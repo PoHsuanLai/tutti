@@ -1,0 +1,91 @@
+[package]
+name = "bevy-tutti"
+version = "0.1.0"
+edition = "2021"
+description = "Bevy plugin for Tutti - Minimal Bevy integration for real-time audio"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Minimal Bevy (just ECS + App, no rendering)
+bevy_app.workspace = true
+bevy_ecs.workspace = true
+bevy_log.workspace = true
+bevy_asset.workspace = true
+bevy_reflect.workspace = true
+bevy_transform = { version = "0.18", optional = true }
+bevy_window = { version = "0.18", optional = true }
+
+# Raw window handle for plugin editor parenting
+raw-window-handle = { version = "0.6", optional = true }
+
+# macOS: attach plugin editor window as child of primary window
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, features = ["NSView", "NSWindow", "NSResponder"] }
+objc2-foundation = { version = "0.3", optional = true, features = ["NSNotification", "NSString", "NSGeometry", "NSObject", "NSThread"] }
+
+
+# Tutti audio engine. `bevy_asset` enables the Asset/TypePath derives on
+# loadable types (Wave, SoundFont, StreamingSample). `bevy_ecs` enables
+# the `Component` derives on the entity-as-node primitives (`AudioNode`,
+# `Volume`, `Pan`, `Mute`, `PluginParam`) — bevy-tutti supplies the
+# reconcile systems that translate component changes into graph ops.
+tutti = { path = "../tutti", features = ["bevy_asset", "bevy_ecs"] }
+tutti-asset = { path = "../tutti/crates/tutti-asset", features = ["std"] }
+
+# Error handling
+thiserror.workspace = true
+
+# MIDI UI observer channel
+crossbeam-channel = "0.5"
+
+[features]
+default = []
+
+# Full feature set
+full = ["tutti/full", "spatial"]
+
+# Spatial audio (requires Transform for position sync)
+spatial = ["tutti/dsp", "bevy_transform"]
+
+# Audio formats (aligned with tutti)
+wav = ["tutti/wav"]
+flac = ["tutti/flac"]
+mp3 = ["tutti/mp3"]
+ogg = ["tutti/ogg"]
+files = ["tutti/files"]
+
+# MIDI (aligned with tutti)
+midi = ["tutti/midi"]
+midi-hardware = ["midi", "tutti/midi-hardware"]
+mpe = ["midi", "tutti/mpe"]
+
+# Synth & sampling
+synth = ["tutti/synth"]
+soundfont = ["tutti/soundfont"]
+sampler = ["tutti/sampler"]
+
+# DSP
+dsp = ["tutti/dsp"]
+
+# Plugin hosting
+plugin = ["tutti/plugin", "dep:bevy_window", "dep:raw-window-handle", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
+vst2 = ["tutti/vst2"]
+vst3 = ["tutti/vst3"]
+clap = ["tutti/clap"]
+au = ["tutti/au"]
+
+# Export & analysis
+export = ["tutti/export"]
+analysis = ["tutti/analysis"]
+
+# Automation
+automation = ["tutti/automation"]
+
+[[example]]
+name = "29_node_entities"
+required-features = ["sampler", "wav"]
+
+[[example]]
+name = "30_full_pipeline"
+required-features = ["sampler", "wav", "automation"]

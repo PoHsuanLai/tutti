@@ -125,6 +125,12 @@ pub use tutti::plugin::handles::PluginHandle;
 pub use tutti::plugin::metadata::{ParameterFlags, ParameterInfo};
 
 #[cfg(feature = "sampler")]
+pub use crate::auditioner::{
+    init_auditioner, AuditionerNode, AuditionerRes, PreviewFile, StopPreview,
+    TuttiAuditionerPlugin,
+};
+
+#[cfg(feature = "sampler")]
 pub use crate::track_clip_reader::{
     ClipCommand, SlotId, TrackClipReaderHandle, TrackClipReaderNode, TrackClipReaderRef,
     TrackClipReaderUnit,

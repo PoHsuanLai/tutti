@@ -174,7 +174,11 @@ impl Plugin for TuttiPlugin {
                 }
 
                 #[cfg(feature = "sampler")]
-                app.insert_resource(SamplerRes(sampler));
+                {
+                    let aud_res = crate::auditioner::init_auditioner(&sampler);
+                    app.insert_resource(aud_res);
+                    app.insert_resource(SamplerRes(sampler));
+                }
 
                 #[cfg(feature = "soundfont")]
                 app.insert_resource(SoundFontRes(soundfont));
@@ -228,7 +232,7 @@ impl Plugin for TuttiPlugin {
         #[cfg(feature = "plugin")]
         app.add_plugins(TuttiHostingPlugin);
         #[cfg(feature = "sampler")]
-        app.add_plugins((TuttiRecordingPlugin, TuttiAudioInputPlugin, TuttiTimeStretchPlugin));
+        app.add_plugins((TuttiRecordingPlugin, TuttiAudioInputPlugin, TuttiTimeStretchPlugin, crate::auditioner::TuttiAuditionerPlugin));
         #[cfg(feature = "automation")]
         app.add_plugins(TuttiAutomationPlugin);
         #[cfg(feature = "analysis")]

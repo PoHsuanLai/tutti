@@ -62,6 +62,8 @@ pub mod playback;
 pub mod dsp;
 
 #[cfg(feature = "sampler")]
+pub mod auditioner;
+#[cfg(feature = "sampler")]
 pub mod track_clip_reader;
 
 #[cfg(feature = "analysis")]

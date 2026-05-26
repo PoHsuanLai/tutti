@@ -70,8 +70,9 @@ pub use tutti::{
 pub use tutti::{AudioNode, Mute, NodeKind, Pan, PluginParam, Volume};
 #[cfg(feature = "dsp")]
 pub use tutti::{
-    Attack, CeilingDb, CompressorRatio, DelayTime, Drive, Feedback, FilterQ, Frequency, GainDb,
-    ModDepth, ModRate, Release, ReverbDamping, ReverbRoomSize, ThresholdDb, WetMix,
+    Attack, Azimuth, CeilingDb, CompressorRatio, DelayTime, Drive, Elevation, Feedback, FilterQ,
+    Frequency, GainDb, ModDepth, ModRate, Release, ReverbDamping, ReverbRoomSize, ThresholdDb,
+    WetMix,
 };
 #[cfg(feature = "sampler")]
 pub use tutti::{SamplerLooping, SamplerSpeed};
@@ -96,8 +97,9 @@ pub use crate::vst2_load::{process_pending_vst2_builds, PendingVst2Build};
 
 #[cfg(feature = "automation")]
 pub use crate::automation::{
-    automation_lane_system, reconcile_automation_writes, AddAutomationLane, AutomationDrivesParam,
-    AutomationLaneEmitter, AutomationLaneNode, AutomationParam, TuttiAutomationPlugin,
+    automation_lane_system, reconcile_automation_writes, update_automation_envelope_system,
+    AddAutomationLane, AutomationDrivesParam, AutomationLaneEmitter, AutomationLaneNode,
+    AutomationParam, TuttiAutomationPlugin, UpdateAutomationEnvelope,
 };
 
 #[cfg(feature = "midi")]

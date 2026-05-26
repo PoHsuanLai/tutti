@@ -34,8 +34,10 @@ pub use reconcile::reconcile_sampler_params;
 pub use reconcile::reconcile_plugin_params;
 #[cfg(feature = "dsp")]
 pub use reconcile::{
-    reconcile_chorus_params, reconcile_compressor_params, reconcile_delay_params,
-    reconcile_filter_params, reconcile_gate_params,
+    reconcile_brickwall_params, reconcile_chorus_params, reconcile_compressor_params,
+    reconcile_delay_params, reconcile_filter_params, reconcile_flanger_params,
+    reconcile_gate_params, reconcile_ladder_params, reconcile_limiter_params,
+    reconcile_phaser_params, reconcile_reverb_params,
 };
 
 pub use routing::{reconcile_audio_routing, AudioFedBy, AudioFeedsTo};

@@ -70,8 +70,8 @@ pub use tutti::{
 pub use tutti::{AudioNode, Mute, NodeKind, Pan, PluginParam, Volume};
 #[cfg(feature = "dsp")]
 pub use tutti::{
-    Attack, CompressorRatio, DelayTime, Feedback, FilterQ, Frequency, GainDb, ModDepth, ModRate,
-    Release, ReverbDamping, ReverbRoomSize, ThresholdDb, WetMix,
+    Attack, CeilingDb, CompressorRatio, DelayTime, Drive, Feedback, FilterQ, Frequency, GainDb,
+    ModDepth, ModRate, Release, ReverbDamping, ReverbRoomSize, ThresholdDb, WetMix,
 };
 #[cfg(feature = "sampler")]
 pub use tutti::{SamplerLooping, SamplerSpeed};
@@ -125,6 +125,12 @@ pub use tutti::plugin::handles::PluginHandle;
 pub use tutti::plugin::metadata::{ParameterFlags, ParameterInfo};
 
 #[cfg(feature = "sampler")]
+pub use crate::track_clip_reader::{
+    ClipCommand, SlotId, TrackClipReaderHandle, TrackClipReaderNode, TrackClipReaderRef,
+    TrackClipReaderUnit,
+};
+
+#[cfg(feature = "sampler")]
 pub use crate::recording::{
     recording_start_system, recording_stop_system, RecordingActive, TuttiRecordingPlugin,
     RecordingResult, StartRecording, StopRecording,
@@ -173,7 +179,9 @@ pub use crate::dsp::{
 };
 #[cfg(feature = "dsp")]
 pub use tutti::units::{
-    ChorusNode, Compressor, Gate, StereoDelayLineNode, StereoSvfFilterNode, SvfType,
+    BrickwallLimiter, ChorusNode, Compressor, FlangerNode, Gate, LadderFilterNode, LadderType,
+    LimiterNode, PhaserNode, StereoDelayLineNode, StereoLadderFilterNode, StereoPhaserNode,
+    StereoSvfFilterNode, SvfType,
 };
 
 // Resource newtypes (defined in `crate::resources`).

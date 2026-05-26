@@ -300,8 +300,8 @@ pub fn reconcile_plugin_params(
 
 #[cfg(feature = "dsp")]
 use tutti::core::ecs::{
-    Attack, CompressorRatio, DelayTime, Feedback, FilterQ, Frequency, GainDb, ModDepth, ModRate,
-    Release, ThresholdDb, WetMix,
+    Attack, CeilingDb, CompressorRatio, DelayTime, Drive, Feedback, FilterQ, Frequency, GainDb,
+    ModDepth, ModRate, Release, ThresholdDb, WetMix,
 };
 
 #[cfg(feature = "dsp")]
@@ -523,6 +523,240 @@ pub fn reconcile_gate_params(
             unit.release_time()
                 .store(r.0, std::sync::atomic::Ordering::Release);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Flanger
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dsp")]
+type FlangerChangedFilter = Or<(
+    Changed<ModRate>,
+    Changed<ModDepth>,
+    Changed<Feedback>,
+    Changed<WetMix>,
+)>;
+
+#[cfg(feature = "dsp")]
+#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
+pub fn reconcile_flanger_params(
+    graph: Option<ResMut<TuttiGraphRes>>,
+    changed: Query<
+        (
+            &AudioNode,
+            &NodeKind,
+            Option<&ModRate>,
+            Option<&ModDepth>,
+            Option<&Feedback>,
+            Option<&WetMix>,
+        ),
+        FlangerChangedFilter,
+    >,
+) {
+    let Some(mut graph) = graph else { return };
+    for (node, kind, rate, depth, fb, wet) in changed.iter() {
+        if !matches!(*kind, NodeKind::Flanger) {
+            continue;
+        }
+        let Some(unit) = graph.0.node_mut::<tutti::units::FlangerNode>(node.0) else {
+            continue;
+        };
+        if let Some(r) = rate {
+            unit.set_rate(r.0);
+        }
+        if let Some(d) = depth {
+            unit.set_depth(d.0);
+        }
+        if let Some(f) = fb {
+            unit.set_feedback(f.0);
+        }
+        if let Some(w) = wet {
+            unit.set_mix(w.0);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phaser
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dsp")]
+type PhaserChangedFilter = Or<(
+    Changed<ModRate>,
+    Changed<ModDepth>,
+    Changed<Feedback>,
+    Changed<WetMix>,
+)>;
+
+#[cfg(feature = "dsp")]
+#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
+pub fn reconcile_phaser_params(
+    graph: Option<ResMut<TuttiGraphRes>>,
+    changed: Query<
+        (
+            &AudioNode,
+            &NodeKind,
+            Option<&ModRate>,
+            Option<&ModDepth>,
+            Option<&Feedback>,
+            Option<&WetMix>,
+        ),
+        PhaserChangedFilter,
+    >,
+) {
+    let Some(mut graph) = graph else { return };
+    for (node, kind, rate, depth, fb, wet) in changed.iter() {
+        if !matches!(*kind, NodeKind::Phaser) {
+            continue;
+        }
+        let Some(unit) = graph.0.node_mut::<tutti::units::StereoPhaserNode>(node.0) else {
+            continue;
+        };
+        if let Some(r) = rate {
+            unit.set_rate(r.0);
+        }
+        if let Some(d) = depth {
+            unit.set_depth(d.0);
+        }
+        if let Some(f) = fb {
+            unit.set_feedback(f.0);
+        }
+        if let Some(w) = wet {
+            unit.set_mix(w.0);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ladder filter
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dsp")]
+type LadderChangedFilter = Or<(Changed<Frequency>, Changed<FilterQ>, Changed<Drive>)>;
+
+#[cfg(feature = "dsp")]
+#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
+pub fn reconcile_ladder_params(
+    graph: Option<ResMut<TuttiGraphRes>>,
+    changed: Query<
+        (&AudioNode, &NodeKind, Option<&Frequency>, Option<&FilterQ>, Option<&Drive>),
+        LadderChangedFilter,
+    >,
+) {
+    let Some(mut graph) = graph else { return };
+    for (node, kind, freq, q, drive) in changed.iter() {
+        if !matches!(*kind, NodeKind::Ladder) {
+            continue;
+        }
+        let Some(unit) =
+            graph.0.node_mut::<tutti::units::StereoLadderFilterNode<f64>>(node.0)
+        else {
+            continue;
+        };
+        if let Some(f) = freq {
+            unit.set_frequency(f.0);
+        }
+        if let Some(q) = q {
+            unit.set_resonance(q.0);
+        }
+        if let Some(d) = drive {
+            unit.set_drive(d.0);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Limiter
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dsp")]
+type LimiterChangedFilter =
+    Or<(Changed<ThresholdDb>, Changed<CeilingDb>, Changed<Release>)>;
+
+#[cfg(feature = "dsp")]
+#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
+pub fn reconcile_limiter_params(
+    graph: Option<ResMut<TuttiGraphRes>>,
+    changed: Query<
+        (&AudioNode, &NodeKind, Option<&ThresholdDb>, Option<&CeilingDb>, Option<&Release>),
+        LimiterChangedFilter,
+    >,
+) {
+    let Some(mut graph) = graph else { return };
+    for (node, kind, thresh, ceiling, release) in changed.iter() {
+        if !matches!(*kind, NodeKind::Limiter) {
+            continue;
+        }
+        let Some(unit) = graph.0.node_mut::<tutti::units::LimiterNode>(node.0) else {
+            continue;
+        };
+        if let Some(t) = thresh {
+            unit.set_threshold(t.0);
+        }
+        if let Some(c) = ceiling {
+            unit.set_ceiling(c.0);
+        }
+        if let Some(r) = release {
+            unit.set_release(r.0);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Brickwall limiter
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dsp")]
+#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
+pub fn reconcile_brickwall_params(
+    graph: Option<ResMut<TuttiGraphRes>>,
+    changed: Query<(&AudioNode, &NodeKind, &CeilingDb), Changed<CeilingDb>>,
+) {
+    let Some(mut graph) = graph else { return };
+    for (node, kind, ceiling) in changed.iter() {
+        if !matches!(*kind, NodeKind::BrickwallLimiter) {
+            continue;
+        }
+        let Some(unit) = graph.0.node_mut::<tutti::units::BrickwallLimiter>(node.0) else {
+            continue;
+        };
+        unit.set_ceiling(ceiling.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reverb (crossfade rebuild — fundsp reverb has no parameter setters)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "dsp")]
+type ReverbChangedFilter = Or<(
+    Changed<tutti::core::ecs::ReverbRoomSize>,
+    Changed<tutti::core::ecs::ReverbDamping>,
+    Changed<WetMix>,
+)>;
+
+#[cfg(feature = "dsp")]
+#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
+pub fn reconcile_reverb_params(
+    mut commands: Commands,
+    changed: Query<
+        (
+            Entity,
+            &NodeKind,
+            &tutti::core::ecs::ReverbRoomSize,
+            &tutti::core::ecs::ReverbDamping,
+            &WetMix,
+        ),
+        (With<AudioNode>, ReverbChangedFilter),
+    >,
+) {
+    for (entity, kind, room, damp, _wet) in changed.iter() {
+        if !matches!(*kind, NodeKind::Reverb) {
+            continue;
+        }
+        let unit = tutti::dsp::reverb_stereo(room.0 as f64, 3.0, damp.0 as f64);
+        crossfade_audio_node(&mut commands, entity, Box::new(unit));
     }
 }
 

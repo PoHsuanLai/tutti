@@ -10,6 +10,7 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use tutti::core::{AudioUnit, BufferMut, BufferRef, SignalFrame, Wave};
+use tutti::sampler::stretch;
 use tutti::sampler::SamplerUnit;
 
 const COMMAND_CAPACITY: usize = 64;
@@ -31,6 +32,27 @@ struct ClipSlot {
     id: SlotId,
     sampler: SamplerUnit,
     reverse: bool,
+    stretch: Option<stretch::Unit>,
+    stretch_factor: f32,
+    pitch_cents: f32,
+    sample_rate: f64,
+}
+
+impl ClipSlot {
+    fn needs_stretch(&self) -> bool {
+        (self.stretch_factor - 1.0).abs() > 0.001 || self.pitch_cents.abs() > 0.5
+    }
+
+    fn rebuild_stretch(&mut self) {
+        if self.needs_stretch() {
+            let unit = stretch::Unit::new(Box::new(self.sampler.clone()), self.sample_rate);
+            unit.set_stretch_factor(self.stretch_factor);
+            unit.set_pitch_cents(self.pitch_cents);
+            self.stretch = Some(unit);
+        } else {
+            self.stretch = None;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +95,11 @@ pub enum ClipCommand {
         id: SlotId,
         reverse: bool,
     },
+    UpdateStretch {
+        id: SlotId,
+        stretch_factor: f32,
+        pitch_cents: f32,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +140,7 @@ pub struct TrackClipReaderNode(pub tutti::NodeId);
 pub struct TrackClipReaderUnit {
     clips: Vec<ClipSlot>,
     rx: Receiver<ClipCommand>,
+    sample_rate: f64,
 }
 
 impl TrackClipReaderUnit {
@@ -122,6 +150,7 @@ impl TrackClipReaderUnit {
         let unit = Self {
             clips: Vec::new(),
             rx,
+            sample_rate: 44100.0,
         };
         (unit, handle)
     }
@@ -139,6 +168,10 @@ impl TrackClipReaderUnit {
                         id,
                         sampler,
                         reverse,
+                        stretch: None,
+                        stretch_factor: 1.0,
+                        pitch_cents: 0.0,
+                        sample_rate: self.sample_rate,
                     });
                 }
                 ClipCommand::Remove(id) => {
@@ -147,6 +180,7 @@ impl TrackClipReaderUnit {
                 ClipCommand::ReplaceWave { id, wave } => {
                     if let Some(slot) = self.clips.iter_mut().find(|s| s.id == id) {
                         slot.sampler.set_wave(wave);
+                        slot.rebuild_stretch();
                     }
                 }
                 ClipCommand::UpdatePlacement {
@@ -196,6 +230,17 @@ impl TrackClipReaderUnit {
                         slot.reverse = reverse;
                     }
                 }
+                ClipCommand::UpdateStretch {
+                    id,
+                    stretch_factor,
+                    pitch_cents,
+                } => {
+                    if let Some(slot) = self.clips.iter_mut().find(|s| s.id == id) {
+                        slot.stretch_factor = stretch_factor;
+                        slot.pitch_cents = pitch_cents;
+                        slot.rebuild_stretch();
+                    }
+                }
             }
         }
     }
@@ -216,12 +261,21 @@ impl Clone for TrackClipReaderUnit {
     fn clone(&self) -> Self {
         let (_tx, rx) = bounded(COMMAND_CAPACITY);
         Self {
-            clips: self.clips.iter().map(|s| ClipSlot {
-                id: s.id,
-                sampler: s.sampler.clone(),
-                reverse: s.reverse,
-            }).collect(),
+            clips: self
+                .clips
+                .iter()
+                .map(|s| ClipSlot {
+                    id: s.id,
+                    sampler: s.sampler.clone(),
+                    reverse: s.reverse,
+                    stretch: s.stretch.clone(),
+                    stretch_factor: s.stretch_factor,
+                    pitch_cents: s.pitch_cents,
+                    sample_rate: s.sample_rate,
+                })
+                .collect(),
             rx,
+            sample_rate: self.sample_rate,
         }
     }
 }
@@ -238,12 +292,20 @@ impl AudioUnit for TrackClipReaderUnit {
     fn reset(&mut self) {
         for slot in &mut self.clips {
             slot.sampler.reset();
+            if let Some(ref mut s) = slot.stretch {
+                s.reset();
+            }
         }
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti::core::SampleRate) {
+        self.sample_rate = sample_rate.get();
         for slot in &mut self.clips {
             slot.sampler.set_sample_rate(sample_rate);
+            slot.sample_rate = sample_rate.get();
+            if let Some(ref mut s) = slot.stretch {
+                s.set_sample_rate(sample_rate);
+            }
         }
     }
 
@@ -257,8 +319,13 @@ impl AudioUnit for TrackClipReaderUnit {
         let mut left = 0.0_f32;
         let mut right = 0.0_f32;
 
-        for slot in &self.clips {
-            if let Some(pos) = slot.sampler.transport_sample_position() {
+        for slot in &mut self.clips {
+            if let Some(ref mut s) = slot.stretch {
+                let mut buf = [0.0f32; 2];
+                s.tick(&[], &mut buf);
+                left += buf[0];
+                right += buf[1];
+            } else if let Some(pos) = slot.sampler.transport_sample_position() {
                 let (l, r) = Self::read_clip_sample(slot, pos);
                 left += l;
                 right += r;
@@ -272,22 +339,30 @@ impl AudioUnit for TrackClipReaderUnit {
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
         self.drain_commands();
 
-        // Zero the output first.
         for i in 0..size {
             output.set_f32(0, i, 0.0);
             output.set_f32(1, i, 0.0);
         }
 
-        for slot in &self.clips {
-            let Some(start_pos) = slot.sampler.transport_sample_position() else {
-                continue;
-            };
-            let advance = (slot.sampler.speed() * slot.sampler.src_ratio()) as f64;
-            for i in 0..size {
-                let pos = start_pos + i as f64 * advance;
-                let (l, r) = Self::read_clip_sample(slot, pos);
-                output.set_f32(0, i, output.at_f32(0, i) + l);
-                output.set_f32(1, i, output.at_f32(1, i) + r);
+        for slot in &mut self.clips {
+            if let Some(ref mut s) = slot.stretch {
+                let mut tick_out = [0.0f32; 2];
+                for i in 0..size {
+                    s.tick(&[], &mut tick_out);
+                    output.set_f32(0, i, output.at_f32(0, i) + tick_out[0]);
+                    output.set_f32(1, i, output.at_f32(1, i) + tick_out[1]);
+                }
+            } else {
+                let Some(start_pos) = slot.sampler.transport_sample_position() else {
+                    continue;
+                };
+                let advance = (slot.sampler.speed() * slot.sampler.src_ratio()) as f64;
+                for i in 0..size {
+                    let pos = start_pos + i as f64 * advance;
+                    let (l, r) = Self::read_clip_sample(slot, pos);
+                    output.set_f32(0, i, output.at_f32(0, i) + l);
+                    output.set_f32(1, i, output.at_f32(1, i) + r);
+                }
             }
         }
     }
@@ -309,8 +384,7 @@ impl AudioUnit for TrackClipReaderUnit {
     }
 
     fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.clips.len() * std::mem::size_of::<ClipSlot>()
+        std::mem::size_of::<Self>() + self.clips.len() * std::mem::size_of::<ClipSlot>()
     }
 }
 
@@ -414,7 +488,8 @@ mod tests {
         let wave = make_wave(100);
 
         for i in 0..3 {
-            let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), 0.0, None);
+            let sampler =
+                SamplerUnit::with_transport(wave.clone(), transport.clone(), 0.0, None);
             handle.send(ClipCommand::Add {
                 id: SlotId(i),
                 sampler,
@@ -491,5 +566,50 @@ mod tests {
         unit.tick(&[], &mut out_after);
 
         assert!((out_after[0] - out_before[0] * 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn update_stretch_enables_processor() {
+        let (mut unit, handle) = TrackClipReaderUnit::new();
+        let transport = MockTransport::new(120.0, 0.0, true);
+        let wave = make_wave(4096);
+
+        let sampler = SamplerUnit::with_transport(wave, transport, 0.0, None);
+        handle.send(ClipCommand::Add {
+            id: SlotId(1),
+            sampler,
+            reverse: false,
+        });
+
+        // Drain add command.
+        let mut out = [0.0f32; 2];
+        unit.tick(&[], &mut out);
+        assert!(
+            unit.clips[0].stretch.is_none(),
+            "no stretch by default"
+        );
+
+        handle.send(ClipCommand::UpdateStretch {
+            id: SlotId(1),
+            stretch_factor: 2.0,
+            pitch_cents: 0.0,
+        });
+        unit.tick(&[], &mut out);
+        assert!(
+            unit.clips[0].stretch.is_some(),
+            "stretch should be active"
+        );
+
+        // Reset to identity removes the processor.
+        handle.send(ClipCommand::UpdateStretch {
+            id: SlotId(1),
+            stretch_factor: 1.0,
+            pitch_cents: 0.0,
+        });
+        unit.tick(&[], &mut out);
+        assert!(
+            unit.clips[0].stretch.is_none(),
+            "identity stretch disables processor"
+        );
     }
 }

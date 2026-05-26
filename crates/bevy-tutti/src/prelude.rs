@@ -134,8 +134,8 @@ pub use crate::auditioner::{
 
 #[cfg(feature = "sampler")]
 pub use crate::track_clip_reader::{
-    ClipCommand, SlotId, TrackClipReaderHandle, TrackClipReaderNode, TrackClipReaderRef,
-    TrackClipReaderUnit,
+    ClipCommand, ClipSampler, SlotId, TrackClipReaderHandle, TrackClipReaderNode,
+    TrackClipReaderRef, TrackClipReaderUnit,
 };
 
 #[cfg(feature = "sampler")]

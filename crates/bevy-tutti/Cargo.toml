@@ -48,6 +48,9 @@ full = ["tutti/full", "spatial"]
 # Spatial audio (requires Transform for position sync)
 spatial = ["tutti/dsp", "bevy_transform"]
 
+# FFT convolution reverb
+convolution = ["tutti/convolution"]
+
 # Audio formats (aligned with tutti)
 wav = ["tutti/wav"]
 flac = ["tutti/flac"]

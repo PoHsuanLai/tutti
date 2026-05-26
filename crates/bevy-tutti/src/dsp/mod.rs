@@ -70,5 +70,12 @@ impl Plugin for TuttiDspPlugin {
                 ),
             );
         }
+
+        #[cfg(feature = "convolution")]
+        app.add_systems(
+            Update,
+            crate::graph::reconcile::reconcile_convolver_params
+                .in_set(crate::graph::GraphReconcileSystems::Params),
+        );
     }
 }

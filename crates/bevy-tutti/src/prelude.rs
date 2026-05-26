@@ -87,6 +87,10 @@ pub use crate::graph::{
     poll_wave_imports, promote_pending_samplers, reconcile_sampler_params, PendingSamplerLoad,
     WaveImportQueue,
 };
+#[cfg(feature = "convolution")]
+pub use crate::graph::{
+    promote_pending_convolvers, start_convolver_loads, PendingConvolverLoad,
+};
 #[cfg(feature = "midi")]
 pub use crate::graph::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi};
 #[cfg(feature = "plugin")]

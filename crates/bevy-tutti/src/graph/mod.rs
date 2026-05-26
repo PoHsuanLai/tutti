@@ -21,6 +21,8 @@ pub mod sidechain;
 
 #[cfg(feature = "sampler")]
 pub mod pending_load;
+#[cfg(feature = "convolution")]
+pub mod pending_convolver;
 #[cfg(feature = "midi")]
 pub mod scheduled;
 
@@ -47,6 +49,12 @@ pub use sidechain::{reconcile_sidechain_links, SidechainOf, SidechainSources};
 pub use pending_load::{
     poll_wave_imports, promote_pending_samplers, PendingSamplerLoad, WaveImportQueue,
 };
+#[cfg(feature = "convolution")]
+pub use pending_convolver::{
+    promote_pending_convolvers, start_convolver_loads, PendingConvolverLoad,
+};
+#[cfg(feature = "convolution")]
+pub use reconcile::reconcile_convolver_params;
 #[cfg(feature = "midi")]
 pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi};
 
@@ -94,6 +102,17 @@ impl Plugin for TuttiGraphPlugin {
                 ),
             );
         }
+
+        #[cfg(feature = "convolution")]
+        app.add_systems(
+            Update,
+            (
+                start_convolver_loads,
+                promote_pending_convolvers
+                    .after(start_convolver_loads)
+                    .in_set(GraphReconcileSystems::Spawn),
+            ),
+        );
 
         #[cfg(feature = "plugin")]
         app.add_systems(

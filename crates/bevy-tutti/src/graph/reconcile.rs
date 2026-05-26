@@ -760,6 +760,27 @@ pub fn reconcile_reverb_params(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Convolution reverb
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "convolution")]
+pub fn reconcile_convolver_params(
+    graph: Option<ResMut<TuttiGraphRes>>,
+    changed: Query<(&AudioNode, &NodeKind, &WetMix), (Changed<WetMix>,)>,
+) {
+    let Some(mut graph) = graph else { return };
+    for (node, kind, wet) in changed.iter() {
+        if !matches!(*kind, NodeKind::ConvolutionReverb) {
+            continue;
+        }
+        let Some(unit) = graph.0.node_mut::<tutti::units::StereoConvolverNode>(node.0) else {
+            continue;
+        };
+        unit.set_mix(wet.0);
+    }
+}
+
 /// Runs `graph.commit()` once iff any reconcile system mutated the graph.
 pub fn commit_graph(graph: Option<ResMut<TuttiGraphRes>>, mut dirty: ResMut<GraphDirty>) {
     if !dirty.0 {

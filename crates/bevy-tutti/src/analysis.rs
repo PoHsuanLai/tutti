@@ -53,27 +53,23 @@ pub fn live_analysis_control_system(
     enable_query: Query<Entity, Added<EnableLiveAnalysis>>,
     disable_query: Query<Entity, Added<DisableLiveAnalysis>>,
 ) {
-    // The new flat-bundle AnalysisHandle does not yet expose a runtime
-    // enable/disable toggle (it's a constructor-time choice via `with_live`).
-    // Mirror the enable/disable requests onto the `is_live` flag so downstream
-    // code can at least gate polling; log a warning so callers know the
-    // underlying analysis thread is not actually being spawned/stopped.
     let Some(analysis) = analysis else { return };
 
     for entity in enable_query.iter() {
-        if !analysis.is_live() {
+        if analysis.enable_live() {
+            data.is_live = true;
+            bevy_log::info!("Live analysis enabled");
+        } else {
             bevy_log::warn!(
-                "EnableLiveAnalysis received but AnalysisHandle has no runtime \
-                 enable hook in this version of tutti — is_live flag flipped \
-                 but no live analysis thread will be spawned"
+                "EnableLiveAnalysis: AnalysisHandle has no metering manager — \
+                 analysis thread cannot start"
             );
         }
-        data.is_live = true;
         commands.entity(entity).remove::<EnableLiveAnalysis>();
-        bevy_log::info!("Live analysis enabled");
     }
 
     for entity in disable_query.iter() {
+        analysis.disable_live();
         data.is_live = false;
         commands.entity(entity).remove::<DisableLiveAnalysis>();
         bevy_log::info!("Live analysis disabled");

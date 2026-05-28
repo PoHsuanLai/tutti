@@ -120,15 +120,6 @@ impl Plugin for TuttiGraphPlugin {
             reconcile_plugin_params.in_set(GraphReconcileSystems::Params),
         );
 
-        #[cfg(all(feature = "plugin", feature = "vst2"))]
-        {
-            use crate::vst2_load::process_pending_vst2_builds;
-            app.add_systems(
-                Update,
-                process_pending_vst2_builds.in_set(GraphReconcileSystems::Spawn),
-            );
-        }
-
         #[cfg(feature = "midi")]
         app.add_systems(Update, tick_scheduled_midi);
     }

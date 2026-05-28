@@ -93,8 +93,6 @@ pub mod plugin_host;
 pub mod native_window;
 #[cfg(all(target_os = "macos", feature = "plugin"))]
 mod live_resize;
-#[cfg(all(feature = "plugin", feature = "vst2"))]
-pub mod vst2_load;
 
 pub use plugin::TuttiPlugin;
 pub use prelude::*;

@@ -96,9 +96,6 @@ pub use crate::graph::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi};
 #[cfg(feature = "plugin")]
 pub use crate::graph::reconcile_plugin_params;
 
-#[cfg(all(feature = "plugin", feature = "vst2"))]
-pub use crate::vst2_load::{process_pending_vst2_builds, PendingVst2Build};
-
 #[cfg(feature = "automation")]
 pub use crate::automation::{
     automation_lane_system, reconcile_automation_writes, update_automation_envelope_system,

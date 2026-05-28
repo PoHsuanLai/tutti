@@ -4,40 +4,75 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::message::Message;
 
 #[cfg(feature = "midi")]
-use tutti::midi::{decode, MidiEvent, SemanticEvent};
+use tutti::midi::{decode, MidiEvent, MidiInputRecord, SemanticEvent};
 
 /// Fired every frame for each MIDI event received from hardware input.
+///
+/// Tagged with the originating device — consumers that don't care
+/// (live-input synth routing) can ignore `device_id` / `device_name`,
+/// while those that do (external clock chase, MIDI-learn-per-device)
+/// filter on them.
 #[cfg(feature = "midi")]
 #[derive(Event, Message, Clone, Debug)]
-pub struct MidiInputEvent(pub MidiEvent);
+pub struct MidiInputEvent {
+    pub event: MidiEvent,
+    pub device_id: u32,
+    pub device_name: String,
+    /// Microseconds since the originating connection opened
+    /// (midir-provided). Monotonic per device.
+    pub timestamp_us: u64,
+}
+
+#[cfg(feature = "midi")]
+impl From<MidiInputRecord> for MidiInputEvent {
+    fn from(r: MidiInputRecord) -> Self {
+        Self {
+            event: r.event,
+            device_id: r.device_id,
+            device_name: r.device_name,
+            timestamp_us: r.timestamp_us,
+        }
+    }
+}
 
 #[cfg(feature = "midi")]
 impl MidiInputEvent {
+    /// Constructor for tests / synthetic events not originating from
+    /// hardware. Real hardware events arrive via `From<MidiInputRecord>`.
+    pub fn synthetic(event: MidiEvent) -> Self {
+        Self {
+            event,
+            device_id: 0,
+            device_name: String::new(),
+            timestamp_us: 0,
+        }
+    }
+
     #[inline]
     pub fn is_note_on(&self) -> bool {
-        self.0.is_note_on()
+        self.event.is_note_on()
     }
 
     #[inline]
     pub fn is_note_off(&self) -> bool {
-        self.0.is_note_off()
+        self.event.is_note_off()
     }
 
     #[inline]
     pub fn note(&self) -> Option<u8> {
-        self.0.note()
+        self.event.note()
     }
 
     /// Velocity as a 7-bit MIDI 1 value, downconverted from the internal
     /// 16-bit MIDI 2 form if the event is MIDI 2.
     #[inline]
     pub fn velocity(&self) -> Option<u8> {
-        self.0.velocity_u7()
+        self.event.velocity_u7()
     }
 
     #[inline]
     pub fn event(&self) -> &MidiEvent {
-        &self.0
+        &self.event
     }
 
     /// Decode into a normalised [`SemanticEvent`]. Returns `None` for
@@ -45,7 +80,7 @@ impl MidiInputEvent {
     /// messages not represented in `SemanticEvent`.
     #[inline]
     pub fn semantic(&self) -> Option<SemanticEvent> {
-        decode(&self.0)
+        decode(&self.event)
     }
 }
 
@@ -62,7 +97,7 @@ mod tests {
 
     #[test]
     fn semantic_decodes_cc_to_normalised_f32() {
-        let ev = MidiInputEvent(MidiEvent::cc(0, 3, 7, u32::MAX / 2));
+        let ev = MidiInputEvent::synthetic(MidiEvent::cc(0, 3, 7, u32::MAX / 2));
         match ev.semantic() {
             Some(SemanticEvent::ControlChange { channel, cc, value }) => {
                 assert_eq!(channel, 3);
@@ -75,7 +110,7 @@ mod tests {
 
     #[test]
     fn semantic_decodes_pitch_bend_to_signed_unit() {
-        let ev = MidiInputEvent(MidiEvent::pitch_bend(0, 0, u32::MAX));
+        let ev = MidiInputEvent::synthetic(MidiEvent::pitch_bend(0, 0, u32::MAX));
         match ev.semantic() {
             Some(SemanticEvent::PitchBend { value, .. }) => {
                 assert!(value > 0.99, "max bend should approach 1.0, got {value}");
@@ -86,7 +121,7 @@ mod tests {
 
     #[test]
     fn semantic_decodes_note_on() {
-        let ev = MidiInputEvent(MidiEvent::note_on(0, 0, 60, 0x8000));
+        let ev = MidiInputEvent::synthetic(MidiEvent::note_on(0, 0, 60, 0x8000));
         match ev.semantic() {
             Some(SemanticEvent::NoteOn { note, velocity, .. }) => {
                 assert_eq!(note, 60);

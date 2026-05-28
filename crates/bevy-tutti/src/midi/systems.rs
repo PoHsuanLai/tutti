@@ -22,13 +22,13 @@ use super::events::MidiDeviceEvent;
 #[cfg(feature = "midi")]
 #[derive(Resource)]
 pub struct MidiInputObserver {
-    pub(crate) receiver: crossbeam_channel::Receiver<tutti::midi::MidiEvent>,
+    pub(crate) receiver: crossbeam_channel::Receiver<tutti::midi::MidiInputRecord>,
 }
 
 #[cfg(feature = "midi")]
 #[derive(Resource)]
 pub(crate) struct MidiObserverSender {
-    pub(crate) sender: Option<crossbeam_channel::Sender<tutti::midi::MidiEvent>>,
+    pub(crate) sender: Option<crossbeam_channel::Sender<tutti::midi::MidiInputRecord>>,
 }
 
 #[cfg(feature = "midi-hardware")]
@@ -68,8 +68,8 @@ pub fn midi_input_event_system(
     mut writer: MessageWriter<MidiInputEvent>,
 ) {
     let Some(observer) = observer else { return };
-    while let Ok(event) = observer.receiver.try_recv() {
-        writer.write(MidiInputEvent(event));
+    while let Ok(record) = observer.receiver.try_recv() {
+        writer.write(MidiInputEvent::from(record));
     }
 }
 

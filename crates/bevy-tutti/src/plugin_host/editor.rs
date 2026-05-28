@@ -142,12 +142,12 @@ pub fn plugin_editor_attach_system(
                 bevy_log::info!(
                     "Plugin '{}' editor opened ({w}x{h}, resizable={})",
                     emitter.handle.name(),
-                    capabilities.resizable,
+                    capabilities.resize.resizable,
                 );
 
                 if let Ok(mut win) = windows.get_mut(pend.window_entity) {
                     win.resolution.set(w as f32, h as f32);
-                    if capabilities.resizable {
+                    if capabilities.resize.resizable {
                         win.resize_constraints = bevy_window::WindowResizeConstraints {
                             min_width: 64.0,
                             min_height: 64.0,
@@ -176,7 +176,7 @@ pub fn plugin_editor_attach_system(
                 // observer that calls `set_editor_size` from inside
                 // AppKit's tracking loop.
                 #[cfg(target_os = "macos")]
-                let live_resize = if capabilities.resizable {
+                let live_resize = if capabilities.resize.resizable {
                     if capabilities.appkit_autoresize_friendly {
                         crate::native_window::enable_subview_autoresize(raw_handle);
                         None
@@ -246,7 +246,7 @@ pub fn plugin_editor_window_resize_system(
             if editor.editor_window != ev.window {
                 continue;
             }
-            if !editor.capabilities.resizable {
+            if !editor.capabilities.resize.resizable {
                 continue;
             }
             if event_size == editor.last_applied {
@@ -312,7 +312,7 @@ pub fn plugin_editor_resize_request_system(
 
         if let Ok(mut win) = windows.get_mut(editor.editor_window) {
             win.resolution.set(req.width as f32, req.height as f32);
-            if !editor.capabilities.resizable {
+            if !editor.capabilities.resize.resizable {
                 win.resize_constraints = bevy_window::WindowResizeConstraints {
                     min_width: req.width as f32,
                     min_height: req.height as f32,

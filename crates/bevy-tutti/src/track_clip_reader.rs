@@ -402,7 +402,14 @@ impl TrackClipReaderUnit {
 
 impl Clone for TrackClipReaderUnit {
     fn clone(&self) -> Self {
-        let (_tx, rx) = bounded(COMMAND_CAPACITY);
+        // `AudioUnit: DynClone`, so the graph (fundsp `Net`) may clone this
+        // unit when it reallocates or swaps a node, then tick the clone and
+        // drop the original. The clone therefore MUST keep receiving the
+        // commands the ECS handle's `Sender` still feeds — so we share the
+        // *same* `Receiver` rather than minting a fresh, dead channel.
+        // `crossbeam` delivers each message to exactly one receiver, and the
+        // graph only ever ticks one instance at a time, so there is no
+        // double-drain.
         Self {
             clips: self
                 .clips
@@ -417,7 +424,7 @@ impl Clone for TrackClipReaderUnit {
                     sample_rate: s.sample_rate,
                 })
                 .collect(),
-            rx,
+            rx: self.rx.clone(),
             sample_rate: self.sample_rate,
             transport: self.transport.clone(),
         }

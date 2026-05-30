@@ -161,6 +161,11 @@ pub use crate::export::{
     TuttiExportPlugin, StartExport,
 };
 #[cfg(feature = "export")]
+pub use crate::render_region::{
+    region_render_poll_system, start_region_render_system, RegionRenderComplete,
+    RegionRenderFailed, RegionRenderInProgress, StartRegionRender, TuttiRegionRenderPlugin,
+};
+#[cfg(feature = "export")]
 pub use tutti::export::{
     AudioFormat, Handle as ExportHandle, Normalize, State as ExportState, Written,
 };

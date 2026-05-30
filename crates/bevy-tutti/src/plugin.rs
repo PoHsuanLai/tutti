@@ -238,6 +238,6 @@ impl Plugin for TuttiPlugin {
         #[cfg(feature = "analysis")]
         app.add_plugins(TuttiAnalysisPlugin);
         #[cfg(feature = "export")]
-        app.add_plugins(TuttiExportPlugin);
+        app.add_plugins((TuttiExportPlugin, crate::render_region::TuttiRegionRenderPlugin));
     }
 }

@@ -72,6 +72,8 @@ mod analysis;
 pub mod automation;
 #[cfg(feature = "export")]
 mod export;
+#[cfg(feature = "export")]
+pub mod render_region;
 #[cfg(feature = "midi")]
 mod midi;
 #[cfg(feature = "sampler")]

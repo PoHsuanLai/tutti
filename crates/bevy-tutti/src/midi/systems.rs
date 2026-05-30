@@ -258,11 +258,14 @@ pub fn midi_sequence_tick_system(
             continue;
         }
 
-        // Determine which notes should be active at this beat
+        // Determine which notes should be active at this beat. This
+        // sequence path is integer-note-keyed; continuous pitch rounds to
+        // the nearest semitone (the rich MPE path lives in dawai-model's
+        // `flatten_notes`, not here).
         let mut should_be_active = std::collections::HashSet::new();
         for n in &seq.notes {
             if local_beat >= n.start && local_beat < n.start + n.duration {
-                should_be_active.insert(n.note);
+                should_be_active.insert(seq_note_number(n));
             }
         }
 
@@ -276,14 +279,22 @@ pub fn midi_sequence_tick_system(
 
         // Note-on for newly active notes
         for n in &seq.notes {
-            if should_be_active.contains(&n.note) && !state.active_notes.contains(&n.note) {
-                let event = note_on_event(n.note, n.velocity);
+            let note = seq_note_number(n);
+            if should_be_active.contains(&note) && !state.active_notes.contains(&note) {
+                let velocity = (n.velocity.clamp(0.0, 1.0) * 127.0).round() as u8;
+                let event = note_on_event(note, velocity);
                 midi.0.queue(unit_id, &[event]);
             }
         }
 
         state.active_notes = should_be_active;
     }
+}
+
+/// Nearest integer MIDI note number for a sequence note's continuous pitch.
+#[cfg(feature = "midi")]
+fn seq_note_number(n: &super::components::MidiSequenceNote) -> u8 {
+    n.pitch.round().clamp(0.0, 127.0) as u8
 }
 
 /// Channel-0 MIDI 2.0 note-on event with a 7-bit MIDI 1 velocity

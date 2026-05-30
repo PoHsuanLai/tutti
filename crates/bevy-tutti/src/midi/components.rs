@@ -2,12 +2,17 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 use tutti::NodeId;
 
-/// A single note within a [`MidiSequence`].
+/// A single note within a [`MidiSequence`]. Runtime ECS mirror of
+/// `dawai_types::SymbolicNote` (without the expression lanes — this form
+/// only fires note_on/note_off). `pitch` is continuous semitones; the
+/// firing system rounds to the nearest integer note number.
 #[cfg(feature = "midi")]
 #[derive(Debug, Clone, Copy, PartialEq, Reflect)]
 pub struct MidiSequenceNote {
-    pub note: u8,
-    pub velocity: u8,
+    /// Pitch in semitones (60.0 = middle C). Fractional = microtonal.
+    pub pitch: f64,
+    /// Onset velocity, normalized `0.0..=1.0`.
+    pub velocity: f32,
     /// Start time in beats, relative to the sequence start.
     pub start: f64,
     /// Duration in beats.

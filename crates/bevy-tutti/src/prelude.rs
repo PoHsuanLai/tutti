@@ -67,7 +67,7 @@ pub use tutti::{
 
 // Entity-as-node ECS primitives — re-exported from `tutti` so apps don't
 // need to reach into `tutti::core::ecs` directly.
-pub use tutti::{AudioNode, Mute, NodeKind, Pan, PluginParam, Volume};
+pub use tutti::{AudioNode, LayerKey, ModParam, Mute, NodeKind, Pan, PluginParam, Volume};
 #[cfg(feature = "dsp")]
 pub use tutti::{
     Attack, Azimuth, CeilingDb, CompressorRatio, DelayTime, Drive, Elevation, Feedback, FilterQ,

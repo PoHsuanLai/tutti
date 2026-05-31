@@ -41,10 +41,7 @@ impl Plugin for TuttiDspPlugin {
         #[cfg(feature = "dsp")]
         {
             use crate::graph::reconcile::{
-                reconcile_brickwall_params, reconcile_chorus_params, reconcile_compressor_params,
-                reconcile_delay_params, reconcile_filter_params, reconcile_flanger_params,
-                reconcile_gate_params, reconcile_ladder_params, reconcile_limiter_params,
-                reconcile_phaser_params, reconcile_reverb_params, GraphReconcileSystems,
+                reconcile_reverb_params, reconcile_unit_params, GraphReconcileSystems,
             };
 
             app.add_systems(
@@ -56,16 +53,11 @@ impl Plugin for TuttiDspPlugin {
                     dsp_reverb_system,
                     dsp_delay_system,
                     dsp_chorus_system,
-                    reconcile_filter_params.in_set(GraphReconcileSystems::Params),
-                    reconcile_ladder_params.in_set(GraphReconcileSystems::Params),
-                    reconcile_delay_params.in_set(GraphReconcileSystems::Params),
-                    reconcile_chorus_params.in_set(GraphReconcileSystems::Params),
-                    reconcile_flanger_params.in_set(GraphReconcileSystems::Params),
-                    reconcile_phaser_params.in_set(GraphReconcileSystems::Params),
-                    reconcile_compressor_params.in_set(GraphReconcileSystems::Params),
-                    reconcile_limiter_params.in_set(GraphReconcileSystems::Params),
-                    reconcile_brickwall_params.in_set(GraphReconcileSystems::Params),
-                    reconcile_gate_params.in_set(GraphReconcileSystems::Params),
+                    // One generic param reconciler for every effect with
+                    // `AudioUnit::set` (filter / ladder / delay / chorus /
+                    // flanger / phaser / compressor / gate / limiter /
+                    // brickwall). Reverb keeps its own crossfade-rebuild path.
+                    reconcile_unit_params.in_set(GraphReconcileSystems::Params),
                     reconcile_reverb_params.in_set(GraphReconcileSystems::Params),
                     // Per-node param-epoch bump for the dsp family (filter /
                     // delay / dynamics / …). Reads `Changed<T>`, not graph

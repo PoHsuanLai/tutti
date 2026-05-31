@@ -67,6 +67,10 @@ impl Plugin for TuttiDspPlugin {
                     reconcile_brickwall_params.in_set(GraphReconcileSystems::Params),
                     reconcile_gate_params.in_set(GraphReconcileSystems::Params),
                     reconcile_reverb_params.in_set(GraphReconcileSystems::Params),
+                    // Per-node param-epoch bump for the dsp family (filter /
+                    // delay / dynamics / …). Reads `Changed<T>`, not graph
+                    // state, so it needs no set ordering.
+                    crate::graph::param_epoch::bump_param_epoch_dsp,
                 ),
             );
         }

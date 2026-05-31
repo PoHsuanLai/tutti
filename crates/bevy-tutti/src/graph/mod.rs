@@ -15,6 +15,7 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
+pub mod param_epoch;
 pub mod reconcile;
 pub mod routing;
 pub mod sidechain;
@@ -26,6 +27,7 @@ pub mod pending_convolver;
 #[cfg(feature = "midi")]
 pub mod scheduled;
 
+pub use param_epoch::{bump_param_epoch_core, NodeParamEpoch};
 pub use reconcile::{
     commit_graph, crossfade_audio_node, reconcile_node_despawn, reconcile_params, GraphDirty,
     GraphReconcileSystems, SpawnAudioNode,
@@ -67,16 +69,28 @@ pub struct TuttiGraphPlugin;
 
 impl Plugin for TuttiGraphPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<GraphDirty>().configure_sets(
-            Update,
-            (
-                GraphReconcileSystems::Spawn,
-                GraphReconcileSystems::Params,
-                GraphReconcileSystems::Despawn,
-                GraphReconcileSystems::Commit,
-            )
-                .chain(),
-        );
+        app.init_resource::<GraphDirty>()
+            .init_resource::<NodeParamEpoch>()
+            .configure_sets(
+                Update,
+                (
+                    GraphReconcileSystems::Spawn,
+                    GraphReconcileSystems::Params,
+                    GraphReconcileSystems::Despawn,
+                    GraphReconcileSystems::Commit,
+                )
+                    .chain(),
+            );
+
+        // Per-node param-epoch bumps. Driven by `Changed<T>` on the param
+        // components themselves (not the reconcilers), so they fire even when a
+        // reconciler doesn't, and can't drift out of sync with the reconciler
+        // list. The dsp-family bump lives in `TuttiDspPlugin` (dsp-gated).
+        app.add_systems(Update, bump_param_epoch_core);
+        #[cfg(feature = "sampler")]
+        app.add_systems(Update, param_epoch::bump_param_epoch_sampler);
+        #[cfg(feature = "plugin")]
+        app.add_systems(Update, param_epoch::bump_param_epoch_plugin);
 
         app.add_systems(
             Update,

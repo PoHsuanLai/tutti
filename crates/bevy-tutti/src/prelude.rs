@@ -71,8 +71,8 @@ pub use tutti::{AudioNode, LayerKey, ModParam, Mute, NodeKind, Pan, PluginParam,
 #[cfg(feature = "dsp")]
 pub use tutti::{
     Attack, Azimuth, CeilingDb, CompressorRatio, DelayTime, Drive, Elevation, Feedback, FilterQ,
-    Frequency, GainDb, ModDepth, ModRate, Release, ReverbDamping, ReverbRoomSize, ThresholdDb,
-    WetMix,
+    Frequency, GainDb, ModDepth, ModRate, Release, ReverbAlgo, ReverbDamping, ReverbRoomSize,
+    ThresholdDb, WetMix,
 };
 #[cfg(feature = "sampler")]
 pub use tutti::{SamplerLooping, SamplerSpeed};

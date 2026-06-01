@@ -430,6 +430,7 @@ type ReverbChangedFilter = Or<(
     Changed<tutti::core::ecs::ReverbRoomSize>,
     Changed<tutti::core::ecs::ReverbDamping>,
     Changed<WetMix>,
+    Changed<tutti::core::ecs::ReverbAlgo>,
 )>;
 
 #[cfg(feature = "dsp")]
@@ -443,16 +444,24 @@ pub fn reconcile_reverb_params(
             &tutti::core::ecs::ReverbRoomSize,
             &tutti::core::ecs::ReverbDamping,
             &WetMix,
+            Option<&tutti::core::ecs::ReverbAlgo>,
         ),
         (With<AudioNode>, ReverbChangedFilter),
     >,
 ) {
-    for (entity, kind, room, damp, _wet) in changed.iter() {
+    use tutti::core::ecs::ReverbAlgo;
+    for (entity, kind, room, damp, _wet, algo) in changed.iter() {
         if !matches!(*kind, NodeKind::Reverb) {
             continue;
         }
-        let unit = tutti::dsp::reverb_stereo(room.0 as f64, 3.0, damp.0 as f64);
-        crossfade_audio_node(&mut commands, entity, Box::new(unit));
+        // fundsp reverb opcodes have no `set()`, so a param change rebuilds the
+        // node with a crossfade. The algorithm tag picks the constructor;
+        // absent (pre-`ReverbAlgo` projects) defaults to the 32-channel FDN.
+        let unit: Box<dyn AudioUnit> = match algo.copied().unwrap_or_default() {
+            ReverbAlgo::Fdn32 => Box::new(tutti::dsp::reverb_stereo(room.0 as f64, 3.0, damp.0 as f64)),
+            ReverbAlgo::Fdn4 => Box::new(tutti::dsp::reverb4_stereo(room.0 as f64, 3.0)),
+        };
+        crossfade_audio_node(&mut commands, entity, unit);
     }
 }
 

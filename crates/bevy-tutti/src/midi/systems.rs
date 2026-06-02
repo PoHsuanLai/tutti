@@ -428,7 +428,7 @@ mod mpe_tests {
         // resource exposes the live PerNoteExpression. Queueing a
         // note-on through the bus updates the resource's read.
         use bevy_ecs::prelude::*;
-        use crate::midi::{MidiEvent, MpeMode, MpeZoneConfig};
+        use tutti_midi_io::{MidiEvent, MpeMode, MpeZoneConfig};
         use crate::midi_runtime::MidiBus;
         use crate::core::MidiUnitId;
 

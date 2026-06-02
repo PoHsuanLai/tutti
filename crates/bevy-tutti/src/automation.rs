@@ -15,8 +15,8 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use tutti::automation::LiveAutomationLane;
-use tutti::core::ecs::{AudioNode, Pan, PluginParam, Volume};
+use tutti_units::automation::LiveAutomationLane;
+use crate::core::ecs::{AudioNode, Pan, PluginParam, Volume};
 
 use crate::graph::reconcile::{reconcile_params, GraphReconcileSystems};
 use crate::resources::{TransportRes, TuttiGraphRes};
@@ -28,11 +28,11 @@ use crate::resources::{TransportRes, TuttiGraphRes};
 /// component with [`AutomationLaneEmitter`] + [`AudioNode`].
 #[derive(Component, Debug, Clone)]
 pub struct AddAutomationLane {
-    pub envelope: tutti::automation::AutomationEnvelope<f32>,
+    pub envelope: tutti_units::automation::AutomationEnvelope<f32>,
 }
 
 impl AddAutomationLane {
-    pub fn with_envelope(envelope: tutti::automation::AutomationEnvelope<f32>) -> Self {
+    pub fn with_envelope(envelope: tutti_units::automation::AutomationEnvelope<f32>) -> Self {
         Self { envelope }
     }
 }
@@ -44,7 +44,7 @@ impl AddAutomationLane {
 /// in the standard graph-reconcile queries.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AutomationLaneEmitter {
-    pub node_id: tutti::NodeId,
+    pub node_id: crate::NodeId,
 }
 
 /// Marker component for entities holding a `LiveAutomationLane<f32>` node.
@@ -84,7 +84,7 @@ pub struct AutomationDrivesParam {
 /// this component after applying the update.
 #[derive(Component, Debug, Clone)]
 pub struct UpdateAutomationEnvelope {
-    pub envelope: tutti::automation::AutomationEnvelope<f32>,
+    pub envelope: tutti_units::automation::AutomationEnvelope<f32>,
 }
 
 pub fn automation_lane_system(
@@ -99,7 +99,7 @@ pub fn automation_lane_system(
     let mut edited = false;
 
     for (entity, add) in query.iter() {
-        let lane = tutti::automation::AutomationLane::new(add.envelope.clone(), transport.0.clone());
+        let lane = tutti_units::automation::AutomationLane::new(add.envelope.clone(), transport.0.clone());
         let node_id = graph.0.add(lane);
         edited = true;
 

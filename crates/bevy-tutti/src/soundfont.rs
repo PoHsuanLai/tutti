@@ -28,13 +28,13 @@ use crate::resources::MidiBusRes;
 #[derive(Component, Debug, Clone, Reflect)]
 #[reflect(Component, Clone)]
 pub struct PlaySoundFont {
-    pub source: Handle<tutti::synth::SoundFontAsset>,
+    pub source: Handle<crate::synth::SoundFontAsset>,
     pub preset: i32,
     pub channel: i32,
 }
 
 impl PlaySoundFont {
-    pub fn new(source: Handle<tutti::synth::SoundFontAsset>) -> Self {
+    pub fn new(source: Handle<crate::synth::SoundFontAsset>) -> Self {
         Self {
             source,
             preset: 0,
@@ -57,7 +57,7 @@ impl PlaySoundFont {
 /// in tutti's graph with MIDI routing, and attaches `AudioEmitter` to the entity.
 pub fn soundfont_playback_system(
     mut commands: Commands,
-    sf_assets: Res<Assets<tutti::synth::SoundFontAsset>>,
+    sf_assets: Res<Assets<crate::synth::SoundFontAsset>>,
     graph: Option<ResMut<TuttiGraphRes>>,
     config: Option<Res<AudioConfig>>,
     #[cfg(feature = "midi")] midi: Option<Res<MidiBusRes>>,
@@ -73,8 +73,8 @@ pub fn soundfont_playback_system(
             continue;
         };
 
-        let settings = tutti::synth::SynthesizerSettings::new(config.sample_rate as i32);
-        let mut unit = match tutti::synth::SoundFontUnit::new(source.0.clone(), &settings) {
+        let settings = crate::synth::SynthesizerSettings::new(config.sample_rate as i32);
+        let mut unit = match crate::synth::SoundFontUnit::new(source.0.clone(), &settings) {
             Ok(unit) => unit,
             Err(e) => {
                 bevy_log::error!("Failed to create SoundFontUnit: {}", e);
@@ -112,8 +112,8 @@ pub struct TuttiSoundFontPlugin;
 impl Plugin for TuttiSoundFontPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<PlaySoundFont>();
-        app.init_asset::<tutti::synth::SoundFontAsset>()
-            .register_asset_loader(TuttiLoader::<tutti::synth::SoundFontAsset>::default())
+        app.init_asset::<crate::synth::SoundFontAsset>()
+            .register_asset_loader(TuttiLoader::<crate::synth::SoundFontAsset>::default())
             .add_systems(Update, soundfont_playback_system);
     }
 }

@@ -4,7 +4,7 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
 #[cfg(feature = "sampler")]
-use tutti::sampler::SamplerUnit;
+use crate::sampler::SamplerUnit;
 
 #[cfg(feature = "sampler")]
 use crate::resources::TuttiGraphRes;

@@ -11,8 +11,8 @@ use bevy_log::warn;
 use bevy_reflect::prelude::*;
 use bevy_transform::components::GlobalTransform;
 
-use tutti::sampler::SamplerUnit;
-use tutti::NodeId;
+use crate::sampler::SamplerUnit;
+use crate::NodeId;
 
 use crate::playback::{audio_cleanup_system, audio_playback_system, AudioEmitter};
 use crate::resources::TuttiGraphRes;
@@ -85,7 +85,7 @@ pub fn spatial_audio_sync_system(
     for (emitter_tf, emitter, mut spatial) in emitter_query.iter_mut() {
         if spatial.panner_node_id.is_none() {
             let emitter_node = emitter.node_id;
-            let Ok(panner) = tutti::units::SpatialPannerNode::stereo() else {
+            let Ok(panner) = crate::units::SpatialPannerNode::stereo() else {
                 warn!("Failed to create SpatialPannerNode");
                 continue;
             };
@@ -122,7 +122,7 @@ pub fn spatial_audio_sync_system(
             (az, el, pos.length())
         };
 
-        if let Some(panner) = graph.0.node::<tutti::units::SpatialPannerNode>(panner_id) {
+        if let Some(panner) = graph.0.node::<crate::units::SpatialPannerNode>(panner_id) {
             panner.set_position(azimuth, elevation);
         }
 

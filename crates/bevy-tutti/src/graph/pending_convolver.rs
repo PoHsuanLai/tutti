@@ -8,9 +8,9 @@
 use bevy_asset::{AssetServer, Assets, Handle};
 use bevy_ecs::prelude::*;
 
-use tutti::core::ecs::{AudioNode, NodeKind};
-use tutti::core::WaveAsset;
-use tutti::units::StereoConvolverNode;
+use crate::core::ecs::{AudioNode, NodeKind};
+use crate::core::WaveAsset;
+use crate::units::StereoConvolverNode;
 
 use super::reconcile::GraphDirty;
 use crate::resources::TuttiGraphRes;
@@ -98,7 +98,7 @@ pub fn promote_pending_convolvers(
             .insert((
                 AudioNode(id),
                 NodeKind::ConvolutionReverb,
-                tutti::core::ecs::WetMix(load.mix),
+                crate::core::ecs::WetMix(load.mix),
             ));
     }
 }

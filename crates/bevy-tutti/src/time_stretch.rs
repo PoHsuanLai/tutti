@@ -51,8 +51,8 @@ impl Default for TimeStretch {
 /// Not `Reflect`: `Arc<AtomicF32>` is not reflected.
 #[derive(Component, Debug, Clone)]
 pub struct TimeStretchControl {
-    pub(crate) stretch_factor: std::sync::Arc<tutti::core::AtomicF32>,
-    pub(crate) pitch_cents: std::sync::Arc<tutti::core::AtomicF32>,
+    pub(crate) stretch_factor: std::sync::Arc<crate::core::AtomicF32>,
+    pub(crate) pitch_cents: std::sync::Arc<crate::core::AtomicF32>,
 }
 
 /// Syncs `TimeStretch` component changes to the lock-free `TimeStretchControl` atomics.
@@ -65,10 +65,10 @@ pub fn time_stretch_sync_system(
     for (ts, control) in query.iter() {
         control
             .stretch_factor
-            .store(ts.stretch_factor, tutti::core::Ordering::Release);
+            .store(ts.stretch_factor, crate::core::Ordering::Release);
         control
             .pitch_cents
-            .store(ts.pitch_cents, tutti::core::Ordering::Release);
+            .store(ts.pitch_cents, crate::core::Ordering::Release);
     }
 }
 

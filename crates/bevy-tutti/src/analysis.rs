@@ -27,20 +27,20 @@ pub struct DisableLiveAnalysis;
 /// Fields are `Arc` pointers -- cheap to clone for UI consumption.
 #[derive(Resource)]
 pub struct LiveAnalysisData {
-    pub pitch: Arc<tutti::analysis::PitchResult>,
-    pub transients: Arc<Vec<tutti::analysis::Transient>>,
-    pub waveform: Arc<tutti::analysis::WaveformSummary>,
-    pub spectrum: Arc<tutti::analysis::SpectrumResult>,
+    pub pitch: Arc<tutti_analysis::PitchResult>,
+    pub transients: Arc<Vec<tutti_analysis::Transient>>,
+    pub waveform: Arc<tutti_analysis::WaveformSummary>,
+    pub spectrum: Arc<tutti_analysis::SpectrumResult>,
     pub is_live: bool,
 }
 
 impl Default for LiveAnalysisData {
     fn default() -> Self {
         Self {
-            pitch: Arc::new(tutti::analysis::PitchResult::default()),
+            pitch: Arc::new(tutti_analysis::PitchResult::default()),
             transients: Arc::new(Vec::new()),
-            waveform: Arc::new(tutti::analysis::WaveformSummary::new(512)),
-            spectrum: Arc::new(tutti::analysis::SpectrumResult::default()),
+            waveform: Arc::new(tutti_analysis::WaveformSummary::new(512)),
+            spectrum: Arc::new(tutti_analysis::SpectrumResult::default()),
             is_live: false,
         }
     }

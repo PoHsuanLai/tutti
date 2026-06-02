@@ -4,7 +4,7 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::message::Message;
 
 #[cfg(feature = "midi")]
-use tutti::midi::{decode, MidiEvent, MidiInputRecord, SemanticEvent};
+use tutti_midi_io::{decode, MidiEvent, MidiInputRecord, SemanticEvent};
 
 /// Fired every frame for each MIDI event received from hardware input.
 ///

@@ -16,10 +16,10 @@ use bevy_reflect::prelude::*;
 use std::sync::Arc;
 
 #[cfg(feature = "midi")]
-use tutti::midi_runtime::MidiBus;
+use crate::midi_runtime::MidiBus;
 #[cfg(feature = "midi-hardware")]
-use tutti::midi::MidiIo;
-use tutti::{TuttiDriver, TuttiGraph};
+use tutti_midi_io::MidiIo;
+use crate::{TuttiDriver, TuttiGraph};
 
 /// Audio device configuration captured at engine build time.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Reflect)]
@@ -58,10 +58,10 @@ impl TuttiDriverRes {
 
 /// Lock-free transport handle (play/stop/seek/tempo/loop).
 #[derive(Resource, Clone)]
-pub struct TransportRes(pub tutti::TransportHandle);
+pub struct TransportRes(pub crate::TransportHandle);
 
 impl std::ops::Deref for TransportRes {
-    type Target = tutti::TransportHandle;
+    type Target = crate::TransportHandle;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -69,10 +69,10 @@ impl std::ops::Deref for TransportRes {
 
 /// Lock-free metering handle (peak/RMS/LUFS/CPU snapshots).
 #[derive(Resource, Clone)]
-pub struct MeteringRes(pub tutti::MeteringHandle);
+pub struct MeteringRes(pub crate::MeteringHandle);
 
 impl std::ops::Deref for MeteringRes {
-    type Target = tutti::MeteringHandle;
+    type Target = crate::MeteringHandle;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -108,11 +108,11 @@ impl std::ops::Deref for MidiIoRes {
 /// Sampler subsystem (disk streaming, clip playback, capture).
 #[cfg(feature = "sampler")]
 #[derive(Resource, Clone)]
-pub struct SamplerRes(pub Arc<tutti::sampler::Sampler>);
+pub struct SamplerRes(pub Arc<crate::sampler::Sampler>);
 
 #[cfg(feature = "sampler")]
 impl std::ops::Deref for SamplerRes {
-    type Target = tutti::sampler::Sampler;
+    type Target = crate::sampler::Sampler;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -121,11 +121,11 @@ impl std::ops::Deref for SamplerRes {
 /// SoundFont system (file cache + synth instantiation).
 #[cfg(feature = "soundfont")]
 #[derive(Resource, Clone)]
-pub struct SoundFontRes(pub Arc<tutti::synth::SoundFontSystem>);
+pub struct SoundFontRes(pub Arc<crate::synth::SoundFontSystem>);
 
 #[cfg(feature = "soundfont")]
 impl std::ops::Deref for SoundFontRes {
-    type Target = tutti::synth::SoundFontSystem;
+    type Target = crate::synth::SoundFontSystem;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -136,11 +136,11 @@ impl std::ops::Deref for SoundFontRes {
 /// `AnalysisHandle` is not `Clone` upstream.
 #[cfg(feature = "analysis")]
 #[derive(Resource)]
-pub struct AnalysisRes(pub tutti::analysis::AnalysisHandle);
+pub struct AnalysisRes(pub tutti_analysis::AnalysisHandle);
 
 #[cfg(feature = "analysis")]
 impl std::ops::Deref for AnalysisRes {
-    type Target = tutti::analysis::AnalysisHandle;
+    type Target = tutti_analysis::AnalysisHandle;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -164,11 +164,11 @@ pub struct PluginEditorMainThread;
 /// needed — no extra `Mutex`.
 #[cfg(feature = "plugin")]
 #[derive(Resource)]
-pub struct PluginsRes(pub tutti::plugin::catalog::Plugins);
+pub struct PluginsRes(pub tutti_plugin::catalog::Plugins);
 
 #[cfg(feature = "plugin")]
 impl PluginsRes {
-    pub fn new(plugins: tutti::plugin::catalog::Plugins) -> Self {
+    pub fn new(plugins: tutti_plugin::catalog::Plugins) -> Self {
         Self(plugins)
     }
 }

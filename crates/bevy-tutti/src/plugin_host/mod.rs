@@ -44,8 +44,8 @@ impl Plugin for TuttiHostingPlugin {
         // resource with their own `PluginsRes::new(Plugins::with_config(...))`
         // after `add_plugins(TuttiHostingPlugin)`.
         let default_db_path = std::path::PathBuf::from(".dawai-plugins.json");
-        let config = tutti::plugin::catalog::PluginsConfig::new(default_db_path, Vec::new());
-        let plugins = tutti::plugin::catalog::Plugins::empty(config);
+        let config = tutti_plugin::catalog::PluginsConfig::new(default_db_path, Vec::new());
+        let plugins = tutti_plugin::catalog::Plugins::empty(config);
         app.insert_resource(crate::resources::PluginsRes::new(plugins));
 
         app.add_systems(

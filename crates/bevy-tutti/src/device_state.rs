@@ -46,7 +46,7 @@ pub fn device_state_init_system(
     if let Ok(name) = driver.0.device_name() {
         state.current_device = name;
     }
-    if let Ok(devices) = tutti::TuttiDriver::devices() {
+    if let Ok(devices) = crate::TuttiDriver::devices() {
         state.output_devices = devices.map(|d| d.name).collect();
     }
 }

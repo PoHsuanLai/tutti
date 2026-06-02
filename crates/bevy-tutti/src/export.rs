@@ -19,8 +19,8 @@ pub struct StartExport {
     pub path: std::path::PathBuf,
     pub duration_seconds: Option<f64>,
     pub duration_beats: Option<(f64, f64)>,
-    pub format: Option<tutti::export::AudioFormat>,
-    pub normalization: Option<tutti::export::Normalize>,
+    pub format: Option<tutti_export::AudioFormat>,
+    pub normalization: Option<tutti_export::Normalize>,
 }
 
 impl StartExport {
@@ -44,12 +44,12 @@ impl StartExport {
         self
     }
 
-    pub fn format(mut self, format: tutti::export::AudioFormat) -> Self {
+    pub fn format(mut self, format: tutti_export::AudioFormat) -> Self {
         self.format = Some(format);
         self
     }
 
-    pub fn normalization(mut self, mode: tutti::export::Normalize) -> Self {
+    pub fn normalization(mut self, mode: tutti_export::Normalize) -> Self {
         self.normalization = Some(mode);
         self
     }
@@ -61,7 +61,7 @@ impl StartExport {
 /// Not `Reflect`: the export `Handle` is foreign to `bevy_reflect`.
 #[derive(Component)]
 pub struct ExportInProgress {
-    pub(crate) handle: tutti::export::Handle<tutti::export::Written>,
+    pub(crate) handle: tutti_export::Handle<tutti_export::Written>,
 }
 
 #[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
@@ -85,7 +85,7 @@ pub fn export_start_system(
 
     for (entity, start) in query.iter() {
         let net = graph.0.clone_net();
-        let mut builder = tutti::export::Export::graph(net, config.sample_rate);
+        let mut builder = tutti_export::Export::graph(net, config.sample_rate);
 
         if let Some(seconds) = start.duration_seconds {
             builder = builder.duration_seconds(seconds);
@@ -117,14 +117,14 @@ pub fn export_poll_system(
 ) {
     for (entity, mut export) in query.iter_mut() {
         match export.handle.poll() {
-            tutti::export::State::Done(_written) => {
+            tutti_export::State::Done(_written) => {
                 bevy_log::info!("Export complete (entity {entity:?})");
                 commands
                     .entity(entity)
                     .remove::<ExportInProgress>()
                     .insert(ExportComplete);
             }
-            tutti::export::State::Failed(error) => {
+            tutti_export::State::Failed(error) => {
                 bevy_log::error!("Export failed (entity {entity:?}): {error}");
                 commands
                     .entity(entity)
@@ -133,7 +133,7 @@ pub fn export_poll_system(
                         error: error.to_string(),
                     });
             }
-            tutti::export::State::Running { .. } | tutti::export::State::Pending => {}
+            tutti_export::State::Running { .. } | tutti_export::State::Pending => {}
         }
     }
 }

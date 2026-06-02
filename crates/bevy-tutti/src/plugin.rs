@@ -8,7 +8,7 @@
 use bevy_app::{App, Plugin, Startup, Update};
 use bevy_log::{error, info};
 
-use tutti::TuttiEngine;
+use crate::TuttiEngine;
 
 use crate::device_state;
 use crate::graph::TuttiGraphPlugin;
@@ -51,7 +51,7 @@ pub struct TuttiPlugin {
     pub outputs: usize,
     pub enable_midi: bool,
     #[cfg(feature = "mpe")]
-    pub mpe_mode: Option<tutti::midi::MpeMode>,
+    pub mpe_mode: Option<tutti_midi_io::MpeMode>,
 }
 
 impl Default for TuttiPlugin {
@@ -88,7 +88,7 @@ impl TuttiPlugin {
 
     /// Automatically enables MIDI.
     #[cfg(feature = "mpe")]
-    pub fn with_mpe(mut self, mode: tutti::midi::MpeMode) -> Self {
+    pub fn with_mpe(mut self, mode: tutti_midi_io::MpeMode) -> Self {
         self.mpe_mode = Some(mode);
         self.enable_midi = true;
         self

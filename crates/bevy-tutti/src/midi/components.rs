@@ -1,6 +1,6 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
-use tutti::NodeId;
+use crate::NodeId;
 
 /// A single note within a [`MidiSequence`]. Runtime ECS mirror of
 /// `dawai_types::SymbolicNote` (without the expression lanes — this form

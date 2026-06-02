@@ -1,6 +1,6 @@
 //! Reconcile entity-as-node component changes into [`TuttiGraph`] operations.
 //!
-//! See [`tutti::ecs`] for the component types. This module provides:
+//! See [`crate::ecs`] for the component types. This module provides:
 //!
 //! - [`SpawnAudioNode`] — `Commands` extension to atomically `graph.add(unit)`
 //!   and attach `AudioNode` + `NodeKind` to a fresh entity.
@@ -17,18 +17,18 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::SystemSet;
 use bevy_ecs::system::EntityCommands;
 
-use tutti::core::ecs::{AudioNode, Mute, NodeKind, Volume};
-use tutti::dsp::AudioUnit;
+use crate::core::ecs::{AudioNode, Mute, NodeKind, Volume};
+use crate::core::dsp::AudioUnit;
 
 use crate::resources::TuttiGraphRes;
 
 #[cfg(feature = "sampler")]
-use tutti::core::ecs::{SamplerLooping, SamplerSpeed};
+use crate::core::ecs::{SamplerLooping, SamplerSpeed};
 #[cfg(feature = "sampler")]
-use tutti::sampler::SamplerUnit;
+use crate::sampler::SamplerUnit;
 
 #[cfg(feature = "plugin")]
-use tutti::core::ecs::PluginParam;
+use crate::core::ecs::PluginParam;
 #[cfg(feature = "plugin")]
 use crate::plugin_host::PluginEmitter;
 
@@ -70,7 +70,7 @@ pub struct GraphDirty(pub bool);
 /// ```rust,ignore
 /// use bevy::prelude::*;
 /// use bevy_tutti::*;
-/// use tutti::dsp::sine_hz;
+/// use crate::core::dsp::sine_hz;
 ///
 /// fn setup(mut commands: Commands) {
 ///     commands.spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator)
@@ -153,7 +153,7 @@ pub fn crossfade_audio_node(
             );
             return;
         };
-        graph.0.crossfade_boxed(node.0, tutti::Fade::Smooth, 0.005, new_unit);
+        graph.0.crossfade_boxed(node.0, crate::Fade::Smooth, 0.005, new_unit);
         if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
             dirty.0 = true;
         }
@@ -167,7 +167,7 @@ pub fn crossfade_audio_node(
 /// `(Entity, NodeId)` pairs in a local map keyed by entity, populated as
 /// new `AudioNode`s are added and consumed when the component disappears.
 pub fn reconcile_node_despawn(
-    mut tracked: Local<std::collections::HashMap<Entity, tutti::NodeId>>,
+    mut tracked: Local<std::collections::HashMap<Entity, crate::NodeId>>,
     mut added: Query<(Entity, &AudioNode), Added<AudioNode>>,
     mut removed: RemovedComponents<AudioNode>,
     graph: Option<ResMut<TuttiGraphRes>>,
@@ -310,7 +310,7 @@ pub fn reconcile_plugin_params(
 // =============================================================================
 
 #[cfg(feature = "dsp")]
-use tutti::core::ecs::{
+use crate::core::ecs::{
     Attack, CeilingDb, CompressorRatio, DelayTime, Drive, Feedback, FilterQ, Frequency, GainDb,
     ModDepth, ModRate, Release, ThresholdDb, WetMix,
 };
@@ -365,8 +365,8 @@ pub fn reconcile_unit_params(
     graph: Option<ResMut<TuttiGraphRes>>,
     changed: Query<EffectParams, AnyParamChanged>,
 ) {
-    use tutti::core::UnitParam;
-    use tutti::dsp::AudioUnit as _;
+    use crate::core::UnitParam;
+    use crate::core::dsp::AudioUnit as _;
     let Some(mut graph) = graph else { return };
     let net = graph.0.net_mut();
     for p in changed.iter() {
@@ -427,10 +427,10 @@ pub fn reconcile_unit_params(
 
 #[cfg(feature = "dsp")]
 type ReverbChangedFilter = Or<(
-    Changed<tutti::core::ecs::ReverbRoomSize>,
-    Changed<tutti::core::ecs::ReverbDamping>,
+    Changed<crate::core::ecs::ReverbRoomSize>,
+    Changed<crate::core::ecs::ReverbDamping>,
     Changed<WetMix>,
-    Changed<tutti::core::ecs::ReverbAlgo>,
+    Changed<crate::core::ecs::ReverbAlgo>,
 )>;
 
 #[cfg(feature = "dsp")]
@@ -441,15 +441,15 @@ pub fn reconcile_reverb_params(
         (
             Entity,
             &NodeKind,
-            &tutti::core::ecs::ReverbRoomSize,
-            &tutti::core::ecs::ReverbDamping,
+            &crate::core::ecs::ReverbRoomSize,
+            &crate::core::ecs::ReverbDamping,
             &WetMix,
-            Option<&tutti::core::ecs::ReverbAlgo>,
+            Option<&crate::core::ecs::ReverbAlgo>,
         ),
         (With<AudioNode>, ReverbChangedFilter),
     >,
 ) {
-    use tutti::core::ecs::ReverbAlgo;
+    use crate::core::ecs::ReverbAlgo;
     for (entity, kind, room, damp, _wet, algo) in changed.iter() {
         if !matches!(*kind, NodeKind::Reverb) {
             continue;
@@ -458,8 +458,8 @@ pub fn reconcile_reverb_params(
         // node with a crossfade. The algorithm tag picks the constructor;
         // absent (pre-`ReverbAlgo` projects) defaults to the 32-channel FDN.
         let unit: Box<dyn AudioUnit> = match algo.copied().unwrap_or_default() {
-            ReverbAlgo::Fdn32 => Box::new(tutti::dsp::reverb_stereo(room.0 as f64, 3.0, damp.0 as f64)),
-            ReverbAlgo::Fdn4 => Box::new(tutti::dsp::reverb4_stereo(room.0 as f64, 3.0)),
+            ReverbAlgo::Fdn32 => Box::new(crate::core::dsp::reverb_stereo(room.0 as f64, 3.0, damp.0 as f64)),
+            ReverbAlgo::Fdn4 => Box::new(crate::core::dsp::reverb4_stereo(room.0 as f64, 3.0)),
         };
         crossfade_audio_node(&mut commands, entity, unit);
     }
@@ -479,7 +479,7 @@ pub fn reconcile_convolver_params(
         if !matches!(*kind, NodeKind::ConvolutionReverb) {
             continue;
         }
-        let Some(unit) = graph.0.node_mut::<tutti::units::StereoConvolverNode>(node.0) else {
+        let Some(unit) = graph.0.node_mut::<crate::units::StereoConvolverNode>(node.0) else {
             continue;
         };
         unit.set_mix(wet.0);
@@ -501,8 +501,8 @@ pub fn commit_graph(graph: Option<ResMut<TuttiGraphRes>>, mut dirty: ResMut<Grap
 mod tests {
     use super::*;
     use bevy_app::App;
-    use tutti::dsp::sine_hz;
-    use tutti::TuttiEngine;
+    use crate::core::dsp::sine_hz;
+    use crate::TuttiEngine;
 
     fn test_app() -> App {
         let engine = TuttiEngine::builder()
@@ -612,9 +612,9 @@ mod tests {
     #[cfg(feature = "sampler")]
     fn sampler_speed_and_looping_change_writes_through() {
         use std::sync::Arc;
-        use tutti::core::ecs::{SamplerLooping, SamplerSpeed};
-        use tutti::sampler::SamplerUnit;
-        use tutti::Wave;
+        use crate::core::ecs::{SamplerLooping, SamplerSpeed};
+        use crate::sampler::SamplerUnit;
+        use crate::Wave;
 
         let mut app = test_app();
         // Add the sampler reconcile system on top of the base test_app set.

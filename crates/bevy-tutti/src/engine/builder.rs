@@ -1,19 +1,19 @@
 //! Builder for configuring and constructing a [`TuttiEngine`].
 
-use crate::audio_io::{AudioCallbackState, AudioEngine};
-use crate::core::{
+use crate::engine::audio_io::{AudioCallbackState, AudioEngine};
+use tutti_core::{
     ClickNode, ClickSettings, MeteringHandle, MeteringManager, PdcManager, TransportClock,
     TransportHandle, TransportManager, TuttiNet,
 };
 use crate::engine::DefaultProcessor;
-use crate::{Result, TuttiDriver, TuttiEngine, TuttiGraph};
+use crate::engine::{Result, TuttiDriver, TuttiEngine, TuttiGraph};
 
 use tutti_core::dsp::An;
 use tutti_core::processor::GraphProcessor;
 use tutti_core::Arc;
 
 #[cfg(feature = "midi")]
-use crate::midi::MidiIo;
+use tutti_midi_io::MidiIo;
 #[cfg(feature = "midi")]
 use tutti_core::midi::MidiProcessor;
 #[cfg(feature = "midi")]
@@ -22,7 +22,7 @@ use tutti_midi_runtime::MidiBus;
 use tutti_midi_runtime::MidiRoutingTable;
 
 #[cfg(feature = "sampler")]
-use crate::sampler::Sampler;
+use tutti_sampler::Sampler;
 
 /// Configures and constructs a [`TuttiEngine`].
 ///
@@ -37,7 +37,7 @@ use crate::sampler::Sampler;
 /// # Example
 ///
 /// ```ignore
-/// use tutti::prelude::*;
+/// use bevy_tutti::prelude::*;
 ///
 /// let engine = TuttiEngine::builder()
 ///     .outputs(2)
@@ -141,7 +141,7 @@ impl TuttiEngineBuilder {
     /// # Example
     ///
     /// ```ignore
-    /// use tutti::prelude::*;
+    /// use bevy_tutti::prelude::*;
     ///
     /// let engine = TuttiEngine::builder()
     ///     .outputs(2)
@@ -240,7 +240,7 @@ impl TuttiEngineBuilder {
         let _ = &pdc_snapshot;
 
         #[cfg(feature = "soundfont")]
-        let soundfont = Arc::new(crate::synth::SoundFontSystem::new(sample_rate as u32));
+        let soundfont = Arc::new(tutti_synth::SoundFontSystem::new(sample_rate as u32));
 
         let graph = TuttiGraph::from_parts(
             net,
@@ -256,7 +256,7 @@ impl TuttiEngineBuilder {
         let transport = TransportHandle::new(transport_mgr, click_settings);
 
         #[cfg(feature = "analysis")]
-        let analysis = crate::analysis::AnalysisHandle::with_metering(
+        let analysis = tutti_analysis::AnalysisHandle::with_metering(
             sample_rate,
             metering_mgr.clone(),
         );

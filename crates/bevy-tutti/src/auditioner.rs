@@ -14,14 +14,14 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
 use bevy_log::{info, warn};
-use tutti::sampler::Sampler;
+use crate::sampler::Sampler;
 
 use crate::graph::GraphDirty;
 use crate::resources::TuttiGraphRes;
 
 /// Wraps the tutti-sampler `Auditioner` as a Bevy resource.
 #[derive(Resource)]
-pub struct AuditionerRes(pub tutti::sampler::preview::Auditioner);
+pub struct AuditionerRes(pub crate::sampler::preview::Auditioner);
 
 /// Request to preview an audio file. The auditioner stops any current
 /// preview before starting the new one.
@@ -34,7 +34,7 @@ pub struct StopPreview;
 
 /// Tracks the auditioner's graph node so we can swap/remove it.
 #[derive(Resource, Default)]
-pub struct AuditionerNode(pub Option<tutti::NodeId>);
+pub struct AuditionerNode(pub Option<crate::NodeId>);
 
 pub struct TuttiAuditionerPlugin;
 

@@ -10,15 +10,15 @@
 
 use std::sync::Arc;
 
-use crate::audio_io::{AudioCallbackState, AudioEngine};
+use crate::engine::audio_io::{AudioCallbackState, AudioEngine};
 use crate::engine::DefaultProcessor;
-use crate::Result;
+use crate::engine::Result;
 
 /// One enumerated audio output device.
 ///
 /// Returned from [`TuttiDriver::devices`]. `index` is the value to pass to
 /// [`TuttiDriver::set_device`] / [`TuttiDriver::restart`] /
-/// [`TuttiEngineBuilder::output_device`](crate::TuttiEngineBuilder::output_device).
+/// [`TuttiEngineBuilder::output_device`](crate::engine::TuttiEngineBuilder::output_device).
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
     pub index: usize,

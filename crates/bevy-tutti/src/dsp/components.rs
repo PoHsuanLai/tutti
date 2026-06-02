@@ -128,7 +128,7 @@ impl AddGate {
 /// If `beat_synced` is true, the LFO is wired to the engine's transport.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct AddLfo {
-    pub shape: tutti::units::LfoShape,
+    pub shape: crate::units::LfoShape,
     pub frequency: f32,
     pub depth: f32,
     pub beat_synced: bool,
@@ -137,7 +137,7 @@ pub struct AddLfo {
 impl Default for AddLfo {
     fn default() -> Self {
         Self {
-            shape: tutti::units::LfoShape::Sine,
+            shape: crate::units::LfoShape::Sine,
             frequency: 1.0,
             depth: 1.0,
             beat_synced: false,
@@ -147,7 +147,7 @@ impl Default for AddLfo {
 
 impl AddLfo {
     /// Free-running LFO with the given shape and frequency in Hz.
-    pub fn new(shape: tutti::units::LfoShape, frequency: f32) -> Self {
+    pub fn new(shape: crate::units::LfoShape, frequency: f32) -> Self {
         Self {
             shape,
             frequency,
@@ -156,7 +156,7 @@ impl AddLfo {
     }
 
     /// Beat-synced LFO with the given shape and beats per cycle.
-    pub fn beat_synced(shape: tutti::units::LfoShape, beats_per_cycle: f32) -> Self {
+    pub fn beat_synced(shape: crate::units::LfoShape, beats_per_cycle: f32) -> Self {
         Self {
             shape,
             frequency: beats_per_cycle,
@@ -180,7 +180,7 @@ impl AddLfo {
 #[cfg(feature = "dsp")]
 #[derive(Component, Debug, Clone, Copy)]
 pub struct AddFilter {
-    pub svf_type: tutti::units::SvfType,
+    pub svf_type: crate::units::SvfType,
     pub frequency: f32,
     pub q: f32,
     /// Only used for Bell / LowShelf / HighShelf modes.
@@ -191,7 +191,7 @@ pub struct AddFilter {
 impl Default for AddFilter {
     fn default() -> Self {
         Self {
-            svf_type: tutti::units::SvfType::LowPass,
+            svf_type: crate::units::SvfType::LowPass,
             frequency: 1000.0,
             q: 0.707,
             gain_db: 0.0,
@@ -203,7 +203,7 @@ impl Default for AddFilter {
 impl AddFilter {
     pub fn lowpass(frequency: f32, q: f32) -> Self {
         Self {
-            svf_type: tutti::units::SvfType::LowPass,
+            svf_type: crate::units::SvfType::LowPass,
             frequency,
             q,
             gain_db: 0.0,
@@ -211,7 +211,7 @@ impl AddFilter {
     }
     pub fn highpass(frequency: f32, q: f32) -> Self {
         Self {
-            svf_type: tutti::units::SvfType::HighPass,
+            svf_type: crate::units::SvfType::HighPass,
             frequency,
             q,
             gain_db: 0.0,
@@ -219,7 +219,7 @@ impl AddFilter {
     }
     pub fn bandpass(frequency: f32, q: f32) -> Self {
         Self {
-            svf_type: tutti::units::SvfType::BandPass,
+            svf_type: crate::units::SvfType::BandPass,
             frequency,
             q,
             gain_db: 0.0,
@@ -227,7 +227,7 @@ impl AddFilter {
     }
     pub fn notch(frequency: f32, q: f32) -> Self {
         Self {
-            svf_type: tutti::units::SvfType::Notch,
+            svf_type: crate::units::SvfType::Notch,
             frequency,
             q,
             gain_db: 0.0,
@@ -235,7 +235,7 @@ impl AddFilter {
     }
     pub fn bell(frequency: f32, q: f32, gain_db: f32) -> Self {
         Self {
-            svf_type: tutti::units::SvfType::Bell,
+            svf_type: crate::units::SvfType::Bell,
             frequency,
             q,
             gain_db,
@@ -243,7 +243,7 @@ impl AddFilter {
     }
     pub fn low_shelf(frequency: f32, q: f32, gain_db: f32) -> Self {
         Self {
-            svf_type: tutti::units::SvfType::LowShelf,
+            svf_type: crate::units::SvfType::LowShelf,
             frequency,
             q,
             gain_db,
@@ -251,7 +251,7 @@ impl AddFilter {
     }
     pub fn high_shelf(frequency: f32, q: f32, gain_db: f32) -> Self {
         Self {
-            svf_type: tutti::units::SvfType::HighShelf,
+            svf_type: crate::units::SvfType::HighShelf,
             frequency,
             q,
             gain_db,

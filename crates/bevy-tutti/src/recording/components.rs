@@ -10,20 +10,20 @@ use bevy_ecs::prelude::*;
 #[derive(Component, Debug, Clone, Copy)]
 pub struct StartRecording {
     pub channel_index: usize,
-    pub source: tutti::sampler::capture::Source,
-    pub mode: tutti::sampler::capture::Mode,
+    pub source: crate::sampler::capture::Source,
+    pub mode: crate::sampler::capture::Mode,
 }
 
 impl StartRecording {
-    pub fn new(channel_index: usize, source: tutti::sampler::capture::Source) -> Self {
+    pub fn new(channel_index: usize, source: crate::sampler::capture::Source) -> Self {
         Self {
             channel_index,
             source,
-            mode: tutti::sampler::capture::Mode::Replace,
+            mode: crate::sampler::capture::Mode::Replace,
         }
     }
 
-    pub fn mode(mut self, mode: tutti::sampler::capture::Mode) -> Self {
+    pub fn mode(mut self, mode: crate::sampler::capture::Mode) -> Self {
         self.mode = mode;
         self
     }
@@ -48,6 +48,6 @@ pub struct StopRecording {
 #[derive(Component, Debug, Clone, Copy)]
 pub struct RecordingActive {
     pub channel_index: usize,
-    pub source: tutti::sampler::capture::Source,
-    pub mode: tutti::sampler::capture::Mode,
+    pub source: crate::sampler::capture::Source,
+    pub mode: crate::sampler::capture::Mode,
 }

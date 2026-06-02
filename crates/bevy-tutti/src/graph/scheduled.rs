@@ -21,8 +21,8 @@ use std::time::Instant;
 
 use bevy_ecs::prelude::*;
 
-use tutti::core::MidiUnitId;
-use tutti::midi::MidiEvent;
+use crate::core::MidiUnitId;
+use tutti_midi_io::MidiEvent;
 
 use crate::resources::MidiBusRes;
 

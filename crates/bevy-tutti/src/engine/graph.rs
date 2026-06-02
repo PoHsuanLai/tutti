@@ -32,7 +32,6 @@ use arc_swap::ArcSwap;
 use std::sync::Arc;
 
 use tutti_core::dsp::AudioUnit;
-#[cfg(feature = "sampler")]
 use tutti_core::{
     dsp::{Fade, Net, NodeId, Source},
     PdcManager, PdcState, TuttiNet,

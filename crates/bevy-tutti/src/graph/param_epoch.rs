@@ -3,7 +3,7 @@
 //!
 //! ## Why this exists
 //!
-//! [`TuttiGraph::revision`](tutti::TuttiGraph::revision) bumps only on
+//! [`TuttiGraph::revision`](crate::TuttiGraph::revision) bumps only on
 //! `Net::commit()`, i.e. on **structural** graph edits (add/remove/rewire).
 //! Parameter setters (`set_frequency`, `set_gain`, `set_q`, …) are plain
 //! in-place writes — correct and real-time-safe for audio, no commit needed —
@@ -26,23 +26,23 @@
 use bevy_ecs::prelude::*;
 use std::collections::HashMap;
 
-use tutti::NodeId;
-use tutti::core::ecs::{AudioNode, Mute, Volume};
+use crate::NodeId;
+use crate::core::ecs::{AudioNode, Mute, Volume};
 
 #[cfg(feature = "dsp")]
-use tutti::core::ecs::{
+use crate::core::ecs::{
     Attack, CeilingDb, CompressorRatio, DelayTime, Drive, Feedback, FilterQ, Frequency, GainDb,
     ModDepth, ModRate, Release, ThresholdDb, WetMix,
 };
 
 #[cfg(feature = "sampler")]
-use tutti::core::ecs::{SamplerLooping, SamplerSpeed};
+use crate::core::ecs::{SamplerLooping, SamplerSpeed};
 
 #[cfg(feature = "plugin")]
-use tutti::core::ecs::PluginParam;
+use crate::core::ecs::PluginParam;
 
 /// Monotonic per-node parameter version. Distinct from
-/// [`TuttiGraph::revision`](tutti::TuttiGraph::revision) (which tracks
+/// [`TuttiGraph::revision`](crate::TuttiGraph::revision) (which tracks
 /// structure); this tracks in-place param writes the revision skips.
 ///
 /// `get` returns 0 for a node that has never had a param change, so a fresh

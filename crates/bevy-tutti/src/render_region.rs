@@ -32,11 +32,11 @@ use bevy_ecs::prelude::*;
 use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use std::sync::Arc;
 
-use tutti::NodeId;
-use tutti::core::dsp::Net;
-use tutti::core::{AudioUnit, OfflineTransport, OfflineTransportConfig, SampleRate, TransportReader};
-use tutti::export::{Error as ExportError, Rendered};
-use tutti::sampler::SamplerUnit;
+use crate::NodeId;
+use crate::core::dsp::Net;
+use crate::core::{AudioUnit, OfflineTransport, OfflineTransportConfig, SampleRate, TransportReader};
+use tutti_export::{Error as ExportError, Rendered};
+use crate::sampler::SamplerUnit;
 
 use crate::resources::{AudioConfig, TuttiGraphRes};
 use crate::track_clip_reader::TrackClipReaderUnit;
@@ -156,7 +156,7 @@ pub struct RegionRenderNet {
 impl RegionRenderNet {
     /// Mutable access to a node in the cloned net, for the `Populate` step to
     /// downcast its clip readers and insert clips.
-    pub fn node_mut(&mut self, node: NodeId) -> &mut dyn tutti::core::AudioUnit {
+    pub fn node_mut(&mut self, node: NodeId) -> &mut dyn crate::core::AudioUnit {
         self.net.node_mut(node)
     }
 }
@@ -240,7 +240,7 @@ pub fn spawn_region_render_system(
         // `FnOnce(..) -> Result<_> + Send`, so it executes fine inside a task;
         // running it on the bounded pool (the same one the STFT step and the
         // wave cache use) keeps the render from starving the audio callback.
-        let run = tutti::export::Export::graph(net, config.sample_rate)
+        let run = tutti_export::Export::graph(net, config.sample_rate)
             .start_beat(render.start_beat)
             .duration_beats(render.len_beats, render.tempo)
             .transport(timeline)
@@ -325,7 +325,7 @@ mod tests {
     use super::*;
     use crate::track_clip_reader::{ClipCommand, SlotId, TrackClipReaderUnit};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use tutti::core::{Bpm, SampleRate, Wave};
+    use crate::core::{Bpm, SampleRate, Wave};
 
     struct MockTransport {
         playing: AtomicBool,
@@ -400,7 +400,7 @@ mod tests {
             44100.0,
             &(0..64).map(|i| (i as f32 + 1.0) / 64.0).collect::<Vec<_>>(),
         ));
-        let sampler = tutti::sampler::SamplerUnit::with_transport(
+        let sampler = crate::sampler::SamplerUnit::with_transport(
             wave,
             live_transport.clone(),
             0.0,

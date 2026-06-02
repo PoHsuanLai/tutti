@@ -18,7 +18,7 @@ use crate::resources::PluginEditorMainThread;
 /// handle that doesn't implement `Debug` and isn't reflected.
 #[derive(Component, Clone)]
 pub struct PluginEmitter {
-    pub handle: tutti::plugin::handles::PluginHandle,
+    pub handle: tutti_plugin::handles::PluginHandle,
 }
 
 /// Present while a plugin's GUI editor is open in a separate Bevy window.
@@ -36,7 +36,7 @@ pub struct PluginEditorOpen {
     pub width: u32,
     /// Editor height in logical pixels as reported by the plugin.
     pub height: u32,
-    pub capabilities: tutti::plugin::handles::EditorCapabilities,
+    pub capabilities: tutti_plugin::handles::EditorCapabilities,
     /// Last size written to either side. A `WindowResized` matching
     /// this is an echo of our own write and is ignored.
     pub last_applied: (u32, u32),
@@ -185,7 +185,7 @@ pub fn plugin_editor_attach_system(
                         let cb: crate::live_resize::ResizeCallback =
                             std::sync::Arc::new(move |w, h| {
                                 let _ = handle.set_editor_size(
-                                    tutti::plugin::handles::EditorSize {
+                                    tutti_plugin::handles::EditorSize {
                                         width: w,
                                         height: h,
                                     },
@@ -253,7 +253,7 @@ pub fn plugin_editor_window_resize_system(
                 continue;
             }
 
-            let requested = tutti::plugin::handles::EditorSize {
+            let requested = tutti_plugin::handles::EditorSize {
                 width: event_size.0,
                 height: event_size.1,
             };

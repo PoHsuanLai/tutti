@@ -21,7 +21,7 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti::core::ecs::AudioNode;
+use crate::core::ecs::AudioNode;
 
 use super::reconcile::GraphDirty;
 use crate::resources::TuttiGraphRes;
@@ -181,7 +181,7 @@ mod tests {
     use super::*;
     use crate::graph::reconcile::GraphReconcileSystems;
     use bevy_app::App;
-    use tutti::TuttiEngine;
+    use crate::TuttiEngine;
 
     fn test_app() -> App {
         let engine = TuttiEngine::builder().inputs(0).outputs(2).build().expect("build engine");
@@ -235,8 +235,8 @@ mod tests {
         // sidechain into port 2; the reconcile must connect there without
         // panicking and clear the dirty flag via commit.
         use crate::graph::reconcile::SpawnAudioNode;
-        use tutti::core::ecs::NodeKind;
-        use tutti::dsp::sine_hz;
+        use crate::core::ecs::NodeKind;
+        use crate::core::dsp::sine_hz;
         let mut app = test_app();
 
         let src = app
@@ -249,7 +249,7 @@ mod tests {
             .world_mut()
             .commands()
             .spawn_audio_node(
-                tutti::dsp::pass() | tutti::dsp::pass() | tutti::dsp::pass(),
+                crate::core::dsp::pass() | crate::core::dsp::pass() | crate::core::dsp::pass(),
                 NodeKind::Generic,
             )
             .id();
@@ -275,8 +275,8 @@ mod tests {
         // port 2 must be skipped with a warning, never connected (would
         // panic in fundsp's Net), and must not raise the dirty flag.
         use crate::graph::reconcile::SpawnAudioNode;
-        use tutti::core::ecs::NodeKind;
-        use tutti::dsp::sine_hz;
+        use crate::core::ecs::NodeKind;
+        use crate::core::dsp::sine_hz;
         let mut app = test_app();
 
         let src = app
@@ -287,7 +287,7 @@ mod tests {
         let target = app
             .world_mut()
             .commands()
-            .spawn_audio_node(tutti::dsp::pass() | tutti::dsp::pass(), NodeKind::Generic)
+            .spawn_audio_node(crate::core::dsp::pass() | crate::core::dsp::pass(), NodeKind::Generic)
             .id();
         app.update();
 

@@ -3,7 +3,7 @@
 //! [`inject_snapshot_reader`] swaps every MIDI-consuming node's source
 //! from its live [`tutti_midi_runtime::MidiReceiver`] to a
 //! [`tutti_midi_runtime::MidiSnapshotReader`] for the duration of one
-//! offline render. Use it while preparing a [`crate::export::GraphExport`]
+//! offline render. Use it while preparing a [`tutti_export::GraphExport`]
 //! terminal so MIDI-driven nodes read from the captured snapshot instead
 //! of their live receivers.
 //!

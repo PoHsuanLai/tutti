@@ -13,11 +13,11 @@ use bevy_asset::AssetApp;
 use bevy_ecs::prelude::*;
 
 use crate::loader::TuttiLoader;
-use tutti::core::WaveAsset;
+use crate::core::WaveAsset;
 #[cfg(feature = "sampler")]
 use crate::loader::TuttiStreamingLoader;
 #[cfg(feature = "sampler")]
-use tutti::sampler::StreamingSample;
+use crate::sampler::StreamingSample;
 
 mod cleanup;
 mod emitter;

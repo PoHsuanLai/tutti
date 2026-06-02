@@ -11,7 +11,7 @@ use tutti_core::metering::{MeteringContext, MeteringManager};
 use tutti_core::processor::AudioProcessor;
 use tutti_core::ScopedNoDenormals;
 
-use crate::error::{Error, Result};
+use crate::engine::error::{Error, Result};
 
 /// Maximum frames per CPAL callback buffer. Pre-allocates the internal f32
 /// buffer to this size to avoid allocation in the audio thread.

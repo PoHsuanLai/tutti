@@ -10,7 +10,7 @@ use super::components::{RecordingActive, StartRecording, StopRecording};
 /// Inserted by `recording_stop_system` on the entity that had `StopRecording`.
 /// Consume and remove this component to process the recorded data.
 #[derive(Component)]
-pub struct RecordingResult(pub tutti::sampler::capture::Recorded);
+pub struct RecordingResult(pub crate::sampler::capture::Recorded);
 
 /// Processes `StartRecording` trigger components.
 ///

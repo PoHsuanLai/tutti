@@ -5,7 +5,7 @@
 //! cleans up when the wave finishes. That's the right shape for fire-and-
 //! forget SFX, but a DAW track wants a long-lived entity-as-node — one
 //! that survives across plays, can be reconfigured (loop range, gain,
-//! speed) via the parameter components in [`tutti::core::ecs`], and is
+//! speed) via the parameter components in [`crate::core::ecs`], and is
 //! eventually removed by despawning the entity.
 //!
 //! [`PendingSamplerLoad`] is exactly that: insert it on a fresh entity
@@ -26,10 +26,10 @@
 use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
 
-use tutti::core::ecs::{AudioNode, NodeKind, SamplerLooping, SamplerSpeed, Volume};
-use tutti::core::WaveAsset;
-use tutti::sampler::file::ImportHandle;
-use tutti::sampler::SamplerUnit;
+use crate::core::ecs::{AudioNode, NodeKind, SamplerLooping, SamplerSpeed, Volume};
+use crate::core::WaveAsset;
+use crate::sampler::file::ImportHandle;
+use crate::sampler::SamplerUnit;
 
 use super::reconcile::GraphDirty;
 use crate::resources::TuttiGraphRes;
@@ -80,7 +80,7 @@ impl PendingSamplerLoad {
     }
 }
 
-/// Tracks in-flight `tutti::sampler::file::ImportHandle` background loads
+/// Tracks in-flight `crate::sampler::file::ImportHandle` background loads
 /// initiated outside the Bevy asset system (e.g. when the host already has
 /// a path string but wants the same `WaveAsset` end state).
 ///
@@ -133,7 +133,7 @@ pub fn poll_wave_imports(
 ) {
     queue.imports.retain_mut(|(path, entity, handle)| {
         match handle.progress() {
-            tutti::sampler::file::ImportStatus::Complete { wave, .. } => {
+            crate::sampler::file::ImportStatus::Complete { wave, .. } => {
                 let bevy_handle = audio_assets.add(WaveAsset(wave));
                 if let Ok(mut pending_load) = pending.get_mut(*entity) {
                     pending_load.wave = bevy_handle;
@@ -146,7 +146,7 @@ pub fn poll_wave_imports(
                 }
                 false
             }
-            tutti::sampler::file::ImportStatus::Failed(e) => {
+            crate::sampler::file::ImportStatus::Failed(e) => {
                 bevy_log::error!("poll_wave_imports: '{}' failed: {}", path, e);
                 false
             }

@@ -18,20 +18,20 @@
 //! edit-systems (`ResMut<TuttiGraphRes>`) independently from read systems
 //! (`Res<TransportRes>`, `Res<MeteringRes>`).
 
-use crate::core::MeteringHandle;
-use crate::{TuttiDriver, TuttiGraph};
+use tutti_core::MeteringHandle;
+use crate::engine::{TuttiDriver, TuttiGraph};
 use tutti_core::processor::GraphProcessor;
 use tutti_core::TransportHandle;
 
 #[cfg(feature = "midi")]
-use crate::midi::MidiIo;
+use tutti_midi_io::MidiIo;
 #[cfg(feature = "midi")]
 use tutti_core::midi::MidiProcessor;
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::MidiBus;
 
 #[cfg(feature = "sampler")]
-use crate::sampler::Sampler;
+use tutti_sampler::Sampler;
 #[cfg(feature = "sampler")]
 use tutti_core::Arc;
 
@@ -41,7 +41,7 @@ use tutti_core::Arc as _SoundFontArc;
 use tutti_synth::SoundFontSystem;
 
 #[cfg(feature = "analysis")]
-use crate::analysis::AnalysisHandle;
+use tutti_analysis::AnalysisHandle;
 
 /// The audio processor type that runs on the RT callback thread.
 ///
@@ -107,7 +107,7 @@ pub struct TuttiEngine {
 
 impl TuttiEngine {
     /// Start a new builder.
-    pub fn builder() -> crate::TuttiEngineBuilder {
-        crate::TuttiEngineBuilder::default()
+    pub fn builder() -> crate::engine::TuttiEngineBuilder {
+        crate::engine::TuttiEngineBuilder::default()
     }
 }

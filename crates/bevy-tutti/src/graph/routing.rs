@@ -28,7 +28,7 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::reflect::{ReflectComponent, ReflectMapEntities};
 use bevy_reflect::Reflect;
 
-use tutti::core::ecs::AudioNode;
+use crate::core::ecs::AudioNode;
 
 use super::reconcile::GraphDirty;
 use crate::resources::TuttiGraphRes;
@@ -204,7 +204,7 @@ mod tests {
     use super::*;
     use crate::graph::reconcile::GraphReconcileSystems;
     use bevy_app::App;
-    use tutti::TuttiEngine;
+    use crate::TuttiEngine;
 
     fn test_app() -> App {
         let engine = TuttiEngine::builder()
@@ -281,9 +281,9 @@ mod tests {
         // ChannelStripUnit-equivalent — using `pass` for simplicity)
         // and verify `AudioFeedsTo` produces an actual graph edge.
         use crate::graph::reconcile::SpawnAudioNode;
-        use tutti::core::ecs::NodeKind;
-        use tutti::dsp::sine_hz;
-        // `tutti::dsp::pass` is a stereo pass-through (2 in, 2 out)
+        use crate::core::ecs::NodeKind;
+        use crate::core::dsp::sine_hz;
+        // `crate::core::dsp::pass` is a stereo pass-through (2 in, 2 out)
         // — exactly what we need as a sink with addressable input ports.
         let mut app = test_app();
 
@@ -297,7 +297,7 @@ mod tests {
         let target = app
             .world_mut()
             .commands()
-            .spawn_audio_node(tutti::dsp::pass() | tutti::dsp::pass(), NodeKind::Generic)
+            .spawn_audio_node(crate::core::dsp::pass() | crate::core::dsp::pass(), NodeKind::Generic)
             .id();
         app.update();
 
@@ -326,8 +326,8 @@ mod tests {
     #[test]
     fn audio_feeds_to_disconnects_on_remove() {
         use crate::graph::reconcile::SpawnAudioNode;
-        use tutti::core::ecs::NodeKind;
-        use tutti::dsp::sine_hz;
+        use crate::core::ecs::NodeKind;
+        use crate::core::dsp::sine_hz;
 
         let mut app = test_app();
 
@@ -339,7 +339,7 @@ mod tests {
         let target = app
             .world_mut()
             .commands()
-            .spawn_audio_node(tutti::dsp::pass() | tutti::dsp::pass(), NodeKind::Generic)
+            .spawn_audio_node(crate::core::dsp::pass() | crate::core::dsp::pass(), NodeKind::Generic)
             .id();
         app.update();
 

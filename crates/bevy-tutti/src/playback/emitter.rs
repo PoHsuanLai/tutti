@@ -8,11 +8,11 @@ use bevy_ecs::prelude::*;
 use bevy_log::warn;
 use bevy_reflect::prelude::*;
 
-use tutti::core::WaveAsset;
-use tutti::NodeId;
+use crate::core::WaveAsset;
+use crate::NodeId;
 
 #[cfg(feature = "sampler")]
-use tutti::sampler::SamplerUnit;
+use crate::sampler::SamplerUnit;
 #[cfg(feature = "sampler")]
 use crate::resources::{AudioConfig, TuttiGraphRes};
 #[cfg(feature = "sampler")]
@@ -28,7 +28,7 @@ use super::cleanup::DespawnOnFinish;
 /// playback and clean up the graph node.
 ///
 /// Not `Reflect`: the wrapped fundsp `NodeId` is foreign and not reflected
-/// (matching `tutti::core::ecs::AudioNode`).
+/// (matching `crate::core::ecs::AudioNode`).
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[require(AudioPlaybackState)]
 pub struct AudioEmitter {
@@ -170,7 +170,7 @@ pub fn audio_playback_system(
         let sampler = SamplerUnit::with_settings(wave, gain, speed, looping);
 
         let (node_id, ts_control) = if let Some(ts) = ts {
-            let wrapped = tutti::sampler::stretch::Unit::new(Box::new(sampler), sample_rate);
+            let wrapped = crate::sampler::stretch::Unit::new(Box::new(sampler), sample_rate);
             wrapped.set_stretch_factor(ts.stretch_factor);
             wrapped.set_pitch_cents(ts.pitch_cents);
             let control = TimeStretchControl {

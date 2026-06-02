@@ -6,9 +6,9 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti::core::ecs::{AudioNode, Frequency, ModDepth, NodeKind};
+use crate::core::ecs::{AudioNode, Frequency, ModDepth, NodeKind};
 #[cfg(feature = "dsp")]
-use tutti::core::ecs::{
+use crate::core::ecs::{
     Attack, CompressorRatio, DelayTime, Feedback, FilterQ, GainDb, ModRate, Release,
     ReverbDamping, ReverbRoomSize, ThresholdDb, WetMix,
 };
@@ -33,9 +33,9 @@ pub fn dsp_compressor_system(
 
     for (entity, add) in query.iter() {
         let comp = if add.stereo {
-            tutti::units::Compressor::stereo(add.threshold_db, add.ratio, add.attack, add.release)
+            crate::units::Compressor::stereo(add.threshold_db, add.ratio, add.attack, add.release)
         } else {
-            tutti::units::Compressor::mono(add.threshold_db, add.ratio, add.attack, add.release)
+            crate::units::Compressor::mono(add.threshold_db, add.ratio, add.attack, add.release)
         }
         .with_makeup(add.makeup_db);
         let node_id = graph.0.add(comp);
@@ -69,9 +69,9 @@ pub fn dsp_gate_system(
 
     for (entity, add) in query.iter() {
         let gate = if add.stereo {
-            tutti::units::Gate::stereo(add.threshold_db, add.attack, add.hold, add.release)
+            crate::units::Gate::stereo(add.threshold_db, add.attack, add.hold, add.release)
         } else {
-            tutti::units::Gate::mono(add.threshold_db, add.attack, add.hold, add.release)
+            crate::units::Gate::mono(add.threshold_db, add.attack, add.hold, add.release)
         };
         let node_id = graph.0.add(gate);
         dirty.0 = true;
@@ -106,12 +106,12 @@ pub fn dsp_lfo_system(
                 bevy_log::warn!("Beat-synced LFO requested but no TransportRes available");
                 continue;
             };
-            let lfo = tutti::units::LfoNode::new(add.shape)
+            let lfo = crate::units::LfoNode::new(add.shape)
                 .with_beat_sync(transport.0.clone(), add.frequency);
             lfo.set_depth(add.depth);
             graph.0.add(lfo)
         } else {
-            let lfo = tutti::units::LfoNode::new(add.shape).with_frequency(add.frequency);
+            let lfo = crate::units::LfoNode::new(add.shape).with_frequency(add.frequency);
             lfo.set_depth(add.depth);
             graph.0.add(lfo)
         };
@@ -141,7 +141,7 @@ pub fn dsp_filter_system(
     let Some(mut graph) = graph else { return };
 
     for (entity, add) in query.iter() {
-        let mut node = tutti::units::StereoSvfFilterNode::<f64>::new(
+        let mut node = crate::units::StereoSvfFilterNode::<f64>::new(
             add.svf_type,
             add.frequency,
             add.q,
@@ -177,7 +177,7 @@ pub fn dsp_reverb_system(
     let Some(mut graph) = graph else { return };
 
     for (entity, add) in query.iter() {
-        let reverb = tutti::dsp::reverb_stereo(
+        let reverb = crate::core::dsp::reverb_stereo(
             add.room_size as f64,
             add.time_secs as f64,
             add.damping as f64,
@@ -207,7 +207,7 @@ pub fn dsp_delay_system(
     let Some(mut graph) = graph else { return };
 
     for (entity, add) in query.iter() {
-        let delay = tutti::units::StereoDelayLineNode::new(
+        let delay = crate::units::StereoDelayLineNode::new(
             add.max_delay_secs,
             add.delay_time_secs,
             add.delay_time_secs,
@@ -239,7 +239,7 @@ pub fn dsp_chorus_system(
     let Some(mut graph) = graph else { return };
 
     for (entity, add) in query.iter() {
-        let chorus = tutti::units::ChorusNode::new();
+        let chorus = crate::units::ChorusNode::new();
         chorus.set_rate(add.rate_hz);
         chorus.set_depth(add.depth_secs);
         chorus.set_feedback(add.feedback);

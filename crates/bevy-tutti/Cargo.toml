@@ -26,16 +26,38 @@ objc2-app-kit = { version = "0.3", optional = true, features = ["NSView", "NSWin
 objc2-foundation = { version = "0.3", optional = true, features = ["NSNotification", "NSString", "NSGeometry", "NSObject", "NSThread"] }
 
 
-# Tutti audio engine. `bevy_asset` enables the Asset/TypePath derives on
-# loadable types (Wave, SoundFont, StreamingSample). `bevy_ecs` enables
-# the `Component` derives on the entity-as-node primitives (`AudioNode`,
-# `Volume`, `Pan`, `Mute`, `PluginParam`) — bevy-tutti supplies the
-# reconcile systems that translate component changes into graph ops.
-tutti = { path = "../tutti", features = ["bevy_asset", "bevy_ecs"] }
+# Tutti audio engine — bevy-tutti is now the umbrella, so it depends on the
+# subsystem crates directly (the old `tutti` umbrella package is dissolved).
+# `tutti-core/bevy_ecs` enables the `Component` derives on the entity-as-node
+# primitives; `tutti-core/bevy_asset` the Asset/TypePath derives on loadable
+# types. bevy-tutti supplies the reconcile systems + the CPAL audio callback
+# (relocated into src/engine/).
+tutti-core = { path = "../tutti/crates/tutti-core", default-features = false, features = ["bevy_ecs", "bevy_asset"] }
+tutti-midi-types = { path = "../tutti/crates/tutti-midi-types", default-features = false }
+tutti-units = { path = "../tutti/crates/tutti-units", default-features = false }
 tutti-asset = { path = "../tutti/crates/tutti-asset", features = ["std"] }
 # Decode-once wave cache (Bevy-native). Format features wired through this
 # crate's wav/mp3/flac/ogg features above.
 tutti-wavecache = { path = "../tutti/crates/tutti-wavecache", default-features = false }
+
+# Optional subsystems (gated by bevy-tutti features below).
+tutti-sampler = { path = "../tutti/crates/tutti-sampler", optional = true, default-features = false }
+tutti-synth = { path = "../tutti/crates/tutti-synth", optional = true, default-features = false }
+tutti-analysis = { path = "../tutti/crates/tutti-analysis", optional = true }
+tutti-export = { path = "../tutti/crates/tutti-export", optional = true }
+tutti-midi-io = { path = "../tutti/crates/tutti-midi-io", optional = true }
+tutti-midi-runtime = { path = "../tutti/crates/tutti-midi-runtime", optional = true, default-features = false }
+tutti-plugin = { path = "../tutti/crates/tutti-plugin", optional = true }
+tutti-plugin-server = { path = "../tutti/crates/tutti-plugin-server", optional = true, default-features = false }
+
+# CPAL audio I/O — bevy-tutti owns the audio callback (engine/audio_io.rs).
+cpal = "0.15"
+
+# Engine graph + RT primitives (used by src/engine/).
+arc-swap = "1.7"
+atomic_float = "1.1"
+parking_lot = "0.12"
+ringbuf = "0.4"
 
 # Error handling
 thiserror.workspace = true
@@ -46,48 +68,57 @@ crossbeam-channel = "0.5"
 [features]
 default = []
 
-# Full feature set
-full = ["tutti/full", "spatial"]
+# Full feature set (mirrors the old tutti `full` minus opt-in plugin formats).
+full = [
+    "files",
+    "midi", "midi-hardware", "mpe",
+    "synth", "soundfont",
+    "sampler",
+    "export", "analysis",
+    "automation",
+    "dsp", "spatial",
+]
 
-# Spatial audio (requires Transform for position sync)
-spatial = ["tutti/dsp", "bevy_transform"]
+# Spatial audio (requires Transform for position sync).
+spatial = ["dsp", "bevy_transform"]
 
-# FFT convolution reverb
-convolution = ["tutti/convolution"]
+# DSP: enables spatial (VBAP/binaural) in tutti-units. Dynamics always compiled.
+dsp = ["tutti-units/spatial"]
 
-# Audio formats (aligned with tutti + the wave cache decoder)
-wav = ["tutti/wav", "tutti-wavecache/wav"]
-flac = ["tutti/flac", "tutti-wavecache/flac"]
-mp3 = ["tutti/mp3", "tutti-wavecache/mp3"]
-ogg = ["tutti/ogg", "tutti-wavecache/ogg"]
-files = ["tutti/files", "tutti-wavecache/files"]
+# FFT convolution reverb (partitioned IR) in tutti-units.
+convolution = ["tutti-units/convolution"]
 
-# MIDI (aligned with tutti)
-midi = ["tutti/midi"]
-midi-hardware = ["midi", "tutti/midi-hardware"]
-mpe = ["midi", "tutti/mpe"]
+# Audio formats (codec on tutti-core + the wave cache decoder).
+wav = ["tutti-core/wav", "tutti-sampler?/wav", "tutti-wavecache/wav"]
+flac = ["tutti-core/flac", "tutti-sampler?/flac", "tutti-wavecache/flac"]
+mp3 = ["tutti-core/mp3", "tutti-sampler?/mp3", "tutti-wavecache/mp3"]
+ogg = ["tutti-core/ogg", "tutti-sampler?/ogg", "tutti-wavecache/ogg"]
+files = ["wav", "flac", "mp3", "ogg"]
 
-# Synth & sampling
-synth = ["tutti/synth"]
-soundfont = ["tutti/soundfont"]
-sampler = ["tutti/sampler"]
+# MIDI.
+midi = ["dep:tutti-midi-io", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-export?/midi", "tutti-synth?/midi"]
+midi-hardware = ["midi"]
+mpe = ["midi", "tutti-midi-io/mpe", "tutti-midi-runtime?/mpe"]
 
-# DSP
-dsp = ["tutti/dsp"]
+# Synth & sampling. bevy-tutti always wants the bevy_asset derives on these
+# (SoundFontAsset, StreamingSample) — it registers them with the AssetServer.
+synth = ["dep:tutti-synth"]
+soundfont = ["synth", "tutti-synth/soundfont", "tutti-synth/bevy_asset"]
+sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy_asset"]
 
-# Plugin hosting
-plugin = ["tutti/plugin", "dep:bevy_window", "dep:raw-window-handle", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
-vst2 = ["tutti/vst2"]
-vst3 = ["tutti/vst3"]
-clap = ["tutti/clap"]
-au = ["tutti/au"]
+# Plugin hosting (native subprocess plugin-server + editor windowing deps).
+plugin = ["dep:tutti-plugin", "dep:tutti-plugin-server", "dep:bevy_window", "dep:raw-window-handle", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
+vst2 = ["plugin", "tutti-plugin-server/vst2", "tutti-plugin/vst2", "tutti-plugin/vst2-in-process"]
+vst3 = ["plugin", "tutti-plugin-server/vst3", "tutti-plugin/vst3"]
+clap = ["plugin", "tutti-plugin-server/clap", "tutti-plugin/clap"]
+au = ["plugin", "tutti-plugin-server/au", "tutti-plugin/au"]
 
-# Export & analysis
-export = ["tutti/export"]
-analysis = ["tutti/analysis"]
+# Export & analysis.
+export = ["dep:tutti-export"]
+analysis = ["dep:tutti-analysis"]
 
-# Automation
-automation = ["tutti/automation"]
+# Automation (transport-driven envelope AudioUnit in tutti-units::automation).
+automation = ["tutti-units/automation"]
 
 [[example]]
 name = "29_node_entities"

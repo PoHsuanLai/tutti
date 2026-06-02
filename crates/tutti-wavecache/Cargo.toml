@@ -1,0 +1,34 @@
+[package]
+name = "tutti-wavecache"
+version = "0.0.1"
+edition = "2021"
+description = "Decode-once, off-thread audio file cache (Arc<Wave>) for the Tutti audio engine"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+keywords = ["audio", "cache", "decode", "bevy"]
+categories = ["multimedia::audio"]
+
+[features]
+# Audio format support cascades to fundsp-tutti's Symphonia codecs (via
+# tutti-core). The cache decodes whatever formats are enabled here.
+default = ["wav"]
+wav = ["tutti-core/wav"]
+flac = ["tutti-core/flac"]
+mp3 = ["tutti-core/mp3"]
+ogg = ["tutti-core/ogg"]
+files = ["wav", "flac", "mp3", "ogg"]
+
+[dependencies]
+# `Wave` + `Wave::load` / `Wave::probe_metadata` live here (re-exported from
+# fundsp-tutti). We need `std` for filesystem decode.
+tutti-core = { path = "../tutti-core", default-features = false, features = ["std"] }
+
+# Bevy-native: the cache is a Resource and decodes on the async compute pool.
+bevy_app = { version = "0.18", default-features = false }
+bevy_ecs = { version = "0.18", default-features = false }
+bevy_tasks = { version = "0.18" }
+bevy_log = { version = "0.18", default-features = false }
+
+[dev-dependencies]
+tempfile = "3.10"
+fundsp = { package = "fundsp-tutti", path = "../fundsp-tutti", default-features = false, features = ["std", "wav"] }

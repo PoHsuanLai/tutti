@@ -1,0 +1,75 @@
+//! DSP nodes for the Tutti audio engine.
+//!
+//! # no_std
+//!
+//! `#![no_std]` when `std` feature is disabled. All DSP nodes work without std.
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(test)]
+extern crate std;
+
+mod error;
+pub use error::{Error, Result};
+
+pub use tutti_core::{
+    params, Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio, SampleRate, Seconds, Semitones, Unit,
+};
+
+pub mod buffer;
+pub mod coeff_cache;
+pub mod smoothing;
+
+mod lfo;
+pub use lfo::{LfoMode, LfoNode, LfoShape};
+
+mod delay;
+pub use delay::{DelayLine, DelayLineNode, InterpolationMode, StereoDelayLineNode, StereoPair};
+
+mod distortion;
+pub use distortion::{DistortionNode, ShapeKind};
+
+mod filter;
+pub use filter::{
+    BandState, EqBandNode, LadderFilterNode, LadderType, StereoLadderFilterNode,
+    StereoSvfFilterNode, SvfFilterNode, SvfType,
+};
+
+mod dynamics;
+pub use dynamics::{BrickwallLimiter, Compressor, Gate, LimiterNode};
+
+#[cfg(feature = "spatial")]
+mod spatial;
+#[cfg(feature = "spatial")]
+pub use spatial::{BinauralPannerNode, ChannelLayout, SpatialPannerNode};
+
+mod modulation;
+pub use modulation::{ChorusNode, FlangerNode, PhaserNode, StereoPhaserNode};
+
+#[cfg(feature = "convolution")]
+mod convolution;
+#[cfg(feature = "convolution")]
+pub use convolution::{
+    generate_room_ir, generate_room_ir_into, generate_test_ir, generate_test_ir_into, Convolver,
+    ConvolverNode, IrChannelConfig, StereoConvolverNode, WetDry,
+};
+
+/// Transport-driven envelope nodes. Reads beat position from a
+/// `TransportReader` and emits a control signal sample-per-sample.
+///
+/// Was previously its own `tutti-automation` crate; folded in once the
+/// only-uses-it consumer (`AutomationLane` as an `AudioUnit`) made the
+/// extra workspace member pointless. Envelope primitives still come
+/// from the `audio_automation` crate — re-exported here so consumers
+/// only need one import path.
+#[cfg(feature = "automation")]
+pub mod automation {
+    pub use crate::automation_lane::{AutomationLane, LiveAutomationLane};
+
+    pub use audio_automation::{
+        AutomationClip, AutomationEnvelope, AutomationPoint, AutomationState, CurveType,
+    };
+}
+
+#[cfg(feature = "automation")]
+mod automation_lane;

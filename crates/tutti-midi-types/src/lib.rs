@@ -1,0 +1,52 @@
+//! Pure MIDI types for the Tutti audio engine.
+//!
+//! Canonical event type is [`MidiEvent`] — a packed 20-byte UMP event
+//! (sample-accurate frame offset + up to four UMP words) carrying any MIDI
+//! 1.0 / 2.0 / SysEx / utility message. Construction uses inherent
+//! constructors ([`MidiEvent::note_on`], [`MidiEvent::cc`], ...). Decoding
+//! goes through `midi2::UmpMessage::try_from(ev.data_words())`.
+//!
+//! Tutti-domain logic lives in dedicated modules: [`routing`] (DAW routing
+//! table), [`mpe`] (MIDI Polyphonic Expression, RP-053), [`sync`] (clock and
+//! MTC decoders), [`cc`] (CC→DAW-target mapping).
+//!
+//! SMF file parsing and MIDI-1 wire codec are provided by the re-exported
+//! `midly` crate. Typed UMP messages are provided by re-exported `midi2`.
+
+#![no_std]
+
+#[cfg(feature = "std")]
+extern crate std;
+
+extern crate alloc;
+
+pub use midi2;
+pub use midly;
+
+pub(crate) mod compat;
+
+pub mod cc;
+pub mod convert;
+pub mod input_source;
+pub mod mpe;
+pub mod note;
+pub mod queue;
+pub mod routing;
+pub mod semantic;
+pub mod source;
+pub mod sync;
+pub mod target;
+pub mod ump;
+pub mod unit_id;
+pub mod utils;
+
+pub use input_source::{MidiInputSource, NoMidiInput};
+pub use note::Note;
+pub use queue::MidiQueue;
+pub use routing::{MidiRoute, MidiRoutingSnapshot, RouteIterator};
+pub use semantic::{decode, SemanticEvent};
+pub use source::MidiSource;
+pub use target::MidiTarget;
+pub use ump::MidiEvent;
+pub use unit_id::MidiUnitId;
+pub use utils::{hz_to_note, normalize_u7, note_to_hz};

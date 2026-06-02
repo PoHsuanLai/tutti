@@ -1,0 +1,73 @@
+[package]
+name = "tutti-sampler"
+version = "0.0.1"
+edition = "2021"
+description = "Sampler, Butler thread, Recording, Audio input, Time stretch"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+[features]
+default = ["wav"]
+
+# Audio format support - cascade to tutti-core
+wav = ["tutti-core/wav"]
+flac = ["tutti-core/flac"]
+mp3 = ["tutti-core/mp3"]
+ogg = ["tutti-core/ogg"]
+files = ["wav", "flac", "mp3", "ogg"]
+
+# Enables `impl TuttiStreamingAsset for StreamingSample` + gated Asset/TypePath
+# derives. Requires wav at minimum for header probing.
+bevy_asset = [
+    "wav",
+    "dep:tutti-asset",
+    "tutti-asset/std",
+    "dep:bevy_asset",
+    "dep:bevy_reflect",
+]
+
+[dependencies]
+# Base dependency - format features added above
+tutti-core = { path = "../tutti-core" }
+tutti-asset = { path = "../tutti-asset", default-features = false, optional = true }
+bevy_asset = { version = "0.18", default-features = false, optional = true }
+bevy_reflect = { version = "0.18", default-features = false, optional = true }
+
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+
+# Audio
+cpal = "0.15"
+audio-automation = "0.4"
+
+# Lock-free
+ringbuf = "0.4"
+crossbeam-channel = "0.5"
+dashmap = "6.1"
+arc-swap = "1.7"
+parking_lot = "0.12"
+smallvec = "1.13"
+
+# Parallel I/O
+rayon = "1.10"
+
+# Thread priority
+thread-priority = "1.1"
+
+# Async butler loop
+smol = "2"
+futures-lite = "2"
+
+# DSP / Files
+hound = "3.5"
+memmap2 = "0.9"
+
+
+[dev-dependencies]
+tracing-subscriber = "0.3"
+insta = { version = "1.41", features = ["yaml"] }
+approx = "0.5"
+tempfile = "3.8"
+rand = "0.8"
+serde_json = "1"
+assert_no_alloc = "1"

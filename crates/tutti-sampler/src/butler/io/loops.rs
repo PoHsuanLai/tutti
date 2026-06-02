@@ -1,0 +1,417 @@
+//! Loop handling and crossfade capture for butler thread.
+
+use super::super::cache::LruCache;
+use super::super::metrics::Metrics;
+use super::super::plan::{ChannelPlan, LoopStatus};
+use super::super::region_map::RegionMap;
+use super::refill::load_wave;
+use dashmap::DashMap;
+use std::path::PathBuf;
+use tutti_core::Wave;
+
+/// Check and handle stream loop conditions with crossfade support.
+///
+/// Loop crossfade is now handled via RtState for lock-free audio thread access.
+/// Butler captures fadeout/fadein samples and passes them to RtState.
+pub(crate) fn handle_loops(
+    plans: &DashMap<usize, ChannelPlan>,
+    regions: &mut RegionMap,
+    cache: &LruCache,
+    metrics: &Metrics,
+) {
+    for stream_entry in plans.iter() {
+        let stream_state = stream_entry.value();
+        let loop_status = stream_state.check_loop_status();
+
+        match loop_status {
+            LoopStatus::Normal => continue,
+            LoopStatus::ApproachingEnd => {
+                if stream_state.rt_state.is_loop_crossfading() {
+                    continue;
+                }
+
+                let Some(link) = stream_state.link.as_ref() else {
+                    continue;
+                };
+                let Some(loop_cfg) = link.loop_config.as_ref() else {
+                    continue;
+                };
+                let fade_len = loop_cfg.crossfade_samples;
+                if fade_len == 0 {
+                    continue;
+                }
+
+                let (loop_start, loop_end) = loop_cfg.range;
+
+                if let Some(writer) = regions.get(link.region_id) {
+                    if let Some(wave) = load_wave(cache, metrics, writer.file_path()) {
+                        let fadeout_start = (loop_end as usize).saturating_sub(fade_len);
+                        let fadeout = capture_samples(&wave, fadeout_start, fade_len);
+
+                        let fadein = if let Some(preloop) = loop_cfg.preloop_buffer.as_deref() {
+                            preloop.to_vec()
+                        } else {
+                            capture_samples(&wave, loop_start as usize, fade_len)
+                        };
+
+                        stream_state.rt_state.start_loop_crossfade(fadeout, fadein);
+                    }
+                }
+            }
+            LoopStatus::AtEnd(loop_start) => {
+                stream_state.rt_state.clear_loop_crossfade();
+
+                let Some(link) = stream_state.link.as_ref() else {
+                    continue;
+                };
+                let Some(writer) = regions.get_mut(link.region_id) else {
+                    continue;
+                };
+
+                let prefill_samples =
+                    if let Some(wave) = load_wave(cache, metrics, writer.file_path()) {
+                        let loop_end = link
+                            .loop_config
+                            .as_ref()
+                            .map_or(wave.len(), |c| c.range.1 as usize);
+                        let loop_len = loop_end - loop_start as usize;
+                        let prefill_len = loop_len.min(writer.write_space());
+                        capture_samples(&wave, loop_start as usize, prefill_len)
+                    } else {
+                        Vec::new()
+                    };
+
+                stream_state.flush_buffer();
+                writer.set_file_position(loop_start);
+
+                if !prefill_samples.is_empty() {
+                    let written = writer.write(&prefill_samples);
+                    writer.set_file_position(loop_start + written as u64);
+                }
+            }
+        }
+    }
+}
+
+/// Capture samples from a wave file into a Vec for crossfade.
+pub(crate) fn capture_samples(wave: &Wave, start: usize, count: usize) -> Vec<(f32, f32)> {
+    let mut samples = Vec::with_capacity(count);
+    let channels = wave.channels();
+    for i in 0..count {
+        let idx = start + i;
+        if idx < wave.len() {
+            let left = wave.at(0, idx);
+            let right = if channels > 1 { wave.at(1, idx) } else { left };
+            samples.push((left, right));
+        } else {
+            samples.push((0.0, 0.0));
+        }
+    }
+    samples
+}
+
+/// Capture samples from the current ring buffer for fadeout during seek.
+///
+/// Reads the last N samples that would have been played from the ring buffer.
+pub(crate) fn fadeout_samples(stream_state: &ChannelPlan, count: usize) -> Vec<(f32, f32)> {
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let Some(consumer_arc) = stream_state.link.as_ref().map(|l| l.consumer.clone()) else {
+        return Vec::new();
+    };
+
+    let Some(mut consumer) = consumer_arc.try_lock() else {
+        return Vec::new();
+    };
+
+    let available = consumer.available();
+    let to_read = available.min(count);
+
+    if to_read == 0 {
+        return Vec::new();
+    }
+
+    let mut samples = Vec::with_capacity(to_read);
+    for _ in 0..to_read {
+        if let Some(sample) = consumer.read() {
+            samples.push(sample);
+        } else {
+            break;
+        }
+    }
+
+    if samples.len() < count {
+        let pad_sample = samples.last().copied().unwrap_or((0.0, 0.0));
+        samples.resize(count, pad_sample);
+    }
+
+    samples
+}
+
+/// Capture samples from the Wave file at the new seek position for fadein.
+pub(crate) fn fadein_samples(
+    cache: &LruCache,
+    metrics: &Metrics,
+    file_path: &PathBuf,
+    position_samples: u64,
+    count: usize,
+) -> Vec<(f32, f32)> {
+    if count == 0 {
+        return Vec::new();
+    }
+
+    let Some(wave) = load_wave(cache, metrics, file_path) else {
+        return Vec::new();
+    };
+
+    let mut samples = Vec::with_capacity(count);
+    let channels = wave.channels();
+
+    for i in 0..count {
+        let idx = position_samples as usize + i;
+        if idx >= wave.len() {
+            samples.push((0.0, 0.0));
+        } else {
+            let left = wave.at(0, idx);
+            let right = if channels > 1 { wave.at(1, idx) } else { left };
+            samples.push((left, right));
+        }
+    }
+
+    samples
+}
+
+pub(crate) fn buffer_size_for_file(file_length_samples: u64, sample_rate: f64) -> usize {
+    let file_size_bytes = file_length_samples * 2 * 4;
+    let file_size_mb = file_size_bytes as f64 / (1024.0 * 1024.0);
+
+    let buffer_seconds = if file_size_mb < 50.0 {
+        (file_length_samples as f64 / sample_rate).min(30.0)
+    } else if file_size_mb < 200.0 {
+        10.0
+    } else if file_size_mb < 500.0 {
+        5.0
+    } else {
+        3.0
+    };
+
+    let buffer_capacity = (buffer_seconds * sample_rate) as usize;
+    buffer_capacity.max(4096)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_wave(samples: &[(f32, f32)]) -> Wave {
+        let mut wave = Wave::new(2, 48000.0);
+        for (l, r) in samples {
+            wave.push((*l, *r));
+        }
+        wave
+    }
+
+    fn make_mono_wave(samples: &[f32]) -> Wave {
+        let mut wave = Wave::new(1, 48000.0);
+        for s in samples {
+            wave.push(*s);
+        }
+        wave
+    }
+
+    #[test]
+    fn test_capture_samples_basic() {
+        let wave = make_test_wave(&[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
+
+        let captured = capture_samples(&wave, 0, 3);
+
+        assert_eq!(captured.len(), 3);
+        assert_eq!(captured[0], (1.0, 2.0));
+        assert_eq!(captured[1], (3.0, 4.0));
+        assert_eq!(captured[2], (5.0, 6.0));
+    }
+
+    #[test]
+    fn test_capture_samples_with_offset() {
+        let wave = make_test_wave(&[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
+
+        let captured = capture_samples(&wave, 2, 2);
+
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0], (5.0, 6.0));
+        assert_eq!(captured[1], (7.0, 8.0));
+    }
+
+    #[test]
+    fn test_capture_samples_past_end_pads_zeros() {
+        let wave = make_test_wave(&[(1.0, 2.0), (3.0, 4.0)]);
+
+        let captured = capture_samples(&wave, 1, 4);
+
+        assert_eq!(captured.len(), 4);
+        assert_eq!(captured[0], (3.0, 4.0)); // Valid sample
+        assert_eq!(captured[1], (0.0, 0.0)); // Past end - zero
+        assert_eq!(captured[2], (0.0, 0.0));
+        assert_eq!(captured[3], (0.0, 0.0));
+    }
+
+    #[test]
+    fn test_capture_samples_empty_request() {
+        let wave = make_test_wave(&[(1.0, 2.0)]);
+
+        let captured = capture_samples(&wave, 0, 0);
+
+        assert!(captured.is_empty());
+    }
+
+    #[test]
+    fn test_capture_samples_mono_duplicates_to_stereo() {
+        let wave = make_mono_wave(&[1.0, 2.0, 3.0]);
+
+        let captured = capture_samples(&wave, 0, 3);
+
+        assert_eq!(captured.len(), 3);
+        assert_eq!(captured[0], (1.0, 1.0)); // Mono duplicated to stereo
+        assert_eq!(captured[1], (2.0, 2.0));
+        assert_eq!(captured[2], (3.0, 3.0));
+    }
+
+    #[test]
+    fn test_buffer_size_small_file() {
+        // Small file: 1 second at 48kHz = 48000 samples
+        // file_size_bytes = 48000 * 2 * 4 = 384000 bytes = 0.37 MB
+        // buffer_seconds = min(1.0, 30.0) = 1.0
+        let size = buffer_size_for_file(48000, 48000.0);
+        assert_eq!(size, 48000); // 1 second buffer
+    }
+
+    #[test]
+    fn test_buffer_size_medium_file() {
+        // Medium file: 100MB = 100 * 1024 * 1024 bytes
+        // file_size_bytes = file_length * 2 * 4 = file_length * 8
+        // For 100MB: file_length = 100 * 1024 * 1024 / 8 = 13,107,200 samples
+        let file_length = 100 * 1024 * 1024 / 8;
+        let size = buffer_size_for_file(file_length, 48000.0);
+
+        // 100MB is in 50-200MB range, so buffer_seconds = 10.0
+        let expected = (10.0 * 48000.0) as usize;
+        assert_eq!(size, expected);
+    }
+
+    #[test]
+    fn test_buffer_size_large_file() {
+        // Large file: 300MB
+        let file_length = 300 * 1024 * 1024 / 8;
+        let size = buffer_size_for_file(file_length, 48000.0);
+
+        // 300MB is in 200-500MB range, so buffer_seconds = 5.0
+        let expected = (5.0 * 48000.0) as usize;
+        assert_eq!(size, expected);
+    }
+
+    #[test]
+    fn test_buffer_size_very_large_file() {
+        // Very large file: 1GB
+        let file_length = 1024 * 1024 * 1024 / 8;
+        let size = buffer_size_for_file(file_length, 48000.0);
+
+        // 1GB > 500MB, so buffer_seconds = 3.0
+        let expected = (3.0 * 48000.0) as usize;
+        assert_eq!(size, expected);
+    }
+
+    #[test]
+    fn test_buffer_size_minimum() {
+        // Tiny file should still have minimum buffer
+        let size = buffer_size_for_file(100, 48000.0);
+        assert!(size >= 4096, "Buffer should be at least 4096 samples");
+    }
+
+    #[test]
+    fn test_buffer_size_small_file_capped_at_30s() {
+        // File that would need more than 30 seconds should be capped
+        // 60 seconds at 48kHz = 2,880,000 samples
+        // file_size = 2,880,000 * 8 = 23MB (< 50MB, so uses file duration)
+        // But capped at 30 seconds
+        let file_length = 60 * 48000; // 60 seconds
+        let size = buffer_size_for_file(file_length, 48000.0);
+
+        let expected = (30.0 * 48000.0) as usize; // Capped at 30s
+        assert_eq!(size, expected);
+    }
+
+    #[test]
+    fn test_capture_fadeout_zero_count() {
+        use crate::butler::plan::ChannelPlan;
+
+        let state = ChannelPlan::default();
+        let samples = fadeout_samples(&state, 0);
+
+        assert!(samples.is_empty());
+    }
+
+    #[test]
+    fn test_capture_fadeout_no_consumer() {
+        use crate::butler::plan::ChannelPlan;
+
+        let state = ChannelPlan::default();
+        // No consumer attached
+        let samples = fadeout_samples(&state, 100);
+
+        assert!(samples.is_empty());
+    }
+
+    #[test]
+    fn test_capture_fadein_zero_count() {
+        let cache = LruCache::new(10, 1024 * 1024);
+        let metrics = Metrics::new();
+        let path = PathBuf::from("nonexistent.wav");
+
+        let samples = fadein_samples(&cache, &metrics, &path, 0, 0);
+
+        assert!(samples.is_empty());
+    }
+
+    #[test]
+    fn test_capture_fadein_file_not_in_cache() {
+        let cache = LruCache::new(10, 1024 * 1024);
+        let metrics = Metrics::new();
+        let path = PathBuf::from("nonexistent.wav");
+
+        let samples = fadein_samples(&cache, &metrics, &path, 0, 100);
+
+        // File not in cache and doesn't exist, so returns empty
+        assert!(samples.is_empty());
+    }
+
+    #[test]
+    fn test_capture_samples_empty_wave() {
+        // Empty wave with 0 samples - should return zeros
+        let wave = Wave::new(2, 48000.0);
+        assert_eq!(wave.len(), 0);
+
+        let captured = capture_samples(&wave, 0, 3);
+
+        // Should pad with zeros since wave is empty
+        assert_eq!(captured.len(), 3);
+        assert_eq!(captured[0], (0.0, 0.0));
+        assert_eq!(captured[1], (0.0, 0.0));
+        assert_eq!(captured[2], (0.0, 0.0));
+    }
+
+    #[test]
+    fn test_capture_samples_large_start_no_panic() {
+        let wave = make_test_wave(&[(1.0, 2.0), (3.0, 4.0)]);
+
+        // Start way past wave length - should not panic, just return zeros
+        let captured = capture_samples(&wave, 1_000_000, 5);
+
+        // All indices are way past wave.len(), so all zeros
+        assert_eq!(captured.len(), 5);
+        for sample in captured {
+            assert_eq!(sample, (0.0, 0.0));
+        }
+    }
+}

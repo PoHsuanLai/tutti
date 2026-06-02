@@ -1,0 +1,47 @@
+[package]
+name = "tutti-midi-types"
+version = "0.0.1"
+edition = "2021"
+description = "Pure MIDI types for Tutti - MidiEvent (UMP) + tutti-domain routing/MPE/sync"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+keywords = ["midi", "audio", "real-time"]
+categories = ["multimedia::audio"]
+
+[features]
+default = []
+# Held for downstream crates that opt in via `features = ["std"]`.
+# The source is unconditionally `#![no_std]`, so this feature currently toggles
+# nothing here — but tutti-core, tutti-midi-runtime, and tutti-midi-io all
+# forward it to signal intent. Keep until we either remove those forwards or
+# wire actual std-gated code behind this flag.
+std = []
+
+[dependencies]
+libm = "0.2"
+# Polyfills AtomicU64 on 32-bit targets without native 64-bit atomics
+# (e.g. thumbv7em-none-eabihf). On targets with native support (x86_64,
+# aarch64, wasm32) this is a zero-cost alias for core::sync::atomic::AtomicU64.
+# Embedded users must provide a `critical-section` impl via the
+# portable-atomic `critical-section` feature or `unsafe-assume-single-core`.
+portable-atomic = { version = "1", default-features = false, features = ["fallback"] }
+
+[dependencies.midi2]
+version = "0.11"
+default-features = false
+features = [
+    "channel-voice1",
+    "channel-voice2",
+    "system-common",
+    "sysex7",
+    "sysex8",
+    "utility",
+]
+
+[dependencies.midly]
+version = "0.5"
+default-features = false
+features = ["alloc"]
+
+[dev-dependencies]
+assert_no_alloc = "1"

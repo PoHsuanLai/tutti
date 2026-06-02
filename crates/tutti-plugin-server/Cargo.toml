@@ -1,0 +1,85 @@
+[package]
+name = "tutti-plugin-server"
+version = "0.0.1"
+edition = "2021"
+description = "Plugin server process for tutti-plugin - hosts VST2, VST3, CLAP plugins in isolation"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+[[bin]]
+name = "plugin-server"
+path = "src/main.rs"
+
+[features]
+default = ["vst2", "vst3", "clap", "au"]
+
+# VST2 support (requires VST SDK; loader lives in `tutti-vst2-host` sibling crate)
+vst2 = ["dep:tutti-vst2-host"]
+
+# VST3 support
+vst3 = ["dep:tutti-vst3-host"]
+
+# CLAP support
+clap = ["dep:tutti-clap-host"]
+
+# Audio Unit support (macOS only)
+au = ["dep:tutti-au-host"]
+
+# All plugin formats. WASM is intentionally absent — it's an in-process
+# format hosted by `tutti-plugin` directly (wasmtime sandbox provides
+# isolation without a subprocess wrapper).
+all = ["vst2", "vst3", "clap", "au"]
+
+[dependencies]
+# Shared protocol types
+tutti-plugin = { path = "../tutti-plugin" }
+
+# Core types
+tutti-core = { path = "../tutti-core", features = ["midi"] }
+
+# MIDI support
+tutti-midi-types = { path = "../tutti-midi-types" }
+tutti-midi-io = { path = "../tutti-midi-io" }
+
+# Serialization for IPC
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+
+# Shared memory
+memmap2 = "0.9"
+
+# Lock-free channels and queues
+arc-swap = "1"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+
+# Stack-first vectors for MIDI events
+smallvec = { version = "1.13", features = ["serde"] }
+
+# Cross-platform local IPC (Unix sockets on Unix, named pipes on Windows)
+interprocess = { version = "2" }
+
+# Error handling
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# VST2 plugin hosting (optional)
+tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
+
+# CLAP plugin hosting (optional)
+tutti-clap-host = { path = "../tutti-clap-host", optional = true }
+
+# VST3 plugin hosting (optional)
+tutti-vst3-host = { path = "../tutti-vst3-host", optional = true }
+
+# Audio Unit hosting (optional, macOS only)
+tutti-au-host = { path = "../tutti-au-host", optional = true }
+
+libloading = "0.8"
+
+[dev-dependencies]
+# RT-safety regression: prove the per-block audio path never allocates.
+assert_no_alloc = "1"

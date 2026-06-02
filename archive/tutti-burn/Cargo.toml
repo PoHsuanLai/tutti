@@ -1,0 +1,38 @@
+[package]
+name = "tutti-burn"
+version = "0.0.1"
+edition = "2021"
+description = "Burn ML backend for Tutti neural audio - GPU-accelerated inference"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+keywords = ["audio", "neural", "burn", "gpu", "inference"]
+categories = ["multimedia::audio"]
+
+[features]
+default = []
+onnx-models = []
+
+[build-dependencies]
+burn-import = { version = "0.20", default-features = false, features = ["onnx"] }
+
+[dependencies]
+# Tutti core (audio types)
+tutti-core = { path = "../tutti-core", default-features = false }
+tutti-neural = { path = "../tutti-neural" }
+
+# ML framework — trait surface only. Apps pick the concrete backend (wgpu /
+# ndarray / cuda / tch / …) and pass a `B::Device` to `tutti_burn::backend`.
+burn = { version = "0.20", default-features = false, features = ["std"] }
+burn-store = { version = "0.20", default-features = false, features = ["burnpack"] }
+
+[dev-dependencies]
+# Tests/benches construct their own device via NdArray (CPU) or Wgpu (GPU).
+burn = { version = "0.20", default-features = false, features = ["ndarray", "wgpu", "std"] }
+serde_json = "1.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+tutti-ort = { path = "../tutti-ort" }
+
+[[bench]]
+name = "inference"
+harness = false
+required-features = ["onnx-models"]

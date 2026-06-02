@@ -1,0 +1,18 @@
+[package]
+name = "tutti-au-host"
+version = "0.0.1"
+edition = "2021"
+description = "Audio Unit (AUv2) plugin hosting for macOS via AudioToolbox framework"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+[dependencies]
+tutti-plugin-types = { path = "../tutti-plugin-types" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+objc2 = "0.6"
+
+[dev-dependencies]
+assert_no_alloc = "1"

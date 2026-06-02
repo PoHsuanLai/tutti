@@ -1,0 +1,38 @@
+[package]
+name = "tutti-units"
+version = "0.0.1"
+edition = "2021"
+description = "Built-in AudioUnit implementations for the Tutti audio engine — LFOs, filters, delays, dynamics, modulation, spatial audio"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+[features]
+default = ["std"]
+std = []
+spatial = ["dep:vbap"]  # VBAP, binaural panning (gates the vbap dep)
+convolution = ["std", "dep:fft-convolver"]  # FFT convolution reverb (partitioned IR)
+# Transport-driven envelope nodes (`AutomationLane`). Folded in from the
+# old `tutti-automation` crate; envelope primitives come from the
+# `audio_automation` crate, re-exported via `tutti_units::automation`.
+automation = ["dep:audio-automation"]
+
+[dependencies]
+# AudioUnit trait and DSP primitives from tutti-core
+tutti-core = { path = "../tutti-core", default-features = false }
+
+# Spatial audio VBAP library (optional)
+vbap = { version = "0.1", optional = true }
+
+# Partitioned FFT convolver (optional, gated by `convolution` feature)
+fft-convolver = { version = "0.3", optional = true }
+
+# Envelope primitives consumed by `AutomationLane` (optional, gated by
+# the `automation` feature).
+audio-automation = { version = "0.4", default-features = false, optional = true }
+
+# Error handling
+thiserror = { version = "2", default-features = false }
+
+[dev-dependencies]
+approx = "0.5"
+assert_no_alloc = "1"

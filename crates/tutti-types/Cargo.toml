@@ -1,0 +1,17 @@
+[package]
+name = "tutti-types"
+version = "0.0.1"
+edition = "2021"
+description = "Shared real-time primitives for the Tutti audio engine — AudioThreadCell, RtEventBuf"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+keywords = ["audio", "real-time", "no-std"]
+categories = ["multimedia::audio", "no-std"]
+
+[dependencies]
+# `const_generics` provides the blanket `Array for [T; N]` impl so RtEventBuf
+# can be generic over its inline capacity `N`.
+smallvec = { version = "1", default-features = false, features = ["const_generics"] }
+
+[dev-dependencies]
+assert_no_alloc = "1"

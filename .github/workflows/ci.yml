@@ -1,0 +1,199 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        rust: [stable, beta]
+        exclude:
+          # Reduce CI time - only test beta on Linux
+          - os: macos-latest
+            rust: beta
+          - os: windows-latest
+            rust: beta
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Build with all features
+        run: cargo build --all-features --verbose
+
+      - name: Test with all features
+        run: cargo test --all-features --verbose
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --exclude fundsp-tutti --exclude rustysynth-tutti -- -D warnings -A dead_code
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Check documentation
+        run: cargo doc --workspace --no-deps --all-features --exclude fundsp-tutti --exclude rustysynth-tutti
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  features:
+    name: Feature Combinations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+
+      - name: Check feature combinations
+        run: cargo hack check --feature-powerset --depth 2 --no-dev-deps --exclude fundsp-tutti --exclude rustysynth-tutti --exclude tutti-plugin-server
+
+  no-std:
+    name: no_std (${{ matrix.target.name }}) / ${{ matrix.crate }}
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.target.soft }}
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - tutti-core
+          - tutti-midi
+          - tutti-units
+          - tutti-asset
+          - tutti-automation
+          - fundsp-tutti
+        target:
+          # Hard checks — must pass.
+          - name: host
+            triple: ""
+            extra-args: ""
+            soft: false
+          - name: wasm32
+            triple: wasm32-unknown-unknown
+            extra-args: "--lib"
+            soft: false
+          # Soft dashboard — allowed to fail. Tracks embedded readiness
+          # (Cortex-M4F / Daisy Seed class). See plans/ for the roadmap.
+          - name: thumbv7em
+            triple: thumbv7em-none-eabihf
+            extra-args: "--lib"
+            soft: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.triple }}
+
+      - name: Check ${{ matrix.crate }} --no-default-features (${{ matrix.target.name }})
+        run: |
+          if [ -n "${{ matrix.target.triple }}" ]; then
+            cargo check -p ${{ matrix.crate }} --no-default-features --target ${{ matrix.target.triple }} ${{ matrix.target.extra-args }}
+          else
+            cargo check -p ${{ matrix.crate }} --no-default-features ${{ matrix.target.extra-args }}
+          fi

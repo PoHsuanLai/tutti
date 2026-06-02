@@ -1,0 +1,79 @@
+//! Subprocess-side of the plugin bridge.
+//!
+//! `tutti-plugin-server` is the implementation behind the `plugin-server`
+//! binary that [`tutti_plugin`] spawns once per loaded plugin. This crate
+//! hosts the plugin in isolation, speaks the [`tutti_plugin::server`]
+//! wire protocol over a Unix-socket / named-pipe, and drives audio via a
+//! shared-memory slab.
+//!
+//! # Using the library
+//!
+//! Most callers want the `plugin-server` binary, not this library. Library
+//! users have exactly one entry point:
+//!
+//! ```no_run
+//! use tutti_plugin_server::{BridgeConfig, PluginServer};
+//!
+//! let config = BridgeConfig {
+//!     socket_path: "/tmp/tutti.sock".into(),
+//!     ..Default::default()
+//! };
+//! PluginServer::new(config).unwrap().run().unwrap();
+//! ```
+//!
+//! # Internal layout
+//!
+//! - `server` — outer shell ([`PluginServer`]); orchestrates the two-phase
+//!   connection dance and drives a `Session` over a `Transport`.
+//! - `session` — pure message-to-reaction dispatch. Owns plugin + shm +
+//!   pipeline + editor state. Unit-testable without sockets.
+//! - `audio_pipeline` — per-block audio machinery (scratch buffers,
+//!   shared-memory I/O, plugin invocation).
+//! - `plugin` — format-polymorphic plugin wrapper; hides VST2/VST3/CLAP/AU
+//!   cfg-gating behind a single `Plugin` enum.
+//! - `editor` — editor window state.
+//! - `transport` — IPC framing; trait seam for testability.
+//! - `loaders::{vst2, vst3, clap, au}` — per-format `PluginInstance` adapters.
+
+mod audio_pipeline;
+mod editor;
+mod loaders;
+mod plugin;
+mod server;
+mod session;
+mod transport;
+
+pub use server::PluginServer;
+pub use tutti_plugin::server::BridgeConfig;
+pub use tutti_plugin::{BridgeError, Result};
+
+// Test-only global allocator for the audio-pipeline RT-safety regression
+// test (`audio_pipeline::tests::process_is_alloc_free`). Active only in the
+// test build; normal builds use the system allocator.
+#[cfg(test)]
+#[global_allocator]
+static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
+/// VST2's `vst` crate uses a global `LOAD_POINTER` static during plugin
+/// loading that is not thread-safe. All plugin-loading tests across the
+/// crate must serialize on this lock.
+#[cfg(test)]
+pub(crate) mod test_utils {
+    use std::sync::{Mutex, MutexGuard};
+    pub static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Acquire the plugin-load lock, recovering from poisoning.
+    ///
+    /// These tests load real third-party plugins, and a single failing
+    /// assertion (e.g. a plugin that doesn't advertise an expected
+    /// capability) panics while holding the lock — poisoning it. Without
+    /// recovery, every *other* plugin test then fails with `PoisonError`,
+    /// turning one real failure into dozens of misleading cascade failures.
+    /// The guarded data is `()`, so there's no invariant a poisoned lock
+    /// could violate; recovering is safe and keeps failures isolated.
+    pub fn plugin_load_lock() -> MutexGuard<'static, ()> {
+        PLUGIN_LOAD_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}

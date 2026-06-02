@@ -1,0 +1,36 @@
+[package]
+name = "tutti-midi-io"
+version = "0.0.1"
+edition = "2021"
+description = "MIDI hardware I/O — device connection, SMF file read/write"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+[features]
+default = []
+mpe = []
+virtual-midi = ["coremidi"]
+
+[dependencies]
+thiserror = "2"
+tracing = "0.1"
+
+# Core types
+tutti-midi-types = { path = "../tutti-midi-types", default-features = false, features = ["std"] }
+tutti-core = { path = "../tutti-core", default-features = false, features = ["std", "midi"] }
+
+# Lock-free
+crossbeam-channel = "0.5"
+arc-swap = "1.7"
+ringbuf = "0.4"
+parking_lot = "0.12"
+
+# MIDI hardware + file I/O
+midir = "0.9"
+midly = "0.5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+coremidi = { version = "0.8", optional = true }
+
+[dev-dependencies]
+tracing-subscriber = "0.3"

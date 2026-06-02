@@ -1,0 +1,31 @@
+[package]
+name = "tutti-analysis"
+version = "0.0.1"
+edition = "2021"
+description = "Audio analysis tools: waveform thumbnails, transient detection, pitch detection, stereo correlation"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+keywords = ["audio", "analysis", "waveform", "pitch", "dsp"]
+categories = ["multimedia::audio"]
+
+[dependencies]
+tutti-core = { path = "../tutti-core", features = ["std"] }
+
+# FFT for spectral analysis (transient detection, pitch detection)
+rustfft = "6"
+
+# Lock-free ring buffer and pointer swap for live analysis
+ringbuf = "0.4"
+arc-swap = "1"
+
+# LRU cache for thumbnail caching
+lru = "0.12"
+
+# Serialization (optional)
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+default = []
+# `dep:serde` (not bare `serde`) so this feature replaces the implicit
+# optional-dep feature rather than colliding with it.
+serde = ["dep:serde"]

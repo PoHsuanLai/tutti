@@ -1,0 +1,124 @@
+[package]
+name = "tutti-plugin"
+version = "0.0.1"
+edition = "2021"
+description = "Multi-process plugin hosting client for Tutti - loads VST2, VST3, CLAP plugins in isolated processes"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+[features]
+default = ["json"]
+
+# Default JSON-file-backed `JsonCatalog`. Disable with `default-features = false`
+# if you're bringing your own `PluginCatalog` impl and don't want the
+# serde_json dep.
+json = ["dep:serde_json"]
+
+# In-process GUI support (loads plugin library in host for editor only)
+vst3 = ["dep:tutti-vst3-host"]
+clap = ["dep:tutti-clap-host"]
+au = ["dep:tutti-au-host"]
+
+# VST2 server-side hosting (audio + parameters + state via the
+# subprocess + IPC bridge). The editor returns a structured error.
+vst2 = []
+
+# In-process VST2 hosting (audio + native editor on the host process).
+# Sacrifices subprocess crash isolation for editor support — VST2's
+# AEffect fuses editor and audio into one instance, so the editor cannot
+# live in a different process from the audio. Implies `vst2`.
+#
+# Hidden behind a separate feature for now so flipping `vst2` doesn't
+# silently switch the user from subprocess to in-process. PR D will wire
+# `vst2()` to use this path by default.
+vst2-in-process = ["vst2", "dep:tutti-vst2-host"]
+
+# In-process WASM Component Model audio plugin loader
+# (`dawai:audio-plugin@0.1.0`). Unlike VST2/VST3/CLAP/AU, WASM is always
+# in-process: the wasmtime sandbox provides equivalent isolation to a
+# subprocess without the IPC overhead.
+wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
+
+[dependencies]
+# Core types (for AudioUnit trait)
+tutti-core = { path = "../tutti-core", features = ["midi"] }
+
+# Host-agnostic asset loading vocabulary (for Bevy asset loader integration)
+tutti-asset = { path = "../tutti-asset", features = ["std"] }
+
+# Parameter range/scaling
+audio-automation = "0.4"
+
+# MIDI support
+tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
+tutti-midi-io = { path = "../tutti-midi-io" }
+tutti-midi-runtime = { path = "../tutti-midi-runtime" }
+
+# Shared value vocabulary used across host crates + IPC protocol.
+tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde"] }
+
+# Serialization for IPC
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+
+# Shared memory
+memmap2 = "0.9"
+
+# Lock-free channels and queues
+arc-swap = "1"
+crossbeam-channel = "0.5"
+crossbeam = "0.8"
+parking_lot = "0.12"
+ringbuf = "0.4"
+
+# Stack-first vectors for MIDI events (zero-alloc for typical case)
+smallvec = { version = "1.13", features = ["serde"] }
+
+# Cross-platform local IPC (Unix sockets on Unix, named pipes on Windows)
+interprocess = { version = "2" }
+
+# Error handling
+thiserror = "2"
+
+# Logging
+tracing = "0.1"
+
+# Typed parent-window handle for editor embedding. The public API accepts
+# anything that impls `HasWindowHandle` (Bevy, winit, wgpu, …) and we
+# extract the platform pointer internally.
+raw-window-handle = "0.6"
+
+# Fork-based plugin probe (Unix)
+libc = "0.2"
+
+# In-process plugin GUI (optional — loads plugin library for editor only).
+# `tutti-vst2-host` is different: it owns the audio path too (single in-process
+# AEffect), since VST2 fuses editor and processor.
+tutti-vst3-host = { path = "../tutti-vst3-host", optional = true }
+tutti-clap-host = { path = "../tutti-clap-host", optional = true }
+tutti-au-host = { path = "../tutti-au-host", optional = true }
+tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
+
+# WASM Component Model runtime (optional, gated by `wasm` feature). Pinned
+# to match `dawai-extensions` so both worlds run on the same engine.
+wasmtime = { version = "39.0", features = ["component-model"], optional = true }
+wasmtime-wasi = { version = "39.0", optional = true }
+
+# Platform-specific (shared memory)
+[target.'cfg(unix)'.dependencies]
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.52", features = [
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_Foundation",
+] }
+
+[dependencies.serde_json]
+version = "1"
+optional = true
+
+[dev-dependencies]
+tempfile = "3"
+assert_no_alloc = "1"
+tutti-midi-types = { path = "../tutti-midi-types" }

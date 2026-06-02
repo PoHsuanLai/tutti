@@ -1,0 +1,25 @@
+[package]
+name = "tutti-clap-test-plugin"
+version = "0.1.0"
+edition = "2021"
+description = "Reference CLAP plugin used as a host-conformance probe in tutti-clap-host tests"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+publish = false
+
+# A real loadable .clap binary (bare dylib) the host dlopens. It records
+# what the host hands it across the CLAP FFI so the host can be asserted
+# against the spec, then is loaded by the `clap_conformance` integration
+# test.
+#
+# Both crate types on purpose: `cdylib` is the loadable artifact the host
+# dlopens; `rlib` lets `tutti-clap-host` take this as a dev-dependency so
+# Cargo builds the cdylib as part of the same `cargo test` invocation
+# (one target-dir lock, no nested `cargo` — see build.rs for why that
+# matters). The rlib also lets the test import the `ProcessCapture` type
+# directly instead of hand-mirroring it.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+clap-sys = "0.5"

@@ -1,0 +1,19 @@
+[package]
+name = "tutti-ort"
+version = "0.0.1"
+edition = "2021"
+description = "ONNX Runtime backend for Tutti neural audio - runtime model loading"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+keywords = ["audio", "neural", "onnx", "inference", "machine-learning"]
+categories = ["multimedia::audio"]
+
+[dependencies]
+tutti-core = { path = "../tutti-core", default-features = false }
+tutti-neural = { path = "../tutti-neural" }
+ort = "2.0.0-rc.12"
+tracing = "0.1"
+
+[features]
+default = []
+cuda = []

@@ -1,0 +1,275 @@
+//! Live audio analysis via ring buffer tap.
+//!
+//! Runs analysis on a background thread, reading from a SPSC ring buffer
+//! fed by the audio callback. Results are published via `ArcSwap` for
+//! lock-free reads from the UI thread.
+
+use crate::{
+    PitchDetector, PitchResult, SpectrumResult, Transient, TransientDetector, WaveformBlock,
+    WaveformSummary,
+};
+use arc_swap::ArcSwap;
+use core::sync::atomic::{AtomicBool, Ordering};
+use ringbuf::{
+    traits::{Consumer, Observer},
+    HeapCons,
+};
+use rustfft::{num_complex::Complex, FftPlanner};
+use std::sync::Arc;
+
+/// Shared state between the analysis thread and `AnalysisHandle`.
+///
+/// All fields are lock-free for reads from any thread.
+pub struct LiveAnalysisState {
+    pub pitch: ArcSwap<PitchResult>,
+    pub transients: ArcSwap<Vec<Transient>>,
+    pub waveform: ArcSwap<WaveformSummary>,
+    pub spectrum: ArcSwap<SpectrumResult>,
+    running: AtomicBool,
+}
+
+impl LiveAnalysisState {
+    pub fn new(samples_per_block: usize) -> Self {
+        Self {
+            pitch: ArcSwap::from_pointee(PitchResult::default()),
+            transients: ArcSwap::from_pointee(Vec::new()),
+            waveform: ArcSwap::from_pointee(WaveformSummary::new(samples_per_block)),
+            spectrum: ArcSwap::from_pointee(SpectrumResult::default()),
+            running: AtomicBool::new(true),
+        }
+    }
+
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::Release);
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Acquire)
+    }
+}
+
+const LIVE_WAVEFORM_BLOCK_SIZE: usize = 512;
+/// Must be large enough for pitch detection.
+const WINDOW_SIZE: usize = 4096;
+const HOP_SIZE: usize = 512;
+const MAX_RECENT_TRANSIENTS: usize = 64;
+
+/// Drains stereo pairs from `consumer`, downmixes to mono, and runs
+/// pitch/transient/waveform analysis on a sliding window.
+/// Blocks until `state.stop()` is called.
+pub fn run_analysis_thread(
+    mut consumer: HeapCons<(f32, f32)>,
+    state: Arc<LiveAnalysisState>,
+    sample_rate: f64,
+) {
+    let mut pitch_detector = PitchDetector::new(sample_rate);
+    let mut transient_detector = TransientDetector::new(sample_rate);
+
+    // FFT for spectrum analysis (separate from transient detector's internal FFT)
+    let mut fft_planner = FftPlanner::<f32>::new();
+    let fft = fft_planner.plan_fft_forward(WINDOW_SIZE);
+    let mut fft_scratch = vec![Complex::<f32>::default(); fft.get_inplace_scratch_len()];
+    let hann_window: Vec<f32> = (0..WINDOW_SIZE)
+        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / WINDOW_SIZE as f32).cos()))
+        .collect();
+
+    let mut window = vec![0.0f32; WINDOW_SIZE];
+    let mut window_pos = 0usize;
+    let mut hop_counter = 0usize;
+
+    let mut waveform_blocks: Vec<WaveformBlock> = Vec::new();
+    let mut block_min = f32::MAX;
+    let mut block_max = f32::MIN;
+    let mut block_sum_sq = 0.0f32;
+    let mut block_count = 0usize;
+
+    let mut recent_transients: Vec<Transient> = Vec::new();
+    let mut total_samples_processed = 0usize;
+
+    let mut drain_buf = [(0.0f32, 0.0f32); 1024];
+
+    while state.is_running() {
+        let available = consumer.occupied_len();
+
+        if available == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            continue;
+        }
+
+        let to_read = available.min(drain_buf.len());
+        let read = consumer.pop_slice(&mut drain_buf[..to_read]);
+
+        for &(l, r) in &drain_buf[..read] {
+            let mono = (l + r) * 0.5;
+
+            window[window_pos % WINDOW_SIZE] = mono;
+            window_pos += 1;
+            hop_counter += 1;
+            total_samples_processed += 1;
+
+            block_min = block_min.min(mono);
+            block_max = block_max.max(mono);
+            block_sum_sq += mono * mono;
+            block_count += 1;
+
+            if block_count >= LIVE_WAVEFORM_BLOCK_SIZE {
+                let rms = (block_sum_sq / block_count as f32).sqrt();
+                waveform_blocks.push(WaveformBlock {
+                    min: block_min,
+                    max: block_max,
+                    rms,
+                });
+
+                let max_blocks = (sample_rate as usize / LIVE_WAVEFORM_BLOCK_SIZE) * 2; // ~2s
+                if waveform_blocks.len() > max_blocks {
+                    waveform_blocks.drain(0..waveform_blocks.len() - max_blocks);
+                }
+
+                let summary = WaveformSummary {
+                    blocks: waveform_blocks.clone(),
+                    samples_per_block: LIVE_WAVEFORM_BLOCK_SIZE,
+                    total_samples: total_samples_processed,
+                };
+                state.waveform.store(Arc::new(summary));
+
+                block_min = f32::MAX;
+                block_max = f32::MIN;
+                block_sum_sq = 0.0;
+                block_count = 0;
+            }
+
+            if hop_counter >= HOP_SIZE && window_pos >= WINDOW_SIZE {
+                hop_counter = 0;
+
+                let start = window_pos % WINDOW_SIZE;
+                let mut contiguous = Vec::with_capacity(WINDOW_SIZE);
+                contiguous.extend_from_slice(&window[start..]);
+                contiguous.extend_from_slice(&window[..start]);
+
+                let pitch = pitch_detector.detect(&contiguous);
+                state.pitch.store(Arc::new(pitch));
+
+                let transients = transient_detector.detect(&contiguous);
+                if !transients.is_empty() {
+                    let base_time = (total_samples_processed - WINDOW_SIZE) as f64 / sample_rate;
+                    for t in &transients {
+                        recent_transients.push(Transient {
+                            sample_position: total_samples_processed - WINDOW_SIZE
+                                + t.sample_position,
+                            time: base_time + t.time,
+                            strength: t.strength,
+                        });
+                    }
+
+                    if recent_transients.len() > MAX_RECENT_TRANSIENTS {
+                        let drain_count = recent_transients.len() - MAX_RECENT_TRANSIENTS;
+                        recent_transients.drain(0..drain_count);
+                    }
+
+                    state.transients.store(Arc::new(recent_transients.clone()));
+                }
+
+                // FFT spectrum: apply Hann window, compute magnitudes
+                let num_bins = WINDOW_SIZE / 2;
+                let mut fft_buf: Vec<Complex<f32>> = contiguous
+                    .iter()
+                    .zip(&hann_window)
+                    .map(|(&s, &w)| Complex { re: s * w, im: 0.0 })
+                    .collect();
+                fft.process_with_scratch(&mut fft_buf, &mut fft_scratch);
+
+                let mut magnitudes: Vec<f32> =
+                    fft_buf[..num_bins].iter().map(|c| c.norm()).collect();
+                let max_mag = magnitudes.iter().copied().fold(0.0f32, f32::max);
+                if max_mag > 0.0 {
+                    for m in &mut magnitudes {
+                        *m /= max_mag;
+                    }
+                }
+                state.spectrum.store(Arc::new(SpectrumResult {
+                    magnitudes,
+                    num_bins,
+                    freq_resolution: sample_rate / WINDOW_SIZE as f64,
+                }));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ringbuf::{traits::Producer, traits::Split, HeapRb};
+
+    #[test]
+    fn test_live_analysis_state_creation() {
+        let state = LiveAnalysisState::new(512);
+        assert!(state.is_running());
+        assert!(!state.pitch.load().is_voiced());
+        assert!(state.transients.load().is_empty());
+    }
+
+    #[test]
+    fn test_analysis_thread_stops() {
+        let rb = HeapRb::<(f32, f32)>::new(4096);
+        let (mut prod, cons) = rb.split();
+
+        let state = Arc::new(LiveAnalysisState::new(512));
+        let state2 = state.clone();
+
+        // Feed a sine wave
+        let sample_rate = 44100.0;
+        for i in 0..8192 {
+            let t = i as f32 / sample_rate as f32;
+            let s = (2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.5;
+            let _ = prod.try_push((s, s));
+        }
+
+        // Stop after brief run
+        let handle = std::thread::spawn(move || {
+            run_analysis_thread(cons, state2, sample_rate);
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        state.stop();
+        handle.join().unwrap();
+
+        // Should have produced some results
+        assert!(!state.waveform.load().blocks.is_empty());
+    }
+
+    #[test]
+    fn test_pitch_detection_live() {
+        let rb = HeapRb::<(f32, f32)>::new(131072);
+        let (mut prod, cons) = rb.split();
+
+        let state = Arc::new(LiveAnalysisState::new(512));
+        let state2 = state.clone();
+
+        let sample_rate = 44100.0;
+        // Feed enough samples for pitch detection (need WINDOW_SIZE + some hops)
+        for i in 0..20000 {
+            let t = i as f32 / sample_rate as f32;
+            let s = (2.0 * std::f32::consts::PI * 440.0 * t).sin() * 0.8;
+            let _ = prod.try_push((s, s));
+        }
+
+        let handle = std::thread::spawn(move || {
+            run_analysis_thread(cons, state2, sample_rate);
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        state.stop();
+        handle.join().unwrap();
+
+        let pitch = state.pitch.load();
+        // Should have detected ~440 Hz
+        if pitch.is_voiced() {
+            assert!(
+                (pitch.frequency - 440.0).abs() < 20.0,
+                "Expected ~440 Hz, got {} Hz",
+                pitch.frequency
+            );
+        }
+    }
+}

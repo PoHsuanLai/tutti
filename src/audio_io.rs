@@ -1,0 +1,337 @@
+//! CPAL audio I/O — callback state, RT entry point, and device stream management.
+//!
+//! The RT callback is generic over [`AudioProcessor`]: it calls `processor.process()`
+//! and updates metering. All audio logic (graph ticking, MIDI splitting, transport)
+//! lives in the processor implementation, which is constructed in the engine builder.
+
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use std::sync::Arc;
+use std::time::Instant;
+use tutti_core::metering::{MeteringContext, MeteringManager};
+use tutti_core::processor::AudioProcessor;
+use tutti_core::ScopedNoDenormals;
+
+use crate::error::{Error, Result};
+
+/// Maximum frames per CPAL callback buffer. Pre-allocates the internal f32
+/// buffer to this size to avoid allocation in the audio thread.
+const MAX_FRAMES: usize = 8192;
+
+/// State shared between the engine and the RT audio callback.
+pub(crate) struct AudioCallbackState<P: AudioProcessor> {
+    pub(crate) processor: P,
+    pub(crate) metering: Arc<MeteringManager>,
+}
+
+impl<P: AudioProcessor> AudioCallbackState<P> {
+    pub(crate) fn new(processor: P, metering: Arc<MeteringManager>) -> Self {
+        Self {
+            processor,
+            metering,
+        }
+    }
+
+    pub(crate) fn reset_owners(&self) {
+        self.processor.reset_owners();
+    }
+}
+
+#[inline]
+pub(crate) fn process_audio<P: AudioProcessor>(state: &AudioCallbackState<P>, output: &mut [f32]) {
+    let _no_denormals = ScopedNoDenormals::new();
+    let frames = output.len() / 2;
+    state.processor.process(output, frames);
+}
+
+/// Holds a [`cpal::Stream`] to keep it alive. CPAL runs the audio callback
+/// on a background thread for as long as this value exists; dropping it stops
+/// the stream. The inner field is never read — ownership *is* the API.
+struct StreamHandle(#[allow(dead_code)] cpal::Stream);
+
+unsafe impl Send for StreamHandle {}
+
+/// Owns the CPAL stream and device configuration. Private to the engine.
+pub(crate) struct AudioEngine {
+    sample_rate: f64,
+    channels: usize,
+    is_running: bool,
+    device_index: Option<usize>,
+    _stream: Option<StreamHandle>,
+}
+
+impl AudioEngine {
+    pub(crate) fn new(device_index: Option<usize>) -> Result<Self> {
+        let device = get_device(device_index)?;
+        let config = device.default_output_config()?;
+
+        Ok(Self {
+            sample_rate: f64::from(config.sample_rate().0),
+            channels: usize::from(config.channels()),
+            is_running: false,
+            device_index,
+            _stream: None,
+        })
+    }
+
+    pub(crate) fn start<P: AudioProcessor>(
+        &mut self,
+        state: Arc<AudioCallbackState<P>>,
+    ) -> Result<()> {
+        if self.is_running {
+            return Ok(());
+        }
+
+        let device = get_device(self.device_index)?;
+        let config = device.default_output_config()?;
+
+        let stream = match config.sample_format() {
+            cpal::SampleFormat::I8 => build_stream::<i8, P>(&device, &config.into(), state)?,
+            cpal::SampleFormat::I16 => build_stream::<i16, P>(&device, &config.into(), state)?,
+            cpal::SampleFormat::I32 => build_stream::<i32, P>(&device, &config.into(), state)?,
+            cpal::SampleFormat::U8 => build_stream::<u8, P>(&device, &config.into(), state)?,
+            cpal::SampleFormat::U16 => build_stream::<u16, P>(&device, &config.into(), state)?,
+            cpal::SampleFormat::U32 => build_stream::<u32, P>(&device, &config.into(), state)?,
+            cpal::SampleFormat::F32 => build_stream::<f32, P>(&device, &config.into(), state)?,
+            cpal::SampleFormat::F64 => build_stream::<f64, P>(&device, &config.into(), state)?,
+            format => {
+                return Err(Error::InvalidConfig(format!(
+                    "Unsupported sample format: {format:?}"
+                )));
+            }
+        };
+
+        stream.play()?;
+        self._stream = Some(StreamHandle(stream));
+        self.is_running = true;
+
+        Ok(())
+    }
+
+    pub(crate) fn stop(&mut self) {
+        self._stream = None;
+        self.is_running = false;
+    }
+
+    pub(crate) fn sample_rate(&self) -> f64 {
+        self.sample_rate
+    }
+
+    pub(crate) fn channels(&self) -> usize {
+        self.channels
+    }
+
+    pub(crate) fn is_running(&self) -> bool {
+        self.is_running
+    }
+
+    pub(crate) fn set_device(&mut self, index: Option<usize>) {
+        self.device_index = index;
+    }
+
+    pub(crate) fn device_name(&self) -> Result<String> {
+        Ok(get_device(self.device_index)?.name()?)
+    }
+
+    pub(crate) fn output_devices() -> Result<impl Iterator<Item = (usize, String)>> {
+        Ok(cpal::default_host()
+            .output_devices()?
+            .enumerate()
+            .map(|(i, d)| (i, d.name().unwrap_or_default())))
+    }
+}
+
+fn get_device(index: Option<usize>) -> Result<cpal::Device> {
+    let host = cpal::default_host();
+
+    match index {
+        Some(i) => {
+            let devices: Vec<_> = host.output_devices()?.collect();
+            let count = devices.len();
+            devices.into_iter().nth(i).ok_or_else(|| {
+                Error::InvalidDevice(format!("Device index {i} out of range ({count} available)"))
+            })
+        }
+        None => host
+            .default_output_device()
+            .ok_or_else(|| Error::InvalidDevice("No output device available".into())),
+    }
+}
+
+fn build_stream<T, P: AudioProcessor>(
+    device: &cpal::Device,
+    config: &cpal::StreamConfig,
+    state: Arc<AudioCallbackState<P>>,
+) -> Result<cpal::Stream>
+where
+    T: cpal::SizedSample + cpal::FromSample<f32>,
+{
+    let channels = usize::from(config.channels);
+
+    // Pre-allocate the internal buffer to MAX_FRAMES stereo frames. We never
+    // resize it at runtime: any over-sized CPAL callback is clamped below,
+    // and the tail of `data` gets silence. This keeps the callback alloc-free.
+    let mut buffer = vec![0.0f32; MAX_FRAMES * 2];
+    let mut metering_ctx = MeteringContext::new();
+
+    let stream = device.build_output_stream(
+        config,
+        move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+            let raw_frames = data.len() / channels;
+            // Clamp to MAX_FRAMES so we never allocate. If CPAL ever hands us a
+            // larger buffer we process the head and write silence to the tail.
+            let frames = raw_frames.min(MAX_FRAMES);
+            debug_assert!(
+                raw_frames <= MAX_FRAMES,
+                "CPAL callback frames {raw_frames} exceeds MAX_FRAMES {MAX_FRAMES}"
+            );
+
+            let start = Instant::now();
+            let needed = frames * 2;
+            let mix = &mut buffer[..needed];
+            // Zero before rendering — the previous callback's contents are not
+            // meaningful input for the graph.
+            mix.fill(0.0);
+            process_audio(&state, mix);
+
+            let elapsed = start.elapsed();
+            state
+                .metering
+                .update_rt(mix, frames, elapsed, &mut metering_ctx);
+
+            write_output(data, channels, mix, frames);
+        },
+        |_err| {},
+        None,
+    )?;
+
+    Ok(stream)
+}
+
+#[inline]
+fn write_output<T: cpal::SizedSample + cpal::FromSample<f32>>(
+    data: &mut [T],
+    channels: usize,
+    output: &[f32],
+    rendered_frames: usize,
+) {
+    let silence = T::from_sample(0.0);
+    for (i, sample) in data.iter_mut().enumerate() {
+        let frame = i / channels;
+        let ch = i % channels;
+        *sample = if frame < rendered_frames && ch < 2 {
+            T::from_sample(output[frame * 2 + ch])
+        } else {
+            silence
+        };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tutti_core::compat::Mutex;
+    use tutti_core::processor::GraphProcessor;
+    use tutti_core::{MeteringManager, Ordering, TransportClock, TransportManager, TuttiNet};
+
+    /// Build a minimal processor + transport pair for callback-level tests.
+    /// Bypasses the engine builder — these tests exercise the RT callback
+    /// in isolation, not the full engine.
+    fn build_callback_state(
+        sample_rate: f64,
+    ) -> (Arc<TransportManager>, AudioCallbackState<GraphProcessor>) {
+        let transport = Arc::new(TransportManager::new(sample_rate));
+        let metering = Arc::new(MeteringManager::new(sample_rate));
+
+        let mut net = TuttiNet::new(0, 2);
+        let clock = TransportClock::new(
+            transport.tempo().clone(),
+            transport.paused().clone(),
+            sample_rate,
+        )
+        .with_seek(
+            transport.seek_target().clone(),
+            transport.seek_pending().clone(),
+        )
+        .with_loop(
+            transport.loop_enabled_flag().clone(),
+            transport.loop_start_beat_atomic().clone(),
+            transport.loop_end_beat_atomic().clone(),
+        )
+        .with_position_writeback(transport.current_beat().clone());
+        net.inner_mut().push(Box::new(clock));
+        let backend = net.backend();
+
+        // Hold the net alive for the duration of the test via a leaked arc —
+        // the backend borrows the graph processor via its inner NetBackend.
+        let _keep_net_alive: &'static Mutex<TuttiNet> = Box::leak(Box::new(Mutex::new(net)));
+
+        let processor = GraphProcessor::new(transport.clone(), backend);
+        let state = AudioCallbackState::new(processor, metering);
+        (transport, state)
+    }
+
+    #[test]
+    fn test_transport_advances_with_graph() {
+        let sample_rate = 44100.0;
+        let (transport, state) = build_callback_state(sample_rate);
+
+        transport.set_paused(false);
+        transport.set_current_beat(0.0);
+        transport.set_tempo(120.0);
+
+        let frames = 256;
+        let mut output = vec![0.0f32; frames * 2];
+        process_audio(&state, &mut output);
+
+        let expected_beat = 256.0 * (120.0 / 60.0) / 44100.0;
+        let actual_beat = transport.get_current_beat();
+        assert!(
+            (actual_beat - expected_beat).abs() < 1e-6,
+            "expected {expected_beat}, got {actual_beat}"
+        );
+    }
+
+    #[test]
+    fn test_transport_loop_wrapping() {
+        let sample_rate = 44100.0;
+        let (transport, state) = build_callback_state(sample_rate);
+
+        transport.set_paused(false);
+        transport.set_tempo(120.0);
+        transport.set_loop_range(0.0, 4.0);
+        transport.set_loop_enabled(true);
+        transport.process_commands();
+        transport.seek_target().store(3.99, Ordering::Release);
+        transport.seek_pending().store(true, Ordering::Release);
+
+        let frames = 1024;
+        let mut output = vec![0.0f32; frames * 2];
+        process_audio(&state, &mut output);
+
+        let beat = transport.get_current_beat();
+        assert!(beat < 4.0, "expected beat wrapped below 4.0, got {beat}");
+    }
+
+    /// RT-safety regression: `process_audio` must not allocate on the
+    /// audio thread. Backs the umbrella step of the RT-safety audit —
+    /// the pre-allocated `MAX_FRAMES * 2` buffer and the clamped/silenced
+    /// tail on over-sized callbacks should keep this allocation-free.
+    #[test]
+    fn process_audio_is_allocation_free() {
+        let sample_rate = 48_000.0;
+        let (transport, state) = build_callback_state(sample_rate);
+        transport.set_paused(false);
+        transport.set_tempo(120.0);
+
+        // Warm up outside the no-alloc scope — first call primes any
+        // internal state on the transport / clock.
+        let mut output = vec![0.0f32; 1024 * 2];
+        process_audio(&state, &mut output);
+
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..1_000 {
+                process_audio(&state, &mut output);
+            }
+        });
+    }
+}

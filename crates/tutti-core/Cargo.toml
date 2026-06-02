@@ -1,0 +1,82 @@
+[package]
+name = "tutti-core"
+version = "0.0.1"
+edition = "2021"
+description = "Core audio graph runtime kernel - Net/Graph, Transport, Metering, PDC"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+keywords = ["audio", "dsp", "real-time", "daw", "fundsp"]
+categories = ["multimedia::audio"]
+
+[features]
+# no_std by default. Enable std for debug thread checks and file format I/O.
+default = []
+
+# std feature: enables AudioThreadCell debug checks, fundsp file I/O,
+# and the metering subsystem (ebur128 + Mutex-based loudness meter +
+# crossbeam-channel for the metering sample pipe).
+# Does NOT include CPAL — the `tutti` umbrella crate owns the audio callback.
+std = ["fundsp/std", "tutti-midi-types/std", "dep:ebur128", "dep:crossbeam-channel"]
+
+# Individual audio format support (each pulls only its codec)
+wav = ["std", "fundsp/wav"]
+flac = ["std", "fundsp/flac"]
+mp3 = ["std", "fundsp/mp3"]
+ogg = ["std", "fundsp/ogg"]
+
+# All file formats
+files = ["wav", "flac", "mp3", "ogg"]
+
+# Optional subsystems
+midi = []
+
+# Enables bevy_asset / bevy_reflect derives on loadable types owned by sibling
+# crates (Wave in fundsp-tutti). Pure additive — no runtime cost.
+bevy_asset = ["std", "fundsp/bevy_asset"]
+
+# Enables bevy_ecs derives on the entity-as-node primitives (`AudioNode`,
+# `NodeKind`, `Volume`, `Pan`, `Mute`, `PluginParam`). Pure additive — no
+# runtime cost when off; tutti-core has no Bevy dependency unless this
+# feature is enabled. Mirrors the `bevy_asset` pattern.
+bevy_ecs = ["std", "dep:bevy_ecs", "bevy_ecs/bevy_reflect", "dep:bevy_reflect"]
+
+[dependencies]
+thiserror = { version = "2", default-features = false }
+dyn-clone = { version = "1.0", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive"] }
+
+# Audio
+fundsp = { package = "fundsp-tutti", version = "0.23.0", path = "../fundsp-tutti", default-features = false }
+
+# MIDI types (pure types from tutti-midi-types) — always included for SmpteFrameRate etc.
+tutti-midi-types = { version = "0.0.1", path = "../tutti-midi-types", default-features = false }
+
+# Shared RT primitives (AudioThreadCell, RtEventBuf).
+tutti-types = { version = "0.0.1", path = "../tutti-types" }
+
+# Lock-free (no_std compatible)
+ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
+crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
+atomic_float = { version = "1.1", default-features = false, features = ["atomic_f64"] }
+arc-swap = "1.7"
+hashbrown = { version = "0.16", default-features = false }
+parking_lot = { version = "0.12", default-features = false }
+
+# Metering (requires std — EBU R128 loudness measurement).
+# crossbeam-channel requires std::thread primitives; used only by metering.
+crossbeam-channel = { version = "0.5", optional = true }
+ebur128 = { version = "0.1", optional = true }
+
+# Bevy ECS derives — only pulled in when the `bevy_ecs` feature is enabled.
+# Pinned to the same Bevy minor used by bevy-tutti.
+bevy_ecs = { version = "0.18", default-features = false, optional = true }
+bevy_reflect = { version = "0.18", default-features = false, optional = true }
+
+[dev-dependencies]
+assert_no_alloc = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.9.0"
+insta = { version = "1.41", features = ["yaml"] }
+approx = "0.5"
+tempfile = "3.8"
+rand = "0.8"

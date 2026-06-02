@@ -1,0 +1,347 @@
+//! Shared state between butler and audio thread.
+//!
+//! All fields are atomic or lock-free. Organized into orthogonal sub-structs
+//! (playback, health, seek/loop crossfade) — one `Arc`, one allocation, but
+//! fields are grouped by concern to reduce false sharing and make the
+//! ownership story obvious.
+
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use tutti_core::AtomicF32;
+
+use super::crossfader::StreamingCrossfader;
+
+/// Playback parameters read by the audio thread every sample.
+#[repr(align(64))]
+pub struct PlaybackParams {
+    speed: AtomicF32,
+    /// 0 = forward, 1 = reverse.
+    direction: AtomicU8,
+    /// file_sample_rate / session_sample_rate. 1.0 = no conversion.
+    src_ratio: AtomicF32,
+}
+
+impl Default for PlaybackParams {
+    fn default() -> Self {
+        Self {
+            speed: AtomicF32::new(1.0),
+            direction: AtomicU8::new(0),
+            src_ratio: AtomicF32::new(1.0),
+        }
+    }
+}
+
+/// Buffer health / underrun reporting.
+#[repr(align(64))]
+pub struct BufferHealth {
+    seeking: AtomicBool,
+    underrun_count: AtomicU64,
+    /// 0-1000 representing 0.0-1.0.
+    buffer_fill_level: AtomicU32,
+}
+
+impl Default for BufferHealth {
+    fn default() -> Self {
+        Self {
+            seeking: AtomicBool::new(false),
+            underrun_count: AtomicU64::new(0),
+            buffer_fill_level: AtomicU32::new(0),
+        }
+    }
+}
+
+/// Shared state between butler and audio thread.
+pub struct RtState {
+    pub playback: PlaybackParams,
+    pub health: BufferHealth,
+    pub seek_crossfade: StreamingCrossfader,
+    pub loop_crossfade: StreamingCrossfader,
+}
+
+impl Default for RtState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RtState {
+    pub fn new() -> Self {
+        Self {
+            playback: PlaybackParams::default(),
+            health: BufferHealth::default(),
+            seek_crossfade: StreamingCrossfader::new(),
+            loop_crossfade: StreamingCrossfader::new(),
+        }
+    }
+
+    #[inline]
+    pub fn speed(&self) -> f32 {
+        self.playback.speed.load(Ordering::Acquire)
+    }
+
+    /// Clamped to 0.25..4.0.
+    pub fn set_speed(&self, speed: f32) {
+        let clamped = speed.clamp(0.25, 4.0);
+        self.playback.speed.store(clamped, Ordering::Release);
+    }
+
+    /// Current playback speed. Same as [`speed`] — kept distinct from the
+    /// raw atomic load for the audio-thread call site which reads it every
+    /// sample.
+    #[inline]
+    pub fn effective_speed(&self) -> f32 {
+        self.speed()
+    }
+
+    #[inline]
+    pub fn is_reverse(&self) -> bool {
+        self.playback.direction.load(Ordering::Acquire) == 1
+    }
+
+    pub fn set_reverse(&self, reverse: bool) {
+        self.playback
+            .direction
+            .store(u8::from(reverse), Ordering::Release);
+    }
+
+    #[inline]
+    pub fn src_ratio(&self) -> f32 {
+        self.playback.src_ratio.load(Ordering::Acquire)
+    }
+
+    pub fn set_src_ratio(&self, ratio: f32) {
+        self.playback.src_ratio.store(ratio, Ordering::Release);
+    }
+
+    #[inline]
+    pub fn is_seeking(&self) -> bool {
+        self.health.seeking.load(Ordering::Acquire)
+    }
+
+    pub fn set_seeking(&self, seeking: bool) {
+        self.health.seeking.store(seeking, Ordering::Release);
+    }
+
+    #[inline]
+    pub fn report_underrun(&self) {
+        self.health.underrun_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn take_underruns(&self) -> u64 {
+        self.health.underrun_count.swap(0, Ordering::Relaxed)
+    }
+
+    pub fn set_buffer_fill(&self, level: f32) {
+        let scaled = (level.clamp(0.0, 1.0) * 1000.0) as u32;
+        self.health
+            .buffer_fill_level
+            .store(scaled, Ordering::Relaxed);
+    }
+
+    /// 0.0 = empty, 1.0 = full. Near 0.0 means underrun risk.
+    #[inline]
+    pub fn buffer_fill(&self) -> f32 {
+        self.health.buffer_fill_level.load(Ordering::Relaxed) as f32 / 1000.0
+    }
+
+    pub fn start_seek_crossfade(&self, fadeout: Vec<(f32, f32)>, fadein: Vec<(f32, f32)>) {
+        self.seek_crossfade.start(fadeout, fadein);
+    }
+
+    #[inline]
+    pub fn is_seek_crossfading(&self) -> bool {
+        self.seek_crossfade.is_active()
+    }
+
+    pub fn next_seek_crossfade_sample(&self) -> Option<(f32, f32)> {
+        self.seek_crossfade.next_sample()
+    }
+
+    pub fn start_loop_crossfade(&self, fadeout: Vec<(f32, f32)>, fadein: Vec<(f32, f32)>) {
+        self.loop_crossfade.start(fadeout, fadein);
+    }
+
+    #[inline]
+    pub fn is_loop_crossfading(&self) -> bool {
+        self.loop_crossfade.is_active()
+    }
+
+    pub fn next_loop_crossfade_sample(&self) -> Option<(f32, f32)> {
+        self.loop_crossfade.next_sample()
+    }
+
+    pub fn clear_loop_crossfade(&self) {
+        self.loop_crossfade.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_values() {
+        let state = RtState::new();
+        assert_eq!(state.speed(), 1.0);
+        assert!(!state.is_reverse());
+        assert!(!state.is_seeking());
+    }
+
+    #[test]
+    fn test_speed_clamping() {
+        let state = RtState::new();
+
+        state.set_speed(0.1);
+        assert_eq!(state.speed(), 0.25);
+
+        state.set_speed(10.0);
+        assert_eq!(state.speed(), 4.0);
+
+        state.set_speed(2.0);
+        assert_eq!(state.speed(), 2.0);
+    }
+
+    #[test]
+    fn test_direction() {
+        let state = RtState::new();
+        assert!(!state.is_reverse());
+        state.set_reverse(true);
+        assert!(state.is_reverse());
+        state.set_reverse(false);
+        assert!(!state.is_reverse());
+    }
+
+    #[test]
+    fn test_seeking() {
+        let state = RtState::new();
+        assert!(!state.is_seeking());
+        state.set_seeking(true);
+        assert!(state.is_seeking());
+        state.set_seeking(false);
+        assert!(!state.is_seeking());
+    }
+
+    #[test]
+    fn test_underrun_reporting() {
+        let state = RtState::new();
+
+        state.report_underrun();
+        state.report_underrun();
+        state.report_underrun();
+        assert_eq!(state.take_underruns(), 3);
+        assert_eq!(state.take_underruns(), 0);
+
+        state.report_underrun();
+        assert_eq!(state.take_underruns(), 1);
+    }
+
+    #[test]
+    fn test_seek_crossfade() {
+        let state = RtState::new();
+
+        assert!(!state.is_seek_crossfading());
+        assert!(state.next_seek_crossfade_sample().is_none());
+
+        let fadeout = vec![(1.0, 1.0); 4];
+        let fadein = vec![(0.0, 0.0); 4];
+
+        state.start_seek_crossfade(fadeout, fadein);
+
+        assert!(state.is_seek_crossfading());
+
+        let sample = state.next_seek_crossfade_sample().unwrap();
+        assert!((sample.0 - 1.0).abs() < 0.01);
+
+        let sample = state.next_seek_crossfade_sample().unwrap();
+        assert!((sample.0 - 0.75).abs() < 0.01);
+
+        let sample = state.next_seek_crossfade_sample().unwrap();
+        assert!((sample.0 - 0.5).abs() < 0.01);
+
+        let sample = state.next_seek_crossfade_sample().unwrap();
+        assert!((sample.0 - 0.25).abs() < 0.01);
+
+        assert!(!state.is_seek_crossfading());
+        assert!(state.next_seek_crossfade_sample().is_none());
+    }
+
+    #[test]
+    fn test_buffer_fill_level() {
+        let state = RtState::new();
+
+        assert_eq!(state.buffer_fill(), 0.0);
+
+        state.set_buffer_fill(0.5);
+        assert!((state.buffer_fill() - 0.5).abs() < 0.01);
+
+        state.set_buffer_fill(1.0);
+        assert!((state.buffer_fill() - 1.0).abs() < 0.01);
+
+        state.set_buffer_fill(0.0);
+        assert!((state.buffer_fill() - 0.0).abs() < 0.01);
+
+        state.set_buffer_fill(-0.5);
+        assert_eq!(state.buffer_fill(), 0.0);
+
+        state.set_buffer_fill(1.5);
+        assert!((state.buffer_fill() - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_loop_crossfade() {
+        let state = RtState::new();
+
+        assert!(!state.is_loop_crossfading());
+        assert!(state.next_loop_crossfade_sample().is_none());
+
+        let fadeout = vec![(1.0, 1.0); 4];
+        let fadein = vec![(0.0, 0.0); 4];
+
+        state.start_loop_crossfade(fadeout, fadein);
+
+        assert!(state.is_loop_crossfading());
+
+        let sample = state.next_loop_crossfade_sample().unwrap();
+        assert!((sample.0 - 1.0).abs() < 0.01);
+
+        let sample = state.next_loop_crossfade_sample().unwrap();
+        assert!((sample.0 - 0.75).abs() < 0.01);
+
+        let sample = state.next_loop_crossfade_sample().unwrap();
+        assert!((sample.0 - 0.5).abs() < 0.01);
+
+        let sample = state.next_loop_crossfade_sample().unwrap();
+        assert!((sample.0 - 0.25).abs() < 0.01);
+
+        assert!(!state.is_loop_crossfading());
+        assert!(state.next_loop_crossfade_sample().is_none());
+    }
+
+    #[test]
+    fn test_loop_crossfade_clear() {
+        let state = RtState::new();
+
+        let fadeout = vec![(1.0, 1.0); 10];
+        let fadein = vec![(0.0, 0.0); 10];
+        state.start_loop_crossfade(fadeout, fadein);
+
+        assert!(state.is_loop_crossfading());
+
+        state.next_loop_crossfade_sample();
+        state.next_loop_crossfade_sample();
+
+        state.clear_loop_crossfade();
+        assert!(!state.is_loop_crossfading());
+        assert!(state.next_loop_crossfade_sample().is_none());
+    }
+
+    #[test]
+    fn test_loop_crossfade_empty_buffers() {
+        let state = RtState::new();
+
+        state.start_loop_crossfade(Vec::new(), Vec::new());
+        assert!(!state.is_loop_crossfading());
+
+        state.start_loop_crossfade(vec![(1.0, 1.0)], Vec::new());
+        assert!(!state.is_loop_crossfading());
+    }
+}

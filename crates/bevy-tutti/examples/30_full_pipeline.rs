@@ -37,8 +37,8 @@ use bevy_tutti::{
     MasterMeterLevels, NodeKind, PendingSamplerLoad, SamplerLooping, SamplerSpeed, SidechainOf,
     SidechainSources, SpawnAudioNode, TransportRes, TuttiPlugin, Volume,
 };
-use tutti::automation::{AutomationEnvelope, AutomationPoint, CurveType, LiveAutomationLane};
-use tutti::dsp::sine_hz;
+use tutti_units::automation::{AutomationEnvelope, AutomationPoint, CurveType, LiveAutomationLane};
+use bevy_tutti::core::dsp::sine_hz;
 
 #[derive(Resource, Default)]
 struct DemoTick(u32);
@@ -117,7 +117,9 @@ fn spawn_demo(mut commands: Commands, transport: Res<TransportRes>) {
     let driver = commands
         .spawn_audio_node(sine_hz::<f32>(60.0), NodeKind::Generator)
         .id();
-    commands.entity(driver).insert(SidechainOf(target));
+    commands
+        .entity(driver)
+        .insert(SidechainOf { target, port: 2 });
 
     // Pending-sampler-load illustration: with no asset present we can't
     // promote, but the queue would resolve it when the asset arrives.

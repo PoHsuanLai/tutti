@@ -35,7 +35,7 @@ use bevy_log::LogPlugin;
 use bevy_tutti::{
     AudioNode, MasterMeterLevels, NodeKind, SpawnAudioNode, TuttiGraphRes, TuttiPlugin, Volume,
 };
-use tutti::dsp::sine_hz;
+use bevy_tutti::core::dsp::sine_hz;
 
 fn main() {
     App::new()

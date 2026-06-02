@@ -12,6 +12,8 @@ bevy_ecs.workspace = true
 bevy_log.workspace = true
 bevy_asset.workspace = true
 bevy_reflect.workspace = true
+# AsyncComputeTaskPool + Task<T> for non-RT subsystem work (export, region
+# render, plugin scan, wave import, soundfont decode). See src/task.rs.
 bevy_tasks.workspace = true
 bevy_transform = { version = "0.18", optional = true }
 bevy_window = { version = "0.18", optional = true }

@@ -52,6 +52,7 @@
 mod loader;
 mod metering;
 mod transport;
+pub mod task;
 mod device_state;
 mod plugin;
 mod prelude;

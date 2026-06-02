@@ -1,30 +1,3 @@
-[workspace]
-members = [
-    "crates/tutti-asset",
-    "crates/tutti-core",
-    "crates/tutti-types",
-    "crates/tutti-midi-io",
-    "crates/tutti-sampler",
-    "crates/tutti-wavecache",
-    "crates/tutti-synth",
-    "crates/tutti-units",
-    "crates/tutti-plugin",
-    "crates/tutti-plugin-server",
-    "crates/tutti-analysis",
-    "crates/tutti-export",
-    "crates/fundsp-tutti",
-    "crates/rustysynth-tutti/rustysynth",
-    "crates/tutti-midi-types",
-    "crates/tutti-midi-runtime",
-    "crates/tutti-plugin-types",
-    "crates/tutti-vst3-host",
-    "crates/tutti-clap-host",
-    "crates/tutti-clap-test-plugin",
-    "crates/tutti-au-host",
-    "crates/tutti-vst2-host",
-]
-resolver = "2"
-
 [package]
 name = "tutti"
 version = "0.0.1"

@@ -11,21 +11,26 @@
 //! ```
 
 use bevy_app::{App, Plugin, Update};
-#[cfg(feature = "dsp")]
+// `IntoScheduleConfigs` (for `.in_set`) and the other schedule traits come in
+// via the ECS prelude; needed for the unconditional LFO spawn systems below as
+// well as the `dsp`-gated effect systems.
 use bevy_ecs::prelude::*;
 
 mod components;
 mod systems;
 
+#[allow(deprecated)]
 pub use components::AddLfo;
 #[cfg(feature = "dsp")]
+#[allow(deprecated)]
 pub use components::{AddChorus, AddCompressor, AddDelay, AddFilter, AddGate, AddReverb};
 
-pub use systems::dsp_lfo_system;
+pub use systems::{dsp_lfo_system, spawn_lfo_nodes};
 #[cfg(feature = "dsp")]
 pub use systems::{
     dsp_chorus_system, dsp_compressor_system, dsp_delay_system, dsp_filter_system,
-    dsp_gate_system, dsp_reverb_system,
+    dsp_gate_system, dsp_reverb_system, spawn_chorus_nodes, spawn_compressor_nodes,
+    spawn_delay_nodes, spawn_filter_nodes, spawn_gate_nodes, spawn_reverb_nodes,
 };
 
 /// Bevy plugin: DSP unit spawn systems.
@@ -36,23 +41,52 @@ pub struct TuttiDspPlugin;
 
 impl Plugin for TuttiDspPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, dsp_lfo_system);
+        use crate::graph::reconcile::GraphReconcileSystems;
+
+        // Register the marker + construction components for reflection. The
+        // param components are registered by `register_audio_node_types`
+        // (graph/mod.rs); here we cover the markers + LFO authored data.
+        crate::graph::register_audio_node_types(app);
+
+        // LFO: both the marker spawner and the deprecated `AddLfo` shim, in
+        // the Spawn set so the deferred `AudioNode` insert lands before the
+        // Despawn set's `Added<AudioNode>` bookkeeping.
+        app.add_systems(
+            Update,
+            (
+                spawn_lfo_nodes.in_set(GraphReconcileSystems::Spawn),
+                dsp_lfo_system.in_set(GraphReconcileSystems::Spawn),
+            ),
+        );
 
         #[cfg(feature = "dsp")]
         {
-            use crate::graph::reconcile::{
-                reconcile_reverb_params, reconcile_unit_params, GraphReconcileSystems,
-            };
+            use crate::graph::reconcile::{reconcile_reverb_params, reconcile_unit_params};
+
+            // Marker-driven spawners (preferred). In the Spawn set.
+            app.add_systems(
+                Update,
+                (
+                    spawn_compressor_nodes,
+                    spawn_gate_nodes,
+                    spawn_filter_nodes,
+                    spawn_reverb_nodes,
+                    spawn_delay_nodes,
+                    spawn_chorus_nodes,
+                )
+                    .in_set(GraphReconcileSystems::Spawn),
+            );
 
             app.add_systems(
                 Update,
                 (
-                    dsp_compressor_system,
-                    dsp_gate_system,
-                    dsp_filter_system,
-                    dsp_reverb_system,
-                    dsp_delay_system,
-                    dsp_chorus_system,
+                    // Deprecated `Add*` shim spawners, also in the Spawn set.
+                    dsp_compressor_system.in_set(GraphReconcileSystems::Spawn),
+                    dsp_gate_system.in_set(GraphReconcileSystems::Spawn),
+                    dsp_filter_system.in_set(GraphReconcileSystems::Spawn),
+                    dsp_reverb_system.in_set(GraphReconcileSystems::Spawn),
+                    dsp_delay_system.in_set(GraphReconcileSystems::Spawn),
+                    dsp_chorus_system.in_set(GraphReconcileSystems::Spawn),
                     // One generic param reconciler for every effect with
                     // `AudioUnit::set` (filter / ladder / delay / chorus /
                     // flanger / phaser / compressor / gate / limiter /

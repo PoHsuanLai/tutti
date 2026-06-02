@@ -1,4 +1,12 @@
 //! `Add*` trigger components for DSP units.
+//!
+//! **Deprecated.** These trigger structs are kept as thin shims for backward
+//! compatibility. Prefer spawning the marker components (`CompressorNode`,
+//! `FilterNode`, …) with their param components directly — see
+//! [`tutti_core::ecs`]. The shim spawn systems produce identical runtime
+//! behavior; this whole module is `#[allow(deprecated)]` so the inherent
+//! `impl`/`Default` blocks below don't warn against their own types.
+#![allow(deprecated)]
 
 use bevy_ecs::prelude::*;
 
@@ -8,6 +16,9 @@ use bevy_ecs::prelude::*;
 /// creates a `Compressor` (mono or stereo via `Compressor::mono`/`Compressor::stereo`),
 /// adds it to the graph, and inserts `AudioEmitter`.
 #[cfg(feature = "dsp")]
+#[deprecated(
+    note = "spawn `(CompressorNode, ThresholdDb(..), CompressorRatio(..), Attack(..), Release(..), GainDb(..), StereoChannels(..))` instead"
+)]
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct AddCompressor {
     pub threshold_db: f32,
@@ -69,6 +80,9 @@ impl AddCompressor {
 /// creates a `Gate` (mono or stereo via `Gate::mono`/`Gate::stereo`), adds it to
 /// the graph, and inserts `AudioEmitter`.
 #[cfg(feature = "dsp")]
+#[deprecated(
+    note = "spawn `(GateNode, ThresholdDb(..), Attack(..), Release(..), StereoChannels(..))` instead"
+)]
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct AddGate {
     pub threshold_db: f32,
@@ -126,6 +140,9 @@ impl AddGate {
 /// The `dsp_lfo_system` processes entities with `Added<AddLfo>`,
 /// creates an `LfoNode`, adds it to the graph, and inserts `AudioEmitter`.
 /// If `beat_synced` is true, the LFO is wired to the engine's transport.
+#[deprecated(
+    note = "spawn `(LfoNodeMarker, Frequency(..), ModDepth(..), LfoShapeKind::*, BeatSynced(..))` instead"
+)]
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct AddLfo {
     pub shape: crate::units::LfoShape,
@@ -178,6 +195,9 @@ impl AddLfo {
 /// and the `Frequency` / `FilterQ` / `GainDb` param components, then
 /// removes the trigger.
 #[cfg(feature = "dsp")]
+#[deprecated(
+    note = "spawn `(FilterNode, Frequency(..), FilterQ(..), GainDb(..), FilterMode::*)` instead"
+)]
 #[derive(Component, Debug, Clone, Copy)]
 pub struct AddFilter {
     pub svf_type: crate::units::SvfType,
@@ -265,6 +285,9 @@ impl AddFilter {
 /// expose post-construction setters; live wet/room/damping changes
 /// require respawning the node (the reconciler handles this).
 #[cfg(feature = "dsp")]
+#[deprecated(
+    note = "spawn `(ReverbNode, ReverbRoomSize(..), ReverbDamping(..), WetMix(..), ReverbTime(..), ReverbAlgo::*)` instead"
+)]
 #[derive(Component, Debug, Clone, Copy)]
 pub struct AddReverb {
     /// Room size in meters (10..30 typical).
@@ -291,6 +314,9 @@ impl Default for AddReverb {
 
 /// Trigger component: spawn an entity with this to add a stereo delay.
 #[cfg(feature = "dsp")]
+#[deprecated(
+    note = "spawn `(DelayNode, DelayTime(..), Feedback(..), WetMix(..), MaxDelay(..))` instead"
+)]
 #[derive(Component, Debug, Clone, Copy)]
 pub struct AddDelay {
     /// Maximum delay length in seconds — sets the buffer size.
@@ -315,6 +341,9 @@ impl Default for AddDelay {
 
 /// Trigger component: spawn an entity with this to add a stereo chorus.
 #[cfg(feature = "dsp")]
+#[deprecated(
+    note = "spawn `(ChorusNode, ModRate(..), ModDepth(..), Feedback(..), WetMix(..))` instead"
+)]
 #[derive(Component, Debug, Clone, Copy)]
 pub struct AddChorus {
     pub rate_hz: f32,

@@ -26,6 +26,7 @@
 
 use bevy_ecs::prelude::Component;
 use bevy_ecs::reflect::ReflectComponent;
+use bevy_reflect::std_traits::ReflectDefault;
 use bevy_reflect::Reflect;
 
 use crate::dsp::NodeId;
@@ -129,6 +130,91 @@ pub enum NodeKind {
     /// Caller-defined; reconcile systems fall through to `set_parameter`-style
     /// hooks if registered, otherwise skip.
     Custom,
+}
+
+// =============================================================================
+// Construction-only authored data (no `set()` at runtime)
+//
+// These carry the values the old `Add*` structs passed *at construction*
+// (stereo/mono channel split, filter mode, LFO shape, delay buffer size).
+// They are authored + Reflect like the params, but the spawn systems read
+// them only when building the unit — there is no per-frame reconcile for
+// them, because the units have no live setter for these.
+//
+// `SvfType` / `LfoShape` live in `tutti-units` (which depends on this crate),
+// so they cannot be referenced here. `FilterMode` / `LfoShapeKind` mirror them
+// 1:1; the `bevy-tutti` spawn systems map between the mirror and the real enum.
+// =============================================================================
+
+/// Whether a DSP node is built in stereo (`true`) or mono (`false`).
+///
+/// Mirrors the `stereo: bool` field the `Add*` dynamics structs carried.
+#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[reflect(Component, Default)]
+pub struct StereoChannels(pub bool);
+
+/// Maximum delay-line length in seconds — sets the delay buffer size at
+/// construction. Cannot change live (the buffer is fixed).
+#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq)]
+#[reflect(Component)]
+pub struct MaxDelay(pub f32);
+
+impl Default for MaxDelay {
+    #[inline]
+    fn default() -> Self {
+        Self(4.0)
+    }
+}
+
+/// Tutti-core mirror of `tutti_units::SvfType`. Authored on a filter entity
+/// to pick the SVF response at construction. `bevy-tutti` maps it to the real
+/// `SvfType` in the filter spawn system.
+#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[reflect(Component, Default)]
+pub enum FilterMode {
+    #[default]
+    LowPass,
+    HighPass,
+    BandPass,
+    Notch,
+    Allpass,
+    Bell,
+    LowShelf,
+    HighShelf,
+}
+
+/// Tutti-core mirror of `tutti_units::LfoShape`. Authored on an LFO entity to
+/// pick the waveform. `bevy-tutti` maps it to the real `LfoShape`.
+#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[reflect(Component, Default)]
+pub enum LfoShapeKind {
+    #[default]
+    Sine,
+    Triangle,
+    Square,
+    Sawtooth,
+    SawtoothDown,
+    Random,
+    RandomSmooth,
+}
+
+/// Beat-sync flag for an LFO. When `true`, the LFO's `Frequency` is
+/// interpreted as beats-per-cycle and it is wired to the transport.
+#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[reflect(Component, Default)]
+pub struct BeatSynced(pub bool);
+
+/// Reverberation time to -60 dB, in seconds. Construction-only for
+/// `reverb_stereo` (no live setter; reverb is crossfade-rebuilt).
+#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq)]
+#[reflect(Component)]
+pub struct ReverbTime(pub f32);
+
+impl Default for ReverbTime {
+    #[inline]
+    fn default() -> Self {
+        Self(5.0)
+    }
 }
 
 /// Linear gain component, applied to the node's primary level setter.
@@ -601,6 +687,184 @@ impl ModParam {
     pub fn is_unlayered(&self) -> bool {
         self.layers.is_empty()
     }
+}
+
+// =============================================================================
+// Node marker components (authoring surface)
+//
+// One ZST marker per known-param `NodeKind`. Each `#[require(...)]`s the param
+// components it needs (which all carry sensible `Default`s above), and exposes
+// a `KIND` const so the spawn system can insert `(Marker, Marker::KIND)`
+// together — keeping the authored marker and the by-value `NodeKind` dispatch
+// tag in lockstep.
+//
+// `AudioNode` is deliberately NOT in any `#[require]` list: it wraps a foreign
+// non-`Reflect` `NodeId` and is inserted by the spawn system *after*
+// `graph.add(unit)`. Marker (authored, Reflect) + AudioNode (runtime handle)
+// coexist on the same entity, the same shape as `AudioEmitter` /
+// `AudioPlaybackState`.
+//
+// "Must-author, no safe default" params are left OUT of `#[require]`; the spawn
+// system warns + skips if they are absent, rather than silently building with a
+// masking default. (None of the markers below currently have such a param —
+// every required param has a real Default — so all are listed.)
+// =============================================================================
+
+/// Authoring marker for a dynamics compressor node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(ThresholdDb, CompressorRatio, Attack, Release, GainDb)]
+pub struct CompressorNode;
+impl CompressorNode {
+    pub const KIND: NodeKind = NodeKind::Compressor;
+}
+
+/// Authoring marker for a noise gate node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(ThresholdDb, Attack, Release)]
+pub struct GateNode;
+impl GateNode {
+    pub const KIND: NodeKind = NodeKind::Gate;
+}
+
+/// Authoring marker for a state-variable filter node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(Frequency, FilterQ, GainDb)]
+pub struct FilterNode;
+impl FilterNode {
+    pub const KIND: NodeKind = NodeKind::Filter;
+}
+
+/// Authoring marker for a parametric EQ band node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(Frequency, FilterQ, GainDb)]
+pub struct EqBandNode;
+impl EqBandNode {
+    pub const KIND: NodeKind = NodeKind::Eq;
+}
+
+/// Authoring marker for a Moog-style ladder filter node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(Frequency, FilterQ, Drive)]
+pub struct LadderNode;
+impl LadderNode {
+    pub const KIND: NodeKind = NodeKind::Ladder;
+}
+
+/// Authoring marker for a stereo reverb node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(ReverbRoomSize, ReverbDamping, WetMix, ReverbAlgo)]
+pub struct ReverbNode;
+impl ReverbNode {
+    pub const KIND: NodeKind = NodeKind::Reverb;
+}
+
+/// Authoring marker for an FFT convolution reverb node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(WetMix)]
+pub struct ConvolutionReverbNode;
+impl ConvolutionReverbNode {
+    pub const KIND: NodeKind = NodeKind::ConvolutionReverb;
+}
+
+/// Authoring marker for a stereo delay node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(DelayTime, Feedback, WetMix)]
+pub struct DelayNode;
+impl DelayNode {
+    pub const KIND: NodeKind = NodeKind::Delay;
+}
+
+/// Authoring marker for a stereo chorus node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(ModRate, ModDepth, Feedback, WetMix)]
+pub struct ChorusNode;
+impl ChorusNode {
+    pub const KIND: NodeKind = NodeKind::Chorus;
+}
+
+/// Authoring marker for a stereo flanger node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(ModRate, ModDepth, Feedback, WetMix)]
+pub struct FlangerNode;
+impl FlangerNode {
+    pub const KIND: NodeKind = NodeKind::Flanger;
+}
+
+/// Authoring marker for a stereo phaser node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(ModRate, ModDepth, Feedback, WetMix)]
+pub struct PhaserNode;
+impl PhaserNode {
+    pub const KIND: NodeKind = NodeKind::Phaser;
+}
+
+/// Authoring marker for a waveshaping distortion node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(Drive)]
+pub struct DistortionNode;
+impl DistortionNode {
+    pub const KIND: NodeKind = NodeKind::Distortion;
+}
+
+/// Authoring marker for a lookahead limiter node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(ThresholdDb, CeilingDb, Release)]
+pub struct LimiterNode;
+impl LimiterNode {
+    pub const KIND: NodeKind = NodeKind::Limiter;
+}
+
+/// Authoring marker for a hard-clip brickwall limiter node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(CeilingDb)]
+pub struct BrickwallLimiterNode;
+impl BrickwallLimiterNode {
+    pub const KIND: NodeKind = NodeKind::BrickwallLimiter;
+}
+
+/// Authoring marker for a sample-playback node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(Volume, SamplerSpeed, SamplerLooping)]
+pub struct SamplerNode;
+impl SamplerNode {
+    pub const KIND: NodeKind = NodeKind::Sampler;
+}
+
+/// Authoring marker for a spatial (VBAP) panner node.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(Azimuth, Elevation)]
+pub struct SpatialPannerNode;
+impl SpatialPannerNode {
+    pub const KIND: NodeKind = NodeKind::SpatialPanner;
+}
+
+/// Authoring marker for an LFO modulator node.
+///
+/// Not in the B7.1 list as a "param kind" but mirrors the live `AddLfo`
+/// trigger; its required params are `Frequency` + `ModDepth`, with `LfoShapeKind`
+/// + `BeatSynced` as construction-only authored data.
+#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
+#[reflect(Component, Default)]
+#[require(Frequency, ModDepth, LfoShapeKind, BeatSynced)]
+pub struct LfoNodeMarker;
+impl LfoNodeMarker {
+    pub const KIND: NodeKind = NodeKind::Lfo;
 }
 
 #[cfg(test)]

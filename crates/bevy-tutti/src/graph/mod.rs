@@ -55,6 +55,77 @@ pub use reconcile::reconcile_convolver_params;
 #[cfg(feature = "midi")]
 pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi};
 
+/// Register every reflectable entity-as-node component (params, construction
+/// data, and authoring markers) for the type registry.
+///
+/// The `tutti-core` param components (`Volume`, `Pan`, …) and the B7 markers
+/// (`CompressorNode`, …) all derive `Reflect` but were registered nowhere;
+/// this is the single registration slot (B7 owns it). Idempotent — Bevy's
+/// `register_type` ignores duplicates, so calling it from more than one plugin
+/// `build()` is harmless.
+///
+/// `AudioNode`, `NodeKind` (the by-value dispatch key still survives), and the
+/// runtime handle/cache types are deliberately *not* registered here:
+/// `AudioNode` wraps a foreign non-`Reflect` `NodeId`. `NodeKind` is `Reflect`
+/// and is registered. The deliberately-non-`Reflect` set (AudioEmitter,
+/// PluginEmitter, TrackClipReader*, …) is owned by other duties and skipped.
+pub fn register_audio_node_types(app: &mut App) {
+    use crate::core::ecs::*;
+
+    app.register_type::<NodeKind>()
+        // Scalar params (all carry `Default`).
+        .register_type::<Volume>()
+        .register_type::<Pan>()
+        .register_type::<Mute>()
+        .register_type::<Frequency>()
+        .register_type::<FilterQ>()
+        .register_type::<GainDb>()
+        .register_type::<WetMix>()
+        .register_type::<Feedback>()
+        .register_type::<DelayTime>()
+        .register_type::<ModRate>()
+        .register_type::<ModDepth>()
+        .register_type::<ThresholdDb>()
+        .register_type::<CompressorRatio>()
+        .register_type::<Attack>()
+        .register_type::<Release>()
+        .register_type::<CeilingDb>()
+        .register_type::<Drive>()
+        .register_type::<ReverbRoomSize>()
+        .register_type::<ReverbDamping>()
+        .register_type::<ReverbAlgo>()
+        .register_type::<Azimuth>()
+        .register_type::<Elevation>()
+        .register_type::<SamplerSpeed>()
+        .register_type::<SamplerLooping>()
+        .register_type::<ModParam>()
+        // Construction-only authored data.
+        .register_type::<StereoChannels>()
+        .register_type::<MaxDelay>()
+        .register_type::<FilterMode>()
+        .register_type::<LfoShapeKind>()
+        .register_type::<BeatSynced>()
+        .register_type::<ReverbTime>()
+        // Authoring markers.
+        .register_type::<CompressorNode>()
+        .register_type::<GateNode>()
+        .register_type::<FilterNode>()
+        .register_type::<EqBandNode>()
+        .register_type::<LadderNode>()
+        .register_type::<ReverbNode>()
+        .register_type::<ConvolutionReverbNode>()
+        .register_type::<DelayNode>()
+        .register_type::<ChorusNode>()
+        .register_type::<FlangerNode>()
+        .register_type::<PhaserNode>()
+        .register_type::<DistortionNode>()
+        .register_type::<LimiterNode>()
+        .register_type::<BrickwallLimiterNode>()
+        .register_type::<SamplerNode>()
+        .register_type::<SpatialPannerNode>()
+        .register_type::<LfoNodeMarker>();
+}
+
 /// Bevy plugin: graph reconciliation pipeline.
 ///
 /// Runs the four-phase reconcile cycle every `Update`: `Spawn` → `Params`

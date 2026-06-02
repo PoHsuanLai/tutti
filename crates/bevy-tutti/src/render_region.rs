@@ -29,10 +29,11 @@
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
-use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
+use bevy_tasks::{AsyncComputeTaskPool, Task};
 use std::sync::Arc;
 
 use crate::NodeId;
+use crate::task::poll_task;
 use crate::core::dsp::Net;
 use crate::core::{AudioUnit, OfflineTransport, OfflineTransportConfig, SampleRate, TransportReader};
 use tutti_export::{Error as ExportError, Rendered};
@@ -265,9 +266,10 @@ pub fn region_render_poll_system(
     mut query: Query<(Entity, &mut RegionRenderInProgress)>,
 ) {
     for (entity, mut render) in query.iter_mut() {
-        // Non-blocking poll of the off-thread render task (same pattern as the
-        // STFT task poll in dawai-spectral). `None` → still running.
-        let Some(result) = block_on(future::poll_once(&mut render.task)) else {
+        // Non-blocking poll of the off-thread render task via the B0 helper
+        // (same convention every Tutti subsystem follows). `None` → still
+        // running; poll again next frame.
+        let Some(result) = poll_task(&mut render.task) else {
             continue;
         };
         match result {

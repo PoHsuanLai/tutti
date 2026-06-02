@@ -18,21 +18,43 @@
 //!
 //! The in-flight imports themselves are tracked by [`WaveImportQueue`].
 //! It mirrors what dawai's `graph_sync` was doing — a `Vec` of
-//! `(path, Entity, ImportHandle)` polled each frame — but lifted up so
+//! `(path, Entity, <in-flight job>)` polled each frame — but lifted up so
 //! every Bevy app that wants the same shape doesn't reinvent it. Callers
 //! that already have a `Handle<WaveAsset>` from `AssetServer::load(...)`
 //! never need to touch the queue at all.
+//!
+//! The decode+peaks job runs on Bevy's [`AsyncComputeTaskPool`] (one
+//! [`Task`] per import), draining via [`crate::task::poll_task`] — the
+//! same one-shot non-RT convention documented in [`crate::task`]. (The
+//! sampler butler/streaming thread is RT disk streaming and stays a tutti
+//! thread; this queue is only the one-shot import/decode of the wave plus
+//! its level-0 peaks.)
+//!
+//! [`AsyncComputeTaskPool`]: bevy_tasks::AsyncComputeTaskPool
+
+use std::sync::Arc;
 
 use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
+use bevy_tasks::{AsyncComputeTaskPool, Task};
 
 use crate::core::ecs::{AudioNode, NodeKind, SamplerLooping, SamplerSpeed, Volume};
-use crate::core::WaveAsset;
-use crate::sampler::file::ImportHandle;
+use crate::core::{Wave, WaveAsset};
 use crate::sampler::SamplerUnit;
+use crate::task::poll_task;
 
 use super::reconcile::GraphDirty;
 use crate::resources::TuttiGraphRes;
+
+/// Level-0 waveform peaks (256 samples per peak, min/max pairs) — the same
+/// shape tutti-sampler's `PeakData` alias names. Not re-exported publicly
+/// from tutti-sampler, so spelled concretely here.
+type PeakData = Vec<(f32, f32)>;
+
+/// Output of a finished wave import: the decoded wave (shared `Arc`, ready
+/// to hand to [`SamplerUnit`]) and its final level-0 peaks. Matches what
+/// the old `ImportHandle::progress() → ImportStatus::Complete` produced.
+type WaveLoad = Result<(Arc<Wave>, PeakData), String>;
 
 /// "When this asset is loaded, build a `SamplerUnit` and add it to the graph."
 ///
@@ -80,24 +102,46 @@ impl PendingSamplerLoad {
     }
 }
 
-/// Tracks in-flight `crate::sampler::file::ImportHandle` background loads
-/// initiated outside the Bevy asset system (e.g. when the host already has
-/// a path string but wants the same `WaveAsset` end state).
+/// Tracks in-flight host-initiated wave loads — decode + level-0 peaks run
+/// on the [`AsyncComputeTaskPool`] — initiated outside the Bevy asset system
+/// (e.g. when the host already has a path string but wants the same
+/// `WaveAsset` end state).
 ///
-/// Each entry is `(path, Entity, ImportHandle)` — `path` is informational
+/// Each entry is `(path, Entity, Task<WaveLoad>)` — `path` is informational
 /// (used for de-duplication and logging), `Entity` is where the resulting
 /// `Handle<WaveAsset>` will be applied. [`poll_wave_imports`] drains the
 /// queue: completed imports become `Handle<WaveAsset>` insertions on the
 /// tracked entity (the entity should already carry a [`PendingSamplerLoad`]
 /// or anything else that consumes a wave handle).
+///
+/// [`AsyncComputeTaskPool`]: bevy_tasks::AsyncComputeTaskPool
 #[derive(Resource, Default)]
 pub struct WaveImportQueue {
-    pub imports: Vec<(String, Entity, ImportHandle)>,
+    pub imports: Vec<(String, Entity, Task<WaveLoad>)>,
 }
 
 impl WaveImportQueue {
-    pub fn start(&mut self, path: String, entity: Entity, handle: ImportHandle) {
-        self.imports.push((path, entity, handle));
+    /// Spawn a background decode+peaks job for `path` on the
+    /// [`AsyncComputeTaskPool`] and track it against `entity`. The job is
+    /// the same blocking work the old `tutti-load-wave` std::thread did —
+    /// [`Wave::load_with_peaks`] — minus the incremental progress/peak
+    /// channels (no consumer needs streaming peaks during a host import).
+    ///
+    /// [`AsyncComputeTaskPool`]: bevy_tasks::AsyncComputeTaskPool
+    pub fn start(&mut self, path: String, entity: Entity) {
+        let load_path = path.clone();
+        let task = AsyncComputeTaskPool::get().spawn(async move {
+            Wave::load_with_peaks(
+                &load_path,
+                |_progress| {},
+                |_peaks| {},
+                |_total_frames, _sample_rate| {},
+                |_samples| {},
+            )
+            .map(|(wave, peaks)| (Arc::new(wave), peaks))
+            .map_err(|e| e.to_string())
+        });
+        self.imports.push((path, entity, task));
     }
 
     pub fn is_importing(&self, path: &str) -> bool {
@@ -131,9 +175,14 @@ pub fn poll_wave_imports(
     mut audio_assets: ResMut<Assets<WaveAsset>>,
     mut pending: Query<&mut PendingSamplerLoad>,
 ) {
-    queue.imports.retain_mut(|(path, entity, handle)| {
-        match handle.progress() {
-            crate::sampler::file::ImportStatus::Complete { wave, .. } => {
+    queue.imports.retain_mut(|(path, entity, task)| {
+        let Some(result) = poll_task(task) else {
+            return true;
+        };
+        match result {
+            // `peaks` is discarded here exactly as the old `ImportStatus::Complete { wave, .. }`
+            // arm did — `promote_pending_samplers` only needs the `Arc<Wave>` to build the unit.
+            Ok((wave, _peaks)) => {
                 let bevy_handle = audio_assets.add(WaveAsset(wave));
                 if let Ok(mut pending_load) = pending.get_mut(*entity) {
                     pending_load.wave = bevy_handle;
@@ -144,14 +193,12 @@ pub fn poll_wave_imports(
                         entity
                     );
                 }
-                false
             }
-            crate::sampler::file::ImportStatus::Failed(e) => {
+            Err(e) => {
                 bevy_log::error!("poll_wave_imports: '{}' failed: {}", path, e);
-                false
             }
-            _ => true,
         }
+        false
     });
 }
 
@@ -186,6 +233,7 @@ pub fn promote_pending_samplers(
         let id = graph.0.add(unit);
         dirty.0 = true;
 
+        // TODO(B7): spawn SamplerNode marker once it lands
         commands
             .entity(entity)
             .remove::<PendingSamplerLoad>()

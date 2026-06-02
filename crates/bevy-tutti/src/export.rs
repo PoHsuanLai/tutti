@@ -3,8 +3,10 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
+use bevy_tasks::{AsyncComputeTaskPool, Task};
 
 use crate::resources::{AudioConfig, TuttiGraphRes};
+use crate::task::poll_task;
 
 /// Trigger component: spawn an entity with this to start an offline export.
 ///
@@ -55,13 +57,18 @@ impl StartExport {
     }
 }
 
-/// In-flight offline export. Holds the upstream handle that the
-/// `export_poll_system` polls each frame.
+/// In-flight offline export. Holds the `AsyncComputeTaskPool` task that
+/// the `export_poll_system` drains each frame, plus a crossbeam receiver
+/// for the latest `(Phase, progress)` reported by the running job.
 ///
-/// Not `Reflect`: the export `Handle` is foreign to `bevy_reflect`.
+/// Not `Reflect`: the `Task` and the export result type are foreign to
+/// `bevy_reflect`.
 #[derive(Component)]
 pub struct ExportInProgress {
-    pub(crate) handle: tutti_export::Handle<tutti_export::Written>,
+    pub(crate) task: Task<Result<tutti_export::Written, tutti_export::Error>>,
+    pub(crate) progress_rx: crossbeam_channel::Receiver<(tutti_export::Phase, f32)>,
+    /// Latest progress observed by the poll system, if any.
+    pub last_progress: Option<(tutti_export::Phase, f32)>,
 }
 
 #[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
@@ -100,14 +107,28 @@ pub fn export_start_system(
             builder = builder.normalize(normalization);
         }
 
-        let handle = builder.to_file(&start.path).spawn();
+        // Build the same `Run<Written>` job, then execute its blocking
+        // terminal on the AsyncComputeTaskPool instead of tutti's own
+        // std::thread. `run_with` forwards each `(Phase, progress)` event
+        // over a crossbeam channel so the poll system can surface it.
+        let run = builder.to_file(&start.path);
+        let (tx, progress_rx) = crossbeam_channel::bounded::<(tutti_export::Phase, f32)>(64);
+        let task = AsyncComputeTaskPool::get().spawn(async move {
+            run.run_with(move |phase, progress| {
+                let _ = tx.try_send((phase, progress));
+            })
+        });
 
         bevy_log::info!("Export started: {}", start.path.display());
 
         commands
             .entity(entity)
             .remove::<StartExport>()
-            .insert(ExportInProgress { handle });
+            .insert(ExportInProgress {
+                task,
+                progress_rx,
+                last_progress: None,
+            });
     }
 }
 
@@ -116,15 +137,20 @@ pub fn export_poll_system(
     mut query: Query<(Entity, &mut ExportInProgress)>,
 ) {
     for (entity, mut export) in query.iter_mut() {
-        match export.handle.poll() {
-            tutti_export::State::Done(_written) => {
+        // Drain any pending progress events before checking completion.
+        while let Ok(p) = export.progress_rx.try_recv() {
+            export.last_progress = Some(p);
+        }
+
+        match poll_task(&mut export.task) {
+            Some(Ok(_written)) => {
                 bevy_log::info!("Export complete (entity {entity:?})");
                 commands
                     .entity(entity)
                     .remove::<ExportInProgress>()
                     .insert(ExportComplete);
             }
-            tutti_export::State::Failed(error) => {
+            Some(Err(error)) => {
                 bevy_log::error!("Export failed (entity {entity:?}): {error}");
                 commands
                     .entity(entity)
@@ -133,7 +159,7 @@ pub fn export_poll_system(
                         error: error.to_string(),
                     });
             }
-            tutti_export::State::Running { .. } | tutti_export::State::Pending => {}
+            None => {}
         }
     }
 }

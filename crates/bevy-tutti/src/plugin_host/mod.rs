@@ -10,6 +10,7 @@ use bevy_ecs::prelude::*;
 
 mod crash;
 mod editor;
+mod scan;
 
 pub use crash::plugin_crash_detect_system;
 pub use editor::{
@@ -17,6 +18,10 @@ pub use editor::{
     plugin_editor_open_system, plugin_editor_resize_request_system,
     plugin_editor_window_close_system, plugin_editor_window_resize_system, ClosePluginEditor,
     OpenPluginEditor, PendingPluginEditor, PluginEditorOpen, PluginEmitter,
+};
+pub use scan::{
+    poll_plugin_scan, trigger_plugin_scan, InFlightScan, PluginScanConfig, PluginsScanned,
+    RescanPlugins,
 };
 
 /// Bevy plugin: plugin editor lifecycle + crash detection + plugin
@@ -45,8 +50,16 @@ impl Plugin for TuttiHostingPlugin {
         // after `add_plugins(TuttiHostingPlugin)`.
         let default_db_path = std::path::PathBuf::from(".dawai-plugins.json");
         let config = tutti_plugin::catalog::PluginsConfig::new(default_db_path, Vec::new());
-        let plugins = tutti_plugin::catalog::Plugins::empty(config);
+        let plugins = tutti_plugin::catalog::Plugins::empty(config.clone());
         app.insert_resource(crate::resources::PluginsRes::new(plugins));
+
+        // Async scan path: config mirrors the default catalog (apps that
+        // override `PluginsRes` should overwrite `PluginScanConfig` to
+        // match), an empty in-flight slot, and the rescan messages.
+        app.insert_resource(PluginScanConfig(config));
+        app.init_resource::<InFlightScan>();
+        app.add_message::<RescanPlugins>();
+        app.add_message::<PluginsScanned>();
 
         app.add_systems(
             Update,
@@ -59,6 +72,8 @@ impl Plugin for TuttiHostingPlugin {
                 plugin_editor_window_resize_system.after(plugin_editor_resize_request_system),
                 plugin_editor_window_close_system,
                 plugin_crash_detect_system,
+                trigger_plugin_scan,
+                poll_plugin_scan.after(trigger_plugin_scan),
             ),
         );
     }

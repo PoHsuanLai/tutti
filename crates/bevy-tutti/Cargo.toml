@@ -12,6 +12,7 @@ bevy_ecs.workspace = true
 bevy_log.workspace = true
 bevy_asset.workspace = true
 bevy_reflect.workspace = true
+bevy_tasks.workspace = true
 bevy_transform = { version = "0.18", optional = true }
 bevy_window = { version = "0.18", optional = true }
 
@@ -32,6 +33,9 @@ objc2-foundation = { version = "0.3", optional = true, features = ["NSNotificati
 # reconcile systems that translate component changes into graph ops.
 tutti = { path = "../tutti", features = ["bevy_asset", "bevy_ecs"] }
 tutti-asset = { path = "../tutti/crates/tutti-asset", features = ["std"] }
+# Decode-once wave cache (Bevy-native). Format features wired through this
+# crate's wav/mp3/flac/ogg features above.
+tutti-wavecache = { path = "../tutti/crates/tutti-wavecache", default-features = false }
 
 # Error handling
 thiserror.workspace = true
@@ -51,12 +55,12 @@ spatial = ["tutti/dsp", "bevy_transform"]
 # FFT convolution reverb
 convolution = ["tutti/convolution"]
 
-# Audio formats (aligned with tutti)
-wav = ["tutti/wav"]
-flac = ["tutti/flac"]
-mp3 = ["tutti/mp3"]
-ogg = ["tutti/ogg"]
-files = ["tutti/files"]
+# Audio formats (aligned with tutti + the wave cache decoder)
+wav = ["tutti/wav", "tutti-wavecache/wav"]
+flac = ["tutti/flac", "tutti-wavecache/flac"]
+mp3 = ["tutti/mp3", "tutti-wavecache/mp3"]
+ogg = ["tutti/ogg", "tutti-wavecache/ogg"]
+files = ["tutti/files", "tutti-wavecache/files"]
 
 # MIDI (aligned with tutti)
 midi = ["tutti/midi"]

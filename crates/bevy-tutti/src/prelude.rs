@@ -8,6 +8,9 @@ pub use crate::loader::{
     TuttiLoader, TuttiLoaderError, TuttiStreamingLoader, TuttiStreamingLoaderError,
 };
 pub use tutti::core::WaveAsset;
+// Decode-once wave cache (Bevy-native): the single shared `Arc<Wave>` source
+// for playback, analysis, and the offline render.
+pub use tutti_wavecache::{poll_wave_cache, WaveCache, WaveCachePlugin, WaveState};
 #[cfg(feature = "soundfont")]
 pub use tutti::synth::SoundFontAsset;
 #[cfg(feature = "sampler")]
@@ -136,7 +139,7 @@ pub use crate::auditioner::{
 
 #[cfg(feature = "sampler")]
 pub use crate::track_clip_reader::{
-    ClipCommand, ClipSampler, ClipSpec, SlotId, TrackClipReaderHandle, TrackClipReaderNode,
+    ClipCommand, ClipSpec, SlotId, TrackClipReaderHandle, TrackClipReaderNode,
     TrackClipReaderRef, TrackClipReaderUnit,
 };
 

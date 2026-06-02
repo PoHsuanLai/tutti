@@ -242,5 +242,9 @@ impl Plugin for TuttiPlugin {
         app.add_plugins(TuttiAnalysisPlugin);
         #[cfg(feature = "export")]
         app.add_plugins((TuttiExportPlugin, crate::render_region::TuttiRegionRenderPlugin));
+
+        // Decode-once wave cache: one Arc<Wave> per file, shared by playback,
+        // analysis, and the offline render. Decodes off-thread.
+        app.add_plugins(tutti_wavecache::WaveCachePlugin);
     }
 }

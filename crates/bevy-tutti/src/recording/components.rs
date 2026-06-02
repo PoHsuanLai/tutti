@@ -1,13 +1,14 @@
+use bevy_ecs::message::Message;
 use bevy_ecs::prelude::*;
 
-/// Trigger component: spawn an entity with this to start recording on a channel.
+/// Fire-and-forget request to start recording on a channel.
 ///
-/// The `recording_start_system` processes entities with `Added<StartRecording>`,
-/// calls `engine.sampler().start_recording()`, replaces this component with
-/// `RecordingActive`, and emits a `RecordingEvent::Started`.
+/// `recording_start_system` reads each `StartRecording`, calls
+/// `engine.sampler().start_recording()`, and spawns an entity carrying
+/// `RecordingActive`.
 ///
 /// Not `Reflect`: `Source` / `Mode` are foreign types from `tutti-sampler`.
-#[derive(Component, Debug, Clone, Copy)]
+#[derive(Message, Debug, Clone, Copy)]
 pub struct StartRecording {
     pub channel_index: usize,
     pub source: crate::sampler::capture::Source,
@@ -29,12 +30,12 @@ impl StartRecording {
     }
 }
 
-/// Trigger component: spawn or insert on an entity to stop recording on a channel.
+/// Fire-and-forget request to stop recording on a channel.
 ///
-/// The `recording_stop_system` processes entities with `Added<StopRecording>`,
-/// calls `engine.sampler().stop_recording()`, removes `RecordingActive`,
-/// and emits a `RecordingEvent::Stopped` with the recorded data.
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// `recording_stop_system` reads each `StopRecording`, calls
+/// `engine.sampler().stop_recording()`, removes the matching
+/// `RecordingActive`, and spawns the `RecordingResult`.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StopRecording {
     pub channel_index: usize,
 }

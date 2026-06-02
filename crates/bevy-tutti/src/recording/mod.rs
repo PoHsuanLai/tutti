@@ -13,6 +13,8 @@ pub struct TuttiRecordingPlugin;
 
 impl Plugin for TuttiRecordingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (recording_start_system, recording_stop_system));
+        app.add_message::<StartRecording>()
+            .add_message::<StopRecording>()
+            .add_systems(Update, (recording_start_system, recording_stop_system));
     }
 }

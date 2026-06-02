@@ -40,7 +40,9 @@ pub use reconcile::reconcile_plugin_params;
 pub use reconcile::{reconcile_reverb_params, reconcile_unit_params};
 
 pub use routing::{reconcile_audio_routing, AudioFedBy, AudioFeedsTo};
-pub use sidechain::{reconcile_sidechain_links, SidechainOf, SidechainSources};
+pub use sidechain::{
+    reconcile_sidechain_links, reconcile_sidechain_remove, SidechainOf, SidechainSources,
+};
 
 #[cfg(feature = "sampler")]
 pub use pending_load::{
@@ -158,11 +160,17 @@ impl Plugin for TuttiGraphPlugin {
         #[cfg(feature = "plugin")]
         app.add_systems(Update, param_epoch::bump_param_epoch_plugin);
 
+        // Graph-node removal is handled by an `On<Remove, AudioNode>`
+        // observer (fires at command-flush, reads the still-present NodeId).
+        // Sidechain teardown is handled by an `On<Remove, SidechainOf>`
+        // observer; only the *add* half stays a Spawn-set system.
+        app.add_observer(reconcile_node_despawn)
+            .add_observer(reconcile_sidechain_remove);
+
         app.add_systems(
             Update,
             (
                 reconcile_params.in_set(GraphReconcileSystems::Params),
-                reconcile_node_despawn.in_set(GraphReconcileSystems::Despawn),
                 commit_graph.in_set(GraphReconcileSystems::Commit),
                 reconcile_sidechain_links.in_set(GraphReconcileSystems::Spawn),
                 reconcile_audio_routing.in_set(GraphReconcileSystems::Spawn),

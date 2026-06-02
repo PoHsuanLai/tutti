@@ -46,18 +46,16 @@ pub struct MidiReceiver {
     pub channel: Option<u8>,
 }
 
-/// One-shot trigger: connect to a MIDI input device by name (partial match).
+/// Fire-and-forget request: connect to a MIDI input device by name (partial match).
 #[cfg(feature = "midi-hardware")]
-#[derive(Component, Debug, Clone, Reflect)]
-#[reflect(Component, Clone)]
+#[derive(bevy_ecs::message::Message, Debug, Clone)]
 pub struct ConnectMidiDevice {
     pub name: String,
 }
 
-/// One-shot trigger: disconnect a specific MIDI input device by name.
+/// Fire-and-forget request: disconnect a specific MIDI input device by name.
 #[cfg(feature = "midi-hardware")]
-#[derive(Component, Debug, Clone, Reflect)]
-#[reflect(Component, Clone)]
+#[derive(bevy_ecs::message::Message, Debug, Clone)]
 pub struct DisconnectMidiDevice {
     pub name: String,
 }

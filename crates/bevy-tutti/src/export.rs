@@ -1,6 +1,7 @@
-//! Offline graph export: `StartExport` trigger → file via tutti's exporter.
+//! Offline graph export: `StartExport` message → file via tutti's exporter.
 
 use bevy_app::{App, Plugin, Update};
+use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
@@ -8,15 +9,15 @@ use bevy_tasks::{AsyncComputeTaskPool, Task};
 use crate::resources::{AudioConfig, TuttiGraphRes};
 use crate::task::poll_task;
 
-/// Trigger component: spawn an entity with this to start an offline export.
+/// Fire-and-forget request to start an offline export.
 ///
-/// The `export_start_system` processes entities with `Added<StartExport>`,
-/// builds a `GraphExport`, calls `.to_file(path).spawn()`, and replaces
-/// this component with `ExportInProgress`.
+/// `export_start_system` reads each `StartExport`, builds a `GraphExport`,
+/// calls `.to_file(path)`, and spawns an entity carrying `ExportInProgress`
+/// to track the in-flight job.
 ///
 /// Not `Reflect`: `AudioFormat` / `Normalize` are foreign types from
 /// `tutti-export`.
-#[derive(Component, Debug, Clone)]
+#[derive(Message, Debug, Clone)]
 pub struct StartExport {
     pub path: std::path::PathBuf,
     pub duration_seconds: Option<f64>,
@@ -85,12 +86,12 @@ pub fn export_start_system(
     mut commands: Commands,
     graph: Option<Res<TuttiGraphRes>>,
     config: Option<Res<AudioConfig>>,
-    query: Query<(Entity, &StartExport), Added<StartExport>>,
+    mut events: MessageReader<StartExport>,
 ) {
     let Some(graph) = graph else { return };
     let Some(config) = config else { return };
 
-    for (entity, start) in query.iter() {
+    for start in events.read() {
         let net = graph.0.clone_net();
         let mut builder = tutti_export::Export::graph(net, config.sample_rate);
 
@@ -121,14 +122,11 @@ pub fn export_start_system(
 
         bevy_log::info!("Export started: {}", start.path.display());
 
-        commands
-            .entity(entity)
-            .remove::<StartExport>()
-            .insert(ExportInProgress {
-                task,
-                progress_rx,
-                last_progress: None,
-            });
+        commands.spawn(ExportInProgress {
+            task,
+            progress_rx,
+            last_progress: None,
+        });
     }
 }
 
@@ -171,6 +169,7 @@ impl Plugin for TuttiExportPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<ExportComplete>()
             .register_type::<ExportFailed>();
+        app.add_message::<StartExport>();
         app.add_systems(Update, (export_start_system, export_poll_system));
     }
 }

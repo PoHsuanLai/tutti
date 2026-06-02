@@ -62,12 +62,16 @@ pub struct PendingPluginEditor {
 #[reflect(Component, Default)]
 pub struct OpenPluginEditor;
 
-/// Trigger component: insert on an entity with `PluginEmitter` +
+/// Entity-targeted event: trigger on an entity with `PluginEmitter` +
 /// `PluginEditorOpen` to close the plugin's native GUI editor.
-/// Automatically removed after processing.
-#[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
-#[reflect(Component, Default)]
-pub struct ClosePluginEditor;
+///
+/// Handled by the `close_editor_observer`. Fire via
+/// `commands.trigger(CloseEditor { entity })` or
+/// `commands.entity(e).trigger(CloseEditor { entity: e })`.
+#[derive(EntityEvent, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CloseEditor {
+    pub entity: Entity,
+}
 
 /// Ticks `editor_idle()` on all plugins that have `PluginEditorOpen`.
 ///
@@ -339,32 +343,37 @@ pub fn plugin_editor_resize_request_system(
     }
 }
 
-/// Closes plugin editors for entities with `ClosePluginEditor` trigger.
-pub fn plugin_editor_close_system(
+/// Observer: closes a plugin editor when `CloseEditor` is triggered on
+/// the plugin entity.
+///
+/// Reads `PluginEmitter` + `PluginEditorOpen` off the targeted entity,
+/// calls the native `close_editor()`, despawns the editor window, and
+/// removes `PluginEditorOpen`. No graph interaction.
+pub fn close_editor_observer(
+    close: On<CloseEditor>,
     _main_thread: NonSend<PluginEditorMainThread>,
     mut commands: Commands,
-    query: Query<(Entity, &PluginEmitter, &PluginEditorOpen), Added<ClosePluginEditor>>,
+    query: Query<(&PluginEmitter, &PluginEditorOpen)>,
 ) {
-    for (entity, emitter, editor) in query.iter() {
-        emitter.handle.close_editor();
-        commands.entity(editor.editor_window).try_despawn();
-        bevy_log::info!(
-            "Plugin '{}' editor closed (entity {entity:?})",
-            emitter.handle.name()
-        );
-        commands
-            .entity(entity)
-            .remove::<ClosePluginEditor>()
-            .remove::<PluginEditorOpen>();
-    }
+    let entity = close.event_target();
+    let Ok((emitter, editor)) = query.get(entity) else {
+        return;
+    };
+    emitter.handle.close_editor();
+    commands.entity(editor.editor_window).try_despawn();
+    bevy_log::info!(
+        "Plugin '{}' editor closed (entity {entity:?})",
+        emitter.handle.name()
+    );
+    commands.entity(entity).remove::<PluginEditorOpen>();
 }
 
 /// Handles the OS close button on plugin editor windows.
 ///
 /// When a plugin editor window receives a `WindowCloseRequested`, this routes
-/// the close through `ClosePluginEditor` on the plugin entity (so the native
-/// `close_editor()` call runs before the window despawns) and removes the
-/// `ClosingWindow` marker so Bevy's default `close_when_requested` doesn't
+/// the close through a `CloseEditor` trigger on the plugin entity (so the
+/// native `close_editor()` call runs before the window despawns) and removes
+/// the `ClosingWindow` marker so Bevy's default `close_when_requested` doesn't
 /// despawn the window out from under us.
 pub fn plugin_editor_window_close_system(
     mut commands: Commands,
@@ -377,7 +386,7 @@ pub fn plugin_editor_window_close_system(
                 commands
                     .entity(event.window)
                     .remove::<bevy_window::ClosingWindow>();
-                commands.entity(entity).insert(ClosePluginEditor);
+                commands.trigger(CloseEditor { entity });
             }
         }
     }

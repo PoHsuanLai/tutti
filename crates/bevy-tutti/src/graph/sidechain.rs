@@ -9,11 +9,12 @@
 //! [`SidechainSources`] is its automatic relationship-target counterpart
 //! on the target side.
 //!
-//! The reconcile system [`reconcile_sidechain_links`] runs in
+//! The add system [`reconcile_sidechain_links`] runs in
 //! [`GraphReconcileSystems::Spawn`]: on `Added<SidechainOf>` it looks up
 //! both entities' [`AudioNode`] and calls
-//! `graph.connect(src_node, 0, target_node, port)`. On
-//! `RemovedComponents<SidechainOf>` it disconnects the same port.
+//! `graph.connect(src_node, 0, target_node, port)`. Removal is handled by
+//! the [`reconcile_sidechain_remove`] observer (`On<Remove, SidechainOf>`),
+//! which disconnects the same port.
 //!
 //! Pure graph-op binding — no DAW vocabulary. The DAW concept of "this
 //! compressor's sidechain follows this kick drum's bus" is built on
@@ -95,31 +96,23 @@ impl SidechainSources {
     }
 }
 
-/// Reconciles sidechain wiring into graph operations.
+/// Reconciles new sidechain wiring into graph operations (add half).
 ///
 /// `Added<SidechainOf>`: looks up `(src_node, target_node)` from each side's
 /// `AudioNode` component and calls `graph.connect(src_node, 0, target_node,
 /// port)`, where `port` is the sidechain bus's first input index declared on
 /// the relationship (the target's main input channel count).
-/// `RemovedComponents<SidechainOf>`: disconnects the same port on the target.
 ///
-/// We track `(src_entity, (target_entity, port))` in a [`Local`] map keyed by
-/// source entity so we know which target/port to disconnect from when the
-/// component disappears (the despawn path can't read the removed value).
+/// Stays a [`GraphReconcileSystems::Spawn`]-set system because it needs both
+/// endpoints' `AudioNode` to exist this frame. The *removal* half lives in
+/// [`reconcile_sidechain_remove`], an `On<Remove, SidechainOf>` observer.
 pub fn reconcile_sidechain_links(
-    mut tracked: Local<std::collections::HashMap<Entity, (Entity, usize)>>,
     graph: Option<ResMut<TuttiGraphRes>>,
     mut dirty: ResMut<GraphDirty>,
     added: Query<(Entity, &SidechainOf), Added<SidechainOf>>,
     nodes: Query<&AudioNode>,
-    mut removed: RemovedComponents<SidechainOf>,
 ) {
-    let Some(mut graph) = graph else {
-        for entity in removed.read() {
-            tracked.remove(&entity);
-        }
-        return;
-    };
+    let Some(mut graph) = graph else { return };
 
     for (src_entity, link) in added.iter() {
         let target_entity = link.target;
@@ -155,25 +148,39 @@ pub fn reconcile_sidechain_links(
             continue;
         }
         graph.0.connect(src_node.0, 0, target_node.0, port);
-        tracked.insert(src_entity, (target_entity, port));
         dirty.0 = true;
     }
+}
 
-    for src_entity in removed.read() {
-        let Some((target_entity, port)) = tracked.remove(&src_entity) else {
-            continue;
-        };
-        let Ok(target_node) = nodes.get(target_entity) else {
-            // Target despawned along with the link; nothing to disconnect.
-            continue;
-        };
-        if graph.0.inputs(target_node.0) <= port {
-            // We never connected (target had no such input); nothing to undo.
-            continue;
-        }
-        graph.0.disconnect(target_node.0, port);
-        dirty.0 = true;
+/// Observer: tears down a sidechain edge when its `SidechainOf` is removed
+/// (including via despawn).
+///
+/// `On<Remove, SidechainOf>` fires *before* the value is dropped, so the
+/// `{target, port}` it carried is still readable off the source entity — no
+/// local `(src, (target, port))` map needed. Reads the target's `AudioNode`
+/// and calls `graph.disconnect(target_node, port)`. Only mutates the graph +
+/// sets `GraphDirty`; the per-frame `commit_graph` (Commit phase) commits.
+pub fn reconcile_sidechain_remove(
+    remove: On<Remove, SidechainOf>,
+    links: Query<&SidechainOf>,
+    nodes: Query<&AudioNode>,
+    graph: Option<ResMut<TuttiGraphRes>>,
+    mut dirty: ResMut<GraphDirty>,
+) {
+    let src_entity = remove.event_target();
+    let Ok(link) = links.get(src_entity) else { return };
+    let Some(mut graph) = graph else { return };
+
+    let Ok(target_node) = nodes.get(link.target) else {
+        // Target despawned along with the link; nothing to disconnect.
+        return;
+    };
+    if graph.0.inputs(target_node.0) <= link.port {
+        // We never connected (target had no such input); nothing to undo.
+        return;
     }
+    graph.0.disconnect(target_node.0, link.port);
+    dirty.0 = true;
 }
 
 #[cfg(test)]
@@ -200,6 +207,7 @@ mod tests {
             )
                 .chain(),
         );
+        app.add_observer(reconcile_sidechain_remove);
         app.add_systems(
             bevy_app::Update,
             (

@@ -4,8 +4,8 @@
 //!
 //! - [`SpawnAudioNode`] — `Commands` extension to atomically `graph.add(unit)`
 //!   and attach `AudioNode` + `NodeKind` to a fresh entity.
-//! - [`reconcile_node_despawn`] — picks up `RemovedComponents<AudioNode>`
-//!   and removes the underlying graph node.
+//! - [`reconcile_node_despawn`] — an `On<Remove, AudioNode>` observer that
+//!   removes the underlying graph node when its `AudioNode` is removed.
 //! - [`reconcile_params`] — sweeps `Changed<Volume>` (and friends) and writes
 //!   the new value through a typed `node_mut::<T>` call.
 //! - [`commit_graph`] — `graph.commit()` once per frame iff any reconcile
@@ -45,8 +45,10 @@ pub enum GraphReconcileSystems {
     Spawn,
     /// Parameter-component changes are written into the graph here.
     Params,
-    /// Entities whose `AudioNode` was removed (or who were despawned)
-    /// have their graph node removed here.
+    /// Reserved for despawn-phase work hosts may want to order here.
+    /// Graph-node removal itself is now an `On<Remove, AudioNode>` observer
+    /// (`reconcile_node_despawn`), which fires at command-flush time rather
+    /// than in this set.
     Despawn,
     /// Single `graph.commit()` if any earlier set mutated the graph.
     Commit,
@@ -160,38 +162,25 @@ pub fn crossfade_audio_node(
     });
 }
 
-/// Removes graph nodes for entities whose `AudioNode` component was removed
-/// (including despawned entities).
+/// Observer: removes a graph node when its `AudioNode` component is removed
+/// (including via despawn).
 ///
-/// We can't read the `NodeId` off a despawned entity, so the system tracks
-/// `(Entity, NodeId)` pairs in a local map keyed by entity, populated as
-/// new `AudioNode`s are added and consumed when the component disappears.
+/// `On<Remove, AudioNode>` fires *before* the component value is dropped, so
+/// the `NodeId` is still readable off the triggered entity — no local
+/// `(Entity, NodeId)` map needed. Only mutates the graph + sets `GraphDirty`;
+/// the per-frame [`commit_graph`] (Commit phase) does the actual commit.
 pub fn reconcile_node_despawn(
-    mut tracked: Local<std::collections::HashMap<Entity, crate::NodeId>>,
-    mut added: Query<(Entity, &AudioNode), Added<AudioNode>>,
-    mut removed: RemovedComponents<AudioNode>,
+    remove: On<Remove, AudioNode>,
+    nodes: Query<&AudioNode>,
     graph: Option<ResMut<TuttiGraphRes>>,
     mut dirty: ResMut<GraphDirty>,
 ) {
-    for (entity, node) in added.iter_mut() {
-        tracked.insert(entity, node.0);
-    }
-
-    let Some(mut graph) = graph else {
-        // Nothing to remove against.
-        for entity in removed.read() {
-            tracked.remove(&entity);
-        }
-        return;
-    };
-
-    for entity in removed.read() {
-        if let Some(id) = tracked.remove(&entity) {
-            if graph.0.contains(id) {
-                graph.0.remove(id);
-                dirty.0 = true;
-            }
-        }
+    let entity = remove.event_target();
+    let Ok(node) = nodes.get(entity) else { return };
+    let Some(mut graph) = graph else { return };
+    if graph.0.contains(node.0) {
+        graph.0.remove(node.0);
+        dirty.0 = true;
     }
 }
 
@@ -515,11 +504,11 @@ mod tests {
         let mut app = App::new();
         app.insert_resource(crate::resources::TuttiGraphRes(graph));
         app.init_resource::<GraphDirty>();
+        app.add_observer(reconcile_node_despawn);
         app.add_systems(
             bevy_app::Update,
             (
                 reconcile_params.in_set(GraphReconcileSystems::Params),
-                reconcile_node_despawn.in_set(GraphReconcileSystems::Despawn),
                 commit_graph.in_set(GraphReconcileSystems::Commit),
             ),
         );
@@ -572,6 +561,71 @@ mod tests {
         app.update();
 
         assert!(!app.world().resource::<crate::resources::TuttiGraphRes>().0.contains(node_id));
+    }
+
+    #[test]
+    fn late_despawn_converges_within_one_frame() {
+        // An `AudioNode` entity despawned by a system running *after* the
+        // Commit phase (here: `Last`) must still have its graph node removed
+        // and the graph converge (dirty cleared) within one trailing frame.
+        //
+        // The `On<Remove, AudioNode>` observer fires at command-flush, so the
+        // graph.remove + dirty happen the same frame the despawn flushes; the
+        // next frame's Commit-phase `commit_graph` coalesces the edit.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let mut app = test_app();
+
+        // Spawn the node in the normal way (so we can read its NodeId once
+        // the spawn command flushed).
+        let entity = {
+            let mut c = app.world_mut().commands();
+            c.spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator)
+                .id()
+        };
+        app.update();
+        let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
+        assert!(app
+            .world()
+            .resource::<crate::resources::TuttiGraphRes>()
+            .0
+            .contains(node_id));
+
+        // A `Last`-phase system (runs after GraphReconcileSystems::Commit)
+        // despawns the entity exactly once.
+        let fired = Arc::new(AtomicBool::new(false));
+        let fired_c = fired.clone();
+        app.add_systems(
+            bevy_app::Last,
+            move |mut commands: Commands, q: Query<Entity, With<AudioNode>>| {
+                if fired_c.swap(true, Ordering::SeqCst) {
+                    return;
+                }
+                for e in q.iter() {
+                    commands.entity(e).despawn();
+                }
+            },
+        );
+
+        // Frame A: the late despawn flushes at end of `Last`; the
+        // On<Remove> observer removes the graph node and sets dirty there.
+        app.update();
+        // Frame B: Commit phase coalesces the pending edit → converged.
+        app.update();
+
+        assert!(app.world().get::<AudioNode>(entity).is_none());
+        assert!(
+            !app.world()
+                .resource::<crate::resources::TuttiGraphRes>()
+                .0
+                .contains(node_id),
+            "late-despawned node removed from graph"
+        );
+        assert!(
+            !app.world().resource::<GraphDirty>().0,
+            "graph converged: dirty flag cleared after one trailing frame"
+        );
     }
 
     #[test]

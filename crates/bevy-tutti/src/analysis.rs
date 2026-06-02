@@ -3,23 +3,21 @@
 use std::sync::Arc;
 
 use bevy_app::{App, Plugin, Update};
+use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
-use bevy_reflect::prelude::*;
 
 use crate::resources::AnalysisRes;
 
-/// Trigger component: spawn an entity with this to enable live analysis.
+/// Fire-and-forget request to enable live analysis.
 ///
-/// Processed by `live_analysis_control_system`, calls `engine.enable_live_analysis()`.
-#[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
-#[reflect(Component, Default)]
+/// Read by `live_analysis_control_system`, calls `engine.enable_live_analysis()`.
+#[derive(Message, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EnableLiveAnalysis;
 
-/// Trigger component: spawn an entity with this to disable live analysis.
+/// Fire-and-forget request to disable live analysis.
 ///
-/// Processed by `live_analysis_control_system`, calls `engine.disable_live_analysis()`.
-#[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
-#[reflect(Component, Default)]
+/// Read by `live_analysis_control_system`, calls `engine.disable_live_analysis()`.
+#[derive(Message, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DisableLiveAnalysis;
 
 /// Live analysis state synced from Tutti via lock-free ArcSwap reads.
@@ -47,15 +45,14 @@ impl Default for LiveAnalysisData {
 }
 
 pub fn live_analysis_control_system(
-    mut commands: Commands,
     analysis: Option<Res<AnalysisRes>>,
     mut data: ResMut<LiveAnalysisData>,
-    enable_query: Query<Entity, Added<EnableLiveAnalysis>>,
-    disable_query: Query<Entity, Added<DisableLiveAnalysis>>,
+    mut enable: MessageReader<EnableLiveAnalysis>,
+    mut disable: MessageReader<DisableLiveAnalysis>,
 ) {
     let Some(analysis) = analysis else { return };
 
-    for entity in enable_query.iter() {
+    for _ in enable.read() {
         if analysis.enable_live() {
             data.is_live = true;
             bevy_log::info!("Live analysis enabled");
@@ -65,13 +62,11 @@ pub fn live_analysis_control_system(
                  analysis thread cannot start"
             );
         }
-        commands.entity(entity).remove::<EnableLiveAnalysis>();
     }
 
-    for entity in disable_query.iter() {
+    for _ in disable.read() {
         analysis.disable_live();
         data.is_live = false;
-        commands.entity(entity).remove::<DisableLiveAnalysis>();
         bevy_log::info!("Live analysis disabled");
     }
 }
@@ -96,8 +91,8 @@ pub struct TuttiAnalysisPlugin;
 
 impl Plugin for TuttiAnalysisPlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<EnableLiveAnalysis>()
-            .register_type::<DisableLiveAnalysis>();
+        app.add_message::<EnableLiveAnalysis>()
+            .add_message::<DisableLiveAnalysis>();
         app.init_resource::<LiveAnalysisData>().add_systems(
             Update,
             (live_analysis_control_system, live_analysis_sync_system),

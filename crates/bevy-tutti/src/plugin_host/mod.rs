@@ -14,9 +14,9 @@ mod scan;
 
 pub use crash::plugin_crash_detect_system;
 pub use editor::{
-    plugin_editor_attach_system, plugin_editor_close_system, plugin_editor_idle_system,
+    close_editor_observer, plugin_editor_attach_system, plugin_editor_idle_system,
     plugin_editor_open_system, plugin_editor_resize_request_system,
-    plugin_editor_window_close_system, plugin_editor_window_resize_system, ClosePluginEditor,
+    plugin_editor_window_close_system, plugin_editor_window_resize_system, CloseEditor,
     OpenPluginEditor, PendingPluginEditor, PluginEditorOpen, PluginEmitter,
 };
 pub use scan::{
@@ -39,8 +39,9 @@ pub struct TuttiHostingPlugin;
 impl Plugin for TuttiHostingPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<OpenPluginEditor>()
-            .register_type::<ClosePluginEditor>()
             .register_type::<PendingPluginEditor>();
+
+        app.add_observer(close_editor_observer);
 
         app.insert_non_send_resource(crate::resources::PluginEditorMainThread);
 
@@ -66,7 +67,6 @@ impl Plugin for TuttiHostingPlugin {
             (
                 plugin_editor_open_system,
                 plugin_editor_attach_system,
-                plugin_editor_close_system,
                 plugin_editor_idle_system,
                 plugin_editor_resize_request_system.after(plugin_editor_idle_system),
                 plugin_editor_window_resize_system.after(plugin_editor_resize_request_system),

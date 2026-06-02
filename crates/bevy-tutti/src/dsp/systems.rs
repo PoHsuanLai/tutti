@@ -625,11 +625,11 @@ mod marker_spawn_tests {
             )
                 .chain(),
         );
+        app.add_observer(reconcile_node_despawn);
         app.add_systems(
             Update,
             (
                 spawn_filter_nodes.in_set(GraphReconcileSystems::Spawn),
-                reconcile_node_despawn.in_set(GraphReconcileSystems::Despawn),
                 commit_graph.in_set(GraphReconcileSystems::Commit),
             ),
         );

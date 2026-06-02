@@ -1,5 +1,7 @@
 #[cfg(feature = "midi")]
 use bevy_ecs::message::MessageWriter;
+#[cfg(feature = "midi-hardware")]
+use bevy_ecs::message::MessageReader;
 #[cfg(feature = "midi")]
 use bevy_ecs::prelude::*;
 #[cfg(feature = "midi-hardware")]
@@ -121,16 +123,15 @@ pub fn midi_routing_sync_system(
 
 #[cfg(feature = "midi-hardware")]
 pub fn midi_device_connect_system(
-    mut commands: Commands,
     midi_io: Option<Res<crate::MidiIoRes>>,
-    connect_query: Query<(Entity, &ConnectMidiDevice), Added<ConnectMidiDevice>>,
-    disconnect_query: Query<(Entity, &DisconnectMidiDevice), Added<DisconnectMidiDevice>>,
+    mut connect_events: MessageReader<ConnectMidiDevice>,
+    mut disconnect_events: MessageReader<DisconnectMidiDevice>,
     mut device_events: MessageWriter<MidiDeviceEvent>,
     mut state: ResMut<MidiDeviceState>,
 ) {
     let Some(midi_io) = midi_io else { return };
 
-    for (entity, connect) in connect_query.iter() {
+    for connect in connect_events.read() {
         match midi_io.0.connect_input_by_name(&connect.name) {
             Ok(()) => {
                 if state.connected.insert(connect.name.clone()) {
@@ -143,17 +144,15 @@ pub fn midi_device_connect_system(
                 warn!("Failed to connect MIDI device '{}': {}", connect.name, e);
             }
         }
-        commands.entity(entity).remove::<ConnectMidiDevice>();
     }
 
-    for (entity, disconnect) in disconnect_query.iter() {
+    for disconnect in disconnect_events.read() {
         midi_io.0.disconnect_input(&disconnect.name);
         if state.connected.remove(&disconnect.name) {
             device_events.write(MidiDeviceEvent::Disconnected {
                 name: disconnect.name.clone(),
             });
         }
-        commands.entity(entity).remove::<DisconnectMidiDevice>();
     }
 }
 

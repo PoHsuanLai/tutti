@@ -241,7 +241,10 @@ impl Plugin for TuttiPlugin {
         #[cfg(feature = "analysis")]
         app.add_plugins(TuttiAnalysisPlugin);
         #[cfg(feature = "export")]
-        app.add_plugins((TuttiExportPlugin, crate::render_region::TuttiRegionRenderPlugin));
+        app.add_plugins(TuttiExportPlugin);
+        // Region render renders sampler/clip-reader units → needs `sampler` too.
+        #[cfg(all(feature = "export", feature = "sampler"))]
+        app.add_plugins(crate::render_region::TuttiRegionRenderPlugin);
 
         // Decode-once wave cache: one Arc<Wave> per file, shared by playback,
         // analysis, and the offline render. Decodes off-thread.

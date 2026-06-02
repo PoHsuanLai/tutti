@@ -503,7 +503,7 @@ pub(crate) fn mpe_setup_system(mut commands: Commands, world: &World) {
 
     let mode = world
         .get_resource::<MpeModeConfig>()
-        .map(|c| c.0.clone())
+        .map(|c| c.0)
         .unwrap_or(tutti_midi_io::MpeMode::Disabled);
 
     if matches!(mode, tutti_midi_io::MpeMode::Disabled) {

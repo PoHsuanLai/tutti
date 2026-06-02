@@ -65,16 +65,32 @@ pub use crate::device_state::{device_state_sync_system, AudioDeviceState};
 pub use crate::content_bounds::ContentBounds;
 
 // The engine types (`TuttiEngine`, `TuttiGraph`, `NodeId`, `Wave`, …) and the
-// entity-as-node ECS primitives (`AudioNode`, `Volume`, `Frequency`, …) are
+// scalar entity-as-node ECS params (`AudioNode`, `Volume`, `Frequency`, …) are
 // re-exported at the crate root by `lib.rs`, and `lib.rs` does `pub use
 // prelude::*`, so they are already reachable via `bevy_tutti::*` and
 // `bevy_tutti::prelude::*` without re-listing them here.
 
+// B7 authoring markers + construction-only authored data (added in
+// `tutti_core::ecs`). The preferred spawn surface: `commands.spawn((FilterNode,
+// Frequency(..), FilterQ(..), ..))`. The `#[require]` lists fill in defaults;
+// the marker spawn systems build the unit from those component values.
+// Several marker names collide with the concrete `tutti_units` unit names
+// already re-exported below (`ChorusNode`, `FlangerNode`, `PhaserNode`,
+// `LimiterNode`). Those four markers are aliased with a `Marker` suffix to
+// disambiguate; the rest keep their natural name.
+pub use crate::core::ecs::{
+    BeatSynced, BrickwallLimiterNode, ChorusNode as ChorusNodeMarker, CompressorNode,
+    ConvolutionReverbNode, DelayNode, DistortionNode, EqBandNode, FilterMode, FilterNode,
+    FlangerNode as FlangerNodeMarker, GateNode, LadderNode, LfoNodeMarker, LfoShapeKind,
+    LimiterNode as LimiterNodeMarker, MaxDelay, PhaserNode as PhaserNodeMarker, ReverbNode,
+    ReverbTime, SamplerNode, SpatialPannerNode, StereoChannels,
+};
+
 pub use crate::graph::{
     commit_graph, crossfade_audio_node, reconcile_audio_routing, reconcile_node_despawn,
-    reconcile_params, reconcile_sidechain_links, AudioFedBy, AudioFeedsTo, GraphDirty,
-    GraphReconcileSystems, NodeParamEpoch, SidechainOf, SidechainSources, SpawnAudioNode,
-    TuttiGraphPlugin,
+    reconcile_params, reconcile_sidechain_links, register_audio_node_types, AudioFedBy,
+    AudioFeedsTo, GraphDirty, GraphReconcileSystems, NodeParamEpoch, SidechainOf, SidechainSources,
+    SpawnAudioNode, TuttiGraphPlugin,
 };
 #[cfg(feature = "sampler")]
 pub use crate::graph::{
@@ -154,7 +170,7 @@ pub use crate::export::{
     export_poll_system, export_start_system, ExportComplete, ExportFailed, ExportInProgress,
     TuttiExportPlugin, StartExport,
 };
-#[cfg(feature = "export")]
+#[cfg(all(feature = "export", feature = "sampler"))]
 pub use crate::render_region::{
     prepare_region_render_system, region_render_poll_system, spawn_region_render_system,
     RegionRenderComplete, RegionRenderFailed, RegionRenderInProgress, RegionRenderNet,
@@ -178,14 +194,19 @@ pub use crate::time_stretch::{
 #[cfg(feature = "sampler")]
 pub use crate::sampler::stretch::Unit as TimeStretchUnit;
 
-pub use crate::dsp::{dsp_lfo_system, AddLfo, TuttiDspPlugin};
+pub use crate::dsp::{dsp_lfo_system, spawn_lfo_nodes, TuttiDspPlugin};
+#[allow(deprecated)]
+pub use crate::dsp::AddLfo;
 pub use crate::units::{LfoMode, LfoNode, LfoShape};
 #[cfg(feature = "dsp")]
 pub use crate::dsp::{
     dsp_chorus_system, dsp_compressor_system, dsp_delay_system, dsp_filter_system,
-    dsp_gate_system, dsp_reverb_system, AddChorus, AddCompressor, AddDelay, AddFilter, AddGate,
-    AddReverb,
+    dsp_gate_system, dsp_reverb_system, spawn_chorus_nodes, spawn_compressor_nodes,
+    spawn_delay_nodes, spawn_filter_nodes, spawn_gate_nodes, spawn_reverb_nodes,
 };
+#[cfg(feature = "dsp")]
+#[allow(deprecated)]
+pub use crate::dsp::{AddChorus, AddCompressor, AddDelay, AddFilter, AddGate, AddReverb};
 #[cfg(feature = "dsp")]
 pub use crate::units::{
     BrickwallLimiter, ChorusNode, Compressor, FlangerNode, Gate, LadderFilterNode, LadderType,

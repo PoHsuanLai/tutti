@@ -78,7 +78,11 @@ mod analysis;
 mod automation;
 #[cfg(feature = "export")]
 mod export;
-#[cfg(feature = "export")]
+// Region rendering renders sampler / clip-reader units offline, so it needs the
+// sampler subsystem in addition to the export pipeline. Gating it on bare
+// `export` made `--features export` fail to compile (it pulls `crate::sampler`
+// + `crate::track_clip_reader`, both `sampler`-gated). `full` enables both.
+#[cfg(all(feature = "export", feature = "sampler"))]
 pub mod render_region;
 #[cfg(feature = "midi")]
 mod midi;

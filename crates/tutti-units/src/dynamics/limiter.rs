@@ -523,11 +523,10 @@ impl AudioUnit for BrickwallLimiter {
     }
 
     fn set(&mut self, setting: tutti_core::dsp::Setting) {
-        if let Some((param, value)) = tutti_core::UnitParam::from_setting(&setting) {
-            match param {
-                tutti_core::UnitParam::Ceiling => self.set_ceiling(value),
-                _ => {}
-            }
+        if let Some((tutti_core::UnitParam::Ceiling, value)) =
+            tutti_core::UnitParam::from_setting(&setting)
+        {
+            self.set_ceiling(value);
         }
     }
 

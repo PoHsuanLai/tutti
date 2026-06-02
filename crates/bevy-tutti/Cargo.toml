@@ -36,9 +36,11 @@ tutti-core = { path = "../tutti/crates/tutti-core", default-features = false, fe
 tutti-midi-types = { path = "../tutti/crates/tutti-midi-types", default-features = false }
 tutti-units = { path = "../tutti/crates/tutti-units", default-features = false }
 tutti-asset = { path = "../tutti/crates/tutti-asset", features = ["std"] }
-# Decode-once wave cache (Bevy-native). Format features wired through this
-# crate's wav/mp3/flac/ogg features above.
-tutti-wavecache = { path = "../tutti/crates/tutti-wavecache", default-features = false }
+# Decode-once wave cache (Bevy-native). It is a non-optional dep that always
+# needs at least one codec (its API uses tutti-core's fundsp `Wave::load` /
+# `WaveMetadata`, which are codec-gated), so enable `wav` unconditionally here;
+# bevy-tutti's own wav/mp3/flac/ogg features add the rest.
+tutti-wavecache = { path = "../tutti/crates/tutti-wavecache", default-features = false, features = ["wav"] }
 
 # Optional subsystems (gated by bevy-tutti features below).
 tutti-sampler = { path = "../tutti/crates/tutti-sampler", optional = true, default-features = false }

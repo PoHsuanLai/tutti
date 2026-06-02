@@ -167,6 +167,25 @@ pub enum ClipCommand {
 }
 
 // ---------------------------------------------------------------------------
+// ClipSpec — a fully-described in-memory clip for synchronous insertion.
+// ---------------------------------------------------------------------------
+
+/// One in-memory clip, ready to drop into a reader's slot list without going
+/// through the command channel. Used by the offline region render, which
+/// populates a cloned (never-ticked) reader directly from ECS state.
+///
+/// Carries the same surface as `ClipCommand::Add` plus stretch, so a single
+/// insert reproduces what the live path builds across `Add` + `UpdateStretch`.
+pub struct ClipSpec {
+    pub id: SlotId,
+    /// Already transport-bound, with gain / loop range applied.
+    pub sampler: SamplerUnit,
+    pub reverse: bool,
+    pub stretch_factor: f32,
+    pub pitch_cents: f32,
+}
+
+// ---------------------------------------------------------------------------
 // Handle — held by ECS systems, sends commands to the audio-thread unit.
 // ---------------------------------------------------------------------------
 
@@ -233,6 +252,77 @@ impl TrackClipReaderUnit {
             transport: Some(transport),
         };
         (unit, handle)
+    }
+
+    /// Number of clip slots currently materialised (drained from the command
+    /// queue). Diagnostic / test helper.
+    pub fn clip_count(&self) -> usize {
+        self.clips.len()
+    }
+
+    /// Rebind this reader and every clip slot it holds to `transport`.
+    ///
+    /// Used by the offline region render: a cloned net's clip samplers still
+    /// reference the *live* transport, which the offline driver doesn't
+    /// advance — so they read a stale playhead and render silence. Pointing the
+    /// reader (streaming gating) and each in-memory slot sampler at the
+    /// offline transport makes the clone play the rendered region. Streaming
+    /// slots are gated by `self.transport`, so rebinding it covers them too.
+    pub fn rebind_transport(&mut self, transport: Arc<dyn TransportReader>) {
+        self.transport = Some(transport.clone());
+        for slot in &mut self.clips {
+            if let ClipSampler::InMemory(sampler) = &mut slot.sampler {
+                sampler.replace_transport(transport.clone());
+            }
+        }
+    }
+
+    /// Insert a clip slot directly, bypassing the command channel.
+    ///
+    /// The live path adds clips by sending `ClipCommand::Add` and letting the
+    /// audio thread drain it in `tick`/`process`. A cloned net built for the
+    /// offline render is never ticked on a thread that drains, so it needs its
+    /// clips materialised synchronously — that's this. Same replace-by-id then
+    /// push semantics as the `ClipCommand::Add` drain arm, plus stretch.
+    pub fn insert_clip(&mut self, spec: ClipSpec) {
+        self.clips.retain(|s| s.id != spec.id);
+        let mut slot = ClipSlot {
+            id: spec.id,
+            sampler: ClipSampler::InMemory(spec.sampler),
+            reverse: spec.reverse,
+            stretch: None,
+            stretch_factor: spec.stretch_factor,
+            pitch_cents: spec.pitch_cents,
+            sample_rate: self.sample_rate,
+        };
+        slot.rebuild_stretch();
+        self.clips.push(slot);
+    }
+
+    /// Drop every clip slot.
+    ///
+    /// The offline render clones the staged net, and a cloned
+    /// [`ClipSampler::Streaming`] slot shares the *same* single-consumer ring
+    /// buffer as the live audio thread's reader — ticking both corrupts the
+    /// live stream. The offline path therefore clears the inherited slots and
+    /// rebuilds every clip in-memory from ECS, so the clone never touches the
+    /// live butler ring.
+    pub fn clear_clips(&mut self) {
+        self.clips.clear();
+    }
+
+    /// Sever this reader from the command channel.
+    ///
+    /// `Clone` shares the live `Receiver` (so the audio-thread clone keeps
+    /// receiving). A cloned reader handed to the offline render must NOT also
+    /// drain that channel — `crossbeam` delivers each command to exactly one
+    /// receiver, so an offline drain would steal commands from the live audio
+    /// thread. Replacing `rx` with a fresh, sender-less receiver makes the
+    /// offline reader hermetic: its `drain_commands()` always finds the queue
+    /// empty.
+    pub fn detach_commands(&mut self) {
+        let (_tx, rx) = bounded(0);
+        self.rx = rx;
     }
 
     fn drain_commands(&mut self) {
@@ -733,6 +823,52 @@ mod tests {
         cloned.tick(&[], &mut out_clone);
 
         assert!(out_clone[0] != 0.0, "cloned unit should have the clip");
+    }
+
+    #[test]
+    fn insert_clip_is_audible_without_channel() {
+        let (mut unit, _handle) = TrackClipReaderUnit::new();
+        let transport = MockTransport::new(120.0, 0.0, true);
+        let wave = make_wave(100);
+
+        let sampler = SamplerUnit::with_transport(wave, transport, 0.0, None);
+        unit.insert_clip(ClipSpec {
+            id: SlotId(1),
+            sampler,
+            reverse: false,
+            stretch_factor: 1.0,
+            pitch_cents: 0.0,
+        });
+
+        // No tick/drain needed — the clip is already in the slot list.
+        assert_eq!(unit.clip_count(), 1);
+
+        let mut out = [0.0f32; 2];
+        unit.tick(&[], &mut out);
+        assert!(out[0] != 0.0 || out[1] != 0.0, "inserted clip should produce audio");
+    }
+
+    #[test]
+    fn detach_commands_ignores_subsequent_sends() {
+        let (mut unit, handle) = TrackClipReaderUnit::new();
+        let transport = MockTransport::new(120.0, 0.0, true);
+        let wave = make_wave(100);
+
+        unit.detach_commands();
+
+        // After detaching, the old handle's sends go nowhere this reader drains.
+        let sampler = SamplerUnit::with_transport(wave, transport, 0.0, None);
+        handle.send(ClipCommand::Add {
+            id: SlotId(1),
+            sampler,
+            reverse: false,
+        });
+
+        let mut out = [0.0f32; 2];
+        unit.tick(&[], &mut out); // drains its (empty) queue
+        assert_eq!(unit.clip_count(), 0, "detached reader must not receive commands");
+        assert_eq!(out[0], 0.0);
+        assert_eq!(out[1], 0.0);
     }
 
     #[test]

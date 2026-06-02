@@ -59,7 +59,7 @@ pub use crate::transport::{transport_sync_system, TransportState};
 pub use crate::device_state::{device_state_sync_system, AudioDeviceState};
 
 #[cfg(feature = "sampler")]
-pub use crate::content_bounds::{content_bounds_sync_system, ContentBounds};
+pub use crate::content_bounds::ContentBounds;
 
 pub use tutti::{
     DeviceInfo, NodeId, TuttiDriver, TuttiEngine, TuttiEngineBuilder, TuttiGraph, Wave,
@@ -136,7 +136,7 @@ pub use crate::auditioner::{
 
 #[cfg(feature = "sampler")]
 pub use crate::track_clip_reader::{
-    ClipCommand, ClipSampler, SlotId, TrackClipReaderHandle, TrackClipReaderNode,
+    ClipCommand, ClipSampler, ClipSpec, SlotId, TrackClipReaderHandle, TrackClipReaderNode,
     TrackClipReaderRef, TrackClipReaderUnit,
 };
 
@@ -163,8 +163,9 @@ pub use crate::export::{
 };
 #[cfg(feature = "export")]
 pub use crate::render_region::{
-    region_render_poll_system, start_region_render_system, RegionRenderComplete,
-    RegionRenderFailed, RegionRenderInProgress, StartRegionRender, TuttiRegionRenderPlugin,
+    prepare_region_render_system, region_render_poll_system, spawn_region_render_system,
+    RegionRenderComplete, RegionRenderFailed, RegionRenderInProgress, RegionRenderNet,
+    RegionRenderSystems, StartRegionRender, TuttiRegionRenderPlugin,
 };
 #[cfg(feature = "export")]
 pub use tutti::export::{

@@ -26,8 +26,6 @@ use crate::soundfont::TuttiSoundFontPlugin;
 #[cfg(feature = "sampler")]
 use crate::audio_input::TuttiAudioInputPlugin;
 #[cfg(feature = "sampler")]
-use crate::content_bounds::content_bounds_sync_system;
-#[cfg(feature = "sampler")]
 use crate::recording::TuttiRecordingPlugin;
 #[cfg(feature = "sampler")]
 use crate::time_stretch::TuttiTimeStretchPlugin;
@@ -211,9 +209,14 @@ impl Plugin for TuttiPlugin {
 
         #[cfg(feature = "sampler")]
         {
+            // The `ContentBounds` resource lives here (bevy-tutti owns the
+            // type), but it's populated downstream from ECS clip placements by
+            // `dawai_model::clip::content_bounds` — the doc/ECS is the source of
+            // truth for project length. The old graph-scan sync was removed: it
+            // only saw top-level `SamplerUnit` nodes and was blind to clips held
+            // inside `TrackClipReaderUnit`, so it always reported 0.
             app.init_resource::<ContentBounds>();
             app.register_type::<ContentBounds>();
-            app.add_systems(Update, content_bounds_sync_system);
         }
 
         // Sub-plugins. Order matters: TuttiGraphPlugin first (configures

@@ -7,7 +7,7 @@
 //! Sub-concepts:
 //! - [`reconcile`] — `SpawnAudioNode` extension, `Volume`/`Pan`/`Mute` reconcile,
 //!   per-effect param reconcilers, `GraphReconcileSystems` ordering.
-//! - [`sidechain`] — `SidechainOf` relationship → port-1 wiring.
+//! - [`sidechain`] — `SidechainOf` relationship → sidechain-bus port wiring.
 //! - [`routing`] — `AudioFeedsTo` relationship → general port-to-port wiring.
 //! - [`pending_load`] — sampler pending-load promotion (sampler-gated).
 //! - [`scheduled`] — time-delayed MIDI dispatch (midi-gated).

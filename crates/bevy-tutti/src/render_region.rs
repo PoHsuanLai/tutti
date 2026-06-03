@@ -32,12 +32,14 @@ use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 use std::sync::Arc;
 
-use crate::NodeId;
-use crate::task::poll_task;
 use crate::core::dsp::Net;
-use crate::core::{AudioUnit, OfflineTransport, OfflineTransportConfig, SampleRate, TransportReader};
-use tutti_export::{Error as ExportError, Rendered};
+use crate::core::{
+    AudioUnit, OfflineTransport, OfflineTransportConfig, SampleRate, TransportReader,
+};
 use crate::sampler::SamplerUnit;
+use crate::task::poll_task;
+use crate::NodeId;
+use tutti_export::{Error as ExportError, Rendered};
 
 use crate::resources::{AudioConfig, TuttiGraphRes};
 use crate::track_clip_reader::TrackClipReaderUnit;
@@ -52,6 +54,42 @@ pub enum RegionRenderSystems {
     Prepare,
     Populate,
     Spawn,
+    /// Drain finished render tasks. Chained *after* `Spawn` so a render that
+    /// completes this frame frees its slot before next frame's `Prepare` counts
+    /// in-flight renders against [`RegionRenderConfig::max_in_flight`] — without
+    /// it the throttled backlog would drain one frame slower per render.
+    Poll,
+}
+
+/// Admission policy for offline region renders.
+///
+/// Each admitted [`StartRegionRender`] does one **main-thread** deep clone of
+/// the live net (`clone_net_isolated` → `DynClone` of every DSP node) in
+/// [`prepare_region_render_system`]. When a consumer enters a mode that taps
+/// many nodes at once (e.g. spectral view, one tap per track), every view
+/// misses its cache and spawns a request in the *same frame*; admitting them all
+/// would run N clones serialized on the main thread, stalling the frame long
+/// enough to underrun the realtime audio callback (audible glitch).
+///
+/// `max_in_flight` caps how many renders occupy a slot
+/// ([`RegionRenderNet`] parked for `Populate`, or [`RegionRenderInProgress`]
+/// running on the pool) at once, so the per-frame clone burst is bounded and the
+/// backlog drains as a trickle. Default `1`.
+///
+/// We cap admissions rather than move the clone off-thread: the clone borrows
+/// `&self` on the graph resource, which cannot cross into a `'static` task, and
+/// the snapshot needed to work around that *is itself* the deep clone — so
+/// off-thread cloning buys nothing once the burst is throttled. Revisit only if
+/// one clone per frame proves too costly for very large graphs.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct RegionRenderConfig {
+    pub max_in_flight: usize,
+}
+
+impl Default for RegionRenderConfig {
+    fn default() -> Self {
+        Self { max_in_flight: 1 }
+    }
 }
 
 /// Make the cloned net hermetic and bind it to the render's offline timeline.
@@ -78,7 +116,10 @@ fn rebind_net_transport(net: &mut Net, transport: &Arc<dyn TransportReader>) {
             // Swap in a fresh, channel-less reader (same 0-in/2-out arity, so
             // `replace` is legal). Discards the cloned reader — and its shared
             // `Receiver` — before the worker ever ticks it.
-            net.replace(id, Box::new(TrackClipReaderUnit::detached(transport.clone())));
+            net.replace(
+                id,
+                Box::new(TrackClipReaderUnit::detached(transport.clone())),
+            );
         } else if let Some(sampler) = net.node_mut(id).as_any_mut().downcast_mut::<SamplerUnit>() {
             sampler.replace_transport(transport.clone());
         }
@@ -170,16 +211,45 @@ pub fn prepare_region_render_system(
     mut commands: Commands,
     graph: Option<Res<TuttiGraphRes>>,
     config: Option<Res<AudioConfig>>,
-    query: Query<(Entity, &StartRegionRender), Added<StartRegionRender>>,
+    render_config: Res<RegionRenderConfig>,
+    // Both a parked-for-Populate net and a running task occupy a slot — the
+    // expensive clone has already happened for either.
+    in_flight: Query<(), Or<(With<RegionRenderNet>, With<RegionRenderInProgress>)>>,
+    // No `Added<>`: a request we decline this frame (over the cap) must still
+    // match next frame. Presence of `StartRegionRender` *is* the "pending" flag;
+    // `remove`ing it on admit below is what marks it admitted. Admission order
+    // over pending requests is unspecified (Bevy archetype order) — fine for
+    // peer views; don't assume FIFO.
+    query: Query<(Entity, &StartRegionRender)>,
 ) {
     let Some(graph) = graph else { return };
     let Some(config) = config else { return };
 
+    // Count slots as of frame start, then track admissions locally: renders
+    // inserted via `commands` this frame aren't visible to `in_flight` until the
+    // next command-buffer flush, so without the local counter we'd admit a full
+    // `max_in_flight` *every* frame.
+    let mut occupied = in_flight.iter().count();
+
     for (entity, start) in query.iter() {
+        if occupied >= render_config.max_in_flight {
+            break; // leave StartRegionRender in place; retry next frame
+        }
+
         let mut ecmd = commands.entity(entity);
         ecmd.remove::<StartRegionRender>();
 
-        let Some(mut net) = graph.0.clone_net_isolated(start.target) else {
+        // Named Tracy zones (drop guards tightly so each step is a distinct
+        // zone): the clone is the suspected main-thread stall — a deep clone of
+        // the whole live net (DynClone every DSP node) — but `reset` and
+        // `rebind` also walk every node, so measure all three separately to see
+        // which dominates the spectral-entry glitch.
+        let clone = {
+            let _span = bevy_log::info_span!("region_render::clone_net_isolated").entered();
+            graph.0.clone_net_isolated(start.target)
+        };
+        let Some(mut net) = clone else {
+            // No-output target never occupied a slot — don't count it.
             ecmd.insert(RegionRenderFailed {
                 target: start.target,
                 error: "target node has no outputs".into(),
@@ -194,7 +264,10 @@ pub fn prepare_region_render_system(
         // and cache-breaking (same cone-hash, different audio). A spectral tap is
         // "what this node sounds like over [start_beat, …] from a clean start",
         // so we always run FX from reset state.
-        net.reset();
+        {
+            let _span = bevy_log::info_span!("region_render::net_reset").entered();
+            net.reset();
+        }
 
         // The offline transport the render advances. The clone's samplers still
         // point at the live transport (which the offline driver never drives),
@@ -208,7 +281,10 @@ pub fn prepare_region_render_system(
             loop_range: None,
         }));
         let reader_transport: Arc<dyn TransportReader> = timeline.clone();
-        rebind_net_transport(&mut net, &reader_transport);
+        {
+            let _span = bevy_log::info_span!("region_render::rebind_net_transport").entered();
+            rebind_net_transport(&mut net, &reader_transport);
+        }
 
         ecmd.insert(RegionRenderNet {
             net,
@@ -218,6 +294,7 @@ pub fn prepare_region_render_system(
             len_beats: start.len_beats,
             tempo: start.tempo,
         });
+        occupied += 1; // a real slot is now occupied
     }
 }
 
@@ -307,14 +384,15 @@ pub struct TuttiRegionRenderPlugin;
 
 impl Plugin for TuttiRegionRenderPlugin {
     fn build(&self, app: &mut App) {
-        use RegionRenderSystems::{Populate, Prepare, Spawn};
-        app.configure_sets(Update, (Prepare, Populate, Spawn).chain())
+        use RegionRenderSystems::{Poll, Populate, Prepare, Spawn};
+        app.init_resource::<RegionRenderConfig>()
+            .configure_sets(Update, (Prepare, Populate, Spawn, Poll).chain())
             .add_systems(
                 Update,
                 (
                     prepare_region_render_system.in_set(Prepare),
                     spawn_region_render_system.in_set(Spawn),
-                    region_render_poll_system,
+                    region_render_poll_system.in_set(Poll),
                 ),
             );
         // `Populate` is intentionally left empty here — a clip-aware downstream
@@ -325,9 +403,9 @@ impl Plugin for TuttiRegionRenderPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{Bpm, SampleRate, Wave};
     use crate::track_clip_reader::{ClipCommand, SlotId, TrackClipReaderUnit};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    use crate::core::{Bpm, SampleRate, Wave};
 
     struct MockTransport {
         playing: AtomicBool,
@@ -402,12 +480,8 @@ mod tests {
             44100.0,
             &(0..64).map(|i| (i as f32 + 1.0) / 64.0).collect::<Vec<_>>(),
         ));
-        let sampler = crate::sampler::SamplerUnit::with_transport(
-            wave,
-            live_transport.clone(),
-            0.0,
-            None,
-        );
+        let sampler =
+            crate::sampler::SamplerUnit::with_transport(wave, live_transport.clone(), 0.0, None);
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
@@ -441,6 +515,106 @@ mod tests {
             cloned_reader.clip_count(),
             0,
             "render clone must never receive live commands"
+        );
+    }
+
+    use crate::core::dsp::dc;
+    use crate::resources::AudioConfig;
+    use bevy_ecs::world::World;
+    use tutti_core::{PdcManager, TuttiNet};
+    #[cfg(feature = "midi")]
+    use tutti_midi_runtime::MidiRoutingTable;
+
+    /// Build a real (tiny, CPAL-free) 2-output graph with one node piped to the
+    /// output bus, so `clone_net_isolated(target)` succeeds in `prepare`.
+    fn graph_res_with_one_target() -> (TuttiGraphRes, NodeId) {
+        let mut net = TuttiNet::new(0, 2);
+        let _backend = net.backend(); // allocate the fundsp backend
+        let pdc = PdcManager::new(2, 0);
+        #[cfg(feature = "midi")]
+        let midi_route = MidiRoutingTable::new();
+        let mut graph = crate::TuttiGraph::from_parts(
+            net,
+            pdc,
+            #[cfg(feature = "midi")]
+            midi_route,
+            48_000.0,
+            2,
+        );
+        let target = graph.master(dc(1.0)); // one node, wired to the output bus
+        (TuttiGraphRes(graph), target)
+    }
+
+    /// With `max_in_flight = 1`, two `StartRegionRender`s spawned in one frame
+    /// must admit exactly one — the second stays pending (its `StartRegionRender`
+    /// is left in place, NOT lost) — and once the first's slot frees, the second
+    /// is admitted on the next run. Guards the two admission traps: persisted
+    /// requests must survive (no `Added<>` reliance) and the per-frame local
+    /// counter must stop over-admission.
+    #[test]
+    fn throttle_admits_up_to_cap_then_drains_backlog() {
+        let (graph, target) = graph_res_with_one_target();
+
+        let mut world = World::new();
+        world.insert_resource(graph);
+        world.insert_resource(AudioConfig {
+            sample_rate: 48_000.0,
+            channels: 2,
+        });
+        world.insert_resource(RegionRenderConfig { max_in_flight: 1 });
+
+        let start = |t: NodeId| StartRegionRender {
+            target: t,
+            start_beat: 0.0,
+            len_beats: 4.0,
+            tempo: 120.0,
+        };
+        world.spawn(start(target));
+        world.spawn(start(target));
+
+        let mut schedule = bevy_ecs::schedule::Schedule::default();
+        schedule.add_systems(prepare_region_render_system);
+
+        // First run: exactly one admitted (one RegionRenderNet), one still pending.
+        schedule.run(&mut world);
+        let admitted = world.query::<&RegionRenderNet>().iter(&world).count();
+        let pending = world.query::<&StartRegionRender>().iter(&world).count();
+        assert_eq!(
+            admitted, 1,
+            "cap=1 must admit exactly one render this frame"
+        );
+        assert_eq!(
+            pending, 1,
+            "the over-cap request must remain pending, not be lost"
+        );
+
+        // Re-running while the slot is still occupied admits nothing more.
+        schedule.run(&mut world);
+        assert_eq!(
+            world.query::<&RegionRenderNet>().iter(&world).count(),
+            1,
+            "no new admission while the single slot is occupied"
+        );
+
+        // Free the slot (simulate the parked net advancing past Populate/Spawn)
+        // and re-run: the backlog drains — the second request is now admitted.
+        let occupied: Vec<Entity> = world
+            .query_filtered::<Entity, With<RegionRenderNet>>()
+            .iter(&world)
+            .collect();
+        for e in occupied {
+            world.entity_mut(e).despawn();
+        }
+        schedule.run(&mut world);
+        assert_eq!(
+            world.query::<&RegionRenderNet>().iter(&world).count(),
+            1,
+            "the previously-pending request is admitted once a slot frees"
+        );
+        assert_eq!(
+            world.query::<&StartRegionRender>().iter(&world).count(),
+            0,
+            "backlog fully drained"
         );
     }
 }

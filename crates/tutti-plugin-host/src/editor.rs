@@ -5,7 +5,7 @@ use bevy_log::warn;
 use bevy_reflect::prelude::*;
 
 use crate::native_window::attach_child_window;
-use crate::resources::PluginEditorMainThread;
+use crate::PluginEditorMainThread;
 
 /// Marks an entity as a loaded plugin with a control handle.
 ///

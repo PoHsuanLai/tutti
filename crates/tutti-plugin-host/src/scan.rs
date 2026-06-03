@@ -21,8 +21,8 @@ use bevy_tasks::{AsyncComputeTaskPool, Task};
 
 use tutti_plugin::catalog::{Plugins, PluginsConfig, ScanResult};
 
-use crate::resources::PluginsRes;
-use crate::task::poll_task;
+use crate::PluginsRes;
+use tutti_core::task::poll_task;
 
 /// Config used to build the [`Plugins`] catalog that an async rescan
 /// produces. Kept module-local (never the shared `resources.rs`) so the

@@ -10,27 +10,8 @@
 //!
 //! See the core module for the design rationale.
 
-#![cfg_attr(not(feature = "plugin"), allow(unused_imports))]
-
-use bevy_ecs::prelude::*;
-
 pub use tutti_core::ecs::param_epoch::{bump_param_epoch_core, NodeParamEpoch};
 
-use crate::core::ecs::AudioNode;
-
-#[cfg(feature = "plugin")]
-use crate::core::ecs::PluginParam;
-
 // The DSP-family param-epoch bump (`bump_param_epoch_dsp`) moved into
-// `tutti_units::ecs::reconcile`. Re-exported via the prelude for compat.
-
-/// Bump the epoch for plugin param changes (`PluginParam`).
-#[cfg(feature = "plugin")]
-pub fn bump_param_epoch_plugin(
-    mut epoch: ResMut<NodeParamEpoch>,
-    changed: Query<&AudioNode, Changed<PluginParam>>,
-) {
-    for node in changed.iter() {
-        epoch.bump(node.0);
-    }
-}
+// `tutti_units::ecs::reconcile`; the plugin bump (`bump_param_epoch_plugin`)
+// moved into the `tutti-plugin-host` crate. Re-exported via the prelude.

@@ -15,17 +15,6 @@ bevy_reflect.workspace = true
 # AsyncComputeTaskPool + Task<T> for non-RT subsystem work (export, region
 # render, plugin scan, wave import, soundfont decode). See src/task.rs.
 bevy_tasks.workspace = true
-bevy_window = { version = "0.18", optional = true }
-
-# Raw window handle for plugin editor parenting
-raw-window-handle = { version = "0.6", optional = true }
-
-# macOS: attach plugin editor window as child of primary window
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2 = { version = "0.6", optional = true }
-objc2-app-kit = { version = "0.3", optional = true, features = ["NSView", "NSWindow", "NSResponder"] }
-objc2-foundation = { version = "0.3", optional = true, features = ["NSNotification", "NSString", "NSGeometry", "NSObject", "NSThread"] }
-
 
 # Tutti audio engine — bevy-tutti is now the umbrella, so it depends on the
 # subsystem crates directly (the old `tutti` umbrella package is dissolved).
@@ -53,7 +42,9 @@ tutti-export = { path = "../tutti/crates/tutti-export", optional = true }
 tutti-midi-io = { path = "../tutti/crates/tutti-midi-io", optional = true }
 tutti-midi-runtime = { path = "../tutti/crates/tutti-midi-runtime", optional = true, default-features = false }
 tutti-plugin = { path = "../tutti/crates/tutti-plugin", optional = true }
-tutti-plugin-server = { path = "../tutti/crates/tutti-plugin-server", optional = true, default-features = false }
+# Plugin-hosting ECS surface (editor windows, scan, crash-detect, param
+# reconcile). Owns the bevy_window / raw-window-handle / objc2 deps now.
+tutti-plugin-host = { path = "../tutti/crates/tutti-plugin-host", optional = true }
 
 # CPAL audio I/O — bevy-tutti owns the audio callback (engine/audio_io.rs).
 cpal = "0.15"
@@ -117,12 +108,20 @@ soundfont = ["synth", "tutti-synth/soundfont", "tutti-synth/bevy_asset"]
 # usable without export.
 sampler = ["wav", "dep:tutti-sampler", "tutti-export?/sampler"]
 
-# Plugin hosting (native subprocess plugin-server + editor windowing deps).
-plugin = ["dep:tutti-plugin", "dep:tutti-plugin-server", "dep:bevy_window", "dep:raw-window-handle", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]
-vst2 = ["plugin", "tutti-plugin-server/vst2", "tutti-plugin/vst2", "tutti-plugin/vst2-in-process"]
-vst3 = ["plugin", "tutti-plugin-server/vst3", "tutti-plugin/vst3"]
-clap = ["plugin", "tutti-plugin-server/clap", "tutti-plugin/clap"]
-au = ["plugin", "tutti-plugin-server/au", "tutti-plugin/au"]
+# Plugin hosting. The ECS surface (editor windows, scan, crash-detect, param
+# reconcile) + the native subprocess plugin-server + editor windowing deps all
+# live in `tutti-plugin-host`. bevy-tutti keeps a direct `tutti-plugin` dep for
+# the catalog / handles / metadata re-exports in its prelude.
+# `tutti-plugin-host` → `tutti-plugin-server` pulls `tutti-core` with `midi`,
+# so tutti-core compiles with midi under feature unification. bevy-tutti's
+# `engine/builder.rs` gates the `MidiRoutingTable` arg to `from_parts` on its
+# OWN `midi` feature, so `plugin` must enable `midi` to keep the call shape in
+# sync with the compiled `tutti-core`.
+plugin = ["dep:tutti-plugin", "dep:tutti-plugin-host", "midi"]
+vst2 = ["plugin", "tutti-plugin-host/vst2", "tutti-plugin/vst2", "tutti-plugin/vst2-in-process"]
+vst3 = ["plugin", "tutti-plugin-host/vst3", "tutti-plugin/vst3"]
+clap = ["plugin", "tutti-plugin-host/clap", "tutti-plugin/clap"]
+au = ["plugin", "tutti-plugin-host/au", "tutti-plugin/au"]
 
 # Export & analysis.
 export = ["dep:tutti-export"]

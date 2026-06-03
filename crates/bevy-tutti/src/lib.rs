@@ -71,13 +71,6 @@ pub mod graph;
 // TuttiMidiPlugin) now lives in `tutti_midi_io::ecs`. bevy-tutti re-exports it
 // via the prelude under the same feature gates.
 
-#[cfg(feature = "plugin")]
-pub mod plugin_host;
-#[cfg(feature = "plugin")]
-pub mod native_window;
-#[cfg(all(target_os = "macos", feature = "plugin"))]
-mod live_resize;
-
 /// The Tutti audio engine (CPAL callback, DSP graph, device driver, bootstrap).
 /// Relocated here when bevy-tutti became the umbrella crate.
 pub mod engine;

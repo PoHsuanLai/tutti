@@ -34,7 +34,7 @@ use tutti_analysis::ecs::{AnalysisRes, TuttiAnalysisPlugin};
 #[cfg(feature = "export")]
 use tutti_export::ecs::TuttiExportPlugin;
 #[cfg(feature = "plugin")]
-use crate::plugin_host::TuttiHostingPlugin;
+use tutti_plugin_host::TuttiHostingPlugin;
 use tutti_units::ecs::TuttiDspPlugin;
 use crate::prelude::{AudioDeviceState, MasterMeterLevels, TransportState};
 

@@ -4,8 +4,6 @@ use bevy_asset::Handle;
 #[cfg(feature = "sampler")]
 use bevy_asset::Assets;
 use bevy_ecs::prelude::*;
-#[cfg(feature = "sampler")]
-use bevy_log::warn;
 use bevy_reflect::prelude::*;
 
 use crate::core::WaveAsset;
@@ -49,9 +47,14 @@ pub enum AudioPlaybackState {
 
 /// Trigger component: spawn an entity with this to start audio playback.
 ///
-/// The `audio_playback_system` processes entities with `Added<PlayAudio>`,
-/// creates a `SamplerUnit` in tutti's graph, attaches `AudioEmitter`, and
-/// removes this component.
+/// The `audio_playback_system` processes entities that carry `PlayAudio` but
+/// not yet an `AudioEmitter`, creates a `SamplerUnit` in tutti's graph,
+/// attaches `AudioEmitter`, and removes this component. The query is
+/// steady-state (`With<PlayAudio>, Without<AudioEmitter>`), not `Added`, so an
+/// entity whose `WaveAsset` has not finished loading is retried every frame
+/// until the asset resolves — the same idiom `bevy_audio` uses with
+/// `Without<AudioSink>`. An `Added`-only query would drop the entity forever
+/// if the asset was not ready on the single frame the component was inserted.
 ///
 /// # Examples
 ///
@@ -146,7 +149,10 @@ pub fn audio_playback_system(
     graph: Option<ResMut<TuttiGraphRes>>,
     config: Option<Res<AudioConfig>>,
     mut dirty: ResMut<crate::graph::GraphDirty>,
-    query: Query<(Entity, &PlayAudio), Added<PlayAudio>>,
+    // Steady-state, not `Added`: an entity stays in this set until it gains an
+    // `AudioEmitter`, so a not-yet-loaded `WaveAsset` is retried each frame
+    // rather than dropped after the insertion frame (the fire-once trap).
+    query: Query<(Entity, &PlayAudio), Without<AudioEmitter>>,
     ts_query: Query<&TimeStretch>,
 ) {
     let Some(mut graph) = graph else { return };
@@ -156,7 +162,8 @@ pub fn audio_playback_system(
 
     for (entity, play) in query.iter() {
         let Some(source) = audio_assets.get(&play.source) else {
-            warn!("WaveAsset not loaded yet for entity {entity:?}, will retry next frame");
+            // Asset still loading; entity remains `With<PlayAudio>,
+            // Without<AudioEmitter>` and is retried next frame.
             continue;
         };
 
@@ -206,5 +213,121 @@ pub fn audio_playback_system(
     // `graph.commit()` per frame. This system is anchored before that phase.
     if edited {
         dirty.0 = true;
+    }
+}
+
+#[cfg(test)]
+#[cfg(feature = "sampler")]
+mod tests {
+    use super::*;
+    use crate::resources::{AudioConfig, TuttiGraphRes};
+    use crate::TuttiEngine;
+    use bevy_app::{App, Update};
+    use bevy_asset::{AssetApp, AssetPlugin, Assets};
+    use std::sync::Arc;
+
+    /// Builds an `App` with the playback system, a real graph, an
+    /// `AudioConfig`, and an empty `Assets<WaveAsset>` store we control.
+    fn test_app() -> App {
+        let engine = TuttiEngine::builder()
+            .inputs(0)
+            .outputs(2)
+            .build()
+            .expect("build engine");
+        let TuttiEngine { graph, .. } = engine;
+
+        let mut app = App::new();
+        app.add_plugins(AssetPlugin::default());
+        app.init_asset::<WaveAsset>();
+        app.insert_resource(TuttiGraphRes(graph));
+        app.insert_resource(AudioConfig {
+            sample_rate: 48_000.0,
+            channels: 2,
+        });
+        app.init_resource::<crate::graph::GraphDirty>();
+        app.add_systems(Update, audio_playback_system);
+        app
+    }
+
+    /// Regression: a `PlayAudio` whose `WaveAsset` is not yet loaded must be
+    /// retried each frame and play once the asset resolves — not dropped after
+    /// the insertion frame (the `Added<PlayAudio>` fire-once trap).
+    #[test]
+    fn play_audio_retries_until_asset_loads() {
+        let mut app = test_app();
+
+        // Reserve a handle with NO backing asset yet — simulates `AssetServer::load`
+        // returning before decode finishes.
+        let handle = app
+            .world()
+            .resource::<Assets<WaveAsset>>()
+            .reserve_handle();
+
+        let entity = app
+            .world_mut()
+            .spawn(PlayAudio::once(handle.clone()))
+            .id();
+
+        // Frame 1: asset still unresolved → no emitter, but the trigger survives.
+        app.update();
+        assert!(
+            app.world().get::<AudioEmitter>(entity).is_none(),
+            "no emitter while asset is unloaded"
+        );
+        assert!(
+            app.world().get::<PlayAudio>(entity).is_some(),
+            "PlayAudio trigger must survive an unresolved-asset frame (no fire-once drop)"
+        );
+
+        // Resolve the asset.
+        let mut wave = crate::Wave::new(1, 48_000.0);
+        wave.push(0.0);
+        app.world_mut()
+            .resource_mut::<Assets<WaveAsset>>()
+            .insert(handle.id(), WaveAsset(Arc::new(wave)))
+            .expect("insert wave asset");
+
+        // Frame 2: asset present → entity plays, emitter attached, trigger gone.
+        app.update();
+        assert!(
+            app.world().get::<AudioEmitter>(entity).is_some(),
+            "emitter attached once the asset resolved on a later frame"
+        );
+        assert!(
+            app.world().get::<PlayAudio>(entity).is_none(),
+            "PlayAudio removed after playback starts"
+        );
+    }
+
+    /// An entity that already played (carries `AudioEmitter`) is excluded by the
+    /// `Without<AudioEmitter>` filter, so re-running the system never double-adds.
+    #[test]
+    fn played_entity_is_not_reprocessed() {
+        let mut app = test_app();
+
+        let handle = {
+            let mut assets = app.world_mut().resource_mut::<Assets<WaveAsset>>();
+            let mut wave = crate::Wave::new(1, 48_000.0);
+            wave.push(0.0);
+            assets.add(WaveAsset(Arc::new(wave)))
+        };
+
+        let entity = app.world_mut().spawn(PlayAudio::once(handle)).id();
+        app.update();
+        let node_before = app
+            .world()
+            .get::<AudioEmitter>(entity)
+            .expect("emitter")
+            .node_id;
+
+        // Re-run: the entity now has AudioEmitter, so the steady-state filter
+        // excludes it — the node id must be unchanged (no second sampler added).
+        app.update();
+        let node_after = app
+            .world()
+            .get::<AudioEmitter>(entity)
+            .expect("emitter")
+            .node_id;
+        assert_eq!(node_before, node_after, "no re-processing of a played entity");
     }
 }

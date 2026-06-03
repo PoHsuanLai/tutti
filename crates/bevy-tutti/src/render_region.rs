@@ -220,6 +220,10 @@ impl RegionRenderNet {
 /// offline transport, rebind every transport-aware unit (and detach the clip
 /// readers' command channels), then park it as a [`RegionRenderNet`]. Clip
 /// population happens downstream in `Populate`; the worker spawns in `Spawn`.
+/// A render slot is occupied by either a parked net (`RegionRenderNet`) or a
+/// running worker (`RegionRenderInProgress`).
+type RegionRenderSlotFilter = Or<(With<RegionRenderNet>, With<RegionRenderInProgress>)>;
+
 pub fn prepare_region_render_system(
     mut commands: Commands,
     graph: Option<Res<TuttiGraphRes>>,
@@ -227,7 +231,7 @@ pub fn prepare_region_render_system(
     render_config: Res<RegionRenderConfig>,
     // Both a parked-for-Populate net and a running task occupy a slot — the
     // expensive clone has already happened for either.
-    in_flight: Query<(), Or<(With<RegionRenderNet>, With<RegionRenderInProgress>)>>,
+    in_flight: Query<(), RegionRenderSlotFilter>,
     // No `Added<>`: a request we decline this frame (over the cap) must still
     // match next frame. Presence of `StartRegionRender` *is* the "pending" flag;
     // `remove`ing it on admit below is what marks it admitted. Admission order

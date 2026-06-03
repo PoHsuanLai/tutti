@@ -458,12 +458,14 @@ pub fn reconcile_reverb_params(
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "convolution")]
+type ChangedConvolverParams<'w> = (&'w AudioNode, &'w WetMix);
+#[cfg(feature = "convolution")]
+type ChangedConvolverFilter = (With<crate::core::ecs::ConvolutionReverbNode>, Changed<WetMix>);
+
+#[cfg(feature = "convolution")]
 pub fn reconcile_convolver_params(
     graph: Option<ResMut<TuttiGraphRes>>,
-    changed: Query<
-        (&AudioNode, &WetMix),
-        (With<crate::core::ecs::ConvolutionReverbNode>, Changed<WetMix>),
-    >,
+    changed: Query<ChangedConvolverParams, ChangedConvolverFilter>,
 ) {
     let Some(mut graph) = graph else { return };
     for (node, wet) in changed.iter() {
@@ -665,7 +667,7 @@ mod tests {
     #[cfg(feature = "sampler")]
     fn sampler_speed_and_looping_change_writes_through() {
         use std::sync::Arc;
-        use crate::core::ecs::{SamplerLooping, SamplerSpeed};
+        use crate::core::ecs::{SamplerLooping, SamplerNode, SamplerSpeed};
         use crate::sampler::SamplerUnit;
         use crate::Wave;
 
@@ -684,8 +686,13 @@ mod tests {
 
         let entity = {
             let mut c = app.world_mut().commands();
+            // `spawn_audio_node` attaches only `AudioNode` + `NodeKind`; the
+            // `SamplerNode` authoring marker must be inserted alongside, exactly
+            // as every production sampler spawn path does (e.g.
+            // `promote_pending_samplers`). `reconcile_sampler_params` filters on
+            // `With<SamplerNode>`, so without it the reconcile is skipped.
             c.spawn_audio_node(unit, NodeKind::Sampler)
-                .insert((SamplerSpeed(1.0), SamplerLooping(false)))
+                .insert((SamplerNode, SamplerSpeed(1.0), SamplerLooping(false)))
                 .id()
         };
         app.update();

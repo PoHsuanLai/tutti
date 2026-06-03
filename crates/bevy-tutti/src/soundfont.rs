@@ -28,11 +28,16 @@ const _: () = {
 
 /// Trigger component: spawn an entity with this to create a SoundFont instrument.
 ///
-/// The [`soundfont_playback_system`] processes entities with
-/// `Added<PlaySoundFont>`, spawns an off-thread `SoundFontUnit` build onto the
-/// [`AsyncComputeTaskPool`] and attaches [`PendingSoundFontUnit`]. Once the build completes,
-/// `promote_pending_soundfonts` adds the unit to tutti's graph with MIDI
-/// routing, attaches `AudioEmitter`, and removes the pending marker.
+/// The [`soundfont_playback_system`] processes entities that carry
+/// `PlaySoundFont` but not yet a [`PendingSoundFontUnit`] or [`AudioEmitter`],
+/// spawns an off-thread `SoundFontUnit` build onto the
+/// [`AsyncComputeTaskPool`] and attaches [`PendingSoundFontUnit`]. Once the
+/// build completes, `promote_pending_soundfonts` adds the unit to tutti's graph
+/// with MIDI routing, attaches `AudioEmitter`, and removes the pending marker.
+///
+/// The trigger query is steady-state (not `Added`), so an entity whose `.sf2`
+/// asset has not finished loading is retried each frame until it resolves —
+/// the same fire-once-trap fix applied to [`PlayAudio`](crate::playback::PlayAudio).
 ///
 /// # Examples
 ///
@@ -84,6 +89,11 @@ pub struct PendingSoundFontUnit {
     channel: i32,
 }
 
+/// Query filter for the steady-state SoundFont trigger: carries `PlaySoundFont`
+/// but is neither building (`PendingSoundFontUnit`) nor already playing
+/// (`AudioEmitter`).
+type PlaySoundFontPending = (Without<PendingSoundFontUnit>, Without<AudioEmitter>);
+
 /// Processes `PlaySoundFont` trigger components: once the `.sf2` asset has
 /// resolved, spawns the (synchronous, potentially expensive)
 /// `SoundFontUnit::new` decode onto the [`AsyncComputeTaskPool`] and attaches
@@ -94,12 +104,17 @@ pub fn soundfont_playback_system(
     mut commands: Commands,
     sf_assets: Res<Assets<crate::synth::SoundFontAsset>>,
     config: Option<Res<AudioConfig>>,
-    query: Query<(Entity, &PlaySoundFont), Added<PlaySoundFont>>,
+    // Steady-state, not `Added`: retried each frame until the `.sf2` asset
+    // resolves. Excludes entities already building (`PendingSoundFontUnit`) or
+    // already playing (`AudioEmitter`).
+    query: Query<(Entity, &PlaySoundFont), PlaySoundFontPending>,
 ) {
     let Some(config) = config else { return };
 
     for (entity, play) in query.iter() {
         let Some(source) = sf_assets.get(&play.source) else {
+            // Asset still loading; entity stays in the trigger set and is
+            // retried next frame.
             continue;
         };
 

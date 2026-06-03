@@ -13,7 +13,6 @@
 //!   reads a snapshot on an offline timeline
 //! - [`MidiRoutingTable`] — UI-thread writer for routing rules, publishing
 //!   immutable [`tutti_midi_types::MidiRoutingSnapshot`] values via [`arc_swap::ArcSwap`]
-//! - [`CCMappingManager`] — MIDI CC → application target mapping with learn mode
 //! - [`MidiOutputAggregator`] — aggregates MIDI output from multiple audio
 //!   units for delivery to hardware output
 //! - [`MpeProcessor`] / [`PerNoteExpression`] (behind `mpe` feature) — MPE
@@ -21,7 +20,6 @@
 
 pub use tutti_midi_types;
 
-pub mod cc_manager;
 pub mod clip_player;
 pub mod output_collector;
 pub mod registry;
@@ -32,7 +30,6 @@ pub mod snapshot_reader;
 #[cfg(feature = "mpe")]
 pub mod mpe;
 
-pub use cc_manager::{CCMappingManager, CCProcessResult};
 pub use clip_player::{CompositeMidiSource, MidiClipSource, TimedClipEvent};
 pub use output_collector::{
     midi_output_channel, midi_output_channel_with_capacity, MidiOutputAggregator,

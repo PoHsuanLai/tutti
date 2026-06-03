@@ -196,9 +196,11 @@ pub use crate::dsp::AddLfo;
 #[cfg(feature = "dsp")]
 pub use crate::dsp::{
     dsp_chorus_system, dsp_compressor_system, dsp_delay_system, dsp_filter_system, dsp_gate_system,
-    dsp_reverb_system, spawn_chorus_nodes, spawn_compressor_nodes, spawn_delay_nodes,
-    spawn_filter_nodes, spawn_gate_nodes, spawn_reverb_nodes,
+    dsp_reverb_system,
 };
+// Generic marker-driven spawn (replaces the six `spawn_*_nodes` systems).
+#[cfg(feature = "dsp")]
+pub use crate::dsp::{spawn_dsp_node, AddDspNode, DspNode, SpawnParams};
 pub use crate::dsp::{dsp_lfo_system, spawn_lfo_nodes, TuttiDspPlugin};
 #[cfg(feature = "dsp")]
 #[allow(deprecated)]

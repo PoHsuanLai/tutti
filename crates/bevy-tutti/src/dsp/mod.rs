@@ -17,7 +17,12 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
 mod components;
+#[cfg(feature = "dsp")]
+mod spawn;
 mod systems;
+
+#[cfg(feature = "dsp")]
+pub use spawn::{spawn_dsp_node, AddDspNode, DspNode, SpawnParams};
 
 #[allow(deprecated)]
 pub use components::AddLfo;
@@ -29,8 +34,7 @@ pub use systems::{dsp_lfo_system, spawn_lfo_nodes};
 #[cfg(feature = "dsp")]
 pub use systems::{
     dsp_chorus_system, dsp_compressor_system, dsp_delay_system, dsp_filter_system,
-    dsp_gate_system, dsp_reverb_system, spawn_chorus_nodes, spawn_compressor_nodes,
-    spawn_delay_nodes, spawn_filter_nodes, spawn_gate_nodes, spawn_reverb_nodes,
+    dsp_gate_system, dsp_reverb_system,
 };
 
 /// Bevy plugin: DSP unit spawn systems.
@@ -61,21 +65,21 @@ impl Plugin for TuttiDspPlugin {
 
         #[cfg(feature = "dsp")]
         {
+            use crate::core::ecs::{
+                ChorusNode, CompressorNode, DelayNode, FilterNode, GateNode, ReverbNode,
+            };
             use crate::graph::reconcile::{reconcile_reverb_params, reconcile_unit_params};
+            use spawn::AddDspNode;
 
-            // Marker-driven spawners (preferred). In the Spawn set.
-            app.add_systems(
-                Update,
-                (
-                    spawn_compressor_nodes,
-                    spawn_gate_nodes,
-                    spawn_filter_nodes,
-                    spawn_reverb_nodes,
-                    spawn_delay_nodes,
-                    spawn_chorus_nodes,
-                )
-                    .in_set(GraphReconcileSystems::Spawn),
-            );
+            // Marker-driven spawners (preferred). One generic `spawn_dsp_node::<T>`
+            // per node type, registered via the `AddDspNode` App ext (the
+            // `AddAudioSource` pattern). All land in the Spawn set.
+            app.add_dsp_node::<CompressorNode>()
+                .add_dsp_node::<GateNode>()
+                .add_dsp_node::<FilterNode>()
+                .add_dsp_node::<ReverbNode>()
+                .add_dsp_node::<DelayNode>()
+                .add_dsp_node::<ChorusNode>();
 
             app.add_systems(
                 Update,

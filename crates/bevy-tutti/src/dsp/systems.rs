@@ -28,7 +28,7 @@ use crate::core::ecs::{
 #[cfg(feature = "dsp")]
 use crate::core::ecs::{
     Attack, ChorusNode, CompressorNode, CompressorRatio, DelayNode, DelayTime, Feedback,
-    FilterMode, FilterNode, FilterQ, GainDb, GateNode, MaxDelay, ModRate, Release, ReverbAlgo,
+    FilterMode, FilterNode, FilterQ, GainDb, GateNode, MaxDelay, ModRate, Release,
     ReverbDamping, ReverbNode, ReverbRoomSize, ReverbTime, StereoChannels, ThresholdDb, WetMix,
 };
 
@@ -46,7 +46,7 @@ use super::components::{AddChorus, AddCompressor, AddDelay, AddFilter, AddGate, 
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "dsp")]
-fn svf_type_of(mode: FilterMode) -> crate::units::SvfType {
+pub(super) fn svf_type_of(mode: FilterMode) -> crate::units::SvfType {
     use crate::units::SvfType;
     match mode {
         FilterMode::LowPass => SvfType::LowPass,
@@ -102,195 +102,17 @@ fn lfo_shape_kind_of(shape: crate::units::LfoShape) -> LfoShapeKind {
 }
 
 // ===========================================================================
-// Marker-driven spawn systems (preferred path)
+// Marker-driven spawn (preferred path)
 //
-// Each reads the param components `#[require]` placed on the entity and builds
-// the unit from THOSE values, so the built unit and the defaulted components
-// never drift. `Without<AudioNode>` skips entities a shim already promoted.
+// The six effect spawn systems (compressor / gate / filter / reverb / delay /
+// chorus) collapsed into the one generic `spawn_dsp_node::<T>` in `dsp::spawn`,
+// registered via `App::add_dsp_node::<T>()`. Their per-unit construction now
+// lives in the `impl DspNode for …` blocks there.
+//
+// The LFO stays bespoke below: it reads `TransportRes` at construction and can
+// decline to build (beat-synced with no transport) — neither fits the generic
+// `build(params) -> Box<dyn AudioUnit>` shape.
 // ===========================================================================
-
-#[cfg(feature = "dsp")]
-#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
-pub fn spawn_compressor_nodes(
-    mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
-    mut dirty: ResMut<GraphDirty>,
-    query: Query<
-        (
-            Entity,
-            &ThresholdDb,
-            &CompressorRatio,
-            &Attack,
-            &Release,
-            &GainDb,
-            Option<&StereoChannels>,
-        ),
-        (Added<CompressorNode>, Without<AudioNode>),
-    >,
-) {
-    let Some(mut graph) = graph else { return };
-    for (entity, thr, ratio, attack, release, makeup, stereo) in query.iter() {
-        let stereo = stereo.map(|s| s.0).unwrap_or(false);
-        let comp = if stereo {
-            crate::units::Compressor::stereo(thr.0, ratio.0, attack.0, release.0)
-        } else {
-            crate::units::Compressor::mono(thr.0, ratio.0, attack.0, release.0)
-        }
-        .with_makeup(makeup.0);
-        let node_id = graph.0.add(comp);
-        dirty.0 = true;
-        commands
-            .entity(entity)
-            .insert((AudioNode(node_id), CompressorNode::KIND));
-        bevy_log::info!("Compressor added (entity {entity:?}, stereo={stereo}, node {node_id:?})");
-    }
-}
-
-#[cfg(feature = "dsp")]
-#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
-pub fn spawn_gate_nodes(
-    mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
-    mut dirty: ResMut<GraphDirty>,
-    query: Query<
-        (Entity, &ThresholdDb, &Attack, &Release, Option<&StereoChannels>),
-        (Added<GateNode>, Without<AudioNode>),
-    >,
-) {
-    let Some(mut graph) = graph else { return };
-    for (entity, thr, attack, release, stereo) in query.iter() {
-        let stereo = stereo.map(|s| s.0).unwrap_or(false);
-        // Hold defaults to the attack time (the `AddGate` default exposed a
-        // separate `hold`, but the marker path keeps only the reconcilable
-        // params; hold is construction-only and rarely tuned).
-        let gate = if stereo {
-            crate::units::Gate::stereo(thr.0, attack.0, attack.0, release.0)
-        } else {
-            crate::units::Gate::mono(thr.0, attack.0, attack.0, release.0)
-        };
-        let node_id = graph.0.add(gate);
-        dirty.0 = true;
-        commands
-            .entity(entity)
-            .insert((AudioNode(node_id), GateNode::KIND));
-        bevy_log::info!("Gate added (entity {entity:?}, stereo={stereo}, node {node_id:?})");
-    }
-}
-
-#[cfg(feature = "dsp")]
-#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
-pub fn spawn_filter_nodes(
-    mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
-    mut dirty: ResMut<GraphDirty>,
-    query: Query<
-        (Entity, &Frequency, &FilterQ, &GainDb, Option<&FilterMode>),
-        (Added<FilterNode>, Without<AudioNode>),
-    >,
-) {
-    let Some(mut graph) = graph else { return };
-    for (entity, freq, q, gain, mode) in query.iter() {
-        let svf = svf_type_of(mode.copied().unwrap_or_default());
-        let mut node = crate::units::StereoSvfFilterNode::<f64>::new(svf, freq.0, q.0);
-        if gain.0 != 0.0 {
-            node = node.with_gain_db(gain.0);
-        }
-        let node_id = graph.0.add(node);
-        dirty.0 = true;
-        commands
-            .entity(entity)
-            .insert((AudioNode(node_id), FilterNode::KIND));
-        bevy_log::info!("Filter added (entity {entity:?}, type={svf:?}, node {node_id:?})");
-    }
-}
-
-#[cfg(feature = "dsp")]
-#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
-pub fn spawn_reverb_nodes(
-    mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
-    mut dirty: ResMut<GraphDirty>,
-    query: Query<
-        (
-            Entity,
-            &ReverbRoomSize,
-            &ReverbDamping,
-            Option<&ReverbTime>,
-            Option<&ReverbAlgo>,
-        ),
-        (Added<ReverbNode>, Without<AudioNode>),
-    >,
-) {
-    let Some(mut graph) = graph else { return };
-    for (entity, room, damp, time, algo) in query.iter() {
-        let time = time.map(|t| t.0).unwrap_or(5.0);
-        let node_id = match algo.copied().unwrap_or_default() {
-            ReverbAlgo::Fdn32 => graph
-                .0
-                .add(crate::core::dsp::reverb_stereo(room.0 as f64, time as f64, damp.0 as f64)),
-            ReverbAlgo::Fdn4 => graph
-                .0
-                .add(crate::core::dsp::reverb4_stereo(room.0 as f64, time as f64)),
-        };
-        dirty.0 = true;
-        commands
-            .entity(entity)
-            .insert((AudioNode(node_id), ReverbNode::KIND));
-        bevy_log::info!("Reverb added (entity {entity:?}, node {node_id:?})");
-    }
-}
-
-#[cfg(feature = "dsp")]
-#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
-pub fn spawn_delay_nodes(
-    mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
-    mut dirty: ResMut<GraphDirty>,
-    query: Query<
-        (Entity, &DelayTime, &Feedback, &WetMix, Option<&MaxDelay>),
-        (Added<DelayNode>, Without<AudioNode>),
-    >,
-) {
-    let Some(mut graph) = graph else { return };
-    for (entity, time, feedback, wet, max) in query.iter() {
-        let max = max.map(|m| m.0).unwrap_or(4.0);
-        let delay = crate::units::StereoDelayLineNode::new(max, time.0, time.0, feedback.0);
-        delay.set_mix(wet.0);
-        let node_id = graph.0.add(delay);
-        dirty.0 = true;
-        commands
-            .entity(entity)
-            .insert((AudioNode(node_id), DelayNode::KIND));
-        bevy_log::info!("Delay added (entity {entity:?}, node {node_id:?})");
-    }
-}
-
-#[cfg(feature = "dsp")]
-#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
-pub fn spawn_chorus_nodes(
-    mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
-    mut dirty: ResMut<GraphDirty>,
-    query: Query<
-        (Entity, &ModRate, &ModDepth, &Feedback, &WetMix),
-        (Added<ChorusNode>, Without<AudioNode>),
-    >,
-) {
-    let Some(mut graph) = graph else { return };
-    for (entity, rate, depth, feedback, wet) in query.iter() {
-        let chorus = crate::units::ChorusNode::new();
-        chorus.set_rate(rate.0);
-        chorus.set_depth(depth.0);
-        chorus.set_feedback(feedback.0);
-        chorus.set_mix(wet.0);
-        let node_id = graph.0.add(chorus);
-        dirty.0 = true;
-        commands
-            .entity(entity)
-            .insert((AudioNode(node_id), ChorusNode::KIND));
-        bevy_log::info!("Chorus added (entity {entity:?}, node {node_id:?})");
-    }
-}
 
 #[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
 pub fn spawn_lfo_nodes(
@@ -629,7 +451,8 @@ mod marker_spawn_tests {
         app.add_systems(
             Update,
             (
-                spawn_filter_nodes.in_set(GraphReconcileSystems::Spawn),
+                super::super::spawn::spawn_dsp_node::<FilterNode>
+                    .in_set(GraphReconcileSystems::Spawn),
                 commit_graph.in_set(GraphReconcileSystems::Commit),
             ),
         );

@@ -54,7 +54,6 @@ mod transport;
 pub mod task;
 mod device_state;
 mod plugin;
-mod prelude;
 mod resources;
 
 pub mod graph;
@@ -75,78 +74,28 @@ pub mod graph;
 pub mod engine;
 
 pub use plugin::TuttiPlugin;
-pub use prelude::*;
 
 // =========================================================================
 // Engine vocabulary re-export surface.
 //
-// bevy-tutti is the umbrella: it re-exposes the subsystem crates and the
-// engine types under `bevy_tutti::*`, exactly as the old `tutti` umbrella
-// did under `crate::*`. Consumers migrate with a `crate::` -> `bevy_tutti::`
-// prefix swap. The one non-1:1 case is the fundsp prelude: it is reached as
-// `bevy_tutti::core::dsp` (NOT `bevy_tutti::dsp`, which is this crate's own
-// DSP systems module).
+// bevy-tutti is the engine + composition root. It exposes ONLY the engine
+// types here; every subsystem symbol is imported by consumers from its
+// origin tutti-* crate directly (no façade aliases).
 // =========================================================================
 
-// Subsystem-crate aliases. Only the names that do NOT collide with one of
-// bevy-tutti's own modules are aliased here, so a consumer can write
-// `bevy_tutti::core` / `::units` / `::sampler` / `::synth` / `::midi_runtime`.
-// The colliding ones (midi, plugin, analysis, export, automation) clash with
-// bevy-tutti's own modules of the same name — consumers reach those subsystem
-// crates by their real crate names directly (`tutti_midi_io`, `tutti_plugin`,
-// `tutti_analysis`, `tutti_export`, `tutti_units::automation`), which are all
-// first-class workspace members.
-pub use tutti_core as core;
-pub use tutti_units as units;
-#[cfg(feature = "midi")]
-pub use tutti_midi_runtime as midi_runtime;
-#[cfg(feature = "sampler")]
-pub use tutti_sampler as sampler;
-#[cfg(feature = "synth")]
-pub use tutti_synth as synth;
-
-// Engine types (the umbrella exposed these at its crate root).
+// Engine types.
 pub use engine::{DefaultProcessor, DeviceInfo, Error, Result, TuttiDriver, TuttiEngine, TuttiEngineBuilder, TuttiGraph};
 
-// Narrow set of core types that appear in engine signatures.
-pub use tutti_core::{AudioUnit, BufferMut, BufferRef, Fade, MeteringHandle, NodeId, Source, TransportHandle, Wave};
+// bevy-tutti's own UI-mirror resources (transport/metering/device state).
+pub use device_state::AudioDeviceState;
+pub use metering::MasterMeterLevels;
+pub use transport::TransportState;
 
-// Entity-as-node ECS primitives + param components (from tutti-core's
-// `bevy_ecs` feature). bevy-tutti owns the reconcile systems that translate
-// these into graph ops; here we surface them at the root + via `ecs`, matching
-// the umbrella.
-pub use tutti_core::ecs;
-pub use tutti_core::{
-    Attack, AudioNode, Azimuth, CeilingDb, CompressorRatio, DelayTime, Drive, Elevation, Feedback,
-    FilterQ, Frequency, GainDb, LayerKey, ModDepth, ModParam, ModRate, Mute, NodeKind, Pan,
-    PluginParam, Release, ReverbAlgo, ReverbDamping, ReverbRoomSize, SamplerLooping, SamplerSpeed,
-    ThresholdDb, Volume, WetMix,
-};
-
-// Per-subsystem resource builders, re-exported at the root like the umbrella
-// (`bevy_tutti::sf2(..)`, `bevy_tutti::wav(..)`, `bevy_tutti::vst3(..)`, …).
+// bevy-tutti's own resource newtypes that wrap engine-leaf handles
+// (CPAL stream / SoundFont system). These live in `resources.rs`.
+pub use resources::TuttiDriverRes;
 #[cfg(feature = "soundfont")]
-pub use tutti_synth::{sf2, Sf2Builder};
-#[cfg(all(feature = "sampler", feature = "flac"))]
-pub use tutti_sampler::flac;
-#[cfg(all(feature = "sampler", feature = "mp3"))]
-pub use tutti_sampler::mp3;
-#[cfg(all(feature = "sampler", feature = "ogg"))]
-pub use tutti_sampler::ogg;
-#[cfg(all(feature = "sampler", feature = "wav"))]
-pub use tutti_sampler::wav;
-#[cfg(feature = "sampler")]
-pub use tutti_sampler::SampleBuilder;
-#[cfg(all(feature = "plugin", feature = "au"))]
-pub use tutti_plugin::au;
-#[cfg(all(feature = "plugin", feature = "clap"))]
-pub use tutti_plugin::clap;
-#[cfg(all(feature = "plugin", feature = "vst2"))]
-pub use tutti_plugin::vst2;
-#[cfg(all(feature = "plugin", feature = "vst3"))]
-pub use tutti_plugin::vst3;
-#[cfg(feature = "plugin")]
-pub use tutti_plugin::PluginBuilder;
+pub use resources::SoundFontRes;
 
 // Test-only global allocator for RT-safety regression tests (relocated from
 // the umbrella). Panics on any heap allocation inside `assert_no_alloc(..)`

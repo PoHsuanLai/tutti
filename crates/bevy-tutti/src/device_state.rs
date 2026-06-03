@@ -1,7 +1,7 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use crate::{AudioConfig, TuttiDriverRes};
+use crate::resources::{AudioConfig, TuttiDriverRes};
 
 /// Audio device state synced from Tutti every frame.
 #[derive(Resource, Debug, Clone, Reflect)]

@@ -1,7 +1,7 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use crate::TransportRes;
+use crate::resources::TransportRes;
 
 /// Transport state synced from Tutti every frame via lock-free atomics.
 #[derive(Resource, Debug, Clone, Reflect)]

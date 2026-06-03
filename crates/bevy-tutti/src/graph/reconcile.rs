@@ -9,7 +9,7 @@
 
 // Generic hub items now live in tutti-core; re-export them here so the many
 // external `crate::graph::reconcile::*` paths keep resolving against this module.
-pub use crate::core::ecs::{
+pub use tutti_core::ecs::{
     commit_graph, crossfade_audio_node, engine_ready, reconcile_node_despawn, reconcile_params,
     GraphDirty, GraphReconcileSystems, SpawnAudioNode,
 };

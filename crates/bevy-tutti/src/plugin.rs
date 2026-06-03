@@ -26,7 +26,7 @@ use tutti_units::ecs::TuttiSpatialPlugin;
 #[cfg(feature = "soundfont")]
 use tutti_synth::ecs::TuttiSoundFontPlugin;
 #[cfg(feature = "sampler")]
-use crate::sampler::ecs::{SamplerRes, TuttiSamplerPlugin};
+use tutti_sampler::ecs::{SamplerRes, TuttiSamplerPlugin};
 #[cfg(feature = "automation")]
 use tutti_units::ecs::TuttiAutomationPlugin;
 #[cfg(feature = "analysis")]
@@ -36,7 +36,7 @@ use tutti_export::ecs::TuttiExportPlugin;
 #[cfg(feature = "plugin")]
 use tutti_plugin_host::TuttiHostingPlugin;
 use tutti_units::ecs::TuttiDspPlugin;
-use crate::prelude::{AudioDeviceState, MasterMeterLevels, TransportState};
+use crate::{AudioDeviceState, MasterMeterLevels, TransportState};
 
 /// Bevy plugin that creates a `TuttiEngine`, starts the audio stream,
 /// and registers ECS components, asset loaders, and systems.
@@ -169,7 +169,7 @@ impl Plugin for TuttiPlugin {
 
                 #[cfg(feature = "sampler")]
                 {
-                    let aud_res = crate::sampler::ecs::init_auditioner(&sampler);
+                    let aud_res = tutti_sampler::ecs::init_auditioner(&sampler);
                     app.insert_resource(aud_res);
                     app.insert_resource(SamplerRes(sampler));
                 }

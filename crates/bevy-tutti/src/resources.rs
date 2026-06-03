@@ -48,11 +48,11 @@ impl TuttiDriverRes {
 /// SoundFont system (file cache + synth instantiation).
 #[cfg(feature = "soundfont")]
 #[derive(Resource, Clone)]
-pub struct SoundFontRes(pub Arc<crate::synth::SoundFontSystem>);
+pub struct SoundFontRes(pub Arc<tutti_synth::SoundFontSystem>);
 
 #[cfg(feature = "soundfont")]
 impl std::ops::Deref for SoundFontRes {
-    type Target = crate::synth::SoundFontSystem;
+    type Target = tutti_synth::SoundFontSystem;
     fn deref(&self) -> &Self::Target {
         &self.0
     }

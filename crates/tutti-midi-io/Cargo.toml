@@ -25,12 +25,13 @@ arc-swap = "1.7"
 ringbuf = "0.4"
 parking_lot = "0.12"
 
-# MIDI hardware + file I/O
-midir = "0.9"
-midly = "0.5"
+# MIDI hardware + file I/O. midly's workspace base is no_std; re-add the
+# `std` + `parallel` features this crate's SMF I/O relies on (midly's default).
+midir = { workspace = true }
+midly = { workspace = true, features = ["std", "parallel"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-coremidi = { version = "0.8", optional = true }
+coremidi = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-subscriber = "0.3"

@@ -11,9 +11,11 @@ use super::SamplerRes;
 
 /// Fire-and-forget request to start recording on a channel.
 ///
-/// `recording_start_system` reads each `StartRecording`, calls
-/// `engine.sampler().start_recording()`, and spawns an entity carrying
-/// `RecordingActive`.
+/// `recording_start_system` reads each `StartRecording`, builds a
+/// `capture::Config` (channel + source + mode, plus `punch_range` when
+/// `punch` is `Some`), calls
+/// `engine.sampler().start_recording_with_config()`, and spawns an entity
+/// carrying `RecordingActive`.
 ///
 /// Not `Reflect`: `Source` / `Mode` are foreign types from `tutti-sampler`.
 #[derive(Message, Debug, Clone, Copy)]
@@ -21,6 +23,10 @@ pub struct StartRecording {
     pub channel_index: usize,
     pub source: crate::capture::Source,
     pub mode: crate::capture::Mode,
+    /// Optional `(in_beat, out_beat)` punch range. When `Some`, the built
+    /// `Config` gets `punch_range(in, out)` — e.g. the loop range when
+    /// the transport is looping.
+    pub punch: Option<(f64, f64)>,
 }
 
 impl StartRecording {
@@ -29,11 +35,17 @@ impl StartRecording {
             channel_index,
             source,
             mode: crate::capture::Mode::Replace,
+            punch: None,
         }
     }
 
     pub fn mode(mut self, mode: crate::capture::Mode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    pub fn punch(mut self, in_beat: f64, out_beat: f64) -> Self {
+        self.punch = Some((in_beat, out_beat));
         self
     }
 }
@@ -61,17 +73,25 @@ pub struct RecordingActive {
     pub mode: crate::capture::Mode,
 }
 
-/// Holds the recorded data after a recording session completes.
+/// Holds the recorded data after a recording session completes, tagged
+/// with the channel it came from so consumers can correlate the result
+/// back to whatever they recorded on that channel.
 ///
 /// Spawned by `recording_stop_system` on its own entity. Consume and
 /// despawn the entity to process the recorded data.
 #[derive(Component)]
-pub struct RecordingResult(pub crate::capture::Recorded);
+pub struct RecordingResult {
+    pub channel_index: usize,
+    pub data: crate::capture::Recorded,
+}
 
 /// Processes `StartRecording` messages.
 ///
-/// Calls `sampler.recording().start_recording()` with the current transport
-/// beat, then spawns a `RecordingActive` entity to track the session.
+/// Builds a `capture::Config` from the message (channel + source + mode,
+/// plus `punch_range` when `punch` is `Some`), calls
+/// `sampler.recording().start_recording_with_config()` with the current
+/// transport beat, then spawns a `RecordingActive` entity to track the
+/// session.
 pub fn recording_start_system(
     mut commands: Commands,
     sampler: Res<SamplerRes>,
@@ -79,12 +99,18 @@ pub fn recording_start_system(
     mut events: MessageReader<StartRecording>,
 ) {
     for start in events.read() {
-        match sampler.0.recording().start_recording(
-            start.channel_index,
-            start.source,
-            start.mode,
-            transport.current_beat(),
-        ) {
+        let mut config = crate::capture::Config::builder()
+            .channel(start.channel_index)
+            .source(start.source)
+            .mode(start.mode);
+        if let Some((in_beat, out_beat)) = start.punch {
+            config = config.punch_range(in_beat, out_beat);
+        }
+        match sampler
+            .0
+            .recording()
+            .start_recording_with_config(config.build(), transport.current_beat())
+        {
             Ok(()) => {
                 commands.spawn(RecordingActive {
                     channel_index: start.channel_index,
@@ -132,7 +158,10 @@ pub fn recording_stop_system(
                         commands.entity(active_entity).remove::<RecordingActive>();
                     }
                 }
-                commands.spawn(RecordingResult(data));
+                commands.spawn(RecordingResult {
+                    channel_index: stop.channel_index,
+                    data,
+                });
             }
             Err(e) => {
                 bevy_log::error!(

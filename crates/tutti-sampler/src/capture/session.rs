@@ -331,7 +331,7 @@ impl std::fmt::Debug for Session {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Recorded {
     Midi {
         buffer: Buffer,

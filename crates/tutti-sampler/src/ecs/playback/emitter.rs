@@ -189,28 +189,16 @@ pub fn audio_playback_system(
 mod tests {
     use super::*;
     use tutti_core::ecs::{AudioConfig, GraphDirty, TuttiGraphRes};
-    use tutti_core::{PdcManager, TuttiGraph, TuttiNet};
+    use tutti_core::TuttiGraph;
     use bevy_app::{App, Update};
     use bevy_asset::{AssetApp, AssetPlugin, Assets};
     use std::sync::Arc;
 
     /// Build a bare `TuttiGraph` directly (no `TuttiEngine`, which lives in
-    /// bevy-tutti). Allocates the fundsp backend so `commit()` has something
-    /// to publish into; we never drive audio through it here.
+    /// bevy-tutti). Feature-agnostic via `TuttiGraph::empty` — tutti-core owns
+    /// the `midi` cfg, so this is correct under workspace feature unification.
     fn bare_graph(channels: usize) -> TuttiGraph {
-        let mut net = TuttiNet::new(0, channels);
-        let _backend = net.backend();
-        let pdc = PdcManager::new(channels, 0);
-        #[cfg(feature = "midi")]
-        let midi_route = tutti_midi_types::MidiRoutingTable::new();
-        TuttiGraph::from_parts(
-            net,
-            pdc,
-            #[cfg(feature = "midi")]
-            midi_route,
-            48_000.0,
-            channels,
-        )
+        TuttiGraph::empty(channels)
     }
 
     /// Builds an `App` with the playback system, a real graph, an

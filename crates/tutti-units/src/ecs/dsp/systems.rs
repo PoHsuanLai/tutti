@@ -389,23 +389,13 @@ mod marker_spawn_tests {
     use tutti_core::ecs::FilterNode;
     use tutti_core::ecs::{commit_graph, reconcile_node_despawn, GraphReconcileSystems};
     use tutti_core::ecs::TuttiGraphRes;
-    use tutti_core::{PdcManager, TuttiGraph, TuttiNet};
+    use tutti_core::TuttiGraph;
     use bevy_app::{App, Update};
 
     fn bare_graph(channels: usize) -> TuttiGraph {
-        let mut net = TuttiNet::new(0, channels);
-        let _backend = net.backend();
-        let pdc = PdcManager::new(channels, 0);
-        #[cfg(feature = "midi")]
-        let midi_route = tutti_midi_types::MidiRoutingTable::new();
-        TuttiGraph::from_parts(
-            net,
-            pdc,
-            #[cfg(feature = "midi")]
-            midi_route,
-            48_000.0,
-            channels,
-        )
+        // Feature-agnostic (tutti-core owns the `midi` cfg) — correct under
+        // workspace feature unification even though tutti-units has no `midi` feature.
+        TuttiGraph::empty(channels)
     }
 
     fn test_app() -> App {

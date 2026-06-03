@@ -32,10 +32,10 @@ use bevy_asset::AssetPlugin;
 use bevy_ecs::prelude::*;
 use bevy_log::LogPlugin;
 
-use bevy_tutti::{
-    AudioNode, MasterMeterLevels, NodeKind, SpawnAudioNode, TuttiGraphRes, TuttiPlugin, Volume,
-};
-use bevy_tutti::core::dsp::sine_hz;
+use bevy_tutti::{MasterMeterLevels, TuttiPlugin};
+use tutti_core::dsp::sine_hz;
+use tutti_core::ecs::{SpawnAudioNode, TuttiGraphRes};
+use tutti_core::{AudioNode, NodeKind, Volume};
 
 fn main() {
     App::new()
@@ -50,7 +50,7 @@ fn main() {
         .run();
 }
 
-fn start_transport(transport: Res<bevy_tutti::TransportRes>) {
+fn start_transport(transport: Res<tutti_core::ecs::TransportRes>) {
     transport.play();
 }
 

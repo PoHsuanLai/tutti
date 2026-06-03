@@ -539,26 +539,12 @@ mod tests {
     use tutti_core::dsp::dc;
     use tutti_core::ecs::AudioConfig;
     use bevy_ecs::world::World;
-    use tutti_core::{PdcManager, TuttiNet};
-    #[cfg(feature = "midi")]
-    use tutti_midi_runtime::MidiRoutingTable;
 
     /// Build a real (tiny, CPAL-free) 2-output graph with one node piped to the
     /// output bus, so `clone_net_isolated(target)` succeeds in `prepare`.
+    /// `TuttiGraph::empty` is feature-agnostic (tutti-core owns the `midi` cfg).
     fn graph_res_with_one_target() -> (TuttiGraphRes, NodeId) {
-        let mut net = TuttiNet::new(0, 2);
-        let _backend = net.backend(); // allocate the fundsp backend
-        let pdc = PdcManager::new(2, 0);
-        #[cfg(feature = "midi")]
-        let midi_route = MidiRoutingTable::new();
-        let mut graph = tutti_core::TuttiGraph::from_parts(
-            net,
-            pdc,
-            #[cfg(feature = "midi")]
-            midi_route,
-            48_000.0,
-            2,
-        );
+        let mut graph = tutti_core::TuttiGraph::empty(2);
         let target = graph.master(dc(1.0)); // one node, wired to the output bus
         (TuttiGraphRes(graph), target)
     }

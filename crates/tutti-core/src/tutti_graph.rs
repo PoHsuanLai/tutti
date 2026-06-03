@@ -75,6 +75,30 @@ impl TuttiGraph {
         }
     }
 
+    /// Build an empty graph with the given output `channels` (0 inputs,
+    /// 48 kHz). Feature-agnostic: constructs the net / PDC / (midi-gated)
+    /// routing table internally, so callers — especially the per-frame test
+    /// fixtures in downstream crates — never have to replicate the
+    /// `#[cfg(feature = "midi")]` arity dance of [`from_parts`](Self::from_parts).
+    /// The `midi` feature is owned here, so this stays correct under any
+    /// workspace feature unification.
+    pub fn empty(channels: usize) -> Self {
+        let mut net = TuttiNet::new(0, channels);
+        // Allocate the fundsp realtime backend (as the real builder does) so
+        // `commit()` has a backend to publish into. Discarded here — nothing
+        // drives audio through a test/bootstrap graph.
+        let _backend = net.backend();
+        let pdc = PdcManager::new(channels, 0);
+        Self {
+            net,
+            pdc,
+            #[cfg(feature = "midi")]
+            midi_route: MidiRoutingTable::new(),
+            sample_rate: 48_000.0,
+            channels,
+        }
+    }
+
     /// Sample rate the graph was built with.
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate

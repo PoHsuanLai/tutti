@@ -32,13 +32,15 @@ use bevy_asset::AssetPlugin;
 use bevy_ecs::prelude::*;
 use bevy_log::LogPlugin;
 
-use bevy_tutti::{
-    crossfade_audio_node, AudioNode, AutomationDrivesParam, AutomationLaneNode, AutomationParam,
-    MasterMeterLevels, NodeKind, PendingSamplerLoad, SamplerLooping, SamplerSpeed, SidechainOf,
-    SidechainSources, SpawnAudioNode, TransportRes, TuttiPlugin, Volume,
+use bevy_tutti::{MasterMeterLevels, TuttiPlugin};
+use tutti_core::dsp::sine_hz;
+use tutti_core::ecs::{
+    crossfade_audio_node, SidechainOf, SidechainSources, SpawnAudioNode, TransportRes,
 };
+use tutti_core::{AudioNode, NodeKind, SamplerLooping, SamplerSpeed, Volume};
+use tutti_sampler::PendingSamplerLoad;
 use tutti_units::automation::{AutomationEnvelope, AutomationPoint, CurveType, LiveAutomationLane};
-use bevy_tutti::core::dsp::sine_hz;
+use tutti_units::{AutomationDrivesParam, AutomationLaneNode, AutomationParam};
 
 #[derive(Resource, Default)]
 struct DemoTick(u32);

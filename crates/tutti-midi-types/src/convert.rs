@@ -77,6 +77,42 @@ pub fn midi2_pitch_bend_to_midi1(v: u32) -> u16 {
     }
 }
 
+// --- UMP integer → canonical f32 unit range -----------------------------------
+//
+// Unsigned values map to `[0.0, 1.0]`; pitch bends map to `[-1.0, 1.0]` around
+// their center code. Float-domain counterpart to the integer converters above —
+// semantic decoding, MPE, and CC handling all normalize through here.
+
+/// 7-bit value (0-127) → `[0.0, 1.0]`.
+#[inline]
+pub fn u7_to_unit_f32(v: u8) -> f32 {
+    f32::from(v) / 127.0
+}
+
+/// 16-bit value → `[0.0, 1.0]`.
+#[inline]
+pub fn u16_to_unit_f32(v: u16) -> f32 {
+    f32::from(v) / f32::from(u16::MAX)
+}
+
+/// 32-bit value → `[0.0, 1.0]`.
+#[inline]
+pub fn u32_to_unit_f32(v: u32) -> f32 {
+    (v as f64 / u32::MAX as f64) as f32
+}
+
+/// 14-bit pitch bend (center 8192) → `[-1.0, 1.0]`.
+#[inline]
+pub fn bend_u14_to_signed_f32(v: u16) -> f32 {
+    (f32::from(v) - 8192.0) / 8192.0
+}
+
+/// 32-bit pitch bend (center 0x8000_0000) → `[-1.0, 1.0]`.
+#[inline]
+pub fn bend_u32_to_signed_f32(v: u32) -> f32 {
+    ((v as f64 - 0x8000_0000_u32 as f64) / 0x8000_0000_u32 as f64) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

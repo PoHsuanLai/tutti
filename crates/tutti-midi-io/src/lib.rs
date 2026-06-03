@@ -7,9 +7,7 @@ pub use io::MidiInputRecord;
 
 // --- Re-exports from tutti-midi ---
 
-pub use tutti_midi_types::note;
-pub use tutti_midi_types::{hz_to_note, note_to_hz};
-pub use tutti_midi_types::{decode, midi2, midly, MidiEvent, MidiTarget, Note, SemanticEvent};
+pub use tutti_midi_types::{decode, midi2, midly, MidiEvent, MidiTarget, SemanticEvent};
 
 #[cfg(feature = "mpe")]
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};

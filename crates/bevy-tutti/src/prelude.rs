@@ -114,7 +114,7 @@ pub use crate::automation::{
 };
 
 #[cfg(feature = "midi")]
-pub use tutti_midi_io::{MidiEvent, MidiInputRecord, Note, SemanticEvent};
+pub use tutti_midi_io::{MidiEvent, MidiInputRecord, SemanticEvent};
 #[cfg(feature = "midi")]
 pub use crate::midi_runtime::MidiBus;
 #[cfg(feature = "midi-hardware")]

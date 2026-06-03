@@ -6,7 +6,7 @@
 //! IDs. No interior mutability, no allocations in the hot path, no threading
 //! primitives.
 //!
-//! The mutable writer with atomic publishing lives in `tutti-core`
+//! The mutable writer with atomic publishing lives in `tutti-midi-runtime`
 //! (`MidiRoutingTable`). Audio-thread consumers typically hold an
 //! `Arc<ArcSwap<MidiRoutingSnapshot>>` and call `.load().route(port, &event)`.
 

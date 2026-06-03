@@ -37,6 +37,7 @@ pub struct TimedClipEvent {
 ///
 /// Cheap to clone — internal state shares atomic cursors so the
 /// graph commit's clone of the parent unit doesn't restart playback.
+#[derive(Clone)]
 pub struct MidiClipSource {
     events: Arc<[TimedClipEvent]>,
     transport: Arc<dyn TransportReader>,
@@ -89,19 +90,6 @@ impl MidiClipSource {
             idx += 1;
         }
         self.cursor.store(idx as u64, Ordering::Release);
-    }
-}
-
-impl Clone for MidiClipSource {
-    fn clone(&self) -> Self {
-        Self {
-            events: Arc::clone(&self.events),
-            transport: Arc::clone(&self.transport),
-            sample_rate: self.sample_rate,
-            cursor: Arc::clone(&self.cursor),
-            last_beat: Arc::clone(&self.last_beat),
-            target_unit: self.target_unit,
-        }
     }
 }
 

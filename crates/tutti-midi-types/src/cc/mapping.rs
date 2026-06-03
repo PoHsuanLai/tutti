@@ -53,7 +53,7 @@ impl CCMapping {
     /// Linearly interpolate CC value (0-127) into `min_value..=max_value`.
     #[inline]
     pub fn map_value(&self, cc_value: u8) -> f32 {
-        let normalized = crate::normalize_u7(cc_value);
+        let normalized = crate::convert::u7_to_unit_f32(cc_value);
         self.min_value + normalized * (self.max_value - self.min_value)
     }
 

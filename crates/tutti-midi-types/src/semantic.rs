@@ -23,6 +23,10 @@
 //!
 //! [`tutti-synth`]: https://docs.rs/tutti-synth
 
+use crate::convert::{
+    bend_u14_to_signed_f32, bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32,
+    u7_to_unit_f32,
+};
 use crate::midi2::channel_voice1::ChannelVoice1;
 use crate::midi2::channel_voice2::ChannelVoice2;
 use crate::midi2::{Channeled, UmpMessage};
@@ -184,33 +188,6 @@ fn decode_cv1(cv1: ChannelVoice1<&[u32]>) -> Option<SemanticEvent> {
             program: u8::from(m.program()),
         }),
     }
-}
-
-#[inline]
-fn u7_to_unit_f32(v: u8) -> f32 {
-    f32::from(v) / 127.0
-}
-
-#[inline]
-fn u16_to_unit_f32(v: u16) -> f32 {
-    f32::from(v) / f32::from(u16::MAX)
-}
-
-#[inline]
-fn u32_to_unit_f32(v: u32) -> f32 {
-    v as f32 / u32::MAX as f32
-}
-
-/// 14-bit pitch bend (center 8192) → `[-1.0, 1.0]`.
-#[inline]
-fn bend_u14_to_signed_f32(v: u16) -> f32 {
-    (f32::from(v) - 8192.0) / 8192.0
-}
-
-/// 32-bit pitch bend (center 0x8000_0000) → `[-1.0, 1.0]`.
-#[inline]
-fn bend_u32_to_signed_f32(v: u32) -> f32 {
-    ((v as f64 - 0x8000_0000_u32 as f64) / 0x8000_0000_u32 as f64) as f32
 }
 
 #[cfg(test)]

@@ -11,8 +11,8 @@
 //! [`AudioProcessor`]: crate::processor::AudioProcessor
 
 pub use tutti_midi_types::{
-    cc, input_source, midi2, midly, normalize_u7, MidiInputSource, MidiQueue, MidiRoute,
-    MidiRoutingSnapshot, MidiSource, MidiTarget, MidiUnitId, NoMidiInput,
+    cc, input_source, midi2, midly, MidiInputSource, MidiQueue, MidiRoute, MidiRoutingSnapshot,
+    MidiSource, MidiTarget, MidiUnitId, NoMidiInput,
 };
 
 pub use crate::processor::MidiProcessor;

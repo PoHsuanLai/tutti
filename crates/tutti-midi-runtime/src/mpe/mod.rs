@@ -8,10 +8,11 @@
 //! route directly to per-note expression (no channel-to-note lookup needed).
 //! MIDI 1.0 inputs follow the classic MPE channel-voice mapping.
 
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
+use tutti_midi_types::convert::{
+    bend_u32_to_signed_f32, midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, u32_to_unit_f32,
+};
 use tutti_midi_types::midi2::channel_voice1::ChannelVoice1;
 use tutti_midi_types::midi2::channel_voice2::{ChannelVoice2, Controller};
 use tutti_midi_types::midi2::{Channeled, UmpMessage};
@@ -124,7 +125,7 @@ impl MpeProcessor {
             ChannelVoice2::PerNotePitchBend(m) => {
                 self.expression.set_pitch_bend(
                     u8::from(m.note_number()),
-                    bend32_to_f32(m.pitch_bend_data()),
+                    bend_u32_to_signed_f32(m.pitch_bend_data()),
                 );
             }
             ChannelVoice2::RegisteredPerNoteController(m) => {
@@ -221,7 +222,7 @@ impl MpeProcessor {
         let Some(zone_info) = self.get_zone_info(channel) else {
             return;
         };
-        let normalized = bend32_to_f32(bend_u32);
+        let normalized = bend_u32_to_signed_f32(bend_u32);
         if zone_info.is_master {
             self.expression.set_global_pitch_bend(normalized);
         } else if zone_info.is_member {
@@ -338,54 +339,6 @@ impl MpeProcessor {
         }
     }
 
-    /// Allocate an MPE member channel for outgoing note-on.
-    pub fn allocate_channel_for_note(&mut self, note: u8) -> Option<u8> {
-        match &self.mode {
-            MpeMode::Disabled => None,
-            MpeMode::LowerZone(_) => self
-                .lower_zone_map
-                .as_mut()
-                .and_then(|m| m.assign_note(note)),
-            MpeMode::UpperZone(_) => self
-                .upper_zone_map
-                .as_mut()
-                .and_then(|m| m.assign_note(note)),
-            MpeMode::DualZone { .. } => {
-                if let Some(ref mut map) = self.lower_zone_map {
-                    map.assign_note(note)
-                } else if let Some(ref mut map) = self.upper_zone_map {
-                    map.assign_note(note)
-                } else {
-                    None
-                }
-            }
-        }
-    }
-
-    /// Call on Note Off to free up the channel for reuse.
-    pub fn release_channel_for_note(&mut self, note: u8) {
-        if let Some(ref mut map) = self.lower_zone_map {
-            map.release_note(note);
-        }
-        if let Some(ref mut map) = self.upper_zone_map {
-            map.release_note(note);
-        }
-    }
-
-    pub fn get_channel_for_note(&self, note: u8) -> Option<u8> {
-        if let Some(ref map) = self.lower_zone_map {
-            if let Some(ch) = map.get_channel_for_note(note) {
-                return Some(ch);
-            }
-        }
-        if let Some(ref map) = self.upper_zone_map {
-            if let Some(ch) = map.get_channel_for_note(note) {
-                return Some(ch);
-            }
-        }
-        None
-    }
-
     pub fn reset(&mut self) {
         self.expression.reset();
         if let Some(ref mut map) = self.lower_zone_map {
@@ -397,19 +350,6 @@ impl MpeProcessor {
     }
 }
 
-use tutti_midi_types::convert::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2};
-
-/// 32-bit UMP value (0..=u32::MAX) -> 0.0..=1.0.
-#[inline]
-fn u32_to_unit_f32(v: u32) -> f32 {
-    (v as f64 / u32::MAX as f64) as f32
-}
-
-/// 32-bit UMP pitch bend (center 0x8000_0000) -> -1.0..=1.0.
-#[inline]
-fn bend32_to_f32(v: u32) -> f32 {
-    ((v as f64 - 0x8000_0000_u32 as f64) / 0x8000_0000_u32 as f64) as f32
-}
 
 /// Extract the CC74 (Brightness / MPE slide) value from a per-note
 /// controller, if that's the dimension encoded.
@@ -505,35 +445,27 @@ mod tests {
     }
 
     #[test]
-    fn test_allocate_and_release_channel_roundtrip() {
-        let mut processor = MpeProcessor::new(MpeMode::LowerZone(MpeZoneConfig::lower(3)));
-
-        let ch = processor.allocate_channel_for_note(60).unwrap();
-        assert!((1..=3).contains(&ch));
-        assert_eq!(processor.get_channel_for_note(60), Some(ch));
-
-        processor.release_channel_for_note(60);
-        assert!(processor.get_channel_for_note(60).is_none());
-    }
-
-    #[test]
-    fn test_allocate_returns_none_when_disabled() {
-        let mut processor = MpeProcessor::new(MpeMode::Disabled);
-        assert!(processor.allocate_channel_for_note(60).is_none());
-    }
-
-    #[test]
     fn test_reset_clears_all_state() {
         let mut processor = MpeProcessor::new(MpeMode::LowerZone(MpeZoneConfig::lower(5)));
 
-        processor.process(&note_on(2, 60, 100));
+        // Drive note + bend through the production path, then confirm reset
+        // clears both per-note expression and the channel→note voice map.
+        processor.process(&note_on(2, 64, 100));
         processor.process(&pitch_bend_14bit(2, 16383));
-        processor.allocate_channel_for_note(64);
+        assert_eq!(
+            processor.lower_zone_map.as_ref().unwrap().get_note_for_channel(2),
+            Some(64)
+        );
 
         processor.reset();
 
-        assert!(!processor.expression().is_active(60));
-        assert!(processor.get_channel_for_note(64).is_none());
+        assert!(!processor.expression().is_active(64));
+        assert!(processor
+            .lower_zone_map
+            .as_ref()
+            .unwrap()
+            .get_note_for_channel(2)
+            .is_none());
         assert!((processor.expression().get_pitch_bend_global()).abs() < 0.001);
     }
 

@@ -3,10 +3,10 @@
 
 use bevy_ecs::prelude::*;
 
-use crate::core::ecs::AudioEmitter;
-use crate::resources::TuttiGraphRes;
+use tutti_core::ecs::AudioEmitter;
+use tutti_core::ecs::TuttiGraphRes;
 
-use super::editor::{PluginEditorOpen, PluginEmitter};
+use crate::editor::{PluginEditorOpen, PluginEmitter};
 
 /// Detects crashed plugins and removes them from the graph.
 ///
@@ -15,7 +15,7 @@ use super::editor::{PluginEditorOpen, PluginEmitter};
 pub fn plugin_crash_detect_system(
     mut commands: Commands,
     mut graph: ResMut<TuttiGraphRes>,
-    mut dirty: ResMut<crate::graph::GraphDirty>,
+    mut dirty: ResMut<tutti_core::ecs::GraphDirty>,
     query: Query<(Entity, &AudioEmitter, &PluginEmitter)>,
 ) {
     let mut edited = false;

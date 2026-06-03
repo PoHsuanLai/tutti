@@ -89,7 +89,7 @@ pub use crate::core::ecs::{
 };
 
 #[cfg(feature = "plugin")]
-pub use crate::graph::reconcile_plugin_params;
+pub use tutti_plugin_host::reconcile_plugin_params;
 pub use crate::graph::{
     commit_graph, crossfade_audio_node, engine_ready, reconcile_audio_routing,
     reconcile_node_despawn, reconcile_params, reconcile_sidechain_links, register_audio_node_types,
@@ -123,7 +123,7 @@ pub use tutti_midi_io::MidiIo;
 pub use tutti_midi_io::{MidiEvent, MidiInputRecord, SemanticEvent};
 
 #[cfg(feature = "plugin")]
-pub use crate::plugin_host::{
+pub use tutti_plugin_host::{
     close_editor_observer, plugin_crash_detect_system, plugin_editor_attach_system,
     plugin_editor_idle_system, plugin_editor_open_system, plugin_editor_resize_request_system,
     plugin_editor_window_close_system, plugin_editor_window_resize_system, CloseEditor,
@@ -226,9 +226,9 @@ pub use tutti_midi_io::ecs::MidiBusRes;
 #[cfg(feature = "midi-hardware")]
 pub use tutti_midi_io::ecs::MidiIoRes;
 #[cfg(feature = "plugin")]
-pub use crate::resources::PluginEditorMainThread;
+pub use tutti_plugin_host::PluginEditorMainThread;
 #[cfg(feature = "plugin")]
-pub use crate::resources::PluginsRes;
+pub use tutti_plugin_host::PluginsRes;
 #[cfg(feature = "sampler")]
 pub use crate::sampler::ecs::{SamplerRes, TuttiSamplerPlugin};
 #[cfg(feature = "soundfont")]

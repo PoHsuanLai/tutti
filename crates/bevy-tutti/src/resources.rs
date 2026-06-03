@@ -9,11 +9,7 @@
 //! (`cpal::Stream` is not `Sync`) — accessed via `NonSend` /
 //! `NonSendMut`, not `Res` / `ResMut`.
 
-#[cfg(any(
-    feature = "plugin",
-    feature = "analysis",
-    feature = "soundfont"
-))]
+#[cfg(any(feature = "analysis", feature = "soundfont"))]
 use bevy_ecs::prelude::*;
 
 #[cfg(feature = "soundfont")]
@@ -65,29 +61,6 @@ impl std::ops::Deref for SoundFontRes {
 // `AnalysisRes` now lives in `tutti_analysis::ecs` (folded into the crate that
 // owns the analysis logic). bevy-tutti re-exports it from there.
 
-/// Non-Send marker resource that forces plugin editor systems to run on the
-/// main thread. AppKit (macOS), Win32, and X11 window operations must happen
-/// on the main thread. JUCE, VSTGUI, and other plugin GUI frameworks assume
-/// this. Inserted as `insert_non_send_resource` so any system that takes
-/// `NonSend<PluginEditorMainThread>` is pinned to the main thread.
-#[cfg(feature = "plugin")]
-pub struct PluginEditorMainThread;
-
-/// The plugin discovery + loading catalog. Owns the on-disk DB and the
-/// scan-dir config; systems reach in to `register_bundled_plugin`,
-/// `unregister_bundled_plugins`, `rescan`, etc.
-///
-/// `Plugins` is `Send + Sync` (the `PluginCatalog` trait carries
-/// `Send + Sync` supertraits, which propagate through `Box<dyn ...>`), so
-/// Bevy's `ResMut<PluginsRes>` exclusivity is the only synchronization
-/// needed — no extra `Mutex`.
-#[cfg(feature = "plugin")]
-#[derive(Resource)]
-pub struct PluginsRes(pub tutti_plugin::catalog::Plugins);
-
-#[cfg(feature = "plugin")]
-impl PluginsRes {
-    pub fn new(plugins: tutti_plugin::catalog::Plugins) -> Self {
-        Self(plugins)
-    }
-}
+// `PluginEditorMainThread` + `PluginsRes` moved into the `tutti-plugin-host`
+// crate (the ECS plugin-hosting duty). The prelude re-exports them from there
+// under the `plugin` feature.

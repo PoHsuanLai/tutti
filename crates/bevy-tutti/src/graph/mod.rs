@@ -17,10 +17,6 @@
 //! lives in [`tutti_midi_io::ecs`] and is scheduled by its `TuttiMidiPlugin`.
 
 use bevy_app::{App, Plugin};
-#[cfg(feature = "plugin")]
-use bevy_app::Update;
-#[cfg(feature = "plugin")]
-use bevy_ecs::prelude::*;
 
 pub mod param_epoch;
 pub mod reconcile;
@@ -36,10 +32,6 @@ pub use tutti_core::ecs::{
     AudioFeedsTo, SidechainOf, SidechainSources,
 };
 pub use param_epoch::bump_param_epoch_core;
-
-// Leaf reconcilers (stay defined in bevy-tutti).
-#[cfg(feature = "plugin")]
-pub use reconcile::reconcile_plugin_params;
 
 // DSP param reconcilers + the convolver reconciler + pending-convolver load now
 // live in `tutti_units::ecs`; re-export them here so the legacy
@@ -90,19 +82,11 @@ impl Plugin for TuttiGraphPlugin {
 
         // Leaf-family param-epoch bumps (core bump added by the core plugin).
         // The sampler bump + sampler reconcilers + pending-load promotion now
-        // live in `tutti_sampler::ecs::TuttiSamplerPlugin`.
-        #[cfg(feature = "plugin")]
-        app.add_systems(Update, param_epoch::bump_param_epoch_plugin);
+        // live in `tutti_sampler::ecs::TuttiSamplerPlugin`. The plugin bump +
+        // `reconcile_plugin_params` moved into `tutti-plugin-host`'s
+        // `TuttiHostingPlugin`.
 
         // The convolution ECS surface (pending-load promotion + the convolver
         // param reconciler) now lives in `tutti_units::ecs::TuttiDspPlugin`.
-
-        // `reconcile_plugin_params` writes through `PluginEmitter`, holds no
-        // engine resource, so it stays ungated.
-        #[cfg(feature = "plugin")]
-        app.add_systems(
-            Update,
-            reconcile_plugin_params.in_set(GraphReconcileSystems::Params),
-        );
     }
 }

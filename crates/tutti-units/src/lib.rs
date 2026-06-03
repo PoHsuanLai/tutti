@@ -73,3 +73,9 @@ pub mod automation {
 
 #[cfg(feature = "automation")]
 mod automation_lane;
+
+/// Bevy ECS integration: spawn pipelines, param reconcilers, and plugins for
+/// the DSP / spatial / automation / convolution units. Mirrors
+/// `tutti_sampler::ecs`. Requires `std` (Bevy is std-only).
+#[cfg(feature = "std")]
+pub mod ecs;

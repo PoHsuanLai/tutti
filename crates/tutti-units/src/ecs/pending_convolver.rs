@@ -8,12 +8,12 @@
 use bevy_asset::{AssetServer, Assets, Handle};
 use bevy_ecs::prelude::*;
 
-use crate::core::ecs::{AudioNode, NodeKind};
-use crate::core::WaveAsset;
-use crate::units::StereoConvolverNode;
+use tutti_core::ecs::{AudioNode, NodeKind};
+use tutti_core::WaveAsset;
+use crate::StereoConvolverNode;
 
-use super::reconcile::GraphDirty;
-use crate::resources::TuttiGraphRes;
+use tutti_core::ecs::GraphDirty;
+use tutti_core::ecs::TuttiGraphRes;
 
 /// Insert on an effect entity to request convolution reverb construction
 /// once the IR file is loaded. The system handles `AssetServer::load()`
@@ -96,10 +96,10 @@ pub fn promote_pending_convolvers(
             .entity(entity)
             .remove::<PendingConvolverLoad>()
             .insert((
-                crate::core::ecs::ConvolutionReverbNode,
+                tutti_core::ecs::ConvolutionReverbNode,
                 AudioNode(id),
                 NodeKind::ConvolutionReverb,
-                crate::core::ecs::WetMix(load.mix),
+                tutti_core::ecs::WetMix(load.mix),
             ));
     }
 }

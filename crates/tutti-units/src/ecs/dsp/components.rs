@@ -15,7 +15,6 @@ use bevy_ecs::prelude::*;
 /// The `dsp_compressor_system` processes entities with `Added<AddCompressor>`,
 /// creates a `Compressor` (mono or stereo via `Compressor::mono`/`Compressor::stereo`),
 /// adds it to the graph, and inserts `AudioEmitter`.
-#[cfg(feature = "dsp")]
 #[deprecated(
     note = "spawn `(CompressorNode, ThresholdDb(..), CompressorRatio(..), Attack(..), Release(..), GainDb(..), StereoChannels(..))` instead"
 )]
@@ -29,7 +28,6 @@ pub struct AddCompressor {
     pub stereo: bool,
 }
 
-#[cfg(feature = "dsp")]
 impl Default for AddCompressor {
     fn default() -> Self {
         Self {
@@ -43,7 +41,6 @@ impl Default for AddCompressor {
     }
 }
 
-#[cfg(feature = "dsp")]
 impl AddCompressor {
     pub fn new(threshold_db: f32, ratio: f32) -> Self {
         Self {
@@ -79,7 +76,6 @@ impl AddCompressor {
 /// The `dsp_gate_system` processes entities with `Added<AddGate>`,
 /// creates a `Gate` (mono or stereo via `Gate::mono`/`Gate::stereo`), adds it to
 /// the graph, and inserts `AudioEmitter`.
-#[cfg(feature = "dsp")]
 #[deprecated(
     note = "spawn `(GateNode, ThresholdDb(..), Attack(..), Release(..), StereoChannels(..))` instead"
 )]
@@ -92,7 +88,6 @@ pub struct AddGate {
     pub stereo: bool,
 }
 
-#[cfg(feature = "dsp")]
 impl Default for AddGate {
     fn default() -> Self {
         Self {
@@ -105,7 +100,6 @@ impl Default for AddGate {
     }
 }
 
-#[cfg(feature = "dsp")]
 impl AddGate {
     pub fn new(threshold_db: f32) -> Self {
         Self {
@@ -145,7 +139,7 @@ impl AddGate {
 )]
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub struct AddLfo {
-    pub shape: crate::units::LfoShape,
+    pub shape: crate::LfoShape,
     pub frequency: f32,
     pub depth: f32,
     pub beat_synced: bool,
@@ -154,7 +148,7 @@ pub struct AddLfo {
 impl Default for AddLfo {
     fn default() -> Self {
         Self {
-            shape: crate::units::LfoShape::Sine,
+            shape: crate::LfoShape::Sine,
             frequency: 1.0,
             depth: 1.0,
             beat_synced: false,
@@ -164,7 +158,7 @@ impl Default for AddLfo {
 
 impl AddLfo {
     /// Free-running LFO with the given shape and frequency in Hz.
-    pub fn new(shape: crate::units::LfoShape, frequency: f32) -> Self {
+    pub fn new(shape: crate::LfoShape, frequency: f32) -> Self {
         Self {
             shape,
             frequency,
@@ -173,7 +167,7 @@ impl AddLfo {
     }
 
     /// Beat-synced LFO with the given shape and beats per cycle.
-    pub fn beat_synced(shape: crate::units::LfoShape, beats_per_cycle: f32) -> Self {
+    pub fn beat_synced(shape: crate::LfoShape, beats_per_cycle: f32) -> Self {
         Self {
             shape,
             frequency: beats_per_cycle,
@@ -194,24 +188,22 @@ impl AddLfo {
 /// `StereoSvfFilterNode<f64>`, attaches `AudioNode`, `NodeKind::Filter`,
 /// and the `Frequency` / `FilterQ` / `GainDb` param components, then
 /// removes the trigger.
-#[cfg(feature = "dsp")]
 #[deprecated(
     note = "spawn `(FilterNode, Frequency(..), FilterQ(..), GainDb(..), FilterMode::*)` instead"
 )]
 #[derive(Component, Debug, Clone, Copy)]
 pub struct AddFilter {
-    pub svf_type: crate::units::SvfType,
+    pub svf_type: crate::SvfType,
     pub frequency: f32,
     pub q: f32,
     /// Only used for Bell / LowShelf / HighShelf modes.
     pub gain_db: f32,
 }
 
-#[cfg(feature = "dsp")]
 impl Default for AddFilter {
     fn default() -> Self {
         Self {
-            svf_type: crate::units::SvfType::LowPass,
+            svf_type: crate::SvfType::LowPass,
             frequency: 1000.0,
             q: 0.707,
             gain_db: 0.0,
@@ -219,11 +211,10 @@ impl Default for AddFilter {
     }
 }
 
-#[cfg(feature = "dsp")]
 impl AddFilter {
     pub fn lowpass(frequency: f32, q: f32) -> Self {
         Self {
-            svf_type: crate::units::SvfType::LowPass,
+            svf_type: crate::SvfType::LowPass,
             frequency,
             q,
             gain_db: 0.0,
@@ -231,7 +222,7 @@ impl AddFilter {
     }
     pub fn highpass(frequency: f32, q: f32) -> Self {
         Self {
-            svf_type: crate::units::SvfType::HighPass,
+            svf_type: crate::SvfType::HighPass,
             frequency,
             q,
             gain_db: 0.0,
@@ -239,7 +230,7 @@ impl AddFilter {
     }
     pub fn bandpass(frequency: f32, q: f32) -> Self {
         Self {
-            svf_type: crate::units::SvfType::BandPass,
+            svf_type: crate::SvfType::BandPass,
             frequency,
             q,
             gain_db: 0.0,
@@ -247,7 +238,7 @@ impl AddFilter {
     }
     pub fn notch(frequency: f32, q: f32) -> Self {
         Self {
-            svf_type: crate::units::SvfType::Notch,
+            svf_type: crate::SvfType::Notch,
             frequency,
             q,
             gain_db: 0.0,
@@ -255,7 +246,7 @@ impl AddFilter {
     }
     pub fn bell(frequency: f32, q: f32, gain_db: f32) -> Self {
         Self {
-            svf_type: crate::units::SvfType::Bell,
+            svf_type: crate::SvfType::Bell,
             frequency,
             q,
             gain_db,
@@ -263,7 +254,7 @@ impl AddFilter {
     }
     pub fn low_shelf(frequency: f32, q: f32, gain_db: f32) -> Self {
         Self {
-            svf_type: crate::units::SvfType::LowShelf,
+            svf_type: crate::SvfType::LowShelf,
             frequency,
             q,
             gain_db,
@@ -271,7 +262,7 @@ impl AddFilter {
     }
     pub fn high_shelf(frequency: f32, q: f32, gain_db: f32) -> Self {
         Self {
-            svf_type: crate::units::SvfType::HighShelf,
+            svf_type: crate::SvfType::HighShelf,
             frequency,
             q,
             gain_db,
@@ -284,7 +275,6 @@ impl AddFilter {
 /// fundsp's `reverb_stereo` is built fresh per AddReverb and does not
 /// expose post-construction setters; live wet/room/damping changes
 /// require respawning the node (the reconciler handles this).
-#[cfg(feature = "dsp")]
 #[deprecated(
     note = "spawn `(ReverbNode, ReverbRoomSize(..), ReverbDamping(..), WetMix(..), ReverbTime(..), ReverbAlgo::*)` instead"
 )]
@@ -300,7 +290,6 @@ pub struct AddReverb {
     pub wet: f32,
 }
 
-#[cfg(feature = "dsp")]
 impl Default for AddReverb {
     fn default() -> Self {
         Self {
@@ -313,7 +302,6 @@ impl Default for AddReverb {
 }
 
 /// Trigger component: spawn an entity with this to add a stereo delay.
-#[cfg(feature = "dsp")]
 #[deprecated(
     note = "spawn `(DelayNode, DelayTime(..), Feedback(..), WetMix(..), MaxDelay(..))` instead"
 )]
@@ -327,7 +315,6 @@ pub struct AddDelay {
     pub wet: f32,
 }
 
-#[cfg(feature = "dsp")]
 impl Default for AddDelay {
     fn default() -> Self {
         Self {
@@ -340,7 +327,6 @@ impl Default for AddDelay {
 }
 
 /// Trigger component: spawn an entity with this to add a stereo chorus.
-#[cfg(feature = "dsp")]
 #[deprecated(
     note = "spawn `(ChorusNode, ModRate(..), ModDepth(..), Feedback(..), WetMix(..))` instead"
 )]
@@ -352,7 +338,6 @@ pub struct AddChorus {
     pub wet: f32,
 }
 
-#[cfg(feature = "dsp")]
 impl Default for AddChorus {
     fn default() -> Self {
         Self {

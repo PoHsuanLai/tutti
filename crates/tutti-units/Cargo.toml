@@ -9,16 +9,32 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 [features]
 default = ["std"]
 std = []
-spatial = ["dep:vbap"]  # VBAP, binaural panning (gates the vbap dep)
-convolution = ["std", "dep:fft-convolver"]  # FFT convolution reverb (partitioned IR)
+spatial = ["dep:vbap", "dep:bevy_transform"]  # VBAP, binaural panning + position sync
+# FFT convolution reverb (partitioned IR). The `pending_convolver` ECS module
+# loads IRs via `bevy_asset` + the `WaveAsset`, so the feature pulls
+# tutti-core's `bevy_asset` + a default decode codec (`wav`).
+convolution = ["std", "dep:fft-convolver", "tutti-core/bevy_asset", "tutti-core/wav"]
 # Transport-driven envelope nodes (`AutomationLane`). Folded in from the
 # old `tutti-automation` crate; envelope primitives come from the
 # `audio_automation` crate, re-exported via `tutti_units::automation`.
 automation = ["dep:audio-automation"]
 
 [dependencies]
-# AudioUnit trait and DSP primitives from tutti-core
-tutti-core = { path = "../tutti-core", default-features = false }
+# AudioUnit trait, DSP primitives, and the entity-as-node ECS hub from
+# tutti-core. `bevy_ecs` enables the `Component` derives on the param/marker
+# components the reconcilers read.
+tutti-core = { path = "../tutti-core", default-features = false, features = ["bevy_ecs"] }
+
+# Bevy ECS integration (the `ecs` module): Components / Systems / Plugins live
+# next to the audio logic. Hard deps, mirroring tutti-wavecache / tutti-sampler.
+bevy_ecs = { version = "0.18", default-features = false }
+bevy_app = { version = "0.18", default-features = false }
+bevy_reflect = { version = "0.18", default-features = false }
+bevy_log = { version = "0.18", default-features = false }
+# `pending_convolver` (convolution-gated) loads IR files via the AssetServer.
+bevy_asset = { version = "0.18", default-features = false }
+# Spatial position sync reads `GlobalTransform` (spatial-gated module).
+bevy_transform = { version = "0.18", optional = true }
 
 # Spatial audio VBAP library (optional)
 vbap = { version = "0.1", optional = true }

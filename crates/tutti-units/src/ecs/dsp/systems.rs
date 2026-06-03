@@ -18,26 +18,24 @@
 //!   skip entities that already carry `AudioNode` (`Without<AudioNode>`), so a
 //!   shim-spawned entity is never double-added.
 //!
-//! Param reconciliation happens in [`crate::graph::reconcile`].
+//! Param reconciliation happens in [`super::reconcile`].
 
 use bevy_ecs::prelude::*;
 
-use crate::core::ecs::{
+use tutti_core::ecs::{
     AudioNode, BeatSynced, Frequency, LfoNodeMarker, LfoShapeKind, ModDepth, NodeKind,
 };
-#[cfg(feature = "dsp")]
-use crate::core::ecs::{
+use tutti_core::ecs::{
     Attack, ChorusNode, CompressorNode, CompressorRatio, DelayNode, DelayTime, Feedback,
     FilterMode, FilterNode, FilterQ, GainDb, GateNode, MaxDelay, ModRate, Release,
     ReverbDamping, ReverbNode, ReverbRoomSize, ReverbTime, StereoChannels, ThresholdDb, WetMix,
 };
 
-use crate::graph::reconcile::GraphDirty;
-use crate::resources::{TransportRes, TuttiGraphRes};
+use tutti_core::ecs::GraphDirty;
+use tutti_core::ecs::{TransportRes, TuttiGraphRes};
 
 #[allow(deprecated)]
 use super::components::AddLfo;
-#[cfg(feature = "dsp")]
 #[allow(deprecated)]
 use super::components::{AddChorus, AddCompressor, AddDelay, AddFilter, AddGate, AddReverb};
 
@@ -45,9 +43,8 @@ use super::components::{AddChorus, AddCompressor, AddDelay, AddFilter, AddGate, 
 // Mirror-enum mapping helpers (tutti-core mirror → real tutti-units enum)
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "dsp")]
-pub(super) fn svf_type_of(mode: FilterMode) -> crate::units::SvfType {
-    use crate::units::SvfType;
+pub(super) fn svf_type_of(mode: FilterMode) -> crate::SvfType {
+    use crate::SvfType;
     match mode {
         FilterMode::LowPass => SvfType::LowPass,
         FilterMode::HighPass => SvfType::HighPass,
@@ -60,9 +57,8 @@ pub(super) fn svf_type_of(mode: FilterMode) -> crate::units::SvfType {
     }
 }
 
-#[cfg(feature = "dsp")]
-fn filter_mode_of(svf: crate::units::SvfType) -> FilterMode {
-    use crate::units::SvfType;
+fn filter_mode_of(svf: crate::SvfType) -> FilterMode {
+    use crate::SvfType;
     match svf {
         SvfType::LowPass => FilterMode::LowPass,
         SvfType::HighPass => FilterMode::HighPass,
@@ -75,8 +71,8 @@ fn filter_mode_of(svf: crate::units::SvfType) -> FilterMode {
     }
 }
 
-fn lfo_shape_of(kind: LfoShapeKind) -> crate::units::LfoShape {
-    use crate::units::LfoShape;
+fn lfo_shape_of(kind: LfoShapeKind) -> crate::LfoShape {
+    use crate::LfoShape;
     match kind {
         LfoShapeKind::Sine => LfoShape::Sine,
         LfoShapeKind::Triangle => LfoShape::Triangle,
@@ -88,8 +84,8 @@ fn lfo_shape_of(kind: LfoShapeKind) -> crate::units::LfoShape {
     }
 }
 
-fn lfo_shape_kind_of(shape: crate::units::LfoShape) -> LfoShapeKind {
-    use crate::units::LfoShape;
+fn lfo_shape_kind_of(shape: crate::LfoShape) -> LfoShapeKind {
+    use crate::LfoShape;
     match shape {
         LfoShape::Sine => LfoShapeKind::Sine,
         LfoShape::Triangle => LfoShapeKind::Triangle,
@@ -129,12 +125,12 @@ pub fn spawn_lfo_nodes(
         let synced = synced.map(|s| s.0).unwrap_or(false);
         let lfo_shape = lfo_shape_of(*shape);
         let node_id = if synced {
-            let lfo = crate::units::LfoNode::new(lfo_shape)
+            let lfo = crate::LfoNode::new(lfo_shape)
                 .with_beat_sync(transport.0.clone(), freq.0);
             lfo.set_depth(depth.0);
             graph.0.add(lfo)
         } else {
-            let lfo = crate::units::LfoNode::new(lfo_shape).with_frequency(freq.0);
+            let lfo = crate::LfoNode::new(lfo_shape).with_frequency(freq.0);
             lfo.set_depth(depth.0);
             graph.0.add(lfo)
         };
@@ -155,7 +151,6 @@ pub fn spawn_lfo_nodes(
 // to the pre-B7 code.
 // ===========================================================================
 
-#[cfg(feature = "dsp")]
 #[allow(deprecated)]
 pub fn dsp_compressor_system(
     mut commands: Commands,
@@ -165,9 +160,9 @@ pub fn dsp_compressor_system(
 ) {
     for (entity, add) in query.iter() {
         let comp = if add.stereo {
-            crate::units::Compressor::stereo(add.threshold_db, add.ratio, add.attack, add.release)
+            crate::Compressor::stereo(add.threshold_db, add.ratio, add.attack, add.release)
         } else {
-            crate::units::Compressor::mono(add.threshold_db, add.ratio, add.attack, add.release)
+            crate::Compressor::mono(add.threshold_db, add.ratio, add.attack, add.release)
         }
         .with_makeup(add.makeup_db);
         let node_id = graph.0.add(comp);
@@ -192,7 +187,6 @@ pub fn dsp_compressor_system(
     }
 }
 
-#[cfg(feature = "dsp")]
 #[allow(deprecated)]
 pub fn dsp_gate_system(
     mut commands: Commands,
@@ -202,9 +196,9 @@ pub fn dsp_gate_system(
 ) {
     for (entity, add) in query.iter() {
         let gate = if add.stereo {
-            crate::units::Gate::stereo(add.threshold_db, add.attack, add.hold, add.release)
+            crate::Gate::stereo(add.threshold_db, add.attack, add.hold, add.release)
         } else {
-            crate::units::Gate::mono(add.threshold_db, add.attack, add.hold, add.release)
+            crate::Gate::mono(add.threshold_db, add.attack, add.hold, add.release)
         };
         let node_id = graph.0.add(gate);
         dirty.0 = true;
@@ -236,12 +230,12 @@ pub fn dsp_lfo_system(
 ) {
     for (entity, add) in query.iter() {
         let node_id = if add.beat_synced {
-            let lfo = crate::units::LfoNode::new(add.shape)
+            let lfo = crate::LfoNode::new(add.shape)
                 .with_beat_sync(transport.0.clone(), add.frequency);
             lfo.set_depth(add.depth);
             graph.0.add(lfo)
         } else {
-            let lfo = crate::units::LfoNode::new(add.shape).with_frequency(add.frequency);
+            let lfo = crate::LfoNode::new(add.shape).with_frequency(add.frequency);
             lfo.set_depth(add.depth);
             graph.0.add(lfo)
         };
@@ -264,7 +258,6 @@ pub fn dsp_lfo_system(
     }
 }
 
-#[cfg(feature = "dsp")]
 #[allow(deprecated)]
 pub fn dsp_filter_system(
     mut commands: Commands,
@@ -274,7 +267,7 @@ pub fn dsp_filter_system(
 ) {
     for (entity, add) in query.iter() {
         let mut node =
-            crate::units::StereoSvfFilterNode::<f64>::new(add.svf_type, add.frequency, add.q);
+            crate::StereoSvfFilterNode::<f64>::new(add.svf_type, add.frequency, add.q);
         if add.gain_db != 0.0 {
             node = node.with_gain_db(add.gain_db);
         }
@@ -298,7 +291,6 @@ pub fn dsp_filter_system(
     }
 }
 
-#[cfg(feature = "dsp")]
 #[allow(deprecated)]
 pub fn dsp_reverb_system(
     mut commands: Commands,
@@ -307,7 +299,7 @@ pub fn dsp_reverb_system(
     query: Query<(Entity, &AddReverb), Added<AddReverb>>,
 ) {
     for (entity, add) in query.iter() {
-        let reverb = crate::core::dsp::reverb_stereo(
+        let reverb = tutti_core::dsp::reverb_stereo(
             add.room_size as f64,
             add.time_secs as f64,
             add.damping as f64,
@@ -329,7 +321,6 @@ pub fn dsp_reverb_system(
     }
 }
 
-#[cfg(feature = "dsp")]
 #[allow(deprecated)]
 pub fn dsp_delay_system(
     mut commands: Commands,
@@ -338,7 +329,7 @@ pub fn dsp_delay_system(
     query: Query<(Entity, &AddDelay), Added<AddDelay>>,
 ) {
     for (entity, add) in query.iter() {
-        let delay = crate::units::StereoDelayLineNode::new(
+        let delay = crate::StereoDelayLineNode::new(
             add.max_delay_secs,
             add.delay_time_secs,
             add.delay_time_secs,
@@ -362,7 +353,6 @@ pub fn dsp_delay_system(
     }
 }
 
-#[cfg(feature = "dsp")]
 #[allow(deprecated)]
 pub fn dsp_chorus_system(
     mut commands: Commands,
@@ -371,7 +361,7 @@ pub fn dsp_chorus_system(
     query: Query<(Entity, &AddChorus), Added<AddChorus>>,
 ) {
     for (entity, add) in query.iter() {
-        let chorus = crate::units::ChorusNode::new();
+        let chorus = crate::ChorusNode::new();
         chorus.set_rate(add.rate_hz);
         chorus.set_depth(add.depth_secs);
         chorus.set_feedback(add.feedback);
@@ -393,26 +383,34 @@ pub fn dsp_chorus_system(
     }
 }
 
-#[cfg(all(test, feature = "dsp"))]
+#[cfg(test)]
 mod marker_spawn_tests {
     use super::*;
-    use crate::core::ecs::FilterNode;
-    use crate::graph::reconcile::{
-        commit_graph, reconcile_node_despawn, GraphReconcileSystems,
-    };
-    use crate::TuttiEngine;
+    use tutti_core::ecs::FilterNode;
+    use tutti_core::ecs::{commit_graph, reconcile_node_despawn, GraphReconcileSystems};
+    use tutti_core::ecs::TuttiGraphRes;
+    use tutti_core::{PdcManager, TuttiGraph, TuttiNet};
     use bevy_app::{App, Update};
 
-    fn test_app() -> App {
-        let engine = TuttiEngine::builder()
-            .inputs(0)
-            .outputs(2)
-            .build()
-            .expect("build engine");
-        let TuttiEngine { graph, .. } = engine;
+    fn bare_graph(channels: usize) -> TuttiGraph {
+        let mut net = TuttiNet::new(0, channels);
+        let _backend = net.backend();
+        let pdc = PdcManager::new(channels, 0);
+        #[cfg(feature = "midi")]
+        let midi_route = tutti_midi_types::MidiRoutingTable::new();
+        TuttiGraph::from_parts(
+            net,
+            pdc,
+            #[cfg(feature = "midi")]
+            midi_route,
+            48_000.0,
+            channels,
+        )
+    }
 
+    fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(crate::resources::TuttiGraphRes(graph));
+        app.insert_resource(TuttiGraphRes(bare_graph(2)));
         app.init_resource::<GraphDirty>();
         app.configure_sets(
             Update,
@@ -447,7 +445,7 @@ mod marker_spawn_tests {
         // Override only FilterQ; let Frequency / GainDb come from #[require].
         let entity = app
             .world_mut()
-            .spawn((FilterNode, crate::core::ecs::FilterQ(2.0)))
+            .spawn((FilterNode, tutti_core::ecs::FilterQ(2.0)))
             .id();
         app.update();
 
@@ -467,10 +465,10 @@ mod marker_spawn_tests {
         assert_eq!(*kind, NodeKind::Filter);
 
         // The overridden Q reached the actual built unit (no first-frame drift).
-        let graph = &world.resource::<crate::resources::TuttiGraphRes>().0;
+        let graph = &world.resource::<tutti_core::ecs::TuttiGraphRes>().0;
         assert!(graph.contains(node.0), "node is in the graph");
         let unit = graph
-            .node::<crate::units::StereoSvfFilterNode<f64>>(node.0)
+            .node::<crate::StereoSvfFilterNode<f64>>(node.0)
             .expect("built StereoSvfFilterNode");
         assert!(
             (unit.q().load(std::sync::atomic::Ordering::Relaxed) - 2.0).abs() < 1e-5,

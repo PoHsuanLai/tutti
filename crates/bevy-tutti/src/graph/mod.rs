@@ -23,8 +23,6 @@ use bevy_ecs::prelude::*;
 pub mod param_epoch;
 pub mod reconcile;
 
-#[cfg(feature = "convolution")]
-pub mod pending_convolver;
 #[cfg(feature = "midi")]
 pub mod scheduled;
 
@@ -43,15 +41,17 @@ pub use param_epoch::bump_param_epoch_core;
 // Leaf reconcilers (stay defined in bevy-tutti).
 #[cfg(feature = "plugin")]
 pub use reconcile::reconcile_plugin_params;
-#[cfg(feature = "dsp")]
-pub use reconcile::{reconcile_reverb_params, reconcile_unit_params};
 
+// DSP param reconcilers + the convolver reconciler + pending-convolver load now
+// live in `tutti_units::ecs`; re-export them here so the legacy
+// `crate::graph::*` paths and the prelude keep resolving.
+#[cfg(feature = "dsp")]
+pub use tutti_units::ecs::{reconcile_reverb_params, reconcile_unit_params};
 #[cfg(feature = "convolution")]
-pub use pending_convolver::{
-    promote_pending_convolvers, start_convolver_loads, PendingConvolverLoad,
+pub use tutti_units::ecs::{
+    promote_pending_convolvers, reconcile_convolver_params, start_convolver_loads,
+    PendingConvolverLoad,
 };
-#[cfg(feature = "convolution")]
-pub use reconcile::reconcile_convolver_params;
 #[cfg(feature = "midi")]
 pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi};
 
@@ -68,23 +68,11 @@ pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi};
 /// `NodeId`). The deliberately-non-`Reflect` set (AudioEmitter, PluginEmitter,
 /// TrackClipReader*, …) is owned by other duties and skipped.
 pub fn register_audio_node_types(app: &mut App) {
-    use crate::core::ecs::*;
-
+    // The DSP authoring markers (`CompressorNode`, …, `LfoNodeMarker`) are now
+    // registered by `tutti_units::ecs::TuttiDspPlugin`; the `SamplerNode` marker
+    // by `tutti_sampler::ecs::TuttiSamplerPlugin`. Here we only register the
+    // core-owned types (`NodeKind`, scalar params, construction data).
     tutti_core::ecs::register_core_node_types(app);
-
-    // Authoring markers. Only the markers a spawn system (`Added<T>`) or a
-    // reconciler (`With<T>`) actually reads are kept: the 6 generic
-    // `spawn_dsp_node` triggers, the LFO trigger, and the three type-guard
-    // markers (Reverb / ConvolutionReverb / Sampler).
-    app.register_type::<CompressorNode>()
-        .register_type::<GateNode>()
-        .register_type::<FilterNode>()
-        .register_type::<ReverbNode>()
-        .register_type::<ConvolutionReverbNode>()
-        .register_type::<DelayNode>()
-        .register_type::<ChorusNode>()
-        .register_type::<SamplerNode>()
-        .register_type::<LfoNodeMarker>();
 }
 
 /// Bevy plugin: graph reconciliation pipeline.
@@ -109,19 +97,8 @@ impl Plugin for TuttiGraphPlugin {
         #[cfg(feature = "plugin")]
         app.add_systems(Update, param_epoch::bump_param_epoch_plugin);
 
-        #[cfg(feature = "convolution")]
-        {
-            // `start_convolver_loads` only uses `AssetServer` (not an engine
-            // resource); `promote_pending_convolvers` needs the graph.
-            app.add_systems(Update, start_convolver_loads);
-            app.add_systems(
-                Update,
-                promote_pending_convolvers
-                    .after(start_convolver_loads)
-                    .in_set(GraphReconcileSystems::Spawn)
-                    .run_if(engine_ready),
-            );
-        }
+        // The convolution ECS surface (pending-load promotion + the convolver
+        // param reconciler) now lives in `tutti_units::ecs::TuttiDspPlugin`.
 
         // `reconcile_plugin_params` writes through `PluginEmitter`, holds no
         // engine resource, so it stays ungated.

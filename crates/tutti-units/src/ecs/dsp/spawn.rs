@@ -18,7 +18,7 @@
 //! `add_boxed`es it, and attaches `(AudioNode(id), T::KIND)`.
 //!
 //! Because the unit is built from the *same* components `#[require]` defaulted,
-//! the first-frame [`reconcile_unit_params`](crate::graph::reconcile::reconcile_unit_params)
+//! the first-frame [`reconcile_unit_params`](super::reconcile::reconcile_unit_params)
 //! sweep is a no-op rather than a drift (risk E1).
 //!
 //! The LFO stays its own bespoke system ([`spawn_lfo_nodes`](super::systems::spawn_lfo_nodes)):
@@ -28,15 +28,15 @@
 use bevy_ecs::prelude::*;
 use bevy_ecs::query::QueryData;
 
-use crate::core::dsp::AudioUnit;
-use crate::core::ecs::{
+use tutti_core::dsp::AudioUnit;
+use tutti_core::ecs::{
     Attack, AudioNode, CeilingDb, CompressorRatio, DelayTime, Drive, Feedback, FilterMode, FilterQ,
     Frequency, GainDb, MaxDelay, ModDepth, ModRate, NodeKind, Release, ReverbAlgo, ReverbDamping,
     ReverbRoomSize, ReverbTime, StereoChannels, ThresholdDb, WetMix,
 };
 
-use crate::graph::reconcile::GraphDirty;
-use crate::resources::TuttiGraphRes;
+use tutti_core::ecs::GraphDirty;
+use tutti_core::ecs::TuttiGraphRes;
 
 use super::systems::svf_type_of;
 
@@ -121,12 +121,12 @@ impl AddDspNode for bevy_app::App {
             bevy_app::Update,
             spawn_dsp_node::<T>
                 .in_set(GraphReconcileSystems::Spawn)
-                .run_if(crate::graph::engine_ready),
+                .run_if(tutti_core::ecs::engine_ready),
         )
     }
 }
 
-use crate::graph::reconcile::GraphReconcileSystems;
+use tutti_core::ecs::GraphReconcileSystems;
 
 // ---------------------------------------------------------------------------
 // Per-node builders — mechanical lifts of the old `spawn_*_nodes` bodies.
@@ -137,7 +137,7 @@ use crate::graph::reconcile::GraphReconcileSystems;
 // missing case — never a masking constant.
 // ---------------------------------------------------------------------------
 
-use crate::core::ecs::{CompressorNode, ChorusNode, DelayNode, FilterNode, GateNode, ReverbNode};
+use tutti_core::ecs::{CompressorNode, ChorusNode, DelayNode, FilterNode, GateNode, ReverbNode};
 
 impl DspNode for CompressorNode {
     const KIND: NodeKind = NodeKind::Compressor;
@@ -149,9 +149,9 @@ impl DspNode for CompressorNode {
         let makeup = p.gain_db.map_or(GainDb::default().0, |c| c.0);
         let stereo = p.stereo.map(|s| s.0).unwrap_or(false);
         let comp = if stereo {
-            crate::units::Compressor::stereo(thr, ratio, attack, release)
+            crate::Compressor::stereo(thr, ratio, attack, release)
         } else {
-            crate::units::Compressor::mono(thr, ratio, attack, release)
+            crate::Compressor::mono(thr, ratio, attack, release)
         }
         .with_makeup(makeup);
         Box::new(comp)
@@ -168,9 +168,9 @@ impl DspNode for GateNode {
         // Hold defaults to the attack time (construction-only; the marker path
         // keeps only the reconcilable params — matches the old spawn system).
         let gate = if stereo {
-            crate::units::Gate::stereo(thr, attack, attack, release)
+            crate::Gate::stereo(thr, attack, attack, release)
         } else {
-            crate::units::Gate::mono(thr, attack, attack, release)
+            crate::Gate::mono(thr, attack, attack, release)
         };
         Box::new(gate)
     }
@@ -183,7 +183,7 @@ impl DspNode for FilterNode {
         let q = p.filter_q.map_or(FilterQ::default().0, |c| c.0);
         let gain = p.gain_db.map_or(GainDb::default().0, |c| c.0);
         let svf = svf_type_of(p.filter_mode.copied().unwrap_or_default());
-        let mut node = crate::units::StereoSvfFilterNode::<f64>::new(svf, freq, q);
+        let mut node = crate::StereoSvfFilterNode::<f64>::new(svf, freq, q);
         if gain != 0.0 {
             node = node.with_gain_db(gain);
         }
@@ -198,12 +198,12 @@ impl DspNode for ReverbNode {
         let damp = p.reverb_damp.map_or(ReverbDamping::default().0, |c| c.0);
         let time = p.reverb_time.map_or(ReverbTime::default().0, |c| c.0);
         match p.reverb_algo.copied().unwrap_or_default() {
-            ReverbAlgo::Fdn32 => Box::new(crate::core::dsp::reverb_stereo(
+            ReverbAlgo::Fdn32 => Box::new(tutti_core::dsp::reverb_stereo(
                 room as f64,
                 time as f64,
                 damp as f64,
             )),
-            ReverbAlgo::Fdn4 => Box::new(crate::core::dsp::reverb4_stereo(room as f64, time as f64)),
+            ReverbAlgo::Fdn4 => Box::new(tutti_core::dsp::reverb4_stereo(room as f64, time as f64)),
         }
     }
 }
@@ -215,7 +215,7 @@ impl DspNode for DelayNode {
         let feedback = p.feedback.map_or(Feedback::default().0, |c| c.0);
         let wet = p.wet.map_or(WetMix::default().0, |c| c.0);
         let max = p.max_delay.map_or(MaxDelay::default().0, |c| c.0);
-        let delay = crate::units::StereoDelayLineNode::new(max, time, time, feedback);
+        let delay = crate::StereoDelayLineNode::new(max, time, time, feedback);
         delay.set_mix(wet);
         Box::new(delay)
     }
@@ -228,7 +228,7 @@ impl DspNode for ChorusNode {
         let depth = p.mod_depth.map_or(ModDepth::default().0, |c| c.0);
         let feedback = p.feedback.map_or(Feedback::default().0, |c| c.0);
         let wet = p.wet.map_or(WetMix::default().0, |c| c.0);
-        let chorus = crate::units::ChorusNode::new();
+        let chorus = crate::ChorusNode::new();
         chorus.set_rate(rate);
         chorus.set_depth(depth);
         chorus.set_feedback(feedback);

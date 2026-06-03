@@ -59,17 +59,12 @@ mod prelude;
 mod resources;
 
 pub mod graph;
-// Private: collides with the `bevy_tutti::dsp` subsystem-crate alias below.
-// Its public items (TuttiDspPlugin, Add*, dsp_*_system) are surfaced via the
-// prelude, and nothing references `bevy_tutti::dsp::*` by path.
-mod dsp;
+// The DSP / automation / spatial / convolution ECS code (spawn pipelines,
+// param reconcilers, plugins) now lives in `tutti_units::ecs`. bevy-tutti
+// re-exports it via the prelude under the same feature gates.
 
 #[cfg(feature = "analysis")]
 mod analysis;
-// Private: collides with the `bevy_tutti::automation` subsystem-crate alias.
-// Public items reach callers via the prelude.
-#[cfg(feature = "automation")]
-mod automation;
 #[cfg(feature = "export")]
 mod export;
 // Region rendering renders sampler / clip-reader units offline, so it needs the
@@ -82,8 +77,6 @@ pub mod render_region;
 mod midi;
 #[cfg(feature = "soundfont")]
 mod soundfont;
-#[cfg(feature = "spatial")]
-mod spatial;
 
 #[cfg(feature = "plugin")]
 pub mod plugin_host;

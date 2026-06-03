@@ -10,10 +10,7 @@
 //!
 //! See the core module for the design rationale.
 
-#![cfg_attr(
-    not(any(feature = "plugin", feature = "dsp")),
-    allow(unused_imports)
-)]
+#![cfg_attr(not(feature = "plugin"), allow(unused_imports))]
 
 use bevy_ecs::prelude::*;
 
@@ -21,51 +18,17 @@ pub use tutti_core::ecs::param_epoch::{bump_param_epoch_core, NodeParamEpoch};
 
 use crate::core::ecs::AudioNode;
 
-#[cfg(feature = "dsp")]
-use crate::core::ecs::{
-    Attack, CeilingDb, CompressorRatio, DelayTime, Drive, Feedback, FilterQ, Frequency, GainDb,
-    ModDepth, ModRate, Release, ThresholdDb, WetMix,
-};
-
 #[cfg(feature = "plugin")]
 use crate::core::ecs::PluginParam;
+
+// The DSP-family param-epoch bump (`bump_param_epoch_dsp`) moved into
+// `tutti_units::ecs::reconcile`. Re-exported via the prelude for compat.
 
 /// Bump the epoch for plugin param changes (`PluginParam`).
 #[cfg(feature = "plugin")]
 pub fn bump_param_epoch_plugin(
     mut epoch: ResMut<NodeParamEpoch>,
     changed: Query<&AudioNode, Changed<PluginParam>>,
-) {
-    for node in changed.iter() {
-        epoch.bump(node.0);
-    }
-}
-
-/// DSP-family param components (filter / delay / chorus / dynamics / …). All
-/// gated behind the `dsp` feature, mirroring the reconcilers that write them.
-#[cfg(feature = "dsp")]
-type DspParamChanged = Or<(
-    Changed<Frequency>,
-    Changed<FilterQ>,
-    Changed<GainDb>,
-    Changed<DelayTime>,
-    Changed<Feedback>,
-    Changed<WetMix>,
-    Changed<ModRate>,
-    Changed<ModDepth>,
-    Changed<ThresholdDb>,
-    Changed<CompressorRatio>,
-    Changed<Attack>,
-    Changed<Release>,
-    Changed<Drive>,
-    Changed<CeilingDb>,
-)>;
-
-/// Bump the epoch for every node whose DSP-family param component changed.
-#[cfg(feature = "dsp")]
-pub fn bump_param_epoch_dsp(
-    mut epoch: ResMut<NodeParamEpoch>,
-    changed: Query<&AudioNode, DspParamChanged>,
 ) {
     for node in changed.iter() {
         epoch.bump(node.0);

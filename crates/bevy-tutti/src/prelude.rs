@@ -26,7 +26,7 @@ pub use crate::sampler::ecs::{
 pub use crate::core::ecs::{AudioEmitter, AudioPlaybackState};
 
 #[cfg(feature = "spatial")]
-pub use crate::spatial::{
+pub use crate::units::ecs::{
     spatial_audio_sync_system, AttenuationModel, AudioListener, SpatialAudio, TuttiSpatialPlugin,
 };
 
@@ -102,12 +102,14 @@ pub use crate::sampler::ecs::{
     WaveImportQueue,
 };
 #[cfg(feature = "convolution")]
-pub use crate::graph::{promote_pending_convolvers, start_convolver_loads, PendingConvolverLoad};
+pub use crate::units::ecs::{
+    promote_pending_convolvers, start_convolver_loads, PendingConvolverLoad,
+};
 #[cfg(feature = "midi")]
 pub use crate::graph::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi};
 
 #[cfg(feature = "automation")]
-pub use crate::automation::{
+pub use crate::units::ecs::{
     automation_lane_system, reconcile_automation_writes, update_automation_envelope_system,
     AddAutomationLane, AutomationDrivesParam, AutomationLaneEmitter, AutomationLaneNode,
     AutomationParam, TuttiAutomationPlugin, UpdateAutomationEnvelope,
@@ -193,20 +195,22 @@ pub use crate::sampler::ecs::{
     time_stretch_sync_system, TimeStretch, TimeStretchControl, TuttiTimeStretchPlugin,
 };
 
+// DSP spawn pipeline + plugin now live in `tutti_units::ecs`; surface them
+// under the same `dsp` gate via the crate root (`bevy_tutti::*`).
 #[allow(deprecated)]
-pub use crate::dsp::AddLfo;
+pub use crate::units::ecs::AddLfo;
 #[cfg(feature = "dsp")]
-pub use crate::dsp::{
+pub use crate::units::ecs::{
     dsp_chorus_system, dsp_compressor_system, dsp_delay_system, dsp_filter_system, dsp_gate_system,
     dsp_reverb_system,
 };
 // Generic marker-driven spawn (replaces the six `spawn_*_nodes` systems).
 #[cfg(feature = "dsp")]
-pub use crate::dsp::{spawn_dsp_node, AddDspNode, DspNode, SpawnParams};
-pub use crate::dsp::{dsp_lfo_system, spawn_lfo_nodes, TuttiDspPlugin};
+pub use crate::units::ecs::{spawn_dsp_node, AddDspNode, DspNode, SpawnParams};
+pub use crate::units::ecs::{dsp_lfo_system, spawn_lfo_nodes, TuttiDspPlugin};
 #[cfg(feature = "dsp")]
 #[allow(deprecated)]
-pub use crate::dsp::{AddChorus, AddCompressor, AddDelay, AddFilter, AddGate, AddReverb};
+pub use crate::units::ecs::{AddChorus, AddCompressor, AddDelay, AddFilter, AddGate, AddReverb};
 #[cfg(feature = "dsp")]
 pub use crate::units::{
     BrickwallLimiter, ChorusNode, Compressor, FlangerNode, Gate, LadderFilterNode, LadderType,

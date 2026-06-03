@@ -11,11 +11,9 @@ use bevy_log::warn;
 use bevy_reflect::prelude::*;
 use bevy_transform::components::GlobalTransform;
 
-use crate::sampler::SamplerUnit;
-use crate::NodeId;
+use tutti_core::NodeId;
 
-use crate::sampler::ecs::{audio_cleanup_system, audio_playback_system, AudioEmitter};
-use crate::resources::TuttiGraphRes;
+use tutti_core::ecs::{engine_ready, AudioEmitter, GraphDirty, GraphReconcileSystems, TuttiGraphRes, Volume};
 
 /// Marks an entity as the audio listener (typically the camera).
 ///
@@ -68,24 +66,26 @@ pub enum AttenuationModel {
 ///
 /// Lazily creates a `SpatialPannerNode` for each emitter with `SpatialAudio`.
 /// Computes listener-relative azimuth/elevation and applies distance attenuation.
+#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
 pub fn spatial_audio_sync_system(
     mut graph: ResMut<TuttiGraphRes>,
-    mut dirty: ResMut<crate::graph::GraphDirty>,
+    mut dirty: ResMut<GraphDirty>,
     listener_query: Query<&bevy_transform::components::GlobalTransform, With<AudioListener>>,
     mut emitter_query: Query<(
         &bevy_transform::components::GlobalTransform,
         &AudioEmitter,
         &mut SpatialAudio,
+        Option<&mut Volume>,
     )>,
 ) {
     let listener_tf = listener_query.single().ok();
 
     let mut edited = false;
 
-    for (emitter_tf, emitter, mut spatial) in emitter_query.iter_mut() {
+    for (emitter_tf, emitter, mut spatial, maybe_volume) in emitter_query.iter_mut() {
         if spatial.panner_node_id.is_none() {
             let emitter_node = emitter.node_id;
-            let Ok(panner) = crate::units::SpatialPannerNode::stereo() else {
+            let Ok(panner) = crate::SpatialPannerNode::stereo() else {
                 warn!("Failed to create SpatialPannerNode");
                 continue;
             };
@@ -122,7 +122,7 @@ pub fn spatial_audio_sync_system(
             (az, el, pos.length())
         };
 
-        if let Some(panner) = graph.0.node::<crate::units::SpatialPannerNode>(panner_id) {
+        if let Some(panner) = graph.0.node::<crate::SpatialPannerNode>(panner_id) {
             panner.set_position(azimuth, elevation);
         }
 
@@ -132,8 +132,15 @@ pub fn spatial_audio_sync_system(
             spatial.ref_distance,
             spatial.max_distance,
         );
-        if let Some(sampler) = graph.0.node_mut::<SamplerUnit>(emitter.node_id) {
-            sampler.set_gain(gain);
+        // Distance attenuation is applied through the generic `Volume` param,
+        // not by reaching into the concrete emitter unit. The emitter's own
+        // leaf reconciler (e.g. `reconcile_sampler_volume`) sees the
+        // `Changed<Volume>` and writes the gain into its unit — identical end
+        // behavior, and tutti-units stays decoupled from tutti-sampler.
+        if let Some(mut volume) = maybe_volume {
+            if (volume.0 - gain).abs() > f32::EPSILON {
+                volume.0 = gain;
+            }
         }
     }
 
@@ -165,9 +172,12 @@ fn compute_attenuation(
 
 /// Bevy plugin: spatial audio panning.
 ///
-/// Depends on [`crate::sampler::ecs::TuttiPlaybackPlugin`] (the spatial system uses
-/// `AudioEmitter` and the `SamplerUnit` it points at). Ordered between
-/// playback and cleanup.
+/// Expects an emitter (`AudioEmitter`) to already exist on each `SpatialAudio`
+/// entity — supplied by whatever leaf produces the source node (e.g. the
+/// sampler's playback plugin). The sync system runs in
+/// [`GraphReconcileSystems::Params`] so it lands after the spawn phase (the
+/// node exists) and before the commit phase. Distance attenuation is written
+/// through the `Volume` param; the emitter's own leaf reconciler applies it.
 pub struct TuttiSpatialPlugin;
 
 impl Plugin for TuttiSpatialPlugin {
@@ -177,9 +187,8 @@ impl Plugin for TuttiSpatialPlugin {
         app.add_systems(
             Update,
             spatial_audio_sync_system
-                .run_if(crate::graph::engine_ready)
-                .after(audio_playback_system)
-                .before(audio_cleanup_system),
+                .in_set(GraphReconcileSystems::Params)
+                .run_if(engine_ready),
         );
     }
 }

@@ -15,11 +15,11 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use tutti_units::automation::LiveAutomationLane;
-use crate::core::ecs::{AudioNode, Pan, PluginParam, Volume};
+use crate::automation::LiveAutomationLane;
+use tutti_core::ecs::{AudioNode, Pan, PluginParam, Volume};
 
-use crate::graph::reconcile::{reconcile_params, GraphReconcileSystems};
-use crate::resources::{TransportRes, TuttiGraphRes};
+use tutti_core::ecs::{reconcile_params, GraphReconcileSystems};
+use tutti_core::ecs::{TransportRes, TuttiGraphRes};
 
 /// Trigger component: spawn an entity with this to create an automation lane.
 ///
@@ -28,11 +28,11 @@ use crate::resources::{TransportRes, TuttiGraphRes};
 /// component with [`AutomationLaneEmitter`] + [`AudioNode`].
 #[derive(Component, Debug, Clone)]
 pub struct AddAutomationLane {
-    pub envelope: tutti_units::automation::AutomationEnvelope<f32>,
+    pub envelope: crate::automation::AutomationEnvelope<f32>,
 }
 
 impl AddAutomationLane {
-    pub fn with_envelope(envelope: tutti_units::automation::AutomationEnvelope<f32>) -> Self {
+    pub fn with_envelope(envelope: crate::automation::AutomationEnvelope<f32>) -> Self {
         Self { envelope }
     }
 }
@@ -44,7 +44,7 @@ impl AddAutomationLane {
 /// in the standard graph-reconcile queries.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AutomationLaneEmitter {
-    pub node_id: crate::NodeId,
+    pub node_id: tutti_core::NodeId,
 }
 
 /// Marker component for entities holding a `LiveAutomationLane<f32>` node.
@@ -84,20 +84,20 @@ pub struct AutomationDrivesParam {
 /// this component after applying the update.
 #[derive(Component, Debug, Clone)]
 pub struct UpdateAutomationEnvelope {
-    pub envelope: tutti_units::automation::AutomationEnvelope<f32>,
+    pub envelope: crate::automation::AutomationEnvelope<f32>,
 }
 
 pub fn automation_lane_system(
     mut commands: Commands,
     mut graph: ResMut<TuttiGraphRes>,
     transport: Res<TransportRes>,
-    mut dirty: ResMut<crate::graph::GraphDirty>,
+    mut dirty: ResMut<tutti_core::ecs::GraphDirty>,
     query: Query<(Entity, &AddAutomationLane), Added<AddAutomationLane>>,
 ) {
     let mut edited = false;
 
     for (entity, add) in query.iter() {
-        let lane = tutti_units::automation::AutomationLane::new(add.envelope.clone(), transport.0.clone());
+        let lane = crate::automation::AutomationLane::new(add.envelope.clone(), transport.0.clone());
         let node_id = graph.0.add(lane);
         edited = true;
 
@@ -123,7 +123,7 @@ pub fn automation_lane_system(
 pub fn update_automation_envelope_system(
     mut commands: Commands,
     mut graph: ResMut<TuttiGraphRes>,
-    mut dirty: ResMut<crate::graph::GraphDirty>,
+    mut dirty: ResMut<tutti_core::ecs::GraphDirty>,
     query: Query<(Entity, &AutomationLaneEmitter, &UpdateAutomationEnvelope)>,
 ) {
     let mut edited = false;
@@ -209,14 +209,14 @@ impl Plugin for TuttiAutomationPlugin {
             Update,
             (automation_lane_system, update_automation_envelope_system)
                 .before(GraphReconcileSystems::Commit)
-                .run_if(crate::graph::engine_ready),
+                .run_if(tutti_core::ecs::engine_ready),
         )
         .add_systems(
             Update,
             reconcile_automation_writes
                 .in_set(GraphReconcileSystems::Params)
                 .before(reconcile_params)
-                .run_if(crate::graph::engine_ready),
+                .run_if(tutti_core::ecs::engine_ready),
         );
     }
 }

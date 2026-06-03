@@ -70,6 +70,7 @@ pub enum AttenuationModel {
 /// Computes listener-relative azimuth/elevation and applies distance attenuation.
 pub fn spatial_audio_sync_system(
     graph: Option<ResMut<TuttiGraphRes>>,
+    mut dirty: ResMut<crate::graph::GraphDirty>,
     listener_query: Query<&bevy_transform::components::GlobalTransform, With<AudioListener>>,
     mut emitter_query: Query<(
         &bevy_transform::components::GlobalTransform,
@@ -137,8 +138,10 @@ pub fn spatial_audio_sync_system(
         }
     }
 
+    // Stage only; the Commit-phase `commit_graph` coalesces (this system is
+    // anchored before that phase).
     if edited {
-        graph.0.commit();
+        dirty.0 = true;
     }
 }
 

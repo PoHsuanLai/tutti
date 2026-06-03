@@ -23,6 +23,7 @@ pub struct DespawnOnFinish;
 pub fn audio_cleanup_system(
     mut commands: Commands,
     graph: Option<ResMut<TuttiGraphRes>>,
+    mut dirty: ResMut<crate::graph::GraphDirty>,
     mut query: Query<(
         Entity,
         &AudioEmitter,
@@ -59,7 +60,9 @@ pub fn audio_cleanup_system(
         }
     }
 
+    // Stage only; the Commit-phase `commit_graph` coalesces (this system is
+    // anchored before that phase).
     if edited {
-        graph.0.commit();
+        dirty.0 = true;
     }
 }

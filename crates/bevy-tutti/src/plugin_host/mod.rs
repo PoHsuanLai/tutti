@@ -71,7 +71,9 @@ impl Plugin for TuttiHostingPlugin {
                 plugin_editor_resize_request_system.after(plugin_editor_idle_system),
                 plugin_editor_window_resize_system.after(plugin_editor_resize_request_system),
                 plugin_editor_window_close_system,
-                plugin_crash_detect_system,
+                // Removes a crashed plugin's node + sets GraphDirty (no inline
+                // commit), so anchor it before the Commit-phase commit_graph.
+                plugin_crash_detect_system.before(crate::graph::GraphReconcileSystems::Commit),
                 trigger_plugin_scan,
                 poll_plugin_scan.after(trigger_plugin_scan),
             ),

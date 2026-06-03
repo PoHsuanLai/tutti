@@ -91,6 +91,7 @@ pub fn automation_lane_system(
     mut commands: Commands,
     graph: Option<ResMut<TuttiGraphRes>>,
     transport: Option<Res<TransportRes>>,
+    mut dirty: ResMut<crate::graph::GraphDirty>,
     query: Query<(Entity, &AddAutomationLane), Added<AddAutomationLane>>,
 ) {
     let Some(mut graph) = graph else { return };
@@ -114,8 +115,10 @@ pub fn automation_lane_system(
         bevy_log::info!("Automation lane added (entity {entity:?}, node {node_id:?})");
     }
 
+    // Stage only; the Commit-phase `commit_graph` coalesces (this system is
+    // anchored before that phase).
     if edited {
-        graph.0.commit();
+        dirty.0 = true;
     }
 }
 
@@ -123,6 +126,7 @@ pub fn automation_lane_system(
 pub fn update_automation_envelope_system(
     mut commands: Commands,
     graph: Option<ResMut<TuttiGraphRes>>,
+    mut dirty: ResMut<crate::graph::GraphDirty>,
     query: Query<(Entity, &AutomationLaneEmitter, &UpdateAutomationEnvelope)>,
 ) {
     let Some(mut graph) = graph else { return };
@@ -136,8 +140,10 @@ pub fn update_automation_envelope_system(
         commands.entity(entity).remove::<UpdateAutomationEnvelope>();
     }
 
+    // Stage only; the Commit-phase `commit_graph` coalesces (this system is
+    // anchored before that phase).
     if edited {
-        graph.0.commit();
+        dirty.0 = true;
     }
 }
 
@@ -203,9 +209,12 @@ impl Plugin for TuttiAutomationPlugin {
         app.register_type::<AutomationLaneNode>()
             .register_type::<AutomationDrivesParam>()
             .register_type::<AutomationParam>();
+        // Both stage graph edits + set GraphDirty; anchor before the Commit
+        // phase so `commit_graph` coalesces (they no longer commit inline).
         app.add_systems(
             Update,
-            (automation_lane_system, update_automation_envelope_system),
+            (automation_lane_system, update_automation_envelope_system)
+                .before(GraphReconcileSystems::Commit),
         )
         .add_systems(
             Update,

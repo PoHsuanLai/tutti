@@ -15,6 +15,7 @@ use super::editor::{PluginEditorOpen, PluginEmitter};
 pub fn plugin_crash_detect_system(
     mut commands: Commands,
     graph: Option<ResMut<TuttiGraphRes>>,
+    mut dirty: ResMut<crate::graph::GraphDirty>,
     query: Query<(Entity, &AudioEmitter, &PluginEmitter)>,
 ) {
     let Some(mut graph) = graph else { return };
@@ -41,7 +42,9 @@ pub fn plugin_crash_detect_system(
         }
     }
 
+    // Stage only; the Commit-phase `commit_graph` coalesces (this system is
+    // anchored before that phase).
     if edited {
-        graph.0.commit();
+        dirty.0 = true;
     }
 }

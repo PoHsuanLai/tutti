@@ -27,6 +27,7 @@ impl Default for AudioVolume {
 #[cfg(feature = "sampler")]
 pub fn audio_parameter_sync_system(
     graph: Option<ResMut<TuttiGraphRes>>,
+    mut dirty: ResMut<crate::graph::GraphDirty>,
     query: Query<(&AudioEmitter, &AudioVolume), Changed<AudioVolume>>,
 ) {
     let Some(mut graph) = graph else { return };
@@ -39,7 +40,9 @@ pub fn audio_parameter_sync_system(
         }
     }
 
+    // Stage only; the Commit-phase `commit_graph` coalesces (this system is
+    // anchored before that phase).
     if edited {
-        graph.0.commit();
+        dirty.0 = true;
     }
 }

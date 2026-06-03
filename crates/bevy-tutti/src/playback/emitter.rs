@@ -145,6 +145,7 @@ pub fn audio_playback_system(
     audio_assets: Res<Assets<WaveAsset>>,
     graph: Option<ResMut<TuttiGraphRes>>,
     config: Option<Res<AudioConfig>>,
+    mut dirty: ResMut<crate::graph::GraphDirty>,
     query: Query<(Entity, &PlayAudio), Added<PlayAudio>>,
     ts_query: Query<&TimeStretch>,
 ) {
@@ -201,7 +202,9 @@ pub fn audio_playback_system(
         }
     }
 
+    // Stage edits only; the Commit-phase `commit_graph` coalesces into one
+    // `graph.commit()` per frame. This system is anchored before that phase.
     if edited {
-        graph.0.commit();
+        dirty.0 = true;
     }
 }

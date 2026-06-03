@@ -75,15 +75,34 @@ pub fn midi_input_event_system(
     }
 }
 
+/// MPE-receiver views needed by [`midi_routing_sync_system`], grouped into a
+/// single [`SystemParam`] so the system stays under clippy's argument limit.
+///
+/// [`SystemParam`]: bevy_ecs::system::SystemParam
+#[cfg(feature = "mpe")]
+#[derive(bevy_ecs::system::SystemParam)]
+pub struct MpeReceiverQueries<'w, 's> {
+    changed: Query<'w, 's, &'static MpeReceiver, Changed<MpeReceiver>>,
+    all: Query<'w, 's, &'static MpeReceiver>,
+    removed: RemovedComponents<'w, 's, MpeReceiver>,
+}
+
+#[cfg(feature = "mpe")]
+impl MpeReceiverQueries<'_, '_> {
+    /// Whether any MPE receiver was added, changed, or removed this frame.
+    fn has_changes(&mut self) -> bool {
+        !self.changed.is_empty() || self.removed.read().next().is_some()
+    }
+}
+
 #[cfg(feature = "midi")]
 pub fn midi_routing_sync_system(
     graph: Option<ResMut<crate::TuttiGraphRes>>,
+    mut dirty: ResMut<crate::graph::GraphDirty>,
     changed: Query<&MidiReceiver, Changed<MidiReceiver>>,
     all_receivers: Query<&MidiReceiver>,
     mut removed: RemovedComponents<MidiReceiver>,
-    #[cfg(feature = "mpe")] mpe_changed: Query<&MpeReceiver, Changed<MpeReceiver>>,
-    #[cfg(feature = "mpe")] all_mpe_receivers: Query<&MpeReceiver>,
-    #[cfg(feature = "mpe")] mut mpe_removed: RemovedComponents<MpeReceiver>,
+    #[cfg(feature = "mpe")] mut mpe: MpeReceiverQueries,
 ) {
     let Some(mut graph) = graph else { return };
 
@@ -92,7 +111,7 @@ pub fn midi_routing_sync_system(
 
     #[cfg(feature = "mpe")]
     {
-        has_changes = has_changes || !mpe_changed.is_empty() || mpe_removed.read().next().is_some();
+        has_changes = has_changes || mpe.has_changes();
     }
 
     if !has_changes {
@@ -112,13 +131,16 @@ pub fn midi_routing_sync_system(
 
     // MPE receivers route all channels to one synth via fallback
     #[cfg(feature = "mpe")]
-    for mpe_recv in all_mpe_receivers.iter() {
+    for mpe_recv in mpe.all.iter() {
         table.fallback(crate::core::MidiUnitId::new(mpe_recv.node_id.value()));
     }
 
-    // `commit()` on TuttiGraph publishes both graph edits and the MIDI
-    // routing table snapshot in one step.
-    graph.0.commit();
+    // The staged route-table edits are published by the Commit-phase
+    // `commit_graph` — `TuttiGraph::commit()` flushes both the fundsp net
+    // and the MIDI routing snapshot in one step, so coalescing here is
+    // equivalent to committing inline. This system is anchored before the
+    // Commit phase.
+    dirty.0 = true;
 }
 
 #[cfg(feature = "midi-hardware")]

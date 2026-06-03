@@ -48,6 +48,12 @@ impl Plugin for TuttiPlaybackPlugin {
 
         #[cfg(feature = "sampler")]
         {
+            use crate::graph::GraphReconcileSystems;
+            // These stage graph edits + set GraphDirty; anchor the whole chain
+            // before the Commit phase so the once-per-frame `commit_graph`
+            // coalesces them (they no longer commit inline). spatial.rs hangs
+            // its sync system between playback and cleanup via .after/.before,
+            // so that relative order is preserved by the chain.
             app.init_asset::<StreamingSample>()
                 .register_asset_loader(TuttiStreamingLoader::<StreamingSample>::default())
                 .add_systems(
@@ -57,7 +63,8 @@ impl Plugin for TuttiPlaybackPlugin {
                         audio_parameter_sync_system,
                         audio_cleanup_system,
                     )
-                        .chain(),
+                        .chain()
+                        .before(GraphReconcileSystems::Commit),
                 );
         }
     }

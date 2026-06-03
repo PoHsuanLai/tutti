@@ -135,6 +135,7 @@ pub fn soundfont_playback_system(
 pub fn promote_pending_soundfonts(
     mut commands: Commands,
     graph: Option<ResMut<TuttiGraphRes>>,
+    mut dirty: ResMut<crate::graph::GraphDirty>,
     #[cfg(feature = "midi")] midi: Option<Res<MidiBusRes>>,
     mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,
 ) {
@@ -175,8 +176,10 @@ pub fn promote_pending_soundfonts(
             .insert(AudioEmitter { node_id: id });
     }
 
+    // Stage only; the Commit-phase `commit_graph` coalesces (this system is
+    // anchored before that phase).
     if edited {
-        graph.0.commit();
+        dirty.0 = true;
     }
 }
 
@@ -186,11 +189,16 @@ pub struct TuttiSoundFontPlugin;
 impl Plugin for TuttiSoundFontPlugin {
     fn build(&self, app: &mut App) {
         app.register_type::<PlaySoundFont>();
+        // `promote_pending_soundfonts` stages graph edits + sets GraphDirty,
+        // so anchor the chain before the Commit phase where `commit_graph`
+        // flushes it (it no longer commits inline).
         app.init_asset::<crate::synth::SoundFontAsset>()
             .register_asset_loader(TuttiLoader::<crate::synth::SoundFontAsset>::default())
             .add_systems(
                 Update,
-                (soundfont_playback_system, promote_pending_soundfonts).chain(),
+                (soundfont_playback_system, promote_pending_soundfonts)
+                    .chain()
+                    .before(crate::graph::GraphReconcileSystems::Commit),
             );
     }
 }

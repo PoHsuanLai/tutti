@@ -27,6 +27,9 @@ impl Plugin for TuttiMidiPlugin {
 
         app.add_systems(Startup, systems::midi_observer_setup_system);
 
+        // `midi_routing_sync_system` stages route-table edits + sets
+        // GraphDirty (instead of committing inline), so anchor the chain
+        // before the Commit phase where `commit_graph` flushes it.
         app.add_systems(
             Update,
             (
@@ -35,7 +38,8 @@ impl Plugin for TuttiMidiPlugin {
                 systems::midi_sequence_setup_system,
                 systems::midi_sequence_tick_system,
             )
-                .chain(),
+                .chain()
+                .before(crate::graph::GraphReconcileSystems::Commit),
         );
 
         #[cfg(feature = "mpe")]

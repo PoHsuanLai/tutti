@@ -25,6 +25,8 @@ libm = "0.2"
 # Embedded users must provide a `critical-section` impl via the
 # portable-atomic `critical-section` feature or `unsafe-assume-single-core`.
 portable-atomic = { version = "1", default-features = false, features = ["fallback"] }
+# Atomic snapshot publishing for MidiRoutingTable (no_std-compatible).
+arc-swap = { version = "1.7", default-features = false }
 
 # midi2's feature set is fully specified at the workspace level (this is its
 # only consumer). midly's no_std base lives there too; we add `alloc` here.

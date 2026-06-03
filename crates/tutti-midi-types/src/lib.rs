@@ -40,7 +40,7 @@ pub mod unit_id;
 
 pub use input_source::{MidiInputSource, NoMidiInput};
 pub use queue::MidiQueue;
-pub use routing::{MidiRoute, MidiRoutingSnapshot, RouteIterator};
+pub use routing::{MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterator};
 pub use semantic::{decode, SemanticEvent};
 pub use source::MidiSource;
 pub use target::MidiTarget;

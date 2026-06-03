@@ -30,7 +30,7 @@ use crate::sampler::ecs::{SamplerRes, TuttiSamplerPlugin};
 #[cfg(feature = "automation")]
 use tutti_units::ecs::TuttiAutomationPlugin;
 #[cfg(feature = "analysis")]
-use crate::analysis::TuttiAnalysisPlugin;
+use tutti_analysis::ecs::{AnalysisRes, TuttiAnalysisPlugin};
 #[cfg(feature = "export")]
 use crate::export::TuttiExportPlugin;
 #[cfg(feature = "plugin")]

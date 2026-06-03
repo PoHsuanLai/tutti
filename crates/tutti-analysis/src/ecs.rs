@@ -1,4 +1,8 @@
 //! Live analysis (pitch, transients, waveform, spectrum) mirror as a Bevy resource.
+//!
+//! The Bevy integration for this crate, defined in-place (the bevy_text shape).
+//! `TuttiAnalysisPlugin` enables/disables the analysis thread on message and
+//! mirrors its lock-free `ArcSwap` results into a Bevy resource each frame.
 
 use std::sync::Arc;
 
@@ -6,8 +10,20 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
 
-use crate::graph::engine_ready;
-use crate::resources::AnalysisRes;
+use tutti_core::ecs::engine_ready;
+
+/// Bevy resource wrapping the analysis handle (transient / pitch / stereo).
+///
+/// `AnalysisHandle` is not `Clone` upstream. Inserted by the engine bundle.
+#[derive(Resource)]
+pub struct AnalysisRes(pub crate::AnalysisHandle);
+
+impl std::ops::Deref for AnalysisRes {
+    type Target = crate::AnalysisHandle;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// Fire-and-forget request to enable live analysis.
 ///
@@ -26,20 +42,20 @@ pub struct DisableLiveAnalysis;
 /// Fields are `Arc` pointers -- cheap to clone for UI consumption.
 #[derive(Resource)]
 pub struct LiveAnalysisData {
-    pub pitch: Arc<tutti_analysis::PitchResult>,
-    pub transients: Arc<Vec<tutti_analysis::Transient>>,
-    pub waveform: Arc<tutti_analysis::WaveformSummary>,
-    pub spectrum: Arc<tutti_analysis::SpectrumResult>,
+    pub pitch: Arc<crate::PitchResult>,
+    pub transients: Arc<Vec<crate::Transient>>,
+    pub waveform: Arc<crate::WaveformSummary>,
+    pub spectrum: Arc<crate::SpectrumResult>,
     pub is_live: bool,
 }
 
 impl Default for LiveAnalysisData {
     fn default() -> Self {
         Self {
-            pitch: Arc::new(tutti_analysis::PitchResult::default()),
+            pitch: Arc::new(crate::PitchResult::default()),
             transients: Arc::new(Vec::new()),
-            waveform: Arc::new(tutti_analysis::WaveformSummary::new(512)),
-            spectrum: Arc::new(tutti_analysis::SpectrumResult::default()),
+            waveform: Arc::new(crate::WaveformSummary::new(512)),
+            spectrum: Arc::new(crate::SpectrumResult::default()),
             is_live: false,
         }
     }
@@ -70,10 +86,7 @@ pub fn live_analysis_control_system(
     }
 }
 
-pub fn live_analysis_sync_system(
-    analysis: Res<AnalysisRes>,
-    mut data: ResMut<LiveAnalysisData>,
-) {
+pub fn live_analysis_sync_system(analysis: Res<AnalysisRes>, mut data: ResMut<LiveAnalysisData>) {
     if !data.is_live {
         return;
     }

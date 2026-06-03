@@ -63,8 +63,7 @@ pub mod graph;
 // param reconcilers, plugins) now lives in `tutti_units::ecs`. bevy-tutti
 // re-exports it via the prelude under the same feature gates.
 
-#[cfg(feature = "analysis")]
-mod analysis;
+// `analysis` ECS folded into `tutti_analysis::ecs`; re-exported via the prelude.
 #[cfg(feature = "export")]
 mod export;
 // Region rendering renders sampler / clip-reader units offline, so it needs the

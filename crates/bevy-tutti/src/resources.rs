@@ -62,20 +62,8 @@ impl std::ops::Deref for SoundFontRes {
     }
 }
 
-/// Analysis handle (transient / pitch / stereo analysis).
-///
-/// `AnalysisHandle` is not `Clone` upstream.
-#[cfg(feature = "analysis")]
-#[derive(Resource)]
-pub struct AnalysisRes(pub tutti_analysis::AnalysisHandle);
-
-#[cfg(feature = "analysis")]
-impl std::ops::Deref for AnalysisRes {
-    type Target = tutti_analysis::AnalysisHandle;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+// `AnalysisRes` now lives in `tutti_analysis::ecs` (folded into the crate that
+// owns the analysis logic). bevy-tutti re-exports it from there.
 
 /// Non-Send marker resource that forces plugin editor systems to run on the
 /// main thread. AppKit (macOS), Win32, and X11 window operations must happen

@@ -161,8 +161,8 @@ pub use crate::sampler::capture::{
 };
 
 #[cfg(feature = "analysis")]
-pub use crate::analysis::{
-    live_analysis_control_system, live_analysis_sync_system, DisableLiveAnalysis,
+pub use tutti_analysis::ecs::{
+    live_analysis_control_system, live_analysis_sync_system, AnalysisRes, DisableLiveAnalysis,
     EnableLiveAnalysis, LiveAnalysisData, TuttiAnalysisPlugin,
 };
 
@@ -220,8 +220,7 @@ pub use crate::units::{
 pub use crate::units::{LfoMode, LfoNode, LfoShape};
 
 // Resource newtypes (defined in `crate::resources`).
-#[cfg(feature = "analysis")]
-pub use crate::resources::AnalysisRes;
+// `AnalysisRes` is re-exported above from `tutti_analysis::ecs`.
 #[cfg(feature = "midi")]
 pub use tutti_midi_io::ecs::MidiBusRes;
 #[cfg(feature = "midi-hardware")]

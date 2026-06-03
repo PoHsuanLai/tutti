@@ -74,3 +74,9 @@ pub use stft::{
 pub use rustfft::num_complex::Complex;
 pub use transient::{DetectionMethod, Transient, TransientDetector};
 pub use waveform::{MultiResolutionSummary, StereoWaveformSummary, WaveformBlock, WaveformSummary};
+
+/// Bevy ECS integration: `TuttiAnalysisPlugin`, `AnalysisRes`, `LiveAnalysisData`.
+pub mod ecs;
+pub use ecs::{
+    AnalysisRes, DisableLiveAnalysis, EnableLiveAnalysis, LiveAnalysisData, TuttiAnalysisPlugin,
+};

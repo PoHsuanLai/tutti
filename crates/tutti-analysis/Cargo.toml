@@ -11,6 +11,14 @@ categories = ["multimedia::audio"]
 [dependencies]
 tutti-core = { path = "../tutti-core", features = ["std"] }
 
+# Bevy — hard deps. tutti-analysis defines its own ECS integration
+# (TuttiAnalysisPlugin, AnalysisRes, LiveAnalysisData) in-place, the bevy_text
+# shape. Mirrors tutti-wavecache / tutti-sampler.
+bevy_ecs = { version = "0.18", default-features = false }
+bevy_app = { version = "0.18", default-features = false }
+bevy_reflect = { version = "0.18", default-features = false }
+bevy_log = { version = "0.18", default-features = false }
+
 # FFT for spectral analysis (transient detection, pitch detection)
 rustfft = "6"
 

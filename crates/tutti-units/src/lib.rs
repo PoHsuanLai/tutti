@@ -79,3 +79,29 @@ mod automation_lane;
 /// `tutti_sampler::ecs`. Requires `std` (Bevy is std-only).
 #[cfg(feature = "std")]
 pub mod ecs;
+// Re-export the ECS surface at the crate root so consumers write
+// `tutti_units::TuttiDspPlugin`, not `tutti_units::ecs::…` (the bevy_text shape).
+#[cfg(feature = "std")]
+#[allow(deprecated)]
+pub use ecs::{
+    bump_param_epoch_dsp, dsp_chorus_system, dsp_compressor_system, dsp_delay_system,
+    dsp_filter_system, dsp_gate_system, dsp_lfo_system, dsp_reverb_system, reconcile_reverb_params,
+    reconcile_unit_params, spawn_dsp_node, spawn_lfo_nodes, AddChorus, AddCompressor, AddDelay,
+    AddDspNode, AddFilter, AddGate, AddLfo, AddReverb, DspNode, EffectParams, SpawnParams,
+    TuttiDspPlugin,
+};
+#[cfg(all(feature = "std", feature = "convolution"))]
+pub use ecs::{
+    promote_pending_convolvers, reconcile_convolver_params, start_convolver_loads,
+    PendingConvolverLoad,
+};
+#[cfg(all(feature = "std", feature = "spatial"))]
+pub use ecs::{
+    spatial_audio_sync_system, AttenuationModel, AudioListener, SpatialAudio, TuttiSpatialPlugin,
+};
+#[cfg(all(feature = "std", feature = "automation"))]
+pub use ecs::{
+    automation_lane_system, reconcile_automation_writes, update_automation_envelope_system,
+    AddAutomationLane, AutomationDrivesParam, AutomationLaneEmitter, AutomationLaneNode,
+    AutomationParam, TuttiAutomationPlugin, UpdateAutomationEnvelope,
+};

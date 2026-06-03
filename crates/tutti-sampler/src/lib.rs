@@ -81,6 +81,21 @@ pub use asset::{StreamingProgress, StreamingSample, StreamingSampleProbeError};
 
 /// Bevy ECS integration: sampler-domain components, systems, and plugins.
 pub mod ecs;
+// Re-export the ECS surface at the crate root so consumers write
+// `tutti_sampler::TuttiSamplerPlugin`, not `tutti_sampler::ecs::…` (the
+// bevy_text shape — the integration is part of the crate's public API).
+pub use ecs::{
+    audio_cleanup_system, audio_parameter_sync_system, audio_playback_system,
+    bump_param_epoch_sampler, init_auditioner, poll_wave_imports, promote_pending_samplers,
+    reconcile_sampler_params, reconcile_sampler_volume, recording_start_system,
+    recording_stop_system, AudioInputDeviceInfo, AudioInputState, AudioVolume, AuditionerNode,
+    AuditionerRes, ClipCommand, ClipSpec, ContentBounds, DespawnOnFinish, DisableAudioInput,
+    EnableAudioInput, PendingSamplerLoad, PlayAudio, PreviewFile, RecordingActive, RecordingResult,
+    SamplerRes, SlotId, StartRecording, StopPreview, StopRecording, TimeStretch, TimeStretchControl,
+    TrackClipReaderHandle, TrackClipReaderNode, TrackClipReaderRef, TrackClipReaderUnit,
+    TuttiAudioInputPlugin, TuttiAuditionerPlugin, TuttiPlaybackPlugin, TuttiRecordingPlugin,
+    TuttiSamplerPlugin, TuttiTimeStretchPlugin, WaveImportQueue,
+};
 
 pub(crate) mod butler;
 mod facade;

@@ -38,3 +38,18 @@ pub use crossbeam_channel;
 /// Bevy ECS integration: MIDI-domain components, events, systems, and the
 /// [`TuttiMidiPlugin`](ecs::TuttiMidiPlugin).
 pub mod ecs;
+// Re-export the ECS surface at the crate root so consumers write
+// `tutti_midi_io::TuttiMidiPlugin`, not `tutti_midi_io::ecs::…` (the bevy_text shape).
+pub use ecs::{
+    midi_input_event_system, midi_routing_sync_system, midi_sequence_setup_system,
+    midi_sequence_tick_system, tick_scheduled_midi, MidiBusRes, MidiInputEvent, MidiInputObserver,
+    MidiReceiver, MidiSequence, MidiSequenceNote, MidiSequenceState, MidiSynthMarker, ScheduledMidi,
+    TuttiMidiPlugin,
+};
+#[cfg(feature = "midi-hardware")]
+pub use ecs::{
+    midi_device_connect_system, midi_device_poll_system, ConnectMidiDevice, DisconnectMidiDevice,
+    MidiDeviceEvent, MidiDeviceState, MidiIoRes,
+};
+#[cfg(feature = "mpe")]
+pub use ecs::{MpeExpressionResource, MpeModeConfig, MpeReceiver};

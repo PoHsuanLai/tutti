@@ -75,8 +75,6 @@ mod export;
 pub mod render_region;
 #[cfg(feature = "midi")]
 mod midi;
-#[cfg(feature = "soundfont")]
-mod soundfont;
 
 #[cfg(feature = "plugin")]
 pub mod plugin_host;

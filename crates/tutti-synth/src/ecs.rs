@@ -7,14 +7,12 @@ use bevy_tasks::{AsyncComputeTaskPool, Task};
 
 use bevy_reflect::prelude::*;
 
-use crate::loader::TuttiLoader;
-use crate::core::ecs::AudioEmitter;
-#[cfg(feature = "midi")]
-use crate::resources::MidiBusRes;
-use crate::resources::{AudioConfig, TuttiGraphRes};
-use crate::task::poll_task;
+use tutti_core::ecs::{AudioConfig, AudioEmitter, GraphDirty, GraphReconcileSystems, TuttiGraphRes};
+use tutti_core::ecs::engine_ready;
+use tutti_core::loader::TuttiLoader;
+use tutti_core::task::poll_task;
 
-/// Compile-time proof that [`SoundFontUnit`](crate::synth::SoundFontUnit) is
+/// Compile-time proof that [`SoundFontUnit`](crate::SoundFontUnit) is
 /// `Send`, which is what lets us build it on the [`AsyncComputeTaskPool`]
 /// instead of the Bevy main thread (the B5 gate). It holds a rustysynth
 /// `Synthesizer` (plain `Vec`/`Arc` struct) plus `Arc<dyn MidiSource>` where
@@ -23,7 +21,7 @@ use crate::task::poll_task;
 /// onto the main thread.
 const _: () = {
     fn assert_send<T: Send>() {}
-    let _ = assert_send::<crate::synth::SoundFontUnit>;
+    let _ = assert_send::<crate::SoundFontUnit>;
 };
 
 /// Trigger component: spawn an entity with this to create a SoundFont instrument.
@@ -32,12 +30,12 @@ const _: () = {
 /// `PlaySoundFont` but not yet a [`PendingSoundFontUnit`] or [`AudioEmitter`],
 /// spawns an off-thread `SoundFontUnit` build onto the
 /// [`AsyncComputeTaskPool`] and attaches [`PendingSoundFontUnit`]. Once the
-/// build completes, `promote_pending_soundfonts` adds the unit to tutti's graph
-/// with MIDI routing, attaches `AudioEmitter`, and removes the pending marker.
+/// build completes, `promote_pending_soundfonts` adds the unit to tutti's graph,
+/// attaches `AudioEmitter`, and removes the pending marker.
 ///
 /// The trigger query is steady-state (not `Added`), so an entity whose `.sf2`
 /// asset has not finished loading is retried each frame until it resolves —
-/// the same fire-once-trap fix applied to [`PlayAudio`](crate::sampler::ecs::PlayAudio).
+/// the same fire-once-trap fix applied to the sampler `PlayAudio` trigger.
 ///
 /// # Examples
 ///
@@ -49,13 +47,13 @@ const _: () = {
 #[derive(Component, Debug, Clone, Reflect)]
 #[reflect(Component, Clone)]
 pub struct PlaySoundFont {
-    pub source: Handle<crate::synth::SoundFontAsset>,
+    pub source: Handle<crate::SoundFontAsset>,
     pub preset: i32,
     pub channel: i32,
 }
 
 impl PlaySoundFont {
-    pub fn new(source: Handle<crate::synth::SoundFontAsset>) -> Self {
+    pub fn new(source: Handle<crate::SoundFontAsset>) -> Self {
         Self {
             source,
             preset: 0,
@@ -74,20 +72,27 @@ impl PlaySoundFont {
     }
 }
 
-/// In-flight off-thread build of a [`SoundFontUnit`](crate::synth::SoundFontUnit).
+/// In-flight off-thread build of a [`SoundFontUnit`](crate::SoundFontUnit).
 ///
-/// Inserted by `soundfont_load_system` once the `.sf2` asset has resolved; the
-/// task owns the decoded `Arc<SoundFont>` and a `SynthesizerSettings` and runs
-/// the synchronous `SoundFontUnit::new` build on the [`AsyncComputeTaskPool`].
-/// `promote_pending_soundfonts` drains it. Mirrors `PendingSamplerLoad` in
-/// `graph/pending_load.rs`, but the decode is the heavy step here so the build
-/// itself is what we move off the main thread.
+/// Inserted by `soundfont_playback_system` once the `.sf2` asset has resolved;
+/// the task owns the decoded `Arc<SoundFont>` and a `SynthesizerSettings` and
+/// runs the synchronous `SoundFontUnit::new` build on the
+/// [`AsyncComputeTaskPool`]. `promote_pending_soundfonts` drains it.
 #[derive(Component)]
 pub struct PendingSoundFontUnit {
-    task: Task<Result<crate::synth::SoundFontUnit, crate::synth::Error>>,
+    task: Task<Result<crate::SoundFontUnit, crate::Error>>,
     preset: i32,
     channel: i32,
 }
+
+/// Carries the cloneable MIDI sender produced when a [`SoundFontUnit`] is
+/// promoted into the graph. The app side registers it on its MIDI bus so the
+/// routing table can dispatch events to the unit by `MidiUnitId`. tutti-synth
+/// produces the sender component; the app wires it to the bus — keeping the
+/// bus vocabulary out of this leaf crate.
+#[cfg(feature = "midi")]
+#[derive(Component)]
+pub struct SoundFontMidiSender(pub tutti_midi_runtime::MidiSender);
 
 /// Query filter for the steady-state SoundFont trigger: carries `PlaySoundFont`
 /// but is neither building (`PendingSoundFontUnit`) nor already playing
@@ -102,7 +107,7 @@ type PlaySoundFontPending = (Without<PendingSoundFontUnit>, Without<AudioEmitter
 /// Entities whose asset is still loading are left alone for the next frame.
 pub fn soundfont_playback_system(
     mut commands: Commands,
-    sf_assets: Res<Assets<crate::synth::SoundFontAsset>>,
+    sf_assets: Res<Assets<crate::SoundFontAsset>>,
     config: Res<AudioConfig>,
     // Steady-state, not `Added`: retried each frame until the `.sf2` asset
     // resolves. Excludes entities already building (`PendingSoundFontUnit`) or
@@ -122,8 +127,8 @@ pub fn soundfont_playback_system(
         let channel = play.channel;
 
         let task = AsyncComputeTaskPool::get().spawn(async move {
-            let settings = crate::synth::SynthesizerSettings::new(sample_rate);
-            crate::synth::SoundFontUnit::new(soundfont, &settings)
+            let settings = crate::SynthesizerSettings::new(sample_rate);
+            crate::SoundFontUnit::new(soundfont, &settings)
         });
 
         commands
@@ -138,18 +143,18 @@ pub fn soundfont_playback_system(
 }
 
 /// Drains [`PendingSoundFontUnit`] entities whose off-thread build has
-/// finished: applies the entity's program change, registers the unit's MIDI
-/// sender on the bus, adds it to tutti's graph, pipes it to output, attaches
-/// `AudioEmitter`, and removes the pending marker. This is the tail of what the
-/// old synchronous `soundfont_playback_system` did — only the decode moved off
-/// the main thread.
+/// finished: applies the entity's program change, adds the unit to tutti's
+/// graph, pipes it to output, attaches `AudioEmitter`, and (under `midi`)
+/// attaches a [`SoundFontMidiSender`] so the app can register the unit on its
+/// MIDI bus. Then removes the pending marker. This is the tail of what the old
+/// synchronous `soundfont_playback_system` did — only the decode moved off the
+/// main thread.
 ///
 /// Entities whose build is still running are left alone for the next frame.
 pub fn promote_pending_soundfonts(
     mut commands: Commands,
     mut graph: ResMut<TuttiGraphRes>,
-    mut dirty: ResMut<crate::graph::GraphDirty>,
-    #[cfg(feature = "midi")] midi: Res<MidiBusRes>,
+    mut dirty: ResMut<GraphDirty>,
     mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,
 ) {
     let mut edited = false;
@@ -169,20 +174,23 @@ pub fn promote_pending_soundfonts(
         };
         unit.program_change(pending_unit.channel, pending_unit.preset);
 
-        // Register the unit's MIDI sender with the bus so the routing table
-        // can dispatch events to it by MidiUnitId.
+        // Clone the unit's MIDI sender before the unit moves into the graph;
+        // the app side drains the `SoundFontMidiSender` component onto its bus.
+        // `midi_sender` is `&self` + clones an Arc-backed handle, so it stays
+        // valid after the unit is in the graph.
         #[cfg(feature = "midi")]
-        midi.0.insert(unit.midi_sender());
+        let sender = unit.midi_sender();
 
         let id = graph.0.add(unit);
         graph.0.pipe_output(id);
         edited = true;
 
-        // TODO(B7): use SoundFontNode marker once it lands
-        commands
-            .entity(entity)
+        let mut entity_commands = commands.entity(entity);
+        entity_commands
             .remove::<PendingSoundFontUnit>()
             .insert(AudioEmitter { node_id: id });
+        #[cfg(feature = "midi")]
+        entity_commands.insert(SoundFontMidiSender(sender));
     }
 
     // Stage only; the Commit-phase `commit_graph` coalesces (this system is
@@ -201,14 +209,14 @@ impl Plugin for TuttiSoundFontPlugin {
         // `promote_pending_soundfonts` stages graph edits + sets GraphDirty,
         // so anchor the chain before the Commit phase where `commit_graph`
         // flushes it (it no longer commits inline).
-        app.init_asset::<crate::synth::SoundFontAsset>()
-            .register_asset_loader(TuttiLoader::<crate::synth::SoundFontAsset>::default())
+        app.init_asset::<crate::SoundFontAsset>()
+            .register_asset_loader(TuttiLoader::<crate::SoundFontAsset>::default())
             .add_systems(
                 Update,
                 (soundfont_playback_system, promote_pending_soundfonts)
                     .chain()
-                    .run_if(crate::graph::engine_ready)
-                    .before(crate::graph::GraphReconcileSystems::Commit),
+                    .run_if(engine_ready)
+                    .before(GraphReconcileSystems::Commit),
             );
     }
 }

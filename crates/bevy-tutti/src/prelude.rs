@@ -55,7 +55,7 @@ pub use crate::midi::systems::{MpeExpressionResource, MpeModeConfig};
 pub use tutti_midi_io::{MpeMode, MpeZone, MpeZoneConfig};
 
 #[cfg(feature = "soundfont")]
-pub use crate::soundfont::{soundfont_playback_system, PlaySoundFont, TuttiSoundFontPlugin};
+pub use tutti_synth::ecs::{soundfont_playback_system, PlaySoundFont, TuttiSoundFontPlugin};
 
 pub use crate::metering::{metering_sync_system, MasterMeterLevels};
 pub use crate::transport::{transport_sync_system, TransportState};

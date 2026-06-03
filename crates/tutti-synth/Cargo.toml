@@ -10,14 +10,25 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 default = ["midi"]
 std = []
 midi = ["tutti-core/midi", "dep:tutti-midi-types", "dep:tutti-midi-runtime"]
-soundfont = ["std", "dep:rustysynth", "midi"]
+# The `ecs` module (gated on `soundfont`) loads `.sf2` via the Bevy asset
+# system, so `soundfont` pulls in `bevy_asset` (the `SoundFontAsset` derive).
+soundfont = ["std", "dep:rustysynth", "midi", "bevy_asset"]
 full = ["soundfont"]
 
 # Propagates bevy_asset derives into rustysynth (gates on soundfont).
 bevy_asset = ["soundfont", "rustysynth?/bevy_asset"]
 
 [dependencies]
-tutti-core = { path = "../tutti-core", default-features = false }
+tutti-core = { path = "../tutti-core", default-features = false, features = ["bevy_asset"] }
+
+# Bevy-native ECS surface (entity-as-node SoundFont trigger). Mirrors
+# tutti-wavecache / tutti-sampler: hard deps, not feature-gated.
+bevy_app = { version = "0.18", default-features = false }
+bevy_ecs = { version = "0.18", default-features = false }
+bevy_reflect = { version = "0.18", default-features = false }
+bevy_asset = { version = "0.18", default-features = false }
+bevy_tasks = { version = "0.18" }
+bevy_log = { version = "0.18", default-features = false }
 tutti-midi-types = { path = "../tutti-midi-types", optional = true, default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", optional = true, default-features = false }
 

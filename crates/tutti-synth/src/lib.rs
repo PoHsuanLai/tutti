@@ -54,3 +54,13 @@ pub(crate) use builder::{EnvelopeConfig, FilterType, OscillatorType, SvfMode, Sy
 mod handle;
 #[cfg(feature = "midi")]
 pub use handle::SynthHandle;
+
+#[cfg(feature = "soundfont")]
+pub mod ecs;
+#[cfg(feature = "soundfont")]
+pub use ecs::{
+    promote_pending_soundfonts, soundfont_playback_system, PendingSoundFontUnit, PlaySoundFont,
+    TuttiSoundFontPlugin,
+};
+#[cfg(all(feature = "soundfont", feature = "midi"))]
+pub use ecs::SoundFontMidiSender;

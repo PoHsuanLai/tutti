@@ -22,7 +22,7 @@ use crate::midi::TuttiMidiPlugin;
 #[cfg(feature = "spatial")]
 use tutti_units::ecs::TuttiSpatialPlugin;
 #[cfg(feature = "soundfont")]
-use crate::soundfont::TuttiSoundFontPlugin;
+use tutti_synth::ecs::TuttiSoundFontPlugin;
 #[cfg(feature = "sampler")]
 use crate::sampler::ecs::{SamplerRes, TuttiSamplerPlugin};
 #[cfg(feature = "automation")]
@@ -211,6 +211,12 @@ impl Plugin for TuttiPlugin {
         app.add_plugins(TuttiSpatialPlugin);
         #[cfg(feature = "soundfont")]
         app.add_plugins(TuttiSoundFontPlugin);
+        // App-side wire: tutti-synth's `promote_pending_soundfonts` attaches a
+        // `SoundFontMidiSender` component (it must not name bevy-tutti's
+        // `MidiBusRes`); we drain those senders onto the MIDI bus here so the
+        // routing table can dispatch events to the unit.
+        #[cfg(all(feature = "soundfont", feature = "midi"))]
+        app.add_systems(Update, register_soundfont_midi.run_if(engine_ready));
         #[cfg(feature = "midi")]
         app.add_plugins(TuttiMidiPlugin);
         #[cfg(feature = "plugin")]
@@ -234,5 +240,24 @@ impl Plugin for TuttiPlugin {
         // Decode-once wave cache: one Arc<Wave> per file, shared by playback,
         // analysis, and the offline render. Decodes off-thread.
         app.add_plugins(tutti_wavecache::WaveCachePlugin);
+    }
+}
+
+/// Registers each freshly-promoted SoundFont unit's MIDI sender on the bus.
+///
+/// tutti-synth's `promote_pending_soundfonts` produces a `SoundFontMidiSender`
+/// component (it can't reference the app's `MidiBusRes`); this system drains
+/// each one exactly once (`Added`) onto the bus so the routing table can
+/// dispatch events to the unit by `MidiUnitId`.
+#[cfg(all(feature = "soundfont", feature = "midi"))]
+fn register_soundfont_midi(
+    bus: bevy_ecs::system::Res<MidiBusRes>,
+    q: bevy_ecs::system::Query<
+        &tutti_synth::ecs::SoundFontMidiSender,
+        bevy_ecs::query::Added<tutti_synth::ecs::SoundFontMidiSender>,
+    >,
+) {
+    for s in &q {
+        bus.0.insert(s.0.clone());
     }
 }

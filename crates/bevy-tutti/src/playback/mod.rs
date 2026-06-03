@@ -48,7 +48,7 @@ impl Plugin for TuttiPlaybackPlugin {
 
         #[cfg(feature = "sampler")]
         {
-            use crate::graph::GraphReconcileSystems;
+            use crate::graph::{engine_ready, GraphReconcileSystems};
             // These stage graph edits + set GraphDirty; anchor the whole chain
             // before the Commit phase so the once-per-frame `commit_graph`
             // coalesces them (they no longer commit inline). spatial.rs hangs
@@ -64,6 +64,7 @@ impl Plugin for TuttiPlaybackPlugin {
                         audio_cleanup_system,
                     )
                         .chain()
+                        .run_if(engine_ready)
                         .before(GraphReconcileSystems::Commit),
                 );
         }

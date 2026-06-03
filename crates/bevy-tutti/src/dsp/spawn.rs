@@ -93,11 +93,10 @@ pub trait DspNode: Component + Default {
 /// absent — the marker is not consumed by a missed frame.
 pub fn spawn_dsp_node<T: DspNode>(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     query: Query<(Entity, SpawnParams), (Added<T>, Without<AudioNode>)>,
 ) {
-    let Some(mut graph) = graph else { return };
     for (entity, params) in query.iter() {
         let unit = T::build(&params);
         let node_id = graph.0.add_boxed(unit);
@@ -120,7 +119,9 @@ impl AddDspNode for bevy_app::App {
     fn add_dsp_node<T: DspNode>(&mut self) -> &mut Self {
         self.add_systems(
             bevy_app::Update,
-            spawn_dsp_node::<T>.in_set(GraphReconcileSystems::Spawn),
+            spawn_dsp_node::<T>
+                .in_set(GraphReconcileSystems::Spawn)
+                .run_if(crate::graph::engine_ready),
         )
     }
 }

@@ -1,6 +1,7 @@
 //! Sampler recording: `StartRecording` / `StopRecording` triggers.
 
 use bevy_app::{App, Plugin, Update};
+use bevy_ecs::prelude::*;
 
 mod components;
 mod systems;
@@ -15,6 +16,10 @@ impl Plugin for TuttiRecordingPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<StartRecording>()
             .add_message::<StopRecording>()
-            .add_systems(Update, (recording_start_system, recording_stop_system));
+            .add_systems(
+                Update,
+                (recording_start_system, recording_stop_system)
+                    .run_if(crate::graph::engine_ready),
+            );
     }
 }

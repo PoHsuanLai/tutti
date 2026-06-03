@@ -6,6 +6,7 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
 
+use crate::graph::engine_ready;
 use crate::resources::AnalysisRes;
 
 /// Fire-and-forget request to enable live analysis.
@@ -45,13 +46,11 @@ impl Default for LiveAnalysisData {
 }
 
 pub fn live_analysis_control_system(
-    analysis: Option<Res<AnalysisRes>>,
+    analysis: Res<AnalysisRes>,
     mut data: ResMut<LiveAnalysisData>,
     mut enable: MessageReader<EnableLiveAnalysis>,
     mut disable: MessageReader<DisableLiveAnalysis>,
 ) {
-    let Some(analysis) = analysis else { return };
-
     for _ in enable.read() {
         if analysis.enable_live() {
             data.is_live = true;
@@ -72,13 +71,12 @@ pub fn live_analysis_control_system(
 }
 
 pub fn live_analysis_sync_system(
-    analysis: Option<Res<AnalysisRes>>,
+    analysis: Res<AnalysisRes>,
     mut data: ResMut<LiveAnalysisData>,
 ) {
     if !data.is_live {
         return;
     }
-    let Some(analysis) = analysis else { return };
 
     data.pitch = analysis.live_pitch();
     data.transients = analysis.live_transients();
@@ -95,7 +93,7 @@ impl Plugin for TuttiAnalysisPlugin {
             .add_message::<DisableLiveAnalysis>();
         app.init_resource::<LiveAnalysisData>().add_systems(
             Update,
-            (live_analysis_control_system, live_analysis_sync_system),
+            (live_analysis_control_system, live_analysis_sync_system).run_if(engine_ready),
         );
     }
 }

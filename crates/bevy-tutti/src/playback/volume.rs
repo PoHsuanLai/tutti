@@ -26,12 +26,10 @@ impl Default for AudioVolume {
 /// Syncs `AudioVolume` component changes to the tutti graph node's gain.
 #[cfg(feature = "sampler")]
 pub fn audio_parameter_sync_system(
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<crate::graph::GraphDirty>,
     query: Query<(&AudioEmitter, &AudioVolume), Changed<AudioVolume>>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     let mut edited = false;
     for (emitter, volume) in query.iter() {
         if let Some(sampler) = graph.0.node_mut::<SamplerUnit>(emitter.node_id) {

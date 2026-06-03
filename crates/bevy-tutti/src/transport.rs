@@ -59,10 +59,9 @@ impl TransportState {
 }
 
 pub fn transport_sync_system(
-    transport: Option<Res<TransportRes>>,
+    transport: Res<TransportRes>,
     mut state: ResMut<TransportState>,
 ) {
-    let Some(transport) = transport else { return };
     state.beat = transport.current_beat();
     state.is_playing = transport.is_playing();
     state.is_recording = transport.is_recording();

@@ -14,10 +14,9 @@ pub struct MasterMeterLevels {
 }
 
 pub fn metering_sync_system(
-    metering: Option<Res<MeteringRes>>,
+    metering: Res<MeteringRes>,
     mut levels: ResMut<MasterMeterLevels>,
 ) {
-    let Some(metering) = metering else { return };
     let (l_peak, r_peak, l_rms, r_rms) = metering.amplitude();
     levels.peak_left = l_peak;
     levels.peak_right = r_peak;

@@ -70,11 +70,10 @@ pub struct AudioInputDeviceInfo {
 }
 
 pub fn audio_input_control_system(
-    sampler: Option<Res<SamplerRes>>,
+    sampler: Res<SamplerRes>,
     mut enable: MessageReader<EnableAudioInput>,
     mut disable: MessageReader<DisableAudioInput>,
 ) {
-    let Some(sampler) = sampler else { return };
     let input = sampler.0.audio_input();
 
     for enable in enable.read() {
@@ -106,19 +105,17 @@ pub fn audio_input_control_system(
 }
 
 pub fn audio_input_sync_system(
-    sampler: Option<Res<SamplerRes>>,
+    sampler: Res<SamplerRes>,
     mut state: ResMut<AudioInputState>,
 ) {
-    let Some(sampler) = sampler else { return };
     state.peak_level = sampler.0.audio_input().peak_level();
 }
 
 /// One-shot startup: enumerate input devices once.
 pub fn audio_input_init_system(
-    sampler: Option<Res<SamplerRes>>,
+    sampler: Res<SamplerRes>,
     mut state: ResMut<AudioInputState>,
 ) {
-    let Some(sampler) = sampler else { return };
     let devices = sampler.0.audio_input().list_input_devices();
     state.devices = devices
         .into_iter()
@@ -139,10 +136,14 @@ impl Plugin for TuttiAudioInputPlugin {
         app.add_message::<EnableAudioInput>()
             .add_message::<DisableAudioInput>();
         app.init_resource::<AudioInputState>()
-            .add_systems(Startup, audio_input_init_system)
+            .add_systems(
+                Startup,
+                audio_input_init_system.run_if(crate::graph::engine_ready),
+            )
             .add_systems(
                 Update,
-                (audio_input_control_system, audio_input_sync_system),
+                (audio_input_control_system, audio_input_sync_system)
+                    .run_if(crate::graph::engine_ready),
             );
     }
 }

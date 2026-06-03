@@ -103,14 +103,12 @@ type PlaySoundFontPending = (Without<PendingSoundFontUnit>, Without<AudioEmitter
 pub fn soundfont_playback_system(
     mut commands: Commands,
     sf_assets: Res<Assets<crate::synth::SoundFontAsset>>,
-    config: Option<Res<AudioConfig>>,
+    config: Res<AudioConfig>,
     // Steady-state, not `Added`: retried each frame until the `.sf2` asset
     // resolves. Excludes entities already building (`PendingSoundFontUnit`) or
     // already playing (`AudioEmitter`).
     query: Query<(Entity, &PlaySoundFont), PlaySoundFontPending>,
 ) {
-    let Some(config) = config else { return };
-
     for (entity, play) in query.iter() {
         let Some(source) = sf_assets.get(&play.source) else {
             // Asset still loading; entity stays in the trigger set and is
@@ -149,13 +147,11 @@ pub fn soundfont_playback_system(
 /// Entities whose build is still running are left alone for the next frame.
 pub fn promote_pending_soundfonts(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<crate::graph::GraphDirty>,
-    #[cfg(feature = "midi")] midi: Option<Res<MidiBusRes>>,
+    #[cfg(feature = "midi")] midi: Res<MidiBusRes>,
     mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     let mut edited = false;
 
     for (entity, mut pending_unit) in pending.iter_mut() {
@@ -176,9 +172,7 @@ pub fn promote_pending_soundfonts(
         // Register the unit's MIDI sender with the bus so the routing table
         // can dispatch events to it by MidiUnitId.
         #[cfg(feature = "midi")]
-        if let Some(midi) = &midi {
-            midi.0.insert(unit.midi_sender());
-        }
+        midi.0.insert(unit.midi_sender());
 
         let id = graph.0.add(unit);
         graph.0.pipe_output(id);
@@ -213,6 +207,7 @@ impl Plugin for TuttiSoundFontPlugin {
                 Update,
                 (soundfont_playback_system, promote_pending_soundfonts)
                     .chain()
+                    .run_if(crate::graph::engine_ready)
                     .before(crate::graph::GraphReconcileSystems::Commit),
             );
     }

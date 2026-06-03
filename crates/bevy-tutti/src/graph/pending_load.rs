@@ -213,12 +213,10 @@ pub fn poll_wave_imports(
 pub fn promote_pending_samplers(
     mut commands: Commands,
     audio_assets: Res<Assets<WaveAsset>>,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     pending: Query<(Entity, &PendingSamplerLoad)>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     for (entity, pending_load) in pending.iter() {
         let Some(asset) = audio_assets.get(&pending_load.wave) else {
             continue;

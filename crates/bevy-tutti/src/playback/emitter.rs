@@ -146,8 +146,8 @@ impl PlayAudio {
 pub fn audio_playback_system(
     mut commands: Commands,
     audio_assets: Res<Assets<WaveAsset>>,
-    graph: Option<ResMut<TuttiGraphRes>>,
-    config: Option<Res<AudioConfig>>,
+    mut graph: ResMut<TuttiGraphRes>,
+    config: Res<AudioConfig>,
     mut dirty: ResMut<crate::graph::GraphDirty>,
     // Steady-state, not `Added`: an entity stays in this set until it gains an
     // `AudioEmitter`, so a not-yet-loaded `WaveAsset` is retried each frame
@@ -155,9 +155,6 @@ pub fn audio_playback_system(
     query: Query<(Entity, &PlayAudio), Without<AudioEmitter>>,
     ts_query: Query<&TimeStretch>,
 ) {
-    let Some(mut graph) = graph else { return };
-    let Some(config) = config else { return };
-
     let mut edited = false;
 
     for (entity, play) in query.iter() {

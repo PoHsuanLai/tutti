@@ -89,14 +89,11 @@ pub struct UpdateAutomationEnvelope {
 
 pub fn automation_lane_system(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
-    transport: Option<Res<TransportRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
+    transport: Res<TransportRes>,
     mut dirty: ResMut<crate::graph::GraphDirty>,
     query: Query<(Entity, &AddAutomationLane), Added<AddAutomationLane>>,
 ) {
-    let Some(mut graph) = graph else { return };
-    let Some(transport) = transport else { return };
-
     let mut edited = false;
 
     for (entity, add) in query.iter() {
@@ -125,11 +122,10 @@ pub fn automation_lane_system(
 /// Apply pending envelope updates to existing graph nodes.
 pub fn update_automation_envelope_system(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<crate::graph::GraphDirty>,
     query: Query<(Entity, &AutomationLaneEmitter, &UpdateAutomationEnvelope)>,
 ) {
-    let Some(mut graph) = graph else { return };
     let mut edited = false;
 
     for (entity, emitter, update) in query.iter() {
@@ -155,13 +151,11 @@ pub fn update_automation_envelope_system(
 /// variant is skipped here — the host provides its own reconciler for
 /// typed effect-parameter components.
 pub fn reconcile_automation_writes(
-    graph: Option<Res<TuttiGraphRes>>,
+    graph: Res<TuttiGraphRes>,
     drivers: Query<(&AudioNode, &AutomationDrivesParam)>,
     mut vol_pan_targets: Query<(Option<&mut Volume>, Option<&mut Pan>)>,
     mut plugin_targets: Query<&mut PluginParam>,
 ) {
-    let Some(graph) = graph else { return };
-
     for (node, drives) in drivers.iter() {
         let Some(lane) = graph.0.node::<LiveAutomationLane<f32>>(node.0) else {
             continue;
@@ -214,13 +208,15 @@ impl Plugin for TuttiAutomationPlugin {
         app.add_systems(
             Update,
             (automation_lane_system, update_automation_envelope_system)
-                .before(GraphReconcileSystems::Commit),
+                .before(GraphReconcileSystems::Commit)
+                .run_if(crate::graph::engine_ready),
         )
         .add_systems(
             Update,
             reconcile_automation_writes
                 .in_set(GraphReconcileSystems::Params)
-                .before(reconcile_params),
+                .before(reconcile_params)
+                .run_if(crate::graph::engine_ready),
         );
     }
 }

@@ -88,7 +88,8 @@ impl Plugin for TuttiAuditionerPlugin {
                     handle_preview_requests,
                     poll_preview_task,
                     handle_stop_preview,
-                ),
+                )
+                    .run_if(crate::graph::engine_ready),
             );
     }
 }
@@ -106,15 +107,13 @@ pub fn init_auditioner(sampler: &Arc<Sampler>) -> AuditionerRes {
 /// `poll_preview_task` once the decode finishes.
 fn handle_preview_requests(
     mut events: MessageReader<PreviewFile>,
-    auditioner: Option<Res<AuditionerRes>>,
+    auditioner: Res<AuditionerRes>,
     mut graph: ResMut<TuttiGraphRes>,
     mut node: ResMut<AuditionerNode>,
     mut dirty: ResMut<GraphDirty>,
     in_flight: Option<Res<PreviewInFlight>>,
     mut commands: Commands,
 ) {
-    let Some(auditioner) = auditioner else { return };
-
     // Only the most recent request matters; a newer file supersedes any
     // queued one (and the decode task in flight).
     let Some(event) = events.read().last() else {
@@ -142,14 +141,14 @@ fn handle_preview_requests(
 
 /// Drain a finished decode task and swap the prepared unit into the graph.
 fn poll_preview_task(
-    auditioner: Option<Res<AuditionerRes>>,
+    auditioner: Res<AuditionerRes>,
     in_flight: Option<ResMut<PreviewInFlight>>,
     mut graph: ResMut<TuttiGraphRes>,
     mut node: ResMut<AuditionerNode>,
     mut dirty: ResMut<GraphDirty>,
     mut commands: Commands,
 ) {
-    let (Some(auditioner), Some(mut in_flight)) = (auditioner, in_flight) else {
+    let Some(mut in_flight) = in_flight else {
         return;
     };
 
@@ -183,15 +182,13 @@ fn poll_preview_task(
 
 fn handle_stop_preview(
     mut events: MessageReader<StopPreview>,
-    auditioner: Option<Res<AuditionerRes>>,
+    auditioner: Res<AuditionerRes>,
     in_flight: Option<Res<PreviewInFlight>>,
     mut graph: ResMut<TuttiGraphRes>,
     mut node: ResMut<AuditionerNode>,
     mut dirty: ResMut<GraphDirty>,
     mut commands: Commands,
 ) {
-    let Some(auditioner) = auditioner else { return };
-
     for _ in events.read() {
         // Cancel any pending decode so its result can't re-add a node.
         if in_flight.is_some() {

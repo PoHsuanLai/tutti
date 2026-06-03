@@ -6,6 +6,7 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
+use crate::graph::engine_ready;
 use crate::resources::{AudioConfig, TuttiGraphRes};
 use crate::task::poll_task;
 
@@ -84,13 +85,10 @@ pub struct ExportFailed {
 
 pub fn export_start_system(
     mut commands: Commands,
-    graph: Option<Res<TuttiGraphRes>>,
-    config: Option<Res<AudioConfig>>,
+    graph: Res<TuttiGraphRes>,
+    config: Res<AudioConfig>,
     mut events: MessageReader<StartExport>,
 ) {
-    let Some(graph) = graph else { return };
-    let Some(config) = config else { return };
-
     for start in events.read() {
         let net = graph.0.clone_net();
         let mut builder = tutti_export::Export::graph(net, config.sample_rate);
@@ -170,6 +168,12 @@ impl Plugin for TuttiExportPlugin {
         app.register_type::<ExportComplete>()
             .register_type::<ExportFailed>();
         app.add_message::<StartExport>();
-        app.add_systems(Update, (export_start_system, export_poll_system));
+        app.add_systems(
+            Update,
+            (
+                export_start_system.run_if(engine_ready),
+                export_poll_system,
+            ),
+        );
     }
 }

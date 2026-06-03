@@ -41,6 +41,7 @@ use crate::task::poll_task;
 use crate::NodeId;
 use tutti_export::{Error as ExportError, Rendered};
 
+use crate::graph::engine_ready;
 use crate::resources::{AudioConfig, TuttiGraphRes};
 use crate::track_clip_reader::TrackClipReaderUnit;
 
@@ -226,8 +227,8 @@ type RegionRenderSlotFilter = Or<(With<RegionRenderNet>, With<RegionRenderInProg
 
 pub fn prepare_region_render_system(
     mut commands: Commands,
-    graph: Option<Res<TuttiGraphRes>>,
-    config: Option<Res<AudioConfig>>,
+    graph: Res<TuttiGraphRes>,
+    config: Res<AudioConfig>,
     render_config: Res<RegionRenderConfig>,
     // Both a parked-for-Populate net and a running task occupy a slot — the
     // expensive clone has already happened for either.
@@ -239,9 +240,6 @@ pub fn prepare_region_render_system(
     // peer views; don't assume FIFO.
     query: Query<(Entity, &StartRegionRender)>,
 ) {
-    let Some(graph) = graph else { return };
-    let Some(config) = config else { return };
-
     // Count slots as of frame start, then track admissions locally: renders
     // inserted via `commands` this frame aren't visible to `in_flight` until the
     // next command-buffer flush, so without the local counter we'd admit a full
@@ -320,11 +318,9 @@ pub fn prepare_region_render_system(
 /// [`RegionRenderInProgress`].
 pub fn spawn_region_render_system(
     mut commands: Commands,
-    config: Option<Res<AudioConfig>>,
+    config: Res<AudioConfig>,
     mut query: Query<(Entity, &mut RegionRenderNet), Added<RegionRenderNet>>,
 ) {
-    let Some(config) = config else { return };
-
     for (entity, mut render) in query.iter_mut() {
         // Move the net out of the component (it goes to the worker by value).
         let net = std::mem::replace(&mut render.net, Net::new(0, 0));
@@ -407,8 +403,12 @@ impl Plugin for TuttiRegionRenderPlugin {
             .add_systems(
                 Update,
                 (
-                    prepare_region_render_system.in_set(Prepare),
-                    spawn_region_render_system.in_set(Spawn),
+                    prepare_region_render_system
+                        .in_set(Prepare)
+                        .run_if(engine_ready),
+                    spawn_region_render_system
+                        .in_set(Spawn)
+                        .run_if(engine_ready),
                     region_render_poll_system.in_set(Poll),
                 ),
             );

@@ -22,7 +22,7 @@ pub struct DespawnOnFinish;
 #[cfg(feature = "sampler")]
 pub fn audio_cleanup_system(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<crate::graph::GraphDirty>,
     mut query: Query<(
         Entity,
@@ -31,8 +31,6 @@ pub fn audio_cleanup_system(
         Option<&DespawnOnFinish>,
     )>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     let mut edited = false;
 
     for (entity, emitter, mut state, despawn) in query.iter_mut() {

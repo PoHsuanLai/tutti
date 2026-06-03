@@ -6,12 +6,13 @@
 //! and adds the sub-plugins for the currently enabled features.
 
 use bevy_app::{App, Plugin, Startup, Update};
+use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_log::{error, info};
 
 use crate::TuttiEngine;
 
 use crate::device_state;
-use crate::graph::TuttiGraphPlugin;
+use crate::graph::{engine_ready, TuttiGraphPlugin};
 use crate::metering;
 use crate::playback::TuttiPlaybackPlugin;
 use crate::resources::*;
@@ -201,8 +202,8 @@ impl Plugin for TuttiPlugin {
         app.add_systems(
             Update,
             (
-                transport::transport_sync_system,
-                metering::metering_sync_system,
+                transport::transport_sync_system.run_if(engine_ready),
+                metering::metering_sync_system.run_if(engine_ready),
                 device_state::device_state_sync_system,
             ),
         );

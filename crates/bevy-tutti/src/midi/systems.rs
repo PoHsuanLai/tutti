@@ -97,15 +97,13 @@ impl MpeReceiverQueries<'_, '_> {
 
 #[cfg(feature = "midi")]
 pub fn midi_routing_sync_system(
-    graph: Option<ResMut<crate::TuttiGraphRes>>,
+    mut graph: ResMut<crate::TuttiGraphRes>,
     mut dirty: ResMut<crate::graph::GraphDirty>,
     changed: Query<&MidiReceiver, Changed<MidiReceiver>>,
     all_receivers: Query<&MidiReceiver>,
     mut removed: RemovedComponents<MidiReceiver>,
     #[cfg(feature = "mpe")] mut mpe: MpeReceiverQueries,
 ) {
-    let Some(mut graph) = graph else { return };
-
     #[allow(unused_mut)]
     let mut has_changes = !changed.is_empty() || removed.read().next().is_some();
 
@@ -240,13 +238,10 @@ pub fn midi_sequence_setup_system(
 /// the transport's current beat position.
 #[cfg(feature = "midi")]
 pub fn midi_sequence_tick_system(
-    transport: Option<Res<crate::TransportRes>>,
-    midi: Option<Res<crate::MidiBusRes>>,
+    transport: Res<crate::TransportRes>,
+    midi: Res<crate::MidiBusRes>,
     mut query: Query<(&MidiSequence, &mut MidiSequenceState)>,
 ) {
-    let Some(transport) = transport else { return };
-    let Some(midi) = midi else { return };
-
     if !transport.0.is_playing() {
         // All-notes-off when transport is not rolling
         for (seq, mut state) in query.iter_mut() {

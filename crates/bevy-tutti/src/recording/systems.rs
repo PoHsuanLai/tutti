@@ -19,12 +19,10 @@ pub struct RecordingResult(pub crate::sampler::capture::Recorded);
 /// beat, then spawns a `RecordingActive` entity to track the session.
 pub fn recording_start_system(
     mut commands: Commands,
-    sampler: Option<Res<SamplerRes>>,
+    sampler: Res<SamplerRes>,
     transport: Res<TransportState>,
     mut events: MessageReader<StartRecording>,
 ) {
-    let Some(sampler) = sampler else { return };
-
     for start in events.read() {
         match sampler.0.recording().start_recording(
             start.channel_index,
@@ -63,12 +61,10 @@ pub fn recording_start_system(
 /// data.
 pub fn recording_stop_system(
     mut commands: Commands,
-    sampler: Option<Res<SamplerRes>>,
+    sampler: Res<SamplerRes>,
     mut events: MessageReader<StopRecording>,
     active_query: Query<(Entity, &RecordingActive)>,
 ) {
-    let Some(sampler) = sampler else { return };
-
     for stop in events.read() {
         match sampler.0.recording().stop_recording(stop.channel_index) {
             Ok(data) => {

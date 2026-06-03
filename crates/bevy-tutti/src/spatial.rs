@@ -69,7 +69,7 @@ pub enum AttenuationModel {
 /// Lazily creates a `SpatialPannerNode` for each emitter with `SpatialAudio`.
 /// Computes listener-relative azimuth/elevation and applies distance attenuation.
 pub fn spatial_audio_sync_system(
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<crate::graph::GraphDirty>,
     listener_query: Query<&bevy_transform::components::GlobalTransform, With<AudioListener>>,
     mut emitter_query: Query<(
@@ -78,7 +78,6 @@ pub fn spatial_audio_sync_system(
         &mut SpatialAudio,
     )>,
 ) {
-    let Some(mut graph) = graph else { return };
     let listener_tf = listener_query.single().ok();
 
     let mut edited = false;
@@ -178,6 +177,7 @@ impl Plugin for TuttiSpatialPlugin {
         app.add_systems(
             Update,
             spatial_audio_sync_system
+                .run_if(crate::graph::engine_ready)
                 .after(audio_playback_system)
                 .before(audio_cleanup_system),
         );

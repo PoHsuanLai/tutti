@@ -117,23 +117,18 @@ fn lfo_shape_kind_of(shape: crate::units::LfoShape) -> LfoShapeKind {
 #[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
 pub fn spawn_lfo_nodes(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
-    transport: Option<Res<TransportRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
+    transport: Res<TransportRes>,
     mut dirty: ResMut<GraphDirty>,
     query: Query<
         (Entity, &Frequency, &ModDepth, &LfoShapeKind, Option<&BeatSynced>),
         (Added<LfoNodeMarker>, Without<AudioNode>),
     >,
 ) {
-    let Some(mut graph) = graph else { return };
     for (entity, freq, depth, shape, synced) in query.iter() {
         let synced = synced.map(|s| s.0).unwrap_or(false);
         let lfo_shape = lfo_shape_of(*shape);
         let node_id = if synced {
-            let Some(transport) = transport.as_ref() else {
-                bevy_log::warn!("Beat-synced LFO requested but no TransportRes available");
-                continue;
-            };
             let lfo = crate::units::LfoNode::new(lfo_shape)
                 .with_beat_sync(transport.0.clone(), freq.0);
             lfo.set_depth(depth.0);
@@ -164,12 +159,10 @@ pub fn spawn_lfo_nodes(
 #[allow(deprecated)]
 pub fn dsp_compressor_system(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     query: Query<(Entity, &AddCompressor), Added<AddCompressor>>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     for (entity, add) in query.iter() {
         let comp = if add.stereo {
             crate::units::Compressor::stereo(add.threshold_db, add.ratio, add.attack, add.release)
@@ -203,12 +196,10 @@ pub fn dsp_compressor_system(
 #[allow(deprecated)]
 pub fn dsp_gate_system(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     query: Query<(Entity, &AddGate), Added<AddGate>>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     for (entity, add) in query.iter() {
         let gate = if add.stereo {
             crate::units::Gate::stereo(add.threshold_db, add.attack, add.hold, add.release)
@@ -238,19 +229,13 @@ pub fn dsp_gate_system(
 #[allow(deprecated)]
 pub fn dsp_lfo_system(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
-    transport: Option<Res<TransportRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
+    transport: Res<TransportRes>,
     mut dirty: ResMut<GraphDirty>,
     query: Query<(Entity, &AddLfo), Added<AddLfo>>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     for (entity, add) in query.iter() {
         let node_id = if add.beat_synced {
-            let Some(transport) = transport.as_ref() else {
-                bevy_log::warn!("Beat-synced LFO requested but no TransportRes available");
-                continue;
-            };
             let lfo = crate::units::LfoNode::new(add.shape)
                 .with_beat_sync(transport.0.clone(), add.frequency);
             lfo.set_depth(add.depth);
@@ -283,12 +268,10 @@ pub fn dsp_lfo_system(
 #[allow(deprecated)]
 pub fn dsp_filter_system(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     query: Query<(Entity, &AddFilter), Added<AddFilter>>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     for (entity, add) in query.iter() {
         let mut node =
             crate::units::StereoSvfFilterNode::<f64>::new(add.svf_type, add.frequency, add.q);
@@ -319,12 +302,10 @@ pub fn dsp_filter_system(
 #[allow(deprecated)]
 pub fn dsp_reverb_system(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     query: Query<(Entity, &AddReverb), Added<AddReverb>>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     for (entity, add) in query.iter() {
         let reverb = crate::core::dsp::reverb_stereo(
             add.room_size as f64,
@@ -352,12 +333,10 @@ pub fn dsp_reverb_system(
 #[allow(deprecated)]
 pub fn dsp_delay_system(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     query: Query<(Entity, &AddDelay), Added<AddDelay>>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     for (entity, add) in query.iter() {
         let delay = crate::units::StereoDelayLineNode::new(
             add.max_delay_secs,
@@ -387,12 +366,10 @@ pub fn dsp_delay_system(
 #[allow(deprecated)]
 pub fn dsp_chorus_system(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     query: Query<(Entity, &AddChorus), Added<AddChorus>>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     for (entity, add) in query.iter() {
         let chorus = crate::units::ChorusNode::new();
         chorus.set_rate(add.rate_hz);

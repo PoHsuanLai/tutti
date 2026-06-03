@@ -79,13 +79,11 @@ pub struct ScheduledMidi {
 /// `tutti-core`'s sequencer instead.
 pub fn tick_scheduled_midi(
     mut commands: Commands,
-    midi: Option<Res<MidiBusRes>>,
+    midi: Res<MidiBusRes>,
     mut last_tick: Local<Option<Instant>>,
     mut scheduled: Query<(Entity, &mut ScheduledMidi)>,
     targets: Query<&MidiSynthMarker>,
 ) {
-    let Some(midi) = midi else { return };
-
     let now = Instant::now();
     let dt = match *last_tick {
         Some(prev) => now.duration_since(prev).as_secs_f32(),

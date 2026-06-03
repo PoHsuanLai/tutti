@@ -29,8 +29,8 @@ pub mod scheduled;
 
 pub use param_epoch::{bump_param_epoch_core, NodeParamEpoch};
 pub use reconcile::{
-    commit_graph, crossfade_audio_node, reconcile_node_despawn, reconcile_params, GraphDirty,
-    GraphReconcileSystems, SpawnAudioNode,
+    commit_graph, crossfade_audio_node, engine_ready, reconcile_node_despawn, reconcile_params,
+    GraphDirty, GraphReconcileSystems, SpawnAudioNode,
 };
 #[cfg(feature = "sampler")]
 pub use reconcile::reconcile_sampler_params;
@@ -172,7 +172,8 @@ impl Plugin for TuttiGraphPlugin {
                 commit_graph.in_set(GraphReconcileSystems::Commit),
                 reconcile_sidechain_links.in_set(GraphReconcileSystems::Spawn),
                 reconcile_audio_routing.in_set(GraphReconcileSystems::Spawn),
-            ),
+            )
+                .run_if(engine_ready),
         );
 
         #[cfg(feature = "sampler")]
@@ -181,25 +182,33 @@ impl Plugin for TuttiGraphPlugin {
                 Update,
                 (
                     reconcile_sampler_params.in_set(GraphReconcileSystems::Params),
-                    poll_wave_imports,
                     promote_pending_samplers
                         .after(poll_wave_imports)
                         .in_set(GraphReconcileSystems::Spawn),
-                ),
+                )
+                    .run_if(engine_ready),
             );
+            // `poll_wave_imports` only touches `WaveImportQueue` + `Assets`, not
+            // an engine resource, so it stays ungated.
+            app.add_systems(Update, poll_wave_imports);
         }
 
         #[cfg(feature = "convolution")]
-        app.add_systems(
-            Update,
-            (
-                start_convolver_loads,
+        {
+            // `start_convolver_loads` only uses `AssetServer` (not an engine
+            // resource); `promote_pending_convolvers` needs the graph.
+            app.add_systems(Update, start_convolver_loads);
+            app.add_systems(
+                Update,
                 promote_pending_convolvers
                     .after(start_convolver_loads)
-                    .in_set(GraphReconcileSystems::Spawn),
-            ),
-        );
+                    .in_set(GraphReconcileSystems::Spawn)
+                    .run_if(engine_ready),
+            );
+        }
 
+        // `reconcile_plugin_params` writes through `PluginEmitter`, holds no
+        // engine resource, so it stays ungated.
         #[cfg(feature = "plugin")]
         app.add_systems(
             Update,
@@ -207,6 +216,6 @@ impl Plugin for TuttiGraphPlugin {
         );
 
         #[cfg(feature = "midi")]
-        app.add_systems(Update, tick_scheduled_midi);
+        app.add_systems(Update, tick_scheduled_midi.run_if(engine_ready));
     }
 }

@@ -60,7 +60,8 @@ impl Plugin for TuttiDspPlugin {
             (
                 spawn_lfo_nodes.in_set(GraphReconcileSystems::Spawn),
                 dsp_lfo_system.in_set(GraphReconcileSystems::Spawn),
-            ),
+            )
+                .run_if(crate::graph::engine_ready),
         );
 
         #[cfg(feature = "dsp")]
@@ -81,35 +82,47 @@ impl Plugin for TuttiDspPlugin {
                 .add_dsp_node::<DelayNode>()
                 .add_dsp_node::<ChorusNode>();
 
+            // Deprecated `Add*` shim spawners, also in the Spawn set. Gated on
+            // `engine_ready` since each builds against `TuttiGraphRes`.
             app.add_systems(
                 Update,
                 (
-                    // Deprecated `Add*` shim spawners, also in the Spawn set.
                     dsp_compressor_system.in_set(GraphReconcileSystems::Spawn),
                     dsp_gate_system.in_set(GraphReconcileSystems::Spawn),
                     dsp_filter_system.in_set(GraphReconcileSystems::Spawn),
                     dsp_reverb_system.in_set(GraphReconcileSystems::Spawn),
                     dsp_delay_system.in_set(GraphReconcileSystems::Spawn),
                     dsp_chorus_system.in_set(GraphReconcileSystems::Spawn),
+                )
+                    .run_if(crate::graph::engine_ready),
+            );
+
+            // Graph-touching param reconcilers (take `ResMut<TuttiGraphRes>`):
+            // gated on `engine_ready` so they don't run — and don't panic on a
+            // missing resource — when the engine failed to build.
+            app.add_systems(
+                Update,
+                (
                     // One generic param reconciler for every effect with
                     // `AudioUnit::set` (filter / ladder / delay / chorus /
                     // flanger / phaser / compressor / gate / limiter /
                     // brickwall). Reverb keeps its own crossfade-rebuild path.
                     reconcile_unit_params.in_set(GraphReconcileSystems::Params),
                     reconcile_reverb_params.in_set(GraphReconcileSystems::Params),
-                    // Per-node param-epoch bump for the dsp family (filter /
-                    // delay / dynamics / …). Reads `Changed<T>`, not graph
-                    // state, so it needs no set ordering.
-                    crate::graph::param_epoch::bump_param_epoch_dsp,
-                ),
+                )
+                    .run_if(crate::graph::engine_ready),
             );
+            // Pure change-detection bump: reads `Changed<T>`, never the graph,
+            // so it stays ungated (mirrors the ungated core epoch bump).
+            app.add_systems(Update, crate::graph::param_epoch::bump_param_epoch_dsp);
         }
 
         #[cfg(feature = "convolution")]
         app.add_systems(
             Update,
             crate::graph::reconcile::reconcile_convolver_params
-                .in_set(crate::graph::GraphReconcileSystems::Params),
+                .in_set(crate::graph::GraphReconcileSystems::Params)
+                .run_if(crate::graph::engine_ready),
         );
     }
 }

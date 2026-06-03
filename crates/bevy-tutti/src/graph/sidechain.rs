@@ -107,13 +107,11 @@ impl SidechainSources {
 /// endpoints' `AudioNode` to exist this frame. The *removal* half lives in
 /// [`reconcile_sidechain_remove`], an `On<Remove, SidechainOf>` observer.
 pub fn reconcile_sidechain_links(
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     added: Query<(Entity, &SidechainOf), Added<SidechainOf>>,
     nodes: Query<&AudioNode>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     for (src_entity, link) in added.iter() {
         let target_entity = link.target;
         let port = link.port;

@@ -132,19 +132,12 @@ impl AudioFedBy {
 ///   would panic in fundsp's `Net`).
 pub fn reconcile_audio_routing(
     mut tracked: Local<std::collections::HashMap<Entity, (Entity, u32)>>,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     added: Query<(Entity, &AudioFeedsTo), Added<AudioFeedsTo>>,
     nodes: Query<&AudioNode>,
     mut removed: RemovedComponents<AudioFeedsTo>,
 ) {
-    let Some(mut graph) = graph else {
-        for entity in removed.read() {
-            tracked.remove(&entity);
-        }
-        return;
-    };
-
     for (src_entity, link) in added.iter() {
         let target_entity = link.target;
         let Ok(src_node) = nodes.get(src_entity) else {

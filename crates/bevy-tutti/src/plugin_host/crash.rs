@@ -14,12 +14,10 @@ use super::editor::{PluginEditorOpen, PluginEmitter};
 /// crashed, removes the graph node and despawns `PluginEmitter` + `PluginEditorOpen`.
 pub fn plugin_crash_detect_system(
     mut commands: Commands,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<crate::graph::GraphDirty>,
     query: Query<(Entity, &AudioEmitter, &PluginEmitter)>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     let mut edited = false;
 
     for (entity, audio, plugin) in query.iter() {

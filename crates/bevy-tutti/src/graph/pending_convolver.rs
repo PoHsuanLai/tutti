@@ -58,12 +58,10 @@ pub fn start_convolver_loads(
 pub fn promote_pending_convolvers(
     mut commands: Commands,
     audio_assets: Res<Assets<WaveAsset>>,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     pending: Query<(Entity, &PendingConvolverLoad)>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     for (entity, load) in pending.iter() {
         let Some(handle) = &load.wave else { continue };
         let Some(asset) = audio_assets.get(handle) else {

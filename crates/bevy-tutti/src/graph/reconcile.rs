@@ -54,6 +54,26 @@ pub enum GraphReconcileSystems {
     Commit,
 }
 
+/// Run-condition: the audio engine built successfully and its resources are
+/// present.
+///
+/// `TuttiPlugin` inserts every engine resource (`TuttiGraphRes`, `TransportRes`,
+/// `MeteringRes`, `AudioConfig`, and the feature subsystem resources) together
+/// in one block iff `TuttiEngine::build()` succeeded; on failure it inserts
+/// none. So `resource_exists::<TuttiGraphRes>` is an exact proxy for "engine
+/// ready", and every system gated on this can take its engine resources as
+/// plain `Res`/`ResMut` instead of `Option<Res<_>>` + a `let Some(..) else`
+/// guard — the system simply does not run when the engine is absent (the
+/// idiomatic Bevy shape, mirroring `bevy_audio`'s `audio_output_available`).
+///
+/// Two resources are *not* covered (they may be absent even when the engine
+/// built) and must keep `Option<Res<_>>`: `MidiIoRes` (only when a hardware
+/// MIDI port opened) and `PluginsRes` (inserted lazily, not in the engine
+/// block).
+pub fn engine_ready(graph: Option<Res<TuttiGraphRes>>) -> bool {
+    graph.is_some()
+}
+
 /// Per-frame "did anything change?" flag used to coalesce
 /// `graph.commit()` to at most one call per frame.
 #[derive(Resource, Default)]
@@ -192,12 +212,10 @@ type ChangedParamFilter = Or<(Changed<Volume>, Changed<Mute>)>;
 /// skipped (apps can layer their own systems for custom kinds).
 #[allow(unused_mut, unused_variables)]
 pub fn reconcile_params(
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     changed_vol: Query<ChangedParams, ChangedParamFilter>,
     mut dirty: ResMut<GraphDirty>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     for (node, kind, volume, mute) in changed_vol.iter() {
         let muted = mute.map(|m| m.0).unwrap_or(false);
         let target = if muted { 0.0 } else { volume.0 };
@@ -243,12 +261,10 @@ type ChangedSamplerFilter = (
 /// of which sampler param changed.
 #[cfg(feature = "sampler")]
 pub fn reconcile_sampler_params(
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     changed: Query<ChangedSamplerParams, ChangedSamplerFilter>,
     mut dirty: ResMut<GraphDirty>,
 ) {
-    let Some(mut graph) = graph else { return };
-
     for (node, speed, looping) in changed.iter() {
         let Some(unit) = graph.0.node_mut::<SamplerUnit>(node.0) else {
             continue;
@@ -350,12 +366,11 @@ pub struct EffectParams {
 #[cfg(feature = "dsp")]
 #[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
 pub fn reconcile_unit_params(
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     changed: Query<EffectParams, AnyParamChanged>,
 ) {
     use crate::core::UnitParam;
     use crate::core::dsp::AudioUnit as _;
-    let Some(mut graph) = graph else { return };
     let net = graph.0.net_mut();
     for p in changed.iter() {
         let id = p.node.0;
@@ -464,10 +479,9 @@ type ChangedConvolverFilter = (With<crate::core::ecs::ConvolutionReverbNode>, Ch
 
 #[cfg(feature = "convolution")]
 pub fn reconcile_convolver_params(
-    graph: Option<ResMut<TuttiGraphRes>>,
+    mut graph: ResMut<TuttiGraphRes>,
     changed: Query<ChangedConvolverParams, ChangedConvolverFilter>,
 ) {
-    let Some(mut graph) = graph else { return };
     for (node, wet) in changed.iter() {
         let Some(unit) = graph.0.node_mut::<crate::units::StereoConvolverNode>(node.0) else {
             continue;
@@ -477,13 +491,11 @@ pub fn reconcile_convolver_params(
 }
 
 /// Runs `graph.commit()` once iff any reconcile system mutated the graph.
-pub fn commit_graph(graph: Option<ResMut<TuttiGraphRes>>, mut dirty: ResMut<GraphDirty>) {
+pub fn commit_graph(mut graph: ResMut<TuttiGraphRes>, mut dirty: ResMut<GraphDirty>) {
     if !dirty.0 {
         return;
     }
-    if let Some(mut graph) = graph {
-        graph.0.commit();
-    }
+    graph.0.commit();
     dirty.0 = false;
 }
 
@@ -524,6 +536,37 @@ mod tests {
                 .chain(),
         );
         app
+    }
+
+    /// The `engine_ready` gate must keep a plain-`ResMut<TuttiGraphRes>` system
+    /// from running (and panicking on the missing resource) when the engine
+    /// failed to build — and must let it run once the resource is present.
+    #[test]
+    fn engine_ready_gates_plain_res_system() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let ran = Arc::new(AtomicUsize::new(0));
+        let ran_c = ran.clone();
+        // A system that takes the engine resource as a PLAIN ResMut — it would
+        // panic if scheduled without TuttiGraphRes present.
+        let sys = move |_graph: ResMut<TuttiGraphRes>| {
+            ran_c.fetch_add(1, Ordering::SeqCst);
+        };
+
+        // No engine: TuttiGraphRes absent. The gate must skip the system, so
+        // `update()` does not panic and the system never runs.
+        let mut app = App::new();
+        app.add_systems(bevy_app::Update, sys.run_if(engine_ready));
+        app.update();
+        assert_eq!(ran.load(Ordering::SeqCst), 0, "gated system skipped with no engine");
+
+        // Insert the resource (engine built): the gate now passes.
+        let engine = TuttiEngine::builder().inputs(0).outputs(2).build().expect("engine");
+        let TuttiEngine { graph, .. } = engine;
+        app.insert_resource(crate::resources::TuttiGraphRes(graph));
+        app.update();
+        assert_eq!(ran.load(Ordering::SeqCst), 1, "gated system runs once engine present");
     }
 
     #[test]

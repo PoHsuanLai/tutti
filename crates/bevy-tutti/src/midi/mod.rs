@@ -39,6 +39,7 @@ impl Plugin for TuttiMidiPlugin {
                 systems::midi_sequence_tick_system,
             )
                 .chain()
+                .run_if(crate::graph::engine_ready)
                 .before(crate::graph::GraphReconcileSystems::Commit),
         );
 

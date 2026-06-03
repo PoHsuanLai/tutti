@@ -73,7 +73,9 @@ impl Plugin for TuttiHostingPlugin {
                 plugin_editor_window_close_system,
                 // Removes a crashed plugin's node + sets GraphDirty (no inline
                 // commit), so anchor it before the Commit-phase commit_graph.
-                plugin_crash_detect_system.before(crate::graph::GraphReconcileSystems::Commit),
+                plugin_crash_detect_system
+                    .before(crate::graph::GraphReconcileSystems::Commit)
+                    .run_if(crate::graph::engine_ready),
                 trigger_plugin_scan,
                 poll_plugin_scan.after(trigger_plugin_scan),
             ),

@@ -50,11 +50,7 @@ impl StreamingProgress {
     }
 }
 
-#[derive(Debug, Clone)]
-#[cfg_attr(
-    feature = "bevy_asset",
-    derive(bevy_asset::Asset, bevy_reflect::TypePath)
-)]
+#[derive(Debug, Clone, bevy_asset::Asset, bevy_reflect::TypePath)]
 pub struct StreamingSample {
     pub path: PathBuf,
     pub sample_rate: u32,
@@ -114,7 +110,6 @@ impl StreamingSample {
     }
 }
 
-#[cfg(feature = "bevy_asset")]
 impl tutti_asset::TuttiStreamingAsset for StreamingSample {
     type Error = StreamingSampleProbeError;
     const EXTENSIONS: &'static [&'static str] = &["wav"];

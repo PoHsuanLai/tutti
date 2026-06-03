@@ -3,7 +3,7 @@
 
 use bevy_ecs::prelude::*;
 
-use crate::playback::AudioEmitter;
+use crate::core::ecs::AudioEmitter;
 use crate::resources::TuttiGraphRes;
 
 use super::editor::{PluginEditorOpen, PluginEmitter};

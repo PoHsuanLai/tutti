@@ -59,16 +59,10 @@ mod prelude;
 mod resources;
 
 pub mod graph;
-pub mod playback;
 // Private: collides with the `bevy_tutti::dsp` subsystem-crate alias below.
 // Its public items (TuttiDspPlugin, Add*, dsp_*_system) are surfaced via the
 // prelude, and nothing references `bevy_tutti::dsp::*` by path.
 mod dsp;
-
-#[cfg(feature = "sampler")]
-pub mod auditioner;
-#[cfg(feature = "sampler")]
-pub mod track_clip_reader;
 
 #[cfg(feature = "analysis")]
 mod analysis;
@@ -86,14 +80,6 @@ mod export;
 pub mod render_region;
 #[cfg(feature = "midi")]
 mod midi;
-#[cfg(feature = "sampler")]
-mod audio_input;
-#[cfg(feature = "sampler")]
-mod content_bounds;
-#[cfg(feature = "sampler")]
-mod recording;
-#[cfg(feature = "sampler")]
-mod time_stretch;
 #[cfg(feature = "soundfont")]
 mod soundfont;
 #[cfg(feature = "spatial")]

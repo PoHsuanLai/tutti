@@ -9,9 +9,16 @@
 //! (`cpal::Stream` is not `Sync`) — accessed via `NonSend` /
 //! `NonSendMut`, not `Res` / `ResMut`.
 
+#[cfg(any(
+    feature = "midi",
+    feature = "midi-hardware",
+    feature = "plugin",
+    feature = "analysis",
+    feature = "soundfont"
+))]
 use bevy_ecs::prelude::*;
 
-#[cfg(any(feature = "sampler", feature = "soundfont"))]
+#[cfg(feature = "soundfont")]
 use std::sync::Arc;
 
 #[cfg(feature = "midi")]
@@ -66,19 +73,6 @@ pub struct MidiIoRes(pub MidiIo);
 #[cfg(feature = "midi-hardware")]
 impl std::ops::Deref for MidiIoRes {
     type Target = MidiIo;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// Sampler subsystem (disk streaming, clip playback, capture).
-#[cfg(feature = "sampler")]
-#[derive(Resource, Clone)]
-pub struct SamplerRes(pub Arc<crate::sampler::Sampler>);
-
-#[cfg(feature = "sampler")]
-impl std::ops::Deref for SamplerRes {
-    type Target = crate::sampler::Sampler;
     fn deref(&self) -> &Self::Target {
         &self.0
     }

@@ -1,17 +1,72 @@
-use bevy_ecs::message::MessageReader;
+//! Sampler recording: `StartRecording` / `StopRecording` triggers.
+
+use bevy_app::{App, Plugin, Update};
+use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
+use bevy_ecs::schedule::IntoScheduleConfigs;
 
-use crate::resources::SamplerRes;
-use crate::transport::TransportState;
+use tutti_core::ecs::{engine_ready, TransportRes};
 
-use super::components::{RecordingActive, StartRecording, StopRecording};
+use super::SamplerRes;
+
+/// Fire-and-forget request to start recording on a channel.
+///
+/// `recording_start_system` reads each `StartRecording`, calls
+/// `engine.sampler().start_recording()`, and spawns an entity carrying
+/// `RecordingActive`.
+///
+/// Not `Reflect`: `Source` / `Mode` are foreign types from `tutti-sampler`.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct StartRecording {
+    pub channel_index: usize,
+    pub source: crate::capture::Source,
+    pub mode: crate::capture::Mode,
+}
+
+impl StartRecording {
+    pub fn new(channel_index: usize, source: crate::capture::Source) -> Self {
+        Self {
+            channel_index,
+            source,
+            mode: crate::capture::Mode::Replace,
+        }
+    }
+
+    pub fn mode(mut self, mode: crate::capture::Mode) -> Self {
+        self.mode = mode;
+        self
+    }
+}
+
+/// Fire-and-forget request to stop recording on a channel.
+///
+/// `recording_stop_system` reads each `StopRecording`, calls
+/// `engine.sampler().stop_recording()`, removes the matching
+/// `RecordingActive`, and spawns the `RecordingResult`.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StopRecording {
+    pub channel_index: usize,
+}
+
+/// Marks an entity as having an active recording session.
+///
+/// Added automatically by `recording_start_system`. Removed when
+/// `StopRecording` is processed or recording stops.
+///
+/// Not `Reflect`: `Source` / `Mode` are foreign types from `tutti-sampler`.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct RecordingActive {
+    pub channel_index: usize,
+    pub source: crate::capture::Source,
+    pub mode: crate::capture::Mode,
+}
 
 /// Holds the recorded data after a recording session completes.
 ///
 /// Spawned by `recording_stop_system` on its own entity. Consume and
 /// despawn the entity to process the recorded data.
 #[derive(Component)]
-pub struct RecordingResult(pub crate::sampler::capture::Recorded);
+pub struct RecordingResult(pub crate::capture::Recorded);
 
 /// Processes `StartRecording` messages.
 ///
@@ -20,7 +75,7 @@ pub struct RecordingResult(pub crate::sampler::capture::Recorded);
 pub fn recording_start_system(
     mut commands: Commands,
     sampler: Res<SamplerRes>,
-    transport: Res<TransportState>,
+    transport: Res<TransportRes>,
     mut events: MessageReader<StartRecording>,
 ) {
     for start in events.read() {
@@ -28,7 +83,7 @@ pub fn recording_start_system(
             start.channel_index,
             start.source,
             start.mode,
-            transport.beat,
+            transport.current_beat(),
         ) {
             Ok(()) => {
                 commands.spawn(RecordingActive {
@@ -87,5 +142,19 @@ pub fn recording_stop_system(
                 );
             }
         }
+    }
+}
+
+/// Bevy plugin: sampler recording control.
+pub struct TuttiRecordingPlugin;
+
+impl Plugin for TuttiRecordingPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_message::<StartRecording>()
+            .add_message::<StopRecording>()
+            .add_systems(
+                Update,
+                (recording_start_system, recording_stop_system).run_if(engine_ready),
+            );
     }
 }

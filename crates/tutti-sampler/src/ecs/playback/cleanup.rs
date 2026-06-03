@@ -3,13 +3,10 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-#[cfg(feature = "sampler")]
-use crate::sampler::SamplerUnit;
+use tutti_core::ecs::{GraphDirty, TuttiGraphRes};
 
-#[cfg(feature = "sampler")]
-use crate::resources::TuttiGraphRes;
+use crate::SamplerUnit;
 
-#[cfg(feature = "sampler")]
 use super::emitter::{AudioEmitter, AudioPlaybackState};
 
 /// Marker component: entity will be despawned when its sample finishes playing.
@@ -19,11 +16,10 @@ pub struct DespawnOnFinish;
 
 /// Polls tutti graph for finished (non-looping) samples and updates
 /// `AudioPlaybackState`. Removes graph nodes and optionally despawns entities.
-#[cfg(feature = "sampler")]
 pub fn audio_cleanup_system(
     mut commands: Commands,
     mut graph: ResMut<TuttiGraphRes>,
-    mut dirty: ResMut<crate::graph::GraphDirty>,
+    mut dirty: ResMut<GraphDirty>,
     mut query: Query<(
         Entity,
         &AudioEmitter,

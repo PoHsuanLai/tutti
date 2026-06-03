@@ -16,22 +16,22 @@ mp3 = ["tutti-core/mp3"]
 ogg = ["tutti-core/ogg"]
 files = ["wav", "flac", "mp3", "ogg"]
 
-# Enables `impl TuttiStreamingAsset for StreamingSample` + gated Asset/TypePath
-# derives. Requires wav at minimum for header probing.
-bevy_asset = [
-    "wav",
-    "dep:tutti-asset",
-    "tutti-asset/std",
-    "dep:bevy_asset",
-    "dep:bevy_reflect",
-]
-
 [dependencies]
-# Base dependency - format features added above
-tutti-core = { path = "../tutti-core" }
-tutti-asset = { path = "../tutti-asset", default-features = false, optional = true }
-bevy_asset = { version = "0.18", default-features = false, optional = true }
-bevy_reflect = { version = "0.18", default-features = false, optional = true }
+# Base dependency - format features added above. `bevy_asset` pulls
+# `fundsp/bevy_asset`, which gates the `WaveAsset` re-export tutti-core surfaces
+# (and which the playback asset loaders register).
+tutti-core = { path = "../tutti-core", features = ["bevy_asset"] }
+# Host-agnostic asset vocabulary (TuttiStreamingAsset for StreamingSample).
+tutti-asset = { path = "../tutti-asset", default-features = false, features = ["std"] }
+
+# Bevy ECS integration (the `ecs` module): Components / Systems / Plugins live
+# next to the audio logic. Hard deps now, mirroring tutti-wavecache's shape.
+bevy_ecs = { version = "0.18", default-features = false }
+bevy_app = { version = "0.18", default-features = false }
+bevy_reflect = { version = "0.18", default-features = false }
+bevy_asset = { version = "0.18", default-features = false }
+bevy_tasks = { version = "0.18" }
+bevy_log = { version = "0.18", default-features = false }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

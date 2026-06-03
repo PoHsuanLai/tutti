@@ -1,11 +1,11 @@
 //! Deferred sampler load — bridges `bevy_asset` and entity-as-node.
 //!
-//! [`PlayAudio`](crate::playback::PlayAudio) is a one-shot lifecycle
+//! [`PlayAudio`](super::playback::PlayAudio) is a one-shot lifecycle
 //! trigger: it spawns a sampler node, pipes it to output, and (optionally)
 //! cleans up when the wave finishes. That's the right shape for fire-and-
 //! forget SFX, but a DAW track wants a long-lived entity-as-node — one
 //! that survives across plays, can be reconfigured (loop range, gain,
-//! speed) via the parameter components in [`crate::core::ecs`], and is
+//! speed) via the parameter components in [`tutti_core::ecs`], and is
 //! eventually removed by despawning the entity.
 //!
 //! [`PendingSamplerLoad`] is exactly that: insert it on a fresh entity
@@ -24,8 +24,8 @@
 //! never need to touch the queue at all.
 //!
 //! The decode+peaks job runs on Bevy's [`AsyncComputeTaskPool`] (one
-//! [`Task`] per import), draining via [`crate::task::poll_task`] — the
-//! same one-shot non-RT convention documented in [`crate::task`]. (The
+//! [`Task`] per import), draining via [`tutti_core::task::poll_task`] — the
+//! same one-shot non-RT convention documented in [`tutti_core::task`]. (The
 //! sampler butler/streaming thread is RT disk streaming and stays a tutti
 //! thread; this queue is only the one-shot import/decode of the wave plus
 //! its level-0 peaks.)
@@ -38,13 +38,14 @@ use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
-use crate::core::ecs::{AudioNode, NodeKind, SamplerLooping, SamplerNode, SamplerSpeed, Volume};
-use crate::core::{Wave, WaveAsset};
-use crate::sampler::SamplerUnit;
-use crate::task::poll_task;
+use tutti_core::ecs::{
+    AudioNode, GraphDirty, NodeKind, SamplerLooping, SamplerNode, SamplerSpeed, TuttiGraphRes,
+    Volume,
+};
+use tutti_core::task::poll_task;
+use tutti_core::{Wave, WaveAsset};
 
-use super::reconcile::GraphDirty;
-use crate::resources::TuttiGraphRes;
+use crate::SamplerUnit;
 
 /// Level-0 waveform peaks (256 samples per peak, min/max pairs) — the same
 /// shape tutti-sampler's `PeakData` alias names. Not re-exported publicly

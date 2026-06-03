@@ -11,7 +11,7 @@
 //! See the core module for the design rationale.
 
 #![cfg_attr(
-    not(any(feature = "sampler", feature = "plugin", feature = "dsp")),
+    not(any(feature = "plugin", feature = "dsp")),
     allow(unused_imports)
 )]
 
@@ -27,25 +27,8 @@ use crate::core::ecs::{
     ModDepth, ModRate, Release, ThresholdDb, WetMix,
 };
 
-#[cfg(feature = "sampler")]
-use crate::core::ecs::{SamplerLooping, SamplerSpeed};
-
 #[cfg(feature = "plugin")]
 use crate::core::ecs::PluginParam;
-
-#[cfg(feature = "sampler")]
-type SamplerParamChanged = Or<(Changed<SamplerSpeed>, Changed<SamplerLooping>)>;
-
-/// Bump the epoch for sampler param changes (`SamplerSpeed`, `SamplerLooping`).
-#[cfg(feature = "sampler")]
-pub fn bump_param_epoch_sampler(
-    mut epoch: ResMut<NodeParamEpoch>,
-    changed: Query<&AudioNode, SamplerParamChanged>,
-) {
-    for node in changed.iter() {
-        epoch.bump(node.0);
-    }
-}
 
 /// Bump the epoch for plugin param changes (`PluginParam`).
 #[cfg(feature = "plugin")]

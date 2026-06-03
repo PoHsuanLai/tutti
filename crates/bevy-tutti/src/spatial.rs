@@ -14,7 +14,7 @@ use bevy_transform::components::GlobalTransform;
 use crate::sampler::SamplerUnit;
 use crate::NodeId;
 
-use crate::playback::{audio_cleanup_system, audio_playback_system, AudioEmitter};
+use crate::sampler::ecs::{audio_cleanup_system, audio_playback_system, AudioEmitter};
 use crate::resources::TuttiGraphRes;
 
 /// Marks an entity as the audio listener (typically the camera).
@@ -165,7 +165,7 @@ fn compute_attenuation(
 
 /// Bevy plugin: spatial audio panning.
 ///
-/// Depends on [`crate::playback::TuttiPlaybackPlugin`] (the spatial system uses
+/// Depends on [`crate::sampler::ecs::TuttiPlaybackPlugin`] (the spatial system uses
 /// `AudioEmitter` and the `SamplerUnit` it points at). Ordered between
 /// playback and cleanup.
 pub struct TuttiSpatialPlugin;

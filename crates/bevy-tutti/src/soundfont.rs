@@ -8,7 +8,7 @@ use bevy_tasks::{AsyncComputeTaskPool, Task};
 use bevy_reflect::prelude::*;
 
 use crate::loader::TuttiLoader;
-use crate::playback::AudioEmitter;
+use crate::core::ecs::AudioEmitter;
 #[cfg(feature = "midi")]
 use crate::resources::MidiBusRes;
 use crate::resources::{AudioConfig, TuttiGraphRes};
@@ -37,7 +37,7 @@ const _: () = {
 ///
 /// The trigger query is steady-state (not `Added`), so an entity whose `.sf2`
 /// asset has not finished loading is retried each frame until it resolves —
-/// the same fire-once-trap fix applied to [`PlayAudio`](crate::playback::PlayAudio).
+/// the same fire-once-trap fix applied to [`PlayAudio`](crate::sampler::ecs::PlayAudio).
 ///
 /// # Examples
 ///

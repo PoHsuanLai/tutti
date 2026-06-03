@@ -14,14 +14,15 @@
 //! - [`pending_load`] — sampler pending-load promotion (sampler-gated).
 //! - [`scheduled`] — time-delayed MIDI dispatch (midi-gated).
 
-use bevy_app::{App, Plugin, Update};
+use bevy_app::{App, Plugin};
+#[cfg(any(feature = "plugin", feature = "convolution", feature = "midi"))]
+use bevy_app::Update;
+#[cfg(any(feature = "plugin", feature = "convolution", feature = "midi"))]
 use bevy_ecs::prelude::*;
 
 pub mod param_epoch;
 pub mod reconcile;
 
-#[cfg(feature = "sampler")]
-pub mod pending_load;
 #[cfg(feature = "convolution")]
 pub mod pending_convolver;
 #[cfg(feature = "midi")]
@@ -40,17 +41,11 @@ pub use tutti_core::ecs::{
 pub use param_epoch::bump_param_epoch_core;
 
 // Leaf reconcilers (stay defined in bevy-tutti).
-#[cfg(feature = "sampler")]
-pub use reconcile::reconcile_sampler_params;
 #[cfg(feature = "plugin")]
 pub use reconcile::reconcile_plugin_params;
 #[cfg(feature = "dsp")]
 pub use reconcile::{reconcile_reverb_params, reconcile_unit_params};
 
-#[cfg(feature = "sampler")]
-pub use pending_load::{
-    poll_wave_imports, promote_pending_samplers, PendingSamplerLoad, WaveImportQueue,
-};
 #[cfg(feature = "convolution")]
 pub use pending_convolver::{
     promote_pending_convolvers, start_convolver_loads, PendingConvolverLoad,
@@ -109,28 +104,10 @@ impl Plugin for TuttiGraphPlugin {
         app.add_plugins(tutti_core::ecs::TuttiGraphPlugin);
 
         // Leaf-family param-epoch bumps (core bump added by the core plugin).
-        #[cfg(feature = "sampler")]
-        app.add_systems(Update, param_epoch::bump_param_epoch_sampler);
+        // The sampler bump + sampler reconcilers + pending-load promotion now
+        // live in `tutti_sampler::ecs::TuttiSamplerPlugin`.
         #[cfg(feature = "plugin")]
         app.add_systems(Update, param_epoch::bump_param_epoch_plugin);
-
-        #[cfg(feature = "sampler")]
-        {
-            app.init_resource::<WaveImportQueue>().add_systems(
-                Update,
-                (
-                    reconcile::reconcile_sampler_volume.in_set(GraphReconcileSystems::Params),
-                    reconcile_sampler_params.in_set(GraphReconcileSystems::Params),
-                    promote_pending_samplers
-                        .after(poll_wave_imports)
-                        .in_set(GraphReconcileSystems::Spawn),
-                )
-                    .run_if(engine_ready),
-            );
-            // `poll_wave_imports` only touches `WaveImportQueue` + `Assets`, not
-            // an engine resource, so it stays ungated.
-            app.add_systems(Update, poll_wave_imports);
-        }
 
         #[cfg(feature = "convolution")]
         {

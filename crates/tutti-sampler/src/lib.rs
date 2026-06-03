@@ -79,6 +79,9 @@ pub use error::{Error, Result};
 pub mod asset;
 pub use asset::{StreamingProgress, StreamingSample, StreamingSampleProbeError};
 
+/// Bevy ECS integration: sampler-domain components, systems, and plugins.
+pub mod ecs;
+
 pub(crate) mod butler;
 mod facade;
 

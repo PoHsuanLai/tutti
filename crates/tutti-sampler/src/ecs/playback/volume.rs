@@ -3,13 +3,10 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-#[cfg(feature = "sampler")]
-use crate::sampler::SamplerUnit;
+use tutti_core::ecs::{GraphDirty, TuttiGraphRes};
 
-#[cfg(feature = "sampler")]
-use crate::resources::TuttiGraphRes;
+use crate::SamplerUnit;
 
-#[cfg(feature = "sampler")]
 use super::emitter::AudioEmitter;
 
 /// Volume control component. Synced to the tutti graph node by `audio_parameter_sync_system`.
@@ -24,10 +21,9 @@ impl Default for AudioVolume {
 }
 
 /// Syncs `AudioVolume` component changes to the tutti graph node's gain.
-#[cfg(feature = "sampler")]
 pub fn audio_parameter_sync_system(
     mut graph: ResMut<TuttiGraphRes>,
-    mut dirty: ResMut<crate::graph::GraphDirty>,
+    mut dirty: ResMut<GraphDirty>,
     query: Query<(&AudioEmitter, &AudioVolume), Changed<AudioVolume>>,
 ) {
     let mut edited = false;

@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
-use crate::core::{AudioUnit, BufferMut, BufferRef, SignalFrame, TransportReader, Wave};
-use crate::sampler::stretch;
-use crate::sampler::SamplerUnit;
+use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, TransportReader, Wave};
+use crate::stretch;
+use crate::SamplerUnit;
 
 const COMMAND_CAPACITY: usize = 64;
 const TRACK_CLIP_READER_ID: u64 = 0x_0000_0000_0000_DA03;
@@ -158,7 +158,7 @@ impl TrackClipReaderHandle {
 pub struct TrackClipReaderRef(pub TrackClipReaderHandle);
 
 #[derive(Component, Debug, Clone, Copy)]
-pub struct TrackClipReaderNode(pub crate::NodeId);
+pub struct TrackClipReaderNode(pub tutti_core::NodeId);
 
 // ---------------------------------------------------------------------------
 // TrackClipReaderUnit — the AudioUnit.
@@ -416,7 +416,7 @@ impl AudioUnit for TrackClipReaderUnit {
         }
     }
 
-    fn set_sample_rate(&mut self, sample_rate: crate::core::SampleRate) {
+    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         self.sample_rate = sample_rate.get();
         for slot in &mut self.clips {
             slot.sampler.set_sample_rate(sample_rate);
@@ -534,8 +534,8 @@ mod tests {
         fn current_beat(&self) -> f64 {
             f64::from_bits(self.beat.load(Ordering::Relaxed))
         }
-        fn tempo(&self) -> crate::core::Bpm {
-            crate::core::Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
+        fn tempo(&self) -> tutti_core::Bpm {
+            tutti_core::Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
         }
         fn is_loop_enabled(&self) -> bool {
             false

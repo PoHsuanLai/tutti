@@ -17,12 +17,13 @@ pub use crate::synth::SoundFontAsset;
 pub use tutti_wavecache::{poll_wave_cache, WaveCache, WaveCachePlugin, WaveState};
 
 #[cfg(feature = "sampler")]
-pub use crate::playback::{
-    audio_cleanup_system, audio_parameter_sync_system, audio_playback_system,
+pub use crate::sampler::ecs::{
+    audio_cleanup_system, audio_parameter_sync_system, audio_playback_system, AudioVolume,
+    DespawnOnFinish, PlayAudio, TuttiPlaybackPlugin,
 };
-pub use crate::playback::{
-    AudioEmitter, AudioPlaybackState, AudioVolume, DespawnOnFinish, PlayAudio, TuttiPlaybackPlugin,
-};
+// `AudioEmitter` / `AudioPlaybackState` are leaf-agnostic value types living in
+// tutti-core's ECS hub, so they resolve in the minimal build too.
+pub use crate::core::ecs::{AudioEmitter, AudioPlaybackState};
 
 #[cfg(feature = "spatial")]
 pub use crate::spatial::{
@@ -62,7 +63,7 @@ pub use crate::transport::{transport_sync_system, TransportState};
 pub use crate::device_state::{device_state_sync_system, AudioDeviceState};
 
 #[cfg(feature = "sampler")]
-pub use crate::content_bounds::ContentBounds;
+pub use crate::sampler::ecs::ContentBounds;
 
 // The engine types (`TuttiEngine`, `TuttiGraph`, `NodeId`, `Wave`, …) and the
 // scalar entity-as-node ECS params (`AudioNode`, `Volume`, `Frequency`, …) are
@@ -96,7 +97,7 @@ pub use crate::graph::{
     SidechainSources, SpawnAudioNode, TuttiGraphPlugin,
 };
 #[cfg(feature = "sampler")]
-pub use crate::graph::{
+pub use crate::sampler::ecs::{
     poll_wave_imports, promote_pending_samplers, reconcile_sampler_params, PendingSamplerLoad,
     WaveImportQueue,
 };
@@ -137,18 +138,18 @@ pub use tutti_plugin::handles::PluginHandle;
 pub use tutti_plugin::metadata::{ParameterFlags, ParameterInfo};
 
 #[cfg(feature = "sampler")]
-pub use crate::auditioner::{
+pub use crate::sampler::ecs::{
     init_auditioner, AuditionerNode, AuditionerRes, PreviewFile, StopPreview, TuttiAuditionerPlugin,
 };
 
 #[cfg(feature = "sampler")]
-pub use crate::track_clip_reader::{
+pub use crate::sampler::ecs::{
     ClipCommand, ClipSpec, SlotId, TrackClipReaderHandle, TrackClipReaderNode, TrackClipReaderRef,
     TrackClipReaderUnit,
 };
 
 #[cfg(feature = "sampler")]
-pub use crate::recording::{
+pub use crate::sampler::ecs::{
     recording_start_system, recording_stop_system, RecordingActive, RecordingResult,
     StartRecording, StopRecording, TuttiRecordingPlugin,
 };
@@ -180,7 +181,7 @@ pub use tutti_export::{
 };
 
 #[cfg(feature = "sampler")]
-pub use crate::audio_input::{
+pub use crate::sampler::ecs::{
     audio_input_control_system, audio_input_sync_system, AudioInputDeviceInfo, AudioInputState,
     DisableAudioInput, EnableAudioInput, TuttiAudioInputPlugin,
 };
@@ -188,7 +189,7 @@ pub use crate::audio_input::{
 #[cfg(feature = "sampler")]
 pub use crate::sampler::stretch::Unit as TimeStretchUnit;
 #[cfg(feature = "sampler")]
-pub use crate::time_stretch::{
+pub use crate::sampler::ecs::{
     time_stretch_sync_system, TimeStretch, TimeStretchControl, TuttiTimeStretchPlugin,
 };
 
@@ -226,7 +227,7 @@ pub use crate::resources::PluginEditorMainThread;
 #[cfg(feature = "plugin")]
 pub use crate::resources::PluginsRes;
 #[cfg(feature = "sampler")]
-pub use crate::resources::SamplerRes;
+pub use crate::sampler::ecs::{SamplerRes, TuttiSamplerPlugin};
 #[cfg(feature = "soundfont")]
 pub use crate::resources::SoundFontRes;
 pub use crate::resources::{AudioConfig, MeteringRes, TransportRes, TuttiDriverRes, TuttiGraphRes};

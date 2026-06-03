@@ -32,14 +32,15 @@ use std::sync::Arc;
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
+use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_log::{info, warn};
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
-use crate::graph::GraphDirty;
-use crate::resources::TuttiGraphRes;
-use crate::sampler::preview::Auditioner;
-use crate::sampler::Sampler;
-use crate::task::poll_task;
+use tutti_core::ecs::{engine_ready, GraphDirty, TuttiGraphRes};
+use tutti_core::task::poll_task;
+
+use crate::preview::Auditioner;
+use crate::Sampler;
 
 /// Wraps the tutti-sampler `Auditioner` as a Bevy resource.
 ///
@@ -60,7 +61,7 @@ pub struct StopPreview;
 
 /// Tracks the auditioner's graph node so we can swap/remove it.
 #[derive(Resource, Default)]
-pub struct AuditionerNode(pub Option<crate::NodeId>);
+pub struct AuditionerNode(pub Option<tutti_core::NodeId>);
 
 /// In-flight off-thread `preview()` decode.
 ///
@@ -71,7 +72,7 @@ pub struct AuditionerNode(pub Option<crate::NodeId>);
 /// `in_memory_unit()`/`streaming_unit()` once the task completes.
 #[derive(Resource)]
 struct PreviewInFlight {
-    task: Task<crate::sampler::Result<()>>,
+    task: Task<crate::Result<()>>,
     path: PathBuf,
 }
 
@@ -89,7 +90,7 @@ impl Plugin for TuttiAuditionerPlugin {
                     poll_preview_task,
                     handle_stop_preview,
                 )
-                    .run_if(crate::graph::engine_ready),
+                    .run_if(engine_ready),
             );
     }
 }

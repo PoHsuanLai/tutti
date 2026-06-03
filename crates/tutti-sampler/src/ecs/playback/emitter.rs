@@ -1,27 +1,22 @@
 //! `PlayAudio` trigger → `SamplerUnit` graph node + `AudioEmitter` marker.
 
-use bevy_asset::Handle;
-#[cfg(feature = "sampler")]
-use bevy_asset::Assets;
+use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use crate::core::WaveAsset;
+use tutti_core::WaveAsset;
 
 // `AudioEmitter` + `AudioPlaybackState` are leaf-agnostic value types; they
-// moved into tutti-core's ECS hub. Re-export so existing
-// `crate::playback::emitter::{AudioEmitter, AudioPlaybackState}` paths hold.
+// live in tutti-core's ECS hub. Re-export so existing
+// `playback::emitter::{AudioEmitter, AudioPlaybackState}` paths hold.
 // `PlayAudio` + `audio_playback_system` stay here (they build a `SamplerUnit`).
-pub use crate::core::ecs::{AudioEmitter, AudioPlaybackState};
+pub use tutti_core::ecs::{AudioEmitter, AudioPlaybackState};
 
-#[cfg(feature = "sampler")]
-use crate::sampler::SamplerUnit;
-#[cfg(feature = "sampler")]
-use crate::resources::{AudioConfig, TuttiGraphRes};
-#[cfg(feature = "sampler")]
-use crate::time_stretch::{TimeStretch, TimeStretchControl};
+use tutti_core::ecs::{AudioConfig, TuttiGraphRes};
 
-#[cfg(feature = "sampler")]
+use crate::ecs::time_stretch::{TimeStretch, TimeStretchControl};
+use crate::SamplerUnit;
+
 use super::cleanup::DespawnOnFinish;
 
 /// Trigger component: spawn an entity with this to start audio playback.
@@ -103,7 +98,6 @@ impl PlayAudio {
     /// ```rust,ignore
     /// commands.spawn(PlayAudio::once(handle).gain(0.8).time_stretch(0.5, 0.0));
     /// ```
-    #[cfg(feature = "sampler")]
     pub fn time_stretch(self, stretch_factor: f32, pitch_cents: f32) -> (Self, TimeStretch) {
         (
             self,
@@ -121,13 +115,12 @@ impl PlayAudio {
 /// If a `TimeStretch` component is present on the same entity, the sampler
 /// is wrapped in a `TimeStretchUnit` and a `TimeStretchControl` component
 /// is inserted for lock-free parameter updates.
-#[cfg(feature = "sampler")]
 pub fn audio_playback_system(
     mut commands: Commands,
     audio_assets: Res<Assets<WaveAsset>>,
     mut graph: ResMut<TuttiGraphRes>,
     config: Res<AudioConfig>,
-    mut dirty: ResMut<crate::graph::GraphDirty>,
+    mut dirty: ResMut<tutti_core::ecs::GraphDirty>,
     // Steady-state, not `Added`: an entity stays in this set until it gains an
     // `AudioEmitter`, so a not-yet-loaded `WaveAsset` is retried each frame
     // rather than dropped after the insertion frame (the fire-once trap).
@@ -154,7 +147,7 @@ pub fn audio_playback_system(
         let sampler = SamplerUnit::with_settings(wave, gain, speed, looping);
 
         let (node_id, ts_control) = if let Some(ts) = ts {
-            let wrapped = crate::sampler::stretch::Unit::new(Box::new(sampler), sample_rate);
+            let wrapped = crate::stretch::Unit::new(Box::new(sampler), sample_rate);
             wrapped.set_stretch_factor(ts.stretch_factor);
             wrapped.set_pitch_cents(ts.pitch_cents);
             let control = TimeStretchControl {
@@ -193,34 +186,45 @@ pub fn audio_playback_system(
 }
 
 #[cfg(test)]
-#[cfg(feature = "sampler")]
 mod tests {
     use super::*;
-    use crate::resources::{AudioConfig, TuttiGraphRes};
-    use crate::TuttiEngine;
+    use tutti_core::ecs::{AudioConfig, GraphDirty, TuttiGraphRes};
+    use tutti_core::{PdcManager, TuttiGraph, TuttiNet};
     use bevy_app::{App, Update};
     use bevy_asset::{AssetApp, AssetPlugin, Assets};
     use std::sync::Arc;
 
+    /// Build a bare `TuttiGraph` directly (no `TuttiEngine`, which lives in
+    /// bevy-tutti). Allocates the fundsp backend so `commit()` has something
+    /// to publish into; we never drive audio through it here.
+    fn bare_graph(channels: usize) -> TuttiGraph {
+        let mut net = TuttiNet::new(0, channels);
+        let _backend = net.backend();
+        let pdc = PdcManager::new(channels, 0);
+        #[cfg(feature = "midi")]
+        let midi_route = tutti_midi_types::MidiRoutingTable::new();
+        TuttiGraph::from_parts(
+            net,
+            pdc,
+            #[cfg(feature = "midi")]
+            midi_route,
+            48_000.0,
+            channels,
+        )
+    }
+
     /// Builds an `App` with the playback system, a real graph, an
     /// `AudioConfig`, and an empty `Assets<WaveAsset>` store we control.
     fn test_app() -> App {
-        let engine = TuttiEngine::builder()
-            .inputs(0)
-            .outputs(2)
-            .build()
-            .expect("build engine");
-        let TuttiEngine { graph, .. } = engine;
-
         let mut app = App::new();
         app.add_plugins(AssetPlugin::default());
         app.init_asset::<WaveAsset>();
-        app.insert_resource(TuttiGraphRes(graph));
+        app.insert_resource(TuttiGraphRes(bare_graph(2)));
         app.insert_resource(AudioConfig {
             sample_rate: 48_000.0,
             channels: 2,
         });
-        app.init_resource::<crate::graph::GraphDirty>();
+        app.init_resource::<GraphDirty>();
         app.add_systems(Update, audio_playback_system);
         app
     }
@@ -256,7 +260,7 @@ mod tests {
         );
 
         // Resolve the asset.
-        let mut wave = crate::Wave::new(1, 48_000.0);
+        let mut wave = tutti_core::Wave::new(1, 48_000.0);
         wave.push(0.0);
         app.world_mut()
             .resource_mut::<Assets<WaveAsset>>()
@@ -283,7 +287,7 @@ mod tests {
 
         let handle = {
             let mut assets = app.world_mut().resource_mut::<Assets<WaveAsset>>();
-            let mut wave = crate::Wave::new(1, 48_000.0);
+            let mut wave = tutti_core::Wave::new(1, 48_000.0);
             wave.push(0.0);
             assets.add(WaveAsset(Arc::new(wave)))
         };

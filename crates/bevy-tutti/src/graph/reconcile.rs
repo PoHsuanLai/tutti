@@ -7,11 +7,15 @@
 //! that write through leaf-crate unit types (`SamplerUnit`, `PluginEmitter`,
 //! the DSP `UnitParam` path, reverb / convolver rebuilds).
 
+#[cfg(any(feature = "dsp", feature = "plugin", feature = "convolution"))]
 use bevy_ecs::prelude::*;
 
+#[cfg(feature = "dsp")]
 use crate::core::ecs::AudioNode;
+#[cfg(feature = "dsp")]
 use crate::core::dsp::AudioUnit;
 
+#[cfg(any(feature = "dsp", feature = "convolution"))]
 use crate::resources::TuttiGraphRes;
 
 // Generic hub items now live in tutti-core; re-export them here so the leaf
@@ -22,86 +26,10 @@ pub use crate::core::ecs::{
     GraphDirty, GraphReconcileSystems, SpawnAudioNode,
 };
 
-#[cfg(feature = "sampler")]
-use crate::core::ecs::{NodeKind, SamplerLooping, SamplerSpeed, Volume};
-#[cfg(feature = "sampler")]
-use crate::sampler::SamplerUnit;
-
 #[cfg(feature = "plugin")]
 use crate::core::ecs::PluginParam;
 #[cfg(feature = "plugin")]
 use crate::plugin_host::PluginEmitter;
-
-/// Sampler volume write-through.
-///
-/// Mirrors the generic `reconcile_params` skeleton in tutti-core, layering the
-/// `NodeKind::Sampler` arm that core deliberately omits (it can't reference
-/// `SamplerUnit`). A `Changed<Volume>`/`Changed<Mute>` on a sampler entity sets
-/// the unit gain and marks the graph dirty.
-#[cfg(feature = "sampler")]
-type ChangedSamplerVolume<'w> = (&'w AudioNode, &'w NodeKind, &'w Volume, Option<&'w crate::core::ecs::Mute>);
-#[cfg(feature = "sampler")]
-type ChangedSamplerVolumeFilter = Or<(Changed<Volume>, Changed<crate::core::ecs::Mute>)>;
-
-#[cfg(feature = "sampler")]
-pub fn reconcile_sampler_volume(
-    mut graph: ResMut<TuttiGraphRes>,
-    changed: Query<ChangedSamplerVolume, ChangedSamplerVolumeFilter>,
-    mut dirty: ResMut<GraphDirty>,
-) {
-    for (node, kind, volume, mute) in changed.iter() {
-        if *kind != NodeKind::Sampler {
-            continue;
-        }
-        let muted = mute.map(|m| m.0).unwrap_or(false);
-        let target = if muted { 0.0 } else { volume.0 };
-        if let Some(unit) = graph.0.node_mut::<SamplerUnit>(node.0) {
-            unit.set_gain(target);
-            dirty.0 = true;
-        }
-    }
-}
-
-#[cfg(feature = "sampler")]
-type ChangedSamplerParams<'w> = (
-    &'w AudioNode,
-    Option<&'w SamplerSpeed>,
-    Option<&'w SamplerLooping>,
-);
-#[cfg(feature = "sampler")]
-type ChangedSamplerFilter = (
-    With<crate::core::ecs::SamplerNode>,
-    Or<(Changed<SamplerSpeed>, Changed<SamplerLooping>)>,
-);
-
-/// Reconciles `Changed<SamplerSpeed>` and `Changed<SamplerLooping>` into
-/// the underlying [`SamplerUnit`].
-///
-/// `SamplerSpeed` writes through `SamplerUnit::set_speed` (`&mut self`,
-/// reached via `node_mut::<SamplerUnit>`). `SamplerLooping` writes through
-/// `SamplerUnit::set_looping` (atomic, `&self`) — it doesn't strictly
-/// require `node_mut`, but using it here keeps the dispatch shape uniform
-/// and lets the dirty flag coalesce a single commit per frame regardless
-/// of which sampler param changed.
-#[cfg(feature = "sampler")]
-pub fn reconcile_sampler_params(
-    mut graph: ResMut<TuttiGraphRes>,
-    changed: Query<ChangedSamplerParams, ChangedSamplerFilter>,
-    mut dirty: ResMut<GraphDirty>,
-) {
-    for (node, speed, looping) in changed.iter() {
-        let Some(unit) = graph.0.node_mut::<SamplerUnit>(node.0) else {
-            continue;
-        };
-        if let Some(s) = speed {
-            unit.set_speed(s.0);
-        }
-        if let Some(l) = looping {
-            unit.set_looping(l.0);
-        }
-        dirty.0 = true;
-    }
-}
 
 /// Reconciles `Changed<PluginParam>` into the bound [`PluginEmitter`].
 ///
@@ -311,88 +239,5 @@ pub fn reconcile_convolver_params(
             continue;
         };
         unit.set_mix(wet.0);
-    }
-}
-
-#[cfg(test)]
-#[cfg(feature = "sampler")]
-mod tests {
-    use super::*;
-    use crate::core::dsp::sine_hz;
-    use crate::core::ecs::NodeKind;
-    use crate::TuttiEngine;
-    use bevy_app::App;
-
-    fn test_app() -> App {
-        let engine = TuttiEngine::builder()
-            .inputs(0)
-            .outputs(2)
-            .build()
-            .expect("build engine");
-        let TuttiEngine { graph, .. } = engine;
-
-        let mut app = App::new();
-        app.insert_resource(crate::resources::TuttiGraphRes(graph));
-        app.init_resource::<GraphDirty>();
-        app.configure_sets(
-            bevy_app::Update,
-            (
-                GraphReconcileSystems::Spawn,
-                GraphReconcileSystems::Params,
-                GraphReconcileSystems::Despawn,
-                GraphReconcileSystems::Commit,
-            )
-                .chain(),
-        );
-        app
-    }
-
-    #[test]
-    fn sampler_speed_and_looping_change_writes_through() {
-        use std::sync::Arc;
-        use crate::core::ecs::{SamplerLooping, SamplerNode, SamplerSpeed};
-        use crate::Wave;
-
-        let mut app = test_app();
-        // Add the sampler reconcile system on top of the base test_app set.
-        app.add_systems(
-            bevy_app::Update,
-            reconcile_sampler_params.in_set(GraphReconcileSystems::Params),
-        );
-
-        // Build a tiny silent wave (1 channel, 1 sample) just to hand to the
-        // sampler. We never tick audio in this test.
-        let mut wave = Wave::new(1, 48_000.0);
-        wave.push(0.0);
-        let unit = SamplerUnit::new(Arc::new(wave));
-
-        let entity = {
-            let mut c = app.world_mut().commands();
-            // `spawn_audio_node` attaches only `AudioNode` + `NodeKind`; the
-            // `SamplerNode` authoring marker must be inserted alongside, exactly
-            // as every production sampler spawn path does (e.g.
-            // `promote_pending_samplers`). `reconcile_sampler_params` filters on
-            // `With<SamplerNode>`, so without it the reconcile is skipped.
-            c.spawn_audio_node(unit, NodeKind::Sampler)
-                .insert((SamplerNode, SamplerSpeed(1.0), SamplerLooping(false)))
-                .id()
-        };
-        app.update();
-
-        // Mutate both params; reconciler should write into the SamplerUnit.
-        {
-            let world = app.world_mut();
-            let mut speed = world.get_mut::<SamplerSpeed>(entity).unwrap();
-            speed.0 = 2.0;
-            let mut looping = world.get_mut::<SamplerLooping>(entity).unwrap();
-            looping.0 = true;
-        }
-        app.update();
-
-        let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
-        let mut graph = app.world_mut().resource_mut::<crate::resources::TuttiGraphRes>();
-        let unit = graph.0.node_mut::<SamplerUnit>(node_id).expect("SamplerUnit");
-        assert_eq!(unit.speed(), 2.0);
-        assert!(unit.is_looping());
     }
 }

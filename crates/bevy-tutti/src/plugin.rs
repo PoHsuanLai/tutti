@@ -14,7 +14,6 @@ use crate::TuttiEngine;
 use crate::device_state;
 use crate::graph::{engine_ready, TuttiGraphPlugin};
 use crate::metering;
-use crate::playback::TuttiPlaybackPlugin;
 use crate::resources::*;
 use crate::transport;
 
@@ -25,11 +24,7 @@ use crate::spatial::TuttiSpatialPlugin;
 #[cfg(feature = "soundfont")]
 use crate::soundfont::TuttiSoundFontPlugin;
 #[cfg(feature = "sampler")]
-use crate::audio_input::TuttiAudioInputPlugin;
-#[cfg(feature = "sampler")]
-use crate::recording::TuttiRecordingPlugin;
-#[cfg(feature = "sampler")]
-use crate::time_stretch::TuttiTimeStretchPlugin;
+use crate::sampler::ecs::{SamplerRes, TuttiSamplerPlugin};
 #[cfg(feature = "automation")]
 use crate::automation::TuttiAutomationPlugin;
 #[cfg(feature = "analysis")]
@@ -40,8 +35,6 @@ use crate::export::TuttiExportPlugin;
 use crate::plugin_host::TuttiHostingPlugin;
 use crate::dsp::TuttiDspPlugin;
 use crate::prelude::{AudioDeviceState, MasterMeterLevels, TransportState};
-#[cfg(feature = "sampler")]
-use crate::prelude::ContentBounds;
 
 /// Bevy plugin that creates a `TuttiEngine`, starts the audio stream,
 /// and registers ECS components, asset loaders, and systems.
@@ -174,7 +167,7 @@ impl Plugin for TuttiPlugin {
 
                 #[cfg(feature = "sampler")]
                 {
-                    let aud_res = crate::auditioner::init_auditioner(&sampler);
+                    let aud_res = crate::sampler::ecs::init_auditioner(&sampler);
                     app.insert_resource(aud_res);
                     app.insert_resource(SamplerRes(sampler));
                 }
@@ -208,23 +201,10 @@ impl Plugin for TuttiPlugin {
             ),
         );
 
-        #[cfg(feature = "sampler")]
-        {
-            // The `ContentBounds` resource lives here (bevy-tutti owns the
-            // type), but it's populated downstream from ECS clip placements by
-            // `dawai_model::clip::content_bounds` — the doc/ECS is the source of
-            // truth for project length. The old graph-scan sync was removed: it
-            // only saw top-level `SamplerUnit` nodes and was blind to clips held
-            // inside `TrackClipReaderUnit`, so it always reported 0.
-            app.init_resource::<ContentBounds>();
-            app.register_type::<ContentBounds>();
-        }
-
         // Sub-plugins. Order matters: TuttiGraphPlugin first (configures
         // GraphReconcileSystems that other plugins schedule against), then
         // duty plugins.
         app.add_plugins(TuttiGraphPlugin);
-        app.add_plugins(TuttiPlaybackPlugin);
         app.add_plugins(TuttiDspPlugin);
 
         #[cfg(feature = "spatial")]
@@ -235,8 +215,12 @@ impl Plugin for TuttiPlugin {
         app.add_plugins(TuttiMidiPlugin);
         #[cfg(feature = "plugin")]
         app.add_plugins(TuttiHostingPlugin);
+        // The whole sampler ECS surface (playback, recording, audio-input,
+        // time-stretch, auditioner, sampler reconcilers, pending-load
+        // promotion, param-epoch bump, ContentBounds) is one plugin now,
+        // owned by tutti-sampler.
         #[cfg(feature = "sampler")]
-        app.add_plugins((TuttiRecordingPlugin, TuttiAudioInputPlugin, TuttiTimeStretchPlugin, crate::auditioner::TuttiAuditionerPlugin));
+        app.add_plugins(TuttiSamplerPlugin);
         #[cfg(feature = "automation")]
         app.add_plugins(TuttiAutomationPlugin);
         #[cfg(feature = "analysis")]

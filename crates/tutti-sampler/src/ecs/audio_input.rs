@@ -3,9 +3,12 @@
 use bevy_app::{App, Plugin, Startup, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
+use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_reflect::prelude::*;
 
-use crate::resources::SamplerRes;
+use tutti_core::ecs::engine_ready;
+
+use super::SamplerRes;
 
 /// Fire-and-forget request to enable audio input capture.
 ///
@@ -138,12 +141,12 @@ impl Plugin for TuttiAudioInputPlugin {
         app.init_resource::<AudioInputState>()
             .add_systems(
                 Startup,
-                audio_input_init_system.run_if(crate::graph::engine_ready),
+                audio_input_init_system.run_if(engine_ready),
             )
             .add_systems(
                 Update,
                 (audio_input_control_system, audio_input_sync_system)
-                    .run_if(crate::graph::engine_ready),
+                    .run_if(engine_ready),
             );
     }
 }

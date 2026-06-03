@@ -737,24 +737,6 @@ impl FilterNode {
     pub const KIND: NodeKind = NodeKind::Filter;
 }
 
-/// Authoring marker for a parametric EQ band node.
-#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
-#[reflect(Component, Default)]
-#[require(Frequency, FilterQ, GainDb)]
-pub struct EqBandNode;
-impl EqBandNode {
-    pub const KIND: NodeKind = NodeKind::Eq;
-}
-
-/// Authoring marker for a Moog-style ladder filter node.
-#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
-#[reflect(Component, Default)]
-#[require(Frequency, FilterQ, Drive)]
-pub struct LadderNode;
-impl LadderNode {
-    pub const KIND: NodeKind = NodeKind::Ladder;
-}
-
 /// Authoring marker for a stereo reverb node.
 #[derive(Component, Reflect, Default, Clone, Copy, Debug)]
 #[reflect(Component, Default)]
@@ -791,51 +773,6 @@ impl ChorusNode {
     pub const KIND: NodeKind = NodeKind::Chorus;
 }
 
-/// Authoring marker for a stereo flanger node.
-#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
-#[reflect(Component, Default)]
-#[require(ModRate, ModDepth, Feedback, WetMix)]
-pub struct FlangerNode;
-impl FlangerNode {
-    pub const KIND: NodeKind = NodeKind::Flanger;
-}
-
-/// Authoring marker for a stereo phaser node.
-#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
-#[reflect(Component, Default)]
-#[require(ModRate, ModDepth, Feedback, WetMix)]
-pub struct PhaserNode;
-impl PhaserNode {
-    pub const KIND: NodeKind = NodeKind::Phaser;
-}
-
-/// Authoring marker for a waveshaping distortion node.
-#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
-#[reflect(Component, Default)]
-#[require(Drive)]
-pub struct DistortionNode;
-impl DistortionNode {
-    pub const KIND: NodeKind = NodeKind::Distortion;
-}
-
-/// Authoring marker for a lookahead limiter node.
-#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
-#[reflect(Component, Default)]
-#[require(ThresholdDb, CeilingDb, Release)]
-pub struct LimiterNode;
-impl LimiterNode {
-    pub const KIND: NodeKind = NodeKind::Limiter;
-}
-
-/// Authoring marker for a hard-clip brickwall limiter node.
-#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
-#[reflect(Component, Default)]
-#[require(CeilingDb)]
-pub struct BrickwallLimiterNode;
-impl BrickwallLimiterNode {
-    pub const KIND: NodeKind = NodeKind::BrickwallLimiter;
-}
-
 /// Authoring marker for a sample-playback node.
 #[derive(Component, Reflect, Default, Clone, Copy, Debug)]
 #[reflect(Component, Default)]
@@ -843,15 +780,6 @@ impl BrickwallLimiterNode {
 pub struct SamplerNode;
 impl SamplerNode {
     pub const KIND: NodeKind = NodeKind::Sampler;
-}
-
-/// Authoring marker for a spatial (VBAP) panner node.
-#[derive(Component, Reflect, Default, Clone, Copy, Debug)]
-#[reflect(Component, Default)]
-#[require(Azimuth, Elevation)]
-pub struct SpatialPannerNode;
-impl SpatialPannerNode {
-    pub const KIND: NodeKind = NodeKind::SpatialPanner;
 }
 
 /// Authoring marker for an LFO modulator node.

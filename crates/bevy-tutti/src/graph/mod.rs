@@ -108,100 +108,22 @@ pub fn register_audio_node_types(app: &mut App) {
         .register_type::<LfoShapeKind>()
         .register_type::<BeatSynced>()
         .register_type::<ReverbTime>()
-        // Authoring markers.
+        // Authoring markers. Only the markers a spawn system (`Added<T>`) or a
+        // reconciler (`With<T>`) actually reads are kept: the 6 generic
+        // `spawn_dsp_node` triggers, the LFO trigger, and the three type-guard
+        // markers (Reverb / ConvolutionReverb / Sampler). The 8 never-filtered
+        // markers (Eq, Ladder, Flanger, Phaser, Distortion, Limiter,
+        // BrickwallLimiter, SpatialPanner) were inserted but never queried, so
+        // they were deleted along with the central `insert_node_marker` match.
         .register_type::<CompressorNode>()
         .register_type::<GateNode>()
         .register_type::<FilterNode>()
-        .register_type::<EqBandNode>()
-        .register_type::<LadderNode>()
         .register_type::<ReverbNode>()
         .register_type::<ConvolutionReverbNode>()
         .register_type::<DelayNode>()
         .register_type::<ChorusNode>()
-        .register_type::<FlangerNode>()
-        .register_type::<PhaserNode>()
-        .register_type::<DistortionNode>()
-        .register_type::<LimiterNode>()
-        .register_type::<BrickwallLimiterNode>()
         .register_type::<SamplerNode>()
-        .register_type::<SpatialPannerNode>()
         .register_type::<LfoNodeMarker>();
-}
-
-/// Insert the B7 authoring marker that corresponds to a [`NodeKind`], if one
-/// exists, onto `entity`.
-///
-/// Markers are an additive authoring surface kept in lockstep with the
-/// by-value `NodeKind` dispatch key: anywhere a node is materialised with a
-/// `NodeKind`, the matching marker should go on alongside it. The bevy-tutti
-/// `dsp` spawn systems already do this; this helper lets the *other* spawn
-/// paths (dawai-model's `EffectAttach`, the sampler `pending_load` promote
-/// step) stay in sync without each re-deriving the mapping. Once every spawn
-/// path inserts the marker, the kind-matching reconcilers can filter on
-/// `With<Marker>` instead of matching `NodeKind` by value.
-///
-/// Kinds with no dedicated effect marker (`Generic`, `Custom`, `SoundFont`,
-/// `Plugin`, `Lfo`, `Generator`) insert nothing — they keep the bare
-/// `NodeKind`-only path.
-pub fn insert_node_marker(entity: &mut bevy_ecs::system::EntityCommands, kind: crate::core::ecs::NodeKind) {
-    use crate::core::ecs::*;
-    match kind {
-        NodeKind::Compressor => {
-            entity.insert(CompressorNode);
-        }
-        NodeKind::Gate => {
-            entity.insert(GateNode);
-        }
-        NodeKind::Filter => {
-            entity.insert(FilterNode);
-        }
-        NodeKind::Eq => {
-            entity.insert(EqBandNode);
-        }
-        NodeKind::Ladder => {
-            entity.insert(LadderNode);
-        }
-        NodeKind::Reverb => {
-            entity.insert(ReverbNode);
-        }
-        NodeKind::ConvolutionReverb => {
-            entity.insert(ConvolutionReverbNode);
-        }
-        NodeKind::Delay => {
-            entity.insert(DelayNode);
-        }
-        NodeKind::Chorus => {
-            entity.insert(ChorusNode);
-        }
-        NodeKind::Flanger => {
-            entity.insert(FlangerNode);
-        }
-        NodeKind::Phaser => {
-            entity.insert(PhaserNode);
-        }
-        NodeKind::Distortion => {
-            entity.insert(DistortionNode);
-        }
-        NodeKind::Limiter => {
-            entity.insert(LimiterNode);
-        }
-        NodeKind::BrickwallLimiter => {
-            entity.insert(BrickwallLimiterNode);
-        }
-        NodeKind::Sampler => {
-            entity.insert(SamplerNode);
-        }
-        NodeKind::SpatialPanner => {
-            entity.insert(SpatialPannerNode);
-        }
-        // No dedicated effect marker — keep the bare NodeKind-only path.
-        NodeKind::Generic
-        | NodeKind::Custom
-        | NodeKind::SoundFont
-        | NodeKind::Plugin
-        | NodeKind::Lfo
-        | NodeKind::Generator => {}
-    }
 }
 
 /// Bevy plugin: graph reconciliation pipeline.

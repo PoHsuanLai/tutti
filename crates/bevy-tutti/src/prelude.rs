@@ -70,29 +70,30 @@ pub use crate::content_bounds::ContentBounds;
 // prelude::*`, so they are already reachable via `bevy_tutti::*` and
 // `bevy_tutti::prelude::*` without re-listing them here.
 
-// B7 authoring markers + construction-only authored data (added in
-// `tutti_core::ecs`). The preferred spawn surface: `commands.spawn((FilterNode,
-// Frequency(..), FilterQ(..), ..))`. The `#[require]` lists fill in defaults;
-// the marker spawn systems build the unit from those component values.
-// Several marker names collide with the concrete `tutti_units` unit names
-// already re-exported below (`ChorusNode`, `FlangerNode`, `PhaserNode`,
-// `LimiterNode`). Those four markers are aliased with a `Marker` suffix to
-// disambiguate; the rest keep their natural name.
+// Authoring markers + construction-only authored data (in `tutti_core::ecs`).
+// The preferred spawn surface: `commands.spawn((FilterNode, Frequency(..),
+// FilterQ(..), ..))`; the `#[require]` lists fill defaults and the generic
+// `spawn_dsp_node::<FilterNode>` builds the unit from those values.
+//
+// Only the markers that are actually read are exported: the 6 generic
+// `spawn_dsp_node` triggers (Compressor / Gate / Filter / Reverb / Delay /
+// Chorus), the LFO trigger, and the 3 type-guard markers
+// (Reverb / ConvolutionReverb / Sampler — `Reverb` covers both roles).
+// `ChorusNode` is aliased `ChorusNodeMarker` to avoid colliding with the
+// concrete `tutti_units::ChorusNode` re-exported below.
 pub use crate::core::ecs::{
-    BeatSynced, BrickwallLimiterNode, ChorusNode as ChorusNodeMarker, CompressorNode,
-    ConvolutionReverbNode, DelayNode, DistortionNode, EqBandNode, FilterMode, FilterNode,
-    FlangerNode as FlangerNodeMarker, GateNode, LadderNode, LfoNodeMarker, LfoShapeKind,
-    LimiterNode as LimiterNodeMarker, MaxDelay, PhaserNode as PhaserNodeMarker, ReverbNode,
-    ReverbTime, SamplerNode, SpatialPannerNode, StereoChannels,
+    BeatSynced, ChorusNode as ChorusNodeMarker, CompressorNode, ConvolutionReverbNode, DelayNode,
+    FilterMode, FilterNode, GateNode, LfoNodeMarker, LfoShapeKind, MaxDelay, ReverbNode,
+    ReverbTime, SamplerNode, StereoChannels,
 };
 
 #[cfg(feature = "plugin")]
 pub use crate::graph::reconcile_plugin_params;
 pub use crate::graph::{
-    commit_graph, crossfade_audio_node, insert_node_marker, reconcile_audio_routing,
-    reconcile_node_despawn, reconcile_params, reconcile_sidechain_links, register_audio_node_types,
-    AudioFedBy, AudioFeedsTo, GraphDirty, GraphReconcileSystems, NodeParamEpoch, SidechainOf,
-    SidechainSources, SpawnAudioNode, TuttiGraphPlugin,
+    commit_graph, crossfade_audio_node, reconcile_audio_routing, reconcile_node_despawn,
+    reconcile_params, reconcile_sidechain_links, register_audio_node_types, AudioFedBy,
+    AudioFeedsTo, GraphDirty, GraphReconcileSystems, NodeParamEpoch, SidechainOf, SidechainSources,
+    SpawnAudioNode, TuttiGraphPlugin,
 };
 #[cfg(feature = "sampler")]
 pub use crate::graph::{

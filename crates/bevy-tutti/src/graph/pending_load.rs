@@ -38,7 +38,7 @@ use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
-use crate::core::ecs::{AudioNode, NodeKind, SamplerLooping, SamplerSpeed, Volume};
+use crate::core::ecs::{AudioNode, NodeKind, SamplerLooping, SamplerNode, SamplerSpeed, Volume};
 use crate::core::{Wave, WaveAsset};
 use crate::sampler::SamplerUnit;
 use crate::task::poll_task;
@@ -233,11 +233,13 @@ pub fn promote_pending_samplers(
         let id = graph.0.add(unit);
         dirty.0 = true;
 
-        // TODO(B7): spawn SamplerNode marker once it lands
+        // The `SamplerNode` B7 marker rides alongside `NodeKind::Sampler` so
+        // the kind-matching reconcilers can filter on `With<SamplerNode>`.
         commands
             .entity(entity)
             .remove::<PendingSamplerLoad>()
             .insert((
+                SamplerNode,
                 AudioNode(id),
                 NodeKind::Sampler,
                 Volume(pending_load.gain),

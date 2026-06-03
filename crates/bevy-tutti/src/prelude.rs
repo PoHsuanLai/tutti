@@ -87,10 +87,10 @@ pub use crate::core::ecs::{
 };
 
 pub use crate::graph::{
-    commit_graph, crossfade_audio_node, reconcile_audio_routing, reconcile_node_despawn,
-    reconcile_params, reconcile_sidechain_links, register_audio_node_types, AudioFedBy,
-    AudioFeedsTo, GraphDirty, GraphReconcileSystems, NodeParamEpoch, SidechainOf, SidechainSources,
-    SpawnAudioNode, TuttiGraphPlugin,
+    commit_graph, crossfade_audio_node, insert_node_marker, reconcile_audio_routing,
+    reconcile_node_despawn, reconcile_params, reconcile_sidechain_links, register_audio_node_types,
+    AudioFedBy, AudioFeedsTo, GraphDirty, GraphReconcileSystems, NodeParamEpoch, SidechainOf,
+    SidechainSources, SpawnAudioNode, TuttiGraphPlugin,
 };
 #[cfg(feature = "sampler")]
 pub use crate::graph::{

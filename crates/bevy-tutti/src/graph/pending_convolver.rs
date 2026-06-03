@@ -92,10 +92,13 @@ pub fn promote_pending_convolvers(
         let id = graph.0.add(node);
         dirty.0 = true;
 
+        // `ConvolutionReverbNode` B7 marker rides alongside the NodeKind so the
+        // convolver param reconciler can filter on `With<ConvolutionReverbNode>`.
         commands
             .entity(entity)
             .remove::<PendingConvolverLoad>()
             .insert((
+                crate::core::ecs::ConvolutionReverbNode,
                 AudioNode(id),
                 NodeKind::ConvolutionReverb,
                 crate::core::ecs::WetMix(load.mix),

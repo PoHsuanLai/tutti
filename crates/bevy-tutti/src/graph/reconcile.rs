@@ -223,12 +223,14 @@ pub fn reconcile_params(
 #[cfg(feature = "sampler")]
 type ChangedSamplerParams<'w> = (
     &'w AudioNode,
-    &'w NodeKind,
     Option<&'w SamplerSpeed>,
     Option<&'w SamplerLooping>,
 );
 #[cfg(feature = "sampler")]
-type ChangedSamplerFilter = Or<(Changed<SamplerSpeed>, Changed<SamplerLooping>)>;
+type ChangedSamplerFilter = (
+    With<crate::core::ecs::SamplerNode>,
+    Or<(Changed<SamplerSpeed>, Changed<SamplerLooping>)>,
+);
 
 /// Reconciles `Changed<SamplerSpeed>` and `Changed<SamplerLooping>` into
 /// the underlying [`SamplerUnit`].
@@ -247,10 +249,7 @@ pub fn reconcile_sampler_params(
 ) {
     let Some(mut graph) = graph else { return };
 
-    for (node, kind, speed, looping) in changed.iter() {
-        if !matches!(*kind, NodeKind::Sampler) {
-            continue;
-        }
+    for (node, speed, looping) in changed.iter() {
         let Some(unit) = graph.0.node_mut::<SamplerUnit>(node.0) else {
             continue;
         };
@@ -429,20 +428,20 @@ pub fn reconcile_reverb_params(
     changed: Query<
         (
             Entity,
-            &NodeKind,
             &crate::core::ecs::ReverbRoomSize,
             &crate::core::ecs::ReverbDamping,
             &WetMix,
             Option<&crate::core::ecs::ReverbAlgo>,
         ),
-        (With<AudioNode>, ReverbChangedFilter),
+        (
+            With<AudioNode>,
+            With<crate::core::ecs::ReverbNode>,
+            ReverbChangedFilter,
+        ),
     >,
 ) {
     use crate::core::ecs::ReverbAlgo;
-    for (entity, kind, room, damp, _wet, algo) in changed.iter() {
-        if !matches!(*kind, NodeKind::Reverb) {
-            continue;
-        }
+    for (entity, room, damp, _wet, algo) in changed.iter() {
         // fundsp reverb opcodes have no `set()`, so a param change rebuilds the
         // node with a crossfade. The algorithm tag picks the constructor;
         // absent (pre-`ReverbAlgo` projects) defaults to the 32-channel FDN.
@@ -461,13 +460,13 @@ pub fn reconcile_reverb_params(
 #[cfg(feature = "convolution")]
 pub fn reconcile_convolver_params(
     graph: Option<ResMut<TuttiGraphRes>>,
-    changed: Query<(&AudioNode, &NodeKind, &WetMix), (Changed<WetMix>,)>,
+    changed: Query<
+        (&AudioNode, &WetMix),
+        (With<crate::core::ecs::ConvolutionReverbNode>, Changed<WetMix>),
+    >,
 ) {
     let Some(mut graph) = graph else { return };
-    for (node, kind, wet) in changed.iter() {
-        if !matches!(*kind, NodeKind::ConvolutionReverb) {
-            continue;
-        }
+    for (node, wet) in changed.iter() {
         let Some(unit) = graph.0.node_mut::<crate::units::StereoConvolverNode>(node.0) else {
             continue;
         };

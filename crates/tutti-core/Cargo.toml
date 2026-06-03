@@ -9,20 +9,21 @@ keywords = ["audio", "dsp", "real-time", "daw", "fundsp"]
 categories = ["multimedia::audio"]
 
 [features]
-# no_std by default. Enable std for debug thread checks and file format I/O.
+# tutti-core is now a std crate with hard Bevy deps (it hosts the ECS graph
+# hub). `std` and `bevy_ecs`/`bevy_asset` are no longer features — they're
+# unconditional. The names below are kept as no-op aliases so sibling crates'
+# existing `features = ["std", "bevy_ecs", ...]` requests keep resolving until
+# they're cleaned up; they pull nothing extra.
 default = []
-
-# std feature: enables AudioThreadCell debug checks, fundsp file I/O,
-# and the metering subsystem (ebur128 + Mutex-based loudness meter +
-# crossbeam-channel for the metering sample pipe).
-# Does NOT include CPAL — the `tutti` umbrella crate owns the audio callback.
-std = ["fundsp/std", "tutti-midi-types/std", "dep:ebur128", "dep:crossbeam-channel"]
+std = []
+bevy_ecs = []
+bevy_asset = ["fundsp/bevy_asset"]
 
 # Individual audio format support (each pulls only its codec)
-wav = ["std", "fundsp/wav"]
-flac = ["std", "fundsp/flac"]
-mp3 = ["std", "fundsp/mp3"]
-ogg = ["std", "fundsp/ogg"]
+wav = ["fundsp/wav"]
+flac = ["fundsp/flac"]
+mp3 = ["fundsp/mp3"]
+ogg = ["fundsp/ogg"]
 
 # All file formats
 files = ["wav", "flac", "mp3", "ogg"]
@@ -30,26 +31,16 @@ files = ["wav", "flac", "mp3", "ogg"]
 # Optional subsystems
 midi = []
 
-# Enables bevy_asset / bevy_reflect derives on loadable types owned by sibling
-# crates (Wave in fundsp-tutti). Pure additive — no runtime cost.
-bevy_asset = ["std", "fundsp/bevy_asset"]
-
-# Enables bevy_ecs derives on the entity-as-node primitives (`AudioNode`,
-# `NodeKind`, `Volume`, `Pan`, `Mute`, `PluginParam`). Pure additive — no
-# runtime cost when off; tutti-core has no Bevy dependency unless this
-# feature is enabled. Mirrors the `bevy_asset` pattern.
-bevy_ecs = ["std", "dep:bevy_ecs", "bevy_ecs/bevy_reflect", "dep:bevy_reflect"]
-
 [dependencies]
 thiserror = { version = "2", default-features = false }
 dyn-clone = { version = "1.0", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
 
 # Audio
-fundsp = { package = "fundsp-tutti", version = "0.23.0", path = "../fundsp-tutti", default-features = false }
+fundsp = { package = "fundsp-tutti", version = "0.23.0", path = "../fundsp-tutti", default-features = false, features = ["std"] }
 
 # MIDI types (pure types from tutti-midi-types) — always included for SmpteFrameRate etc.
-tutti-midi-types = { version = "0.0.1", path = "../tutti-midi-types", default-features = false }
+tutti-midi-types = { version = "0.0.1", path = "../tutti-midi-types", default-features = false, features = ["std"] }
 
 # Shared RT primitives (AudioThreadCell, RtEventBuf).
 tutti-types = { version = "0.0.1", path = "../tutti-types" }
@@ -62,15 +53,21 @@ arc-swap = "1.7"
 hashbrown = { version = "0.16", default-features = false }
 parking_lot = { version = "0.12", default-features = false }
 
-# Metering (requires std — EBU R128 loudness measurement).
-# crossbeam-channel requires std::thread primitives; used only by metering.
-crossbeam-channel = { version = "0.5", optional = true }
-ebur128 = { version = "0.1", optional = true }
+# Metering (EBU R128 loudness measurement). Unconditional now that tutti-core
+# is std. crossbeam-channel carries the metering sample pipe.
+crossbeam-channel = { version = "0.5" }
+ebur128 = { version = "0.1" }
 
-# Bevy ECS derives — only pulled in when the `bevy_ecs` feature is enabled.
-# Pinned to the same Bevy minor used by bevy-tutti.
-bevy_ecs = { version = "0.18", default-features = false, optional = true }
-bevy_reflect = { version = "0.18", default-features = false, optional = true }
+# Bevy — hard deps. tutti-core hosts the ECS graph-reconcile hub
+# (GraphReconcileSystems, TuttiGraphRes, TuttiGraphPlugin, the param
+# components) that every leaf audio crate schedules against. Pinned to the
+# same Bevy minor as the rest of the workspace.
+bevy_ecs = { version = "0.18", default-features = false, features = ["bevy_reflect"] }
+bevy_reflect = { version = "0.18", default-features = false }
+bevy_app = { version = "0.18", default-features = false }
+bevy_asset = { version = "0.18", default-features = false }
+bevy_tasks = { version = "0.18" }
+bevy_log = { version = "0.18", default-features = false }
 
 [dev-dependencies]
 assert_no_alloc = "1"

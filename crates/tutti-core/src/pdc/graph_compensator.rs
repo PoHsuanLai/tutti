@@ -5,7 +5,7 @@
 //! node's input, then insert delays on shorter paths to align them at merge points.
 
 use crate::compat::{HashMap, Vec};
-use alloc::collections::VecDeque;
+use std::collections::VecDeque;
 use fundsp::audiounit::AudioUnit;
 use fundsp::net::{Net, NodeId, Source};
 use hashbrown::HashSet;

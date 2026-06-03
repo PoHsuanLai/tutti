@@ -23,7 +23,7 @@ impl Clone for MonoPdcDelayUnit {
 impl MonoPdcDelayUnit {
     pub fn new(delay_samples: usize) -> Self {
         Self {
-            buffer: alloc::vec![0.0; delay_samples.max(1)],
+            buffer: std::vec![0.0; delay_samples.max(1)],
             write_pos: 0,
             delay_samples,
         }

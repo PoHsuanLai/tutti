@@ -19,17 +19,13 @@
 //! For CPAL audio I/O, use the `tutti` umbrella crate — it owns the device stream
 //! and wires the RT callback around this vocabulary.
 //!
-//! # no_std
+//! # std + Bevy
 //!
-//! `#![no_std]` with `alloc`. No std feature needed.
-
-#![no_std]
-
-#[cfg(feature = "std")]
-extern crate std;
-
-#[macro_use]
-extern crate alloc;
+//! tutti-core is a std crate that depends on `bevy_ecs`/`bevy_app`: it hosts the
+//! shared ECS graph-reconcile hub (`GraphReconcileSystems`, `TuttiGraphRes`, the
+//! param components, `TuttiGraphPlugin`) that every leaf audio crate schedules
+//! against. The DSP/RT vocabulary itself is Bevy-agnostic; the `ecs` module is
+//! where the Bevy integration lives.
 
 pub mod error;
 pub use error::{Error, Result};
@@ -57,9 +53,7 @@ pub use transport::{
     BBT,
 };
 
-#[cfg(feature = "std")]
 pub mod metering;
-#[cfg(feature = "std")]
 pub use metering::{
     AtomicAmplitude, AtomicStereoAnalysis, CpuMeter, CpuMetrics, MeteringContext, MeteringHandle,
     MeteringManager, StereoAnalysisSnapshot,
@@ -86,10 +80,7 @@ pub use fundsp::fft::{inverse_fft, real_fft};
 pub use fundsp::math::Complex32;
 pub use fundsp::net::{NodeId, Source};
 pub use fundsp::prelude::{shared, AudioUnit, BufferMut, BufferRef, Shared};
-#[cfg(all(
-    feature = "bevy_asset",
-    any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")
-))]
+#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 pub use fundsp::read::WaveAsset;
 // `WaveMetadata` is a plain metadata struct (frame count / sample rate /
 // channels) — available with any decode feature, no `bevy_asset` needed.
@@ -106,7 +97,8 @@ pub use fundsp::wave::Wave;
 pub use fundsp::MAX_BUFFER_SIZE;
 pub use fundsp::{Sample, F32, F64};
 
-/// Compatibility layer for no_std + alloc.
+/// Shared re-exports for the core data structures (parking_lot locks,
+/// hashbrown maps, std collections/atomics).
 pub mod compat;
 
 pub mod node_id;
@@ -128,9 +120,7 @@ pub use midi::{
 mod denormals;
 pub use denormals::ScopedNoDenormals;
 
-#[cfg(feature = "bevy_ecs")]
 pub mod ecs;
-#[cfg(feature = "bevy_ecs")]
 pub use ecs::{
     Attack, AudioNode, Azimuth, CeilingDb, CompressorRatio, DelayTime, Drive, Elevation, Feedback,
     FilterQ, Frequency, GainDb, LayerKey, ModDepth, ModParam, ModRate, Mute, NodeKind, Pan,

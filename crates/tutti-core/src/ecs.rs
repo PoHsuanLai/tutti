@@ -586,7 +586,7 @@ pub struct ModParam {
     base: f32,
     min: f32,
     max: f32,
-    layers: alloc::vec::Vec<(LayerKey, f32)>,
+    layers: std::vec::Vec<(LayerKey, f32)>,
     dirty: bool,
 }
 
@@ -598,7 +598,7 @@ impl ModParam {
             base,
             min,
             max,
-            layers: alloc::vec::Vec::new(),
+            layers: std::vec::Vec::new(),
             dirty: true,
         }
     }

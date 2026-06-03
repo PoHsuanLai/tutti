@@ -112,7 +112,10 @@ mpe = ["midi", "tutti-midi-io/mpe", "tutti-midi-runtime?/mpe"]
 # (SoundFontAsset, StreamingSample) — it registers them with the AssetServer.
 synth = ["dep:tutti-synth"]
 soundfont = ["synth", "tutti-synth/soundfont", "tutti-synth/bevy_asset"]
-sampler = ["wav", "dep:tutti-sampler"]
+# `tutti-export?/sampler` turns on tutti-export's region-render module only when
+# the export crate is also pulled in (export feature on) — the `?` keeps sampler
+# usable without export.
+sampler = ["wav", "dep:tutti-sampler", "tutti-export?/sampler"]
 
 # Plugin hosting (native subprocess plugin-server + editor windowing deps).
 plugin = ["dep:tutti-plugin", "dep:tutti-plugin-server", "dep:bevy_window", "dep:raw-window-handle", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation"]

@@ -167,12 +167,12 @@ pub use tutti_analysis::ecs::{
 };
 
 #[cfg(feature = "export")]
-pub use crate::export::{
+pub use tutti_export::ecs::{
     export_poll_system, export_start_system, ExportComplete, ExportFailed, ExportInProgress,
     StartExport, TuttiExportPlugin,
 };
 #[cfg(all(feature = "export", feature = "sampler"))]
-pub use crate::render_region::{
+pub use tutti_export::ecs::{
     prepare_region_render_system, region_render_poll_system, spawn_region_render_system,
     RegionRenderComplete, RegionRenderConfig, RegionRenderFailed, RegionRenderInProgress,
     RegionRenderNet, RegionRenderSystems, StartRegionRender, TuttiRegionRenderPlugin,

@@ -10,10 +10,11 @@
 //! [`RegionRenderComplete`] component carrying the PCM.
 //!
 //! Mirrors the `StartExport` / `ExportInProgress` poll pattern in
-//! [`crate::export`], with two differences: the node isolation, and the render
-//! runs on the shared [`AsyncComputeTaskPool`] via the `to_buffers` (in-memory)
-//! terminal — a bounded, Bevy-managed pool rather than `Run::spawn`'s raw OS
-//! thread, so it cannot pin every core and starve the real-time audio callback.
+//! [`crate::ecs::export`], with two differences: the node isolation, and the
+//! render runs on the shared [`AsyncComputeTaskPool`] via the `to_buffers`
+//! (in-memory) terminal — a bounded, Bevy-managed pool rather than `Run::spawn`'s
+//! raw OS thread, so it cannot pin every core and starve the real-time audio
+//! callback.
 //!
 //! ## Clip population is a downstream hole
 //!
@@ -32,18 +33,18 @@ use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 use std::sync::Arc;
 
-use crate::core::dsp::Net;
-use crate::core::{
+use tutti_core::dsp::Net;
+use tutti_core::{
     AudioUnit, OfflineTransport, OfflineTransportConfig, SampleRate, TransportReader,
 };
-use crate::sampler::SamplerUnit;
-use crate::task::poll_task;
-use crate::NodeId;
-use tutti_export::{Error as ExportError, Rendered};
+use tutti_core::task::poll_task;
+use tutti_core::NodeId;
+use crate::{Error as ExportError, Rendered};
 
-use crate::graph::engine_ready;
-use crate::resources::{AudioConfig, TuttiGraphRes};
-use crate::sampler::ecs::TrackClipReaderUnit;
+use tutti_core::ecs::engine_ready;
+use tutti_core::ecs::{AudioConfig, TuttiGraphRes};
+use tutti_sampler::ecs::TrackClipReaderUnit;
+use tutti_sampler::SamplerUnit;
 
 /// Ordering anchor for the three-step region render. A clip-aware downstream
 /// crate schedules its clip-population system in [`Self::Populate`]; this crate
@@ -212,7 +213,7 @@ pub struct RegionRenderNet {
 impl RegionRenderNet {
     /// Mutable access to a node in the cloned net, for the `Populate` step to
     /// downcast its clip readers and insert clips.
-    pub fn node_mut(&mut self, node: NodeId) -> &mut dyn crate::core::AudioUnit {
+    pub fn node_mut(&mut self, node: NodeId) -> &mut dyn AudioUnit {
         self.net.node_mut(node)
     }
 }
@@ -331,7 +332,7 @@ pub fn spawn_region_render_system(
         // `FnOnce(..) -> Result<_> + Send`, so it executes fine inside a task;
         // running it on the bounded pool (the same one the STFT step and the
         // wave cache use) keeps the render from starving the audio callback.
-        let run = tutti_export::Export::graph(net, config.sample_rate)
+        let run = crate::Export::graph(net, config.sample_rate)
             .start_beat(render.start_beat)
             .duration_beats(render.len_beats, render.tempo)
             .transport(timeline)
@@ -420,8 +421,8 @@ impl Plugin for TuttiRegionRenderPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{Bpm, SampleRate, Wave};
-    use crate::sampler::ecs::{ClipCommand, SlotId, TrackClipReaderUnit};
+    use tutti_core::{Bpm, SampleRate, Wave};
+    use tutti_sampler::ecs::{ClipCommand, SlotId, TrackClipReaderUnit};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     struct MockTransport {
@@ -498,7 +499,7 @@ mod tests {
             &(0..64).map(|i| (i as f32 + 1.0) / 64.0).collect::<Vec<_>>(),
         ));
         let sampler =
-            crate::sampler::SamplerUnit::with_transport(wave, live_transport.clone(), 0.0, None);
+            SamplerUnit::with_transport(wave, live_transport.clone(), 0.0, None);
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
@@ -535,8 +536,8 @@ mod tests {
         );
     }
 
-    use crate::core::dsp::dc;
-    use crate::resources::AudioConfig;
+    use tutti_core::dsp::dc;
+    use tutti_core::ecs::AudioConfig;
     use bevy_ecs::world::World;
     use tutti_core::{PdcManager, TuttiNet};
     #[cfg(feature = "midi")]
@@ -550,7 +551,7 @@ mod tests {
         let pdc = PdcManager::new(2, 0);
         #[cfg(feature = "midi")]
         let midi_route = MidiRoutingTable::new();
-        let mut graph = crate::TuttiGraph::from_parts(
+        let mut graph = tutti_core::TuttiGraph::from_parts(
             net,
             pdc,
             #[cfg(feature = "midi")]

@@ -64,14 +64,9 @@ pub mod graph;
 // re-exports it via the prelude under the same feature gates.
 
 // `analysis` ECS folded into `tutti_analysis::ecs`; re-exported via the prelude.
-#[cfg(feature = "export")]
-mod export;
-// Region rendering renders sampler / clip-reader units offline, so it needs the
-// sampler subsystem in addition to the export pipeline. Gating it on bare
-// `export` made `--features export` fail to compile (it pulls `crate::sampler`
-// + `crate::track_clip_reader`, both `sampler`-gated). `full` enables both.
-#[cfg(all(feature = "export", feature = "sampler"))]
-pub mod render_region;
+// The export pipeline ECS (StartExport / TuttiExportPlugin) and the offline
+// region render (TuttiRegionRenderPlugin) now live in `tutti_export::ecs`;
+// bevy-tutti re-exports them via the prelude under the same feature gates.
 // The MIDI ECS code (components / events / systems / scheduled dispatch +
 // TuttiMidiPlugin) now lives in `tutti_midi_io::ecs`. bevy-tutti re-exports it
 // via the prelude under the same feature gates.

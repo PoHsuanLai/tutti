@@ -6,9 +6,9 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
-use crate::graph::engine_ready;
-use crate::resources::{AudioConfig, TuttiGraphRes};
-use crate::task::poll_task;
+use tutti_core::ecs::engine_ready;
+use tutti_core::ecs::{AudioConfig, TuttiGraphRes};
+use tutti_core::task::poll_task;
 
 /// Fire-and-forget request to start an offline export.
 ///
@@ -23,8 +23,8 @@ pub struct StartExport {
     pub path: std::path::PathBuf,
     pub duration_seconds: Option<f64>,
     pub duration_beats: Option<(f64, f64)>,
-    pub format: Option<tutti_export::AudioFormat>,
-    pub normalization: Option<tutti_export::Normalize>,
+    pub format: Option<crate::AudioFormat>,
+    pub normalization: Option<crate::Normalize>,
 }
 
 impl StartExport {
@@ -48,12 +48,12 @@ impl StartExport {
         self
     }
 
-    pub fn format(mut self, format: tutti_export::AudioFormat) -> Self {
+    pub fn format(mut self, format: crate::AudioFormat) -> Self {
         self.format = Some(format);
         self
     }
 
-    pub fn normalization(mut self, mode: tutti_export::Normalize) -> Self {
+    pub fn normalization(mut self, mode: crate::Normalize) -> Self {
         self.normalization = Some(mode);
         self
     }
@@ -67,10 +67,10 @@ impl StartExport {
 /// `bevy_reflect`.
 #[derive(Component)]
 pub struct ExportInProgress {
-    pub(crate) task: Task<Result<tutti_export::Written, tutti_export::Error>>,
-    pub(crate) progress_rx: crossbeam_channel::Receiver<(tutti_export::Phase, f32)>,
+    pub(crate) task: Task<Result<crate::Written, crate::Error>>,
+    pub(crate) progress_rx: crossbeam_channel::Receiver<(crate::Phase, f32)>,
     /// Latest progress observed by the poll system, if any.
-    pub last_progress: Option<(tutti_export::Phase, f32)>,
+    pub last_progress: Option<(crate::Phase, f32)>,
 }
 
 #[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
@@ -91,7 +91,7 @@ pub fn export_start_system(
 ) {
     for start in events.read() {
         let net = graph.0.clone_net();
-        let mut builder = tutti_export::Export::graph(net, config.sample_rate);
+        let mut builder = crate::Export::graph(net, config.sample_rate);
 
         if let Some(seconds) = start.duration_seconds {
             builder = builder.duration_seconds(seconds);
@@ -111,7 +111,7 @@ pub fn export_start_system(
         // std::thread. `run_with` forwards each `(Phase, progress)` event
         // over a crossbeam channel so the poll system can surface it.
         let run = builder.to_file(&start.path);
-        let (tx, progress_rx) = crossbeam_channel::bounded::<(tutti_export::Phase, f32)>(64);
+        let (tx, progress_rx) = crossbeam_channel::bounded::<(crate::Phase, f32)>(64);
         let task = AsyncComputeTaskPool::get().spawn(async move {
             run.run_with(move |phase, progress| {
                 let _ = tx.try_send((phase, progress));

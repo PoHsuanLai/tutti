@@ -32,7 +32,7 @@ use tutti_units::ecs::TuttiAutomationPlugin;
 #[cfg(feature = "analysis")]
 use tutti_analysis::ecs::{AnalysisRes, TuttiAnalysisPlugin};
 #[cfg(feature = "export")]
-use crate::export::TuttiExportPlugin;
+use tutti_export::ecs::TuttiExportPlugin;
 #[cfg(feature = "plugin")]
 use crate::plugin_host::TuttiHostingPlugin;
 use tutti_units::ecs::TuttiDspPlugin;
@@ -237,7 +237,7 @@ impl Plugin for TuttiPlugin {
         app.add_plugins(TuttiExportPlugin);
         // Region render renders sampler/clip-reader units → needs `sampler` too.
         #[cfg(all(feature = "export", feature = "sampler"))]
-        app.add_plugins(crate::render_region::TuttiRegionRenderPlugin);
+        app.add_plugins(tutti_export::ecs::TuttiRegionRenderPlugin);
 
         // Decode-once wave cache: one Arc<Wave> per file, shared by playback,
         // analysis, and the offline render. Decodes off-thread.

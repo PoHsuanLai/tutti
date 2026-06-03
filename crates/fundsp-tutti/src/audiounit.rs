@@ -29,6 +29,29 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
         // The default implementation does nothing.
     }
 
+    /// Sever any shared *live* I/O so this unit is safe to tick in isolation on
+    /// a worker thread, concurrently with the live graph.
+    ///
+    /// `Net::clone` (run on every `commit()`) shares some units' live input
+    /// handles by `Arc` — e.g. a synth's MIDI inbox, a clip reader's command
+    /// channel. That is correct for the frontend↔backend swap, where only one
+    /// instance is ever ticked. But an *offline* clone (a region render) is
+    /// ticked on a worker thread **while the original keeps playing**; a shared
+    /// inbox means the worker drains events/commands the live unit needs (each
+    /// is delivered to exactly one consumer), garbling live playback.
+    ///
+    /// Implementors that hold shared live input reset it to fresh, dead, empty
+    /// local state here — after `isolate()` the unit reads nothing from the
+    /// live world and steals nothing from it. Pure-DSP units share no live I/O,
+    /// so the default does nothing. Called by the offline-render isolation pass
+    /// on every node of the cloned net before it reaches the worker.
+    ///
+    /// This severs *inputs only*; re-pointing a unit at offline data (transport,
+    /// scheduled events) is a separate, data-carrying step the caller drives.
+    fn isolate(&mut self) {
+        // The default implementation does nothing.
+    }
+
     /// Set the sample rate of the unit.
     /// The default sample rate is 44100 Hz.
     /// The unit is allowed to reset itself here in response to sample rate changes.

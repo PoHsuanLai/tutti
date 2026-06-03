@@ -94,28 +94,41 @@ impl Default for RegionRenderConfig {
 
 /// Make the cloned net hermetic and bind it to the render's offline timeline.
 ///
-/// Walks each node:
-/// - **Clip readers** ([`TrackClipReaderUnit`]) are *replaced wholesale* with a
-///   fresh [`TrackClipReaderUnit::detached`] — born empty and channel-less, so
-///   the render shares none of the live reader's clip state and (critically)
-///   none of its live crossbeam command `Receiver` (cloning the net inevitably
-///   shares that `Receiver`; draining it on the worker thread would steal
-///   commands from the audio thread). The render's clips are rebuilt from ECS
-///   in the `Populate` step via [`TrackClipReaderUnit::insert_clip`].
-/// - **Bare in-memory samplers** ([`SamplerUnit`]) keep their cloned content
-///   (their clone is already independent — atomics snapshotted, `Arc`s
-///   read-only) and are just re-pointed at the offline transport so they read
-///   the render's playhead rather than the (undriven) live one.
+/// Two concerns, kept distinct:
+///
+/// 1. **Sever shared live inputs** ([`AudioUnit::isolate`]) — generic, no DAW
+///    vocabulary. Every node gets `isolate()`d; units that share a live inbox
+///    by `Arc` (synths' MIDI receiver, …) mint fresh dead state there, so the
+///    worker thread can't drain events the live graph needs. Pure-DSP units
+///    no-op. This is the half that fixes the cross-thread theft, and it scales:
+///    a new shared-input node declares its own `isolate()` and is covered here
+///    automatically — the render never type-switches on it.
+///
+/// 2. **Re-point at offline data** — inherently external (needs the render's
+///    transport / ECS clips), so it stays an explicit per-type step:
+///    - **Clip readers** ([`TrackClipReaderUnit`]) are *replaced wholesale* with
+///      a fresh [`TrackClipReaderUnit::detached`] — born empty and channel-less.
+///      The render's clips are rebuilt from ECS in the `Populate` step via
+///      [`TrackClipReaderUnit::insert_clip`]. (This also severs the reader's
+///      live command `Receiver`; it predates `isolate()` and can migrate onto
+///      it in a follow-up.)
+///    - **Bare in-memory samplers** ([`SamplerUnit`]) keep their cloned content
+///      (their clone is already independent) and are just re-pointed at the
+///      offline transport so they read the render's playhead, not the (undriven)
+///      live one.
 fn rebind_net_transport(net: &mut Net, transport: &Arc<dyn TransportReader>) {
     let ids: Vec<NodeId> = net.ids().copied().collect();
     for id in ids {
-        // Decide the action with a scoped borrow, then act — `net.replace`
-        // needs `&mut net`, which can't coexist with the `node_mut` borrow.
+        // 1. Generic: sever any shared live input on this clone before the
+        //    worker ticks it. No-op for pure-DSP nodes.
+        net.node_mut(id).isolate();
+
+        // 2. Type-specific offline rebind. Decide with a scoped borrow, then
+        //    act — `net.replace` needs `&mut net`, which can't coexist with the
+        //    `node_mut` borrow.
         let is_reader = net.node_mut(id).as_any_mut().is::<TrackClipReaderUnit>();
         if is_reader {
-            // Swap in a fresh, channel-less reader (same 0-in/2-out arity, so
-            // `replace` is legal). Discards the cloned reader — and its shared
-            // `Receiver` — before the worker ever ticks it.
+            // Same 0-in/2-out arity, so `replace` is legal.
             net.replace(
                 id,
                 Box::new(TrackClipReaderUnit::detached(transport.clone())),

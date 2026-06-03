@@ -440,6 +440,53 @@ impl AudioUnit for PolySynth {
         }
     }
 
+    /// Sever every live handle this clone shares with the original synth, so a
+    /// worker thread can tick it concurrently with live playback safely.
+    ///
+    /// `clone()` shares two layers of live state by `Arc` (correct for the
+    /// commit-clone, where only the original is ticked, but unsafe for an offline
+    /// render ticked on a worker thread while the live synth keeps playing):
+    ///
+    /// 1. **MIDI inbox** — `midi_receiver` + `midi_source_override`. A shared
+    ///    inbox is drained to exactly one consumer, so the worker would *steal*
+    ///    the live synth's note-ons/offs/CC. Fixed by minting a fresh,
+    ///    unconnected sender/receiver pair (nothing holds this sender, so the
+    ///    receiver stays permanently empty) and dropping the override.
+    ///
+    /// 2. **Per-voice `Shared` params** — every [`SynthVoice`] (and its
+    ///    sub-voices) holds `gate`/`pitch`/`filter_cutoff`/`filter_resonance` as
+    ///    `Shared` (`Arc<AtomicU32>`), which `#[derive(Clone)]` aliases. The
+    ///    voice's `tick` *writes* these every sample (envelope→filter, pitch
+    ///    glide), so a worker ticking the clone would stomp the atomics the live
+    ///    voice reads into its output → continuous garbage. Fixed by rebuilding
+    ///    the voice set from config: `from_config` mints fresh `Shared`s, and a
+    ///    clean, inactive voice set is exactly the correct event-free render
+    ///    state. The allocator is reset to agree the slots are free.
+    ///
+    /// After `isolate()` the synth reads nothing from, and writes nothing into,
+    /// the live world — it renders silence until its own (now-empty) inbox feeds
+    /// it events, which it never will.
+    fn isolate(&mut self) {
+        let (sender, receiver) = MidiEventSlot::pair(self.midi_unit_id);
+        self.midi_sender = sender;
+        self.midi_receiver = receiver;
+        self.midi_source_override = None;
+
+        // Rebuild voices with fresh `Shared` atomics (see #2 above).
+        let unison_count = self
+            .config
+            .unison
+            .as_ref()
+            .map_or(1, |u| usize::from(u.voice_count));
+        self.voices.clear();
+        for _ in 0..self.config.max_voices {
+            let mut voice = SynthVoice::from_config(&self.config, unison_count);
+            voice.set_sample_rate(tutti_core::SampleRate(self.config.sample_rate));
+            self.voices.push(voice);
+        }
+        self.allocator.reset();
+    }
+
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         for voice in &mut self.voices {
@@ -725,6 +772,89 @@ mod tests {
         synth.tick(&[], &mut output);
 
         assert_eq!(synth.active_voice_count(), 1);
+    }
+
+    /// Regression: an offline render clones the live synth and ticks the clone
+    /// on a worker thread. Before `isolate()`, the clone shared the live MIDI
+    /// receiver, so ticking it drained — *stole* — the events the live synth
+    /// needed (each event is delivered to exactly one consumer), garbling live
+    /// playback for the whole render. After `isolate()` the clone has its own
+    /// dead inbox: events sent on the original's sender reach ONLY the original,
+    /// and the clone receives nothing.
+    #[test]
+    fn isolate_severs_shared_midi_inbox_no_theft() {
+        let mut live = SynthBuilder::new(44100.0)
+            .poly(4)
+            .oscillator(OscillatorType::Sine)
+            .build()
+            .unwrap();
+
+        // The render's clone, isolated as `rebind_net_transport` does.
+        let mut render = live.clone();
+        render.isolate();
+
+        // Queue a note via the LIVE synth's sender (what the app holds).
+        queue_midi(&live, &[ev_note_on(0, 60, 100)]);
+
+        // Tick the render clone FIRST — if it still shared the inbox it would
+        // drain the note here, stealing it from the live synth.
+        let mut out = [0.0f32; 2];
+        render.tick(&[], &mut out);
+        assert_eq!(
+            render.active_voice_count(),
+            0,
+            "isolated clone must not receive events from the original's sender"
+        );
+
+        // The live synth still gets its note — nothing was stolen.
+        live.tick(&[], &mut out);
+        assert_eq!(
+            live.active_voice_count(),
+            1,
+            "live synth must still receive its note after the clone is ticked"
+        );
+    }
+
+    /// Regression: the deeper half of the same bug. `SynthVoice` holds its
+    /// `gate`/`pitch`/`filter_*` as `Shared` (`Arc<AtomicU32>`), which `clone()`
+    /// aliases — and the voice *writes* them every tick. So a worker ticking the
+    /// render clone would stomp the atomics the live voice reads into its output,
+    /// even with the MIDI inbox already severed. `isolate()` must rebuild the
+    /// voices with fresh `Shared`s. Prove the clone's voice params are unaliased:
+    /// driving the clone's voice leaves the live voice's gate untouched.
+    #[test]
+    fn isolate_unaliases_voice_shared_params() {
+        let mut live = SynthBuilder::new(44100.0)
+            .poly(4)
+            .oscillator(OscillatorType::Sine)
+            .build()
+            .unwrap();
+
+        // Activate a voice on the live synth and tick so its gate Shared = 1.0.
+        queue_midi(&live, &[ev_note_on(0, 60, 100)]);
+        let mut out = [0.0f32; 2];
+        live.tick(&[], &mut out);
+        assert_eq!(live.active_voice_count(), 1);
+        let live_gate_before = live.voices[0].gate_value();
+        assert_eq!(live_gate_before, 1.0, "live voice gate should be open");
+
+        // Clone + isolate (the render path). Then drive a note-off through the
+        // clone's *own* (fresh) machinery: gate the clone's voice shut.
+        let mut render = live.clone();
+        render.isolate();
+        // A clone that still ALIASED the voice Shared would, by note_off on its
+        // voice, also slam the live voice's gate to 0.0.
+        if let Some(v) = render.voices.get_mut(0) {
+            v.note_off();
+        }
+        render.tick(&[], &mut out);
+
+        // The live voice's gate must be untouched by the clone's note_off.
+        assert_eq!(
+            live.voices[0].gate_value(),
+            1.0,
+            "live voice gate must stay open — clone's voice Shared is unaliased"
+        );
     }
 
     #[test]

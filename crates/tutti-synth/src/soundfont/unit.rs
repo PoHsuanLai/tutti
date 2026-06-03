@@ -203,6 +203,22 @@ impl AudioUnit for SoundFontUnit {
         self.buffer_pos = self.buffer_size;
     }
 
+    /// Sever the live MIDI inbox this clone shares with the original synth.
+    ///
+    /// Same rationale as [`super::super::builder::polysynth::PolySynth::isolate`]:
+    /// `clone()` shares `midi_receiver` + `midi_source_override` by `Arc` so the
+    /// inbox follows the unit across the commit-clone (where only the original is
+    /// ticked), but an offline render ticks this clone on a worker thread while
+    /// the live synth plays, and a shared inbox is drained to exactly one
+    /// consumer — the worker would steal the live synth's events. Mint a fresh,
+    /// unconnected pair and drop the override so this clone reads nothing.
+    fn isolate(&mut self) {
+        let (sender, receiver) = MidiEventSlot::pair(self.midi_unit_id);
+        self.midi_sender = sender;
+        self.midi_receiver = receiver;
+        self.midi_source_override = None;
+    }
+
     fn set_sample_rate(&mut self, _sample_rate: tutti_core::SampleRate) {
         // RustySynth sample rate is fixed at construction
     }

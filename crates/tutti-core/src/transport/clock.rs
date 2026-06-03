@@ -165,6 +165,37 @@ impl AudioUnit for TransportClock {
         self.current_beat = 0.0;
     }
 
+    /// Sever every shared link to the *live* transport so this clone can be
+    /// ticked on a worker thread (an offline region render) without disturbing
+    /// live playback.
+    ///
+    /// `Clone` shares all of `tempo`/`paused`/`seek_*`/loop/`position_writeback`
+    /// by `Arc` (correct for the commit-clone, where only the original is
+    /// ticked). But an offline render ticks this clone for seconds while the
+    /// live graph plays, and the clock **writes** `position_writeback` and reads
+    /// `paused`/`seek_*` every buffer — so the worker would stomp the live
+    /// playhead (the writeback the live playback reads as "current beat") and
+    /// consume live seeks, jerking the live samplers to garbage positions →
+    /// continuous noise for the whole render.
+    ///
+    /// Snapshot the live tempo into a fresh private atomic, force unpaused with
+    /// no pending seek (the render advances its own linear window), and — most
+    /// importantly — drop `position_writeback` and the loop atomics so this
+    /// clock writes to nothing live and reads no live loop/seek state. The
+    /// render's actual length/start is governed by the offline transport and
+    /// region bounds, not by this clock's loop fields.
+    fn isolate(&mut self) {
+        let tempo_now = self.tempo.load(Ordering::Acquire);
+        self.tempo = Arc::new(AtomicF64::new(tempo_now));
+        self.paused = Arc::new(AtomicBool::new(false));
+        self.seek_target = Arc::new(AtomicF64::new(0.0));
+        self.seek_pending = Arc::new(AtomicBool::new(false));
+        self.position_writeback = None;
+        self.loop_enabled = None;
+        self.loop_start = None;
+        self.loop_end = None;
+    }
+
     fn set_sample_rate(&mut self, sample_rate: crate::params::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
@@ -324,6 +355,45 @@ mod tests {
         }
 
         assert!((reconstruct_beat(&output) - 2.0).abs() < 0.01);
+    }
+
+    /// Regression: an offline region render clones the live net and ticks the
+    /// clone on a worker thread. `Clone` shares the live `position_writeback`
+    /// (and `paused`/`seek_*`) by `Arc`, and `tick` *writes* the writeback every
+    /// sample — so the worker would stomp the live playhead the rest of the app
+    /// reads as "current beat", jerking live samplers to garbage positions →
+    /// continuous noise for the whole render. `isolate()` must sever these.
+    #[test]
+    fn isolate_severs_live_position_writeback() {
+        let (tempo, paused) = create_test_atomics();
+        let live_position = Arc::new(AtomicF64::new(7.5)); // live playhead "now"
+        let clock = TransportClock::new(tempo, paused, 44100.0)
+            .with_position_writeback(Arc::clone(&live_position));
+
+        // The render's clone, isolated as the render's rebind pass does.
+        let mut render = clock.clone();
+        render.isolate();
+
+        // Tick the isolated clone a full second — if it still shared the
+        // writeback, it would overwrite `live_position` with its own advancing
+        // beat (starting from 0.0), wrecking the live playhead.
+        let mut out = [0.0f32; 2];
+        for _ in 0..44100 {
+            render.tick(&[], &mut out);
+        }
+
+        assert_eq!(
+            live_position.load(Ordering::Acquire),
+            7.5,
+            "live playhead must be untouched by the isolated render clock"
+        );
+        // The clone still advances its own private beat (~2 beats at 120 BPM),
+        // so the render actually produces audio over its window.
+        assert!(
+            (render.current_beat() - 2.0).abs() < 0.01,
+            "isolated clock must still advance its own beat, got {}",
+            render.current_beat()
+        );
     }
 
     #[test]

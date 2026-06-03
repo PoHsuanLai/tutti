@@ -34,3 +34,7 @@ pub use file::{
 pub use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteTimecode};
 
 pub use crossbeam_channel;
+
+/// Bevy ECS integration: MIDI-domain components, events, systems, and the
+/// [`TuttiMidiPlugin`](ecs::TuttiMidiPlugin).
+pub mod ecs;

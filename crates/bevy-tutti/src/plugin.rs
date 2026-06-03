@@ -18,7 +18,9 @@ use crate::resources::*;
 use crate::transport;
 
 #[cfg(feature = "midi")]
-use crate::midi::TuttiMidiPlugin;
+use tutti_midi_io::ecs::{MidiBusRes, TuttiMidiPlugin};
+#[cfg(feature = "midi-hardware")]
+use tutti_midi_io::ecs::MidiIoRes;
 #[cfg(feature = "spatial")]
 use tutti_units::ecs::TuttiSpatialPlugin;
 #[cfg(feature = "soundfont")]

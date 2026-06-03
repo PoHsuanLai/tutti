@@ -12,19 +12,18 @@
 //!   convolver).
 //! - [`param_epoch`] — leaf-family param-epoch bumps (core bump is in tutti-core).
 //! - [`pending_load`] — sampler pending-load promotion (sampler-gated).
-//! - [`scheduled`] — time-delayed MIDI dispatch (midi-gated).
+//!
+//! Time-delayed MIDI dispatch (`ScheduledMidi` / `tick_scheduled_midi`) now
+//! lives in [`tutti_midi_io::ecs`] and is scheduled by its `TuttiMidiPlugin`.
 
 use bevy_app::{App, Plugin};
-#[cfg(any(feature = "plugin", feature = "convolution", feature = "midi"))]
+#[cfg(feature = "plugin")]
 use bevy_app::Update;
-#[cfg(any(feature = "plugin", feature = "convolution", feature = "midi"))]
+#[cfg(feature = "plugin")]
 use bevy_ecs::prelude::*;
 
 pub mod param_epoch;
 pub mod reconcile;
-
-#[cfg(feature = "midi")]
-pub mod scheduled;
 
 // Generic hub items re-exported from tutti-core's ECS module so existing
 // `crate::graph::*` paths hold unchanged.
@@ -52,8 +51,6 @@ pub use tutti_units::ecs::{
     promote_pending_convolvers, reconcile_convolver_params, start_convolver_loads,
     PendingConvolverLoad,
 };
-#[cfg(feature = "midi")]
-pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi};
 
 /// Register every reflectable entity-as-node component (params, construction
 /// data, and authoring markers) for the type registry.
@@ -107,8 +104,5 @@ impl Plugin for TuttiGraphPlugin {
             Update,
             reconcile_plugin_params.in_set(GraphReconcileSystems::Params),
         );
-
-        #[cfg(feature = "midi")]
-        app.add_systems(Update, tick_scheduled_midi.run_if(engine_ready));
     }
 }

@@ -105,7 +105,7 @@ files = ["wav", "flac", "mp3", "ogg"]
 
 # MIDI.
 midi = ["dep:tutti-midi-io", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-export?/midi", "tutti-synth?/midi"]
-midi-hardware = ["midi"]
+midi-hardware = ["midi", "tutti-midi-io/midi-hardware"]
 mpe = ["midi", "tutti-midi-io/mpe", "tutti-midi-runtime?/mpe"]
 
 # Synth & sampling. bevy-tutti always wants the bevy_asset derives on these

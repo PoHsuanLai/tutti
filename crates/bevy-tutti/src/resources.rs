@@ -10,8 +10,6 @@
 //! `NonSendMut`, not `Res` / `ResMut`.
 
 #[cfg(any(
-    feature = "midi",
-    feature = "midi-hardware",
     feature = "plugin",
     feature = "analysis",
     feature = "soundfont"
@@ -21,10 +19,6 @@ use bevy_ecs::prelude::*;
 #[cfg(feature = "soundfont")]
 use std::sync::Arc;
 
-#[cfg(feature = "midi")]
-use crate::midi_runtime::MidiBus;
-#[cfg(feature = "midi-hardware")]
-use tutti_midi_io::MidiIo;
 use crate::TuttiDriver;
 
 // The leaf-agnostic engine resources moved into tutti-core's ECS hub; re-export
@@ -51,32 +45,9 @@ impl TuttiDriverRes {
     }
 }
 
-/// MIDI fan-out bus — audio-thread event dispatch to per-unit inboxes.
-#[cfg(feature = "midi")]
-#[derive(Resource, Clone)]
-pub struct MidiBusRes(pub MidiBus);
-
-#[cfg(feature = "midi")]
-impl std::ops::Deref for MidiBusRes {
-    type Target = MidiBus;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// Hardware MIDI I/O (OS port management + virtual ports). Only present
-/// when `.midi()` was called on the builder.
-#[cfg(feature = "midi-hardware")]
-#[derive(Resource, Clone)]
-pub struct MidiIoRes(pub MidiIo);
-
-#[cfg(feature = "midi-hardware")]
-impl std::ops::Deref for MidiIoRes {
-    type Target = MidiIo;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+// `MidiBusRes` + `MidiIoRes` moved into `tutti_midi_io::ecs`. The prelude
+// re-exports them from there so `bevy_tutti::{MidiBusRes, MidiIoRes}` still
+// resolve unchanged.
 
 /// SoundFont system (file cache + synth instantiation).
 #[cfg(feature = "soundfont")]

@@ -31,26 +31,26 @@ pub use crate::units::ecs::{
 };
 
 #[cfg(feature = "midi")]
-pub use crate::midi::components::{MidiReceiver, MidiSequence, MidiSequenceNote};
+pub use tutti_midi_io::ecs::{MidiReceiver, MidiSequence, MidiSequenceNote};
 #[cfg(feature = "midi")]
-pub use crate::midi::events::MidiInputEvent;
+pub use tutti_midi_io::ecs::MidiInputEvent;
 #[cfg(feature = "midi")]
-pub use crate::midi::systems::{
+pub use tutti_midi_io::ecs::{
     midi_input_event_system, midi_routing_sync_system, midi_sequence_setup_system,
     midi_sequence_tick_system, MidiSequenceState,
 };
 
 #[cfg(feature = "midi-hardware")]
-pub use crate::midi::components::{ConnectMidiDevice, DisconnectMidiDevice};
+pub use tutti_midi_io::ecs::{ConnectMidiDevice, DisconnectMidiDevice};
 #[cfg(feature = "midi-hardware")]
-pub use crate::midi::events::MidiDeviceEvent;
+pub use tutti_midi_io::ecs::MidiDeviceEvent;
 #[cfg(feature = "midi-hardware")]
-pub use crate::midi::systems::{midi_device_connect_system, midi_device_poll_system};
+pub use tutti_midi_io::ecs::{midi_device_connect_system, midi_device_poll_system};
 
 #[cfg(feature = "mpe")]
-pub use crate::midi::components::MpeReceiver;
+pub use tutti_midi_io::ecs::MpeReceiver;
 #[cfg(feature = "mpe")]
-pub use crate::midi::systems::{MpeExpressionResource, MpeModeConfig};
+pub use tutti_midi_io::ecs::{MpeExpressionResource, MpeModeConfig};
 #[cfg(feature = "mpe")]
 pub use tutti_midi_io::{MpeMode, MpeZone, MpeZoneConfig};
 
@@ -106,7 +106,7 @@ pub use crate::units::ecs::{
     promote_pending_convolvers, start_convolver_loads, PendingConvolverLoad,
 };
 #[cfg(feature = "midi")]
-pub use crate::graph::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi};
+pub use tutti_midi_io::ecs::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi};
 
 #[cfg(feature = "automation")]
 pub use crate::units::ecs::{
@@ -223,9 +223,9 @@ pub use crate::units::{LfoMode, LfoNode, LfoShape};
 #[cfg(feature = "analysis")]
 pub use crate::resources::AnalysisRes;
 #[cfg(feature = "midi")]
-pub use crate::resources::MidiBusRes;
+pub use tutti_midi_io::ecs::MidiBusRes;
 #[cfg(feature = "midi-hardware")]
-pub use crate::resources::MidiIoRes;
+pub use tutti_midi_io::ecs::MidiIoRes;
 #[cfg(feature = "plugin")]
 pub use crate::resources::PluginEditorMainThread;
 #[cfg(feature = "plugin")]

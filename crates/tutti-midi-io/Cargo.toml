@@ -8,7 +8,14 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
 default = []
-mpe = []
+# MPE: forwards to tutti-midi-runtime's `mpe` (MpeProcessor / PerNoteExpression)
+# and exposes the MpeReceiver component + MpeExpressionResource / MpeModeConfig
+# in the `ecs` module.
+mpe = ["tutti-midi-runtime/mpe"]
+# Hardware device connect / disconnect / hot-plug poll (the `ecs` module's
+# ConnectMidiDevice / MidiDeviceState / device systems). midir is a hard dep,
+# so this only gates the Bevy ECS surface, not the underlying I/O.
+midi-hardware = []
 virtual-midi = ["coremidi"]
 
 [dependencies]
@@ -18,6 +25,19 @@ tracing = "0.1"
 # Core types
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false, features = ["std"] }
 tutti-core = { path = "../tutti-core", default-features = false, features = ["std", "midi"] }
+# MIDI fan-out runtime (MidiBus, MpeProcessor, PerNoteExpression, MidiEventSlot).
+# The `ecs` module's MidiBusRes wraps tutti-midi-runtime's MidiBus. Acyclic:
+# tutti-midi-runtime does NOT depend on tutti-midi-io.
+tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
+
+# Bevy ECS integration (the `ecs` module): Components / Events / Systems /
+# Plugins live next to the I/O logic. Hard deps, mirroring tutti-sampler /
+# tutti-wavecache.
+bevy_ecs = { version = "0.18", default-features = false }
+bevy_app = { version = "0.18", default-features = false }
+bevy_reflect = { version = "0.18", default-features = false }
+bevy_tasks = { version = "0.18" }
+bevy_log = { version = "0.18", default-features = false }
 
 # Lock-free
 crossbeam-channel = "0.5"

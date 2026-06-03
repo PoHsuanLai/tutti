@@ -1,12 +1,11 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
-use crate::NodeId;
+use tutti_core::NodeId;
 
 /// A single note within a [`MidiSequence`]. Runtime ECS mirror of
 /// `dawai_types::SymbolicNote` (without the expression lanes — this form
 /// only fires note_on/note_off). `pitch` is continuous semitones; the
 /// firing system rounds to the nearest integer note number.
-#[cfg(feature = "midi")]
 #[derive(Debug, Clone, Copy, PartialEq, Reflect)]
 pub struct MidiSequenceNote {
     /// Pitch in semitones (60.0 = middle C). Fractional = microtonal.
@@ -24,7 +23,6 @@ pub struct MidiSequenceNote {
 /// Ticked every frame by [`super::systems::midi_sequence_tick_system`].
 ///
 /// Not `Reflect`: `target` wraps a foreign fundsp `NodeId`.
-#[cfg(feature = "midi")]
 #[derive(Component, Debug, Clone)]
 pub struct MidiSequence {
     pub target: NodeId,
@@ -38,7 +36,6 @@ pub struct MidiSequence {
 /// The routing table is rebuilt automatically when these components change.
 ///
 /// Not `Reflect`: `node_id` wraps a foreign fundsp `NodeId`.
-#[cfg(feature = "midi")]
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MidiReceiver {
     pub node_id: NodeId,
@@ -69,4 +66,3 @@ pub struct DisconnectMidiDevice {
 pub struct MpeReceiver {
     pub node_id: NodeId,
 }
-

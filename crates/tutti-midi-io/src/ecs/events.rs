@@ -1,10 +1,7 @@
-#[cfg(feature = "midi")]
 use bevy_ecs::prelude::*;
-#[cfg(feature = "midi")]
 use bevy_ecs::message::Message;
 
-#[cfg(feature = "midi")]
-use tutti_midi_io::{decode, MidiEvent, MidiInputRecord, SemanticEvent};
+use crate::{decode, MidiEvent, MidiInputRecord, SemanticEvent};
 
 /// Fired every frame for each MIDI event received from hardware input.
 ///
@@ -12,7 +9,6 @@ use tutti_midi_io::{decode, MidiEvent, MidiInputRecord, SemanticEvent};
 /// (live-input synth routing) can ignore `device_id` / `device_name`,
 /// while those that do (external clock chase, MIDI-learn-per-device)
 /// filter on them.
-#[cfg(feature = "midi")]
 #[derive(Event, Message, Clone, Debug)]
 pub struct MidiInputEvent {
     pub event: MidiEvent,
@@ -23,7 +19,6 @@ pub struct MidiInputEvent {
     pub timestamp_us: u64,
 }
 
-#[cfg(feature = "midi")]
 impl From<MidiInputRecord> for MidiInputEvent {
     fn from(r: MidiInputRecord) -> Self {
         Self {
@@ -35,7 +30,6 @@ impl From<MidiInputRecord> for MidiInputEvent {
     }
 }
 
-#[cfg(feature = "midi")]
 impl MidiInputEvent {
     /// Constructor for tests / synthetic events not originating from
     /// hardware. Real hardware events arrive via `From<MidiInputRecord>`.
@@ -91,7 +85,7 @@ pub enum MidiDeviceEvent {
     Disconnected { name: String },
 }
 
-#[cfg(all(test, feature = "midi"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

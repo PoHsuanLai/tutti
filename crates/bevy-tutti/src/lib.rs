@@ -73,8 +73,9 @@ mod export;
 // + `crate::track_clip_reader`, both `sampler`-gated). `full` enables both.
 #[cfg(all(feature = "export", feature = "sampler"))]
 pub mod render_region;
-#[cfg(feature = "midi")]
-mod midi;
+// The MIDI ECS code (components / events / systems / scheduled dispatch +
+// TuttiMidiPlugin) now lives in `tutti_midi_io::ecs`. bevy-tutti re-exports it
+// via the prelude under the same feature gates.
 
 #[cfg(feature = "plugin")]
 pub mod plugin_host;

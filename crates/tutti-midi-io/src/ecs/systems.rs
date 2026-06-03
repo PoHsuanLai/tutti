@@ -1,16 +1,12 @@
-#[cfg(feature = "midi")]
 use bevy_ecs::message::MessageWriter;
 #[cfg(feature = "midi-hardware")]
 use bevy_ecs::message::MessageReader;
-#[cfg(feature = "midi")]
 use bevy_ecs::prelude::*;
 #[cfg(feature = "midi-hardware")]
 use bevy_log::warn;
 
-#[cfg(feature = "midi")]
 use super::events::MidiInputEvent;
 
-#[cfg(feature = "midi")]
 use super::components::MidiReceiver;
 
 #[cfg(feature = "mpe")]
@@ -21,16 +17,14 @@ use super::components::{ConnectMidiDevice, DisconnectMidiDevice};
 #[cfg(feature = "midi-hardware")]
 use super::events::MidiDeviceEvent;
 
-#[cfg(feature = "midi")]
 #[derive(Resource)]
 pub struct MidiInputObserver {
-    pub(crate) receiver: crossbeam_channel::Receiver<tutti_midi_io::MidiInputRecord>,
+    pub(crate) receiver: crossbeam_channel::Receiver<crate::MidiInputRecord>,
 }
 
-#[cfg(feature = "midi")]
 #[derive(Resource)]
 pub(crate) struct MidiObserverSender {
-    pub(crate) sender: Option<crossbeam_channel::Sender<tutti_midi_io::MidiInputRecord>>,
+    pub(crate) sender: Option<crossbeam_channel::Sender<crate::MidiInputRecord>>,
 }
 
 #[cfg(feature = "midi-hardware")]
@@ -43,9 +37,8 @@ pub struct MidiDeviceState {
 /// Sets up the UI observer on the hardware MIDI input port, funneling events
 /// into `MidiInputObserver`'s channel. No-op when `midi-hardware` is disabled
 /// (there's no hardware port to observe).
-#[cfg(feature = "midi")]
 pub(crate) fn midi_observer_setup_system(
-    #[cfg(feature = "midi-hardware")] midi_io: Option<Res<crate::MidiIoRes>>,
+    #[cfg(feature = "midi-hardware")] midi_io: Option<Res<crate::ecs::MidiIoRes>>,
     mut sender_res: ResMut<MidiObserverSender>,
 ) {
     let Some(sender) = sender_res.sender.take() else {
@@ -64,7 +57,6 @@ pub(crate) fn midi_observer_setup_system(
     }
 }
 
-#[cfg(feature = "midi")]
 pub fn midi_input_event_system(
     observer: Option<Res<MidiInputObserver>>,
     mut writer: MessageWriter<MidiInputEvent>,
@@ -95,10 +87,9 @@ impl MpeReceiverQueries<'_, '_> {
     }
 }
 
-#[cfg(feature = "midi")]
 pub fn midi_routing_sync_system(
-    mut graph: ResMut<crate::TuttiGraphRes>,
-    mut dirty: ResMut<crate::graph::GraphDirty>,
+    mut graph: ResMut<tutti_core::ecs::TuttiGraphRes>,
+    mut dirty: ResMut<tutti_core::ecs::GraphDirty>,
     changed: Query<&MidiReceiver, Changed<MidiReceiver>>,
     all_receivers: Query<&MidiReceiver>,
     mut removed: RemovedComponents<MidiReceiver>,
@@ -119,7 +110,7 @@ pub fn midi_routing_sync_system(
     let table = graph.0.midi_route_mut();
     table.clear();
     for receiver in all_receivers.iter() {
-        let unit_id = crate::core::MidiUnitId::new(receiver.node_id.value());
+        let unit_id = tutti_core::MidiUnitId::new(receiver.node_id.value());
         if let Some(ch) = receiver.channel {
             table.channel(ch, unit_id);
         } else {
@@ -130,7 +121,7 @@ pub fn midi_routing_sync_system(
     // MPE receivers route all channels to one synth via fallback
     #[cfg(feature = "mpe")]
     for mpe_recv in mpe.all.iter() {
-        table.fallback(crate::core::MidiUnitId::new(mpe_recv.node_id.value()));
+        table.fallback(tutti_core::MidiUnitId::new(mpe_recv.node_id.value()));
     }
 
     // The staged route-table edits are published by the Commit-phase
@@ -143,7 +134,7 @@ pub fn midi_routing_sync_system(
 
 #[cfg(feature = "midi-hardware")]
 pub fn midi_device_connect_system(
-    midi_io: Option<Res<crate::MidiIoRes>>,
+    midi_io: Option<Res<crate::ecs::MidiIoRes>>,
     mut connect_events: MessageReader<ConnectMidiDevice>,
     mut disconnect_events: MessageReader<DisconnectMidiDevice>,
     mut device_events: MessageWriter<MidiDeviceEvent>,
@@ -181,7 +172,7 @@ pub fn midi_device_connect_system(
 /// or an external connection through another part of the app).
 #[cfg(feature = "midi-hardware")]
 pub fn midi_device_poll_system(
-    midi_io: Option<Res<crate::MidiIoRes>>,
+    midi_io: Option<Res<crate::ecs::MidiIoRes>>,
     mut state: ResMut<MidiDeviceState>,
     mut device_events: MessageWriter<MidiDeviceEvent>,
 ) {
@@ -212,11 +203,9 @@ pub fn midi_device_poll_system(
 // MIDI Sequence playback
 // =========================================================================
 
-#[cfg(feature = "midi")]
 use super::components::MidiSequence;
 
 /// Tracks which notes are currently sounding for a [`MidiSequence`].
-#[cfg(feature = "midi")]
 #[derive(Component, Default)]
 pub struct MidiSequenceState {
     active_notes: std::collections::HashSet<u8>,
@@ -224,7 +213,6 @@ pub struct MidiSequenceState {
 
 /// Auto-inserts [`MidiSequenceState`] on entities that have [`MidiSequence`]
 /// but not yet a state component.
-#[cfg(feature = "midi")]
 pub fn midi_sequence_setup_system(
     mut commands: Commands,
     query: Query<Entity, (With<MidiSequence>, Without<MidiSequenceState>)>,
@@ -236,16 +224,15 @@ pub fn midi_sequence_setup_system(
 
 /// Ticks all [`MidiSequence`] entities, firing note_on/note_off based on
 /// the transport's current beat position.
-#[cfg(feature = "midi")]
 pub fn midi_sequence_tick_system(
-    transport: Res<crate::TransportRes>,
-    midi: Res<crate::MidiBusRes>,
+    transport: Res<tutti_core::ecs::TransportRes>,
+    midi: Res<crate::ecs::MidiBusRes>,
     mut query: Query<(&MidiSequence, &mut MidiSequenceState)>,
 ) {
     if !transport.0.is_playing() {
         // All-notes-off when transport is not rolling
         for (seq, mut state) in query.iter_mut() {
-            let unit_id = crate::core::MidiUnitId::new(seq.target.value());
+            let unit_id = tutti_core::MidiUnitId::new(seq.target.value());
             for note in state.active_notes.drain() {
                 let event = note_off_event(note);
                 midi.0.queue(unit_id, &[event]);
@@ -257,7 +244,7 @@ pub fn midi_sequence_tick_system(
     let beat = transport.0.current_beat();
 
     for (seq, mut state) in query.iter_mut() {
-        let unit_id = crate::core::MidiUnitId::new(seq.target.value());
+        let unit_id = tutti_core::MidiUnitId::new(seq.target.value());
         let local_beat = if seq.loop_enabled && seq.duration_beats > 0.0 {
             let offset = beat - seq.start_beat;
             ((offset % seq.duration_beats) + seq.duration_beats) % seq.duration_beats
@@ -308,25 +295,22 @@ pub fn midi_sequence_tick_system(
 }
 
 /// Nearest integer MIDI note number for a sequence note's continuous pitch.
-#[cfg(feature = "midi")]
 fn seq_note_number(n: &super::components::MidiSequenceNote) -> u8 {
     n.pitch.round().clamp(0.0, 127.0) as u8
 }
 
 /// Channel-0 MIDI 2.0 note-on event with a 7-bit MIDI 1 velocity
 /// (upconverted to the 16-bit MIDI 2 velocity range).
-#[cfg(feature = "midi")]
-fn note_on_event(note: u8, velocity_midi1: u8) -> tutti_midi_io::MidiEvent {
-    tutti_midi_io::MidiEvent::note_on(0, 0, note, (velocity_midi1 as u16) << 9)
+fn note_on_event(note: u8, velocity_midi1: u8) -> crate::MidiEvent {
+    crate::MidiEvent::note_on(0, 0, note, (velocity_midi1 as u16) << 9)
 }
 
-#[cfg(feature = "midi")]
-fn note_off_event(note: u8) -> tutti_midi_io::MidiEvent {
-    tutti_midi_io::MidiEvent::note_off(0, 0, note, 0)
+fn note_off_event(note: u8) -> crate::MidiEvent {
+    crate::MidiEvent::note_off(0, 0, note, 0)
 }
 
 /// Live per-note MPE expression state, wrapping an
-/// [`Arc<crate::midi_runtime::PerNoteExpression>`] from a tutti-side
+/// [`Arc<tutti_midi_runtime::PerNoteExpression>`] from a tutti-side
 /// [`MpeProcessor`].
 ///
 /// The Arc is lock-free and safe to read from any thread; the writer
@@ -346,7 +330,7 @@ fn note_off_event(note: u8) -> tutti_midi_io::MidiEvent {
 /// *read* side.
 #[cfg(feature = "mpe")]
 #[derive(Resource, Default, Clone)]
-pub struct MpeExpressionResource(Option<std::sync::Arc<crate::midi_runtime::PerNoteExpression>>);
+pub struct MpeExpressionResource(Option<std::sync::Arc<tutti_midi_runtime::PerNoteExpression>>);
 
 #[cfg(feature = "mpe")]
 #[allow(
@@ -356,12 +340,12 @@ pub struct MpeExpressionResource(Option<std::sync::Arc<crate::midi_runtime::PerN
 )]
 impl MpeExpressionResource {
     /// Construct from an existing processor's expression handle.
-    pub fn from_expression(expr: std::sync::Arc<crate::midi_runtime::PerNoteExpression>) -> Self {
+    pub fn from_expression(expr: std::sync::Arc<tutti_midi_runtime::PerNoteExpression>) -> Self {
         Self(Some(expr))
     }
 
     /// Replace the expression backing. Pass `None` to disable.
-    pub fn set_expression(&mut self, expr: Option<std::sync::Arc<crate::midi_runtime::PerNoteExpression>>) {
+    pub fn set_expression(&mut self, expr: Option<std::sync::Arc<tutti_midi_runtime::PerNoteExpression>>) {
         self.0 = expr;
     }
 
@@ -402,7 +386,7 @@ impl MpeExpressionResource {
 
     /// Direct access to the underlying expression handle, if wired.
     /// Useful for tests and for callers that want to share the Arc.
-    pub fn expression(&self) -> Option<std::sync::Arc<crate::midi_runtime::PerNoteExpression>> {
+    pub fn expression(&self) -> Option<std::sync::Arc<tutti_midi_runtime::PerNoteExpression>> {
         self.0.clone()
     }
 }
@@ -423,7 +407,7 @@ mod mpe_tests {
 
     #[test]
     fn wired_round_trips_expression() {
-        let expr = std::sync::Arc::new(crate::midi_runtime::PerNoteExpression::new());
+        let expr = std::sync::Arc::new(tutti_midi_runtime::PerNoteExpression::new());
         expr.note_on(60);
         expr.set_pitch_bend(60, 0.5);
         expr.set_pressure(60, 0.75);
@@ -444,13 +428,13 @@ mod mpe_tests {
         // resource exposes the live PerNoteExpression. Queueing a
         // note-on through the bus updates the resource's read.
         use bevy_ecs::prelude::*;
-        use tutti_midi_io::{MidiEvent, MpeMode, MpeZoneConfig};
-        use crate::midi_runtime::MidiBus;
-        use crate::core::MidiUnitId;
+        use crate::{MidiEvent, MpeMode, MpeZoneConfig};
+        use tutti_midi_runtime::MidiBus;
+        use tutti_core::MidiUnitId;
 
         let mut world = World::new();
         let bus = MidiBus::new();
-        world.insert_resource(crate::resources::MidiBusRes(bus.clone()));
+        world.insert_resource(crate::ecs::MidiBusRes(bus.clone()));
         world.insert_resource(MpeModeConfig(MpeMode::LowerZone(MpeZoneConfig::lower(15))));
 
         let mut schedule = Schedule::default();
@@ -462,7 +446,7 @@ mod mpe_tests {
 
         // Subscribe a unit so the bus has somewhere to deliver to.
         let id = MidiUnitId::new(1);
-        let (sender, _recv) = crate::midi_runtime::MidiEventSlot::pair(id);
+        let (sender, _recv) = tutti_midi_runtime::MidiEventSlot::pair(id);
         bus.insert(sender);
 
         let note_on = MidiEvent::note_on(0, 2, 60, 100u16 << 9);
@@ -474,11 +458,11 @@ mod mpe_tests {
     #[test]
     fn mpe_setup_disabled_mode_inserts_default_resource() {
         use bevy_ecs::prelude::*;
-        use tutti_midi_io::MpeMode;
-        use crate::midi_runtime::MidiBus;
+        use crate::MpeMode;
+        use tutti_midi_runtime::MidiBus;
 
         let mut world = World::new();
-        world.insert_resource(crate::resources::MidiBusRes(MidiBus::new()));
+        world.insert_resource(crate::ecs::MidiBusRes(MidiBus::new()));
         world.insert_resource(MpeModeConfig(MpeMode::Disabled));
 
         let mut schedule = Schedule::default();
@@ -496,38 +480,38 @@ mod mpe_tests {
 /// installation flip this to `LowerZone` / `UpperZone` / `DualZone`.
 #[cfg(feature = "mpe")]
 #[derive(bevy_ecs::resource::Resource, Debug, Clone)]
-pub struct MpeModeConfig(pub tutti_midi_io::MpeMode);
+pub struct MpeModeConfig(pub crate::MpeMode);
 
 #[cfg(feature = "mpe")]
 impl Default for MpeModeConfig {
     fn default() -> Self {
-        Self(tutti_midi_io::MpeMode::Disabled)
+        Self(crate::MpeMode::Disabled)
     }
 }
 
 /// Initialise [`MpeExpressionResource`].
 ///
 /// If [`MpeModeConfig`] is set to anything other than `Disabled` and
-/// a [`MidiBusRes`](crate::resources::MidiBusRes) is present, install an
-/// [`MpeProcessor`](crate::midi_runtime::MpeProcessor) on the bus and
+/// a [`MidiBusRes`](crate::ecs::MidiBusRes) is present, install an
+/// [`MpeProcessor`](tutti_midi_runtime::MpeProcessor) on the bus and
 /// hand its `Arc<PerNoteExpression>` to the resource. Otherwise
 /// inserts the resource in disabled state — `MpeExpressionResource`
 /// then returns defaults from every reader.
 #[cfg(feature = "mpe")]
 pub(crate) fn mpe_setup_system(mut commands: Commands, world: &World) {
-    use crate::midi_runtime::MpeProcessor;
+    use tutti_midi_runtime::MpeProcessor;
 
     let mode = world
         .get_resource::<MpeModeConfig>()
         .map(|c| c.0)
-        .unwrap_or(tutti_midi_io::MpeMode::Disabled);
+        .unwrap_or(crate::MpeMode::Disabled);
 
-    if matches!(mode, tutti_midi_io::MpeMode::Disabled) {
+    if matches!(mode, crate::MpeMode::Disabled) {
         commands.insert_resource(MpeExpressionResource::default());
         return;
     }
 
-    let Some(bus) = world.get_resource::<crate::resources::MidiBusRes>() else {
+    let Some(bus) = world.get_resource::<crate::ecs::MidiBusRes>() else {
         commands.insert_resource(MpeExpressionResource::default());
         return;
     };

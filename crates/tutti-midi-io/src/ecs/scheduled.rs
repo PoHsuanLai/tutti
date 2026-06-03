@@ -12,7 +12,7 @@
 //!   marker means "this entity *is* the MIDI sink for that unit-id."
 //! - [`ScheduledMidi`] — "fire this MIDI event in `remaining_secs` at
 //!   the synth on `target`." [`tick_scheduled_midi`] counts the timer
-//!   down and dispatches via [`MidiBusRes`](crate::MidiBusRes).
+//!   down and dispatches via [`MidiBusRes`](crate::ecs::MidiBusRes).
 //!
 //! The host owns scheduling (`commands.spawn(ScheduledMidi { ... })`);
 //! the system owns delivery. Once fired, the entity is despawned.
@@ -21,10 +21,10 @@ use std::time::Instant;
 
 use bevy_ecs::prelude::*;
 
-use crate::core::MidiUnitId;
-use tutti_midi_io::MidiEvent;
+use tutti_core::MidiUnitId;
+use crate::MidiEvent;
 
-use crate::resources::MidiBusRes;
+use crate::ecs::MidiBusRes;
 
 /// "This entity owns the audio-graph node whose MIDI sink id is `midi_unit_id`."
 ///

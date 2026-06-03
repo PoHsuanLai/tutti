@@ -134,11 +134,12 @@ mod asset {
         }
     }
 
-    impl tutti_asset::TuttiAsset for SoundFontAsset {
-        type Error = SoundFontError;
-        const EXTENSIONS: &'static [&'static str] = &["sf2"];
+    impl SoundFontAsset {
+        /// File extensions the Bevy asset loader recognises.
+        pub const EXTENSIONS: &'static [&'static str] = &["sf2"];
 
-        fn from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
+        /// Parse a complete SoundFont from an in-memory byte slice.
+        pub fn from_bytes(bytes: &[u8]) -> Result<Self, SoundFontError> {
             SoundFont::new(&mut std::io::Cursor::new(bytes)).map(|sf| Self(Arc::new(sf)))
         }
     }

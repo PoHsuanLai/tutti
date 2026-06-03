@@ -27,7 +27,6 @@ tutti-midi-types = { path = "../tutti/crates/tutti-midi-types", default-features
 # `std` enables tutti-units' `ecs` module (the DSP / spatial / automation /
 # convolution spawn pipelines + reconcilers + plugins that bevy-tutti schedules).
 tutti-units = { path = "../tutti/crates/tutti-units", default-features = false, features = ["std"] }
-tutti-asset = { path = "../tutti/crates/tutti-asset", features = ["std"] }
 # Decode-once wave cache (Bevy-native). It is a non-optional dep that always
 # needs at least one codec (its API uses tutti-core's fundsp `Wave::load` /
 # `WaveMetadata`, which are codec-gated), so enable `wav` unconditionally here;

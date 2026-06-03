@@ -15,17 +15,14 @@ categories = ["multimedia::audio"]
 [features]
 default = []
 
-# Enables `impl TuttiAsset for SoundFont` and `#[derive(Asset, TypePath)]` on
-# `SoundFont`. Pulls tutti-asset + optional bevy_asset/bevy_reflect.
+# Enables `SoundFontAsset` (inherent `from_bytes` + `#[derive(Asset, TypePath)]`
+# on the wrapper). Pulls optional bevy_asset/bevy_reflect.
 bevy_asset = [
-    "dep:tutti-asset",
-    "tutti-asset/std",
     "dep:bevy_asset",
     "dep:bevy_reflect",
 ]
 
 [dependencies]
-tutti-asset = { version = "0.0.1", path = "../../tutti-asset", default-features = false, optional = true }
 bevy_asset = { version = "0.18", default-features = false, optional = true }
 bevy_reflect = { version = "0.18", default-features = false, optional = true }
 thiserror = { version = "2", default-features = false, optional = true }

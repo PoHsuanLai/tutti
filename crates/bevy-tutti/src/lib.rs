@@ -49,7 +49,6 @@
 //! }
 //! ```
 
-mod loader;
 mod metering;
 mod transport;
 pub mod task;

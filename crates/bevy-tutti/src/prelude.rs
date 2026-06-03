@@ -5,9 +5,6 @@
 //! `bevy_tutti::prelude` directly — keep this module `pub(crate)`.
 
 pub use crate::core::WaveAsset;
-pub use crate::loader::{
-    TuttiLoader, TuttiLoaderError, TuttiStreamingLoader, TuttiStreamingLoaderError,
-};
 // Decode-once wave cache (Bevy-native): the single shared `Arc<Wave>` source
 // for playback, analysis, and the offline render.
 #[cfg(feature = "sampler")]

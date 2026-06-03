@@ -4,7 +4,6 @@ use crate::error::BridgeError;
 use crate::protocol::PluginInfo;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use tutti_asset::TuttiStreamingAsset;
 
 /// On-disk record for a single discovered plugin.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,21 +80,18 @@ impl PluginFormat {
     }
 }
 
-/// Lets a host asset system (Bevy, Unity, CLI) discover plugins via the
-/// same generic loader it uses for samples and SoundFonts. `probe` spawns
-/// a `tutti-plugin-server` subprocess, reads metadata, and falls back to
-/// filename-derived metadata if the server binary isn't on PATH.
-///
-/// This yields the full [`PluginRecord`] (path + format + metadata + mtime)
-/// — the same row a [`crate::catalog::PluginCatalog`] would store, so the
-/// asset-loader path and the scanner path converge on one record shape.
-impl TuttiStreamingAsset for PluginRecord {
-    type Error = BridgeError;
-
-    const EXTENSIONS: &'static [&'static str] =
+impl PluginRecord {
+    /// Plugin file extensions a scanner / asset path recognises.
+    pub const EXTENSIONS: &'static [&'static str] =
         &["vst3", "vst", "dll", "so", "clap", "component", "wasm"];
 
-    fn probe(path: &Path) -> Result<Self, Self::Error> {
+    /// Probe a plugin file into a full record. Spawns a
+    /// `tutti-plugin-server` subprocess to read metadata, falling back to
+    /// filename-derived metadata if the server binary isn't on PATH.
+    ///
+    /// Yields the same row a [`crate::catalog::PluginCatalog`] would store,
+    /// so the asset-loader path and the scanner path converge on one shape.
+    pub fn probe(path: &Path) -> Result<Self, BridgeError> {
         let format = super::fs::format_from_path(path).ok_or_else(|| BridgeError::LoadFailed {
             path: path.to_path_buf(),
             stage: crate::error::LoadStage::Opening,

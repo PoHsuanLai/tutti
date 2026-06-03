@@ -85,6 +85,10 @@ pub use fundsp::net::{NodeId, Source};
 pub use fundsp::prelude::{shared, AudioUnit, BufferMut, BufferRef, Shared};
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 pub use fundsp::read::WaveAsset;
+// Decode error surfaced by `WaveAsset::from_bytes`; the Bevy `WaveAssetLoader`
+// in tutti-sampler wraps it.
+#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+pub use fundsp::read::WaveError;
 // `WaveMetadata` is a plain metadata struct (frame count / sample rate /
 // channels) — available with any decode feature, no `bevy_asset` needed.
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
@@ -134,7 +138,3 @@ pub use ecs::{
 /// Bevy `AsyncComputeTaskPool` + `Task<T>` helper for non-RT subsystem work.
 pub mod task;
 pub use task::poll_task;
-
-/// Generic Bevy `AssetLoader` adapters over the tutti asset traits.
-pub mod loader;
-pub use loader::{TuttiLoader, TuttiLoaderError, TuttiStreamingLoader, TuttiStreamingLoaderError};

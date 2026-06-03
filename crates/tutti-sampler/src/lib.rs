@@ -79,6 +79,11 @@ pub use error::{Error, Result};
 pub mod asset;
 pub use asset::{StreamingProgress, StreamingSample, StreamingSampleProbeError};
 
+pub mod loader;
+pub use loader::{
+    StreamingSampleLoader, StreamingSampleLoaderError, WaveAssetLoader, WaveAssetLoaderError,
+};
+
 /// Bevy ECS integration: sampler-domain components, systems, and plugins.
 pub mod ecs;
 // Re-export the ECS surface at the crate root so consumers write

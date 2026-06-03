@@ -71,6 +71,9 @@ pub enum StreamingSampleProbeError {
 }
 
 impl StreamingSample {
+    /// File extensions the Bevy asset loader recognises.
+    pub const EXTENSIONS: &'static [&'static str] = &["wav"];
+
     /// Probe `path`, returning a locator + metadata. Progress is set to
     /// `1.0` on success.
     pub fn probe(path: &Path) -> Result<Self, StreamingSampleProbeError> {
@@ -107,14 +110,5 @@ impl StreamingSample {
             bits_per_sample: spec.bits_per_sample,
             progress,
         })
-    }
-}
-
-impl tutti_asset::TuttiStreamingAsset for StreamingSample {
-    type Error = StreamingSampleProbeError;
-    const EXTENSIONS: &'static [&'static str] = &["wav"];
-
-    fn probe(path: &Path) -> Result<Self, Self::Error> {
-        StreamingSample::probe(path)
     }
 }

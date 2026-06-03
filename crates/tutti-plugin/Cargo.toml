@@ -43,9 +43,6 @@ wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
 # Core types (for AudioUnit trait)
 tutti-core = { path = "../tutti-core", features = ["midi"] }
 
-# Host-agnostic asset loading vocabulary (for Bevy asset loader integration)
-tutti-asset = { path = "../tutti-asset", features = ["std"] }
-
 # Parameter range/scaling
 audio-automation = "0.4"
 

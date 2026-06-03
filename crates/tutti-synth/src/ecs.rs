@@ -7,10 +7,47 @@ use bevy_tasks::{AsyncComputeTaskPool, Task};
 
 use bevy_reflect::prelude::*;
 
+use bevy_asset::{io::Reader, AssetLoader, LoadContext};
+
 use tutti_core::ecs::{AudioConfig, AudioEmitter, GraphDirty, GraphReconcileSystems, TuttiGraphRes};
 use tutti_core::ecs::engine_ready;
-use tutti_core::loader::TuttiLoader;
 use tutti_core::task::poll_task;
+
+use crate::SoundFontAsset;
+
+/// In-memory Bevy loader for [`SoundFontAsset`]. Reads the whole `.sf2`
+/// payload, then delegates to [`SoundFontAsset::from_bytes`].
+#[derive(Default, TypePath)]
+pub struct SoundFontAssetLoader;
+
+#[derive(Debug, thiserror::Error)]
+pub enum SoundFontAssetLoaderError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Parse(rustysynth::SoundFontError),
+}
+
+impl AssetLoader for SoundFontAssetLoader {
+    type Asset = SoundFontAsset;
+    type Settings = ();
+    type Error = SoundFontAssetLoaderError;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &Self::Settings,
+        _load_context: &mut LoadContext<'_>,
+    ) -> Result<Self::Asset, Self::Error> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        SoundFontAsset::from_bytes(&bytes).map_err(SoundFontAssetLoaderError::Parse)
+    }
+
+    fn extensions(&self) -> &[&str] {
+        SoundFontAsset::EXTENSIONS
+    }
+}
 
 /// Compile-time proof that [`SoundFontUnit`](crate::SoundFontUnit) is
 /// `Send`, which is what lets us build it on the [`AsyncComputeTaskPool`]
@@ -210,7 +247,7 @@ impl Plugin for TuttiSoundFontPlugin {
         // so anchor the chain before the Commit phase where `commit_graph`
         // flushes it (it no longer commits inline).
         app.init_asset::<crate::SoundFontAsset>()
-            .register_asset_loader(TuttiLoader::<crate::SoundFontAsset>::default())
+            .register_asset_loader(SoundFontAssetLoader)
             .add_systems(
                 Update,
                 (soundfont_playback_system, promote_pending_soundfonts)

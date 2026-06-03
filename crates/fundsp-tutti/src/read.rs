@@ -499,11 +499,12 @@ mod asset {
         }
     }
 
-    impl tutti_asset::TuttiAsset for WaveAsset {
-        type Error = WaveError;
-        const EXTENSIONS: &'static [&'static str] = &["wav", "flac", "mp3", "ogg"];
+    impl WaveAsset {
+        /// File extensions the Bevy asset loader recognises.
+        pub const EXTENSIONS: &'static [&'static str] = &["wav", "flac", "mp3", "ogg"];
 
-        fn from_bytes(bytes: &[u8]) -> core::result::Result<Self, Self::Error> {
+        /// Decode a complete wave from an in-memory byte slice.
+        pub fn from_bytes(bytes: &[u8]) -> core::result::Result<Self, WaveError> {
             Wave::load_slice(bytes.to_vec()).map(|w| Self(Arc::new(w)))
         }
     }

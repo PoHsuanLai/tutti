@@ -10,9 +10,9 @@ use bevy_asset::AssetApp;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 
 use tutti_core::ecs::{engine_ready, GraphReconcileSystems};
-use tutti_core::loader::{TuttiLoader, TuttiStreamingLoader};
 use tutti_core::WaveAsset;
 
+use crate::loader::{StreamingSampleLoader, WaveAssetLoader};
 use crate::StreamingSample;
 
 mod cleanup;
@@ -29,7 +29,7 @@ pub struct TuttiPlaybackPlugin;
 impl Plugin for TuttiPlaybackPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<WaveAsset>()
-            .register_asset_loader(TuttiLoader::<WaveAsset>::default());
+            .register_asset_loader(WaveAssetLoader);
 
         app.register_type::<AudioPlaybackState>()
             .register_type::<DespawnOnFinish>()
@@ -42,7 +42,7 @@ impl Plugin for TuttiPlaybackPlugin {
         // its sync system between playback and cleanup via .after/.before,
         // so that relative order is preserved by the chain.
         app.init_asset::<StreamingSample>()
-            .register_asset_loader(TuttiStreamingLoader::<StreamingSample>::default())
+            .register_asset_loader(StreamingSampleLoader)
             .add_systems(
                 Update,
                 (

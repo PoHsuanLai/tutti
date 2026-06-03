@@ -21,8 +21,6 @@ files = ["wav", "flac", "mp3", "ogg"]
 # `fundsp/bevy_asset`, which gates the `WaveAsset` re-export tutti-core surfaces
 # (and which the playback asset loaders register).
 tutti-core = { path = "../tutti-core", features = ["bevy_asset"] }
-# Host-agnostic asset vocabulary (TuttiStreamingAsset for StreamingSample).
-tutti-asset = { path = "../tutti-asset", default-features = false, features = ["std"] }
 
 # Bevy ECS integration (the `ecs` module): Components / Systems / Plugins live
 # next to the audio logic. Hard deps now, mirroring tutti-wavecache's shape.

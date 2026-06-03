@@ -24,26 +24,26 @@
 //!
 //! [`PdcManager`] is fully private to the graph. Readers subscribe via
 //! [`pdc_snapshot`](TuttiGraph::pdc_snapshot), which hands back an
-//! [`Arc`]`<`[`ArcSwap`]`<`[`PdcState`](tutti_core::PdcState)`>>` — the only
+//! [`Arc`]`<`[`ArcSwap`]`<`[`PdcState`](crate::PdcState)`>>` — the only
 //! channel through which PDC state escapes. Typical consumer is the sampler's
 //! butler thread.
 
 use arc_swap::ArcSwap;
 use std::sync::Arc;
 
-use tutti_core::dsp::AudioUnit;
-use tutti_core::{
+use crate::dsp::AudioUnit;
+use crate::{
     dsp::{Fade, Net, NodeId, Source},
     PdcManager, PdcState, TuttiNet,
 };
 
 #[cfg(feature = "midi")]
-use tutti_midi_runtime::MidiRoutingTable;
+use tutti_midi_types::MidiRoutingTable;
 
 /// The editable DSP graph.
 ///
-/// Owned by a single `&mut` thread; no locks. Wraps a [`TuttiNet`](tutti_core::TuttiNet)
-/// and its associated [`PdcManager`](tutti_core::PdcManager) (plus, under the
+/// Owned by a single `&mut` thread; no locks. Wraps a [`TuttiNet`](crate::TuttiNet)
+/// and its associated [`PdcManager`](crate::PdcManager) (plus, under the
 /// `midi` feature, a [`MidiRoutingTable`]). Edits are staged until
 /// [`commit`](Self::commit) publishes them to the audio thread.
 pub struct TuttiGraph {
@@ -58,7 +58,7 @@ pub struct TuttiGraph {
 impl TuttiGraph {
     /// Construct from pre-built parts. Called by `TuttiEngineBuilder`.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_parts(
+    pub fn from_parts(
         net: TuttiNet,
         pdc: PdcManager,
         #[cfg(feature = "midi")] midi_route: MidiRoutingTable,
@@ -144,7 +144,7 @@ impl TuttiGraph {
 
     /// Lock-free PDC snapshot subscription.
     ///
-    /// The returned [`Arc`]`<`[`ArcSwap`]`<`[`PdcState`](tutti_core::PdcState)`>>`
+    /// The returned [`Arc`]`<`[`ArcSwap`]`<`[`PdcState`](crate::PdcState)`>>`
     /// is cheap to clone and safe to share with RT readers (e.g. the sampler
     /// butler thread). Each reader calls `.load()` whenever it needs a current
     /// snapshot. Snapshots are republished by [`commit`](Self::commit).
@@ -461,8 +461,8 @@ impl<'a> core::fmt::Display for GraphDot<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::dsp::{dc, limiter};
-    use tutti_core::PdcManager;
+    use crate::dsp::{dc, limiter};
+    use crate::PdcManager;
 
     fn graph_with(channels: usize) -> TuttiGraph {
         let mut net = TuttiNet::new(0, channels);
@@ -535,7 +535,7 @@ mod tests {
         let mut net = graph.clone_net();
         assert!(isolate_output(&mut net, b));
 
-        net.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        net.set_sample_rate(crate::SampleRate(48_000.0));
         net.allocate();
         let mut out = [0.0f32; 2];
         net.tick(&[], &mut out);
@@ -552,7 +552,7 @@ mod tests {
         assert!(isolate_output(&mut net, m));
         assert_eq!(net.outputs_in(m), 1);
 
-        net.set_sample_rate(tutti_core::SampleRate(48_000.0));
+        net.set_sample_rate(crate::SampleRate(48_000.0));
         net.allocate();
         let mut out = [0.0f32; 2];
         net.tick(&[], &mut out);

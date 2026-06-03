@@ -7,7 +7,12 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
 use crate::core::WaveAsset;
-use crate::NodeId;
+
+// `AudioEmitter` + `AudioPlaybackState` are leaf-agnostic value types; they
+// moved into tutti-core's ECS hub. Re-export so existing
+// `crate::playback::emitter::{AudioEmitter, AudioPlaybackState}` paths hold.
+// `PlayAudio` + `audio_playback_system` stay here (they build a `SamplerUnit`).
+pub use crate::core::ecs::{AudioEmitter, AudioPlaybackState};
 
 #[cfg(feature = "sampler")]
 use crate::sampler::SamplerUnit;
@@ -18,32 +23,6 @@ use crate::time_stretch::{TimeStretch, TimeStretchControl};
 
 #[cfg(feature = "sampler")]
 use super::cleanup::DespawnOnFinish;
-
-/// Marks an entity as an audio emitter with a live node in tutti's graph.
-///
-/// Added automatically by `audio_playback_system` when a `PlayAudio` trigger
-/// is processed. Remove this component (or despawn the entity) to stop
-/// playback and clean up the graph node.
-///
-/// Not `Reflect`: the wrapped fundsp `NodeId` is foreign and not reflected
-/// (matching `crate::core::ecs::AudioNode`).
-#[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[require(AudioPlaybackState)]
-pub struct AudioEmitter {
-    pub node_id: NodeId,
-}
-
-/// Playback state for audio emitters.
-///
-/// Updated by `audio_cleanup_system` when a non-looping sample finishes.
-#[derive(Component, Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
-#[reflect(Component, Default)]
-pub enum AudioPlaybackState {
-    #[default]
-    Stopped,
-    Playing,
-    Finished,
-}
 
 /// Trigger component: spawn an entity with this to start audio playback.
 ///

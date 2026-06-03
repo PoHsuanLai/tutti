@@ -14,7 +14,6 @@ mod builder;
 mod bundle;
 mod driver;
 mod error;
-mod graph;
 
 #[cfg(all(feature = "midi", feature = "export"))]
 pub mod midi_export;
@@ -23,4 +22,7 @@ pub use builder::TuttiEngineBuilder;
 pub use bundle::{DefaultProcessor, TuttiEngine};
 pub use driver::{DeviceInfo, TuttiDriver};
 pub use error::{Error, Result};
-pub use graph::TuttiGraph;
+// `TuttiGraph` (plus `isolate_output` / `GraphDot`) moved into tutti-core; the
+// engine surfaces them from there so existing `engine::TuttiGraph` paths hold.
+pub use tutti_core::tutti_graph::{isolate_output, GraphDot};
+pub use tutti_core::TuttiGraph;

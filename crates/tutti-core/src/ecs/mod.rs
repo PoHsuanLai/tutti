@@ -31,6 +31,31 @@ use bevy_reflect::Reflect;
 
 use crate::dsp::NodeId;
 
+// The generic graph-reconcile hub. These submodules carry the leaf-agnostic
+// reconcile pipeline, the shared engine resources, the routing/sidechain
+// relationships, the emitter markers, and the `TuttiGraphPlugin`. Leaf-specific
+// reconcilers (sampler/plugin/convolution/midi) stay in bevy-tutti.
+pub mod emitter;
+pub mod param_epoch;
+pub mod plugin;
+pub mod reconcile;
+pub mod resources;
+pub mod routing;
+pub mod sidechain;
+
+pub use emitter::{AudioEmitter, AudioPlaybackState};
+pub use param_epoch::{bump_param_epoch_core, NodeParamEpoch};
+pub use plugin::{register_core_node_types, TuttiGraphPlugin};
+pub use reconcile::{
+    commit_graph, crossfade_audio_node, engine_ready, reconcile_node_despawn, reconcile_params,
+    GraphDirty, GraphReconcileSystems, SpawnAudioNode,
+};
+pub use resources::{AudioConfig, MeteringRes, TransportRes, TuttiGraphRes};
+pub use routing::{reconcile_audio_routing, AudioFedBy, AudioFeedsTo};
+pub use sidechain::{
+    reconcile_sidechain_links, reconcile_sidechain_remove, SidechainOf, SidechainSources,
+};
+
 /// Component identity for a graph node.
 ///
 /// Wraps a fundsp [`NodeId`]. Inserted by host helpers (e.g.

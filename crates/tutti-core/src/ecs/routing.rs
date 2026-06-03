@@ -28,10 +28,10 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::reflect::{ReflectComponent, ReflectMapEntities};
 use bevy_reflect::Reflect;
 
-use crate::core::ecs::AudioNode;
+use crate::ecs::AudioNode;
 
 use super::reconcile::GraphDirty;
-use crate::resources::TuttiGraphRes;
+use crate::ecs::TuttiGraphRes;
 
 /// "This entity's audio output `src_port` feeds `target`'s input `dst_port`."
 ///
@@ -195,20 +195,30 @@ pub fn reconcile_audio_routing(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::reconcile::GraphReconcileSystems;
+    use crate::ecs::reconcile::GraphReconcileSystems;
+    use crate::tutti_graph::TuttiGraph;
+    use crate::{PdcManager, TuttiNet};
     use bevy_app::App;
-    use crate::TuttiEngine;
+
+    fn bare_graph(channels: usize) -> TuttiGraph {
+        let mut net = TuttiNet::new(0, channels);
+        let _backend = net.backend();
+        let pdc = PdcManager::new(channels, 0);
+        #[cfg(feature = "midi")]
+        let midi_route = tutti_midi_types::MidiRoutingTable::new();
+        TuttiGraph::from_parts(
+            net,
+            pdc,
+            #[cfg(feature = "midi")]
+            midi_route,
+            48_000.0,
+            channels,
+        )
+    }
 
     fn test_app() -> App {
-        let engine = TuttiEngine::builder()
-            .inputs(0)
-            .outputs(2)
-            .build()
-            .expect("build engine");
-        let TuttiEngine { graph, .. } = engine;
-
         let mut app = App::new();
-        app.insert_resource(crate::resources::TuttiGraphRes(graph));
+        app.insert_resource(crate::ecs::TuttiGraphRes(bare_graph(2)));
         app.init_resource::<GraphDirty>();
         app.configure_sets(
             bevy_app::Update,
@@ -224,7 +234,7 @@ mod tests {
             bevy_app::Update,
             (
                 reconcile_audio_routing.in_set(GraphReconcileSystems::Spawn),
-                crate::graph::reconcile::commit_graph.in_set(GraphReconcileSystems::Commit),
+                crate::ecs::reconcile::commit_graph.in_set(GraphReconcileSystems::Commit),
             ),
         );
         app
@@ -273,10 +283,10 @@ mod tests {
         // Spawn two AudioNodes (a sine generator and a stereo
         // ChannelStripUnit-equivalent — using `pass` for simplicity)
         // and verify `AudioFeedsTo` produces an actual graph edge.
-        use crate::graph::reconcile::SpawnAudioNode;
-        use crate::core::ecs::NodeKind;
-        use crate::core::dsp::sine_hz;
-        // `crate::core::dsp::pass` is a stereo pass-through (2 in, 2 out)
+        use crate::ecs::reconcile::SpawnAudioNode;
+        use crate::ecs::NodeKind;
+        use crate::dsp::sine_hz;
+        // `crate::dsp::pass` is a stereo pass-through (2 in, 2 out)
         // — exactly what we need as a sink with addressable input ports.
         let mut app = test_app();
 
@@ -290,7 +300,7 @@ mod tests {
         let target = app
             .world_mut()
             .commands()
-            .spawn_audio_node(crate::core::dsp::pass() | crate::core::dsp::pass(), NodeKind::Generic)
+            .spawn_audio_node(crate::dsp::pass() | crate::dsp::pass(), NodeKind::Generic)
             .id();
         app.update();
 
@@ -318,9 +328,9 @@ mod tests {
 
     #[test]
     fn audio_feeds_to_disconnects_on_remove() {
-        use crate::graph::reconcile::SpawnAudioNode;
-        use crate::core::ecs::NodeKind;
-        use crate::core::dsp::sine_hz;
+        use crate::ecs::reconcile::SpawnAudioNode;
+        use crate::ecs::NodeKind;
+        use crate::dsp::sine_hz;
 
         let mut app = test_app();
 
@@ -332,7 +342,7 @@ mod tests {
         let target = app
             .world_mut()
             .commands()
-            .spawn_audio_node(crate::core::dsp::pass() | crate::core::dsp::pass(), NodeKind::Generic)
+            .spawn_audio_node(crate::dsp::pass() | crate::dsp::pass(), NodeKind::Generic)
             .id();
         app.update();
 

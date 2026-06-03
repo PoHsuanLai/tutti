@@ -44,6 +44,9 @@ pub use processor::{AudioProcessor, GraphProcessor};
 mod graph;
 pub use graph::{CommitOutcome, TuttiNet};
 
+pub mod tutti_graph;
+pub use tutti_graph::{isolate_output, GraphDot, TuttiGraph};
+
 pub mod transport;
 pub use transport::{
     click, AutomationEnvelopeFn, AutomationReaderInput, ClickNode, ClickSettings, ClickState,
@@ -127,3 +130,11 @@ pub use ecs::{
     PluginParam, Release, ReverbAlgo, ReverbDamping, ReverbRoomSize, SamplerLooping, SamplerSpeed,
     ThresholdDb, Volume, WetMix,
 };
+
+/// Bevy `AsyncComputeTaskPool` + `Task<T>` helper for non-RT subsystem work.
+pub mod task;
+pub use task::poll_task;
+
+/// Generic Bevy `AssetLoader` adapters over the tutti asset traits.
+pub mod loader;
+pub use loader::{TuttiLoader, TuttiLoaderError, TuttiStreamingLoader, TuttiStreamingLoaderError};

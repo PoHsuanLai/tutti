@@ -10,7 +10,6 @@
 //! `NonSendMut`, not `Res` / `ResMut`.
 
 use bevy_ecs::prelude::*;
-use bevy_reflect::prelude::*;
 
 #[cfg(any(feature = "sampler", feature = "soundfont"))]
 use std::sync::Arc;
@@ -19,24 +18,13 @@ use std::sync::Arc;
 use crate::midi_runtime::MidiBus;
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_io::MidiIo;
-use crate::{TuttiDriver, TuttiGraph};
+use crate::TuttiDriver;
 
-/// Audio device configuration captured at engine build time.
-#[derive(Resource, Debug, Clone, Copy, PartialEq, Reflect)]
-#[reflect(Resource, Clone)]
-pub struct AudioConfig {
-    pub sample_rate: f64,
-    pub channels: usize,
-}
-
-/// Owns the editable DSP graph. `&mut` edits; call `commit()` once per frame
-/// after a batch of edits to publish them to the audio thread.
-///
-/// Intentionally no `Deref`: graph mutation is paired with the per-frame
-/// `commit()` discipline (see `commit_graph`). Keeping access through `.0`
-/// makes the dirty/commit boundary visible at the call site.
-#[derive(Resource)]
-pub struct TuttiGraphRes(pub TuttiGraph);
+// The leaf-agnostic engine resources moved into tutti-core's ECS hub; re-export
+// them so existing `crate::resources::{AudioConfig, TuttiGraphRes, …}` paths
+// hold. The driver + feature resources below stay here (they wrap CPAL /
+// leaf-crate types).
+pub use tutti_core::ecs::{AudioConfig, MeteringRes, TransportRes, TuttiGraphRes};
 
 /// Owns the CPAL stream lifecycle (device selection, restart, enumeration).
 ///
@@ -53,28 +41,6 @@ pub struct TuttiDriverRes(pub TuttiDriver);
 impl TuttiDriverRes {
     pub fn new(driver: TuttiDriver) -> Self {
         Self(driver)
-    }
-}
-
-/// Lock-free transport handle (play/stop/seek/tempo/loop).
-#[derive(Resource, Clone)]
-pub struct TransportRes(pub crate::TransportHandle);
-
-impl std::ops::Deref for TransportRes {
-    type Target = crate::TransportHandle;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// Lock-free metering handle (peak/RMS/LUFS/CPU snapshots).
-#[derive(Resource, Clone)]
-pub struct MeteringRes(pub crate::MeteringHandle);
-
-impl std::ops::Deref for MeteringRes {
-    type Target = crate::MeteringHandle;
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
 

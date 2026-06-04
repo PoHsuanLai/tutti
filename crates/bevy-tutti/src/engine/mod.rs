@@ -2,24 +2,23 @@
 //!
 //! Relocated from the former standalone `tutti` umbrella crate when bevy-tutti
 //! became the umbrella. Holds the CPAL audio callback (`audio_io`), the device
-//! lifecycle (`driver`), the editable DSP graph (`graph`), the engine bootstrap
-//! (`builder`), and the flat `TuttiEngine` bundle (`bundle`). `TuttiPlugin`
-//! builds a `TuttiEngine` and destructures it into Bevy resources.
+//! lifecycle (`driver`), the editable DSP graph (`graph`), and the engine
+//! bootstrap (`build`). [`build_into`] runs one ordered fallible RT-wiring
+//! transaction and inserts every subsystem as a Bevy resource directly into the
+//! `App` — there is no intermediate bundle struct to destructure.
 //!
 //! Unlike the old umbrella these are NOT gated on a `std` feature — bevy-tutti
 //! always runs with std (it drives a Bevy `App` over CPAL).
 
 mod audio_io;
-mod builder;
-mod bundle;
+mod build;
 mod driver;
 mod error;
 
 #[cfg(all(feature = "midi", feature = "export"))]
 pub mod midi_export;
 
-pub use builder::TuttiEngineBuilder;
-pub use bundle::{DefaultProcessor, TuttiEngine};
+pub use build::{build_into, DefaultProcessor};
 pub use driver::{DeviceInfo, TuttiDriver};
 pub use error::{Error, Result};
 // `TuttiGraph` (plus `isolate_output` / `GraphDot`) moved into tutti-core; the

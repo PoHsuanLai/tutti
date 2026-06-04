@@ -37,8 +37,9 @@
 //!
 //! # Direct API Access
 //!
-//! Each subsystem of the `TuttiEngine` is surfaced as its own Bevy resource.
-//! Systems take only the ones they need:
+//! `TuttiPlugin` builds the audio engine and inserts each subsystem as its own
+//! Bevy resource (`TuttiGraphRes`, `TransportRes`, `MeteringRes`, …). Systems
+//! take only the ones they need:
 //!
 //! ```rust,ignore
 //! fn control_audio(transport: Res<TransportRes>, mut graph: ResMut<TuttiGraphRes>) {
@@ -78,7 +79,7 @@ pub use plugin::TuttiPlugin;
 // =========================================================================
 
 // Engine types.
-pub use engine::{DefaultProcessor, DeviceInfo, Error, Result, TuttiDriver, TuttiEngine, TuttiEngineBuilder, TuttiGraph};
+pub use engine::{DefaultProcessor, DeviceInfo, Error, Result, TuttiDriver, TuttiGraph};
 
 // bevy-tutti's own UI-mirror resource (audio device state). Its CPAL driver
 // is bevy-tutti's, so the mirror lives here. Transport state + master metering

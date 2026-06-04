@@ -6,32 +6,30 @@
 //! and adds the sub-plugins for the currently enabled features.
 
 use bevy_app::{App, Plugin, Startup, Update};
+// Needed only for the `.run_if(..)` on the soundfont-midi bridge system below.
+#[cfg(all(feature = "soundfont", feature = "midi"))]
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_log::{error, info};
-
-use crate::TuttiEngine;
 
 use crate::device_state;
 #[cfg(all(feature = "soundfont", feature = "midi"))]
 use tutti_core::ecs::engine_ready;
-use tutti_core::ecs::{AudioConfig, MeteringRes, TransportRes, TuttiGraphPlugin, TuttiGraphRes};
-#[cfg(feature = "soundfont")]
-use tutti_synth::SoundFontRes;
+use tutti_core::ecs::{AudioConfig, TuttiGraphPlugin};
 
 #[cfg(feature = "midi")]
-use tutti_midi_io::ecs::{MidiBusRes, TuttiMidiPlugin};
-#[cfg(feature = "midi-hardware")]
-use tutti_midi_io::ecs::MidiIoRes;
+use tutti_midi_io::ecs::TuttiMidiPlugin;
+#[cfg(all(feature = "soundfont", feature = "midi"))]
+use tutti_midi_io::ecs::MidiBusRes;
 #[cfg(feature = "spatial")]
 use tutti_units::ecs::TuttiSpatialPlugin;
 #[cfg(feature = "soundfont")]
 use tutti_synth::ecs::TuttiSoundFontPlugin;
 #[cfg(feature = "sampler")]
-use tutti_sampler::ecs::{SamplerRes, TuttiSamplerPlugin};
+use tutti_sampler::ecs::TuttiSamplerPlugin;
 #[cfg(feature = "automation")]
 use tutti_units::ecs::TuttiAutomationPlugin;
 #[cfg(feature = "analysis")]
-use tutti_analysis::ecs::{AnalysisRes, TuttiAnalysisPlugin};
+use tutti_analysis::ecs::TuttiAnalysisPlugin;
 #[cfg(feature = "export")]
 use tutti_export::ecs::TuttiExportPlugin;
 #[cfg(feature = "plugin")]
@@ -63,15 +61,15 @@ use crate::AudioDeviceState;
 ///
 /// Which subsystems run is governed by the crate's Cargo features (sampler,
 /// dsp, synth, midi, plugin, …) — the composition root only adds the sub-plugins
-/// whose features are enabled.
+/// whose features are enabled. Software MIDI fan-out is on whenever `midi` is
+/// compiled; OS MIDI ports are opened whenever `midi-hardware` is compiled.
+/// MPE is configured at runtime via the `MpeModeConfig` resource (driven by the
+/// UI), not a plugin field.
 pub struct TuttiPlugin {
     /// `None` = system default device
     pub output_device: Option<usize>,
     pub inputs: usize,
     pub outputs: usize,
-    pub enable_midi: bool,
-    #[cfg(feature = "mpe")]
-    pub mpe_mode: Option<tutti_midi_io::MpeMode>,
 }
 
 impl Default for TuttiPlugin {
@@ -80,9 +78,6 @@ impl Default for TuttiPlugin {
             output_device: None,
             inputs: 0,
             outputs: 2,
-            enable_midi: cfg!(feature = "midi"),
-            #[cfg(feature = "mpe")]
-            mpe_mode: None,
         }
     }
 }
@@ -91,94 +86,12 @@ impl Plugin for TuttiPlugin {
     fn build(&self, app: &mut App) {
         info!("Initializing Tutti Audio Plugin");
 
-        let mut builder = TuttiEngine::builder()
-            .inputs(self.inputs)
-            .outputs(self.outputs);
-
-        if let Some(device) = self.output_device {
-            builder = builder.output_device(device);
-        }
-
-        #[cfg(feature = "midi")]
-        if self.enable_midi {
-            builder = builder.midi();
-        }
-
-        #[cfg(feature = "mpe")]
-        if let Some(ref mode) = self.mpe_mode {
-            builder = builder.mpe(*mode);
-        }
-
-        match builder.build() {
-            Ok(engine) => {
-                info!(
-                    "Tutti Audio Engine started ({}Hz, {}ch)",
-                    engine.sample_rate, self.outputs
-                );
-
-                // Enable amplitude + CPU metering by default (consumers read
-                // `MeteringRes::amplitude()` / `cpu()` directly).
-                engine.metering.inner().enable_amp();
-                engine.metering.inner().cpu().enable();
-
-                let sample_rate = engine.sample_rate;
-                let channels = engine.channels;
-
-                app.insert_resource(AudioConfig {
-                    sample_rate,
-                    channels,
-                });
-
-                let TuttiEngine {
-                    graph,
-                    driver,
-                    transport,
-                    metering,
-                    #[cfg(feature = "midi")]
-                    midi,
-                    #[cfg(feature = "midi")]
-                    midi_io,
-                    #[cfg(feature = "sampler")]
-                    sampler,
-                    #[cfg(feature = "soundfont")]
-                    soundfont,
-                    #[cfg(feature = "analysis")]
-                    analysis,
-                    ..
-                } = engine;
-
-                app.insert_resource(TuttiGraphRes(graph));
-                app.insert_non_send_resource(driver);
-                app.insert_resource(TransportRes(transport));
-                app.insert_resource(MeteringRes(metering));
-
-                #[cfg(feature = "midi")]
-                app.insert_resource(MidiBusRes(midi));
-                #[cfg(feature = "midi-hardware")]
-                if let Some(io) = midi_io {
-                    app.insert_resource(MidiIoRes(io));
-                }
-                #[cfg(all(feature = "midi", not(feature = "midi-hardware")))]
-                {
-                    let _ = midi_io;
-                }
-
-                #[cfg(feature = "sampler")]
-                {
-                    let aud_res = tutti_sampler::ecs::init_auditioner(&sampler);
-                    app.insert_resource(aud_res);
-                    app.insert_resource(SamplerRes(sampler));
-                }
-
-                #[cfg(feature = "soundfont")]
-                app.insert_resource(SoundFontRes(soundfont));
-
-                #[cfg(feature = "analysis")]
-                app.insert_resource(AnalysisRes(analysis));
-            }
-            Err(e) => {
-                error!("Failed to start Tutti Audio Engine: {}", e);
-            }
+        // One ordered fallible RT-wiring transaction that inserts every
+        // subsystem resource directly into the app (CPAL callback live on Ok).
+        // On Err the app proceeds without audio — `engine_ready` gates the
+        // engine-dependent systems.
+        if let Err(e) = crate::engine::build_into(self, app) {
+            error!("Failed to start Tutti Audio Engine: {}", e);
         }
 
         // Engine-wide state + per-frame syncs that don't fit any one duty.

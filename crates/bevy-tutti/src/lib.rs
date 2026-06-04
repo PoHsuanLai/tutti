@@ -55,14 +55,14 @@ mod plugin;
 
 // The graph reconcile hub + `GraphReconcilePlugin` live in `tutti_core::graph`; the
 // leaf reconcilers in their subsystem crates (`tutti_units::ecs`,
-// `tutti_sampler::ecs`, `tutti_plugin_host`, `tutti_midi_io::ecs`). `plugin.rs`
+// `tutti_sampler::ecs`, `tutti_plugin_host`, and the MIDI subsystem). `plugin.rs`
 // (the composition root) adds them directly — bevy-tutti no longer wraps any of it.
 // The export pipeline ECS (StartExport / TuttiExportPlugin) and the offline
 // region render (TuttiRegionRenderPlugin) now live in `tutti_export::ecs`;
 // bevy-tutti re-exports them via the prelude under the same feature gates.
-// The MIDI ECS code (components / events / systems / scheduled dispatch +
-// TuttiMidiPlugin) now lives in `tutti_midi_io::ecs`. bevy-tutti re-exports it
-// via the prelude under the same feature gates.
+// The MIDI subsystem is grouped by function — input / routing / sequence /
+// scheduled / device / mpe sub-plugins composed by `tutti_midi_io::TuttiMidiPlugin`.
+// bevy-tutti re-exports it via the prelude under the same feature gates.
 
 /// The Tutti audio engine (CPAL callback, DSP graph, device driver, bootstrap).
 /// Relocated here when bevy-tutti became the umbrella crate.

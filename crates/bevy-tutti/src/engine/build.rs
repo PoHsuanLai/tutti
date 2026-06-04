@@ -34,7 +34,7 @@ use tutti_core::transport::PendingTransport;
 #[cfg(feature = "midi")]
 use tutti_core::processor::MidiProcessor;
 #[cfg(feature = "midi")]
-use tutti_midi_io::ecs::PendingMidi;
+use tutti_midi_io::PendingMidi;
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_io::MidiIo;
 #[cfg(feature = "midi")]

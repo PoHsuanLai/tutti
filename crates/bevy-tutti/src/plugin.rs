@@ -14,7 +14,7 @@ use tutti_core::metering::TuttiMeteringPlugin;
 use tutti_core::transport::TuttiTransportPlugin;
 
 #[cfg(feature = "midi")]
-use tutti_midi_io::ecs::TuttiMidiPlugin;
+use tutti_midi_io::TuttiMidiPlugin;
 #[cfg(feature = "spatial")]
 use tutti_units::ecs::TuttiSpatialPlugin;
 #[cfg(feature = "soundfont")]

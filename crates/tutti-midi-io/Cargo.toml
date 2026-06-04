@@ -9,12 +9,12 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 [features]
 default = []
 # MPE: forwards to tutti-midi-runtime's `mpe` (MpeProcessor / PerNoteExpression)
-# and exposes the MpeReceiver component + MpeExpressionResource / MpeModeConfig
-# in the `ecs` module.
+# and compiles the `mpe` module (MpeReceiver component, MpeExpressionResource /
+# MpeModeConfig, MpePlugin) + the `routing` MPE-receiver path.
 mpe = ["tutti-midi-runtime/mpe"]
-# Hardware device connect / disconnect / hot-plug poll (the `ecs` module's
-# ConnectMidiDevice / MidiDeviceState / device systems). midir is a hard dep,
-# so this only gates the Bevy ECS surface, not the underlying I/O.
+# Hardware device connect / disconnect / hot-plug poll (the `device` module:
+# ConnectMidiDevice / MidiDeviceState / MidiIoRes / device systems). midir is a
+# hard dep, so this only gates the Bevy ECS surface, not the underlying I/O.
 midi-hardware = []
 virtual-midi = ["coremidi"]
 

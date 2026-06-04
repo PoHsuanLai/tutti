@@ -1,5 +1,15 @@
+//! Hardware MIDI input → ECS event bridge.
+//!
+//! A crossbeam channel funnels [`MidiInputRecord`](crate::MidiInputRecord)s
+//! from the hardware port observer into the ECS world; the per-frame
+//! [`midi_input_event_system`] drains it into [`MidiInputEvent`] messages that
+//! any consumer can read. Without `midi-hardware` there's no port to observe,
+//! so the setup is a no-op and events only arrive via
+//! [`MidiInputEvent::synthetic`].
+
+use bevy_app::{App, Plugin, Startup, Update};
+use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::*;
-use bevy_ecs::message::Message;
 
 use crate::{decode, MidiEvent, MidiInputRecord, SemanticEvent};
 
@@ -78,11 +88,71 @@ impl MidiInputEvent {
     }
 }
 
-#[cfg(feature = "midi-hardware")]
-#[derive(Event, Message, Clone, Debug)]
-pub enum MidiDeviceEvent {
-    Connected { name: String },
-    Disconnected { name: String },
+/// Receiving end of the hardware-input observer channel; drained each frame by
+/// [`midi_input_event_system`].
+#[derive(Resource)]
+pub struct MidiInputObserver {
+    pub(crate) receiver: crossbeam_channel::Receiver<MidiInputRecord>,
+}
+
+/// Sending end, handed to the hardware port at [`Startup`]; taken once by
+/// [`midi_observer_setup_system`].
+#[derive(Resource)]
+pub(crate) struct MidiObserverSender {
+    pub(crate) sender: Option<crossbeam_channel::Sender<MidiInputRecord>>,
+}
+
+/// Sets up the UI observer on the hardware MIDI input port, funneling events
+/// into [`MidiInputObserver`]'s channel. No-op when `midi-hardware` is disabled
+/// (there's no hardware port to observe).
+pub(crate) fn midi_observer_setup_system(
+    #[cfg(feature = "midi-hardware")] midi_io: Option<Res<crate::MidiIoRes>>,
+    mut sender_res: ResMut<MidiObserverSender>,
+) {
+    let Some(sender) = sender_res.sender.take() else {
+        return;
+    };
+
+    #[cfg(feature = "midi-hardware")]
+    {
+        let Some(midi_io) = midi_io else { return };
+        midi_io.0.set_input_observer(sender);
+    }
+
+    #[cfg(not(feature = "midi-hardware"))]
+    {
+        let _ = sender;
+    }
+}
+
+pub fn midi_input_event_system(
+    observer: Option<Res<MidiInputObserver>>,
+    mut writer: MessageWriter<MidiInputEvent>,
+) {
+    let Some(observer) = observer else { return };
+    while let Ok(record) = observer.receiver.try_recv() {
+        writer.write(MidiInputEvent::from(record));
+    }
+}
+
+/// Hardware MIDI input observation: the observer channel + per-frame event pump.
+pub struct MidiInputPlugin;
+
+impl Plugin for MidiInputPlugin {
+    fn build(&self, app: &mut App) {
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        app.insert_resource(MidiInputObserver { receiver });
+        app.insert_resource(MidiObserverSender {
+            sender: Some(sender),
+        });
+
+        app.add_message::<MidiInputEvent>();
+        app.add_systems(Startup, midi_observer_setup_system);
+        app.add_systems(
+            Update,
+            midi_input_event_system.run_if(tutti_core::graph::engine_ready),
+        );
+    }
 }
 
 #[cfg(test)]

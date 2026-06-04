@@ -12,19 +12,19 @@
 //!   marker means "this entity *is* the MIDI sink for that unit-id."
 //! - [`ScheduledMidi`] — "fire this MIDI event in `remaining_secs` at
 //!   the synth on `target`." [`tick_scheduled_midi`] counts the timer
-//!   down and dispatches via [`MidiBusRes`](crate::ecs::MidiBusRes).
+//!   down and dispatches via [`MidiBusRes`](crate::MidiBusRes).
 //!
 //! The host owns scheduling (`commands.spawn(ScheduledMidi { ... })`);
 //! the system owns delivery. Once fired, the entity is despawned.
 
 use std::time::Instant;
 
+use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use tutti_midi_types::MidiUnitId;
+use crate::MidiBusRes;
 use crate::MidiEvent;
-
-use crate::ecs::MidiBusRes;
+use tutti_midi_types::MidiUnitId;
 
 /// "This entity owns the audio-graph node whose MIDI sink id is `midi_unit_id`."
 ///
@@ -108,5 +108,18 @@ pub fn tick_scheduled_midi(
 
         midi.0.queue(marker.midi_unit_id, &[sched.event]);
         commands.entity(entity).despawn();
+    }
+}
+
+/// Time-delayed MIDI dispatch: counts down [`ScheduledMidi`] timers and fires
+/// them through the bus.
+pub struct ScheduledMidiPlugin;
+
+impl Plugin for ScheduledMidiPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(
+            Update,
+            tick_scheduled_midi.run_if(tutti_core::graph::engine_ready),
+        );
     }
 }

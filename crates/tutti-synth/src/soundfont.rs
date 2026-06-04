@@ -482,7 +482,7 @@ pub fn promote_pending_soundfonts(
     mut commands: Commands,
     mut graph: ResMut<AudioGraphRes>,
     mut dirty: ResMut<GraphDirty>,
-    #[cfg(feature = "midi")] midi: Option<Res<tutti_midi_io::ecs::MidiBusRes>>,
+    #[cfg(feature = "midi")] midi: Option<Res<tutti_midi_io::MidiBusRes>>,
     mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,
 ) {
     let mut edited = false;

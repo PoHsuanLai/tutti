@@ -35,21 +35,49 @@ pub use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecod
 
 pub use crossbeam_channel;
 
-/// Bevy ECS integration: MIDI-domain components, events, systems, and the
-/// [`TuttiMidiPlugin`](ecs::TuttiMidiPlugin).
-pub mod ecs;
-// Re-export the ECS surface at the crate root so consumers write
-// `tutti_midi_io::TuttiMidiPlugin`, not `tutti_midi_io::ecs::…` (the bevy_text shape).
-pub use ecs::{
-    midi_input_event_system, midi_routing_sync_system, midi_sequence_setup_system,
-    midi_sequence_tick_system, tick_scheduled_midi, MidiBusRes, MidiInputEvent, MidiInputObserver,
-    MidiReceiver, MidiSequence, MidiSequenceNote, MidiSequenceState, MidiSynthMarker, ScheduledMidi,
-    TuttiMidiPlugin,
-};
-#[cfg(feature = "midi-hardware")]
-pub use ecs::{
-    midi_device_connect_system, midi_device_poll_system, ConnectMidiDevice, DisconnectMidiDevice,
-    MidiDeviceEvent, MidiDeviceState, MidiIoRes,
-};
+// --- Bevy ECS integration ---
+//
+// The MIDI subsystem is grouped by FUNCTION: each duty (bus / input / routing /
+// sequence / scheduled dispatch / hardware device / MPE) owns its components,
+// systems, resources, and a focused sub-plugin in its own module.
+// `TuttiMidiPlugin` (`midi_plugin.rs`) is the composition root that claims the
+// engine handles and adds the sub-plugins. Each resource lives with the duty
+// that owns it: `MidiBusRes` in `bus`, `MidiIoRes` in `device`, the transient
+// `PendingMidi` next to its claimant in `midi_plugin`. The whole surface
+// re-exports at the crate root so consumers write `tutti_midi_io::TuttiMidiPlugin`.
+
+pub mod bus;
+pub use bus::MidiBusRes;
+
+pub mod input;
+pub use input::{midi_input_event_system, MidiInputEvent, MidiInputObserver, MidiInputPlugin};
+
+pub mod routing;
+pub use routing::{midi_routing_sync_system, MidiReceiver, MidiRoutingPlugin};
 #[cfg(feature = "mpe")]
-pub use ecs::{MpeExpressionResource, MpeModeConfig, MpeReceiver};
+pub use routing::MpeReceiver;
+
+pub mod sequence;
+pub use sequence::{
+    midi_sequence_setup_system, midi_sequence_tick_system, MidiSequence, MidiSequenceNote,
+    MidiSequencePlugin, MidiSequenceState,
+};
+
+pub mod scheduled;
+pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi, ScheduledMidiPlugin};
+
+#[cfg(feature = "midi-hardware")]
+pub mod device;
+#[cfg(feature = "midi-hardware")]
+pub use device::{
+    midi_device_connect_system, midi_device_poll_system, ConnectMidiDevice, DisconnectMidiDevice,
+    MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState, MidiIoRes,
+};
+
+#[cfg(feature = "mpe")]
+pub mod mpe;
+#[cfg(feature = "mpe")]
+pub use mpe::{MpeExpressionResource, MpeModeConfig, MpePlugin};
+
+mod midi_plugin;
+pub use midi_plugin::{PendingMidi, TuttiMidiPlugin};

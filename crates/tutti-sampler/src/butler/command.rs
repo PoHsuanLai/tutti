@@ -35,13 +35,6 @@ use super::varispeed::PlayDirection;
 /// Command sent to the Butler thread.
 #[derive(Debug)]
 pub(crate) enum ButlerCommand {
-    /// Start/resume butler processing.
-    Run,
-    /// Pause butler (e.g., during locate).
-    Pause,
-    /// Wait for butler to complete current work and signal ready.
-    WaitForCompletion,
-
     /// Stream an audio file to a channel buffer.
     StreamAudioFile {
         channel_index: usize,
@@ -50,23 +43,6 @@ pub(crate) enum ButlerCommand {
     },
     /// Stop streaming for a channel.
     StopStreaming { channel_index: usize },
-
-    /// Seek within a stream (in samples).
-    SeekStream {
-        channel_index: usize,
-        position_samples: u64,
-    },
-
-    /// Set loop range for a channel (in samples). `crossfade_samples = 0` disables crossfade.
-    SetLoopRange {
-        channel_index: usize,
-        start_samples: u64,
-        end_samples: u64,
-        crossfade_samples: usize,
-    },
-
-    /// Clear loop range for a channel.
-    ClearLoopRange { channel_index: usize },
 
     /// Set varispeed (direction and speed) for a channel. `speed = 1.0` is normal.
     SetVarispeed {
@@ -87,10 +63,6 @@ pub(crate) enum ButlerCommand {
     RemoveCapture(CaptureId),
     /// Flush a single capture buffer to disk.
     Flush(CaptureId),
-
-    /// Set buffer margin multiplier (for external sync jitter handling).
-    /// `1.0` is normal, `>1.0` allocates larger buffers for jitter.
-    SetBufferMargin { margin: f64 },
 
     /// Shutdown the butler thread.
     Shutdown,

@@ -30,9 +30,6 @@ pub enum Error {
 
     #[error("Hound error: {0}")]
     HoundError(#[from] hound::Error),
-
-    #[error("Memory-mapped reader error: {0}")]
-    MmapReader(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

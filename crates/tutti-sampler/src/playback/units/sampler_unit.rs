@@ -539,28 +539,6 @@ impl AudioUnit for SamplerUnit {
     }
 }
 
-impl super::playback_unit::PlaybackUnit for SamplerUnit {
-    fn set_gain(&mut self, gain: f32) {
-        self.gain = gain;
-    }
-
-    fn set_speed(&mut self, speed: f32) {
-        self.speed = speed;
-    }
-
-    fn play(&self) {
-        self.playing.store(true, Ordering::Relaxed);
-    }
-
-    fn stop(&self) {
-        self.playing.store(false, Ordering::Relaxed);
-    }
-
-    fn is_playing(&self) -> bool {
-        self.playing.load(Ordering::Relaxed)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

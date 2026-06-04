@@ -18,7 +18,7 @@ use tutti_units::ecs::TuttiSpatialPlugin;
 #[cfg(feature = "soundfont")]
 use tutti_synth::TuttiSoundFontPlugin;
 #[cfg(feature = "sampler")]
-use tutti_sampler::ecs::TuttiSamplerPlugin;
+use tutti_sampler::TuttiSamplerPlugin;
 #[cfg(feature = "automation")]
 use tutti_units::ecs::TuttiAutomationPlugin;
 #[cfg(feature = "analysis")]

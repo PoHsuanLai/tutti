@@ -36,7 +36,6 @@ serde = { version = "1", features = ["derive"] }
 
 # Audio
 cpal = "0.15"
-audio-automation = "0.4"
 
 # Lock-free
 ringbuf = "0.4"

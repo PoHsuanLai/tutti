@@ -17,18 +17,11 @@ use super::cache::LruCache;
 use super::command::{ButlerCommand, CaptureId, RegionId};
 use super::config::BufferConfig;
 use super::io::capture::{flush_all, flush_capture, open_wav, ActiveCapture};
-use super::io::loops::{buffer_size_for_file, capture_samples, fadein_samples, fadeout_samples};
+use super::io::loops::buffer_size_for_file;
 use super::metrics::Metrics;
-use super::plan::{ChannelPlan, LoopConfig};
+use super::plan::ChannelPlan;
 use super::prefetch::RegionBuffer;
 use super::region_map::RegionMap;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(super) enum RunState {
-    #[default]
-    Running,
-    Paused,
-}
 
 /// Arc'd handles shared between `ButlerThread` (controller) and the butler
 /// loop. `Clone` is cheap — every field is an `Arc` or `Option<Arc>`.
@@ -45,7 +38,6 @@ pub(super) struct Handles {
 pub(super) struct Local {
     pub regions: RegionMap,
     pub captures: HashMap<CaptureId, ActiveCapture>,
-    pub run_state: RunState,
     pub buffer_margin: f64,
     pub next_region_id: u64,
     pub interleave_buffer: Vec<(f32, f32)>,
@@ -56,7 +48,6 @@ impl Local {
         Self {
             regions: RegionMap::new(),
             captures: HashMap::new(),
-            run_state: RunState::Running,
             buffer_margin: 1.0,
             next_region_id: 0,
             interleave_buffer: Vec::with_capacity(base_chunk_size),
@@ -77,21 +68,6 @@ pub(super) fn handle_command(
     local: &mut Local,
 ) {
     match cmd {
-        ButlerCommand::Run => {
-            local.run_state = RunState::Running;
-        }
-        ButlerCommand::Pause => {
-            local.run_state = RunState::Paused;
-        }
-        ButlerCommand::WaitForCompletion => {
-            flush_all(
-                &mut local.captures,
-                &shared.metrics,
-                config.flush_threshold,
-                true,
-            );
-        }
-
         ButlerCommand::StreamAudioFile {
             channel_index,
             file_path,
@@ -109,35 +85,6 @@ pub(super) fn handle_command(
         ButlerCommand::StopStreaming { channel_index } => {
             if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
                 plan.stop_streaming();
-            }
-        }
-
-        ButlerCommand::SeekStream {
-            channel_index,
-            position_samples,
-        } => {
-            handle_seek_stream(channel_index, position_samples, shared, config, local);
-        }
-
-        ButlerCommand::SetLoopRange {
-            channel_index,
-            start_samples,
-            end_samples,
-            crossfade_samples,
-        } => {
-            handle_set_loop_range(
-                channel_index,
-                start_samples,
-                end_samples,
-                crossfade_samples,
-                shared,
-                local,
-            );
-        }
-
-        ButlerCommand::ClearLoopRange { channel_index } => {
-            if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
-                plan.clear_loop_range();
             }
         }
 
@@ -181,10 +128,6 @@ pub(super) fn handle_command(
             if let Some(cap_state) = local.captures.get_mut(&capture_id) {
                 flush_capture(cap_state, &shared.metrics, usize::MAX);
             }
-        }
-
-        ButlerCommand::SetBufferMargin { margin } => {
-            local.buffer_margin = margin.clamp(0.5, 3.0);
         }
 
         ButlerCommand::Shutdown => {
@@ -261,89 +204,6 @@ fn handle_stream_file(
         plan.pdc_preroll = pdc_preroll;
         plan.rt_state.set_src_ratio(src_ratio);
     }
-}
-
-fn handle_seek_stream(
-    channel_index: usize,
-    position_samples: u64,
-    shared: &Handles,
-    config: &BufferConfig,
-    local: &mut Local,
-) {
-    let Some(plan) = shared.plans.get(&channel_index) else {
-        return;
-    };
-    let Some(region_id) = plan.link.as_ref().map(|l| l.region_id) else {
-        return;
-    };
-    let Some(producer) = local.regions.get_mut(region_id) else {
-        return;
-    };
-    let crossfade_len = config.seek_crossfade_samples;
-
-    let pdc_preroll = plan.pdc_preroll;
-    let adjusted_position = position_samples.saturating_sub(pdc_preroll);
-
-    let fadeout = fadeout_samples(&plan, crossfade_len);
-
-    plan.set_seeking(true);
-
-    plan.flush_buffer();
-    producer.set_file_position(adjusted_position);
-
-    let fadein = fadein_samples(
-        &shared.cache,
-        &shared.metrics,
-        producer.file_path(),
-        adjusted_position,
-        crossfade_len,
-    );
-
-    if !fadeout.is_empty() && !fadein.is_empty() {
-        plan.rt_state.start_seek_crossfade(fadeout, fadein);
-    }
-
-    plan.set_seeking(false);
-}
-
-fn handle_set_loop_range(
-    channel_index: usize,
-    start_samples: u64,
-    end_samples: u64,
-    crossfade_samples: usize,
-    shared: &Handles,
-    local: &mut Local,
-) {
-    let Some(mut plan) = shared.plans.get_mut(&channel_index) else {
-        return;
-    };
-
-    let mut new_cfg = LoopConfig {
-        range: (start_samples, end_samples),
-        crossfade_samples,
-        preloop_buffer: None,
-    };
-
-    if let Some(link) = plan.link.as_ref() {
-        if let Some(producer) = local.regions.get_mut(link.region_id) {
-            if producer.file_position() > end_samples {
-                plan.flush_buffer();
-                producer.set_file_position(start_samples);
-            }
-
-            if crossfade_samples > 0 {
-                if let Some(wave) = shared.cache.get(producer.file_path()) {
-                    new_cfg.preloop_buffer = Some(capture_samples(
-                        &wave,
-                        start_samples as usize,
-                        crossfade_samples,
-                    ));
-                }
-            }
-        }
-    }
-
-    plan.set_loop_config(new_cfg);
 }
 
 #[cfg(test)]

@@ -62,9 +62,17 @@ pub use convolution::{
 /// extra workspace member pointless. Envelope primitives still come
 /// from the `audio_automation` crate — re-exported here so consumers
 /// only need one import path.
+///
+/// Both halves of automation live here: the playback-side [`AutomationLane`]
+/// and the recording-side [`Manager`]/[`Recorder`]/[`RecordingTarget`]
+/// (write/touch/latch capture during a take).
 #[cfg(feature = "automation")]
 pub mod automation {
     pub use crate::automation_lane::{AutomationLane, LiveAutomationLane};
+    pub use crate::automation_recording::{
+        AutomationRecordingConfig, AutomationSnapshot, AutomationTarget, Manager, Recorder,
+        RecordingTarget,
+    };
 
     pub use audio_automation::{
         AutomationClip, AutomationEnvelope, AutomationPoint, AutomationState, CurveType,
@@ -73,6 +81,9 @@ pub mod automation {
 
 #[cfg(feature = "automation")]
 mod automation_lane;
+
+#[cfg(feature = "automation")]
+mod automation_recording;
 
 /// Bevy ECS integration: spawn pipelines, param reconcilers, and plugins for
 /// the DSP / spatial / automation / convolution units. Mirrors

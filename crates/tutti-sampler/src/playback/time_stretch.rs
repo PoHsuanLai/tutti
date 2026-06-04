@@ -1,16 +1,12 @@
 //! Time-stretch: lock-free pitch + duration control on a sampler.
 //!
-//! `TimeStretch` is a companion to [`super::playback::PlayAudio`] —
+//! `TimeStretch` is a companion to [`super::trigger::PlayAudio`] —
 //! when present alongside `PlayAudio`, the playback system wraps the
 //! `SamplerUnit` in a `TimeStretchUnit` and inserts a
 //! [`TimeStretchControl`] for lock-free realtime updates.
 
-use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
-use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_reflect::prelude::*;
-
-use super::playback::audio_playback_system;
 
 /// Companion component for `PlayAudio` entities that enables time stretching.
 ///
@@ -73,16 +69,3 @@ pub fn time_stretch_sync_system(
     }
 }
 
-/// Bevy plugin: time-stretch parameter sync.
-///
-/// Depends on [`crate::playback::TuttiPlaybackPlugin`] for ordering — runs after
-/// `audio_playback_system` so the `TimeStretchControl` component exists
-/// before this system tries to update it.
-pub struct TuttiTimeStretchPlugin;
-
-impl Plugin for TuttiTimeStretchPlugin {
-    fn build(&self, app: &mut App) {
-        app.register_type::<TimeStretch>();
-        app.add_systems(Update, time_stretch_sync_system.after(audio_playback_system));
-    }
-}

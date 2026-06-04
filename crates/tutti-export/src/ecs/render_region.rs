@@ -43,7 +43,7 @@ use crate::{Error as ExportError, Rendered};
 
 use tutti_core::ecs::engine_ready;
 use tutti_core::ecs::{AudioConfig, TuttiGraphRes};
-use tutti_sampler::ecs::TrackClipReaderUnit;
+use tutti_sampler::TrackClipReaderUnit;
 use tutti_sampler::SamplerUnit;
 
 /// Ordering anchor for the three-step region render. A clip-aware downstream
@@ -422,7 +422,7 @@ impl Plugin for TuttiRegionRenderPlugin {
 mod tests {
     use super::*;
     use tutti_core::{Bpm, SampleRate, Wave};
-    use tutti_sampler::ecs::{ClipCommand, SlotId, TrackClipReaderUnit};
+    use tutti_sampler::{ClipCommand, SlotId, TrackClipReaderUnit};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     struct MockTransport {

@@ -104,23 +104,9 @@ impl ChannelPlan {
         }
     }
 
-    pub fn clear_loop_range(&mut self) {
-        if let Some(link) = self.link.as_mut() {
-            link.loop_config = None;
-        }
-        self.rt_state.clear_loop_crossfade();
-    }
-
     /// The active loop config, if streaming and looping.
     pub(crate) fn loop_config(&self) -> Option<&LoopConfig> {
         self.link.as_ref()?.loop_config.as_ref()
-    }
-
-    /// Mutable access to the loop config slot on the active link.
-    pub(crate) fn set_loop_config(&mut self, config: LoopConfig) {
-        if let Some(link) = self.link.as_mut() {
-            link.loop_config = Some(config);
-        }
     }
 
     /// Classify the current read position relative to the loop.
@@ -163,20 +149,6 @@ mod tests {
     fn test_loop_status_normal() {
         let state = ChannelPlan::default();
         assert_eq!(state.check_loop_status(), LoopStatus::Normal);
-    }
-
-    #[test]
-    fn test_clear_loop_range_resets_config() {
-        let mut state = ChannelPlan::default();
-        state.set_loop_config(LoopConfig {
-            range: (100, 500),
-            crossfade_samples: 64,
-            preloop_buffer: Some(vec![(0.5, 0.5)]),
-        });
-
-        state.clear_loop_range();
-
-        assert!(state.loop_config().is_none());
     }
 
     #[test]

@@ -13,7 +13,7 @@ use smol::Timer;
 
 use super::command::ButlerCommand;
 use super::config::BufferConfig;
-use super::handlers::{handle_command, Handles, Local, RunState};
+use super::handlers::{handle_command, Handles, Local};
 use super::io::capture::flush_all;
 use super::io::loops::handle_loops;
 use super::io::pdc::apply_pdc_updates;
@@ -43,15 +43,6 @@ pub(super) async fn butler_loop_async(
         // Drain all immediately available commands (non-blocking)
         while let Ok(cmd) = rx.try_recv() {
             handle_command(cmd, &shared, &config, sample_rate, &mut local);
-        }
-
-        // Paused: await next command (replaces sleep(10ms))
-        if local.run_state == RunState::Paused {
-            match rx.recv().await {
-                Ok(cmd) => handle_command(cmd, &shared, &config, sample_rate, &mut local),
-                Err(_) => break,
-            }
-            continue;
         }
 
         // Idle: race command recv against 1ms timer

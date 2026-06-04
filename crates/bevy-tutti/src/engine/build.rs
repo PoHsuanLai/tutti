@@ -40,7 +40,6 @@ use tutti_midi_runtime::MidiRoutingTable;
 use tutti_midi_io::ecs::MidiIoRes;
 
 #[cfg(feature = "sampler")]
-use tutti_sampler::ecs::SamplerRes;
 #[cfg(feature = "sampler")]
 use tutti_sampler::Sampler;
 
@@ -141,11 +140,13 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     audio_engine.start(callback_state.clone())?;
 
     #[cfg(feature = "sampler")]
-    let sampler = Arc::new(
-        Sampler::builder(sample_rate)
-            .pdc(pdc_snapshot.clone())
-            .build()?,
-    );
+    let sampler = Sampler::new(
+        sample_rate,
+        tutti_sampler::SamplerConfig {
+            pdc: Some(pdc_snapshot.clone()),
+            ..Default::default()
+        },
+    )?;
     // Silence the unused warning in the non-sampler config.
     #[cfg(not(feature = "sampler"))]
     let _ = &pdc_snapshot;
@@ -191,8 +192,8 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
 
     #[cfg(feature = "sampler")]
     {
-        app.insert_resource(tutti_sampler::ecs::init_auditioner(&sampler));
-        app.insert_resource(SamplerRes(sampler));
+        app.insert_resource(tutti_sampler::init_auditioner(&sampler));
+        app.insert_resource(sampler);
     }
 
     #[cfg(feature = "analysis")]

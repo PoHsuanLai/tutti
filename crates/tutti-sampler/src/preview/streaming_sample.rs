@@ -1,4 +1,4 @@
-//! Path-backed streaming-sample asset.
+//! Path-backed streaming-sample asset + its Bevy `AssetLoader`.
 //!
 //! Long audio files that shouldn't live in RAM. [`StreamingSample::probe`]
 //! reads the WAV header (via `hound`, already a sampler dependency) and
@@ -18,6 +18,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use bevy_asset::{io::file::FileAssetReader, io::Reader, AssetLoader, LoadContext};
+use bevy_reflect::TypePath;
 use tutti_core::{AtomicF32, Ordering};
 
 /// Shared lock-free loading progress for a streaming sample.
@@ -110,5 +112,39 @@ impl StreamingSample {
             bits_per_sample: spec.bits_per_sample,
             progress,
         })
+    }
+}
+
+/// Path-probing [`AssetLoader`] for [`StreamingSample`]. Resolves the load
+/// context path to a local filesystem path and probes the header via
+/// [`StreamingSample::probe`]; the resulting asset is a locator + metadata.
+#[derive(Default, TypePath)]
+pub struct StreamingSampleLoader;
+
+#[derive(Debug, thiserror::Error)]
+pub enum StreamingSampleLoaderError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Probe(StreamingSampleProbeError),
+}
+
+impl AssetLoader for StreamingSampleLoader {
+    type Asset = StreamingSample;
+    type Settings = ();
+    type Error = StreamingSampleLoaderError;
+
+    async fn load(
+        &self,
+        _reader: &mut dyn Reader,
+        _settings: &Self::Settings,
+        load_context: &mut LoadContext<'_>,
+    ) -> Result<Self::Asset, Self::Error> {
+        let full_path = FileAssetReader::get_base_path().join(load_context.path().path());
+        StreamingSample::probe(&full_path).map_err(StreamingSampleLoaderError::Probe)
+    }
+
+    fn extensions(&self) -> &[&str] {
+        StreamingSample::EXTENSIONS
     }
 }

@@ -1,24 +1,20 @@
-//! `PlayAudio` trigger → `SamplerUnit` graph node + `AudioEmitter` marker.
+//! `PlayAudio` trigger → `SamplerUnit` graph node, plus `AudioVolume` param
+//! sync and finished-sample cleanup. The playback-domain plugin lives in
+//! [`super`](crate::playback); this file is the trigger lifecycle itself.
 
 use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
+use tutti_core::ecs::{AudioConfig, GraphDirty, TuttiGraphRes};
 use tutti_core::WaveAsset;
 
-// `AudioEmitter` + `AudioPlaybackState` are leaf-agnostic value types; they
-// live in tutti-core's ECS hub. Re-export so existing
-// `playback::emitter::{AudioEmitter, AudioPlaybackState}` paths hold.
-// `PlayAudio` + `audio_playback_system` stay here (they build a `SamplerUnit`).
-pub use tutti_core::ecs::{AudioEmitter, AudioPlaybackState};
-
-use tutti_core::ecs::{AudioConfig, TuttiGraphRes};
-
-use crate::ecs::time_stretch::{TimeStretch, TimeStretchControl};
+use super::time_stretch::{TimeStretch, TimeStretchControl};
 use crate::SamplerUnit;
 
-#[cfg(doc)]
-use super::cleanup::DespawnOnFinish;
+// `AudioEmitter` + `AudioPlaybackState` are leaf-agnostic value types; they
+// live in tutti-core's ECS hub. Re-export so consumers keep one import site.
+pub use tutti_core::ecs::{AudioEmitter, AudioPlaybackState};
 
 /// Trigger component: spawn an entity with this to start audio playback.
 ///
@@ -89,7 +85,7 @@ pub fn audio_playback_system(
     audio_assets: Res<Assets<WaveAsset>>,
     mut graph: ResMut<TuttiGraphRes>,
     config: Res<AudioConfig>,
-    mut dirty: ResMut<tutti_core::ecs::GraphDirty>,
+    mut dirty: ResMut<GraphDirty>,
     // Steady-state, not `Added`: an entity stays in this set until it gains an
     // `AudioEmitter`, so a not-yet-loaded `WaveAsset` is retried each frame
     // rather than dropped after the insertion frame (the fire-once trap).
@@ -150,14 +146,98 @@ pub fn audio_playback_system(
     }
 }
 
+/// Volume control component. Synced to the tutti graph node by `audio_parameter_sync_system`.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Reflect)]
+#[reflect(Component, Default, Clone)]
+pub struct AudioVolume(pub f32);
+
+impl Default for AudioVolume {
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
+/// Syncs `AudioVolume` component changes to the tutti graph node's gain.
+pub fn audio_parameter_sync_system(
+    mut graph: ResMut<TuttiGraphRes>,
+    mut dirty: ResMut<GraphDirty>,
+    query: Query<(&AudioEmitter, &AudioVolume), Changed<AudioVolume>>,
+) {
+    let mut edited = false;
+    for (emitter, volume) in query.iter() {
+        if let Some(sampler) = graph.0.node_mut::<SamplerUnit>(emitter.node_id) {
+            sampler.set_gain(volume.0);
+            edited = true;
+        }
+    }
+
+    // Stage only; the Commit-phase `commit_graph` coalesces (this system is
+    // anchored before that phase).
+    if edited {
+        dirty.0 = true;
+    }
+}
+
+/// Marker component: entity will be despawned when its sample finishes playing.
+#[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
+#[reflect(Component, Default)]
+pub struct DespawnOnFinish;
+
+/// Polls tutti graph for finished (non-looping) samples and updates
+/// `AudioPlaybackState`. Removes graph nodes and optionally despawns entities.
+pub fn audio_cleanup_system(
+    mut commands: Commands,
+    mut graph: ResMut<TuttiGraphRes>,
+    mut dirty: ResMut<GraphDirty>,
+    mut query: Query<(
+        Entity,
+        &AudioEmitter,
+        &mut AudioPlaybackState,
+        Option<&DespawnOnFinish>,
+    )>,
+) {
+    let mut edited = false;
+
+    for (entity, emitter, mut state, despawn) in query.iter_mut() {
+        if *state != AudioPlaybackState::Playing {
+            continue;
+        }
+
+        let is_playing = graph
+            .0
+            .node::<SamplerUnit>(emitter.node_id)
+            .map(|s| s.is_playing())
+            .unwrap_or(false);
+
+        if !is_playing {
+            *state = AudioPlaybackState::Finished;
+
+            if graph.0.contains(emitter.node_id) {
+                graph.0.remove(emitter.node_id);
+                edited = true;
+            }
+
+            if despawn.is_some() {
+                commands.entity(entity).despawn();
+            }
+        }
+    }
+
+    // Stage only; the Commit-phase `commit_graph` coalesces (this system is
+    // anchored before that phase).
+    if edited {
+        dirty.0 = true;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::ecs::{AudioConfig, GraphDirty, TuttiGraphRes};
-    use tutti_core::TuttiGraph;
     use bevy_app::{App, Update};
     use bevy_asset::{AssetApp, AssetPlugin, Assets};
     use std::sync::Arc;
+    use tutti_core::ecs::{AudioConfig, GraphDirty, TuttiGraphRes};
+    use tutti_core::TuttiGraph;
 
     /// Build a bare `TuttiGraph` directly (no `TuttiEngine`, which lives in
     /// bevy-tutti). Feature-agnostic via `TuttiGraph::empty` — tutti-core owns

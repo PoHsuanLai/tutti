@@ -185,7 +185,7 @@ impl Recorder {
         channel_index: usize,
         sample_position: u64,
         beat: Option<f64>,
-        xrun_type: crate::capture_impl::session::XRunType,
+        xrun_type: crate::recording::capture::session::XRunType,
     ) -> crate::error::Result<()> {
         self.with_session(channel_index, |s| {
             s.record_xrun(sample_position, beat, xrun_type)
@@ -370,10 +370,15 @@ impl Recorder {
                 crate::error::Error::Recording(format!("Failed to send RemoveCapture: {}", e))
             })?;
 
-        let duration_seconds = crate::mmap_reader::MmapReader::open(&file_path)
+        // Probe the just-written WAV header for its duration.
+        let duration_seconds = hound::WavReader::open(&file_path)
             .map(|reader| {
-                let info = reader.info();
-                info.total_frames as f64 / f64::from(info.sample_rate)
+                let spec = reader.spec();
+                if spec.sample_rate == 0 {
+                    0.0
+                } else {
+                    reader.duration() as f64 / f64::from(spec.sample_rate)
+                }
             })
             .unwrap_or(0.0);
 
@@ -523,7 +528,7 @@ mod tests {
 
     #[test]
     fn test_xrun_tracking() {
-        use crate::capture_impl::session::XRunType;
+        use crate::recording::capture::session::XRunType;
 
         let manager = create_test_manager();
 
@@ -552,11 +557,13 @@ mod tests {
     fn test_punch_all_sessions() {
         let manager = create_test_manager();
 
-        let config = crate::capture::Config::builder()
-            .channel(0)
-            .source(Source::MidiInput)
-            .punch_range(4.0, 8.0)
-            .build();
+        let config = crate::capture::Config {
+            channel_index: 0,
+            source: Source::MidiInput,
+            punch_in: Some(4.0),
+            punch_out: Some(8.0),
+            ..Default::default()
+        };
 
         let session = crate::capture::Session::new(config, 44100.0, 0.0);
         manager.sessions.insert(0, std::sync::Arc::new(session));
@@ -577,11 +584,13 @@ mod tests {
     fn test_punch_events_in_recorded_data() {
         let manager = create_test_manager();
 
-        let config = crate::capture::Config::builder()
-            .channel(0)
-            .source(Source::MidiInput)
-            .punch_range(4.0, 8.0)
-            .build();
+        let config = crate::capture::Config {
+            channel_index: 0,
+            source: Source::MidiInput,
+            punch_in: Some(4.0),
+            punch_out: Some(8.0),
+            ..Default::default()
+        };
 
         let session = crate::capture::Session::new(config, 44100.0, 0.0);
         manager.sessions.insert(0, std::sync::Arc::new(session));

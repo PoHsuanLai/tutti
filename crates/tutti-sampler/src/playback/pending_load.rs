@@ -1,6 +1,6 @@
 //! Deferred sampler load — bridges `bevy_asset` and entity-as-node.
 //!
-//! [`PlayAudio`](super::playback::PlayAudio) is a one-shot lifecycle
+//! [`PlayAudio`](crate::playback::PlayAudio) is a one-shot lifecycle
 //! trigger: it spawns a sampler node, pipes it to output, and (optionally)
 //! cleans up when the wave finishes. That's the right shape for fire-and-
 //! forget SFX, but a DAW track wants a long-lived entity-as-node — one

@@ -108,10 +108,6 @@ impl ButlerThread {
         Arc::clone(&self.shared.plans)
     }
 
-    pub fn metrics(&self) -> Arc<Metrics> {
-        Arc::clone(&self.shared.metrics)
-    }
-
     pub fn cache(&self) -> Arc<LruCache> {
         Arc::clone(&self.shared.cache)
     }

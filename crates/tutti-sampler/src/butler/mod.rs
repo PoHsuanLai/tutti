@@ -13,21 +13,16 @@ mod prefetch;
 mod region_map;
 mod rt_state;
 mod thread;
-mod transport;
 mod varispeed;
 
 pub(crate) use cache::LruCache;
-pub use cache::Stats;
 pub(crate) use command::{ButlerCommand, CaptureId, CaptureIdGen};
 pub(crate) use config::BufferConfig;
-pub(crate) use metrics::Metrics;
-pub use metrics::Snapshot;
 pub(crate) use plan::ChannelPlan;
 pub(crate) use prefetch::{CaptureBuffer, CaptureWriter, RegionReader};
 pub(crate) use rt_state::RtState;
 pub(crate) use thread::ButlerThread;
-pub(crate) use transport::TransportBridge;
-pub use varispeed::{PlayDirection, Varispeed};
+pub(crate) use varispeed::PlayDirection;
 
 // Test-only re-exports for unit tests outside the butler module tree (e.g.
 // `units::streaming_sampler`) that build readers directly. Gated so they

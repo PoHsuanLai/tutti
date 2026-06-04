@@ -1,4 +1,7 @@
-//! Sampler recording: `StartRecording` / `StopRecording` triggers.
+//! Sampler recording: `StartRecording` / `StopRecording` triggers (ECS) plus
+//! the capture bookkeeping impl ([`capture`]: recorder, sessions, config).
+
+pub mod capture;
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
@@ -7,7 +10,7 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 
 use tutti_core::ecs::{engine_ready, TransportRes};
 
-use super::SamplerRes;
+use crate::Sampler;
 
 /// Fire-and-forget request to start recording on a channel.
 ///
@@ -94,22 +97,26 @@ pub struct RecordingResult {
 /// session.
 pub fn recording_start_system(
     mut commands: Commands,
-    sampler: Res<SamplerRes>,
+    sampler: Res<Sampler>,
     transport: Res<TransportRes>,
     mut events: MessageReader<StartRecording>,
 ) {
     for start in events.read() {
-        let mut config = crate::capture::Config::builder()
-            .channel(start.channel_index)
-            .source(start.source)
-            .mode(start.mode);
-        if let Some((in_beat, out_beat)) = start.punch {
-            config = config.punch_range(in_beat, out_beat);
-        }
+        let (punch_in, punch_out) = match start.punch {
+            Some((in_beat, out_beat)) => (Some(in_beat), Some(out_beat)),
+            None => (None, None),
+        };
+        let config = crate::capture::Config {
+            channel_index: start.channel_index,
+            source: start.source,
+            mode: start.mode,
+            punch_in,
+            punch_out,
+            ..Default::default()
+        };
         match sampler
-            .0
             .recording()
-            .start_recording_with_config(config.build(), transport.current_beat())
+            .start_recording_with_config(config, transport.current_beat())
         {
             Ok(()) => {
                 commands.spawn(RecordingActive {
@@ -142,12 +149,12 @@ pub fn recording_start_system(
 /// data.
 pub fn recording_stop_system(
     mut commands: Commands,
-    sampler: Res<SamplerRes>,
+    sampler: Res<Sampler>,
     mut events: MessageReader<StopRecording>,
     active_query: Query<(Entity, &RecordingActive)>,
 ) {
     for stop in events.read() {
-        match sampler.0.recording().stop_recording(stop.channel_index) {
+        match sampler.recording().stop_recording(stop.channel_index) {
             Ok(data) => {
                 bevy_log::info!(
                     "Recording stopped on channel {}, data captured",

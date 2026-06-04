@@ -1,7 +1,7 @@
 //! Fluent API handle for metering control.
 
 use super::{MeteringManager, StereoAnalysisSnapshot};
-use crate::compat::Arc;
+use std::sync::Arc;
 
 /// Fluent API handle for metering control.
 ///

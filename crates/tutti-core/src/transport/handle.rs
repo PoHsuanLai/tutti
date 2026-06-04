@@ -2,7 +2,7 @@
 
 use super::click::{ClickState, MetronomeMode};
 use super::{MotionState, TransportManager};
-use crate::compat::Arc;
+use std::sync::Arc;
 use crate::params::{Bpm, Linear};
 
 /// Fluent API handle for metronome control.

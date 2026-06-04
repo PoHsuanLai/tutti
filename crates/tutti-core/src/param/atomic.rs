@@ -14,7 +14,7 @@
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 
-use crate::compat::Arc;
+use std::sync::Arc;
 use crate::param::units::Unit;
 use atomic_float::AtomicF32;
 

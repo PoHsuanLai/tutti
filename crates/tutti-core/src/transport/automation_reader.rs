@@ -1,6 +1,7 @@
 //! Sample-accurate automation reader that evaluates envelopes from beat position input.
 
-use crate::compat::{any, Arc, Vec};
+use std::any;
+use std::sync::Arc;
 use fundsp::prelude::*;
 
 pub type AutomationEnvelopeFn = Arc<dyn Fn(f64) -> f32 + Send + Sync>;

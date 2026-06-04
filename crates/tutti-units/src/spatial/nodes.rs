@@ -1,6 +1,6 @@
 use crate::Result;
 #[cfg(not(feature = "std"))]
-use tutti_core::compat::{vec, Vec};
+use std::vec::Vec;
 use tutti_core::AudioUnit;
 use tutti_core::{BufferMut, BufferRef, Degrees, Linear, Param, SignalFrame};
 

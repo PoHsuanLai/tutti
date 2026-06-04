@@ -1,6 +1,6 @@
 //! Error types for tutti-core.
 
-use crate::compat::String;
+use std::string::String;
 use thiserror::Error;
 
 #[derive(Error, Debug)]

@@ -11,7 +11,7 @@
 #![cfg(feature = "std")]
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::compat::Mutex;
+use parking_lot::Mutex;
 use tutti_core::dsp::{bell_hz, limiter_stereo, pan, sine_hz, AudioUnit};
 use tutti_core::processor::{AudioProcessor, GraphProcessor};
 use tutti_core::{SampleRate, TransportClock, TransportManager, GraphNet};

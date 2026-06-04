@@ -5,7 +5,7 @@
 //! `Net` directly for all pure graph operations (push, connect, remove, etc.).
 //! The rest of the API is intentionally minimal.
 
-use crate::compat::{Box, Vec};
+use std::boxed::Box;
 use crate::pdc;
 
 use fundsp::net::{Net, NodeId, Source};

@@ -1,6 +1,7 @@
 //! Sample-accurate transport clock.
 
-use crate::compat::{any, Arc};
+use std::any;
+use std::sync::Arc;
 use crate::{AtomicBool, AtomicF64, Ordering};
 use fundsp::prelude::*;
 

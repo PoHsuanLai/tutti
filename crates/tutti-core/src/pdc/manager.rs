@@ -1,6 +1,6 @@
 //! Plugin Delay Compensation (PDC) Manager.
 
-use crate::compat::{Arc, Vec};
+use std::sync::Arc;
 use crate::{AtomicUsize, Ordering};
 use arc_swap::ArcSwap;
 

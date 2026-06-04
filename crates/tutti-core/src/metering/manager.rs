@@ -1,7 +1,9 @@
 //! Central metering manager.
 
 use super::{AtomicAmplitude, AtomicLufs, AtomicStereoAnalysis, CpuMeter, StereoAnalysisSnapshot};
-use crate::compat::{Arc, HashMap, Mutex};
+use std::sync::Arc;
+use hashbrown::HashMap;
+use parking_lot::Mutex;
 use crate::Ordering;
 use crossbeam_channel::Receiver;
 use ebur128::{EbuR128, Mode};

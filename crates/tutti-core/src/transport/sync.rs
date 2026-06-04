@@ -5,7 +5,7 @@
 //! - MIDI Clock - 24 PPQN beat clock
 //! - Linear Timecode (LTC) - Audio-embedded SMPTE timecode
 
-use crate::compat::Ordering;
+use std::sync::atomic::Ordering;
 use crate::{AtomicBool, AtomicF64, AtomicU8};
 
 /// External sync source type.

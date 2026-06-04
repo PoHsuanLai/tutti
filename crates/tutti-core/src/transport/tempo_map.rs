@@ -5,7 +5,7 @@
 //! rates (44100, 48000, 88200, 96000). This avoids floating-point drift that
 //! accumulates when converting beats ↔ seconds ↔ samples via f64 arithmetic.
 
-use crate::compat::{Arc, Vec};
+use std::sync::Arc;
 use crate::params::{Bpm, SampleRate};
 
 /// 2^10 × 3^2 × 5^4 × 7^2 — divides evenly by 44100, 48000, 88200, 96000.

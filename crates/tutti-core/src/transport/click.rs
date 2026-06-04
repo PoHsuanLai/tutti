@@ -4,7 +4,7 @@
 //! (volume, accent, mode) from [`ClickSettings`].
 
 use super::TransportReader;
-use crate::compat::{Arc, Vec};
+use std::sync::Arc;
 use crate::{AtomicF32, AtomicU32, AtomicU8, Ordering, TransportHandle};
 use fundsp::audionode::AudioNode;
 use fundsp::prelude::*;

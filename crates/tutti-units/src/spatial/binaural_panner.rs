@@ -1,6 +1,6 @@
 use core::sync::atomic::Ordering;
 #[cfg(not(feature = "std"))]
-use tutti_core::compat::{vec, Vec};
+use std::vec::Vec;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::SampleRate;

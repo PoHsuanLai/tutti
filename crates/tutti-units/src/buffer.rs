@@ -7,7 +7,8 @@
 #[cfg(feature = "std")]
 use std::collections::VecDeque;
 #[cfg(not(feature = "std"))]
-use tutti_core::compat::{vec, Vec, VecDeque};
+use std::collections::VecDeque;
+use std::vec::Vec;
 
 /// Fixed-capacity ring buffer with explicit write position.
 ///

@@ -229,7 +229,7 @@ fn write_output<T: cpal::SizedSample + cpal::FromSample<f32>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::compat::Mutex;
+    use parking_lot::Mutex;
     use tutti_core::processor::GraphProcessor;
     use tutti_core::{MeteringManager, Ordering, TransportClock, TransportManager, GraphNet};
 

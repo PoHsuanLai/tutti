@@ -69,7 +69,14 @@ pub(crate) mod pdc;
 pub use pdc::{PdcDelayUnit, PdcManager, PdcState};
 
 pub use atomic_float::{AtomicF32, AtomicF64};
-pub use compat::{Arc, AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+// Convenience re-exports of the std primitives the RT/DSP vocabulary leans on,
+// so sibling crates can write `tutti_core::Arc` etc. (`parking_lot` locks and
+// `hashbrown` maps are deliberate non-std choices — sibling crates name those
+// crates directly rather than re-exporting them here.)
+pub use std::sync::atomic::{
+    AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+};
+pub use std::sync::Arc;
 
 pub use tutti_types::{AudioThreadCell, RtEventBuf};
 
@@ -107,10 +114,6 @@ pub use fundsp::signal::{Signal, SignalFrame};
 pub use fundsp::wave::Wave;
 pub use fundsp::MAX_BUFFER_SIZE;
 pub use fundsp::{Sample, F32, F64};
-
-/// Shared re-exports for the core data structures (parking_lot locks,
-/// hashbrown maps, std collections/atomics).
-pub mod compat;
 
 pub mod node_id;
 

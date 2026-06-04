@@ -4,7 +4,7 @@
 //! walk the graph in topological order, compute the worst-case latency at each
 //! node's input, then insert delays on shorter paths to align them at merge points.
 
-use crate::compat::{HashMap, Vec};
+use hashbrown::HashMap;
 use std::collections::VecDeque;
 use fundsp::audiounit::AudioUnit;
 use fundsp::net::{Net, NodeId, Source};
@@ -236,7 +236,7 @@ fn topological_sort(net: &Net, node_ids: &[NodeId]) -> Vec<NodeId> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compat::Box;
+    use std::boxed::Box;
     use fundsp::prelude::*;
 
     #[test]

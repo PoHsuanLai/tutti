@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use assert_no_alloc::AllocDisabler;
-use tutti_core::compat::Mutex;
+use parking_lot::Mutex;
 use tutti_core::processor::{AudioProcessor, GraphProcessor, MidiProcessor};
 use tutti_core::{TransportClock, TransportManager, GraphNet};
 use tutti_midi_types::ump::MidiEvent;

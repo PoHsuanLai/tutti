@@ -6,7 +6,7 @@
 //! wraps another processor to split the buffer on MIDI event boundaries for
 //! sample-accurate event timing.
 
-use crate::compat::Arc;
+use std::sync::Arc;
 use crate::transport::TransportManager;
 use crate::{AtomicU32, AudioThreadCell, Ordering};
 use fundsp::audiounit::AudioUnit;
@@ -120,7 +120,7 @@ impl AudioProcessor for GraphProcessor {
 #[cfg(feature = "midi")]
 mod midi_processor {
     use super::AudioProcessor;
-    use crate::compat::Arc;
+    use std::sync::Arc;
     use crate::RtEventBuf;
     use arc_swap::ArcSwap;
     use tutti_midi_types::ump::MidiEvent;

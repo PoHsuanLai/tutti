@@ -1,6 +1,6 @@
 //! Transport manager with FSM-based state management.
 
-use crate::compat::Arc;
+use std::sync::Arc;
 use crate::AudioThreadCell;
 use arc_swap::ArcSwap;
 use crossbeam_queue::ArrayQueue;
@@ -9,7 +9,7 @@ use super::fsm::{LocateState, TransportEvent, TransportFSM};
 use super::position::{LoopRange, MusicalPosition};
 use super::sync::{SyncSnapshot, SyncSource, SyncState};
 use super::tempo_map::{TempoMap, TempoMapSnapshot, TimeSignature, BBT};
-use crate::compat::Ordering;
+use std::sync::atomic::Ordering;
 use crate::params::{Bpm, SampleRate};
 use crate::{AtomicBool, AtomicF64, AtomicU32, AtomicU8};
 
@@ -748,7 +748,7 @@ mod tests {
     #[cfg(feature = "std")]
     #[test]
     fn test_concurrent_access() {
-        use crate::compat::{Arc, Vec};
+        use std::sync::Arc;
         use std::thread;
 
         let manager = Arc::new(TransportManager::new(48000.0));

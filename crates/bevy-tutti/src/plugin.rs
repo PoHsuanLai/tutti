@@ -12,7 +12,6 @@ use bevy_log::{error, info};
 use crate::TuttiEngine;
 
 use crate::device_state;
-use crate::TuttiDriver;
 #[cfg(all(feature = "soundfont", feature = "midi"))]
 use tutti_core::ecs::engine_ready;
 use tutti_core::ecs::{AudioConfig, MeteringRes, TransportRes, TuttiGraphPlugin, TuttiGraphRes};

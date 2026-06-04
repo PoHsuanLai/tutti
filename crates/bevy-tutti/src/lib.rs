@@ -53,12 +53,10 @@ mod device_state;
 mod plugin;
 mod resources;
 
-pub mod graph;
-// The DSP / automation / spatial / convolution ECS code (spawn pipelines,
-// param reconcilers, plugins) now lives in `tutti_units::ecs`. bevy-tutti
-// re-exports it via the prelude under the same feature gates.
-
-// `analysis` ECS folded into `tutti_analysis::ecs`; re-exported via the prelude.
+// The graph reconcile hub + `TuttiGraphPlugin` live in `tutti_core::ecs`; the
+// leaf reconcilers in their subsystem crates (`tutti_units::ecs`,
+// `tutti_sampler::ecs`, `tutti_plugin_host`, `tutti_midi_io::ecs`). `plugin.rs`
+// (the composition root) adds them directly — bevy-tutti no longer wraps any of it.
 // The export pipeline ECS (StartExport / TuttiExportPlugin) and the offline
 // region render (TuttiRegionRenderPlugin) now live in `tutti_export::ecs`;
 // bevy-tutti re-exports them via the prelude under the same feature gates.

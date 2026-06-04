@@ -13,8 +13,8 @@ use crate::TuttiEngine;
 
 use crate::device_state;
 #[cfg(all(feature = "soundfont", feature = "midi"))]
-use crate::graph::engine_ready;
-use crate::graph::TuttiGraphPlugin;
+use tutti_core::ecs::engine_ready;
+use tutti_core::ecs::TuttiGraphPlugin;
 use crate::resources::*;
 
 #[cfg(feature = "midi")]

@@ -25,8 +25,6 @@ pub use dsp_params::{
 // `tutti_units::node_markers::*`.
 
 pub mod buffer;
-pub mod coeff_cache;
-pub mod smoothing;
 
 mod lfo;
 pub use lfo::{LfoMode, LfoNode, LfoShape};
@@ -62,46 +60,20 @@ pub use convolution::{
     ConvolverNode, IrChannelConfig, StereoConvolverNode, WetDry,
 };
 
-/// Transport-driven envelope nodes. Reads beat position from a
-/// `TransportReader` and emits a control signal sample-per-sample.
-///
-/// Was previously its own `tutti-automation` crate; folded in once the
-/// only-uses-it consumer (`AutomationLane` as an `AudioUnit`) made the
-/// extra workspace member pointless. Envelope primitives still come
-/// from the `audio_automation` crate — re-exported here so consumers
-/// only need one import path.
-///
-/// Both halves of automation live here: the playback-side [`AutomationLane`]
-/// and the recording-side [`Manager`]/[`Recorder`]/[`RecordingTarget`]
-/// (write/touch/latch capture during a take).
+/// Transport-driven envelope automation — the playback-side `AutomationLane`
+/// `AudioUnit`, the recording-side `Manager`/`Recorder`, and the Bevy ECS
+/// binding ([`automation::graph`]). See the module docs.
 #[cfg(feature = "automation")]
-pub mod automation {
-    pub use crate::automation_lane::{AutomationLane, LiveAutomationLane};
-    pub use crate::automation_recording::{
-        AutomationRecordingConfig, AutomationSnapshot, AutomationTarget, Manager, Recorder,
-        RecordingTarget,
-    };
-
-    pub use audio_automation::{
-        AutomationClip, AutomationEnvelope, AutomationPoint, AutomationState, CurveType,
-    };
-}
-
-#[cfg(feature = "automation")]
-mod automation_lane;
-
-#[cfg(feature = "automation")]
-mod automation_recording;
+pub mod automation;
 
 // Bevy ECS integration for the units domain — the audio-graph reconcile pieces
-// that bind the DSP / spatial / automation / convolution units into tutti's
-// entity-as-node graph. Each duty is its own crate-root module carrying its own
-// `Tutti*Plugin` (the bevy_text shape — no central `ecs` hub).
+// that bind the DSP / spatial / convolution units into tutti's entity-as-node
+// graph. Each duty is its own crate-root module carrying its own `Tutti*Plugin`
+// (the bevy_text shape — no central `ecs` hub).
 //
-// `*_graph` suffixes disambiguate the graph-binding layer from the same-named
-// DSP-unit module it drives (`spatial/` the panner nodes vs `spatial_graph` the
-// reconciler; `automation_lane`/`automation_recording` the DSP vs
-// `automation_graph` the ECS lane binding).
+// The `spatial_graph` suffix disambiguates the graph-binding layer from the
+// same-named `spatial/` DSP-unit module it drives (the panner nodes). The
+// automation graph binding lives inside `automation::graph` alongside its DSP.
 pub mod dsp;
 pub mod reconcile;
 pub use dsp::{spawn_dsp_node, spawn_lfo_nodes, AddDspNode, DspNode, SpawnParams, TuttiDspPlugin};
@@ -122,9 +94,7 @@ pub use spatial_graph::{
 };
 
 #[cfg(feature = "automation")]
-pub mod automation_graph;
-#[cfg(feature = "automation")]
-pub use automation_graph::{
+pub use automation::graph::{
     automation_lane_system, reconcile_automation_writes, update_automation_envelope_system,
     AddAutomationLane, AutomationDrivesParam, AutomationLaneEmitter, AutomationLaneNode,
     AutomationParam, TuttiAutomationPlugin, UpdateAutomationEnvelope,

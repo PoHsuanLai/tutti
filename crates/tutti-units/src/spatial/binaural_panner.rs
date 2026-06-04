@@ -3,7 +3,7 @@ use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::SampleRate;
 
-use super::utils::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
+use super::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
 
 /// Pure Woodworth-Schlosberg ITD/ILD computation.
 /// Returns `(itd_samples, left_gain, right_gain)` for a given azimuth and sample rate.

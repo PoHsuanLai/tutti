@@ -1,5 +1,5 @@
 //! Automation *recording* — the write/touch/latch capture side, companion to
-//! the playback-side [`AutomationLane`](crate::automation_lane::AutomationLane).
+//! the playback-side [`AutomationLane`](crate::automation::AutomationLane).
 //!
 //! - [`RecordingTarget`] — trait downstream crates implement for their target
 //!   enum; [`AutomationTarget`] is a ready-made default schema.

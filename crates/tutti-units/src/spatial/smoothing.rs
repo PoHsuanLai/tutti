@@ -1,7 +1,5 @@
-//! One-pole exponential smoother used to de-zipper atomic parameter changes.
-//!
-//! Originally lived inside `spatial::utils`; promoted here so filter and
-//! modulation nodes can share it without depending on the `spatial` feature.
+//! One-pole exponential smoother used to de-zipper the panners' atomic
+//! position changes. Private to `spatial` — the only consumer.
 
 use tutti_core::{SampleRate, Seconds};
 

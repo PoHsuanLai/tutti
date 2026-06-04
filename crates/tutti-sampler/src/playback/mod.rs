@@ -17,12 +17,15 @@ use bevy_ecs::schedule::IntoScheduleConfigs;
 use tutti_core::ecs::{engine_ready, GraphReconcileSystems};
 use tutti_core::WaveAsset;
 
+mod loop_crossfade;
 pub mod pending_load;
 pub mod reconcile;
+pub mod sampler_unit;
+pub mod streaming_sampler;
 pub mod time_stretch;
+pub mod time_stretch_dsp;
 pub mod track_clip_reader;
 pub mod trigger;
-pub mod units;
 pub mod wave_loader;
 
 pub use pending_load::{
@@ -38,7 +41,8 @@ pub use trigger::{
     audio_cleanup_system, audio_parameter_sync_system, audio_playback_system, AudioEmitter,
     AudioPlaybackState, AudioVolume, DespawnOnFinish, PlayAudio,
 };
-pub use units::{SamplerUnit, StreamingSamplerUnit};
+pub use sampler_unit::SamplerUnit;
+pub use streaming_sampler::StreamingSamplerUnit;
 pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 
 /// Bevy plugin: the whole playback domain — trigger → sampler → cleanup,

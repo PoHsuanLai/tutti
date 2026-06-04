@@ -140,5 +140,5 @@ pub mod capture {
 
 /// Time-stretching and pitch-shifting DSP unit.
 pub mod stretch {
-    pub use crate::playback::units::time_stretch::{Algorithm, FftSize, GrainSize, Params, Unit};
+    pub use crate::playback::time_stretch_dsp::{Algorithm, FftSize, GrainSize, Params, Unit};
 }

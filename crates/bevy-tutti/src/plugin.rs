@@ -24,7 +24,7 @@ use tutti_sampler::TuttiSamplerPlugin;
 #[cfg(feature = "automation")]
 use tutti_units::ecs::TuttiAutomationPlugin;
 #[cfg(feature = "analysis")]
-use tutti_analysis::ecs::TuttiAnalysisPlugin;
+use tutti_analysis::TuttiAnalysisPlugin;
 #[cfg(feature = "export")]
 use tutti_export::ecs::TuttiExportPlugin;
 #[cfg(feature = "plugin")]

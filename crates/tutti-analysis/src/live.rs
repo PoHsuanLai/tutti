@@ -196,6 +196,188 @@ pub fn run_analysis_thread(
     }
 }
 
+// ===========================================================================
+// Bevy ECS surface — the live-analysis duty.
+//
+// Co-located with the RT engine above (`LiveAnalysisState` /
+// `run_analysis_thread`). [`AnalysisRes`] is a plain resource owning the
+// metering tap source and the running analysis thread; the control system
+// spawns/joins that thread on Enable/Disable messages, and the sync system
+// pulls its lock-free `ArcSwap` results into [`LiveAnalysisData`] each frame.
+// There is no separate handle facade — the resource *is* the live state, and a
+// system owns its lifecycle (the bevy-native shape).
+// ===========================================================================
+
+use bevy_app::{App, Plugin, Update};
+use bevy_ecs::message::{Message, MessageReader};
+use bevy_ecs::prelude::*;
+use std::thread::JoinHandle;
+use tutti_core::metering::MeteringManager;
+
+use tutti_core::graph::engine_ready;
+
+/// The running analysis thread plus the state it publishes into.
+struct RunningAnalysis {
+    state: Arc<LiveAnalysisState>,
+    thread: Option<JoinHandle<()>>,
+}
+
+/// Live-analysis engine state, as a Bevy resource.
+///
+/// Holds the metering manager (the audio-thread tap source) and, while live,
+/// the running analysis thread + its published [`LiveAnalysisState`]. The
+/// control system mutates this through `ResMut` (Bevy guarantees exclusive
+/// access), so no interior locking is needed — enable spawns the thread, disable
+/// joins it. Built by bevy-tutti and claimed from [`PendingAnalysis`] in
+/// [`TuttiAnalysisPlugin`]'s `build()`.
+#[derive(Resource)]
+pub struct AnalysisRes {
+    sample_rate: f64,
+    metering: Arc<MeteringManager>,
+    running: Option<RunningAnalysis>,
+}
+
+impl AnalysisRes {
+    /// Construct from the engine's metering manager. Live analysis is off until
+    /// [`EnableLiveAnalysis`] is sent.
+    pub fn new(sample_rate: impl Into<tutti_core::SampleRate>, metering: Arc<MeteringManager>) -> Self {
+        Self {
+            sample_rate: sample_rate.into().get(),
+            metering,
+            running: None,
+        }
+    }
+
+    fn is_live(&self) -> bool {
+        self.running.is_some()
+    }
+
+    /// Enable the metering tap and spawn the analysis thread. Idempotent.
+    fn enable(&mut self) {
+        if self.running.is_some() {
+            return;
+        }
+        let consumer = self.metering.enable_tap();
+        let state = Arc::new(LiveAnalysisState::new(512));
+        let thread_state = state.clone();
+        let sample_rate = self.sample_rate;
+        let thread = std::thread::Builder::new()
+            .name("tutti-analysis".into())
+            .spawn(move || run_analysis_thread(consumer, thread_state, sample_rate))
+            .expect("failed to spawn tutti-analysis thread");
+        self.running = Some(RunningAnalysis {
+            state,
+            thread: Some(thread),
+        });
+    }
+
+    /// Stop the analysis thread and disable the tap. Idempotent.
+    fn disable(&mut self) {
+        let Some(mut running) = self.running.take() else {
+            return;
+        };
+        running.state.stop();
+        self.metering.disable_tap();
+        if let Some(handle) = running.thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for AnalysisRes {
+    fn drop(&mut self) {
+        self.disable();
+    }
+}
+
+/// Transient handoff resource: the engine-built analysis state. Inserted by
+/// `build_into`; claimed into [`AnalysisRes`] by [`TuttiAnalysisPlugin`].
+#[derive(Resource)]
+pub struct PendingAnalysis(pub Option<AnalysisRes>);
+
+/// Fire-and-forget request to enable live analysis.
+#[derive(Message, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnableLiveAnalysis;
+
+/// Fire-and-forget request to disable live analysis.
+#[derive(Message, Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DisableLiveAnalysis;
+
+/// Live analysis state synced from the analysis thread via lock-free ArcSwap
+/// reads.
+///
+/// Fields are `Arc` pointers -- cheap to clone for UI consumption.
+#[derive(Resource)]
+pub struct LiveAnalysisData {
+    pub pitch: Arc<crate::PitchResult>,
+    pub transients: Arc<Vec<crate::Transient>>,
+    pub waveform: Arc<crate::WaveformSummary>,
+    pub spectrum: Arc<crate::SpectrumResult>,
+    pub is_live: bool,
+}
+
+impl Default for LiveAnalysisData {
+    fn default() -> Self {
+        Self {
+            pitch: Arc::new(crate::PitchResult::default()),
+            transients: Arc::new(Vec::new()),
+            waveform: Arc::new(crate::WaveformSummary::new(512)),
+            spectrum: Arc::new(crate::SpectrumResult::default()),
+            is_live: false,
+        }
+    }
+}
+
+pub fn live_analysis_control_system(
+    mut analysis: ResMut<AnalysisRes>,
+    mut data: ResMut<LiveAnalysisData>,
+    mut enable: MessageReader<EnableLiveAnalysis>,
+    mut disable: MessageReader<DisableLiveAnalysis>,
+) {
+    if enable.read().next().is_some() && !analysis.is_live() {
+        analysis.enable();
+        data.is_live = true;
+        bevy_log::info!("Live analysis enabled");
+    }
+
+    if disable.read().next().is_some() {
+        analysis.disable();
+        data.is_live = false;
+        bevy_log::info!("Live analysis disabled");
+    }
+}
+
+pub fn live_analysis_sync_system(analysis: Res<AnalysisRes>, mut data: ResMut<LiveAnalysisData>) {
+    let Some(running) = analysis.running.as_ref() else {
+        return;
+    };
+    data.pitch = running.state.pitch.load_full();
+    data.transients = running.state.transients.load_full();
+    data.waveform = running.state.waveform.load_full();
+    data.spectrum = running.state.spectrum.load_full();
+}
+
+/// Bevy plugin: live analysis enable/disable + per-frame pull.
+pub struct TuttiAnalysisPlugin;
+
+impl Plugin for TuttiAnalysisPlugin {
+    fn build(&self, app: &mut App) {
+        // Claim the analysis state out of the transient `build_into` inserted
+        // (synchronous, during plugin build — present before frame 1).
+        if let Some(PendingAnalysis(Some(res))) =
+            app.world_mut().remove_resource::<PendingAnalysis>()
+        {
+            app.insert_resource(res);
+        }
+        app.add_message::<EnableLiveAnalysis>()
+            .add_message::<DisableLiveAnalysis>();
+        app.init_resource::<LiveAnalysisData>().add_systems(
+            Update,
+            (live_analysis_control_system, live_analysis_sync_system).run_if(engine_ready),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

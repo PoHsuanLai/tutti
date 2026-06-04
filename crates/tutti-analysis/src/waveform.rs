@@ -84,30 +84,6 @@ impl WaveformSummary {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct StereoWaveformSummary {
-    pub left: WaveformSummary,
-    pub right: WaveformSummary,
-}
-
-impl StereoWaveformSummary {
-    pub(crate) fn new(samples_per_block: usize) -> Self {
-        Self {
-            left: WaveformSummary::new(samples_per_block),
-            right: WaveformSummary::new(samples_per_block),
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        self.left.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.left.is_empty()
-    }
-}
-
 fn compute_block(samples: &[f32]) -> WaveformBlock {
     if samples.is_empty() {
         return WaveformBlock::default();
@@ -162,61 +138,6 @@ pub fn compute_summary(
     }));
 
     summary
-}
-
-/// Input: interleaved `[L, R, L, R, ...]`.
-pub(crate) fn compute_stereo_summary(
-    samples: &[f32],
-    samples_per_block: usize,
-) -> StereoWaveformSummary {
-    if samples.is_empty() || samples_per_block == 0 {
-        return StereoWaveformSummary::new(samples_per_block);
-    }
-
-    let channel_samples = samples.len() / 2;
-    let num_blocks = channel_samples.div_ceil(samples_per_block);
-
-    let mut left = WaveformSummary::with_capacity(samples_per_block, num_blocks);
-    let mut right = WaveformSummary::with_capacity(samples_per_block, num_blocks);
-    left.total_samples = channel_samples;
-    right.total_samples = channel_samples;
-
-    for block_idx in 0..num_blocks {
-        let start = block_idx * samples_per_block;
-        let end = (start + samples_per_block).min(channel_samples);
-        let count = end - start;
-
-        let (l_min, l_max, l_sum_sq, r_min, r_max, r_sum_sq) = (start..end).fold(
-            (f32::MAX, f32::MIN, 0.0f32, f32::MAX, f32::MIN, 0.0f32),
-            |(l_mn, l_mx, l_sq, r_mn, r_mx, r_sq), i| {
-                let l = samples[i * 2];
-                let r = samples[i * 2 + 1];
-                (
-                    l_mn.min(l),
-                    l_mx.max(l),
-                    l_sq + l * l,
-                    r_mn.min(r),
-                    r_mx.max(r),
-                    r_sq + r * r,
-                )
-            },
-        );
-
-        let make_block = |min: f32, max: f32, sum_sq: f32| WaveformBlock {
-            min: if min == f32::MAX { 0.0 } else { min },
-            max: if max == f32::MIN { 0.0 } else { max },
-            rms: if count > 0 {
-                (sum_sq / count as f32).sqrt()
-            } else {
-                0.0
-            },
-        };
-
-        left.blocks.push(make_block(l_min, l_max, l_sum_sq));
-        right.blocks.push(make_block(r_min, r_max, r_sum_sq));
-    }
-
-    StereoWaveformSummary { left, right }
 }
 
 /// Multiple zoom levels for efficient rendering.
@@ -313,27 +234,6 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_summary_stereo() {
-        let samples: Vec<f32> = (0..2000)
-            .map(|i| if i % 2 == 0 { 0.5 } else { -0.5 })
-            .collect();
-
-        let summary = compute_stereo_summary(&samples, 100);
-
-        assert_eq!(summary.len(), 10);
-
-        for block in &summary.left.blocks {
-            assert!((block.min - 0.5).abs() < 0.001);
-            assert!((block.max - 0.5).abs() < 0.001);
-        }
-
-        for block in &summary.right.blocks {
-            assert!((block.min - (-0.5)).abs() < 0.001);
-            assert!((block.max - (-0.5)).abs() < 0.001);
-        }
-    }
-
-    #[test]
     fn test_multi_resolution() {
         let samples: Vec<f32> = (0..1024).map(|i| (i as f32 / 50.0).sin()).collect();
 
@@ -353,9 +253,6 @@ mod tests {
     fn test_empty_samples() {
         let summary = compute_summary(&[], 1, 100);
         assert!(summary.is_empty());
-
-        let stereo = compute_stereo_summary(&[], 100);
-        assert!(stereo.is_empty());
     }
 
     #[test]

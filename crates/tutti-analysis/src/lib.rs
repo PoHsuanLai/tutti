@@ -53,13 +53,16 @@ pub mod stft;
 pub mod transient;
 pub mod waveform;
 
-mod handle;
-
 pub use cache::ThumbnailCache;
 pub use correlation::{CorrelationMeter, StereoAnalysis};
-pub use handle::AnalysisHandle;
 pub use istft::{istft, istft_complex};
 pub use live::{run_analysis_thread, LiveAnalysisState};
+// Bevy ECS surface of the live-analysis duty — co-located in `live` with the
+// RT engine it mirrors (was the standalone `ecs` module).
+pub use live::{
+    AnalysisRes, DisableLiveAnalysis, EnableLiveAnalysis, LiveAnalysisData, PendingAnalysis,
+    TuttiAnalysisPlugin,
+};
 pub use pitch::{
     freq_to_midi, median_filter, midi_to_freq, viterbi_smooth, PitchDetector, PitchResult,
 };
@@ -73,10 +76,5 @@ pub use stft::{
 /// the complex bin type without depending on `rustfft` directly.
 pub use rustfft::num_complex::Complex;
 pub use transient::{DetectionMethod, Transient, TransientDetector};
-pub use waveform::{MultiResolutionSummary, StereoWaveformSummary, WaveformBlock, WaveformSummary};
+pub use waveform::{MultiResolutionSummary, WaveformBlock, WaveformSummary};
 
-/// Bevy ECS integration: `TuttiAnalysisPlugin`, `AnalysisRes`, `LiveAnalysisData`.
-pub mod ecs;
-pub use ecs::{
-    AnalysisRes, DisableLiveAnalysis, EnableLiveAnalysis, LiveAnalysisData, TuttiAnalysisPlugin,
-};

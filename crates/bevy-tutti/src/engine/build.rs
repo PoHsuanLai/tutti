@@ -46,7 +46,7 @@ use tutti_midi_runtime::MidiRoutingTable;
 use tutti_sampler::{PendingSampler, Sampler};
 
 #[cfg(feature = "analysis")]
-use tutti_analysis::ecs::PendingAnalysis;
+use tutti_analysis::PendingAnalysis;
 
 /// The audio processor type that runs on the RT callback thread.
 ///
@@ -167,7 +167,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let transport = TransportHandle::new(transport_mgr, click_settings);
 
     #[cfg(feature = "analysis")]
-    let analysis = tutti_analysis::AnalysisHandle::with_metering(sample_rate, metering_mgr.clone());
+    let analysis = tutti_analysis::AnalysisRes::new(sample_rate, metering_mgr.clone());
 
     let metering = MeteringHandle::new(metering_mgr);
 

@@ -196,7 +196,7 @@ pub fn reconcile_audio_routing(
 mod tests {
     use super::*;
     use crate::graph::reconcile::GraphReconcileSystems;
-    use crate::audio_graph::AudioGraph;
+    use crate::AudioGraph;
     use crate::{PdcManager, GraphNet};
     use bevy_app::App;
 

@@ -30,22 +30,25 @@
 pub mod error;
 pub use error::{Error, Result};
 
-pub mod params;
-pub use params::{
-    Bpm, Cents, Db, Degrees, Hz, Linear, Ratio, SampleRate, Seconds, Semitones, Unit,
+// Parameter vocabulary: units (Bpm/Hz/Db…), the atomic Param cell, and UnitParam
+// addressing — grouped under one `param` module by what they do.
+pub mod param;
+pub use param::{
+    Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio, SampleRate, Seconds, Semitones, Unit,
+    UnitParam,
 };
 
-mod param;
-pub use param::Param;
+/// Back-compat alias for the unit newtypes' old module path
+/// (`tutti_core::params::Bpm`, …). The vocabulary now lives in
+/// [`param::units`]; this keeps existing `tutti_core::params::*` imports
+/// resolving. Prefer `tutti_core::param::units` (or the crate-root re-exports)
+/// in new code.
+pub mod params {
+    pub use crate::param::units::*;
+}
 
 pub mod processor;
 pub use processor::{AudioProcessor, GraphProcessor};
-
-mod graph_net;
-pub use graph_net::{CommitOutcome, GraphNet};
-
-pub mod audio_graph;
-pub use audio_graph::{isolate_output, GraphDot, AudioGraph};
 
 pub mod transport;
 pub use transport::{
@@ -70,8 +73,9 @@ pub use compat::{Arc, AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, O
 
 pub use tutti_types::{AudioThreadCell, RtEventBuf};
 
-pub mod rt_scratch;
-pub use rt_scratch::{RtScratch, RtScratchOverflow};
+// Real-time audio-thread primitives: the scratch buffer + the denormals guard.
+pub mod rt;
+pub use rt::{RtScratch, RtScratchOverflow, ScopedNoDenormals};
 
 pub mod dsp {
     //! Re-export of fundsp::prelude for DSP building blocks.
@@ -110,9 +114,6 @@ pub mod compat;
 
 pub mod node_id;
 
-pub mod unit_param;
-pub use unit_param::UnitParam;
-
 #[cfg(feature = "midi")]
 pub mod midi;
 
@@ -124,11 +125,11 @@ pub use midi::{
     MidiInputSource, MidiQueue, MidiRoute, MidiRoutingSnapshot, MidiSource, MidiTarget, NoMidiInput,
 };
 
-mod denormals;
-pub use denormals::ScopedNoDenormals;
-
 pub mod graph;
-pub use graph::{AudioNode, LayerKey, ModParam, Mute, NodeKind, Pan, PluginParam, Volume};
+pub use graph::{
+    isolate_output, AudioGraph, AudioNode, CommitOutcome, GraphDot, GraphNet, LayerKey, ModParam,
+    Mute, NodeKind, Pan, PluginParam, Volume,
+};
 
 /// Bevy `AsyncComputeTaskPool` + `Task<T>` helper for non-RT subsystem work.
 pub mod task;

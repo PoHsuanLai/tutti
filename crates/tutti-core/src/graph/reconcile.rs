@@ -241,7 +241,7 @@ mod tests {
     use super::*;
     use crate::dsp::sine_hz;
     use crate::graph::AudioGraphRes;
-    use crate::audio_graph::AudioGraph;
+    use crate::AudioGraph;
     use crate::{PdcManager, GraphNet};
     use bevy_app::App;
 

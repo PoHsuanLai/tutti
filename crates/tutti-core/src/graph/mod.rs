@@ -31,11 +31,14 @@ use bevy_reflect::Reflect;
 
 use crate::dsp::NodeId;
 
-// The generic graph-reconcile hub. These submodules carry the leaf-agnostic
-// reconcile pipeline, the shared engine resources, the routing/sidechain
-// relationships, the emitter markers, and the `GraphReconcilePlugin`. Leaf-specific
-// reconcilers (sampler/plugin/convolution/midi) stay in bevy-tutti.
+// The audio graph: the editable DSP graph itself (`editable` = `AudioGraph`,
+// `net` = the `GraphNet` fundsp facade) plus the leaf-agnostic reconcile pipeline
+// that operates on it (reconcile / routing / sidechain relationships / emitter
+// markers / resources / `GraphReconcilePlugin`). Leaf-specific reconcilers
+// (sampler/plugin/convolution/midi) stay in bevy-tutti.
+pub mod editable;
 pub mod emitter;
+pub mod net;
 pub mod param_epoch;
 pub mod plugin;
 pub mod reconcile;
@@ -43,6 +46,8 @@ pub mod resources;
 pub mod routing;
 pub mod sidechain;
 
+pub use editable::{isolate_output, AudioGraph, GraphDot};
+pub use net::{CommitOutcome, GraphNet};
 pub use emitter::{AudioEmitter, AudioPlaybackState};
 pub use param_epoch::{bump_param_epoch_core, NodeParamEpoch};
 pub use plugin::{register_core_node_types, GraphReconcilePlugin};

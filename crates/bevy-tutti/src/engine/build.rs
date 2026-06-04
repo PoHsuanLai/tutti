@@ -44,9 +44,6 @@ use tutti_sampler::ecs::SamplerRes;
 #[cfg(feature = "sampler")]
 use tutti_sampler::Sampler;
 
-#[cfg(feature = "soundfont")]
-use tutti_synth::SoundFontRes;
-
 #[cfg(feature = "analysis")]
 use tutti_analysis::ecs::AnalysisRes;
 
@@ -153,9 +150,6 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     #[cfg(not(feature = "sampler"))]
     let _ = &pdc_snapshot;
 
-    #[cfg(feature = "soundfont")]
-    let soundfont = Arc::new(tutti_synth::SoundFontSystem::new(sample_rate as u32));
-
     let graph = TuttiGraph::from_parts(
         net,
         pdc,
@@ -200,9 +194,6 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         app.insert_resource(tutti_sampler::ecs::init_auditioner(&sampler));
         app.insert_resource(SamplerRes(sampler));
     }
-
-    #[cfg(feature = "soundfont")]
-    app.insert_resource(SoundFontRes(soundfont));
 
     #[cfg(feature = "analysis")]
     app.insert_resource(AnalysisRes(analysis));

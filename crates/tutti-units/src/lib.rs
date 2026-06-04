@@ -82,13 +82,9 @@ pub mod ecs;
 // Re-export the ECS surface at the crate root so consumers write
 // `tutti_units::TuttiDspPlugin`, not `tutti_units::ecs::…` (the bevy_text shape).
 #[cfg(feature = "std")]
-#[allow(deprecated)]
 pub use ecs::{
-    bump_param_epoch_dsp, dsp_chorus_system, dsp_compressor_system, dsp_delay_system,
-    dsp_filter_system, dsp_gate_system, dsp_lfo_system, dsp_reverb_system, reconcile_reverb_params,
-    reconcile_unit_params, spawn_dsp_node, spawn_lfo_nodes, AddChorus, AddCompressor, AddDelay,
-    AddDspNode, AddFilter, AddGate, AddLfo, AddReverb, DspNode, EffectParams, SpawnParams,
-    TuttiDspPlugin,
+    bump_param_epoch_dsp, reconcile_reverb_params, reconcile_unit_params, spawn_dsp_node,
+    spawn_lfo_nodes, AddDspNode, DspNode, EffectParams, SpawnParams, TuttiDspPlugin,
 };
 #[cfg(all(feature = "std", feature = "convolution"))]
 pub use ecs::{

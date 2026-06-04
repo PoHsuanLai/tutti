@@ -17,6 +17,7 @@ use tutti_core::ecs::{AudioConfig, TuttiGraphRes};
 use crate::ecs::time_stretch::{TimeStretch, TimeStretchControl};
 use crate::SamplerUnit;
 
+#[cfg(doc)]
 use super::cleanup::DespawnOnFinish;
 
 /// Trigger component: spawn an entity with this to start audio playback.
@@ -30,82 +31,50 @@ use super::cleanup::DespawnOnFinish;
 /// `Without<AudioSink>`. An `Added`-only query would drop the entity forever
 /// if the asset was not ready on the single frame the component was inserted.
 ///
+/// Configure it the idiomatic Bevy way — `Default` plus struct-update syntax.
+/// `gain` / `speed` default to `1.0`. Add the [`DespawnOnFinish`] marker to
+/// auto-despawn on completion, or a [`TimeStretch`] component to time-stretch.
+///
 /// # Examples
 ///
 /// ```rust,ignore
 /// // One-shot sound effect
-/// commands.spawn(PlayAudio::once(asset_server.load("boom.wav")));
+/// commands.spawn(PlayAudio { source: asset_server.load("boom.wav"), ..default() });
 ///
 /// // Looping ambient sound
-/// commands.spawn(PlayAudio::looping(asset_server.load("wind.ogg")).gain(0.3));
+/// commands.spawn(PlayAudio {
+///     source: asset_server.load("wind.ogg"),
+///     looping: true,
+///     gain: 0.3,
+///     ..default()
+/// });
 ///
 /// // Auto-despawn when finished
-/// commands.spawn(PlayAudio::once(handle).despawn_on_finish());
+/// commands.spawn((PlayAudio { source: handle, ..default() }, DespawnOnFinish));
+///
+/// // Time-stretched
+/// commands.spawn((
+///     PlayAudio { source: handle, ..default() },
+///     TimeStretch { stretch_factor: 0.5, pitch_cents: 0.0 },
+/// ));
 /// ```
 #[derive(Component, Debug, Clone, Reflect)]
-#[reflect(Component, Clone)]
+#[reflect(Component, Clone, Default)]
 pub struct PlayAudio {
     pub source: Handle<WaveAsset>,
     pub looping: bool,
     pub gain: f32,
     pub speed: f32,
-    pub(crate) auto_despawn: bool,
 }
 
-impl PlayAudio {
-    pub fn once(source: Handle<WaveAsset>) -> Self {
+impl Default for PlayAudio {
+    fn default() -> Self {
         Self {
-            source,
+            source: Handle::default(),
             looping: false,
             gain: 1.0,
             speed: 1.0,
-            auto_despawn: false,
         }
-    }
-
-    pub fn looping(source: Handle<WaveAsset>) -> Self {
-        Self {
-            source,
-            looping: true,
-            gain: 1.0,
-            speed: 1.0,
-            auto_despawn: false,
-        }
-    }
-
-    pub fn gain(mut self, gain: f32) -> Self {
-        self.gain = gain;
-        self
-    }
-
-    pub fn speed(mut self, speed: f32) -> Self {
-        self.speed = speed;
-        self
-    }
-
-    pub fn despawn_on_finish(mut self) -> Self {
-        self.auto_despawn = true;
-        self
-    }
-
-    /// Enable time stretching on this audio source.
-    ///
-    /// Returns a `(PlayAudio, TimeStretch)` tuple for spawning.
-    /// Must be the last method in the chain since it changes the return type.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// commands.spawn(PlayAudio::once(handle).gain(0.8).time_stretch(0.5, 0.0));
-    /// ```
-    pub fn time_stretch(self, stretch_factor: f32, pitch_cents: f32) -> (Self, TimeStretch) {
-        (
-            self,
-            TimeStretch {
-                stretch_factor,
-                pitch_cents,
-            },
-        )
     }
 }
 
@@ -172,10 +141,6 @@ pub fn audio_playback_system(
         if let Some(control) = ts_control {
             entity_commands.insert(control);
         }
-
-        if play.auto_despawn {
-            entity_commands.insert(DespawnOnFinish);
-        }
     }
 
     // Stage edits only; the Commit-phase `commit_graph` coalesces into one
@@ -233,7 +198,7 @@ mod tests {
 
         let entity = app
             .world_mut()
-            .spawn(PlayAudio::once(handle.clone()))
+            .spawn(PlayAudio { source: handle.clone(), ..Default::default() })
             .id();
 
         // Frame 1: asset still unresolved → no emitter, but the trigger survives.
@@ -280,7 +245,7 @@ mod tests {
             assets.add(WaveAsset(Arc::new(wave)))
         };
 
-        let entity = app.world_mut().spawn(PlayAudio::once(handle)).id();
+        let entity = app.world_mut().spawn(PlayAudio { source: handle, ..Default::default() }).id();
         app.update();
         let node_before = app
             .world()

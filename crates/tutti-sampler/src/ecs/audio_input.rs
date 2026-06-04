@@ -14,6 +14,10 @@ use super::SamplerRes;
 ///
 /// Read by `audio_input_control_system`. Selects device, sets gain/monitoring,
 /// and requests capture start.
+///
+/// Configure it the idiomatic Bevy way — `Default` plus struct-update syntax —
+/// rather than builder methods:
+/// `EnableAudioInput { device_index: Some(0), monitoring: true, ..default() }`.
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
 pub struct EnableAudioInput {
     pub device_index: Option<usize>,
@@ -28,27 +32,6 @@ impl Default for EnableAudioInput {
             monitoring: false,
             gain: 1.0,
         }
-    }
-}
-
-impl EnableAudioInput {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn device(mut self, index: usize) -> Self {
-        self.device_index = Some(index);
-        self
-    }
-
-    pub fn monitoring(mut self, enabled: bool) -> Self {
-        self.monitoring = enabled;
-        self
-    }
-
-    pub fn gain(mut self, gain: f32) -> Self {
-        self.gain = gain;
-        self
     }
 }
 

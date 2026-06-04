@@ -18,45 +18,24 @@ use tutti_core::task::poll_task;
 ///
 /// Not `Reflect`: `AudioFormat` / `Normalize` are foreign types from
 /// `tutti-export`.
-#[derive(Message, Debug, Clone)]
+///
+/// Configure it the idiomatic Bevy way — `Default` plus struct-update syntax —
+/// rather than builder methods:
+///
+/// ```rust,ignore
+/// commands.write_message(StartExport {
+///     path: "output.wav".into(),
+///     duration_seconds: Some(10.0),
+///     ..default()
+/// });
+/// ```
+#[derive(Message, Debug, Clone, Default)]
 pub struct StartExport {
     pub path: std::path::PathBuf,
     pub duration_seconds: Option<f64>,
     pub duration_beats: Option<(f64, f64)>,
     pub format: Option<crate::AudioFormat>,
     pub normalization: Option<crate::Normalize>,
-}
-
-impl StartExport {
-    pub fn new(path: impl Into<std::path::PathBuf>) -> Self {
-        Self {
-            path: path.into(),
-            duration_seconds: None,
-            duration_beats: None,
-            format: None,
-            normalization: None,
-        }
-    }
-
-    pub fn duration_seconds(mut self, seconds: f64) -> Self {
-        self.duration_seconds = Some(seconds);
-        self
-    }
-
-    pub fn duration_beats(mut self, beats: f64, tempo: f64) -> Self {
-        self.duration_beats = Some((beats, tempo));
-        self
-    }
-
-    pub fn format(mut self, format: crate::AudioFormat) -> Self {
-        self.format = Some(format);
-        self
-    }
-
-    pub fn normalization(mut self, mode: crate::Normalize) -> Self {
-        self.normalization = Some(mode);
-        self
-    }
 }
 
 /// In-flight offline export. Holds the `AsyncComputeTaskPool` task that

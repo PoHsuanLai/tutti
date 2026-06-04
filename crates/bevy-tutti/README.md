@@ -24,10 +24,10 @@ fn main() {
 
 fn setup(mut commands: Commands, assets: Res<AssetServer>) {
     // One-shot sound effect (auto-despawn when done)
-    commands.spawn(PlayAudio::once(assets.load("boom.wav")).despawn_on_finish());
+    commands.spawn((PlayAudio { source: assets.load("boom.wav"), ..default() }, DespawnOnFinish));
 
     // Looping ambient at 30% volume
-    commands.spawn(PlayAudio::looping(assets.load("wind.ogg")).gain(0.3));
+    commands.spawn(PlayAudio { source: assets.load("wind.ogg"), looping: true, gain: 0.3, ..default() });
 }
 ```
 
@@ -144,17 +144,17 @@ Spawn an entity with a trigger component to perform an action. The corresponding
 
 ```rust
 // One-shot
-commands.spawn(PlayAudio::once(handle));
+commands.spawn(PlayAudio { source: handle, ..default() });
 
 // Looping with parameters
-commands.spawn(PlayAudio::looping(handle).gain(0.5).speed(1.2));
+commands.spawn(PlayAudio { source: handle, looping: true, gain: 0.5, speed: 1.2 });
 
-// With time stretching (returns tuple, must be last in chain)
-commands.spawn(PlayAudio::once(handle).gain(0.8).time_stretch(0.5, 0.0));
+// Auto-despawn on finish: add the marker
+commands.spawn((PlayAudio { source: handle, ..default() }, DespawnOnFinish));
 
-// Or as companion component
+// Time-stretched: add the companion component
 commands.spawn((
-    PlayAudio::once(handle),
+    PlayAudio { source: handle, gain: 0.8, ..default() },
     TimeStretch { stretch_factor: 0.5, pitch_cents: -100.0 },
 ));
 ```
@@ -167,7 +167,7 @@ Requires `soundfont` feature.
 
 ```rust
 let sf2 = asset_server.load("sounds/GeneralMidi.sf2");
-commands.spawn(PlaySoundFont::new(sf2).preset(0).channel(0));
+commands.spawn(PlaySoundFont { source: sf2, preset: 0, channel: 0 });
 ```
 
 ### Audio plugins (VST3/VST2/CLAP)
@@ -231,23 +231,27 @@ commands.spawn(StopRecording { channel_index: 0 });
 Requires `export` feature.
 
 ```rust
-commands.spawn(
-    StartExport::new("output.wav")
-        .duration_seconds(30.0)
-        .format(AudioFormat::Wav)
-        .normalization(NormalizationMode::Loudness { target_lufs: -14.0 })
-);
+fn start(mut export: MessageWriter<StartExport>) {
+    export.write(StartExport {
+        path: "output.wav".into(),
+        duration_seconds: Some(30.0),
+        format: Some(AudioFormat::Wav),
+        normalization: Some(Normalize::lufs(-14.0)),
+        ..default()
+    });
+}
 ```
 
-After processing: `StartExport` is removed, `ExportInProgress` is inserted. When done, replaced by `ExportComplete` or `ExportFailed`.
+After processing, an entity carrying `ExportInProgress` tracks the in-flight job; on completion it is replaced by `ExportComplete` or `ExportFailed`.
 
 ### Audio input
 
 Requires `sampler` feature.
 
 ```rust
-commands.spawn(EnableAudioInput::new().device(0).monitoring(true).gain(0.8));
-commands.spawn(DisableAudioInput);
+// EnableAudioInput / DisableAudioInput are Messages (not spawned components).
+input.write(EnableAudioInput { device_index: Some(0), monitoring: true, gain: 0.8 });
+input.write(DisableAudioInput);
 ```
 
 ### Live analysis
@@ -271,27 +275,31 @@ let mut envelope = AutomationEnvelope::new("volume");
 envelope.add_point(AutomationPoint::new(0.0, 0.0))
         .add_point(AutomationPoint::with_curve(4.0, 1.0, CurveType::SCurve));
 
-commands.spawn(AddAutomationLane::with_envelope(envelope));
-
-// Or empty lane for a target
-commands.spawn(AddAutomationLane::new("filter_cutoff"));
+commands.spawn(AddAutomationLane { envelope });
 ```
 
 After processing: `AutomationLaneEmitter { node_id }` is inserted.
 
 ### DSP nodes
 
+Spawn the node marker; its `#[require(...)]` list inserts the param components
+with their defaults, and you override only the ones you care about via
+struct-update.
+
 ```rust
-// LFO (always available, no feature gate)
-commands.spawn(AddLfo::new(LfoShape::Sine, 2.0).depth(0.5));
-commands.spawn(AddLfo::beat_synced(LfoShape::Triangle, 4.0).depth(0.8));
+// LFO — required: Frequency, ModDepth, LfoShapeKind, BeatSynced
+commands.spawn((LfoNodeMarker, Frequency(2.0), ModDepth(0.5), LfoShapeKind::Sine));
+commands.spawn((LfoNodeMarker, Frequency(4.0), ModDepth(0.8), LfoShapeKind::Triangle, BeatSynced(true)));
 
-// Compressor (requires `dsp` feature)
-commands.spawn(AddCompressor::new(-18.0, 3.0).attack(0.01).release(0.15).makeup(3.0));
-commands.spawn(AddCompressor::new(-18.0, 3.0).stereo());
+// Compressor — required: ThresholdDb, CompressorRatio, Attack, Release, GainDb
+commands.spawn((
+    CompressorNode,
+    ThresholdDb(-18.0), CompressorRatio(3.0),
+    Attack(0.01), Release(0.15), GainDb(3.0),
+));
 
-// Gate (requires `dsp` feature)
-commands.spawn(AddGate::new(-25.0).attack(0.002).hold(0.05).release(0.2));
+// Gate — required: ThresholdDb, Attack, Release
+commands.spawn((GateNode, ThresholdDb(-25.0), Attack(0.002), Release(0.2)));
 ```
 
 ### Spatial audio
@@ -304,7 +312,7 @@ commands.spawn((AudioListener, Transform::default()));
 
 // Spatial emitter
 commands.spawn((
-    PlayAudio::once(handle),
+    PlayAudio { source: handle, ..default() },
     SpatialAudio::default(),
     Transform::from_xyz(5.0, 0.0, -3.0),
 ));

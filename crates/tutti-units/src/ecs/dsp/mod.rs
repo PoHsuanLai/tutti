@@ -1,8 +1,9 @@
-//! DSP unit spawn triggers (filter, reverb, delay, chorus, compressor, gate, LFO).
+//! DSP unit spawn (filter, reverb, delay, chorus, compressor, gate, LFO).
 //!
-//! Each `Add*` component, when added to an entity, is consumed by its
-//! sibling system in [`systems`], which builds the corresponding tutti
-//! unit, adds it to the graph, and inserts the entity-as-node shape:
+//! Spawn a marker (`CompressorNode`, `FilterNode`, …); its `#[require(...)]`
+//! list inserts the param components, and the sibling system in [`systems`]
+//! builds the tutti unit from them, adds it to the graph, and inserts the
+//! entity-as-node shape:
 //!
 //! ```text
 //! AudioNode(id)        — wraps the tutti NodeId
@@ -13,30 +14,21 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-mod components;
 mod spawn;
 mod systems;
 
 pub use spawn::{spawn_dsp_node, AddDspNode, DspNode, SpawnParams};
 
-#[allow(deprecated)]
-pub use components::{
-    AddChorus, AddCompressor, AddDelay, AddFilter, AddGate, AddLfo, AddReverb,
-};
-
-pub use systems::{
-    dsp_chorus_system, dsp_compressor_system, dsp_delay_system, dsp_filter_system, dsp_gate_system,
-    dsp_lfo_system, dsp_reverb_system, spawn_lfo_nodes,
-};
+pub use systems::spawn_lfo_nodes;
 
 /// Bevy plugin: DSP unit spawn systems + param reconcilers.
 ///
 /// Registers the authoring markers, the marker-driven generic spawners
-/// (`spawn_dsp_node::<T>`), the deprecated `Add*` shim spawners, the LFO
-/// spawner, and the DSP param reconcilers (`reconcile_unit_params` /
-/// `reconcile_reverb_params`) + epoch bump. The generic graph hub
-/// ([`tutti_core::ecs::TuttiGraphPlugin`]) must be added first — it configures
-/// the `GraphReconcileSystems` schedule this plugin schedules against.
+/// (`spawn_dsp_node::<T>`), the LFO spawner, and the DSP param reconcilers
+/// (`reconcile_unit_params` / `reconcile_reverb_params`) + epoch bump. The
+/// generic graph hub ([`tutti_core::ecs::TuttiGraphPlugin`]) must be added
+/// first — it configures the `GraphReconcileSystems` schedule this plugin
+/// schedules against.
 pub struct TuttiDspPlugin;
 
 impl Plugin for TuttiDspPlugin {
@@ -50,15 +42,13 @@ impl Plugin for TuttiDspPlugin {
         // plugin); here we cover the leaf-owned markers.
         register_dsp_node_types(app);
 
-        // LFO: both the marker spawner and the deprecated `AddLfo` shim, in the
-        // Spawn set so the deferred `AudioNode` insert lands before the Despawn
-        // set's `Added<AudioNode>` bookkeeping.
+        // LFO: bespoke marker spawner, in the Spawn set so the deferred
+        // `AudioNode` insert lands before the Despawn set's `Added<AudioNode>`
+        // bookkeeping.
         app.add_systems(
             Update,
-            (
-                spawn_lfo_nodes.in_set(GraphReconcileSystems::Spawn),
-                dsp_lfo_system.in_set(GraphReconcileSystems::Spawn),
-            )
+            spawn_lfo_nodes
+                .in_set(GraphReconcileSystems::Spawn)
                 .run_if(engine_ready),
         );
 
@@ -76,21 +66,6 @@ impl Plugin for TuttiDspPlugin {
             .add_dsp_node::<ReverbNode>()
             .add_dsp_node::<DelayNode>()
             .add_dsp_node::<ChorusNode>();
-
-        // Deprecated `Add*` shim spawners, also in the Spawn set. Gated on
-        // `engine_ready` since each builds against `TuttiGraphRes`.
-        app.add_systems(
-            Update,
-            (
-                dsp_compressor_system.in_set(GraphReconcileSystems::Spawn),
-                dsp_gate_system.in_set(GraphReconcileSystems::Spawn),
-                dsp_filter_system.in_set(GraphReconcileSystems::Spawn),
-                dsp_reverb_system.in_set(GraphReconcileSystems::Spawn),
-                dsp_delay_system.in_set(GraphReconcileSystems::Spawn),
-                dsp_chorus_system.in_set(GraphReconcileSystems::Spawn),
-            )
-                .run_if(engine_ready),
-        );
 
         // Graph-touching param reconcilers + the (ungated) epoch bump.
         super::reconcile::build(app);

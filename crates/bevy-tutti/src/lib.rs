@@ -18,8 +18,8 @@
 //! }
 //!
 //! fn setup(mut commands: Commands, assets: Res<AssetServer>) {
-//!     commands.spawn(PlayAudio::once(assets.load("boom.wav")).despawn_on_finish());
-//!     commands.spawn(PlayAudio::looping(assets.load("wind.ogg")).gain(0.3));
+//!     commands.spawn((PlayAudio { source: assets.load("boom.wav"), ..default() }, DespawnOnFinish));
+//!     commands.spawn(PlayAudio { source: assets.load("wind.ogg"), looping: true, gain: 0.3, ..default() });
 //! }
 //! ```
 //!

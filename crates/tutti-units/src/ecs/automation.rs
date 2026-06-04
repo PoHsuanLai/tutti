@@ -31,12 +31,6 @@ pub struct AddAutomationLane {
     pub envelope: crate::automation::AutomationEnvelope<f32>,
 }
 
-impl AddAutomationLane {
-    pub fn with_envelope(envelope: crate::automation::AutomationEnvelope<f32>) -> Self {
-        Self { envelope }
-    }
-}
-
 /// Marks an entity as having an automation lane in the graph.
 ///
 /// Added automatically by `automation_lane_system`. The entity also

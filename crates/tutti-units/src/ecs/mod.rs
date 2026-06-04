@@ -31,12 +31,8 @@ pub mod automation;
 pub mod pending_convolver;
 
 pub use dsp::{
-    dsp_chorus_system, dsp_compressor_system, dsp_delay_system, dsp_filter_system, dsp_gate_system,
-    dsp_lfo_system, dsp_reverb_system, spawn_dsp_node, spawn_lfo_nodes, AddDspNode, DspNode,
-    SpawnParams, TuttiDspPlugin,
+    spawn_dsp_node, spawn_lfo_nodes, AddDspNode, DspNode, SpawnParams, TuttiDspPlugin,
 };
-#[allow(deprecated)]
-pub use dsp::{AddChorus, AddCompressor, AddDelay, AddFilter, AddGate, AddLfo, AddReverb};
 
 pub use reconcile::{
     bump_param_epoch_dsp, reconcile_reverb_params, reconcile_unit_params, EffectParams,

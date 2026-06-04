@@ -1,6 +1,15 @@
-//! SoundFont audio unit wrapping RustySynth.
+//! SoundFont (.sf2) synthesis via RustySynth.
+//!
+//! Build a [`SoundFontUnit`] with [`SoundFontUnit::new`] from a decoded
+//! `SoundFont` (loaded via the Bevy asset system as a [`SoundFontAsset`]) and a
+//! [`SynthesizerSettings`], then `program_change` to pick the preset/channel.
 
-use rustysynth::{SoundFont, Synthesizer, SynthesizerSettings};
+pub use rustysynth::{SoundFont, SynthesizerSettings};
+
+#[cfg(feature = "bevy_asset")]
+pub use rustysynth::SoundFontAsset;
+
+use rustysynth::Synthesizer;
 use smallvec::SmallVec;
 use tutti_core::midi::{MidiSource, MidiTarget, MidiUnitId};
 use tutti_core::Arc;
@@ -205,7 +214,7 @@ impl AudioUnit for SoundFontUnit {
 
     /// Sever the live MIDI inbox this clone shares with the original synth.
     ///
-    /// Same rationale as [`super::super::builder::polysynth::PolySynth::isolate`]:
+    /// Same rationale as [`crate::PolySynth::isolate`]:
     /// `clone()` shares `midi_receiver` + `midi_source_override` by `Arc` so the
     /// inbox follows the unit across the commit-clone (where only the original is
     /// ticked), but an offline render ticks this clone on a worker thread while
@@ -309,6 +318,233 @@ impl Clone for SoundFontUnit {
 impl MidiTarget for SoundFontUnit {
     fn midi_unit_id(&self) -> MidiUnitId {
         self.midi_unit_id
+    }
+}
+
+// ===========================================================================
+// Bevy ECS: SoundFont playback as an entity-as-node trigger.
+// ===========================================================================
+
+use bevy_app::{App, Plugin, Update};
+use bevy_asset::{io::Reader, AssetApp, AssetLoader, Assets, Handle, LoadContext};
+use bevy_ecs::prelude::*;
+use bevy_reflect::prelude::*;
+use bevy_tasks::{AsyncComputeTaskPool, Task};
+
+use tutti_core::ecs::engine_ready;
+use tutti_core::ecs::{AudioConfig, AudioEmitter, GraphDirty, GraphReconcileSystems, TuttiGraphRes};
+use tutti_core::task::poll_task;
+
+/// In-memory Bevy loader for [`SoundFontAsset`]. Reads the whole `.sf2`
+/// payload, then delegates to [`SoundFontAsset::from_bytes`].
+#[derive(Default, TypePath)]
+pub struct SoundFontAssetLoader;
+
+#[derive(Debug, thiserror::Error)]
+pub enum SoundFontAssetLoaderError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Parse(rustysynth::SoundFontError),
+}
+
+impl AssetLoader for SoundFontAssetLoader {
+    type Asset = SoundFontAsset;
+    type Settings = ();
+    type Error = SoundFontAssetLoaderError;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _settings: &Self::Settings,
+        _load_context: &mut LoadContext<'_>,
+    ) -> Result<Self::Asset, Self::Error> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        SoundFontAsset::from_bytes(&bytes).map_err(SoundFontAssetLoaderError::Parse)
+    }
+
+    fn extensions(&self) -> &[&str] {
+        SoundFontAsset::EXTENSIONS
+    }
+}
+
+/// Compile-time proof that [`SoundFontUnit`] is `Send`, which is what lets us
+/// build it on the [`AsyncComputeTaskPool`] instead of the Bevy main thread
+/// (the B5 gate). It holds a rustysynth `Synthesizer` (plain `Vec`/`Arc`
+/// struct) plus `Arc<dyn MidiSource>` where `MidiSource: Send + Sync`, so this
+/// assertion holds. If it ever stops compiling, the async decode below is
+/// unsound and the decode must move back onto the main thread.
+const _: () = {
+    fn assert_send<T: Send>() {}
+    let _ = assert_send::<SoundFontUnit>;
+};
+
+/// Trigger component: spawn an entity with this to create a SoundFont instrument.
+///
+/// The [`soundfont_playback_system`] processes entities that carry
+/// `PlaySoundFont` but not yet a [`PendingSoundFontUnit`] or [`AudioEmitter`],
+/// spawns an off-thread `SoundFontUnit` build onto the
+/// [`AsyncComputeTaskPool`] and attaches [`PendingSoundFontUnit`]. Once the
+/// build completes, `promote_pending_soundfonts` adds the unit to tutti's graph,
+/// attaches `AudioEmitter`, and removes the pending marker.
+///
+/// The trigger query is steady-state (not `Added`), so an entity whose `.sf2`
+/// asset has not finished loading is retried each frame until it resolves —
+/// the same fire-once-trap fix applied to the sampler `PlayAudio` trigger.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// // Load a SoundFont and spawn a piano (preset 0)
+/// let gm = asset_server.load("sounds/GeneralMidi.sf2");
+/// commands.spawn(PlaySoundFont { source: gm, ..default() });
+/// ```
+///
+/// Configure it the idiomatic Bevy way — `Default` plus struct-update syntax —
+/// rather than builder methods. `source` has no default; set it explicitly.
+#[derive(Component, Debug, Clone, Default, Reflect)]
+#[reflect(Component, Clone, Default)]
+pub struct PlaySoundFont {
+    pub source: Handle<SoundFontAsset>,
+    pub preset: i32,
+    pub channel: i32,
+}
+
+/// In-flight off-thread build of a [`SoundFontUnit`].
+///
+/// Inserted by `soundfont_playback_system` once the `.sf2` asset has resolved;
+/// the task owns the decoded `Arc<SoundFont>` and a `SynthesizerSettings` and
+/// runs the synchronous `SoundFontUnit::new` build on the
+/// [`AsyncComputeTaskPool`]. `promote_pending_soundfonts` drains it.
+#[derive(Component)]
+pub struct PendingSoundFontUnit {
+    task: Task<Result<SoundFontUnit, crate::Error>>,
+    preset: i32,
+    channel: i32,
+}
+
+/// Query filter for the steady-state SoundFont trigger: carries `PlaySoundFont`
+/// but is neither building (`PendingSoundFontUnit`) nor already playing
+/// (`AudioEmitter`).
+type PlaySoundFontPending = (Without<PendingSoundFontUnit>, Without<AudioEmitter>);
+
+/// Processes `PlaySoundFont` trigger components: once the `.sf2` asset has
+/// resolved, spawns the (synchronous, potentially expensive)
+/// `SoundFontUnit::new` decode onto the [`AsyncComputeTaskPool`] and attaches
+/// [`PendingSoundFontUnit`], removing `PlaySoundFont`.
+///
+/// Entities whose asset is still loading are left alone for the next frame.
+pub fn soundfont_playback_system(
+    mut commands: Commands,
+    sf_assets: Res<Assets<SoundFontAsset>>,
+    config: Res<AudioConfig>,
+    // Steady-state, not `Added`: retried each frame until the `.sf2` asset
+    // resolves. Excludes entities already building (`PendingSoundFontUnit`) or
+    // already playing (`AudioEmitter`).
+    query: Query<(Entity, &PlaySoundFont), PlaySoundFontPending>,
+) {
+    for (entity, play) in query.iter() {
+        let Some(source) = sf_assets.get(&play.source) else {
+            // Asset still loading; entity stays in the trigger set and is
+            // retried next frame.
+            continue;
+        };
+
+        let soundfont = source.0.clone();
+        let sample_rate = config.sample_rate as i32;
+        let preset = play.preset;
+        let channel = play.channel;
+
+        let task = AsyncComputeTaskPool::get().spawn(async move {
+            let settings = SynthesizerSettings::new(sample_rate);
+            SoundFontUnit::new(soundfont, &settings)
+        });
+
+        commands
+            .entity(entity)
+            .remove::<PlaySoundFont>()
+            .insert(PendingSoundFontUnit {
+                task,
+                preset,
+                channel,
+            });
+    }
+}
+
+/// Drains [`PendingSoundFontUnit`] entities whose off-thread build has
+/// finished: applies the entity's program change, registers the unit's MIDI
+/// sender on the bus (under `midi`), adds the unit to tutti's graph, pipes it to
+/// output, attaches `AudioEmitter`, then removes the pending marker.
+///
+/// Entities whose build is still running are left alone for the next frame.
+pub fn promote_pending_soundfonts(
+    mut commands: Commands,
+    mut graph: ResMut<TuttiGraphRes>,
+    mut dirty: ResMut<GraphDirty>,
+    #[cfg(feature = "midi")] midi: Option<Res<tutti_midi_io::ecs::MidiBusRes>>,
+    mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,
+) {
+    let mut edited = false;
+
+    for (entity, mut pending_unit) in pending.iter_mut() {
+        let Some(result) = poll_task(&mut pending_unit.task) else {
+            continue;
+        };
+
+        let mut unit = match result {
+            Ok(unit) => unit,
+            Err(e) => {
+                bevy_log::error!("Failed to create SoundFontUnit: {}", e);
+                commands.entity(entity).remove::<PendingSoundFontUnit>();
+                continue;
+            }
+        };
+        unit.program_change(pending_unit.channel, pending_unit.preset);
+
+        // Register the unit's MIDI sender on the bus so the routing table can
+        // dispatch events to it by `MidiUnitId` — done inline here (like every
+        // other MIDI-producing unit), before the unit moves into the graph.
+        #[cfg(feature = "midi")]
+        if let Some(ref bus) = midi {
+            bus.0.insert(unit.midi_sender());
+        }
+
+        let id = graph.0.add(unit);
+        graph.0.pipe_output(id);
+        edited = true;
+
+        commands
+            .entity(entity)
+            .remove::<PendingSoundFontUnit>()
+            .insert(AudioEmitter { node_id: id });
+    }
+
+    // Stage only; the Commit-phase `commit_graph` coalesces (this system is
+    // anchored before that phase).
+    if edited {
+        dirty.0 = true;
+    }
+}
+
+/// Bevy plugin: SoundFont asset loader + deferred playback trigger systems.
+pub struct TuttiSoundFontPlugin;
+
+impl Plugin for TuttiSoundFontPlugin {
+    fn build(&self, app: &mut App) {
+        app.register_type::<PlaySoundFont>();
+        // `promote_pending_soundfonts` stages graph edits + sets GraphDirty,
+        // so anchor the chain before the Commit phase where `commit_graph`
+        // flushes it (it no longer commits inline).
+        app.init_asset::<SoundFontAsset>()
+            .register_asset_loader(SoundFontAssetLoader)
+            .add_systems(
+                Update,
+                (soundfont_playback_system, promote_pending_soundfonts)
+                    .chain()
+                    .run_if(engine_ready)
+                    .before(GraphReconcileSystems::Commit),
+            );
     }
 }
 

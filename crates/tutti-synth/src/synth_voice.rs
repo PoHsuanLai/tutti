@@ -1,7 +1,6 @@
 //! Internal voice implementation for PolySynth.
 
-use super::SvfMode;
-use super::{FilterModConfig, FilterType, OscillatorType, SynthConfig};
+use crate::{FilterModConfig, FilterType, OscillatorType, SvfMode, SynthConfig};
 use crate::{MpeVoiceState, UnisonEngine};
 use tutti_core::dsp::{
     adsr_live, bandpass_q, dc, highpass_q, lowpass_q, moog, notch_q, pass, pink, poly_pulse, saw,

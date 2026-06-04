@@ -18,7 +18,7 @@ use assert_no_alloc::AllocDisabler;
 use tutti_core::{AudioUnit, BufferVec, SampleRate};
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_synth::SynthHandle;
+use tutti_synth::{FilterType, OscillatorType, PolySynth, SynthConfig};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -35,11 +35,13 @@ fn note_off(channel: u8, note: u8) -> MidiEvent {
 fn polysynth_process_idle_is_allocation_free() {
     // No active voices — process should still tick through allocator
     // bookkeeping and the MIDI inbox poll.
-    let mut synth = SynthHandle::new(SampleRate(48_000.0))
-        .saw()
-        .poly(8)
-        .build()
-        .unwrap();
+    let mut synth = PolySynth::new(SynthConfig {
+        sample_rate: 48_000.0,
+        max_voices: 8,
+        oscillator: OscillatorType::Saw,
+        ..Default::default()
+    })
+    .unwrap();
     synth.set_sample_rate(SampleRate(48_000.0));
 
     let input_vec = BufferVec::new(0);
@@ -62,12 +64,18 @@ fn polysynth_process_idle_is_allocation_free() {
 
 #[test]
 fn polysynth_process_with_active_voices_is_allocation_free() {
-    let mut synth = SynthHandle::new(SampleRate(48_000.0))
-        .saw()
-        .poly(8)
-        .filter_lowpass(2_000.0, 0.707_f32)
-        .build()
-        .unwrap();
+    let mut synth = PolySynth::new(SynthConfig {
+        sample_rate: 48_000.0,
+        max_voices: 8,
+        oscillator: OscillatorType::Saw,
+        filter: FilterType::Svf {
+            cutoff: 2_000.0,
+            q: 0.707,
+            mode: tutti_synth::SvfMode::Lowpass,
+        },
+        ..Default::default()
+    })
+    .unwrap();
     synth.set_sample_rate(SampleRate(48_000.0));
 
     // Trigger 4 sustained voices before entering the gate.
@@ -101,11 +109,13 @@ fn polysynth_process_with_active_voices_is_allocation_free() {
 fn polysynth_tick_with_active_voices_is_allocation_free() {
     // `tick` is the per-sample path — drives `Voice::tick_stereo`
     // directly without MIDI sub-buffer splitting.
-    let mut synth = SynthHandle::new(SampleRate(48_000.0))
-        .triangle()
-        .poly(8)
-        .build()
-        .unwrap();
+    let mut synth = PolySynth::new(SynthConfig {
+        sample_rate: 48_000.0,
+        max_voices: 8,
+        oscillator: OscillatorType::Triangle,
+        ..Default::default()
+    })
+    .unwrap();
     synth.set_sample_rate(SampleRate(48_000.0));
 
     synth
@@ -128,11 +138,13 @@ fn polysynth_tick_with_active_voices_is_allocation_free() {
 fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
     // Sub-buffer split path: queue events with non-zero frame offsets so
     // `process` walks the event-driven block boundaries.
-    let mut synth = SynthHandle::new(SampleRate(48_000.0))
-        .saw()
-        .poly(8)
-        .build()
-        .unwrap();
+    let mut synth = PolySynth::new(SynthConfig {
+        sample_rate: 48_000.0,
+        max_voices: 8,
+        oscillator: OscillatorType::Saw,
+        ..Default::default()
+    })
+    .unwrap();
     synth.set_sample_rate(SampleRate(48_000.0));
     let sender = synth.midi_sender();
 

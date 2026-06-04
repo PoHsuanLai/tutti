@@ -16,7 +16,7 @@ use tutti_midi_io::ecs::TuttiMidiPlugin;
 #[cfg(feature = "spatial")]
 use tutti_units::ecs::TuttiSpatialPlugin;
 #[cfg(feature = "soundfont")]
-use tutti_synth::ecs::TuttiSoundFontPlugin;
+use tutti_synth::TuttiSoundFontPlugin;
 #[cfg(feature = "sampler")]
 use tutti_sampler::ecs::TuttiSamplerPlugin;
 #[cfg(feature = "automation")]

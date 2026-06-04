@@ -23,7 +23,7 @@ use super::playback::audio_playback_system;
 ///
 /// ```rust,ignore
 /// commands.spawn((
-///     PlayAudio::once(asset_server.load("drums.wav")),
+///     PlayAudio { source: asset_server.load("drums.wav"), ..default() },
 ///     TimeStretch { stretch_factor: 0.5, pitch_cents: 0.0 },
 /// ));
 /// ```

@@ -809,8 +809,7 @@ impl SamplerNode {
 
 /// Authoring marker for an LFO modulator node.
 ///
-/// Not in the B7.1 list as a "param kind" but mirrors the live `AddLfo`
-/// trigger; its required params are `Frequency` + `ModDepth`, with `LfoShapeKind`
+/// Its required params are `Frequency` + `ModDepth`, with `LfoShapeKind`
 /// + `BeatSynced` as construction-only authored data.
 #[derive(Component, Reflect, Default, Clone, Copy, Debug)]
 #[reflect(Component, Default)]

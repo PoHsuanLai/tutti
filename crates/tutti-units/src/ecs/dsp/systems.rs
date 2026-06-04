@@ -1,43 +1,23 @@
 //! Spawn systems for DSP units.
 //!
-//! Two entry shapes feed the same graph-build code:
-//!
-//! - **Marker-driven (preferred):** spawn a marker (`CompressorNode`,
-//!   `FilterNode`, …). Its `#[require(...)]` list inserts the param components
-//!   with their defaults synchronously, so by the time the `Added<Marker>`
-//!   spawn system runs (in `GraphReconcileSystems::Spawn`) every param the unit
-//!   needs is already on the entity. The system **builds the unit from those
-//!   component values** (single source of truth — never from independent
-//!   constants), `graph.add`s it, then inserts `(AudioNode(id), Marker::KIND)`.
-//!   Because the unit is built from the same values `#[require]` defaulted,
-//!   `reconcile_unit_params` firing on frame 1 is a no-op, not a drift (risk E1).
-//!
-//! - **`Add*` shim (deprecated):** the legacy trigger structs still spawn an
-//!   identical node. Each shim system builds the unit and inserts the marker +
-//!   `AudioNode` + `NodeKind` + params in one shot. The marker spawn systems
-//!   skip entities that already carry `AudioNode` (`Without<AudioNode>`), so a
-//!   shim-spawned entity is never double-added.
+//! Spawn a marker (`CompressorNode`, `FilterNode`, …); its `#[require(...)]`
+//! list inserts the param components with their defaults synchronously, so by
+//! the time the `Added<Marker>` spawn system runs (in
+//! `GraphReconcileSystems::Spawn`) every param the unit needs is already on the
+//! entity. The system builds the unit from those component values, `graph.add`s
+//! it, then inserts `(AudioNode(id), Marker::KIND)`.
 //!
 //! Param reconciliation happens in [`super::reconcile`].
 
 use bevy_ecs::prelude::*;
 
 use tutti_core::ecs::{
-    AudioNode, BeatSynced, Frequency, LfoNodeMarker, LfoShapeKind, ModDepth, NodeKind,
+    AudioNode, BeatSynced, Frequency, LfoNodeMarker, LfoShapeKind, ModDepth,
 };
-use tutti_core::ecs::{
-    Attack, ChorusNode, CompressorNode, CompressorRatio, DelayNode, DelayTime, Feedback,
-    FilterMode, FilterNode, FilterQ, GainDb, GateNode, MaxDelay, ModRate, Release,
-    ReverbDamping, ReverbNode, ReverbRoomSize, ReverbTime, StereoChannels, ThresholdDb, WetMix,
-};
+use tutti_core::ecs::FilterMode;
 
 use tutti_core::ecs::GraphDirty;
 use tutti_core::ecs::{TransportRes, TuttiGraphRes};
-
-#[allow(deprecated)]
-use super::components::AddLfo;
-#[allow(deprecated)]
-use super::components::{AddChorus, AddCompressor, AddDelay, AddFilter, AddGate, AddReverb};
 
 // ---------------------------------------------------------------------------
 // Mirror-enum mapping helpers (tutti-core mirror → real tutti-units enum)
@@ -57,20 +37,6 @@ pub(super) fn svf_type_of(mode: FilterMode) -> crate::SvfType {
     }
 }
 
-fn filter_mode_of(svf: crate::SvfType) -> FilterMode {
-    use crate::SvfType;
-    match svf {
-        SvfType::LowPass => FilterMode::LowPass,
-        SvfType::HighPass => FilterMode::HighPass,
-        SvfType::BandPass => FilterMode::BandPass,
-        SvfType::Notch => FilterMode::Notch,
-        SvfType::Allpass => FilterMode::Allpass,
-        SvfType::Bell => FilterMode::Bell,
-        SvfType::LowShelf => FilterMode::LowShelf,
-        SvfType::HighShelf => FilterMode::HighShelf,
-    }
-}
-
 fn lfo_shape_of(kind: LfoShapeKind) -> crate::LfoShape {
     use crate::LfoShape;
     match kind {
@@ -84,21 +50,8 @@ fn lfo_shape_of(kind: LfoShapeKind) -> crate::LfoShape {
     }
 }
 
-fn lfo_shape_kind_of(shape: crate::LfoShape) -> LfoShapeKind {
-    use crate::LfoShape;
-    match shape {
-        LfoShape::Sine => LfoShapeKind::Sine,
-        LfoShape::Triangle => LfoShapeKind::Triangle,
-        LfoShape::Square => LfoShapeKind::Square,
-        LfoShape::Sawtooth => LfoShapeKind::Sawtooth,
-        LfoShape::SawtoothDown => LfoShapeKind::SawtoothDown,
-        LfoShape::Random => LfoShapeKind::Random,
-        LfoShape::RandomSmooth => LfoShapeKind::RandomSmooth,
-    }
-}
-
 // ===========================================================================
-// Marker-driven spawn (preferred path)
+// Marker-driven spawn
 //
 // The six effect spawn systems (compressor / gate / filter / reverb / delay /
 // chorus) collapsed into the one generic `spawn_dsp_node::<T>` in `dsp::spawn`,
@@ -142,251 +95,10 @@ pub fn spawn_lfo_nodes(
     }
 }
 
-// ===========================================================================
-// `Add*` shim spawn systems (deprecated path)
-//
-// Build the unit exactly as before and insert the marker + AudioNode + KIND +
-// params in one shot. The marker spawn systems skip these entities via
-// `Without<AudioNode>`, so there is no double-add. Identical runtime behavior
-// to the pre-B7 code.
-// ===========================================================================
-
-#[allow(deprecated)]
-pub fn dsp_compressor_system(
-    mut commands: Commands,
-    mut graph: ResMut<TuttiGraphRes>,
-    mut dirty: ResMut<GraphDirty>,
-    query: Query<(Entity, &AddCompressor), Added<AddCompressor>>,
-) {
-    for (entity, add) in query.iter() {
-        let comp = if add.stereo {
-            crate::Compressor::stereo(add.threshold_db, add.ratio, add.attack, add.release)
-        } else {
-            crate::Compressor::mono(add.threshold_db, add.ratio, add.attack, add.release)
-        }
-        .with_makeup(add.makeup_db);
-        let node_id = graph.0.add(comp);
-        dirty.0 = true;
-
-        commands.entity(entity).remove::<AddCompressor>().insert((
-            CompressorNode,
-            AudioNode(node_id),
-            NodeKind::Compressor,
-            ThresholdDb(add.threshold_db),
-            CompressorRatio(add.ratio),
-            Attack(add.attack),
-            Release(add.release),
-            GainDb(add.makeup_db),
-            StereoChannels(add.stereo),
-        ));
-
-        bevy_log::info!(
-            "Compressor added (entity {entity:?}, stereo={}, node {node_id:?})",
-            add.stereo
-        );
-    }
-}
-
-#[allow(deprecated)]
-pub fn dsp_gate_system(
-    mut commands: Commands,
-    mut graph: ResMut<TuttiGraphRes>,
-    mut dirty: ResMut<GraphDirty>,
-    query: Query<(Entity, &AddGate), Added<AddGate>>,
-) {
-    for (entity, add) in query.iter() {
-        let gate = if add.stereo {
-            crate::Gate::stereo(add.threshold_db, add.attack, add.hold, add.release)
-        } else {
-            crate::Gate::mono(add.threshold_db, add.attack, add.hold, add.release)
-        };
-        let node_id = graph.0.add(gate);
-        dirty.0 = true;
-
-        commands.entity(entity).remove::<AddGate>().insert((
-            GateNode,
-            AudioNode(node_id),
-            NodeKind::Gate,
-            ThresholdDb(add.threshold_db),
-            Attack(add.attack),
-            Release(add.release),
-            StereoChannels(add.stereo),
-        ));
-
-        bevy_log::info!(
-            "Gate added (entity {entity:?}, stereo={}, node {node_id:?})",
-            add.stereo
-        );
-    }
-}
-
-#[allow(deprecated)]
-pub fn dsp_lfo_system(
-    mut commands: Commands,
-    mut graph: ResMut<TuttiGraphRes>,
-    transport: Res<TransportRes>,
-    mut dirty: ResMut<GraphDirty>,
-    query: Query<(Entity, &AddLfo), Added<AddLfo>>,
-) {
-    for (entity, add) in query.iter() {
-        let node_id = if add.beat_synced {
-            let lfo = crate::LfoNode::new(add.shape)
-                .with_beat_sync(transport.0.clone(), add.frequency);
-            lfo.set_depth(add.depth);
-            graph.0.add(lfo)
-        } else {
-            let lfo = crate::LfoNode::new(add.shape).with_frequency(add.frequency);
-            lfo.set_depth(add.depth);
-            graph.0.add(lfo)
-        };
-        dirty.0 = true;
-
-        commands.entity(entity).remove::<AddLfo>().insert((
-            LfoNodeMarker,
-            AudioNode(node_id),
-            NodeKind::Lfo,
-            Frequency(add.frequency),
-            ModDepth(add.depth),
-            lfo_shape_kind_of(add.shape),
-            BeatSynced(add.beat_synced),
-        ));
-
-        bevy_log::info!(
-            "LFO added (entity {entity:?}, beat_synced={}, node {node_id:?})",
-            add.beat_synced
-        );
-    }
-}
-
-#[allow(deprecated)]
-pub fn dsp_filter_system(
-    mut commands: Commands,
-    mut graph: ResMut<TuttiGraphRes>,
-    mut dirty: ResMut<GraphDirty>,
-    query: Query<(Entity, &AddFilter), Added<AddFilter>>,
-) {
-    for (entity, add) in query.iter() {
-        let mut node =
-            crate::StereoSvfFilterNode::<f64>::new(add.svf_type, add.frequency, add.q);
-        if add.gain_db != 0.0 {
-            node = node.with_gain_db(add.gain_db);
-        }
-        let node_id = graph.0.add(node);
-        dirty.0 = true;
-
-        commands.entity(entity).remove::<AddFilter>().insert((
-            FilterNode,
-            AudioNode(node_id),
-            NodeKind::Filter,
-            Frequency(add.frequency),
-            FilterQ(add.q),
-            GainDb(add.gain_db),
-            filter_mode_of(add.svf_type),
-        ));
-
-        bevy_log::info!(
-            "Filter added (entity {entity:?}, type={:?}, node {node_id:?})",
-            add.svf_type
-        );
-    }
-}
-
-#[allow(deprecated)]
-pub fn dsp_reverb_system(
-    mut commands: Commands,
-    mut graph: ResMut<TuttiGraphRes>,
-    mut dirty: ResMut<GraphDirty>,
-    query: Query<(Entity, &AddReverb), Added<AddReverb>>,
-) {
-    for (entity, add) in query.iter() {
-        let reverb = tutti_core::dsp::reverb_stereo(
-            add.room_size as f64,
-            add.time_secs as f64,
-            add.damping as f64,
-        );
-        let node_id = graph.0.add(reverb);
-        dirty.0 = true;
-
-        commands.entity(entity).remove::<AddReverb>().insert((
-            ReverbNode,
-            AudioNode(node_id),
-            NodeKind::Reverb,
-            ReverbRoomSize(add.room_size),
-            ReverbDamping(add.damping),
-            WetMix(add.wet),
-            ReverbTime(add.time_secs),
-        ));
-
-        bevy_log::info!("Reverb added (entity {entity:?}, node {node_id:?})");
-    }
-}
-
-#[allow(deprecated)]
-pub fn dsp_delay_system(
-    mut commands: Commands,
-    mut graph: ResMut<TuttiGraphRes>,
-    mut dirty: ResMut<GraphDirty>,
-    query: Query<(Entity, &AddDelay), Added<AddDelay>>,
-) {
-    for (entity, add) in query.iter() {
-        let delay = crate::StereoDelayLineNode::new(
-            add.max_delay_secs,
-            add.delay_time_secs,
-            add.delay_time_secs,
-            add.feedback,
-        );
-        delay.set_mix(add.wet);
-        let node_id = graph.0.add(delay);
-        dirty.0 = true;
-
-        commands.entity(entity).remove::<AddDelay>().insert((
-            DelayNode,
-            AudioNode(node_id),
-            NodeKind::Delay,
-            DelayTime(add.delay_time_secs),
-            Feedback(add.feedback),
-            WetMix(add.wet),
-            MaxDelay(add.max_delay_secs),
-        ));
-
-        bevy_log::info!("Delay added (entity {entity:?}, node {node_id:?})");
-    }
-}
-
-#[allow(deprecated)]
-pub fn dsp_chorus_system(
-    mut commands: Commands,
-    mut graph: ResMut<TuttiGraphRes>,
-    mut dirty: ResMut<GraphDirty>,
-    query: Query<(Entity, &AddChorus), Added<AddChorus>>,
-) {
-    for (entity, add) in query.iter() {
-        let chorus = crate::ChorusNode::new();
-        chorus.set_rate(add.rate_hz);
-        chorus.set_depth(add.depth_secs);
-        chorus.set_feedback(add.feedback);
-        chorus.set_mix(add.wet);
-        let node_id = graph.0.add(chorus);
-        dirty.0 = true;
-
-        commands.entity(entity).remove::<AddChorus>().insert((
-            ChorusNode,
-            AudioNode(node_id),
-            NodeKind::Chorus,
-            ModRate(add.rate_hz),
-            ModDepth(add.depth_secs),
-            Feedback(add.feedback),
-            WetMix(add.wet),
-        ));
-
-        bevy_log::info!("Chorus added (entity {entity:?}, node {node_id:?})");
-    }
-}
-
 #[cfg(test)]
 mod marker_spawn_tests {
     use super::*;
-    use tutti_core::ecs::FilterNode;
+    use tutti_core::ecs::{FilterNode, FilterQ, GainDb, NodeKind};
     use tutti_core::ecs::{commit_graph, reconcile_node_despawn, GraphReconcileSystems};
     use tutti_core::ecs::TuttiGraphRes;
     use tutti_core::TuttiGraph;
@@ -466,34 +178,4 @@ mod marker_spawn_tests {
         );
     }
 
-    /// The deprecated `AddFilter` shim and the marker path produce the same
-    /// node shape (marker + AudioNode + NodeKind), and the marker spawn system
-    /// does not double-add (Without<AudioNode> guard).
-    #[test]
-    #[allow(deprecated)]
-    fn add_filter_shim_matches_marker_shape() {
-        use super::super::components::AddFilter;
-        let mut app = test_app();
-        app.add_systems(
-            Update,
-            dsp_filter_system.in_set(GraphReconcileSystems::Spawn),
-        );
-
-        let entity = app
-            .world_mut()
-            .spawn(AddFilter::lowpass(500.0, 1.5))
-            .id();
-        app.update();
-
-        let world = app.world();
-        // Shim attaches the marker too.
-        assert!(world.get::<FilterNode>(entity).is_some(), "shim attaches FilterNode marker");
-        assert!(world.get::<AudioNode>(entity).is_some(), "shim attaches AudioNode");
-        assert_eq!(*world.get::<NodeKind>(entity).unwrap(), NodeKind::Filter);
-        // AddFilter trigger removed.
-        assert!(world.get::<AddFilter>(entity).is_none(), "AddFilter consumed");
-        // Exactly one filter node in the graph (no double-add).
-        let q = world.get::<FilterQ>(entity).unwrap();
-        assert_eq!(q.0, 1.5);
-    }
 }

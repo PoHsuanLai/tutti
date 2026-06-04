@@ -26,9 +26,13 @@ pub(crate) mod io;
 #[cfg(all(target_os = "macos", feature = "virtual-midi"))]
 pub use io::{VirtualMidiDestination, VirtualMidiSource};
 
-pub(crate) mod file;
-pub use file::{
-    encode_midi_file, write_midi_file, MidiWriteOptions, ParsedMidiFile, SmfTimedEvent,
+/// Standard MIDI File (SMF) read/write — parse a `.mid` into beat-positioned
+/// events ([`ParsedMidiFile`]) or per-track paired notes ([`smf::tracks`]), and
+/// encode events back out ([`encode_midi_file`]).
+pub mod smf;
+pub use smf::{
+    encode_midi_file, write_midi_file, MidiWriteOptions, ParsedMidiFile, SmfNote, SmfTimedEvent,
+    SmfTrack,
 };
 
 pub use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteTimecode};

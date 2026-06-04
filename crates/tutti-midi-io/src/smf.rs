@@ -114,6 +114,129 @@ fn sort_by_time(events: &mut [SmfTimedEvent]) {
     events.sort_by(|a, b| a.time_beats.partial_cmp(&b.time_beats).unwrap());
 }
 
+// --- Per-track paired notes ---
+//
+// A higher-level read view than [`ParsedMidiFile`]'s flat event stream:
+// note-on/off are paired into whole notes, kept separated per SMF track, with
+// each track's name. This is the shape an importer wants (one clip per track,
+// notes with durations). The records are engine-neutral `u8`/`f64` — callers
+// above this crate (e.g. dawai's SMF import) widen them into their own note
+// type; tutti-midi-io has no knowledge of those.
+
+/// One note, paired from its NoteOn/NoteOff, in beats from track start.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SmfNote {
+    /// MIDI key number, 0..=127.
+    pub key: u8,
+    /// NoteOn velocity, 1..=127 (velocity-0 NoteOn is treated as NoteOff).
+    pub velocity: u8,
+    /// Onset in beats, relative to the start of the file.
+    pub start_beats: f64,
+    /// Duration in beats (NoteOff time − NoteOn time, clamped to ≥ 0).
+    pub duration_beats: f64,
+}
+
+/// One SMF track's paired notes plus its track-name meta event (if any).
+#[derive(Debug, Clone, Default)]
+pub struct SmfTrack {
+    pub name: Option<String>,
+    pub notes: Vec<SmfNote>,
+}
+
+/// Parse an SMF into per-track paired notes (one [`SmfTrack`] per SMF track,
+/// note-on/off paired into [`SmfNote`]s, time in beats from the file division).
+///
+/// Tracks with no notes are still returned (callers skip empties as they see
+/// fit). Only metrical (ticks-per-beat) timing is supported — SMPTE-timed files
+/// return [`Error::MidiUnsupportedTiming`]. The tempo map is not applied; beats
+/// come from the division, matching [`ParsedMidiFile`].
+pub fn tracks(data: &[u8]) -> Result<Vec<SmfTrack>> {
+    let smf = Smf::parse(data)?;
+    let ticks_per_beat = match smf.header.timing {
+        Timing::Metrical(tpb) => f64::from(tpb.as_int()),
+        Timing::Timecode(_, _) => return Err(Error::MidiUnsupportedTiming),
+    };
+    if ticks_per_beat == 0.0 {
+        return Err(Error::MidiFileParse("zero ticks-per-beat".into()));
+    }
+
+    Ok(smf
+        .tracks
+        .iter()
+        .map(|track| SmfTrack {
+            name: track_name(track),
+            notes: pair_notes(track, ticks_per_beat),
+        })
+        .collect())
+}
+
+/// Parse an SMF file at `path` into per-track paired notes. See [`tracks`].
+pub fn tracks_from_path(path: impl AsRef<Path>) -> Result<Vec<SmfTrack>> {
+    tracks(&std::fs::read(path.as_ref())?)
+}
+
+/// Pair NoteOn / NoteOff events in one track into whole notes. Velocity-0
+/// NoteOn is treated as NoteOff; overlapping notes on the same key close in
+/// LIFO order; notes left open at end-of-track are dropped.
+fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
+    use std::collections::BTreeMap;
+
+    let mut now_ticks: u64 = 0;
+    let mut held: BTreeMap<u8, Vec<(f64, u8)>> = BTreeMap::new();
+    let mut out: Vec<SmfNote> = Vec::new();
+
+    let mut close = |held: &mut BTreeMap<u8, Vec<(f64, u8)>>, key: u8, end: f64| {
+        if let Some(stack) = held.get_mut(&key) {
+            if let Some((start, velocity)) = stack.pop() {
+                out.push(SmfNote {
+                    key,
+                    velocity,
+                    start_beats: start,
+                    duration_beats: (end - start).max(0.0),
+                });
+            }
+        }
+    };
+
+    for event in track.iter() {
+        now_ticks = now_ticks.saturating_add(u64::from(event.delta.as_int()));
+        let beat = now_ticks as f64 / ticks_per_beat;
+        if let TrackEventKind::Midi { message, .. } = event.kind {
+            match message {
+                MidiMessage::NoteOn { key, vel } => {
+                    let (key, vel) = (key.as_int(), vel.as_int());
+                    if vel == 0 {
+                        close(&mut held, key, beat);
+                    } else {
+                        held.entry(key).or_default().push((beat, vel));
+                    }
+                }
+                MidiMessage::NoteOff { key, .. } => close(&mut held, key.as_int(), beat),
+                _ => {}
+            }
+        }
+    }
+
+    out.sort_by(|a, b| {
+        a.start_beats
+            .partial_cmp(&b.start_beats)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out
+}
+
+/// First non-empty `TrackName` meta event in a track, trimmed.
+fn track_name(track: &Track) -> Option<String> {
+    track.iter().find_map(|e| match e.kind {
+        TrackEventKind::Meta(MetaMessage::TrackName(bytes)) => std::str::from_utf8(bytes)
+            .ok()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        _ => None,
+    })
+}
+
 // --- Writing ---
 
 #[derive(Debug, Clone)]
@@ -281,5 +404,69 @@ mod tests {
     fn test_write_empty_tracks_error() {
         let result = encode_midi_file(&[], &MidiWriteOptions::default());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn tracks_pairs_note_on_off_with_duration() {
+        // One note: on at beat 0, off at beat 1, on a named track.
+        let events = vec![SmfTimedEvent {
+            time_beats: 0.0,
+            channel: 0,
+            msg: MidiMessage::NoteOn {
+                key: 60.into(),
+                vel: 100.into(),
+            },
+        }, SmfTimedEvent {
+            time_beats: 1.0,
+            channel: 0,
+            msg: MidiMessage::NoteOff {
+                key: 60.into(),
+                vel: 0.into(),
+            },
+        }];
+        let data = encode_midi_file(
+            &[events],
+            &MidiWriteOptions {
+                ticks_per_beat: 480,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let parsed = tracks(&data).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].notes.len(), 1);
+        let n = parsed[0].notes[0];
+        assert_eq!(n.key, 60);
+        assert_eq!(n.velocity, 100);
+        assert!((n.start_beats - 0.0).abs() < 1e-6);
+        assert!((n.duration_beats - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn tracks_treats_velocity_zero_note_on_as_off() {
+        let events = vec![SmfTimedEvent {
+            time_beats: 0.0,
+            channel: 0,
+            msg: MidiMessage::NoteOn {
+                key: 64.into(),
+                vel: 80.into(),
+            },
+        }, SmfTimedEvent {
+            time_beats: 2.0,
+            channel: 0,
+            // Running-status note-off: NoteOn with velocity 0.
+            msg: MidiMessage::NoteOn {
+                key: 64.into(),
+                vel: 0.into(),
+            },
+        }];
+        let data =
+            encode_midi_file(&[events], &MidiWriteOptions { ticks_per_beat: 480, ..Default::default() })
+                .unwrap();
+
+        let parsed = tracks(&data).unwrap();
+        assert_eq!(parsed[0].notes.len(), 1, "vel-0 NoteOn should close the note");
+        assert!((parsed[0].notes[0].duration_beats - 2.0).abs() < 1e-3);
     }
 }

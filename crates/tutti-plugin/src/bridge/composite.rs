@@ -152,6 +152,16 @@ impl PluginBridge {
 
     pub fn close_editor(&self) -> bool {
         tutti_plugin_types::assert_main_thread();
+        self.close_editor_inner()
+    }
+
+    /// Editor-close without the main-thread assert. Used by `Drop`, which can
+    /// run on a worker thread when the fundsp graph releases a plugin node
+    /// during a graph rebuild (`commit_graph` runs off the main thread).
+    /// Asserting there would false-fire on a teardown that is benign — the
+    /// public [`close_editor`](Self::close_editor) keeps the guard for the
+    /// real UI-thread call path.
+    fn close_editor_inner(&self) -> bool {
         let Ok(mut guard) = self.gui.lock() else {
             return false;
         };
@@ -321,7 +331,11 @@ impl Drop for PluginBridge {
         //
         // Leaking the GUI instance avoids the crash. The OS reclaims all memory
         // on process exit anyway.
-        self.close_editor();
+        //
+        // Use the *_inner variant: Drop can run on a worker thread (the fundsp
+        // graph releases this node during commit_graph, which runs off-main),
+        // so the main-thread assert in the public close_editor would false-fire.
+        self.close_editor_inner();
         if let Ok(mut guard) = self.gui.lock() {
             if let Some(gui) = guard.take() {
                 std::mem::forget(gui);

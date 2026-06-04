@@ -1,6 +1,11 @@
 //! DSP nodes for the Tutti audio engine.
 
+// The crate's only fallible operation is VBAP speaker-layout construction, so
+// `Error` / `Result` exist only under `spatial` (without it `Error` would be an
+// uninhabited enum with no users).
+#[cfg(feature = "spatial")]
 mod error;
+#[cfg(feature = "spatial")]
 pub use error::{Error, Result};
 
 mod node_id;

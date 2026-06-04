@@ -1,9 +1,48 @@
-//! Time-stretch: lock-free pitch + duration control on a sampler.
+//! Time-stretching and pitch-shifting for sample playback.
 //!
-//! `TimeStretch` is a companion to [`super::trigger::PlayAudio`] —
-//! when present alongside `PlayAudio`, the playback system wraps the
-//! `SamplerUnit` in a `TimeStretchUnit` and inserts a
-//! [`TimeStretchControl`] for lock-free realtime updates.
+//! Provides real-time time-stretching and pitch-shifting capabilities using
+//! phase vocoder techniques. Can wrap any AudioUnit to add time/pitch manipulation.
+//!
+//! # Example
+//!
+//! ```ignore
+//! use tutti_sampler::{SamplerUnit, stretch};
+//! use std::sync::Arc;
+//!
+//! // Create a sampler with a loaded audio file
+//! let sampler = SamplerUnit::new(Arc::new(wave));
+//!
+//! // Wrap with time-stretch capability
+//! let mut stretched = stretch::Unit::new(Box::new(sampler), 44100.0);
+//!
+//! // Slow down to half speed
+//! stretched.set_stretch_factor(2.0);
+//!
+//! // Pitch up by one octave
+//! stretched.set_pitch_cents(1200.0);
+//! ```
+//!
+//! # Features
+//!
+//! - **Lock-free parameter updates**: Real-time control via atomic operations
+//! - **High-quality phase vocoder**: Phase-locked algorithm for pitched content
+//! - **Multiple FFT sizes**: Trade-off between latency and quality
+//! - **Stereo processing**: Independent left/right channel processing
+//!
+//! The ECS layer ([`TimeStretch`] component + [`time_stretch_sync_system`])
+//! lives at the bottom of this module; the playback system wraps a
+//! `SamplerUnit` in a [`Unit`] when a `TimeStretch` is present.
+
+mod granular;
+mod phase_vocoder;
+mod types;
+mod unit;
+
+pub use granular::GrainSize;
+pub use types::{Algorithm, FftSize, Params};
+pub use unit::Unit;
+
+// ───────────────────────────── ECS layer ───────────────────────────
 
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
@@ -11,9 +50,9 @@ use bevy_reflect::prelude::*;
 /// Companion component for `PlayAudio` entities that enables time stretching.
 ///
 /// When present alongside `PlayAudio`, the `audio_playback_system` wraps the
-/// `SamplerUnit` in a `TimeStretchUnit` before adding it to the graph.
-/// After playback starts, a `TimeStretchControl` component is inserted
-/// for lock-free parameter updates.
+/// `SamplerUnit` in a [`Unit`] before adding it to the graph. After playback
+/// starts, a [`TimeStretchControl`] component is inserted for lock-free
+/// parameter updates.
 ///
 /// # Examples
 ///
@@ -43,7 +82,7 @@ impl Default for TimeStretch {
 ///
 /// Inserted automatically by `audio_playback_system` when `TimeStretch` is
 /// present. Holds `Arc<AtomicF32>` handles for real-time parameter updates.
-/// Updated by `time_stretch_sync_system` when `TimeStretch` changes.
+/// Updated by [`time_stretch_sync_system`] when `TimeStretch` changes.
 ///
 /// Not `Reflect`: `Arc<AtomicF32>` is not reflected.
 #[derive(Component, Debug, Clone)]
@@ -68,4 +107,3 @@ pub fn time_stretch_sync_system(
             .store(ts.pitch_cents, tutti_core::Ordering::Release);
     }
 }
-

@@ -23,7 +23,6 @@ pub mod reconcile;
 pub mod sampler_unit;
 pub mod streaming_sampler;
 pub mod time_stretch;
-pub mod time_stretch_dsp;
 pub mod track_clip_reader;
 pub mod trigger;
 pub mod wave_loader;

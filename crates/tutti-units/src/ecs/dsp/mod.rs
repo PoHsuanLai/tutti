@@ -36,11 +36,11 @@ impl Plugin for TuttiDspPlugin {
         use tutti_core::ecs::engine_ready;
         use tutti_core::ecs::GraphReconcileSystems;
 
-        // Register the DSP authoring markers + LFO authored data. The core-owned
-        // param/construction components are registered by
-        // `tutti_core::ecs::register_core_node_types` (added by the core graph
-        // plugin); here we cover the leaf-owned markers.
-        register_dsp_node_types(app);
+        // Register the DSP param pool + authoring markers (both owned by this
+        // crate now). The core graph plugin registers only the foundational
+        // params (`Volume`/`Pan`/`Mute`/`NodeKind`).
+        crate::dsp_params::register_param_types(app);
+        crate::node_markers::register_node_markers(app);
 
         // LFO: bespoke marker spawner, in the Spawn set so the deferred
         // `AudioNode` insert lands before the Despawn set's `Added<AudioNode>`
@@ -53,7 +53,7 @@ impl Plugin for TuttiDspPlugin {
         );
 
         use spawn::AddDspNode as _;
-        use tutti_core::ecs::{
+        use crate::node_markers::{
             ChorusNode, CompressorNode, DelayNode, FilterNode, GateNode, ReverbNode,
         };
 
@@ -94,22 +94,3 @@ impl Plugin for TuttiDspPlugin {
     }
 }
 
-/// Register the leaf-owned DSP authoring markers for reflection.
-///
-/// The core-owned types (`NodeKind`, scalar params, construction data) are
-/// registered by [`tutti_core::ecs::register_core_node_types`]. Idempotent —
-/// Bevy's `register_type` ignores duplicates.
-fn register_dsp_node_types(app: &mut App) {
-    use tutti_core::ecs::{
-        ChorusNode, CompressorNode, ConvolutionReverbNode, DelayNode, FilterNode, GateNode,
-        LfoNodeMarker, ReverbNode,
-    };
-    app.register_type::<CompressorNode>()
-        .register_type::<GateNode>()
-        .register_type::<FilterNode>()
-        .register_type::<ReverbNode>()
-        .register_type::<ConvolutionReverbNode>()
-        .register_type::<DelayNode>()
-        .register_type::<ChorusNode>()
-        .register_type::<LfoNodeMarker>();
-}

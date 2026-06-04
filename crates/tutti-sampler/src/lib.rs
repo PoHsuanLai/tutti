@@ -79,10 +79,11 @@ pub use playback::{
     audio_cleanup_system, audio_parameter_sync_system, audio_playback_system,
     bump_param_epoch_sampler, poll_wave_imports, promote_pending_samplers, reconcile_sampler_params,
     reconcile_sampler_volume, time_stretch_sync_system, AudioEmitter, AudioPlaybackState,
-    AudioVolume, ClipCommand, ClipSpec, DespawnOnFinish, PendingSamplerLoad, PlayAudio, SamplerUnit,
-    SlotId, StreamingSamplerUnit, TimeStretch, TimeStretchControl, TrackClipReaderHandle,
-    TrackClipReaderNode, TrackClipReaderRef, TrackClipReaderUnit, TuttiPlaybackPlugin,
-    WaveImportQueue, WaveAssetLoader, WaveAssetLoaderError,
+    AudioVolume, ClipCommand, ClipSpec, DespawnOnFinish, PendingSamplerLoad, PlayAudio,
+    SamplerLooping, SamplerNode, SamplerSpeed, SamplerUnit, SlotId, StreamingSamplerUnit,
+    TimeStretch, TimeStretchControl, TrackClipReaderHandle, TrackClipReaderNode,
+    TrackClipReaderRef, TrackClipReaderUnit, TuttiPlaybackPlugin, WaveImportQueue, WaveAssetLoader,
+    WaveAssetLoaderError,
 };
 pub use recording::{
     recording_start_system, recording_stop_system, RecordingActive, RecordingResult,
@@ -106,10 +107,8 @@ pub struct TuttiSamplerPlugin;
 
 impl bevy_app::Plugin for TuttiSamplerPlugin {
     fn build(&self, app: &mut bevy_app::App) {
-        // Register the sampler authoring marker so the type registry knows it.
-        app.register_type::<tutti_core::ecs::SamplerNode>();
-
         // Each domain is a self-contained plugin; this just composes them.
+        // (`SamplerNode` + its params are registered by `TuttiPlaybackPlugin`.)
         // (`TuttiPlaybackPlugin` owns the trigger lifecycle, deferred-load
         // promotion, `SamplerUnit` reconcilers, param-epoch bump, and
         // time-stretch sync.)

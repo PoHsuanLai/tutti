@@ -34,7 +34,7 @@ use tutti_core::ecs::GraphReconcileSystems;
 // the plugin / sampler paths are handled by their own leaf crates.
 // =============================================================================
 
-use tutti_core::ecs::{
+use crate::dsp_params::{
     Attack, CeilingDb, CompressorRatio, DelayTime, Drive, Feedback, FilterQ, Frequency, GainDb,
     ModDepth, ModRate, Release, ThresholdDb, WetMix,
 };
@@ -146,10 +146,10 @@ pub fn reconcile_unit_params(
 // ---------------------------------------------------------------------------
 
 type ReverbChangedFilter = Or<(
-    Changed<tutti_core::ecs::ReverbRoomSize>,
-    Changed<tutti_core::ecs::ReverbDamping>,
+    Changed<crate::dsp_params::ReverbRoomSize>,
+    Changed<crate::dsp_params::ReverbDamping>,
     Changed<WetMix>,
-    Changed<tutti_core::ecs::ReverbAlgo>,
+    Changed<crate::dsp_params::ReverbAlgo>,
 )>;
 
 #[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
@@ -158,20 +158,20 @@ pub fn reconcile_reverb_params(
     changed: Query<
         (
             Entity,
-            &tutti_core::ecs::ReverbRoomSize,
-            &tutti_core::ecs::ReverbDamping,
+            &crate::dsp_params::ReverbRoomSize,
+            &crate::dsp_params::ReverbDamping,
             &WetMix,
-            Option<&tutti_core::ecs::ReverbAlgo>,
+            Option<&crate::dsp_params::ReverbAlgo>,
         ),
         (
             With<AudioNode>,
-            With<tutti_core::ecs::ReverbNode>,
+            With<crate::node_markers::ReverbNode>,
             ReverbChangedFilter,
         ),
     >,
 ) {
     use tutti_core::ecs::crossfade_audio_node;
-    use tutti_core::ecs::ReverbAlgo;
+    use crate::dsp_params::ReverbAlgo;
     for (entity, room, damp, _wet, algo) in changed.iter() {
         // fundsp reverb opcodes have no `set()`, so a param change rebuilds the
         // node with a crossfade. The algorithm tag picks the constructor;
@@ -191,7 +191,7 @@ pub fn reconcile_reverb_params(
 #[cfg(feature = "convolution")]
 type ChangedConvolverParams<'w> = (&'w AudioNode, &'w WetMix);
 #[cfg(feature = "convolution")]
-type ChangedConvolverFilter = (With<tutti_core::ecs::ConvolutionReverbNode>, Changed<WetMix>);
+type ChangedConvolverFilter = (With<crate::node_markers::ConvolutionReverbNode>, Changed<WetMix>);
 
 #[cfg(feature = "convolution")]
 pub fn reconcile_convolver_params(

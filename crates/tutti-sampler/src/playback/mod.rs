@@ -18,6 +18,7 @@ use tutti_core::ecs::{engine_ready, GraphReconcileSystems};
 use tutti_core::WaveAsset;
 
 mod loop_crossfade;
+pub mod node;
 pub mod pending_load;
 pub mod reconcile;
 pub mod sampler_unit;
@@ -40,6 +41,7 @@ pub use trigger::{
     audio_cleanup_system, audio_parameter_sync_system, audio_playback_system, AudioEmitter,
     AudioPlaybackState, AudioVolume, DespawnOnFinish, PlayAudio,
 };
+pub use node::{SamplerLooping, SamplerNode, SamplerSpeed};
 pub use sampler_unit::SamplerUnit;
 pub use streaming_sampler::StreamingSamplerUnit;
 pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
@@ -61,7 +63,10 @@ impl Plugin for TuttiPlaybackPlugin {
             .register_type::<DespawnOnFinish>()
             .register_type::<AudioVolume>()
             .register_type::<PlayAudio>()
-            .register_type::<TimeStretch>();
+            .register_type::<TimeStretch>()
+            .register_type::<node::SamplerNode>()
+            .register_type::<node::SamplerSpeed>()
+            .register_type::<node::SamplerLooping>();
 
         // Trigger lifecycle. These stage graph edits + set GraphDirty; anchor
         // the chain before the Commit phase so the once-per-frame `commit_graph`

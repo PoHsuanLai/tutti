@@ -38,11 +38,10 @@ use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
-use tutti_core::ecs::{
-    AudioNode, GraphDirty, NodeKind, SamplerLooping, SamplerNode, SamplerSpeed, TuttiGraphRes,
-    Volume,
-};
+use tutti_core::ecs::{AudioNode, GraphDirty, NodeKind, TuttiGraphRes, Volume};
 use tutti_core::task::poll_task;
+
+use super::node::{SamplerLooping, SamplerNode, SamplerSpeed};
 use tutti_core::{Wave, WaveAsset};
 
 use crate::SamplerUnit;

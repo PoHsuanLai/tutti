@@ -70,48 +70,19 @@ impl Plugin for TuttiGraphPlugin {
     }
 }
 
-/// Register the core entity-as-node reflectable types: `NodeKind`, every
-/// scalar param component, and the construction-only authored data.
+/// Register the core entity-as-node reflectable types: `NodeKind` + the
+/// foundational graph params (`Volume`/`Pan`/`Mute`/`PluginParam`/`ModParam`).
 ///
-/// Leaf authoring markers (`CompressorNode`, `ReverbNode`, `SamplerNode`, …)
-/// are deliberately NOT registered here — bevy-tutti registers those alongside
-/// its leaf reconcilers. Idempotent — Bevy's `register_type` ignores
-/// duplicates, so calling it from more than one plugin `build()` is harmless.
+/// The DSP param pool + node markers live in tutti-units (registered by
+/// `TuttiDspPlugin`); the sampler params/marker in tutti-sampler. Idempotent —
+/// Bevy's `register_type` ignores duplicates.
 pub fn register_core_node_types(app: &mut App) {
     use crate::ecs::*;
 
     app.register_type::<NodeKind>()
-        // Scalar params (all carry `Default`).
         .register_type::<Volume>()
         .register_type::<Pan>()
         .register_type::<Mute>()
-        .register_type::<Frequency>()
-        .register_type::<FilterQ>()
-        .register_type::<GainDb>()
-        .register_type::<WetMix>()
-        .register_type::<Feedback>()
-        .register_type::<DelayTime>()
-        .register_type::<ModRate>()
-        .register_type::<ModDepth>()
-        .register_type::<ThresholdDb>()
-        .register_type::<CompressorRatio>()
-        .register_type::<Attack>()
-        .register_type::<Release>()
-        .register_type::<CeilingDb>()
-        .register_type::<Drive>()
-        .register_type::<ReverbRoomSize>()
-        .register_type::<ReverbDamping>()
-        .register_type::<ReverbAlgo>()
-        .register_type::<Azimuth>()
-        .register_type::<Elevation>()
-        .register_type::<SamplerSpeed>()
-        .register_type::<SamplerLooping>()
-        .register_type::<ModParam>()
-        // Construction-only authored data.
-        .register_type::<StereoChannels>()
-        .register_type::<MaxDelay>()
-        .register_type::<FilterMode>()
-        .register_type::<LfoShapeKind>()
-        .register_type::<BeatSynced>()
-        .register_type::<ReverbTime>();
+        .register_type::<PluginParam>()
+        .register_type::<ModParam>();
 }

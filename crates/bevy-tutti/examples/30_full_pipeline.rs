@@ -37,7 +37,8 @@ use tutti_core::dsp::sine_hz;
 use tutti_core::ecs::{
     crossfade_audio_node, MeteringRes, SidechainOf, SidechainSources, SpawnAudioNode, TransportRes,
 };
-use tutti_core::{AudioNode, NodeKind, SamplerLooping, SamplerSpeed, Volume};
+use tutti_core::{AudioNode, NodeKind, Volume};
+use tutti_sampler::{SamplerLooping, SamplerSpeed};
 use tutti_sampler::PendingSamplerLoad;
 use tutti_units::automation::{AutomationEnvelope, AutomationPoint, CurveType, LiveAutomationLane};
 use tutti_units::{AutomationDrivesParam, AutomationLaneNode, AutomationParam};

@@ -29,10 +29,11 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::query::QueryData;
 
 use tutti_core::dsp::AudioUnit;
-use tutti_core::ecs::{
-    Attack, AudioNode, CeilingDb, CompressorRatio, DelayTime, Drive, Feedback, FilterMode, FilterQ,
-    Frequency, GainDb, MaxDelay, ModDepth, ModRate, NodeKind, Release, ReverbAlgo, ReverbDamping,
-    ReverbRoomSize, ReverbTime, StereoChannels, ThresholdDb, WetMix,
+use tutti_core::ecs::{AudioNode, NodeKind};
+use crate::dsp_params::{
+    Attack, CeilingDb, CompressorRatio, DelayTime, Drive, Feedback, FilterMode, FilterQ, Frequency,
+    GainDb, MaxDelay, ModDepth, ModRate, Release, ReverbAlgo, ReverbDamping, ReverbRoomSize,
+    ReverbTime, StereoChannels, ThresholdDb, WetMix,
 };
 
 use tutti_core::ecs::GraphDirty;
@@ -137,7 +138,9 @@ use tutti_core::ecs::GraphReconcileSystems;
 // missing case — never a masking constant.
 // ---------------------------------------------------------------------------
 
-use tutti_core::ecs::{CompressorNode, ChorusNode, DelayNode, FilterNode, GateNode, ReverbNode};
+use crate::node_markers::{
+    ChorusNode, CompressorNode, DelayNode, FilterNode, GateNode, ReverbNode,
+};
 
 impl DspNode for CompressorNode {
     const KIND: NodeKind = NodeKind::Compressor;

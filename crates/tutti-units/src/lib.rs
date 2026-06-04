@@ -16,6 +16,21 @@ pub use tutti_core::{
     params, Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio, SampleRate, Seconds, Semitones, Unit,
 };
 
+// The shared DSP parameter pool (Frequency, FilterQ, GainDb, WetMix, …) and the
+// node authoring markers — the cross-cutting ECS vocabulary the reconcile/spawn
+// systems below read. Moved out of tutti-core (which keeps only the foundational
+// graph params) so the API sits in the crate whose DSP it drives.
+pub mod dsp_params;
+pub mod node_markers;
+pub use dsp_params::{
+    Attack, Azimuth, BeatSynced, CeilingDb, CompressorRatio, DelayTime, Drive, Elevation, Feedback,
+    FilterMode, FilterQ, Frequency, GainDb, LfoShapeKind, MaxDelay, ModDepth, ModRate, Release,
+    ReverbAlgo, ReverbDamping, ReverbRoomSize, ReverbTime, StereoChannels, ThresholdDb, WetMix,
+};
+// `node_markers` is NOT glob-re-exported: its `ChorusNode` marker would collide
+// with the `ChorusNode` DSP unit re-exported below. Reach markers via
+// `tutti_units::node_markers::*`.
+
 pub mod buffer;
 pub mod coeff_cache;
 pub mod smoothing;

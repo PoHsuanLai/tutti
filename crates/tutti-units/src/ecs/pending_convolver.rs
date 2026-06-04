@@ -96,10 +96,10 @@ pub fn promote_pending_convolvers(
             .entity(entity)
             .remove::<PendingConvolverLoad>()
             .insert((
-                tutti_core::ecs::ConvolutionReverbNode,
+                crate::node_markers::ConvolutionReverbNode,
                 AudioNode(id),
                 NodeKind::ConvolutionReverb,
-                tutti_core::ecs::WetMix(load.mix),
+                crate::dsp_params::WetMix(load.mix),
             ));
     }
 }

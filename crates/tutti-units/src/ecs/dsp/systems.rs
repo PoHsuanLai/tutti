@@ -11,10 +11,9 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::ecs::{
-    AudioNode, BeatSynced, Frequency, LfoNodeMarker, LfoShapeKind, ModDepth,
-};
-use tutti_core::ecs::FilterMode;
+use tutti_core::ecs::AudioNode;
+use crate::dsp_params::{BeatSynced, FilterMode, Frequency, LfoShapeKind, ModDepth};
+use crate::node_markers::LfoNodeMarker;
 
 use tutti_core::ecs::GraphDirty;
 use tutti_core::ecs::{TransportRes, TuttiGraphRes};
@@ -98,7 +97,9 @@ pub fn spawn_lfo_nodes(
 #[cfg(test)]
 mod marker_spawn_tests {
     use super::*;
-    use tutti_core::ecs::{FilterNode, FilterQ, GainDb, NodeKind};
+    use crate::dsp_params::{FilterQ, GainDb};
+    use crate::node_markers::FilterNode;
+    use tutti_core::ecs::NodeKind;
     use tutti_core::ecs::{commit_graph, reconcile_node_despawn, GraphReconcileSystems};
     use tutti_core::ecs::TuttiGraphRes;
     use tutti_core::TuttiGraph;
@@ -147,7 +148,7 @@ mod marker_spawn_tests {
         // Override only FilterQ; let Frequency / GainDb come from #[require].
         let entity = app
             .world_mut()
-            .spawn((FilterNode, tutti_core::ecs::FilterQ(2.0)))
+            .spawn((FilterNode, crate::dsp_params::FilterQ(2.0)))
             .id();
         app.update();
 

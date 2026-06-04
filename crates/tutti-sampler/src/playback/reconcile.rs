@@ -9,9 +9,10 @@
 use bevy_ecs::prelude::*;
 
 use tutti_core::ecs::{
-    AudioNode, GraphDirty, Mute, NodeKind, NodeParamEpoch, SamplerLooping, SamplerNode,
-    SamplerSpeed, TuttiGraphRes, Volume,
+    AudioNode, GraphDirty, Mute, NodeKind, NodeParamEpoch, TuttiGraphRes, Volume,
 };
+
+use super::node::{SamplerLooping, SamplerNode, SamplerSpeed};
 
 use crate::SamplerUnit;
 

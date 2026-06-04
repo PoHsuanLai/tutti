@@ -16,20 +16,20 @@ use tutti_core::transport::TuttiTransportPlugin;
 #[cfg(feature = "midi")]
 use tutti_midi_io::TuttiMidiPlugin;
 #[cfg(feature = "spatial")]
-use tutti_units::ecs::TuttiSpatialPlugin;
+use tutti_units::TuttiSpatialPlugin;
 #[cfg(feature = "soundfont")]
 use tutti_synth::TuttiSoundFontPlugin;
 #[cfg(feature = "sampler")]
 use tutti_sampler::TuttiSamplerPlugin;
 #[cfg(feature = "automation")]
-use tutti_units::ecs::TuttiAutomationPlugin;
+use tutti_units::TuttiAutomationPlugin;
 #[cfg(feature = "analysis")]
 use tutti_analysis::TuttiAnalysisPlugin;
 #[cfg(feature = "export")]
 use tutti_export::ecs::TuttiExportPlugin;
 #[cfg(feature = "plugin")]
 use tutti_plugin_host::TuttiHostingPlugin;
-use tutti_units::ecs::TuttiDspPlugin;
+use tutti_units::TuttiDspPlugin;
 use crate::AudioDeviceState;
 
 /// Bevy plugin that creates a `TuttiEngine`, starts the audio stream,

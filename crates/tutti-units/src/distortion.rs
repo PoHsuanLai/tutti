@@ -293,7 +293,7 @@ mod tests {
         let out = process_mono_through(&mut n, &input);
         for y in out {
             assert!(
-                y <= 1.0 + 1e-6 && y >= -1.0 - 1e-6,
+                (-1.0 - 1e-6..=1.0 + 1e-6).contains(&y),
                 "hardclip exceeded ±1: {y}"
             );
         }

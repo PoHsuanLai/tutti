@@ -4,11 +4,7 @@
 //! modulation, and limiter modules previously hand-rolled. `MonotonicMaxDeque`
 //! powers the lookahead-limiter's O(1) sliding-window maximum.
 
-#[cfg(feature = "std")]
 use std::collections::VecDeque;
-#[cfg(not(feature = "std"))]
-use std::collections::VecDeque;
-use std::vec::Vec;
 
 /// Fixed-capacity ring buffer with explicit write position.
 ///

@@ -7,7 +7,7 @@
 //! entity. The system builds the unit from those component values, `graph.add`s
 //! it, then inserts `(AudioNode(id), Marker::KIND)`.
 //!
-//! Param reconciliation happens in [`super::reconcile`].
+//! Param reconciliation happens in [`crate::reconcile`].
 
 use bevy_ecs::prelude::*;
 

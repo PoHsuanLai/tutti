@@ -242,9 +242,9 @@ pub fn bump_param_epoch_dsp(
 
 /// Schedule the DSP param reconcilers + epoch bump.
 ///
-/// Called by [`super::TuttiDspPlugin`]. The graph-touching reconcilers run in
-/// the `Params` set gated on `engine_ready`; the epoch bump stays ungated.
-pub(super) fn build(app: &mut bevy_app::App) {
+/// Called by [`crate::dsp::TuttiDspPlugin`]. The graph-touching reconcilers run
+/// in the `Params` set gated on `engine_ready`; the epoch bump stays ungated.
+pub(crate) fn build(app: &mut bevy_app::App) {
     use tutti_core::graph::engine_ready;
     app.add_systems(
         bevy_app::Update,

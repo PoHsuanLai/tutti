@@ -7,13 +7,11 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
-default = ["std"]
-std = []
 spatial = ["dep:vbap", "dep:bevy_transform"]  # VBAP, binaural panning + position sync
-# FFT convolution reverb (partitioned IR). The `pending_convolver` ECS module
+# FFT convolution reverb (partitioned IR). The `pending_convolver` graph module
 # loads IRs via `bevy_asset` + the `WaveAsset`, so the feature pulls
 # tutti-core's `bevy_asset` + a default decode codec (`wav`).
-convolution = ["std", "dep:fft-convolver", "tutti-core/bevy_asset", "tutti-core/wav"]
+convolution = ["dep:fft-convolver", "tutti-core/bevy_asset", "tutti-core/wav"]
 # Transport-driven envelope nodes (`AutomationLane`). Folded in from the
 # old `tutti-automation` crate; envelope primitives come from the
 # `audio_automation` crate, re-exported via `tutti_units::automation`.
@@ -25,8 +23,9 @@ automation = ["dep:audio-automation", "dep:dashmap", "dep:parking_lot", "dep:ser
 # components the reconcilers read.
 tutti-core = { path = "../tutti-core", default-features = false, features = ["bevy_ecs"] }
 
-# Bevy ECS integration (the `ecs` module): Components / Systems / Plugins live
-# next to the audio logic. Hard deps, mirroring tutti-wavecache / tutti-sampler.
+# Bevy ECS integration (the `dsp` / `reconcile` / `*_graph` modules): Components
+# / Systems / Plugins live next to the audio logic. Hard deps, mirroring
+# tutti-wavecache / tutti-sampler.
 bevy_ecs = { version = "0.18", default-features = false }
 bevy_app = { version = "0.18", default-features = false }
 bevy_reflect = { version = "0.18", default-features = false }

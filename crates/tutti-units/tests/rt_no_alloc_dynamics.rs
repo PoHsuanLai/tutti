@@ -113,11 +113,13 @@ fn brickwall_limiter_process_is_allocation_free() {
     let mut output_vec = BufferVec::new(2);
     fill_with_signal(&mut input_vec, 1.5);
 
-    let input = input_vec.buffer_ref();
-    let mut output = output_vec.buffer_mut();
-    node.process(64, &input, &mut output);
-    drop(output);
-    drop(input);
+    // Warm-up pass in its own scope so the buffer borrows end before the
+    // measured loop re-borrows `input_vec` / `output_vec`.
+    {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        node.process(64, &input, &mut output);
+    }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..5_000 {

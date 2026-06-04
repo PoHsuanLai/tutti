@@ -68,11 +68,11 @@ impl Plugin for TuttiDspPlugin {
             .add_dsp_node::<ChorusNode>();
 
         // Graph-touching param reconcilers + the (ungated) epoch bump.
-        super::reconcile::build(app);
+        crate::reconcile::build(app);
 
         #[cfg(feature = "convolution")]
         {
-            use super::pending_convolver::{promote_pending_convolvers, start_convolver_loads};
+            use crate::pending_convolver::{promote_pending_convolvers, start_convolver_loads};
             // `start_convolver_loads` only uses `AssetServer` (not an engine
             // resource), so it stays ungated; `promote_pending_convolvers` needs
             // the graph.
@@ -86,7 +86,7 @@ impl Plugin for TuttiDspPlugin {
             );
             app.add_systems(
                 Update,
-                super::reconcile::reconcile_convolver_params
+                crate::reconcile::reconcile_convolver_params
                     .in_set(GraphReconcileSystems::Params)
                     .run_if(engine_ready),
             );

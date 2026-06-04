@@ -1,13 +1,4 @@
 //! DSP nodes for the Tutti audio engine.
-//!
-//! # no_std
-//!
-//! `#![no_std]` when `std` feature is disabled. All DSP nodes work without std.
-
-#![cfg_attr(not(feature = "std"), no_std)]
-
-#[cfg(test)]
-extern crate std;
 
 mod error;
 pub use error::{Error, Result};
@@ -102,29 +93,38 @@ mod automation_lane;
 #[cfg(feature = "automation")]
 mod automation_recording;
 
-/// Bevy ECS integration: spawn pipelines, param reconcilers, and plugins for
-/// the DSP / spatial / automation / convolution units. Mirrors
-/// `tutti_sampler::ecs`. Requires `std` (Bevy is std-only).
-#[cfg(feature = "std")]
-pub mod ecs;
-// Re-export the ECS surface at the crate root so consumers write
-// `tutti_units::TuttiDspPlugin`, not `tutti_units::ecs::…` (the bevy_text shape).
-#[cfg(feature = "std")]
-pub use ecs::{
-    bump_param_epoch_dsp, reconcile_reverb_params, reconcile_unit_params, spawn_dsp_node,
-    spawn_lfo_nodes, AddDspNode, DspNode, EffectParams, SpawnParams, TuttiDspPlugin,
-};
-#[cfg(all(feature = "std", feature = "convolution"))]
-pub use ecs::{
-    promote_pending_convolvers, reconcile_convolver_params, start_convolver_loads,
-    PendingConvolverLoad,
-};
-#[cfg(all(feature = "std", feature = "spatial"))]
-pub use ecs::{
+// Bevy ECS integration for the units domain — the audio-graph reconcile pieces
+// that bind the DSP / spatial / automation / convolution units into tutti's
+// entity-as-node graph. Each duty is its own crate-root module carrying its own
+// `Tutti*Plugin` (the bevy_text shape — no central `ecs` hub).
+//
+// `*_graph` suffixes disambiguate the graph-binding layer from the same-named
+// DSP-unit module it drives (`spatial/` the panner nodes vs `spatial_graph` the
+// reconciler; `automation_lane`/`automation_recording` the DSP vs
+// `automation_graph` the ECS lane binding).
+pub mod dsp;
+pub mod reconcile;
+pub use dsp::{spawn_dsp_node, spawn_lfo_nodes, AddDspNode, DspNode, SpawnParams, TuttiDspPlugin};
+pub use reconcile::{bump_param_epoch_dsp, reconcile_reverb_params, reconcile_unit_params, EffectParams};
+
+#[cfg(feature = "convolution")]
+pub mod pending_convolver;
+#[cfg(feature = "convolution")]
+pub use pending_convolver::{promote_pending_convolvers, start_convolver_loads, PendingConvolverLoad};
+#[cfg(feature = "convolution")]
+pub use reconcile::reconcile_convolver_params;
+
+#[cfg(feature = "spatial")]
+pub mod spatial_graph;
+#[cfg(feature = "spatial")]
+pub use spatial_graph::{
     spatial_audio_sync_system, AttenuationModel, AudioListener, SpatialAudio, TuttiSpatialPlugin,
 };
-#[cfg(all(feature = "std", feature = "automation"))]
-pub use ecs::{
+
+#[cfg(feature = "automation")]
+pub mod automation_graph;
+#[cfg(feature = "automation")]
+pub use automation_graph::{
     automation_lane_system, reconcile_automation_writes, update_automation_envelope_system,
     AddAutomationLane, AutomationDrivesParam, AutomationLaneEmitter, AutomationLaneNode,
     AutomationParam, TuttiAutomationPlugin, UpdateAutomationEnvelope,

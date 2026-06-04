@@ -1,10 +1,8 @@
 //! Impulse-response generators for convolution reverb.
 //!
 //! The `*_into` variants write into a caller-provided slice so they
-//! can run under `no_std` and without touching the allocator on a hot
-//! reload. The `Vec`-returning wrappers remain available for
-//! ergonomics (crate already requires `std` when the `convolution`
-//! feature is enabled).
+//! avoid touching the allocator on a hot reload. The `Vec`-returning
+//! wrappers remain available for ergonomics.
 
 use tutti_core::{SampleRate, Seconds};
 

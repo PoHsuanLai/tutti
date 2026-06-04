@@ -24,9 +24,10 @@ bevy_tasks.workspace = true
 # (relocated into src/engine/).
 tutti-core = { path = "../tutti/crates/tutti-core", default-features = false, features = ["bevy_ecs", "bevy_asset"] }
 tutti-midi-types = { path = "../tutti/crates/tutti-midi-types", default-features = false }
-# `std` enables tutti-units' `ecs` module (the DSP / spatial / automation /
-# convolution spawn pipelines + reconcilers + plugins that bevy-tutti schedules).
-tutti-units = { path = "../tutti/crates/tutti-units", default-features = false, features = ["std"] }
+# tutti-units' Bevy modules (the DSP / spatial / automation / convolution spawn
+# pipelines + reconcilers + plugins that bevy-tutti schedules) are always-on; the
+# optional features below add spatial / convolution / automation on top.
+tutti-units = { path = "../tutti/crates/tutti-units", default-features = false }
 # Decode-once wave cache (Bevy-native). It is a non-optional dep that always
 # needs at least one codec (its API uses tutti-core's fundsp `Wave::load` /
 # `WaveMetadata`, which are codec-gated), so enable `wav` unconditionally here;
@@ -74,13 +75,13 @@ full = [
     "dsp", "spatial",
 ]
 
-# Spatial audio. The spatial ECS module + position-sync (GlobalTransform) live
-# in `tutti_units::ecs::spatial`, behind tutti-units' own `spatial` feature.
+# Spatial audio. The spatial graph reconciler + position-sync (GlobalTransform)
+# live in `tutti_units::spatial_graph`, behind tutti-units' own `spatial` feature.
 spatial = ["dsp", "tutti-units/spatial"]
 
 # DSP: the DSP spawn pipeline + reconcilers live (unconditionally) in
-# `tutti_units::ecs`; this feature enables the prelude re-exports + the
-# VBAP/binaural panner unit. Dynamics always compiled.
+# `tutti_units::{dsp, reconcile}`; this feature enables the VBAP/binaural panner
+# unit. Dynamics always compiled.
 dsp = ["tutti-units/spatial"]
 
 # FFT convolution reverb (partitioned IR) in tutti-units.

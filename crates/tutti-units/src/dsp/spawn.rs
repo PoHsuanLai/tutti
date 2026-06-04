@@ -18,7 +18,7 @@
 //! `add_boxed`es it, and attaches `(AudioNode(id), T::KIND)`.
 //!
 //! Because the unit is built from the *same* components `#[require]` defaulted,
-//! the first-frame [`reconcile_unit_params`](super::reconcile::reconcile_unit_params)
+//! the first-frame [`reconcile_unit_params`](crate::reconcile::reconcile_unit_params)
 //! sweep is a no-op rather than a drift (risk E1).
 //!
 //! The LFO stays its own bespoke system ([`spawn_lfo_nodes`](super::systems::spawn_lfo_nodes)):

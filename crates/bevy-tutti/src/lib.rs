@@ -54,7 +54,7 @@ mod device_state;
 mod plugin;
 
 // The graph reconcile hub + `GraphReconcilePlugin` live in `tutti_core::graph`; the
-// leaf reconcilers in their subsystem crates (`tutti_units::ecs`,
+// leaf reconcilers in their subsystem crates (`tutti_units::{dsp, reconcile}`,
 // `tutti_sampler::ecs`, `tutti_plugin_host`, and the MIDI subsystem). `plugin.rs`
 // (the composition root) adds them directly — bevy-tutti no longer wraps any of it.
 // The export pipeline ECS (StartExport / TuttiExportPlugin) and the offline

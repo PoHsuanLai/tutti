@@ -224,7 +224,19 @@ pub fn reconcile_params(
 }
 
 /// Runs `graph.commit()` once iff any reconcile system mutated the graph.
-pub fn commit_graph(mut graph: ResMut<AudioGraphRes>, mut dirty: ResMut<GraphDirty>) {
+///
+/// **Pinned to the main thread** via [`NonSendMarker`]. `commit()` deallocates
+/// the previous graph version — which includes any in-process plugin nodes
+/// whose `Drop` tears down a native editor window (AppKit/Win32/X11). Those
+/// teardowns are only legal on the host's main/UI thread; running this on a
+/// worker thread (the default for a parallel system) panicked the plugin-host
+/// main-thread guard. The marker is zero-cost and forces main-thread
+/// scheduling without an exclusive-system signature.
+pub fn commit_graph(
+    _main: bevy_ecs::system::NonSendMarker,
+    mut graph: ResMut<AudioGraphRes>,
+    mut dirty: ResMut<GraphDirty>,
+) {
     if !dirty.0 {
         return;
     }

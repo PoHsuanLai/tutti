@@ -40,6 +40,29 @@ use crate::AudioDeviceState;
 
 /// Bevy plugin that creates a `TuttiEngine`, starts the audio stream,
 /// and registers ECS components, asset loaders, and systems.
+///
+/// Configure it the idiomatic Bevy way — `Default` plus public fields set with
+/// struct-update syntax — rather than builder methods:
+///
+/// ```rust,ignore
+/// use bevy::prelude::*;
+/// use bevy_tutti::TuttiPlugin;
+///
+/// // Defaults: stereo out, no input, MIDI on iff the `midi` feature is built.
+/// app.add_plugins(TuttiPlugin::default());
+///
+/// // Override only what you need:
+/// app.add_plugins(TuttiPlugin {
+///     inputs: 2,
+///     outputs: 4,
+///     output_device: Some(1),
+///     ..default()
+/// });
+/// ```
+///
+/// Which subsystems run is governed by the crate's Cargo features (sampler,
+/// dsp, synth, midi, plugin, …) — the composition root only adds the sub-plugins
+/// whose features are enabled.
 pub struct TuttiPlugin {
     /// `None` = system default device
     pub output_device: Option<usize>,
@@ -60,34 +83,6 @@ impl Default for TuttiPlugin {
             #[cfg(feature = "mpe")]
             mpe_mode: None,
         }
-    }
-}
-
-impl TuttiPlugin {
-    pub fn with_io(inputs: usize, outputs: usize) -> Self {
-        Self {
-            inputs,
-            outputs,
-            ..Default::default()
-        }
-    }
-
-    pub fn with_midi(mut self) -> Self {
-        self.enable_midi = true;
-        self
-    }
-
-    pub fn with_output_device(mut self, index: usize) -> Self {
-        self.output_device = Some(index);
-        self
-    }
-
-    /// Automatically enables MIDI.
-    #[cfg(feature = "mpe")]
-    pub fn with_mpe(mut self, mode: tutti_midi_io::MpeMode) -> Self {
-        self.mpe_mode = Some(mode);
-        self.enable_midi = true;
-        self
     }
 }
 

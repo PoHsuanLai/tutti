@@ -135,7 +135,7 @@ impl<F: Real + 'static> AudioUnit for EqBandNode<F> {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::EQ_BAND_ID
+        crate::node_id::EQ_BAND_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

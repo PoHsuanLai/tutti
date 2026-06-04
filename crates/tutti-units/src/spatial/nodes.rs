@@ -232,7 +232,7 @@ impl AudioUnit for SpatialPannerNode {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::SPATIAL_PANNER_BASE_ID | (self.num_outputs as u64)
+        crate::node_id::SPATIAL_PANNER_BASE_ID | (self.num_outputs as u64)
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -377,7 +377,7 @@ impl AudioUnit for BinauralPannerNode {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::BINAURAL_PANNER_ID
+        crate::node_id::BINAURAL_PANNER_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

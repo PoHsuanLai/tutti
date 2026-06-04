@@ -240,7 +240,7 @@ impl AudioUnit for DistortionNode {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::DISTORTION_ID
+        crate::node_id::DISTORTION_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

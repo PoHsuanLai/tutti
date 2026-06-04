@@ -108,7 +108,7 @@ impl AudioUnit for ChorusNode {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::CHORUS_ID
+        crate::node_id::CHORUS_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

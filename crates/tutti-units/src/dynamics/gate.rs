@@ -309,9 +309,9 @@ impl AudioUnit for Gate {
 
     fn get_id(&self) -> u64 {
         if self.channels == 1 {
-            tutti_core::node_id::GATE_ID
+            crate::node_id::GATE_ID
         } else {
-            tutti_core::node_id::STEREO_GATE_ID
+            crate::node_id::STEREO_GATE_ID
         }
     }
 
@@ -488,8 +488,8 @@ mod tests {
     fn test_gate_get_id_distinguishes_mono_and_stereo() {
         let mono = Gate::mono(-20.0, 0.001, 0.01, 0.1);
         let stereo = Gate::stereo(-20.0, 0.001, 0.01, 0.1);
-        assert_eq!(mono.get_id(), tutti_core::node_id::GATE_ID);
-        assert_eq!(stereo.get_id(), tutti_core::node_id::STEREO_GATE_ID);
+        assert_eq!(mono.get_id(), crate::node_id::GATE_ID);
+        assert_eq!(stereo.get_id(), crate::node_id::STEREO_GATE_ID);
     }
 
     // ── Audio-rate threshold param-input port ────────────────────────────────

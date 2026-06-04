@@ -318,7 +318,7 @@ impl AudioUnit for StreamingSamplerUnit {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::STREAMING_SAMPLER_ID
+        crate::node_id::STREAMING_SAMPLER_ID
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

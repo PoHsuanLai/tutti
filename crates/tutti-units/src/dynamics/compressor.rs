@@ -341,9 +341,9 @@ impl AudioUnit for Compressor {
 
     fn get_id(&self) -> u64 {
         if self.channels == 1 {
-            tutti_core::node_id::COMPRESSOR_ID
+            crate::node_id::COMPRESSOR_ID
         } else {
-            tutti_core::node_id::STEREO_COMPRESSOR_ID
+            crate::node_id::STEREO_COMPRESSOR_ID
         }
     }
 
@@ -516,8 +516,8 @@ mod tests {
     fn test_compressor_get_id_distinguishes_mono_and_stereo() {
         let mono = Compressor::mono(-20.0, 4.0, 0.001, 0.1);
         let stereo = Compressor::stereo(-20.0, 4.0, 0.001, 0.1);
-        assert_eq!(mono.get_id(), tutti_core::node_id::COMPRESSOR_ID);
-        assert_eq!(stereo.get_id(), tutti_core::node_id::STEREO_COMPRESSOR_ID);
+        assert_eq!(mono.get_id(), crate::node_id::COMPRESSOR_ID);
+        assert_eq!(stereo.get_id(), crate::node_id::STEREO_COMPRESSOR_ID);
     }
 
     // ── Audio-rate threshold param-input port ────────────────────────────────

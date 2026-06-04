@@ -109,7 +109,7 @@ impl AudioUnit for FlangerNode {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::FLANGER_ID
+        crate::node_id::FLANGER_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

@@ -351,7 +351,7 @@ impl AudioUnit for LimiterNode {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::LIMITER_ID
+        crate::node_id::LIMITER_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -531,7 +531,7 @@ impl AudioUnit for BrickwallLimiter {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::BRICKWALL_LIMITER_ID
+        crate::node_id::BRICKWALL_LIMITER_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

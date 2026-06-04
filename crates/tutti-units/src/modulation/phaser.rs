@@ -183,7 +183,7 @@ impl AudioUnit for PhaserNode {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::PHASER_ID
+        crate::node_id::PHASER_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -308,7 +308,7 @@ impl AudioUnit for StereoPhaserNode {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::PHASER_ID ^ 0xDA02
+        crate::node_id::PHASER_ID ^ 0xDA02
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

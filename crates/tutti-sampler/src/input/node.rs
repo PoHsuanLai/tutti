@@ -120,7 +120,7 @@ impl AudioUnit for AudioInputBackend {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::AUDIO_INPUT_BACKEND_ID
+        crate::node_id::AUDIO_INPUT_BACKEND_ID
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

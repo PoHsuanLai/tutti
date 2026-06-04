@@ -519,7 +519,7 @@ impl AudioUnit for SamplerUnit {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::SAMPLER_NODE_ID
+        crate::node_id::SAMPLER_NODE_ID
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

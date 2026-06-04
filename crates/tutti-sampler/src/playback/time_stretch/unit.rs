@@ -363,7 +363,7 @@ impl AudioUnit for Unit {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::TIME_STRETCH_ID
+        crate::node_id::TIME_STRETCH_ID
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

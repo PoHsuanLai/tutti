@@ -384,7 +384,7 @@ impl<R: TransportReader + Clone + 'static> AudioUnit for LfoNode<R> {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::LFO_ID
+        crate::node_id::LFO_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

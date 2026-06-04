@@ -223,7 +223,7 @@ impl AudioUnit for DelayLineNode {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::DELAY_LINE_ID
+        crate::node_id::DELAY_LINE_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -571,7 +571,7 @@ impl AudioUnit for StereoDelayLineNode {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::STEREO_DELAY_LINE_ID
+        crate::node_id::STEREO_DELAY_LINE_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

@@ -160,7 +160,7 @@ impl<T: Clone + Send + Sync + 'static, R: TransportReader + Clone + 'static> Aud
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::AUTOMATION_LANE_ID
+        crate::node_id::AUTOMATION_LANE_ID
     }
 
     fn footprint(&self) -> usize {

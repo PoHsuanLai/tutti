@@ -260,7 +260,7 @@ impl<F: Real + 'static> AudioUnit for LadderFilterNode<F> {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::LADDER_FILTER_ID
+        crate::node_id::LADDER_FILTER_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -502,7 +502,7 @@ impl<F: Real + 'static> AudioUnit for StereoLadderFilterNode<F> {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::LADDER_FILTER_ID ^ 0xDA02
+        crate::node_id::LADDER_FILTER_ID ^ 0xDA02
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

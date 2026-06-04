@@ -140,7 +140,7 @@ impl AudioUnit for ConvolverNode {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::CONVOLVER_ID
+        crate::node_id::CONVOLVER_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -311,7 +311,7 @@ impl AudioUnit for StereoConvolverNode {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::STEREO_CONVOLVER_ID
+        crate::node_id::STEREO_CONVOLVER_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

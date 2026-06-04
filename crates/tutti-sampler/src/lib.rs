@@ -55,6 +55,8 @@
 pub mod error;
 pub use error::{Error, Result};
 
+mod node_id;
+
 // Each domain is a self-contained module owning its Components / Systems /
 // Plugin next to the audio logic it drives (the bevy_audio shape — no `ecs/`
 // category folder). `TuttiSamplerPlugin` composes the four domain plugins.

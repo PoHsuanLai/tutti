@@ -90,6 +90,7 @@ pub use error::{BridgeError, EditorError, LoadStage, Result};
 mod audio;
 mod audio_node;
 mod bridge;
+mod node_id;
 mod builder;
 mod config;
 mod control_backend;

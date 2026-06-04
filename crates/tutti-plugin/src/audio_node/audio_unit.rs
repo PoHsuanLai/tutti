@@ -46,7 +46,7 @@ impl AudioUnit for PluginClient {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::PLUGIN_CLIENT_ID
+        crate::node_id::PLUGIN_CLIENT_ID
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -112,7 +112,7 @@ impl AudioUnit<F64> for PluginClient {
     }
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::PLUGIN_CLIENT_ID
+        crate::node_id::PLUGIN_CLIENT_ID
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

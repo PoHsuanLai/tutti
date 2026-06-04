@@ -13,18 +13,78 @@
 //! Per-instance routing identity (for MIDI dispatch) lives on
 //! [`MidiUnitId`] via [`MidiTarget`], *not* on `get_id()`.
 //!
+//! ## Ownership — each crate owns its own ids
+//!
+//! This module holds ONLY the ids for tutti-core's own infrastructure nodes
+//! (PDC delays + transport/automation). Higher crates own the ids for the node
+//! types they define, in their own `node_id` module: tutti-units (filters,
+//! delay, modulation, dynamics, spatial, automation-lane), tutti-synth
+//! (`POLYSYNT`, `\0RUSTYSY`), tutti-plugin (`PLUGINCL`), tutti-sampler
+//! (`AUDINBKD`, `SAMPLRND`, `STRSMPLR`, `TSTRCHNT`). This keeps core the bottom
+//! layer — it no longer names node types that live above it.
+//!
 //! ## Collisions
 //!
-//! fundsp reserves small integers (0..~100) for its own AudioNode types.
-//! This catalog uses 64-bit values that encode ASCII mnemonics, well
-//! outside fundsp's range. Each constant below is unique by construction.
+//! fundsp reserves small integers (0..~100) for its own AudioNode types; every
+//! id here is a 64-bit ASCII mnemonic, well outside that range (enforced by
+//! [`mnemonic`]). Uniqueness *within* a crate is a compile error via
+//! [`assert_unique`]. Cross-crate uniqueness rests on the mnemonic convention
+//! plus this ledger of every reserved 8-char mnemonic (keep it current when
+//! adding an id in any crate):
+//!
+//! ```text
+//! core:    PDCDE   MPDC    TRNSCLK\0  AUTOINPT
+//! units:   AUTOMATE SVFFILT1 LADDERF1 EQBANDN1 DLYNODE1 DLYNODE2 LFO_NODE
+//!          PHASERN1 CHORUSN1 FLANGER1 DISTORT1 CONVNOD1 CONVNOD2 SCGATE
+//!          SCCOMP  SSCGAT  SSCCOM  LIMITER1 BRKWLLMT PAN\0  BIN\0
+//!          (svf/ladder/phaser also derive a stereo sibling via `^ 0xDA02`;
+//!           PAN\0 ORs num_outputs into the low byte)
+//! synth:   POLYSYNT \0RUSTYSY
+//! plugin:  PLUGINCL
+//! sampler: AUDINBKD SAMPLRND STRSMPLR TSTRCHNT
+//! ```
 //!
 //! [`AudioUnit::get_id`]: fundsp::audiounit::AudioUnit::get_id
 //! [`MidiUnitId`]: crate::midi::MidiUnitId
 //! [`MidiTarget`]: crate::midi::MidiTarget
 
+/// Pack an 8-byte ASCII mnemonic into a `get_id()` fingerprint (big-endian).
+///
+/// The single source of truth for a node id: write `mnemonic(b"SVFFILT1")`
+/// rather than a hand-computed hex literal, so the value can never drift from
+/// the mnemonic. Const-asserts the result is outside fundsp's reserved
+/// small-integer range (0..=100) — any 8-char ASCII string packs far above it,
+/// but a caller passing mostly-NUL bytes (a short mnemonic) is caught here.
+///
+/// Each crate derives its own node ids from this; collisions *within* a crate
+/// are a compile error via [`assert_unique`]. Cross-crate uniqueness is held by
+/// the mnemonic convention + the reserved-mnemonic ledger in this module's docs.
+pub const fn mnemonic(s: &[u8; 8]) -> u64 {
+    let v = u64::from_be_bytes(*s);
+    assert!(v > 100, "node-id mnemonic collides with fundsp's reserved range");
+    v
+}
+
+/// Compile-time assert that a crate's own node ids are all distinct.
+///
+/// Use as `const _: () = assert_unique(&[ID_A, ID_B, …]);` in each crate's
+/// `node_id` module. A duplicate fails `cargo build` (const-eval panic), so the
+/// "all ids in one file are eyeball-unique" guarantee survives decentralization
+/// for the realistic (intra-crate copy-paste) collision.
+pub const fn assert_unique(ids: &[u64]) {
+    let mut i = 0;
+    while i < ids.len() {
+        let mut j = i + 1;
+        while j < ids.len() {
+            assert!(ids[i] != ids[j], "duplicate node id within crate");
+            j += 1;
+        }
+        i += 1;
+    }
+}
+
 // ──────────────────────────────────────────────────────────────────────
-// PDC markers (scanned by graph.rs to find auto-inserted delays)
+// PDC markers (scanned by graph/net.rs to find auto-inserted delays)
 // ──────────────────────────────────────────────────────────────────────
 pub const PDC_DELAY_ID: u64 = 0x_0000_0050_4443_4445; // "PDCDE"
 pub const MONO_PDC_DELAY_ID: u64 = 0x_0000_0000_4D50_4443; // "MPDC"
@@ -34,55 +94,11 @@ pub const MONO_PDC_DELAY_ID: u64 = 0x_0000_0000_4D50_4443; // "MPDC"
 // ──────────────────────────────────────────────────────────────────────
 pub const TRANSPORT_CLOCK_ID: u64 = 0x_5452_4E53_434C_4B00; // "TRNSCLK\0"
 pub const AUTOMATION_INPUT_ID: u64 = 0x_4155_544F_494E_5054; // "AUTOINPT"
-pub const AUTOMATION_LANE_ID: u64 = 0x_4155_544F_4D41_5445; // "AUTOMATE"
 
-// ──────────────────────────────────────────────────────────────────────
-// MIDI-receiving synths (instance identity lives on MidiTarget)
-// ──────────────────────────────────────────────────────────────────────
-pub const POLY_SYNTH_ID: u64 = 0x_504F_4C59_5359_4E54; // "POLYSYNT"
-pub const SOUNDFONT_ID: u64 = 0x_0052_5553_5459_5359; // "\0RUSTYSY"
-pub const PLUGIN_CLIENT_ID: u64 = 0x_504C_5547_494E_434C; // "PLUGINCL"
-
-// ──────────────────────────────────────────────────────────────────────
-// tutti-units filters
-// ──────────────────────────────────────────────────────────────────────
-pub const SVF_FILTER_ID: u64 = 0x_5356_4646_494C_5431; // "SVFFILT1"
-pub const LADDER_FILTER_ID: u64 = 0x_4C41_4444_4552_4631; // "LADDERF1"
-pub const EQ_BAND_ID: u64 = 0x_4551_4241_4E44_4E31; // "EQBANDN1"
-
-// ──────────────────────────────────────────────────────────────────────
-// tutti-units delay / modulation
-// ──────────────────────────────────────────────────────────────────────
-pub const DELAY_LINE_ID: u64 = 0x_444C_594E_4F44_4531; // "DLYNODE1"
-pub const STEREO_DELAY_LINE_ID: u64 = 0x_444C_594E_4F44_4532; // "DLYNODE2"
-pub const LFO_ID: u64 = 0x_4C46_4F5F_4E4F_4445; // "LFO_NODE"
-pub const PHASER_ID: u64 = 0x_5048_4153_4552_4E31; // "PHASERN1"
-pub const CHORUS_ID: u64 = 0x_4348_4F52_5553_4E31; // "CHORUSN1"
-pub const FLANGER_ID: u64 = 0x_464C_414E_4745_5231; // "FLANGER1"
-pub const DISTORTION_ID: u64 = 0x_4449_5354_4F52_5431; // "DISTORT1"
-pub const CONVOLVER_ID: u64 = 0x_434F_4E56_4E4F_4431; // "CONVNOD1"
-pub const STEREO_CONVOLVER_ID: u64 = 0x_434F_4E56_4E4F_4432; // "CONVNOD2"
-
-// ──────────────────────────────────────────────────────────────────────
-// tutti-units dynamics
-// ──────────────────────────────────────────────────────────────────────
-pub const GATE_ID: u64 = 0x_0000_5343_4741_5445; // "SCGATE"
-pub const COMPRESSOR_ID: u64 = 0x_0000_5343_434F_4D50; // "SCCOMP"
-pub const STEREO_GATE_ID: u64 = 0x_0000_5353_4347_4154; // "SSCGAT"
-pub const STEREO_COMPRESSOR_ID: u64 = 0x_0000_5353_4343_4F4D; // "SSCCOM"
-pub const LIMITER_ID: u64 = 0x_4C49_4D49_5445_5231; // "LIMITER1"
-pub const BRICKWALL_LIMITER_ID: u64 = 0x_4252_4B57_4C4C_4D54; // "BRKWLLMT"
-
-// ──────────────────────────────────────────────────────────────────────
-// tutti-units spatial (SpatialPanner ORs num_outputs into the low byte)
-// ──────────────────────────────────────────────────────────────────────
-pub const SPATIAL_PANNER_BASE_ID: u64 = 0x_0000_0000_5041_4E00; // "PAN\0"
-pub const BINAURAL_PANNER_ID: u64 = 0x_0000_0000_4249_4E00; // "BIN\0"
-
-// ──────────────────────────────────────────────────────────────────────
-// tutti-sampler
-// ──────────────────────────────────────────────────────────────────────
-pub const AUDIO_INPUT_BACKEND_ID: u64 = 0x_4155_4449_4E42_4B44; // "AUDINBKD"
-pub const SAMPLER_NODE_ID: u64 = 0x_5341_4D50_4C52_4E44; // "SAMPLRND"
-pub const STREAMING_SAMPLER_ID: u64 = 0x_5354_5253_4D50_4C52; // "STRSMPLR"
-pub const TIME_STRETCH_ID: u64 = 0x_5453_5452_4348_4E54; // "TSTRCHNT"
+// Compile-time intra-crate uniqueness guard for core's own ids.
+const _: () = assert_unique(&[
+    PDC_DELAY_ID,
+    MONO_PDC_DELAY_ID,
+    TRANSPORT_CLOCK_ID,
+    AUTOMATION_INPUT_ID,
+]);

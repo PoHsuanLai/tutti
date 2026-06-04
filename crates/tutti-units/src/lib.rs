@@ -12,6 +12,8 @@ extern crate std;
 mod error;
 pub use error::{Error, Result};
 
+mod node_id;
+
 pub use tutti_core::{
     params, Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio, SampleRate, Seconds, Semitones, Unit,
 };

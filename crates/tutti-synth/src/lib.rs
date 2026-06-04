@@ -16,6 +16,8 @@
 //! ```
 
 pub mod error;
+
+mod node_id;
 pub use error::{Error, Result};
 
 mod voice;

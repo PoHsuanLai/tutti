@@ -275,7 +275,7 @@ impl AudioUnit for SoundFontUnit {
     fn set(&mut self, _setting: Setting) {}
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::SOUNDFONT_ID
+        crate::node_id::SOUNDFONT_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

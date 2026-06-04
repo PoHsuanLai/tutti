@@ -667,7 +667,7 @@ impl AudioUnit for PolySynth {
     fn set(&mut self, _setting: tutti_core::Setting) {}
 
     fn get_id(&self) -> u64 {
-        tutti_core::node_id::POLY_SYNTH_ID
+        crate::node_id::POLY_SYNTH_ID
     }
 
     fn as_any(&self) -> &dyn core::any::Any {

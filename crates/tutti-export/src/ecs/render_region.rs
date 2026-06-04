@@ -147,12 +147,18 @@ fn rebind_net_transport(net: &mut Net, transport: &Arc<dyn TransportReader>) {
 /// The start system consumes this and replaces it with
 /// [`RegionRenderInProgress`]; when the worker finishes, that becomes
 /// [`RegionRenderComplete`].
+///
+/// `priority` orders admission when more requests are pending than the
+/// [`RegionRenderConfig::max_in_flight`] cap allows: higher admits first. A
+/// consumer that taps many nodes at once (spectral view, one per track) sets the
+/// focused/visible view higher so it paints first; peers default to `0`.
 #[derive(Component, Debug, Clone)]
 pub struct StartRegionRender {
     pub target: NodeId,
     pub start_beat: f64,
     pub len_beats: f64,
     pub tempo: f64,
+    pub priority: i32,
 }
 
 /// In-flight region render. Holds the off-thread render task the poll system
@@ -236,9 +242,9 @@ pub fn prepare_region_render_system(
     in_flight: Query<(), RegionRenderSlotFilter>,
     // No `Added<>`: a request we decline this frame (over the cap) must still
     // match next frame. Presence of `StartRegionRender` *is* the "pending" flag;
-    // `remove`ing it on admit below is what marks it admitted. Admission order
-    // over pending requests is unspecified (Bevy archetype order) — fine for
-    // peer views; don't assume FIFO.
+    // `remove`ing it on admit below is what marks it admitted. We admit in
+    // descending `priority` order so a consumer can paint its focused tap first
+    // (peers tie at 0 — Bevy archetype order among them, don't assume FIFO).
     query: Query<(Entity, &StartRegionRender)>,
 ) {
     // Count slots as of frame start, then track admissions locally: renders
@@ -247,7 +253,12 @@ pub fn prepare_region_render_system(
     // `max_in_flight` *every* frame.
     let mut occupied = in_flight.iter().count();
 
-    for (entity, start) in query.iter() {
+    // Highest priority first. Cheap: at most one request per tapped node, and
+    // we only sort when something is pending.
+    let mut pending: Vec<(Entity, &StartRegionRender)> = query.iter().collect();
+    pending.sort_by_key(|(_, s)| std::cmp::Reverse(s.priority));
+
+    for (entity, start) in pending {
         if occupied >= render_config.max_in_flight {
             break; // leave StartRegionRender in place; retry next frame
         }
@@ -572,6 +583,7 @@ mod tests {
             start_beat: 0.0,
             len_beats: 4.0,
             tempo: 120.0,
+            priority: 0,
         };
         world.spawn(start(target));
         world.spawn(start(target));
@@ -619,6 +631,48 @@ mod tests {
             world.query::<&StartRegionRender>().iter(&world).count(),
             0,
             "backlog fully drained"
+        );
+    }
+
+    /// With the cap reached, the highest-`priority` pending request is admitted
+    /// first — so a consumer can paint its focused tap before its peers.
+    #[test]
+    fn higher_priority_request_admits_first() {
+        let (graph, target) = graph_res_with_one_target();
+
+        let mut world = World::new();
+        world.insert_resource(graph);
+        world.insert_resource(AudioConfig {
+            sample_rate: 48_000.0,
+            channels: 2,
+        });
+        world.insert_resource(RegionRenderConfig { max_in_flight: 1 });
+
+        let start = |t: NodeId, priority: i32| StartRegionRender {
+            target: t,
+            start_beat: 0.0,
+            len_beats: 4.0,
+            tempo: 120.0,
+            priority,
+        };
+        // Spawn the low-priority one first so archetype order would pick it under
+        // the old (unsorted) admission — the sort must override that.
+        let low = world.spawn(start(target, 0)).id();
+        let high = world.spawn(start(target, 2)).id();
+
+        let mut schedule = bevy_ecs::schedule::Schedule::default();
+        schedule.add_systems(prepare_region_render_system);
+        schedule.run(&mut world);
+
+        // The high-priority request was admitted (its StartRegionRender removed);
+        // the low-priority one is still pending.
+        assert!(
+            !world.entity(high).contains::<StartRegionRender>(),
+            "highest-priority request must be admitted first"
+        );
+        assert!(
+            world.entity(low).contains::<StartRegionRender>(),
+            "lower-priority request must stay pending under the cap"
         );
     }
 }

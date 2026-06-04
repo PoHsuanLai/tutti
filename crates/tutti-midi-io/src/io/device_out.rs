@@ -1,3 +1,6 @@
+//! MIDI output device ports: enumeration + a background thread that owns the
+//! open output connection and serializes events to MIDI 1.0 wire bytes.
+
 use crate::MidiDevice;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use midir::{MidiOutput, MidiOutputConnection};

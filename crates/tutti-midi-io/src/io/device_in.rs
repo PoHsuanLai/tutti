@@ -1,4 +1,4 @@
-//! Pure MIDI input I/O: device enumeration and hardware connection.
+//! MIDI input device ports: enumeration + opening a hardware input connection.
 
 use crate::InputProducerHandle;
 use crate::MidiDevice;

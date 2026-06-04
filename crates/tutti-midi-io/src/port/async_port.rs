@@ -1,81 +1,58 @@
-use std::cell::UnsafeCell;
 use std::time::Instant;
 
-use ringbuf::{
-    traits::{Consumer, Producer, Split},
-    HeapRb,
-};
 use tutti_midi_types::ump::MidiEvent;
 
+use super::spsc::{SpscProducer, SpscRing};
+
+/// Producer handle for a port's input ring (timestamped events).
+///
 /// # Safety
-/// Must only be used from a single thread (the midir callback thread).
-/// SPSC ring buffers require exactly one producer — concurrent pushes are UB.
+/// Must only be used from a single thread (the midir callback thread) — the
+/// SPSC single-producer invariant. The wrapped [`SpscProducer`] encapsulates
+/// the unsafe; this newtype only pairs each event with its arrival `Instant`.
+#[derive(Clone)]
 pub struct InputProducerHandle {
-    producer: *mut ringbuf::HeapProd<(Instant, MidiEvent)>,
+    producer: SpscProducer<(Instant, MidiEvent)>,
 }
-
-// SAFETY: HeapProd is Send. Ownership is transferred to the midir callback thread.
-unsafe impl Send for InputProducerHandle {}
-
-// SAFETY: Only one thread calls push() (SPSC invariant).
-unsafe impl Sync for InputProducerHandle {}
 
 impl InputProducerHandle {
     #[inline]
     pub fn push(&self, event: MidiEvent, timestamp: Instant) -> bool {
-        // SAFETY: Exclusive access as single producer (SPSC invariant).
-        let prod = unsafe { &mut *self.producer };
-        prod.try_push((timestamp, event)).is_ok()
+        self.producer.push((timestamp, event))
     }
 }
 
+/// Producer handle for a port's output ring.
+///
 /// # Safety
-/// Must only be used from a single thread (the audio thread).
-/// Clone copies the pointer; only one thread may call push() (SPSC invariant).
+/// Must only be used from a single thread (the audio thread) — the SPSC
+/// single-producer invariant.
 #[derive(Clone)]
 pub struct OutputProducerHandle {
-    producer: *mut ringbuf::HeapProd<MidiEvent>,
+    producer: SpscProducer<MidiEvent>,
 }
-
-// SAFETY: HeapProd is Send. Ownership is transferred to the audio thread.
-unsafe impl Send for OutputProducerHandle {}
-
-// SAFETY: Only one thread calls push() (SPSC invariant).
-unsafe impl Sync for OutputProducerHandle {}
 
 impl OutputProducerHandle {
     #[inline]
     pub fn push(&self, event: MidiEvent) -> bool {
-        // SAFETY: Exclusive access as single producer (SPSC invariant).
-        let prod = unsafe { &mut *self.producer };
-        prod.try_push(event).is_ok()
+        self.producer.push(event)
     }
 }
 
 pub struct AsyncMidiPort {
     name: String,
     active: std::sync::atomic::AtomicBool,
-    input_consumer: UnsafeCell<ringbuf::HeapCons<(Instant, MidiEvent)>>,
-    input_producer: UnsafeCell<ringbuf::HeapProd<(Instant, MidiEvent)>>,
-    output_producer: UnsafeCell<ringbuf::HeapProd<MidiEvent>>,
-    output_consumer: UnsafeCell<ringbuf::HeapCons<MidiEvent>>,
+    input: SpscRing<(Instant, MidiEvent)>,
+    output: SpscRing<MidiEvent>,
 }
 
 impl AsyncMidiPort {
     pub fn new(name: impl Into<String>, fifo_size: usize) -> Self {
-        let name = name.into();
-        let input_rb = HeapRb::<(Instant, MidiEvent)>::new(fifo_size);
-        let (input_producer, input_consumer) = input_rb.split();
-        let output_rb = HeapRb::<MidiEvent>::new(fifo_size);
-        let (output_producer, output_consumer) = output_rb.split();
-
         Self {
-            name,
+            name: name.into(),
             active: std::sync::atomic::AtomicBool::new(true),
-            input_consumer: UnsafeCell::new(input_consumer),
-            input_producer: UnsafeCell::new(input_producer),
-            output_producer: UnsafeCell::new(output_producer),
-            output_consumer: UnsafeCell::new(output_consumer),
+            input: SpscRing::new(fifo_size),
+            output: SpscRing::new(fifo_size),
         }
     }
 
@@ -96,13 +73,13 @@ impl AsyncMidiPort {
 
     pub fn input_producer_handle(&self) -> InputProducerHandle {
         InputProducerHandle {
-            producer: self.input_producer.get(),
+            producer: self.input.producer(),
         }
     }
 
     pub fn output_producer_handle(&self) -> OutputProducerHandle {
         OutputProducerHandle {
-            producer: self.output_producer.get(),
+            producer: self.output.producer(),
         }
     }
 
@@ -112,10 +89,8 @@ impl AsyncMidiPort {
         buf: &mut Vec<(Instant, usize, MidiEvent)>,
         port_index: usize,
     ) {
-        let consumer = unsafe { &mut *self.input_consumer.get() };
-        while let Some((timestamp, event)) = consumer.try_pop() {
-            buf.push((timestamp, port_index, event));
-        }
+        self.input
+            .drain_each(|(timestamp, event)| buf.push((timestamp, port_index, event)));
     }
 
     #[inline]
@@ -124,16 +99,10 @@ impl AsyncMidiPort {
         buf: &mut Vec<(usize, MidiEvent)>,
         port_index: usize,
     ) {
-        let consumer = unsafe { &mut *self.output_consumer.get() };
-        while let Some(event) = consumer.try_pop() {
-            buf.push((port_index, event));
-        }
+        self.output
+            .drain_each(|event| buf.push((port_index, event)));
     }
 }
-
-// SAFETY: All UnsafeCell fields follow SPSC invariants — each ring buffer
-// has exactly one producer and one consumer, never accessed concurrently.
-unsafe impl Sync for AsyncMidiPort {}
 
 impl core::fmt::Debug for AsyncMidiPort {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

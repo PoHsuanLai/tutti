@@ -4,7 +4,7 @@ use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use smallvec::SmallVec;
-use tutti_core::midi::{cc, MidiSource, MidiTarget, MidiUnitId};
+use tutti_midi_types::{cc, MidiSource, MidiTarget, MidiUnitId};
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Shared, SignalFrame};
 use tutti_midi_types::semantic::SemanticEvent;
 use tutti_midi_types::ump::MidiEvent;

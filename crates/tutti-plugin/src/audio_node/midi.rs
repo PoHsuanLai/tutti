@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use crate::protocol::MidiEventVec;
-use tutti_core::midi::MidiUnitId;
+use tutti_midi_types::MidiUnitId;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiSource;
 use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};

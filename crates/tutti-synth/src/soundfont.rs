@@ -11,7 +11,7 @@ pub use rustysynth::SoundFontAsset;
 
 use rustysynth::Synthesizer;
 use smallvec::SmallVec;
-use tutti_core::midi::{MidiSource, MidiTarget, MidiUnitId};
+use tutti_midi_types::{MidiSource, MidiTarget, MidiUnitId};
 use tutti_core::Arc;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
 use tutti_midi_types::semantic::SemanticEvent;

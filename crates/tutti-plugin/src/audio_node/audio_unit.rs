@@ -3,7 +3,7 @@
 
 use super::signal::route_with_latency;
 use super::PluginClient;
-use tutti_core::midi::{MidiTarget, MidiUnitId};
+use tutti_midi_types::{MidiTarget, MidiUnitId};
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
 
 impl AudioUnit for PluginClient {

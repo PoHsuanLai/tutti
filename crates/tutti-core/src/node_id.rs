@@ -45,8 +45,8 @@
 //! ```
 //!
 //! [`AudioUnit::get_id`]: fundsp::audiounit::AudioUnit::get_id
-//! [`MidiUnitId`]: crate::midi::MidiUnitId
-//! [`MidiTarget`]: crate::midi::MidiTarget
+//! [`MidiUnitId`]: tutti_midi_types::MidiUnitId
+//! [`MidiTarget`]: tutti_midi_types::MidiTarget
 
 /// Pack an 8-byte ASCII mnemonic into a `get_id()` fingerprint (big-endian).
 ///

@@ -32,7 +32,7 @@ use tutti_core::metering::PendingMetering;
 use tutti_core::transport::PendingTransport;
 
 #[cfg(feature = "midi")]
-use tutti_core::midi::MidiProcessor;
+use tutti_core::processor::MidiProcessor;
 #[cfg(feature = "midi")]
 use tutti_midi_io::ecs::PendingMidi;
 #[cfg(feature = "midi-hardware")]

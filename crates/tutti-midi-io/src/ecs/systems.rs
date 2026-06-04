@@ -110,7 +110,7 @@ pub fn midi_routing_sync_system(
     let table = graph.0.midi_route_mut();
     table.clear();
     for receiver in all_receivers.iter() {
-        let unit_id = tutti_core::MidiUnitId::new(receiver.node_id.value());
+        let unit_id = tutti_midi_types::MidiUnitId::new(receiver.node_id.value());
         if let Some(ch) = receiver.channel {
             table.channel(ch, unit_id);
         } else {
@@ -121,7 +121,7 @@ pub fn midi_routing_sync_system(
     // MPE receivers route all channels to one synth via fallback
     #[cfg(feature = "mpe")]
     for mpe_recv in mpe.all.iter() {
-        table.fallback(tutti_core::MidiUnitId::new(mpe_recv.node_id.value()));
+        table.fallback(tutti_midi_types::MidiUnitId::new(mpe_recv.node_id.value()));
     }
 
     // The staged route-table edits are published by the Commit-phase
@@ -232,7 +232,7 @@ pub fn midi_sequence_tick_system(
     if !transport.0.is_playing() {
         // All-notes-off when transport is not rolling
         for (seq, mut state) in query.iter_mut() {
-            let unit_id = tutti_core::MidiUnitId::new(seq.target.value());
+            let unit_id = tutti_midi_types::MidiUnitId::new(seq.target.value());
             for note in state.active_notes.drain() {
                 let event = note_off_event(note);
                 midi.0.queue(unit_id, &[event]);
@@ -244,7 +244,7 @@ pub fn midi_sequence_tick_system(
     let beat = transport.0.current_beat();
 
     for (seq, mut state) in query.iter_mut() {
-        let unit_id = tutti_core::MidiUnitId::new(seq.target.value());
+        let unit_id = tutti_midi_types::MidiUnitId::new(seq.target.value());
         let local_beat = if seq.loop_enabled && seq.duration_beats > 0.0 {
             let offset = beat - seq.start_beat;
             ((offset % seq.duration_beats) + seq.duration_beats) % seq.duration_beats
@@ -430,7 +430,7 @@ mod mpe_tests {
         use bevy_ecs::prelude::*;
         use crate::{MidiEvent, MpeMode, MpeZoneConfig};
         use tutti_midi_runtime::MidiBus;
-        use tutti_core::MidiUnitId;
+        use tutti_midi_types::MidiUnitId;
 
         let mut world = World::new();
         let bus = MidiBus::new();

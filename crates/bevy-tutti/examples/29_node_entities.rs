@@ -32,9 +32,9 @@ use bevy_asset::AssetPlugin;
 use bevy_ecs::prelude::*;
 use bevy_log::LogPlugin;
 
-use bevy_tutti::{MasterMeterLevels, TuttiPlugin};
+use bevy_tutti::TuttiPlugin;
 use tutti_core::dsp::sine_hz;
-use tutti_core::ecs::{SpawnAudioNode, TuttiGraphRes};
+use tutti_core::ecs::{MeteringRes, SpawnAudioNode, TuttiGraphRes};
 use tutti_core::{AudioNode, NodeKind, Volume};
 
 fn main() {
@@ -80,18 +80,19 @@ fn fade_volume(mut q: Query<&mut Volume, With<AudioNode>>) {
 }
 
 fn log_state(
-    meters: Res<MasterMeterLevels>,
+    metering: Res<MeteringRes>,
     q: Query<&Volume, With<AudioNode>>,
     mut tick: Local<u32>,
 ) {
     *tick = tick.wrapping_add(1);
     if (*tick).is_multiple_of(30) {
         let vol = q.single().map(|v| v.0).unwrap_or(0.0);
+        let (peak_l, peak_r, _, _) = metering.amplitude();
         bevy_log::info!(
             "Volume = {:.3} | peak L/R = {:.3} / {:.3}",
             vol,
-            meters.peak_left,
-            meters.peak_right
+            peak_l,
+            peak_r
         );
     }
 }

@@ -49,8 +49,6 @@
 //! }
 //! ```
 
-mod metering;
-mod transport;
 mod device_state;
 mod plugin;
 mod resources;
@@ -85,10 +83,10 @@ pub use plugin::TuttiPlugin;
 // Engine types.
 pub use engine::{DefaultProcessor, DeviceInfo, Error, Result, TuttiDriver, TuttiEngine, TuttiEngineBuilder, TuttiGraph};
 
-// bevy-tutti's own UI-mirror resources (transport/metering/device state).
+// bevy-tutti's own UI-mirror resource (audio device state). Its CPAL driver
+// is bevy-tutti's, so the mirror lives here. Transport state + master metering
+// are dawai projection targets and live in `dawai-model`.
 pub use device_state::AudioDeviceState;
-pub use metering::MasterMeterLevels;
-pub use transport::TransportState;
 
 // bevy-tutti's own resource newtypes that wrap engine-leaf handles
 // (CPAL stream / SoundFont system). These live in `resources.rs`.

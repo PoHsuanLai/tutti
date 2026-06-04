@@ -12,10 +12,10 @@ use bevy_log::{error, info};
 use crate::TuttiEngine;
 
 use crate::device_state;
-use crate::graph::{engine_ready, TuttiGraphPlugin};
-use crate::metering;
+#[cfg(all(feature = "soundfont", feature = "midi"))]
+use crate::graph::engine_ready;
+use crate::graph::TuttiGraphPlugin;
 use crate::resources::*;
-use crate::transport;
 
 #[cfg(feature = "midi")]
 use tutti_midi_io::ecs::{MidiBusRes, TuttiMidiPlugin};
@@ -36,7 +36,7 @@ use tutti_export::ecs::TuttiExportPlugin;
 #[cfg(feature = "plugin")]
 use tutti_plugin_host::TuttiHostingPlugin;
 use tutti_units::ecs::TuttiDspPlugin;
-use crate::{AudioDeviceState, MasterMeterLevels, TransportState};
+use crate::AudioDeviceState;
 
 /// Bevy plugin that creates a `TuttiEngine`, starts the audio stream,
 /// and registers ECS components, asset loaders, and systems.
@@ -120,8 +120,8 @@ impl Plugin for TuttiPlugin {
                     engine.sample_rate, self.outputs
                 );
 
-                // Enable amplitude + CPU metering by default (used by the
-                // metering_sync_system).
+                // Enable amplitude + CPU metering by default (consumers read
+                // `MeteringRes::amplitude()` / `cpu()` directly).
                 engine.metering.inner().enable_amp();
                 engine.metering.inner().cpu().enable();
 
@@ -186,22 +186,13 @@ impl Plugin for TuttiPlugin {
         }
 
         // Engine-wide state + per-frame syncs that don't fit any one duty.
-        app.init_resource::<TransportState>();
-        app.init_resource::<MasterMeterLevels>();
+        // (Transport state + master metering are dawai projection targets and
+        // are owned by `dawai-model`'s transport plugins.)
         app.init_resource::<AudioDeviceState>();
-        app.register_type::<TransportState>()
-            .register_type::<MasterMeterLevels>()
-            .register_type::<AudioDeviceState>()
+        app.register_type::<AudioDeviceState>()
             .register_type::<crate::resources::AudioConfig>();
         app.add_systems(Startup, device_state::device_state_init_system);
-        app.add_systems(
-            Update,
-            (
-                transport::transport_sync_system.run_if(engine_ready),
-                metering::metering_sync_system.run_if(engine_ready),
-                device_state::device_state_sync_system,
-            ),
-        );
+        app.add_systems(Update, device_state::device_state_sync_system);
 
         // Sub-plugins. Order matters: TuttiGraphPlugin first (configures
         // GraphReconcileSystems that other plugins schedule against), then

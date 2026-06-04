@@ -130,9 +130,7 @@ These resources are synced from the engine every frame via lock-free atomics:
 |----------|---------|-------------|
 | `TuttiGraphRes` | always | `TuttiGraph` -- editable DSP graph |
 | `TransportRes` | always | Lock-free transport handle (play/stop/seek/tempo/loop) |
-| `MeteringRes` | always | Lock-free metering snapshots |
-| `TransportState` | always | Beat position, tempo, play/pause/record/loop state |
-| `MasterMeterLevels` | always | Peak and RMS levels (L/R) |
+| `MeteringRes` | always | Lock-free metering snapshots (peak/RMS amplitude) |
 | `AudioDeviceState` | always | Output devices, current device, running status |
 | `ContentBounds` | `sampler` | Content end beat and duration in seconds |
 | `LiveAnalysisData` | `analysis` | Spectrum, loudness, and other analysis data |

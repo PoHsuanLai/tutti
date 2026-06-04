@@ -32,10 +32,10 @@ use bevy_asset::AssetPlugin;
 use bevy_ecs::prelude::*;
 use bevy_log::LogPlugin;
 
-use bevy_tutti::{MasterMeterLevels, TuttiPlugin};
+use bevy_tutti::TuttiPlugin;
 use tutti_core::dsp::sine_hz;
 use tutti_core::ecs::{
-    crossfade_audio_node, SidechainOf, SidechainSources, SpawnAudioNode, TransportRes,
+    crossfade_audio_node, MeteringRes, SidechainOf, SidechainSources, SpawnAudioNode, TransportRes,
 };
 use tutti_core::{AudioNode, NodeKind, SamplerLooping, SamplerSpeed, Volume};
 use tutti_sampler::PendingSamplerLoad;
@@ -155,7 +155,7 @@ fn periodic_crossfade(
 }
 
 fn report_status(
-    meters: Res<MasterMeterLevels>,
+    metering: Res<MeteringRes>,
     targets: Query<&Volume, With<AutomationTarget>>,
     sources: Query<&SidechainSources>,
     tick: Res<DemoTick>,
@@ -165,12 +165,13 @@ fn report_status(
     }
     let vol = targets.single().map(|v| v.0).unwrap_or(0.0);
     let sidechain_count = sources.iter().map(|s| s.len()).sum::<usize>();
+    let (peak_l, peak_r, _, _) = metering.amplitude();
     bevy_log::info!(
         "tick {:>4} | target Volume = {:.3} | sidechain links = {} | peak L/R = {:.3} / {:.3}",
         tick.0,
         vol,
         sidechain_count,
-        meters.peak_left,
-        meters.peak_right
+        peak_l,
+        peak_r
     );
 }

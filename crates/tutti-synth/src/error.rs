@@ -17,8 +17,3 @@ pub enum Error {
     #[error("SoundFont error: {0}")]
     SoundFont(String),
 }
-impl From<Error> for tutti_core::Error {
-    fn from(e: Error) -> Self {
-        tutti_core::Error::Synth(e.to_string())
-    }
-}

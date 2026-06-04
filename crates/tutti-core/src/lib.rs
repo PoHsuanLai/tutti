@@ -127,7 +127,3 @@ pub use graph::{
     isolate_output, AudioGraph, AudioNode, CommitOutcome, GraphDot, GraphNet, LayerKey, ModParam,
     Mute, NodeKind, Pan, PluginParam, Volume,
 };
-
-/// Bevy `AsyncComputeTaskPool` + `Task<T>` helper for non-RT subsystem work.
-pub mod task;
-pub use task::poll_task;

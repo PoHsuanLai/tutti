@@ -22,7 +22,7 @@ use bevy_tasks::{AsyncComputeTaskPool, Task};
 use tutti_plugin::catalog::{Plugins, PluginsConfig, ScanResult};
 
 use crate::PluginsRes;
-use tutti_core::task::poll_task;
+use bevy_tasks::{block_on, futures_lite::future};
 
 /// Config used to build the [`Plugins`] catalog that an async rescan
 /// produces. Kept module-local (never the shared `resources.rs`) so the
@@ -92,7 +92,7 @@ pub fn poll_plugin_scan(
     let Some(task) = in_flight.0.as_mut() else {
         return;
     };
-    let Some((plugins, result)) = poll_task(task) else {
+    let Some((plugins, result)) = block_on(future::poll_once(task)) else {
         return;
     };
     in_flight.0 = None;

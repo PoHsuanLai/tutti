@@ -37,7 +37,7 @@ use tutti_core::dsp::Net;
 use tutti_core::{
     AudioUnit, OfflineTransport, OfflineTransportConfig, SampleRate, TransportReader,
 };
-use tutti_core::task::poll_task;
+use bevy_tasks::{block_on, futures_lite::future};
 use tutti_core::NodeId;
 use crate::{Error as ExportError, Rendered};
 
@@ -360,7 +360,7 @@ pub fn region_render_poll_system(
         // Non-blocking poll of the off-thread render task via the B0 helper
         // (same convention every Tutti subsystem follows). `None` → still
         // running; poll again next frame.
-        let Some(result) = poll_task(&mut render.task) else {
+        let Some(result) = block_on(future::poll_once(&mut render.task)) else {
             continue;
         };
         match result {

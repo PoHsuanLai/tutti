@@ -333,7 +333,7 @@ use bevy_tasks::{AsyncComputeTaskPool, Task};
 
 use tutti_core::graph::engine_ready;
 use tutti_core::graph::{AudioConfig, AudioEmitter, GraphDirty, GraphReconcileSystems, AudioGraphRes};
-use tutti_core::task::poll_task;
+use bevy_tasks::{block_on, futures_lite::future};
 
 /// In-memory Bevy loader for [`SoundFontAsset`]. Reads the whole `.sf2`
 /// payload, then delegates to [`SoundFontAsset::from_bytes`].
@@ -488,7 +488,7 @@ pub fn promote_pending_soundfonts(
     let mut edited = false;
 
     for (entity, mut pending_unit) in pending.iter_mut() {
-        let Some(result) = poll_task(&mut pending_unit.task) else {
+        let Some(result) = block_on(future::poll_once(&mut pending_unit.task)) else {
             continue;
         };
 

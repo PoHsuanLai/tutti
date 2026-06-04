@@ -8,7 +8,7 @@ use bevy_tasks::{AsyncComputeTaskPool, Task};
 
 use tutti_core::graph::engine_ready;
 use tutti_core::graph::{AudioConfig, AudioGraphRes};
-use tutti_core::task::poll_task;
+use bevy_tasks::{block_on, futures_lite::future};
 
 /// Fire-and-forget request to start an offline export.
 ///
@@ -117,7 +117,7 @@ pub fn export_poll_system(
             export.last_progress = Some(p);
         }
 
-        match poll_task(&mut export.task) {
+        match block_on(future::poll_once(&mut export.task)) {
             Some(Ok(_written)) => {
                 bevy_log::info!("Export complete (entity {entity:?})");
                 commands

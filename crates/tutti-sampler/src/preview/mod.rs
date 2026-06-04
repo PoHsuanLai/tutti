@@ -43,7 +43,7 @@ use dashmap::DashMap;
 use smol::channel::Sender;
 
 use tutti_core::graph::{engine_ready, GraphDirty, AudioGraphRes};
-use tutti_core::task::poll_task;
+use bevy_tasks::{block_on, futures_lite::future};
 use tutti_core::{AtomicF32, Wave};
 
 use crate::butler::{ButlerCommand, ChannelPlan, LruCache, PlayDirection};
@@ -386,7 +386,7 @@ fn poll_preview_task(
         return;
     };
 
-    let Some(result) = poll_task(&mut in_flight.task) else {
+    let Some(result) = block_on(future::poll_once(&mut in_flight.task)) else {
         return;
     };
 

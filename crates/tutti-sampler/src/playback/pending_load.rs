@@ -24,7 +24,7 @@
 //! never need to touch the queue at all.
 //!
 //! The decode+peaks job runs on Bevy's [`AsyncComputeTaskPool`] (one
-//! [`Task`] per import), draining via [`tutti_core::task::poll_task`] — the
+//! [`Task`] per import), draining via `block_on(future::poll_once(..))` — the
 //! same one-shot non-RT convention documented in [`tutti_core::task`]. (The
 //! sampler butler/streaming thread is RT disk streaming and stays a tutti
 //! thread; this queue is only the one-shot import/decode of the wave plus
@@ -39,7 +39,7 @@ use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
 use tutti_core::graph::{AudioNode, GraphDirty, NodeKind, AudioGraphRes, Volume};
-use tutti_core::task::poll_task;
+use bevy_tasks::{block_on, futures_lite::future};
 
 use super::node::{SamplerLooping, SamplerNode, SamplerSpeed};
 use tutti_core::{Wave, WaveAsset};
@@ -176,7 +176,7 @@ pub fn poll_wave_imports(
     mut pending: Query<&mut PendingSamplerLoad>,
 ) {
     queue.imports.retain_mut(|(path, entity, task)| {
-        let Some(result) = poll_task(task) else {
+        let Some(result) = block_on(future::poll_once(task)) else {
             return true;
         };
         match result {

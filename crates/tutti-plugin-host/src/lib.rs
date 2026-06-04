@@ -16,7 +16,7 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use tutti_core::ecs::{AudioNode, GraphReconcileSystems, NodeParamEpoch, PluginParam};
+use tutti_core::graph::{AudioNode, GraphReconcileSystems, NodeParamEpoch, PluginParam};
 
 pub mod crash;
 pub mod editor;
@@ -101,7 +101,7 @@ pub fn bump_param_epoch_plugin(
 /// - [`bump_param_epoch_plugin`] in `Update`.
 /// - [`reconcile_plugin_params`] in [`GraphReconcileSystems::Params`].
 ///
-/// Requires [`tutti_core::ecs::TuttiGraphPlugin`] (which configures the
+/// Requires [`tutti_core::graph::GraphReconcilePlugin`] (which configures the
 /// `GraphReconcileSystems` set) to be added before this plugin.
 pub struct TuttiHostingPlugin;
 
@@ -144,7 +144,7 @@ impl Plugin for TuttiHostingPlugin {
                 // commit), so anchor it before the Commit-phase commit_graph.
                 plugin_crash_detect_system
                     .before(GraphReconcileSystems::Commit)
-                    .run_if(tutti_core::ecs::engine_ready),
+                    .run_if(tutti_core::graph::engine_ready),
                 trigger_plugin_scan,
                 poll_plugin_scan.after(trigger_plugin_scan),
                 // Param-epoch bump for plugin param changes.

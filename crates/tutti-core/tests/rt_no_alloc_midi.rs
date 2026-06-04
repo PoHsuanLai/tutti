@@ -19,20 +19,20 @@ use arc_swap::ArcSwap;
 use assert_no_alloc::AllocDisabler;
 use tutti_core::compat::Mutex;
 use tutti_core::processor::{AudioProcessor, GraphProcessor, MidiProcessor};
-use tutti_core::{TransportClock, TransportManager, TuttiNet};
+use tutti_core::{TransportClock, TransportManager, GraphNet};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiInputSource, MidiQueue, MidiRoute, MidiRoutingSnapshot, MidiUnitId};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-/// Build a GraphProcessor fronted by a minimal TuttiNet, mirroring the
+/// Build a GraphProcessor fronted by a minimal GraphNet, mirroring the
 /// pattern in `tutti/src/audio_io.rs::tests::build_callback_state`.
 fn build_graph_processor() -> GraphProcessor {
     let sample_rate = 48_000.0;
     let transport = Arc::new(TransportManager::new(sample_rate));
 
-    let mut net = TuttiNet::new(0, 2);
+    let mut net = GraphNet::new(0, 2);
     let clock = TransportClock::new(
         transport.tempo().clone(),
         transport.paused().clone(),
@@ -52,7 +52,7 @@ fn build_graph_processor() -> GraphProcessor {
     let backend = net.backend();
 
     // Keep the net alive for the test's lifetime — the backend borrows it.
-    let _leaked: &'static Mutex<TuttiNet> = Box::leak(Box::new(Mutex::new(net)));
+    let _leaked: &'static Mutex<GraphNet> = Box::leak(Box::new(Mutex::new(net)));
 
     GraphProcessor::new(transport, backend)
 }

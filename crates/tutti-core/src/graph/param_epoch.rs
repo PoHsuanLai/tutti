@@ -3,7 +3,7 @@
 //!
 //! ## Why this exists
 //!
-//! [`TuttiGraph::revision`](crate::TuttiGraph::revision) bumps only on
+//! [`AudioGraph::revision`](crate::AudioGraph::revision) bumps only on
 //! `Net::commit()`, i.e. on **structural** graph edits (add/remove/rewire).
 //! Parameter setters (`set_frequency`, `set_gain`, `set_q`, …) are plain
 //! in-place writes — correct and real-time-safe for audio, no commit needed —
@@ -30,11 +30,11 @@
 use bevy_ecs::prelude::*;
 use std::collections::HashMap;
 
-use crate::ecs::{AudioNode, Mute, Volume};
+use crate::graph::{AudioNode, Mute, Volume};
 use crate::NodeId;
 
 /// Monotonic per-node parameter version. Distinct from
-/// [`TuttiGraph::revision`](crate::TuttiGraph::revision) (which tracks
+/// [`AudioGraph::revision`](crate::AudioGraph::revision) (which tracks
 /// structure); this tracks in-place param writes the revision skips.
 ///
 /// `get` returns 0 for a node that has never had a param change, so a fresh

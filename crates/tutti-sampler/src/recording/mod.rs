@@ -8,7 +8,7 @@ use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 
-use tutti_core::ecs::{engine_ready, TransportRes};
+use tutti_core::graph::{engine_ready, TransportRes};
 
 use crate::Sampler;
 

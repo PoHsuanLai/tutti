@@ -29,15 +29,15 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::query::QueryData;
 
 use tutti_core::dsp::AudioUnit;
-use tutti_core::ecs::{AudioNode, NodeKind};
+use tutti_core::graph::{AudioNode, NodeKind};
 use crate::dsp_params::{
     Attack, CeilingDb, CompressorRatio, DelayTime, Drive, Feedback, FilterMode, FilterQ, Frequency,
     GainDb, MaxDelay, ModDepth, ModRate, Release, ReverbAlgo, ReverbDamping, ReverbRoomSize,
     ReverbTime, StereoChannels, ThresholdDb, WetMix,
 };
 
-use tutti_core::ecs::GraphDirty;
-use tutti_core::ecs::TuttiGraphRes;
+use tutti_core::graph::GraphDirty;
+use tutti_core::graph::AudioGraphRes;
 
 use super::systems::svf_type_of;
 
@@ -94,7 +94,7 @@ pub trait DspNode: Component + Default {
 /// absent — the marker is not consumed by a missed frame.
 pub fn spawn_dsp_node<T: DspNode>(
     mut commands: Commands,
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     query: Query<(Entity, SpawnParams), (Added<T>, Without<AudioNode>)>,
 ) {
@@ -122,12 +122,12 @@ impl AddDspNode for bevy_app::App {
             bevy_app::Update,
             spawn_dsp_node::<T>
                 .in_set(GraphReconcileSystems::Spawn)
-                .run_if(tutti_core::ecs::engine_ready),
+                .run_if(tutti_core::graph::engine_ready),
         )
     }
 }
 
-use tutti_core::ecs::GraphReconcileSystems;
+use tutti_core::graph::GraphReconcileSystems;
 
 // ---------------------------------------------------------------------------
 // Per-node builders — mechanical lifts of the old `spawn_*_nodes` bodies.

@@ -26,15 +26,15 @@ pub use systems::spawn_lfo_nodes;
 /// Registers the authoring markers, the marker-driven generic spawners
 /// (`spawn_dsp_node::<T>`), the LFO spawner, and the DSP param reconcilers
 /// (`reconcile_unit_params` / `reconcile_reverb_params`) + epoch bump. The
-/// generic graph hub ([`tutti_core::ecs::TuttiGraphPlugin`]) must be added
+/// generic graph hub ([`tutti_core::graph::GraphReconcilePlugin`]) must be added
 /// first — it configures the `GraphReconcileSystems` schedule this plugin
 /// schedules against.
 pub struct TuttiDspPlugin;
 
 impl Plugin for TuttiDspPlugin {
     fn build(&self, app: &mut App) {
-        use tutti_core::ecs::engine_ready;
-        use tutti_core::ecs::GraphReconcileSystems;
+        use tutti_core::graph::engine_ready;
+        use tutti_core::graph::GraphReconcileSystems;
 
         // Register the DSP param pool + authoring markers (both owned by this
         // crate now). The core graph plugin registers only the foundational

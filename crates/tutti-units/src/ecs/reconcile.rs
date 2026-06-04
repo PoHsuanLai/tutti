@@ -3,16 +3,16 @@
 //! The generic reconcile hub (`SpawnAudioNode`, `GraphReconcileSystems`,
 //! `engine_ready`, `GraphDirty`, `reconcile_node_despawn`, `reconcile_params`,
 //! `commit_graph`, the `NodeParamEpoch` resource + `bump_param_epoch_core`)
-//! lives in [`tutti_core::ecs`]. This module keeps the reconcilers that write
+//! lives in [`tutti_core::graph`]. This module keeps the reconcilers that write
 //! through this crate's unit types (the DSP `UnitParam` path, reverb /
 //! convolver rebuilds), plus the DSP-family param-epoch bump.
 
 use bevy_ecs::prelude::*;
 
 use tutti_core::dsp::AudioUnit;
-use tutti_core::ecs::{AudioNode, NodeParamEpoch, TuttiGraphRes};
+use tutti_core::graph::{AudioNode, NodeParamEpoch, AudioGraphRes};
 
-use tutti_core::ecs::GraphReconcileSystems;
+use tutti_core::graph::GraphReconcileSystems;
 
 // =============================================================================
 // Generic parameter reconciler.
@@ -83,7 +83,7 @@ pub struct EffectParams {
 /// dozen per-effect `reconcile_*_params` systems (reverb excepted).
 #[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
 pub fn reconcile_unit_params(
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     changed: Query<EffectParams, AnyParamChanged>,
 ) {
     use tutti_core::dsp::AudioUnit as _;
@@ -170,7 +170,7 @@ pub fn reconcile_reverb_params(
         ),
     >,
 ) {
-    use tutti_core::ecs::crossfade_audio_node;
+    use tutti_core::graph::crossfade_audio_node;
     use crate::dsp_params::ReverbAlgo;
     for (entity, room, damp, _wet, algo) in changed.iter() {
         // fundsp reverb opcodes have no `set()`, so a param change rebuilds the
@@ -195,7 +195,7 @@ type ChangedConvolverFilter = (With<crate::node_markers::ConvolutionReverbNode>,
 
 #[cfg(feature = "convolution")]
 pub fn reconcile_convolver_params(
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     changed: Query<ChangedConvolverParams, ChangedConvolverFilter>,
 ) {
     for (node, wet) in changed.iter() {
@@ -245,7 +245,7 @@ pub fn bump_param_epoch_dsp(
 /// Called by [`super::TuttiDspPlugin`]. The graph-touching reconcilers run in
 /// the `Params` set gated on `engine_ready`; the epoch bump stays ungated.
 pub(super) fn build(app: &mut bevy_app::App) {
-    use tutti_core::ecs::engine_ready;
+    use tutti_core::graph::engine_ready;
     app.add_systems(
         bevy_app::Update,
         (

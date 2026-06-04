@@ -17,7 +17,7 @@ use crate::NodeId;
 /// playback and clean up the graph node.
 ///
 /// Not `Reflect`: the wrapped fundsp `NodeId` is foreign and not reflected
-/// (matching `crate::ecs::AudioNode`).
+/// (matching `crate::graph::AudioNode`).
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[require(AudioPlaybackState)]
 pub struct AudioEmitter {

@@ -5,7 +5,7 @@
 //! cleans up when the wave finishes. That's the right shape for fire-and-
 //! forget SFX, but a DAW track wants a long-lived entity-as-node — one
 //! that survives across plays, can be reconfigured (loop range, gain,
-//! speed) via the parameter components in [`tutti_core::ecs`], and is
+//! speed) via the parameter components in [`tutti_core::graph`], and is
 //! eventually removed by despawning the entity.
 //!
 //! [`PendingSamplerLoad`] is exactly that: insert it on a fresh entity
@@ -38,7 +38,7 @@ use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
-use tutti_core::ecs::{AudioNode, GraphDirty, NodeKind, TuttiGraphRes, Volume};
+use tutti_core::graph::{AudioNode, GraphDirty, NodeKind, AudioGraphRes, Volume};
 use tutti_core::task::poll_task;
 
 use super::node::{SamplerLooping, SamplerNode, SamplerSpeed};
@@ -213,7 +213,7 @@ pub fn poll_wave_imports(
 pub fn promote_pending_samplers(
     mut commands: Commands,
     audio_assets: Res<Assets<WaveAsset>>,
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     pending: Query<(Entity, &PendingSamplerLoad)>,
 ) {

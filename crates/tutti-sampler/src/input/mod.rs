@@ -18,7 +18,7 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_reflect::prelude::*;
 
-use tutti_core::ecs::engine_ready;
+use tutti_core::graph::engine_ready;
 
 use crate::Sampler;
 

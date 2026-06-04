@@ -16,10 +16,10 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
 use crate::automation::LiveAutomationLane;
-use tutti_core::ecs::{AudioNode, Pan, PluginParam, Volume};
+use tutti_core::graph::{AudioNode, Pan, PluginParam, Volume};
 
-use tutti_core::ecs::{reconcile_params, GraphReconcileSystems};
-use tutti_core::ecs::{TransportRes, TuttiGraphRes};
+use tutti_core::graph::{reconcile_params, GraphReconcileSystems};
+use tutti_core::graph::{TransportRes, AudioGraphRes};
 
 /// Trigger component: spawn an entity with this to create an automation lane.
 ///
@@ -83,9 +83,9 @@ pub struct UpdateAutomationEnvelope {
 
 pub fn automation_lane_system(
     mut commands: Commands,
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     transport: Res<TransportRes>,
-    mut dirty: ResMut<tutti_core::ecs::GraphDirty>,
+    mut dirty: ResMut<tutti_core::graph::GraphDirty>,
     query: Query<(Entity, &AddAutomationLane), Added<AddAutomationLane>>,
 ) {
     let mut edited = false;
@@ -116,8 +116,8 @@ pub fn automation_lane_system(
 /// Apply pending envelope updates to existing graph nodes.
 pub fn update_automation_envelope_system(
     mut commands: Commands,
-    mut graph: ResMut<TuttiGraphRes>,
-    mut dirty: ResMut<tutti_core::ecs::GraphDirty>,
+    mut graph: ResMut<AudioGraphRes>,
+    mut dirty: ResMut<tutti_core::graph::GraphDirty>,
     query: Query<(Entity, &AutomationLaneEmitter, &UpdateAutomationEnvelope)>,
 ) {
     let mut edited = false;
@@ -145,7 +145,7 @@ pub fn update_automation_envelope_system(
 /// variant is skipped here — the host provides its own reconciler for
 /// typed effect-parameter components.
 pub fn reconcile_automation_writes(
-    graph: Res<TuttiGraphRes>,
+    graph: Res<AudioGraphRes>,
     drivers: Query<(&AudioNode, &AutomationDrivesParam)>,
     mut vol_pan_targets: Query<(Option<&mut Volume>, Option<&mut Pan>)>,
     mut plugin_targets: Query<&mut PluginParam>,
@@ -203,14 +203,14 @@ impl Plugin for TuttiAutomationPlugin {
             Update,
             (automation_lane_system, update_automation_envelope_system)
                 .before(GraphReconcileSystems::Commit)
-                .run_if(tutti_core::ecs::engine_ready),
+                .run_if(tutti_core::graph::engine_ready),
         )
         .add_systems(
             Update,
             reconcile_automation_writes
                 .in_set(GraphReconcileSystems::Params)
                 .before(reconcile_params)
-                .run_if(tutti_core::ecs::engine_ready),
+                .run_if(tutti_core::graph::engine_ready),
         );
     }
 }

@@ -14,7 +14,7 @@ use assert_no_alloc::AllocDisabler;
 use tutti_core::compat::Mutex;
 use tutti_core::dsp::{bell_hz, limiter_stereo, pan, sine_hz, AudioUnit};
 use tutti_core::processor::{AudioProcessor, GraphProcessor};
-use tutti_core::{SampleRate, TransportClock, TransportManager, TuttiNet};
+use tutti_core::{SampleRate, TransportClock, TransportManager, GraphNet};
 
 use std::sync::Arc;
 
@@ -28,7 +28,7 @@ fn build_graph_processor_with_chain() -> GraphProcessor {
     let sample_rate = 48_000.0;
     let transport = Arc::new(TransportManager::new(sample_rate));
 
-    let mut net = TuttiNet::new(0, 2);
+    let mut net = GraphNet::new(0, 2);
 
     // Transport clock — matches what every real GraphProcessor sees.
     let clock = TransportClock::new(
@@ -60,7 +60,7 @@ fn build_graph_processor_with_chain() -> GraphProcessor {
     let backend = net.backend();
 
     // The backend holds a pointer back into the net; keep it alive.
-    let _keep: &'static Mutex<TuttiNet> = Box::leak(Box::new(Mutex::new(net)));
+    let _keep: &'static Mutex<GraphNet> = Box::leak(Box::new(Mutex::new(net)));
 
     GraphProcessor::new(transport, backend)
 }

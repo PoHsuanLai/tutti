@@ -331,8 +331,8 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
-use tutti_core::ecs::engine_ready;
-use tutti_core::ecs::{AudioConfig, AudioEmitter, GraphDirty, GraphReconcileSystems, TuttiGraphRes};
+use tutti_core::graph::engine_ready;
+use tutti_core::graph::{AudioConfig, AudioEmitter, GraphDirty, GraphReconcileSystems, AudioGraphRes};
 use tutti_core::task::poll_task;
 
 /// In-memory Bevy loader for [`SoundFontAsset`]. Reads the whole `.sf2`
@@ -480,7 +480,7 @@ pub fn soundfont_playback_system(
 /// Entities whose build is still running are left alone for the next frame.
 pub fn promote_pending_soundfonts(
     mut commands: Commands,
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     #[cfg(feature = "midi")] midi: Option<Res<tutti_midi_io::ecs::MidiBusRes>>,
     mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,

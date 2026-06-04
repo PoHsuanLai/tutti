@@ -1,7 +1,7 @@
-//! `TuttiNet` — thin facade over [`fundsp::net::Net`] that adds typed downcast
+//! `GraphNet` — thin facade over [`fundsp::net::Net`] that adds typed downcast
 //! helpers and a crate-internal commit that runs PDC analysis.
 //!
-//! Callers use [`TuttiNet::inner`] / [`TuttiNet::inner_ref`] to reach fundsp's
+//! Callers use [`GraphNet::inner`] / [`GraphNet::inner_ref`] to reach fundsp's
 //! `Net` directly for all pure graph operations (push, connect, remove, etc.).
 //! The rest of the API is intentionally minimal.
 
@@ -12,7 +12,7 @@ use fundsp::net::{Net, NodeId, Source};
 use fundsp::prelude::AudioUnit;
 use fundsp::realnet::NetBackend;
 
-/// Result of committing a [`TuttiNet`]. Carries both the scalar graph
+/// Result of committing a [`GraphNet`]. Carries both the scalar graph
 /// latency and the per-output-channel arrival times so callers can
 /// publish them into their PDC manager.
 #[derive(Debug, Clone, Default)]
@@ -24,11 +24,11 @@ pub struct CommitOutcome {
     pub channel_latencies: Vec<usize>,
 }
 
-pub struct TuttiNet {
+pub struct GraphNet {
     net: Net,
 }
 
-impl TuttiNet {
+impl GraphNet {
     /// Build a new net with the given input/output port counts.
     pub fn new(inputs: usize, outputs: usize) -> Self {
         Self {

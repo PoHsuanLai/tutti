@@ -5,7 +5,7 @@
 //! logic they drive. The generic reconcile hub (`GraphReconcileSystems`,
 //! `SpawnAudioNode`, `engine_ready`, `GraphDirty`, `reconcile_params`,
 //! `commit_graph`, the `NodeParamEpoch` resource, …) lives in
-//! [`tutti_core::ecs`]; this module layers the units-specific pieces on top:
+//! [`tutti_core::graph`]; this module layers the units-specific pieces on top:
 //!
 //! - [`dsp`] — DSP spawn pipeline + the `TuttiDspPlugin` (unconditional; DSP
 //!   units are core).

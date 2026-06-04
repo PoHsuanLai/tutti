@@ -38,11 +38,11 @@
 //! # Direct API Access
 //!
 //! `TuttiPlugin` builds the audio engine and inserts each subsystem as its own
-//! Bevy resource (`TuttiGraphRes`, `TransportRes`, `MeteringRes`, …). Systems
+//! Bevy resource (`AudioGraphRes`, `TransportRes`, `MeteringRes`, …). Systems
 //! take only the ones they need:
 //!
 //! ```rust,ignore
-//! fn control_audio(transport: Res<TransportRes>, mut graph: ResMut<TuttiGraphRes>) {
+//! fn control_audio(transport: Res<TransportRes>, mut graph: ResMut<AudioGraphRes>) {
 //!     transport.tempo(128.0).play();
 //!     let id = graph.0.add(tutti_core::dsp::sine_hz(440.0));
 //!     graph.0.pipe_output(id);
@@ -53,7 +53,7 @@
 mod device_state;
 mod plugin;
 
-// The graph reconcile hub + `TuttiGraphPlugin` live in `tutti_core::ecs`; the
+// The graph reconcile hub + `GraphReconcilePlugin` live in `tutti_core::graph`; the
 // leaf reconcilers in their subsystem crates (`tutti_units::ecs`,
 // `tutti_sampler::ecs`, `tutti_plugin_host`, `tutti_midi_io::ecs`). `plugin.rs`
 // (the composition root) adds them directly — bevy-tutti no longer wraps any of it.
@@ -71,7 +71,7 @@ pub mod engine;
 pub use plugin::TuttiPlugin;
 
 // Engine types.
-pub use engine::{DefaultProcessor, DeviceInfo, Error, Result, TuttiDriver, TuttiGraph};
+pub use engine::{DefaultProcessor, DeviceInfo, Error, Result, TuttiDriver, AudioGraph};
 
 // bevy-tutti's own UI-mirror resource (audio device state). Its CPAL driver
 // is bevy-tutti's, so the mirror lives here. Transport state + master metering

@@ -7,6 +7,7 @@
 use bevy_app::{App, Plugin, Startup, Update};
 use bevy_ecs::prelude::*;
 
+
 pub mod components;
 pub mod events;
 pub mod scheduled;
@@ -61,6 +62,15 @@ impl std::ops::Deref for MidiIoRes {
     }
 }
 
+/// Transient handoff: the built MIDI handles. `build_into` inserts this; the
+/// MIDI plugin's `build()` claims it (see [`TuttiMidiPlugin`]).
+#[derive(Resource)]
+pub struct PendingMidi {
+    pub bus: Option<tutti_midi_runtime::MidiBus>,
+    #[cfg(feature = "midi-hardware")]
+    pub io: Option<crate::MidiIo>,
+}
+
 /// Bevy plugin: MIDI input + sequence playback + hardware I/O + time-delayed
 /// dispatch.
 pub struct TuttiMidiPlugin;
@@ -79,6 +89,18 @@ impl Plugin for TuttiMidiPlugin {
 
         app.add_systems(Startup, systems::midi_observer_setup_system);
 
+        // Claim our handles out of the transient `build_into` inserted
+        // (synchronous, during plugin build — present before frame 1).
+        if let Some(mut pending) = app.world_mut().remove_resource::<PendingMidi>() {
+            if let Some(bus) = pending.bus.take() {
+                app.insert_resource(MidiBusRes(bus));
+            }
+            #[cfg(feature = "midi-hardware")]
+            if let Some(io) = pending.io.take() {
+                app.insert_resource(MidiIoRes(io));
+            }
+        }
+
         // `midi_routing_sync_system` stages route-table edits + sets
         // GraphDirty (instead of committing inline), so anchor the chain
         // before the Commit phase where `commit_graph` flushes it.
@@ -91,15 +113,15 @@ impl Plugin for TuttiMidiPlugin {
                 systems::midi_sequence_tick_system,
             )
                 .chain()
-                .run_if(tutti_core::ecs::engine_ready)
-                .before(tutti_core::ecs::GraphReconcileSystems::Commit),
+                .run_if(tutti_core::graph::engine_ready)
+                .before(tutti_core::graph::GraphReconcileSystems::Commit),
         );
 
         // Time-delayed MIDI dispatch (relocated from bevy-tutti's
-        // `TuttiGraphPlugin`, which used to schedule it inline).
+        // `GraphReconcilePlugin`, which used to schedule it inline).
         app.add_systems(
             Update,
-            scheduled::tick_scheduled_midi.run_if(tutti_core::ecs::engine_ready),
+            scheduled::tick_scheduled_midi.run_if(tutti_core::graph::engine_ready),
         );
 
         #[cfg(feature = "mpe")]
@@ -121,3 +143,4 @@ impl Plugin for TuttiMidiPlugin {
         }
     }
 }
+

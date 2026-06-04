@@ -18,6 +18,9 @@ pub use offline::{OfflineTransport, OfflineTransportConfig};
 pub use sync::{SmpteFrameRate, SyncSnapshot, SyncSource, SyncState, SyncStatus};
 pub use tempo_map::{TempoMap, TimeSignature, BBT};
 
+pub mod plugin;
+pub use plugin::{PendingTransport, TransportRes, TuttiTransportPlugin};
+
 /// Trait for reading transport state.
 ///
 /// This abstraction allows both live transport (`TransportHandle`) and

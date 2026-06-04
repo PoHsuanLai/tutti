@@ -34,7 +34,7 @@ use bevy_log::LogPlugin;
 
 use bevy_tutti::TuttiPlugin;
 use tutti_core::dsp::sine_hz;
-use tutti_core::ecs::{MeteringRes, SpawnAudioNode, TuttiGraphRes};
+use tutti_core::graph::{MeteringRes, SpawnAudioNode, AudioGraphRes};
 use tutti_core::{AudioNode, NodeKind, Volume};
 
 fn main() {
@@ -50,7 +50,7 @@ fn main() {
         .run();
 }
 
-fn start_transport(transport: Res<tutti_core::ecs::TransportRes>) {
+fn start_transport(transport: Res<tutti_core::graph::TransportRes>) {
     transport.play();
 }
 
@@ -67,7 +67,7 @@ fn spawn_sine(mut commands: Commands) {
         let Some(node) = world.get::<AudioNode>(entity).copied() else {
             return;
         };
-        let mut graph = world.resource_mut::<TuttiGraphRes>();
+        let mut graph = world.resource_mut::<AudioGraphRes>();
         graph.0.pipe_output(node.0);
         graph.0.commit();
     });

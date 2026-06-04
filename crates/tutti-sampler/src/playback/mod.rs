@@ -14,7 +14,7 @@ use bevy_app::{App, Plugin, Update};
 use bevy_asset::AssetApp;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 
-use tutti_core::ecs::{engine_ready, GraphReconcileSystems};
+use tutti_core::graph::{engine_ready, GraphReconcileSystems};
 use tutti_core::WaveAsset;
 
 mod loop_crossfade;
@@ -50,7 +50,7 @@ pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 /// deferred wave-load promotion, `SamplerUnit` param reconcilers, the sampler
 /// param-epoch bump, and time-stretch control sync.
 ///
-/// Requires the core graph plugin ([`tutti_core::ecs::TuttiGraphPlugin`]) to
+/// Requires the core graph plugin ([`tutti_core::graph::GraphReconcilePlugin`]) to
 /// have configured `GraphReconcileSystems` first.
 pub struct TuttiPlaybackPlugin;
 

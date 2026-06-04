@@ -6,7 +6,7 @@ use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use tutti_core::ecs::{AudioConfig, GraphDirty, TuttiGraphRes};
+use tutti_core::graph::{AudioConfig, GraphDirty, AudioGraphRes};
 use tutti_core::WaveAsset;
 
 use super::time_stretch::{TimeStretch, TimeStretchControl};
@@ -14,7 +14,7 @@ use crate::SamplerUnit;
 
 // `AudioEmitter` + `AudioPlaybackState` are leaf-agnostic value types; they
 // live in tutti-core's ECS hub. Re-export so consumers keep one import site.
-pub use tutti_core::ecs::{AudioEmitter, AudioPlaybackState};
+pub use tutti_core::graph::{AudioEmitter, AudioPlaybackState};
 
 /// Trigger component: spawn an entity with this to start audio playback.
 ///
@@ -83,7 +83,7 @@ impl Default for PlayAudio {
 pub fn audio_playback_system(
     mut commands: Commands,
     audio_assets: Res<Assets<WaveAsset>>,
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     config: Res<AudioConfig>,
     mut dirty: ResMut<GraphDirty>,
     // Steady-state, not `Added`: an entity stays in this set until it gains an
@@ -159,7 +159,7 @@ impl Default for AudioVolume {
 
 /// Syncs `AudioVolume` component changes to the tutti graph node's gain.
 pub fn audio_parameter_sync_system(
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     query: Query<(&AudioEmitter, &AudioVolume), Changed<AudioVolume>>,
 ) {
@@ -187,7 +187,7 @@ pub struct DespawnOnFinish;
 /// `AudioPlaybackState`. Removes graph nodes and optionally despawns entities.
 pub fn audio_cleanup_system(
     mut commands: Commands,
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     mut query: Query<(
         Entity,
@@ -236,14 +236,14 @@ mod tests {
     use bevy_app::{App, Update};
     use bevy_asset::{AssetApp, AssetPlugin, Assets};
     use std::sync::Arc;
-    use tutti_core::ecs::{AudioConfig, GraphDirty, TuttiGraphRes};
-    use tutti_core::TuttiGraph;
+    use tutti_core::graph::{AudioConfig, GraphDirty, AudioGraphRes};
+    use tutti_core::AudioGraph;
 
-    /// Build a bare `TuttiGraph` directly (no `TuttiEngine`, which lives in
-    /// bevy-tutti). Feature-agnostic via `TuttiGraph::empty` — tutti-core owns
+    /// Build a bare `AudioGraph` directly (no `TuttiEngine`, which lives in
+    /// bevy-tutti). Feature-agnostic via `AudioGraph::empty` — tutti-core owns
     /// the `midi` cfg, so this is correct under workspace feature unification.
-    fn bare_graph(channels: usize) -> TuttiGraph {
-        TuttiGraph::empty(channels)
+    fn bare_graph(channels: usize) -> AudioGraph {
+        AudioGraph::empty(channels)
     }
 
     /// Builds an `App` with the playback system, a real graph, an
@@ -252,7 +252,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(AssetPlugin::default());
         app.init_asset::<WaveAsset>();
-        app.insert_resource(TuttiGraphRes(bare_graph(2)));
+        app.insert_resource(AudioGraphRes(bare_graph(2)));
         app.insert_resource(AudioConfig {
             sample_rate: 48_000.0,
             channels: 2,

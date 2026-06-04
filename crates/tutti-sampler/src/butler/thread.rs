@@ -61,7 +61,7 @@ impl ButlerThread {
     /// Subscribe to PDC snapshots for automatic delay compensation.
     ///
     /// The `Arc<ArcSwap<PdcState>>` is published by whoever owns the graph
-    /// (typically `TuttiGraph`). Readers call `.load()` to obtain a current
+    /// (typically `AudioGraph`). Readers call `.load()` to obtain a current
     /// snapshot; writers clone + mutate + store to publish.
     pub fn with_pdc(mut self, snapshot: Arc<ArcSwap<PdcState>>) -> Self {
         self.shared.pdc = Some(snapshot);

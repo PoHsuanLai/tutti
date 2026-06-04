@@ -22,10 +22,10 @@
 
 use bevy_ecs::prelude::*;
 
-use crate::ecs::AudioNode;
+use crate::graph::AudioNode;
 
 use super::reconcile::GraphDirty;
-use crate::ecs::TuttiGraphRes;
+use crate::graph::AudioGraphRes;
 
 /// "This entity's audio drives `target`'s sidechain input bus."
 ///
@@ -107,7 +107,7 @@ impl SidechainSources {
 /// endpoints' `AudioNode` to exist this frame. The *removal* half lives in
 /// [`reconcile_sidechain_remove`], an `On<Remove, SidechainOf>` observer.
 pub fn reconcile_sidechain_links(
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     mut dirty: ResMut<GraphDirty>,
     added: Query<(Entity, &SidechainOf), Added<SidechainOf>>,
     nodes: Query<&AudioNode>,
@@ -162,7 +162,7 @@ pub fn reconcile_sidechain_remove(
     remove: On<Remove, SidechainOf>,
     links: Query<&SidechainOf>,
     nodes: Query<&AudioNode>,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    graph: Option<ResMut<AudioGraphRes>>,
     mut dirty: ResMut<GraphDirty>,
 ) {
     let src_entity = remove.event_target();
@@ -184,18 +184,18 @@ pub fn reconcile_sidechain_remove(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ecs::reconcile::GraphReconcileSystems;
-    use crate::tutti_graph::TuttiGraph;
-    use crate::{PdcManager, TuttiNet};
+    use crate::graph::reconcile::GraphReconcileSystems;
+    use crate::audio_graph::AudioGraph;
+    use crate::{PdcManager, GraphNet};
     use bevy_app::App;
 
-    fn bare_graph(channels: usize) -> TuttiGraph {
-        let mut net = TuttiNet::new(0, channels);
+    fn bare_graph(channels: usize) -> AudioGraph {
+        let mut net = GraphNet::new(0, channels);
         let _backend = net.backend();
         let pdc = PdcManager::new(channels, 0);
         #[cfg(feature = "midi")]
         let midi_route = tutti_midi_types::MidiRoutingTable::new();
-        TuttiGraph::from_parts(
+        AudioGraph::from_parts(
             net,
             pdc,
             #[cfg(feature = "midi")]
@@ -207,7 +207,7 @@ mod tests {
 
     fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(crate::ecs::TuttiGraphRes(bare_graph(2)));
+        app.insert_resource(crate::graph::AudioGraphRes(bare_graph(2)));
         app.init_resource::<GraphDirty>();
         app.configure_sets(
             bevy_app::Update,
@@ -224,7 +224,7 @@ mod tests {
             bevy_app::Update,
             (
                 reconcile_sidechain_links.in_set(GraphReconcileSystems::Spawn),
-                crate::ecs::reconcile::commit_graph.in_set(GraphReconcileSystems::Commit),
+                crate::graph::reconcile::commit_graph.in_set(GraphReconcileSystems::Commit),
             ),
         );
         app
@@ -254,8 +254,8 @@ mod tests {
         // Build a 3-input target (three stacked passes = 3 in / 3 out) and
         // sidechain into port 2; the reconcile must connect there without
         // panicking and clear the dirty flag via commit.
-        use crate::ecs::reconcile::SpawnAudioNode;
-        use crate::ecs::NodeKind;
+        use crate::graph::reconcile::SpawnAudioNode;
+        use crate::graph::NodeKind;
         use crate::dsp::sine_hz;
         let mut app = test_app();
 
@@ -294,8 +294,8 @@ mod tests {
         // Target has only 2 inputs (ports 0,1); declaring a sidechain at
         // port 2 must be skipped with a warning, never connected (would
         // panic in fundsp's Net), and must not raise the dirty flag.
-        use crate::ecs::reconcile::SpawnAudioNode;
-        use crate::ecs::NodeKind;
+        use crate::graph::reconcile::SpawnAudioNode;
+        use crate::graph::NodeKind;
         use crate::dsp::sine_hz;
         let mut app = test_app();
 

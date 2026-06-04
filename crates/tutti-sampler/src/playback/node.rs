@@ -9,7 +9,7 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use tutti_core::ecs::{NodeKind, Volume};
+use tutti_core::graph::{NodeKind, Volume};
 
 /// Sampler playback speed multiplier. `1.0` is normal speed, `2.0` is
 /// double-speed (one octave up for a wavetable, twice as fast for a

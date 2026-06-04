@@ -21,7 +21,7 @@ pub mod midi_export;
 pub use build::{build_into, DefaultProcessor};
 pub use driver::{DeviceInfo, TuttiDriver};
 pub use error::{Error, Result};
-// `TuttiGraph` (plus `isolate_output` / `GraphDot`) moved into tutti-core; the
-// engine surfaces them from there so existing `engine::TuttiGraph` paths hold.
-pub use tutti_core::tutti_graph::{isolate_output, GraphDot};
-pub use tutti_core::TuttiGraph;
+// `AudioGraph` (plus `isolate_output` / `GraphDot`) moved into tutti-core; the
+// engine surfaces them from there so existing `engine::AudioGraph` paths hold.
+pub use tutti_core::audio_graph::{isolate_output, GraphDot};
+pub use tutti_core::AudioGraph;

@@ -5,7 +5,7 @@
 //! a clip's raw source file. This module renders exactly that: spawn an entity
 //! with [`StartRegionRender`] naming a `NodeId` and a beat range; the start
 //! system clones the live net, repoints its output bus at that node (via
-//! [`TuttiGraph::clone_net_isolated`]), and renders it offline on a worker
+//! [`AudioGraph::clone_net_isolated`]), and renders it offline on a worker
 //! thread. When the render finishes, the result lands on the same entity as a
 //! [`RegionRenderComplete`] component carrying the PCM.
 //!
@@ -41,8 +41,8 @@ use tutti_core::task::poll_task;
 use tutti_core::NodeId;
 use crate::{Error as ExportError, Rendered};
 
-use tutti_core::ecs::engine_ready;
-use tutti_core::ecs::{AudioConfig, TuttiGraphRes};
+use tutti_core::graph::engine_ready;
+use tutti_core::graph::{AudioConfig, AudioGraphRes};
 use tutti_sampler::TrackClipReaderUnit;
 use tutti_sampler::SamplerUnit;
 
@@ -228,7 +228,7 @@ type RegionRenderSlotFilter = Or<(With<RegionRenderNet>, With<RegionRenderInProg
 
 pub fn prepare_region_render_system(
     mut commands: Commands,
-    graph: Res<TuttiGraphRes>,
+    graph: Res<AudioGraphRes>,
     config: Res<AudioConfig>,
     render_config: Res<RegionRenderConfig>,
     // Both a parked-for-Populate net and a running task occupy a slot — the
@@ -537,16 +537,16 @@ mod tests {
     }
 
     use tutti_core::dsp::dc;
-    use tutti_core::ecs::AudioConfig;
+    use tutti_core::graph::AudioConfig;
     use bevy_ecs::world::World;
 
     /// Build a real (tiny, CPAL-free) 2-output graph with one node piped to the
     /// output bus, so `clone_net_isolated(target)` succeeds in `prepare`.
-    /// `TuttiGraph::empty` is feature-agnostic (tutti-core owns the `midi` cfg).
-    fn graph_res_with_one_target() -> (TuttiGraphRes, NodeId) {
-        let mut graph = tutti_core::TuttiGraph::empty(2);
+    /// `AudioGraph::empty` is feature-agnostic (tutti-core owns the `midi` cfg).
+    fn graph_res_with_one_target() -> (AudioGraphRes, NodeId) {
+        let mut graph = tutti_core::AudioGraph::empty(2);
         let target = graph.master(dc(1.0)); // one node, wired to the output bus
-        (TuttiGraphRes(graph), target)
+        (AudioGraphRes(graph), target)
     }
 
     /// With `max_in_flight = 1`, two `StartRegionRender`s spawned in one frame

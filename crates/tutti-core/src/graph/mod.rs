@@ -33,7 +33,7 @@ use crate::dsp::NodeId;
 
 // The generic graph-reconcile hub. These submodules carry the leaf-agnostic
 // reconcile pipeline, the shared engine resources, the routing/sidechain
-// relationships, the emitter markers, and the `TuttiGraphPlugin`. Leaf-specific
+// relationships, the emitter markers, and the `GraphReconcilePlugin`. Leaf-specific
 // reconcilers (sampler/plugin/convolution/midi) stay in bevy-tutti.
 pub mod emitter;
 pub mod param_epoch;
@@ -45,12 +45,17 @@ pub mod sidechain;
 
 pub use emitter::{AudioEmitter, AudioPlaybackState};
 pub use param_epoch::{bump_param_epoch_core, NodeParamEpoch};
-pub use plugin::{register_core_node_types, TuttiGraphPlugin};
+pub use plugin::{register_core_node_types, GraphReconcilePlugin};
 pub use reconcile::{
     commit_graph, crossfade_audio_node, engine_ready, reconcile_node_despawn, reconcile_params,
     GraphDirty, GraphReconcileSystems, SpawnAudioNode,
 };
-pub use resources::{AudioConfig, MeteringRes, TransportRes, TuttiGraphRes};
+pub use resources::{AudioConfig, AudioGraphRes, PendingGraph};
+// `TransportRes`/`MeteringRes` and their plugins now live next to their own
+// subsystem (the `bevy_audio`-style per-subsystem co-location). Re-exported here
+// so existing `tutti_core::graph::{TransportRes, MeteringRes}` paths keep resolving.
+pub use crate::metering::{MeteringRes, PendingMetering, TuttiMeteringPlugin};
+pub use crate::transport::{PendingTransport, TransportRes, TuttiTransportPlugin};
 pub use routing::{reconcile_audio_routing, AudioFedBy, AudioFeedsTo};
 pub use sidechain::{
     reconcile_sidechain_links, reconcile_sidechain_remove, SidechainOf, SidechainSources,

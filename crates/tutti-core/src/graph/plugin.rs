@@ -1,6 +1,6 @@
 //! The generic graph-reconcile Bevy plugin and core type registration.
 //!
-//! [`TuttiGraphPlugin`] wires the four-phase reconcile cycle (`Spawn` →
+//! [`GraphReconcilePlugin`] wires the four-phase reconcile cycle (`Spawn` →
 //! `Params` → `Despawn` → `Commit`) plus the core param-epoch bump, the
 //! despawn observer, and the leaf-agnostic reconcile systems. Leaf crates layer
 //! their own feature-gated systems on top (sampler/plugin/convolution/midi).
@@ -8,13 +8,14 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use crate::ecs::param_epoch::{bump_param_epoch_core, NodeParamEpoch};
-use crate::ecs::reconcile::{
+use crate::graph::param_epoch::{bump_param_epoch_core, NodeParamEpoch};
+use crate::graph::reconcile::{
     commit_graph, engine_ready, reconcile_node_despawn, reconcile_params, GraphDirty,
     GraphReconcileSystems,
 };
-use crate::ecs::routing::reconcile_audio_routing;
-use crate::ecs::sidechain::{reconcile_sidechain_links, reconcile_sidechain_remove};
+use crate::graph::resources::{AudioGraphRes, PendingGraph};
+use crate::graph::routing::reconcile_audio_routing;
+use crate::graph::sidechain::{reconcile_sidechain_links, reconcile_sidechain_remove};
 
 /// Bevy plugin: the generic graph reconciliation pipeline.
 ///
@@ -22,9 +23,9 @@ use crate::ecs::sidechain::{reconcile_sidechain_links, reconcile_sidechain_remov
 /// → `Despawn` → `Commit`. Other plugins hook into these sets to interleave
 /// their work. This is the leaf-agnostic core; bevy-tutti adds the
 /// sampler/plugin/convolution/midi systems on top.
-pub struct TuttiGraphPlugin;
+pub struct GraphReconcilePlugin;
 
-impl Plugin for TuttiGraphPlugin {
+impl Plugin for GraphReconcilePlugin {
     fn build(&self, app: &mut App) {
         // Register the core entity-as-node reflectable types (NodeKind, scalar
         // params, construction data). Leaf authoring markers register themselves
@@ -43,6 +44,16 @@ impl Plugin for TuttiGraphPlugin {
                 )
                     .chain(),
             );
+
+        // Claim the graph + config out of the transient `build_into` inserted
+        // (synchronous, during plugin build — see `claim_pending`). The graph
+        // subsystem owns its own claim, like every other subsystem plugin.
+        if let Some(PendingGraph(Some((graph, config)))) =
+            app.world_mut().remove_resource::<PendingGraph>()
+        {
+            app.insert_resource(AudioGraphRes(graph));
+            app.insert_resource(config);
+        }
 
         // Per-node param-epoch bumps. Driven by `Changed<T>` on the param
         // components themselves (not the reconcilers), so they fire even when a
@@ -77,7 +88,7 @@ impl Plugin for TuttiGraphPlugin {
 /// `TuttiDspPlugin`); the sampler params/marker in tutti-sampler. Idempotent —
 /// Bevy's `register_type` ignores duplicates.
 pub fn register_core_node_types(app: &mut App) {
-    use crate::ecs::*;
+    use crate::graph::*;
 
     app.register_type::<NodeKind>()
         .register_type::<Volume>()

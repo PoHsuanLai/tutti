@@ -3,13 +3,13 @@
 //! The generic reconcile hub (`SpawnAudioNode`, `GraphReconcileSystems`,
 //! `engine_ready`, `GraphDirty`, `reconcile_params`, `commit_graph`, the
 //! `NodeParamEpoch` resource + `bump_param_epoch_core`) lives in
-//! [`tutti_core::ecs`]. This module keeps only the reconcilers that write
+//! [`tutti_core::graph`]. This module keeps only the reconcilers that write
 //! through `SamplerUnit`, plus the sampler param-epoch bump.
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::ecs::{
-    AudioNode, GraphDirty, Mute, NodeKind, NodeParamEpoch, TuttiGraphRes, Volume,
+use tutti_core::graph::{
+    AudioNode, GraphDirty, Mute, NodeKind, NodeParamEpoch, AudioGraphRes, Volume,
 };
 
 use super::node::{SamplerLooping, SamplerNode, SamplerSpeed};
@@ -26,7 +26,7 @@ type ChangedSamplerVolume<'w> = (&'w AudioNode, &'w NodeKind, &'w Volume, Option
 type ChangedSamplerVolumeFilter = Or<(Changed<Volume>, Changed<Mute>)>;
 
 pub fn reconcile_sampler_volume(
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     changed: Query<ChangedSamplerVolume, ChangedSamplerVolumeFilter>,
     mut dirty: ResMut<GraphDirty>,
 ) {
@@ -63,7 +63,7 @@ type ChangedSamplerFilter = (
 /// and lets the dirty flag coalesce a single commit per frame regardless
 /// of which sampler param changed.
 pub fn reconcile_sampler_params(
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     changed: Query<ChangedSamplerParams, ChangedSamplerFilter>,
     mut dirty: ResMut<GraphDirty>,
 ) {
@@ -96,20 +96,20 @@ pub fn bump_param_epoch_sampler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::ecs::{GraphReconcileSystems, TuttiGraphRes};
-    use tutti_core::TuttiGraph;
+    use tutti_core::graph::{GraphReconcileSystems, AudioGraphRes};
+    use tutti_core::AudioGraph;
     use bevy_app::App;
 
-    fn bare_graph(channels: usize) -> TuttiGraph {
+    fn bare_graph(channels: usize) -> AudioGraph {
         // Feature-agnostic: tutti-core owns the `midi` cfg, so this stays correct
         // under workspace feature unification (tutti-sampler has no `midi` feature
         // of its own, but tutti-core may have midi enabled transitively).
-        TuttiGraph::empty(channels)
+        AudioGraph::empty(channels)
     }
 
     fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(TuttiGraphRes(bare_graph(2)));
+        app.insert_resource(AudioGraphRes(bare_graph(2)));
         app.init_resource::<GraphDirty>();
         app.configure_sets(
             bevy_app::Update,
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn sampler_speed_and_looping_change_writes_through() {
         use std::sync::Arc;
-        use tutti_core::ecs::SpawnAudioNode;
+        use tutti_core::graph::SpawnAudioNode;
         use tutti_core::Wave;
 
         let mut app = test_app();
@@ -167,7 +167,7 @@ mod tests {
         app.update();
 
         let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
-        let mut graph = app.world_mut().resource_mut::<TuttiGraphRes>();
+        let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let unit = graph.0.node_mut::<SamplerUnit>(node_id).expect("SamplerUnit");
         assert_eq!(unit.speed(), 2.0);
         assert!(unit.is_looping());

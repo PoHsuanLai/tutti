@@ -11,12 +11,12 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::ecs::AudioNode;
+use tutti_core::graph::AudioNode;
 use crate::dsp_params::{BeatSynced, FilterMode, Frequency, LfoShapeKind, ModDepth};
 use crate::node_markers::LfoNodeMarker;
 
-use tutti_core::ecs::GraphDirty;
-use tutti_core::ecs::{TransportRes, TuttiGraphRes};
+use tutti_core::graph::GraphDirty;
+use tutti_core::graph::{TransportRes, AudioGraphRes};
 
 // ---------------------------------------------------------------------------
 // Mirror-enum mapping helpers (tutti-core mirror → real tutti-units enum)
@@ -65,7 +65,7 @@ fn lfo_shape_of(kind: LfoShapeKind) -> crate::LfoShape {
 #[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
 pub fn spawn_lfo_nodes(
     mut commands: Commands,
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     transport: Res<TransportRes>,
     mut dirty: ResMut<GraphDirty>,
     query: Query<
@@ -99,21 +99,21 @@ mod marker_spawn_tests {
     use super::*;
     use crate::dsp_params::{FilterQ, GainDb};
     use crate::node_markers::FilterNode;
-    use tutti_core::ecs::NodeKind;
-    use tutti_core::ecs::{commit_graph, reconcile_node_despawn, GraphReconcileSystems};
-    use tutti_core::ecs::TuttiGraphRes;
-    use tutti_core::TuttiGraph;
+    use tutti_core::graph::NodeKind;
+    use tutti_core::graph::{commit_graph, reconcile_node_despawn, GraphReconcileSystems};
+    use tutti_core::graph::AudioGraphRes;
+    use tutti_core::AudioGraph;
     use bevy_app::{App, Update};
 
-    fn bare_graph(channels: usize) -> TuttiGraph {
+    fn bare_graph(channels: usize) -> AudioGraph {
         // Feature-agnostic (tutti-core owns the `midi` cfg) — correct under
         // workspace feature unification even though tutti-units has no `midi` feature.
-        TuttiGraph::empty(channels)
+        AudioGraph::empty(channels)
     }
 
     fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(TuttiGraphRes(bare_graph(2)));
+        app.insert_resource(AudioGraphRes(bare_graph(2)));
         app.init_resource::<GraphDirty>();
         app.configure_sets(
             Update,
@@ -168,7 +168,7 @@ mod marker_spawn_tests {
         assert_eq!(*kind, NodeKind::Filter);
 
         // The overridden Q reached the actual built unit (no first-frame drift).
-        let graph = &world.resource::<tutti_core::ecs::TuttiGraphRes>().0;
+        let graph = &world.resource::<tutti_core::graph::AudioGraphRes>().0;
         assert!(graph.contains(node.0), "node is in the graph");
         let unit = graph
             .node::<crate::StereoSvfFilterNode<f64>>(node.0)

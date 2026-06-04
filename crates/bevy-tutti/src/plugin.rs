@@ -9,7 +9,9 @@ use bevy_app::{App, Plugin, Startup, Update};
 use bevy_log::{error, info};
 
 use crate::device_state;
-use tutti_core::ecs::{AudioConfig, TuttiGraphPlugin};
+use tutti_core::graph::{AudioConfig, GraphReconcilePlugin};
+use tutti_core::metering::TuttiMeteringPlugin;
+use tutti_core::transport::TuttiTransportPlugin;
 
 #[cfg(feature = "midi")]
 use tutti_midi_io::ecs::TuttiMidiPlugin;
@@ -96,11 +98,19 @@ impl Plugin for TuttiPlugin {
         app.add_systems(Startup, device_state::device_state_init_system);
         app.add_systems(Update, device_state::device_state_sync_system);
 
-        // Sub-plugins. Order matters: TuttiGraphPlugin first (configures
-        // GraphReconcileSystems that other plugins schedule against), then
-        // duty plugins.
-        app.add_plugins(TuttiGraphPlugin);
+        // Sub-plugins. `build_into` (above) already inserted each subsystem's
+        // `PendingX` transient, so every sub-plugin's `build()` claims its handle
+        // out of the world synchronously here — order among them doesn't matter
+        // (each owns an independent transient). GraphReconcilePlugin stays first
+        // only because it configures the `GraphReconcileSystems` sets the others
+        // schedule against.
+        app.add_plugins(GraphReconcilePlugin);
         app.add_plugins(TuttiDspPlugin);
+
+        // Transport + metering own their Bevy surface (resource + claim) next to
+        // their subsystem, like MIDI/sampler/analysis.
+        app.add_plugins(TuttiTransportPlugin);
+        app.add_plugins(TuttiMeteringPlugin);
 
         #[cfg(feature = "spatial")]
         app.add_plugins(TuttiSpatialPlugin);

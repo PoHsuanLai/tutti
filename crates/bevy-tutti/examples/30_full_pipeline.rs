@@ -34,7 +34,7 @@ use bevy_log::LogPlugin;
 
 use bevy_tutti::TuttiPlugin;
 use tutti_core::dsp::sine_hz;
-use tutti_core::ecs::{
+use tutti_core::graph::{
     crossfade_audio_node, MeteringRes, SidechainOf, SidechainSources, SpawnAudioNode, TransportRes,
 };
 use tutti_core::{AudioNode, NodeKind, Volume};

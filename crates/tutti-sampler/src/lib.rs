@@ -95,13 +95,21 @@ mod sampler;
 
 pub use sampler::{Sampler, SamplerConfig};
 
+use bevy_ecs::prelude::Resource;
+
+/// Transient handed off by `build_into`. The umbrella builder inserts the
+/// freshly-built [`Sampler`]; [`TuttiSamplerPlugin`]'s `build()` derives the
+/// [`Auditioner`] from it and installs both as their own resources.
+#[derive(Resource)]
+pub struct PendingSampler(pub Option<Sampler>);
+
 /// Bevy plugin: the whole sampler ECS surface.
 ///
 /// Composes the per-duty sub-plugins (playback, recording, audio-input,
 /// time-stretch, auditioner) and adds the sampler reconcilers + pending-load
 /// promotion + param-epoch bump into the shared `GraphReconcileSystems`
-/// schedule owned by [`tutti_core::ecs`]. Requires the core graph plugin
-/// ([`tutti_core::ecs::TuttiGraphPlugin`]) to have configured
+/// schedule owned by [`tutti_core::graph`]. Requires the core graph plugin
+/// ([`tutti_core::graph::GraphReconcilePlugin`]) to have configured
 /// `GraphReconcileSystems` first.
 pub struct TuttiSamplerPlugin;
 
@@ -118,6 +126,16 @@ impl bevy_app::Plugin for TuttiSamplerPlugin {
             input::TuttiAudioInputPlugin,
             preview::TuttiAuditionerPlugin,
         ));
+
+        // Claim the sampler out of the transient `build_into` inserted
+        // (synchronous, during plugin build). Derive the auditioner *before*
+        // moving the sampler out — `init_auditioner` borrows it.
+        if let Some(PendingSampler(Some(sampler))) =
+            app.world_mut().remove_resource::<PendingSampler>()
+        {
+            app.insert_resource(init_auditioner(&sampler));
+            app.insert_resource(sampler);
+        }
     }
 }
 

@@ -6,8 +6,8 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
-use tutti_core::ecs::engine_ready;
-use tutti_core::ecs::{AudioConfig, TuttiGraphRes};
+use tutti_core::graph::engine_ready;
+use tutti_core::graph::{AudioConfig, AudioGraphRes};
 use tutti_core::task::poll_task;
 
 /// Fire-and-forget request to start an offline export.
@@ -64,7 +64,7 @@ pub struct ExportFailed {
 
 pub fn export_start_system(
     mut commands: Commands,
-    graph: Res<TuttiGraphRes>,
+    graph: Res<AudioGraphRes>,
     config: Res<AudioConfig>,
     mut events: MessageReader<StartExport>,
 ) {

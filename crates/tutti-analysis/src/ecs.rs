@@ -10,13 +10,19 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
 
-use tutti_core::ecs::engine_ready;
+use tutti_core::graph::engine_ready;
 
 /// Bevy resource wrapping the analysis handle (transient / pitch / stereo).
 ///
-/// `AnalysisHandle` is not `Clone` upstream. Inserted by the engine bundle.
+/// `AnalysisHandle` is not `Clone` upstream. Claimed from [`PendingAnalysis`] in
+/// [`TuttiAnalysisPlugin`]'s `build()`.
 #[derive(Resource)]
 pub struct AnalysisRes(pub crate::AnalysisHandle);
+
+/// Transient handoff resource: holds the freshly-built analysis handle. Inserted
+/// by `build_into`; claimed into [`AnalysisRes`] by [`TuttiAnalysisPlugin`].
+#[derive(Resource)]
+pub struct PendingAnalysis(pub Option<crate::AnalysisHandle>);
 
 impl std::ops::Deref for AnalysisRes {
     type Target = crate::AnalysisHandle;
@@ -102,6 +108,13 @@ pub struct TuttiAnalysisPlugin;
 
 impl Plugin for TuttiAnalysisPlugin {
     fn build(&self, app: &mut App) {
+        // Claim the analysis handle out of the transient `build_into` inserted
+        // (synchronous, during plugin build — present before frame 1).
+        if let Some(PendingAnalysis(Some(handle))) =
+            app.world_mut().remove_resource::<PendingAnalysis>()
+        {
+            app.insert_resource(AnalysisRes(handle));
+        }
         app.add_message::<EnableLiveAnalysis>()
             .add_message::<DisableLiveAnalysis>();
         app.init_resource::<LiveAnalysisData>().add_systems(

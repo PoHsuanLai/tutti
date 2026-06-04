@@ -15,36 +15,38 @@
 use bevy_app::App;
 
 use crate::engine::audio_io::{AudioCallbackState, AudioEngine};
-use crate::engine::{Result, TuttiDriver, TuttiGraph};
+use crate::engine::{Result, TuttiDriver, AudioGraph};
 use tutti_core::dsp::An;
 use tutti_core::processor::GraphProcessor;
 use tutti_core::Arc;
 use tutti_core::{
     ClickNode, ClickSettings, MeteringHandle, MeteringManager, PdcManager, TransportClock,
-    TransportHandle, TransportManager, TuttiNet,
+    TransportHandle, TransportManager, GraphNet,
 };
 
-use tutti_core::ecs::{AudioConfig, MeteringRes, TransportRes, TuttiGraphRes};
+// Each subsystem owns its own transient `PendingX` (defined next to its plugin).
+// `build_into` fills them; the subsystem's plugin `build()` claims each into the
+// subsystem's `*Res` (synchronously, before frame 1).
+use tutti_core::graph::{AudioConfig, PendingGraph};
+use tutti_core::metering::PendingMetering;
+use tutti_core::transport::PendingTransport;
 
 #[cfg(feature = "midi")]
 use tutti_core::midi::MidiProcessor;
 #[cfg(feature = "midi")]
-use tutti_midi_io::ecs::MidiBusRes;
+use tutti_midi_io::ecs::PendingMidi;
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_io::MidiIo;
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::MidiBus;
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::MidiRoutingTable;
-#[cfg(feature = "midi-hardware")]
-use tutti_midi_io::ecs::MidiIoRes;
 
 #[cfg(feature = "sampler")]
-#[cfg(feature = "sampler")]
-use tutti_sampler::Sampler;
+use tutti_sampler::{PendingSampler, Sampler};
 
 #[cfg(feature = "analysis")]
-use tutti_analysis::ecs::AnalysisRes;
+use tutti_analysis::ecs::PendingAnalysis;
 
 /// The audio processor type that runs on the RT callback thread.
 ///
@@ -84,7 +86,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let pdc = PdcManager::new(outputs, 0);
     let pdc_snapshot = pdc.snapshot_arc();
 
-    let mut net = TuttiNet::new(inputs, outputs);
+    let mut net = GraphNet::new(inputs, outputs);
 
     // Transport clock — infrastructure node writing back beat position via atomics.
     let clock = TransportClock::new(
@@ -151,7 +153,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     #[cfg(not(feature = "sampler"))]
     let _ = &pdc_snapshot;
 
-    let graph = TuttiGraph::from_parts(
+    let graph = AudioGraph::from_parts(
         net,
         pdc,
         #[cfg(feature = "midi")]
@@ -168,36 +170,32 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let analysis = tutti_analysis::AnalysisHandle::with_metering(sample_rate, metering_mgr.clone());
 
     let metering = MeteringHandle::new(metering_mgr);
-    // Enable amplitude + CPU metering by default (consumers read
-    // `MeteringRes::amplitude()` / `cpu()` directly).
-    metering.inner().enable_amp();
-    metering.inner().cpu().enable();
 
-    // --- Publish every subsystem as a resource (no intermediate bundle) ---
-    app.insert_resource(AudioConfig {
+    // --- Hand each subsystem its transient `PendingX` (claimed in each
+    // subsystem plugin's `build()`). The non-send CPAL driver has no subsystem
+    // plugin, so it's inserted directly. On `Err` earlier, none of this runs —
+    // `engine_ready` stays an exact proxy. ---
+    let config = AudioConfig {
         sample_rate,
         channels,
-    });
-    app.insert_resource(TuttiGraphRes(graph));
+    };
+    app.insert_resource(PendingGraph(Some((graph, config))));
     app.insert_non_send_resource(driver);
-    app.insert_resource(TransportRes(transport));
-    app.insert_resource(MeteringRes(metering));
+    app.insert_resource(PendingTransport(Some(transport)));
+    app.insert_resource(PendingMetering(Some(metering)));
 
     #[cfg(feature = "midi")]
-    app.insert_resource(MidiBusRes(midi_bus));
-    #[cfg(feature = "midi-hardware")]
-    if let Some(io) = midi_io {
-        app.insert_resource(MidiIoRes(io));
-    }
+    app.insert_resource(PendingMidi {
+        bus: Some(midi_bus),
+        #[cfg(feature = "midi-hardware")]
+        io: midi_io,
+    });
 
     #[cfg(feature = "sampler")]
-    {
-        app.insert_resource(tutti_sampler::init_auditioner(&sampler));
-        app.insert_resource(sampler);
-    }
+    app.insert_resource(PendingSampler(Some(sampler)));
 
     #[cfg(feature = "analysis")]
-    app.insert_resource(AnalysisRes(analysis));
+    app.insert_resource(PendingAnalysis(Some(analysis)));
 
     Ok(())
 }

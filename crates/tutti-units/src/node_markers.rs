@@ -18,7 +18,7 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use tutti_core::ecs::NodeKind;
+use tutti_core::graph::NodeKind;
 
 use crate::dsp_params::{
     Attack, BeatSynced, CompressorRatio, DelayTime, Feedback, Frequency, FilterQ, GainDb, ModDepth,

@@ -88,8 +88,8 @@ impl MpeReceiverQueries<'_, '_> {
 }
 
 pub fn midi_routing_sync_system(
-    mut graph: ResMut<tutti_core::ecs::TuttiGraphRes>,
-    mut dirty: ResMut<tutti_core::ecs::GraphDirty>,
+    mut graph: ResMut<tutti_core::graph::AudioGraphRes>,
+    mut dirty: ResMut<tutti_core::graph::GraphDirty>,
     changed: Query<&MidiReceiver, Changed<MidiReceiver>>,
     all_receivers: Query<&MidiReceiver>,
     mut removed: RemovedComponents<MidiReceiver>,
@@ -125,7 +125,7 @@ pub fn midi_routing_sync_system(
     }
 
     // The staged route-table edits are published by the Commit-phase
-    // `commit_graph` — `TuttiGraph::commit()` flushes both the fundsp net
+    // `commit_graph` — `AudioGraph::commit()` flushes both the fundsp net
     // and the MIDI routing snapshot in one step, so coalescing here is
     // equivalent to committing inline. This system is anchored before the
     // Commit phase.
@@ -225,7 +225,7 @@ pub fn midi_sequence_setup_system(
 /// Ticks all [`MidiSequence`] entities, firing note_on/note_off based on
 /// the transport's current beat position.
 pub fn midi_sequence_tick_system(
-    transport: Res<tutti_core::ecs::TransportRes>,
+    transport: Res<tutti_core::graph::TransportRes>,
     midi: Res<crate::ecs::MidiBusRes>,
     mut query: Query<(&MidiSequence, &mut MidiSequenceState)>,
 ) {

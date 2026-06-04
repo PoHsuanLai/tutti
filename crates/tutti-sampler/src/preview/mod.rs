@@ -42,7 +42,7 @@ use bevy_tasks::{AsyncComputeTaskPool, Task};
 use dashmap::DashMap;
 use smol::channel::Sender;
 
-use tutti_core::ecs::{engine_ready, GraphDirty, TuttiGraphRes};
+use tutti_core::graph::{engine_ready, GraphDirty, AudioGraphRes};
 use tutti_core::task::poll_task;
 use tutti_core::{AtomicF32, Wave};
 
@@ -342,7 +342,7 @@ pub fn init_auditioner(sampler: &Sampler) -> Auditioner {
 fn handle_preview_requests(
     mut events: MessageReader<PreviewFile>,
     auditioner: Res<Auditioner>,
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     mut node: ResMut<AuditionerNode>,
     mut dirty: ResMut<GraphDirty>,
     in_flight: Option<Res<PreviewInFlight>>,
@@ -377,7 +377,7 @@ fn handle_preview_requests(
 fn poll_preview_task(
     auditioner: Res<Auditioner>,
     in_flight: Option<ResMut<PreviewInFlight>>,
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     mut node: ResMut<AuditionerNode>,
     mut dirty: ResMut<GraphDirty>,
     mut commands: Commands,
@@ -418,7 +418,7 @@ fn handle_stop_preview(
     mut events: MessageReader<StopPreview>,
     auditioner: Res<Auditioner>,
     in_flight: Option<Res<PreviewInFlight>>,
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     mut node: ResMut<AuditionerNode>,
     mut dirty: ResMut<GraphDirty>,
     mut commands: Commands,

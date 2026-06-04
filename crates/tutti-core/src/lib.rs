@@ -7,7 +7,7 @@
 //! vocabulary here (DSP graph, transport, metering, PDC, MIDI registry) is
 //! re-exported and used by sibling crates (tutti-plugin, tutti-sampler, …).
 //!
-//! - [`TuttiNet`]: DSP graph manipulation
+//! - [`GraphNet`]: DSP graph manipulation
 //! - [`TransportHandle`]: Playback control (play/stop/seek/loop)
 //! - [`MeteringManager`]: Audio level monitoring
 //! - [`PdcManager`]: Plugin delay compensation
@@ -22,8 +22,8 @@
 //! # std + Bevy
 //!
 //! tutti-core is a std crate that depends on `bevy_ecs`/`bevy_app`: it hosts the
-//! shared ECS graph-reconcile hub (`GraphReconcileSystems`, `TuttiGraphRes`, the
-//! param components, `TuttiGraphPlugin`) that every leaf audio crate schedules
+//! shared ECS graph-reconcile hub (`GraphReconcileSystems`, `AudioGraphRes`, the
+//! param components, `GraphReconcilePlugin`) that every leaf audio crate schedules
 //! against. The DSP/RT vocabulary itself is Bevy-agnostic; the `ecs` module is
 //! where the Bevy integration lives.
 
@@ -41,11 +41,11 @@ pub use param::Param;
 pub mod processor;
 pub use processor::{AudioProcessor, GraphProcessor};
 
-mod graph;
-pub use graph::{CommitOutcome, TuttiNet};
+mod graph_net;
+pub use graph_net::{CommitOutcome, GraphNet};
 
-pub mod tutti_graph;
-pub use tutti_graph::{isolate_output, GraphDot, TuttiGraph};
+pub mod audio_graph;
+pub use audio_graph::{isolate_output, GraphDot, AudioGraph};
 
 pub mod transport;
 pub use transport::{
@@ -94,7 +94,7 @@ pub use fundsp::read::WaveError;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 pub use fundsp::read::WaveMetadata;
 pub use fundsp::realnet::NetBackend;
-// `Fade` is used by the graph crossfade path (`TuttiGraph::crossfade_boxed`,
+// `Fade` is used by the graph crossfade path (`AudioGraph::crossfade_boxed`,
 // reverb/distortion node-rebuild). The rest of `sequencer` (Sequencer/EventId/
 // ReplayMode) had no consumers and was dropped — see docs/fundsp-fork-audit.md.
 pub use fundsp::sequencer::Fade;
@@ -127,8 +127,8 @@ pub use midi::{
 mod denormals;
 pub use denormals::ScopedNoDenormals;
 
-pub mod ecs;
-pub use ecs::{AudioNode, LayerKey, ModParam, Mute, NodeKind, Pan, PluginParam, Volume};
+pub mod graph;
+pub use graph::{AudioNode, LayerKey, ModParam, Mute, NodeKind, Pan, PluginParam, Volume};
 
 /// Bevy `AsyncComputeTaskPool` + `Task<T>` helper for non-RT subsystem work.
 pub mod task;

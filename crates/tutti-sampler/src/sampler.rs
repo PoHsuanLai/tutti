@@ -128,7 +128,7 @@ pub struct SamplerConfig {
     ///
     /// While set, butler pre-rolls each stream by the channel's latency so
     /// downstream effects stay sample-aligned. Typically obtained from
-    /// `TuttiGraph::pdc_snapshot()`.
+    /// `AudioGraph::pdc_snapshot()`.
     pub pdc: Option<Arc<ArcSwap<PdcState>>>,
 }
 

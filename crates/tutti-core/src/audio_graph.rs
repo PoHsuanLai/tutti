@@ -1,13 +1,13 @@
-//! `TuttiGraph` — the editable DSP graph.
+//! `AudioGraph` — the editable DSP graph.
 //!
-//! Owns the fundsp-backed [`TuttiNet`], the [`PdcManager`] that tracks plugin
+//! Owns the fundsp-backed [`GraphNet`], the [`PdcManager`] that tracks plugin
 //! delay compensation, and (with feature `midi`) the [`MidiRoutingTable`] that
 //! publishes hardware-MIDI → node routing snapshots. Edits take `&mut self`
 //! directly. No `Mutex`, no closure, no `Arc<TuttiEngine>`.
 //!
 //! # Edit and commit
 //!
-//! Graph edits stage changes on the frontend `TuttiNet`. Call [`commit`] once
+//! Graph edits stage changes on the frontend `GraphNet`. Call [`commit`] once
 //! after a batch of edits to publish them to the audio thread:
 //!
 //! ```ignore
@@ -23,7 +23,7 @@
 //! # PDC
 //!
 //! [`PdcManager`] is fully private to the graph. Readers subscribe via
-//! [`pdc_snapshot`](TuttiGraph::pdc_snapshot), which hands back an
+//! [`pdc_snapshot`](AudioGraph::pdc_snapshot), which hands back an
 //! [`Arc`]`<`[`ArcSwap`]`<`[`PdcState`](crate::PdcState)`>>` — the only
 //! channel through which PDC state escapes. Typical consumer is the sampler's
 //! butler thread.
@@ -34,7 +34,7 @@ use std::sync::Arc;
 use crate::dsp::AudioUnit;
 use crate::{
     dsp::{Fade, Net, NodeId, Source},
-    PdcManager, PdcState, TuttiNet,
+    PdcManager, PdcState, GraphNet,
 };
 
 #[cfg(feature = "midi")]
@@ -42,12 +42,12 @@ use tutti_midi_types::MidiRoutingTable;
 
 /// The editable DSP graph.
 ///
-/// Owned by a single `&mut` thread; no locks. Wraps a [`TuttiNet`](crate::TuttiNet)
+/// Owned by a single `&mut` thread; no locks. Wraps a [`GraphNet`](crate::GraphNet)
 /// and its associated [`PdcManager`](crate::PdcManager) (plus, under the
 /// `midi` feature, a [`MidiRoutingTable`]). Edits are staged until
 /// [`commit`](Self::commit) publishes them to the audio thread.
-pub struct TuttiGraph {
-    net: TuttiNet,
+pub struct AudioGraph {
+    net: GraphNet,
     pdc: PdcManager,
     #[cfg(feature = "midi")]
     midi_route: MidiRoutingTable,
@@ -55,11 +55,11 @@ pub struct TuttiGraph {
     channels: usize,
 }
 
-impl TuttiGraph {
+impl AudioGraph {
     /// Construct from pre-built parts. Called by `TuttiEngineBuilder`.
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
-        net: TuttiNet,
+        net: GraphNet,
         pdc: PdcManager,
         #[cfg(feature = "midi")] midi_route: MidiRoutingTable,
         sample_rate: f64,
@@ -83,7 +83,7 @@ impl TuttiGraph {
     /// The `midi` feature is owned here, so this stays correct under any
     /// workspace feature unification.
     pub fn empty(channels: usize) -> Self {
-        let mut net = TuttiNet::new(0, channels);
+        let mut net = GraphNet::new(0, channels);
         // Allocate the fundsp realtime backend (as the real builder does) so
         // `commit()` has a backend to publish into. Discarded here — nothing
         // drives audio through a test/bootstrap graph.
@@ -348,7 +348,7 @@ impl TuttiGraph {
             self.pdc.set_channel_latency(ch, lat);
         }
         // Return-bus PDC: `PdcManager::set_return_latency` exists but is
-        // unused here — `TuttiGraph` has no bus topology yet, so we can't
+        // unused here — `AudioGraph` has no bus topology yet, so we can't
         // split "track" latency from "return" latency. Returns continue
         // to get zero compensation (same as prior behaviour). When bus
         // identity lands on the graph, add a parallel `set_return_latency`
@@ -400,7 +400,7 @@ impl TuttiGraph {
 /// branches that no longer feed an output are simply never read.
 ///
 /// Returns `false` (leaving `net` untouched) if `target` has no outputs.
-/// Operate on a [`clone_net`](TuttiGraph::clone_net) snapshot, never the live
+/// Operate on a [`clone_net`](AudioGraph::clone_net) snapshot, never the live
 /// net — this rewrites the output edges.
 pub fn isolate_output(net: &mut Net, target: NodeId) -> bool {
     let outs = net.outputs_in(target);
@@ -417,12 +417,12 @@ pub fn isolate_output(net: &mut Net, target: NodeId) -> bool {
     true
 }
 
-/// Graphviz `digraph` printer for a [`TuttiGraph`].
+/// Graphviz `digraph` printer for a [`AudioGraph`].
 ///
-/// Returned by [`TuttiGraph::dot`]. Implements [`Display`](core::fmt::Display);
+/// Returned by [`AudioGraph::dot`]. Implements [`Display`](core::fmt::Display);
 /// call `.to_string()` or format directly with `println!("{}", graph.dot())`.
 pub struct GraphDot<'a> {
-    graph: &'a TuttiGraph,
+    graph: &'a AudioGraph,
 }
 
 impl<'a> core::fmt::Display for GraphDot<'a> {
@@ -488,8 +488,8 @@ mod tests {
     use crate::dsp::{dc, limiter};
     use crate::PdcManager;
 
-    fn graph_with(channels: usize) -> TuttiGraph {
-        let mut net = TuttiNet::new(0, channels);
+    fn graph_with(channels: usize) -> AudioGraph {
+        let mut net = GraphNet::new(0, channels);
         // Allocate the fundsp backend so `commit()` has something to
         // publish into. We never drive audio through it in this test —
         // we only care that the commit path runs and updates PDC state.
@@ -497,7 +497,7 @@ mod tests {
         let pdc = PdcManager::new(channels, 0);
         #[cfg(feature = "midi")]
         let midi_route = MidiRoutingTable::new();
-        TuttiGraph::from_parts(
+        AudioGraph::from_parts(
             net,
             pdc,
             #[cfg(feature = "midi")]

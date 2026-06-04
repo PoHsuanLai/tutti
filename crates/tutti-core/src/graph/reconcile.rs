@@ -1,6 +1,6 @@
-//! Reconcile entity-as-node component changes into [`TuttiGraph`] operations.
+//! Reconcile entity-as-node component changes into [`AudioGraph`] operations.
 //!
-//! See [`crate::ecs`] for the component types. This module provides:
+//! See [`crate::graph`] for the component types. This module provides:
 //!
 //! - [`SpawnAudioNode`] — `Commands` extension to atomically `graph.add(unit)`
 //!   and attach `AudioNode` + `NodeKind` to a fresh entity.
@@ -18,7 +18,7 @@ use bevy_ecs::schedule::SystemSet;
 use bevy_ecs::system::EntityCommands;
 
 use crate::dsp::AudioUnit;
-use crate::ecs::{AudioNode, Mute, NodeKind, TuttiGraphRes, Volume};
+use crate::graph::{AudioNode, Mute, NodeKind, AudioGraphRes, Volume};
 
 /// System-set ordering anchor for the reconcile pipeline.
 ///
@@ -45,20 +45,23 @@ pub enum GraphReconcileSystems {
 /// Run-condition: the audio engine built successfully and its resources are
 /// present.
 ///
-/// `TuttiPlugin` inserts every engine resource (`TuttiGraphRes`, `TransportRes`,
-/// `MeteringRes`, `AudioConfig`, and the feature subsystem resources) together
-/// in one block iff `TuttiEngine::build()` succeeded; on failure it inserts
-/// none. So `resource_exists::<TuttiGraphRes>` is an exact proxy for "engine
-/// ready", and every system gated on this can take its engine resources as
-/// plain `Res`/`ResMut` instead of `Option<Res<_>>` + a `let Some(..) else`
-/// guard — the system simply does not run when the engine is absent (the
-/// idiomatic Bevy shape, mirroring `bevy_audio`'s `audio_output_available`).
+/// Every engine resource (`AudioGraphRes`, `TransportRes`, `MeteringRes`,
+/// `AudioConfig`, and the feature subsystem resources) is inserted during the
+/// synchronous plugin-build pass: `build_into` inserts a transient `PendingX`
+/// per subsystem iff the RT build succeeded (none on failure), then each
+/// subsystem plugin's `build()` promotes its `PendingX` into its `*Res`. All of
+/// this runs before frame 1, so `resource_exists::<AudioGraphRes>` is an exact
+/// proxy for "engine ready", and every system gated on this can take its engine
+/// resources as plain `Res`/`ResMut` instead of `Option<Res<_>>` + a
+/// `let Some(..) else` guard — the system simply does not run when the engine is
+/// absent (the idiomatic Bevy shape, mirroring `bevy_audio`'s
+/// `audio_output_available`).
 ///
 /// Two resources are *not* covered (they may be absent even when the engine
 /// built) and must keep `Option<Res<_>>`: `MidiIoRes` (only when a hardware
 /// MIDI port opened) and `PluginsRes` (inserted lazily, not in the engine
 /// block).
-pub fn engine_ready(graph: Option<Res<TuttiGraphRes>>) -> bool {
+pub fn engine_ready(graph: Option<Res<AudioGraphRes>>) -> bool {
     graph.is_some()
 }
 
@@ -101,11 +104,11 @@ impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
     {
         let entity = self.spawn_empty().id();
         self.queue(move |world: &mut World| {
-            let id = match world.get_resource_mut::<TuttiGraphRes>() {
+            let id = match world.get_resource_mut::<AudioGraphRes>() {
                 Some(mut graph) => graph.0.add(unit),
                 None => {
                     bevy_log::warn!(
-                        "spawn_audio_node: TuttiGraphRes missing; entity {:?} left without AudioNode",
+                        "spawn_audio_node: AudioGraphRes missing; entity {:?} left without AudioNode",
                         entity
                     );
                     return;
@@ -129,7 +132,7 @@ impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
 /// Queues a deferred world command that:
 ///
 /// 1. Looks up the entity's [`AudioNode(NodeId)`](AudioNode).
-/// 2. Calls [`TuttiGraph::crossfade_boxed`] with a 5 ms `Smooth` fade.
+/// 2. Calls [`AudioGraph::crossfade_boxed`] with a 5 ms `Smooth` fade.
 /// 3. Marks [`GraphDirty`] so the per-frame [`commit_graph`] flushes.
 ///
 /// The same `NodeId` survives the crossfade — connections to/from this node
@@ -156,9 +159,9 @@ pub fn crossfade_audio_node(
             );
             return;
         };
-        let Some(mut graph) = world.get_resource_mut::<TuttiGraphRes>() else {
+        let Some(mut graph) = world.get_resource_mut::<AudioGraphRes>() else {
             bevy_log::warn!(
-                "crossfade_audio_node: TuttiGraphRes missing; entity {:?} not crossfaded",
+                "crossfade_audio_node: AudioGraphRes missing; entity {:?} not crossfaded",
                 entity
             );
             return;
@@ -180,7 +183,7 @@ pub fn crossfade_audio_node(
 pub fn reconcile_node_despawn(
     remove: On<Remove, AudioNode>,
     nodes: Query<&AudioNode>,
-    graph: Option<ResMut<TuttiGraphRes>>,
+    graph: Option<ResMut<AudioGraphRes>>,
     mut dirty: ResMut<GraphDirty>,
 ) {
     let entity = remove.event_target();
@@ -205,7 +208,7 @@ type ChangedParamFilter = Or<(Changed<Volume>, Changed<Mute>)>;
 /// their own systems against [`GraphReconcileSystems::Params`].
 #[allow(unused_mut, unused_variables)]
 pub fn reconcile_params(
-    mut graph: ResMut<TuttiGraphRes>,
+    mut graph: ResMut<AudioGraphRes>,
     changed_vol: Query<ChangedParams, ChangedParamFilter>,
     mut dirty: ResMut<GraphDirty>,
 ) {
@@ -225,7 +228,7 @@ pub fn reconcile_params(
 }
 
 /// Runs `graph.commit()` once iff any reconcile system mutated the graph.
-pub fn commit_graph(mut graph: ResMut<TuttiGraphRes>, mut dirty: ResMut<GraphDirty>) {
+pub fn commit_graph(mut graph: ResMut<AudioGraphRes>, mut dirty: ResMut<GraphDirty>) {
     if !dirty.0 {
         return;
     }
@@ -237,21 +240,21 @@ pub fn commit_graph(mut graph: ResMut<TuttiGraphRes>, mut dirty: ResMut<GraphDir
 mod tests {
     use super::*;
     use crate::dsp::sine_hz;
-    use crate::ecs::TuttiGraphRes;
-    use crate::tutti_graph::TuttiGraph;
-    use crate::{PdcManager, TuttiNet};
+    use crate::graph::AudioGraphRes;
+    use crate::audio_graph::AudioGraph;
+    use crate::{PdcManager, GraphNet};
     use bevy_app::App;
 
-    /// Build a bare `TuttiGraph` directly (no `TuttiEngine`, which lives in
+    /// Build a bare `AudioGraph` directly (no `TuttiEngine`, which lives in
     /// bevy-tutti). Allocates the fundsp backend so `commit()` has something
     /// to publish into; we never drive audio through it in these tests.
-    fn bare_graph(channels: usize) -> TuttiGraph {
-        let mut net = TuttiNet::new(0, channels);
+    fn bare_graph(channels: usize) -> AudioGraph {
+        let mut net = GraphNet::new(0, channels);
         let _backend = net.backend();
         let pdc = PdcManager::new(channels, 0);
         #[cfg(feature = "midi")]
         let midi_route = tutti_midi_types::MidiRoutingTable::new();
-        TuttiGraph::from_parts(
+        AudioGraph::from_parts(
             net,
             pdc,
             #[cfg(feature = "midi")]
@@ -263,7 +266,7 @@ mod tests {
 
     fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(TuttiGraphRes(bare_graph(2)));
+        app.insert_resource(AudioGraphRes(bare_graph(2)));
         app.init_resource::<GraphDirty>();
         app.add_observer(reconcile_node_despawn);
         app.add_systems(
@@ -286,7 +289,7 @@ mod tests {
         app
     }
 
-    /// The `engine_ready` gate must keep a plain-`ResMut<TuttiGraphRes>` system
+    /// The `engine_ready` gate must keep a plain-`ResMut<AudioGraphRes>` system
     /// from running (and panicking on the missing resource) when the engine
     /// failed to build — and must let it run once the resource is present.
     #[test]
@@ -297,12 +300,12 @@ mod tests {
         let ran = Arc::new(AtomicUsize::new(0));
         let ran_c = ran.clone();
         // A system that takes the engine resource as a PLAIN ResMut — it would
-        // panic if scheduled without TuttiGraphRes present.
-        let sys = move |_graph: ResMut<TuttiGraphRes>| {
+        // panic if scheduled without AudioGraphRes present.
+        let sys = move |_graph: ResMut<AudioGraphRes>| {
             ran_c.fetch_add(1, Ordering::SeqCst);
         };
 
-        // No engine: TuttiGraphRes absent. The gate must skip the system, so
+        // No engine: AudioGraphRes absent. The gate must skip the system, so
         // `update()` does not panic and the system never runs.
         let mut app = App::new();
         app.add_systems(bevy_app::Update, sys.run_if(engine_ready));
@@ -310,7 +313,7 @@ mod tests {
         assert_eq!(ran.load(Ordering::SeqCst), 0, "gated system skipped with no engine");
 
         // Insert the resource (engine built): the gate now passes.
-        app.insert_resource(TuttiGraphRes(bare_graph(2)));
+        app.insert_resource(AudioGraphRes(bare_graph(2)));
         app.update();
         assert_eq!(ran.load(Ordering::SeqCst), 1, "gated system runs once engine present");
     }
@@ -330,7 +333,7 @@ mod tests {
             count += 1;
             assert_eq!(*kind, NodeKind::Generator);
             assert_eq!(vol.0, 0.5);
-            assert!(app.world().resource::<TuttiGraphRes>().0.contains(node.0));
+            assert!(app.world().resource::<AudioGraphRes>().0.contains(node.0));
         }
         assert_eq!(count, 1);
     }
@@ -345,12 +348,12 @@ mod tests {
         app.update();
 
         let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
-        assert!(app.world().resource::<TuttiGraphRes>().0.contains(node_id));
+        assert!(app.world().resource::<AudioGraphRes>().0.contains(node_id));
 
         app.world_mut().despawn(entity);
         app.update();
 
-        assert!(!app.world().resource::<TuttiGraphRes>().0.contains(node_id));
+        assert!(!app.world().resource::<AudioGraphRes>().0.contains(node_id));
     }
 
     #[test]
@@ -378,7 +381,7 @@ mod tests {
         let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
         assert!(app
             .world()
-            .resource::<TuttiGraphRes>()
+            .resource::<AudioGraphRes>()
             .0
             .contains(node_id));
 
@@ -407,7 +410,7 @@ mod tests {
         assert!(app.world().get::<AudioNode>(entity).is_none());
         assert!(
             !app.world()
-                .resource::<TuttiGraphRes>()
+                .resource::<AudioGraphRes>()
                 .0
                 .contains(node_id),
             "late-despawned node removed from graph"
@@ -436,7 +439,7 @@ mod tests {
         app.update();
 
         let node_id_before = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
-        assert!(app.world().resource::<TuttiGraphRes>().0.contains(node_id_before));
+        assert!(app.world().resource::<AudioGraphRes>().0.contains(node_id_before));
 
         // Replace with a different oscillator — same NodeId, new unit.
         {
@@ -448,6 +451,6 @@ mod tests {
         // Same NodeId stays — that's the contract of crossfade.
         let node_id_after = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
         assert_eq!(node_id_before, node_id_after);
-        assert!(app.world().resource::<TuttiGraphRes>().0.contains(node_id_after));
+        assert!(app.world().resource::<AudioGraphRes>().0.contains(node_id_after));
     }
 }

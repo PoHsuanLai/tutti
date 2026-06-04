@@ -231,7 +231,7 @@ mod tests {
     use super::*;
     use tutti_core::compat::Mutex;
     use tutti_core::processor::GraphProcessor;
-    use tutti_core::{MeteringManager, Ordering, TransportClock, TransportManager, TuttiNet};
+    use tutti_core::{MeteringManager, Ordering, TransportClock, TransportManager, GraphNet};
 
     /// Build a minimal processor + transport pair for callback-level tests.
     /// Bypasses the engine builder — these tests exercise the RT callback
@@ -242,7 +242,7 @@ mod tests {
         let transport = Arc::new(TransportManager::new(sample_rate));
         let metering = Arc::new(MeteringManager::new(sample_rate));
 
-        let mut net = TuttiNet::new(0, 2);
+        let mut net = GraphNet::new(0, 2);
         let clock = TransportClock::new(
             transport.tempo().clone(),
             transport.paused().clone(),
@@ -263,7 +263,7 @@ mod tests {
 
         // Hold the net alive for the duration of the test via a leaked arc —
         // the backend borrows the graph processor via its inner NetBackend.
-        let _keep_net_alive: &'static Mutex<TuttiNet> = Box::leak(Box::new(Mutex::new(net)));
+        let _keep_net_alive: &'static Mutex<GraphNet> = Box::leak(Box::new(Mutex::new(net)));
 
         let processor = GraphProcessor::new(transport.clone(), backend);
         let state = AudioCallbackState::new(processor, metering);

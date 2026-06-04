@@ -216,14 +216,10 @@ pub fn reconcile_params(
         let muted = mute.map(|m| m.0).unwrap_or(false);
         let target = if muted { 0.0 } else { volume.0 };
 
-        match *kind {
-            // No first-class typed setter at this layer; hosts (and the
-            // leaf crates) layer their own systems. See module docs for the
-            // extension pattern.
-            _ => {
-                let _ = (target, node);
-            }
-        }
+        // No first-class typed setter at this layer; hosts (and the leaf
+        // crates) layer their own systems matching on `kind`. See module docs
+        // for the extension pattern.
+        let _ = (target, node, kind);
     }
 }
 

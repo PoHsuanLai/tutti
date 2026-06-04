@@ -90,7 +90,7 @@ impl ComplexStftResult {
 /// `window_sum` normalization in [`istft_complex`](crate::istft::istft_complex)
 /// is exact, so untouched bins reconstruct to float precision.
 pub fn hann_cola_ok(window_size: usize, hop_size: usize) -> bool {
-    hop_size > 0 && window_size % hop_size == 0 && window_size / hop_size >= 4
+    hop_size > 0 && window_size.is_multiple_of(hop_size) && window_size / hop_size >= 4
 }
 
 /// Compute the full complex STFT of a mono buffer (DC … Nyquist inclusive).

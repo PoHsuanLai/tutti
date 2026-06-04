@@ -1,7 +1,8 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use crate::resources::{AudioConfig, TuttiDriverRes};
+use crate::TuttiDriver;
+use tutti_core::ecs::AudioConfig;
 
 /// Audio device state synced from Tutti every frame.
 #[derive(Resource, Debug, Clone, Reflect)]
@@ -25,12 +26,12 @@ impl Default for AudioDeviceState {
 }
 
 pub fn device_state_sync_system(
-    driver: Option<NonSend<TuttiDriverRes>>,
+    driver: Option<NonSend<TuttiDriver>>,
     config: Option<Res<AudioConfig>>,
     mut state: ResMut<AudioDeviceState>,
 ) {
     let Some(driver) = driver else { return };
-    state.is_running = driver.0.is_running();
+    state.is_running = driver.is_running();
     if let Some(cfg) = config {
         state.channels = cfg.channels;
     }
@@ -38,12 +39,12 @@ pub fn device_state_sync_system(
 
 /// One-shot startup system: enumerate devices once.
 pub fn device_state_init_system(
-    driver: Option<NonSend<TuttiDriverRes>>,
+    driver: Option<NonSend<TuttiDriver>>,
     mut state: ResMut<AudioDeviceState>,
 ) {
     let Some(driver) = driver else { return };
 
-    if let Ok(name) = driver.0.device_name() {
+    if let Ok(name) = driver.device_name() {
         state.current_device = name;
     }
     if let Ok(devices) = crate::TuttiDriver::devices() {

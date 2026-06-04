@@ -12,10 +12,12 @@ use bevy_log::{error, info};
 use crate::TuttiEngine;
 
 use crate::device_state;
+use crate::TuttiDriver;
 #[cfg(all(feature = "soundfont", feature = "midi"))]
 use tutti_core::ecs::engine_ready;
-use tutti_core::ecs::TuttiGraphPlugin;
-use crate::resources::*;
+use tutti_core::ecs::{AudioConfig, MeteringRes, TransportRes, TuttiGraphPlugin, TuttiGraphRes};
+#[cfg(feature = "soundfont")]
+use tutti_synth::SoundFontRes;
 
 #[cfg(feature = "midi")]
 use tutti_midi_io::ecs::{MidiBusRes, TuttiMidiPlugin};
@@ -147,7 +149,7 @@ impl Plugin for TuttiPlugin {
                 } = engine;
 
                 app.insert_resource(TuttiGraphRes(graph));
-                app.insert_non_send_resource(TuttiDriverRes::new(driver));
+                app.insert_non_send_resource(driver);
                 app.insert_resource(TransportRes(transport));
                 app.insert_resource(MeteringRes(metering));
 
@@ -185,7 +187,7 @@ impl Plugin for TuttiPlugin {
         // are owned by `dawai-model`'s transport plugins.)
         app.init_resource::<AudioDeviceState>();
         app.register_type::<AudioDeviceState>()
-            .register_type::<crate::resources::AudioConfig>();
+            .register_type::<AudioConfig>();
         app.add_systems(Startup, device_state::device_state_init_system);
         app.add_systems(Update, device_state::device_state_sync_system);
 

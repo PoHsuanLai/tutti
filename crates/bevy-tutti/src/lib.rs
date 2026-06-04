@@ -51,7 +51,6 @@
 
 mod device_state;
 mod plugin;
-mod resources;
 
 // The graph reconcile hub + `TuttiGraphPlugin` live in `tutti_core::ecs`; the
 // leaf reconcilers in their subsystem crates (`tutti_units::ecs`,
@@ -86,11 +85,12 @@ pub use engine::{DefaultProcessor, DeviceInfo, Error, Result, TuttiDriver, Tutti
 // are dawai projection targets and live in `dawai-model`.
 pub use device_state::AudioDeviceState;
 
-// bevy-tutti's own resource newtypes that wrap engine-leaf handles
-// (CPAL stream / SoundFont system). These live in `resources.rs`.
-pub use resources::TuttiDriverRes;
+// The CPAL driver is inserted directly as a non-send resource (`TuttiDriver`
+// itself — no newtype; it's a local type, so no orphan-rule wrapper needed).
+// `SoundFontRes` lives in `tutti_synth::ecs` next to the SoundFont system it
+// wraps (mirroring `tutti_sampler::SamplerRes`); re-exported for the prelude.
 #[cfg(feature = "soundfont")]
-pub use resources::SoundFontRes;
+pub use tutti_synth::SoundFontRes;
 
 // Test-only global allocator for RT-safety regression tests (relocated from
 // the umbrella). Panics on any heap allocation inside `assert_no_alloc(..)`

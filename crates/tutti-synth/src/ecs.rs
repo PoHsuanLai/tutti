@@ -15,6 +15,19 @@ use tutti_core::task::poll_task;
 
 use crate::SoundFontAsset;
 
+/// Bevy resource wrapping the SoundFont system (file cache + synth
+/// instantiation). Inserted by the umbrella crate from the engine bundle;
+/// systems reach the cache through `Deref`. Mirrors `tutti_sampler::SamplerRes`.
+#[derive(Resource, Clone)]
+pub struct SoundFontRes(pub std::sync::Arc<crate::SoundFontSystem>);
+
+impl std::ops::Deref for SoundFontRes {
+    type Target = crate::SoundFontSystem;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// In-memory Bevy loader for [`SoundFontAsset`]. Reads the whole `.sf2`
 /// payload, then delegates to [`SoundFontAsset::from_bytes`].
 #[derive(Default, TypePath)]

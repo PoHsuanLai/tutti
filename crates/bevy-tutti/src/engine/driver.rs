@@ -5,8 +5,11 @@
 //! call [`set_device`](TuttiDriver::set_device) / [`restart`](TuttiDriver::restart)
 //! to switch device without rebuilding the graph.
 //!
-//! `&mut self` lifecycle — no `Mutex`. Hold it in one place (e.g. Bevy
-//! `ResMut<TuttiDriverRes>`).
+//! `&mut self` lifecycle — no `Mutex`. Hold it in one place. bevy-tutti
+//! inserts it as a **non-send** resource (the `cpal::Stream` it owns is `Send`
+//! but not `Sync`), so systems take `NonSend<TuttiDriver>` / `NonSendMut<TuttiDriver>`
+//! and Bevy pins them to the main thread — the same pattern Bevy uses for
+//! `Window` / `AudioOutput`.
 
 use std::sync::Arc;
 

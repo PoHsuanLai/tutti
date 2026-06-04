@@ -135,15 +135,6 @@ pub struct PendingSoundFontUnit {
     channel: i32,
 }
 
-/// Carries the cloneable MIDI sender produced when a [`SoundFontUnit`] is
-/// promoted into the graph. The app side registers it on its MIDI bus so the
-/// routing table can dispatch events to the unit by `MidiUnitId`. tutti-synth
-/// produces the sender component; the app wires it to the bus — keeping the
-/// bus vocabulary out of this leaf crate.
-#[cfg(feature = "midi")]
-#[derive(Component)]
-pub struct SoundFontMidiSender(pub tutti_midi_runtime::MidiSender);
-
 /// Query filter for the steady-state SoundFont trigger: carries `PlaySoundFont`
 /// but is neither building (`PendingSoundFontUnit`) nor already playing
 /// (`AudioEmitter`).
@@ -193,18 +184,18 @@ pub fn soundfont_playback_system(
 }
 
 /// Drains [`PendingSoundFontUnit`] entities whose off-thread build has
-/// finished: applies the entity's program change, adds the unit to tutti's
-/// graph, pipes it to output, attaches `AudioEmitter`, and (under `midi`)
-/// attaches a [`SoundFontMidiSender`] so the app can register the unit on its
-/// MIDI bus. Then removes the pending marker. This is the tail of what the old
-/// synchronous `soundfont_playback_system` did — only the decode moved off the
-/// main thread.
+/// finished: applies the entity's program change, registers the unit's MIDI
+/// sender on the bus (under `midi`), adds the unit to tutti's graph, pipes it to
+/// output, attaches `AudioEmitter`, then removes the pending marker. This is the
+/// tail of what the old synchronous `soundfont_playback_system` did — only the
+/// decode moved off the main thread.
 ///
 /// Entities whose build is still running are left alone for the next frame.
 pub fn promote_pending_soundfonts(
     mut commands: Commands,
     mut graph: ResMut<TuttiGraphRes>,
     mut dirty: ResMut<GraphDirty>,
+    #[cfg(feature = "midi")] midi: Option<Res<tutti_midi_io::ecs::MidiBusRes>>,
     mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,
 ) {
     let mut edited = false;
@@ -224,23 +215,23 @@ pub fn promote_pending_soundfonts(
         };
         unit.program_change(pending_unit.channel, pending_unit.preset);
 
-        // Clone the unit's MIDI sender before the unit moves into the graph;
-        // the app side drains the `SoundFontMidiSender` component onto its bus.
-        // `midi_sender` is `&self` + clones an Arc-backed handle, so it stays
-        // valid after the unit is in the graph.
+        // Register the unit's MIDI sender on the bus so the routing table can
+        // dispatch events to it by `MidiUnitId` — done inline here (like every
+        // other MIDI-producing unit), before the unit moves into the graph.
+        // `midi_sender` is `&self` + clones an Arc-backed handle.
         #[cfg(feature = "midi")]
-        let sender = unit.midi_sender();
+        if let Some(ref bus) = midi {
+            bus.0.insert(unit.midi_sender());
+        }
 
         let id = graph.0.add(unit);
         graph.0.pipe_output(id);
         edited = true;
 
-        let mut entity_commands = commands.entity(entity);
-        entity_commands
+        commands
+            .entity(entity)
             .remove::<PendingSoundFontUnit>()
             .insert(AudioEmitter { node_id: id });
-        #[cfg(feature = "midi")]
-        entity_commands.insert(SoundFontMidiSender(sender));
     }
 
     // Stage only; the Commit-phase `commit_graph` coalesces (this system is

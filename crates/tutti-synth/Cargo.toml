@@ -9,7 +9,7 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 [features]
 default = ["midi"]
 std = []
-midi = ["tutti-core/midi", "dep:tutti-midi-types", "dep:tutti-midi-runtime"]
+midi = ["tutti-core/midi", "dep:tutti-midi-types", "dep:tutti-midi-runtime", "dep:tutti-midi-io"]
 # The `ecs` module (gated on `soundfont`) loads `.sf2` via the Bevy asset
 # system, so `soundfont` pulls in `bevy_asset` (the `SoundFontAsset` derive).
 soundfont = ["std", "dep:rustysynth", "midi", "bevy_asset"]
@@ -31,6 +31,9 @@ bevy_tasks = { version = "0.18" }
 bevy_log = { version = "0.18", default-features = false }
 tutti-midi-types = { path = "../tutti-midi-types", optional = true, default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", optional = true, default-features = false }
+# For MidiBusRes — registering a promoted SoundFont unit's sender on the bus
+# inline at promote (acyclic: midi-io does not depend on synth).
+tutti-midi-io = { path = "../tutti-midi-io", optional = true, default-features = false }
 
 # Lock-free collections (for SoundFont manager)
 dashmap = "6.1"

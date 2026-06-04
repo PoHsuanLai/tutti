@@ -62,5 +62,3 @@ pub use ecs::{
     promote_pending_soundfonts, soundfont_playback_system, PendingSoundFontUnit, PlaySoundFont,
     SoundFontAssetLoader, SoundFontAssetLoaderError, SoundFontRes, TuttiSoundFontPlugin,
 };
-#[cfg(all(feature = "soundfont", feature = "midi"))]
-pub use ecs::SoundFontMidiSender;

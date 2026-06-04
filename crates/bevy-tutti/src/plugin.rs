@@ -6,20 +6,13 @@
 //! and adds the sub-plugins for the currently enabled features.
 
 use bevy_app::{App, Plugin, Startup, Update};
-// Needed only for the `.run_if(..)` on the soundfont-midi bridge system below.
-#[cfg(all(feature = "soundfont", feature = "midi"))]
-use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_log::{error, info};
 
 use crate::device_state;
-#[cfg(all(feature = "soundfont", feature = "midi"))]
-use tutti_core::ecs::engine_ready;
 use tutti_core::ecs::{AudioConfig, TuttiGraphPlugin};
 
 #[cfg(feature = "midi")]
 use tutti_midi_io::ecs::TuttiMidiPlugin;
-#[cfg(all(feature = "soundfont", feature = "midi"))]
-use tutti_midi_io::ecs::MidiBusRes;
 #[cfg(feature = "spatial")]
 use tutti_units::ecs::TuttiSpatialPlugin;
 #[cfg(feature = "soundfont")]
@@ -113,12 +106,6 @@ impl Plugin for TuttiPlugin {
         app.add_plugins(TuttiSpatialPlugin);
         #[cfg(feature = "soundfont")]
         app.add_plugins(TuttiSoundFontPlugin);
-        // App-side wire: tutti-synth's `promote_pending_soundfonts` attaches a
-        // `SoundFontMidiSender` component (it must not name bevy-tutti's
-        // `MidiBusRes`); we drain those senders onto the MIDI bus here so the
-        // routing table can dispatch events to the unit.
-        #[cfg(all(feature = "soundfont", feature = "midi"))]
-        app.add_systems(Update, register_soundfont_midi.run_if(engine_ready));
         #[cfg(feature = "midi")]
         app.add_plugins(TuttiMidiPlugin);
         #[cfg(feature = "plugin")]
@@ -145,21 +132,3 @@ impl Plugin for TuttiPlugin {
     }
 }
 
-/// Registers each freshly-promoted SoundFont unit's MIDI sender on the bus.
-///
-/// tutti-synth's `promote_pending_soundfonts` produces a `SoundFontMidiSender`
-/// component (it can't reference the app's `MidiBusRes`); this system drains
-/// each one exactly once (`Added`) onto the bus so the routing table can
-/// dispatch events to the unit by `MidiUnitId`.
-#[cfg(all(feature = "soundfont", feature = "midi"))]
-fn register_soundfont_midi(
-    bus: bevy_ecs::system::Res<MidiBusRes>,
-    q: bevy_ecs::system::Query<
-        &tutti_synth::ecs::SoundFontMidiSender,
-        bevy_ecs::query::Added<tutti_synth::ecs::SoundFontMidiSender>,
-    >,
-) {
-    for s in &q {
-        bus.0.insert(s.0.clone());
-    }
-}

@@ -70,14 +70,6 @@ pub mod engine;
 
 pub use plugin::TuttiPlugin;
 
-// =========================================================================
-// Engine vocabulary re-export surface.
-//
-// bevy-tutti is the engine + composition root. It exposes ONLY the engine
-// types here; every subsystem symbol is imported by consumers from its
-// origin tutti-* crate directly (no façade aliases).
-// =========================================================================
-
 // Engine types.
 pub use engine::{DefaultProcessor, DeviceInfo, Error, Result, TuttiDriver, TuttiGraph};
 
@@ -85,13 +77,6 @@ pub use engine::{DefaultProcessor, DeviceInfo, Error, Result, TuttiDriver, Tutti
 // is bevy-tutti's, so the mirror lives here. Transport state + master metering
 // are dawai projection targets and live in `dawai-model`.
 pub use device_state::AudioDeviceState;
-
-// The CPAL driver is inserted directly as a non-send resource (`TuttiDriver`
-// itself — no newtype; it's a local type, so no orphan-rule wrapper needed).
-// `SoundFontRes` lives in `tutti_synth::ecs` next to the SoundFont system it
-// wraps (mirroring `tutti_sampler::SamplerRes`); re-exported for the prelude.
-#[cfg(feature = "soundfont")]
-pub use tutti_synth::SoundFontRes;
 
 // Test-only global allocator for RT-safety regression tests (relocated from
 // the umbrella). Panics on any heap allocation inside `assert_no_alloc(..)`

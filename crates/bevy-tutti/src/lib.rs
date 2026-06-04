@@ -43,7 +43,7 @@
 //! ```rust,ignore
 //! fn control_audio(transport: Res<TransportRes>, mut graph: ResMut<TuttiGraphRes>) {
 //!     transport.tempo(128.0).play();
-//!     let id = graph.0.add(crate::core::dsp::sine_hz(440.0));
+//!     let id = graph.0.add(tutti_core::dsp::sine_hz(440.0));
 //!     graph.0.pipe_output(id);
 //!     graph.0.commit();
 //! }
@@ -51,7 +51,6 @@
 
 mod metering;
 mod transport;
-pub mod task;
 mod device_state;
 mod plugin;
 mod resources;

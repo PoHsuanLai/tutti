@@ -26,6 +26,11 @@ pub struct TuttiGraphPlugin;
 
 impl Plugin for TuttiGraphPlugin {
     fn build(&self, app: &mut App) {
+        // Register the core entity-as-node reflectable types (NodeKind, scalar
+        // params, construction data). Leaf authoring markers register themselves
+        // in their own subsystem plugins. Idempotent.
+        register_core_node_types(app);
+
         app.init_resource::<GraphDirty>()
             .init_resource::<NodeParamEpoch>()
             .configure_sets(

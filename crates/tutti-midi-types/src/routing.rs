@@ -20,22 +20,6 @@ use arc_swap::ArcSwap;
 /// Supports layering up to 8 synths on a single channel.
 pub const MAX_TARGETS_PER_ROUTE: usize = 8;
 
-/// Extract the channel nibble from a channel-voice UMP event.
-///
-/// Returns `None` for non-channel-voice messages (system, sysex, utility).
-/// Used on the hot path to route by channel without paying for a full
-/// `midi2::UmpMessage::try_from` dispatch.
-#[inline]
-fn event_channel(event: &MidiEvent) -> Option<u8> {
-    let type_nibble = (event.data[0] >> 28) & 0x0F;
-    // UMP type 0x2 = MIDI 1.0 channel voice, 0x4 = MIDI 2.0 channel voice.
-    if type_nibble == 0x2 || type_nibble == 0x4 {
-        Some(((event.data[0] >> 16) & 0x0F) as u8)
-    } else {
-        None
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct MidiRoute {
     /// Port filter: `None` = any port, `Some(n)` = port n only
@@ -110,7 +94,7 @@ impl MidiRoute {
         let port_matches = self.port.is_none_or(|p| p == port);
         let channel_matches = match self.channel {
             None => true,
-            Some(c) => event_channel(event) == Some(c),
+            Some(c) => event.channel() == Some(c),
         };
         port_matches && channel_matches
     }
@@ -198,7 +182,7 @@ impl MidiRoutingSnapshot {
     pub fn route_single(&self, port: usize, event: &MidiEvent) -> Option<MidiUnitId> {
         // Non-channel-voice messages (system, SysEx, utility) skip the
         // channel-indexed fast path.
-        if let Some(channel) = event_channel(event) {
+        if let Some(channel) = event.channel() {
             if let Some(&target) = self.channel_lookup[channel as usize].first() {
                 return Some(target);
             }
@@ -303,7 +287,7 @@ impl Iterator for RouteIterator<'_> {
                     // Non-channel-voice messages (system/SysEx/utility) bypass
                     // the channel-indexed fast path and fall through to the
                     // "any channel" bucket.
-                    if let Some(channel) = event_channel(self.event) {
+                    if let Some(channel) = self.event.channel() {
                         let targets = &self.snapshot.channel_lookup[channel as usize];
                         while self.target_idx < targets.len() {
                             let target = targets[self.target_idx];

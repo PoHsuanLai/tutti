@@ -138,6 +138,23 @@ impl MidiEvent {
             _ => None,
         }
     }
+
+    /// Channel nibble (0-15) for a channel-voice event, read directly from the
+    /// UMP word without a full decode. `None` for system, SysEx, and utility
+    /// messages, which carry no channel. Covers both MIDI 1.0 (UMP type 0x2)
+    /// and MIDI 2.0 (type 0x4) channel voice — the channel sits in the same
+    /// bit position in both, so the hot path (e.g. MIDI routing by channel)
+    /// avoids paying for a `midi2::UmpMessage::try_from` dispatch.
+    #[inline]
+    pub fn channel(&self) -> Option<u8> {
+        let type_nibble = (self.data[0] >> 28) & 0x0F;
+        // UMP type 0x2 = MIDI 1.0 channel voice, 0x4 = MIDI 2.0 channel voice.
+        if type_nibble == 0x2 || type_nibble == 0x4 {
+            Some(((self.data[0] >> 16) & 0x0F) as u8)
+        } else {
+            None
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -678,6 +695,18 @@ mod tests {
         assert_eq!(u8::from(m.channel()), 2);
         assert_eq!(u8::from(m.control()), 74);
         assert_eq!(m.control_change_data(), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn channel_reads_both_voice_versions() {
+        // MIDI 2.0 channel voice (UMP type 0x4).
+        assert_eq!(MidiEvent::note_on(0, 5, 60, 0x8000).channel(), Some(5));
+        // MIDI 1.0 channel voice (UMP type 0x2), built via the wire bridge.
+        let cv1 = MidiEvent::from_midi1_bytes(0, &[0x93, 0x3C, 0x64]).unwrap();
+        assert_eq!(cv1.channel(), Some(3));
+        // System messages carry no channel.
+        assert_eq!(MidiEvent::timing_clock(0).channel(), None);
+        assert_eq!(MidiEvent::noop().channel(), None);
     }
 
     #[test]

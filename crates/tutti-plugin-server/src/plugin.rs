@@ -104,13 +104,8 @@ impl Plugin {
         let (plugin, metadata): (Plugin, PluginInfo) = match extension.to_lowercase().as_str() {
             #[cfg(feature = "vst3")]
             "vst3" => {
-                let mut vst = Vst3Instance::load(path, sample_rate, block_size)?;
-                if preferred_format == SampleFormat::Float64
-                    && vst.can_process_f64()
-                    && vst.set_sample_format(SampleFormat::Float64).is_err()
-                {
-                    vst.clear_f64_support();
-                }
+                let prefer_f64 = preferred_format == SampleFormat::Float64;
+                let vst = Vst3Instance::load(path, sample_rate, block_size, prefer_f64)?;
                 let metadata = vst.metadata().clone();
                 (Plugin::Vst3(vst), metadata)
             }

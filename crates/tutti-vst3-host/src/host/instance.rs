@@ -28,7 +28,9 @@ use crate::types::{
     PluginInfo, ProcessOutputRef, TransportInfo, Vst3Sample,
 };
 
-use super::loaded::{get_bus_channel_count, Vst3Loaded, K_INPUT, K_OUTPUT};
+use super::{IComponentExt, K_INPUT, K_OUTPUT};
+use super::loaded::Vst3Loaded;
+use super::midi_mapping::MidiCcMapping;
 
 pub(super) const K_EVENT: i32 = kEvent as i32;
 const K_REALTIME: i32 = kRealtime as i32;
@@ -200,18 +202,17 @@ fn param_changes_ptr(
 /// every `process()` call: we call `refill_from_changes` / `clear_in_place`
 /// rather than re-building a fresh ComWrapper. That keeps the RT path
 /// allocation- and lock-free.
-struct AudioIO {
+struct AudioIO<T> {
     sample_rate: f64,
     block_size: usize,
-    use_f64: bool,
     num_input_channels: usize,
     num_output_channels: usize,
-    ptrs_f32: BufferPtrs<f32>,
-    ptrs_f64: BufferPtrs<f64>,
+    /// Typed pointer tables for the single committed sample format `T`.
+    /// Sized to the per-direction channel total (main + sidechain/aux buses).
+    ptrs: BufferPtrs<T>,
     /// Per-bus `AudioBusBuffers` scratch (one per direction; sample-type
     /// erased). Bus 0 is mapped onto the live caller buffer; extra input buses
-    /// receive silence and extra output buses a discard sink. The flat `ptrs_*`
-    /// above feed bus 0's channel pointers into these.
+    /// receive silence and extra output buses a discard sink.
     in_buses: BusBuffers,
     out_buses: BusBuffers,
     input_events: vst3::ComWrapper<EventList>,
@@ -234,16 +235,26 @@ struct AudioIO {
 
 /// Fully-active VST3 plugin ready to process audio.
 ///
+/// The type parameter `T` fixes the sample format at activation time:
+/// `Vst3Instance<f32>` (the default) always calls `setupProcessing` with
+/// `kSample32`; `Vst3Instance<f64>` uses `kSample64` and returns an error from
+/// [`Vst3Loaded::activate`] if the plugin does not advertise 64-bit support.
+///
 /// Embeds a [`Vst3Loaded`]; all parameter, editor, state, and metadata methods
 /// are inherited via [`Deref`]. Obtain via [`Vst3Instance::load`] or
 /// [`Vst3Loaded::activate`], and drop back to a non-processing
 /// [`Vst3Loaded`] with [`Vst3Instance::deactivate`].
-pub struct Vst3Instance {
+pub struct Vst3Instance<T: Vst3Sample = f32> {
     loaded: Vst3Loaded,
-    audio: AudioIO,
+    audio: AudioIO<T>,
+    /// `IMidiMapping` CC→parameter routing table. Built at activation from the
+    /// controller's `IMidiMapping` interface and re-built when the caller
+    /// responds to [`RestartOutcome::midi_cc_assignment_changed`] by calling
+    /// [`rebuild_midi_cc_mapping`](Self::rebuild_midi_cc_mapping).
+    midi_cc_mapping: MidiCcMapping,
 }
 
-impl Vst3Instance {
+impl<T: Vst3Sample> Vst3Instance<T> {
     /// Lightweight metadata read: load the library, read factory and bus info,
     /// return without calling `initialize()` or `setActive()`. Safe for plugins
     /// that would otherwise pop license dialogs or hit the network during full
@@ -263,8 +274,10 @@ impl Vst3Instance {
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) with
     /// [`LoadStage::Setup`] or [`LoadStage::Activation`] if the plugin rejects
     /// the requested sample rate / block size or refuses to activate.
+    /// Returns [`Vst3Error::NotSupported`] if `T = f64` and the plugin does
+    /// not advertise 64-bit support.
     pub fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
-        let loaded = Vst3Loaded::load_with_info(path)?;
+        let loaded = Vst3Loaded::load(path)?;
         Self::from_loaded(loaded, sample_rate, block_size)
     }
 
@@ -275,6 +288,12 @@ impl Vst3Instance {
         sample_rate: f64,
         block_size: usize,
     ) -> Result<Self> {
+        if T::VST3_SYMBOLIC_SIZE == crate::types::K_SAMPLE_64_INT && !loaded.info.supports_f64 {
+            return Err(Vst3Error::NotSupported(
+                "Plugin does not support 64-bit processing".to_string(),
+            ));
+        }
+
         let num_input_channels = loaded.info.num_inputs;
         let num_output_channels = loaded.info.num_outputs;
         // The flat `BufferPtrs` arrays carry every bus's channels in bus order
@@ -297,11 +316,9 @@ impl Vst3Instance {
         let audio = AudioIO {
             sample_rate,
             block_size,
-            use_f64: false,
             num_input_channels,
             num_output_channels,
-            ptrs_f32: BufferPtrs::new(input_ptr_count, output_ptr_count),
-            ptrs_f64: BufferPtrs::new(input_ptr_count, output_ptr_count),
+            ptrs: BufferPtrs::new(input_ptr_count, output_ptr_count),
             in_buses: BusBuffers::new(&input_bus_channels, num_input_channels, block_size),
             out_buses: BusBuffers::new(&output_bus_channels, num_output_channels, block_size),
             input_events: EventList::new(),
@@ -314,7 +331,8 @@ impl Vst3Instance {
             cc_param_changes: ParameterChanges::new(),
         };
 
-        let mut instance = Self { loaded, audio };
+        let midi_cc_mapping = MidiCcMapping::query(loaded.interfaces.controller.as_ref());
+        let mut instance = Self { loaded, audio, midi_cc_mapping };
         instance.apply_process_setup()?;
         instance.activate_buses()?;
         instance.set_active(true)?;
@@ -370,23 +388,6 @@ impl Vst3Instance {
         self.audio.num_output_channels
     }
 
-    /// Enable or disable 64-bit float processing. Re-runs `setupProcessing`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Vst3Error::NotSupported`] if `use_f64` is `true` but the
-    /// plugin advertised no 64-bit support.
-    pub fn set_use_f64(&mut self, use_f64: bool) -> Result<&mut Self> {
-        if use_f64 && !self.loaded.info.supports_f64 {
-            return Err(Vst3Error::NotSupported(
-                "Plugin does not support 64-bit processing".to_string(),
-            ));
-        }
-        self.audio.use_f64 = use_f64;
-        self.apply_process_setup()?;
-        Ok(self)
-    }
-
     /// Run one realtime processing block.
     ///
     /// `midi_events` and `note_expressions` are staged into the plugin's input
@@ -395,10 +396,10 @@ impl Vst3Instance {
     /// returned [`ProcessOutput`] carries any MIDI / parameter-change events
     /// the plugin emitted.
     ///
-    /// Falls back to an empty output if the sample type is incompatible with
-    /// the plugin, if `buffer.num_samples == 0`, or if the plugin returns a
-    /// non-OK `tresult` (in which case `buffer.outputs` is also cleared).
-    pub fn process<T: Vst3Sample>(
+    /// Falls back to an empty output if `buffer.num_samples == 0` or if the
+    /// plugin returns a non-OK `tresult` (in which case `buffer.outputs` is
+    /// also cleared).
+    pub fn process(
         &mut self,
         buffer: &mut AudioBuffer<T>,
         midi_events: &[MidiEvent],
@@ -418,7 +419,7 @@ impl Vst3Instance {
         }
         self.audio.out_param_changes.queues.clear();
 
-        if !self.can_process::<T>() || buffer.num_samples == 0 {
+        if buffer.num_samples == 0 {
             return ProcessOutputRef {
                 midi_events: &self.audio.out_midi,
                 parameter_changes: &self.audio.out_param_changes,
@@ -429,12 +430,8 @@ impl Vst3Instance {
         // Fill bus-0 channel pointers from the (flat) caller buffer, then build
         // the per-bus `AudioBusBuffers` arrays: bus 0 maps onto the live
         // channels, extra input buses get silence, extra output buses a sink.
-        let (input_ptrs, output_ptrs) = T::prepare_ffi_buffers(
-            &mut self.audio.ptrs_f32,
-            &mut self.audio.ptrs_f64,
-            buffer.inputs,
-            buffer.outputs,
-        );
+        let (input_ptrs, output_ptrs) =
+            self.audio.ptrs.prepare(buffer.inputs, buffer.outputs);
         let num_input_buses = self.audio.in_buses.num_buses();
         let num_output_buses = self.audio.out_buses.num_buses();
         // SAFETY: `input_ptrs`/`output_ptrs` point at the just-filled per-channel
@@ -540,11 +537,6 @@ impl Vst3Instance {
         }
     }
 
-    /// True if this instance can process buffers of sample type `T`.
-    fn can_process<T: Vst3Sample>(&self) -> bool {
-        T::VST3_SYMBOLIC_SIZE != crate::types::K_SAMPLE_64_INT || self.loaded.info.supports_f64
-    }
-
     /// Route `IMidiMapping`-mapped controllers into parameter changes.
     ///
     /// When the plugin exposes a non-empty CC→param table, this walks
@@ -567,7 +559,7 @@ impl Vst3Instance {
         midi_events: &[MidiEvent],
         param_changes: Option<&ParameterChanges>,
     ) -> bool {
-        if self.loaded.midi_cc_mapping.is_empty() {
+        if self.midi_cc_mapping.is_empty() {
             return false;
         }
 
@@ -592,7 +584,7 @@ impl Vst3Instance {
         }
 
         super::midi_mapping::route_cc_events(
-            &self.loaded.midi_cc_mapping,
+            &self.midi_cc_mapping,
             midi_events,
             &mut self.audio.cc_filtered_midi,
             &mut self.audio.cc_param_changes,
@@ -605,6 +597,13 @@ impl Vst3Instance {
         true
     }
 
+    /// Re-query the `IMidiMapping` CC→parameter table from the controller.
+    /// Call this when [`RestartOutcome::midi_cc_assignment_changed`] is set.
+    pub fn rebuild_midi_cc_mapping(&mut self) {
+        tutti_plugin_types::assert_main_thread();
+        self.midi_cc_mapping = MidiCcMapping::query(self.loaded.interfaces.controller.as_ref());
+    }
+
     /// Tell the plugin's audio processor to idle. Safe to call repeatedly;
     /// `Drop` calls this automatically.
     pub fn stop_processing(&mut self) {
@@ -614,14 +613,9 @@ impl Vst3Instance {
     }
 
     fn apply_process_setup(&mut self) -> Result<()> {
-        let symbolic_sample_size = if self.audio.use_f64 {
-            crate::types::K_SAMPLE_64_INT
-        } else {
-            crate::types::K_SAMPLE_32_INT
-        };
         let mut setup = ProcessSetup {
             processMode: K_REALTIME,
-            symbolicSampleSize: symbolic_sample_size,
+            symbolicSampleSize: T::VST3_SYMBOLIC_SIZE,
             maxSamplesPerBlock: self.audio.block_size as i32,
             sampleRate: self.audio.sample_rate,
         };
@@ -636,7 +630,7 @@ impl Vst3Instance {
     }
 
     fn activate_buses(&mut self) -> Result<()> {
-        const K_AUDIO: i32 = super::loaded::K_AUDIO;
+        const K_AUDIO: i32 = super::K_AUDIO;
         unsafe {
             let component = &self.loaded.interfaces.component;
             for i in 0..component.getBusCount(K_AUDIO, K_INPUT) {
@@ -648,18 +642,16 @@ impl Vst3Instance {
 
             // Re-sync channel counts after bus activation — some plugins only
             // finalise their bus arrangement once activated.
-            if let Some(ch) = get_bus_channel_count(component, K_INPUT, 0) {
+            if let Some(ch) = component.audio_bus_channel_count(K_INPUT, 0) {
                 if ch != self.audio.num_input_channels {
                     self.audio.num_input_channels = ch;
-                    self.audio.ptrs_f32.resize_inputs(ch.max(MIN_PTR_COUNT));
-                    self.audio.ptrs_f64.resize_inputs(ch.max(MIN_PTR_COUNT));
+                    self.audio.ptrs.resize_inputs(ch.max(MIN_PTR_COUNT));
                 }
             }
-            if let Some(ch) = get_bus_channel_count(component, K_OUTPUT, 1) {
+            if let Some(ch) = component.audio_bus_channel_count(K_OUTPUT, 1) {
                 if ch != self.audio.num_output_channels {
                     self.audio.num_output_channels = ch;
-                    self.audio.ptrs_f32.resize_outputs(ch.max(MIN_PTR_COUNT));
-                    self.audio.ptrs_f64.resize_outputs(ch.max(MIN_PTR_COUNT));
+                    self.audio.ptrs.resize_outputs(ch.max(MIN_PTR_COUNT));
                 }
             }
 
@@ -667,8 +659,8 @@ impl Vst3Instance {
             // activated; re-enumerate every bus and rebuild the per-bus
             // scratch so the RT `process` path sees the live layout. Setup-time
             // only — never on the audio thread.
-            let input_bus_channels = super::loaded::enumerate_bus_channels(component, K_INPUT);
-            let output_bus_channels = super::loaded::enumerate_bus_channels(component, K_OUTPUT);
+            let input_bus_channels = component.audio_bus_channels(K_INPUT);
+            let output_bus_channels = component.audio_bus_channels(K_OUTPUT);
             let block_size = self.audio.block_size;
             // Re-size the flat pointer arrays to the live per-direction totals
             // (main + sidechain/aux) so a multi-bus flat caller buffer isn't
@@ -676,12 +668,10 @@ impl Vst3Instance {
             let total_in: usize = input_bus_channels.iter().sum();
             let total_out: usize = output_bus_channels.iter().sum();
             if total_in > self.audio.num_input_channels {
-                self.audio.ptrs_f32.resize_inputs(total_in.max(MIN_PTR_COUNT));
-                self.audio.ptrs_f64.resize_inputs(total_in.max(MIN_PTR_COUNT));
+                self.audio.ptrs.resize_inputs(total_in.max(MIN_PTR_COUNT));
             }
             if total_out > self.audio.num_output_channels {
-                self.audio.ptrs_f32.resize_outputs(total_out.max(MIN_PTR_COUNT));
-                self.audio.ptrs_f64.resize_outputs(total_out.max(MIN_PTR_COUNT));
+                self.audio.ptrs.resize_outputs(total_out.max(MIN_PTR_COUNT));
             }
             self.audio.in_buses =
                 BusBuffers::new(&input_bus_channels, self.audio.num_input_channels, block_size);
@@ -713,20 +703,20 @@ impl Vst3Instance {
     }
 }
 
-impl Deref for Vst3Instance {
+impl<T: Vst3Sample> Deref for Vst3Instance<T> {
     type Target = Vst3Loaded;
     fn deref(&self) -> &Vst3Loaded {
         &self.loaded
     }
 }
 
-impl DerefMut for Vst3Instance {
+impl<T: Vst3Sample> DerefMut for Vst3Instance<T> {
     fn deref_mut(&mut self) -> &mut Vst3Loaded {
         &mut self.loaded
     }
 }
 
-impl Drop for Vst3Instance {
+impl<T: Vst3Sample> Drop for Vst3Instance<T> {
     fn drop(&mut self) {
         self.stop_processing();
         let _ = self.set_active(false);

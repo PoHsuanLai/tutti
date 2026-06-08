@@ -12,24 +12,67 @@ use crate::loaders::common::params::{make_param_info, ParamCache};
 
 pub use tutti_vst3_host;
 
+/// Typed inner holds either a f32 or f64 instance, selected at activation time
+/// based on plugin capabilities and the caller's preferred format.
+enum VstInner {
+    F32(tutti_vst3_host::Vst3Instance<f32>),
+    F64(tutti_vst3_host::Vst3Instance<f64>),
+}
+
+/// Dispatch a shared expression over both inner variants (immutable).
+macro_rules! vst_dispatch {
+    ($self:expr, $inner:ident => $body:expr) => {
+        match &$self.inner {
+            VstInner::F32($inner) => $body,
+            VstInner::F64($inner) => $body,
+        }
+    };
+}
+
+/// Dispatch a shared expression over both inner variants (mutable).
+macro_rules! vst_dispatch_mut {
+    ($self:expr, $inner:ident => $body:expr) => {
+        match &mut $self.inner {
+            VstInner::F32($inner) => $body,
+            VstInner::F64($inner) => $body,
+        }
+    };
+}
+
 pub struct Vst3Instance {
-    inner: tutti_vst3_host::Vst3Instance,
+    inner: VstInner,
     metadata: PluginInfo,
     param_cache: ParamCache,
+}
+
+/// Map a `tutti_vst3_host::Vst3Error` to the server's `BridgeError`.
+fn map_vst3_error(e: tutti_vst3_host::Vst3Error, path: &Path) -> BridgeError {
+    match e {
+        tutti_vst3_host::Vst3Error::LoadFailed { path, stage, reason } => {
+            BridgeError::LoadFailed { path, stage, reason }
+        }
+        tutti_vst3_host::Vst3Error::PluginError { stage, code } => {
+            BridgeError::PluginError { stage, code }
+        }
+        _ => BridgeError::LoadFailed {
+            path: path.to_path_buf(),
+            stage: LoadStage::Opening,
+            reason: e.to_string(),
+        },
+    }
 }
 
 impl Vst3Instance {
     /// Lightweight probe: load library and read factory metadata without activation.
     pub fn probe(path: &Path) -> Result<PluginInfo> {
         let resolved = tutti_plugin::server::resolve_bundle(path)?;
-        let metadata = tutti_vst3_host::Vst3Instance::probe(&resolved).map_err(|e| {
+        let info = tutti_vst3_host::Vst3Instance::<f32>::probe(&resolved).map_err(|e| {
             BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage: LoadStage::Scanning,
                 reason: e.to_string(),
             }
         })?;
-        let info = metadata;
         Ok(PluginInfo::new(info.id.clone(), info.name.clone())
             .author(info.vendor.clone())
             .version(info.version.clone())
@@ -38,49 +81,48 @@ impl Vst3Instance {
             .f64_support(info.supports_f64))
     }
 
-    pub fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
+    /// Load and activate a VST3 plugin.
+    ///
+    /// If `prefer_f64` is `true` and the plugin advertises 64-bit support, the
+    /// inner instance is activated as `Vst3Instance<f64>`; otherwise `f32` is
+    /// used. The chosen format is reflected in `metadata().supports_f64`.
+    pub fn load(path: &Path, sample_rate: f64, block_size: usize, prefer_f64: bool) -> Result<Self> {
         let resolved = tutti_plugin::server::resolve_bundle(path)?;
-        let inner = tutti_vst3_host::Vst3Instance::load(&resolved, sample_rate, block_size)
-            .map_err(|e| match e {
-                tutti_vst3_host::Vst3Error::LoadFailed {
-                    path,
-                    stage,
-                    reason,
-                } => BridgeError::LoadFailed {
-                    path,
-                    // Host and bridge LoadStage are the same shared type now.
-                    stage,
-                    reason,
-                },
-                tutti_vst3_host::Vst3Error::PluginError { stage, code } => {
-                    BridgeError::PluginError { stage, code }
-                }
-                _ => BridgeError::LoadFailed {
-                    path: path.to_path_buf(),
-                    stage: LoadStage::Opening,
-                    reason: e.to_string(),
-                },
-            })?;
+        let loaded = tutti_vst3_host::Vst3Loaded::load(&resolved)
+            .map_err(|e| map_vst3_error(e, path))?;
 
-        let info = inner.info();
-        let has_editor = inner.has_editor();
-        let latency = inner.get_latency_samples() as usize;
-        let buses = build_bus_layout(info);
+        let info = loaded.info().clone();
+        let has_editor = loaded.has_editor();
+
+        let inner = if prefer_f64 && info.supports_f64 {
+            let inst = loaded
+                .activate::<f64>(sample_rate, block_size)
+                .map_err(|e| map_vst3_error(e, path))?;
+            VstInner::F64(inst)
+        } else {
+            let inst = loaded
+                .activate::<f32>(sample_rate, block_size)
+                .map_err(|e| map_vst3_error(e, path))?;
+            VstInner::F32(inst)
+        };
+
+        let actually_f64 = matches!(inner, VstInner::F64(_));
+        let latency = match &inner {
+            VstInner::F32(i) => i.read_latency_samples(),
+            VstInner::F64(i) => i.read_latency_samples(),
+        } as usize;
+        let buses = build_bus_layout(&info);
         let metadata = PluginInfo::new(info.id.clone(), info.name.clone())
             .author(info.vendor.clone())
             .version(info.version.clone())
             .audio_io(info.num_inputs, info.num_outputs)
             .midi(info.has_midi_input)
-            .f64_support(info.supports_f64)
+            .f64_support(actually_f64)
             .buses(buses)
             .editor(has_editor, None)
             .latency(latency);
 
-        Ok(Self {
-            inner,
-            metadata,
-            param_cache: ParamCache::default(),
-        })
+        Ok(Self { inner, metadata, param_cache: ParamCache::default() })
     }
 
     pub fn metadata(&self) -> &PluginInfo {
@@ -88,55 +130,28 @@ impl Vst3Instance {
     }
 
     /// Drain the plugin's `restartComponent` requests and apply their
-    /// host-side effects (latency re-read, bus re-enumeration). If
-    /// `kLatencyChanged` fired and the value actually changed, update cached
-    /// metadata and return the new latency in samples so the server can push a
-    /// PDC update to the host. Returns `None` when latency is unchanged.
+    /// host-side effects (bus re-enumeration). If `kLatencyChanged` fired,
+    /// re-read the latency, update cached metadata, and return the new value in
+    /// samples so the server can push a PDC update to the host. Returns `None`
+    /// when latency did not change.
     ///
     /// Polled between audio blocks by [`Plugin::poll_async_events`]; it must
     /// not be called concurrently with [`process`](Self::process).
     pub fn poll_latency_changed(&mut self) -> Option<usize> {
-        let (_events, outcome) = self.inner.handle_restart_events();
-        outcome.new_latency_samples.map(|samples| {
-            let samples = samples as usize;
+        let notifications = vst_dispatch_mut!(self, inner => inner.poll_plugin_notifications());
+        notifications.restart.latency_changed.then(|| {
+            let samples = vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize;
             self.metadata = self.metadata.clone().latency(samples);
             samples
         })
     }
 
-    /// The plugin advertised f64 support at probe time but rejected it at
-    /// `set_sample_format` — flip the flag so callers renegotiate to f32.
-    pub fn clear_f64_support(&mut self) {
-        self.metadata.supports_f64 = false;
-    }
-
-    /// Used by [`Plugin::load`](crate::plugin::Plugin) to decide whether
-    /// to attempt f64 setup before the caller's preferred format is
-    /// negotiated.
-    pub fn can_process_f64(&self) -> bool {
-        self.inner.supports_f64()
-    }
-
-    /// Used by [`Plugin::load`](crate::plugin::Plugin) to negotiate the
-    /// session sample format with the plugin. VST3 plugins may refuse f64
-    /// setup even when `can_process_f64()` is true; the error is how the
-    /// caller learns to fall back to f32.
-    pub fn set_sample_format(&mut self, format: tutti_plugin::server::SampleFormat) -> Result<()> {
-        let use_f64 = matches!(format, tutti_plugin::server::SampleFormat::Float64);
-        self.inner
-            .set_use_f64(use_f64)
-            .map(|_| ())
-            .map_err(|e| BridgeError::LoadFailed {
-                path: std::path::PathBuf::new(),
-                stage: LoadStage::Initialization,
-                reason: format!("set_sample_format failed: {e}"),
-            })
-    }
-
     pub fn get_parameter_list(&self) -> Vec<ParameterInfo> {
-        let count = self.inner.parameter_count();
+        let count = vst_dispatch!(self, inner => inner.parameter_count());
         (0..count)
-            .filter_map(|i| self.inner.parameter_info(i).map(build_param_info))
+            .filter_map(|i| {
+                vst_dispatch!(self, inner => inner.parameter_info(i)).map(build_param_info)
+            })
             .collect()
     }
 
@@ -148,78 +163,65 @@ impl Vst3Instance {
     pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         // Safety: WindowHandle was validated at the IPC boundary in server.rs
         let handle = unsafe { tutti_vst3_host::WindowHandle::from_raw(parent.as_ptr()) };
-        self.inner
-            .open_editor(handle)
-            .map(|size| EditorSize {
-                width: size.width,
-                height: size.height,
-            })
+        vst_dispatch_mut!(self, inner => inner.open_editor(handle))
+            .map(|size| EditorSize { width: size.width, height: size.height })
             .map_err(|e| BridgeError::EditorError(e.to_string()))
-    }
-
-    /// Generic process body shared between the f32 and f64 call paths —
-    /// the `tutti_vst3_host::AudioBuffer<T>` and its underlying FFI setup are
-    /// identical at every level except the sample type, so we pay for
-    /// that branch exactly once in the trait method above.
-    fn process_inner<'a, T: tutti_vst3_host::Vst3Sample>(
-        &mut self,
-        inputs: &'a [&'a [T]],
-        outputs: &'a mut [&'a mut [T]],
-        sample_rate: f64,
-        ctx: &tutti_plugin::server::ProcessContext,
-    ) -> Result<tutti_plugin::server::ProcessOutput> {
-        let mut vst3_buffer = tutti_vst3_host::AudioBuffer::new(inputs, outputs, sample_rate);
-
-        let vst3_transport = ctx.transport.cloned().unwrap_or_default();
-
-        let vst3_note_expr = ctx
-            .note_expression
-            .map(convert_note_expression_to_vst3)
-            .unwrap_or_default();
-
-        let output = self.inner.process(
-            &mut vst3_buffer,
-            ctx.midi_events,
-            ctx.param_changes,
-            &vst3_note_expr,
-            &vst3_transport,
-        );
-
-        let midi_events = output.midi_events.iter().copied().collect();
-        let param_changes = output.parameter_changes.clone();
-
-        Ok(tutti_plugin::server::ProcessOutput {
-            midi_events,
-            param_changes,
-            note_expression: NoteExpressionChanges::new(),
-        })
     }
 }
 
-/// Build a Tutti [`ParameterInfo`] from a VST3 parameter descriptor.
-///
-/// Shared between [`Vst3Instance::get_parameter_list`] and
-/// [`Vst3Instance::ensure_param_cache`] so both paths agree on the flag
-/// mapping and on VST3's normalized 0..1 range convention.
+/// Process one audio block through a typed `Vst3Instance<T>`.
+fn process_block<'a, T: tutti_vst3_host::Vst3Sample>(
+    inner: &mut tutti_vst3_host::Vst3Instance<T>,
+    inputs: &'a [&'a [T]],
+    outputs: &'a mut [&'a mut [T]],
+    sample_rate: f64,
+    ctx: &tutti_plugin::server::ProcessContext,
+) -> Result<tutti_plugin::server::ProcessOutput> {
+    let mut vst3_buffer = tutti_vst3_host::AudioBuffer::new(inputs, outputs, sample_rate);
+    let vst3_transport = ctx.transport.cloned().unwrap_or_default();
+    let vst3_note_expr = ctx
+        .note_expression
+        .map(convert_note_expression_to_vst3)
+        .unwrap_or_default();
+    let output = inner.process(
+        &mut vst3_buffer,
+        ctx.midi_events,
+        ctx.param_changes,
+        &vst3_note_expr,
+        &vst3_transport,
+    );
+    let midi_events = output.midi_events.iter().copied().collect();
+    let param_changes = output.parameter_changes.clone();
+    Ok(tutti_plugin::server::ProcessOutput {
+        midi_events,
+        param_changes,
+        note_expression: NoteExpressionChanges::new(),
+    })
+}
+
 /// Translate the vst3-host's per-bus channel enumeration into protocol
 /// [`BusLayout`]s (input buses then output buses, each in bus-index order).
 ///
 /// Returns an empty list for single-bus plugins (≤1 bus per direction) so the
 /// wire format is byte-identical to today and the server's single-bus path is
 /// unchanged. A non-empty list is emitted only when a plugin actually exposes
-/// an aux/sidechain bus, which is what Stage 3 will split.
+/// an aux/sidechain bus.
 fn build_bus_layout(info: &tutti_vst3_host::PluginInfo) -> Vec<BusLayout> {
     let multi_input = info.input_bus_channels.len() > 1;
     let multi_output = info.output_bus_channels.len() > 1;
     if !multi_input && !multi_output {
         return Vec::new();
     }
-    let mut buses = Vec::with_capacity(info.input_bus_channels.len() + info.output_bus_channels.len());
+    let mut buses =
+        Vec::with_capacity(info.input_bus_channels.len() + info.output_bus_channels.len());
     buses.extend(info.input_bus_channels.iter().map(|&ch| BusLayout::input(ch)));
     buses.extend(info.output_bus_channels.iter().map(|&ch| BusLayout::output(ch)));
     buses
 }
 
+/// Build a Tutti [`ParameterInfo`] from a VST3 parameter descriptor. Both the
+/// `get_parameter_list` and the cache-warming paths go through here so they
+/// agree on the flag mapping and on VST3's normalized 0..1 range convention.
 fn build_param_info(info: tutti_vst3_host::Vst3ParameterInfo) -> ParameterInfo {
     let flags = ParameterFlags {
         automatable: info.can_automate(),
@@ -272,26 +274,35 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
         ctx: &tutti_plugin::server::ProcessContext,
     ) -> Result<tutti_plugin::server::ProcessOutput> {
         use tutti_plugin::server::AudioBufferMut;
-        match buffer {
-            AudioBufferMut::F32(buf) => {
-                self.process_inner(buf.inputs, buf.outputs, buf.sample_rate, ctx)
+        match (&mut self.inner, buffer) {
+            (VstInner::F32(inner), AudioBufferMut::F32(buf)) => {
+                process_block(inner, buf.inputs, buf.outputs, buf.sample_rate, ctx)
             }
-            AudioBufferMut::F64(buf) => {
-                self.process_inner(buf.inputs, buf.outputs, buf.sample_rate, ctx)
+            (VstInner::F64(inner), AudioBufferMut::F64(buf)) => {
+                process_block(inner, buf.inputs, buf.outputs, buf.sample_rate, ctx)
             }
+            _ => Err(BridgeError::LoadFailed {
+                path: std::path::PathBuf::new(),
+                stage: LoadStage::Initialization,
+                reason: "Buffer format mismatch: plugin was activated with a different sample format".to_string(),
+            }),
         }
     }
 
     fn set_sample_rate(&mut self, rate: f64) {
-        self.inner.set_sample_rate(rate);
+        vst_dispatch_mut!(self, inner => {
+            inner.set_sample_rate(rate);
+        });
     }
 
     fn get_parameter(&self, id: u32) -> f64 {
-        self.inner.parameter(id)
+        vst_dispatch!(self, inner => inner.parameter(id))
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) {
-        self.inner.set_parameter(id, value);
+        vst_dispatch_mut!(self, inner => {
+            inner.set_parameter(id, value);
+        });
     }
 
     fn get_parameter_list(&mut self) -> Vec<tutti_plugin::server::ParameterInfo> {
@@ -307,7 +318,9 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
     }
 
     fn close_editor(&mut self) {
-        self.inner.close_editor();
+        vst_dispatch_mut!(self, inner => {
+            inner.close_editor();
+        });
     }
 
     fn editor_idle(&mut self) {
@@ -315,14 +328,12 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
     }
 
     fn get_state(&mut self) -> Result<Vec<u8>> {
-        self.inner
-            .state()
+        vst_dispatch_mut!(self, inner => inner.state())
             .map_err(|e| BridgeError::StateSaveError(e.to_string()))
     }
 
     fn set_state(&mut self, data: &[u8]) -> Result<()> {
-        self.inner
-            .set_state(data)
+        vst_dispatch_mut!(self, inner => inner.set_state(data))
             .map(|_| ())
             .map_err(|e| BridgeError::StateRestoreError(e.to_string()))
     }
@@ -343,7 +354,7 @@ mod tests {
     fn test_vst3_load() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(VST3_PLUGIN);
-        let instance = Vst3Instance::load(path, 44100.0, 512);
+        let instance = Vst3Instance::load(path, 44100.0, 512, false);
         assert!(
             instance.is_ok(),
             "Failed to load VST3 plugin: {:?}",
@@ -360,7 +371,7 @@ mod tests {
     fn test_vst3_metadata() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(VST3_PLUGIN);
-        let instance = Vst3Instance::load(path, 44100.0, 512).expect("Failed to load VST3 plugin");
+        let instance = Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
         let meta = instance.metadata();
 
         assert!(
@@ -374,7 +385,7 @@ mod tests {
     fn test_vst3_parameter_count() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(VST3_PLUGIN);
-        let instance = Vst3Instance::load(path, 44100.0, 512).expect("Failed to load VST3 plugin");
+        let instance = Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
 
         let count = instance.get_parameter_list().len();
         assert!(
@@ -388,7 +399,7 @@ mod tests {
     fn test_vst3_parameter_list() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(VST3_PLUGIN);
-        let instance = Vst3Instance::load(path, 44100.0, 512).expect("Failed to load VST3 plugin");
+        let instance = Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
 
         let params = instance.get_parameter_list();
         assert!(
@@ -409,7 +420,7 @@ mod tests {
     fn test_vst3_get_parameter() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(VST3_PLUGIN);
-        let instance = Vst3Instance::load(path, 44100.0, 512).expect("Failed to load VST3 plugin");
+        let instance = Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
 
         let params = instance.get_parameter_list();
         assert!(!params.is_empty(), "Need at least one parameter");
@@ -428,7 +439,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(VST3_PLUGIN);
         let mut instance =
-            Vst3Instance::load(path, 44100.0, 512).expect("Failed to load VST3 plugin");
+            Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
 
         let num_samples = 512;
         let input_data = vec![vec![0.0f32; num_samples]; 2];
@@ -455,7 +466,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(VST3_PLUGIN);
         let mut instance =
-            Vst3Instance::load(path, 44100.0, 512).expect("Failed to load VST3 plugin");
+            Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
 
         let num_samples = 512;
         let note_on = [MidiEvent::note_on(
@@ -554,7 +565,7 @@ mod tests {
             eprintln!("Skipping: SPAN.vst3 not found at {:?}", path);
             return;
         }
-        let instance = Vst3Instance::load(&path, 44100.0, 512);
+        let instance = Vst3Instance::load(&path, 44100.0, 512, false);
         assert!(
             instance.is_ok(),
             "Failed to load SPAN: {:?}",
@@ -578,7 +589,7 @@ mod tests {
             eprintln!("Skipping: Boogex.vst3 not found at {:?}", path);
             return;
         }
-        let instance = Vst3Instance::load(&path, 44100.0, 512);
+        let instance = Vst3Instance::load(&path, 44100.0, 512, false);
         assert!(
             instance.is_ok(),
             "Failed to load Boogex: {:?}",
@@ -602,17 +613,13 @@ mod tests {
             eprintln!("Skipping: SPAN.vst3 not found at {:?}", path);
             return;
         }
-        let mut instance = Vst3Instance::load(&path, 44100.0, 512).expect("Failed to load SPAN");
+        // Load with f64 preference — if the plugin supports it, inner will be F64.
+        let mut instance = Vst3Instance::load(&path, 44100.0, 512, true).expect("Failed to load SPAN");
 
         if !instance.metadata().supports_f64 {
             eprintln!("SPAN does not report f64 support, skipping f64 test");
             return;
         }
-
-        // Enable f64 processing
-        instance
-            .set_sample_format(tutti_plugin::server::SampleFormat::Float64)
-            .expect("Failed to set f64 format");
 
         let num_samples = 512;
         // Feed a 440Hz sine wave to test pass-through
@@ -663,17 +670,13 @@ mod tests {
             eprintln!("Skipping: Boogex.vst3 not found at {:?}", path);
             return;
         }
-        let mut instance = Vst3Instance::load(&path, 44100.0, 512).expect("Failed to load Boogex");
+        // Load with f64 preference — if the plugin supports it, inner will be F64.
+        let mut instance = Vst3Instance::load(&path, 44100.0, 512, true).expect("Failed to load Boogex");
 
         if !instance.metadata().supports_f64 {
             eprintln!("Boogex does not report f64 support, skipping f64 test");
             return;
         }
-
-        // Enable f64 processing
-        instance
-            .set_sample_format(tutti_plugin::server::SampleFormat::Float64)
-            .expect("Failed to set f64 format");
 
         let num_samples = 512;
         // Feed a sine wave — Boogex is an amp sim so it should transform the audio

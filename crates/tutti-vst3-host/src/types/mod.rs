@@ -12,7 +12,7 @@ mod info;
 mod transport;
 
 pub use audio::Vst3Sample;
-pub(crate) use audio::{K_SAMPLE_32_INT, K_SAMPLE_64_INT};
+pub(crate) use audio::K_SAMPLE_64_INT;
 pub(crate) use events::{from_c_event, to_c_event};
 pub use events::{
     vst3_event_from_midi, vst3_to_midi_event, vst3_to_note_expression, DataEvent, EventHeader,

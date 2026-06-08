@@ -65,13 +65,16 @@ impl GuiInstance for Vst3GuiInstance {
     }
 
     fn poll_gui_param_changes(&mut self) -> Vec<(u32, f32)> {
-        // Drain through the restart-aware consumer so `restartComponent`
+        // Drain through the unified notification poll so `restartComponent`
         // requests (latency / IO / param re-reads) are applied to host state
         // instead of being silently dropped. The GUI path forwards param
         // edits up; the `RestartOutcome` side effects (latency re-read, bus
-        // re-enumeration) are applied in-place by `handle_restart_events`.
-        let (events, _outcome) = self.inner.handle_restart_events();
-        events
+        // re-enumeration) are applied in-place by `poll_plugin_notifications`.
+        // Progress / unit notifications are not surfaced through the GUI param
+        // path.
+        let notifications = self.inner.poll_plugin_notifications();
+        notifications
+            .param_edits
             .into_iter()
             .filter_map(|e| {
                 use tutti_vst3_host::ParameterEditEvent;

@@ -8,19 +8,16 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crossbeam_channel::Receiver;
 use vst3::com_scrape_types::Unknown;
 use vst3::Steinberg::{
     kResultFalse, kResultOk, FUnknown, IBStream, IPlugView, IPlugViewTrait, IPluginBaseTrait,
     ViewRect,
     Vst::{
-        BusDirections_::{kInput, kOutput},
         IAudioProcessor, IAudioProcessorTrait, IComponent, IComponentTrait, IConnectionPoint,
         IConnectionPointTrait, IEditController, IEditControllerTrait,
-        MediaTypes_::kAudio,
     },
 };
-use vst3::{ComPtr, ComWrapper};
+use vst3::ComPtr;
 
 #[cfg(target_os = "windows")]
 use vst3::Steinberg::kPlatformTypeHWND;
@@ -36,117 +33,16 @@ use crate::com::{
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
 use crate::types::{
-    BusInfo as BusInfoWrap, EditorCapabilities, EditorSize, PluginInfo, Vst3ParameterInfo,
-    WindowHandle,
+    EditorCapabilities, EditorSize, PluginInfo, Vst3ParameterInfo,
+    WindowHandle, Vst3Sample,
 };
 
+use super::{IComponentExt, K_INPUT, K_OUTPUT};
 use super::instance::Vst3Instance;
 use super::library::Vst3Library;
-use super::midi_mapping::MidiCcMapping;
+use super::plugin_state::{Controller, EditorState, HostContext, PluginInterfaces};
 
 const DEFAULT_EDITOR_SIZE: (u32, u32) = (800, 600);
-
-pub(super) const K_AUDIO: i32 = kAudio as i32;
-pub(super) const K_INPUT: i32 = kInput as i32;
-pub(super) const K_OUTPUT: i32 = kOutput as i32;
-
-pub(super) fn get_bus_channel_count(
-    component: &ComPtr<IComponent>,
-    direction: i32,
-    min_channels: i32,
-) -> Option<usize> {
-    unsafe {
-        let num_buses = component.getBusCount(K_AUDIO, direction);
-        if num_buses <= 0 {
-            return None;
-        }
-        let mut bus = BusInfoWrap::default();
-        if component.getBusInfo(K_AUDIO, direction, 0, bus.as_mut_inner()) == kResultOk {
-            Some(bus.channel_count().max(min_channels) as usize)
-        } else {
-            None
-        }
-    }
-}
-
-/// Enumerate the channel count of every audio bus in `direction`, in
-/// bus-index order. Returns one entry per `getBusCount(kAudio, direction)`
-/// bus; a bus whose `getBusInfo` query fails contributes 0 channels so the
-/// returned vector's length always matches the plugin's bus count (the
-/// host pre-allocates per-bus pointer tables off this).
-pub(super) fn enumerate_bus_channels(
-    component: &ComPtr<IComponent>,
-    direction: i32,
-) -> Vec<usize> {
-    unsafe {
-        let num_buses = component.getBusCount(K_AUDIO, direction);
-        if num_buses <= 0 {
-            return Vec::new();
-        }
-        (0..num_buses)
-            .map(|i| {
-                let mut bus = BusInfoWrap::default();
-                if component.getBusInfo(K_AUDIO, direction, i, bus.as_mut_inner()) == kResultOk {
-                    bus.channel_count().max(0) as usize
-                } else {
-                    0
-                }
-            })
-            .collect()
-    }
-}
-
-pub(super) struct PluginInterfaces {
-    pub component: ComPtr<IComponent>,
-    /// Always present: [`Vst3Loaded::load_with_info`] errors out at load time
-    /// if the component doesn't expose `IAudioProcessor`.
-    pub processor: ComPtr<IAudioProcessor>,
-    pub controller: Controller,
-}
-
-unsafe impl Send for PluginInterfaces {}
-unsafe impl Sync for PluginInterfaces {}
-
-/// Three-way split encoding the controller invariant: either the component is
-/// also the controller (`Same`), the controller is a distinct COM object
-/// (`Separate`), or the plugin has no controller at all (`None`).
-pub(super) enum Controller {
-    /// Component and controller are the same COM object (common single-component
-    /// plugins). No extra `initialize()`/connection wiring needed.
-    Same(ComPtr<IEditController>),
-    /// Controller is a distinct COM object created from a separate CID. We
-    /// [`initialize`](IEditControllerTrait) it and wire the connection points.
-    Separate(ComPtr<IEditController>),
-    /// Plugin has no editor controller (no parameters, no UI).
-    None,
-}
-
-impl Controller {
-    pub fn as_ref(&self) -> Option<&ComPtr<IEditController>> {
-        match self {
-            Controller::Same(c) | Controller::Separate(c) => Some(c),
-            Controller::None => None,
-        }
-    }
-}
-
-pub(super) struct HostContext {
-    pub application: ComWrapper<HostApplication>,
-    pub handler: ComWrapper<ComponentHandler>,
-    pub param_event_rx: Receiver<ParameterEditEvent>,
-    pub progress_event_rx: Receiver<ProgressEvent>,
-    pub unit_event_rx: Receiver<UnitEvent>,
-}
-
-/// Editor window state. `Open` owns the attached view; `Drop`-like close is
-/// via [`Vst3Loaded::close_editor`].
-pub(super) enum EditorState {
-    Closed,
-    Open(ComPtr<IPlugView>),
-}
-
-unsafe impl Send for EditorState {}
-unsafe impl Sync for EditorState {}
 
 /// Plugin instance that has been `initialize()`'d and has usable parameter,
 /// editor, and state surfaces, but is **not** processing audio.
@@ -161,33 +57,21 @@ pub struct Vst3Loaded {
     pub(super) host: HostContext,
     pub(super) editor: EditorState,
     pub(super) info: PluginInfo,
-    pub(super) plug_frame: ComWrapper<HostPlugFrame>,
-    pub(super) plug_frame_rx: Receiver<EditorSize>,
-    /// Cached processing latency in samples. Read once at load and re-read
-    /// whenever the plugin signals `kLatencyChanged` via `restartComponent`
-    /// (see [`Vst3Loaded::handle_restart_events`]). Owners poll
-    /// [`RestartOutcome::new_latency_samples`] to update PDC.
-    pub(super) latency_samples: u32,
-    /// `IMidiMapping` CC→parameter routing table, queried at load and re-built
-    /// on `kMidiCCAssignmentChanged`. Read (lock-free) by the audio path to
-    /// route mapped CCs into `inputParameterChanges`.
-    pub(super) midi_cc_mapping: MidiCcMapping,
 }
 
 /// Summary of the host-side state changes triggered by draining one or more
 /// `restartComponent(flags)` requests through
-/// [`Vst3Loaded::handle_restart_events`].
+/// [`Vst3Loaded::poll_plugin_notifications`].
 ///
 /// Lets the caller (the bridge/PDC owner) react to coalesced restart signals
-/// without re-deriving the bit math: e.g. push `new_latency_samples` to the
-/// host's plugin-delay-compensation, or re-pull the parameter list when
-/// `param_titles_changed`.
+/// without re-deriving the bit math: e.g. call
+/// [`Vst3Loaded::read_latency_samples`] when `latency_changed` is set, or
+/// re-pull the parameter list when `param_titles_changed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RestartOutcome {
-    /// `Some(n)` if `kLatencyChanged` fired and the re-read latency differs
-    /// from the previously-cached value; the new value in samples. `None` if
-    /// latency was not signalled or did not actually change.
-    pub new_latency_samples: Option<u32>,
+    /// `kLatencyChanged` fired — the caller should call
+    /// [`Vst3Loaded::read_latency_samples`] and push the result to PDC.
+    pub latency_changed: bool,
     /// `kParamValuesChanged` fired — the caller should re-read parameter
     /// values (host-cached automation state is stale).
     pub param_values_changed: bool,
@@ -214,12 +98,36 @@ impl RestartOutcome {
     }
 
     fn merge_flags(&mut self, flags: RestartFlags) {
+        self.latency_changed |= flags.latency_changed;
         self.param_values_changed |= flags.param_values_changed;
         self.param_titles_changed |= flags.param_titles_changed;
         self.io_changed |= flags.io_changed;
         self.midi_cc_assignment_changed |= flags.midi_cc_assignment_changed;
         self.reload_requested |= flags.reload_component;
     }
+}
+
+/// One batch of everything the plugin's editor pushed to the host since the
+/// last poll, returned by [`Vst3Loaded::poll_plugin_notifications`].
+///
+/// All four fields are independent; a typical idle tick has them all empty
+/// (`param_edits`/`progress`/`units` empty and `restart.is_empty()`).
+#[derive(Debug, Clone, Default)]
+pub struct PluginNotifications {
+    /// Non-restart parameter-edit events (`BeginEdit`/`PerformEdit`/`EndEdit`/
+    /// `SetDirty`/…) in arrival order. `RestartComponent` requests are folded
+    /// into `restart` instead of appearing here.
+    pub param_edits: Vec<ParameterEditEvent>,
+    /// Coalesced restart side-effects. `kIoChanged` was already acted on in
+    /// place; the remaining flags are for the caller (e.g. PDC on
+    /// `latency_changed`).
+    pub restart: RestartOutcome,
+    /// `IProgress` reports for long plugin operations (sample loading, offline
+    /// rendering) — drive a host progress indicator.
+    pub progress: Vec<ProgressEvent>,
+    /// `IUnitHandler` notifications: the user changed a unit / program inside
+    /// the plugin's own UI, or the unit↔bus mapping changed.
+    pub units: Vec<UnitEvent>,
 }
 
 impl Vst3Loaded {
@@ -255,13 +163,6 @@ impl Vst3Loaded {
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if
     /// `IPluginBase::initialize` fails.
     pub fn load(path: &Path) -> Result<Self> {
-        Self::load_with_info(path)
-    }
-
-    /// Shared constructor used by both [`Vst3Loaded::load`] and
-    /// [`Vst3Instance::load`]. Returns `Loaded` state; the caller decides
-    /// whether to [`activate`](Vst3Loaded::activate) it.
-    pub(super) fn load_with_info(path: &Path) -> Result<Self> {
         check_exists(path)?;
         let library = Vst3Library::load(path)?;
         ensure_has_classes(&library, path)?;
@@ -296,8 +197,6 @@ impl Vst3Loaded {
         let host_application = HostApplication::new("vst3-host");
         let (component_handler, param_event_rx, progress_event_rx, unit_event_rx) =
             ComponentHandler::new();
-        let (plug_frame, plug_frame_rx) = HostPlugFrame::new();
-        let latency_samples = unsafe { processor.getLatencySamples() };
 
         Self {
             _library: library,
@@ -315,18 +214,17 @@ impl Vst3Loaded {
             },
             editor: EditorState::Closed,
             info,
-            plug_frame,
-            plug_frame_rx,
-            latency_samples,
-            // Built in `initialize` once the controller is set up.
-            midi_cc_mapping: MidiCcMapping::empty(),
         }
     }
 
     /// Transition to the processing state. Runs `setupProcessing`, activates
     /// buses, calls `setActive(1)` and `setProcessing(1)`. Returns a
-    /// [`Vst3Instance`] that exposes `process()`.
-    pub fn activate(self, sample_rate: f64, block_size: usize) -> Result<Vst3Instance> {
+    /// [`Vst3Instance<T>`] that exposes `process()`.
+    ///
+    /// `T` fixes the sample format: `f32` (the default) uses `kSample32`;
+    /// `f64` uses `kSample64` and returns [`Vst3Error::NotSupported`] if the
+    /// plugin does not advertise 64-bit support.
+    pub fn activate<T: Vst3Sample>(self, sample_rate: f64, block_size: usize) -> Result<Vst3Instance<T>> {
         Vst3Instance::from_loaded(self, sample_rate, block_size)
     }
 
@@ -335,28 +233,13 @@ impl Vst3Loaded {
         &self.info
     }
 
-    /// True if the plugin advertises 64-bit float processing support.
-    pub fn supports_f64(&self) -> bool {
-        self.info.supports_f64
-    }
-
-    /// Processing latency in samples.
-    ///
-    /// Returns the cached value, which is read once at load and kept current
-    /// by [`handle_restart_events`](Self::handle_restart_events) whenever the
-    /// plugin signals `kLatencyChanged`. For a forced fresh read straight from
-    /// the processor use [`reread_latency_samples`](Self::reread_latency_samples).
-    pub fn get_latency_samples(&self) -> u32 {
-        self.latency_samples
-    }
-
-    /// Re-read latency straight from `IAudioProcessor::getLatencySamples`,
-    /// update the cache, and return the fresh value.
-    pub fn reread_latency_samples(&mut self) -> u32 {
+    /// Read the current processing latency directly from
+    /// `IAudioProcessor::getLatencySamples`. Call this at load time and
+    /// whenever [`RestartOutcome::latency_changed`] is set to get the fresh
+    /// value for PDC.
+    pub fn read_latency_samples(&self) -> u32 {
         tutti_plugin_types::assert_main_thread();
-        let latency = unsafe { self.interfaces.processor.getLatencySamples() };
-        self.latency_samples = latency;
-        latency
+        unsafe { self.interfaces.processor.getLatencySamples() }
     }
 
     /// Number of automatable parameters exposed by the edit controller.
@@ -398,96 +281,44 @@ impl Vst3Loaded {
         (result == kResultOk).then(|| Vst3ParameterInfo::from_c(&raw))
     }
 
-    /// Receiver for parameter-edit notifications emitted by the plugin's
-    /// editor (`beginEdit`/`performEdit`/`endEdit`, restart requests, etc.).
-    pub fn param_event_receiver(&self) -> &Receiver<ParameterEditEvent> {
-        &self.host.param_event_rx
-    }
-
-    /// Drain all currently-queued parameter-edit events without blocking.
-    pub fn poll_param_events(&self) -> Vec<ParameterEditEvent> {
-        self.host.param_event_rx.try_iter().collect()
-    }
-
-    /// Drain queued parameter-edit events, act on every
-    /// `RestartComponent(flags)` request, and return a coalesced
-    /// [`RestartOutcome`] describing the host-side state changes.
+    /// Drain every host-side notification channel the plugin's editor pushes
+    /// to and return them as one [`PluginNotifications`] batch.
     ///
-    /// This is the consumer the plugin's editor/automation thread expects: it
-    /// re-reads latency on `kLatencyChanged`, re-enumerates buses on
-    /// `kIoChanged`, and flags the rest for the caller. Non-restart events
-    /// (`BeginEdit`/`PerformEdit`/`EndEdit`/…) are returned untouched in
-    /// `events` so existing consumers (the GUI bridge) keep working — call
-    /// this *instead of* [`poll_param_events`](Self::poll_param_events) when
-    /// you want restart handling.
+    /// This is the single polling entry point for everything the plugin reports
+    /// asynchronously between process calls:
+    /// - **`param_edits`** — `BeginEdit`/`PerformEdit`/`EndEdit`/… in arrival
+    ///   order (the `RestartComponent` requests are stripped out and folded into
+    ///   `restart` instead).
+    /// - **`restart`** — coalesced [`RestartOutcome`]. `kIoChanged` is acted on
+    ///   in place (bus re-enumeration); `kLatencyChanged` and the rest are
+    ///   flagged for the caller (e.g. call
+    ///   [`read_latency_samples`](Self::read_latency_samples) on
+    ///   `restart.latency_changed`).
+    /// - **`progress`** — `IProgress` start/update/finish reports (long
+    ///   operations such as sample loading), for a host-drawn progress bar.
+    /// - **`units`** — `IUnitHandler` unit-selection / program-list / unit-by-bus
+    ///   changes the user made inside the plugin's own UI.
     ///
-    /// Returns `(events, outcome)` where `events` is every non-restart event,
-    /// in arrival order.
-    pub fn handle_restart_events(&mut self) -> (Vec<ParameterEditEvent>, RestartOutcome) {
+    /// Must be called on the main thread; not while inside
+    /// [`process`](Vst3Instance::process).
+    pub fn poll_plugin_notifications(&mut self) -> PluginNotifications {
         tutti_plugin_types::assert_main_thread();
-        let drained: Vec<ParameterEditEvent> = self.host.param_event_rx.try_iter().collect();
-        let mut outcome = RestartOutcome::default();
-        let mut passthrough = Vec::with_capacity(drained.len());
-        for event in drained {
+        let mut notifications = PluginNotifications::default();
+        for event in self.host.param_event_rx.try_iter().collect::<Vec<_>>() {
             match event {
                 ParameterEditEvent::RestartComponent(flags) => {
-                    self.apply_restart_flags(RestartFlags::from_bits(flags), &mut outcome);
+                    let flags = RestartFlags::from_bits(flags);
+                    if flags.io_changed {
+                        self.reconcile_bus_counts();
+                    }
+                    notifications.restart.merge_flags(flags);
                 }
-                other => passthrough.push(other),
+                other => notifications.param_edits.push(other),
             }
         }
-        (passthrough, outcome)
-    }
-
-    /// Apply a single decoded `RestartFlags` set: perform the COM re-reads the
-    /// host can do in-place and accumulate the rest into `outcome`.
-    ///
-    /// Re-reads handled here:
-    /// - `kLatencyChanged` → re-read `getLatencySamples`; record the new value
-    ///   in `outcome` only if it actually changed.
-    /// - `kIoChanged` → re-run bus-count enumeration so `info()` reflects the
-    ///   new layout (full arrangement renegotiation is V1).
-    ///
-    /// Everything else (`kParamValuesChanged`, `kParamTitlesChanged`,
-    /// `kMidiCCAssignmentChanged`, `kReloadComponent`) is recorded for the
-    /// caller to act on — the host cannot, for instance, reload the component
-    /// from behind a `&mut self` borrow.
-    fn apply_restart_flags(&mut self, flags: RestartFlags, outcome: &mut RestartOutcome) {
-        if flags.latency_changed {
-            let previous = self.latency_samples;
-            let fresh = self.reread_latency_samples();
-            if fresh != previous {
-                outcome.new_latency_samples = Some(fresh);
-            }
-        }
-        if flags.io_changed {
-            self.reconcile_bus_counts();
-        }
-        if flags.midi_cc_assignment_changed {
-            self.rebuild_midi_cc_mapping();
-        }
-        outcome.merge_flags(flags);
-    }
-
-    /// Receiver for plugin-reported progress events (long operations such as
-    /// sample loading).
-    pub fn progress_event_receiver(&self) -> &Receiver<ProgressEvent> {
-        &self.host.progress_event_rx
-    }
-
-    /// Drain all currently-queued progress events without blocking.
-    pub fn poll_progress_events(&self) -> Vec<ProgressEvent> {
-        self.host.progress_event_rx.try_iter().collect()
-    }
-
-    /// Receiver for unit / program-list change events.
-    pub fn unit_event_receiver(&self) -> &Receiver<UnitEvent> {
-        &self.host.unit_event_rx
-    }
-
-    /// Drain all currently-queued unit events without blocking.
-    pub fn poll_unit_events(&self) -> Vec<UnitEvent> {
-        self.host.unit_event_rx.try_iter().collect()
+        notifications.progress = self.host.progress_event_rx.try_iter().collect();
+        notifications.units = self.host.unit_event_rx.try_iter().collect();
+        notifications
     }
 
     /// Capture the plugin's component state as an opaque byte blob suitable
@@ -642,9 +473,10 @@ impl Vst3Loaded {
         #[cfg(target_os = "linux")]
         let platform_type = kPlatformTypeX11EmbedWindowID;
 
+        // Create a fresh frame/channel pair for this editor session.
         // setFrame must precede attached() per Steinberg spec.
-        let frame_ptr = self
-            .plug_frame
+        let (plug_frame, resize_rx) = HostPlugFrame::new();
+        let frame_ptr = plug_frame
             .as_com_ref::<vst3::Steinberg::IPlugFrame>()
             .map(|r| r.as_ptr())
             .unwrap_or(std::ptr::null_mut());
@@ -661,7 +493,7 @@ impl Vst3Loaded {
         }
 
         let (width, height) = query_view_size(&view).unwrap_or(DEFAULT_EDITOR_SIZE);
-        self.editor = EditorState::Open(view);
+        self.editor = EditorState::Open { view, plug_frame, resize_rx };
 
         Ok(EditorSize { width, height })
     }
@@ -679,7 +511,7 @@ impl Vst3Loaded {
     /// instance. The public [`close_editor`](Self::close_editor) asserts;
     /// this does not.
     fn close_editor_inner(&mut self) {
-        if let EditorState::Open(view) = std::mem::replace(&mut self.editor, EditorState::Closed) {
+        if let EditorState::Open { view, .. } = std::mem::replace(&mut self.editor, EditorState::Closed) {
             unsafe {
                 view.removed();
             }
@@ -687,7 +519,7 @@ impl Vst3Loaded {
     }
 
     pub fn editor_capabilities(&self) -> EditorCapabilities {
-        let EditorState::Open(view) = &self.editor else {
+        let EditorState::Open { view, .. } = &self.editor else {
             return EditorCapabilities::default();
         };
         let resizable = unsafe { view.canResize() } == kResultOk;
@@ -703,11 +535,11 @@ impl Vst3Loaded {
     /// Coalesces multiple `IPlugFrame::resizeView` requests received
     /// since the last poll, returning only the latest.
     pub fn poll_editor_resize_request(&mut self) -> Option<EditorSize> {
-        if !matches!(self.editor, EditorState::Open(_)) {
+        let EditorState::Open { resize_rx, .. } = &self.editor else {
             return None;
-        }
+        };
         let mut latest = None;
-        while let Ok(size) = self.plug_frame_rx.try_recv() {
+        while let Ok(size) = resize_rx.try_recv() {
             latest = Some(size);
         }
         latest
@@ -715,7 +547,7 @@ impl Vst3Loaded {
 
     /// Returns the snapped size the plugin applied.
     pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
-        let EditorState::Open(view) = &self.editor else {
+        let EditorState::Open { view, .. } = &self.editor else {
             return Err(Vst3Error::NotSupported("editor not open".to_string()));
         };
         let mut rect = ViewRect {
@@ -779,17 +611,7 @@ impl Vst3Loaded {
         }
 
         self.attach_component_handler();
-        self.rebuild_midi_cc_mapping();
         Ok(())
-    }
-
-    /// (Re)query the `IMidiMapping` CC→parameter table from the controller.
-    /// Called once at `initialize` and again whenever the plugin signals
-    /// `kMidiCCAssignmentChanged`. UI/main-thread only — `IMidiMapping` is an
-    /// `IEditController` extension.
-    fn rebuild_midi_cc_mapping(&mut self) {
-        tutti_plugin_types::assert_main_thread();
-        self.midi_cc_mapping = MidiCcMapping::query(self.interfaces.controller.as_ref());
     }
 
     /// `IHostApplication` upcast to `FUnknown`, with a +1 refcount that the
@@ -810,12 +632,12 @@ impl Vst3Loaded {
     /// Re-query bus counts from the component — `initialize` may have changed
     /// them (some plugins don't declare bus counts until after init).
     fn reconcile_bus_counts(&mut self) {
-        if let Some(ch) = get_bus_channel_count(&self.interfaces.component, K_INPUT, 0) {
+        if let Some(ch) = self.interfaces.component.audio_bus_channel_count(K_INPUT, 0) {
             if ch != self.info.num_inputs {
                 self.info = self.info.clone().audio_io(ch, self.info.num_outputs);
             }
         }
-        if let Some(ch) = get_bus_channel_count(&self.interfaces.component, K_OUTPUT, 1) {
+        if let Some(ch) = self.interfaces.component.audio_bus_channel_count(K_OUTPUT, 1) {
             if ch != self.info.num_outputs {
                 self.info = self.info.clone().audio_io(self.info.num_inputs, ch);
             }
@@ -823,8 +645,8 @@ impl Vst3Loaded {
         // Re-enumerate the full per-bus layout — `initialize` may have changed
         // bus counts, and aux/sidechain buses are only visible post-init on
         // some plugins.
-        let input_bus_channels = enumerate_bus_channels(&self.interfaces.component, K_INPUT);
-        let output_bus_channels = enumerate_bus_channels(&self.interfaces.component, K_OUTPUT);
+        let input_bus_channels = self.interfaces.component.audio_bus_channels(K_INPUT);
+        let output_bus_channels = self.interfaces.component.audio_bus_channels(K_OUTPUT);
         self.info = self
             .info
             .clone()
@@ -920,7 +742,7 @@ fn query_view_size(view: &ComPtr<IPlugView>) -> Option<(u32, u32)> {
 
 /// Assemble `PluginInfo` from already-queried interfaces. Used by both
 /// [`Vst3Loaded::probe`] (which may not own an `IAudioProcessor`) and
-/// [`Vst3Loaded::load_with_info`] (which does).
+/// [`Vst3Loaded::load`] (which does).
 fn build_plugin_info_raw(
     library: &Vst3Library,
     component: &ComPtr<IComponent>,
@@ -931,10 +753,10 @@ fn build_plugin_info_raw(
         .get_factory_info()
         .map(|info| info.vendor)
         .unwrap_or_default();
-    let num_inputs = get_bus_channel_count(component, K_INPUT, 0).unwrap_or(0);
-    let num_outputs = get_bus_channel_count(component, K_OUTPUT, 1).unwrap_or(2);
-    let input_bus_channels = enumerate_bus_channels(component, K_INPUT);
-    let output_bus_channels = enumerate_bus_channels(component, K_OUTPUT);
+    let num_inputs = component.audio_bus_channel_count(K_INPUT, 0).unwrap_or(0);
+    let num_outputs = component.audio_bus_channel_count(K_OUTPUT, 1).unwrap_or(2);
+    let input_bus_channels = component.audio_bus_channels(K_INPUT);
+    let output_bus_channels = component.audio_bus_channels(K_OUTPUT);
     let supports_f64 = processor
         .map(|p| unsafe { p.canProcessSampleSize(crate::types::K_SAMPLE_64_INT) == kResultOk })
         .unwrap_or(false);
@@ -1027,8 +849,7 @@ mod restart_outcome_tests {
         assert!(outcome.io_changed);
         assert!(!outcome.reload_requested);
         assert!(!outcome.is_empty());
-        // Latency is set only by the COM re-read path, never by merge_flags.
-        assert_eq!(outcome.new_latency_samples, None);
+        assert!(!outcome.latency_changed);
     }
 
     #[test]

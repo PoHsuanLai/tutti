@@ -18,7 +18,7 @@ pub mod host;
 pub mod types;
 
 pub use error::{LoadStage, Result, Vst3Error};
-pub use host::{RestartOutcome, Vst3Instance, Vst3Library, Vst3Loaded};
+pub use host::{PluginNotifications, RestartOutcome, Vst3Instance, Vst3Library, Vst3Loaded};
 pub use types::{
     parameter_flags, to_process_context, vst3_event_from_midi, vst3_to_midi_event, AudioBuffer,
     BufferPtrs, BusInfo, EditorCapabilities, EditorSize, MidiEvent, NoteExpressionType,

@@ -72,22 +72,26 @@ pub fn midi_routing_sync_system(
         return;
     }
 
-    let table = graph.0.midi_route_mut();
-    table.clear();
+    let mut routes = Vec::new();
+    let mut fallback = None;
     for receiver in all_receivers.iter() {
         let unit_id = tutti_midi_types::MidiUnitId::new(receiver.node_id.value());
-        if let Some(ch) = receiver.channel {
-            table.channel(ch, unit_id);
-        } else {
-            table.fallback(unit_id);
+        match receiver.channel {
+            Some(ch) => {
+                routes.push(tutti_midi_types::MidiRoute::for_channel(ch).with_target(unit_id))
+            }
+            // Channel-less receivers route every channel via the fallback.
+            None => fallback = Some(unit_id),
         }
     }
 
-    // MPE receivers route all channels to one synth via fallback
+    // MPE receivers route all channels to one synth via the fallback.
     #[cfg(feature = "mpe")]
     for mpe_recv in mpe.all.iter() {
-        table.fallback(tutti_midi_types::MidiUnitId::new(mpe_recv.node_id.value()));
+        fallback = Some(tutti_midi_types::MidiUnitId::new(mpe_recv.node_id.value()));
     }
+
+    graph.0.midi_route_mut().set_routes(routes, fallback);
 
     // The staged route-table edits are published by the Commit-phase
     // `commit_graph` — `AudioGraph::commit()` flushes both the fundsp net

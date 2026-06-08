@@ -10,7 +10,7 @@ categories = ["multimedia::audio"]
 readme = "README.md"
 
 [dependencies]
-libloading = "0.8"
+libloading = "0.9"
 thiserror = "2"
 smallvec = "1.13"
 parking_lot = "0.12"

@@ -12,6 +12,44 @@ use smallvec::SmallVec;
 /// table on a mono bus then stays in-bounds (the extra slot points at `aux`).
 pub(super) const MIN_PTR_COUNT: usize = 2;
 
+/// The resolved scratch sizing for one process direction, derived from a
+/// plugin's per-bus channel layout.
+///
+/// Both the initial sizing (from the `PluginInfo` snapshot) and the
+/// post-activation re-sync (from the live component, since some plugins only
+/// finalise their arrangement once active) reduce to the same computation:
+/// given the per-bus channel vec plus the main-bus channel count, produce the
+/// flat `BufferPtrs` width and the per-bus [`BusBuffers`] scratch.
+pub(super) struct DirectionScratch {
+    /// Per-bus `AudioBusBuffers` scratch for this direction.
+    pub buses: BusBuffers,
+    /// Flat `BufferPtrs` width: the per-direction channel total (main +
+    /// sidechain/aux), clamped to [`MIN_PTR_COUNT`]. The flat caller buffer
+    /// carries every bus's channels in bus order, so sizing to just the main
+    /// bus would truncate sidechain channels before they reach `prepare`.
+    pub ptr_count: usize,
+}
+
+impl DirectionScratch {
+    /// Resolve one direction from its per-bus channel layout.
+    ///
+    /// `bus_channels` is the live per-bus channel count vec (empty == a single
+    /// bus of `main_channels`); `main_channels` is bus 0's channel count, used
+    /// as the fallback and to size the per-bus scratch. `block_size` sizes the
+    /// aux silence/sink block.
+    pub fn resolve(bus_channels: &[usize], main_channels: usize, block_size: usize) -> Self {
+        let total: usize = if bus_channels.is_empty() {
+            main_channels
+        } else {
+            bus_channels.iter().sum()
+        };
+        Self {
+            buses: BusBuffers::new(bus_channels, main_channels, block_size),
+            ptr_count: total.max(MIN_PTR_COUNT),
+        }
+    }
+}
+
 /// Build an `AudioBusBuffers` from a channel count and a raw pointer-array.
 ///
 /// The `channelBuffers32`/`channelBuffers64` union members are the same

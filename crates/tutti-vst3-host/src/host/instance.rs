@@ -28,9 +28,9 @@ use crate::types::{
     PluginInfo, ProcessOutputRef, TransportInfo, Vst3Sample,
 };
 
-use super::bus_buffers::{BusBuffers, MIN_PTR_COUNT};
+use super::bus_buffers::{BusBuffers, DirectionScratch};
 use super::loaded::Vst3Loaded;
-use super::midi_mapping::MidiCcMapping;
+use super::midi_mapping::{CcRoute, MidiCcMapping};
 use super::{IComponentExt, K_INPUT, K_OUTPUT};
 
 pub(super) const K_EVENT: i32 = kEvent as i32;
@@ -78,15 +78,35 @@ struct OutputStaging {
     emitted_param_changes: ParameterChanges,
 }
 
-/// Pooled scratch for the `IMidiMapping` CC→param routing pass. When the plugin
-/// has a non-empty mapping, mapped CC/aftertouch/pitch-bend events are pulled
-/// out of the input MIDI into `filtered_midi` (the events that still reach the
-/// plugin's event list) while their parameter points are merged into
-/// `param_changes` alongside the host's automation. Both are reused across
-/// blocks to keep the routing pass allocation-free.
-struct CcRouteScratch {
-    filtered_midi: SmallVec<[MidiEvent; 64]>,
-    param_changes: ParameterChanges,
+impl OutputStaging {
+    /// Reset the emitted-event return pools so a borrow into them reads empty.
+    /// Called at the top of every `process` block: the bail-out paths return
+    /// `emitted_ref()` directly, and the steady-state path then drains the
+    /// plugin's fresh events in. Clears in place, keeping heap capacity.
+    fn clear_emitted(&mut self) {
+        self.emitted_midi.clear();
+        for queue in self.emitted_param_changes.queues.iter_mut() {
+            queue.points.clear();
+        }
+        self.emitted_param_changes.queues.clear();
+    }
+
+    /// Borrow the emitted-event return pools as a [`ProcessOutputRef`].
+    fn emitted_ref(&self) -> ProcessOutputRef<'_> {
+        ProcessOutputRef {
+            midi_events: &self.emitted_midi,
+            parameter_changes: &self.emitted_param_changes,
+        }
+    }
+
+    /// Drain the plugin's emitted events from the COM output lists into the
+    /// return pools. Both `fill_*` clear their destination first and reuse its
+    /// heap capacity, so this is allocation-free after warmup.
+    fn drain_emitted(&mut self) {
+        self.events.fill_midi_events(&mut self.emitted_midi);
+        self.param_changes
+            .fill_changes(&mut self.emitted_param_changes);
+    }
 }
 
 /// All the per-block scratch the realtime `process()` loop needs, grouped to
@@ -102,7 +122,7 @@ struct AudioIO<T> {
     ptrs: BufferPtrs<T>,
     input: InputStaging,
     output: OutputStaging,
-    cc: CcRouteScratch,
+    cc: CcRoute,
 }
 
 /// Fully-active VST3 plugin ready to process audio.
@@ -119,11 +139,6 @@ struct AudioIO<T> {
 pub struct Vst3Instance<T: Vst3Sample = f32> {
     loaded: Vst3Loaded,
     audio: AudioIO<T>,
-    /// `IMidiMapping` CC→parameter routing table. Built at activation from the
-    /// controller's `IMidiMapping` interface and re-built when the caller
-    /// responds to [`RestartOutcome::midi_cc_assignment_changed`] by calling
-    /// [`rebuild_midi_cc_mapping`](Self::rebuild_midi_cc_mapping).
-    midi_cc_mapping: MidiCcMapping,
 }
 
 impl<T: Vst3Sample> Vst3Instance<T> {
@@ -168,16 +183,20 @@ impl<T: Vst3Sample> Vst3Instance<T> {
 
         let num_input_channels = loaded.info.num_inputs;
         let num_output_channels = loaded.info.num_outputs;
-        // The flat `BufferPtrs` arrays carry every bus's channels in bus order
-        // (main + sidechain/aux), so size them to the per-direction totals —
-        // not just bus 0 — or the flat caller buffer would be truncated to the
-        // main bus and the sidechain channels would never reach `prepare`.
-        let total_input_channels = loaded.info.total_input_channels();
-        let total_output_channels = loaded.info.total_output_channels();
-        let input_ptr_count = total_input_channels.max(MIN_PTR_COUNT);
-        let output_ptr_count = total_output_channels.max(MIN_PTR_COUNT);
-        let input_bus_channels = loaded.info.input_bus_channels.clone();
-        let output_bus_channels = loaded.info.output_bus_channels.clone();
+        // Resolve the per-direction scratch from the initial bus layout in the
+        // PluginInfo snapshot. `activate_buses` re-resolves the same way from
+        // the live component afterward, since some plugins only finalise their
+        // arrangement once active.
+        let in_scratch = DirectionScratch::resolve(
+            &loaded.info.input_bus_channels,
+            num_input_channels,
+            block_size,
+        );
+        let out_scratch = DirectionScratch::resolve(
+            &loaded.info.output_bus_channels,
+            num_output_channels,
+            block_size,
+        );
 
         let mut emitted_param_changes = ParameterChanges::new();
         // SmallVec doesn't expose a sized constructor for inline capacity;
@@ -192,27 +211,23 @@ impl<T: Vst3Sample> Vst3Instance<T> {
                 num_input_channels,
                 num_output_channels,
             },
-            ptrs: BufferPtrs::new(input_ptr_count, output_ptr_count),
+            ptrs: BufferPtrs::new(in_scratch.ptr_count, out_scratch.ptr_count),
             input: InputStaging {
-                buses: BusBuffers::new(&input_bus_channels, num_input_channels, block_size),
+                buses: in_scratch.buses,
                 events: EventList::new(),
                 param_changes: ParameterChangesImpl::new_empty(),
             },
             output: OutputStaging {
-                buses: BusBuffers::new(&output_bus_channels, num_output_channels, block_size),
+                buses: out_scratch.buses,
                 events: EventList::new(),
                 param_changes: ParameterChangesImpl::new_empty(),
                 emitted_midi: SmallVec::new(),
                 emitted_param_changes,
             },
-            cc: CcRouteScratch {
-                filtered_midi: SmallVec::new(),
-                param_changes: ParameterChanges::new(),
-            },
+            cc: CcRoute::new(MidiCcMapping::query(loaded.interfaces.controller.as_ref())),
         };
 
-        let midi_cc_mapping = MidiCcMapping::query(loaded.interfaces.controller.as_ref());
-        let mut instance = Self { loaded, audio, midi_cc_mapping };
+        let mut instance = Self { loaded, audio };
         instance.apply_process_setup()?;
         instance.activate_buses()?;
         instance.set_active(true)?;
@@ -231,41 +246,12 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         loaded
     }
 
-    /// Sample rate in Hz that was applied to `setupProcessing`.
-    pub fn sample_rate(&self) -> f64 {
-        self.audio.config.sample_rate
-    }
-
     /// Change the sample rate and re-run `setupProcessing`. Must be called
     /// only when not inside [`process`](Self::process).
     pub fn set_sample_rate(&mut self, rate: f64) -> &mut Self {
         self.audio.config.sample_rate = rate;
         let _ = self.apply_process_setup();
         self
-    }
-
-    /// Maximum block size (samples per channel) that was applied to
-    /// `setupProcessing`.
-    pub fn block_size(&self) -> usize {
-        self.audio.config.block_size
-    }
-
-    /// Change the maximum block size and re-run `setupProcessing`. Must be
-    /// called only when not inside [`process`](Self::process).
-    pub fn set_block_size(&mut self, size: usize) -> &mut Self {
-        self.audio.config.block_size = size;
-        let _ = self.apply_process_setup();
-        self
-    }
-
-    /// Input channels the plugin will read on bus 0.
-    pub fn num_input_channels(&self) -> usize {
-        self.audio.config.num_input_channels
-    }
-
-    /// Output channels the plugin will write on bus 0.
-    pub fn num_output_channels(&self) -> usize {
-        self.audio.config.num_output_channels
     }
 
     /// Run one realtime processing block.
@@ -287,23 +273,13 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         note_expressions: &[NoteExpressionValue],
         transport: &TransportInfo,
     ) -> ProcessOutputRef<'_> {
-        // Clear pooled return buffers up front so:
-        // 1. the bail-out paths below return a borrow into known-empty
-        //    state without separately constructing an empty owned output,
-        // 2. the steady-state path can `fill_*` into them with the
-        //    plugin's freshly-pushed events.
-        self.audio.output.emitted_midi.clear();
-        // Clear inline points without dropping heap capacity.
-        for queue in self.audio.output.emitted_param_changes.queues.iter_mut() {
-            queue.points.clear();
-        }
-        self.audio.output.emitted_param_changes.queues.clear();
+        // Reset the return pools up front so the bail-out paths below return a
+        // borrow into known-empty state, and the steady-state path drains the
+        // plugin's fresh events into them.
+        self.audio.output.clear_emitted();
 
         if buffer.num_samples == 0 {
-            return ProcessOutputRef {
-                midi_events: &self.audio.output.emitted_midi,
-                parameter_changes: &self.audio.output.emitted_param_changes,
-            };
+            return self.audio.output.emitted_ref();
         }
         let processor = self.loaded.interfaces.processor.clone();
 
@@ -332,18 +308,16 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             )
         };
 
-        // Route IMidiMapping-mapped CCs into parameter changes. When the
-        // plugin exposes a non-empty CC→param table, mapped CC/aftertouch/
-        // pitch-bend events are pulled out of the MIDI stream and merged into
-        // a scratch ParameterChanges alongside the host's automation; the
-        // remaining MIDI events still go to the event list. Returns whether
-        // the routing pass took ownership of the staged events / params.
-        let cc_routed = self.route_midi_cc(midi_events, param_changes);
+        // Route IMidiMapping-mapped CCs into parameter changes. When the plugin
+        // exposes a non-empty CC→param table, `CcRoute::route` pulls mapped
+        // CC/aftertouch/pitch-bend events out of the MIDI stream and merges them
+        // into its scratch ParameterChanges alongside the host's automation,
+        // returning the filtered MIDI + merged params to forward; otherwise the
+        // caller's own inputs are forwarded untouched.
         let (effective_midi, effective_params): (&[MidiEvent], Option<&ParameterChanges>) =
-            if cc_routed {
-                (&self.audio.cc.filtered_midi, Some(&self.audio.cc.param_changes))
-            } else {
-                (midi_events, param_changes)
+            match self.audio.cc.route(midi_events, param_changes) {
+                Some((midi, params)) => (midi, Some(params)),
+                None => (midi_events, param_changes),
             };
 
         // Stage the (possibly CC-filtered) MIDI plus note expressions into the
@@ -399,97 +373,23 @@ impl<T: Vst3Sample> Vst3Instance<T> {
 
         if result != kResultOk {
             buffer.clear_outputs();
-            return ProcessOutputRef {
-                midi_events: &self.audio.output.emitted_midi,
-                parameter_changes: &self.audio.output.emitted_param_changes,
-            };
+            return self.audio.output.emitted_ref();
         }
 
-        // Drain the plugin's emitted events into the pooled return
-        // buffers. Both `fill_*` clear their destination first and
-        // reuse the destination's heap capacity.
-        let output = &mut self.audio.output;
-        output.events.fill_midi_events(&mut output.emitted_midi);
-        output
-            .param_changes
-            .fill_changes(&mut output.emitted_param_changes);
-
-        ProcessOutputRef {
-            midi_events: &self.audio.output.emitted_midi,
-            parameter_changes: &self.audio.output.emitted_param_changes,
-        }
-    }
-
-    /// Route `IMidiMapping`-mapped controllers into parameter changes.
-    ///
-    /// When the plugin exposes a non-empty CC→param table, this walks
-    /// `midi_events` and, for each mapped CC / channel-pressure / pitch-bend
-    /// message, appends a normalized parameter point to `cc_param_changes`
-    /// (seeded with the host's `param_changes`) and *omits* that event from
-    /// `cc_filtered_midi`. Unmapped events (notes, unmapped CCs, …) pass
-    /// through to `cc_filtered_midi` unchanged.
-    ///
-    /// Returns `true` when routing happened and the caller should use the
-    /// scratch buffers; `false` (no work) when the plugin has no mapping —
-    /// the common case for effects and simple instruments, so the hot path
-    /// pays nothing.
-    ///
-    /// Allocation-free after warmup: both scratch buffers are cleared in place
-    /// and reuse their heap capacity. Decoding goes through MIDI-1 bytes, the
-    /// same lossless path `vst3_event_from_midi` already uses for events.
-    fn route_midi_cc(
-        &mut self,
-        midi_events: &[MidiEvent],
-        param_changes: Option<&ParameterChanges>,
-    ) -> bool {
-        if self.midi_cc_mapping.is_empty() {
-            return false;
-        }
-
-        // Clear scratch in place (keep heap capacity).
-        self.audio.cc.filtered_midi.clear();
-        for queue in self.audio.cc.param_changes.queues.iter_mut() {
-            queue.points.clear();
-        }
-        self.audio.cc.param_changes.queues.clear();
-
-        // Seed the merged param changes with the host's automation.
-        if let Some(pc) = param_changes {
-            for queue in &pc.queues {
-                for point in &queue.points {
-                    self.audio.cc.param_changes.add_change(
-                        queue.param_id,
-                        point.sample_offset,
-                        point.value,
-                    );
-                }
-            }
-        }
-
-        super::midi_mapping::route_cc_events(
-            &self.midi_cc_mapping,
-            midi_events,
-            &mut self.audio.cc.filtered_midi,
-            &mut self.audio.cc.param_changes,
-        );
-
-        // VST3 requires each IParamValueQueue's points in ascending
-        // sampleOffset order; seeding + appending can leave them unsorted.
-        super::midi_mapping::sort_param_points(&mut self.audio.cc.param_changes);
-
-        true
+        self.audio.output.drain_emitted();
+        self.audio.output.emitted_ref()
     }
 
     /// Re-query the `IMidiMapping` CC→parameter table from the controller.
     /// Call this when [`RestartOutcome::midi_cc_assignment_changed`] is set.
     pub fn rebuild_midi_cc_mapping(&mut self) {
         tutti_plugin_types::assert_main_thread();
-        self.midi_cc_mapping = MidiCcMapping::query(self.loaded.interfaces.controller.as_ref());
+        self.audio.cc.mapping = MidiCcMapping::query(self.loaded.interfaces.controller.as_ref());
     }
 
     /// Tell the plugin's audio processor to idle. Safe to call repeatedly;
-    /// `Drop` calls this automatically.
-    pub fn stop_processing(&mut self) {
+    /// `deactivate` and `Drop` call it during teardown.
+    fn stop_processing(&mut self) {
         unsafe {
             self.loaded.interfaces.processor.setProcessing(0);
         }
@@ -514,59 +414,38 @@ impl<T: Vst3Sample> Vst3Instance<T> {
 
     fn activate_buses(&mut self) -> Result<()> {
         const K_AUDIO: i32 = super::K_AUDIO;
+        let component = &self.loaded.interfaces.component;
         unsafe {
-            let component = &self.loaded.interfaces.component;
             for i in 0..component.getBusCount(K_AUDIO, K_INPUT) {
                 component.activateBus(K_AUDIO, K_INPUT, i, 1);
             }
             for i in 0..component.getBusCount(K_AUDIO, K_OUTPUT) {
                 component.activateBus(K_AUDIO, K_OUTPUT, i, 1);
             }
-
-            // Re-sync channel counts after bus activation — some plugins only
-            // finalise their bus arrangement once activated.
-            if let Some(ch) = component.audio_bus_channel_count(K_INPUT, 0) {
-                if ch != self.audio.config.num_input_channels {
-                    self.audio.config.num_input_channels = ch;
-                    self.audio.ptrs.resize_inputs(ch.max(MIN_PTR_COUNT));
-                }
-            }
-            if let Some(ch) = component.audio_bus_channel_count(K_OUTPUT, 1) {
-                if ch != self.audio.config.num_output_channels {
-                    self.audio.config.num_output_channels = ch;
-                    self.audio.ptrs.resize_outputs(ch.max(MIN_PTR_COUNT));
-                }
-            }
-
-            // Some plugins only finalise their full bus arrangement once
-            // activated; re-enumerate every bus and rebuild the per-bus
-            // scratch so the RT `process` path sees the live layout. Setup-time
-            // only — never on the audio thread.
-            let input_bus_channels = component.audio_bus_channels(K_INPUT);
-            let output_bus_channels = component.audio_bus_channels(K_OUTPUT);
-            let block_size = self.audio.config.block_size;
-            // Re-size the flat pointer arrays to the live per-direction totals
-            // (main + sidechain/aux) so a multi-bus flat caller buffer isn't
-            // truncated to the main bus. No-op for single-bus plugins.
-            let total_in: usize = input_bus_channels.iter().sum();
-            let total_out: usize = output_bus_channels.iter().sum();
-            if total_in > self.audio.config.num_input_channels {
-                self.audio.ptrs.resize_inputs(total_in.max(MIN_PTR_COUNT));
-            }
-            if total_out > self.audio.config.num_output_channels {
-                self.audio.ptrs.resize_outputs(total_out.max(MIN_PTR_COUNT));
-            }
-            self.audio.input.buses = BusBuffers::new(
-                &input_bus_channels,
-                self.audio.config.num_input_channels,
-                block_size,
-            );
-            self.audio.output.buses = BusBuffers::new(
-                &output_bus_channels,
-                self.audio.config.num_output_channels,
-                block_size,
-            );
         }
+
+        // Re-resolve the per-bus scratch from the live component — some plugins
+        // only finalise their bus arrangement once activated, so the layout can
+        // differ from the PluginInfo snapshot used in `from_loaded`. Setup-time
+        // only; never on the audio thread.
+        let num_in = component
+            .audio_bus_channel_count(K_INPUT, 0)
+            .unwrap_or(self.audio.config.num_input_channels);
+        let num_out = component
+            .audio_bus_channel_count(K_OUTPUT, 1)
+            .unwrap_or(self.audio.config.num_output_channels);
+        let block_size = self.audio.config.block_size;
+        let in_scratch =
+            DirectionScratch::resolve(&component.audio_bus_channels(K_INPUT), num_in, block_size);
+        let out_scratch =
+            DirectionScratch::resolve(&component.audio_bus_channels(K_OUTPUT), num_out, block_size);
+
+        self.audio.config.num_input_channels = num_in;
+        self.audio.config.num_output_channels = num_out;
+        self.audio.ptrs.resize_inputs(in_scratch.ptr_count);
+        self.audio.ptrs.resize_outputs(out_scratch.ptr_count);
+        self.audio.input.buses = in_scratch.buses;
+        self.audio.output.buses = out_scratch.buses;
         Ok(())
     }
 

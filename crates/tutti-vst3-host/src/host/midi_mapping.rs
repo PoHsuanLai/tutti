@@ -210,6 +210,92 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
     }
 }
 
+/// The `IMidiMapping` CC→param routing concern as a per-block unit: the
+/// controller-queried mapping table plus the pooled scratch the routing pass
+/// needs. Held by `Vst3Instance`'s `AudioIO`.
+///
+/// When `mapping` is non-empty, mapped CC/aftertouch/pitch-bend events are
+/// pulled out of the input MIDI into `filtered_midi` (the events that still
+/// reach the plugin's event list) while their parameter points are merged into
+/// `param_changes` alongside the host's automation. The scratch buffers are
+/// reused across blocks to keep the routing pass allocation-free; `mapping` is
+/// rebuilt only when the plugin signals `kMidiCCAssignmentChanged` (see
+/// [`Vst3Instance::rebuild_midi_cc_mapping`](crate::Vst3Instance)).
+pub(crate) struct CcRoute {
+    pub(crate) mapping: MidiCcMapping,
+    filtered_midi: SmallVec<[MidiEvent; 64]>,
+    param_changes: ParameterChanges,
+}
+
+impl CcRoute {
+    /// Build with an empty mapping queried from `controller`, plus empty
+    /// scratch. The scratch grows once on first use and is reused thereafter.
+    pub(crate) fn new(mapping: MidiCcMapping) -> Self {
+        Self {
+            mapping,
+            filtered_midi: SmallVec::new(),
+            param_changes: ParameterChanges::new(),
+        }
+    }
+
+    /// Route `IMidiMapping`-mapped controllers into parameter changes, returning
+    /// the MIDI + params the plugin should actually receive this block.
+    ///
+    /// When the mapping is non-empty, walks `midi_events` and, for each mapped
+    /// CC / channel-pressure / pitch-bend message, appends a normalized
+    /// parameter point to the scratch `param_changes` (seeded with the host's
+    /// `param_changes`) and *omits* that event from the scratch `filtered_midi`.
+    /// Unmapped events (notes, unmapped CCs, …) pass through unchanged. Returns
+    /// `Some((filtered_midi, merged_params))` borrowing the scratch.
+    ///
+    /// Returns `None` when the plugin has no mapping — the common case for
+    /// effects and simple instruments, so the caller forwards its inputs
+    /// untouched and the hot path pays nothing.
+    ///
+    /// Allocation-free after warmup: both scratch buffers are cleared in place
+    /// and reuse their heap capacity. Decoding goes through MIDI-1 bytes, the
+    /// same lossless path `vst3_event_from_midi` already uses for events.
+    pub(crate) fn route(
+        &mut self,
+        midi_events: &[MidiEvent],
+        param_changes: Option<&ParameterChanges>,
+    ) -> Option<(&[MidiEvent], &ParameterChanges)> {
+        if self.mapping.is_empty() {
+            return None;
+        }
+
+        // Clear scratch in place (keep heap capacity).
+        self.filtered_midi.clear();
+        for queue in self.param_changes.queues.iter_mut() {
+            queue.points.clear();
+        }
+        self.param_changes.queues.clear();
+
+        // Seed the merged param changes with the host's automation.
+        if let Some(pc) = param_changes {
+            for queue in &pc.queues {
+                for point in &queue.points {
+                    self.param_changes
+                        .add_change(queue.param_id, point.sample_offset, point.value);
+                }
+            }
+        }
+
+        route_cc_events(
+            &self.mapping,
+            midi_events,
+            &mut self.filtered_midi,
+            &mut self.param_changes,
+        );
+
+        // VST3 requires each IParamValueQueue's points in ascending
+        // sampleOffset order; seeding + appending can leave them unsorted.
+        sort_param_points(&mut self.param_changes);
+
+        Some((&self.filtered_midi, &self.param_changes))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

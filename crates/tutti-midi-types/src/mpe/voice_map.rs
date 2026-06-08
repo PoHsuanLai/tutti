@@ -8,7 +8,11 @@ pub struct MpeChannelVoiceMap {
     pub channel_to_note: [Option<u8>; 16],
     /// Note number -> channel
     pub note_to_channel: [Option<u8>; 128],
-    next_channel_index: usize,
+    /// Assignment stamp per channel: the value of `clock` when the channel's
+    /// current note was assigned. Used to pick the oldest voice when stealing.
+    assigned_at: [u64; 16],
+    /// Monotonic counter bumped on every assignment.
+    clock: u64,
     zone_config: MpeZoneConfig,
 }
 
@@ -17,12 +21,14 @@ impl MpeChannelVoiceMap {
         Self {
             channel_to_note: [None; 16],
             note_to_channel: [None; 128],
-            next_channel_index: 0,
+            assigned_at: [0; 16],
+            clock: 0,
             zone_config,
         }
     }
 
-    /// Round-robin channel allocation with voice stealing when exhausted.
+    /// Allocate a member channel for `note`, stealing the oldest sounding
+    /// voice when all member channels are occupied.
     pub fn assign_note(&mut self, note: u8) -> Option<u8> {
         if note >= 128 {
             return None;
@@ -33,28 +39,29 @@ impl MpeChannelVoiceMap {
         }
 
         let member_range = self.zone_config.member_channel_range();
-        let member_count = *member_range.end() - *member_range.start() + 1;
 
-        for offset in 0..member_count {
-            let index = (self.next_channel_index + offset as usize) % member_count as usize;
-            let channel = *member_range.start() + index as u8;
+        // Prefer any free channel; among free channels the lowest is fine.
+        let free = member_range
+            .clone()
+            .find(|&ch| self.channel_to_note[ch as usize].is_none());
 
-            if self.channel_to_note[channel as usize].is_none() {
-                self.channel_to_note[channel as usize] = Some(note);
-                self.note_to_channel[note as usize] = Some(channel);
-                self.next_channel_index = (index + 1) % member_count as usize;
-                return Some(channel);
-            }
-        }
+        let channel = match free {
+            Some(ch) => ch,
+            // All occupied — steal the channel whose note was assigned
+            // longest ago (smallest stamp).
+            None => member_range
+                .clone()
+                .min_by_key(|&ch| self.assigned_at[ch as usize])
+                .expect("MPE zone always has at least one member channel"),
+        };
 
-        // Voice stealing: reuse the oldest channel (round-robin)
-        let channel = *member_range.start() + self.next_channel_index as u8;
         if let Some(old_note) = self.channel_to_note[channel as usize] {
             self.note_to_channel[old_note as usize] = None;
         }
         self.channel_to_note[channel as usize] = Some(note);
         self.note_to_channel[note as usize] = Some(channel);
-        self.next_channel_index = (self.next_channel_index + 1) % member_count as usize;
+        self.assigned_at[channel as usize] = self.clock;
+        self.clock += 1;
         Some(channel)
     }
 
@@ -95,7 +102,8 @@ impl MpeChannelVoiceMap {
     pub fn clear(&mut self) {
         self.channel_to_note = [None; 16];
         self.note_to_channel = [None; 128];
-        self.next_channel_index = 0;
+        self.assigned_at = [0; 16];
+        self.clock = 0;
     }
 }
 
@@ -157,6 +165,37 @@ mod tests {
 
         // Bidirectional consistency: channel → note and note → channel match
         assert_eq!(map.get_note_for_channel(ch_c), Some(67));
+    }
+
+    #[test]
+    fn test_voice_stealing_takes_oldest_note() {
+        // 3 members (channels 1,2,3). Assign in a known order so "oldest" is
+        // unambiguous, then force a steal and confirm the FIRST note goes.
+        let config = MpeZoneConfig::lower(3);
+        let mut map = MpeChannelVoiceMap::new(config);
+
+        let ch_oldest = map.assign_note(60).unwrap(); // assigned first
+        map.assign_note(64).unwrap();
+        map.assign_note(67).unwrap();
+
+        // All 3 occupied — assigning a 4th steals the oldest (note 60).
+        let ch_new = map.assign_note(72).unwrap();
+
+        assert_eq!(
+            ch_new, ch_oldest,
+            "steal must reuse the channel of the oldest note"
+        );
+        assert!(
+            map.get_channel_for_note(60).is_none(),
+            "oldest note (60) must be evicted"
+        );
+        assert!(map.get_channel_for_note(64).is_some(), "64 must still sound");
+        assert_eq!(map.get_channel_for_note(72), Some(ch_new));
+
+        // A second steal must take note 64 (now the oldest survivor), not 67.
+        map.assign_note(76).unwrap();
+        assert!(map.get_channel_for_note(64).is_none(), "64 is now oldest, evict it");
+        assert!(map.get_channel_for_note(67).is_some(), "67 is newer, must survive");
     }
 
     #[test]

@@ -176,6 +176,16 @@ impl IParameterChangesTrait for ParameterChangesImpl {
     }
 }
 
+/// Raw `IParameterChanges*` for `ProcessData`, or null if the wrapper can't
+/// expose the interface. Used by the realtime `process` path for both the
+/// input and output parameter-change slots.
+pub fn param_changes_ptr(changes: &ComWrapper<ParameterChangesImpl>) -> *mut IParameterChanges {
+    changes
+        .as_com_ref::<IParameterChanges>()
+        .map(|r| r.as_ptr())
+        .unwrap_or(std::ptr::null_mut())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

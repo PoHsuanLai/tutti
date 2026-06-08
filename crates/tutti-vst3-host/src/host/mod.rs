@@ -3,6 +3,7 @@
 //! ready to `process`). Stages are encoded as distinct types — transitions
 //! consume `self` so the compiler enforces the ordering.
 
+mod bus_buffers;
 mod instance;
 mod library;
 mod loaded;

@@ -25,9 +25,9 @@ mod tests;
 pub use component_handler::{
     ComponentHandler, ParameterEditEvent, ProgressEvent, RestartFlags, UnitEvent,
 };
-pub use event_list::EventList;
+pub use event_list::{event_list_ptr, EventList};
 pub use host_application::HostApplication;
-pub use param_changes::ParameterChangesImpl;
+pub use param_changes::{param_changes_ptr, ParameterChangesImpl};
 pub(crate) use plug_frame::HostPlugFrame;
 pub use stream::BStream;
 

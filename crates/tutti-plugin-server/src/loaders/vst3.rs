@@ -300,9 +300,7 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) {
-        vst_dispatch_mut!(self, inner => {
-            inner.set_parameter(id, value);
-        });
+        vst_dispatch_mut!(self, inner => inner.set_parameter(id, value));
     }
 
     fn get_parameter_list(&mut self) -> Vec<tutti_plugin::server::ParameterInfo> {
@@ -318,9 +316,7 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
     }
 
     fn close_editor(&mut self) {
-        vst_dispatch_mut!(self, inner => {
-            inner.close_editor();
-        });
+        vst_dispatch_mut!(self, inner => inner.close_editor());
     }
 
     fn editor_idle(&mut self) {
@@ -334,7 +330,6 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
 
     fn set_state(&mut self, data: &[u8]) -> Result<()> {
         vst_dispatch_mut!(self, inner => inner.set_state(data))
-            .map(|_| ())
             .map_err(|e| BridgeError::StateRestoreError(e.to_string()))
     }
 }

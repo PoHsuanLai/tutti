@@ -262,13 +262,12 @@ impl Vst3Loaded {
 
     /// Write a normalized (0.0 – 1.0) `value` to the parameter at `index`.
     /// No-op if the plugin has no controller.
-    pub fn set_parameter(&mut self, index: u32, value: f64) -> &mut Self {
+    pub fn set_parameter(&mut self, index: u32, value: f64) {
         if let Some(c) = self.interfaces.controller.as_ref() {
             unsafe {
                 c.setParamNormalized(index, value);
             }
         }
-        self
     }
 
     /// Descriptor for the parameter at `index` (title, units, flags, default).
@@ -321,16 +320,23 @@ impl Vst3Loaded {
         notifications
     }
 
-    /// Capture the plugin's component state as an opaque byte blob suitable
-    /// for persisting and later feeding back to [`set_state`](Self::set_state).
+    /// Capture the plugin's component state as the opaque byte blob the plugin
+    /// itself writes via `IComponent::getState`, suitable for persisting and
+    /// later feeding back to [`set_state`](Self::set_state).
     ///
-    /// Falls back to a host-side parameter-dump encoding for plugins that
-    /// refuse `IComponent::getState`.
+    /// The bytes are the plugin's private format — the host never interprets
+    /// them. A `kResultFalse` return (plugin has no state to persist) yields an
+    /// empty blob, which `set_state` accepts back as a no-op.
     ///
     /// # Errors
     ///
     /// Returns [`Vst3Error::StateError`](crate::Vst3Error::StateError) if the
-    /// host-side `IBStream` wrapper cannot be created.
+    /// host-side `IBStream` wrapper cannot be created, or
+    /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if the plugin
+    /// fails `getState`. We do **not** substitute a parameter dump: a plugin's
+    /// real state covers more than parameters (active preset, internal DSP
+    /// state, sample references), so a lossy synthetic blob would restore
+    /// incorrectly while masquerading as faithful state.
     pub fn state(&self) -> Result<Vec<u8>> {
         tutti_plugin_types::assert_main_thread();
         let stream = BStream::new();
@@ -341,36 +347,31 @@ impl Vst3Loaded {
         let result = unsafe { self.interfaces.component.getState(stream_ptr.as_ptr()) };
 
         if result != kResultOk && result != kResultFalse {
-            return self.state_fallback();
+            return Err(Vst3Error::PluginError {
+                stage: LoadStage::Initialization,
+                code: result,
+            });
         }
 
         Ok(stream.data())
-    }
-
-    fn state_fallback(&self) -> Result<Vec<u8>> {
-        let param_count = self.parameter_count();
-        let mut state = Vec::with_capacity(4 + (param_count as usize * 8));
-        state.extend_from_slice(&param_count.to_le_bytes());
-        for i in 0..param_count {
-            let value = self.parameter(i);
-            state.extend_from_slice(&value.to_le_bytes());
-        }
-        Ok(state)
     }
 
     /// Restore plugin state from a blob produced by [`state`](Self::state).
     /// Also pushes the blob through the controller's `setComponentState` so
     /// both halves of a separate component/controller stay in sync.
     ///
+    /// An empty blob (from a plugin that had no state to save) is a no-op.
+    ///
     /// # Errors
     ///
-    /// Returns [`Vst3Error::StateError`](crate::Vst3Error::StateError) for
-    /// empty or malformed data, or if the `IBStream` wrapper cannot be
-    /// created.
-    pub fn set_state(&mut self, data: &[u8]) -> Result<&mut Self> {
+    /// Returns [`Vst3Error::StateError`](crate::Vst3Error::StateError) if the
+    /// `IBStream` wrapper cannot be created, or
+    /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if the plugin
+    /// rejects the blob via `setState`.
+    pub fn set_state(&mut self, data: &[u8]) -> Result<()> {
         tutti_plugin_types::assert_main_thread();
         if data.is_empty() {
-            return Err(Vst3Error::StateError("Empty state data".to_string()));
+            return Ok(());
         }
 
         let stream = BStream::from_data(data.to_vec());
@@ -381,7 +382,10 @@ impl Vst3Loaded {
         let result = unsafe { self.interfaces.component.setState(stream_ptr.as_ptr()) };
 
         if result != kResultOk && result != kResultFalse {
-            return self.set_state_fallback(data);
+            return Err(Vst3Error::PluginError {
+                stage: LoadStage::Initialization,
+                code: result,
+            });
         }
 
         if let Some(ctrl) = self.interfaces.controller.as_ref() {
@@ -393,46 +397,7 @@ impl Vst3Loaded {
             }
         }
 
-        Ok(self)
-    }
-
-    fn set_state_fallback(&mut self, data: &[u8]) -> Result<&mut Self> {
-        if data.len() < 4 {
-            return Err(Vst3Error::StateError("Invalid state data".to_string()));
-        }
-
-        let param_count = i32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        if param_count < 0 {
-            return Err(Vst3Error::StateError(format!(
-                "Invalid param count: {}",
-                param_count
-            )));
-        }
-        let expected_size = 4usize.saturating_add((param_count as usize).saturating_mul(8));
-        if data.len() != expected_size {
-            return Err(Vst3Error::StateError(format!(
-                "State size mismatch: expected {}, got {}",
-                expected_size,
-                data.len()
-            )));
-        }
-
-        for i in 0..param_count {
-            let offset = 4 + (i as usize * 8);
-            let value = f64::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-                data[offset + 4],
-                data[offset + 5],
-                data[offset + 6],
-                data[offset + 7],
-            ]);
-            self.set_parameter(i as u32, value);
-        }
-
-        Ok(self)
+        Ok(())
     }
 
     /// True if the plugin exposes an editor controller. Not all plugins with a
@@ -500,17 +465,16 @@ impl Vst3Loaded {
 
     /// Close the editor if open, calling `IPlugView::removed`. No-op otherwise.
     /// Called automatically on `Drop`.
-    pub fn close_editor(&mut self) -> &mut Self {
+    pub fn close_editor(&mut self) {
         tutti_plugin_types::assert_main_thread();
-        self.close_editor_inner();
-        self
+        self.close_editor_unchecked();
     }
 
-    /// Editor teardown without the main-thread assertion — used by `Drop`,
-    /// which can run on the audio thread when the fundsp graph releases the
-    /// instance. The public [`close_editor`](Self::close_editor) asserts;
-    /// this does not.
-    fn close_editor_inner(&mut self) {
+    /// Assert-free editor teardown for [`Drop`], which can run on the audio
+    /// thread when the fundsp graph releases the instance. The public
+    /// [`close_editor`](Self::close_editor) asserts the main thread before
+    /// delegating here; `Drop` calls this directly to avoid panicking off it.
+    fn close_editor_unchecked(&mut self) {
         if let EditorState::Open { view, .. } = std::mem::replace(&mut self.editor, EditorState::Closed) {
             unsafe {
                 view.removed();
@@ -674,8 +638,8 @@ impl Vst3Loaded {
 impl Drop for Vst3Loaded {
     fn drop(&mut self) {
         // No main-thread assert: Drop can run on the audio thread when the
-        // fundsp graph releases the instance. See `close_editor_inner`.
-        self.close_editor_inner();
+        // fundsp graph releases the instance. See `close_editor_unchecked`.
+        self.close_editor_unchecked();
         unsafe {
             self.interfaces.component.terminate();
         }

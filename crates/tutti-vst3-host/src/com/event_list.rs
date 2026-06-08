@@ -181,6 +181,15 @@ impl IEventListTrait for EventList {
     }
 }
 
+/// Raw `IEventList*` for `ProcessData`, or null if the wrapper can't expose the
+/// interface. Lets the realtime `process` path hand the pointer straight to the
+/// plugin without re-deriving the COM cast.
+pub fn event_list_ptr(list: &ComWrapper<EventList>) -> *mut IEventList {
+    list.as_com_ref::<IEventList>()
+        .map(|r| r.as_ptr())
+        .unwrap_or(std::ptr::null_mut())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

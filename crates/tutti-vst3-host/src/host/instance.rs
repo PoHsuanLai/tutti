@@ -41,42 +41,68 @@ const K_REALTIME: i32 = kRealtime as i32;
 /// beyond this allocates once and then sticks.
 const OUTPUT_PARAM_QUEUE_RESERVE: usize = 32;
 
-/// Scratch buffers + event lists the realtime `process()` loop needs.
-/// Separated from [`Vst3Loaded`] so GUI-only hosting doesn't pay the cost.
-///
-/// The two `ComWrapper<ParameterChangesImpl>` slots are reused across
-/// every `process()` call: we call `refill_from_changes` / `clear_in_place`
-/// rather than re-building a fresh ComWrapper. That keeps the RT path
-/// allocation- and lock-free.
-struct AudioIO<T> {
+/// Sample rate / block size / channel counts captured at activation. Read by
+/// `apply_process_setup` to fill `ProcessSetup` and by `process` to size
+/// `ProcessData`. Channel counts are re-synced post-activation in
+/// `activate_buses` (some plugins only finalise their arrangement once active).
+struct ProcessConfig {
     sample_rate: f64,
     block_size: usize,
     num_input_channels: usize,
     num_output_channels: usize,
-    /// Typed pointer tables for the single committed sample format `T`.
+}
+
+/// The input half of `ProcessData`: per-bus audio scratch plus the COM-wrapped
+/// event and parameter-change lists the host stages for the plugin to read.
+/// All three are reused in place each block to keep the RT path allocation-free.
+struct InputStaging {
+    /// Per-bus `AudioBusBuffers` scratch. Bus 0 is mapped onto the live caller
+    /// buffer; extra input buses receive silence.
+    buses: BusBuffers,
+    events: vst3::ComWrapper<EventList>,
+    param_changes: vst3::ComWrapper<ParameterChangesImpl>,
+}
+
+/// The output half of `ProcessData`: per-bus audio scratch, the COM-wrapped
+/// lists the plugin writes into, plus the pooled buffers `process` drains those
+/// emitted events into so it can return a borrowed [`ProcessOutputRef`].
+struct OutputStaging {
+    /// Per-bus `AudioBusBuffers` scratch. Bus 0 is mapped onto the live caller
+    /// buffer; extra output buses get a discard sink.
+    buses: BusBuffers,
+    events: vst3::ComWrapper<EventList>,
+    param_changes: vst3::ComWrapper<ParameterChangesImpl>,
+    /// Pooled return-value buffers. `process` drains the plugin's emitted
+    /// events into these so the call can return a borrowed view.
+    emitted_midi: SmallVec<[MidiEvent; 64]>,
+    emitted_param_changes: ParameterChanges,
+}
+
+/// Pooled scratch for the `IMidiMapping` CC→param routing pass. When the plugin
+/// has a non-empty mapping, mapped CC/aftertouch/pitch-bend events are pulled
+/// out of the input MIDI into `filtered_midi` (the events that still reach the
+/// plugin's event list) while their parameter points are merged into
+/// `param_changes` alongside the host's automation. Both are reused across
+/// blocks to keep the routing pass allocation-free.
+struct CcRouteScratch {
+    filtered_midi: SmallVec<[MidiEvent; 64]>,
+    param_changes: ParameterChanges,
+}
+
+/// All the per-block scratch the realtime `process()` loop needs, grouped to
+/// mirror `ProcessData`'s own input/output split. Separated from [`Vst3Loaded`]
+/// so GUI-only hosting doesn't pay the allocation cost.
+///
+/// `ptrs` is shared: its flat per-channel pointers feed both `input.buses` and
+/// `output.buses` each block.
+struct AudioIO<T> {
+    config: ProcessConfig,
+    /// Typed flat pointer tables for the single committed sample format `T`.
     /// Sized to the per-direction channel total (main + sidechain/aux buses).
     ptrs: BufferPtrs<T>,
-    /// Per-bus `AudioBusBuffers` scratch (one per direction; sample-type
-    /// erased). Bus 0 is mapped onto the live caller buffer; extra input buses
-    /// receive silence and extra output buses a discard sink.
-    in_buses: BusBuffers,
-    out_buses: BusBuffers,
-    input_events: vst3::ComWrapper<EventList>,
-    output_events: vst3::ComWrapper<EventList>,
-    input_param_changes: vst3::ComWrapper<ParameterChangesImpl>,
-    output_param_changes: vst3::ComWrapper<ParameterChangesImpl>,
-    /// Pooled return-value buffers. `process` writes converted events
-    /// into these so the call can return a borrowed view.
-    out_midi: SmallVec<[MidiEvent; 64]>,
-    out_param_changes: ParameterChanges,
-    /// Pooled scratch for the `IMidiMapping` CC→param routing pass. When the
-    /// plugin has a non-empty mapping, mapped CC/aftertouch/pitch-bend events
-    /// are pulled out of `midi_events` into `cc_filtered_midi` (the events that
-    /// still go to the plugin's event list) while their parameter points are
-    /// merged into `cc_param_changes` alongside the host's automation. Both
-    /// are reused across blocks to keep the routing pass allocation-free.
-    cc_filtered_midi: SmallVec<[MidiEvent; 64]>,
-    cc_param_changes: ParameterChanges,
+    input: InputStaging,
+    output: OutputStaging,
+    cc: CcRouteScratch,
 }
 
 /// Fully-active VST3 plugin ready to process audio.
@@ -153,28 +179,36 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         let input_bus_channels = loaded.info.input_bus_channels.clone();
         let output_bus_channels = loaded.info.output_bus_channels.clone();
 
-        let mut out_param_changes = ParameterChanges::new();
+        let mut emitted_param_changes = ParameterChanges::new();
         // SmallVec doesn't expose a sized constructor for inline capacity;
         // pre-reserve via grow_to_capacity-by-clear-after-push. Cheaper
         // approach: just call reserve to pump heap capacity once.
-        out_param_changes.queues.reserve(OUTPUT_PARAM_QUEUE_RESERVE);
+        emitted_param_changes.queues.reserve(OUTPUT_PARAM_QUEUE_RESERVE);
 
         let audio = AudioIO {
-            sample_rate,
-            block_size,
-            num_input_channels,
-            num_output_channels,
+            config: ProcessConfig {
+                sample_rate,
+                block_size,
+                num_input_channels,
+                num_output_channels,
+            },
             ptrs: BufferPtrs::new(input_ptr_count, output_ptr_count),
-            in_buses: BusBuffers::new(&input_bus_channels, num_input_channels, block_size),
-            out_buses: BusBuffers::new(&output_bus_channels, num_output_channels, block_size),
-            input_events: EventList::new(),
-            output_events: EventList::new(),
-            input_param_changes: ParameterChangesImpl::new_empty(),
-            output_param_changes: ParameterChangesImpl::new_empty(),
-            out_midi: SmallVec::new(),
-            out_param_changes,
-            cc_filtered_midi: SmallVec::new(),
-            cc_param_changes: ParameterChanges::new(),
+            input: InputStaging {
+                buses: BusBuffers::new(&input_bus_channels, num_input_channels, block_size),
+                events: EventList::new(),
+                param_changes: ParameterChangesImpl::new_empty(),
+            },
+            output: OutputStaging {
+                buses: BusBuffers::new(&output_bus_channels, num_output_channels, block_size),
+                events: EventList::new(),
+                param_changes: ParameterChangesImpl::new_empty(),
+                emitted_midi: SmallVec::new(),
+                emitted_param_changes,
+            },
+            cc: CcRouteScratch {
+                filtered_midi: SmallVec::new(),
+                param_changes: ParameterChanges::new(),
+            },
         };
 
         let midi_cc_mapping = MidiCcMapping::query(loaded.interfaces.controller.as_ref());
@@ -199,13 +233,13 @@ impl<T: Vst3Sample> Vst3Instance<T> {
 
     /// Sample rate in Hz that was applied to `setupProcessing`.
     pub fn sample_rate(&self) -> f64 {
-        self.audio.sample_rate
+        self.audio.config.sample_rate
     }
 
     /// Change the sample rate and re-run `setupProcessing`. Must be called
     /// only when not inside [`process`](Self::process).
     pub fn set_sample_rate(&mut self, rate: f64) -> &mut Self {
-        self.audio.sample_rate = rate;
+        self.audio.config.sample_rate = rate;
         let _ = self.apply_process_setup();
         self
     }
@@ -213,25 +247,25 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     /// Maximum block size (samples per channel) that was applied to
     /// `setupProcessing`.
     pub fn block_size(&self) -> usize {
-        self.audio.block_size
+        self.audio.config.block_size
     }
 
     /// Change the maximum block size and re-run `setupProcessing`. Must be
     /// called only when not inside [`process`](Self::process).
     pub fn set_block_size(&mut self, size: usize) -> &mut Self {
-        self.audio.block_size = size;
+        self.audio.config.block_size = size;
         let _ = self.apply_process_setup();
         self
     }
 
     /// Input channels the plugin will read on bus 0.
     pub fn num_input_channels(&self) -> usize {
-        self.audio.num_input_channels
+        self.audio.config.num_input_channels
     }
 
     /// Output channels the plugin will write on bus 0.
     pub fn num_output_channels(&self) -> usize {
-        self.audio.num_output_channels
+        self.audio.config.num_output_channels
     }
 
     /// Run one realtime processing block.
@@ -258,17 +292,17 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         //    state without separately constructing an empty owned output,
         // 2. the steady-state path can `fill_*` into them with the
         //    plugin's freshly-pushed events.
-        self.audio.out_midi.clear();
+        self.audio.output.emitted_midi.clear();
         // Clear inline points without dropping heap capacity.
-        for queue in self.audio.out_param_changes.queues.iter_mut() {
+        for queue in self.audio.output.emitted_param_changes.queues.iter_mut() {
             queue.points.clear();
         }
-        self.audio.out_param_changes.queues.clear();
+        self.audio.output.emitted_param_changes.queues.clear();
 
         if buffer.num_samples == 0 {
             return ProcessOutputRef {
-                midi_events: &self.audio.out_midi,
-                parameter_changes: &self.audio.out_param_changes,
+                midi_events: &self.audio.output.emitted_midi,
+                parameter_changes: &self.audio.output.emitted_param_changes,
             };
         }
         let processor = self.loaded.interfaces.processor.clone();
@@ -278,18 +312,20 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         // channels, extra input buses get silence, extra output buses a sink.
         let (input_ptrs, output_ptrs) =
             self.audio.ptrs.prepare(buffer.inputs, buffer.outputs);
-        let num_input_buses = self.audio.in_buses.num_buses();
-        let num_output_buses = self.audio.out_buses.num_buses();
+        let num_input_buses = self.audio.input.buses.num_buses();
+        let num_output_buses = self.audio.output.buses.num_buses();
         // SAFETY: `input_ptrs`/`output_ptrs` point at the just-filled per-channel
         // pointer arrays (length = buffer.inputs/outputs.len()), valid until the
         // `processor.process` call below; the scratch tables are pre-sized.
         let inputs_ptr = unsafe {
-            self.audio
-                .in_buses
-                .prepare(input_ptrs as *const *mut std::ffi::c_void, buffer.inputs.len(), true)
+            self.audio.input.buses.prepare(
+                input_ptrs as *const *mut std::ffi::c_void,
+                buffer.inputs.len(),
+                true,
+            )
         };
         let outputs_ptr = unsafe {
-            self.audio.out_buses.prepare(
+            self.audio.output.buses.prepare(
                 output_ptrs as *const *mut std::ffi::c_void,
                 buffer.outputs.len(),
                 false,
@@ -305,7 +341,7 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         let cc_routed = self.route_midi_cc(midi_events, param_changes);
         let (effective_midi, effective_params): (&[MidiEvent], Option<&ParameterChanges>) =
             if cc_routed {
-                (&self.audio.cc_filtered_midi, Some(&self.audio.cc_param_changes))
+                (&self.audio.cc.filtered_midi, Some(&self.audio.cc.param_changes))
             } else {
                 (midi_events, param_changes)
             };
@@ -313,27 +349,29 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         // Stage the (possibly CC-filtered) MIDI plus note expressions into the
         // input event list, or clear it when there's nothing to send.
         if effective_midi.is_empty() && note_expressions.is_empty() {
-            self.audio.input_events.clear();
+            self.audio.input.events.clear();
         } else {
             self.audio
-                .input_events
+                .input
+                .events
                 .update_from_midi_and_expression(effective_midi, note_expressions);
         }
-        self.audio.output_events.clear();
-        let input_events_ptr = event_list_ptr(&self.audio.input_events);
-        let output_events_ptr = event_list_ptr(&self.audio.output_events);
+        self.audio.output.events.clear();
+        let input_events_ptr = event_list_ptr(&self.audio.input.events);
+        let output_events_ptr = event_list_ptr(&self.audio.output.events);
 
         // Refill the pooled input/output ParameterChanges wrappers in
         // place instead of building fresh ComWrappers every block.
         let have_input_params = effective_params.map(|pc| !pc.is_empty()).unwrap_or(false);
         if have_input_params {
             self.audio
-                .input_param_changes
+                .input
+                .param_changes
                 .refill_from_changes(effective_params.unwrap());
         } else {
-            self.audio.input_param_changes.clear_in_place();
+            self.audio.input.param_changes.clear_in_place();
         }
-        self.audio.output_param_changes.clear_in_place();
+        self.audio.output.param_changes.clear_in_place();
 
         let mut process_context = to_process_context(transport);
         process_context.sampleRate = buffer.sample_rate;
@@ -347,11 +385,11 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             inputs: inputs_ptr,
             outputs: outputs_ptr,
             inputParameterChanges: if have_input_params {
-                param_changes_ptr(&self.audio.input_param_changes)
+                param_changes_ptr(&self.audio.input.param_changes)
             } else {
                 std::ptr::null_mut()
             },
-            outputParameterChanges: param_changes_ptr(&self.audio.output_param_changes),
+            outputParameterChanges: param_changes_ptr(&self.audio.output.param_changes),
             inputEvents: input_events_ptr,
             outputEvents: output_events_ptr,
             processContext: &mut process_context,
@@ -362,24 +400,23 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         if result != kResultOk {
             buffer.clear_outputs();
             return ProcessOutputRef {
-                midi_events: &self.audio.out_midi,
-                parameter_changes: &self.audio.out_param_changes,
+                midi_events: &self.audio.output.emitted_midi,
+                parameter_changes: &self.audio.output.emitted_param_changes,
             };
         }
 
         // Drain the plugin's emitted events into the pooled return
         // buffers. Both `fill_*` clear their destination first and
         // reuse the destination's heap capacity.
-        self.audio
-            .output_events
-            .fill_midi_events(&mut self.audio.out_midi);
-        self.audio
-            .output_param_changes
-            .fill_changes(&mut self.audio.out_param_changes);
+        let output = &mut self.audio.output;
+        output.events.fill_midi_events(&mut output.emitted_midi);
+        output
+            .param_changes
+            .fill_changes(&mut output.emitted_param_changes);
 
         ProcessOutputRef {
-            midi_events: &self.audio.out_midi,
-            parameter_changes: &self.audio.out_param_changes,
+            midi_events: &self.audio.output.emitted_midi,
+            parameter_changes: &self.audio.output.emitted_param_changes,
         }
     }
 
@@ -410,17 +447,17 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         }
 
         // Clear scratch in place (keep heap capacity).
-        self.audio.cc_filtered_midi.clear();
-        for queue in self.audio.cc_param_changes.queues.iter_mut() {
+        self.audio.cc.filtered_midi.clear();
+        for queue in self.audio.cc.param_changes.queues.iter_mut() {
             queue.points.clear();
         }
-        self.audio.cc_param_changes.queues.clear();
+        self.audio.cc.param_changes.queues.clear();
 
         // Seed the merged param changes with the host's automation.
         if let Some(pc) = param_changes {
             for queue in &pc.queues {
                 for point in &queue.points {
-                    self.audio.cc_param_changes.add_change(
+                    self.audio.cc.param_changes.add_change(
                         queue.param_id,
                         point.sample_offset,
                         point.value,
@@ -432,13 +469,13 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         super::midi_mapping::route_cc_events(
             &self.midi_cc_mapping,
             midi_events,
-            &mut self.audio.cc_filtered_midi,
-            &mut self.audio.cc_param_changes,
+            &mut self.audio.cc.filtered_midi,
+            &mut self.audio.cc.param_changes,
         );
 
         // VST3 requires each IParamValueQueue's points in ascending
         // sampleOffset order; seeding + appending can leave them unsorted.
-        super::midi_mapping::sort_param_points(&mut self.audio.cc_param_changes);
+        super::midi_mapping::sort_param_points(&mut self.audio.cc.param_changes);
 
         true
     }
@@ -462,8 +499,8 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         let mut setup = ProcessSetup {
             processMode: K_REALTIME,
             symbolicSampleSize: T::VST3_SYMBOLIC_SIZE,
-            maxSamplesPerBlock: self.audio.block_size as i32,
-            sampleRate: self.audio.sample_rate,
+            maxSamplesPerBlock: self.audio.config.block_size as i32,
+            sampleRate: self.audio.config.sample_rate,
         };
         let result = unsafe { self.loaded.interfaces.processor.setupProcessing(&mut setup) };
         if result != kResultOk && result != kResultFalse {
@@ -489,14 +526,14 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             // Re-sync channel counts after bus activation — some plugins only
             // finalise their bus arrangement once activated.
             if let Some(ch) = component.audio_bus_channel_count(K_INPUT, 0) {
-                if ch != self.audio.num_input_channels {
-                    self.audio.num_input_channels = ch;
+                if ch != self.audio.config.num_input_channels {
+                    self.audio.config.num_input_channels = ch;
                     self.audio.ptrs.resize_inputs(ch.max(MIN_PTR_COUNT));
                 }
             }
             if let Some(ch) = component.audio_bus_channel_count(K_OUTPUT, 1) {
-                if ch != self.audio.num_output_channels {
-                    self.audio.num_output_channels = ch;
+                if ch != self.audio.config.num_output_channels {
+                    self.audio.config.num_output_channels = ch;
                     self.audio.ptrs.resize_outputs(ch.max(MIN_PTR_COUNT));
                 }
             }
@@ -507,22 +544,28 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             // only — never on the audio thread.
             let input_bus_channels = component.audio_bus_channels(K_INPUT);
             let output_bus_channels = component.audio_bus_channels(K_OUTPUT);
-            let block_size = self.audio.block_size;
+            let block_size = self.audio.config.block_size;
             // Re-size the flat pointer arrays to the live per-direction totals
             // (main + sidechain/aux) so a multi-bus flat caller buffer isn't
             // truncated to the main bus. No-op for single-bus plugins.
             let total_in: usize = input_bus_channels.iter().sum();
             let total_out: usize = output_bus_channels.iter().sum();
-            if total_in > self.audio.num_input_channels {
+            if total_in > self.audio.config.num_input_channels {
                 self.audio.ptrs.resize_inputs(total_in.max(MIN_PTR_COUNT));
             }
-            if total_out > self.audio.num_output_channels {
+            if total_out > self.audio.config.num_output_channels {
                 self.audio.ptrs.resize_outputs(total_out.max(MIN_PTR_COUNT));
             }
-            self.audio.in_buses =
-                BusBuffers::new(&input_bus_channels, self.audio.num_input_channels, block_size);
-            self.audio.out_buses =
-                BusBuffers::new(&output_bus_channels, self.audio.num_output_channels, block_size);
+            self.audio.input.buses = BusBuffers::new(
+                &input_bus_channels,
+                self.audio.config.num_input_channels,
+                block_size,
+            );
+            self.audio.output.buses = BusBuffers::new(
+                &output_bus_channels,
+                self.audio.config.num_output_channels,
+                block_size,
+            );
         }
         Ok(())
     }

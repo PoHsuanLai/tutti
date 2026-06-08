@@ -165,6 +165,7 @@ pub mod catalog {
 /// plugin stays alive as long as either does.
 pub mod handles {
     pub use crate::audio_node::PluginClient;
+    pub use crate::bridge::audio::ResyncKind;
     pub use crate::control_handle::PluginHandle;
     pub use crate::window::{EditorCapabilities, EditorSize};
 

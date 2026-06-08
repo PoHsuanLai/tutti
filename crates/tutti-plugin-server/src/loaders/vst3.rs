@@ -43,6 +43,40 @@ pub struct Vst3Instance {
     inner: VstInner,
     metadata: PluginInfo,
     param_cache: ParamCache,
+    /// Load parameters retained so the plugin can be torn down and rebuilt in
+    /// place when it requests `kReloadComponent`. See [`Self::reload`].
+    reload: ReloadParams,
+}
+
+/// Everything `Vst3Instance::load` needs, kept so a `kReloadComponent` request
+/// can reconstruct the instance with identical settings.
+#[derive(Clone)]
+struct ReloadParams {
+    path: std::path::PathBuf,
+    sample_rate: f64,
+    block_size: usize,
+    prefer_f64: bool,
+}
+
+/// Outcome of [`Vst3Instance::poll_restart`] — the host-side restart effects
+/// that could not be applied in place and need the server / client to react.
+/// The CC-mapping rebuild and bus re-enumeration are already done by the time
+/// this returns; these flags are what remains.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RestartChanges {
+    /// New latency in samples (re-read because `kLatencyChanged` fired). Push
+    /// to PDC.
+    pub latency: Option<usize>,
+    /// `kParamValuesChanged` — the client should re-read parameter values.
+    pub param_values_changed: bool,
+    /// `kParamTitlesChanged` — the client should re-pull the parameter list.
+    pub param_titles_changed: bool,
+    /// `kReloadComponent` — the instance was torn down and rebuilt in place;
+    /// the client should resync everything (it is effectively a fresh plugin).
+    pub reloaded: bool,
+    /// `kIoChanged` — the bus layout changed and was re-enumerated; the new
+    /// layout is in `metadata()`. The client should rewire its audio graph.
+    pub io_changed: bool,
 }
 
 /// Map a `tutti_vst3_host::Vst3Error` to the server's `BridgeError`.
@@ -60,6 +94,48 @@ fn map_vst3_error(e: tutti_vst3_host::Vst3Error, path: &Path) -> BridgeError {
             reason: e.to_string(),
         },
     }
+}
+
+/// Resolve, load, and activate the inner host instance from load parameters,
+/// returning it alongside freshly-built protocol metadata. Shared by
+/// [`Vst3Instance::load`] and [`Vst3Instance::reload`].
+fn build_inner(p: &ReloadParams) -> Result<(VstInner, PluginInfo)> {
+    let resolved = tutti_plugin::server::resolve_bundle(&p.path)?;
+    let loaded =
+        tutti_vst3_host::Vst3Loaded::load(&resolved).map_err(|e| map_vst3_error(e, &p.path))?;
+
+    let info = loaded.info().clone();
+    let has_editor = loaded.has_editor();
+
+    let inner = if p.prefer_f64 && info.supports_f64 {
+        let inst = loaded
+            .activate::<f64>(p.sample_rate, p.block_size)
+            .map_err(|e| map_vst3_error(e, &p.path))?;
+        VstInner::F64(inst)
+    } else {
+        let inst = loaded
+            .activate::<f32>(p.sample_rate, p.block_size)
+            .map_err(|e| map_vst3_error(e, &p.path))?;
+        VstInner::F32(inst)
+    };
+
+    let actually_f64 = matches!(inner, VstInner::F64(_));
+    let latency = match &inner {
+        VstInner::F32(i) => i.read_latency_samples(),
+        VstInner::F64(i) => i.read_latency_samples(),
+    } as usize;
+    let buses = build_bus_layout(&info);
+    let metadata = PluginInfo::new(info.id.clone(), info.name.clone())
+        .author(info.vendor.clone())
+        .version(info.version.clone())
+        .audio_io(info.num_inputs, info.num_outputs)
+        .midi(info.has_midi_input)
+        .f64_support(actually_f64)
+        .buses(buses)
+        .editor(has_editor, None)
+        .latency(latency);
+
+    Ok((inner, metadata))
 }
 
 impl Vst3Instance {
@@ -87,63 +163,102 @@ impl Vst3Instance {
     /// inner instance is activated as `Vst3Instance<f64>`; otherwise `f32` is
     /// used. The chosen format is reflected in `metadata().supports_f64`.
     pub fn load(path: &Path, sample_rate: f64, block_size: usize, prefer_f64: bool) -> Result<Self> {
-        let resolved = tutti_plugin::server::resolve_bundle(path)?;
-        let loaded = tutti_vst3_host::Vst3Loaded::load(&resolved)
-            .map_err(|e| map_vst3_error(e, path))?;
-
-        let info = loaded.info().clone();
-        let has_editor = loaded.has_editor();
-
-        let inner = if prefer_f64 && info.supports_f64 {
-            let inst = loaded
-                .activate::<f64>(sample_rate, block_size)
-                .map_err(|e| map_vst3_error(e, path))?;
-            VstInner::F64(inst)
-        } else {
-            let inst = loaded
-                .activate::<f32>(sample_rate, block_size)
-                .map_err(|e| map_vst3_error(e, path))?;
-            VstInner::F32(inst)
+        let reload = ReloadParams {
+            path: path.to_path_buf(),
+            sample_rate,
+            block_size,
+            prefer_f64,
         };
+        let (inner, metadata) = build_inner(&reload)?;
+        Ok(Self {
+            inner,
+            metadata,
+            param_cache: ParamCache::default(),
+            reload,
+        })
+    }
 
-        let actually_f64 = matches!(inner, VstInner::F64(_));
-        let latency = match &inner {
-            VstInner::F32(i) => i.read_latency_samples(),
-            VstInner::F64(i) => i.read_latency_samples(),
-        } as usize;
-        let buses = build_bus_layout(&info);
-        let metadata = PluginInfo::new(info.id.clone(), info.name.clone())
-            .author(info.vendor.clone())
-            .version(info.version.clone())
-            .audio_io(info.num_inputs, info.num_outputs)
-            .midi(info.has_midi_input)
-            .f64_support(actually_f64)
-            .buses(buses)
-            .editor(has_editor, None)
-            .latency(latency);
+    /// Tear the instance down and rebuild it from the original load parameters,
+    /// preserving plugin state across the swap. Invoked when the plugin
+    /// requests `kReloadComponent` (e.g. after an in-plugin preset load that
+    /// changes the component structure). The rebuilt instance replaces `inner`
+    /// and `metadata` in place.
+    fn reload(&mut self) -> Result<()> {
+        // Capture state from the old instance so the rebuilt one resumes where
+        // it left off; tolerate plugins that refuse getState.
+        let saved_state = vst_dispatch_mut!(self, inner => inner.state()).ok();
 
-        Ok(Self { inner, metadata, param_cache: ParamCache::default() })
+        let (inner, metadata) = build_inner(&self.reload)?;
+        self.inner = inner;
+        self.metadata = metadata;
+        self.param_cache = ParamCache::default();
+
+        if let Some(state) = saved_state {
+            let _ = vst_dispatch_mut!(self, inner => inner.set_state(&state));
+        }
+        Ok(())
     }
 
     pub fn metadata(&self) -> &PluginInfo {
         &self.metadata
     }
 
-    /// Drain the plugin's `restartComponent` requests and apply their
-    /// host-side effects (bus re-enumeration). If `kLatencyChanged` fired,
-    /// re-read the latency, update cached metadata, and return the new value in
-    /// samples so the server can push a PDC update to the host. Returns `None`
-    /// when latency did not change.
+    /// Drain the plugin's `restartComponent` requests and apply every host-side
+    /// effect, returning the residual [`RestartChanges`] the server / client
+    /// still needs to react to.
+    ///
+    /// Applied in place here:
+    /// - `kLatencyChanged` → re-read latency, update cached metadata (returned
+    ///   in `latency` for PDC).
+    /// - `kMidiCCAssignmentChanged` → re-query the `IMidiMapping` CC→param table
+    ///   (`rebuild_midi_cc_mapping`), so runtime CC remaps take effect.
+    /// - `kReloadComponent` → tear the instance down and rebuild it from the
+    ///   original load params, preserving state (`reloaded`).
+    /// - `kIoChanged` → the host re-enumerated buses; refresh cached bus
+    ///   metadata and flag `io_changed` so the client can rewire.
+    ///
+    /// Surfaced for the client (no host-side action possible): the parameter
+    /// re-read flags.
     ///
     /// Polled between audio blocks by [`Plugin::poll_async_events`]; it must
     /// not be called concurrently with [`process`](Self::process).
-    pub fn poll_latency_changed(&mut self) -> Option<usize> {
-        let notifications = vst_dispatch_mut!(self, inner => inner.poll_plugin_notifications());
-        notifications.restart.latency_changed.then(|| {
-            let samples = vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize;
+    pub fn poll_restart(&mut self) -> RestartChanges {
+        let restart = vst_dispatch_mut!(self, inner => inner.poll_plugin_notifications()).restart;
+        let mut changes = RestartChanges::default();
+
+        if restart.latency_changed {
+            let samples =
+                vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize;
             self.metadata = self.metadata.clone().latency(samples);
-            samples
-        })
+            changes.latency = Some(samples);
+        }
+
+        if restart.midi_cc_assignment_changed {
+            vst_dispatch_mut!(self, inner => inner.rebuild_midi_cc_mapping());
+        }
+
+        changes.param_values_changed = restart.param_values_changed;
+        changes.param_titles_changed = restart.param_titles_changed;
+
+        if restart.io_changed {
+            // The host already re-enumerated buses on its side; refresh the
+            // cached layout so metadata() reflects it for the client rewire.
+            let buses = vst_dispatch!(self, inner => build_bus_layout(inner.info()));
+            self.metadata = self.metadata.clone().buses(buses);
+            changes.io_changed = true;
+        }
+
+        if restart.reload_requested {
+            // A failed reload leaves the old instance in place; surface nothing
+            // rather than tearing the plugin down on a transient error.
+            if self.reload().is_ok() {
+                changes.reloaded = true;
+                // Reload re-read latency into the fresh metadata; propagate it.
+                changes.latency = Some(self.metadata.latency_samples);
+            }
+        }
+
+        changes
     }
 
     pub fn get_parameter_list(&self) -> Vec<ParameterInfo> {

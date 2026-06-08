@@ -40,10 +40,22 @@ pub(crate) enum Plugin {
 /// Events a plugin can queue between audio blocks that the server needs
 /// to forward to the host out-of-band of the per-block reply.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Variants are constructed only under vst2/clap features.
+#[allow(dead_code)] // Variants are constructed only under vst2/clap/vst3 features.
 pub(crate) enum AsyncEvent {
     ParameterChanged { index: i32, value: f32 },
     LatencyChanged { samples: usize },
+    /// Plugin changed its own parameter values at runtime (e.g. preset load).
+    /// The client should re-read parameter values.
+    ParamValuesChanged,
+    /// Plugin changed parameter titles/units/flags. The client should re-pull
+    /// the parameter list.
+    ParamTitlesChanged,
+    /// Plugin's bus arrangement changed and was re-enumerated. The client
+    /// should rewire its audio graph from the refreshed metadata.
+    IoChanged,
+    /// Plugin was torn down and rebuilt in place (`kReloadComponent`). The
+    /// client should resync everything — it is effectively a fresh instance.
+    Reloaded,
 }
 
 impl Plugin {
@@ -212,7 +224,23 @@ impl Plugin {
             }
             #[cfg(feature = "vst3")]
             Plugin::Vst3(vst3) => {
-                if let Some(samples) = vst3.poll_latency_changed() {
+                let changes = vst3.poll_restart();
+                // A reload is a superset resync, so it subsumes the finer-grained
+                // param/io signals — emit just Reloaded (plus latency) in that case.
+                if changes.reloaded {
+                    out.push(AsyncEvent::Reloaded);
+                } else {
+                    if changes.param_values_changed {
+                        out.push(AsyncEvent::ParamValuesChanged);
+                    }
+                    if changes.param_titles_changed {
+                        out.push(AsyncEvent::ParamTitlesChanged);
+                    }
+                    if changes.io_changed {
+                        out.push(AsyncEvent::IoChanged);
+                    }
+                }
+                if let Some(samples) = changes.latency {
                     out.push(AsyncEvent::LatencyChanged { samples });
                 }
             }

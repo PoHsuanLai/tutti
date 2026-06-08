@@ -188,6 +188,10 @@ impl Session {
                     BridgeMessage::ParameterChanged { index, value }
                 }
                 AsyncEvent::LatencyChanged { samples } => BridgeMessage::LatencyChanged { samples },
+                AsyncEvent::ParamValuesChanged => BridgeMessage::PluginParamValuesChanged,
+                AsyncEvent::ParamTitlesChanged => BridgeMessage::PluginParamTitlesChanged,
+                AsyncEvent::IoChanged => BridgeMessage::PluginIoChanged,
+                AsyncEvent::Reloaded => BridgeMessage::PluginReloaded,
             })
             .collect()
     }

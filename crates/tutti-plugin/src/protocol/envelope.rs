@@ -110,6 +110,19 @@ pub enum BridgeMessage {
     LatencyChanged {
         samples: usize,
     },
+    /// Plugin changed its own parameter values at runtime (e.g. an in-plugin
+    /// preset load). The host should re-read parameter values from the plugin.
+    PluginParamValuesChanged,
+    /// Plugin changed parameter titles/units/flags. The host should re-pull the
+    /// parameter list.
+    PluginParamTitlesChanged,
+    /// Plugin's bus arrangement changed and was re-enumerated server-side. The
+    /// host should rewire its audio graph from the plugin's refreshed metadata.
+    PluginIoChanged,
+    /// Plugin was torn down and rebuilt in place at the plugin's request
+    /// (`kReloadComponent`). The host should resync all plugin state — it is
+    /// effectively a fresh instance.
+    PluginReloaded,
     SharedMemoryReady,
     Error {
         message: String,

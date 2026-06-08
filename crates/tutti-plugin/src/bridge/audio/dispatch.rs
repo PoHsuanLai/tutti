@@ -1,7 +1,7 @@
 //! Per-command IPC choreography for the bridge thread.
 
 use super::channels::Channels;
-use super::messages::{AudioResponse, BridgeEvent, Command};
+use super::messages::{AudioResponse, BridgeEvent, Command, ResyncKind};
 use super::payload_pool::PayloadPool;
 use crate::error::Result;
 use crate::protocol::{BridgeMessage, HostMessage, IpcMidiEvent, ProcessAudioFullData};
@@ -102,6 +102,18 @@ fn recv_reply(
             }
             BridgeMessage::ParameterChanged { index, value } => {
                 channels.push_unsolicited(BridgeEvent::ParameterChanged { index, value });
+            }
+            BridgeMessage::PluginParamValuesChanged => {
+                channels.push_unsolicited(BridgeEvent::Resync(ResyncKind::ParamValues));
+            }
+            BridgeMessage::PluginParamTitlesChanged => {
+                channels.push_unsolicited(BridgeEvent::Resync(ResyncKind::ParamTitles));
+            }
+            BridgeMessage::PluginIoChanged => {
+                channels.push_unsolicited(BridgeEvent::Resync(ResyncKind::Io));
+            }
+            BridgeMessage::PluginReloaded => {
+                channels.push_unsolicited(BridgeEvent::Resync(ResyncKind::Reloaded));
             }
             msg => return Ok(msg),
         }

@@ -22,7 +22,7 @@ mod signal;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use listeners::{LatencyChangeSink, ParameterChangeSink};
+pub(crate) use listeners::{LatencyChangeSink, ParameterChangeSink, ResyncSink};
 pub(crate) use midi::Midi;
 pub(crate) use process::ProcessGuard;
 #[cfg(any(feature = "vst2-in-process", feature = "wasm"))]
@@ -56,6 +56,7 @@ pub struct PluginClient {
     /// and still see events driven by the bridge thread.
     latency_sink: LatencyChangeSink,
     param_sink: ParameterChangeSink,
+    resync_sink: ResyncSink,
     /// Subprocess lifetime, shared with `PluginHandle::from_client`.
     process_guard: Arc<ProcessGuard>,
     io: Batcher,
@@ -112,6 +113,7 @@ impl PluginClient {
         let process_guard = Arc::new(ProcessGuard::new(server.process, bridge_thread, config));
         let latency_sink = LatencyChangeSink::new();
         let param_sink = ParameterChangeSink::new();
+        let resync_sink = ResyncSink::new();
 
         // Route unsolicited bridge events into the shared atomic + sinks.
         // The bridge-thread callback must be cheap; it writes the latency
@@ -120,6 +122,7 @@ impl PluginClient {
         let listener_latency = Arc::clone(&latency);
         let listener_latency_sink = latency_sink.clone();
         let listener_param_sink = param_sink.clone();
+        let listener_resync_sink = resync_sink.clone();
         bridge.set_listener(Some(Arc::new(move |ev| match ev {
             BridgeEvent::LatencyChanged { samples } => {
                 listener_latency.store(samples, Ordering::Release);
@@ -130,6 +133,9 @@ impl PluginClient {
                     listener_param_sink.fire(id, value);
                 }
             }
+            BridgeEvent::Resync(kind) => {
+                listener_resync_sink.fire(kind);
+            }
         })));
 
         Ok(Self {
@@ -139,6 +145,7 @@ impl PluginClient {
             latency,
             latency_sink,
             param_sink,
+            resync_sink,
             process_guard,
             io: Batcher::new(inputs, outputs, output_base, server.format, max_buffer_size),
             midi: Midi::new(),
@@ -151,6 +158,10 @@ impl PluginClient {
 
     pub(crate) fn param_sink(&self) -> &ParameterChangeSink {
         &self.param_sink
+    }
+
+    pub(crate) fn resync_sink(&self) -> &ResyncSink {
+        &self.resync_sink
     }
 
     /// Accessor for `PluginHandle::from_client` — not for end users.

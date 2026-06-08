@@ -1,4 +1,5 @@
-use crate::audio_node::{LatencyChangeSink, ParameterChangeSink};
+use crate::audio_node::{LatencyChangeSink, ParameterChangeSink, ResyncSink};
+use crate::bridge::audio::ResyncKind;
 use crate::control_backend::ControlBackend;
 use crate::error::EditorError;
 use crate::protocol::{ParameterInfo, PluginInfo};
@@ -22,6 +23,7 @@ pub struct PluginHandle {
     metadata: PluginInfo,
     latency_sink: LatencyChangeSink,
     param_sink: ParameterChangeSink,
+    resync_sink: ResyncSink,
     midi_sender: MidiSender,
 }
 
@@ -38,6 +40,7 @@ impl PluginHandle {
             metadata: client.metadata().clone(),
             latency_sink: client.latency_sink().clone(),
             param_sink: client.param_sink().clone(),
+            resync_sink: client.resync_sink().clone(),
             midi_sender: client.midi_sender(),
         }
     }
@@ -57,6 +60,9 @@ impl PluginHandle {
             metadata,
             latency_sink,
             param_sink,
+            // In-process backends (VST2, WASM) have no restartComponent
+            // mechanism, so they never emit resync signals.
+            resync_sink: ResyncSink::default(),
             midi_sender,
         }
     }
@@ -77,6 +83,7 @@ impl PluginHandle {
             metadata,
             latency_sink: LatencyChangeSink::default(),
             param_sink: ParameterChangeSink::default(),
+            resync_sink: ResyncSink::default(),
             midi_sender: sender,
         }
     }
@@ -191,6 +198,19 @@ impl PluginHandle {
         self
     }
 
+    /// Register a callback invoked when the plugin asks the host to resync some
+    /// aspect of its state at runtime — a preset load that changed parameter
+    /// values ([`ResyncKind::ParamValues`]) or titles
+    /// ([`ResyncKind::ParamTitles`]), a bus-layout change ([`ResyncKind::Io`]),
+    /// or a full in-place reload ([`ResyncKind::Reloaded`]). The callback should
+    /// re-read the affected state from the handle (e.g. `parameter_list`). See
+    /// [`Self::on_latency_changed`] for thread caveats. Only the out-of-process
+    /// VST3 backend emits these; replaces any previous callback.
+    pub fn on_plugin_resync<F: Fn(ResyncKind) + Send + Sync + 'static>(&self, f: F) -> &Self {
+        self.resync_sink.set(f);
+        self
+    }
+
     /// Clear the latency-changed callback (if any).
     pub fn clear_latency_callback(&self) -> &Self {
         self.latency_sink.clear();
@@ -200,6 +220,12 @@ impl PluginHandle {
     /// Clear the parameter-changed callback (if any).
     pub fn clear_parameter_callback(&self) -> &Self {
         self.param_sink.clear();
+        self
+    }
+
+    /// Clear the plugin-resync callback (if any).
+    pub fn clear_plugin_resync_callback(&self) -> &Self {
+        self.resync_sink.clear();
         self
     }
 }

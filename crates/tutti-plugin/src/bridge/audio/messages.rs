@@ -80,4 +80,23 @@ pub(super) enum AudioResponse {
 pub enum BridgeEvent {
     LatencyChanged { samples: usize },
     ParameterChanged { index: i32, value: f32 },
+    /// The plugin asked the host to resync some aspect of its state at runtime
+    /// (preset load, param-title change, IO change, full reload). Carries no
+    /// payload — the host re-reads from the plugin in response.
+    Resync(ResyncKind),
+}
+
+/// Which aspect of plugin state a [`BridgeEvent::Resync`] asks the host to
+/// re-read. Distinct from `LatencyChanged`/`ParameterChanged`, which carry the
+/// new value inline; these say only "your cached view of X is stale."
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResyncKind {
+    /// Re-read all parameter values (plugin loaded a preset / wrote them back).
+    ParamValues,
+    /// Re-pull the parameter list (titles, units, or flags changed).
+    ParamTitles,
+    /// Re-read the bus layout and rewire the audio graph.
+    Io,
+    /// The plugin instance was rebuilt; resync everything.
+    Reloaded,
 }

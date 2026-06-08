@@ -10,8 +10,11 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
+use crate::bridge::audio::ResyncKind;
+
 type LatencyCb = Arc<dyn Fn(usize) + Send + Sync>;
 type ParamCb = Arc<dyn Fn(u32, f32) + Send + Sync>;
+type ResyncCb = Arc<dyn Fn(ResyncKind) + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub(crate) struct LatencyChangeSink {
@@ -64,6 +67,35 @@ impl ParameterChangeSink {
         let cb = self.inner.lock().clone();
         if let Some(cb) = cb {
             cb(param_id, value);
+        }
+    }
+}
+
+/// Sink for plugin-requested resync signals (preset load, param-title change,
+/// IO change, full reload). Payload-free — the callback re-reads from the
+/// plugin per the [`ResyncKind`].
+#[derive(Clone, Default)]
+pub(crate) struct ResyncSink {
+    inner: Arc<Mutex<Option<ResyncCb>>>,
+}
+
+impl ResyncSink {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn set<F: Fn(ResyncKind) + Send + Sync + 'static>(&self, f: F) {
+        *self.inner.lock() = Some(Arc::new(f));
+    }
+
+    pub(crate) fn clear(&self) {
+        *self.inner.lock() = None;
+    }
+
+    pub(crate) fn fire(&self, kind: ResyncKind) {
+        let cb = self.inner.lock().clone();
+        if let Some(cb) = cb {
+            cb(kind);
         }
     }
 }

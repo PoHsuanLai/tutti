@@ -11,19 +11,9 @@ use vst3::Steinberg::{
 use vst3::{ComPtr, Interface};
 
 use crate::error::{LoadStage, Result, Vst3Error};
-use crate::helpers::c_str_to_string;
+use crate::helpers::{c_str_to_string, guid_as_tuid};
 
 type GetPluginFactoryFn = unsafe extern "system" fn() -> *mut IPluginFactory;
-
-/// Convert a 16-byte `Guid` (the type of `Interface::IID`) to a `TUID`
-/// (`[int8; 16]`) — same bytes, different signed-ness.
-fn guid_as_tuid(guid: &vst3::com_scrape_types::Guid) -> TUID {
-    let mut out: TUID = [0; 16];
-    for (i, b) in guid.iter().enumerate() {
-        out[i] = *b as i8;
-    }
-    out
-}
 
 /// A loaded VST3 dynamic library with its `IPluginFactory` resolved.
 ///

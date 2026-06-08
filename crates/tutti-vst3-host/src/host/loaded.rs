@@ -34,6 +34,7 @@ use crate::com::{
     RestartFlags, UnitEvent,
 };
 use crate::error::{LoadStage, Result, Vst3Error};
+use crate::helpers::cid_to_string;
 use crate::types::{
     BusInfo as BusInfoWrap, EditorCapabilities, EditorSize, PluginInfo, Vst3ParameterInfo,
     WindowHandle,
@@ -48,16 +49,6 @@ const DEFAULT_EDITOR_SIZE: (u32, u32) = (800, 600);
 pub(super) const K_AUDIO: i32 = kAudio as i32;
 pub(super) const K_INPUT: i32 = kInput as i32;
 pub(super) const K_OUTPUT: i32 = kOutput as i32;
-
-pub(super) fn cid_to_string(cid_bytes: &[u8; 16]) -> String {
-    format!(
-        "{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}",
-        cid_bytes[0], cid_bytes[1], cid_bytes[2], cid_bytes[3],
-        cid_bytes[4], cid_bytes[5], cid_bytes[6], cid_bytes[7],
-        cid_bytes[8], cid_bytes[9], cid_bytes[10], cid_bytes[11],
-        cid_bytes[12], cid_bytes[13], cid_bytes[14], cid_bytes[15]
-    )
-}
 
 pub(super) fn get_bus_channel_count(
     component: &ComPtr<IComponent>,

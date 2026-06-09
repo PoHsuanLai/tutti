@@ -238,8 +238,18 @@ pub struct MidiBus {
     /// processor before delivery, populating the per-note
     /// expression atomics that voices read on the audio thread.
     /// `None` = MPE disabled (the default).
+    ///
+    /// The `Mutex` is taken with `try_lock` on the audio-thread feed path
+    /// (see [`feed_mpe`](MidiBus::feed_mpe)) so the RT thread never blocks on
+    /// it; the only other locker is the off-RT `process`-mutation itself.
     #[cfg(feature = "mpe")]
     mpe: Arc<ArcSwap<Option<Arc<Mutex<MpeProcessor>>>>>,
+    /// The installed processor's `PerNoteExpression`, published separately so
+    /// [`mpe_expression`](MidiBus::mpe_expression) reads it with a single
+    /// atomic load — without locking the processor (which the audio thread
+    /// may be holding). `None` = MPE disabled.
+    #[cfg(feature = "mpe")]
+    mpe_expression: Arc<ArcSwap<Option<Arc<PerNoteExpression>>>>,
 }
 
 impl MidiBus {
@@ -259,37 +269,47 @@ impl MidiBus {
     #[cfg(feature = "mpe")]
     pub fn install_mpe(&self, processor: MpeProcessor) -> Arc<PerNoteExpression> {
         let expression = processor.expression();
+        // Publish the expression separately *before* the processor, so any
+        // concurrent `mpe_expression()` reader never has to lock the processor.
+        self.mpe_expression
+            .store(Arc::new(Some(Arc::clone(&expression))));
         self.mpe
             .store(Arc::new(Some(Arc::new(Mutex::new(processor)))));
         expression
     }
 
-    /// Read-only access to the live `PerNoteExpression`, if MPE is
-    /// installed. Lock-free: `expression()` returns an Arc clone.
+    /// Read-only access to the live `PerNoteExpression`, if MPE is installed.
+    /// Lock-free: a single atomic load + `Arc` clone. Does **not** lock the
+    /// processor (which the audio-thread feed may hold), so a UI-thread caller
+    /// can never stall the RT thread by reading the expression handle.
     #[cfg(feature = "mpe")]
     pub fn mpe_expression(&self) -> Option<Arc<PerNoteExpression>> {
-        self.mpe
-            .load()
-            .as_ref()
-            .as_ref()
-            .map(|p| p.lock().expression())
+        self.mpe_expression.load().as_ref().as_ref().map(Arc::clone)
     }
 
     /// Uninstall the MPE processor. Subsequent events bypass the feed.
     #[cfg(feature = "mpe")]
     pub fn uninstall_mpe(&self) {
         self.mpe.store(Arc::new(None));
+        self.mpe_expression.store(Arc::new(None));
     }
 
-    /// If MPE is installed, feed an event to the processor. Sweeps a
-    /// brief lock; `process` is short and the lock is uncontended in
-    /// the typical single-thread MIDI ingestion path. No-op when the
-    /// `mpe` feature is off.
+    /// If MPE is installed, feed an event to the processor.
+    ///
+    /// Uses `try_lock`: this runs on the audio thread (`MidiBus::queue` is the
+    /// engine's RT dispatch target), so it must never block. The only
+    /// competing locker is `process`-mutation itself; under the rare
+    /// contention window this skips the feed for one event rather than
+    /// stalling the RT thread — a dropped expression update is far cheaper
+    /// than an audio dropout, and the next event re-syncs the state.
+    /// No-op when the `mpe` feature is off.
     #[inline]
     #[cfg(feature = "mpe")]
     fn feed_mpe(&self, event: &MidiEvent) {
         if let Some(processor) = self.mpe.load().as_ref().as_ref() {
-            processor.lock().process(event);
+            if let Some(mut guard) = processor.try_lock() {
+                guard.process(event);
+            }
         }
     }
     #[inline]
@@ -566,6 +586,32 @@ mod tests {
             "expected pitch_bend ≈ 1.0 after bend, got {actual}"
         );
         assert!(expression.is_active(60), "note 60 should be active");
+    }
+
+    #[test]
+    #[cfg(feature = "mpe")]
+    fn bus_mpe_expression_readable_without_processor_lock() {
+        // mpe_expression() must read the published expression handle via the
+        // separate ArcSwap, NOT by locking the processor — so it stays
+        // readable even while the processor mutex is held (which on the audio
+        // thread it transiently is). We can't easily hold the RT lock from a
+        // test, but we can at least assert install publishes it and uninstall
+        // clears it, and that the returned handle is the same one install gave.
+        use crate::mpe::{MpeMode, MpeProcessor, MpeZoneConfig};
+
+        let bus = MidiBus::new();
+        assert!(bus.mpe_expression().is_none());
+
+        let processor = MpeProcessor::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
+        let installed = bus.install_mpe(processor);
+        let read_back = bus.mpe_expression().expect("expression published on install");
+        assert!(
+            Arc::ptr_eq(&installed, &read_back),
+            "mpe_expression() must hand back the same handle install_mpe returned"
+        );
+
+        bus.uninstall_mpe();
+        assert!(bus.mpe_expression().is_none(), "uninstall clears the expression");
     }
 
     #[test]

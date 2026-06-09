@@ -11,6 +11,8 @@
 
 pub use tutti_midi_types::MidiEvent;
 
+use tutti_midi_types::{decode, SemanticEvent};
+
 use vst3::Steinberg::Vst::Event_::EventTypes_;
 
 /// `type_` discriminant for note-on events.
@@ -284,15 +286,16 @@ pub(crate) unsafe fn from_c_event(event: &vst3::Steinberg::Vst::Event) -> Option
 
 /// Encode a Tutti UMP [`MidiEvent`] as a [`Vst3Event`].
 ///
-/// Note-on/off and poly-pressure land in their typed VST3 variants; all other
-/// MIDI messages (CC, pitch bend, program change, channel pressure) fall
-/// through to [`Vst3Event::Data`]. Returns `None` for MIDI 2.0 events that
-/// can't be flattened to 3 MIDI-1 bytes.
+/// Notes and poly-pressure decode through [`tutti_midi_types::decode`] into
+/// VST3's typed structs, so velocity / pressure arrive at the plugin at the
+/// source event's full bit width (`f32` 0..1) rather than re-quantized through
+/// 7-bit MIDI-1 — a MIDI-2 note-on keeps its 16-bit velocity. Everything else
+/// (CC, pitch bend, program change, channel pressure, SysEx) becomes a
+/// [`Vst3Event::Data`] event, which is a 3-byte MIDI-1 frame by definition, so
+/// that branch stays on the byte form. Returns `None` only for messages with
+/// no MIDI-1 byte representation and no semantic note/pressure mapping.
 pub fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
-    let (bytes, _len) = event.to_midi1_bytes()?;
     let sample_offset = event.frame_offset as i32;
-    let status = bytes[0];
-    let channel = (status & 0x0F) as i16;
     let header = EventHeader {
         bus_index: 0,
         sample_offset,
@@ -301,56 +304,79 @@ pub fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
         event_type: 0,
     };
 
-    match status & 0xF0 {
-        0x90 => {
-            let mut h = header;
-            h.event_type = K_NOTE_ON_EVENT;
-            Some(Vst3Event::NoteOn(NoteOnEvent {
-                header: h,
-                channel,
-                pitch: bytes[1] as i16,
+    // Notes and poly-pressure get VST3's typed structs with full-width f32
+    // values; the rest fall through to a 3-byte Data event below.
+    match decode(event) {
+        Some(SemanticEvent::NoteOn {
+            channel,
+            note,
+            velocity,
+        }) => {
+            return Some(Vst3Event::NoteOn(NoteOnEvent {
+                header: EventHeader {
+                    event_type: K_NOTE_ON_EVENT,
+                    ..header
+                },
+                channel: channel as i16,
+                pitch: note as i16,
                 tuning: 0.0,
-                velocity: bytes[2] as f32 / 127.0,
+                velocity,
                 length: 0,
                 note_id: -1,
-            }))
+            }));
         }
-        0x80 => {
-            let mut h = header;
-            h.event_type = K_NOTE_OFF_EVENT;
-            Some(Vst3Event::NoteOff(NoteOffEvent {
-                header: h,
-                channel,
-                pitch: bytes[1] as i16,
-                velocity: bytes[2] as f32 / 127.0,
+        Some(SemanticEvent::NoteOff { channel, note }) => {
+            return Some(Vst3Event::NoteOff(NoteOffEvent {
+                header: EventHeader {
+                    event_type: K_NOTE_OFF_EVENT,
+                    ..header
+                },
+                channel: channel as i16,
+                pitch: note as i16,
+                velocity: 0.0,
                 note_id: -1,
                 tuning: 0.0,
-            }))
+            }));
         }
-        0xA0 => {
-            let mut h = header;
-            h.event_type = K_POLY_PRESSURE_EVENT;
-            Some(Vst3Event::PolyPressure(PolyPressureEvent {
-                header: h,
-                channel,
-                pitch: bytes[1] as i16,
-                pressure: bytes[2] as f32 / 127.0,
+        Some(SemanticEvent::KeyPressure {
+            channel,
+            note,
+            value,
+        }) => {
+            return Some(Vst3Event::PolyPressure(PolyPressureEvent {
+                header: EventHeader {
+                    event_type: K_POLY_PRESSURE_EVENT,
+                    ..header
+                },
+                channel: channel as i16,
+                pitch: note as i16,
+                pressure: value,
                 note_id: -1,
-            }))
+            }));
         }
-        _ => {
-            let mut h = header;
-            h.event_type = K_DATA_EVENT;
-            let mut data = [0u8; 16];
-            data[..3].copy_from_slice(&bytes);
-            Some(Vst3Event::Data(DataEvent {
-                header: h,
-                size: 3,
-                event_type: 0,
-                bytes: data,
-            }))
-        }
+        // CC / channel pressure / pitch bend / program change carry no extra
+        // resolution VST3 can use here — they ride the plugin's parameter
+        // funnel (see `CcRoute`) or land as a raw Data event. Per-note
+        // controllers/bends would need a note-id allocation scheme to bind to
+        // a VST3 voice (our note-ons use note_id = -1), so they aren't mapped
+        // to note-expression yet — they fall through to the byte form, which
+        // drops them (no MIDI-1 encoding) rather than misattributing a voice.
+        _ => {}
     }
+
+    // Data event: the VST3 carrier for any 3-byte MIDI-1 message.
+    let (bytes, _len) = event.to_midi1_bytes()?;
+    let mut data = [0u8; 16];
+    data[..3].copy_from_slice(&bytes);
+    Some(Vst3Event::Data(DataEvent {
+        header: EventHeader {
+            event_type: K_DATA_EVENT,
+            ..header
+        },
+        size: 3,
+        event_type: 0,
+        bytes: data,
+    }))
 }
 
 /// Decode a [`Vst3Event`] into a Tutti UMP [`MidiEvent`].

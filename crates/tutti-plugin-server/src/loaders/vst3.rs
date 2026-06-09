@@ -9,7 +9,7 @@ use tutti_plugin::server::{
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
-use crate::loaders::common::params::{make_param_info, ParamCache};
+use crate::loaders::common::params::make_param_info;
 
 pub use tutti_vst3_host;
 
@@ -43,7 +43,6 @@ macro_rules! vst_dispatch_mut {
 pub struct Vst3Instance {
     inner: VstInner,
     metadata: PluginInfo,
-    param_cache: ParamCache,
     /// Load parameters retained so the plugin can be torn down and rebuilt in
     /// place when it requests `kReloadComponent`. See [`Self::reload`].
     reload: ReloadParams,
@@ -174,7 +173,6 @@ impl Vst3Instance {
         Ok(Self {
             inner,
             metadata,
-            param_cache: ParamCache::default(),
             reload,
         })
     }
@@ -192,7 +190,6 @@ impl Vst3Instance {
         let (inner, metadata) = build_inner(&self.reload)?;
         self.inner = inner;
         self.metadata = metadata;
-        self.param_cache = ParamCache::default();
 
         if let Some(state) = saved_state {
             let _ = vst_dispatch_mut!(self, inner => inner.set_state(&state));
@@ -271,11 +268,6 @@ impl Vst3Instance {
             .collect()
     }
 
-    pub fn get_parameter_info(&mut self, param_id: u32) -> Option<ParameterInfo> {
-        let list = self.get_parameter_list();
-        self.param_cache.lookup(param_id, || list)
-    }
-
     pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         // Safety: WindowHandle was validated at the IPC boundary in server.rs
         let handle = unsafe { tutti_vst3_host::WindowHandle::from_raw(parent.as_ptr()) };
@@ -299,14 +291,21 @@ fn process_block<'a, T: tutti_vst3_host::Vst3Sample>(
         .note_expression
         .map(convert_note_expression_to_vst3)
         .unwrap_or_default();
-    let vst3_chords = ctx.chords.map(convert_chords_to_vst3).unwrap_or_default();
-    let vst3_scales = ctx.scales.map(convert_scales_to_vst3).unwrap_or_default();
-    let vst3_expr_texts = ctx
-        .expr_texts
+    let expr = ctx.expressive.as_ref();
+    let vst3_chords = expr
+        .and_then(|e| e.chords)
+        .map(convert_chords_to_vst3)
+        .unwrap_or_default();
+    let vst3_scales = expr
+        .and_then(|e| e.scales)
+        .map(convert_scales_to_vst3)
+        .unwrap_or_default();
+    let vst3_expr_texts = expr
+        .and_then(|e| e.expr_texts)
         .map(convert_expr_texts_to_vst3)
         .unwrap_or_default();
-    let vst3_expr_ints = ctx
-        .expr_ints
+    let vst3_expr_ints = expr
+        .and_then(|e| e.expr_ints)
         .map(convert_expr_ints_to_vst3)
         .unwrap_or_default();
     let output = inner.process(
@@ -489,12 +488,8 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
         vst_dispatch_mut!(self, inner => inner.set_parameter(id, value));
     }
 
-    fn get_parameter_list(&mut self) -> Vec<tutti_plugin::server::ParameterInfo> {
+    fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
         Vst3Instance::get_parameter_list(self)
-    }
-
-    fn get_parameter_info(&mut self, id: u32) -> Option<tutti_plugin::server::ParameterInfo> {
-        Vst3Instance::get_parameter_info(self, id)
     }
 
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
@@ -503,10 +498,6 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
 
     fn close_editor(&mut self) {
         vst_dispatch_mut!(self, inner => inner.close_editor());
-    }
-
-    fn editor_idle(&mut self) {
-        // VST3 doesn't have explicit idle
     }
 
     fn get_state(&mut self) -> Result<Vec<u8>> {

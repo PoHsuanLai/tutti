@@ -11,10 +11,8 @@ use tutti_plugin::server::{
     EditorSize, ParameterInfo, PluginInstance, ProcessContext, ProcessOutput, WindowHandle,
 };
 
-#[cfg(not(all(target_os = "macos", feature = "au")))]
-use crate::loaders::common::params::ParamCache;
 #[cfg(all(target_os = "macos", feature = "au"))]
-use crate::loaders::common::params::{make_param_info, ParamCache, ALL_AUTOMATABLE};
+use crate::loaders::common::params::{make_param_info, ALL_AUTOMATABLE};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 #[cfg(all(target_os = "macos", feature = "au"))]
@@ -26,7 +24,6 @@ pub struct AuInstance {
     #[cfg(all(target_os = "macos", feature = "au"))]
     editor: Option<AuEditor>,
     metadata: PluginInfo,
-    param_cache: ParamCache,
 }
 
 unsafe impl Send for AuInstance {}
@@ -168,7 +165,6 @@ impl AuInstance {
                 inner,
                 editor: None,
                 metadata,
-                param_cache: ParamCache::default(),
             })
         }
 
@@ -262,7 +258,7 @@ impl PluginInstance for AuInstance {
         let _ = parameters::set(self.inner.raw_unit(), id, value as f32);
     }
 
-    fn get_parameter_list(&mut self) -> Vec<ParameterInfo> {
+    fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         parameters::list(self.inner.raw_unit())
             .into_iter()
             .map(|p| {
@@ -278,11 +274,6 @@ impl PluginInstance for AuInstance {
                 )
             })
             .collect()
-    }
-
-    fn get_parameter_info(&mut self, id: u32) -> Option<ParameterInfo> {
-        let params = self.get_parameter_list();
-        self.param_cache.lookup(id, || params)
     }
 
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
@@ -301,10 +292,6 @@ impl PluginInstance for AuInstance {
         if let Some(mut ed) = self.editor.take() {
             ed.close();
         }
-    }
-
-    fn editor_idle(&mut self) {
-        // AUv2 Cocoa views are driven by the AppKit run loop; no explicit idle needed.
     }
 
     fn get_state(&mut self) -> Result<Vec<u8>> {
@@ -371,7 +358,6 @@ mod tests {
             inner,
             editor: None,
             metadata: PluginInfo::new("au.appl.dely", "AUDelay"),
-            param_cache: ParamCache::default(),
         };
 
         let params = au.get_parameter_list();
@@ -405,7 +391,6 @@ mod tests {
             inner,
             editor: None,
             metadata: PluginInfo::new("au.appl.dely", "AUDelay").audio_io(2, 2),
-            param_cache: ParamCache::default(),
         };
 
         let num_samples = 512;
@@ -451,7 +436,6 @@ mod tests {
             inner,
             editor: None,
             metadata: PluginInfo::new("au.appl.dely", "AUDelay"),
-            param_cache: ParamCache::default(),
         };
 
         let state = au.get_state().expect("save should succeed");

@@ -9,7 +9,7 @@
 //!
 //! ```no_run
 //! # #[cfg(feature = "json")]
-//! # async fn ex(window: &impl raw_window_handle::HasWindowHandle)
+//! # fn ex(window: &impl raw_window_handle::HasWindowHandle)
 //! # -> tutti_plugin::Result<()> {
 //! use std::path::PathBuf;
 //! use tutti_plugin::catalog::PluginsConfig;
@@ -20,7 +20,7 @@
 //! )
 //! .build()
 //! .with_fresh_scan();
-//! let (unit, handle) = plugins.load_by_name("TAL-NoiseMaker", 48000.0).await?;
+//! let (unit, handle) = plugins.load_by_name("TAL-NoiseMaker", 48000.0)?;
 //!
 //! // `unit` is a `Box<dyn AudioUnit>` that goes into your fundsp graph.
 //! // `handle` is the main-thread control surface.

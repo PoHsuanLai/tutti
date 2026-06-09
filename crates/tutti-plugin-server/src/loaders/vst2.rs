@@ -18,7 +18,7 @@ use tutti_vst2_host::{
     ProcessContext as Vst2ProcessContext, RenderScratch, Vst2Error, Vst2Instance as Vst2Host,
 };
 
-use crate::loaders::common::params::{make_param_info, ParamCache, ALL_AUTOMATABLE};
+use crate::loaders::common::params::{make_param_info, ALL_AUTOMATABLE};
 
 pub struct Vst2Instance {
     #[cfg(feature = "vst2")]
@@ -26,7 +26,6 @@ pub struct Vst2Instance {
     #[cfg(feature = "vst2")]
     scratch: RenderScratch,
     metadata: PluginInfo,
-    param_cache: ParamCache,
     #[allow(dead_code)] // Carried for diagnostics under the not(vst2) cfg.
     sample_rate: f64,
 }
@@ -55,7 +54,6 @@ impl Vst2Instance {
                 inner,
                 scratch,
                 metadata,
-                param_cache: ParamCache::default(),
                 sample_rate,
             })
         }
@@ -211,7 +209,7 @@ impl PluginInstance for Vst2Instance {
         let _ = (id, value);
     }
 
-    fn get_parameter_list(&mut self) -> Vec<ParameterInfo> {
+    fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         #[cfg(feature = "vst2")]
         {
             self.inner
@@ -233,11 +231,6 @@ impl PluginInstance for Vst2Instance {
         }
         #[cfg(not(feature = "vst2"))]
         Vec::new()
-    }
-
-    fn get_parameter_info(&mut self, id: u32) -> Option<ParameterInfo> {
-        let params = self.get_parameter_list();
-        self.param_cache.lookup(id, || params)
     }
 
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
@@ -264,11 +257,6 @@ impl PluginInstance for Vst2Instance {
     fn close_editor(&mut self) {
         #[cfg(feature = "vst2")]
         self.inner.close_editor();
-    }
-
-    fn editor_idle(&mut self) {
-        #[cfg(feature = "vst2")]
-        self.inner.editor_idle();
     }
 
     fn get_state(&mut self) -> Result<Vec<u8>> {

@@ -127,16 +127,18 @@ impl Session {
             M::GetParameterList => {
                 let parameters = self
                     .plugin
-                    .as_mut()
-                    .map(|p| p.instance_mut().get_parameter_list())
+                    .as_ref()
+                    .map(|p| p.instance().get_parameter_list())
                     .unwrap_or_default();
                 Ok(BridgeMessage::ParameterList { parameters }.into())
             }
             M::GetParameterInfo { param_id } => {
-                let info = self
-                    .plugin
-                    .as_mut()
-                    .and_then(|p| p.instance_mut().get_parameter_info(param_id));
+                let info = self.plugin.as_ref().and_then(|p| {
+                    p.instance()
+                        .get_parameter_list()
+                        .into_iter()
+                        .find(|info| info.id == param_id)
+                });
                 Ok(BridgeMessage::ParameterInfoResponse { info }.into())
             }
 
@@ -148,15 +150,6 @@ impl Session {
                 }
                 Ok(Reaction::None)
             }
-            M::EditorIdle => {
-                if self.editor.is_open() {
-                    if let Some(plugin) = self.plugin.as_mut() {
-                        plugin.instance_mut().editor_idle();
-                    }
-                }
-                Ok(Reaction::None)
-            }
-
             M::SetSampleRate { rate } => {
                 self.clock.sample_rate = rate;
                 if let Some(plugin) = self.plugin.as_mut() {

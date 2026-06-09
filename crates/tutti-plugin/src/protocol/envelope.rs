@@ -62,7 +62,6 @@ pub enum HostMessage {
         parent_handle: u64,
     },
     CloseEditor,
-    EditorIdle,
     SetupSharedMemory {
         shm_name: String,
         layout: SlabLayout,

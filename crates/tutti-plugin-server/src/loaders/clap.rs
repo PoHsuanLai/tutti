@@ -7,7 +7,7 @@ use tutti_plugin::server::{
 };
 use tutti_plugin::server::{PluginInstance, ProcessContext, ProcessOutput};
 
-use crate::loaders::common::params::{make_param_info, ParamCache};
+use crate::loaders::common::params::make_param_info;
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 #[cfg(feature = "clap")]
@@ -17,7 +17,6 @@ pub struct ClapInstance {
     #[cfg(feature = "clap")]
     inner: ClapHostInstance,
     metadata: PluginInfo,
-    param_cache: ParamCache,
 }
 
 // Safety: ClapHostInstance is Send
@@ -101,7 +100,6 @@ impl ClapInstance {
             let mut instance = Self {
                 inner,
                 metadata,
-                param_cache: ParamCache::default(),
             };
             instance.activate()?;
             // Latency is queryable after activation.
@@ -234,22 +232,12 @@ impl PluginInstance for ClapInstance {
         self.inner.set_parameter(id, value);
     }
 
-    fn get_parameter_list(&mut self) -> Vec<ParameterInfo> {
+    fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         self.inner
             .parameters()
             .into_iter()
             .map(convert_param_info)
             .collect()
-    }
-
-    fn get_parameter_info(&mut self, id: u32) -> Option<ParameterInfo> {
-        let params = self
-            .inner
-            .parameters()
-            .into_iter()
-            .map(convert_param_info)
-            .collect::<Vec<_>>();
-        self.param_cache.lookup(id, || params)
     }
 
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
@@ -266,10 +254,6 @@ impl PluginInstance for ClapInstance {
 
     fn close_editor(&mut self) {
         self.inner.close_editor();
-    }
-
-    fn editor_idle(&mut self) {
-        // CLAP doesn't need explicit idle
     }
 
     fn get_state(&mut self) -> Result<Vec<u8>> {

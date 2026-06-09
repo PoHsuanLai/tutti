@@ -11,9 +11,9 @@
 //! `AudioOutput`.
 
 use tutti_plugin::server::{
-    AudioBufferMut, AudioSlab, ChordChanges, MidiEvent, MidiEventVec, NoteExpressionChanges,
-    NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges, PluginInstance,
-    ProcessContext, SampleFormat, ScaleChanges, TransportInfo,
+    AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, MidiEvent, MidiEventVec,
+    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
+    PluginInstance, ProcessContext, SampleFormat, ScaleChanges, TransportInfo,
 };
 use tutti_plugin::Result;
 
@@ -189,11 +189,13 @@ impl AudioPipeline {
             ctx = ctx
                 .params(ex.param_changes)
                 .note_expression(ex.note_expression)
-                .chords(ex.chords)
-                .scales(ex.scales)
-                .expr_texts(ex.expr_texts)
-                .expr_ints(ex.expr_ints)
-                .transport(ex.transport);
+                .transport(ex.transport)
+                .expressive(ExpressiveContext {
+                    chords: Some(ex.chords),
+                    scales: Some(ex.scales),
+                    expr_texts: Some(ex.expr_texts),
+                    expr_ints: Some(ex.expr_ints),
+                });
         }
 
         let sample_rate = clock.sample_rate;
@@ -519,17 +521,13 @@ mod tests {
             0.0
         }
         fn set_parameter(&mut self, _id: u32, _value: f64) {}
-        fn get_parameter_list(&mut self) -> Vec<tutti_plugin::server::ParameterInfo> {
+        fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
-        }
-        fn get_parameter_info(&mut self, _id: u32) -> Option<tutti_plugin::server::ParameterInfo> {
-            None
         }
         fn open_editor(&mut self, _parent: WindowHandle) -> Result<tutti_plugin::server::EditorSize> {
             unreachable!("editor not used in this test")
         }
         fn close_editor(&mut self) {}
-        fn editor_idle(&mut self) {}
         fn get_state(&mut self) -> Result<Vec<u8>> {
             Ok(Vec::new())
         }
@@ -578,17 +576,13 @@ mod tests {
             0.0
         }
         fn set_parameter(&mut self, _id: u32, _value: f64) {}
-        fn get_parameter_list(&mut self) -> Vec<tutti_plugin::server::ParameterInfo> {
+        fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
-        }
-        fn get_parameter_info(&mut self, _id: u32) -> Option<tutti_plugin::server::ParameterInfo> {
-            None
         }
         fn open_editor(&mut self, _parent: WindowHandle) -> Result<tutti_plugin::server::EditorSize> {
             unreachable!("editor not used in this test")
         }
         fn close_editor(&mut self) {}
-        fn editor_idle(&mut self) {}
         fn get_state(&mut self) -> Result<Vec<u8>> {
             Ok(Vec::new())
         }

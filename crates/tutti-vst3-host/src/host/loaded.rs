@@ -10,13 +10,14 @@ use std::sync::Arc;
 
 use vst3::com_scrape_types::Unknown;
 use vst3::Steinberg::{
-    kResultFalse, kResultOk, FUnknown, IBStream, IPlugView, IPlugViewTrait, IPluginBaseTrait,
-    ViewRect,
+    kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPlugView, IPlugViewTrait,
+    IPluginBaseTrait, ViewRect,
     Vst::{
         IAudioProcessor, IAudioProcessorTrait, IComponent, IComponentTrait, IConnectionPoint,
-        IConnectionPointTrait, IEditController, IEditControllerTrait, IMidiLearn,
+        IAutomationState, IAutomationStateTrait, IConnectionPointTrait, IEditController,
+        IEditControllerTrait, IKeyswitchController, IKeyswitchControllerTrait, IMidiLearn,
         INoteExpressionController, INoteExpressionControllerTrait, IProcessContextRequirements,
-        IProcessContextRequirementsTrait,
+        IProcessContextRequirementsTrait, IRemapParamID, IRemapParamIDTrait,
     },
 };
 use vst3::ComPtr;
@@ -35,8 +36,8 @@ use crate::com::{
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
 use crate::types::{
-    EditorCapabilities, EditorSize, PluginInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
-    WindowHandle, Vst3Sample,
+    EditorCapabilities, EditorSize, PluginInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo,
+    Vst3ParameterInfo, WindowHandle, Vst3Sample,
 };
 
 use super::midi_learn::MidiLearnConsumer;
@@ -209,6 +210,13 @@ impl Vst3Loaded {
         let note_expression = controller
             .as_ref()
             .and_then(|c| c.cast::<INoteExpressionController>());
+        let automation_state = controller
+            .as_ref()
+            .and_then(|c| c.cast::<IAutomationState>());
+        let keyswitch = controller
+            .as_ref()
+            .and_then(|c| c.cast::<IKeyswitchController>());
+        let remap_param_id = controller.as_ref().and_then(|c| c.cast::<IRemapParamID>());
         let midi_learn = MidiLearnConsumer::new(
             controller.as_ref().and_then(|c| c.cast::<IMidiLearn>()),
         );
@@ -221,6 +229,9 @@ impl Vst3Loaded {
                 controller,
                 process_context_requirements,
                 note_expression,
+                automation_state,
+                keyswitch,
+                remap_param_id,
             },
             host: HostContext {
                 application: host_application,
@@ -331,6 +342,63 @@ impl Vst3Loaded {
         (result == kResultOk).then(|| Vst3NoteExpressionInfo::from_c(&raw))
     }
 
+    /// Number of key-switch (articulation) entries the plugin exposes on the
+    /// given event `bus_index` / MIDI `channel`. Returns `0` if the plugin
+    /// doesn't implement `IKeyswitchController`.
+    ///
+    /// Pair with [`keyswitch_info`](Self::keyswitch_info) to enumerate the
+    /// articulation map a sample-library instrument advertises.
+    pub fn keyswitch_count(&self, bus_index: i32, channel: i16) -> u32 {
+        match &self.interfaces.keyswitch {
+            Some(c) => unsafe { c.getKeyswitchCount(bus_index, channel).max(0) as u32 },
+            None => 0,
+        }
+    }
+
+    /// Descriptor for the key switch at `index` on the given event `bus_index` /
+    /// MIDI `channel` (articulation title, trigger key range, kind). Returns
+    /// `None` if the index is out of range or the plugin doesn't implement
+    /// `IKeyswitchController`.
+    pub fn keyswitch_info(
+        &self,
+        bus_index: i32,
+        channel: i16,
+        index: u32,
+    ) -> Option<Vst3KeyswitchInfo> {
+        let controller = self.interfaces.keyswitch.as_ref()?;
+        let mut raw: vst3::Steinberg::Vst::KeyswitchInfo = unsafe { std::mem::zeroed() };
+        let result =
+            unsafe { controller.getKeyswitchInfo(bus_index, channel, index as i32, &mut raw) };
+        (result == kResultOk).then(|| Vst3KeyswitchInfo::from_c(&raw))
+    }
+
+    /// Ask the plugin (via `IRemapParamID`) for the parameter ID in *this*
+    /// plugin that corresponds to `old_param_id` from a *previous* plugin
+    /// identified by `plugin_to_replace_uid` (its processor class ID / `TUID`).
+    ///
+    /// This is how a host carries saved automation forward when swapping one
+    /// plugin for a newer/compatible one: each old automation lane's `ParamID`
+    /// is remapped to the replacement's. Returns `Some(new_id)` when the plugin
+    /// reports a compatible parameter (possibly equal to `old_param_id`), or
+    /// `None` when there is none or the plugin doesn't implement `IRemapParamID`.
+    ///
+    /// The host does **not** call this automatically anywhere — like JUCE, it's
+    /// exposed for a caller-driven migration flow to use. Must run on the
+    /// main/UI thread.
+    pub fn remap_param_id(&self, plugin_to_replace_uid: &[i8; 16], old_param_id: u32) -> Option<u32> {
+        tutti_plugin_types::assert_main_thread();
+        let remap = self.interfaces.remap_param_id.as_ref()?;
+        let mut new_param_id: u32 = 0;
+        let result = unsafe {
+            remap.getCompatibleParamID(
+                plugin_to_replace_uid as *const [i8; 16],
+                old_param_id,
+                &mut new_param_id,
+            )
+        };
+        (result == kResultTrue).then_some(new_param_id)
+    }
+
     /// Drain every host-side notification channel the plugin's editor pushes
     /// to and return them as one [`PluginNotifications`] batch.
     ///
@@ -395,6 +463,26 @@ impl Vst3Loaded {
     /// [`arm_midi_learn`](Self::arm_midi_learn).
     pub fn is_midi_learn_armed(&self) -> bool {
         self.midi_learn.is_armed()
+    }
+
+    /// Tell the plugin the host's current automation read/write mode via
+    /// `IAutomationState`. `state` is one of the
+    /// [`automation_state`](crate::automation_state) constants
+    /// (`NONE` / `READ` / `WRITE` / `READ_WRITE`).
+    ///
+    /// Some plugins change behaviour during automation playback vs recording
+    /// (e.g. snapping a knob to the automation lane while reading). No-op if the
+    /// plugin doesn't implement `IAutomationState`. Returns `true` if the call
+    /// was delivered. Must run on the main/UI thread.
+    pub fn set_automation_state(&mut self, state: i32) -> bool {
+        tutti_plugin_types::assert_main_thread();
+        match &self.interfaces.automation_state {
+            Some(a) => {
+                unsafe { a.setAutomationState(state) };
+                true
+            }
+            None => false,
+        }
     }
 
     /// Capture the plugin's component state as the opaque byte blob the plugin

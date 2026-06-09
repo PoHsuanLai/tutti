@@ -3,7 +3,10 @@
 use crossbeam_channel::Receiver;
 use vst3::Steinberg::{
     IPlugView,
-    Vst::{IAudioProcessor, IComponent, IEditController, INoteExpressionController},
+    Vst::{
+        IAutomationState, IAudioProcessor, IComponent, IEditController, IKeyswitchController,
+        INoteExpressionController, IRemapParamID,
+    },
 };
 use vst3::{ComPtr, ComWrapper};
 
@@ -29,6 +32,18 @@ pub(super) struct PluginInterfaces {
     /// expression. The host **sends** note-expression value events regardless;
     /// this is the **read** side (descriptors / supported types).
     pub note_expression: Option<ComPtr<INoteExpressionController>>,
+    /// The plugin's automation-state interface, if it implements one. The host
+    /// pushes the current read/write automation mode to it (see
+    /// [`super::loaded::Vst3Loaded::set_automation_state`]).
+    pub automation_state: Option<ComPtr<IAutomationState>>,
+    /// The plugin's keyswitch (articulation) metadata interface, if any. Read
+    /// side only — enumerates the plugin's key-switch map per bus/channel.
+    pub keyswitch: Option<ComPtr<IKeyswitchController>>,
+    /// The plugin's parameter-ID remap interface, used when migrating saved
+    /// automation across plugin versions. Queried + exposed as an accessor; the
+    /// host never auto-applies it (matches JUCE — the caller drives any migration
+    /// flow).
+    pub remap_param_id: Option<ComPtr<IRemapParamID>>,
 }
 
 unsafe impl Send for PluginInterfaces {}

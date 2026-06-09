@@ -1,6 +1,8 @@
 //! Newtype wrappers over the vst3 crate's `BusInfo`, `ParameterInfo`, and
 //! `NoteExpressionTypeInfo`.
 
+use vst3::Steinberg::Vst::IAutomationState_::AutomationStates_;
+use vst3::Steinberg::Vst::KeyswitchTypeIDs_;
 use vst3::Steinberg::Vst::NoteExpressionTypeInfo_::NoteExpressionTypeFlags_;
 use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_;
 
@@ -172,6 +174,24 @@ pub mod parameter_flags {
     pub const IS_BYPASS: i32 = ParameterFlags_::kIsBypass;
 }
 
+/// VST3 `IAutomationState` mode constants, mirroring
+/// `IAutomationState_::AutomationStates_` from the Steinberg SDK. The host
+/// pushes one of these to the plugin so it can adapt to whether the host is
+/// reading, writing, both, or ignoring automation. Pass to
+/// [`Vst3Loaded::set_automation_state`](crate::Vst3Loaded::set_automation_state).
+pub mod automation_state {
+    use super::AutomationStates_;
+
+    /// No automation read or write.
+    pub const NONE: i32 = AutomationStates_::kNoAutomation;
+    /// Host is reading automation.
+    pub const READ: i32 = AutomationStates_::kReadState;
+    /// Host is writing automation.
+    pub const WRITE: i32 = AutomationStates_::kWriteState;
+    /// Host is both reading and writing automation.
+    pub const READ_WRITE: i32 = AutomationStates_::kReadWriteState;
+}
+
 /// Host-facing note-expression-type descriptor — a flat snake_case view over the
 /// vst3 crate's `NoteExpressionTypeInfo`, read from the plugin's
 /// `INoteExpressionController::getNoteExpressionInfo`. This is the **read** side
@@ -298,6 +318,89 @@ pub mod note_expression_flags {
         NoteExpressionTypeFlags_::kAssociatedParameterIDValid as i32;
 }
 
+/// Host-facing keyswitch (articulation) descriptor — a flat snake_case view over
+/// the vst3 crate's `KeyswitchInfo`, read from
+/// `IKeyswitchController::getKeyswitchInfo`. Sample-library instruments use key
+/// switches to select articulations (legato / staccato / pizzicato / …); this
+/// is the **read** side that tells the host which switches a plugin exposes and
+/// on which keys.
+#[derive(Clone)]
+pub struct Vst3KeyswitchInfo {
+    /// Keyswitch kind (`KeyswitchTypeIDs`). See [`keyswitch_type`].
+    pub type_id: u32,
+    /// UTF-16 display title (the articulation name).
+    pub title: [u16; 128],
+    /// UTF-16 abbreviated title (for narrow UIs).
+    pub short_title: [u16; 128],
+    /// Lowest MIDI key that triggers this switch.
+    pub keyswitch_min: i32,
+    /// Highest MIDI key that triggers this switch.
+    pub keyswitch_max: i32,
+    /// The key the plugin actually maps the switch to internally (may differ
+    /// from the trigger range), or `-1` if not remapped.
+    pub key_remapped: i32,
+    /// Unit the keyswitch belongs to (for `IUnitInfo` plugins).
+    pub unit_id: i32,
+    /// `KeyswitchInfo` flags bitfield (no named bits in the current SDK
+    /// binding; surfaced verbatim).
+    pub flags: i32,
+}
+
+impl Default for Vst3KeyswitchInfo {
+    fn default() -> Self {
+        Self {
+            type_id: 0,
+            title: [0; 128],
+            short_title: [0; 128],
+            keyswitch_min: 0,
+            keyswitch_max: 0,
+            key_remapped: -1,
+            unit_id: 0,
+            flags: 0,
+        }
+    }
+}
+
+impl Vst3KeyswitchInfo {
+    /// Decoded [`title`](Self::title) as a Rust `String`.
+    pub fn title_string(&self) -> String {
+        utf16_to_string(&self.title)
+    }
+
+    /// Decoded [`short_title`](Self::short_title) as a Rust `String`.
+    pub fn short_title_string(&self) -> String {
+        utf16_to_string(&self.short_title)
+    }
+
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::KeyswitchInfo) -> Self {
+        Self {
+            type_id: c.typeId,
+            title: c.title,
+            short_title: c.shortTitle,
+            keyswitch_min: c.keyswitchMin,
+            keyswitch_max: c.keyswitchMax,
+            key_remapped: c.keyRemapped,
+            unit_id: c.unitId,
+            flags: c.flags,
+        }
+    }
+}
+
+/// VST3 `KeyswitchTypeIDs` constants — the *kind* of a key switch, mirroring
+/// `KeyswitchTypeIDs_` from the Steinberg SDK.
+pub mod keyswitch_type {
+    use super::KeyswitchTypeIDs_;
+
+    /// Switch selected by playing its key before the note.
+    pub const NOTE_ON_KEYSWITCH: u32 = KeyswitchTypeIDs_::kNoteOnKeyswitchTypeID;
+    /// Switch that can be changed while a note sustains.
+    pub const ON_THE_FLY_KEYSWITCH: u32 = KeyswitchTypeIDs_::kOnTheFlyKeyswitchTypeID;
+    /// Switch applied on note release.
+    pub const ON_RELEASE_KEYSWITCH: u32 = KeyswitchTypeIDs_::kOnReleaseKeyswitchTypeID;
+    /// A key *range* mapped to an articulation rather than a single switch key.
+    pub const KEY_RANGE: u32 = KeyswitchTypeIDs_::kKeyRangeTypeID;
+}
+
 #[cfg(test)]
 mod note_expression_info_tests {
     use super::{note_expression_flags, Vst3NoteExpressionInfo};
@@ -346,5 +449,41 @@ mod note_expression_info_tests {
         assert!(info.is_associated_parameter_id_valid());
         assert!(!info.is_one_shot());
         assert!(!info.is_absolute());
+    }
+}
+
+#[cfg(test)]
+mod keyswitch_info_tests {
+    use super::{keyswitch_type, Vst3KeyswitchInfo};
+
+    fn string128(s: &str) -> [u16; 128] {
+        let mut buf = [0u16; 128];
+        for (slot, ch) in buf.iter_mut().zip(s.encode_utf16()) {
+            *slot = ch;
+        }
+        buf
+    }
+
+    /// `from_c` decodes the articulation title and trigger key range, and keeps
+    /// the keyswitch kind.
+    #[test]
+    fn from_c_decodes_articulation_and_range() {
+        let mut raw: vst3::Steinberg::Vst::KeyswitchInfo = unsafe { std::mem::zeroed() };
+        raw.typeId = keyswitch_type::NOTE_ON_KEYSWITCH;
+        raw.title = string128("Staccato");
+        raw.shortTitle = string128("Stac");
+        raw.keyswitchMin = 24; // C1
+        raw.keyswitchMax = 24;
+        raw.keyRemapped = -1;
+        raw.unitId = 0;
+
+        let info = Vst3KeyswitchInfo::from_c(&raw);
+
+        assert_eq!(info.type_id, keyswitch_type::NOTE_ON_KEYSWITCH);
+        assert_eq!(info.title_string(), "Staccato");
+        assert_eq!(info.short_title_string(), "Stac");
+        assert_eq!(info.keyswitch_min, 24);
+        assert_eq!(info.keyswitch_max, 24);
+        assert_eq!(info.key_remapped, -1);
     }
 }

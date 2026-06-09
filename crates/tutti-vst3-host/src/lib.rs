@@ -21,14 +21,15 @@ pub mod types;
 pub use error::{LoadStage, Result, Vst3Error};
 pub use host::{PluginNotifications, RestartOutcome, Vst3Instance, Vst3Library, Vst3Loaded};
 pub use types::{
-    note_expression_flags, parameter_flags, process_context_flags, to_process_context,
-    vst3_event_from_midi, vst3_to_chord, vst3_to_midi_event, vst3_to_note_expression,
+    automation_state, keyswitch_type, note_expression_flags, parameter_flags,
+    process_context_flags, to_process_context, vst3_event_from_midi, vst3_to_chord,
+    vst3_to_midi_event, vst3_to_note_expression,
     vst3_to_note_expression_int, vst3_to_note_expression_text, vst3_to_scale, AudioBuffer,
     BufferPtrs, BusInfo, ChordValue, EditorCapabilities, EditorSize, MidiEvent,
     NoteExpressionIntValue, NoteExpressionText, NoteExpressionType, NoteExpressionValue,
     ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo, ProcessOutput, ProcessOutputRef,
-    Sample, ScaleValue, TransportInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3Sample,
-    WindowHandle,
+    Sample, ScaleValue, TransportInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
+    Vst3Sample, WindowHandle,
 };
 
 pub use com::{ParameterEditEvent, ProgressEvent, RestartFlags, UnitEvent};

@@ -10,7 +10,7 @@ use std::marker::PhantomData;
 
 use smallvec::SmallVec;
 
-use crate::types::{Vst3Sample, K_SAMPLE_64_INT};
+use crate::types::Vst3Sample;
 
 /// Minimum pointer-table width per bus. A defensive over-read of a stereo
 /// table on a mono bus then stays in-bounds (the extra slot points at `aux`).
@@ -57,30 +57,9 @@ impl<T: Vst3Sample> DirectionScratch<T> {
     }
 }
 
-/// Store a channel-pointer table into an `AudioBusBuffers`' union, writing the
-/// member that matches the committed sample format `T`.
-///
-/// `channelBuffers32`/`channelBuffers64` overlay the same machine pointer (a
-/// pointer's width is independent of its pointee's), so either member sets the
-/// same bytes; the plugin reads whichever the `ProcessData::symbolicSampleSize`
-/// tag names. Writing the `T`-matching member keeps the code honest — an
-/// `f64` direction stores through `channelBuffers64`. The branch is on a
-/// `const`, so it folds away per monomorphization.
-#[inline]
-fn set_channel_buffers<T: Vst3Sample>(
-    bus: &mut vst3::Steinberg::Vst::AudioBusBuffers,
-    channel_ptrs: *mut *mut std::ffi::c_void,
-) {
-    if T::VST3_SYMBOLIC_SIZE == K_SAMPLE_64_INT {
-        bus.__field0.channelBuffers64 = channel_ptrs as *mut *mut f64;
-    } else {
-        bus.__field0.channelBuffers32 = channel_ptrs as *mut *mut f32;
-    }
-}
-
 /// Build an `AudioBusBuffers` from a channel count, leaving the channel-pointer
-/// union member null (refreshed every `prepare`). Generic over `T` only so the
-/// later [`set_channel_buffers`] writes the matching union member.
+/// union member null (zeroed) — refreshed every `prepare` via
+/// [`Vst3Sample::set_channel_buffers`].
 fn make_audio_bus(num_channels: usize) -> vst3::Steinberg::Vst::AudioBusBuffers {
     let mut bus: vst3::Steinberg::Vst::AudioBusBuffers = unsafe { std::mem::zeroed() };
     bus.numChannels = num_channels as i32;
@@ -211,7 +190,7 @@ impl<T: Vst3Sample> BusBuffers<T> {
             let bus = &mut self.bus_arrays[bus_idx];
             bus.numChannels = bus_ch as i32;
             bus.silenceFlags = 0;
-            set_channel_buffers::<T>(bus, table.as_mut_ptr());
+            T::set_channel_buffers(bus, table.as_mut_ptr());
         }
         self.bus_arrays.as_mut_ptr()
     }

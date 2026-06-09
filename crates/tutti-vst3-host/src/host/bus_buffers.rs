@@ -167,32 +167,69 @@ impl<T: Vst3Sample> BusBuffers<T> {
         live_len: usize,
         zero_aux: bool,
     ) -> *mut vst3::Steinberg::Vst::AudioBusBuffers {
+        // Input direction: aux is the silence source, so it must read as zero.
+        // Output direction: aux is a discard sink, so its contents don't matter.
         if zero_aux {
             for s in self.aux.iter_mut() {
                 *s = 0.0;
             }
         }
         let aux_ptr = self.aux.as_mut_ptr() as *mut std::ffi::c_void;
-        // Running index into the flat, bus-ordered `live` array.
-        let mut flat = 0usize;
-        for (bus_idx, table) in self.ptr_tables.iter_mut().enumerate() {
-            let bus_ch = self.bus_channels[bus_idx];
-            for (c, slot) in table.iter_mut().enumerate() {
-                if c < bus_ch && flat < live_len {
-                    *slot = *live.add(flat);
-                    flat += 1;
-                } else {
-                    // Aux/silence: bus channel with no live backing (extra bus
-                    // beyond what the caller supplied) or a padding slot.
-                    *slot = aux_ptr;
-                }
-            }
-            let bus = &mut self.bus_arrays[bus_idx];
-            bus.numChannels = bus_ch as i32;
-            bus.silenceFlags = 0;
-            T::set_channel_buffers(bus, table.as_mut_ptr());
+
+        // Deal the flat, bus-ordered `live` channels out one bus at a time. The
+        // index advances *across* buses — bus 0 consumes its channels, then bus 1
+        // continues from where bus 0 stopped — so it's threaded through each call.
+        let mut next_live = 0usize;
+        for bus_idx in 0..self.ptr_tables.len() {
+            next_live = self.fill_bus(bus_idx, live, live_len, next_live, aux_ptr);
         }
         self.bus_arrays.as_mut_ptr()
+    }
+
+    /// Point one bus's channel table at the next slice of the flat `live` list,
+    /// then stamp the bus header. Returns the advanced `live` index for the next
+    /// bus to continue from.
+    ///
+    /// Each table slot is backed by either a supplied `live` channel or the
+    /// shared `aux` block — never null. A slot falls back to `aux` when it is
+    /// *not a real channel* (a [`MIN_PTR_COUNT`] padding slot past the bus's
+    /// declared channel count) or there is *no live audio left* (the caller
+    /// supplied fewer channels than the plugin advertises — e.g. an unconnected
+    /// sidechain bus). For an input direction `aux` is zeroed silence; for an
+    /// output direction it's a write-sink.
+    ///
+    /// # Safety
+    /// Same contract as [`Self::prepare`]: `live` is a valid array of
+    /// `live_len` channel pointers, and `next_live <= live_len`.
+    unsafe fn fill_bus(
+        &mut self,
+        bus_idx: usize,
+        live: *const *mut std::ffi::c_void,
+        live_len: usize,
+        mut next_live: usize,
+        aux_ptr: *mut std::ffi::c_void,
+    ) -> usize {
+        let bus_ch = self.bus_channels[bus_idx];
+        let table = &mut self.ptr_tables[bus_idx];
+
+        for (slot_idx, slot) in table.iter_mut().enumerate() {
+            let is_real_channel = slot_idx < bus_ch; // vs a MIN_PTR_COUNT padding slot
+            let has_live_audio = next_live < live_len; // flat list not yet exhausted
+            *slot = if is_real_channel && has_live_audio {
+                let channel = *live.add(next_live);
+                next_live += 1;
+                channel
+            } else {
+                aux_ptr
+            };
+        }
+
+        let bus = &mut self.bus_arrays[bus_idx];
+        bus.numChannels = bus_ch as i32;
+        bus.silenceFlags = 0;
+        T::set_channel_buffers(bus, table.as_mut_ptr());
+
+        next_live
     }
 }
 

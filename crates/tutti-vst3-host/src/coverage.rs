@@ -75,15 +75,15 @@ pub const INTERFACES: &[InterfaceCoverage] = &[
     optional("IDataExchangeHandler"), // bulk host↔plugin data exchange
     optional("IComponentHandlerBusActivation"), // plugin-driven bus activation
     optional("IContextMenu"),   // host-provided right-click menus in the editor
+    optional("IProcessContextRequirements"), // plugin declares which ProcessContext fields it needs (see types::transport)
+    optional("INoteExpressionController"), // read the plugin's note-expression type metadata (see Vst3Loaded::note_expression_info)
+    optional("IMidiLearn"),     // forward live MIDI-CC so the plugin can learn a CC→param assignment (see host::midi_learn)
     // ── Known but not implemented (graceful-degrade without these) ──────────
-    todo("INoteExpressionController", "query the plugin's note-expression type metadata (we send the events, but don't read their descriptors)"),
     todo("INoteExpressionPhysicalUIMapping", "map physical controls to note-expression dimensions"),
-    todo("IMidiLearn", "let the plugin record a CC assignment from incoming MIDI"),
     todo("IKeyswitchController", "expose the plugin's key-switch articulation map"),
     todo("IParameterFunctionName", "resolve well-known parameter roles by function name"),
     todo("IRemapParamID", "remap parameter IDs across plugin versions on state load"),
     todo("IAutomationState", "tell the plugin the host's automation read/write state"),
-    todo("IProcessContextRequirements", "let the plugin declare which ProcessContext fields it needs"),
     todo("IPrefetchableSupport", "offline/prefetch processing mode negotiation"),
     todo("IAudioPresentationLatency", "report downstream presentation latency to the plugin"),
     todo("IPluginCompatibility", "machine-readable plugin migration / compatibility info"),

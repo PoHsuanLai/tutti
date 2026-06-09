@@ -31,8 +31,10 @@ use crate::types::{
 
 use super::bus_buffers::{BusBuffers, DirectionScratch};
 use super::loaded::Vst3Loaded;
-use super::midi_mapping::{CcRoute, MidiCcMapping};
+use super::midi_learn::MidiLearnProducer;
+use super::midi_mapping::{semantic_to_mapped_controller, CcRoute, MidiCcMapping};
 use super::{IComponentExt, K_INPUT, K_OUTPUT};
+use tutti_midi_types::decode;
 
 pub(super) const K_EVENT: i32 = kEvent as i32;
 const K_REALTIME: i32 = kRealtime as i32;
@@ -124,6 +126,10 @@ struct AudioIO<T: Vst3Sample> {
     input: InputStaging<T>,
     output: OutputStaging<T>,
     cc: CcRoute,
+    /// RT-side MIDI-learn CC capture, paired with the
+    /// [`Vst3Loaded`](super::loaded::Vst3Loaded)'s consumer. Inert (a single
+    /// relaxed atomic load) unless learn is armed.
+    midi_learn: MidiLearnProducer,
 }
 
 /// Fully-active VST3 plugin ready to process audio.
@@ -226,6 +232,7 @@ impl<T: Vst3Sample> Vst3Instance<T> {
                 emitted_param_changes,
             },
             cc: CcRoute::new(MidiCcMapping::query(loaded.interfaces.controller.as_ref())),
+            midi_learn: loaded.midi_learn.producer(),
         };
 
         let mut instance = Self { loaded, audio };
@@ -316,6 +323,12 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             )
         };
 
+        // MIDI learn (IMidiLearn): when armed, capture each incoming controller
+        // from the *raw* MIDI — before CC routing can divert mapped CCs into
+        // parameter changes — so the plugin can learn even controllers that have
+        // no mapping yet. A single relaxed atomic load when disarmed (the norm).
+        self.capture_midi_learn(midi_events);
+
         // Route IMidiMapping-mapped CCs into parameter changes. When the plugin
         // exposes a non-empty CC→param table, `CcRoute::route` pulls mapped
         // CC/aftertouch/pitch-bend events out of the MIDI stream and merges them
@@ -365,7 +378,8 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         }
         self.audio.output.param_changes.clear_in_place();
 
-        let mut process_context = to_process_context(transport);
+        let mut process_context =
+            to_process_context(transport, self.loaded.interfaces.process_context_requirements);
         process_context.sampleRate = buffer.sample_rate;
 
         let mut process_data = vst3::Steinberg::Vst::ProcessData {
@@ -396,6 +410,27 @@ impl<T: Vst3Sample> Vst3Instance<T> {
 
         self.audio.output.drain_emitted();
         self.audio.output.emitted_ref()
+    }
+
+    /// Feed incoming MIDI CC controllers to the MIDI-learn capture (for
+    /// `IMidiLearn`). When learn is disarmed — the common case — this is a single
+    /// relaxed atomic load and an immediate return, so the hot path pays almost
+    /// nothing. When armed, each mappable controller (CC / channel-pressure /
+    /// pitch-bend) is decoded to its VST3 `(channel, controller)` and captured
+    /// allocation-free; the value is irrelevant to learning and dropped.
+    #[inline]
+    fn capture_midi_learn(&self, midi_events: &[MidiEvent]) {
+        // Cheap bail when disarmed (the norm): avoid even decoding the MIDI.
+        if !self.audio.midi_learn.is_armed() {
+            return;
+        }
+        for event in midi_events {
+            if let Some((channel, controller, _value)) =
+                decode(event).as_ref().and_then(semantic_to_mapped_controller)
+            {
+                self.audio.midi_learn.capture(channel, controller);
+            }
+        }
     }
 
     /// Re-query the `IMidiMapping` CC→parameter table from the controller.

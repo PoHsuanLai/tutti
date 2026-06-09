@@ -7,6 +7,7 @@ mod bus_buffers;
 mod instance;
 mod library;
 mod loaded;
+mod midi_learn;
 mod midi_mapping;
 mod plugin_state;
 

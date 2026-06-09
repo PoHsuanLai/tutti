@@ -14,7 +14,9 @@ use vst3::Steinberg::{
     ViewRect,
     Vst::{
         IAudioProcessor, IAudioProcessorTrait, IComponent, IComponentTrait, IConnectionPoint,
-        IConnectionPointTrait, IEditController, IEditControllerTrait,
+        IConnectionPointTrait, IEditController, IEditControllerTrait, IMidiLearn,
+        INoteExpressionController, INoteExpressionControllerTrait, IProcessContextRequirements,
+        IProcessContextRequirementsTrait,
     },
 };
 use vst3::ComPtr;
@@ -33,10 +35,11 @@ use crate::com::{
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
 use crate::types::{
-    EditorCapabilities, EditorSize, PluginInfo, Vst3ParameterInfo,
+    EditorCapabilities, EditorSize, PluginInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
     WindowHandle, Vst3Sample,
 };
 
+use super::midi_learn::MidiLearnConsumer;
 use super::{IComponentExt, K_INPUT, K_OUTPUT};
 use super::instance::Vst3Instance;
 use super::library::Vst3Library;
@@ -57,6 +60,10 @@ pub struct Vst3Loaded {
     pub(super) host: HostContext,
     pub(super) editor: EditorState,
     pub(super) info: PluginInfo,
+    /// IMidiLearn forwarding: armed off the main thread, fed captured CCs from
+    /// the audio thread, drained in [`poll_plugin_notifications`]. Built at load
+    /// and outlives activate/deactivate cycles.
+    pub(super) midi_learn: MidiLearnConsumer,
 }
 
 /// Summary of the host-side state changes triggered by draining one or more
@@ -198,12 +205,22 @@ impl Vst3Loaded {
         let (component_handler, param_event_rx, progress_event_rx, unit_event_rx) =
             ComponentHandler::new();
 
+        let process_context_requirements = query_process_context_requirements(&processor);
+        let note_expression = controller
+            .as_ref()
+            .and_then(|c| c.cast::<INoteExpressionController>());
+        let midi_learn = MidiLearnConsumer::new(
+            controller.as_ref().and_then(|c| c.cast::<IMidiLearn>()),
+        );
+
         Self {
             _library: library,
             interfaces: PluginInterfaces {
                 component,
                 processor,
                 controller,
+                process_context_requirements,
+                note_expression,
             },
             host: HostContext {
                 application: host_application,
@@ -214,6 +231,7 @@ impl Vst3Loaded {
             },
             editor: EditorState::Closed,
             info,
+            midi_learn,
         }
     }
 
@@ -280,6 +298,39 @@ impl Vst3Loaded {
         (result == kResultOk).then(|| Vst3ParameterInfo::from_c(&raw))
     }
 
+    /// Number of per-note expression types the plugin supports on the given
+    /// event `bus_index` / MIDI `channel`. Returns `0` if the plugin doesn't
+    /// implement `INoteExpressionController`.
+    ///
+    /// This is the **read** side of note expression — pair it with
+    /// [`note_expression_info`](Self::note_expression_info) to enumerate
+    /// descriptors. The host can always **send**
+    /// [`NoteExpressionValue`](crate::NoteExpressionValue) events regardless of
+    /// what this reports.
+    pub fn note_expression_count(&self, bus_index: i32, channel: i16) -> u32 {
+        match &self.interfaces.note_expression {
+            Some(c) => unsafe { c.getNoteExpressionCount(bus_index, channel).max(0) as u32 },
+            None => 0,
+        }
+    }
+
+    /// Descriptor for the note-expression type at `index` on the given event
+    /// `bus_index` / MIDI `channel` (title, units, value range, flags). Returns
+    /// `None` if the index is out of range or the plugin doesn't implement
+    /// `INoteExpressionController`.
+    pub fn note_expression_info(
+        &self,
+        bus_index: i32,
+        channel: i16,
+        index: u32,
+    ) -> Option<Vst3NoteExpressionInfo> {
+        let controller = self.interfaces.note_expression.as_ref()?;
+        let mut raw: vst3::Steinberg::Vst::NoteExpressionTypeInfo = unsafe { std::mem::zeroed() };
+        let result =
+            unsafe { controller.getNoteExpressionInfo(bus_index, channel, index as i32, &mut raw) };
+        (result == kResultOk).then(|| Vst3NoteExpressionInfo::from_c(&raw))
+    }
+
     /// Drain every host-side notification channel the plugin's editor pushes
     /// to and return them as one [`PluginNotifications`] batch.
     ///
@@ -317,7 +368,33 @@ impl Vst3Loaded {
         }
         notifications.progress = self.host.progress_event_rx.try_iter().collect();
         notifications.units = self.host.unit_event_rx.try_iter().collect();
+        // Forward any live CCs the audio thread captured for MIDI-learn to the
+        // plugin's IMidiLearn on this (main) thread, as the SDK requires. No-op
+        // unless learn is armed and the plugin implements IMidiLearn.
+        self.midi_learn.forward_pending();
         notifications
+    }
+
+    /// Arm or disarm VST3 MIDI learn (`IMidiLearn`).
+    ///
+    /// While armed, the realtime path captures incoming MIDI CCs and the next
+    /// [`poll_plugin_notifications`](Self::poll_plugin_notifications) forwards
+    /// them to the plugin's `IMidiLearn::onLiveMIDIControllerInput` — letting the
+    /// plugin bind the moved controller to whatever parameter the user is
+    /// editing in its own UI. Typically: arm on right-click-knob → "MIDI learn",
+    /// let the user move a controller, observe the resulting
+    /// `kMidiCCAssignmentChanged` restart, then disarm.
+    ///
+    /// No observable effect if the plugin doesn't implement `IMidiLearn`.
+    pub fn arm_midi_learn(&mut self, armed: bool) {
+        tutti_plugin_types::assert_main_thread();
+        self.midi_learn.arm(armed);
+    }
+
+    /// Whether VST3 MIDI learn is currently armed. See
+    /// [`arm_midi_learn`](Self::arm_midi_learn).
+    pub fn is_midi_learn_armed(&self) -> bool {
+        self.midi_learn.is_armed()
     }
 
     /// Capture the plugin's component state as the opaque byte blob the plugin
@@ -768,6 +845,21 @@ fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<AudioClass> {
             stage: LoadStage::Factory,
             reason: "No audio processor classes found in VST3".to_string(),
         })
+}
+
+/// Ask the plugin (via `IProcessContextRequirements`) which `ProcessContext`
+/// fields it actually consumes, so [`crate::types::to_process_context`] can
+/// skip populating the rest.
+///
+/// Plugins that don't implement the interface get [`u32::MAX`] — every bit set,
+/// i.e. "send everything", which is both the pre-spec default and exactly what
+/// this host did before this interface was wired. So the gating is a strict
+/// no-op for them.
+fn query_process_context_requirements(processor: &ComPtr<IAudioProcessor>) -> u32 {
+    match processor.cast::<IProcessContextRequirements>() {
+        Some(reqs) => unsafe { reqs.getProcessContextRequirements() },
+        None => u32::MAX,
+    }
 }
 
 fn query_controller(component: &ComPtr<IComponent>, library: &Vst3Library) -> Controller {

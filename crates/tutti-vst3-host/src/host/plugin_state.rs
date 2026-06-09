@@ -3,7 +3,7 @@
 use crossbeam_channel::Receiver;
 use vst3::Steinberg::{
     IPlugView,
-    Vst::{IAudioProcessor, IComponent, IEditController},
+    Vst::{IAudioProcessor, IComponent, IEditController, INoteExpressionController},
 };
 use vst3::{ComPtr, ComWrapper};
 
@@ -18,6 +18,17 @@ pub(super) struct PluginInterfaces {
     /// if the component doesn't expose `IAudioProcessor`.
     pub processor: ComPtr<IAudioProcessor>,
     pub controller: Controller,
+    /// Bitmask of the `ProcessContext` fields the plugin asked for via
+    /// `IProcessContextRequirements::getProcessContextRequirements`. Plugins
+    /// that don't implement the interface get the all-bits sentinel
+    /// [`u32::MAX`], reproducing the pre-spec "send everything" default so the
+    /// gating in [`crate::types::to_process_context`] is a no-op for them.
+    pub process_context_requirements: u32,
+    /// The plugin's note-expression metadata interface, if it implements one.
+    /// Queried off the controller; `None` for plugins with no per-note
+    /// expression. The host **sends** note-expression value events regardless;
+    /// this is the **read** side (descriptors / supported types).
+    pub note_expression: Option<ComPtr<INoteExpressionController>>,
 }
 
 unsafe impl Send for PluginInterfaces {}

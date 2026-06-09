@@ -1,5 +1,7 @@
-//! Newtype wrappers over the vst3 crate's `BusInfo` and `ParameterInfo`.
+//! Newtype wrappers over the vst3 crate's `BusInfo`, `ParameterInfo`, and
+//! `NoteExpressionTypeInfo`.
 
+use vst3::Steinberg::Vst::NoteExpressionTypeInfo_::NoteExpressionTypeFlags_;
 use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_;
 
 use crate::helpers::utf16_to_string;
@@ -168,4 +170,181 @@ pub mod parameter_flags {
     pub const IS_PROGRAM_CHANGE: i32 = ParameterFlags_::kIsProgramChange;
     /// Parameter is the plugin's bypass switch.
     pub const IS_BYPASS: i32 = ParameterFlags_::kIsBypass;
+}
+
+/// Host-facing note-expression-type descriptor — a flat snake_case view over the
+/// vst3 crate's `NoteExpressionTypeInfo`, read from the plugin's
+/// `INoteExpressionController::getNoteExpressionInfo`. This is the **read** side
+/// of note expression: it tells the host which per-note expression dimensions a
+/// plugin supports (the [`crate::NoteExpressionValue`] send side is separate).
+#[derive(Clone)]
+pub struct Vst3NoteExpressionInfo {
+    /// Expression type id (`NoteExpressionTypeID`). Volume/Pan/Tuning/… use the
+    /// well-known low ids; plugins may also define custom ones.
+    pub type_id: u32,
+    /// UTF-16 display title.
+    pub title: [u16; 128],
+    /// UTF-16 abbreviated title (for narrow UIs).
+    pub short_title: [u16; 128],
+    /// UTF-16 value units (e.g. "dB", "cent").
+    pub units: [u16; 128],
+    /// Unit the expression belongs to (for `IUnitInfo` plugins).
+    pub unit_id: i32,
+    /// Default value, normalized to 0.0 – 1.0.
+    pub default_value: f64,
+    /// Minimum value, normalized to 0.0 – 1.0.
+    pub minimum: f64,
+    /// Maximum value, normalized to 0.0 – 1.0.
+    pub maximum: f64,
+    /// Number of discrete steps, or 0 for continuous expression.
+    pub step_count: i32,
+    /// Host parameter this expression is associated with — only meaningful when
+    /// [`is_associated_parameter_id_valid`](Self::is_associated_parameter_id_valid).
+    pub associated_parameter_id: u32,
+    /// `NoteExpressionTypeFlags_` bitfield. See [`note_expression_flags`].
+    pub flags: i32,
+}
+
+impl Default for Vst3NoteExpressionInfo {
+    fn default() -> Self {
+        Self {
+            type_id: 0,
+            title: [0; 128],
+            short_title: [0; 128],
+            units: [0; 128],
+            unit_id: 0,
+            default_value: 0.0,
+            minimum: 0.0,
+            maximum: 1.0,
+            step_count: 0,
+            associated_parameter_id: 0,
+            flags: 0,
+        }
+    }
+}
+
+impl Vst3NoteExpressionInfo {
+    /// Decoded [`title`](Self::title) as a Rust `String`.
+    pub fn title_string(&self) -> String {
+        utf16_to_string(&self.title)
+    }
+
+    /// Decoded [`short_title`](Self::short_title) as a Rust `String`.
+    pub fn short_title_string(&self) -> String {
+        utf16_to_string(&self.short_title)
+    }
+
+    /// Decoded [`units`](Self::units) as a Rust `String`.
+    pub fn units_string(&self) -> String {
+        utf16_to_string(&self.units)
+    }
+
+    /// True if the expression is bipolar (centred at 0.5, e.g. pan/tuning).
+    pub fn is_bipolar(&self) -> bool {
+        (self.flags & note_expression_flags::IS_BIPOLAR) != 0
+    }
+
+    /// True if the expression is one-shot (sampled at note-on only).
+    pub fn is_one_shot(&self) -> bool {
+        (self.flags & note_expression_flags::IS_ONE_SHOT) != 0
+    }
+
+    /// True if the expression carries an absolute (rather than relative) value.
+    pub fn is_absolute(&self) -> bool {
+        (self.flags & note_expression_flags::IS_ABSOLUTE) != 0
+    }
+
+    /// True if [`associated_parameter_id`](Self::associated_parameter_id) is
+    /// meaningful.
+    pub fn is_associated_parameter_id_valid(&self) -> bool {
+        (self.flags & note_expression_flags::ASSOCIATED_PARAMETER_ID_VALID) != 0
+    }
+
+    pub(crate) fn from_c(c: &vst3::Steinberg::Vst::NoteExpressionTypeInfo) -> Self {
+        Self {
+            type_id: c.typeId,
+            title: c.title,
+            short_title: c.shortTitle,
+            units: c.units,
+            unit_id: c.unitId,
+            default_value: c.valueDesc.defaultValue,
+            minimum: c.valueDesc.minimum,
+            maximum: c.valueDesc.maximum,
+            step_count: c.valueDesc.stepCount,
+            associated_parameter_id: c.associatedParameterId,
+            flags: c.flags,
+        }
+    }
+}
+
+/// VST3 `NoteExpressionTypeInfo` flag bits as simple `i32` constants, matching
+/// the `flags: i32` field they mask against. Mirrors `NoteExpressionTypeFlags_`
+/// from the Steinberg SDK, whose constants are `u32` on unix / `c_int` on
+/// Windows — normalised to `i32` here (the bit values fit either way).
+// Casts are `u32 as i32` on unix and no-ops on Windows (where the SDK enum is
+// already `c_int`); allow the latter's "unnecessary cast" lint.
+#[allow(clippy::unnecessary_cast)]
+pub mod note_expression_flags {
+    use super::NoteExpressionTypeFlags_;
+
+    /// Expression is bipolar (value centred at 0.5).
+    pub const IS_BIPOLAR: i32 = NoteExpressionTypeFlags_::kIsBipolar as i32;
+    /// Expression is sampled once at note-on (not continuously).
+    pub const IS_ONE_SHOT: i32 = NoteExpressionTypeFlags_::kIsOneShot as i32;
+    /// Expression value is absolute rather than relative.
+    pub const IS_ABSOLUTE: i32 = NoteExpressionTypeFlags_::kIsAbsolute as i32;
+    /// `associatedParameterId` is valid.
+    pub const ASSOCIATED_PARAMETER_ID_VALID: i32 =
+        NoteExpressionTypeFlags_::kAssociatedParameterIDValid as i32;
+}
+
+#[cfg(test)]
+mod note_expression_info_tests {
+    use super::{note_expression_flags, Vst3NoteExpressionInfo};
+
+    /// Copy a Rust `&str` into a UTF-16, null-terminated `String128` buffer.
+    fn string128(s: &str) -> [u16; 128] {
+        let mut buf = [0u16; 128];
+        for (slot, ch) in buf.iter_mut().zip(s.encode_utf16()) {
+            *slot = ch;
+        }
+        buf
+    }
+
+    /// `from_c` flattens `valueDesc`, decodes the UTF-16 title/units, and
+    /// surfaces the flag bits through the boolean accessors.
+    #[test]
+    fn from_c_decodes_fields_and_flags() {
+        let mut raw: vst3::Steinberg::Vst::NoteExpressionTypeInfo =
+            unsafe { std::mem::zeroed() };
+        raw.typeId = 1; // Pan, conventionally.
+        raw.title = string128("Pan");
+        raw.units = string128("L/R");
+        raw.unitId = 3;
+        raw.valueDesc.defaultValue = 0.5;
+        raw.valueDesc.minimum = 0.0;
+        raw.valueDesc.maximum = 1.0;
+        raw.valueDesc.stepCount = 0;
+        raw.associatedParameterId = 42;
+        // Bipolar + associated-param-id-valid.
+        raw.flags = note_expression_flags::IS_BIPOLAR
+            | note_expression_flags::ASSOCIATED_PARAMETER_ID_VALID;
+
+        let info = Vst3NoteExpressionInfo::from_c(&raw);
+
+        assert_eq!(info.type_id, 1);
+        assert_eq!(info.title_string(), "Pan");
+        assert_eq!(info.units_string(), "L/R");
+        assert_eq!(info.unit_id, 3);
+        assert_eq!(info.default_value, 0.5);
+        assert_eq!(info.minimum, 0.0);
+        assert_eq!(info.maximum, 1.0);
+        assert_eq!(info.step_count, 0);
+        assert_eq!(info.associated_parameter_id, 42);
+
+        assert!(info.is_bipolar());
+        assert!(info.is_associated_parameter_id_valid());
+        assert!(!info.is_one_shot());
+        assert!(!info.is_absolute());
+    }
 }

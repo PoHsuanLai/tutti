@@ -25,8 +25,10 @@ pub use events::{
     K_NOTE_EXPRESSION_VALUE_EVENT, K_NOTE_OFF_EVENT, K_NOTE_ON_EVENT, K_POLY_PRESSURE_EVENT,
     K_SCALE_EVENT,
 };
-pub use info::{parameter_flags, BusInfo, Vst3ParameterInfo};
-pub use transport::to_process_context;
+pub use info::{
+    note_expression_flags, parameter_flags, BusInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
+};
+pub use transport::{process_context_flags, to_process_context};
 
 // Re-exports of the cross-format vocabulary.
 pub use tutti_plugin_types::{

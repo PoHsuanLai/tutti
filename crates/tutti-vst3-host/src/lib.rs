@@ -12,7 +12,6 @@
 
 #[allow(dead_code)]
 pub(crate) mod com;
-pub mod coverage;
 pub mod error;
 pub(crate) mod helpers;
 pub mod host;
@@ -21,9 +20,9 @@ pub mod types;
 pub use error::{LoadStage, Result, Vst3Error};
 pub use host::{PluginNotifications, RestartOutcome, Vst3Instance, Vst3Library, Vst3Loaded};
 pub use types::{
-    automation_state, keyswitch_type, note_expression_flags, parameter_flags,
-    process_context_flags, to_process_context, vst3_event_from_midi, vst3_to_chord,
-    vst3_to_midi_event, vst3_to_note_expression,
+    automation_state, keyswitch_type, note_expression_flags, parameter_flags, physical_ui_type,
+    prefetchable_support, process_context_flags, to_process_context, vst3_event_from_midi,
+    vst3_to_chord, vst3_to_midi_event, vst3_to_note_expression,
     vst3_to_note_expression_int, vst3_to_note_expression_text, vst3_to_scale, AudioBuffer,
     BufferPtrs, BusInfo, ChordValue, EditorCapabilities, EditorSize, MidiEvent,
     NoteExpressionIntValue, NoteExpressionText, NoteExpressionType, NoteExpressionValue,

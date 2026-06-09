@@ -5,6 +5,7 @@ use vst3::Steinberg::Vst::IAutomationState_::AutomationStates_;
 use vst3::Steinberg::Vst::KeyswitchTypeIDs_;
 use vst3::Steinberg::Vst::NoteExpressionTypeInfo_::NoteExpressionTypeFlags_;
 use vst3::Steinberg::Vst::ParameterInfo_::ParameterFlags_;
+use vst3::Steinberg::Vst::{ePrefetchableSupport_, PhysicalUITypeIDs_};
 
 use crate::helpers::utf16_to_string;
 
@@ -399,6 +400,46 @@ pub mod keyswitch_type {
     pub const ON_RELEASE_KEYSWITCH: u32 = KeyswitchTypeIDs_::kOnReleaseKeyswitchTypeID;
     /// A key *range* mapped to an articulation rather than a single switch key.
     pub const KEY_RANGE: u32 = KeyswitchTypeIDs_::kKeyRangeTypeID;
+}
+
+/// VST3 `PhysicalUITypeIDs` constants — which physical control a
+/// note-expression-physical-UI mapping entry refers to. Mirrors
+/// `PhysicalUITypeIDs_` from the Steinberg SDK. Returned (as the first tuple
+/// element) by
+/// [`Vst3Loaded::physical_ui_mapping`](crate::Vst3Loaded::physical_ui_mapping).
+///
+/// Casts are `u32 as u32` no-ops on unix and `c_int as u32` on Windows; allow
+/// the former's lint.
+#[allow(clippy::unnecessary_cast)]
+pub mod physical_ui_type {
+    use super::PhysicalUITypeIDs_;
+
+    /// Horizontal movement of the physical control.
+    pub const X_MOVEMENT: u32 = PhysicalUITypeIDs_::kPUIXMovement as u32;
+    /// Vertical movement of the physical control.
+    pub const Y_MOVEMENT: u32 = PhysicalUITypeIDs_::kPUIYMovement as u32;
+    /// Pressure applied to the physical control.
+    pub const PRESSURE: u32 = PhysicalUITypeIDs_::kPUIPressure as u32;
+    /// Sentinel for "no physical UI type" / unmapped.
+    pub const INVALID: u32 = PhysicalUITypeIDs_::kInvalidPUITypeID as u32;
+}
+
+/// VST3 `IPrefetchableSupport` result constants, mirroring
+/// `ePrefetchableSupport_` from the Steinberg SDK. Returned by
+/// [`Vst3Loaded::prefetchable_support`](crate::Vst3Loaded::prefetchable_support).
+///
+/// Casts are `u32 as u32` no-ops on unix and `c_int as u32` on Windows; allow
+/// the former's lint.
+#[allow(clippy::unnecessary_cast)]
+pub mod prefetchable_support {
+    use super::ePrefetchableSupport_;
+
+    /// The plugin can never be used in prefetch (offline look-ahead) mode.
+    pub const NEVER: u32 = ePrefetchableSupport_::kIsNeverPrefetchable as u32;
+    /// The plugin currently supports prefetch.
+    pub const YET: u32 = ePrefetchableSupport_::kIsYetPrefetchable as u32;
+    /// The plugin doesn't currently support prefetch (but may later).
+    pub const NOT_YET: u32 = ePrefetchableSupport_::kIsNotYetPrefetchable as u32;
 }
 
 #[cfg(test)]

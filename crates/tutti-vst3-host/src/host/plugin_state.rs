@@ -4,8 +4,9 @@ use crossbeam_channel::Receiver;
 use vst3::Steinberg::{
     IPlugView,
     Vst::{
-        IAutomationState, IAudioProcessor, IComponent, IEditController, IKeyswitchController,
-        INoteExpressionController, IRemapParamID,
+        IAudioPresentationLatency, IAutomationState, IAudioProcessor, IComponent, IEditController,
+        IKeyswitchController, INoteExpressionController, INoteExpressionPhysicalUIMapping,
+        IParameterFunctionName, IPrefetchableSupport, IRemapParamID, IXmlRepresentationController,
     },
 };
 use vst3::{ComPtr, ComWrapper};
@@ -44,6 +45,22 @@ pub(super) struct PluginInterfaces {
     /// host never auto-applies it (matches JUCE — the caller drives any migration
     /// flow).
     pub remap_param_id: Option<ComPtr<IRemapParamID>>,
+    /// Resolve a well-known parameter "function name" (Wet/Dry mix, master
+    /// volume, …) to its `ParamID`. Controller extension; read accessor.
+    pub parameter_function_name: Option<ComPtr<IParameterFunctionName>>,
+    /// Map the plugin's physical UI controls (X/Y movement, pressure) to the
+    /// note-expression dimensions they drive. Controller extension; read
+    /// accessor.
+    pub physical_ui_mapping: Option<ComPtr<INoteExpressionPhysicalUIMapping>>,
+    /// Export the plugin's parameter remote-control layout as XML. Controller
+    /// extension; read accessor.
+    pub xml_representation: Option<ComPtr<IXmlRepresentationController>>,
+    /// Whether the plugin supports offline/prefetch processing. Processor
+    /// extension; read accessor.
+    pub prefetchable_support: Option<ComPtr<IPrefetchableSupport>>,
+    /// Report downstream presentation latency to the plugin. Processor
+    /// extension; host→plugin setter.
+    pub audio_presentation_latency: Option<ComPtr<IAudioPresentationLatency>>,
 }
 
 unsafe impl Send for PluginInterfaces {}

@@ -10,14 +10,19 @@ use std::sync::Arc;
 
 use vst3::com_scrape_types::Unknown;
 use vst3::Steinberg::{
-    kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPlugView, IPlugViewTrait,
-    IPluginBaseTrait, ViewRect,
+    kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPluginCompatibility,
+    IPluginCompatibilityTrait, IPlugView, IPlugViewTrait, IPluginBaseTrait, ViewRect,
     Vst::{
         IAudioProcessor, IAudioProcessorTrait, IComponent, IComponentTrait, IConnectionPoint,
-        IAutomationState, IAutomationStateTrait, IConnectionPointTrait, IEditController,
-        IEditControllerTrait, IKeyswitchController, IKeyswitchControllerTrait, IMidiLearn,
-        INoteExpressionController, INoteExpressionControllerTrait, IProcessContextRequirements,
+        IAudioPresentationLatency, IAudioPresentationLatencyTrait, IAutomationState,
+        IAutomationStateTrait, IConnectionPointTrait, IEditController, IEditControllerTrait,
+        IKeyswitchController, IKeyswitchControllerTrait, IMidiLearn, INoteExpressionController,
+        INoteExpressionControllerTrait, INoteExpressionPhysicalUIMapping,
+        INoteExpressionPhysicalUIMappingTrait, IParameterFunctionName, IParameterFunctionNameTrait,
+        IPrefetchableSupport, IPrefetchableSupportTrait, IProcessContextRequirements,
         IProcessContextRequirementsTrait, IRemapParamID, IRemapParamIDTrait,
+        IXmlRepresentationController, IXmlRepresentationControllerTrait, PhysicalUIMap,
+        PhysicalUIMapList, RepresentationInfo,
     },
 };
 use vst3::ComPtr;
@@ -217,6 +222,17 @@ impl Vst3Loaded {
             .as_ref()
             .and_then(|c| c.cast::<IKeyswitchController>());
         let remap_param_id = controller.as_ref().and_then(|c| c.cast::<IRemapParamID>());
+        let parameter_function_name = controller
+            .as_ref()
+            .and_then(|c| c.cast::<IParameterFunctionName>());
+        let physical_ui_mapping = controller
+            .as_ref()
+            .and_then(|c| c.cast::<INoteExpressionPhysicalUIMapping>());
+        let xml_representation = controller
+            .as_ref()
+            .and_then(|c| c.cast::<IXmlRepresentationController>());
+        let prefetchable_support = processor.cast::<IPrefetchableSupport>();
+        let audio_presentation_latency = processor.cast::<IAudioPresentationLatency>();
         let midi_learn = MidiLearnConsumer::new(
             controller.as_ref().and_then(|c| c.cast::<IMidiLearn>()),
         );
@@ -232,6 +248,11 @@ impl Vst3Loaded {
                 automation_state,
                 keyswitch,
                 remap_param_id,
+                parameter_function_name,
+                physical_ui_mapping,
+                xml_representation,
+                prefetchable_support,
+                audio_presentation_latency,
             },
             host: HostContext {
                 application: host_application,
@@ -397,6 +418,167 @@ impl Vst3Loaded {
             )
         };
         (result == kResultTrue).then_some(new_param_id)
+    }
+
+    /// Resolve a well-known parameter *function name* (the VST3 spec defines
+    /// roles like "Wet/Dry Mix", "Master Volume", "Resonance") to the plugin's
+    /// `ParamID` for that role, scoped to `unit_id`. Returns `None` if the role
+    /// is unknown to the plugin or it doesn't implement `IParameterFunctionName`.
+    ///
+    /// Lets a host bind a generic "mix" knob to whatever parameter the plugin
+    /// uses for it, without hard-coding parameter indices. Main/UI thread.
+    pub fn param_id_for_function_name(&self, unit_id: i32, function_name: &str) -> Option<u32> {
+        tutti_plugin_types::assert_main_thread();
+        let ctrl = self.interfaces.parameter_function_name.as_ref()?;
+        let c_name = std::ffi::CString::new(function_name).ok()?;
+        let mut param_id: u32 = 0;
+        let result =
+            unsafe { ctrl.getParameterIDFromFunctionName(unit_id, c_name.as_ptr(), &mut param_id) };
+        (result == kResultOk).then_some(param_id)
+    }
+
+    /// Map the plugin's physical UI controls to the note-expression dimensions
+    /// they drive, on the given event `bus_index` / MIDI `channel`. Returns one
+    /// `(physical_ui_type, note_expression_type)` pair per physical control
+    /// (X/Y movement, pressure — see [`physical_ui_type`](crate::physical_ui_type)),
+    /// or an empty vec if the plugin doesn't implement
+    /// `INoteExpressionPhysicalUIMapping`.
+    ///
+    /// The host allocates the list; the plugin fills the note-expression id each
+    /// physical control is wired to. Main/UI thread.
+    pub fn physical_ui_mapping(&self, bus_index: i32, channel: i16) -> Vec<(u32, u32)> {
+        tutti_plugin_types::assert_main_thread();
+        let Some(ctrl) = self.interfaces.physical_ui_mapping.as_ref() else {
+            return Vec::new();
+        };
+        // Query all three physical UI types (X, Y, pressure). The plugin fills
+        // each entry's noteExpressionTypeID, leaving kInvalidTypeID where the
+        // control isn't mapped.
+        let mut entries: Vec<PhysicalUIMap> = (0..3)
+            .map(|i| PhysicalUIMap {
+                physicalUITypeID: i,
+                noteExpressionTypeID: u32::MAX,
+            })
+            .collect();
+        let mut list = PhysicalUIMapList {
+            count: entries.len() as u32,
+            map: entries.as_mut_ptr(),
+        };
+        let result = unsafe { ctrl.getPhysicalUIMapping(bus_index, channel, &mut list) };
+        if result != kResultOk {
+            return Vec::new();
+        }
+        entries
+            .iter()
+            .map(|e| (e.physicalUITypeID, e.noteExpressionTypeID))
+            .collect()
+    }
+
+    /// Export the plugin's parameter remote-control layout as XML, for the
+    /// representation identified by `(vendor, name, version, host)`. Returns the
+    /// XML string, or `None` if the plugin doesn't implement
+    /// `IXmlRepresentationController` or produced nothing.
+    ///
+    /// Hardware controller surfaces use this to lay out a plugin's parameters.
+    /// Main/UI thread.
+    pub fn xml_representation(
+        &self,
+        vendor: &str,
+        name: &str,
+        version: &str,
+        host: &str,
+    ) -> Option<String> {
+        tutti_plugin_types::assert_main_thread();
+        let ctrl = self.interfaces.xml_representation.as_ref()?;
+
+        let mut info: RepresentationInfo = unsafe { std::mem::zeroed() };
+        fill_char8_64(&mut info.vendor, vendor);
+        fill_char8_64(&mut info.name, name);
+        fill_char8_64(&mut info.version, version);
+        fill_char8_64(&mut info.host, host);
+
+        let stream = BStream::new();
+        let stream_ptr = stream.as_com_ref::<IBStream>()?;
+        let result =
+            unsafe { ctrl.getXmlRepresentationStream(&mut info, stream_ptr.as_ptr()) };
+        if result != kResultOk {
+            return None;
+        }
+        let bytes = stream.data();
+        (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Read the bundle's machine-readable compatibility / migration info as a
+    /// JSON string, via the factory's `IPluginCompatibility` class (the
+    /// moduleinfo "compatibility" section). Describes which older plugins this
+    /// one can replace, so a host can offer to swap an unavailable plugin for a
+    /// compatible successor and migrate its state.
+    ///
+    /// Unlike the other accessors this is a **factory-level** class, not a
+    /// controller/processor extension: we enumerate the factory's classes, find
+    /// the one in the "Plugin Compatibility Class" category, instantiate it, and
+    /// read its JSON. Returns `None` if the bundle ships no such class. Main/UI
+    /// thread.
+    pub fn compatibility_json(&self) -> Option<String> {
+        tutti_plugin_types::assert_main_thread();
+        // The SDK category string for the compatibility class (kPluginCompatibilityClass).
+        const COMPATIBILITY_CATEGORY: &str = "Plugin Compatibility Class";
+
+        let count = self._library.count_classes();
+        let cid = (0..count).find_map(|i| {
+            let info = self._library.get_class_info(i).ok()?;
+            (info.category == COMPATIBILITY_CATEGORY).then_some(info.cid)
+        })?;
+
+        let compat = self
+            ._library
+            .create_instance::<IPluginCompatibility>(&cid)
+            .ok()?;
+
+        let stream = BStream::new();
+        let stream_ptr = stream.as_com_ref::<IBStream>()?;
+        let result = unsafe { compat.getCompatibilityJSON(stream_ptr.as_ptr()) };
+        if result != kResultOk {
+            return None;
+        }
+        let bytes = stream.data();
+        (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Query the plugin's offline/prefetch processing support via
+    /// `IPrefetchableSupport`. Returns one of the
+    /// [`prefetchable_support`](crate::prefetchable_support) constants, or `None`
+    /// if the plugin doesn't implement the interface. Main/UI thread.
+    pub fn prefetchable_support(&self) -> Option<u32> {
+        tutti_plugin_types::assert_main_thread();
+        let proc = self.interfaces.prefetchable_support.as_ref()?;
+        let mut support: u32 = 0;
+        let result = unsafe { proc.getPrefetchableSupport(&mut support) };
+        (result == kResultOk).then_some(support)
+    }
+
+    /// Tell the plugin the downstream presentation latency (in samples) for a
+    /// given bus, via `IAudioPresentationLatency` — the delay between the
+    /// plugin's output and what the listener hears, so latency-aware plugins can
+    /// compensate. `dir` is [`K_INPUT`](super::K_INPUT) / [`K_OUTPUT`](super::K_OUTPUT).
+    /// Returns `true` if delivered; no-op if the plugin doesn't implement the
+    /// interface. Main/UI thread.
+    pub fn set_audio_presentation_latency(
+        &mut self,
+        dir: i32,
+        bus_index: i32,
+        latency_samples: u32,
+    ) -> bool {
+        tutti_plugin_types::assert_main_thread();
+        match &self.interfaces.audio_presentation_latency {
+            Some(p) => {
+                unsafe {
+                    p.setAudioPresentationLatencySamples(dir, bus_index, latency_samples);
+                }
+                true
+            }
+            None => false,
+        }
     }
 
     /// Drain every host-side notification channel the plugin's editor pushes
@@ -943,6 +1125,18 @@ fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<AudioClass> {
 /// i.e. "send everything", which is both the pre-spec default and exactly what
 /// this host did before this interface was wired. So the gating is a strict
 /// no-op for them.
+/// Copy a Rust `&str` into a fixed `[char8; 64]` (`i8`) VST3 string buffer as
+/// NUL-terminated ASCII/UTF-8 bytes, truncating to fit (leaving room for the
+/// terminator). Used to fill `RepresentationInfo`'s vendor/name/version/host.
+fn fill_char8_64(dst: &mut [i8; 64], src: &str) {
+    let bytes = src.as_bytes();
+    let n = bytes.len().min(dst.len() - 1);
+    for (slot, &b) in dst.iter_mut().zip(&bytes[..n]) {
+        *slot = b as i8;
+    }
+    dst[n] = 0;
+}
+
 fn query_process_context_requirements(processor: &ComPtr<IAudioProcessor>) -> u32 {
     match processor.cast::<IProcessContextRequirements>() {
         Some(reqs) => unsafe { reqs.getProcessContextRequirements() },
@@ -963,6 +1157,40 @@ fn query_controller(component: &ComPtr<IComponent>, library: &Vst3Library) -> Co
         }
     } else {
         Controller::None
+    }
+}
+
+#[cfg(test)]
+mod char8_fill_tests {
+    use super::fill_char8_64;
+
+    /// A short string is copied verbatim and NUL-terminated.
+    #[test]
+    fn fills_and_terminates() {
+        let mut buf = [0i8; 64];
+        fill_char8_64(&mut buf, "Acme");
+        assert_eq!(&buf[..4], &[b'A' as i8, b'c' as i8, b'm' as i8, b'e' as i8]);
+        assert_eq!(buf[4], 0);
+    }
+
+    /// An over-long string is truncated, always leaving room for the NUL
+    /// terminator at index 63.
+    #[test]
+    fn truncates_leaving_room_for_terminator() {
+        let mut buf = [1i8; 64];
+        let long = "x".repeat(100);
+        fill_char8_64(&mut buf, &long);
+        // 63 chars written, last slot is the terminator.
+        assert!(buf[..63].iter().all(|&b| b == b'x' as i8));
+        assert_eq!(buf[63], 0);
+    }
+
+    /// An empty string yields an immediate terminator.
+    #[test]
+    fn empty_is_just_terminator() {
+        let mut buf = [9i8; 64];
+        fill_char8_64(&mut buf, "");
+        assert_eq!(buf[0], 0);
     }
 }
 

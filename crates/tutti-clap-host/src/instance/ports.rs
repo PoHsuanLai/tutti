@@ -1,7 +1,7 @@
 //! Audio/note port enumeration, configuration, and the render / voice /
 //! surround / ambisonic extensions.
 
-use super::ClapInstance;
+use super::ClapLoaded;
 use crate::types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioPortConfig,
     AudioPortConfigRequest, AudioPortFlags, AudioPortInfo, AudioPortType, NoteDialect,
@@ -26,7 +26,7 @@ use std::ptr;
 
 use crate::cstr_to_string;
 
-impl ClapInstance {
+impl ClapLoaded {
     /// Number of input or output audio ports exposed by the plugin.
     pub fn audio_port_count(&self, is_input: bool) -> usize {
         if self.extensions.audio.ports.is_null() {

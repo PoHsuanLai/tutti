@@ -8,11 +8,13 @@
 //! ## Example
 //!
 //! ```ignore
-//! use tutti_clap_host::{ClapInstance, MidiEvent, ProcessContext, TransportInfo};
+//! use tutti_clap_host::{ClapLoaded, MidiEvent, ProcessContext, TransportInfo};
 //!
-//! let mut plugin = ClapInstance::load("/path/to/plugin.clap", 44100.0, 512)?;
+//! // Load (GUI/params/state usable here), then activate to process audio.
+//! let loaded = ClapLoaded::load("/path/to/plugin.clap", 44100.0, 512)?;
+//! let mut active = loaded.activate::<f32>().map_err(|(_, e)| e)?;
 //! let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
-//! plugin.process(&mut buffer, &ProcessContext {
+//! active.process(&mut buffer, &ProcessContext {
 //!     midi: &[MidiEvent::note_on(0, 0, 60, 16384)],
 //!     transport: Some(&transport),
 //!     ..Default::default()
@@ -41,7 +43,7 @@ pub(crate) unsafe fn cstr_to_string(ptr: *const std::ffi::c_char) -> String {
 pub use error::{ClapError, LoadStage, Result};
 pub use events::{ClapEvent, EventList, InputEventList, OutputEventList};
 pub use host::{ClapHost, HostState, InputStream, OutputStream};
-pub use instance::{ClapInstance, ClapSample, ParamMapping, ProcessContext};
+pub use instance::{ClapActive, ClapLoaded, ClapSample, ParamMapping, ProcessContext};
 #[cfg(unix)]
 pub use types::PosixFdFlags;
 pub use types::{

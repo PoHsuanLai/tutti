@@ -1,7 +1,7 @@
 //! Parameter-query and parameter-update methods for [`ClapInstance`].
 
 use super::ext;
-use super::ClapInstance;
+use super::ClapLoaded;
 use crate::events::{ClapEvent, InputEventList, OutputEventList};
 use crate::types::{Color, ParamAutomationState, ParameterFlags, ParameterInfo};
 use clap_sys::ext::param_indication::{
@@ -64,7 +64,7 @@ fn color_to_clap(color: Color) -> clap_sys::color::clap_color {
     }
 }
 
-impl ClapInstance {
+impl ClapLoaded {
     /// Number of parameters the plugin exposes. Returns 0 if the plugin
     /// does not implement `CLAP_EXT_PARAMS`.
     pub fn parameter_count(&self) -> usize {

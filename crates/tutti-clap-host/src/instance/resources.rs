@@ -1,10 +1,10 @@
 //! Resource-directory methods from the draft `CLAP_EXT_RESOURCE_DIRECTORY`.
 
 use super::ext;
-use super::ClapInstance;
+use super::ClapLoaded;
 use crate::cstr_to_string;
 
-impl ClapInstance {
+impl ClapLoaded {
     /// Tell the plugin where to read/write its resources. `is_shared`
     /// selects between the shared (project-level) and private (preset-level)
     /// directory.

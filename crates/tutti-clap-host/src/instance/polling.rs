@@ -2,7 +2,7 @@
 //! menus, triggers, remote controls, POSIX FDs, timers, and other
 //! main-thread host-interaction methods.
 
-use super::ClapInstance;
+use super::ClapLoaded;
 use crate::cstr_to_string;
 use crate::error::{ClapError, Result};
 use crate::host::HostState;
@@ -51,7 +51,7 @@ fn platform_window_handle(parent: *mut c_void) -> (*const i8, clap_window_handle
     )
 }
 
-impl ClapInstance {
+impl ClapLoaded {
     /// Whether the plugin implements `CLAP_EXT_GUI` and can open an editor.
     pub fn has_editor(&self) -> bool {
         !self.extensions.gui.gui.is_null()

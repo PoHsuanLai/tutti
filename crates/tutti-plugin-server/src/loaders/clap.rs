@@ -11,15 +11,47 @@ use crate::loaders::common::params::make_param_info;
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 #[cfg(feature = "clap")]
-use tutti_clap_host::ClapInstance as ClapHostInstance;
+use tutti_clap_host::{ClapActive, ClapLoaded};
+
+/// Active host instance, monomorphised by sample format at activation time.
+/// CLAP advertises f32 in metadata today, so the F32 arm is the live path; the
+/// F64 arm is wired for symmetry and future 64-bit support.
+#[cfg(feature = "clap")]
+enum ClapInner {
+    F32(ClapActive<f32>),
+    F64(ClapActive<f64>),
+}
+
+/// Dispatch a shared expression over both inner variants (immutable). The bound
+/// methods come from `ClapLoaded` via `Deref`, so they resolve on either arm.
+#[cfg(feature = "clap")]
+macro_rules! clap_dispatch {
+    ($self:expr, $inner:ident => $body:expr) => {
+        match &$self.inner {
+            ClapInner::F32($inner) => $body,
+            ClapInner::F64($inner) => $body,
+        }
+    };
+}
+
+/// Dispatch a shared expression over both inner variants (mutable).
+#[cfg(feature = "clap")]
+macro_rules! clap_dispatch_mut {
+    ($self:expr, $inner:ident => $body:expr) => {
+        match &mut $self.inner {
+            ClapInner::F32($inner) => $body,
+            ClapInner::F64($inner) => $body,
+        }
+    };
+}
 
 pub struct ClapInstance {
     #[cfg(feature = "clap")]
-    inner: ClapHostInstance,
+    inner: ClapInner,
     metadata: PluginInfo,
 }
 
-// Safety: ClapHostInstance is Send
+// Safety: the inner host instances are Send.
 unsafe impl Send for ClapInstance {}
 
 impl ClapInstance {
@@ -33,7 +65,7 @@ impl ClapInstance {
             } else {
                 None
             };
-            let info = ClapHostInstance::probe(path, library_path).map_err(|e| {
+            let info = ClapLoaded::probe(path, library_path).map_err(|e| {
                 BridgeError::LoadFailed {
                     path: path.to_path_buf(),
                     stage: LoadStage::Scanning,
@@ -70,7 +102,7 @@ impl ClapInstance {
             } else {
                 None
             };
-            let inner = ClapHostInstance::load_with_library(
+            let loaded = ClapLoaded::load_with_library(
                 path,
                 library_path,
                 sample_rate,
@@ -87,24 +119,45 @@ impl ClapInstance {
                 reason: e.to_string(),
             })?;
 
-            let info = inner.info();
-            let has_note_input = inner.note_port_count(true) > 0;
-            let metadata = PluginInfo::new(info.id.clone(), info.name.clone())
+            // Read metadata off the loaded (pre-activation) instance.
+            let info = loaded.info();
+            let has_note_input = loaded.note_port_count(true) > 0;
+            let supports_f64 = loaded.supports_f64();
+            let mut metadata = PluginInfo::new(info.id.clone(), info.name.clone())
                 .author(info.vendor.clone())
                 .version(info.version.clone())
                 .audio_io(info.audio_inputs, info.audio_outputs)
                 .midi(has_note_input)
-                .f64_support(inner.supports_f64())
-                .editor(inner.has_editor(), None);
+                .f64_support(supports_f64)
+                .editor(loaded.has_editor(), None);
 
-            let mut instance = Self {
-                inner,
-                metadata,
+            // Activate into the typed inner. CLAP advertises f32 today, so the
+            // F32 arm is taken; F64 is wired for symmetry.
+            let inner = if supports_f64 {
+                ClapInner::F64(loaded.activate::<f64>().map_err(|(_, e)| {
+                    BridgeError::LoadFailed {
+                        path: path.to_path_buf(),
+                        stage: LoadStage::Activation,
+                        reason: format!("activate failed: {e}"),
+                    }
+                })?)
+            } else {
+                ClapInner::F32(loaded.activate::<f32>().map_err(|(_, e)| {
+                    BridgeError::LoadFailed {
+                        path: path.to_path_buf(),
+                        stage: LoadStage::Activation,
+                        reason: format!("activate failed: {e}"),
+                    }
+                })?)
             };
-            instance.activate()?;
+
             // Latency is queryable after activation.
-            instance.metadata.latency_samples = instance.get_latency() as usize;
-            Ok(instance)
+            metadata.latency_samples = match &inner {
+                ClapInner::F32(i) => i.get_latency(),
+                ClapInner::F64(i) => i.get_latency(),
+            } as usize;
+
+            Ok(Self { inner, metadata })
         }
 
         #[cfg(not(feature = "clap"))]
@@ -118,36 +171,46 @@ impl ClapInstance {
         }
     }
 
-    /// Activate the plugin (CLAP requirement: must be called on the main thread).
-    ///
-    /// Call this before handing the instance to the bridge thread.
-    /// `start_processing()` will be called lazily on the audio/bridge thread
-    /// by the first `process()` call.
-    #[cfg(feature = "clap")]
-    pub fn activate(&mut self) -> Result<()> {
-        self.inner.activate().map_err(|e| BridgeError::LoadFailed {
-            path: std::path::PathBuf::new(),
-            stage: LoadStage::Activation,
-            reason: format!("activate failed: {e}"),
-        })
-    }
-
     /// Returns true if the plugin requested a latency change since the last poll.
     /// Clears the flag.
     #[cfg(feature = "clap")]
     pub fn poll_latency_changed(&mut self) -> bool {
-        self.inner.poll_latency_changed()
+        clap_dispatch_mut!(self, i => i.poll_latency_changed())
     }
 
     /// Current latency in samples, as reported by the plugin.
     #[cfg(feature = "clap")]
     pub fn get_latency(&self) -> u32 {
-        self.inner.get_latency()
+        clap_dispatch!(self, i => i.get_latency())
     }
 
+    /// Test-only access to the underlying loaded instance (via `Deref` through
+    /// whichever active arm). Lets the integration tests exercise the read-only
+    /// `ClapLoaded` surface (poll_*, port/note queries, state context, …)
+    /// without threading the f32/f64 enum through every assertion.
+    #[cfg(all(feature = "clap", test))]
+    fn loaded(&self) -> &tutti_clap_host::ClapLoaded {
+        clap_dispatch!(self, i => &**i)
+    }
+
+    /// Test-only mutable access (for `poll_timers`, `on_main_thread`, …).
+    #[cfg(all(feature = "clap", test))]
+    fn loaded_mut(&mut self) -> &mut tutti_clap_host::ClapLoaded {
+        clap_dispatch_mut!(self, i => &mut **i)
+    }
+
+    /// Test-only: has the active instance started processing? (`is_processing`
+    /// lives on `ClapActive`, so it is reached through the enum, not `Deref`.)
+    #[cfg(all(feature = "clap", test))]
+    fn is_processing(&self) -> bool {
+        clap_dispatch!(self, i => i.is_processing())
+    }
+
+    /// Drive one block through a typed active instance. Free of `self.inner`
+    /// so it works for whichever arm of [`ClapInner`] matches the buffer format.
     #[cfg(feature = "clap")]
-    fn process_clap<'a, T: tutti_clap_host::ClapSample>(
-        &'a mut self,
+    fn process_active<'a, T: tutti_clap_host::ClapSample>(
+        active: &'a mut ClapActive<T>,
         clap_buffer: &mut tutti_clap_host::AudioBuffer<T>,
         ctx: &ProcessContext,
         sample_rate: f64,
@@ -170,7 +233,7 @@ impl ClapInstance {
             transport: transport.as_ref(),
         };
 
-        self.inner
+        active
             .process(clap_buffer, &clap_ctx)
             .map_err(|e| BridgeError::ProcessError(e.to_string()))
     }
@@ -188,8 +251,11 @@ impl PluginInstance for ClapInstance {
         ctx: &ProcessContext,
     ) -> Result<ProcessOutput> {
         use tutti_plugin::server::AudioBufferMut;
-        match buffer {
-            AudioBufferMut::F32(buf) => {
+        // The buffer format must match the format the instance was activated
+        // with (the `ClapInner` arm). A mismatch is a negotiation bug upstream;
+        // surface it rather than silently mis-cast.
+        match (buffer, &mut self.inner) {
+            (AudioBufferMut::F32(buf), ClapInner::F32(active)) => {
                 let sr = buf.sample_rate;
                 let mut clap_buffer = tutti_clap_host::AudioBuffer32 {
                     inputs: buf.inputs,
@@ -197,13 +263,14 @@ impl PluginInstance for ClapInstance {
                     num_samples: buf.num_samples,
                     sample_rate: sr,
                 };
-                Ok(convert_process_output(self.process_clap(
+                Ok(convert_process_output(Self::process_active(
+                    active,
                     &mut clap_buffer,
                     ctx,
                     sr,
                 )?))
             }
-            AudioBufferMut::F64(buf) => {
+            (AudioBufferMut::F64(buf), ClapInner::F64(active)) => {
                 let sr = buf.sample_rate;
                 let mut clap_buffer = tutti_clap_host::AudioBuffer64 {
                     inputs: buf.inputs,
@@ -211,30 +278,40 @@ impl PluginInstance for ClapInstance {
                     num_samples: buf.num_samples,
                     sample_rate: sr,
                 };
-                Ok(convert_process_output(self.process_clap(
+                Ok(convert_process_output(Self::process_active(
+                    active,
                     &mut clap_buffer,
                     ctx,
                     sr,
                 )?))
             }
+            (AudioBufferMut::F32(_), ClapInner::F64(_))
+            | (AudioBufferMut::F64(_), ClapInner::F32(_)) => Err(BridgeError::ProcessError(
+                "audio buffer sample format does not match the format the CLAP \
+                 plugin was activated with"
+                    .to_string(),
+            )),
         }
     }
 
     fn set_sample_rate(&mut self, rate: f64) {
-        self.inner.set_sample_rate(rate);
+        clap_dispatch_mut!(self, i => {
+            i.set_sample_rate(rate);
+        });
     }
 
     fn get_parameter(&self, id: u32) -> f64 {
-        self.inner.parameter(id).unwrap_or(0.0)
+        clap_dispatch!(self, i => i.parameter(id)).unwrap_or(0.0)
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) {
-        self.inner.set_parameter(id, value);
+        clap_dispatch_mut!(self, i => {
+            i.set_parameter(id, value);
+        });
     }
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
-        self.inner
-            .parameters()
+        clap_dispatch!(self, i => i.parameters())
             .into_iter()
             .map(convert_param_info)
             .collect()
@@ -243,8 +320,7 @@ impl PluginInstance for ClapInstance {
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         // Safety: WindowHandle was validated at the IPC boundary in server.rs
         let handle = unsafe { tutti_clap_host::WindowHandle::from_raw(parent.as_ptr()) };
-        self.inner
-            .open_editor(handle)
+        clap_dispatch_mut!(self, i => i.open_editor(handle))
             .map(|s| EditorSize {
                 width: s.width,
                 height: s.height,
@@ -253,18 +329,18 @@ impl PluginInstance for ClapInstance {
     }
 
     fn close_editor(&mut self) {
-        self.inner.close_editor();
+        clap_dispatch_mut!(self, i => {
+            i.close_editor();
+        });
     }
 
     fn get_state(&mut self) -> Result<Vec<u8>> {
-        self.inner
-            .state()
+        clap_dispatch_mut!(self, i => i.state())
             .map_err(|e| BridgeError::StateSaveError(e.to_string()))
     }
 
     fn set_state(&mut self, data: &[u8]) -> Result<()> {
-        self.inner
-            .set_state(data)
+        clap_dispatch_mut!(self, i => i.set_state(data))
             .map_err(|e| BridgeError::StateRestoreError(e.to_string()))
     }
 }
@@ -460,7 +536,7 @@ mod tests {
     fn test_clap_parameter_count() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(CLAP_PLUGIN);
-        let mut instance =
+        let instance =
             ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
 
         let count = instance.get_parameter_list().len();
@@ -475,7 +551,7 @@ mod tests {
     fn test_clap_parameter_list() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(CLAP_PLUGIN);
-        let mut instance =
+        let instance =
             ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
 
         let params = instance.get_parameter_list();
@@ -497,7 +573,7 @@ mod tests {
     fn test_clap_get_parameter() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(CLAP_PLUGIN);
-        let mut instance =
+        let instance =
             ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
 
         let params = instance.get_parameter_list();
@@ -654,7 +730,7 @@ mod tests {
         let instance =
             ClapInstance::load(Path::new(SURGE_XT), 44100.0, 512).expect("Failed to load Surge XT");
 
-        let port_info = instance.inner.audio_port_info(0, false);
+        let port_info = instance.loaded().audio_port_info(0, false);
         assert!(port_info.is_some(), "Expected at least one output port");
 
         let port = port_info.unwrap();
@@ -752,66 +828,50 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let instance =
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
-        // load() now activates the plugin so it's ready to process immediately
+        // `load()` activates the plugin: `inner` is a `ClapActive` arm, so the
+        // "active after load" guarantee is now encoded in the type itself.
         assert!(
-            instance.inner.is_active(),
-            "Plugin should be active after load"
+            matches!(instance.inner, ClapInner::F32(_) | ClapInner::F64(_)),
+            "load() should yield an active (ClapActive) instance"
         );
     }
 
     #[test]
-    fn test_clap_lifecycle_activate_deactivate() {
+    fn test_clap_lifecycle_processing_starts_on_process() {
         let _lock = crate::test_utils::plugin_load_lock();
         let mut instance =
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
-        // Already active after load()
-        assert!(instance.inner.is_active());
-
-        instance.inner.deactivate();
+        // A freshly-activated instance has not started processing yet — that
+        // happens lazily on the first `process` call (the type guarantees it is
+        // already activated, so there is no "auto-activate" step to test).
         assert!(
-            !instance.inner.is_active(),
-            "Should be inactive after deactivate"
+            !instance.is_processing(),
+            "Should not be processing before first process()"
         );
 
+        let num_samples = 128;
+        let input_data: Vec<Vec<f32>> = vec![vec![0.0f32; num_samples]; 2];
+        let mut output_data = vec![vec![0.0f32; num_samples]; 2];
+        let input_slices: Vec<&[f32]> = input_data.iter().map(|v| v.as_slice()).collect();
+        let mut output_slices: Vec<&mut [f32]> =
+            output_data.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let buffer = tutti_plugin::server::AudioBuffer {
+            inputs: &input_slices,
+            outputs: &mut output_slices,
+            num_samples,
+            sample_rate: 44100.0,
+        };
         instance
-            .inner
-            .activate()
-            .expect("Reactivation should succeed");
-        assert!(
-            instance.inner.is_active(),
-            "Should be active after reactivate"
-        );
-    }
+            .process(
+                tutti_plugin::server::AudioBufferMut::F32(buffer),
+                &ProcessContext::new(),
+            )
+            .expect("process should succeed");
 
-    #[test]
-    fn test_clap_lifecycle_start_stop_processing() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let mut instance =
-            ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
-
-        // start_processing auto-activates if needed
-        instance
-            .inner
-            .start_processing()
-            .expect("start_processing should succeed");
         assert!(
-            instance.inner.is_active(),
-            "Should be active (auto-activated)"
-        );
-        assert!(
-            instance.inner.is_processing(),
-            "Should be processing after start"
-        );
-
-        instance.inner.stop_processing();
-        assert!(
-            !instance.inner.is_processing(),
-            "Should not be processing after stop"
-        );
-        assert!(
-            instance.inner.is_active(),
-            "Should still be active after stop_processing"
+            instance.is_processing(),
+            "Should be processing after first process()"
         );
     }
 
@@ -821,7 +881,7 @@ mod tests {
         let mut instance =
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
         // Just verify no crash
-        instance.inner.on_main_thread();
+        instance.loaded_mut().on_main_thread();
     }
 
     // ── Group B: Polling Methods ──
@@ -833,16 +893,16 @@ mod tests {
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
         // All poll methods should return false on a fresh instance
-        assert!(!instance.inner.poll_restart_requested());
-        assert!(!instance.inner.poll_process_requested());
-        assert!(!instance.inner.poll_callback_requested());
-        assert!(!instance.inner.poll_latency_changed());
-        assert!(!instance.inner.poll_tail_changed());
-        assert!(!instance.inner.poll_params_rescan());
-        assert!(!instance.inner.poll_params_flush_requested());
-        assert!(!instance.inner.poll_state_dirty());
-        assert!(!instance.inner.poll_audio_ports_changed());
-        assert!(!instance.inner.poll_note_ports_changed());
+        assert!(!instance.loaded().poll_restart_requested());
+        assert!(!instance.loaded().poll_process_requested());
+        assert!(!instance.loaded().poll_callback_requested());
+        assert!(!instance.loaded().poll_latency_changed());
+        assert!(!instance.loaded().poll_tail_changed());
+        assert!(!instance.loaded().poll_params_rescan());
+        assert!(!instance.loaded().poll_params_flush_requested());
+        assert!(!instance.loaded().poll_state_dirty());
+        assert!(!instance.loaded().poll_audio_ports_changed());
+        assert!(!instance.loaded().poll_note_ports_changed());
     }
 
     #[test]
@@ -851,7 +911,7 @@ mod tests {
         let instance =
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
-        let state = instance.inner.host_state();
+        let state = instance.loaded().host_state();
         state
             .lifecycle
             .restart_requested
@@ -859,25 +919,25 @@ mod tests {
 
         // needs_restart() is non-clearing — should return true repeatedly
         assert!(
-            instance.inner.needs_restart(),
+            instance.loaded().needs_restart(),
             "needs_restart should be true"
         );
         assert!(
-            instance.inner.needs_restart(),
+            instance.loaded().needs_restart(),
             "needs_restart should still be true (non-clearing)"
         );
 
         // poll_restart_requested() clears the flag
         assert!(
-            instance.inner.poll_restart_requested(),
+            instance.loaded().poll_restart_requested(),
             "poll should return true"
         );
         assert!(
-            !instance.inner.poll_restart_requested(),
+            !instance.loaded().poll_restart_requested(),
             "poll should return false after clearing"
         );
         assert!(
-            !instance.inner.needs_restart(),
+            !instance.loaded().needs_restart(),
             "needs_restart should be false after poll cleared it"
         );
     }
@@ -888,7 +948,7 @@ mod tests {
         let instance =
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
-        let state = instance.inner.host_state();
+        let state = instance.loaded().host_state();
         state
             .lifecycle
             .process_requested
@@ -898,12 +958,12 @@ mod tests {
             .callback_requested
             .store(true, Ordering::Release);
 
-        assert!(instance.inner.poll_process_requested());
-        assert!(instance.inner.poll_callback_requested());
+        assert!(instance.loaded().poll_process_requested());
+        assert!(instance.loaded().poll_callback_requested());
 
         // Second poll should be false (cleared)
-        assert!(!instance.inner.poll_process_requested());
-        assert!(!instance.inner.poll_callback_requested());
+        assert!(!instance.loaded().poll_process_requested());
+        assert!(!instance.loaded().poll_callback_requested());
     }
 
     #[test]
@@ -912,18 +972,18 @@ mod tests {
         let instance =
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
-        let state = instance.inner.host_state();
+        let state = instance.loaded().host_state();
         state
             .processing
             .latency_changed
             .store(true, Ordering::Release);
         state.processing.tail_changed.store(true, Ordering::Release);
 
-        assert!(instance.inner.poll_latency_changed());
-        assert!(instance.inner.poll_tail_changed());
+        assert!(instance.loaded().poll_latency_changed());
+        assert!(instance.loaded().poll_tail_changed());
 
-        assert!(!instance.inner.poll_latency_changed());
-        assert!(!instance.inner.poll_tail_changed());
+        assert!(!instance.loaded().poll_latency_changed());
+        assert!(!instance.loaded().poll_tail_changed());
     }
 
     #[test]
@@ -932,18 +992,18 @@ mod tests {
         let instance =
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
-        let state = instance.inner.host_state();
+        let state = instance.loaded().host_state();
         state.audio_ports.changed.store(true, Ordering::Release);
         state.notes.ports_changed.store(true, Ordering::Release);
         state.processing.state_dirty.store(true, Ordering::Release);
 
-        assert!(instance.inner.poll_audio_ports_changed());
-        assert!(instance.inner.poll_note_ports_changed());
-        assert!(instance.inner.poll_state_dirty());
+        assert!(instance.loaded().poll_audio_ports_changed());
+        assert!(instance.loaded().poll_note_ports_changed());
+        assert!(instance.loaded().poll_state_dirty());
 
-        assert!(!instance.inner.poll_audio_ports_changed());
-        assert!(!instance.inner.poll_note_ports_changed());
-        assert!(!instance.inner.poll_state_dirty());
+        assert!(!instance.loaded().poll_audio_ports_changed());
+        assert!(!instance.loaded().poll_note_ports_changed());
+        assert!(!instance.loaded().poll_state_dirty());
     }
 
     // ── Group C: Parameter Get/Set Roundtrip ──
@@ -1023,7 +1083,7 @@ mod tests {
         let instance =
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
-        let output_count = instance.inner.audio_port_count(false);
+        let output_count = instance.loaded().audio_port_count(false);
         assert!(
             output_count > 0,
             "Synth should have at least one output port"
@@ -1031,7 +1091,7 @@ mod tests {
 
         for i in 0..output_count {
             let info = instance
-                .inner
+                .loaded()
                 .audio_port_info(i, false)
                 .expect("audio_port_info should return Some");
             assert!(info.channel_count > 0, "Port {} should have channels", i);
@@ -1045,7 +1105,7 @@ mod tests {
         let instance =
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
-        let input_count = instance.inner.note_port_count(true);
+        let input_count = instance.loaded().note_port_count(true);
         assert!(
             input_count > 0,
             "Synth should have at least one note input port"
@@ -1053,7 +1113,7 @@ mod tests {
 
         for i in 0..input_count {
             let info = instance
-                .inner
+                .loaded()
                 .note_port_info(i, true)
                 .expect("note_port_info should return Some");
             assert!(!info.name.is_empty(), "Note port {} should have a name", i);
@@ -1069,8 +1129,8 @@ mod tests {
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
         // Just verify no crash — values depend on plugin
-        let _latency = instance.inner.get_latency();
-        let _tail = instance.inner.get_tail();
+        let _latency = instance.loaded().get_latency();
+        let _tail = instance.loaded().get_tail();
     }
 
     // ── Group G: Processing with Param Automation, Expressions, Transport ──
@@ -1213,12 +1273,12 @@ mod tests {
         let instance =
             ClapInstance::load(Path::new(SURGE_XT), 44100.0, 512).expect("Failed to load Surge XT");
 
-        let output_count = instance.inner.audio_port_count(false);
+        let output_count = instance.loaded().audio_port_count(false);
         assert!(output_count > 0, "Surge XT should have output ports");
 
         let port = instance
-            .inner
-            .audio_port_info(0, false)
+                .loaded()
+                .audio_port_info(0, false)
             .expect("Should have at least one output port");
         assert!(
             port.channel_count >= 2,
@@ -1233,8 +1293,8 @@ mod tests {
         let instance =
             ClapInstance::load(Path::new(SURGE_XT), 44100.0, 512).expect("Failed to load Surge XT");
 
-        let _latency = instance.inner.get_latency();
-        let _tail = instance.inner.get_tail();
+        let _latency = instance.loaded().get_latency();
+        let _tail = instance.loaded().get_tail();
     }
 
     // ── Group J: GUI / Editor ──
@@ -1323,9 +1383,9 @@ mod tests {
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
         // Set offline mode — returns true if plugin supports render extension
-        let _ = instance.inner.set_render_mode(true);
+        let _ = instance.loaded_mut().set_render_mode(true);
         // Set back to realtime
-        let _ = instance.inner.set_render_mode(false);
+        let _ = instance.loaded_mut().set_render_mode(false);
         // No crash is the assertion
     }
 
@@ -1336,7 +1396,7 @@ mod tests {
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
         // Most synths don't have hard RT requirements
-        let _has_rt = instance.inner.has_hard_realtime_requirement();
+        let _has_rt = instance.loaded().has_hard_realtime_requirement();
     }
 
     // ── Group L: Voice Info ──
@@ -1348,7 +1408,7 @@ mod tests {
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
         // TAL-NoiseMaker may or may not support voice info
-        if let Some(info) = instance.inner.get_voice_info() {
+        if let Some(info) = instance.loaded().get_voice_info() {
             assert!(info.voice_count > 0, "voice_count should be > 0");
             assert!(info.voice_capacity > 0, "voice_capacity should be > 0");
         }
@@ -1361,7 +1421,7 @@ mod tests {
             ClapInstance::load(Path::new(SURGE_XT), 44100.0, 512).expect("Failed to load Surge XT");
 
         // Surge XT likely supports voice info
-        if let Some(info) = instance.inner.get_voice_info() {
+        if let Some(info) = instance.loaded().get_voice_info() {
             assert!(info.voice_count > 0, "Surge XT voice_count should be > 0");
             assert!(
                 info.voice_capacity > 0,
@@ -1378,10 +1438,10 @@ mod tests {
         let instance =
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
-        let count = instance.inner.note_name_count();
+        let count = instance.loaded().note_name_count();
         // Iterate whatever's there — may be 0 for synths without custom note names
         for i in 0..count {
-            let name = instance.inner.get_note_name(i);
+            let name = instance.loaded().get_note_name(i);
             assert!(name.is_some(), "note_name at index {} should exist", i);
             assert!(
                 !name.unwrap().name.is_empty(),
@@ -1459,7 +1519,7 @@ mod tests {
             ClapInstance::load(Path::new(CLAP_PLUGIN), 44100.0, 512).expect("Failed to load");
 
         // Just query — may or may not be supported
-        let _supports = instance.inner.supports_state_context();
+        let _supports = instance.loaded().supports_state_context();
     }
 
     #[test]
@@ -1470,14 +1530,14 @@ mod tests {
 
         // Save with ForProject context (falls back to regular save if unsupported)
         let saved = instance
-            .inner
-            .state_with_context(tutti_clap_host::StateContext::ForProject)
+                .loaded()
+                .state_with_context(tutti_clap_host::StateContext::ForProject)
             .expect("state_with_context should succeed");
         assert!(!saved.is_empty());
 
         // Load it back
         instance
-            .inner
+            .loaded_mut()
             .set_state_with_context(&saved, tutti_clap_host::StateContext::ForProject)
             .expect("set_state_with_context should succeed");
     }
@@ -1490,13 +1550,13 @@ mod tests {
 
         // ForDuplicate context — used when duplicating a plugin instance
         let saved = instance
-            .inner
-            .state_with_context(tutti_clap_host::StateContext::ForDuplicate)
+                .loaded()
+                .state_with_context(tutti_clap_host::StateContext::ForDuplicate)
             .expect("save should succeed");
         assert!(!saved.is_empty());
 
         instance
-            .inner
+            .loaded_mut()
             .set_state_with_context(&saved, tutti_clap_host::StateContext::ForDuplicate)
             .expect("load should succeed");
     }

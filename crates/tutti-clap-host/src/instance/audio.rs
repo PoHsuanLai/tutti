@@ -1,7 +1,7 @@
-//! Audio processing methods for ClapInstance.
+//! Audio processing methods for the active CLAP instance.
 
-use super::config::{PortLayout, ProcessScratch};
-use super::ClapInstance;
+use super::config::{AudioScratch, PortLayout, ProcessScratch};
+use super::ClapActive;
 use crate::error::{ClapError, Result};
 use crate::events::EventList;
 use crate::types::{AudioBuffer, MidiEvent, NoteExpressionValue, ParameterChanges, TransportInfo};
@@ -76,9 +76,6 @@ pub trait ClapSample: tutti_plugin_types::Sample {
     /// Construct a `clap_audio_buffer` from a base pointer into a channel-
     /// pointer array (`data32` / `data64` selected per sample type).
     fn make_port_buffer(ptrs_base: *mut *mut Self, channel_count: u32) -> clap_audio_buffer;
-
-    /// Borrow the instance's pre-allocated RT scratch for this sample type.
-    fn scratch_mut(instance: &mut ClapInstance) -> &mut ProcessScratch<Self>;
 }
 
 impl ClapSample for f32 {
@@ -95,10 +92,6 @@ impl ClapSample for f32 {
             constant_mask: 0,
         }
     }
-
-    fn scratch_mut(instance: &mut ClapInstance) -> &mut ProcessScratch<f32> {
-        &mut instance.scratch_f32
-    }
 }
 
 impl ClapSample for f64 {
@@ -114,10 +107,6 @@ impl ClapSample for f64 {
             latency: 0,
             constant_mask: 0,
         }
-    }
-
-    fn scratch_mut(instance: &mut ClapInstance) -> &mut ProcessScratch<f64> {
-        &mut instance.scratch_f64
     }
 }
 
@@ -193,38 +182,31 @@ fn refill_port_buffers<T: ClapSample>(
     }
 }
 
-impl ClapInstance {
-    /// Process audio through the plugin.
+impl<T: ClapSample> ClapActive<T> {
+    /// Process one block of audio through the plugin.
     ///
-    /// Generic over [`ClapSample`] — pass an `AudioBuffer32` for f32 or
-    /// `AudioBuffer64` for f64. The f64 path automatically checks that the
-    /// plugin advertises 64-bit support.
+    /// The sample format is fixed at activation: `ClapActive<f32>` takes an
+    /// `AudioBuffer32`, `ClapActive<f64>` an `AudioBuffer64`. (The 64-bit
+    /// support check happened once in [`ClapLoaded::activate`](super::ClapLoaded::activate).)
     ///
     /// ```ignore
-    /// plugin.process(&mut buffer, &ProcessContext {
+    /// active.process(&mut buffer, &ProcessContext {
     ///     midi: &[Midi1Event::note_on(0, 0, 60, 100)],
     ///     transport: Some(&transport),
     ///     ..Default::default()
     /// })?;
     /// ```
-    pub fn process<T: ClapSample>(
+    pub fn process(
         &mut self,
         buffer: &mut AudioBuffer<T>,
         ctx: &ProcessContext<'_>,
     ) -> Result<ProcessOutputRef<'_>> {
-        if T::requires_f64() && !self.audio.supports_f64 {
-            return Err(ClapError::ProcessError(format!(
-                "Plugin '{}' does not support 64-bit audio processing \
-                 (CLAP_AUDIO_PORT_SUPPORTS_64BITS not set)",
-                self.info.name
-            )));
-        }
         let empty_params = ParameterChanges::new();
         let params = ctx.params.unwrap_or(&empty_params);
         self.process_impl(buffer, ctx.midi, params, ctx.expressions, ctx.transport)
     }
 
-    fn process_impl<T: ClapSample>(
+    fn process_impl(
         &mut self,
         buffer: &mut AudioBuffer<T>,
         midi_events: &[MidiEvent],
@@ -238,21 +220,23 @@ impl ClapInstance {
         // heap capacity reserved in `activate()`; the subsequent `add_*`
         // calls push into that capacity without touching the allocator
         // (steady state — first call past the reserve cap will allocate).
-        self.input_events.clear();
+        self.scratch.input_events.clear();
         if !midi_events.is_empty() {
-            self.input_events.add_midi_events(midi_events);
+            self.scratch.input_events.add_midi_events(midi_events);
         }
         if !param_changes.is_empty() {
-            self.input_events.add_param_changes(param_changes);
+            self.scratch.input_events.add_param_changes(param_changes);
         }
         if !note_expressions.is_empty() {
-            self.input_events.add_note_expressions(note_expressions);
+            self.scratch
+                .input_events
+                .add_note_expressions(note_expressions);
         }
-        self.input_events.sort_by_time();
+        self.scratch.input_events.sort_by_time();
 
         // Output list starts empty each block; the plugin's `try_push`
         // callback fills it during `process_fn`.
-        self.output_events.clear();
+        self.scratch.output_events.clear();
 
         // Caller-supplied channel pointers live on the stack (SmallVec) —
         // no heap alloc for typical channel counts (≤ 16 per side).
@@ -262,14 +246,14 @@ impl ClapInstance {
             buffer.outputs.iter_mut().map(|s| s.as_mut_ptr()).collect();
 
         // Populate the pre-allocated scratch in place. We need to read
-        // `self.ports` while mutating the sample-specific scratch; the two
+        // `self.loaded.ports` while mutating `self.scratch.process`; the two
         // fields are disjoint, so we split the borrow through a raw pointer.
         //
-        // SAFETY: `ports_ptr` and the `scratch` borrow come from disjoint
-        // fields of `*self`. We don't mutate `ports` and we don't reborrow
-        // `self` for the duration of the scratch mutation.
-        let ports_ptr: *const PortLayout = &self.ports;
-        let scratch = T::scratch_mut(self);
+        // SAFETY: `ports_ptr` and the `process` scratch borrow come from
+        // disjoint fields of `*self`. We don't mutate `ports` and we don't
+        // reborrow `self` for the duration of the scratch mutation.
+        let ports_ptr: *const PortLayout = &self.loaded.ports;
+        let scratch = &mut self.scratch.process;
         unsafe {
             refill_port_buffers(
                 scratch,
@@ -305,10 +289,10 @@ impl ClapInstance {
         num_samples: u32,
         transport: Option<&TransportInfo>,
     ) -> Result<ProcessOutputRef<'_>> {
-        // start_processing() publishes the audio-thread identity into
+        // ensure_processing() publishes the audio-thread identity into
         // host_state.audio_thread_id (once per start/stop cycle) — the RT
         // do_process path is lock-free and allocation-free here.
-        self.start_processing()?;
+        self.ensure_processing()?;
 
         let clap_transport = transport.map(build_clap_transport);
         let transport_ptr = clap_transport
@@ -317,15 +301,15 @@ impl ClapInstance {
             .unwrap_or(ptr::null());
 
         let steady_time = transport
-            .map(|t| (t.position.seconds * self.audio.sample_rate) as i64)
+            .map(|t| (t.position.seconds * self.loaded.audio.sample_rate) as i64)
             .unwrap_or(0);
 
         // Build FFI pointers into the pooled event lists. The plugin's
         // `process` runs synchronously and must not retain either pointer
-        // past return, so reading `&self.input_events` and
-        // `&mut self.output_events` through their raw forms here is sound.
-        let in_events = self.input_events.as_raw();
-        let out_events = self.output_events.as_raw_mut();
+        // past return, so reading `&self.scratch.input_events` and
+        // `&mut self.scratch.output_events` through their raw forms here is sound.
+        let in_events = self.scratch.input_events.as_raw();
+        let out_events = self.scratch.output_events.as_raw_mut();
 
         let process_data = clap_process {
             steady_time,
@@ -339,9 +323,9 @@ impl ClapInstance {
             out_events,
         };
 
-        let plugin_ref = unsafe { self.plugin.as_ref() };
+        let plugin_ref = unsafe { self.loaded.plugin.as_ref() };
         let status = if let Some(process_fn) = plugin_ref.process {
-            unsafe { process_fn(self.plugin.as_ptr(), &process_data) }
+            unsafe { process_fn(self.loaded.plugin.as_ptr(), &process_data) }
         } else {
             CLAP_PROCESS_CONTINUE
         };
@@ -352,17 +336,23 @@ impl ClapInstance {
 
         // Drain the plugin's output events into the pooled return buffers.
         // Each `fill_*` clears its destination first; SmallVec/ParameterChanges
-        // keep their heap capacity reserved in `activate()`.
-        self.output_events.fill_midi_events(&mut self.out_midi);
-        self.output_events
-            .fill_param_changes(&mut self.out_param_changes);
-        self.output_events
-            .fill_note_expressions(&mut self.out_note_expressions);
+        // keep their heap capacity reserved in `activate()`. Destructure the
+        // scratch so `output_events` and each return pool are disjoint borrows.
+        let AudioScratch {
+            output_events,
+            out_midi,
+            out_param_changes,
+            out_note_expressions,
+            ..
+        } = &mut self.scratch;
+        output_events.fill_midi_events(out_midi);
+        output_events.fill_param_changes(out_param_changes);
+        output_events.fill_note_expressions(out_note_expressions);
 
         Ok(ProcessOutputRef {
-            midi_events: &self.out_midi,
-            param_changes: &self.out_param_changes,
-            note_expressions: &self.out_note_expressions,
+            midi_events: &self.scratch.out_midi,
+            param_changes: &self.scratch.out_param_changes,
+            note_expressions: &self.scratch.out_note_expressions,
         })
     }
 }

@@ -1,7 +1,7 @@
 //! Plugin state save/load and preset loading.
 
 use super::ext;
-use super::ClapInstance;
+use super::ClapLoaded;
 use crate::error::{ClapError, Result};
 use crate::host::{InputStream, OutputStream};
 use crate::types::StateContext;
@@ -9,7 +9,7 @@ use clap_sys::factory::preset_discovery::CLAP_PRESET_DISCOVERY_LOCATION_FILE;
 use std::path::Path;
 use std::ptr;
 
-impl ClapInstance {
+impl ClapLoaded {
     /// Serialize the plugin's state to bytes via `CLAP_EXT_STATE`.
     ///
     /// # Errors

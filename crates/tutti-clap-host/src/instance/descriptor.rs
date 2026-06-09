@@ -2,8 +2,7 @@
 //! `load_with_library`. Everything through "get the first plugin descriptor
 //! from the factory" lives here; the two entry points then diverge.
 
-use super::entry_registry_acquire;
-use super::EntryGuard;
+use super::entry::{entry_registry_acquire, EntryGuard};
 use crate::cstr_to_string;
 use crate::error::{ClapError, LoadStage, Result};
 use crate::types::PluginInfo;

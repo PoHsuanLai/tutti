@@ -6,7 +6,7 @@ use crate::window::{EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 
 pub(crate) struct ClapGuiInstance {
-    inner: tutti_clap_host::ClapInstance,
+    inner: tutti_clap_host::ClapLoaded,
 }
 
 impl ClapGuiInstance {
@@ -16,7 +16,7 @@ impl ClapGuiInstance {
         // Editor-only load: gui/params/state work without activation, and this
         // instance must never be activated or process audio (audio runs in the
         // subprocess instance). `load_editor_only` encodes that contract.
-        let inner = tutti_clap_host::ClapInstance::load_editor_only(&resolved, None).map_err(
+        let inner = tutti_clap_host::ClapLoaded::load_editor_only(&resolved, None).map_err(
             |e| BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage: LoadStage::Opening,

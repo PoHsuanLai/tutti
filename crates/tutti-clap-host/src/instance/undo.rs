@@ -1,11 +1,11 @@
 //! Undo / redo support from the draft `CLAP_EXT_UNDO` extensions.
 
 use super::ext;
-use super::ClapInstance;
+use super::ClapLoaded;
 use crate::types::UndoDeltaProperties;
 use clap_sys::ext::draft::undo::clap_undo_delta_properties;
 
-impl ClapInstance {
+impl ClapLoaded {
     /// Query the plugin's undo delta capabilities (whether it produces
     /// deltas, whether they persist across sessions, format version).
     pub fn undo_get_delta_properties(&self) -> Option<UndoDeltaProperties> {

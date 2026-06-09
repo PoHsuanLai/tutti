@@ -263,6 +263,29 @@ impl ClapInstance {
         })
     }
 
+    /// Load a CLAP plugin for editor/parameter/state work only — never for
+    /// audio. The returned instance must NOT be `activate()`d, `process()`d, or
+    /// `start_processing()`d; doing so is a misuse of an editor-only load.
+    ///
+    /// CLAP's `gui`, `params`, and `state` extensions work without activation,
+    /// so this skips the audio-config negotiation a processing load needs. The
+    /// sample rate / max-frames passed to the plugin are placeholders that are
+    /// never used (no `activate()` call consumes them). Use this in the
+    /// in-process GUI host, where audio runs in a separate instance/process.
+    pub fn load_editor_only(bundle_path: &Path, library_path: Option<&Path>) -> Result<Self> {
+        // Placeholder audio config: never used because the caller must not
+        // activate this instance. A processing load uses `load_with_library`
+        // with the real sample rate / block size instead.
+        const EDITOR_ONLY_SAMPLE_RATE: f64 = 44_100.0;
+        const EDITOR_ONLY_MAX_FRAMES: u32 = 512;
+        Self::load_with_library(
+            bundle_path,
+            library_path,
+            EDITOR_ONLY_SAMPLE_RATE,
+            EDITOR_ONLY_MAX_FRAMES,
+        )
+    }
+
     pub fn supports_f64(&self) -> bool {
         self.audio.supports_f64
     }

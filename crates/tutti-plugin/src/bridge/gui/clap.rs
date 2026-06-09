@@ -13,14 +13,16 @@ impl ClapGuiInstance {
     pub fn load(path: &Path) -> Result<Self> {
         // Resolve bundle directory to the actual binary.
         let resolved = crate::subprocess::resolve_bundle(path)?;
-        // Load with dummy sample rate / block size — we never activate audio.
-        let inner = tutti_clap_host::ClapInstance::load_with_library(&resolved, None, 44100.0, 512)
-            .map_err(|e| BridgeError::LoadFailed {
+        // Editor-only load: gui/params/state work without activation, and this
+        // instance must never be activated or process audio (audio runs in the
+        // subprocess instance). `load_editor_only` encodes that contract.
+        let inner = tutti_clap_host::ClapInstance::load_editor_only(&resolved, None).map_err(
+            |e| BridgeError::LoadFailed {
                 path: path.to_path_buf(),
                 stage: LoadStage::Opening,
                 reason: format!("CLAP GUI-only load failed: {e}"),
-            })?;
-        // Do NOT call activate() — GUI extension works without it.
+            },
+        )?;
         Ok(Self { inner })
     }
 }

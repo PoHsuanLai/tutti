@@ -2,8 +2,8 @@ pub mod error;
 pub use error::{Error, Result};
 
 mod midi_io;
-pub use midi_io::{MidiDevice, MidiIo};
-pub use io::MidiInputRecord;
+pub use midi_io::MidiIo;
+pub use hardware::{MidiDevice, MidiInputRecord};
 
 // --- Re-exports from tutti-midi ---
 
@@ -21,10 +21,10 @@ pub use tutti_midi_types::cc::mapping::{CCMapping, CCNumber, CCTarget, MappingId
 
 // --- Local modules ---
 
-pub(crate) mod io;
+pub(crate) mod hardware;
 
 #[cfg(all(target_os = "macos", feature = "virtual-midi"))]
-pub use io::{VirtualMidiDestination, VirtualMidiSource};
+pub use hardware::{VirtualMidiDestination, VirtualMidiSource};
 
 /// Standard MIDI File (SMF) read/write — parse a `.mid` into beat-positioned
 /// events ([`ParsedMidiFile`]) or per-track paired notes ([`smf::tracks`]), and

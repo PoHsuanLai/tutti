@@ -1,7 +1,7 @@
 //! MIDI input device ports: enumeration + opening a hardware input connection.
 
+use super::MidiDevice;
 use crate::InputProducerHandle;
-use crate::MidiDevice;
 use crossbeam_channel::Sender;
 use midir::{MidiInput, MidiInputConnection};
 use std::time::Instant;

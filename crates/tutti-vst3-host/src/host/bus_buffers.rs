@@ -6,7 +6,11 @@
 //! the realtime `process` path stays allocation-free because every table here
 //! is sized once at construction.
 
+use std::marker::PhantomData;
+
 use smallvec::SmallVec;
+
+use crate::types::{Vst3Sample, K_SAMPLE_64_INT};
 
 /// Minimum pointer-table width per bus. A defensive over-read of a stereo
 /// table on a mono bus then stays in-bounds (the extra slot points at `aux`).
@@ -15,14 +19,17 @@ pub(super) const MIN_PTR_COUNT: usize = 2;
 /// The resolved scratch sizing for one process direction, derived from a
 /// plugin's per-bus channel layout.
 ///
+/// Generic over the committed sample format `T` so the [`BusBuffers`] it holds
+/// writes the matching `channelBuffers32`/`64` union member.
+///
 /// Both the initial sizing (from the `PluginInfo` snapshot) and the
 /// post-activation re-sync (from the live component, since some plugins only
 /// finalise their arrangement once active) reduce to the same computation:
 /// given the per-bus channel vec plus the main-bus channel count, produce the
 /// flat `BufferPtrs` width and the per-bus [`BusBuffers`] scratch.
-pub(super) struct DirectionScratch {
+pub(super) struct DirectionScratch<T: Vst3Sample> {
     /// Per-bus `AudioBusBuffers` scratch for this direction.
-    pub buses: BusBuffers,
+    pub buses: BusBuffers<T>,
     /// Flat `BufferPtrs` width: the per-direction channel total (main +
     /// sidechain/aux), clamped to [`MIN_PTR_COUNT`]. The flat caller buffer
     /// carries every bus's channels in bus order, so sizing to just the main
@@ -30,7 +37,7 @@ pub(super) struct DirectionScratch {
     pub ptr_count: usize,
 }
 
-impl DirectionScratch {
+impl<T: Vst3Sample> DirectionScratch<T> {
     /// Resolve one direction from its per-bus channel layout.
     ///
     /// `bus_channels` is the live per-bus channel count vec (empty == a single
@@ -50,20 +57,34 @@ impl DirectionScratch {
     }
 }
 
-/// Build an `AudioBusBuffers` from a channel count and a raw pointer-array.
+/// Store a channel-pointer table into an `AudioBusBuffers`' union, writing the
+/// member that matches the committed sample format `T`.
 ///
-/// The `channelBuffers32`/`channelBuffers64` union members are the same
-/// machine pointer; the plugin selects which to read off
-/// `ProcessData::symbolicSampleSize`, so we always write the `channelBuffers32`
-/// slot regardless of sample type.
-fn make_audio_bus(
-    num_channels: usize,
+/// `channelBuffers32`/`channelBuffers64` overlay the same machine pointer (a
+/// pointer's width is independent of its pointee's), so either member sets the
+/// same bytes; the plugin reads whichever the `ProcessData::symbolicSampleSize`
+/// tag names. Writing the `T`-matching member keeps the code honest — an
+/// `f64` direction stores through `channelBuffers64`. The branch is on a
+/// `const`, so it folds away per monomorphization.
+#[inline]
+fn set_channel_buffers<T: Vst3Sample>(
+    bus: &mut vst3::Steinberg::Vst::AudioBusBuffers,
     channel_ptrs: *mut *mut std::ffi::c_void,
-) -> vst3::Steinberg::Vst::AudioBusBuffers {
+) {
+    if T::VST3_SYMBOLIC_SIZE == K_SAMPLE_64_INT {
+        bus.__field0.channelBuffers64 = channel_ptrs as *mut *mut f64;
+    } else {
+        bus.__field0.channelBuffers32 = channel_ptrs as *mut *mut f32;
+    }
+}
+
+/// Build an `AudioBusBuffers` from a channel count, leaving the channel-pointer
+/// union member null (refreshed every `prepare`). Generic over `T` only so the
+/// later [`set_channel_buffers`] writes the matching union member.
+fn make_audio_bus(num_channels: usize) -> vst3::Steinberg::Vst::AudioBusBuffers {
     let mut bus: vst3::Steinberg::Vst::AudioBusBuffers = unsafe { std::mem::zeroed() };
     bus.numChannels = num_channels as i32;
     bus.silenceFlags = 0;
-    bus.__field0.channelBuffers32 = channel_ptrs as *mut *mut f32;
     bus
 }
 
@@ -79,28 +100,34 @@ fn make_audio_bus(
 ///   a write-sink for extra output buses). Every aux channel that has no
 ///   real backing buffer points here.
 ///
-/// Sample-type erased: the `AudioBusBuffers.channelBuffers32`/`64` union
-/// members are the same machine pointer, and an all-zero bit pattern is `0.0`
-/// for both `f32` and `f64`, so one scratch serves both. The `aux` block is
-/// sized in `f64`s (8 bytes/sample) so it is large enough for the wider type.
+/// Parameterized by the committed sample format `T`, which decides the
+/// `channelBuffers32`/`64` union member written for every bus (see
+/// [`set_channel_buffers`]). The two members alias the same machine pointer, so
+/// `T` only selects *which* member the code names — not the bytes stored.
+///
+/// The `aux` block stays `Vec<f64>` regardless of `T`: it's the wider of the two
+/// sample widths, and an all-zero bit pattern is `0.0` for both `f32` and `f64`,
+/// so one zeroed block reads as silence whichever format the plugin uses.
 ///
 /// Allocated once in
 /// [`Vst3Instance::from_loaded`](super::instance::Vst3Instance) and reused so
 /// the realtime `process` path is allocation-free. The flat caller buffer
 /// (bus 0) is mapped onto bus 0; every other bus is backed by `aux`.
-pub(super) struct BusBuffers {
+pub(super) struct BusBuffers<T: Vst3Sample> {
     bus_channels: SmallVec<[usize; 4]>,
     bus_arrays: SmallVec<[vst3::Steinberg::Vst::AudioBusBuffers; 4]>,
     ptr_tables: SmallVec<[Vec<*mut std::ffi::c_void>; 4]>,
     aux: Vec<f64>,
+    /// `T` governs the union member written but is not stored in any field.
+    _format: PhantomData<T>,
 }
 
 // The pointer tables hold raw pointers into host-owned buffers that outlive
 // each process call, mirroring `BufferPtrs`.
-unsafe impl Send for BusBuffers {}
-unsafe impl Sync for BusBuffers {}
+unsafe impl<T: Vst3Sample> Send for BusBuffers<T> {}
+unsafe impl<T: Vst3Sample> Sync for BusBuffers<T> {}
 
-impl BusBuffers {
+impl<T: Vst3Sample> BusBuffers<T> {
     /// Pre-allocate per-bus pointer tables + the aux scratch block.
     ///
     /// `bus_channels` is the per-bus channel layout (empty == single bus of
@@ -115,11 +142,9 @@ impl BusBuffers {
         let mut ptr_tables: SmallVec<[Vec<*mut std::ffi::c_void>; 4]> = SmallVec::new();
         for &ch in &bus_channels {
             let table = vec![std::ptr::null_mut::<std::ffi::c_void>(); ch.max(MIN_PTR_COUNT)];
-            let mut bus = make_audio_bus(ch, std::ptr::null_mut());
-            // channelBuffers pointer is refreshed every `prepare`; leave it
-            // null now so a stale (about-to-move) Vec pointer is never read.
-            bus.__field0.channelBuffers32 = std::ptr::null_mut();
-            bus_arrays.push(bus);
+            // channelBuffers pointer is left null (zeroed) and refreshed every
+            // `prepare`, so a stale (about-to-move) Vec pointer is never read.
+            bus_arrays.push(make_audio_bus(ch));
             ptr_tables.push(table);
         }
         Self {
@@ -127,6 +152,7 @@ impl BusBuffers {
             bus_arrays,
             ptr_tables,
             aux: vec![0.0f64; block_size.max(1)],
+            _format: PhantomData,
         }
     }
 
@@ -185,7 +211,7 @@ impl BusBuffers {
             let bus = &mut self.bus_arrays[bus_idx];
             bus.numChannels = bus_ch as i32;
             bus.silenceFlags = 0;
-            bus.__field0.channelBuffers32 = table.as_mut_ptr() as *mut *mut f32;
+            set_channel_buffers::<T>(bus, table.as_mut_ptr());
         }
         self.bus_arrays.as_mut_ptr()
     }
@@ -202,7 +228,7 @@ mod tests {
     /// channel count, and bus 0 maps straight onto the live channels.
     #[test]
     fn empty_layout_is_single_bus() {
-        let mut bb = BusBuffers::new(&[], 2, BLOCK);
+        let mut bb = BusBuffers::<f32>::new(&[], 2, BLOCK);
         assert_eq!(bb.num_buses(), 1);
         assert_eq!(bb.bus_channels[0], 2);
 
@@ -227,7 +253,7 @@ mod tests {
     #[test]
     fn extra_input_bus_gets_silence() {
         // main = stereo, sidechain = mono.
-        let mut bb = BusBuffers::new(&[2, 1], 2, BLOCK);
+        let mut bb = BusBuffers::<f32>::new(&[2, 1], 2, BLOCK);
         assert_eq!(bb.num_buses(), 2);
 
         let mut l = [5.0f32; BLOCK];
@@ -261,7 +287,7 @@ mod tests {
     #[test]
     fn sidechain_bus_reads_supplied_channel() {
         // main = stereo, sidechain = mono.
-        let mut bb = BusBuffers::new(&[2, 1], 2, BLOCK);
+        let mut bb = BusBuffers::<f32>::new(&[2, 1], 2, BLOCK);
 
         let mut l = [5.0f32; BLOCK];
         let mut r = [6.0f32; BLOCK];
@@ -293,7 +319,7 @@ mod tests {
     /// pointer tables and re-zeros the aux block.
     #[test]
     fn prepare_is_alloc_free() {
-        let mut bb = BusBuffers::new(&[2, 1], 2, BLOCK);
+        let mut bb = BusBuffers::<f32>::new(&[2, 1], 2, BLOCK);
         let mut l = [0.5f32; BLOCK];
         let mut r = [0.5f32; BLOCK];
         let live = [l.as_mut_ptr() as *mut c_void, r.as_mut_ptr() as *mut c_void];
@@ -314,7 +340,7 @@ mod tests {
     #[test]
     fn output_padding_slots_are_non_null() {
         // Single mono output bus → table padded to MIN_PTR_COUNT.
-        let mut bb = BusBuffers::new(&[1], 1, BLOCK);
+        let mut bb = BusBuffers::<f32>::new(&[1], 1, BLOCK);
         assert!(bb.ptr_tables[0].len() >= MIN_PTR_COUNT);
         let mut m = [9.0f32; BLOCK];
         let live = [m.as_mut_ptr() as *mut c_void];
@@ -326,6 +352,30 @@ mod tests {
             // Padding slot is non-null (points at aux); a defensive over-read
             // stays in-bounds even though the plugin sees numChannels=1.
             assert!(!(*p.add(1)).is_null());
+        }
+    }
+
+    /// An `f64` direction must write the `channelBuffers64` union member, not
+    /// `channelBuffers32`. Both alias the same bytes, so reading either back
+    /// yields the same pointer — this asserts the value landed and that the
+    /// 64-bit member is the one we wrote through.
+    #[test]
+    fn f64_direction_writes_channel_buffers_64() {
+        let mut bb = BusBuffers::<f64>::new(&[2], 2, BLOCK);
+        let mut l = [1.0f64; BLOCK];
+        let mut r = [2.0f64; BLOCK];
+        let live = [l.as_mut_ptr() as *mut c_void, r.as_mut_ptr() as *mut c_void];
+        unsafe {
+            let arrays = bb.prepare(live.as_ptr(), live.len(), true);
+            let bus0 = &*arrays;
+            // Read back through the 64-bit member.
+            let p64 = bus0.__field0.channelBuffers64 as *const *mut f64;
+            assert_eq!(*p64.add(0), l.as_mut_ptr());
+            assert_eq!(*p64.add(1), r.as_mut_ptr());
+            // The union aliases, so the 32-bit view sees the same machine
+            // pointers (just relabeled) — confirms it's one slot, not two.
+            let p32 = bus0.__field0.channelBuffers32 as *const *mut f64;
+            assert_eq!(*p32.add(0), l.as_mut_ptr());
         }
     }
 }

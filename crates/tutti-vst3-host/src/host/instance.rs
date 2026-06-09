@@ -56,10 +56,10 @@ struct ProcessConfig {
 /// The input half of `ProcessData`: per-bus audio scratch plus the COM-wrapped
 /// event and parameter-change lists the host stages for the plugin to read.
 /// All three are reused in place each block to keep the RT path allocation-free.
-struct InputStaging {
+struct InputStaging<T: Vst3Sample> {
     /// Per-bus `AudioBusBuffers` scratch. Bus 0 is mapped onto the live caller
     /// buffer; extra input buses receive silence.
-    buses: BusBuffers,
+    buses: BusBuffers<T>,
     events: vst3::ComWrapper<EventList>,
     param_changes: vst3::ComWrapper<ParameterChangesImpl>,
 }
@@ -67,10 +67,10 @@ struct InputStaging {
 /// The output half of `ProcessData`: per-bus audio scratch, the COM-wrapped
 /// lists the plugin writes into, plus the pooled buffers `process` drains those
 /// emitted events into so it can return a borrowed [`ProcessOutputRef`].
-struct OutputStaging {
+struct OutputStaging<T: Vst3Sample> {
     /// Per-bus `AudioBusBuffers` scratch. Bus 0 is mapped onto the live caller
     /// buffer; extra output buses get a discard sink.
-    buses: BusBuffers,
+    buses: BusBuffers<T>,
     events: vst3::ComWrapper<EventList>,
     param_changes: vst3::ComWrapper<ParameterChangesImpl>,
     /// Pooled return-value buffers. `process` drains the plugin's emitted
@@ -79,7 +79,7 @@ struct OutputStaging {
     emitted_param_changes: ParameterChanges,
 }
 
-impl OutputStaging {
+impl<T: Vst3Sample> OutputStaging<T> {
     /// Reset the emitted-event return pools so a borrow into them reads empty.
     /// Called at the top of every `process` block: the bail-out paths return
     /// `emitted_ref()` directly, and the steady-state path then drains the
@@ -116,13 +116,13 @@ impl OutputStaging {
 ///
 /// `ptrs` is shared: its flat per-channel pointers feed both `input.buses` and
 /// `output.buses` each block.
-struct AudioIO<T> {
+struct AudioIO<T: Vst3Sample> {
     config: ProcessConfig,
     /// Typed flat pointer tables for the single committed sample format `T`.
     /// Sized to the per-direction channel total (main + sidechain/aux buses).
     ptrs: BufferPtrs<T>,
-    input: InputStaging,
-    output: OutputStaging,
+    input: InputStaging<T>,
+    output: OutputStaging<T>,
     cc: CcRoute,
 }
 
@@ -188,12 +188,12 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         // PluginInfo snapshot. `activate_buses` re-resolves the same way from
         // the live component afterward, since some plugins only finalise their
         // arrangement once active.
-        let in_scratch = DirectionScratch::resolve(
+        let in_scratch = DirectionScratch::<T>::resolve(
             &loaded.info.input_bus_channels,
             num_input_channels,
             block_size,
         );
-        let out_scratch = DirectionScratch::resolve(
+        let out_scratch = DirectionScratch::<T>::resolve(
             &loaded.info.output_bus_channels,
             num_output_channels,
             block_size,
@@ -453,10 +453,16 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             .audio_bus_channel_count(K_OUTPUT, 1)
             .unwrap_or(self.audio.config.num_output_channels);
         let block_size = self.audio.config.block_size;
-        let in_scratch =
-            DirectionScratch::resolve(&component.audio_bus_channels(K_INPUT), num_in, block_size);
-        let out_scratch =
-            DirectionScratch::resolve(&component.audio_bus_channels(K_OUTPUT), num_out, block_size);
+        let in_scratch = DirectionScratch::<T>::resolve(
+            &component.audio_bus_channels(K_INPUT),
+            num_in,
+            block_size,
+        );
+        let out_scratch = DirectionScratch::<T>::resolve(
+            &component.audio_bus_channels(K_OUTPUT),
+            num_out,
+            block_size,
+        );
 
         self.audio.config.num_input_channels = num_in;
         self.audio.config.num_output_channels = num_out;

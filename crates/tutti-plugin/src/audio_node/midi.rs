@@ -24,7 +24,7 @@ fn empty_poll_scratch() -> Vec<MidiEvent> {
     vec![MidiEvent::noop(); POLL_BUFFER_SIZE]
 }
 
-pub(crate) struct Midi {
+pub struct Midi {
     unit_id: MidiUnitId,
     pending: Vec<MidiEvent>,
     drain: MidiEventVec,
@@ -61,8 +61,14 @@ impl Clone for Midi {
     }
 }
 
+impl Default for Midi {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Midi {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let unit_id = MidiUnitId::next();
         let (sender, receiver) = MidiEventSlot::pair(unit_id);
         Self {
@@ -77,22 +83,22 @@ impl Midi {
         }
     }
 
-    pub(crate) fn unit_id(&self) -> MidiUnitId {
+    pub fn unit_id(&self) -> MidiUnitId {
         self.unit_id
     }
 
     /// Producer handle for this plugin's MIDI inbox.
-    pub(crate) fn sender(&self) -> MidiSender {
+    pub fn sender(&self) -> MidiSender {
         self.sender.clone()
     }
 
     /// Replace the pending queue. Sent on next process.
-    pub(crate) fn queue(&mut self, events: &[MidiEvent]) {
+    pub fn queue(&mut self, events: &[MidiEvent]) {
         self.pending.clear();
         self.pending.extend_from_slice(events);
     }
 
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.pending.clear();
     }
 
@@ -100,27 +106,27 @@ impl Midi {
     /// block in `drain_for_process` instead of the live `MidiReceiver`.
     /// Used by clip players (`tutti_midi_runtime::MidiClipSource`) to
     /// drive plugin synths from MIDI clips.
-    pub(crate) fn set_source(&mut self, source: Arc<dyn MidiSource>) {
+    pub fn set_source(&mut self, source: Arc<dyn MidiSource>) {
         self.source_override = Some(source);
     }
 
     /// Drop a previously-installed source override. Subsequent ticks
     /// poll the live receiver again.
-    pub(crate) fn clear_source(&mut self) {
+    pub fn clear_source(&mut self) {
         self.source_override = None;
     }
 
     /// Reset the running sample position. Called on `reset()` /
     /// `set_sample_rate()` so the source override sees a clean
     /// playhead at transport restarts.
-    pub(crate) fn reset_sample_pos(&mut self) {
+    pub fn reset_sample_pos(&mut self) {
         self.sample_pos = 0;
     }
 
     /// Merge pending + override-or-receiver events into one buffer and
     /// return it. Bumps `sample_pos` by `block_size` so the next call
     /// sees the next block's window.
-    pub(crate) fn drain_for_process(&mut self, block_size: usize) -> &MidiEventVec {
+    pub fn drain_for_process(&mut self, block_size: usize) -> &MidiEventVec {
         self.drain.clear();
         self.drain.extend(self.pending.drain(..));
         let count = match &self.source_override {
@@ -143,7 +149,7 @@ impl Midi {
 
     /// Sample-by-sample variant for the `tick` path. Bumps the
     /// sample_pos by 1 each call.
-    pub(crate) fn drain_for_tick(&mut self) -> &MidiEventVec {
+    pub fn drain_for_tick(&mut self) -> &MidiEventVec {
         self.drain_for_process(1)
     }
 }

@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use crate::audio_node::{LatencyChangeSink, ParameterChangeSink};
-use crate::error::Result;
-use crate::handles::PluginHandle;
+use tutti_plugin::backend::{LatencyChangeSink, ParameterChangeSink};
+use tutti_plugin::handles::PluginHandle;
+use tutti_plugin::Result;
 
-use super::audio_unit::InProcessWasmClient;
-use super::control_backend::InProcessWasmBackend;
-use super::instance::WasmInstance;
+use crate::audio_unit::InProcessWasmClient;
+use crate::control_backend::InProcessWasmBackend;
+use crate::instance::WasmInstance;
 
 /// Block size we report to the WASM guest at `init`. The guest may
 /// pre-allocate scratch up to this size; we honor it from the audio

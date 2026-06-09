@@ -21,10 +21,11 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use tutti_midi_types::ump::MidiEvent as UmpMidiEvent;
 
-use crate::error::{BridgeError, LoadStage, Result};
-use crate::protocol::{MidiEventVec, ParameterFlags, ParameterInfo, PluginInfo};
+use tutti_plugin::server::MidiEventVec;
+use tutti_plugin::{BridgeError, LoadStage, Result};
+use tutti_plugin_types::{ParameterFlags, ParameterInfo, PluginInfo};
 
-use super::runtime::{self, EPOCH_DEADLINE_TICKS};
+use crate::runtime::{self, EPOCH_DEADLINE_TICKS};
 
 // =============================================================================
 // Bindings — generated from wit/audio-plugin.wit
@@ -97,7 +98,7 @@ impl WasmInstance {
     pub(super) fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
         let engine =
             runtime::engine().map_err(|e| load_failed(path, LoadStage::Opening, e))?;
-        let component = Component::from_file(&*engine, path).map_err(|e| {
+        let component = Component::from_file(&engine, path).map_err(|e| {
             load_failed(
                 path,
                 LoadStage::Opening,

@@ -27,7 +27,11 @@ use crate::window::{EditorCapabilities, EditorSize};
 /// the lone audio-thread-callable entry — implementations must be
 /// allocation-free and non-blocking on that path. The other methods may
 /// allocate / lock / do IPC.
-pub(crate) trait ControlBackend: Send + Sync {
+///
+/// Public so out-of-crate in-process loaders (e.g. `tutti-wasm-plugin`)
+/// can build a [`PluginHandle`](crate::handles::PluginHandle) over their
+/// own backend via [`PluginHandle::from_backend`](crate::handles::PluginHandle::from_backend).
+pub trait ControlBackend: Send + Sync {
     fn open_editor(&self, parent_ptr: *mut c_void) -> std::result::Result<EditorSize, EditorError>;
 
     fn close_editor(&self);

@@ -76,11 +76,11 @@
 //!   state). No in-process editor yet — opening the editor returns an
 //!   error. Requires `tutti-plugin-server` to be built with the matching
 //!   `vst2` feature.
-//! - `wasm` — in-process WASM Component Model audio plugins
-//!   (`dawai:audio-plugin@0.1.0`). Unlike the native formats above, WASM
-//!   never goes through `tutti-plugin-server` — the wasmtime sandbox
-//!   provides equivalent isolation to a subprocess without the IPC
-//!   overhead. See [`in_process_wasm`].
+//!
+//! In-process WASM Component Model audio plugins (`dawai:audio-plugin@0.1.0`)
+//! live in the separate `tutti-wasm-plugin` crate, which reuses this crate's
+//! [`backend`] machinery. They never go through `tutti-plugin-server` — the
+//! wasmtime sandbox provides equivalent isolation to a subprocess.
 //!
 //! [`AudioUnit`]: tutti_core::AudioUnit
 
@@ -121,19 +121,32 @@ pub use config::BridgeConfig;
 /// thread, at host startup. No-op if never called.
 pub use tutti_plugin_types::mark_main_thread;
 
+/// Building blocks for out-of-crate in-process loaders.
+///
+/// **Not part of the general API.** These let a sibling crate (e.g.
+/// `tutti-wasm-plugin`) implement [`ControlBackend`] over its own plugin
+/// and hand the result to
+/// [`PluginHandle::from_backend`](handles::PluginHandle::from_backend),
+/// reusing this crate's main-thread control surface and audio-node wiring
+/// without re-implementing them. End users loading plugins should stick to
+/// [`catalog`] and [`handles`].
+pub mod backend {
+    pub use crate::audio_node::{
+        route_with_latency, LatencyChangeSink, Midi, ParameterChangeSink,
+    };
+    pub use crate::control_backend::ControlBackend;
+    pub use crate::node_id::PLUGIN_CLIENT_ID;
+}
+
 /// Load a VST2 plugin in-process (audio + native editor on the host
 /// process). See [`in_process::vst2::load`] for details. Available
 /// behind the `vst2-in-process` feature.
 #[cfg(feature = "vst2-in-process")]
 pub use in_process::vst2::load as in_process_vst2;
 
-/// Load a WASM Component Model audio plugin in-process. See
-/// [`in_process::wasm::load`] for details. Available behind the `wasm`
-/// feature. Unlike VST2, WASM is *always* in-process — the wasmtime
-/// sandbox provides equivalent isolation to a subprocess without the
-/// IPC overhead.
-#[cfg(feature = "wasm")]
-pub use in_process::wasm::load as in_process_wasm;
+// WASM Component Model audio plugins live in the `tutti-wasm-plugin` crate
+// (`tutti_wasm_plugin::load`) — extracted so the heavy wasmtime dependency
+// stays out of this crate. They reuse this crate's [`backend`] machinery.
 
 /// Discovering, persisting, and loading plugins.
 ///
@@ -176,12 +189,8 @@ pub mod handles {
     #[cfg(feature = "vst2-in-process")]
     pub use crate::in_process::vst2::InProcessVst2Client;
 
-    /// In-process WASM audio-graph node. Used when a host loads WASM
-    /// Component Model plugins directly in the host process (via
-    /// `in_process_wasm`). Hosts can downcast graph nodes to this type to
-    /// read their `MidiUnitId`.
-    #[cfg(feature = "wasm")]
-    pub use crate::in_process::wasm::InProcessWasmClient;
+    // The in-process WASM audio-graph node (`InProcessWasmClient`) lives in
+    // the `tutti-wasm-plugin` crate alongside its loader.
 }
 
 /// Plugin + parameter descriptors.

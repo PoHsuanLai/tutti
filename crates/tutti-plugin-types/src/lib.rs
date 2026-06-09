@@ -10,13 +10,19 @@ pub mod automation;
 pub mod editor;
 pub mod load_stage;
 pub mod main_thread;
+pub mod metadata;
+pub mod parameters;
 pub mod transport;
 
 pub use audio::{AudioBuffer, AudioBuffer32, AudioBuffer64, BufferPtrs, Sample};
 pub use main_thread::{assert_main_thread, mark_main_thread};
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
-pub use editor::{AspectRatio, EditorCapabilities, EditorSize, ResizeHints, WindowHandle};
+pub use editor::{
+    AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,
+};
 pub use load_stage::LoadStage;
+pub use metadata::{AudioIO, BusDirection, BusLayout, PluginInfo};
+pub use parameters::{ParameterFlags, ParameterInfo};
 pub use transport::{
     BarInfo, LoopRegion, MusicalTiming, TransportInfo, TransportPosition, TransportState,
 };

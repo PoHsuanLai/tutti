@@ -33,11 +33,9 @@ vst2 = []
 # `vst2()` to use this path by default.
 vst2-in-process = ["vst2", "dep:tutti-vst2-host"]
 
-# In-process WASM Component Model audio plugin loader
-# (`dawai:audio-plugin@0.1.0`). Unlike VST2/VST3/CLAP/AU, WASM is always
-# in-process: the wasmtime sandbox provides equivalent isolation to a
-# subprocess without the IPC overhead.
-wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
+# In-process WASM Component Model audio plugins (`dawai:audio-plugin@0.1.0`)
+# live in the separate `tutti-wasm-plugin` crate, which reuses this crate's
+# `backend` machinery. The heavy wasmtime stack stays out of this crate.
 
 [dependencies]
 # Core types (for AudioUnit trait)
@@ -95,11 +93,6 @@ tutti-vst3-host = { path = "../tutti-vst3-host", optional = true }
 tutti-clap-host = { path = "../tutti-clap-host", optional = true }
 tutti-au-host = { path = "../tutti-au-host", optional = true }
 tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
-
-# WASM Component Model runtime (optional, gated by `wasm` feature). Pinned
-# to match `dawai-extensions` so both worlds run on the same engine.
-wasmtime = { version = "39.0", features = ["component-model"], optional = true }
-wasmtime-wasi = { version = "39.0", optional = true }
 
 # Platform-specific (shared memory)
 [target.'cfg(unix)'.dependencies]

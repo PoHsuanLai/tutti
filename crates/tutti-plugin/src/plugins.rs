@@ -175,8 +175,10 @@ impl Plugins {
     /// the plugin runs.
     ///
     /// Format dispatch:
-    /// - WASM with the `wasm` feature: runs in the host process under
-    ///   the wasmtime sandbox (always; no subprocess wrapper).
+    /// - WASM: not loaded here — returns a `LoadFailed` error directing the
+    ///   caller to `tutti_wasm_plugin::load` (the in-process wasmtime path
+    ///   lives in the separate `tutti-wasm-plugin` crate). Hosts route by
+    ///   format before calling this.
     /// - VST2 with the `vst2-in-process` feature: runs entirely in the
     ///   host process (single AEffect for audio + editor).
     /// - Everything else: subprocess + IPC bridge (audio out-of-process,
@@ -186,9 +188,20 @@ impl Plugins {
         id: &PluginId,
         sample_rate: f64,
     ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
-        #[cfg(feature = "wasm")]
+        // WASM Component Model plugins are loaded in-process by the
+        // `tutti-wasm-plugin` crate, which this crate must not depend on
+        // (it would pull the wasmtime stack back in and risk a dependency
+        // cycle). Hosts route by format: WASM records go to
+        // `tutti_wasm_plugin::load`, everything else here.
         if matches!(format_from_path(&id.0), Some(PluginFormat::Wasm)) {
-            return crate::in_process::wasm::load(&id.0, sample_rate);
+            return Err(BridgeError::LoadFailed {
+                path: id.0.clone(),
+                stage: crate::error::LoadStage::Opening,
+                reason: "WASM plugins are loaded in-process via the \
+                         tutti-wasm-plugin crate (tutti_wasm_plugin::load), \
+                         not tutti_plugin::Plugins::load"
+                    .to_string(),
+            });
         }
         #[cfg(feature = "vst2-in-process")]
         if matches!(format_from_path(&id.0), Some(PluginFormat::Vst2)) {

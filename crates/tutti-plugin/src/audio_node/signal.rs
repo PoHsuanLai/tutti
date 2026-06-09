@@ -6,7 +6,7 @@ use tutti_core::{Signal, SignalFrame};
 /// - Generator (no inputs): all outputs carry pure internal latency.
 /// - Effect: each output delays the corresponding input, reusing the
 ///   last input for extra outputs (mirrors fundsp's limiter pattern).
-pub(crate) fn route_with_latency(
+pub fn route_with_latency(
     inputs: usize,
     outputs: usize,
     latency: f64,

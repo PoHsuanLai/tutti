@@ -2,7 +2,7 @@
 //! Component Model audio plugin from the host audio thread.
 //!
 //! The instance lives behind `Arc<parking_lot::Mutex<WasmInstance>>`
-//! shared with the matching [`InProcessWasmBackend`](super::control_backend::InProcessWasmBackend).
+//! shared with the matching [`InProcessWasmBackend`](crate::control_backend::InProcessWasmBackend).
 //! The audio thread always takes the lock with `try_lock`; on contention
 //! it falls back to silence and bumps
 //! [`InProcessWasmClient::contention_count`].
@@ -24,10 +24,10 @@ use tutti_midi_types::{MidiTarget, MidiUnitId};
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
 use tutti_midi_runtime::MidiSender;
 
-use crate::audio_node::Midi;
-use crate::protocol::PluginInfo;
+use tutti_plugin::backend::Midi;
+use tutti_plugin_types::PluginInfo;
 
-use super::instance::WasmInstance;
+use crate::instance::WasmInstance;
 
 /// Maximum block size we pre-size scratch for. Matches fundsp's
 /// `MAX_BUFFER_SIZE` so a single block lands in one `process_f32` call.
@@ -62,7 +62,7 @@ pub struct InProcessWasmClient {
 }
 
 impl InProcessWasmClient {
-    pub(super) fn new(
+    pub(crate) fn new(
         inner: Arc<Mutex<WasmInstance>>,
         metadata: PluginInfo,
         sample_rate: f64,
@@ -217,7 +217,7 @@ impl AudioUnit for InProcessWasmClient {
     }
 
     fn get_id(&self) -> u64 {
-        crate::node_id::PLUGIN_CLIENT_ID
+        tutti_plugin::backend::PLUGIN_CLIENT_ID
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -229,7 +229,7 @@ impl AudioUnit for InProcessWasmClient {
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        crate::audio_node::route_with_latency(
+        tutti_plugin::backend::route_with_latency(
             self.metadata.audio_io.inputs,
             self.metadata.audio_io.outputs,
             self.metadata.latency_samples as f64,
@@ -330,7 +330,7 @@ impl AudioUnit<F64> for InProcessWasmClient {
     }
 
     fn get_id(&self) -> u64 {
-        crate::node_id::PLUGIN_CLIENT_ID
+        tutti_plugin::backend::PLUGIN_CLIENT_ID
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -342,7 +342,7 @@ impl AudioUnit<F64> for InProcessWasmClient {
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        crate::audio_node::route_with_latency(
+        tutti_plugin::backend::route_with_latency(
             self.metadata.audio_io.inputs,
             self.metadata.audio_io.outputs,
             self.metadata.latency_samples as f64,

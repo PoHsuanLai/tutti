@@ -22,11 +22,16 @@ mod signal;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use listeners::{LatencyChangeSink, ParameterChangeSink, ResyncSink};
-pub(crate) use midi::Midi;
+pub(crate) use listeners::ResyncSink;
+// Public so `crate::backend` can re-export them for out-of-crate in-process
+// loaders (e.g. `tutti-wasm-plugin`). `ResyncSink` stays crate-internal.
+pub use listeners::{LatencyChangeSink, ParameterChangeSink};
+pub use midi::Midi;
 pub(crate) use process::ProcessGuard;
-#[cfg(any(feature = "vst2-in-process", feature = "wasm"))]
-pub(crate) use signal::route_with_latency;
+// Public so `crate::backend` can re-export it for out-of-crate in-process
+// loaders (e.g. `tutti-wasm-plugin`); also used by the in-crate vst2-in-process
+// path.
+pub use signal::route_with_latency;
 
 use crate::bridge::audio::BridgeEvent;
 use crate::bridge::PluginBridge;

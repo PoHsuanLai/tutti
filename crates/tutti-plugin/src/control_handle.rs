@@ -45,10 +45,11 @@ impl PluginHandle {
         }
     }
 
-    /// Construct from any `ControlBackend` impl plus an explicit metadata
-    /// snapshot. Used by every in-process loader (VST2, WASM).
-    #[cfg(any(feature = "vst2-in-process", feature = "wasm"))]
-    pub(crate) fn from_backend(
+    /// Construct from any [`ControlBackend`](crate::control_backend::ControlBackend)
+    /// impl plus an explicit metadata snapshot. Used by every in-process
+    /// loader — the in-crate VST2 path and out-of-crate loaders like
+    /// `tutti-wasm-plugin`.
+    pub fn from_backend(
         inner: Arc<dyn ControlBackend>,
         metadata: PluginInfo,
         latency_sink: LatencyChangeSink,

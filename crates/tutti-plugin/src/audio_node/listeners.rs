@@ -17,12 +17,12 @@ type ParamCb = Arc<dyn Fn(u32, f32) + Send + Sync>;
 type ResyncCb = Arc<dyn Fn(ResyncKind) + Send + Sync>;
 
 #[derive(Clone, Default)]
-pub(crate) struct LatencyChangeSink {
+pub struct LatencyChangeSink {
     inner: Arc<Mutex<Option<LatencyCb>>>,
 }
 
 impl LatencyChangeSink {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
@@ -46,12 +46,12 @@ impl LatencyChangeSink {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct ParameterChangeSink {
+pub struct ParameterChangeSink {
     inner: Arc<Mutex<Option<ParamCb>>>,
 }
 
 impl ParameterChangeSink {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 

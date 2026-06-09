@@ -4,7 +4,7 @@
 //! GUI thread methods use blocking `lock()` — they wait at most one
 //! audio block since `process_f32` releases the lock as soon as the
 //! guest call returns. The audio thread always uses `try_lock` (in
-//! [`super::audio_unit`]) and emits silence on contention so a slow
+//! [`crate::audio_unit`]) and emits silence on contention so a slow
 //! state-save call can't underrun audio.
 
 use std::ffi::c_void;
@@ -12,12 +12,10 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use crate::control_backend::ControlBackend;
-use crate::error::EditorError;
-use crate::protocol::ParameterInfo;
-use crate::window::EditorSize;
+use tutti_plugin::backend::ControlBackend;
+use tutti_plugin_types::{EditorError, EditorSize, ParameterInfo};
 
-use super::instance::WasmInstance;
+use crate::instance::WasmInstance;
 
 pub(crate) struct InProcessWasmBackend {
     pub(crate) inner: Arc<Mutex<WasmInstance>>,

@@ -65,7 +65,7 @@ fn drive_silent(inst: &mut Vst3Instance, iters: usize, transport: &TransportInfo
         let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
         let ins: &[&[f32]] = &[];
         let mut buffer = AudioBuffer::new(ins, outs, 48_000.0);
-        let _ = inst.process(&mut buffer, &midi, None, &[], transport);
+        let _ = inst.process(&mut buffer, &midi, None, &[], &[], &[], &[], &[], transport);
     }
 }
 
@@ -110,7 +110,7 @@ fn process_with_midi_does_not_allocate() {
             MidiEvent::note_on(0, 0, 60, 0x8000),
             MidiEvent::note_off(0, 0, 60, 0),
         ];
-        let _ = inst.process(&mut buffer, &warm, None, &[], &transport);
+        let _ = inst.process(&mut buffer, &warm, None, &[], &[], &[], &[], &[], &transport);
     }
     drive_silent(&mut inst, 32, &transport);
 
@@ -127,7 +127,7 @@ fn process_with_midi_does_not_allocate() {
             let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
             let ins: &[&[f32]] = &[];
             let mut buffer = AudioBuffer::new(ins, outs, 48_000.0);
-            let _ = inst.process(&mut buffer, events, None, &[], &transport);
+            let _ = inst.process(&mut buffer, events, None, &[], &[], &[], &[], &[], &transport);
         }
     });
 }

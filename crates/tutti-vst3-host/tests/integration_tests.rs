@@ -158,7 +158,7 @@ fn test_process_silence() {
     let transport = TransportInfo::new().with_tempo(120.0).with_playing(true);
     let midi: [MidiEvent; 0] = [];
 
-    let _output_events = plugin.process(&mut buffer, &midi, None, &[], &transport);
+    let _output_events = plugin.process(&mut buffer, &midi, None, &[], &[], &[], &[], &[], &transport);
     println!("Processing completed successfully");
 }
 
@@ -192,7 +192,7 @@ fn test_process_with_midi() {
 
     let midi = [MidiEvent::note_on(0, 0, 60, 0x9999)];
 
-    let _output_events = plugin.process(&mut buffer, &midi, None, &[], &transport);
+    let _output_events = plugin.process(&mut buffer, &midi, None, &[], &[], &[], &[], &[], &transport);
 
     // buffer goes out of scope here, releasing borrow on output slices
     let has_output = output_left.iter().any(|&s| s.abs() > 0.0001);
@@ -235,7 +235,7 @@ fn test_process_multiple_buffers() {
             vec![]
         };
 
-        plugin.process(&mut buffer, &midi, None, &[], &transport);
+        plugin.process(&mut buffer, &midi, None, &[], &[], &[], &[], &[], &transport);
     }
     println!("Processed 10 buffers successfully");
 }
@@ -343,7 +343,7 @@ fn test_rapid_process_calls() {
         let mut outputs: [&mut [f32]; 2] = [&mut out_l, &mut out_r];
 
         let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 44100.0);
-        plugin.process(&mut buffer, &midi, None, &[], &transport);
+        plugin.process(&mut buffer, &midi, None, &[], &[], &[], &[], &[], &transport);
     }
     let elapsed = start.elapsed();
 

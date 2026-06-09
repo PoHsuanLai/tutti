@@ -25,6 +25,16 @@ pub const K_DATA_EVENT: u16 = EventTypes_::kDataEvent as u16;
 pub const K_POLY_PRESSURE_EVENT: u16 = EventTypes_::kPolyPressureEvent as u16;
 /// `type_` discriminant for note-expression value events.
 pub const K_NOTE_EXPRESSION_VALUE_EVENT: u16 = EventTypes_::kNoteExpressionValueEvent as u16;
+/// `type_` discriminant for note-expression *text* events.
+pub const K_NOTE_EXPRESSION_TEXT_EVENT: u16 = EventTypes_::kNoteExpressionTextEvent as u16;
+/// `type_` discriminant for chord events.
+pub const K_CHORD_EVENT: u16 = EventTypes_::kChordEvent as u16;
+/// `type_` discriminant for scale events.
+pub const K_SCALE_EVENT: u16 = EventTypes_::kScaleEvent as u16;
+/// `type_` discriminant for note-expression integer-value events.
+pub const K_NOTE_EXPRESSION_INT_VALUE_EVENT: u16 = EventTypes_::kNoteExpressionIntValueEvent as u16;
+/// `type_` discriminant for legacy-MIDI-CC-out events (plugin → host, value 0xFFFF).
+pub const K_LEGACY_MIDI_CC_OUT_EVENT: u16 = EventTypes_::kLegacyMIDICCOutEvent as u16;
 /// `DataEvent.type` subtype marking the payload as a MIDI SysEx message.
 pub const K_DATA_TYPE_MIDI_SYSEX: u32 = vst3::Steinberg::Vst::DataEvent_::DataTypes_::kMidiSysEx;
 
@@ -110,9 +120,77 @@ pub struct NoteExpressionValueEvent {
     pub value: f64,
 }
 
+/// A `(start, len)` slice into an `EventList`'s UTF-16 text arena.
+///
+/// VST3's chord / scale / note-expression-text events carry a borrowed
+/// `const TChar*` (UTF-16) that must outlive the `process` call. To keep
+/// [`Vst3Event`] `Copy` (no owned heap per event), the string lives in a shared
+/// arena owned by the `EventList` — cleared each block, like the `DataEvent`
+/// byte scratch — and the event holds only this index into it. `len` counts
+/// `u16` code units, excluding any terminator.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TextRef {
+    pub start: u32,
+    pub len: u32,
+}
+
+/// Per-note text annotation (e.g. lyric, ornament name). `text` indexes the
+/// owning event list's arena; `type_id` is a VST3 note-expression type id.
+#[derive(Debug, Clone, Copy)]
+pub struct NoteExpressionTextEvent {
+    pub header: EventHeader,
+    pub type_id: u32,
+    pub note_id: i32,
+    pub text: TextRef,
+}
+
+/// Current chord context: root + bass note (0..127), a degree `mask`, and a
+/// display name in the arena. Drives chord-aware instruments / harmonizers.
+#[derive(Debug, Clone, Copy)]
+pub struct ChordEvent {
+    pub header: EventHeader,
+    pub root: i16,
+    pub bass_note: i16,
+    pub mask: i16,
+    pub text: TextRef,
+}
+
+/// Current scale/key context: root (0..127) + a 12-bit `mask` of scale degrees
+/// (bit 0 = C), and a display name in the arena.
+#[derive(Debug, Clone, Copy)]
+pub struct ScaleEvent {
+    pub header: EventHeader,
+    pub root: i16,
+    pub mask: i16,
+    pub text: TextRef,
+}
+
+/// Integer-valued per-note expression, the `i64` counterpart to
+/// [`NoteExpressionValueEvent`] (used for stepped / enumerated dimensions).
+#[derive(Debug, Clone, Copy)]
+pub struct NoteExpressionIntValueEvent {
+    pub header: EventHeader,
+    pub type_id: u32,
+    pub note_id: i32,
+    pub value: i64,
+}
+
+/// Legacy MIDI CC emitted by the plugin back to the host (arpeggiators, MIDI
+/// effects). `control_number` is a `ControllerNumbers` index; `value2` carries
+/// the second data byte for pitch-bend / poly-pressure. Output-only.
+#[derive(Debug, Clone, Copy)]
+pub struct LegacyMidiCcOutEvent {
+    pub header: EventHeader,
+    pub control_number: u8,
+    pub channel: i8,
+    pub value: i8,
+    pub value2: i8,
+}
+
 /// Safe tagged-enum form of the VST3 `Event` union. See
 /// [`vst3_event_from_midi`] / [`vst3_to_midi_event`] for round-trip MIDI
-/// conversion.
+/// conversion. Text-bearing variants reference the owning event list's arena
+/// (see [`TextRef`]) so the enum stays `Copy`.
 #[derive(Debug, Clone, Copy)]
 pub enum Vst3Event {
     NoteOn(NoteOnEvent),
@@ -120,39 +198,50 @@ pub enum Vst3Event {
     Data(DataEvent),
     PolyPressure(PolyPressureEvent),
     NoteExpression(NoteExpressionValueEvent),
+    NoteExpressionText(NoteExpressionTextEvent),
+    Chord(ChordEvent),
+    Scale(ScaleEvent),
+    NoteExpressionInt(NoteExpressionIntValueEvent),
+    LegacyMidiCcOut(LegacyMidiCcOutEvent),
 }
 
 impl Vst3Event {
     /// Frame offset within the current processing block, from the underlying
     /// [`EventHeader`].
     pub fn sample_offset(&self) -> i32 {
+        self.header().sample_offset
+    }
+
+    /// The common [`EventHeader`] of any variant.
+    pub fn header(&self) -> &EventHeader {
         match self {
-            Vst3Event::NoteOn(e) => e.header.sample_offset,
-            Vst3Event::NoteOff(e) => e.header.sample_offset,
-            Vst3Event::Data(e) => e.header.sample_offset,
-            Vst3Event::PolyPressure(e) => e.header.sample_offset,
-            Vst3Event::NoteExpression(e) => e.header.sample_offset,
+            Vst3Event::NoteOn(e) => &e.header,
+            Vst3Event::NoteOff(e) => &e.header,
+            Vst3Event::Data(e) => &e.header,
+            Vst3Event::PolyPressure(e) => &e.header,
+            Vst3Event::NoteExpression(e) => &e.header,
+            Vst3Event::NoteExpressionText(e) => &e.header,
+            Vst3Event::Chord(e) => &e.header,
+            Vst3Event::Scale(e) => &e.header,
+            Vst3Event::NoteExpressionInt(e) => &e.header,
+            Vst3Event::LegacyMidiCcOut(e) => &e.header,
         }
     }
 }
 
 /// Convert our flat `Vst3Event` into the C `Event` struct the vst3 crate expects.
 ///
-/// `data_storage` acts as an owner for the `DataEvent.bytes` pointer: when a
-/// `Data` event is encoded, the buffer is pushed into `data_storage` and the
-/// event's `bytes` field points at the most-recently-pushed slot. Callers must
-/// keep `data_storage` alive at least as long as the returned `Event` is used.
+/// Two owner-scratch buffers back the borrowed pointers in the C structs and
+/// must outlive the returned `Event`:
+/// - `data_storage` owns the `DataEvent.bytes` slot (one push per `Data` event).
+/// - `text_arena` owns the UTF-16 text for chord / scale / note-expression-text
+///   events; the event's [`TextRef`] indexes into it, resolved to a pointer here.
 pub(crate) fn to_c_event(
     event: &Vst3Event,
     data_storage: &mut smallvec::SmallVec<[[u8; 16]; 8]>,
+    text_arena: &[u16],
 ) -> vst3::Steinberg::Vst::Event {
-    let header = match event {
-        Vst3Event::NoteOn(e) => &e.header,
-        Vst3Event::NoteOff(e) => &e.header,
-        Vst3Event::Data(e) => &e.header,
-        Vst3Event::PolyPressure(e) => &e.header,
-        Vst3Event::NoteExpression(e) => &e.header,
-    };
+    let header = event.header();
 
     let mut out: vst3::Steinberg::Vst::Event = unsafe { std::mem::zeroed() };
     out.busIndex = header.bus_index;
@@ -160,6 +249,17 @@ pub(crate) fn to_c_event(
     out.ppqPosition = header.ppq_position;
     out.flags = header.flags;
     out.r#type = header.event_type;
+
+    // Resolve a TextRef to a (pointer, len) into the arena. A null pointer with
+    // len 0 when the slice is out of range (defensive — staging keeps it valid).
+    let resolve = |t: &TextRef| -> (*const u16, u16) {
+        let start = t.start as usize;
+        let end = start + t.len as usize;
+        match text_arena.get(start..end) {
+            Some(slice) => (slice.as_ptr(), t.len as u16),
+            None => (std::ptr::null(), 0),
+        }
+    };
 
     match event {
         Vst3Event::NoteOn(e) => {
@@ -205,24 +305,95 @@ pub(crate) fn to_c_event(
                 value: e.value,
             };
         }
+        Vst3Event::NoteExpressionText(e) => {
+            let (text, text_len) = resolve(&e.text);
+            out.__field0.noteExpressionText = vst3::Steinberg::Vst::NoteExpressionTextEvent {
+                typeId: e.type_id,
+                noteId: e.note_id,
+                textLen: text_len as u32,
+                text,
+            };
+        }
+        Vst3Event::Chord(e) => {
+            let (text, text_len) = resolve(&e.text);
+            out.__field0.chord = vst3::Steinberg::Vst::ChordEvent {
+                root: e.root,
+                bassNote: e.bass_note,
+                mask: e.mask,
+                textLen: text_len,
+                text,
+            };
+        }
+        Vst3Event::Scale(e) => {
+            let (text, text_len) = resolve(&e.text);
+            out.__field0.scale = vst3::Steinberg::Vst::ScaleEvent {
+                root: e.root,
+                mask: e.mask,
+                textLen: text_len,
+                text,
+            };
+        }
+        Vst3Event::NoteExpressionInt(e) => {
+            out.__field0.noteExpressionIntValue =
+                vst3::Steinberg::Vst::NoteExpressionIntValueEvent {
+                    typeId: e.type_id,
+                    noteId: e.note_id,
+                    value: e.value as u64,
+                };
+        }
+        Vst3Event::LegacyMidiCcOut(e) => {
+            out.__field0.midiCCOut = vst3::Steinberg::Vst::LegacyMIDICCOutEvent {
+                controlNumber: e.control_number,
+                channel: e.channel,
+                value: e.value,
+                value2: e.value2,
+            };
+        }
     }
 
     out
 }
 
+/// Largest UTF-16 text we copy out of a plugin-supplied chord/scale/text event.
+/// Plugin display names are short; this caps a malicious/garbage `textLen`.
+const MAX_EVENT_TEXT_LEN: usize = 256;
+
 /// Convert from the vst3 crate's tagged-union `Event` to our safe enum.
+///
+/// `text_arena` owns the UTF-16 for any chord / scale / note-expression-text
+/// event decoded here (these arrive on a plugin's *output* event list); the
+/// returned [`TextRef`] indexes the bytes appended to it. Pass the same arena
+/// the resulting `Vst3Event` will be read against.
 ///
 /// # Safety
 ///
 /// `event.type_` must accurately label the variant stored in `__field0`.
 #[allow(clippy::unnecessary_cast)]
-pub(crate) unsafe fn from_c_event(event: &vst3::Steinberg::Vst::Event) -> Option<Vst3Event> {
+pub(crate) unsafe fn from_c_event(
+    event: &vst3::Steinberg::Vst::Event,
+    text_arena: &mut smallvec::SmallVec<[u16; 256]>,
+) -> Option<Vst3Event> {
     let header = EventHeader {
         bus_index: event.busIndex,
         sample_offset: event.sampleOffset,
         ppq_position: event.ppqPosition,
         flags: event.flags,
         event_type: event.r#type,
+    };
+
+    // Copy a plugin-supplied (ptr, len) UTF-16 string into the arena, returning
+    // the TextRef. Null pointer or zero length yields an empty ref.
+    let intern = |arena: &mut smallvec::SmallVec<[u16; 256]>,
+                  ptr: *const u16,
+                  len: usize|
+     -> TextRef {
+        let n = len.min(MAX_EVENT_TEXT_LEN);
+        if ptr.is_null() || n == 0 {
+            return TextRef::default();
+        }
+        let start = arena.len() as u32;
+        arena.extend(std::slice::from_raw_parts(ptr, n).iter().copied());
+        TextRef { start, len: n as u32 }
     };
 
     match event.r#type as u32 {
@@ -280,6 +451,56 @@ pub(crate) unsafe fn from_c_event(event: &vst3::Steinberg::Vst::Event) -> Option
                 note_id: e.noteId,
                 type_id: e.typeId,
                 value: e.value,
+            }))
+        }
+        t if t == EventTypes_::kNoteExpressionTextEvent as u32 => {
+            let e = event.__field0.noteExpressionText;
+            let text = intern(text_arena, e.text, e.textLen as usize);
+            Some(Vst3Event::NoteExpressionText(NoteExpressionTextEvent {
+                header,
+                type_id: e.typeId,
+                note_id: e.noteId,
+                text,
+            }))
+        }
+        t if t == EventTypes_::kChordEvent as u32 => {
+            let e = event.__field0.chord;
+            let text = intern(text_arena, e.text, e.textLen as usize);
+            Some(Vst3Event::Chord(ChordEvent {
+                header,
+                root: e.root,
+                bass_note: e.bassNote,
+                mask: e.mask,
+                text,
+            }))
+        }
+        t if t == EventTypes_::kScaleEvent as u32 => {
+            let e = event.__field0.scale;
+            let text = intern(text_arena, e.text, e.textLen as usize);
+            Some(Vst3Event::Scale(ScaleEvent {
+                header,
+                root: e.root,
+                mask: e.mask,
+                text,
+            }))
+        }
+        t if t == EventTypes_::kNoteExpressionIntValueEvent as u32 => {
+            let e = event.__field0.noteExpressionIntValue;
+            Some(Vst3Event::NoteExpressionInt(NoteExpressionIntValueEvent {
+                header,
+                type_id: e.typeId,
+                note_id: e.noteId,
+                value: e.value as i64,
+            }))
+        }
+        t if t == EventTypes_::kLegacyMIDICCOutEvent as u32 => {
+            let e = event.__field0.midiCCOut;
+            Some(Vst3Event::LegacyMidiCcOut(LegacyMidiCcOutEvent {
+                header,
+                control_number: e.controlNumber,
+                channel: e.channel,
+                value: e.value,
+                value2: e.value2,
             }))
         }
         _ => None,
@@ -484,9 +705,11 @@ fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
 /// plugin's `f32` velocity / pressure is preserved at MIDI-2's full bit width
 /// instead of being squashed to 7 bits. A [`Vst3Event::Data`] carrying SysEx is
 /// rebuilt as a UMP SysEx7 packet; other Data events decode from their raw
-/// MIDI-1 bytes. Returns `None` for [`Vst3Event::NoteExpression`] (not a
-/// channel-voice MIDI message), for `Data` payloads shorter than 2 bytes, and
-/// for a SysEx too long to fit a single UMP packet.
+/// MIDI-1 bytes. A plugin-emitted [`Vst3Event::LegacyMidiCcOut`] is rebuilt as
+/// the CC / pitch-bend / poly-pressure UMP message it stands for. Returns `None`
+/// for the non-MIDI events (note-expression value/text/int, chord, scale), for
+/// `Data` payloads shorter than 2 bytes, and for a SysEx too long for one UMP
+/// packet.
 pub fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
     let frame = event.sample_offset().max(0) as u32;
     let semantic = match event {
@@ -522,9 +745,49 @@ pub fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
             }
             return MidiEvent::from_midi1_bytes(frame, bytes);
         }
-        Vst3Event::NoteExpression(_) => return None,
+        Vst3Event::LegacyMidiCcOut(e) => {
+            return legacy_cc_to_midi(e, frame);
+        }
+        // Not channel-voice MIDI messages.
+        Vst3Event::NoteExpression(_)
+        | Vst3Event::NoteExpressionText(_)
+        | Vst3Event::Chord(_)
+        | Vst3Event::Scale(_)
+        | Vst3Event::NoteExpressionInt(_) => return None,
     };
     Some(encode(&semantic).with_frame_offset(frame))
+}
+
+/// Rebuild the UMP MIDI message a plugin-emitted [`LegacyMidiCcOutEvent`] stands
+/// for. `control_number` is a VST3 `ControllerNumbers` index: 0-127 are real
+/// CCs; the synthetic slots map to their channel-voice messages, with `value2`
+/// supplying the second data byte for pitch bend and poly-pressure.
+fn legacy_cc_to_midi(e: &LegacyMidiCcOutEvent, frame: u32) -> Option<MidiEvent> {
+    use vst3::Steinberg::Vst::ControllerNumbers_::{
+        kAfterTouch, kCtrlPolyPressure, kPitchBend,
+    };
+    use tutti_midi_types::convert::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2};
+
+    let channel = (e.channel as u8) & 0x0F;
+    let v1 = (e.value as u8) & 0x7F;
+    let v2 = (e.value2 as u8) & 0x7F;
+    let cn = e.control_number as i32;
+
+    let ev = if cn == kPitchBend as i32 {
+        // 14-bit: LSB = value, MSB = value2.
+        let bend14 = (v1 as u16) | ((v2 as u16) << 7);
+        MidiEvent::pitch_bend(0, channel, midi1_pitch_bend_to_midi2(bend14))
+    } else if cn == kAfterTouch as i32 {
+        MidiEvent::channel_pressure(0, channel, midi1_cc_to_midi2(v1))
+    } else if cn == kCtrlPolyPressure as i32 {
+        // value = note, value2 = pressure.
+        MidiEvent::poly_pressure(0, channel, v1, midi1_cc_to_midi2(v2))
+    } else if (0..=127).contains(&cn) {
+        MidiEvent::cc(0, channel, cn as u8, midi1_cc_to_midi2(v1))
+    } else {
+        return None;
+    };
+    Some(ev.with_frame_offset(frame))
 }
 
 /// VST3-standard note-expression dimensions carried on
@@ -618,6 +881,183 @@ pub fn vst3_to_note_expression(event: &Vst3Event) -> Option<NoteExpressionValue>
         }
         _ => None,
     }
+}
+
+/// Owner-scratch alias for the UTF-16 text arena that backs chord / scale /
+/// note-expression-text events' borrowed `text` pointers.
+pub(crate) type TextArena = smallvec::SmallVec<[u16; 256]>;
+
+/// Intern `text` into `arena` and return a [`TextRef`] addressing it.
+fn intern_utf16(arena: &mut TextArena, text: &[u16]) -> TextRef {
+    let n = text.len().min(MAX_EVENT_TEXT_LEN);
+    if n == 0 {
+        return TextRef::default();
+    }
+    let start = arena.len() as u32;
+    arena.extend_from_slice(&text[..n]);
+    TextRef { start, len: n as u32 }
+}
+
+fn text_header(sample_offset: i32, event_type: u16) -> EventHeader {
+    EventHeader {
+        bus_index: 0,
+        sample_offset,
+        ppq_position: 0.0,
+        flags: 0,
+        event_type,
+    }
+}
+
+/// Host-facing per-note text annotation. `text` is UTF-16 (converted from the
+/// IPC `String` at this boundary); staging interns it into the event arena.
+#[derive(Debug, Clone)]
+pub struct NoteExpressionText {
+    pub sample_offset: i32,
+    pub note_id: i32,
+    pub type_id: u32,
+    pub text: Vec<u16>,
+}
+
+impl NoteExpressionText {
+    /// Stage into a [`Vst3Event`], interning the text into `arena`.
+    pub fn to_vst3_event(&self, arena: &mut TextArena) -> Vst3Event {
+        Vst3Event::NoteExpressionText(NoteExpressionTextEvent {
+            header: text_header(self.sample_offset, K_NOTE_EXPRESSION_TEXT_EVENT),
+            type_id: self.type_id,
+            note_id: self.note_id,
+            text: intern_utf16(arena, &self.text),
+        })
+    }
+}
+
+/// Host-facing chord context (see [`ChordEvent`]).
+#[derive(Debug, Clone)]
+pub struct ChordValue {
+    pub sample_offset: i32,
+    pub root: i16,
+    pub bass_note: i16,
+    pub mask: i16,
+    pub text: Vec<u16>,
+}
+
+impl ChordValue {
+    pub fn to_vst3_event(&self, arena: &mut TextArena) -> Vst3Event {
+        Vst3Event::Chord(ChordEvent {
+            header: text_header(self.sample_offset, K_CHORD_EVENT),
+            root: self.root,
+            bass_note: self.bass_note,
+            mask: self.mask,
+            text: intern_utf16(arena, &self.text),
+        })
+    }
+}
+
+/// Host-facing scale/key context (see [`ScaleEvent`]).
+#[derive(Debug, Clone)]
+pub struct ScaleValue {
+    pub sample_offset: i32,
+    pub root: i16,
+    pub mask: i16,
+    pub text: Vec<u16>,
+}
+
+impl ScaleValue {
+    pub fn to_vst3_event(&self, arena: &mut TextArena) -> Vst3Event {
+        Vst3Event::Scale(ScaleEvent {
+            header: text_header(self.sample_offset, K_SCALE_EVENT),
+            root: self.root,
+            mask: self.mask,
+            text: intern_utf16(arena, &self.text),
+        })
+    }
+}
+
+/// Host-facing integer-valued per-note expression (see
+/// [`NoteExpressionIntValueEvent`]). No text, so no arena needed.
+#[derive(Debug, Clone, Copy)]
+pub struct NoteExpressionIntValue {
+    pub sample_offset: i32,
+    pub note_id: i32,
+    pub type_id: u32,
+    pub value: i64,
+}
+
+impl NoteExpressionIntValue {
+    pub fn to_vst3_event(&self) -> Vst3Event {
+        Vst3Event::NoteExpressionInt(NoteExpressionIntValueEvent {
+            header: EventHeader {
+                bus_index: 0,
+                sample_offset: self.sample_offset,
+                ppq_position: 0.0,
+                flags: 0,
+                event_type: K_NOTE_EXPRESSION_INT_VALUE_EVENT,
+            },
+            type_id: self.type_id,
+            note_id: self.note_id,
+            value: self.value,
+        })
+    }
+}
+
+/// Read a chord/scale/text/int event off an output list, resolving its
+/// [`TextRef`] against `arena` into an owned UTF-16 `Vec`. Returns `None` for
+/// any other variant.
+pub fn vst3_to_chord(event: &Vst3Event, arena: &[u16]) -> Option<ChordValue> {
+    match event {
+        Vst3Event::Chord(e) => Some(ChordValue {
+            sample_offset: e.header.sample_offset,
+            root: e.root,
+            bass_note: e.bass_note,
+            mask: e.mask,
+            text: resolve_text(&e.text, arena),
+        }),
+        _ => None,
+    }
+}
+
+/// See [`vst3_to_chord`].
+pub fn vst3_to_scale(event: &Vst3Event, arena: &[u16]) -> Option<ScaleValue> {
+    match event {
+        Vst3Event::Scale(e) => Some(ScaleValue {
+            sample_offset: e.header.sample_offset,
+            root: e.root,
+            mask: e.mask,
+            text: resolve_text(&e.text, arena),
+        }),
+        _ => None,
+    }
+}
+
+/// See [`vst3_to_chord`].
+pub fn vst3_to_note_expression_text(event: &Vst3Event, arena: &[u16]) -> Option<NoteExpressionText> {
+    match event {
+        Vst3Event::NoteExpressionText(e) => Some(NoteExpressionText {
+            sample_offset: e.header.sample_offset,
+            note_id: e.note_id,
+            type_id: e.type_id,
+            text: resolve_text(&e.text, arena),
+        }),
+        _ => None,
+    }
+}
+
+/// Read the integer per-note expression off an event, or `None` otherwise.
+pub fn vst3_to_note_expression_int(event: &Vst3Event) -> Option<NoteExpressionIntValue> {
+    match event {
+        Vst3Event::NoteExpressionInt(e) => Some(NoteExpressionIntValue {
+            sample_offset: e.header.sample_offset,
+            note_id: e.note_id,
+            type_id: e.type_id,
+            value: e.value,
+        }),
+        _ => None,
+    }
+}
+
+fn resolve_text(t: &TextRef, arena: &[u16]) -> Vec<u16> {
+    let start = t.start as usize;
+    let end = start + t.len as usize;
+    arena.get(start..end).map(|s| s.to_vec()).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -865,5 +1305,200 @@ mod tests {
             }
             _ => panic!("expected NoteOn"),
         }
+    }
+
+    // ── chord / scale / text / int + legacy-cc-out ───────────────────────────
+
+    /// `Vst3Event` must stay `Copy` even with the text-bearing variants (they
+    /// hold a `TextRef` index, not an owned string).
+    #[test]
+    fn vst3_event_is_copy() {
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<Vst3Event>();
+    }
+
+    /// Round-trip a host chord value: intern into an arena via `to_vst3_event`,
+    /// encode to a C `Event` (`to_c_event` reads the arena), decode back
+    /// (`from_c_event` re-interns into its own arena), and read it out.
+    #[test]
+    fn chord_round_trips_through_c_event_with_text() {
+        let name: Vec<u16> = "Cmaj7".encode_utf16().collect();
+        let host = ChordValue {
+            sample_offset: 12,
+            root: 60,
+            bass_note: 48,
+            mask: 0b1001_0010_001,
+            text: name.clone(),
+        };
+
+        let mut in_arena: TextArena = Default::default();
+        let ev = host.to_vst3_event(&mut in_arena);
+        assert_eq!(ev.header().event_type, K_CHORD_EVENT);
+
+        // Encode to the C struct, pointing into the staging arena.
+        let mut data_scratch = smallvec::SmallVec::new();
+        let c = to_c_event(&ev, &mut data_scratch, &in_arena);
+        assert_eq!(c.r#type, K_CHORD_EVENT);
+        unsafe {
+            assert_eq!(c.__field0.chord.root, 60);
+            assert_eq!(c.__field0.chord.textLen as usize, name.len());
+            assert!(!c.__field0.chord.text.is_null());
+        }
+
+        // Decode back (plugin → host direction): re-interns into out_arena.
+        let mut out_arena = smallvec::SmallVec::new();
+        let decoded = unsafe { from_c_event(&c, &mut out_arena) }.expect("decodes");
+        let back = vst3_to_chord(&decoded, &out_arena).expect("is a chord");
+        assert_eq!(back.root, 60);
+        assert_eq!(back.bass_note, 48);
+        assert_eq!(back.mask, host.mask);
+        assert_eq!(back.text, name);
+        assert_eq!(back.sample_offset, 12);
+    }
+
+    #[test]
+    fn scale_and_text_round_trip_through_c_event() {
+        let scale_name: Vec<u16> = "D Dorian".encode_utf16().collect();
+        let scale = ScaleValue {
+            sample_offset: 0,
+            root: 62,
+            mask: 0x5ab5,
+            text: scale_name.clone(),
+        };
+        let text_str: Vec<u16> = "staccato".encode_utf16().collect();
+        let expr_text = NoteExpressionText {
+            sample_offset: 4,
+            note_id: note_id_for(2, 64),
+            type_id: 7,
+            text: text_str.clone(),
+        };
+
+        let mut in_arena: TextArena = Default::default();
+        let scale_ev = scale.to_vst3_event(&mut in_arena);
+        let text_ev = expr_text.to_vst3_event(&mut in_arena);
+
+        let mut scratch = smallvec::SmallVec::new();
+        let mut out = smallvec::SmallVec::new();
+        for (ev, expect_scale) in [(scale_ev, true), (text_ev, false)] {
+            let c = to_c_event(&ev, &mut scratch, &in_arena);
+            let decoded = unsafe { from_c_event(&c, &mut out) }.expect("decodes");
+            if expect_scale {
+                let s = vst3_to_scale(&decoded, &out).expect("scale");
+                assert_eq!(s.root, 62);
+                assert_eq!(s.mask, 0x5ab5);
+                assert_eq!(s.text, scale_name);
+            } else {
+                let t = vst3_to_note_expression_text(&decoded, &out).expect("text");
+                assert_eq!(t.note_id, note_id_for(2, 64));
+                assert_eq!(t.type_id, 7);
+                assert_eq!(t.text, text_str);
+            }
+        }
+    }
+
+    #[test]
+    fn note_expression_int_round_trips() {
+        let host = NoteExpressionIntValue {
+            sample_offset: 9,
+            note_id: note_id_for(1, 50),
+            type_id: 3,
+            value: -1234,
+        };
+        let ev = host.to_vst3_event();
+        assert_eq!(ev.header().event_type, K_NOTE_EXPRESSION_INT_VALUE_EVENT);
+        let mut scratch = smallvec::SmallVec::new();
+        let c = to_c_event(&ev, &mut scratch, &[]);
+        let mut arena = smallvec::SmallVec::new();
+        let decoded = unsafe { from_c_event(&c, &mut arena) }.expect("decodes");
+        let back = vst3_to_note_expression_int(&decoded).expect("int expr");
+        assert_eq!(back.value, -1234);
+        assert_eq!(back.note_id, note_id_for(1, 50));
+        assert_eq!(back.type_id, 3);
+        // Not a MIDI message.
+        assert!(vst3_to_midi_event(&decoded).is_none());
+    }
+
+    /// A plugin-emitted legacy-MIDI-CC-out event decodes to the CC / pitch-bend
+    /// / poly-pressure MIDI message it stands for.
+    #[test]
+    fn legacy_cc_out_decodes_to_midi() {
+        use vst3::Steinberg::Vst::ControllerNumbers_::{kAfterTouch, kPitchBend};
+
+        // Plain CC 74 = 100 on channel 3.
+        let cc = Vst3Event::LegacyMidiCcOut(LegacyMidiCcOutEvent {
+            header: EventHeader {
+                bus_index: 0,
+                sample_offset: 5,
+                ppq_position: 0.0,
+                flags: 0,
+                event_type: K_LEGACY_MIDI_CC_OUT_EVENT,
+            },
+            control_number: 74,
+            channel: 3,
+            value: 100,
+            value2: 0,
+        });
+        let m = vst3_to_midi_event(&cc).expect("CC decodes");
+        assert_eq!(m.frame_offset, 5);
+        match tutti_midi_types::decode(&m).unwrap() {
+            SemanticEvent::ControlChange { channel, cc, value } => {
+                assert_eq!((channel, cc), (3, 74));
+                assert!((value - 100.0 / 127.0).abs() < 0.01);
+            }
+            other => panic!("expected CC, got {other:?}"),
+        }
+
+        // Pitch bend: 14-bit from (value=LSB, value2=MSB). Center = 0,0x40.
+        let pb = Vst3Event::LegacyMidiCcOut(LegacyMidiCcOutEvent {
+            header: EventHeader {
+                bus_index: 0,
+                sample_offset: 0,
+                ppq_position: 0.0,
+                flags: 0,
+                event_type: K_LEGACY_MIDI_CC_OUT_EVENT,
+            },
+            control_number: kPitchBend as u8,
+            channel: 0,
+            value: 0,
+            value2: 0x40,
+        });
+        match tutti_midi_types::decode(&vst3_to_midi_event(&pb).unwrap()).unwrap() {
+            SemanticEvent::PitchBend { value, .. } => assert!(value.abs() < 0.01),
+            other => panic!("expected PitchBend, got {other:?}"),
+        }
+
+        // Aftertouch (channel pressure).
+        let at = Vst3Event::LegacyMidiCcOut(LegacyMidiCcOutEvent {
+            header: EventHeader {
+                bus_index: 0,
+                sample_offset: 0,
+                ppq_position: 0.0,
+                flags: 0,
+                event_type: K_LEGACY_MIDI_CC_OUT_EVENT,
+            },
+            control_number: kAfterTouch as u8,
+            channel: 1,
+            value: 127,
+            value2: 0,
+        });
+        assert!(matches!(
+            tutti_midi_types::decode(&vst3_to_midi_event(&at).unwrap()).unwrap(),
+            SemanticEvent::ChannelPressure { channel: 1, .. }
+        ));
+    }
+
+    /// Chord / scale / text / int events are not channel-voice MIDI.
+    #[test]
+    fn harmony_events_are_not_midi() {
+        let mut arena: TextArena = Default::default();
+        let chord = ChordValue {
+            sample_offset: 0,
+            root: 60,
+            bass_note: 60,
+            mask: 0,
+            text: vec![],
+        }
+        .to_vst3_event(&mut arena);
+        assert!(vst3_to_midi_event(&chord).is_none());
     }
 }

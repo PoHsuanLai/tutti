@@ -95,7 +95,7 @@ impl MidiSender {
 
     /// Convenience: send a MIDI 1.0 note-on (velocity is 7-bit).
     pub fn note_on(&self, channel: u8, note: u8, velocity: u8) {
-        let event = MidiEvent::note_on(0, channel, note, (velocity as u16) << 9);
+        let event = MidiEvent::note_on_7bit(0, channel, note, velocity);
         let _ = self.slot.events.push(event);
     }
 

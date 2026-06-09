@@ -2,12 +2,29 @@ use super::zone::MpeZoneConfig;
 
 /// Tracks which MPE member channel is playing which note, enabling
 /// per-channel expression to be routed to per-note expression.
+///
+/// There are two allocation models, and this map serves both:
+///
+/// - **Controller-allocates (classic MPE).** The controller (Seaboard,
+///   LinnStrument, …) sprays each note onto its own channel before sending.
+///   The host is *told* the channel and merely records the pairing — use
+///   [`bind_channel`](Self::bind_channel) / [`unbind_channel`](Self::unbind_channel).
+///   This is the path `MpeProcessor` takes.
+/// - **Host-allocates.** The host receives notes and *chooses* the member
+///   channel itself (round-robin with oldest-voice stealing) — use
+///   [`assign_note`](Self::assign_note) / [`release_note`](Self::release_note).
+///   Not currently wired into any runtime path; provided for hosts that
+///   allocate channels themselves.
+///
+/// Don't mix the two for a given note: `assign_note` *picks* a channel and
+/// maintains age stamps for stealing, whereas `bind_channel` *records* the
+/// channel the controller already chose.
 #[derive(Debug)]
 pub struct MpeChannelVoiceMap {
     /// Channel (0-15) -> note number
-    pub channel_to_note: [Option<u8>; 16],
+    channel_to_note: [Option<u8>; 16],
     /// Note number -> channel
-    pub note_to_channel: [Option<u8>; 128],
+    note_to_channel: [Option<u8>; 128],
     /// Assignment stamp per channel: the value of `clock` when the channel's
     /// current note was assigned. Used to pick the oldest voice when stealing.
     assigned_at: [u64; 16],
@@ -72,6 +89,29 @@ impl MpeChannelVoiceMap {
 
         if let Some(channel) = self.note_to_channel[note as usize] {
             self.channel_to_note[channel as usize] = None;
+            self.note_to_channel[note as usize] = None;
+        }
+    }
+
+    /// Record that `channel` is playing `note` (controller-allocates / classic
+    /// MPE). The caller supplies the channel the controller already chose; this
+    /// does not pick a channel or steal voices — see the type docs for the
+    /// distinction from [`assign_note`](Self::assign_note).
+    pub fn bind_channel(&mut self, channel: u8, note: u8) {
+        if channel < 16 {
+            self.channel_to_note[channel as usize] = Some(note);
+        }
+        if note < 128 {
+            self.note_to_channel[note as usize] = Some(channel);
+        }
+    }
+
+    /// Clear the `channel`↔`note` binding made by [`bind_channel`](Self::bind_channel).
+    pub fn unbind_channel(&mut self, channel: u8, note: u8) {
+        if channel < 16 {
+            self.channel_to_note[channel as usize] = None;
+        }
+        if note < 128 {
             self.note_to_channel[note as usize] = None;
         }
     }

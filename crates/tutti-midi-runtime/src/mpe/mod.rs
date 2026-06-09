@@ -206,10 +206,9 @@ impl MpeProcessor {
         if velocity_u16 > 0 {
             if zone_info.is_member {
                 if let Some(map) = self.get_voice_map_mut(zone_info.is_lower_zone) {
-                    map.channel_to_note[channel as usize] = Some(note);
-                    if note < 128 {
-                        map.note_to_channel[note as usize] = Some(channel);
-                    }
+                    // Classic MPE: the controller already chose this channel,
+                    // so we record the binding rather than allocate one.
+                    map.bind_channel(channel, note);
                 }
             }
             self.expression.note_on(note);
@@ -269,10 +268,7 @@ impl MpeProcessor {
     fn handle_note_off_internal(&mut self, channel: u8, note: u8, is_lower_zone: bool) {
         if let Some(ref mut map) = self.get_voice_map_mut(is_lower_zone) {
             if map.handles_channel(channel) {
-                map.channel_to_note[channel as usize] = None;
-                if note < 128 {
-                    map.note_to_channel[note as usize] = None;
-                }
+                map.unbind_channel(channel, note);
             }
         }
         self.expression.note_off(note);

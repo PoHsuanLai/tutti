@@ -181,7 +181,7 @@ impl<T: Vst3Sample> BusBuffers<T> {
         // continues from where bus 0 stopped — so it's threaded through each call.
         let mut next_live = 0usize;
         for bus_idx in 0..self.ptr_tables.len() {
-            next_live = self.fill_bus(bus_idx, live, live_len, next_live, aux_ptr);
+            next_live = self.fill_bus(bus_idx, live, live_len, next_live, aux_ptr, zero_aux);
         }
         self.bus_arrays.as_mut_ptr()
     }
@@ -198,6 +198,13 @@ impl<T: Vst3Sample> BusBuffers<T> {
     /// sidechain bus). For an input direction `aux` is zeroed silence; for an
     /// output direction it's a write-sink.
     ///
+    /// When `silence_aux_channels` is set (input direction — `aux` is provably
+    /// zero), each real channel that fell back to `aux` gets its `silenceFlags`
+    /// bit set, so the plugin may skip processing it. Channels backed by a
+    /// supplied `live` pointer are never flagged: we can't claim they're zero.
+    /// The flag is left clear for the output direction, where `aux` is an
+    /// unzeroed sink.
+    ///
     /// # Safety
     /// Same contract as [`Self::prepare`]: `live` is a valid array of
     /// `live_len` channel pointers, and `next_live <= live_len`.
@@ -208,10 +215,14 @@ impl<T: Vst3Sample> BusBuffers<T> {
         live_len: usize,
         mut next_live: usize,
         aux_ptr: *mut std::ffi::c_void,
+        silence_aux_channels: bool,
     ) -> usize {
         let bus_ch = self.bus_channels[bus_idx];
         let table = &mut self.ptr_tables[bus_idx];
 
+        // One bit per real channel; set when that channel is provably silent
+        // (backed by the zeroed `aux` block on an input bus).
+        let mut silence_flags: u64 = 0;
         for (slot_idx, slot) in table.iter_mut().enumerate() {
             let is_real_channel = slot_idx < bus_ch; // vs a MIN_PTR_COUNT padding slot
             let has_live_audio = next_live < live_len; // flat list not yet exhausted
@@ -220,13 +231,19 @@ impl<T: Vst3Sample> BusBuffers<T> {
                 next_live += 1;
                 channel
             } else {
+                // A real channel with no live backing reads as zeroed `aux`, so
+                // on an input bus it's safe to declare silent (bit < 64 always:
+                // VST3 buses never exceed 64 channels).
+                if is_real_channel && silence_aux_channels && slot_idx < 64 {
+                    silence_flags |= 1 << slot_idx;
+                }
                 aux_ptr
             };
         }
 
         let bus = &mut self.bus_arrays[bus_idx];
         bus.numChannels = bus_ch as i32;
-        bus.silenceFlags = 0;
+        bus.silenceFlags = silence_flags;
         T::set_channel_buffers(bus, table.as_mut_ptr());
 
         next_live
@@ -292,6 +309,45 @@ mod tests {
             let sc = *p1.add(0);
             assert!(sc != l.as_mut_ptr() && sc != r.as_mut_ptr());
             assert_eq!(*sc, 0.0);
+
+            // Bus 0 has real audio on both channels → no silence declared.
+            assert_eq!(bus0.silenceFlags, 0);
+            // Bus 1's single channel is aux-backed → declared silent (bit 0).
+            assert_eq!(bus1.silenceFlags, 0b1);
+        }
+    }
+
+    /// Silence flags are an input-only hint: the output direction's `aux` is an
+    /// unzeroed discard sink, so an aux-backed output channel must NOT be
+    /// declared silent (the plugin still writes real audio into it).
+    #[test]
+    fn output_direction_never_declares_silence() {
+        // main = stereo out, plus an aux output bus the host doesn't drive.
+        let mut bb = BusBuffers::<f32>::new(&[2, 2], 2, BLOCK);
+        let mut l = [0.0f32; BLOCK];
+        let mut r = [0.0f32; BLOCK];
+        let live = [l.as_mut_ptr() as *mut c_void, r.as_mut_ptr() as *mut c_void];
+        unsafe {
+            // zero_aux = false → output direction.
+            let arrays = bb.prepare(live.as_ptr(), live.len(), false);
+            assert_eq!((*arrays.add(0)).silenceFlags, 0);
+            // The aux-backed second bus is a sink, not silence — still 0.
+            assert_eq!((*arrays.add(1)).silenceFlags, 0);
+        }
+    }
+
+    /// A fully-supplied input bus declares no silence; an entirely aux-backed
+    /// input bus declares all its real channels silent (and only those, not the
+    /// MIN_PTR_COUNT padding slots).
+    #[test]
+    fn fully_unconnected_input_bus_flags_only_real_channels() {
+        // One stereo bus, but the caller supplies zero channels.
+        let mut bb = BusBuffers::<f32>::new(&[2], 2, BLOCK);
+        let live: [*mut c_void; 0] = [];
+        unsafe {
+            let arrays = bb.prepare(live.as_ptr(), 0, true);
+            // Both real channels aux-backed → bits 0 and 1 set, nothing above.
+            assert_eq!((*arrays).silenceFlags, 0b11);
         }
     }
 

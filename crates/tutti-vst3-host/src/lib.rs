@@ -12,6 +12,7 @@
 
 #[allow(dead_code)]
 pub(crate) mod com;
+pub mod coverage;
 pub mod error;
 pub(crate) mod helpers;
 pub mod host;

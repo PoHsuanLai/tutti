@@ -3,8 +3,9 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    BusLayout, EditorSize, NoteExpressionChanges, NoteExpressionType, ParameterFlags,
-    ParameterInfo, PluginInfo, WindowHandle,
+    BusLayout, ChordChanges, EditorSize, NoteExpressionChanges, NoteExpressionIntChanges,
+    NoteExpressionTextChanges, NoteExpressionType, ParameterFlags, ParameterInfo, PluginInfo,
+    ScaleChanges, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -298,11 +299,25 @@ fn process_block<'a, T: tutti_vst3_host::Vst3Sample>(
         .note_expression
         .map(convert_note_expression_to_vst3)
         .unwrap_or_default();
+    let vst3_chords = ctx.chords.map(convert_chords_to_vst3).unwrap_or_default();
+    let vst3_scales = ctx.scales.map(convert_scales_to_vst3).unwrap_or_default();
+    let vst3_expr_texts = ctx
+        .expr_texts
+        .map(convert_expr_texts_to_vst3)
+        .unwrap_or_default();
+    let vst3_expr_ints = ctx
+        .expr_ints
+        .map(convert_expr_ints_to_vst3)
+        .unwrap_or_default();
     let output = inner.process(
         &mut vst3_buffer,
         ctx.midi_events,
         ctx.param_changes,
         &vst3_note_expr,
+        &vst3_chords,
+        &vst3_scales,
+        &vst3_expr_texts,
+        &vst3_expr_ints,
         &vst3_transport,
     );
     let midi_events = output.midi_events.iter().copied().collect();
@@ -374,6 +389,62 @@ fn convert_note_expression_to_vst3(
                 NoteExpressionType::Brightness => tutti_vst3_host::NoteExpressionType::Brightness,
             },
             value: e.value,
+        })
+        .collect()
+}
+
+fn convert_chords_to_vst3(chords: &ChordChanges) -> Vec<tutti_vst3_host::ChordValue> {
+    chords
+        .changes
+        .iter()
+        .map(|c| tutti_vst3_host::ChordValue {
+            sample_offset: c.sample_offset,
+            root: c.root,
+            bass_note: c.bass_note,
+            mask: c.mask,
+            text: c.text.encode_utf16().collect(),
+        })
+        .collect()
+}
+
+fn convert_scales_to_vst3(scales: &ScaleChanges) -> Vec<tutti_vst3_host::ScaleValue> {
+    scales
+        .changes
+        .iter()
+        .map(|s| tutti_vst3_host::ScaleValue {
+            sample_offset: s.sample_offset,
+            root: s.root,
+            mask: s.mask,
+            text: s.text.encode_utf16().collect(),
+        })
+        .collect()
+}
+
+fn convert_expr_texts_to_vst3(
+    texts: &NoteExpressionTextChanges,
+) -> Vec<tutti_vst3_host::NoteExpressionText> {
+    texts
+        .changes
+        .iter()
+        .map(|t| tutti_vst3_host::NoteExpressionText {
+            sample_offset: t.sample_offset,
+            note_id: t.note_id,
+            type_id: t.type_id,
+            text: t.text.encode_utf16().collect(),
+        })
+        .collect()
+}
+
+fn convert_expr_ints_to_vst3(
+    ints: &NoteExpressionIntChanges,
+) -> Vec<tutti_vst3_host::NoteExpressionIntValue> {
+    ints.changes
+        .iter()
+        .map(|i| tutti_vst3_host::NoteExpressionIntValue {
+            sample_offset: i.sample_offset,
+            note_id: i.note_id,
+            type_id: i.type_id,
+            value: i.value,
         })
         .collect()
 }

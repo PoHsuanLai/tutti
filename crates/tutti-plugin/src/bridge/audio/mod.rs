@@ -19,9 +19,20 @@ mod thread;
 
 use crate::error::Result;
 use crate::protocol::{
-    MidiEventVec, NoteExpressionChanges, ParameterChanges, ParameterInfo, TransportInfo,
+    ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
+    NoteExpressionTextChanges, ParameterChanges, ParameterInfo, ScaleChanges, TransportInfo,
 };
 use crate::transport::shm::AudioSlab;
+
+/// VST3 sequencer-context inputs for one process block, bundled to keep
+/// [`AudioBridge::process`]'s signature manageable. All default to empty.
+#[derive(Debug, Default)]
+pub struct HarmonyInputs {
+    pub chords: ChordChanges,
+    pub scales: ScaleChanges,
+    pub expr_texts: NoteExpressionTextChanges,
+    pub expr_ints: NoteExpressionIntChanges,
+}
 use ask::ask;
 use channels::Channels;
 use lifecycle::Lifecycle;
@@ -113,12 +124,14 @@ impl AudioBridge {
     // --- RT request+response ---
 
     /// RT-safe, lock-free. Waits for the bridge thread's AudioResponse.
+    #[allow(clippy::too_many_arguments)]
     pub fn process(
         &self,
         num_samples: usize,
         midi_events: MidiEventVec,
         param_changes: ParameterChanges,
         note_expression: NoteExpressionChanges,
+        harmony: HarmonyInputs,
         transport: TransportInfo,
     ) -> bool {
         if self.lifecycle.is_crashed() {
@@ -131,6 +144,10 @@ impl AudioBridge {
         payload.midi_events = midi_events;
         payload.param_changes = param_changes;
         payload.note_expression = note_expression;
+        payload.chords = harmony.chords;
+        payload.scales = harmony.scales;
+        payload.expr_texts = harmony.expr_texts;
+        payload.expr_ints = harmony.expr_ints;
         payload.transport = transport;
 
         if !self.channels.push_command(Command::Process(payload)) {

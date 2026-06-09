@@ -98,6 +98,10 @@ impl Session {
                 let extras = ProcessExtras {
                     param_changes: &data.param_changes,
                     note_expression: &data.note_expression,
+                    chords: &data.chords,
+                    scales: &data.scales,
+                    expr_texts: &data.expr_texts,
+                    expr_ints: &data.expr_ints,
                     transport: &data.transport,
                 };
                 self.handle_process(AudioBlock {
@@ -452,6 +456,7 @@ mod tests {
                     param_changes: ParameterChanges::new(),
                     note_expression: NoteExpressionChanges::new(),
                     transport: TransportInfo::default(),
+                    ..Default::default()
                 },
             )))
             .unwrap();
@@ -801,6 +806,7 @@ mod tests {
                     param_changes: ParameterChanges::new(),
                     note_expression: NoteExpressionChanges::new(),
                     transport: TransportInfo::default(),
+                    ..Default::default()
                 },
             )))
             .unwrap()

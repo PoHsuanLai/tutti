@@ -26,6 +26,10 @@ pub(super) fn handle(
                 midi_events: payload.midi_events.iter().map(IpcMidiEvent::from).collect(),
                 param_changes: core::mem::take(&mut payload.param_changes),
                 note_expression: core::mem::take(&mut payload.note_expression),
+                chords: core::mem::take(&mut payload.chords),
+                scales: core::mem::take(&mut payload.scales),
+                expr_texts: core::mem::take(&mut payload.expr_texts),
+                expr_ints: core::mem::take(&mut payload.expr_ints),
                 transport: core::mem::take(&mut payload.transport),
             }));
 

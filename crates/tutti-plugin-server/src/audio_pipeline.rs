@@ -11,8 +11,9 @@
 //! `AudioOutput`.
 
 use tutti_plugin::server::{
-    AudioBufferMut, AudioSlab, MidiEvent, MidiEventVec, NoteExpressionChanges, ParameterChanges,
-    PluginInstance, ProcessContext, SampleFormat, TransportInfo,
+    AudioBufferMut, AudioSlab, ChordChanges, MidiEvent, MidiEventVec, NoteExpressionChanges,
+    NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges, PluginInstance,
+    ProcessContext, SampleFormat, ScaleChanges, TransportInfo,
 };
 use tutti_plugin::Result;
 
@@ -97,6 +98,10 @@ impl AudioBuffers {
 pub(crate) struct ProcessExtras<'a> {
     pub param_changes: &'a ParameterChanges,
     pub note_expression: &'a NoteExpressionChanges,
+    pub chords: &'a ChordChanges,
+    pub scales: &'a ScaleChanges,
+    pub expr_texts: &'a NoteExpressionTextChanges,
+    pub expr_ints: &'a NoteExpressionIntChanges,
     pub transport: &'a TransportInfo,
 }
 
@@ -184,6 +189,10 @@ impl AudioPipeline {
             ctx = ctx
                 .params(ex.param_changes)
                 .note_expression(ex.note_expression)
+                .chords(ex.chords)
+                .scales(ex.scales)
+                .expr_texts(ex.expr_texts)
+                .expr_ints(ex.expr_ints)
                 .transport(ex.transport);
         }
 

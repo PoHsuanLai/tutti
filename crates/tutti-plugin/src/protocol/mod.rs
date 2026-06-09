@@ -6,6 +6,7 @@
 //! in [`crate::config`].
 
 pub mod envelope;
+pub mod harmony;
 pub mod metadata;
 pub mod midi;
 pub mod note_expression;
@@ -16,6 +17,10 @@ pub mod shm;
 pub mod transport;
 
 pub use envelope::{BridgeMessage, HostMessage};
+pub use harmony::{
+    ChordChanges, ChordValue, NoteExpressionIntChanges, NoteExpressionIntValue,
+    NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,
+};
 pub use metadata::{AudioIO, BusDirection, BusLayout, PluginInfo};
 pub use midi::{IpcMidiEvent, IpcMidiEventVec, MidiEventVec};
 pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpressionValue};
@@ -305,5 +310,49 @@ mod tests {
         assert_eq!(info.timing.time_sig_denominator, 4);
         assert!(!info.state.playing);
         assert!(!info.state.recording);
+    }
+
+    /// The harmony inputs (chord / scale / text / int) must survive a bincode
+    /// round-trip inside `ProcessAudioFullData`, including the owned `String`
+    /// names.
+    #[test]
+    fn process_audio_full_round_trips_harmony_fields() {
+        let mut data = ProcessAudioFullData::default();
+        data.num_samples = 256;
+        data.chords.add_change(ChordValue {
+            sample_offset: 0,
+            root: 60,
+            bass_note: 48,
+            mask: 0b1001,
+            text: "Cmaj7".to_string(),
+        });
+        data.scales.add_change(ScaleValue {
+            sample_offset: 0,
+            root: 62,
+            mask: 0x5ab5,
+            text: "D Dorian".to_string(),
+        });
+        data.expr_texts.add_change(NoteExpressionTextValue {
+            sample_offset: 4,
+            note_id: 7,
+            type_id: 1,
+            text: "staccato".to_string(),
+        });
+        data.expr_ints.add_change(NoteExpressionIntValue {
+            sample_offset: 8,
+            note_id: 7,
+            type_id: 2,
+            value: -42,
+        });
+
+        let bytes = bincode::serialize(&data).unwrap();
+        let back: ProcessAudioFullData = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(back.num_samples, 256);
+        assert_eq!(back.chords.changes[0].text, "Cmaj7");
+        assert_eq!(back.chords.changes[0].root, 60);
+        assert_eq!(back.scales.changes[0].text, "D Dorian");
+        assert_eq!(back.expr_texts.changes[0].text, "staccato");
+        assert_eq!(back.expr_ints.changes[0].value, -42);
     }
 }

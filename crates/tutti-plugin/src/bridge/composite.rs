@@ -1,6 +1,6 @@
 //! Plugin bridge — composites out-of-process audio with in-process GUI.
 
-use super::audio::{AudioBridge, BridgeListener, BridgeThread};
+use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs};
 use super::gui::GuiInstance;
 use crate::error::{EditorError, Result};
 use crate::protocol::{
@@ -44,12 +44,14 @@ impl PluginBridge {
         Ok((bridge, bridge_thread))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn process(
         &self,
         num_samples: usize,
         midi_events: MidiEventVec,
         param_changes: ParameterChanges,
         note_expression: NoteExpressionChanges,
+        harmony: HarmonyInputs,
         transport: TransportInfo,
     ) -> bool {
         self.audio.process(
@@ -57,6 +59,7 @@ impl PluginBridge {
             midi_events,
             param_changes,
             note_expression,
+            harmony,
             transport,
         )
     }

@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::harmony::{
+    ChordChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ScaleChanges,
+};
 use super::midi::IpcMidiEventVec;
 use super::note_expression::NoteExpressionChanges;
 use super::parameters::ParameterChanges;
@@ -14,13 +17,20 @@ pub struct ProcessAudioMidiData {
     pub midi_events: IpcMidiEventVec,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProcessAudioFullData {
     pub buffer_id: u32,
     pub num_samples: usize,
     pub midi_events: IpcMidiEventVec,
     pub param_changes: ParameterChanges,
     pub note_expression: NoteExpressionChanges,
+    /// VST3 sequencer-context inputs (chord / scale / per-note text / int
+    /// expression). VST3-only; other formats ignore them. Empty until a host
+    /// produces them.
+    pub chords: ChordChanges,
+    pub scales: ScaleChanges,
+    pub expr_texts: NoteExpressionTextChanges,
+    pub expr_ints: NoteExpressionIntChanges,
     pub transport: TransportInfo,
 }
 

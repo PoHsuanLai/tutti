@@ -15,6 +15,7 @@
 //! format-tagged enum; only one variant exists per `Batcher` instance at
 //! runtime.
 
+use crate::bridge::audio::HarmonyInputs;
 use crate::bridge::PluginBridge;
 use crate::error::Result;
 use crate::protocol::{
@@ -237,6 +238,7 @@ impl Batcher {
             midi,
             ParameterChanges::new(),
             NoteExpressionChanges::new(),
+            HarmonyInputs::default(),
             TransportInfo::default(),
         ) {
             T::silence_tick(self, size, self.outputs);
@@ -273,6 +275,7 @@ impl Batcher {
             midi,
             ParameterChanges::new(),
             NoteExpressionChanges::new(),
+            HarmonyInputs::default(),
             TransportInfo::default(),
         ) {
             T::silence_block(output, size, self.outputs);

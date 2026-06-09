@@ -14,10 +14,12 @@ pub use crate::audio::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut
 pub use crate::config::BridgeConfig;
 pub use crate::protocol::{
     AudioIO, AudioProcessedFullData, AudioProcessedMidiData, BridgeMessage, BusDirection,
-    BusLayout, HostMessage, IpcMidiEvent, IpcMidiEventVec, MidiEvent, MidiEventVec,
-    NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, ParameterChanges,
-    ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, PluginInfo,
-    ProcessAudioFullData, ProcessAudioMidiData, SampleFormat, SlabLayout, TransportInfo,
+    BusLayout, ChordChanges, ChordValue, HostMessage, IpcMidiEvent, IpcMidiEventVec, MidiEvent,
+    MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
+    NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
+    ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, PluginInfo,
+    ProcessAudioFullData, ProcessAudioMidiData, SampleFormat, ScaleChanges, ScaleValue,
+    SlabLayout, TransportInfo,
 };
 pub use crate::subprocess::resolve_bundle;
 pub use crate::transport::shm::AudioSlab;
@@ -31,6 +33,12 @@ pub struct ProcessContext<'a> {
     pub param_changes: Option<&'a ParameterChanges>,
     /// VST3/CLAP only, ignored by VST2.
     pub note_expression: Option<&'a NoteExpressionChanges>,
+    /// VST3-only sequencer-context inputs (chord / scale / per-note text / int
+    /// expression). Ignored by VST2/CLAP/AU.
+    pub chords: Option<&'a ChordChanges>,
+    pub scales: Option<&'a ScaleChanges>,
+    pub expr_texts: Option<&'a NoteExpressionTextChanges>,
+    pub expr_ints: Option<&'a NoteExpressionIntChanges>,
     pub transport: Option<&'a TransportInfo>,
 }
 
@@ -51,6 +59,26 @@ impl<'a> ProcessContext<'a> {
 
     pub fn note_expression(mut self, changes: &'a NoteExpressionChanges) -> Self {
         self.note_expression = Some(changes);
+        self
+    }
+
+    pub fn chords(mut self, changes: &'a ChordChanges) -> Self {
+        self.chords = Some(changes);
+        self
+    }
+
+    pub fn scales(mut self, changes: &'a ScaleChanges) -> Self {
+        self.scales = Some(changes);
+        self
+    }
+
+    pub fn expr_texts(mut self, changes: &'a NoteExpressionTextChanges) -> Self {
+        self.expr_texts = Some(changes);
+        self
+    }
+
+    pub fn expr_ints(mut self, changes: &'a NoteExpressionIntChanges) -> Self {
+        self.expr_ints = Some(changes);
         self
     }
 

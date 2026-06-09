@@ -3,7 +3,8 @@
 
 use super::ask::Reply;
 use crate::protocol::{
-    MidiEventVec, NoteExpressionChanges, ParameterChanges, ParameterInfo, TransportInfo,
+    ChordChanges, MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges,
+    NoteExpressionTextChanges, ParameterChanges, ParameterInfo, ScaleChanges, TransportInfo,
 };
 
 /// Audio-thread bulk payload for one `Process` command. Heap-boxed and
@@ -15,6 +16,11 @@ pub(super) struct ProcessPayload {
     pub midi_events: MidiEventVec,
     pub param_changes: ParameterChanges,
     pub note_expression: NoteExpressionChanges,
+    /// VST3 sequencer-context inputs. Empty until a host produces them.
+    pub chords: ChordChanges,
+    pub scales: ScaleChanges,
+    pub expr_texts: NoteExpressionTextChanges,
+    pub expr_ints: NoteExpressionIntChanges,
     pub transport: TransportInfo,
 }
 
@@ -26,6 +32,10 @@ impl ProcessPayload {
             midi_events: MidiEventVec::new(),
             param_changes: ParameterChanges::new(),
             note_expression: NoteExpressionChanges::new(),
+            chords: ChordChanges::new(),
+            scales: ScaleChanges::new(),
+            expr_texts: NoteExpressionTextChanges::new(),
+            expr_ints: NoteExpressionIntChanges::new(),
             transport: TransportInfo::default(),
         }
     }

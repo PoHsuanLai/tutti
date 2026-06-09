@@ -88,6 +88,14 @@ impl MidiInputEvent {
     }
 }
 
+/// Bound on the hardware-input observer channel. This is a best-effort UI
+/// notification tap (the audible path is the lock-free port ring, separate),
+/// so the channel is *bounded*: if a frame stall stops the drain while a fast
+/// controller spews events, the midir callback's `try_send` drops the overflow
+/// rather than growing the channel without limit. Sized for several frames of
+/// dense CC traffic.
+const OBSERVER_CHANNEL_CAPACITY: usize = 1024;
+
 /// Receiving end of the hardware-input observer channel; drained each frame by
 /// [`midi_input_event_system`].
 #[derive(Resource)]
@@ -140,7 +148,7 @@ pub struct MidiInputPlugin;
 
 impl Plugin for MidiInputPlugin {
     fn build(&self, app: &mut App) {
-        let (sender, receiver) = crossbeam_channel::unbounded();
+        let (sender, receiver) = crossbeam_channel::bounded(OBSERVER_CHANNEL_CAPACITY);
         app.insert_resource(MidiInputObserver { receiver });
         app.insert_resource(MidiObserverSender {
             sender: Some(sender),

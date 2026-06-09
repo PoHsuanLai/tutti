@@ -158,6 +158,44 @@ mod tests {
     }
 
     #[test]
+    fn test_snapshot_reader_buffer_overflow_resumes() {
+        // Three events all within one beat-block. A buffer of 2 forces an
+        // overflow: the third event must come out on a follow-up poll, with
+        // no duplicates and nothing dropped.
+        let mut snapshot = MidiSnapshot::new();
+        let unit_id = MidiUnitId::new(5);
+        snapshot.add_event(unit_id, 0.0, note_on(60, 100));
+        snapshot.add_event(unit_id, 0.1, note_on(62, 100));
+        snapshot.add_event(unit_id, 0.2, note_on(64, 100));
+
+        let timeline = Arc::new(OfflineTransport::new(&OfflineTransportConfig {
+            start_beat: 0.0,
+            tempo: tutti_core::Bpm(120.0),
+            sample_rate: tutti_core::SampleRate(44100.0),
+            loop_range: None,
+        }));
+        let reader = MidiSnapshotReader::new(snapshot, Arc::clone(&timeline));
+
+        // Advance one full beat so all three events fall in the range.
+        timeline.advance(22050);
+
+        // First poll: buffer holds only 2 → overflow.
+        let mut small = [MidiEvent::noop(); 2];
+        assert_eq!(reader.poll_into(unit_id, 0, 22050, &mut small), 2);
+
+        // Second poll at the SAME beat: the remaining event must surface.
+        let mut rest = [MidiEvent::noop(); 8];
+        assert_eq!(
+            reader.poll_into(unit_id, 0, 22050, &mut rest),
+            1,
+            "the overflowed event must be delivered, not dropped"
+        );
+
+        // No further events at this beat.
+        assert_eq!(reader.poll_into(unit_id, 0, 22050, &mut rest), 0);
+    }
+
+    #[test]
     fn test_snapshot_reader_no_events_for_unknown_unit() {
         let snapshot = MidiSnapshot::new();
         let timeline = Arc::new(OfflineTransport::new(&OfflineTransportConfig::default()));

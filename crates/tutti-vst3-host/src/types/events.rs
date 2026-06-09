@@ -25,6 +25,8 @@ pub const K_DATA_EVENT: u16 = EventTypes_::kDataEvent as u16;
 pub const K_POLY_PRESSURE_EVENT: u16 = EventTypes_::kPolyPressureEvent as u16;
 /// `type_` discriminant for note-expression value events.
 pub const K_NOTE_EXPRESSION_VALUE_EVENT: u16 = EventTypes_::kNoteExpressionValueEvent as u16;
+/// `DataEvent.type` subtype marking the payload as a MIDI SysEx message.
+pub const K_DATA_TYPE_MIDI_SYSEX: u32 = vst3::Steinberg::Vst::DataEvent_::DataTypes_::kMidiSysEx;
 
 /// Flat Rust-facing header merging the `busIndex` / `sampleOffset` /
 /// `ppqPosition` / `flags` / `type_` fields of `vst3::Steinberg::Vst::Event`
@@ -417,7 +419,35 @@ pub fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
         _ => {}
     }
 
-    // Data event: the VST3 carrier for any 3-byte MIDI-1 message.
+    // SysEx → DataEvent with the kMidiSysEx subtype. VST3 wants the complete
+    // message *with* its 0xF0 … 0xF7 delimiters. We forward a single-packet
+    // SysEx (the payload fits a UMP type-0x3 packet, ≤ 6 bytes → ≤ 8 with
+    // delimiters, well within the 16-byte buffer). Multi-packet SysEx needs
+    // cross-event reassembly that doesn't belong in a per-event converter, so
+    // only the self-contained `SINGLE` packet is mapped here.
+    if let Some((status, payload, n)) = event.sysex7_payload() {
+        if status == tutti_midi_types::ump::SYSEX7_STATUS_SINGLE {
+            let mut bytes = [0u8; 16];
+            bytes[0] = 0xF0;
+            bytes[1..1 + n].copy_from_slice(&payload[..n]);
+            bytes[1 + n] = 0xF7;
+            return Some(Vst3Event::Data(DataEvent {
+                header: EventHeader {
+                    event_type: K_DATA_EVENT,
+                    ..header
+                },
+                size: (n + 2) as u32,
+                event_type: K_DATA_TYPE_MIDI_SYSEX,
+                bytes,
+            }));
+        }
+        // Start/Continue/End fragments can't stand alone as a VST3 Data event.
+        return None;
+    }
+
+    // Data event: the VST3 carrier for any 3-byte MIDI-1 message. VST3 defines
+    // no Data subtype for plain channel-voice bytes (only kMidiSysEx), so the
+    // subtype stays 0 — these are a fallback the plugin reads as raw bytes.
     let (bytes, _len) = event.to_midi1_bytes()?;
     let mut data = [0u8; 16];
     data[..3].copy_from_slice(&bytes);
@@ -452,10 +482,11 @@ fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
 ///
 /// Notes and poly-pressure go through [`tutti_midi_types::encode`], so the
 /// plugin's `f32` velocity / pressure is preserved at MIDI-2's full bit width
-/// instead of being squashed to 7 bits. [`Vst3Event::Data`] stays on its raw
-/// MIDI-1 bytes (the only thing it carries). Returns `None` for
-/// [`Vst3Event::NoteExpression`] (not a channel-voice MIDI message) and for
-/// `Data` payloads shorter than 2 bytes.
+/// instead of being squashed to 7 bits. A [`Vst3Event::Data`] carrying SysEx is
+/// rebuilt as a UMP SysEx7 packet; other Data events decode from their raw
+/// MIDI-1 bytes. Returns `None` for [`Vst3Event::NoteExpression`] (not a
+/// channel-voice MIDI message), for `Data` payloads shorter than 2 bytes, and
+/// for a SysEx too long to fit a single UMP packet.
 pub fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
     let frame = event.sample_offset().max(0) as u32;
     let semantic = match event {
@@ -477,7 +508,19 @@ pub fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
             if e.size < 2 {
                 return None;
             }
-            return MidiEvent::from_midi1_bytes(frame, &e.bytes[..e.size as usize]);
+            let bytes = &e.bytes[..e.size as usize];
+            // SysEx Data event → UMP SysEx7. The 0xF0 framing is the reliable
+            // signal (the kMidiSysEx subtype is 0, indistinguishable from the
+            // raw-channel-voice fallback's subtype). Strip the 0xF0 … 0xF7
+            // delimiters and rebuild a single packet — the inverse of the input
+            // path, which only emits self-contained ≤ 6-byte SysEx. Anything
+            // longer can't be one UMP event, so it's dropped, not truncated.
+            if bytes[0] == 0xF0 {
+                let inner = bytes.strip_prefix(&[0xF0]).unwrap_or(bytes);
+                let inner = inner.strip_suffix(&[0xF7]).unwrap_or(inner);
+                return MidiEvent::sysex7_single(0, inner).map(|m| m.with_frame_offset(frame));
+            }
+            return MidiEvent::from_midi1_bytes(frame, bytes);
         }
         Vst3Event::NoteExpression(_) => return None,
     };
@@ -759,6 +802,46 @@ mod tests {
         let unknown =
             MidiEvent::per_note_controller(0, 0, 60, 33, midi1_cc_to_midi2(100), false);
         assert!(vst3_event_from_midi(&unknown).is_none());
+    }
+
+    #[test]
+    fn single_packet_sysex_round_trips_through_data_event() {
+        // A short SysEx (identity request) → VST3 Data event with the SysEx
+        // subtype and 0xF0 … 0xF7 framing, then back to the same UMP payload.
+        let payload = [0x7E, 0x7F, 0x06, 0x01];
+        let event = MidiEvent::sysex7_single(0, &payload)
+            .unwrap()
+            .with_frame_offset(7);
+        let vst3 = vst3_event_from_midi(&event).expect("SysEx should map to Data");
+        match &vst3 {
+            Vst3Event::Data(e) => {
+                assert_eq!(e.event_type, K_DATA_TYPE_MIDI_SYSEX);
+                assert_eq!(e.size as usize, payload.len() + 2);
+                assert_eq!(e.bytes[0], 0xF0);
+                assert_eq!(e.bytes[1..1 + payload.len()], payload);
+                assert_eq!(e.bytes[1 + payload.len()], 0xF7);
+                assert_eq!(e.header.sample_offset, 7);
+            }
+            _ => panic!("expected Data variant for SysEx"),
+        }
+
+        let back = vst3_to_midi_event(&vst3).expect("SysEx Data round-trips");
+        let (status, bytes, n) = back.sysex7_payload().expect("decodes as SysEx7");
+        assert_eq!(status, tutti_midi_types::ump::SYSEX7_STATUS_SINGLE);
+        assert_eq!(&bytes[..n], &payload);
+        assert_eq!(back.frame_offset, 7);
+    }
+
+    #[test]
+    fn fragmented_sysex_is_not_forwarded() {
+        // A multi-packet SysEx (>6 bytes) produces Start/Continue/End fragments;
+        // none stand alone as a VST3 Data event, so each is dropped.
+        let mut frags = Vec::new();
+        MidiEvent::sysex7_fragments(0, &[1, 2, 3, 4, 5, 6, 7, 8], &mut frags);
+        assert!(frags.len() > 1);
+        for frag in &frags {
+            assert!(vst3_event_from_midi(frag).is_none());
+        }
     }
 
     #[test]

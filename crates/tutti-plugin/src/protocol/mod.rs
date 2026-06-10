@@ -2,8 +2,8 @@
 //! Deserialize` and flows between host and server process.
 //!
 //! Non-wire runtime types (`Sample`, `AudioBuffer<T>`, window handles)
-//! live in [`crate::protocol::audio`] / [`crate::window`]. Host-local config lives
-//! in [`crate::config`].
+//! live in [`crate::protocol::audio`] / [`crate::util::window`]. Host-local config lives
+//! in [`crate::util::config`].
 
 pub mod audio;
 pub mod envelope;

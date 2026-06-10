@@ -87,28 +87,22 @@
 pub mod error;
 pub use error::{BridgeError, EditorError, LoadStage, Result};
 
-mod audio_node;
-mod bridge;
-mod builder;
-mod config;
-mod in_process;
-mod plugins;
-mod window;
+mod format;
+mod host;
+mod util;
 
 pub(crate) mod protocol;
-pub(crate) mod subprocess;
-pub(crate) mod transport;
 
 #[cfg(feature = "au")]
-pub use builder::au;
+pub use host::builder::au;
 #[cfg(feature = "clap")]
-pub use builder::clap;
+pub use host::builder::clap;
 #[cfg(feature = "vst2")]
-pub use builder::vst2;
+pub use host::builder::vst2;
 #[cfg(feature = "vst3")]
-pub use builder::vst3;
-pub use builder::PluginBuilder;
-pub use config::BridgeConfig;
+pub use host::builder::vst3;
+pub use host::builder::PluginBuilder;
+pub use util::config::BridgeConfig;
 
 /// Mark the calling thread as the host's main/UI thread, enabling the
 /// debug-only main-thread affinity assertions in the editor/state paths
@@ -126,18 +120,18 @@ pub use tutti_plugin_types::mark_main_thread;
 /// without re-implementing them. End users loading plugins should stick to
 /// [`catalog`] and [`handles`].
 pub mod backend {
-    pub use crate::audio_node::{
+    pub use crate::host::node::{
         route_with_latency, LatencyChangeSink, Midi, ParameterChangeSink,
     };
-    pub use crate::handles::control_backend::ControlBackend;
-    pub use crate::audio_node::node_id::PLUGIN_CLIENT_ID;
+    pub use crate::host::handles::control_backend::ControlBackend;
+    pub use crate::util::node::node_id::PLUGIN_CLIENT_ID;
 }
 
 /// Load a VST2 plugin in-process (audio + native editor on the host
-/// process). See [`in_process::vst2::load`] for details. Available
+/// process). See [`format::vst2_in_process::load`] for details. Available
 /// behind the `vst2-in-process` feature.
 #[cfg(feature = "vst2-in-process")]
-pub use in_process::vst2::load as in_process_vst2;
+pub use format::vst2_in_process::load as in_process_vst2;
 
 // WASM Component Model audio plugins live in the `tutti-wasm-plugin` crate
 // (`tutti_wasm_plugin::load`) — extracted so the heavy wasmtime dependency
@@ -151,24 +145,24 @@ pub use in_process::vst2::load as in_process_vst2;
 /// by name or id.
 ///
 /// The default catalog is a JSON file on disk
-/// ([`JsonCatalog`](crate::discovery::JsonCatalog), behind the `json` feature).
+/// ([`JsonCatalog`](crate::host::discovery::JsonCatalog), behind the `json` feature).
 /// Ship your own [`PluginCatalog`](catalog::PluginCatalog) impl for SQLite,
 /// in-memory, or any other persistence.
 pub mod catalog {
     #[cfg(feature = "json")]
-    pub use crate::discovery::JsonCatalog;
-    pub use crate::discovery::{
+    pub use crate::host::discovery::JsonCatalog;
+    pub use crate::host::discovery::{
         AuComponentType, Blacklist, CatalogExt, PluginCatalog, PluginClass, PluginDescriptor,
         PluginFormat, PluginRecord, PluginScanner, ScanHandle, ScanPhase, ScanProgress, ScanResult,
         Vst2Category,
     };
-    pub use crate::plugins::{PluginId, Plugins};
-    pub use crate::config::PluginsConfig;
+    pub use crate::host::plugins::{PluginId, Plugins};
+    pub use crate::util::config::PluginsConfig;
 }
 
 /// Per-plugin handles — [`PluginClient`](handles::PluginClient) (audio graph
 /// node) and [`PluginHandle`](handles::PluginHandle) (main-thread control).
-pub mod handles;
+pub use host::handles;
 
 /// Plugin + parameter descriptors.
 ///
@@ -186,7 +180,7 @@ pub mod metadata {
 /// Internal module exposed publicly for submodule lookup. Use the
 /// [`catalog`] namespace instead — this is here for rustdoc linking only.
 #[doc(hidden)]
-pub mod discovery;
+pub use host::discovery;
 
 /// Wire-contract types for `tutti-plugin-server`.
 ///

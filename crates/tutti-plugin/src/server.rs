@@ -11,7 +11,7 @@
 use crate::Result;
 
 pub use crate::protocol::audio::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, Sample};
-pub use crate::config::BridgeConfig;
+pub use crate::util::config::BridgeConfig;
 pub use crate::protocol::{
     AuComponentType, AudioProcessedFullData, AudioProcessedMidiData, BridgeMessage, BusChannels,
     ChordChanges, ChordValue, HostMessage, IpcMidiEvent, IpcMidiEventVec, LoadedPlugin, MidiEvent,
@@ -21,9 +21,9 @@ pub use crate::protocol::{
     PluginDescriptor, ProcessAudioFullData, ProcessAudioMidiData, SampleFormat, ScaleChanges,
     ScaleValue, SlabLayout, TransportInfo, Vst2Category,
 };
-pub use crate::subprocess::resolve_bundle;
-pub use crate::transport::shm::AudioSlab;
-pub use crate::window::{EditorSize, WindowHandle};
+pub use crate::host::subprocess::resolve_bundle;
+pub use crate::util::transport::shm::AudioSlab;
+pub use crate::util::window::{EditorSize, WindowHandle};
 
 /// VST3-only sequencer-context inputs (chord / scale / per-note text / int
 /// expression). No other format consumes these, so they live in one optional

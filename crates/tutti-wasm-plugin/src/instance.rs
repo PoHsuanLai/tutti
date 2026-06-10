@@ -23,7 +23,8 @@ use tutti_midi_types::ump::MidiEvent as UmpMidiEvent;
 
 use tutti_plugin::server::MidiEventVec;
 use tutti_plugin::{BridgeError, LoadStage, Result};
-use tutti_plugin_types::{ParameterFlags, ParameterInfo, PluginInfo};
+use tutti_plugin::server::{BusChannels, LoadedPlugin, PluginClass, PluginDescriptor};
+use tutti_plugin_types::{ParameterFlags, ParameterInfo};
 
 use crate::runtime::{self, EPOCH_DEADLINE_TICKS};
 
@@ -77,7 +78,8 @@ impl WasiView for WasmHostState {
 pub(super) struct WasmInstance {
     store: Store<WasmHostState>,
     bindings: AudioPlugin,
-    metadata: PluginInfo,
+    descriptor: PluginDescriptor,
+    loaded: LoadedPlugin,
     parameters: Vec<ParameterInfo>,
     /// Reusable per-block scratch for the input planar tree. The outer
     /// Vec is sized once at first `process_f32` and reused; only the
@@ -90,9 +92,9 @@ pub(super) struct WasmInstance {
 impl WasmInstance {
     /// Probe metadata without keeping the instance alive.
     #[allow(dead_code)]
-    pub(super) fn probe(path: &Path) -> Result<PluginInfo> {
+    pub(super) fn probe(path: &Path) -> Result<PluginDescriptor> {
         let inst = Self::load(path, 44100.0, 256)?;
-        Ok(inst.metadata.clone())
+        Ok(inst.descriptor.clone())
     }
 
     pub(super) fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
@@ -155,17 +157,23 @@ impl WasmInstance {
             .map(|s| format!("wasm.{s}"))
             .unwrap_or_else(|| "wasm.unknown".to_string());
 
-        let metadata = PluginInfo::new(id, metadata_wit.name)
-            .author(metadata_wit.vendor)
-            .version(metadata_wit.version)
-            .audio_io(
-                metadata_wit.audio.inputs as usize,
-                metadata_wit.audio.outputs as usize,
-            )
-            .midi(metadata_wit.midi.receives)
-            .latency(metadata_wit.latency_samples as usize)
-            .editor(false, None)
-            .f64_support(false);
+        let descriptor = PluginDescriptor {
+            id,
+            name: metadata_wit.name,
+            vendor: metadata_wit.vendor,
+            version: metadata_wit.version,
+            class: PluginClass::Wasm {
+                receives_midi: metadata_wit.midi.receives,
+            },
+            has_editor: false,
+        };
+        // The WASM audio-plugin world is single-bus per direction.
+        let loaded = LoadedPlugin {
+            inputs: BusChannels::from_slice(&[metadata_wit.audio.inputs as usize]),
+            outputs: BusChannels::from_slice(&[metadata_wit.audio.outputs as usize]),
+            latency_samples: metadata_wit.latency_samples as usize,
+            supports_f64: false,
+        };
 
         let parameters = metadata_wit
             .parameters
@@ -177,15 +185,20 @@ impl WasmInstance {
         Ok(Self {
             store,
             bindings,
-            metadata,
+            descriptor,
+            loaded,
             parameters,
             inputs_planar: Vec::new(),
             midi_in: Vec::new(),
         })
     }
 
-    pub(super) fn metadata(&self) -> &PluginInfo {
-        &self.metadata
+    pub(super) fn descriptor(&self) -> &PluginDescriptor {
+        &self.descriptor
+    }
+
+    pub(super) fn loaded(&self) -> &LoadedPlugin {
+        &self.loaded
     }
 
     pub(super) fn parameters(&self) -> &[ParameterInfo] {
@@ -325,8 +338,8 @@ impl WasmInstance {
     /// block on the main thread. After this returns, the audio thread's
     /// first `process_f32` won't pay first-call setup costs.
     pub(super) fn warm_prime(&mut self) {
-        let n_in = self.metadata.audio_io.inputs;
-        let n_out = self.metadata.audio_io.outputs;
+        let n_in = self.loaded.total_inputs();
+        let n_out = self.loaded.total_outputs();
         const N: usize = 64;
         let empty: Vec<f32> = vec![0.0; N];
         let input_refs: Vec<&[f32]> = (0..n_in).map(|_| empty.as_slice()).collect();
@@ -418,10 +431,9 @@ mod tests {
             return;
         };
         let inst = WasmInstance::load(&path, 44100.0, 256).expect("reverb should load");
-        let m = inst.metadata();
-        assert_eq!(m.name, "Simple Reverb");
-        assert_eq!(m.audio_io.inputs, 2);
-        assert_eq!(m.audio_io.outputs, 2);
+        assert_eq!(inst.descriptor().name, "Simple Reverb");
+        assert_eq!(inst.loaded().total_inputs(), 2);
+        assert_eq!(inst.loaded().total_outputs(), 2);
         assert_eq!(inst.parameters().len(), 4);
     }
 
@@ -515,11 +527,16 @@ mod tests {
             return;
         };
         let inst = WasmInstance::load(&path, 44100.0, 256).expect("synth dsp should load");
-        let m = inst.metadata();
-        assert_eq!(m.name, "Subtractive Synth");
-        assert_eq!(m.audio_io.inputs, 0);
-        assert_eq!(m.audio_io.outputs, 2);
-        assert!(m.receives_midi, "synth should declare MIDI receive");
+        assert_eq!(inst.descriptor().name, "Subtractive Synth");
+        assert_eq!(inst.loaded().total_inputs(), 0);
+        assert_eq!(inst.loaded().total_outputs(), 2);
+        assert!(
+            matches!(
+                inst.descriptor().class,
+                PluginClass::Wasm { receives_midi: true }
+            ),
+            "synth should declare MIDI receive"
+        );
         assert_eq!(inst.parameters().len(), 3);
     }
 

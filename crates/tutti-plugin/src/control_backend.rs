@@ -50,6 +50,11 @@ pub trait ControlBackend: Send + Sync {
     /// the audio thread.
     fn set_parameter_rt(&self, id: u32, value: f32);
 
+    /// Push the host automation state to the plugin (VST3 `IAutomationState`).
+    /// Fire-and-forget; default no-op so backends without the concept don't
+    /// need to implement it.
+    fn set_automation_state_rt(&self, _state: i32) {}
+
     /// `true` if the underlying plugin is gone (subprocess crashed, in-
     /// process backend never returns true since a crash takes the host
     /// down with it).

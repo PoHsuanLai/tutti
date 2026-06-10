@@ -8,8 +8,9 @@
 use crate::bridge::audio::{BridgeEvent, BridgeThread};
 use crate::bridge::PluginBridge;
 use crate::control_handle::PluginHandle;
-use crate::protocol::{BridgeMessage, HostMessage, ParameterInfo, PluginInfo};
-use crate::protocol::{SampleFormat, SlabLayout};
+use crate::protocol::{BridgeMessage, HostMessage, LoadedPlugin, ParameterInfo, PluginDescriptor};
+use crate::protocol::{PluginClass, SampleFormat, SlabLayout};
+use smallvec::smallvec;
 use crate::transport::shm::AudioSlab;
 use std::sync::Arc;
 
@@ -80,7 +81,8 @@ fn handle_with_mock_server(
                 channels: 2,
                 samples_per_channel: 512,
                 format: SampleFormat::Float32,
-                buses: Vec::new(),
+                inputs: smallvec![],
+                outputs: smallvec![],
             },
         )
         .unwrap(),
@@ -125,10 +127,21 @@ fn handle_with_mock_server(
     // Give the bridge thread time to start up and register I/O.
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    let metadata = PluginInfo::new("test.plugin", "Test Plugin")
-        .audio_io(2, 2)
-        .editor(true, Some((800, 600)));
-    let plugin_handle = PluginHandle::from_bridge_and_metadata(bridge, metadata);
+    let descriptor = PluginDescriptor {
+        id: "test.plugin".into(),
+        name: "Test Plugin".into(),
+        vendor: String::new(),
+        version: String::new(),
+        class: PluginClass::Unknown,
+        has_editor: true,
+    };
+    let loaded = LoadedPlugin {
+        inputs: smallvec![2],
+        outputs: smallvec![2],
+        latency_samples: 0,
+        supports_f64: false,
+    };
+    let plugin_handle = PluginHandle::from_bridge_and_metadata(bridge, descriptor, loaded);
 
     (plugin_handle, bridge_thread, server_thread)
 }
@@ -161,7 +174,8 @@ fn handle_with_multi_reply_server(
                 channels: 2,
                 samples_per_channel: 512,
                 format: SampleFormat::Float32,
-                buses: Vec::new(),
+                inputs: smallvec![],
+                outputs: smallvec![],
             },
         )
         .unwrap(),
@@ -206,10 +220,22 @@ fn handle_with_multi_reply_server(
 
     std::thread::sleep(std::time::Duration::from_millis(50));
 
-    let metadata = PluginInfo::new("test.plugin", "Test Plugin")
-        .audio_io(2, 2)
-        .editor(true, Some((800, 600)));
-    let plugin_handle = PluginHandle::from_bridge_and_metadata(Arc::clone(&bridge), metadata);
+    let descriptor = PluginDescriptor {
+        id: "test.plugin".into(),
+        name: "Test Plugin".into(),
+        vendor: String::new(),
+        version: String::new(),
+        class: PluginClass::Unknown,
+        has_editor: true,
+    };
+    let loaded = LoadedPlugin {
+        inputs: smallvec![2],
+        outputs: smallvec![2],
+        latency_samples: 0,
+        supports_f64: false,
+    };
+    let plugin_handle =
+        PluginHandle::from_bridge_and_metadata(Arc::clone(&bridge), descriptor, loaded);
 
     (plugin_handle, bridge, bridge_thread, server_thread)
 }

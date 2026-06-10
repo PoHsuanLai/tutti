@@ -12,7 +12,27 @@ use super::control_backend::InProcessVst2Backend;
 use crate::audio_node::{LatencyChangeSink, ParameterChangeSink};
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::handles::PluginHandle;
-use crate::protocol::PluginInfo;
+use crate::protocol::{LoadedPlugin, PluginClass, PluginDescriptor, Vst2Category};
+use smallvec::SmallVec;
+use tutti_vst2_host::Vst2Category as HostVst2Category;
+
+/// Map `tutti-vst2-host`'s category mirror to `tutti-plugin`'s wire mirror.
+fn map_vst2_category(c: HostVst2Category) -> Vst2Category {
+    match c {
+        HostVst2Category::Unknown => Vst2Category::Unknown,
+        HostVst2Category::Effect => Vst2Category::Effect,
+        HostVst2Category::Synth => Vst2Category::Synth,
+        HostVst2Category::Analysis => Vst2Category::Analysis,
+        HostVst2Category::Mastering => Vst2Category::Mastering,
+        HostVst2Category::Spacializer => Vst2Category::Spacializer,
+        HostVst2Category::RoomFx => Vst2Category::RoomFx,
+        HostVst2Category::SurroundFx => Vst2Category::SurroundFx,
+        HostVst2Category::Restoration => Vst2Category::Restoration,
+        HostVst2Category::OfflineProcess => Vst2Category::OfflineProcess,
+        HostVst2Category::Shell => Vst2Category::Shell,
+        HostVst2Category::Generator => Vst2Category::Generator,
+    }
+}
 
 /// Maximum block size we pre-size the plugin's render scratch for.
 /// Plugins are told this is the upper bound; per-call sizes may be
@@ -39,14 +59,23 @@ pub fn load(
     })?;
 
     let host_meta = inner.metadata().clone();
-    let plugin_info = PluginInfo::new(host_meta.id.clone(), host_meta.name.clone())
-        .author(host_meta.vendor.clone())
-        .version(host_meta.version.clone())
-        .audio_io(host_meta.num_inputs, host_meta.num_outputs)
-        .midi(host_meta.receives_midi)
-        .f64_support(host_meta.supports_f64)
-        .editor(host_meta.has_editor, None)
-        .latency(host_meta.latency_samples);
+    let descriptor = PluginDescriptor {
+        id: host_meta.id.clone(),
+        name: host_meta.name.clone(),
+        vendor: host_meta.vendor.clone(),
+        version: host_meta.version.clone(),
+        class: PluginClass::Vst2 {
+            category: map_vst2_category(host_meta.category),
+        },
+        has_editor: host_meta.has_editor,
+    };
+    // VST2 is single-bus: one main input bus and one main output bus.
+    let loaded = LoadedPlugin {
+        inputs: SmallVec::from_slice(&[host_meta.num_inputs]),
+        outputs: SmallVec::from_slice(&[host_meta.num_outputs]),
+        latency_samples: host_meta.latency_samples,
+        supports_f64: host_meta.supports_f64,
+    };
 
     let inner = Arc::new(Mutex::new(inner));
     let contention = Arc::new(AtomicU64::new(0));
@@ -66,8 +95,14 @@ pub fn load(
     );
     let midi_sender = client.midi_sender();
 
-    let handle =
-        PluginHandle::from_backend(backend, plugin_info, latency_sink, param_sink, midi_sender);
+    let handle = PluginHandle::from_backend(
+        backend,
+        descriptor,
+        loaded,
+        latency_sink,
+        param_sink,
+        midi_sender,
+    );
 
     Ok((Box::new(client), handle))
 }

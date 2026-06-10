@@ -8,24 +8,46 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, EditorSize, MidiEventVec, NoteExpressionChanges, ParameterChanges,
-    ParameterInfo, PluginInfo, PluginInstance, ProcessContext, ProcessOutput, WindowHandle,
+    AudioBufferMut, EditorSize, LoadedPlugin, MidiEventVec, NoteExpressionChanges,
+    ParameterChanges, ParameterInfo, PluginClass, PluginDescriptor, PluginInstance, ProcessContext,
+    ProcessOutput, Vst2Category, WindowHandle,
 };
 use tutti_plugin::{BridgeError, Result};
 
 #[cfg(feature = "vst2")]
 use tutti_vst2_host::{
-    ProcessContext as Vst2ProcessContext, RenderScratch, Vst2Error, Vst2Instance as Vst2Host,
+    ProcessContext as Vst2ProcessContext, RenderScratch, Vst2Category as HostVst2Category,
+    Vst2Error, Vst2Instance as Vst2Host,
 };
 
 use crate::loaders::common::params::{make_param_info, ALL_AUTOMATABLE};
+use crate::loaders::common::{single_bus, Meta};
+
+/// Map `tutti-vst2-host`'s category mirror to the wire `Vst2Category`.
+#[cfg(feature = "vst2")]
+fn map_category(c: HostVst2Category) -> Vst2Category {
+    match c {
+        HostVst2Category::Unknown => Vst2Category::Unknown,
+        HostVst2Category::Effect => Vst2Category::Effect,
+        HostVst2Category::Synth => Vst2Category::Synth,
+        HostVst2Category::Analysis => Vst2Category::Analysis,
+        HostVst2Category::Mastering => Vst2Category::Mastering,
+        HostVst2Category::Spacializer => Vst2Category::Spacializer,
+        HostVst2Category::RoomFx => Vst2Category::RoomFx,
+        HostVst2Category::SurroundFx => Vst2Category::SurroundFx,
+        HostVst2Category::Restoration => Vst2Category::Restoration,
+        HostVst2Category::OfflineProcess => Vst2Category::OfflineProcess,
+        HostVst2Category::Shell => Vst2Category::Shell,
+        HostVst2Category::Generator => Vst2Category::Generator,
+    }
+}
 
 pub struct Vst2Instance {
     #[cfg(feature = "vst2")]
     inner: Vst2Host,
     #[cfg(feature = "vst2")]
     scratch: RenderScratch,
-    metadata: PluginInfo,
+    meta: Meta,
     #[allow(dead_code)] // Carried for diagnostics under the not(vst2) cfg.
     sample_rate: f64,
 }
@@ -38,14 +60,23 @@ impl Vst2Instance {
                 .map_err(|e| translate_error(e, path))?;
 
             let host_meta = inner.metadata().clone();
-            let metadata = PluginInfo::new(host_meta.id, host_meta.name)
-                .author(host_meta.vendor)
-                .version(host_meta.version)
-                .audio_io(host_meta.num_inputs, host_meta.num_outputs)
-                .midi(host_meta.receives_midi)
-                .f64_support(host_meta.supports_f64)
-                .editor(host_meta.has_editor, None)
-                .latency(host_meta.latency_samples);
+            let descriptor = PluginDescriptor {
+                id: host_meta.id,
+                name: host_meta.name,
+                vendor: host_meta.vendor,
+                version: host_meta.version,
+                class: PluginClass::Vst2 {
+                    category: map_category(host_meta.category),
+                },
+                has_editor: host_meta.has_editor,
+            };
+            // VST2 is single-bus: one main input bus, one main output bus.
+            let loaded = LoadedPlugin {
+                inputs: single_bus(host_meta.num_inputs),
+                outputs: single_bus(host_meta.num_outputs),
+                latency_samples: host_meta.latency_samples,
+                supports_f64: host_meta.supports_f64,
+            };
 
             let scratch =
                 RenderScratch::new(host_meta.num_inputs, host_meta.num_outputs, block_size);
@@ -53,7 +84,7 @@ impl Vst2Instance {
             Ok(Self {
                 inner,
                 scratch,
-                metadata,
+                meta: Meta { descriptor, loaded },
                 sample_rate,
             })
         }
@@ -69,8 +100,8 @@ impl Vst2Instance {
         }
     }
 
-    pub fn metadata(&self) -> &PluginInfo {
-        &self.metadata
+    pub fn descriptor(&self) -> &PluginDescriptor {
+        &self.meta.descriptor
     }
 
     /// Drain plugin-internal parameter changes (e.g., GUI knob movement).
@@ -107,8 +138,12 @@ fn translate_error(err: Vst2Error, _path: &Path) -> BridgeError {
 }
 
 impl PluginInstance for Vst2Instance {
-    fn metadata(&self) -> &PluginInfo {
-        &self.metadata
+    fn descriptor(&self) -> &PluginDescriptor {
+        &self.meta.descriptor
+    }
+
+    fn loaded(&self) -> &LoadedPlugin {
+        &self.meta.loaded
     }
 
     fn process(

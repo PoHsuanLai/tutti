@@ -21,7 +21,9 @@ pub use harmony::{
     ChordChanges, ChordValue, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,
 };
-pub use metadata::{AudioIO, BusDirection, BusLayout, PluginInfo};
+pub use metadata::{
+    AuComponentType, BusChannels, LoadedPlugin, PluginClass, PluginDescriptor, Vst2Category,
+};
 pub use midi::{IpcMidiEvent, IpcMidiEventVec, MidiEventVec};
 pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpressionValue};
 pub use parameters::{

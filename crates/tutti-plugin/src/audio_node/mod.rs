@@ -37,7 +37,7 @@ use crate::bridge::audio::BridgeEvent;
 use crate::bridge::PluginBridge;
 use crate::config::BridgeConfig;
 use crate::error::Result;
-use crate::protocol::{PluginInfo, SampleFormat};
+use crate::protocol::{LoadedPlugin, PluginDescriptor, SampleFormat};
 use crate::subprocess;
 use batcher::Batcher;
 use std::path::PathBuf;
@@ -51,7 +51,8 @@ use tutti_midi_types::ump::MidiEvent;
 #[derive(Clone)]
 pub struct PluginClient {
     bridge: Arc<PluginBridge>,
-    metadata: PluginInfo,
+    descriptor: PluginDescriptor,
+    loaded: LoadedPlugin,
     format: SampleFormat,
     /// Shared across clones so runtime latency updates are seen by
     /// whichever clone fundsp is currently processing.
@@ -106,14 +107,14 @@ impl PluginClient {
         // channel (bus-ordered, base 0). The output direction reads from the
         // slab's per-direction output base so it never aliases the inputs.
         // Read the layout BEFORE the slab is moved into the bridge.
-        let inputs: usize = server.metadata.input_bus_channels().iter().sum();
-        let outputs: usize = server.metadata.output_bus_channels().iter().sum();
+        let inputs: usize = server.loaded.total_inputs();
+        let outputs: usize = server.loaded.total_outputs();
         let output_base = server.audio_buffer.layout_ref().output_base();
 
         let (bridge, bridge_thread) =
             PluginBridge::new(config.socket_path.clone(), server.audio_buffer, plugin_path)?;
 
-        let latency = Arc::new(AtomicUsize::new(server.metadata.latency_samples));
+        let latency = Arc::new(AtomicUsize::new(server.loaded.latency_samples));
         let max_buffer_size = config.max_buffer_size;
         let process_guard = Arc::new(ProcessGuard::new(server.process, bridge_thread, config));
         let latency_sink = LatencyChangeSink::new();
@@ -145,7 +146,8 @@ impl PluginClient {
 
         Ok(Self {
             bridge,
-            metadata: server.metadata,
+            descriptor: server.descriptor,
+            loaded: server.loaded,
             format: server.format,
             latency,
             latency_sink,
@@ -190,8 +192,14 @@ impl PluginClient {
         self.latency.store(samples, Ordering::Release);
     }
 
-    pub fn metadata(&self) -> &PluginInfo {
-        &self.metadata
+    /// Catalog identity (id, name, vendor, version, native class, editor).
+    pub fn descriptor(&self) -> &PluginDescriptor {
+        &self.descriptor
+    }
+
+    /// Engine-wiring data from load (per-bus channel widths, latency, f64).
+    pub fn loaded(&self) -> &LoadedPlugin {
+        &self.loaded
     }
 
     pub fn format(&self) -> SampleFormat {

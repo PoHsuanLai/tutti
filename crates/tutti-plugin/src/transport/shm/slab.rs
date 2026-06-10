@@ -183,7 +183,8 @@ mod tests {
             channels,
             samples_per_channel: samples,
             format,
-            buses: Vec::new(),
+            inputs: Default::default(),
+            outputs: Default::default(),
         }
     }
 

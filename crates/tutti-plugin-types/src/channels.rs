@@ -1,21 +1,48 @@
-//! Audio buffer types shared by all plugin host crates.
+//! Deinterleaved channel buffers and the C-FFI pointer marshalling that hands
+//! them to a plugin's process call.
 //!
-//! The [`Sample`] trait lets generic process functions dispatch to the
-//! correct pointer-array layout at compile time. Per-format extensions
-//! (e.g. `tutti-vst3-host`'s `Vst3Sample`) layer format-specific constants
-//! on top.
+//! Audio crosses the plugin boundary one buffer *per channel* (deinterleaved),
+//! and the C plugin ABIs (VST3, AU) take those channel buffers as a `void**` —
+//! a pointer to an array of per-channel pointers (`*mut *mut c_void` in Rust).
+//! This module owns the three pieces that shape that hand-off:
+//!
+//! - [`AudioBuffer`] — the safe, borrowed view of one process block: a slice of
+//!   input channel slices and a slice of output channel slices, plus the block
+//!   length and sample rate. This is what host code reads and writes.
+//! - [`BufferPtrs`] — the pre-allocated `void**` pointer scratch handed to the C
+//!   API each block. Filled from an [`AudioBuffer`]'s slices without allocating,
+//!   so the realtime path stays allocation-free.
+//! - [`Sample`] — a compile-time switch (`f32` / `f64`) that routes a generic
+//!   `process::<T>` call to the matching-width [`BufferPtrs`]. Per-format
+//!   extensions (e.g. `tutti-vst3-host`'s `Vst3Sample`) layer format-specific
+//!   constants on top.
 
 use std::ffi::c_void;
 
-/// Marker trait for plugin-compatible sample types (f32, f64).
+/// Plugin-compatible sample width (`f32` or `f64`), used as a compile-time
+/// switch by generic process code.
 ///
-/// Generic process code such as `Vst3Instance::process` /
-/// `ClapInstance::process` uses `<T: Sample>` so the compiler monomorphizes
-/// one specialization per concrete type.
+/// Generic process code such as `Vst3Instance::process` / `ClapInstance::process`
+/// is written `<T: Sample>`, so the compiler monomorphizes one specialization
+/// per concrete width. The plugin *instance*, however, is **not** generic over
+/// `T`: it is one concrete struct that must serve whichever format gets
+/// negotiated at runtime — and VST3 plugins can re-negotiate f32 ⇄ f64 across
+/// their lifetime. So the instance holds a [`BufferPtrs`] of *each* width and
+/// this trait's [`prepare_ffi_buffers`](Sample::prepare_ffi_buffers) selects the
+/// one matching `T`.
 pub trait Sample: Copy + Default + Send + 'static {
-    /// Fill the appropriate [`BufferPtrs`] from the caller's input/output
-    /// slices and return the two `*mut *mut c_void` arrays that C plugin
-    /// APIs (VST3, AU) require.
+    /// Fill the matching-width [`BufferPtrs`] from the caller's channel slices
+    /// and return its `(inputs, outputs)` `void**` arrays for the C plugin API.
+    ///
+    /// Both `BufferPtrs<f32>` and `BufferPtrs<f64>` are passed because the caller
+    /// (`process::<T>`) is generic and owns *both* widths of scratch, but only
+    /// one matches `T`. Each impl uses the one whose element type is `Self` and
+    /// ignores the other (a no-op `&mut` borrow, zero cost) — this is the
+    /// compile-time switch that bridges the generic `process::<T>` and the
+    /// instance's two concrete, typed scratch buffers. (The scratch can't be a
+    /// single `BufferPtrs<T>`: `Vec<*mut f32>` and `Vec<*mut f64>` are distinct
+    /// Rust types even though the bytes are identical, so one can't stand in for
+    /// the other without a transmute.)
     fn prepare_ffi_buffers(
         ptrs_f32: &mut BufferPtrs<f32>,
         ptrs_f64: &mut BufferPtrs<f64>,
@@ -46,9 +73,18 @@ impl Sample for f64 {
     }
 }
 
-/// Pair of pre-allocated pointer arrays handed to a C plugin API on each
-/// process call, one per bus direction. Allocated once per plugin instance
-/// and reused so the realtime path is allocation-free.
+/// Pre-allocated channel-pointer arrays handed to a C plugin API on each
+/// process call — one array per process direction (input / output).
+///
+/// Each `Vec<*mut T>` is the backing store for a `void**`: it holds one pointer
+/// per channel (each pointing at that channel's deinterleaved sample buffer),
+/// and [`prepare`](Self::prepare) returns the `Vec`'s base as a
+/// `*mut *mut c_void` for the C API.
+///
+/// Allocated once per plugin instance and reused, so the realtime `process`
+/// path only *refills* the pointer slots (never grows the `Vec`s) and stays
+/// allocation-free. An instance holds one of these per sample width — see
+/// [`Sample`] for why both widths are kept rather than a single `BufferPtrs<T>`.
 pub struct BufferPtrs<T> {
     pub input: Vec<*mut T>,
     pub output: Vec<*mut T>,

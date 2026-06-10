@@ -22,10 +22,10 @@ fn load_in_process_returns_audio_unit_and_handle() {
     let (_unit, handle) =
         tutti_plugin::in_process_vst2(Path::new(VST2_PLUGIN), 48_000.0).expect("load failed");
 
-    let meta = handle.metadata();
-    assert!(!meta.name.is_empty());
-    assert_eq!(meta.audio_io.outputs, 2);
-    assert!(meta.has_editor);
+    let descriptor = handle.descriptor();
+    assert!(!descriptor.name.is_empty());
+    assert_eq!(handle.loaded().total_outputs(), 2);
+    assert!(descriptor.has_editor);
 }
 
 #[test]

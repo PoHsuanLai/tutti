@@ -16,6 +16,9 @@ pub struct PluginInfo {
     pub version: String,
     pub num_inputs: usize,
     pub num_outputs: usize,
+    /// The plugin's declared VST2 category, carried verbatim. Callers classify
+    /// it themselves rather than relying on the derived `receives_midi` flag.
+    pub category: Vst2Category,
     /// `true` if the plugin is a synth or declares MIDI input/output.
     pub receives_midi: bool,
     pub has_editor: bool,
@@ -24,6 +27,26 @@ pub struct PluginInfo {
     /// `true` if the plugin advertised f64 precision support — the `vst`
     /// crate processes f32 only regardless, so this is informational.
     pub supports_f64: bool,
+}
+
+/// The plugin's declared VST2 category (mirror of the `vst` crate's
+/// `Category`, owned here so this crate's public API doesn't leak the `vst`
+/// dependency).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Vst2Category {
+    #[default]
+    Unknown,
+    Effect,
+    Synth,
+    Analysis,
+    Mastering,
+    Spacializer,
+    RoomFx,
+    SurroundFx,
+    Restoration,
+    OfflineProcess,
+    Shell,
+    Generator,
 }
 
 /// Single VST2 parameter descriptor.

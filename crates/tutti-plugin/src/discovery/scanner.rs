@@ -7,8 +7,7 @@
 use super::catalog::{CatalogExt, PluginCatalog};
 use super::fs::{discover_plugins, file_modification_time};
 use super::pedal::Pedal;
-use super::record::{Blacklist, PluginFormat, PluginRecord};
-use crate::protocol::PluginInfo;
+use super::record::{Blacklist, PluginClass, PluginDescriptor, PluginFormat, PluginRecord};
 use crossbeam_channel::{Receiver, Sender};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
@@ -184,11 +183,11 @@ impl PluginScanner {
             warn!("failed to arm dead-man's pedal: {e}");
         }
         let outcome = match probe_plugin(path, format) {
-            Ok(metadata) => {
+            Ok(descriptor) => {
                 self.catalog.upsert(PluginRecord {
                     path: path.to_path_buf(),
                     format,
-                    metadata,
+                    descriptor,
                     modification_time: file_modification_time(path).unwrap_or(0),
                     blacklist: Blacklist::Ok,
                     extension_id: None,
@@ -258,9 +257,9 @@ impl ScanResult {
 /// Probe a plugin by spawning a plugin-server subprocess and querying its
 /// metadata. Falls back to filename-based metadata if the plugin-server
 /// binary is not available.
-fn probe_plugin(path: &Path, format: PluginFormat) -> Result<PluginInfo, String> {
+fn probe_plugin(path: &Path, format: PluginFormat) -> Result<PluginDescriptor, String> {
     match crate::subprocess::probe_metadata(path) {
-        Ok(metadata) => Ok(metadata),
+        Ok(descriptor) => Ok(descriptor),
         Err(crate::error::BridgeError::ServerNotFound) => {
             debug!(
                 "plugin-server not available, using filename metadata for {:?}",
@@ -272,8 +271,10 @@ fn probe_plugin(path: &Path, format: PluginFormat) -> Result<PluginInfo, String>
     }
 }
 
-/// Fallback: create minimal metadata from filename when plugin-server is unavailable.
-fn probe_plugin_fallback(path: &Path, format: PluginFormat) -> PluginInfo {
+/// Fallback: create minimal metadata from filename when plugin-server is
+/// unavailable. The native classification is unknown without a probe, so the
+/// descriptor carries [`PluginClass::Unknown`].
+fn probe_plugin_fallback(path: &Path, format: PluginFormat) -> PluginDescriptor {
     let name = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -286,12 +287,13 @@ fn probe_plugin_fallback(path: &Path, format: PluginFormat) -> PluginInfo {
         name.to_lowercase().replace(' ', "_")
     );
 
-    PluginInfo::new(id, name)
+    PluginDescriptor::new(id, name, PluginClass::Unknown)
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::database::JsonCatalog;
+    use super::super::record::Vst2Category;
     use super::*;
     use tempfile::TempDir;
 
@@ -352,7 +354,7 @@ mod tests {
         db.upsert(PluginRecord {
             path: plugin,
             format: PluginFormat::Vst3,
-            metadata: PluginInfo::new("cached", "cached"),
+            descriptor: PluginDescriptor::new("cached", "cached", PluginClass::Unknown),
             modification_time: mtime,
             blacklist: Blacklist::Ok,
             extension_id: None,
@@ -449,12 +451,22 @@ mod tests {
         let format = format_from_path(path).unwrap();
 
         match probe_plugin(path, format) {
-            Ok(meta) => {
-                assert!(!meta.name.is_empty(), "name should not be empty");
-                assert!(meta.receives_midi, "synth should receive MIDI");
-                assert!(meta.is_synth(), "TAL-NoiseMaker should classify as synth");
-                assert!(meta.audio_io.outputs > 0, "synth should have audio outputs");
-                println!("Probed {:?}: {:?}", path, meta);
+            Ok(descriptor) => {
+                assert!(!descriptor.name.is_empty(), "name should not be empty");
+                // TAL-NoiseMaker is a synth; its native class should reflect that
+                // (VST2 `Synth` category). The DAW interprets the class itself —
+                // tutti only carries it verbatim.
+                assert!(
+                    matches!(
+                        &descriptor.class,
+                        PluginClass::Vst2 {
+                            category: Vst2Category::Synth
+                        }
+                    ),
+                    "TAL-NoiseMaker should report a synth class, got {:?}",
+                    descriptor.class
+                );
+                println!("Probed {:?}: {:?}", path, descriptor);
             }
             Err(e) => {
                 eprintln!("Probe failed (plugin-server may not be built): {e}");

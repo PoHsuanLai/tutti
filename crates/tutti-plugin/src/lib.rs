@@ -163,8 +163,9 @@ pub mod catalog {
     #[cfg(feature = "json")]
     pub use crate::discovery::JsonCatalog;
     pub use crate::discovery::{
-        Blacklist, CatalogExt, PluginCatalog, PluginFormat, PluginRecord, PluginScanner,
-        ScanHandle, ScanPhase, ScanProgress, ScanResult,
+        AuComponentType, Blacklist, CatalogExt, PluginCatalog, PluginClass, PluginDescriptor,
+        PluginFormat, PluginRecord, PluginScanner, ScanHandle, ScanPhase, ScanProgress, ScanResult,
+        Vst2Category,
     };
     pub use crate::plugins::{PluginId, Plugins};
     pub use crate::plugins_config::PluginsConfig;
@@ -201,7 +202,8 @@ pub mod handles {
 /// through [`server`] for that path.
 pub mod metadata {
     pub use crate::protocol::{
-        ParameterFlags, ParameterInfo, PluginInfo, SampleFormat, TransportInfo,
+        AuComponentType, BusChannels, LoadedPlugin, ParameterFlags, ParameterInfo, PluginClass,
+        PluginDescriptor, SampleFormat, TransportInfo, Vst2Category,
     };
 }
 

@@ -3,7 +3,7 @@
 
 use super::locate::find_plugin_server;
 use crate::error::{BridgeError, Result};
-use crate::protocol::{BridgeMessage, HostMessage, PluginInfo};
+use crate::protocol::{BridgeMessage, HostMessage, PluginDescriptor};
 use crate::transport::control::{self as ipc, ControlStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -15,7 +15,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECT_ATTEMPTS: u32 = 20;
 const CONNECT_BACKOFF: Duration = Duration::from_millis(100);
 
-pub fn probe_metadata(plugin_path: &Path) -> Result<PluginInfo> {
+pub fn probe_metadata(plugin_path: &Path) -> Result<PluginDescriptor> {
     let server_path = find_plugin_server()?;
     let socket_path = next_socket_path();
 
@@ -38,7 +38,7 @@ pub fn probe_metadata(plugin_path: &Path) -> Result<PluginInfo> {
     result
 }
 
-fn run_probe(socket_path: &Path, plugin_path: &Path) -> Result<PluginInfo> {
+fn run_probe(socket_path: &Path, plugin_path: &Path) -> Result<PluginDescriptor> {
     let stream = connect_with_retry(socket_path)?;
     probe_exchange(stream, plugin_path)
 }
@@ -56,7 +56,7 @@ fn connect_with_retry(socket: &Path) -> Result<ControlStream> {
     })
 }
 
-fn probe_exchange(mut stream: ControlStream, plugin_path: &Path) -> Result<PluginInfo> {
+fn probe_exchange(mut stream: ControlStream, plugin_path: &Path) -> Result<PluginDescriptor> {
     match ipc::recv_within(&mut stream, PROBE_TIMEOUT)? {
         BridgeMessage::Ready => {}
         ref other => return Err(BridgeError::unexpected_message("Ready", other)),
@@ -70,7 +70,7 @@ fn probe_exchange(mut stream: ControlStream, plugin_path: &Path) -> Result<Plugi
     )?;
 
     match ipc::recv_within(&mut stream, PROBE_TIMEOUT)? {
-        BridgeMessage::PluginLoaded { metadata, .. } => Ok(*metadata),
+        BridgeMessage::PluginLoaded { descriptor, .. } => Ok(*descriptor),
         BridgeMessage::Error { message } => {
             Err(BridgeError::load_from_server(plugin_path, message))
         }

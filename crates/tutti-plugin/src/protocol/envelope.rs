@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::metadata::PluginInfo;
+use super::metadata::{LoadedPlugin, PluginDescriptor};
 use super::parameters::ParameterInfo;
 use super::process::{
     AudioProcessedFullData, AudioProcessedMidiData, ProcessAudioFullData, ProcessAudioMidiData,
@@ -43,6 +43,9 @@ pub enum HostMessage {
         param_id: u32,
         value: f32,
     },
+    SetAutomationState {
+        state: i32,
+    },
     GetParameter {
         param_id: u32,
     },
@@ -72,7 +75,14 @@ pub enum HostMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BridgeMessage {
     PluginLoaded {
-        metadata: Box<PluginInfo>,
+        /// Catalog identity (id, name, vendor, version, native class, editor).
+        /// The probe path uses only this half; `loaded` is defaulted for a
+        /// metadata-only probe that never activated the plugin.
+        descriptor: Box<PluginDescriptor>,
+        /// Engine-wiring data from instantiation (bus widths, latency, f64).
+        /// Empty/default for a `ProbePlugin` reply.
+        #[serde(default)]
+        loaded: LoadedPlugin,
         negotiated_format: SampleFormat,
     },
     PluginUnloaded,

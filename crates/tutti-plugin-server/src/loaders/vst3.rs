@@ -3,13 +3,14 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    BusLayout, ChordChanges, EditorSize, NoteExpressionChanges, NoteExpressionIntChanges,
-    NoteExpressionTextChanges, NoteExpressionType, ParameterFlags, ParameterInfo, PluginInfo,
-    ScaleChanges, WindowHandle,
+    BusChannels, ChordChanges, EditorSize, LoadedPlugin, NoteExpressionChanges,
+    NoteExpressionIntChanges, NoteExpressionTextChanges, NoteExpressionType, ParameterFlags,
+    ParameterInfo, PluginClass, PluginDescriptor, ScaleChanges, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 use crate::loaders::common::params::make_param_info;
+use crate::loaders::common::{single_bus, Meta};
 
 pub use tutti_vst3_host;
 
@@ -42,7 +43,7 @@ macro_rules! vst_dispatch_mut {
 
 pub struct Vst3Instance {
     inner: VstInner,
-    metadata: PluginInfo,
+    meta: Meta,
     /// Load parameters retained so the plugin can be torn down and rebuilt in
     /// place when it requests `kReloadComponent`. See [`Self::reload`].
     reload: ReloadParams,
@@ -75,7 +76,7 @@ pub struct RestartChanges {
     /// the client should resync everything (it is effectively a fresh plugin).
     pub reloaded: bool,
     /// `kIoChanged` — the bus layout changed and was re-enumerated; the new
-    /// layout is in `metadata()`. The client should rewire its audio graph.
+    /// layout is in `loaded()`. The client should rewire its audio graph.
     pub io_changed: bool,
 }
 
@@ -99,7 +100,7 @@ fn map_vst3_error(e: tutti_vst3_host::Vst3Error, path: &Path) -> BridgeError {
 /// Resolve, load, and activate the inner host instance from load parameters,
 /// returning it alongside freshly-built protocol metadata. Shared by
 /// [`Vst3Instance::load`] and [`Vst3Instance::reload`].
-fn build_inner(p: &ReloadParams) -> Result<(VstInner, PluginInfo)> {
+fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
     let resolved = tutti_plugin::server::resolve_bundle(&p.path)?;
     let loaded =
         tutti_vst3_host::Vst3Loaded::load(&resolved).map_err(|e| map_vst3_error(e, &p.path))?;
@@ -124,23 +125,59 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, PluginInfo)> {
         VstInner::F32(i) => i.read_latency_samples(),
         VstInner::F64(i) => i.read_latency_samples(),
     } as usize;
-    let buses = build_bus_layout(&info);
-    let metadata = PluginInfo::new(info.id.clone(), info.name.clone())
-        .author(info.vendor.clone())
-        .version(info.version.clone())
-        .audio_io(info.num_inputs, info.num_outputs)
-        .midi(info.has_midi_input)
-        .f64_support(actually_f64)
-        .buses(buses)
-        .editor(has_editor, None)
-        .latency(latency);
+    let descriptor = vst3_descriptor(&info, has_editor);
+    let loaded_meta = LoadedPlugin {
+        inputs: bus_channels(&info.input_bus_channels, info.num_inputs),
+        outputs: bus_channels(&info.output_bus_channels, info.num_outputs),
+        latency_samples: latency,
+        supports_f64: actually_f64,
+    };
 
-    Ok((inner, metadata))
+    Ok((
+        inner,
+        Meta {
+            descriptor,
+            loaded: loaded_meta,
+        },
+    ))
+}
+
+/// Build the catalog descriptor from VST3 factory info.
+///
+/// `class` carries an empty subcategory string for now: the per-bus layout and
+/// MIDI/editor data come straight from the live component, but the VST3
+/// `PClassInfo2::subCategories` string (e.g. `"Fx|Reverb"`) isn't threaded
+/// through the host's instance `PluginInfo` yet.
+// TODO: surface `PClassInfo2::subCategories` from the factory so the class is
+// fully populated; until then the DAW falls back on `has_midi_input` etc.
+fn vst3_descriptor(info: &tutti_vst3_host::PluginInfo, has_editor: bool) -> PluginDescriptor {
+    PluginDescriptor {
+        id: info.id.clone(),
+        name: info.name.clone(),
+        vendor: info.vendor.clone(),
+        version: info.version.clone(),
+        class: PluginClass::Vst3 {
+            category: String::new(),
+        },
+        has_editor,
+    }
+}
+
+/// Per-bus channel counts for one direction. The host already enumerates every
+/// audio bus; we carry the full list verbatim so sidechain/aux buses survive.
+/// Falls back to a single main bus of `main_channels` when the host reported no
+/// per-bus list (e.g. a plugin with exactly one bus that mirrors `num_*`).
+fn bus_channels(host_buses: &[usize], main_channels: usize) -> BusChannels {
+    if host_buses.is_empty() {
+        single_bus(main_channels)
+    } else {
+        host_buses.iter().copied().collect()
+    }
 }
 
 impl Vst3Instance {
     /// Lightweight probe: load library and read factory metadata without activation.
-    pub fn probe(path: &Path) -> Result<PluginInfo> {
+    pub fn probe(path: &Path) -> Result<PluginDescriptor> {
         let resolved = tutti_plugin::server::resolve_bundle(path)?;
         let info = tutti_vst3_host::Vst3Instance::<f32>::probe(&resolved).map_err(|e| {
             BridgeError::LoadFailed {
@@ -149,12 +186,7 @@ impl Vst3Instance {
                 reason: e.to_string(),
             }
         })?;
-        Ok(PluginInfo::new(info.id.clone(), info.name.clone())
-            .author(info.vendor.clone())
-            .version(info.version.clone())
-            .audio_io(info.num_inputs, info.num_outputs)
-            .midi(info.has_midi_input)
-            .f64_support(info.supports_f64))
+        Ok(vst3_descriptor(&info, false))
     }
 
     /// Load and activate a VST3 plugin.
@@ -169,10 +201,10 @@ impl Vst3Instance {
             block_size,
             prefer_f64,
         };
-        let (inner, metadata) = build_inner(&reload)?;
+        let (inner, meta) = build_inner(&reload)?;
         Ok(Self {
             inner,
-            metadata,
+            meta,
             reload,
         })
     }
@@ -187,9 +219,9 @@ impl Vst3Instance {
         // it left off; tolerate plugins that refuse getState.
         let saved_state = vst_dispatch_mut!(self, inner => inner.state()).ok();
 
-        let (inner, metadata) = build_inner(&self.reload)?;
+        let (inner, meta) = build_inner(&self.reload)?;
         self.inner = inner;
-        self.metadata = metadata;
+        self.meta = meta;
 
         if let Some(state) = saved_state {
             let _ = vst_dispatch_mut!(self, inner => inner.set_state(&state));
@@ -197,9 +229,6 @@ impl Vst3Instance {
         Ok(())
     }
 
-    pub fn metadata(&self) -> &PluginInfo {
-        &self.metadata
-    }
 
     /// Drain the plugin's `restartComponent` requests and apply every host-side
     /// effect, returning the residual [`RestartChanges`] the server / client
@@ -227,7 +256,7 @@ impl Vst3Instance {
         if restart.latency_changed {
             let samples =
                 vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize;
-            self.metadata = self.metadata.clone().latency(samples);
+            self.meta.loaded.latency_samples = samples;
             changes.latency = Some(samples);
         }
 
@@ -240,9 +269,10 @@ impl Vst3Instance {
 
         if restart.io_changed {
             // The host already re-enumerated buses on its side; refresh the
-            // cached layout so metadata() reflects it for the client rewire.
-            let buses = vst_dispatch!(self, inner => build_bus_layout(inner.info()));
-            self.metadata = self.metadata.clone().buses(buses);
+            // cached per-bus layout so loaded() reflects it for the client rewire.
+            let info = vst_dispatch!(self, inner => inner.info().clone());
+            self.meta.loaded.inputs = bus_channels(&info.input_bus_channels, info.num_inputs);
+            self.meta.loaded.outputs = bus_channels(&info.output_bus_channels, info.num_outputs);
             changes.io_changed = true;
         }
 
@@ -252,7 +282,7 @@ impl Vst3Instance {
             if self.reload().is_ok() {
                 changes.reloaded = true;
                 // Reload re-read latency into the fresh metadata; propagate it.
-                changes.latency = Some(self.metadata.latency_samples);
+                changes.latency = Some(self.meta.loaded.latency_samples);
             }
         }
 
@@ -328,25 +358,6 @@ fn process_block<'a, T: tutti_vst3_host::Vst3Sample>(
     })
 }
 
-/// Translate the vst3-host's per-bus channel enumeration into protocol
-/// [`BusLayout`]s (input buses then output buses, each in bus-index order).
-///
-/// Returns an empty list for single-bus plugins (≤1 bus per direction) so the
-/// wire format is byte-identical to today and the server's single-bus path is
-/// unchanged. A non-empty list is emitted only when a plugin actually exposes
-/// an aux/sidechain bus.
-fn build_bus_layout(info: &tutti_vst3_host::PluginInfo) -> Vec<BusLayout> {
-    let multi_input = info.input_bus_channels.len() > 1;
-    let multi_output = info.output_bus_channels.len() > 1;
-    if !multi_input && !multi_output {
-        return Vec::new();
-    }
-    let mut buses =
-        Vec::with_capacity(info.input_bus_channels.len() + info.output_bus_channels.len());
-    buses.extend(info.input_bus_channels.iter().map(|&ch| BusLayout::input(ch)));
-    buses.extend(info.output_bus_channels.iter().map(|&ch| BusLayout::output(ch)));
-    buses
-}
 
 /// Build a Tutti [`ParameterInfo`] from a VST3 parameter descriptor. Both the
 /// `get_parameter_list` and the cache-warming paths go through here so they
@@ -449,8 +460,12 @@ fn convert_expr_ints_to_vst3(
 }
 
 impl tutti_plugin::server::PluginInstance for Vst3Instance {
-    fn metadata(&self) -> &PluginInfo {
-        &self.metadata
+    fn descriptor(&self) -> &PluginDescriptor {
+        &self.meta.descriptor
+    }
+
+    fn loaded(&self) -> &LoadedPlugin {
+        &self.meta.loaded
     }
 
     fn process(
@@ -486,6 +501,14 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
 
     fn set_parameter(&mut self, id: u32, value: f64) {
         vst_dispatch_mut!(self, inner => inner.set_parameter(id, value));
+    }
+
+    fn set_automation_state(&mut self, state: i32) {
+        // Forwards to `Vst3Loaded::set_automation_state` via Deref; a no-op if
+        // the plugin doesn't implement IAutomationState. Runs on the server's
+        // main thread (same as set_parameter), satisfying the host's
+        // main-thread assertion.
+        vst_dispatch_mut!(self, inner => { inner.set_automation_state(state); });
     }
 
     fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
@@ -534,7 +557,7 @@ mod tests {
         );
 
         let instance = instance.unwrap();
-        let meta = instance.metadata();
+        let meta = instance.descriptor();
         assert!(!meta.name.is_empty(), "Plugin name should not be empty");
         assert!(!meta.id.is_empty(), "Plugin id should not be empty");
     }
@@ -544,13 +567,9 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(VST3_PLUGIN);
         let instance = Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
-        let meta = instance.metadata();
+        let outputs = instance.loaded().total_outputs();
 
-        assert!(
-            meta.audio_io.outputs > 0,
-            "Expected audio outputs > 0, got {}",
-            meta.audio_io.outputs
-        );
+        assert!(outputs > 0, "Expected audio outputs > 0, got {outputs}");
     }
 
     #[test]
@@ -745,12 +764,12 @@ mod tests {
         );
 
         let instance = instance.unwrap();
-        let meta = instance.metadata();
         eprintln!(
             "SPAN: name={}, supports_f64={}",
-            meta.name, meta.supports_f64
+            instance.descriptor().name,
+            instance.loaded().supports_f64
         );
-        assert!(!meta.name.is_empty());
+        assert!(!instance.descriptor().name.is_empty());
     }
 
     #[test]
@@ -769,12 +788,12 @@ mod tests {
         );
 
         let instance = instance.unwrap();
-        let meta = instance.metadata();
         eprintln!(
             "Boogex: name={}, supports_f64={}",
-            meta.name, meta.supports_f64
+            instance.descriptor().name,
+            instance.loaded().supports_f64
         );
-        assert!(!meta.name.is_empty());
+        assert!(!instance.descriptor().name.is_empty());
     }
 
     #[test]
@@ -788,7 +807,7 @@ mod tests {
         // Load with f64 preference — if the plugin supports it, inner will be F64.
         let mut instance = Vst3Instance::load(&path, 44100.0, 512, true).expect("Failed to load SPAN");
 
-        if !instance.metadata().supports_f64 {
+        if !instance.loaded().supports_f64 {
             eprintln!("SPAN does not report f64 support, skipping f64 test");
             return;
         }
@@ -845,7 +864,7 @@ mod tests {
         // Load with f64 preference — if the plugin supports it, inner will be F64.
         let mut instance = Vst3Instance::load(&path, 44100.0, 512, true).expect("Failed to load Boogex");
 
-        if !instance.metadata().supports_f64 {
+        if !instance.loaded().supports_f64 {
             eprintln!("Boogex does not report f64 support, skipping f64 test");
             return;
         }

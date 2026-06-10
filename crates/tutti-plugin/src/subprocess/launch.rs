@@ -5,7 +5,9 @@
 use super::locate::find_plugin_server;
 use crate::config::BridgeConfig;
 use crate::error::{BridgeError, Result};
-use crate::protocol::{BridgeMessage, HostMessage, PluginInfo, SampleFormat};
+use crate::protocol::{
+    BridgeMessage, BusChannels, HostMessage, LoadedPlugin, PluginDescriptor, SampleFormat,
+};
 use crate::transport::control::{self as ipc, ControlStream};
 use crate::transport::shm::{AudioSlab, SlabLayout};
 use std::path::Path;
@@ -19,7 +21,10 @@ const STARTUP_DELAY: Duration = Duration::from_millis(500);
 
 pub struct LaunchedServer {
     pub process: Child,
-    pub metadata: PluginInfo,
+    /// Catalog identity (name, vendor, class, editor).
+    pub descriptor: PluginDescriptor,
+    /// Engine-wiring data from instantiation (bus widths, latency, f64).
+    pub loaded: LoadedPlugin,
     pub format: SampleFormat,
     pub audio_buffer: Arc<AudioSlab>,
 }
@@ -33,13 +38,14 @@ pub fn launch(
     let mut stream = handshake(config)?;
 
     let shm_name = next_shm_name();
-    let (metadata, format) =
+    let (descriptor, loaded, format) =
         load_plugin(&mut stream, config, plugin_path, sample_rate, &shm_name)?;
-    let audio_buffer = setup_shm(&mut stream, config, &metadata, format, shm_name)?;
+    let audio_buffer = setup_shm(&mut stream, config, &loaded, format, shm_name)?;
 
     Ok(LaunchedServer {
         process,
-        metadata: *metadata,
+        descriptor: *descriptor,
+        loaded,
         format,
         audio_buffer,
     })
@@ -65,13 +71,14 @@ fn handshake(config: &BridgeConfig) -> Result<ControlStream> {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn load_plugin(
     stream: &mut ControlStream,
     config: &BridgeConfig,
     plugin_path: &Path,
     sample_rate: f64,
     shm_name: &str,
-) -> Result<(Box<PluginInfo>, SampleFormat)> {
+) -> Result<(Box<PluginDescriptor>, LoadedPlugin, SampleFormat)> {
     ipc::send(
         stream,
         &HostMessage::LoadPlugin {
@@ -86,9 +93,10 @@ fn load_plugin(
     let timeout = Duration::from_millis(config.timeout_ms);
     match ipc::recv_within(stream, timeout)? {
         BridgeMessage::PluginLoaded {
-            metadata,
+            descriptor,
+            loaded,
             negotiated_format,
-        } => Ok((metadata, negotiated_format)),
+        } => Ok((descriptor, loaded, negotiated_format)),
         BridgeMessage::Error { message } => {
             Err(BridgeError::load_from_server(plugin_path, message))
         }
@@ -99,34 +107,38 @@ fn load_plugin(
 fn setup_shm(
     stream: &mut ControlStream,
     config: &BridgeConfig,
-    metadata: &PluginInfo,
+    loaded: &LoadedPlugin,
     format: SampleFormat,
     shm_name: String,
 ) -> Result<Arc<AudioSlab>> {
-    // Carry the plugin's per-bus layout on the slab so both processes agree
-    // how the flat channel range maps to buses. Negotiated once here at load;
-    // empty when the plugin reported no multi-bus layout (single-bus legacy).
-    let buses = metadata.buses.clone();
-    let channels = if buses.is_empty() {
-        // Legacy single-bus: one flat channel set shared in-place by both
-        // directions, sized to the wider of the two.
-        metadata
-            .audio_io
-            .inputs
-            .max(metadata.audio_io.outputs)
-            .max(2)
+    // Carry the plugin's per-bus layout on the slab so both processes agree how
+    // the flat channel range maps to buses. Loaders always populate at least the
+    // main bus, so a single-bus plugin reports `inputs = [main_in]` /
+    // `outputs = [main_out]`. A truly empty list means "unknown" (filename
+    // fallback) and collapses to the legacy single shared flat range.
+    let single_bus = loaded.inputs.len() <= 1 && loaded.outputs.len() <= 1;
+    let channels = if single_bus {
+        // One main bus per direction: a single flat channel set shared in-place,
+        // sized to the wider of the two directions.
+        loaded.total_inputs().max(loaded.total_outputs()).max(2)
     } else {
         // Multi-bus: input and output directions occupy disjoint flat ranges so
         // sidechain inputs survive the output write (see `SlabLayout::output_base`).
-        let total_in: usize = metadata.input_bus_channels().iter().sum();
-        let total_out: usize = metadata.output_bus_channels().iter().sum();
-        (total_in + total_out).max(2)
+        (loaded.total_inputs() + loaded.total_outputs()).max(2)
+    };
+    // Only carry the per-bus partition on the slab when it's genuinely multi-bus;
+    // a single main bus per direction stays the legacy in-place flat layout.
+    let (inputs, outputs) = if single_bus {
+        (BusChannels::new(), BusChannels::new())
+    } else {
+        (loaded.inputs.clone(), loaded.outputs.clone())
     };
     let layout = SlabLayout {
         channels,
         samples_per_channel: config.max_buffer_size,
         format,
-        buses,
+        inputs,
+        outputs,
     };
     let audio_buffer = Arc::new(AudioSlab::create(shm_name.clone(), layout.clone())?);
 

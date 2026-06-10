@@ -19,5 +19,8 @@ pub use catalog::{CatalogExt, PluginCatalog};
 #[cfg(feature = "json")]
 pub use database::JsonCatalog;
 pub use fs::{file_modification_time, format_from_path};
-pub use record::{Blacklist, PluginFormat, PluginRecord};
+pub use record::{
+    AuComponentType, Blacklist, PluginClass, PluginDescriptor, PluginFormat, PluginRecord,
+    Vst2Category,
+};
 pub use scanner::{PluginScanner, ScanHandle, ScanPhase, ScanProgress, ScanResult};

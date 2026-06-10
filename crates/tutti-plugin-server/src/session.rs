@@ -117,6 +117,12 @@ impl Session {
                 }
                 Ok(Reaction::None)
             }
+            M::SetAutomationState { state } => {
+                if let Some(plugin) = self.plugin.as_mut() {
+                    plugin.instance_mut().set_automation_state(state);
+                }
+                Ok(Reaction::None)
+            }
             M::GetParameter { param_id } => {
                 let value = self
                     .plugin
@@ -207,8 +213,10 @@ impl Session {
 
     fn handle_probe(&self, path: &std::path::Path) -> BridgeMessage {
         match Plugin::probe(path) {
-            Ok(metadata) => BridgeMessage::PluginLoaded {
-                metadata: Box::new(metadata),
+            Ok(descriptor) => BridgeMessage::PluginLoaded {
+                descriptor: Box::new(descriptor),
+                // A probe never activates the plugin, so there is no load data.
+                loaded: Default::default(),
                 negotiated_format: self.clock.format,
             },
             Err(e) => BridgeMessage::Error {
@@ -224,7 +232,7 @@ impl Session {
         block_size: usize,
         preferred_format: SampleFormat,
     ) -> Result<Reaction> {
-        let (plugin, metadata, negotiated) =
+        let (plugin, descriptor, loaded, negotiated) =
             Plugin::load(&path, sample_rate, block_size, preferred_format)?;
         self.clock = Clock {
             sample_rate,
@@ -233,7 +241,8 @@ impl Session {
         self.pipeline.set_format(negotiated);
         self.plugin = Some(plugin);
         Ok(BridgeMessage::PluginLoaded {
-            metadata: Box::new(metadata),
+            descriptor: Box::new(descriptor),
+            loaded,
             negotiated_format: negotiated,
         }
         .into())
@@ -585,7 +594,8 @@ mod tests {
             channels: 2,
             samples_per_channel: 8192,
             format: preferred_format,
-            buses: Vec::new(),
+            inputs: smallvec::smallvec![],
+            outputs: smallvec::smallvec![],
         };
         let shm_guard = AudioSlab::create(buffer_name.clone(), layout.clone()).unwrap();
         s.shm = Some(AudioSlab::open(buffer_name, layout).unwrap());
@@ -605,8 +615,8 @@ mod tests {
     fn load_clap_plugin_f64() {
         let _lock = crate::test_utils::plugin_load_lock();
         let (s, _shm) = load_clap("load_clap_f64", SampleFormat::Float64);
-        let metadata = s.plugin.as_ref().unwrap().instance().metadata();
-        if metadata.supports_f64 {
+        let loaded = s.plugin.as_ref().unwrap().instance().loaded();
+        if loaded.supports_f64 {
             assert_eq!(s.clock.format, SampleFormat::Float64);
         } else {
             assert_eq!(s.clock.format, SampleFormat::Float32);
@@ -816,6 +826,6 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, _shm) = load_clap("editor_check_clap", SampleFormat::Float32);
         let plugin = s.plugin.as_mut().expect("plugin loaded");
-        let _has_editor: bool = plugin.instance().metadata().has_editor;
+        let _has_editor: bool = plugin.instance().descriptor().has_editor;
     }
 }

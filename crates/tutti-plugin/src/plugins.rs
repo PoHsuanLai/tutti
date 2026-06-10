@@ -35,7 +35,7 @@ use crate::discovery::{CatalogExt, PluginCatalog, PluginRecord, PluginScanner, S
 use crate::discovery::{JsonCatalog, ScanHandle};
 use crate::error::{BridgeError, Result};
 use crate::plugins_config::PluginsConfig;
-use crate::protocol::PluginInfo;
+use crate::protocol::PluginDescriptor;
 use std::path::{Path, PathBuf};
 
 /// Opaque identifier for a plugin in a [`Plugins`] catalog.
@@ -141,10 +141,10 @@ impl Plugins {
     }
 
     /// Iterate all non-blacklisted plugins.
-    pub fn iter(&self) -> impl Iterator<Item = (PluginId, &PluginInfo)> {
+    pub fn iter(&self) -> impl Iterator<Item = (PluginId, &PluginDescriptor)> {
         self.catalog
             .plugins()
-            .map(|r| (PluginId(r.path.clone()), &r.metadata))
+            .map(|r| (PluginId(r.path.clone()), &r.descriptor))
     }
 
     /// Iterate full non-blacklisted [`PluginRecord`]s. Use this when the
@@ -158,16 +158,16 @@ impl Plugins {
     pub fn find(&self, name: &str) -> Option<PluginId> {
         self.catalog
             .plugins()
-            .find(|r| r.metadata.name == name)
+            .find(|r| r.descriptor.name == name)
             .map(|r| PluginId(r.path.clone()))
     }
 
-    /// Look up plugin info by id.
-    pub fn info(&self, id: &PluginId) -> Option<&PluginInfo> {
+    /// Look up a plugin's catalog descriptor by id.
+    pub fn info(&self, id: &PluginId) -> Option<&PluginDescriptor> {
         self.catalog
             .plugins()
             .find(|r| r.path == id.0)
-            .map(|r| &r.metadata)
+            .map(|r| &r.descriptor)
     }
 
     /// Load a plugin by id. Returns a graph-ready `Box<dyn AudioUnit>`
@@ -291,13 +291,13 @@ impl Plugins {
             ),
         })?;
 
-        let metadata = crate::subprocess::probe_metadata(plugin_path)?;
+        let descriptor = crate::subprocess::probe_metadata(plugin_path)?;
         let modification_time = crate::discovery::file_modification_time(plugin_path).unwrap_or(0);
 
         self.catalog.upsert(PluginRecord {
             path: plugin_path.to_path_buf(),
             format,
-            metadata,
+            descriptor,
             modification_time,
             blacklist: crate::discovery::record::Blacklist::Ok,
             extension_id: Some(ext_id.to_string()),

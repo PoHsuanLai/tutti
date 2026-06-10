@@ -2,7 +2,7 @@ use crate::audio_node::{LatencyChangeSink, ParameterChangeSink, ResyncSink};
 use crate::bridge::audio::ResyncKind;
 use crate::control_backend::ControlBackend;
 use crate::error::EditorError;
-use crate::protocol::{ParameterInfo, PluginInfo};
+use crate::protocol::{LoadedPlugin, ParameterInfo, PluginDescriptor};
 use crate::window::{EditorCapabilities, EditorSize};
 use raw_window_handle::HasWindowHandle;
 use std::sync::Arc;
@@ -20,7 +20,8 @@ use tutti_midi_runtime::MidiSender;
 #[derive(Clone)]
 pub struct PluginHandle {
     inner: Arc<dyn ControlBackend>,
-    metadata: PluginInfo,
+    descriptor: PluginDescriptor,
+    loaded: LoadedPlugin,
     latency_sink: LatencyChangeSink,
     param_sink: ParameterChangeSink,
     resync_sink: ResyncSink,
@@ -37,7 +38,8 @@ impl PluginHandle {
         );
         Self {
             inner: Arc::new(backend),
-            metadata: client.metadata().clone(),
+            descriptor: client.descriptor().clone(),
+            loaded: client.loaded().clone(),
             latency_sink: client.latency_sink().clone(),
             param_sink: client.param_sink().clone(),
             resync_sink: client.resync_sink().clone(),
@@ -46,19 +48,21 @@ impl PluginHandle {
     }
 
     /// Construct from any [`ControlBackend`](crate::control_backend::ControlBackend)
-    /// impl plus an explicit metadata snapshot. Used by every in-process
+    /// impl plus explicit descriptor + load snapshots. Used by every in-process
     /// loader — the in-crate VST2 path and out-of-crate loaders like
     /// `tutti-wasm-plugin`.
     pub fn from_backend(
         inner: Arc<dyn ControlBackend>,
-        metadata: PluginInfo,
+        descriptor: PluginDescriptor,
+        loaded: LoadedPlugin,
         latency_sink: LatencyChangeSink,
         param_sink: ParameterChangeSink,
         midi_sender: MidiSender,
     ) -> Self {
         Self {
             inner,
-            metadata,
+            descriptor,
+            loaded,
             latency_sink,
             param_sink,
             // In-process backends (VST2, WASM) have no restartComponent
@@ -71,7 +75,8 @@ impl PluginHandle {
     #[cfg(test)]
     pub(crate) fn from_bridge_and_metadata(
         bridge: Arc<crate::bridge::PluginBridge>,
-        metadata: PluginInfo,
+        descriptor: PluginDescriptor,
+        loaded: LoadedPlugin,
     ) -> Self {
         let guard = Arc::new(crate::audio_node::ProcessGuard::for_test(
             crate::config::BridgeConfig::default(),
@@ -81,7 +86,8 @@ impl PluginHandle {
             tutti_midi_runtime::MidiEventSlot::pair(tutti_midi_types::MidiUnitId::next());
         Self {
             inner: Arc::new(backend),
-            metadata,
+            descriptor,
+            loaded,
             latency_sink: LatencyChangeSink::default(),
             param_sink: ParameterChangeSink::default(),
             resync_sink: ResyncSink::default(),
@@ -90,7 +96,7 @@ impl PluginHandle {
     }
 
     pub fn has_editor(&self) -> bool {
-        self.metadata.has_editor
+        self.descriptor.has_editor
     }
 
     /// Embed the plugin's editor into `parent`. Pass anything that impls
@@ -160,12 +166,27 @@ impl PluginHandle {
         self
     }
 
-    pub fn metadata(&self) -> &PluginInfo {
-        &self.metadata
+    /// Push the host's automation read/write state to the plugin (VST3
+    /// `IAutomationState`). Fire-and-forget; a no-op for plugins / formats that
+    /// don't implement it. `state` is the VST3 `AutomationStates` bitmask
+    /// (`0=none, 1=read, 2=write, 3=read|write`).
+    pub fn set_automation_state(&self, state: i32) -> &Self {
+        self.inner.set_automation_state_rt(state);
+        self
+    }
+
+    /// Catalog identity (id, name, vendor, version, native class, editor).
+    pub fn descriptor(&self) -> &PluginDescriptor {
+        &self.descriptor
+    }
+
+    /// Engine-wiring data from load (per-bus channel widths, latency, f64).
+    pub fn loaded(&self) -> &LoadedPlugin {
+        &self.loaded
     }
 
     pub fn name(&self) -> &str {
-        &self.metadata.name
+        &self.descriptor.name
     }
 
     /// Producer handle for this plugin's MIDI inbox. Cheap to clone —

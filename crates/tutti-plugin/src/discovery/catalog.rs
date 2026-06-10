@@ -7,7 +7,6 @@
 
 use super::fs::{file_modification_time, format_from_path};
 use super::record::{Blacklist, PluginFormat, PluginRecord};
-use crate::protocol::PluginInfo;
 use std::path::{Path, PathBuf};
 
 /// Minimal primitives a catalog must provide. Derived operations
@@ -67,7 +66,7 @@ pub trait CatalogExt: PluginCatalog {
             None => PluginRecord {
                 path: path.to_path_buf(),
                 format: format_from_path(path).unwrap_or(PluginFormat::Vst3),
-                metadata: PluginInfo::default(),
+                descriptor: super::record::PluginDescriptor::default(),
                 modification_time: file_modification_time(path).unwrap_or(0),
                 blacklist: Blacklist::Blacklisted { reason },
                 extension_id: None,

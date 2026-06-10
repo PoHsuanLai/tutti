@@ -25,7 +25,7 @@ use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
 use tutti_midi_runtime::MidiSender;
 
 use tutti_plugin::backend::Midi;
-use tutti_plugin_types::PluginInfo;
+use tutti_plugin::server::LoadedPlugin;
 
 use crate::instance::WasmInstance;
 
@@ -52,7 +52,7 @@ impl ProcessScratch {
 
 pub struct InProcessWasmClient {
     inner: Arc<Mutex<WasmInstance>>,
-    metadata: PluginInfo,
+    loaded: LoadedPlugin,
     midi: Midi,
     process_scratch: ProcessScratch,
     sample_rate: f64,
@@ -64,15 +64,15 @@ pub struct InProcessWasmClient {
 impl InProcessWasmClient {
     pub(crate) fn new(
         inner: Arc<Mutex<WasmInstance>>,
-        metadata: PluginInfo,
+        loaded: LoadedPlugin,
         sample_rate: f64,
         contention_count: Arc<AtomicU64>,
     ) -> Self {
         let process_scratch =
-            ProcessScratch::new(metadata.audio_io.inputs, metadata.audio_io.outputs);
+            ProcessScratch::new(loaded.total_inputs(), loaded.total_outputs());
         Self {
             inner,
-            metadata,
+            loaded,
             midi: Midi::new(),
             process_scratch,
             sample_rate,
@@ -110,10 +110,10 @@ impl InProcessWasmClient {
 impl Clone for InProcessWasmClient {
     fn clone(&self) -> Self {
         let process_scratch =
-            ProcessScratch::new(self.metadata.audio_io.inputs, self.metadata.audio_io.outputs);
+            ProcessScratch::new(self.loaded.total_inputs(), self.loaded.total_outputs());
         Self {
             inner: Arc::clone(&self.inner),
-            metadata: self.metadata.clone(),
+            loaded: self.loaded.clone(),
             midi: self.midi.clone(),
             process_scratch,
             sample_rate: self.sample_rate,
@@ -124,11 +124,11 @@ impl Clone for InProcessWasmClient {
 
 impl AudioUnit for InProcessWasmClient {
     fn inputs(&self) -> usize {
-        self.metadata.audio_io.inputs
+        self.loaded.total_inputs()
     }
 
     fn outputs(&self) -> usize {
-        self.metadata.audio_io.outputs
+        self.loaded.total_outputs()
     }
 
     fn reset(&mut self) {
@@ -154,8 +154,8 @@ impl AudioUnit for InProcessWasmClient {
     }
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        let n_in = self.metadata.audio_io.inputs;
-        let n_out = self.metadata.audio_io.outputs;
+        let n_in = self.loaded.total_inputs();
+        let n_out = self.loaded.total_outputs();
         for (ch, &sample) in input.iter().enumerate().take(n_in) {
             self.process_scratch.f32_in[ch][0] = sample;
         }
@@ -180,8 +180,8 @@ impl AudioUnit for InProcessWasmClient {
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         self.ensure_scratch_size(size);
-        let n_in = self.metadata.audio_io.inputs;
-        let n_out = self.metadata.audio_io.outputs;
+        let n_in = self.loaded.total_inputs();
+        let n_out = self.loaded.total_outputs();
 
         // Stage caller samples into our pre-allocated f32 channel buffers.
         for ch in 0..n_in {
@@ -230,9 +230,9 @@ impl AudioUnit for InProcessWasmClient {
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         tutti_plugin::backend::route_with_latency(
-            self.metadata.audio_io.inputs,
-            self.metadata.audio_io.outputs,
-            self.metadata.latency_samples as f64,
+            self.loaded.total_inputs(),
+            self.loaded.total_outputs(),
+            self.loaded.latency_samples as f64,
             input,
         )
     }
@@ -244,11 +244,11 @@ impl AudioUnit for InProcessWasmClient {
 
 impl AudioUnit<F64> for InProcessWasmClient {
     fn inputs(&self) -> usize {
-        self.metadata.audio_io.inputs
+        self.loaded.total_inputs()
     }
 
     fn outputs(&self) -> usize {
-        self.metadata.audio_io.outputs
+        self.loaded.total_outputs()
     }
 
     fn reset(&mut self) {
@@ -267,8 +267,8 @@ impl AudioUnit<F64> for InProcessWasmClient {
     }
 
     fn tick(&mut self, input: &[f64], output: &mut [f64]) {
-        let n_in = self.metadata.audio_io.inputs;
-        let n_out = self.metadata.audio_io.outputs;
+        let n_in = self.loaded.total_inputs();
+        let n_out = self.loaded.total_outputs();
         // WIT v0.1 is f32-only; down-convert at the edge.
         for (ch, &sample) in input.iter().enumerate().take(n_in) {
             self.process_scratch.f32_in[ch][0] = sample as f32;
@@ -294,8 +294,8 @@ impl AudioUnit<F64> for InProcessWasmClient {
 
     fn process(&mut self, size: usize, input: &BufferRef<F64>, output: &mut BufferMut<F64>) {
         self.ensure_scratch_size(size);
-        let n_in = self.metadata.audio_io.inputs;
-        let n_out = self.metadata.audio_io.outputs;
+        let n_in = self.loaded.total_inputs();
+        let n_out = self.loaded.total_outputs();
 
         for ch in 0..n_in {
             let slot = &mut self.process_scratch.f32_in[ch][..size];
@@ -343,9 +343,9 @@ impl AudioUnit<F64> for InProcessWasmClient {
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         tutti_plugin::backend::route_with_latency(
-            self.metadata.audio_io.inputs,
-            self.metadata.audio_io.outputs,
-            self.metadata.latency_samples as f64,
+            self.loaded.total_inputs(),
+            self.loaded.total_outputs(),
+            self.loaded.latency_samples as f64,
             input,
         )
     }

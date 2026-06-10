@@ -44,7 +44,8 @@ pub fn load(
     // time a guest runs).
     instance.warm_prime();
 
-    let metadata = instance.metadata().clone();
+    let descriptor = instance.descriptor().clone();
+    let loaded = instance.loaded().clone();
 
     let inner = Arc::new(Mutex::new(instance));
     let contention = Arc::new(AtomicU64::new(0));
@@ -56,11 +57,17 @@ pub fn load(
     });
 
     let client =
-        InProcessWasmClient::new(Arc::clone(&inner), metadata.clone(), sample_rate, contention);
+        InProcessWasmClient::new(Arc::clone(&inner), loaded.clone(), sample_rate, contention);
     let midi_sender = client.midi_sender();
 
-    let handle =
-        PluginHandle::from_backend(backend, metadata, latency_sink, param_sink, midi_sender);
+    let handle = PluginHandle::from_backend(
+        backend,
+        descriptor,
+        loaded,
+        latency_sink,
+        param_sink,
+        midi_sender,
+    );
 
     Ok((Box::new(client), handle))
 }

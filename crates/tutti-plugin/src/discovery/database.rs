@@ -94,14 +94,14 @@ mod tests {
     use super::super::catalog::CatalogExt;
     use super::super::record::{Blacklist, PluginFormat};
     use super::*;
-    use crate::protocol::PluginInfo;
+    use super::super::record::{PluginClass, PluginDescriptor};
     use tempfile::TempDir;
 
     fn test_record(name: &str) -> PluginRecord {
         PluginRecord {
             path: PathBuf::from(format!("/plugins/{name}.vst3")),
             format: PluginFormat::Vst3,
-            metadata: PluginInfo::new(name, name),
+            descriptor: PluginDescriptor::new(name, name, PluginClass::Unknown),
             modification_time: 1700000000,
             blacklist: Blacklist::Ok,
             extension_id: None,
@@ -123,8 +123,8 @@ mod tests {
 
         let db = JsonCatalog::load(&db_path);
         assert_eq!(db.len(), 2);
-        assert!(db.plugins().any(|r| r.metadata.name == "reverb"));
-        assert!(db.plugins().any(|r| r.metadata.name == "delay"));
+        assert!(db.plugins().any(|r| r.descriptor.name == "reverb"));
+        assert!(db.plugins().any(|r| r.descriptor.name == "delay"));
     }
 
     #[test]
@@ -144,7 +144,7 @@ mod tests {
         db.upsert(PluginRecord {
             path: plugin_file.clone(),
             format: PluginFormat::Vst3,
-            metadata: PluginInfo::default(),
+            descriptor: PluginDescriptor::default(),
             modification_time: 0,
             blacklist: Blacklist::Ok,
             extension_id: None,
@@ -165,7 +165,7 @@ mod tests {
         db.upsert(PluginRecord {
             path: plugin_file.clone(),
             format: PluginFormat::Vst3,
-            metadata: PluginInfo::default(),
+            descriptor: PluginDescriptor::default(),
             modification_time: mtime,
             blacklist: Blacklist::Ok,
             extension_id: None,
@@ -215,7 +215,7 @@ mod tests {
         db.upsert(PluginRecord {
             path: existing.clone(),
             format: PluginFormat::Vst3,
-            metadata: PluginInfo::default(),
+            descriptor: PluginDescriptor::default(),
             modification_time: 0,
             blacklist: Blacklist::Ok,
             extension_id: None,
@@ -224,7 +224,7 @@ mod tests {
         db.upsert(PluginRecord {
             path: PathBuf::from("/nonexistent/gone.vst3"),
             format: PluginFormat::Vst3,
-            metadata: PluginInfo::default(),
+            descriptor: PluginDescriptor::default(),
             modification_time: 0,
             blacklist: Blacklist::Ok,
             extension_id: None,
@@ -263,8 +263,8 @@ mod tests {
         let removed = db.remove_for_extension("ext-a");
         assert_eq!(removed.len(), 2);
         assert_eq!(db.len(), 2);
-        assert!(db.iter().any(|r| r.metadata.name == "standalone"));
-        assert!(db.iter().any(|r| r.metadata.name == "b1"));
+        assert!(db.iter().any(|r| r.descriptor.name == "standalone"));
+        assert!(db.iter().any(|r| r.descriptor.name == "b1"));
     }
 
     #[test]

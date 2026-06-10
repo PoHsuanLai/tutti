@@ -13,13 +13,13 @@ use crate::Result;
 pub use crate::audio::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, Sample};
 pub use crate::config::BridgeConfig;
 pub use crate::protocol::{
-    AudioIO, AudioProcessedFullData, AudioProcessedMidiData, BridgeMessage, BusDirection,
-    BusLayout, ChordChanges, ChordValue, HostMessage, IpcMidiEvent, IpcMidiEventVec, MidiEvent,
+    AuComponentType, AudioProcessedFullData, AudioProcessedMidiData, BridgeMessage, BusChannels,
+    ChordChanges, ChordValue, HostMessage, IpcMidiEvent, IpcMidiEventVec, LoadedPlugin, MidiEvent,
     MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
-    ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, PluginInfo,
-    ProcessAudioFullData, ProcessAudioMidiData, SampleFormat, ScaleChanges, ScaleValue,
-    SlabLayout, TransportInfo,
+    ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, PluginClass,
+    PluginDescriptor, ProcessAudioFullData, ProcessAudioMidiData, SampleFormat, ScaleChanges,
+    ScaleValue, SlabLayout, TransportInfo, Vst2Category,
 };
 pub use crate::subprocess::resolve_bundle;
 pub use crate::transport::shm::AudioSlab;
@@ -92,12 +92,15 @@ pub struct ProcessOutput {
 /// Unified interface for VST2, VST3, CLAP, and AU plugin instances,
 /// implemented on the server side of the IPC.
 ///
-/// Static capability queries (`has_editor`, `supports_f64`, etc.) go
-/// through [`metadata`](Self::metadata) — one authoritative source for
-/// what the plugin reported at load time. The trait's remaining methods
-/// are the ones that need a live plugin reference.
+/// Static identity (name, vendor, native class, editor) goes through
+/// [`descriptor`](Self::descriptor); engine-wiring data (per-bus widths,
+/// latency, f64) through [`loaded`](Self::loaded). Both are snapshots of what
+/// the plugin reported at load time. The trait's remaining methods are the
+/// ones that need a live plugin reference.
 pub trait PluginInstance: Send {
-    fn metadata(&self) -> &PluginInfo;
+    fn descriptor(&self) -> &PluginDescriptor;
+
+    fn loaded(&self) -> &LoadedPlugin;
 
     /// Process one audio block. The buffer carries the negotiated sample
     /// format (f32 or f64) as a tagged enum, so the trait stays
@@ -120,6 +123,11 @@ pub trait PluginInstance: Send {
     /// See [`get_parameter`](Self::get_parameter) for the value convention
     /// (normalized for VST2/VST3/AU, native plain range for CLAP).
     fn set_parameter(&mut self, id: u32, value: f64);
+
+    /// Push the host automation read/write state to the plugin. Fire-and-forget;
+    /// the default no-op covers formats without an automation-state concept
+    /// (only VST3's `IAutomationState` implements it).
+    fn set_automation_state(&mut self, _state: i32) {}
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo>;
 

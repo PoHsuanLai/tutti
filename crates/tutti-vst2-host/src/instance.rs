@@ -22,7 +22,25 @@ use crate::handle::Vst2Handle;
 use crate::host::{HostState, ParameterChange};
 use crate::midi::MidiSendBuffer;
 use crate::parameters::SendParams;
-use crate::types::{MidiEvent, MidiEventVec, PluginInfo};
+use crate::types::{MidiEvent, MidiEventVec, PluginInfo, Vst2Category};
+
+/// Map the `vst` crate's `Category` to this crate's owned mirror.
+fn map_category(c: Category) -> Vst2Category {
+    match c {
+        Category::Unknown => Vst2Category::Unknown,
+        Category::Effect => Vst2Category::Effect,
+        Category::Synth => Vst2Category::Synth,
+        Category::Analysis => Vst2Category::Analysis,
+        Category::Mastering => Vst2Category::Mastering,
+        Category::Spacializer => Vst2Category::Spacializer,
+        Category::RoomFx => Vst2Category::RoomFx,
+        Category::SurroundFx => Vst2Category::SurroundFx,
+        Category::Restoration => Vst2Category::Restoration,
+        Category::OfflineProcess => Vst2Category::OfflineProcess,
+        Category::Shell => Vst2Category::Shell,
+        Category::Generator => Vst2Category::Generator,
+    }
+}
 
 /// Loaded, initialized, processing-ready VST2 plugin.
 ///
@@ -111,6 +129,7 @@ impl Vst2Instance {
             version: info.version.to_string(),
             num_inputs: info.inputs as usize,
             num_outputs: info.outputs as usize,
+            category: map_category(info.category),
             receives_midi,
             has_editor: false, // overwritten below once we ask the handle
             latency_samples: info.initial_delay.max(0) as usize,

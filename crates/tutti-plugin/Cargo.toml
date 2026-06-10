@@ -44,6 +44,9 @@ tutti-core = { path = "../tutti-core", features = ["midi"] }
 # Parameter range/scaling
 audio-automation = "0.4"
 
+# Lock-free f64 cursor for the harmony source
+atomic_float = "1.1"
+
 # MIDI support
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
 tutti-midi-io = { path = "../tutti-midi-io" }

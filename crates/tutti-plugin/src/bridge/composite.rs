@@ -81,6 +81,10 @@ impl PluginBridge {
         self.audio.set_parameter_rt(param_id, value)
     }
 
+    pub fn set_automation_state_rt(&self, state: i32) -> bool {
+        self.audio.set_automation_state_rt(state)
+    }
+
     pub fn set_sample_rate_rt(&self, rate: f64) -> bool {
         self.audio.set_sample_rate_rt(rate)
     }
@@ -300,6 +304,10 @@ impl crate::control_backend::ControlBackend for SubprocessBackend {
 
     fn set_parameter_rt(&self, id: u32, value: f32) {
         self.bridge.set_parameter_rt(id, value);
+    }
+
+    fn set_automation_state_rt(&self, state: i32) {
+        self.bridge.set_automation_state_rt(state);
     }
 
     fn is_crashed(&self) -> bool {

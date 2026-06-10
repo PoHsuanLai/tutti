@@ -219,7 +219,12 @@ impl Batcher {
 
     /// Send inputs, process, receive outputs, reset cursors. Any bridge
     /// failure zero-fills `size` output samples and returns.
-    pub(super) fn flush<T: Scalar>(&mut self, bridge: &PluginBridge, midi: MidiEventVec) {
+    pub(super) fn flush<T: Scalar>(
+        &mut self,
+        bridge: &PluginBridge,
+        midi: MidiEventVec,
+        harmony: HarmonyInputs,
+    ) {
         let size = self.write_pos;
         if size == 0 {
             return;
@@ -238,7 +243,7 @@ impl Batcher {
             midi,
             ParameterChanges::new(),
             NoteExpressionChanges::new(),
-            HarmonyInputs::default(),
+            harmony,
             TransportInfo::default(),
         ) {
             T::silence_tick(self, size, self.outputs);
@@ -262,6 +267,7 @@ impl Batcher {
         input: &BufferRef<'_, T::Marker>,
         output: &mut BufferMut<'_, T::Marker>,
         midi: MidiEventVec,
+        harmony: HarmonyInputs,
     ) {
         for ch in 0..self.inputs {
             if T::send_block(self, bridge, ch, size, input).is_err() {
@@ -275,7 +281,7 @@ impl Batcher {
             midi,
             ParameterChanges::new(),
             NoteExpressionChanges::new(),
-            HarmonyInputs::default(),
+            harmony,
             TransportInfo::default(),
         ) {
             T::silence_block(output, size, self.outputs);

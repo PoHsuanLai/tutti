@@ -14,6 +14,7 @@
 
 mod audio_unit;
 mod batcher;
+mod harmony_source;
 mod listeners;
 mod midi;
 mod process;
@@ -26,6 +27,7 @@ pub(crate) use listeners::ResyncSink;
 // Public so `crate::backend` can re-export them for out-of-crate in-process
 // loaders (e.g. `tutti-wasm-plugin`). `ResyncSink` stays crate-internal.
 pub use listeners::{LatencyChangeSink, ParameterChangeSink};
+pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
 pub use midi::Midi;
 pub(crate) use process::ProcessGuard;
 // Public so `crate::backend` can re-export it for out-of-crate in-process
@@ -67,6 +69,38 @@ pub struct PluginClient {
     process_guard: Arc<ProcessGuard>,
     io: Batcher,
     midi: Midi,
+    harmony: Harmony,
+}
+
+/// Per-client chord/scale producer state. The optional source is shared across
+/// fundsp graph-commit clones (Arc, like `Midi::source_override`); the per-block
+/// drain buffer is rebuilt fresh per clone since it's scratch.
+#[derive(Default)]
+struct Harmony {
+    source: Option<Arc<HarmonySource>>,
+    drain: crate::bridge::audio::HarmonyInputs,
+}
+
+impl Clone for Harmony {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            drain: crate::bridge::audio::HarmonyInputs::default(),
+        }
+    }
+}
+
+impl Harmony {
+    /// Fill (and return) the per-block harmony inputs from the installed
+    /// source, or an empty bundle when no source is installed.
+    fn drain_for_process(&mut self, block_size: usize) -> &crate::bridge::audio::HarmonyInputs {
+        self.drain.chords.changes.clear();
+        self.drain.scales.changes.clear();
+        if let Some(src) = &self.source {
+            src.fill(block_size, &mut self.drain);
+        }
+        &self.drain
+    }
 }
 
 // Sibling-module access (audio_unit.rs). Field access stays private.
@@ -85,6 +119,12 @@ impl PluginClient {
 
     pub(super) fn midi_mut(&mut self) -> &mut Midi {
         &mut self.midi
+    }
+
+    /// Fill the per-block chord/scale context from the installed harmony
+    /// source (empty when none is installed). Cloned out for the bridge call.
+    pub(super) fn drain_harmony(&mut self, block_size: usize) -> crate::bridge::audio::HarmonyInputs {
+        self.harmony.drain_for_process(block_size).clone()
     }
 
     pub(super) fn bridge_ref(&self) -> &Arc<PluginBridge> {
@@ -156,6 +196,7 @@ impl PluginClient {
             process_guard,
             io: Batcher::new(inputs, outputs, output_base, server.format, max_buffer_size),
             midi: Midi::new(),
+            harmony: Harmony::default(),
         })
     }
 
@@ -219,6 +260,14 @@ impl PluginClient {
         let _ = self.bridge.set_parameter_rt(param_id, value);
     }
 
+    /// Push the host automation read/write state to the plugin (VST3
+    /// `IAutomationState`). RT-safe, fire-and-forget; a no-op for plugins /
+    /// formats without the concept. `state` is the VST3 `AutomationStates`
+    /// bitmask (`0=none, 1=read, 2=write, 3=read|write`).
+    pub fn set_automation_state(&self, state: i32) {
+        let _ = self.bridge.set_automation_state_rt(state);
+    }
+
     /// Producer handle for this plugin's MIDI inbox.
     pub fn midi_sender(&self) -> tutti_midi_runtime::MidiSender {
         self.midi.sender()
@@ -244,6 +293,20 @@ impl PluginClient {
     /// the unit-clone fundsp performs on each `commit()`.
     pub fn set_midi_source(&mut self, source: std::sync::Arc<dyn tutti_midi_types::MidiSource>) {
         self.midi.set_source(source);
+    }
+
+    /// Install a [`HarmonySource`] override that supplies per-block chord/scale
+    /// context (VST3 `kChordEvent` / `kScaleEvent`) from a track's chord/scale
+    /// lanes. Mirrors [`set_midi_source`](Self::set_midi_source); the source is
+    /// held in an `Arc` so it survives fundsp's graph-commit clones.
+    pub fn set_harmony_source(&mut self, source: std::sync::Arc<HarmonySource>) {
+        self.harmony.source = Some(source);
+    }
+
+    /// Drop a previously-installed harmony source. Subsequent blocks feed the
+    /// plugin empty chord/scale context.
+    pub fn clear_harmony_source(&mut self) {
+        self.harmony.source = None;
     }
 
     /// Drop a previously-installed source override; subsequent ticks

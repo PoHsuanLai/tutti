@@ -26,7 +26,7 @@ use crate::transport::shm::AudioSlab;
 
 /// VST3 sequencer-context inputs for one process block, bundled to keep
 /// [`AudioBridge::process`]'s signature manageable. All default to empty.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct HarmonyInputs {
     pub chords: ChordChanges,
     pub scales: ScaleChanges,
@@ -111,6 +111,13 @@ impl AudioBridge {
             && self
                 .channels
                 .push_command(Command::SetParameter { param_id, value })
+    }
+
+    pub fn set_automation_state_rt(&self, state: i32) -> bool {
+        !self.lifecycle.is_crashed()
+            && self
+                .channels
+                .push_command(Command::SetAutomationState { state })
     }
 
     pub fn set_sample_rate_rt(&self, rate: f64) -> bool {

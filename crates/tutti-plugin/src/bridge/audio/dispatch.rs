@@ -52,6 +52,9 @@ pub(super) fn handle(
         Command::SetParameter { param_id, value } => {
             ipc::send(stream, &HostMessage::SetParameter { param_id, value })?;
         }
+        Command::SetAutomationState { state } => {
+            ipc::send(stream, &HostMessage::SetAutomationState { state })?;
+        }
         Command::SetSampleRate { rate } => {
             ipc::send(stream, &HostMessage::SetSampleRate { rate })?;
         }

@@ -52,6 +52,9 @@ pub(super) enum Command {
         param_id: u32,
         value: f32,
     },
+    SetAutomationState {
+        state: i32,
+    },
     SetSampleRate {
         rate: f64,
     },

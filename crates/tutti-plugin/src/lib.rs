@@ -179,8 +179,10 @@ pub mod catalog {
 /// plugin stays alive as long as either does.
 pub mod handles {
     pub use crate::audio_node::PluginClient;
+    pub use crate::audio_node::{HarmonySource, TimedChord, TimedScale};
     pub use crate::bridge::audio::ResyncKind;
     pub use crate::control_handle::PluginHandle;
+    pub use crate::protocol::{ChordValue, ScaleValue};
     pub use crate::window::{EditorCapabilities, EditorSize};
 
     /// In-process VST2 audio-graph node. Used when a host loads VST2 plugins

@@ -4,7 +4,7 @@
 //! own crate feature). Each takes a host [`sample_rate`] and a path;
 //! [`PluginBuilder::build`] loads the plugin, applies any queued initial
 //! parameter values, and returns the audio unit together with its
-//! [`PluginHandle`](crate::control_handle::PluginHandle) for main-thread
+//! [`PluginHandle`](crate::handles::control_handle::PluginHandle) for main-thread
 //! control.
 //!
 //! VST3, CLAP, and AU run in a subprocess (audio + control IPC) with
@@ -20,7 +20,7 @@
 
 use crate::audio_node::PluginClient;
 use crate::config::BridgeConfig;
-use crate::control_handle::PluginHandle;
+use crate::handles::control_handle::PluginHandle;
 use crate::error::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;

@@ -4,7 +4,7 @@
 //! `scan_dirs` (where to look for plugins) — this library has no opinion
 //! on OS conventions or app names.
 
-use crate::config::BridgeConfig;
+use super::bridge::BridgeConfig;
 use crate::protocol::SampleFormat;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

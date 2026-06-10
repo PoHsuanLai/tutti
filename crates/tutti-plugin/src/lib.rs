@@ -87,17 +87,12 @@
 pub mod error;
 pub use error::{BridgeError, EditorError, LoadStage, Result};
 
-mod audio;
 mod audio_node;
 mod bridge;
-mod node_id;
 mod builder;
 mod config;
-mod control_backend;
-mod control_handle;
 mod in_process;
 mod plugins;
-mod plugins_config;
 mod window;
 
 pub(crate) mod protocol;
@@ -134,8 +129,8 @@ pub mod backend {
     pub use crate::audio_node::{
         route_with_latency, LatencyChangeSink, Midi, ParameterChangeSink,
     };
-    pub use crate::control_backend::ControlBackend;
-    pub use crate::node_id::PLUGIN_CLIENT_ID;
+    pub use crate::handles::control_backend::ControlBackend;
+    pub use crate::audio_node::node_id::PLUGIN_CLIENT_ID;
 }
 
 /// Load a VST2 plugin in-process (audio + native editor on the host
@@ -168,33 +163,12 @@ pub mod catalog {
         Vst2Category,
     };
     pub use crate::plugins::{PluginId, Plugins};
-    pub use crate::plugins_config::PluginsConfig;
+    pub use crate::config::PluginsConfig;
 }
 
-/// Per-plugin handles.
-///
-/// Every loaded plugin yields both a [`PluginClient`](handles::PluginClient)
-/// (audio graph node) and a [`PluginHandle`](handles::PluginHandle)
-/// (main-thread control). They share subprocess lifetime via `Arc` — the
-/// plugin stays alive as long as either does.
-pub mod handles {
-    pub use crate::audio_node::PluginClient;
-    pub use crate::audio_node::{HarmonySource, TimedChord, TimedScale};
-    pub use crate::bridge::audio::ResyncKind;
-    pub use crate::control_handle::PluginHandle;
-    pub use crate::protocol::{ChordValue, ScaleValue};
-    pub use crate::window::{EditorCapabilities, EditorSize};
-
-    /// In-process VST2 audio-graph node. Used when a host loads VST2 plugins
-    /// directly in the host process (via `in_process_vst2`). Hosts that
-    /// dispatch MIDI to plugins through their own routing layer can downcast
-    /// graph nodes to this type to read their `MidiUnitId`.
-    #[cfg(feature = "vst2-in-process")]
-    pub use crate::in_process::vst2::InProcessVst2Client;
-
-    // The in-process WASM audio-graph node (`InProcessWasmClient`) lives in
-    // the `tutti-wasm-plugin` crate alongside its loader.
-}
+/// Per-plugin handles — [`PluginClient`](handles::PluginClient) (audio graph
+/// node) and [`PluginHandle`](handles::PluginHandle) (main-thread control).
+pub mod handles;
 
 /// Plugin + parameter descriptors.
 ///

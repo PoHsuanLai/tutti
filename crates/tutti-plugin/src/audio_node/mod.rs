@@ -17,6 +17,7 @@ mod batcher;
 mod harmony_source;
 mod listeners;
 mod midi;
+pub(crate) mod node_id;
 mod process;
 mod signal;
 

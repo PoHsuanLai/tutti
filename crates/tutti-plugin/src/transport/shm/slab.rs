@@ -4,7 +4,7 @@
 //! No synchronization here — the control channel handshake (in the layer
 //! above) is what tells each side when the other is done writing.
 
-use crate::audio::Sample;
+use crate::protocol::audio::Sample;
 use crate::error::{BridgeError, Result};
 use crate::protocol::{SampleFormat, SlabLayout};
 use memmap2::MmapMut;

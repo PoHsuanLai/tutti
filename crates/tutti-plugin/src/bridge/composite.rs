@@ -273,7 +273,7 @@ impl SubprocessBackend {
     }
 }
 
-impl crate::control_backend::ControlBackend for SubprocessBackend {
+impl crate::handles::control_backend::ControlBackend for SubprocessBackend {
     fn open_editor(&self, parent_ptr: *mut c_void) -> std::result::Result<EditorSize, EditorError> {
         self.bridge.open_editor(parent_ptr)
     }

@@ -1,6 +1,6 @@
 use crate::audio_node::{LatencyChangeSink, ParameterChangeSink, ResyncSink};
 use crate::bridge::audio::ResyncKind;
-use crate::control_backend::ControlBackend;
+use crate::handles::control_backend::ControlBackend;
 use crate::error::EditorError;
 use crate::protocol::{LoadedPlugin, ParameterInfo, PluginDescriptor};
 use crate::window::{EditorCapabilities, EditorSize};
@@ -47,7 +47,7 @@ impl PluginHandle {
         }
     }
 
-    /// Construct from any [`ControlBackend`](crate::control_backend::ControlBackend)
+    /// Construct from any [`ControlBackend`](crate::handles::control_backend::ControlBackend)
     /// impl plus explicit descriptor + load snapshots. Used by every in-process
     /// loader — the in-crate VST2 path and out-of-crate loaders like
     /// `tutti-wasm-plugin`.

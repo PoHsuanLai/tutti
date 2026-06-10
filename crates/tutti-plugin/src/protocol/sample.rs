@@ -1,6 +1,6 @@
 //! Sample-format discriminator that travels on the wire.
 //!
-//! Runtime counterparts (`Sample` trait, `AudioBuffer<T>`) live in `crate::audio`.
+//! Runtime counterparts (`Sample` trait, `AudioBuffer<T>`) live in `crate::protocol::audio`.
 
 use serde::{Deserialize, Serialize};
 

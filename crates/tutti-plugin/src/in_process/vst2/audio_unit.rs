@@ -249,7 +249,7 @@ impl AudioUnit for InProcessVst2Client {
     }
 
     fn get_id(&self) -> u64 {
-        crate::node_id::PLUGIN_CLIENT_ID
+        crate::audio_node::node_id::PLUGIN_CLIENT_ID
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -367,7 +367,7 @@ impl AudioUnit<F64> for InProcessVst2Client {
     }
 
     fn get_id(&self) -> u64 {
-        crate::node_id::PLUGIN_CLIENT_ID
+        crate::audio_node::node_id::PLUGIN_CLIENT_ID
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

@@ -27,14 +27,14 @@
 //! ```
 
 use crate::audio_node::PluginClient;
-use crate::control_handle::PluginHandle;
+use crate::handles::control_handle::PluginHandle;
 use crate::discovery::format_from_path;
 use crate::discovery::record::PluginFormat;
 use crate::discovery::{CatalogExt, PluginCatalog, PluginRecord, PluginScanner, ScanResult};
 #[cfg(feature = "json")]
 use crate::discovery::{JsonCatalog, ScanHandle};
 use crate::error::{BridgeError, Result};
-use crate::plugins_config::PluginsConfig;
+use crate::config::PluginsConfig;
 use crate::protocol::PluginDescriptor;
 use std::path::{Path, PathBuf};
 

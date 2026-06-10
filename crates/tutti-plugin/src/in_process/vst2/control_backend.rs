@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use tutti_vst2_host::Vst2Instance;
 
 use crate::audio_node::ParameterChangeSink;
-use crate::control_backend::ControlBackend;
+use crate::handles::control_backend::ControlBackend;
 use crate::error::EditorError;
 use crate::protocol::ParameterInfo;
 use crate::window::EditorSize;

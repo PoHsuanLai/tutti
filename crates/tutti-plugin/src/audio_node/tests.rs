@@ -7,7 +7,7 @@
 
 use crate::bridge::audio::{BridgeEvent, BridgeThread};
 use crate::bridge::PluginBridge;
-use crate::control_handle::PluginHandle;
+use crate::handles::control_handle::PluginHandle;
 use crate::protocol::{BridgeMessage, HostMessage, LoadedPlugin, ParameterInfo, PluginDescriptor};
 use crate::protocol::{PluginClass, SampleFormat, SlabLayout};
 use smallvec::smallvec;

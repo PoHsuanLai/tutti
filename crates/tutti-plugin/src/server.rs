@@ -10,7 +10,7 @@
 
 use crate::Result;
 
-pub use crate::audio::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, Sample};
+pub use crate::protocol::audio::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, Sample};
 pub use crate::config::BridgeConfig;
 pub use crate::protocol::{
     AuComponentType, AudioProcessedFullData, AudioProcessedMidiData, BridgeMessage, BusChannels,

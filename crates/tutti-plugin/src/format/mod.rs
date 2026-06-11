@@ -24,5 +24,5 @@
 
 pub mod gui;
 
-#[cfg(feature = "vst2-in-process")]
+#[cfg(feature = "vst2")]
 pub mod vst2_in_process;

@@ -19,19 +19,12 @@ vst3 = ["dep:tutti-vst3-host"]
 clap = ["dep:tutti-clap-host"]
 au = ["dep:tutti-au-host"]
 
-# VST2 server-side hosting (audio + parameters + state via the
-# subprocess + IPC bridge). The editor returns a structured error.
-vst2 = []
-
 # In-process VST2 hosting (audio + native editor on the host process).
-# Sacrifices subprocess crash isolation for editor support — VST2's
-# AEffect fuses editor and audio into one instance, so the editor cannot
-# live in a different process from the audio. Implies `vst2`.
-#
-# Hidden behind a separate feature for now so flipping `vst2` doesn't
-# silently switch the user from subprocess to in-process. PR D will wire
-# `vst2()` to use this path by default.
-vst2-in-process = ["vst2", "dep:tutti-vst2-host"]
+# Unlike VST3/CLAP/AU, VST2 is always in-process: its `AEffect` fuses the
+# editor and audio processor into one instance, so the editor cannot live
+# in a different process from the audio. There is no subprocess VST2 path
+# here.
+vst2 = ["dep:tutti-vst2-host"]
 
 # In-process WASM Component Model audio plugins (`dawai:audio-plugin@0.1.0`)
 # live in the separate `tutti-wasm-plugin` crate, which reuses this crate's

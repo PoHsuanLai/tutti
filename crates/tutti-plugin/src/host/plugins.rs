@@ -179,8 +179,8 @@ impl Plugins {
     ///   caller to `tutti_wasm_plugin::load` (the in-process wasmtime path
     ///   lives in the separate `tutti-wasm-plugin` crate). Hosts route by
     ///   format before calling this.
-    /// - VST2 with the `vst2-in-process` feature: runs entirely in the
-    ///   host process (single AEffect for audio + editor).
+    /// - VST2 (with the `vst2` feature): runs entirely in the host process
+    ///   (single AEffect for audio + editor).
     /// - Everything else: subprocess + IPC bridge (audio out-of-process,
     ///   editor lazily loaded in-host).
     pub fn load(
@@ -203,11 +203,11 @@ impl Plugins {
                     .to_string(),
             });
         }
-        #[cfg(feature = "vst2-in-process")]
+        #[cfg(feature = "vst2")]
         if matches!(format_from_path(&id.0), Some(PluginFormat::Vst2)) {
             return crate::format::vst2_in_process::load(&id.0, sample_rate);
         }
-        let _ = format_from_path; // keep import live without the in-process feature
+        let _ = format_from_path; // keep import live without the vst2 feature
         let _ = PluginFormat::Vst2;
 
         let client =

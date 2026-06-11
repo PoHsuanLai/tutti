@@ -63,8 +63,8 @@ pub(crate) fn load_gui_instance(path: &Path) -> Result<Box<dyn GuiInstance>> {
             path: path.to_path_buf(),
             stage: LoadStage::Opening,
             reason: "VST2 plugins use the in-process backend (enable the \
-                     `vst2-in-process` feature) — they don't go through the \
-                     subprocess GUI loader."
+                     `vst2` feature) — they don't go through the subprocess \
+                     GUI loader."
                 .into(),
         }),
         PluginFormat::Wasm => Err(BridgeError::LoadFailed {

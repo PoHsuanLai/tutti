@@ -8,7 +8,7 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
 default = []
-vst2 = ["tutti-plugin-server/vst2", "tutti-plugin/vst2", "tutti-plugin/vst2-in-process"]
+vst2 = ["tutti-plugin-server/vst2", "tutti-plugin/vst2"]
 vst3 = ["tutti-plugin-server/vst3", "tutti-plugin/vst3"]
 clap = ["tutti-plugin-server/clap", "tutti-plugin/clap"]
 au = ["tutti-plugin-server/au", "tutti-plugin/au"]

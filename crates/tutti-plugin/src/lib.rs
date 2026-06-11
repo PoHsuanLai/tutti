@@ -74,10 +74,10 @@
 //! - `vst3`, `clap`, `au` — in-process GUI support. Loads the plugin
 //!   library in the *host* process for editor rendering only; audio still
 //!   runs out-of-process.
-//! - `vst2` — out-of-process VST2 hosting (audio + MIDI + parameters +
-//!   state). No in-process editor yet — opening the editor returns an
-//!   error. Requires `tutti-plugin-server` to be built with the matching
-//!   `vst2` feature.
+//! - `vst2` — in-process VST2 hosting (audio + MIDI + parameters + state +
+//!   native editor). Unlike VST3/CLAP/AU, VST2 is always in-process: its
+//!   `AEffect` fuses the editor and audio processor into one instance, so
+//!   the two cannot live in separate processes.
 //!
 //! In-process WASM Component Model audio plugins (`dawai:audio-plugin@0.1.0`)
 //! live in the separate `tutti-wasm-plugin` crate, which reuses this crate's
@@ -131,8 +131,8 @@ pub mod backend {
 
 /// Load a VST2 plugin in-process (audio + native editor on the host
 /// process). See [`format::vst2_in_process::load`] for details. Available
-/// behind the `vst2-in-process` feature.
-#[cfg(feature = "vst2-in-process")]
+/// behind the `vst2` feature.
+#[cfg(feature = "vst2")]
 pub use format::vst2_in_process::load as in_process_vst2;
 
 // WASM Component Model audio plugins live in the `tutti-wasm-plugin` crate

@@ -23,7 +23,7 @@ pub use control_handle::PluginHandle;
 /// directly in the host process (via `in_process_vst2`). Hosts that dispatch
 /// MIDI to plugins through their own routing layer can downcast graph nodes to
 /// this type to read their `MidiUnitId`.
-#[cfg(feature = "vst2-in-process")]
+#[cfg(feature = "vst2")]
 pub use crate::format::vst2_in_process::InProcessVst2Client;
 
 // The in-process WASM audio-graph node (`InProcessWasmClient`) lives in the

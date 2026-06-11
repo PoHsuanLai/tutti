@@ -8,7 +8,7 @@
 //! regressions, so failure means the in-process backend (or the
 //! `vst2-host` codec) introduced a per-block alloc.
 
-#![cfg(feature = "vst2-in-process")]
+#![cfg(feature = "vst2")]
 
 use assert_no_alloc::AllocDisabler;
 use std::path::Path;

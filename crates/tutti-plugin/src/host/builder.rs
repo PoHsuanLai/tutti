@@ -11,12 +11,10 @@
 //! their editor lazily loaded in the host process — the standard
 //! audio-out-of-process / GUI-in-host split.
 //!
-//! VST2 is different. With the `vst2-in-process` feature enabled (the
-//! default once a user opts into editor support), the plugin runs
-//! entirely in the host process via `vst2-host`: VST2's `AEffect` fuses
-//! editor and audio processor, so the editor cannot live in a different
-//! process from audio. Without that feature, VST2 falls back to the
-//! subprocess path with `open_editor` returning an error.
+//! VST2 is different: it always runs entirely in the host process via
+//! `vst2-host`. VST2's `AEffect` fuses editor and audio processor into one
+//! instance, so the editor cannot live in a different process from audio —
+//! there is no subprocess VST2 path.
 
 use crate::host::node::PluginClient;
 use crate::util::config::BridgeConfig;
@@ -54,9 +52,8 @@ pub fn au(sample_rate: f64, path: impl Into<PathBuf>) -> PluginBuilder {
 
 /// Starts a [`PluginBuilder`] for a VST2 plugin bundle (`.vst` / `.dll` / `.so`).
 ///
-/// With the `vst2-in-process` feature, the plugin runs entirely in the
-/// host process and the editor is fully supported. Without it, audio
-/// runs in a subprocess and `open_editor` returns an error.
+/// VST2 always runs entirely in the host process (its `AEffect` fuses the
+/// editor and audio processor), so the editor is fully supported.
 #[cfg(feature = "vst2")]
 pub fn vst2(sample_rate: f64, path: impl Into<PathBuf>) -> PluginBuilder {
     PluginBuilder::new(sample_rate, path.into())
@@ -93,11 +90,11 @@ impl PluginBuilder {
         self
     }
 
-    /// Loads the plugin (in-process for VST2 with the `vst2-in-process`
-    /// feature, subprocess otherwise), applies any queued [`Self::param`]
-    /// values, and returns the audio unit together with its [`PluginHandle`].
+    /// Loads the plugin (in-process for VST2, subprocess for VST3 / CLAP /
+    /// AU), applies any queued [`Self::param`] values, and returns the audio
+    /// unit together with its [`PluginHandle`].
     pub fn build(self) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
-        #[cfg(feature = "vst2-in-process")]
+        #[cfg(feature = "vst2")]
         if matches!(
             self.path.extension().and_then(|s| s.to_str()),
             Some("vst") | Some("VST")
@@ -109,7 +106,7 @@ impl PluginBuilder {
     }
 }
 
-#[cfg(feature = "vst2-in-process")]
+#[cfg(feature = "vst2")]
 fn load_plugin_vst2_in_process(
     sample_rate: f64,
     path: PathBuf,

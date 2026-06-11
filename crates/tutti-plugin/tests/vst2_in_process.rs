@@ -4,7 +4,7 @@
 //! doesn't ship plugins, so every plugin-touching test is `#[ignore]`'d
 //! and only runs under `cargo test -- --ignored`.
 
-#![cfg(feature = "vst2-in-process")]
+#![cfg(feature = "vst2")]
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -77,10 +77,9 @@ fn handle_is_not_crashed_in_process() {
 #[ignore]
 fn vst2_builder_routes_to_in_process() {
     // The public `tutti_plugin::vst2(...)` builder should detect a `.vst`
-    // path and route to the in-process backend (with the
-    // `vst2-in-process` feature on, which the integration test gate
-    // requires). Confirm by checking has_editor reports true and no
-    // crash.
+    // path and route to the in-process backend (with the `vst2` feature
+    // on, which the integration test gate requires). Confirm by checking
+    // has_editor reports true and no crash.
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
     let (_unit, handle) = tutti_plugin::vst2(48_000.0, VST2_PLUGIN)
         .build()

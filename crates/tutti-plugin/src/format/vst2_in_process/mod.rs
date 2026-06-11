@@ -6,12 +6,10 @@
 //! `editor_idle` call the audio thread emits silence and bumps a
 //! contention counter rather than blocking.
 
-#[cfg(feature = "vst2-in-process")]
 mod audio_unit;
 mod control_backend;
 mod loader;
 
-#[cfg(feature = "vst2-in-process")]
 #[allow(unused_imports)]
 pub use audio_unit::InProcessVst2Client;
 pub use loader::load;

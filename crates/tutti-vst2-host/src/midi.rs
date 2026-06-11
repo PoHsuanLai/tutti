@@ -10,7 +10,33 @@
 //! aligned `Vec<u64>`. The buffer is reused across calls so the audio
 //! thread never allocates after warmup.
 
-use crate::types::MidiEvent;
+use crate::types::{MidiEvent, MidiEventVec};
+
+/// Per-block MIDI plumbing for one [`crate::Vst2Instance`]: the host→plugin
+/// staging buffer, the plugin→host inbox, and the pooled out-drain returned
+/// to callers. All RT-reused so steady-state processing never allocates.
+pub(crate) struct MidiIo {
+    /// Host→plugin staging: rebuilt in place each `process` call.
+    pub(crate) send: MidiSendBuffer,
+    /// Plugin→host inbox, fed by the `process_events` callback.
+    pub(crate) out_rx: crossbeam_channel::Receiver<MidiEvent>,
+    /// Pooled drain of `out_rx`, refilled and borrowed back each block.
+    pub(crate) out: MidiEventVec,
+}
+
+impl MidiIo {
+    /// Construct with the inbox receiver; pre-sizes both reusable buffers so
+    /// the audio thread never allocates after warm-up.
+    pub(crate) fn new(out_rx: crossbeam_channel::Receiver<MidiEvent>) -> Self {
+        let mut out = MidiEventVec::new();
+        out.reserve(256);
+        Self {
+            send: MidiSendBuffer::new(),
+            out_rx,
+            out,
+        }
+    }
+}
 
 /// Parse a VST2 `vst::api::MidiEvent` (MIDI 1.0 wire bytes) into a Tutti
 /// UMP [`MidiEvent`]. Tags the event with the original `delta_frames`.
@@ -47,7 +73,7 @@ pub(crate) fn midi_to_api_event(event: &MidiEvent) -> Option<vst::api::MidiEvent
 /// Pre-allocated, reusable storage for a VST2 `api::Events` flexible-
 /// array struct.
 ///
-/// One instance lives on each [`crate::Vst2Instance`]; [`Self::stage`]
+/// One instance lives on each [`MidiIo`]; [`Self::stage`]
 /// rebuilds the contents in place for the next process call. Capacity
 /// grows on demand (rarely, only if a block carries more events than
 /// any prior block) — sized at construction to a generous default so

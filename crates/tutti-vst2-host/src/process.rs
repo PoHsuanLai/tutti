@@ -2,8 +2,8 @@
 //!
 //! The public entry points [`Vst2Instance::process_f32`] and
 //! [`Vst2Instance::process_f64`] update the cached transport snapshot
-//! (`self.time_info`), then drive the scratch buffers and the `vst`
-//! crate's `AudioBuffer`. Returns any MIDI events the plugin emitted.
+//! (`self.host_link.time_info`), then drive the scratch buffers and the
+//! `vst` crate's `AudioBuffer`. Returns any MIDI events the plugin emitted.
 
 use std::sync::Arc;
 use vst::plugin::Plugin as _;
@@ -32,9 +32,9 @@ impl Vst2Instance {
         ctx: &ProcessContext,
         scratch: &mut RenderScratch,
     ) -> &MidiEventVec {
-        self.midi_out.clear();
+        self.midi.out.clear();
         if num_samples == 0 {
-            return &self.midi_out;
+            return &self.midi.out;
         }
 
         self.update_transport(ctx);
@@ -44,7 +44,7 @@ impl Vst2Instance {
         scratch.copy_out_f32(outputs, num_samples);
 
         self.drain_midi_out();
-        &self.midi_out
+        &self.midi.out
     }
 
     /// Render one f64 block. The `vst` crate is f32-only internally, so
@@ -60,9 +60,9 @@ impl Vst2Instance {
         ctx: &ProcessContext,
         scratch: &mut RenderScratch,
     ) -> &MidiEventVec {
-        self.midi_out.clear();
+        self.midi.out.clear();
         if num_samples == 0 {
-            return &self.midi_out;
+            return &self.midi.out;
         }
 
         self.update_transport(ctx);
@@ -72,27 +72,28 @@ impl Vst2Instance {
         scratch.copy_out_f64(outputs, num_samples);
 
         self.drain_midi_out();
-        &self.midi_out
+        &self.midi.out
     }
 
     /// Drain the plugin's MIDI-out channel into the pooled `midi_out`
     /// SmallVec. Steady-state allocation-free once the SmallVec has been
     /// grown past its inline capacity.
     fn drain_midi_out(&mut self) {
-        for ev in self.midi_out_rx.try_iter() {
-            self.midi_out.push(ev);
+        for ev in self.midi.out_rx.try_iter() {
+            self.midi.out.push(ev);
         }
     }
 
     fn update_transport(&self, ctx: &ProcessContext) {
         if let Some(t) = ctx.transport {
-            self.time_info
+            self.host_link
+                .time_info
                 .store(Arc::new(Some(build_vst2_time_info(t, ctx.sample_rate))));
         }
     }
 
     fn dispatch_midi(&mut self, midi: &[MidiEvent]) {
-        if let Some(events_ptr) = self.midi_send.stage(midi) {
+        if let Some(events_ptr) = self.midi.send.stage(midi) {
             // SAFETY: `stage` returns a pointer valid until the next
             // `stage` call or `drop`. We use it immediately and don't
             // retain it. The plugin is required by the VST2 spec to

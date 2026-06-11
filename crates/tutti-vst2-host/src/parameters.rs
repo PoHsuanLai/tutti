@@ -73,6 +73,6 @@ impl Vst2Instance {
     /// Drain any plugin-internal parameter changes (knobs moved on the
     /// editor surface). Cheap: a `try_iter` over a crossbeam channel.
     pub fn drain_param_changes(&self) -> Vec<ParameterChange> {
-        self.param_rx.try_iter().collect()
+        self.host_link.param_rx.try_iter().collect()
     }
 }

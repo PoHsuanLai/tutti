@@ -126,23 +126,11 @@ pub enum PluginClass {
     Wasm { receives_midi: bool },
 }
 
-/// Mirror of the VST2 plugin category. Self-contained so the wire vocab doesn't
-/// depend on `tutti-vst2-host`; the VST2 loader maps its native category here.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum Vst2Category {
-    Unknown,
-    Effect,
-    Synth,
-    Analysis,
-    Mastering,
-    Spacializer,
-    RoomFx,
-    SurroundFx,
-    Restoration,
-    OfflineProcess,
-    Shell,
-    Generator,
-}
+/// The VST2 plugin-category mirror. Canonical definition lives in
+/// `tutti-plugin-types` (the unconditional shared dep), so this persisted
+/// wire vocab stays nameable without the optional `vst2` feature; the VST2
+/// loader maps its native category into it.
+pub use tutti_plugin_types::Vst2Category;
 
 /// Mirror of the AudioUnit component type. Self-contained so the wire vocab
 /// doesn't depend on `tutti-au-host`; the AU loader maps its native `AuType`

@@ -12,27 +12,8 @@ use super::control_backend::InProcessVst2Backend;
 use crate::host::node::{LatencyChangeSink, ParameterChangeSink};
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::host::handles::PluginHandle;
-use crate::protocol::{LoadedPlugin, PluginClass, PluginDescriptor, Vst2Category};
+use crate::protocol::{LoadedPlugin, PluginClass, PluginDescriptor};
 use smallvec::SmallVec;
-use tutti_vst2_host::Vst2Category as HostVst2Category;
-
-/// Map `tutti-vst2-host`'s category mirror to `tutti-plugin`'s wire mirror.
-fn map_vst2_category(c: HostVst2Category) -> Vst2Category {
-    match c {
-        HostVst2Category::Unknown => Vst2Category::Unknown,
-        HostVst2Category::Effect => Vst2Category::Effect,
-        HostVst2Category::Synth => Vst2Category::Synth,
-        HostVst2Category::Analysis => Vst2Category::Analysis,
-        HostVst2Category::Mastering => Vst2Category::Mastering,
-        HostVst2Category::Spacializer => Vst2Category::Spacializer,
-        HostVst2Category::RoomFx => Vst2Category::RoomFx,
-        HostVst2Category::SurroundFx => Vst2Category::SurroundFx,
-        HostVst2Category::Restoration => Vst2Category::Restoration,
-        HostVst2Category::OfflineProcess => Vst2Category::OfflineProcess,
-        HostVst2Category::Shell => Vst2Category::Shell,
-        HostVst2Category::Generator => Vst2Category::Generator,
-    }
-}
 
 /// Maximum block size we pre-size the plugin's render scratch for.
 /// Plugins are told this is the upper bound; per-call sizes may be
@@ -65,7 +46,7 @@ pub fn load(
         vendor: host_meta.vendor.clone(),
         version: host_meta.version.clone(),
         class: PluginClass::Vst2 {
-            category: map_vst2_category(host_meta.category),
+            category: host_meta.category,
         },
         has_editor: host_meta.has_editor,
     };

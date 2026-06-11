@@ -10,37 +10,17 @@ use std::path::Path;
 use tutti_plugin::server::{
     AudioBufferMut, EditorSize, LoadedPlugin, MidiEventVec, NoteExpressionChanges,
     ParameterChanges, ParameterInfo, PluginClass, PluginDescriptor, PluginInstance, ProcessContext,
-    ProcessOutput, Vst2Category, WindowHandle,
+    ProcessOutput, WindowHandle,
 };
 use tutti_plugin::{BridgeError, Result};
 
 #[cfg(feature = "vst2")]
 use tutti_vst2_host::{
-    ProcessContext as Vst2ProcessContext, RenderScratch, Vst2Category as HostVst2Category,
-    Vst2Error, Vst2Instance as Vst2Host,
+    ProcessContext as Vst2ProcessContext, RenderScratch, Vst2Error, Vst2Instance as Vst2Host,
 };
 
 use crate::loaders::common::params::{make_param_info, ALL_AUTOMATABLE};
 use crate::loaders::common::{single_bus, Meta};
-
-/// Map `tutti-vst2-host`'s category mirror to the wire `Vst2Category`.
-#[cfg(feature = "vst2")]
-fn map_category(c: HostVst2Category) -> Vst2Category {
-    match c {
-        HostVst2Category::Unknown => Vst2Category::Unknown,
-        HostVst2Category::Effect => Vst2Category::Effect,
-        HostVst2Category::Synth => Vst2Category::Synth,
-        HostVst2Category::Analysis => Vst2Category::Analysis,
-        HostVst2Category::Mastering => Vst2Category::Mastering,
-        HostVst2Category::Spacializer => Vst2Category::Spacializer,
-        HostVst2Category::RoomFx => Vst2Category::RoomFx,
-        HostVst2Category::SurroundFx => Vst2Category::SurroundFx,
-        HostVst2Category::Restoration => Vst2Category::Restoration,
-        HostVst2Category::OfflineProcess => Vst2Category::OfflineProcess,
-        HostVst2Category::Shell => Vst2Category::Shell,
-        HostVst2Category::Generator => Vst2Category::Generator,
-    }
-}
 
 pub struct Vst2Instance {
     #[cfg(feature = "vst2")]
@@ -66,7 +46,7 @@ impl Vst2Instance {
                 vendor: host_meta.vendor,
                 version: host_meta.version,
                 class: PluginClass::Vst2 {
-                    category: map_category(host_meta.category),
+                    category: host_meta.category,
                 },
                 has_editor: host_meta.has_editor,
             };

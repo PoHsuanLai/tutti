@@ -29,25 +29,10 @@ pub struct PluginInfo {
     pub supports_f64: bool,
 }
 
-/// The plugin's declared VST2 category (mirror of the `vst` crate's
-/// `Category`, owned here so this crate's public API doesn't leak the `vst`
-/// dependency).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum Vst2Category {
-    #[default]
-    Unknown,
-    Effect,
-    Synth,
-    Analysis,
-    Mastering,
-    Spacializer,
-    RoomFx,
-    SurroundFx,
-    Restoration,
-    OfflineProcess,
-    Shell,
-    Generator,
-}
+/// The plugin's declared VST2 category. Canonical definition lives in
+/// `tutti-plugin-types` (shared with the catalog/wire layer); this crate maps
+/// the native `vst::Category` into it via `From` (see `instance.rs`).
+pub use tutti_plugin_types::Vst2Category;
 
 /// Single VST2 parameter descriptor.
 ///

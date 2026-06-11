@@ -24,7 +24,10 @@ use crate::midi::MidiSendBuffer;
 use crate::parameters::SendParams;
 use crate::types::{MidiEvent, MidiEventVec, PluginInfo, Vst2Category};
 
-/// Map the `vst` crate's `Category` to this crate's owned mirror.
+/// Map the `vst` crate's `Category` to the shared [`Vst2Category`] mirror.
+/// A free fn rather than a `From` impl: both `Category` (from `vst`) and
+/// `Vst2Category` (from `tutti-plugin-types`) are foreign here, so the orphan
+/// rule forbids the impl.
 fn map_category(c: Category) -> Vst2Category {
     match c {
         Category::Unknown => Vst2Category::Unknown,

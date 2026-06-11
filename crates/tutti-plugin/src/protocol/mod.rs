@@ -308,8 +308,10 @@ mod tests {
     /// names.
     #[test]
     fn process_audio_full_round_trips_harmony_fields() {
-        let mut data = ProcessAudioFullData::default();
-        data.num_samples = 256;
+        let mut data = ProcessAudioFullData {
+            num_samples: 256,
+            ..Default::default()
+        };
         data.chords.add_change(ChordValue {
             sample_offset: 0,
             root: 60,

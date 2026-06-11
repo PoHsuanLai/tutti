@@ -1306,7 +1306,7 @@ mod tests {
             sample_offset: 12,
             root: 60,
             bass_note: 48,
-            mask: 0b1001_0010_001,
+            mask: 0b100_1001_0001,
             text: name.clone(),
         };
 

@@ -1,8 +1,42 @@
 //! Named, cross-process audio storage. `channels × samples_per_channel`
 //! of `f32`/`f64` samples in shared memory.
 //!
-//! No synchronization here — the control channel handshake (in the layer
-//! above) is what tells each side when the other is done writing.
+//! # Why shared memory
+//!
+//! Each plugin runs in its own subprocess, so the host and the plugin live
+//! in separate address spaces and share no memory by default. Audio has to
+//! cross that boundary every block (~thousands of times a second), on the
+//! real-time audio thread, which must never block, allocate, or wait on the
+//! kernel. Sending it over the control socket would mean serialize + two
+//! syscalls + kernel copies *per block* — far too expensive.
+//!
+//! Instead both processes `mmap` the *same* named, RAM-backed file
+//! (`/dev/shm` on Linux, a temp file elsewhere), so the kernel maps the
+//! same physical pages into both. A write on one side is instantly visible
+//! to the other: transfer becomes a plain `memcpy` with no syscall in the
+//! hot path. See [`AudioSlab::write_channel`] / [`read_channel_into`].
+//!
+//! [`read_channel_into`]: AudioSlab::read_channel_into
+//!
+//! # No locking
+//!
+//! There is deliberately **no synchronization in this module**. A mutex on
+//! the audio thread would defeat the purpose. The single-writer-per-channel
+//! invariant is instead upheld by the control-channel handshake one layer
+//! up: each side only writes while the other has yielded the slab to it.
+//!
+//! # Lifecycle
+//!
+//! One side [`create`s](AudioSlab::create) the slab (the [`Owner`], which
+//! unlinks the backing file on drop); the other [`open`s](AudioSlab::open)
+//! it (a [`View`]) using a matching [`SlabLayout`]. Both then
+//! [`write_channel`](AudioSlab::write_channel) /
+//! [`read_channel_into`](AudioSlab::read_channel_into) against the shared
+//! region; [`Clone`] reopens it as a fresh view so a cloned audio node
+//! points at the same pages.
+//!
+//! [`Owner`]: Ownership::Owner
+//! [`View`]: Ownership::View
 
 use crate::protocol::audio::Sample;
 use crate::error::{BridgeError, Result};
@@ -23,8 +57,11 @@ fn channel_offset(layout: &SlabLayout, channel: usize) -> usize {
     channel * layout.samples_per_channel * sample_size(layout.format)
 }
 
+/// Who is responsible for the backing file's lifetime.
 enum Ownership {
+    /// Created the slab; unlinks the backing file on drop.
     Owner,
+    /// Opened an existing slab; detaches on drop without deleting it.
     View,
 }
 
@@ -41,6 +78,14 @@ pub struct AudioSlab {
 }
 
 impl AudioSlab {
+    // ---- Construction: one side creates, the other opens ----
+
+    /// Create the slab: allocate the named backing file, size it to
+    /// `layout.byte_size()`, and map it. This side is the [`Owner`] and
+    /// unlinks the file on drop. Exactly one side calls this; the other
+    /// calls [`open`](Self::open) with a matching `layout`.
+    ///
+    /// [`Owner`]: Ownership::Owner
     pub fn create(name: impl Into<String>, layout: SlabLayout) -> Result<Self> {
         let name = name.into();
         let mmap = open_mmap(&name, layout.byte_size(), Open::Create)?;
@@ -52,6 +97,13 @@ impl AudioSlab {
         })
     }
 
+    /// Open an existing slab as a [`View`]. The `layout` must match the one
+    /// the [`Owner`] created it with — both sides agree on the shape out of
+    /// band (over the control channel) before mapping. Detaches on drop
+    /// without deleting the backing file.
+    ///
+    /// [`View`]: Ownership::View
+    /// [`Owner`]: Ownership::Owner
     pub fn open(name: impl Into<String>, layout: SlabLayout) -> Result<Self> {
         let name = name.into();
         let mmap = open_mmap(&name, layout.byte_size(), Open::Existing)?;
@@ -63,22 +115,38 @@ impl AudioSlab {
         })
     }
 
+    // ---- Accessors ----
+
+    /// The slab's name, used by the other side to [`open`](Self::open) it.
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// Clone the layout. For the allocation-free audio path, prefer
+    /// [`layout_ref`](Self::layout_ref).
     pub fn layout(&self) -> SlabLayout {
         self.layout.clone()
     }
 
     /// Borrow the layout without cloning its (heap-backed) bus list — for the
-    /// allocation-free audio path. `layout()` (which clones) is for callers
-    /// that need to own a copy.
+    /// allocation-free audio path. [`layout`](Self::layout) (which clones) is
+    /// for callers that need to own a copy.
     pub fn layout_ref(&self) -> &SlabLayout {
         &self.layout
     }
 
-    /// Caller must ensure single-writer access per channel.
+    // ---- Per-block transfer: the hot path ----
+    //
+    // Both are a single bounds check + `memcpy` into/out of the mapped
+    // region — no syscall, no allocation. Safe to call on the audio thread.
+    // The single-writer-per-channel invariant is the caller's responsibility
+    // (upheld by the control-channel handshake; see the module docs).
+
+    /// Copy `data` into `channel`'s region of the shared buffer.
+    ///
+    /// Caller must ensure single-writer access per channel — there is no
+    /// internal locking. Errors if `channel` is out of range or `data` is
+    /// longer than `samples_per_channel`.
     pub fn write_channel<T: Sample>(&self, channel: usize, data: &[T]) -> Result<()> {
         self.check_channel(channel)?;
         if data.len() > self.layout.samples_per_channel {
@@ -90,7 +158,9 @@ impl AudioSlab {
         Ok(())
     }
 
-    /// Zero-copy read into `output`. Returns the number of samples copied.
+    /// Copy `channel`'s region out into `output`. Reads
+    /// `min(samples_per_channel, output.len())` samples and returns that
+    /// count. Errors if `channel` is out of range.
     pub fn read_channel_into<T: Sample>(&self, channel: usize, output: &mut [T]) -> Result<usize> {
         self.check_channel(channel)?;
         let copy_samples = self.layout.samples_per_channel.min(output.len());
@@ -101,6 +171,9 @@ impl AudioSlab {
         Ok(copy_samples)
     }
 
+    // ---- Internal helpers ----
+
+    /// Reject channel indices past the slab's channel count.
     fn check_channel(&self, channel: usize) -> Result<()> {
         if channel >= self.layout.channels {
             Err(oob("channel index out of bounds"))
@@ -111,6 +184,11 @@ impl AudioSlab {
 }
 
 impl Clone for AudioSlab {
+    /// Reopen the same backing file as a fresh [`View`], so a cloned audio
+    /// node still points at the same physical pages. The clone never owns
+    /// the file, regardless of this side's [`Ownership`].
+    ///
+    /// [`View`]: Ownership::View
     fn clone(&self) -> Self {
         Self::open(self.name.clone(), self.layout.clone())
             .expect("failed to reopen shared-memory slab for clone")
@@ -118,6 +196,10 @@ impl Clone for AudioSlab {
 }
 
 impl Drop for AudioSlab {
+    /// Only the [`Owner`] unlinks the backing file; [`View`]s just detach.
+    ///
+    /// [`Owner`]: Ownership::Owner
+    /// [`View`]: Ownership::View
     fn drop(&mut self) {
         if matches!(self.ownership, Ownership::Owner) {
             let _ = std::fs::remove_file(shm_path(&self.name));

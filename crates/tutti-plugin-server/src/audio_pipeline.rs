@@ -6,12 +6,12 @@
 //! so the server doesn't have to weave field borrows.
 //!
 //! Input/output cross this layer as value types ([`AudioBlock`],
-//! [`AudioOutput`]). The server decodes `HostMessage::ProcessAudio*` into
-//! an `AudioBlock` and builds the wire `BridgeMessage` from an
-//! `AudioOutput`.
+//! [`AudioOutput`]). The server decodes `HostMessage::ProcessAudio` into an
+//! `AudioBlock` and builds the wire `BridgeMessage::AudioProcessed` from the
+//! resulting `AudioOutput`.
 
 use tutti_plugin::server::{
-    AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, MidiEvent, MidiEventVec,
+    AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, MidiEvent,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
     PluginInstance, ProcessContext, SampleFormat, ScaleChanges, TransportInfo,
 };
@@ -112,13 +112,13 @@ pub(crate) struct AudioBlock<'a> {
     pub extras: Option<ProcessExtras<'a>>,
 }
 
-/// One outbound block's plugin output + measured latency.
+/// One processed block's result. The plugin's audio output is written back
+/// into the shared slab in place; only the measured latency travels onward.
+/// (Plugin-emitted MIDI / parameter output is produced but not routed back to
+/// the host — see [`BridgeMessage::AudioProcessed`].)
 #[derive(Default)]
 pub(crate) struct AudioOutput {
     pub latency_us: u64,
-    pub midi: MidiEventVec,
-    pub param_changes: ParameterChanges,
-    pub note_expression: NoteExpressionChanges,
 }
 
 /// Driver for one audio block. Holds scratch across calls so the audio
@@ -267,11 +267,12 @@ impl AudioPipeline {
             }
         };
 
+        // Plugin output (`plugin_output.{midi_events, param_changes,
+        // note_expression}`) is intentionally dropped here — the host doesn't
+        // consume it. Audio was written back into the slab above.
+        let _ = plugin_output;
         Ok(AudioOutput {
             latency_us: start.elapsed().as_micros() as u64,
-            midi: plugin_output.midi_events,
-            param_changes: plugin_output.param_changes,
-            note_expression: plugin_output.note_expression,
         })
     }
 }

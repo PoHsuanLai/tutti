@@ -13,13 +13,13 @@ use crate::Result;
 pub use crate::protocol::audio::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, Sample};
 pub use crate::util::config::BridgeConfig;
 pub use crate::protocol::{
-    AuComponentType, AudioProcessedFullData, AudioProcessedMidiData, BridgeMessage, BusChannels,
-    ChordChanges, ChordValue, HostMessage, IpcMidiEvent, IpcMidiEventVec, LoadedPlugin, MidiEvent,
-    MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
-    NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
-    ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, PluginClass,
-    PluginDescriptor, ProcessAudioFullData, ProcessAudioMidiData, SampleFormat, ScaleChanges,
-    ScaleValue, SlabLayout, TransportInfo, Vst2Category,
+    AuComponentType, BridgeMessage, BusChannels, ChordChanges, ChordValue, HostMessage,
+    IpcMidiEvent, IpcMidiEventVec, LoadedPlugin, MidiEvent, MidiEventVec, NoteExpressionChanges,
+    NoteExpressionIntChanges, NoteExpressionIntValue, NoteExpressionTextChanges,
+    NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue, ParameterChanges,
+    ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, PluginClass, PluginDescriptor,
+    ProcessAudioData, SampleFormat, ScaleChanges, ScaleValue, SlabLayout, TransportInfo,
+    Vst2Category,
 };
 pub use crate::host::subprocess::resolve_bundle;
 pub use crate::util::transport::shm::AudioSlab;

@@ -3,15 +3,19 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::process::{
-    AudioProcessedFullData, AudioProcessedMidiData, ProcessAudioFullData, ProcessAudioMidiData,
-};
+use super::process::ProcessAudioData;
 use super::sample::SampleFormat;
 use super::shm::SlabLayout;
 use super::{LoadedPlugin, ParameterInfo, PluginDescriptor};
 
+/// Wire-deserialization fallback for [`HostMessage::LoadPlugin::block_size`]
+/// when an older/partial message arrives without the field. The operative
+/// value at runtime comes from `config.max_buffer_size` (see
+/// `host::subprocess::launch`); this is only a safety net for legacy messages.
+pub(crate) const DEFAULT_BLOCK_SIZE: usize = 512;
+
 fn default_block_size() -> usize {
-    512
+    DEFAULT_BLOCK_SIZE
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,12 +36,9 @@ pub enum HostMessage {
         shm_name: String,
     },
     UnloadPlugin,
-    ProcessAudio {
-        buffer_id: u32,
-        num_samples: usize,
-    },
-    ProcessAudioMidi(Box<ProcessAudioMidiData>),
-    ProcessAudioFull(Box<ProcessAudioFullData>),
+    /// Process one audio block. Audio rides the shared `AudioSlab` (referenced
+    /// by `buffer_id`); the boxed payload carries the per-block side-band.
+    ProcessAudio(Box<ProcessAudioData>),
     SetParameter {
         param_id: u32,
         value: f32,
@@ -85,11 +86,12 @@ pub enum BridgeMessage {
         negotiated_format: SampleFormat,
     },
     PluginUnloaded,
+    /// Acknowledges a processed block. Audio output is written back into the
+    /// shared `AudioSlab` in place; only the measured latency travels here.
+    /// (Plugin MIDI / parameter output is not routed back to the host.)
     AudioProcessed {
         latency_us: u64,
     },
-    AudioProcessedMidi(Box<AudioProcessedMidiData>),
-    AudioProcessedFull(Box<AudioProcessedFullData>),
     ParameterValue {
         value: Option<f32>,
     },

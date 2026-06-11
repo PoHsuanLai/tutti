@@ -4,7 +4,7 @@ use super::channels::Channels;
 use super::messages::{AudioResponse, BridgeEvent, Command, ResyncKind};
 use super::payload_pool::PayloadPool;
 use crate::error::Result;
-use crate::protocol::{BridgeMessage, HostMessage, IpcMidiEvent, ProcessAudioFullData};
+use crate::protocol::{BridgeMessage, HostMessage, IpcMidiEvent, ProcessAudioData};
 use crate::util::transport::control::{self as ipc, ControlStream};
 use std::time::Duration;
 
@@ -20,7 +20,7 @@ pub(super) fn handle(
 ) -> Result<()> {
     match cmd {
         Command::Process(mut payload) => {
-            let msg = HostMessage::ProcessAudioFull(Box::new(ProcessAudioFullData {
+            let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
                 buffer_id: payload.buffer_id,
                 num_samples: payload.num_samples,
                 midi_events: payload.midi_events.iter().map(IpcMidiEvent::from).collect(),
@@ -38,9 +38,7 @@ pub(super) fn handle(
             ipc::send(stream, &msg)?;
 
             match recv_reply(stream, channels, PROCESS_TIMEOUT)? {
-                BridgeMessage::AudioProcessedFull { .. }
-                | BridgeMessage::AudioProcessedMidi { .. }
-                | BridgeMessage::AudioProcessed { .. } => {
+                BridgeMessage::AudioProcessed { .. } => {
                     channels.push_audio_response(AudioResponse::AudioProcessed);
                 }
                 BridgeMessage::Error { .. } => {

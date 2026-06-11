@@ -14,9 +14,7 @@ pub mod shm;
 
 pub use envelope::{BridgeMessage, HostMessage};
 pub use midi::{IpcMidiEvent, IpcMidiEventVec, MidiEventVec};
-pub use process::{
-    AudioProcessedFullData, AudioProcessedMidiData, ProcessAudioFullData, ProcessAudioMidiData,
-};
+pub use process::ProcessAudioData;
 pub use sample::SampleFormat;
 pub use shm::SlabLayout;
 
@@ -55,7 +53,7 @@ mod tests {
         let msg = HostMessage::LoadPlugin {
             path: PathBuf::from("/test/plugin.vst3"),
             sample_rate: 44100.0,
-            block_size: 512,
+            block_size: envelope::DEFAULT_BLOCK_SIZE,
             preferred_format: SampleFormat::Float32,
             shm_name: String::new(),
         };
@@ -82,15 +80,6 @@ mod tests {
         matches!(
             UmpMessage::try_from(ev.data_words()),
             Ok(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_)))
-        )
-    }
-
-    fn is_note_off(ev: &MidiEvent) -> bool {
-        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
-        use tutti_midi_types::midi2::UmpMessage;
-        matches!(
-            UmpMessage::try_from(ev.data_words()),
-            Ok(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(_)))
         )
     }
 
@@ -128,17 +117,18 @@ mod tests {
         .map(IpcMidiEvent::from)
         .collect();
 
-        let msg = HostMessage::ProcessAudioMidi(Box::new(ProcessAudioMidiData {
+        let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
             buffer_id: 42,
             num_samples: 512,
             midi_events,
+            ..Default::default()
         }));
 
         let encoded = bincode::serialize(&msg).unwrap();
         let decoded: HostMessage = bincode::deserialize(&encoded).unwrap();
 
         match decoded {
-            HostMessage::ProcessAudioMidi(data) => {
+            HostMessage::ProcessAudio(data) => {
                 assert_eq!(data.buffer_id, 42);
                 assert_eq!(data.num_samples, 512);
                 assert_eq!(data.midi_events.len(), 3);
@@ -152,37 +142,6 @@ mod tests {
                 assert!(is_note_on(&events[1]));
                 assert_eq!(note_number(&events[1]), Some(64));
                 assert_eq!(events[2].frame_offset, 256);
-            }
-            _ => panic!("Wrong message type"),
-        }
-    }
-
-    #[test]
-    fn test_midi_output_response_serialization() {
-        let midi_output: IpcMidiEventVec = [
-            MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(512),
-            MidiEvent::note_off(0, 0, 64, 0).with_frame_offset(640),
-        ]
-        .iter()
-        .map(IpcMidiEvent::from)
-        .collect();
-
-        let msg = BridgeMessage::AudioProcessedMidi(Box::new(AudioProcessedMidiData {
-            latency_us: 1500,
-            midi_output,
-        }));
-
-        let encoded = bincode::serialize(&msg).unwrap();
-        let decoded: BridgeMessage = bincode::deserialize(&encoded).unwrap();
-
-        match decoded {
-            BridgeMessage::AudioProcessedMidi(data) => {
-                assert_eq!(data.latency_us, 1500);
-                assert_eq!(data.midi_output.len(), 2);
-
-                let events: Vec<MidiEvent> = data.midi_output.iter().map(|&e| e.into()).collect();
-                assert!(is_note_off(&events[0]));
-                assert!(is_note_off(&events[1]));
             }
             _ => panic!("Wrong message type"),
         }
@@ -304,11 +263,11 @@ mod tests {
     }
 
     /// The harmony inputs (chord / scale / text / int) must survive a bincode
-    /// round-trip inside `ProcessAudioFullData`, including the owned `String`
+    /// round-trip inside `ProcessAudioData`, including the owned `String`
     /// names.
     #[test]
-    fn process_audio_full_round_trips_harmony_fields() {
-        let mut data = ProcessAudioFullData {
+    fn process_audio_round_trips_harmony_fields() {
+        let mut data = ProcessAudioData {
             num_samples: 256,
             ..Default::default()
         };
@@ -339,7 +298,7 @@ mod tests {
         });
 
         let bytes = bincode::serialize(&data).unwrap();
-        let back: ProcessAudioFullData = bincode::deserialize(&bytes).unwrap();
+        let back: ProcessAudioData = bincode::deserialize(&bytes).unwrap();
 
         assert_eq!(back.num_samples, 256);
         assert_eq!(back.chords.changes[0].text, "Cmaj7");

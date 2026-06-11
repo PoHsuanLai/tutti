@@ -153,25 +153,39 @@ pub fn to_process_context(
 mod tests {
     use super::process_context_flags as need;
     use super::*;
+    use tutti_plugin_types::{BarInfo, LoopRegion, MusicalTiming, TransportPosition, TransportState};
     use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
 
     /// A TransportInfo with every field set to a recognisable non-zero value,
     /// so a "field was populated" check is unambiguous.
     fn populated_transport() -> TransportInfo {
-        let mut t = TransportInfo::default();
-        t.sample_rate = 48_000.0;
-        t.position.samples = 1_234;
-        t.position.quarters = 4.0;
-        t.bar.position_quarters = 8.0;
-        t.loop_region.start_quarters = 2.0;
-        t.loop_region.end_quarters = 6.0;
-        t.timing.tempo = 128.0;
-        t.timing.time_sig_numerator = 7;
-        t.timing.time_sig_denominator = 8;
-        t.state.playing = true;
-        t.state.recording = true;
-        t.state.cycle_active = true;
-        t
+        TransportInfo {
+            sample_rate: 48_000.0,
+            position: TransportPosition {
+                samples: 1_234,
+                quarters: 4.0,
+                ..Default::default()
+            },
+            bar: BarInfo {
+                position_quarters: 8.0,
+                ..Default::default()
+            },
+            loop_region: LoopRegion {
+                start_quarters: 2.0,
+                end_quarters: 6.0,
+                ..Default::default()
+            },
+            timing: MusicalTiming {
+                tempo: 128.0,
+                time_sig_numerator: 7,
+                time_sig_denominator: 8,
+            },
+            state: TransportState {
+                playing: true,
+                recording: true,
+                cycle_active: true,
+            },
+        }
     }
 
     /// `u32::MAX` (the "plugin didn't implement IProcessContextRequirements"
@@ -194,14 +208,14 @@ mod tests {
         assert_eq!(ctx.timeSigDenominator, 8);
 
         // All the validity flags + transport-state bits set.
-        let s = ctx.state as u32;
-        assert_ne!(s & StatesAndFlags_::kPlaying as u32, 0);
-        assert_ne!(s & StatesAndFlags_::kRecording as u32, 0);
-        assert_ne!(s & StatesAndFlags_::kCycleActive as u32, 0);
-        assert_ne!(s & StatesAndFlags_::kProjectTimeMusicValid as u32, 0);
-        assert_ne!(s & StatesAndFlags_::kBarPositionValid as u32, 0);
-        assert_ne!(s & StatesAndFlags_::kTempoValid as u32, 0);
-        assert_ne!(s & StatesAndFlags_::kTimeSigValid as u32, 0);
+        let s = ctx.state;
+        assert_ne!(s & StatesAndFlags_::kPlaying, 0);
+        assert_ne!(s & StatesAndFlags_::kRecording, 0);
+        assert_ne!(s & StatesAndFlags_::kCycleActive, 0);
+        assert_ne!(s & StatesAndFlags_::kProjectTimeMusicValid, 0);
+        assert_ne!(s & StatesAndFlags_::kBarPositionValid, 0);
+        assert_ne!(s & StatesAndFlags_::kTempoValid, 0);
+        assert_ne!(s & StatesAndFlags_::kTimeSigValid, 0);
     }
 
     /// Requesting only tempo fills `tempo` + `kTempoValid` and nothing else
@@ -213,19 +227,19 @@ mod tests {
 
         // Requested.
         assert_eq!(ctx.tempo, 128.0);
-        assert_ne!(ctx.state as u32 & StatesAndFlags_::kTempoValid as u32, 0);
+        assert_ne!(ctx.state & StatesAndFlags_::kTempoValid, 0);
 
         // Not requested → left zeroed, valid bit clear.
         assert_eq!(ctx.timeSigNumerator, 0);
         assert_eq!(ctx.timeSigDenominator, 0);
-        assert_eq!(ctx.state as u32 & StatesAndFlags_::kTimeSigValid as u32, 0);
+        assert_eq!(ctx.state & StatesAndFlags_::kTimeSigValid, 0);
         assert_eq!(ctx.barPositionMusic, 0.0);
-        assert_eq!(ctx.state as u32 & StatesAndFlags_::kBarPositionValid as u32, 0);
+        assert_eq!(ctx.state & StatesAndFlags_::kBarPositionValid, 0);
         assert_eq!(ctx.continousTimeSamples, 0);
 
         // Transport-state not requested → no play/record/cycle bits.
-        assert_eq!(ctx.state as u32 & StatesAndFlags_::kPlaying as u32, 0);
-        assert_eq!(ctx.state as u32 & StatesAndFlags_::kCycleActive as u32, 0);
+        assert_eq!(ctx.state & StatesAndFlags_::kPlaying, 0);
+        assert_eq!(ctx.state & StatesAndFlags_::kCycleActive, 0);
     }
 
     /// Always-on fields (sampleRate, projectTimeSamples) are populated even

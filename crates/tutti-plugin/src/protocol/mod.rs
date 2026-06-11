@@ -7,37 +7,42 @@
 
 pub mod audio;
 pub mod envelope;
-pub mod harmony;
-pub mod metadata;
 pub mod midi;
-pub mod note_expression;
-pub mod parameters;
 pub mod process;
 pub mod sample;
 pub mod shm;
-pub mod transport;
 
 pub use envelope::{BridgeMessage, HostMessage};
-pub use harmony::{
-    ChordChanges, ChordValue, NoteExpressionIntChanges, NoteExpressionIntValue,
-    NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,
-};
-pub use metadata::{
-    AuComponentType, BusChannels, LoadedPlugin, PluginClass, PluginDescriptor, Vst2Category,
-};
 pub use midi::{IpcMidiEvent, IpcMidiEventVec, MidiEventVec};
-pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpressionValue};
-pub use parameters::{
-    ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue,
-};
 pub use process::{
     AudioProcessedFullData, AudioProcessedMidiData, ProcessAudioFullData, ProcessAudioMidiData,
 };
 pub use sample::SampleFormat;
 pub use shm::SlabLayout;
-pub use transport::TransportInfo;
 
 pub use tutti_midi_types::ump::MidiEvent;
+
+// Types that are owned elsewhere but speak on the wire, adopted here so
+// `crate::protocol::{...}` is the single import point for the bridge.
+//
+// - Plugin load metadata: the catalog-identity `PluginDescriptor` (+ its
+//   per-format `PluginClass`) lives in `crate::host::discovery::record`; the
+//   runtime engine-wiring `LoadedPlugin` lives in the format-agnostic
+//   `tutti-plugin-types`. They ride on `BridgeMessage::PluginLoaded`
+//   (descriptor + loaded) / probe replies (descriptor only).
+// - Parameters, transport snapshot, note-expression and harmony events:
+//   cross-format vocabulary shared with the host crates
+//   (`tutti-{vst2,vst3,clap,au}-host`) via `tutti-plugin-types`.
+pub use crate::host::discovery::record::{
+    AuComponentType, PluginClass, PluginDescriptor, Vst2Category,
+};
+pub use tutti_plugin_types::{
+    BusChannels, ChordChanges, ChordValue, LoadedPlugin, NoteExpressionChanges,
+    NoteExpressionIntChanges, NoteExpressionIntValue, NoteExpressionTextChanges,
+    NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue, ParameterChanges,
+    ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, ScaleChanges, ScaleValue,
+    TransportInfo,
+};
 
 #[cfg(test)]
 mod tests {
@@ -286,23 +291,6 @@ mod tests {
         assert_eq!(changes.queues.len(), 1);
         assert_eq!(changes.queues[0].param_id, 42);
         assert_eq!(changes.queues[0].points.len(), 2);
-    }
-
-    #[test]
-    fn test_note_expression_add_change() {
-        let mut expr = NoteExpressionChanges::new();
-        assert!(expr.is_empty());
-
-        expr.add_change(NoteExpressionValue {
-            sample_offset: 0,
-            note_id: 1,
-            expression_type: NoteExpressionType::Tuning,
-            value: 0.5,
-        });
-
-        assert!(!expr.is_empty());
-        assert_eq!(expr.changes.len(), 1);
-        assert_eq!(expr.changes[0].expression_type, NoteExpressionType::Tuning);
     }
 
     #[test]

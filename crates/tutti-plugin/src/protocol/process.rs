@@ -2,13 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::harmony::{
-    ChordChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ScaleChanges,
-};
 use super::midi::IpcMidiEventVec;
-use super::note_expression::NoteExpressionChanges;
-use super::parameters::ParameterChanges;
-use super::transport::TransportInfo;
+use super::{
+    ChordChanges, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges,
+    ParameterChanges, ScaleChanges, TransportInfo,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessAudioMidiData {

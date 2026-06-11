@@ -3,8 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::metadata::BusChannels;
 use super::sample::SampleFormat;
+use super::BusChannels;
 
 /// Shared-memory slab descriptor. `channels` is the **flat total** across all
 /// buses; `inputs`/`outputs` (when non-empty) describe how that flat channel

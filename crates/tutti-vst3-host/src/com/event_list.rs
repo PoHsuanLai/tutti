@@ -20,9 +20,9 @@ use vst3::Steinberg::{
 use vst3::{Class, ComWrapper};
 
 use crate::types::{
-    from_c_event, to_c_event, vst3_event_from_midi, vst3_to_midi_event, vst3_to_note_expression,
-    ChordValue, MidiEvent, NoteExpressionIntValue, NoteExpressionText, NoteExpressionValue,
-    ScaleValue, Vst3Event,
+    from_c_event, note_expression_to_vst3, to_c_event, vst3_event_from_midi, vst3_to_midi_event,
+    vst3_to_note_expression, ChordValue, MidiEvent, NoteExpressionIntValue, NoteExpressionText,
+    NoteExpressionValue, ScaleValue, Vst3Event,
 };
 use tutti_types::AudioThreadCell;
 
@@ -112,9 +112,9 @@ impl EventList {
             events, text_arena, ..
         } = &mut *inner;
         events.extend(midi_events.iter().filter_map(vst3_event_from_midi));
-        for expr in note_expressions {
-            events.push(expr.to_vst3_event());
-        }
+        // `note_expression_to_vst3` returns `None` for a dimension VST3 can't
+        // encode (Pressure/Expression); those are skipped, not coerced.
+        events.extend(note_expressions.iter().filter_map(note_expression_to_vst3));
         for expr in expr_ints {
             events.push(expr.to_vst3_event());
         }

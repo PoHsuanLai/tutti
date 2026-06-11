@@ -57,11 +57,13 @@
 //!
 //! # Module map
 //!
-//! - [`catalog`] — discovering, persisting, and loading plugins
+//! - [`catalog`] — discovering, persisting, and loading plugins (incl. the
+//!   [`PluginDescriptor`][catalog::PluginDescriptor] /
+//!   [`PluginClass`][catalog::PluginClass] identity types)
 //! - [`handles`] — [`PluginClient`][handles::PluginClient] and
 //!   [`PluginHandle`][handles::PluginHandle]
-//! - [`metadata`] — plugin + parameter descriptors
-//! - [`server`] — wire contract for `tutti-plugin-server` only
+//! - [`server`] — wire contract for `tutti-plugin-server` only (the full set
+//!   of frame types, incl. [`ParameterInfo`][server::ParameterInfo])
 //! - [`BridgeConfig`] at the crate root for low-level bridge tuning
 //!
 //! # Features
@@ -163,19 +165,6 @@ pub mod catalog {
 /// Per-plugin handles — [`PluginClient`](handles::PluginClient) (audio graph
 /// node) and [`PluginHandle`](handles::PluginHandle) (main-thread control).
 pub use host::handles;
-
-/// Plugin + parameter descriptors.
-///
-/// These types describe the plugin itself (identity, audio I/O, whether
-/// it has an editor) and the parameters it exposes (name, range, flags).
-/// They're also part of the host↔server wire contract — re-exported
-/// through [`server`] for that path.
-pub mod metadata {
-    pub use crate::protocol::{
-        AuComponentType, BusChannels, LoadedPlugin, ParameterFlags, ParameterInfo, PluginClass,
-        PluginDescriptor, SampleFormat, TransportInfo, Vst2Category,
-    };
-}
 
 /// Internal module exposed publicly for submodule lookup. Use the
 /// [`catalog`] namespace instead — this is here for rustdoc linking only.

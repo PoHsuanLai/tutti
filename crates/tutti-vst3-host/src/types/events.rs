@@ -12,6 +12,7 @@
 pub use tutti_midi_types::MidiEvent;
 
 use tutti_midi_types::{decode, encode, SemanticEvent};
+use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue};
 
 use vst3::Steinberg::Vst::Event_::EventTypes_;
 
@@ -605,15 +606,13 @@ pub fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
             note,
             value,
         }) => {
-            return Some(
-                NoteExpressionValue {
-                    sample_offset,
-                    note_id: note_id_for(channel, note),
-                    expression_type: NoteExpressionType::Tuning,
-                    value: (value as f64 + 1.0) / 2.0,
-                }
-                .to_vst3_event(),
-            );
+            // Tuning is VST3-encodable, so `note_expression_to_vst3` is `Some`.
+            return note_expression_to_vst3(&NoteExpressionValue {
+                sample_offset,
+                note_id: note_id_for(channel, note),
+                expression_type: NoteExpressionType::Tuning,
+                value: (value as f64 + 1.0) / 2.0,
+            });
         }
         // MIDI-2 per-note controllers map onto VST3 note-expression dimensions
         // for the indices that have a standard expression counterpart; other
@@ -624,14 +623,13 @@ pub fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
             index,
             value,
         }) => {
-            return per_note_controller_expression(index).map(|expression_type| {
-                NoteExpressionValue {
+            return per_note_controller_expression(index).and_then(|expression_type| {
+                note_expression_to_vst3(&NoteExpressionValue {
                     sample_offset,
                     note_id: note_id_for(channel, note),
                     expression_type,
                     value: value as f64,
-                }
-                .to_vst3_event()
+                })
             });
         }
         // CC / channel pressure / channel pitch bend / program change carry no
@@ -790,80 +788,58 @@ fn legacy_cc_to_midi(e: &LegacyMidiCcOutEvent, frame: u32) -> Option<MidiEvent> 
     Some(ev.with_frame_offset(frame))
 }
 
-/// VST3-standard note-expression dimensions carried on
-/// [`NoteExpressionValueEvent`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoteExpressionType {
-    /// Volume expression (0.0 = -inf dB, 0.5 = 0dB, 1.0 = +6dB).
-    Volume,
-    /// Pan expression (0.0 = left, 0.5 = center, 1.0 = right).
-    Pan,
-    /// Tuning in semitones (-120 to +120 mapped to 0.0-1.0).
-    Tuning,
-    /// Vibrato intensity (0.0 = none, 1.0 = max).
-    Vibrato,
-    /// Brightness/filter cutoff (0.0 = dark, 1.0 = bright).
-    Brightness,
-}
-
-impl NoteExpressionType {
-    /// Encode as the integer `typeId` VST3 uses on the wire.
-    pub fn to_type_id(self) -> u32 {
-        match self {
-            NoteExpressionType::Volume => 0,
-            NoteExpressionType::Pan => 1,
-            NoteExpressionType::Tuning => 2,
-            NoteExpressionType::Vibrato => 3,
-            NoteExpressionType::Brightness => 4,
-        }
-    }
-
-    /// Decode a VST3 `typeId` back to an enum value; `None` for unknown ids.
-    pub fn from_type_id(id: u32) -> Option<Self> {
-        match id {
-            0 => Some(NoteExpressionType::Volume),
-            1 => Some(NoteExpressionType::Pan),
-            2 => Some(NoteExpressionType::Tuning),
-            3 => Some(NoteExpressionType::Vibrato),
-            4 => Some(NoteExpressionType::Brightness),
-            _ => None,
-        }
+/// Encode a [`NoteExpressionType`] as the integer `typeId` VST3 uses on the
+/// wire. **Partial:** VST3 has no note-expression `typeId` for CLAP's
+/// [`Pressure`](NoteExpressionType::Pressure) /
+/// [`Expression`](NoteExpressionType::Expression), so those return `None`.
+/// Callers must handle the `None` (skip the event) rather than substitute a
+/// different dimension.
+pub fn note_expression_type_to_id(ty: NoteExpressionType) -> Option<u32> {
+    match ty {
+        NoteExpressionType::Volume => Some(0),
+        NoteExpressionType::Pan => Some(1),
+        NoteExpressionType::Tuning => Some(2),
+        NoteExpressionType::Vibrato => Some(3),
+        NoteExpressionType::Brightness => Some(4),
+        NoteExpressionType::Pressure | NoteExpressionType::Expression => None,
     }
 }
 
-/// Host-facing note-expression sample. Paired with a note id so the plugin
-/// applies it to a specific active voice.
-#[derive(Debug, Clone, Copy)]
-pub struct NoteExpressionValue {
-    /// Frame offset within the current processing block.
-    pub sample_offset: i32,
-    /// Note id returned by the originating note-on.
-    pub note_id: i32,
-    /// Which expression dimension this sample drives.
-    pub expression_type: NoteExpressionType,
-    /// 0.0 to 1.0
-    pub value: f64,
+/// Decode a VST3 `typeId` back into a [`NoteExpressionType`]; `None` for
+/// unknown ids. VST3 only emits the five it can encode, so this never yields
+/// `Pressure`/`Expression`.
+pub fn note_expression_type_from_id(id: u32) -> Option<NoteExpressionType> {
+    match id {
+        0 => Some(NoteExpressionType::Volume),
+        1 => Some(NoteExpressionType::Pan),
+        2 => Some(NoteExpressionType::Tuning),
+        3 => Some(NoteExpressionType::Vibrato),
+        4 => Some(NoteExpressionType::Brightness),
+        _ => None,
+    }
 }
 
-impl NoteExpressionValue {
-    /// Convert to the tagged-enum [`Vst3Event`] form accepted by the event
-    /// list staging code.
-    pub fn to_vst3_event(&self) -> Vst3Event {
-        let header = EventHeader {
-            bus_index: 0,
-            sample_offset: self.sample_offset,
-            ppq_position: 0.0,
-            flags: 0,
-            event_type: K_NOTE_EXPRESSION_VALUE_EVENT,
-        };
+/// Stage a [`NoteExpressionValue`] into the tagged-enum [`Vst3Event`] form
+/// accepted by the event-list code. Returns `None` for a dimension VST3
+/// cannot encode (Pressure/Expression) — see [`note_expression_type_to_id`];
+/// the caller drops the event rather than substituting a different dimension.
+pub fn note_expression_to_vst3(value: &NoteExpressionValue) -> Option<Vst3Event> {
+    let type_id = note_expression_type_to_id(value.expression_type)?;
 
-        Vst3Event::NoteExpression(NoteExpressionValueEvent {
-            header,
-            note_id: self.note_id,
-            type_id: self.expression_type.to_type_id(),
-            value: self.value,
-        })
-    }
+    let header = EventHeader {
+        bus_index: 0,
+        sample_offset: value.sample_offset,
+        ppq_position: 0.0,
+        flags: 0,
+        event_type: K_NOTE_EXPRESSION_VALUE_EVENT,
+    };
+
+    Some(Vst3Event::NoteExpression(NoteExpressionValueEvent {
+        header,
+        note_id: value.note_id,
+        type_id,
+        value: value.value,
+    }))
 }
 
 /// Extract a [`NoteExpressionValue`] from a [`Vst3Event`], or `None` for any
@@ -871,7 +847,7 @@ impl NoteExpressionValue {
 pub fn vst3_to_note_expression(event: &Vst3Event) -> Option<NoteExpressionValue> {
     match event {
         Vst3Event::NoteExpression(e) => {
-            let expression_type = NoteExpressionType::from_type_id(e.type_id)?;
+            let expression_type = note_expression_type_from_id(e.type_id)?;
             Some(NoteExpressionValue {
                 sample_offset: e.header.sample_offset,
                 note_id: e.note_id,
@@ -1167,7 +1143,7 @@ mod tests {
             expression_type: NoteExpressionType::Tuning,
             value: 0.5,
         };
-        let vst3 = expr.to_vst3_event();
+        let vst3 = note_expression_to_vst3(&expr).expect("Tuning is VST3-encodable");
         assert!(vst3_to_midi_event(&vst3).is_none());
     }
 
@@ -1233,7 +1209,10 @@ mod tests {
             MidiEvent::per_note_controller(0, 0, 60, 74, midi1_cc_to_midi2(100), false);
         match vst3_event_from_midi(&known) {
             Some(Vst3Event::NoteExpression(e)) => {
-                assert_eq!(e.type_id, NoteExpressionType::Brightness.to_type_id());
+                assert_eq!(
+                    Some(e.type_id),
+                    note_expression_type_to_id(NoteExpressionType::Brightness)
+                );
                 assert_eq!(e.note_id, note_id_for(0, 60));
             }
             other => panic!("expected Brightness note expression, got {other:?}"),

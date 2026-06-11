@@ -4,8 +4,8 @@ use std::path::Path;
 
 use tutti_plugin::server::{
     BusChannels, ChordChanges, EditorSize, LoadedPlugin, NoteExpressionChanges,
-    NoteExpressionIntChanges, NoteExpressionTextChanges, NoteExpressionType, ParameterFlags,
-    ParameterInfo, PluginClass, PluginDescriptor, ScaleChanges, WindowHandle,
+    NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterFlags, ParameterInfo,
+    PluginClass, PluginDescriptor, ScaleChanges, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -317,9 +317,12 @@ fn process_block<'a, T: tutti_vst3_host::Vst3Sample>(
 ) -> Result<tutti_plugin::server::ProcessOutput> {
     let mut vst3_buffer = tutti_vst3_host::AudioBuffer::new(inputs, outputs, sample_rate);
     let vst3_transport = ctx.transport.cloned().unwrap_or_default();
+    // The protocol and vst3-host share the note-expression value type
+    // (`tutti_plugin_types::NoteExpressionValue`), so this is a borrow, not a
+    // conversion.
     let vst3_note_expr = ctx
         .note_expression
-        .map(convert_note_expression_to_vst3)
+        .map(|n| n.changes.as_slice())
         .unwrap_or_default();
     let expr = ctx.expressive.as_ref();
     let vst3_chords = expr
@@ -342,7 +345,7 @@ fn process_block<'a, T: tutti_vst3_host::Vst3Sample>(
         &mut vst3_buffer,
         ctx.midi_events,
         ctx.param_changes,
-        &vst3_note_expr,
+        vst3_note_expr,
         &vst3_chords,
         &vst3_scales,
         &vst3_expr_texts,
@@ -380,27 +383,6 @@ fn build_param_info(info: tutti_vst3_host::Vst3ParameterInfo) -> ParameterInfo {
         info.step_count as u32,
         flags,
     )
-}
-
-fn convert_note_expression_to_vst3(
-    note_expr: &NoteExpressionChanges,
-) -> Vec<tutti_vst3_host::NoteExpressionValue> {
-    note_expr
-        .changes
-        .iter()
-        .map(|e| tutti_vst3_host::NoteExpressionValue {
-            sample_offset: e.sample_offset,
-            note_id: e.note_id,
-            expression_type: match e.expression_type {
-                NoteExpressionType::Volume => tutti_vst3_host::NoteExpressionType::Volume,
-                NoteExpressionType::Pan => tutti_vst3_host::NoteExpressionType::Pan,
-                NoteExpressionType::Tuning => tutti_vst3_host::NoteExpressionType::Tuning,
-                NoteExpressionType::Vibrato => tutti_vst3_host::NoteExpressionType::Vibrato,
-                NoteExpressionType::Brightness => tutti_vst3_host::NoteExpressionType::Brightness,
-            },
-            value: e.value,
-        })
-        .collect()
 }
 
 fn convert_chords_to_vst3(chords: &ChordChanges) -> Vec<tutti_vst3_host::ChordValue> {

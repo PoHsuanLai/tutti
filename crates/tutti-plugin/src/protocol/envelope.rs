@@ -3,13 +3,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::metadata::{LoadedPlugin, PluginDescriptor};
-use super::parameters::ParameterInfo;
 use super::process::{
     AudioProcessedFullData, AudioProcessedMidiData, ProcessAudioFullData, ProcessAudioMidiData,
 };
 use super::sample::SampleFormat;
 use super::shm::SlabLayout;
+use super::{LoadedPlugin, ParameterInfo, PluginDescriptor};
 
 fn default_block_size() -> usize {
     512

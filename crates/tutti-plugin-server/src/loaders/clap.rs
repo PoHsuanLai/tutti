@@ -367,26 +367,14 @@ impl PluginInstance for ClapInstance {
 fn convert_note_expressions(
     changes: &NoteExpressionChanges,
 ) -> Vec<tutti_clap_host::NoteExpressionValue> {
+    // The expression dimension is the shared `NoteExpressionType` on both
+    // sides; only CLAP's voice-addressed value wrapper differs (it adds
+    // port/channel/key, defaulted here via `new`).
     changes
         .changes
         .iter()
         .map(|expr| {
-            let expression_type = match expr.expression_type {
-                tutti_plugin::server::NoteExpressionType::Volume => {
-                    tutti_clap_host::NoteExpressionType::Volume
-                }
-                tutti_plugin::server::NoteExpressionType::Pan => tutti_clap_host::NoteExpressionType::Pan,
-                tutti_plugin::server::NoteExpressionType::Tuning => {
-                    tutti_clap_host::NoteExpressionType::Tuning
-                }
-                tutti_plugin::server::NoteExpressionType::Vibrato => {
-                    tutti_clap_host::NoteExpressionType::Vibrato
-                }
-                tutti_plugin::server::NoteExpressionType::Brightness => {
-                    tutti_clap_host::NoteExpressionType::Brightness
-                }
-            };
-            tutti_clap_host::NoteExpressionValue::new(expression_type, expr.note_id, expr.value)
+            tutti_clap_host::NoteExpressionValue::new(expr.expression_type, expr.note_id, expr.value)
                 .at(expr.sample_offset)
         })
         .collect()
@@ -436,32 +424,15 @@ fn convert_process_output(output: tutti_clap_host::instance::ProcessOutputRef<'_
         param_changes.add_queue(tutti_queue);
     }
 
+    // CLAP's note expression uses the shared `NoteExpressionType` (Pressure /
+    // Expression included), so this narrows CLAP's voice-addressed value down
+    // to the protocol shape without losing the dimension.
     let mut note_expression = NoteExpressionChanges::new();
     for expr in output.note_expressions {
         note_expression.add_change(tutti_plugin::server::NoteExpressionValue {
             sample_offset: expr.sample_offset,
             note_id: expr.note_id,
-            expression_type: match expr.expression_type {
-                tutti_clap_host::NoteExpressionType::Volume => {
-                    tutti_plugin::server::NoteExpressionType::Volume
-                }
-                tutti_clap_host::NoteExpressionType::Pan => tutti_plugin::server::NoteExpressionType::Pan,
-                tutti_clap_host::NoteExpressionType::Tuning => {
-                    tutti_plugin::server::NoteExpressionType::Tuning
-                }
-                tutti_clap_host::NoteExpressionType::Vibrato => {
-                    tutti_plugin::server::NoteExpressionType::Vibrato
-                }
-                tutti_clap_host::NoteExpressionType::Brightness => {
-                    tutti_plugin::server::NoteExpressionType::Brightness
-                }
-                tutti_clap_host::NoteExpressionType::Pressure => {
-                    tutti_plugin::server::NoteExpressionType::Volume
-                } // Map to volume
-                tutti_clap_host::NoteExpressionType::Expression => {
-                    tutti_plugin::server::NoteExpressionType::Volume
-                } // Map to volume
-            },
+            expression_type: expr.expression_type,
             value: expr.value,
         });
     }

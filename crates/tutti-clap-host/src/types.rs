@@ -11,7 +11,8 @@ use std::fmt;
 
 pub use tutti_plugin_types::{
     AudioBuffer, AudioBuffer32, AudioBuffer64, EditorCapabilities, EditorSize, MidiEvent,
-    ParameterChanges, ParameterPoint, ParameterQueue, TransportInfo, WindowHandle,
+    NoteExpressionType, ParameterChanges, ParameterPoint, ParameterQueue, TransportInfo,
+    WindowHandle,
 };
 
 /// Metadata describing a loaded plugin, returned from
@@ -91,20 +92,13 @@ impl fmt::Display for PluginInfo {
     }
 }
 
-/// Per-note expression dimension (CLAP's richer alternative to MIDI polyphonic
-/// aftertouch / per-note CC).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoteExpressionType {
-    Volume,
-    Pan,
-    Tuning,
-    Vibrato,
-    Brightness,
-    Pressure,
-    Expression,
-}
-
 /// A single note expression applied at a sample offset within a block.
+///
+/// CLAP's voice addressing is richer than the cross-format
+/// [`NoteExpressionValue`](tutti_plugin_types::NoteExpressionValue): besides
+/// `note_id` it can scope to a `port_index` / `channel` / `key`. This local
+/// wrapper carries those extra fields; [`expression_type`](Self::expression_type)
+/// uses the shared [`NoteExpressionType`].
 #[derive(Debug, Clone, Copy)]
 pub struct NoteExpressionValue {
     pub sample_offset: i32,

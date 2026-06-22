@@ -33,11 +33,11 @@ tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false 
 # Bevy ECS integration (the `ecs` module): Components / Events / Systems /
 # Plugins live next to the I/O logic. Hard deps, mirroring tutti-sampler /
 # tutti-wavecache.
-bevy_ecs = { version = "0.18", default-features = false }
-bevy_app = { version = "0.18", default-features = false }
-bevy_reflect = { version = "0.18", default-features = false }
-bevy_tasks = { version = "0.18" }
-bevy_log = { version = "0.18", default-features = false }
+bevy_ecs = { version = "0.19", default-features = false }
+bevy_app = { version = "0.19", default-features = false }
+bevy_reflect = { version = "0.19", default-features = false }
+bevy_tasks = { version = "0.19" }
+bevy_log = { version = "0.19", default-features = false }
 
 # Lock-free
 crossbeam-channel = "0.5"

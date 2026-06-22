@@ -26,14 +26,14 @@ tutti-core = { path = "../tutti-core", default-features = false, features = ["be
 # Bevy ECS integration (the `dsp` / `reconcile` / `*_graph` modules): Components
 # / Systems / Plugins live next to the audio logic. Hard deps, mirroring
 # tutti-wavecache / tutti-sampler.
-bevy_ecs = { version = "0.18", default-features = false }
-bevy_app = { version = "0.18", default-features = false }
-bevy_reflect = { version = "0.18", default-features = false }
-bevy_log = { version = "0.18", default-features = false }
+bevy_ecs = { version = "0.19", default-features = false }
+bevy_app = { version = "0.19", default-features = false }
+bevy_reflect = { version = "0.19", default-features = false }
+bevy_log = { version = "0.19", default-features = false }
 # `pending_convolver` (convolution-gated) loads IR files via the AssetServer.
-bevy_asset = { version = "0.18", default-features = false }
+bevy_asset = { version = "0.19", default-features = false }
 # Spatial position sync reads `GlobalTransform` (spatial-gated module).
-bevy_transform = { version = "0.18", optional = true }
+bevy_transform = { version = "0.19", optional = true }
 
 # Spatial audio VBAP library (optional)
 vbap = { version = "0.1", optional = true }

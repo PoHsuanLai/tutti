@@ -18,12 +18,12 @@ tutti-core = { path = "../tutti-core", default-features = false }
 tutti-plugin = { path = "../tutti-plugin" }
 tutti-plugin-server = { path = "../tutti-plugin-server", default-features = false }
 
-bevy_ecs = { version = "0.18", default-features = false }
-bevy_app = { version = "0.18", default-features = false }
-bevy_reflect = { version = "0.18", default-features = false }
-bevy_tasks = { version = "0.18" }
-bevy_log = { version = "0.18", default-features = false }
-bevy_window = { version = "0.18" }
+bevy_ecs = { version = "0.19", default-features = false }
+bevy_app = { version = "0.19", default-features = false }
+bevy_reflect = { version = "0.19", default-features = false }
+bevy_tasks = { version = "0.19" }
+bevy_log = { version = "0.19", default-features = false }
+bevy_window = { version = "0.19" }
 raw-window-handle = { version = "0.6" }
 
 # macOS: child-window attach + live-resize observer for plugin editors.

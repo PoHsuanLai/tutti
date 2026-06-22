@@ -23,12 +23,12 @@ tutti-core = { path = "../tutti-core", default-features = false, features = ["be
 
 # Bevy-native ECS surface (entity-as-node SoundFont trigger). Mirrors
 # tutti-wavecache / tutti-sampler: hard deps, not feature-gated.
-bevy_app = { version = "0.18", default-features = false }
-bevy_ecs = { version = "0.18", default-features = false }
-bevy_reflect = { version = "0.18", default-features = false }
-bevy_asset = { version = "0.18", default-features = false }
-bevy_tasks = { version = "0.18" }
-bevy_log = { version = "0.18", default-features = false }
+bevy_app = { version = "0.19", default-features = false }
+bevy_ecs = { version = "0.19", default-features = false }
+bevy_reflect = { version = "0.19", default-features = false }
+bevy_asset = { version = "0.19", default-features = false }
+bevy_tasks = { version = "0.19" }
+bevy_log = { version = "0.19", default-features = false }
 tutti-midi-types = { path = "../tutti-midi-types", optional = true, default-features = false }
 tutti-midi-runtime = { path = "../tutti-midi-runtime", optional = true, default-features = false }
 # For MidiBusRes — registering a promoted SoundFont unit's sender on the bus

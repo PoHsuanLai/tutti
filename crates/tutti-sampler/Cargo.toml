@@ -24,12 +24,12 @@ tutti-core = { path = "../tutti-core", features = ["bevy_asset"] }
 
 # Bevy ECS integration (the `ecs` module): Components / Systems / Plugins live
 # next to the audio logic. Hard deps now, mirroring tutti-wavecache's shape.
-bevy_ecs = { version = "0.18", default-features = false }
-bevy_app = { version = "0.18", default-features = false }
-bevy_reflect = { version = "0.18", default-features = false }
-bevy_asset = { version = "0.18", default-features = false }
-bevy_tasks = { version = "0.18" }
-bevy_log = { version = "0.18", default-features = false }
+bevy_ecs = { version = "0.19", default-features = false }
+bevy_app = { version = "0.19", default-features = false }
+bevy_reflect = { version = "0.19", default-features = false }
+bevy_asset = { version = "0.19", default-features = false }
+bevy_tasks = { version = "0.19" }
+bevy_log = { version = "0.19", default-features = false }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

@@ -23,6 +23,6 @@ bevy_asset = [
 ]
 
 [dependencies]
-bevy_asset = { version = "0.18", default-features = false, optional = true }
-bevy_reflect = { version = "0.18", default-features = false, optional = true }
+bevy_asset = { version = "0.19", default-features = false, optional = true }
+bevy_reflect = { version = "0.19", default-features = false, optional = true }
 thiserror = { version = "2", default-features = false, optional = true }

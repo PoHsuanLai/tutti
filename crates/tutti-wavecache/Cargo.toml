@@ -24,10 +24,10 @@ files = ["wav", "flac", "mp3", "ogg"]
 tutti-core = { path = "../tutti-core", default-features = false, features = ["std"] }
 
 # Bevy-native: the cache is a Resource and decodes on the async compute pool.
-bevy_app = { version = "0.18", default-features = false }
-bevy_ecs = { version = "0.18", default-features = false }
-bevy_tasks = { version = "0.18" }
-bevy_log = { version = "0.18", default-features = false }
+bevy_app = { version = "0.19", default-features = false }
+bevy_ecs = { version = "0.19", default-features = false }
+bevy_tasks = { version = "0.19" }
+bevy_log = { version = "0.19", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.10"

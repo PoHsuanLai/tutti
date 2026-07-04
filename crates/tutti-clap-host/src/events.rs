@@ -8,6 +8,7 @@ use crate::types::{
     ParameterQueue,
 };
 use smallvec::SmallVec;
+use tutti_midi_types::{decode, encode, SemanticEvent};
 use clap_sys::events::{
     clap_event_header, clap_event_midi, clap_event_midi_sysex, clap_event_note,
     clap_event_note_expression, clap_event_param_gesture, clap_event_param_mod,
@@ -179,59 +180,64 @@ impl ClapEvent {
 
     /// Build a `ClapEvent` from a Tutti UMP [`MidiEvent`].
     ///
-    /// The UMP is downconverted via `tutti_midi_types::MidiEvent::to_midi1_bytes`
-    /// and encoded into the matching CLAP event shape (typed NoteOn/Off
-    /// for channel-voice notes, generic `Midi` for everything else).
-    /// Returns `None` for UMP variants with no MIDI-1 form (per-note
-    /// controllers, SysEx, utility).
+    /// Notes decode through [`tutti_midi_types::decode`] into the typed CLAP
+    /// NoteOn/Off shape, so velocity arrives as the decoder's normalized `f32`
+    /// and the velocity-0 NoteOn → NoteOff quirk is handled centrally. Every
+    /// other channel-voice message (CC, pitch bend, pressure, program change,
+    /// per-note) is forwarded as a generic MIDI-1 `Midi` event — the form CLAP
+    /// plugins consume when the host has no parameter mapping for it. Returns
+    /// `None` for UMP variants with no MIDI-1 form (SysEx, utility).
     pub fn from_midi_event(event: &MidiEvent) -> Option<Self> {
-        let (bytes, _len) = event.to_midi1_bytes()?;
         let time = event.frame_offset;
-        let status = bytes[0];
-        let channel = (status & 0x0F) as i16;
-        match status & 0xF0 {
-            0x80 => Some(ClapEvent::note_off(
-                time,
+        match decode(event) {
+            Some(SemanticEvent::NoteOn {
                 channel,
-                bytes[1] as i16,
-                bytes[2] as f64 / 127.0,
-            )),
-            0x90 => Some(ClapEvent::note_on(
+                note,
+                velocity,
+            }) => Some(ClapEvent::note_on(
                 time,
-                channel,
-                bytes[1] as i16,
-                bytes[2] as f64 / 127.0,
+                channel as i16,
+                note as i16,
+                velocity as f64,
             )),
-            _ => Some(ClapEvent::midi(time, 0, [status, bytes[1], bytes[2]])),
+            Some(SemanticEvent::NoteOff { channel, note }) => {
+                Some(ClapEvent::note_off(time, channel as i16, note as i16, 0.0))
+            }
+            // CC / pitch-bend / pressure / program / per-note: forward as raw
+            // MIDI-1 bytes. `decode` returning `Some(other)` still implies a
+            // channel-voice message that downconverts; a `None` decode (SysEx,
+            // utility) has no 3-byte form and is dropped.
+            _ => {
+                let (bytes, _len) = event.to_midi1_bytes()?;
+                Some(ClapEvent::midi(time, 0, bytes))
+            }
         }
     }
 
     /// Convert a `ClapEvent` back to a Tutti UMP [`MidiEvent`].
     ///
-    /// Typed NoteOn/Off events are re-serialized to 3-byte wire form and
-    /// `Midi` events pass through; `MidiEvent::from_midi1_bytes` then
-    /// upconverts velocity/CC/pitch-bend resolution. Returns `None` for
-    /// non-MIDI variants (NoteExpression, ParamValue, etc.).
+    /// Typed NoteOn/Off events go through [`tutti_midi_types::encode`], so the
+    /// plugin's `f32` velocity is preserved at MIDI-2's full bit width instead
+    /// of being squashed to 7 bits. Generic `Midi` events upconvert from their
+    /// raw MIDI-1 bytes. Returns `None` for non-MIDI variants (NoteExpression,
+    /// ParamValue, etc.).
     pub fn to_midi_event(&self) -> Option<MidiEvent> {
         match self {
-            ClapEvent::NoteOn(e) => {
-                let velocity_u7 = (e.velocity * 127.0).clamp(0.0, 127.0) as u8;
-                let bytes = [
-                    0x90 | (e.channel as u8 & 0x0F),
-                    e.key as u8 & 0x7F,
-                    velocity_u7,
-                ];
-                MidiEvent::from_midi1_bytes(e.header.time, &bytes)
-            }
-            ClapEvent::NoteOff(e) => {
-                let velocity_u7 = (e.velocity * 127.0).clamp(0.0, 127.0) as u8;
-                let bytes = [
-                    0x80 | (e.channel as u8 & 0x0F),
-                    e.key as u8 & 0x7F,
-                    velocity_u7,
-                ];
-                MidiEvent::from_midi1_bytes(e.header.time, &bytes)
-            }
+            ClapEvent::NoteOn(e) => Some(
+                encode(&SemanticEvent::NoteOn {
+                    channel: e.channel as u8 & 0x0F,
+                    note: e.key as u8 & 0x7F,
+                    velocity: e.velocity as f32,
+                })
+                .with_frame_offset(e.header.time),
+            ),
+            ClapEvent::NoteOff(e) => Some(
+                encode(&SemanticEvent::NoteOff {
+                    channel: e.channel as u8 & 0x0F,
+                    note: e.key as u8 & 0x7F,
+                })
+                .with_frame_offset(e.header.time),
+            ),
             ClapEvent::Midi(e) => MidiEvent::from_midi1_bytes(e.header.time, &e.data),
             _ => None,
         }
@@ -667,6 +673,67 @@ mod tests {
         }
 
         assert_eq!(output.events().len(), 1);
+    }
+
+    #[test]
+    fn from_midi_event_note_on_decodes_to_typed_note_on() {
+        let midi = MidiEvent::note_on(0, 1, 60, 0x8000).with_frame_offset(7);
+        match ClapEvent::from_midi_event(&midi).expect("note on converts") {
+            ClapEvent::NoteOn(e) => {
+                assert_eq!(e.header.time, 7);
+                assert_eq!(e.channel, 1);
+                assert_eq!(e.key, 60);
+                assert!((e.velocity - 0.5).abs() < 0.01, "velocity {}", e.velocity);
+            }
+            _ => panic!("expected NoteOn"),
+        }
+    }
+
+    #[test]
+    fn from_midi_event_velocity_zero_note_on_becomes_note_off() {
+        // The MIDI velocity-0 NoteOn quirk: `decode` normalizes it to NoteOff,
+        // so the hand-rolled `& 0xF0` path that used to emit a vel-0 NoteOn is
+        // gone. Build the MIDI-1 velocity-0 NoteOn through raw bytes.
+        let midi = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 0]).expect("builds");
+        match ClapEvent::from_midi_event(&midi).expect("converts") {
+            ClapEvent::NoteOff(e) => {
+                assert_eq!(e.key, 60);
+            }
+            _ => panic!("expected NoteOff for vel-0 NoteOn"),
+        }
+    }
+
+    #[test]
+    fn from_midi_event_cc_forwards_as_generic_midi() {
+        let midi = MidiEvent::cc(0, 0, 7, 0x8000_0000); // volume, ~half
+        match ClapEvent::from_midi_event(&midi).expect("cc converts") {
+            ClapEvent::Midi(e) => {
+                assert_eq!(e.data[0] & 0xF0, 0xB0, "status should be CC");
+                assert_eq!(e.data[1], 7, "controller number");
+            }
+            _ => panic!("expected generic Midi for CC"),
+        }
+    }
+
+    #[test]
+    fn note_event_round_trips_through_semantic_encode() {
+        // ClapEvent::NoteOn -> MidiEvent (via encode) -> decode preserves the
+        // note and full-width velocity (no 7-bit squash).
+        let clap = ClapEvent::note_on(3, 2, 64, 0.75);
+        let midi = clap.to_midi_event().expect("note on -> midi");
+        assert_eq!(midi.frame_offset, 3);
+        match decode(&midi).expect("decodes") {
+            SemanticEvent::NoteOn {
+                channel,
+                note,
+                velocity,
+            } => {
+                assert_eq!(channel, 2);
+                assert_eq!(note, 64);
+                assert!((velocity - 0.75).abs() < 0.01, "velocity {velocity}");
+            }
+            other => panic!("expected NoteOn, got {other:?}"),
+        }
     }
 
     #[test]

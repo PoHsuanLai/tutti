@@ -6,13 +6,14 @@
 //! so the server doesn't have to weave field borrows.
 //!
 //! Input/output cross this layer as value types ([`AudioBlock`],
-//! [`AudioOutput`]). The server decodes `HostMessage::ProcessAudio*` into
-//! an `AudioBlock` and builds the wire `BridgeMessage` from an
-//! `AudioOutput`.
+//! [`AudioOutput`]). The server decodes `HostMessage::ProcessAudio` into an
+//! `AudioBlock` and builds the wire `BridgeMessage::AudioProcessed` from the
+//! resulting `AudioOutput`.
 
 use tutti_plugin::server::{
-    AudioBufferMut, AudioSlab, MidiEvent, MidiEventVec, NoteExpressionChanges, ParameterChanges,
-    PluginInstance, ProcessContext, SampleFormat, TransportInfo,
+    AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, MidiEvent,
+    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
+    PluginInstance, ProcessContext, SampleFormat, ScaleChanges, TransportInfo,
 };
 use tutti_plugin::Result;
 
@@ -97,6 +98,10 @@ impl AudioBuffers {
 pub(crate) struct ProcessExtras<'a> {
     pub param_changes: &'a ParameterChanges,
     pub note_expression: &'a NoteExpressionChanges,
+    pub chords: &'a ChordChanges,
+    pub scales: &'a ScaleChanges,
+    pub expr_texts: &'a NoteExpressionTextChanges,
+    pub expr_ints: &'a NoteExpressionIntChanges,
     pub transport: &'a TransportInfo,
 }
 
@@ -107,13 +112,13 @@ pub(crate) struct AudioBlock<'a> {
     pub extras: Option<ProcessExtras<'a>>,
 }
 
-/// One outbound block's plugin output + measured latency.
+/// One processed block's result. The plugin's audio output is written back
+/// into the shared slab in place; only the measured latency travels onward.
+/// (Plugin-emitted MIDI / parameter output is produced but not routed back to
+/// the host — see [`BridgeMessage::AudioProcessed`].)
 #[derive(Default)]
 pub(crate) struct AudioOutput {
     pub latency_us: u64,
-    pub midi: MidiEventVec,
-    pub param_changes: ParameterChanges,
-    pub note_expression: NoteExpressionChanges,
 }
 
 /// Driver for one audio block. Holds scratch across calls so the audio
@@ -163,8 +168,8 @@ impl AudioPipeline {
                 layout.output_base(),
             )
         } else {
-            let io = &plugin.metadata().audio_io;
-            (io.inputs, io.outputs, 0)
+            let loaded = plugin.loaded();
+            (loaded.total_inputs(), loaded.total_outputs(), 0)
         };
         // Scratch holds each direction at full width; the input scratch is the
         // flat, bus-ordered input view handed to the plugin's `process` (the
@@ -184,7 +189,13 @@ impl AudioPipeline {
             ctx = ctx
                 .params(ex.param_changes)
                 .note_expression(ex.note_expression)
-                .transport(ex.transport);
+                .transport(ex.transport)
+                .expressive(ExpressiveContext {
+                    chords: Some(ex.chords),
+                    scales: Some(ex.scales),
+                    expr_texts: Some(ex.expr_texts),
+                    expr_ints: Some(ex.expr_ints),
+                });
         }
 
         let sample_rate = clock.sample_rate;
@@ -256,11 +267,12 @@ impl AudioPipeline {
             }
         };
 
+        // Plugin output (`plugin_output.{midi_events, param_changes,
+        // note_expression}`) is intentionally dropped here — the host doesn't
+        // consume it. Audio was written back into the slab above.
+        let _ = plugin_output;
         Ok(AudioOutput {
             latency_us: start.elapsed().as_micros() as u64,
-            midi: plugin_output.midi_events,
-            param_changes: plugin_output.param_changes,
-            note_expression: plugin_output.note_expression,
         })
     }
 }
@@ -478,20 +490,26 @@ mod tests {
         assert_eq!(p.buffers.format(), SampleFormat::Float64);
     }
 
-    use tutti_plugin::server::{PluginInfo, ProcessOutput, SlabLayout, WindowHandle};
+    use crate::loaders::common::Meta;
+    use tutti_plugin::server::{
+        LoadedPlugin, PluginDescriptor, ProcessOutput, SlabLayout, WindowHandle,
+    };
 
     /// A stand-in plugin whose `process` fills every output sample with a
     /// non-finite value. Used to prove the pipeline sanitizes plugin output
     /// before it reaches the shared-memory slab. Only `metadata` + `process`
     /// are meaningful; the rest are inert.
     struct NanPlugin {
-        info: PluginInfo,
+        meta: Meta,
         fill: f32,
     }
 
     impl tutti_plugin::server::PluginInstance for NanPlugin {
-        fn metadata(&self) -> &PluginInfo {
-            &self.info
+        fn descriptor(&self) -> &PluginDescriptor {
+            &self.meta.descriptor
+        }
+        fn loaded(&self) -> &LoadedPlugin {
+            &self.meta.loaded
         }
         fn process(
             &mut self,
@@ -510,17 +528,13 @@ mod tests {
             0.0
         }
         fn set_parameter(&mut self, _id: u32, _value: f64) {}
-        fn get_parameter_list(&mut self) -> Vec<tutti_plugin::server::ParameterInfo> {
+        fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
-        }
-        fn get_parameter_info(&mut self, _id: u32) -> Option<tutti_plugin::server::ParameterInfo> {
-            None
         }
         fn open_editor(&mut self, _parent: WindowHandle) -> Result<tutti_plugin::server::EditorSize> {
             unreachable!("editor not used in this test")
         }
         fn close_editor(&mut self) {}
-        fn editor_idle(&mut self) {}
         fn get_state(&mut self) -> Result<Vec<u8>> {
             Ok(Vec::new())
         }
@@ -536,13 +550,16 @@ mod tests {
     /// the sidechain bus is observed. Sample-erased via an interior-mutable
     /// `RefCell` so `process(&mut self)` can stash the seen values.
     struct EchoProbe {
-        info: PluginInfo,
+        meta: Meta,
         seen_inputs: std::cell::RefCell<Vec<f32>>,
     }
 
     impl tutti_plugin::server::PluginInstance for EchoProbe {
-        fn metadata(&self) -> &PluginInfo {
-            &self.info
+        fn descriptor(&self) -> &PluginDescriptor {
+            &self.meta.descriptor
+        }
+        fn loaded(&self) -> &LoadedPlugin {
+            &self.meta.loaded
         }
         fn process(
             &mut self,
@@ -569,17 +586,13 @@ mod tests {
             0.0
         }
         fn set_parameter(&mut self, _id: u32, _value: f64) {}
-        fn get_parameter_list(&mut self) -> Vec<tutti_plugin::server::ParameterInfo> {
+        fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
-        }
-        fn get_parameter_info(&mut self, _id: u32) -> Option<tutti_plugin::server::ParameterInfo> {
-            None
         }
         fn open_editor(&mut self, _parent: WindowHandle) -> Result<tutti_plugin::server::EditorSize> {
             unreachable!("editor not used in this test")
         }
         fn close_editor(&mut self) {}
-        fn editor_idle(&mut self) {}
         fn get_state(&mut self) -> Result<Vec<u8>> {
             Ok(Vec::new())
         }
@@ -588,7 +601,21 @@ mod tests {
         }
     }
 
-    use tutti_plugin::server::{BusLayout, SampleFormat as SF};
+    use smallvec::smallvec;
+    use tutti_plugin::server::SampleFormat as SF;
+
+    /// Build a test [`Meta`] with the given per-bus input/output channel widths.
+    fn meta(inputs: &[usize], outputs: &[usize]) -> Meta {
+        Meta {
+            descriptor: PluginDescriptor::default(),
+            loaded: LoadedPlugin {
+                inputs: inputs.iter().copied().collect(),
+                outputs: outputs.iter().copied().collect(),
+                latency_samples: 0,
+                supports_f64: false,
+            },
+        }
+    }
 
     /// Multi-bus channel split: a 2-input-bus layout (stereo main + mono
     /// sidechain) plus a stereo output bus. The slab lays input at flat
@@ -605,7 +632,8 @@ mod tests {
             channels: 5,
             samples_per_channel: N,
             format: SF::Float32,
-            buses: vec![BusLayout::input(2), BusLayout::input(1), BusLayout::output(2)],
+            inputs: smallvec![2, 1], // stereo main + mono sidechain
+            outputs: smallvec![2],
         };
         let name = format!("tutti_multibus_test_{}", std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
@@ -614,18 +642,12 @@ mod tests {
         // Write a distinct marker into each of the 3 input channels at base 0.
         let markers = [11.0f32, 22.0, 33.0];
         for (ch, &m) in markers.iter().enumerate() {
-            shm.write_channel::<f32>(ch, &vec![m; N]).unwrap();
+            shm.write_channel::<f32>(ch, &[m; N]).unwrap();
         }
 
         let mut pipeline = AudioPipeline::new(SampleFormat::Float32);
         let mut plugin = EchoProbe {
-            info: PluginInfo::new("echo", "Echo")
-                .audio_io(2, 2)
-                .buses(vec![
-                    BusLayout::input(2),
-                    BusLayout::input(1),
-                    BusLayout::output(2),
-                ]),
+            meta: meta(&[2, 1], &[2]),
             seen_inputs: std::cell::RefCell::new(Vec::new()),
         };
         let clock = Clock {
@@ -673,7 +695,8 @@ mod tests {
             channels: CH,
             samples_per_channel: N,
             format: SampleFormat::Float32,
-            buses: Vec::new(),
+            inputs: smallvec![],
+            outputs: smallvec![],
         };
         let name = format!("tutti_nan_test_{}_{}", fill.to_bits(), std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
@@ -681,7 +704,7 @@ mod tests {
 
         let mut pipeline = AudioPipeline::new(SampleFormat::Float32);
         let mut plugin = NanPlugin {
-            info: PluginInfo::new("nan", "Nan").audio_io(CH, CH),
+            meta: meta(&[CH], &[CH]),
             fill,
         };
         let clock = Clock {
@@ -731,7 +754,8 @@ mod tests {
             channels: CH,
             samples_per_channel: N,
             format: SampleFormat::Float32,
-            buses: Vec::new(),
+            inputs: smallvec![],
+            outputs: smallvec![],
         };
         let name = format!("tutti_noalloc_test_{}", std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
@@ -740,7 +764,7 @@ mod tests {
         let mut pipeline = AudioPipeline::new(SampleFormat::Float32);
         // A finite-output fake; sanitize still runs, it just finds nothing.
         let mut plugin = NanPlugin {
-            info: PluginInfo::new("noalloc", "NoAlloc").audio_io(CH, CH),
+            meta: meta(&[CH], &[CH]),
             fill: 0.25,
         };
         let clock = Clock {
@@ -787,16 +811,12 @@ mod tests {
     fn process_multibus_is_alloc_free() {
         const N: usize = 128;
         // stereo main in + mono sidechain in + stereo out → 5 flat channels.
-        let buses = vec![
-            BusLayout::input(2),
-            BusLayout::input(1),
-            BusLayout::output(2),
-        ];
         let layout = SlabLayout {
             channels: 5,
             samples_per_channel: N,
             format: SampleFormat::Float32,
-            buses: buses.clone(),
+            inputs: smallvec![2, 1],
+            outputs: smallvec![2],
         };
         let name = format!("tutti_noalloc_mb_test_{}", std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
@@ -804,9 +824,7 @@ mod tests {
 
         let mut pipeline = AudioPipeline::new(SampleFormat::Float32);
         let mut plugin = NanPlugin {
-            info: PluginInfo::new("noalloc_mb", "NoAllocMB")
-                .audio_io(2, 2)
-                .buses(buses),
+            meta: meta(&[2, 1], &[2]),
             fill: 0.25,
         };
         let clock = Clock {

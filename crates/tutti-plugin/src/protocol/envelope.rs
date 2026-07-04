@@ -3,16 +3,19 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::metadata::PluginInfo;
-use super::parameters::ParameterInfo;
-use super::process::{
-    AudioProcessedFullData, AudioProcessedMidiData, ProcessAudioFullData, ProcessAudioMidiData,
-};
+use super::process::ProcessAudioData;
 use super::sample::SampleFormat;
 use super::shm::SlabLayout;
+use super::{LoadedPlugin, ParameterInfo, PluginDescriptor};
+
+/// Wire-deserialization fallback for [`HostMessage::LoadPlugin::block_size`]
+/// when an older/partial message arrives without the field. The operative
+/// value at runtime comes from `config.max_buffer_size` (see
+/// `host::subprocess::launch`); this is only a safety net for legacy messages.
+pub(crate) const DEFAULT_BLOCK_SIZE: usize = 512;
 
 fn default_block_size() -> usize {
-    512
+    DEFAULT_BLOCK_SIZE
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,15 +36,15 @@ pub enum HostMessage {
         shm_name: String,
     },
     UnloadPlugin,
-    ProcessAudio {
-        buffer_id: u32,
-        num_samples: usize,
-    },
-    ProcessAudioMidi(Box<ProcessAudioMidiData>),
-    ProcessAudioFull(Box<ProcessAudioFullData>),
+    /// Process one audio block. Audio rides the shared `AudioSlab` (referenced
+    /// by `buffer_id`); the boxed payload carries the per-block side-band.
+    ProcessAudio(Box<ProcessAudioData>),
     SetParameter {
         param_id: u32,
         value: f32,
+    },
+    SetAutomationState {
+        state: i32,
     },
     GetParameter {
         param_id: u32,
@@ -62,7 +65,6 @@ pub enum HostMessage {
         parent_handle: u64,
     },
     CloseEditor,
-    EditorIdle,
     SetupSharedMemory {
         shm_name: String,
         layout: SlabLayout,
@@ -73,15 +75,23 @@ pub enum HostMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BridgeMessage {
     PluginLoaded {
-        metadata: Box<PluginInfo>,
+        /// Catalog identity (id, name, vendor, version, native class, editor).
+        /// The probe path uses only this half; `loaded` is defaulted for a
+        /// metadata-only probe that never activated the plugin.
+        descriptor: Box<PluginDescriptor>,
+        /// Engine-wiring data from instantiation (bus widths, latency, f64).
+        /// Empty/default for a `ProbePlugin` reply.
+        #[serde(default)]
+        loaded: LoadedPlugin,
         negotiated_format: SampleFormat,
     },
     PluginUnloaded,
+    /// Acknowledges a processed block. Audio output is written back into the
+    /// shared `AudioSlab` in place; only the measured latency travels here.
+    /// (Plugin MIDI / parameter output is not routed back to the host.)
     AudioProcessed {
         latency_us: u64,
     },
-    AudioProcessedMidi(Box<AudioProcessedMidiData>),
-    AudioProcessedFull(Box<AudioProcessedFullData>),
     ParameterValue {
         value: Option<f32>,
     },
@@ -110,6 +120,19 @@ pub enum BridgeMessage {
     LatencyChanged {
         samples: usize,
     },
+    /// Plugin changed its own parameter values at runtime (e.g. an in-plugin
+    /// preset load). The host should re-read parameter values from the plugin.
+    PluginParamValuesChanged,
+    /// Plugin changed parameter titles/units/flags. The host should re-pull the
+    /// parameter list.
+    PluginParamTitlesChanged,
+    /// Plugin's bus arrangement changed and was re-enumerated server-side. The
+    /// host should rewire its audio graph from the plugin's refreshed metadata.
+    PluginIoChanged,
+    /// Plugin was torn down and rebuilt in place at the plugin's request
+    /// (`kReloadComponent`). The host should resync all plugin state — it is
+    /// effectively a fresh instance.
+    PluginReloaded,
     SharedMemoryReady,
     Error {
         message: String,

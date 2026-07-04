@@ -85,6 +85,55 @@ pub fn decode(event: &MidiEvent) -> Option<SemanticEvent> {
     }
 }
 
+/// Encode a [`SemanticEvent`] back into a MIDI-2 [`MidiEvent`] on group 0.
+///
+/// The inverse of [`decode`]: each normalized `f32` is re-discretized to the
+/// MIDI-2 bit width (16-bit velocity, 32-bit controllers / pitch bend) so a
+/// `decode` → `encode` round-trip is lossless up to that width. Group is always
+/// 0 and `frame_offset` is left at 0 — callers stamp those after the fact via
+/// [`MidiEvent::with_frame_offset`] if needed.
+pub fn encode(event: &SemanticEvent) -> MidiEvent {
+    use crate::convert::{signed_f32_to_bend_u32, unit_f32_to_u16, unit_f32_to_u32};
+    match *event {
+        SemanticEvent::NoteOn {
+            channel,
+            note,
+            velocity,
+        } => MidiEvent::note_on(0, channel, note, unit_f32_to_u16(velocity)),
+        SemanticEvent::NoteOff { channel, note } => MidiEvent::note_off(0, channel, note, 0),
+        SemanticEvent::ControlChange { channel, cc, value } => {
+            MidiEvent::cc(0, channel, cc, unit_f32_to_u32(value))
+        }
+        SemanticEvent::ChannelPressure { channel, value } => {
+            MidiEvent::channel_pressure(0, channel, unit_f32_to_u32(value))
+        }
+        SemanticEvent::KeyPressure {
+            channel,
+            note,
+            value,
+        } => MidiEvent::poly_pressure(0, channel, note, unit_f32_to_u32(value)),
+        SemanticEvent::PitchBend { channel, value } => {
+            MidiEvent::pitch_bend(0, channel, signed_f32_to_bend_u32(value))
+        }
+        SemanticEvent::ProgramChange { channel, program } => {
+            MidiEvent::program_change(0, channel, program, None)
+        }
+        SemanticEvent::PerNotePitchBend {
+            channel,
+            note,
+            value,
+        } => MidiEvent::per_note_pitch_bend(0, channel, note, signed_f32_to_bend_u32(value)),
+        SemanticEvent::PerNoteController {
+            channel,
+            note,
+            index,
+            value,
+            // `decode` only surfaces the assignable per-note controller, so
+            // round-trip back to assignable (registered = false).
+        } => MidiEvent::per_note_controller(0, channel, note, index, unit_f32_to_u32(value), false),
+    }
+}
+
 fn decode_cv2(cv2: ChannelVoice2<&[u32]>) -> Option<SemanticEvent> {
     match cv2 {
         ChannelVoice2::NoteOn(m) => {
@@ -282,6 +331,102 @@ mod tests {
                 assert!((value - 100.0 / 127.0).abs() < 0.01);
             }
             _ => panic!("expected ChannelPressure"),
+        }
+    }
+
+    /// `encode` is the inverse of `decode`: round-tripping a SemanticEvent
+    /// through MIDI-2 and back reproduces it to within MIDI-2 quantization.
+    #[test]
+    fn encode_decode_round_trips_every_variant() {
+        let cases = [
+            SemanticEvent::NoteOn {
+                channel: 3,
+                note: 60,
+                velocity: 0.75,
+            },
+            SemanticEvent::NoteOff {
+                channel: 3,
+                note: 60,
+            },
+            SemanticEvent::ControlChange {
+                channel: 2,
+                cc: 74,
+                value: 0.5,
+            },
+            SemanticEvent::ChannelPressure {
+                channel: 1,
+                value: 0.9,
+            },
+            SemanticEvent::KeyPressure {
+                channel: 0,
+                note: 64,
+                value: 0.25,
+            },
+            SemanticEvent::PitchBend {
+                channel: 4,
+                value: -0.5,
+            },
+            SemanticEvent::ProgramChange {
+                channel: 9,
+                program: 42,
+            },
+            SemanticEvent::PerNotePitchBend {
+                channel: 5,
+                note: 67,
+                value: 0.3,
+            },
+            SemanticEvent::PerNoteController {
+                channel: 6,
+                note: 72,
+                index: 11,
+                value: 0.6,
+            },
+        ];
+
+        for original in cases {
+            let decoded = decode(&encode(&original)).expect("re-decodes");
+            match (original, decoded) {
+                (
+                    SemanticEvent::NoteOn {
+                        velocity: a,
+                        channel: c0,
+                        note: n0,
+                    },
+                    SemanticEvent::NoteOn {
+                        velocity: b,
+                        channel: c1,
+                        note: n1,
+                    },
+                ) => {
+                    assert_eq!((c0, n0), (c1, n1));
+                    assert!((a - b).abs() < 1e-4, "velocity {a} vs {b}");
+                }
+                (
+                    SemanticEvent::PitchBend { value: a, .. },
+                    SemanticEvent::PitchBend { value: b, .. },
+                )
+                | (
+                    SemanticEvent::PerNotePitchBend { value: a, .. },
+                    SemanticEvent::PerNotePitchBend { value: b, .. },
+                )
+                | (
+                    SemanticEvent::ControlChange { value: a, .. },
+                    SemanticEvent::ControlChange { value: b, .. },
+                )
+                | (
+                    SemanticEvent::ChannelPressure { value: a, .. },
+                    SemanticEvent::ChannelPressure { value: b, .. },
+                )
+                | (
+                    SemanticEvent::KeyPressure { value: a, .. },
+                    SemanticEvent::KeyPressure { value: b, .. },
+                )
+                | (
+                    SemanticEvent::PerNoteController { value: a, .. },
+                    SemanticEvent::PerNoteController { value: b, .. },
+                ) => assert!((a - b).abs() < 1e-4, "value {a} vs {b}"),
+                (a, b) => assert_eq!(a, b),
+            }
         }
     }
 }

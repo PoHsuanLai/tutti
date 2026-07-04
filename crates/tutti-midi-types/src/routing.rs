@@ -20,22 +20,6 @@ use arc_swap::ArcSwap;
 /// Supports layering up to 8 synths on a single channel.
 pub const MAX_TARGETS_PER_ROUTE: usize = 8;
 
-/// Extract the channel nibble from a channel-voice UMP event.
-///
-/// Returns `None` for non-channel-voice messages (system, sysex, utility).
-/// Used on the hot path to route by channel without paying for a full
-/// `midi2::UmpMessage::try_from` dispatch.
-#[inline]
-fn event_channel(event: &MidiEvent) -> Option<u8> {
-    let type_nibble = (event.data[0] >> 28) & 0x0F;
-    // UMP type 0x2 = MIDI 1.0 channel voice, 0x4 = MIDI 2.0 channel voice.
-    if type_nibble == 0x2 || type_nibble == 0x4 {
-        Some(((event.data[0] >> 16) & 0x0F) as u8)
-    } else {
-        None
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct MidiRoute {
     /// Port filter: `None` = any port, `Some(n)` = port n only
@@ -110,7 +94,7 @@ impl MidiRoute {
         let port_matches = self.port.is_none_or(|p| p == port);
         let channel_matches = match self.channel {
             None => true,
-            Some(c) => event_channel(event) == Some(c),
+            Some(c) => event.channel() == Some(c),
         };
         port_matches && channel_matches
     }
@@ -198,7 +182,7 @@ impl MidiRoutingSnapshot {
     pub fn route_single(&self, port: usize, event: &MidiEvent) -> Option<MidiUnitId> {
         // Non-channel-voice messages (system, SysEx, utility) skip the
         // channel-indexed fast path.
-        if let Some(channel) = event_channel(event) {
+        if let Some(channel) = event.channel() {
             if let Some(&target) = self.channel_lookup[channel as usize].first() {
                 return Some(target);
             }
@@ -303,7 +287,7 @@ impl Iterator for RouteIterator<'_> {
                     // Non-channel-voice messages (system/SysEx/utility) bypass
                     // the channel-indexed fast path and fall through to the
                     // "any channel" bucket.
-                    if let Some(channel) = event_channel(self.event) {
+                    if let Some(channel) = self.event.channel() {
                         let targets = &self.snapshot.channel_lookup[channel as usize];
                         while self.target_idx < targets.len() {
                             let target = targets[self.target_idx];
@@ -367,11 +351,11 @@ impl Iterator for RouteIterator<'_> {
 /// UI-thread writer for MIDI routing configuration.
 ///
 /// The mutable writer that publishes [`MidiRoutingSnapshot`]s atomically to
-/// the audio thread via [`arc_swap::ArcSwap`]. Call configuration methods
-/// ([`channel`](MidiRoutingTable::channel), [`port`](MidiRoutingTable::port),
-/// etc.) from the UI thread, then [`commit`](MidiRoutingTable::commit) to
-/// publish. The audio thread reads via the `Arc<ArcSwap<MidiRoutingSnapshot>>`
-/// returned by [`snapshot_arc`](MidiRoutingTable::snapshot_arc).
+/// the audio thread via [`arc_swap::ArcSwap`]. Stage the full rule set with
+/// [`set_routes`](MidiRoutingTable::set_routes) from the UI thread, then
+/// [`commit`](MidiRoutingTable::commit) to publish. The audio thread reads via
+/// the `Arc<ArcSwap<MidiRoutingSnapshot>>` returned by
+/// [`snapshot_arc`](MidiRoutingTable::snapshot_arc).
 pub struct MidiRoutingTable {
     routes: Vec<MidiRoute>,
     fallback_target: Option<MidiUnitId>,
@@ -399,114 +383,21 @@ impl MidiRoutingTable {
         self.snapshot.load()
     }
 
-    /// Set fallback target (for unmapped events).
-    pub fn fallback(&mut self, target: MidiUnitId) -> &mut Self {
-        self.fallback_target = Some(target);
+    /// Stage a complete replacement of the routing rules.
+    ///
+    /// Callers rebuild the full rule set from their source of truth (e.g.
+    /// `MidiReceiver` components) and hand it over wholesale; there is no
+    /// incremental edit. The staged rules are published to the audio thread
+    /// on the next [`commit`](Self::commit), which coalesces with the graph
+    /// net flush so routes and topology flip atomically.
+    pub fn set_routes(
+        &mut self,
+        routes: impl IntoIterator<Item = MidiRoute>,
+        fallback: Option<MidiUnitId>,
+    ) {
+        self.routes = routes.into_iter().collect();
+        self.fallback_target = fallback;
         self.dirty = true;
-        self
-    }
-
-    pub fn clear_fallback(&mut self) -> &mut Self {
-        self.fallback_target = None;
-        self.dirty = true;
-        self
-    }
-
-    /// Route channel to target. Multiple calls add multiple targets per channel.
-    pub fn channel(&mut self, channel: u8, unit_id: MidiUnitId) -> &mut Self {
-        for route in &mut self.routes {
-            if route.port.is_none() && route.channel == Some(channel) {
-                if !route.targets.contains(&unit_id) {
-                    route.targets.push(unit_id);
-                }
-                self.dirty = true;
-                return self;
-            }
-        }
-
-        self.routes
-            .push(MidiRoute::for_channel(channel).with_target(unit_id));
-        self.dirty = true;
-        self
-    }
-
-    pub fn port(&mut self, port: usize, unit_id: MidiUnitId) -> &mut Self {
-        for route in &mut self.routes {
-            if route.port == Some(port) && route.channel.is_none() {
-                if !route.targets.contains(&unit_id) {
-                    route.targets.push(unit_id);
-                }
-                self.dirty = true;
-                return self;
-            }
-        }
-
-        self.routes
-            .push(MidiRoute::for_port(port).with_target(unit_id));
-        self.dirty = true;
-        self
-    }
-
-    pub fn port_channel(&mut self, port: usize, channel: u8, unit_id: MidiUnitId) -> &mut Self {
-        for route in &mut self.routes {
-            if route.port == Some(port) && route.channel == Some(channel) {
-                if !route.targets.contains(&unit_id) {
-                    route.targets.push(unit_id);
-                }
-                self.dirty = true;
-                return self;
-            }
-        }
-
-        self.routes
-            .push(MidiRoute::for_port_channel(port, channel).with_target(unit_id));
-        self.dirty = true;
-        self
-    }
-
-    /// Route all MIDI to multiple targets. Replaces existing global layer.
-    pub fn layer(&mut self, targets: &[MidiUnitId]) -> &mut Self {
-        self.routes
-            .retain(|r| r.port.is_some() || r.channel.is_some());
-
-        if !targets.is_empty() {
-            self.routes.push(MidiRoute::new().with_targets(targets));
-        }
-        self.dirty = true;
-        self
-    }
-
-    /// Route channel to multiple targets. Replaces existing routes for this channel.
-    pub fn channel_layer(&mut self, channel: u8, targets: &[MidiUnitId]) -> &mut Self {
-        self.routes
-            .retain(|r| !(r.port.is_none() && r.channel == Some(channel)));
-
-        if !targets.is_empty() {
-            self.routes
-                .push(MidiRoute::for_channel(channel).with_targets(targets));
-        }
-        self.dirty = true;
-        self
-    }
-
-    pub fn remove_unit(&mut self, unit_id: MidiUnitId) -> &mut Self {
-        for route in &mut self.routes {
-            route.targets.retain(|&id| id != unit_id);
-        }
-        self.routes.retain(|r| !r.targets.is_empty());
-
-        if self.fallback_target == Some(unit_id) {
-            self.fallback_target = None;
-        }
-        self.dirty = true;
-        self
-    }
-
-    pub fn clear(&mut self) -> &mut Self {
-        self.routes.clear();
-        self.fallback_target = None;
-        self.dirty = true;
-        self
     }
 
     pub fn route_count(&self) -> usize {
@@ -717,7 +608,7 @@ mod tests {
     #[test]
     fn test_fallback_through_table() {
         let mut table = MidiRoutingTable::new();
-        table.fallback(id(42));
+        table.set_routes([], Some(id(42)));
         table.commit();
 
         let snapshot = table.load();
@@ -729,7 +620,13 @@ mod tests {
     #[test]
     fn test_channel_through_table() {
         let mut table = MidiRoutingTable::new();
-        table.channel(0, id(100)).channel(1, id(200));
+        table.set_routes(
+            [
+                MidiRoute::for_channel(0).with_target(id(100)),
+                MidiRoute::for_channel(1).with_target(id(200)),
+            ],
+            None,
+        );
         table.commit();
 
         let snapshot = table.load();
@@ -739,15 +636,16 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_unit_through_table() {
+    fn test_set_routes_replaces_wholesale() {
         let mut table = MidiRoutingTable::new();
-        table
-            .channel(0, id(100))
-            .channel(0, id(200))
-            .fallback(id(100));
+        table.set_routes(
+            [MidiRoute::for_channel(0).with_targets(&[id(100), id(200)])],
+            Some(id(100)),
+        );
         table.commit();
 
-        table.remove_unit(id(100));
+        // A second set_routes fully replaces the prior rules — no merge.
+        table.set_routes([MidiRoute::for_channel(0).with_target(id(200))], None);
         table.commit();
 
         let snapshot = table.load();
@@ -762,7 +660,7 @@ mod tests {
         let mut table = MidiRoutingTable::new();
         assert!(!table.is_dirty());
 
-        table.channel(0, id(100));
+        table.set_routes([MidiRoute::for_channel(0).with_target(id(100))], None);
         assert!(table.is_dirty());
 
         table.commit();

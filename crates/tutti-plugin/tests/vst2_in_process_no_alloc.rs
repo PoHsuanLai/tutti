@@ -8,7 +8,7 @@
 //! regressions, so failure means the in-process backend (or the
 //! `vst2-host` codec) introduced a per-block alloc.
 
-#![cfg(feature = "vst2-in-process")]
+#![cfg(feature = "vst2")]
 
 use assert_no_alloc::AllocDisabler;
 use std::path::Path;
@@ -32,9 +32,9 @@ fn process_steady_state_does_not_allocate() {
     let (mut unit, handle) =
         tutti_plugin::in_process_vst2(Path::new(VST2_PLUGIN), 48_000.0).expect("load failed");
 
-    let meta = handle.metadata();
-    let in_ch = meta.audio_io.inputs.max(1); // BufferVec::new(0) panics on at()
-    let out_ch = meta.audio_io.outputs.max(1);
+    let loaded = handle.loaded();
+    let in_ch = loaded.total_inputs().max(1); // BufferVec::new(0) panics on at()
+    let out_ch = loaded.total_outputs().max(1);
 
     let input = BufferVec::new(in_ch);
     let mut output = BufferVec::new(out_ch);
@@ -67,9 +67,9 @@ fn process_with_midi_does_not_allocate() {
 
     let sender = handle.midi_sender();
 
-    let meta = handle.metadata();
-    let in_ch = meta.audio_io.inputs.max(1);
-    let out_ch = meta.audio_io.outputs.max(1);
+    let loaded = handle.loaded();
+    let in_ch = loaded.total_inputs().max(1);
+    let out_ch = loaded.total_outputs().max(1);
 
     let input = BufferVec::new(in_ch);
     let mut output = BufferVec::new(out_ch);

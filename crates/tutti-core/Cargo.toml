@@ -62,12 +62,12 @@ ebur128 = { version = "0.1" }
 # (GraphReconcileSystems, TuttiGraphRes, TuttiGraphPlugin, the param
 # components) that every leaf audio crate schedules against. Pinned to the
 # same Bevy minor as the rest of the workspace.
-bevy_ecs = { version = "0.18", default-features = false, features = ["bevy_reflect"] }
-bevy_reflect = { version = "0.18", default-features = false }
-bevy_app = { version = "0.18", default-features = false }
-bevy_asset = { version = "0.18", default-features = false }
-bevy_tasks = { version = "0.18" }
-bevy_log = { version = "0.18", default-features = false }
+bevy_ecs = { version = "0.19", default-features = false, features = ["bevy_reflect"] }
+bevy_reflect = { version = "0.19", default-features = false }
+bevy_app = { version = "0.19", default-features = false }
+bevy_asset = { version = "0.19", default-features = false }
+bevy_tasks = { version = "0.19" }
+bevy_log = { version = "0.19", default-features = false }
 
 [dev-dependencies]
 assert_no_alloc = "1"

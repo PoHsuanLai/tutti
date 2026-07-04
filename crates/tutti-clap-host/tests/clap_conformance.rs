@@ -25,7 +25,8 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use tutti_clap_host::{
-    AudioBuffer32, ClapInstance, MidiEvent, ParameterChanges, ProcessContext, TransportInfo,
+    AudioBuffer32, ClapActive, ClapLoaded, MidiEvent, ParameterChanges, ProcessContext,
+    TransportInfo,
 };
 // The reference plugin is a dev-dependency (cdylib + rlib), so we share its
 // `#[repr(C)]` capture type directly instead of hand-mirroring it — the
@@ -53,7 +54,7 @@ const PROBE_ID: &str = "tutti.conformance-probe";
 
 /// Load + activate the reference plugin, or print a skip message and return
 /// `None` if it wasn't built.
-fn load_or_skip() -> Option<ClapInstance> {
+fn load_or_skip() -> Option<ClapActive<f32>> {
     if PLUGIN_PATH.is_empty() {
         eprintln!(
             "tutti-clap-test-plugin not built (TUTTI_CLAP_TEST_PLUGIN empty); \
@@ -68,9 +69,12 @@ fn load_or_skip() -> Option<ClapInstance> {
     }
     // The artifact is a bare dylib — pass it as both bundle and library so
     // the host dlopens it directly (no .clap bundle structure needed).
-    let mut inst = ClapInstance::load_with_library(path, Some(path), 48_000.0, 512)
+    let loaded = ClapLoaded::load_with_library(path, Some(path), 48_000.0, 512)
         .expect("reference plugin should load");
-    inst.activate().expect("reference plugin should activate");
+    let inst = loaded
+        .activate::<f32>()
+        .map_err(|(_, e)| e)
+        .expect("reference plugin should activate");
     Some(inst)
 }
 
@@ -96,7 +100,11 @@ fn read_capture() -> ProcessCapture {
 ///
 /// Holds [`CAPTURE_LOCK`] across the `process` → `read_capture` pair so a
 /// parallel test can't overwrite the process-global capture in between.
-fn drive_once(inst: &mut ClapInstance, frames: usize, ctx: &ProcessContext<'_>) -> ProcessCapture {
+fn drive_once(
+    inst: &mut ClapActive<f32>,
+    frames: usize,
+    ctx: &ProcessContext<'_>,
+) -> ProcessCapture {
     let _lock = CAPTURE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let mut out_l = vec![0.0f32; frames];
     let mut out_r = vec![0.0f32; frames];

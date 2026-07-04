@@ -18,13 +18,17 @@ pub mod host;
 pub mod types;
 
 pub use error::{LoadStage, Result, Vst3Error};
-pub use host::{RestartOutcome, Vst3Instance, Vst3Library, Vst3Loaded};
+pub use host::{PluginNotifications, RestartOutcome, Vst3Instance, Vst3Library, Vst3Loaded};
 pub use types::{
-    parameter_flags, to_process_context, vst3_event_from_midi, vst3_to_midi_event, AudioBuffer,
-    BufferPtrs, BusInfo, EditorCapabilities, EditorSize, MidiEvent, NoteExpressionType,
-    NoteExpressionValue, ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo,
-    ProcessOutput, ProcessOutputRef, Sample, TransportInfo, Vst3ParameterInfo, Vst3Sample,
-    WindowHandle,
+    automation_state, keyswitch_type, note_expression_flags, parameter_flags, physical_ui_type,
+    prefetchable_support, process_context_flags, to_process_context, vst3_event_from_midi,
+    vst3_to_chord, vst3_to_midi_event, vst3_to_note_expression,
+    vst3_to_note_expression_int, vst3_to_note_expression_text, vst3_to_scale, AudioBuffer,
+    BufferPtrs, BusInfo, ChordValue, EditorCapabilities, EditorSize, MidiEvent,
+    NoteExpressionIntValue, NoteExpressionText, NoteExpressionType, NoteExpressionValue,
+    ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo, ProcessOutput, ProcessOutputRef,
+    Sample, ScaleValue, TransportInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo, Vst3ParameterInfo,
+    Vst3Sample, WindowHandle,
 };
 
 pub use com::{ParameterEditEvent, ProgressEvent, RestartFlags, UnitEvent};
@@ -38,9 +42,12 @@ pub use com::{ParameterEditEvent, ProgressEvent, RestartFlags, UnitEvent};
 /// depending on the raw `vst3` crate.
 pub mod events {
     pub use crate::types::{
-        DataEvent, EventHeader, NoteExpressionValueEvent, NoteOffEvent, NoteOnEvent,
-        PolyPressureEvent, Vst3Event, K_DATA_EVENT, K_NOTE_EXPRESSION_VALUE_EVENT,
-        K_NOTE_OFF_EVENT, K_NOTE_ON_EVENT, K_POLY_PRESSURE_EVENT,
+        ChordEvent, DataEvent, EventHeader, LegacyMidiCcOutEvent, NoteExpressionIntValueEvent,
+        NoteExpressionTextEvent, NoteExpressionValueEvent, NoteOffEvent, NoteOnEvent,
+        PolyPressureEvent, ScaleEvent, TextRef, Vst3Event, K_CHORD_EVENT, K_DATA_EVENT,
+        K_LEGACY_MIDI_CC_OUT_EVENT, K_NOTE_EXPRESSION_INT_VALUE_EVENT,
+        K_NOTE_EXPRESSION_TEXT_EVENT, K_NOTE_EXPRESSION_VALUE_EVENT, K_NOTE_OFF_EVENT,
+        K_NOTE_ON_EVENT, K_POLY_PRESSURE_EVENT, K_SCALE_EVENT,
     };
 }
 

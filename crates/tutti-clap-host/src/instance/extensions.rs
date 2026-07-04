@@ -7,7 +7,9 @@
 use clap_sys::ext::ambisonic::CLAP_EXT_AMBISONIC;
 use clap_sys::ext::audio_ports::CLAP_EXT_AUDIO_PORTS;
 use clap_sys::ext::audio_ports_activation::CLAP_EXT_AUDIO_PORTS_ACTIVATION;
-use clap_sys::ext::audio_ports_config::CLAP_EXT_AUDIO_PORTS_CONFIG;
+use clap_sys::ext::audio_ports_config::{
+    CLAP_EXT_AUDIO_PORTS_CONFIG, CLAP_EXT_AUDIO_PORTS_CONFIG_INFO,
+};
 use clap_sys::ext::configurable_audio_ports::CLAP_EXT_CONFIGURABLE_AUDIO_PORTS;
 use clap_sys::ext::context_menu::CLAP_EXT_CONTEXT_MENU;
 use clap_sys::ext::draft::extensible_audio_ports::CLAP_EXT_EXTENSIBLE_AUDIO_PORTS;
@@ -41,7 +43,9 @@ use std::ptr;
 use clap_sys::ext::ambisonic::clap_plugin_ambisonic;
 use clap_sys::ext::audio_ports::clap_plugin_audio_ports;
 use clap_sys::ext::audio_ports_activation::clap_plugin_audio_ports_activation;
-use clap_sys::ext::audio_ports_config::clap_plugin_audio_ports_config;
+use clap_sys::ext::audio_ports_config::{
+    clap_plugin_audio_ports_config, clap_plugin_audio_ports_config_info,
+};
 use clap_sys::ext::configurable_audio_ports::clap_plugin_configurable_audio_ports;
 use clap_sys::ext::context_menu::clap_plugin_context_menu;
 use clap_sys::ext::draft::extensible_audio_ports::clap_plugin_extensible_audio_ports;
@@ -72,6 +76,7 @@ use clap_sys::ext::voice_info::clap_plugin_voice_info;
 pub(crate) struct AudioExtensions {
     pub(crate) ports: *const clap_plugin_audio_ports,
     pub(crate) ports_config: *const clap_plugin_audio_ports_config,
+    pub(crate) ports_config_info: *const clap_plugin_audio_ports_config_info,
     pub(crate) ports_activation: *const clap_plugin_audio_ports_activation,
     pub(crate) configurable_ports: *const clap_plugin_configurable_audio_ports,
     pub(crate) extensible_ports: *const clap_plugin_extensible_audio_ports,
@@ -138,6 +143,11 @@ impl ExtensionCache {
             audio: AudioExtensions {
                 ports: Self::get(plugin, get_ext, CLAP_EXT_AUDIO_PORTS.as_ptr()),
                 ports_config: Self::get(plugin, get_ext, CLAP_EXT_AUDIO_PORTS_CONFIG.as_ptr()),
+                ports_config_info: Self::get(
+                    plugin,
+                    get_ext,
+                    CLAP_EXT_AUDIO_PORTS_CONFIG_INFO.as_ptr(),
+                ),
                 ports_activation: Self::get(
                     plugin,
                     get_ext,

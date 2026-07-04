@@ -6,6 +6,10 @@ use thiserror::Error;
 /// referring to `crate::error::LoadStage`.
 pub use tutti_plugin_types::LoadStage;
 
+/// Structured editor-open failures, shared via `tutti-plugin-types`.
+/// Re-exported so callers keep referring to `crate::error::EditorError`.
+pub use tutti_plugin_types::EditorError;
+
 #[derive(Error, Debug)]
 pub enum BridgeError {
     #[error("Bridge connection failed: {0}")]
@@ -72,27 +76,6 @@ pub enum BridgeError {
 }
 
 pub type Result<T> = std::result::Result<T, BridgeError>;
-
-/// Structured failures from opening an editor. Each variant tells the
-/// caller exactly what went wrong so UI can surface a meaningful message
-/// instead of falling back to "failed to open" for every case.
-#[derive(Error, Debug)]
-pub enum EditorError {
-    #[error("plugin subprocess has crashed")]
-    PluginCrashed,
-
-    #[error("no in-process GUI support compiled for {format}")]
-    GuiNotSupported { format: String },
-
-    #[error("parent window platform not supported by this plugin host: {got}")]
-    UnsupportedPlatform { got: String },
-
-    #[error("plugin failed to open editor: {0}")]
-    PluginError(String),
-
-    #[error("could not acquire GUI lock (another open_editor in progress?)")]
-    Busy,
-}
 
 impl BridgeError {
     /// Build an `UnexpectedMessage` error by Debug-formatting the received

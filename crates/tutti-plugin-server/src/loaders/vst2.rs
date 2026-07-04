@@ -8,8 +8,9 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, EditorSize, MidiEventVec, NoteExpressionChanges, ParameterChanges,
-    ParameterInfo, PluginInfo, PluginInstance, ProcessContext, ProcessOutput, WindowHandle,
+    AudioBufferMut, EditorSize, LoadedPlugin, MidiEventVec, NoteExpressionChanges,
+    ParameterChanges, ParameterInfo, PluginClass, PluginDescriptor, PluginInstance, ProcessContext,
+    ProcessOutput, WindowHandle,
 };
 use tutti_plugin::{BridgeError, Result};
 
@@ -18,15 +19,15 @@ use tutti_vst2_host::{
     ProcessContext as Vst2ProcessContext, RenderScratch, Vst2Error, Vst2Instance as Vst2Host,
 };
 
-use crate::loaders::common::params::{make_param_info, ParamCache, ALL_AUTOMATABLE};
+use crate::loaders::common::params::{make_param_info, ALL_AUTOMATABLE};
+use crate::loaders::common::{single_bus, Meta};
 
 pub struct Vst2Instance {
     #[cfg(feature = "vst2")]
     inner: Vst2Host,
     #[cfg(feature = "vst2")]
     scratch: RenderScratch,
-    metadata: PluginInfo,
-    param_cache: ParamCache,
+    meta: Meta,
     #[allow(dead_code)] // Carried for diagnostics under the not(vst2) cfg.
     sample_rate: f64,
 }
@@ -39,14 +40,23 @@ impl Vst2Instance {
                 .map_err(|e| translate_error(e, path))?;
 
             let host_meta = inner.metadata().clone();
-            let metadata = PluginInfo::new(host_meta.id, host_meta.name)
-                .author(host_meta.vendor)
-                .version(host_meta.version)
-                .audio_io(host_meta.num_inputs, host_meta.num_outputs)
-                .midi(host_meta.receives_midi)
-                .f64_support(host_meta.supports_f64)
-                .editor(host_meta.has_editor, None)
-                .latency(host_meta.latency_samples);
+            let descriptor = PluginDescriptor {
+                id: host_meta.id,
+                name: host_meta.name,
+                vendor: host_meta.vendor,
+                version: host_meta.version,
+                class: PluginClass::Vst2 {
+                    category: host_meta.category,
+                },
+                has_editor: host_meta.has_editor,
+            };
+            // VST2 is single-bus: one main input bus, one main output bus.
+            let loaded = LoadedPlugin {
+                inputs: single_bus(host_meta.num_inputs),
+                outputs: single_bus(host_meta.num_outputs),
+                latency_samples: host_meta.latency_samples,
+                supports_f64: host_meta.supports_f64,
+            };
 
             let scratch =
                 RenderScratch::new(host_meta.num_inputs, host_meta.num_outputs, block_size);
@@ -54,8 +64,7 @@ impl Vst2Instance {
             Ok(Self {
                 inner,
                 scratch,
-                metadata,
-                param_cache: ParamCache::default(),
+                meta: Meta { descriptor, loaded },
                 sample_rate,
             })
         }
@@ -71,8 +80,8 @@ impl Vst2Instance {
         }
     }
 
-    pub fn metadata(&self) -> &PluginInfo {
-        &self.metadata
+    pub fn descriptor(&self) -> &PluginDescriptor {
+        &self.meta.descriptor
     }
 
     /// Drain plugin-internal parameter changes (e.g., GUI knob movement).
@@ -109,8 +118,12 @@ fn translate_error(err: Vst2Error, _path: &Path) -> BridgeError {
 }
 
 impl PluginInstance for Vst2Instance {
-    fn metadata(&self) -> &PluginInfo {
-        &self.metadata
+    fn descriptor(&self) -> &PluginDescriptor {
+        &self.meta.descriptor
+    }
+
+    fn loaded(&self) -> &LoadedPlugin {
+        &self.meta.loaded
     }
 
     fn process(
@@ -211,7 +224,7 @@ impl PluginInstance for Vst2Instance {
         let _ = (id, value);
     }
 
-    fn get_parameter_list(&mut self) -> Vec<ParameterInfo> {
+    fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         #[cfg(feature = "vst2")]
         {
             self.inner
@@ -233,11 +246,6 @@ impl PluginInstance for Vst2Instance {
         }
         #[cfg(not(feature = "vst2"))]
         Vec::new()
-    }
-
-    fn get_parameter_info(&mut self, id: u32) -> Option<ParameterInfo> {
-        let params = self.get_parameter_list();
-        self.param_cache.lookup(id, || params)
     }
 
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
@@ -264,11 +272,6 @@ impl PluginInstance for Vst2Instance {
     fn close_editor(&mut self) {
         #[cfg(feature = "vst2")]
         self.inner.close_editor();
-    }
-
-    fn editor_idle(&mut self) {
-        #[cfg(feature = "vst2")]
-        self.inner.editor_idle();
     }
 
     fn get_state(&mut self) -> Result<Vec<u8>> {

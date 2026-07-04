@@ -2,34 +2,45 @@
 //! Deserialize` and flows between host and server process.
 //!
 //! Non-wire runtime types (`Sample`, `AudioBuffer<T>`, window handles)
-//! live in [`crate::audio`] / [`crate::window`]. Host-local config lives
-//! in [`crate::config`].
+//! live in [`crate::protocol::audio`] / [`crate::util::window`]. Host-local config lives
+//! in [`crate::util::config`].
 
+pub mod audio;
 pub mod envelope;
-pub mod metadata;
 pub mod midi;
-pub mod note_expression;
-pub mod parameters;
 pub mod process;
 pub mod sample;
 pub mod shm;
-pub mod transport;
 
 pub use envelope::{BridgeMessage, HostMessage};
-pub use metadata::{AudioIO, BusDirection, BusLayout, PluginInfo};
 pub use midi::{IpcMidiEvent, IpcMidiEventVec, MidiEventVec};
-pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpressionValue};
-pub use parameters::{
-    ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue,
-};
-pub use process::{
-    AudioProcessedFullData, AudioProcessedMidiData, ProcessAudioFullData, ProcessAudioMidiData,
-};
+pub use process::ProcessAudioData;
 pub use sample::SampleFormat;
 pub use shm::SlabLayout;
-pub use transport::TransportInfo;
 
 pub use tutti_midi_types::ump::MidiEvent;
+
+// Types that are owned elsewhere but speak on the wire, adopted here so
+// `crate::protocol::{...}` is the single import point for the bridge.
+//
+// - Plugin load metadata: the catalog-identity `PluginDescriptor` (+ its
+//   per-format `PluginClass`) lives in `crate::host::discovery::record`; the
+//   runtime engine-wiring `LoadedPlugin` lives in the format-agnostic
+//   `tutti-plugin-types`. They ride on `BridgeMessage::PluginLoaded`
+//   (descriptor + loaded) / probe replies (descriptor only).
+// - Parameters, transport snapshot, note-expression and harmony events:
+//   cross-format vocabulary shared with the host crates
+//   (`tutti-{vst2,vst3,clap,au}-host`) via `tutti-plugin-types`.
+pub use crate::host::discovery::record::{
+    AuComponentType, PluginClass, PluginDescriptor, Vst2Category,
+};
+pub use tutti_plugin_types::{
+    BusChannels, ChordChanges, ChordValue, LoadedPlugin, NoteExpressionChanges,
+    NoteExpressionIntChanges, NoteExpressionIntValue, NoteExpressionTextChanges,
+    NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue, ParameterChanges,
+    ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, ScaleChanges, ScaleValue,
+    TransportInfo,
+};
 
 #[cfg(test)]
 mod tests {
@@ -42,7 +53,7 @@ mod tests {
         let msg = HostMessage::LoadPlugin {
             path: PathBuf::from("/test/plugin.vst3"),
             sample_rate: 44100.0,
-            block_size: 512,
+            block_size: envelope::DEFAULT_BLOCK_SIZE,
             preferred_format: SampleFormat::Float32,
             shm_name: String::new(),
         };
@@ -69,15 +80,6 @@ mod tests {
         matches!(
             UmpMessage::try_from(ev.data_words()),
             Ok(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_)))
-        )
-    }
-
-    fn is_note_off(ev: &MidiEvent) -> bool {
-        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
-        use tutti_midi_types::midi2::UmpMessage;
-        matches!(
-            UmpMessage::try_from(ev.data_words()),
-            Ok(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(_)))
         )
     }
 
@@ -115,17 +117,18 @@ mod tests {
         .map(IpcMidiEvent::from)
         .collect();
 
-        let msg = HostMessage::ProcessAudioMidi(Box::new(ProcessAudioMidiData {
+        let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
             buffer_id: 42,
             num_samples: 512,
             midi_events,
+            ..Default::default()
         }));
 
         let encoded = bincode::serialize(&msg).unwrap();
         let decoded: HostMessage = bincode::deserialize(&encoded).unwrap();
 
         match decoded {
-            HostMessage::ProcessAudioMidi(data) => {
+            HostMessage::ProcessAudio(data) => {
                 assert_eq!(data.buffer_id, 42);
                 assert_eq!(data.num_samples, 512);
                 assert_eq!(data.midi_events.len(), 3);
@@ -139,37 +142,6 @@ mod tests {
                 assert!(is_note_on(&events[1]));
                 assert_eq!(note_number(&events[1]), Some(64));
                 assert_eq!(events[2].frame_offset, 256);
-            }
-            _ => panic!("Wrong message type"),
-        }
-    }
-
-    #[test]
-    fn test_midi_output_response_serialization() {
-        let midi_output: IpcMidiEventVec = [
-            MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(512),
-            MidiEvent::note_off(0, 0, 64, 0).with_frame_offset(640),
-        ]
-        .iter()
-        .map(IpcMidiEvent::from)
-        .collect();
-
-        let msg = BridgeMessage::AudioProcessedMidi(Box::new(AudioProcessedMidiData {
-            latency_us: 1500,
-            midi_output,
-        }));
-
-        let encoded = bincode::serialize(&msg).unwrap();
-        let decoded: BridgeMessage = bincode::deserialize(&encoded).unwrap();
-
-        match decoded {
-            BridgeMessage::AudioProcessedMidi(data) => {
-                assert_eq!(data.latency_us, 1500);
-                assert_eq!(data.midi_output.len(), 2);
-
-                let events: Vec<MidiEvent> = data.midi_output.iter().map(|&e| e.into()).collect();
-                assert!(is_note_off(&events[0]));
-                assert!(is_note_off(&events[1]));
             }
             _ => panic!("Wrong message type"),
         }
@@ -281,23 +253,6 @@ mod tests {
     }
 
     #[test]
-    fn test_note_expression_add_change() {
-        let mut expr = NoteExpressionChanges::new();
-        assert!(expr.is_empty());
-
-        expr.add_change(NoteExpressionValue {
-            sample_offset: 0,
-            note_id: 1,
-            expression_type: NoteExpressionType::Tuning,
-            value: 0.5,
-        });
-
-        assert!(!expr.is_empty());
-        assert_eq!(expr.changes.len(), 1);
-        assert_eq!(expr.changes[0].expression_type, NoteExpressionType::Tuning);
-    }
-
-    #[test]
     fn test_transport_info_default() {
         let info = TransportInfo::default();
         assert_eq!(info.timing.tempo, 120.0);
@@ -305,5 +260,51 @@ mod tests {
         assert_eq!(info.timing.time_sig_denominator, 4);
         assert!(!info.state.playing);
         assert!(!info.state.recording);
+    }
+
+    /// The harmony inputs (chord / scale / text / int) must survive a bincode
+    /// round-trip inside `ProcessAudioData`, including the owned `String`
+    /// names.
+    #[test]
+    fn process_audio_round_trips_harmony_fields() {
+        let mut data = ProcessAudioData {
+            num_samples: 256,
+            ..Default::default()
+        };
+        data.chords.add_change(ChordValue {
+            sample_offset: 0,
+            root: 60,
+            bass_note: 48,
+            mask: 0b1001,
+            text: "Cmaj7".to_string(),
+        });
+        data.scales.add_change(ScaleValue {
+            sample_offset: 0,
+            root: 62,
+            mask: 0x5ab5,
+            text: "D Dorian".to_string(),
+        });
+        data.expr_texts.add_change(NoteExpressionTextValue {
+            sample_offset: 4,
+            note_id: 7,
+            type_id: 1,
+            text: "staccato".to_string(),
+        });
+        data.expr_ints.add_change(NoteExpressionIntValue {
+            sample_offset: 8,
+            note_id: 7,
+            type_id: 2,
+            value: -42,
+        });
+
+        let bytes = bincode::serialize(&data).unwrap();
+        let back: ProcessAudioData = bincode::deserialize(&bytes).unwrap();
+
+        assert_eq!(back.num_samples, 256);
+        assert_eq!(back.chords.changes[0].text, "Cmaj7");
+        assert_eq!(back.chords.changes[0].root, 60);
+        assert_eq!(back.scales.changes[0].text, "D Dorian");
+        assert_eq!(back.expr_texts.changes[0].text, "staccato");
+        assert_eq!(back.expr_ints.changes[0].value, -42);
     }
 }

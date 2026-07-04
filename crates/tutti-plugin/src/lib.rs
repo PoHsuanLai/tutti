@@ -9,7 +9,7 @@
 //!
 //! ```no_run
 //! # #[cfg(feature = "json")]
-//! # async fn ex(window: &impl raw_window_handle::HasWindowHandle)
+//! # fn ex(window: &impl raw_window_handle::HasWindowHandle)
 //! # -> tutti_plugin::Result<()> {
 //! use std::path::PathBuf;
 //! use tutti_plugin::catalog::PluginsConfig;
@@ -20,7 +20,7 @@
 //! )
 //! .build()
 //! .with_fresh_scan();
-//! let (unit, handle) = plugins.load_by_name("TAL-NoiseMaker", 48000.0).await?;
+//! let (unit, handle) = plugins.load_by_name("TAL-NoiseMaker", 48000.0)?;
 //!
 //! // `unit` is a `Box<dyn AudioUnit>` that goes into your fundsp graph.
 //! // `handle` is the main-thread control surface.
@@ -57,11 +57,13 @@
 //!
 //! # Module map
 //!
-//! - [`catalog`] — discovering, persisting, and loading plugins
+//! - [`catalog`] — discovering, persisting, and loading plugins (incl. the
+//!   [`PluginDescriptor`][catalog::PluginDescriptor] /
+//!   [`PluginClass`][catalog::PluginClass] identity types)
 //! - [`handles`] — [`PluginClient`][handles::PluginClient] and
 //!   [`PluginHandle`][handles::PluginHandle]
-//! - [`metadata`] — plugin + parameter descriptors
-//! - [`server`] — wire contract for `tutti-plugin-server` only
+//! - [`server`] — wire contract for `tutti-plugin-server` only (the full set
+//!   of frame types, incl. [`ParameterInfo`][server::ParameterInfo])
 //! - [`BridgeConfig`] at the crate root for low-level bridge tuning
 //!
 //! # Features
@@ -72,48 +74,37 @@
 //! - `vst3`, `clap`, `au` — in-process GUI support. Loads the plugin
 //!   library in the *host* process for editor rendering only; audio still
 //!   runs out-of-process.
-//! - `vst2` — out-of-process VST2 hosting (audio + MIDI + parameters +
-//!   state). No in-process editor yet — opening the editor returns an
-//!   error. Requires `tutti-plugin-server` to be built with the matching
-//!   `vst2` feature.
-//! - `wasm` — in-process WASM Component Model audio plugins
-//!   (`dawai:audio-plugin@0.1.0`). Unlike the native formats above, WASM
-//!   never goes through `tutti-plugin-server` — the wasmtime sandbox
-//!   provides equivalent isolation to a subprocess without the IPC
-//!   overhead. See [`in_process_wasm`].
+//! - `vst2` — in-process VST2 hosting (audio + MIDI + parameters + state +
+//!   native editor). Unlike VST3/CLAP/AU, VST2 is always in-process: its
+//!   `AEffect` fuses the editor and audio processor into one instance, so
+//!   the two cannot live in separate processes.
+//!
+//! In-process WASM Component Model audio plugins (`dawai:audio-plugin@0.1.0`)
+//! live in the separate `tutti-wasm-plugin` crate, which reuses this crate's
+//! [`backend`] machinery. They never go through `tutti-plugin-server` — the
+//! wasmtime sandbox provides equivalent isolation to a subprocess.
 //!
 //! [`AudioUnit`]: tutti_core::AudioUnit
 
 pub mod error;
 pub use error::{BridgeError, EditorError, LoadStage, Result};
 
-mod audio;
-mod audio_node;
-mod bridge;
-mod node_id;
-mod builder;
-mod config;
-mod control_backend;
-mod control_handle;
-mod in_process;
-mod plugins;
-mod plugins_config;
-mod window;
+mod format;
+mod host;
+mod util;
 
 pub(crate) mod protocol;
-pub(crate) mod subprocess;
-pub(crate) mod transport;
 
 #[cfg(feature = "au")]
-pub use builder::au;
+pub use host::builder::au;
 #[cfg(feature = "clap")]
-pub use builder::clap;
+pub use host::builder::clap;
 #[cfg(feature = "vst2")]
-pub use builder::vst2;
+pub use host::builder::vst2;
 #[cfg(feature = "vst3")]
-pub use builder::vst3;
-pub use builder::PluginBuilder;
-pub use config::BridgeConfig;
+pub use host::builder::vst3;
+pub use host::builder::PluginBuilder;
+pub use util::config::BridgeConfig;
 
 /// Mark the calling thread as the host's main/UI thread, enabling the
 /// debug-only main-thread affinity assertions in the editor/state paths
@@ -121,19 +112,32 @@ pub use config::BridgeConfig;
 /// thread, at host startup. No-op if never called.
 pub use tutti_plugin_types::mark_main_thread;
 
-/// Load a VST2 plugin in-process (audio + native editor on the host
-/// process). See [`in_process::vst2::load`] for details. Available
-/// behind the `vst2-in-process` feature.
-#[cfg(feature = "vst2-in-process")]
-pub use in_process::vst2::load as in_process_vst2;
+/// Building blocks for out-of-crate in-process loaders.
+///
+/// **Not part of the general API.** These let a sibling crate (e.g.
+/// `tutti-wasm-plugin`) implement [`ControlBackend`] over its own plugin
+/// and hand the result to
+/// [`PluginHandle::from_backend`](handles::PluginHandle::from_backend),
+/// reusing this crate's main-thread control surface and audio-node wiring
+/// without re-implementing them. End users loading plugins should stick to
+/// [`catalog`] and [`handles`].
+pub mod backend {
+    pub use crate::host::node::{
+        route_with_latency, LatencyChangeSink, Midi, ParameterChangeSink,
+    };
+    pub use crate::host::handles::control_backend::ControlBackend;
+    pub use crate::util::node::node_id::PLUGIN_CLIENT_ID;
+}
 
-/// Load a WASM Component Model audio plugin in-process. See
-/// [`in_process::wasm::load`] for details. Available behind the `wasm`
-/// feature. Unlike VST2, WASM is *always* in-process — the wasmtime
-/// sandbox provides equivalent isolation to a subprocess without the
-/// IPC overhead.
-#[cfg(feature = "wasm")]
-pub use in_process::wasm::load as in_process_wasm;
+/// Load a VST2 plugin in-process (audio + native editor on the host
+/// process). See [`format::vst2_in_process::load`] for details. Available
+/// behind the `vst2` feature.
+#[cfg(feature = "vst2")]
+pub use format::vst2_in_process::load as in_process_vst2;
+
+// WASM Component Model audio plugins live in the `tutti-wasm-plugin` crate
+// (`tutti_wasm_plugin::load`) — extracted so the heavy wasmtime dependency
+// stays out of this crate. They reuse this crate's [`backend`] machinery.
 
 /// Discovering, persisting, and loading plugins.
 ///
@@ -143,62 +147,29 @@ pub use in_process::wasm::load as in_process_wasm;
 /// by name or id.
 ///
 /// The default catalog is a JSON file on disk
-/// ([`JsonCatalog`](crate::discovery::JsonCatalog), behind the `json` feature).
+/// ([`JsonCatalog`](crate::host::discovery::JsonCatalog), behind the `json` feature).
 /// Ship your own [`PluginCatalog`](catalog::PluginCatalog) impl for SQLite,
 /// in-memory, or any other persistence.
 pub mod catalog {
     #[cfg(feature = "json")]
-    pub use crate::discovery::JsonCatalog;
-    pub use crate::discovery::{
-        Blacklist, CatalogExt, PluginCatalog, PluginFormat, PluginRecord, PluginScanner,
-        ScanHandle, ScanPhase, ScanProgress, ScanResult,
+    pub use crate::host::discovery::JsonCatalog;
+    pub use crate::host::discovery::{
+        AuComponentType, Blacklist, CatalogExt, PluginCatalog, PluginClass, PluginDescriptor,
+        PluginFormat, PluginRecord, PluginScanner, ScanHandle, ScanPhase, ScanProgress, ScanResult,
+        Vst2Category,
     };
-    pub use crate::plugins::{PluginId, Plugins};
-    pub use crate::plugins_config::PluginsConfig;
+    pub use crate::host::plugins::{PluginId, Plugins};
+    pub use crate::util::config::PluginsConfig;
 }
 
-/// Per-plugin handles.
-///
-/// Every loaded plugin yields both a [`PluginClient`](handles::PluginClient)
-/// (audio graph node) and a [`PluginHandle`](handles::PluginHandle)
-/// (main-thread control). They share subprocess lifetime via `Arc` — the
-/// plugin stays alive as long as either does.
-pub mod handles {
-    pub use crate::audio_node::PluginClient;
-    pub use crate::control_handle::PluginHandle;
-    pub use crate::window::{EditorCapabilities, EditorSize};
-
-    /// In-process VST2 audio-graph node. Used when a host loads VST2 plugins
-    /// directly in the host process (via `in_process_vst2`). Hosts that
-    /// dispatch MIDI to plugins through their own routing layer can downcast
-    /// graph nodes to this type to read their `MidiUnitId`.
-    #[cfg(feature = "vst2-in-process")]
-    pub use crate::in_process::vst2::InProcessVst2Client;
-
-    /// In-process WASM audio-graph node. Used when a host loads WASM
-    /// Component Model plugins directly in the host process (via
-    /// `in_process_wasm`). Hosts can downcast graph nodes to this type to
-    /// read their `MidiUnitId`.
-    #[cfg(feature = "wasm")]
-    pub use crate::in_process::wasm::InProcessWasmClient;
-}
-
-/// Plugin + parameter descriptors.
-///
-/// These types describe the plugin itself (identity, audio I/O, whether
-/// it has an editor) and the parameters it exposes (name, range, flags).
-/// They're also part of the host↔server wire contract — re-exported
-/// through [`server`] for that path.
-pub mod metadata {
-    pub use crate::protocol::{
-        ParameterFlags, ParameterInfo, PluginInfo, SampleFormat, TransportInfo,
-    };
-}
+/// Per-plugin handles — [`PluginClient`](handles::PluginClient) (audio graph
+/// node) and [`PluginHandle`](handles::PluginHandle) (main-thread control).
+pub use host::handles;
 
 /// Internal module exposed publicly for submodule lookup. Use the
 /// [`catalog`] namespace instead — this is here for rustdoc linking only.
 #[doc(hidden)]
-pub mod discovery;
+pub use host::discovery;
 
 /// Wire-contract types for `tutti-plugin-server`.
 ///

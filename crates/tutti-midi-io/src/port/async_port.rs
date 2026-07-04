@@ -83,24 +83,29 @@ impl AsyncMidiPort {
         }
     }
 
+    /// Drain this port's input ring into `sink`, tagging each event with
+    /// `port_index`. Generic over the sink (`Vec`, `SmallVec`, …) so callers
+    /// can use whatever RT buffer they hold.
     #[inline]
     pub fn cycle_start_read_input_into(
         &self,
-        buf: &mut Vec<(Instant, usize, MidiEvent)>,
+        sink: &mut impl Extend<(Instant, usize, MidiEvent)>,
         port_index: usize,
     ) {
         self.input
-            .drain_each(|(timestamp, event)| buf.push((timestamp, port_index, event)));
+            .drain_each(|(timestamp, event)| sink.extend(core::iter::once((timestamp, port_index, event))));
     }
 
+    /// Drain this port's output ring into `sink`, tagging each event with
+    /// `port_index`. Generic over the sink as above.
     #[inline]
     pub fn cycle_end_flush_output_into(
         &self,
-        buf: &mut Vec<(usize, MidiEvent)>,
+        sink: &mut impl Extend<(usize, MidiEvent)>,
         port_index: usize,
     ) {
         self.output
-            .drain_each(|event| buf.push((port_index, event)));
+            .drain_each(|event| sink.extend(core::iter::once((port_index, event))));
     }
 }
 

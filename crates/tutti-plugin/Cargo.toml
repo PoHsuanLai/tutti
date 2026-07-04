@@ -19,25 +19,16 @@ vst3 = ["dep:tutti-vst3-host"]
 clap = ["dep:tutti-clap-host"]
 au = ["dep:tutti-au-host"]
 
-# VST2 server-side hosting (audio + parameters + state via the
-# subprocess + IPC bridge). The editor returns a structured error.
-vst2 = []
-
 # In-process VST2 hosting (audio + native editor on the host process).
-# Sacrifices subprocess crash isolation for editor support — VST2's
-# AEffect fuses editor and audio into one instance, so the editor cannot
-# live in a different process from the audio. Implies `vst2`.
-#
-# Hidden behind a separate feature for now so flipping `vst2` doesn't
-# silently switch the user from subprocess to in-process. PR D will wire
-# `vst2()` to use this path by default.
-vst2-in-process = ["vst2", "dep:tutti-vst2-host"]
+# Unlike VST3/CLAP/AU, VST2 is always in-process: its `AEffect` fuses the
+# editor and audio processor into one instance, so the editor cannot live
+# in a different process from the audio. There is no subprocess VST2 path
+# here.
+vst2 = ["dep:tutti-vst2-host"]
 
-# In-process WASM Component Model audio plugin loader
-# (`dawai:audio-plugin@0.1.0`). Unlike VST2/VST3/CLAP/AU, WASM is always
-# in-process: the wasmtime sandbox provides equivalent isolation to a
-# subprocess without the IPC overhead.
-wasm = ["dep:wasmtime", "dep:wasmtime-wasi"]
+# In-process WASM Component Model audio plugins (`dawai:audio-plugin@0.1.0`)
+# live in the separate `tutti-wasm-plugin` crate, which reuses this crate's
+# `backend` machinery. The heavy wasmtime stack stays out of this crate.
 
 [dependencies]
 # Core types (for AudioUnit trait)
@@ -45,6 +36,9 @@ tutti-core = { path = "../tutti-core", features = ["midi"] }
 
 # Parameter range/scaling
 audio-automation = "0.4"
+
+# Lock-free f64 cursor for the harmony source
+atomic_float = "1.1"
 
 # MIDI support
 tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
@@ -95,11 +89,6 @@ tutti-vst3-host = { path = "../tutti-vst3-host", optional = true }
 tutti-clap-host = { path = "../tutti-clap-host", optional = true }
 tutti-au-host = { path = "../tutti-au-host", optional = true }
 tutti-vst2-host = { path = "../tutti-vst2-host", optional = true }
-
-# WASM Component Model runtime (optional, gated by `wasm` feature). Pinned
-# to match `dawai-extensions` so both worlds run on the same engine.
-wasmtime = { version = "39.0", features = ["component-model"], optional = true }
-wasmtime-wasi = { version = "39.0", optional = true }
 
 # Platform-specific (shared memory)
 [target.'cfg(unix)'.dependencies]

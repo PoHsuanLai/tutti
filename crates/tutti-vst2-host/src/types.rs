@@ -16,6 +16,9 @@ pub struct PluginInfo {
     pub version: String,
     pub num_inputs: usize,
     pub num_outputs: usize,
+    /// The plugin's declared VST2 category, carried verbatim. Callers classify
+    /// it themselves rather than relying on the derived `receives_midi` flag.
+    pub category: Vst2Category,
     /// `true` if the plugin is a synth or declares MIDI input/output.
     pub receives_midi: bool,
     pub has_editor: bool,
@@ -25,6 +28,11 @@ pub struct PluginInfo {
     /// crate processes f32 only regardless, so this is informational.
     pub supports_f64: bool,
 }
+
+/// The plugin's declared VST2 category. Canonical definition lives in
+/// `tutti-plugin-types` (shared with the catalog/wire layer); this crate maps
+/// the native `vst::Category` into it via `From` (see `instance.rs`).
+pub use tutti_plugin_types::Vst2Category;
 
 /// Single VST2 parameter descriptor.
 ///

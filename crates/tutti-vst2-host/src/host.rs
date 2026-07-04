@@ -8,12 +8,26 @@
 
 use crate::midi::api_event_to_midi;
 use crate::types::MidiEvent;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use vst::host::Host;
 
 /// `(parameter_index, normalized_value)` reported by the plugin's
 /// `audioMasterAutomate` callback.
 pub type ParameterChange = (i32, f32);
+
+/// The endpoints of the plugin→host callback channels, plus the shared
+/// transport snapshot the plugin reads back. All three are created together
+/// from one [`HostState`] at load and live for the instance's lifetime.
+pub(crate) struct HostLink {
+    /// Kept alive so the `Host`-trait callbacks keep firing; never read
+    /// directly — the plugin holds the other end. Drop ends the callbacks.
+    pub(crate) _state: Arc<Mutex<HostState>>,
+    /// Transport snapshot the host pushes and the plugin reads via
+    /// `get_time_info`. Lock-free swap so the audio thread never blocks.
+    pub(crate) time_info: Arc<arc_swap::ArcSwap<Option<vst::api::TimeInfo>>>,
+    /// Inbox for `audioMasterAutomate` parameter changes (editor knob moves).
+    pub(crate) param_rx: crossbeam_channel::Receiver<ParameterChange>,
+}
 
 /// Implements `vst::host::Host`. Owns the channel ends the plugin writes
 /// into.

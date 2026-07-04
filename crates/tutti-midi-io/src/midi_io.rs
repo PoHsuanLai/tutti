@@ -4,9 +4,9 @@
 //! sending events, and receiving events via ring buffers. Clone is cheap (Arc).
 
 use crate::error::{Error, Result};
-use crate::io::{
-    connect_midi_input, list_input_devices, list_output_devices, MidiInputRecord, OutputCmd,
-    OutputThread,
+use crate::hardware::{
+    connect_midi_input, list_input_devices, list_output_devices, MidiDevice, MidiInputRecord,
+    OutputCmd, OutputThread,
 };
 use crate::{InputProducerHandle, MidiPortManager};
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -16,13 +16,6 @@ use std::sync::Arc;
 use std::thread;
 use tracing::debug;
 use tutti_midi_types::ump::MidiEvent;
-
-/// A detected MIDI device (input or output).
-#[derive(Debug, Clone)]
-pub struct MidiDevice {
-    pub index: usize,
-    pub name: String,
-}
 
 /// Hardware MIDI I/O. Clone is cheap (Arc internally).
 ///

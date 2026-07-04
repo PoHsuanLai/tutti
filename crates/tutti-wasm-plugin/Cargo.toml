@@ -1,0 +1,26 @@
+[package]
+name = "tutti-wasm-plugin"
+version = "0.0.1"
+edition = "2021"
+description = "In-process WASM Component Model audio plugin host for tutti (dawai:audio-plugin@0.1.0)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+[dependencies]
+# Shared value vocabulary (PluginInfo, ParameterInfo, etc.).
+tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde"] }
+# Host machinery reused over the WASM ControlBackend: PluginHandle,
+# ControlBackend, the audio-node Midi/listener helpers, and the error type.
+tutti-plugin = { path = "../tutti-plugin" }
+# Audio graph node trait + buffers.
+tutti-core = { path = "../tutti-core", features = ["midi"] }
+# MIDI vocab + runtime (MidiSender, MidiTarget, UMP events).
+tutti-midi-types = { path = "../tutti-midi-types", default-features = false }
+tutti-midi-runtime = { path = "../tutti-midi-runtime" }
+
+parking_lot = "0.12"
+
+# WASM Component Model runtime. Pinned to match the version the loader
+# was developed against.
+wasmtime = { version = "39.0", features = ["component-model"] }
+wasmtime-wasi = "39.0"

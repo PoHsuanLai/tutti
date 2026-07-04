@@ -1,13 +1,10 @@
-use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
-use parking_lot::RwLock;
-use tutti_core::AudioThreadCell;
+use tutti_core::{AudioThreadCell, RtScratchBuf};
 
-use super::async_port::{AsyncMidiPort, OutputProducerHandle};
+use super::async_port::AsyncMidiPort;
 use tutti_midi_types::ump::MidiEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,171 +13,219 @@ pub enum PortType {
     Output,
 }
 
+/// A snapshot view of one port, computed on demand from the underlying
+/// [`AsyncMidiPort`]. The port is the single source of truth for `name` and
+/// `active` — `PortInfo` just bundles them with the port's index/type for
+/// listing. `active` is a point-in-time value, not a live handle.
 #[derive(Debug, Clone)]
 pub struct PortInfo {
     pub index: usize,
     pub name: String,
     pub port_type: PortType,
-    pub active: Arc<AtomicBool>,
+    pub active: bool,
+}
+
+impl PortInfo {
+    fn of(port: &AsyncMidiPort, index: usize, port_type: PortType) -> Self {
+        Self {
+            index,
+            name: port.name().to_string(),
+            port_type,
+            active: port.is_active(),
+        }
+    }
+}
+
+/// Worst-case events drained from all ports in one audio block. Sized to the
+/// previous `Vec::with_capacity(256)`; overflow beyond this spills (SmallVec),
+/// which is acceptable off the hot path and vanishingly rare in practice.
+const CYCLE_SCRATCH_CAP: usize = 256;
+
+/// Audio-thread-only scratch state for the per-cycle fan-in/fan-out.
+///
+/// Every field is touched **only** from the audio callback, one borrow at a
+/// time. Isolating them here keeps that single-thread reasoning contained to
+/// one small type rather than spread across the whole [`MidiPortManager`] — and
+/// because every field is a `Sync` primitive ([`AudioThreadCell`] /
+/// [`RtScratchBuf`]), this type *derives* `Sync` with no hand-written
+/// `unsafe impl`.
+///
+/// `sample_rate` and `timestamped_buffer` use [`AudioThreadCell`] (scoped
+/// guards, never lent out). `event_buffer` / `output_event_buffer` use
+/// [`RtScratchBuf`] precisely because their filled slice is returned out of the
+/// `cycle_*` methods with `&self` lifetime (see [`MidiInputSource::cycle_read`])
+/// — the "lend a borrow back to the caller" shape `AudioThreadCell` can't give.
+struct CycleScratch {
+    sample_rate: AudioThreadCell<f64>,
+    timestamped_buffer: AudioThreadCell<Vec<(Instant, usize, MidiEvent)>>,
+    event_buffer: RtScratchBuf<(usize, MidiEvent), CYCLE_SCRATCH_CAP>,
+    output_event_buffer: RtScratchBuf<(usize, MidiEvent), CYCLE_SCRATCH_CAP>,
+}
+
+impl CycleScratch {
+    fn new() -> Self {
+        Self {
+            sample_rate: AudioThreadCell::new(44100.0),
+            timestamped_buffer: AudioThreadCell::new(Vec::with_capacity(CYCLE_SCRATCH_CAP)),
+            event_buffer: RtScratchBuf::new(),
+            output_event_buffer: RtScratchBuf::new(),
+        }
+    }
+
+    fn set_sample_rate(&self, sample_rate: f64) {
+        *self.sample_rate.borrow_mut() = sample_rate;
+    }
+
+    /// Drain `input_ports`' active rings, converting arrival timestamps to
+    /// sample-accurate `frame_offset`s, and return a flat slice borrowing the
+    /// internal scratch buffer. RT-safe (lock-free, no heap allocation).
+    fn read_inputs(
+        &self,
+        input_ports: &[Arc<AsyncMidiPort>],
+        nframes: usize,
+    ) -> &[(usize, MidiEvent)] {
+        let buffer_start = Instant::now();
+        let sample_rate = *self.sample_rate.borrow();
+
+        // Drain all active input ports into the timestamp scratch, dropping that
+        // guard before the fill closure borrows `event_buffer`.
+        let mut timestamped = self.timestamped_buffer.borrow_mut();
+        timestamped.clear();
+        for (port_index, port) in input_ports.iter().enumerate() {
+            if !port.is_active() {
+                continue;
+            }
+            port.cycle_start_read_input_into(&mut *timestamped, port_index);
+        }
+        let timestamped_snapshot = timestamped;
+
+        // SAFETY: single-audio-thread access — `read_inputs` is only reached
+        // from the audio callback (`MidiInputSource::cycle_read`).
+        unsafe {
+            self.event_buffer.fill_and_read(|out| {
+                for &(midi_instant, port_index, mut event) in timestamped_snapshot.iter() {
+                    let delta = buffer_start.saturating_duration_since(midi_instant);
+                    let samples_ago = (delta.as_secs_f64() * sample_rate) as u32;
+                    let nframes_u32 = nframes as u32;
+                    event.frame_offset = nframes_u32.saturating_sub(samples_ago);
+                    if event.frame_offset >= nframes_u32 {
+                        event.frame_offset = nframes_u32.saturating_sub(1);
+                    }
+                    out.push((port_index, event));
+                }
+            })
+        }
+    }
+
+    /// Drain `output_ports`' active rings into a flat slice borrowing the
+    /// internal scratch buffer. RT-safe (lock-free, no heap allocation).
+    fn flush_outputs(&self, output_ports: &[Arc<AsyncMidiPort>]) -> &[(usize, MidiEvent)] {
+        // SAFETY: single-audio-thread access; see `read_inputs`.
+        unsafe {
+            self.output_event_buffer.fill_and_read(|out| {
+                for (port_index, port) in output_ports.iter().enumerate() {
+                    if !port.is_active() {
+                        continue;
+                    }
+                    port.cycle_end_flush_output_into(out, port_index);
+                }
+            })
+        }
+    }
 }
 
 pub struct MidiPortManager {
-    input_ports: Arc<ArcSwap<Vec<Arc<AsyncMidiPort>>>>,
-    output_ports: Arc<ArcSwap<Vec<Arc<AsyncMidiPort>>>>,
-    output_handles: Arc<ArcSwap<Vec<OutputProducerHandle>>>,
-    port_info: Arc<RwLock<Vec<PortInfo>>>,
+    input_ports: ArcSwap<Vec<Arc<AsyncMidiPort>>>,
+    output_ports: ArcSwap<Vec<Arc<AsyncMidiPort>>>,
     fifo_size: usize,
-    // Scalar and the internal scratch buffer use AudioThreadCell: they never
-    // hand a reference back out, so the borrow-guard lifetimes are contained
-    // within a single method, and debug builds get the concurrent-borrow check.
-    sample_rate: AudioThreadCell<f64>,
-    timestamped_buffer: AudioThreadCell<Vec<(Instant, usize, MidiEvent)>>,
-    // These two stay as raw UnsafeCell because their `.as_slice()` is returned
-    // out of the cycle_*_all_* methods with `&self` lifetime (see
-    // `MidiInputSource::cycle_read`), which AudioThreadCell's scoped guards
-    // intentionally do not allow. The single-audio-thread invariant is what
-    // keeps the raw access sound.
-    event_buffer: UnsafeCell<Vec<(usize, MidiEvent)>>,
-    output_event_buffer: UnsafeCell<Vec<(usize, MidiEvent)>>,
+    /// Audio-thread-only scratch buffers. All the manager's `unsafe` lives in
+    /// `CycleScratch`; everything else here is `Sync` on its own, so the
+    /// manager derives `Sync` rather than asserting it by hand.
+    scratch: CycleScratch,
 }
-
-// SAFETY: MidiPortManager is Sync because:
-// 1. sample_rate / timestamped_buffer are AudioThreadCell, which is Sync.
-// 2. event_buffer / output_event_buffer (raw UnsafeCell) are only accessed
-//    from the audio callback (single-threaded), one borrow at a time.
-// 3. All other fields (ArcSwap, RwLock, primitives) are already Sync.
-unsafe impl Sync for MidiPortManager {}
 
 impl MidiPortManager {
     pub fn new(fifo_size: usize) -> Self {
         Self {
-            input_ports: Arc::new(ArcSwap::from_pointee(Vec::new())),
-            output_ports: Arc::new(ArcSwap::from_pointee(Vec::new())),
-            output_handles: Arc::new(ArcSwap::from_pointee(Vec::new())),
-            port_info: Arc::new(RwLock::new(Vec::new())),
+            input_ports: ArcSwap::from_pointee(Vec::new()),
+            output_ports: ArcSwap::from_pointee(Vec::new()),
             fifo_size,
-            sample_rate: AudioThreadCell::new(44100.0),
-            timestamped_buffer: AudioThreadCell::new(Vec::with_capacity(256)),
-            event_buffer: UnsafeCell::new(Vec::with_capacity(256)),
-            output_event_buffer: UnsafeCell::new(Vec::with_capacity(256)),
+            scratch: CycleScratch::new(),
         }
     }
 
     /// Set sample rate. Call before starting the audio stream.
     pub fn set_sample_rate(&self, sample_rate: f64) {
-        *self.sample_rate.borrow_mut() = sample_rate;
+        self.scratch.set_sample_rate(sample_rate);
+    }
+
+    /// Append `port` to `ports` (clone-and-swap) and return its index. The
+    /// port owns its own name and active flag — there is no parallel metadata
+    /// to keep in sync.
+    fn push_port(ports: &ArcSwap<Vec<Arc<AsyncMidiPort>>>, port: Arc<AsyncMidiPort>) -> usize {
+        let mut new_ports = (**ports.load()).clone();
+        let port_index = new_ports.len();
+        new_ports.push(port);
+        ports.store(Arc::new(new_ports));
+        port_index
     }
 
     pub fn create_input_port(&self, name: impl Into<String>) -> usize {
-        let name = name.into();
-        let port = Arc::new(AsyncMidiPort::new(&name, self.fifo_size));
-        let current_ports = self.input_ports.load();
-        let mut new_ports = (**current_ports).clone();
-        let port_index = new_ports.len();
-        new_ports.push(port);
-        self.input_ports.store(Arc::new(new_ports));
-
-        let mut port_info = self.port_info.write();
-        let info = PortInfo {
-            index: port_index,
-            name: name.clone(),
-            port_type: PortType::Input,
-            active: Arc::new(AtomicBool::new(true)),
-        };
-        port_info.push(info);
-
-        port_index
+        let port = Arc::new(AsyncMidiPort::new(name.into(), self.fifo_size));
+        Self::push_port(&self.input_ports, port)
     }
 
     pub fn create_output_port(&self, name: impl Into<String>) -> usize {
-        let name = name.into();
-        let port = Arc::new(AsyncMidiPort::new(&name, self.fifo_size));
+        let port = Arc::new(AsyncMidiPort::new(name.into(), self.fifo_size));
+        Self::push_port(&self.output_ports, port)
+    }
 
-        let output_handle = port.output_producer_handle();
-
-        let current_ports = self.output_ports.load();
-        let mut new_ports = (**current_ports).clone();
-        let port_index = new_ports.len();
-        new_ports.push(port);
-        self.output_ports.store(Arc::new(new_ports));
-
-        let current_handles = self.output_handles.load();
-        let mut new_handles = (**current_handles).clone();
-        new_handles.push(output_handle);
-        self.output_handles.store(Arc::new(new_handles));
-
-        let mut port_info = self.port_info.write();
-        let info = PortInfo {
-            index: port_index,
-            name: name.clone(),
-            port_type: PortType::Output,
-            active: Arc::new(AtomicBool::new(true)),
-        };
-        port_info.push(info);
-
-        port_index
+    fn ports_of(&self, port_type: PortType) -> &ArcSwap<Vec<Arc<AsyncMidiPort>>> {
+        match port_type {
+            PortType::Input => &self.input_ports,
+            PortType::Output => &self.output_ports,
+        }
     }
 
     pub fn get_port_info(&self, port_type: PortType, port_index: usize) -> Option<PortInfo> {
-        let port_info = self.port_info.read();
-        port_info
-            .iter()
-            .find(|info| info.port_type == port_type && info.index == port_index)
-            .cloned()
+        self.ports_of(port_type)
+            .load()
+            .get(port_index)
+            .map(|port| PortInfo::of(port, port_index, port_type))
     }
 
     pub fn list_input_ports(&self) -> Vec<PortInfo> {
-        let port_info = self.port_info.read();
-        port_info
-            .iter()
-            .filter(|info| info.port_type == PortType::Input)
-            .cloned()
-            .collect()
+        self.list_ports(PortType::Input)
     }
 
     pub fn list_output_ports(&self) -> Vec<PortInfo> {
-        let port_info = self.port_info.read();
-        port_info
+        self.list_ports(PortType::Output)
+    }
+
+    fn list_ports(&self, port_type: PortType) -> Vec<PortInfo> {
+        self.ports_of(port_type)
+            .load()
             .iter()
-            .filter(|info| info.port_type == PortType::Output)
-            .cloned()
+            .enumerate()
+            .map(|(index, port)| PortInfo::of(port, index, port_type))
             .collect()
     }
 
     pub fn set_port_active(&self, port_type: PortType, port_index: usize, active: bool) -> bool {
-        let port_info = self.port_info.read();
-        if let Some(info) = port_info
-            .iter()
-            .find(|info| info.port_type == port_type && info.index == port_index)
-        {
-            info.active.store(active, Ordering::Release);
-            match info.port_type {
-                PortType::Input => {
-                    let input_ports = self.input_ports.load();
-                    if let Some(port) = input_ports.get(info.index) {
-                        port.set_active(active);
-                    }
-                }
-                PortType::Output => {
-                    let output_ports = self.output_ports.load();
-                    if let Some(port) = output_ports.get(info.index) {
-                        port.set_active(active);
-                    }
-                }
+        match self.ports_of(port_type).load().get(port_index) {
+            Some(port) => {
+                port.set_active(active);
+                true
             }
-            true
-        } else {
-            false
+            None => false,
         }
     }
 
-    /// NOT RT-safe (acquires lock).
     pub fn is_port_active(&self, port_type: PortType, port_index: usize) -> bool {
-        let port_info = self.port_info.read();
-        port_info
-            .iter()
-            .find(|info| info.port_type == port_type && info.index == port_index)
-            .is_some_and(|info| info.active.load(Ordering::Acquire))
+        self.ports_of(port_type)
+            .load()
+            .get(port_index)
+            .is_some_and(|port| port.is_active())
     }
 
     pub fn output_port_count(&self) -> usize {
@@ -191,17 +236,15 @@ impl MidiPortManager {
         self.output_ports.load()
     }
 
-    /// RT-safe (lock-free).
+    /// RT-safe (lock-free). Pushes regardless of the port's active flag.
     ///
     /// # Safety
     /// Must only be called from a single thread (the audio thread).
     pub fn write_output_event(&self, port_index: usize, event: MidiEvent) -> bool {
-        let output_handles = self.output_handles.load();
-        if let Some(handle) = output_handles.get(port_index) {
-            handle.push(event)
-        } else {
-            false
-        }
+        self.output_ports
+            .load()
+            .get(port_index)
+            .is_some_and(|port| port.output_producer_handle().push(event))
     }
 
     /// RT-safe (lock-free, no heap allocation).
@@ -209,83 +252,30 @@ impl MidiPortManager {
     /// Drains all active input port ring buffers, converts timestamps to
     /// sample-accurate frame_offsets, and returns a flat event slice.
     pub fn cycle_start_read_all_inputs(&self, nframes: usize) -> &[(usize, MidiEvent)] {
-        let buffer_start = Instant::now();
-        let sample_rate = *self.sample_rate.borrow();
-
-        // Drain all active input ports into the scratch buffer, then drop the
-        // guard before touching `event_buffer` (one borrow at a time).
-        {
-            let mut timestamped = self.timestamped_buffer.borrow_mut();
-            timestamped.clear();
-            let input_ports = self.input_ports.load();
-            for (port_index, port) in input_ports.iter().enumerate() {
-                if !port.is_active() {
-                    continue;
-                }
-                port.cycle_start_read_input_into(&mut timestamped, port_index);
-            }
-
-            // Convert timestamps to frame_offsets into the returned buffer.
-            // SAFETY: single-audio-thread access; the returned slice borrows
-            // `self`, which is why this buffer is a raw UnsafeCell (see the
-            // field comment).
-            let all_events = unsafe { &mut *self.event_buffer.get() };
-            all_events.clear();
-            for &(midi_instant, port_index, mut event) in timestamped.iter() {
-                let delta = buffer_start.saturating_duration_since(midi_instant);
-                let samples_ago = (delta.as_secs_f64() * sample_rate) as u32;
-                let nframes_u32 = nframes as u32;
-                event.frame_offset = nframes_u32.saturating_sub(samples_ago);
-                if event.frame_offset >= nframes_u32 {
-                    event.frame_offset = nframes_u32.saturating_sub(1);
-                }
-                all_events.push((port_index, event));
-            }
-        }
-
-        // SAFETY: as above; the `timestamped_buffer` guard has been dropped.
-        unsafe { (*self.event_buffer.get()).as_slice() }
+        // Hold the ArcSwap guard across the drain so the snapshot can't be
+        // swapped out mid-read; the scratch borrows from it.
+        let input_ports = self.input_ports.load();
+        self.scratch.read_inputs(&input_ports, nframes)
     }
 
     /// RT-safe (lock-free, no heap allocation).
     ///
     /// Returns a flat slice of (port_index, event) pairs from all active output ports.
     pub fn cycle_end_flush_all_outputs(&self) -> &[(usize, MidiEvent)] {
-        unsafe {
-            let all_events = &mut *self.output_event_buffer.get();
-            all_events.clear();
-            let output_ports = self.output_ports.load();
-
-            for (port_index, port) in output_ports.iter().enumerate() {
-                if !port.is_active() {
-                    continue;
-                }
-                port.cycle_end_flush_output_into(all_events, port_index);
-            }
-            all_events.as_slice()
-        }
+        let output_ports = self.output_ports.load();
+        self.scratch.flush_outputs(&output_ports)
     }
 
-    /// RT-safe (lock-free).
+    /// RT-safe (lock-free). Skips inactive ports.
     ///
     /// # Safety
     /// Must only be called from a single thread (the audio thread).
     pub fn write_event_to_port(&self, port_index: usize, event: MidiEvent) -> bool {
-        let output_ports = self.output_ports.load();
-        if let Some(port) = output_ports.get(port_index) {
-            if !port.is_active() {
-                return false;
-            }
-        } else {
-            return false;
-        }
-
-        let output_handles = self.output_handles.load();
-        if let Some(handle) = output_handles.get(port_index) {
-            handle.push(event)
-        } else {
-            false
-        }
+        self.output_ports
+            .load()
+            .get(port_index)
+            .filter(|port| port.is_active())
+            .is_some_and(|port| port.output_producer_handle().push(event))
     }
 
     pub fn get_input_producer_handle(
@@ -357,14 +347,14 @@ mod tests {
         let input_info = &input_ports[0];
         assert_eq!(input_info.name, "Test Input");
         assert_eq!(input_info.port_type, PortType::Input);
-        assert!(input_info.active.load(Ordering::Acquire));
+        assert!(input_info.active);
 
         let output_ports = manager.list_output_ports();
         assert_eq!(output_ports.len(), 1);
         let output_info = &output_ports[0];
         assert_eq!(output_info.name, "Test Output");
         assert_eq!(output_info.port_type, PortType::Output);
-        assert!(output_info.active.load(Ordering::Acquire));
+        assert!(output_info.active);
     }
 
     #[test]

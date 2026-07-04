@@ -10,18 +10,32 @@
 
 use crate::Result;
 
-pub use crate::audio::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, Sample};
-pub use crate::config::BridgeConfig;
+pub use crate::protocol::audio::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, Sample};
+pub use crate::util::config::BridgeConfig;
 pub use crate::protocol::{
-    AudioIO, AudioProcessedFullData, AudioProcessedMidiData, BridgeMessage, BusDirection,
-    BusLayout, HostMessage, IpcMidiEvent, IpcMidiEventVec, MidiEvent, MidiEventVec,
-    NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, ParameterChanges,
-    ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, PluginInfo,
-    ProcessAudioFullData, ProcessAudioMidiData, SampleFormat, SlabLayout, TransportInfo,
+    AuComponentType, BridgeMessage, BusChannels, ChordChanges, ChordValue, HostMessage,
+    IpcMidiEvent, IpcMidiEventVec, LoadedPlugin, MidiEvent, MidiEventVec, NoteExpressionChanges,
+    NoteExpressionIntChanges, NoteExpressionIntValue, NoteExpressionTextChanges,
+    NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue, ParameterChanges,
+    ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, PluginClass, PluginDescriptor,
+    ProcessAudioData, SampleFormat, ScaleChanges, ScaleValue, SlabLayout, TransportInfo,
+    Vst2Category,
 };
-pub use crate::subprocess::resolve_bundle;
-pub use crate::transport::shm::AudioSlab;
-pub use crate::window::{EditorSize, WindowHandle};
+pub use crate::host::subprocess::resolve_bundle;
+pub use crate::util::transport::shm::AudioSlab;
+pub use crate::util::window::{EditorSize, WindowHandle};
+
+/// VST3-only sequencer-context inputs (chord / scale / per-note text / int
+/// expression). No other format consumes these, so they live in one optional
+/// bundle rather than as loose fields on the universal [`ProcessContext`]. The
+/// VST3 loader is the only reader; everyone else leaves this `None`.
+#[derive(Default)]
+pub struct ExpressiveContext<'a> {
+    pub chords: Option<&'a ChordChanges>,
+    pub scales: Option<&'a ScaleChanges>,
+    pub expr_texts: Option<&'a NoteExpressionTextChanges>,
+    pub expr_ints: Option<&'a NoteExpressionIntChanges>,
+}
 
 /// Per-block inputs to [`PluginInstance::process`] beyond the audio buffer.
 #[derive(Default)]
@@ -32,6 +46,8 @@ pub struct ProcessContext<'a> {
     /// VST3/CLAP only, ignored by VST2.
     pub note_expression: Option<&'a NoteExpressionChanges>,
     pub transport: Option<&'a TransportInfo>,
+    /// VST3-only sequencer context. `None` for VST2/CLAP/AU.
+    pub expressive: Option<ExpressiveContext<'a>>,
 }
 
 impl<'a> ProcessContext<'a> {
@@ -58,6 +74,11 @@ impl<'a> ProcessContext<'a> {
         self.transport = Some(info);
         self
     }
+
+    pub fn expressive(mut self, ctx: ExpressiveContext<'a>) -> Self {
+        self.expressive = Some(ctx);
+        self
+    }
 }
 
 /// Per-block outputs from [`PluginInstance::process`] beyond the audio buffer.
@@ -71,12 +92,15 @@ pub struct ProcessOutput {
 /// Unified interface for VST2, VST3, CLAP, and AU plugin instances,
 /// implemented on the server side of the IPC.
 ///
-/// Static capability queries (`has_editor`, `supports_f64`, etc.) go
-/// through [`metadata`](Self::metadata) — one authoritative source for
-/// what the plugin reported at load time. The trait's remaining methods
-/// are the ones that need a live plugin reference.
+/// Static identity (name, vendor, native class, editor) goes through
+/// [`descriptor`](Self::descriptor); engine-wiring data (per-bus widths,
+/// latency, f64) through [`loaded`](Self::loaded). Both are snapshots of what
+/// the plugin reported at load time. The trait's remaining methods are the
+/// ones that need a live plugin reference.
 pub trait PluginInstance: Send {
-    fn metadata(&self) -> &PluginInfo;
+    fn descriptor(&self) -> &PluginDescriptor;
+
+    fn loaded(&self) -> &LoadedPlugin;
 
     /// Process one audio block. The buffer carries the negotiated sample
     /// format (f32 or f64) as a tagged enum, so the trait stays
@@ -90,21 +114,26 @@ pub trait PluginInstance: Send {
 
     fn set_sample_rate(&mut self, rate: f64);
 
-    /// Normalized 0..1.
+    /// Parameter value in the format's native convention: normalized 0..1 for
+    /// VST2/VST3/AU, but the plugin's **native plain range** for CLAP (CLAP has
+    /// no normalization concept). A consumer that needs a normalized value must
+    /// scale by the `min_value`/`max_value` carried on [`ParameterInfo`].
     fn get_parameter(&self, id: u32) -> f64;
 
-    /// Normalized 0..1.
+    /// See [`get_parameter`](Self::get_parameter) for the value convention
+    /// (normalized for VST2/VST3/AU, native plain range for CLAP).
     fn set_parameter(&mut self, id: u32, value: f64);
 
-    fn get_parameter_list(&mut self) -> Vec<ParameterInfo>;
+    /// Push the host automation read/write state to the plugin. Fire-and-forget;
+    /// the default no-op covers formats without an automation-state concept
+    /// (only VST3's `IAutomationState` implements it).
+    fn set_automation_state(&mut self, _state: i32) {}
 
-    fn get_parameter_info(&mut self, id: u32) -> Option<ParameterInfo>;
+    fn get_parameter_list(&self) -> Vec<ParameterInfo>;
 
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize>;
 
     fn close_editor(&mut self);
-
-    fn editor_idle(&mut self);
 
     fn get_state(&mut self) -> Result<Vec<u8>>;
 

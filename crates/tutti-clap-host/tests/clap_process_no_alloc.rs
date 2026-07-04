@@ -1,4 +1,4 @@
-//! RT-safety regression: `ClapInstance::process` must not allocate on the
+//! RT-safety regression: `ClapActive::process` must not allocate on the
 //! audio thread in steady state.
 //!
 //! Requires a real CLAP plugin (TAL-NoiseMaker by default) and is
@@ -23,7 +23,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use assert_no_alloc::AllocDisabler;
-use tutti_clap_host::{AudioBuffer32, ClapInstance, MidiEvent, ProcessContext, TransportInfo};
+use tutti_clap_host::{
+    AudioBuffer32, ClapActive, ClapLoaded, MidiEvent, ProcessContext, TransportInfo,
+};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -50,22 +52,25 @@ fn resolve_bundle(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-fn load_or_skip() -> Option<ClapInstance> {
+fn load_or_skip() -> Option<ClapActive<f32>> {
     let bundle = Path::new(TAL_NOISEMAKER);
     if !bundle.exists() {
         eprintln!("TAL-NoiseMaker CLAP not installed at {TAL_NOISEMAKER}, skipping");
         return None;
     }
     let library = resolve_bundle(bundle);
-    let mut inst = ClapInstance::load_with_library(bundle, Some(&library), 48_000.0, 512)
+    let loaded = ClapLoaded::load_with_library(bundle, Some(&library), 48_000.0, 512)
         .expect("CLAP load failed");
-    inst.activate().expect("activate failed");
+    let inst = loaded
+        .activate::<f32>()
+        .map_err(|(_, e)| e)
+        .expect("activate failed");
     Some(inst)
 }
 
 /// Run the plugin `iters` times. Buffer setup is done per-iteration but
 /// uses only stack arrays — no heap allocs.
-fn drive_silent(inst: &mut ClapInstance, iters: usize, transport: &TransportInfo) {
+fn drive_silent(inst: &mut ClapActive<f32>, iters: usize, transport: &TransportInfo) {
     // Stack-only channel storage. Hard-coded stereo out, zero in.
     let mut out_l = [0.0f32; 64];
     let mut out_r = [0.0f32; 64];

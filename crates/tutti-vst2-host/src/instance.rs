@@ -19,10 +19,31 @@ use vst::plugin::{Category, Plugin as _};
 
 use crate::error::{LoadStage, Result, Vst2Error};
 use crate::handle::Vst2Handle;
-use crate::host::{HostState, ParameterChange};
-use crate::midi::MidiSendBuffer;
+use crate::host::{HostLink, HostState};
+use crate::midi::MidiIo;
 use crate::parameters::SendParams;
-use crate::types::{MidiEvent, MidiEventVec, PluginInfo};
+use crate::types::{PluginInfo, Vst2Category};
+
+/// Map the `vst` crate's `Category` to the shared [`Vst2Category`] mirror.
+/// A free fn rather than a `From` impl: both `Category` (from `vst`) and
+/// `Vst2Category` (from `tutti-plugin-types`) are foreign here, so the orphan
+/// rule forbids the impl.
+fn map_category(c: Category) -> Vst2Category {
+    match c {
+        Category::Unknown => Vst2Category::Unknown,
+        Category::Effect => Vst2Category::Effect,
+        Category::Synth => Vst2Category::Synth,
+        Category::Analysis => Vst2Category::Analysis,
+        Category::Mastering => Vst2Category::Mastering,
+        Category::Spacializer => Vst2Category::Spacializer,
+        Category::RoomFx => Vst2Category::RoomFx,
+        Category::SurroundFx => Vst2Category::SurroundFx,
+        Category::Restoration => Vst2Category::Restoration,
+        Category::OfflineProcess => Vst2Category::OfflineProcess,
+        Category::Shell => Vst2Category::Shell,
+        Category::Generator => Vst2Category::Generator,
+    }
+}
 
 /// Loaded, initialized, processing-ready VST2 plugin.
 ///
@@ -31,22 +52,14 @@ use crate::types::{MidiEvent, MidiEventVec, PluginInfo};
 /// `Sync` — callers serialize access (subprocess server is single-threaded;
 /// in-process backend uses a `parking_lot::Mutex`).
 pub struct Vst2Instance {
+    /// The loaded `vst::PluginInstance` (owns the editor handle + teardown).
     pub(crate) handle: Vst2Handle,
-    /// Kept alive so the `Host` trait callbacks keep firing. The
-    /// underlying `Mutex` is the `vst` crate's API; we never block on it
-    /// outside callbacks the plugin makes back into us.
-    #[allow(dead_code)]
-    pub(crate) host: Arc<Mutex<HostState>>,
-    pub(crate) time_info: Arc<arc_swap::ArcSwap<Option<vst::api::TimeInfo>>>,
+    /// The plugin's parameter object (get/set/preset access).
     pub(crate) params: SendParams,
-    pub(crate) param_rx: crossbeam_channel::Receiver<ParameterChange>,
-    pub(crate) midi_out_rx: crossbeam_channel::Receiver<MidiEvent>,
-    /// Pre-allocated MIDI dispatch buffer reused on every process call.
-    pub(crate) midi_send: MidiSendBuffer,
-    /// Pooled output drain. Refilled in place at the end of every
-    /// `process_f32` / `process_f64`; returned by borrow so the audio
-    /// thread never allocates after warm-up.
-    pub(crate) midi_out: MidiEventVec,
+    /// Host-callback channel endpoints + the shared transport snapshot.
+    pub(crate) host_link: HostLink,
+    /// Per-block MIDI plumbing (host→plugin staging, plugin→host drain).
+    pub(crate) midi: MidiIo,
     metadata: PluginInfo,
 }
 
@@ -111,6 +124,7 @@ impl Vst2Instance {
             version: info.version.to_string(),
             num_inputs: info.inputs as usize,
             num_outputs: info.outputs as usize,
+            category: map_category(info.category),
             receives_midi,
             has_editor: false, // overwritten below once we ask the handle
             latency_samples: info.initial_delay.max(0) as usize,
@@ -122,20 +136,15 @@ impl Vst2Instance {
         let mut metadata = metadata;
         metadata.has_editor = handle.has_editor();
 
-        // Pre-size the output MIDI pool to the SmallVec inline cap so
-        // steady-state is allocation-free.
-        let mut midi_out = MidiEventVec::new();
-        midi_out.reserve(256);
-
         Ok(Self {
             handle,
-            host,
-            time_info,
             params,
-            param_rx,
-            midi_out_rx,
-            midi_send: MidiSendBuffer::new(),
-            midi_out,
+            host_link: HostLink {
+                _state: host,
+                time_info,
+                param_rx,
+            },
+            midi: MidiIo::new(midi_out_rx),
             metadata,
         })
     }

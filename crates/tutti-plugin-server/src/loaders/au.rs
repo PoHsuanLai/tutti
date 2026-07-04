@@ -5,35 +5,50 @@
 #![allow(dead_code)]
 
 use std::path::Path;
-use tutti_plugin::server::PluginInfo;
+use tutti_plugin::server::{AuComponentType, LoadedPlugin, PluginClass, PluginDescriptor};
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
     EditorSize, ParameterInfo, PluginInstance, ProcessContext, ProcessOutput, WindowHandle,
 };
 
-#[cfg(not(all(target_os = "macos", feature = "au")))]
-use crate::loaders::common::params::ParamCache;
 #[cfg(all(target_os = "macos", feature = "au"))]
-use crate::loaders::common::params::{make_param_info, ParamCache, ALL_AUTOMATABLE};
+use crate::loaders::common::params::{make_param_info, ALL_AUTOMATABLE};
+use crate::loaders::common::{single_bus, Meta};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_au_host::{component, editor::AuEditor, instance::AuInstance as AuHostInstance, parameters};
+
+/// Map the AU host's native component type to the wire `AuComponentType` mirror.
+#[cfg(all(target_os = "macos", feature = "au"))]
+fn map_au_type(t: tutti_au_host::component::AuType) -> AuComponentType {
+    use tutti_au_host::component::AuType;
+    match t {
+        AuType::Effect => AuComponentType::Effect,
+        AuType::Instrument => AuComponentType::Instrument,
+        AuType::Generator => AuComponentType::Generator,
+        AuType::MusicEffect => AuComponentType::MusicEffect,
+        AuType::Mixer => AuComponentType::Mixer,
+        AuType::Converter => AuComponentType::Converter,
+        AuType::Output => AuComponentType::Output,
+        AuType::MidiProcessor => AuComponentType::MidiProcessor,
+        AuType::Unknown(code) => AuComponentType::Unknown(code),
+    }
+}
 
 pub struct AuInstance {
     #[cfg(all(target_os = "macos", feature = "au"))]
     inner: AuHostInstance,
     #[cfg(all(target_os = "macos", feature = "au"))]
     editor: Option<AuEditor>,
-    metadata: PluginInfo,
-    param_cache: ParamCache,
+    meta: Meta,
 }
 
 unsafe impl Send for AuInstance {}
 
 impl AuInstance {
     /// Lightweight probe: read AU component info without instantiation.
-    pub fn probe(path: &Path) -> Result<PluginInfo> {
+    pub fn probe(path: &Path) -> Result<PluginDescriptor> {
         #[cfg(all(target_os = "macos", feature = "au"))]
         {
             let bundle_name = path
@@ -56,18 +71,20 @@ impl AuInstance {
                     reason: format!("No Audio Unit component matching '{}'", bundle_name),
                 })?;
 
-            let receives_midi = component_info.component_type.receives_midi();
-
-            Ok(PluginInfo::new(
-                format!(
+            Ok(PluginDescriptor {
+                id: format!(
                     "au.{}.{}",
                     tutti_au_host::types::fourcc_to_string(component_info.manufacturer_code),
                     tutti_au_host::types::fourcc_to_string(component_info.sub_type),
                 ),
-                component_info.name.clone(),
-            )
-            .author(component_info.manufacturer.clone())
-            .midi(receives_midi))
+                name: component_info.name.clone(),
+                vendor: component_info.manufacturer.clone(),
+                version: String::new(),
+                class: PluginClass::Au {
+                    component_type: map_au_type(component_info.component_type),
+                },
+                has_editor: false,
+            })
         }
         #[cfg(not(all(target_os = "macos", feature = "au")))]
         Err(BridgeError::LoadFailed {
@@ -145,30 +162,35 @@ impl AuInstance {
             })?;
 
             let name = inner.get_name().unwrap_or_else(|_| bundle_name.clone());
-            let receives_midi = component_info.component_type.receives_midi();
             let has_editor = AuEditor::has_editor(inner.raw_unit());
-
             let latency = inner.get_latency().unwrap_or(0) as usize;
-            let metadata = PluginInfo::new(
-                format!(
+
+            let descriptor = PluginDescriptor {
+                id: format!(
                     "au.{}.{}",
                     tutti_au_host::types::fourcc_to_string(component_info.manufacturer_code),
                     tutti_au_host::types::fourcc_to_string(component_info.sub_type),
                 ),
                 name,
-            )
-            .author(component_info.manufacturer.clone())
-            .audio_io(inner.num_inputs() as usize, inner.num_outputs() as usize)
-            .midi(receives_midi)
-            .f64_support(false)
-            .editor(has_editor, None)
-            .latency(latency);
+                vendor: component_info.manufacturer.clone(),
+                version: String::new(),
+                class: PluginClass::Au {
+                    component_type: map_au_type(component_info.component_type),
+                },
+                has_editor,
+            };
+            // AU exposes a single main bus per direction here.
+            let loaded = LoadedPlugin {
+                inputs: single_bus(inner.num_inputs() as usize),
+                outputs: single_bus(inner.num_outputs() as usize),
+                latency_samples: latency,
+                supports_f64: false,
+            };
 
             Ok(Self {
                 inner,
                 editor: None,
-                metadata,
-                param_cache: ParamCache::default(),
+                meta: Meta { descriptor, loaded },
             })
         }
 
@@ -184,15 +206,19 @@ impl AuInstance {
         }
     }
 
-    pub fn metadata(&self) -> &PluginInfo {
-        &self.metadata
+    pub fn descriptor(&self) -> &PluginDescriptor {
+        &self.meta.descriptor
     }
 }
 
 #[cfg(all(target_os = "macos", feature = "au"))]
 impl PluginInstance for AuInstance {
-    fn metadata(&self) -> &PluginInfo {
-        &self.metadata
+    fn descriptor(&self) -> &PluginDescriptor {
+        &self.meta.descriptor
+    }
+
+    fn loaded(&self) -> &LoadedPlugin {
+        &self.meta.loaded
     }
 
     fn process(
@@ -262,7 +288,7 @@ impl PluginInstance for AuInstance {
         let _ = parameters::set(self.inner.raw_unit(), id, value as f32);
     }
 
-    fn get_parameter_list(&mut self) -> Vec<ParameterInfo> {
+    fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         parameters::list(self.inner.raw_unit())
             .into_iter()
             .map(|p| {
@@ -278,11 +304,6 @@ impl PluginInstance for AuInstance {
                 )
             })
             .collect()
-    }
-
-    fn get_parameter_info(&mut self, id: u32) -> Option<ParameterInfo> {
-        let params = self.get_parameter_list();
-        self.param_cache.lookup(id, || params)
     }
 
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
@@ -301,10 +322,6 @@ impl PluginInstance for AuInstance {
         if let Some(mut ed) = self.editor.take() {
             ed.close();
         }
-    }
-
-    fn editor_idle(&mut self) {
-        // AUv2 Cocoa views are driven by the AppKit run loop; no explicit idle needed.
     }
 
     fn get_state(&mut self) -> Result<Vec<u8>> {
@@ -367,11 +384,10 @@ mod tests {
             .expect("Should create instance");
         inner.initialize().expect("Should initialize");
 
-        let mut au = AuInstance {
+        let au = AuInstance {
             inner,
             editor: None,
-            metadata: PluginInfo::new("au.appl.dely", "AUDelay"),
-            param_cache: ParamCache::default(),
+            meta: Meta::default(),
         };
 
         let params = au.get_parameter_list();
@@ -404,8 +420,7 @@ mod tests {
         let mut au = AuInstance {
             inner,
             editor: None,
-            metadata: PluginInfo::new("au.appl.dely", "AUDelay").audio_io(2, 2),
-            param_cache: ParamCache::default(),
+            meta: Meta::default(),
         };
 
         let num_samples = 512;
@@ -450,8 +465,7 @@ mod tests {
         let mut au = AuInstance {
             inner,
             editor: None,
-            metadata: PluginInfo::new("au.appl.dely", "AUDelay"),
-            param_cache: ParamCache::default(),
+            meta: Meta::default(),
         };
 
         let state = au.get_state().expect("save should succeed");

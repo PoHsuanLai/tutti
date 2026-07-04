@@ -138,6 +138,23 @@ impl MidiEvent {
             _ => None,
         }
     }
+
+    /// Channel nibble (0-15) for a channel-voice event, read directly from the
+    /// UMP word without a full decode. `None` for system, SysEx, and utility
+    /// messages, which carry no channel. Covers both MIDI 1.0 (UMP type 0x2)
+    /// and MIDI 2.0 (type 0x4) channel voice — the channel sits in the same
+    /// bit position in both, so the hot path (e.g. MIDI routing by channel)
+    /// avoids paying for a `midi2::UmpMessage::try_from` dispatch.
+    #[inline]
+    pub fn channel(&self) -> Option<u8> {
+        let type_nibble = (self.data[0] >> 28) & 0x0F;
+        // UMP type 0x2 = MIDI 1.0 channel voice, 0x4 = MIDI 2.0 channel voice.
+        if type_nibble == 0x2 || type_nibble == 0x4 {
+            Some(((self.data[0] >> 16) & 0x0F) as u8)
+        } else {
+            None
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -336,6 +353,20 @@ impl MidiEvent {
         m.set_note_number(u7::new(note & 0x7F));
         m.set_velocity(velocity);
         Self::from_ump(0, m.data())
+    }
+
+    /// Note-on from a 7-bit MIDI 1.0 velocity (0-127), widened to the 16-bit
+    /// MIDI 2.0 field by left-shifting 9 bits.
+    ///
+    /// This is the shift-widen many callers were open-coding as
+    /// `note_on(g, c, n, (vel as u16) << 9)`. Note it is *not* the spec
+    /// Min-Center-Max upconvert (`convert::midi1_velocity_to_midi2`): `<< 9`
+    /// maps 127 → 65024, not 65535. Preserved here verbatim so the helper is a
+    /// drop-in for the existing call sites; reach for `note_on` +
+    /// `midi1_velocity_to_midi2` when exact full-range fidelity matters.
+    #[inline]
+    pub fn note_on_7bit(group: u8, channel: u8, note: u8, velocity_u7: u8) -> Self {
+        Self::note_on(group, channel, note, (velocity_u7 as u16) << 9)
     }
 
     #[inline]
@@ -564,10 +595,14 @@ impl MidiEvent {
 // `std` feature — unavailable in no_std. Fragmentation is hand-written here,
 // and round-trip-verified against midi2 in the test module below.
 
-const SYSEX7_STATUS_SINGLE: u8 = 0x0;
-const SYSEX7_STATUS_START: u8 = 0x1;
-const SYSEX7_STATUS_CONTINUE: u8 = 0x2;
-const SYSEX7_STATUS_END: u8 = 0x3;
+/// SysEx7 status nibble: a complete message in one packet.
+pub const SYSEX7_STATUS_SINGLE: u8 = 0x0;
+/// SysEx7 status nibble: first packet of a multi-packet message.
+pub const SYSEX7_STATUS_START: u8 = 0x1;
+/// SysEx7 status nibble: a middle packet of a multi-packet message.
+pub const SYSEX7_STATUS_CONTINUE: u8 = 0x2;
+/// SysEx7 status nibble: last packet of a multi-packet message.
+pub const SYSEX7_STATUS_END: u8 = 0x3;
 
 impl MidiEvent {
     /// Build SysEx 7-bit packets (UMP type 0x3, 64-bit each) for `data` and
@@ -594,6 +629,52 @@ impl MidiEvent {
             };
             out.push(Self::sysex7_packet(group, status, chunk));
         }
+    }
+
+    /// Build a single self-contained SysEx 7-bit packet (UMP type 0x3) from a
+    /// payload of up to 6 bytes (the data *between* 0xF0 and 0xF7, no
+    /// delimiters). Returns `None` if the payload exceeds one packet — use
+    /// [`Self::sysex7_fragments`] for longer messages. The no-`alloc`
+    /// single-packet counterpart to `sysex7_fragments`.
+    pub fn sysex7_single(group: u8, payload: &[u8]) -> Option<Self> {
+        if payload.len() > 6 {
+            return None;
+        }
+        Some(Self::sysex7_packet(group, SYSEX7_STATUS_SINGLE, payload))
+    }
+
+    /// Decode a single SysEx 7-bit packet (UMP type 0x3) into its
+    /// `(status, payload)` — the inverse of [`Self::sysex7_packet`]. Returns the
+    /// status nibble ([`SYSEX7_STATUS_SINGLE`]/`START`/`CONTINUE`/`END`) and the
+    /// up-to-6 payload bytes (no 0xF0/0xF7 delimiters). `None` for any event
+    /// that isn't a type-0x3 packet, or one whose declared length exceeds 6.
+    ///
+    /// Reassembling a multi-packet SysEx stream is the caller's job — this
+    /// decodes one packet, mirroring how [`Self::sysex7_fragments`] emits them.
+    pub fn sysex7_payload(&self) -> Option<(u8, [u8; 6], usize)> {
+        let w0 = self.data[0];
+        if (w0 >> 28) & 0x0F != 0x3 {
+            return None;
+        }
+        let status = ((w0 >> 20) & 0x0F) as u8;
+        let n = ((w0 >> 16) & 0x0F) as usize;
+        if n > 6 {
+            return None;
+        }
+        let w1 = self.data[1];
+        let mut out = [0u8; 6];
+        for (i, slot) in out.iter_mut().enumerate().take(n) {
+            *slot = match i {
+                0 => (w0 >> 8) & 0x7F,
+                1 => w0 & 0x7F,
+                2 => (w1 >> 24) & 0x7F,
+                3 => (w1 >> 16) & 0x7F,
+                4 => (w1 >> 8) & 0x7F,
+                5 => w1 & 0x7F,
+                _ => unreachable!(),
+            } as u8;
+        }
+        Some((status, out, n))
     }
 
     fn sysex7_packet(group: u8, status: u8, payload: &[u8]) -> Self {
@@ -681,6 +762,18 @@ mod tests {
     }
 
     #[test]
+    fn channel_reads_both_voice_versions() {
+        // MIDI 2.0 channel voice (UMP type 0x4).
+        assert_eq!(MidiEvent::note_on(0, 5, 60, 0x8000).channel(), Some(5));
+        // MIDI 1.0 channel voice (UMP type 0x2), built via the wire bridge.
+        let cv1 = MidiEvent::from_midi1_bytes(0, &[0x93, 0x3C, 0x64]).unwrap();
+        assert_eq!(cv1.channel(), Some(3));
+        // System messages carry no channel.
+        assert_eq!(MidiEvent::timing_clock(0).channel(), None);
+        assert_eq!(MidiEvent::noop().channel(), None);
+    }
+
+    #[test]
     fn timing_clock_is_one_word() {
         let ev = MidiEvent::timing_clock(0);
         assert_eq!(ev.data_words().len(), 1);
@@ -730,5 +823,18 @@ mod tests {
         for ev in &out {
             assert_eq!(ev.data_words().len(), 2);
         }
+    }
+
+    #[test]
+    fn sysex7_single_payload_round_trips() {
+        for payload in [&[][..], &[0x42][..], &[0x7E, 0x7F, 0x06, 0x01][..], &[1, 2, 3, 4, 5, 6][..]] {
+            let ev = MidiEvent::sysex7_single(0, payload).expect("fits one packet");
+            let (status, bytes, n) = ev.sysex7_payload().expect("decodes");
+            assert_eq!(status, SYSEX7_STATUS_SINGLE);
+            assert_eq!(n, payload.len());
+            assert_eq!(&bytes[..n], payload);
+        }
+        // 7 bytes is more than one packet.
+        assert!(MidiEvent::sysex7_single(0, &[0; 7]).is_none());
     }
 }

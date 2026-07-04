@@ -28,6 +28,7 @@ use vst3::Steinberg::Vst::{
 };
 
 use crate::types::{MidiEvent, ParameterChanges};
+use tutti_midi_types::{decode, SemanticEvent};
 
 /// Number of MIDI channels VST3 enumerates mappings for.
 pub(crate) const NUM_CHANNELS: usize = 16;
@@ -135,24 +136,27 @@ impl MidiCcMapping {
     }
 }
 
-/// A MIDI-1 message decomposed into the `(controller, normalized_value)` a
-/// VST3 `IMidiMapping` parameter expects, or `None` if the message is not a
-/// mappable controller (CC / channel pressure / pitch bend).
+/// Decompose a decoded [`SemanticEvent`] into the `(channel, controller,
+/// normalized_value)` a VST3 `IMidiMapping` parameter expects, or `None` if the
+/// event is not a mappable controller (CC / channel pressure / pitch bend).
 ///
-/// Value normalization matches the VST3 host contract:
-/// - CC / channel pressure: 7-bit `0..=127` → `0.0..=1.0`.
-/// - Pitch bend: 14-bit `0..=16383` → `0.0..=1.0`, with `8192` (center) at
-///   `0.5`.
-pub(crate) fn midi1_to_mapped_controller(status: u8, d1: u8, d2: u8) -> Option<(usize, f64)> {
-    match status & 0xF0 {
-        // Control change: controller number = d1, value = d2.
-        0xB0 => Some((d1 as usize, d2 as f64 / 127.0)),
-        // Channel pressure (channel aftertouch): value = d1.
-        0xD0 => Some((CTRL_AFTERTOUCH, d1 as f64 / 127.0)),
-        // Pitch bend: 14-bit little-endian (LSB=d1, MSB=d2).
-        0xE0 => {
-            let bend14 = (d1 as u16 & 0x7F) | ((d2 as u16 & 0x7F) << 7);
-            Some((CTRL_PITCH_BEND, bend14 as f64 / 16383.0))
+/// Values arrive from [`tutti_midi_types::decode`] already normalized to the
+/// canonical unit range, so this only translates ranges to the VST3 host
+/// contract — no bit-width quantization:
+/// - CC / channel pressure: unit `0.0..=1.0` pass straight through.
+/// - Pitch bend: signed `-1.0..=1.0` (center `0.0`) → `0.0..=1.0` (center
+///   `0.5`), matching what the plugin's parameter funnel expects.
+pub(crate) fn semantic_to_mapped_controller(event: &SemanticEvent) -> Option<(u8, usize, f64)> {
+    match *event {
+        SemanticEvent::ControlChange { channel, cc, value } => {
+            Some((channel, cc as usize, value as f64))
+        }
+        SemanticEvent::ChannelPressure { channel, value } => {
+            Some((channel, CTRL_AFTERTOUCH, value as f64))
+        }
+        SemanticEvent::PitchBend { channel, value } => {
+            // Signed [-1, 1] (center 0) → unit [0, 1] (center 0.5).
+            Some((channel, CTRL_PITCH_BEND, (value as f64 + 1.0) / 2.0))
         }
         _ => None,
     }
@@ -165,7 +169,8 @@ pub(crate) fn midi1_to_mapped_controller(status: u8, d1: u8, d2: u8) -> Option<(
 ///
 /// The caller owns clearing/seeding `out_params` and clearing `out_filtered`
 /// before the call (the audio path clears in place to stay allocation-free);
-/// this routine only appends. Decoding uses the lossless MIDI-1 byte form.
+/// this routine only appends. Decoding goes through
+/// [`tutti_midi_types::decode`], so MIDI-2 controllers keep their full width.
 ///
 /// Allocation-free given pre-warmed `out_*` capacity — the inner loop only
 /// pushes into existing storage.
@@ -176,14 +181,11 @@ pub(crate) fn route_cc_events(
     out_params: &mut ParameterChanges,
 ) {
     for event in midi_events {
-        let Some((bytes, _len)) = event.to_midi1_bytes() else {
-            out_filtered.push(*event);
-            continue;
-        };
-        let status = bytes[0];
-        let channel = status & 0x0F;
-        match midi1_to_mapped_controller(status, bytes[1], bytes[2]) {
-            Some((controller, value)) => match mapping.lookup(channel, controller) {
+        let mapped = decode(event)
+            .as_ref()
+            .and_then(semantic_to_mapped_controller);
+        match mapped {
+            Some((channel, controller, value)) => match mapping.lookup(channel, controller) {
                 Some(param_id) => {
                     out_params.add_change(param_id, event.frame_offset as i32, value);
                 }
@@ -207,6 +209,92 @@ pub(crate) fn sort_param_points(params: &mut ParameterChanges) {
         queue
             .points
             .sort_unstable_by_key(|point| point.sample_offset);
+    }
+}
+
+/// The `IMidiMapping` CC→param routing concern as a per-block unit: the
+/// controller-queried mapping table plus the pooled scratch the routing pass
+/// needs. Held by `Vst3Instance`'s `AudioIO`.
+///
+/// When `mapping` is non-empty, mapped CC/aftertouch/pitch-bend events are
+/// pulled out of the input MIDI into `filtered_midi` (the events that still
+/// reach the plugin's event list) while their parameter points are merged into
+/// `param_changes` alongside the host's automation. The scratch buffers are
+/// reused across blocks to keep the routing pass allocation-free; `mapping` is
+/// rebuilt only when the plugin signals `kMidiCCAssignmentChanged` (see
+/// [`Vst3Instance::rebuild_midi_cc_mapping`](crate::Vst3Instance)).
+pub(crate) struct CcRoute {
+    pub(crate) mapping: MidiCcMapping,
+    filtered_midi: SmallVec<[MidiEvent; 64]>,
+    param_changes: ParameterChanges,
+}
+
+impl CcRoute {
+    /// Build with an empty mapping queried from `controller`, plus empty
+    /// scratch. The scratch grows once on first use and is reused thereafter.
+    pub(crate) fn new(mapping: MidiCcMapping) -> Self {
+        Self {
+            mapping,
+            filtered_midi: SmallVec::new(),
+            param_changes: ParameterChanges::new(),
+        }
+    }
+
+    /// Route `IMidiMapping`-mapped controllers into parameter changes, returning
+    /// the MIDI + params the plugin should actually receive this block.
+    ///
+    /// When the mapping is non-empty, walks `midi_events` and, for each mapped
+    /// CC / channel-pressure / pitch-bend message, appends a normalized
+    /// parameter point to the scratch `param_changes` (seeded with the host's
+    /// `param_changes`) and *omits* that event from the scratch `filtered_midi`.
+    /// Unmapped events (notes, unmapped CCs, …) pass through unchanged. Returns
+    /// `Some((filtered_midi, merged_params))` borrowing the scratch.
+    ///
+    /// Returns `None` when the plugin has no mapping — the common case for
+    /// effects and simple instruments, so the caller forwards its inputs
+    /// untouched and the hot path pays nothing.
+    ///
+    /// Allocation-free after warmup: both scratch buffers are cleared in place
+    /// and reuse their heap capacity. Decoding goes through MIDI-1 bytes, the
+    /// same lossless path `vst3_event_from_midi` already uses for events.
+    pub(crate) fn route(
+        &mut self,
+        midi_events: &[MidiEvent],
+        param_changes: Option<&ParameterChanges>,
+    ) -> Option<(&[MidiEvent], &ParameterChanges)> {
+        if self.mapping.is_empty() {
+            return None;
+        }
+
+        // Clear scratch in place (keep heap capacity).
+        self.filtered_midi.clear();
+        for queue in self.param_changes.queues.iter_mut() {
+            queue.points.clear();
+        }
+        self.param_changes.queues.clear();
+
+        // Seed the merged param changes with the host's automation.
+        if let Some(pc) = param_changes {
+            for queue in &pc.queues {
+                for point in &queue.points {
+                    self.param_changes
+                        .add_change(queue.param_id, point.sample_offset, point.value);
+                }
+            }
+        }
+
+        route_cc_events(
+            &self.mapping,
+            midi_events,
+            &mut self.filtered_midi,
+            &mut self.param_changes,
+        );
+
+        // VST3 requires each IParamValueQueue's points in ascending
+        // sampleOffset order; seeding + appending can leave them unsorted.
+        sort_param_points(&mut self.param_changes);
+
+        Some((&self.filtered_midi, &self.param_changes))
     }
 }
 
@@ -243,33 +331,46 @@ mod tests {
         assert_eq!(m.lookup(0, NUM_CONTROLLERS), None);
     }
 
+    /// Decode a `MidiEvent` and run it through `semantic_to_mapped_controller`.
+    fn mapped(event: &MidiEvent) -> Option<(u8, usize, f64)> {
+        decode(event).as_ref().and_then(semantic_to_mapped_controller)
+    }
+
     #[test]
     fn cc_decodes_to_controller_and_normalized_value() {
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
         // CC 74 (brightness) = 64 on channel 2.
-        let (ctrl, value) = midi1_to_mapped_controller(0xB2, 74, 64).unwrap();
+        let (ch, ctrl, value) =
+            mapped(&MidiEvent::cc(0, 2, 74, midi1_cc_to_midi2(64))).unwrap();
+        assert_eq!(ch, 2);
         assert_eq!(ctrl, 74);
-        assert!((value - 64.0 / 127.0).abs() < 1e-9);
+        assert!((value - 64.0 / 127.0).abs() < 0.01);
     }
 
     #[test]
     fn channel_pressure_decodes_to_aftertouch() {
-        let (ctrl, value) = midi1_to_mapped_controller(0xD0, 127, 0).unwrap();
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+        let (ch, ctrl, value) =
+            mapped(&MidiEvent::channel_pressure(0, 0, midi1_cc_to_midi2(127))).unwrap();
+        assert_eq!(ch, 0);
         assert_eq!(ctrl, CTRL_AFTERTOUCH);
-        assert!((value - 1.0).abs() < 1e-9);
+        assert!((value - 1.0).abs() < 0.01);
     }
 
     #[test]
     fn pitch_bend_center_is_half() {
-        // 8192 = LSB 0x00, MSB 0x40.
-        let (ctrl, value) = midi1_to_mapped_controller(0xE0, 0x00, 0x40).unwrap();
+        use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
+        let (ch, ctrl, value) =
+            mapped(&MidiEvent::pitch_bend(0, 4, midi1_pitch_bend_to_midi2(8192))).unwrap();
+        assert_eq!(ch, 4);
         assert_eq!(ctrl, CTRL_PITCH_BEND);
-        assert!((value - 8192.0 / 16383.0).abs() < 1e-9);
+        // Center bend maps to the middle of the unit range.
         assert!((value - 0.5).abs() < 0.01);
     }
 
     #[test]
     fn note_on_is_not_a_mapped_controller() {
-        assert_eq!(midi1_to_mapped_controller(0x90, 60, 100), None);
+        assert_eq!(mapped(&MidiEvent::note_on(0, 0, 60, 0x8000)), None);
     }
 
     /// Build a table with a single channel-0 mod-wheel (CC 1) → param mapping.
@@ -301,7 +402,9 @@ mod tests {
         let queue = params.get_queue(500).expect("mod wheel mapped to param 500");
         assert_eq!(queue.points.len(), 1);
         assert_eq!(queue.points[0].sample_offset, 8);
-        assert!((queue.points[0].value - 64.0 / 127.0).abs() < 1e-9);
+        // Value decoded at MIDI-2 width then normalized; ~64/127, not bit-exact
+        // (the source CC was a MIDI-1→MIDI-2 promotion).
+        assert!((queue.points[0].value - 64.0 / 127.0).abs() < 0.01);
 
         // Note-on and the unmapped CC 74 stayed as MIDI events.
         assert_eq!(filtered.len(), 2);

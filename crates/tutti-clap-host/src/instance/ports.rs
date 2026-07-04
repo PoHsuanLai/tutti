@@ -1,7 +1,7 @@
 //! Audio/note port enumeration, configuration, and the render / voice /
 //! surround / ambisonic extensions.
 
-use super::ClapInstance;
+use super::ClapLoaded;
 use crate::types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioPortConfig,
     AudioPortConfigRequest, AudioPortFlags, AudioPortInfo, AudioPortType, NoteDialect,
@@ -26,7 +26,7 @@ use std::ptr;
 
 use crate::cstr_to_string;
 
-impl ClapInstance {
+impl ClapLoaded {
     /// Number of input or output audio ports exposed by the plugin.
     pub fn audio_port_count(&self, is_input: bool) -> usize {
         if self.extensions.audio.ports.is_null() {
@@ -53,27 +53,7 @@ impl ClapInstance {
             return None;
         }
 
-        let port_type = if info.port_type.is_null() {
-            AudioPortType::Custom(String::new())
-        } else {
-            let type_cstr = unsafe { CStr::from_ptr(info.port_type) };
-            if type_cstr == CLAP_PORT_MONO {
-                AudioPortType::Mono
-            } else if type_cstr == CLAP_PORT_STEREO {
-                AudioPortType::Stereo
-            } else {
-                AudioPortType::Custom(type_cstr.to_string_lossy().into_owned())
-            }
-        };
-
-        Some(AudioPortInfo {
-            id: info.id,
-            name: unsafe { cstr_to_string(info.name.as_ptr()) },
-            channel_count: info.channel_count,
-            flags: AudioPortFlags::from_bits_truncate(info.flags),
-            port_type,
-            in_place_pair_id: info.in_place_pair,
-        })
+        Some(audio_port_info_from_clap(&info))
     }
 
     /// Total input channel count, summed across every input port.
@@ -186,6 +166,50 @@ impl ClapInstance {
             Some(f) => unsafe { f(self.plugin.as_ptr(), config_id) },
             None => false,
         }
+    }
+
+    /// The `id` of the audio-ports configuration currently active
+    /// (`CLAP_EXT_AUDIO_PORTS_CONFIG_INFO`). Returns `None` when the plugin
+    /// does not implement the extension.
+    ///
+    /// This is the companion to [`audio_port_config_count`](Self::audio_port_config_count) /
+    /// [`get_audio_port_config`](Self::get_audio_port_config): those enumerate
+    /// the *available* configs; this reports which one is live and lets you
+    /// read its full per-port info via
+    /// [`audio_port_config_port_info`](Self::audio_port_config_port_info).
+    pub fn current_audio_port_config(&self) -> Option<u32> {
+        if self.extensions.audio.ports_config_info.is_null() {
+            return None;
+        }
+        let ext = unsafe { &*self.extensions.audio.ports_config_info };
+        let current_fn = ext.current_config?;
+        Some(unsafe { current_fn(self.plugin.as_ptr()) })
+    }
+
+    /// Full [`AudioPortInfo`] for a single port *within a specific config*
+    /// (`CLAP_EXT_AUDIO_PORTS_CONFIG_INFO`). Unlike
+    /// [`get_audio_port_config`](Self::get_audio_port_config) (which returns
+    /// only the config summary), this exposes each port's id / name / channel
+    /// count / flags / type for the named `config_id`, without first having to
+    /// switch to it. Returns `None` when unsupported or the plugin rejects the
+    /// `(config_id, port_index, is_input)` triple.
+    pub fn audio_port_config_port_info(
+        &self,
+        config_id: u32,
+        port_index: u32,
+        is_input: bool,
+    ) -> Option<AudioPortInfo> {
+        if self.extensions.audio.ports_config_info.is_null() {
+            return None;
+        }
+        let ext = unsafe { &*self.extensions.audio.ports_config_info };
+        let get_fn = ext.get?;
+
+        let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
+        if !unsafe { get_fn(self.plugin.as_ptr(), config_id, port_index, is_input, &mut info) } {
+            return None;
+        }
+        Some(audio_port_info_from_clap(&info))
     }
 
     /// Plugin-reported processing latency in samples. 0 when unsupported.
@@ -525,6 +549,33 @@ impl ClapInstance {
                 .filter_map(|&pos| SurroundChannel::from_position(pos))
                 .collect(),
         )
+    }
+}
+
+/// Convert a raw `clap_audio_port_info` into the safe [`AudioPortInfo`].
+/// Shared by [`ClapLoaded::audio_port_info`] and
+/// [`ClapLoaded::audio_port_config_port_info`].
+fn audio_port_info_from_clap(info: &clap_audio_port_info) -> AudioPortInfo {
+    let port_type = if info.port_type.is_null() {
+        AudioPortType::Custom(String::new())
+    } else {
+        let type_cstr = unsafe { CStr::from_ptr(info.port_type) };
+        if type_cstr == CLAP_PORT_MONO {
+            AudioPortType::Mono
+        } else if type_cstr == CLAP_PORT_STEREO {
+            AudioPortType::Stereo
+        } else {
+            AudioPortType::Custom(type_cstr.to_string_lossy().into_owned())
+        }
+    };
+
+    AudioPortInfo {
+        id: info.id,
+        name: unsafe { cstr_to_string(info.name.as_ptr()) },
+        channel_count: info.channel_count,
+        flags: AudioPortFlags::from_bits_truncate(info.flags),
+        port_type,
+        in_place_pair_id: info.in_place_pair,
     }
 }
 

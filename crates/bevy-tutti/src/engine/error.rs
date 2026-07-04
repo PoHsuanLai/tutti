@@ -76,7 +76,9 @@ pub enum Error {
 
     /// Built-in units subsystem failure.
     ///
-    /// Wraps [`tutti_units::Error`].
+    /// Wraps [`tutti_units::Error`], which only exists when tutti-units'
+    /// `spatial` module is compiled in (pulled by our `dsp` feature).
+    #[cfg(feature = "dsp")]
     #[error("Units: {0}")]
     Dsp(#[from] tutti_units::Error),
 

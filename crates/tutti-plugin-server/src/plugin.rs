@@ -10,7 +10,7 @@
 //! list the server can drain after each audio block.
 
 use std::path::Path;
-use tutti_plugin::server::{PluginInfo, PluginInstance, SampleFormat};
+use tutti_plugin::server::{LoadedPlugin, PluginDescriptor, PluginInstance, SampleFormat};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 #[cfg(feature = "vst2")]
@@ -40,10 +40,22 @@ pub(crate) enum Plugin {
 /// Events a plugin can queue between audio blocks that the server needs
 /// to forward to the host out-of-band of the per-block reply.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Variants are constructed only under vst2/clap features.
+#[allow(dead_code)] // Variants are constructed only under vst2/clap/vst3 features.
 pub(crate) enum AsyncEvent {
     ParameterChanged { index: i32, value: f32 },
     LatencyChanged { samples: usize },
+    /// Plugin changed its own parameter values at runtime (e.g. preset load).
+    /// The client should re-read parameter values.
+    ParamValuesChanged,
+    /// Plugin changed parameter titles/units/flags. The client should re-pull
+    /// the parameter list.
+    ParamTitlesChanged,
+    /// Plugin's bus arrangement changed and was re-enumerated. The client
+    /// should rewire its audio graph from the refreshed metadata.
+    IoChanged,
+    /// Plugin was torn down and rebuilt in place (`kReloadComponent`). The
+    /// client should resync everything — it is effectively a fresh instance.
+    Reloaded,
 }
 
 impl Plugin {
@@ -51,7 +63,7 @@ impl Plugin {
     /// path in the underlying crate; we fall through to `load` and drop
     /// the instance, which matches the previous behavior.
     #[allow(unreachable_code, unused_variables)]
-    pub(crate) fn probe(path: &Path) -> Result<PluginInfo> {
+    pub(crate) fn probe(path: &Path) -> Result<PluginDescriptor> {
         if !path.exists() {
             return Err(BridgeError::LoadFailed {
                 path: path.to_path_buf(),
@@ -71,7 +83,7 @@ impl Plugin {
             #[cfg(feature = "vst2")]
             "vst" | "dll" | "so" => {
                 let vst = Vst2Instance::load(path, 44100.0, 512)?;
-                Ok(vst.metadata().clone())
+                Ok(vst.descriptor().clone())
             }
             _ => Err(BridgeError::LoadFailed {
                 path: path.to_path_buf(),
@@ -81,17 +93,17 @@ impl Plugin {
         }
     }
 
-    /// Fully load and instantiate a plugin. Returns the wrapped plugin,
-    /// its metadata, and the negotiated sample format (which already
-    /// accounts for the plugin's declared f64 support, and for VST3
-    /// rejecting the f64 setup call).
+    /// Fully load and instantiate a plugin. Returns the wrapped plugin, its
+    /// catalog descriptor, its runtime load data, and the negotiated sample
+    /// format (which already accounts for the plugin's declared f64 support,
+    /// and for VST3 rejecting the f64 setup call).
     #[allow(unreachable_code, unused_variables)]
     pub(crate) fn load(
         path: &Path,
         sample_rate: f64,
         block_size: usize,
         preferred_format: SampleFormat,
-    ) -> Result<(Self, PluginInfo, SampleFormat)> {
+    ) -> Result<(Self, PluginDescriptor, LoadedPlugin, SampleFormat)> {
         if !path.exists() {
             return Err(BridgeError::LoadFailed {
                 path: path.to_path_buf(),
@@ -101,40 +113,23 @@ impl Plugin {
         }
 
         let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let (plugin, metadata): (Plugin, PluginInfo) = match extension.to_lowercase().as_str() {
+        let plugin: Plugin = match extension.to_lowercase().as_str() {
             #[cfg(feature = "vst3")]
             "vst3" => {
-                let mut vst = Vst3Instance::load(path, sample_rate, block_size)?;
-                if preferred_format == SampleFormat::Float64
-                    && vst.can_process_f64()
-                    && vst.set_sample_format(SampleFormat::Float64).is_err()
-                {
-                    vst.clear_f64_support();
-                }
-                let metadata = vst.metadata().clone();
-                (Plugin::Vst3(vst), metadata)
+                let prefer_f64 = preferred_format == SampleFormat::Float64;
+                Plugin::Vst3(Vst3Instance::load(path, sample_rate, block_size, prefer_f64)?)
             }
 
             #[cfg(feature = "vst2")]
             "vst" | "dll" | "so" => {
-                let vst = Vst2Instance::load(path, sample_rate, block_size)?;
-                let metadata = vst.metadata().clone();
-                (Plugin::Vst2(vst), metadata)
+                Plugin::Vst2(Vst2Instance::load(path, sample_rate, block_size)?)
             }
 
             #[cfg(feature = "clap")]
-            "clap" => {
-                let clap = ClapInstance::load(path, sample_rate, block_size)?;
-                let metadata = clap.metadata().clone();
-                (Plugin::Clap(clap), metadata)
-            }
+            "clap" => Plugin::Clap(ClapInstance::load(path, sample_rate, block_size)?),
 
             #[cfg(all(feature = "au", target_os = "macos"))]
-            "component" => {
-                let au = AuInstance::load(path, sample_rate, block_size)?;
-                let metadata = au.metadata().clone();
-                (Plugin::Au(au), metadata)
-            }
+            "component" => Plugin::Au(AuInstance::load(path, sample_rate, block_size)?),
 
             _ => {
                 return Err(BridgeError::LoadFailed {
@@ -143,18 +138,21 @@ impl Plugin {
                     reason: format!(
                         "Unsupported plugin format: {extension}. \
                          Supported: .vst3, .vst/.dll/.so (VST2), .clap, .component (AU). \
-                         WASM plugins are loaded in-process via `tutti_plugin::in_process_wasm`."
+                         WASM plugins are loaded in-process via the `tutti-wasm-plugin` crate (`tutti_wasm_plugin::load`)."
                     ),
                 });
             }
         };
 
-        let negotiated = if preferred_format == SampleFormat::Float64 && metadata.supports_f64 {
+        let descriptor = plugin.instance().descriptor().clone();
+        let loaded = plugin.instance().loaded().clone();
+
+        let negotiated = if preferred_format == SampleFormat::Float64 && loaded.supports_f64 {
             SampleFormat::Float64
         } else {
             SampleFormat::Float32
         };
-        Ok((plugin, metadata, negotiated))
+        Ok((plugin, descriptor, loaded, negotiated))
     }
 
     #[allow(dead_code)] // used by `#[cfg(feature = "clap")]` tests
@@ -217,7 +215,23 @@ impl Plugin {
             }
             #[cfg(feature = "vst3")]
             Plugin::Vst3(vst3) => {
-                if let Some(samples) = vst3.poll_latency_changed() {
+                let changes = vst3.poll_restart();
+                // A reload is a superset resync, so it subsumes the finer-grained
+                // param/io signals — emit just Reloaded (plus latency) in that case.
+                if changes.reloaded {
+                    out.push(AsyncEvent::Reloaded);
+                } else {
+                    if changes.param_values_changed {
+                        out.push(AsyncEvent::ParamValuesChanged);
+                    }
+                    if changes.param_titles_changed {
+                        out.push(AsyncEvent::ParamTitlesChanged);
+                    }
+                    if changes.io_changed {
+                        out.push(AsyncEvent::IoChanged);
+                    }
+                }
+                if let Some(samples) = changes.latency {
                     out.push(AsyncEvent::LatencyChanged { samples });
                 }
             }

@@ -51,17 +51,17 @@ impl MtcDecoder {
         let piece = (quarter_frame >> 4) & 0x07;
         let nibble = quarter_frame & 0x0F;
 
-        // Detect sequence reset: pieces must arrive in order 0..7.
+        // Pieces must arrive strictly in order 0,1,…,7. Piece 0 starts a
+        // fresh frame; any other piece that isn't exactly one past the last
+        // is out of sequence — discard the partial frame and wait for the
+        // next piece 0. (Pieces never wrap here: piece 0 is handled above, so
+        // `last_piece + 1` stays in 1..=7 and needs no masking.)
         if piece == 0 {
             self.count = 0;
-        } else if piece != self.last_piece.wrapping_add(1) & 0x07 {
-            // Out of sequence; discard and wait for piece 0.
-            if piece != self.last_piece.wrapping_add(1) {
-                self.count = 0;
-                self.last_piece = piece;
-                self.nibbles[piece as usize] = nibble;
-                return;
-            }
+        } else if piece != self.last_piece + 1 {
+            self.last_piece = piece;
+            self.count = 0;
+            return;
         }
 
         self.last_piece = piece;
@@ -198,6 +198,33 @@ mod tests {
             decoder.feed(make_quarter_frame(piece, 0));
         }
         assert!(decoder.timecode().is_none());
+    }
+
+    #[test]
+    fn test_out_of_sequence_pieces_discarded() {
+        let mut decoder = MtcDecoder::new();
+        // A gap (0,1,3,…) must not assemble a timecode from mismatched
+        // nibble slots — the partial frame is discarded at the gap.
+        for piece in [0u8, 1, 3, 4, 5, 6, 7] {
+            decoder.feed(make_quarter_frame(piece, 0));
+        }
+        assert!(
+            decoder.timecode().is_none(),
+            "out-of-sequence pieces must not produce a timecode"
+        );
+    }
+
+    #[test]
+    fn test_resyncs_on_next_piece_zero() {
+        let mut decoder = MtcDecoder::new();
+        // Feed a broken run, then a clean full frame: the clean one wins.
+        decoder.feed(make_quarter_frame(0, 0));
+        decoder.feed(make_quarter_frame(2, 0)); // gap → discard, wait for 0
+        assert!(decoder.timecode().is_none());
+
+        feed_timecode(&mut decoder, 1, 2, 3, 4, 3);
+        let tc = decoder.timecode().unwrap();
+        assert_eq!((tc.hours, tc.minutes, tc.seconds, tc.frames), (1, 2, 3, 4));
     }
 
     #[test]

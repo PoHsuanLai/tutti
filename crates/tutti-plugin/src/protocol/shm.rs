@@ -3,30 +3,34 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::metadata::{BusDirection, BusLayout};
 use super::sample::SampleFormat;
+use super::BusChannels;
 
 /// Shared-memory slab descriptor. `channels` is the **flat total** across all
-/// buses; `buses` (when non-empty) describes how that flat channel range is
-/// partitioned into per-bus segments so both sides agree which flat channels
-/// belong to which bus.
+/// buses; `inputs`/`outputs` (when non-empty) describe how that flat channel
+/// range is partitioned into per-bus segments so both sides agree which flat
+/// channels belong to which bus, per direction.
 ///
-/// `buses` is `#[serde(default)]`: an older peer that never sent a bus list
-/// deserializes to an empty vector == today's single-bus behaviour (all
+/// Both bus lists are `#[serde(default)]`: an older peer that never sent them
+/// deserializes to empty vectors == today's single-bus behaviour (all
 /// `channels` belong to one main bus). `byte_size` depends only on the flat
-/// `channels`, so the mmap size is identical with or without a bus list.
+/// `channels`, so the mmap size is identical with or without bus lists.
 ///
-/// No longer `Copy` (the `buses` vector); it is cheap to `Clone` and passed by
+/// No longer `Copy` (the bus vectors); it is cheap to `Clone` and passed by
 /// reference on the hot read path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlabLayout {
     pub channels: usize,
     pub samples_per_channel: usize,
     pub format: SampleFormat,
-    /// Per-bus flat-channel partition, ordered input buses then output buses
-    /// (each in bus-index order). Empty == single flat bus (legacy).
+    /// Per-bus input channel counts, in bus-index order. Empty == single flat
+    /// bus (legacy).
     #[serde(default)]
-    pub buses: Vec<BusLayout>,
+    pub inputs: BusChannels,
+    /// Per-bus output channel counts, in bus-index order. Empty == single flat
+    /// bus (legacy).
+    #[serde(default)]
+    pub outputs: BusChannels,
 }
 
 impl SlabLayout {
@@ -41,22 +45,14 @@ impl SlabLayout {
     /// True when a per-bus partition was negotiated. When false the slab is a
     /// single flat channel set shared in-place by both directions (legacy).
     pub fn is_multibus(&self) -> bool {
-        !self.buses.is_empty()
-    }
-
-    fn direction_channels(&self, dir: BusDirection) -> usize {
-        self.buses
-            .iter()
-            .filter(|b| b.direction == dir)
-            .map(|b| b.channels)
-            .sum()
+        !self.inputs.is_empty() || !self.outputs.is_empty()
     }
 
     /// Total flat channels the input direction occupies (sum across input
     /// buses). Falls back to the whole flat `channels` when single-bus legacy.
     pub fn input_channels(&self) -> usize {
         if self.is_multibus() {
-            self.direction_channels(BusDirection::Input)
+            self.inputs.iter().sum()
         } else {
             self.channels
         }
@@ -66,7 +62,7 @@ impl SlabLayout {
     /// buses). Falls back to the whole flat `channels` when single-bus legacy.
     pub fn output_channels(&self) -> usize {
         if self.is_multibus() {
-            self.direction_channels(BusDirection::Output)
+            self.outputs.iter().sum()
         } else {
             self.channels
         }
@@ -89,9 +85,9 @@ impl SlabLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::BusLayout;
+    use smallvec::SmallVec;
 
-    /// Empty bus list (single-bus legacy): bincode round-trips and `byte_size`
+    /// Empty bus lists (single-bus legacy): bincode round-trips and `byte_size`
     /// is computed from the flat `channels` alone.
     #[test]
     fn empty_buses_round_trips() {
@@ -99,31 +95,38 @@ mod tests {
             channels: 2,
             samples_per_channel: 512,
             format: SampleFormat::Float32,
-            buses: Vec::new(),
+            inputs: BusChannels::new(),
+            outputs: BusChannels::new(),
         };
         let bytes = bincode::serialize(&layout).unwrap();
         let back: SlabLayout = bincode::deserialize(&bytes).unwrap();
         assert_eq!(back, layout);
-        assert!(back.buses.is_empty());
+        assert!(!back.is_multibus());
         assert_eq!(back.byte_size(), 2 * 512 * 4);
     }
 
     /// A populated bus partition round-trips; `byte_size` still depends only on
-    /// the flat `channels` (the bus list never changes the mmap size).
+    /// the flat `channels` (the bus lists never change the mmap size). The
+    /// per-direction channel accessors sum each list.
     #[test]
     fn multi_bus_round_trips_without_changing_byte_size() {
         let layout = SlabLayout {
-            channels: 3,
+            channels: 5,
             samples_per_channel: 256,
             format: SampleFormat::Float32,
-            buses: vec![BusLayout::input(2), BusLayout::input(1)],
+            inputs: SmallVec::from_slice(&[2, 1]), // stereo main + mono sidechain
+            outputs: SmallVec::from_slice(&[2]),
         };
         let bytes = bincode::serialize(&layout).unwrap();
         let back: SlabLayout = bincode::deserialize(&bytes).unwrap();
         assert_eq!(back, layout);
-        assert_eq!(back.buses.len(), 2);
+        assert!(back.is_multibus());
+        assert_eq!(back.input_channels(), 3);
+        assert_eq!(back.output_channels(), 2);
+        // Output direction sits past the input range so sidechain survives.
+        assert_eq!(back.output_base(), 3);
         // Flat-total byte size, unaffected by the partition.
-        assert_eq!(back.byte_size(), 3 * 256 * 4);
+        assert_eq!(back.byte_size(), 5 * 256 * 4);
     }
 
     /// Mirror of the pre-`buses` `SlabLayout` to confirm the same

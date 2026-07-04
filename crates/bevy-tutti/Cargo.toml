@@ -123,7 +123,7 @@ sampler = ["wav", "dep:tutti-sampler", "tutti-export?/sampler"]
 # OWN `midi` feature, so `plugin` must enable `midi` to keep the call shape in
 # sync with the compiled `tutti-core`.
 plugin = ["dep:tutti-plugin", "dep:tutti-plugin-host", "midi"]
-vst2 = ["plugin", "tutti-plugin-host/vst2", "tutti-plugin/vst2", "tutti-plugin/vst2-in-process"]
+vst2 = ["plugin", "tutti-plugin-host/vst2", "tutti-plugin/vst2"]
 vst3 = ["plugin", "tutti-plugin-host/vst3", "tutti-plugin/vst3"]
 clap = ["plugin", "tutti-plugin-host/clap", "tutti-plugin/clap"]
 au = ["plugin", "tutti-plugin-host/au", "tutti-plugin/au"]

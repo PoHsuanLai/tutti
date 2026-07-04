@@ -8,11 +8,16 @@
 //!   contract, reached through `&self` (e.g. behind an `Arc` or a COM object).
 //! - [`RtEventBuf`]: a fixed-inline-capacity event collector refilled each
 //!   block, built on [`AudioThreadCell`].
+//! - [`RtScratchBuf`]: a fixed-inline-capacity scratch buffer that refills each
+//!   block and lends its filled slice out with `&self` lifetime — the one
+//!   "return a borrow back to the caller" shape `AudioThreadCell` cannot give.
 
 #![no_std]
 
 mod audio_thread_cell;
 mod rt_event_buf;
+mod rt_scratch_buf;
 
 pub use audio_thread_cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use rt_event_buf::RtEventBuf;
+pub use rt_scratch_buf::RtScratchBuf;

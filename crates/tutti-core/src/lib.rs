@@ -78,7 +78,7 @@ pub use std::sync::atomic::{
 };
 pub use std::sync::Arc;
 
-pub use tutti_types::{AudioThreadCell, RtEventBuf};
+pub use tutti_types::{AudioThreadCell, RtEventBuf, RtScratchBuf};
 
 // Real-time audio-thread primitives: the scratch buffer + the denormals guard.
 pub mod rt;

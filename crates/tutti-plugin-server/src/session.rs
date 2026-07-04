@@ -6,12 +6,11 @@
 //! loop should do next. Because it has no `async` and no `Transport`
 //! dependency, it's unit-testable without tokio or sockets.
 
-use crate::audio_pipeline::{AudioBlock, AudioOutput, AudioPipeline, Clock, ProcessExtras};
+use crate::audio_pipeline::{AudioBlock, AudioPipeline, Clock, ProcessExtras};
 use crate::editor::EditorState;
 use crate::plugin::{AsyncEvent, Plugin};
 use tutti_plugin::server::{
-    AudioProcessedFullData, AudioProcessedMidiData, AudioSlab, BridgeMessage, HostMessage,
-    IpcMidiEvent, MidiEventVec, SampleFormat, WindowHandle,
+    AudioSlab, BridgeMessage, HostMessage, MidiEventVec, SampleFormat, WindowHandle,
 };
 use tutti_plugin::Result;
 
@@ -80,24 +79,15 @@ impl Session {
                 Ok(Reaction::None)
             }
 
-            M::ProcessAudio { num_samples, .. } => self.handle_process(AudioBlock {
-                num_samples,
-                midi: &[],
-                extras: None,
-            }),
-            M::ProcessAudioMidi(data) => {
-                let midi: MidiEventVec = data.midi_events.iter().map(|&e| e.into()).collect();
-                self.handle_process(AudioBlock {
-                    num_samples: data.num_samples,
-                    midi: &midi,
-                    extras: None,
-                })
-            }
-            M::ProcessAudioFull(data) => {
+            M::ProcessAudio(data) => {
                 let midi: MidiEventVec = data.midi_events.iter().map(|&e| e.into()).collect();
                 let extras = ProcessExtras {
                     param_changes: &data.param_changes,
                     note_expression: &data.note_expression,
+                    chords: &data.chords,
+                    scales: &data.scales,
+                    expr_texts: &data.expr_texts,
+                    expr_ints: &data.expr_ints,
                     transport: &data.transport,
                 };
                 self.handle_process(AudioBlock {
@@ -113,6 +103,12 @@ impl Session {
                 }
                 Ok(Reaction::None)
             }
+            M::SetAutomationState { state } => {
+                if let Some(plugin) = self.plugin.as_mut() {
+                    plugin.instance_mut().set_automation_state(state);
+                }
+                Ok(Reaction::None)
+            }
             M::GetParameter { param_id } => {
                 let value = self
                     .plugin
@@ -123,16 +119,18 @@ impl Session {
             M::GetParameterList => {
                 let parameters = self
                     .plugin
-                    .as_mut()
-                    .map(|p| p.instance_mut().get_parameter_list())
+                    .as_ref()
+                    .map(|p| p.instance().get_parameter_list())
                     .unwrap_or_default();
                 Ok(BridgeMessage::ParameterList { parameters }.into())
             }
             M::GetParameterInfo { param_id } => {
-                let info = self
-                    .plugin
-                    .as_mut()
-                    .and_then(|p| p.instance_mut().get_parameter_info(param_id));
+                let info = self.plugin.as_ref().and_then(|p| {
+                    p.instance()
+                        .get_parameter_list()
+                        .into_iter()
+                        .find(|info| info.id == param_id)
+                });
                 Ok(BridgeMessage::ParameterInfoResponse { info }.into())
             }
 
@@ -144,15 +142,6 @@ impl Session {
                 }
                 Ok(Reaction::None)
             }
-            M::EditorIdle => {
-                if self.editor.is_open() {
-                    if let Some(plugin) = self.plugin.as_mut() {
-                        plugin.instance_mut().editor_idle();
-                    }
-                }
-                Ok(Reaction::None)
-            }
-
             M::SetSampleRate { rate } => {
                 self.clock.sample_rate = rate;
                 if let Some(plugin) = self.plugin.as_mut() {
@@ -188,6 +177,10 @@ impl Session {
                     BridgeMessage::ParameterChanged { index, value }
                 }
                 AsyncEvent::LatencyChanged { samples } => BridgeMessage::LatencyChanged { samples },
+                AsyncEvent::ParamValuesChanged => BridgeMessage::PluginParamValuesChanged,
+                AsyncEvent::ParamTitlesChanged => BridgeMessage::PluginParamTitlesChanged,
+                AsyncEvent::IoChanged => BridgeMessage::PluginIoChanged,
+                AsyncEvent::Reloaded => BridgeMessage::PluginReloaded,
             })
             .collect()
     }
@@ -206,8 +199,10 @@ impl Session {
 
     fn handle_probe(&self, path: &std::path::Path) -> BridgeMessage {
         match Plugin::probe(path) {
-            Ok(metadata) => BridgeMessage::PluginLoaded {
-                metadata: Box::new(metadata),
+            Ok(descriptor) => BridgeMessage::PluginLoaded {
+                descriptor: Box::new(descriptor),
+                // A probe never activates the plugin, so there is no load data.
+                loaded: Default::default(),
                 negotiated_format: self.clock.format,
             },
             Err(e) => BridgeMessage::Error {
@@ -223,7 +218,7 @@ impl Session {
         block_size: usize,
         preferred_format: SampleFormat,
     ) -> Result<Reaction> {
-        let (plugin, metadata, negotiated) =
+        let (plugin, descriptor, loaded, negotiated) =
             Plugin::load(&path, sample_rate, block_size, preferred_format)?;
         self.clock = Clock {
             sample_rate,
@@ -232,14 +227,14 @@ impl Session {
         self.pipeline.set_format(negotiated);
         self.plugin = Some(plugin);
         Ok(BridgeMessage::PluginLoaded {
-            metadata: Box::new(metadata),
+            descriptor: Box::new(descriptor),
+            loaded,
             negotiated_format: negotiated,
         }
         .into())
     }
 
     fn handle_process(&mut self, block: AudioBlock<'_>) -> Result<Reaction> {
-        let want_full = block.extras.is_some();
         let Some(plugin) = self.plugin.as_mut() else {
             return Ok(BridgeMessage::Error {
                 message: "No plugin loaded".to_string(),
@@ -250,14 +245,16 @@ impl Session {
             // Matches prior behavior: process path only ran under the full
             // `plugin + shared_buffer` pair. No shm ⇒ produce an empty
             // AudioProcessed reply so the host stays in sync.
-            let output = AudioOutput::default();
-            return Ok(build_audio_reply(output, want_full).into());
+            return Ok(BridgeMessage::AudioProcessed { latency_us: 0 }.into());
         };
 
         let output = self
             .pipeline
             .process(plugin.instance_mut(), shm, &self.clock, block)?;
-        Ok(build_audio_reply(output, want_full).into())
+        Ok(BridgeMessage::AudioProcessed {
+            latency_us: output.latency_us,
+        }
+        .into())
     }
 
     fn handle_open_editor(&mut self, parent_handle: u64) -> BridgeMessage {
@@ -306,35 +303,6 @@ impl Session {
             }
             .into(),
         }
-    }
-}
-
-/// Build the outbound wire message matching the inbound process variant.
-fn build_audio_reply(output: AudioOutput, want_full: bool) -> BridgeMessage {
-    let AudioOutput {
-        latency_us,
-        midi,
-        param_changes,
-        note_expression,
-    } = output;
-
-    let midi_ipc: tutti_plugin::server::IpcMidiEventVec =
-        midi.iter().map(IpcMidiEvent::from).collect();
-
-    if want_full {
-        BridgeMessage::AudioProcessedFull(Box::new(AudioProcessedFullData {
-            latency_us,
-            midi_output: midi_ipc,
-            param_output: param_changes,
-            note_expression_output: note_expression,
-        }))
-    } else if midi_ipc.is_empty() {
-        BridgeMessage::AudioProcessed { latency_us }
-    } else {
-        BridgeMessage::AudioProcessedMidi(Box::new(AudioProcessedMidiData {
-            latency_us,
-            midi_output: midi_ipc,
-        }))
     }
 }
 
@@ -413,41 +381,15 @@ mod tests {
     fn process_audio_no_plugin() {
         let mut s = Session::new();
         let r = s
-            .handle(HostMessage::ProcessAudio {
-                buffer_id: 0,
-                num_samples: 256,
-            })
-            .unwrap();
-        assert_error_contains(r, "No plugin loaded");
-    }
-
-    #[test]
-    fn process_audio_midi_no_plugin() {
-        let mut s = Session::new();
-        let r = s
-            .handle(HostMessage::ProcessAudioMidi(Box::new(
-                tutti_plugin::server::ProcessAudioMidiData {
-                    buffer_id: 0,
-                    num_samples: 256,
-                    midi_events: IpcMidiEventVec::new(),
-                },
-            )))
-            .unwrap();
-        assert_error_contains(r, "No plugin loaded");
-    }
-
-    #[test]
-    fn process_audio_full_no_plugin() {
-        let mut s = Session::new();
-        let r = s
-            .handle(HostMessage::ProcessAudioFull(Box::new(
-                tutti_plugin::server::ProcessAudioFullData {
+            .handle(HostMessage::ProcessAudio(Box::new(
+                tutti_plugin::server::ProcessAudioData {
                     buffer_id: 0,
                     num_samples: 256,
                     midi_events: IpcMidiEventVec::new(),
                     param_changes: ParameterChanges::new(),
                     note_expression: NoteExpressionChanges::new(),
                     transport: TransportInfo::default(),
+                    ..Default::default()
                 },
             )))
             .unwrap();
@@ -583,7 +525,8 @@ mod tests {
             channels: 2,
             samples_per_channel: 8192,
             format: preferred_format,
-            buses: Vec::new(),
+            inputs: smallvec::smallvec![],
+            outputs: smallvec::smallvec![],
         };
         let shm_guard = AudioSlab::create(buffer_name.clone(), layout.clone()).unwrap();
         s.shm = Some(AudioSlab::open(buffer_name, layout).unwrap());
@@ -603,8 +546,8 @@ mod tests {
     fn load_clap_plugin_f64() {
         let _lock = crate::test_utils::plugin_load_lock();
         let (s, _shm) = load_clap("load_clap_f64", SampleFormat::Float64);
-        let metadata = s.plugin.as_ref().unwrap().instance().metadata();
-        if metadata.supports_f64 {
+        let loaded = s.plugin.as_ref().unwrap().instance().loaded();
+        if loaded.supports_f64 {
             assert_eq!(s.clock.format, SampleFormat::Float64);
         } else {
             assert_eq!(s.clock.format, SampleFormat::Float32);
@@ -768,41 +711,21 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, _shm) = load_clap("proc_audio_clap", SampleFormat::Float32);
         let reply = s
-            .handle(HostMessage::ProcessAudio {
-                buffer_id: 0,
-                num_samples: 512,
-            })
-            .unwrap()
-            .into_reply();
-        assert!(
-            matches!(
-                reply,
-                BridgeMessage::AudioProcessed { .. } | BridgeMessage::AudioProcessedMidi(..)
-            ),
-            "unexpected reply: {reply:?}"
-        );
-    }
-
-    #[test]
-    #[cfg(feature = "clap")]
-    fn process_audio_full_with_plugin() {
-        let _lock = crate::test_utils::plugin_load_lock();
-        let (mut s, _shm) = load_clap("proc_audio_full_clap", SampleFormat::Float32);
-        let reply = s
-            .handle(HostMessage::ProcessAudioFull(Box::new(
-                tutti_plugin::server::ProcessAudioFullData {
+            .handle(HostMessage::ProcessAudio(Box::new(
+                tutti_plugin::server::ProcessAudioData {
                     buffer_id: 0,
                     num_samples: 512,
                     midi_events: IpcMidiEventVec::new(),
                     param_changes: ParameterChanges::new(),
                     note_expression: NoteExpressionChanges::new(),
                     transport: TransportInfo::default(),
+                    ..Default::default()
                 },
             )))
             .unwrap()
             .into_reply();
         assert!(
-            matches!(reply, BridgeMessage::AudioProcessedFull(..)),
+            matches!(reply, BridgeMessage::AudioProcessed { .. }),
             "unexpected reply: {reply:?}"
         );
     }
@@ -813,6 +736,6 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (mut s, _shm) = load_clap("editor_check_clap", SampleFormat::Float32);
         let plugin = s.plugin.as_mut().expect("plugin loaded");
-        let _has_editor: bool = plugin.instance().metadata().has_editor;
+        let _has_editor: bool = plugin.instance().descriptor().has_editor;
     }
 }

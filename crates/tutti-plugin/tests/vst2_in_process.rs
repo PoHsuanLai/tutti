@@ -4,7 +4,7 @@
 //! doesn't ship plugins, so every plugin-touching test is `#[ignore]`'d
 //! and only runs under `cargo test -- --ignored`.
 
-#![cfg(feature = "vst2-in-process")]
+#![cfg(feature = "vst2")]
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -22,10 +22,10 @@ fn load_in_process_returns_audio_unit_and_handle() {
     let (_unit, handle) =
         tutti_plugin::in_process_vst2(Path::new(VST2_PLUGIN), 48_000.0).expect("load failed");
 
-    let meta = handle.metadata();
-    assert!(!meta.name.is_empty());
-    assert_eq!(meta.audio_io.outputs, 2);
-    assert!(meta.has_editor);
+    let descriptor = handle.descriptor();
+    assert!(!descriptor.name.is_empty());
+    assert_eq!(handle.loaded().total_outputs(), 2);
+    assert!(descriptor.has_editor);
 }
 
 #[test]
@@ -77,10 +77,9 @@ fn handle_is_not_crashed_in_process() {
 #[ignore]
 fn vst2_builder_routes_to_in_process() {
     // The public `tutti_plugin::vst2(...)` builder should detect a `.vst`
-    // path and route to the in-process backend (with the
-    // `vst2-in-process` feature on, which the integration test gate
-    // requires). Confirm by checking has_editor reports true and no
-    // crash.
+    // path and route to the in-process backend (with the `vst2` feature
+    // on, which the integration test gate requires). Confirm by checking
+    // has_editor reports true and no crash.
     let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
     let (_unit, handle) = tutti_plugin::vst2(48_000.0, VST2_PLUGIN)
         .build()

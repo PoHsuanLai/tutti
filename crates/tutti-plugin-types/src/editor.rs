@@ -123,3 +123,24 @@ impl<'de> serde::Deserialize<'de> for WindowHandle {
         Ok(unsafe { WindowHandle::from_u64(value) })
     }
 }
+
+/// Structured failures from opening an editor. Each variant tells the
+/// caller exactly what went wrong so UI can surface a meaningful message
+/// instead of falling back to "failed to open" for every case.
+#[derive(thiserror::Error, Debug)]
+pub enum EditorError {
+    #[error("plugin subprocess has crashed")]
+    PluginCrashed,
+
+    #[error("no in-process GUI support compiled for {format}")]
+    GuiNotSupported { format: String },
+
+    #[error("parent window platform not supported by this plugin host: {got}")]
+    UnsupportedPlatform { got: String },
+
+    #[error("plugin failed to open editor: {0}")]
+    PluginError(String),
+
+    #[error("could not acquire GUI lock (another open_editor in progress?)")]
+    Busy,
+}

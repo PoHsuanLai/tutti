@@ -8,19 +8,24 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crossbeam_channel::Receiver;
 use vst3::com_scrape_types::Unknown;
 use vst3::Steinberg::{
-    kResultFalse, kResultOk, FUnknown, IBStream, IPlugView, IPlugViewTrait, IPluginBaseTrait,
-    ViewRect,
+    kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPluginCompatibility,
+    IPluginCompatibilityTrait, IPlugView, IPlugViewTrait, IPluginBaseTrait, ViewRect,
     Vst::{
-        BusDirections_::{kInput, kOutput},
         IAudioProcessor, IAudioProcessorTrait, IComponent, IComponentTrait, IConnectionPoint,
-        IConnectionPointTrait, IEditController, IEditControllerTrait,
-        MediaTypes_::kAudio,
+        IAudioPresentationLatency, IAudioPresentationLatencyTrait, IAutomationState,
+        IAutomationStateTrait, IConnectionPointTrait, IEditController, IEditControllerTrait,
+        IKeyswitchController, IKeyswitchControllerTrait, IMidiLearn, INoteExpressionController,
+        INoteExpressionControllerTrait, INoteExpressionPhysicalUIMapping,
+        INoteExpressionPhysicalUIMappingTrait, IParameterFunctionName, IParameterFunctionNameTrait,
+        IPrefetchableSupport, IPrefetchableSupportTrait, IProcessContextRequirements,
+        IProcessContextRequirementsTrait, IRemapParamID, IRemapParamIDTrait,
+        IXmlRepresentationController, IXmlRepresentationControllerTrait, PhysicalUIMap,
+        PhysicalUIMapList, RepresentationInfo,
     },
 };
-use vst3::{ComPtr, ComWrapper};
+use vst3::ComPtr;
 
 #[cfg(target_os = "windows")]
 use vst3::Steinberg::kPlatformTypeHWND;
@@ -36,117 +41,17 @@ use crate::com::{
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
 use crate::types::{
-    BusInfo as BusInfoWrap, EditorCapabilities, EditorSize, PluginInfo, Vst3ParameterInfo,
-    WindowHandle,
+    EditorCapabilities, EditorSize, PluginInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo,
+    Vst3ParameterInfo, WindowHandle, Vst3Sample,
 };
 
+use super::midi_learn::MidiLearnConsumer;
+use super::{IComponentExt, K_INPUT, K_OUTPUT};
 use super::instance::Vst3Instance;
 use super::library::Vst3Library;
-use super::midi_mapping::MidiCcMapping;
+use super::plugin_state::{Controller, EditorState, HostContext, PluginInterfaces};
 
 const DEFAULT_EDITOR_SIZE: (u32, u32) = (800, 600);
-
-pub(super) const K_AUDIO: i32 = kAudio as i32;
-pub(super) const K_INPUT: i32 = kInput as i32;
-pub(super) const K_OUTPUT: i32 = kOutput as i32;
-
-pub(super) fn get_bus_channel_count(
-    component: &ComPtr<IComponent>,
-    direction: i32,
-    min_channels: i32,
-) -> Option<usize> {
-    unsafe {
-        let num_buses = component.getBusCount(K_AUDIO, direction);
-        if num_buses <= 0 {
-            return None;
-        }
-        let mut bus = BusInfoWrap::default();
-        if component.getBusInfo(K_AUDIO, direction, 0, bus.as_mut_inner()) == kResultOk {
-            Some(bus.channel_count().max(min_channels) as usize)
-        } else {
-            None
-        }
-    }
-}
-
-/// Enumerate the channel count of every audio bus in `direction`, in
-/// bus-index order. Returns one entry per `getBusCount(kAudio, direction)`
-/// bus; a bus whose `getBusInfo` query fails contributes 0 channels so the
-/// returned vector's length always matches the plugin's bus count (the
-/// host pre-allocates per-bus pointer tables off this).
-pub(super) fn enumerate_bus_channels(
-    component: &ComPtr<IComponent>,
-    direction: i32,
-) -> Vec<usize> {
-    unsafe {
-        let num_buses = component.getBusCount(K_AUDIO, direction);
-        if num_buses <= 0 {
-            return Vec::new();
-        }
-        (0..num_buses)
-            .map(|i| {
-                let mut bus = BusInfoWrap::default();
-                if component.getBusInfo(K_AUDIO, direction, i, bus.as_mut_inner()) == kResultOk {
-                    bus.channel_count().max(0) as usize
-                } else {
-                    0
-                }
-            })
-            .collect()
-    }
-}
-
-pub(super) struct PluginInterfaces {
-    pub component: ComPtr<IComponent>,
-    /// Always present: [`Vst3Loaded::load_with_info`] errors out at load time
-    /// if the component doesn't expose `IAudioProcessor`.
-    pub processor: ComPtr<IAudioProcessor>,
-    pub controller: Controller,
-}
-
-unsafe impl Send for PluginInterfaces {}
-unsafe impl Sync for PluginInterfaces {}
-
-/// Three-way split encoding the controller invariant: either the component is
-/// also the controller (`Same`), the controller is a distinct COM object
-/// (`Separate`), or the plugin has no controller at all (`None`).
-pub(super) enum Controller {
-    /// Component and controller are the same COM object (common single-component
-    /// plugins). No extra `initialize()`/connection wiring needed.
-    Same(ComPtr<IEditController>),
-    /// Controller is a distinct COM object created from a separate CID. We
-    /// [`initialize`](IEditControllerTrait) it and wire the connection points.
-    Separate(ComPtr<IEditController>),
-    /// Plugin has no editor controller (no parameters, no UI).
-    None,
-}
-
-impl Controller {
-    pub fn as_ref(&self) -> Option<&ComPtr<IEditController>> {
-        match self {
-            Controller::Same(c) | Controller::Separate(c) => Some(c),
-            Controller::None => None,
-        }
-    }
-}
-
-pub(super) struct HostContext {
-    pub application: ComWrapper<HostApplication>,
-    pub handler: ComWrapper<ComponentHandler>,
-    pub param_event_rx: Receiver<ParameterEditEvent>,
-    pub progress_event_rx: Receiver<ProgressEvent>,
-    pub unit_event_rx: Receiver<UnitEvent>,
-}
-
-/// Editor window state. `Open` owns the attached view; `Drop`-like close is
-/// via [`Vst3Loaded::close_editor`].
-pub(super) enum EditorState {
-    Closed,
-    Open(ComPtr<IPlugView>),
-}
-
-unsafe impl Send for EditorState {}
-unsafe impl Sync for EditorState {}
 
 /// Plugin instance that has been `initialize()`'d and has usable parameter,
 /// editor, and state surfaces, but is **not** processing audio.
@@ -161,33 +66,25 @@ pub struct Vst3Loaded {
     pub(super) host: HostContext,
     pub(super) editor: EditorState,
     pub(super) info: PluginInfo,
-    pub(super) plug_frame: ComWrapper<HostPlugFrame>,
-    pub(super) plug_frame_rx: Receiver<EditorSize>,
-    /// Cached processing latency in samples. Read once at load and re-read
-    /// whenever the plugin signals `kLatencyChanged` via `restartComponent`
-    /// (see [`Vst3Loaded::handle_restart_events`]). Owners poll
-    /// [`RestartOutcome::new_latency_samples`] to update PDC.
-    pub(super) latency_samples: u32,
-    /// `IMidiMapping` CC→parameter routing table, queried at load and re-built
-    /// on `kMidiCCAssignmentChanged`. Read (lock-free) by the audio path to
-    /// route mapped CCs into `inputParameterChanges`.
-    pub(super) midi_cc_mapping: MidiCcMapping,
+    /// IMidiLearn forwarding: armed off the main thread, fed captured CCs from
+    /// the audio thread, drained in [`poll_plugin_notifications`]. Built at load
+    /// and outlives activate/deactivate cycles.
+    pub(super) midi_learn: MidiLearnConsumer,
 }
 
 /// Summary of the host-side state changes triggered by draining one or more
 /// `restartComponent(flags)` requests through
-/// [`Vst3Loaded::handle_restart_events`].
+/// [`Vst3Loaded::poll_plugin_notifications`].
 ///
 /// Lets the caller (the bridge/PDC owner) react to coalesced restart signals
-/// without re-deriving the bit math: e.g. push `new_latency_samples` to the
-/// host's plugin-delay-compensation, or re-pull the parameter list when
-/// `param_titles_changed`.
+/// without re-deriving the bit math: e.g. call
+/// [`Vst3Loaded::read_latency_samples`] when `latency_changed` is set, or
+/// re-pull the parameter list when `param_titles_changed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RestartOutcome {
-    /// `Some(n)` if `kLatencyChanged` fired and the re-read latency differs
-    /// from the previously-cached value; the new value in samples. `None` if
-    /// latency was not signalled or did not actually change.
-    pub new_latency_samples: Option<u32>,
+    /// `kLatencyChanged` fired — the caller should call
+    /// [`Vst3Loaded::read_latency_samples`] and push the result to PDC.
+    pub latency_changed: bool,
     /// `kParamValuesChanged` fired — the caller should re-read parameter
     /// values (host-cached automation state is stale).
     pub param_values_changed: bool,
@@ -214,12 +111,36 @@ impl RestartOutcome {
     }
 
     fn merge_flags(&mut self, flags: RestartFlags) {
+        self.latency_changed |= flags.latency_changed;
         self.param_values_changed |= flags.param_values_changed;
         self.param_titles_changed |= flags.param_titles_changed;
         self.io_changed |= flags.io_changed;
         self.midi_cc_assignment_changed |= flags.midi_cc_assignment_changed;
         self.reload_requested |= flags.reload_component;
     }
+}
+
+/// One batch of everything the plugin's editor pushed to the host since the
+/// last poll, returned by [`Vst3Loaded::poll_plugin_notifications`].
+///
+/// All four fields are independent; a typical idle tick has them all empty
+/// (`param_edits`/`progress`/`units` empty and `restart.is_empty()`).
+#[derive(Debug, Clone, Default)]
+pub struct PluginNotifications {
+    /// Non-restart parameter-edit events (`BeginEdit`/`PerformEdit`/`EndEdit`/
+    /// `SetDirty`/…) in arrival order. `RestartComponent` requests are folded
+    /// into `restart` instead of appearing here.
+    pub param_edits: Vec<ParameterEditEvent>,
+    /// Coalesced restart side-effects. `kIoChanged` was already acted on in
+    /// place; the remaining flags are for the caller (e.g. PDC on
+    /// `latency_changed`).
+    pub restart: RestartOutcome,
+    /// `IProgress` reports for long plugin operations (sample loading, offline
+    /// rendering) — drive a host progress indicator.
+    pub progress: Vec<ProgressEvent>,
+    /// `IUnitHandler` notifications: the user changed a unit / program inside
+    /// the plugin's own UI, or the unit↔bus mapping changed.
+    pub units: Vec<UnitEvent>,
 }
 
 impl Vst3Loaded {
@@ -255,13 +176,6 @@ impl Vst3Loaded {
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if
     /// `IPluginBase::initialize` fails.
     pub fn load(path: &Path) -> Result<Self> {
-        Self::load_with_info(path)
-    }
-
-    /// Shared constructor used by both [`Vst3Loaded::load`] and
-    /// [`Vst3Instance::load`]. Returns `Loaded` state; the caller decides
-    /// whether to [`activate`](Vst3Loaded::activate) it.
-    pub(super) fn load_with_info(path: &Path) -> Result<Self> {
         check_exists(path)?;
         let library = Vst3Library::load(path)?;
         ensure_has_classes(&library, path)?;
@@ -296,8 +210,32 @@ impl Vst3Loaded {
         let host_application = HostApplication::new("vst3-host");
         let (component_handler, param_event_rx, progress_event_rx, unit_event_rx) =
             ComponentHandler::new();
-        let (plug_frame, plug_frame_rx) = HostPlugFrame::new();
-        let latency_samples = unsafe { processor.getLatencySamples() };
+
+        let process_context_requirements = query_process_context_requirements(&processor);
+        let note_expression = controller
+            .as_ref()
+            .and_then(|c| c.cast::<INoteExpressionController>());
+        let automation_state = controller
+            .as_ref()
+            .and_then(|c| c.cast::<IAutomationState>());
+        let keyswitch = controller
+            .as_ref()
+            .and_then(|c| c.cast::<IKeyswitchController>());
+        let remap_param_id = controller.as_ref().and_then(|c| c.cast::<IRemapParamID>());
+        let parameter_function_name = controller
+            .as_ref()
+            .and_then(|c| c.cast::<IParameterFunctionName>());
+        let physical_ui_mapping = controller
+            .as_ref()
+            .and_then(|c| c.cast::<INoteExpressionPhysicalUIMapping>());
+        let xml_representation = controller
+            .as_ref()
+            .and_then(|c| c.cast::<IXmlRepresentationController>());
+        let prefetchable_support = processor.cast::<IPrefetchableSupport>();
+        let audio_presentation_latency = processor.cast::<IAudioPresentationLatency>();
+        let midi_learn = MidiLearnConsumer::new(
+            controller.as_ref().and_then(|c| c.cast::<IMidiLearn>()),
+        );
 
         Self {
             _library: library,
@@ -305,6 +243,16 @@ impl Vst3Loaded {
                 component,
                 processor,
                 controller,
+                process_context_requirements,
+                note_expression,
+                automation_state,
+                keyswitch,
+                remap_param_id,
+                parameter_function_name,
+                physical_ui_mapping,
+                xml_representation,
+                prefetchable_support,
+                audio_presentation_latency,
             },
             host: HostContext {
                 application: host_application,
@@ -315,18 +263,18 @@ impl Vst3Loaded {
             },
             editor: EditorState::Closed,
             info,
-            plug_frame,
-            plug_frame_rx,
-            latency_samples,
-            // Built in `initialize` once the controller is set up.
-            midi_cc_mapping: MidiCcMapping::empty(),
+            midi_learn,
         }
     }
 
     /// Transition to the processing state. Runs `setupProcessing`, activates
     /// buses, calls `setActive(1)` and `setProcessing(1)`. Returns a
-    /// [`Vst3Instance`] that exposes `process()`.
-    pub fn activate(self, sample_rate: f64, block_size: usize) -> Result<Vst3Instance> {
+    /// [`Vst3Instance<T>`] that exposes `process()`.
+    ///
+    /// `T` fixes the sample format: `f32` (the default) uses `kSample32`;
+    /// `f64` uses `kSample64` and returns [`Vst3Error::NotSupported`] if the
+    /// plugin does not advertise 64-bit support.
+    pub fn activate<T: Vst3Sample>(self, sample_rate: f64, block_size: usize) -> Result<Vst3Instance<T>> {
         Vst3Instance::from_loaded(self, sample_rate, block_size)
     }
 
@@ -335,28 +283,13 @@ impl Vst3Loaded {
         &self.info
     }
 
-    /// True if the plugin advertises 64-bit float processing support.
-    pub fn supports_f64(&self) -> bool {
-        self.info.supports_f64
-    }
-
-    /// Processing latency in samples.
-    ///
-    /// Returns the cached value, which is read once at load and kept current
-    /// by [`handle_restart_events`](Self::handle_restart_events) whenever the
-    /// plugin signals `kLatencyChanged`. For a forced fresh read straight from
-    /// the processor use [`reread_latency_samples`](Self::reread_latency_samples).
-    pub fn get_latency_samples(&self) -> u32 {
-        self.latency_samples
-    }
-
-    /// Re-read latency straight from `IAudioProcessor::getLatencySamples`,
-    /// update the cache, and return the fresh value.
-    pub fn reread_latency_samples(&mut self) -> u32 {
+    /// Read the current processing latency directly from
+    /// `IAudioProcessor::getLatencySamples`. Call this at load time and
+    /// whenever [`RestartOutcome::latency_changed`] is set to get the fresh
+    /// value for PDC.
+    pub fn read_latency_samples(&self) -> u32 {
         tutti_plugin_types::assert_main_thread();
-        let latency = unsafe { self.interfaces.processor.getLatencySamples() };
-        self.latency_samples = latency;
-        latency
+        unsafe { self.interfaces.processor.getLatencySamples() }
     }
 
     /// Number of automatable parameters exposed by the edit controller.
@@ -379,13 +312,12 @@ impl Vst3Loaded {
 
     /// Write a normalized (0.0 – 1.0) `value` to the parameter at `index`.
     /// No-op if the plugin has no controller.
-    pub fn set_parameter(&mut self, index: u32, value: f64) -> &mut Self {
+    pub fn set_parameter(&mut self, index: u32, value: f64) {
         if let Some(c) = self.interfaces.controller.as_ref() {
             unsafe {
                 c.setParamNormalized(index, value);
             }
         }
-        self
     }
 
     /// Descriptor for the parameter at `index` (title, units, flags, default).
@@ -398,108 +330,360 @@ impl Vst3Loaded {
         (result == kResultOk).then(|| Vst3ParameterInfo::from_c(&raw))
     }
 
-    /// Receiver for parameter-edit notifications emitted by the plugin's
-    /// editor (`beginEdit`/`performEdit`/`endEdit`, restart requests, etc.).
-    pub fn param_event_receiver(&self) -> &Receiver<ParameterEditEvent> {
-        &self.host.param_event_rx
+    /// Number of per-note expression types the plugin supports on the given
+    /// event `bus_index` / MIDI `channel`. Returns `0` if the plugin doesn't
+    /// implement `INoteExpressionController`.
+    ///
+    /// This is the **read** side of note expression — pair it with
+    /// [`note_expression_info`](Self::note_expression_info) to enumerate
+    /// descriptors. The host can always **send**
+    /// [`NoteExpressionValue`](crate::NoteExpressionValue) events regardless of
+    /// what this reports.
+    pub fn note_expression_count(&self, bus_index: i32, channel: i16) -> u32 {
+        match &self.interfaces.note_expression {
+            Some(c) => unsafe { c.getNoteExpressionCount(bus_index, channel).max(0) as u32 },
+            None => 0,
+        }
     }
 
-    /// Drain all currently-queued parameter-edit events without blocking.
-    pub fn poll_param_events(&self) -> Vec<ParameterEditEvent> {
-        self.host.param_event_rx.try_iter().collect()
+    /// Descriptor for the note-expression type at `index` on the given event
+    /// `bus_index` / MIDI `channel` (title, units, value range, flags). Returns
+    /// `None` if the index is out of range or the plugin doesn't implement
+    /// `INoteExpressionController`.
+    pub fn note_expression_info(
+        &self,
+        bus_index: i32,
+        channel: i16,
+        index: u32,
+    ) -> Option<Vst3NoteExpressionInfo> {
+        let controller = self.interfaces.note_expression.as_ref()?;
+        let mut raw: vst3::Steinberg::Vst::NoteExpressionTypeInfo = unsafe { std::mem::zeroed() };
+        let result =
+            unsafe { controller.getNoteExpressionInfo(bus_index, channel, index as i32, &mut raw) };
+        (result == kResultOk).then(|| Vst3NoteExpressionInfo::from_c(&raw))
     }
 
-    /// Drain queued parameter-edit events, act on every
-    /// `RestartComponent(flags)` request, and return a coalesced
-    /// [`RestartOutcome`] describing the host-side state changes.
+    /// Number of key-switch (articulation) entries the plugin exposes on the
+    /// given event `bus_index` / MIDI `channel`. Returns `0` if the plugin
+    /// doesn't implement `IKeyswitchController`.
     ///
-    /// This is the consumer the plugin's editor/automation thread expects: it
-    /// re-reads latency on `kLatencyChanged`, re-enumerates buses on
-    /// `kIoChanged`, and flags the rest for the caller. Non-restart events
-    /// (`BeginEdit`/`PerformEdit`/`EndEdit`/…) are returned untouched in
-    /// `events` so existing consumers (the GUI bridge) keep working — call
-    /// this *instead of* [`poll_param_events`](Self::poll_param_events) when
-    /// you want restart handling.
+    /// Pair with [`keyswitch_info`](Self::keyswitch_info) to enumerate the
+    /// articulation map a sample-library instrument advertises.
+    pub fn keyswitch_count(&self, bus_index: i32, channel: i16) -> u32 {
+        match &self.interfaces.keyswitch {
+            Some(c) => unsafe { c.getKeyswitchCount(bus_index, channel).max(0) as u32 },
+            None => 0,
+        }
+    }
+
+    /// Descriptor for the key switch at `index` on the given event `bus_index` /
+    /// MIDI `channel` (articulation title, trigger key range, kind). Returns
+    /// `None` if the index is out of range or the plugin doesn't implement
+    /// `IKeyswitchController`.
+    pub fn keyswitch_info(
+        &self,
+        bus_index: i32,
+        channel: i16,
+        index: u32,
+    ) -> Option<Vst3KeyswitchInfo> {
+        let controller = self.interfaces.keyswitch.as_ref()?;
+        let mut raw: vst3::Steinberg::Vst::KeyswitchInfo = unsafe { std::mem::zeroed() };
+        let result =
+            unsafe { controller.getKeyswitchInfo(bus_index, channel, index as i32, &mut raw) };
+        (result == kResultOk).then(|| Vst3KeyswitchInfo::from_c(&raw))
+    }
+
+    /// Ask the plugin (via `IRemapParamID`) for the parameter ID in *this*
+    /// plugin that corresponds to `old_param_id` from a *previous* plugin
+    /// identified by `plugin_to_replace_uid` (its processor class ID / `TUID`).
     ///
-    /// Returns `(events, outcome)` where `events` is every non-restart event,
-    /// in arrival order.
-    pub fn handle_restart_events(&mut self) -> (Vec<ParameterEditEvent>, RestartOutcome) {
+    /// This is how a host carries saved automation forward when swapping one
+    /// plugin for a newer/compatible one: each old automation lane's `ParamID`
+    /// is remapped to the replacement's. Returns `Some(new_id)` when the plugin
+    /// reports a compatible parameter (possibly equal to `old_param_id`), or
+    /// `None` when there is none or the plugin doesn't implement `IRemapParamID`.
+    ///
+    /// The host does **not** call this automatically anywhere — like JUCE, it's
+    /// exposed for a caller-driven migration flow to use. Must run on the
+    /// main/UI thread.
+    pub fn remap_param_id(&self, plugin_to_replace_uid: &[i8; 16], old_param_id: u32) -> Option<u32> {
         tutti_plugin_types::assert_main_thread();
-        let drained: Vec<ParameterEditEvent> = self.host.param_event_rx.try_iter().collect();
-        let mut outcome = RestartOutcome::default();
-        let mut passthrough = Vec::with_capacity(drained.len());
-        for event in drained {
+        let remap = self.interfaces.remap_param_id.as_ref()?;
+        let mut new_param_id: u32 = 0;
+        let result = unsafe {
+            remap.getCompatibleParamID(
+                plugin_to_replace_uid as *const [i8; 16],
+                old_param_id,
+                &mut new_param_id,
+            )
+        };
+        (result == kResultTrue).then_some(new_param_id)
+    }
+
+    /// Resolve a well-known parameter *function name* (the VST3 spec defines
+    /// roles like "Wet/Dry Mix", "Master Volume", "Resonance") to the plugin's
+    /// `ParamID` for that role, scoped to `unit_id`. Returns `None` if the role
+    /// is unknown to the plugin or it doesn't implement `IParameterFunctionName`.
+    ///
+    /// Lets a host bind a generic "mix" knob to whatever parameter the plugin
+    /// uses for it, without hard-coding parameter indices. Main/UI thread.
+    pub fn param_id_for_function_name(&self, unit_id: i32, function_name: &str) -> Option<u32> {
+        tutti_plugin_types::assert_main_thread();
+        let ctrl = self.interfaces.parameter_function_name.as_ref()?;
+        let c_name = std::ffi::CString::new(function_name).ok()?;
+        let mut param_id: u32 = 0;
+        let result =
+            unsafe { ctrl.getParameterIDFromFunctionName(unit_id, c_name.as_ptr(), &mut param_id) };
+        (result == kResultOk).then_some(param_id)
+    }
+
+    /// Map the plugin's physical UI controls to the note-expression dimensions
+    /// they drive, on the given event `bus_index` / MIDI `channel`. Returns one
+    /// `(physical_ui_type, note_expression_type)` pair per physical control
+    /// (X/Y movement, pressure — see [`physical_ui_type`](crate::physical_ui_type)),
+    /// or an empty vec if the plugin doesn't implement
+    /// `INoteExpressionPhysicalUIMapping`.
+    ///
+    /// The host allocates the list; the plugin fills the note-expression id each
+    /// physical control is wired to. Main/UI thread.
+    pub fn physical_ui_mapping(&self, bus_index: i32, channel: i16) -> Vec<(u32, u32)> {
+        tutti_plugin_types::assert_main_thread();
+        let Some(ctrl) = self.interfaces.physical_ui_mapping.as_ref() else {
+            return Vec::new();
+        };
+        // Query all three physical UI types (X, Y, pressure). The plugin fills
+        // each entry's noteExpressionTypeID, leaving kInvalidTypeID where the
+        // control isn't mapped.
+        let mut entries: Vec<PhysicalUIMap> = (0..3)
+            .map(|i| PhysicalUIMap {
+                physicalUITypeID: i,
+                noteExpressionTypeID: u32::MAX,
+            })
+            .collect();
+        let mut list = PhysicalUIMapList {
+            count: entries.len() as u32,
+            map: entries.as_mut_ptr(),
+        };
+        let result = unsafe { ctrl.getPhysicalUIMapping(bus_index, channel, &mut list) };
+        if result != kResultOk {
+            return Vec::new();
+        }
+        entries
+            .iter()
+            .map(|e| (e.physicalUITypeID, e.noteExpressionTypeID))
+            .collect()
+    }
+
+    /// Export the plugin's parameter remote-control layout as XML, for the
+    /// representation identified by `(vendor, name, version, host)`. Returns the
+    /// XML string, or `None` if the plugin doesn't implement
+    /// `IXmlRepresentationController` or produced nothing.
+    ///
+    /// Hardware controller surfaces use this to lay out a plugin's parameters.
+    /// Main/UI thread.
+    pub fn xml_representation(
+        &self,
+        vendor: &str,
+        name: &str,
+        version: &str,
+        host: &str,
+    ) -> Option<String> {
+        tutti_plugin_types::assert_main_thread();
+        let ctrl = self.interfaces.xml_representation.as_ref()?;
+
+        let mut info: RepresentationInfo = unsafe { std::mem::zeroed() };
+        fill_char8_64(&mut info.vendor, vendor);
+        fill_char8_64(&mut info.name, name);
+        fill_char8_64(&mut info.version, version);
+        fill_char8_64(&mut info.host, host);
+
+        let stream = BStream::new();
+        let stream_ptr = stream.as_com_ref::<IBStream>()?;
+        let result =
+            unsafe { ctrl.getXmlRepresentationStream(&mut info, stream_ptr.as_ptr()) };
+        if result != kResultOk {
+            return None;
+        }
+        let bytes = stream.data();
+        (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Read the bundle's machine-readable compatibility / migration info as a
+    /// JSON string, via the factory's `IPluginCompatibility` class (the
+    /// moduleinfo "compatibility" section). Describes which older plugins this
+    /// one can replace, so a host can offer to swap an unavailable plugin for a
+    /// compatible successor and migrate its state.
+    ///
+    /// Unlike the other accessors this is a **factory-level** class, not a
+    /// controller/processor extension: we enumerate the factory's classes, find
+    /// the one in the "Plugin Compatibility Class" category, instantiate it, and
+    /// read its JSON. Returns `None` if the bundle ships no such class. Main/UI
+    /// thread.
+    pub fn compatibility_json(&self) -> Option<String> {
+        tutti_plugin_types::assert_main_thread();
+        // The SDK category string for the compatibility class (kPluginCompatibilityClass).
+        const COMPATIBILITY_CATEGORY: &str = "Plugin Compatibility Class";
+
+        let count = self._library.count_classes();
+        let cid = (0..count).find_map(|i| {
+            let info = self._library.get_class_info(i).ok()?;
+            (info.category == COMPATIBILITY_CATEGORY).then_some(info.cid)
+        })?;
+
+        let compat = self
+            ._library
+            .create_instance::<IPluginCompatibility>(&cid)
+            .ok()?;
+
+        let stream = BStream::new();
+        let stream_ptr = stream.as_com_ref::<IBStream>()?;
+        let result = unsafe { compat.getCompatibilityJSON(stream_ptr.as_ptr()) };
+        if result != kResultOk {
+            return None;
+        }
+        let bytes = stream.data();
+        (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Query the plugin's offline/prefetch processing support via
+    /// `IPrefetchableSupport`. Returns one of the
+    /// [`prefetchable_support`](crate::prefetchable_support) constants, or `None`
+    /// if the plugin doesn't implement the interface. Main/UI thread.
+    pub fn prefetchable_support(&self) -> Option<u32> {
+        tutti_plugin_types::assert_main_thread();
+        let proc = self.interfaces.prefetchable_support.as_ref()?;
+        let mut support: u32 = 0;
+        let result = unsafe { proc.getPrefetchableSupport(&mut support) };
+        (result == kResultOk).then_some(support)
+    }
+
+    /// Tell the plugin the downstream presentation latency (in samples) for a
+    /// given bus, via `IAudioPresentationLatency` — the delay between the
+    /// plugin's output and what the listener hears, so latency-aware plugins can
+    /// compensate. `dir` is [`K_INPUT`](super::K_INPUT) / [`K_OUTPUT`](super::K_OUTPUT).
+    /// Returns `true` if delivered; no-op if the plugin doesn't implement the
+    /// interface. Main/UI thread.
+    pub fn set_audio_presentation_latency(
+        &mut self,
+        dir: i32,
+        bus_index: i32,
+        latency_samples: u32,
+    ) -> bool {
+        tutti_plugin_types::assert_main_thread();
+        match &self.interfaces.audio_presentation_latency {
+            Some(p) => {
+                unsafe {
+                    p.setAudioPresentationLatencySamples(dir, bus_index, latency_samples);
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Drain every host-side notification channel the plugin's editor pushes
+    /// to and return them as one [`PluginNotifications`] batch.
+    ///
+    /// This is the single polling entry point for everything the plugin reports
+    /// asynchronously between process calls:
+    /// - **`param_edits`** — `BeginEdit`/`PerformEdit`/`EndEdit`/… in arrival
+    ///   order (the `RestartComponent` requests are stripped out and folded into
+    ///   `restart` instead).
+    /// - **`restart`** — coalesced [`RestartOutcome`]. `kIoChanged` is acted on
+    ///   in place (bus re-enumeration); `kLatencyChanged` and the rest are
+    ///   flagged for the caller (e.g. call
+    ///   [`read_latency_samples`](Self::read_latency_samples) on
+    ///   `restart.latency_changed`).
+    /// - **`progress`** — `IProgress` start/update/finish reports (long
+    ///   operations such as sample loading), for a host-drawn progress bar.
+    /// - **`units`** — `IUnitHandler` unit-selection / program-list / unit-by-bus
+    ///   changes the user made inside the plugin's own UI.
+    ///
+    /// Must be called on the main thread; not while inside
+    /// [`process`](Vst3Instance::process).
+    pub fn poll_plugin_notifications(&mut self) -> PluginNotifications {
+        tutti_plugin_types::assert_main_thread();
+        let mut notifications = PluginNotifications::default();
+        for event in self.host.param_event_rx.try_iter().collect::<Vec<_>>() {
             match event {
                 ParameterEditEvent::RestartComponent(flags) => {
-                    self.apply_restart_flags(RestartFlags::from_bits(flags), &mut outcome);
+                    let flags = RestartFlags::from_bits(flags);
+                    if flags.io_changed {
+                        self.reconcile_bus_counts();
+                    }
+                    notifications.restart.merge_flags(flags);
                 }
-                other => passthrough.push(other),
+                other => notifications.param_edits.push(other),
             }
         }
-        (passthrough, outcome)
+        notifications.progress = self.host.progress_event_rx.try_iter().collect();
+        notifications.units = self.host.unit_event_rx.try_iter().collect();
+        // Forward any live CCs the audio thread captured for MIDI-learn to the
+        // plugin's IMidiLearn on this (main) thread, as the SDK requires. No-op
+        // unless learn is armed and the plugin implements IMidiLearn.
+        self.midi_learn.forward_pending();
+        notifications
     }
 
-    /// Apply a single decoded `RestartFlags` set: perform the COM re-reads the
-    /// host can do in-place and accumulate the rest into `outcome`.
+    /// Arm or disarm VST3 MIDI learn (`IMidiLearn`).
     ///
-    /// Re-reads handled here:
-    /// - `kLatencyChanged` → re-read `getLatencySamples`; record the new value
-    ///   in `outcome` only if it actually changed.
-    /// - `kIoChanged` → re-run bus-count enumeration so `info()` reflects the
-    ///   new layout (full arrangement renegotiation is V1).
+    /// While armed, the realtime path captures incoming MIDI CCs and the next
+    /// [`poll_plugin_notifications`](Self::poll_plugin_notifications) forwards
+    /// them to the plugin's `IMidiLearn::onLiveMIDIControllerInput` — letting the
+    /// plugin bind the moved controller to whatever parameter the user is
+    /// editing in its own UI. Typically: arm on right-click-knob → "MIDI learn",
+    /// let the user move a controller, observe the resulting
+    /// `kMidiCCAssignmentChanged` restart, then disarm.
     ///
-    /// Everything else (`kParamValuesChanged`, `kParamTitlesChanged`,
-    /// `kMidiCCAssignmentChanged`, `kReloadComponent`) is recorded for the
-    /// caller to act on — the host cannot, for instance, reload the component
-    /// from behind a `&mut self` borrow.
-    fn apply_restart_flags(&mut self, flags: RestartFlags, outcome: &mut RestartOutcome) {
-        if flags.latency_changed {
-            let previous = self.latency_samples;
-            let fresh = self.reread_latency_samples();
-            if fresh != previous {
-                outcome.new_latency_samples = Some(fresh);
+    /// No observable effect if the plugin doesn't implement `IMidiLearn`.
+    pub fn arm_midi_learn(&mut self, armed: bool) {
+        tutti_plugin_types::assert_main_thread();
+        self.midi_learn.arm(armed);
+    }
+
+    /// Whether VST3 MIDI learn is currently armed. See
+    /// [`arm_midi_learn`](Self::arm_midi_learn).
+    pub fn is_midi_learn_armed(&self) -> bool {
+        self.midi_learn.is_armed()
+    }
+
+    /// Tell the plugin the host's current automation read/write mode via
+    /// `IAutomationState`. `state` is one of the
+    /// [`automation_state`](crate::automation_state) constants
+    /// (`NONE` / `READ` / `WRITE` / `READ_WRITE`).
+    ///
+    /// Some plugins change behaviour during automation playback vs recording
+    /// (e.g. snapping a knob to the automation lane while reading). No-op if the
+    /// plugin doesn't implement `IAutomationState`. Returns `true` if the call
+    /// was delivered. Must run on the main/UI thread.
+    pub fn set_automation_state(&mut self, state: i32) -> bool {
+        tutti_plugin_types::assert_main_thread();
+        match &self.interfaces.automation_state {
+            Some(a) => {
+                unsafe { a.setAutomationState(state) };
+                true
             }
+            None => false,
         }
-        if flags.io_changed {
-            self.reconcile_bus_counts();
-        }
-        if flags.midi_cc_assignment_changed {
-            self.rebuild_midi_cc_mapping();
-        }
-        outcome.merge_flags(flags);
     }
 
-    /// Receiver for plugin-reported progress events (long operations such as
-    /// sample loading).
-    pub fn progress_event_receiver(&self) -> &Receiver<ProgressEvent> {
-        &self.host.progress_event_rx
-    }
-
-    /// Drain all currently-queued progress events without blocking.
-    pub fn poll_progress_events(&self) -> Vec<ProgressEvent> {
-        self.host.progress_event_rx.try_iter().collect()
-    }
-
-    /// Receiver for unit / program-list change events.
-    pub fn unit_event_receiver(&self) -> &Receiver<UnitEvent> {
-        &self.host.unit_event_rx
-    }
-
-    /// Drain all currently-queued unit events without blocking.
-    pub fn poll_unit_events(&self) -> Vec<UnitEvent> {
-        self.host.unit_event_rx.try_iter().collect()
-    }
-
-    /// Capture the plugin's component state as an opaque byte blob suitable
-    /// for persisting and later feeding back to [`set_state`](Self::set_state).
+    /// Capture the plugin's component state as the opaque byte blob the plugin
+    /// itself writes via `IComponent::getState`, suitable for persisting and
+    /// later feeding back to [`set_state`](Self::set_state).
     ///
-    /// Falls back to a host-side parameter-dump encoding for plugins that
-    /// refuse `IComponent::getState`.
+    /// The bytes are the plugin's private format — the host never interprets
+    /// them. A `kResultFalse` return (plugin has no state to persist) yields an
+    /// empty blob, which `set_state` accepts back as a no-op.
     ///
     /// # Errors
     ///
     /// Returns [`Vst3Error::StateError`](crate::Vst3Error::StateError) if the
-    /// host-side `IBStream` wrapper cannot be created.
+    /// host-side `IBStream` wrapper cannot be created, or
+    /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if the plugin
+    /// fails `getState`. We do **not** substitute a parameter dump: a plugin's
+    /// real state covers more than parameters (active preset, internal DSP
+    /// state, sample references), so a lossy synthetic blob would restore
+    /// incorrectly while masquerading as faithful state.
     pub fn state(&self) -> Result<Vec<u8>> {
         tutti_plugin_types::assert_main_thread();
         let stream = BStream::new();
@@ -510,36 +694,31 @@ impl Vst3Loaded {
         let result = unsafe { self.interfaces.component.getState(stream_ptr.as_ptr()) };
 
         if result != kResultOk && result != kResultFalse {
-            return self.state_fallback();
+            return Err(Vst3Error::PluginError {
+                stage: LoadStage::Initialization,
+                code: result,
+            });
         }
 
         Ok(stream.data())
-    }
-
-    fn state_fallback(&self) -> Result<Vec<u8>> {
-        let param_count = self.parameter_count();
-        let mut state = Vec::with_capacity(4 + (param_count as usize * 8));
-        state.extend_from_slice(&param_count.to_le_bytes());
-        for i in 0..param_count {
-            let value = self.parameter(i);
-            state.extend_from_slice(&value.to_le_bytes());
-        }
-        Ok(state)
     }
 
     /// Restore plugin state from a blob produced by [`state`](Self::state).
     /// Also pushes the blob through the controller's `setComponentState` so
     /// both halves of a separate component/controller stay in sync.
     ///
+    /// An empty blob (from a plugin that had no state to save) is a no-op.
+    ///
     /// # Errors
     ///
-    /// Returns [`Vst3Error::StateError`](crate::Vst3Error::StateError) for
-    /// empty or malformed data, or if the `IBStream` wrapper cannot be
-    /// created.
-    pub fn set_state(&mut self, data: &[u8]) -> Result<&mut Self> {
+    /// Returns [`Vst3Error::StateError`](crate::Vst3Error::StateError) if the
+    /// `IBStream` wrapper cannot be created, or
+    /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if the plugin
+    /// rejects the blob via `setState`.
+    pub fn set_state(&mut self, data: &[u8]) -> Result<()> {
         tutti_plugin_types::assert_main_thread();
         if data.is_empty() {
-            return Err(Vst3Error::StateError("Empty state data".to_string()));
+            return Ok(());
         }
 
         let stream = BStream::from_data(data.to_vec());
@@ -550,7 +729,10 @@ impl Vst3Loaded {
         let result = unsafe { self.interfaces.component.setState(stream_ptr.as_ptr()) };
 
         if result != kResultOk && result != kResultFalse {
-            return self.set_state_fallback(data);
+            return Err(Vst3Error::PluginError {
+                stage: LoadStage::Initialization,
+                code: result,
+            });
         }
 
         if let Some(ctrl) = self.interfaces.controller.as_ref() {
@@ -562,46 +744,7 @@ impl Vst3Loaded {
             }
         }
 
-        Ok(self)
-    }
-
-    fn set_state_fallback(&mut self, data: &[u8]) -> Result<&mut Self> {
-        if data.len() < 4 {
-            return Err(Vst3Error::StateError("Invalid state data".to_string()));
-        }
-
-        let param_count = i32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        if param_count < 0 {
-            return Err(Vst3Error::StateError(format!(
-                "Invalid param count: {}",
-                param_count
-            )));
-        }
-        let expected_size = 4usize.saturating_add((param_count as usize).saturating_mul(8));
-        if data.len() != expected_size {
-            return Err(Vst3Error::StateError(format!(
-                "State size mismatch: expected {}, got {}",
-                expected_size,
-                data.len()
-            )));
-        }
-
-        for i in 0..param_count {
-            let offset = 4 + (i as usize * 8);
-            let value = f64::from_le_bytes([
-                data[offset],
-                data[offset + 1],
-                data[offset + 2],
-                data[offset + 3],
-                data[offset + 4],
-                data[offset + 5],
-                data[offset + 6],
-                data[offset + 7],
-            ]);
-            self.set_parameter(i as u32, value);
-        }
-
-        Ok(self)
+        Ok(())
     }
 
     /// True if the plugin exposes an editor controller. Not all plugins with a
@@ -642,9 +785,10 @@ impl Vst3Loaded {
         #[cfg(target_os = "linux")]
         let platform_type = kPlatformTypeX11EmbedWindowID;
 
+        // Create a fresh frame/channel pair for this editor session.
         // setFrame must precede attached() per Steinberg spec.
-        let frame_ptr = self
-            .plug_frame
+        let (plug_frame, resize_rx) = HostPlugFrame::new();
+        let frame_ptr = plug_frame
             .as_com_ref::<vst3::Steinberg::IPlugFrame>()
             .map(|r| r.as_ptr())
             .unwrap_or(std::ptr::null_mut());
@@ -661,25 +805,24 @@ impl Vst3Loaded {
         }
 
         let (width, height) = query_view_size(&view).unwrap_or(DEFAULT_EDITOR_SIZE);
-        self.editor = EditorState::Open(view);
+        self.editor = EditorState::Open { view, plug_frame, resize_rx };
 
         Ok(EditorSize { width, height })
     }
 
     /// Close the editor if open, calling `IPlugView::removed`. No-op otherwise.
     /// Called automatically on `Drop`.
-    pub fn close_editor(&mut self) -> &mut Self {
+    pub fn close_editor(&mut self) {
         tutti_plugin_types::assert_main_thread();
-        self.close_editor_inner();
-        self
+        self.close_editor_unchecked();
     }
 
-    /// Editor teardown without the main-thread assertion — used by `Drop`,
-    /// which can run on the audio thread when the fundsp graph releases the
-    /// instance. The public [`close_editor`](Self::close_editor) asserts;
-    /// this does not.
-    fn close_editor_inner(&mut self) {
-        if let EditorState::Open(view) = std::mem::replace(&mut self.editor, EditorState::Closed) {
+    /// Assert-free editor teardown for [`Drop`], which can run on the audio
+    /// thread when the fundsp graph releases the instance. The public
+    /// [`close_editor`](Self::close_editor) asserts the main thread before
+    /// delegating here; `Drop` calls this directly to avoid panicking off it.
+    fn close_editor_unchecked(&mut self) {
+        if let EditorState::Open { view, .. } = std::mem::replace(&mut self.editor, EditorState::Closed) {
             unsafe {
                 view.removed();
             }
@@ -687,7 +830,7 @@ impl Vst3Loaded {
     }
 
     pub fn editor_capabilities(&self) -> EditorCapabilities {
-        let EditorState::Open(view) = &self.editor else {
+        let EditorState::Open { view, .. } = &self.editor else {
             return EditorCapabilities::default();
         };
         let resizable = unsafe { view.canResize() } == kResultOk;
@@ -703,11 +846,11 @@ impl Vst3Loaded {
     /// Coalesces multiple `IPlugFrame::resizeView` requests received
     /// since the last poll, returning only the latest.
     pub fn poll_editor_resize_request(&mut self) -> Option<EditorSize> {
-        if !matches!(self.editor, EditorState::Open(_)) {
+        let EditorState::Open { resize_rx, .. } = &self.editor else {
             return None;
-        }
+        };
         let mut latest = None;
-        while let Ok(size) = self.plug_frame_rx.try_recv() {
+        while let Ok(size) = resize_rx.try_recv() {
             latest = Some(size);
         }
         latest
@@ -715,7 +858,7 @@ impl Vst3Loaded {
 
     /// Returns the snapped size the plugin applied.
     pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
-        let EditorState::Open(view) = &self.editor else {
+        let EditorState::Open { view, .. } = &self.editor else {
             return Err(Vst3Error::NotSupported("editor not open".to_string()));
         };
         let mut rect = ViewRect {
@@ -779,17 +922,7 @@ impl Vst3Loaded {
         }
 
         self.attach_component_handler();
-        self.rebuild_midi_cc_mapping();
         Ok(())
-    }
-
-    /// (Re)query the `IMidiMapping` CC→parameter table from the controller.
-    /// Called once at `initialize` and again whenever the plugin signals
-    /// `kMidiCCAssignmentChanged`. UI/main-thread only — `IMidiMapping` is an
-    /// `IEditController` extension.
-    fn rebuild_midi_cc_mapping(&mut self) {
-        tutti_plugin_types::assert_main_thread();
-        self.midi_cc_mapping = MidiCcMapping::query(self.interfaces.controller.as_ref());
     }
 
     /// `IHostApplication` upcast to `FUnknown`, with a +1 refcount that the
@@ -810,12 +943,12 @@ impl Vst3Loaded {
     /// Re-query bus counts from the component — `initialize` may have changed
     /// them (some plugins don't declare bus counts until after init).
     fn reconcile_bus_counts(&mut self) {
-        if let Some(ch) = get_bus_channel_count(&self.interfaces.component, K_INPUT, 0) {
+        if let Some(ch) = self.interfaces.component.audio_bus_channel_count(K_INPUT, 0) {
             if ch != self.info.num_inputs {
                 self.info = self.info.clone().audio_io(ch, self.info.num_outputs);
             }
         }
-        if let Some(ch) = get_bus_channel_count(&self.interfaces.component, K_OUTPUT, 1) {
+        if let Some(ch) = self.interfaces.component.audio_bus_channel_count(K_OUTPUT, 1) {
             if ch != self.info.num_outputs {
                 self.info = self.info.clone().audio_io(self.info.num_inputs, ch);
             }
@@ -823,8 +956,8 @@ impl Vst3Loaded {
         // Re-enumerate the full per-bus layout — `initialize` may have changed
         // bus counts, and aux/sidechain buses are only visible post-init on
         // some plugins.
-        let input_bus_channels = enumerate_bus_channels(&self.interfaces.component, K_INPUT);
-        let output_bus_channels = enumerate_bus_channels(&self.interfaces.component, K_OUTPUT);
+        let input_bus_channels = self.interfaces.component.audio_bus_channels(K_INPUT);
+        let output_bus_channels = self.interfaces.component.audio_bus_channels(K_OUTPUT);
         self.info = self
             .info
             .clone()
@@ -852,8 +985,8 @@ impl Vst3Loaded {
 impl Drop for Vst3Loaded {
     fn drop(&mut self) {
         // No main-thread assert: Drop can run on the audio thread when the
-        // fundsp graph releases the instance. See `close_editor_inner`.
-        self.close_editor_inner();
+        // fundsp graph releases the instance. See `close_editor_unchecked`.
+        self.close_editor_unchecked();
         unsafe {
             self.interfaces.component.terminate();
         }
@@ -920,7 +1053,7 @@ fn query_view_size(view: &ComPtr<IPlugView>) -> Option<(u32, u32)> {
 
 /// Assemble `PluginInfo` from already-queried interfaces. Used by both
 /// [`Vst3Loaded::probe`] (which may not own an `IAudioProcessor`) and
-/// [`Vst3Loaded::load_with_info`] (which does).
+/// [`Vst3Loaded::load`] (which does).
 fn build_plugin_info_raw(
     library: &Vst3Library,
     component: &ComPtr<IComponent>,
@@ -931,10 +1064,10 @@ fn build_plugin_info_raw(
         .get_factory_info()
         .map(|info| info.vendor)
         .unwrap_or_default();
-    let num_inputs = get_bus_channel_count(component, K_INPUT, 0).unwrap_or(0);
-    let num_outputs = get_bus_channel_count(component, K_OUTPUT, 1).unwrap_or(2);
-    let input_bus_channels = enumerate_bus_channels(component, K_INPUT);
-    let output_bus_channels = enumerate_bus_channels(component, K_OUTPUT);
+    let num_inputs = component.audio_bus_channel_count(K_INPUT, 0).unwrap_or(0);
+    let num_outputs = component.audio_bus_channel_count(K_OUTPUT, 1).unwrap_or(2);
+    let input_bus_channels = component.audio_bus_channels(K_INPUT);
+    let output_bus_channels = component.audio_bus_channels(K_OUTPUT);
     let supports_f64 = processor
         .map(|p| unsafe { p.canProcessSampleSize(crate::types::K_SAMPLE_64_INT) == kResultOk })
         .unwrap_or(false);
@@ -984,6 +1117,33 @@ fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<AudioClass> {
         })
 }
 
+/// Ask the plugin (via `IProcessContextRequirements`) which `ProcessContext`
+/// fields it actually consumes, so [`crate::types::to_process_context`] can
+/// skip populating the rest.
+///
+/// Plugins that don't implement the interface get [`u32::MAX`] — every bit set,
+/// i.e. "send everything", which is both the pre-spec default and exactly what
+/// this host did before this interface was wired. So the gating is a strict
+/// no-op for them.
+/// Copy a Rust `&str` into a fixed `[char8; 64]` (`i8`) VST3 string buffer as
+/// NUL-terminated ASCII/UTF-8 bytes, truncating to fit (leaving room for the
+/// terminator). Used to fill `RepresentationInfo`'s vendor/name/version/host.
+fn fill_char8_64(dst: &mut [i8; 64], src: &str) {
+    let bytes = src.as_bytes();
+    let n = bytes.len().min(dst.len() - 1);
+    for (slot, &b) in dst.iter_mut().zip(&bytes[..n]) {
+        *slot = b as i8;
+    }
+    dst[n] = 0;
+}
+
+fn query_process_context_requirements(processor: &ComPtr<IAudioProcessor>) -> u32 {
+    match processor.cast::<IProcessContextRequirements>() {
+        Some(reqs) => unsafe { reqs.getProcessContextRequirements() },
+        None => u32::MAX,
+    }
+}
+
 fn query_controller(component: &ComPtr<IComponent>, library: &Vst3Library) -> Controller {
     if let Some(ctrl) = component.cast::<IEditController>() {
         return Controller::Same(ctrl);
@@ -997,6 +1157,40 @@ fn query_controller(component: &ComPtr<IComponent>, library: &Vst3Library) -> Co
         }
     } else {
         Controller::None
+    }
+}
+
+#[cfg(test)]
+mod char8_fill_tests {
+    use super::fill_char8_64;
+
+    /// A short string is copied verbatim and NUL-terminated.
+    #[test]
+    fn fills_and_terminates() {
+        let mut buf = [0i8; 64];
+        fill_char8_64(&mut buf, "Acme");
+        assert_eq!(&buf[..4], &[b'A' as i8, b'c' as i8, b'm' as i8, b'e' as i8]);
+        assert_eq!(buf[4], 0);
+    }
+
+    /// An over-long string is truncated, always leaving room for the NUL
+    /// terminator at index 63.
+    #[test]
+    fn truncates_leaving_room_for_terminator() {
+        let mut buf = [1i8; 64];
+        let long = "x".repeat(100);
+        fill_char8_64(&mut buf, &long);
+        // 63 chars written, last slot is the terminator.
+        assert!(buf[..63].iter().all(|&b| b == b'x' as i8));
+        assert_eq!(buf[63], 0);
+    }
+
+    /// An empty string yields an immediate terminator.
+    #[test]
+    fn empty_is_just_terminator() {
+        let mut buf = [9i8; 64];
+        fill_char8_64(&mut buf, "");
+        assert_eq!(buf[0], 0);
     }
 }
 
@@ -1027,8 +1221,7 @@ mod restart_outcome_tests {
         assert!(outcome.io_changed);
         assert!(!outcome.reload_requested);
         assert!(!outcome.is_empty());
-        // Latency is set only by the COM re-read path, never by merge_flags.
-        assert_eq!(outcome.new_latency_samples, None);
+        assert!(!outcome.latency_changed);
     }
 
     #[test]

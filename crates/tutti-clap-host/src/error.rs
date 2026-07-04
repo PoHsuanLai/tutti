@@ -37,6 +37,11 @@ pub enum ClapError {
     #[error("Plugin not activated")]
     NotActivated,
 
+    /// A requested capability is not advertised by the plugin (e.g. activating
+    /// as `ClapActive<f64>` when the plugin is 32-bit only).
+    #[error("Not supported: {0}")]
+    NotSupported(String),
+
     /// A parameter ID or value was rejected by the plugin.
     #[error("Invalid parameter: {0}")]
     InvalidParameter(String),

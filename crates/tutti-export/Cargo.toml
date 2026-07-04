@@ -41,11 +41,11 @@ crossbeam-channel = "0.5"
 
 # Bevy ECS surface (mirrors tutti-wavecache): the export pipeline ships its own
 # Bevy plugins now. Hard deps — the `ecs` module is unconditional.
-bevy_app = { version = "0.18", default-features = false }
-bevy_ecs = { version = "0.18", default-features = false }
-bevy_reflect = { version = "0.18", default-features = false }
-bevy_tasks = { version = "0.18" }
-bevy_log = { version = "0.18", default-features = false }
+bevy_app = { version = "0.19", default-features = false }
+bevy_ecs = { version = "0.19", default-features = false }
+bevy_reflect = { version = "0.19", default-features = false }
+bevy_tasks = { version = "0.19" }
+bevy_log = { version = "0.19", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.10"

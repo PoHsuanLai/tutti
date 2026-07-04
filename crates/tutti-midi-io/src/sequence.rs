@@ -135,10 +135,8 @@ fn seq_note_number(n: &MidiSequenceNote) -> u8 {
     n.pitch.round().clamp(0.0, 127.0) as u8
 }
 
-/// Channel-0 MIDI 2.0 note-on event with a 7-bit MIDI 1 velocity
-/// (upconverted to the 16-bit MIDI 2 velocity range).
 fn note_on_event(note: u8, velocity_midi1: u8) -> crate::MidiEvent {
-    crate::MidiEvent::note_on(0, 0, note, (velocity_midi1 as u16) << 9)
+    crate::MidiEvent::note_on_7bit(0, 0, note, velocity_midi1)
 }
 
 fn note_off_event(note: u8) -> crate::MidiEvent {

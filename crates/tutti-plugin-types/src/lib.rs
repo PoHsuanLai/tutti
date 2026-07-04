@@ -5,18 +5,33 @@
 //! public API so callers can stay format-agnostic when only the shared
 //! surface is in play.
 
-pub mod audio;
 pub mod automation;
+pub mod channels;
+pub mod classification;
 pub mod editor;
+pub mod harmony;
 pub mod load_stage;
 pub mod main_thread;
+pub mod metadata;
+pub mod note_expression;
+pub mod parameters;
 pub mod transport;
 
-pub use audio::{AudioBuffer, AudioBuffer32, AudioBuffer64, BufferPtrs, Sample};
-pub use main_thread::{assert_main_thread, mark_main_thread};
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
-pub use editor::{AspectRatio, EditorCapabilities, EditorSize, ResizeHints, WindowHandle};
+pub use channels::{AudioBuffer, AudioBuffer32, AudioBuffer64, BufferPtrs, Sample};
+pub use classification::Vst2Category;
+pub use main_thread::{assert_main_thread, mark_main_thread};
+pub use editor::{
+    AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,
+};
+pub use harmony::{
+    ChordChanges, ChordValue, NoteExpressionIntChanges, NoteExpressionIntValue,
+    NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,
+};
 pub use load_stage::LoadStage;
+pub use metadata::{BusChannels, LoadedPlugin};
+pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpressionValue};
+pub use parameters::{ParameterFlags, ParameterInfo};
 pub use transport::{
     BarInfo, LoopRegion, MusicalTiming, TransportInfo, TransportPosition, TransportState,
 };

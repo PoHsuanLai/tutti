@@ -9,6 +9,7 @@ pub mod automation;
 pub mod channels;
 pub mod classification;
 pub mod editor;
+pub mod features;
 pub mod harmony;
 pub mod load_stage;
 pub mod main_thread;
@@ -20,6 +21,7 @@ pub mod transport;
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
 pub use channels::{AudioBuffer, AudioBuffer32, AudioBuffer64, BufferPtrs, Sample};
 pub use classification::Vst2Category;
+pub use features::Features;
 pub use main_thread::{assert_main_thread, mark_main_thread};
 pub use editor::{
     AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,

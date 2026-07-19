@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    BusChannels, ChordChanges, EditorSize, LoadedPlugin, NoteExpressionChanges,
+    BusChannels, ChordChanges, EditorSize, Features, LoadedPlugin, NoteExpressionChanges,
     NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterFlags, ParameterInfo,
     PluginClass, PluginDescriptor, ScaleChanges, WindowHandle,
 };
@@ -108,6 +108,15 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
     let info = loaded.info().clone();
     let has_editor = loaded.has_editor();
 
+    // Probe capability + best-effort ("consumes") flags off the loaded plugin
+    // BEFORE `activate` consumes it. The gate is the flag, not the format:
+    // whatever the plugin reports here is what the engine will send it.
+    let editor_resizable = has_editor && loaded.editor_capabilities().resize.resizable;
+    // Note-expression: any dimension on the main event bus / channel 0.
+    let has_note_expression = loaded.note_expression_count(0, 0) > 0;
+    let wants_transport = loaded.wants_transport();
+    let wants_sequencer_context = loaded.wants_sequencer_context();
+
     let inner = if p.prefer_f64 && info.supports_f64 {
         let inst = loaded
             .activate::<f64>(p.sample_rate, p.block_size)
@@ -126,11 +135,24 @@ fn build_inner(p: &ReloadParams) -> Result<(VstInner, Meta)> {
         VstInner::F64(i) => i.read_latency_samples(),
     } as usize;
     let descriptor = vst3_descriptor(&info, has_editor);
+
+    let mut features = Features::empty();
+    features.set(Features::F64_AUDIO, actually_f64);
+    features.set(Features::MIDI_IN, info.has_midi_input);
+    features.set(Features::MIDI_OUT, info.has_midi_output);
+    features.set(Features::EDITOR, has_editor);
+    features.set(Features::EDITOR_RESIZE, editor_resizable);
+    // VST3 always carries sample-accurate parameter automation (IParameterChanges).
+    features.insert(Features::PARAM_AUTOMATION);
+    features.set(Features::TRANSPORT, wants_transport);
+    features.set(Features::NOTE_EXPRESSION, has_note_expression);
+    features.set(Features::SEQUENCER_CONTEXT, wants_sequencer_context);
+
     let loaded_meta = LoadedPlugin {
         inputs: bus_channels(&info.input_bus_channels, info.num_inputs),
         outputs: bus_channels(&info.output_bus_channels, info.num_outputs),
         latency_samples: latency,
-        supports_f64: actually_f64,
+        features,
     };
 
     Ok((
@@ -193,7 +215,8 @@ impl Vst3Instance {
     ///
     /// If `prefer_f64` is `true` and the plugin advertises 64-bit support, the
     /// inner instance is activated as `Vst3Instance<f64>`; otherwise `f32` is
-    /// used. The chosen format is reflected in `metadata().supports_f64`.
+    /// used. The chosen format is reflected in `metadata().features`
+    /// ([`Features::F64_AUDIO`]).
     pub fn load(path: &Path, sample_rate: f64, block_size: usize, prefer_f64: bool) -> Result<Self> {
         let reload = ReloadParams {
             path: path.to_path_buf(),
@@ -749,7 +772,7 @@ mod tests {
         eprintln!(
             "SPAN: name={}, supports_f64={}",
             instance.descriptor().name,
-            instance.loaded().supports_f64
+            instance.loaded().features.contains(Features::F64_AUDIO)
         );
         assert!(!instance.descriptor().name.is_empty());
     }
@@ -773,7 +796,7 @@ mod tests {
         eprintln!(
             "Boogex: name={}, supports_f64={}",
             instance.descriptor().name,
-            instance.loaded().supports_f64
+            instance.loaded().features.contains(Features::F64_AUDIO)
         );
         assert!(!instance.descriptor().name.is_empty());
     }
@@ -789,7 +812,7 @@ mod tests {
         // Load with f64 preference — if the plugin supports it, inner will be F64.
         let mut instance = Vst3Instance::load(&path, 44100.0, 512, true).expect("Failed to load SPAN");
 
-        if !instance.loaded().supports_f64 {
+        if !instance.loaded().features.contains(Features::F64_AUDIO) {
             eprintln!("SPAN does not report f64 support, skipping f64 test");
             return;
         }
@@ -846,7 +869,7 @@ mod tests {
         // Load with f64 preference — if the plugin supports it, inner will be F64.
         let mut instance = Vst3Instance::load(&path, 44100.0, 512, true).expect("Failed to load Boogex");
 
-        if !instance.loaded().supports_f64 {
+        if !instance.loaded().features.contains(Features::F64_AUDIO) {
             eprintln!("Boogex does not report f64 support, skipping f64 test");
             return;
         }

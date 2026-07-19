@@ -79,6 +79,11 @@ pub struct PluginDescriptor {
     /// routing) — tutti does not flatten it into a common "kind".
     pub class: PluginClass,
     /// `true` if the plugin reports an editor / GUI.
+    ///
+    /// Persisted in the catalog and read at **browse time, before any load**,
+    /// so the app can show a GUI badge without instantiating the plugin. The
+    /// post-load authoritative copy is `LoadedPlugin.features` /
+    /// [`Features::EDITOR`](tutti_plugin_types::Features); the loader sets both.
     pub has_editor: bool,
 }
 

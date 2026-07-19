@@ -346,6 +346,42 @@ impl Vst3Loaded {
         }
     }
 
+    /// Raw `IProcessContextRequirements::getProcessContextRequirements` bitmask
+    /// the plugin returned at load (see [`process_context_flags`]). `u32::MAX`
+    /// means the plugin doesn't implement the interface — treat as "wants
+    /// everything", matching the pre-interface unconditional behaviour.
+    ///
+    /// [`process_context_flags`]: crate::types::process_context_flags
+    pub fn context_requirements(&self) -> u32 {
+        self.interfaces.process_context_requirements
+    }
+
+    /// `true` if the plugin asked for any transport field (tempo, playhead,
+    /// bar, cycle, time-sig, or transport state). A plugin that implements
+    /// `IProcessContextRequirements` and requests none of these does not want a
+    /// transport snapshot each block; one that doesn't implement the interface
+    /// (`u32::MAX`) wants everything.
+    pub fn wants_transport(&self) -> bool {
+        use crate::types::process_context_flags as f;
+        let req = self.interfaces.process_context_requirements;
+        const TRANSPORT_BITS: u32 = f::NEED_TEMPO
+            | f::NEED_PROJECT_TIME_MUSIC
+            | f::NEED_BAR_POSITION_MUSIC
+            | f::NEED_CYCLE_MUSIC
+            | f::NEED_TIME_SIGNATURE
+            | f::NEED_TRANSPORT_STATE
+            | f::NEED_CONTINOUS_TIME_SAMPLES;
+        req & TRANSPORT_BITS != 0
+    }
+
+    /// `true` if the plugin asked for the host-track chord field
+    /// (`kNeedChord`) — the VST3 signal that it consumes sequencer context
+    /// (chord / scale). Distinct from note-expression.
+    pub fn wants_sequencer_context(&self) -> bool {
+        use crate::types::process_context_flags as f;
+        self.interfaces.process_context_requirements & f::NEED_CHORD != 0
+    }
+
     /// Descriptor for the note-expression type at `index` on the given event
     /// `bus_index` / MIDI `channel` (title, units, value range, flags). Returns
     /// `None` if the index is out of range or the plugin doesn't implement
@@ -1073,6 +1109,8 @@ fn build_plugin_info_raw(
         .unwrap_or(false);
     let receives_midi =
         unsafe { component.getBusCount(crate::host::instance::K_EVENT, K_INPUT) > 0 };
+    let emits_midi =
+        unsafe { component.getBusCount(crate::host::instance::K_EVENT, K_OUTPUT) > 0 };
 
     PluginInfo::new(
         format!("vst3.{}", cid_to_string(&class.cid_bytes)),
@@ -1083,6 +1121,7 @@ fn build_plugin_info_raw(
     .audio_io(num_inputs, num_outputs)
     .bus_channels(input_bus_channels, output_bus_channels)
     .midi(receives_midi)
+    .midi_output(emits_midi)
     .f64_support(supports_f64)
 }
 

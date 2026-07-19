@@ -312,7 +312,7 @@ impl Session {
 mod tests {
     use super::*;
     use tutti_plugin::server::{
-        IpcMidiEventVec, NoteExpressionChanges, ParameterChanges, TransportInfo,
+        Features, IpcMidiEventVec, NoteExpressionChanges, ParameterChanges, TransportInfo,
     };
     use tutti_plugin::{BridgeError, LoadStage};
 
@@ -547,7 +547,7 @@ mod tests {
         let _lock = crate::test_utils::plugin_load_lock();
         let (s, _shm) = load_clap("load_clap_f64", SampleFormat::Float64);
         let loaded = s.plugin.as_ref().unwrap().instance().loaded();
-        if loaded.supports_f64 {
+        if loaded.features.contains(Features::F64_AUDIO) {
             assert_eq!(s.clock.format, SampleFormat::Float64);
         } else {
             assert_eq!(s.clock.format, SampleFormat::Float32);

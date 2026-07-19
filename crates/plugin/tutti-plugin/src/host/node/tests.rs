@@ -8,7 +8,9 @@
 use crate::host::ipc_client::audio::{BridgeEvent, BridgeThread};
 use crate::host::ipc_client::PluginBridge;
 use crate::host::handles::control_handle::PluginHandle;
-use crate::protocol::{BridgeMessage, HostMessage, LoadedPlugin, ParameterInfo, PluginDescriptor};
+use crate::protocol::{
+    BridgeMessage, Features, HostMessage, LoadedPlugin, ParameterInfo, PluginDescriptor,
+};
 use crate::protocol::{PluginClass, SampleFormat, SlabLayout};
 use smallvec::smallvec;
 use crate::util::transport::shm::AudioSlab;
@@ -139,7 +141,7 @@ fn handle_with_mock_server(
         inputs: smallvec![2],
         outputs: smallvec![2],
         latency_samples: 0,
-        supports_f64: false,
+        features: Features::EDITOR,
     };
     let plugin_handle = PluginHandle::from_bridge_and_metadata(bridge, descriptor, loaded);
 
@@ -232,7 +234,7 @@ fn handle_with_multi_reply_server(
         inputs: smallvec![2],
         outputs: smallvec![2],
         latency_samples: 0,
-        supports_f64: false,
+        features: Features::EDITOR,
     };
     let plugin_handle =
         PluginHandle::from_bridge_and_metadata(Arc::clone(&bridge), descriptor, loaded);

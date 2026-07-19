@@ -33,7 +33,7 @@ use crate::host::ipc_client::audio::BridgeEvent;
 use crate::host::ipc_client::PluginBridge;
 use crate::util::config::BridgeConfig;
 use crate::error::Result;
-use crate::protocol::{LoadedPlugin, PluginDescriptor, SampleFormat};
+use crate::protocol::{Features, LoadedPlugin, PluginDescriptor, SampleFormat};
 use crate::host::subprocess;
 use batcher::Batcher;
 use std::path::PathBuf;
@@ -117,7 +117,15 @@ impl PluginClient {
 
     /// Fill the per-block chord/scale context from the installed harmony
     /// source (empty when none is installed). Cloned out for the bridge call.
+    ///
+    /// Gated on [`Features::SEQUENCER_CONTEXT`]: a plugin that didn't advertise
+    /// it never has [`HarmonySource::fill`] run for it — the engine only
+    /// produces the payload the plugin asked to consume, keyed on the flag,
+    /// never on the plugin's format.
     pub(super) fn drain_harmony(&mut self, block_size: usize) -> crate::host::ipc_client::audio::HarmonyInputs {
+        if !self.loaded.features.contains(Features::SEQUENCER_CONTEXT) {
+            return crate::host::ipc_client::audio::HarmonyInputs::default();
+        }
         self.harmony.drain_for_process(block_size).clone()
     }
 

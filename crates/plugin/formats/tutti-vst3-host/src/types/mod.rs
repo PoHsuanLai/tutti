@@ -102,6 +102,9 @@ pub struct PluginInfo {
     pub output_bus_channels: Vec<usize>,
     /// `true` if the plugin exposes at least one input event bus.
     pub has_midi_input: bool,
+    /// `true` if the plugin exposes at least one output event bus (emits MIDI
+    /// the host can read back).
+    pub has_midi_output: bool,
     /// `true` if the plugin advertises `kSample64` processing.
     pub supports_f64: bool,
 }
@@ -118,6 +121,7 @@ impl PluginInfo {
             input_bus_channels: Vec::new(),
             output_bus_channels: Vec::new(),
             has_midi_input: false,
+            has_midi_output: false,
             supports_f64: false,
         }
     }
@@ -175,6 +179,11 @@ impl PluginInfo {
 
     pub fn midi(mut self, has_midi: bool) -> Self {
         self.has_midi_input = has_midi;
+        self
+    }
+
+    pub fn midi_output(mut self, has_midi_output: bool) -> Self {
+        self.has_midi_output = has_midi_output;
         self
     }
 

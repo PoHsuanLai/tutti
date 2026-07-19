@@ -10,7 +10,7 @@
 //! list the server can drain after each audio block.
 
 use std::path::Path;
-use tutti_plugin::server::{LoadedPlugin, PluginDescriptor, PluginInstance, SampleFormat};
+use tutti_plugin::server::{Features, LoadedPlugin, PluginDescriptor, PluginInstance, SampleFormat};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 #[cfg(feature = "vst2")]
@@ -147,7 +147,9 @@ impl Plugin {
         let descriptor = plugin.instance().descriptor().clone();
         let loaded = plugin.instance().loaded().clone();
 
-        let negotiated = if preferred_format == SampleFormat::Float64 && loaded.supports_f64 {
+        let negotiated = if preferred_format == SampleFormat::Float64
+            && loaded.features.contains(Features::F64_AUDIO)
+        {
             SampleFormat::Float64
         } else {
             SampleFormat::Float32

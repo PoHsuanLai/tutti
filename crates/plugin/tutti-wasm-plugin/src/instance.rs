@@ -23,7 +23,7 @@ use tutti_midi_types::ump::MidiEvent as UmpMidiEvent;
 
 use tutti_plugin::server::MidiEventVec;
 use tutti_plugin::{BridgeError, LoadStage, Result};
-use tutti_plugin::server::{BusChannels, LoadedPlugin, PluginClass, PluginDescriptor};
+use tutti_plugin::server::{BusChannels, Features, LoadedPlugin, PluginClass, PluginDescriptor};
 use tutti_plugin_types::{ParameterFlags, ParameterInfo};
 
 use crate::runtime::{self, EPOCH_DEADLINE_TICKS};
@@ -167,12 +167,17 @@ impl WasmInstance {
             },
             has_editor: false,
         };
-        // The WASM audio-plugin world is single-bus per direction.
+        // The WASM audio-plugin world (v0.1) is single-bus, f32-only, headless,
+        // and consumes MIDI-1 input. It has no editor, no f64, no transport /
+        // automation / note-expression / sequencer context, and its guest MIDI
+        // output is discarded — so only MIDI_IN is advertised.
+        let mut features = Features::empty();
+        features.set(Features::MIDI_IN, metadata_wit.midi.receives);
         let loaded = LoadedPlugin {
             inputs: BusChannels::from_slice(&[metadata_wit.audio.inputs as usize]),
             outputs: BusChannels::from_slice(&[metadata_wit.audio.outputs as usize]),
             latency_samples: metadata_wit.latency_samples as usize,
-            supports_f64: false,
+            features,
         };
 
         let parameters = metadata_wit

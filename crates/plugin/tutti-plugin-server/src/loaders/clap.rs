@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use tutti_plugin::server::{
-    EditorSize, LoadedPlugin, NoteExpressionChanges, ParameterChanges, ParameterFlags,
+    EditorSize, Features, LoadedPlugin, NoteExpressionChanges, ParameterChanges, ParameterFlags,
     ParameterInfo, PluginClass, PluginDescriptor, WindowHandle,
 };
 use tutti_plugin::server::{PluginInstance, ProcessContext, ProcessOutput};
@@ -129,14 +129,33 @@ impl ClapInstance {
             // Read metadata off the loaded (pre-activation) instance.
             let info = loaded.info();
             let supports_f64 = loaded.supports_f64();
-            let descriptor = clap_descriptor(info, loaded.has_editor());
+            let has_editor = loaded.has_editor();
+            let editor_resizable = has_editor && loaded.editor_capabilities().resize.resizable;
+            let has_note_in = loaded.note_port_count(true) > 0;
+            let has_note_out = loaded.note_port_count(false) > 0;
+            let descriptor = clap_descriptor(info, has_editor);
+
+            let mut features = Features::empty();
+            features.set(Features::F64_AUDIO, supports_f64);
+            features.set(Features::MIDI_IN, has_note_in);
+            features.set(Features::MIDI_OUT, has_note_out);
+            features.set(Features::EDITOR, has_editor);
+            features.set(Features::EDITOR_RESIZE, editor_resizable);
+            // CLAP always carries transport, sample-accurate param automation, and
+            // the full note-expression dimension set (see build_clap_transport /
+            // PARAM_VALUE events / CLAP_EVENT_NOTE_EXPRESSION). No sequencer context
+            // (the CLAP spec defines no chord/scale events).
+            features.insert(Features::TRANSPORT);
+            features.insert(Features::PARAM_AUTOMATION);
+            features.set(Features::NOTE_EXPRESSION, has_note_in);
+
             // CLAP reports aggregate audio port channel counts; carry them as a
             // single main bus per direction (per-port enumeration is a follow-up).
             let mut loaded_meta = LoadedPlugin {
                 inputs: single_bus(info.audio_inputs),
                 outputs: single_bus(info.audio_outputs),
                 latency_samples: 0,
-                supports_f64,
+                features,
             };
 
             // Activate into the typed inner. CLAP advertises f32 today, so the
@@ -512,7 +531,7 @@ mod tests {
         // practice — TAL-NoiseMaker reports f32-only. The flag must simply
         // reflect what the plugin advertises; both values are valid. Reading it
         // here confirms the metadata is populated without crashing.
-        let _ = instance.loaded().supports_f64;
+        let _ = instance.loaded().features.contains(Features::F64_AUDIO);
     }
 
     #[test]

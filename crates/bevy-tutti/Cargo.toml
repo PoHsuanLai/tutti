@@ -22,29 +22,29 @@ bevy_tasks.workspace = true
 # primitives; `tutti-core/bevy_asset` the Asset/TypePath derives on loadable
 # types. bevy-tutti supplies the reconcile systems + the CPAL audio callback
 # (relocated into src/engine/).
-tutti-core = { path = "../tutti/crates/tutti-core", default-features = false, features = ["bevy_ecs", "bevy_asset"] }
-tutti-midi-types = { path = "../tutti/crates/tutti-midi-types", default-features = false }
+tutti-core = { path = "../tutti/crates/core/tutti-core", default-features = false, features = ["bevy_ecs", "bevy_asset"] }
+tutti-midi-types = { path = "../tutti/crates/midi/tutti-midi-types", default-features = false }
 # tutti-units' Bevy modules (the DSP / spatial / automation / convolution spawn
 # pipelines + reconcilers + plugins that bevy-tutti schedules) are always-on; the
 # optional features below add spatial / convolution / automation on top.
-tutti-units = { path = "../tutti/crates/tutti-units", default-features = false }
+tutti-units = { path = "../tutti/crates/dsp/tutti-units", default-features = false }
 # Decode-once wave cache (Bevy-native). It is a non-optional dep that always
 # needs at least one codec (its API uses tutti-core's fundsp `Wave::load` /
 # `WaveMetadata`, which are codec-gated), so enable `wav` unconditionally here;
 # bevy-tutti's own wav/mp3/flac/ogg features add the rest.
-tutti-wavecache = { path = "../tutti/crates/tutti-wavecache", default-features = false, features = ["wav"] }
+tutti-wavecache = { path = "../tutti/crates/core/tutti-wavecache", default-features = false, features = ["wav"] }
 
 # Optional subsystems (gated by bevy-tutti features below).
-tutti-sampler = { path = "../tutti/crates/tutti-sampler", optional = true, default-features = false }
-tutti-synth = { path = "../tutti/crates/tutti-synth", optional = true, default-features = false }
-tutti-analysis = { path = "../tutti/crates/tutti-analysis", optional = true }
-tutti-export = { path = "../tutti/crates/tutti-export", optional = true }
-tutti-midi-io = { path = "../tutti/crates/tutti-midi-io", optional = true }
-tutti-midi-runtime = { path = "../tutti/crates/tutti-midi-runtime", optional = true, default-features = false }
-tutti-plugin = { path = "../tutti/crates/tutti-plugin", optional = true }
+tutti-sampler = { path = "../tutti/crates/dsp/tutti-sampler", optional = true, default-features = false }
+tutti-synth = { path = "../tutti/crates/dsp/tutti-synth", optional = true, default-features = false }
+tutti-analysis = { path = "../tutti/crates/dsp/tutti-analysis", optional = true }
+tutti-export = { path = "../tutti/crates/core/tutti-export", optional = true }
+tutti-midi-io = { path = "../tutti/crates/midi/tutti-midi-io", optional = true }
+tutti-midi-runtime = { path = "../tutti/crates/midi/tutti-midi-runtime", optional = true, default-features = false }
+tutti-plugin = { path = "../tutti/crates/plugin/tutti-plugin", optional = true }
 # Plugin-hosting ECS surface (editor windows, scan, crash-detect, param
 # reconcile). Owns the bevy_window / raw-window-handle / objc2 deps now.
-tutti-plugin-host = { path = "../tutti/crates/tutti-plugin-host", optional = true }
+tutti-plugin-host = { path = "../tutti/crates/plugin/tutti-plugin-host", optional = true }
 
 # CPAL audio I/O — bevy-tutti owns the audio callback (engine/audio_io.rs).
 cpal = "0.15"

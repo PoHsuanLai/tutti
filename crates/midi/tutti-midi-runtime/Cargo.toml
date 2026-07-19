@@ -1,0 +1,30 @@
+[package]
+name = "tutti-midi-runtime"
+version = "0.0.1"
+edition = "2021"
+description = "MIDI runtime state machines for the Tutti audio engine: registry, snapshot, routing table, MPE processor, CC mapping, output collection"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+keywords = ["audio", "midi", "real-time", "daw"]
+categories = ["multimedia::audio"]
+
+[features]
+default = []
+# MPE-specific runtime (MpeProcessor, PerNoteExpression). Enabled when the
+# umbrella `tutti` crate's `mpe` feature is on.
+mpe = []
+
+[dependencies]
+tutti-midi-types = { version = "0.0.1", path = "../tutti-midi-types", default-features = false, features = ["std"] }
+tutti-core = { version = "0.0.1", path = "../../core/tutti-core", default-features = false, features = ["std", "midi"] }
+
+# Lock-free / concurrent
+arc-swap = "1.7"
+atomic_float = "1.1"
+crossbeam-queue = { version = "0.3", default-features = false, features = ["alloc"] }
+dashmap = "6.1"
+parking_lot = "0.12"
+ringbuf = "0.4"
+
+[dev-dependencies]
+assert_no_alloc = "1"

@@ -1,0 +1,59 @@
+[package]
+name = "tutti-units"
+version = "0.0.1"
+edition = "2021"
+description = "Built-in AudioUnit implementations for the Tutti audio engine — LFOs, filters, delays, dynamics, modulation, spatial audio"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+[features]
+spatial = ["dep:vbap", "dep:bevy_transform"]  # VBAP, binaural panning + position sync
+# FFT convolution reverb (partitioned IR). The `pending_convolver` graph module
+# loads IRs via `bevy_asset` + the `WaveAsset`, so the feature pulls
+# tutti-core's `bevy_asset` + a default decode codec (`wav`).
+convolution = ["dep:fft-convolver", "tutti-core/bevy_asset", "tutti-core/wav"]
+# Transport-driven envelope nodes (`AutomationLane`). Folded in from the
+# old `tutti-automation` crate; envelope primitives come from the
+# `audio_automation` crate, re-exported via `tutti_units::automation`.
+automation = ["dep:audio-automation", "dep:dashmap", "dep:parking_lot", "dep:serde"]
+
+[dependencies]
+# AudioUnit trait, DSP primitives, and the entity-as-node ECS hub from
+# tutti-core. `bevy_ecs` enables the `Component` derives on the param/marker
+# components the reconcilers read.
+tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["bevy_ecs"] }
+
+# Bevy ECS integration (the `dsp` / `reconcile` / `*_graph` modules): Components
+# / Systems / Plugins live next to the audio logic. Hard deps, mirroring
+# tutti-wavecache / tutti-sampler.
+bevy_ecs = { version = "0.19", default-features = false }
+bevy_app = { version = "0.19", default-features = false }
+bevy_reflect = { version = "0.19", default-features = false }
+bevy_log = { version = "0.19", default-features = false }
+# `pending_convolver` (convolution-gated) loads IR files via the AssetServer.
+bevy_asset = { version = "0.19", default-features = false }
+# Spatial position sync reads `GlobalTransform` (spatial-gated module).
+bevy_transform = { version = "0.19", optional = true }
+
+# Spatial audio VBAP library (optional)
+vbap = { version = "0.1", optional = true }
+
+# Partitioned FFT convolver (optional, gated by `convolution` feature)
+fft-convolver = { version = "0.3", optional = true }
+
+# Envelope primitives consumed by `AutomationLane` (optional, gated by
+# the `automation` feature).
+audio-automation = { version = "0.4", default-features = false, optional = true }
+# Automation *recording* (`Recorder`/`Manager`): concurrent lane map, envelope
+# lock, and snapshot (de)serialization. All gated by `automation`.
+dashmap = { version = "6.1", optional = true }
+parking_lot = { version = "0.12", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+
+# Error handling
+thiserror = { version = "2", default-features = false }
+
+[dev-dependencies]
+approx = "0.5"
+assert_no_alloc = "1"
+serde_json = "1"

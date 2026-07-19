@@ -1,0 +1,33 @@
+[package]
+name = "tutti-plugin-host"
+version = "0.0.1"
+edition = "2021"
+description = "Bevy ECS plugin-editor + scan + crash-detect hosting for tutti-plugin"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+[features]
+default = []
+vst2 = ["tutti-plugin-server/vst2", "tutti-plugin/vst2"]
+vst3 = ["tutti-plugin-server/vst3", "tutti-plugin/vst3"]
+clap = ["tutti-plugin-server/clap", "tutti-plugin/clap"]
+au = ["tutti-plugin-server/au", "tutti-plugin/au"]
+
+[dependencies]
+tutti-core = { path = "../../core/tutti-core", default-features = false }
+tutti-plugin = { path = "../tutti-plugin" }
+tutti-plugin-server = { path = "../tutti-plugin-server", default-features = false }
+
+bevy_ecs = { version = "0.19", default-features = false }
+bevy_app = { version = "0.19", default-features = false }
+bevy_reflect = { version = "0.19", default-features = false }
+bevy_tasks = { version = "0.19" }
+bevy_log = { version = "0.19", default-features = false }
+bevy_window = { version = "0.19" }
+raw-window-handle = { version = "0.6" }
+
+# macOS: child-window attach + live-resize observer for plugin editors.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6" }
+objc2-app-kit = { version = "0.3", features = ["NSView", "NSWindow", "NSResponder"] }
+objc2-foundation = { version = "0.3", features = ["NSNotification", "NSString", "NSGeometry", "NSObject", "NSThread"] }

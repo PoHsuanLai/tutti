@@ -54,10 +54,10 @@ impl Vst2Instance {
             // VST2's advertised f64 is informational only (the `vst` crate is
             // f32-internally), but the flag reflects what the plugin declares.
             features.set(Features::F64_AUDIO, host_meta.supports_f64);
-            // VST2 exposes one combined "MIDI-capable" flag; the host both feeds
-            // and drains MIDI, so it maps to both directions.
             features.set(Features::MIDI_IN, host_meta.receives_midi);
-            features.set(Features::MIDI_OUT, host_meta.receives_midi);
+            // MIDI-out is the plugin's declared output-bus count, not the
+            // combined input flag — the host drains only what the plugin emits.
+            features.set(Features::MIDI_OUT, host_meta.emits_midi);
             features.set(Features::EDITOR, host_meta.has_editor);
             // VST2 always gets a transport snapshot (get_time_info). No
             // sample-accurate automation, note-expression, sequencer context, or

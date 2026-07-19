@@ -224,6 +224,7 @@ impl Batcher {
         bridge: &PluginBridge,
         midi: MidiEventVec,
         harmony: HarmonyInputs,
+        transport: TransportInfo,
     ) {
         let size = self.write_pos;
         if size == 0 {
@@ -244,7 +245,7 @@ impl Batcher {
             ParameterChanges::new(),
             NoteExpressionChanges::new(),
             harmony,
-            TransportInfo::default(),
+            transport,
         ) {
             T::silence_tick(self, size, self.outputs);
             self.drain_to(size);
@@ -268,6 +269,7 @@ impl Batcher {
         output: &mut BufferMut<'_, T::Marker>,
         midi: MidiEventVec,
         harmony: HarmonyInputs,
+        transport: TransportInfo,
     ) {
         for ch in 0..self.inputs {
             if T::send_block(self, bridge, ch, size, input).is_err() {
@@ -282,7 +284,7 @@ impl Batcher {
             ParameterChanges::new(),
             NoteExpressionChanges::new(),
             harmony,
-            TransportInfo::default(),
+            transport,
         ) {
             T::silence_block(output, size, self.outputs);
             return;

@@ -25,6 +25,7 @@ impl AudioUnit for PluginClient {
         let sample_rate: f64 = sample_rate.get();
         self.io_mut().reset();
         self.midi_mut().reset_sample_pos();
+        self.set_transport_sample_rate(sample_rate);
         let _ = self.bridge_ref().set_sample_rate_rt(sample_rate);
     }
 
@@ -33,8 +34,9 @@ impl AudioUnit for PluginClient {
         if self.io_ref().should_flush() {
             let midi = self.midi_mut().drain_for_tick().clone();
             let harmony = self.drain_harmony(1);
+            let transport = self.drain_transport();
             let bridge = self.bridge_ref().clone();
-            self.io_mut().flush::<f32>(&bridge, midi, harmony);
+            self.io_mut().flush::<f32>(&bridge, midi, harmony, transport);
         }
         self.io_mut().read::<f32>(output);
     }
@@ -42,9 +44,10 @@ impl AudioUnit for PluginClient {
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         let midi = self.midi_mut().drain_for_process(size).clone();
         let harmony = self.drain_harmony(size);
+        let transport = self.drain_transport();
         let bridge = self.bridge_ref().clone();
         self.io_mut()
-            .process::<f32>(&bridge, size, input, output, midi, harmony);
+            .process::<f32>(&bridge, size, input, output, midi, harmony, transport);
     }
 
     fn get_id(&self) -> u64 {
@@ -93,6 +96,7 @@ impl AudioUnit<F64> for PluginClient {
         let sample_rate: f64 = sample_rate.get();
         self.io_mut().reset();
         self.midi_mut().reset_sample_pos();
+        self.set_transport_sample_rate(sample_rate);
         let _ = self.bridge_ref().set_sample_rate_rt(sample_rate);
     }
 
@@ -101,8 +105,9 @@ impl AudioUnit<F64> for PluginClient {
         if self.io_ref().should_flush() {
             let midi = self.midi_mut().drain_for_tick().clone();
             let harmony = self.drain_harmony(1);
+            let transport = self.drain_transport();
             let bridge = self.bridge_ref().clone();
-            self.io_mut().flush::<f64>(&bridge, midi, harmony);
+            self.io_mut().flush::<f64>(&bridge, midi, harmony, transport);
         }
         self.io_mut().read::<f64>(output);
     }
@@ -110,9 +115,10 @@ impl AudioUnit<F64> for PluginClient {
     fn process(&mut self, size: usize, input: &BufferRef<F64>, output: &mut BufferMut<F64>) {
         let midi = self.midi_mut().drain_for_process(size).clone();
         let harmony = self.drain_harmony(size);
+        let transport = self.drain_transport();
         let bridge = self.bridge_ref().clone();
         self.io_mut()
-            .process::<f64>(&bridge, size, input, output, midi, harmony);
+            .process::<f64>(&bridge, size, input, output, midi, harmony, transport);
     }
 
     fn get_id(&self) -> u64 {

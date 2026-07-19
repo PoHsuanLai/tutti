@@ -21,6 +21,9 @@ pub struct PluginInfo {
     pub category: Vst2Category,
     /// `true` if the plugin is a synth or declares MIDI input/output.
     pub receives_midi: bool,
+    /// `true` if the plugin declares at least one MIDI **output** bus
+    /// (`get_info().midi_outputs > 0`) — it emits MIDI the host reads back.
+    pub emits_midi: bool,
     pub has_editor: bool,
     /// Reported initial latency, in samples.
     pub latency_samples: usize,

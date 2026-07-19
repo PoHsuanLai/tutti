@@ -57,7 +57,7 @@ pub fn load(
     let mut features = Features::empty();
     features.set(Features::F64_AUDIO, host_meta.supports_f64);
     features.set(Features::MIDI_IN, host_meta.receives_midi);
-    features.set(Features::MIDI_OUT, host_meta.receives_midi);
+    features.set(Features::MIDI_OUT, host_meta.emits_midi);
     features.set(Features::EDITOR, host_meta.has_editor);
     features.insert(Features::TRANSPORT);
 

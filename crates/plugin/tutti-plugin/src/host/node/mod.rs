@@ -33,7 +33,7 @@ use crate::host::ipc_client::audio::BridgeEvent;
 use crate::host::ipc_client::PluginBridge;
 use crate::util::config::BridgeConfig;
 use crate::error::Result;
-use crate::protocol::{Features, LoadedPlugin, PluginDescriptor, SampleFormat};
+use crate::protocol::{Features, LoadedPlugin, PluginDescriptor, SampleFormat, TransportInfo};
 use crate::host::subprocess;
 use batcher::Batcher;
 use std::path::PathBuf;
@@ -64,6 +64,42 @@ pub struct PluginClient {
     io: Batcher,
     midi: Midi,
     harmony: Harmony,
+    transport: Transport,
+}
+
+/// Per-client transport source. Like [`Harmony`], the reader is shared across
+/// fundsp graph-commit clones via `Arc`. Produces the per-block
+/// [`TransportInfo`] the plugin consumes, but only when the plugin advertised
+/// [`Features::TRANSPORT`] — otherwise the plugin is fed a default snapshot.
+#[derive(Clone, Default)]
+struct Transport {
+    reader: Option<Arc<dyn tutti_core::transport::TransportReader>>,
+    /// Latest negotiated sample rate, stamped onto the snapshot (CLAP reads it).
+    sample_rate: f64,
+}
+
+impl Transport {
+    /// Read the live transport into a [`TransportInfo`]. Returns the default
+    /// (stopped, 120 BPM) snapshot when no reader is installed.
+    fn snapshot(&self) -> TransportInfo {
+        let Some(reader) = &self.reader else {
+            return TransportInfo::default();
+        };
+        let mut info = TransportInfo::new()
+            .with_tempo(reader.tempo().get())
+            .with_playing(reader.is_playing())
+            .with_recording(reader.is_recording())
+            .with_sample_rate(self.sample_rate);
+        // CLAP-style beats position; seconds derived from beats + tempo.
+        let beats = reader.current_beat_f64();
+        let tempo = reader.tempo().get();
+        let seconds = if tempo > 0.0 { beats * 60.0 / tempo } else { 0.0 };
+        info = info.with_position_beats(beats, seconds);
+        if let Some((start, end)) = reader.get_loop_range() {
+            info = info.with_loop(reader.is_loop_enabled(), start, end);
+        }
+        info
+    }
 }
 
 /// Per-client chord/scale producer state. The optional source is shared across
@@ -129,8 +165,25 @@ impl PluginClient {
         self.harmony.drain_for_process(block_size).clone()
     }
 
+    /// The per-block transport snapshot for this plugin, gated on
+    /// [`Features::TRANSPORT`]: a plugin that didn't advertise it always gets a
+    /// default snapshot, never a live read — the engine only sends what the
+    /// plugin asked to consume, keyed on the flag, never on the plugin's format.
+    pub(super) fn drain_transport(&self) -> TransportInfo {
+        if !self.loaded.features.contains(Features::TRANSPORT) {
+            return TransportInfo::default();
+        }
+        self.transport.snapshot()
+    }
+
     pub(super) fn bridge_ref(&self) -> &Arc<PluginBridge> {
         &self.bridge
+    }
+
+    /// Update the sample rate stamped onto the transport snapshot. Called from
+    /// the `AudioUnit::set_sample_rate` impls alongside the bridge notification.
+    pub(super) fn set_transport_sample_rate(&mut self, sample_rate: f64) {
+        self.transport.sample_rate = sample_rate;
     }
 }
 
@@ -199,6 +252,10 @@ impl PluginClient {
             io: Batcher::new(inputs, outputs, output_base, server.format, max_buffer_size),
             midi: Midi::new(),
             harmony: Harmony::default(),
+            transport: Transport {
+                reader: None,
+                sample_rate,
+            },
         })
     }
 
@@ -309,6 +366,23 @@ impl PluginClient {
     /// plugin empty chord/scale context.
     pub fn clear_harmony_source(&mut self) {
         self.harmony.source = None;
+    }
+
+    /// Install a transport reader so the plugin receives a live per-block
+    /// [`TransportInfo`] (tempo, playhead, loop). Held in an `Arc` so it
+    /// survives fundsp's graph-commit clones. The snapshot is only sent to
+    /// plugins advertising [`Features::TRANSPORT`]; others always get a default.
+    pub fn set_transport_source(
+        &mut self,
+        reader: std::sync::Arc<dyn tutti_core::transport::TransportReader>,
+    ) {
+        self.transport.reader = Some(reader);
+    }
+
+    /// Drop a previously-installed transport reader; subsequent blocks feed the
+    /// plugin a default (stopped) transport snapshot.
+    pub fn clear_transport_source(&mut self) {
+        self.transport.reader = None;
     }
 
     /// Drop a previously-installed source override; subsequent ticks

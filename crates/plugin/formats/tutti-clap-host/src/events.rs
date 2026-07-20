@@ -52,6 +52,56 @@ pub enum ClapEvent {
 unsafe impl Send for ClapEvent {}
 unsafe impl Sync for ClapEvent {}
 
+/// Per-note pitch-bend range, in semitones, used to convert a MIDI-2 per-note
+/// pitch bend (signed `[-1, 1]`) to CLAP's `CLAP_NOTE_EXPRESSION_TUNING` value
+/// (defined *in semitones*). Matches the synth's MPE default (48-semitone
+/// per-note bend range) so a note bent to full scale here lands where the
+/// engine's own MPE voices would put it.
+const PER_NOTE_PITCH_BEND_RANGE_SEMITONES: f64 = 48.0;
+
+/// Deterministic CLAP `note_id` for a `(channel, note)` pair.
+///
+/// CLAP addresses per-note events by a host-chosen `note_id` the plugin echoes
+/// back. We derive a stable id from channel and note so a note-on and any
+/// note-expression for the same `(channel, note)` compute the same id and bind
+/// to the same voice — matching the VST3 host's `note_id_for` scheme
+/// (`channel * 128 + note`), keeping voice identity consistent across formats.
+#[inline]
+pub fn note_id_for(channel: u8, note: u8) -> i32 {
+    (channel as i32) * 128 + (note as i32)
+}
+
+/// Recover the `(channel, note)` a [`note_id_for`] id was built from. Ids at the
+/// `-1` wildcard (or otherwise negative) clamp to 0 before the `/128`, `%128`
+/// split so a round-tripped NoteExpression stays bound to its note.
+#[inline]
+fn note_id_to_channel_note(note_id: i32) -> (u8, u8) {
+    let id = note_id.max(0);
+    (((id / 128) & 0x0F) as u8, ((id % 128) & 0x7F) as u8)
+}
+
+/// Map a MIDI-2 per-note controller index to the CLAP note-expression it
+/// corresponds to (volume = 7, pan = 10, brightness = 74), or `None` when
+/// there's no standard counterpart.
+fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
+    match index {
+        7 => Some(NoteExpressionType::Volume),
+        10 => Some(NoteExpressionType::Pan),
+        74 => Some(NoteExpressionType::Brightness),
+        _ => None,
+    }
+}
+
+/// Inverse of [`per_note_controller_expression`].
+fn expression_to_per_note_controller_index(ty: NoteExpressionType) -> Option<u8> {
+    match ty {
+        NoteExpressionType::Volume => Some(7),
+        NoteExpressionType::Pan => Some(10),
+        NoteExpressionType::Brightness => Some(74),
+        _ => None,
+    }
+}
+
 impl ClapEvent {
     /// Borrow the common CLAP event header (time, type, space ID, flags).
     pub fn header(&self) -> &clap_event_header {
@@ -188,32 +238,93 @@ impl ClapEvent {
     /// plugins consume when the host has no parameter mapping for it. Returns
     /// `None` for UMP variants with no MIDI-1 form (SysEx, utility).
     pub fn from_midi_event(event: &MidiEvent) -> Option<Self> {
-        use tutti_midi_types::convert::u16_to_unit_f32;
-        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
+        use tutti_midi_types::midi2::channel_voice2::{ChannelVoice2 as Cv2, Controller};
         use tutti_midi_types::midi2::{Channeled, UmpMessage};
 
         let time = event.frame_offset;
         let normalized = tutti_midi_types::normalize(event);
-        match UmpMessage::try_from(normalized.data_words()) {
-            Ok(UmpMessage::ChannelVoice2(Cv2::NoteOn(m))) => Some(ClapEvent::note_on(
+        // Raw-bytes fallback for channel-voice messages CLAP has no typed slot
+        // for (CC, channel pitch bend/pressure, program, unmapped per-note CCs).
+        let as_generic_midi = || -> Option<Self> {
+            let (bytes, _len) = event.to_midi1_bytes()?;
+            Some(ClapEvent::midi(time, 0, bytes))
+        };
+        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(normalized.data_words()) else {
+            let (bytes, _len) = event.to_midi1_bytes()?;
+            return Some(ClapEvent::midi(time, 0, bytes));
+        };
+        let channel = u8::from(cv2.channel());
+        match cv2 {
+            Cv2::NoteOn(m) => Some(ClapEvent::note_on(
                 time,
-                i16::from(u8::from(m.channel())),
+                i16::from(channel),
                 i16::from(u8::from(m.note_number())),
                 f64::from(u16_to_unit_f32(m.velocity())),
             )),
-            Ok(UmpMessage::ChannelVoice2(Cv2::NoteOff(m))) => Some(ClapEvent::note_off(
+            Cv2::NoteOff(m) => Some(ClapEvent::note_off(
                 time,
-                i16::from(u8::from(m.channel())),
+                i16::from(channel),
                 i16::from(u8::from(m.note_number())),
                 0.0,
             )),
-            // CC / pitch-bend / pressure / program / per-note: forward as raw
-            // MIDI-1 bytes. A message with a 3-byte MIDI-1 form downconverts; one
-            // with no such form (SysEx, utility) is dropped.
-            _ => {
-                let (bytes, _len) = event.to_midi1_bytes()?;
-                Some(ClapEvent::midi(time, 0, bytes))
+            // MIDI-2 per-note pitch bend → CLAP tuning expression. Signed
+            // [-1, 1] scales to semitones by the per-note bend range.
+            Cv2::PerNotePitchBend(m) => Some(Self::per_note_expression(
+                time,
+                NoteExpressionType::Tuning,
+                channel,
+                u8::from(m.note_number()),
+                f64::from(bend_u32_to_signed_f32(m.pitch_bend_data()))
+                    * PER_NOTE_PITCH_BEND_RANGE_SEMITONES,
+            )),
+            // Poly (per-key) pressure → CLAP pressure expression, unit [0, 1].
+            Cv2::KeyPressure(m) => Some(Self::per_note_expression(
+                time,
+                NoteExpressionType::Pressure,
+                channel,
+                u8::from(m.note_number()),
+                f64::from(u32_to_unit_f32(m.key_pressure_data())),
+            )),
+            // Assignable per-note controllers map to CLAP note-expression for the
+            // indices with a standard counterpart (7/10/74); others fall through.
+            Cv2::AssignablePerNoteController(m) => {
+                match per_note_controller_expression(m.index()) {
+                    Some(ty) => Some(Self::per_note_expression(
+                        time,
+                        ty,
+                        channel,
+                        u8::from(m.note_number()),
+                        f64::from(u32_to_unit_f32(m.controller_data())),
+                    )),
+                    None => as_generic_midi(),
+                }
             }
+            // Registered per-note controllers carry spec meaning by name.
+            Cv2::RegisteredPerNoteController(m) => {
+                let mapped = match m.controller() {
+                    Controller::Volume(d) => Some((NoteExpressionType::Volume, d)),
+                    Controller::Pan(d) => Some((NoteExpressionType::Pan, d)),
+                    Controller::Brightness(d)
+                    | Controller::SoundController { index: 5, data: d } => {
+                        Some((NoteExpressionType::Brightness, d))
+                    }
+                    _ => None,
+                };
+                match mapped {
+                    Some((ty, data)) => Some(Self::per_note_expression(
+                        time,
+                        ty,
+                        channel,
+                        u8::from(m.note_number()),
+                        f64::from(u32_to_unit_f32(data)),
+                    )),
+                    None => as_generic_midi(),
+                }
+            }
+            // CC / channel pitch-bend / channel pressure / program: raw MIDI-1
+            // bytes (or dropped when there's no 3-byte form).
+            _ => as_generic_midi(),
         }
     }
 
@@ -240,9 +351,77 @@ impl ClapEvent {
                 MidiEvent::note_off(0, e.channel as u8 & 0x0F, e.key as u8 & 0x7F, 0)
                     .with_frame_offset(e.header.time),
             ),
+            ClapEvent::NoteExpression(e) => Self::note_expression_to_midi(e),
             ClapEvent::Midi(e) => MidiEvent::from_midi1_bytes(e.header.time, &e.data),
             _ => None,
         }
+    }
+
+    /// Rebuild the MIDI-2 per-note [`MidiEvent`] a CLAP note-expression stands
+    /// for: Tuning → per-note pitch bend, Pressure → poly pressure,
+    /// Volume/Pan/Brightness → the matching per-note controller. `(channel, note)`
+    /// come from the event's `channel`/`key` when the host stamped them, else
+    /// from decoding its `note_id`. Returns `None` for dimensions with no MIDI-2
+    /// per-note counterpart (Vibrato, Expression).
+    fn note_expression_to_midi(e: &clap_event_note_expression) -> Option<MidiEvent> {
+        use tutti_midi_types::convert::{signed_f32_to_bend_u32, unit_f32_to_u32};
+
+        let (channel, note) = if e.channel >= 0 && e.key >= 0 {
+            (e.channel as u8 & 0x0F, e.key as u8 & 0x7F)
+        } else {
+            note_id_to_channel_note(e.note_id)
+        };
+        let time = e.header.time;
+
+        let expression_type = match e.expression_id {
+            id if id == CLAP_NOTE_EXPRESSION_VOLUME => NoteExpressionType::Volume,
+            id if id == CLAP_NOTE_EXPRESSION_PAN => NoteExpressionType::Pan,
+            id if id == CLAP_NOTE_EXPRESSION_TUNING => NoteExpressionType::Tuning,
+            id if id == CLAP_NOTE_EXPRESSION_BRIGHTNESS => NoteExpressionType::Brightness,
+            id if id == CLAP_NOTE_EXPRESSION_PRESSURE => NoteExpressionType::Pressure,
+            _ => return None,
+        };
+
+        let event = match expression_type {
+            NoteExpressionType::Tuning => {
+                let signed = (e.value / PER_NOTE_PITCH_BEND_RANGE_SEMITONES) as f32;
+                MidiEvent::per_note_pitch_bend(0, channel, note, signed_f32_to_bend_u32(signed))
+            }
+            NoteExpressionType::Pressure => {
+                MidiEvent::poly_pressure(0, channel, note, unit_f32_to_u32(e.value as f32))
+            }
+            other => {
+                let index = expression_to_per_note_controller_index(other)?;
+                MidiEvent::per_note_controller(
+                    0,
+                    channel,
+                    note,
+                    index,
+                    unit_f32_to_u32(e.value as f32),
+                    false,
+                )
+            }
+        };
+        Some(event.with_frame_offset(time))
+    }
+
+    /// Build a note-expression event bound to a `(channel, note)` voice via
+    /// [`note_id_for`], also stamping `channel`/`key` so a plugin can match on
+    /// those as well as `note_id`.
+    fn per_note_expression(
+        time: u32,
+        expression_type: NoteExpressionType,
+        channel: u8,
+        note: u8,
+        value: f64,
+    ) -> Self {
+        let mut event =
+            Self::note_expression(time, expression_type, note_id_for(channel, note), value);
+        if let ClapEvent::NoteExpression(ne) = &mut event {
+            ne.channel = channel as i16;
+            ne.key = note as i16;
+        }
+        event
     }
 }
 
@@ -660,6 +839,86 @@ unsafe extern "C" fn output_events_try_push(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::convert::{signed_f32_to_bend_u32, unit_f32_to_u32};
+
+    // --- MIDI 2.0 per-note ↔ CLAP note-expression (Stream C) ---
+
+    #[test]
+    fn per_note_pitch_bend_becomes_tuning_note_expression() {
+        let bend = signed_f32_to_bend_u32(0.5);
+        let midi = MidiEvent::per_note_pitch_bend(0, 3, 60, bend).with_frame_offset(11);
+        match ClapEvent::from_midi_event(&midi).expect("per-note bend converts") {
+            ClapEvent::NoteExpression(e) => {
+                assert_eq!(e.header.time, 11);
+                assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_TUNING);
+                assert_eq!(e.note_id, note_id_for(3, 60));
+                assert_eq!(e.channel, 3);
+                assert_eq!(e.key, 60);
+                let expected = 0.5 * PER_NOTE_PITCH_BEND_RANGE_SEMITONES;
+                assert!((e.value - expected).abs() < 0.1, "tuning {} vs {expected}", e.value);
+            }
+            _ => panic!("expected NoteExpression(Tuning)"),
+        }
+    }
+
+    #[test]
+    fn tuning_note_expression_round_trips_to_per_note_pitch_bend() {
+        use tutti_midi_types::convert::bend_u32_to_signed_f32;
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
+        let value_semitones = 0.5 * PER_NOTE_PITCH_BEND_RANGE_SEMITONES;
+        let clap =
+            ClapEvent::per_note_expression(7, NoteExpressionType::Tuning, 5, 67, value_semitones);
+        let midi = clap.to_midi_event().expect("tuning -> midi");
+        assert_eq!(midi.frame_offset, 7);
+        match UmpMessage::try_from(midi.data_words()).expect("UMP") {
+            UmpMessage::ChannelVoice2(Cv2::PerNotePitchBend(m)) => {
+                assert_eq!(u8::from(m.channel()), 5);
+                assert_eq!(u8::from(m.note_number()), 67);
+                let value = bend_u32_to_signed_f32(m.pitch_bend_data());
+                assert!((value - 0.5).abs() < 0.01, "bend {value}");
+            }
+            other => panic!("expected PerNotePitchBend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn key_pressure_becomes_pressure_note_expression() {
+        let midi = MidiEvent::poly_pressure(0, 2, 48, unit_f32_to_u32(0.75));
+        match ClapEvent::from_midi_event(&midi).expect("poly pressure converts") {
+            ClapEvent::NoteExpression(e) => {
+                assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_PRESSURE);
+                assert_eq!(e.note_id, note_id_for(2, 48));
+                assert!((e.value - 0.75).abs() < 0.01, "pressure {}", e.value);
+            }
+            _ => panic!("expected NoteExpression(Pressure)"),
+        }
+    }
+
+    #[test]
+    fn assignable_per_note_controller_maps_to_brightness() {
+        // Assignable per-note controller index 74 (CC74) → CLAP _BRIGHTNESS.
+        let midi = MidiEvent::per_note_controller(0, 1, 64, 74, unit_f32_to_u32(0.6), false);
+        match ClapEvent::from_midi_event(&midi).expect("per-note cc converts") {
+            ClapEvent::NoteExpression(e) => {
+                assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_BRIGHTNESS);
+                assert_eq!(e.note_id, note_id_for(1, 64));
+                assert!((e.value - 0.6).abs() < 0.01, "brightness {}", e.value);
+            }
+            _ => panic!("expected NoteExpression(Brightness)"),
+        }
+    }
+
+    #[test]
+    fn per_note_controller_without_counterpart_falls_through_to_midi() {
+        // Per-note CC index 20 has no CLAP expression dimension → generic Midi.
+        let midi = MidiEvent::per_note_controller(0, 0, 60, 20, unit_f32_to_u32(0.5), false);
+        assert!(matches!(
+            ClapEvent::from_midi_event(&midi),
+            Some(ClapEvent::Midi(_)) | None
+        ));
+    }
 
     #[test]
     fn test_output_events_push_note_on() {

@@ -47,7 +47,15 @@ pub(crate) fn api_event_to_midi(event: &vst::api::MidiEvent) -> Option<MidiEvent
 }
 
 /// Serialize a Tutti UMP [`MidiEvent`] to a VST2 `vst::api::MidiEvent`.
-/// Returns `None` for MIDI 2.0-only events that have no MIDI 1.0 form.
+///
+/// MIDI 1.0 boundary. VST2 is a MIDI-1-only host: `to_midi1_bytes` performs the
+/// spec Min-Center-Max downscale (16-bit velocity / 32-bit CC / bend → 7/14-bit;
+/// `convert.rs`), so no precision is lost beyond MIDI-1's inherent width.
+/// Translated: NoteOn/Off, CC, channel pitch bend, channel/poly pressure,
+/// program change (everything with a 3-byte MIDI-1 form).
+/// Dropped (returns `None` — no MIDI-1 analogue): per-note pitch bend, per-note
+/// controllers, per-note management (Detach/Reset), and any resolution beyond
+/// 7/14 bits.
 pub(crate) fn midi_to_api_event(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
     use std::mem;
     use vst::api;

@@ -15,6 +15,13 @@
 //!
 //! The `Serialize`/`Deserialize` derives are gated behind the `serde` feature
 //! (the IPC wire path enables it), and serialize as the underlying bits.
+//!
+//! This is a fixed list of the functionality we support — not a superset of
+//! what the formats emit. The three kinds (Required / Negotiated / Best-effort)
+//! and the per-format capability table live in the `tutti-plugin` crate README
+//! (`## Capability model`). Keep that table in sync with the per-format loaders
+//! in `tutti-plugin-server/src/loaders/`, which are the source of truth for what
+//! each format actually reports.
 
 use bitflags::bitflags;
 

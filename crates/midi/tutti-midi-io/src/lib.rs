@@ -50,38 +50,50 @@ pub use crossbeam_channel;
 // `PendingMidi` next to its claimant in `midi_plugin`. The whole surface
 // re-exports at the crate root so consumers write `tutti_midi_io::TuttiMidiPlugin`.
 
+#[cfg(feature = "bevy")]
 pub mod bus;
+#[cfg(feature = "bevy")]
 pub use bus::MidiBusRes;
 
+#[cfg(feature = "bevy")]
 pub mod input;
+#[cfg(feature = "bevy")]
 pub use input::{midi_input_event_system, MidiInputEvent, MidiInputObserver, MidiInputPlugin};
 
+#[cfg(feature = "bevy")]
 pub mod routing;
+#[cfg(feature = "bevy")]
 pub use routing::{midi_routing_sync_system, MidiReceiver, MidiRoutingPlugin};
-#[cfg(feature = "mpe")]
+#[cfg(all(feature = "bevy", feature = "mpe"))]
 pub use routing::MpeReceiver;
 
+#[cfg(feature = "bevy")]
 pub mod sequence;
+#[cfg(feature = "bevy")]
 pub use sequence::{
     midi_sequence_setup_system, midi_sequence_tick_system, MidiSequence, MidiSequenceNote,
     MidiSequencePlugin, MidiSequenceState,
 };
 
+#[cfg(feature = "bevy")]
 pub mod scheduled;
+#[cfg(feature = "bevy")]
 pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi, ScheduledMidiPlugin};
 
-#[cfg(feature = "midi-hardware")]
+#[cfg(all(feature = "bevy", feature = "midi-hardware"))]
 pub mod device;
-#[cfg(feature = "midi-hardware")]
+#[cfg(all(feature = "bevy", feature = "midi-hardware"))]
 pub use device::{
     midi_device_connect_system, midi_device_poll_system, ConnectMidiDevice, DisconnectMidiDevice,
     MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState, MidiIoRes,
 };
 
-#[cfg(feature = "mpe")]
+#[cfg(all(feature = "bevy", feature = "mpe"))]
 pub mod mpe;
-#[cfg(feature = "mpe")]
+#[cfg(all(feature = "bevy", feature = "mpe"))]
 pub use mpe::{MpeExpressionResource, MpeModeConfig, MpePlugin};
 
+#[cfg(feature = "bevy")]
 mod midi_plugin;
+#[cfg(feature = "bevy")]
 pub use midi_plugin::{PendingMidi, TuttiMidiPlugin};

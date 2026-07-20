@@ -58,7 +58,8 @@ pub use correlation::{CorrelationMeter, StereoAnalysis};
 pub use istft::{istft, istft_complex};
 pub use live::{run_analysis_thread, LiveAnalysisState};
 // Bevy ECS surface of the live-analysis duty — co-located in `live` with the
-// RT engine it mirrors (was the standalone `ecs` module).
+// RT engine it mirrors. Gated behind the `bevy` feature.
+#[cfg(feature = "bevy")]
 pub use live::{
     AnalysisRes, DisableLiveAnalysis, EnableLiveAnalysis, LiveAnalysisData, PendingAnalysis,
     TuttiAnalysisPlugin,

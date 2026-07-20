@@ -206,7 +206,16 @@ pub fn run_analysis_thread(
 // pulls its lock-free `ArcSwap` results into [`LiveAnalysisData`] each frame.
 // There is no separate handle facade — the resource *is* the live state, and a
 // system owns its lifecycle (the bevy-native shape).
+//
+// Gated behind the `bevy` feature: the analysis algorithms above are Bevy-free.
 // ===========================================================================
+
+#[cfg(feature = "bevy")]
+pub use ecs::*;
+
+#[cfg(feature = "bevy")]
+mod ecs {
+    use super::*;
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
@@ -454,4 +463,5 @@ mod tests {
             );
         }
     }
+}
 }

@@ -9,15 +9,22 @@ keywords = ["audio", "dsp", "real-time", "daw", "fundsp"]
 categories = ["multimedia::audio"]
 
 [features]
-# tutti-core is now a std crate with hard Bevy deps (it hosts the ECS graph
-# hub). `std` and `bevy_ecs`/`bevy_asset` are no longer features — they're
-# unconditional. The names below are kept as no-op aliases so sibling crates'
-# existing `features = ["std", "bevy_ecs", ...]` requests keep resolving until
-# they're cleaned up; they pull nothing extra.
-default = []
+# tutti-core is a std crate; its DSP graph runtime (Net/AudioGraph, transport,
+# metering, PDC) is Bevy-free. The `bevy` feature adds the ECS reconcile hub
+# (GraphReconcileSystems, AudioGraphRes, GraphReconcilePlugin, the param
+# Components) that leaf audio crates schedule against. On by default so Bevy
+# consumers are unaffected; `--no-default-features` builds a Bevy-free kernel a
+# non-Bevy DAW can link.
+default = ["bevy"]
+bevy = ["dep:bevy_ecs", "dep:bevy_reflect", "dep:bevy_app", "dep:bevy_tasks", "dep:bevy_log"]
+
+# Back-compat aliases: sibling crates still pass `features = ["std"|"bevy_ecs"]`.
+# `std` is unconditional now (no-op); `bevy_ecs` maps onto the `bevy` feature.
 std = []
-bevy_ecs = []
-bevy_asset = ["fundsp/bevy_asset"]
+bevy_ecs = ["bevy"]
+# Bevy asset loading is a distinct axis (fundsp WaveAsset derives); it also
+# implies `bevy` since the loaders live in the ECS layer.
+bevy_asset = ["bevy", "dep:bevy_asset", "fundsp/bevy_asset"]
 
 # Individual audio format support (each pulls only its codec)
 wav = ["fundsp/wav"]
@@ -58,16 +65,17 @@ parking_lot = { version = "0.12", default-features = false }
 crossbeam-channel = { version = "0.5" }
 ebur128 = { version = "0.1" }
 
-# Bevy — hard deps. tutti-core hosts the ECS graph-reconcile hub
-# (GraphReconcileSystems, TuttiGraphRes, TuttiGraphPlugin, the param
-# components) that every leaf audio crate schedules against. Pinned to the
-# same Bevy minor as the rest of the workspace.
-bevy_ecs = { version = "0.19", default-features = false, features = ["bevy_reflect"] }
-bevy_reflect = { version = "0.19", default-features = false }
-bevy_app = { version = "0.19", default-features = false }
-bevy_asset = { version = "0.19", default-features = false }
-bevy_tasks = { version = "0.19" }
-bevy_log = { version = "0.19", default-features = false }
+# Bevy — optional, gated by the `bevy` feature. tutti-core hosts the ECS
+# graph-reconcile hub (GraphReconcileSystems, AudioGraphRes,
+# GraphReconcilePlugin, the param components) that every leaf audio crate
+# schedules against. Pinned to the same Bevy minor as the rest of the
+# workspace. `--no-default-features` drops all of these.
+bevy_ecs = { version = "0.19", default-features = false, features = ["bevy_reflect"], optional = true }
+bevy_reflect = { version = "0.19", default-features = false, optional = true }
+bevy_app = { version = "0.19", default-features = false, optional = true }
+bevy_asset = { version = "0.19", default-features = false, optional = true }
+bevy_tasks = { version = "0.19", optional = true }
+bevy_log = { version = "0.19", default-features = false, optional = true }
 
 [dev-dependencies]
 assert_no_alloc = "1"

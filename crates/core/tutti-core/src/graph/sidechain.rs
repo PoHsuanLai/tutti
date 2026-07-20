@@ -193,12 +193,10 @@ mod tests {
         let mut net = GraphNet::new(0, channels);
         let _backend = net.backend();
         let pdc = PdcManager::new(channels, 0);
-        #[cfg(feature = "midi")]
         let midi_route = tutti_midi_types::MidiRoutingTable::new();
         AudioGraph::from_parts(
             net,
             pdc,
-            #[cfg(feature = "midi")]
             midi_route,
             48_000.0,
             channels,

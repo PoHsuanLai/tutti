@@ -16,5 +16,7 @@ pub use manager::MeteringManager;
 pub use rt::MeteringContext;
 pub use stereo::{AtomicStereoAnalysis, StereoAnalysisSnapshot};
 
+#[cfg(feature = "bevy")]
 pub mod plugin;
+#[cfg(feature = "bevy")]
 pub use plugin::{MeteringRes, PendingMetering, TuttiMeteringPlugin};

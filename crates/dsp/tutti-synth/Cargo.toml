@@ -7,28 +7,33 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
-default = ["midi"]
+default = ["midi", "bevy"]
 std = []
 midi = ["tutti-core/midi", "dep:tutti-midi-types", "dep:tutti-midi-runtime", "dep:tutti-midi-io"]
-# The `ecs` module (gated on `soundfont`) loads `.sf2` via the Bevy asset
-# system, so `soundfont` pulls in `bevy_asset` (the `SoundFontAsset` derive).
+# Bevy ECS surface. The only Bevy code in this crate is the `soundfont` module's
+# entity-as-node trigger + `.sf2` AssetLoader, so `soundfont` implies `bevy`.
+# The voice/unison/portamento/tuning/synth DSP itself is Bevy-free.
+bevy = ["dep:bevy_app", "dep:bevy_ecs", "dep:bevy_reflect", "dep:bevy_asset", "dep:bevy_tasks", "dep:bevy_log", "tutti-core/bevy_asset"]
 soundfont = ["std", "dep:rustysynth", "midi", "bevy_asset"]
 full = ["soundfont"]
 
-# Propagates bevy_asset derives into rustysynth (gates on soundfont).
-bevy_asset = ["soundfont", "rustysynth?/bevy_asset"]
+# Propagates bevy_asset derives into rustysynth (gates on soundfont) and pulls
+# the Bevy surface + tutti-core's bevy_asset.
+bevy_asset = ["bevy", "soundfont", "rustysynth?/bevy_asset"]
 
 [dependencies]
-tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["bevy_asset"] }
+# default-features = false so tutti-core's default `bevy` doesn't leak in; the
+# `bevy` feature above re-adds `tutti-core/bevy_asset` when wanted.
+tutti-core = { path = "../../core/tutti-core", default-features = false }
 
-# Bevy-native ECS surface (entity-as-node SoundFont trigger). Mirrors
-# tutti-wavecache / tutti-sampler: hard deps, not feature-gated.
-bevy_app = { version = "0.19", default-features = false }
-bevy_ecs = { version = "0.19", default-features = false }
-bevy_reflect = { version = "0.19", default-features = false }
-bevy_asset = { version = "0.19", default-features = false }
-bevy_tasks = { version = "0.19" }
-bevy_log = { version = "0.19", default-features = false }
+# Bevy-native ECS surface (entity-as-node SoundFont trigger). Optional, gated by
+# the `bevy` feature (implied by `soundfont`).
+bevy_app = { version = "0.19", default-features = false, optional = true }
+bevy_ecs = { version = "0.19", default-features = false, optional = true }
+bevy_reflect = { version = "0.19", default-features = false, optional = true }
+bevy_asset = { version = "0.19", default-features = false, optional = true }
+bevy_tasks = { version = "0.19", optional = true }
+bevy_log = { version = "0.19", default-features = false, optional = true }
 tutti-midi-types = { path = "../../midi/tutti-midi-types", optional = true, default-features = false }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", optional = true, default-features = false }
 # For MidiBusRes — registering a promoted SoundFont unit's sender on the bus

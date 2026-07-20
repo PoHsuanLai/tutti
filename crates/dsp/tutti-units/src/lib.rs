@@ -17,9 +17,12 @@ pub use tutti_core::{
 // The shared DSP parameter pool (Frequency, FilterQ, GainDb, WetMix, …) and the
 // node authoring markers — the cross-cutting ECS vocabulary the reconcile/spawn
 // systems below read. Moved out of tutti-core (which keeps only the foundational
-// graph params) so the API sits in the crate whose DSP it drives.
+// graph params) so the API sits in the crate whose DSP it drives. Bevy-only.
+#[cfg(feature = "bevy")]
 pub mod dsp_params;
+#[cfg(feature = "bevy")]
 pub mod node_markers;
+#[cfg(feature = "bevy")]
 pub use dsp_params::{
     Attack, Azimuth, BeatSynced, CeilingDb, CompressorRatio, DelayTime, Drive, Elevation, Feedback,
     FilterMode, FilterQ, Frequency, GainDb, LfoShapeKind, MaxDelay, ModDepth, ModRate, Release,
@@ -79,26 +82,30 @@ pub mod automation;
 // The `spatial_graph` suffix disambiguates the graph-binding layer from the
 // same-named `spatial/` DSP-unit module it drives (the panner nodes). The
 // automation graph binding lives inside `automation::graph` alongside its DSP.
+#[cfg(feature = "bevy")]
 pub mod dsp;
+#[cfg(feature = "bevy")]
 pub mod reconcile;
+#[cfg(feature = "bevy")]
 pub use dsp::{spawn_dsp_node, spawn_lfo_nodes, AddDspNode, DspNode, SpawnParams, TuttiDspPlugin};
+#[cfg(feature = "bevy")]
 pub use reconcile::{bump_param_epoch_dsp, reconcile_reverb_params, reconcile_unit_params, EffectParams};
 
-#[cfg(feature = "convolution")]
+#[cfg(all(feature = "bevy", feature = "convolution"))]
 pub mod pending_convolver;
-#[cfg(feature = "convolution")]
+#[cfg(all(feature = "bevy", feature = "convolution"))]
 pub use pending_convolver::{promote_pending_convolvers, start_convolver_loads, PendingConvolverLoad};
-#[cfg(feature = "convolution")]
+#[cfg(all(feature = "bevy", feature = "convolution"))]
 pub use reconcile::reconcile_convolver_params;
 
-#[cfg(feature = "spatial")]
+#[cfg(all(feature = "bevy", feature = "spatial"))]
 pub mod spatial_graph;
-#[cfg(feature = "spatial")]
+#[cfg(all(feature = "bevy", feature = "spatial"))]
 pub use spatial_graph::{
     spatial_audio_sync_system, AttenuationModel, AudioListener, SpatialAudio, TuttiSpatialPlugin,
 };
 
-#[cfg(feature = "automation")]
+#[cfg(all(feature = "bevy", feature = "automation"))]
 pub use automation::graph::{
     automation_lane_system, reconcile_automation_writes, update_automation_envelope_system,
     AddAutomationLane, AutomationDrivesParam, AutomationLaneEmitter, AutomationLaneNode,

@@ -18,7 +18,9 @@ pub use offline::{OfflineTransport, OfflineTransportConfig};
 pub use sync::{SmpteFrameRate, SyncSnapshot, SyncSource, SyncState, SyncStatus};
 pub use tempo_map::{TempoMap, TimeSignature, BBT};
 
+#[cfg(feature = "bevy")]
 pub mod plugin;
+#[cfg(feature = "bevy")]
 pub use plugin::{PendingTransport, TransportRes, TuttiTransportPlugin};
 
 /// Trait for reading transport state.

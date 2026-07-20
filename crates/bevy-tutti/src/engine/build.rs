@@ -39,8 +39,10 @@ use tutti_midi_io::PendingMidi;
 use tutti_midi_io::MidiIo;
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::MidiBus;
-#[cfg(feature = "midi")]
-use tutti_midi_runtime::MidiRoutingTable;
+// `MidiRoutingTable` is a plain type (from tutti-midi-types, a hard dep) that
+// `AudioGraph` always carries — import it unconditionally so the `from_parts`
+// call shape doesn't depend on the `midi` feature.
+use tutti_midi_types::MidiRoutingTable;
 
 #[cfg(feature = "sampler")]
 use tutti_sampler::{PendingSampler, Sampler};
@@ -114,7 +116,6 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
 
     let backend = net.backend();
 
-    #[cfg(feature = "midi")]
     let midi_route = MidiRoutingTable::new();
     #[cfg(feature = "midi")]
     let midi_bus = MidiBus::new();
@@ -156,7 +157,6 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let graph = AudioGraph::from_parts(
         net,
         pdc,
-        #[cfg(feature = "midi")]
         midi_route,
         sample_rate,
         channels,

@@ -26,24 +26,19 @@
 //! [`AsyncComputeTaskPool`]: bevy_tasks::AsyncComputeTaskPool
 
 /// Path-backed streaming-sample asset + its loader (long files the auditioner
-/// streams from disk).
+/// streams from disk). Bevy `Asset` glue — gated.
+#[cfg(feature = "bevy")]
 pub mod streaming_sample;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use bevy_app::{App, Plugin, Update};
-use bevy_ecs::message::{Message, MessageReader};
-use bevy_ecs::prelude::*;
-use bevy_ecs::schedule::IntoScheduleConfigs;
-use bevy_log::{info, warn};
-use bevy_tasks::{AsyncComputeTaskPool, Task};
+#[cfg(feature = "bevy")]
+use bevy_ecs::prelude::Resource;
 use dashmap::DashMap;
 use smol::channel::Sender;
 
-use tutti_core::graph::{engine_ready, GraphDirty, AudioGraphRes};
-use bevy_tasks::{block_on, futures_lite::future};
 use tutti_core::{AtomicF32, Wave};
 
 use crate::butler::{ButlerCommand, ChannelPlan, LruCache, PlayDirection};
@@ -82,7 +77,8 @@ enum PreviewMode {
 /// to the whole `Sampler`. All fields are `Arc`/`Sender`/atomics, so `Clone`
 /// is a cheap shared-handle copy: cloning the resource into an off-thread
 /// decode task operates on the *same* underlying state.
-#[derive(Resource, Clone)]
+#[cfg_attr(feature = "bevy", derive(Resource))]
+#[derive(Clone)]
 pub struct Auditioner {
     butler_tx: Sender<ButlerCommand>,
     butler_plans: Arc<DashMap<usize, ChannelPlan>>,
@@ -282,6 +278,25 @@ impl Auditioner {
     }
 }
 
+// Bevy ECS surface — the preview/stop messages, the graph-node tracker, the
+// off-thread decode plugin, and its systems. The `Auditioner` engine above is
+// Bevy-free; a non-Bevy host calls `Sampler::auditioner()` and drives
+// `preview`/`stop` on it directly, wiring `in_memory_unit()`/`streaming_unit()`
+// into its own graph.
+#[cfg(feature = "bevy")]
+pub use ecs::*;
+
+#[cfg(feature = "bevy")]
+mod ecs {
+    use super::*;
+    use bevy_app::{App, Plugin, Update};
+    use bevy_ecs::message::{Message, MessageReader};
+    use bevy_ecs::prelude::*;
+    use bevy_ecs::schedule::IntoScheduleConfigs;
+    use bevy_log::{info, warn};
+    use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
+    use tutti_core::graph::{engine_ready, AudioGraphRes, GraphDirty};
+
 /// Request to preview an audio file. The auditioner stops any current
 /// preview before starting the new one.
 #[derive(Message)]
@@ -436,4 +451,5 @@ fn handle_stop_preview(
             }
         }
     }
+}
 }

@@ -9,9 +9,16 @@ pub(crate) mod manager;
 pub(crate) mod node;
 
 /// Hardware input device + manager (cpal capture stream + MPMC channel).
+/// Bevy-free: a non-Bevy host drives capture through the [`Manager`] directly.
 pub use manager::{Device, Manager};
 pub use node::{AudioInput, AudioInputBackend};
 
+// Bevy ECS surface — the enable/disable messages, state resource, and plugin.
+#[cfg(feature = "bevy")]
+pub use ecs::*;
+
+#[cfg(feature = "bevy")]
+mod ecs {
 use bevy_app::{App, Plugin, Startup, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
@@ -144,4 +151,5 @@ impl Plugin for TuttiAudioInputPlugin {
                     .run_if(engine_ready),
             );
     }
+}
 }

@@ -16,6 +16,7 @@
 
 mod lane;
 mod recording;
+#[cfg(feature = "bevy")]
 pub mod graph;
 
 pub use lane::{AutomationLane, LiveAutomationLane};

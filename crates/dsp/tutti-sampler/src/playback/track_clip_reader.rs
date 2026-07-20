@@ -11,6 +11,7 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, TransportReader, Wave};
@@ -143,6 +144,7 @@ impl TrackClipReaderHandle {
         match self.tx.try_send(cmd) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
+                #[cfg(feature = "bevy")]
                 bevy_log::warn!("TrackClipReader command queue full, dropping command");
             }
             Err(TrySendError::Disconnected(_)) => {}
@@ -154,9 +156,11 @@ impl TrackClipReaderHandle {
 // ECS components — live on the track entity.
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "bevy")]
 #[derive(Component)]
 pub struct TrackClipReaderRef(pub TrackClipReaderHandle);
 
+#[cfg(feature = "bevy")]
 #[derive(Component, Debug, Clone, Copy)]
 pub struct TrackClipReaderNode(pub tutti_core::NodeId);
 

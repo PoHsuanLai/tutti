@@ -37,9 +37,20 @@
 //! - [`input`] — hardware audio input via `cpal`
 //! - [`stretch`] — time-stretch / pitch-shift DSP unit
 //!
-//! # Direct DSP integration
+//! # Bevy-free use (`--no-default-features`)
 //!
-//! For direct FunDSP-graph integration without the ECS layer:
+//! The whole engine is Bevy-free; only the ECS drivers (Plugins, trigger
+//! messages, reconcile systems) are behind the `bevy` feature. A non-Bevy host
+//! builds a [`Sampler`] and drives it through plain methods:
+//!
+//! - In-memory playback: construct a [`SamplerUnit`] / [`TrackClipReaderUnit`]
+//!   and add it to a [`tutti_core::graph::AudioGraph`].
+//! - **Disk streaming**: [`Sampler::new`] spawns the butler thread;
+//!   [`Sampler::auditioner`] gives an [`Auditioner`] whose
+//!   [`preview`](Auditioner::preview) streams long files from disk and hands back
+//!   a [`StreamingSamplerUnit`] via
+//!   [`streaming_unit()`](Auditioner::streaming_unit) to wire into your graph.
+//! - Recording: [`Sampler::recording`] returns the capture [`Recorder`](capture::Recorder).
 //!
 //! ```no_run
 //! use std::sync::Arc;
@@ -57,51 +68,73 @@ pub use error::{Error, Result};
 
 mod node_id;
 
-// Each domain is a self-contained module owning its Components / Systems /
-// Plugin next to the audio logic it drives (the bevy_audio shape — no `ecs/`
-// category folder). `TuttiSamplerPlugin` composes the four domain plugins.
-pub mod input;
+// Each domain is a self-contained module owning its audio engine + (under the
+// `bevy` feature) its Components / Systems / Plugin. The disk-streaming engine —
+// the butler thread, the `Sampler` handle, `StreamingSamplerUnit`, the recording
+// bookkeeper, and the auditioner — is Bevy-free: a non-Bevy host builds a
+// `Sampler` with `Sampler::new(..)` and drives streaming/preview through its
+// methods directly. Only the ECS drivers (Plugins, trigger Messages, reconcile
+// systems) that turn those into entity-spawn workflows are gated.
 pub mod playback;
+pub mod input;
 pub mod preview;
 pub mod recording;
 
+// Bevy ECS surface of the input / preview / recording domains.
+#[cfg(feature = "bevy")]
 pub use input::{
     audio_input_control_system, audio_input_init_system, audio_input_sync_system,
     AudioInputDeviceInfo, AudioInputState, DisableAudioInput, EnableAudioInput,
     TuttiAudioInputPlugin,
 };
+#[cfg(feature = "bevy")]
 pub use preview::streaming_sample::{
     StreamingProgress, StreamingSample, StreamingSampleLoader, StreamingSampleLoaderError,
     StreamingSampleProbeError,
 };
+#[cfg(feature = "bevy")]
 pub use preview::{
-    init_auditioner, Auditioner, AuditionerNode, PreviewFile, StopPreview, TuttiAuditionerPlugin,
+    init_auditioner, AuditionerNode, PreviewFile, StopPreview, TuttiAuditionerPlugin,
 };
+// The auditioner streaming engine (Bevy-free logic; `Resource` derive is gated).
+pub use preview::Auditioner;
+// Bevy-free DSP leaves + value types from `playback` — usable for direct
+// FunDSP-graph integration without the ECS layer.
+pub use playback::{ClipCommand, ClipSpec, SamplerUnit, SlotId, StreamingSamplerUnit,
+    TrackClipReaderHandle, TrackClipReaderUnit};
+// Bevy ECS surface of `playback`.
+#[cfg(feature = "bevy")]
 pub use playback::{
     audio_cleanup_system, audio_parameter_sync_system, audio_playback_system,
     bump_param_epoch_sampler, poll_wave_imports, promote_pending_samplers, reconcile_sampler_params,
     reconcile_sampler_volume, time_stretch_sync_system, AudioEmitter, AudioPlaybackState,
-    AudioVolume, ClipCommand, ClipSpec, DespawnOnFinish, PendingSamplerLoad, PlayAudio,
-    SamplerLooping, SamplerNode, SamplerSpeed, SamplerUnit, SlotId, StreamingSamplerUnit,
-    TimeStretch, TimeStretchControl, TrackClipReaderHandle, TrackClipReaderNode,
-    TrackClipReaderRef, TrackClipReaderUnit, TuttiPlaybackPlugin, WaveImportQueue, WaveAssetLoader,
+    AudioVolume, DespawnOnFinish, PendingSamplerLoad, PlayAudio,
+    SamplerLooping, SamplerNode, SamplerSpeed,
+    TimeStretch, TimeStretchControl, TrackClipReaderNode,
+    TrackClipReaderRef, TuttiPlaybackPlugin, WaveImportQueue, WaveAssetLoader,
     WaveAssetLoaderError,
 };
+#[cfg(feature = "bevy")]
 pub use recording::{
     recording_start_system, recording_stop_system, RecordingActive, RecordingResult,
     StartRecording, StopRecording, TuttiRecordingPlugin,
 };
 
+// The async disk-streaming engine (butler thread + the `Sampler` handle). All
+// Bevy-free — a non-Bevy host drives it directly via `Sampler::new` / the
+// `ButlerThread` API. The `Resource` derive on `Sampler` is `bevy`-gated inside.
 pub(crate) mod butler;
-mod sampler;
 
+mod sampler;
 pub use sampler::{Sampler, SamplerConfig};
 
+#[cfg(feature = "bevy")]
 use bevy_ecs::prelude::Resource;
 
 /// Transient handed off by `build_into`. The umbrella builder inserts the
 /// freshly-built [`Sampler`]; [`TuttiSamplerPlugin`]'s `build()` derives the
 /// [`Auditioner`] from it and installs both as their own resources.
+#[cfg(feature = "bevy")]
 #[derive(Resource)]
 pub struct PendingSampler(pub Option<Sampler>);
 
@@ -113,8 +146,10 @@ pub struct PendingSampler(pub Option<Sampler>);
 /// schedule owned by [`tutti_core::graph`]. Requires the core graph plugin
 /// ([`tutti_core::graph::GraphReconcilePlugin`]) to have configured
 /// `GraphReconcileSystems` first.
+#[cfg(feature = "bevy")]
 pub struct TuttiSamplerPlugin;
 
+#[cfg(feature = "bevy")]
 impl bevy_app::Plugin for TuttiSamplerPlugin {
     fn build(&self, app: &mut bevy_app::App) {
         // Each domain is a self-contained plugin; this just composes them.

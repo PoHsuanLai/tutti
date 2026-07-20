@@ -3,6 +3,14 @@
 
 pub mod capture;
 
+// Bevy ECS surface (the `StartRecording`/`StopRecording` triggers + plugin).
+// The `capture` bookkeeping above is Bevy-free — a non-Bevy host records via
+// `Sampler::recording()` directly.
+#[cfg(feature = "bevy")]
+pub use ecs::*;
+
+#[cfg(feature = "bevy")]
+mod ecs {
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
@@ -193,4 +201,5 @@ impl Plugin for TuttiRecordingPlugin {
                 (recording_start_system, recording_stop_system).run_if(engine_ready),
             );
     }
+}
 }

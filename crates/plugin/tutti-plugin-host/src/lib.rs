@@ -5,6 +5,12 @@
 //! plugin handles into Bevy entities with a native GUI editor window,
 //! and reconciles `PluginParam` changes into the running audio graph.
 //!
+//! **Bevy-only by design.** Every module here is ECS / window glue; there is no
+//! Bevy-free core to gate. A non-Bevy host uses the (Bevy-free) `tutti-plugin`
+//! crate for plugin discovery / loading / `PluginHandle` param control and
+//! `tutti-plugin-server` for out-of-process audio, wiring editor + scan hosting
+//! itself.
+//!
 //! Sub-modules:
 //! - [`editor`] — open / attach / idle / window-resize / close. The 5-system
 //!   choreography that owns the plugin GUI window's lifecycle.

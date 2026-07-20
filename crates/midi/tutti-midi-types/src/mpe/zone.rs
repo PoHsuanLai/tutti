@@ -124,6 +124,47 @@ impl MpeZoneConfig {
             MpeZone::SingleChannel(ch) => ch..=ch,
         }
     }
+
+    /// Encode this zone as an **MPE Configuration Message** (MCM): a MIDI 2.0
+    /// Registered Controller (RPN) on the zone's *master* channel, bank
+    /// [`RPN_BANK_MPE`], index [`RPN_INDEX_MCM`], data = member count. Per
+    /// RP-053 / M2-104, the master channel (Ch1 lower / Ch16 upper) is what a
+    /// receiver reads to know which zone is being configured; `member_count`
+    /// = `0` would disable the zone.
+    ///
+    /// The 7-bit member count sits in the top 7 bits of the 32-bit data field
+    /// (MSB-aligned, the spec's 7→32 convention) so it round-trips exactly.
+    pub fn to_mcm(&self) -> crate::ump::MidiEvent {
+        crate::ump::MidiEvent::registered_controller(
+            0,
+            self.master_channel,
+            crate::ump::RPN_BANK_MPE,
+            crate::ump::RPN_INDEX_MCM,
+            (self.member_count as u32) << 25,
+        )
+    }
+
+    /// Decode an MCM back into `(master_channel, member_count)`, if `event` is an
+    /// MPE Configuration Message (RPN bank `0x00`, index `0x06`). Returns `None`
+    /// for any other message. The zone side (lower vs upper) is inferred from the
+    /// master channel by the caller (Ch0 → lower, Ch15 → upper).
+    pub fn from_mcm(event: &crate::ump::MidiEvent) -> Option<(u8, u8)> {
+        use midi2::channel_voice2::ChannelVoice2;
+        use midi2::{Channeled, UmpMessage};
+        let UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m)) =
+            UmpMessage::try_from(event.data_words()).ok()?
+        else {
+            return None;
+        };
+        if u8::from(m.bank()) != crate::ump::RPN_BANK_MPE
+            || u8::from(m.index()) != crate::ump::RPN_INDEX_MCM
+        {
+            return None;
+        }
+        let master_channel = u8::from(m.channel());
+        let member_count = (m.controller_data() >> 25) as u8;
+        Some((master_channel, member_count))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -148,6 +189,32 @@ pub enum MpeMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcm_round_trips_lower_zone() {
+        // MpeZoneConfig → MCM RPN → (master_channel, member_count) identity.
+        let cfg = MpeZoneConfig::lower(10);
+        let (master, members) = MpeZoneConfig::from_mcm(&cfg.to_mcm()).expect("is an MCM");
+        assert_eq!(master, 0); // lower zone master = Ch1 (0-indexed)
+        assert_eq!(members, 10);
+    }
+
+    #[test]
+    fn mcm_round_trips_upper_zone() {
+        let cfg = MpeZoneConfig::upper(7);
+        let (master, members) = MpeZoneConfig::from_mcm(&cfg.to_mcm()).expect("is an MCM");
+        assert_eq!(master, 15); // upper zone master = Ch16
+        assert_eq!(members, 7);
+    }
+
+    #[test]
+    fn from_mcm_rejects_non_mcm() {
+        // A plain note-on is not an MCM.
+        assert!(MpeZoneConfig::from_mcm(&crate::ump::MidiEvent::note_on(0, 0, 60, 0x8000)).is_none());
+        // An RPN with a different index is not an MCM.
+        let other_rpn = crate::ump::MidiEvent::registered_controller(0, 0, 0x00, 0x00, 0);
+        assert!(MpeZoneConfig::from_mcm(&other_rpn).is_none());
+    }
 
     #[test]
     fn pitch_bend_sensitivity_rpn_roundtrip() {

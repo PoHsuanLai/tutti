@@ -68,7 +68,7 @@ pub use trigger::{
 #[cfg(feature = "bevy")]
 pub use node::{SamplerLooping, SamplerNode, SamplerSpeed};
 pub use sampler_unit::SamplerUnit;
-pub use streaming_sampler::StreamingSamplerUnit;
+pub use streaming_sampler::{StreamingClip, StreamingClipReader, StreamingSamplerUnit};
 #[cfg(feature = "bevy")]
 pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 

@@ -38,6 +38,12 @@ pub struct BufferHealth {
     underrun_count: AtomicU64,
     /// 0-1000 representing 0.0-1.0.
     buffer_fill_level: AtomicU32,
+    /// Butler-bumped ring-reset request. The butler increments this when it
+    /// repositions the stream (seek / loop-wrap) and needs the audio thread to
+    /// drop the stale buffered samples. The audio thread — the sole ring
+    /// consumer — clears the ring when it observes a change vs. its last-applied
+    /// value, keeping the SPSC pop single-threaded (the butler never pops).
+    reset_epoch: AtomicU64,
 }
 
 impl Default for BufferHealth {
@@ -46,6 +52,7 @@ impl Default for BufferHealth {
             seeking: AtomicBool::new(false),
             underrun_count: AtomicU64::new(0),
             buffer_fill_level: AtomicU32::new(0),
+            reset_epoch: AtomicU64::new(0),
         }
     }
 }
@@ -136,6 +143,20 @@ impl RtState {
 
     pub fn set_seeking(&self, seeking: bool) {
         self.health.seeking.store(seeking, Ordering::Release);
+    }
+
+    /// Butler side: request the audio thread drop the ring's stale contents
+    /// after repositioning the stream. Lock-free; the butler never touches the
+    /// SPSC consumer itself.
+    pub fn request_ring_reset(&self) {
+        self.health.reset_epoch.fetch_add(1, Ordering::Release);
+    }
+
+    /// Current ring-reset epoch. The audio thread compares this against its
+    /// last-applied value to decide whether a butler-requested clear is pending.
+    #[inline]
+    pub fn reset_epoch(&self) -> u64 {
+        self.health.reset_epoch.load(Ordering::Acquire)
     }
 
     #[inline]

@@ -100,15 +100,34 @@ pub(crate) fn refill_all(
         let adjusted_speed = speed * src_ratio * buffer_margin as f32;
         let chunk_size = varifill_chunk(fill_pct, base_chunk_size, read_rate, adjusted_speed);
 
+        let file_position = writer.file_position() as usize;
+        let loop_range = stream_state.loop_config().map(|c| c.range);
+
+        // Real incremental streaming: decode only the requested range from
+        // disk. Regions whose format isn't seekable have no decoder and use the
+        // whole-file `load_wave` + `LruCache` fallback below.
+        #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+        if writer.decoder_mut().is_some() {
+            if is_reverse {
+                refill_reverse_stream(writer, file_position, chunk_size, interleave_buffer);
+            } else {
+                refill_forward_stream(
+                    writer,
+                    file_position,
+                    chunk_size,
+                    interleave_buffer,
+                    loop_range,
+                );
+            }
+            continue;
+        }
+
         let file_path = writer.file_path();
         let Some(wave) = load_wave(cache, metrics, file_path) else {
             continue;
         };
 
-        let file_position = writer.file_position() as usize;
         let channels = wave.channels();
-
-        let loop_range = stream_state.loop_config().map(|c| c.range);
 
         if is_reverse {
             refill_reverse(
@@ -241,13 +260,26 @@ fn refill_one(
     shared: &super::super::rt_state::RtState,
     buffer: &mut Vec<(f32, f32)>,
 ) {
+    shared.set_buffer_fill(fill_pct);
+
+    let file_position = writer.file_position() as usize;
+
+    // Real incremental streaming when this region has a decoder; the parallel
+    // path (like the whole-file one) ignores loop ranges.
+    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    if writer.decoder_mut().is_some() {
+        if is_reverse {
+            refill_reverse_stream(writer, file_position, chunk_size, buffer);
+        } else {
+            refill_forward_stream(writer, file_position, chunk_size, buffer, None);
+        }
+        return;
+    }
+
     let Some(wave) = cache.get(file_path) else {
         return;
     };
 
-    shared.set_buffer_fill(fill_pct);
-
-    let file_position = writer.file_position() as usize;
     let channels = wave.channels();
 
     buffer.clear();
@@ -324,6 +356,98 @@ fn fill_buffer_reverse(
     for sample in temp.into_iter().rev() {
         buffer.push(sample);
     }
+}
+
+/// Refill buffer for forward playback by decoding the requested range straight
+/// from disk (real streaming), respecting loop boundaries if set. Advances
+/// `file_position` by the number of frames written — identical bookkeeping to
+/// the whole-file [`refill_forward`].
+#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+fn refill_forward_stream(
+    writer: &mut RegionWriter,
+    file_position: usize,
+    chunk_size: usize,
+    interleave_buffer: &mut Vec<(f32, f32)>,
+    loop_range: Option<(u64, u64)>,
+) {
+    interleave_buffer.clear();
+    interleave_buffer.resize(chunk_size, (0.0, 0.0));
+
+    let loop_bounds = loop_range.and_then(|(start, end)| {
+        let start = start as usize;
+        let end = end as usize;
+        let len = end.saturating_sub(start);
+        (len > 0).then_some((start, end, len))
+    });
+
+    let decoder = match writer.decoder_mut() {
+        Some(d) => d,
+        None => return,
+    };
+
+    // Fill the chunk in contiguous runs. Without a loop this is one range read
+    // (the sequential fast-path inside the decoder). With a loop, each run stops
+    // at `loop_end` and the next run seeks back to `loop_start`.
+    let mut filled = 0usize;
+    let mut pos = file_position;
+    while filled < chunk_size {
+        if let Some((loop_start, loop_end, loop_len)) = loop_bounds {
+            if pos >= loop_end {
+                pos = loop_start + ((pos - loop_start) % loop_len);
+            }
+            let run = (loop_end - pos).min(chunk_size - filled);
+            let _ = decoder.read_range(pos as u64, &mut interleave_buffer[filled..filled + run]);
+            filled += run;
+            pos += run;
+        } else {
+            let run = chunk_size - filled;
+            let _ = decoder.read_range(pos as u64, &mut interleave_buffer[filled..filled + run]);
+            filled += run;
+            pos += run;
+        }
+    }
+
+    let written = writer.write(interleave_buffer);
+
+    let mut new_pos = file_position + written;
+    if let Some((loop_start, loop_end, loop_len)) = loop_bounds {
+        if new_pos >= loop_end {
+            new_pos = loop_start + ((new_pos - loop_start) % loop_len);
+        }
+    }
+    writer.set_file_position(new_pos as u64);
+}
+
+/// Refill buffer for reverse playback by decoding forward from disk then
+/// writing the samples reversed — mirrors [`refill_reverse`] but streams the
+/// range instead of reading a resident `Wave`.
+#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+fn refill_reverse_stream(
+    writer: &mut RegionWriter,
+    file_position: usize,
+    chunk_size: usize,
+    interleave_buffer: &mut Vec<(f32, f32)>,
+) {
+    let read_start = file_position.saturating_sub(chunk_size);
+    let actual_chunk = file_position - read_start;
+
+    if actual_chunk == 0 {
+        interleave_buffer.clear();
+        interleave_buffer.resize(chunk_size, (0.0, 0.0));
+        writer.write(interleave_buffer);
+        return;
+    }
+
+    interleave_buffer.clear();
+    interleave_buffer.resize(actual_chunk, (0.0, 0.0));
+
+    if let Some(decoder) = writer.decoder_mut() {
+        let _ = decoder.read_range(read_start as u64, &mut interleave_buffer[..]);
+    }
+    interleave_buffer.reverse();
+
+    let written = writer.write(interleave_buffer);
+    writer.set_file_position(file_position.saturating_sub(written) as u64);
 }
 
 /// Refill buffer for forward playback, respecting loop boundaries if set.

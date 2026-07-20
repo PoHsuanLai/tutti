@@ -57,7 +57,13 @@ pub(crate) fn apply_pdc_updates(
         let new_pos = pdc_new_position(current_pos, current_preroll, new_preroll);
 
         let crossfade_len = config.seek_crossfade_samples;
-        let fadeout = fadeout_samples(stream_state, crossfade_len);
+        let fadeout = fadeout_samples(
+            stream_state,
+            cache,
+            metrics,
+            writer.file_path(),
+            crossfade_len,
+        );
 
         stream_state.set_seeking(true);
         stream_state.flush_buffer();
@@ -115,7 +121,7 @@ mod tests {
             regions.register(region_id, writer);
 
             let mut state = ChannelPlan::default();
-            state.start_streaming(Arc::new(parking_lot::Mutex::new(reader)));
+            state.start_streaming(crate::butler::share_reader(reader), None);
             plans.insert(i, state);
         }
 

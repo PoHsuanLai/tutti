@@ -5,9 +5,13 @@
 //! `StereoSumUnit`" model. ECS systems send [`ClipCommand`]s through
 //! a [`TrackClipReaderHandle`]; the unit drains them each audio buffer.
 //!
-//! Every clip is an in-memory [`SamplerUnit`] — the whole clip resides in RAM
-//! as an `Arc<Wave>` (decoded once by the wave cache). The optional time-stretch
-//! processor wraps the sampler when a clip is stretched/pitched.
+//! Each clip is EITHER an in-memory [`SamplerUnit`] (the whole clip resident in
+//! RAM as an `Arc<Wave>`, decoded once by the wave cache) OR a
+//! [`StreamingClipReader`] that pulls incrementally from the butler ring
+//! (Wave 6 disk streaming). The choice is a monomorphized [`ClipSource`] enum,
+//! not a boxed trait object, so the per-buffer match stays inlinable and the hot
+//! path allocation-free. The optional time-stretch processor wraps whichever
+//! source when a clip is stretched/pitched (both variants `impl AudioUnit`).
 
 use std::sync::Arc;
 
@@ -19,6 +23,7 @@ use tutti_core::{
     SamplePosition, SignalFrame, TransportReader, Wave,
 };
 use crate::stretch;
+use crate::StreamingClipReader;
 use crate::SamplerUnit;
 
 const COMMAND_CAPACITY: usize = 64;
@@ -62,16 +67,63 @@ impl Direction {
 }
 
 // ---------------------------------------------------------------------------
-// ClipSlot — one clip's playback state. Always an in-memory `SamplerUnit`
-// (the whole clip resides in RAM as an `Arc<Wave>`, decoded once by the wave
-// cache). Disk streaming was removed: it didn't actually stream (it decoded
-// the whole file then served from RAM), and its single-consumer ring couldn't
-// be cloned safely for the offline render.
+// ClipSource — a clip's audio source, monomorphized. Either the whole clip is
+// resident in RAM (`InMemory`) or it streams incrementally from the butler ring
+// (`Streaming`, Wave 6). A concrete enum rather than `Box<dyn AudioUnit>` so the
+// per-buffer dispatch in `tick`/`process` inlines and never touches the heap.
+// Both variants are `Clone` and `impl AudioUnit`, so the field-wise `ClipSlot`
+// clone and the stretch wrapper work uniformly across them.
+// ---------------------------------------------------------------------------
+
+enum ClipSource {
+    InMemory(SamplerUnit),
+    Streaming(StreamingClipReader),
+}
+
+impl Clone for ClipSource {
+    fn clone(&self) -> Self {
+        match self {
+            Self::InMemory(s) => Self::InMemory(s.clone()),
+            Self::Streaming(s) => Self::Streaming(s.clone()),
+        }
+    }
+}
+
+impl ClipSource {
+    /// A boxed clone as a trait object, for handing to the stretch processor at
+    /// slot-creation time. The resident stretch unit pulls from this clone; it
+    /// is kept in sync with the direct-read source by [`ClipSlot::sync_sampler`].
+    fn boxed_clone(&self) -> Box<dyn AudioUnit> {
+        match self {
+            Self::InMemory(s) => Box::new(s.clone()),
+            Self::Streaming(s) => Box::new(s.clone()),
+        }
+    }
+
+    fn reset(&mut self) {
+        match self {
+            Self::InMemory(s) => s.reset(),
+            Self::Streaming(s) => s.reset(),
+        }
+    }
+
+    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
+        match self {
+            Self::InMemory(s) => s.set_sample_rate(sample_rate),
+            Self::Streaming(s) => s.set_sample_rate(sample_rate),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ClipSlot — one clip's playback state. Its `source` is either an in-memory
+// `SamplerUnit` or a streaming `StreamingClipReader` (the [`ClipSource`] enum).
+// `id` / `direction` / stretch state are shared across both variants.
 // ---------------------------------------------------------------------------
 
 struct ClipSlot {
     id: SlotId,
-    sampler: SamplerUnit,
+    source: ClipSource,
     direction: Direction,
     /// The time-stretch processor is **always resident**: it is built once (a
     /// `Box` + two phase-vocoder constructions + four `RtScratch` scratch
@@ -103,18 +155,18 @@ impl ClipSlot {
     /// slot-creation time, never on the per-buffer command drain.
     fn new(
         id: SlotId,
-        sampler: SamplerUnit,
+        source: ClipSource,
         direction: Direction,
         stretch_factor: Ratio,
         pitch_cents: Cents,
         sample_rate: f64,
     ) -> Self {
-        let stretch = stretch::Unit::new(Box::new(sampler.clone()), sample_rate);
+        let stretch = stretch::Unit::new(source.boxed_clone(), sample_rate);
         stretch.set_stretch_factor(stretch_factor);
         stretch.set_pitch_cents(pitch_cents);
         Self {
             id,
-            sampler,
+            source,
             direction,
             stretch,
             stretch_factor,
@@ -140,9 +192,11 @@ impl ClipSlot {
 
     /// The resident processor's internal source, downcast back to
     /// `SamplerUnit`. Every param mutation is applied to this alongside the
-    /// direct-read `sampler` so the two playback paths never diverge — the
+    /// direct-read source so the two playback paths never diverge — the
     /// processor's source is a clone made at slot-creation and would otherwise
-    /// go stale once the identity gate flips it into the signal path.
+    /// go stale once the identity gate flips it into the signal path. Returns
+    /// `None` for a streaming slot (whose stretch source is a
+    /// `StreamingClipReader`, not a `SamplerUnit`).
     fn stretch_source_mut(&mut self) -> Option<&mut SamplerUnit> {
         self.stretch
             .source_mut()
@@ -150,12 +204,34 @@ impl ClipSlot {
             .downcast_mut::<SamplerUnit>()
     }
 
-    /// Apply an in-place mutation to both the direct-read `sampler` and the
-    /// resident processor's internal source, keeping the two playback paths in
-    /// sync. Lock-free — no rebuild.
+    /// Like [`stretch_source_mut`] but for the streaming variant.
+    fn stretch_stream_mut(&mut self) -> Option<&mut StreamingClipReader> {
+        self.stretch
+            .source_mut()
+            .as_any_mut()
+            .downcast_mut::<StreamingClipReader>()
+    }
+
+    /// Apply an in-place mutation to both the direct-read in-memory sampler and
+    /// the resident processor's internal source, keeping the two playback paths
+    /// in sync. No-op for a streaming slot. Lock-free — no rebuild.
     fn sync_sampler(&mut self, mut f: impl FnMut(&mut SamplerUnit)) {
-        f(&mut self.sampler);
+        if let ClipSource::InMemory(sampler) = &mut self.source {
+            f(sampler);
+        }
         if let Some(src) = self.stretch_source_mut() {
+            f(src);
+        }
+    }
+
+    /// Streaming counterpart of [`sync_sampler`]: mutate both the direct-read
+    /// `StreamingClipReader` and the stretch processor's stream clone. No-op for
+    /// an in-memory slot. Lock-free.
+    fn sync_streaming(&mut self, mut f: impl FnMut(&mut StreamingClipReader)) {
+        if let ClipSource::Streaming(reader) = &mut self.source {
+            f(reader);
+        }
+        if let Some(src) = self.stretch_stream_mut() {
             f(src);
         }
     }
@@ -169,6 +245,15 @@ pub enum ClipCommand {
     Add {
         id: SlotId,
         sampler: SamplerUnit,
+        direction: Direction,
+    },
+    /// Add a disk-streaming clip. The `StreamingClipReader` is built on the
+    /// ECS/butler side (butler stream registration, ring allocation, placement
+    /// gate), so the audio-thread drain only moves it into a slot — no
+    /// allocation or I/O on the hot path.
+    AddStreaming {
+        id: SlotId,
+        reader: StreamingClipReader,
         direction: Direction,
     },
     Remove(SlotId),
@@ -336,7 +421,7 @@ impl TrackClipReaderUnit {
         self.clips.retain(|s| s.id != spec.id);
         self.clips.push(ClipSlot::new(
             spec.id,
-            spec.sampler,
+            ClipSource::InMemory(spec.sampler),
             spec.direction,
             spec.stretch_factor,
             spec.pitch_cents,
@@ -368,7 +453,27 @@ impl TrackClipReaderUnit {
                     self.clips.retain(|s| s.id != id);
                     self.clips.push(ClipSlot::new(
                         id,
-                        sampler,
+                        ClipSource::InMemory(sampler),
+                        direction,
+                        Ratio::new(1.0),
+                        Cents::new(0.0),
+                        self.sample_rate,
+                    ));
+                }
+                ClipCommand::AddStreaming {
+                    id,
+                    reader,
+                    direction,
+                } => {
+                    // The reader is fully built on the ECS/butler side; the
+                    // drain only moves it into a slot. `ClipSlot::new` builds the
+                    // resident stretch unit (a `StreamingClipReader` clone) — the
+                    // one heavy step — which is why the `AddStreaming` command,
+                    // like `Add`, is a control-thread emission, not a hot-path op.
+                    self.clips.retain(|s| s.id != id);
+                    self.clips.push(ClipSlot::new(
+                        id,
+                        ClipSource::Streaming(reader),
                         direction,
                         Ratio::new(1.0),
                         Cents::new(0.0),
@@ -380,6 +485,12 @@ impl TrackClipReaderUnit {
                 }
                 ClipCommand::ReplaceWave { id, wave } => {
                     if let Some(slot) = self.slot_mut(id) {
+                        // In-memory: swap the resident wave. Streaming has no
+                        // in-RAM wave; a source change means re-registering the
+                        // butler stream on a different file — a control-thread /
+                        // butler op, so `sync_sampler`'s streaming no-op is the
+                        // right behaviour here (the butler-side wiring re-issues
+                        // `AddStreaming` for a new source in Wave 6.4).
                         slot.sync_sampler(|s| s.set_wave(wave.clone()));
                     }
                 }
@@ -390,16 +501,24 @@ impl TrackClipReaderUnit {
                 } => {
                     if let Some(slot) = self.slot_mut(id) {
                         slot.sync_sampler(|s| s.set_placement(start_beat, duration_beats));
+                        // Streaming: the placement gate lives on the reader, so
+                        // forward the window there (it re-seeks on the next
+                        // inside-frame).
+                        slot.sync_streaming(|s| s.set_placement(start_beat, duration_beats));
                     }
                 }
                 ClipCommand::UpdateGain { id, gain } => {
                     if let Some(slot) = self.slot_mut(id) {
                         slot.sync_sampler(|s| s.set_gain(gain));
+                        slot.sync_streaming(|s| s.set_gain(gain));
                     }
                 }
                 ClipCommand::UpdateSpeed { id, speed } => {
                     if let Some(slot) = self.slot_mut(id) {
                         slot.sync_sampler(|s| s.set_speed(speed));
+                        // Streaming speed is driven by the butler `RtState`
+                        // (`set_speed`), reached through the butler command path
+                        // that Wave 6.4 wires; no per-slot forward here yet.
                     }
                 }
                 ClipCommand::UpdateLoop {
@@ -418,6 +537,9 @@ impl TrackClipReaderUnit {
                                 s.set_looping(false);
                             }
                         });
+                        // Streaming loop is a butler concern (`SetStreamLoop`,
+                        // wired in Wave 6.4): the loop range decides where the
+                        // butler wraps the disk decoder. Stubbed forward for now.
                     }
                 }
                 ClipCommand::ClearLoop(id) => {
@@ -426,6 +548,8 @@ impl TrackClipReaderUnit {
                             s.clear_loop_range();
                             s.set_looping(false);
                         });
+                        // Streaming: forwards to the butler clear-loop command in
+                        // Wave 6.4.
                     }
                 }
                 ClipCommand::UpdateReverse { id, direction } => {
@@ -480,13 +604,13 @@ impl Clone for TrackClipReaderUnit {
                 .iter()
                 .map(|s| ClipSlot {
                     id: s.id,
-                    sampler: s.sampler.clone(),
+                    source: s.source.clone(),
                     direction: s.direction,
                     stretch: s.stretch.clone(),
                     stretch_factor: s.stretch_factor,
                     pitch_cents: s.pitch_cents,
                     sample_rate: s.sample_rate,
-                }) // resident stretch::Unit clones by value; atomics preserved
+                }) // ClipSource + resident stretch::Unit clone by value; atomics preserved
                 .collect(),
             rx: self.rx.clone(),
             sample_rate: self.sample_rate,
@@ -506,7 +630,7 @@ impl AudioUnit for TrackClipReaderUnit {
 
     fn reset(&mut self) {
         for slot in &mut self.clips {
-            slot.sampler.reset();
+            slot.source.reset();
             slot.stretch.reset();
         }
     }
@@ -514,7 +638,7 @@ impl AudioUnit for TrackClipReaderUnit {
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         self.sample_rate = sample_rate.get();
         for slot in &mut self.clips {
-            slot.sampler.set_sample_rate(sample_rate);
+            slot.source.set_sample_rate(sample_rate);
             slot.sample_rate = sample_rate.get();
             slot.stretch.set_sample_rate(sample_rate);
         }
@@ -536,10 +660,26 @@ impl AudioUnit for TrackClipReaderUnit {
                 slot.stretch.tick(&[], &mut buf);
                 left += buf[0];
                 right += buf[1];
-            } else if let Some(pos) = slot.sampler.transport_sample_position() {
-                let (l, r) = Self::read_clip_sample(&slot.sampler, slot.direction, pos);
-                left += l;
-                right += r;
+            } else {
+                match &mut slot.source {
+                    ClipSource::InMemory(sampler) => {
+                        if let Some(pos) = sampler.transport_sample_position() {
+                            let (l, r) = Self::read_clip_sample(sampler, slot.direction, pos);
+                            left += l;
+                            right += r;
+                        }
+                    }
+                    ClipSource::Streaming(reader) => {
+                        // The `StreamingClipReader` owns its placement gate: it
+                        // emits silence outside the clip window and pulls the
+                        // butler ring inside it. Alloc-free (preallocated
+                        // `fetch_scratch`).
+                        let mut buf = [0.0f32; 2];
+                        reader.tick(&[], &mut buf);
+                        left += buf[0];
+                        right += buf[1];
+                    }
+                }
             }
         }
 
@@ -564,15 +704,31 @@ impl AudioUnit for TrackClipReaderUnit {
                     output.set_f32(1, i, output.at_f32(1, i) + tick_out[1]);
                 }
             } else {
-                let Some(start_pos) = slot.sampler.transport_sample_position() else {
-                    continue;
-                };
-                let advance = (slot.sampler.speed().get() * slot.sampler.src_ratio().get()) as f64;
-                for i in 0..size {
-                    let pos = start_pos + i as f64 * advance;
-                    let (l, r) = Self::read_clip_sample(&slot.sampler, slot.direction, pos);
-                    output.set_f32(0, i, output.at_f32(0, i) + l);
-                    output.set_f32(1, i, output.at_f32(1, i) + r);
+                match &mut slot.source {
+                    ClipSource::InMemory(sampler) => {
+                        let Some(start_pos) = sampler.transport_sample_position() else {
+                            continue;
+                        };
+                        let advance = (sampler.speed().get() * sampler.src_ratio().get()) as f64;
+                        for i in 0..size {
+                            let pos = start_pos + i as f64 * advance;
+                            let (l, r) = Self::read_clip_sample(sampler, slot.direction, pos);
+                            output.set_f32(0, i, output.at_f32(0, i) + l);
+                            output.set_f32(1, i, output.at_f32(1, i) + r);
+                        }
+                    }
+                    ClipSource::Streaming(reader) => {
+                        // Sum the reader per-sample (its placement gate + ring
+                        // pull run inside each `tick`). Per-sample accumulation
+                        // mirrors the stretch branch above and keeps this
+                        // alloc-free — no per-slot scratch `BufferMut`.
+                        let mut tick_out = [0.0f32; 2];
+                        for i in 0..size {
+                            reader.tick(&[], &mut tick_out);
+                            output.set_f32(0, i, output.at_f32(0, i) + tick_out[0]);
+                            output.set_f32(1, i, output.at_f32(1, i) + tick_out[1]);
+                        }
+                    }
                 }
             }
         }

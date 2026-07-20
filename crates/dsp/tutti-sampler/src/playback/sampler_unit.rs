@@ -160,12 +160,9 @@ impl SamplerUnit {
     }
 
     pub fn set_placement(&mut self, start_beat: BeatPosition, duration_beats: Option<BeatDuration>) {
-        match &mut self.placement {
-            Some(placement) => {
-                placement.start_beat = start_beat;
-                placement.duration_beats = duration_beats;
-            }
-            None => {}
+        if let Some(placement) = &mut self.placement {
+            placement.start_beat = start_beat;
+            placement.duration_beats = duration_beats;
         }
     }
 

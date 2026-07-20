@@ -4,7 +4,7 @@
 
 use dashmap::DashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use tutti_core::Wave;
 
@@ -20,6 +20,26 @@ struct CacheEntry {
     wave: Arc<Wave>,
     last_access: AtomicU64,
     size_bytes: u64,
+    /// Active stream count. Non-zero while a stream is reading this wave; the
+    /// LRU refuses to evict a pinned entry (a fully-buffered stream would go
+    /// cold and get evicted out from under its reader otherwise).
+    pins: AtomicU32,
+}
+
+/// RAII guard that keeps a cache entry pinned (unevictable) for the lifetime of
+/// a stream. Acquired by [`LruCache::pin`], released on `Drop`. Held inside the
+/// butler's stream link so it lives exactly as long as the stream.
+pub struct StreamPin {
+    cache: Arc<LruCache>,
+    path: PathBuf,
+}
+
+impl Drop for StreamPin {
+    fn drop(&mut self) {
+        if let Some(entry) = self.cache.cache.get(&self.path) {
+            entry.pins.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
 }
 
 impl LruCache {
@@ -60,9 +80,27 @@ impl LruCache {
                 wave,
                 last_access: AtomicU64::new(now_ms()),
                 size_bytes: size,
+                pins: AtomicU32::new(0),
             },
         );
         self.current_bytes.fetch_add(size, Ordering::Relaxed);
+    }
+
+    /// Pin the entry at `path` so the LRU will not evict it while the returned
+    /// [`StreamPin`] is alive. Held by an active stream (in `ChannelPlan::Link`)
+    /// so a fully-buffered — hence cold — stream is never evicted mid-read.
+    ///
+    /// No-op-on-drop is safe if the entry is absent (e.g. never admitted): the
+    /// pin count only exists on a live entry, so the guard's `Drop` simply finds
+    /// nothing to decrement. Callers pin *after* insertion in practice.
+    pub fn pin(self: &Arc<Self>, path: &PathBuf) -> StreamPin {
+        if let Some(entry) = self.cache.get(path) {
+            entry.pins.fetch_add(1, Ordering::Relaxed);
+        }
+        StreamPin {
+            cache: Arc::clone(self),
+            path: path.clone(),
+        }
     }
 
     /// Whether inserting `incoming` bytes would exceed the entry-count or
@@ -75,9 +113,14 @@ impl LruCache {
     }
 
     fn evict_lru(&self) -> bool {
+        // Only unpinned entries are eviction candidates; a pinned entry backs an
+        // active stream and must stay resident. If every remaining entry is
+        // pinned this returns `None`, `insert`'s loop breaks, and the wave is
+        // admitted over-budget — the same escape the empty-cache case uses.
         let oldest_path = self
             .cache
             .iter()
+            .filter(|entry| entry.value().pins.load(Ordering::Relaxed) == 0)
             .min_by_key(|entry| entry.value().last_access.load(Ordering::Relaxed))
             .map(|entry| entry.key().clone());
 
@@ -169,6 +212,80 @@ mod tests {
 
         assert_eq!(cache.len(), 2);
         assert_eq!(cache.byte_len(), 1200);
+    }
+
+    #[test]
+    fn test_pin_prevents_eviction_of_lru_victim() {
+        // Byte budget fits exactly two waves of 100 samples (400 bytes each).
+        let cache = Arc::new(LruCache::new(100, 900));
+        let a = PathBuf::from("/test/a.wav");
+        let b = PathBuf::from("/test/b.wav");
+        let c = PathBuf::from("/test/c.wav");
+
+        // `a` is inserted first, so it is the LRU victim. Pin it: an active
+        // stream is reading it.
+        cache.insert(a.clone(), make_wave(100));
+        let _pin = cache.pin(&a);
+        cache.insert(b.clone(), make_wave(100));
+
+        // Inserting `c` would evict the LRU (`a`), but `a` is pinned. The evictor
+        // must skip it and take `b` instead (next-oldest, unpinned).
+        cache.insert(c.clone(), make_wave(100));
+
+        assert!(cache.get(&a).is_some(), "pinned LRU victim must survive");
+        assert!(cache.get(&c).is_some(), "new entry admitted");
+        assert!(cache.get(&b).is_none(), "unpinned next-oldest evicted instead");
+    }
+
+    #[test]
+    fn test_all_pinned_admits_over_budget() {
+        let cache = Arc::new(LruCache::new(100, 900));
+        let a = PathBuf::from("/test/a.wav");
+        let b = PathBuf::from("/test/b.wav");
+        let c = PathBuf::from("/test/c.wav");
+
+        cache.insert(a.clone(), make_wave(100));
+        let _pa = cache.pin(&a);
+        cache.insert(b.clone(), make_wave(100));
+        let _pb = cache.pin(&b);
+
+        // Both resident entries are pinned; the newcomer can't evict either, so
+        // it is admitted over-budget rather than dropping an active stream.
+        cache.insert(c.clone(), make_wave(100));
+
+        assert!(cache.get(&a).is_some());
+        assert!(cache.get(&b).is_some());
+        assert!(cache.get(&c).is_some(), "over-budget admit when all pinned");
+        assert_eq!(cache.len(), 3);
+    }
+
+    #[test]
+    fn test_unpin_on_drop_restores_evictability() {
+        // Budget holds exactly one wave (400 bytes); the second insert must evict
+        // the first — unless it's pinned. This makes the eviction target
+        // unambiguous (no LRU tie between same-millisecond entries).
+        let cache = Arc::new(LruCache::new(100, 400));
+        let a = PathBuf::from("/test/a.wav");
+        let b = PathBuf::from("/test/b.wav");
+
+        cache.insert(a.clone(), make_wave(100));
+
+        // While pinned, inserting `b` cannot evict `a`; it is admitted
+        // over-budget instead (the all-pinned escape). Keep `b` pinned too so
+        // that once `a`'s pin drops, `a` is the *only* eviction candidate — no
+        // LRU tie between same-millisecond entries.
+        let pin_a = cache.pin(&a);
+        cache.insert(b.clone(), make_wave(100));
+        let _pin_b = cache.pin(&b);
+        assert!(cache.get(&a).is_some(), "pinned `a` survives the over-budget insert");
+        drop(pin_a);
+
+        // With `a`'s pin gone it is the sole unpinned entry: the next over-budget
+        // insert reclaims it (`b` stays put, pinned).
+        let c = PathBuf::from("/test/c.wav");
+        cache.insert(c.clone(), make_wave(100));
+        assert!(cache.get(&a).is_none(), "dropped pin → LRU can evict `a`");
+        assert!(cache.get(&b).is_some(), "still-pinned `b` untouched");
     }
 
     #[test]

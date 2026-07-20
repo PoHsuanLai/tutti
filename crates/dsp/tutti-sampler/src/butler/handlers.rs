@@ -10,18 +10,17 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use parking_lot::Mutex;
 use tutti_core::PdcState;
 
 use super::cache::LruCache;
 use super::command::{ButlerCommand, CaptureId, RegionId};
 use super::config::BufferConfig;
 use super::io::capture::{flush_all, flush_capture, open_wav, ActiveCapture};
-use super::io::loops::buffer_size_for_file;
+use super::io::loops::{buffer_size_for_file, capture_samples};
 use super::io::refill::load_wave;
 use super::metrics::Metrics;
-use super::plan::ChannelPlan;
-use super::prefetch::RegionBuffer;
+use super::plan::{ChannelPlan, LoopConfig};
+use super::prefetch::{share_reader, RegionBuffer};
 use super::region_map::RegionMap;
 
 /// Arc'd handles shared between `ButlerThread` (controller) and the butler
@@ -97,6 +96,21 @@ pub(super) fn handle_command(
             }
         }
 
+        ButlerCommand::SetStreamLoop {
+            channel_index,
+            range,
+            crossfade_samples,
+        } => {
+            handle_set_stream_loop(channel_index, range, crossfade_samples, shared, local);
+        }
+        ButlerCommand::ClearStreamLoop { channel_index } => {
+            if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
+                if let Some(link) = plan.link.as_mut() {
+                    link.loop_config = None;
+                }
+            }
+        }
+
         ButlerCommand::SetVarispeed {
             channel_index,
             direction,
@@ -156,6 +170,28 @@ pub(super) fn handle_command(
     }
 }
 
+/// Try to open an incremental disk decoder for `file_path`. Returns
+/// `Some((metadata, decoder))` when the format is seekable (has a frame count
+/// and the decoder opened), so the region can stream real ranges from disk.
+/// Returns `None` — signalling the whole-file `load_wave` fallback — when a
+/// codec feature isn't compiled in, the probe fails, or the format is
+/// non-seekable.
+#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+fn open_stream(
+    file_path: &std::path::Path,
+) -> Option<(tutti_core::WaveMetadata, tutti_core::StreamDecoder)> {
+    let meta = tutti_core::Wave::probe_metadata(file_path).ok()?;
+    // Non-seekable formats (no reported frame count) fall back to whole-file.
+    meta.total_frames?;
+    let decoder = tutti_core::StreamDecoder::open(file_path, None).ok()?;
+    // Guard against a decoder that reports itself non-seekable despite a
+    // frame count (defensive; open() only sets seekable when n_frames exists).
+    if !decoder.seekable() {
+        return None;
+    }
+    Some((meta, decoder))
+}
+
 fn handle_stream_file(
     channel_index: usize,
     file_path: PathBuf,
@@ -164,17 +200,42 @@ fn handle_stream_file(
     sample_rate: f64,
     local: &mut Local,
 ) {
-    let Some(wave) = load_wave(&shared.cache, &shared.metrics, &file_path) else {
-        return;
+    // Probe metadata (frame count / sample rate) for ring sizing + src_ratio
+    // WITHOUT decoding the whole file. Prefer real incremental streaming; fall
+    // back to the whole-file `load_wave` + `LruCache` path when the format
+    // isn't seekable (no frame count) or opening the stream decoder fails.
+    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    let (file_length, file_sr, decoder) = match open_stream(&file_path) {
+        Some((meta, decoder)) => (
+            meta.total_frames.unwrap_or(0),
+            meta.sample_rate as f64,
+            Some(decoder),
+        ),
+        None => {
+            let Some(wave) = load_wave(&shared.cache, &shared.metrics, &file_path) else {
+                return;
+            };
+            (wave.len() as u64, wave.sample_rate(), None)
+        }
     };
-
-    let file_length = wave.len() as u64;
+    #[cfg(not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")))]
+    let (file_length, file_sr) = {
+        let Some(wave) = load_wave(&shared.cache, &shared.metrics, &file_path) else {
+            return;
+        };
+        (wave.len() as u64, wave.sample_rate())
+    };
 
     let buffer_capacity = buffer_size_for_file(file_length, sample_rate);
     let region_id = local.mint_region_id();
 
-    let (producer, consumer) =
+    let (mut producer, consumer) =
         RegionBuffer::with_capacity(region_id, file_path.clone(), buffer_capacity);
+
+    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    if let Some(decoder) = decoder {
+        producer.set_decoder(decoder);
+    }
 
     let pdc_preroll = shared.pdc.as_ref().map_or(0, |pdc| {
         let snap = pdc.load();
@@ -194,18 +255,67 @@ fn handle_stream_file(
 
     shared.plans.entry(channel_index).or_default();
 
-    let file_sr = wave.sample_rate();
     let src_ratio = if (file_sr - sample_rate).abs() < 0.01 {
         1.0
     } else {
         (file_sr / sample_rate) as f32
     };
 
+    // Pin the streamed wave in the LRU cache for the stream's lifetime. On the
+    // fallback path `load_wave` inserted the whole file into the cache, so this
+    // protects that resident Wave from being evicted mid-read (a fully-buffered
+    // stream goes cold and would otherwise be picked as the LRU victim). On the
+    // incremental-decode path the wave isn't cached, so `pin` finds no entry and
+    // the guard is inert — harmless. Held inside the `Link` (see
+    // `ChannelPlan::start_streaming`) so it releases when streaming stops.
+    let cache_pin = Some(shared.cache.pin(&file_path));
+
     if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
-        plan.start_streaming(Arc::new(Mutex::new(consumer)));
+        plan.start_streaming(share_reader(consumer), cache_pin);
         plan.pdc_preroll = pdc_preroll;
         plan.rt_state.set_src_ratio(src_ratio);
     }
+}
+
+/// Populate a streaming channel's `link.loop_config`, so `handle_loops`
+/// wraps the disk decoder at the loop bounds and `refill_forward` respects
+/// them. When a crossfade is requested, the fadein head of the loop is
+/// captured once here (off the audio thread) into `preloop_buffer`, so the
+/// per-loop crossfade in `handle_loops` doesn't re-read it every wrap.
+///
+/// No-op when the channel isn't currently streaming (no `link`) — the loop
+/// config has nowhere to live without an active stream.
+fn handle_set_stream_loop(
+    channel_index: usize,
+    range: (u64, u64),
+    crossfade_samples: usize,
+    shared: &Handles,
+    local: &mut Local,
+) {
+    let Some(mut plan) = shared.plans.get_mut(&channel_index) else {
+        return;
+    };
+    let Some(link) = plan.link.as_mut() else {
+        return;
+    };
+
+    // Capture the loop-start fadein head once, off the audio thread, so the
+    // per-wrap crossfade in `handle_loops` never re-reads the file.
+    let preloop_buffer = if crossfade_samples > 0 {
+        local
+            .regions
+            .get(link.region_id)
+            .and_then(|writer| load_wave(&shared.cache, &shared.metrics, writer.file_path()))
+            .map(|wave| capture_samples(&wave, range.0 as usize, crossfade_samples))
+    } else {
+        None
+    };
+
+    link.loop_config = Some(LoopConfig {
+        range,
+        crossfade_samples,
+        preloop_buffer,
+    });
 }
 
 #[cfg(test)]

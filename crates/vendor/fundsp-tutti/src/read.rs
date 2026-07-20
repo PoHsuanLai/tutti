@@ -17,6 +17,29 @@ use symphonia::core::probe::Hint;
 pub type WaveResult<T> = Result<T>;
 pub type WaveError = Error;
 
+/// Decode one packet into `dest`, reusing the buffer across calls to avoid
+/// per-packet allocation. On success returns the filled buffer together with
+/// its frame count. This is the single decode-a-packet primitive shared by
+/// every decode loop (full load, streaming peaks, and disk streaming): given a
+/// packet already known to belong to the selected track, it runs
+/// `decoder.decode` then `clear` / `render_silence` / `convert` into the
+/// interleaved-per-channel `AudioBuffer<f32>` that callers read from.
+pub(crate) fn decode_packet_into<'d>(
+    decoder: &mut dyn symphonia::core::codecs::Decoder,
+    packet: &symphonia::core::formats::Packet,
+    dest: &'d mut Option<AudioBuffer<f32>>,
+) -> WaveResult<(&'d AudioBuffer<f32>, usize)> {
+    let decoded = decoder.decode(packet)?;
+    let buf = dest.get_or_insert_with(|| {
+        AudioBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec())
+    });
+    buf.clear();
+    buf.render_silence(Some(decoded.frames()));
+    decoded.convert(buf);
+    let buffer_len = decoded.frames();
+    Ok((buf, buffer_len))
+}
+
 /// Container/codec metadata read from an audio file without decoding any
 /// audio. Cheap, format-agnostic (anything Symphonia can probe), and the
 /// single source of truth for "how long is this file" decisions.
@@ -273,25 +296,14 @@ impl Wave {
                         continue;
                     }
 
-                    match decoder.decode(&packet) {
-                        Ok(decoded) => {
+                    match decode_packet_into(&mut *decoder, &packet, &mut dest) {
+                        Ok((buf, buffer_len)) => {
                             if wave.is_none() {
-                                let spec = *decoded.spec();
+                                let spec = *buf.spec();
                                 wave = Some(Wave::new(spec.channels.count(), spec.rate as f64));
                             }
 
                             if let Some(ref mut wave_output) = wave {
-                                let buf = dest.get_or_insert_with(|| {
-                                    AudioBuffer::<f32>::new(
-                                        decoded.capacity() as u64,
-                                        *decoded.spec(),
-                                    )
-                                });
-                                buf.clear();
-                                buf.render_silence(Some(decoded.frames()));
-                                decoded.convert(buf);
-
-                                let buffer_len = decoded.frames();
                                 let num_ch = buf.spec().channels.count();
 
                                 // Feed channel 0 to peak builder before appending to wave
@@ -430,25 +442,14 @@ impl Wave {
                         continue;
                     }
 
-                    match decoder.decode(&packet) {
-                        Ok(decoded) => {
+                    match decode_packet_into(&mut *decoder, &packet, &mut dest) {
+                        Ok((buf, buffer_len)) => {
                             if wave.is_none() {
-                                let spec = *decoded.spec();
+                                let spec = *buf.spec();
                                 wave = Some(Wave::new(spec.channels.count(), spec.rate as f64));
                             }
 
                             if let Some(ref mut wave_output) = wave {
-                                let buf = dest.get_or_insert_with(|| {
-                                    AudioBuffer::<f32>::new(
-                                        decoded.capacity() as u64,
-                                        *decoded.spec(),
-                                    )
-                                });
-                                buf.clear();
-                                buf.render_silence(Some(decoded.frames()));
-                                decoded.convert(buf);
-
-                                let buffer_len = decoded.frames();
                                 let num_ch = buf.spec().channels.count();
 
                                 // Batch-append all channels at once

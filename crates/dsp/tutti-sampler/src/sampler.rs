@@ -4,13 +4,15 @@ use crate::butler::{
     BufferConfig, ButlerCommand, ButlerThread, CaptureIdGen, LruCache, ChannelPlan,
 };
 use crate::error::Result;
+use crate::{StreamingClipReader, StreamingSamplerUnit};
 use arc_swap::ArcSwap;
 #[cfg(feature = "bevy")]
 use bevy_ecs::resource::Resource;
 use dashmap::DashMap;
 use smol::channel::Sender;
+use std::path::PathBuf;
 use std::sync::Arc;
-use tutti_core::PdcState;
+use tutti_core::{BeatDuration, BeatPosition, PdcState, TransportReader};
 
 /// The sampler subsystem handle, held as a Bevy [`Resource`].
 ///
@@ -93,6 +95,94 @@ impl Sampler {
     /// Hardware audio-input manager (cpal capture stream + MPMC channel).
     pub fn audio_input(&self) -> &crate::input::manager::Manager {
         &self.audio_input
+    }
+
+    /// Register a disk-streaming source for a timeline clip on `channel_index`.
+    ///
+    /// Sends the butler a [`StreamAudioFile`](ButlerCommand::StreamAudioFile)
+    /// command; the butler probes the file, allocates a ring, and installs the
+    /// [`ChannelPlan`] link asynchronously. Pair with
+    /// [`take_clip_reader`](Self::take_clip_reader) — called on a later frame —
+    /// to build the [`StreamingClipReader`] once the link exists.
+    ///
+    /// `channel_index` must be unique per streaming clip; the caller (dawai-model)
+    /// derives it from the clip's `SlotId`.
+    pub fn stream_clip(&self, channel_index: usize, file_path: PathBuf, offset_samples: usize) {
+        let _ = self.butler_tx.send_blocking(ButlerCommand::StreamAudioFile {
+            channel_index,
+            file_path,
+            offset_samples,
+        });
+    }
+
+    /// Build a [`StreamingClipReader`] for a channel whose butler stream is
+    /// ready, binding it to the timeline placement gate.
+    ///
+    /// Pulls the ring consumer + shared `RtState` out of the channel's
+    /// [`ChannelPlan`] link — the same handles [`Auditioner::streaming_unit`]
+    /// wires — and wraps them in a placement-gated reader. Returns `None` while
+    /// the butler hasn't installed the link yet (the caller retries next frame).
+    ///
+    /// [`Auditioner::streaming_unit`]: crate::Auditioner::streaming_unit
+    pub fn take_clip_reader(
+        &self,
+        channel_index: usize,
+        transport: Arc<dyn TransportReader>,
+        start_beat: BeatPosition,
+        duration: Option<BeatDuration>,
+    ) -> Option<StreamingClipReader> {
+        let plans = self.butler_plans();
+        let plan = plans.get(&channel_index)?;
+        let link = plan.link.as_ref()?;
+        let consumer = link.consumer.clone();
+        let rt_state = plan.rt_state();
+
+        // file_sr / session_sr is the src_ratio the butler set on the plan; the
+        // reader's placement gate converts transport seconds → file samples with
+        // the file's own rate, so recover it from that ratio.
+        let file_sample_rate = self.sample_rate * rt_state.src_ratio().get() as f64;
+
+        let inner = StreamingSamplerUnit::new(consumer, Arc::clone(&rt_state));
+        Some(StreamingClipReader::new(
+            inner,
+            rt_state,
+            transport,
+            start_beat,
+            duration,
+            file_sample_rate,
+        ))
+    }
+
+    /// Enable/replace looping on a streaming clip's channel.
+    ///
+    /// `range` is `(loop_start, loop_end)` in file samples. Forwards
+    /// [`SetStreamLoop`](ButlerCommand::SetStreamLoop) to the butler, which
+    /// builds the loop config the refill/wrap loop respects.
+    pub fn set_clip_stream_loop(
+        &self,
+        channel_index: usize,
+        range: (u64, u64),
+        crossfade_samples: usize,
+    ) {
+        let _ = self.butler_tx.send_blocking(ButlerCommand::SetStreamLoop {
+            channel_index,
+            range,
+            crossfade_samples,
+        });
+    }
+
+    /// Disable looping on a streaming clip's channel.
+    pub fn clear_clip_stream_loop(&self, channel_index: usize) {
+        let _ = self
+            .butler_tx
+            .send_blocking(ButlerCommand::ClearStreamLoop { channel_index });
+    }
+
+    /// Stop a streaming clip's channel — drops its ring + link.
+    pub fn stop_clip_stream(&self, channel_index: usize) {
+        let _ = self
+            .butler_tx
+            .send_blocking(ButlerCommand::StopStreaming { channel_index });
     }
 
     /// Build a low-latency [`Auditioner`](crate::Auditioner) for previewing

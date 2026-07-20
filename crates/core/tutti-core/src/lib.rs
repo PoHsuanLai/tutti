@@ -109,6 +109,11 @@ pub use fundsp::read::WaveError;
 // channels) — available with any decode feature, no `bevy_asset` needed.
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 pub use fundsp::read::WaveMetadata;
+// `StreamDecoder` decodes arbitrary sample-frame ranges incrementally from
+// disk (real streaming). Butler-thread only. Same codec gating as the rest of
+// the decode path.
+#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+pub use fundsp::stream::StreamDecoder;
 pub use fundsp::realnet::NetBackend;
 // `Fade` is used by the graph crossfade path (`AudioGraph::crossfade_boxed`,
 // reverb/distortion node-rebuild). The rest of `sequencer` (Sequencer/EventId/

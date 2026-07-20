@@ -44,6 +44,20 @@ pub(crate) enum ButlerCommand {
     /// Stop streaming for a channel.
     StopStreaming { channel_index: usize },
 
+    /// Enable looping on a streaming channel. The butler builds a
+    /// [`LoopConfig`](super::plan::LoopConfig) (range + crossfade, plus a
+    /// pre-captured fadein buffer) into the channel's `link.loop_config`, which
+    /// the refill/loop-wrap machinery then respects.
+    SetStreamLoop {
+        channel_index: usize,
+        /// `(loop_start, loop_end)` in file samples.
+        range: (u64, u64),
+        crossfade_samples: usize,
+    },
+    /// Clear looping on a streaming channel — drop its `link.loop_config` so the
+    /// stream plays through to the end without wrapping.
+    ClearStreamLoop { channel_index: usize },
+
     /// Set varispeed (direction and speed) for a channel. `speed = 1.0` is normal.
     SetVarispeed {
         channel_index: usize,

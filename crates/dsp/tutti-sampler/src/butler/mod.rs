@@ -15,11 +15,11 @@ mod rt_state;
 mod thread;
 mod varispeed;
 
-pub(crate) use cache::LruCache;
+pub use cache::{LruCache, StreamPin};
 pub(crate) use command::{ButlerCommand, CaptureId, CaptureIdGen};
 pub(crate) use config::BufferConfig;
 pub(crate) use plan::ChannelPlan;
-pub(crate) use prefetch::{CaptureBuffer, CaptureWriter, RegionReader};
+pub(crate) use prefetch::{CaptureBuffer, CaptureWriter, SharedReader};
 pub(crate) use rt_state::RtState;
 pub(crate) use thread::ButlerThread;
 pub(crate) use varispeed::PlayDirection;
@@ -30,4 +30,4 @@ pub(crate) use varispeed::PlayDirection;
 #[cfg(test)]
 pub(crate) use command::RegionId;
 #[cfg(test)]
-pub(crate) use prefetch::RegionBuffer;
+pub(crate) use prefetch::{share_reader, RegionBuffer};

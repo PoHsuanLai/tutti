@@ -43,6 +43,11 @@ use batcher::Batcher;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use arc_swap::ArcSwapOption;
+
+/// `Sized` wrapper so a `dyn TransportReader` trait object can live in an
+/// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
+struct TransportReaderHandle(Arc<dyn tutti_core::transport::TransportReader>);
 use tutti_midi_types::ump::MidiEvent;
 
 /// Cheap to clone: clones share `bridge`, `latency`, and `process_guard`
@@ -72,24 +77,39 @@ pub struct PluginClient {
     param_automation: ParamAutomation,
 }
 
-/// Per-client transport source. Like [`Harmony`], the reader is shared across
-/// fundsp graph-commit clones via `Arc`. Produces the per-block
-/// [`TransportInfo`] the plugin consumes, but only when the plugin advertised
-/// [`Features::TRANSPORT`] — otherwise the plugin is fed a default snapshot.
-#[derive(Clone, Default)]
+/// Per-client transport source. The reader lives in a **shared**
+/// `Arc<ArcSwapOption<…>>` (see [`Harmony`] / the note on `Midi::source_override`)
+/// so an install on any clone reaches the box the audio thread runs. Produces
+/// the per-block [`TransportInfo`] the plugin consumes, but only when the plugin
+/// advertised [`Features::TRANSPORT`] — otherwise the plugin is fed a default
+/// snapshot.
+#[derive(Clone)]
 struct Transport {
-    reader: Option<Arc<dyn tutti_core::transport::TransportReader>>,
+    reader: Arc<ArcSwapOption<TransportReaderHandle>>,
     /// Latest negotiated sample rate, stamped onto the snapshot (CLAP reads it).
+    /// A plain field is fine here: fundsp calls `AudioUnit::set_sample_rate` on
+    /// the actual running box, so this reaches the right clone without sharing.
     sample_rate: f64,
+}
+
+impl Default for Transport {
+    fn default() -> Self {
+        Self {
+            reader: Arc::new(ArcSwapOption::empty()),
+            sample_rate: 0.0,
+        }
+    }
 }
 
 impl Transport {
     /// Read the live transport into a [`TransportInfo`]. Returns the default
     /// (stopped, 120 BPM) snapshot when no reader is installed.
     fn snapshot(&self) -> TransportInfo {
-        let Some(reader) = &self.reader else {
+        let guard = self.reader.load();
+        let Some(handle) = guard.as_ref() else {
             return TransportInfo::default();
         };
+        let reader = &handle.0;
         let mut info = TransportInfo::new()
             .with_tempo(reader.tempo().get())
             .with_playing(reader.is_playing())
@@ -107,19 +127,30 @@ impl Transport {
     }
 }
 
-/// Per-client chord/scale producer state. The optional source is shared across
-/// fundsp graph-commit clones (Arc, like `Midi::source_override`); the per-block
+/// Per-client chord/scale producer state. The source lives in a **shared**
+/// `Arc<ArcSwapOption<…>>` (see the note on `Midi::source_override`) so an
+/// install on any clone reaches the box the audio thread runs; the per-block
 /// drain buffer is rebuilt fresh per clone since it's scratch.
-#[derive(Default)]
 struct Harmony {
-    source: Option<Arc<HarmonySource>>,
+    source: Arc<ArcSwapOption<HarmonySource>>,
     drain: crate::host::ipc_client::audio::HarmonyInputs,
+}
+
+impl Default for Harmony {
+    fn default() -> Self {
+        Self {
+            source: Arc::new(ArcSwapOption::empty()),
+            drain: crate::host::ipc_client::audio::HarmonyInputs::default(),
+        }
+    }
 }
 
 impl Clone for Harmony {
     fn clone(&self) -> Self {
         Self {
-            source: self.source.clone(),
+            // Share the slot (Arc clone), not the Option — so a later install is
+            // seen by whichever clone the audio thread runs.
+            source: Arc::clone(&self.source),
             drain: crate::host::ipc_client::audio::HarmonyInputs::default(),
         }
     }
@@ -131,26 +162,37 @@ impl Harmony {
     fn drain_for_process(&mut self, block_size: usize) -> &crate::host::ipc_client::audio::HarmonyInputs {
         self.drain.chords.changes.clear();
         self.drain.scales.changes.clear();
-        if let Some(src) = &self.source {
+        if let Some(src) = self.source.load().as_ref() {
             src.fill(block_size, &mut self.drain);
         }
         &self.drain
     }
 }
 
-/// Per-client parameter-automation producer state. The optional source is
-/// shared across fundsp graph-commit clones (`Arc`, like [`Harmony`]); the
+/// Per-client parameter-automation producer state. The source lives in a
+/// **shared** `Arc<ArcSwapOption<…>>` (see the note on `Midi::source_override`)
+/// so an install on any clone reaches the box the audio thread runs; the
 /// per-block drain buffer is rebuilt fresh per clone since it's scratch.
-#[derive(Default)]
 struct ParamAutomation {
-    source: Option<Arc<ParamAutomationSource>>,
+    source: Arc<ArcSwapOption<ParamAutomationSource>>,
     drain: ParameterChanges,
+}
+
+impl Default for ParamAutomation {
+    fn default() -> Self {
+        Self {
+            source: Arc::new(ArcSwapOption::empty()),
+            drain: ParameterChanges::new(),
+        }
+    }
 }
 
 impl Clone for ParamAutomation {
     fn clone(&self) -> Self {
         Self {
-            source: self.source.clone(),
+            // Share the slot (Arc clone), not the Option — a later install must
+            // be visible to whichever clone the audio thread runs.
+            source: Arc::clone(&self.source),
             drain: ParameterChanges::new(),
         }
     }
@@ -161,7 +203,7 @@ impl ParamAutomation {
     /// source, or an empty set when no source is installed.
     fn drain_for_process(&mut self, block_size: usize) -> &ParameterChanges {
         self.drain.clear();
-        if let Some(src) = &self.source {
+        if let Some(src) = self.source.load().as_ref() {
             src.fill(block_size, &mut self.drain);
         }
         &self.drain
@@ -301,7 +343,7 @@ impl PluginClient {
             midi: Midi::new(),
             harmony: Harmony::default(),
             transport: Transport {
-                reader: None,
+                reader: Arc::new(ArcSwapOption::empty()),
                 sample_rate,
             },
             param_automation: ParamAutomation::default(),
@@ -408,13 +450,13 @@ impl PluginClient {
     /// lanes. Mirrors [`set_midi_source`](Self::set_midi_source); the source is
     /// held in an `Arc` so it survives fundsp's graph-commit clones.
     pub fn set_harmony_source(&mut self, source: std::sync::Arc<HarmonySource>) {
-        self.harmony.source = Some(source);
+        self.harmony.source.store(Some(source));
     }
 
     /// Drop a previously-installed harmony source. Subsequent blocks feed the
     /// plugin empty chord/scale context.
     pub fn clear_harmony_source(&mut self) {
-        self.harmony.source = None;
+        self.harmony.source.store(None);
     }
 
     /// Install a transport reader so the plugin receives a live per-block
@@ -425,13 +467,15 @@ impl PluginClient {
         &mut self,
         reader: std::sync::Arc<dyn tutti_core::transport::TransportReader>,
     ) {
-        self.transport.reader = Some(reader);
+        self.transport
+            .reader
+            .store(Some(Arc::new(TransportReaderHandle(reader))));
     }
 
     /// Drop a previously-installed transport reader; subsequent blocks feed the
     /// plugin a default (stopped) transport snapshot.
     pub fn clear_transport_source(&mut self) {
-        self.transport.reader = None;
+        self.transport.reader.store(None);
     }
 
     /// Install a [`ParamAutomationSource`] so the plugin receives sample-accurate
@@ -440,14 +484,14 @@ impl PluginClient {
     /// automation path for hosted-plugin parameters — the frame-rate
     /// `set_parameter` route is never wired for them.
     pub fn set_param_automation_source(&mut self, source: std::sync::Arc<ParamAutomationSource>) {
-        self.param_automation.source = Some(source);
+        self.param_automation.source.store(Some(source));
     }
 
     /// Drop a previously-installed parameter-automation source; subsequent
     /// blocks feed the plugin empty [`ParameterChanges`] (it keeps its current
     /// parameter values).
     pub fn clear_param_automation_source(&mut self) {
-        self.param_automation.source = None;
+        self.param_automation.source.store(None);
     }
 
     /// Drop a previously-installed source override; subsequent ticks

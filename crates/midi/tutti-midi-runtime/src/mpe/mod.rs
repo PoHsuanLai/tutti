@@ -11,7 +11,8 @@
 use std::sync::Arc;
 
 use tutti_midi_types::convert::{
-    bend_u32_to_signed_f32, midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, u32_to_unit_f32,
+    bend_u32_to_signed_f32, midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
+    u32_to_unit_f32,
 };
 use tutti_midi_types::midi2::channel_voice1::ChannelVoice1;
 use tutti_midi_types::midi2::channel_voice2::{ChannelVoice2, Controller};
@@ -145,6 +146,23 @@ impl MpeProcessor {
                 self.expression
                     .set_slide(id, u32_to_unit_f32(m.controller_data()));
             }
+            // Per-Note Management (M2-104 §7.4.15). Reset restores the note's
+            // per-note controllers to their defaults; Detach detaches ongoing
+            // per-note controllers from the note so a later note-off / re-use
+            // doesn't disturb them. At the runtime expression layer both collapse
+            // to "return this note's expression to neutral" — there is no
+            // separately-addressable detached-controller lifetime here (that
+            // distinction lives at the synth-voice layer, Stream B), so we
+            // document the collapse and reset the note either way.
+            ChannelVoice2::PerNoteManagement(m) => {
+                if m.reset() || m.detach() {
+                    let id = NoteId::from_channel_note(
+                        u8::from(m.channel()),
+                        u8::from(m.note_number()),
+                    );
+                    self.expression.reset_note(id);
+                }
+            }
             _ => {}
         }
     }
@@ -163,7 +181,7 @@ impl MpeProcessor {
                         self.handle_note_off_internal(ch, note, zone_info.is_lower_zone);
                     }
                 } else {
-                    self.handle_note_on(ch, note, u16::from(vel) << 9);
+                    self.handle_note_on(ch, note, midi1_velocity_to_midi2(vel));
                 }
             }
             ChannelVoice1::NoteOff(m) => {
@@ -369,8 +387,8 @@ mod tests {
     use super::*;
 
     fn note_on(channel: u8, note: u8, vel_u7: u8) -> MidiEvent {
-        // Upconvert 7-bit velocity into the MIDI 2.0 16-bit range.
-        MidiEvent::note_on(0, channel, note, (vel_u7 as u16) << 9)
+        // Spec Min-Center-Max upconvert of 7-bit velocity to the MIDI 2.0 range.
+        MidiEvent::note_on(0, channel, note, midi1_velocity_to_midi2(vel_u7))
     }
 
     fn note_off(channel: u8, note: u8) -> MidiEvent {
@@ -528,5 +546,28 @@ mod tests {
         ));
         let slide = processor.expression().get_slide(nid(0, 60));
         assert!((slide - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_per_note_management_reset_returns_only_that_note_to_neutral() {
+        let mut processor = MpeProcessor::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
+
+        // Two native per-note bends on the SAME channel, different notes.
+        processor.process(&MidiEvent::per_note_pitch_bend(0, 2, 60, 0xFFFF_FFFF));
+        processor.process(&MidiEvent::per_note_pitch_bend(0, 2, 64, 0xFFFF_FFFF));
+        assert!((processor.expression().get_pitch_bend_per_note(nid(2, 60)) - 1.0).abs() < 0.01);
+        assert!((processor.expression().get_pitch_bend_per_note(nid(2, 64)) - 1.0).abs() < 0.01);
+
+        // Per-Note Management Reset addressed to note 60 only.
+        processor.process(&MidiEvent::per_note_management(0, 2, 60, false, true));
+
+        assert!(
+            processor.expression().get_pitch_bend_per_note(nid(2, 60)).abs() < 0.01,
+            "note 60 must reset to neutral"
+        );
+        assert!(
+            (processor.expression().get_pitch_bend_per_note(nid(2, 64)) - 1.0).abs() < 0.01,
+            "note 64 must be untouched"
+        );
     }
 }

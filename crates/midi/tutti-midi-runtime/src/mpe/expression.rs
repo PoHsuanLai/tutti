@@ -178,6 +178,19 @@ impl PerNoteExpression {
         self.global_pitch_bend.store(0.0, Ordering::Release);
         self.global_pressure.store(0.0, Ordering::Release);
     }
+
+    /// Reset one note's per-note expression to defaults (pitch bend 0, pressure
+    /// 0, slide centre), leaving the note active and every other note untouched.
+    /// Backs MIDI 2.0 Per-Note Management **Reset** (M2-104 §7.4.15). No-op for a
+    /// note with no live slot.
+    #[inline]
+    pub fn reset_note(&self, id: NoteId) {
+        if self.notes.get(id).is_some() {
+            self.set_pitch_bend(id, 0.0);
+            self.set_pressure(id, 0.0);
+            self.set_slide(id, SLIDE_DEFAULT);
+        }
+    }
 }
 
 #[cfg(test)]

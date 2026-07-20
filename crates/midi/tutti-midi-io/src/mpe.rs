@@ -203,7 +203,8 @@ mod tests {
         let (sender, _recv) = tutti_midi_runtime::MidiEventSlot::pair(id);
         bus.insert(sender);
 
-        let note_on = MidiEvent::note_on(0, 2, 60, 100u16 << 9);
+        let note_on =
+            MidiEvent::note_on(0, 2, 60, tutti_midi_types::convert::midi1_velocity_to_midi2(100));
         bus.queue(id, &[note_on]);
 
         // Channel 2 is a lower-zone member; the processor keys expression by the

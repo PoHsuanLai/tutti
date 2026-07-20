@@ -362,6 +362,14 @@ impl SynthVoice {
         self.mpe.slide = slide.clamp(0.0, 1.0);
     }
 
+    /// Reset this voice's per-note expression (pitch bend, pressure, slide) to
+    /// their defaults. Backs MIDI 2.0 Per-Note Management *Reset* (M2-104
+    /// §7.4.15): the voice keeps sounding, only its accumulated per-note
+    /// controllers snap back to the note-on baseline.
+    pub(crate) fn reset_mpe(&mut self) {
+        self.mpe.reset();
+    }
+
     fn apply_mpe_modulation(&mut self, unison: Option<&UnisonEngine>) {
         if !self.mpe_enabled {
             return;

@@ -154,6 +154,14 @@ impl SoundFontUnit {
         }
     }
 
+    /// MIDI 1.0 boundary. Values downscale via spec Min-Center-Max (convert.rs).
+    /// Translated: NoteOn/Off, CC, channel pitch bend, program change.
+    /// (Channel pressure / key pressure arrive as CC/poly-pressure UMP but
+    /// rustysynth exposes no dedicated setter, so they fall through the `_`
+    /// arm — see Dropped.)
+    /// Dropped (no rustysynth MIDI-1 analogue): per-note pitch bend, per-note
+    /// controllers, per-note management (Detach/Reset), channel/poly pressure,
+    /// RPN/NRPN, and any 16-bit velocity / 32-bit CC precision beyond 7 bits.
     fn dispatch(&mut self, event: &MidiEvent) {
         use tutti_midi_types::convert::{
             midi2_cc_to_midi1, midi2_pitch_bend_to_midi1, midi2_velocity_to_midi1,
@@ -596,6 +604,20 @@ mod tests {
             samples.push((output[0], output[1]));
         }
         samples
+    }
+
+    /// The MIDI-1 boundary (`dispatch`) must scale 16-bit UMP velocity through
+    /// the spec Min-Center-Max downscaler, not an open-coded multiply. Assert
+    /// the representative spec vectors so a regression to `* 127 / 65535` (which
+    /// maps center `0x8000` to 63, not 64) is caught.
+    #[test]
+    fn midi1_boundary_uses_spec_downscalers() {
+        use tutti_midi_types::convert::{midi2_cc_to_midi1, midi2_velocity_to_midi1};
+        assert_eq!(midi2_velocity_to_midi1(0xFFFF), 127);
+        assert_eq!(midi2_velocity_to_midi1(0x8000), 64); // center → center
+        assert_eq!(midi2_velocity_to_midi1(0x0000), 0);
+        assert_eq!(midi2_cc_to_midi1(0xFFFF_FFFF), 127);
+        assert_eq!(midi2_cc_to_midi1(0x8000_0000), 64); // center → center
     }
 
     #[test]

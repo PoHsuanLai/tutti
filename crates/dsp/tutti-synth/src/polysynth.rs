@@ -304,6 +304,45 @@ impl PolySynth {
                 let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
                 self.set_voice_mpe_slide(id, u32_to_unit_f32(m.controller_data()));
             }
+            // Registered per-note controllers carry a *semantic* controller enum
+            // (index resolved to Volume/Pan/Brightness/…). We honor only the dims
+            // the synth voice can actually apply: CC74 (Brightness / SoundController
+            // index 5) → per-note slide. Volume/Pan are recognized-but-unwired
+            // (no per-note gain/pan DSP on `SynthVoice` yet — don't invent it).
+            Cv2::RegisteredPerNoteController(m) => {
+                use tutti_midi_types::midi2::channel_voice2::Controller;
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                match m.controller() {
+                    Controller::Brightness(data)
+                    | Controller::SoundController { index: 5, data } => {
+                        self.set_voice_mpe_slide(id, u32_to_unit_f32(data));
+                    }
+                    _ => {}
+                }
+            }
+            // MIDI 2.0 Per-Note Management (M2-104 §7.4.15).
+            //
+            // **Reset (S)**: reset the addressed note's per-note controllers to
+            // their defaults — pitch bend→0, pressure→0, slide→center — while the
+            // note keeps sounding. Fully honored via `reset_voice_mpe`.
+            //
+            // **Detach (D)**: spec-intent is to detach ongoing per-note controllers
+            // from the note so a subsequent note-off / same-pitch note-on does not
+            // disturb them. `SynthVoice` has no separate "detached controller"
+            // lifetime — per-note expression lives *on* the voice and dies with it —
+            // so there is nothing to re-home. We treat Detach as a lighter-touch
+            // reset of the voice's accumulated per-note expression: it clears the
+            // current per-note state but does NOT (and cannot, given this voice
+            // model) preserve controllers past the voice's own lifetime. This is
+            // spec-faithful in effect (per-note controllers stop influencing the
+            // note) without pretending to a controller-persistence model the synth
+            // does not have.
+            Cv2::PerNoteManagement(m) => {
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                if m.reset() || m.detach() {
+                    self.reset_voice_mpe(id);
+                }
+            }
             _ => {}
         }
     }
@@ -390,6 +429,15 @@ impl PolySynth {
     fn set_voice_mpe_slide(&mut self, id: NoteId, value: f32) {
         if let Some(i) = self.voice_index_for_id(id) {
             self.voices[i].set_mpe_slide(value);
+        }
+    }
+
+    /// MIDI 2.0 Per-Note Management *Reset* (M2-104 §7.4.15): snap the addressed
+    /// voice's per-note controllers (pitch bend, pressure, slide) back to their
+    /// note-on defaults, leaving the note sounding. Other voices are untouched.
+    fn reset_voice_mpe(&mut self, id: NoteId) {
+        if let Some(i) = self.voice_index_for_id(id) {
+            self.voices[i].reset_mpe();
         }
     }
 
@@ -1852,6 +1900,128 @@ mod tests {
             voice_64.mpe_state().pitch_bend_semitones.get().abs() < 0.01,
             "note 64 (same channel) must be untouched, got {}",
             voice_64.mpe_state().pitch_bend_semitones
+        );
+    }
+
+    #[test]
+    fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
+        // MIDI 2.0 Per-Note Management {reset:true} must reset ONLY the addressed
+        // note's per-note expression, leaving another sounding voice's bend intact.
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Sine,
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            },
+            mpe_enabled: true,
+            mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+            ..Default::default()
+        });
+
+        // Two notes on the same channel.
+        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+        assert_eq!(synth.active_voice_count(), 2);
+
+        // Bend BOTH notes fully (per-note, so each is addressed independently).
+        queue_midi(
+            &synth,
+            &[
+                MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF),
+                MidiEvent::per_note_pitch_bend(0, 1, 64, 0xFFFF_FFFF),
+            ],
+        );
+        synth.tick(&[], &mut output);
+
+        let bent = |synth: &PolySynth, note: u8| {
+            synth
+                .voices
+                .iter()
+                .find(|v| v.is_active() && v.note() == note)
+                .unwrap()
+                .mpe_state()
+                .pitch_bend_semitones
+                .get()
+        };
+        assert!(bent(&synth, 60) > 40.0, "note 60 should start bent");
+        assert!(bent(&synth, 64) > 40.0, "note 64 should start bent");
+
+        // Per-Note Management Reset addressed to note 60 only.
+        queue_midi(&synth, &[MidiEvent::per_note_management(0, 1, 60, false, true)]);
+        synth.tick(&[], &mut output);
+
+        assert!(
+            bent(&synth, 60).abs() < 0.01,
+            "note 60 per-note expression must be reset to 0, got {}",
+            bent(&synth, 60)
+        );
+        assert!(
+            bent(&synth, 64) > 40.0,
+            "note 64 (unaddressed) must keep its bend, got {}",
+            bent(&synth, 64)
+        );
+    }
+
+    #[test]
+    fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slide() {
+        // A Registered Per-Note Controller for Brightness (CC74 / SoundController
+        // index 5) addressed to note X must set ONLY note X's slide.
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Saw,
+            filter: FilterType::Moog {
+                cutoff: 1000.0,
+                resonance: 0.5,
+            },
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            },
+            mpe_enabled: true,
+            ..Default::default()
+        });
+
+        // Two notes on the same channel.
+        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+        assert_eq!(synth.active_voice_count(), 2);
+
+        // Registered per-note Brightness (index 74) addressed to note 60, full value.
+        queue_midi(
+            &synth,
+            &[MidiEvent::per_note_controller(0, 1, 60, 74, 0xFFFF_FFFF, true)],
+        );
+        synth.tick(&[], &mut output);
+
+        let slide = |synth: &PolySynth, note: u8| {
+            synth
+                .voices
+                .iter()
+                .find(|v| v.is_active() && v.note() == note)
+                .unwrap()
+                .mpe_state()
+                .slide
+        };
+        assert!(
+            (slide(&synth, 60) - 1.0).abs() < 0.01,
+            "note 60 slide should be full, got {}",
+            slide(&synth, 60)
+        );
+        assert!(
+            slide(&synth, 64).abs() < 0.01,
+            "note 64 (unaddressed) slide must stay 0, got {}",
+            slide(&synth, 64)
         );
     }
 

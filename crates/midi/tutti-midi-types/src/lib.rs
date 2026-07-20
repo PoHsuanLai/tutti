@@ -26,6 +26,7 @@ pub use midly;
 pub(crate) mod compat;
 
 pub mod cc;
+pub mod clip_file;
 pub mod convert;
 pub mod input_source;
 pub mod mpe;

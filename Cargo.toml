@@ -61,5 +61,6 @@ midi2 = { version = "0.11", default-features = false, features = [
     "sysex7",
     "sysex8",
     "utility",
+    "ump-stream",
 ] }
 coremidi = "0.8"

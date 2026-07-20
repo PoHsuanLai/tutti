@@ -14,7 +14,13 @@ extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
+use arc_swap::ArcSwapOption;
+
 const FINISHED_NOTES_CAPACITY: usize = 16;
+
+/// `Sized` wrapper so a `dyn MidiSource` trait object can live in an
+/// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
+struct MidiSourceHandle(Arc<dyn MidiSource>);
 
 /// Polyphonic synthesizer combining tutti-synth building blocks with FunDSP.
 ///
@@ -38,10 +44,15 @@ pub struct PolySynth {
     /// Optional override (e.g. `MidiSnapshotReader` for offline export
     /// or `MidiClipSource` for beat-scheduled clip playback). When set,
     /// `tick()`/`process()` poll this instead of `midi_receiver`.
-    /// Held in an `Arc` so it survives the unit-clone fundsp performs
-    /// on each `commit()`, keeping the override live on the audio
-    /// thread without re-installing it after every graph edit.
-    midi_source_override: Option<Arc<dyn MidiSource>>,
+    ///
+    /// A **shared** `Arc<ArcSwapOption<…>>`, not a per-clone `Option`: fundsp's
+    /// frontend/backend split runs a *different* clone than the one
+    /// `set_midi_source` mutates, and `node_mut`/clone edits are discarded by
+    /// `Net::migrate` on commit. Sharing the slot makes an install on any clone
+    /// visible to the running box, lock-free — otherwise clip playback silently
+    /// never reaches the audio thread. `isolate()` (offline export) deliberately
+    /// swaps in a FRESH private slot to sever this sharing.
+    midi_source_override: Arc<ArcSwapOption<MidiSourceHandle>>,
     midi_buffer: Vec<MidiEvent>,
     mix_buffer: [f32; 2],
     finished_indices: SmallVec<[usize; FINISHED_NOTES_CAPACITY]>,
@@ -106,7 +117,7 @@ impl PolySynth {
             midi_unit_id,
             midi_sender,
             midi_receiver,
-            midi_source_override: None,
+            midi_source_override: Arc::new(ArcSwapOption::empty()),
             midi_buffer: vec![MidiEvent::noop(); 256],
             mix_buffer: [0.0; 2],
             finished_indices: SmallVec::new(),
@@ -130,19 +141,22 @@ impl PolySynth {
     ///
     /// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
     pub fn set_midi_source(&mut self, source: Arc<dyn MidiSource>) {
-        self.midi_source_override = Some(source);
+        self.midi_source_override
+            .store(Some(Arc::new(MidiSourceHandle(source))));
     }
 
     /// Drop a previously-installed override; subsequent ticks poll the
     /// live `MidiReceiver` again.
     pub fn clear_midi_source(&mut self) {
-        self.midi_source_override = None;
+        self.midi_source_override.store(None);
     }
 
     fn poll_count(&mut self, block_size: usize) -> usize {
         let block_start = self.sample_pos;
-        match &self.midi_source_override {
-            Some(src) => src.poll_into(
+        // `load()` is lock-free; the guard holds the current source for the poll.
+        let source = self.midi_source_override.load();
+        match source.as_ref() {
+            Some(handle) => handle.0.poll_into(
                 self.midi_unit_id,
                 block_start,
                 block_size,
@@ -475,7 +489,13 @@ impl AudioUnit for PolySynth {
         let (sender, receiver) = MidiEventSlot::pair(self.midi_unit_id);
         self.midi_sender = sender;
         self.midi_receiver = receiver;
-        self.midi_source_override = None;
+        // Swap in a FRESH private slot (not `store(None)` on the shared one):
+        // the override slot is now shared across clones, so clearing the shared
+        // slot would sever the LIVE synth's clip source mid-export. A brand-new
+        // empty slot detaches this export clone alone, which is exactly what
+        // isolation wants — this clone renders silence, the live synth is
+        // untouched.
+        self.midi_source_override = Arc::new(ArcSwapOption::empty());
 
         // Rebuild voices with fresh `Shared` atomics (see #2 above).
         let unison_count = self
@@ -701,9 +721,11 @@ impl Clone for PolySynth {
     fn clone(&self) -> Self {
         // Share the underlying MIDI inbox so events queued via any
         // outstanding `MidiSender` keep reaching whichever PolySynth
-        // fundsp is currently polling. Same for the MIDI source
-        // override — it's behind an `Arc`, so the audio-thread clone
-        // and the frontend share the same scheduled-event source.
+        // fundsp is currently polling. Same for the MIDI source override:
+        // the `Arc<ArcSwapOption>` SLOT is shared (Arc clone), so an install
+        // on any clone is seen by the box the audio thread runs — a plain
+        // `Option` clone (the old bug) gave each clone a private slot that
+        // never propagated.
         Self {
             config: self.config.clone(),
             allocator: self.allocator.clone(),
@@ -828,6 +850,68 @@ mod tests {
             live.active_voice_count(),
             1,
             "live synth must still receive its note after the clone is ticked"
+        );
+    }
+
+    /// A source that emits one note-on at offset 0 on its first poll — enough to
+    /// prove it was the thing polled (activates exactly one voice).
+    struct NoteOnceSource {
+        note: u8,
+    }
+    impl MidiSource for NoteOnceSource {
+        fn poll_into(
+            &self,
+            _unit: MidiUnitId,
+            _start: u64,
+            _block: usize,
+            buffer: &mut [MidiEvent],
+        ) -> usize {
+            if buffer.is_empty() {
+                return 0;
+            }
+            buffer[0] = ev_note_on(0, self.note, 100);
+            1
+        }
+    }
+
+    /// The regression guard for [[plugin-source-install-shared-cell]] on the synth
+    /// side: installing a clip source on ONE clone must be visible to ANOTHER
+    /// clone, because fundsp runs a different clone than the one the install call
+    /// mutates. With the old per-clone `Option<Arc<…>>` this failed silently, so
+    /// synth clip playback never reached the audio thread.
+    #[test]
+    fn midi_source_install_propagates_across_clones() {
+        let live = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Sine,
+            ..Default::default()
+        });
+        // `clone_a` is the ECS-handle-style clone the install call mutates;
+        // `audio_clone` is the box the audio thread would run.
+        let mut clone_a = live.clone();
+        let mut audio_clone = live.clone();
+
+        clone_a.set_midi_source(Arc::new(NoteOnceSource { note: 60 }));
+
+        // The audio clone must see the install (shared slot) and activate a voice.
+        let mut out = [0.0f32; 2];
+        audio_clone.tick(&[], &mut out);
+        assert_eq!(
+            audio_clone.active_voice_count(),
+            1,
+            "install on clone_a must reach audio_clone via the shared slot"
+        );
+
+        // Clearing on one clone clears for the other.
+        clone_a.clear_midi_source();
+        let mut fresh = live.clone();
+        fresh.tick(&[], &mut out);
+        assert_eq!(
+            fresh.active_voice_count(),
+            0,
+            "clear on clone_a must propagate — no source polled"
         );
     }
 

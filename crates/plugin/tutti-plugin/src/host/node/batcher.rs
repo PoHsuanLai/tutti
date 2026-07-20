@@ -15,12 +15,10 @@
 //! format-tagged enum; only one variant exists per `Batcher` instance at
 //! runtime.
 
-use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::host::ipc_client::PluginBridge;
+use crate::host::node::BlockPayload;
 use crate::error::Result;
-use crate::protocol::{
-    MidiEventVec, NoteExpressionChanges, ParameterChanges, SampleFormat, TransportInfo,
-};
+use crate::protocol::SampleFormat;
 use tutti_core::{BufferMut, BufferRef, Sample as FundspSample, F32, F64};
 
 /// Matches fundsp's `MAX_BUFFER_SIZE` (`1 << 6`). Blocks of this size are
@@ -219,14 +217,20 @@ impl Batcher {
 
     /// Send inputs, process, receive outputs, reset cursors. Any bridge
     /// failure zero-fills `size` output samples and returns.
-    pub(super) fn flush<T: Scalar>(
-        &mut self,
-        bridge: &PluginBridge,
-        midi: MidiEventVec,
-        param_changes: ParameterChanges,
-        harmony: HarmonyInputs,
-        transport: TransportInfo,
-    ) {
+    /// Unpack a [`BlockPayload`] into the positional `bridge.process` call. The
+    /// one place the host-side aggregate meets the (unchanged) IPC boundary.
+    fn dispatch(&self, bridge: &PluginBridge, size: usize, payload: BlockPayload) -> bool {
+        bridge.process(
+            size,
+            payload.midi,
+            payload.params,
+            payload.note_expression,
+            payload.harmony,
+            payload.transport,
+        )
+    }
+
+    pub(super) fn flush<T: Scalar>(&mut self, bridge: &PluginBridge, payload: BlockPayload) {
         let size = self.write_pos;
         if size == 0 {
             return;
@@ -240,27 +244,14 @@ impl Batcher {
             }
         }
 
-        // `param_changes` carries sample-accurate parameter automation from the
-        // node's `ParamAutomationSource` (empty when no automation lane targets
-        // this plugin) — the VST3/CLAP loaders stage it into `IParameterChanges`
-        // / CLAP `PARAM_VALUE` events. This is the *only* automation path for
-        // hosted plugins; there is no frame-rate `set_parameter` fallback.
-        //
-        // `note_expression` is still sent empty: it is a live, spec-native input
-        // channel the loaders DO consume (native `note_id`-addressed
-        // note-expression), but per-note expression currently reaches plugins via
-        // the MIDI stream instead — clip-authored expression is emitted as MIDI-2
-        // UMP per-note events and converted to native note-expression at the
-        // format boundary (see `vst3_event_from_midi`). The field is the direct
-        // channel awaiting a producer; the UMP route is the current stopgap.
-        if !bridge.process(
-            size,
-            midi,
-            param_changes,
-            NoteExpressionChanges::new(),
-            harmony,
-            transport,
-        ) {
+        // `payload` bundles this block's host-produced inputs (see
+        // `crate::host::node::BlockPayload`); unpacked here into the unchanged
+        // positional `bridge.process` call so the IPC wire shape is untouched.
+        // `note_expression` is default (empty): a live, spec-native channel the
+        // loaders DO consume (native `note_id`-addressed note-expression), but
+        // per-note expression currently reaches plugins via the MIDI-2 UMP stream
+        // converted at the format boundary — the field awaits a producer.
+        if !self.dispatch(bridge, size, payload) {
             T::silence_tick(self, size, self.outputs);
             self.drain_to(size);
             return;
@@ -281,10 +272,7 @@ impl Batcher {
         size: usize,
         input: &BufferRef<'_, T::Marker>,
         output: &mut BufferMut<'_, T::Marker>,
-        midi: MidiEventVec,
-        param_changes: ParameterChanges,
-        harmony: HarmonyInputs,
-        transport: TransportInfo,
+        payload: BlockPayload,
     ) {
         for ch in 0..self.inputs {
             if T::send_block(self, bridge, ch, size, input).is_err() {
@@ -293,17 +281,8 @@ impl Batcher {
             }
         }
 
-        // `param_changes` = sample-accurate automation (empty when unautomated);
-        // `note_expression` still empty (delivered via MIDI-UMP) — see the note
-        // on the `flush` send above.
-        if !bridge.process(
-            size,
-            midi,
-            param_changes,
-            NoteExpressionChanges::new(),
-            harmony,
-            transport,
-        ) {
+        // See `flush` for the payload/wire note.
+        if !self.dispatch(bridge, size, payload) {
             T::silence_block(output, size, self.outputs);
             return;
         }

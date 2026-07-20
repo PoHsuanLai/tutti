@@ -21,6 +21,7 @@ use atomic_float::AtomicF64;
 use tutti_core::transport::TransportReader;
 
 use crate::host::ipc_client::audio::HarmonyInputs;
+use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
 use crate::protocol::{ChordValue, ScaleValue};
 
 /// A chord change scheduled at an absolute beat. The `value`'s `sample_offset`
@@ -177,6 +178,24 @@ impl HarmonySource {
             idx += 1;
         }
         cursor.store(idx as u64, Ordering::Release);
+    }
+}
+
+impl BlockInput for HarmonySource {
+    type Out = HarmonyInputs;
+    fn fill(&self, ctx: BlockCtx, out: &mut HarmonyInputs) {
+        // Inherent `fill` self-clears chords/scales, so it satisfies the
+        // "fully overwrite `out`" contract.
+        HarmonySource::fill(self, ctx.block_size, out);
+    }
+}
+
+impl BlockReset for HarmonyInputs {
+    fn reset(&mut self) {
+        self.chords.changes.clear();
+        self.scales.changes.clear();
+        self.expr_texts.changes.clear();
+        self.expr_ints.changes.clear();
     }
 }
 

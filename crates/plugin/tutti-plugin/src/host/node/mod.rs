@@ -15,8 +15,10 @@
 mod audio_unit;
 mod batcher;
 mod harmony_source;
+mod input_slot;
 mod param_automation_source;
 mod process;
+mod transport_source;
 
 #[cfg(test)]
 mod tests;
@@ -38,16 +40,14 @@ use crate::error::Result;
 use crate::protocol::{
     Features, LoadedPlugin, ParameterChanges, PluginDescriptor, SampleFormat, TransportInfo,
 };
+use crate::host::ipc_client::audio::HarmonyInputs;
+use crate::host::node::input_slot::{BlockCtx, InputSlot};
+use crate::host::node::transport_source::TransportSource;
 use crate::host::subprocess;
 use batcher::Batcher;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use arc_swap::ArcSwapOption;
-
-/// `Sized` wrapper so a `dyn TransportReader` trait object can live in an
-/// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
-struct TransportReaderHandle(Arc<dyn tutti_core::transport::TransportReader>);
 use tutti_midi_types::ump::MidiEvent;
 
 /// Cheap to clone: clones share `bridge`, `latency`, and `process_guard`
@@ -72,142 +72,45 @@ pub struct PluginClient {
     process_guard: Arc<ProcessGuard>,
     io: Batcher,
     midi: Midi,
-    harmony: Harmony,
-    transport: Transport,
-    param_automation: ParamAutomation,
-}
-
-/// Per-client transport source. The reader lives in a **shared**
-/// `Arc<ArcSwapOption<…>>` (see [`Harmony`] / the note on `Midi::source_override`)
-/// so an install on any clone reaches the box the audio thread runs. Produces
-/// the per-block [`TransportInfo`] the plugin consumes, but only when the plugin
-/// advertised [`Features::TRANSPORT`] — otherwise the plugin is fed a default
-/// snapshot.
-#[derive(Clone)]
-struct Transport {
-    reader: Arc<ArcSwapOption<TransportReaderHandle>>,
-    /// Latest negotiated sample rate, stamped onto the snapshot (CLAP reads it).
-    /// A plain field is fine here: fundsp calls `AudioUnit::set_sample_rate` on
-    /// the actual running box, so this reaches the right clone without sharing.
+    inputs: PluginInputs,
+    /// Last-known sample rate, used to stamp a freshly-installed
+    /// [`TransportSource`]. Updated by `AudioUnit::set_sample_rate`.
     sample_rate: f64,
 }
 
-impl Default for Transport {
-    fn default() -> Self {
+/// The per-block inputs this plugin consumes, each an [`InputSlot`] sharing its
+/// producer across fundsp graph-commit clones. MIDI is deliberately NOT here —
+/// it has a live-receiver fallback the uniform slot doesn't model (see [`Midi`]).
+#[derive(Clone)]
+struct PluginInputs {
+    harmony: InputSlot<HarmonySource>,
+    params: InputSlot<ParamAutomationSource>,
+    transport: InputSlot<TransportSource>,
+}
+
+impl PluginInputs {
+    /// Slots with the gates that decide which plugins receive each input:
+    /// harmony → `SEQUENCER_CONTEXT`, transport → `TRANSPORT`, params → universal
+    /// (empty gate = always send). Matches the former per-`drain` feature checks.
+    fn new() -> Self {
         Self {
-            reader: Arc::new(ArcSwapOption::empty()),
-            sample_rate: 0.0,
+            harmony: InputSlot::new(Features::SEQUENCER_CONTEXT),
+            params: InputSlot::new(Features::empty()),
+            transport: InputSlot::new(Features::TRANSPORT),
         }
     }
 }
 
-impl Transport {
-    /// Read the live transport into a [`TransportInfo`]. Returns the default
-    /// (stopped, 120 BPM) snapshot when no reader is installed.
-    fn snapshot(&self) -> TransportInfo {
-        let guard = self.reader.load();
-        let Some(handle) = guard.as_ref() else {
-            return TransportInfo::default();
-        };
-        let reader = &handle.0;
-        let mut info = TransportInfo::new()
-            .with_tempo(reader.tempo().get())
-            .with_playing(reader.is_playing())
-            .with_recording(reader.is_recording())
-            .with_sample_rate(self.sample_rate);
-        // CLAP-style beats position; seconds derived from beats + tempo.
-        let beats = reader.current_beat_f64();
-        let tempo = reader.tempo().get();
-        let seconds = if tempo > 0.0 { beats * 60.0 / tempo } else { 0.0 };
-        info = info.with_position_beats(beats, seconds);
-        if let Some((start, end)) = reader.get_loop_range() {
-            info = info.with_loop(reader.is_loop_enabled(), start, end);
-        }
-        info
-    }
-}
-
-/// Per-client chord/scale producer state. The source lives in a **shared**
-/// `Arc<ArcSwapOption<…>>` (see the note on `Midi::source_override`) so an
-/// install on any clone reaches the box the audio thread runs; the per-block
-/// drain buffer is rebuilt fresh per clone since it's scratch.
-struct Harmony {
-    source: Arc<ArcSwapOption<HarmonySource>>,
-    drain: crate::host::ipc_client::audio::HarmonyInputs,
-}
-
-impl Default for Harmony {
-    fn default() -> Self {
-        Self {
-            source: Arc::new(ArcSwapOption::empty()),
-            drain: crate::host::ipc_client::audio::HarmonyInputs::default(),
-        }
-    }
-}
-
-impl Clone for Harmony {
-    fn clone(&self) -> Self {
-        Self {
-            // Share the slot (Arc clone), not the Option — so a later install is
-            // seen by whichever clone the audio thread runs.
-            source: Arc::clone(&self.source),
-            drain: crate::host::ipc_client::audio::HarmonyInputs::default(),
-        }
-    }
-}
-
-impl Harmony {
-    /// Fill (and return) the per-block harmony inputs from the installed
-    /// source, or an empty bundle when no source is installed.
-    fn drain_for_process(&mut self, block_size: usize) -> &crate::host::ipc_client::audio::HarmonyInputs {
-        self.drain.chords.changes.clear();
-        self.drain.scales.changes.clear();
-        if let Some(src) = self.source.load().as_ref() {
-            src.fill(block_size, &mut self.drain);
-        }
-        &self.drain
-    }
-}
-
-/// Per-client parameter-automation producer state. The source lives in a
-/// **shared** `Arc<ArcSwapOption<…>>` (see the note on `Midi::source_override`)
-/// so an install on any clone reaches the box the audio thread runs; the
-/// per-block drain buffer is rebuilt fresh per clone since it's scratch.
-struct ParamAutomation {
-    source: Arc<ArcSwapOption<ParamAutomationSource>>,
-    drain: ParameterChanges,
-}
-
-impl Default for ParamAutomation {
-    fn default() -> Self {
-        Self {
-            source: Arc::new(ArcSwapOption::empty()),
-            drain: ParameterChanges::new(),
-        }
-    }
-}
-
-impl Clone for ParamAutomation {
-    fn clone(&self) -> Self {
-        Self {
-            // Share the slot (Arc clone), not the Option — a later install must
-            // be visible to whichever clone the audio thread runs.
-            source: Arc::clone(&self.source),
-            drain: ParameterChanges::new(),
-        }
-    }
-}
-
-impl ParamAutomation {
-    /// Fill (and return) the per-block parameter changes from the installed
-    /// source, or an empty set when no source is installed.
-    fn drain_for_process(&mut self, block_size: usize) -> &ParameterChanges {
-        self.drain.clear();
-        if let Some(src) = self.source.load().as_ref() {
-            src.fill(block_size, &mut self.drain);
-        }
-        &self.drain
-    }
+/// Everything the host produces for one process block, aggregated for the bridge
+/// call. Host-side only — the batcher unpacks it into the (unchanged) positional
+/// `bridge.process` arguments, so the IPC wire shape is untouched.
+#[derive(Default)]
+pub(super) struct BlockPayload {
+    pub midi: crate::protocol::MidiEventVec,
+    pub params: ParameterChanges,
+    pub note_expression: crate::protocol::NoteExpressionChanges,
+    pub harmony: HarmonyInputs,
+    pub transport: TransportInfo,
 }
 
 // Sibling-module access (audio_unit.rs). Field access stays private.
@@ -228,42 +131,21 @@ impl PluginClient {
         &mut self.midi
     }
 
-    /// Fill the per-block chord/scale context from the installed harmony
-    /// source (empty when none is installed). Cloned out for the bridge call.
-    ///
-    /// Gated on [`Features::SEQUENCER_CONTEXT`]: a plugin that didn't advertise
-    /// it never has [`HarmonySource::fill`] run for it — the engine only
-    /// produces the payload the plugin asked to consume, keyed on the flag,
-    /// never on the plugin's format.
-    pub(super) fn drain_harmony(&mut self, block_size: usize) -> crate::host::ipc_client::audio::HarmonyInputs {
-        if !self.loaded.features.contains(Features::SEQUENCER_CONTEXT) {
-            return crate::host::ipc_client::audio::HarmonyInputs::default();
+    /// Assemble this block's [`BlockPayload`]: MIDI (from the receiver-fallback
+    /// [`Midi`]) plus each gated [`InputSlot`] (harmony/params/transport). Every
+    /// send/gate decision lives in [`InputSlot::drain`] keyed on the plugin's
+    /// [`Features`] — never on the plugin's format. `note_expression` is left
+    /// default (no producer yet; delivered via the MIDI-UMP path).
+    pub(super) fn build_block_payload(&mut self, block_size: usize) -> BlockPayload {
+        let ctx = BlockCtx { block_size };
+        let features = self.loaded.features;
+        BlockPayload {
+            midi: self.midi.drain_for_process(block_size).clone(),
+            params: self.inputs.params.drain(ctx, features).clone(),
+            harmony: self.inputs.harmony.drain(ctx, features).clone(),
+            transport: self.inputs.transport.drain(ctx, features).clone(),
+            note_expression: crate::protocol::NoteExpressionChanges::new(),
         }
-        self.harmony.drain_for_process(block_size).clone()
-    }
-
-    /// The per-block transport snapshot for this plugin, gated on
-    /// [`Features::TRANSPORT`]: a plugin that didn't advertise it always gets a
-    /// default snapshot, never a live read — the engine only sends what the
-    /// plugin asked to consume, keyed on the flag, never on the plugin's format.
-    pub(super) fn drain_transport(&self) -> TransportInfo {
-        if !self.loaded.features.contains(Features::TRANSPORT) {
-            return TransportInfo::default();
-        }
-        self.transport.snapshot()
-    }
-
-    /// Fill the per-block sample-accurate parameter automation from the
-    /// installed source (empty when none is installed). Cloned out for the
-    /// bridge call.
-    ///
-    /// Unlike harmony/transport this is **not** gated on a [`Features`] bit:
-    /// every plugin format consumes parameter changes, so the gate is simply
-    /// "a source was installed" — a track with no automation lane targeting one
-    /// of this plugin's params never has a source set, so its plugin sees an
-    /// empty [`ParameterChanges`] and keeps its current values.
-    pub(super) fn drain_params(&mut self, block_size: usize) -> ParameterChanges {
-        self.param_automation.drain_for_process(block_size).clone()
     }
 
     pub(super) fn bridge_ref(&self) -> &Arc<PluginBridge> {
@@ -271,9 +153,14 @@ impl PluginClient {
     }
 
     /// Update the sample rate stamped onto the transport snapshot. Called from
-    /// the `AudioUnit::set_sample_rate` impls alongside the bridge notification.
+    /// the `AudioUnit::set_sample_rate` impls. Reaches the running box because
+    /// the source's rate is a shared atomic; a no-op when no source is installed
+    /// (it's installed later with the correct rate by the host).
     pub(super) fn set_transport_sample_rate(&mut self, sample_rate: f64) {
-        self.transport.sample_rate = sample_rate;
+        self.sample_rate = sample_rate;
+        if let Some(src) = self.inputs.transport.source_ref().load().as_ref() {
+            src.set_sample_rate(sample_rate);
+        }
     }
 }
 
@@ -341,12 +228,11 @@ impl PluginClient {
             process_guard,
             io: Batcher::new(inputs, outputs, output_base, server.format, max_buffer_size),
             midi: Midi::new(),
-            harmony: Harmony::default(),
-            transport: Transport {
-                reader: Arc::new(ArcSwapOption::empty()),
-                sample_rate,
-            },
-            param_automation: ParamAutomation::default(),
+            // No transport source yet — the host installs one via
+            // `set_transport_source` right after load; it's stamped with
+            // `sample_rate` below (updated live on device rate changes).
+            inputs: PluginInputs::new(),
+            sample_rate,
         })
     }
 
@@ -450,32 +336,33 @@ impl PluginClient {
     /// lanes. Mirrors [`set_midi_source`](Self::set_midi_source); the source is
     /// held in an `Arc` so it survives fundsp's graph-commit clones.
     pub fn set_harmony_source(&mut self, source: std::sync::Arc<HarmonySource>) {
-        self.harmony.source.store(Some(source));
+        self.inputs.harmony.install(source);
     }
 
     /// Drop a previously-installed harmony source. Subsequent blocks feed the
     /// plugin empty chord/scale context.
     pub fn clear_harmony_source(&mut self) {
-        self.harmony.source.store(None);
+        self.inputs.harmony.clear();
     }
 
     /// Install a transport reader so the plugin receives a live per-block
-    /// [`TransportInfo`] (tempo, playhead, loop). Held in an `Arc` so it
-    /// survives fundsp's graph-commit clones. The snapshot is only sent to
-    /// plugins advertising [`Features::TRANSPORT`]; others always get a default.
+    /// [`TransportInfo`] (tempo, playhead, loop). Wrapped in a [`TransportSource`]
+    /// stamped with the current sample rate (updated live on device changes).
+    /// The snapshot is only sent to plugins advertising [`Features::TRANSPORT`];
+    /// others always get a default.
     pub fn set_transport_source(
         &mut self,
         reader: std::sync::Arc<dyn tutti_core::transport::TransportReader>,
     ) {
-        self.transport
-            .reader
-            .store(Some(Arc::new(TransportReaderHandle(reader))));
+        self.inputs
+            .transport
+            .install(Arc::new(TransportSource::new(reader, self.sample_rate)));
     }
 
     /// Drop a previously-installed transport reader; subsequent blocks feed the
     /// plugin a default (stopped) transport snapshot.
     pub fn clear_transport_source(&mut self) {
-        self.transport.reader.store(None);
+        self.inputs.transport.clear();
     }
 
     /// Install a [`ParamAutomationSource`] so the plugin receives sample-accurate
@@ -484,14 +371,14 @@ impl PluginClient {
     /// automation path for hosted-plugin parameters — the frame-rate
     /// `set_parameter` route is never wired for them.
     pub fn set_param_automation_source(&mut self, source: std::sync::Arc<ParamAutomationSource>) {
-        self.param_automation.source.store(Some(source));
+        self.inputs.params.install(source);
     }
 
     /// Drop a previously-installed parameter-automation source; subsequent
     /// blocks feed the plugin empty [`ParameterChanges`] (it keeps its current
     /// parameter values).
     pub fn clear_param_automation_source(&mut self) {
-        self.param_automation.source.store(None);
+        self.inputs.params.clear();
     }
 
     /// Drop a previously-installed source override; subsequent ticks

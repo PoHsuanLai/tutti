@@ -23,6 +23,7 @@ use std::sync::Arc;
 use audio_automation::AutomationEnvelope;
 use tutti_core::transport::TransportReader;
 
+use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
 use crate::protocol::ParameterChanges;
 
 /// One plugin parameter's automation curve, keyed by the plugin's numeric
@@ -118,6 +119,21 @@ impl ParamAutomationSource {
                 out.add_queue(queue);
             }
         }
+    }
+}
+
+impl BlockInput for ParamAutomationSource {
+    type Out = ParameterChanges;
+    fn fill(&self, ctx: BlockCtx, out: &mut ParameterChanges) {
+        // Inherent `fill` self-clears, so it satisfies the "fully overwrite
+        // `out`" contract.
+        ParamAutomationSource::fill(self, ctx.block_size, out);
+    }
+}
+
+impl BlockReset for ParameterChanges {
+    fn reset(&mut self) {
+        self.clear();
     }
 }
 

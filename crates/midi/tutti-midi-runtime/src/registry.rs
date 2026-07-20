@@ -395,7 +395,7 @@ mod tests {
     use tutti_midi_types::midi2::{system_common, UmpMessage};
 
     fn note_on(note: u8, vel_u7: u8) -> MidiEvent {
-        MidiEvent::note_on(0, 0, note, (vel_u7 as u16) << 9)
+        MidiEvent::note_on(0, 0, note, tutti_midi_types::convert::midi1_velocity_to_midi2(vel_u7))
     }
 
     fn note_off(note: u8) -> MidiEvent {
@@ -574,7 +574,7 @@ mod tests {
         bus.insert(sender);
 
         // Note on, channel 2 (a member channel of the lower zone).
-        let note_on = MidiEvent::note_on(0, 2, 60, 100u16 << 9);
+        let note_on = MidiEvent::note_on(0, 2, 60, tutti_midi_types::convert::midi1_velocity_to_midi2(100));
         // Channel pitch-bend on channel 2 — under MPE classic mapping
         // this routes to note 60.
         let bend = MidiEvent::pitch_bend(0, 2, midi1_pitch_bend_to_midi2(16383));
@@ -633,7 +633,7 @@ mod tests {
 
         // Without MPE installed, queueing a note-on shouldn't update
         // the expression atomics.
-        let note_on = MidiEvent::note_on(0, 2, 60, 100u16 << 9);
+        let note_on = MidiEvent::note_on(0, 2, 60, tutti_midi_types::convert::midi1_velocity_to_midi2(100));
         bus.queue(id, &[note_on]);
 
         assert!(
@@ -654,7 +654,7 @@ mod tests {
         let (sender, receiver) = MidiEventSlot::pair(id);
         bus.insert(sender);
 
-        let note_on = MidiEvent::note_on(0, 0, 60, 100u16 << 9);
+        let note_on = MidiEvent::note_on(0, 0, 60, tutti_midi_types::convert::midi1_velocity_to_midi2(100));
         bus.queue(id, &[note_on]);
 
         assert!(receiver.has_events());

@@ -298,7 +298,7 @@ mod tests {
     }
 
     fn note_on(note: u8, vel: u8) -> MidiEvent {
-        MidiEvent::note_on(0, 0, note, (vel as u16) << 9)
+        MidiEvent::note_on(0, 0, note, tutti_midi_types::convert::midi1_velocity_to_midi2(vel))
     }
 
     #[test]

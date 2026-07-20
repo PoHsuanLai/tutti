@@ -25,9 +25,8 @@ use tutti_core::WaveAsset;
 // Bevy-free DSP leaves — always compiled.
 mod loop_crossfade;
 pub mod sampler_unit;
-// Disk streaming is fed by the Bevy-gated butler engine, so the streaming unit
-// gates with it.
-#[cfg(feature = "bevy")]
+// Disk streaming — the unit is Bevy-free; it's fed by the (Bevy-free) butler
+// engine, which a non-Bevy host drives via `Sampler` / `Auditioner`.
 pub mod streaming_sampler;
 // `time_stretch` / `track_clip_reader` hold Bevy-free DSP (their ECS pieces are
 // gated inside each module).
@@ -67,7 +66,6 @@ pub use trigger::{
 #[cfg(feature = "bevy")]
 pub use node::{SamplerLooping, SamplerNode, SamplerSpeed};
 pub use sampler_unit::SamplerUnit;
-#[cfg(feature = "bevy")]
 pub use streaming_sampler::StreamingSamplerUnit;
 #[cfg(feature = "bevy")]
 pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};

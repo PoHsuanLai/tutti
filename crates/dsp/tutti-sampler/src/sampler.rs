@@ -5,6 +5,7 @@ use crate::butler::{
 };
 use crate::error::Result;
 use arc_swap::ArcSwap;
+#[cfg(feature = "bevy")]
 use bevy_ecs::resource::Resource;
 use dashmap::DashMap;
 use smol::channel::Sender;
@@ -36,7 +37,7 @@ use tutti_core::PdcState;
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Resource)]
+#[cfg_attr(feature = "bevy", derive(Resource))]
 pub struct Sampler {
     butler_tx: Sender<ButlerCommand>,
     butler: ButlerThread,

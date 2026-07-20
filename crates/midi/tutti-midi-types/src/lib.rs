@@ -36,12 +36,14 @@ pub mod routing;
 pub mod source;
 pub mod sync;
 pub mod target;
+pub mod translate;
 pub mod ump;
 pub mod unit_id;
 
 pub use input_source::{MidiInputSource, NoMidiInput};
 pub use normalize::normalize;
 pub use note_id::{NoteId, PerNoteMap};
+pub use translate::Midi1ToMidi2Translator;
 pub use queue::MidiQueue;
 pub use routing::{MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterator};
 pub use source::MidiSource;

@@ -16,6 +16,9 @@ pub const BALANCE: u8 = 8;
 pub const PAN: u8 = 10;
 pub const EXPRESSION: u8 = 11;
 
+/// Data Entry LSB — the low 7 bits of an (N)RPN value (MSB is [`DATA_ENTRY`]).
+pub const DATA_ENTRY_LSB: u8 = 38;
+
 // Sound controllers
 pub const RESONANCE: u8 = 71;
 pub const RELEASE_TIME: u8 = 72;

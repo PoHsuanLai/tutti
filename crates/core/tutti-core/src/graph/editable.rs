@@ -37,7 +37,6 @@ use crate::{
     PdcManager, PdcState, GraphNet,
 };
 
-#[cfg(feature = "midi")]
 use tutti_midi_types::MidiRoutingTable;
 
 /// The editable DSP graph.
@@ -49,7 +48,6 @@ use tutti_midi_types::MidiRoutingTable;
 pub struct AudioGraph {
     net: GraphNet,
     pdc: PdcManager,
-    #[cfg(feature = "midi")]
     midi_route: MidiRoutingTable,
     sample_rate: f64,
     channels: usize,
@@ -61,14 +59,13 @@ impl AudioGraph {
     pub fn from_parts(
         net: GraphNet,
         pdc: PdcManager,
-        #[cfg(feature = "midi")] midi_route: MidiRoutingTable,
+        midi_route: MidiRoutingTable,
         sample_rate: f64,
         channels: usize,
     ) -> Self {
         Self {
             net,
             pdc,
-            #[cfg(feature = "midi")]
             midi_route,
             sample_rate,
             channels,
@@ -76,12 +73,7 @@ impl AudioGraph {
     }
 
     /// Build an empty graph with the given output `channels` (0 inputs,
-    /// 48 kHz). Feature-agnostic: constructs the net / PDC / (midi-gated)
-    /// routing table internally, so callers — especially the per-frame test
-    /// fixtures in downstream crates — never have to replicate the
-    /// `#[cfg(feature = "midi")]` arity dance of [`from_parts`](Self::from_parts).
-    /// The `midi` feature is owned here, so this stays correct under any
-    /// workspace feature unification.
+    /// 48 kHz). Constructs the net / PDC / routing table internally.
     pub fn empty(channels: usize) -> Self {
         let mut net = GraphNet::new(0, channels);
         // Allocate the fundsp realtime backend (as the real builder does) so
@@ -92,7 +84,6 @@ impl AudioGraph {
         Self {
             net,
             pdc,
-            #[cfg(feature = "midi")]
             midi_route: MidiRoutingTable::new(),
             sample_rate: 48_000.0,
             channels,
@@ -323,7 +314,6 @@ impl AudioGraph {
     ///
     /// Edits are staged alongside graph edits and only reach the audio thread
     /// after the next [`commit`](Self::commit).
-    #[cfg(feature = "midi")]
     pub fn midi_route_mut(&mut self) -> &mut MidiRoutingTable {
         &mut self.midi_route
     }
@@ -353,7 +343,6 @@ impl AudioGraph {
         // to get zero compensation (same as prior behaviour). When bus
         // identity lands on the graph, add a parallel `set_return_latency`
         // loop here.
-        #[cfg(feature = "midi")]
         self.midi_route.commit();
         outcome.total_latency
     }
@@ -495,13 +484,10 @@ mod tests {
         // we only care that the commit path runs and updates PDC state.
         let _backend = net.backend();
         let pdc = PdcManager::new(channels, 0);
-        #[cfg(feature = "midi")]
-        let midi_route = MidiRoutingTable::new();
         AudioGraph::from_parts(
             net,
             pdc,
-            #[cfg(feature = "midi")]
-            midi_route,
+            MidiRoutingTable::new(),
             48_000.0,
             channels,
         )

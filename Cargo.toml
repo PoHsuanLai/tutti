@@ -1,0 +1,65 @@
+# Workspace root for the tutti audio engine + its Bevy adapter (bevy-tutti).
+#
+# tutti is a self-contained, third-party audio engine (Bevy-free at its core);
+# bevy-tutti is the Bevy adapter layered on top. Together they form one
+# workspace that lives OUTSIDE the dawai app workspace (the app's root
+# Cargo.toml `exclude`s this tree). The app depends on these crates via
+# cross-workspace path deps, exactly like a published dependency.
+#
+# The engine crates all live under crates/** (this dir is their common
+# ancestor, so Cargo auto-discovers this root). bevy-tutti physically lives at
+# ../bevy-tutti and joins via a member entry + its own `package.workspace`
+# pointer back here.
+[workspace]
+resolver = "2"
+members = [
+    "crates/core/tutti-core",
+    "crates/core/tutti-types",
+    "crates/core/tutti-wavecache",
+    "crates/core/tutti-export",
+    "crates/midi/tutti-midi-io",
+    "crates/midi/tutti-midi-types",
+    "crates/midi/tutti-midi-runtime",
+    "crates/dsp/tutti-sampler",
+    "crates/dsp/tutti-synth",
+    "crates/dsp/tutti-units",
+    "crates/dsp/tutti-analysis",
+    "crates/plugin/tutti-plugin",
+    "crates/plugin/tutti-plugin-server",
+    "crates/plugin/tutti-plugin-host",
+    "crates/plugin/tutti-plugin-types",
+    "crates/plugin/tutti-wasm-plugin",
+    "crates/plugin/formats/tutti-vst3-host",
+    "crates/plugin/formats/tutti-clap-host",
+    "crates/plugin/formats/tutti-au-host",
+    "crates/plugin/formats/tutti-vst2-host",
+    "crates/vendor/fundsp-tutti",
+    "crates/vendor/rustysynth-tutti/rustysynth",
+    "crates/vendor/tutti-clap-test-plugin",
+    # The Bevy adapter — lives outside this dir tree; it sets `package.workspace
+    # = "../tutti"` so Cargo counts it here rather than in the app workspace.
+    "../bevy-tutti",
+]
+
+# Shared-dep pins the members inherit via `workspace = true`. Kept identical to
+# the dawai app workspace's pins (root Cargo.toml) so both workspaces resolve the
+# same bevy 0.19 / midi crate versions.
+[workspace.dependencies]
+bevy_app = { version = "0.19", default-features = false }
+bevy_ecs = { version = "0.19", default-features = false, features = ["debug", "bevy_reflect"] }
+bevy_log = { version = "0.19", default-features = false }
+bevy_asset = { version = "0.19", default-features = false }
+bevy_reflect = { version = "0.19", default-features = false }
+bevy_tasks = "0.19"
+thiserror = "2"
+midir = "0.9"
+midly = { version = "0.5", default-features = false }
+midi2 = { version = "0.11", default-features = false, features = [
+    "channel-voice1",
+    "channel-voice2",
+    "system-common",
+    "sysex7",
+    "sysex8",
+    "utility",
+] }
+coremidi = "0.8"

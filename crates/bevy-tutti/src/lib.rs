@@ -70,6 +70,18 @@ pub mod engine;
 
 pub use plugin::TuttiPlugin;
 
+// Plugin-hosting surface. `tutti-plugin-host` is the Bevy-only plugin-editor /
+// scan / crash-detect layer — an implementation detail of this adapter. Consumers
+// reach it through bevy-tutti (`bevy_tutti::PluginsRes`, …) rather than depending
+// on the engine-workspace crate directly. Re-exported as a namespace + the common
+// entry types.
+#[cfg(feature = "plugin")]
+pub use tutti_plugin_host as plugin_host;
+#[cfg(feature = "plugin")]
+pub use tutti_plugin_host::{
+    OpenPluginEditor, PluginEmitter, PluginsRes, TuttiHostingPlugin,
+};
+
 // Engine types.
 pub use engine::{DefaultProcessor, DeviceInfo, Error, Result, TuttiDriver, AudioGraph};
 

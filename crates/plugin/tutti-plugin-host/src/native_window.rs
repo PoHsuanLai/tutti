@@ -1,8 +1,10 @@
 //! Platform helpers for native window handles.
 //!
-//! Thin wrappers around OS APIs for plugin editor window management.
-//! All functions take [`bevy_window::RawHandleWrapper`] from Bevy's window
-//! system and perform platform-specific operations.
+//! Thin wrappers around OS APIs for plugin editor window management. Bevy-free:
+//! all functions speak [`raw_window_handle::RawWindowHandle`] (the platform-neutral
+//! trait Bevy, winit, and wgpu all implement), so any host — Bevy or not — can
+//! reuse them. The Bevy call sites unwrap `bevy_window::RawHandleWrapper`
+//! (`.get_window_handle()`) before calling in.
 
 /// Extract a u64 native handle pointer from a [`raw_window_handle::RawWindowHandle`].
 ///
@@ -26,8 +28,8 @@ pub fn native_view_ptr(raw: raw_window_handle::RawWindowHandle) -> Option<u64> {
 /// - **Windows**: `SetWindowLongPtrW(GWL_HWNDPARENT)` — owned window.
 /// - **Linux**: No-op — X11/Wayland don't support toplevel parent-child.
 pub fn attach_child_window(
-    child: &bevy_window::RawHandleWrapper,
-    parent: &bevy_window::RawHandleWrapper,
+    child: raw_window_handle::RawWindowHandle,
+    parent: raw_window_handle::RawWindowHandle,
 ) {
     #[cfg(target_os = "macos")]
     {
@@ -35,9 +37,9 @@ pub fn attach_child_window(
 
         unsafe {
             let child_view: &NSView =
-                &*(native_view_ptr(child.get_window_handle()).unwrap() as *const NSView);
+                &*(native_view_ptr(child).unwrap() as *const NSView);
             let parent_view: &NSView =
-                &*(native_view_ptr(parent.get_window_handle()).unwrap() as *const NSView);
+                &*(native_view_ptr(parent).unwrap() as *const NSView);
 
             let child_window = child_view.window().expect("child must be in a window");
             let parent_window = parent_view.window().expect("parent must be in a window");
@@ -50,7 +52,7 @@ pub fn attach_child_window(
     {
         use raw_window_handle::RawWindowHandle;
         if let (RawWindowHandle::Win32(child_h), RawWindowHandle::Win32(parent_h)) =
-            (child.get_window_handle(), parent.get_window_handle())
+            (child, parent)
         {
             unsafe {
                 #[cfg(target_pointer_width = "64")]
@@ -89,14 +91,14 @@ pub fn attach_child_window(
 /// autoresizing mask they stay fixed during a host edge-drag, which
 /// produces a visible flash as the plugin briefly pokes outside (or
 /// is clipped by) the new host bounds.
-pub fn enable_subview_autoresize(host: &bevy_window::RawHandleWrapper) {
+pub fn enable_subview_autoresize(host: raw_window_handle::RawWindowHandle) {
     #[cfg(target_os = "macos")]
     {
         use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
 
         unsafe {
             let host_view: &NSView =
-                &*(native_view_ptr(host.get_window_handle()).unwrap() as *const NSView);
+                &*(native_view_ptr(host).unwrap() as *const NSView);
             host_view.setAutoresizesSubviews(true);
             let mask = NSAutoresizingMaskOptions::ViewWidthSizable
                 | NSAutoresizingMaskOptions::ViewHeightSizable;

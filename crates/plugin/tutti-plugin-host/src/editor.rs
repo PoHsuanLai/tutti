@@ -170,8 +170,13 @@ pub fn plugin_editor_attach_system(
                 }
 
                 // Attach as child of primary window so they move together.
+                // Unwrap Bevy's RawHandleWrapper into a platform-neutral
+                // RawWindowHandle at the boundary; native_window is Bevy-free.
                 if let Ok(parent_handle) = primary.single() {
-                    attach_child_window(raw_handle, parent_handle);
+                    attach_child_window(
+                        raw_handle.get_window_handle(),
+                        parent_handle.get_window_handle(),
+                    );
                 }
 
                 // macOS: drive smooth live resize. AppKit-friendly
@@ -182,7 +187,9 @@ pub fn plugin_editor_attach_system(
                 #[cfg(target_os = "macos")]
                 let live_resize = if capabilities.resize.resizable {
                     if capabilities.appkit_autoresize_friendly {
-                        crate::native_window::enable_subview_autoresize(raw_handle);
+                        crate::native_window::enable_subview_autoresize(
+                            raw_handle.get_window_handle(),
+                        );
                         None
                     } else {
                         let handle = emitter.handle.clone();
@@ -197,7 +204,10 @@ pub fn plugin_editor_attach_system(
                             });
                         // SAFETY: main-thread context.
                         unsafe {
-                            crate::live_resize::LiveResizeHandle::install(raw_handle, cb)
+                            crate::live_resize::LiveResizeHandle::install(
+                                raw_handle.get_window_handle(),
+                                cb,
+                            )
                         }
                     }
                 } else {

@@ -64,13 +64,13 @@ impl LiveResizeHandle {
     /// Must be called on the main thread; `host` must be a valid
     /// AppKit window handle.
     pub(crate) unsafe fn install(
-        host: &bevy_window::RawHandleWrapper,
+        host: raw_window_handle::RawWindowHandle,
         callback: ResizeCallback,
     ) -> Option<Self> {
         let _mtm = MainThreadMarker::new()?;
 
         let host_view: &NSView =
-            unsafe { &*(native_view_ptr(host.get_window_handle())? as *const NSView) };
+            unsafe { &*(native_view_ptr(host)? as *const NSView) };
         let host_window = host_view.window()?;
 
         let ivars = ObserverIvars {

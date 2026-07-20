@@ -25,7 +25,7 @@ mod per_note_map;
 
 pub use expression::PerNoteExpression;
 pub use per_note_map::{AtomicPerNoteMap, AtomicSlot};
-use tutti_midi_types::mpe::{MpeChannelVoiceMap, ZoneInfo};
+use tutti_midi_types::mpe::{MpeChannelVoiceMap, NoteRotationAllocator, ZoneInfo};
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
 
 /// Routes MIDI input (1.0 channel-based or 2.0 per-note) to per-note expression state.
@@ -35,6 +35,9 @@ pub struct MpeProcessor {
     expression: Arc<PerNoteExpression>,
     lower_zone_map: Option<MpeChannelVoiceMap>,
     upper_zone_map: Option<MpeChannelVoiceMap>,
+    /// Present only in [`MpeMode::SingleChannelRotation`]: mints a distinct id
+    /// per note-on so same-pitch notes on the one channel get their own voices.
+    rotation: Option<NoteRotationAllocator>,
 }
 
 impl MpeProcessor {
@@ -42,7 +45,7 @@ impl MpeProcessor {
         let expression = Arc::new(PerNoteExpression::new());
 
         let (lower_zone_map, upper_zone_map) = match &mode {
-            MpeMode::Disabled => (None, None),
+            MpeMode::Disabled | MpeMode::SingleChannelRotation { .. } => (None, None),
             MpeMode::LowerZone(config) => (Some(MpeChannelVoiceMap::new(*config)), None),
             MpeMode::UpperZone(config) => (None, Some(MpeChannelVoiceMap::new(*config))),
             MpeMode::DualZone { lower, upper } => (
@@ -50,12 +53,15 @@ impl MpeProcessor {
                 Some(MpeChannelVoiceMap::new(*upper)),
             ),
         };
+        let rotation = matches!(mode, MpeMode::SingleChannelRotation { .. })
+            .then(NoteRotationAllocator::new);
 
         Self {
             mode,
             expression,
             lower_zone_map,
             upper_zone_map,
+            rotation,
         }
     }
 
@@ -81,6 +87,12 @@ impl MpeProcessor {
         let Ok(msg) = UmpMessage::try_from(event.data_words()) else {
             return;
         };
+        if let MpeMode::SingleChannelRotation { channel } = self.mode {
+            if let UmpMessage::ChannelVoice2(cv2) = msg {
+                self.process_rotation_cv2(channel, cv2);
+            }
+            return;
+        }
         match msg {
             UmpMessage::ChannelVoice2(cv2) => self.process_cv2(cv2),
             UmpMessage::ChannelVoice1(cv1) => self.process_cv1(cv1),
@@ -161,6 +173,74 @@ impl MpeProcessor {
                         u8::from(m.note_number()),
                     );
                     self.expression.reset_note(id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Note Number Rotation path: single channel, 128-note polyphony, distinct
+    /// minted [`NoteId`] per note-on. Per-note messages address by note number
+    /// and route to that number's currently-active minted id (the spec's
+    /// by-number addressing; when two same-number notes are live, the most
+    /// recent one is targeted). Only messages on the configured channel apply.
+    fn process_rotation_cv2(&mut self, channel: u8, cv2: ChannelVoice2<&[u32]>) {
+        // A message not on the rotation channel is ignored (this mode owns one).
+        if u8::from(cv2.channel()) != channel {
+            return;
+        }
+        let Some(rotation) = self.rotation.as_mut() else {
+            return;
+        };
+        match cv2 {
+            ChannelVoice2::NoteOn(m) if m.velocity() > 0 => {
+                let id = rotation.note_on(u8::from(m.note_number()));
+                self.expression.note_on(id);
+            }
+            // A CV2 velocity-0 NoteOn is a NoteOff.
+            ChannelVoice2::NoteOn(m) => {
+                if let Some(id) = rotation.note_off(u8::from(m.note_number())) {
+                    self.expression.note_off(id);
+                }
+            }
+            ChannelVoice2::NoteOff(m) => {
+                if let Some(id) = rotation.note_off(u8::from(m.note_number())) {
+                    self.expression.note_off(id);
+                }
+            }
+            ChannelVoice2::PerNotePitchBend(m) => {
+                if let Some(id) = rotation.resolve(u8::from(m.note_number())) {
+                    self.expression
+                        .set_pitch_bend(id, bend_u32_to_signed_f32(m.pitch_bend_data()));
+                }
+            }
+            ChannelVoice2::KeyPressure(m) => {
+                if let Some(id) = rotation.resolve(u8::from(m.note_number())) {
+                    self.expression
+                        .set_pressure(id, u32_to_unit_f32(m.key_pressure_data()));
+                }
+            }
+            ChannelVoice2::RegisteredPerNoteController(m) => {
+                if let Some(value) = slide_value(m.controller()) {
+                    if let Some(id) = rotation.resolve(u8::from(m.note_number())) {
+                        self.expression.set_slide(id, u32_to_unit_f32(value));
+                    }
+                }
+            }
+            ChannelVoice2::AssignablePerNoteController(m) if m.index() == 74 => {
+                if let Some(id) = rotation.resolve(u8::from(m.note_number())) {
+                    self.expression
+                        .set_slide(id, u32_to_unit_f32(m.controller_data()));
+                }
+            }
+            ChannelVoice2::PerNoteManagement(m) => {
+                if (m.reset() || m.detach()) && {
+                    // Reset by number targets the active note of that number.
+                    rotation.resolve(u8::from(m.note_number())).is_some()
+                } {
+                    if let Some(id) = rotation.resolve(u8::from(m.note_number())) {
+                        self.expression.reset_note(id);
+                    }
                 }
             }
             _ => {}
@@ -302,7 +382,8 @@ impl MpeProcessor {
 
     fn get_zone_info(&self, channel: u8) -> Option<ZoneInfo> {
         match &self.mode {
-            MpeMode::Disabled => None,
+            // Rotation has no zones; its per-note routing bypasses zone-info.
+            MpeMode::Disabled | MpeMode::SingleChannelRotation { .. } => None,
             MpeMode::LowerZone(config) => {
                 if config.handles_channel(channel) {
                     Some(ZoneInfo {
@@ -368,6 +449,9 @@ impl MpeProcessor {
         }
         if let Some(ref mut map) = self.upper_zone_map {
             map.clear();
+        }
+        if let Some(ref mut rotation) = self.rotation {
+            rotation.clear();
         }
     }
 }
@@ -569,5 +653,43 @@ mod tests {
             (processor.expression().get_pitch_bend_per_note(nid(2, 64)) - 1.0).abs() < 0.01,
             "note 64 must be untouched"
         );
+    }
+
+    #[test]
+    fn test_note_number_rotation_routes_and_ignores_off_channel() {
+        // Single-channel rotation on channel 5. A note-on mints an id and marks
+        // it active; a by-number per-note bend routes to that note and moves it.
+        let mut processor = MpeProcessor::new(MpeMode::SingleChannelRotation { channel: 5 });
+
+        processor.process(&note_on(5, 60, 100));
+        processor.process(&MidiEvent::per_note_pitch_bend(0, 5, 60, 0xFFFF_FFFF));
+
+        // The active id for note 60 is what the message resolved to; read it back
+        // via the rotation allocator's resolve so we address the same id.
+        let id = processor
+            .rotation
+            .as_ref()
+            .unwrap()
+            .resolve(60)
+            .expect("note 60 active");
+        assert!((processor.expression().get_pitch_bend_per_note(id) - 1.0).abs() < 0.01);
+
+        // A message on a different channel is ignored (this mode owns channel 5).
+        processor.process(&note_on(7, 64, 100));
+        assert!(
+            processor.rotation.as_ref().unwrap().resolve(64).is_none(),
+            "off-channel note-on must not register"
+        );
+    }
+
+    #[test]
+    fn test_note_number_rotation_mints_distinct_ids_same_pitch() {
+        // Two same-pitch note-ons mint DISTINCT ids (via the allocator), the
+        // core win of rotation over classic single-channel MPE.
+        use tutti_midi_types::mpe::NoteRotationAllocator;
+        let mut rot = NoteRotationAllocator::new();
+        let a = rot.note_on(60);
+        let b = rot.note_on(60);
+        assert_ne!(a, b);
     }
 }

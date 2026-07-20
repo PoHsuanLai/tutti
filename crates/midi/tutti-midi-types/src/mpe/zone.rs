@@ -136,6 +136,13 @@ pub enum MpeMode {
         lower: MpeZoneConfig,
         upper: MpeZoneConfig,
     },
+    /// Single-channel **Note Number Rotation**: full 128-note polyphony on one
+    /// channel (no zones / member-channel spreading). Each note-on mints a
+    /// distinct host-internal note id so same-pitch notes get their own voices.
+    /// See [`NoteRotationAllocator`](super::NoteRotationAllocator).
+    SingleChannelRotation {
+        channel: u8,
+    },
 }
 
 #[cfg(test)]

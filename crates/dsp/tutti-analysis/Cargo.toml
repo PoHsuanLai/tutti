@@ -9,15 +9,17 @@ keywords = ["audio", "analysis", "waveform", "pitch", "dsp"]
 categories = ["multimedia::audio"]
 
 [dependencies]
-tutti-core = { path = "../../core/tutti-core", features = ["std"] }
+# default-features = false so tutti-core's default `bevy` doesn't leak in; this
+# crate's own `bevy` feature re-adds `tutti-core/bevy` when wanted.
+tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["std"] }
 
-# Bevy — hard deps. tutti-analysis defines its own ECS integration
-# (TuttiAnalysisPlugin, AnalysisRes, LiveAnalysisData) in-place, the bevy_text
-# shape. Mirrors tutti-wavecache / tutti-sampler.
-bevy_ecs = { version = "0.19", default-features = false }
-bevy_app = { version = "0.19", default-features = false }
-bevy_reflect = { version = "0.19", default-features = false }
-bevy_log = { version = "0.19", default-features = false }
+# Bevy — optional, gated by the `bevy` feature. tutti-analysis defines its own
+# ECS integration (TuttiAnalysisPlugin, AnalysisRes, LiveAnalysisData) in the
+# `live` module; the analysis algorithms themselves are Bevy-free.
+bevy_ecs = { version = "0.19", default-features = false, optional = true }
+bevy_app = { version = "0.19", default-features = false, optional = true }
+bevy_reflect = { version = "0.19", default-features = false, optional = true }
+bevy_log = { version = "0.19", default-features = false, optional = true }
 
 # FFT for spectral analysis (transient detection, pitch detection)
 rustfft = "6"
@@ -33,7 +35,11 @@ lru = "0.12"
 serde = { version = "1", features = ["derive"], optional = true }
 
 [features]
-default = []
+default = ["bevy"]
+# ECS integration (TuttiAnalysisPlugin + the live-analysis resources/systems).
+# Off → the analysis algorithms compile Bevy-free. `tutti-core` is requested
+# without bevy (`std` only), so the only Bevy pulled here is this crate's own.
+bevy = ["dep:bevy_ecs", "dep:bevy_app", "dep:bevy_reflect", "dep:bevy_log", "tutti-core/bevy"]
 # `dep:serde` (not bare `serde`) so this feature replaces the implicit
 # optional-dep feature rather than colliding with it.
 serde = ["dep:serde"]

@@ -14,7 +14,10 @@ clap = ["tutti-plugin-server/clap", "tutti-plugin/clap"]
 au = ["tutti-plugin-server/au", "tutti-plugin/au"]
 
 [dependencies]
-tutti-core = { path = "../../core/tutti-core", default-features = false }
+# This crate IS the Bevy ECS hosting layer for plugins — it is Bevy-only by
+# design (a non-Bevy DAW uses tutti-plugin / tutti-plugin-server directly and
+# hosts editors/scan itself). So it always needs tutti-core's `bevy` surface.
+tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["bevy"] }
 tutti-plugin = { path = "../tutti-plugin" }
 tutti-plugin-server = { path = "../tutti-plugin-server", default-features = false }
 

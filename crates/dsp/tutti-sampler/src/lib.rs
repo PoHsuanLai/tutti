@@ -60,48 +60,81 @@ mod node_id;
 // Each domain is a self-contained module owning its Components / Systems /
 // Plugin next to the audio logic it drives (the bevy_audio shape — no `ecs/`
 // category folder). `TuttiSamplerPlugin` composes the four domain plugins.
-pub mod input;
+// `playback` stays compiled — it holds the Bevy-free DSP leaves (SamplerUnit,
+// StreamingSamplerUnit, TrackClipReaderUnit, stretch::Unit). Its Bevy submodules
+// are gated inside `playback/mod.rs`. The other three domains are pure Bevy glue.
 pub mod playback;
+#[cfg(feature = "bevy")]
+pub mod input;
+#[cfg(feature = "bevy")]
 pub mod preview;
+// `recording` (triggers + the capture bookkeeping) is fed by the Bevy-gated
+// butler engine, so the whole domain is Bevy-gated.
+#[cfg(feature = "bevy")]
 pub mod recording;
 
+#[cfg(feature = "bevy")]
 pub use input::{
     audio_input_control_system, audio_input_init_system, audio_input_sync_system,
     AudioInputDeviceInfo, AudioInputState, DisableAudioInput, EnableAudioInput,
     TuttiAudioInputPlugin,
 };
+#[cfg(feature = "bevy")]
 pub use preview::streaming_sample::{
     StreamingProgress, StreamingSample, StreamingSampleLoader, StreamingSampleLoaderError,
     StreamingSampleProbeError,
 };
+#[cfg(feature = "bevy")]
 pub use preview::{
     init_auditioner, Auditioner, AuditionerNode, PreviewFile, StopPreview, TuttiAuditionerPlugin,
 };
+// Bevy-free DSP leaves + value types from `playback` — usable for direct
+// FunDSP-graph integration without the ECS layer. (`StreamingSamplerUnit` is
+// Bevy-gated: it is fed by the Bevy-gated butler engine.)
+pub use playback::{ClipCommand, ClipSpec, SamplerUnit, SlotId,
+    TrackClipReaderHandle, TrackClipReaderUnit};
+#[cfg(feature = "bevy")]
+pub use playback::StreamingSamplerUnit;
+// Bevy ECS surface of `playback`.
+#[cfg(feature = "bevy")]
 pub use playback::{
     audio_cleanup_system, audio_parameter_sync_system, audio_playback_system,
     bump_param_epoch_sampler, poll_wave_imports, promote_pending_samplers, reconcile_sampler_params,
     reconcile_sampler_volume, time_stretch_sync_system, AudioEmitter, AudioPlaybackState,
-    AudioVolume, ClipCommand, ClipSpec, DespawnOnFinish, PendingSamplerLoad, PlayAudio,
-    SamplerLooping, SamplerNode, SamplerSpeed, SamplerUnit, SlotId, StreamingSamplerUnit,
-    TimeStretch, TimeStretchControl, TrackClipReaderHandle, TrackClipReaderNode,
-    TrackClipReaderRef, TrackClipReaderUnit, TuttiPlaybackPlugin, WaveImportQueue, WaveAssetLoader,
+    AudioVolume, DespawnOnFinish, PendingSamplerLoad, PlayAudio,
+    SamplerLooping, SamplerNode, SamplerSpeed,
+    TimeStretch, TimeStretchControl, TrackClipReaderNode,
+    TrackClipReaderRef, TuttiPlaybackPlugin, WaveImportQueue, WaveAssetLoader,
     WaveAssetLoaderError,
 };
+#[cfg(feature = "bevy")]
 pub use recording::{
     recording_start_system, recording_stop_system, RecordingActive, RecordingResult,
     StartRecording, StopRecording, TuttiRecordingPlugin,
 };
 
+// The async disk-streaming engine (butler thread) is reached only through the
+// Bevy `Sampler` resource / `preview` domain, and its RT-read primitives are fed
+// exclusively by that engine. So the whole streaming subsystem — butler,
+// `StreamingSamplerUnit`, the `Sampler` handle — is Bevy-gated. The Bevy-free
+// surface is in-memory playback: `SamplerUnit`, `TrackClipReaderUnit`, `stretch`.
+// (A framework-free streaming driver would be a separate addition, like the
+// `ThreadedWaveCache` path in tutti-wavecache.)
+#[cfg(feature = "bevy")]
 pub(crate) mod butler;
-mod sampler;
 
+#[cfg(feature = "bevy")]
+mod sampler;
+#[cfg(feature = "bevy")]
 pub use sampler::{Sampler, SamplerConfig};
 
+#[cfg(feature = "bevy")]
 use bevy_ecs::prelude::Resource;
 
 /// Transient handed off by `build_into`. The umbrella builder inserts the
 /// freshly-built [`Sampler`]; [`TuttiSamplerPlugin`]'s `build()` derives the
 /// [`Auditioner`] from it and installs both as their own resources.
+#[cfg(feature = "bevy")]
 #[derive(Resource)]
 pub struct PendingSampler(pub Option<Sampler>);
 
@@ -113,8 +146,10 @@ pub struct PendingSampler(pub Option<Sampler>);
 /// schedule owned by [`tutti_core::graph`]. Requires the core graph plugin
 /// ([`tutti_core::graph::GraphReconcilePlugin`]) to have configured
 /// `GraphReconcileSystems` first.
+#[cfg(feature = "bevy")]
 pub struct TuttiSamplerPlugin;
 
+#[cfg(feature = "bevy")]
 impl bevy_app::Plugin for TuttiSamplerPlugin {
     fn build(&self, app: &mut bevy_app::App) {
         // Each domain is a self-contained plugin; this just composes them.
@@ -148,6 +183,7 @@ impl bevy_app::Plugin for TuttiSamplerPlugin {
 /// exposes the value types ([`Config`](capture::Config), [`Source`](capture::Source),
 /// [`Mode`](capture::Mode), …) that those messages and the [`Recorder`](capture::Recorder)
 /// speak.
+#[cfg(feature = "bevy")]
 pub mod capture {
     pub use crate::recording::capture::config::{Config, Mode, QuantizeSettings, Source};
     pub use crate::recording::capture::events::Buffer;

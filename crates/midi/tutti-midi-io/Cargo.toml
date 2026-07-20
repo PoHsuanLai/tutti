@@ -7,10 +7,18 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
-default = []
+default = ["bevy"]
+# Bevy ECS integration: the bus / input / routing / sequence / scheduled /
+# device / mpe / midi_plugin modules (Components / Events / Systems / Plugins).
+# Off → the MIDI I/O + SMF + port management compiles Bevy-free (the real
+# fan-out logic lives in tutti-midi-runtime, which is Bevy-free). Pulls
+# `tutti-core/bevy` because the routing/sequence systems schedule against
+# tutti-core's ECS graph hub (AudioGraphRes, GraphReconcileSystems, …).
+bevy = ["dep:bevy_ecs", "dep:bevy_app", "dep:bevy_reflect", "dep:bevy_tasks", "dep:bevy_log", "tutti-core/bevy"]
 # MPE: forwards to tutti-midi-runtime's `mpe` (MpeProcessor / PerNoteExpression)
 # and compiles the `mpe` module (MpeReceiver component, MpeExpressionResource /
-# MpeModeConfig, MpePlugin) + the `routing` MPE-receiver path.
+# MpeModeConfig, MpePlugin) + the `routing` MPE-receiver path. The `mpe` ECS
+# surface additionally needs `bevy`.
 mpe = ["tutti-midi-runtime/mpe"]
 # Hardware device connect / disconnect / hot-plug poll (the `device` module:
 # ConnectMidiDevice / MidiDeviceState / MidiIoRes / device systems). midir is a
@@ -30,14 +38,13 @@ tutti-core = { path = "../../core/tutti-core", default-features = false, feature
 # tutti-midi-runtime does NOT depend on tutti-midi-io.
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
 
-# Bevy ECS integration (the `ecs` module): Components / Events / Systems /
-# Plugins live next to the I/O logic. Hard deps, mirroring tutti-sampler /
-# tutti-wavecache.
-bevy_ecs = { version = "0.19", default-features = false }
-bevy_app = { version = "0.19", default-features = false }
-bevy_reflect = { version = "0.19", default-features = false }
-bevy_tasks = { version = "0.19" }
-bevy_log = { version = "0.19", default-features = false }
+# Bevy ECS integration: Components / Events / Systems / Plugins live next to the
+# I/O logic. Optional, gated by the `bevy` feature.
+bevy_ecs = { version = "0.19", default-features = false, optional = true }
+bevy_app = { version = "0.19", default-features = false, optional = true }
+bevy_reflect = { version = "0.19", default-features = false, optional = true }
+bevy_tasks = { version = "0.19", optional = true }
+bevy_log = { version = "0.19", default-features = false, optional = true }
 
 # Lock-free
 crossbeam-channel = "0.5"

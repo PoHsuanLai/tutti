@@ -35,11 +35,11 @@ all = ["vst2", "vst3", "clap", "au"]
 tutti-plugin = { path = "../tutti-plugin" }
 
 # Core types
-tutti-core = { path = "../../core/tutti-core", features = ["midi"] }
+tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
 
 # MIDI support
 tutti-midi-types = { path = "../../midi/tutti-midi-types" }
-tutti-midi-io = { path = "../../midi/tutti-midi-io" }
+tutti-midi-io = { path = "../../midi/tutti-midi-io", default-features = false }
 
 # Serialization for IPC
 serde = { version = "1", features = ["derive"] }

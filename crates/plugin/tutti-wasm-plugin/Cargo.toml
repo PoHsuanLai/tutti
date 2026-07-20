@@ -13,7 +13,7 @@ tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde"] }
 # ControlBackend, the audio-node Midi/listener helpers, and the error type.
 tutti-plugin = { path = "../tutti-plugin" }
 # Audio graph node trait + buffers.
-tutti-core = { path = "../../core/tutti-core", features = ["midi"] }
+tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
 # MIDI vocab + runtime (MidiSender, MidiTarget, UMP events).
 tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime" }

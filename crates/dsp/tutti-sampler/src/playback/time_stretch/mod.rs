@@ -43,7 +43,13 @@ pub use types::{Algorithm, FftSize, Params};
 pub use unit::Unit;
 
 // ───────────────────────────── ECS layer ───────────────────────────
+// Gated behind `bevy`: the DSP (granular / phase_vocoder / unit) above is free.
 
+#[cfg(feature = "bevy")]
+pub use ecs::*;
+
+#[cfg(feature = "bevy")]
+mod ecs {
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
@@ -106,4 +112,5 @@ pub fn time_stretch_sync_system(
             .pitch_cents
             .store(ts.pitch_cents, tutti_core::Ordering::Release);
     }
+}
 }

@@ -10,40 +10,66 @@
 //!
 //! [`TuttiPlaybackPlugin`] registers the whole domain in one place.
 
+#[cfg(feature = "bevy")]
 use bevy_app::{App, Plugin, Update};
+#[cfg(feature = "bevy")]
 use bevy_asset::AssetApp;
+#[cfg(feature = "bevy")]
 use bevy_ecs::schedule::IntoScheduleConfigs;
 
+#[cfg(feature = "bevy")]
 use tutti_core::graph::{engine_ready, GraphReconcileSystems};
+#[cfg(feature = "bevy")]
 use tutti_core::WaveAsset;
 
+// Bevy-free DSP leaves — always compiled.
 mod loop_crossfade;
-pub mod node;
-pub mod pending_load;
-pub mod reconcile;
 pub mod sampler_unit;
+// Disk streaming is fed by the Bevy-gated butler engine, so the streaming unit
+// gates with it.
+#[cfg(feature = "bevy")]
 pub mod streaming_sampler;
+// `time_stretch` / `track_clip_reader` hold Bevy-free DSP (their ECS pieces are
+// gated inside each module).
 pub mod time_stretch;
 pub mod track_clip_reader;
+
+// Pure Bevy-glue modules.
+#[cfg(feature = "bevy")]
+pub mod node;
+#[cfg(feature = "bevy")]
+pub mod pending_load;
+#[cfg(feature = "bevy")]
+pub mod reconcile;
+#[cfg(feature = "bevy")]
 pub mod trigger;
+#[cfg(feature = "bevy")]
 pub mod wave_loader;
 
+#[cfg(feature = "bevy")]
 pub use pending_load::{
     poll_wave_imports, promote_pending_samplers, PendingSamplerLoad, WaveImportQueue,
 };
+#[cfg(feature = "bevy")]
 pub use reconcile::{bump_param_epoch_sampler, reconcile_sampler_params, reconcile_sampler_volume};
+#[cfg(feature = "bevy")]
 pub use time_stretch::{time_stretch_sync_system, TimeStretch, TimeStretchControl};
-pub use track_clip_reader::{
-    ClipCommand, ClipSpec, SlotId, TrackClipReaderHandle, TrackClipReaderNode, TrackClipReaderRef,
-    TrackClipReaderUnit,
-};
+// Bevy-free reader value types + DSP unit.
+pub use track_clip_reader::{ClipCommand, ClipSpec, SlotId, TrackClipReaderHandle,
+    TrackClipReaderUnit};
+#[cfg(feature = "bevy")]
+pub use track_clip_reader::{TrackClipReaderNode, TrackClipReaderRef};
+#[cfg(feature = "bevy")]
 pub use trigger::{
     audio_cleanup_system, audio_parameter_sync_system, audio_playback_system, AudioEmitter,
     AudioPlaybackState, AudioVolume, DespawnOnFinish, PlayAudio,
 };
+#[cfg(feature = "bevy")]
 pub use node::{SamplerLooping, SamplerNode, SamplerSpeed};
 pub use sampler_unit::SamplerUnit;
+#[cfg(feature = "bevy")]
 pub use streaming_sampler::StreamingSamplerUnit;
+#[cfg(feature = "bevy")]
 pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 
 /// Bevy plugin: the whole playback domain — trigger → sampler → cleanup,
@@ -52,8 +78,10 @@ pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 ///
 /// Requires the core graph plugin ([`tutti_core::graph::GraphReconcilePlugin`]) to
 /// have configured `GraphReconcileSystems` first.
+#[cfg(feature = "bevy")]
 pub struct TuttiPlaybackPlugin;
 
+#[cfg(feature = "bevy")]
 impl Plugin for TuttiPlaybackPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<WaveAsset>()

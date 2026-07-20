@@ -32,7 +32,7 @@ vst2 = ["dep:tutti-vst2-host"]
 
 [dependencies]
 # Core types (for AudioUnit trait)
-tutti-core = { path = "../../core/tutti-core", features = ["midi"] }
+tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
 
 # Parameter range/scaling
 audio-automation = "0.4"
@@ -42,7 +42,7 @@ atomic_float = "1.1"
 
 # MIDI support
 tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }
-tutti-midi-io = { path = "../../midi/tutti-midi-io" }
+tutti-midi-io = { path = "../../midi/tutti-midi-io", default-features = false }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime" }
 
 # Shared value vocabulary used across host crates + IPC protocol.

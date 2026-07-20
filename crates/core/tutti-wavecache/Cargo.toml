@@ -11,7 +11,11 @@ categories = ["multimedia::audio"]
 [features]
 # Audio format support cascades to fundsp-tutti's Symphonia codecs (via
 # tutti-core). The cache decodes whatever formats are enabled here.
-default = ["wav"]
+default = ["bevy", "wav"]
+# Bevy front-end: the `WaveCache` Resource + `WaveCachePlugin` decoding on the
+# async compute pool. Off → only the framework-free `WaveCacheCore` /
+# `ThreadedWaveCache` (std::thread) are built.
+bevy = ["dep:bevy_app", "dep:bevy_ecs", "dep:bevy_tasks", "dep:bevy_log"]
 wav = ["tutti-core/wav"]
 flac = ["tutti-core/flac"]
 mp3 = ["tutti-core/mp3"]
@@ -20,14 +24,16 @@ files = ["wav", "flac", "mp3", "ogg"]
 
 [dependencies]
 # `Wave` + `Wave::load` / `Wave::probe_metadata` live here (re-exported from
-# fundsp-tutti). We need `std` for filesystem decode.
+# fundsp-tutti). We need `std` for filesystem decode. No bevy — the core /
+# threaded cache is Bevy-free.
 tutti-core = { path = "../tutti-core", default-features = false, features = ["std"] }
 
-# Bevy-native: the cache is a Resource and decodes on the async compute pool.
-bevy_app = { version = "0.19", default-features = false }
-bevy_ecs = { version = "0.19", default-features = false }
-bevy_tasks = { version = "0.19" }
-bevy_log = { version = "0.19", default-features = false }
+# Bevy front-end: the cache is a Resource and decodes on the async compute pool.
+# Optional, gated by the `bevy` feature.
+bevy_app = { version = "0.19", default-features = false, optional = true }
+bevy_ecs = { version = "0.19", default-features = false, optional = true }
+bevy_tasks = { version = "0.19", optional = true }
+bevy_log = { version = "0.19", default-features = false, optional = true }
 
 [dev-dependencies]
 tempfile = "3.10"

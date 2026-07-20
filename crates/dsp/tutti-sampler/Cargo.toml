@@ -7,7 +7,16 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
-default = ["wav"]
+default = ["bevy", "wav"]
+
+# Bevy ECS integration: the playback/recording/input/preview Plugins, Components,
+# Systems, and asset loaders. Off → the DSP leaves (SamplerUnit,
+# StreamingSamplerUnit, TrackClipReaderUnit, the butler streaming engine, the
+# stretch::Unit) compile Bevy-free for direct FunDSP-graph use. Pulls
+# `tutti-core/bevy` (the playback systems schedule against the graph hub and
+# `#[require(Volume)]` a core Component) and `tutti-core/bevy_asset` (the
+# `WaveAsset` loader).
+bevy = ["dep:bevy_ecs", "dep:bevy_app", "dep:bevy_reflect", "dep:bevy_asset", "dep:bevy_tasks", "dep:bevy_log", "tutti-core/bevy", "tutti-core/bevy_asset"]
 
 # Audio format support - cascade to tutti-core
 wav = ["tutti-core/wav"]
@@ -17,19 +26,19 @@ ogg = ["tutti-core/ogg"]
 files = ["wav", "flac", "mp3", "ogg"]
 
 [dependencies]
-# Base dependency - format features added above. `bevy_asset` pulls
-# `fundsp/bevy_asset`, which gates the `WaveAsset` re-export tutti-core surfaces
-# (and which the playback asset loaders register).
-tutti-core = { path = "../../core/tutti-core", features = ["bevy_asset"] }
+# Base dependency - format features added above. default-features = false so
+# tutti-core's default `bevy` doesn't leak in; this crate's `bevy` feature
+# re-adds `tutti-core/bevy` + `tutti-core/bevy_asset`.
+tutti-core = { path = "../../core/tutti-core", default-features = false }
 
-# Bevy ECS integration (the `ecs` module): Components / Systems / Plugins live
-# next to the audio logic. Hard deps now, mirroring tutti-wavecache's shape.
-bevy_ecs = { version = "0.19", default-features = false }
-bevy_app = { version = "0.19", default-features = false }
-bevy_reflect = { version = "0.19", default-features = false }
-bevy_asset = { version = "0.19", default-features = false }
-bevy_tasks = { version = "0.19" }
-bevy_log = { version = "0.19", default-features = false }
+# Bevy ECS integration: Components / Systems / Plugins live next to the audio
+# logic. Optional, gated by the `bevy` feature.
+bevy_ecs = { version = "0.19", default-features = false, optional = true }
+bevy_app = { version = "0.19", default-features = false, optional = true }
+bevy_reflect = { version = "0.19", default-features = false, optional = true }
+bevy_asset = { version = "0.19", default-features = false, optional = true }
+bevy_tasks = { version = "0.19", optional = true }
+bevy_log = { version = "0.19", default-features = false, optional = true }
 
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

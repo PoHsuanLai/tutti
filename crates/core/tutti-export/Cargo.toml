@@ -9,7 +9,11 @@ keywords = ["audio", "export", "render", "wav", "flac", "aiff", "ogg"]
 categories = ["multimedia::audio"]
 
 [features]
-default = ["wav", "flac", "aiff", "ogg"]
+default = ["bevy", "wav", "flac", "aiff", "ogg"]
+# Bevy ECS surface (the `ecs` module: export + region-render plugins). Off → the
+# encode/process/render pipeline compiles Bevy-free. The `sampler` feature (used
+# by `ecs::render_region`) implies `bevy`.
+bevy = ["dep:bevy_app", "dep:bevy_ecs", "dep:bevy_reflect", "dep:bevy_tasks", "dep:bevy_log", "tutti-core/bevy"]
 wav = ["hound"]
 flac = ["flacenc"]
 aiff = []
@@ -24,7 +28,8 @@ midi = ["tutti-core/midi", "dep:tutti-midi-runtime"]
 # `ecs::export` is unconditional; only `ecs::render_region` is gated here.
 # tutti-sampler's file-loading path (its `Wave::load`) is codec-gated, so pull
 # `wav` to give it a codec — matches how the umbrella turns on the sampler.
-sampler = ["dep:tutti-sampler", "tutti-sampler/wav"]
+# `ecs::render_region` is Bevy code, so `sampler` implies `bevy`.
+sampler = ["bevy", "dep:tutti-sampler", "tutti-sampler/wav"]
 
 [dependencies]
 thiserror = "1.0"
@@ -39,13 +44,13 @@ flacenc = { version = "0.4", optional = true }
 vorbis_rs = { version = "0.5", optional = true }
 crossbeam-channel = "0.5"
 
-# Bevy ECS surface (mirrors tutti-wavecache): the export pipeline ships its own
-# Bevy plugins now. Hard deps — the `ecs` module is unconditional.
-bevy_app = { version = "0.19", default-features = false }
-bevy_ecs = { version = "0.19", default-features = false }
-bevy_reflect = { version = "0.19", default-features = false }
-bevy_tasks = { version = "0.19" }
-bevy_log = { version = "0.19", default-features = false }
+# Bevy ECS surface (the `ecs` module: export + region-render plugins). Optional,
+# gated by the `bevy` feature.
+bevy_app = { version = "0.19", default-features = false, optional = true }
+bevy_ecs = { version = "0.19", default-features = false, optional = true }
+bevy_reflect = { version = "0.19", default-features = false, optional = true }
+bevy_tasks = { version = "0.19", optional = true }
+bevy_log = { version = "0.19", default-features = false, optional = true }
 
 [dev-dependencies]
 tempfile = "3.10"

@@ -21,11 +21,13 @@
 //!
 //! # std + Bevy
 //!
-//! tutti-core is a std crate that depends on `bevy_ecs`/`bevy_app`: it hosts the
-//! shared ECS graph-reconcile hub (`GraphReconcileSystems`, `AudioGraphRes`, the
-//! param components, `GraphReconcilePlugin`) that every leaf audio crate schedules
-//! against. The DSP/RT vocabulary itself is Bevy-agnostic; the `ecs` module is
-//! where the Bevy integration lives.
+//! tutti-core is a std crate whose DSP graph runtime ([`AudioGraph`]/[`GraphNet`],
+//! transport, metering, PDC) is Bevy-agnostic. The optional `bevy` feature (on by
+//! default) adds the shared ECS graph-reconcile hub (`GraphReconcileSystems`,
+//! `AudioGraphRes`, the param components, `GraphReconcilePlugin`) that every leaf
+//! audio crate schedules against. Build with `--no-default-features` for a
+//! Bevy-free kernel; a non-Bevy host wires nodes via [`AudioGraph`]'s imperative
+//! `connect`/`disconnect` API directly.
 
 pub mod error;
 pub use error::{Error, Result};
@@ -94,7 +96,10 @@ pub use fundsp::fft::{inverse_fft, real_fft};
 pub use fundsp::math::Complex32;
 pub use fundsp::net::{NodeId, Source};
 pub use fundsp::prelude::{shared, AudioUnit, BufferMut, BufferRef, Shared};
-#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+// `WaveAsset` is a Bevy `Asset` — it only exists in fundsp under `bevy_asset`,
+// so gate the re-export on our `bevy_asset` feature (which chains
+// `fundsp/bevy_asset`), not on the plain codec features.
+#[cfg(feature = "bevy_asset")]
 pub use fundsp::read::WaveAsset;
 // Decode error surfaced by `WaveAsset::from_bytes`; the Bevy `WaveAssetLoader`
 // in tutti-sampler wraps it.

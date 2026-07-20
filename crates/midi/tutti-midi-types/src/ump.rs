@@ -798,6 +798,88 @@ pub const RPN_INDEX_MCM: u8 = 0x06;
 /// semitone range (see [`crate::mpe::PitchBendSensitivity`]).
 pub const RPN_INDEX_PITCH_BEND_SENSITIVITY: u8 = 0x00;
 
+// =============================================================================
+// Stream G — Flex Data (UMP Message Type 0xD)
+// -----------------------------------------------------------------------------
+// Flex Data messages carry musical metadata that MIDI 1.0 kept in SMF "meta
+// events" — tempo, time signature, key signature, metronome, chord names, and
+// text/lyrics (M2-104 §7.5). They are group-scoped (no channel). These
+// constructors cover the set a DAW clip needs; text/chord (variable-length)
+// are left to their own follow-on.
+// =============================================================================
+
+impl MidiEvent {
+    /// Flex Data **Set Tempo** from beats-per-minute. The wire field is the
+    /// number of 10-nanosecond units per quarter note, so `bpm` is inverted:
+    /// `600_000_000 / bpm` (60 s / bpm, in 10 ns units).
+    #[inline]
+    pub fn flex_set_tempo(group: u8, bpm: f64) -> Self {
+        use midi2::flex_data::SetTempo;
+        let ten_ns_per_qn = if bpm > 0.0 {
+            (600_000_000.0 / bpm).round() as u32
+        } else {
+            0
+        };
+        let mut m = SetTempo::<[u32; 4]>::new();
+        m.set_group(u4::new(group & 0x0F));
+        m.set_number_of_10_nanosecond_units_per_quarter_note(ten_ns_per_qn);
+        Self::from_ump(0, m.data())
+    }
+
+    /// Flex Data **Set Time Signature**. `numerator`/`denominator` are the beats
+    /// per bar and the beat unit; `num_32nd_notes` is the number of 1/32 notes
+    /// per quarter note (usually 8).
+    #[inline]
+    pub fn flex_set_time_signature(
+        group: u8,
+        numerator: u8,
+        denominator: u8,
+        num_32nd_notes: u8,
+    ) -> Self {
+        use midi2::flex_data::SetTimeSignature;
+        let mut m = SetTimeSignature::<[u32; 4]>::new();
+        m.set_group(u4::new(group & 0x0F));
+        m.set_numerator(numerator);
+        m.set_denominator(denominator);
+        m.set_number_of_32nd_notes(num_32nd_notes);
+        Self::from_ump(0, m.data())
+    }
+
+    /// Flex Data **Set Metronome**. `clocks_per_click` = MIDI clocks per primary
+    /// click; the three bar accents mark which subdivisions are accented.
+    #[inline]
+    pub fn flex_set_metronome(
+        group: u8,
+        clocks_per_click: u8,
+        bar_accent1: u8,
+        bar_accent2: u8,
+        bar_accent3: u8,
+    ) -> Self {
+        use midi2::flex_data::SetMetronome;
+        let mut m = SetMetronome::<[u32; 4]>::new();
+        m.set_group(u4::new(group & 0x0F));
+        m.set_number_of_clocks_per_primary_click(clocks_per_click);
+        m.set_bar_accent1(bar_accent1);
+        m.set_bar_accent2(bar_accent2);
+        m.set_bar_accent3(bar_accent3);
+        Self::from_ump(0, m.data())
+    }
+}
+
+/// Recover BPM from a Flex Data Set Tempo [`MidiEvent`], or `None` if `event`
+/// isn't one. Inverse of [`MidiEvent::flex_set_tempo`].
+pub fn flex_tempo_bpm(event: &MidiEvent) -> Option<f64> {
+    use midi2::flex_data::FlexData;
+    use midi2::UmpMessage;
+    let UmpMessage::FlexData(FlexData::SetTempo(m)) =
+        UmpMessage::try_from(event.data_words()).ok()?
+    else {
+        return None;
+    };
+    let ten_ns = m.number_of_10_nanosecond_units_per_quarter_note();
+    (ten_ns != 0).then(|| 600_000_000.0 / ten_ns as f64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -964,5 +1046,34 @@ mod tests {
             }
             other => panic!("expected AssignableController, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn flex_set_tempo_round_trips_bpm() {
+        for bpm in [60.0, 120.0, 140.0, 174.0] {
+            let ev = MidiEvent::flex_set_tempo(0, bpm);
+            let decoded = flex_tempo_bpm(&ev).expect("is a Set Tempo");
+            // 10ns-per-qn is integer-quantized, so allow a tiny epsilon.
+            assert!((decoded - bpm).abs() < 0.05, "bpm {bpm} → {decoded}");
+        }
+    }
+
+    #[test]
+    fn flex_set_time_signature_decodes_via_midi2() {
+        use midi2::flex_data::FlexData;
+        let ev = MidiEvent::flex_set_time_signature(0, 7, 8, 8);
+        match midi2::UmpMessage::try_from(ev.data_words()).unwrap() {
+            midi2::UmpMessage::FlexData(FlexData::SetTimeSignature(m)) => {
+                assert_eq!(m.numerator(), 7);
+                assert_eq!(m.denominator(), 8);
+                assert_eq!(m.number_of_32nd_notes(), 8);
+            }
+            other => panic!("expected SetTimeSignature, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn flex_tempo_bpm_rejects_non_tempo() {
+        assert!(flex_tempo_bpm(&MidiEvent::note_on(0, 0, 60, 0x8000)).is_none());
     }
 }

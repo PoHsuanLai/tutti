@@ -33,21 +33,24 @@ impl AudioUnit for PluginClient {
         self.io_mut().write::<f32>(input);
         if self.io_ref().should_flush() {
             let midi = self.midi_mut().drain_for_tick().clone();
+            let params = self.drain_params(1);
             let harmony = self.drain_harmony(1);
             let transport = self.drain_transport();
             let bridge = self.bridge_ref().clone();
-            self.io_mut().flush::<f32>(&bridge, midi, harmony, transport);
+            self.io_mut()
+                .flush::<f32>(&bridge, midi, params, harmony, transport);
         }
         self.io_mut().read::<f32>(output);
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         let midi = self.midi_mut().drain_for_process(size).clone();
+        let params = self.drain_params(size);
         let harmony = self.drain_harmony(size);
         let transport = self.drain_transport();
         let bridge = self.bridge_ref().clone();
         self.io_mut()
-            .process::<f32>(&bridge, size, input, output, midi, harmony, transport);
+            .process::<f32>(&bridge, size, input, output, midi, params, harmony, transport);
     }
 
     fn get_id(&self) -> u64 {
@@ -104,21 +107,24 @@ impl AudioUnit<F64> for PluginClient {
         self.io_mut().write::<f64>(input);
         if self.io_ref().should_flush() {
             let midi = self.midi_mut().drain_for_tick().clone();
+            let params = self.drain_params(1);
             let harmony = self.drain_harmony(1);
             let transport = self.drain_transport();
             let bridge = self.bridge_ref().clone();
-            self.io_mut().flush::<f64>(&bridge, midi, harmony, transport);
+            self.io_mut()
+                .flush::<f64>(&bridge, midi, params, harmony, transport);
         }
         self.io_mut().read::<f64>(output);
     }
 
     fn process(&mut self, size: usize, input: &BufferRef<F64>, output: &mut BufferMut<F64>) {
         let midi = self.midi_mut().drain_for_process(size).clone();
+        let params = self.drain_params(size);
         let harmony = self.drain_harmony(size);
         let transport = self.drain_transport();
         let bridge = self.bridge_ref().clone();
         self.io_mut()
-            .process::<f64>(&bridge, size, input, output, midi, harmony, transport);
+            .process::<f64>(&bridge, size, input, output, midi, params, harmony, transport);
     }
 
     fn get_id(&self) -> u64 {

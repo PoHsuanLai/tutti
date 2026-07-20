@@ -223,6 +223,7 @@ impl Batcher {
         &mut self,
         bridge: &PluginBridge,
         midi: MidiEventVec,
+        param_changes: ParameterChanges,
         harmony: HarmonyInputs,
         transport: TransportInfo,
     ) {
@@ -239,10 +240,23 @@ impl Batcher {
             }
         }
 
+        // `param_changes` carries sample-accurate parameter automation from the
+        // node's `ParamAutomationSource` (empty when no automation lane targets
+        // this plugin) — the VST3/CLAP loaders stage it into `IParameterChanges`
+        // / CLAP `PARAM_VALUE` events. This is the *only* automation path for
+        // hosted plugins; there is no frame-rate `set_parameter` fallback.
+        //
+        // `note_expression` is still sent empty: it is a live, spec-native input
+        // channel the loaders DO consume (native `note_id`-addressed
+        // note-expression), but per-note expression currently reaches plugins via
+        // the MIDI stream instead — clip-authored expression is emitted as MIDI-2
+        // UMP per-note events and converted to native note-expression at the
+        // format boundary (see `vst3_event_from_midi`). The field is the direct
+        // channel awaiting a producer; the UMP route is the current stopgap.
         if !bridge.process(
             size,
             midi,
-            ParameterChanges::new(),
+            param_changes,
             NoteExpressionChanges::new(),
             harmony,
             transport,
@@ -268,6 +282,7 @@ impl Batcher {
         input: &BufferRef<'_, T::Marker>,
         output: &mut BufferMut<'_, T::Marker>,
         midi: MidiEventVec,
+        param_changes: ParameterChanges,
         harmony: HarmonyInputs,
         transport: TransportInfo,
     ) {
@@ -278,10 +293,13 @@ impl Batcher {
             }
         }
 
+        // `param_changes` = sample-accurate automation (empty when unautomated);
+        // `note_expression` still empty (delivered via MIDI-UMP) — see the note
+        // on the `flush` send above.
         if !bridge.process(
             size,
             midi,
-            ParameterChanges::new(),
+            param_changes,
             NoteExpressionChanges::new(),
             harmony,
             transport,

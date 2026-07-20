@@ -15,6 +15,7 @@
 mod audio_unit;
 mod batcher;
 mod harmony_source;
+mod param_automation_source;
 mod process;
 
 #[cfg(test)]
@@ -27,13 +28,16 @@ mod tests;
 pub use crate::util::node::{LatencyChangeSink, Midi, ParameterChangeSink, route_with_latency};
 pub(crate) use crate::util::node::ResyncSink;
 pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
+pub use param_automation_source::{ParamAutomationSource, TimedParam};
 pub(crate) use process::ProcessGuard;
 
 use crate::host::ipc_client::audio::BridgeEvent;
 use crate::host::ipc_client::PluginBridge;
 use crate::util::config::BridgeConfig;
 use crate::error::Result;
-use crate::protocol::{Features, LoadedPlugin, PluginDescriptor, SampleFormat, TransportInfo};
+use crate::protocol::{
+    Features, LoadedPlugin, ParameterChanges, PluginDescriptor, SampleFormat, TransportInfo,
+};
 use crate::host::subprocess;
 use batcher::Batcher;
 use std::path::PathBuf;
@@ -65,6 +69,7 @@ pub struct PluginClient {
     midi: Midi,
     harmony: Harmony,
     transport: Transport,
+    param_automation: ParamAutomation,
 }
 
 /// Per-client transport source. Like [`Harmony`], the reader is shared across
@@ -133,6 +138,36 @@ impl Harmony {
     }
 }
 
+/// Per-client parameter-automation producer state. The optional source is
+/// shared across fundsp graph-commit clones (`Arc`, like [`Harmony`]); the
+/// per-block drain buffer is rebuilt fresh per clone since it's scratch.
+#[derive(Default)]
+struct ParamAutomation {
+    source: Option<Arc<ParamAutomationSource>>,
+    drain: ParameterChanges,
+}
+
+impl Clone for ParamAutomation {
+    fn clone(&self) -> Self {
+        Self {
+            source: self.source.clone(),
+            drain: ParameterChanges::new(),
+        }
+    }
+}
+
+impl ParamAutomation {
+    /// Fill (and return) the per-block parameter changes from the installed
+    /// source, or an empty set when no source is installed.
+    fn drain_for_process(&mut self, block_size: usize) -> &ParameterChanges {
+        self.drain.clear();
+        if let Some(src) = &self.source {
+            src.fill(block_size, &mut self.drain);
+        }
+        &self.drain
+    }
+}
+
 // Sibling-module access (audio_unit.rs). Field access stays private.
 impl PluginClient {
     pub(super) fn io_mut(&mut self) -> &mut Batcher {
@@ -174,6 +209,19 @@ impl PluginClient {
             return TransportInfo::default();
         }
         self.transport.snapshot()
+    }
+
+    /// Fill the per-block sample-accurate parameter automation from the
+    /// installed source (empty when none is installed). Cloned out for the
+    /// bridge call.
+    ///
+    /// Unlike harmony/transport this is **not** gated on a [`Features`] bit:
+    /// every plugin format consumes parameter changes, so the gate is simply
+    /// "a source was installed" — a track with no automation lane targeting one
+    /// of this plugin's params never has a source set, so its plugin sees an
+    /// empty [`ParameterChanges`] and keeps its current values.
+    pub(super) fn drain_params(&mut self, block_size: usize) -> ParameterChanges {
+        self.param_automation.drain_for_process(block_size).clone()
     }
 
     pub(super) fn bridge_ref(&self) -> &Arc<PluginBridge> {
@@ -256,6 +304,7 @@ impl PluginClient {
                 reader: None,
                 sample_rate,
             },
+            param_automation: ParamAutomation::default(),
         })
     }
 
@@ -383,6 +432,22 @@ impl PluginClient {
     /// plugin a default (stopped) transport snapshot.
     pub fn clear_transport_source(&mut self) {
         self.transport.reader = None;
+    }
+
+    /// Install a [`ParamAutomationSource`] so the plugin receives sample-accurate
+    /// per-block [`ParameterChanges`] for the automated parameters. Held in an
+    /// `Arc` so it survives fundsp's graph-commit clones. This is the *only*
+    /// automation path for hosted-plugin parameters — the frame-rate
+    /// `set_parameter` route is never wired for them.
+    pub fn set_param_automation_source(&mut self, source: std::sync::Arc<ParamAutomationSource>) {
+        self.param_automation.source = Some(source);
+    }
+
+    /// Drop a previously-installed parameter-automation source; subsequent
+    /// blocks feed the plugin empty [`ParameterChanges`] (it keeps its current
+    /// parameter values).
+    pub fn clear_param_automation_source(&mut self) {
+        self.param_automation.source = None;
     }
 
     /// Drop a previously-installed source override; subsequent ticks

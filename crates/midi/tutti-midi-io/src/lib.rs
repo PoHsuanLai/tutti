@@ -7,7 +7,7 @@ pub use hardware::{MidiDevice, MidiInputRecord};
 
 // --- Re-exports from tutti-midi ---
 
-pub use tutti_midi_types::{decode, midi2, midly, MidiEvent, MidiTarget, SemanticEvent};
+pub use tutti_midi_types::{midi2, midly, normalize, MidiEvent, MidiTarget};
 
 #[cfg(feature = "mpe")]
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};

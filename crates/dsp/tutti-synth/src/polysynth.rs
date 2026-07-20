@@ -4,9 +4,8 @@ use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use smallvec::SmallVec;
-use tutti_midi_types::{cc, MidiSource, MidiTarget, MidiUnitId};
+use tutti_midi_types::{cc, MidiSource, MidiTarget, MidiUnitId, NoteId};
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Shared, SignalFrame};
-use tutti_midi_types::semantic::SemanticEvent;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
 
@@ -247,24 +246,37 @@ impl PolySynth {
     }
 
     fn process_midi_event(&mut self, event: &MidiEvent) {
-        let Some(sem) = tutti_midi_types::decode(event) else {
+        use tutti_midi_types::convert::{
+            bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32,
+        };
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
+        // `normalize` folds velocity-0 NoteOn→NoteOff and promotes any inbound
+        // MIDI 1.0 channel voice to MIDI 2.0, so we match a single vocabulary.
+        let normalized = tutti_midi_types::normalize(event);
+        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(normalized.data_words())
+        else {
             return;
         };
-        match sem {
-            SemanticEvent::NoteOn {
-                channel,
-                note,
-                velocity,
-            } => {
-                self.handle_note_on(note, velocity, channel);
+        let channel = u8::from(cv2.channel());
+        match cv2 {
+            Cv2::NoteOn(m) => {
+                let note = u8::from(m.note_number());
+                self.handle_note_on(note, u16_to_unit_f32(m.velocity()), channel);
             }
-            SemanticEvent::NoteOff { channel, note } => {
-                self.handle_note_off(note, channel);
+            Cv2::NoteOff(m) => {
+                self.handle_note_off(u8::from(m.note_number()), channel);
             }
-            SemanticEvent::ControlChange { channel, cc, value } => {
-                self.handle_cc(cc, value, channel);
+            Cv2::ControlChange(m) => {
+                self.handle_cc(
+                    u8::from(m.control()),
+                    u32_to_unit_f32(m.control_change_data()),
+                    channel,
+                );
             }
-            SemanticEvent::PitchBend { channel, value } => {
+            Cv2::ChannelPitchBend(m) => {
+                let value = bend_u32_to_signed_f32(m.pitch_bend_data());
                 if self.config.mpe_enabled {
                     self.handle_mpe_pitch_bend_normalized(channel, value);
                 } else {
@@ -272,15 +284,33 @@ impl PolySynth {
                     self.apply_pitch_bend();
                 }
             }
-            SemanticEvent::ChannelPressure { channel, value } if self.config.mpe_enabled => {
-                self.handle_mpe_pressure_normalized(channel, value);
+            Cv2::ChannelPressure(m) if self.config.mpe_enabled => {
+                self.handle_mpe_pressure_normalized(
+                    channel,
+                    u32_to_unit_f32(m.channel_pressure_data()),
+                );
+            }
+            // MIDI 2.0 native per-note messages address one voice by note-id —
+            // two same-pitch notes stay independent even on one channel.
+            Cv2::PerNotePitchBend(m) => {
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                self.set_voice_mpe_pitch_bend(id, bend_u32_to_signed_f32(m.pitch_bend_data()));
+            }
+            Cv2::KeyPressure(m) => {
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                self.set_voice_mpe_pressure(id, u32_to_unit_f32(m.key_pressure_data()));
+            }
+            Cv2::AssignablePerNoteController(m) if m.index() == cc::BRIGHTNESS => {
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                self.set_voice_mpe_slide(id, u32_to_unit_f32(m.controller_data()));
             }
             _ => {}
         }
     }
 
     fn handle_note_on(&mut self, note: u8, vel_norm: f32, channel: u8) {
-        let result = self.allocator.allocate(note, channel, vel_norm);
+        let id = NoteId::from_channel_note(channel, note);
+        let result = self.allocator.allocate(id, note, channel, vel_norm);
 
         let slot_index = match result {
             AllocationResult::Allocated { slot_index } => Some(slot_index),
@@ -314,12 +344,11 @@ impl PolySynth {
     }
 
     fn handle_note_off(&mut self, note: u8, channel: u8) {
-        self.allocator.release(note, channel);
+        let id = NoteId::from_channel_note(channel, note);
+        self.allocator.release(id, channel);
 
         let slot_still_active = self.allocator.slots().iter().any(|s| {
-            s.note() == note
-                && s.channel() == channel
-                && s.state() == crate::voice::VoiceState::Active
+            s.id() == id && s.state() == crate::voice::VoiceState::Active
         });
 
         if !slot_still_active {
@@ -330,6 +359,37 @@ impl PolySynth {
             {
                 voice.note_off();
             }
+        }
+    }
+
+    /// Index of the voice currently bound to `id` (matches the allocator slot).
+    #[inline]
+    fn voice_index_for_id(&self, id: NoteId) -> Option<usize> {
+        self.allocator
+            .slots()
+            .iter()
+            .position(|s| s.id() == id && s.state() != crate::voice::VoiceState::Idle)
+    }
+
+    /// MIDI 2.0 per-note pitch bend: modulate only the voice addressed by `id`.
+    fn set_voice_mpe_pitch_bend(&mut self, id: NoteId, bend_norm: f32) {
+        let semitones = tutti_core::Semitones(bend_norm * self.config.mpe_pitch_bend_range.get());
+        if let Some(i) = self.voice_index_for_id(id) {
+            self.voices[i].set_mpe_pitch_bend(semitones);
+        }
+    }
+
+    /// MIDI 2.0 per-note pressure (poly key pressure): only the addressed voice.
+    fn set_voice_mpe_pressure(&mut self, id: NoteId, norm: f32) {
+        if let Some(i) = self.voice_index_for_id(id) {
+            self.voices[i].set_mpe_pressure(norm);
+        }
+    }
+
+    /// MIDI 2.0 per-note slide (CC74 / Brightness): only the addressed voice.
+    fn set_voice_mpe_slide(&mut self, id: NoteId, value: f32) {
+        if let Some(i) = self.voice_index_for_id(id) {
+            self.voices[i].set_mpe_slide(value);
         }
     }
 
@@ -1736,6 +1796,62 @@ mod tests {
             voice_ch2.mpe_state().pitch_bend_semitones.get().abs() < 0.01,
             "Channel 2 should have no pitch bend, got {}",
             voice_ch2.mpe_state().pitch_bend_semitones
+        );
+    }
+
+    #[test]
+    fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
+        // MIDI 2.0 native per-note pitch bend carries the note number on the
+        // wire, so it must move ONLY the addressed voice — even when both notes
+        // sound on the same channel (where the classic per-channel MPE handler
+        // would have bent both). This is the per-note-addressing proof.
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Sine,
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            },
+            mpe_enabled: true,
+            mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+            ..Default::default()
+        });
+
+        // Two notes, same channel, different pitches.
+        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+        assert_eq!(synth.active_voice_count(), 2);
+
+        // Native per-note pitch bend addressed to note 60 only (full positive).
+        let bend = MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF);
+        queue_midi(&synth, &[bend]);
+        synth.tick(&[], &mut output);
+
+        let voice_60 = synth
+            .voices
+            .iter()
+            .find(|v| v.is_active() && v.note() == 60)
+            .unwrap();
+        let voice_64 = synth
+            .voices
+            .iter()
+            .find(|v| v.is_active() && v.note() == 64)
+            .unwrap();
+
+        assert!(
+            voice_60.mpe_state().pitch_bend_semitones.get() > 40.0,
+            "note 60 should be bent, got {}",
+            voice_60.mpe_state().pitch_bend_semitones
+        );
+        assert!(
+            voice_64.mpe_state().pitch_bend_semitones.get().abs() < 0.01,
+            "note 64 (same channel) must be untouched, got {}",
+            voice_64.mpe_state().pitch_bend_semitones
         );
     }
 

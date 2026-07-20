@@ -17,10 +17,13 @@ use tutti_midi_types::midi2::channel_voice1::ChannelVoice1;
 use tutti_midi_types::midi2::channel_voice2::{ChannelVoice2, Controller};
 use tutti_midi_types::midi2::{Channeled, UmpMessage};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::NoteId;
 
 mod expression;
+mod per_note_map;
 
 pub use expression::PerNoteExpression;
+pub use per_note_map::{AtomicPerNoteMap, AtomicSlot};
 use tutti_midi_types::mpe::{MpeChannelVoiceMap, ZoneInfo};
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
 
@@ -109,10 +112,9 @@ impl MpeProcessor {
                 self.handle_channel_pressure(u8::from(m.channel()), m.channel_pressure_data());
             }
             ChannelVoice2::KeyPressure(m) => {
-                self.expression.set_pressure(
-                    u8::from(m.note_number()),
-                    u32_to_unit_f32(m.key_pressure_data()),
-                );
+                let id = NoteId::from_channel_note(u8::from(m.channel()), u8::from(m.note_number()));
+                self.expression
+                    .set_pressure(id, u32_to_unit_f32(m.key_pressure_data()));
             }
             ChannelVoice2::ControlChange(m) => {
                 let (ch, cc, v) = (
@@ -123,26 +125,25 @@ impl MpeProcessor {
                 self.handle_cc(ch, cc, v);
             }
             ChannelVoice2::PerNotePitchBend(m) => {
-                self.expression.set_pitch_bend(
-                    u8::from(m.note_number()),
-                    bend_u32_to_signed_f32(m.pitch_bend_data()),
-                );
+                let id = NoteId::from_channel_note(u8::from(m.channel()), u8::from(m.note_number()));
+                self.expression
+                    .set_pitch_bend(id, bend_u32_to_signed_f32(m.pitch_bend_data()));
             }
             ChannelVoice2::RegisteredPerNoteController(m) => {
                 // Registered per-note controllers use midi2's semantic
                 // `Controller` enum (spec-mandated indices only).
                 if let Some(value) = slide_value(m.controller()) {
-                    self.expression
-                        .set_slide(u8::from(m.note_number()), u32_to_unit_f32(value));
+                    let id =
+                        NoteId::from_channel_note(u8::from(m.channel()), u8::from(m.note_number()));
+                    self.expression.set_slide(id, u32_to_unit_f32(value));
                 }
             }
             // Assignable per-note controllers accept any 8-bit index; we
             // interpret index 74 (CC74 / Brightness) as the MPE slide.
             ChannelVoice2::AssignablePerNoteController(m) if m.index() == 74 => {
-                self.expression.set_slide(
-                    u8::from(m.note_number()),
-                    u32_to_unit_f32(m.controller_data()),
-                );
+                let id = NoteId::from_channel_note(u8::from(m.channel()), u8::from(m.note_number()));
+                self.expression
+                    .set_slide(id, u32_to_unit_f32(m.controller_data()));
             }
             _ => {}
         }
@@ -183,8 +184,9 @@ impl MpeProcessor {
                 );
             }
             ChannelVoice1::KeyPressure(m) => {
+                let id = NoteId::from_channel_note(u8::from(m.channel()), u8::from(m.note_number()));
                 self.expression.set_pressure(
-                    u8::from(m.note_number()),
+                    id,
                     u32_to_unit_f32(midi1_cc_to_midi2(u8::from(m.pressure()))),
                 );
             }
@@ -211,7 +213,7 @@ impl MpeProcessor {
                     map.bind_channel(channel, note);
                 }
             }
-            self.expression.note_on(note);
+            self.expression.note_on(NoteId::from_channel_note(channel, note));
         } else {
             self.handle_note_off_internal(channel, note, zone_info.is_lower_zone);
         }
@@ -227,7 +229,8 @@ impl MpeProcessor {
         } else if zone_info.is_member {
             if let Some(map) = self.get_voice_map(zone_info.is_lower_zone) {
                 if let Some(note) = map.get_note_for_channel(channel) {
-                    self.expression.set_pitch_bend(note, normalized);
+                    self.expression
+                        .set_pitch_bend(NoteId::from_channel_note(channel, note), normalized);
                 }
             }
         }
@@ -243,7 +246,8 @@ impl MpeProcessor {
         } else if zone_info.is_member {
             if let Some(map) = self.get_voice_map(zone_info.is_lower_zone) {
                 if let Some(note) = map.get_note_for_channel(channel) {
-                    self.expression.set_pressure(note, normalized);
+                    self.expression
+                        .set_pressure(NoteId::from_channel_note(channel, note), normalized);
                 }
             }
         }
@@ -258,7 +262,10 @@ impl MpeProcessor {
             if zone_info.is_member {
                 if let Some(map) = self.get_voice_map(zone_info.is_lower_zone) {
                     if let Some(note) = map.get_note_for_channel(channel) {
-                        self.expression.set_slide(note, u32_to_unit_f32(value_u32));
+                        self.expression.set_slide(
+                            NoteId::from_channel_note(channel, note),
+                            u32_to_unit_f32(value_u32),
+                        );
                     }
                 }
             }
@@ -271,7 +278,8 @@ impl MpeProcessor {
                 map.unbind_channel(channel, note);
             }
         }
-        self.expression.note_off(note);
+        self.expression
+            .note_off(NoteId::from_channel_note(channel, note));
     }
 
     fn get_zone_info(&self, channel: u8) -> Option<ZoneInfo> {
@@ -377,6 +385,12 @@ mod tests {
         MidiEvent::cc(0, channel, cc_num, midi1_cc_to_midi2(value_u7))
     }
 
+    /// Per-note expression identity for a note sounding on `channel` (the
+    /// classic-MPE key the processor writes under).
+    fn nid(channel: u8, note: u8) -> NoteId {
+        NoteId::from_channel_note(channel, note)
+    }
+
     #[test]
     fn test_mpe_processor_pitch_bend() {
         let mut processor = MpeProcessor::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
@@ -384,7 +398,7 @@ mod tests {
         processor.process(&note_on(2, 60, 100));
         processor.process(&pitch_bend_14bit(2, 16383));
 
-        let bend = processor.expression().get_pitch_bend(60);
+        let bend = processor.expression().get_pitch_bend(nid(2, 60));
         assert!((bend - 1.0).abs() < 0.01);
     }
 
@@ -405,7 +419,7 @@ mod tests {
         let mut processor = MpeProcessor::new(MpeMode::Disabled);
 
         processor.process(&note_on(2, 60, 100));
-        assert!(!processor.expression().is_active(60));
+        assert!(!processor.expression().is_active(nid(2, 60)));
     }
 
     #[test]
@@ -414,7 +428,7 @@ mod tests {
 
         processor.process(&note_on(14, 60, 100));
         processor.process(&pitch_bend_14bit(14, 16383));
-        let bend = processor.expression().get_pitch_bend(60);
+        let bend = processor.expression().get_pitch_bend(nid(14, 60));
         assert!((bend - 1.0).abs() < 0.01);
 
         // Master channel for upper zone is 15.
@@ -434,8 +448,8 @@ mod tests {
         processor.process(&note_on(12, 72, 100));
 
         processor.process(&pitch_bend_14bit(3, 16383));
-        let bend_60 = processor.expression().get_pitch_bend_per_note(60);
-        let bend_72 = processor.expression().get_pitch_bend_per_note(72);
+        let bend_60 = processor.expression().get_pitch_bend_per_note(nid(3, 60));
+        let bend_72 = processor.expression().get_pitch_bend_per_note(nid(12, 72));
         assert!((bend_60 - 1.0).abs() < 0.01);
         assert!((bend_72 - 0.0).abs() < 0.01);
     }
@@ -455,7 +469,7 @@ mod tests {
 
         processor.reset();
 
-        assert!(!processor.expression().is_active(64));
+        assert!(!processor.expression().is_active(nid(2, 64)));
         assert!(processor
             .lower_zone_map
             .as_ref()
@@ -471,7 +485,7 @@ mod tests {
 
         processor.process(&note_on(3, 60, 100));
         processor.process(&cc(3, 74, 127));
-        let slide = processor.expression().get_slide(60);
+        let slide = processor.expression().get_slide(nid(3, 60));
         assert!((slide - 1.0).abs() < 0.01);
     }
 
@@ -495,7 +509,7 @@ mod tests {
         // No NoteOn needed first because per-note messages carry the note directly.
         processor.process(&MidiEvent::per_note_pitch_bend(0, 0, 60, 0xFFFF_FFFF));
 
-        let bend = processor.expression().get_pitch_bend(60);
+        let bend = processor.expression().get_pitch_bend(nid(0, 60));
         assert!((bend - 1.0).abs() < 0.01);
     }
 
@@ -512,7 +526,7 @@ mod tests {
             0xFFFF_FFFF,
             false,
         ));
-        let slide = processor.expression().get_slide(60);
+        let slide = processor.expression().get_slide(nid(0, 60));
         assert!((slide - 1.0).abs() < 0.01);
     }
 }

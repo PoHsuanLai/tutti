@@ -1,87 +1,91 @@
 //! MIDI 1.0 ↔ MIDI 2.0 scalar resolution conversion (spec Min-Center-Max).
 //!
-//! `midi2` applies the same scaling inside its `HybridSchemaProperty`
-//! conversions when typed messages are rebuffered between 7-bit and UMP
-//! forms. These free functions cover places where a tutti consumer has a
-//! raw 7-bit value (from a hardware port, a DAW automation knob, or a test
-//! helper) and wants the 16/32-bit UMP value to pass into a constructor like
+//! The MIDI 2.0 spec (M2-104 Appendix D.1.3, "Default Upscaling Method") widens
+//! a value by left-shifting into the high bits, then *bit-repeating* the source's
+//! fractional bits for values above center. This is what makes min→min,
+//! center→center, and max→max map exactly — a plain linear scale does not
+//! preserve the center code (14-bit bend `8192` must widen to `0x8000_0000`, not
+//! a value one ULP off). Downscaling is the symmetric truncation.
+//!
+//! These free functions cover places where a tutti consumer has a raw 7/14-bit
+//! value (from a hardware port, a DAW automation knob, or a test helper) and
+//! wants the 16/32-bit UMP value to pass into a constructor like
 //! [`MidiEvent::note_on`](crate::ump::MidiEvent::note_on).
+
+/// Spec Min-Center-Max upscale: shift into the high `dst - src` bits, then
+/// bit-repeat the source's fractional bits for values above center. `dst >= src`,
+/// both ≤ 32.
+const fn mcm_up(value: u32, src: u32, dst: u32) -> u32 {
+    let shift = dst - src;
+    let shifted = value << shift;
+    let center = 1u32 << (src - 1);
+    if value <= center {
+        return shifted; // lower half (incl. center) is a pure left-shift
+    }
+    let repeat_bits = src - 1;
+    let mut repeat = value & ((1u32 << repeat_bits) - 1);
+    repeat = if shift >= repeat_bits {
+        repeat << (shift - repeat_bits)
+    } else {
+        repeat >> (repeat_bits - shift)
+    };
+    let mut out = shifted;
+    while repeat != 0 {
+        out |= repeat;
+        repeat >>= repeat_bits;
+    }
+    out
+}
+
+/// Spec Min-Center-Max downscale: keep the top `dst` bits (drop the repeated
+/// tail). Exact inverse of [`mcm_up`] for every representable source value.
+const fn mcm_down(value: u32, src: u32, dst: u32) -> u32 {
+    value >> (src - dst)
+}
 
 /// 7-bit velocity → 16-bit velocity (MIDI 2.0 native form).
 #[inline]
 pub fn midi1_velocity_to_midi2(v: u8) -> u16 {
-    if v == 0 {
-        0
-    } else {
-        let v7 = u32::from(v);
-        ((v7 * 65535 + 63) / 127) as u16
-    }
+    mcm_up(v as u32, 7, 16) as u16
 }
 
 /// 16-bit velocity → 7-bit (lossy).
 #[inline]
 pub fn midi2_velocity_to_midi1(v: u16) -> u8 {
-    if v == 0 {
-        0
-    } else {
-        let v16 = u32::from(v);
-        ((v16 * 127 + 32767) / 65535).min(127) as u8
-    }
+    mcm_down(v as u32, 16, 7) as u8
 }
 
 /// 7-bit CC / pressure → 32-bit (MIDI 2.0 native form).
 #[inline]
 pub fn midi1_cc_to_midi2(v: u8) -> u32 {
-    if v == 0 {
-        0
-    } else if v == 127 {
-        u32::MAX
-    } else {
-        let v7 = u64::from(v);
-        ((v7 * u32::MAX as u64 + 63) / 127) as u32
-    }
+    mcm_up(v as u32, 7, 32)
 }
 
 /// 32-bit CC / pressure → 7-bit (lossy).
 #[inline]
 pub fn midi2_cc_to_midi1(v: u32) -> u8 {
-    if v == 0 {
-        0
-    } else {
-        let v32 = u64::from(v);
-        ((v32 * 127 + 0x7FFF_FFFF) / u32::MAX as u64).min(127) as u8
-    }
+    mcm_down(v, 32, 7) as u8
 }
 
 /// 14-bit pitch bend (center 8192) → 32-bit (center 0x8000_0000).
 #[inline]
 pub fn midi1_pitch_bend_to_midi2(v: u16) -> u32 {
-    if v == 0 {
-        0
-    } else if v == 16383 {
-        u32::MAX
-    } else {
-        let v14 = u64::from(v);
-        ((v14 * u32::MAX as u64 + 8191) / 16383) as u32
-    }
+    mcm_up(v as u32, 14, 32)
 }
 
 /// 32-bit pitch bend → 14-bit (lossy).
 #[inline]
 pub fn midi2_pitch_bend_to_midi1(v: u32) -> u16 {
-    if v == 0 {
-        0
-    } else {
-        let v32 = u64::from(v);
-        ((v32 * 16383 + 0x7FFF_FFFF) / u32::MAX as u64).min(16383) as u16
-    }
+    mcm_down(v, 32, 14) as u16
 }
 
-// --- UMP integer → canonical f32 unit range -----------------------------------
+// --- UMP integer → f32 unit range (DSP normalization, NOT MIDI1↔2 scaling) ----
 //
-// Unsigned values map to `[0.0, 1.0]`; pitch bends map to `[-1.0, 1.0]` around
-// their center code. Float-domain counterpart to the integer converters above —
-// semantic decoding, MPE, and CC handling all normalize through here.
+// These map a native UMP integer to the `[0.0, 1.0]` / `[-1.0, 1.0]` range a DSP
+// node wants. They are a lossy convenience for the audio edge — NOT part of the
+// MIDI 1.0 ↔ 2.0 resolution path above (`u32_to_unit_f32` loses low bits through
+// f32's 24-bit mantissa). Consumers call these at their own boundary, not through
+// a shared decode layer.
 
 /// 7-bit value (0-127) → `[0.0, 1.0]`.
 #[inline]
@@ -136,6 +140,18 @@ pub fn signed_f32_to_bend_u32(v: f32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spec_min_center_max_vectors() {
+        // M2-104 Appendix D.1.3 worked examples — a linear scale fails these.
+        assert_eq!(midi1_velocity_to_midi2(10), 0x1400);
+        assert_eq!(midi1_velocity_to_midi2(64), 0x8000); // center → center
+        assert_eq!(midi1_velocity_to_midi2(87), 0xaeba);
+        assert_eq!(midi1_velocity_to_midi2(127), 0xffff);
+        assert_eq!(midi1_pitch_bend_to_midi2(8192), 0x8000_0000); // bend center
+        assert_eq!(midi1_cc_to_midi2(127), 0xffff_ffff);
+        assert_eq!(midi1_cc_to_midi2(0), 0);
+    }
 
     #[test]
     fn velocity_roundtrip() {

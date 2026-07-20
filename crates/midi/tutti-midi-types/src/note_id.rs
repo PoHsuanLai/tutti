@@ -1,0 +1,170 @@
+//! Per-note identity for MIDI 2.0 per-note addressing.
+//!
+//! MIDI 2.0 has no note-index field on the wire — per-note messages still key on
+//! (channel, note number). [`NoteId`] is the *host-internal* identity that lets
+//! two simultaneous notes sharing a note number stay independent (the point of
+//! per-note addressing). On the MIDI 1.0 / classic-MPE path it is a pure function
+//! of (channel, note), so behaviour is identical to keying on the raw pair; under
+//! Note Number Rotation an allocator mints distinct ids via [`NoteId::from_raw`].
+
+/// Stable per-note identity.
+///
+/// The default (MIDI-1) encoding packs `channel` and `note` so
+/// [`NoteId::note_number`] / [`NoteId::channel`] recover them; rotation-minted
+/// ids are opaque and need not carry either.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+pub struct NoteId(u32);
+
+impl NoteId {
+    /// MIDI-1 / classic-MPE identity: `(channel, note)`.
+    #[inline]
+    pub const fn from_channel_note(channel: u8, note: u8) -> Self {
+        Self(((channel as u32) << 8) | note as u32)
+    }
+
+    /// Note-Number-Rotation identity: an allocator-minted distinct value.
+    #[inline]
+    pub const fn from_raw(v: u32) -> Self {
+        Self(v)
+    }
+
+    /// The MIDI note number, for the [`from_channel_note`](Self::from_channel_note) encoding.
+    #[inline]
+    pub const fn note_number(self) -> u8 {
+        (self.0 & 0x7f) as u8
+    }
+
+    /// The MIDI channel, for the [`from_channel_note`](Self::from_channel_note) encoding.
+    #[inline]
+    pub const fn channel(self) -> u8 {
+        ((self.0 >> 8) & 0x0f) as u8
+    }
+
+    /// The opaque backing value.
+    #[inline]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+/// Fixed-capacity, allocation-free per-note store keyed by full [`NoteId`].
+///
+/// Keyed by the whole id (not note number) so two same-pitch notes never
+/// collide — the storage half of per-note addressing. Audio-thread safe: no
+/// allocation, only a linear probe over `N` slots. `N` is the max simultaneous
+/// notes (e.g. 128); [`insert`](Self::insert) returns `false` when full.
+#[derive(Clone)]
+pub struct PerNoteMap<T, const N: usize> {
+    ids: [Option<NoteId>; N],
+    vals: [T; N],
+}
+
+impl<T: Copy + Default, const N: usize> Default for PerNoteMap<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Copy + Default, const N: usize> PerNoteMap<T, N> {
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            ids: [None; N],
+            vals: [T::default(); N],
+        }
+    }
+
+    #[inline]
+    fn slot(&self, id: NoteId) -> Option<usize> {
+        self.ids.iter().position(|&s| s == Some(id))
+    }
+
+    /// Get a mutable handle to `id`'s value, inserting a default one if absent.
+    /// Returns `None` only when the map is full and `id` is not present.
+    #[inline]
+    pub fn entry(&mut self, id: NoteId) -> Option<&mut T> {
+        let slot = self
+            .slot(id)
+            .or_else(|| self.ids.iter().position(Option::is_none))?;
+        self.ids[slot] = Some(id);
+        Some(&mut self.vals[slot])
+    }
+
+    #[inline]
+    pub fn get(&self, id: NoteId) -> Option<&T> {
+        self.slot(id).map(|s| &self.vals[s])
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self, id: NoteId) -> Option<&mut T> {
+        self.slot(id).map(move |s| &mut self.vals[s])
+    }
+
+    /// Insert or overwrite. Returns `false` if the map is full and `id` is new.
+    #[inline]
+    pub fn insert(&mut self, id: NoteId, value: T) -> bool {
+        match self.entry(id) {
+            Some(v) => {
+                *v = value;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Remove `id`, returning its value if present.
+    #[inline]
+    pub fn remove(&mut self, id: NoteId) -> Option<T> {
+        let slot = self.slot(id)?;
+        self.ids[slot] = None;
+        Some(core::mem::take(&mut self.vals[slot]))
+    }
+
+    /// Iterate over live `(NoteId, &T)` pairs.
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = (NoteId, &T)> {
+        self.ids
+            .iter()
+            .zip(self.vals.iter())
+            .filter_map(|(id, v)| id.map(|id| (id, v)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_note_roundtrip() {
+        let id = NoteId::from_channel_note(9, 60);
+        assert_eq!(id.channel(), 9);
+        assert_eq!(id.note_number(), 60);
+    }
+
+    #[test]
+    fn same_note_number_distinct_ids_do_not_collide() {
+        // The whole point: two live notes on note 60 must stay independent.
+        let a = NoteId::from_channel_note(0, 60);
+        let b = NoteId::from_raw(0xDEAD_0000); // rotation-minted, same sounding pitch
+        assert_ne!(a, b);
+
+        let mut map: PerNoteMap<i32, 8> = PerNoteMap::new();
+        assert!(map.insert(a, 1));
+        assert!(map.insert(b, 2));
+        assert_eq!(map.get(a), Some(&1));
+        assert_eq!(map.get(b), Some(&2));
+        assert_eq!(map.remove(a), Some(1));
+        assert_eq!(map.get(b), Some(&2));
+    }
+
+    #[test]
+    fn full_map_rejects_new_ids() {
+        let mut map: PerNoteMap<u8, 2> = PerNoteMap::new();
+        assert!(map.insert(NoteId::from_raw(1), 1));
+        assert!(map.insert(NoteId::from_raw(2), 2));
+        assert!(!map.insert(NoteId::from_raw(3), 3));
+        // existing key still writable when full
+        assert!(map.insert(NoteId::from_raw(1), 9));
+        assert_eq!(map.get(NoteId::from_raw(1)), Some(&9));
+    }
+}

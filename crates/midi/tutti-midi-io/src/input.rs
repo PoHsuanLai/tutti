@@ -11,7 +11,7 @@ use bevy_app::{App, Plugin, Startup, Update};
 use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::*;
 
-use crate::{decode, MidiEvent, MidiInputRecord, SemanticEvent};
+use crate::{normalize, MidiEvent, MidiInputRecord};
 
 /// Fired every frame for each MIDI event received from hardware input.
 ///
@@ -79,12 +79,13 @@ impl MidiInputEvent {
         &self.event
     }
 
-    /// Decode into a normalised [`SemanticEvent`]. Returns `None` for
-    /// utility / sysex / system-real-time messages and channel-voice
-    /// messages not represented in `SemanticEvent`.
+    /// Normalise to a MIDI 2.0 Channel Voice [`MidiEvent`]: velocity-0 NoteOn
+    /// folds to NoteOff and inbound MIDI 1.0 channel voice is promoted to Channel
+    /// Voice 2, so consumers match one vocabulary. Decode the result with
+    /// `midi2::UmpMessage::try_from(ev.data_words())`.
     #[inline]
-    pub fn semantic(&self) -> Option<SemanticEvent> {
-        decode(&self.event)
+    pub fn normalized(&self) -> MidiEvent {
+        normalize(&self.event)
     }
 }
 
@@ -166,40 +167,45 @@ impl Plugin for MidiInputPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+    use tutti_midi_types::midi2::{Channeled, UmpMessage};
 
     #[test]
-    fn semantic_decodes_cc_to_normalised_f32() {
+    fn normalized_decodes_cc() {
         let ev = MidiInputEvent::synthetic(MidiEvent::cc(0, 3, 7, u32::MAX / 2));
-        match ev.semantic() {
-            Some(SemanticEvent::ControlChange { channel, cc, value }) => {
-                assert_eq!(channel, 3);
-                assert_eq!(cc, 7);
-                assert!((value - 0.5).abs() < 1e-3, "value={value}");
+        let norm = ev.normalized();
+        match UmpMessage::try_from(norm.data_words()).expect("UMP") {
+            UmpMessage::ChannelVoice2(Cv2::ControlChange(m)) => {
+                assert_eq!(u8::from(m.channel()), 3);
+                assert_eq!(u8::from(m.control()), 7);
+                assert_eq!(m.control_change_data(), u32::MAX / 2);
             }
-            other => panic!("expected ControlChange, got {other:?}"),
+            other => panic!("expected CV2 ControlChange, got {other:?}"),
         }
     }
 
     #[test]
-    fn semantic_decodes_pitch_bend_to_signed_unit() {
+    fn normalized_decodes_pitch_bend() {
         let ev = MidiInputEvent::synthetic(MidiEvent::pitch_bend(0, 0, u32::MAX));
-        match ev.semantic() {
-            Some(SemanticEvent::PitchBend { value, .. }) => {
-                assert!(value > 0.99, "max bend should approach 1.0, got {value}");
+        let norm = ev.normalized();
+        match UmpMessage::try_from(norm.data_words()).expect("UMP") {
+            UmpMessage::ChannelVoice2(Cv2::ChannelPitchBend(m)) => {
+                assert_eq!(m.pitch_bend_data(), u32::MAX);
             }
-            other => panic!("expected PitchBend, got {other:?}"),
+            other => panic!("expected CV2 ChannelPitchBend, got {other:?}"),
         }
     }
 
     #[test]
-    fn semantic_decodes_note_on() {
+    fn normalized_decodes_note_on() {
         let ev = MidiInputEvent::synthetic(MidiEvent::note_on(0, 0, 60, 0x8000));
-        match ev.semantic() {
-            Some(SemanticEvent::NoteOn { note, velocity, .. }) => {
-                assert_eq!(note, 60);
-                assert!((velocity - 0.5).abs() < 1e-2, "velocity={velocity}");
+        let norm = ev.normalized();
+        match UmpMessage::try_from(norm.data_words()).expect("UMP") {
+            UmpMessage::ChannelVoice2(Cv2::NoteOn(m)) => {
+                assert_eq!(u8::from(m.note_number()), 60);
+                assert_eq!(m.velocity(), 0x8000);
             }
-            other => panic!("expected NoteOn, got {other:?}"),
+            other => panic!("expected CV2 NoteOn, got {other:?}"),
         }
     }
 }

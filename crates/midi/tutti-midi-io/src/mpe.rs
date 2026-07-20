@@ -51,34 +51,31 @@ impl MpeExpressionResource {
         self.0 = expr;
     }
 
-    /// Combined per-note + global pitch bend, -1.0..=1.0.
+    /// Combined per-note + global pitch bend, -1.0..=1.0, for the note addressed
+    /// by `id`. Returns 0.0 when no processor is wired.
+    pub fn pitch_bend(&self, id: tutti_midi_types::NoteId) -> f32 {
+        self.0
+            .as_ref()
+            .map(|e| e.get_pitch_bend(id))
+            .unwrap_or(0.0)
+    }
+
+    /// max(per-note, global) pressure, 0.0..=1.0, for the note addressed by `id`.
     /// Returns 0.0 when no processor is wired.
-    pub fn pitch_bend(&self, note: u8) -> f32 {
-        self.0
-            .as_ref()
-            .map(|e| e.get_pitch_bend(note))
-            .unwrap_or(0.0)
+    pub fn pressure(&self, id: tutti_midi_types::NoteId) -> f32 {
+        self.0.as_ref().map(|e| e.get_pressure(id)).unwrap_or(0.0)
     }
 
-    /// max(per-note, global) pressure, 0.0..=1.0. Returns 0.0 when
-    /// no processor is wired.
-    pub fn pressure(&self, note: u8) -> f32 {
-        self.0
-            .as_ref()
-            .map(|e| e.get_pressure(note))
-            .unwrap_or(0.0)
+    /// CC74 slide (timbre / brightness), 0.0..=1.0, for the note addressed by
+    /// `id`. Returns the CC74 rest position (0.5) when no processor is wired.
+    pub fn slide(&self, id: tutti_midi_types::NoteId) -> f32 {
+        self.0.as_ref().map(|e| e.get_slide(id)).unwrap_or(0.5)
     }
 
-    /// CC74 slide (timbre / brightness), 0.0..=1.0. Returns the CC74
-    /// rest position (0.5) when no processor is wired.
-    pub fn slide(&self, note: u8) -> f32 {
-        self.0.as_ref().map(|e| e.get_slide(note)).unwrap_or(0.5)
-    }
-
-    /// Whether the note is currently held. `false` when no processor
-    /// is wired.
-    pub fn is_note_active(&self, note: u8) -> bool {
-        self.0.as_ref().map(|e| e.is_active(note)).unwrap_or(false)
+    /// Whether the note addressed by `id` is currently held. `false` when no
+    /// processor is wired.
+    pub fn is_note_active(&self, id: tutti_midi_types::NoteId) -> bool {
+        self.0.as_ref().map(|e| e.is_active(id)).unwrap_or(false)
     }
 
     /// Whether a processor has been wired.
@@ -153,28 +150,30 @@ mod tests {
 
     #[test]
     fn unwired_returns_defaults() {
+        let id = tutti_midi_types::NoteId::from_channel_note(0, 60);
         let r = MpeExpressionResource::default();
-        assert_eq!(r.pitch_bend(60), 0.0);
-        assert_eq!(r.pressure(60), 0.0);
-        assert_eq!(r.slide(60), 0.5);
-        assert!(!r.is_note_active(60));
+        assert_eq!(r.pitch_bend(id), 0.0);
+        assert_eq!(r.pressure(id), 0.0);
+        assert_eq!(r.slide(id), 0.5);
+        assert!(!r.is_note_active(id));
         assert!(!r.is_enabled());
     }
 
     #[test]
     fn wired_round_trips_expression() {
+        let id = tutti_midi_types::NoteId::from_channel_note(0, 60);
         let expr = std::sync::Arc::new(tutti_midi_runtime::PerNoteExpression::new());
-        expr.note_on(60);
-        expr.set_pitch_bend(60, 0.5);
-        expr.set_pressure(60, 0.75);
-        expr.set_slide(60, 0.25);
+        expr.note_on(id);
+        expr.set_pitch_bend(id, 0.5);
+        expr.set_pressure(id, 0.75);
+        expr.set_slide(id, 0.25);
 
         let r = MpeExpressionResource::from_expression(expr);
         assert!(r.is_enabled());
-        assert!(r.is_note_active(60));
-        assert!((r.pitch_bend(60) - 0.5).abs() < 1e-6);
-        assert!((r.pressure(60) - 0.75).abs() < 1e-6);
-        assert!((r.slide(60) - 0.25).abs() < 1e-6);
+        assert!(r.is_note_active(id));
+        assert!((r.pitch_bend(id) - 0.5).abs() < 1e-6);
+        assert!((r.pressure(id) - 0.75).abs() < 1e-6);
+        assert!((r.slide(id) - 0.25).abs() < 1e-6);
     }
 
     #[test]
@@ -207,7 +206,10 @@ mod tests {
         let note_on = MidiEvent::note_on(0, 2, 60, 100u16 << 9);
         bus.queue(id, &[note_on]);
 
-        assert!(r.is_note_active(60), "note 60 should be active after queue");
+        // Channel 2 is a lower-zone member; the processor keys expression by the
+        // (channel, note) identity.
+        let n60 = tutti_midi_types::NoteId::from_channel_note(2, 60);
+        assert!(r.is_note_active(n60), "note 60 should be active after queue");
     }
 
     #[test]

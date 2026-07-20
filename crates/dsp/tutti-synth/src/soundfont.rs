@@ -19,7 +19,6 @@ use tutti_core::Arc;
 /// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
 struct MidiSourceHandle(Arc<dyn MidiSource>);
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
-use tutti_midi_types::semantic::SemanticEvent;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
 
@@ -147,69 +146,59 @@ impl SoundFontUnit {
         // before we call back into `&mut self` dispatchers.
         let events: SmallVec<[MidiEvent; 128]> = self.pending_midi.drain(..).collect();
         for event in events {
-            // RustySynth speaks MIDI 1.0 wire format. Decode once via the
-            // semantic decoder, then re-encode at MIDI 1.0 resolution.
-            let Some(sem) = tutti_midi_types::decode(&event) else {
-                continue;
-            };
-            self.dispatch(sem);
+            // RustySynth speaks MIDI 1.0 wire format. `normalize` gives us a
+            // single MIDI-2 vocabulary; `dispatch` downscales to 7-bit via the
+            // spec Min-Center-Max converters (this is a documented 1.0 boundary:
+            // per-note messages have no rustysynth analogue and are dropped).
+            self.dispatch(&tutti_midi_types::normalize(&event));
         }
     }
 
-    fn dispatch(&mut self, sem: SemanticEvent) {
-        match sem {
-            SemanticEvent::NoteOn {
-                channel,
-                note,
-                velocity,
-            } => {
-                let vel_u7 = unit_to_u7(velocity).max(1);
+    fn dispatch(&mut self, event: &MidiEvent) {
+        use tutti_midi_types::convert::{
+            midi2_cc_to_midi1, midi2_pitch_bend_to_midi1, midi2_velocity_to_midi1,
+        };
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
+        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(event.data_words()) else {
+            return;
+        };
+        let ch = i32::from(u8::from(cv2.channel()));
+        match cv2 {
+            Cv2::NoteOn(m) => {
+                // A zero after downscale would read as NoteOff to rustysynth;
+                // `normalize` already folded true velocity-0 to NoteOff, so any
+                // NoteOn here is audible — clamp the 7-bit floor to 1.
+                let vel_u7 = midi2_velocity_to_midi1(m.velocity()).max(1);
                 self.synthesizer
-                    .note_on(i32::from(channel), i32::from(note), i32::from(vel_u7));
+                    .note_on(ch, i32::from(u8::from(m.note_number())), i32::from(vel_u7));
             }
-            SemanticEvent::NoteOff { channel, note } => {
+            Cv2::NoteOff(m) => {
                 self.synthesizer
-                    .note_off(i32::from(channel), i32::from(note));
+                    .note_off(ch, i32::from(u8::from(m.note_number())));
             }
-            SemanticEvent::ProgramChange { channel, program } => {
-                self.synthesizer.process_midi_message(
-                    i32::from(channel),
-                    0xC0,
-                    i32::from(program),
-                    0,
-                );
+            Cv2::ProgramChange(m) => {
+                self.synthesizer
+                    .process_midi_message(ch, 0xC0, i32::from(u8::from(m.program())), 0);
             }
-            SemanticEvent::PitchBend { channel, value } => {
-                let bend14 = unit_signed_to_u14(value);
+            Cv2::ChannelPitchBend(m) => {
+                let bend14 = midi2_pitch_bend_to_midi1(m.pitch_bend_data());
                 let lsb = i32::from(bend14 & 0x7F);
                 let msb = i32::from((bend14 >> 7) & 0x7F);
-                self.synthesizer
-                    .process_midi_message(i32::from(channel), 0xE0, lsb, msb);
+                self.synthesizer.process_midi_message(ch, 0xE0, lsb, msb);
             }
-            SemanticEvent::ControlChange { channel, cc, value } => {
+            Cv2::ControlChange(m) => {
                 self.synthesizer.process_midi_message(
-                    i32::from(channel),
+                    ch,
                     0xB0,
-                    i32::from(cc),
-                    i32::from(unit_to_u7(value)),
+                    i32::from(u8::from(m.control())),
+                    i32::from(midi2_cc_to_midi1(m.control_change_data())),
                 );
             }
             _ => {}
         }
     }
-}
-
-/// `[0.0, 1.0]` → `[0, 127]` (rounded).
-#[inline]
-fn unit_to_u7(v: f32) -> u8 {
-    (v.clamp(0.0, 1.0) * 127.0).round() as u8
-}
-
-/// `[-1.0, 1.0]` → 14-bit (center 8192).
-#[inline]
-fn unit_signed_to_u14(v: f32) -> u16 {
-    let scaled = (v.clamp(-1.0, 1.0) * 8192.0).round() as i32 + 8192;
-    scaled.clamp(0, 16383) as u16
 }
 
 impl AudioUnit for SoundFontUnit {

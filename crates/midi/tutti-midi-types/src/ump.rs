@@ -469,6 +469,27 @@ impl MidiEvent {
             | (index as u32);
         Self::from_ump(0, &[w0, value])
     }
+
+    /// Per-Note Management (M2-104 §7.4.5). `detach` = D (detach per-note
+    /// controllers from prior notes on this note number); `reset` = S (reset
+    /// per-note controllers to defaults). `D=0, S=0` has no defined function.
+    #[inline]
+    pub fn per_note_management(
+        group: u8,
+        channel: u8,
+        note: u8,
+        detach: bool,
+        reset: bool,
+    ) -> Self {
+        use midi2::channel_voice2::PerNoteManagement;
+        let mut m = PerNoteManagement::<[u32; 2]>::new();
+        m.set_group(u4::new(group & 0x0F));
+        m.set_channel(u4::new(channel & 0x0F));
+        m.set_note_number(u7::new(note & 0x7F));
+        m.set_detach(detach);
+        m.set_reset(reset);
+        Self::from_ump(0, m.data())
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -759,6 +780,20 @@ mod tests {
         assert_eq!(u8::from(m.channel()), 2);
         assert_eq!(u8::from(m.control()), 74);
         assert_eq!(m.control_change_data(), 0xDEAD_BEEF);
+    }
+
+    #[test]
+    fn per_note_management_decodes_via_midi2() {
+        let ev = MidiEvent::per_note_management(0, 4, 60, true, false);
+        let msg = UmpMessage::try_from(ev.data_words()).unwrap();
+        let UmpMessage::ChannelVoice2(channel_voice2::ChannelVoice2::PerNoteManagement(m)) = msg
+        else {
+            panic!("expected CV2 PerNoteManagement");
+        };
+        assert_eq!(u8::from(m.channel()), 4);
+        assert_eq!(u8::from(m.note_number()), 60);
+        assert!(m.detach());
+        assert!(!m.reset());
     }
 
     #[test]

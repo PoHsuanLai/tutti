@@ -32,9 +32,8 @@ use crate::types::{
 use super::bus_buffers::{BusBuffers, DirectionScratch};
 use super::loaded::Vst3Loaded;
 use super::midi_learn::MidiLearnProducer;
-use super::midi_mapping::{semantic_to_mapped_controller, CcRoute, MidiCcMapping};
+use super::midi_mapping::{midi_to_mapped_controller, CcRoute, MidiCcMapping};
 use super::{IComponentExt, K_INPUT, K_OUTPUT};
-use tutti_midi_types::decode;
 
 pub(super) const K_EVENT: i32 = kEvent as i32;
 const K_REALTIME: i32 = kRealtime as i32;
@@ -425,9 +424,7 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             return;
         }
         for event in midi_events {
-            if let Some((channel, controller, _value)) =
-                decode(event).as_ref().and_then(semantic_to_mapped_controller)
-            {
+            if let Some((channel, controller, _value)) = midi_to_mapped_controller(event) {
                 self.audio.midi_learn.capture(channel, controller);
             }
         }

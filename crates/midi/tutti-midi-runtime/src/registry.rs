@@ -562,6 +562,7 @@ mod tests {
         // the per-note expression atomic reflects the bend.
         use crate::mpe::{MpeMode, MpeProcessor, MpeZoneConfig};
         use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
+        use tutti_midi_types::NoteId;
 
         let bus = MidiBus::new();
         let processor = MpeProcessor::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
@@ -580,12 +581,13 @@ mod tests {
 
         bus.queue(id, &[note_on, bend]);
 
-        let actual = expression.get_pitch_bend(60);
+        let n60 = NoteId::from_channel_note(2, 60);
+        let actual = expression.get_pitch_bend(n60);
         assert!(
             (actual - 1.0).abs() < 0.01,
             "expected pitch_bend ≈ 1.0 after bend, got {actual}"
         );
-        assert!(expression.is_active(60), "note 60 should be active");
+        assert!(expression.is_active(n60), "note 60 should be active");
     }
 
     #[test]
@@ -618,6 +620,7 @@ mod tests {
     #[cfg(feature = "mpe")]
     fn bus_mpe_uninstall_stops_feed() {
         use crate::mpe::{MpeMode, MpeProcessor, MpeZoneConfig};
+        use tutti_midi_types::NoteId;
 
         let bus = MidiBus::new();
         let processor = MpeProcessor::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
@@ -633,7 +636,10 @@ mod tests {
         let note_on = MidiEvent::note_on(0, 2, 60, 100u16 << 9);
         bus.queue(id, &[note_on]);
 
-        assert!(!expression.is_active(60), "note should not register after uninstall");
+        assert!(
+            !expression.is_active(NoteId::from_channel_note(2, 60)),
+            "note should not register after uninstall"
+        );
     }
 
     #[test]

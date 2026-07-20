@@ -8,7 +8,6 @@ use crate::types::{
     ParameterQueue,
 };
 use smallvec::SmallVec;
-use tutti_midi_types::{decode, encode, SemanticEvent};
 use clap_sys::events::{
     clap_event_header, clap_event_midi, clap_event_midi_sysex, clap_event_note,
     clap_event_note_expression, clap_event_param_gesture, clap_event_param_mod,
@@ -180,33 +179,37 @@ impl ClapEvent {
 
     /// Build a `ClapEvent` from a Tutti UMP [`MidiEvent`].
     ///
-    /// Notes decode through [`tutti_midi_types::decode`] into the typed CLAP
-    /// NoteOn/Off shape, so velocity arrives as the decoder's normalized `f32`
-    /// and the velocity-0 NoteOn → NoteOff quirk is handled centrally. Every
+    /// Notes are matched on `midi2`'s Channel Voice 2 vocabulary via
+    /// [`tutti_midi_types::normalize`] (which folds velocity-0 NoteOn → NoteOff
+    /// and promotes any inbound MIDI 1.0), so the 16-bit velocity arrives here at
+    /// full width and is normalized to CLAP's `0.0..=1.0` at this edge. Every
     /// other channel-voice message (CC, pitch bend, pressure, program change,
     /// per-note) is forwarded as a generic MIDI-1 `Midi` event — the form CLAP
     /// plugins consume when the host has no parameter mapping for it. Returns
     /// `None` for UMP variants with no MIDI-1 form (SysEx, utility).
     pub fn from_midi_event(event: &MidiEvent) -> Option<Self> {
+        use tutti_midi_types::convert::u16_to_unit_f32;
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
         let time = event.frame_offset;
-        match decode(event) {
-            Some(SemanticEvent::NoteOn {
-                channel,
-                note,
-                velocity,
-            }) => Some(ClapEvent::note_on(
+        let normalized = tutti_midi_types::normalize(event);
+        match UmpMessage::try_from(normalized.data_words()) {
+            Ok(UmpMessage::ChannelVoice2(Cv2::NoteOn(m))) => Some(ClapEvent::note_on(
                 time,
-                channel as i16,
-                note as i16,
-                velocity as f64,
+                i16::from(u8::from(m.channel())),
+                i16::from(u8::from(m.note_number())),
+                f64::from(u16_to_unit_f32(m.velocity())),
             )),
-            Some(SemanticEvent::NoteOff { channel, note }) => {
-                Some(ClapEvent::note_off(time, channel as i16, note as i16, 0.0))
-            }
+            Ok(UmpMessage::ChannelVoice2(Cv2::NoteOff(m))) => Some(ClapEvent::note_off(
+                time,
+                i16::from(u8::from(m.channel())),
+                i16::from(u8::from(m.note_number())),
+                0.0,
+            )),
             // CC / pitch-bend / pressure / program / per-note: forward as raw
-            // MIDI-1 bytes. `decode` returning `Some(other)` still implies a
-            // channel-voice message that downconverts; a `None` decode (SysEx,
-            // utility) has no 3-byte form and is dropped.
+            // MIDI-1 bytes. A message with a 3-byte MIDI-1 form downconverts; one
+            // with no such form (SysEx, utility) is dropped.
             _ => {
                 let (bytes, _len) = event.to_midi1_bytes()?;
                 Some(ClapEvent::midi(time, 0, bytes))
@@ -216,27 +219,26 @@ impl ClapEvent {
 
     /// Convert a `ClapEvent` back to a Tutti UMP [`MidiEvent`].
     ///
-    /// Typed NoteOn/Off events go through [`tutti_midi_types::encode`], so the
-    /// plugin's `f32` velocity is preserved at MIDI-2's full bit width instead
+    /// Typed NoteOn/Off events build a native MIDI-2 Channel Voice event, so the
+    /// plugin's `f64` velocity is preserved at MIDI-2's full 16-bit width instead
     /// of being squashed to 7 bits. Generic `Midi` events upconvert from their
     /// raw MIDI-1 bytes. Returns `None` for non-MIDI variants (NoteExpression,
     /// ParamValue, etc.).
     pub fn to_midi_event(&self) -> Option<MidiEvent> {
+        use tutti_midi_types::convert::unit_f32_to_u16;
         match self {
             ClapEvent::NoteOn(e) => Some(
-                encode(&SemanticEvent::NoteOn {
-                    channel: e.channel as u8 & 0x0F,
-                    note: e.key as u8 & 0x7F,
-                    velocity: e.velocity as f32,
-                })
+                MidiEvent::note_on(
+                    0,
+                    e.channel as u8 & 0x0F,
+                    e.key as u8 & 0x7F,
+                    unit_f32_to_u16(e.velocity as f32),
+                )
                 .with_frame_offset(e.header.time),
             ),
             ClapEvent::NoteOff(e) => Some(
-                encode(&SemanticEvent::NoteOff {
-                    channel: e.channel as u8 & 0x0F,
-                    note: e.key as u8 & 0x7F,
-                })
-                .with_frame_offset(e.header.time),
+                MidiEvent::note_off(0, e.channel as u8 & 0x0F, e.key as u8 & 0x7F, 0)
+                    .with_frame_offset(e.header.time),
             ),
             ClapEvent::Midi(e) => MidiEvent::from_midi1_bytes(e.header.time, &e.data),
             _ => None,
@@ -716,23 +718,24 @@ mod tests {
     }
 
     #[test]
-    fn note_event_round_trips_through_semantic_encode() {
-        // ClapEvent::NoteOn -> MidiEvent (via encode) -> decode preserves the
-        // note and full-width velocity (no 7-bit squash).
+    fn note_event_round_trips_to_full_width_cv2() {
+        // ClapEvent::NoteOn -> MidiEvent builds a native MIDI-2 NoteOn preserving
+        // the note and full-width velocity (no 7-bit squash).
+        use tutti_midi_types::convert::u16_to_unit_f32;
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
         let clap = ClapEvent::note_on(3, 2, 64, 0.75);
         let midi = clap.to_midi_event().expect("note on -> midi");
         assert_eq!(midi.frame_offset, 3);
-        match decode(&midi).expect("decodes") {
-            SemanticEvent::NoteOn {
-                channel,
-                note,
-                velocity,
-            } => {
-                assert_eq!(channel, 2);
-                assert_eq!(note, 64);
+        match UmpMessage::try_from(midi.data_words()).expect("decodes") {
+            UmpMessage::ChannelVoice2(Cv2::NoteOn(m)) => {
+                assert_eq!(u8::from(m.channel()), 2);
+                assert_eq!(u8::from(m.note_number()), 64);
+                let velocity = u16_to_unit_f32(m.velocity());
                 assert!((velocity - 0.75).abs() < 0.01, "velocity {velocity}");
             }
-            other => panic!("expected NoteOn, got {other:?}"),
+            other => panic!("expected CV2 NoteOn, got {other:?}"),
         }
     }
 

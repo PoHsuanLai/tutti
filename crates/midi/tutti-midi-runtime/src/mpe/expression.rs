@@ -288,8 +288,8 @@ mod tests {
 
     #[test]
     fn same_pitch_different_channel_is_independent() {
-        // The ruling-#3 proof at the expression layer: two notes at pitch 60 on
-        // different member channels do not alias.
+        // Two notes at pitch 60 on different member channels must not alias in
+        // the per-note store.
         let expr = PerNoteExpression::new();
         let a = id(1, 60);
         let b = id(2, 60);

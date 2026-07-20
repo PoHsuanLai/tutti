@@ -841,7 +841,7 @@ mod tests {
     use super::*;
     use tutti_midi_types::convert::{signed_f32_to_bend_u32, unit_f32_to_u32};
 
-    // --- MIDI 2.0 per-note ↔ CLAP note-expression (Stream C) ---
+    // --- MIDI 2.0 per-note ↔ CLAP note-expression ---
 
     #[test]
     fn per_note_pitch_bend_becomes_tuning_note_expression() {
@@ -952,9 +952,8 @@ mod tests {
 
     #[test]
     fn from_midi_event_velocity_zero_note_on_becomes_note_off() {
-        // The MIDI velocity-0 NoteOn quirk: `decode` normalizes it to NoteOff,
-        // so the hand-rolled `& 0xF0` path that used to emit a vel-0 NoteOn is
-        // gone. Build the MIDI-1 velocity-0 NoteOn through raw bytes.
+        // The MIDI velocity-0 NoteOn quirk: `normalize` folds it to a NoteOff, so
+        // a raw MIDI-1 velocity-0 NoteOn converts to a CLAP NoteOff.
         let midi = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 0]).expect("builds");
         match ClapEvent::from_midi_event(&midi).expect("converts") {
             ClapEvent::NoteOff(e) => {

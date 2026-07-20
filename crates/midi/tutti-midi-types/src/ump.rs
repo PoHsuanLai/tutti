@@ -738,7 +738,7 @@ pub(crate) const fn ump_word_count(type_nibble: u8) -> usize {
 }
 
 // =============================================================================
-// Stream D — RPN / NRPN (Registered / Assignable Controllers) + MPE MCM
+// RPN / NRPN (Registered / Assignable Controllers) + MPE Configuration Message
 // -----------------------------------------------------------------------------
 // MIDI 2.0 gives RPN and NRPN dedicated Channel Voice 2 messages carrying a
 // (bank, index) 14-bit address and a full 32-bit data field — no multi-CC
@@ -799,13 +799,13 @@ pub const RPN_INDEX_MCM: u8 = 0x06;
 pub const RPN_INDEX_PITCH_BEND_SENSITIVITY: u8 = 0x00;
 
 // =============================================================================
-// Stream G — Flex Data (UMP Message Type 0xD)
+// Flex Data (UMP Message Type 0xD)
 // -----------------------------------------------------------------------------
 // Flex Data messages carry musical metadata that MIDI 1.0 kept in SMF "meta
 // events" — tempo, time signature, key signature, metronome, chord names, and
-// text/lyrics (M2-104 §7.5). They are group-scoped (no channel). These
-// constructors cover the set a DAW clip needs; text/chord (variable-length)
-// are left to their own follow-on.
+// text/lyrics (M2-104 §7.5). They are group-scoped (no channel). The
+// constructors below cover the fixed-size subset a DAW clip needs; the
+// variable-length text/chord messages are not yet exposed.
 // =============================================================================
 
 impl MidiEvent {
@@ -881,12 +881,12 @@ pub fn flex_tempo_bpm(event: &MidiEvent) -> Option<f64> {
 }
 
 // =============================================================================
-// Stream H — UMP Stream (MT=0xF): Endpoint Discovery + Function Blocks
+// UMP Stream (MT=0xF): Endpoint Discovery + Function Blocks
 // -----------------------------------------------------------------------------
 // UMP Stream messages configure the endpoint itself (protocol negotiation,
 // endpoint & Function Block topology) rather than carrying musical data
-// (M2-104 §7.1.1). The JR Timestamp constructor already lives above; Start/
-// End-of-Clip (also UMP Stream) are built by the clip-file codec.
+// (M2-104 §7.1.1). The JR Timestamp constructor lives above; Start/End-of-Clip
+// (also UMP Stream) are built by the clip-file codec (`clip_file`).
 // =============================================================================
 
 impl MidiEvent {

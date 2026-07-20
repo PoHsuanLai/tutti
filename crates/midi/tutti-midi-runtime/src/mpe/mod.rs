@@ -164,8 +164,8 @@ impl MpeProcessor {
             // doesn't disturb them. At the runtime expression layer both collapse
             // to "return this note's expression to neutral" — there is no
             // separately-addressable detached-controller lifetime here (that
-            // distinction lives at the synth-voice layer, Stream B), so we
-            // document the collapse and reset the note either way.
+            // distinction only exists once a note owns a synth voice), so we
+            // reset the note either way.
             ChannelVoice2::PerNoteManagement(m) => {
                 if m.reset() || m.detach() {
                     let id = NoteId::from_channel_note(

@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn same_note_number_distinct_ids_are_independent() {
-        // The ruling-#3 storage proof: two ids sharing a note number must not alias.
+        // Two ids sharing a note number must not alias in the store.
         let map: AtomicPerNoteMap<TestSlot, 8> = AtomicPerNoteMap::new();
         let a = NoteId::from_channel_note(0, 60);
         let b = NoteId::from_channel_note(1, 60); // same pitch, different channel

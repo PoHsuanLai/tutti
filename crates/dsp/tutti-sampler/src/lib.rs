@@ -187,7 +187,9 @@ impl bevy_app::Plugin for TuttiSamplerPlugin {
 /// [`Mode`](capture::Mode), …) that those messages and the [`Recorder`](capture::Recorder)
 /// speak.
 pub mod capture {
-    pub use crate::recording::capture::config::{Config, Mode, QuantizeSettings, Source};
+    pub use crate::recording::capture::config::{
+        CaptureFormat, Config, Mode, QuantizeSettings, Source,
+    };
     pub use crate::recording::capture::events::Buffer;
     pub use crate::recording::capture::manager::Recorder;
     pub use crate::recording::capture::session::{

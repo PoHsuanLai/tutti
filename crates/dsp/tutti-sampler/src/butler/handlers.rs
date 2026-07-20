@@ -85,7 +85,15 @@ pub(super) fn handle_command(
         }
         ButlerCommand::StopStreaming { channel_index } => {
             if let Some(mut plan) = shared.plans.get_mut(&channel_index) {
+                // Capture the region id before dropping the link so its writer
+                // (ring buffer + RegionMeta) can be freed from the RegionMap;
+                // otherwise every stopped stream leaks for the butler's lifetime.
+                let region_id = plan.link.as_ref().map(|link| link.region_id);
                 plan.stop_streaming();
+                drop(plan);
+                if let Some(region_id) = region_id {
+                    local.regions.remove(region_id);
+                }
             }
         }
 
@@ -107,20 +115,25 @@ pub(super) fn handle_command(
             file_path,
             sample_rate: cap_sample_rate,
             channels,
+            format,
         } => {
-            let writer = open_wav(&file_path, cap_sample_rate, channels);
+            let writer = open_wav(&file_path, cap_sample_rate, channels, format);
             local.captures.insert(
                 capture_id,
                 ActiveCapture {
                     consumer,
                     writer,
                     channels,
+                    format,
                 },
             );
         }
         ButlerCommand::RemoveCapture(capture_id) => {
             if let Some(mut cap_state) = local.captures.remove(&capture_id) {
                 flush_capture(&mut cap_state, &shared.metrics, usize::MAX);
+                shared
+                    .metrics
+                    .record_capture_drops(cap_state.consumer.frames_dropped());
                 if let Some(writer) = cap_state.writer.take() {
                     let _ = writer.finalize();
                 }

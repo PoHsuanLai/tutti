@@ -1,5 +1,22 @@
 //! Time-stretching types and parameters.
 
+/// Flush a subnormal (denormal) float to zero.
+///
+/// The phase-vocoder and granular overlap-add FIFOs are IIR-like accumulators:
+/// on a silent tail they can decay into the subnormal range, where x86 FPUs
+/// trap into microcode and cause large CPU spikes. Snapping subnormals to zero
+/// avoids that. It never changes audible output — subnormals are below
+/// `~1.2e-38`, far under any perceptible level and under the noise floor of
+/// 32-bit audio. Pure arithmetic branch, zero-alloc, safe on the audio thread.
+#[inline(always)]
+pub(super) fn flush_denormal(x: f32) -> f32 {
+    if x.is_subnormal() {
+        0.0
+    } else {
+        x
+    }
+}
+
 /// Time-stretch and pitch-shift parameters
 ///
 /// ## Range Limits

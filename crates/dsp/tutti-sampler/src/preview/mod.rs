@@ -142,8 +142,8 @@ impl Auditioner {
     fn start_in_memory(&self, wave: Arc<Wave>, path: &Path) {
         let mut unit = SamplerUnit::with_settings(
             wave,
-            self.gain.load(Ordering::Acquire),
-            self.speed.load(Ordering::Acquire),
+            tutti_core::Linear::new(self.gain.load(Ordering::Acquire)),
+            tutti_core::Ratio::new(self.speed.load(Ordering::Acquire)),
             false,
         );
         unit.set_session_sample_rate(self.session_sample_rate);

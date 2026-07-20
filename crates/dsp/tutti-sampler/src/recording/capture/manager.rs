@@ -312,11 +312,18 @@ impl Recorder {
     fn setup_audio_input_capture(&self, session: &Session) -> crate::error::Result<()> {
         let capture_id = self.capture_ids.mint();
 
-        let file_path = PathBuf::from(format!(
-            "recordings/track_{}_{}.wav",
+        // Stable absolute recording directory, consistent with the dawai model
+        // side (`~/Music/dawai-recordings/`). Previously this was a relative
+        // `recordings/...` path that depended on the process cwd.
+        let dir = recordings_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let file_path = dir.join(format!(
+            "track_{}_{}.wav",
             session.channel_index(),
             capture_id.0
         ));
+
+        let format = session.config().capture_format;
 
         let (producer, consumer) = CaptureBuffer::new(
             file_path.clone(),
@@ -331,6 +338,7 @@ impl Recorder {
                 file_path: file_path.clone(),
                 sample_rate: self.sample_rate,
                 channels: 2,
+                format,
             })
             .map_err(|e| {
                 crate::error::Error::Recording(format!("Failed to send RegisterCapture: {}", e))
@@ -357,6 +365,12 @@ impl Recorder {
             .get_recording_file()
             .ok_or_else(|| crate::error::Error::Recording("No recording file path".to_string()))?;
 
+        // Read the overrun counter from the shared capture producer before we
+        // tear the capture down. Nonzero means the ring overran mid-recording.
+        let frames_dropped = session
+            .get_capture_producer()
+            .map_or(0, |producer| producer.frames_dropped());
+
         self.butler_tx
             .send_blocking(ButlerCommand::Flush(capture_id))
             .map_err(|e| crate::error::Error::Recording(format!("Failed to send Flush: {}", e)))?;
@@ -382,10 +396,22 @@ impl Recorder {
         Ok(Recorded::Audio {
             file_path,
             duration_seconds,
+            frames_dropped,
             punch_events,
             xrun_events,
         })
     }
+}
+
+/// Stable absolute directory for butler-written audio-input recordings.
+///
+/// Mirrors the dawai model side (`dirs::audio_dir()/"dawai-recordings"`,
+/// falling back to the temp dir) so both write to the same place regardless
+/// of the process working directory.
+fn recordings_dir() -> PathBuf {
+    dirs::audio_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("dawai-recordings")
 }
 
 impl Default for Recorder {

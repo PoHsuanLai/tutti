@@ -224,8 +224,8 @@ pub fn promote_pending_samplers(
         let wave = asset.0.clone();
         let unit = SamplerUnit::with_settings(
             wave,
-            pending_load.gain,
-            pending_load.speed,
+            tutti_core::Linear::new(pending_load.gain),
+            tutti_core::Ratio::new(pending_load.speed),
             pending_load.looping,
         );
         let id = graph.0.add(unit);

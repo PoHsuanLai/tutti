@@ -14,7 +14,10 @@ use std::sync::Arc;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, TransportReader, Wave};
+use tutti_core::{
+    AudioUnit, BeatDuration, BeatPosition, BufferMut, BufferRef, Cents, Linear, Ratio,
+    SamplePosition, SignalFrame, TransportReader, Wave,
+};
 use crate::stretch;
 use crate::SamplerUnit;
 
@@ -70,65 +73,90 @@ struct ClipSlot {
     id: SlotId,
     sampler: SamplerUnit,
     direction: Direction,
-    /// `stretch` is derived from `stretch_factor` / `pitch_cents`: it is `Some`
-    /// exactly when they call for a non-identity transform. The three are kept
-    /// consistent by construction — every path that changes the factors goes
-    /// through [`ClipSlot::new`] or [`ClipSlot::set_stretch`], both of which
-    /// rebuild `stretch`. The factor fields are private so no caller can set a
-    /// non-identity factor without producing the matching `stretch` unit.
-    stretch: Option<stretch::Unit>,
-    stretch_factor: f32,
-    pitch_cents: f32,
+    /// The time-stretch processor is **always resident**: it is built once (a
+    /// `Box` + two phase-vocoder constructions + four `RtScratch` scratch
+    /// buffers) when the slot is created, off the per-buffer hot path. The
+    /// audio thread never (re)builds it — it only flips the lock-free
+    /// `stretch_factor` / `pitch_cents` atomics inside it. At tick time, the
+    /// `needs_stretch()` gate (mirrored from those atomics into the two factor
+    /// fields below) chooses whether to route through the processor or read the
+    /// bare `sampler` directly. Wave 5e moved the heavy construction off the
+    /// audio thread this way: [`ClipCommand::UpdateStretch`] now only sets
+    /// atomics, never allocates.
+    ///
+    /// Structural invariant (from Wave 2, adapted): the factor fields cannot
+    /// drift from the processor's atomics — every mutation goes through
+    /// [`ClipSlot::set_stretch`], which writes both in one step, and the fields
+    /// are private so no caller can set a non-identity factor without the
+    /// matching atomic being updated.
+    stretch: stretch::Unit,
+    stretch_factor: Ratio,
+    pitch_cents: Cents,
     sample_rate: f64,
 }
 
 impl ClipSlot {
-    /// Build a slot with the stretch unit already materialised from
-    /// `stretch_factor` / `pitch_cents` — the single constructor both the live
-    /// `Add` path and the synchronous `insert_clip` path go through, so neither
-    /// can produce a non-identity factor with `stretch = None`.
+    /// Build a slot with the resident stretch unit already materialised and its
+    /// atomics primed from `stretch_factor` / `pitch_cents` — the single
+    /// constructor both the live `Add` path and the synchronous `insert_clip`
+    /// path go through. The heavy `stretch::Unit` construction happens here, at
+    /// slot-creation time, never on the per-buffer command drain.
     fn new(
         id: SlotId,
         sampler: SamplerUnit,
         direction: Direction,
-        stretch_factor: f32,
-        pitch_cents: f32,
+        stretch_factor: Ratio,
+        pitch_cents: Cents,
         sample_rate: f64,
     ) -> Self {
-        let mut slot = Self {
+        let stretch = stretch::Unit::new(Box::new(sampler.clone()), sample_rate);
+        stretch.set_stretch_factor(stretch_factor);
+        stretch.set_pitch_cents(pitch_cents);
+        Self {
             id,
             sampler,
             direction,
-            stretch: None,
+            stretch,
             stretch_factor,
             pitch_cents,
             sample_rate,
-        };
-        slot.rebuild_stretch();
-        slot
+        }
     }
 
     fn needs_stretch(&self) -> bool {
-        (self.stretch_factor - 1.0).abs() > 0.001 || self.pitch_cents.abs() > 0.5
+        (self.stretch_factor.get() - 1.0).abs() > 0.001 || self.pitch_cents.get().abs() > 0.5
     }
 
-    /// Update the stretch factors and rebuild the derived `stretch` unit in one
-    /// step — the only entry point for mutating the factors, so they can never
-    /// drift out of sync with `stretch`.
-    fn set_stretch(&mut self, stretch_factor: f32, pitch_cents: f32) {
+    /// Update the stretch factors — the only entry point for mutating them.
+    /// Lock-free: flips the resident processor's atomics and mirrors the values
+    /// into the factor fields (used by the `needs_stretch()` routing gate).
+    /// Allocation-free, so it is safe to run on the audio-thread command drain.
+    fn set_stretch(&mut self, stretch_factor: Ratio, pitch_cents: Cents) {
         self.stretch_factor = stretch_factor;
         self.pitch_cents = pitch_cents;
-        self.rebuild_stretch();
+        self.stretch.set_stretch_factor(stretch_factor);
+        self.stretch.set_pitch_cents(pitch_cents);
     }
 
-    fn rebuild_stretch(&mut self) {
-        if self.needs_stretch() {
-            let unit = stretch::Unit::new(Box::new(self.sampler.clone()), self.sample_rate);
-            unit.set_stretch_factor(self.stretch_factor);
-            unit.set_pitch_cents(self.pitch_cents);
-            self.stretch = Some(unit);
-        } else {
-            self.stretch = None;
+    /// The resident processor's internal source, downcast back to
+    /// `SamplerUnit`. Every param mutation is applied to this alongside the
+    /// direct-read `sampler` so the two playback paths never diverge — the
+    /// processor's source is a clone made at slot-creation and would otherwise
+    /// go stale once the identity gate flips it into the signal path.
+    fn stretch_source_mut(&mut self) -> Option<&mut SamplerUnit> {
+        self.stretch
+            .source_mut()
+            .as_any_mut()
+            .downcast_mut::<SamplerUnit>()
+    }
+
+    /// Apply an in-place mutation to both the direct-read `sampler` and the
+    /// resident processor's internal source, keeping the two playback paths in
+    /// sync. Lock-free — no rebuild.
+    fn sync_sampler(&mut self, mut f: impl FnMut(&mut SamplerUnit)) {
+        f(&mut self.sampler);
+        if let Some(src) = self.stretch_source_mut() {
+            f(src);
         }
     }
 }
@@ -150,22 +178,22 @@ pub enum ClipCommand {
     },
     UpdatePlacement {
         id: SlotId,
-        start_beat: f64,
-        duration_beats: Option<f64>,
+        start_beat: BeatPosition,
+        duration_beats: Option<BeatDuration>,
     },
     UpdateGain {
         id: SlotId,
-        gain: f32,
+        gain: Linear,
     },
     UpdateSpeed {
         id: SlotId,
-        speed: f32,
+        speed: Ratio,
     },
     UpdateLoop {
         id: SlotId,
         looping: bool,
-        loop_start: u64,
-        loop_end: u64,
+        loop_start: SamplePosition,
+        loop_end: SamplePosition,
         crossfade_samples: usize,
     },
     ClearLoop(SlotId),
@@ -175,8 +203,8 @@ pub enum ClipCommand {
     },
     UpdateStretch {
         id: SlotId,
-        stretch_factor: f32,
-        pitch_cents: f32,
+        stretch_factor: Ratio,
+        pitch_cents: Cents,
     },
 }
 
@@ -195,8 +223,8 @@ pub struct ClipSpec {
     /// Already transport-bound, with gain / loop range applied.
     pub sampler: SamplerUnit,
     pub direction: Direction,
-    pub stretch_factor: f32,
-    pub pitch_cents: f32,
+    pub stretch_factor: Ratio,
+    pub pitch_cents: Cents,
 }
 
 // ---------------------------------------------------------------------------
@@ -342,8 +370,8 @@ impl TrackClipReaderUnit {
                         id,
                         sampler,
                         direction,
-                        1.0,
-                        0.0,
+                        Ratio::new(1.0),
+                        Cents::new(0.0),
                         self.sample_rate,
                     ));
                 }
@@ -352,8 +380,7 @@ impl TrackClipReaderUnit {
                 }
                 ClipCommand::ReplaceWave { id, wave } => {
                     if let Some(slot) = self.slot_mut(id) {
-                        slot.sampler.set_wave(wave);
-                        slot.rebuild_stretch();
+                        slot.sync_sampler(|s| s.set_wave(wave.clone()));
                     }
                 }
                 ClipCommand::UpdatePlacement {
@@ -362,17 +389,17 @@ impl TrackClipReaderUnit {
                     duration_beats,
                 } => {
                     if let Some(slot) = self.slot_mut(id) {
-                        slot.sampler.set_placement(start_beat, duration_beats);
+                        slot.sync_sampler(|s| s.set_placement(start_beat, duration_beats));
                     }
                 }
                 ClipCommand::UpdateGain { id, gain } => {
                     if let Some(slot) = self.slot_mut(id) {
-                        slot.sampler.set_gain(gain);
+                        slot.sync_sampler(|s| s.set_gain(gain));
                     }
                 }
                 ClipCommand::UpdateSpeed { id, speed } => {
                     if let Some(slot) = self.slot_mut(id) {
-                        slot.sampler.set_speed(speed);
+                        slot.sync_sampler(|s| s.set_speed(speed));
                     }
                 }
                 ClipCommand::UpdateLoop {
@@ -383,19 +410,22 @@ impl TrackClipReaderUnit {
                     crossfade_samples,
                 } => {
                     if let Some(slot) = self.slot_mut(id) {
-                        if looping {
-                            slot.sampler
-                                .set_loop_range(loop_start, loop_end, crossfade_samples);
-                        } else {
-                            slot.sampler.clear_loop_range();
-                            slot.sampler.set_looping(false);
-                        }
+                        slot.sync_sampler(|s| {
+                            if looping {
+                                s.set_loop_range(loop_start, loop_end, crossfade_samples);
+                            } else {
+                                s.clear_loop_range();
+                                s.set_looping(false);
+                            }
+                        });
                     }
                 }
                 ClipCommand::ClearLoop(id) => {
                     if let Some(slot) = self.slot_mut(id) {
-                        slot.sampler.clear_loop_range();
-                        slot.sampler.set_looping(false);
+                        slot.sync_sampler(|s| {
+                            s.clear_loop_range();
+                            s.set_looping(false);
+                        });
                     }
                 }
                 ClipCommand::UpdateReverse { id, direction } => {
@@ -456,7 +486,7 @@ impl Clone for TrackClipReaderUnit {
                     stretch_factor: s.stretch_factor,
                     pitch_cents: s.pitch_cents,
                     sample_rate: s.sample_rate,
-                })
+                }) // resident stretch::Unit clones by value; atomics preserved
                 .collect(),
             rx: self.rx.clone(),
             sample_rate: self.sample_rate,
@@ -477,9 +507,7 @@ impl AudioUnit for TrackClipReaderUnit {
     fn reset(&mut self) {
         for slot in &mut self.clips {
             slot.sampler.reset();
-            if let Some(ref mut s) = slot.stretch {
-                s.reset();
-            }
+            slot.stretch.reset();
         }
     }
 
@@ -488,9 +516,7 @@ impl AudioUnit for TrackClipReaderUnit {
         for slot in &mut self.clips {
             slot.sampler.set_sample_rate(sample_rate);
             slot.sample_rate = sample_rate.get();
-            if let Some(ref mut s) = slot.stretch {
-                s.set_sample_rate(sample_rate);
-            }
+            slot.stretch.set_sample_rate(sample_rate);
         }
     }
 
@@ -505,9 +531,9 @@ impl AudioUnit for TrackClipReaderUnit {
         let mut right = 0.0_f32;
 
         for slot in &mut self.clips {
-            if let Some(ref mut s) = slot.stretch {
+            if slot.needs_stretch() {
                 let mut buf = [0.0f32; 2];
-                s.tick(&[], &mut buf);
+                slot.stretch.tick(&[], &mut buf);
                 left += buf[0];
                 right += buf[1];
             } else if let Some(pos) = slot.sampler.transport_sample_position() {
@@ -530,10 +556,10 @@ impl AudioUnit for TrackClipReaderUnit {
         }
 
         for slot in &mut self.clips {
-            if let Some(ref mut s) = slot.stretch {
+            if slot.needs_stretch() {
                 let mut tick_out = [0.0f32; 2];
                 for i in 0..size {
-                    s.tick(&[], &mut tick_out);
+                    slot.stretch.tick(&[], &mut tick_out);
                     output.set_f32(0, i, output.at_f32(0, i) + tick_out[0]);
                     output.set_f32(1, i, output.at_f32(1, i) + tick_out[1]);
                 }
@@ -541,7 +567,7 @@ impl AudioUnit for TrackClipReaderUnit {
                 let Some(start_pos) = slot.sampler.transport_sample_position() else {
                     continue;
                 };
-                let advance = (slot.sampler.speed() * slot.sampler.src_ratio()) as f64;
+                let advance = (slot.sampler.speed().get() * slot.sampler.src_ratio().get()) as f64;
                 for i in 0..size {
                     let pos = start_pos + i as f64 * advance;
                     let (l, r) = Self::read_clip_sample(&slot.sampler, slot.direction, pos);
@@ -619,7 +645,7 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, true);
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), 0.0, None);
+        let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), BeatPosition::new(0.0), None);
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
@@ -642,7 +668,7 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, false);
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, 0.0, None);
+        let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
@@ -663,7 +689,7 @@ mod tests {
 
         for i in 0..3 {
             let sampler =
-                SamplerUnit::with_transport(wave.clone(), transport.clone(), 0.0, None);
+                SamplerUnit::with_transport(wave.clone(), transport.clone(), BeatPosition::new(0.0), None);
             handle.send(ClipCommand::Add {
                 id: SlotId(i),
                 sampler,
@@ -675,7 +701,7 @@ mod tests {
         unit.tick(&[], &mut out_3);
 
         let (mut unit2, handle2) = TrackClipReaderUnit::new();
-        let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), 0.0, None);
+        let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), BeatPosition::new(0.0), None);
         handle2.send(ClipCommand::Add {
             id: SlotId(0),
             sampler,
@@ -695,7 +721,7 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, true);
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, 0.0, None);
+        let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
@@ -718,13 +744,13 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, true);
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, 0.0, None);
+        let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
         unit.insert_clip(ClipSpec {
             id: SlotId(1),
             sampler,
             direction: Direction::Forward,
-            stretch_factor: 1.0,
-            pitch_cents: 0.0,
+            stretch_factor: Ratio::new(1.0),
+            pitch_cents: Cents::new(0.0),
         });
 
         // No tick/drain needed — the clip is already in the slot list.
@@ -752,13 +778,13 @@ mod tests {
         assert_eq!(out[1], 0.0);
 
         // But clips inserted directly (the Populate path) are audible.
-        let sampler = SamplerUnit::with_transport(wave, transport, 0.0, None);
+        let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
         unit.insert_clip(ClipSpec {
             id: SlotId(1),
             sampler,
             direction: Direction::Forward,
-            stretch_factor: 1.0,
-            pitch_cents: 0.0,
+            stretch_factor: Ratio::new(1.0),
+            pitch_cents: Cents::new(0.0),
         });
         unit.tick(&[], &mut out);
         assert!(out[0] != 0.0 || out[1] != 0.0, "inserted clip is audible");
@@ -770,7 +796,7 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, true);
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, 0.0, None);
+        let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
@@ -782,7 +808,7 @@ mod tests {
 
         handle.send(ClipCommand::UpdateGain {
             id: SlotId(1),
-            gain: 0.5,
+            gain: Linear::new(0.5),
         });
 
         let mut out_after = [0.0f32; 2];
@@ -797,7 +823,7 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, true);
         let wave = make_wave(4096);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, 0.0, None);
+        let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
@@ -806,24 +832,24 @@ mod tests {
 
         let mut out = [0.0f32; 2];
         unit.tick(&[], &mut out);
-        assert!(unit.clips[0].stretch.is_none(), "no stretch by default");
+        assert!(!unit.clips[0].needs_stretch(), "no stretch by default");
 
         handle.send(ClipCommand::UpdateStretch {
             id: SlotId(1),
-            stretch_factor: 2.0,
-            pitch_cents: 0.0,
+            stretch_factor: Ratio::new(2.0),
+            pitch_cents: Cents::new(0.0),
         });
         unit.tick(&[], &mut out);
-        assert!(unit.clips[0].stretch.is_some(), "stretch should be active");
+        assert!(unit.clips[0].needs_stretch(), "stretch should be active");
 
         handle.send(ClipCommand::UpdateStretch {
             id: SlotId(1),
-            stretch_factor: 1.0,
-            pitch_cents: 0.0,
+            stretch_factor: Ratio::new(1.0),
+            pitch_cents: Cents::new(0.0),
         });
         unit.tick(&[], &mut out);
         assert!(
-            unit.clips[0].stretch.is_none(),
+            !unit.clips[0].needs_stretch(),
             "identity stretch disables processor"
         );
     }

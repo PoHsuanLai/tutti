@@ -177,8 +177,12 @@ impl GranularProcessor {
             let in_idx = (read_start + i) % in_fifo_len;
             let out_idx = (self.output_write_pos + i) % out_fifo_len;
 
-            // Overlap-add: add windowed grain to output
-            self.output_fifo[out_idx] += self.input_fifo[in_idx] * self.window[i];
+            // Overlap-add: add windowed grain to output. Flush-to-zero keeps
+            // the accumulator out of the subnormal range on silent tails
+            // (avoids x86 denormal CPU spikes); inaudible for normal signals.
+            self.output_fifo[out_idx] = super::types::flush_denormal(
+                self.output_fifo[out_idx] + self.input_fifo[in_idx] * self.window[i],
+            );
         }
 
         // Advance input by analysis hop (always same hop for input)

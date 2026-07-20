@@ -166,7 +166,7 @@ mod tests {
         assert_eq!(state.pdc_preroll, 0);
         assert!(state.link.is_none());
         assert!(state.loop_config().is_none());
-        assert_eq!(state.rt_state.speed(), 1.0);
+        assert_eq!(state.rt_state.speed(), tutti_core::Ratio::new(1.0));
         assert!(!state.rt_state.is_reverse());
     }
 }

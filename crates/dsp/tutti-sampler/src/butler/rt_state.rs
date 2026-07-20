@@ -6,7 +6,7 @@
 //! ownership story obvious.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use tutti_core::AtomicF32;
+use tutti_core::{AtomicF32, Ratio};
 
 use super::crossfader::StreamingCrossfader;
 use crate::Direction;
@@ -75,8 +75,8 @@ impl RtState {
     }
 
     #[inline]
-    pub fn speed(&self) -> f32 {
-        self.playback.speed.load(Ordering::Acquire)
+    pub fn speed(&self) -> Ratio {
+        Ratio::new(self.playback.speed.load(Ordering::Acquire))
     }
 
     /// Clamped to 0.25..4.0.
@@ -89,7 +89,7 @@ impl RtState {
     /// raw atomic load for the audio-thread call site which reads it every
     /// sample.
     #[inline]
-    pub fn effective_speed(&self) -> f32 {
+    pub fn effective_speed(&self) -> Ratio {
         self.speed()
     }
 
@@ -121,8 +121,8 @@ impl RtState {
     }
 
     #[inline]
-    pub fn src_ratio(&self) -> f32 {
-        self.playback.src_ratio.load(Ordering::Acquire)
+    pub fn src_ratio(&self) -> Ratio {
+        Ratio::new(self.playback.src_ratio.load(Ordering::Acquire))
     }
 
     pub fn set_src_ratio(&self, ratio: f32) {
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn test_default_values() {
         let state = RtState::new();
-        assert_eq!(state.speed(), 1.0);
+        assert_eq!(state.speed(), Ratio::new(1.0));
         assert!(!state.is_reverse());
         assert!(!state.is_seeking());
     }
@@ -208,13 +208,13 @@ mod tests {
         let state = RtState::new();
 
         state.set_speed(0.1);
-        assert_eq!(state.speed(), 0.25);
+        assert_eq!(state.speed(), Ratio::new(0.25));
 
         state.set_speed(10.0);
-        assert_eq!(state.speed(), 4.0);
+        assert_eq!(state.speed(), Ratio::new(4.0));
 
         state.set_speed(2.0);
-        assert_eq!(state.speed(), 2.0);
+        assert_eq!(state.speed(), Ratio::new(2.0));
     }
 
     #[test]

@@ -66,7 +66,10 @@ futures-lite = "2"
 
 # DSP / Files
 hound = "3.5"
-memmap2 = "0.9"
+
+# Stable OS recording directory (dirs::audio_dir), consistent with the
+# dawai model side.
+dirs = "6"
 
 
 [dev-dependencies]

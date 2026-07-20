@@ -109,12 +109,17 @@ pub fn audio_playback_system(
         let ts = ts_query.get(entity).ok();
         let sample_rate = config.sample_rate;
 
-        let sampler = SamplerUnit::with_settings(wave, gain, speed, looping);
+        let sampler = SamplerUnit::with_settings(
+            wave,
+            tutti_core::Linear::new(gain),
+            tutti_core::Ratio::new(speed),
+            looping,
+        );
 
         let (node_id, ts_control) = if let Some(ts) = ts {
             let wrapped = crate::stretch::Unit::new(Box::new(sampler), sample_rate);
-            wrapped.set_stretch_factor(ts.stretch_factor);
-            wrapped.set_pitch_cents(ts.pitch_cents);
+            wrapped.set_stretch_factor(tutti_core::Ratio::new(ts.stretch_factor));
+            wrapped.set_pitch_cents(tutti_core::Cents::new(ts.pitch_cents));
             let control = TimeStretchControl {
                 stretch_factor: wrapped.stretch_factor_arc(),
                 pitch_cents: wrapped.pitch_cents_arc(),
@@ -166,7 +171,7 @@ pub fn audio_parameter_sync_system(
     let mut edited = false;
     for (emitter, volume) in query.iter() {
         if let Some(sampler) = graph.0.node_mut::<SamplerUnit>(emitter.node_id) {
-            sampler.set_gain(volume.0);
+            sampler.set_gain(tutti_core::Linear::new(volume.0));
             edited = true;
         }
     }

@@ -268,7 +268,9 @@ impl PhaseVocoderProcessor {
         for i in 0..self.fft_size {
             let sample = self.complex_buffer[i].re * scale * self.synthesis_window[i];
             let out_idx = (self.output_write_pos + i) % out_fifo_len;
-            self.output_fifo[out_idx] += sample;
+            // Flush-to-zero: keep the overlap-add accumulator out of the
+            // subnormal range on silent tails (avoids x86 denormal CPU spikes).
+            self.output_fifo[out_idx] = super::types::flush_denormal(self.output_fifo[out_idx] + sample);
         }
 
         // Advance output write position by synthesis hop

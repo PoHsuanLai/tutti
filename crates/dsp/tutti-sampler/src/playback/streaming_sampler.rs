@@ -4,19 +4,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tutti_core::{AudioUnit, BufferMut, BufferRef};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, Linear};
 
+use super::interp::cubic_hermite;
 use crate::butler::{RegionReader, RtState};
-
-/// Cubic Hermite interpolation for smooth varispeed playback.
-#[inline]
-pub(crate) fn cubic_hermite(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
-    let c0 = y1;
-    let c1 = 0.5 * (y2 - y0);
-    let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
-    let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
-    ((c3 * t + c2) * t + c1) * t + c0
-}
 
 /// 8192 frames at 4x speed with interpolation padding.
 const MAX_FETCH_SAMPLES: usize = 8192 * 4 + 8;
@@ -26,7 +17,7 @@ pub struct StreamingSamplerUnit {
     consumer: Arc<Mutex<RegionReader>>,
     playing: AtomicBool,
 
-    gain: f32,
+    gain: Linear,
     sample_rate: f32,
 
     /// Shared state for cross-thread communication (speed, direction, seeking).
@@ -62,7 +53,7 @@ impl StreamingSamplerUnit {
         Self {
             consumer,
             playing: AtomicBool::new(true),
-            gain: 1.0,
+            gain: Linear::new(1.0),
             sample_rate: 44100.0,
             shared_state: Some(shared_state),
             fractional_pos: 0.0,
@@ -83,7 +74,7 @@ impl StreamingSamplerUnit {
         self.playing.load(Ordering::Relaxed)
     }
 
-    pub fn set_gain(&mut self, gain: f32) {
+    pub fn set_gain(&mut self, gain: Linear) {
         self.gain = gain;
     }
 
@@ -105,22 +96,25 @@ impl StreamingSamplerUnit {
             return;
         }
 
-        let src_ratio = self.shared_state.as_ref().map_or(1.0, |s| s.src_ratio()) as f64;
+        let src_ratio = self
+            .shared_state
+            .as_ref()
+            .map_or(1.0, |s| s.src_ratio().get() as f64);
         let base_speed = self
             .shared_state
             .as_ref()
-            .map_or(1.0, |s| s.effective_speed()) as f64
+            .map_or(1.0, |s| s.effective_speed().get() as f64)
             * src_ratio;
 
         let samples_needed = (size as f64 * base_speed).ceil() as usize + 4;
 
         self.fetch_scratch.clear();
 
+        let gain = self.gain.get();
         if let Some(mut guard) = self.consumer.try_lock() {
             for _ in 0..samples_needed {
                 if let Some((left, right)) = guard.read() {
-                    self.fetch_scratch
-                        .push((left * self.gain, right * self.gain));
+                    self.fetch_scratch.push((left * gain, right * gain));
                 } else {
                     break;
                 }
@@ -132,7 +126,7 @@ impl StreamingSamplerUnit {
             let speed = self
                 .shared_state
                 .as_ref()
-                .map_or(1.0, |s| s.effective_speed() as f64 * s.src_ratio() as f64);
+                .map_or(1.0, |s| s.effective_speed().get() as f64 * s.src_ratio().get() as f64);
 
             self.fractional_pos += speed;
 
@@ -201,11 +195,12 @@ impl AudioUnit for StreamingSamplerUnit {
             return;
         }
 
+        let gain = self.gain.get();
         if let Some(ref state) = self.shared_state {
             if let Some((left, right)) = state.next_seek_crossfade_sample() {
                 if output.len() >= 2 {
-                    output[0] = left * self.gain;
-                    output[1] = right * self.gain;
+                    output[0] = left * gain;
+                    output[1] = right * gain;
                 }
                 return;
             }
@@ -222,7 +217,7 @@ impl AudioUnit for StreamingSamplerUnit {
         let speed = self
             .shared_state
             .as_ref()
-            .map_or(1.0, |s| s.effective_speed() as f64 * s.src_ratio() as f64);
+            .map_or(1.0, |s| s.effective_speed().get() as f64 * s.src_ratio().get() as f64);
 
         self.fractional_pos += speed;
 
@@ -232,7 +227,7 @@ impl AudioUnit for StreamingSamplerUnit {
 
             if let Some(mut guard) = self.consumer.try_lock() {
                 if let Some((left, right)) = guard.read() {
-                    self.history[3] = (left * self.gain, right * self.gain);
+                    self.history[3] = (left * gain, right * gain);
                 } else {
                     if let Some(ref state) = self.shared_state {
                         state.report_underrun();
@@ -282,8 +277,8 @@ impl AudioUnit for StreamingSamplerUnit {
             if state.is_seek_crossfading() {
                 for i in 0..size {
                     if let Some((left, right)) = state.next_seek_crossfade_sample() {
-                        output.set_f32(0, i, left * self.gain);
-                        output.set_f32(1, i, right * self.gain);
+                        output.set_f32(0, i, left * self.gain.get());
+                        output.set_f32(1, i, right * self.gain.get());
                     } else {
                         self.process_normal_samples(size - i, i, output);
                         return;
@@ -295,8 +290,8 @@ impl AudioUnit for StreamingSamplerUnit {
             if state.is_loop_crossfading() {
                 for i in 0..size {
                     if let Some((left, right)) = state.next_loop_crossfade_sample() {
-                        output.set_f32(0, i, left * self.gain);
-                        output.set_f32(1, i, right * self.gain);
+                        output.set_f32(0, i, left * self.gain.get());
+                        output.set_f32(1, i, right * self.gain.get());
                     } else {
                         self.process_normal_samples(size - i, i, output);
                         return;
@@ -375,19 +370,19 @@ mod tests {
     fn test_shared_stream_state_speed() {
         let state = RtState::new();
 
-        assert_eq!(state.speed(), 1.0);
+        assert_eq!(state.speed(), tutti_core::Ratio::new(1.0));
 
         state.set_speed(0.5);
-        assert_eq!(state.speed(), 0.5);
+        assert_eq!(state.speed(), tutti_core::Ratio::new(0.5));
 
         state.set_speed(2.0);
-        assert_eq!(state.speed(), 2.0);
+        assert_eq!(state.speed(), tutti_core::Ratio::new(2.0));
 
         state.set_speed(0.1);
-        assert_eq!(state.speed(), 0.25);
+        assert_eq!(state.speed(), tutti_core::Ratio::new(0.25));
 
         state.set_speed(10.0);
-        assert_eq!(state.speed(), 4.0);
+        assert_eq!(state.speed(), tutti_core::Ratio::new(4.0));
     }
 
     // --- New: play/stop state ---
@@ -530,7 +525,7 @@ mod tests {
 
         let mut full = StreamingSamplerUnit::new(reader1, state1);
         let mut half = StreamingSamplerUnit::new(reader2, state2);
-        half.set_gain(0.5);
+        half.set_gain(Linear::new(0.5));
 
         let mut out_full = [0.0f32; 2];
         let mut out_half = [0.0f32; 2];

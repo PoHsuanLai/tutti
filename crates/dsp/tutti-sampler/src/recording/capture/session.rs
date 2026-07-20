@@ -342,6 +342,9 @@ pub enum Recorded {
     Audio {
         file_path: PathBuf,
         duration_seconds: f64,
+        /// Frames dropped by capture ring overruns during this recording.
+        /// Nonzero means the capture ring overran and samples were lost.
+        frames_dropped: u64,
         punch_events: Vec<PunchEvent>,
         xrun_events: Vec<XRun>,
     },

@@ -94,8 +94,8 @@ pub(crate) fn refill_all(
         }
 
         let is_reverse = stream_state.rt_state.is_reverse();
-        let speed = stream_state.rt_state.effective_speed();
-        let src_ratio = stream_state.rt_state.src_ratio();
+        let speed = stream_state.rt_state.effective_speed().get();
+        let src_ratio = stream_state.rt_state.src_ratio().get();
 
         let adjusted_speed = speed * src_ratio * buffer_margin as f32;
         let chunk_size = varifill_chunk(fill_pct, base_chunk_size, read_rate, adjusted_speed);
@@ -174,8 +174,8 @@ pub(crate) fn refill_all_parallel(
                 return None;
             }
 
-            let speed = stream_state.rt_state.effective_speed();
-            let src_ratio = stream_state.rt_state.src_ratio();
+            let speed = stream_state.rt_state.effective_speed().get();
+            let src_ratio = stream_state.rt_state.src_ratio().get();
 
             let adjusted_speed = speed * src_ratio * buffer_margin as f32;
             let chunk_size = varifill_chunk(fill_pct, base_chunk_size, read_rate, adjusted_speed);

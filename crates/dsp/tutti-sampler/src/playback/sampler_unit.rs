@@ -1,8 +1,11 @@
 //! In-memory sample playback with optional loop crossfade.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, TransportReader, Wave};
+use tutti_core::{
+    AtomicSamplePosition, AudioUnit, BeatDuration, BeatPosition, BufferMut, BufferRef, Linear,
+    Ratio, SamplePosition, SampleRate, TransportReader, Wave,
+};
 
 use super::loop_crossfade::LoopCrossfade;
 
@@ -16,7 +19,7 @@ pub(super) enum LoopMode {
     OneShot,
     /// Loop over `range` (start, end) in samples, with optional crossfade.
     Looping {
-        range: (u64, u64),
+        range: (SamplePosition, SamplePosition),
         crossfade: Option<LoopCrossfade>,
     },
 }
@@ -41,9 +44,9 @@ pub struct TransportPlacement {
     /// beat position to compute the sample offset.
     pub transport: Arc<dyn TransportReader>,
     /// Start position in beats on the timeline.
-    pub start_beat: f64,
+    pub start_beat: BeatPosition,
     /// Duration in beats, or None to play the entire sample.
-    pub duration_beats: Option<f64>,
+    pub duration_beats: Option<BeatDuration>,
 }
 
 impl Clone for TransportPlacement {
@@ -63,19 +66,19 @@ impl Clone for TransportPlacement {
 /// (e.g., MIDI-triggered one-shots).
 pub struct SamplerUnit {
     wave: Arc<Wave>,
-    position: AtomicU64,
+    position: AtomicSamplePosition,
 
     /// Defaults to true (auto-play).
     playing: AtomicBool,
 
-    gain: f32,
+    gain: Linear,
 
-    speed: f32,
+    speed: Ratio,
 
-    sample_rate: f32,
+    sample_rate: SampleRate,
 
     /// SRC ratio: file_sample_rate / session_sample_rate. 1.0 = no conversion.
-    src_ratio: f32,
+    src_ratio: Ratio,
 
     /// Loop configuration. `OneShot` plays through once; `Looping` guarantees a
     /// range and carries the optional crossfade.
@@ -89,7 +92,7 @@ impl Clone for SamplerUnit {
     fn clone(&self) -> Self {
         Self {
             wave: Arc::clone(&self.wave),
-            position: AtomicU64::new(self.position.load(Ordering::Relaxed)),
+            position: AtomicSamplePosition::new(self.position.load(Ordering::Relaxed)),
             playing: AtomicBool::new(self.playing.load(Ordering::Relaxed)),
             gain: self.gain,
             speed: self.speed,
@@ -103,21 +106,21 @@ impl Clone for SamplerUnit {
 
 impl SamplerUnit {
     pub fn new(wave: Arc<Wave>) -> Self {
-        let sample_rate = wave.sample_rate() as f32;
+        let sample_rate = SampleRate::new(wave.sample_rate());
         Self {
             wave,
-            position: AtomicU64::new(0),
+            position: AtomicSamplePosition::new(SamplePosition::new(0.0)),
             playing: AtomicBool::new(true),
-            gain: 1.0,
-            speed: 1.0,
+            gain: Linear::new(1.0),
+            speed: Ratio::new(1.0),
             sample_rate,
-            src_ratio: 1.0,
+            src_ratio: Ratio::new(1.0),
             loop_mode: LoopMode::OneShot,
             placement: None,
         }
     }
 
-    pub fn with_settings(wave: Arc<Wave>, gain: f32, speed: f32, looping: bool) -> Self {
+    pub fn with_settings(wave: Arc<Wave>, gain: Linear, speed: Ratio, looping: bool) -> Self {
         let mut unit = Self {
             gain,
             speed,
@@ -130,8 +133,8 @@ impl SamplerUnit {
     pub fn with_transport(
         wave: Arc<Wave>,
         transport: Arc<dyn TransportReader>,
-        start_beat: f64,
-        duration_beats: Option<f64>,
+        start_beat: BeatPosition,
+        duration_beats: Option<BeatDuration>,
     ) -> Self {
         Self {
             placement: Some(TransportPlacement {
@@ -146,8 +149,8 @@ impl SamplerUnit {
     pub fn set_transport(
         &mut self,
         transport: Arc<dyn TransportReader>,
-        start_beat: f64,
-        duration_beats: Option<f64>,
+        start_beat: BeatPosition,
+        duration_beats: Option<BeatDuration>,
     ) {
         self.placement = Some(TransportPlacement {
             transport,
@@ -156,7 +159,7 @@ impl SamplerUnit {
         });
     }
 
-    pub fn set_placement(&mut self, start_beat: f64, duration_beats: Option<f64>) {
+    pub fn set_placement(&mut self, start_beat: BeatPosition, duration_beats: Option<BeatDuration>) {
         match &mut self.placement {
             Some(placement) => {
                 placement.start_beat = start_beat;
@@ -175,7 +178,7 @@ impl SamplerUnit {
             None => {
                 self.placement = Some(TransportPlacement {
                     transport,
-                    start_beat: 0.0,
+                    start_beat: BeatPosition::new(0.0),
                     duration_beats: None,
                 });
             }
@@ -187,11 +190,12 @@ impl SamplerUnit {
     }
 
     pub fn trigger(&self) {
-        self.position.store(0, Ordering::Relaxed);
+        self.position
+            .store(SamplePosition::new(0.0), Ordering::Relaxed);
         self.playing.store(true, Ordering::Relaxed);
     }
 
-    pub fn trigger_at(&self, position: u64) {
+    pub fn trigger_at(&self, position: SamplePosition) {
         self.position.store(position, Ordering::Relaxed);
         self.playing.store(true, Ordering::Relaxed);
     }
@@ -216,7 +220,10 @@ impl SamplerUnit {
             (true, LoopMode::Looping { .. }) => {}
             (true, LoopMode::OneShot) => {
                 self.loop_mode = LoopMode::Looping {
-                    range: (0, self.wave.len() as u64),
+                    range: (
+                        SamplePosition::new(0.0),
+                        SamplePosition::new(self.wave.len() as f64),
+                    ),
                     crossfade: None,
                 };
             }
@@ -230,16 +237,18 @@ impl SamplerUnit {
         matches!(self.loop_mode, LoopMode::Looping { .. })
     }
 
-    pub fn position(&self) -> u64 {
+    pub fn position(&self) -> SamplePosition {
         self.position.load(Ordering::Relaxed)
     }
 
-    pub fn start_beat(&self) -> f64 {
-        self.placement.as_ref().map_or(0.0, |p| p.start_beat)
+    pub fn start_beat(&self) -> BeatPosition {
+        self.placement
+            .as_ref()
+            .map_or(BeatPosition::new(0.0), |p| p.start_beat)
     }
 
     /// None means play entire sample.
-    pub fn duration_beats(&self) -> Option<f64> {
+    pub fn duration_beats(&self) -> Option<BeatDuration> {
         self.placement.as_ref().and_then(|p| p.duration_beats)
     }
 
@@ -251,23 +260,23 @@ impl SamplerUnit {
         self.wave.duration()
     }
 
-    pub fn set_gain(&mut self, gain: f32) {
+    pub fn set_gain(&mut self, gain: Linear) {
         self.gain = gain;
     }
 
-    pub fn gain(&self) -> f32 {
+    pub fn gain(&self) -> Linear {
         self.gain
     }
 
-    pub fn set_speed(&mut self, speed: f32) {
+    pub fn set_speed(&mut self, speed: Ratio) {
         self.speed = speed;
     }
 
-    pub fn speed(&self) -> f32 {
+    pub fn speed(&self) -> Ratio {
         self.speed
     }
 
-    pub fn src_ratio(&self) -> f32 {
+    pub fn src_ratio(&self) -> Ratio {
         self.src_ratio
     }
 
@@ -279,27 +288,33 @@ impl SamplerUnit {
     ///
     /// Call from `graph_mut` — not safe to call from the audio thread directly.
     pub fn set_wave(&mut self, wave: Arc<Wave>) {
-        self.sample_rate = wave.sample_rate() as f32;
+        self.sample_rate = SampleRate::new(wave.sample_rate());
         self.wave = wave;
-        self.position.store(0, Ordering::Release);
+        self.position
+            .store(SamplePosition::new(0.0), Ordering::Release);
     }
 
     /// Computes SRC ratio from file vs session sample rate.
     pub fn set_session_sample_rate(&mut self, session_rate: f64) {
         let file_rate = self.wave.sample_rate();
-        self.src_ratio = if (file_rate - session_rate).abs() < 0.01 {
+        self.src_ratio = Ratio::new(if (file_rate - session_rate).abs() < 0.01 {
             1.0
         } else {
             (file_rate / session_rate) as f32
-        };
+        });
     }
 
-    pub fn set_loop_range(&mut self, loop_start: u64, loop_end: u64, crossfade_samples: usize) {
+    pub fn set_loop_range(
+        &mut self,
+        loop_start: SamplePosition,
+        loop_end: SamplePosition,
+        crossfade_samples: usize,
+    ) {
         let crossfade = if crossfade_samples > 0 {
             let mut xfade = LoopCrossfade::new(crossfade_samples);
 
             let preloop_samples: Vec<_> = (0..crossfade_samples)
-                .map(|i| self.get_sample_raw(loop_start as f64 + i as f64))
+                .map(|i| self.get_sample_raw(loop_start.get() + i as f64))
                 .collect();
             xfade.fill_preloop(&preloop_samples);
 
@@ -318,7 +333,7 @@ impl SamplerUnit {
         self.loop_mode = LoopMode::OneShot;
     }
 
-    pub fn loop_range(&self) -> Option<(u64, u64)> {
+    pub fn loop_range(&self) -> Option<(SamplePosition, SamplePosition)> {
         match &self.loop_mode {
             LoopMode::Looping { range, .. } => Some(*range),
             LoopMode::OneShot => None,
@@ -332,34 +347,16 @@ impl SamplerUnit {
             return (0.0, 0.0);
         }
 
-        let idx = position.floor() as usize;
-        let frac = position.fract() as f32;
-
-        let (l0, r0) = if self.wave.channels() >= 2 {
-            (self.wave.at(0, idx), self.wave.at(1, idx))
-        } else {
-            let mono = self.wave.at(0, idx);
-            (mono, mono)
-        };
-
-        let next_idx = (idx + 1).min(self.wave.len().saturating_sub(1));
-        let (l1, r1) = if self.wave.channels() >= 2 {
-            (self.wave.at(0, next_idx), self.wave.at(1, next_idx))
-        } else {
-            let mono = self.wave.at(0, next_idx);
-            (mono, mono)
-        };
-
-        let left = l0 + (l1 - l0) * frac;
-        let right = r0 + (r1 - r0) * frac;
-
-        (left, right)
+        // 4-tap cubic Hermite via the shared kernel (idx-1, idx, idx+1, idx+2,
+        // bound-clamped), unifying this path with `StreamingSamplerUnit`.
+        super::interp::read_stereo_frame(&self.wave, position)
     }
 
     #[inline]
     pub fn get_sample(&self, position: f64) -> (f32, f32) {
         let (l, r) = self.get_sample_raw(position);
-        (l * self.gain, r * self.gain)
+        let gain = self.gain.get();
+        (l * gain, r * gain)
     }
 
     #[inline]
@@ -370,12 +367,12 @@ impl SamplerUnit {
             return None;
         }
         let current_beat = transport.current_beat();
-        let beat_offset = current_beat - placement.start_beat;
+        let beat_offset = current_beat - placement.start_beat.get();
         if beat_offset < 0.0 {
             return None;
         }
         if let Some(dur) = placement.duration_beats {
-            if beat_offset >= dur {
+            if beat_offset >= dur.get() {
                 return None;
             }
         }
@@ -398,14 +395,14 @@ impl AudioUnit for SamplerUnit {
     }
 
     fn reset(&mut self) {
-        self.position.store(0, Ordering::Relaxed);
+        self.position
+            .store(SamplePosition::new(0.0), Ordering::Relaxed);
         self.playing.store(false, Ordering::Relaxed);
     }
 
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
-        self.sample_rate = sample_rate as f32;
-        self.set_session_sample_rate(sample_rate);
+    fn set_sample_rate(&mut self, sample_rate: SampleRate) {
+        self.sample_rate = sample_rate;
+        self.set_session_sample_rate(sample_rate.get());
     }
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
@@ -434,8 +431,7 @@ impl AudioUnit for SamplerUnit {
             return;
         }
 
-        let pos_bits = self.position.load(Ordering::Relaxed);
-        let pos = f64::from_bits(pos_bits);
+        let pos = self.position.load(Ordering::Relaxed).get();
 
         let (mut left, mut right) = self.get_sample(pos);
 
@@ -443,7 +439,7 @@ impl AudioUnit for SamplerUnit {
         let (looping, loop_start, loop_end) = match &mut self.loop_mode {
             LoopMode::OneShot => (false, 0.0, wave_len),
             LoopMode::Looping { range, crossfade } => {
-                let (loop_start, loop_end) = (range.0 as f64, range.1 as f64);
+                let (loop_start, loop_end) = (range.0.get(), range.1.get());
                 if let Some(xfade) = crossfade {
                     let crossfade_start = loop_end - xfade.len() as f64;
                     if pos >= crossfade_start && pos < loop_end && !xfade.is_active() {
@@ -464,13 +460,14 @@ impl AudioUnit for SamplerUnit {
             output[1] = right;
         }
 
-        let new_pos = pos + (self.speed * self.src_ratio) as f64;
+        let new_pos = pos + (self.speed.get() * self.src_ratio.get()) as f64;
 
         if new_pos >= loop_end {
             if looping {
                 let overshoot = new_pos - loop_end;
                 let wrapped = loop_start + overshoot;
-                self.position.store(wrapped.to_bits(), Ordering::Relaxed);
+                self.position
+                    .store(SamplePosition::new(wrapped), Ordering::Relaxed);
 
                 if let LoopMode::Looping {
                     crossfade: Some(xfade),
@@ -481,10 +478,12 @@ impl AudioUnit for SamplerUnit {
                 }
             } else {
                 self.playing.store(false, Ordering::Relaxed);
-                self.position.store(loop_end.to_bits(), Ordering::Relaxed);
+                self.position
+                    .store(SamplePosition::new(loop_end), Ordering::Relaxed);
             }
         } else {
-            self.position.store(new_pos.to_bits(), Ordering::Relaxed);
+            self.position
+                .store(SamplePosition::new(new_pos), Ordering::Relaxed);
         }
     }
 
@@ -498,7 +497,7 @@ impl AudioUnit for SamplerUnit {
                     }
                 }
                 Some(start_pos) => {
-                    let advance = (self.speed * self.src_ratio) as f64;
+                    let advance = (self.speed.get() * self.src_ratio.get()) as f64;
                     for i in 0..size {
                         let pos = start_pos + i as f64 * advance;
                         let (left, right) = self.get_sample(pos);
@@ -518,12 +517,12 @@ impl AudioUnit for SamplerUnit {
             return;
         }
 
-        let mut pos_bits = self.position.load(Ordering::Relaxed);
+        let mut pos = self.position.load(Ordering::Relaxed).get();
         let wave_len = self.wave.len() as f64;
 
         let (looping, loop_start, loop_end) = match &self.loop_mode {
             LoopMode::OneShot => (false, 0.0, wave_len),
-            LoopMode::Looping { range, .. } => (true, range.0 as f64, range.1 as f64),
+            LoopMode::Looping { range, .. } => (true, range.0.get(), range.1.get()),
         };
 
         let crossfade_start = match &self.loop_mode {
@@ -535,13 +534,10 @@ impl AudioUnit for SamplerUnit {
         };
 
         for i in 0..size {
-            let pos = f64::from_bits(pos_bits);
-
             if pos >= loop_end {
                 if looping {
                     let overshoot = pos - loop_end;
-                    let wrapped = loop_start + overshoot;
-                    pos_bits = wrapped.to_bits();
+                    pos = loop_start + overshoot;
 
                     if let LoopMode::Looping {
                         crossfade: Some(xfade),
@@ -560,7 +556,7 @@ impl AudioUnit for SamplerUnit {
                 }
             }
 
-            let current_pos = f64::from_bits(pos_bits);
+            let current_pos = pos;
             let (mut left, mut right) = self.get_sample(current_pos);
 
             if let LoopMode::Looping {
@@ -581,11 +577,11 @@ impl AudioUnit for SamplerUnit {
             output.set_f32(0, i, left);
             output.set_f32(1, i, right);
 
-            let new_pos = current_pos + (self.speed * self.src_ratio) as f64;
-            pos_bits = new_pos.to_bits();
+            pos = current_pos + (self.speed.get() * self.src_ratio.get()) as f64;
         }
 
-        self.position.store(pos_bits, Ordering::Relaxed);
+        self.position
+            .store(SamplePosition::new(pos), Ordering::Relaxed);
     }
 
     audio_unit_boilerplate!(id = crate::node_id::SAMPLER_NODE_ID, outputs = 2);
@@ -594,7 +590,7 @@ impl AudioUnit for SamplerUnit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::{BufferVec, SampleRate};
+    use tutti_core::BufferVec;
 
     fn ramp_wave(len: usize, sample_rate: f64) -> Arc<Wave> {
         let samples: Vec<f32> = (0..len).map(|i| (i + 1) as f32).collect();
@@ -669,7 +665,7 @@ mod tests {
 
         assert!(sampler.is_playing());
         assert!(!sampler.is_looping());
-        assert_eq!(sampler.position(), 0);
+        assert_eq!(sampler.position(), SamplePosition::new(0.0));
     }
 
     #[test]
@@ -679,7 +675,7 @@ mod tests {
 
         sampler.trigger();
         assert!(sampler.is_playing());
-        assert_eq!(sampler.position(), 0);
+        assert_eq!(sampler.position(), SamplePosition::new(0.0));
 
         sampler.stop();
         assert!(!sampler.is_playing());
@@ -707,9 +703,12 @@ mod tests {
 
         assert!(sampler.loop_range().is_none());
 
-        sampler.set_loop_range(100, 500, 64);
+        sampler.set_loop_range(SamplePosition::new(100.0), SamplePosition::new(500.0), 64);
 
-        assert_eq!(sampler.loop_range(), Some((100, 500)));
+        assert_eq!(
+            sampler.loop_range(),
+            Some((SamplePosition::new(100.0), SamplePosition::new(500.0)))
+        );
         assert!(sampler.is_looping());
 
         sampler.clear_loop_range();
@@ -722,7 +721,7 @@ mod tests {
         let wave = Wave::from_samples(44100.0, &samples);
         let mut sampler = SamplerUnit::new(Arc::new(wave));
 
-        sampler.set_loop_range(10, 90, 10);
+        sampler.set_loop_range(SamplePosition::new(10.0), SamplePosition::new(90.0), 10);
         sampler.trigger();
 
         for _ in 0..75 {
@@ -741,12 +740,13 @@ mod tests {
     #[test]
     fn with_settings_constructor() {
         let wave = ramp_wave(100, 44100.0);
-        let sampler = SamplerUnit::with_settings(Arc::clone(&wave), 0.5, 2.0, true);
+        let sampler =
+            SamplerUnit::with_settings(Arc::clone(&wave), Linear::new(0.5), Ratio::new(2.0), true);
 
         assert!(sampler.is_playing());
         assert!(sampler.is_looping());
-        assert_eq!(sampler.gain(), 0.5);
-        assert_eq!(sampler.speed(), 2.0);
+        assert_eq!(sampler.gain(), Linear::new(0.5));
+        assert_eq!(sampler.speed(), Ratio::new(2.0));
     }
 
     #[test]
@@ -755,9 +755,9 @@ mod tests {
         let sampler = SamplerUnit::new(wave);
 
         sampler.stop();
-        sampler.trigger_at(42);
+        sampler.trigger_at(SamplePosition::new(42.0));
         assert!(sampler.is_playing());
-        assert_eq!(sampler.position(), 42);
+        assert_eq!(sampler.position(), SamplePosition::new(42.0));
     }
 
     #[test]
@@ -770,11 +770,11 @@ mod tests {
         for _ in 0..10 {
             sampler.tick(&[], &mut output);
         }
-        assert!(sampler.position() > 0);
+        assert!(sampler.position().get() > 0.0);
         assert!(sampler.is_playing());
 
         sampler.reset();
-        assert_eq!(sampler.position(), 0);
+        assert_eq!(sampler.position(), SamplePosition::new(0.0));
         assert!(!sampler.is_playing());
     }
 
@@ -784,7 +784,7 @@ mod tests {
 
         let mut sampler_full = SamplerUnit::new(Arc::clone(&wave));
         let mut sampler_half = SamplerUnit::new(wave);
-        sampler_half.set_gain(0.5);
+        sampler_half.set_gain(Linear::new(0.5));
 
         let mut out_full = [0.0f32; 2];
         let mut out_half = [0.0f32; 2];
@@ -827,7 +827,7 @@ mod tests {
 
         let mut normal = SamplerUnit::new(Arc::clone(&wave));
         let mut fast = SamplerUnit::new(wave);
-        fast.set_speed(2.0);
+        fast.set_speed(Ratio::new(2.0));
 
         let mut out = [0.0f32; 2];
         for _ in 0..10 {
@@ -835,8 +835,8 @@ mod tests {
             fast.tick(&[], &mut out);
         }
 
-        let normal_pos = f64::from_bits(normal.position());
-        let fast_pos = f64::from_bits(fast.position());
+        let normal_pos = normal.position().get();
+        let fast_pos = fast.position().get();
         assert!((fast_pos - normal_pos * 2.0).abs() < 1e-6);
     }
 
@@ -849,7 +849,7 @@ mod tests {
         let mut out = [0.0f32; 2];
         sampler.tick(&[], &mut out);
 
-        let pos = f64::from_bits(sampler.position());
+        let pos = sampler.position().get();
         assert!((pos - 2.0).abs() < 1e-6, "48k/24k = 2x advance per tick");
     }
 
@@ -862,7 +862,7 @@ mod tests {
         let mut out = [0.0f32; 2];
         sampler.tick(&[], &mut out);
 
-        let pos = f64::from_bits(sampler.position());
+        let pos = sampler.position().get();
         assert!((pos - 1.0).abs() < 1e-6);
     }
 
@@ -891,7 +891,7 @@ mod tests {
             sampler.tick(&[], &mut out);
         }
         assert!(sampler.is_playing());
-        let pos = f64::from_bits(sampler.position());
+        let pos = sampler.position().get();
         assert!(
             (pos - 0.0).abs() < 1e-6,
             "10 ticks at speed=1 on len=10 should wrap to 0.0, got {pos}"
@@ -905,7 +905,7 @@ mod tests {
             "after wrap to 0.0, should read sample[0] = 1.0, got {}",
             out[0]
         );
-        let pos_after = f64::from_bits(sampler.position());
+        let pos_after = sampler.position().get();
         assert!(
             (pos_after - 1.0).abs() < 1e-6,
             "position should advance to 1.0, got {pos_after}"
@@ -917,7 +917,7 @@ mod tests {
         let wave = ramp_wave(10, 44100.0);
         let mut sampler = SamplerUnit::new(wave);
         sampler.set_looping(true);
-        sampler.set_speed(2.0);
+        sampler.set_speed(Ratio::new(2.0));
 
         let mut out = [0.0f32; 2];
         // 5 ticks at speed=2 → position advances 0,2,4,6,8 → after tick 5
@@ -926,7 +926,7 @@ mod tests {
             sampler.tick(&[], &mut out);
         }
         assert!(sampler.is_playing());
-        let pos = f64::from_bits(sampler.position());
+        let pos = sampler.position().get();
         assert!(
             (pos - 0.0).abs() < 1e-6,
             "5 ticks at speed=2 on len=10 should wrap to 0.0, got {pos}"
@@ -1005,7 +1005,7 @@ mod tests {
         // ramp_wave has sample[i] = i+1, so sample[22050] = 22051.0.
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(1.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(wave, transport, 0.0, None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1023,7 +1023,7 @@ mod tests {
     fn transport_stopped_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::stopped();
-        let mut sampler = SamplerUnit::with_transport(wave, transport, 0.0, None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1036,7 +1036,7 @@ mod tests {
     fn transport_before_start_beat_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(1.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(wave, transport, 4.0, None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(4.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1048,7 +1048,8 @@ mod tests {
     fn transport_past_duration_beats_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(10.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(wave, transport, 0.0, Some(4.0));
+        let mut sampler =
+            SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), Some(BeatDuration::new(4.0)));
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1060,7 +1061,7 @@ mod tests {
     fn transport_process_block() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(0.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(wave, transport, 0.0, None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
@@ -1075,7 +1076,7 @@ mod tests {
     fn transport_process_block_silence_when_stopped() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::stopped();
-        let mut sampler = SamplerUnit::with_transport(wave, transport, 0.0, None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
@@ -1093,15 +1094,15 @@ mod tests {
     #[test]
     fn clone_preserves_state() {
         let wave = ramp_wave(100, 44100.0);
-        let sampler = SamplerUnit::with_settings(wave, 0.75, 1.5, true);
-        sampler.trigger_at(42);
+        let sampler = SamplerUnit::with_settings(wave, Linear::new(0.75), Ratio::new(1.5), true);
+        sampler.trigger_at(SamplePosition::new(42.0));
 
         let cloned = sampler.clone();
-        assert_eq!(cloned.gain(), 0.75);
-        assert_eq!(cloned.speed(), 1.5);
+        assert_eq!(cloned.gain(), Linear::new(0.75));
+        assert_eq!(cloned.speed(), Ratio::new(1.5));
         assert!(cloned.is_looping());
         assert!(cloned.is_playing());
-        assert_eq!(cloned.position(), 42);
+        assert_eq!(cloned.position(), SamplePosition::new(42.0));
     }
 
     // --- set_wave ---
@@ -1112,10 +1113,10 @@ mod tests {
         let wave2 = ramp_wave(50, 48000.0);
         let mut sampler = SamplerUnit::new(wave1);
 
-        sampler.trigger_at(42);
+        sampler.trigger_at(SamplePosition::new(42.0));
         sampler.set_wave(wave2);
 
-        assert_eq!(sampler.position(), 0);
+        assert_eq!(sampler.position(), SamplePosition::new(0.0));
         assert_eq!(sampler.duration_samples(), 50);
     }
 
@@ -1130,7 +1131,7 @@ mod tests {
 
         let mut out = [0.0f32; 2];
         sampler.tick(&[], &mut out);
-        let pos = f64::from_bits(sampler.position());
+        let pos = sampler.position().get();
         assert!((pos - 2.0).abs() < 1e-6, "48k/24k = 2x advance");
     }
 

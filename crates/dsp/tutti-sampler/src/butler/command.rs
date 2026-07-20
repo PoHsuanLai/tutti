@@ -58,6 +58,7 @@ pub(crate) enum ButlerCommand {
         file_path: PathBuf,
         sample_rate: f64,
         channels: usize,
+        format: crate::capture::CaptureFormat,
     },
     /// Remove a capture buffer (finalize and close file).
     RemoveCapture(CaptureId),

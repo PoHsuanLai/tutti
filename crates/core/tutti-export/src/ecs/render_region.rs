@@ -433,7 +433,8 @@ impl Plugin for TuttiRegionRenderPlugin {
 mod tests {
     use super::*;
     use tutti_core::{Bpm, SampleRate, Wave};
-    use tutti_sampler::{ClipCommand, SlotId, TrackClipReaderUnit};
+    use tutti_core::BeatPosition;
+    use tutti_sampler::{ClipCommand, Direction, SlotId, TrackClipReaderUnit};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     struct MockTransport {
@@ -509,12 +510,16 @@ mod tests {
             44100.0,
             &(0..64).map(|i| (i as f32 + 1.0) / 64.0).collect::<Vec<_>>(),
         ));
-        let sampler =
-            SamplerUnit::with_transport(wave, live_transport.clone(), 0.0, None);
+        let sampler = SamplerUnit::with_transport(
+            wave,
+            live_transport.clone(),
+            BeatPosition::new(0.0),
+            None,
+        );
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
-            reverse: false,
+            direction: Direction::Forward,
         });
 
         net.set_sample_rate(SampleRate(44100.0));

@@ -33,6 +33,24 @@ impl RegionMap {
         self.index.insert(region_id, idx);
     }
 
+    /// Drop the writer for `region_id`, freeing its ring buffer + `RegionMeta`.
+    /// `swap_remove`s the writer and reindexes the entry that moved into its
+    /// slot so the `Vec`/index side-index stays consistent. No-op if the id is
+    /// unknown. Returns `true` if a writer was removed.
+    pub(super) fn remove(&mut self, region_id: RegionId) -> bool {
+        let Some(idx) = self.index.remove(&region_id) else {
+            return false;
+        };
+        self.writers.swap_remove(idx);
+        // `swap_remove` moved the last writer into `idx` (unless we removed the
+        // last one); fix that writer's index entry to point at its new slot.
+        if idx < self.writers.len() {
+            let moved_region = self.writers[idx].region_id();
+            self.index.insert(moved_region, idx);
+        }
+        true
+    }
+
     pub(super) fn get(&self, region_id: RegionId) -> Option<&RegionWriter> {
         self.index
             .get(&region_id)
@@ -104,5 +122,39 @@ mod tests {
             reg.register(id, make_writer(id));
         }
         assert_eq!(reg.writers_mut().len(), 3);
+    }
+
+    #[test]
+    fn remove_frees_writer_and_reindexes() {
+        let mut reg = RegionMap::new();
+        for i in 1..=3 {
+            let id = RegionId(i);
+            reg.register(id, make_writer(id));
+        }
+
+        // Remove the middle one; the swapped-in survivor must stay reachable.
+        assert!(reg.remove(RegionId(2)));
+        assert!(reg.get(RegionId(2)).is_none());
+        assert!(reg.get(RegionId(1)).is_some());
+        assert!(reg.get(RegionId(3)).is_some());
+        assert_eq!(reg.writers().len(), 2);
+
+        // Removing an unknown id is a no-op.
+        assert!(!reg.remove(RegionId(999)));
+        assert_eq!(reg.writers().len(), 2);
+    }
+
+    /// Start + stop N streams and confirm the map is empty afterward — the
+    /// regression guard for the StopStreaming ring-buffer leak.
+    #[test]
+    fn start_then_stop_n_streams_leaves_map_empty() {
+        let mut reg = RegionMap::new();
+        for i in 1..=64u64 {
+            let id = RegionId(i);
+            reg.register(id, make_writer(id));
+            assert!(reg.remove(id));
+        }
+        assert_eq!(reg.writers().len(), 0);
+        assert!(reg.index().is_empty());
     }
 }

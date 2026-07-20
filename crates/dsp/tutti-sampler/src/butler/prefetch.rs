@@ -56,6 +56,7 @@ impl<T> SendCons<T> {
 }
 
 pub(crate) struct RegionMeta {
+    region_id: RegionId,
     file_path: PathBuf,
     file_position: AtomicU64,
 }
@@ -121,6 +122,10 @@ impl RegionWriter {
     pub fn file_path(&self) -> &PathBuf {
         &self.meta.file_path
     }
+
+    pub(crate) fn region_id(&self) -> RegionId {
+        self.meta.region_id
+    }
 }
 
 pub struct RegionReader {
@@ -178,6 +183,7 @@ impl RegionBuffer {
         let (prod, cons) = rb.split();
 
         let meta = Arc::new(RegionMeta {
+            region_id,
             file_path,
             file_position: AtomicU64::new(0),
         });
@@ -201,6 +207,7 @@ pub(crate) struct CaptureMeta {
     file_path: PathBuf,
     frames_written: AtomicU64,
     frames_captured: AtomicU64,
+    frames_dropped: AtomicU64,
 }
 
 impl CaptureMeta {
@@ -210,6 +217,14 @@ impl CaptureMeta {
 
     fn add_frames_captured(&self, count: u64) {
         self.frames_captured.fetch_add(count, Ordering::Relaxed);
+    }
+
+    fn add_frames_dropped(&self, count: u64) {
+        self.frames_dropped.fetch_add(count, Ordering::Relaxed);
+    }
+
+    fn frames_dropped(&self) -> u64 {
+        self.frames_dropped.load(Ordering::Relaxed)
     }
 }
 
@@ -229,8 +244,15 @@ impl CaptureWriter {
             self.meta.add_frames_captured(1);
             true
         } else {
+            self.meta.add_frames_dropped(1);
             false
         }
+    }
+
+    /// Frames dropped because the capture ring was full when audio tried to
+    /// push. Nonzero means overruns occurred and the recording lost samples.
+    pub fn frames_dropped(&self) -> u64 {
+        self.meta.frames_dropped()
     }
 
     pub fn file_path(&self) -> &PathBuf {
@@ -270,6 +292,11 @@ impl CaptureReader {
     pub(crate) fn add_frames_written(&self, count: u64) {
         self.meta.add_frames_written(count);
     }
+
+    /// Frames dropped by the producer due to a full ring (overruns).
+    pub(crate) fn frames_dropped(&self) -> u64 {
+        self.meta.frames_dropped()
+    }
 }
 
 pub(crate) struct CaptureBuffer;
@@ -290,6 +317,7 @@ impl CaptureBuffer {
             file_path,
             frames_written: AtomicU64::new(0),
             frames_captured: AtomicU64::new(0),
+            frames_dropped: AtomicU64::new(0),
         });
 
         let producer = CaptureWriter {
@@ -462,5 +490,32 @@ mod tests {
             "After refill, should get high-freq data with larger sample diff, got {}",
             sample_diff.abs()
         );
+    }
+
+    #[test]
+    fn test_capture_overrun_records_drops() {
+        // Small ring (clamped to 4096) with no consumer draining it.
+        let (mut writer, reader) =
+            CaptureBuffer::new(PathBuf::from("test.wav"), 44100.0, 0.0);
+
+        let capacity = writer.write_space();
+        assert!(capacity > 0);
+        assert_eq!(writer.frames_dropped(), 0);
+
+        // Push exactly enough to fill the ring; all should succeed.
+        for _ in 0..capacity {
+            assert!(writer.write((0.0, 0.0)));
+        }
+        assert_eq!(writer.frames_dropped(), 0);
+
+        // Overrun: nothing is draining, so these must be dropped.
+        let overrun = 100;
+        for _ in 0..overrun {
+            assert!(!writer.write((0.0, 0.0)));
+        }
+
+        assert_eq!(writer.frames_dropped(), overrun as u64);
+        // The reader observes the same shared counter.
+        assert_eq!(reader.frames_dropped(), overrun as u64);
     }
 }

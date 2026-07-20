@@ -97,7 +97,57 @@ pub(super) async fn butler_loop_async(
 
         flush_all(&mut local.captures, &shared.metrics, flush_threshold, false);
 
+        // Adaptive pacing: if every active ring buffer is above its refill
+        // threshold and no capture has enough pending data to warrant a flush,
+        // nothing is urgent — race the command channel against a short timer
+        // (like the idle branch) instead of spinning this max-priority thread.
+        // A genuine refill need keeps a buffer below threshold, which drops us
+        // straight back to yield-and-loop, so this adds no latency to refills.
+        if buffers_healthy(&shared.plans, local.buffer_margin, &local.captures, flush_threshold) {
+            let timeout = async {
+                Timer::after(Duration::from_millis(HEALTHY_SLEEP_MS)).await;
+                Err(smol::channel::RecvError)
+            };
+            if let Ok(cmd) = futures_lite::future::or(rx.recv(), timeout).await {
+                handle_command(cmd, &shared, &config, sample_rate, &mut local);
+            }
+            continue;
+        }
+
         // Yield so any spawned async tasks can progress
         futures_lite::future::yield_now().await;
     }
+}
+
+/// Short sleep (ms) taken when all active buffers are healthy — long enough to
+/// stop the thread from busy-spinning, short enough to stay well inside the
+/// smallest ring buffer's drain time so refills never fall behind.
+const HEALTHY_SLEEP_MS: u64 = 3;
+
+/// True when no stream needs a refill and no capture needs a flush — i.e. the
+/// loop can safely park on a short timer instead of spinning.
+fn buffers_healthy(
+    plans: &dashmap::DashMap<usize, super::plan::ChannelPlan>,
+    buffer_margin: f64,
+    captures: &std::collections::HashMap<super::command::CaptureId, super::io::capture::ActiveCapture>,
+    flush_threshold: usize,
+) -> bool {
+    let fill_threshold = (0.75 / buffer_margin) as f32;
+
+    // Every streaming channel must be at or above its refill threshold. A
+    // channel with no active link imposes no refill work.
+    let streams_healthy = plans.iter().all(|entry| {
+        let plan = entry.value();
+        if plan.link.is_none() {
+            return true;
+        }
+        plan.rt_state.buffer_fill() >= fill_threshold
+    });
+
+    // No capture may have accumulated a flush-worth of samples.
+    let captures_healthy = captures
+        .values()
+        .all(|cap| cap.consumer.available() < flush_threshold);
+
+    streams_healthy && captures_healthy
 }

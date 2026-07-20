@@ -24,6 +24,8 @@ use tutti_core::WaveAsset;
 
 // Bevy-free DSP leaves — always compiled.
 mod loop_crossfade;
+// Shared zero-alloc interpolation kernel (one cubic Hermite for both units).
+pub mod interp;
 pub mod sampler_unit;
 // Disk streaming — the unit is Bevy-free; it's fed by the (Bevy-free) butler
 // engine, which a non-Bevy host drives via `Sampler` / `Auditioner`.

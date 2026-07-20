@@ -281,10 +281,7 @@ impl Session {
     }
 
     fn record_punch_event(&self, event: PunchEvent) {
-        let current = self.punch_events.load_full();
-        let mut events = (*current).clone();
-        events.push(event);
-        self.punch_events.store(Arc::new(events));
+        push_cow(&self.punch_events, event);
     }
 
     pub fn get_punch_events(&self) -> Vec<PunchEvent> {
@@ -299,10 +296,7 @@ impl Session {
             xrun_type,
         };
 
-        let current = self.xrun_events.load_full();
-        let mut events = (*current).clone();
-        events.push(event);
-        self.xrun_events.store(Arc::new(events));
+        push_cow(&self.xrun_events, event);
     }
 
     pub fn get_xrun_events(&self) -> Vec<XRun> {
@@ -317,6 +311,13 @@ impl Session {
     pub fn has_xruns(&self) -> bool {
         !self.xrun_events.load().is_empty()
     }
+}
+
+fn push_cow<T: Clone>(slot: &ArcSwap<Vec<T>>, item: T) {
+    let current = slot.load_full();
+    let mut items = (*current).clone();
+    items.push(item);
+    slot.store(Arc::new(items));
 }
 
 impl std::fmt::Debug for Session {

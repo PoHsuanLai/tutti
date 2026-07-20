@@ -54,7 +54,7 @@ pub use reconcile::{bump_param_epoch_sampler, reconcile_sampler_params, reconcil
 #[cfg(feature = "bevy")]
 pub use time_stretch::{time_stretch_sync_system, TimeStretch, TimeStretchControl};
 // Bevy-free reader value types + DSP unit.
-pub use track_clip_reader::{ClipCommand, ClipSpec, SlotId, TrackClipReaderHandle,
+pub use track_clip_reader::{ClipCommand, ClipSpec, Direction, SlotId, TrackClipReaderHandle,
     TrackClipReaderUnit};
 #[cfg(feature = "bevy")]
 pub use track_clip_reader::{TrackClipReaderNode, TrackClipReaderRef};

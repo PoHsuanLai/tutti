@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use tutti_core::AtomicF32;
 
 use super::crossfader::StreamingCrossfader;
+use crate::Direction;
 
 /// Playback parameters read by the audio thread every sample.
 #[repr(align(64))]
@@ -92,15 +93,31 @@ impl RtState {
         self.speed()
     }
 
+    /// Current playback direction. Backed by the `AtomicU8` (0 = forward,
+    /// 1 = reverse); the [`Direction`] enum is the API surface.
     #[inline]
-    pub fn is_reverse(&self) -> bool {
-        self.playback.direction.load(Ordering::Acquire) == 1
+    pub fn direction(&self) -> Direction {
+        if self.playback.direction.load(Ordering::Acquire) == 1 {
+            Direction::Reverse
+        } else {
+            Direction::Forward
+        }
     }
 
-    pub fn set_reverse(&self, reverse: bool) {
+    pub fn set_direction(&self, direction: Direction) {
         self.playback
             .direction
-            .store(u8::from(reverse), Ordering::Release);
+            .store(u8::from(direction.is_reverse()), Ordering::Release);
+    }
+
+    #[inline]
+    pub fn is_reverse(&self) -> bool {
+        self.direction().is_reverse()
+    }
+
+    #[cfg(test)]
+    pub fn set_reverse(&self, reverse: bool) {
+        self.set_direction(Direction::from_reverse(reverse));
     }
 
     #[inline]

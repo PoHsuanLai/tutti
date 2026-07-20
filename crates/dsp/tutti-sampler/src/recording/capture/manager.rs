@@ -130,13 +130,12 @@ impl Recorder {
     }
 
     pub fn update_prerolls(&self, delta_beats: f64) -> usize {
-        let mut completed_count = 0;
-        for session in self.sessions.iter() {
-            if session.get_state() == State::Armed && session.update_preroll(delta_beats) {
-                completed_count += 1;
-            }
-        }
-        completed_count
+        self.sessions
+            .iter()
+            .filter(|session| {
+                session.get_state() == State::Armed && session.update_preroll(delta_beats)
+            })
+            .count()
     }
 
     pub fn preroll_sessions(&self) -> Vec<Arc<Session>> {
@@ -158,16 +157,14 @@ impl Recorder {
     }
 
     pub fn process_punch_all(&self, current_beat: f64, sample_position: Option<u64>) -> usize {
-        let mut transitions = 0;
-        for session in self.sessions.iter() {
-            if session
-                .process_punch(current_beat, sample_position)
-                .is_some()
-            {
-                transitions += 1;
-            }
-        }
-        transitions
+        self.sessions
+            .iter()
+            .filter(|session| {
+                session
+                    .process_punch(current_beat, sample_position)
+                    .is_some()
+            })
+            .count()
     }
 
     pub fn set_record_safe(&self, channel_index: usize, safe: bool) -> crate::error::Result<()> {

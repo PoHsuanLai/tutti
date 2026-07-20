@@ -308,17 +308,18 @@ fn fill_buffer_reverse(
         return;
     }
 
-    let mut temp = Vec::with_capacity(actual_chunk);
-    for i in 0..actual_chunk {
-        let sample_idx = read_start + i;
-        let left = wave.at(0, sample_idx);
-        let right = if channels > 1 {
-            wave.at(1, sample_idx)
-        } else {
-            left
-        };
-        temp.push((left, right));
-    }
+    let temp: Vec<(f32, f32)> = (0..actual_chunk)
+        .map(|i| {
+            let sample_idx = read_start + i;
+            let left = wave.at(0, sample_idx);
+            let right = if channels > 1 {
+                wave.at(1, sample_idx)
+            } else {
+                left
+            };
+            (left, right)
+        })
+        .collect();
 
     for sample in temp.into_iter().rev() {
         buffer.push(sample);
@@ -415,7 +416,7 @@ fn refill_reverse(
     writer.set_file_position(file_position.saturating_sub(written) as u64);
 }
 
-pub(super) fn load_wave(
+pub(in crate::butler) fn load_wave(
     cache: &LruCache,
     metrics: &Metrics,
     file_path: &PathBuf,

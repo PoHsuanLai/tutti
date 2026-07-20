@@ -36,8 +36,8 @@ pub use error::{Error, Result};
 // addressing — grouped under one `param` module by what they do.
 pub mod param;
 pub use param::{
-    Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio, SampleRate, Seconds, Semitones, Unit,
-    UnitParam,
+    AtomicSamplePosition, BeatDuration, BeatPosition, Bpm, Cents, Db, Degrees, Hz, Linear, Param,
+    Ratio, SamplePosition, SampleRate, Seconds, Semitones, Unit, UnitParam,
 };
 
 /// Back-compat alias for the unit newtypes' old module path

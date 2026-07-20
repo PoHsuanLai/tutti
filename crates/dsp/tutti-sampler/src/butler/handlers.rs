@@ -11,13 +11,14 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use tutti_core::{PdcState, Wave};
+use tutti_core::PdcState;
 
 use super::cache::LruCache;
 use super::command::{ButlerCommand, CaptureId, RegionId};
 use super::config::BufferConfig;
 use super::io::capture::{flush_all, flush_capture, open_wav, ActiveCapture};
 use super::io::loops::buffer_size_for_file;
+use super::io::refill::load_wave;
 use super::metrics::Metrics;
 use super::plan::ChannelPlan;
 use super::prefetch::RegionBuffer;
@@ -95,7 +96,8 @@ pub(super) fn handle_command(
         } => {
             if let Some(plan) = shared.plans.get(&channel_index) {
                 plan.rt_state.set_speed(speed);
-                plan.rt_state.set_reverse(direction.is_reverse());
+                plan.rt_state
+                    .set_direction(crate::Direction::from_reverse(direction.is_reverse()));
             }
         }
 
@@ -149,21 +151,8 @@ fn handle_stream_file(
     sample_rate: f64,
     local: &mut Local,
 ) {
-    let wave = if let Some(cached) = shared.cache.get(&file_path) {
-        shared.metrics.record_cache_hit();
-        cached
-    } else {
-        shared.metrics.record_cache_miss();
-        match Wave::load(&file_path) {
-            Ok(w) => {
-                let arc_wave = Arc::new(w);
-                let bytes = arc_wave.len() as u64 * arc_wave.channels() as u64 * 4;
-                shared.metrics.record_read(bytes);
-                shared.cache.insert(file_path.clone(), arc_wave.clone());
-                arc_wave
-            }
-            Err(_) => return,
-        }
+    let Some(wave) = load_wave(&shared.cache, &shared.metrics, &file_path) else {
+        return;
     };
 
     let file_length = wave.len() as u64;

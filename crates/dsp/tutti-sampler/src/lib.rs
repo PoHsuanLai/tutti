@@ -66,6 +66,9 @@
 pub mod error;
 pub use error::{Error, Result};
 
+#[macro_use]
+mod macros;
+
 mod node_id;
 
 // Each domain is a self-contained module owning its audio engine + (under the
@@ -100,7 +103,7 @@ pub use preview::{
 pub use preview::Auditioner;
 // Bevy-free DSP leaves + value types from `playback` — usable for direct
 // FunDSP-graph integration without the ECS layer.
-pub use playback::{ClipCommand, ClipSpec, SamplerUnit, SlotId, StreamingSamplerUnit,
+pub use playback::{ClipCommand, ClipSpec, Direction, SamplerUnit, SlotId, StreamingSamplerUnit,
     TrackClipReaderHandle, TrackClipReaderUnit};
 // Bevy ECS surface of `playback`.
 #[cfg(feature = "bevy")]

@@ -48,10 +48,7 @@ impl LruCache {
             return;
         }
 
-        while self.cache.len() >= self.max_entries
-            || (self.current_bytes.load(Ordering::Relaxed) + size > self.max_bytes
-                && !self.cache.is_empty())
-        {
+        while self.over_budget(size) {
             if !self.evict_lru() {
                 break;
             }
@@ -66,6 +63,15 @@ impl LruCache {
             },
         );
         self.current_bytes.fetch_add(size, Ordering::Relaxed);
+    }
+
+    /// Whether inserting `incoming` bytes would exceed the entry-count or
+    /// byte budget (byte check ignores an empty cache so a single oversized
+    /// wave can still be admitted).
+    fn over_budget(&self, incoming: u64) -> bool {
+        self.cache.len() >= self.max_entries
+            || (self.current_bytes.load(Ordering::Relaxed) + incoming > self.max_bytes
+                && !self.cache.is_empty())
     }
 
     fn evict_lru(&self) -> bool {

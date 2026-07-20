@@ -362,17 +362,7 @@ impl AudioUnit for Unit {
         }
     }
 
-    fn get_id(&self) -> u64 {
-        crate::node_id::TIME_STRETCH_ID
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
+    audio_unit_boilerplate!(id = crate::node_id::TIME_STRETCH_ID);
 
     fn route(&mut self, input: &SignalFrame, frequency: f64) -> SignalFrame {
         let source = self.source.route(input, frequency);

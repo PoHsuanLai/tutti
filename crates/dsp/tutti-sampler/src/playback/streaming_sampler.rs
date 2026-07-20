@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef};
 
 use crate::butler::{RegionReader, RtState};
 
@@ -317,25 +317,7 @@ impl AudioUnit for StreamingSamplerUnit {
         self.process_normal_samples(size, 0, output);
     }
 
-    fn get_id(&self) -> u64 {
-        crate::node_id::STREAMING_SAMPLER_ID
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        SignalFrame::new(2)
-    }
-
-    fn footprint(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
+    audio_unit_boilerplate!(id = crate::node_id::STREAMING_SAMPLER_ID, outputs = 2);
 }
 
 

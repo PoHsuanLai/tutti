@@ -7,6 +7,7 @@ use tutti_core::{AtomicU64, Ordering};
 use super::command::RegionId;
 use super::prefetch::RegionReader;
 use super::rt_state::RtState;
+use crate::Direction;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LoopStatus {
@@ -86,7 +87,7 @@ impl ChannelPlan {
         self.link = None;
         self.pdc_preroll = 0;
         self.rt_state.set_speed(1.0);
-        self.rt_state.set_reverse(false);
+        self.rt_state.set_direction(Direction::Forward);
         self.rt_state.set_seeking(false);
         self.rt_state.set_src_ratio(1.0);
         self.rt_state.clear_loop_crossfade();

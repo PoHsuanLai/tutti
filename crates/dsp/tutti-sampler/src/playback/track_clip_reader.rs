@@ -30,6 +30,35 @@ const TRACK_CLIP_READER_ID: u64 = 0x_0000_0000_0000_DA03;
 pub struct SlotId(pub u128);
 
 // ---------------------------------------------------------------------------
+// Direction — playback direction for a clip. Replaces loose `reverse: bool`
+// so the intent reads at every call site.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Direction {
+    #[default]
+    Forward,
+    Reverse,
+}
+
+impl Direction {
+    #[inline]
+    pub fn is_reverse(self) -> bool {
+        matches!(self, Self::Reverse)
+    }
+
+    /// `true` → `Reverse`, `false` → `Forward`.
+    #[inline]
+    pub fn from_reverse(reverse: bool) -> Self {
+        if reverse {
+            Self::Reverse
+        } else {
+            Self::Forward
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ClipSlot — one clip's playback state. Always an in-memory `SamplerUnit`
 // (the whole clip resides in RAM as an `Arc<Wave>`, decoded once by the wave
 // cache). Disk streaming was removed: it didn't actually stream (it decoded
@@ -40,7 +69,13 @@ pub struct SlotId(pub u128);
 struct ClipSlot {
     id: SlotId,
     sampler: SamplerUnit,
-    reverse: bool,
+    direction: Direction,
+    /// `stretch` is derived from `stretch_factor` / `pitch_cents`: it is `Some`
+    /// exactly when they call for a non-identity transform. The three are kept
+    /// consistent by construction — every path that changes the factors goes
+    /// through [`ClipSlot::new`] or [`ClipSlot::set_stretch`], both of which
+    /// rebuild `stretch`. The factor fields are private so no caller can set a
+    /// non-identity factor without producing the matching `stretch` unit.
     stretch: Option<stretch::Unit>,
     stretch_factor: f32,
     pitch_cents: f32,
@@ -48,8 +83,42 @@ struct ClipSlot {
 }
 
 impl ClipSlot {
+    /// Build a slot with the stretch unit already materialised from
+    /// `stretch_factor` / `pitch_cents` — the single constructor both the live
+    /// `Add` path and the synchronous `insert_clip` path go through, so neither
+    /// can produce a non-identity factor with `stretch = None`.
+    fn new(
+        id: SlotId,
+        sampler: SamplerUnit,
+        direction: Direction,
+        stretch_factor: f32,
+        pitch_cents: f32,
+        sample_rate: f64,
+    ) -> Self {
+        let mut slot = Self {
+            id,
+            sampler,
+            direction,
+            stretch: None,
+            stretch_factor,
+            pitch_cents,
+            sample_rate,
+        };
+        slot.rebuild_stretch();
+        slot
+    }
+
     fn needs_stretch(&self) -> bool {
         (self.stretch_factor - 1.0).abs() > 0.001 || self.pitch_cents.abs() > 0.5
+    }
+
+    /// Update the stretch factors and rebuild the derived `stretch` unit in one
+    /// step — the only entry point for mutating the factors, so they can never
+    /// drift out of sync with `stretch`.
+    fn set_stretch(&mut self, stretch_factor: f32, pitch_cents: f32) {
+        self.stretch_factor = stretch_factor;
+        self.pitch_cents = pitch_cents;
+        self.rebuild_stretch();
     }
 
     fn rebuild_stretch(&mut self) {
@@ -72,7 +141,7 @@ pub enum ClipCommand {
     Add {
         id: SlotId,
         sampler: SamplerUnit,
-        reverse: bool,
+        direction: Direction,
     },
     Remove(SlotId),
     ReplaceWave {
@@ -102,7 +171,7 @@ pub enum ClipCommand {
     ClearLoop(SlotId),
     UpdateReverse {
         id: SlotId,
-        reverse: bool,
+        direction: Direction,
     },
     UpdateStretch {
         id: SlotId,
@@ -125,7 +194,7 @@ pub struct ClipSpec {
     pub id: SlotId,
     /// Already transport-bound, with gain / loop range applied.
     pub sampler: SamplerUnit,
-    pub reverse: bool,
+    pub direction: Direction,
     pub stretch_factor: f32,
     pub pitch_cents: f32,
 }
@@ -176,16 +245,22 @@ pub struct TrackClipReaderUnit {
 }
 
 impl TrackClipReaderUnit {
-    pub fn new() -> (Self, TrackClipReaderHandle) {
-        let (tx, rx) = bounded(COMMAND_CAPACITY);
-        let handle = TrackClipReaderHandle { tx };
-        let unit = Self {
+    /// Build a unit from an already-created command receiver + optional
+    /// transport. Shared field-literal source for `new` / `with_transport` /
+    /// `detached`.
+    fn from_parts(rx: Receiver<ClipCommand>, transport: Option<Arc<dyn TransportReader>>) -> Self {
+        Self {
             clips: Vec::new(),
             rx,
             sample_rate: 44100.0,
-            transport: None,
-        };
-        (unit, handle)
+            transport,
+        }
+    }
+
+    pub fn new() -> (Self, TrackClipReaderHandle) {
+        let (tx, rx) = bounded(COMMAND_CAPACITY);
+        let handle = TrackClipReaderHandle { tx };
+        (Self::from_parts(rx, None), handle)
     }
 
     pub fn with_transport(
@@ -193,13 +268,7 @@ impl TrackClipReaderUnit {
     ) -> (Self, TrackClipReaderHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
         let handle = TrackClipReaderHandle { tx };
-        let unit = Self {
-            clips: Vec::new(),
-            rx,
-            sample_rate: 44100.0,
-            transport: Some(transport),
-        };
-        (unit, handle)
+        (Self::from_parts(rx, Some(transport)), handle)
     }
 
     /// Number of clip slots currently materialised (drained from the command
@@ -225,12 +294,7 @@ impl TrackClipReaderUnit {
     /// [`Self::insert_clip`].
     pub fn detached(transport: Arc<dyn TransportReader>) -> Self {
         let (_tx, rx) = bounded(0);
-        Self {
-            clips: Vec::new(),
-            rx,
-            sample_rate: 44100.0,
-            transport: Some(transport),
-        }
+        Self::from_parts(rx, Some(transport))
     }
 
     /// Insert a clip slot directly, bypassing the command channel.
@@ -242,17 +306,14 @@ impl TrackClipReaderUnit {
     /// push semantics as the `ClipCommand::Add` drain arm, plus stretch.
     pub fn insert_clip(&mut self, spec: ClipSpec) {
         self.clips.retain(|s| s.id != spec.id);
-        let mut slot = ClipSlot {
-            id: spec.id,
-            sampler: spec.sampler,
-            reverse: spec.reverse,
-            stretch: None,
-            stretch_factor: spec.stretch_factor,
-            pitch_cents: spec.pitch_cents,
-            sample_rate: self.sample_rate,
-        };
-        slot.rebuild_stretch();
-        self.clips.push(slot);
+        self.clips.push(ClipSlot::new(
+            spec.id,
+            spec.sampler,
+            spec.direction,
+            spec.stretch_factor,
+            spec.pitch_cents,
+            self.sample_rate,
+        ));
     }
 
     /// Drop every clip slot.
@@ -264,30 +325,33 @@ impl TrackClipReaderUnit {
         self.clips.clear();
     }
 
+    fn slot_mut(&mut self, id: SlotId) -> Option<&mut ClipSlot> {
+        self.clips.iter_mut().find(|s| s.id == id)
+    }
+
     fn drain_commands(&mut self) {
         while let Ok(cmd) = self.rx.try_recv() {
             match cmd {
                 ClipCommand::Add {
                     id,
                     sampler,
-                    reverse,
+                    direction,
                 } => {
                     self.clips.retain(|s| s.id != id);
-                    self.clips.push(ClipSlot {
+                    self.clips.push(ClipSlot::new(
                         id,
                         sampler,
-                        reverse,
-                        stretch: None,
-                        stretch_factor: 1.0,
-                        pitch_cents: 0.0,
-                        sample_rate: self.sample_rate,
-                    });
+                        direction,
+                        1.0,
+                        0.0,
+                        self.sample_rate,
+                    ));
                 }
                 ClipCommand::Remove(id) => {
                     self.clips.retain(|s| s.id != id);
                 }
                 ClipCommand::ReplaceWave { id, wave } => {
-                    if let Some(slot) = self.clips.iter_mut().find(|s| s.id == id) {
+                    if let Some(slot) = self.slot_mut(id) {
                         slot.sampler.set_wave(wave);
                         slot.rebuild_stretch();
                     }
@@ -297,17 +361,17 @@ impl TrackClipReaderUnit {
                     start_beat,
                     duration_beats,
                 } => {
-                    if let Some(slot) = self.clips.iter_mut().find(|s| s.id == id) {
+                    if let Some(slot) = self.slot_mut(id) {
                         slot.sampler.set_placement(start_beat, duration_beats);
                     }
                 }
                 ClipCommand::UpdateGain { id, gain } => {
-                    if let Some(slot) = self.clips.iter_mut().find(|s| s.id == id) {
+                    if let Some(slot) = self.slot_mut(id) {
                         slot.sampler.set_gain(gain);
                     }
                 }
                 ClipCommand::UpdateSpeed { id, speed } => {
-                    if let Some(slot) = self.clips.iter_mut().find(|s| s.id == id) {
+                    if let Some(slot) = self.slot_mut(id) {
                         slot.sampler.set_speed(speed);
                     }
                 }
@@ -318,7 +382,7 @@ impl TrackClipReaderUnit {
                     loop_end,
                     crossfade_samples,
                 } => {
-                    if let Some(slot) = self.clips.iter_mut().find(|s| s.id == id) {
+                    if let Some(slot) = self.slot_mut(id) {
                         if looping {
                             slot.sampler
                                 .set_loop_range(loop_start, loop_end, crossfade_samples);
@@ -329,14 +393,14 @@ impl TrackClipReaderUnit {
                     }
                 }
                 ClipCommand::ClearLoop(id) => {
-                    if let Some(slot) = self.clips.iter_mut().find(|s| s.id == id) {
+                    if let Some(slot) = self.slot_mut(id) {
                         slot.sampler.clear_loop_range();
                         slot.sampler.set_looping(false);
                     }
                 }
-                ClipCommand::UpdateReverse { id, reverse } => {
-                    if let Some(slot) = self.clips.iter_mut().find(|s| s.id == id) {
-                        slot.reverse = reverse;
+                ClipCommand::UpdateReverse { id, direction } => {
+                    if let Some(slot) = self.slot_mut(id) {
+                        slot.direction = direction;
                     }
                 }
                 ClipCommand::UpdateStretch {
@@ -344,10 +408,8 @@ impl TrackClipReaderUnit {
                     stretch_factor,
                     pitch_cents,
                 } => {
-                    if let Some(slot) = self.clips.iter_mut().find(|s| s.id == id) {
-                        slot.stretch_factor = stretch_factor;
-                        slot.pitch_cents = pitch_cents;
-                        slot.rebuild_stretch();
+                    if let Some(slot) = self.slot_mut(id) {
+                        slot.set_stretch(stretch_factor, pitch_cents);
                     }
                 }
             }
@@ -355,13 +417,14 @@ impl TrackClipReaderUnit {
     }
 
     #[inline]
-    fn read_clip_sample(sampler: &SamplerUnit, reverse: bool, pos: f64) -> (f32, f32) {
-        if reverse {
-            let len = sampler.duration_samples() as f64;
-            let reversed = (len - 1.0 - pos).max(0.0);
-            sampler.get_sample(reversed)
-        } else {
-            sampler.get_sample(pos)
+    fn read_clip_sample(sampler: &SamplerUnit, direction: Direction, pos: f64) -> (f32, f32) {
+        match direction {
+            Direction::Reverse => {
+                let len = sampler.duration_samples() as f64;
+                let reversed = (len - 1.0 - pos).max(0.0);
+                sampler.get_sample(reversed)
+            }
+            Direction::Forward => sampler.get_sample(pos),
         }
     }
 
@@ -388,7 +451,7 @@ impl Clone for TrackClipReaderUnit {
                 .map(|s| ClipSlot {
                     id: s.id,
                     sampler: s.sampler.clone(),
-                    reverse: s.reverse,
+                    direction: s.direction,
                     stretch: s.stretch.clone(),
                     stretch_factor: s.stretch_factor,
                     pitch_cents: s.pitch_cents,
@@ -448,7 +511,7 @@ impl AudioUnit for TrackClipReaderUnit {
                 left += buf[0];
                 right += buf[1];
             } else if let Some(pos) = slot.sampler.transport_sample_position() {
-                let (l, r) = Self::read_clip_sample(&slot.sampler, slot.reverse, pos);
+                let (l, r) = Self::read_clip_sample(&slot.sampler, slot.direction, pos);
                 left += l;
                 right += r;
             }
@@ -481,7 +544,7 @@ impl AudioUnit for TrackClipReaderUnit {
                 let advance = (slot.sampler.speed() * slot.sampler.src_ratio()) as f64;
                 for i in 0..size {
                     let pos = start_pos + i as f64 * advance;
-                    let (l, r) = Self::read_clip_sample(&slot.sampler, slot.reverse, pos);
+                    let (l, r) = Self::read_clip_sample(&slot.sampler, slot.direction, pos);
                     output.set_f32(0, i, output.at_f32(0, i) + l);
                     output.set_f32(1, i, output.at_f32(1, i) + r);
                 }
@@ -489,17 +552,7 @@ impl AudioUnit for TrackClipReaderUnit {
         }
     }
 
-    fn get_id(&self) -> u64 {
-        TRACK_CLIP_READER_ID
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
+    audio_unit_boilerplate!(id = TRACK_CLIP_READER_ID);
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
         SignalFrame::new(2)
@@ -570,7 +623,7 @@ mod tests {
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
-            reverse: false,
+            direction: Direction::Forward,
         });
 
         let mut out = [0.0f32; 2];
@@ -593,7 +646,7 @@ mod tests {
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
-            reverse: false,
+            direction: Direction::Forward,
         });
 
         let mut out = [0.0f32; 2];
@@ -614,7 +667,7 @@ mod tests {
             handle.send(ClipCommand::Add {
                 id: SlotId(i),
                 sampler,
-                reverse: false,
+                direction: Direction::Forward,
             });
         }
 
@@ -626,7 +679,7 @@ mod tests {
         handle2.send(ClipCommand::Add {
             id: SlotId(0),
             sampler,
-            reverse: false,
+            direction: Direction::Forward,
         });
         let mut out_1 = [0.0f32; 2];
         unit2.tick(&[], &mut out_1);
@@ -646,7 +699,7 @@ mod tests {
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
-            reverse: false,
+            direction: Direction::Forward,
         });
 
         let mut out = [0.0f32; 2];
@@ -669,7 +722,7 @@ mod tests {
         unit.insert_clip(ClipSpec {
             id: SlotId(1),
             sampler,
-            reverse: false,
+            direction: Direction::Forward,
             stretch_factor: 1.0,
             pitch_cents: 0.0,
         });
@@ -703,7 +756,7 @@ mod tests {
         unit.insert_clip(ClipSpec {
             id: SlotId(1),
             sampler,
-            reverse: false,
+            direction: Direction::Forward,
             stretch_factor: 1.0,
             pitch_cents: 0.0,
         });
@@ -721,7 +774,7 @@ mod tests {
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
-            reverse: false,
+            direction: Direction::Forward,
         });
 
         let mut out_before = [0.0f32; 2];
@@ -748,7 +801,7 @@ mod tests {
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
-            reverse: false,
+            direction: Direction::Forward,
         });
 
         let mut out = [0.0f32; 2];

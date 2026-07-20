@@ -342,13 +342,22 @@ mod tests {
             map.get_channel_for_note(60).is_none(),
             "oldest note (60) must be evicted"
         );
-        assert!(map.get_channel_for_note(64).is_some(), "64 must still sound");
+        assert!(
+            map.get_channel_for_note(64).is_some(),
+            "64 must still sound"
+        );
         assert_eq!(map.get_channel_for_note(72), Some(ch_new));
 
         // A second steal must take note 64 (now the oldest survivor), not 67.
         map.assign_note(76).unwrap();
-        assert!(map.get_channel_for_note(64).is_none(), "64 is now oldest, evict it");
-        assert!(map.get_channel_for_note(67).is_some(), "67 is newer, must survive");
+        assert!(
+            map.get_channel_for_note(64).is_none(),
+            "64 is now oldest, evict it"
+        );
+        assert!(
+            map.get_channel_for_note(67).is_some(),
+            "67 is newer, must survive"
+        );
     }
 
     #[test]

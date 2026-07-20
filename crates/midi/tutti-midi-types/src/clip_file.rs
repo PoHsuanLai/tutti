@@ -19,8 +19,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use midi2::utility::{DeltaClockstamp, DeltaClockstampTpq};
 use midi2::ump_stream::{EndOfClip, StartOfClip};
+use midi2::utility::{DeltaClockstamp, DeltaClockstampTpq};
 use midi2::ux::u20;
 use midi2::Data;
 

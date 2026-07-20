@@ -144,7 +144,9 @@ mod tests {
         // Select RPN 0x00 / 0x06 (the MPE MCM), then Data Entry MSB = 10.
         assert!(t.translate(&cc_ev(3, cc::RPN_MSB, 0x00)).is_none());
         assert!(t.translate(&cc_ev(3, cc::RPN_LSB, 0x06)).is_none());
-        let out = t.translate(&cc_ev(3, cc::DATA_ENTRY, 10)).expect("emits on data entry");
+        let out = t
+            .translate(&cc_ev(3, cc::DATA_ENTRY, 10))
+            .expect("emits on data entry");
         match UmpMessage::try_from(out.data_words()).unwrap() {
             UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m)) => {
                 assert_eq!(u8::from(m.channel()), 3);
@@ -173,7 +175,9 @@ mod tests {
     #[test]
     fn plain_cc_promotes_straight_through() {
         let mut t = Midi1ToMidi2Translator::new();
-        let out = t.translate(&cc_ev(1, cc::MOD_WHEEL, 100)).expect("plain CC promotes");
+        let out = t
+            .translate(&cc_ev(1, cc::MOD_WHEEL, 100))
+            .expect("plain CC promotes");
         match UmpMessage::try_from(out.data_words()).unwrap() {
             UmpMessage::ChannelVoice2(ChannelVoice2::ControlChange(m)) => {
                 assert_eq!(u8::from(m.control()), cc::MOD_WHEEL);

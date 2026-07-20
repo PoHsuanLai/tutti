@@ -12,10 +12,12 @@ default = []
 # ParameterChanges, EditorSize, EditorCapabilities, WindowHandle). Required
 # by tutti-plugin's bincode IPC protocol; host crates that don't need IPC
 # don't pay for the serde dep.
-serde = ["dep:serde", "smallvec/serde"]
+serde = ["dep:serde", "smallvec/serde", "bitflags/serde"]
 
 [dependencies]
 smallvec = "1"
+# Plugin capability flag set (`Features`) — wgpu-style bitflags.
+bitflags = "2"
 tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }
 serde = { version = "1", features = ["derive"], optional = true }
 # Parameter range/scaling, for `ParameterInfo::to_range`.

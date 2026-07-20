@@ -15,12 +15,10 @@
 //! format-tagged enum; only one variant exists per `Batcher` instance at
 //! runtime.
 
-use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::host::ipc_client::PluginBridge;
+use crate::host::node::BlockPayload;
 use crate::error::Result;
-use crate::protocol::{
-    MidiEventVec, NoteExpressionChanges, ParameterChanges, SampleFormat, TransportInfo,
-};
+use crate::protocol::SampleFormat;
 use tutti_core::{BufferMut, BufferRef, Sample as FundspSample, F32, F64};
 
 /// Matches fundsp's `MAX_BUFFER_SIZE` (`1 << 6`). Blocks of this size are
@@ -219,12 +217,20 @@ impl Batcher {
 
     /// Send inputs, process, receive outputs, reset cursors. Any bridge
     /// failure zero-fills `size` output samples and returns.
-    pub(super) fn flush<T: Scalar>(
-        &mut self,
-        bridge: &PluginBridge,
-        midi: MidiEventVec,
-        harmony: HarmonyInputs,
-    ) {
+    /// Unpack a [`BlockPayload`] into the positional `bridge.process` call. The
+    /// one place the host-side aggregate meets the (unchanged) IPC boundary.
+    fn dispatch(&self, bridge: &PluginBridge, size: usize, payload: BlockPayload) -> bool {
+        bridge.process(
+            size,
+            payload.midi,
+            payload.params,
+            payload.note_expression,
+            payload.harmony,
+            payload.transport,
+        )
+    }
+
+    pub(super) fn flush<T: Scalar>(&mut self, bridge: &PluginBridge, payload: BlockPayload) {
         let size = self.write_pos;
         if size == 0 {
             return;
@@ -238,14 +244,14 @@ impl Batcher {
             }
         }
 
-        if !bridge.process(
-            size,
-            midi,
-            ParameterChanges::new(),
-            NoteExpressionChanges::new(),
-            harmony,
-            TransportInfo::default(),
-        ) {
+        // `payload` bundles this block's host-produced inputs (see
+        // `crate::host::node::BlockPayload`); unpacked here into the unchanged
+        // positional `bridge.process` call so the IPC wire shape is untouched.
+        // `note_expression` is default (empty): a live, spec-native channel the
+        // loaders DO consume (native `note_id`-addressed note-expression), but
+        // per-note expression currently reaches plugins via the MIDI-2 UMP stream
+        // converted at the format boundary — the field awaits a producer.
+        if !self.dispatch(bridge, size, payload) {
             T::silence_tick(self, size, self.outputs);
             self.drain_to(size);
             return;
@@ -266,8 +272,7 @@ impl Batcher {
         size: usize,
         input: &BufferRef<'_, T::Marker>,
         output: &mut BufferMut<'_, T::Marker>,
-        midi: MidiEventVec,
-        harmony: HarmonyInputs,
+        payload: BlockPayload,
     ) {
         for ch in 0..self.inputs {
             if T::send_block(self, bridge, ch, size, input).is_err() {
@@ -276,14 +281,8 @@ impl Batcher {
             }
         }
 
-        if !bridge.process(
-            size,
-            midi,
-            ParameterChanges::new(),
-            NoteExpressionChanges::new(),
-            harmony,
-            TransportInfo::default(),
-        ) {
+        // See `flush` for the payload/wire note.
+        if !self.dispatch(bridge, size, payload) {
             T::silence_block(output, size, self.outputs);
             return;
         }

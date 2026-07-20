@@ -12,6 +12,8 @@
 
 use smallvec::SmallVec;
 
+use crate::Features;
+
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
@@ -36,10 +38,15 @@ pub struct LoadedPlugin {
     pub inputs: BusChannels,
     /// Per-bus output channel counts, main bus first. Empty == single main bus.
     pub outputs: BusChannels,
-    /// Reported initial processing latency, in samples (for PDC).
+    /// Reported initial processing latency, in samples (for PDC). The numeric
+    /// half — the `Features::latency` presence bit is derived from this
+    /// (`latency()`), not stored separately.
     pub latency_samples: usize,
-    /// `true` if the plugin negotiated 64-bit sample processing at load.
-    pub supports_f64: bool,
+    /// Capability flag set the plugin reported at load. The on/off half;
+    /// numeric wiring stays in `inputs`/`outputs`/`latency_samples` above.
+    /// (`f64` support was formerly the standalone `supports_f64` bool — it is
+    /// now `Features::F64_AUDIO`.)
+    pub features: Features,
 }
 
 impl LoadedPlugin {
@@ -53,6 +60,19 @@ impl LoadedPlugin {
     /// Total output channel width across all buses.
     pub fn total_outputs(&self) -> usize {
         self.outputs.iter().sum()
+    }
+
+    /// `true` if the plugin exposes more than one bus in either direction
+    /// (sidechain / aux). Derived from the bus lists — not a stored flag, so it
+    /// can't drift from the actual channel layout.
+    pub fn multi_bus(&self) -> bool {
+        self.inputs.len() > 1 || self.outputs.len() > 1
+    }
+
+    /// `true` if the plugin reports non-zero processing latency (participates in
+    /// PDC). Derived from `latency_samples`.
+    pub fn latency(&self) -> bool {
+        self.latency_samples > 0
     }
 }
 
@@ -68,13 +88,16 @@ mod tests {
             inputs: SmallVec::from_slice(&[2, 1]), // stereo main + mono sidechain
             outputs: SmallVec::from_slice(&[2]),
             latency_samples: 128,
-            supports_f64: true,
+            features: Features::F64_AUDIO | Features::MIDI_IN,
         };
         let bytes = bincode::serialize(&loaded).unwrap();
         let back: LoadedPlugin = bincode::deserialize(&bytes).unwrap();
         assert_eq!(back, loaded);
         assert_eq!(back.total_inputs(), 3);
         assert_eq!(back.total_outputs(), 2);
+        assert!(back.features.contains(Features::F64_AUDIO));
+        assert!(back.multi_bus()); // two input buses
+        assert!(back.latency()); // 128 samples
     }
 
     /// An empty bus list (single-bus legacy) round-trips and sums to zero.
@@ -86,5 +109,8 @@ mod tests {
         assert_eq!(back, loaded);
         assert!(back.inputs.is_empty());
         assert_eq!(back.total_inputs(), 0);
+        assert_eq!(back.features, Features::empty());
+        assert!(!back.multi_bus());
+        assert!(!back.latency());
     }
 }

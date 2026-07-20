@@ -126,6 +126,7 @@ impl Vst2Instance {
             num_outputs: info.outputs as usize,
             category: map_category(info.category),
             receives_midi,
+            emits_midi: info.midi_outputs > 0,
             has_editor: false, // overwritten below once we ask the handle
             latency_samples: info.initial_delay.max(0) as usize,
             supports_f64: info.f64_precision,

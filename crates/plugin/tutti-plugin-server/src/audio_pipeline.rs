@@ -11,7 +11,7 @@
 //! resulting `AudioOutput`.
 
 use tutti_plugin::server::{
-    AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, MidiEvent,
+    AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, Features, MidiEvent,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
     PluginInstance, ProcessContext, SampleFormat, ScaleChanges, TransportInfo,
 };
@@ -184,18 +184,31 @@ impl AudioPipeline {
 
         let start = std::time::Instant::now();
 
+        // Gate each best-effort input on the plugin's advertised features — the
+        // engine only hands a plugin what it asked to consume, keyed on the
+        // flag, never on the plugin's format. (The host already gates its sends
+        // the same way; gating here keeps the server-side context honest even if
+        // an over-eager payload arrives.)
+        let features = plugin.loaded().features;
         let mut ctx = ProcessContext::new().midi(block.midi);
         if let Some(ref ex) = block.extras {
-            ctx = ctx
-                .params(ex.param_changes)
-                .note_expression(ex.note_expression)
-                .transport(ex.transport)
-                .expressive(ExpressiveContext {
+            if features.contains(Features::PARAM_AUTOMATION) {
+                ctx = ctx.params(ex.param_changes);
+            }
+            if features.contains(Features::NOTE_EXPRESSION) {
+                ctx = ctx.note_expression(ex.note_expression);
+            }
+            if features.contains(Features::TRANSPORT) {
+                ctx = ctx.transport(ex.transport);
+            }
+            if features.contains(Features::SEQUENCER_CONTEXT) {
+                ctx = ctx.expressive(ExpressiveContext {
                     chords: Some(ex.chords),
                     scales: Some(ex.scales),
                     expr_texts: Some(ex.expr_texts),
                     expr_ints: Some(ex.expr_ints),
                 });
+            }
         }
 
         let sample_rate = clock.sample_rate;
@@ -492,7 +505,7 @@ mod tests {
 
     use crate::loaders::common::Meta;
     use tutti_plugin::server::{
-        LoadedPlugin, PluginDescriptor, ProcessOutput, SlabLayout, WindowHandle,
+        Features, LoadedPlugin, PluginDescriptor, ProcessOutput, SlabLayout, WindowHandle,
     };
 
     /// A stand-in plugin whose `process` fills every output sample with a
@@ -612,7 +625,7 @@ mod tests {
                 inputs: inputs.iter().copied().collect(),
                 outputs: outputs.iter().copied().collect(),
                 latency_samples: 0,
-                supports_f64: false,
+                features: Features::empty(),
             },
         }
     }

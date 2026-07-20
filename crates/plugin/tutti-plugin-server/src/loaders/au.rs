@@ -5,7 +5,9 @@
 #![allow(dead_code)]
 
 use std::path::Path;
-use tutti_plugin::server::{AuComponentType, LoadedPlugin, PluginClass, PluginDescriptor};
+use tutti_plugin::server::{
+    AuComponentType, Features, LoadedPlugin, PluginClass, PluginDescriptor,
+};
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
     EditorSize, ParameterInfo, PluginInstance, ProcessContext, ProcessOutput, WindowHandle,
@@ -179,12 +181,20 @@ impl AuInstance {
                 },
                 has_editor,
             };
+            // This AUv2 host is f32-only, single-bus, with a Cocoa editor and
+            // latency read-back. MIDI I/O, transport/host-callbacks, sample-
+            // accurate automation, note-expression, sequencer context, f64, and
+            // host-driven editor resize are not implemented — so only EDITOR is
+            // set (latency presence is derived from `latency_samples`).
+            let mut features = Features::empty();
+            features.set(Features::EDITOR, has_editor);
+
             // AU exposes a single main bus per direction here.
             let loaded = LoadedPlugin {
                 inputs: single_bus(inner.num_inputs() as usize),
                 outputs: single_bus(inner.num_outputs() as usize),
                 latency_samples: latency,
-                supports_f64: false,
+                features,
             };
 
             Ok(Self {

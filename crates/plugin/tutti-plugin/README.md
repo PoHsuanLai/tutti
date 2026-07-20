@@ -1,6 +1,6 @@
 # Tutti Plugin
 
-VST2, VST3, and CLAP plugin hosting.
+VST2, VST3, CLAP, AU, and WASM plugin hosting.
 
 ## What this is
 
@@ -27,7 +27,52 @@ client.process(&mut buffer);
 
 ## How it works
 
-Client-server architecture with IPC. Audio buffers transferred via shared memory. Supports both f32 and f64 sample formats. MIDI events include frame offsets for sample-accurate timing. Transport context (tempo, time signature, position) is passed to plugins.
+Client-server architecture with IPC. Audio buffers transferred via shared memory. Supports both f32 and f64 sample formats. MIDI events include frame offsets for sample-accurate timing. Per-block inputs a plugin can consume (transport, parameter automation, chord/scale context) are sent only when the plugin advertised wanting them.
+
+## Design principles
+
+The rules the code here obeys. New formats and new per-block inputs should follow them; a change that violates one is a smell worth a second look.
+
+1. **Define the functionality we support, then score each format against it.** The interface is a fixed list of capabilities we handle; each format either supports a row or doesn't (see the capability table below). Don't instead collect everything VST3/CLAP/AU/VST2 can emit into a neutral superset. *Because* a format-shaped superset leaks format names into the shared vocabulary and grows one special case per format.
+
+2. **Capabilities are data, not types.** A plugin's abilities ride as a `Features` bitset (on `LoadedPlugin`), and the engine gates each per-block send on a flag — never by matching on the format, never via a per-capability trait. *Because* a loaded plugin is a `Box<dyn PluginInstance>` across a process boundary; you cannot downcast across IPC, so capability facts must be data on the wire, not the type system. (Mirrors cpal / wgpu-hal: one fat trait + runtime capability queries, not a trait per capability.)
+
+3. **Share the slot, not the value.** Anything host-side installed onto a running audio node — a MIDI clip source, harmony, transport, parameter automation — lives in a shared cell (`Arc<ArcSwapOption<…>>`), not a per-clone `Option<Arc<…>>`. *Because* fundsp's frontend/backend split runs a *different* clone than the one your setter mutates, and `Net::migrate` discards `node_mut`/clone edits on commit — so a per-clone field is a silent no-op that never reaches the audio thread. (This bit us across four producers at once; see `input_slot.rs`.)
+
+4. **Unify by mechanism, separate by trigger.** Collapse code that is the same *mechanism* (the per-block producer slots all became one `InputSlot<B>`). Keep code separate when it reacts to a different *reactive trigger* (the harmony / param-automation / MIDI-clip install systems each fire on their own `Changed<T>` and stay separate). *Because* duplication inside one reactive scope is real and hides bugs, but merging two systems that watch different change-sets would couple unrelated edits and do needless work per frame. What looks like duplicated shape across two systems is usually their differing triggers showing through — not a smell.
+
+## Capability model
+
+### Functionality we support
+
+Every host-side capability is one of three kinds:
+
+- **Required** — the plugin must satisfy it or we refuse to load. Plain trait methods, no flag: **audio (f32)**, **parameter get/set + enumerate**, **state save/restore**. All four external formats provide these, so requiring them excludes nothing today while protecting the save/load guarantee.
+- **Negotiated** — the plugin answers once at load; the host adapts. A `Features` flag: **f64 audio**, **MIDI in/out**, **editor**, **editor resize**. (Bus widths + latency are the numeric `Limits` half — plain fields on `LoadedPlugin`, not flags.)
+- **Best-effort** — sent per block only to plugins that advertise the flag, gated on `Features::CONSUMES`, never on format: **transport**, **parameter automation**, **note expression**, **sequencer context**.
+
+### Per-format capability table
+
+What each format supports, as reported by its loader in `tutti-plugin-server/src/loaders/`. Where a format exposes a query the flag is live-probed at load (VST3 `IProcessContextRequirements`, CLAP note ports); otherwise the loader sets an honest blanket. Keep this table in sync with those loaders, not with a spec.
+
+`●` full · `◐` conditional / probed / advisory · `○` not implemented by our loader · `✕` the format can't (by spec)
+
+| Capability | Kind | VST3 | CLAP | AU | VST2 |
+|---|---|:--:|:--:|:--:|:--:|
+| Audio (f32) | Required | ● | ● | ● | ● |
+| Params get/set + enumerate | Required | ● | ● | ● | ● |
+| State save/restore | Required | ● | ● | ● | ● |
+| `F64_AUDIO` | Negotiated | ◐ | ◐ | ○ | ◐ |
+| `MIDI_IN` | Negotiated | ◐ | ◐ | ○ | ◐ |
+| `MIDI_OUT` | Negotiated | ◐ | ◐ | ○ | ◐ |
+| `EDITOR` | Negotiated | ● | ● | ● | ● |
+| `EDITOR_RESIZE` | Negotiated | ◐ | ◐ | ○ | ○ |
+| `TRANSPORT` | Best-effort | ◐ | ● | ○ | ● |
+| `PARAM_AUTOMATION` | Best-effort | ● | ● | ○ | ○ |
+| `NOTE_EXPRESSION` | Best-effort | ◐ | ◐ | ✕ | ✕ |
+| `SEQUENCER_CONTEXT` | Best-effort | ◐ | ✕ | ✕ | ✕ |
+
+Notes: the AU loader currently reports only `EDITOR` — its MIDI / transport / f64 paths are unimplemented (`○`), not spec-impossible. VST2's `F64_AUDIO` is advisory (the `vst` crate is f32 internally). `SEQUENCER_CONTEXT` (chord/scale/per-note text) is a VST3-only concept by spec. **WASM is our own format (`dawai:audio-plugin`), so it's not in this external-format table**; its loader today reports only `MIDI_IN`.
 
 ## License
 

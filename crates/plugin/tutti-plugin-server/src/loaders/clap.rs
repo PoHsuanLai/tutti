@@ -2,8 +2,8 @@
 
 use std::path::Path;
 use tutti_plugin::server::{
-    EditorSize, LoadedPlugin, NoteExpressionChanges, ParameterChanges, ParameterFlags,
-    ParameterInfo, PluginClass, PluginDescriptor, WindowHandle,
+    BusChannels, EditorSize, Features, LoadedPlugin, NoteExpressionChanges, ParameterChanges,
+    ParameterFlags, ParameterInfo, PluginClass, PluginDescriptor, WindowHandle,
 };
 use tutti_plugin::server::{PluginInstance, ProcessContext, ProcessOutput};
 
@@ -14,6 +14,31 @@ use tutti_plugin::{BridgeError, LoadStage, Result};
 /// Build the catalog descriptor from CLAP factory info, carrying its feature
 /// tags verbatim as the native class.
 #[cfg(feature = "clap")]
+/// Per-bus channel counts for one direction, main bus first, read off the
+/// CLAP `audio-ports` extension (e.g. `[2, 1]` = stereo main + mono sidechain).
+/// Falls back to a single aggregate main bus when the plugin doesn't implement
+/// the extension (empty port list), matching the single-bus legacy convention
+/// the downstream slab expects.
+fn per_bus_channels(loaded: &tutti_clap_host::ClapLoaded, is_input: bool) -> BusChannels {
+    let count = loaded.audio_port_count(is_input);
+    let buses: BusChannels = (0..count)
+        .filter_map(|i| loaded.audio_port_info(i, is_input))
+        .map(|p| p.channel_count as usize)
+        .collect();
+    if buses.is_empty() {
+        // No `audio-ports` extension: fall back to the aggregate total the
+        // host reports, as a single main bus.
+        let total = if is_input {
+            loaded.info().audio_inputs
+        } else {
+            loaded.info().audio_outputs
+        };
+        single_bus(total)
+    } else {
+        buses
+    }
+}
+
 fn clap_descriptor(info: &tutti_clap_host::PluginInfo, has_editor: bool) -> PluginDescriptor {
     PluginDescriptor {
         id: info.id.clone(),
@@ -129,14 +154,39 @@ impl ClapInstance {
             // Read metadata off the loaded (pre-activation) instance.
             let info = loaded.info();
             let supports_f64 = loaded.supports_f64();
-            let descriptor = clap_descriptor(info, loaded.has_editor());
+            let has_editor = loaded.has_editor();
+            let editor_resizable = has_editor && loaded.editor_capabilities().resize.resizable;
+            let has_note_in = loaded.note_port_count(true) > 0;
+            let has_note_out = loaded.note_port_count(false) > 0;
+            // Real per-port bus layout (main + any sidechain/aux), read off the
+            // `audio-ports` extension before `activate` consumes `loaded`.
+            let input_buses = per_bus_channels(&loaded, true);
+            let output_buses = per_bus_channels(&loaded, false);
+            let descriptor = clap_descriptor(info, has_editor);
+
+            let mut features = Features::empty();
+            features.set(Features::F64_AUDIO, supports_f64);
+            features.set(Features::MIDI_IN, has_note_in);
+            features.set(Features::MIDI_OUT, has_note_out);
+            features.set(Features::EDITOR, has_editor);
+            features.set(Features::EDITOR_RESIZE, editor_resizable);
+            // CLAP always carries transport, sample-accurate param automation, and
+            // the full note-expression dimension set (see build_clap_transport /
+            // PARAM_VALUE events / CLAP_EVENT_NOTE_EXPRESSION). No sequencer context
+            // (the CLAP spec defines no chord/scale events).
+            features.insert(Features::TRANSPORT);
+            features.insert(Features::PARAM_AUTOMATION);
+            features.set(Features::NOTE_EXPRESSION, has_note_in);
+
             // CLAP reports aggregate audio port channel counts; carry them as a
-            // single main bus per direction (per-port enumeration is a follow-up).
+            // Per-bus channel counts, main bus first (e.g. [2, 1] = stereo main
+            // + mono sidechain). Falls back to a single aggregate main bus for
+            // plugins that don't implement the `audio-ports` extension.
             let mut loaded_meta = LoadedPlugin {
-                inputs: single_bus(info.audio_inputs),
-                outputs: single_bus(info.audio_outputs),
+                inputs: input_buses,
+                outputs: output_buses,
                 latency_samples: 0,
-                supports_f64,
+                features,
             };
 
             // Activate into the typed inner. CLAP advertises f32 today, so the
@@ -512,7 +562,7 @@ mod tests {
         // practice — TAL-NoiseMaker reports f32-only. The flag must simply
         // reflect what the plugin advertises; both values are valid. Reading it
         // here confirms the metadata is populated without crashing.
-        let _ = instance.loaded().supports_f64;
+        let _ = instance.loaded().features.contains(Features::F64_AUDIO);
     }
 
     #[test]

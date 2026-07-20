@@ -13,7 +13,7 @@ use crate::Result;
 pub use crate::protocol::audio::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, Sample};
 pub use crate::util::config::BridgeConfig;
 pub use crate::protocol::{
-    AuComponentType, BridgeMessage, BusChannels, ChordChanges, ChordValue, HostMessage,
+    AuComponentType, BridgeMessage, BusChannels, ChordChanges, ChordValue, Features, HostMessage,
     IpcMidiEvent, IpcMidiEventVec, LoadedPlugin, MidiEvent, MidiEventVec, NoteExpressionChanges,
     NoteExpressionIntChanges, NoteExpressionIntValue, NoteExpressionTextChanges,
     NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue, ParameterChanges,
@@ -25,10 +25,12 @@ pub use crate::host::subprocess::resolve_bundle;
 pub use crate::util::transport::shm::AudioSlab;
 pub use crate::util::window::{EditorSize, WindowHandle};
 
-/// VST3-only sequencer-context inputs (chord / scale / per-note text / int
-/// expression). No other format consumes these, so they live in one optional
-/// bundle rather than as loose fields on the universal [`ProcessContext`]. The
-/// VST3 loader is the only reader; everyone else leaves this `None`.
+/// Sequencer-context inputs (chord / scale / per-note text / int expression).
+/// These live in one optional bundle rather than as loose fields on the
+/// universal [`ProcessContext`]. The host sends this bundle only when the
+/// plugin advertised [`Features::SEQUENCER_CONTEXT`]; a plugin that didn't
+/// leaves this `None`. (Today only the VST3 loader reads it — that is a fact
+/// about the format landscape, not a gate: the gate is the feature flag.)
 #[derive(Default)]
 pub struct ExpressiveContext<'a> {
     pub chords: Option<&'a ChordChanges>,
@@ -38,15 +40,20 @@ pub struct ExpressiveContext<'a> {
 }
 
 /// Per-block inputs to [`PluginInstance::process`] beyond the audio buffer.
+///
+/// Each best-effort field is `Some` only when the plugin advertised the
+/// matching bit in [`Features::CONSUMES`] — the host gates the send on the
+/// flag, never on the plugin's format.
 #[derive(Default)]
 pub struct ProcessContext<'a> {
     pub midi_events: &'a [MidiEvent],
-    /// VST3/CLAP only, ignored by VST2.
+    /// Sent only when the plugin advertised [`Features::PARAM_AUTOMATION`].
     pub param_changes: Option<&'a ParameterChanges>,
-    /// VST3/CLAP only, ignored by VST2.
+    /// Sent only when the plugin advertised [`Features::NOTE_EXPRESSION`].
     pub note_expression: Option<&'a NoteExpressionChanges>,
+    /// Sent only when the plugin advertised [`Features::TRANSPORT`].
     pub transport: Option<&'a TransportInfo>,
-    /// VST3-only sequencer context. `None` for VST2/CLAP/AU.
+    /// Sent only when the plugin advertised [`Features::SEQUENCER_CONTEXT`].
     pub expressive: Option<ExpressiveContext<'a>>,
 }
 

@@ -55,6 +55,34 @@
 //! Both share the subprocess lifetime — the plugin dies only when the
 //! last of either drops.
 //!
+//! # Design principles
+//!
+//! The rules this crate obeys; new formats and per-block inputs should follow
+//! them. Fuller rationale + the per-format capability table are in the crate
+//! README.
+//!
+//! 1. **Define the functionality we support, then score each format against
+//!    it.** [`Features`] is a fixed list of the capabilities we handle; each
+//!    format either supports a row or doesn't (see the capability table in the
+//!    README). Don't instead collect everything the formats emit into a neutral
+//!    superset — that leaks format names into shared types and grows a special
+//!    case per format.
+//! 2. **Capabilities are data, not types.** Abilities ride as a [`Features`]
+//!    bitset and gate sends by flag — never by matching the format, never a
+//!    per-capability trait — because a loaded plugin is `Box<dyn PluginInstance>`
+//!    across IPC and cannot be downcast.
+//! 3. **Share the slot, not the value.** Host-installed per-block sources
+//!    (MIDI, harmony, transport, automation) live in a shared
+//!    `Arc<ArcSwapOption<…>>`, not a per-clone `Option`, because fundsp runs a
+//!    different clone than the setter mutates — a per-clone field is a silent
+//!    no-op. See [`handles::PluginClient`] and the `input_slot` module.
+//! 4. **Unify by mechanism, separate by trigger.** Collapse same-mechanism
+//!    code (the per-block producers became one `InputSlot`); keep systems that
+//!    react to different `Changed<T>` triggers separate — merging them would
+//!    couple unrelated edits.
+//!
+//! [`Features`]: crate::protocol::Features
+//!
 //! # Module map
 //!
 //! - [`catalog`] — discovering, persisting, and loading plugins (incl. the

@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, EditorSize, LoadedPlugin, MidiEventVec, NoteExpressionChanges,
+    AudioBufferMut, EditorSize, Features, LoadedPlugin, MidiEventVec, NoteExpressionChanges,
     ParameterChanges, ParameterInfo, PluginClass, PluginDescriptor, PluginInstance, ProcessContext,
     ProcessOutput, WindowHandle,
 };
@@ -50,12 +50,26 @@ impl Vst2Instance {
                 },
                 has_editor: host_meta.has_editor,
             };
+            let mut features = Features::empty();
+            // VST2's advertised f64 is informational only (the `vst` crate is
+            // f32-internally), but the flag reflects what the plugin declares.
+            features.set(Features::F64_AUDIO, host_meta.supports_f64);
+            features.set(Features::MIDI_IN, host_meta.receives_midi);
+            // MIDI-out is the plugin's declared output-bus count, not the
+            // combined input flag — the host drains only what the plugin emits.
+            features.set(Features::MIDI_OUT, host_meta.emits_midi);
+            features.set(Features::EDITOR, host_meta.has_editor);
+            // VST2 always gets a transport snapshot (get_time_info). No
+            // sample-accurate automation, note-expression, sequencer context, or
+            // host-driven editor resize (fused AEffect editor, no sizeWindow).
+            features.insert(Features::TRANSPORT);
+
             // VST2 is single-bus: one main input bus, one main output bus.
             let loaded = LoadedPlugin {
                 inputs: single_bus(host_meta.num_inputs),
                 outputs: single_bus(host_meta.num_outputs),
                 latency_samples: host_meta.latency_samples,
-                supports_f64: host_meta.supports_f64,
+                features,
             };
 
             let scratch =

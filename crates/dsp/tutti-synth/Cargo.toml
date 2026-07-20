@@ -41,6 +41,11 @@ dashmap = "6.1"
 # RT-safe small vectors
 smallvec = "1.13"
 
+# Lock-free shared cell for the MIDI-source override slot, so an install on any
+# fundsp graph-commit clone reaches the box the audio thread runs. See the
+# plugin-side fix for the same pattern.
+arc-swap = "1"
+
 # Error handling
 thiserror = "2"
 

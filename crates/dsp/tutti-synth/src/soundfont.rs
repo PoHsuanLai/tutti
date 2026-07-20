@@ -11,8 +11,13 @@ pub use rustysynth::SoundFontAsset;
 
 use rustysynth::Synthesizer;
 use smallvec::SmallVec;
+use arc_swap::ArcSwapOption;
 use tutti_midi_types::{MidiSource, MidiTarget, MidiUnitId};
 use tutti_core::Arc;
+
+/// `Sized` wrapper so a `dyn MidiSource` trait object can live in an
+/// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
+struct MidiSourceHandle(Arc<dyn MidiSource>);
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
 use tutti_midi_types::semantic::SemanticEvent;
 use tutti_midi_types::ump::MidiEvent;
@@ -35,7 +40,10 @@ pub struct SoundFontUnit {
     midi_unit_id: MidiUnitId,
     midi_sender: MidiSender,
     midi_receiver: MidiReceiver,
-    midi_source_override: Option<Arc<dyn MidiSource>>,
+    /// Shared `Arc<ArcSwapOption<…>>` (see [`super::polysynth`]): an install on
+    /// any fundsp graph-commit clone reaches the box the audio thread runs.
+    /// `isolate()` swaps in a fresh private slot to sever the sharing.
+    midi_source_override: Arc<ArcSwapOption<MidiSourceHandle>>,
     midi_buffer: Vec<MidiEvent>,
     /// Running absolute-sample counter, handed to MIDI sources so
     /// beat-scheduled events can compute their `frame_offset` for
@@ -66,7 +74,7 @@ impl SoundFontUnit {
             midi_unit_id,
             midi_sender,
             midi_receiver,
-            midi_source_override: None,
+            midi_source_override: Arc::new(ArcSwapOption::empty()),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
             sample_pos: 0,
         })
@@ -86,11 +94,12 @@ impl SoundFontUnit {
     ///
     /// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
     pub fn set_midi_source(&mut self, source: Arc<dyn MidiSource>) {
-        self.midi_source_override = Some(source);
+        self.midi_source_override
+            .store(Some(Arc::new(MidiSourceHandle(source))));
     }
 
     pub fn clear_midi_source(&mut self) {
-        self.midi_source_override = None;
+        self.midi_source_override.store(None);
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -120,8 +129,9 @@ impl SoundFontUnit {
 
     fn poll_midi_events(&mut self, block_size: usize) {
         let block_start = self.sample_pos;
-        let count = match &self.midi_source_override {
-            Some(src) => src.poll_into(
+        let source = self.midi_source_override.load();
+        let count = match source.as_ref() {
+            Some(handle) => handle.0.poll_into(
                 self.midi_unit_id,
                 block_start,
                 block_size,
@@ -225,7 +235,9 @@ impl AudioUnit for SoundFontUnit {
         let (sender, receiver) = MidiEventSlot::pair(self.midi_unit_id);
         self.midi_sender = sender;
         self.midi_receiver = receiver;
-        self.midi_source_override = None;
+        // Fresh PRIVATE slot, not `store(None)` on the shared one — clearing the
+        // shared slot would sever the live synth's clip source mid-export.
+        self.midi_source_override = Arc::new(ArcSwapOption::empty());
     }
 
     fn set_sample_rate(&mut self, _sample_rate: tutti_core::SampleRate) {

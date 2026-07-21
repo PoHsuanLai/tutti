@@ -7,6 +7,7 @@
 
 use bitflags::bitflags;
 use midi2::prelude::*;
+use midi2::Data;
 
 use super::MidiEvent;
 
@@ -135,6 +136,36 @@ impl MidiEvent {
         m.set_software_version(software_version.map(|b| u7::new(b & 0x7F)));
         Self::from_ump(0, m.data())
     }
+}
+
+/// Split a multi-packet UMP-Stream message's words into 4-word [`MidiEvent`]s,
+/// appended to `out`. UMP-Stream text messages (name / product id) can span
+/// several 128-bit packets; each becomes one `MidiEvent`.
+fn push_ump_stream_packets(words: &[u32], out: &mut Vec<MidiEvent>) {
+    for packet in words.chunks(4) {
+        out.push(MidiEvent::from_ump(0, packet));
+    }
+}
+
+/// UMP Stream **Endpoint Name Notification** — the reply to an Endpoint
+/// Discovery `request_endpoint_name`. `name` is UTF-8 and may span several
+/// packets, so this appends one or more [`MidiEvent`]s to `out` (mirroring
+/// [`MidiEvent::sysex7_fragments`]).
+pub fn endpoint_name(name: &str, out: &mut Vec<MidiEvent>) {
+    use midi2::ump_stream::EndpointName;
+    let mut m = EndpointName::<Vec<u32>>::new();
+    m.set_name(name);
+    push_ump_stream_packets(m.data(), out);
+}
+
+/// UMP Stream **Product Instance Id Notification** — the reply to an Endpoint
+/// Discovery `request_product_instance_id`. Like [`endpoint_name`], the id may
+/// span several packets appended to `out`.
+pub fn product_instance_id(id: &str, out: &mut Vec<MidiEvent>) {
+    use midi2::ump_stream::ProductInstanceId;
+    let mut m = ProductInstanceId::<Vec<u32>>::new();
+    m.set_id(id);
+    push_ump_stream_packets(m.data(), out);
 }
 
 /// Direction of a Function Block, for [`MidiEvent::function_block_info`].

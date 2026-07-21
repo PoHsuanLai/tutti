@@ -15,7 +15,7 @@ default = []
 mpe = []
 
 [dependencies]
-tutti-midi-types = { version = "0.0.1", path = "../tutti-midi-types", default-features = false, features = ["std"] }
+tutti-midi-types = { version = "0.0.1", path = "../tutti-midi-types" }
 tutti-core = { version = "0.0.1", path = "../../core/tutti-core", default-features = false, features = ["std", "midi"] }
 
 # Lock-free / concurrent

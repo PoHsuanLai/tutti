@@ -31,7 +31,7 @@ thiserror = "2"
 tracing = "0.1"
 
 # Core types
-tutti-midi-types = { path = "../tutti-midi-types", default-features = false, features = ["std"] }
+tutti-midi-types = { path = "../tutti-midi-types" }
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["std", "midi"] }
 # MIDI fan-out runtime (MidiBus, MpeProcessor, PerNoteExpression, MidiEventSlot).
 # The `ecs` module's MidiBusRes wraps tutti-midi-runtime's MidiBus. Acyclic:

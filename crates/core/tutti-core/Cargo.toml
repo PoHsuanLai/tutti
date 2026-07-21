@@ -47,7 +47,7 @@ serde = { version = "1", default-features = false, features = ["derive"] }
 fundsp = { package = "fundsp-tutti", version = "0.23.0", path = "../../vendor/fundsp-tutti", default-features = false, features = ["std"] }
 
 # MIDI types (pure types from tutti-midi-types) — always included for SmpteFrameRate etc.
-tutti-midi-types = { version = "0.0.1", path = "../../midi/tutti-midi-types", default-features = false, features = ["std"] }
+tutti-midi-types = { version = "0.0.1", path = "../../midi/tutti-midi-types" }
 
 # Shared RT primitives (AudioThreadCell, RtEventBuf).
 tutti-types = { version = "0.0.1", path = "../tutti-types" }

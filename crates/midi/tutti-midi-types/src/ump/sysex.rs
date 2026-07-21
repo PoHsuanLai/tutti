@@ -1,6 +1,6 @@
 //! SysEx 7-bit: single-packet and multi-packet fragmentation (UMP type 0x3).
 
-use crate::compat::Vec;
+use std::vec::Vec;
 
 use super::MidiEvent;
 

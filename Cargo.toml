@@ -63,5 +63,8 @@ midi2 = { version = "0.11", default-features = false, features = [
     "utility",
     "ump-stream",
     "flex-data",
+    # Growable `Vec` message buffers, needed by the variable-length UMP-Stream
+    # text notifications (Endpoint Name / Product Instance Id).
+    "std",
 ] }
 coremidi = "0.8"

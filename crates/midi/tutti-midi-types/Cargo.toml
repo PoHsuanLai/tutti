@@ -8,31 +8,13 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["midi", "audio", "real-time"]
 categories = ["multimedia::audio"]
 
-[features]
-default = []
-# Held for downstream crates that opt in via `features = ["std"]`.
-# The source is unconditionally `#![no_std]`, so this feature currently toggles
-# nothing here — but tutti-core, tutti-midi-runtime, and tutti-midi-io all
-# forward it to signal intent. Keep until we either remove those forwards or
-# wire actual std-gated code behind this flag.
-std = []
-
 [dependencies]
-libm = "0.2"
-# no_std by default; matches the `bitflags!` convention used across tutti
-# (tutti-clap-host, tutti-plugin-types).
-bitflags = { version = "2", default-features = false }
-# Polyfills AtomicU64 on 32-bit targets without native 64-bit atomics
-# (e.g. thumbv7em-none-eabihf). On targets with native support (x86_64,
-# aarch64, wasm32) this is a zero-cost alias for core::sync::atomic::AtomicU64.
-# Embedded users must provide a `critical-section` impl via the
-# portable-atomic `critical-section` feature or `unsafe-assume-single-core`.
-portable-atomic = { version = "1", default-features = false, features = ["fallback"] }
-# Atomic snapshot publishing for MidiRoutingTable (no_std-compatible).
-arc-swap = { version = "1.7", default-features = false }
+bitflags = "2"
+# Atomic snapshot publishing for MidiRoutingTable.
+arc-swap = "1.7"
 
 # midi2's feature set is fully specified at the workspace level (this is its
-# only consumer). midly's no_std base lives there too; we add `alloc` here.
+# only consumer). midly's alloc feature gives it owned event buffers.
 midi2 = { workspace = true }
 midly = { workspace = true, features = ["alloc"] }
 

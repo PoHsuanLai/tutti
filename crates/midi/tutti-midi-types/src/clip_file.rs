@@ -16,8 +16,7 @@
 //! This module models the file as a flat list of `(delta_ticks, MidiEvent)`,
 //! which is all a Type-0-like clip needs; the caller supplies the DCTPQ.
 
-extern crate alloc;
-use alloc::vec::Vec;
+use std::vec::Vec;
 
 use midi2::ump_stream::{EndOfClip, StartOfClip};
 use midi2::utility::{DeltaClockstamp, DeltaClockstampTpq};
@@ -100,7 +99,6 @@ impl core::fmt::Display for ClipFileError {
     }
 }
 
-#[cfg(feature = "std")]
 impl std::error::Error for ClipFileError {}
 
 /// Parse a MIDI Clip File (M2-116). Delta Clockstamps set the delta of the

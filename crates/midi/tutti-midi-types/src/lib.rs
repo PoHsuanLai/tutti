@@ -13,17 +13,8 @@
 //! SMF file parsing and MIDI-1 wire codec are provided by the re-exported
 //! `midly` crate. Typed UMP messages are provided by re-exported `midi2`.
 
-#![no_std]
-
-#[cfg(feature = "std")]
-extern crate std;
-
-extern crate alloc;
-
 pub use midi2;
 pub use midly;
-
-pub(crate) mod compat;
 
 pub mod cc;
 pub mod clip_file;

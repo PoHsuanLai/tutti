@@ -10,10 +10,10 @@
 //! the bottom of this module. Audio-thread consumers typically hold an
 //! `Arc<ArcSwap<MidiRoutingSnapshot>>` and call `.load().route(port, &event)`.
 
-use crate::compat::Vec;
+use std::vec::Vec;
 use crate::ump::MidiEvent;
 use crate::unit_id::MidiUnitId;
-use alloc::sync::Arc;
+use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 /// Maximum number of targets per routing rule.
@@ -429,7 +429,6 @@ impl Default for MidiRoutingTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
 
     const fn id(n: u64) -> MidiUnitId {
         MidiUnitId::new(n)

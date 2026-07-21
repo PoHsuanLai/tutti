@@ -1,7 +1,7 @@
 //! Opaque identifier for a MIDI-receiving audio unit.
 
 use core::sync::atomic::Ordering;
-use portable_atomic::AtomicU64;
+use std::sync::atomic::AtomicU64;
 
 /// Opaque per-instance identifier for a MIDI-receiving audio unit.
 ///

@@ -10,16 +10,10 @@
 //! `respond_to` is the whole inbound half: config in, reply events out. It is
 //! pure (no interior mutation), so it is trivially testable and safe to call
 //! from any thread.
-//!
-//! **Not answered:** the optional Endpoint Name and Product Instance Id text
-//! notifications. Those are variable-length UMP-Stream text messages that need a
-//! growable message buffer, which `midi2` only provides under its `std` feature;
-//! tutti builds `midi2` `no_std`, so they are omitted. A discovery that requests
-//! *only* those receives no reply — spec-legal, since every text notification is
-//! optional.
 
 use tutti_midi_types::midi2::ump_stream::UmpStream;
 use tutti_midi_types::midi2::UmpMessage;
+use tutti_midi_types::ump::{endpoint_name, product_instance_id};
 use tutti_midi_types::{
     EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection, FunctionBlocks,
     JrTimestamps, MidiEvent, Protocol, UmpVersion,
@@ -52,13 +46,16 @@ pub struct EndpointNegotiator {
     protocol: Protocol,
     jr: JrTimestamps,
     identity: DeviceIdentity,
+    name: String,
+    product_instance_id: String,
     function_blocks: Vec<FunctionBlock>,
 }
 
 impl EndpointNegotiator {
     /// A negotiator for an endpoint speaking UMP 1.1 with the given identity and
     /// Function Blocks, advertising MIDI-2 + MIDI-1 protocol support (no JR
-    /// timestamps). Adjust with the `with_*` setters.
+    /// timestamps). The endpoint name and product-instance id default to empty
+    /// (their notifications are then omitted). Adjust with the `with_*` setters.
     pub fn new(identity: DeviceIdentity, function_blocks: Vec<FunctionBlock>) -> Self {
         Self {
             ump_version: UmpVersion::V1_1,
@@ -67,6 +64,8 @@ impl EndpointNegotiator {
             protocol: Protocol::Midi2,
             jr: JrTimestamps::empty(),
             identity,
+            name: String::new(),
+            product_instance_id: String::new(),
             function_blocks,
         }
     }
@@ -81,6 +80,18 @@ impl EndpointNegotiator {
     pub fn with_stream_config(mut self, protocol: Protocol, jr: JrTimestamps) -> Self {
         self.protocol = protocol;
         self.jr = jr;
+        self
+    }
+
+    /// Set the human-readable endpoint name and product-instance id reported in
+    /// their respective notifications. Empty strings omit those replies.
+    pub fn with_names(
+        mut self,
+        name: impl Into<String>,
+        product_instance_id: impl Into<String>,
+    ) -> Self {
+        self.name = name.into();
+        self.product_instance_id = product_instance_id.into();
         self
     }
 
@@ -119,6 +130,12 @@ impl EndpointNegotiator {
                 id.family_model,
                 id.software_version,
             ));
+        }
+        if d.request_endpoint_name() && !self.name.is_empty() {
+            endpoint_name(&self.name, &mut out);
+        }
+        if d.request_product_instance_id() && !self.product_instance_id.is_empty() {
+            product_instance_id(&self.product_instance_id, &mut out);
         }
         if d.request_stream_configuration() {
             out.push(MidiEvent::stream_configuration_notification(
@@ -171,14 +188,15 @@ mod tests {
                 direction: FunctionBlockDirection::Bidirectional,
             }],
         )
+        .with_names("Tutti", "tutti-0001")
     }
 
     #[test]
     fn responds_to_full_discovery_with_all_notifications() {
         let n = negotiator();
         let replies = n.respond_to(&EndpointNegotiator::discovery_request());
-        // info + identity + stream-config + one function block.
-        assert_eq!(replies.len(), 4);
+        // info + identity + name + product-id + stream-config + one function block.
+        assert_eq!(replies.len(), 6);
         assert!(matches!(
             UmpMessage::try_from(replies[0].data_words()).unwrap(),
             UmpMessage::UmpStream(UmpStream::EndpointInfo(_))
@@ -189,12 +207,42 @@ mod tests {
         ));
         assert!(matches!(
             UmpMessage::try_from(replies[2].data_words()).unwrap(),
-            UmpMessage::UmpStream(UmpStream::StreamConfigurationNotification(_))
+            UmpMessage::UmpStream(UmpStream::EndpointName(_))
         ));
         assert!(matches!(
             UmpMessage::try_from(replies[3].data_words()).unwrap(),
+            UmpMessage::UmpStream(UmpStream::ProductInstanceId(_))
+        ));
+        assert!(matches!(
+            UmpMessage::try_from(replies[4].data_words()).unwrap(),
+            UmpMessage::UmpStream(UmpStream::StreamConfigurationNotification(_))
+        ));
+        assert!(matches!(
+            UmpMessage::try_from(replies[5].data_words()).unwrap(),
             UmpMessage::UmpStream(UmpStream::FunctionBlockInfo(_))
         ));
+    }
+
+    #[test]
+    fn empty_name_omits_its_notification() {
+        // Default (no with_names) → name/product-id replies are skipped.
+        let n = EndpointNegotiator::new(
+            DeviceIdentity {
+                manufacturer: [0, 0, 0],
+                family: 0,
+                family_model: 0,
+                software_version: [0; 4],
+            },
+            vec![],
+        );
+        let replies = n.respond_to(&EndpointNegotiator::discovery_request());
+        // info + identity + stream-config, no name/product-id, no blocks.
+        assert_eq!(replies.len(), 3);
+        assert!(replies.iter().all(|e| !matches!(
+            UmpMessage::try_from(e.data_words()).unwrap(),
+            UmpMessage::UmpStream(UmpStream::EndpointName(_))
+                | UmpMessage::UmpStream(UmpStream::ProductInstanceId(_))
+        )));
     }
 
     #[test]

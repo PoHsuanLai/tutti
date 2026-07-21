@@ -84,14 +84,18 @@ impl PerNoteExpression {
         self.notes.remove(id);
     }
 
-    // Setters address an *already-sounding* note, so they update via `get`
-    // (never `entry`): a stray or post-note-off expression message must not
-    // claim a slot, or the fixed-capacity map would leak until `reset`.
+    // Setters claim a slot via `entry` (find-or-claim), not `get`: a MIDI 2.0
+    // per-note message is self-addressing — it carries its own note number and is
+    // spec-legal without a prior channel note-on (per-note addressing is
+    // independent of channel-voice note-ons, M2-104 §4.2). `entry` is capacity-
+    // bounded (returns `None` when the map is full, never allocates) and slots are
+    // freed on note-off / `reset_note`, so this cannot leak; the earlier `get`
+    // rule silently dropped every per-note write that didn't follow a note-on.
 
     /// `value`: -1.0 to 1.0
     #[inline]
     pub fn set_pitch_bend(&self, id: NoteId, value: f32) {
-        if let Some(slot) = self.notes.get(id) {
+        if let Some(slot) = self.notes.entry(id) {
             slot.pitch_bend
                 .store(value.clamp(-1.0, 1.0), Ordering::Release);
         }
@@ -100,7 +104,7 @@ impl PerNoteExpression {
     /// `value`: 0.0 to 1.0
     #[inline]
     pub fn set_pressure(&self, id: NoteId, value: f32) {
-        if let Some(slot) = self.notes.get(id) {
+        if let Some(slot) = self.notes.entry(id) {
             slot.pressure.store(value.clamp(0.0, 1.0), Ordering::Release);
         }
     }
@@ -108,7 +112,7 @@ impl PerNoteExpression {
     /// CC74 slide. `value`: 0.0 to 1.0
     #[inline]
     pub fn set_slide(&self, id: NoteId, value: f32) {
-        if let Some(slot) = self.notes.get(id) {
+        if let Some(slot) = self.notes.entry(id) {
             slot.slide.store(value.clamp(0.0, 1.0), Ordering::Release);
         }
     }
@@ -256,20 +260,35 @@ mod tests {
     }
 
     #[test]
-    fn stray_setters_do_not_claim_slots() {
-        // Per-note expression for notes that never sounded (or arriving after
-        // note-off) must NOT consume capacity — else the fixed-size map leaks and
-        // eventually drops legitimate note-ons. Setters update via `get`, so an
-        // unclaimed id stays absent.
+    fn per_note_setters_self_register_and_are_capacity_bounded() {
+        // A MIDI 2.0 per-note message is self-addressing: it applies to its note
+        // number without a prior channel note-on (M2-104 §4.2). So a setter claims
+        // a slot (via `entry`) rather than dropping the write. That claim is
+        // capacity-bounded — `entry` returns `None` when the 128-slot map is full,
+        // so a flood of distinct ids can never allocate or grow the map; it just
+        // stops registering new ones. `reset` recovers all capacity.
         let expr = PerNoteExpression::new();
-        for note in 0..200u32 {
-            let stray = NoteId::from_raw(note + 1); // never note_on'd
+
+        // One self-addressed per-note bend, no note_on first — the write lands.
+        let addressed = NoteId::from_raw(1);
+        expr.set_pitch_bend(addressed, 0.5);
+        assert!((expr.get_pitch_bend_per_note(addressed) - 0.5).abs() < 0.001);
+
+        // Flooding beyond capacity is safe (bounded, no panic/alloc); ids past the
+        // 128th simply don't register.
+        for note in 0..500u32 {
+            let stray = NoteId::from_raw(note + 1000);
             expr.set_pitch_bend(stray, 0.5);
             expr.set_pressure(stray, 0.5);
             expr.set_slide(stray, 0.5);
-            assert!(!expr.is_active(stray));
         }
-        // The map (128 slots) is still fully open: a real note claims cleanly.
+        // A brand-new id past capacity does not register (map is full).
+        let overflow = NoteId::from_raw(999_999);
+        expr.set_pitch_bend(overflow, 0.9);
+        assert!((expr.get_pitch_bend_per_note(overflow)).abs() < 0.001);
+
+        // `reset` frees every slot; the map is fully open again.
+        expr.reset();
         let real = id(0, 60);
         expr.note_on(real);
         assert!(expr.is_active(real));

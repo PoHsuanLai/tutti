@@ -166,14 +166,10 @@ impl MpeProcessor {
             // separately-addressable detached-controller lifetime here (that
             // distinction only exists once a note owns a synth voice), so we
             // reset the note either way.
-            ChannelVoice2::PerNoteManagement(m) => {
-                if m.reset() || m.detach() {
-                    let id = NoteId::from_channel_note(
-                        u8::from(m.channel()),
-                        u8::from(m.note_number()),
-                    );
-                    self.expression.reset_note(id);
-                }
+            ChannelVoice2::PerNoteManagement(m) if m.reset() || m.detach() => {
+                let id =
+                    NoteId::from_channel_note(u8::from(m.channel()), u8::from(m.note_number()));
+                self.expression.reset_note(id);
             }
             _ => {}
         }
@@ -233,14 +229,10 @@ impl MpeProcessor {
                         .set_slide(id, u32_to_unit_f32(m.controller_data()));
                 }
             }
-            ChannelVoice2::PerNoteManagement(m) => {
-                if (m.reset() || m.detach()) && {
-                    // Reset by number targets the active note of that number.
-                    rotation.resolve(u8::from(m.note_number())).is_some()
-                } {
-                    if let Some(id) = rotation.resolve(u8::from(m.note_number())) {
-                        self.expression.reset_note(id);
-                    }
+            ChannelVoice2::PerNoteManagement(m) if m.reset() || m.detach() => {
+                // Reset by number targets the active note of that number.
+                if let Some(id) = rotation.resolve(u8::from(m.note_number())) {
+                    self.expression.reset_note(id);
                 }
             }
             _ => {}

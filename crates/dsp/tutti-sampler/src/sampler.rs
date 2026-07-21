@@ -4,18 +4,14 @@ use crate::butler::{
     BufferConfig, ButlerCommand, ButlerThread, CaptureIdGen, LruCache, ChannelPlan,
 };
 use crate::error::Result;
-use crate::playback::{Direction, StreamingClipConfig, TransportPlacement};
-use crate::StreamingClipReader;
+use crate::ports::{Commands, Status};
 use arc_swap::ArcSwap;
 #[cfg(feature = "bevy")]
 use bevy_ecs::resource::Resource;
 use dashmap::DashMap;
 use smol::channel::Sender;
-use std::path::PathBuf;
 use std::sync::Arc;
-use tutti_core::{
-    BeatDuration, BeatPosition, PdcState, Ratio, SamplePosition, TransportReader,
-};
+use tutti_core::PdcState;
 
 /// The sampler subsystem handle, held as a Bevy [`Resource`].
 ///
@@ -25,6 +21,11 @@ use tutti_core::{
 /// `Res<Sampler>` and reaches the subsystems through
 /// [`recording`](Self::recording) / [`audio_input`](Self::audio_input), or
 /// builds an [`Auditioner`](crate::Auditioner) via [`auditioner`](Self::auditioner).
+///
+/// Stream control is split MIDI-device-style into two cloneable ports: the
+/// WRITE port [`commands`](Self::commands) (a [`Commands`] over the butler
+/// command channel) and the READ port [`status`](Self::status) (a [`Status`]
+/// carrying the sample rate + the reader-factory).
 ///
 /// Playback, recording, and preview are driven the idiomatic Bevy way — spawn
 /// a [`PlayAudio`](crate::PlayAudio) entity, write a
@@ -38,7 +39,7 @@ use tutti_core::{
 ///
 /// # fn main() -> tutti_sampler::Result<()> {
 /// let sampler = Sampler::new(48_000.0, Default::default())?;
-/// let _ = sampler.sample_rate();
+/// let _ = sampler.status().sample_rate();
 /// # Ok(())
 /// # }
 /// ```
@@ -85,9 +86,16 @@ impl Sampler {
         })
     }
 
-    /// Sample rate the system was built with.
-    pub fn sample_rate(&self) -> f64 {
-        self.sample_rate
+    /// WRITE port: a cloneable [`Commands`] handle over the butler command
+    /// channel. Drive streaming with `commands().send(Command::…)`.
+    pub fn commands(&self) -> Commands {
+        Commands::new(self.butler_tx.clone())
+    }
+
+    /// READ port: a cloneable [`Status`] snapshot carrying the sample rate and
+    /// the channel-plan map (the reader-factory).
+    pub fn status(&self) -> Status {
+        Status::new(self.sample_rate, self.butler.plans())
     }
 
     /// Recording-session bookkeeper for MIDI / audio / automation captures.
@@ -98,120 +106,6 @@ impl Sampler {
     /// Hardware audio-input manager (cpal capture stream + MPMC channel).
     pub fn audio_input(&self) -> &crate::input::manager::InputEngine {
         &self.audio_input
-    }
-
-    /// Register a disk-streaming source for a timeline clip on `channel_index`.
-    ///
-    /// Sends the butler a [`StreamAudioFile`](ButlerCommand::StreamAudioFile)
-    /// command; the butler probes the file, allocates a ring, and installs the
-    /// [`ChannelPlan`] link asynchronously. Pair with
-    /// [`take_clip_reader`](Self::take_clip_reader) — called on a later frame —
-    /// to build the [`StreamingClipReader`] once the link exists.
-    ///
-    /// `channel_index` must be unique per streaming clip; the caller (dawai-model)
-    /// derives it from the clip's `SlotId`.
-    pub fn stream_clip(&self, channel_index: usize, file_path: PathBuf, offset: SamplePosition) {
-        crate::butler::control::stream(
-            &self.butler_tx,
-            channel_index,
-            file_path,
-            offset.get().max(0.0) as usize,
-        );
-    }
-
-    /// Build a [`StreamingClipReader`] for a channel whose butler stream is
-    /// ready, binding it to the timeline placement gate.
-    ///
-    /// Pulls the ring consumer + shared `RtState` out of the channel's
-    /// [`ChannelPlan`] link — the same handles [`Auditioner::streaming_unit`]
-    /// wires — and wraps them in a placement-gated reader. Returns `None` while
-    /// the butler hasn't installed the link yet (the caller retries next frame).
-    ///
-    /// [`Auditioner::streaming_unit`]: crate::Auditioner::streaming_unit
-    pub fn take_clip_reader(
-        &self,
-        channel_index: usize,
-        transport: Arc<dyn TransportReader>,
-        start_beat: BeatPosition,
-        duration: Option<BeatDuration>,
-    ) -> Option<StreamingClipReader> {
-        let plans = self.butler_plans();
-        let (inner, rt_state) =
-            crate::butler::control::take_streaming_unit(&plans, channel_index)?;
-
-        // file_sr / session_sr is the src_ratio the butler set on the plan; the
-        // reader's placement gate converts transport seconds → file samples with
-        // the file's own rate, so recover it from that ratio.
-        let file_sample_rate = self.sample_rate * rt_state.src_ratio().get() as f64;
-
-        Some(StreamingClipReader::new(
-            inner,
-            rt_state,
-            StreamingClipConfig {
-                placement: TransportPlacement {
-                    transport,
-                    start_beat,
-                    duration_beats: duration,
-                },
-                file_sample_rate,
-            },
-        ))
-    }
-
-    /// Enable/replace looping on a streaming clip's channel.
-    ///
-    /// `range` is `(loop_start, loop_end)` in file samples. Forwards
-    /// [`SetStreamLoop`](ButlerCommand::SetStreamLoop) to the butler, which
-    /// builds the loop config the refill/wrap loop respects.
-    pub fn set_clip_stream_loop(
-        &self,
-        channel_index: usize,
-        range: (SamplePosition, SamplePosition),
-        crossfade_samples: usize,
-    ) {
-        let _ = self.butler_tx.send_blocking(ButlerCommand::SetStreamLoop {
-            channel_index,
-            range: (
-                range.0.get().max(0.0) as u64,
-                range.1.get().max(0.0) as u64,
-            ),
-            crossfade_samples,
-        });
-    }
-
-    /// Disable looping on a streaming clip's channel.
-    pub fn clear_clip_stream_loop(&self, channel_index: usize) {
-        let _ = self
-            .butler_tx
-            .send_blocking(ButlerCommand::ClearStreamLoop { channel_index });
-    }
-
-    /// Reposition a streaming clip's channel to an absolute file sample offset
-    /// (timeline seek). Forwards [`SeekStream`](ButlerCommand::SeekStream); the
-    /// butler applies the channel's PDC preroll and repositions the live stream
-    /// click-free (flush + seek + crossfade).
-    pub fn seek_clip_stream(&self, channel_index: usize, file_position: SamplePosition) {
-        let _ = self.butler_tx.send_blocking(ButlerCommand::SeekStream {
-            channel_index,
-            file_position: file_position.get().max(0.0) as u64,
-        });
-    }
-
-    /// Set varispeed (playback speed + direction) on a streaming clip's channel.
-    /// `speed = 1.0` is normal; `direction` flips playback direction. Forwards
-    /// [`SetVarispeed`](ButlerCommand::SetVarispeed).
-    pub fn set_clip_stream_speed(&self, channel_index: usize, speed: Ratio, direction: Direction) {
-        crate::butler::control::set_varispeed(
-            &self.butler_tx,
-            channel_index,
-            speed.get(),
-            direction.is_reverse(),
-        );
-    }
-
-    /// Stop a streaming clip's channel — drops its ring + link.
-    pub fn stop_clip_stream(&self, channel_index: usize) {
-        crate::butler::control::stop_stream(&self.butler_tx, channel_index);
     }
 
     /// Build a low-latency [`Auditioner`](crate::Auditioner) for previewing
@@ -262,7 +156,7 @@ mod tests {
         // A fresh butler has read nothing and an empty cache.
         let plans = sampler.butler_plans();
         assert!(plans.is_empty());
-        assert_eq!(sampler.sample_rate(), 44100.0);
+        assert_eq!(sampler.status().sample_rate(), 44100.0);
     }
 
     #[test]

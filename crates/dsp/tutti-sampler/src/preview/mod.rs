@@ -101,7 +101,7 @@ impl Auditioner {
             playing: Arc::new(AtomicBool::new(false)),
             gain: Arc::new(AtomicF32::new(1.0)),
             speed: Arc::new(AtomicF32::new(1.0)),
-            session_sample_rate: sampler.sample_rate(),
+            session_sample_rate: sampler.status().sample_rate(),
         }
     }
 

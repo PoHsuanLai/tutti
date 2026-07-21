@@ -2,8 +2,8 @@
 
 /// Flush a subnormal (denormal) float to zero.
 ///
-/// The phase-vocoder and granular overlap-add FIFOs are IIR-like accumulators:
-/// on a silent tail they can decay into the subnormal range, where x86 FPUs
+/// The phase-vocoder overlap-add FIFO is an IIR-like accumulator:
+/// on a silent tail it can decay into the subnormal range, where x86 FPUs
 /// trap into microcode and cause large CPU spikes. Snapping subnormals to zero
 /// avoids that. It never changes audible output — subnormals are below
 /// `~1.2e-38`, far under any perceptible level and under the noise floor of
@@ -124,9 +124,6 @@ pub enum Algorithm {
     /// Phase vocoder (FFT-based) - best for melodic/pitched content
     #[default]
     PhaseVocoder,
-
-    /// Granular synthesis - best for drums/transients
-    Granular,
 }
 
 /// FFT size presets for latency/quality trade-off

@@ -359,26 +359,12 @@ impl SamplerUnit {
     #[inline]
     pub fn transport_sample_position(&self) -> Option<f64> {
         let placement = self.placement.as_ref()?;
-        let transport = &placement.transport;
-        if !transport.is_playing() {
-            return None;
-        }
-        let current_beat = transport.current_beat();
-        let beat_offset = current_beat - placement.start_beat.get();
-        if beat_offset < 0.0 {
-            return None;
-        }
-        if let Some(dur) = placement.duration_beats {
-            if beat_offset >= dur.get() {
-                return None;
-            }
-        }
-        let tempo = transport.tempo().get();
-        if tempo <= 0.0 {
-            return None;
-        }
-        let seconds_offset = beat_offset * 60.0 / tempo;
-        Some(seconds_offset * self.wave.sample_rate())
+        super::interp::transport_sample_offset(
+            placement.transport.as_ref(),
+            placement.start_beat,
+            placement.duration_beats,
+            self.wave.sample_rate(),
+        )
     }
 }
 

@@ -11,7 +11,51 @@
 //! so it is safe to call from `process`/`tick` hot paths.
 
 use std::sync::Arc;
-use tutti_core::Wave;
+use tutti_core::{BeatDuration, BeatPosition, TransportReader, Wave};
+
+/// Clip-relative sample offset the playhead sits at, or `None` when it is
+/// outside the clip's transport window.
+///
+/// The single source of truth for the transport-placement gate shared by the
+/// in-memory [`SamplerUnit`](super::sampler_unit::SamplerUnit) and the
+/// disk-streaming
+/// [`StreamingClipReader`](super::streaming_sampler::StreamingClipReader).
+/// Callers differ only in how they obtain `file_sample_rate` (the in-memory
+/// unit reads `wave.sample_rate()`, the streaming reader stores it), so it is
+/// passed in to keep this source-agnostic.
+///
+/// Returns `None` when the transport is stopped, the playhead is before
+/// `start_beat`, past `duration`, or the tempo is non-positive. Otherwise the
+/// value is `beat_offset * 60 / tempo * file_sample_rate`.
+///
+/// Pure arithmetic: no allocation, no locks — safe from `tick`/`process` hot
+/// paths.
+#[inline]
+pub fn transport_sample_offset(
+    transport: &dyn TransportReader,
+    start_beat: BeatPosition,
+    duration: Option<BeatDuration>,
+    file_sample_rate: f64,
+) -> Option<f64> {
+    if !transport.is_playing() {
+        return None;
+    }
+    let beat_offset = transport.current_beat() - start_beat.get();
+    if beat_offset < 0.0 {
+        return None;
+    }
+    if let Some(dur) = duration {
+        if beat_offset >= dur.get() {
+            return None;
+        }
+    }
+    let tempo = transport.tempo().get();
+    if tempo <= 0.0 {
+        return None;
+    }
+    let seconds_offset = beat_offset * 60.0 / tempo;
+    Some(seconds_offset * file_sample_rate)
+}
 
 /// Catmull-Rom cubic Hermite interpolation across four consecutive taps.
 ///

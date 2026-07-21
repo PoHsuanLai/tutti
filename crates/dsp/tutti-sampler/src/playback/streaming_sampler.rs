@@ -464,28 +464,17 @@ impl StreamingClipReader {
     }
 
     /// Clip-relative sample offset the playhead sits at, or `None` when it is
-    /// outside the clip window. A verbatim port of
-    /// [`SamplerUnit::transport_sample_position`] — the one gate definition.
+    /// outside the clip window. Delegates to the shared
+    /// [`transport_sample_offset`](super::interp::transport_sample_offset) — the
+    /// one gate definition, also used by [`SamplerUnit`].
     #[inline]
     fn placement_sample_offset(&self) -> Option<f64> {
-        if !self.transport.is_playing() {
-            return None;
-        }
-        let beat_offset = self.transport.current_beat() - self.start_beat.get();
-        if beat_offset < 0.0 {
-            return None;
-        }
-        if let Some(dur) = self.duration {
-            if beat_offset >= dur.get() {
-                return None;
-            }
-        }
-        let tempo = self.transport.tempo().get();
-        if tempo <= 0.0 {
-            return None;
-        }
-        let seconds_offset = beat_offset * 60.0 / tempo;
-        Some(seconds_offset * self.file_sample_rate)
+        super::interp::transport_sample_offset(
+            self.transport.as_ref(),
+            self.start_beat,
+            self.duration,
+            self.file_sample_rate,
+        )
     }
 
     /// Ask the butler to stream from `target_offset` (clip-relative samples).

@@ -5,55 +5,47 @@ use tutti_core::{AtomicF32, AudioUnit, BufferMut, BufferRef, Cents, Ordering, Ra
 
 use tutti_core::RtScratch;
 
-use super::granular::{GrainSize, GranularProcessor};
 use super::phase_vocoder::PhaseVocoderProcessor;
 use super::types::{Algorithm, FftSize};
 
 enum Processor {
     PhaseVocoder(PhaseVocoderProcessor),
-    Granular(GranularProcessor),
 }
 
 impl Processor {
     fn latency_samples(&self) -> usize {
         match self {
             Self::PhaseVocoder(p) => p.latency_samples(),
-            Self::Granular(p) => p.latency_samples(),
         }
     }
 
     fn reset(&mut self) {
         match self {
             Self::PhaseVocoder(p) => p.reset(),
-            Self::Granular(p) => p.reset(),
         }
     }
 
     fn set_sample_rate(&mut self, sr: tutti_core::SampleRate) {
         match self {
             Self::PhaseVocoder(p) => p.set_sample_rate(sr),
-            Self::Granular(p) => p.set_sample_rate(sr),
         }
     }
 
     fn push_input(&mut self, samples: &[f32]) {
         match self {
             Self::PhaseVocoder(p) => p.push_input(samples),
-            Self::Granular(p) => p.push_input(samples),
         }
     }
 
     fn process(&mut self, stretch: f32, pitch_ratio: f32) {
         match self {
             Self::PhaseVocoder(p) => p.process(stretch, pitch_ratio),
-            Self::Granular(p) => p.process(stretch, pitch_ratio),
         }
     }
 
     fn pop_output(&mut self, output: &mut [f32]) -> usize {
         match self {
             Self::PhaseVocoder(p) => p.pop_output(output),
-            Self::Granular(p) => p.pop_output(output),
         }
     }
 }
@@ -62,7 +54,6 @@ impl Clone for Processor {
     fn clone(&self) -> Self {
         match self {
             Self::PhaseVocoder(p) => Self::PhaseVocoder(p.clone()),
-            Self::Granular(p) => Self::Granular(p.clone()),
         }
     }
 }
@@ -114,32 +105,6 @@ impl Unit {
             pitch_cents: Arc::new(AtomicF32::new(0.0)),
             enabled: true,
             algorithm: Algorithm::PhaseVocoder,
-            sample_rate,
-            source_buffer: vec![0.0; 2],
-            scratch_left: RtScratch::new(MAX_BUFFER_SIZE),
-            scratch_right: RtScratch::new(MAX_BUFFER_SIZE),
-            scratch_out_left: RtScratch::new(MAX_BUFFER_SIZE),
-            scratch_out_right: RtScratch::new(MAX_BUFFER_SIZE),
-        }
-    }
-
-    /// Create with granular algorithm (better for drums/transients)
-    ///
-    /// Note: Granular does NOT support pitch shifting - use phase vocoder for that.
-    pub fn with_granular(
-        source: Box<dyn AudioUnit>,
-        sample_rate: impl Into<tutti_core::SampleRate>,
-        grain_size: GrainSize,
-    ) -> Self {
-        let sample_rate = sample_rate.into().get();
-        Self {
-            source,
-            processor_left: Processor::Granular(GranularProcessor::new(grain_size, sample_rate)),
-            processor_right: Processor::Granular(GranularProcessor::new(grain_size, sample_rate)),
-            stretch_factor: Arc::new(AtomicF32::new(1.0)),
-            pitch_cents: Arc::new(AtomicF32::new(0.0)),
-            enabled: true,
-            algorithm: Algorithm::Granular,
             sample_rate,
             source_buffer: vec![0.0; 2],
             scratch_left: RtScratch::new(MAX_BUFFER_SIZE),
@@ -443,12 +408,6 @@ mod tests {
         let unit = Unit::new(Box::new(PassthroughUnit), 44100.0);
         assert_eq!(unit.algorithm(), Algorithm::PhaseVocoder);
         assert_eq!(unit.outputs(), 2);
-    }
-
-    #[test]
-    fn test_granular_creation() {
-        let unit = Unit::with_granular(Box::new(PassthroughUnit), 44100.0, GrainSize::Medium);
-        assert_eq!(unit.algorithm(), Algorithm::Granular);
     }
 
     #[test]

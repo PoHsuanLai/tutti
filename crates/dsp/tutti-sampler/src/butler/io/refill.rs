@@ -295,6 +295,39 @@ fn refill_one(
     }
 }
 
+/// Wrap a forward playback position back into a loop range.
+///
+/// When `pos` has reached or passed `loop_end`, folds it back to
+/// `loop_start + (pos - loop_start) % loop_len`; otherwise returns `pos`
+/// unchanged. The single source of truth for the loop-wrap arithmetic shared by
+/// the streaming and whole-file forward refills. Pure `usize` arithmetic.
+#[inline]
+fn wrap_pos(pos: usize, loop_start: usize, loop_end: usize, loop_len: usize) -> usize {
+    if pos >= loop_end {
+        loop_start + ((pos - loop_start) % loop_len)
+    } else {
+        pos
+    }
+}
+
+/// Read one stereo frame from `wave` at integer index `idx`, with mono → stereo
+/// fan-out and `(0.0, 0.0)` past the end of the wave.
+///
+/// The single source of truth for the butler-thread frame read shared by the
+/// forward/reverse refills here and the crossfade capture in
+/// [`loops`](super::loops). Butler-thread only (alloc is allowed on this
+/// thread), but the helper itself is a cheap pure fn.
+#[inline]
+pub(super) fn wave_frame(wave: &Wave, idx: usize, channels: usize) -> (f32, f32) {
+    if idx >= wave.len() {
+        (0.0, 0.0)
+    } else {
+        let left = wave.at(0, idx);
+        let right = if channels > 1 { wave.at(1, idx) } else { left };
+        (left, right)
+    }
+}
+
 /// Fill buffer with forward samples (no ring buffer write).
 #[inline]
 fn fill_buffer_forward(
@@ -305,19 +338,7 @@ fn fill_buffer_forward(
     buffer: &mut Vec<(f32, f32)>,
 ) {
     for i in 0..chunk_size {
-        let sample_idx = file_position + i;
-        let sample = if sample_idx >= wave.len() {
-            (0.0, 0.0)
-        } else {
-            let left = wave.at(0, sample_idx);
-            let right = if channels > 1 {
-                wave.at(1, sample_idx)
-            } else {
-                left
-            };
-            (left, right)
-        };
-        buffer.push(sample);
+        buffer.push(wave_frame(wave, file_position + i, channels));
     }
 }
 
@@ -341,16 +362,7 @@ fn fill_buffer_reverse(
     }
 
     let temp: Vec<(f32, f32)> = (0..actual_chunk)
-        .map(|i| {
-            let sample_idx = read_start + i;
-            let left = wave.at(0, sample_idx);
-            let right = if channels > 1 {
-                wave.at(1, sample_idx)
-            } else {
-                left
-            };
-            (left, right)
-        })
+        .map(|i| wave_frame(wave, read_start + i, channels))
         .collect();
 
     for sample in temp.into_iter().rev() {
@@ -392,9 +404,7 @@ fn refill_forward_stream(
     let mut pos = file_position;
     while filled < chunk_size {
         if let Some((loop_start, loop_end, loop_len)) = loop_bounds {
-            if pos >= loop_end {
-                pos = loop_start + ((pos - loop_start) % loop_len);
-            }
+            pos = wrap_pos(pos, loop_start, loop_end, loop_len);
             let run = (loop_end - pos).min(chunk_size - filled);
             let _ = decoder.read_range(pos as u64, &mut interleave_buffer[filled..filled + run]);
             filled += run;
@@ -411,9 +421,7 @@ fn refill_forward_stream(
 
     let mut new_pos = file_position + written;
     if let Some((loop_start, loop_end, loop_len)) = loop_bounds {
-        if new_pos >= loop_end {
-            new_pos = loop_start + ((new_pos - loop_start) % loop_len);
-        }
+        new_pos = wrap_pos(new_pos, loop_start, loop_end, loop_len);
     }
     writer.set_file_position(new_pos as u64);
 }
@@ -474,20 +482,10 @@ fn refill_forward(
 
     for _ in 0..chunk_size {
         if let Some((loop_start, loop_end, loop_len)) = loop_bounds {
-            if pos >= loop_end {
-                pos = loop_start + ((pos - loop_start) % loop_len);
-            }
+            pos = wrap_pos(pos, loop_start, loop_end, loop_len);
         }
 
-        let sample = if pos >= wave.len() {
-            (0.0, 0.0)
-        } else {
-            let left = wave.at(0, pos);
-            let right = if channels > 1 { wave.at(1, pos) } else { left };
-            (left, right)
-        };
-
-        interleave_buffer.push(sample);
+        interleave_buffer.push(wave_frame(wave, pos, channels));
         pos += 1;
     }
 
@@ -495,9 +493,7 @@ fn refill_forward(
 
     let mut new_pos = file_position + written;
     if let Some((loop_start, loop_end, loop_len)) = loop_bounds {
-        if new_pos >= loop_end {
-            new_pos = loop_start + ((new_pos - loop_start) % loop_len);
-        }
+        new_pos = wrap_pos(new_pos, loop_start, loop_end, loop_len);
     }
     writer.set_file_position(new_pos as u64);
 }
@@ -526,14 +522,7 @@ fn refill_reverse(
 
     interleave_buffer.clear();
     for i in 0..actual_chunk {
-        let sample_idx = read_start + i;
-        let left = wave.at(0, sample_idx);
-        let right = if channels > 1 {
-            wave.at(1, sample_idx)
-        } else {
-            left
-        };
-        interleave_buffer.push((left, right));
+        interleave_buffer.push(wave_frame(wave, read_start + i, channels));
     }
 
     let written = writer.write_reversed(interleave_buffer);

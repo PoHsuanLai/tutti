@@ -33,17 +33,15 @@
 //! lives at the bottom of this module; the playback system wraps a
 //! `SamplerUnit` in a [`Unit`] when a `TimeStretch` is present.
 
-mod granular;
 mod phase_vocoder;
 mod types;
 mod unit;
 
-pub use granular::GrainSize;
 pub use types::{Algorithm, FftSize, Params};
 pub use unit::Unit;
 
 // ───────────────────────────── ECS layer ───────────────────────────
-// Gated behind `bevy`: the DSP (granular / phase_vocoder / unit) above is free.
+// Gated behind `bevy`: the DSP (phase_vocoder / unit) above is free.
 
 #[cfg(feature = "bevy")]
 pub use ecs::*;

@@ -4,7 +4,7 @@ use super::super::cache::LruCache;
 use super::super::metrics::Metrics;
 use super::super::plan::{ChannelPlan, LoopStatus};
 use super::super::region_map::RegionMap;
-use super::refill::load_wave;
+use super::refill::{load_wave, wave_frame};
 use dashmap::DashMap;
 use std::path::PathBuf;
 use tutti_core::Wave;
@@ -98,14 +98,7 @@ pub(crate) fn capture_samples(wave: &Wave, start: usize, count: usize) -> Vec<(f
     let mut samples = Vec::with_capacity(count);
     let channels = wave.channels();
     for i in 0..count {
-        let idx = start + i;
-        if idx < wave.len() {
-            let left = wave.at(0, idx);
-            let right = if channels > 1 { wave.at(1, idx) } else { left };
-            samples.push((left, right));
-        } else {
-            samples.push((0.0, 0.0));
-        }
+        samples.push(wave_frame(wave, start + i, channels));
     }
     samples
 }
@@ -164,14 +157,7 @@ pub(crate) fn fadein_samples(
     let channels = wave.channels();
 
     for i in 0..count {
-        let idx = position_samples as usize + i;
-        if idx >= wave.len() {
-            samples.push((0.0, 0.0));
-        } else {
-            let left = wave.at(0, idx);
-            let right = if channels > 1 { wave.at(1, idx) } else { left };
-            samples.push((left, right));
-        }
+        samples.push(wave_frame(&wave, position_samples as usize + i, channels));
     }
 
     samples

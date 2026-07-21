@@ -71,13 +71,22 @@ pub fn note_id_for(channel: u8, note: u8) -> i32 {
     (channel as i32) * 128 + (note as i32)
 }
 
-/// Recover the `(channel, note)` a [`note_id_for`] id was built from. Ids at the
-/// `-1` wildcard (or otherwise negative) clamp to 0 before the `/128`, `%128`
-/// split so a round-tripped NoteExpression stays bound to its note.
+/// Largest `note_id` [`note_id_for`] can mint: channel 15, note 127.
+const MAX_HOST_NOTE_ID: i32 = 15 * 128 + 127;
+
+/// Recover the `(channel, note)` a [`note_id_for`] id was built from, or `None`
+/// if `note_id` is outside the host-minted range `0..=MAX_HOST_NOTE_ID`.
+///
+/// A CLAP plugin may assign per-note events its *own* `note_id` space; such an
+/// id is not `channel * 128 + note` and must not be force-decoded — masking it
+/// would bind the event to a phantom `(channel, note)`. Callers skip the event
+/// instead. (The `-1` wildcard is likewise out of range → `None`.)
 #[inline]
-fn note_id_to_channel_note(note_id: i32) -> (u8, u8) {
-    let id = note_id.max(0);
-    (((id / 128) & 0x0F) as u8, ((id % 128) & 0x7F) as u8)
+fn note_id_to_channel_note(note_id: i32) -> Option<(u8, u8)> {
+    if !(0..=MAX_HOST_NOTE_ID).contains(&note_id) {
+        return None;
+    }
+    Some(((note_id / 128) as u8, (note_id % 128) as u8))
 }
 
 /// Map a MIDI-2 per-note controller index to the CLAP note-expression it
@@ -369,7 +378,10 @@ impl ClapEvent {
         let (channel, note) = if e.channel >= 0 && e.key >= 0 {
             (e.channel as u8 & 0x0F, e.key as u8 & 0x7F)
         } else {
-            note_id_to_channel_note(e.note_id)
+            // No stamped channel/key: fall back to the host-minted note_id. A
+            // plugin's own note_id space can't be decoded — skip rather than
+            // bind to a phantom voice.
+            note_id_to_channel_note(e.note_id)?
         };
         let time = e.header.time;
 

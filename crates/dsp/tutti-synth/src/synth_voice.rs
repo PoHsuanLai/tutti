@@ -51,16 +51,8 @@ impl SynthVoice {
     pub(crate) fn channel(&self) -> u8 {
         self.channel
     }
-    #[allow(dead_code)]
-    pub(crate) fn velocity(&self) -> f32 {
-        self.velocity
-    }
     pub(crate) fn is_active(&self) -> bool {
         self.active
-    }
-    #[allow(dead_code)]
-    pub(crate) fn envelope_level(&self) -> f32 {
-        self.envelope_level
     }
     pub(crate) fn gate_value(&self) -> f32 {
         self.gate.value()
@@ -264,16 +256,14 @@ impl SynthVoice {
             right += mono_sample * right_gain;
         }
 
-        let pressure_gain = if self.mpe_enabled {
-            1.0 + self.mpe.pressure * 0.5
+        let (pressure_gain, note_gain) = if self.mpe_enabled {
+            (1.0 + self.mpe.pressure * 0.5, self.mpe.gain)
         } else {
-            1.0
+            (1.0, 1.0)
         };
 
-        (
-            left * self.velocity * pressure_gain,
-            right * self.velocity * pressure_gain,
-        )
+        let voice_gain = self.velocity * pressure_gain * note_gain;
+        (left * voice_gain, right * voice_gain)
     }
 
     fn update_modulated_filter(&mut self) {
@@ -362,6 +352,10 @@ impl SynthVoice {
         self.mpe.slide = slide.clamp(0.0, 1.0);
     }
 
+    pub(crate) fn set_mpe_gain(&mut self, gain: f32) {
+        self.mpe.gain = gain.clamp(0.0, 1.0);
+    }
+
     /// Reset this voice's per-note expression (pitch bend, pressure, slide) to
     /// their defaults. Backs MIDI 2.0 Per-Note Management *Reset* (M2-104
     /// §7.4.15): the voice keeps sounding, only its accumulated per-note
@@ -391,8 +385,10 @@ impl SynthVoice {
             }
         }
 
-        if self.mpe.slide.abs() > 0.001 || (self.mpe.slide - 0.5).abs() > 0.001 {
-            let factor = (4.0_f32).powf(self.mpe.slide - 0.5);
+        // Slide modulates filter cutoff around its center; skip only when the
+        // slide is at center (no timbre shift), leaving the base cutoff intact.
+        if (self.mpe.slide - crate::voice::SLIDE_CENTER).abs() > 0.001 {
+            let factor = (4.0_f32).powf(self.mpe.slide - crate::voice::SLIDE_CENTER);
             self.filter_cutoff.set(self.base_filter_cutoff * factor);
         }
     }

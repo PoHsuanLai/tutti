@@ -5,36 +5,49 @@
 //! (M2-104 §7.1.1). The JR Timestamp constructor lives in the parent module;
 //! Start/End-of-Clip (also UMP Stream) are built by the clip-file codec.
 
+use bitflags::bitflags;
 use midi2::prelude::*;
 
 use super::MidiEvent;
 
+bitflags! {
+    /// Which Endpoint Discovery replies to request (M2-104 §7.1.1). Each bit
+    /// asks the peer for one reply message; OR them together.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct EndpointDiscoveryRequest: u8 {
+        const ENDPOINT_INFO         = 1 << 0;
+        const DEVICE_IDENTITY       = 1 << 1;
+        const ENDPOINT_NAME         = 1 << 2;
+        const PRODUCT_INSTANCE_ID    = 1 << 3;
+        const STREAM_CONFIGURATION  = 1 << 4;
+    }
+}
+
 impl MidiEvent {
     /// UMP Stream **Endpoint Discovery** — the protocol-negotiation request an
     /// endpoint sends to learn a peer's capabilities. `ump_major`/`ump_minor`
-    /// are the supported UMP version; the `request_*` flags select which replies
-    /// to ask for (endpoint info / device identity / name / product id / stream
-    /// configuration).
+    /// are the supported UMP version; `request` selects which replies to ask for.
     #[inline]
-    #[allow(clippy::too_many_arguments)]
     pub fn endpoint_discovery(
         ump_major: u8,
         ump_minor: u8,
-        request_endpoint_info: bool,
-        request_device_identity: bool,
-        request_endpoint_name: bool,
-        request_product_instance_id: bool,
-        request_stream_configuration: bool,
+        request: EndpointDiscoveryRequest,
     ) -> Self {
         use midi2::ump_stream::EndpointDiscovery;
         let mut m = EndpointDiscovery::<[u32; 4]>::new();
         m.set_ump_version_major(ump_major);
         m.set_ump_version_minor(ump_minor);
-        m.set_request_endpoint_info(request_endpoint_info);
-        m.set_request_device_identity(request_device_identity);
-        m.set_request_endpoint_name(request_endpoint_name);
-        m.set_request_product_instance_id(request_product_instance_id);
-        m.set_request_stream_configuration(request_stream_configuration);
+        m.set_request_endpoint_info(request.contains(EndpointDiscoveryRequest::ENDPOINT_INFO));
+        m.set_request_device_identity(
+            request.contains(EndpointDiscoveryRequest::DEVICE_IDENTITY),
+        );
+        m.set_request_endpoint_name(request.contains(EndpointDiscoveryRequest::ENDPOINT_NAME));
+        m.set_request_product_instance_id(
+            request.contains(EndpointDiscoveryRequest::PRODUCT_INSTANCE_ID),
+        );
+        m.set_request_stream_configuration(
+            request.contains(EndpointDiscoveryRequest::STREAM_CONFIGURATION),
+        );
         Self::from_ump(0, m.data())
     }
 
@@ -81,7 +94,11 @@ mod tests {
     fn endpoint_discovery_decodes_via_midi2() {
         use midi2::ump_stream::UmpStream;
         use midi2::UmpMessage;
-        let ev = MidiEvent::endpoint_discovery(1, 1, true, false, true, false, false);
+        let ev = MidiEvent::endpoint_discovery(
+            1,
+            1,
+            EndpointDiscoveryRequest::ENDPOINT_INFO | EndpointDiscoveryRequest::ENDPOINT_NAME,
+        );
         match UmpMessage::try_from(ev.data_words()).unwrap() {
             UmpMessage::UmpStream(UmpStream::EndpointDiscovery(m)) => {
                 assert_eq!(m.ump_version_major(), 1);

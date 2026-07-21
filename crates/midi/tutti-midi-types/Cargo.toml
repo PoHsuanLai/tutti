@@ -19,6 +19,9 @@ std = []
 
 [dependencies]
 libm = "0.2"
+# no_std by default; matches the `bitflags!` convention used across tutti
+# (tutti-clap-host, tutti-plugin-types).
+bitflags = { version = "2", default-features = false }
 # Polyfills AtomicU64 on 32-bit targets without native 64-bit atomics
 # (e.g. thumbv7em-none-eabihf). On targets with native support (x86_64,
 # aarch64, wasm32) this is a zero-cost alias for core::sync::atomic::AtomicU64.

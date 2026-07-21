@@ -84,10 +84,14 @@ impl PerNoteExpression {
         self.notes.remove(id);
     }
 
+    // Setters address an *already-sounding* note, so they update via `get`
+    // (never `entry`): a stray or post-note-off expression message must not
+    // claim a slot, or the fixed-capacity map would leak until `reset`.
+
     /// `value`: -1.0 to 1.0
     #[inline]
     pub fn set_pitch_bend(&self, id: NoteId, value: f32) {
-        if let Some(slot) = self.notes.entry(id) {
+        if let Some(slot) = self.notes.get(id) {
             slot.pitch_bend
                 .store(value.clamp(-1.0, 1.0), Ordering::Release);
         }
@@ -96,7 +100,7 @@ impl PerNoteExpression {
     /// `value`: 0.0 to 1.0
     #[inline]
     pub fn set_pressure(&self, id: NoteId, value: f32) {
-        if let Some(slot) = self.notes.entry(id) {
+        if let Some(slot) = self.notes.get(id) {
             slot.pressure.store(value.clamp(0.0, 1.0), Ordering::Release);
         }
     }
@@ -104,7 +108,7 @@ impl PerNoteExpression {
     /// CC74 slide. `value`: 0.0 to 1.0
     #[inline]
     pub fn set_slide(&self, id: NoteId, value: f32) {
-        if let Some(slot) = self.notes.entry(id) {
+        if let Some(slot) = self.notes.get(id) {
             slot.slide.store(value.clamp(0.0, 1.0), Ordering::Release);
         }
     }
@@ -239,6 +243,7 @@ mod tests {
     fn test_expression_clamping() {
         let expr = PerNoteExpression::new();
         let n60 = id(0, 60);
+        expr.note_on(n60); // setters address a sounding note
 
         expr.set_pitch_bend(n60, 2.0);
         assert!((expr.get_pitch_bend(n60) - 1.0).abs() < 0.001);
@@ -248,6 +253,28 @@ mod tests {
 
         expr.set_pressure(n60, 1.5);
         assert!((expr.get_pressure(n60) - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn stray_setters_do_not_claim_slots() {
+        // Per-note expression for notes that never sounded (or arriving after
+        // note-off) must NOT consume capacity — else the fixed-size map leaks and
+        // eventually drops legitimate note-ons. Setters update via `get`, so an
+        // unclaimed id stays absent.
+        let expr = PerNoteExpression::new();
+        for note in 0..200u32 {
+            let stray = NoteId::from_raw(note + 1); // never note_on'd
+            expr.set_pitch_bend(stray, 0.5);
+            expr.set_pressure(stray, 0.5);
+            expr.set_slide(stray, 0.5);
+            assert!(!expr.is_active(stray));
+        }
+        // The map (128 slots) is still fully open: a real note claims cleanly.
+        let real = id(0, 60);
+        expr.note_on(real);
+        assert!(expr.is_active(real));
+        expr.set_pitch_bend(real, 0.7);
+        assert!((expr.get_pitch_bend_per_note(real) - 0.7).abs() < 0.001);
     }
 
     #[test]

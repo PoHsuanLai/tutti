@@ -300,19 +300,29 @@ impl PolySynth {
                 let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
                 self.set_voice_mpe_pressure(id, u32_to_unit_f32(m.key_pressure_data()));
             }
-            Cv2::AssignablePerNoteController(m) if m.index() == cc::BRIGHTNESS => {
+            // Assignable per-note controllers carry a raw index. We honor the dims
+            // the synth voice can apply: CC74 → slide, CC7 → per-note gain.
+            Cv2::AssignablePerNoteController(m) => {
                 let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
-                self.set_voice_mpe_slide(id, u32_to_unit_f32(m.controller_data()));
+                let data = u32_to_unit_f32(m.controller_data());
+                match m.index() {
+                    cc::BRIGHTNESS => self.set_voice_mpe_slide(id, data),
+                    cc::VOLUME => self.set_voice_mpe_gain(id, data),
+                    _ => {}
+                }
             }
             // Registered per-note controllers carry a *semantic* controller enum
-            // (index resolved to Volume/Pan/Brightness/…). We honor only the dims
-            // the synth voice can actually apply: CC74 (Brightness / SoundController
-            // index 5) → per-note slide. Volume/Pan are recognized-but-unwired
-            // (no per-note gain/pan DSP on `SynthVoice` yet — don't invent it).
+            // (index resolved to Volume/Pan/Brightness/…). We honor the dims the
+            // synth voice can apply: Volume → per-note gain, Brightness (CC74 /
+            // SoundController index 5) → slide. Pan stays recognized-but-unwired
+            // (no per-note pan DSP on `SynthVoice` yet — don't invent it).
             Cv2::RegisteredPerNoteController(m) => {
                 use tutti_midi_types::midi2::channel_voice2::Controller;
                 let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
                 match m.controller() {
+                    Controller::Volume(data) => {
+                        self.set_voice_mpe_gain(id, u32_to_unit_f32(data));
+                    }
                     Controller::Brightness(data)
                     | Controller::SoundController { index: 5, data } => {
                         self.set_voice_mpe_slide(id, u32_to_unit_f32(data));
@@ -384,20 +394,11 @@ impl PolySynth {
 
     fn handle_note_off(&mut self, note: u8, channel: u8) {
         let id = NoteId::from_channel_note(channel, note);
-        self.allocator.release(id, channel);
-
-        let slot_still_active = self.allocator.slots().iter().any(|s| {
-            s.id() == id && s.state() == crate::voice::VoiceState::Active
-        });
-
-        if !slot_still_active {
-            if let Some(voice) = self
-                .voices
-                .iter_mut()
-                .find(|v| v.is_active() && v.note() == note && v.channel() == channel)
-            {
-                voice.note_off();
-            }
+        // `release` resolves the exact voice by id and tells us whether it truly
+        // stopped (vs. held by a pedal). Gate that voice by index — never by a
+        // (note, channel) scan, which would alias two same-pitch voices.
+        if let Some(slot_index) = self.allocator.release(id, channel) {
+            self.voices[slot_index].note_off();
         }
     }
 
@@ -410,35 +411,42 @@ impl PolySynth {
             .position(|s| s.id() == id && s.state() != crate::voice::VoiceState::Idle)
     }
 
+    /// Apply `f` to the single voice bound to `id` (the per-note addressing
+    /// primitive every MIDI 2.0 per-note message routes through). No-op if no
+    /// voice currently holds `id`, so other voices are never disturbed.
+    #[inline]
+    fn with_voice_for_id(&mut self, id: NoteId, f: impl FnOnce(&mut SynthVoice)) {
+        if let Some(i) = self.voice_index_for_id(id) {
+            f(&mut self.voices[i]);
+        }
+    }
+
     /// MIDI 2.0 per-note pitch bend: modulate only the voice addressed by `id`.
     fn set_voice_mpe_pitch_bend(&mut self, id: NoteId, bend_norm: f32) {
         let semitones = tutti_core::Semitones(bend_norm * self.config.mpe_pitch_bend_range.get());
-        if let Some(i) = self.voice_index_for_id(id) {
-            self.voices[i].set_mpe_pitch_bend(semitones);
-        }
+        self.with_voice_for_id(id, |v| v.set_mpe_pitch_bend(semitones));
     }
 
     /// MIDI 2.0 per-note pressure (poly key pressure): only the addressed voice.
     fn set_voice_mpe_pressure(&mut self, id: NoteId, norm: f32) {
-        if let Some(i) = self.voice_index_for_id(id) {
-            self.voices[i].set_mpe_pressure(norm);
-        }
+        self.with_voice_for_id(id, |v| v.set_mpe_pressure(norm));
     }
 
     /// MIDI 2.0 per-note slide (CC74 / Brightness): only the addressed voice.
     fn set_voice_mpe_slide(&mut self, id: NoteId, value: f32) {
-        if let Some(i) = self.voice_index_for_id(id) {
-            self.voices[i].set_mpe_slide(value);
-        }
+        self.with_voice_for_id(id, |v| v.set_mpe_slide(value));
+    }
+
+    /// MIDI 2.0 per-note gain (per-note Volume / CC7): only the addressed voice.
+    fn set_voice_mpe_gain(&mut self, id: NoteId, value: f32) {
+        self.with_voice_for_id(id, |v| v.set_mpe_gain(value));
     }
 
     /// MIDI 2.0 Per-Note Management *Reset* (M2-104 §7.4.15): snap the addressed
-    /// voice's per-note controllers (pitch bend, pressure, slide) back to their
-    /// note-on defaults, leaving the note sounding. Other voices are untouched.
+    /// voice's per-note controllers (pitch bend, pressure, slide, gain) back to
+    /// their note-on defaults, leaving the note sounding. Others are untouched.
     fn reset_voice_mpe(&mut self, id: NoteId) {
-        if let Some(i) = self.voice_index_for_id(id) {
-            self.voices[i].reset_mpe();
-        }
+        self.with_voice_for_id(id, |v| v.reset_mpe());
     }
 
     fn handle_cc(&mut self, cc_num: u8, value: f32, channel: u8) {
@@ -2018,10 +2026,67 @@ mod tests {
             "note 60 slide should be full, got {}",
             slide(&synth, 60)
         );
+        // The unaddressed voice must keep its neutral default (center = no timbre
+        // shift), not be dragged along with note 60.
         assert!(
-            slide(&synth, 64).abs() < 0.01,
-            "note 64 (unaddressed) slide must stay 0, got {}",
+            (slide(&synth, 64) - crate::voice::SLIDE_CENTER).abs() < 0.01,
+            "note 64 (unaddressed) slide must stay at center, got {}",
             slide(&synth, 64)
+        );
+    }
+
+    #[test]
+    fn test_midi2_per_note_gain_addresses_only_one_voice() {
+        // Per-note Volume (CC7) — as clip Gain lanes emit it (Assignable index 7)
+        // and as a Registered Volume controller — must reach the addressed voice
+        // as gain, and leave others at unity.
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Sine,
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            },
+            mpe_enabled: true,
+            ..Default::default()
+        });
+
+        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+
+        let gain = |synth: &PolySynth, note: u8| {
+            synth
+                .voices
+                .iter()
+                .find(|v| v.is_active() && v.note() == note)
+                .unwrap()
+                .mpe_state()
+                .gain
+        };
+        // Fresh voices are at unity gain.
+        assert!((gain(&synth, 60) - 1.0).abs() < 0.01);
+        assert!((gain(&synth, 64) - 1.0).abs() < 0.01);
+
+        // Assignable per-note CC7 (the clip Gain-lane encoding) → half gain on 60.
+        queue_midi(
+            &synth,
+            &[MidiEvent::per_note_controller(0, 1, 60, 7, 0x8000_0000, false)],
+        );
+        synth.tick(&[], &mut output);
+        assert!(
+            (gain(&synth, 60) - 0.5).abs() < 0.02,
+            "note 60 gain should follow CC7, got {}",
+            gain(&synth, 60)
+        );
+        assert!(
+            (gain(&synth, 64) - 1.0).abs() < 0.01,
+            "note 64 (unaddressed) gain must stay unity, got {}",
+            gain(&synth, 64)
         );
     }
 

@@ -52,9 +52,11 @@ pub fn write_clip_file(ticks_per_quarter: u16, events: &[ClipEvent]) -> Vec<u8> 
     push_words(&mut out, delta_clockstamp(0).data_words());
     push_words(&mut out, start_of_clip().data_words());
 
-    // The timed event stream: each UMP preceded by its delta clockstamp.
+    // The timed event stream: each UMP preceded by its delta clockstamp(s).
+    // A DCS field is only 20 bits, so a delta beyond `DCS_MAX` is expressed as a
+    // chain of DCS messages that accumulate (M2-116 §3.2.3).
     for ev in events {
-        push_words(&mut out, delta_clockstamp(ev.delta_ticks).data_words());
+        push_delta(&mut out, ev.delta_ticks);
         push_words(&mut out, ev.event.data_words());
     }
 
@@ -71,15 +73,45 @@ pub struct ParsedClipFile {
     pub events: Vec<ClipEvent>,
 }
 
-/// Parse a MIDI Clip File (M2-116). Returns `None` on a bad magic, truncated
-/// data, or a missing DCTPQ. Delta Clockstamps set the delta of the following
-/// UMP; Start/End-of-Clip and the DCTPQ are structural and not returned as
-/// events. Unknown/utility messages between DCS and a real event are tolerated.
-pub fn read_clip_file(bytes: &[u8]) -> Option<ParsedClipFile> {
-    if bytes.len() < 8 || bytes[..8] != CLIP_FILE_MAGIC {
-        return None;
+/// Why a byte stream failed to parse as a MIDI Clip File (M2-116). Distinguishes
+/// "this isn't a clip file" from "this clip file is malformed" so a caller can
+/// react differently (e.g. try another importer vs. report corruption).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipFileError {
+    /// Fewer than 8 bytes, or the leading 8 bytes are not [`CLIP_FILE_MAGIC`].
+    BadMagic,
+    /// The body length is not a whole number of 32-bit UMP words.
+    Unaligned,
+    /// A UMP claims more words than remain in the stream.
+    Truncated,
+    /// No DCTPQ (tick-unit declaration) was seen before the events.
+    MissingDctpq,
+}
+
+impl core::fmt::Display for ClipFileError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let msg = match self {
+            Self::BadMagic => "not a MIDI Clip File (bad or missing SMF2CLIP magic)",
+            Self::Unaligned => "clip body is not 32-bit-word aligned",
+            Self::Truncated => "clip file is truncated mid-message",
+            Self::MissingDctpq => "clip file has no DCTPQ tick-unit declaration",
+        };
+        f.write_str(msg)
     }
-    let mut words = WordReader::new(&bytes[8..])?;
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ClipFileError {}
+
+/// Parse a MIDI Clip File (M2-116). Delta Clockstamps set the delta of the
+/// following UMP; Start/End-of-Clip and the DCTPQ are structural and not
+/// returned as events. Unknown/utility messages between a DCS and a real event
+/// are tolerated. See [`ClipFileError`] for the failure cases.
+pub fn read_clip_file(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
+    if bytes.len() < 8 || bytes[..8] != CLIP_FILE_MAGIC {
+        return Err(ClipFileError::BadMagic);
+    }
+    let mut words = WordReader::new(&bytes[8..]).ok_or(ClipFileError::Unaligned)?;
 
     let mut ticks_per_quarter = None;
     let mut events = Vec::new();
@@ -88,7 +120,7 @@ pub fn read_clip_file(bytes: &[u8]) -> Option<ParsedClipFile> {
     while let Some(word0) = words.peek() {
         let mt = (word0 >> 28) as u8;
         let n = crate::ump::ump_word_count(mt);
-        let raw = words.take(n)?;
+        let raw = words.take(n).ok_or(ClipFileError::Truncated)?;
         let ev = MidiEvent::from_ump(0, raw);
 
         // Classify by message type + status.
@@ -97,7 +129,9 @@ pub fn read_clip_file(bytes: &[u8]) -> Option<ParsedClipFile> {
             let status = ((word0 >> 20) & 0x0F) as u8;
             match status {
                 0x4 => {
-                    pending_delta = word0 & 0x000F_FFFF;
+                    // Delta Clockstamps accumulate: a chain of them (each ≤ 20
+                    // bits) expresses a delta larger than one field can hold.
+                    pending_delta = pending_delta.saturating_add(word0 & DCS_MAX);
                     continue;
                 }
                 0x3 => {
@@ -125,8 +159,8 @@ pub fn read_clip_file(bytes: &[u8]) -> Option<ParsedClipFile> {
         pending_delta = 0;
     }
 
-    Some(ParsedClipFile {
-        ticks_per_quarter: ticks_per_quarter?,
+    Ok(ParsedClipFile {
+        ticks_per_quarter: ticks_per_quarter.ok_or(ClipFileError::MissingDctpq)?,
         events,
     })
 }
@@ -139,10 +173,27 @@ fn push_words(out: &mut Vec<u8>, words: &[u32]) {
     }
 }
 
+/// Widest value a single 20-bit Delta Clockstamp field can carry.
+const DCS_MAX: u32 = 0x000F_FFFF;
+
 fn delta_clockstamp(ticks: u32) -> MidiEvent {
     let mut m = DeltaClockstamp::<[u32; 1]>::new();
-    m.set_time_data(u20::new(ticks & 0x000F_FFFF));
+    m.set_time_data(u20::new(ticks & DCS_MAX));
     MidiEvent::from_ump(0, m.data())
+}
+
+/// Emit `ticks` as one or more chained Delta Clockstamps. A single DCS field is
+/// 20 bits; a larger delta is split into full-width chunks that the reader sums
+/// (M2-116 §3.2.3). `0` still emits exactly one (zero) DCS.
+fn push_delta(out: &mut Vec<u8>, mut ticks: u32) {
+    loop {
+        let chunk = ticks.min(DCS_MAX);
+        push_words(out, delta_clockstamp(chunk).data_words());
+        ticks -= chunk;
+        if ticks == 0 {
+            break;
+        }
+    }
 }
 
 fn dctpq(ticks_per_quarter: u16) -> MidiEvent {
@@ -244,8 +295,42 @@ mod tests {
     }
 
     #[test]
-    fn bad_magic_is_rejected() {
-        assert!(read_clip_file(b"NOTACLIP\0\0\0\0").is_none());
-        assert!(read_clip_file(b"short").is_none());
+    fn large_delta_chains_and_round_trips() {
+        // A delta well beyond the 20-bit DCS field (0xFFFFF = 1_048_575) must
+        // survive via chained clockstamps rather than truncating.
+        let big = 3_000_000; // ~2.86 × DCS_MAX
+        let events = [
+            ClipEvent {
+                delta_ticks: big,
+                event: MidiEvent::note_on(0, 0, 60, 0x8000),
+            },
+            ClipEvent {
+                delta_ticks: DCS_MAX, // exactly one full field
+                event: MidiEvent::note_off(0, 0, 60, 0),
+            },
+        ];
+        let bytes = write_clip_file(480, &events);
+        let parsed = read_clip_file(&bytes).expect("parses");
+        assert_eq!(parsed.events.len(), 2);
+        assert_eq!(parsed.events[0].delta_ticks, big);
+        assert_eq!(parsed.events[1].delta_ticks, DCS_MAX);
+        assert_eq!(parsed.events, events);
+    }
+
+    #[test]
+    fn errors_distinguish_failure_modes() {
+        // Not a clip file at all.
+        assert_eq!(read_clip_file(b"NOTACLIP\0\0\0\0"), Err(ClipFileError::BadMagic));
+        assert_eq!(read_clip_file(b"short"), Err(ClipFileError::BadMagic));
+        // Right magic, but the body isn't word-aligned.
+        assert_eq!(
+            read_clip_file(b"SMF2CLIP\x00\x00\x00"),
+            Err(ClipFileError::Unaligned)
+        );
+        // Magic + aligned body, but no DCTPQ before EOF.
+        assert_eq!(
+            read_clip_file(b"SMF2CLIP"),
+            Err(ClipFileError::MissingDctpq)
+        );
     }
 }

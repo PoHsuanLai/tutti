@@ -10,6 +10,15 @@ use midi2::prelude::*;
 
 use super::MidiEvent;
 
+/// The three bar-accent positions of a Flex Data **Set Metronome** message: each
+/// marks a subdivision (in clicks) that receives an accent, `0` meaning "none".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BarAccents {
+    pub primary: u8,
+    pub secondary: u8,
+    pub tertiary: u8,
+}
+
 /// 10-nanosecond units in one minute — the numerator relating BPM to the Flex
 /// Data Set Tempo wire field (60 s = 6e9 × 10 ns). `bpm × ten_ns_per_qn = 6e9`.
 const TEN_NS_UNITS_PER_MINUTE: f64 = 600_000_000.0;
@@ -68,22 +77,16 @@ impl MidiEvent {
     }
 
     /// Flex Data **Set Metronome**. `clocks_per_click` = MIDI clocks per primary
-    /// click; the three bar accents mark which subdivisions are accented.
+    /// click; `accents` marks which bar subdivisions are accented.
     #[inline]
-    pub fn flex_set_metronome(
-        group: u8,
-        clocks_per_click: u8,
-        bar_accent1: u8,
-        bar_accent2: u8,
-        bar_accent3: u8,
-    ) -> Self {
+    pub fn flex_set_metronome(group: u8, clocks_per_click: u8, accents: BarAccents) -> Self {
         use midi2::flex_data::SetMetronome;
         let mut m = SetMetronome::<[u32; 4]>::new();
         m.set_group(u4::new(group & 0x0F));
         m.set_number_of_clocks_per_primary_click(clocks_per_click);
-        m.set_bar_accent1(bar_accent1);
-        m.set_bar_accent2(bar_accent2);
-        m.set_bar_accent3(bar_accent3);
+        m.set_bar_accent1(accents.primary);
+        m.set_bar_accent2(accents.secondary);
+        m.set_bar_accent3(accents.tertiary);
         Self::from_ump(0, m.data())
     }
 }
@@ -144,5 +147,25 @@ mod tests {
     #[test]
     fn flex_tempo_bpm_rejects_non_tempo() {
         assert!(flex_tempo_bpm(&MidiEvent::note_on(0, 0, 60, 0x8000)).is_none());
+    }
+
+    #[test]
+    fn flex_set_metronome_decodes_via_midi2() {
+        use midi2::flex_data::FlexData;
+        let accents = BarAccents {
+            primary: 24,
+            secondary: 12,
+            tertiary: 6,
+        };
+        let ev = MidiEvent::flex_set_metronome(0, 24, accents);
+        match midi2::UmpMessage::try_from(ev.data_words()).unwrap() {
+            midi2::UmpMessage::FlexData(FlexData::SetMetronome(m)) => {
+                assert_eq!(m.number_of_clocks_per_primary_click(), 24);
+                assert_eq!(m.bar_accent1(), 24);
+                assert_eq!(m.bar_accent2(), 12);
+                assert_eq!(m.bar_accent3(), 6);
+            }
+            other => panic!("expected SetMetronome, got {other:?}"),
+        }
     }
 }

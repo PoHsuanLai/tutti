@@ -23,22 +23,38 @@ impl VoiceId {
     }
 }
 
+/// Slide/timbre (CC74) center: 0.5 is "no timbre shift". The modulation math
+/// keys off this center (`4^(slide - SLIDE_CENTER)`), so both `Default` and
+/// `reset` must land here — a note with no CC74 must not shift its filter.
+pub(crate) const SLIDE_CENTER: f32 = 0.5;
+
 /// Per-voice MPE expression state.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct MpeVoiceState {
     /// Per-note pitch bend in semitones (range: -48..+48).
     pub pitch_bend_semitones: tutti_core::Semitones,
     /// Per-note pressure (0.0..1.0), from channel pressure.
     pub pressure: f32,
-    /// Per-note slide/timbre (0.0..1.0), from CC74.
+    /// Per-note slide/timbre (0.0..1.0), from CC74. Centered at [`SLIDE_CENTER`].
     pub slide: f32,
+    /// Per-note gain (0.0..1.0), from per-note Volume (CC7). `1.0` is unity.
+    pub gain: f32,
+}
+
+impl Default for MpeVoiceState {
+    fn default() -> Self {
+        Self {
+            pitch_bend_semitones: tutti_core::Semitones(0.0),
+            pressure: 0.0,
+            slide: SLIDE_CENTER,
+            gain: 1.0,
+        }
+    }
 }
 
 impl MpeVoiceState {
     pub fn reset(&mut self) {
-        self.pitch_bend_semitones = tutti_core::Semitones(0.0);
-        self.pressure = 0.0;
-        self.slide = 0.0;
+        *self = Self::default();
     }
 }
 
@@ -105,12 +121,6 @@ impl VoiceSlot {
     #[inline]
     pub(crate) fn channel(&self) -> u8 {
         self.channel
-    }
-
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn velocity(&self) -> f32 {
-        self.velocity
     }
 
     #[inline]
@@ -318,7 +328,12 @@ impl VoiceAllocator {
         }
     }
 
-    pub fn release(&mut self, id: NoteId, channel: u8) {
+    /// Process a note-off for `id`. Returns the slot whose voice should now be
+    /// gated off (the note actually stopped sounding), or `None` when the note
+    /// is held by sustain/sostenuto or no live voice matched `id`. The caller
+    /// gates the returned slot's voice directly — no note/channel re-scan.
+    pub fn release(&mut self, id: NoteId, channel: u8) -> Option<usize> {
+        let mut released = None;
         if let Some(slot_index) = self.id_to_slot.get(id).copied() {
             let slot = &mut self.slots[slot_index];
 
@@ -330,6 +345,7 @@ impl VoiceAllocator {
                 } else {
                     slot.set_state(VoiceState::Releasing);
                     self.id_to_slot.remove(id);
+                    released = Some(slot_index);
                 }
             }
         }
@@ -337,6 +353,8 @@ impl VoiceAllocator {
         if self.config.mode == VoiceMode::Legato && self.legato_last_note == Some(id.note_number()) {
             self.legato_last_note = None;
         }
+
+        released
     }
 
     /// Call when envelope reaches zero to free the slot for reuse.

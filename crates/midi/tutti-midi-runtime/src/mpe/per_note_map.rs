@@ -122,15 +122,6 @@ impl<S: AtomicSlot, const N: usize> AtomicPerNoteMap<S, N> {
             self.slots[i].clear();
         }
     }
-
-    /// Iterate the payloads of currently-claimed slots, paired with their `NoteId`.
-    #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = (NoteId, &S)> {
-        self.ids.iter().zip(self.slots.iter()).filter_map(|(id, s)| {
-            let raw = id.load(Ordering::Acquire);
-            (raw != EMPTY).then(|| (NoteId::from_raw(raw), s))
-        })
-    }
 }
 
 #[cfg(test)]

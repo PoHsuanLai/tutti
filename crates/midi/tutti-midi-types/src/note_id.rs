@@ -17,9 +17,14 @@ pub struct NoteId(u32);
 
 impl NoteId {
     /// MIDI-1 / classic-MPE identity: `(channel, note)`.
+    ///
+    /// `channel` and `note` are masked to their valid MIDI widths (4 / 7 bits)
+    /// so the packed value is self-consistent with [`channel`](Self::channel) and
+    /// [`note_number`](Self::note_number) — a `note` ≥ 128 or `channel` ≥ 16 can
+    /// never alias a different pair or read back changed.
     #[inline]
     pub const fn from_channel_note(channel: u8, note: u8) -> Self {
-        Self(((channel as u32) << 8) | note as u32)
+        Self((((channel & 0x0f) as u32) << 8) | (note & 0x7f) as u32)
     }
 
     /// Note-Number-Rotation identity: an allocator-minted distinct value.
@@ -82,7 +87,7 @@ impl<T: Copy + Default, const N: usize> PerNoteMap<T, N> {
     /// Get a mutable handle to `id`'s value, inserting a default one if absent.
     /// Returns `None` only when the map is full and `id` is not present.
     #[inline]
-    pub fn entry(&mut self, id: NoteId) -> Option<&mut T> {
+    fn entry(&mut self, id: NoteId) -> Option<&mut T> {
         let slot = self
             .slot(id)
             .or_else(|| self.ids.iter().position(Option::is_none))?;
@@ -93,11 +98,6 @@ impl<T: Copy + Default, const N: usize> PerNoteMap<T, N> {
     #[inline]
     pub fn get(&self, id: NoteId) -> Option<&T> {
         self.slot(id).map(|s| &self.vals[s])
-    }
-
-    #[inline]
-    pub fn get_mut(&mut self, id: NoteId) -> Option<&mut T> {
-        self.slot(id).map(move |s| &mut self.vals[s])
     }
 
     /// Insert or overwrite. Returns `false` if the map is full and `id` is new.
@@ -118,15 +118,6 @@ impl<T: Copy + Default, const N: usize> PerNoteMap<T, N> {
         let slot = self.slot(id)?;
         self.ids[slot] = None;
         Some(core::mem::take(&mut self.vals[slot]))
-    }
-
-    /// Iterate over live `(NoteId, &T)` pairs.
-    #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = (NoteId, &T)> {
-        self.ids
-            .iter()
-            .zip(self.vals.iter())
-            .filter_map(|(id, v)| id.map(|id| (id, v)))
     }
 }
 

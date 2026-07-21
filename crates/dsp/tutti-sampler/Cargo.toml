@@ -41,7 +41,6 @@ bevy_tasks = { version = "0.19", optional = true }
 bevy_log = { version = "0.19", default-features = false, optional = true }
 
 thiserror = "2"
-serde = { version = "1", features = ["derive"] }
 
 # Audio
 cpal = "0.15"
@@ -52,7 +51,6 @@ crossbeam-channel = "0.5"
 dashmap = "6.1"
 arc-swap = "1.7"
 parking_lot = "0.12"
-smallvec = "1.13"
 
 # Parallel I/O
 rayon = "1.10"

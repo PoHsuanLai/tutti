@@ -1,6 +1,5 @@
 //! Disk streaming sample playback, fed by the butler thread.
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -9,34 +8,7 @@ use tutti_core::{
 };
 
 use super::interp::cubic_hermite;
-use crate::butler::{LruCache, RtState, SharedReader};
-
-/// Source descriptor for a disk-streaming clip: everything needed to rebuild it
-/// as an in-RAM [`SamplerUnit`](super::sampler_unit::SamplerUnit) offline,
-/// **without** touching the live butler ring.
-///
-/// The offline region render clones the graph, but a streaming reader's ring is
-/// a single-consumer SPSC that cannot be cloned onto a worker thread. The render
-/// never tries: its `Prepare` step replaces every clip reader with a fresh
-/// detached one, and its `Populate` step rebuilds each clip as a `SamplerUnit`
-/// from the [`WaveCache`](tutti_wavecache::WaveCache) using ECS state — so a
-/// streaming tier is *invisible* offline. This descriptor is what makes that
-/// rebuild possible from the reader itself when needed: the butler knows the
-/// `path` (via `RegionMeta.file_path`) and the `cache` is shareable (via
-/// `ButlerThread::cache()`). `placement` mirrors the timeline window the live
-/// reader gates on.
-#[derive(Clone)]
-pub struct StreamingClip {
-    /// Source file on disk — the same path the butler streams from.
-    pub path: PathBuf,
-    /// Timeline start position, in beats.
-    pub start_beat: BeatPosition,
-    /// Timeline duration in beats, or `None` to play the whole file.
-    pub duration: Option<BeatDuration>,
-    /// Shared LRU cache handle, so an offline rebuild can pull the resident wave
-    /// (or admit it) without going through the butler.
-    pub cache: Arc<LruCache>,
-}
+use crate::butler::{RtState, SharedReader};
 
 /// 8192 frames at 4x speed with interpolation padding.
 const MAX_FETCH_SAMPLES: usize = 8192 * 4 + 8;
@@ -434,12 +406,6 @@ pub struct StreamingClipReader {
     /// Whether the previous frame was inside the clip window. A false→true edge
     /// (playhead entering the clip) always forces a seek.
     was_inside: bool,
-
-    /// Offline-render source descriptor. `Some` for timeline clips built through
-    /// the butler (carrying the disk path + shared cache so the render can
-    /// rebuild this clip as an in-RAM `SamplerUnit`); `None` for readers built
-    /// directly from a ring in tests. Never touched on the audio hot path.
-    descriptor: Option<StreamingClip>,
 }
 
 impl Clone for StreamingClipReader {
@@ -453,7 +419,6 @@ impl Clone for StreamingClipReader {
             file_sample_rate: self.file_sample_rate,
             streamed_offset: self.streamed_offset,
             was_inside: self.was_inside,
-            descriptor: self.descriptor.clone(),
         }
     }
 }
@@ -482,23 +447,7 @@ impl StreamingClipReader {
             file_sample_rate,
             streamed_offset: NO_SEEK_TARGET,
             was_inside: false,
-            descriptor: None,
         }
-    }
-
-    /// Attach the offline-render source descriptor (disk path + shared cache +
-    /// timeline placement). The butler sets this when it builds a timeline
-    /// streaming clip, so the offline region render can rebuild the clip in RAM
-    /// without cloning the live SPSC ring. Control-thread only.
-    pub fn set_descriptor(&mut self, descriptor: StreamingClip) {
-        self.descriptor = Some(descriptor);
-    }
-
-    /// The offline-render source descriptor, if this reader was built through the
-    /// butler with one. Read by the region-render populate path to rebuild the
-    /// clip as an in-RAM `SamplerUnit`.
-    pub fn descriptor(&self) -> Option<&StreamingClip> {
-        self.descriptor.as_ref()
     }
 
     pub fn set_placement(&mut self, start_beat: BeatPosition, duration: Option<BeatDuration>) {

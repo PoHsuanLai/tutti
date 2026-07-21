@@ -27,14 +27,6 @@ pub fn cubic_hermite(y0: f32, y1: f32, y2: f32, y3: f32, t: f32) -> f32 {
     ((c3 * t + c2) * t + c1) * t + c0
 }
 
-/// Two-tap linear interpolation. Retained for callers that explicitly want the
-/// cheaper kernel; the sampler playback path uses [`cubic_hermite`] via
-/// [`read_stereo_frame`].
-#[inline]
-pub fn linear(y0: f32, y1: f32, t: f32) -> f32 {
-    y0 + (y1 - y0) * t
-}
-
 /// Read one stereo frame from `wave` at fractional position `position` using
 /// 4-tap cubic Hermite interpolation, with mono → stereo fan-out.
 ///

@@ -8,7 +8,7 @@
 //! Each clip is EITHER an in-memory [`SamplerUnit`] (the whole clip resident in
 //! RAM as an `Arc<Wave>`, decoded once by the wave cache) OR a
 //! [`StreamingClipReader`] that pulls incrementally from the butler ring
-//! (Wave 6 disk streaming). The choice is a monomorphized [`ClipSource`] enum,
+//! (disk streaming). The choice is a monomorphized [`ClipSource`] enum,
 //! not a boxed trait object, so the per-buffer match stays inlinable and the hot
 //! path allocation-free. The optional time-stretch processor wraps whichever
 //! source when a clip is stretched/pitched (both variants `impl AudioUnit`).
@@ -69,7 +69,7 @@ impl Direction {
 // ---------------------------------------------------------------------------
 // ClipSource — a clip's audio source, monomorphized. Either the whole clip is
 // resident in RAM (`InMemory`) or it streams incrementally from the butler ring
-// (`Streaming`, Wave 6). A concrete enum rather than `Box<dyn AudioUnit>` so the
+// (`Streaming`). A concrete enum rather than `Box<dyn AudioUnit>` so the
 // per-buffer dispatch in `tick`/`process` inlines and never touches the heap.
 // Both variants are `Clone` and `impl AudioUnit`, so the field-wise `ClipSlot`
 // clone and the stretch wrapper work uniformly across them.
@@ -132,11 +132,11 @@ struct ClipSlot {
     /// `stretch_factor` / `pitch_cents` atomics inside it. At tick time, the
     /// `needs_stretch()` gate (mirrored from those atomics into the two factor
     /// fields below) chooses whether to route through the processor or read the
-    /// bare `sampler` directly. Wave 5e moved the heavy construction off the
-    /// audio thread this way: [`ClipCommand::UpdateStretch`] now only sets
-    /// atomics, never allocates.
+    /// bare `sampler` directly. The heavy construction stays off the audio
+    /// thread this way: [`ClipCommand::UpdateStretch`] only sets atomics, never
+    /// allocates.
     ///
-    /// Structural invariant (from Wave 2, adapted): the factor fields cannot
+    /// Structural invariant: the factor fields cannot
     /// drift from the processor's atomics — every mutation goes through
     /// [`ClipSlot::set_stretch`], which writes both in one step, and the fields
     /// are private so no caller can set a non-identity factor without the

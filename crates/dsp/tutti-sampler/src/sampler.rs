@@ -4,6 +4,7 @@ use crate::butler::{
     BufferConfig, ButlerCommand, ButlerThread, CaptureIdGen, LruCache, ChannelPlan,
 };
 use crate::error::Result;
+use crate::playback::{Direction, StreamingClipConfig, TransportPlacement};
 use crate::StreamingClipReader;
 use arc_swap::ArcSwap;
 #[cfg(feature = "bevy")]
@@ -12,7 +13,9 @@ use dashmap::DashMap;
 use smol::channel::Sender;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tutti_core::{BeatDuration, BeatPosition, PdcState, TransportReader};
+use tutti_core::{
+    BeatDuration, BeatPosition, PdcState, Ratio, SamplePosition, TransportReader,
+};
 
 /// The sampler subsystem handle, held as a Bevy [`Resource`].
 ///
@@ -107,8 +110,13 @@ impl Sampler {
     ///
     /// `channel_index` must be unique per streaming clip; the caller (dawai-model)
     /// derives it from the clip's `SlotId`.
-    pub fn stream_clip(&self, channel_index: usize, file_path: PathBuf, offset_samples: usize) {
-        crate::butler::control::stream(&self.butler_tx, channel_index, file_path, offset_samples);
+    pub fn stream_clip(&self, channel_index: usize, file_path: PathBuf, offset: SamplePosition) {
+        crate::butler::control::stream(
+            &self.butler_tx,
+            channel_index,
+            file_path,
+            offset.get().max(0.0) as usize,
+        );
     }
 
     /// Build a [`StreamingClipReader`] for a channel whose butler stream is
@@ -139,10 +147,14 @@ impl Sampler {
         Some(StreamingClipReader::new(
             inner,
             rt_state,
-            transport,
-            start_beat,
-            duration,
-            file_sample_rate,
+            StreamingClipConfig {
+                placement: TransportPlacement {
+                    transport,
+                    start_beat,
+                    duration_beats: duration,
+                },
+                file_sample_rate,
+            },
         ))
     }
 
@@ -154,12 +166,15 @@ impl Sampler {
     pub fn set_clip_stream_loop(
         &self,
         channel_index: usize,
-        range: (u64, u64),
+        range: (SamplePosition, SamplePosition),
         crossfade_samples: usize,
     ) {
         let _ = self.butler_tx.send_blocking(ButlerCommand::SetStreamLoop {
             channel_index,
-            range,
+            range: (
+                range.0.get().max(0.0) as u64,
+                range.1.get().max(0.0) as u64,
+            ),
             crossfade_samples,
         });
     }
@@ -175,18 +190,23 @@ impl Sampler {
     /// (timeline seek). Forwards [`SeekStream`](ButlerCommand::SeekStream); the
     /// butler applies the channel's PDC preroll and repositions the live stream
     /// click-free (flush + seek + crossfade).
-    pub fn seek_clip_stream(&self, channel_index: usize, file_position: u64) {
+    pub fn seek_clip_stream(&self, channel_index: usize, file_position: SamplePosition) {
         let _ = self.butler_tx.send_blocking(ButlerCommand::SeekStream {
             channel_index,
-            file_position,
+            file_position: file_position.get().max(0.0) as u64,
         });
     }
 
     /// Set varispeed (playback speed + direction) on a streaming clip's channel.
-    /// `speed = 1.0` is normal; `reverse` flips playback direction. Forwards
+    /// `speed = 1.0` is normal; `direction` flips playback direction. Forwards
     /// [`SetVarispeed`](ButlerCommand::SetVarispeed).
-    pub fn set_clip_stream_speed(&self, channel_index: usize, speed: f32, reverse: bool) {
-        crate::butler::control::set_varispeed(&self.butler_tx, channel_index, speed, reverse);
+    pub fn set_clip_stream_speed(&self, channel_index: usize, speed: Ratio, direction: Direction) {
+        crate::butler::control::set_varispeed(
+            &self.butler_tx,
+            channel_index,
+            speed.get(),
+            direction.is_reverse(),
+        );
     }
 
     /// Stop a streaming clip's channel — drops its ring + link.

@@ -14,26 +14,16 @@ use super::loop_crossfade::LoopCrossfade;
 /// Modeled on the butler's `Link.loop_config`: making loop state a single enum
 /// means `OneShot` renders `range`/`crossfade` unreachable, and `Looping`
 /// guarantees a range — the three fields can no longer disagree.
-pub(super) enum LoopMode {
+#[derive(Default)]
+pub enum LoopMode {
     /// Play through once, then stop.
+    #[default]
     OneShot,
     /// Loop over `range` (start, end) in samples, with optional crossfade.
     Looping {
         range: (SamplePosition, SamplePosition),
         crossfade: Option<LoopCrossfade>,
     },
-}
-
-impl Clone for LoopMode {
-    fn clone(&self) -> Self {
-        match self {
-            Self::OneShot => Self::OneShot,
-            Self::Looping { range, crossfade } => Self::Looping {
-                range: *range,
-                crossfade: crossfade.clone(),
-            },
-        }
-    }
 }
 
 /// Transport binding for beat-synced playback. Present as a whole or absent as
@@ -55,6 +45,67 @@ impl Clone for TransportPlacement {
             transport: self.transport.clone(),
             start_beat: self.start_beat,
             duration_beats: self.duration_beats,
+        }
+    }
+}
+
+impl std::fmt::Debug for TransportPlacement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TransportPlacement")
+            .field("start_beat", &self.start_beat)
+            .field("duration_beats", &self.duration_beats)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Configuration for building a [`SamplerUnit`], passed to
+/// [`SamplerUnit::with_config`]. Matches tutti's config-struct constructor
+/// convention (`PolySynth::new(SynthConfig)`, `OfflineTransport::new(..)`).
+///
+/// `Default` yields the same audible baseline as [`SamplerUnit::new`]: unity
+/// gain, normal speed, one-shot, no transport binding. It is hand-written (not
+/// derived) because the newtypes default to zero — a derived default would ship
+/// silent (`gain = 0`) and frozen (`speed = 0`).
+#[derive(Clone, Debug)]
+pub struct SamplerUnitConfig {
+    pub gain: Linear,
+    pub speed: Ratio,
+    pub loop_mode: LoopMode,
+    /// Optional transport binding for beat-synced playback.
+    pub placement: Option<TransportPlacement>,
+}
+
+impl Default for SamplerUnitConfig {
+    fn default() -> Self {
+        Self {
+            gain: Linear::new(1.0),
+            speed: Ratio::new(1.0),
+            loop_mode: LoopMode::OneShot,
+            placement: None,
+        }
+    }
+}
+
+impl Clone for LoopMode {
+    fn clone(&self) -> Self {
+        match self {
+            Self::OneShot => Self::OneShot,
+            Self::Looping { range, crossfade } => Self::Looping {
+                range: *range,
+                crossfade: crossfade.clone(),
+            },
+        }
+    }
+}
+
+impl std::fmt::Debug for LoopMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OneShot => f.write_str("OneShot"),
+            Self::Looping { range, .. } => f
+                .debug_struct("Looping")
+                .field("range", range)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -120,30 +171,45 @@ impl SamplerUnit {
         }
     }
 
-    pub fn with_settings(wave: Arc<Wave>, gain: Linear, speed: Ratio, looping: bool) -> Self {
-        let mut unit = Self {
-            gain,
-            speed,
+    /// Build from an explicit [`SamplerUnitConfig`] — the canonical
+    /// configurable constructor, matching tutti's `X::new(XConfig)` convention.
+    ///
+    /// A `Looping` config with a range whose crossfade is `None` gets no
+    /// crossfade preloop primed; use [`set_loop_range`](Self::set_loop_range)
+    /// afterwards if a crossfade is wanted.
+    pub fn with_config(wave: Arc<Wave>, config: SamplerUnitConfig) -> Self {
+        Self {
+            gain: config.gain,
+            speed: config.speed,
+            loop_mode: config.loop_mode,
+            placement: config.placement,
             ..Self::new(wave)
-        };
-        unit.set_looping(looping);
-        unit
+        }
     }
 
+    /// Convenience constructor for the common transport-bound clip case: bind a
+    /// transport at `start_beat` for `duration_beats`, everything else default.
+    /// Equivalent to `with_config(wave, SamplerUnitConfig { placement: Some(..),
+    /// ..Default::default() })`; kept because it reads better at the three
+    /// timeline call sites (tutti-synth likewise keeps convenience ctors
+    /// alongside its config one).
     pub fn with_transport(
         wave: Arc<Wave>,
         transport: Arc<dyn TransportReader>,
         start_beat: BeatPosition,
         duration_beats: Option<BeatDuration>,
     ) -> Self {
-        Self {
-            placement: Some(TransportPlacement {
-                transport,
-                start_beat,
-                duration_beats,
-            }),
-            ..Self::new(wave)
-        }
+        Self::with_config(
+            wave,
+            SamplerUnitConfig {
+                placement: Some(TransportPlacement {
+                    transport,
+                    start_beat,
+                    duration_beats,
+                }),
+                ..Default::default()
+            },
+        )
     }
 
     pub fn set_transport(
@@ -721,15 +787,37 @@ mod tests {
     // --- New coverage tests ---
 
     #[test]
-    fn with_settings_constructor() {
+    fn with_config_constructor() {
         let wave = ramp_wave(100, 44100.0);
-        let sampler =
-            SamplerUnit::with_settings(Arc::clone(&wave), Linear::new(0.5), Ratio::new(2.0), true);
+        let sampler = SamplerUnit::with_config(
+            Arc::clone(&wave),
+            SamplerUnitConfig {
+                gain: Linear::new(0.5),
+                speed: Ratio::new(2.0),
+                loop_mode: LoopMode::Looping {
+                    range: (SamplePosition::new(0.0), SamplePosition::new(100.0)),
+                    crossfade: None,
+                },
+                ..Default::default()
+            },
+        );
 
         assert!(sampler.is_playing());
         assert!(sampler.is_looping());
         assert_eq!(sampler.gain(), Linear::new(0.5));
         assert_eq!(sampler.speed(), Ratio::new(2.0));
+    }
+
+    #[test]
+    fn config_default_matches_new() {
+        let wave = ramp_wave(100, 44100.0);
+        let sampler = SamplerUnit::with_config(wave, SamplerUnitConfig::default());
+
+        // Default config must reproduce `new`'s audible baseline: unity gain,
+        // normal speed, one-shot — NOT the newtypes' zero default.
+        assert_eq!(sampler.gain(), Linear::new(1.0));
+        assert_eq!(sampler.speed(), Ratio::new(1.0));
+        assert!(!sampler.is_looping());
     }
 
     #[test]
@@ -1077,7 +1165,18 @@ mod tests {
     #[test]
     fn clone_preserves_state() {
         let wave = ramp_wave(100, 44100.0);
-        let sampler = SamplerUnit::with_settings(wave, Linear::new(0.75), Ratio::new(1.5), true);
+        let sampler = SamplerUnit::with_config(
+            wave,
+            SamplerUnitConfig {
+                gain: Linear::new(0.75),
+                speed: Ratio::new(1.5),
+                loop_mode: LoopMode::Looping {
+                    range: (SamplePosition::new(0.0), SamplePosition::new(100.0)),
+                    crossfade: None,
+                },
+                ..Default::default()
+            },
+        );
         sampler.trigger_at(SamplePosition::new(42.0));
 
         let cloned = sampler.clone();

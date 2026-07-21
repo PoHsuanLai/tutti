@@ -156,7 +156,17 @@ pub(super) fn handle_command(
                     .metrics
                     .record_capture_drops(cap_state.consumer.frames_dropped());
                 if let Some(writer) = cap_state.writer.take() {
-                    let _ = writer.finalize();
+                    // Finalizing the WAV writer flushes the sample buffer and
+                    // back-patches the RIFF/data chunk sizes in the header. If it
+                    // fails the file is left with a stale header and the recording
+                    // is unreadable — a real integrity loss, not a fire-and-forget
+                    // send — so surface it rather than silently swallowing.
+                    if let Err(e) = writer.finalize() {
+                        #[cfg(feature = "bevy")]
+                        bevy_log::error!("capture writer finalize failed: {e}");
+                        #[cfg(not(feature = "bevy"))]
+                        eprintln!("capture writer finalize failed: {e}");
+                    }
                 }
             }
         }

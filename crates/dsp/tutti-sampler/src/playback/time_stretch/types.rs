@@ -1,5 +1,7 @@
 //! Time-stretching types and parameters.
 
+use tutti_core::{Cents, Ratio};
+
 /// Flush a subnormal (denormal) float to zero.
 ///
 /// The phase-vocoder overlap-add FIFO is an IIR-like accumulator:
@@ -27,11 +29,11 @@ pub(super) fn flush_denormal(x: f32) -> f32 {
 pub struct Params {
     /// Playback speed factor (1.0 = normal, 0.5 = half speed, 2.0 = double speed)
     /// Range: 0.25 to 4.0
-    pub stretch_factor: f32,
+    pub stretch_factor: Ratio,
 
     /// Pitch shift in cents (100 cents = 1 semitone)
     /// Range: -2400 to +2400 (±2 octaves)
-    pub pitch_cents: f32,
+    pub pitch_cents: Cents,
 
     /// Whether to preserve formants when pitch-shifting
     /// Important for vocal/speech content
@@ -50,19 +52,20 @@ impl Params {
 
     pub fn new() -> Self {
         Self {
-            stretch_factor: 1.0,
-            pitch_cents: 0.0,
+            stretch_factor: Ratio::new(1.0),
+            pitch_cents: Cents::new(0.0),
             preserve_formants: false,
         }
     }
 
-    pub fn stretch_factor(mut self, factor: f32) -> Self {
-        self.stretch_factor = factor.clamp(Self::MIN_STRETCH, Self::MAX_STRETCH);
+    pub fn stretch_factor(mut self, factor: Ratio) -> Self {
+        self.stretch_factor = Ratio::new(factor.get().clamp(Self::MIN_STRETCH, Self::MAX_STRETCH));
         self
     }
 
-    pub fn pitch_cents(mut self, cents: f32) -> Self {
-        self.pitch_cents = cents.clamp(Self::MIN_PITCH_CENTS, Self::MAX_PITCH_CENTS);
+    pub fn pitch_cents(mut self, cents: Cents) -> Self {
+        self.pitch_cents =
+            Cents::new(cents.get().clamp(Self::MIN_PITCH_CENTS, Self::MAX_PITCH_CENTS));
         self
     }
 
@@ -73,7 +76,7 @@ impl Params {
 
     /// Check if any time-stretching/pitch-shifting is active
     pub fn is_active(&self) -> bool {
-        (self.stretch_factor - 1.0).abs() > 0.001 || self.pitch_cents.abs() > 0.5
+        (self.stretch_factor.get() - 1.0).abs() > 0.001 || self.pitch_cents.get().abs() > 0.5
     }
 
     /// Calculate the effective playback rate
@@ -82,14 +85,14 @@ impl Params {
     /// adjust playback speed to compensate for the pitch change.
     pub fn effective_stretch_factor(&self) -> f32 {
         // Convert cents to frequency ratio: 2^(cents/1200)
-        let pitch_ratio = 2.0_f32.powf(self.pitch_cents / 1200.0);
+        let pitch_ratio = 2.0_f32.powf(self.pitch_cents.get() / 1200.0);
 
         if self.preserve_formants {
             // Formant preservation: stretch factor is independent of pitch
-            self.stretch_factor
+            self.stretch_factor.get()
         } else {
             // Standard pitch-shift: combine stretch and pitch factors
-            self.stretch_factor / pitch_ratio
+            self.stretch_factor.get() / pitch_ratio
         }
     }
 
@@ -100,7 +103,7 @@ impl Params {
     pub fn synthesis_hop_ratio(&self) -> f32 {
         // stretch_factor > 1 means slower playback (longer output)
         // So we need larger synthesis hop to spread frames out
-        self.stretch_factor
+        self.stretch_factor.get()
     }
 
     /// Calculate the phase increment factor for pitch shifting
@@ -108,7 +111,7 @@ impl Params {
     /// When pitch-shifting, we need to modify the phase accumulation
     /// to shift frequencies up or down.
     pub fn pitch_shift_ratio(&self) -> f32 {
-        2.0_f32.powf(self.pitch_cents / 1200.0)
+        2.0_f32.powf(self.pitch_cents.get() / 1200.0)
     }
 }
 
@@ -179,8 +182,8 @@ mod tests {
     #[test]
     fn test_params_default() {
         let params = Params::new();
-        assert!((params.stretch_factor - 1.0).abs() < 0.001);
-        assert!(params.pitch_cents.abs() < 0.001);
+        assert!((params.stretch_factor.get() - 1.0).abs() < 0.001);
+        assert!(params.pitch_cents.get().abs() < 0.001);
         assert!(!params.preserve_formants);
         assert!(!params.is_active());
     }
@@ -188,12 +191,12 @@ mod tests {
     #[test]
     fn test_params_builder() {
         let params = Params::new()
-            .stretch_factor(2.0)
-            .pitch_cents(1200.0)
+            .stretch_factor(Ratio::new(2.0))
+            .pitch_cents(Cents::new(1200.0))
             .preserve_formants(true);
 
-        assert!((params.stretch_factor - 2.0).abs() < 0.001);
-        assert!((params.pitch_cents - 1200.0).abs() < 0.001);
+        assert!((params.stretch_factor.get() - 2.0).abs() < 0.001);
+        assert!((params.pitch_cents.get() - 1200.0).abs() < 0.001);
         assert!(params.preserve_formants);
         assert!(params.is_active());
     }
@@ -201,23 +204,23 @@ mod tests {
     #[test]
     fn test_params_clamping() {
         let params = Params::new()
-            .stretch_factor(10.0) // Should clamp to 4.0
-            .pitch_cents(5000.0); // Should clamp to 2400.0
+            .stretch_factor(Ratio::new(10.0)) // Should clamp to 4.0
+            .pitch_cents(Cents::new(5000.0)); // Should clamp to 2400.0
 
-        assert!((params.stretch_factor - 4.0).abs() < 0.001);
-        assert!((params.pitch_cents - 2400.0).abs() < 0.001);
+        assert!((params.stretch_factor.get() - 4.0).abs() < 0.001);
+        assert!((params.pitch_cents.get() - 2400.0).abs() < 0.001);
 
         let params2 = Params::new()
-            .stretch_factor(0.1) // Should clamp to 0.25
-            .pitch_cents(-5000.0); // Should clamp to -2400.0
+            .stretch_factor(Ratio::new(0.1)) // Should clamp to 0.25
+            .pitch_cents(Cents::new(-5000.0)); // Should clamp to -2400.0
 
-        assert!((params2.stretch_factor - 0.25).abs() < 0.001);
-        assert!((params2.pitch_cents - (-2400.0)).abs() < 0.001);
+        assert!((params2.stretch_factor.get() - 0.25).abs() < 0.001);
+        assert!((params2.pitch_cents.get() - (-2400.0)).abs() < 0.001);
     }
 
     #[test]
     fn test_effective_stretch_no_pitch() {
-        let params = Params::new().stretch_factor(1.5);
+        let params = Params::new().stretch_factor(Ratio::new(1.5));
         assert!((params.effective_stretch_factor() - 1.5).abs() < 0.001);
     }
 
@@ -225,7 +228,9 @@ mod tests {
     fn test_effective_stretch_with_pitch() {
         // Pitch up by 1 octave (1200 cents) = 2x frequency
         // Without formant preservation, effective stretch = stretch / pitch_ratio
-        let params = Params::new().stretch_factor(1.0).pitch_cents(1200.0);
+        let params = Params::new()
+            .stretch_factor(Ratio::new(1.0))
+            .pitch_cents(Cents::new(1200.0));
 
         let effective = params.effective_stretch_factor();
         // 1.0 / 2.0 = 0.5
@@ -239,8 +244,8 @@ mod tests {
     #[test]
     fn test_effective_stretch_with_formant_preservation() {
         let params = Params::new()
-            .stretch_factor(1.5)
-            .pitch_cents(1200.0)
+            .stretch_factor(Ratio::new(1.5))
+            .pitch_cents(Cents::new(1200.0))
             .preserve_formants(true);
 
         // With formant preservation, stretch factor is independent
@@ -249,13 +254,13 @@ mod tests {
 
     #[test]
     fn test_pitch_shift_ratio() {
-        let params = Params::new().pitch_cents(1200.0); // +1 octave
+        let params = Params::new().pitch_cents(Cents::new(1200.0)); // +1 octave
         assert!((params.pitch_shift_ratio() - 2.0).abs() < 0.01);
 
-        let params2 = Params::new().pitch_cents(-1200.0); // -1 octave
+        let params2 = Params::new().pitch_cents(Cents::new(-1200.0)); // -1 octave
         assert!((params2.pitch_shift_ratio() - 0.5).abs() < 0.01);
 
-        let params3 = Params::new().pitch_cents(0.0); // No shift
+        let params3 = Params::new().pitch_cents(Cents::new(0.0)); // No shift
         assert!((params3.pitch_shift_ratio() - 1.0).abs() < 0.001);
     }
 

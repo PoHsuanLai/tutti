@@ -3,11 +3,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tutti_core::{
-    AudioUnit, BeatDuration, BeatPosition, BufferMut, BufferRef, Linear, TransportReader,
-};
+use tutti_core::{AudioUnit, BeatDuration, BeatPosition, BufferMut, BufferRef, Linear};
 
 use super::interp::cubic_hermite;
+use super::sampler_unit::TransportPlacement;
 use crate::butler::{RtState, SharedReader};
 
 /// 8192 frames at 4x speed with interpolation padding.
@@ -382,15 +381,28 @@ const NO_SEEK_TARGET: f64 = f64::NEG_INFINITY;
 /// slack at a generous block size keeps normal advance from tripping a seek.
 const SEEK_EPSILON_SAMPLES: f64 = 4096.0;
 
+/// Wiring for [`StreamingClipReader::new`]: the placement gate plus the file
+/// sample rate. Reuses [`TransportPlacement`] for the transport/start/duration
+/// cluster so the streaming path and `SamplerUnit` speak the same value type;
+/// `shared_state` stays a separate wiring arg (it must be the same `RtState` the
+/// `inner` unit holds).
+pub struct StreamingClipConfig {
+    /// Transport binding — the placement gate. Whole-or-nothing, mirroring
+    /// `SamplerUnit`'s use of [`TransportPlacement`].
+    pub placement: TransportPlacement,
+    /// File sample rate — converts the transport's second-offset into a sample
+    /// offset for the seek target, matching `SamplerUnit`'s use of
+    /// `wave.sample_rate()`.
+    pub file_sample_rate: f64,
+}
+
 pub struct StreamingClipReader {
     inner: StreamingSamplerUnit,
     shared_state: Arc<RtState>,
 
     /// Transport binding — the placement gate. Whole-or-nothing, mirroring
     /// `SamplerUnit`'s `TransportPlacement`.
-    transport: Arc<dyn TransportReader>,
-    start_beat: BeatPosition,
-    duration: Option<BeatDuration>,
+    placement: TransportPlacement,
 
     /// File sample rate — converts the transport's second-offset into a sample
     /// offset for the seek target, matching `SamplerUnit`'s use of
@@ -414,9 +426,7 @@ impl Clone for StreamingClipReader {
         Self {
             inner: self.inner.clone(),
             shared_state: Arc::clone(&self.shared_state),
-            transport: Arc::clone(&self.transport),
-            start_beat: self.start_beat,
-            duration: self.duration,
+            placement: self.placement.clone(),
             file_sample_rate: self.file_sample_rate,
             streamed_offset: self.streamed_offset,
             was_inside: self.was_inside,
@@ -434,26 +444,21 @@ impl StreamingClipReader {
     pub fn new(
         inner: StreamingSamplerUnit,
         shared_state: Arc<RtState>,
-        transport: Arc<dyn TransportReader>,
-        start_beat: BeatPosition,
-        duration: Option<BeatDuration>,
-        file_sample_rate: f64,
+        config: StreamingClipConfig,
     ) -> Self {
         Self {
             inner,
             shared_state,
-            transport,
-            start_beat,
-            duration,
-            file_sample_rate,
+            placement: config.placement,
+            file_sample_rate: config.file_sample_rate,
             streamed_offset: NO_SEEK_TARGET,
             was_inside: false,
         }
     }
 
     pub fn set_placement(&mut self, start_beat: BeatPosition, duration: Option<BeatDuration>) {
-        self.start_beat = start_beat;
-        self.duration = duration;
+        self.placement.start_beat = start_beat;
+        self.placement.duration_beats = duration;
         // A placement change may move the window out from under the playhead;
         // force a re-seek on the next inside-frame.
         self.streamed_offset = NO_SEEK_TARGET;
@@ -471,9 +476,9 @@ impl StreamingClipReader {
     #[inline]
     fn placement_sample_offset(&self) -> Option<f64> {
         super::interp::transport_sample_offset(
-            self.transport.as_ref(),
-            self.start_beat,
-            self.duration,
+            self.placement.transport.as_ref(),
+            self.placement.start_beat,
+            self.placement.duration_beats,
             self.file_sample_rate,
         )
     }
@@ -573,7 +578,7 @@ mod tests {
     use super::*;
     use crate::butler::{RegionBuffer, RegionId};
     use std::path::PathBuf;
-    use tutti_core::BufferVec;
+    use tutti_core::{BufferVec, TransportReader};
 
     fn make_reader_with_samples(samples: &[(f32, f32)]) -> SharedReader {
         let (mut writer, reader) =
@@ -645,7 +650,18 @@ mod tests {
         duration: Option<BeatDuration>,
     ) -> StreamingClipReader {
         let (inner, state) = make_unit(samples);
-        StreamingClipReader::new(inner, state, transport, start_beat, duration, 44100.0)
+        StreamingClipReader::new(
+            inner,
+            state,
+            StreamingClipConfig {
+                placement: TransportPlacement {
+                    transport,
+                    start_beat,
+                    duration_beats: duration,
+                },
+                file_sample_rate: 44100.0,
+            },
+        )
     }
 
     #[test]

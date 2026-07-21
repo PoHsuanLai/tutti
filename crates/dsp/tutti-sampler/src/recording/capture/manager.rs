@@ -316,7 +316,15 @@ impl Recorder {
         // side (`~/Music/dawai-recordings/`). Previously this was a relative
         // `recordings/...` path that depended on the process cwd.
         let dir = recordings_dir();
-        let _ = std::fs::create_dir_all(&dir);
+        // Propagate a failed mkdir here: if the directory can't be created the
+        // subsequent WAV open fails anyway, but with a far more confusing error
+        // ("no such file or directory" on the file) than the real cause.
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            crate::error::Error::Recording(format!(
+                "failed to create recordings dir {}: {e}",
+                dir.display()
+            ))
+        })?;
         let file_path = dir.join(format!(
             "track_{}_{}.wav",
             session.channel_index(),

@@ -5,7 +5,7 @@
 //! samples in `process()` so a `&mut self` design is simpler.
 
 #[derive(Debug, Clone)]
-pub(super) struct LoopCrossfade {
+pub struct LoopCrossfade {
     pre_loop_buffer: Vec<(f32, f32)>,
     crossfade_samples: usize,
     position: usize,

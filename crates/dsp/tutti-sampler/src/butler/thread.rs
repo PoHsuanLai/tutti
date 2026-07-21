@@ -77,6 +77,10 @@ impl ButlerThread {
             return;
         }
 
+        // Fatal-init invariant: `rx` is `Some` for the whole pre-start lifetime
+        // and is only taken here. The `thread_handle.is_some()` guard above
+        // returns early once the thread is running, so `start()` reaches this
+        // point exactly once — the `take()` can never observe `None`.
         let rx = self.rx.take().expect("rx already taken");
         let shutdown = Arc::clone(&self.shutdown);
         let shared = self.shared.clone();
@@ -89,6 +93,11 @@ impl ButlerThread {
                 let _ = thread_priority::set_current_thread_priority(ThreadPriority::Max);
                 smol::block_on(butler_loop_async(rx, shared, config, sample_rate, shutdown));
             })
+            // Fatal init: spawning the disk-I/O butler thread is a prerequisite
+            // for all streaming/recording. A spawn failure means the OS is out of
+            // threads — unrecoverable at this layer, and every downstream stream
+            // command would silently stall on a channel with no consumer. Panic
+            // loudly at startup rather than degrade into a mute engine.
             .expect("Failed to spawn butler thread");
 
         self.thread_handle = Some(handle);

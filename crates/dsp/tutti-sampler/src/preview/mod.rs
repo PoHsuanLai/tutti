@@ -137,7 +137,14 @@ impl Auditioner {
 
     fn start_in_memory(&self, wave: Arc<Wave>, path: &Path) {
         // placement None => free-running (no transport/beat gate).
-        let mut unit = SamplerUnit::with_settings(wave, self.gain(), self.speed(), false);
+        let mut unit = SamplerUnit::with_config(
+            wave,
+            crate::SamplerUnitConfig {
+                gain: self.gain(),
+                speed: self.speed(),
+                ..Default::default()
+            },
+        );
         unit.set_session_sample_rate(self.session_sample_rate);
         unit.trigger();
 

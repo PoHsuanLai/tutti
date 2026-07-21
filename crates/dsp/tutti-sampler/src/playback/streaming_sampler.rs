@@ -726,8 +726,9 @@ mod tests {
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
 
-        // Warm-up: drains the first (allocating) seek request + primes the
-        // interpolation history so the guarded loop is on the steady-state path.
+        // Warm-up: settles the enter-window seek edge + primes the interpolation
+        // history so the guarded loop is on the steady-state path. (The seek edge
+        // itself is alloc-free — see `clip_reader_seek_edge_is_allocation_free`.)
         for _ in 0..16 {
             let input = input_vec.buffer_ref();
             let mut output = output_vec.buffer_mut();
@@ -736,6 +737,46 @@ mod tests {
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..2_000 {
+                let input = input_vec.buffer_ref();
+                let mut output = output_vec.buffer_mut();
+                reader.process(64, &input, &mut output);
+            }
+        });
+    }
+
+    /// The seek edge (`request_seek`, fired on the audio thread when the playhead
+    /// jumps into or across the clip window) must be allocation-free — it may only
+    /// touch the lock-free `RtState` seek-request slot. This exercises that edge
+    /// *inside* the guarded block by moving the transport beat each iteration, so a
+    /// regression that reintroduces allocation on the seek path is caught.
+    #[test]
+    fn clip_reader_seek_edge_is_allocation_free() {
+        let samples: Vec<_> = (1..2048).map(|i| (i as f32 * 0.001, i as f32 * 0.001)).collect();
+        let transport = MockTransport::new(120.0, 5.0, true); // inside [4, 8)
+        let mut reader = make_clip_reader(
+            &samples,
+            Arc::clone(&transport) as Arc<dyn TransportReader>,
+            BeatPosition::new(4.0),
+            Some(BeatDuration::new(4.0)),
+        );
+        reader.set_sample_rate(tutti_core::SampleRate::new(48_000.0));
+
+        let input_vec = BufferVec::new(0);
+        let mut output_vec = BufferVec::new(2);
+
+        // Prime interpolation history / settle the initial enter-window seek.
+        for _ in 0..16 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            reader.process(64, &input, &mut output);
+        }
+
+        assert_no_alloc::assert_no_alloc(|| {
+            for i in 0..2_000 {
+                // Jump the playhead in and out of the window so `maybe_seek` keeps
+                // detecting discontinuities and calling `request_seek`.
+                let beat = if i % 2 == 0 { 5.0 } else { 6.5 };
+                transport.set_beat(beat);
                 let input = input_vec.buffer_ref();
                 let mut output = output_vec.buffer_mut();
                 reader.process(64, &input, &mut output);

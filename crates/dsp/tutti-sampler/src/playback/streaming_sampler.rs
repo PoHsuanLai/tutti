@@ -11,6 +11,7 @@ use tutti_core::{
 use super::clip_reader::ClipReader;
 use super::interp::cubic_hermite;
 use super::sampler_unit::{LoopSetting, TransportPlacement};
+use super::track_clip_reader::Direction;
 use crate::butler::{RtState, SharedReader};
 
 /// 8192 frames at 4x speed with interpolation padding.
@@ -512,6 +513,15 @@ impl StreamingClipReader {
         self.shared_state.set_speed(speed.get());
     }
 
+    /// Set the playback direction. Routes directly to the shared [`RtState`],
+    /// which is exactly the direction leg of the butler's `SetVarispeed` handler
+    /// (`rt_state.set_direction`) — one lock-free atomic store, no butler
+    /// round-trip. Pairs with [`set_speed`](Self::set_speed) so the reader can
+    /// reproduce a full `SetVarispeed { speed, direction }` in-unit.
+    pub fn set_direction(&mut self, direction: Direction) {
+        self.shared_state.set_direction(direction);
+    }
+
     /// Public seek: reposition the live stream to clip-relative `to`. Delegates
     /// to the private [`request_seek`](Self::request_seek), which publishes the
     /// target to the shared [`RtState`] (two atomic stores) for the butler to
@@ -554,6 +564,15 @@ impl ClipReader for StreamingClipReader {
         // effect is exactly `RtState::set_speed`, which this reader can reach via
         // its `Arc<RtState>`. See [`StreamingClipReader::set_speed`].
         StreamingClipReader::set_speed(self, speed);
+    }
+
+    fn set_direction(&mut self, direction: Direction) {
+        // Honest in-unit forward: the direction leg of the butler's `SetVarispeed`
+        // handler is `RtState::set_direction`, reachable via this reader's
+        // `Arc<RtState>`. See [`StreamingClipReader::set_direction`]. This is what
+        // makes streaming reverse produce the same effect the old butler
+        // `Command::SetSpeed { direction }` did, now driven from the reader drain.
+        StreamingClipReader::set_direction(self, direction);
     }
 
     fn set_loop(&mut self, _setting: LoopSetting) {

@@ -480,6 +480,14 @@ impl super::clip_reader::ClipReader for SamplerUnit {
         SamplerUnit::set_speed(self, speed);
     }
 
+    fn set_direction(&mut self, _direction: super::track_clip_reader::Direction) {
+        // Deliberate no-op. For the in-RAM backend, direction is carried on the
+        // reader's per-slot `direction` (consumed by the reversed index in the hot
+        // read), not inside the `SamplerUnit`. The `UpdateReverse` drain arm sets
+        // that slot field directly; there is no source-side direction state to
+        // mutate here.
+    }
+
     fn set_loop(&mut self, setting: LoopSetting) {
         // Same behavior as the `ClipCommand::UpdateLoop` / `ClearLoop` drain
         // arms: `On` primes the loop range + crossfade; `Off` clears the range

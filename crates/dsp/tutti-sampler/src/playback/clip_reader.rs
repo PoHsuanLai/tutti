@@ -27,6 +27,7 @@ use std::sync::Arc;
 use tutti_core::{AudioUnit, BeatDuration, BeatPosition, Linear, Ratio, SamplePosition, Wave};
 
 use super::sampler_unit::LoopSetting;
+use super::track_clip_reader::Direction;
 
 /// One cold-path control surface over a clip-playback backend.
 ///
@@ -39,8 +40,18 @@ pub trait ClipReader: AudioUnit {
     /// Update the timeline placement window (start + optional duration in beats).
     fn set_placement(&mut self, start_beat: BeatPosition, duration: Option<BeatDuration>);
 
-    /// Set the playback speed magnitude. Direction is carried separately.
+    /// Set the playback speed magnitude. Direction is carried separately (see
+    /// [`set_direction`](Self::set_direction)).
     fn set_speed(&mut self, speed: Ratio);
+
+    /// Set the playback direction. In-RAM playback carries direction *outside*
+    /// the source (on the reader's per-slot `direction`, consumed by the reversed
+    /// index in the hot read), so the in-RAM impl is a no-op — the drain sets the
+    /// slot field directly. The streaming source has no slot-side read to reverse;
+    /// its direction lives in the shared `RtState`, so the streaming impl forwards
+    /// here (`RtState::set_direction`) — the same effect the butler's
+    /// `SetVarispeed` direction leg produced.
+    fn set_direction(&mut self, direction: Direction);
 
     /// Enable/replace (`On`) or disable (`Off`) looping.
     fn set_loop(&mut self, setting: LoopSetting);

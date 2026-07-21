@@ -24,6 +24,8 @@ use tutti_core::{
 };
 use crate::stretch;
 use crate::ClipReader;
+use crate::Command;
+use crate::Commands;
 use crate::LoopSetting;
 use crate::StreamingClipReader;
 use crate::SamplerUnit;
@@ -125,6 +127,14 @@ struct ClipSlot {
     id: SlotId,
     source: ClipSource,
     direction: Direction,
+    /// Butler channel index for a `Streaming` source; `None` for `InMemory`.
+    /// The reader drain forwards streaming loop ops (`SetStreamLoop` /
+    /// `ClearStreamLoop`) to this channel via the typed [`Commands`] handle —
+    /// loop is butler-owned (it reads a fadein head off disk + mutates
+    /// `plan.link.loop_config`, neither reachable from the reader), so the
+    /// forward is the honest path. Meaningless for `InMemory` (loop is primed
+    /// directly on the `SamplerUnit`).
+    channel_index: Option<usize>,
     /// The time-stretch processor is **always resident**: it is built once (two
     /// phase-vocoder constructions + four `RtScratch` scratch buffers) when the
     /// slot is created, off the per-buffer hot path. The audio thread never
@@ -158,6 +168,7 @@ impl ClipSlot {
         id: SlotId,
         source: ClipSource,
         direction: Direction,
+        channel_index: Option<usize>,
         stretch_factor: Ratio,
         pitch_cents: Cents,
         sample_rate: f64,
@@ -169,6 +180,7 @@ impl ClipSlot {
             id,
             source,
             direction,
+            channel_index,
             stretch,
             stretch_factor,
             pitch_cents,
@@ -210,6 +222,9 @@ pub enum ClipCommand {
         id: SlotId,
         reader: StreamingClipReader,
         direction: Direction,
+        /// Butler channel index the stream occupies. Stored on the slot so the
+        /// reader drain can forward streaming loop ops to the right channel.
+        channel_index: usize,
     },
     Remove(SlotId),
     ReplaceWave {
@@ -310,33 +325,45 @@ pub struct TrackClipReaderUnit {
     rx: Receiver<ClipCommand>,
     sample_rate: f64,
     transport: Option<Arc<dyn TransportReader>>,
+    /// Typed butler write handle. `Some` on the live path (threaded in from the
+    /// [`Sampler`](crate::Sampler)); `None` for tests / detached / offline
+    /// readers with no live butler. Used by the drain to forward *streaming*
+    /// loop ops (`Command::Loop`) — loop is butler-owned and not reachable from
+    /// the reader itself. Cloning it is cheap (a `Sender` + an `Arc` map).
+    butler: Option<Commands>,
 }
 
 impl TrackClipReaderUnit {
     /// Build a unit from an already-created command receiver + optional
     /// transport. Shared field-literal source for `new` / `with_transport` /
     /// `detached`.
-    fn from_parts(rx: Receiver<ClipCommand>, transport: Option<Arc<dyn TransportReader>>) -> Self {
+    fn from_parts(
+        rx: Receiver<ClipCommand>,
+        transport: Option<Arc<dyn TransportReader>>,
+        butler: Option<Commands>,
+    ) -> Self {
         Self {
             clips: Vec::new(),
             rx,
             sample_rate: 44100.0,
             transport,
+            butler,
         }
     }
 
     pub fn new() -> (Self, TrackClipReaderHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
         let handle = TrackClipReaderHandle { tx };
-        (Self::from_parts(rx, None), handle)
+        (Self::from_parts(rx, None, None), handle)
     }
 
     pub fn with_transport(
         transport: Arc<dyn TransportReader>,
+        butler: Option<Commands>,
     ) -> (Self, TrackClipReaderHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
         let handle = TrackClipReaderHandle { tx };
-        (Self::from_parts(rx, Some(transport)), handle)
+        (Self::from_parts(rx, Some(transport), butler), handle)
     }
 
     /// Number of clip slots currently materialised (drained from the command
@@ -362,7 +389,9 @@ impl TrackClipReaderUnit {
     /// [`Self::insert_clip`].
     pub fn detached(transport: Arc<dyn TransportReader>) -> Self {
         let (_tx, rx) = bounded(0);
-        Self::from_parts(rx, Some(transport))
+        // No butler: the offline render never forwards streaming loop ops (it
+        // rebuilds in-RAM clips from ECS), so a `None` handle is correct here.
+        Self::from_parts(rx, Some(transport), None)
     }
 
     /// Insert a clip slot directly, bypassing the command channel.
@@ -378,6 +407,7 @@ impl TrackClipReaderUnit {
             spec.id,
             ClipSource::InMemory(spec.sampler),
             spec.direction,
+            None,
             spec.stretch_factor,
             spec.pitch_cents,
             self.sample_rate,
@@ -397,6 +427,40 @@ impl TrackClipReaderUnit {
         self.clips.iter_mut().find(|s| s.id == id)
     }
 
+    /// Apply a loop setting to a slot, routing by tier.
+    ///
+    /// - **In-RAM**: primes / clears the loop range on the `SamplerUnit` in-unit
+    ///   (`ClipReader::set_loop`).
+    /// - **Streaming**: loop is butler-owned — `SetStreamLoop` reads a loop-start
+    ///   fadein head off disk and mutates `plan.link.loop_config`, neither
+    ///   reachable from the reader — so the reader FORWARDS to the butler via the
+    ///   typed [`Commands`] handle (`Command::Loop`, which maps `On`→
+    ///   `SetStreamLoop` / `Off`→`ClearStreamLoop`). This is the same command
+    ///   dawai-model used to send itself; it now originates here so dawai speaks
+    ///   one unified `ClipCommand` for both tiers.
+    ///
+    /// RT-safe: this runs on the COLD command drain (top of `tick`/`process`,
+    /// before the per-sample loop), so the channel send is fine — it never
+    /// touches the per-sample hot path.
+    fn apply_loop(&mut self, id: SlotId, setting: LoopSetting) {
+        let Some(slot) = self.clips.iter_mut().find(|s| s.id == id) else {
+            return;
+        };
+        match &mut slot.source {
+            ClipSource::InMemory(sampler) => {
+                sampler.set_loop(setting);
+            }
+            ClipSource::Streaming(_) => {
+                if let (Some(butler), Some(channel_index)) = (&self.butler, slot.channel_index) {
+                    butler.send(Command::Loop {
+                        channel_index,
+                        setting,
+                    });
+                }
+            }
+        }
+    }
+
     fn drain_commands(&mut self) {
         while let Ok(cmd) = self.rx.try_recv() {
             match cmd {
@@ -410,6 +474,7 @@ impl TrackClipReaderUnit {
                         id,
                         ClipSource::InMemory(sampler),
                         direction,
+                        None,
                         Ratio::new(1.0),
                         Cents::new(0.0),
                         self.sample_rate,
@@ -419,6 +484,7 @@ impl TrackClipReaderUnit {
                     id,
                     reader,
                     direction,
+                    channel_index,
                 } => {
                     // The reader is fully built on the ECS/butler side; the
                     // drain only moves it into a slot. `ClipSlot::new` builds the
@@ -430,6 +496,7 @@ impl TrackClipReaderUnit {
                         id,
                         ClipSource::Streaming(reader),
                         direction,
+                        Some(channel_index),
                         Ratio::new(1.0),
                         Cents::new(0.0),
                         self.sample_rate,
@@ -470,16 +537,13 @@ impl TrackClipReaderUnit {
                 }
                 ClipCommand::UpdateSpeed { id, speed } => {
                     if let Some(slot) = self.slot_mut(id) {
-                        // In-memory only: streaming speed is a butler concern,
-                        // forwarded control-side by dawai-model via
-                        // `Sampler::set_clip_stream_speed` (butler `SetVarispeed`).
-                        // Kept off the single-source `set_speed` so this drain
-                        // does not also publish it — preserving the existing
-                        // division of labour. (The former second call — into the
-                        // stretch clone's downcast — is gone with the clone.)
-                        if let ClipSource::InMemory(sampler) = &mut slot.source {
-                            sampler.set_speed(speed);
-                        }
+                        // Unified across tiers: both backends carry speed in-unit.
+                        // In-RAM stores it on the `SamplerUnit`; streaming forwards
+                        // to the shared `RtState` (the exact speed effect of the
+                        // butler's `SetVarispeed`, reachable from the reader). The
+                        // `ClipReader::set_speed` covers both — dawai no longer
+                        // forks streaming speed onto a separate butler command.
+                        slot.source.as_clip_reader_mut().set_speed(speed);
                     }
                 }
                 ClipCommand::UpdateLoop {
@@ -489,35 +553,32 @@ impl TrackClipReaderUnit {
                     loop_end,
                     crossfade_samples,
                 } => {
-                    if let Some(slot) = self.slot_mut(id) {
-                        // Streaming `set_loop` is a deliberate no-op (loop is a
-                        // butler concern, forwarded control-side via
-                        // `Sampler::set_clip_stream_loop`); in-memory primes the
-                        // range + crossfade or clears it. One `ClipReader` call
-                        // covers both.
-                        let setting = if looping {
-                            LoopSetting::On {
-                                start: loop_start,
-                                end: loop_end,
-                                crossfade_samples,
-                            }
-                        } else {
-                            LoopSetting::Off
-                        };
-                        slot.source.as_clip_reader_mut().set_loop(setting);
-                    }
+                    let setting = if looping {
+                        LoopSetting::On {
+                            start: loop_start,
+                            end: loop_end,
+                            crossfade_samples,
+                        }
+                    } else {
+                        LoopSetting::Off
+                    };
+                    self.apply_loop(id, setting);
                 }
                 ClipCommand::ClearLoop(id) => {
-                    if let Some(slot) = self.slot_mut(id) {
-                        // Streaming: dawai-model forwards the clear control-side
-                        // via `Sampler::clear_clip_stream_loop`; its `set_loop(Off)`
-                        // is a no-op here. In-memory clears the range + looping.
-                        slot.source.as_clip_reader_mut().set_loop(LoopSetting::Off);
-                    }
+                    self.apply_loop(id, LoopSetting::Off);
                 }
                 ClipCommand::UpdateReverse { id, direction } => {
                     if let Some(slot) = self.slot_mut(id) {
+                        // In-RAM: `slot.direction` drives the reversed index in the
+                        // hot read (the source-side `set_direction` is a no-op).
+                        // Streaming: the source-side `set_direction` forwards to the
+                        // shared `RtState` (the direction leg of the butler's
+                        // `SetVarispeed`) — `slot.direction` is unused by the ring
+                        // pull. One command reaches both, so dawai sends reverse
+                        // ONCE, no longer folding it into a separate butler speed
+                        // command.
                         slot.direction = direction;
+                        slot.source.as_clip_reader_mut().set_direction(direction);
                     }
                 }
                 ClipCommand::UpdateStretch {
@@ -591,6 +652,7 @@ impl Clone for TrackClipReaderUnit {
                     id: s.id,
                     source: s.source.clone(),
                     direction: s.direction,
+                    channel_index: s.channel_index,
                     stretch: s.stretch.clone(),
                     stretch_factor: s.stretch_factor,
                     pitch_cents: s.pitch_cents,
@@ -600,6 +662,7 @@ impl Clone for TrackClipReaderUnit {
             rx: self.rx.clone(),
             sample_rate: self.sample_rate,
             transport: self.transport.clone(),
+            butler: self.butler.clone(),
         }
     }
 }

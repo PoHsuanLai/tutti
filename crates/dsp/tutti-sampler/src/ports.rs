@@ -22,7 +22,49 @@ use crate::playback::{
     Direction, LoopSetting, StreamingClipConfig, StreamingClipReader, TransportPlacement,
 };
 use crate::StreamingSamplerUnit;
-use tutti_core::{BeatDuration, BeatPosition, Ratio, SamplePosition, TransportReader};
+use tutti_core::{BeatDuration, BeatPosition, Ratio, SamplePosition, TransportReader, Wave};
+
+/// The caller's stated choice of playback tier for a clip: whole-file in RAM
+/// (`Memory`) or incremental disk streaming (`Disk`). Plain data — the sampler
+/// never decides the tier on its own; it plays whichever variant it is handed.
+///
+/// Use [`from_duration`](Source::from_duration) to opt into the shared duration
+/// heuristic ([`crate::tiering::should_stream`]); otherwise construct the
+/// variant directly.
+#[derive(Clone)]
+pub enum Source {
+    /// Whole file decoded into RAM, played by a `SamplerUnit`.
+    Memory(Arc<Wave>),
+    /// File streamed incrementally from disk via the butler.
+    Disk(PathBuf),
+}
+
+// `Wave` doesn't implement `Debug`, so hand-roll it (len/rate summary for
+// `Memory`, path for `Disk`) rather than deriving.
+impl std::fmt::Debug for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Source::Memory(wave) => f
+                .debug_struct("Memory")
+                .field("len", &wave.len())
+                .field("sample_rate", &wave.sample_rate())
+                .finish(),
+            Source::Disk(path) => f.debug_tuple("Disk").field(path).finish(),
+        }
+    }
+}
+
+impl Source {
+    /// Pick the tier via the shared heuristic: stream from `path` when the wave
+    /// is longer than [`crate::tiering::IN_MEMORY_SECS`], else keep it in RAM.
+    pub fn from_duration(wave: Arc<Wave>, path: PathBuf, sample_rate: f64) -> Source {
+        if crate::tiering::should_stream(wave.len(), sample_rate) {
+            Source::Disk(path)
+        } else {
+            Source::Memory(wave)
+        }
+    }
+}
 
 /// A butler stream-control command, one public variant per streaming operation.
 ///

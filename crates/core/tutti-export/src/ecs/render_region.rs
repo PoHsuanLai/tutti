@@ -483,7 +483,7 @@ mod tests {
         let live_transport = MockTransport::new(true);
 
         // A live reader + its handle, placed in a net feeding the output.
-        let (reader, handle) = TrackClipReaderUnit::with_transport(live_transport.clone());
+        let (reader, handle) = TrackClipReaderUnit::with_transport(live_transport.clone(), None);
         let mut net = Net::new(0, 2);
         let id = net.push(Box::new(reader));
         net.pipe_output(id);

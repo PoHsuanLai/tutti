@@ -172,7 +172,7 @@ fn track_clip_reader_process_steady_state_is_allocation_free() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = sine_wave(2.0, 48_000.0);
 
-    let (mut unit, _handle) = TrackClipReaderUnit::with_transport(transport.clone());
+    let (mut unit, _handle) = TrackClipReaderUnit::with_transport(transport.clone(), None);
     unit.set_sample_rate(SampleRate(48_000.0));
 
     for i in 0..2u128 {
@@ -217,7 +217,7 @@ fn track_clip_reader_tick_steady_state_is_allocation_free() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = sine_wave(2.0, 48_000.0);
 
-    let (mut unit, _handle) = TrackClipReaderUnit::with_transport(transport.clone());
+    let (mut unit, _handle) = TrackClipReaderUnit::with_transport(transport.clone(), None);
     unit.set_sample_rate(SampleRate(48_000.0));
 
     for i in 0..2u128 {
@@ -301,7 +301,7 @@ fn run_stretch_drain_under_guard() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = sine_wave(2.0, 48_000.0);
 
-    let (mut unit, handle) = TrackClipReaderUnit::with_transport(transport.clone());
+    let (mut unit, handle) = TrackClipReaderUnit::with_transport(transport.clone(), None);
     unit.set_sample_rate(SampleRate(48_000.0));
 
     let sampler = SamplerUnit::with_transport(

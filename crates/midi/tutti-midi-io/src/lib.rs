@@ -8,7 +8,8 @@ pub use hardware::{MidiDevice, MidiInputRecord};
 // --- Re-exports from tutti-midi ---
 
 pub use tutti_midi_types::{
-    midi2, midly, normalize, MidiEvent, MidiMessage, MidiTarget, PerNoteController,
+    midi2, midly, normalize, MidiEvent, MidiMessage, MidiTarget, NoteAttribute, PerNoteController,
+    UnencodableMessage,
 };
 
 /// Stateful MIDI 1.0 → 2.0 translation (RPN/NRPN reassembly). Feed inbound CV1

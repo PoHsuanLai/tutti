@@ -34,47 +34,78 @@ pub enum PerNoteController {
     Assignable { index: u8 },
 }
 
+/// A MIDI 2.0 note-on attribute (M2-104 §7.4.2): extra per-note data carried
+/// alongside the note. tutti's re-export of `midi2`'s attribute so consumers
+/// don't import `midi2` to preserve it across a decode/re-encode round-trip.
+pub type NoteAttribute = midi2::channel_voice2::NoteAttribute;
+
 /// A decoded MIDI 2.0 message — tutti's application-facing view of a
 /// [`MidiEvent`]. See the [module docs](self). `#[non_exhaustive]` so added
 /// message families never break an existing `match`.
+///
+/// Every variant carries `frame_offset` (the source event's sample-accurate
+/// timing) so a decode → re-encode round-trip preserves timing; note variants
+/// carry the note `attribute`. Unmodeled families keep their whole source event
+/// in [`Other`](Self::Other), so [`MidiEvent::try_from`] can reconstruct any
+/// message this view produced.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum MidiMessage {
     /// Note on. `velocity` is the full 16-bit MIDI 2.0 value.
     NoteOn {
+        frame_offset: u32,
         id: NoteId,
         channel: u8,
         note: u8,
         velocity: u16,
+        attribute: Option<NoteAttribute>,
     },
     /// Note off (also a MIDI 1.0 velocity-0 note-on, folded by `normalize`).
     NoteOff {
+        frame_offset: u32,
         id: NoteId,
         channel: u8,
         note: u8,
         velocity: u16,
+        attribute: Option<NoteAttribute>,
     },
     /// Polyphonic key pressure (per-note aftertouch). `pressure` is 32-bit.
     PolyPressure {
+        frame_offset: u32,
         id: NoteId,
         channel: u8,
         note: u8,
         pressure: u32,
     },
     /// Control change. `value` is the full 32-bit MIDI 2.0 value.
-    ControlChange { channel: u8, index: u8, value: u32 },
+    ControlChange {
+        frame_offset: u32,
+        channel: u8,
+        index: u8,
+        value: u32,
+    },
     /// Program change, with an optional bank (MSB<<7 | LSB) when present.
     ProgramChange {
+        frame_offset: u32,
         channel: u8,
         program: u8,
         bank: Option<u16>,
     },
     /// Channel (mono) aftertouch. `pressure` is 32-bit.
-    ChannelPressure { channel: u8, pressure: u32 },
+    ChannelPressure {
+        frame_offset: u32,
+        channel: u8,
+        pressure: u32,
+    },
     /// Channel pitch bend. `value` is 32-bit, bipolar around `0x8000_0000`.
-    PitchBend { channel: u8, value: u32 },
+    PitchBend {
+        frame_offset: u32,
+        channel: u8,
+        value: u32,
+    },
     /// Per-note pitch bend (MIDI 2.0). Addresses one voice by `id`.
     PerNotePitchBend {
+        frame_offset: u32,
         id: NoteId,
         channel: u8,
         note: u8,
@@ -82,6 +113,7 @@ pub enum MidiMessage {
     },
     /// Per-note controller (MIDI 2.0). `value` is 32-bit.
     PerNoteController {
+        frame_offset: u32,
         id: NoteId,
         channel: u8,
         note: u8,
@@ -91,6 +123,7 @@ pub enum MidiMessage {
     /// Per-Note Management (MIDI 2.0): detach / reset the addressed note's
     /// controllers.
     PerNoteManagement {
+        frame_offset: u32,
         id: NoteId,
         channel: u8,
         note: u8,
@@ -98,8 +131,9 @@ pub enum MidiMessage {
         reset: bool,
     },
     /// Any message family this view does not model (system, SysEx, Flex Data,
-    /// UMP Stream, utility). Decode via the source event's `data_words()`.
-    Other,
+    /// UMP Stream, utility) — carries the whole source [`MidiEvent`] so it is
+    /// never information-free. Inspect it via `event.data_words()` + `midi2`.
+    Other(MidiEvent),
 }
 
 impl MidiMessage {
@@ -148,7 +182,7 @@ impl MidiMessage {
             | Self::PerNotePitchBend { channel, .. }
             | Self::PerNoteController { channel, .. }
             | Self::PerNoteManagement { channel, .. } => Some(*channel),
-            Self::Other => None,
+            Self::Other(_) => None,
         }
     }
 
@@ -158,6 +192,24 @@ impl MidiMessage {
         match self {
             Self::NoteOn { velocity, .. } | Self::NoteOff { velocity, .. } => Some(*velocity),
             _ => None,
+        }
+    }
+
+    /// Sample-accurate offset within the current audio block, for every message.
+    #[inline]
+    pub fn frame_offset(&self) -> u32 {
+        match self {
+            Self::NoteOn { frame_offset, .. }
+            | Self::NoteOff { frame_offset, .. }
+            | Self::PolyPressure { frame_offset, .. }
+            | Self::ControlChange { frame_offset, .. }
+            | Self::ProgramChange { frame_offset, .. }
+            | Self::ChannelPressure { frame_offset, .. }
+            | Self::PitchBend { frame_offset, .. }
+            | Self::PerNotePitchBend { frame_offset, .. }
+            | Self::PerNoteController { frame_offset, .. }
+            | Self::PerNoteManagement { frame_offset, .. } => *frame_offset,
+            Self::Other(ev) => ev.frame_offset,
         }
     }
 
@@ -183,8 +235,10 @@ impl MidiEvent {
     /// for those.
     pub fn message(&self) -> MidiMessage {
         let ev = crate::normalize(self);
+        let frame_offset = ev.frame_offset;
         let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(ev.data_words()) else {
-            return MidiMessage::Other;
+            // Preserve the *original* event verbatim so a re-encode is exact.
+            return MidiMessage::Other(*self);
         };
         let channel = u8::from(cv2.channel());
         let note_id = |note: u8| NoteId::from_channel_note(channel, note);
@@ -193,24 +247,29 @@ impl MidiEvent {
             Cv2::NoteOn(m) => {
                 let note = u8::from(m.note_number());
                 MidiMessage::NoteOn {
+                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
                     velocity: m.velocity(),
+                    attribute: m.attribute(),
                 }
             }
             Cv2::NoteOff(m) => {
                 let note = u8::from(m.note_number());
                 MidiMessage::NoteOff {
+                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
                     velocity: m.velocity(),
+                    attribute: m.attribute(),
                 }
             }
             Cv2::KeyPressure(m) => {
                 let note = u8::from(m.note_number());
                 MidiMessage::PolyPressure {
+                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
@@ -218,26 +277,31 @@ impl MidiEvent {
                 }
             }
             Cv2::ControlChange(m) => MidiMessage::ControlChange {
+                frame_offset,
                 channel,
                 index: u8::from(m.control()),
                 value: m.control_change_data(),
             },
             Cv2::ProgramChange(m) => MidiMessage::ProgramChange {
+                frame_offset,
                 channel,
                 program: u8::from(m.program()),
                 bank: m.bank().map(u16::from),
             },
             Cv2::ChannelPressure(m) => MidiMessage::ChannelPressure {
+                frame_offset,
                 channel,
                 pressure: m.channel_pressure_data(),
             },
             Cv2::ChannelPitchBend(m) => MidiMessage::PitchBend {
+                frame_offset,
                 channel,
                 value: m.pitch_bend_data(),
             },
             Cv2::PerNotePitchBend(m) => {
                 let note = u8::from(m.note_number());
                 MidiMessage::PerNotePitchBend {
+                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
@@ -248,6 +312,7 @@ impl MidiEvent {
                 let note = u8::from(m.note_number());
                 let (index, value) = controller_index_and_data(m.controller());
                 MidiMessage::PerNoteController {
+                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
@@ -258,6 +323,7 @@ impl MidiEvent {
             Cv2::AssignablePerNoteController(m) => {
                 let note = u8::from(m.note_number());
                 MidiMessage::PerNoteController {
+                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
@@ -268,6 +334,7 @@ impl MidiEvent {
             Cv2::PerNoteManagement(m) => {
                 let note = u8::from(m.note_number());
                 MidiMessage::PerNoteManagement {
+                    frame_offset,
                     id: note_id(note),
                     channel,
                     note,
@@ -275,9 +342,137 @@ impl MidiEvent {
                     reset: m.reset(),
                 }
             }
-            _ => MidiMessage::Other,
+            _ => MidiMessage::Other(*self),
         }
     }
+}
+
+/// A [`MidiMessage`] variant that this engine cannot re-encode to a
+/// [`MidiEvent`]. Every variant `MidiEvent::message` produces *can* be
+/// re-encoded, so this only arises for hand-built messages using a per-note
+/// controller index or program bank outside the encodable range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnencodableMessage;
+
+impl core::fmt::Display for UnencodableMessage {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("MidiMessage cannot be encoded to a MidiEvent")
+    }
+}
+
+impl std::error::Error for UnencodableMessage {}
+
+impl TryFrom<MidiMessage> for MidiEvent {
+    type Error = UnencodableMessage;
+
+    /// Re-encode a [`MidiMessage`] back to its wire [`MidiEvent`], preserving the
+    /// frame offset (and note attribute where present). Every message produced by
+    /// [`MidiEvent::message`] round-trips; the error case only occurs for
+    /// hand-built controller/bank values with no MIDI-2 encoding.
+    fn try_from(msg: MidiMessage) -> Result<Self, Self::Error> {
+        let ev = match msg {
+            MidiMessage::NoteOn {
+                channel,
+                note,
+                velocity,
+                attribute,
+                ..
+            } => note_with_attribute(true, channel, note, velocity, attribute),
+            MidiMessage::NoteOff {
+                channel,
+                note,
+                velocity,
+                attribute,
+                ..
+            } => note_with_attribute(false, channel, note, velocity, attribute),
+            MidiMessage::PolyPressure {
+                channel,
+                note,
+                pressure,
+                ..
+            } => MidiEvent::poly_pressure(0, channel, note, pressure),
+            MidiMessage::ControlChange {
+                channel,
+                index,
+                value,
+                ..
+            } => MidiEvent::cc(0, channel, index, value),
+            MidiMessage::ProgramChange {
+                channel,
+                program,
+                bank,
+                ..
+            } => MidiEvent::program_change(0, channel, program, bank),
+            MidiMessage::ChannelPressure {
+                channel, pressure, ..
+            } => MidiEvent::channel_pressure(0, channel, pressure),
+            MidiMessage::PitchBend { channel, value, .. } => {
+                MidiEvent::pitch_bend(0, channel, value)
+            }
+            MidiMessage::PerNotePitchBend {
+                channel,
+                note,
+                value,
+                ..
+            } => MidiEvent::per_note_pitch_bend(0, channel, note, value),
+            MidiMessage::PerNoteController {
+                channel,
+                note,
+                controller,
+                value,
+                ..
+            } => {
+                let (index, registered) = match controller {
+                    PerNoteController::Registered { index } => (index, true),
+                    PerNoteController::Assignable { index } => (index, false),
+                };
+                MidiEvent::per_note_controller(0, channel, note, index, value, registered)
+            }
+            MidiMessage::PerNoteManagement {
+                channel,
+                note,
+                detach,
+                reset,
+                ..
+            } => MidiEvent::per_note_management(0, channel, note, detach, reset),
+            // The source event was preserved verbatim.
+            MidiMessage::Other(ev) => return Ok(ev),
+        };
+        Ok(ev.with_frame_offset(msg.frame_offset()))
+    }
+}
+
+/// Build a note-on/off [`MidiEvent`], re-applying a note `attribute` if present.
+fn note_with_attribute(
+    on: bool,
+    channel: u8,
+    note: u8,
+    velocity: u16,
+    attribute: Option<NoteAttribute>,
+) -> MidiEvent {
+    use midi2::channel_voice2::{NoteOff, NoteOn};
+    use midi2::prelude::*;
+    let mut words = [0u32; 4];
+    if on {
+        let mut m = NoteOn::<[u32; 2]>::new();
+        m.set_channel(u4::new(channel & 0x0F));
+        m.set_note_number(u7::new(note & 0x7F));
+        m.set_velocity(velocity);
+        if let Some(attr) = attribute {
+            m.set_attribute(Some(attr));
+        }
+        words[..2].copy_from_slice(m.data());
+    } else {
+        let mut m = NoteOff::<[u32; 2]>::new();
+        m.set_channel(u4::new(channel & 0x0F));
+        m.set_note_number(u7::new(note & 0x7F));
+        m.set_velocity(velocity);
+        if let Some(attr) = attribute {
+            m.set_attribute(Some(attr));
+        }
+        words[..2].copy_from_slice(m.data());
+    }
+    MidiEvent::from_ump(0, &words[..2])
 }
 
 /// Split a registered per-note `Controller` into its spec index and 32-bit data
@@ -346,7 +541,7 @@ mod tests {
     fn control_change_carries_32bit_value() {
         let msg = MidiEvent::cc(0, 5, 74, 0xDEAD_BEEF).message();
         match msg {
-            MidiMessage::ControlChange { channel, index, value } => {
+            MidiMessage::ControlChange { channel, index, value, .. } => {
                 assert_eq!(channel, 5);
                 assert_eq!(index, 74);
                 assert_eq!(value, 0xDEAD_BEEF);
@@ -375,8 +570,59 @@ mod tests {
     }
 
     #[test]
-    fn system_message_is_other() {
-        assert_eq!(MidiEvent::timing_clock(0).message(), MidiMessage::Other);
-        assert_eq!(MidiEvent::timing_clock(0).message().channel(), None);
+    fn system_message_is_other_carrying_its_event() {
+        let clock = MidiEvent::timing_clock(0);
+        let msg = clock.message();
+        assert_eq!(msg, MidiMessage::Other(clock));
+        assert_eq!(msg.channel(), None);
+    }
+
+    #[test]
+    fn round_trip_preserves_frame_offset() {
+        // The view must not drop sample-accurate timing (project round-trip invariant).
+        let ev = MidiEvent::cc(0, 5, 74, 0xABCD_1234).with_frame_offset(137);
+        let msg = ev.message();
+        assert_eq!(msg.frame_offset(), 137);
+        let back = MidiEvent::try_from(msg).expect("re-encodable");
+        assert_eq!(back, ev);
+    }
+
+    #[test]
+    fn round_trip_preserves_note_attribute() {
+        use midi2::channel_voice2::NoteAttribute;
+        use midi2::num::Fixed7_9;
+        // A note-on carrying a Pitch7_9 attribute must survive decode → re-encode.
+        let mut on = midi2::channel_voice2::NoteOn::<[u32; 2]>::new();
+        {
+            use midi2::prelude::*;
+            on.set_channel(u4::new(3));
+            on.set_note_number(u7::new(60));
+            on.set_velocity(0x8000);
+            on.set_attribute(Some(NoteAttribute::Pitch7_9(Fixed7_9::from_bits(0x1234))));
+        }
+        let ev = MidiEvent::from_ump(0, {
+            use midi2::Data;
+            on.data()
+        });
+        let msg = ev.message();
+        match msg {
+            MidiMessage::NoteOn { attribute, .. } => {
+                assert_eq!(
+                    attribute,
+                    Some(NoteAttribute::Pitch7_9(Fixed7_9::from_bits(0x1234)))
+                );
+            }
+            other => panic!("expected NoteOn, got {other:?}"),
+        }
+        let back = MidiEvent::try_from(msg).expect("re-encodable");
+        assert_eq!(back, ev);
+    }
+
+    #[test]
+    fn round_trip_other_is_exact() {
+        // An unmodeled message re-encodes byte-for-byte via the preserved event.
+        let ev = MidiEvent::timing_clock(0).with_frame_offset(42);
+        let back = MidiEvent::try_from(ev.message()).expect("Other round-trips");
+        assert_eq!(back, ev);
     }
 }

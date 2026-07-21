@@ -35,7 +35,7 @@ pub mod unit_id;
 
 pub use clip_file::{read_clip_file, write_clip_file, ClipEvent, ClipFileError, ParsedClipFile};
 pub use input_source::{MidiInputSource, NoMidiInput};
-pub use message::{MidiMessage, PerNoteController};
+pub use message::{MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage};
 pub use mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZone, MpeZoneConfig, NoteRotationAllocator,
     PitchBendSensitivity,

@@ -14,7 +14,7 @@
 //! [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
 
 use tutti_midi_runtime::tutti_midi_types::ump::MidiEvent;
-use tutti_midi_runtime::tutti_midi_types::{write_clip_file, ClipEvent, MidiUnitId};
+use tutti_midi_runtime::tutti_midi_types::{write_clip_file_from_beats, MidiUnitId};
 use tutti_midi_runtime::MidiSnapshot;
 
 #[derive(Debug, Default)]
@@ -83,23 +83,15 @@ impl MidiTrack {
     /// is the DCTPQ tick unit; beat positions are quantized to it as inter-event
     /// delta ticks. Merges all units into a single beat-ordered stream.
     pub fn to_clip_file(&self, ticks_per_quarter: u16) -> Vec<u8> {
-        let tpq = f64::from(ticks_per_quarter);
-        let mut prev_tick: i64 = 0;
-        let events: Vec<ClipEvent> = self
-            .snapshot
-            .events_in_beat_order()
-            .into_iter()
-            .map(|te| {
-                let tick = (te.beat * tpq).round() as i64;
-                let delta = (tick - prev_tick).max(0) as u32;
-                prev_tick = tick;
-                ClipEvent {
-                    delta_ticks: delta,
-                    event: te.event,
-                }
-            })
-            .collect();
-        write_clip_file(ticks_per_quarter, &events)
+        // The beat façade owns the beat→tick→delta conversion; we just hand it
+        // the merged, beat-ordered `(beat, event)` stream.
+        write_clip_file_from_beats(
+            ticks_per_quarter,
+            self.snapshot
+                .events_in_beat_order()
+                .into_iter()
+                .map(|te| (te.beat, te.event)),
+        )
     }
 }
 

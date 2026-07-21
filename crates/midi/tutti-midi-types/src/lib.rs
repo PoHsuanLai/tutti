@@ -37,7 +37,10 @@ pub mod unit_id;
 /// [`translation`] with the rest of the MIDI-1↔2 boundary.
 pub use translation::scaling as convert;
 
-pub use clip_file::{read_clip_file, write_clip_file, ClipEvent, ClipFileError, ParsedClipFile};
+pub use clip_file::{
+    read_clip_file, write_clip_file, write_clip_file_from_beats, ClipEvent, ClipFileError,
+    ParsedClipFile,
+};
 pub use message::{MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage};
 pub use translation::{normalize, Midi1ToMidi2Translator, MidiParseError};
 pub use mpe::{

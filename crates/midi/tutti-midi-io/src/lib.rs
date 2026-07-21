@@ -51,7 +51,8 @@ pub use tutti_midi_types::Midi1ToMidi2Translator;
 /// distinct from project save (Loro) and from SMF. See [`crate::smf`] for the
 /// MIDI 1.0 equivalent.
 pub use tutti_midi_types::{
-    read_clip_file, write_clip_file, ClipEvent, ClipFileError, ParsedClipFile,
+    read_clip_file, write_clip_file, write_clip_file_from_beats, ClipEvent, ClipFileError,
+    ParsedClipFile,
 };
 
 #[cfg(feature = "mpe")]

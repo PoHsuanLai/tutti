@@ -30,10 +30,31 @@ pub const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
 
 /// A timed UMP event in a clip: `delta_ticks` since the previous event, then the
 /// event itself.
+///
+/// This is the file's on-wire timing model (relative ticks). If you think in
+/// beats — as most callers do — prefer [`write_clip_file_from_beats`] and
+/// [`ParsedClipFile::timed`], which own the beat↔tick↔delta conversion so you
+/// never build these by hand.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ClipEvent {
     pub delta_ticks: u32,
     pub event: MidiEvent,
+}
+
+impl ClipEvent {
+    /// A timed event: `delta_ticks` since the previous event, then the event.
+    #[inline]
+    pub const fn new(delta_ticks: u32, event: MidiEvent) -> Self {
+        Self { delta_ticks, event }
+    }
+}
+
+impl From<(u32, MidiEvent)> for ClipEvent {
+    /// `(delta_ticks, event)` — lets a caller write the tuple form.
+    #[inline]
+    fn from((delta_ticks, event): (u32, MidiEvent)) -> Self {
+        Self { delta_ticks, event }
+    }
 }
 
 /// Serialize a MIDI Clip File (M2-116) from a tick-per-quarter unit and a flat
@@ -65,11 +86,76 @@ pub fn write_clip_file(ticks_per_quarter: u16, events: &[ClipEvent]) -> Vec<u8> 
     out
 }
 
+/// Serialize a MIDI Clip File from **beat-positioned** events — the ergonomic
+/// entry point when you think in beats rather than delta ticks.
+///
+/// Each `(beat, event)` carries an *absolute* beat position (quarter notes from
+/// the clip start). This quantizes them to `ticks_per_quarter` and computes the
+/// inter-event delta ticks for you, so you never accumulate deltas by hand.
+/// Input need not be sorted — events are ordered by beat first; a zero or
+/// negative gap (simultaneous or slightly out-of-order events) becomes a
+/// zero-tick delta.
+///
+/// ```
+/// # use tutti_midi_types::{write_clip_file_from_beats, read_clip_file, MidiEvent};
+/// let bytes = write_clip_file_from_beats(96, [
+///     (0.0, MidiEvent::note_on(0, 0, 60, 0x8000)),
+///     (2.0, MidiEvent::note_off(0, 0, 60, 0)),
+/// ]);
+/// let clip = read_clip_file(&bytes).unwrap();
+/// assert_eq!(clip.timed().count(), 2);
+/// ```
+pub fn write_clip_file_from_beats(
+    ticks_per_quarter: u16,
+    events: impl IntoIterator<Item = (f64, MidiEvent)>,
+) -> Vec<u8> {
+    let tpq = f64::from(ticks_per_quarter);
+    let mut timed: Vec<(f64, MidiEvent)> = events.into_iter().collect();
+    timed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
+
+    let mut prev_tick: i64 = 0;
+    let clip_events: Vec<ClipEvent> = timed
+        .into_iter()
+        .map(|(beat, event)| {
+            let tick = (beat * tpq).round() as i64;
+            let delta = (tick - prev_tick).max(0) as u32;
+            prev_tick = tick;
+            ClipEvent::new(delta, event)
+        })
+        .collect();
+    write_clip_file(ticks_per_quarter, &clip_events)
+}
+
 /// A parsed MIDI Clip File.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedClipFile {
     pub ticks_per_quarter: u16,
     pub events: Vec<ClipEvent>,
+}
+
+impl ParsedClipFile {
+    /// Iterate events as `(beat, event)` with **absolute** beat positions —
+    /// quarter notes from the clip start — undoing the file's relative delta
+    /// ticks. The inverse of [`write_clip_file_from_beats`]: the natural way to
+    /// consume a clip when you schedule in beats.
+    ///
+    /// Beats are `delta_ticks` summed and divided by [`Self::ticks_per_quarter`].
+    pub fn timed(&self) -> impl Iterator<Item = (f64, MidiEvent)> + '_ {
+        let tpq = f64::from(self.ticks_per_quarter);
+        let mut abs_tick: u64 = 0;
+        self.events.iter().map(move |ce| {
+            abs_tick += u64::from(ce.delta_ticks);
+            (abs_tick as f64 / tpq, ce.event)
+        })
+    }
+
+    /// The clip's musical length in beats: the absolute beat of the last event
+    /// (0.0 for an empty clip). Note-offs are events too, so this reflects where
+    /// the last message lands, not necessarily where sound stops.
+    pub fn duration_beats(&self) -> f64 {
+        let total_ticks: u64 = self.events.iter().map(|ce| u64::from(ce.delta_ticks)).sum();
+        total_ticks as f64 / f64::from(self.ticks_per_quarter)
+    }
 }
 
 /// Why a byte stream failed to parse as a MIDI Clip File (M2-116). Distinguishes
@@ -313,6 +399,51 @@ mod tests {
         assert_eq!(parsed.events[0].delta_ticks, big);
         assert_eq!(parsed.events[1].delta_ticks, DCS_MAX);
         assert_eq!(parsed.events, events);
+    }
+
+    #[test]
+    fn beats_round_trip_through_the_beat_facade() {
+        // Absolute beats in → delta ticks on disk → absolute beats out.
+        let bytes = write_clip_file_from_beats(
+            96,
+            [
+                (0.0, MidiEvent::note_on(0, 0, 60, 0x8000)),
+                (2.0, MidiEvent::note_off(0, 0, 60, 0)),
+                (2.5, MidiEvent::note_on(0, 1, 64, 0xFFFF)),
+            ],
+        );
+        let clip = read_clip_file(&bytes).expect("parses");
+        let timed: Vec<(f64, MidiEvent)> = clip.timed().collect();
+        assert_eq!(timed.len(), 3);
+        assert!((timed[0].0 - 0.0).abs() < 1e-9);
+        assert!((timed[1].0 - 2.0).abs() < 1e-9);
+        assert!((timed[2].0 - 2.5).abs() < 1e-9);
+        assert_eq!(timed[2].1, MidiEvent::note_on(0, 1, 64, 0xFFFF));
+        assert!((clip.duration_beats() - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn beat_facade_orders_unsorted_input() {
+        // Out-of-order input is sorted by beat; deltas never go negative.
+        let bytes = write_clip_file_from_beats(
+            480,
+            [
+                (4.0, MidiEvent::note_off(0, 0, 60, 0)),
+                (0.0, MidiEvent::note_on(0, 0, 60, 0x8000)),
+            ],
+        );
+        let clip = read_clip_file(&bytes).expect("parses");
+        let beats: Vec<f64> = clip.timed().map(|(b, _)| b).collect();
+        assert_eq!(beats.len(), 2);
+        assert!(beats[0] < beats[1]);
+        assert!((beats[0] - 0.0).abs() < 1e-9);
+        assert!((beats[1] - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn clip_event_tuple_and_new_are_equivalent() {
+        let ev = MidiEvent::note_on(0, 0, 60, 0x8000);
+        assert_eq!(ClipEvent::new(240, ev), ClipEvent::from((240, ev)));
     }
 
     #[test]

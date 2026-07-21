@@ -37,8 +37,8 @@ pub use core::{VirtualMidiDestination, VirtualMidiSource};
 pub use tutti_midi_types::Protocol;
 
 pub use tutti_midi_types::{
-    midi2, midly, normalize, MidiEvent, MidiMessage, MidiTarget, NoteAttribute, NoteId,
-    PerNoteController, UnencodableMessage,
+    midi2, midly, normalize, MidiEvent, MidiMessage, MidiSource, MidiTarget, MidiUnitId,
+    NoteAttribute, NoteId, PerNoteController, UnencodableMessage,
 };
 
 /// Stateful MIDI 1.0 → 2.0 translation (RPN/NRPN reassembly). Feed inbound CV1
@@ -62,6 +62,17 @@ pub use tutti_midi_types::cc::mapping::{CCMapping, CCNumber, CCTarget, MappingId
 
 pub use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteTimecode};
 
+// --- Runtime delivery (event fan-out + beat-scheduled playback) ---
+//
+// The lock-free dispatch (`MidiBus`/`MidiSender`/`MidiReceiver`) and the offline
+// snapshot / clip playback live in `tutti-midi-runtime`; surface them here so an
+// app depends on this one umbrella crate rather than reaching into the runtime.
+
+pub use tutti_midi_runtime::{
+    MidiBus, MidiClipSource, MidiEventSlot, MidiReceiver, MidiSender, MidiSnapshot, TimedClipEvent,
+    TimedMidiEvent,
+};
+
 pub use crossbeam_channel;
 
 // --- Standard MIDI File codec ---
@@ -74,6 +85,47 @@ pub use smf::{
     encode_midi_file, write_midi_file, MidiWriteOptions, ParsedMidiFile, SmfMessage, SmfNote,
     SmfTimedEvent, SmfTrack,
 };
+
+/// The umbrella MIDI prelude, for `use tutti_midi_io::prelude::*;` — everything a
+/// typical app touches, from one import.
+///
+/// It re-exports [`tutti_midi_types::prelude`] (the wire event + decoded view +
+/// clip-file codec + per-note identity) and adds this crate's I/O and delivery:
+///
+/// - **Hardware I/O** — [`MidiIo`] (connect / send / observe), the
+///   protocol-transparent [`MidiPort`] seam + [`SendError`], and [`MidiDevice`].
+/// - **Delivery** — [`MidiBus`] / [`MidiSender`] / [`MidiReceiver`] (lock-free
+///   fan-out), and beat-scheduled playback ([`MidiClipSource`], [`MidiSnapshot`],
+///   [`TimedMidiEvent`]).
+///
+/// Deliberately excludes the rarer surfaces — SMF codec internals, UMP-Stream
+/// endpoint negotiation, the Bevy ECS layer, sync decoders, MPE zone config —
+/// which stay explicit imports (`tutti_midi_io::smf`, `::MidiClockDecoder`,
+/// `::ecs::*`, …). Glob this for the 90% path; import the rest by name.
+///
+/// ```
+/// use tutti_midi_io::prelude::*;
+///
+/// // The types prelude comes along: build + decode an event.
+/// let ev = MidiEvent::note_on(0, 0, 60, 0x8000);
+/// assert!(ev.message().is_note_on());
+///
+/// // And the delivery types are here too — fan an event to a unit's inbox.
+/// let (tx, rx) = MidiEventSlot::pair(MidiUnitId::new(1));
+/// let bus = MidiBus::new();
+/// bus.insert(tx);
+/// bus.note_on(MidiUnitId::new(1), 0, 60, 100);
+/// let mut buf = [ev; 4];
+/// assert_eq!(rx.poll_into(&mut buf), 1);
+/// ```
+pub mod prelude {
+    pub use tutti_midi_types::prelude::*;
+
+    pub use crate::{
+        MidiBus, MidiClipSource, MidiDevice, MidiEventSlot, MidiIo, MidiPort, MidiReceiver,
+        MidiSender, MidiSnapshot, SendError, TimedMidiEvent,
+    };
+}
 
 // --- Bevy ECS integration ---
 

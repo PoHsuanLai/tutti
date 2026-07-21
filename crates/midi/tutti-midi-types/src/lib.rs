@@ -55,3 +55,47 @@ pub use ump::{
     FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
 };
 pub use unit_id::MidiUnitId;
+
+/// The common MIDI-types surface, for `use tutti_midi_types::prelude::*;`.
+///
+/// Pulls in what building and decoding MIDI needs: the wire event
+/// ([`MidiEvent`]) and its decoded view ([`MidiMessage`] via
+/// [`MidiEvent::message`]), per-note identity ([`NoteId`]), the routing-address
+/// trait ([`MidiTarget`]) and unit id, the [`normalize`] seam, and the MIDI 2.0
+/// Clip File codec (beat-domain [`write_clip_file_from_beats`] /
+/// [`read_clip_file`] / [`ParsedClipFile`]).
+///
+/// Deliberately *narrow* — the advanced surfaces (UMP-Stream endpoint
+/// negotiation, Flex Data, RPN/NRPN translation state, MPE zone config, the sync
+/// decoders, the raw scaling `convert` module) stay explicit imports so a glob
+/// import doesn't flood scope. Reach for them by path when you need them.
+///
+/// For hardware and file I/O on top of these types, use
+/// `tutti_midi_io::prelude::*`, which re-exports this prelude plus [`MidiIo`],
+/// the [`MidiPort`] seam, and the runtime delivery types.
+///
+/// ```
+/// use tutti_midi_types::prelude::*;
+///
+/// // Build a note, decode it back — no midi2 imports, no width juggling.
+/// let ev = MidiEvent::note_on(0, 0, 60, 0x8000);
+/// let msg = ev.message();
+/// assert!(msg.is_note_on());
+/// assert_eq!(msg.note(), Some(60));
+///
+/// // Round-trip a phrase through a MIDI 2.0 Clip File, in beats.
+/// let bytes = write_clip_file_from_beats(96, [(0.0, ev)]);
+/// let clip = read_clip_file(&bytes).unwrap();
+/// assert_eq!(clip.timed().count(), 1);
+/// ```
+///
+/// [`MidiEvent::message`]: crate::MidiMessage
+/// [`MidiIo`]: https://docs.rs/tutti-midi-io
+/// [`MidiPort`]: https://docs.rs/tutti-midi-io
+pub mod prelude {
+    pub use crate::{
+        normalize, read_clip_file, write_clip_file, write_clip_file_from_beats, ClipEvent,
+        ClipFileError, MidiEvent, MidiMessage, MidiSource, MidiTarget, MidiUnitId, NoteAttribute,
+        NoteId, ParsedClipFile, PerNoteController, Protocol,
+    };
+}

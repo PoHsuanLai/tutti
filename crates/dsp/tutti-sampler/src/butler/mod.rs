@@ -3,6 +3,7 @@
 mod cache;
 mod command;
 mod config;
+pub(crate) mod control;
 mod crossfader;
 mod handlers;
 mod io;

@@ -82,6 +82,7 @@ pub mod playback;
 pub mod input;
 pub mod preview;
 pub mod recording;
+pub mod tiering;
 
 // Bevy ECS surface of the input / preview / recording domains.
 #[cfg(feature = "bevy")]

@@ -4,7 +4,7 @@ use crate::butler::{
     BufferConfig, ButlerCommand, ButlerThread, CaptureIdGen, LruCache, ChannelPlan,
 };
 use crate::error::Result;
-use crate::{StreamingClipReader, StreamingSamplerUnit};
+use crate::StreamingClipReader;
 use arc_swap::ArcSwap;
 #[cfg(feature = "bevy")]
 use bevy_ecs::resource::Resource;
@@ -108,11 +108,7 @@ impl Sampler {
     /// `channel_index` must be unique per streaming clip; the caller (dawai-model)
     /// derives it from the clip's `SlotId`.
     pub fn stream_clip(&self, channel_index: usize, file_path: PathBuf, offset_samples: usize) {
-        let _ = self.butler_tx.send_blocking(ButlerCommand::StreamAudioFile {
-            channel_index,
-            file_path,
-            offset_samples,
-        });
+        crate::butler::control::stream(&self.butler_tx, channel_index, file_path, offset_samples);
     }
 
     /// Build a [`StreamingClipReader`] for a channel whose butler stream is
@@ -132,17 +128,14 @@ impl Sampler {
         duration: Option<BeatDuration>,
     ) -> Option<StreamingClipReader> {
         let plans = self.butler_plans();
-        let plan = plans.get(&channel_index)?;
-        let link = plan.link.as_ref()?;
-        let consumer = link.consumer.clone();
-        let rt_state = plan.rt_state();
+        let (inner, rt_state) =
+            crate::butler::control::take_streaming_unit(&plans, channel_index)?;
 
         // file_sr / session_sr is the src_ratio the butler set on the plan; the
         // reader's placement gate converts transport seconds → file samples with
         // the file's own rate, so recover it from that ratio.
         let file_sample_rate = self.sample_rate * rt_state.src_ratio().get() as f64;
 
-        let inner = StreamingSamplerUnit::new(consumer, Arc::clone(&rt_state));
         Some(StreamingClipReader::new(
             inner,
             rt_state,
@@ -193,23 +186,12 @@ impl Sampler {
     /// `speed = 1.0` is normal; `reverse` flips playback direction. Forwards
     /// [`SetVarispeed`](ButlerCommand::SetVarispeed).
     pub fn set_clip_stream_speed(&self, channel_index: usize, speed: f32, reverse: bool) {
-        let direction = if reverse {
-            crate::butler::PlayDirection::Reverse
-        } else {
-            crate::butler::PlayDirection::Forward
-        };
-        let _ = self.butler_tx.send_blocking(ButlerCommand::SetVarispeed {
-            channel_index,
-            direction,
-            speed,
-        });
+        crate::butler::control::set_varispeed(&self.butler_tx, channel_index, speed, reverse);
     }
 
     /// Stop a streaming clip's channel — drops its ring + link.
     pub fn stop_clip_stream(&self, channel_index: usize) {
-        let _ = self
-            .butler_tx
-            .send_blocking(ButlerCommand::StopStreaming { channel_index });
+        crate::butler::control::stop_stream(&self.butler_tx, channel_index);
     }
 
     /// Build a low-latency [`Auditioner`](crate::Auditioner) for previewing

@@ -39,19 +39,15 @@ use bevy_ecs::prelude::Resource;
 use dashmap::DashMap;
 use smol::channel::Sender;
 
-use tutti_core::{AtomicF32, Wave};
+use tutti_core::{AtomicF32, Linear, Ratio, Wave};
 
-use crate::butler::{ButlerCommand, ChannelPlan, LruCache, PlayDirection};
-use crate::{SamplerUnit, StreamingSamplerUnit};
+use crate::butler::{control, ButlerCommand, ChannelPlan, LruCache};
 use crate::Sampler;
+use crate::{SamplerUnit, StreamingSamplerUnit};
 
 /// Reserved channel index for auditioner streaming.
 /// Uses a high value to avoid collision with track channels (0, 1, 2...).
 const AUDITIONER_CHANNEL: usize = usize::MAX - 1;
-
-/// Threshold in samples: files shorter than this use in-memory playback.
-/// ~10 seconds at 48kHz.
-const IN_MEMORY_THRESHOLD: usize = 480_000;
 
 enum PreviewMode {
     InMemory(SamplerUnit),
@@ -67,10 +63,13 @@ enum PreviewMode {
 ///
 /// # Mode selection
 ///
-/// Files shorter than ~10 seconds (or already in the LRU cache) play
-/// **in-memory**: the file is decoded once and looped from RAM with
-/// automatic sample-rate conversion. Longer files **stream from disk**
-/// through a reserved internal channel.
+/// Preview is just free-running playback: the same tier policy the timeline
+/// uses ([`crate::tiering`]) picks in-RAM vs streaming. Files at or under
+/// [`crate::tiering::IN_MEMORY_SECS`] (or already in the LRU cache) play
+/// **in-memory** — decoded once and played from RAM (placement `None`, so no
+/// transport gate) with automatic sample-rate conversion. Longer files
+/// **stream from disk** through a reserved internal channel, driven by the
+/// very same butler control the timeline path uses.
 ///
 /// Holds exactly the butler handles the auditioner drives (command channel,
 /// channel plans, decode cache) plus its own playback state — no back-pointer
@@ -106,15 +105,12 @@ impl Auditioner {
         }
     }
 
-    /// Send a butler command, blocking until queued.
-    fn send(&self, cmd: ButlerCommand) {
-        let _ = self.butler_tx.send_blocking(cmd);
-    }
-
     /// Preview a file.
     ///
     /// Stops any current preview first. Short or already-cached files
-    /// play in-memory; longer files stream from disk via butler.
+    /// play in-memory; longer files stream from disk via butler. Tier
+    /// selection uses the shared [`crate::tiering`] policy — the same one the
+    /// timeline path applies.
     pub fn preview(&self, file_path: &Path) -> crate::Result<()> {
         self.stop();
 
@@ -129,10 +125,10 @@ impl Auditioner {
             );
             cache.insert(path.clone(), wave.clone());
 
-            if wave.len() <= IN_MEMORY_THRESHOLD {
-                self.start_in_memory(wave, &path);
-            } else {
+            if crate::tiering::should_stream(wave.len(), wave.sample_rate()) {
                 self.start_streaming(&path);
+            } else {
+                self.start_in_memory(wave, &path);
             }
         }
 
@@ -140,12 +136,8 @@ impl Auditioner {
     }
 
     fn start_in_memory(&self, wave: Arc<Wave>, path: &Path) {
-        let mut unit = SamplerUnit::with_settings(
-            wave,
-            tutti_core::Linear::new(self.gain.load(Ordering::Acquire)),
-            tutti_core::Ratio::new(self.speed.load(Ordering::Acquire)),
-            false,
-        );
+        // placement None => free-running (no transport/beat gate).
+        let mut unit = SamplerUnit::with_settings(wave, self.gain(), self.speed(), false);
         unit.set_session_sample_rate(self.session_sample_rate);
         unit.trigger();
 
@@ -153,13 +145,9 @@ impl Auditioner {
     }
 
     fn start_streaming(&self, path: &Path) {
-        self.send(ButlerCommand::StreamAudioFile {
-            channel_index: AUDITIONER_CHANNEL,
-            file_path: path.to_path_buf(),
-            offset_samples: 0,
-        });
+        control::stream(&self.butler_tx, AUDITIONER_CHANNEL, path.to_path_buf(), 0);
 
-        let speed = self.speed.load(Ordering::Acquire);
+        let speed = self.speed().get();
         if speed != 1.0 {
             self.set_stream_speed(speed);
         }
@@ -167,18 +155,10 @@ impl Auditioner {
         self.enter(PreviewMode::Streaming, path);
     }
 
-    /// Set varispeed on the reserved auditioner streaming channel.
+    /// Set varispeed on the reserved auditioner streaming channel — the same
+    /// butler control the timeline's `Sampler::set_clip_stream_speed` uses.
     fn set_stream_speed(&self, speed: f32) {
-        let direction = if speed < 0.0 {
-            PlayDirection::Reverse
-        } else {
-            PlayDirection::Forward
-        };
-        self.send(ButlerCommand::SetVarispeed {
-            channel_index: AUDITIONER_CHANNEL,
-            direction,
-            speed: speed.abs(),
-        });
+        control::set_varispeed(&self.butler_tx, AUDITIONER_CHANNEL, speed.abs(), speed < 0.0);
     }
 
     /// Install a new preview mode and mark playing.
@@ -194,9 +174,7 @@ impl Auditioner {
             match mode {
                 PreviewMode::InMemory(unit) => unit.stop(),
                 PreviewMode::Streaming => {
-                    self.send(ButlerCommand::StopStreaming {
-                        channel_index: AUDITIONER_CHANNEL,
-                    });
+                    control::stop_stream(&self.butler_tx, AUDITIONER_CHANNEL);
                 }
             }
         }
@@ -210,18 +188,18 @@ impl Auditioner {
     }
 
     /// Set linear playback gain. Clamped to non-negative.
-    pub fn set_gain(&self, gain: f32) {
-        self.gain.store(gain.max(0.0), Ordering::Release);
+    pub fn set_gain(&self, gain: Linear) {
+        self.gain.store(gain.get().max(0.0), Ordering::Release);
     }
 
     /// Current linear playback gain.
-    pub fn gain(&self) -> f32 {
-        self.gain.load(Ordering::Acquire)
+    pub fn gain(&self) -> Linear {
+        Linear::new(self.gain.load(Ordering::Acquire))
     }
 
     /// Set playback speed. Clamped to `[0.25, 4.0]`.
-    pub fn set_speed(&self, speed: f32) {
-        let clamped = speed.clamp(0.25, 4.0);
+    pub fn set_speed(&self, speed: Ratio) {
+        let clamped = speed.get().clamp(0.25, 4.0);
         self.speed.store(clamped, Ordering::Release);
         let mode = self.mode.lock();
         if let Some(PreviewMode::Streaming) = mode.as_ref() {
@@ -230,8 +208,8 @@ impl Auditioner {
     }
 
     /// Current playback speed.
-    pub fn speed(&self) -> f32 {
-        self.speed.load(Ordering::Acquire)
+    pub fn speed(&self) -> Ratio {
+        Ratio::new(self.speed.load(Ordering::Acquire))
     }
 
     /// Path of the file currently being previewed, if any.
@@ -269,9 +247,11 @@ impl Auditioner {
         let mode = self.mode.lock();
         match mode.as_ref()? {
             PreviewMode::Streaming => {
-                let plan = self.butler_plans.get(&AUDITIONER_CHANNEL)?;
-                let consumer = plan.link.as_ref().map(|l| l.consumer.clone())?;
-                Some(StreamingSamplerUnit::new(consumer, plan.rt_state()))
+                // Same 3-line consumer handoff the timeline path uses via
+                // `Sampler::take_clip_reader`; here it stays un-gated (free-running).
+                let (unit, _rt_state) =
+                    control::take_streaming_unit(&self.butler_plans, AUDITIONER_CHANNEL)?;
+                Some(unit)
             }
             PreviewMode::InMemory(_) => None,
         }

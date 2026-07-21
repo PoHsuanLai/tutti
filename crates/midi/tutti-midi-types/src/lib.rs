@@ -20,6 +20,7 @@ pub mod cc;
 pub mod clip_file;
 pub mod convert;
 pub mod input_source;
+pub mod message;
 pub mod mpe;
 pub mod normalize;
 pub mod note_id;
@@ -34,6 +35,7 @@ pub mod unit_id;
 
 pub use clip_file::{read_clip_file, write_clip_file, ClipEvent, ClipFileError, ParsedClipFile};
 pub use input_source::{MidiInputSource, NoMidiInput};
+pub use message::{MidiMessage, PerNoteController};
 pub use mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZone, MpeZoneConfig, NoteRotationAllocator,
     PitchBendSensitivity,

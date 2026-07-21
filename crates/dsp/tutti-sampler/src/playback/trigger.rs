@@ -129,16 +129,23 @@ pub fn audio_playback_system(
         );
 
         let (node_id, ts_control) = if let Some(ts) = ts {
-            let wrapped = crate::stretch::Unit::new(Box::new(sampler), sample_rate);
-            wrapped.set_stretch_factor(tutti_core::Ratio::new(ts.stretch_factor));
-            wrapped.set_pitch_cents(tutti_core::Cents::new(ts.pitch_cents));
+            // The stretcher is now a pure filter that owns no source: add the
+            // sampler as its own node and pipe it into the filter, then the
+            // filter to the output. `AudioEmitter` points at the SAMPLER node so
+            // volume sync (`node_mut::<SamplerUnit>`) and finish detection
+            // (`node::<SamplerUnit>`) resolve against the real source.
+            let stretch = crate::stretch::Unit::new(sample_rate);
+            stretch.set_stretch_factor(tutti_core::Ratio::new(ts.stretch_factor));
+            stretch.set_pitch_cents(tutti_core::Cents::new(ts.pitch_cents));
             let control = TimeStretchControl {
-                stretch_factor: wrapped.stretch_factor_arc(),
-                pitch_cents: wrapped.pitch_cents_arc(),
+                stretch_factor: stretch.stretch_factor_arc(),
+                pitch_cents: stretch.pitch_cents_arc(),
             };
-            let id = graph.0.add(wrapped);
-            graph.0.pipe_output(id);
-            (id, Some(control))
+            let sampler_id = graph.0.add(sampler);
+            let stretch_id = graph.0.add(stretch);
+            graph.0.pipe_all(sampler_id, stretch_id);
+            graph.0.pipe_output(stretch_id);
+            (sampler_id, Some(control))
         } else {
             let id = graph.0.add(sampler);
             graph.0.pipe_output(id);

@@ -59,8 +59,10 @@
 //!
 //! let wave = Arc::new(Wave::with_capacity(1, 44_100.0, 0));
 //! let unit = SamplerUnit::new(wave);
-//! let stretched = stretch::Unit::new(Box::new(unit), 44_100.0);
-//! # let _ = stretched;
+//! // The stretcher is a pure frame-in → frame-out filter: it owns no source.
+//! // The caller ticks `unit` and feeds each frame into `stretched`.
+//! let stretched = stretch::Unit::new(44_100.0);
+//! # let _ = (unit, stretched);
 //! ```
 
 pub mod error;
@@ -105,7 +107,7 @@ pub use preview::Auditioner;
 // Bevy-free DSP leaves + value types from `playback` — usable for direct
 // FunDSP-graph integration without the ECS layer.
 pub use butler::{LruCache, StreamPin};
-pub use playback::{ClipCommand, ClipSpec, Direction, LoopSetting, SamplerUnit,
+pub use playback::{ClipCommand, ClipReader, ClipSpec, Direction, LoopSetting, SamplerUnit,
     SamplerUnitConfig, SlotId, StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit,
     TransportPlacement, TrackClipReaderHandle, TrackClipReaderUnit};
 // Bevy ECS surface of `playback`.

@@ -3,10 +3,14 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tutti_core::{AudioUnit, BeatDuration, BeatPosition, BufferMut, BufferRef, Linear};
+use tutti_core::{
+    AudioUnit, BeatDuration, BeatPosition, BufferMut, BufferRef, Linear, Ratio, SamplePosition,
+    Wave,
+};
 
+use super::clip_reader::ClipReader;
 use super::interp::cubic_hermite;
-use super::sampler_unit::TransportPlacement;
+use super::sampler_unit::{LoopSetting, TransportPlacement};
 use crate::butler::{RtState, SharedReader};
 
 /// 8192 frames at 4x speed with interpolation padding.
@@ -498,6 +502,26 @@ impl StreamingClipReader {
         self.shared_state.request_seek(target_offset.max(0.0) as u64);
     }
 
+    /// Set the playback speed magnitude. Routes directly to the shared
+    /// [`RtState`], which is exactly what the butler's `SetVarispeed` handler
+    /// does for speed (`rt_state.set_speed`) — two lock-free atomic stores, no
+    /// butler round-trip needed. Direction is a separate concern (the reader has
+    /// no direction verb), so this leaves it untouched, mirroring how
+    /// `ClipCommand::UpdateSpeed` carries only a magnitude.
+    pub fn set_speed(&mut self, speed: Ratio) {
+        self.shared_state.set_speed(speed.get());
+    }
+
+    /// Public seek: reposition the live stream to clip-relative `to`. Delegates
+    /// to the private [`request_seek`](Self::request_seek), which publishes the
+    /// target to the shared [`RtState`] (two atomic stores) for the butler to
+    /// apply click-free — the same mechanism the placement gate uses on a
+    /// discontinuous jump, and the same one the `Command::Seek` butler path
+    /// ultimately drives. RT-safe: no alloc, no I/O.
+    pub fn seek(&mut self, to: SamplePosition) {
+        self.request_seek(to.get());
+    }
+
     /// Decide, for a frame whose desired clip-relative offset is `offset`,
     /// whether the playhead jumped (fresh entry or a seek/loop discontinuity)
     /// and issue a butler seek if so.
@@ -513,6 +537,58 @@ impl StreamingClipReader {
             // bounded and normal advance never trips the discontinuity check.
             self.streamed_offset = offset;
         }
+    }
+}
+
+impl ClipReader for StreamingClipReader {
+    fn set_gain(&mut self, gain: Linear) {
+        StreamingClipReader::set_gain(self, gain);
+    }
+
+    fn set_placement(&mut self, start_beat: BeatPosition, duration: Option<BeatDuration>) {
+        StreamingClipReader::set_placement(self, start_beat, duration);
+    }
+
+    fn set_speed(&mut self, speed: Ratio) {
+        // Honest in-unit forward: the butler's `SetVarispeed` handler's speed
+        // effect is exactly `RtState::set_speed`, which this reader can reach via
+        // its `Arc<RtState>`. See [`StreamingClipReader::set_speed`].
+        StreamingClipReader::set_speed(self, speed);
+    }
+
+    fn set_loop(&mut self, _setting: LoopSetting) {
+        // NOT honestly implementable in-unit. `SetStreamLoop` mutates
+        // butler-owned state (`plan.link.loop_config`) and reads the loop-start
+        // fadein head off disk in `handle_set_stream_loop`; the reader holds only
+        // `Arc<RtState>` + the ring consumer and can reach neither. Deliberate
+        // no-op: streaming loop stays on the butler command path
+        // (`Command::Loop` → `SetStreamLoop`/`ClearStreamLoop`), which Layer 4
+        // keeps driving control-side from dawai-model. The command drain skips the
+        // streaming variant for loop ops accordingly.
+    }
+
+    fn seek(&mut self, to: SamplePosition) {
+        StreamingClipReader::seek(self, to);
+    }
+
+    fn set_wave(&mut self, _wave: Arc<Wave>) {
+        // Deliberate no-op. A streaming source has no in-RAM wave to swap; a
+        // source change means re-registering the butler stream on a different
+        // file (a control-thread / butler op via `AddStreaming`), not an in-unit
+        // mutation. Preserves the existing `ReplaceWave` behavior where the
+        // command drain skips the streaming variant.
+    }
+
+    fn play(&self) {
+        self.inner.play();
+    }
+
+    fn stop(&self) {
+        self.inner.stop();
+    }
+
+    fn is_playing(&self) -> bool {
+        self.inner.is_playing()
     }
 }
 

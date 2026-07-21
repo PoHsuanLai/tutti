@@ -467,6 +467,59 @@ impl SamplerUnit {
     }
 }
 
+impl super::clip_reader::ClipReader for SamplerUnit {
+    fn set_gain(&mut self, gain: Linear) {
+        SamplerUnit::set_gain(self, gain);
+    }
+
+    fn set_placement(&mut self, start_beat: BeatPosition, duration: Option<BeatDuration>) {
+        SamplerUnit::set_placement(self, start_beat, duration);
+    }
+
+    fn set_speed(&mut self, speed: Ratio) {
+        SamplerUnit::set_speed(self, speed);
+    }
+
+    fn set_loop(&mut self, setting: LoopSetting) {
+        // Same behavior as the `ClipCommand::UpdateLoop` / `ClearLoop` drain
+        // arms: `On` primes the loop range + crossfade; `Off` clears the range
+        // and disables looping.
+        match setting {
+            LoopSetting::On {
+                start,
+                end,
+                crossfade_samples,
+            } => self.set_loop_range(start, end, crossfade_samples),
+            LoopSetting::Off => {
+                self.clear_loop_range();
+                self.set_looping(false);
+            }
+        }
+    }
+
+    fn seek(&mut self, to: SamplePosition) {
+        // In-RAM seek is the instant position store; `trigger_at` also arms
+        // playback, matching the existing manual-seek semantics.
+        self.trigger_at(to);
+    }
+
+    fn set_wave(&mut self, wave: Arc<Wave>) {
+        SamplerUnit::set_wave(self, wave);
+    }
+
+    fn play(&self) {
+        SamplerUnit::play(self);
+    }
+
+    fn stop(&self) {
+        SamplerUnit::stop(self);
+    }
+
+    fn is_playing(&self) -> bool {
+        SamplerUnit::is_playing(self)
+    }
+}
+
 impl AudioUnit for SamplerUnit {
     fn inputs(&self) -> usize {
         0

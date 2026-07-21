@@ -10,10 +10,11 @@
 //! use std::sync::Arc;
 //!
 //! // Create a sampler with a loaded audio file
-//! let sampler = SamplerUnit::new(Arc::new(wave));
+//! let mut sampler = SamplerUnit::new(Arc::new(wave));
 //!
-//! // Wrap with time-stretch capability
-//! let mut stretched = stretch::Unit::new(Box::new(sampler), 44100.0);
+//! // The stretcher is a pure filter: the caller ticks `sampler` and feeds each
+//! // frame into `stretched` (it owns no source of its own).
+//! let mut stretched = stretch::Unit::new(44100.0);
 //!
 //! // Slow down to half speed
 //! stretched.set_stretch_factor(2.0);

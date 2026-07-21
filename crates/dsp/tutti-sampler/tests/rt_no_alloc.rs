@@ -17,8 +17,7 @@ use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{
-    AudioUnit, BeatPosition, Bpm, BufferMut, BufferRef, BufferVec, Cents, Ratio, SampleRate,
-    SignalFrame, TransportReader, Wave,
+    AudioUnit, BeatPosition, Bpm, BufferVec, Cents, Ratio, SampleRate, TransportReader, Wave,
 };
 use tutti_sampler::stretch::{Algorithm, Unit as TimeStretchUnit};
 use tutti_sampler::{ClipCommand, ClipSpec, Direction, SamplerUnit, SlotId, TrackClipReaderUnit};
@@ -82,56 +81,21 @@ fn sampler_unit_tick_is_allocation_free() {
     });
 }
 
-/// Minimal constant source so the time-stretch unit has something to pull.
-#[derive(Clone)]
-struct ConstSource;
-
-impl AudioUnit for ConstSource {
-    fn inputs(&self) -> usize {
-        0
-    }
-    fn outputs(&self) -> usize {
-        2
-    }
-    fn reset(&mut self) {}
-    fn set_sample_rate(&mut self, _: SampleRate) {}
-    fn tick(&mut self, _: &[f32], output: &mut [f32]) {
-        if output.len() >= 2 {
-            output[0] = 0.25;
-            output[1] = 0.25;
-        }
-    }
-    fn process(&mut self, size: usize, _: &BufferRef, output: &mut BufferMut) {
-        for i in 0..size {
-            output.set_f32(0, i, 0.25);
-            output.set_f32(1, i, 0.25);
-        }
-    }
-    fn get_id(&self) -> u64 {
-        424242
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-    fn route(&mut self, _: &SignalFrame, _: f64) -> SignalFrame {
-        SignalFrame::new(2)
-    }
-    fn footprint(&self) -> usize {
-        0
-    }
-}
-
 #[test]
 fn time_stretch_process_is_allocation_free() {
-    let mut node = TimeStretchUnit::new(Box::new(ConstSource), 48_000.0);
+    // The stretcher is now a pure filter: it owns no source and reads the stereo
+    // frames the caller feeds in. Feed a 2-channel input buffer (matching its
+    // `inputs() == 2`) primed with a constant source signal.
+    let mut node = TimeStretchUnit::new(48_000.0);
     node.set_sample_rate(SampleRate(48_000.0));
     node.set_stretch_factor(Ratio::new(1.5));
     assert_eq!(node.algorithm(), Algorithm::PhaseVocoder);
 
-    let input_vec = BufferVec::new(0);
+    let mut input_vec = BufferVec::new(2);
+    for i in 0..64 {
+        input_vec.buffer_mut().set_f32(0, i, 0.25);
+        input_vec.buffer_mut().set_f32(1, i, 0.25);
+    }
     let mut output_vec = BufferVec::new(2);
 
     // Warm up past the phase-vocoder fill-up latency so `process` is on its

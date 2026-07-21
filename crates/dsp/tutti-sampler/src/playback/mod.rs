@@ -24,6 +24,8 @@ use tutti_core::WaveAsset;
 
 // Bevy-free DSP leaves — always compiled.
 mod loop_crossfade;
+// The cold-path control trait shared by both clip-playback backends.
+pub mod clip_reader;
 // Shared zero-alloc interpolation kernel (one cubic Hermite for both units).
 pub mod interp;
 pub mod sampler_unit;
@@ -67,6 +69,7 @@ pub use trigger::{
 };
 #[cfg(feature = "bevy")]
 pub use node::{SamplerLooping, SamplerNode, SamplerSpeed};
+pub use clip_reader::ClipReader;
 pub use sampler_unit::{LoopSetting, SamplerUnit, SamplerUnitConfig, TransportPlacement};
 pub use streaming_sampler::{StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit};
 #[cfg(feature = "bevy")]

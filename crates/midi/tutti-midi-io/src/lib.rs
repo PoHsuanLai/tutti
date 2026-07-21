@@ -37,8 +37,8 @@ pub use core::{VirtualMidiDestination, VirtualMidiSource};
 pub use tutti_midi_types::Protocol;
 
 pub use tutti_midi_types::{
-    midi2, midly, normalize, MidiEvent, MidiMessage, MidiTarget, NoteAttribute, PerNoteController,
-    UnencodableMessage,
+    midi2, midly, normalize, MidiEvent, MidiMessage, MidiTarget, NoteAttribute, NoteId,
+    PerNoteController, UnencodableMessage,
 };
 
 /// Stateful MIDI 1.0 → 2.0 translation (RPN/NRPN reassembly). Feed inbound CV1

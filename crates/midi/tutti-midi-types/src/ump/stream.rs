@@ -198,10 +198,12 @@ pub struct FunctionBlocks {
 
 /// The MIDI protocol carried on a UMP stream, for
 /// [`MidiEvent::stream_configuration_notification`]. Wire values per M2-104.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum Protocol {
     Midi1 = 1,
+    /// The default — this engine is MIDI-2-native.
+    #[default]
     Midi2 = 2,
 }
 

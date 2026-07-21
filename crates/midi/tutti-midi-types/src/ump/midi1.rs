@@ -5,6 +5,31 @@ use midi2::prelude::*;
 
 use super::MidiEvent;
 
+/// The bytes were not a parseable MIDI 1.0 channel-voice or system message
+/// (malformed, or a SysEx — use [`MidiEvent::sysex7_fragments`] for that).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MidiParseError;
+
+impl core::fmt::Display for MidiParseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("not a parseable MIDI 1.0 message")
+    }
+}
+
+impl std::error::Error for MidiParseError {}
+
+impl TryFrom<&[u8]> for MidiEvent {
+    type Error = MidiParseError;
+
+    /// Parse MIDI 1.0 wire bytes at frame offset 0 — the idiomatic spelling of
+    /// [`MidiEvent::from_midi1_bytes`]. Use `from_midi1_bytes` when you need a
+    /// non-zero frame offset.
+    #[inline]
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_midi1_bytes(0, bytes).ok_or(MidiParseError)
+    }
+}
+
 impl MidiEvent {
     /// Parse raw MIDI 1.0 wire bytes (2-3 byte channel-voice or 1-byte system
     /// real-time message) into a UMP [`MidiEvent`] of type 0x2 (Channel Voice 1)
@@ -180,5 +205,20 @@ impl MidiEvent {
             0xF6 | 0xF8 | 0xFA..=0xFC | 0xFE | 0xFF => Some(([status, 0, 0], 1)),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_from_bytes_parses_and_errors() {
+        // Note-on wire bytes → a valid MidiEvent at frame 0.
+        let ev = MidiEvent::try_from(&[0x93u8, 60, 100][..]).expect("valid note-on");
+        assert_eq!(ev, MidiEvent::from_midi1_bytes(0, &[0x93, 60, 100]).unwrap());
+        assert_eq!(ev.frame_offset, 0);
+        // Garbage → the typed error.
+        assert_eq!(MidiEvent::try_from(&[0x00u8][..]), Err(MidiParseError));
     }
 }

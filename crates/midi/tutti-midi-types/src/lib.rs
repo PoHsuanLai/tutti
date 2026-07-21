@@ -49,6 +49,6 @@ pub use target::MidiTarget;
 pub use translate::Midi1ToMidi2Translator;
 pub use ump::{
     BarAccents, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
-    FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
+    FunctionBlocks, JrTimestamps, MidiEvent, MidiParseError, Protocol, UmpVersion,
 };
 pub use unit_id::MidiUnitId;

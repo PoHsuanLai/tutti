@@ -261,9 +261,7 @@ impl MidiEvent {
                     id: note_id(note),
                     channel,
                     note,
-                    controller: PerNoteController::Assignable {
-                        index: u8::from(m.index()),
-                    },
+                    controller: PerNoteController::Assignable { index: m.index() },
                     value: m.controller_data(),
                 }
             }

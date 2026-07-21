@@ -12,8 +12,24 @@
 /// The default (MIDI-1) encoding packs `channel` and `note` so
 /// [`NoteId::note_number`] / [`NoteId::channel`] recover them; rotation-minted
 /// ids are opaque and need not carry either.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct NoteId(u32);
+
+impl From<u32> for NoteId {
+    /// Same as [`NoteId::from_raw`] — treat a raw value as an opaque id.
+    #[inline]
+    fn from(v: u32) -> Self {
+        Self(v)
+    }
+}
+
+impl From<NoteId> for u32 {
+    /// The opaque backing value (see [`NoteId::raw`]).
+    #[inline]
+    fn from(id: NoteId) -> Self {
+        id.0
+    }
+}
 
 impl NoteId {
     /// MIDI-1 / classic-MPE identity: `(channel, note)`.
@@ -157,5 +173,24 @@ mod tests {
         // existing key still writable when full
         assert!(map.insert(NoteId::from_raw(1), 9));
         assert_eq!(map.get(NoteId::from_raw(1)), Some(&9));
+    }
+
+    #[test]
+    fn u32_conversions_round_trip_and_alias_raw() {
+        let id: NoteId = 0x0340u32.into();
+        assert_eq!(id, NoteId::from_raw(0x0340));
+        let raw: u32 = id.into();
+        assert_eq!(raw, 0x0340);
+    }
+
+    #[test]
+    fn ord_makes_it_a_btree_key() {
+        use std::collections::BTreeMap;
+        let mut m = BTreeMap::new();
+        m.insert(NoteId::from_channel_note(0, 64), "b");
+        m.insert(NoteId::from_channel_note(0, 60), "a");
+        // BTreeMap requires Ord; keys come back sorted.
+        let notes: Vec<u8> = m.keys().map(|k| k.note_number()).collect();
+        assert_eq!(notes, [60, 64]);
     }
 }

@@ -179,6 +179,7 @@ mod system;
 mod utility;
 
 pub use controllers::{RPN_BANK_MPE, RPN_INDEX_MCM, RPN_INDEX_PITCH_BEND_SENSITIVITY};
+pub use midi1::MidiParseError;
 pub use flex_data::{
     bpm_to_ten_ns_per_quarter, flex_tempo_bpm, ten_ns_per_quarter_to_bpm, BarAccents,
 };

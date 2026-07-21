@@ -5,11 +5,22 @@
 /// bits of semitones in the high word, 25 fractional bits below. This is the wire
 /// form the MPE Configuration Message (RPN 0x0006) carries — modelling it as the
 /// fixed-point value, not a bare `u8`, is what lets it round-trip through UMP.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PitchBendSensitivity(u32);
+
+impl Default for PitchBendSensitivity {
+    /// The MPE default per-note bend range: ±48 semitones (MPE spec RP-053).
+    #[inline]
+    fn default() -> Self {
+        Self::MPE_DEFAULT
+    }
+}
 
 impl PitchBendSensitivity {
     const FRAC_BITS: u32 = 25;
+
+    /// The MPE default per-note bend range: 48 semitones (MPE spec RP-053).
+    pub const MPE_DEFAULT: Self = Self(48 << Self::FRAC_BITS);
 
     /// Whole-semitone sensitivity (the common MPE case, e.g. 48).
     #[inline]

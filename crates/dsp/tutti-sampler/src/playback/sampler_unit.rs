@@ -9,13 +9,15 @@ use tutti_core::{
 
 use super::loop_crossfade::LoopCrossfade;
 
-/// Loop configuration for a `SamplerUnit`.
+/// Live loop state on a `SamplerUnit`. Internal: `Looping` carries the running
+/// [`LoopCrossfade`] DSP object, which callers can neither build nor observe —
+/// the public loop *intent* is [`LoopSetting`].
 ///
 /// Modeled on the butler's `Link.loop_config`: making loop state a single enum
 /// means `OneShot` renders `range`/`crossfade` unreachable, and `Looping`
 /// guarantees a range — the three fields can no longer disagree.
 #[derive(Default)]
-pub enum LoopMode {
+pub(crate) enum LoopMode {
     /// Play through once, then stop.
     #[default]
     OneShot,
@@ -23,6 +25,27 @@ pub enum LoopMode {
     Looping {
         range: (SamplePosition, SamplePosition),
         crossfade: Option<LoopCrossfade>,
+    },
+}
+
+/// Public loop *intent* for a [`SamplerUnitConfig`] — a plain, buildable value
+/// that says whether and how to loop, without exposing the live
+/// [`LoopCrossfade`] runtime state. [`SamplerUnit::with_config`] converts it
+/// into the internal [`LoopMode`], priming the crossfade privately.
+///
+/// This mirrors how the streaming/timeline loop already speaks in
+/// `(start, end, crossfade_samples)` via `ClipCommand::UpdateLoop`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum LoopSetting {
+    /// Play through once, then stop.
+    #[default]
+    Off,
+    /// Loop over `[start, end)` in samples, with `crossfade_samples` of loop
+    /// crossfade (0 = hard loop, no crossfade).
+    On {
+        start: SamplePosition,
+        end: SamplePosition,
+        crossfade_samples: usize,
     },
 }
 
@@ -70,7 +93,9 @@ impl std::fmt::Debug for TransportPlacement {
 pub struct SamplerUnitConfig {
     pub gain: Linear,
     pub speed: Ratio,
-    pub loop_mode: LoopMode,
+    /// Loop intent. `Off` plays once; `On { .. }` loops over the range and
+    /// [`SamplerUnit::with_config`] primes the crossfade internally.
+    pub loop_setting: LoopSetting,
     /// Optional transport binding for beat-synced playback.
     pub placement: Option<TransportPlacement>,
 }
@@ -80,7 +105,7 @@ impl Default for SamplerUnitConfig {
         Self {
             gain: Linear::new(1.0),
             speed: Ratio::new(1.0),
-            loop_mode: LoopMode::OneShot,
+            loop_setting: LoopSetting::Off,
             placement: None,
         }
     }
@@ -174,17 +199,25 @@ impl SamplerUnit {
     /// Build from an explicit [`SamplerUnitConfig`] — the canonical
     /// configurable constructor, matching tutti's `X::new(XConfig)` convention.
     ///
-    /// A `Looping` config with a range whose crossfade is `None` gets no
-    /// crossfade preloop primed; use [`set_loop_range`](Self::set_loop_range)
-    /// afterwards if a crossfade is wanted.
+    /// A `LoopSetting::On { crossfade_samples, .. }` primes the loop crossfade
+    /// from the wave (via the same path as [`set_loop_range`](Self::set_loop_range));
+    /// `crossfade_samples == 0` loops with no crossfade.
     pub fn with_config(wave: Arc<Wave>, config: SamplerUnitConfig) -> Self {
-        Self {
+        let mut unit = Self {
             gain: config.gain,
             speed: config.speed,
-            loop_mode: config.loop_mode,
             placement: config.placement,
             ..Self::new(wave)
+        };
+        if let LoopSetting::On {
+            start,
+            end,
+            crossfade_samples,
+        } = config.loop_setting
+        {
+            unit.set_loop_range(start, end, crossfade_samples);
         }
+        unit
     }
 
     /// Convenience constructor for the common transport-bound clip case: bind a
@@ -794,9 +827,10 @@ mod tests {
             SamplerUnitConfig {
                 gain: Linear::new(0.5),
                 speed: Ratio::new(2.0),
-                loop_mode: LoopMode::Looping {
-                    range: (SamplePosition::new(0.0), SamplePosition::new(100.0)),
-                    crossfade: None,
+                loop_setting: LoopSetting::On {
+                    start: SamplePosition::new(0.0),
+                    end: SamplePosition::new(100.0),
+                    crossfade_samples: 0,
                 },
                 ..Default::default()
             },
@@ -1170,9 +1204,10 @@ mod tests {
             SamplerUnitConfig {
                 gain: Linear::new(0.75),
                 speed: Ratio::new(1.5),
-                loop_mode: LoopMode::Looping {
-                    range: (SamplePosition::new(0.0), SamplePosition::new(100.0)),
-                    crossfade: None,
+                loop_setting: LoopSetting::On {
+                    start: SamplePosition::new(0.0),
+                    end: SamplePosition::new(100.0),
+                    crossfade_samples: 0,
                 },
                 ..Default::default()
             },

@@ -44,8 +44,7 @@ use bevy_tasks::{block_on, futures_lite::future};
 use super::node::{SamplerLooping, SamplerNode, SamplerSpeed};
 use tutti_core::{Linear, Ratio, SamplePosition, Wave, WaveAsset};
 
-use crate::playback::sampler_unit::LoopMode;
-use crate::{SamplerUnit, SamplerUnitConfig};
+use crate::{LoopSetting, SamplerUnit, SamplerUnitConfig};
 
 /// Level-0 waveform peaks (256 samples per peak, min/max pairs) — the same
 /// shape tutti-sampler's `PeakData` alias names. Not re-exported publicly
@@ -225,23 +224,21 @@ pub fn promote_pending_samplers(
         let wave = asset.0.clone();
         // A looping pending load loops over the whole sample; `SamplerUnit` fills
         // in the range from the wave length.
-        let loop_mode = if pending_load.looping {
-            LoopMode::Looping {
-                range: (
-                    SamplePosition::new(0.0),
-                    SamplePosition::new(wave.len() as f64),
-                ),
-                crossfade: None,
+        let loop_setting = if pending_load.looping {
+            LoopSetting::On {
+                start: SamplePosition::new(0.0),
+                end: SamplePosition::new(wave.len() as f64),
+                crossfade_samples: 0,
             }
         } else {
-            LoopMode::OneShot
+            LoopSetting::Off
         };
         let unit = SamplerUnit::with_config(
             wave,
             SamplerUnitConfig {
                 gain: pending_load.gain,
                 speed: pending_load.speed,
-                loop_mode,
+                loop_setting,
                 ..Default::default()
             },
         );

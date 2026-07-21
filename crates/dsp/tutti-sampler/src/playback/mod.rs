@@ -67,8 +67,7 @@ pub use trigger::{
 };
 #[cfg(feature = "bevy")]
 pub use node::{SamplerLooping, SamplerNode, SamplerSpeed};
-pub use loop_crossfade::LoopCrossfade;
-pub use sampler_unit::{LoopMode, SamplerUnit, SamplerUnitConfig, TransportPlacement};
+pub use sampler_unit::{LoopSetting, SamplerUnit, SamplerUnitConfig, TransportPlacement};
 pub use streaming_sampler::{StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit};
 #[cfg(feature = "bevy")]
 pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};

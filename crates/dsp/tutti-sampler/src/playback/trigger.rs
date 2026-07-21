@@ -109,23 +109,21 @@ pub fn audio_playback_system(
         let ts = ts_query.get(entity).ok();
         let sample_rate = config.sample_rate;
 
-        let loop_mode = if looping {
-            crate::LoopMode::Looping {
-                range: (
-                    tutti_core::SamplePosition::new(0.0),
-                    tutti_core::SamplePosition::new(wave.len() as f64),
-                ),
-                crossfade: None,
+        let loop_setting = if looping {
+            crate::LoopSetting::On {
+                start: tutti_core::SamplePosition::new(0.0),
+                end: tutti_core::SamplePosition::new(wave.len() as f64),
+                crossfade_samples: 0,
             }
         } else {
-            crate::LoopMode::OneShot
+            crate::LoopSetting::Off
         };
         let sampler = SamplerUnit::with_config(
             wave,
             crate::SamplerUnitConfig {
                 gain: tutti_core::Linear::new(gain),
                 speed: tutti_core::Ratio::new(speed),
-                loop_mode,
+                loop_setting,
                 ..Default::default()
             },
         );

@@ -4,7 +4,7 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
-use tutti_core::AtomicF32;
+use tutti_core::{AtomicF32, Linear};
 
 /// Sentinel value for "no device selected"
 const NO_DEVICE_SELECTED: usize = usize::MAX;
@@ -23,7 +23,7 @@ pub struct Device {
 }
 
 /// Thread-safe audio input manager.
-pub struct Manager {
+pub struct InputEngine {
     input_sender: Option<Sender<(f32, f32)>>,
     input_receiver: Option<Arc<Receiver<(f32, f32)>>>,
     monitoring_enabled: Arc<AtomicBool>,
@@ -37,7 +37,7 @@ pub struct Manager {
     stop_requested: Arc<AtomicBool>,
 }
 
-impl Clone for Manager {
+impl Clone for InputEngine {
     fn clone(&self) -> Self {
         Self {
             input_sender: None,
@@ -55,7 +55,7 @@ impl Clone for Manager {
     }
 }
 
-impl Manager {
+impl InputEngine {
     pub fn new(sample_rate: u32) -> Self {
         Self {
             input_sender: None,
@@ -178,29 +178,17 @@ impl Manager {
     }
 
     /// Range: 0.0 to 2.0.
-    pub fn set_gain(&self, gain: f32) {
+    pub fn set_gain(&self, gain: Linear) {
         self.input_gain
-            .store(gain.clamp(0.0, 2.0), Ordering::Release);
+            .store(gain.get().clamp(0.0, 2.0), Ordering::Release);
     }
 
-    pub fn gain(&self) -> f32 {
-        self.input_gain.load(Ordering::Acquire)
+    pub fn gain(&self) -> Linear {
+        Linear::new(self.input_gain.load(Ordering::Acquire))
     }
 
     pub fn peak_level(&self) -> f32 {
         self.peak_level.load(Ordering::Acquire)
-    }
-
-    pub fn input_gain_arc(&self) -> Arc<AtomicF32> {
-        Arc::clone(&self.input_gain)
-    }
-
-    pub fn peak_level_arc(&self) -> Arc<AtomicF32> {
-        Arc::clone(&self.peak_level)
-    }
-
-    pub fn dropped_samples_arc(&self) -> Arc<AtomicU32> {
-        Arc::clone(&self.dropped_samples)
     }
 
     /// Get the input receiver (for transferring samples to recording)
@@ -208,10 +196,6 @@ impl Manager {
     /// **Lock-free MPMC**: Receiver can be cloned for multiple concurrent readers!
     pub fn input_receiver(&self) -> Option<Arc<Receiver<(f32, f32)>>> {
         self.input_receiver.clone()
-    }
-
-    pub fn monitoring_enabled_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.monitoring_enabled)
     }
 
     /// Returns None if no device selected.
@@ -261,7 +245,7 @@ mod tests {
 
     #[test]
     fn test_list_devices() {
-        let manager = Manager::new(44100);
+        let manager = InputEngine::new(44100);
         let devices = manager.list_input_devices();
         println!("Found {} input devices", devices.len());
         for device in &devices {
@@ -274,14 +258,14 @@ mod tests {
 
     #[test]
     fn test_gain_clamp() {
-        let manager = Manager::new(44100);
-        manager.set_gain(3.0);
-        assert_eq!(manager.gain(), 2.0);
+        let manager = InputEngine::new(44100);
+        manager.set_gain(Linear::new(3.0));
+        assert_eq!(manager.gain(), Linear::new(2.0));
 
-        manager.set_gain(-1.0);
-        assert_eq!(manager.gain(), 0.0);
+        manager.set_gain(Linear::new(-1.0));
+        assert_eq!(manager.gain(), Linear::new(0.0));
 
-        manager.set_gain(0.5);
-        assert_eq!(manager.gain(), 0.5);
+        manager.set_gain(Linear::new(0.5));
+        assert_eq!(manager.gain(), Linear::new(0.5));
     }
 }

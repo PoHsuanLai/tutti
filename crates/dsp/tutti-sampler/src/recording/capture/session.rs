@@ -45,6 +45,9 @@ impl From<u8> for State {
     }
 }
 
+/// Lock-free per-channel recording session: state, buffer, preroll/punch
+/// bookkeeping, and the audio-input capture handles. Shared across threads via
+/// atomics and `ArcSwap`.
 pub struct Session {
     state: AtomicU8,
     config: Config,
@@ -60,6 +63,8 @@ pub struct Session {
 }
 
 impl Session {
+    /// Create an armed session for `config`, with its buffer anchored at
+    /// `start_beat` and running at `sample_rate`.
     pub fn new(config: Config, sample_rate: f64, start_beat: f64) -> Self {
         let buffer = Buffer::new(start_beat, sample_rate);
         let preroll_beats = config.preroll_beats;
@@ -79,38 +84,48 @@ impl Session {
         }
     }
 
-    pub fn get_state(&self) -> State {
+    /// Current recording state (armed, recording, overdubbing, or stopped).
+    pub fn state(&self) -> State {
         State::from(self.state.load(Ordering::Acquire))
     }
 
+    /// Transition the session to `state`.
     pub fn set_state(&self, state: State) {
         self.state.store(state as u8, Ordering::Release);
     }
 
+    /// Whether the session is still live (not yet deactivated on stop).
     pub fn is_active(&self) -> bool {
         self.is_active.load(Ordering::Acquire)
     }
 
+    /// Mark the session as no longer live; called when recording stops.
     pub fn deactivate(&self) {
         self.is_active.store(false, Ordering::Release);
     }
 
+    /// The immutable config this session was created with.
     pub fn config(&self) -> &Config {
         &self.config
     }
 
+    /// The channel this session records on.
     pub fn channel_index(&self) -> usize {
         self.config.channel_index
     }
 
+    /// The input source being recorded.
     pub fn source(&self) -> Source {
         self.config.source
     }
 
+    /// The recording mode (replace, overdub, or loop).
     pub fn mode(&self) -> Mode {
         self.config.mode
     }
 
+    /// Apply `f` to a mutable clone of the recording buffer, then store the
+    /// result back via copy-on-write.
     pub fn with_buffer<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut Buffer) -> R,
@@ -123,14 +138,18 @@ impl Session {
         result
     }
 
-    pub fn get_buffer(&self) -> Arc<Buffer> {
+    /// A snapshot of the current recording buffer.
+    pub fn buffer(&self) -> Arc<Buffer> {
         self.buffer.load_full()
     }
 
+    /// Replace the buffer with `new_buffer`, returning the previous one.
     pub fn swap_buffer(&self, new_buffer: Buffer) -> Arc<Buffer> {
         self.buffer.swap(Arc::new(new_buffer))
     }
 
+    /// Advance the preroll countdown by `delta_beats`. Returns `true` if this
+    /// call exhausted the preroll and armed the session into recording.
     pub fn update_preroll(&self, delta_beats: f64) -> bool {
         let mut current_bits = self.preroll_remaining.load(Ordering::Acquire);
         loop {
@@ -146,7 +165,7 @@ impl Session {
             ) {
                 Ok(_) => {
                     if new_value <= 0.0 {
-                        let state = self.get_state();
+                        let state = self.state();
                         if state == State::Armed {
                             let new_state = match self.config.mode {
                                 Mode::Replace => State::Recording,
@@ -166,21 +185,25 @@ impl Session {
         }
     }
 
+    /// Whether the session is still counting down its preroll.
     pub fn is_in_preroll(&self) -> bool {
         let bits = self.preroll_remaining.load(Ordering::Acquire);
         f64::from_bits(bits) > 0.0
     }
 
+    /// Beats of preroll left before recording begins.
     pub fn preroll_remaining(&self) -> f64 {
         let bits = self.preroll_remaining.load(Ordering::Acquire);
         f64::from_bits(bits)
     }
 
+    /// Record the butler capture ID backing this session's audio-input WAV.
     pub fn set_capture_id(&self, id: CaptureId) {
         self.capture_id.store(id.0, Ordering::Release);
     }
 
-    pub fn get_capture_id(&self) -> Option<CaptureId> {
+    /// The butler capture ID, or `None` if no audio-input capture is attached.
+    pub fn capture_id(&self) -> Option<CaptureId> {
         let id_value = self.capture_id.load(Ordering::Acquire);
         if id_value == 0 {
             None
@@ -189,50 +212,62 @@ impl Session {
         }
     }
 
+    /// Record the path of the WAV file this session captures into.
     pub fn set_recording_file(&self, path: PathBuf) {
         self.recording_file.store(Arc::new(Some(path)));
     }
 
-    pub fn get_recording_file(&self) -> Option<PathBuf> {
+    /// The path of the captured WAV file, if one has been set.
+    pub fn recording_file(&self) -> Option<PathBuf> {
         let guard = self.recording_file.load();
         guard.as_ref().clone()
     }
 
+    /// Attach the capture writer feeding samples into the butler ring.
     pub fn set_capture_producer(&self, producer: CaptureWriter) {
         self.capture_producer
             .store(Arc::new(Some(Arc::new(producer))));
     }
 
-    pub fn get_capture_producer(&self) -> Option<Arc<CaptureWriter>> {
+    /// The capture writer feeding the butler ring, if one is attached.
+    pub fn capture_producer(&self) -> Option<Arc<CaptureWriter>> {
         let guard = self.capture_producer.load();
         guard.as_ref().clone()
     }
 
+    /// Whether `current_beat` has reached the configured punch-in while armed.
     pub fn check_punch_in(&self, current_beat: f64) -> bool {
         self.config
             .punch_in
-            .is_some_and(|punch_in| current_beat >= punch_in && self.get_state() == State::Armed)
+            .is_some_and(|punch_in| current_beat >= punch_in && self.state() == State::Armed)
     }
 
+    /// Whether `current_beat` has reached the configured punch-out while
+    /// recording or overdubbing.
     pub fn check_punch_out(&self, current_beat: f64) -> bool {
         self.config.punch_out.is_some_and(|punch_out| {
             current_beat >= punch_out
-                && (self.get_state() == State::Recording || self.get_state() == State::Overdubbing)
+                && (self.state() == State::Recording || self.state() == State::Overdubbing)
         })
     }
 
+    /// Toggle record-safe mode, which blocks the session from ever recording.
     pub fn set_record_safe(&self, safe: bool) {
         self.record_safe.store(safe, Ordering::Release);
     }
 
+    /// Whether record-safe mode is engaged.
     pub fn is_record_safe(&self) -> bool {
         self.record_safe.load(Ordering::Acquire)
     }
 
+    /// Whether the session is allowed to record (i.e. not record-safe).
     pub fn can_record(&self) -> bool {
         !self.is_record_safe()
     }
 
+    /// Evaluate punch-in/punch-out for `current_beat`, transitioning state and
+    /// returning the punch event if one fired.
     pub fn process_punch(
         &self,
         current_beat: f64,
@@ -242,7 +277,7 @@ impl Session {
             return None;
         }
 
-        let state = self.get_state();
+        let state = self.state();
 
         match state {
             State::Armed => {
@@ -284,11 +319,13 @@ impl Session {
         push_cow(&self.punch_events, event);
     }
 
-    pub fn get_punch_events(&self) -> Vec<PunchEvent> {
+    /// A snapshot of the punch-in/punch-out events recorded so far.
+    pub fn punch_events(&self) -> Vec<PunchEvent> {
         let events = self.punch_events.load_full();
         (*events).clone()
     }
 
+    /// Record a buffer xrun (under/overrun) at the given position.
     pub fn record_xrun(&self, sample_position: u64, beat: Option<f64>, xrun_type: XRunType) {
         let event = XRun {
             sample_position,
@@ -299,15 +336,18 @@ impl Session {
         push_cow(&self.xrun_events, event);
     }
 
-    pub fn get_xrun_events(&self) -> Vec<XRun> {
+    /// A snapshot of the xrun events recorded so far.
+    pub fn xrun_events(&self) -> Vec<XRun> {
         let events = self.xrun_events.load_full();
         (*events).clone()
     }
 
+    /// Number of xruns recorded so far.
     pub fn xrun_count(&self) -> usize {
         self.xrun_events.load().len()
     }
 
+    /// Whether any xruns have been recorded.
     pub fn has_xruns(&self) -> bool {
         !self.xrun_events.load().is_empty()
     }
@@ -323,7 +363,7 @@ fn push_cow<T: Clone>(slot: &ArcSwap<Vec<T>>, item: T) {
 impl std::fmt::Debug for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Session")
-            .field("state", &self.get_state())
+            .field("state", &self.state())
             .field("channel_index", &self.config.channel_index)
             .field("source", &self.config.source)
             .field("mode", &self.config.mode)
@@ -361,6 +401,7 @@ pub enum Recorded {
 }
 
 impl Recorded {
+    /// The punch events captured during this recording.
     pub fn punch_events(&self) -> &[PunchEvent] {
         match self {
             Self::Midi { punch_events, .. }
@@ -370,6 +411,7 @@ impl Recorded {
         }
     }
 
+    /// The xruns captured during this recording.
     pub fn xrun_events(&self) -> &[XRun] {
         match self {
             Self::Midi { xrun_events, .. }
@@ -379,10 +421,12 @@ impl Recorded {
         }
     }
 
+    /// Whether this recording captured any xruns.
     pub fn has_xruns(&self) -> bool {
         !self.xrun_events().is_empty()
     }
 
+    /// Number of xruns captured during this recording.
     pub fn xrun_count(&self) -> usize {
         self.xrun_events().len()
     }
@@ -406,7 +450,7 @@ mod tests {
         let config = Config::default();
         let session = Session::new(config, 44100.0, 0.0);
 
-        assert_eq!(session.get_state(), State::Armed);
+        assert_eq!(session.state(), State::Armed);
         assert!(session.is_active());
         assert_eq!(session.channel_index(), 0);
     }
@@ -425,7 +469,7 @@ mod tests {
         assert!(session.is_in_preroll());
         assert!(session.update_preroll(2.5));
         assert!(!session.is_in_preroll());
-        assert_eq!(session.get_state(), State::Recording);
+        assert_eq!(session.state(), State::Recording);
     }
 
     #[test]
@@ -458,7 +502,7 @@ mod tests {
         let session = Session::new(config, 44100.0, 0.0);
 
         assert!(session.process_punch(2.0, Some(88200)).is_none());
-        assert_eq!(session.get_state(), State::Armed);
+        assert_eq!(session.state(), State::Armed);
 
         let event = session.process_punch(4.0, Some(176400));
         assert!(event.is_some());
@@ -466,10 +510,10 @@ mod tests {
             event.unwrap(),
             PunchEvent::PunchIn { beat: 4.0, .. }
         ));
-        assert_eq!(session.get_state(), State::Recording);
+        assert_eq!(session.state(), State::Recording);
 
         assert!(session.process_punch(6.0, Some(264600)).is_none());
-        assert_eq!(session.get_state(), State::Recording);
+        assert_eq!(session.state(), State::Recording);
 
         let event = session.process_punch(8.0, Some(352800));
         assert!(event.is_some());
@@ -477,10 +521,10 @@ mod tests {
             event.unwrap(),
             PunchEvent::PunchOut { beat: 8.0, .. }
         ));
-        assert_eq!(session.get_state(), State::Stopped);
+        assert_eq!(session.state(), State::Stopped);
 
         // Verify punch events were recorded
-        let events = session.get_punch_events();
+        let events = session.punch_events();
         assert_eq!(events.len(), 2);
     }
 
@@ -502,14 +546,14 @@ mod tests {
 
         let event = session.process_punch(4.0, None);
         assert!(event.is_none());
-        assert_eq!(session.get_state(), State::Armed);
+        assert_eq!(session.state(), State::Armed);
 
         session.set_record_safe(false);
         assert!(session.can_record());
 
         let event = session.process_punch(4.0, None);
         assert!(event.is_some());
-        assert_eq!(session.get_state(), State::Recording);
+        assert_eq!(session.state(), State::Recording);
     }
 
     #[test]
@@ -526,7 +570,7 @@ mod tests {
         assert!(session.has_xruns());
         assert_eq!(session.xrun_count(), 2);
 
-        let events = session.get_xrun_events();
+        let events = session.xrun_events();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].xrun_type, XRunType::Underrun);
         assert_eq!(events[1].xrun_type, XRunType::Overrun);

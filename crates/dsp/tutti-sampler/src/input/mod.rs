@@ -9,8 +9,8 @@ pub(crate) mod manager;
 pub(crate) mod node;
 
 /// Hardware input device + manager (cpal capture stream + MPMC channel).
-/// Bevy-free: a non-Bevy host drives capture through the [`Manager`] directly.
-pub use manager::{Device, Manager};
+/// Bevy-free: a non-Bevy host drives capture through the [`InputEngine`] directly.
+pub use manager::{Device, InputEngine};
 pub use node::{AudioInput, AudioInputBackend};
 
 // Bevy ECS surface — the enable/disable messages, state resource, and plugin.
@@ -92,7 +92,7 @@ pub fn audio_input_control_system(
             }
         }
 
-        input.set_gain(enable.gain);
+        input.set_gain(tutti_core::Linear::new(enable.gain));
         input.set_monitoring(enable.monitoring);
 
         bevy_log::info!(

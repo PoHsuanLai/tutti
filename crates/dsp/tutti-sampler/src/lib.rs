@@ -64,7 +64,7 @@
 //! ```
 
 pub mod error;
-pub use error::{Error, Result};
+pub use error::{Error, RecordingError, Result};
 
 #[macro_use]
 mod macros;

@@ -47,7 +47,7 @@ pub struct Sampler {
     butler_tx: Sender<ButlerCommand>,
     butler: ButlerThread,
     recording: Arc<crate::recording::capture::manager::Recorder>,
-    audio_input: Arc<crate::input::manager::Manager>,
+    audio_input: Arc<crate::input::manager::InputEngine>,
     sample_rate: f64,
 }
 
@@ -74,7 +74,7 @@ impl Sampler {
             sample_rate,
             capture_ids,
         ));
-        let audio_input = Arc::new(crate::input::manager::Manager::new(sample_rate as u32));
+        let audio_input = Arc::new(crate::input::manager::InputEngine::new(sample_rate as u32));
 
         Ok(Sampler {
             butler_tx,
@@ -96,7 +96,7 @@ impl Sampler {
     }
 
     /// Hardware audio-input manager (cpal capture stream + MPMC channel).
-    pub fn audio_input(&self) -> &crate::input::manager::Manager {
+    pub fn audio_input(&self) -> &crate::input::manager::InputEngine {
         &self.audio_input
     }
 

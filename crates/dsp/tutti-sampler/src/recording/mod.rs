@@ -1,7 +1,7 @@
 //! Sampler recording: `StartRecording` / `StopRecording` triggers (ECS) plus
 //! the capture bookkeeping impl ([`capture`]: recorder, sessions, config).
 
-pub mod capture;
+pub(crate) mod capture;
 
 // Bevy ECS surface (the `StartRecording`/`StopRecording` triggers + plugin).
 // The `capture` bookkeeping above is Bevy-free — a non-Bevy host records via

@@ -22,7 +22,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::MidiUnitId;
+use tutti_midi_types::{FunctionBlockDirection, MidiUnitId};
 
 #[cfg(feature = "mpe")]
 use crate::mpe::{MpeProcessor, PerNoteExpression};
@@ -357,6 +357,48 @@ impl MidiBus {
         }
     }
 
+    /// Broadcast the current tempo as a MIDI 2.0 **Flex Data Set Tempo** message
+    /// (M2-104 §7.5), so subscribers see tempo *in-band* in the UMP stream rather
+    /// than only via out-of-band transport state. Call on every tempo change.
+    /// Like [`queue_system`](Self::queue_system), this bypasses MPE.
+    pub fn broadcast_tempo(&self, bpm: f64) {
+        self.queue_system(&MidiEvent::flex_set_tempo(0, bpm));
+    }
+
+    /// Broadcast the current meter as a MIDI 2.0 **Flex Data Set Time Signature**
+    /// message (M2-104 §7.5). `num_32nd_notes` is the number of 1/32 notes per
+    /// quarter (usually 8). Companion to [`broadcast_tempo`](Self::broadcast_tempo);
+    /// call on every meter change.
+    pub fn broadcast_time_signature(&self, numerator: u8, denominator: u8, num_32nd_notes: u8) {
+        self.queue_system(&MidiEvent::flex_set_time_signature(
+            0,
+            numerator,
+            denominator,
+            num_32nd_notes,
+        ));
+    }
+
+    /// Announce this endpoint's Function Block topology as a MIDI 2.0 **UMP Stream
+    /// Function Block Info** message (M2-104 §7.1.1), so a downstream peer learns
+    /// which groups this endpoint spans and in which direction. This is the
+    /// outbound half of UMP Stream endpoint negotiation; inbound Endpoint
+    /// Discovery handling belongs to an endpoint-negotiation layer above the bus.
+    pub fn broadcast_function_block(
+        &self,
+        block_number: u8,
+        first_group: u8,
+        num_groups: u8,
+        direction: FunctionBlockDirection,
+    ) {
+        self.queue_system(&MidiEvent::function_block_info(
+            true,
+            block_number,
+            first_group,
+            num_groups,
+            direction,
+        ));
+    }
+
     /// True if the bus has a subscriber for the unit id.
     pub fn contains(&self, unit_id: MidiUnitId) -> bool {
         self.senders.contains_key(&unit_id)
@@ -553,6 +595,52 @@ mod tests {
 
         assert!(r1.has_system_events());
         assert!(!r2.has_system_events());
+    }
+
+    #[test]
+    fn bus_broadcasts_flex_tempo_in_band() {
+        use tutti_midi_types::midi2::flex_data::FlexData;
+        let bus = MidiBus::new();
+        let (s, r) = MidiEventSlot::pair(MidiUnitId::new(1));
+        bus.insert(s);
+
+        bus.broadcast_tempo(140.0);
+
+        let mut buf = [MidiEvent::noop(); 4];
+        assert_eq!(r.poll_system(&mut buf), 1);
+        let UmpMessage::FlexData(FlexData::SetTempo(_)) =
+            UmpMessage::try_from(buf[0].data_words()).unwrap()
+        else {
+            panic!("expected a Flex Set Tempo broadcast");
+        };
+        // The decoded BPM round-trips through the Flex tempo field.
+        let bpm = tutti_midi_types::ump::flex_tempo_bpm(&buf[0]).expect("is a tempo");
+        assert!((bpm - 140.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn bus_broadcasts_flex_time_signature_and_function_block() {
+        use tutti_midi_types::midi2::flex_data::FlexData;
+        use tutti_midi_types::midi2::ump_stream::UmpStream;
+        use tutti_midi_types::FunctionBlockDirection;
+        let bus = MidiBus::new();
+        let (s, r) = MidiEventSlot::pair(MidiUnitId::new(1));
+        bus.insert(s);
+
+        bus.broadcast_time_signature(7, 8, 8);
+        bus.broadcast_function_block(2, 4, 1, FunctionBlockDirection::Output);
+
+        // Both broadcasts land on the system ring in order.
+        let mut buf = [MidiEvent::noop(); 4];
+        assert_eq!(r.poll_system(&mut buf), 2);
+        assert!(matches!(
+            UmpMessage::try_from(buf[0].data_words()).unwrap(),
+            UmpMessage::FlexData(FlexData::SetTimeSignature(_))
+        ));
+        assert!(matches!(
+            UmpMessage::try_from(buf[1].data_words()).unwrap(),
+            UmpMessage::UmpStream(UmpStream::FunctionBlockInfo(_))
+        ));
     }
 
     #[test]

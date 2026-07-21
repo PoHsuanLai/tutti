@@ -32,11 +32,6 @@ use bevy_ecs::prelude::*;
 #[derive(Resource, Default, Clone)]
 pub struct MpeExpressionResource(Option<std::sync::Arc<tutti_midi_runtime::PerNoteExpression>>);
 
-#[allow(
-    dead_code,
-    reason = "Public surface that callers (downstream apps) flip to live by passing \
-              an MpeProcessor's expression handle. No in-tree consumer yet."
-)]
 impl MpeExpressionResource {
     /// Construct from an existing processor's expression handle.
     pub fn from_expression(expr: std::sync::Arc<tutti_midi_runtime::PerNoteExpression>) -> Self {

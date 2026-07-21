@@ -154,6 +154,15 @@ impl MidiSnapshot {
             cursor.store(0, Ordering::Relaxed);
         }
     }
+
+    /// Every event across all units, merged into one beat-ordered `Vec` (cursors
+    /// untouched). For offline serialization (e.g. a MIDI Clip File) that needs
+    /// the whole track as a single ordered stream rather than a cursor poll.
+    pub fn events_in_beat_order(&self) -> Vec<TimedMidiEvent> {
+        let mut all: Vec<TimedMidiEvent> = self.events.values().flatten().copied().collect();
+        all.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(core::cmp::Ordering::Equal));
+        all
+    }
 }
 
 #[cfg(test)]

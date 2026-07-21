@@ -14,7 +14,7 @@
 //! [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
 
 use tutti_midi_runtime::tutti_midi_types::ump::MidiEvent;
-use tutti_midi_runtime::tutti_midi_types::MidiUnitId;
+use tutti_midi_runtime::tutti_midi_types::{write_clip_file, ClipEvent, MidiUnitId};
 use tutti_midi_runtime::MidiSnapshot;
 
 #[derive(Debug, Default)]
@@ -77,6 +77,30 @@ impl MidiTrack {
     pub fn into_snapshot(self) -> MidiSnapshot {
         self.snapshot
     }
+
+    /// Serialize this track as a MIDI 2.0 **Clip File** (M2-116) — the MIDI-2
+    /// interchange analogue of an SMF, one ordered UMP stream. `ticks_per_quarter`
+    /// is the DCTPQ tick unit; beat positions are quantized to it as inter-event
+    /// delta ticks. Merges all units into a single beat-ordered stream.
+    pub fn to_clip_file(&self, ticks_per_quarter: u16) -> Vec<u8> {
+        let tpq = f64::from(ticks_per_quarter);
+        let mut prev_tick: i64 = 0;
+        let events: Vec<ClipEvent> = self
+            .snapshot
+            .events_in_beat_order()
+            .into_iter()
+            .map(|te| {
+                let tick = (te.beat * tpq).round() as i64;
+                let delta = (tick - prev_tick).max(0) as u32;
+                prev_tick = tick;
+                ClipEvent {
+                    delta_ticks: delta,
+                    event: te.event,
+                }
+            })
+            .collect();
+        write_clip_file(ticks_per_quarter, &events)
+    }
 }
 
 #[cfg(test)]
@@ -101,5 +125,22 @@ mod tests {
             .cc(0.5, unit, 7, 100);
         let snap = track.into_snapshot();
         assert!(snap.has_events(unit));
+    }
+
+    #[test]
+    fn to_clip_file_round_trips_beats_as_delta_ticks() {
+        use tutti_midi_runtime::tutti_midi_types::read_clip_file;
+
+        let unit = MidiUnitId::new(1);
+        let mut track = MidiTrack::new();
+        // note-on at beat 0, note-off at beat 2 → at 96 tpq, delta 0 then 192.
+        track.note_on(0.0, unit, 60, 0x8000).note_off(2.0, unit, 60);
+
+        let bytes = track.to_clip_file(96);
+        let parsed = read_clip_file(&bytes).expect("valid clip file");
+        assert_eq!(parsed.ticks_per_quarter, 96);
+        assert_eq!(parsed.events.len(), 2);
+        assert_eq!(parsed.events[0].delta_ticks, 0);
+        assert_eq!(parsed.events[1].delta_ticks, 192);
     }
 }

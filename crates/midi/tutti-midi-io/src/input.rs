@@ -7,11 +7,14 @@
 //! so the setup is a no-op and events only arrive via
 //! [`MidiInputEvent::synthetic`].
 
+use std::collections::HashMap;
+
 use bevy_app::{App, Plugin, Startup, Update};
 use bevy_ecs::message::MessageWriter;
 use bevy_ecs::prelude::*;
 
 use crate::{normalize, MidiEvent, MidiInputRecord};
+use tutti_midi_types::Midi1ToMidi2Translator;
 
 /// Fired every frame for each MIDI event received from hardware input.
 ///
@@ -83,9 +86,42 @@ impl MidiInputEvent {
     /// folds to NoteOff and inbound MIDI 1.0 channel voice is promoted to Channel
     /// Voice 2, so consumers match one vocabulary. Decode the result with
     /// `midi2::UmpMessage::try_from(ev.data_words())`.
+    ///
+    /// This is *stateless*. Use [`MidiInputEvent::translated`] with a
+    /// [`MidiInputTranslators`] when a source sends multi-message (N)RPN runs
+    /// that must be reassembled into single MIDI-2 controller messages.
     #[inline]
     pub fn normalized(&self) -> MidiEvent {
         normalize(&self.event)
+    }
+
+    /// Translate to MIDI 2.0 through the per-device stateful translator, so an
+    /// (N)RPN CC run collapses into one Registered/Assignable Controller. Returns
+    /// `None` when this event is *absorbed* mid-run (a parameter-select or partial
+    /// Data Entry); otherwise the promoted/translated [`MidiEvent`]. Non-(N)RPN
+    /// events pass through exactly as [`normalized`](Self::normalized) would.
+    #[inline]
+    pub fn translated(&self, translators: &mut MidiInputTranslators) -> Option<MidiEvent> {
+        translators.of(self.device_id).translate(&self.event)
+    }
+}
+
+/// Per-device [`Midi1ToMidi2Translator`] state for the inbound hardware path.
+///
+/// (N)RPN reassembly is stateful and per-endpoint, so each device keeps its own
+/// accumulator. Insert this as a resource and drive inbound events through
+/// [`MidiInputEvent::translated`] instead of [`MidiInputEvent::normalized`] to
+/// get spec-faithful MIDI-1→2 translation, including multi-CC (N)RPN runs.
+#[derive(Resource, Default)]
+pub struct MidiInputTranslators {
+    per_device: HashMap<u32, Midi1ToMidi2Translator>,
+}
+
+impl MidiInputTranslators {
+    /// The translator for `device_id`, created on first use.
+    #[inline]
+    pub fn of(&mut self, device_id: u32) -> &mut Midi1ToMidi2Translator {
+        self.per_device.entry(device_id).or_default()
     }
 }
 
@@ -154,6 +190,7 @@ impl Plugin for MidiInputPlugin {
         app.insert_resource(MidiObserverSender {
             sender: Some(sender),
         });
+        app.init_resource::<MidiInputTranslators>();
 
         app.add_message::<MidiInputEvent>();
         app.add_systems(Startup, midi_observer_setup_system);
@@ -207,5 +244,43 @@ mod tests {
             }
             other => panic!("expected CV2 NoteOn, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn translated_reassembles_rpn_run_per_device() {
+        // A MIDI-1 RPN run (CC101/100 select + CC6 data) must collapse into one
+        // MIDI-2 Registered Controller when routed through the stateful translator,
+        // and each device keeps independent state.
+        let mut translators = MidiInputTranslators::default();
+        let cc = |control: u8, value: u8| {
+            let mut ev = MidiInputEvent::synthetic(
+                MidiEvent::from_midi1_bytes(0, &[0xB0 | 3, control, value]).expect("CV1 CC"),
+            );
+            ev.device_id = 42;
+            ev
+        };
+
+        // Select RPN 0x00/0x06 then Data Entry — the first two are absorbed.
+        assert!(cc(101, 0x00).translated(&mut translators).is_none());
+        assert!(cc(100, 0x06).translated(&mut translators).is_none());
+        let out = cc(6, 10)
+            .translated(&mut translators)
+            .expect("data entry emits a controller");
+        match UmpMessage::try_from(out.data_words()).expect("UMP") {
+            UmpMessage::ChannelVoice2(Cv2::RegisteredController(m)) => {
+                assert_eq!(u8::from(m.channel()), 3);
+                assert_eq!(u8::from(m.bank()), 0x00);
+                assert_eq!(u8::from(m.index()), 0x06);
+            }
+            other => panic!("expected RegisteredController, got {other:?}"),
+        }
+
+        // A plain note on a *different* device promotes straight through.
+        let mut note = MidiInputEvent::synthetic(MidiEvent::note_on(0, 0, 60, 0x8000));
+        note.device_id = 7;
+        assert!(matches!(
+            UmpMessage::try_from(note.translated(&mut translators).unwrap().data_words()).unwrap(),
+            UmpMessage::ChannelVoice2(Cv2::NoteOn(_))
+        ));
     }
 }

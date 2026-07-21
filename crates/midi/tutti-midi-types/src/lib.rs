@@ -41,7 +41,12 @@ pub mod translate;
 pub mod ump;
 pub mod unit_id;
 
+pub use clip_file::{read_clip_file, write_clip_file, ClipEvent, ClipFileError, ParsedClipFile};
 pub use input_source::{MidiInputSource, NoMidiInput};
+pub use mpe::{
+    MpeChannelVoiceMap, MpeMode, MpeZone, MpeZoneConfig, NoteRotationAllocator,
+    PitchBendSensitivity,
+};
 pub use normalize::normalize;
 pub use note_id::{NoteId, PerNoteMap};
 pub use queue::MidiQueue;
@@ -49,5 +54,5 @@ pub use routing::{MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterato
 pub use source::MidiSource;
 pub use target::MidiTarget;
 pub use translate::Midi1ToMidi2Translator;
-pub use ump::MidiEvent;
+pub use ump::{BarAccents, EndpointDiscoveryRequest, FunctionBlockDirection, MidiEvent};
 pub use unit_id::MidiUnitId;

@@ -9,6 +9,19 @@ pub use hardware::{MidiDevice, MidiInputRecord};
 
 pub use tutti_midi_types::{midi2, midly, normalize, MidiEvent, MidiTarget};
 
+/// Stateful MIDI 1.0 → 2.0 translation (RPN/NRPN reassembly). Feed inbound CV1
+/// events through [`Midi1ToMidi2Translator`] when a hardware source needs
+/// multi-message (N)RPN runs collapsed into single MIDI-2 controller messages;
+/// [`normalize`] alone handles only the stateless per-message quirks.
+pub use tutti_midi_types::Midi1ToMidi2Translator;
+
+/// MIDI 2.0 Clip File (M2-116) interchange — a portable single-clip UMP stream,
+/// distinct from project save (Loro) and from SMF. See [`crate::smf`] for the
+/// MIDI 1.0 equivalent.
+pub use tutti_midi_types::{
+    read_clip_file, write_clip_file, ClipEvent, ClipFileError, ParsedClipFile,
+};
+
 #[cfg(feature = "mpe")]
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
 
@@ -58,7 +71,10 @@ pub use bus::MidiBusRes;
 #[cfg(feature = "bevy")]
 pub mod input;
 #[cfg(feature = "bevy")]
-pub use input::{midi_input_event_system, MidiInputEvent, MidiInputObserver, MidiInputPlugin};
+pub use input::{
+    midi_input_event_system, MidiInputEvent, MidiInputObserver, MidiInputPlugin,
+    MidiInputTranslators,
+};
 
 #[cfg(feature = "bevy")]
 pub mod routing;

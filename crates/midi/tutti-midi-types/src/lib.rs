@@ -18,37 +18,37 @@ pub use midly;
 
 pub mod cc;
 pub mod clip_file;
-pub mod convert;
-pub mod input_source;
 pub mod message;
 pub mod mpe;
-pub mod normalize;
 pub mod note_id;
-pub mod queue;
 pub mod routing;
-pub mod source;
 pub mod sync;
-pub mod target;
-pub mod translate;
+pub mod traits;
+/// Translation between the MIDI 1.0 and MIDI 2.0 Protocols (M2-104 §4.1 / App. D):
+/// bit scaling, the wire codec, and the stateless / stateful promotions. See
+/// [`translation`] for the layering.
+pub mod translation;
 pub mod ump;
 pub mod unit_id;
 
+/// Bit Scaling and Resolution (M2-104 §1.7 — MIDI 1.0 ↔ 2.0 widths + DSP-edge
+/// f32). Kept reachable at the crate root as `tutti_midi_types::convert::*`, the
+/// path many consumers import directly, while physically living under
+/// [`translation`] with the rest of the MIDI-1↔2 boundary.
+pub use translation::scaling as convert;
+
 pub use clip_file::{read_clip_file, write_clip_file, ClipEvent, ClipFileError, ParsedClipFile};
-pub use input_source::{MidiInputSource, NoMidiInput};
 pub use message::{MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage};
+pub use translation::{normalize, Midi1ToMidi2Translator, MidiParseError};
 pub use mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZone, MpeZoneConfig, NoteRotationAllocator,
     PitchBendSensitivity,
 };
-pub use normalize::normalize;
 pub use note_id::{NoteId, PerNoteMap};
-pub use queue::MidiQueue;
 pub use routing::{MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterator};
-pub use source::MidiSource;
-pub use target::MidiTarget;
-pub use translate::Midi1ToMidi2Translator;
+pub use traits::{MidiInputSource, MidiQueue, MidiSource, MidiTarget, NoMidiInput};
 pub use ump::{
     BarAccents, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
-    FunctionBlocks, JrTimestamps, MidiEvent, MidiParseError, Protocol, UmpVersion,
+    FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
 };
 pub use unit_id::MidiUnitId;

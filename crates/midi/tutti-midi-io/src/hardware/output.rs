@@ -1,13 +1,42 @@
 //! MIDI output device ports: enumeration + a background thread that owns the
-//! open output connection and serializes events to MIDI 1.0 wire bytes.
+//! open output connection. The connection is a [`Midi1Port`] — a `midir` port is
+//! a MIDI 1.0 endpoint (see [`crate::midi_port`]) — so it speaks [`MidiEvent`] and
+//! translates to wire bytes at its own edge.
 
 use super::MidiDevice;
+use crate::midi_port::{MidiPort, SendError};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use midir::{MidiOutput, MidiOutputConnection};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use tutti_midi_types::ump::MidiEvent;
+use tracing::debug;
+use tutti_midi_types::{MidiEvent, Protocol};
+
+/// A MIDI output connection over `midir`. Because every OS MIDI API `midir`
+/// targets presents a MIDI 1.0 byte stream, this is a MIDI 1.0 endpoint: it takes
+/// engine-native [`MidiEvent`]s and translates them to 1.0 wire bytes at the edge
+/// via [`MidiEvent::to_midi1_bytes`]. MIDI-2-only messages have no 1.0 form and
+/// come back as [`SendError::NoWireForm`] rather than vanishing.
+pub(crate) struct Midi1Port {
+    conn: MidiOutputConnection,
+}
+
+impl MidiPort for Midi1Port {
+    fn send(&mut self, event: &MidiEvent) -> Result<(), SendError> {
+        match event.to_midi1_bytes() {
+            Some((bytes, len)) => self
+                .conn
+                .send(&bytes[..len as usize])
+                .map_err(|e| SendError::Wire(crate::error::Error::MidiPort(e.to_string()))),
+            None => Err(SendError::NoWireForm(*event)),
+        }
+    }
+
+    fn protocol(&self) -> Protocol {
+        Protocol::Midi1
+    }
+}
 
 /// Enumerate available MIDI output devices.
 pub fn list_output_devices() -> Vec<MidiDevice> {
@@ -67,15 +96,15 @@ fn run_output_thread(
     device_name: Arc<arc_swap::ArcSwap<Option<String>>>,
     connected: Arc<AtomicBool>,
 ) {
-    let mut conn: Option<MidiOutputConnection> = None;
+    let mut port: Option<Midi1Port> = None;
 
     while let Ok(cmd) = rx.recv() {
         match cmd {
             OutputCmd::Connect(idx) => {
-                conn.take();
+                port.take();
                 match connect_device(idx) {
-                    Ok((c, name)) => {
-                        conn = Some(c);
+                    Ok((p, name)) => {
+                        port = Some(p);
                         connected.store(true, Ordering::Release);
                         device_name.store(Arc::new(Some(name)));
                     }
@@ -86,17 +115,18 @@ fn run_output_thread(
                 }
             }
             OutputCmd::Disconnect => {
-                conn.take();
+                port.take();
                 connected.store(false, Ordering::Release);
                 device_name.store(Arc::new(None));
             }
             OutputCmd::Send(event) => {
-                if let Some(ref mut c) = conn {
-                    // Serialize to MIDI 1.0 wire bytes. Events without a
-                    // 1.0 representation (per-note pitch bend, per-note
-                    // controllers, SysEx fragments, utility) are dropped.
-                    if let Some((bytes, len)) = event.to_midi1_bytes() {
-                        let _ = c.send(&bytes[..len as usize]);
+                if let Some(ref mut p) = port {
+                    // The port translates to its wire form at the edge. A
+                    // MIDI-2-only message has no MIDI 1.0 representation on this
+                    // MIDI-1 port; we log the drop rather than losing it
+                    // silently. (A future Midi2Port would send it verbatim.)
+                    if let Err(e) = p.send(&event) {
+                        debug!("MIDI output: {e}");
                     }
                 }
             }
@@ -104,9 +134,7 @@ fn run_output_thread(
     }
 }
 
-fn connect_device(
-    device_index: usize,
-) -> Result<(MidiOutputConnection, String), crate::error::Error> {
+fn connect_device(device_index: usize) -> Result<(Midi1Port, String), crate::error::Error> {
     let midi_output = MidiOutput::new("tutti-midi-output")?;
     let ports = midi_output.ports();
     let port = ports.get(device_index).ok_or_else(|| {
@@ -116,5 +144,32 @@ fn connect_device(
         .port_name(port)
         .unwrap_or_else(|_| format!("Device {}", device_index));
     let conn = midi_output.connect(port, "tutti-output")?;
-    Ok((conn, name))
+    Ok((Midi1Port { conn }, name))
+}
+
+#[cfg(test)]
+mod tests {
+    use tutti_midi_types::MidiEvent;
+
+    /// The `Midi1Port::send` contract hinges on `to_midi1_bytes`: a message with
+    /// a 1.0 form translates and is sent; a MIDI-2-only message returns `None`,
+    /// which `send` surfaces as `SendError::NoWireForm` instead of dropping it.
+    /// (We can't open a real `MidiOutputConnection` without hardware, so this
+    /// pins the classification the port relies on.)
+    #[test]
+    fn midi1_representable_events_translate_others_do_not() {
+        // A plain note-on has a MIDI 1.0 status → translatable.
+        let note_on = MidiEvent::note_on(0, 0, 60, 100);
+        assert!(
+            note_on.to_midi1_bytes().is_some(),
+            "note-on must have a 1.0 wire form"
+        );
+
+        // A per-note pitch bend is MIDI-2-only → no 1.0 form → NoWireForm on send.
+        let per_note_bend = MidiEvent::per_note_pitch_bend(0, 0, 60, 0x8000_0000);
+        assert!(
+            per_note_bend.to_midi1_bytes().is_none(),
+            "per-note pitch bend has no 1.0 wire form and must surface as NoWireForm"
+        );
+    }
 }

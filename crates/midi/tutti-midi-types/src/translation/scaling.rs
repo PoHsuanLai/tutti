@@ -1,4 +1,6 @@
-//! MIDI 1.0 ↔ MIDI 2.0 scalar resolution conversion (spec Min-Center-Max).
+//! **Bit Scaling and Resolution** (M2-104 §1.7 / Appendix D.1) — the
+//! Min-Center-Max scaling of a scalar value between the MIDI 1.0 and MIDI 2.0
+//! protocols' bit widths.
 //!
 //! The MIDI 2.0 spec (M2-104 Appendix D.1.3, "Default Upscaling Method") widens
 //! a value by left-shifting into the high bits, then *bit-repeating* the source's

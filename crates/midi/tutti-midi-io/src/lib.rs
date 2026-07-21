@@ -5,6 +5,13 @@ mod midi_io;
 pub use midi_io::MidiIo;
 pub use hardware::{MidiDevice, MidiInputRecord};
 
+/// The protocol-transparent hardware seam: a [`MidiPort`] speaks [`MidiEvent`]
+/// both ways and hides whether the wire is MIDI 1.0 or 2.0. See the module docs
+/// for how a future UMP-native backend slots in behind the same trait.
+mod midi_port;
+pub use midi_port::{MidiPort, SendError};
+pub use tutti_midi_types::Protocol;
+
 // --- Re-exports from tutti-midi ---
 
 pub use tutti_midi_types::{

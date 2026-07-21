@@ -168,18 +168,18 @@ pub(crate) const fn ump_word_count(type_nibble: u8) -> usize {
     }
 }
 
-// UMP message families — each extends `MidiEvent` in its own module.
+// UMP message families — each extends `MidiEvent` in its own module. The MIDI
+// 1.0 wire codec (`from/to_midi1_bytes`) is a `MidiEvent` family too, but it
+// lives in `crate::midi1` alongside the rest of the MIDI-1 boundary.
 mod channel_voice;
 mod controllers;
 mod flex_data;
-mod midi1;
 mod stream;
 mod sysex;
 mod system;
 mod utility;
 
 pub use controllers::{RPN_BANK_MPE, RPN_INDEX_MCM, RPN_INDEX_PITCH_BEND_SENSITIVITY};
-pub use midi1::MidiParseError;
 pub use flex_data::{
     bpm_to_ten_ns_per_quarter, flex_tempo_bpm, ten_ns_per_quarter_to_bpm, BarAccents,
 };

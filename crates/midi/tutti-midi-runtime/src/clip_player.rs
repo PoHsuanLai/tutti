@@ -17,8 +17,8 @@ use std::sync::Arc;
 
 use atomic_float::AtomicF64;
 use tutti_core::transport::TransportReader;
-use tutti_midi_types::source::MidiSource;
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::MidiSource;
 use tutti_midi_types::unit_id::MidiUnitId;
 
 /// One MIDI event scheduled at an absolute beat position. Note-on

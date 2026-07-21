@@ -1,11 +1,14 @@
-//! The one seam that hides the two MIDI 1.0 ↔ 2.0 quirks, so every consumer
-//! matches a single vocabulary — MIDI 2.0 Channel Voice via `midi2`.
+//! **MIDI 1.0 → MIDI 2.0 Default Translation** (M2-104 Appendix D.3), stateless
+//! and per-message — the one seam that hides the MIDI 1.0 ↔ 2.0 differences so
+//! every consumer matches a single vocabulary: MIDI 2.0 Channel Voice via `midi2`.
+//! (The multi-message parts of Default Translation — RPN/NRPN runs — live in the
+//! sibling [`rpn`](super::rpn), which delegates here for everything else.)
 //!
 //! [`normalize`] takes any [`MidiEvent`] and returns a **MIDI 2.0 Channel Voice**
 //! event (still a [`MidiEvent`], i.e. an owned `[u32; 4]`), applying:
 //!   * **velocity-0 NoteOn ⇒ NoteOff** (the MIDI 1.0 historical quirk), and
 //!   * **Channel Voice 1 ⇒ Channel Voice 2 promotion** — 7/14-bit fields widened
-//!     to 16/32-bit via [`crate::convert`]'s spec Min-Center-Max scaling.
+//!     to 16/32-bit via [`scaling`](super::scaling)'s spec Min-Center-Max.
 //!
 //! Consumers then decode with the same `midi2::UmpMessage::try_from(ev.data_words())`
 //! they would use anyway — but on a stream that is guaranteed single-protocol, so
@@ -17,7 +20,7 @@ use midi2::channel_voice1::ChannelVoice1;
 use midi2::channel_voice2::ChannelVoice2;
 use midi2::{Channeled, Grouped, UmpMessage};
 
-use crate::convert::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2};
+use super::scaling::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2};
 use crate::ump::MidiEvent;
 
 /// Normalize `event` to a MIDI 2.0 Channel Voice [`MidiEvent`]. See module docs.

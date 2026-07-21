@@ -3,7 +3,7 @@
 
 use midi2::prelude::*;
 
-use super::MidiEvent;
+use crate::ump::MidiEvent;
 
 /// The bytes were not a parseable MIDI 1.0 channel-voice or system message
 /// (malformed, or a SysEx — use [`MidiEvent::sysex7_fragments`] for that).
@@ -143,7 +143,7 @@ impl MidiEvent {
     }
 
     fn cv2_to_midi1_bytes(&self) -> Option<([u8; 3], u8)> {
-        use crate::convert::{
+        use super::scaling::{
             midi2_cc_to_midi1, midi2_pitch_bend_to_midi1, midi2_velocity_to_midi1,
         };
         use midi2::channel_voice2::ChannelVoice2;

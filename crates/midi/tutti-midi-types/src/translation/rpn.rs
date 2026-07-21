@@ -1,6 +1,6 @@
 //! MIDI 1.0 → MIDI 2.0 translation that needs *state*, per M2-104 Appendix D.
 //!
-//! [`crate::normalize`] handles the stateless quirks (velocity-0 NoteOn → NoteOff,
+//! [`normalize`](super::normalize) handles the stateless quirks (velocity-0 NoteOn → NoteOff,
 //! per-message CV1 → CV2 promotion). Some MIDI 1.0 constructs, though, span
 //! *several* messages and can only be translated by accumulating them:
 //!
@@ -14,7 +14,7 @@
 //!
 //! A translator is stateful and per-endpoint; feed it every inbound CV1 event.
 //! Events that aren't part of an (N)RPN run are promoted straight through via
-//! [`crate::normalize`], so a caller can treat it as "MIDI-1 in, MIDI-2 out".
+//! [`normalize`](super::normalize), so a caller can treat it as "MIDI-1 in, MIDI-2 out".
 
 use midi2::channel_voice1::ChannelVoice1;
 use midi2::{Channeled, UmpMessage};
@@ -54,13 +54,13 @@ impl Midi1ToMidi2Translator {
     ///   Controller message;
     /// - a parameter-select or partial Data Entry is *absorbed* (returns `None` —
     ///   it only updates state);
-    /// - anything else is promoted through [`crate::normalize`].
+    /// - anything else is promoted through [`normalize`](super::normalize).
     pub fn translate(&mut self, event: &MidiEvent) -> Option<MidiEvent> {
         let Ok(UmpMessage::ChannelVoice1(ChannelVoice1::ControlChange(m))) =
             UmpMessage::try_from(event.data_words())
         else {
             // Not a MIDI-1 CC — nothing to accumulate; promote straight through.
-            return Some(crate::normalize(event));
+            return Some(super::normalize(event));
         };
         let channel = u8::from(m.channel()) as usize;
         let control = u8::from(m.control());
@@ -101,7 +101,7 @@ impl Midi1ToMidi2Translator {
                 self.emit(channel, event.frame_offset)
             }
             // A plain CC (not part of an (N)RPN run) promotes normally.
-            _ => Some(crate::normalize(event)),
+            _ => Some(super::normalize(event)),
         }
     }
 
@@ -116,7 +116,7 @@ impl Midi1ToMidi2Translator {
         // spec Min-Center-Max upscale, so a MIDI-1 RPN value lands where its
         // MIDI-2 equivalent would.
         let data14 = ((state.data_msb as u16) << 7) | (state.data_lsb as u16);
-        let data32 = crate::convert::midi1_pitch_bend_to_midi2(data14);
+        let data32 = super::scaling::midi1_pitch_bend_to_midi2(data14);
         let ch = channel as u8;
         let ev = if state.registered {
             MidiEvent::registered_controller(0, ch, state.bank, state.index, data32)

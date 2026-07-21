@@ -1,14 +1,11 @@
 //! The sampler streaming-engine handle. See [`Sampler`].
 
-use crate::butler::{
-    BufferConfig, ButlerCommand, ButlerThread, CaptureIdGen, LruCache, ChannelPlan,
-};
+use crate::butler::{BufferConfig, ButlerCommand, ButlerThread, CaptureIdGen, LruCache};
 use crate::error::Result;
 use crate::ports::{Commands, Status};
 use arc_swap::ArcSwap;
 #[cfg(feature = "bevy")]
 use bevy_ecs::resource::Resource;
-use dashmap::DashMap;
 use smol::channel::Sender;
 use std::sync::Arc;
 use tutti_core::PdcState;
@@ -89,7 +86,7 @@ impl Sampler {
     /// WRITE port: a cloneable [`Commands`] handle over the butler command
     /// channel. Drive streaming with `commands().send(Command::…)`.
     pub fn commands(&self) -> Commands {
-        Commands::new(self.butler_tx.clone())
+        Commands::new(self.butler_tx.clone(), self.butler.plans())
     }
 
     /// READ port: a cloneable [`Status`] snapshot carrying the sample rate and
@@ -113,16 +110,6 @@ impl Sampler {
     /// and the LRU cache for instant replay of recently-accessed files.
     pub fn auditioner(&self) -> crate::Auditioner {
         crate::Auditioner::new(self)
-    }
-
-    /// Clone of the butler command channel, for handles (auditioner) that
-    /// drive the butler without a back-reference to the whole `Sampler`.
-    pub(crate) fn butler_sender(&self) -> Sender<ButlerCommand> {
-        self.butler_tx.clone()
-    }
-
-    pub(crate) fn butler_plans(&self) -> Arc<DashMap<usize, ChannelPlan>> {
-        self.butler.plans()
     }
 
     pub(crate) fn butler_cache(&self) -> Arc<LruCache> {
@@ -154,7 +141,7 @@ mod tests {
     fn test_io_metrics_zeroed_on_fresh_system() {
         let sampler = Sampler::new(44100.0, Default::default()).unwrap();
         // A fresh butler has read nothing and an empty cache.
-        let plans = sampler.butler_plans();
+        let plans = sampler.butler.plans();
         assert!(plans.is_empty());
         assert_eq!(sampler.status().sample_rate(), 44100.0);
     }

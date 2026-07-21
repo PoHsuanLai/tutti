@@ -135,7 +135,7 @@ mod sampler;
 pub use sampler::{Sampler, SamplerConfig};
 
 mod ports;
-pub use ports::{Command, Commands, Status};
+pub use ports::{ClipControl, Command, Commands, Status};
 
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::Resource;

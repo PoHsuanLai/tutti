@@ -36,13 +36,11 @@ use std::sync::Arc;
 
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::Resource;
-use dashmap::DashMap;
-use smol::channel::Sender;
 
 use tutti_core::{AtomicF32, Linear, Ratio, Wave};
 
-use crate::butler::{control, ButlerCommand, ChannelPlan, LruCache};
-use crate::Sampler;
+use crate::butler::LruCache;
+use crate::{ClipControl, Sampler};
 use crate::{SamplerUnit, StreamingSamplerUnit};
 
 /// Reserved channel index for auditioner streaming.
@@ -79,8 +77,7 @@ enum PreviewMode {
 #[cfg_attr(feature = "bevy", derive(Resource))]
 #[derive(Clone)]
 pub struct Auditioner {
-    butler_tx: Sender<ButlerCommand>,
-    butler_plans: Arc<DashMap<usize, ChannelPlan>>,
+    clip: ClipControl,
     butler_cache: Arc<LruCache>,
     mode: Arc<parking_lot::Mutex<Option<PreviewMode>>>,
     current_path: Arc<parking_lot::Mutex<Option<PathBuf>>>,
@@ -93,8 +90,7 @@ pub struct Auditioner {
 impl Auditioner {
     pub(crate) fn new(sampler: &Sampler) -> Self {
         Self {
-            butler_tx: sampler.butler_sender(),
-            butler_plans: sampler.butler_plans(),
+            clip: sampler.commands().channel(AUDITIONER_CHANNEL),
             butler_cache: sampler.butler_cache(),
             mode: Arc::new(parking_lot::Mutex::new(None)),
             current_path: Arc::new(parking_lot::Mutex::new(None)),
@@ -152,7 +148,7 @@ impl Auditioner {
     }
 
     fn start_streaming(&self, path: &Path) {
-        control::stream(&self.butler_tx, AUDITIONER_CHANNEL, path.to_path_buf(), 0);
+        self.clip.stream(path.to_path_buf());
 
         let speed = self.speed().get();
         if speed != 1.0 {
@@ -165,7 +161,11 @@ impl Auditioner {
     /// Set varispeed on the reserved auditioner streaming channel — the same
     /// butler control the timeline's `Sampler::set_clip_stream_speed` uses.
     fn set_stream_speed(&self, speed: f32) {
-        control::set_varispeed(&self.butler_tx, AUDITIONER_CHANNEL, speed.abs(), speed < 0.0);
+        if speed < 0.0 {
+            self.clip.reverse(speed.abs());
+        } else {
+            self.clip.speed(speed.abs());
+        }
     }
 
     /// Install a new preview mode and mark playing.
@@ -181,7 +181,7 @@ impl Auditioner {
             match mode {
                 PreviewMode::InMemory(unit) => unit.stop(),
                 PreviewMode::Streaming => {
-                    control::stop_stream(&self.butler_tx, AUDITIONER_CHANNEL);
+                    self.clip.stop();
                 }
             }
         }
@@ -254,10 +254,9 @@ impl Auditioner {
         let mode = self.mode.lock();
         match mode.as_ref()? {
             PreviewMode::Streaming => {
-                // Same 3-line consumer handoff the timeline path uses via
+                // Same consumer handoff the timeline path uses via
                 // `Sampler::take_clip_reader`; here it stays un-gated (free-running).
-                let (unit, _rt_state) =
-                    control::take_streaming_unit(&self.butler_plans, AUDITIONER_CHANNEL)?;
+                let (unit, _rt_state) = self.clip.take_streaming_unit()?;
                 Some(unit)
             }
             PreviewMode::InMemory(_) => None,

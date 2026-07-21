@@ -182,7 +182,10 @@ pub use controllers::{RPN_BANK_MPE, RPN_INDEX_MCM, RPN_INDEX_PITCH_BEND_SENSITIV
 pub use flex_data::{
     bpm_to_ten_ns_per_quarter, flex_tempo_bpm, ten_ns_per_quarter_to_bpm, BarAccents,
 };
-pub use stream::{EndpointDiscoveryRequest, FunctionBlockDirection};
+pub use stream::{
+    EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection, FunctionBlocks,
+    JrTimestamps, Protocol, UmpVersion,
+};
 pub use sysex::{
     SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
 };

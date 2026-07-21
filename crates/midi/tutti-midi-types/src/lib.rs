@@ -54,5 +54,8 @@ pub use routing::{MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterato
 pub use source::MidiSource;
 pub use target::MidiTarget;
 pub use translate::Midi1ToMidi2Translator;
-pub use ump::{BarAccents, EndpointDiscoveryRequest, FunctionBlockDirection, MidiEvent};
+pub use ump::{
+    BarAccents, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
+    FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
+};
 pub use unit_id::MidiUnitId;

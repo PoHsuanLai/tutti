@@ -76,6 +76,65 @@ impl MidiEvent {
         });
         Self::from_ump(0, m.data())
     }
+
+    /// UMP Stream **Endpoint Info Notification** — the reply to an Endpoint
+    /// Discovery `request_endpoint_info`. Declares this endpoint's UMP version,
+    /// its Function Blocks (count + whether the set is `static`), and which
+    /// protocols / JR-timestamp directions it [`supports`](EndpointCapabilities).
+    #[inline]
+    pub fn endpoint_info(
+        ump_version: UmpVersion,
+        function_blocks: FunctionBlocks,
+        supports: EndpointCapabilities,
+    ) -> Self {
+        use midi2::ump_stream::EndpointInfo;
+        let mut m = EndpointInfo::<[u32; 4]>::new();
+        m.set_ump_version_major(ump_version.major);
+        m.set_ump_version_minor(ump_version.minor);
+        m.set_static_function_blocks(function_blocks.is_static);
+        m.set_number_of_function_blocks(u7::new(function_blocks.count & 0x7F));
+        m.set_supports_midi2_protocol(supports.contains(EndpointCapabilities::MIDI2_PROTOCOL));
+        m.set_supports_midi1_protocol(supports.contains(EndpointCapabilities::MIDI1_PROTOCOL));
+        m.set_supports_sending_jr_timestamps(supports.contains(EndpointCapabilities::SEND_JR));
+        m.set_supports_receiving_jr_timestamps(
+            supports.contains(EndpointCapabilities::RECEIVE_JR),
+        );
+        Self::from_ump(0, m.data())
+    }
+
+    /// UMP Stream **Stream Configuration Notification** — the reply to an
+    /// Endpoint Discovery `request_stream_configuration`, and the message an
+    /// endpoint sends when it changes protocol. `jr` selects which JR-timestamp
+    /// directions are active on the configured [`Protocol`].
+    #[inline]
+    pub fn stream_configuration_notification(protocol: Protocol, jr: JrTimestamps) -> Self {
+        use midi2::ump_stream::StreamConfigurationNotification;
+        let mut m = StreamConfigurationNotification::<[u32; 4]>::new();
+        m.set_protocol(protocol as u8);
+        m.set_receive_jr_timestamps(jr.contains(JrTimestamps::RECEIVE));
+        m.set_send_jr_timestamps(jr.contains(JrTimestamps::SEND));
+        Self::from_ump(0, m.data())
+    }
+
+    /// UMP Stream **Device Identity Notification** — the reply to an Endpoint
+    /// Discovery `request_device_identity`. Carries the SysEx-style device id:
+    /// a 3-byte `manufacturer`, 14-bit `family` and `family_model`, and a 4-byte
+    /// `software_version`.
+    #[inline]
+    pub fn device_identity(
+        manufacturer: [u8; 3],
+        family: u16,
+        family_model: u16,
+        software_version: [u8; 4],
+    ) -> Self {
+        use midi2::ump_stream::DeviceIdentity;
+        let mut m = DeviceIdentity::<[u32; 4]>::new();
+        m.set_device_manufacturer(manufacturer.map(|b| u7::new(b & 0x7F)));
+        m.set_device_family(u14::new(family & 0x3FFF));
+        m.set_device_family_model_number(u14::new(family_model & 0x3FFF));
+        m.set_software_version(software_version.map(|b| u7::new(b & 0x7F)));
+        Self::from_ump(0, m.data())
+    }
 }
 
 /// Direction of a Function Block, for [`MidiEvent::function_block_info`].
@@ -84,6 +143,57 @@ pub enum FunctionBlockDirection {
     Input,
     Output,
     Bidirectional,
+}
+
+/// UMP protocol version an endpoint speaks, for [`MidiEvent::endpoint_info`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UmpVersion {
+    pub major: u8,
+    pub minor: u8,
+}
+
+impl UmpVersion {
+    /// UMP 1.1 — the version this engine implements.
+    pub const V1_1: Self = Self { major: 1, minor: 1 };
+}
+
+/// An endpoint's Function Block set, for [`MidiEvent::endpoint_info`]: how many
+/// blocks it exposes and whether that set is fixed (`is_static`) or may change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FunctionBlocks {
+    pub count: u8,
+    pub is_static: bool,
+}
+
+/// The MIDI protocol carried on a UMP stream, for
+/// [`MidiEvent::stream_configuration_notification`]. Wire values per M2-104.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Protocol {
+    Midi1 = 1,
+    Midi2 = 2,
+}
+
+bitflags! {
+    /// Which capabilities an endpoint advertises in its Endpoint Info
+    /// (M2-104 §7.1.2): supported protocols and JR-timestamp directions.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct EndpointCapabilities: u8 {
+        const MIDI2_PROTOCOL = 1 << 0;
+        const MIDI1_PROTOCOL = 1 << 1;
+        const SEND_JR        = 1 << 2;
+        const RECEIVE_JR     = 1 << 3;
+    }
+}
+
+bitflags! {
+    /// Active JR-timestamp directions on a configured stream, for
+    /// [`MidiEvent::stream_configuration_notification`].
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct JrTimestamps: u8 {
+        const SEND    = 1 << 0;
+        const RECEIVE = 1 << 1;
+    }
 }
 
 #[cfg(test)]
@@ -125,6 +235,63 @@ mod tests {
                 assert_eq!(m.direction(), Direction::Output);
             }
             other => panic!("expected FunctionBlockInfo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn endpoint_info_decodes_via_midi2() {
+        use midi2::ump_stream::UmpStream;
+        use midi2::UmpMessage;
+        let ev = MidiEvent::endpoint_info(
+            UmpVersion::V1_1,
+            FunctionBlocks {
+                count: 3,
+                is_static: true,
+            },
+            EndpointCapabilities::MIDI2_PROTOCOL | EndpointCapabilities::MIDI1_PROTOCOL,
+        );
+        match UmpMessage::try_from(ev.data_words()).unwrap() {
+            UmpMessage::UmpStream(UmpStream::EndpointInfo(m)) => {
+                assert_eq!(m.ump_version_major(), 1);
+                assert_eq!(u8::from(m.number_of_function_blocks()), 3);
+                assert!(m.static_function_blocks());
+                assert!(m.supports_midi2_protocol());
+                assert!(m.supports_midi1_protocol());
+                assert!(!m.supports_sending_jr_timestamps());
+            }
+            other => panic!("expected EndpointInfo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn device_identity_decodes_via_midi2() {
+        use midi2::ump_stream::UmpStream;
+        use midi2::UmpMessage;
+        let ev = MidiEvent::device_identity([0x00, 0x21, 0x09], 0x1234, 0x0001, [1, 2, 3, 4]);
+        match UmpMessage::try_from(ev.data_words()).unwrap() {
+            UmpMessage::UmpStream(UmpStream::DeviceIdentity(m)) => {
+                assert_eq!(u8::from(m.device_manufacturer()[2]), 0x09);
+                assert_eq!(u16::from(m.device_family()), 0x1234);
+            }
+            other => panic!("expected DeviceIdentity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_configuration_decodes_via_midi2() {
+        use midi2::ump_stream::UmpStream;
+        use midi2::UmpMessage;
+        let ev = MidiEvent::stream_configuration_notification(
+            Protocol::Midi2,
+            JrTimestamps::SEND | JrTimestamps::RECEIVE,
+        );
+        match UmpMessage::try_from(ev.data_words()).unwrap() {
+            UmpMessage::UmpStream(UmpStream::StreamConfigurationNotification(m)) => {
+                assert_eq!(m.protocol(), 2);
+                assert!(m.send_jr_timestamps());
+                assert!(m.receive_jr_timestamps());
+            }
+            other => panic!("expected StreamConfigurationNotification, got {other:?}"),
         }
     }
 }

@@ -22,7 +22,9 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{FunctionBlockDirection, MidiUnitId};
+use tutti_midi_types::{
+    BarAccents, EndpointDiscoveryRequest, FunctionBlockDirection, MidiUnitId,
+};
 
 #[cfg(feature = "mpe")]
 use crate::mpe::{MpeProcessor, PerNoteExpression};
@@ -380,9 +382,9 @@ impl MidiBus {
 
     /// Announce this endpoint's Function Block topology as a MIDI 2.0 **UMP Stream
     /// Function Block Info** message (M2-104 §7.1.1), so a downstream peer learns
-    /// which groups this endpoint spans and in which direction. This is the
-    /// outbound half of UMP Stream endpoint negotiation; inbound Endpoint
-    /// Discovery handling belongs to an endpoint-negotiation layer above the bus.
+    /// which groups this endpoint spans and in which direction. This is one
+    /// outbound message of UMP Stream endpoint negotiation; the inbound-discovery
+    /// reply stream is built by [`crate::EndpointNegotiator`].
     pub fn broadcast_function_block(
         &self,
         block_number: u8,
@@ -397,6 +399,22 @@ impl MidiBus {
             num_groups,
             direction,
         ));
+    }
+
+    /// Broadcast the click configuration as a MIDI 2.0 **Flex Data Set Metronome**
+    /// message (M2-104 §7.5). `clocks_per_click` is MIDI clocks per primary click;
+    /// `accents` marks the accented bar subdivisions. Companion to
+    /// [`broadcast_tempo`](Self::broadcast_tempo) / [`broadcast_time_signature`](Self::broadcast_time_signature).
+    pub fn broadcast_metronome(&self, clocks_per_click: u8, accents: BarAccents) {
+        self.queue_system(&MidiEvent::flex_set_metronome(0, clocks_per_click, accents));
+    }
+
+    /// Broadcast an **Endpoint Discovery** request — the probe tutti sends as the
+    /// *discoverer* to learn a peer's capabilities. `request` selects which
+    /// replies to ask for. The peer's reply stream is interpreted by
+    /// [`crate::EndpointNegotiator`] on the answering side.
+    pub fn request_endpoint_discovery(&self, request: EndpointDiscoveryRequest) {
+        self.queue_system(&MidiEvent::endpoint_discovery(1, 1, request));
     }
 
     /// True if the bus has a subscriber for the unit id.
@@ -629,10 +647,11 @@ mod tests {
 
         bus.broadcast_time_signature(7, 8, 8);
         bus.broadcast_function_block(2, 4, 1, FunctionBlockDirection::Output);
+        bus.broadcast_metronome(24, BarAccents::default());
 
-        // Both broadcasts land on the system ring in order.
+        // All three broadcasts land on the system ring in order.
         let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(r.poll_system(&mut buf), 2);
+        assert_eq!(r.poll_system(&mut buf), 3);
         assert!(matches!(
             UmpMessage::try_from(buf[0].data_words()).unwrap(),
             UmpMessage::FlexData(FlexData::SetTimeSignature(_))
@@ -640,6 +659,10 @@ mod tests {
         assert!(matches!(
             UmpMessage::try_from(buf[1].data_words()).unwrap(),
             UmpMessage::UmpStream(UmpStream::FunctionBlockInfo(_))
+        ));
+        assert!(matches!(
+            UmpMessage::try_from(buf[2].data_words()).unwrap(),
+            UmpMessage::FlexData(FlexData::SetMetronome(_))
         ));
     }
 

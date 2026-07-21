@@ -366,9 +366,10 @@ impl AudioUnit for StreamingSamplerUnit {
 // The gate math is a copy of `SamplerUnit::transport_sample_position`: it is the
 // single source of truth for "is the playhead inside this clip, and at what
 // sample offset". Kept lock-free / alloc-free so `tick`/`process` stay RT-safe —
-// the actual disk seek is deferred to the butler; here we only flip the
-// lock-free `RtState` seek flag and stash the requested target for the butler
-// to pick up (butler wiring lands in Wave 6.4).
+// the actual disk seek is deferred to the butler; here we only publish the
+// requested target to the lock-free `RtState` (two atomic stores), which the
+// butler polls each loop and applies click-free. The butler owns the seek flag
+// so it can clear it; the reader never sets it.
 // ---------------------------------------------------------------------------
 
 /// Sentinel for "no seek has been requested yet" — any real target differs from
@@ -479,20 +480,17 @@ impl StreamingClipReader {
 
     /// Ask the butler to stream from `target_offset` (clip-relative samples).
     ///
-    /// Phase-1 STUB: records the target so drift tracking works, but does NOT
-    /// yet cross the butler channel. Wave 6.4 replaces the stubbed body with the
-    /// real butler stream-seek command (`SetStreamLoop` / stream-seek), which is
-    /// what will flip `RtState::set_seeking` so the audio thread mutes until the
-    /// ring refills from the new disk offset. Until then the butler streams
-    /// contiguously and the placement gate above governs audibility, so we must
-    /// NOT set the seek flag here — with no butler to clear it the reader would
-    /// mute forever. RT-safe regardless: only a field write, no alloc, no I/O.
+    /// Records the target for drift tracking, then publishes it to the shared
+    /// [`RtState`](crate::butler::RtState) via `request_seek` — two lock-free
+    /// atomic stores. The butler polls the request each loop and repositions the
+    /// live stream click-free (flush + seek + crossfade), owning the seek flag so
+    /// it can clear it; the reader must NOT flip `set_seeking` itself (with no
+    /// butler to clear it the reader would mute forever). RT-safe: no alloc, no
+    /// I/O, no blocking on this path.
     #[inline]
     fn request_seek(&mut self, target_offset: f64) {
         self.streamed_offset = target_offset;
-        // Wave 6.4: `self.shared_state.set_seeking(true)` + forward
-        // `target_offset` to the butler stream command here.
-        let _ = &self.shared_state;
+        self.shared_state.request_seek(target_offset.max(0.0) as u64);
     }
 
     /// Decide, for a frame whose desired clip-relative offset is `offset`,

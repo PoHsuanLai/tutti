@@ -490,7 +490,8 @@ impl TrackClipReaderUnit {
                         // butler stream on a different file — a control-thread /
                         // butler op, so `sync_sampler`'s streaming no-op is the
                         // right behaviour here (the butler-side wiring re-issues
-                        // `AddStreaming` for a new source in Wave 6.4).
+                        // `AddStreaming` for a new source, driven control-side
+                        // from dawai-model).
                         slot.sync_sampler(|s| s.set_wave(wave.clone()));
                     }
                 }
@@ -516,9 +517,10 @@ impl TrackClipReaderUnit {
                 ClipCommand::UpdateSpeed { id, speed } => {
                     if let Some(slot) = self.slot_mut(id) {
                         slot.sync_sampler(|s| s.set_speed(speed));
-                        // Streaming speed is driven by the butler `RtState`
-                        // (`set_speed`), reached through the butler command path
-                        // that Wave 6.4 wires; no per-slot forward here yet.
+                        // Streaming speed is a butler concern: dawai-model
+                        // forwards it control-side via
+                        // `Sampler::set_clip_stream_speed` (butler
+                        // `SetVarispeed`). Correctly a no-op in this drain.
                     }
                 }
                 ClipCommand::UpdateLoop {
@@ -537,9 +539,11 @@ impl TrackClipReaderUnit {
                                 s.set_looping(false);
                             }
                         });
-                        // Streaming loop is a butler concern (`SetStreamLoop`,
-                        // wired in Wave 6.4): the loop range decides where the
-                        // butler wraps the disk decoder. Stubbed forward for now.
+                        // Streaming loop is a butler concern: dawai-model
+                        // forwards it control-side via
+                        // `Sampler::set_clip_stream_loop` (the loop range
+                        // decides where the butler wraps the disk decoder).
+                        // Correctly a no-op in this drain.
                     }
                 }
                 ClipCommand::ClearLoop(id) => {
@@ -548,8 +552,9 @@ impl TrackClipReaderUnit {
                             s.clear_loop_range();
                             s.set_looping(false);
                         });
-                        // Streaming: forwards to the butler clear-loop command in
-                        // Wave 6.4.
+                        // Streaming: dawai-model forwards the clear control-side
+                        // via `Sampler::clear_clip_stream_loop`. Correctly a
+                        // no-op in this drain.
                     }
                 }
                 ClipCommand::UpdateReverse { id, direction } => {

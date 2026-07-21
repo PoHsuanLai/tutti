@@ -58,6 +58,15 @@ pub(crate) enum ButlerCommand {
     /// stream plays through to the end without wrapping.
     ClearStreamLoop { channel_index: usize },
 
+    /// Reposition a live stream to an absolute file sample offset (timeline
+    /// seek). `file_position` is the absolute file sample offset; the handler
+    /// applies the channel's `pdc_preroll` before repositioning. Mirrors the
+    /// PDC/loop-wrap click-free reposition (flush + seek + crossfade).
+    SeekStream {
+        channel_index: usize,
+        file_position: u64,
+    },
+
     /// Set varispeed (direction and speed) for a channel. `speed = 1.0` is normal.
     SetVarispeed {
         channel_index: usize,

@@ -178,6 +178,33 @@ impl Sampler {
             .send_blocking(ButlerCommand::ClearStreamLoop { channel_index });
     }
 
+    /// Reposition a streaming clip's channel to an absolute file sample offset
+    /// (timeline seek). Forwards [`SeekStream`](ButlerCommand::SeekStream); the
+    /// butler applies the channel's PDC preroll and repositions the live stream
+    /// click-free (flush + seek + crossfade).
+    pub fn seek_clip_stream(&self, channel_index: usize, file_position: u64) {
+        let _ = self.butler_tx.send_blocking(ButlerCommand::SeekStream {
+            channel_index,
+            file_position,
+        });
+    }
+
+    /// Set varispeed (playback speed + direction) on a streaming clip's channel.
+    /// `speed = 1.0` is normal; `reverse` flips playback direction. Forwards
+    /// [`SetVarispeed`](ButlerCommand::SetVarispeed).
+    pub fn set_clip_stream_speed(&self, channel_index: usize, speed: f32, reverse: bool) {
+        let direction = if reverse {
+            crate::butler::PlayDirection::Reverse
+        } else {
+            crate::butler::PlayDirection::Forward
+        };
+        let _ = self.butler_tx.send_blocking(ButlerCommand::SetVarispeed {
+            channel_index,
+            direction,
+            speed,
+        });
+    }
+
     /// Stop a streaming clip's channel — drops its ring + link.
     pub fn stop_clip_stream(&self, channel_index: usize) {
         let _ = self

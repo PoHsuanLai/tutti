@@ -44,6 +44,18 @@ pub struct BufferHealth {
     /// consumer — clears the ring when it observes a change vs. its last-applied
     /// value, keeping the SPSC pop single-threaded (the butler never pops).
     reset_epoch: AtomicU64,
+    /// Audio-bumped timeline-seek request (the mirror image of `reset_epoch`:
+    /// audio requests, butler applies). The audio thread stores the absolute
+    /// file offset in `seek_target` and bumps `seek_request_epoch`; the butler
+    /// polls the epoch and, on a change vs. `applied_seek_epoch`, repositions the
+    /// live stream to `seek_target` (flush + seek + crossfade). Both stores are
+    /// lock-free and allocation-free — safe on the audio hot path.
+    seek_target: AtomicU64,
+    seek_request_epoch: AtomicU64,
+    /// Butler-only last-applied seek epoch. Never touched by the audio thread —
+    /// the symmetric counterpart to the audio-side `applied_reset_epoch`. Lets
+    /// the butler coalesce rapid seeks (only the latest `seek_target` survives).
+    applied_seek_epoch: AtomicU64,
 }
 
 impl Default for BufferHealth {
@@ -53,6 +65,9 @@ impl Default for BufferHealth {
             underrun_count: AtomicU64::new(0),
             buffer_fill_level: AtomicU32::new(0),
             reset_epoch: AtomicU64::new(0),
+            seek_target: AtomicU64::new(0),
+            seek_request_epoch: AtomicU64::new(0),
+            applied_seek_epoch: AtomicU64::new(0),
         }
     }
 }
@@ -157,6 +172,44 @@ impl RtState {
     #[inline]
     pub fn reset_epoch(&self) -> u64 {
         self.health.reset_epoch.load(Ordering::Acquire)
+    }
+
+    /// Audio side: request the butler reposition the live stream to absolute file
+    /// offset `file_offset` (timeline seek). Two atomic stores, zero alloc, zero
+    /// I/O — safe to call from the audio hot path. Coalescing is intentional:
+    /// only the latest target survives if the butler hasn't caught up.
+    #[inline]
+    pub fn request_seek(&self, file_offset: u64) {
+        self.health.seek_target.store(file_offset, Ordering::Relaxed);
+        self.health
+            .seek_request_epoch
+            .fetch_add(1, Ordering::Release);
+    }
+
+    /// Butler side: read the pending seek request as `(epoch, target)`. The
+    /// butler compares `epoch` against its last-applied value (see
+    /// [`take_seek_request`](Self::take_seek_request)) to decide whether to act.
+    #[inline]
+    pub fn seek_request(&self) -> (u64, u64) {
+        let epoch = self.health.seek_request_epoch.load(Ordering::Acquire);
+        let target = self.health.seek_target.load(Ordering::Relaxed);
+        (epoch, target)
+    }
+
+    /// Butler side: if a new seek has been requested since the last poll, mark it
+    /// applied and return `Some(target)`; otherwise `None`. Coalesces rapid
+    /// seeks — only the latest `seek_target` is returned. Butler-only: never
+    /// touched by the audio thread.
+    #[inline]
+    pub fn take_seek_request(&self) -> Option<u64> {
+        let (epoch, target) = self.seek_request();
+        if epoch == self.health.applied_seek_epoch.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.health
+            .applied_seek_epoch
+            .store(epoch, Ordering::Relaxed);
+        Some(target)
     }
 
     #[inline]

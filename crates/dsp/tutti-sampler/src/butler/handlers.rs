@@ -16,7 +16,7 @@ use super::cache::LruCache;
 use super::command::{ButlerCommand, CaptureId, RegionId};
 use super::config::BufferConfig;
 use super::io::capture::{flush_all, flush_capture, open_wav, ActiveCapture};
-use super::io::loops::{buffer_size_for_file, capture_samples};
+use super::io::loops::{buffer_size_for_file, capture_samples, fadein_samples, fadeout_samples};
 use super::io::refill::load_wave;
 use super::metrics::Metrics;
 use super::plan::{ChannelPlan, LoopConfig};
@@ -109,6 +109,13 @@ pub(super) fn handle_command(
                     link.loop_config = None;
                 }
             }
+        }
+
+        ButlerCommand::SeekStream {
+            channel_index,
+            file_position,
+        } => {
+            handle_seek_stream(channel_index, file_position, shared, config, local);
         }
 
         ButlerCommand::SetVarispeed {
@@ -316,6 +323,63 @@ fn handle_set_stream_loop(
         crossfade_samples,
         preloop_buffer,
     });
+}
+
+/// Reposition a live stream to an absolute file sample offset (timeline seek),
+/// click-free. Mirrors the PDC reposition
+/// ([`apply_pdc_updates`](super::io::pdc::apply_pdc_updates)) but with an
+/// explicit target instead of a preroll delta: capture the fadeout tail before
+/// moving, flush the ring, seek the writer, capture the fadein head at the new
+/// position, and hand both to the audio thread's seek crossfader. `pdc_preroll`
+/// is applied to the target (a larger preroll seeks earlier) but not mutated.
+///
+/// No-op when the channel isn't streaming (no `link`) or its region writer is
+/// gone.
+pub(super) fn handle_seek_stream(
+    channel_index: usize,
+    file_position: u64,
+    shared: &Handles,
+    config: &BufferConfig,
+    local: &mut Local,
+) {
+    let Some(plan) = shared.plans.get(&channel_index) else {
+        return;
+    };
+    let Some(link) = plan.link.as_ref() else {
+        return;
+    };
+    let Some(writer) = local.regions.get_mut(link.region_id) else {
+        return;
+    };
+
+    let new_pos = file_position.saturating_sub(plan.pdc_preroll);
+
+    let crossfade_len = config.seek_crossfade_samples;
+    let fadeout = fadeout_samples(
+        &plan,
+        &shared.cache,
+        &shared.metrics,
+        writer.file_path(),
+        crossfade_len,
+    );
+
+    plan.set_seeking(true);
+    plan.flush_buffer();
+    writer.set_file_position(new_pos);
+
+    let fadein = fadein_samples(
+        &shared.cache,
+        &shared.metrics,
+        writer.file_path(),
+        new_pos,
+        crossfade_len,
+    );
+
+    if !fadeout.is_empty() && !fadein.is_empty() {
+        plan.rt_state.start_seek_crossfade(fadeout, fadein);
+    }
+
+    plan.set_seeking(false);
 }
 
 #[cfg(test)]

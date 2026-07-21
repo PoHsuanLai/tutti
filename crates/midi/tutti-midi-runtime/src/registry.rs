@@ -21,11 +21,11 @@ use dashmap::DashMap;
 #[cfg(feature = "mpe")]
 use parking_lot::Mutex;
 
+use tutti_core::transport::TimeSignature;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{
-    BarAccents, EndpointDiscoveryRequest, FunctionBlockDirection, MidiUnitId,
-};
+use tutti_midi_types::{BarAccents, EndpointDiscoveryRequest, MidiUnitId};
 
+use crate::endpoint::FunctionBlock;
 #[cfg(feature = "mpe")]
 use crate::mpe::{MpeProcessor, PerNoteExpression};
 use crate::snapshot::MidiSnapshot;
@@ -342,6 +342,19 @@ impl MidiBus {
         }
     }
 
+    /// Convenience: queue a note-on to a subscribed unit without building the
+    /// [`MidiEvent`] yourself (`velocity` is 7-bit MIDI 1.0). Mirrors
+    /// [`MidiSender::note_on`] for callers that hold only the bus + a unit id.
+    pub fn note_on(&self, unit_id: MidiUnitId, channel: u8, note: u8, velocity: u8) {
+        self.queue(unit_id, &[MidiEvent::note_on_7bit(0, channel, note, velocity)]);
+    }
+
+    /// Convenience: queue a note-off to a subscribed unit. Mirrors
+    /// [`MidiSender::note_off`].
+    pub fn note_off(&self, unit_id: MidiUnitId, channel: u8, note: u8) {
+        self.queue(unit_id, &[MidiEvent::note_off(0, channel, note, 0)]);
+    }
+
     /// Broadcast a system event to every subscribed unit. RT-safe: reads a
     /// flat snapshot via a single atomic load. **Bypasses MPE** — system
     /// events (clock, start/stop, song-position) aren't channel/voice
@@ -368,36 +381,33 @@ impl MidiBus {
     }
 
     /// Broadcast the current meter as a MIDI 2.0 **Flex Data Set Time Signature**
-    /// message (M2-104 §7.5). `num_32nd_notes` is the number of 1/32 notes per
-    /// quarter (usually 8). Companion to [`broadcast_tempo`](Self::broadcast_tempo);
-    /// call on every meter change.
-    pub fn broadcast_time_signature(&self, numerator: u8, denominator: u8, num_32nd_notes: u8) {
+    /// message (M2-104 §7.5). Takes the musical [`TimeSignature`]; the wire field
+    /// `num_32nd_notes` (1/32 notes per quarter) is fixed at the standard `8`.
+    /// Companion to [`broadcast_tempo`](Self::broadcast_tempo); call on every meter
+    /// change.
+    pub fn broadcast_time_signature(&self, time_signature: TimeSignature) {
         self.queue_system(&MidiEvent::flex_set_time_signature(
             0,
-            numerator,
-            denominator,
-            num_32nd_notes,
+            time_signature.numerator as u8,
+            time_signature.denominator as u8,
+            8,
         ));
     }
 
-    /// Announce this endpoint's Function Block topology as a MIDI 2.0 **UMP Stream
-    /// Function Block Info** message (M2-104 §7.1.1), so a downstream peer learns
-    /// which groups this endpoint spans and in which direction. This is one
-    /// outbound message of UMP Stream endpoint negotiation; the inbound-discovery
-    /// reply stream is built by [`crate::EndpointNegotiator`].
-    pub fn broadcast_function_block(
-        &self,
-        block_number: u8,
-        first_group: u8,
-        num_groups: u8,
-        direction: FunctionBlockDirection,
-    ) {
+    /// Announce a Function Block's topology as a MIDI 2.0 **UMP Stream Function
+    /// Block Info** message (M2-104 §7.1.1), so a downstream peer learns which
+    /// groups this endpoint spans and in which direction. Takes the same
+    /// [`FunctionBlock`] you configured the endpoint with — no field
+    /// re-destructuring. This is one outbound message of UMP Stream endpoint
+    /// negotiation; the inbound-discovery reply stream is built by
+    /// [`crate::EndpointNegotiator`].
+    pub fn broadcast_function_block(&self, block: &FunctionBlock) {
         self.queue_system(&MidiEvent::function_block_info(
             true,
-            block_number,
-            first_group,
-            num_groups,
-            direction,
+            block.block_number,
+            block.first_group,
+            block.num_groups,
+            block.direction,
         ));
     }
 
@@ -496,6 +506,25 @@ mod tests {
 
         let mut buf = [note_on(0, 0); 4];
         assert_eq!(receiver.poll_into(&mut buf), 2);
+    }
+
+    #[test]
+    fn bus_note_helpers_reach_the_addressed_unit() {
+        // A caller holding only the bus + a unit id can send notes without
+        // building a MidiEvent or knowing UMP.
+        let bus = MidiBus::new();
+        let unit = MidiUnitId::new(1);
+        let (s, r) = MidiEventSlot::pair(unit);
+        bus.insert(s);
+
+        bus.note_on(unit, 0, 60, 100);
+        bus.note_off(unit, 0, 60);
+
+        let mut buf = [MidiEvent::noop(); 4];
+        assert_eq!(r.poll_into(&mut buf), 2);
+        assert!(buf[0].is_note_on());
+        assert_eq!(buf[0].note(), Some(60));
+        assert!(buf[1].is_note_off());
     }
 
     #[test]
@@ -645,8 +674,13 @@ mod tests {
         let (s, r) = MidiEventSlot::pair(MidiUnitId::new(1));
         bus.insert(s);
 
-        bus.broadcast_time_signature(7, 8, 8);
-        bus.broadcast_function_block(2, 4, 1, FunctionBlockDirection::Output);
+        bus.broadcast_time_signature(TimeSignature::new(7, 8));
+        bus.broadcast_function_block(&FunctionBlock {
+            block_number: 2,
+            first_group: 4,
+            num_groups: 1,
+            direction: FunctionBlockDirection::Output,
+        });
         bus.broadcast_metronome(24, BarAccents::default());
 
         // All three broadcasts land on the system ring in order.

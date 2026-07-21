@@ -9,11 +9,34 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
 
-#[derive(Debug, Clone, Copy)]
+/// One [`MidiEvent`] tagged with the absolute beat at which it fires.
+///
+/// The single "timed event" currency across the runtime: the snapshot store,
+/// the clip player (re-exported there as `TimedClipEvent`), and clip-file import
+/// all speak this one type, so events move between them without repacking.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TimedMidiEvent {
     pub event: MidiEvent,
     /// Beat position when this event should trigger.
     pub beat: f64,
+}
+
+impl TimedMidiEvent {
+    /// A timed event at `beat`. Field-order-independent, so callers never have
+    /// to remember whether `beat` or `event` comes first.
+    #[inline]
+    pub const fn new(beat: f64, event: MidiEvent) -> Self {
+        Self { event, beat }
+    }
+}
+
+impl From<(f64, MidiEvent)> for TimedMidiEvent {
+    /// `(beat, event)` — matches the tuples [`crate::tutti_midi_types::ParsedClipFile::timed`]
+    /// yields, so a parsed clip file drops straight into the player/snapshot.
+    #[inline]
+    fn from((beat, event): (f64, MidiEvent)) -> Self {
+        Self { event, beat }
+    }
 }
 
 /// Non-destructive snapshot of MIDI events for export.
@@ -52,10 +75,32 @@ impl MidiSnapshot {
         Self::default()
     }
 
+    /// Add one event, keeping the unit's stream beat-sorted.
+    ///
+    /// Sorts on every call, so feeding a whole clip through this in a loop is
+    /// O(n²) — use [`add_events`](Self::add_events) to bulk-insert and sort once.
     pub fn add_event(&mut self, unit_id: MidiUnitId, beat: f64, event: MidiEvent) {
         let events = self.events.entry(unit_id).or_default();
-        events.push(TimedMidiEvent { event, beat });
-        events.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap());
+        events.push(TimedMidiEvent::new(beat, event));
+        sort_by_beat(events);
+        self.cursors
+            .entry(unit_id)
+            .or_insert_with(|| AtomicUsize::new(0));
+    }
+
+    /// Bulk-insert many events for one unit, sorting **once** at the end — the
+    /// O(n log n) path for building a clip, versus [`add_event`](Self::add_event)'s
+    /// per-call re-sort. Accepts anything that converts into a [`TimedMidiEvent`],
+    /// including `(beat, event)` tuples and the output of
+    /// [`ParsedClipFile::timed`](crate::tutti_midi_types::ParsedClipFile::timed).
+    pub fn add_events(
+        &mut self,
+        unit_id: MidiUnitId,
+        events: impl IntoIterator<Item = impl Into<TimedMidiEvent>>,
+    ) {
+        let slot = self.events.entry(unit_id).or_default();
+        slot.extend(events.into_iter().map(Into::into));
+        sort_by_beat(slot);
         self.cursors
             .entry(unit_id)
             .or_insert_with(|| AtomicUsize::new(0));
@@ -163,6 +208,13 @@ impl MidiSnapshot {
         all.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(core::cmp::Ordering::Equal));
         all
     }
+}
+
+/// Stable NaN-safe beat sort — a `NaN` beat compares Equal (kept in place)
+/// rather than panicking, unlike a bare `partial_cmp(..).unwrap()`.
+#[inline]
+fn sort_by_beat(events: &mut [TimedMidiEvent]) {
+    events.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(core::cmp::Ordering::Equal));
 }
 
 #[cfg(test)]
@@ -308,5 +360,48 @@ mod tests {
 
         let mut out = buf16();
         assert_eq!(snapshot.poll_range(unit_id, 0.0, 1.0, &mut out), 1);
+    }
+
+    #[test]
+    fn add_events_bulk_matches_per_event_and_sorts_once() {
+        let unit = MidiUnitId::new(7);
+        // Feed out-of-order via the bulk path (tuples → TimedMidiEvent).
+        let mut bulk = MidiSnapshot::new();
+        bulk.add_events(
+            unit,
+            [
+                (2.0, note_off(60)),
+                (0.0, note_on(60, 100)),
+                (1.0, note_on(64, 90)),
+            ],
+        );
+        // Same events via the per-event path.
+        let mut one_by_one = MidiSnapshot::new();
+        one_by_one.add_event(unit, 0.0, note_on(60, 100));
+        one_by_one.add_event(unit, 1.0, note_on(64, 90));
+        one_by_one.add_event(unit, 2.0, note_off(60));
+
+        // Both end beat-sorted and identical.
+        assert_eq!(bulk.events_in_beat_order(), one_by_one.events_in_beat_order());
+        let beats: Vec<f64> = bulk.events_in_beat_order().iter().map(|e| e.beat).collect();
+        assert_eq!(beats, [0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn timed_event_from_tuple_and_new_agree() {
+        let ev = note_on(60, 100);
+        assert_eq!(TimedMidiEvent::new(1.5, ev), TimedMidiEvent::from((1.5, ev)));
+    }
+
+    #[test]
+    fn nan_beat_does_not_panic_the_sort() {
+        // A NaN beat used to panic `partial_cmp(..).unwrap()`; now it's kept in
+        // place rather than crashing the (audio-adjacent) builder.
+        let mut snap = MidiSnapshot::new();
+        let unit = MidiUnitId::new(9);
+        snap.add_event(unit, 0.0, note_on(60, 100));
+        snap.add_event(unit, f64::NAN, note_on(62, 100)); // must not panic
+        snap.add_event(unit, 1.0, note_off(60));
+        assert_eq!(snap.events_in_beat_order().len(), 3);
     }
 }

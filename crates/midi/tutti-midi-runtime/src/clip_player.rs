@@ -21,14 +21,14 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiSource;
 use tutti_midi_types::unit_id::MidiUnitId;
 
-/// One MIDI event scheduled at an absolute beat position. Note-on
-/// and note-off both arrive as fully-formed [`MidiEvent`]s so the
-/// player is agnostic to message shape.
-#[derive(Clone, Copy, Debug)]
-pub struct TimedClipEvent {
-    pub beat: f64,
-    pub event: MidiEvent,
-}
+/// One MIDI event scheduled at an absolute beat — the clip player's name for the
+/// runtime's one timed-event type, [`TimedMidiEvent`](crate::TimedMidiEvent).
+///
+/// It is the *same type*, so a `MidiSnapshot`'s events, a parsed clip file's
+/// `(beat, event)` tuples, and a clip all speak one currency and move between
+/// each other without repacking. Build with `TimedMidiEvent::new(beat, event)`,
+/// `.into()` from a `(beat, event)` tuple, or the field literal (`beat`/`event`).
+pub type TimedClipEvent = crate::snapshot::TimedMidiEvent;
 
 /// MIDI clip player. Constructed with a sorted-by-beat event list,
 /// a transport reader, and the audio sample rate. Events are emitted

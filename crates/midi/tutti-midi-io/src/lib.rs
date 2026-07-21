@@ -71,8 +71,8 @@ pub use crossbeam_channel;
 /// encode events back out ([`encode_midi_file`]).
 pub mod smf;
 pub use smf::{
-    encode_midi_file, write_midi_file, MidiWriteOptions, ParsedMidiFile, SmfNote, SmfTimedEvent,
-    SmfTrack,
+    encode_midi_file, write_midi_file, MidiWriteOptions, ParsedMidiFile, SmfMessage, SmfNote,
+    SmfTimedEvent, SmfTrack,
 };
 
 // --- Bevy ECS integration ---

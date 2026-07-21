@@ -43,6 +43,26 @@ impl MidiOutputConsumer {
         events
     }
 
+    /// Drain up to `out.len()` events into a caller-owned slice, returning how
+    /// many were written — the allocation-free counterpart to [`drain_all`], for
+    /// the per-block hardware-output path. Events past `out.len()` stay queued
+    /// for the next call.
+    ///
+    /// [`drain_all`]: Self::drain_all
+    pub fn drain_into(&mut self, out: &mut [MidiEvent]) -> usize {
+        let mut n = 0;
+        while n < out.len() {
+            match self.consumer.try_pop() {
+                Some(event) => {
+                    out[n] = event;
+                    n += 1;
+                }
+                None => break,
+            }
+        }
+        n
+    }
+
     #[inline]
     pub fn has_pending(&self) -> bool {
         !self.consumer.is_empty()
@@ -84,25 +104,28 @@ impl MidiOutputAggregator {
         self.consumers.lock().push(consumer);
     }
 
-    /// Uses `try_lock` to avoid blocking the audio thread.
-    pub fn drain_all(&self) -> Vec<MidiEvent> {
-        let mut consumers = match self.consumers.try_lock() {
-            Some(guard) => guard,
-            None => return Vec::new(),
-        };
+    /// Drain every consumer, or `None` if the consumer list was momentarily
+    /// locked (add/remove in flight). Uses `try_lock` to avoid blocking the audio
+    /// thread — and returns `None` rather than an empty `Vec` on contention so a
+    /// caller can tell "lock busy, try again" apart from "genuinely nothing
+    /// pending" (an empty `Vec` means the latter). A shutdown-drain loop should
+    /// treat `None` as "retry", not "done".
+    pub fn drain_all(&self) -> Option<Vec<MidiEvent>> {
+        let mut consumers = self.consumers.try_lock()?;
         let mut all_events = Vec::new();
         for consumer in consumers.iter_mut() {
             all_events.extend(consumer.drain_all());
         }
-        all_events
+        Some(all_events)
     }
 
-    /// Uses `try_lock` to avoid blocking the audio thread.
-    pub fn has_pending(&self) -> bool {
-        match self.consumers.try_lock() {
-            Some(consumers) => consumers.iter().any(|c| c.has_pending()),
-            None => false,
-        }
+    /// Whether any consumer has pending events, or `None` if the list was
+    /// momentarily locked (same busy-vs-empty distinction as [`drain_all`]).
+    ///
+    /// [`drain_all`]: Self::drain_all
+    pub fn has_pending(&self) -> Option<bool> {
+        let consumers = self.consumers.try_lock()?;
+        Some(consumers.iter().any(|c| c.has_pending()))
     }
 }
 
@@ -158,8 +181,29 @@ mod tests {
         prod1.push(note_on(0, 60));
         prod2.push(note_on(1, 72));
 
-        let events = aggregator.drain_all();
+        // Lock is free here, so drain_all yields Some; the two events are present.
+        let events = aggregator.drain_all().expect("lock free");
         assert_eq!(events.len(), 2);
+        // Now empty (but not busy) → Some(empty), distinct from None.
+        assert_eq!(aggregator.drain_all(), Some(Vec::new()));
+        assert_eq!(aggregator.has_pending(), Some(false));
+    }
+
+    #[test]
+    fn drain_into_is_alloc_free_and_partial() {
+        let (mut prod, mut cons) = midi_output_channel();
+        prod.push(note_on(0, 60));
+        prod.push(note_on(0, 61));
+        prod.push(note_on(0, 62));
+
+        // Buffer holds 2 — two drained now, the third stays for the next call.
+        let mut buf = [MidiEvent::noop(); 2];
+        assert_eq!(cons.drain_into(&mut buf), 2);
+        assert_eq!(buf[0].note(), Some(60));
+        assert_eq!(buf[1].note(), Some(61));
+        assert_eq!(cons.drain_into(&mut buf), 1);
+        assert_eq!(buf[0].note(), Some(62));
+        assert_eq!(cons.drain_into(&mut buf), 0);
     }
 
     #[test]

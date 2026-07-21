@@ -83,28 +83,46 @@ impl MidiSender {
         self.unit_id
     }
 
-    /// Push events into the slot. Audio-thread-safe; full slots silently drop.
-    pub fn queue(&self, events: &[MidiEvent]) {
+    /// Push events into the slot. Audio-thread-safe.
+    ///
+    /// Returns how many were accepted — `< events.len()` means the 256-slot ring
+    /// was full and the rest were dropped. Dropping a note-off while its note-on
+    /// landed is what produces a stuck note, so a caller that cares (e.g. a dense
+    /// live-input burst) can check the count and back off or warn. `queue` never
+    /// blocks, so a full ring drops rather than stalls the audio thread.
+    pub fn queue(&self, events: &[MidiEvent]) -> usize {
+        let mut accepted = 0;
         for &event in events {
-            let _ = self.slot.events.push(event);
+            if self.slot.events.push(event).is_err() {
+                break; // ring full; the ArrayQueue stays FIFO, so stop here
+            }
+            accepted += 1;
         }
+        accepted
     }
 
-    /// Push a single system event (clock, start/stop, addressed SysEx).
-    pub fn queue_system(&self, event: &MidiEvent) {
-        let _ = self.slot.sys_events.push(*event);
+    /// Push a single system event (clock, start/stop, addressed SysEx). Returns
+    /// `false` if the system ring was full and the event was dropped.
+    pub fn queue_system(&self, event: &MidiEvent) -> bool {
+        self.slot.sys_events.push(*event).is_ok()
     }
 
-    /// Convenience: send a MIDI 1.0 note-on (velocity is 7-bit).
-    pub fn note_on(&self, channel: u8, note: u8, velocity: u8) {
-        let event = MidiEvent::note_on_7bit(0, channel, note, velocity);
-        let _ = self.slot.events.push(event);
+    /// Convenience: send a MIDI 1.0 note-on (velocity is 7-bit). Returns `false`
+    /// if the ring was full and the note was dropped.
+    pub fn note_on(&self, channel: u8, note: u8, velocity: u8) -> bool {
+        self.slot
+            .events
+            .push(MidiEvent::note_on_7bit(0, channel, note, velocity))
+            .is_ok()
     }
 
-    /// Convenience: send a MIDI 1.0 note-off.
-    pub fn note_off(&self, channel: u8, note: u8) {
-        let event = MidiEvent::note_off(0, channel, note, 0);
-        let _ = self.slot.events.push(event);
+    /// Convenience: send a MIDI 1.0 note-off. Returns `false` if the ring was
+    /// full and the note-off was dropped (which would leave a stuck note).
+    pub fn note_off(&self, channel: u8, note: u8) -> bool {
+        self.slot
+            .events
+            .push(MidiEvent::note_off(0, channel, note, 0))
+            .is_ok()
     }
 }
 

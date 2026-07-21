@@ -2,13 +2,19 @@
 //!
 //! A [`MidiEvent`] is a 20-byte packed struct — a 32-bit frame offset plus
 //! four UMP words — carrying any MIDI message type. Construction goes through
-//! [`midi2`] (spec-compliant encoding). Decoding is a `TryFrom` into
-//! [`midi2::UmpMessage`] via [`MidiEvent::data_words`]:
+//! [`midi2`] (spec-compliant encoding).
+//!
+//! **To decode, prefer [`MidiEvent::message`](crate::MidiMessage) → a
+//! [`MidiMessage`](crate::MidiMessage)** — the app-facing "just tell me what it
+//! is" view with `.note()` / `.channel()` / `.velocity()` accessors, already
+//! normalized so a MIDI 1.0 event arrives as its MIDI 2.0 form. Only reach for
+//! the raw `midi2` layer below when you need a message family `MidiMessage`
+//! doesn't model:
 //!
 //! ```ignore
 //! use midi2::UmpMessage;
 //! if let Ok(msg) = UmpMessage::try_from(ev.data_words()) {
-//!     // pattern match on msg
+//!     // pattern match on the raw midi2 message
 //! }
 //! ```
 

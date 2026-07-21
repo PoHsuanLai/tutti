@@ -84,8 +84,14 @@ impl MidiInputEvent {
 
     /// Normalise to a MIDI 2.0 Channel Voice [`MidiEvent`]: velocity-0 NoteOn
     /// folds to NoteOff and inbound MIDI 1.0 channel voice is promoted to Channel
-    /// Voice 2, so consumers match one vocabulary. Decode the result with
-    /// `midi2::UmpMessage::try_from(ev.data_words())`.
+    /// Voice 2, so consumers match one vocabulary.
+    ///
+    /// To read it, prefer `.message()` on the result → a
+    /// [`MidiMessage`](crate::MidiMessage) with `.note()` / `.channel()` /
+    /// `.velocity()` accessors (or just use this event's own
+    /// [`is_note_on`](Self::is_note_on) / [`note`](Self::note) shortcuts). Reach
+    /// for `midi2::UmpMessage::try_from(ev.data_words())` only for message
+    /// families `MidiMessage` doesn't model.
     ///
     /// This is *stateless*. Use [`MidiInputEvent::translated`] with a
     /// [`MidiInputTranslators`] when a source sends multi-message (N)RPN runs

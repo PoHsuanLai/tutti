@@ -7,7 +7,7 @@
 //! is the boundary the whole engine is built around: everything internal is
 //! MIDI-2, and each port translates at its own edge (M2-104 §4.1, the Translator).
 //!
-//! Today the only implementation is [`Midi1Port`], which wraps a `midir`
+//! Today the only implementation is `Midi1Port`, which wraps a `midir`
 //! connection — every OS MIDI API `midir` targets (CoreMIDI, ALSA seq, WinMM)
 //! presents a MIDI 1.0 byte stream, so a `midir` port *is* a MIDI 1.0 endpoint and
 //! translates via [`MidiEvent::to_midi1_bytes`] / [`MidiEvent::from_midi1_bytes`].
@@ -40,7 +40,7 @@ pub trait MidiPort {
 #[derive(Debug)]
 pub enum SendError {
     /// The event has no representation on this port's wire protocol, so it was
-    /// not sent. On a [`Midi1Port`] this is the MIDI-2-only message set —
+    /// not sent. On a `Midi1Port` this is the MIDI-2-only message set —
     /// per-note pitch bend, per-note controllers, RPN/NRPN, utility, UMP Stream —
     /// none of which has a single MIDI 1.0 status. Carries the event so a caller
     /// can log, count, or route it elsewhere instead of losing it silently.
@@ -48,7 +48,7 @@ pub enum SendError {
 
     /// The underlying driver rejected the write (device unplugged mid-send, OS
     /// buffer error, …).
-    Wire(crate::error::Error),
+    Wire(crate::core::error::Error),
 }
 
 impl core::fmt::Display for SendError {

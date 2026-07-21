@@ -14,7 +14,7 @@ pub enum PortType {
 }
 
 /// A snapshot view of one port, computed on demand from the underlying
-/// [`AsyncMidiPort`]. The port is the single source of truth for `name` and
+/// `AsyncMidiPort`. The port is the single source of truth for `name` and
 /// `active` — `PortInfo` just bundles them with the port's index/type for
 /// listing. `active` is a point-in-time value, not a live handle.
 #[derive(Debug, Clone)]

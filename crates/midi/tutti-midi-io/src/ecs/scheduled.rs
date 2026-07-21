@@ -12,7 +12,7 @@
 //!   marker means "this entity *is* the MIDI sink for that unit-id."
 //! - [`ScheduledMidi`] — "fire this MIDI event in `remaining_secs` at
 //!   the synth on `target`." [`tick_scheduled_midi`] counts the timer
-//!   down and dispatches via [`MidiBusRes`](crate::MidiBusRes).
+//!   down and dispatches via [`MidiBusRes`].
 //!
 //! The host owns scheduling (`commands.spawn(ScheduledMidi { ... })`);
 //! the system owns delivery. Once fired, the entity is despawned.

@@ -1,0 +1,50 @@
+//! Bevy ECS integration for the MIDI subsystem (`feature = "bevy"`).
+//!
+//! Grouped by FUNCTION: each duty owns its components, systems, resources, and a
+//! focused sub-plugin in its own module. [`TuttiMidiPlugin`] (in [`midi_plugin`])
+//! is the composition root that claims the engine handles and adds the
+//! sub-plugins. Each resource lives with the duty that owns it: [`MidiBusRes`] in
+//! [`bus`], `MidiIoRes` in `device` (behind `midi-hardware`), the transient
+//! [`PendingMidi`] next to its claimant in [`midi_plugin`]. The whole surface
+//! re-exports at the crate root so consumers write `tutti_midi_io::TuttiMidiPlugin`.
+//!
+//! This is the only Bevy-dependent part of the crate; everything under
+//! [`crate::core`] is framework-free.
+
+pub mod bus;
+pub mod input;
+pub mod routing;
+pub mod scheduled;
+pub mod sequence;
+
+#[cfg(feature = "midi-hardware")]
+pub mod device;
+
+#[cfg(feature = "mpe")]
+pub mod mpe;
+
+pub mod midi_plugin;
+
+pub use bus::MidiBusRes;
+pub use input::{
+    midi_input_event_system, MidiInputEvent, MidiInputObserver, MidiInputPlugin,
+    MidiInputTranslators,
+};
+pub use midi_plugin::{PendingMidi, TuttiMidiPlugin};
+pub use routing::{midi_routing_sync_system, MidiRoutingPlugin, MidiSink};
+pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi, ScheduledMidiPlugin};
+pub use sequence::{
+    midi_sequence_setup_system, midi_sequence_tick_system, MidiSequence, MidiSequenceNote,
+    MidiSequencePlugin, MidiSequenceState,
+};
+
+#[cfg(feature = "mpe")]
+pub use mpe::{MpeExpressionResource, MpeModeConfig, MpePlugin};
+#[cfg(feature = "mpe")]
+pub use routing::MpeReceiver;
+
+#[cfg(feature = "midi-hardware")]
+pub use device::{
+    midi_device_connect_system, midi_device_poll_system, ConnectMidiDevice, DisconnectMidiDevice,
+    MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState, MidiIoRes,
+};

@@ -1,7 +1,7 @@
 //! MIDI input device ports: enumeration + opening a hardware input connection.
 
 use super::MidiDevice;
-use crate::InputProducerHandle;
+use crate::core::InputProducerHandle;
 use crossbeam_channel::Sender;
 use midir::{MidiInput, MidiInputConnection};
 use std::time::Instant;
@@ -63,12 +63,12 @@ pub(crate) fn connect_midi_input(
     device_id: u32,
     producer_handle: InputProducerHandle,
     ui_observer: Option<Sender<MidiInputRecord>>,
-) -> Result<(MidiInputConnection<()>, String), crate::error::Error> {
+) -> Result<(MidiInputConnection<()>, String), crate::core::error::Error> {
     let midi_input = MidiInput::new("tutti-midi-input")?;
 
     let ports = midi_input.ports();
     let port = ports.get(device_index).ok_or_else(|| {
-        crate::error::Error::MidiDevice(format!("MIDI device {} not found", device_index))
+        crate::core::error::Error::MidiDevice(format!("MIDI device {} not found", device_index))
     })?;
 
     let port_name = midi_input

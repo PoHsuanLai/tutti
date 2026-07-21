@@ -1,6 +1,6 @@
 //! Component-driven MIDI routing-table reconciliation.
 //!
-//! [`MidiReceiver`] (and, under `mpe`, [`MpeReceiver`]) components declare which
+//! [`MidiSink`] (and, under `mpe`, `MpeReceiver`) components declare which
 //! audio-graph node each MIDI channel feeds. [`midi_routing_sync_system`]
 //! rebuilds the engine's `MidiRoutingTable` whenever those components change and
 //! stages the edit for the Commit phase (it sets `GraphDirty` rather than
@@ -11,18 +11,23 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use tutti_core::NodeId;
 
-/// Routes hardware MIDI input to an audio graph node via `MidiRoutingTable`.
-/// The routing table is rebuilt automatically when these components change.
+/// Marks an audio-graph node as a **MIDI sink** — a destination that incoming
+/// MIDI events flow into, for one channel or all. The engine's `MidiRoutingTable`
+/// is rebuilt automatically whenever these components change.
+///
+/// Distinct from `tutti_midi_runtime::MidiReceiver`, which is the lock-free inbox
+/// *half* a node owns; this is the ECS-side *routing declaration* that points
+/// events at that node.
 ///
 /// Not `Reflect`: `node_id` wraps a foreign fundsp `NodeId`.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MidiReceiver {
+pub struct MidiSink {
     pub node_id: NodeId,
     /// MIDI channel filter. `None` = receive all channels.
     pub channel: Option<u8>,
 }
 
-/// Unlike [`MidiReceiver`], routes all MIDI channels to one synth via
+/// Unlike [`MidiSink`], routes all MIDI channels to one synth via
 /// `table.fallback()` (standard MPE pattern).
 ///
 /// Not `Reflect`: `node_id` wraps a foreign fundsp `NodeId`.
@@ -55,9 +60,9 @@ impl MpeReceiverQueries<'_, '_> {
 pub fn midi_routing_sync_system(
     mut graph: ResMut<tutti_core::graph::AudioGraphRes>,
     mut dirty: ResMut<tutti_core::graph::GraphDirty>,
-    changed: Query<&MidiReceiver, Changed<MidiReceiver>>,
-    all_receivers: Query<&MidiReceiver>,
-    mut removed: RemovedComponents<MidiReceiver>,
+    changed: Query<&MidiSink, Changed<MidiSink>>,
+    all_receivers: Query<&MidiSink>,
+    mut removed: RemovedComponents<MidiSink>,
     #[cfg(feature = "mpe")] mut mpe: MpeReceiverQueries,
 ) {
     #[allow(unused_mut)]
@@ -101,7 +106,7 @@ pub fn midi_routing_sync_system(
     dirty.0 = true;
 }
 
-/// Rebuilds the engine MIDI routing table from [`MidiReceiver`] components.
+/// Rebuilds the engine MIDI routing table from [`MidiSink`] components.
 pub struct MidiRoutingPlugin;
 
 impl Plugin for MidiRoutingPlugin {

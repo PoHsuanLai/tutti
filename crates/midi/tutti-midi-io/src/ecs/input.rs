@@ -1,6 +1,6 @@
 //! Hardware MIDI input → ECS event bridge.
 //!
-//! A crossbeam channel funnels [`MidiInputRecord`](crate::MidiInputRecord)s
+//! A crossbeam channel funnels [`MidiInputRecord`]s
 //! from the hardware port observer into the ECS world; the per-frame
 //! [`midi_input_event_system`] drains it into [`MidiInputEvent`] messages that
 //! any consumer can read. Without `midi-hardware` there's no port to observe,

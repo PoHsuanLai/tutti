@@ -8,7 +8,7 @@ use super::spsc::{SpscProducer, SpscRing};
 ///
 /// # Safety
 /// Must only be used from a single thread (the midir callback thread) — the
-/// SPSC single-producer invariant. The wrapped [`SpscProducer`] encapsulates
+/// SPSC single-producer invariant. The wrapped `SpscProducer` encapsulates
 /// the unsafe; this newtype only pairs each event with its arrival `Instant`.
 #[derive(Clone)]
 pub struct InputProducerHandle {

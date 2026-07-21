@@ -1,18 +1,40 @@
-pub mod error;
-pub use error::{Error, Result};
+//! Hardware and file MIDI I/O for the Tutti engine.
+//!
+//! The crate has two worlds, kept in separate module trees:
+//! - [`core`] — framework-free hardware I/O: [`MidiIo`], the [`MidiPort`] seam,
+//!   the `midir`/`coremidi` driver edge, and the audio-thread ring buffers. Usable
+//!   without Bevy.
+//! - [`ecs`] — the `feature = "bevy"` ECS integration (components, systems,
+//!   plugins) that wires the core into a Bevy app.
+//!
+//! Plus [`smf`], the Standard MIDI File codec, and passthrough re-exports of the
+//! pure MIDI vocabulary from [`tutti_midi_types`]. The whole surface re-exports at
+//! the crate root, so consumers write `tutti_midi_io::MidiIo` /
+//! `tutti_midi_io::TuttiMidiPlugin` regardless of which world a type lives in.
 
-mod midi_io;
-pub use midi_io::MidiIo;
-pub use hardware::{MidiDevice, MidiInputRecord};
+// --- Framework-free hardware I/O core ---
+
+pub mod core;
+pub use core::error;
+pub use core::{Error, Result};
+pub use core::{MidiDevice, MidiInputRecord, MidiIo};
+pub use core::{InputProducerHandle, MidiPortManager, PortInfo, PortType};
 
 /// The protocol-transparent hardware seam: a [`MidiPort`] speaks [`MidiEvent`]
-/// both ways and hides whether the wire is MIDI 1.0 or 2.0. See the module docs
+/// both ways and hides whether the wire is MIDI 1.0 or 2.0. See [`core::midi_port`]
 /// for how a future UMP-native backend slots in behind the same trait.
-mod midi_port;
-pub use midi_port::{MidiPort, SendError};
-pub use tutti_midi_types::Protocol;
+pub use core::{MidiPort, SendError};
 
-// --- Re-exports from tutti-midi ---
+/// `MidiPortManager` and friends live in [`core::port`]; kept as a crate-root
+/// module path for the `tutti_midi_io::port::*` spelling consumers already use.
+pub use core::port;
+
+#[cfg(all(target_os = "macos", feature = "virtual-midi"))]
+pub use core::{VirtualMidiDestination, VirtualMidiSource};
+
+// --- Re-exports from tutti-midi-types (the pure MIDI vocabulary) ---
+
+pub use tutti_midi_types::Protocol;
 
 pub use tutti_midi_types::{
     midi2, midly, normalize, MidiEvent, MidiMessage, MidiTarget, NoteAttribute, PerNoteController,
@@ -35,19 +57,13 @@ pub use tutti_midi_types::{
 #[cfg(feature = "mpe")]
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
 
-// --- Port management (ring-buffer I/O between hardware and audio thread) ---
-
-pub mod port;
-pub use port::{InputProducerHandle, MidiPortManager, PortInfo, PortType};
-
 pub use tutti_midi_types::cc::mapping::{CCMapping, CCNumber, CCTarget, MappingId, MidiChannel};
 
-// --- Local modules ---
+pub use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteTimecode};
 
-pub(crate) mod hardware;
+pub use crossbeam_channel;
 
-#[cfg(all(target_os = "macos", feature = "virtual-midi"))]
-pub use hardware::{VirtualMidiDestination, VirtualMidiSource};
+// --- Standard MIDI File codec ---
 
 /// Standard MIDI File (SMF) read/write — parse a `.mid` into beat-positioned
 /// events ([`ParsedMidiFile`]) or per-track paired notes ([`smf::tracks`]), and
@@ -58,68 +74,25 @@ pub use smf::{
     SmfTrack,
 };
 
-pub use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteTimecode};
-
-pub use crossbeam_channel;
-
 // --- Bevy ECS integration ---
-//
-// The MIDI subsystem is grouped by FUNCTION: each duty (bus / input / routing /
-// sequence / scheduled dispatch / hardware device / MPE) owns its components,
-// systems, resources, and a focused sub-plugin in its own module.
-// `TuttiMidiPlugin` (`midi_plugin.rs`) is the composition root that claims the
-// engine handles and adds the sub-plugins. Each resource lives with the duty
-// that owns it: `MidiBusRes` in `bus`, `MidiIoRes` in `device`, the transient
-// `PendingMidi` next to its claimant in `midi_plugin`. The whole surface
-// re-exports at the crate root so consumers write `tutti_midi_io::TuttiMidiPlugin`.
 
 #[cfg(feature = "bevy")]
-pub mod bus;
-#[cfg(feature = "bevy")]
-pub use bus::MidiBusRes;
+pub mod ecs;
 
 #[cfg(feature = "bevy")]
-pub mod input;
-#[cfg(feature = "bevy")]
-pub use input::{
-    midi_input_event_system, MidiInputEvent, MidiInputObserver, MidiInputPlugin,
-    MidiInputTranslators,
+pub use ecs::{
+    midi_input_event_system, midi_routing_sync_system, midi_sequence_setup_system,
+    midi_sequence_tick_system, tick_scheduled_midi, MidiBusRes, MidiInputEvent, MidiInputObserver,
+    MidiInputPlugin, MidiInputTranslators, MidiRoutingPlugin, MidiSequence, MidiSequenceNote,
+    MidiSequencePlugin, MidiSequenceState, MidiSink, MidiSynthMarker, PendingMidi, ScheduledMidi,
+    ScheduledMidiPlugin, TuttiMidiPlugin,
 };
 
-#[cfg(feature = "bevy")]
-pub mod routing;
-#[cfg(feature = "bevy")]
-pub use routing::{midi_routing_sync_system, MidiReceiver, MidiRoutingPlugin};
 #[cfg(all(feature = "bevy", feature = "mpe"))]
-pub use routing::MpeReceiver;
-
-#[cfg(feature = "bevy")]
-pub mod sequence;
-#[cfg(feature = "bevy")]
-pub use sequence::{
-    midi_sequence_setup_system, midi_sequence_tick_system, MidiSequence, MidiSequenceNote,
-    MidiSequencePlugin, MidiSequenceState,
-};
-
-#[cfg(feature = "bevy")]
-pub mod scheduled;
-#[cfg(feature = "bevy")]
-pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi, ScheduledMidiPlugin};
+pub use ecs::{MpeExpressionResource, MpeModeConfig, MpePlugin, MpeReceiver};
 
 #[cfg(all(feature = "bevy", feature = "midi-hardware"))]
-pub mod device;
-#[cfg(all(feature = "bevy", feature = "midi-hardware"))]
-pub use device::{
+pub use ecs::{
     midi_device_connect_system, midi_device_poll_system, ConnectMidiDevice, DisconnectMidiDevice,
     MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState, MidiIoRes,
 };
-
-#[cfg(all(feature = "bevy", feature = "mpe"))]
-pub mod mpe;
-#[cfg(all(feature = "bevy", feature = "mpe"))]
-pub use mpe::{MpeExpressionResource, MpeModeConfig, MpePlugin};
-
-#[cfg(feature = "bevy")]
-mod midi_plugin;
-#[cfg(feature = "bevy")]
-pub use midi_plugin::{PendingMidi, TuttiMidiPlugin};

@@ -4,12 +4,12 @@
 //! I/O) out of the [`PendingMidi`] transient bevy-tutti inserted, then adds the
 //! per-duty sub-plugins:
 //!
-//! - [`MidiInputPlugin`](crate::input::MidiInputPlugin) — hardware → ECS event bridge
-//! - [`MidiRoutingPlugin`](crate::routing::MidiRoutingPlugin) — component-driven route table
-//! - [`MidiSequencePlugin`](crate::sequence::MidiSequencePlugin) — transport-beat note firing
-//! - [`ScheduledMidiPlugin`](crate::scheduled::ScheduledMidiPlugin) — time-delayed dispatch
-//! - [`MidiDevicePlugin`](crate::device::MidiDevicePlugin) — hardware connect/poll (`midi-hardware`)
-//! - [`MpePlugin`](crate::mpe::MpePlugin) — per-note expression read side (`mpe`)
+//! - [`MidiInputPlugin`](super::input::MidiInputPlugin) — hardware → ECS event bridge
+//! - [`MidiRoutingPlugin`](super::routing::MidiRoutingPlugin) — component-driven route table
+//! - [`MidiSequencePlugin`](super::sequence::MidiSequencePlugin) — transport-beat note firing
+//! - [`ScheduledMidiPlugin`](super::scheduled::ScheduledMidiPlugin) — time-delayed dispatch
+//! - `MidiDevicePlugin` — hardware connect/poll (`midi-hardware`)
+//! - `MpePlugin` — per-note expression read side (`mpe`)
 //!
 //! Claiming happens synchronously in `build()` (before frame 1), so every
 //! `*Res` is present by the time any gated system runs — the same invariant
@@ -18,14 +18,14 @@
 use bevy_app::{App, Plugin};
 use bevy_ecs::prelude::*;
 
-use crate::bus::MidiBusRes;
+use super::bus::MidiBusRes;
 
 #[cfg(feature = "midi-hardware")]
-use crate::device::MidiIoRes;
+use super::device::MidiIoRes;
 
 /// Transient handoff: the built MIDI handles. bevy-tutti's `build_into` inserts
 /// this; [`TuttiMidiPlugin`]'s `build()` claims it into [`MidiBusRes`] (and, under
-/// `midi-hardware`, [`MidiIoRes`](crate::device::MidiIoRes)), then removes it.
+/// `midi-hardware`, `MidiIoRes`), then removes it.
 #[derive(Resource)]
 pub struct PendingMidi {
     pub bus: Option<tutti_midi_runtime::MidiBus>,
@@ -51,15 +51,15 @@ impl Plugin for TuttiMidiPlugin {
             }
         }
 
-        app.add_plugins(crate::input::MidiInputPlugin);
-        app.add_plugins(crate::routing::MidiRoutingPlugin);
-        app.add_plugins(crate::sequence::MidiSequencePlugin);
-        app.add_plugins(crate::scheduled::ScheduledMidiPlugin);
+        app.add_plugins(super::input::MidiInputPlugin);
+        app.add_plugins(super::routing::MidiRoutingPlugin);
+        app.add_plugins(super::sequence::MidiSequencePlugin);
+        app.add_plugins(super::scheduled::ScheduledMidiPlugin);
 
         #[cfg(feature = "midi-hardware")]
-        app.add_plugins(crate::device::MidiDevicePlugin);
+        app.add_plugins(super::device::MidiDevicePlugin);
 
         #[cfg(feature = "mpe")]
-        app.add_plugins(crate::mpe::MpePlugin);
+        app.add_plugins(super::mpe::MpePlugin);
     }
 }

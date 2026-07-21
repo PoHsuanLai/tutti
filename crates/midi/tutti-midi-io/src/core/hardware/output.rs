@@ -1,10 +1,10 @@
 //! MIDI output device ports: enumeration + a background thread that owns the
 //! open output connection. The connection is a [`Midi1Port`] — a `midir` port is
-//! a MIDI 1.0 endpoint (see [`crate::midi_port`]) — so it speaks [`MidiEvent`] and
+//! a MIDI 1.0 endpoint (see [`crate::core::midi_port`]) — so it speaks [`MidiEvent`] and
 //! translates to wire bytes at its own edge.
 
 use super::MidiDevice;
-use crate::midi_port::{MidiPort, SendError};
+use crate::core::midi_port::{MidiPort, SendError};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use midir::{MidiOutput, MidiOutputConnection};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +28,7 @@ impl MidiPort for Midi1Port {
             Some((bytes, len)) => self
                 .conn
                 .send(&bytes[..len as usize])
-                .map_err(|e| SendError::Wire(crate::error::Error::MidiPort(e.to_string()))),
+                .map_err(|e| SendError::Wire(crate::core::error::Error::MidiPort(e.to_string()))),
             None => Err(SendError::NoWireForm(*event)),
         }
     }
@@ -134,11 +134,11 @@ fn run_output_thread(
     }
 }
 
-fn connect_device(device_index: usize) -> Result<(Midi1Port, String), crate::error::Error> {
+fn connect_device(device_index: usize) -> Result<(Midi1Port, String), crate::core::error::Error> {
     let midi_output = MidiOutput::new("tutti-midi-output")?;
     let ports = midi_output.ports();
     let port = ports.get(device_index).ok_or_else(|| {
-        crate::error::Error::MidiDevice(format!("MIDI output device {} not found", device_index))
+        crate::core::error::Error::MidiDevice(format!("MIDI output device {} not found", device_index))
     })?;
     let name = midi_output
         .port_name(port)

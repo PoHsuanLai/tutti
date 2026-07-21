@@ -4,7 +4,7 @@ use coremidi::{Client, PacketBuffer, VirtualDestination, VirtualSource};
 use std::sync::Arc;
 use tracing::debug;
 
-use crate::error::{Error, Result};
+use crate::core::error::{Error, Result};
 
 pub struct VirtualMidiSource {
     _client: Client,

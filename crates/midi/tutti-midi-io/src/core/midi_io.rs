@@ -3,12 +3,12 @@
 //! `MidiIo` is the single entry point for hardware MIDI — connecting devices,
 //! sending events, and receiving events via ring buffers. Clone is cheap (Arc).
 
-use crate::error::{Error, Result};
-use crate::hardware::{
+use crate::core::error::{Error, Result};
+use crate::core::hardware::{
     connect_midi_input, list_input_devices, list_output_devices, MidiDevice, MidiInputRecord,
     OutputCmd, OutputThread,
 };
-use crate::{InputProducerHandle, MidiPortManager};
+use crate::core::{InputProducerHandle, MidiPortManager};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use midir::MidiInputConnection;
 use std::sync::atomic::{AtomicU32, Ordering};

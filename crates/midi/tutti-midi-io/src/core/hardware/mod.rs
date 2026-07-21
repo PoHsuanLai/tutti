@@ -5,7 +5,7 @@
 //! descriptor this layer speaks — it lives here, with the driver code that
 //! produces it, rather than up at the orchestrator.
 //!
-//! [`MidiIo`]: crate::MidiIo
+//! [`MidiIo`]: crate::core::MidiIo
 
 mod input;
 mod output;

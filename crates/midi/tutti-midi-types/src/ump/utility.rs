@@ -24,6 +24,18 @@ impl MidiEvent {
         words[0] = m.data()[0] | (((group & 0x0F) as u32) << 24);
         Self::from_ump(0, &words)
     }
+
+    /// The 16-bit JR-timestamp value if this event is a JR Timestamp utility
+    /// message, else `None`. Inverse of [`Self::jr_timestamp`].
+    #[inline]
+    pub fn jr_timestamp_value(&self) -> Option<u16> {
+        use midi2::utility::Utility;
+        use midi2::UmpMessage;
+        match UmpMessage::try_from(self.data_words()).ok()? {
+            UmpMessage::Utility(Utility::Timestamp(m)) => Some(u16::from(m.time_data())),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

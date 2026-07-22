@@ -89,9 +89,6 @@ impl Direction {
 // The enum (not a `Box<dyn AudioUnit>`) is deliberate: RT requires monomorphized
 // dispatch on `tick`/`process`, so the per-sample read inlines and never touches
 // a vtable or the heap. `ClipReader` is a trait object only on the cold path.
-// The [`SampleSource`](crate::SampleSource) trait names the vocabulary both
-// variants share, but it is a compose/construction bound only — never stored as
-// a `Box<dyn SampleSource>` and never dispatched per-sample.
 // Both variants are `Clone` and `impl AudioUnit`, so the field-wise `Voice`
 // clone and the stretch wrapper work uniformly across them.
 // ---------------------------------------------------------------------------

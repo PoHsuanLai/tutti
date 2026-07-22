@@ -24,8 +24,10 @@
 //! [`pending_load`], [`reconcile`], [`track_clip_reader`]). Value types and DSP
 //! internals live in purpose-named namespaces:
 //!
-//! - [`capture`] — the write side: [`SampleSink`](capture::SampleSink) +
-//!   [`WavSink`](capture::WavSink) (the `AudioOut` building block)
+//! - [`io`] — the two-trait I/O vocabulary: [`AudioIn`] (pull frames) +
+//!   [`AudioOut`] (push frames). Recording is a pump from one to the other.
+//! - [`capture`] — the write side's live impl: [`WavSink`](capture::WavSink),
+//!   an [`AudioOut`]
 //! - [`stretch`] — time-stretch / pitch-shift DSP unit
 //!
 //! # Bevy-free use (`--no-default-features`)
@@ -62,6 +64,11 @@ mod macros;
 
 mod node_id;
 
+/// The two-trait I/O vocabulary ([`AudioIn`] / [`AudioOut`]) every source and
+/// sink speaks.
+pub mod io;
+pub use io::{AudioIn, AudioOut};
+
 // Each domain is a self-contained module owning its audio engine + (under the
 // `bevy` feature) its Components / Systems / Plugin. The disk-streaming engine —
 // the butler thread, the `Sampler` handle, `StreamingSamplerUnit` — is Bevy-free:
@@ -73,9 +80,9 @@ pub mod playback;
 
 // Bevy-free DSP leaves + value types from `playback` — usable for direct
 // FunDSP-graph integration without the ECS layer.
-pub use butler::{LruCache, SampleSink, StreamPin, WavSink};
+pub use butler::{LruCache, StreamPin, WavSink};
 pub use playback::{ClipCommand, ClipReader, ClipSpec, Direction, LoopSetting, PendingPlayback,
-    Playback, SampleSource, SamplerUnit, SamplerUnitConfig, SlotId, StreamingClipConfig,
+    Playback, SamplerUnit, SamplerUnitConfig, SlotId, StreamingClipConfig,
     StreamingClipReader, StreamingSamplerUnit, TransportPlacement, TrackClipReaderHandle,
     TrackClipReaderUnit, Voice, VoiceNode, VoiceSource};
 // Bevy ECS surface of `playback`.
@@ -141,15 +148,14 @@ impl bevy_app::Plugin for TuttiSamplerPlugin {
     }
 }
 
-/// The write side of the sampler: a [`SampleSink`] (push frames → destination)
-/// and its live WAV impl [`WavSink`].
+/// The write side's live impl: [`WavSink`], an [`AudioOut`] that streams stereo
+/// frames to a WAV file, plus its [`CaptureFormat`](capture::CaptureFormat).
 ///
-/// This is the `AudioOut` building block. The former recording subsystem
-/// (recorder / sessions / punch-preroll / mic capture) was torn out; the
-/// record-mic→WAV flow will be rebuilt as an explicit source→sink pump on the
-/// two-trait (`AudioIn`/`AudioOut`) foundation, driving this sink.
+/// The former recording subsystem (recorder / sessions / punch-preroll / mic
+/// capture) was torn out; the record-mic→WAV flow will be rebuilt as an explicit
+/// [`AudioIn`] → [`AudioOut`] pump, driving this sink.
 pub mod capture {
-    pub use crate::butler::{CaptureFormat, SampleSink, WavSink};
+    pub use crate::butler::{CaptureFormat, WavSink};
 }
 
 /// Time-stretching and pitch-shifting DSP unit.

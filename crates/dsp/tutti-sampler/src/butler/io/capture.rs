@@ -1,15 +1,12 @@
-//! WAV write sink — the write side of the sampler.
+//! [`WavSink`] — the live WAV implementation of [`AudioOut`](crate::AudioOut).
 //!
-//! Playback pulls frames from a [`SampleSource`](crate::playback::SampleSource)
-//! into the graph; a sink pushes frames the other way, into a file. This module
-//! owns that write side as a [`SampleSink`]: `write` incrementally, then
-//! `finalize`.
-//!
-//! The live WAV sink writes 32-bit float (default) or 24-bit int, INCREMENTALLY
-//! — a recording is minutes long and never held resident. That is the deliberate
-//! contrast with `tutti-export`'s offline `FileSink`, which buffers a whole
-//! signal before encoding (inherent for compressed formats). Same "push frames →
-//! file" concept, two impls; they share the vocabulary, not the implementation.
+//! An [`AudioOut`](crate::AudioOut) is "push frames → destination"; this is that
+//! destination for a WAV file. It writes 32-bit float (default) or 24-bit int,
+//! INCREMENTALLY — a recording is minutes long and never held resident. That is
+//! the deliberate contrast with `tutti-export`'s offline `FileSink`, which
+//! buffers a whole signal before encoding (inherent for compressed formats).
+//! Same "push frames → file" concept, two impls; they share the vocabulary
+//! ([`AudioOut`](crate::AudioOut)), not the implementation.
 //!
 //! Kept a thin direct use of `hound` rather than routing through `tutti-export`'s
 //! `StreamingEncoder`: a live sink wants the simplest possible path (open →
@@ -20,6 +17,7 @@
 //! `AudioOut` building block that the two-trait (`AudioIn`/`AudioOut`) rebuild
 //! will drive. Its unit tests keep it exercised so it isn't dead-code-pruned.
 
+use crate::io::AudioOut;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
@@ -38,26 +36,7 @@ pub enum CaptureFormat {
     I24,
 }
 
-/// The write-side twin of [`SampleSource`](crate::playback::SampleSource):
-/// "where captured frames GO". A sink is fed stereo frames incrementally with
-/// [`write`](SampleSink::write) and closed once with
-/// [`finalize`](SampleSink::finalize), which yields whatever the write produced
-/// (for a file sink, the header is back-patched here).
-///
-/// Not an RT interface — a background thread drives it. The audio thread only
-/// pushes into a lock-free ring; it never touches a sink.
-pub trait SampleSink {
-    /// Append `frames` to the sink. Called repeatedly as capture progresses;
-    /// implementations write incrementally and never buffer the whole recording.
-    fn write(&mut self, frames: &[(f32, f32)]);
-
-    /// Close the sink, flushing any buffered bytes and committing the result.
-    /// For the WAV sink this back-patches the RIFF/`data` chunk sizes in the
-    /// header, so a failure here means the file is left unreadable — surface it.
-    fn finalize(self) -> std::io::Result<()>;
-}
-
-/// Live WAV [`SampleSink`]. Owns the `hound` writer plus the channel count and
+/// Live WAV [`AudioOut`]. Owns the `hound` writer plus the channel count and
 /// on-disk format needed to encode each frame.
 pub struct WavSink {
     writer: WavWriter<BufWriter<File>>,
@@ -97,7 +76,7 @@ impl WavSink {
     }
 }
 
-impl SampleSink for WavSink {
+impl AudioOut for WavSink {
     fn write(&mut self, frames: &[(f32, f32)]) {
         for &(left, right) in frames {
             match self.format {
@@ -161,7 +140,8 @@ mod tests {
         for _ in 0..blocks {
             sink.write(&block);
         }
-        sink.finalize().expect("finalize should back-patch the header");
+        sink.finalize()
+            .expect("finalize should back-patch the header");
 
         let reader = hound::WavReader::open(&path).expect("finalized WAV should be readable");
         let spec = reader.spec();

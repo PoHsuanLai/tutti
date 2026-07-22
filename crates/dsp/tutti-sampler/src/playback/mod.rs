@@ -69,7 +69,7 @@ pub use trigger::{
 };
 #[cfg(feature = "bevy")]
 pub use node::{SamplerLooping, SamplerNode, SamplerSpeed};
-pub use clip_reader::{ClipReader, SampleSource};
+pub use clip_reader::ClipReader;
 pub use sampler_unit::{LoopSetting, SamplerUnit, SamplerUnitConfig, TransportPlacement};
 pub use streaming_sampler::{StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit};
 #[cfg(feature = "bevy")]

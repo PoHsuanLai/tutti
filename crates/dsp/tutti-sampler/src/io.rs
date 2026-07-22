@@ -12,6 +12,23 @@
 //! decoded file, disk stream, neural generator — all are just an `AudioIn`; a
 //! WAV file, a network socket, another ring — all are just an `AudioOut`.
 //!
+//! # The frame: `[S; CH]`, generic in element and channel count
+//!
+//! A frame is an array of `CH` samples of element type `S` — interleaved. This
+//! is the foundational shape, so it carries **both** axes of variation any real
+//! I/O needs:
+//!
+//! - **`S`** — the sample element. `f32` (default) for the whole edge world;
+//!   `f64` for a 64-bit plugin bus or high-precision render.
+//! - **`CH`** — channels per frame. `2` (default) is stereo; `1` is mono; a
+//!   surround plugin bus is `6` or `8`. Const-generic, so the width is part of
+//!   the type and the compiler monomorphizes each one.
+//!
+//! Both default to `<f32, 2>`, so a plain stereo source is just `AudioIn` and a
+//! plain stereo sink is just `AudioOut` — the generality costs nothing at the
+//! common edge. `[f32; 2]` is `Copy`, lives in a lock-free ring unchanged, and
+//! carries no channel-order policy (that's the concrete backend's business).
+//!
 //! # Deliberately minimal
 //!
 //! Two methods total. No rate/length/seek/format vocabulary lives here — those
@@ -26,8 +43,13 @@
 //! per-sample graph read stays behind the monomorphized `ClipSource` enum and
 //! must remain alloc-free / lock-free; these block interfaces do not touch it.
 
-/// A pull source of stereo audio frames. The one method fills a caller-owned
-/// buffer and reports how many frames it actually produced.
+/// A pull source of audio frames. The one method fills a caller-owned buffer of
+/// `[S; CH]` frames and reports how many it actually produced.
+///
+/// Generic over the sample element `S` (default `f32`) and channel count `CH`
+/// (default `2` = stereo). A mono source is `AudioIn<f32, 1>`; a 64-bit
+/// six-channel plugin output is `AudioIn<f64, 6>`. See the [module docs](self)
+/// for the frame model.
 ///
 /// # Why a returned count
 ///
@@ -36,16 +58,20 @@
 /// file) returns a short count at end-of-stream, then `0`. The caller owns the
 /// buffer, so polling never allocates; the count tells the caller how much of
 /// `out` was written this call.
-pub trait AudioIn {
-    /// Fill the front of `out` with the next available stereo frames and return
-    /// the number written (`0..=out.len()`). Frames past the returned count are
+pub trait AudioIn<S = f32, const CH: usize = 2> {
+    /// Fill the front of `out` with the next available frames and return the
+    /// number written (`0..=out.len()`). Frames past the returned count are
     /// left untouched. `0` means "nothing available right now" for a live
     /// source, or end-of-stream for a finite one.
-    fn poll_into(&mut self, out: &mut [(f32, f32)]) -> usize;
+    fn poll_into(&mut self, out: &mut [[S; CH]]) -> usize;
 }
 
-/// A push destination for stereo audio frames: write blocks incrementally, then
-/// close once.
+/// A push destination for audio frames: write blocks of `[S; CH]` incrementally,
+/// then close once.
+///
+/// Generic over the sample element `S` (default `f32`) and channel count `CH`
+/// (default `2` = stereo), matching [`AudioIn`]. A WAV file sink is
+/// `AudioOut<f32, 2>`; a 64-bit multichannel encoder is `AudioOut<f64, N>`.
 ///
 /// # Why `finalize` consumes `self`
 ///
@@ -53,10 +79,10 @@ pub trait AudioIn {
 /// once (a WAV sink back-patches its header; a socket flushes and closes).
 /// Taking `self` by value makes "you cannot write after finalizing" a
 /// compile-time guarantee and gives the commit a place to surface I/O errors.
-pub trait AudioOut {
+pub trait AudioOut<S = f32, const CH: usize = 2> {
     /// Append `frames` to the destination. Called repeatedly as data arrives;
     /// implementations write incrementally and never buffer the whole stream.
-    fn write(&mut self, frames: &[(f32, f32)]);
+    fn write(&mut self, frames: &[[S; CH]]);
 
     /// Close the destination, flushing and committing. For a file sink this is
     /// where the header is back-patched, so a failure here can mean an
@@ -73,7 +99,7 @@ pub trait AudioOut {
 /// runs this on a background thread until its stop flag is set:
 ///
 /// ```ignore
-/// let mut buf = vec![(0.0, 0.0); 1024];   // caller owns the buffer — no alloc per pump
+/// let mut buf = [[0.0f32; 2]; 1024];      // caller owns the buffer — no alloc per pump
 /// while running.load(Ordering::Relaxed) {
 ///     if pump(&mut mic, &mut wav, &mut buf) == 0 {
 ///         std::thread::yield_now();       // nothing ready — a live source may starve briefly
@@ -82,16 +108,18 @@ pub trait AudioOut {
 /// wav.finalize()?;                        // caller finalizes once, after the loop
 /// ```
 ///
-/// Generic, not `dyn`: the caller picks the concrete source and sink at the
-/// call site, so both `poll_into` and `write` inline and the pump allocates
-/// nothing (the buffer is caller-owned). Returning `0` means the source had
-/// nothing this pass — the caller decides whether that's back-off (live source)
-/// or end-of-stream (finite source).
-pub fn pump<I: AudioIn + ?Sized, O: AudioOut + ?Sized>(
-    src: &mut I,
-    dst: &mut O,
-    buf: &mut [(f32, f32)],
-) -> usize {
+/// Generic over the frame `[S; CH]` and, not `dyn`, over the concrete source
+/// and sink: the caller picks both at the call site, so `poll_into` and `write`
+/// inline and the pump allocates nothing (the buffer is caller-owned). The
+/// source, sink, and buffer must agree on `S` and `CH` — a stereo mic can't
+/// pump into a 6-channel sink, and the type system enforces it. Returning `0`
+/// means the source had nothing this pass — the caller decides whether that's
+/// back-off (live source) or end-of-stream (finite source).
+pub fn pump<S, const CH: usize, I, O>(src: &mut I, dst: &mut O, buf: &mut [[S; CH]]) -> usize
+where
+    I: AudioIn<S, CH> + ?Sized,
+    O: AudioOut<S, CH> + ?Sized,
+{
     let n = src.poll_into(buf);
     dst.write(&buf[..n]);
     n
@@ -101,18 +129,20 @@ pub fn pump<I: AudioIn + ?Sized, O: AudioOut + ?Sized>(
 mod tests {
     use super::*;
 
-    /// A finite in-memory [`AudioIn`]: hands out its frames in bounded chunks,
-    /// returning a short-then-zero count at end-of-stream — the shape a decoded
-    /// file has, and a stand-in for a live source in a test.
-    struct SliceSource {
-        frames: Vec<(f32, f32)>,
+    /// A finite in-memory [`AudioIn`], generic over element `S` and channel
+    /// count `CH`: hands out its frames in bounded chunks, returning a
+    /// short-then-zero count at end-of-stream — the shape a decoded file has,
+    /// and a stand-in for a live source in a test. Generic so the same fixture
+    /// exercises the default `<f32, 2>` and a non-default width.
+    struct SliceSource<S, const CH: usize> {
+        frames: Vec<[S; CH]>,
         pos: usize,
         /// Cap per poll, to exercise the "source produces fewer than asked" path.
         chunk: usize,
     }
 
-    impl AudioIn for SliceSource {
-        fn poll_into(&mut self, out: &mut [(f32, f32)]) -> usize {
+    impl<S: Copy, const CH: usize> AudioIn<S, CH> for SliceSource<S, CH> {
+        fn poll_into(&mut self, out: &mut [[S; CH]]) -> usize {
             let remaining = self.frames.len() - self.pos;
             let n = remaining.min(out.len()).min(self.chunk);
             out[..n].copy_from_slice(&self.frames[self.pos..self.pos + n]);
@@ -123,14 +153,21 @@ mod tests {
 
     /// A sink that just tallies every frame it's handed — no I/O, so the pump
     /// contract (write exactly the polled count, never the untouched tail) can
-    /// be asserted without touching disk.
-    #[derive(Default)]
-    struct CountingSink {
-        written: Vec<(f32, f32)>,
+    /// be asserted without touching disk. Generic to match [`SliceSource`].
+    struct CountingSink<S, const CH: usize> {
+        written: Vec<[S; CH]>,
     }
 
-    impl AudioOut for CountingSink {
-        fn write(&mut self, frames: &[(f32, f32)]) {
+    impl<S, const CH: usize> Default for CountingSink<S, CH> {
+        fn default() -> Self {
+            Self {
+                written: Vec::new(),
+            }
+        }
+    }
+
+    impl<S: Copy, const CH: usize> AudioOut<S, CH> for CountingSink<S, CH> {
+        fn write(&mut self, frames: &[[S; CH]]) {
             self.written.extend_from_slice(frames);
         }
         fn finalize(self) -> std::io::Result<()> {
@@ -140,17 +177,18 @@ mod tests {
 
     /// Pumping a finite source to exhaustion moves every frame exactly once, in
     /// order, and never writes past the polled count even when the buffer is
-    /// larger than what the source produces that pass.
+    /// larger than what the source produces that pass. Uses the default stereo
+    /// `f32` frame.
     #[test]
     fn pump_drains_a_finite_source_exactly() {
-        let frames: Vec<(f32, f32)> = (0..1000).map(|i| (i as f32, -(i as f32))).collect();
+        let frames: Vec<[f32; 2]> = (0..1000).map(|i| [i as f32, -(i as f32)]).collect();
         let mut src = SliceSource {
             frames: frames.clone(),
             pos: 0,
             chunk: 37, // deliberately coprime with the buffer so chunks straddle
         };
         let mut dst = CountingSink::default();
-        let mut buf = vec![(0.0, 0.0); 64];
+        let mut buf = vec![[0.0f32; 2]; 64];
 
         let mut total = 0;
         loop {
@@ -166,6 +204,31 @@ mod tests {
         assert_eq!(
             dst.written, frames,
             "frames must arrive intact and in order"
+        );
+    }
+
+    /// The same pump over a non-default frame — `f64`, six channels — the shape
+    /// a 64-bit surround plugin bus wants. Proves the const-generic width and
+    /// the element type actually thread through `pump`, not just the stereo-f32
+    /// default that would compile even if the generics were vestigial.
+    #[test]
+    fn pump_carries_a_64bit_six_channel_frame() {
+        let frames: Vec<[f64; 6]> = (0..500)
+            .map(|i| std::array::from_fn(|ch| (i * 6 + ch) as f64))
+            .collect();
+        let mut src = SliceSource {
+            frames: frames.clone(),
+            pos: 0,
+            chunk: 41,
+        };
+        let mut dst: CountingSink<f64, 6> = CountingSink::default();
+        let mut buf = vec![[0.0f64; 6]; 64];
+
+        while pump(&mut src, &mut dst, &mut buf) != 0 {}
+
+        assert_eq!(
+            dst.written, frames,
+            "wide frames must survive the pump intact"
         );
     }
 }

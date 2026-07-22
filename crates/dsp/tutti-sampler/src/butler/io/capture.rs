@@ -77,8 +77,8 @@ impl WavSink {
 }
 
 impl AudioOut for WavSink {
-    fn write(&mut self, frames: &[(f32, f32)]) {
-        for &(left, right) in frames {
+    fn write(&mut self, frames: &[[f32; 2]]) {
+        for &[left, right] in frames {
             match self.format {
                 CaptureFormat::F32 => {
                     if self.writer.write_sample(left).is_err() {
@@ -133,8 +133,8 @@ mod tests {
         let mut sink =
             WavSink::create(&path, 48_000.0, 2, CaptureFormat::F32).expect("sink should open");
 
-        let block: Vec<(f32, f32)> = (0..256)
-            .map(|i| (i as f32 / 256.0, -(i as f32) / 256.0))
+        let block: Vec<[f32; 2]> = (0..256)
+            .map(|i| [i as f32 / 256.0, -(i as f32) / 256.0])
             .collect();
         let blocks = 5;
         for _ in 0..blocks {
@@ -158,7 +158,7 @@ mod tests {
 
         let mut sink =
             WavSink::create(&path, 44_100.0, 1, CaptureFormat::F32).expect("sink should open");
-        let frames = vec![(0.5f32, 0.9f32); 128];
+        let frames = vec![[0.5f32, 0.9f32]; 128];
         sink.write(&frames);
         sink.finalize().unwrap();
 

@@ -46,7 +46,7 @@ unsafe impl Send for StreamHandle {}
 /// pump it into any [`AudioOut`](tutti_sampler::AudioOut) (e.g. a `WavSink`) to
 /// record.
 pub struct MicSource {
-    cons: HeapCons<(f32, f32)>,
+    cons: HeapCons<[f32; 2]>,
     sample_rate: f64,
     // Held to keep the input stream running; dropped with the source.
     _stream: StreamHandle,
@@ -61,7 +61,7 @@ impl MicSource {
         let sample_rate = f64::from(config.sample_rate().0);
         let channels = usize::from(config.channels());
 
-        let rb = HeapRb::<(f32, f32)>::new(RING_FRAMES);
+        let rb = HeapRb::<[f32; 2]>::new(RING_FRAMES);
         let (prod, cons) = rb.split();
 
         let stream = match config.sample_format() {
@@ -106,7 +106,7 @@ impl MicSource {
 }
 
 impl AudioIn for MicSource {
-    fn poll_into(&mut self, out: &mut [(f32, f32)]) -> usize {
+    fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
         // Pop up to out.len() frames the callback has pushed. A short/zero count
         // is normal for a live source — the pump backs off and tries again.
         let mut n = 0;
@@ -148,7 +148,7 @@ fn build_input<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     channels: usize,
-    mut prod: HeapProd<(f32, f32)>,
+    mut prod: HeapProd<[f32; 2]>,
 ) -> Result<cpal::Stream>
 where
     T: cpal::SizedSample,
@@ -167,7 +167,7 @@ where
                 };
                 // Drop on overrun: a full ring means the pump fell behind. Never
                 // block the RT input thread.
-                let _ = prod.try_push((left, right));
+                let _ = prod.try_push([left, right]);
             }
         },
         |_err| {},

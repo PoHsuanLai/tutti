@@ -15,7 +15,7 @@ use tutti_core::PdcState;
 use super::cache::LruCache;
 use super::command::{ButlerCommand, CaptureId, RegionId};
 use super::config::BufferConfig;
-use super::io::capture::{flush_all, flush_capture, open_wav, ActiveCapture};
+use super::io::capture::{flush_all, flush_capture, ActiveCapture, SampleSink, WavSink};
 use super::io::loops::{buffer_size_for_file, capture_samples, fadein_samples, fadeout_samples};
 use super::io::refill::load_wave;
 use super::metrics::Metrics;
@@ -138,16 +138,10 @@ pub(super) fn handle_command(
             channels,
             format,
         } => {
-            let writer = open_wav(&file_path, cap_sample_rate, channels, format);
-            local.captures.insert(
-                capture_id,
-                ActiveCapture {
-                    consumer,
-                    writer,
-                    channels,
-                    format,
-                },
-            );
+            let sink = WavSink::create(&file_path, cap_sample_rate, channels, format);
+            local
+                .captures
+                .insert(capture_id, ActiveCapture { consumer, sink });
         }
         ButlerCommand::RemoveCapture(capture_id) => {
             if let Some(mut cap_state) = local.captures.remove(&capture_id) {
@@ -155,17 +149,17 @@ pub(super) fn handle_command(
                 shared
                     .metrics
                     .record_capture_drops(cap_state.consumer.frames_dropped());
-                if let Some(writer) = cap_state.writer.take() {
-                    // Finalizing the WAV writer flushes the sample buffer and
-                    // back-patches the RIFF/data chunk sizes in the header. If it
-                    // fails the file is left with a stale header and the recording
-                    // is unreadable — a real integrity loss, not a fire-and-forget
+                if let Some(sink) = cap_state.sink.take() {
+                    // Finalizing the sink flushes buffered samples and back-patches
+                    // the RIFF/data chunk sizes in the WAV header. If it fails the
+                    // file is left with a stale header and the recording is
+                    // unreadable — a real integrity loss, not a fire-and-forget
                     // send — so surface it rather than silently swallowing.
-                    if let Err(e) = writer.finalize() {
+                    if let Err(e) = sink.finalize() {
                         #[cfg(feature = "bevy")]
-                        bevy_log::error!("capture writer finalize failed: {e}");
+                        bevy_log::error!("capture sink finalize failed: {e}");
                         #[cfg(not(feature = "bevy"))]
-                        eprintln!("capture writer finalize failed: {e}");
+                        eprintln!("capture sink finalize failed: {e}");
                     }
                 }
             }

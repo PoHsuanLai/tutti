@@ -19,6 +19,7 @@ mod varispeed;
 pub use cache::{LruCache, StreamPin};
 pub(crate) use command::{ButlerCommand, CaptureId, CaptureIdGen};
 pub(crate) use config::BufferConfig;
+pub use io::capture::{SampleSink, WavSink};
 pub(crate) use plan::ChannelPlan;
 pub(crate) use prefetch::{CaptureBuffer, CaptureWriter, SharedReader};
 pub(crate) use rt_state::RtState;

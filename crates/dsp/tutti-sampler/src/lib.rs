@@ -106,7 +106,7 @@ pub use preview::{
 pub use preview::Auditioner;
 // Bevy-free DSP leaves + value types from `playback` — usable for direct
 // FunDSP-graph integration without the ECS layer.
-pub use butler::{LruCache, StreamPin};
+pub use butler::{LruCache, SampleSink, StreamPin, WavSink};
 pub use playback::{ClipCommand, ClipReader, ClipSpec, Direction, LoopSetting, PendingPlayback,
     Playback, SampleSource, SamplerUnit, SamplerUnitConfig, SlotId, StreamingClipConfig,
     StreamingClipReader, StreamingSamplerUnit, TransportPlacement, TrackClipReaderHandle,

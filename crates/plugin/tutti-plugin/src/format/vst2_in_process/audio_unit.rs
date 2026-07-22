@@ -90,6 +90,22 @@ impl InProcessVst2Client {
         self.midi.sender()
     }
 
+    /// Install the outbound routing target so this plugin's MIDI-out re-enters
+    /// the graph. See [`Midi::set_out`]. Off-RT; call once at wiring time.
+    pub fn set_midi_out(
+        &self,
+        queue: Arc<dyn tutti_midi_types::MidiQueue>,
+        routing: Arc<arc_swap::ArcSwap<tutti_midi_types::MidiRoutingSnapshot>>,
+        port: usize,
+    ) {
+        self.midi.set_out(queue, routing, port);
+    }
+
+    /// Drop the outbound routing target; subsequent blocks discard MIDI-out.
+    pub fn clear_midi_out(&self) {
+        self.midi.clear_out();
+    }
+
     /// Cumulative audio-thread `try_lock` failures since construction.
     /// Shared across clones; intended for diagnostic introspection by
     /// embedders (no current internal caller).
@@ -439,7 +455,11 @@ fn drive_f32(
                 size,
                 |out_slice| {
                     let ctx = ProcessContext::new(sample_rate).midi(&midi_events);
-                    let _midi_out = instance.process_f32(in_slice, out_slice, size, &ctx, scratch);
+                    let midi_out = instance.process_f32(in_slice, out_slice, size, &ctx, scratch);
+                    // Re-inject the plugin's MIDI-out into routing (no-op if no
+                    // out-target installed). Emitting here, inside the block,
+                    // keeps each event's frame_offset intact.
+                    midi.emit(midi_out);
                 },
             );
             true
@@ -482,7 +502,9 @@ fn drive_f64(
                 size,
                 |out_slice| {
                     let ctx = ProcessContext::new(sample_rate).midi(&midi_events);
-                    let _midi_out = instance.process_f64(in_slice, out_slice, size, &ctx, scratch);
+                    let midi_out = instance.process_f64(in_slice, out_slice, size, &ctx, scratch);
+                    // Re-inject the plugin's MIDI-out into routing (see `drive_f32`).
+                    midi.emit(midi_out);
                 },
             );
             true

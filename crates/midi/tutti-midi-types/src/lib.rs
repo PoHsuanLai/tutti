@@ -54,7 +54,7 @@ pub use ump::{
     BarAccents, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
     FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
 };
-pub use unit_id::MidiUnitId;
+pub use unit_id::{next_plugin_out_port, MidiUnitId, PLUGIN_OUT_PORT_BASE};
 
 /// The common MIDI-types surface, for `use tutti_midi_types::prelude::*;`.
 ///

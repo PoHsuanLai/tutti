@@ -99,6 +99,65 @@ impl TransportClock {
         self
     }
 
+    // ---- Derived beat streams -------------------------------------------
+    //
+    // A clock IS a stream of beats. These combinators derive an independent
+    // stream from it, for material that must be timed separately from live
+    // playback (offline renders, previews).
+    //
+    // They are deliberately **static**: a derived stream snapshots its
+    // configuration and shares nothing with the live transport, so ticking it
+    // on a worker thread cannot disturb playback. The live transport stays
+    // authoritative for the timeline, because its loop/tempo atomics are the
+    // audio-thread mirror of persisted document state (the Loro projection
+    // reconciles them every frame) — they are not incidental state a stream
+    // transform could absorb.
+
+    /// Derive an independent stream starting at `beat`.
+    ///
+    /// Absolute, not an offset: the returned clock's first emitted beat is
+    /// exactly `beat`, matching the one-shot absolute semantics of seek.
+    ///
+    /// Severs every shared link to the live transport (the same cut
+    /// [`AudioUnit::isolate`] makes), so this clock writes to nothing live and
+    /// reads no live loop or seek state.
+    pub fn starting_at(&self, beat: f64) -> Self {
+        let mut derived = self.clone();
+        derived.isolate();
+        derived.current_beat = beat;
+        derived
+    }
+
+    /// Derive an independent stream that wraps within `range`.
+    ///
+    /// Wrapping happens in the clock, so consumers downstream receive an
+    /// already-wrapped beat and need no loop handling of their own.
+    pub fn looped(&self, range: core::ops::Range<f64>) -> Self {
+        let mut derived = self.clone();
+        derived.isolate();
+        derived.current_beat = range.start;
+        let span = LoopSpan::new(range.start, range.end);
+        span.set_enabled(true);
+        derived.loop_span = Some(span);
+        derived
+    }
+
+    /// Derive an independent stream running at a fixed `bpm`.
+    pub fn at_tempo(&self, bpm: impl Into<crate::Bpm>) -> Self {
+        let mut derived = self.clone();
+        derived.isolate();
+        derived.set_tempo(bpm);
+        derived
+    }
+
+    /// Set this clock's tempo, refreshing the cached per-sample increment.
+    fn set_tempo(&mut self, bpm: impl Into<crate::Bpm>) {
+        let bpm = bpm.into().get();
+        self.tempo.store(bpm, Ordering::Release);
+        self.beat_per_sample = Self::calculate_beat_per_sample(bpm, self.sample_rate);
+        self.last_tempo = bpm;
+    }
+
     pub fn seek_slot(&self) -> SeekSlot {
         self.seek.clone()
     }
@@ -505,6 +564,129 @@ mod tests {
             (output[1] - 0.5).abs() < 0.001,
             "Fractional part should be ~0.5, got {}",
             output[1]
+        );
+    }
+
+    // ---- derived beat streams ------------------------------------------
+
+    #[test]
+    fn starting_at_emits_that_beat_first() {
+        let (tempo, paused) = create_test_atomics();
+        let live = TransportClock::new(tempo, paused, 44100.0);
+
+        let mut derived = live.starting_at(8.0);
+        let mut output = [0.0f32; 2];
+        derived.tick(&[], &mut output);
+
+        assert!(
+            (reconstruct_beat(&output) - 8.0).abs() < 1e-4,
+            "expected first beat 8.0, got {}",
+            reconstruct_beat(&output)
+        );
+    }
+
+    #[test]
+    fn derived_stream_does_not_disturb_the_live_playhead() {
+        let (tempo, paused) = create_test_atomics();
+        let writeback = Arc::new(AtomicF64::new(0.0));
+        let live = TransportClock::new(tempo, paused, 44100.0)
+            .with_position_writeback(Arc::clone(&writeback));
+
+        // Tick a derived stream for a while; the live writeback must not move.
+        let mut derived = live.starting_at(100.0);
+        let mut output = [0.0f32; 2];
+        for _ in 0..1000 {
+            derived.tick(&[], &mut output);
+        }
+
+        assert_eq!(
+            writeback.load(Ordering::Acquire),
+            0.0,
+            "derived stream wrote into the live playhead"
+        );
+    }
+
+    #[test]
+    fn derived_stream_ignores_live_seek_and_loop() {
+        let (tempo, paused) = create_test_atomics();
+        let seek = SeekSlot::new();
+        let loop_span = LoopSpan::new(0.0, 4.0);
+        loop_span.set_enabled(true);
+        let live = TransportClock::new(tempo, paused, 44100.0)
+            .with_seek(seek.clone())
+            .with_loop(loop_span.clone());
+
+        let mut derived = live.starting_at(20.0);
+
+        // A live seek must not yank the derived stream.
+        seek.request(0.0);
+        let mut output = [0.0f32; 2];
+        derived.tick(&[], &mut output);
+        assert!(
+            (reconstruct_beat(&output) - 20.0).abs() < 1e-4,
+            "live seek leaked into the derived stream: {}",
+            reconstruct_beat(&output)
+        );
+        // ...and the live seek is still pending for the live clock.
+        assert!(seek.is_pending(), "derived stream consumed the live seek");
+    }
+
+    #[test]
+    fn looped_wraps_within_its_own_range() {
+        let (tempo, paused) = create_test_atomics();
+        let live = TransportClock::new(tempo, paused, 44100.0);
+
+        // 120 BPM at 44.1 kHz = 2 beats/sec. 90000 samples > 2 seconds > 4 beats.
+        let mut derived = live.looped(0.0..4.0);
+        let mut output = [0.0f32; 2];
+        for _ in 0..90000 {
+            derived.tick(&[], &mut output);
+        }
+
+        let beat = reconstruct_beat(&output);
+        assert!(
+            (0.0..4.0).contains(&beat),
+            "beat {beat} escaped the 0..4 loop"
+        );
+    }
+
+    #[test]
+    fn at_tempo_changes_the_beat_rate() {
+        let (tempo, paused) = create_test_atomics();
+        let live = TransportClock::new(tempo, paused, 44100.0);
+
+        // One second of samples at 240 BPM = 4 beats.
+        let mut derived = live.at_tempo(240.0);
+        let mut output = [0.0f32; 2];
+        for _ in 0..44100 {
+            derived.tick(&[], &mut output);
+        }
+
+        let beat = reconstruct_beat(&output);
+        assert!(
+            (beat - 4.0).abs() < 0.01,
+            "expected ~4 beats at 240 BPM, got {beat}"
+        );
+    }
+
+    #[test]
+    fn combinators_compose() {
+        let (tempo, paused) = create_test_atomics();
+        let live = TransportClock::new(tempo, paused, 44100.0);
+
+        let mut derived = live.at_tempo(240.0).starting_at(8.0);
+        let mut output = [0.0f32; 2];
+        derived.tick(&[], &mut output);
+        assert!((reconstruct_beat(&output) - 8.0).abs() < 1e-4);
+
+        // Still at the derived tempo: one second later we are 4 beats on.
+        for _ in 0..44100 {
+            derived.tick(&[], &mut output);
+        }
+        let beat = reconstruct_beat(&output);
+        assert!(
+            (beat - 12.0).abs() < 0.01,
+            "expected ~12.0 (8 + 4 beats at 240 BPM), got {beat}"
         );
     }
 }

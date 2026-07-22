@@ -13,8 +13,10 @@
 //! [`MidiEvent::message`]; it first runs [`normalize`](crate::normalize()), so a MIDI 1.0
 //! event is already promoted to its MIDI 2.0 form before you see it.
 //!
-//! For message families this enum does not model (system real-time, SysEx, Flex
-//! Data, UMP Stream, …) [`MidiMessage::Other`] is returned; reach for
+//! System Real-Time / System Common messages (M2-104 §7.6 — UMP Message Type
+//! 0x1: clock, transport start/stop/continue, MTC, song position/select) are
+//! first-class variants. For the families this enum still does not model (SysEx,
+//! Flex Data, UMP Stream, utility) [`MidiMessage::Other`] is returned; reach for
 //! `event.data_words()` + `midi2` when you need those.
 
 use midi2::channel_voice2::ChannelVoice2 as Cv2;
@@ -130,9 +132,33 @@ pub enum MidiMessage {
         detach: bool,
         reset: bool,
     },
-    /// Any message family this view does not model (system, SysEx, Flex Data,
-    /// UMP Stream, utility) — carries the whole source [`MidiEvent`] so it is
-    /// never information-free. Inspect it via `event.data_words()` + `midi2`.
+    /// System Real-Time: timing clock (M2-104 §7.6, status 0xF8 — 24 clocks per
+    /// quarter-note). Carries no channel or data.
+    TimingClock { frame_offset: u32 },
+    /// System Real-Time: transport start (M2-104 §7.6, status 0xFA — rewind to
+    /// zero and play).
+    Start { frame_offset: u32 },
+    /// System Real-Time: transport continue (M2-104 §7.6, status 0xFB — play
+    /// from the current position).
+    Continue { frame_offset: u32 },
+    /// System Real-Time: transport stop (M2-104 §7.6, status 0xFC).
+    Stop { frame_offset: u32 },
+    /// System Common: MIDI Time Code quarter-frame (M2-104 §7.6, status 0xF1).
+    /// `code` is the 7-bit data byte: message type in bits 4..6, value in
+    /// bits 0..3.
+    TimeCode { frame_offset: u32, code: u8 },
+    /// System Common: song position pointer (M2-104 §7.6, status 0xF2). 14-bit
+    /// position in MIDI beats (1/16 notes) since song start.
+    SongPosition { frame_offset: u32, position: u16 },
+    /// System Common: song select (M2-104 §7.6, status 0xF3). 7-bit song number.
+    SongSelect { frame_offset: u32, song: u8 },
+    /// System Real-Time: active sensing (M2-104 §7.6, status 0xFE).
+    ActiveSensing { frame_offset: u32 },
+    /// System Real-Time: reset (M2-104 §7.6, status 0xFF).
+    Reset { frame_offset: u32 },
+    /// Any message family this view does not model (SysEx, Flex Data, UMP
+    /// Stream, utility) — carries the whole source [`MidiEvent`] so it is never
+    /// information-free. Inspect it via `event.data_words()` + `midi2`.
     Other(MidiEvent),
 }
 
@@ -182,7 +208,8 @@ impl MidiMessage {
             | Self::PerNotePitchBend { channel, .. }
             | Self::PerNoteController { channel, .. }
             | Self::PerNoteManagement { channel, .. } => Some(*channel),
-            Self::Other(_) => None,
+            // System messages and `Other` carry no channel.
+            _ => None,
         }
     }
 
@@ -208,7 +235,16 @@ impl MidiMessage {
             | Self::PitchBend { frame_offset, .. }
             | Self::PerNotePitchBend { frame_offset, .. }
             | Self::PerNoteController { frame_offset, .. }
-            | Self::PerNoteManagement { frame_offset, .. } => *frame_offset,
+            | Self::PerNoteManagement { frame_offset, .. }
+            | Self::TimingClock { frame_offset }
+            | Self::Start { frame_offset }
+            | Self::Continue { frame_offset }
+            | Self::Stop { frame_offset }
+            | Self::TimeCode { frame_offset, .. }
+            | Self::SongPosition { frame_offset, .. }
+            | Self::SongSelect { frame_offset, .. }
+            | Self::ActiveSensing { frame_offset }
+            | Self::Reset { frame_offset } => *frame_offset,
             Self::Other(ev) => ev.frame_offset,
         }
     }
@@ -236,9 +272,13 @@ impl MidiEvent {
     pub fn message(&self) -> MidiMessage {
         let ev = crate::normalize(self);
         let frame_offset = ev.frame_offset;
-        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(ev.data_words()) else {
+        let cv2 = match UmpMessage::try_from(ev.data_words()) {
+            Ok(UmpMessage::ChannelVoice2(cv2)) => cv2,
+            Ok(UmpMessage::SystemCommon(sc)) => {
+                return system_common_message(sc, frame_offset).unwrap_or(MidiMessage::Other(*self))
+            }
             // Preserve the *original* event verbatim so a re-encode is exact.
-            return MidiMessage::Other(*self);
+            _ => return MidiMessage::Other(*self),
         };
         let channel = u8::from(cv2.channel());
         let note_id = |note: u8| NoteId::from_channel_note(channel, note);
@@ -435,6 +475,15 @@ impl TryFrom<MidiMessage> for MidiEvent {
                 reset,
                 ..
             } => MidiEvent::per_note_management(0, channel, note, detach, reset),
+            MidiMessage::TimingClock { .. } => MidiEvent::timing_clock(0),
+            MidiMessage::Start { .. } => MidiEvent::start(0),
+            MidiMessage::Continue { .. } => MidiEvent::continue_msg(0),
+            MidiMessage::Stop { .. } => MidiEvent::stop(0),
+            MidiMessage::TimeCode { code, .. } => MidiEvent::mtc_quarter_frame(0, code),
+            MidiMessage::SongPosition { position, .. } => MidiEvent::song_position(0, position),
+            MidiMessage::SongSelect { song, .. } => MidiEvent::song_select(0, song),
+            MidiMessage::ActiveSensing { .. } => MidiEvent::active_sensing(0),
+            MidiMessage::Reset { .. } => MidiEvent::system_reset(0),
             // The source event was preserved verbatim.
             MidiMessage::Other(ev) => return Ok(ev),
         };
@@ -506,6 +555,39 @@ fn controller_index_and_data(c: midi2::channel_voice2::Controller) -> (u8, u32) 
     }
 }
 
+/// Map a decoded System Real-Time / System Common message to its [`MidiMessage`]
+/// variant (M2-104 §7.6). Returns `None` for the families this view still leaves
+/// in [`MidiMessage::Other`] (currently just Tune Request), so the caller
+/// preserves the original event verbatim.
+fn system_common_message(
+    sc: midi2::system_common::SystemCommon<&[u32]>,
+    frame_offset: u32,
+) -> Option<MidiMessage> {
+    use midi2::system_common::SystemCommon as Sc;
+    Some(match sc {
+        Sc::TimingClock(_) => MidiMessage::TimingClock { frame_offset },
+        Sc::Start(_) => MidiMessage::Start { frame_offset },
+        Sc::Continue(_) => MidiMessage::Continue { frame_offset },
+        Sc::Stop(_) => MidiMessage::Stop { frame_offset },
+        Sc::TimeCode(m) => MidiMessage::TimeCode {
+            frame_offset,
+            code: u8::from(m.time_code()),
+        },
+        Sc::SongPositionPointer(m) => MidiMessage::SongPosition {
+            frame_offset,
+            position: u16::from(m.position()),
+        },
+        Sc::SongSelect(m) => MidiMessage::SongSelect {
+            frame_offset,
+            song: u8::from(m.song()),
+        },
+        Sc::ActiveSensing(_) => MidiMessage::ActiveSensing { frame_offset },
+        Sc::Reset(_) => MidiMessage::Reset { frame_offset },
+        // Tune Request has no modeled variant; the caller keeps it in `Other`.
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,11 +652,47 @@ mod tests {
     }
 
     #[test]
-    fn system_message_is_other_carrying_its_event() {
-        let clock = MidiEvent::timing_clock(0);
-        let msg = clock.message();
-        assert_eq!(msg, MidiMessage::Other(clock));
-        assert_eq!(msg.channel(), None);
+    fn system_transport_messages_decode_first_class() {
+        // Timing clock / start / stop / continue are modeled variants now, not
+        // `Other`. They carry no channel.
+        assert!(matches!(
+            MidiEvent::timing_clock(0).message(),
+            MidiMessage::TimingClock { .. }
+        ));
+        assert!(matches!(
+            MidiEvent::start(0).message(),
+            MidiMessage::Start { .. }
+        ));
+        assert!(matches!(MidiEvent::stop(0).message(), MidiMessage::Stop { .. }));
+        assert!(matches!(
+            MidiEvent::continue_msg(0).message(),
+            MidiMessage::Continue { .. }
+        ));
+        assert_eq!(MidiEvent::timing_clock(0).message().channel(), None);
+    }
+
+    #[test]
+    fn system_common_data_messages_decode_their_payload() {
+        match MidiEvent::mtc_quarter_frame(0, 0x5F).message() {
+            MidiMessage::TimeCode { code, .. } => assert_eq!(code, 0x5F),
+            other => panic!("expected TimeCode, got {other:?}"),
+        }
+        match MidiEvent::song_position(0, 12345).message() {
+            MidiMessage::SongPosition { position, .. } => assert_eq!(position, 12345),
+            other => panic!("expected SongPosition, got {other:?}"),
+        }
+        match MidiEvent::song_select(0, 0x4F).message() {
+            MidiMessage::SongSelect { song, .. } => assert_eq!(song, 0x4F),
+            other => panic!("expected SongSelect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tune_request_stays_other() {
+        // Tune Request is System Common but has no modeled variant — it must
+        // still round-trip through `Other`.
+        let tune = MidiEvent::tune_request(0);
+        assert_eq!(tune.message(), MidiMessage::Other(tune));
     }
 
     #[test]
@@ -620,9 +738,34 @@ mod tests {
 
     #[test]
     fn round_trip_other_is_exact() {
-        // An unmodeled message re-encodes byte-for-byte via the preserved event.
-        let ev = MidiEvent::timing_clock(0).with_frame_offset(42);
+        // An unmodeled message (tune request — System Common with no variant)
+        // re-encodes byte-for-byte via the preserved event.
+        let ev = MidiEvent::tune_request(0).with_frame_offset(42);
+        assert!(matches!(ev.message(), MidiMessage::Other(_)));
         let back = MidiEvent::try_from(ev.message()).expect("Other round-trips");
         assert_eq!(back, ev);
+    }
+
+    #[test]
+    fn system_transport_round_trips_preserve_frame_offset() {
+        // Each modeled system message must survive decode → re-encode with its
+        // frame offset intact (project round-trip invariant).
+        for ev in [
+            MidiEvent::timing_clock(0),
+            MidiEvent::start(0),
+            MidiEvent::continue_msg(0),
+            MidiEvent::stop(0),
+            MidiEvent::mtc_quarter_frame(0, 0x5F),
+            MidiEvent::song_position(0, 12345),
+            MidiEvent::song_select(0, 0x4F),
+            MidiEvent::active_sensing(0),
+            MidiEvent::system_reset(0),
+        ] {
+            let ev = ev.with_frame_offset(77);
+            let msg = ev.message();
+            assert_eq!(msg.frame_offset(), 77);
+            let back = MidiEvent::try_from(msg).expect("system message re-encodable");
+            assert_eq!(back, ev, "round-trip mismatch for {msg:?}");
+        }
     }
 }

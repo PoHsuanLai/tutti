@@ -1,5 +1,8 @@
-//! System Real-Time / System Common constructors (UMP type 0x1, one word):
-//! timing clock, start/stop/continue, and MIDI Time Code quarter-frame.
+//! System Real-Time / System Common constructors (M2-104 §7.6 — UMP Message
+//! Type 0x1, one 32-bit word): timing clock, transport start/stop/continue,
+//! MIDI Time Code quarter-frame, song position/select, active sensing, reset,
+//! and tune request. Decode the other direction with [`MidiEvent::message`],
+//! which surfaces these as [`MidiMessage`](crate::MidiMessage) System variants.
 
 use midi2::prelude::*;
 

@@ -80,6 +80,10 @@ impl RegionMeta {
 pub(crate) struct RegionWriter {
     prod: SendProd<(f32, f32)>,
     meta: Arc<RegionMeta>,
+    /// Frames accepted by the most recent [`AudioOut::write`](tutti_core::io::AudioOut::write)
+    /// run. `write` returns `()`, so the count the caller needs to advance the
+    /// file cursor is stashed here and drained via [`take_accepted`](Self::take_accepted).
+    accepted: usize,
     /// Incremental disk decoder for real streaming. `None` means this region
     /// uses the whole-file `load_wave` + `LruCache` fallback path (non-seekable
     /// format, or no frame count). `Box<dyn FormatReader/Decoder>` are `Send`,
@@ -119,6 +123,34 @@ impl RegionWriter {
         self.prod.capacity().get()
     }
 
+    /// Push `[f32; 2]` frames into the ring until it fills, returning how many
+    /// landed. The frame-native counterpart of [`write`](Self::write); the
+    /// [`AudioOut`](tutti_core::io::AudioOut) impl (in [`io::wave_io`](super::io::wave_io))
+    /// drives this.
+    pub fn push_frames(&mut self, frames: &[[f32; 2]]) -> usize {
+        let mut written = 0;
+        for &f in frames {
+            if self.prod.try_push((f[0], f[1])).is_ok() {
+                written += 1;
+            } else {
+                break;
+            }
+        }
+        written
+    }
+
+    /// Record how many frames the last `AudioOut::write` accepted, to be read
+    /// back by [`take_accepted`](Self::take_accepted).
+    pub fn record_accepted(&mut self, n: usize) {
+        self.accepted = n;
+    }
+
+    /// Take (and clear) the frames-accepted count stashed by the `AudioOut`
+    /// impl, so the refill can advance the file cursor after a `pump`.
+    pub fn take_accepted(&mut self) -> usize {
+        core::mem::take(&mut self.accepted)
+    }
+
     pub fn write(&mut self, samples: &[(f32, f32)]) -> usize {
         let mut written = 0;
         for &sample in samples {
@@ -131,12 +163,14 @@ impl RegionWriter {
         written
     }
 
-    /// Write samples in reverse order (for reverse playback).
-    /// Samples are taken from the end of the slice first.
-    pub fn write_reversed(&mut self, samples: &[(f32, f32)]) -> usize {
+    /// Write frames in reverse order (for reverse playback). Frames are taken
+    /// from the end of the slice first; returns how many landed before the ring
+    /// filled. `pump` can't express the reversal, so the reverse refill path
+    /// calls this directly.
+    pub fn write_frames_reversed(&mut self, frames: &[[f32; 2]]) -> usize {
         let mut written = 0;
-        for &sample in samples.iter().rev() {
-            if self.prod.try_push(sample).is_ok() {
+        for &f in frames.iter().rev() {
+            if self.prod.try_push((f[0], f[1])).is_ok() {
                 written += 1;
             } else {
                 break;
@@ -311,12 +345,8 @@ impl RegionBuffer {
         let producer = RegionWriter {
             prod: SendProd::new(prod),
             meta: meta.clone(),
-            #[cfg(any(
-                feature = "wav",
-                feature = "flac",
-                feature = "mp3",
-                feature = "ogg"
-            ))]
+            accepted: 0,
+            #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
             decoder: None,
         };
 
@@ -487,5 +517,4 @@ mod tests {
             sample_diff.abs()
         );
     }
-
 }

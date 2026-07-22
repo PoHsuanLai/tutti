@@ -37,7 +37,7 @@ pub(super) struct Local {
     pub regions: RegionMap,
     pub buffer_margin: f64,
     pub next_region_id: u64,
-    pub interleave_buffer: Vec<(f32, f32)>,
+    pub interleave_buffer: Vec<[f32; 2]>,
 }
 
 impl Local {

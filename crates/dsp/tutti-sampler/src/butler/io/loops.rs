@@ -4,7 +4,8 @@ use super::super::cache::LruCache;
 use super::super::metrics::Metrics;
 use super::super::plan::{ChannelPlan, LoopStatus};
 use super::super::region_map::RegionMap;
-use super::refill::{load_wave, wave_frame};
+use super::refill::load_wave;
+use super::wave_io::wave_frame;
 use dashmap::DashMap;
 use std::path::PathBuf;
 use tutti_core::Wave;
@@ -98,7 +99,8 @@ pub(crate) fn capture_samples(wave: &Wave, start: usize, count: usize) -> Vec<(f
     let mut samples = Vec::with_capacity(count);
     let channels = wave.channels();
     for i in 0..count {
-        samples.push(wave_frame(wave, start + i, channels));
+        let [l, r] = wave_frame(wave, channels, start + i);
+        samples.push((l, r));
     }
     samples
 }
@@ -128,9 +130,7 @@ pub(crate) fn fadeout_samples(
         return Vec::new();
     };
 
-    let read_position = link
-        .read_position
-        .load(tutti_core::Ordering::Relaxed);
+    let read_position = link.read_position.load(tutti_core::Ordering::Relaxed);
 
     // Same file-sourced capture as `fadein_samples`, anchored at the position
     // the ring is about to hand to the audio thread.
@@ -157,7 +157,8 @@ pub(crate) fn fadein_samples(
     let channels = wave.channels();
 
     for i in 0..count {
-        samples.push(wave_frame(&wave, position_samples as usize + i, channels));
+        let [l, r] = wave_frame(&wave, channels, position_samples as usize + i);
+        samples.push((l, r));
     }
 
     samples

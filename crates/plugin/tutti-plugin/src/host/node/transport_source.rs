@@ -49,14 +49,14 @@ impl TransportSource {
     fn snapshot_into(&self, out: &mut TransportInfo) {
         let sample_rate = self.sample_rate.load(Ordering::Acquire);
         let reader = &self.reader;
+        let tempo = reader.tempo().get();
         let mut info = TransportInfo::new()
-            .with_tempo(reader.tempo().get())
+            .with_tempo(tempo)
             .with_playing(reader.is_playing())
             .with_recording(reader.is_recording())
             .with_sample_rate(sample_rate);
         // CLAP-style beats position; seconds derived from beats + tempo.
         let beats = reader.current_beat_f64();
-        let tempo = reader.tempo().get();
         let seconds = if tempo > 0.0 { beats * 60.0 / tempo } else { 0.0 };
         info = info.with_position_beats(beats, seconds);
         if let Some((start, end)) = reader.get_loop_range() {

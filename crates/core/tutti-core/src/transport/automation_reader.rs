@@ -17,15 +17,11 @@ pub type AutomationEnvelopeFn = Arc<dyn Fn(f64) -> f32 + Send + Sync>;
 /// - Port 0: Automation value (evaluated envelope)
 pub struct AutomationReaderInput {
     envelope: AutomationEnvelopeFn,
-    sample_rate: f64,
 }
 
 impl AutomationReaderInput {
     pub fn new(envelope: AutomationEnvelopeFn) -> Self {
-        Self {
-            envelope,
-            sample_rate: DEFAULT_SR,
-        }
+        Self { envelope }
     }
 
     pub fn from_points(points: Vec<(f64, f32)>) -> Self {
@@ -83,9 +79,9 @@ impl AudioUnit for AutomationReaderInput {
 
     fn reset(&mut self) {}
 
-    fn set_sample_rate(&mut self, sample_rate: crate::params::SampleRate) {
-        self.sample_rate = sample_rate.get();
-    }
+    /// No-op: the beat arrives on the input ports, so this node derives
+    /// nothing from the sample rate.
+    fn set_sample_rate(&mut self, _sample_rate: crate::params::SampleRate) {}
 
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
@@ -135,7 +131,6 @@ impl Clone for AutomationReaderInput {
     fn clone(&self) -> Self {
         Self {
             envelope: Arc::clone(&self.envelope),
-            sample_rate: self.sample_rate,
         }
     }
 }

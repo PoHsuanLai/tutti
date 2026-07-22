@@ -245,41 +245,6 @@ impl TransportManager {
         self.in_preroll.store(in_preroll, Ordering::Release);
     }
 
-    /// RT-safe. Returns true if loop boundary was hit.
-    pub fn advance_position_rt(&self, beat_increment: f64) -> bool {
-        let current = self.current_beat.load(Ordering::Acquire);
-        let reverse = self.reverse.load(Ordering::Acquire);
-
-        let new_position = if reverse {
-            current - beat_increment
-        } else {
-            current + beat_increment
-        };
-
-        if self.loop_enabled.load(Ordering::Acquire) {
-            let start = self.loop_start_beat.load(Ordering::Acquire);
-            let end = self.loop_end_beat.load(Ordering::Acquire);
-
-            if reverse {
-                if new_position < start {
-                    let wrapped = end - (start - new_position);
-                    self.current_beat.store(wrapped, Ordering::Release);
-                    return true;
-                }
-            } else if new_position >= end {
-                let wrapped = start + (new_position - end);
-                self.current_beat.store(wrapped, Ordering::Release);
-                return true;
-            }
-        } else if reverse && new_position < 0.0 {
-            self.current_beat.store(0.0, Ordering::Release);
-            return false;
-        }
-
-        self.current_beat.store(new_position, Ordering::Release);
-        false
-    }
-
     pub fn play(&self) {
         self.send_command(TransportEvent::Play);
     }

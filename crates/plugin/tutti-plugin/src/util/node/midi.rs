@@ -1,9 +1,8 @@
-//! MIDI event collection for `PluginClient`. Merges direct [`Midi::queue`]
-//! events with events polled from this client's own
-//! [`tutti_midi_runtime::MidiReceiver`] (or an installed
+//! MIDI event collection for `PluginClient`. Each block it polls this client's
+//! own [`tutti_midi_runtime::MidiReceiver`] (or an installed
 //! [`tutti_midi_types::MidiSource`] override — typically a
-//! [`tutti_midi_runtime::MidiClipSource`]) into a single buffer for
-//! the audio path. Callers route MIDI to the plugin via either:
+//! [`tutti_midi_runtime::MidiClipSource`]) into a single buffer for the audio
+//! path. Callers route MIDI to the plugin via either:
 //!
 //! - [`Midi::sender`] for live producers (hardware drivers, panel
 //!   previews) that push events as they arrive.
@@ -33,7 +32,6 @@ fn empty_poll_scratch() -> Vec<MidiEvent> {
 
 pub struct Midi {
     unit_id: MidiUnitId,
-    pending: Vec<MidiEvent>,
     drain: MidiEventVec,
     sender: MidiSender,
     receiver: MidiReceiver,
@@ -62,7 +60,6 @@ impl Clone for Midi {
     fn clone(&self) -> Self {
         Self {
             unit_id: self.unit_id,
-            pending: Vec::new(),
             drain: MidiEventVec::new(),
             sender: self.sender.clone(),
             receiver: self.receiver.clone(),
@@ -89,7 +86,6 @@ impl Midi {
         let (sender, receiver) = MidiEventSlot::pair(unit_id);
         Self {
             unit_id,
-            pending: Vec::new(),
             drain: MidiEventVec::new(),
             sender,
             receiver,
@@ -106,16 +102,6 @@ impl Midi {
     /// Producer handle for this plugin's MIDI inbox.
     pub fn sender(&self) -> MidiSender {
         self.sender.clone()
-    }
-
-    /// Replace the pending queue. Sent on next process.
-    pub fn queue(&mut self, events: &[MidiEvent]) {
-        self.pending.clear();
-        self.pending.extend_from_slice(events);
-    }
-
-    pub fn clear(&mut self) {
-        self.pending.clear();
     }
 
     /// Install an `Arc`-backed [`MidiSource`] override. Polled per
@@ -140,12 +126,11 @@ impl Midi {
         self.sample_pos = 0;
     }
 
-    /// Merge pending + override-or-receiver events into one buffer and
+    /// Drain the override-or-receiver events for this block into one buffer and
     /// return it. Bumps `sample_pos` by `block_size` so the next call
     /// sees the next block's window.
     pub fn drain_for_process(&mut self, block_size: usize) -> &MidiEventVec {
         self.drain.clear();
-        self.drain.extend(self.pending.drain(..));
         // `load()` is lock-free; the guard holds the current source (if any)
         // for the duration of the poll.
         let source = self.source_override.load();

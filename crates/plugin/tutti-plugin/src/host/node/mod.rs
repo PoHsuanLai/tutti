@@ -48,7 +48,6 @@ use batcher::Batcher;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tutti_midi_types::ump::MidiEvent;
 
 /// Cheap to clone: clones share `bridge`, `latency`, and `process_guard`
 /// (all Arc) but get independent `io` and `midi` state (fundsp clones
@@ -304,18 +303,11 @@ impl PluginClient {
         let _ = self.bridge.set_automation_state_rt(state);
     }
 
-    /// Producer handle for this plugin's MIDI inbox.
+    /// Producer handle for this plugin's MIDI inbox. Route live MIDI to the
+    /// plugin by pushing through this sender (or by inserting it into a
+    /// [`tutti_midi_runtime::MidiBus`]); clip playback uses [`Self::set_midi_source`].
     pub fn midi_sender(&self) -> tutti_midi_runtime::MidiSender {
         self.midi.sender()
-    }
-
-    /// Events are buffered and sent on the next `process()`.
-    pub fn queue_midi(&mut self, events: &[MidiEvent]) {
-        self.midi.queue(events);
-    }
-
-    pub fn clear_midi(&mut self) {
-        self.midi.clear();
     }
 
     /// Install a [`tutti_midi_types::MidiSource`] override (typically

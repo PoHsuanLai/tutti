@@ -1,53 +1,44 @@
 //! AutomationLane AudioUnit node.
 
 use audio_automation::AutomationEnvelope;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, TransportHandle, TransportReader};
+use tutti_core::{beat_from_ports, AudioUnit, BufferMut, BufferRef, SignalFrame, BEAT_PORTS};
 
-/// An automation lane that outputs control signals based on transport position.
+/// An automation lane that evaluates an envelope against musical time.
 ///
-/// Reads the current beat position from the transport and evaluates
-/// the envelope to produce a control signal output.
+/// The beat arrives on the node's [`BEAT_PORTS`] inputs (port 0 whole beats,
+/// port 1 the fraction), wired from `TransportClock`. The lane holds no
+/// transport: it is a pure function of the beat it is handed, which makes it
+/// per-sample accurate and lets an offline render drive it from its own clock
+/// without any special casing.
 ///
-/// The lane is generic over `R: TransportReader`, allowing it to work with
-/// either a live `TransportHandle` or an `OfflineTransport` for offline rendering.
-///
-/// # Sample rate
-///
-/// `AutomationLane::new` initializes `sample_rate` to `44_100.0`. `process()`
-/// uses it to advance the beat cursor within a block; inserting a lane into
-/// a graph causes the host to call [`AudioUnit::set_sample_rate`] once at
-/// insertion time and again whenever the device rate changes. Call
-/// [`AudioUnit::tick`] instead of `process` if you need to drive the lane
-/// before it has been inserted into a graph.
+/// The beat arriving here is already loop-wrapped by the clock, so the lane
+/// does not consult a loop range.
 ///
 /// # Example
 ///
 /// ```ignore
-/// use tutti_automation::{AutomationLane, AutomationEnvelope, AutomationPoint};
-///
 /// let mut envelope = AutomationEnvelope::new("volume");
 /// envelope.add_point(AutomationPoint::new(0.0, 0.0));
 /// envelope.add_point(AutomationPoint::new(4.0, 1.0));
 ///
-/// let lane = AutomationLane::new(envelope, transport_handle);
+/// let lane = AutomationLane::new(envelope);
+/// graph.connect(clock_id, 0, lane_id, 0);
+/// graph.connect(clock_id, 1, lane_id, 1);
 /// ```
-pub struct AutomationLane<T, R: TransportReader = TransportHandle> {
+pub struct AutomationLane<T> {
     envelope: AutomationEnvelope<T>,
-    transport: R,
     last_value: f32,
-    sample_rate: f64,
 }
 
-/// Type alias for automation lane with live transport.
-pub type LiveAutomationLane<T> = AutomationLane<T, TransportHandle>;
+/// Type alias kept for the typed `graph.node::<LiveAutomationLane<f32>>(..)`
+/// lookups in consumers.
+pub type LiveAutomationLane<T> = AutomationLane<T>;
 
-impl<T, R: TransportReader> AutomationLane<T, R> {
-    pub fn new(envelope: AutomationEnvelope<T>, transport: R) -> Self {
+impl<T> AutomationLane<T> {
+    pub fn new(envelope: AutomationEnvelope<T>) -> Self {
         Self {
             envelope,
-            transport,
             last_value: 0.0,
-            sample_rate: 44100.0,
         }
     }
 
@@ -76,69 +67,30 @@ impl<T, R: TransportReader> AutomationLane<T, R> {
         self.envelope.get_value_at(beat).unwrap_or(0.0)
     }
 
-    /// Get value accounting for transport loop.
-    ///
-    /// Wraps beat positions beyond `loop_end` back into `[loop_start, loop_end)`.
-    /// Falls back to direct evaluation if the loop range is invalid.
-    pub fn get_value_looped(&self, beat: f64, loop_start: f64, loop_end: f64) -> f32 {
-        let loop_len = loop_end - loop_start;
-
-        if loop_len <= 0.0 {
-            return self.envelope.get_value_at(beat).unwrap_or(0.0);
-        }
-
-        let effective_beat = if beat < loop_end {
-            beat
-        } else {
-            loop_start + ((beat - loop_start) % loop_len)
-        };
-
-        self.envelope.get_value_at(effective_beat).unwrap_or(0.0)
-    }
-
-    /// Update and return the current value using the transport position.
-    ///
-    /// Handles loop wrapping automatically when looping is enabled.
-    pub fn update(&mut self) -> f32 {
-        let beat = self.transport.current_beat_f64();
-
-        self.last_value = self
-            .transport
-            .get_loop_range()
-            .map(|(ls, le)| self.get_value_looped(beat, ls, le))
-            .unwrap_or_else(|| self.envelope.get_value_at(beat).unwrap_or(0.0));
-
+    /// Evaluate at `beat` and record it as the last value.
+    pub fn update_to(&mut self, beat: f64) -> f32 {
+        self.last_value = self.get_value_at(beat);
         self.last_value
     }
 }
 
-impl<T: Clone + Send + Sync + 'static, R: TransportReader + Clone + 'static> AudioUnit
-    for AutomationLane<T, R>
-{
+impl<T: Clone + Send + Sync + 'static> AudioUnit for AutomationLane<T> {
     fn inputs(&self) -> usize {
-        0
+        BEAT_PORTS
     }
 
     fn outputs(&self) -> usize {
         1
     }
 
-    fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        output[0] = self.update();
+    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+        output[0] = self.update_to(beat_from_ports(input[0], input[1]));
     }
 
-    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        let beat = self.transport.current_beat_f64();
-        let tempo = self.transport.tempo().get();
-        let beats_per_sample = (tempo / 60.0) / self.sample_rate;
-        let loop_range = self.transport.get_loop_range();
-
+    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         for i in 0..size {
-            let sample_beat = beat + i as f64 * beats_per_sample;
-            let value = loop_range
-                .map(|(ls, le)| self.get_value_looped(sample_beat, ls, le))
-                .unwrap_or_else(|| self.envelope.get_value_at(sample_beat).unwrap_or(0.0));
-            output.set_f32(0, i, value);
+            let beat = beat_from_ports(input.at_f32(0, i), input.at_f32(1, i));
+            output.set_f32(0, i, self.get_value_at(beat));
         }
 
         if size > 0 {
@@ -150,10 +102,9 @@ impl<T: Clone + Send + Sync + 'static, R: TransportReader + Clone + 'static> Aud
         self.last_value = 0.0;
     }
 
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
-        self.sample_rate = sample_rate;
-    }
+    /// No-op: the beat arrives on the input ports, so the lane derives nothing
+    /// from the sample rate.
+    fn set_sample_rate(&mut self, _sample_rate: tutti_core::SampleRate) {}
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
         SignalFrame::new(1)
@@ -176,13 +127,11 @@ impl<T: Clone + Send + Sync + 'static, R: TransportReader + Clone + 'static> Aud
     }
 }
 
-impl<T: Clone, R: TransportReader + Clone> Clone for AutomationLane<T, R> {
+impl<T: Clone> Clone for AutomationLane<T> {
     fn clone(&self) -> Self {
         Self {
             envelope: self.envelope.clone(),
-            transport: self.transport.clone(),
             last_value: self.last_value,
-            sample_rate: self.sample_rate,
         }
     }
 }
@@ -193,60 +142,12 @@ mod tests {
     use super::*;
     use alloc::vec;
     use audio_automation::AutomationPoint;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
+    use tutti_core::BufferVec;
 
-    #[derive(Clone)]
-    struct MockTransport {
-        beat: Arc<AtomicU64>,
-        loop_enabled: bool,
-        loop_range: Option<(f64, f64)>,
-    }
-
-    impl MockTransport {
-        fn new(beat: f64) -> Self {
-            Self {
-                beat: Arc::new(AtomicU64::new(beat.to_bits())),
-                loop_enabled: false,
-                loop_range: None,
-            }
-        }
-
-        fn with_loop(beat: f64, loop_start: f64, loop_end: f64) -> Self {
-            Self {
-                beat: Arc::new(AtomicU64::new(beat.to_bits())),
-                loop_enabled: true,
-                loop_range: Some((loop_start, loop_end)),
-            }
-        }
-
-        fn set_beat(&self, beat: f64) {
-            self.beat.store(beat.to_bits(), Ordering::Relaxed);
-        }
-    }
-
-    impl TransportReader for MockTransport {
-        fn current_beat(&self) -> f64 {
-            f64::from_bits(self.beat.load(Ordering::Relaxed))
-        }
-        fn is_loop_enabled(&self) -> bool {
-            self.loop_enabled
-        }
-        fn get_loop_range(&self) -> Option<(f64, f64)> {
-            self.loop_range
-        }
-        fn is_playing(&self) -> bool {
-            true
-        }
-        fn is_recording(&self) -> bool {
-            false
-        }
-        fn is_in_preroll(&self) -> bool {
-            false
-        }
-        fn tempo(&self) -> tutti_core::Bpm {
-            tutti_core::Bpm(120.0)
-        }
+    /// Split a beat the way `TransportClock` does, for feeding the input ports.
+    fn ports(beat: f64) -> [f32; 2] {
+        let whole = beat.floor();
+        [whole as f32, (beat - whole) as f32]
     }
 
     fn ramp_envelope() -> AutomationEnvelope<&'static str> {
@@ -258,106 +159,87 @@ mod tests {
     }
 
     #[test]
-    fn test_update_tracks_transport_position() {
-        let transport = MockTransport::new(0.0);
-        let mut lane = AutomationLane::new(ramp_envelope(), transport.clone());
-
-        transport.set_beat(0.0);
-        assert!((lane.update() - 0.0).abs() < 0.01);
-
-        transport.set_beat(2.0);
-        assert!((lane.update() - 0.5).abs() < 0.01);
-
-        transport.set_beat(4.0);
-        assert!((lane.update() - 1.0).abs() < 0.01);
-
-        transport.set_beat(6.0);
-        assert!((lane.update() - 0.75).abs() < 0.01);
+    fn declares_two_beat_inputs() {
+        let lane = AutomationLane::new(ramp_envelope());
+        assert_eq!(lane.inputs(), BEAT_PORTS);
+        assert_eq!(lane.outputs(), 1);
     }
 
     #[test]
-    fn test_update_with_loop_wraps_correctly() {
-        let transport = MockTransport::with_loop(10.0, 4.0, 8.0);
-        let mut lane = AutomationLane::new(ramp_envelope(), transport);
+    fn test_update_tracks_beat_position() {
+        let mut lane = AutomationLane::new(ramp_envelope());
 
-        let val = lane.update();
-        assert!((val - 0.75).abs() < 0.01, "Expected ~0.75, got {}", val);
+        assert!((lane.update_to(0.0) - 0.0).abs() < 0.01);
+        assert!((lane.update_to(2.0) - 0.5).abs() < 0.01);
+        assert!((lane.update_to(4.0) - 1.0).abs() < 0.01);
+        assert!((lane.update_to(6.0) - 0.75).abs() < 0.01);
     }
 
+    /// The clock emits an already-wrapped beat, so a lane fed beat 6 behaves
+    /// identically whether or not a loop produced it. This replaces the old
+    /// `get_value_looped` tests, which duplicated the clock's wrap.
     #[test]
-    fn test_update_loop_enabled_but_no_range_falls_back() {
-        let transport = MockTransport {
-            beat: Arc::new(AtomicU64::new(2.0f64.to_bits())),
-            loop_enabled: true,
-            loop_range: None,
-        };
-        let mut lane = AutomationLane::new(ramp_envelope(), transport);
-        assert!((lane.update() - 0.5).abs() < 0.01);
+    fn wrapped_beat_needs_no_loop_handling_in_the_lane() {
+        let mut lane = AutomationLane::new(ramp_envelope());
+        // A 4..8 loop wraps beat 10 to beat 6 in the clock.
+        let wrapped = lane.update_to(6.0);
+        assert!(
+            (wrapped - 0.75).abs() < 0.01,
+            "expected ~0.75, got {wrapped}"
+        );
     }
 
     #[test]
     fn test_tick_outputs_current_value() {
-        let transport = MockTransport::new(0.0);
-        let mut lane = AutomationLane::new(ramp_envelope(), transport.clone());
-
+        let mut lane = AutomationLane::new(ramp_envelope());
         let mut output = [0.0f32; 1];
 
-        transport.set_beat(4.0);
-        lane.tick(&[], &mut output);
+        lane.tick(&ports(4.0), &mut output);
         assert!((output[0] - 1.0).abs() < 0.01);
 
-        transport.set_beat(0.0);
-        lane.tick(&[], &mut output);
+        lane.tick(&ports(0.0), &mut output);
         assert!((output[0] - 0.0).abs() < 0.01);
     }
 
     #[test]
-    fn test_tick_updates_last_value() {
-        let transport = MockTransport::new(4.0);
-        let mut lane = AutomationLane::new(ramp_envelope(), transport);
+    fn tick_reads_the_fractional_port() {
+        let mut lane = AutomationLane::new(ramp_envelope());
+        let mut split = [0.0f32; 1];
+        let mut whole = [0.0f32; 1];
 
+        // Beat 2.0 delivered as (0 whole + 2.0 frac) must match (2.0 + 0).
+        lane.tick(&[0.0, 2.0], &mut split);
+        lane.tick(&[2.0, 0.0], &mut whole);
+        assert!((split[0] - whole[0]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_tick_updates_last_value() {
+        let mut lane = AutomationLane::new(ramp_envelope());
         assert_eq!(lane.last_value(), 0.0);
+
         let mut output = [0.0f32; 1];
-        lane.tick(&[], &mut output);
+        lane.tick(&ports(4.0), &mut output);
         assert!((lane.last_value() - 1.0).abs() < 0.01);
     }
 
     #[test]
-    fn test_looped_value_at_exact_boundary_wraps() {
-        let lane = AutomationLane::new(ramp_envelope(), MockTransport::new(0.0));
-        let val = lane.get_value_looped(8.0, 4.0, 8.0);
-        let at_start = lane.get_value_at(4.0);
-        assert!((val - at_start).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_looped_value_with_invalid_range_doesnt_crash() {
-        let lane = AutomationLane::new(ramp_envelope(), MockTransport::new(0.0));
-        let val = lane.get_value_looped(2.0, 8.0, 4.0);
-        assert!((val - 0.5).abs() < 0.01);
-        let val = lane.get_value_looped(2.0, 4.0, 4.0);
-        assert!((val - 0.5).abs() < 0.01);
-    }
-
-    #[test]
     fn test_set_envelope_changes_output() {
-        let transport = MockTransport::new(2.0);
-        let mut lane = AutomationLane::new(ramp_envelope(), transport);
-
-        assert!((lane.update() - 0.5).abs() < 0.01);
+        let mut lane = AutomationLane::new(ramp_envelope());
+        assert!((lane.update_to(2.0) - 0.5).abs() < 0.01);
 
         let mut flat: AutomationEnvelope<&str> = AutomationEnvelope::new("flat");
         flat.add_point(AutomationPoint::new(0.0, 0.9));
         flat.add_point(AutomationPoint::new(8.0, 0.9));
         lane.set_envelope(flat);
 
-        assert!((lane.update() - 0.9).abs() < 0.01);
+        assert!((lane.update_to(2.0) - 0.9).abs() < 0.01);
     }
 
     #[test]
     fn test_reset_clears_last_value() {
-        let mut lane = AutomationLane::new(ramp_envelope(), MockTransport::new(4.0));
-        lane.update();
+        let mut lane = AutomationLane::new(ramp_envelope());
+        lane.update_to(4.0);
         assert!((lane.last_value() - 1.0).abs() < 0.01);
 
         lane.reset();
@@ -367,35 +249,51 @@ mod tests {
     #[test]
     fn test_empty_envelope_returns_zero() {
         let empty: AutomationEnvelope<&str> = AutomationEnvelope::new("empty");
-        let mut lane = AutomationLane::new(empty, MockTransport::new(5.0));
-        assert_eq!(lane.update(), 0.0);
+        let mut lane = AutomationLane::new(empty);
+        assert_eq!(lane.update_to(5.0), 0.0);
 
         let mut output = [0.0f32; 1];
-        lane.tick(&[], &mut output);
+        lane.tick(&ports(5.0), &mut output);
         assert_eq!(output[0], 0.0);
     }
 
+    /// Build a beat-ramp input buffer the way `TransportClock` would emit it:
+    /// channel 0 whole beats, channel 1 the fraction. Written through the same
+    /// `set_f32` API the node reads with, so the SIMD layout stays theirs.
+    fn beat_ramp(size: usize, start: f64, per_sample: f64) -> BufferVec {
+        let mut buf = BufferVec::new(BEAT_PORTS);
+        {
+            let mut view = buf.buffer_mut();
+            for i in 0..size {
+                let beat = start + i as f64 * per_sample;
+                let whole = beat.floor();
+                view.set_f32(0, i, whole as f32);
+                view.set_f32(1, i, (beat - whole) as f32);
+            }
+        }
+        buf
+    }
+
     #[test]
-    fn test_process_fills_block_with_automation_value() {
+    fn test_process_fills_block_from_beat_input() {
         use tutti_core::dsp::F32x;
 
-        let transport = MockTransport::new(4.0);
-        let mut lane = AutomationLane::new(ramp_envelope(), transport);
+        let mut lane = AutomationLane::new(ramp_envelope());
+        let block_size = 32;
 
+        // Hold the beat at 4.0 for the whole block -> constant 1.0 output.
+        let input_buf = beat_ramp(block_size, 4.0, 0.0);
+        let input_ref = input_buf.buffer_ref();
         let mut output_simd = vec![F32x::ZERO; 8];
-        let input_ref = BufferRef::empty();
         let mut output_buf = BufferMut::new(&mut output_simd);
 
-        let block_size = 32;
         lane.process(block_size, &input_ref, &mut output_buf);
 
         for i in 0..block_size {
             let val = output_buf.at_f32(0, i);
             assert!(
                 (val - 1.0).abs() < 0.01,
-                "Sample {} expected ~1.0, got {}",
-                i,
-                val
+                "Sample {i} expected ~1.0, got {val}"
             );
         }
     }
@@ -404,13 +302,12 @@ mod tests {
     fn test_process_updates_last_value() {
         use tutti_core::dsp::F32x;
 
-        let transport = MockTransport::new(2.0);
-        let mut lane = AutomationLane::new(ramp_envelope(), transport);
-
+        let mut lane = AutomationLane::new(ramp_envelope());
         assert_eq!(lane.last_value(), 0.0);
 
-        let mut output_simd = vec![F32x::ZERO; 8];
-        let input_ref = BufferRef::empty();
+        let input_buf = beat_ramp(64, 2.0, 0.0);
+        let input_ref = input_buf.buffer_ref();
+        let mut output_simd = vec![F32x::ZERO; 16];
         let mut output_buf = BufferMut::new(&mut output_simd);
 
         lane.process(64, &input_ref, &mut output_buf);
@@ -422,68 +319,33 @@ mod tests {
         );
     }
 
+    /// The whole point of beat-as-signal: the value moves WITHIN a block,
+    /// following the per-sample beat, rather than being held block-constant.
     #[test]
     fn test_process_per_sample_varies() {
         use tutti_core::dsp::F32x;
 
-        // Ramp from 0.0 at beat 0 to 1.0 at beat 4. At beat 0, each sample
-        // should produce a slightly different value as the beat advances.
-        let transport = MockTransport::new(0.0);
-        let mut lane = AutomationLane::new(ramp_envelope(), transport);
-        lane.sample_rate = 44100.0;
-
+        let mut lane = AutomationLane::new(ramp_envelope());
+        // 120 BPM at 44.1 kHz.
+        let per_sample = (120.0 / 60.0) / 44100.0;
+        let input_buf = beat_ramp(32, 0.0, per_sample);
+        let input_ref = input_buf.buffer_ref();
         let mut output_simd = vec![F32x::ZERO; 8];
-        let input_ref = BufferRef::empty();
         let mut output_buf = BufferMut::new(&mut output_simd);
 
         lane.process(32, &input_ref, &mut output_buf);
 
-        // First sample at beat 0 should be 0.0
         assert!((output_buf.at_f32(0, 0) - 0.0).abs() < 0.001);
 
-        // Last sample should be slightly > 0.0 (per-sample beat advance)
-        // beats_per_sample = (120/60) / 44100 ≈ 0.0000453515
-        // beat at sample 31 = 31 * 0.0000453515 ≈ 0.001406
-        // value = 0.001406 / 4.0 ≈ 0.000351 (ramp 0→1 over 4 beats)
         let last = output_buf.at_f32(0, 31);
         assert!(last > 0.0, "Expected > 0.0, got {last}");
         assert!(last < 0.01, "Expected small value, got {last}");
 
-        // Values should be monotonically increasing (ramp up)
         for i in 1..32 {
             assert!(
                 output_buf.at_f32(0, i) >= output_buf.at_f32(0, i - 1),
                 "Sample {i} should be >= sample {}",
                 i - 1
-            );
-        }
-    }
-
-    #[test]
-    fn test_process_with_transport_advancing() {
-        use tutti_core::dsp::F32x;
-
-        let transport = MockTransport::new(0.0);
-        let mut lane = AutomationLane::new(ramp_envelope(), transport.clone());
-
-        let mut output_simd = vec![F32x::ZERO; 8];
-
-        {
-            let input_ref = BufferRef::empty();
-            let mut output_buf = BufferMut::new(&mut output_simd);
-            lane.process(16, &input_ref, &mut output_buf);
-            assert!((output_buf.at_f32(0, 0) - 0.0).abs() < 0.01);
-        }
-
-        transport.set_beat(4.0);
-        {
-            let input_ref = BufferRef::empty();
-            let mut output_buf = BufferMut::new(&mut output_simd);
-            lane.process(16, &input_ref, &mut output_buf);
-            assert!(
-                (output_buf.at_f32(0, 0) - 1.0).abs() < 0.01,
-                "Expected ~1.0 after transport advance, got {}",
-                output_buf.at_f32(0, 0)
             );
         }
     }

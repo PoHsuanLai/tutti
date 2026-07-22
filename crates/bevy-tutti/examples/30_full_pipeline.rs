@@ -101,7 +101,9 @@ fn spawn_demo(mut commands: Commands, transport: Res<TransportRes>) {
     envelope.add_point(AutomationPoint::with_curve(2.0, 1.0, CurveType::Linear));
     envelope.add_point(AutomationPoint::with_curve(4.0, 0.0, CurveType::Linear));
 
-    let lane: LiveAutomationLane<f32> = LiveAutomationLane::new(envelope, transport.0.clone());
+    // The lane holds no transport — it reads the beat from its two input
+    // ports, which the automation spawner wires from the transport clock.
+    let lane: LiveAutomationLane<f32> = LiveAutomationLane::new(envelope);
 
     commands
         .spawn_audio_node(lane, NodeKind::Generator)

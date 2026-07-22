@@ -21,6 +21,7 @@
 pub use tutti_midi_types;
 
 pub mod clip_player;
+pub mod clock_master;
 pub mod endpoint;
 pub mod output_collector;
 pub mod registry;
@@ -32,6 +33,7 @@ pub mod snapshot_reader;
 pub mod mpe;
 
 pub use clip_player::{CompositeMidiSource, MidiClipSource, TimedClipEvent};
+pub use clock_master::ClockMaster;
 pub use endpoint::{DeviceIdentity, EndpointNegotiator, FunctionBlock};
 pub use output_collector::{
     midi_output_channel, midi_output_channel_with_capacity, MidiOutputAggregator,

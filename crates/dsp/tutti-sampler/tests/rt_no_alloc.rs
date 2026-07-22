@@ -248,30 +248,31 @@ fn track_clip_reader_tick_steady_state_is_allocation_free() {
     });
 }
 
-/// KNOWN ALLOCATION — expected to FAIL today; Wave 5e fixes it.
+/// The `ClipCommand::UpdateStretch` drain is allocation-free.
 ///
-/// Draining a `ClipCommand::UpdateStretch` on the audio thread calls
-/// `ClipSlot::set_stretch` → `rebuild_stretch`, which `Box::new`s a cloned
-/// `SamplerUnit` and builds a fresh `stretch::Unit` (heap-allocating its
-/// scratch buffers). That command-drain happens inside `tick`/`process`, so
-/// the per-buffer hot path allocates whenever a stretch update lands. Wave 5e
-/// moves the rebuild off the audio thread; until then this path allocates.
+/// The resident time-stretch processor is built once at slot creation, off the
+/// hot path. Draining an `UpdateStretch` calls `ClipSlot::set_stretch`, which
+/// only flips the processor's lock-free `stretch_factor` / `pitch_cents` atomics
+/// and mirrors them into the routing-gate fields — it allocates nothing and
+/// (re)builds nothing. So the per-buffer `tick`/`process` command drain stays
+/// alloc-free even when a stretch update lands on it. (Earlier, the drain
+/// rebuilt the stretch unit inline and allocated; batch-1's resident-stretch
+/// moved that construction to slot creation, closing the hole this test guards.)
 ///
 /// The `AllocDisabler` global allocator *aborts* the process (SIGABRT via
 /// `handle_alloc_error`) on a violation — it cannot be caught with
-/// `catch_unwind`. Running the allocating body inline would take the whole
-/// test binary down with it, hiding every other test's result. So the actual
-/// `assert_no_alloc`-guarded drain runs in a re-exec'd CHILD of this test
-/// binary (`RT_NO_ALLOC_STRETCH_CHILD=1`), and the parent asserts on the
-/// child's exit status. TODAY the child aborts → this test FAILS, as intended.
-/// After Wave 5e the child exits 0 → this test turns GREEN, with no code change
-/// here.
+/// `catch_unwind`. An allocation here would take the whole test binary down,
+/// hiding every other test's result. So the actual `assert_no_alloc`-guarded
+/// drain runs in a re-exec'd CHILD of this test binary
+/// (`RT_NO_ALLOC_STRETCH_CHILD=1`), and the parent asserts the child exited
+/// cleanly. A regression that reintroduces allocation on the drain aborts the
+/// child → this test FAILS.
 #[test]
-fn track_clip_reader_update_stretch_drain_allocates_known_wave5e() {
-    // Child arm: run the guarded, allocating drain. Aborts today.
+fn track_clip_reader_update_stretch_drain_is_allocation_free() {
+    // Child arm: run the guarded drain. Aborts only on a regression.
     if std::env::var_os("RT_NO_ALLOC_STRETCH_CHILD").is_some() {
         run_stretch_drain_under_guard();
-        // Reached only if the guard did NOT abort (i.e. Wave 5e landed).
+        // Reached because the guard did NOT abort — the drain is alloc-free.
         std::process::exit(0);
     }
 
@@ -280,7 +281,7 @@ fn track_clip_reader_update_stretch_drain_allocates_known_wave5e() {
     let exe = std::env::current_exe().expect("current_exe");
     let status = std::process::Command::new(exe)
         .arg("--exact")
-        .arg("track_clip_reader_update_stretch_drain_allocates_known_wave5e")
+        .arg("track_clip_reader_update_stretch_drain_is_allocation_free")
         .arg("--nocapture")
         .env("RT_NO_ALLOC_STRETCH_CHILD", "1")
         .stdout(std::process::Stdio::null())
@@ -291,12 +292,13 @@ fn track_clip_reader_update_stretch_drain_allocates_known_wave5e() {
     assert!(
         status.success(),
         "UpdateStretch drain allocated on the audio thread (child exited {status}). \
-         Expected to FAIL until Wave 5e moves the stretch rebuild off-thread."
+         The drain must only flip the resident stretch unit's atomics — never allocate."
     );
 }
 
 /// The body that runs inside the re-exec'd child: enqueue an `UpdateStretch`
-/// and drain it inside `assert_no_alloc`. Aborts today via `AllocDisabler`.
+/// and drain it inside `assert_no_alloc`. Exits cleanly today (drain is
+/// alloc-free); a regression that allocates on the drain aborts it.
 fn run_stretch_drain_under_guard() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = sine_wave(2.0, 48_000.0);

@@ -436,6 +436,22 @@ impl SamplerUnit {
         }
     }
 
+    /// The current loop as a public [`LoopSetting`] intent (crossfade length
+    /// recovered from the live [`LoopCrossfade`]). Lets a caller that built this
+    /// unit imperatively read its loop back as a value — used by the
+    /// `TrackClipReader` add shim to fold a pre-configured `SamplerUnit`'s loop
+    /// into a `Playback` record.
+    pub fn loop_setting(&self) -> LoopSetting {
+        match &self.loop_mode {
+            LoopMode::Looping { range, crossfade } => LoopSetting::On {
+                start: range.0,
+                end: range.1,
+                crossfade_samples: crossfade.as_ref().map_or(0, |x| x.len()),
+            },
+            LoopMode::OneShot => LoopSetting::Off,
+        }
+    }
+
     #[inline]
     pub fn get_sample_raw(&self, position: f64) -> (f32, f32) {
         let len = self.wave.len() as f64;

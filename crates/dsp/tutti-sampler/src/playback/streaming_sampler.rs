@@ -115,6 +115,10 @@ impl StreamingSamplerUnit {
         self.gain = gain;
     }
 
+    pub fn gain(&self) -> Linear {
+        self.gain
+    }
+
     #[inline]
     fn shift_history(&mut self) {
         self.history[0] = self.history[1];
@@ -472,6 +476,15 @@ impl StreamingClipReader {
 
     pub fn set_gain(&mut self, gain: Linear) {
         self.inner.set_gain(gain);
+    }
+
+    pub fn gain(&self) -> Linear {
+        self.inner.gain()
+    }
+
+    /// The file sample rate this stream decodes at.
+    pub fn file_sample_rate(&self) -> f64 {
+        self.file_sample_rate
     }
 
     /// Clip-relative sample offset the playhead sits at, or `None` when it is

@@ -13,8 +13,9 @@
 //!   reads a snapshot on an offline timeline
 //! - [`MidiRoutingTable`] — UI-thread writer for routing rules, publishing
 //!   immutable [`tutti_midi_types::MidiRoutingSnapshot`] values via [`arc_swap::ArcSwap`]
-//! - [`MidiOutputAggregator`] — aggregates MIDI output from multiple audio
-//!   units for delivery to hardware output
+//! - [`midi_output_channel`] — a lock-free [`MidiOutputProducer`] /
+//!   [`MidiOutputConsumer`] ring for carrying engine-produced MIDI out
+//!   (e.g. the [`ClockMaster`]'s Beat Clock / MTC) to a hardware-out pump
 //! - [`MpeProcessor`] / [`PerNoteExpression`] — MPE state machine mapping
 //!   channel voice messages to per-note expression
 
@@ -35,8 +36,7 @@ pub use clip_player::{CompositeMidiSource, MidiClipSource, TimedClipEvent};
 pub use clock_master::ClockMaster;
 pub use endpoint::{DeviceIdentity, EndpointNegotiator, FunctionBlock};
 pub use output_collector::{
-    midi_output_channel, midi_output_channel_with_capacity, MidiOutputAggregator,
-    MidiOutputConsumer, MidiOutputProducer,
+    midi_output_channel, midi_output_channel_with_capacity, MidiOutputConsumer, MidiOutputProducer,
 };
 pub use registry::{MidiBus, MidiEventSlot, MidiReceiver, MidiSender};
 pub use routing_table::MidiRoutingTable;

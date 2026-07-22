@@ -1,7 +1,7 @@
-//! MIDI output collection — ring-buffer channels for collecting MIDI output
-//! from multiple audio units, aggregated for hardware output.
+//! MIDI output ring — a lock-free producer/consumer channel carrying
+//! engine-produced MIDI out (e.g. the clock master's Beat Clock / MTC) from the
+//! audio thread to an off-RT pump that forwards it to hardware output.
 
-use parking_lot::Mutex;
 use ringbuf::{traits::*, HeapCons, HeapProd, HeapRb};
 use tutti_midi_types::ump::MidiEvent;
 
@@ -29,11 +29,6 @@ pub struct MidiOutputConsumer {
 }
 
 impl MidiOutputConsumer {
-    #[inline]
-    pub fn pop(&mut self) -> Option<MidiEvent> {
-        self.consumer.try_pop()
-    }
-
     pub fn drain_all(&mut self) -> Vec<MidiEvent> {
         let count = self.consumer.occupied_len();
         let mut events = Vec::with_capacity(count);
@@ -62,16 +57,6 @@ impl MidiOutputConsumer {
         }
         n
     }
-
-    #[inline]
-    pub fn has_pending(&self) -> bool {
-        !self.consumer.is_empty()
-    }
-
-    #[inline]
-    pub fn pending_count(&self) -> usize {
-        self.consumer.occupied_len()
-    }
 }
 
 pub fn midi_output_channel() -> (MidiOutputProducer, MidiOutputConsumer) {
@@ -87,52 +72,6 @@ pub fn midi_output_channel_with_capacity(
         MidiOutputProducer { producer },
         MidiOutputConsumer { consumer },
     )
-}
-
-pub struct MidiOutputAggregator {
-    consumers: Mutex<Vec<MidiOutputConsumer>>,
-}
-
-impl MidiOutputAggregator {
-    pub fn new() -> Self {
-        Self {
-            consumers: Mutex::new(Vec::new()),
-        }
-    }
-
-    pub fn add_consumer(&self, consumer: MidiOutputConsumer) {
-        self.consumers.lock().push(consumer);
-    }
-
-    /// Drain every consumer, or `None` if the consumer list was momentarily
-    /// locked (add/remove in flight). Uses `try_lock` to avoid blocking the audio
-    /// thread — and returns `None` rather than an empty `Vec` on contention so a
-    /// caller can tell "lock busy, try again" apart from "genuinely nothing
-    /// pending" (an empty `Vec` means the latter). A shutdown-drain loop should
-    /// treat `None` as "retry", not "done".
-    pub fn drain_all(&self) -> Option<Vec<MidiEvent>> {
-        let mut consumers = self.consumers.try_lock()?;
-        let mut all_events = Vec::new();
-        for consumer in consumers.iter_mut() {
-            all_events.extend(consumer.drain_all());
-        }
-        Some(all_events)
-    }
-
-    /// Whether any consumer has pending events, or `None` if the list was
-    /// momentarily locked (same busy-vs-empty distinction as [`drain_all`]).
-    ///
-    /// [`drain_all`]: Self::drain_all
-    pub fn has_pending(&self) -> Option<bool> {
-        let consumers = self.consumers.try_lock()?;
-        Some(consumers.iter().any(|c| c.has_pending()))
-    }
-}
-
-impl Default for MidiOutputAggregator {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 #[cfg(test)]
@@ -166,27 +105,6 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].note(), Some(60));
         assert_eq!(events[1].note(), Some(60));
-    }
-
-    #[test]
-    fn test_aggregator() {
-        let aggregator = MidiOutputAggregator::new();
-
-        let (mut prod1, cons1) = midi_output_channel();
-        let (mut prod2, cons2) = midi_output_channel();
-
-        aggregator.add_consumer(cons1);
-        aggregator.add_consumer(cons2);
-
-        prod1.push(note_on(0, 60));
-        prod2.push(note_on(1, 72));
-
-        // Lock is free here, so drain_all yields Some; the two events are present.
-        let events = aggregator.drain_all().expect("lock free");
-        assert_eq!(events.len(), 2);
-        // Now empty (but not busy) → Some(empty), distinct from None.
-        assert_eq!(aggregator.drain_all(), Some(Vec::new()));
-        assert_eq!(aggregator.has_pending(), Some(false));
     }
 
     #[test]

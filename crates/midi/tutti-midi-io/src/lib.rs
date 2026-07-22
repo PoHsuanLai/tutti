@@ -54,7 +54,9 @@ pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
 
 pub use tutti_midi_types::cc::mapping::{CCMapping, CCNumber, CCTarget, MappingId, MidiChannel};
 
-pub use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteTimecode};
+pub use tutti_midi_types::sync::{
+    ClockTransportState, MidiClockDecoder, MtcDecoder, SmpteFrameRate, SmpteTimecode,
+};
 
 // --- Runtime delivery (event fan-out + beat-scheduled playback) ---
 //

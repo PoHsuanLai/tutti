@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use tutti_core::dsp::Net;
 use tutti_core::{
-    AudioUnit, OfflineTransport, OfflineTransportConfig, SampleRate, TransportReader,
+    AudioUnit, OfflineTransport, OfflineTransportConfig, SampleRate, TransportClockRead,
 };
 use bevy_tasks::{block_on, futures_lite::future};
 use tutti_core::NodeId;
@@ -118,7 +118,7 @@ impl Default for RegionRenderConfig {
 ///      (their clone is already independent) and are just re-pointed at the
 ///      offline transport so they read the render's playhead, not the (undriven)
 ///      live one.
-fn rebind_net_transport(net: &mut Net, transport: &Arc<dyn TransportReader>) {
+fn rebind_net_transport(net: &mut Net, transport: &Arc<dyn TransportClockRead>) {
     let ids: Vec<NodeId> = net.ids().copied().collect();
     for id in ids {
         // 1. Generic: sever any shared live input on this clone before the
@@ -307,7 +307,7 @@ pub fn prepare_region_render_system(
             sample_rate: SampleRate(config.sample_rate),
             loop_range: None,
         }));
-        let reader_transport: Arc<dyn TransportReader> = timeline.clone();
+        let reader_transport: Arc<dyn TransportClockRead> = timeline.clone();
         {
             let _span = bevy_log::info_span!("region_render::rebind_net_transport").entered();
             rebind_net_transport(&mut net, &reader_transport);
@@ -450,7 +450,7 @@ mod tests {
             })
         }
     }
-    impl TransportReader for MockTransport {
+    impl TransportClockRead for MockTransport {
         fn is_playing(&self) -> bool {
             self.playing.load(Ordering::Relaxed)
         }
@@ -489,7 +489,7 @@ mod tests {
 
         // Clone the net (as the render does) and rebind it to an offline
         // transport — this should swap the cloned reader for a fresh one.
-        let offline = MockTransport::new(true) as Arc<dyn TransportReader>;
+        let offline = MockTransport::new(true) as Arc<dyn TransportClockRead>;
         let mut clone = net.clone();
         rebind_net_transport(&mut clone, &offline);
 

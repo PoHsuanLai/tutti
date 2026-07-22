@@ -2,7 +2,7 @@
 //!
 //! The parameter-automation counterpart of [`super::harmony_source::HarmonySource`]:
 //! a [`ParamAutomationSource`] holds one [`AutomationEnvelope`] per plugin
-//! parameter id plus a [`TransportReader`]. Each block it reads the transport
+//! parameter id plus a [`TransportClockRead`]. Each block it reads the transport
 //! beat, walks the block sample-by-sample stepping the beat cursor, and fills a
 //! reused [`ParameterChanges`] with one [`ParameterPoint`] per parameter at
 //! sample-accurate offsets across the block window.
@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use audio_automation::AutomationEnvelope;
-use tutti_core::transport::TransportReader;
+use tutti_core::transport::TransportClockRead;
 
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
 use crate::protocol::ParameterChanges;
@@ -47,7 +47,7 @@ const SAMPLE_STRIDE: usize = 8;
 #[derive(Clone)]
 pub struct ParamAutomationSource {
     params: Arc<[TimedParam]>,
-    transport: Arc<dyn TransportReader>,
+    transport: Arc<dyn TransportClockRead>,
     sample_rate: f64,
 }
 
@@ -55,7 +55,7 @@ impl ParamAutomationSource {
     /// Build a parameter-automation source from one envelope per parameter id.
     pub fn new(
         params: impl IntoIterator<Item = TimedParam>,
-        transport: Arc<dyn TransportReader>,
+        transport: Arc<dyn TransportClockRead>,
         sample_rate: f64,
     ) -> Self {
         Self {
@@ -140,9 +140,9 @@ impl BlockReset for ParameterChanges {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atomic_float::AtomicF64;
     use audio_automation::AutomationPoint;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use atomic_float::AtomicF64;
     use tutti_core::params::Bpm;
 
     struct TestTransport {
@@ -162,7 +162,7 @@ mod tests {
             self.beat.store(b, Ordering::Release);
         }
     }
-    impl TransportReader for TestTransport {
+    impl TransportClockRead for TestTransport {
         fn current_beat(&self) -> f64 {
             self.beat.load(Ordering::Acquire)
         }
@@ -202,7 +202,7 @@ mod tests {
         let transport = Arc::new(TestTransport::new(120.0)); // 22050 samples/beat @ 44.1k
         let src = ParamAutomationSource::new(
             vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn TransportReader>,
+            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
             44100.0,
         );
         let mut out = ParameterChanges::new();
@@ -227,7 +227,7 @@ mod tests {
         transport.playing.store(false, Ordering::Release);
         let src = ParamAutomationSource::new(
             vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn TransportReader>,
+            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
             44100.0,
         );
         let mut out = ParameterChanges::new();
@@ -240,7 +240,7 @@ mod tests {
         let transport = Arc::new(TestTransport::new(120.0));
         let src = ParamAutomationSource::new(
             vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn TransportReader>,
+            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
             44100.0,
         );
         let mut out = ParameterChanges::new();
@@ -256,9 +256,8 @@ mod tests {
 
     #[test]
     fn empty_source_and_empty_envelope_emit_nothing() {
-        let transport = Arc::new(TestTransport::new(120.0)) as Arc<dyn TransportReader>;
-        let empty_src =
-            ParamAutomationSource::new(Vec::new(), Arc::clone(&transport), 44100.0);
+        let transport = Arc::new(TestTransport::new(120.0)) as Arc<dyn TransportClockRead>;
+        let empty_src = ParamAutomationSource::new(Vec::new(), Arc::clone(&transport), 44100.0);
         let mut out = ParameterChanges::new();
         empty_src.fill(64, &mut out);
         assert!(out.is_empty());

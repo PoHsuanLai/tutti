@@ -1,13 +1,13 @@
 //! Metronome click AudioUnit - generates click sounds synced to transport.
 //!
-//! The click node reads transport state via [`TransportReader`] and settings
+//! The click node reads transport state via [`TransportClockRead`] and settings
 //! (volume, accent, mode) from [`ClickSettings`].
 
-use super::TransportReader;
-use std::sync::Arc;
+use super::TransportClockRead;
 use crate::{AtomicF32, AtomicU32, AtomicU8, Ordering, TransportHandle};
 use fundsp::audionode::AudioNode;
 use fundsp::prelude::*;
+use std::sync::Arc;
 
 /// Metronome operating mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -37,7 +37,7 @@ impl From<u8> for MetronomeMode {
 
 /// Click-specific settings (volume, accent pattern, mode).
 ///
-/// Transport state (beat, playing, recording, preroll) comes from `TransportReader`.
+/// Transport state (beat, playing, recording, preroll) comes from `TransportClockRead`.
 #[repr(align(64))]
 pub struct ClickSettings {
     volume: AtomicF32,
@@ -90,10 +90,10 @@ pub type ClickState = ClickSettings;
 /// Click generator AudioNode.
 ///
 /// Outputs stereo click sounds synced to the transport beat.
-/// Generic over `R: TransportReader` so it works with both live
+/// Generic over `R: TransportClockRead` so it works with both live
 /// `TransportHandle` and `OfflineTransport`.
 #[derive(Clone)]
-pub struct ClickNode<R: TransportReader = TransportHandle> {
+pub struct ClickNode<R: TransportClockRead = TransportHandle> {
     transport: R,
     settings: Arc<ClickSettings>,
     sample_rate: f64,
@@ -114,7 +114,7 @@ impl ClickNode<TransportHandle> {
     }
 }
 
-impl<R: TransportReader + Clone> ClickNode<R> {
+impl<R: TransportClockRead + Clone> ClickNode<R> {
     pub fn with_transport(
         transport: R,
         settings: Arc<ClickSettings>,
@@ -168,7 +168,7 @@ impl<R: TransportReader + Clone> ClickNode<R> {
     }
 }
 
-impl<R: TransportReader + Clone + Send + Sync + 'static> AudioNode for ClickNode<R> {
+impl<R: TransportClockRead + Clone + Send + Sync + 'static> AudioNode for ClickNode<R> {
     const ID: u64 = 0x436c69636b_u64; // "Click"
 
     type Inputs = U0;
@@ -292,7 +292,7 @@ mod tests {
         }
     }
 
-    impl TransportReader for MockTransport {
+    impl TransportClockRead for MockTransport {
         fn current_beat(&self) -> f64 {
             self.beat.load(Ordering::Acquire)
         }

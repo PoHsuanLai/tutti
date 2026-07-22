@@ -11,12 +11,12 @@
 
 use std::sync::Arc;
 
+use crate::stretch;
+use crate::SamplerUnit;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, TransportReader, Wave};
-use crate::stretch;
-use crate::SamplerUnit;
+use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, TransportClockRead, Wave};
 
 const COMMAND_CAPACITY: usize = 64;
 const TRACK_CLIP_READER_ID: u64 = 0x_0000_0000_0000_DA03;
@@ -172,7 +172,7 @@ pub struct TrackClipReaderUnit {
     clips: Vec<ClipSlot>,
     rx: Receiver<ClipCommand>,
     sample_rate: f64,
-    transport: Option<Arc<dyn TransportReader>>,
+    transport: Option<Arc<dyn TransportClockRead>>,
 }
 
 impl TrackClipReaderUnit {
@@ -188,9 +188,7 @@ impl TrackClipReaderUnit {
         (unit, handle)
     }
 
-    pub fn with_transport(
-        transport: Arc<dyn TransportReader>,
-    ) -> (Self, TrackClipReaderHandle) {
+    pub fn with_transport(transport: Arc<dyn TransportClockRead>) -> (Self, TrackClipReaderHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
         let handle = TrackClipReaderHandle { tx };
         let unit = Self {
@@ -223,7 +221,7 @@ impl TrackClipReaderUnit {
     /// channel-less, so it shares zero mutable state with the live graph at any
     /// instant. Clips are then rebuilt from ECS in the Populate step via
     /// [`Self::insert_clip`].
-    pub fn detached(transport: Arc<dyn TransportReader>) -> Self {
+    pub fn detached(transport: Arc<dyn TransportClockRead>) -> Self {
         let (_tx, rx) = bounded(0);
         Self {
             clips: Vec::new(),
@@ -364,7 +362,6 @@ impl TrackClipReaderUnit {
             sampler.get_sample(pos)
         }
     }
-
 }
 
 impl Clone for TrackClipReaderUnit {
@@ -531,7 +528,7 @@ mod tests {
         }
     }
 
-    impl TransportReader for MockTransport {
+    impl TransportClockRead for MockTransport {
         fn is_playing(&self) -> bool {
             self.playing.load(Ordering::Relaxed)
         }
@@ -556,7 +553,9 @@ mod tests {
     }
 
     fn make_wave(samples: usize) -> Arc<Wave> {
-        let data: Vec<f32> = (0..samples).map(|i| (i as f32 + 1.0) / samples as f32).collect();
+        let data: Vec<f32> = (0..samples)
+            .map(|i| (i as f32 + 1.0) / samples as f32)
+            .collect();
         Arc::new(Wave::from_samples(44100.0, &data))
     }
 
@@ -609,8 +608,7 @@ mod tests {
         let wave = make_wave(100);
 
         for i in 0..3 {
-            let sampler =
-                SamplerUnit::with_transport(wave.clone(), transport.clone(), 0.0, None);
+            let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), 0.0, None);
             handle.send(ClipCommand::Add {
                 id: SlotId(i),
                 sampler,
@@ -679,7 +677,10 @@ mod tests {
 
         let mut out = [0.0f32; 2];
         unit.tick(&[], &mut out);
-        assert!(out[0] != 0.0 || out[1] != 0.0, "inserted clip should produce audio");
+        assert!(
+            out[0] != 0.0 || out[1] != 0.0,
+            "inserted clip should produce audio"
+        );
     }
 
     #[test]

@@ -352,7 +352,7 @@ impl PluginClient {
     /// [`Features::TRANSPORT`]; others always get a default.
     pub fn set_transport_source(
         &mut self,
-        reader: std::sync::Arc<dyn tutti_core::transport::TransportReader>,
+        reader: std::sync::Arc<dyn tutti_core::transport::TransportClockRead>,
     ) {
         self.inputs
             .transport

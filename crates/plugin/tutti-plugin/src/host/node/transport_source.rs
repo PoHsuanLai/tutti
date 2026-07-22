@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use atomic_float::AtomicF64;
 use std::sync::atomic::Ordering;
-use tutti_core::transport::TransportReader;
+use tutti_core::transport::TransportClockRead;
 
 use crate::host::node::input_slot::{BlockCtx, BlockInput};
 use crate::protocol::TransportInfo;
@@ -26,12 +26,12 @@ use crate::protocol::TransportInfo;
 /// via `Arc`).
 #[derive(Clone)]
 pub struct TransportSource {
-    reader: Arc<dyn TransportReader>,
+    reader: Arc<dyn TransportClockRead>,
     sample_rate: Arc<AtomicF64>,
 }
 
 impl TransportSource {
-    pub fn new(reader: Arc<dyn TransportReader>, sample_rate: f64) -> Self {
+    pub fn new(reader: Arc<dyn TransportClockRead>, sample_rate: f64) -> Self {
         Self {
             reader,
             sample_rate: Arc::new(AtomicF64::new(sample_rate)),
@@ -56,8 +56,12 @@ impl TransportSource {
             .with_recording(reader.is_recording())
             .with_sample_rate(sample_rate);
         // CLAP-style beats position; seconds derived from beats + tempo.
-        let beats = reader.current_beat_f64();
-        let seconds = if tempo > 0.0 { beats * 60.0 / tempo } else { 0.0 };
+        let beats = reader.current_beat();
+        let seconds = if tempo > 0.0 {
+            beats * 60.0 / tempo
+        } else {
+            0.0
+        };
         info = info.with_position_beats(beats, seconds);
         if let Some((start, end)) = reader.get_loop_range() {
             info = info.with_loop(reader.is_loop_enabled(), start, end);
@@ -93,7 +97,7 @@ mod tests {
         tempo: f64,
         playing: AtomicBool,
     }
-    impl TransportReader for TestTransport {
+    impl TransportClockRead for TestTransport {
         fn current_beat(&self) -> f64 {
             self.beat.load(Ordering::Acquire)
         }
@@ -123,7 +127,7 @@ mod tests {
             tempo,
             playing: AtomicBool::new(true),
         });
-        let src = TransportSource::new(Arc::clone(&t) as Arc<dyn TransportReader>, rate);
+        let src = TransportSource::new(Arc::clone(&t) as Arc<dyn TransportClockRead>, rate);
         (t, src)
     }
 

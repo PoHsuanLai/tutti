@@ -291,7 +291,7 @@ impl TransportHandle {
     }
 }
 
-impl super::TransportReader for TransportHandle {
+impl super::TransportClockRead for TransportHandle {
     fn current_beat(&self) -> f64 {
         self.transport.get_current_beat()
     }

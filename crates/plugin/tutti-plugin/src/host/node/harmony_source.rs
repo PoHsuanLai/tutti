@@ -2,7 +2,7 @@
 //!
 //! The VST3 counterpart of [`tutti_midi_runtime::MidiClipSource`]: a
 //! [`HarmonySource`] holds sorted, beat-tagged [`ChordValue`] / [`ScaleValue`]
-//! changes and a [`TransportReader`]. Each block it reads the transport beat,
+//! changes and a [`TransportClockRead`]. Each block it reads the transport beat,
 //! computes the beat range the upcoming block covers, and fills a reused
 //! [`HarmonyInputs`] with the changes whose beat falls in that range — their
 //! `sample_offset` stamped to the sample-accurate position inside the block.
@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use atomic_float::AtomicF64;
-use tutti_core::transport::TransportReader;
+use tutti_core::transport::TransportClockRead;
 
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
@@ -45,7 +45,7 @@ pub struct TimedScale {
 pub struct HarmonySource {
     chords: Arc<[TimedChord]>,
     scales: Arc<[TimedScale]>,
-    transport: Arc<dyn TransportReader>,
+    transport: Arc<dyn TransportClockRead>,
     sample_rate: f64,
     chord_cursor: Arc<AtomicU64>,
     scale_cursor: Arc<AtomicU64>,
@@ -58,7 +58,7 @@ impl HarmonySource {
     pub fn new(
         chords: impl IntoIterator<Item = TimedChord>,
         scales: impl IntoIterator<Item = TimedScale>,
-        transport: Arc<dyn TransportReader>,
+        transport: Arc<dyn TransportClockRead>,
         sample_rate: f64,
     ) -> Self {
         let mut c: Vec<TimedChord> = chords.into_iter().collect();
@@ -246,7 +246,7 @@ mod tests {
             self.beat.store(b, Ordering::Release);
         }
     }
-    impl TransportReader for TestTransport {
+    impl TransportClockRead for TestTransport {
         fn current_beat(&self) -> f64 {
             self.beat.load(Ordering::Acquire)
         }
@@ -300,7 +300,7 @@ mod tests {
         let src = HarmonySource::new(
             vec![chord(0.0, 0, "C"), chord(0.5, 7, "G")],
             vec![scale(0.0, 0, "C major")],
-            Arc::clone(&transport) as Arc<dyn TransportReader>,
+            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
             44100.0,
         );
         let mut out = HarmonyInputs::default();
@@ -319,7 +319,7 @@ mod tests {
         let src = HarmonySource::new(
             vec![chord(0.0, 0, "C")],
             Vec::new(),
-            Arc::clone(&transport) as Arc<dyn TransportReader>,
+            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
             44100.0,
         );
         let mut out = HarmonyInputs::default();
@@ -338,7 +338,7 @@ mod tests {
         let src = HarmonySource::new(
             vec![chord(0.0, 0, "C")],
             Vec::new(),
-            Arc::clone(&transport) as Arc<dyn TransportReader>,
+            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
             44100.0,
         );
         let mut out = HarmonyInputs::default();
@@ -352,7 +352,7 @@ mod tests {
         let src = HarmonySource::new(
             vec![chord(0.0, 0, "C"), chord(0.25, 7, "G")],
             Vec::new(),
-            Arc::clone(&transport) as Arc<dyn TransportReader>,
+            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
             44100.0,
         );
         let mut out = HarmonyInputs::default();

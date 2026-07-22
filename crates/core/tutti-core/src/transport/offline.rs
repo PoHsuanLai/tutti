@@ -1,4 +1,4 @@
-//! Offline transport — a simulated [`super::TransportReader`] that advances
+//! Offline transport — a simulated [`super::TransportClockRead`] that advances
 //! deterministically by sample count rather than wall clock.
 //!
 //! Primary consumer is offline audio export, but anything that needs a
@@ -34,8 +34,8 @@ impl Default for OfflineTransportConfig {
 
 /// Simulated transport that advances by sample count.
 ///
-/// Implements [`super::TransportReader`], so any node that accepts a
-/// `&dyn TransportReader` treats it interchangeably with the live
+/// Implements [`super::TransportClockRead`], so any node that accepts a
+/// `&dyn TransportClockRead` treats it interchangeably with the live
 /// [`super::TransportHandle`].
 ///
 /// # Example
@@ -143,7 +143,7 @@ impl OfflineTransport {
     }
 }
 
-impl super::TransportReader for OfflineTransport {
+impl super::TransportClockRead for OfflineTransport {
     fn current_beat(&self) -> f64 {
         self.current_beat.load(Ordering::Acquire)
     }
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn test_transport_reader_impl() {
-        use crate::TransportReader;
+        use crate::TransportClockRead;
 
         let timeline = OfflineTransport::new(&OfflineTransportConfig {
             start_beat: 0.0,
@@ -283,7 +283,7 @@ mod tests {
             loop_range: Some((0.0, 8.0)),
         });
 
-        // TransportReader methods
+        // TransportClockRead methods
         assert!(timeline.is_playing());
         assert!(!timeline.is_recording());
         assert!(!timeline.is_in_preroll());
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_transport_reader_no_loop() {
-        use crate::TransportReader;
+        use crate::TransportClockRead;
 
         let timeline = OfflineTransport::new(&OfflineTransportConfig {
             start_beat: 0.0,

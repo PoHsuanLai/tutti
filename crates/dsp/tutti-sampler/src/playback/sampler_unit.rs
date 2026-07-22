@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, TransportReader, Wave};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, TransportClockRead, Wave};
 
 use super::loop_crossfade::LoopCrossfade;
 
@@ -38,7 +38,7 @@ pub struct SamplerUnit {
     /// Optional transport for beat-synced playback.
     /// When set, sampler only plays when transport is rolling
     /// and uses beat position to compute sample offset.
-    transport: Option<Arc<dyn TransportReader>>,
+    transport: Option<Arc<dyn TransportClockRead>>,
 
     /// Start position in beats on the timeline.
     start_beat: f64,
@@ -108,7 +108,7 @@ impl SamplerUnit {
 
     pub fn with_transport(
         wave: Arc<Wave>,
-        transport: Arc<dyn TransportReader>,
+        transport: Arc<dyn TransportClockRead>,
         start_beat: f64,
         duration_beats: Option<f64>,
     ) -> Self {
@@ -132,7 +132,7 @@ impl SamplerUnit {
 
     pub fn set_transport(
         &mut self,
-        transport: Arc<dyn TransportReader>,
+        transport: Arc<dyn TransportClockRead>,
         start_beat: f64,
         duration_beats: Option<f64>,
     ) {
@@ -147,7 +147,7 @@ impl SamplerUnit {
     }
 
     /// Used by export to inject export timeline.
-    pub fn replace_transport(&mut self, transport: Arc<dyn TransportReader>) {
+    pub fn replace_transport(&mut self, transport: Arc<dyn TransportClockRead>) {
         self.transport = Some(transport);
     }
 
@@ -584,7 +584,7 @@ mod tests {
         }
     }
 
-    impl TransportReader for MockTransport {
+    impl TransportClockRead for MockTransport {
         fn current_beat(&self) -> f64 {
             self.beat
         }

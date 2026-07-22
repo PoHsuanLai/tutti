@@ -182,6 +182,7 @@ mod controllers;
 mod flex_data;
 mod stream;
 mod sysex;
+mod sysex8;
 mod system;
 mod utility;
 
@@ -197,6 +198,10 @@ pub use stream::{
 };
 pub use sysex::{
     SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,
+};
+pub use sysex8::{
+    sysex8_message, SYSEX8_STATUS_CONTINUE, SYSEX8_STATUS_END, SYSEX8_STATUS_SINGLE,
+    SYSEX8_STATUS_START,
 };
 
 #[cfg(test)]

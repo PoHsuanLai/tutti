@@ -12,7 +12,6 @@
 //! [`crate::core`] is framework-free.
 
 pub mod bus;
-pub mod input;
 pub mod routing;
 pub mod scheduled;
 pub mod sequence;
@@ -26,10 +25,6 @@ pub mod mpe;
 pub mod midi_plugin;
 
 pub use bus::MidiBusRes;
-pub use input::{
-    midi_input_event_system, MidiInputEvent, MidiInputObserver, MidiInputPlugin,
-    MidiInputTranslators,
-};
 pub use midi_plugin::{PendingMidi, TuttiMidiPlugin};
 pub use routing::{midi_routing_sync_system, MidiRoutingPlugin, MidiSink};
 pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi, ScheduledMidiPlugin};

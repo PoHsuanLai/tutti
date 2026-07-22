@@ -127,9 +127,8 @@ pub mod ecs;
 
 #[cfg(feature = "bevy")]
 pub use ecs::{
-    midi_input_event_system, midi_routing_sync_system, midi_sequence_setup_system,
-    midi_sequence_tick_system, tick_scheduled_midi, MidiBusRes, MidiInputEvent, MidiInputObserver,
-    MidiInputPlugin, MidiInputTranslators, MidiRoutingPlugin, MidiSequence, MidiSequenceNote,
+    midi_routing_sync_system, midi_sequence_setup_system, midi_sequence_tick_system,
+    tick_scheduled_midi, MidiBusRes, MidiRoutingPlugin, MidiSequence, MidiSequenceNote,
     MidiSequencePlugin, MidiSequenceState, MidiSink, MidiSynthMarker, PendingMidi, ScheduledMidi,
     ScheduledMidiPlugin, TuttiMidiPlugin,
 };

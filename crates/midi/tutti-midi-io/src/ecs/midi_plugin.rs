@@ -4,7 +4,6 @@
 //! I/O) out of the [`PendingMidi`] transient bevy-tutti inserted, then adds the
 //! per-duty sub-plugins:
 //!
-//! - [`MidiInputPlugin`](super::input::MidiInputPlugin) — hardware → ECS event bridge
 //! - [`MidiRoutingPlugin`](super::routing::MidiRoutingPlugin) — component-driven route table
 //! - [`MidiSequencePlugin`](super::sequence::MidiSequencePlugin) — transport-beat note firing
 //! - [`ScheduledMidiPlugin`](super::scheduled::ScheduledMidiPlugin) — time-delayed dispatch
@@ -51,7 +50,6 @@ impl Plugin for TuttiMidiPlugin {
             }
         }
 
-        app.add_plugins(super::input::MidiInputPlugin);
         app.add_plugins(super::routing::MidiRoutingPlugin);
         app.add_plugins(super::sequence::MidiSequencePlugin);
         app.add_plugins(super::scheduled::ScheduledMidiPlugin);

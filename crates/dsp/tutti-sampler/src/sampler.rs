@@ -68,7 +68,7 @@ impl Sampler {
     /// WRITE port: a cloneable [`Commands`] handle over the butler command
     /// channel. Drive streaming with `commands().send(Command::…)`.
     pub fn commands(&self) -> Commands {
-        Commands::new(self.butler_tx.clone(), self.butler.plans())
+        Commands::new(self.butler_tx.clone())
     }
 
     /// READ port: a cloneable [`Status`] snapshot carrying the sample rate and

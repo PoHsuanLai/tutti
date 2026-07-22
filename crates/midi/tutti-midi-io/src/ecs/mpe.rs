@@ -1,6 +1,6 @@
 //! MIDI Polyphonic Expression (MPE) read-side integration.
 //!
-//! Only compiled under `mpe`. [`mpe_setup_system`] reads [`MpeModeConfig`] at
+//! [`mpe_setup_system`] reads [`MpeModeConfig`] at
 //! startup and, if MPE is enabled and a [`MidiBusRes`](crate::MidiBusRes) is
 //! present, installs a [`MpeProcessor`](tutti_midi_runtime::MpeProcessor) on the
 //! bus and hands its `Arc<PerNoteExpression>` to [`MpeExpressionResource`] —

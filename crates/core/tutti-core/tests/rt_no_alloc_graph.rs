@@ -8,8 +8,6 @@
 //! of those (or in `Net`'s vertex iteration) shows up here as an
 //! allocation panic.
 
-#![cfg(feature = "std")]
-
 use assert_no_alloc::AllocDisabler;
 use parking_lot::Mutex;
 use tutti_core::dsp::{bell_hz, limiter_stereo, pan, sine_hz, AudioUnit};

@@ -11,7 +11,7 @@
 //! All three must reuse the pre-allocated `event_buffer` inside
 //! `MidiProcessor` without touching the allocator.
 
-#![cfg(all(feature = "std", feature = "midi"))]
+#![cfg(feature = "midi")]
 
 use std::sync::Arc;
 

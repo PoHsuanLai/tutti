@@ -54,7 +54,6 @@ const DRAIN_CHUNK: usize = 256;
 /// Per-frame: drain the clock-master ring and send each event to hardware MIDI
 /// out. Under `midi-hardware` this reaches the OS; otherwise it drains and
 /// drops (keeping the ring from backing up).
-#[cfg_attr(not(feature = "midi-hardware"), allow(unused_variables))]
 pub fn pump_clock_out_system(
     clock_out: Option<Res<ClockMasterRes>>,
     #[cfg(feature = "midi-hardware")] midi_io: Option<Res<super::device::MidiIoRes>>,

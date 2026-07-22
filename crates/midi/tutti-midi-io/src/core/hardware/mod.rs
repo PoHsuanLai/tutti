@@ -28,6 +28,7 @@ pub(crate) use output::{OutputCmd, OutputThread};
 pub use virtual_port::{VirtualMidiDestination, VirtualMidiSource};
 
 /// A detected MIDI device (input or output).
+#[cfg(feature = "midi-hardware")]
 #[derive(Debug, Clone)]
 pub struct MidiDevice {
     pub index: usize,

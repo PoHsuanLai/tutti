@@ -3,8 +3,6 @@
 //! called from the CPAL callback every buffer, and the LUFS publish
 //! step that writes into the `AtomicLufs` snapshot.
 
-#![cfg(feature = "std")]
-
 use assert_no_alloc::AllocDisabler;
 use std::time::Duration;
 use tutti_core::{MeteringContext, MeteringManager};

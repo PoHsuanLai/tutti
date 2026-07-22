@@ -15,8 +15,8 @@
 //!   immutable [`tutti_midi_types::MidiRoutingSnapshot`] values via [`arc_swap::ArcSwap`]
 //! - [`MidiOutputAggregator`] — aggregates MIDI output from multiple audio
 //!   units for delivery to hardware output
-//! - [`MpeProcessor`] / [`PerNoteExpression`] (behind `mpe` feature) — MPE
-//!   state machine mapping channel voice messages to per-note expression
+//! - [`MpeProcessor`] / [`PerNoteExpression`] — MPE state machine mapping
+//!   channel voice messages to per-note expression
 
 pub use tutti_midi_types;
 

@@ -16,11 +16,11 @@
 pub mod core;
 pub use core::error;
 pub use core::{Error, Result};
-pub use core::MidiDevice;
-// OS hardware orchestrator + the record its observer channel carries — only
-// present under `midi-hardware` (they own the `midir` edge).
+// OS hardware orchestrator, the device descriptor, and the record its observer
+// channel carries — only present under `midi-hardware` (they own the `midir`
+// edge).
 #[cfg(feature = "midi-hardware")]
-pub use core::{MidiInputRecord, MidiIo};
+pub use core::{MidiDevice, MidiInputRecord, MidiIo};
 pub use core::{InputProducerHandle, MidiPortManager, PortInfo, PortType};
 
 /// `MidiPortManager` and friends live in [`core::port`]; kept as a crate-root
@@ -120,13 +120,13 @@ pub mod prelude {
     pub use tutti_midi_types::prelude::*;
 
     pub use crate::{
-        MidiBus, MidiClipSource, MidiDevice, MidiEventSlot, MidiReceiver, MidiSender, MidiSnapshot,
+        MidiBus, MidiClipSource, MidiEventSlot, MidiReceiver, MidiSender, MidiSnapshot,
         TimedMidiEvent,
     };
 
-    // The OS orchestrator only exists under `midi-hardware`.
+    // The OS orchestrator + device descriptor only exist under `midi-hardware`.
     #[cfg(feature = "midi-hardware")]
-    pub use crate::MidiIo;
+    pub use crate::{MidiDevice, MidiIo};
 }
 
 // --- Bevy ECS integration ---

@@ -1,6 +1,7 @@
-//! The sampler's two-trait I/O vocabulary: [`AudioIn`] (pull frames from a
-//! source) and [`AudioOut`] (push frames to a destination). Everything the
-//! sampler reads or writes speaks one of these two shapes.
+//! The engine's two-trait I/O vocabulary: [`AudioIn`] (pull frames from a
+//! source) and [`AudioOut`] (push frames to a destination). Every audio source
+//! and sink in tutti — mic, decoded file, disk stream, plugin boundary, WAV
+//! encoder — speaks one of these two shapes.
 //!
 //! ```text
 //!   AudioIn  ──poll_into──▶  [your buffer]  ──write──▶  AudioOut
@@ -11,6 +12,10 @@
 //! poll a block from the source, write that block to the sink, repeat. Mic,
 //! decoded file, disk stream, neural generator — all are just an `AudioIn`; a
 //! WAV file, a network socket, another ring — all are just an `AudioOut`.
+//!
+//! Homed in `tutti-types`, the root leaf, so every subsystem (sampler, export,
+//! analysis, the plugin hosts) can implement these without depending on any
+//! particular engine crate.
 //!
 //! # The frame: `[S; CH]`, generic in element and channel count
 //!
@@ -40,7 +45,7 @@
 //!
 //! Neither trait is invoked per-sample on the audio thread. They move frames in
 //! *blocks* on a cold/background path (a capture pump, an offline render). The
-//! per-sample graph read stays behind the monomorphized `ClipSource` enum and
+//! per-sample graph read stays behind the monomorphized clip-source enum and
 //! must remain alloc-free / lock-free; these block interfaces do not touch it.
 
 /// A pull source of audio frames. The one method fills a caller-owned buffer of

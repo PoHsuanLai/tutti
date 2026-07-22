@@ -75,12 +75,13 @@ pub use atomic_float::{AtomicF32, AtomicF64};
 // so sibling crates can write `tutti_core::Arc` etc. (`parking_lot` locks and
 // `hashbrown` maps are deliberate non-std choices — sibling crates name those
 // crates directly rather than re-exporting them here.)
-pub use std::sync::atomic::{
-    AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
-};
+pub use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 pub use std::sync::Arc;
 
 pub use tutti_types::{AudioThreadCell, RtEventBuf, RtScratchBuf};
+// The engine's I/O edge vocabulary (mic/file/plugin sources + sinks), homed in
+// `tutti-types` and surfaced here so consumers reach it via the engine root.
+pub use tutti_types::io::{self, pump, AudioIn, AudioOut};
 
 // Real-time audio-thread primitives: the scratch buffer + the denormals guard.
 pub mod rt;
@@ -112,9 +113,9 @@ pub use fundsp::read::WaveMetadata;
 // `StreamDecoder` decodes arbitrary sample-frame ranges incrementally from
 // disk (real streaming). Butler-thread only. Same codec gating as the rest of
 // the decode path.
+pub use fundsp::realnet::NetBackend;
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 pub use fundsp::stream::StreamDecoder;
-pub use fundsp::realnet::NetBackend;
 // `Fade` is used by the graph crossfade path (`AudioGraph::crossfade_boxed`,
 // reverb/distortion node-rebuild). The rest of `sequencer` (Sequencer/EventId/
 // ReplayMode) had no consumers and was dropped — see docs/fundsp-fork-audit.md.

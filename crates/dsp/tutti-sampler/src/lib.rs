@@ -24,8 +24,9 @@
 //! [`pending_load`], [`reconcile`], [`track_clip_reader`]). Value types and DSP
 //! internals live in purpose-named namespaces:
 //!
-//! - [`io`] — the two-trait I/O vocabulary: [`AudioIn`] (pull frames) +
-//!   [`AudioOut`] (push frames). Recording is a pump from one to the other.
+//! - [`AudioIn`] / [`AudioOut`] / [`pump`] — the engine's I/O edge vocabulary,
+//!   re-exported from [`tutti_types::io`]. Recording is a pump from one to the
+//!   other.
 //! - [`capture`] — the write side's live impl: [`WavSink`](capture::WavSink),
 //!   an [`AudioOut`]
 //! - [`stretch`] — time-stretch / pitch-shift DSP unit
@@ -64,11 +65,11 @@ mod macros;
 
 mod node_id;
 
-/// The two-trait I/O vocabulary ([`AudioIn`] / [`AudioOut`]) every source and
-/// sink speaks, plus the [`pump`](io::pump) that moves frames from one to the
-/// other (the whole of "recording", minus the caller's loop + stop policy).
-pub mod io;
-pub use io::{pump, AudioIn, AudioOut};
+// The engine's I/O edge vocabulary lives in `tutti-types` (the root leaf) so
+// every subsystem shares one definition. Re-exported here for back-compat so
+// `tutti_sampler::{AudioIn, AudioOut, pump}` paths keep resolving.
+pub use tutti_core::io;
+pub use tutti_core::io::{pump, AudioIn, AudioOut};
 
 // Each domain is a self-contained module owning its audio engine + (under the
 // `bevy` feature) its Components / Systems / Plugin. The disk-streaming engine —
@@ -82,21 +83,22 @@ pub mod playback;
 // Bevy-free DSP leaves + value types from `playback` — usable for direct
 // FunDSP-graph integration without the ECS layer.
 pub use butler::{LruCache, StreamPin, WavSink};
-pub use playback::{ClipCommand, ClipReader, ClipSpec, Direction, LoopSetting, PendingPlayback,
-    Playback, SamplerUnit, SamplerUnitConfig, SlotId, StreamingClipConfig,
-    StreamingClipReader, StreamingSamplerUnit, TransportPlacement, TrackClipReaderHandle,
-    TrackClipReaderUnit, Voice, VoiceNode, VoiceSource};
+pub use playback::{
+    ClipCommand, ClipReader, ClipSpec, Direction, LoopSetting, PendingPlayback, Playback,
+    SamplerUnit, SamplerUnitConfig, SlotId, StreamingClipConfig, StreamingClipReader,
+    StreamingSamplerUnit, TrackClipReaderHandle, TrackClipReaderUnit, TransportPlacement, Voice,
+    VoiceNode, VoiceSource,
+};
 // Bevy ECS surface of `playback`.
 #[cfg(feature = "bevy")]
 pub use playback::{
     audio_cleanup_system, audio_parameter_sync_system, audio_playback_system,
-    bump_param_epoch_sampler, poll_wave_imports, promote_pending_samplers, reconcile_sampler_params,
-    reconcile_sampler_volume, time_stretch_sync_system, AudioEmitter, AudioPlaybackState,
-    AudioVolume, DespawnOnFinish, PendingSamplerLoad, PlayAudio,
-    SamplerLooping, SamplerNode, SamplerSpeed,
-    TimeStretch, TimeStretchControl, TrackClipReaderNode,
-    TrackClipReaderRef, TuttiPlaybackPlugin, WaveImportQueue, WaveAssetLoader,
-    WaveAssetLoaderError,
+    bump_param_epoch_sampler, poll_wave_imports, promote_pending_samplers,
+    reconcile_sampler_params, reconcile_sampler_volume, time_stretch_sync_system, AudioEmitter,
+    AudioPlaybackState, AudioVolume, DespawnOnFinish, PendingSamplerLoad, PlayAudio,
+    SamplerLooping, SamplerNode, SamplerSpeed, TimeStretch, TimeStretchControl,
+    TrackClipReaderNode, TrackClipReaderRef, TuttiPlaybackPlugin, WaveAssetLoader,
+    WaveAssetLoaderError, WaveImportQueue,
 };
 
 // The async disk-streaming engine (butler thread + the `Sampler` handle). All

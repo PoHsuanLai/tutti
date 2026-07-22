@@ -1,6 +1,21 @@
 //! Named, cross-process audio storage. `channels × samples_per_channel`
 //! of `f32`/`f64` samples in shared memory.
 //!
+//! # The process edge, in the engine's I/O vocabulary
+//!
+//! This slab is where audio genuinely crosses the subprocess boundary, so it
+//! is the concrete realisation of [`tutti_types::io`]'s two roles at that edge:
+//! [`write_channel`](AudioSlab::write_channel) is the
+//! [`AudioOut`](tutti_types::io::AudioOut) side (push a block of samples into
+//! the shared region) and [`read_channel_into`](AudioSlab::read_channel_into)
+//! is the [`AudioIn`](tutti_types::io::AudioIn) side (poll a block back out).
+//! The slab does not `impl` those traits directly: they move *interleaved*
+//! `[S; CH]` frames, whereas the slab is *mono-planar* — one fixed contiguous
+//! region per channel, addressed by index — because the plugin ABIs it feeds
+//! are deinterleaved and the memcpy must stay a straight per-channel copy with
+//! no transpose. The traits name what each direction *is*; this module is the
+//! planar, fixed-region edge that carries it across the process boundary.
+//!
 //! # Why shared memory
 //!
 //! Each plugin runs in its own subprocess, so the host and the plugin live
@@ -142,7 +157,9 @@ impl AudioSlab {
     // The single-writer-per-channel invariant is the caller's responsibility
     // (upheld by the control-channel handshake; see the module docs).
 
-    /// Copy `data` into `channel`'s region of the shared buffer.
+    /// Copy `data` into `channel`'s region of the shared buffer. The per-channel
+    /// [`AudioOut`](tutti_types::io::AudioOut) push at the process edge: a
+    /// multichannel writer calls this once per channel to place one block.
     ///
     /// Caller must ensure single-writer access per channel — there is no
     /// internal locking. Errors if `channel` is out of range or `data` is
@@ -158,9 +175,13 @@ impl AudioSlab {
         Ok(())
     }
 
-    /// Copy `channel`'s region out into `output`. Reads
-    /// `min(samples_per_channel, output.len())` samples and returns that
-    /// count. Errors if `channel` is out of range.
+    /// Copy `channel`'s region out into `output`. The per-channel
+    /// [`AudioIn`](tutti_types::io::AudioIn) poll at the process edge: a
+    /// multichannel reader calls this once per channel to pull one block, and
+    /// the returned count mirrors `AudioIn::poll_into`'s "how many frames I
+    /// actually produced" contract. Reads `min(samples_per_channel,
+    /// output.len())` samples and returns that count. Errors if `channel` is
+    /// out of range.
     pub fn read_channel_into<T: Sample>(&self, channel: usize, output: &mut [T]) -> Result<usize> {
         self.check_channel(channel)?;
         let copy_samples = self.layout.samples_per_channel.min(output.len());

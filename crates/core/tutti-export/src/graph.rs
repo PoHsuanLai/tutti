@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tutti_core::io::AudioOut;
 use tutti_core::transport::{OfflineTransport, OfflineTransportConfig};
 
 /// `(start_beat, end_beat)`. Convenience alias for offline-transport loop
@@ -435,17 +436,23 @@ fn run_stream_to_file(
     let mut progress =
         ProgressEmitter::new(on_progress, Phase::Render, total_samples, spec.sample_rate);
 
-    let result = {
+    // The sink defers its per-block encoder error to finalize (the AudioOut
+    // contract); surface it after the render loop.
+    let (render_result, sink_result) = {
         let encoder_ref = &mut *encoder;
         let processor_ref = &mut processor;
         let mut sink = StreamSink::new(|l: &[f32], r: &[f32]| {
             let chunk = processor_ref.process_chunk(l, r);
-            encoder_ref.write_chunk(chunk)
+            encoder_ref
+                .write_chunk(chunk)
+                .map_err(|e| std::io::Error::other(e.to_string()))
         });
-        render::render(request, &mut sink, &mut progress)
+        let render_result = render::render(request, &mut sink, &mut progress);
+        (render_result, sink.finalize())
     };
     progress.finish();
-    result?;
+    render_result?;
+    sink_result.map_err(Error::Io)?;
     encoder.finalize()?;
 
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);

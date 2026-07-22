@@ -11,6 +11,10 @@
 #[cfg(any(feature = "wav", feature = "flac"))]
 pub(crate) mod sink;
 
+// Shared float→PCM quantization used by the WAV and AIFF encoders.
+#[cfg(any(feature = "wav", feature = "aiff"))]
+pub(crate) mod pcm;
+
 #[cfg(feature = "wav")]
 pub(crate) mod bwav;
 #[cfg(feature = "wav")]

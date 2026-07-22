@@ -1,6 +1,7 @@
 //! AIFF encoder (hand-rolled IFF chunks + 80-bit IEEE 754 extended sample
 //! rate). No streaming support — AIFF requires total size up front.
 
+use crate::encode::pcm::{f32_to_i16, f32_to_i24};
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
@@ -130,16 +131,6 @@ fn ieee_extended_to_f64(bytes: &[u8; 10]) -> f64 {
     } else {
         val
     }
-}
-
-#[inline]
-fn f32_to_i16(sample: f32) -> i16 {
-    (sample.clamp(-1.0, 1.0) * 32767.0) as i16
-}
-
-#[inline]
-fn f32_to_i24(sample: f32) -> i32 {
-    (sample.clamp(-1.0, 1.0) * 8388607.0) as i32
 }
 
 #[cfg(test)]

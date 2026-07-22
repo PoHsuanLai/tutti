@@ -1,22 +1,25 @@
-//! Block consumer abstraction for the render stage.
+//! Block consumers for the render stage, speaking the cold-path [`AudioOut`]
+//! vocabulary.
 //!
-//! [`RenderSink`] is a one-method trait; two impls cover the current needs:
-//! [`BufferedSink`] collects blocks into two `Vec<f32>`s, and
-//! [`StreamSink`] forwards each gated block to a user-supplied closure (which
-//! typically calls into an encoder).
-//!
-//! [`BlockCursor`] packs the per-block positioning and gating logic so both
-//! sinks share one implementation.
+//! The driver gates each block through a [`BlockCursor`] (latency-trim +
+//! output-length cap) *before* handing it to a sink, so the gate stays off the
+//! sink trait: a sink just accepts the frames it is given. Two sinks cover the
+//! current needs — [`BufferedSink`] collects frames into two `Vec<f32>` planes
+//! (read back with `into_stereo`, since [`AudioOut::finalize`] returns `()` not
+//! data), and [`StreamSink`] forwards each block to a user closure that pushes
+//! it into an encoder.
 
-use crate::Result;
+use std::io;
 use std::ops::Range;
+use tutti_core::io::AudioOut;
 
-/// Per-block positioning handed from the driver to a sink. Encapsulates the
-/// latency-gate + output-length-cap arithmetic that both sinks need.
+/// Per-block positioning handed from the driver to its gate. Encapsulates the
+/// latency-gate + output-length-cap arithmetic. It is applied *before* the
+/// sink sees a block, so it never rides on the [`AudioOut`] trait.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BlockCursor {
     /// Absolute sample index of the block's first sample (index 0 in the
-    /// slices the sink receives).
+    /// slices the gate receives).
     pub block_start_sample: usize,
     /// Leading samples that should be dropped (look-ahead latency).
     pub latency_samples: usize,
@@ -44,15 +47,7 @@ impl BlockCursor {
     }
 }
 
-/// A consumer of rendered stereo blocks. The driver calls `accept_block`
-/// once per processed chunk, passing a fresh [`BlockCursor`] that describes
-/// where this block sits in the overall render.
-pub(crate) trait RenderSink {
-    fn accept_block(&mut self, left: &[f32], right: &[f32], cursor: BlockCursor) -> Result<usize>;
-}
-
-/// Collects blocks into two `Vec<f32>`s, dropping samples that fall outside
-/// the cursor window.
+/// Collects gated stereo frames into two `Vec<f32>` planes.
 pub(crate) struct BufferedSink {
     left: Vec<f32>,
     right: Vec<f32>,
@@ -71,38 +66,64 @@ impl BufferedSink {
     }
 }
 
-impl RenderSink for BufferedSink {
-    fn accept_block(&mut self, left: &[f32], right: &[f32], cursor: BlockCursor) -> Result<usize> {
-        let window = cursor.window(left.len());
-        let kept = window.end - window.start;
-        if kept > 0 {
-            self.left.extend_from_slice(&left[window.clone()]);
-            self.right.extend_from_slice(&right[window]);
+impl AudioOut for BufferedSink {
+    fn write(&mut self, frames: &[[f32; 2]]) {
+        self.left.reserve(frames.len());
+        self.right.reserve(frames.len());
+        for &[l, r] in frames {
+            self.left.push(l);
+            self.right.push(r);
         }
-        Ok(kept)
+    }
+
+    fn finalize(self) -> io::Result<()> {
+        // Buffered output is read back via `into_stereo`, not through finalize.
+        Ok(())
     }
 }
 
-/// Forwards each gated block to an `FnMut` closure. The closure typically
-/// pushes the chunk into a streaming encoder.
-pub(crate) struct StreamSink<F: FnMut(&[f32], &[f32]) -> Result<()>> {
+/// Forwards each block to an `FnMut` closure as planar slices. The closure
+/// typically pushes the chunk into a streaming encoder; any error it returns is
+/// stashed and surfaced at [`finalize`](AudioOut::finalize).
+pub(crate) struct StreamSink<F: FnMut(&[f32], &[f32]) -> io::Result<()>> {
     f: F,
+    /// Reusable planar staging so the closure keeps its `&[f32], &[f32]` shape.
+    left: Vec<f32>,
+    right: Vec<f32>,
+    deferred: io::Result<()>,
 }
 
-impl<F: FnMut(&[f32], &[f32]) -> Result<()>> StreamSink<F> {
+impl<F: FnMut(&[f32], &[f32]) -> io::Result<()>> StreamSink<F> {
     pub fn new(f: F) -> Self {
-        Self { f }
+        Self {
+            f,
+            left: Vec::new(),
+            right: Vec::new(),
+            deferred: Ok(()),
+        }
     }
 }
 
-impl<F: FnMut(&[f32], &[f32]) -> Result<()>> RenderSink for StreamSink<F> {
-    fn accept_block(&mut self, left: &[f32], right: &[f32], cursor: BlockCursor) -> Result<usize> {
-        let window = cursor.window(left.len());
-        let kept = window.end - window.start;
-        if kept > 0 {
-            (self.f)(&left[window.clone()], &right[window])?;
+impl<F: FnMut(&[f32], &[f32]) -> io::Result<()>> AudioOut for StreamSink<F> {
+    fn write(&mut self, frames: &[[f32; 2]]) {
+        if self.deferred.is_err() || frames.is_empty() {
+            return;
         }
-        Ok(kept)
+        self.left.clear();
+        self.right.clear();
+        self.left.reserve(frames.len());
+        self.right.reserve(frames.len());
+        for &[l, r] in frames {
+            self.left.push(l);
+            self.right.push(r);
+        }
+        if let Err(e) = (self.f)(&self.left, &self.right) {
+            self.deferred = Err(e);
+        }
+    }
+
+    fn finalize(self) -> io::Result<()> {
+        self.deferred
     }
 }
 
@@ -117,6 +138,12 @@ mod tests {
             samples_kept_so_far: kept,
             output_length,
         }
+    }
+
+    /// Interleave two planar slices into stereo frames, mirroring the driver's
+    /// pre-sink packing so these tests exercise the same input shape.
+    fn frames(left: &[f32], right: &[f32]) -> Vec<[f32; 2]> {
+        left.iter().zip(right).map(|(&l, &r)| [l, r]).collect()
     }
 
     #[test]
@@ -152,20 +179,16 @@ mod tests {
     }
 
     #[test]
-    fn buffered_sink_collects_windowed_samples() {
+    fn buffered_sink_collects_frames() {
         let mut sink = BufferedSink::with_capacity(16);
-        let block = vec![1.0_f32; 8];
-        let kept = sink
-            .accept_block(&block, &block, cursor(0, 0, 0, 16))
-            .unwrap();
-        assert_eq!(kept, 8);
-        let kept = sink
-            .accept_block(&block, &block, cursor(8, 0, 8, 16))
-            .unwrap();
-        assert_eq!(kept, 8);
+        let block = frames(&[1.0; 8], &[2.0; 8]);
+        sink.write(&block);
+        sink.write(&block);
         let (l, r) = sink.into_stereo();
         assert_eq!(l.len(), 16);
         assert_eq!(r.len(), 16);
+        assert!(l.iter().all(|&x| x == 1.0));
+        assert!(r.iter().all(|&x| x == 2.0));
     }
 
     #[test]
@@ -176,10 +199,18 @@ mod tests {
                 captured.extend_from_slice(l);
                 Ok(())
             });
-            let block = vec![2.0_f32; 8];
-            sink.accept_block(&block, &block, cursor(0, 0, 0, 16))
-                .unwrap();
+            sink.write(&frames(&[3.0; 8], &[3.0; 8]));
+            sink.finalize().unwrap();
         }
         assert_eq!(captured.len(), 8);
+    }
+
+    #[test]
+    fn stream_sink_defers_closure_error_to_finalize() {
+        let mut sink = StreamSink::new(|_l: &[f32], _r: &[f32]| Err(io::Error::other("boom")));
+        // write() must not surface the error…
+        sink.write(&frames(&[1.0; 4], &[1.0; 4]));
+        // …finalize() does.
+        assert!(sink.finalize().is_err());
     }
 }

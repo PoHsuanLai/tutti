@@ -35,7 +35,9 @@ pub mod mpe;
 
 pub use clip_player::{CompositeMidiSource, MidiClipSource, TimedClipEvent};
 pub use clock_master::ClockMaster;
-pub use endpoint::{DeviceIdentity, EndpointNegotiator, FunctionBlock};
+pub use endpoint::{
+    DeviceIdentity, DiscoveredEndpoint, EndpointInquiry, EndpointNegotiator, FunctionBlock,
+};
 pub use jr_timestamp::{JrClock, JrReceiver, JrStamper};
 pub use output_collector::{
     midi_output_channel, midi_output_channel_with_capacity, MidiOutputConsumer, MidiOutputProducer,

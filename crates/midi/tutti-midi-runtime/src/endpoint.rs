@@ -11,7 +11,7 @@
 //! pure (no interior mutation), so it is trivially testable and safe to call
 //! from any thread.
 
-use tutti_midi_types::midi2::ump_stream::UmpStream;
+use tutti_midi_types::midi2::ump_stream::{Direction, UmpStream};
 use tutti_midi_types::midi2::UmpMessage;
 use tutti_midi_types::ump::{endpoint_name, product_instance_id};
 use tutti_midi_types::{
@@ -168,6 +168,162 @@ impl EndpointNegotiator {
     }
 }
 
+/// What an [`EndpointInquiry`] has learned about a peer from its discovery-reply
+/// stream. Fields fill in as the matching notifications arrive; [`name`] /
+/// [`product_instance_id`] stay empty until their (possibly multi-packet)
+/// notifications complete.
+///
+/// [`name`]: Self::name
+/// [`product_instance_id`]: Self::product_instance_id
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DiscoveredEndpoint {
+    pub ump_version: Option<UmpVersion>,
+    pub capabilities: EndpointCapabilities,
+    pub protocol: Option<Protocol>,
+    pub jr: JrTimestamps,
+    pub identity: Option<DeviceIdentity>,
+    pub name: String,
+    pub product_instance_id: String,
+    pub function_blocks: Vec<FunctionBlock>,
+}
+
+/// The **discoverer** half of UMP-Stream endpoint negotiation — the counterpart
+/// to [`EndpointNegotiator`] (the responder). Build its [`request`](Self::request)
+/// (an Endpoint Discovery asking for everything), send it, then feed each reply
+/// event through [`ingest`](Self::ingest); [`result`](Self::result) yields the
+/// assembled [`DiscoveredEndpoint`] once at least the Endpoint Info notification
+/// has arrived.
+///
+/// Multi-packet text notifications (Endpoint Name, Product Instance Id) are
+/// reassembled by accumulating their words until the message decodes — the
+/// receive counterpart to `push_ump_stream_packets`.
+#[derive(Clone, Debug, Default)]
+pub struct EndpointInquiry {
+    discovered: DiscoveredEndpoint,
+    saw_info: bool,
+    /// In-progress Endpoint Name packet words (across multi-packet messages).
+    name_words: Vec<u32>,
+    /// In-progress Product Instance Id packet words.
+    product_words: Vec<u32>,
+}
+
+impl EndpointInquiry {
+    /// A fresh inquiry with no accumulated state.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The outbound Endpoint Discovery this inquiry sends to probe a peer, asking
+    /// for every reply. Identical to [`EndpointNegotiator::discovery_request`].
+    pub fn request() -> MidiEvent {
+        EndpointNegotiator::discovery_request()
+    }
+
+    /// Feed one reply event from the peer. Non-UMP-Stream events are ignored.
+    /// Returns `true` if the event advanced the discovered state.
+    pub fn ingest(&mut self, event: &MidiEvent) -> bool {
+        let Ok(UmpMessage::UmpStream(stream)) = UmpMessage::try_from(event.data_words()) else {
+            return false;
+        };
+        match stream {
+            UmpStream::EndpointInfo(m) => {
+                self.discovered.ump_version = Some(UmpVersion {
+                    major: m.ump_version_major(),
+                    minor: m.ump_version_minor(),
+                });
+                let mut caps = EndpointCapabilities::empty();
+                caps.set(EndpointCapabilities::MIDI2_PROTOCOL, m.supports_midi2_protocol());
+                caps.set(EndpointCapabilities::MIDI1_PROTOCOL, m.supports_midi1_protocol());
+                caps.set(
+                    EndpointCapabilities::SEND_JR,
+                    m.supports_sending_jr_timestamps(),
+                );
+                caps.set(
+                    EndpointCapabilities::RECEIVE_JR,
+                    m.supports_receiving_jr_timestamps(),
+                );
+                self.discovered.capabilities = caps;
+                self.saw_info = true;
+                true
+            }
+            UmpStream::DeviceIdentity(m) => {
+                self.discovered.identity = Some(DeviceIdentity {
+                    manufacturer: m.device_manufacturer().map(u8::from),
+                    family: u16::from(m.device_family()),
+                    family_model: u16::from(m.device_family_model_number()),
+                    software_version: m.software_version().map(u8::from),
+                });
+                true
+            }
+            UmpStream::StreamConfigurationNotification(m) => {
+                self.discovered.protocol = Some(match m.protocol() {
+                    1 => Protocol::Midi1,
+                    _ => Protocol::Midi2,
+                });
+                let mut jr = JrTimestamps::empty();
+                jr.set(JrTimestamps::SEND, m.send_jr_timestamps());
+                jr.set(JrTimestamps::RECEIVE, m.receive_jr_timestamps());
+                self.discovered.jr = jr;
+                true
+            }
+            UmpStream::FunctionBlockInfo(m) => {
+                self.discovered.function_blocks.push(FunctionBlock {
+                    block_number: u8::from(m.function_block_number()),
+                    first_group: u8::from(m.first_group()),
+                    num_groups: m.number_of_groups_spanned(),
+                    direction: match m.direction() {
+                        Direction::Input => FunctionBlockDirection::Input,
+                        Direction::Output => FunctionBlockDirection::Output,
+                        _ => FunctionBlockDirection::Bidirectional,
+                    },
+                });
+                true
+            }
+            UmpStream::EndpointName(_) => {
+                self.name_words.extend_from_slice(event.data_words());
+                if let Some(name) = decode_endpoint_name(&self.name_words) {
+                    self.discovered.name = name;
+                    self.name_words.clear();
+                }
+                true
+            }
+            UmpStream::ProductInstanceId(_) => {
+                self.product_words.extend_from_slice(event.data_words());
+                if let Some(id) = decode_product_instance_id(&self.product_words) {
+                    self.discovered.product_instance_id = id;
+                    self.product_words.clear();
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The assembled endpoint, or `None` until the Endpoint Info notification has
+    /// been ingested (the minimum for a meaningful result).
+    pub fn result(&self) -> Option<&DiscoveredEndpoint> {
+        self.saw_info.then_some(&self.discovered)
+    }
+}
+
+/// Decode a (possibly multi-packet) Endpoint Name from accumulated UMP-Stream
+/// words, or `None` if the words don't yet form a complete message.
+fn decode_endpoint_name(words: &[u32]) -> Option<String> {
+    match UmpMessage::try_from(words).ok()? {
+        UmpMessage::UmpStream(UmpStream::EndpointName(m)) => Some(m.name()),
+        _ => None,
+    }
+}
+
+/// Decode a (possibly multi-packet) Product Instance Id from accumulated
+/// UMP-Stream words, or `None` if not yet complete.
+fn decode_product_instance_id(words: &[u32]) -> Option<String> {
+    match UmpMessage::try_from(words).ok()? {
+        UmpMessage::UmpStream(UmpStream::ProductInstanceId(m)) => Some(m.id()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +431,52 @@ mod tests {
             UmpMessage::try_from(replies[0].data_words()).unwrap(),
             UmpMessage::UmpStream(UmpStream::DeviceIdentity(_))
         ));
+    }
+
+    #[test]
+    fn inquiry_reconstructs_responder_from_its_reply_stream() {
+        // Full loopback: the responder's replies to a discovery, fed back into
+        // the discoverer, reconstruct the responder's declared identity/topology.
+        let n = negotiator();
+        let replies = n.respond_to(&EndpointInquiry::request());
+
+        let mut inquiry = EndpointInquiry::new();
+        for r in &replies {
+            inquiry.ingest(r);
+        }
+        let d = inquiry.result().expect("Endpoint Info was in the reply stream");
+
+        assert_eq!(d.ump_version, Some(UmpVersion::V1_1));
+        assert!(d.capabilities.contains(EndpointCapabilities::MIDI2_PROTOCOL));
+        assert!(d.capabilities.contains(EndpointCapabilities::MIDI1_PROTOCOL));
+        assert_eq!(d.protocol, Some(Protocol::Midi2));
+        assert_eq!(
+            d.identity,
+            Some(DeviceIdentity {
+                manufacturer: [0x00, 0x21, 0x09],
+                family: 0x1234,
+                family_model: 0x0001,
+                software_version: [1, 0, 0, 0],
+            })
+        );
+        assert_eq!(d.name, "Tutti");
+        assert_eq!(d.product_instance_id, "tutti-0001");
+        assert_eq!(d.function_blocks.len(), 1);
+        assert_eq!(d.function_blocks[0].block_number, 0);
+        assert_eq!(
+            d.function_blocks[0].direction,
+            FunctionBlockDirection::Bidirectional
+        );
+    }
+
+    #[test]
+    fn inquiry_has_no_result_until_endpoint_info_seen() {
+        let mut inquiry = EndpointInquiry::new();
+        // A device-identity reply alone isn't enough.
+        inquiry.ingest(&MidiEvent::device_identity([1, 2, 3], 4, 5, [6, 7, 8, 9]));
+        assert!(inquiry.result().is_none());
+        // A non-UMP-Stream event is ignored.
+        assert!(!inquiry.ingest(&MidiEvent::note_on(0, 0, 60, 0x8000)));
     }
 
     #[test]

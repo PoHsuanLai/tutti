@@ -18,7 +18,7 @@
 use crate::host::ipc_client::PluginBridge;
 use crate::host::node::BlockPayload;
 use crate::error::Result;
-use crate::protocol::SampleFormat;
+use crate::protocol::{MidiEventVec, SampleFormat};
 use tutti_core::{BufferMut, BufferRef, Sample as FundspSample, F32, F64};
 
 /// Matches fundsp's `MAX_BUFFER_SIZE` (`1 << 6`). Blocks of this size are
@@ -218,8 +218,15 @@ impl Batcher {
     /// Send inputs, process, receive outputs, reset cursors. Any bridge
     /// failure zero-fills `size` output samples and returns.
     /// Unpack a [`BlockPayload`] into the positional `bridge.process` call. The
-    /// one place the host-side aggregate meets the (unchanged) IPC boundary.
-    fn dispatch(&self, bridge: &PluginBridge, size: usize, payload: BlockPayload) -> bool {
+    /// one place the host-side aggregate meets the IPC boundary; `midi_out` is
+    /// the caller-owned sink the plugin's MIDI-out is drained into.
+    fn dispatch(
+        &self,
+        bridge: &PluginBridge,
+        size: usize,
+        payload: BlockPayload,
+        midi_out: &mut MidiEventVec,
+    ) -> bool {
         bridge.process(
             size,
             payload.midi,
@@ -227,10 +234,16 @@ impl Batcher {
             payload.note_expression,
             payload.harmony,
             payload.transport,
+            midi_out,
         )
     }
 
-    pub(super) fn flush<T: Scalar>(&mut self, bridge: &PluginBridge, payload: BlockPayload) {
+    pub(super) fn flush<T: Scalar>(
+        &mut self,
+        bridge: &PluginBridge,
+        payload: BlockPayload,
+        midi_out: &mut MidiEventVec,
+    ) {
         let size = self.write_pos;
         if size == 0 {
             return;
@@ -251,7 +264,7 @@ impl Batcher {
         // loaders DO consume (native `note_id`-addressed note-expression), but
         // per-note expression currently reaches plugins via the MIDI-2 UMP stream
         // converted at the format boundary — the field awaits a producer.
-        if !self.dispatch(bridge, size, payload) {
+        if !self.dispatch(bridge, size, payload, midi_out) {
             T::silence_tick(self, size, self.outputs);
             self.drain_to(size);
             return;
@@ -273,6 +286,7 @@ impl Batcher {
         input: &BufferRef<'_, T::Marker>,
         output: &mut BufferMut<'_, T::Marker>,
         payload: BlockPayload,
+        midi_out: &mut MidiEventVec,
     ) {
         for ch in 0..self.inputs {
             if T::send_block(self, bridge, ch, size, input).is_err() {
@@ -282,7 +296,7 @@ impl Batcher {
         }
 
         // See `flush` for the payload/wire note.
-        if !self.dispatch(bridge, size, payload) {
+        if !self.dispatch(bridge, size, payload, midi_out) {
             T::silence_block(output, size, self.outputs);
             return;
         }

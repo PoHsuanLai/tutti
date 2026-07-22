@@ -10,11 +10,34 @@ use crate::audio_pipeline::{AudioBlock, AudioPipeline, Clock, ProcessExtras};
 use crate::editor::EditorState;
 use crate::plugin::{AsyncEvent, Plugin};
 use tutti_plugin::server::{
-    AudioSlab, BridgeMessage, HostMessage, MidiEventVec, SampleFormat, WindowHandle,
+    AudioSlab, BridgeMessage, HostMessage, IpcMidiEvent, IpcMidiEventVec, MidiEventVec,
+    SampleFormat, WindowHandle, MIDI_STACK_CAPACITY,
 };
 use tutti_plugin::Result;
 
+/// Serialize a block's plugin MIDI-out for the wire, capped so the SmallVec
+/// stays inline (no heap on the RT-adjacent subprocess audio callback). A cap
+/// hit means a pathological >256-events/block plugin; log once and truncate.
+fn encode_midi_out(events: &MidiEventVec) -> IpcMidiEventVec {
+    if events.len() > MIDI_STACK_CAPACITY {
+        tracing::warn!(
+            "plugin emitted {} MIDI events this block; capping at {}",
+            events.len(),
+            MIDI_STACK_CAPACITY
+        );
+    }
+    events
+        .iter()
+        .take(MIDI_STACK_CAPACITY)
+        .map(IpcMidiEvent::from)
+        .collect()
+}
+
 /// What [`Session::handle`] asks the transport loop to do.
+// `Reply` wraps `BridgeMessage`, whose `AudioProcessed` variant carries an
+// inline-256 MIDI-out vec (see `protocol::envelope`). Off-RT server-side; the
+// size gap is the deliberate inline-capacity tradeoff, not worth boxing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum Reaction {
     /// Send this reply back to the host.
@@ -245,7 +268,11 @@ impl Session {
             // Matches prior behavior: process path only ran under the full
             // `plugin + shared_buffer` pair. No shm ⇒ produce an empty
             // AudioProcessed reply so the host stays in sync.
-            return Ok(BridgeMessage::AudioProcessed { latency_us: 0 }.into());
+            return Ok(BridgeMessage::AudioProcessed {
+                latency_us: 0,
+                midi_out: IpcMidiEventVec::new(),
+            }
+            .into());
         };
 
         let output = self
@@ -253,6 +280,7 @@ impl Session {
             .process(plugin.instance_mut(), shm, &self.clock, block)?;
         Ok(BridgeMessage::AudioProcessed {
             latency_us: output.latency_us,
+            midi_out: encode_midi_out(&output.midi_out),
         }
         .into())
     }

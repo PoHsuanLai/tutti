@@ -4,7 +4,7 @@ use super::channels::Channels;
 use super::messages::{AudioResponse, BridgeEvent, Command, ResyncKind};
 use super::payload_pool::PayloadPool;
 use crate::error::Result;
-use crate::protocol::{BridgeMessage, HostMessage, IpcMidiEvent, ProcessAudioData};
+use crate::protocol::{BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, ProcessAudioData};
 use crate::util::transport::control::{self as ipc, ControlStream};
 use std::time::Duration;
 
@@ -38,8 +38,13 @@ pub(super) fn handle(
             ipc::send(stream, &msg)?;
 
             match recv_reply(stream, channels, PROCESS_TIMEOUT)? {
-                BridgeMessage::AudioProcessed { .. } => {
-                    channels.push_audio_response(AudioResponse::AudioProcessed);
+                BridgeMessage::AudioProcessed { midi_out, .. } => {
+                    // Convert IpcMidiEvent → MidiEvent HERE, on the bridge
+                    // thread (off-RT). The RT thread only drains the built
+                    // SmallVec — no per-event conversion, no heap traffic on
+                    // the audio thread.
+                    let midi_out = midi_out.iter().map(|e| MidiEvent::from(*e)).collect();
+                    channels.push_audio_response(AudioResponse::AudioProcessed { midi_out });
                 }
                 BridgeMessage::Error { .. } => {
                     channels.push_audio_response(AudioResponse::Error);

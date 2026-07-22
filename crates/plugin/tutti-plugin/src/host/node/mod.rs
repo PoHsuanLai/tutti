@@ -71,6 +71,10 @@ pub struct PluginClient {
     process_guard: Arc<ProcessGuard>,
     io: Batcher,
     midi: Midi,
+    /// Per-block scratch the subprocess plugin's MIDI-out is drained into, then
+    /// re-injected into routing via [`Midi::emit`]. Cleared at the start of each
+    /// `process`; steady-state capacity makes the drain alloc-free.
+    midi_out: crate::protocol::MidiEventVec,
     inputs: PluginInputs,
     /// Last-known sample rate, used to stamp a freshly-installed
     /// [`TransportSource`]. Updated by `AudioUnit::set_sample_rate`.
@@ -130,6 +134,22 @@ impl PluginClient {
         &mut self.midi
     }
 
+    /// Install the outbound routing target so this subprocess plugin's MIDI-out
+    /// re-enters the graph. See [`Midi::set_out`]. Off-RT; call at wiring time.
+    pub fn set_midi_out(
+        &self,
+        queue: Arc<dyn tutti_midi_types::MidiQueue>,
+        routing: Arc<arc_swap::ArcSwap<tutti_midi_types::MidiRoutingSnapshot>>,
+        port: usize,
+    ) {
+        self.midi.set_out(queue, routing, port);
+    }
+
+    /// Drop the outbound routing target; subsequent blocks discard MIDI-out.
+    pub fn clear_midi_out(&self) {
+        self.midi.clear_out();
+    }
+
     /// Assemble this block's [`BlockPayload`]: MIDI (from the receiver-fallback
     /// [`Midi`]) plus each gated [`InputSlot`] (harmony/params/transport). Every
     /// send/gate decision lives in [`InputSlot::drain`] keyed on the plugin's
@@ -149,6 +169,29 @@ impl PluginClient {
 
     pub(super) fn bridge_ref(&self) -> &Arc<PluginBridge> {
         &self.bridge
+    }
+
+    /// Flush the tick batch through the bridge, then re-inject the plugin's
+    /// MIDI-out into routing. Split-borrows `io` / `bridge` / `midi_out` / `midi`
+    /// so the sink and the emit sidestep an aliasing `&mut self`.
+    pub(in crate::host::node) fn flush_batch<T: batcher::Scalar>(&mut self, payload: BlockPayload) {
+        let bridge = self.bridge.clone();
+        self.io.flush::<T>(&bridge, payload, &mut self.midi_out);
+        self.midi.emit(&self.midi_out);
+    }
+
+    /// Block-mode counterpart of [`Self::flush_batch`].
+    pub(in crate::host::node) fn process_block<T: batcher::Scalar>(
+        &mut self,
+        size: usize,
+        input: &tutti_core::BufferRef<'_, T::Marker>,
+        output: &mut tutti_core::BufferMut<'_, T::Marker>,
+        payload: BlockPayload,
+    ) {
+        let bridge = self.bridge.clone();
+        self.io
+            .process::<T>(&bridge, size, input, output, payload, &mut self.midi_out);
+        self.midi.emit(&self.midi_out);
     }
 
     /// Update the sample rate stamped onto the transport snapshot. Called from
@@ -227,6 +270,7 @@ impl PluginClient {
             process_guard,
             io: Batcher::new(inputs, outputs, output_base, server.format, max_buffer_size),
             midi: Midi::new(),
+            midi_out: crate::protocol::MidiEventVec::new(),
             // No transport source yet — the host installs one via
             // `set_transport_source` right after load; it's stamped with
             // `sample_rate` below (updated live on device rate changes).

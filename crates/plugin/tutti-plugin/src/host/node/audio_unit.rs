@@ -33,17 +33,14 @@ impl AudioUnit for PluginClient {
         self.io_mut().write::<f32>(input);
         if self.io_ref().should_flush() {
             let payload = self.build_block_payload(1);
-            let bridge = self.bridge_ref().clone();
-            self.io_mut().flush::<f32>(&bridge, payload);
+            self.flush_batch::<f32>(payload);
         }
         self.io_mut().read::<f32>(output);
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         let payload = self.build_block_payload(size);
-        let bridge = self.bridge_ref().clone();
-        self.io_mut()
-            .process::<f32>(&bridge, size, input, output, payload);
+        self.process_block::<f32>(size, input, output, payload);
     }
 
     fn get_id(&self) -> u64 {
@@ -100,17 +97,14 @@ impl AudioUnit<F64> for PluginClient {
         self.io_mut().write::<f64>(input);
         if self.io_ref().should_flush() {
             let payload = self.build_block_payload(1);
-            let bridge = self.bridge_ref().clone();
-            self.io_mut().flush::<f64>(&bridge, payload);
+            self.flush_batch::<f64>(payload);
         }
         self.io_mut().read::<f64>(output);
     }
 
     fn process(&mut self, size: usize, input: &BufferRef<F64>, output: &mut BufferMut<F64>) {
         let payload = self.build_block_payload(size);
-        let bridge = self.bridge_ref().clone();
-        self.io_mut()
-            .process::<f64>(&bridge, size, input, output, payload);
+        self.process_block::<f64>(size, input, output, payload);
     }
 
     fn get_id(&self) -> u64 {

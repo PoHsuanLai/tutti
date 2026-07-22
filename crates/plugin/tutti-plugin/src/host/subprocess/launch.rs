@@ -66,7 +66,10 @@ fn handshake(config: &BridgeConfig) -> Result<ControlStream> {
     let mut stream = ipc::connect(&config.socket_path)?;
     let timeout = Duration::from_millis(config.timeout_ms);
     match ipc::recv_within(&mut stream, timeout)? {
-        BridgeMessage::Ready => Ok(stream),
+        BridgeMessage::Ready { protocol_version } => {
+            crate::protocol::check_protocol_version(protocol_version)?;
+            Ok(stream)
+        }
         ref other => Err(BridgeError::unexpected_message("Ready", other)),
     }
 }

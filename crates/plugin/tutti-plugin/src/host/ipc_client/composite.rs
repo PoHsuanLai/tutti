@@ -53,6 +53,7 @@ impl PluginBridge {
         note_expression: NoteExpressionChanges,
         harmony: HarmonyInputs,
         transport: TransportInfo,
+        midi_out: &mut MidiEventVec,
     ) -> bool {
         self.audio.process(
             num_samples,
@@ -61,6 +62,7 @@ impl PluginBridge {
             note_expression,
             harmony,
             transport,
+            midi_out,
         )
     }
 

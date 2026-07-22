@@ -6,7 +6,7 @@
 
 use crate::session::{Reaction, Session};
 use crate::transport::{Transport, TransportListener};
-use tutti_plugin::server::{BridgeConfig, BridgeMessage};
+use tutti_plugin::server::{BridgeConfig, BridgeMessage, PROTOCOL_VERSION};
 use tutti_plugin::Result;
 
 pub struct PluginServer {
@@ -27,7 +27,9 @@ impl PluginServer {
 
         // Phase 1: handshake.
         let mut handshake = listener.accept()?;
-        handshake.send(&BridgeMessage::Ready)?;
+        handshake.send(&BridgeMessage::Ready {
+            protocol_version: PROTOCOL_VERSION,
+        })?;
         if self.handshake_phase(&mut handshake)? {
             return Ok(());
         }
@@ -35,7 +37,9 @@ impl PluginServer {
 
         // Phase 2: audio.
         let mut audio = listener.accept()?;
-        audio.send(&BridgeMessage::Ready)?;
+        audio.send(&BridgeMessage::Ready {
+            protocol_version: PROTOCOL_VERSION,
+        })?;
         self.audio_phase(&mut audio)
     }
 

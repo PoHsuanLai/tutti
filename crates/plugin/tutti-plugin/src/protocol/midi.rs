@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 use tutti_midi_types::ump::MidiEvent;
 
-pub(super) const MIDI_STACK_CAPACITY: usize = 256;
+pub const MIDI_STACK_CAPACITY: usize = 256;
 
 /// On-wire MIDI event. 20 bytes — packs the full UMP event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

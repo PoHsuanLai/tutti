@@ -58,7 +58,9 @@ fn connect_with_retry(socket: &Path) -> Result<ControlStream> {
 
 fn probe_exchange(mut stream: ControlStream, plugin_path: &Path) -> Result<PluginDescriptor> {
     match ipc::recv_within(&mut stream, PROBE_TIMEOUT)? {
-        BridgeMessage::Ready => {}
+        BridgeMessage::Ready { protocol_version } => {
+            crate::protocol::check_protocol_version(protocol_version)?;
+        }
         ref other => return Err(BridgeError::unexpected_message("Ready", other)),
     }
 

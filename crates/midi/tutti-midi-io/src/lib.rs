@@ -1,9 +1,8 @@
 //! Hardware and file MIDI I/O for the Tutti engine.
 //!
 //! The crate has two worlds, kept in separate module trees:
-//! - [`core`] — framework-free hardware I/O: [`MidiIo`], the [`MidiPort`] seam,
-//!   the `midir`/`coremidi` driver edge, and the audio-thread ring buffers. Usable
-//!   without Bevy.
+//! - [`core`] — framework-free hardware I/O: [`MidiIo`], the `midir`/`coremidi`
+//!   driver edge, and the audio-thread ring buffers. Usable without Bevy.
 //! - [`ecs`] — the `feature = "bevy"` ECS integration (components, systems,
 //!   plugins) that wires the core into a Bevy app.
 //!
@@ -19,11 +18,6 @@ pub use core::error;
 pub use core::{Error, Result};
 pub use core::{MidiDevice, MidiInputRecord, MidiIo};
 pub use core::{InputProducerHandle, MidiPortManager, PortInfo, PortType};
-
-/// The protocol-transparent hardware seam: a [`MidiPort`] speaks [`MidiEvent`]
-/// both ways and hides whether the wire is MIDI 1.0 or 2.0. See [`core::midi_port`]
-/// for how a future UMP-native backend slots in behind the same trait.
-pub use core::{MidiPort, SendError};
 
 /// `MidiPortManager` and friends live in [`core::port`]; kept as a crate-root
 /// module path for the `tutti_midi_io::port::*` spelling consumers already use.
@@ -92,8 +86,7 @@ pub use smf::{
 /// It re-exports [`tutti_midi_types::prelude`] (the wire event + decoded view +
 /// clip-file codec + per-note identity) and adds this crate's I/O and delivery:
 ///
-/// - **Hardware I/O** — [`MidiIo`] (connect / send / observe), the
-///   protocol-transparent [`MidiPort`] seam + [`SendError`], and [`MidiDevice`].
+/// - **Hardware I/O** — [`MidiIo`] (connect / send / observe) and [`MidiDevice`].
 /// - **Delivery** — [`MidiBus`] / [`MidiSender`] / [`MidiReceiver`] (lock-free
 ///   fan-out), and beat-scheduled playback ([`MidiClipSource`], [`MidiSnapshot`],
 ///   [`TimedMidiEvent`]).
@@ -122,8 +115,8 @@ pub mod prelude {
     pub use tutti_midi_types::prelude::*;
 
     pub use crate::{
-        MidiBus, MidiClipSource, MidiDevice, MidiEventSlot, MidiIo, MidiPort, MidiReceiver,
-        MidiSender, MidiSnapshot, SendError, TimedMidiEvent,
+        MidiBus, MidiClipSource, MidiDevice, MidiEventSlot, MidiIo, MidiReceiver, MidiSender,
+        MidiSnapshot, TimedMidiEvent,
     };
 }
 

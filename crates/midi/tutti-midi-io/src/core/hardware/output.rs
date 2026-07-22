@@ -1,40 +1,39 @@
 //! MIDI output device ports: enumeration + a background thread that owns the
 //! open output connection. The connection is a [`Midi1Port`] — a `midir` port is
-//! a MIDI 1.0 endpoint (see [`crate::core::midi_port`]) — so it speaks [`MidiEvent`] and
-//! translates to wire bytes at its own edge.
+//! a MIDI 1.0 endpoint — so it speaks [`MidiEvent`] and translates to wire bytes
+//! at its own edge.
 
 use super::MidiDevice;
-use crate::core::midi_port::{MidiPort, SendError};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use midir::{MidiOutput, MidiOutputConnection};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use tracing::debug;
-use tutti_midi_types::{MidiEvent, Protocol};
+use tutti_midi_types::MidiEvent;
 
 /// A MIDI output connection over `midir`. Because every OS MIDI API `midir`
 /// targets presents a MIDI 1.0 byte stream, this is a MIDI 1.0 endpoint: it takes
 /// engine-native [`MidiEvent`]s and translates them to 1.0 wire bytes at the edge
-/// via [`MidiEvent::to_midi1_bytes`]. MIDI-2-only messages have no 1.0 form and
-/// come back as [`SendError::NoWireForm`] rather than vanishing.
+/// via [`MidiEvent::to_midi1_bytes`]. A MIDI-2-only message has no 1.0 form and
+/// is dropped (the translation returns `None`).
 pub(crate) struct Midi1Port {
     conn: MidiOutputConnection,
 }
 
-impl MidiPort for Midi1Port {
-    fn send(&mut self, event: &MidiEvent) -> Result<(), SendError> {
+impl Midi1Port {
+    /// Translate an engine-native [`MidiEvent`] to MIDI 1.0 wire bytes and send
+    /// it. A message with no 1.0 form (MIDI-2-only: per-note pitch bend, per-note
+    /// controllers, …) has no wire representation and is silently dropped
+    /// (`to_midi1_bytes` returns `None` → `Ok(())`).
+    fn send(&mut self, event: &MidiEvent) -> Result<(), crate::core::error::Error> {
         match event.to_midi1_bytes() {
             Some((bytes, len)) => self
                 .conn
                 .send(&bytes[..len as usize])
-                .map_err(|e| SendError::Wire(crate::core::error::Error::MidiPort(e.to_string()))),
-            None => Err(SendError::NoWireForm(*event)),
+                .map_err(|e| crate::core::error::Error::MidiPort(e.to_string())),
+            None => Ok(()),
         }
-    }
-
-    fn protocol(&self) -> Protocol {
-        Protocol::Midi1
     }
 }
 
@@ -121,10 +120,9 @@ fn run_output_thread(
             }
             OutputCmd::Send(event) => {
                 if let Some(ref mut p) = port {
-                    // The port translates to its wire form at the edge. A
-                    // MIDI-2-only message has no MIDI 1.0 representation on this
-                    // MIDI-1 port; we log the drop rather than losing it
-                    // silently. (A future Midi2Port would send it verbatim.)
+                    // The port translates to its wire form at the edge; a
+                    // MIDI-2-only message with no MIDI 1.0 form is dropped there.
+                    // A genuine driver write error is logged.
                     if let Err(e) = p.send(&event) {
                         debug!("MIDI output: {e}");
                     }
@@ -152,12 +150,12 @@ mod tests {
     use tutti_midi_types::MidiEvent;
 
     /// The `Midi1Port::send` contract hinges on `to_midi1_bytes`: a message with
-    /// a 1.0 form translates and is sent; a MIDI-2-only message returns `None`,
-    /// which `send` surfaces as `SendError::NoWireForm` instead of dropping it.
-    /// (We can't open a real `MidiOutputConnection` without hardware, so this
-    /// pins the classification the port relies on.)
+    /// a 1.0 form translates and is sent; a MIDI-2-only message returns `None`
+    /// and `send` drops it (returns `Ok(())`). (We can't open a real
+    /// `MidiOutputConnection` without hardware, so this pins the classification
+    /// the port relies on.)
     #[test]
-    fn midi1_representable_events_translate_others_do_not() {
+    fn midi1_representable_events_translate_others_are_dropped() {
         // A plain note-on has a MIDI 1.0 status → translatable.
         let note_on = MidiEvent::note_on(0, 0, 60, 100);
         assert!(
@@ -165,11 +163,11 @@ mod tests {
             "note-on must have a 1.0 wire form"
         );
 
-        // A per-note pitch bend is MIDI-2-only → no 1.0 form → NoWireForm on send.
+        // A per-note pitch bend is MIDI-2-only → no 1.0 form → dropped by `send`.
         let per_note_bend = MidiEvent::per_note_pitch_bend(0, 0, 60, 0x8000_0000);
         assert!(
             per_note_bend.to_midi1_bytes().is_none(),
-            "per-note pitch bend has no 1.0 wire form and must surface as NoWireForm"
+            "per-note pitch bend has no 1.0 wire form and is dropped on send"
         );
     }
 }

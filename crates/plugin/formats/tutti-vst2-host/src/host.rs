@@ -6,7 +6,7 @@
 //! crate via crossbeam channels and an atomic `time_info` snapshot so
 //! the audio-thread side never blocks on the main thread.
 
-use crate::midi::api_event_to_midi;
+use crate::midi::to_midi;
 use crate::types::MidiEvent;
 use std::sync::{Arc, Mutex};
 use vst::host::Host;
@@ -65,7 +65,7 @@ impl Host for HostState {
             let event = unsafe { &*event_ptr };
             if matches!(event.event_type, vst::api::EventType::Midi) {
                 let midi_event = unsafe { &*(event_ptr as *const vst::api::MidiEvent) };
-                if let Some(converted) = api_event_to_midi(midi_event) {
+                if let Some(converted) = to_midi(midi_event) {
                     let _ = self.midi_out_tx.try_send(converted);
                 }
             }

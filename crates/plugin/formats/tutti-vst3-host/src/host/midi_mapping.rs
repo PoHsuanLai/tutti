@@ -267,7 +267,7 @@ impl CcRoute {
     ///
     /// Allocation-free after warmup: both scratch buffers are cleared in place
     /// and reuse their heap capacity. Decoding goes through MIDI-1 bytes, the
-    /// same lossless path `vst3_event_from_midi` already uses for events.
+    /// same lossless path `Vst3Event::from_midi` already uses for events.
     pub(crate) fn route(
         &mut self,
         midi_events: &[MidiEvent],

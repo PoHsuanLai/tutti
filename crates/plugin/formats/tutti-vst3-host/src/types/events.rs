@@ -4,7 +4,7 @@
 //! VST3's native event list is richer than raw MIDI-1 wire data (typed
 //! note-on/off/poly-pressure structs with `f32` velocity plus generic
 //! `Data` events for CC / ProgramChange / ChannelPressure / PitchBend). The
-//! [`vst3_event_from_midi`] / [`vst3_to_midi_event`] helpers bridge it to the
+//! [`Vst3Event::from_midi`] / [`Vst3Event::to_midi`] helpers bridge it to the
 //! workspace's canonical [`MidiEvent`] UMP type — one `MidiEvent` maps to one
 //! [`Vst3Event`] and round-trips losslessly for the MIDI-representable
 //! variants.
@@ -188,7 +188,7 @@ pub struct LegacyMidiCcOutEvent {
 }
 
 /// Safe tagged-enum form of the VST3 `Event` union. See
-/// [`vst3_event_from_midi`] / [`vst3_to_midi_event`] for round-trip MIDI
+/// [`Vst3Event::from_midi`] / [`Vst3Event::to_midi`] for round-trip MIDI
 /// conversion. Text-bearing variants reference the owning event list's arena
 /// (see [`TextRef`]) so the enum stays `Copy`.
 #[derive(Debug, Clone, Copy)]
@@ -226,6 +226,23 @@ impl Vst3Event {
             Vst3Event::NoteExpressionInt(e) => &e.header,
             Vst3Event::LegacyMidiCcOut(e) => &e.header,
         }
+    }
+
+    /// Encode a Tutti UMP [`MidiEvent`] as a [`Vst3Event`]. Notes and
+    /// poly-pressure keep MIDI-2 full-width resolution; per-note messages become
+    /// note-expression events; everything else becomes a MIDI-1 [`Vst3Event::Data`]
+    /// frame. `None` only for messages with no MIDI-1 form and no per-note mapping.
+    #[inline]
+    pub fn from_midi(event: &MidiEvent) -> Option<Self> {
+        vst3_event_from_midi(event)
+    }
+
+    /// Decode this [`Vst3Event`] into a Tutti UMP [`MidiEvent`], promoting any
+    /// MIDI-1 payload to Channel Voice 2. `None` for non-MIDI events. The inverse
+    /// of [`Vst3Event::from_midi`].
+    #[inline]
+    pub fn to_midi(&self) -> Option<MidiEvent> {
+        vst3_to_midi_event(self)
     }
 }
 
@@ -520,7 +537,7 @@ pub(crate) unsafe fn from_c_event(
 /// 3-byte MIDI-1 frame by definition, so that branch stays on the byte form.
 /// Returns `None` only for messages with no MIDI-1 byte representation and no
 /// per-note mapping.
-pub fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
+pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
     use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
     use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
     use tutti_midi_types::midi2::{Channeled, UmpMessage};
@@ -725,7 +742,7 @@ fn registered_controller_expression(
 /// for the non-MIDI events (note-expression value/text/int, chord, scale), for
 /// `Data` payloads shorter than 2 bytes, and for a SysEx too long for one UMP
 /// packet.
-pub fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
+pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
     use tutti_midi_types::convert::{unit_f32_to_u16, unit_f32_to_u32};
 
     let frame = event.sample_offset().max(0) as u32;
@@ -1064,7 +1081,7 @@ fn resolve_text(t: &TextRef, arena: &[u16]) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    //! MIDI round-trip tests through `vst3_event_from_midi` + `vst3_to_midi_event`.
+    //! MIDI round-trip tests through `Vst3Event::from_midi` + `Vst3Event::to_midi`.
 
     use super::*;
     use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};

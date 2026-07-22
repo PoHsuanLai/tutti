@@ -16,7 +16,7 @@ pub(crate) use audio::K_SAMPLE_64_INT;
 pub(crate) use events::{from_c_event, to_c_event};
 pub use events::{
     note_expression_to_vst3, note_expression_type_from_id, note_expression_type_to_id,
-    vst3_event_from_midi, vst3_to_chord, vst3_to_midi_event, vst3_to_note_expression,
+    vst3_to_chord, vst3_to_note_expression,
     vst3_to_note_expression_int, vst3_to_note_expression_text, vst3_to_scale, ChordEvent,
     ChordValue, DataEvent, EventHeader, LegacyMidiCcOutEvent, NoteExpressionIntValue,
     NoteExpressionIntValueEvent, NoteExpressionText, NoteExpressionTextEvent,

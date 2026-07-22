@@ -26,7 +26,7 @@ use std::ptr;
 /// struct so a pointer to its `header` field can be cast back by the plugin.
 ///
 /// Construct via the `note_on`/`note_off`/`midi`/`param_value`/`note_expression`
-/// helpers, or from [`MidiEvent`] via [`ClapEvent::from_midi_event`].
+/// helpers, or from [`MidiEvent`] via [`ClapEvent::from_midi`].
 #[allow(dead_code)]
 pub enum ClapEvent {
     NoteOn(clap_event_note),
@@ -217,7 +217,7 @@ impl ClapEvent {
     /// per-note) is forwarded as a generic MIDI-1 `Midi` event — the form CLAP
     /// plugins consume when the host has no parameter mapping for it. Returns
     /// `None` for UMP variants with no MIDI-1 form (SysEx, utility).
-    pub fn from_midi_event(event: &MidiEvent) -> Option<Self> {
+    pub fn from_midi(event: &MidiEvent) -> Option<Self> {
         use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
         use tutti_midi_types::midi2::channel_voice2::{ChannelVoice2 as Cv2, Controller};
         use tutti_midi_types::midi2::{Channeled, UmpMessage};
@@ -315,7 +315,7 @@ impl ClapEvent {
     /// of being squashed to 7 bits. Generic `Midi` events upconvert from their
     /// raw MIDI-1 bytes. Returns `None` for non-MIDI variants (NoteExpression,
     /// ParamValue, etc.).
-    pub fn to_midi_event(&self) -> Option<MidiEvent> {
+    pub fn to_midi(&self) -> Option<MidiEvent> {
         use tutti_midi_types::convert::unit_f32_to_u16;
         match self {
             ClapEvent::NoteOn(e) => Some(
@@ -471,7 +471,7 @@ impl InputEventList {
     /// Convert a [`MidiEvent`] to a [`ClapEvent`] and append it. UMP
     /// variants without a MIDI-1 form are silently skipped.
     pub fn add_midi(&mut self, event: &MidiEvent) -> &mut Self {
-        if let Some(clap_event) = ClapEvent::from_midi_event(event) {
+        if let Some(clap_event) = ClapEvent::from_midi(event) {
             self.events.push(clap_event);
         }
         self
@@ -480,7 +480,7 @@ impl InputEventList {
     /// Batch version of [`add_midi`](Self::add_midi).
     pub fn add_midi_events(&mut self, events: &[MidiEvent]) -> &mut Self {
         for event in events {
-            if let Some(clap_event) = ClapEvent::from_midi_event(event) {
+            if let Some(clap_event) = ClapEvent::from_midi(event) {
                 self.events.push(clap_event);
             }
         }
@@ -617,7 +617,7 @@ impl OutputEventList {
     pub fn to_midi_events(&self) -> Vec<MidiEvent> {
         self.events
             .iter()
-            .filter_map(|e| e.to_midi_event())
+            .filter_map(|e| e.to_midi())
             .collect()
     }
 
@@ -627,7 +627,7 @@ impl OutputEventList {
     pub fn fill_midi_events(&self, out: &mut SmallVec<[MidiEvent; 64]>) {
         out.clear();
         for e in &self.events {
-            if let Some(midi) = e.to_midi_event() {
+            if let Some(midi) = e.to_midi() {
                 out.push(midi);
             }
         }
@@ -834,7 +834,7 @@ mod tests {
     fn per_note_pitch_bend_becomes_tuning_note_expression() {
         let bend = signed_f32_to_bend_u32(0.5);
         let midi = MidiEvent::per_note_pitch_bend(0, 3, 60, bend).with_frame_offset(11);
-        match ClapEvent::from_midi_event(&midi).expect("per-note bend converts") {
+        match ClapEvent::from_midi(&midi).expect("per-note bend converts") {
             ClapEvent::NoteExpression(e) => {
                 assert_eq!(e.header.time, 11);
                 assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_TUNING);
@@ -857,7 +857,7 @@ mod tests {
         let value_semitones = 0.5 * PER_NOTE_PITCH_BEND_RANGE_SEMITONES;
         let clap =
             ClapEvent::per_note_expression(7, NoteExpressionType::Tuning, 5, 67, value_semitones);
-        let midi = clap.to_midi_event().expect("tuning -> midi");
+        let midi = clap.to_midi().expect("tuning -> midi");
         assert_eq!(midi.frame_offset, 7);
         match UmpMessage::try_from(midi.data_words()).expect("UMP") {
             UmpMessage::ChannelVoice2(Cv2::PerNotePitchBend(m)) => {
@@ -873,7 +873,7 @@ mod tests {
     #[test]
     fn key_pressure_becomes_pressure_note_expression() {
         let midi = MidiEvent::poly_pressure(0, 2, 48, unit_f32_to_u32(0.75));
-        match ClapEvent::from_midi_event(&midi).expect("poly pressure converts") {
+        match ClapEvent::from_midi(&midi).expect("poly pressure converts") {
             ClapEvent::NoteExpression(e) => {
                 assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_PRESSURE);
                 assert_eq!(e.note_id, note_id_for(2, 48));
@@ -887,7 +887,7 @@ mod tests {
     fn assignable_per_note_controller_maps_to_brightness() {
         // Assignable per-note controller index 74 (CC74) → CLAP _BRIGHTNESS.
         let midi = MidiEvent::per_note_controller(0, 1, 64, 74, unit_f32_to_u32(0.6), false);
-        match ClapEvent::from_midi_event(&midi).expect("per-note cc converts") {
+        match ClapEvent::from_midi(&midi).expect("per-note cc converts") {
             ClapEvent::NoteExpression(e) => {
                 assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_BRIGHTNESS);
                 assert_eq!(e.note_id, note_id_for(1, 64));
@@ -902,7 +902,7 @@ mod tests {
         // Per-note CC index 20 has no CLAP expression dimension → generic Midi.
         let midi = MidiEvent::per_note_controller(0, 0, 60, 20, unit_f32_to_u32(0.5), false);
         assert!(matches!(
-            ClapEvent::from_midi_event(&midi),
+            ClapEvent::from_midi(&midi),
             Some(ClapEvent::Midi(_)) | None
         ));
     }
@@ -926,7 +926,7 @@ mod tests {
     #[test]
     fn from_midi_event_note_on_decodes_to_typed_note_on() {
         let midi = MidiEvent::note_on(0, 1, 60, 0x8000).with_frame_offset(7);
-        match ClapEvent::from_midi_event(&midi).expect("note on converts") {
+        match ClapEvent::from_midi(&midi).expect("note on converts") {
             ClapEvent::NoteOn(e) => {
                 assert_eq!(e.header.time, 7);
                 assert_eq!(e.channel, 1);
@@ -942,7 +942,7 @@ mod tests {
         // The MIDI velocity-0 NoteOn quirk: `normalize` folds it to a NoteOff, so
         // a raw MIDI-1 velocity-0 NoteOn converts to a CLAP NoteOff.
         let midi = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 0]).expect("builds");
-        match ClapEvent::from_midi_event(&midi).expect("converts") {
+        match ClapEvent::from_midi(&midi).expect("converts") {
             ClapEvent::NoteOff(e) => {
                 assert_eq!(e.key, 60);
             }
@@ -953,7 +953,7 @@ mod tests {
     #[test]
     fn from_midi_event_cc_forwards_as_generic_midi() {
         let midi = MidiEvent::cc(0, 0, 7, 0x8000_0000); // volume, ~half
-        match ClapEvent::from_midi_event(&midi).expect("cc converts") {
+        match ClapEvent::from_midi(&midi).expect("cc converts") {
             ClapEvent::Midi(e) => {
                 assert_eq!(e.data[0] & 0xF0, 0xB0, "status should be CC");
                 assert_eq!(e.data[1], 7, "controller number");
@@ -973,7 +973,7 @@ mod tests {
 
         // A generic CLAP Midi event carrying raw MIDI-1 CC bytes (0xB1, 74, 100).
         let clap = ClapEvent::midi(0, 0, [0xB1, 74, 100]);
-        let midi = clap.to_midi_event().expect("cc decodes");
+        let midi = clap.to_midi().expect("cc decodes");
         match UmpMessage::try_from(midi.data_words()).expect("valid UMP") {
             UmpMessage::ChannelVoice2(Cv2::ControlChange(m)) => {
                 assert_eq!(u8::from(m.channel()), 1);
@@ -991,7 +991,7 @@ mod tests {
         use tutti_midi_types::midi2::UmpMessage;
 
         let clap = ClapEvent::midi(0, 0, [0xF8, 0, 0]);
-        let midi = clap.to_midi_event().expect("clock decodes");
+        let midi = clap.to_midi().expect("clock decodes");
         assert!(
             matches!(
                 UmpMessage::try_from(midi.data_words()),
@@ -1010,7 +1010,7 @@ mod tests {
         use tutti_midi_types::midi2::{Channeled, UmpMessage};
 
         let clap = ClapEvent::note_on(3, 2, 64, 0.75);
-        let midi = clap.to_midi_event().expect("note on -> midi");
+        let midi = clap.to_midi().expect("note on -> midi");
         assert_eq!(midi.frame_offset, 3);
         match UmpMessage::try_from(midi.data_words()).expect("decodes") {
             UmpMessage::ChannelVoice2(Cv2::NoteOn(m)) => {

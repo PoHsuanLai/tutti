@@ -21,9 +21,9 @@ pub use error::{LoadStage, Result, Vst3Error};
 pub use host::{PluginNotifications, RestartOutcome, Vst3Instance, Vst3Library, Vst3Loaded};
 pub use types::{
     automation_state, keyswitch_type, note_expression_flags, parameter_flags, physical_ui_type,
-    prefetchable_support, process_context_flags, to_process_context, vst3_event_from_midi,
-    vst3_to_chord, vst3_to_midi_event, vst3_to_note_expression,
-    vst3_to_note_expression_int, vst3_to_note_expression_text, vst3_to_scale, AudioBuffer,
+    prefetchable_support, process_context_flags, to_process_context, vst3_to_chord,
+    vst3_to_note_expression, vst3_to_note_expression_int, vst3_to_note_expression_text,
+    vst3_to_scale, AudioBuffer,
     BufferPtrs, BusInfo, ChordValue, EditorCapabilities, EditorSize, MidiEvent,
     NoteExpressionIntValue, NoteExpressionText, NoteExpressionType, NoteExpressionValue,
     ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo, ProcessOutput, ProcessOutputRef,
@@ -38,7 +38,7 @@ pub use com::{ParameterEditEvent, ProgressEvent, RestartFlags, UnitEvent};
 ///
 /// Re-exported here so downstream crates that need to construct
 /// `NoteOnEvent`/`NoteOffEvent`/etc. literally (rather than going through the
-/// [`vst3_to_midi_event`] / [`vst3_event_from_midi`] helpers) can do so without
+/// [`Vst3Event::to_midi`] / [`Vst3Event::from_midi`] helpers) can do so without
 /// depending on the raw `vst3` crate.
 pub mod events {
     pub use crate::types::{

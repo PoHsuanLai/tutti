@@ -291,8 +291,10 @@ impl WasmInstance {
 
         let mut midi_out = MidiEventVec::new();
         for ev in process_output.midi {
+            // Promote the guest's MIDI-1 bytes to Channel Voice 2 at this edge so
+            // the engine sees one vocabulary, matching the hardware input path.
             if let Some(ump) = UmpMidiEvent::from_midi1_bytes(ev.time_frames, &ev.data) {
-                midi_out.push(ump);
+                midi_out.push(tutti_midi_types::normalize(&ump));
             }
         }
 

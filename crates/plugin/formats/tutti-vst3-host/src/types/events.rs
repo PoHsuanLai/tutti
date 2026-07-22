@@ -763,7 +763,11 @@ pub fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
                 let inner = inner.strip_suffix(&[0xF7]).unwrap_or(inner);
                 return MidiEvent::sysex7_single(0, inner).map(|m| m.with_frame_offset(frame));
             }
-            return MidiEvent::from_midi1_bytes(frame, bytes);
+            // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the
+            // engine sees one vocabulary regardless of source — matching the
+            // hardware input path. System messages pass through unchanged.
+            return MidiEvent::from_midi1_bytes(frame, bytes)
+                .map(|e| tutti_midi_types::normalize(&e));
         }
         Vst3Event::LegacyMidiCcOut(e) => {
             return legacy_cc_to_midi(e, frame);
@@ -1066,6 +1070,43 @@ mod tests {
     use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
     use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
     use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
+    #[test]
+    fn inbound_generic_data_cc_promotes_to_cv2() {
+        // A CC has no typed VST3 slot, so it rounds through a generic `Data`
+        // (3-byte MIDI-1) event. Decoding that must yield MIDI-2 Channel Voice
+        // 2, not CV1 — the engine sees one vocabulary regardless of source
+        // (mirrors the hardware input path's `normalize` promotion).
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+
+        let event = MidiEvent::cc(0, 1, 74, midi1_cc_to_midi2(100));
+        let vst3 = vst3_event_from_midi(&event).expect("CC -> Data");
+        assert!(matches!(vst3, Vst3Event::Data(_)), "CC should be a Data event");
+        let back = vst3_to_midi_event(&vst3).expect("cc decodes");
+        match UmpMessage::try_from(back.data_words()).expect("valid UMP") {
+            UmpMessage::ChannelVoice2(Cv2::ControlChange(m)) => {
+                assert_eq!(u8::from(m.channel()), 1);
+                assert_eq!(u8::from(m.control()), 74);
+            }
+            other => panic!("expected CV2 ControlChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inbound_system_message_passes_through() {
+        // A System real-time message (Timing Clock 0xF8) has no CV form and must
+        // pass through `normalize` unchanged, not be dropped or promoted.
+        let event = MidiEvent::timing_clock(0);
+        let vst3 = vst3_event_from_midi(&event).expect("clock -> Data");
+        let back = vst3_to_midi_event(&vst3).expect("clock decodes");
+        assert!(
+            matches!(
+                UmpMessage::try_from(back.data_words()),
+                Ok(UmpMessage::SystemCommon(_))
+            ),
+            "timing clock should stay a System Real-Time message"
+        );
+    }
 
     #[test]
     fn note_on_lands_in_note_on_variant() {

@@ -332,7 +332,11 @@ impl ClapEvent {
                     .with_frame_offset(e.header.time),
             ),
             ClapEvent::NoteExpression(e) => Self::note_expression_to_midi(e),
-            ClapEvent::Midi(e) => MidiEvent::from_midi1_bytes(e.header.time, &e.data),
+            // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the
+            // engine sees one vocabulary regardless of source — matching the
+            // hardware input path. System / SysEx messages pass through unchanged.
+            ClapEvent::Midi(e) => MidiEvent::from_midi1_bytes(e.header.time, &e.data)
+                .map(|m| tutti_midi_types::normalize(&m)),
             _ => None,
         }
     }
@@ -956,6 +960,45 @@ mod tests {
             }
             _ => panic!("expected generic Midi for CC"),
         }
+    }
+
+    #[test]
+    fn inbound_generic_midi_cc_promotes_to_cv2() {
+        // A plugin-emitted generic MIDI-1 CC must decode to MIDI-2 Channel Voice
+        // 2, not CV1 — the engine sees one vocabulary regardless of source
+        // (mirrors the hardware input path's `normalize` promotion).
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
+        // A generic CLAP Midi event carrying raw MIDI-1 CC bytes (0xB1, 74, 100).
+        let clap = ClapEvent::midi(0, 0, [0xB1, 74, 100]);
+        let midi = clap.to_midi_event().expect("cc decodes");
+        match UmpMessage::try_from(midi.data_words()).expect("valid UMP") {
+            UmpMessage::ChannelVoice2(Cv2::ControlChange(m)) => {
+                assert_eq!(u8::from(m.channel()), 1);
+                assert_eq!(u8::from(m.control()), 74);
+                assert_eq!(m.control_change_data(), midi1_cc_to_midi2(100));
+            }
+            other => panic!("expected CV2 ControlChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inbound_system_message_passes_through() {
+        // A System real-time message (Timing Clock 0xF8) has no CV form and must
+        // pass through `normalize` unchanged, not be dropped or promoted.
+        use tutti_midi_types::midi2::UmpMessage;
+
+        let clap = ClapEvent::midi(0, 0, [0xF8, 0, 0]);
+        let midi = clap.to_midi_event().expect("clock decodes");
+        assert!(
+            matches!(
+                UmpMessage::try_from(midi.data_words()),
+                Ok(UmpMessage::SystemCommon(_))
+            ),
+            "timing clock should stay a System Real-Time message"
+        );
     }
 
     #[test]

@@ -18,7 +18,6 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use crossbeam_queue::ArrayQueue;
 use dashmap::DashMap;
-#[cfg(feature = "mpe")]
 use parking_lot::Mutex;
 
 use tutti_core::transport::TimeSignature;
@@ -26,7 +25,6 @@ use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{BarAccents, EndpointDiscoveryRequest, MidiUnitId};
 
 use crate::endpoint::FunctionBlock;
-#[cfg(feature = "mpe")]
 use crate::mpe::{MpeProcessor, PerNoteExpression};
 use crate::snapshot::MidiSnapshot;
 
@@ -262,13 +260,11 @@ pub struct MidiBus {
     /// The `Mutex` is taken with `try_lock` on the audio-thread feed path
     /// (see [`feed_mpe`](MidiBus::feed_mpe)) so the RT thread never blocks on
     /// it; the only other locker is the off-RT `process`-mutation itself.
-    #[cfg(feature = "mpe")]
     mpe: Arc<ArcSwap<Option<Arc<Mutex<MpeProcessor>>>>>,
     /// The installed processor's `PerNoteExpression`, published separately so
     /// [`mpe_expression`](MidiBus::mpe_expression) reads it with a single
     /// atomic load — without locking the processor (which the audio thread
     /// may be holding). `None` = MPE disabled.
-    #[cfg(feature = "mpe")]
     mpe_expression: Arc<ArcSwap<Option<Arc<PerNoteExpression>>>>,
 }
 
@@ -286,7 +282,6 @@ impl MidiBus {
     /// processor's `Arc<PerNoteExpression>` so callers (typically
     /// bevy-tutti's `mpe_setup_system`) can hand it to readers without
     /// touching the bus again.
-    #[cfg(feature = "mpe")]
     pub fn install_mpe(&self, processor: MpeProcessor) -> Arc<PerNoteExpression> {
         let expression = processor.expression();
         // Publish the expression separately *before* the processor, so any
@@ -302,13 +297,11 @@ impl MidiBus {
     /// Lock-free: a single atomic load + `Arc` clone. Does **not** lock the
     /// processor (which the audio-thread feed may hold), so a UI-thread caller
     /// can never stall the RT thread by reading the expression handle.
-    #[cfg(feature = "mpe")]
     pub fn mpe_expression(&self) -> Option<Arc<PerNoteExpression>> {
         self.mpe_expression.load().as_ref().as_ref().map(Arc::clone)
     }
 
     /// Uninstall the MPE processor. Subsequent events bypass the feed.
-    #[cfg(feature = "mpe")]
     pub fn uninstall_mpe(&self) {
         self.mpe.store(Arc::new(None));
         self.mpe_expression.store(Arc::new(None));
@@ -322,9 +315,8 @@ impl MidiBus {
     /// contention window this skips the feed for one event rather than
     /// stalling the RT thread — a dropped expression update is far cheaper
     /// than an audio dropout, and the next event re-syncs the state.
-    /// No-op when the `mpe` feature is off.
+    /// No-op when no MPE processor is installed (the default).
     #[inline]
-    #[cfg(feature = "mpe")]
     fn feed_mpe(&self, event: &MidiEvent) {
         if let Some(processor) = self.mpe.load().as_ref().as_ref() {
             if let Some(mut guard) = processor.try_lock() {
@@ -332,9 +324,6 @@ impl MidiBus {
             }
         }
     }
-    #[inline]
-    #[cfg(not(feature = "mpe"))]
-    fn feed_mpe(&self, _event: &MidiEvent) {}
 
     /// Attach (or replace) the sender for a unit id.
     pub fn insert(&self, sender: MidiSender) {
@@ -719,7 +708,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "mpe")]
     fn bus_mpe_feed_updates_per_note_expression() {
         // Install MPE on the bus, queue a note-on + pitch-bend, verify
         // the per-note expression atomic reflects the bend.
@@ -754,7 +742,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "mpe")]
     fn bus_mpe_expression_readable_without_processor_lock() {
         // mpe_expression() must read the published expression handle via the
         // separate ArcSwap, NOT by locking the processor — so it stays
@@ -780,7 +767,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "mpe")]
     fn bus_mpe_uninstall_stops_feed() {
         use crate::mpe::{MpeMode, MpeProcessor, MpeZoneConfig};
         use tutti_midi_types::NoteId;
@@ -806,7 +792,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "mpe")]
     fn bus_mpe_disabled_by_default_no_overhead() {
         // No processor installed → `feed_mpe` is a single ArcSwap load
         // and a None-check. Confirm the bus still routes events.

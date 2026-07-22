@@ -7,18 +7,24 @@
 //!
 //! [`MidiIo`]: crate::core::MidiIo
 
+#[cfg(feature = "midi-hardware")]
 mod input;
+#[cfg(feature = "midi-hardware")]
 mod output;
 
-#[cfg(all(target_os = "macos", feature = "virtual-midi"))]
+#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 pub mod virtual_port;
 
+#[cfg(feature = "midi-hardware")]
 pub(crate) use input::connect_midi_input;
+#[cfg(feature = "midi-hardware")]
 pub use input::{list_input_devices, MidiInputRecord};
+#[cfg(feature = "midi-hardware")]
 pub use output::list_output_devices;
+#[cfg(feature = "midi-hardware")]
 pub(crate) use output::{OutputCmd, OutputThread};
 
-#[cfg(all(target_os = "macos", feature = "virtual-midi"))]
+#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 pub use virtual_port::{VirtualMidiDestination, VirtualMidiSource};
 
 /// A detected MIDI device (input or output).

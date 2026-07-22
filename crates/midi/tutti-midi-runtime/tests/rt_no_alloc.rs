@@ -72,7 +72,6 @@ fn midi_bus_queue_system_broadcast_is_allocation_free() {
 /// thread on every note-on/off and every expression update. Claiming, updating,
 /// reading, and releasing a slot must all be allocation-free.
 #[test]
-#[cfg(feature = "mpe")]
 fn per_note_expression_hot_path_is_allocation_free() {
     use tutti_midi_runtime::PerNoteExpression;
     use tutti_midi_types::NoteId;

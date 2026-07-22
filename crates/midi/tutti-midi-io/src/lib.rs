@@ -16,14 +16,18 @@
 pub mod core;
 pub use core::error;
 pub use core::{Error, Result};
-pub use core::{MidiDevice, MidiInputRecord, MidiIo};
+pub use core::MidiDevice;
+// OS hardware orchestrator + the record its observer channel carries — only
+// present under `midi-hardware` (they own the `midir` edge).
+#[cfg(feature = "midi-hardware")]
+pub use core::{MidiInputRecord, MidiIo};
 pub use core::{InputProducerHandle, MidiPortManager, PortInfo, PortType};
 
 /// `MidiPortManager` and friends live in [`core::port`]; kept as a crate-root
 /// module path for the `tutti_midi_io::port::*` spelling consumers already use.
 pub use core::port;
 
-#[cfg(all(target_os = "macos", feature = "virtual-midi"))]
+#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 pub use core::{VirtualMidiDestination, VirtualMidiSource};
 
 // --- Re-exports from tutti-midi-types (the pure MIDI vocabulary) ---
@@ -49,7 +53,6 @@ pub use tutti_midi_types::{
     ParsedClipFile,
 };
 
-#[cfg(feature = "mpe")]
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
 
 pub use tutti_midi_types::cc::mapping::{CCMapping, CCNumber, CCTarget, MappingId, MidiChannel};
@@ -117,9 +120,13 @@ pub mod prelude {
     pub use tutti_midi_types::prelude::*;
 
     pub use crate::{
-        MidiBus, MidiClipSource, MidiDevice, MidiEventSlot, MidiIo, MidiReceiver, MidiSender,
-        MidiSnapshot, TimedMidiEvent,
+        MidiBus, MidiClipSource, MidiDevice, MidiEventSlot, MidiReceiver, MidiSender, MidiSnapshot,
+        TimedMidiEvent,
     };
+
+    // The OS orchestrator only exists under `midi-hardware`.
+    #[cfg(feature = "midi-hardware")]
+    pub use crate::MidiIo;
 }
 
 // --- Bevy ECS integration ---
@@ -135,7 +142,7 @@ pub use ecs::{
     MidiSink, MidiSynthMarker, PendingMidi, ScheduledMidi, ScheduledMidiPlugin, TuttiMidiPlugin,
 };
 
-#[cfg(all(feature = "bevy", feature = "mpe"))]
+#[cfg(feature = "bevy")]
 pub use ecs::{MpeExpressionResource, MpeModeConfig, MpePlugin, MpeReceiver};
 
 #[cfg(all(feature = "bevy", feature = "midi-hardware"))]

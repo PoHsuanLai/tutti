@@ -140,7 +140,7 @@ impl Clone for AutomationReaderInput {
     }
 }
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::transport::TransportClock;

@@ -29,7 +29,6 @@ pub mod routing_table;
 pub mod snapshot;
 pub mod snapshot_reader;
 
-#[cfg(feature = "mpe")]
 pub mod mpe;
 
 pub use clip_player::{CompositeMidiSource, MidiClipSource, TimedClipEvent};
@@ -44,5 +43,4 @@ pub use routing_table::MidiRoutingTable;
 pub use snapshot::{MidiSnapshot, TimedMidiEvent};
 pub use snapshot_reader::MidiSnapshotReader;
 
-#[cfg(feature = "mpe")]
 pub use mpe::{MpeMode, MpeProcessor, MpeZone, MpeZoneConfig, PerNoteExpression};

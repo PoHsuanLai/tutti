@@ -745,7 +745,6 @@ mod tests {
         assert!((beats - 4.0).abs() < 0.0001);
     }
 
-    #[cfg(feature = "std")]
     #[test]
     fn test_concurrent_access() {
         use std::sync::Arc;

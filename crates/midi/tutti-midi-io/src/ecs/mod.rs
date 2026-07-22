@@ -20,7 +20,6 @@ pub mod sequence;
 #[cfg(feature = "midi-hardware")]
 pub mod device;
 
-#[cfg(feature = "mpe")]
 pub mod mpe;
 
 pub mod midi_plugin;
@@ -35,9 +34,7 @@ pub use sequence::{
     MidiSequencePlugin, MidiSequenceState,
 };
 
-#[cfg(feature = "mpe")]
 pub use mpe::{MpeExpressionResource, MpeModeConfig, MpePlugin};
-#[cfg(feature = "mpe")]
 pub use routing::MpeReceiver;
 
 #[cfg(feature = "midi-hardware")]

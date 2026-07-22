@@ -8,23 +8,21 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
 default = ["bevy"]
-# Bevy ECS integration: the bus / input / routing / sequence / scheduled /
-# device / mpe / midi_plugin modules (Components / Events / Systems / Plugins).
+# Bevy ECS integration: the bus / routing / sequence / scheduled / mpe /
+# clock_out / midi_plugin modules (Components / Events / Systems / Plugins).
 # Off → the MIDI I/O + SMF + port management compiles Bevy-free (the real
 # fan-out logic lives in tutti-midi-runtime, which is Bevy-free). Pulls
 # `tutti-core/bevy` because the routing/sequence systems schedule against
 # tutti-core's ECS graph hub (AudioGraphRes, GraphReconcileSystems, …).
 bevy = ["dep:bevy_ecs", "dep:bevy_app", "dep:bevy_reflect", "dep:bevy_tasks", "dep:bevy_log", "tutti-core/bevy"]
-# MPE: forwards to tutti-midi-runtime's `mpe` (MpeProcessor / PerNoteExpression)
-# and compiles the `mpe` module (MpeReceiver component, MpeExpressionResource /
-# MpeModeConfig, MpePlugin) + the `routing` MPE-receiver path. The `mpe` ECS
-# surface additionally needs `bevy`.
-mpe = ["tutti-midi-runtime/mpe"]
-# Hardware device connect / disconnect / hot-plug poll (the `device` module:
-# ConnectMidiDevice / MidiDeviceState / MidiIoRes / device systems). midir is a
-# hard dep, so this only gates the Bevy ECS surface, not the underlying I/O.
-midi-hardware = []
-virtual-midi = ["coremidi"]
+# OS MIDI hardware I/O: pulls `midir` (device connect / poll / send, the `MidiIo`
+# orchestrator + hardware input/output threads) and, on macOS, `coremidi` for
+# virtual ports. Off → the engine still has full MIDI (bus, routing, clips,
+# sequencer, MPE, clock-master *generation*) but no OS ports; `midir` is not
+# linked. This is the engine-vs-OS-I/O axis. The Bevy `device` ECS surface
+# (MidiIoRes / connect systems) + the clock-master send half additionally need
+# `bevy`.
+midi-hardware = ["dep:midir", "coremidi"]
 
 [dependencies]
 thiserror = "2"
@@ -32,7 +30,7 @@ tracing = "0.1"
 
 # Core types
 tutti-midi-types = { path = "../tutti-midi-types" }
-tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["std", "midi"] }
+tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
 # MIDI fan-out runtime (MidiBus, MpeProcessor, PerNoteExpression, MidiEventSlot).
 # The `ecs` module's MidiBusRes wraps tutti-midi-runtime's MidiBus. Acyclic:
 # tutti-midi-runtime does NOT depend on tutti-midi-io.
@@ -52,9 +50,11 @@ arc-swap = "1.7"
 ringbuf = "0.4"
 parking_lot = "0.12"
 
-# MIDI hardware + file I/O. midly's workspace base is no_std; re-add the
-# `std` + `parallel` features this crate's SMF I/O relies on (midly's default).
-midir = { workspace = true }
+# OS MIDI hardware, gated by `midi-hardware`. `midly` (SMF file I/O) is a hard
+# dep — SMF read/write is engine-side, not OS hardware. midly's workspace base
+# is no_std; re-add the `std` + `parallel` features this crate's SMF I/O relies
+# on (midly's default).
+midir = { workspace = true, optional = true }
 midly = { workspace = true, features = ["std", "parallel"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -62,3 +62,12 @@ coremidi = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-subscriber = "0.3"
+
+# These examples drive the OS `MidiIo` orchestrator, so they need the hardware axis.
+[[example]]
+name = "list_devices"
+required-features = ["midi-hardware"]
+
+[[example]]
+name = "iac_loopback_test"
+required-features = ["midi-hardware"]

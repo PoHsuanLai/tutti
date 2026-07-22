@@ -64,7 +64,6 @@ impl Plugin for TuttiMidiPlugin {
         #[cfg(feature = "midi-hardware")]
         app.add_plugins(super::device::MidiDevicePlugin);
 
-        #[cfg(feature = "mpe")]
         app.add_plugins(super::mpe::MpePlugin);
     }
 }

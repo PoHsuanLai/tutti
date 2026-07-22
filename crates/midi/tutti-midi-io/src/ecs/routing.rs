@@ -31,7 +31,6 @@ pub struct MidiSink {
 /// `table.fallback()` (standard MPE pattern).
 ///
 /// Not `Reflect`: `node_id` wraps a foreign fundsp `NodeId`.
-#[cfg(feature = "mpe")]
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MpeReceiver {
     pub node_id: NodeId,
@@ -41,7 +40,6 @@ pub struct MpeReceiver {
 /// single [`SystemParam`] so the system stays under clippy's argument limit.
 ///
 /// [`SystemParam`]: bevy_ecs::system::SystemParam
-#[cfg(feature = "mpe")]
 #[derive(bevy_ecs::system::SystemParam)]
 pub struct MpeReceiverQueries<'w, 's> {
     changed: Query<'w, 's, &'static MpeReceiver, Changed<MpeReceiver>>,
@@ -49,7 +47,6 @@ pub struct MpeReceiverQueries<'w, 's> {
     removed: RemovedComponents<'w, 's, MpeReceiver>,
 }
 
-#[cfg(feature = "mpe")]
 impl MpeReceiverQueries<'_, '_> {
     /// Whether any MPE receiver was added, changed, or removed this frame.
     fn has_changes(&mut self) -> bool {
@@ -63,15 +60,10 @@ pub fn midi_routing_sync_system(
     changed: Query<&MidiSink, Changed<MidiSink>>,
     all_receivers: Query<&MidiSink>,
     mut removed: RemovedComponents<MidiSink>,
-    #[cfg(feature = "mpe")] mut mpe: MpeReceiverQueries,
+    mut mpe: MpeReceiverQueries,
 ) {
-    #[allow(unused_mut)]
-    let mut has_changes = !changed.is_empty() || removed.read().next().is_some();
-
-    #[cfg(feature = "mpe")]
-    {
-        has_changes = has_changes || mpe.has_changes();
-    }
+    let has_changes =
+        !changed.is_empty() || removed.read().next().is_some() || mpe.has_changes();
 
     if !has_changes {
         return;
@@ -91,7 +83,6 @@ pub fn midi_routing_sync_system(
     }
 
     // MPE receivers route all channels to one synth via the fallback.
-    #[cfg(feature = "mpe")]
     for mpe_recv in mpe.all.iter() {
         fallback = Some(tutti_midi_types::MidiUnitId::new(mpe_recv.node_id.value()));
     }

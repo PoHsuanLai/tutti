@@ -13,15 +13,19 @@
 //!   audio graph.
 
 pub mod error;
+#[cfg(feature = "midi-hardware")]
 pub mod midi_io;
 
 pub(crate) mod hardware;
 pub mod port;
 
 pub use error::{Error, Result};
-pub use hardware::{MidiDevice, MidiInputRecord};
+pub use hardware::MidiDevice;
+#[cfg(feature = "midi-hardware")]
+pub use hardware::MidiInputRecord;
+#[cfg(feature = "midi-hardware")]
 pub use midi_io::MidiIo;
 pub use port::{InputProducerHandle, MidiPortManager, PortInfo, PortType};
 
-#[cfg(all(target_os = "macos", feature = "virtual-midi"))]
+#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 pub use hardware::{VirtualMidiDestination, VirtualMidiSource};

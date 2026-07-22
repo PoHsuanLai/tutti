@@ -127,6 +127,15 @@ mod midi_processor {
     use tutti_midi_types::{MidiIn, MidiOut, MidiRoutingSnapshot, MidiUnitId};
     use tutti_types::AudioThreadCell;
 
+    /// Per-block outbound clock/timecode generator (e.g. a `ClockMaster`).
+    /// Ticked once per audio block, before event splitting, so it emits
+    /// regardless of whether any inbound MIDI is present this block.
+    pub trait BlockClock: Send + Sync {
+        /// Generate this block's clock/timecode output. `block_size` is the
+        /// frame count of the upcoming audio block.
+        fn tick(&self, block_size: usize);
+    }
+
     const MIDI_EVENT_BUFFER_CAPACITY: usize = 512;
     const MAX_SPLIT_POINTS: usize = 258;
 
@@ -158,6 +167,11 @@ mod midi_processor {
         /// processor stays `&self` on the audio path; single-audio-thread access
         /// (the same contract `events` relies on).
         poll_scratch: AudioThreadCell<[MidiEvent; MIDI_EVENT_BUFFER_CAPACITY]>,
+        /// Optional outbound clock/timecode generator, ticked once per block.
+        /// Emits into its own output ring, independent of the routing path
+        /// above — so System Real-Time messages reach hardware-out rather than
+        /// being dropped by the unit-keyed router.
+        clock: Option<Arc<dyn BlockClock>>,
     }
 
     impl<P: AudioProcessor> MidiProcessor<P> {
@@ -169,6 +183,7 @@ mod midi_processor {
                 routing,
                 events: RtEventBuf::new(),
                 poll_scratch: AudioThreadCell::new([MidiEvent::noop(); MIDI_EVENT_BUFFER_CAPACITY]),
+                clock: None,
             }
         }
 
@@ -178,6 +193,11 @@ mod midi_processor {
 
         pub fn set_queue(&mut self, queue: Arc<dyn MidiOut>) {
             self.queue = Some(queue);
+        }
+
+        /// Install the per-block clock/timecode generator (see [`BlockClock`]).
+        pub fn set_clock(&mut self, clock: Arc<dyn BlockClock>) {
+            self.clock = Some(clock);
         }
 
         /// Access the inner processor.
@@ -240,6 +260,13 @@ mod midi_processor {
     impl<P: AudioProcessor> AudioProcessor for MidiProcessor<P> {
         #[inline]
         fn process(&self, output: &mut [f32], frames: usize) {
+            // Tick the outbound clock/timecode generator first — it reads the
+            // transport and pushes into its own output ring every block,
+            // independent of inbound MIDI or event splitting below.
+            if let Some(clock) = &self.clock {
+                clock.tick(frames);
+            }
+
             // Process transport commands via the inner processor's first call
             let event_count = self.collect_events(frames);
 
@@ -301,4 +328,4 @@ mod midi_processor {
 }
 
 #[cfg(feature = "midi")]
-pub use midi_processor::MidiProcessor;
+pub use midi_processor::{BlockClock, MidiProcessor};

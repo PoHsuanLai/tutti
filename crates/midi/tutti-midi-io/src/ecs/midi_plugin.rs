@@ -30,6 +30,9 @@ pub struct PendingMidi {
     pub bus: Option<tutti_midi_runtime::MidiBus>,
     #[cfg(feature = "midi-hardware")]
     pub io: Option<crate::MidiIo>,
+    /// The audio-thread clock master + its output-ring consumer, if the engine
+    /// built one. Claimed into [`ClockMasterRes`](super::clock_out::ClockMasterRes).
+    pub clock_out: Option<super::clock_out::ClockMasterRes>,
 }
 
 /// Bevy plugin: MIDI input + routing + sequence playback + time-delayed
@@ -48,11 +51,15 @@ impl Plugin for TuttiMidiPlugin {
             if let Some(io) = pending.io.take() {
                 app.insert_resource(MidiIoRes(io));
             }
+            if let Some(clock_out) = pending.clock_out.take() {
+                app.insert_resource(clock_out);
+            }
         }
 
         app.add_plugins(super::routing::MidiRoutingPlugin);
         app.add_plugins(super::sequence::MidiSequencePlugin);
         app.add_plugins(super::scheduled::ScheduledMidiPlugin);
+        app.add_plugins(super::clock_out::ClockOutPlugin);
 
         #[cfg(feature = "midi-hardware")]
         app.add_plugins(super::device::MidiDevicePlugin);

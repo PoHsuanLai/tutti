@@ -12,6 +12,7 @@
 //! [`crate::core`] is framework-free.
 
 pub mod bus;
+pub mod clock_out;
 pub mod routing;
 pub mod scheduled;
 pub mod sequence;
@@ -25,6 +26,7 @@ pub mod mpe;
 pub mod midi_plugin;
 
 pub use bus::MidiBusRes;
+pub use clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
 pub use midi_plugin::{PendingMidi, TuttiMidiPlugin};
 pub use routing::{midi_routing_sync_system, MidiRoutingPlugin, MidiSink};
 pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi, ScheduledMidiPlugin};

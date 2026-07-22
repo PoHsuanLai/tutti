@@ -81,6 +81,13 @@ pub struct ClockMaster {
     mtc_piece: AtomicU8,
 }
 
+impl tutti_core::processor::BlockClock for ClockMaster {
+    #[inline]
+    fn tick(&self, block_size: usize) {
+        ClockMaster::tick(self, block_size)
+    }
+}
+
 impl ClockMaster {
     /// Build a clock master reading `transport`, emitting into `producer`.
     /// Starts **disabled**; call [`set_enabled`](Self::set_enabled) once a

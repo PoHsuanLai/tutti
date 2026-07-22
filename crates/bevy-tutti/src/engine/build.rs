@@ -122,10 +122,29 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
 
     let graph_processor = GraphProcessor::new(transport_mgr.clone(), backend);
 
+    // Clock master — outbound MIDI Beat Clock / MTC generator. Reads the
+    // transport, pushes into its own output ring (independent of the routing
+    // path, so System Real-Time reaches hardware-out). Ticked once per block by
+    // the RT processor; its consumer is drained to the OS by the frontend pump.
+    // Starts disabled — no output until the UI connects a device + enables it.
+    #[cfg(feature = "midi")]
+    let (clock_master, clock_out_consumer) = {
+        let (producer, consumer) = tutti_midi_runtime::midi_output_channel_with_capacity(1024);
+        let clock_transport =
+            TransportHandle::new(transport_mgr.clone(), click_settings.clone());
+        let master = Arc::new(tutti_midi_runtime::ClockMaster::new(
+            Arc::new(clock_transport),
+            sample_rate,
+            producer,
+        ));
+        (master, consumer)
+    };
+
     #[cfg(feature = "midi")]
     let processor: DefaultProcessor = {
         let mut midi_proc = MidiProcessor::new(graph_processor, midi_route.snapshot_arc());
         midi_proc.set_queue(Arc::new(midi_bus.clone()));
+        midi_proc.set_clock(clock_master.clone());
 
         // Hardware MIDI input only exists under `midi-hardware`.
         #[cfg(feature = "midi-hardware")]
@@ -189,6 +208,10 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         bus: Some(midi_bus),
         #[cfg(feature = "midi-hardware")]
         io: midi_io,
+        clock_out: Some(tutti_midi_io::ClockMasterRes::new(
+            clock_master,
+            clock_out_consumer,
+        )),
     });
 
     #[cfg(feature = "sampler")]

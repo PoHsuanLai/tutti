@@ -606,9 +606,10 @@ impl ClipReader for StreamingClipReader {
     fn set_wave(&mut self, _wave: Arc<Wave>) {
         // Deliberate no-op. A streaming source has no in-RAM wave to swap; a
         // source change means re-registering the butler stream on a different
-        // file (a control-thread / butler op via `AddStreaming`), not an in-unit
-        // mutation. Preserves the existing `ReplaceWave` behavior where the
-        // command drain skips the streaming variant.
+        // file (a control-thread / butler op — dawai-model re-issues a fresh
+        // `AddVoice` with a `Disk` source), not an in-unit mutation. Preserves
+        // the existing `ReplaceWave` behavior where the command drain skips the
+        // streaming variant.
     }
 
     fn play(&self) {

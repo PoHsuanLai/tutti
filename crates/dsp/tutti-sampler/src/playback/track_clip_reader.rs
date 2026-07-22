@@ -812,9 +812,12 @@ impl TrackClipReaderUnit {
         }
     }
 
-    /// Insert a `Voice` as a new slot and REALISE its full `Playback` intent
-    /// per-tier — the single path every add command funnels through
-    /// (`AddVoice` and the deprecated `Add`/`AddStreaming` shims).
+    /// Insert a fully-built [`Voice`] as a new slot and REALISE its full
+    /// `Playback` intent per-tier — the single path the [`AddVoice`] command
+    /// funnels through. Public so a clip-aware caller (the offline region
+    /// render's `Populate` step) can hand the reader a `Voice` it built from
+    /// ECS DATA — gain / loop / direction / stretch / pitch carried on
+    /// `voice.play` — instead of pre-poking a `SamplerUnit` before send.
     ///
     /// The `Playback` is control-INTENT; each tier applies it its own way. Rather
     /// than duplicate the tier fork, we replay the exact cold-path appliers the
@@ -824,11 +827,8 @@ impl TrackClipReaderUnit {
     /// primes the range in-unit, streaming forwards `Command::Loop` to the
     /// butler). Stretch/pitch are primed by `ClipSlot::new` from `play`. Runs on
     /// the COLD command drain, so the loop's butler send is RT-safe.
-    /// Insert a fully-built [`Voice`] as a new slot and REALISE its `Playback`
-    /// intent per-tier. Public so a clip-aware caller (the offline region
-    /// render's `Populate` step) can hand the reader a `Voice` it built from
-    /// ECS DATA — gain / loop / direction / stretch / pitch carried on
-    /// `voice.play` — instead of pre-poking a `SamplerUnit` before send.
+    ///
+    /// [`AddVoice`]: ClipCommand::AddVoice
     pub fn insert_voice(&mut self, id: SlotId, voice: Voice) {
         self.clips.retain(|s| s.id != id);
         // Split the loop out: `apply_loop` needs the slot present to look it up,
@@ -870,8 +870,9 @@ impl TrackClipReaderUnit {
                         // in-RAM wave; its `ClipReader::set_wave` is a deliberate
                         // no-op (a source change means re-registering the butler
                         // stream on a different file — a control-thread / butler
-                        // op, `AddStreaming` re-issued control-side from
-                        // dawai-model). One `ClipReader` call covers both.
+                        // op, re-issued control-side from dawai-model as a fresh
+                        // `AddVoice` with a `Disk` source). One `ClipReader` call
+                        // covers both.
                         slot.voice.source.as_clip_reader_mut().set_wave(wave);
                     }
                 }

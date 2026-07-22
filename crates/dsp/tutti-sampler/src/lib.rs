@@ -1,5 +1,5 @@
-//! Sample playback, disk streaming, recording, and time-stretching for the
-//! Tutti audio engine.
+//! Sample playback, disk streaming, and time-stretching for the Tutti audio
+//! engine.
 //!
 //! # Bevy-native API
 //!
@@ -12,28 +12,24 @@
 //! // One-shot playback: spawn an entity carrying the trigger.
 //! commands.spawn(PlayAudio { source: asset_server.load("clip.wav"), ..default() });
 //!
-//! // Record: write a message.
-//! recorder.write(StartRecording { channel_index: 0, ..default() });
-//!
 //! // Preview a browser file: write a message.
 //! previews.write(PreviewFile("clip.wav".into()));
 //! ```
 //!
 //! The [`Sampler`] resource is the streaming-engine handle (butler thread +
-//! recording / audio-input managers). The engine builds it once with
-//! [`Sampler::new`] and inserts it; systems read it as `Res<Sampler>` and reach
-//! the subsystems through [`recording()`](Sampler::recording) /
-//! [`audio_input()`](Sampler::audio_input), or build an [`Auditioner`] via
-//! [`auditioner()`](Sampler::auditioner).
+//! audio-input manager). The engine builds it once with [`Sampler::new`] and
+//! inserts it; systems read it as `Res<Sampler>` and reach the subsystems
+//! through [`audio_input()`](Sampler::audio_input), or build an [`Auditioner`]
+//! via [`auditioner()`](Sampler::auditioner).
 //!
 //! # Crate layout
 //!
-//! Bevy duties are crate-root modules ([`playback`], [`recording`],
-//! [`audio_input`], [`auditioner`], [`time_stretch`], [`pending_load`],
-//! [`reconcile`], [`track_clip_reader`]). Value types and
-//! DSP internals live in purpose-named namespaces:
+//! Bevy duties are crate-root modules ([`playback`], [`input`], [`preview`],
+//! [`time_stretch`], [`pending_load`], [`reconcile`], [`track_clip_reader`]).
+//! Value types and DSP internals live in purpose-named namespaces:
 //!
-//! - [`capture`] — recording config + recorder + session bookkeeping
+//! - [`capture`] — the write side: [`SampleSink`](capture::SampleSink) +
+//!   [`WavSink`](capture::WavSink) (the `AudioOut` building block)
 //! - [`input`] — hardware audio input via `cpal`
 //! - [`stretch`] — time-stretch / pitch-shift DSP unit
 //!
@@ -50,7 +46,6 @@
 //!   [`preview`](Auditioner::preview) streams long files from disk and hands back
 //!   a [`StreamingSamplerUnit`] via
 //!   [`streaming_unit()`](Auditioner::streaming_unit) to wire into your graph.
-//! - Recording: [`Sampler::recording`] returns the capture [`Recorder`](capture::Recorder).
 //!
 //! ```no_run
 //! use std::sync::Arc;
@@ -66,7 +61,7 @@
 //! ```
 
 pub mod error;
-pub use error::{Error, RecordingError, Result};
+pub use error::{Error, Result};
 
 #[macro_use]
 mod macros;
@@ -83,10 +78,9 @@ mod node_id;
 pub mod playback;
 pub mod input;
 pub mod preview;
-pub mod recording;
 pub mod tiering;
 
-// Bevy ECS surface of the input / preview / recording domains.
+// Bevy ECS surface of the input / preview domains.
 #[cfg(feature = "bevy")]
 pub use input::{
     audio_input_control_system, audio_input_init_system, audio_input_sync_system,
@@ -123,11 +117,6 @@ pub use playback::{
     TrackClipReaderRef, TuttiPlaybackPlugin, WaveImportQueue, WaveAssetLoader,
     WaveAssetLoaderError,
 };
-#[cfg(feature = "bevy")]
-pub use recording::{
-    recording_start_system, recording_stop_system, RecordingActive, RecordingResult,
-    StartRecording, StopRecording, TuttiRecordingPlugin,
-};
 
 // The async disk-streaming engine (butler thread + the `Sampler` handle). All
 // Bevy-free — a non-Bevy host drives it directly via `Sampler::new` / the
@@ -152,7 +141,7 @@ pub struct PendingSampler(pub Option<Sampler>);
 
 /// Bevy plugin: the whole sampler ECS surface.
 ///
-/// Composes the per-duty sub-plugins (playback, recording, audio-input,
+/// Composes the per-duty sub-plugins (playback, audio-input,
 /// time-stretch, auditioner) and adds the sampler reconcilers + pending-load
 /// promotion + param-epoch bump into the shared `GraphReconcileSystems`
 /// schedule owned by [`tutti_core::graph`]. Requires the core graph plugin
@@ -171,7 +160,6 @@ impl bevy_app::Plugin for TuttiSamplerPlugin {
         // time-stretch sync.)
         app.add_plugins((
             playback::TuttiPlaybackPlugin,
-            recording::TuttiRecordingPlugin,
             input::TuttiAudioInputPlugin,
             preview::TuttiAuditionerPlugin,
         ));
@@ -188,22 +176,15 @@ impl bevy_app::Plugin for TuttiSamplerPlugin {
     }
 }
 
-/// Recording sessions: capture config + recorder + session bookkeeping.
+/// The write side of the sampler: a [`SampleSink`] (push frames → destination)
+/// and its live WAV impl [`WavSink`].
 ///
-/// Recording is driven the idiomatic Bevy way — write a
-/// [`StartRecording`] message — not through a fluent builder. This namespace
-/// exposes the value types ([`Config`](capture::Config), [`Source`](capture::Source),
-/// [`Mode`](capture::Mode), …) that those messages and the [`Recorder`](capture::Recorder)
-/// speak.
+/// This is the `AudioOut` building block. The former recording subsystem
+/// (recorder / sessions / punch-preroll / mic capture) was torn out; the
+/// record-mic→WAV flow will be rebuilt as an explicit source→sink pump on the
+/// two-trait (`AudioIn`/`AudioOut`) foundation, driving this sink.
 pub mod capture {
-    pub use crate::recording::capture::config::{
-        CaptureFormat, Config, Mode, QuantizeSettings, Source,
-    };
-    pub use crate::recording::capture::events::Buffer;
-    pub use crate::recording::capture::manager::Recorder;
-    pub use crate::recording::capture::session::{
-        PunchEvent, Recorded, Session, State, XRun, XRunType,
-    };
+    pub use crate::butler::{CaptureFormat, SampleSink, WavSink};
 }
 
 /// Time-stretching and pitch-shifting DSP unit.

@@ -14,7 +14,6 @@ use smol::Timer;
 use super::command::ButlerCommand;
 use super::config::BufferConfig;
 use super::handlers::{handle_command, handle_seek_stream, Handles, Local};
-use super::io::capture::flush_all;
 use super::io::loops::handle_loops;
 use super::io::pdc::apply_pdc_updates;
 use super::io::refill::{refill_all, refill_all_parallel};
@@ -28,7 +27,6 @@ pub(super) async fn butler_loop_async(
     shutdown: Arc<AtomicBool>,
 ) {
     let base_chunk_size = config.chunk_size;
-    let flush_threshold = config.flush_threshold;
     let parallel_io = config.parallel_io;
 
     let mut local = Local::new(base_chunk_size);
@@ -36,7 +34,6 @@ pub(super) async fn butler_loop_async(
     loop {
         // Check shutdown
         if shutdown.load(Ordering::SeqCst) {
-            flush_all(&mut local.captures, &shared.metrics, flush_threshold, true);
             break;
         }
 
@@ -46,7 +43,7 @@ pub(super) async fn butler_loop_async(
         }
 
         // Idle: race command recv against 1ms timer
-        if shared.plans.is_empty() && local.captures.is_empty() {
+        if shared.plans.is_empty() {
             let timeout = async {
                 Timer::after(Duration::from_millis(1)).await;
                 Err(smol::channel::RecvError)
@@ -99,15 +96,13 @@ pub(super) async fn butler_loop_async(
             );
         }
 
-        flush_all(&mut local.captures, &shared.metrics, flush_threshold, false);
-
         // Adaptive pacing: if every active ring buffer is above its refill
-        // threshold and no capture has enough pending data to warrant a flush,
-        // nothing is urgent — race the command channel against a short timer
-        // (like the idle branch) instead of spinning this max-priority thread.
-        // A genuine refill need keeps a buffer below threshold, which drops us
-        // straight back to yield-and-loop, so this adds no latency to refills.
-        if buffers_healthy(&shared.plans, local.buffer_margin, &local.captures, flush_threshold) {
+        // threshold, nothing is urgent — race the command channel against a
+        // short timer (like the idle branch) instead of spinning this
+        // max-priority thread. A genuine refill need keeps a buffer below
+        // threshold, which drops us straight back to yield-and-loop, so this
+        // adds no latency to refills.
+        if buffers_healthy(&shared.plans, local.buffer_margin) {
             let timeout = async {
                 Timer::after(Duration::from_millis(HEALTHY_SLEEP_MS)).await;
                 Err(smol::channel::RecvError)
@@ -154,30 +149,21 @@ fn apply_seek_requests(shared: &Handles, config: &BufferConfig, local: &mut Loca
 /// smallest ring buffer's drain time so refills never fall behind.
 const HEALTHY_SLEEP_MS: u64 = 3;
 
-/// True when no stream needs a refill and no capture needs a flush — i.e. the
-/// loop can safely park on a short timer instead of spinning.
+/// True when no stream needs a refill — i.e. the loop can safely park on a
+/// short timer instead of spinning.
 fn buffers_healthy(
     plans: &dashmap::DashMap<usize, super::plan::ChannelPlan>,
     buffer_margin: f64,
-    captures: &std::collections::HashMap<super::command::CaptureId, super::io::capture::ActiveCapture>,
-    flush_threshold: usize,
 ) -> bool {
     let fill_threshold = (0.75 / buffer_margin) as f32;
 
     // Every streaming channel must be at or above its refill threshold. A
     // channel with no active link imposes no refill work.
-    let streams_healthy = plans.iter().all(|entry| {
+    plans.iter().all(|entry| {
         let plan = entry.value();
         if plan.link.is_none() {
             return true;
         }
         plan.rt_state.buffer_fill() >= fill_threshold
-    });
-
-    // No capture may have accumulated a flush-worth of samples.
-    let captures_healthy = captures
-        .values()
-        .all(|cap| cap.consumer.available() < flush_threshold);
-
-    streams_healthy && captures_healthy
+    })
 }

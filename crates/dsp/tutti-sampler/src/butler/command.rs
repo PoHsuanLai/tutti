@@ -5,31 +5,6 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct RegionId(pub u64);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CaptureId(pub u64);
-
-/// Monotonic CaptureId generator scoped to a `Sampler` instance.
-///
-/// Cloneable — hand a clone to any subsystem that needs to mint capture IDs
-/// on behalf of the same system (e.g. `Recorder`).
-#[derive(Debug, Clone)]
-pub(crate) struct CaptureIdGen {
-    next: std::sync::Arc<std::sync::atomic::AtomicU64>,
-}
-
-impl CaptureIdGen {
-    pub(crate) fn new() -> Self {
-        Self {
-            next: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
-        }
-    }
-
-    pub(crate) fn mint(&self) -> CaptureId {
-        CaptureId(self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-    }
-}
-
-use super::prefetch::CaptureReader;
 use super::varispeed::PlayDirection;
 
 /// Command sent to the Butler thread.
@@ -73,20 +48,6 @@ pub(crate) enum ButlerCommand {
         direction: PlayDirection,
         speed: f32,
     },
-
-    /// Register a capture buffer consumer (Butler will read from this and write to disk).
-    RegisterCapture {
-        capture_id: CaptureId,
-        consumer: CaptureReader,
-        file_path: PathBuf,
-        sample_rate: f64,
-        channels: usize,
-        format: crate::capture::CaptureFormat,
-    },
-    /// Remove a capture buffer (finalize and close file).
-    RemoveCapture(CaptureId),
-    /// Flush a single capture buffer to disk.
-    Flush(CaptureId),
 
     /// Shutdown the butler thread.
     Shutdown,

@@ -4,7 +4,6 @@
 //! `Local`    — butler-thread-local data (producers, captures, ...).
 //! `handle_command` — dispatch; each arm is either inline or a `handle_*` fn.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -13,9 +12,8 @@ use dashmap::DashMap;
 use tutti_core::PdcState;
 
 use super::cache::LruCache;
-use super::command::{ButlerCommand, CaptureId, RegionId};
+use super::command::{ButlerCommand, RegionId};
 use super::config::BufferConfig;
-use super::io::capture::{flush_all, flush_capture, ActiveCapture, SampleSink, WavSink};
 use super::io::loops::{buffer_size_for_file, capture_samples, fadein_samples, fadeout_samples};
 use super::io::refill::load_wave;
 use super::metrics::Metrics;
@@ -37,7 +35,6 @@ pub(super) struct Handles {
 /// Butler-thread-local state. Never shared. Plain data.
 pub(super) struct Local {
     pub regions: RegionMap,
-    pub captures: HashMap<CaptureId, ActiveCapture>,
     pub buffer_margin: f64,
     pub next_region_id: u64,
     pub interleave_buffer: Vec<(f32, f32)>,
@@ -47,7 +44,6 @@ impl Local {
     pub(super) fn new(base_chunk_size: usize) -> Self {
         Self {
             regions: RegionMap::new(),
-            captures: HashMap::new(),
             buffer_margin: 1.0,
             next_region_id: 0,
             interleave_buffer: Vec::with_capacity(base_chunk_size),
@@ -130,54 +126,7 @@ pub(super) fn handle_command(
             }
         }
 
-        ButlerCommand::RegisterCapture {
-            capture_id,
-            consumer,
-            file_path,
-            sample_rate: cap_sample_rate,
-            channels,
-            format,
-        } => {
-            let sink = WavSink::create(&file_path, cap_sample_rate, channels, format);
-            local
-                .captures
-                .insert(capture_id, ActiveCapture { consumer, sink });
-        }
-        ButlerCommand::RemoveCapture(capture_id) => {
-            if let Some(mut cap_state) = local.captures.remove(&capture_id) {
-                flush_capture(&mut cap_state, &shared.metrics, usize::MAX);
-                shared
-                    .metrics
-                    .record_capture_drops(cap_state.consumer.frames_dropped());
-                if let Some(sink) = cap_state.sink.take() {
-                    // Finalizing the sink flushes buffered samples and back-patches
-                    // the RIFF/data chunk sizes in the WAV header. If it fails the
-                    // file is left with a stale header and the recording is
-                    // unreadable — a real integrity loss, not a fire-and-forget
-                    // send — so surface it rather than silently swallowing.
-                    if let Err(e) = sink.finalize() {
-                        #[cfg(feature = "bevy")]
-                        bevy_log::error!("capture sink finalize failed: {e}");
-                        #[cfg(not(feature = "bevy"))]
-                        eprintln!("capture sink finalize failed: {e}");
-                    }
-                }
-            }
-        }
-        ButlerCommand::Flush(capture_id) => {
-            if let Some(cap_state) = local.captures.get_mut(&capture_id) {
-                flush_capture(cap_state, &shared.metrics, usize::MAX);
-            }
-        }
-
-        ButlerCommand::Shutdown => {
-            flush_all(
-                &mut local.captures,
-                &shared.metrics,
-                config.flush_threshold,
-                true,
-            );
-        }
+        ButlerCommand::Shutdown => {}
     }
 }
 

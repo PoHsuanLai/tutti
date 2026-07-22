@@ -1,6 +1,6 @@
 //! The sampler streaming-engine handle. See [`Sampler`].
 
-use crate::butler::{BufferConfig, ButlerCommand, ButlerThread, CaptureIdGen, LruCache};
+use crate::butler::{BufferConfig, ButlerCommand, ButlerThread, LruCache};
 use crate::error::Result;
 use crate::ports::{Commands, Status};
 use arc_swap::ArcSwap;
@@ -13,11 +13,11 @@ use tutti_core::PdcState;
 /// The sampler subsystem handle, held as a Bevy [`Resource`].
 ///
 /// Owns the butler thread (which drives all disk I/O) along with the
-/// recording and audio-input managers. The engine builds one at startup with
+/// audio-input manager. The engine builds one at startup with
 /// [`new`](Self::new) and inserts it directly; the ECS layer reads it as
 /// `Res<Sampler>` and reaches the subsystems through
-/// [`recording`](Self::recording) / [`audio_input`](Self::audio_input), or
-/// builds an [`Auditioner`](crate::Auditioner) via [`auditioner`](Self::auditioner).
+/// [`audio_input`](Self::audio_input), or builds an
+/// [`Auditioner`](crate::Auditioner) via [`auditioner`](Self::auditioner).
 ///
 /// Stream control is split MIDI-device-style into two cloneable ports: the
 /// WRITE port [`commands`](Self::commands) (a [`Commands`] over the butler
@@ -44,7 +44,6 @@ use tutti_core::PdcState;
 pub struct Sampler {
     butler_tx: Sender<ButlerCommand>,
     butler: ButlerThread,
-    recording: Arc<crate::recording::capture::manager::Recorder>,
     audio_input: Arc<crate::input::manager::InputEngine>,
     sample_rate: f64,
 }
@@ -65,19 +64,11 @@ impl Sampler {
         let butler_tx = butler.command_sender();
         butler.start();
 
-        let capture_ids = CaptureIdGen::new();
-        let recording = Arc::new(crate::recording::capture::manager::Recorder::new(
-            64,
-            butler_tx.clone(),
-            sample_rate,
-            capture_ids,
-        ));
         let audio_input = Arc::new(crate::input::manager::InputEngine::new(sample_rate as u32));
 
         Ok(Sampler {
             butler_tx,
             butler,
-            recording,
             audio_input,
             sample_rate,
         })
@@ -93,11 +84,6 @@ impl Sampler {
     /// the channel-plan map (the reader-factory).
     pub fn status(&self) -> Status {
         Status::new(self.sample_rate, self.butler.plans())
-    }
-
-    /// Recording-session bookkeeper for MIDI / audio / automation captures.
-    pub fn recording(&self) -> &crate::recording::capture::manager::Recorder {
-        &self.recording
     }
 
     /// Hardware audio-input manager (cpal capture stream + MPMC channel).

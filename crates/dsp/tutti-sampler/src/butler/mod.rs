@@ -17,11 +17,11 @@ mod thread;
 mod varispeed;
 
 pub use cache::{LruCache, StreamPin};
-pub(crate) use command::{ButlerCommand, CaptureId, CaptureIdGen};
+pub(crate) use command::ButlerCommand;
 pub(crate) use config::BufferConfig;
-pub use io::capture::{SampleSink, WavSink};
+pub use io::capture::{CaptureFormat, SampleSink, WavSink};
 pub(crate) use plan::ChannelPlan;
-pub(crate) use prefetch::{CaptureBuffer, CaptureWriter, SharedReader};
+pub(crate) use prefetch::SharedReader;
 pub(crate) use rt_state::RtState;
 pub(crate) use thread::ButlerThread;
 pub(crate) use varispeed::PlayDirection;

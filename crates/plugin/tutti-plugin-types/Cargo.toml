@@ -19,6 +19,10 @@ smallvec = "1"
 # Plugin capability flag set (`Features`) — wgpu-style bitflags.
 bitflags = "2"
 tutti-midi-types = { path = "../../midi/tutti-midi-types", default-features = false }
+# The engine's AudioIn/AudioOut I/O vocabulary — this crate's `Sample` is the
+# plugin-width narrowing of that vocabulary's element type, and `AudioBuffer`
+# names its roles in the doc contract.
+tutti-types = { path = "../../core/tutti-types" }
 serde = { version = "1", features = ["derive"], optional = true }
 # Parameter range/scaling, for `ParameterInfo::to_range`.
 audio-automation = "0.4"

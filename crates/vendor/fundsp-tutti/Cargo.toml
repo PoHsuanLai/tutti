@@ -24,6 +24,10 @@ funutd = { version = "0.16.0", default-features = false }
 once_cell = { version = "1.21.3", default-features = false, features = ["race", "alloc"] }
 # Audio file decoding - symphonia with no default features, codecs enabled individually
 symphonia = { version = "0.5.5", optional = true, default-features = false }
+# The AudioIn/AudioOut vocabulary the StreamDecoder speaks. Std-only, pulled in
+# only with a codec feature (StreamDecoder itself is codec-gated), so it never
+# reaches the no_std build.
+tutti-types = { version = "0.0.1", path = "../../core/tutti-types", optional = true }
 resampler = { version = "0.4.0", features = ["no_std"] }
 fft-convolver = { version = "0.3.0", optional = true }
 lfqueue = { version = "0.8.1", default-features = false }
@@ -49,10 +53,10 @@ std = []
 
 # Individual codec features
 # Note: wav needs pcm codec for actual audio decoding (wav is just the container format)
-wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm"]
-flac = ["dep:symphonia", "symphonia/flac"]
-mp3 = ["dep:symphonia", "symphonia/mp3"]
-ogg = ["dep:symphonia", "symphonia/ogg", "symphonia/vorbis"]
+wav = ["dep:symphonia", "symphonia/wav", "symphonia/pcm", "dep:tutti-types"]
+flac = ["dep:symphonia", "symphonia/flac", "dep:tutti-types"]
+mp3 = ["dep:symphonia", "symphonia/mp3", "dep:tutti-types"]
+ogg = ["dep:symphonia", "symphonia/ogg", "symphonia/vorbis", "dep:tutti-types"]
 
 # Convenience: all file formats
 files-all = ["wav", "flac", "mp3", "ogg"]

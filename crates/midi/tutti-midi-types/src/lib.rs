@@ -49,12 +49,12 @@ pub use mpe::{
 };
 pub use note_id::{NoteId, PerNoteMap};
 pub use routing::{MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterator};
-pub use traits::{MidiInputSource, MidiOut, MidiIn, NoMidiInput};
+pub use traits::{MidiIn, MidiOut};
 pub use ump::{
     BarAccents, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
     FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
 };
-pub use unit_id::{next_plugin_out_port, MidiUnitId, PLUGIN_OUT_PORT_BASE};
+pub use unit_id::MidiUnitId;
 
 /// The common MIDI-types surface, for `use tutti_midi_types::prelude::*;`.
 ///

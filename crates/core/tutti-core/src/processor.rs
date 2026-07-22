@@ -124,10 +124,15 @@ mod midi_processor {
     use crate::RtEventBuf;
     use arc_swap::ArcSwap;
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiInputSource, MidiOut, MidiRoutingSnapshot};
+    use tutti_midi_types::{MidiIn, MidiOut, MidiRoutingSnapshot, MidiUnitId};
+    use tutti_types::AudioThreadCell;
 
     const MIDI_EVENT_BUFFER_CAPACITY: usize = 512;
     const MAX_SPLIT_POINTS: usize = 258;
+
+    /// Sentinel unit id passed to the pre-routing hardware [`MidiIn`], which
+    /// ignores it and returns every pending event (routing decides targets).
+    const HARDWARE_POLL_UNIT: MidiUnitId = MidiUnitId::new(0);
 
     /// Decorates an [`AudioProcessor`] with MIDI sub-buffer splitting and routing.
     ///
@@ -141,13 +146,18 @@ mod midi_processor {
     /// for example a single `MidiSender`).
     pub struct MidiProcessor<P: AudioProcessor> {
         inner: P,
-        input: Option<Arc<dyn MidiInputSource>>,
+        input: Option<Arc<dyn MidiIn>>,
         queue: Option<Arc<dyn MidiOut>>,
         routing: Arc<ArcSwap<MidiRoutingSnapshot>>,
-        /// `(frame_offset, port, event)` collected per buffer, sorted by
-        /// offset. Fixed capacity: events past `MIDI_EVENT_BUFFER_CAPACITY`
-        /// are dropped (never allocated) on the audio thread.
-        events: RtEventBuf<(usize, usize, MidiEvent), MIDI_EVENT_BUFFER_CAPACITY>,
+        /// `(frame_offset, event)` collected per buffer, sorted by offset. Fixed
+        /// capacity: events past `MIDI_EVENT_BUFFER_CAPACITY` are dropped (never
+        /// allocated) on the audio thread.
+        events: RtEventBuf<(usize, MidiEvent), MIDI_EVENT_BUFFER_CAPACITY>,
+        /// Scratch the hardware [`MidiIn`] fills each block via `poll_into`,
+        /// before we copy it into `events`. Interior-mutable so the whole
+        /// processor stays `&self` on the audio path; single-audio-thread access
+        /// (the same contract `events` relies on).
+        poll_scratch: AudioThreadCell<[MidiEvent; MIDI_EVENT_BUFFER_CAPACITY]>,
     }
 
     impl<P: AudioProcessor> MidiProcessor<P> {
@@ -158,10 +168,11 @@ mod midi_processor {
                 queue: None,
                 routing,
                 events: RtEventBuf::new(),
+                poll_scratch: AudioThreadCell::new([MidiEvent::noop(); MIDI_EVENT_BUFFER_CAPACITY]),
             }
         }
 
-        pub fn set_input(&mut self, input: Arc<dyn MidiInputSource>) {
+        pub fn set_input(&mut self, input: Arc<dyn MidiIn>) {
             self.input = Some(input);
         }
 
@@ -182,25 +193,28 @@ mod midi_processor {
                 return 0;
             };
 
-            let routing = self.routing.load();
-            if !routing.has_routes() {
-                let _ = input.cycle_read(frames);
-                return 0;
-            }
+            // Drain the input into scratch, then copy the routed subset into
+            // `events` — all inside one `borrow_mut` (the cell allows a single
+            // live borrow at a time). `poll_into` ignores the unit id (hardware
+            // is pre-routing) and returns everything pending; the copy is bounded
+            // and allocation-free. We drain even when nothing is routed, so the
+            // hardware rings don't back up.
+            let mut scratch = self.poll_scratch.borrow_mut();
+            let n = input.poll_into(HARDWARE_POLL_UNIT, 0, frames, &mut scratch[..]);
 
-            let events = input.cycle_read(frames);
-            if events.is_empty() {
+            let routing = self.routing.load();
+            if !routing.has_routes() || n == 0 {
                 return 0;
             }
 
             // Capped push reproduces the fixed-budget drop-overflow behaviour;
             // it never allocates on the audio thread.
-            for &(port, event) in events {
-                let _ = self.events.push((event.frame_offset as usize, port, event));
+            for &event in &scratch[..n] {
+                let _ = self.events.push((event.frame_offset as usize, event));
             }
 
             // Sort by frame offset for sub-buffer splitting.
-            self.events.sort_by_key(|&(offset, _, _)| offset);
+            self.events.sort_by_key(|&(offset, _)| offset);
             self.events.len()
         }
 
@@ -213,9 +227,9 @@ mod midi_processor {
 
             // Events are sorted by offset; skip those at or past `end` rather
             // than breaking (for_each visits the whole active region).
-            self.events.for_each(|&(offset, port, event)| {
+            self.events.for_each(|&(offset, event)| {
                 if offset >= start && offset < end {
-                    for target in routing.route(port, &event) {
+                    for target in routing.route(&event) {
                         queue.queue(target, &[event]);
                     }
                 }
@@ -240,7 +254,7 @@ mod midi_processor {
             // check; once `MAX_SPLIT_POINTS` is reached the body no-ops.
             let mut split_points = [0usize; MAX_SPLIT_POINTS];
             let mut split_count = 0;
-            self.events.for_each(|&(offset, _, _)| {
+            self.events.for_each(|&(offset, _)| {
                 if split_count < MAX_SPLIT_POINTS
                     && offset > 0
                     && offset < frames

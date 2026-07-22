@@ -1,14 +1,14 @@
-//! The audio-thread MIDI plumbing traits: how events enter, get delivered to,
-//! and are pulled by audio units.
+//! The audio-thread MIDI plumbing traits — two roles on the hot path:
 //!
-//! Small traits that work together on the hot path:
-//! - [`MidiInputSource`] — produces raw `(port, event)` pairs from hardware /
-//!   virtual / Web-MIDI sources, frame offsets already computed.
-//! - [`MidiOut`] — the write side: routing code hands events to per-unit queues.
-//! - [`MidiIn`] — the read side: a unit drains its queue into a buffer during
-//!   `process()`.
+//! - [`MidiOut`] — the **push** side: routing code hands events to a routing
+//!   address (a per-unit inbox, a fan-out bus, a plugin's out-port).
+//! - [`MidiIn`] — the **pull** side: whoever needs events drains them during
+//!   `process()`. Implemented by per-unit inboxes, clip players, export
+//!   snapshots, and the hardware input edge alike — a hardware source is just a
+//!   `MidiIn` that ignores the unit id and returns everything pending, its
+//!   ring-buffer + timestamp→`frame_offset` machinery private to its impl.
 //!
-//! All are `MidiEvent` + [`MidiUnitId`] plumbing; they live together because
+//! Both are `MidiEvent` + [`MidiUnitId`] plumbing; they live together because
 //! they *are* the routing hot path. A unit's routing address (its
 //! [`MidiUnitId`]) is exposed by each unit's own inherent `midi_unit_id()`.
 
@@ -16,36 +16,7 @@ use crate::ump::MidiEvent;
 use crate::unit_id::MidiUnitId;
 
 // -----------------------------------------------------------------------------
-// Input edge
-// -----------------------------------------------------------------------------
-
-/// RT-safe MIDI input source that can be polled from the audio callback.
-///
-/// Implementations must be lock-free and safe to call from the audio thread.
-/// `cycle_read` is called once per audio buffer to collect all pending MIDI
-/// events. This abstraction lets the audio callback read from various sources
-/// (hardware ports, virtual ports, WASM Web MIDI, …) without depending on
-/// specific implementations or platform timestamps — implementations convert
-/// platform-specific timestamps (e.g. `Instant`, `performance.now()`) into
-/// `frame_offset` internally.
-pub trait MidiInputSource: Send + Sync {
-    /// Returns `(port_index, event)` tuples with `event.frame_offset` already set.
-    /// Valid until the next call.
-    fn cycle_read(&self, nframes: usize) -> &[(usize, MidiEvent)];
-}
-
-/// No-op source for when MIDI hardware is not connected.
-#[derive(Debug, Default)]
-pub struct NoMidiInput;
-
-impl MidiInputSource for NoMidiInput {
-    fn cycle_read(&self, _nframes: usize) -> &[(usize, MidiEvent)] {
-        &[]
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Delivery: write side (queue) and read side (source)
+// Delivery: write side (out) and read side (in)
 // -----------------------------------------------------------------------------
 
 /// Deliver MIDI events to registered audio units — the write-side complement to

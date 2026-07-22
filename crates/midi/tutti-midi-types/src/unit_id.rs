@@ -42,25 +42,6 @@ impl MidiUnitId {
     }
 }
 
-/// Base for plugin MIDI-out **port** numbers, chosen high so they never collide
-/// with the small device-driven hardware input port indices (0, 1, 2, …). A
-/// plugin that emits MIDI routes its output through the same
-/// [`MidiRoutingSnapshot`](crate::MidiRoutingSnapshot) as a hardware port, keyed
-/// on a port index allocated by [`next_plugin_out_port`].
-pub const PLUGIN_OUT_PORT_BASE: usize = 1 << 20;
-
-/// Process-wide allocator for plugin MIDI-out port indices, disjoint from
-/// hardware input ports (see [`PLUGIN_OUT_PORT_BASE`]).
-static NEXT_PLUGIN_OUT_PORT: AtomicU64 = AtomicU64::new(PLUGIN_OUT_PORT_BASE as u64);
-
-/// Allocate a fresh plugin MIDI-out port index, unique across the process and
-/// disjoint from hardware input port indices. Call once per plugin that emits
-/// MIDI, at wiring time.
-#[inline]
-pub fn next_plugin_out_port() -> usize {
-    NEXT_PLUGIN_OUT_PORT.fetch_add(1, Ordering::Relaxed) as usize
-}
-
 impl From<u64> for MidiUnitId {
     #[inline]
     fn from(id: u64) -> Self {

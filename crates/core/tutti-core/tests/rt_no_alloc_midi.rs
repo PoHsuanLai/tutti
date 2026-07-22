@@ -5,7 +5,7 @@
 //! Covers three cases:
 //!
 //! 1. No MIDI input source attached (fast-path).
-//! 2. Input source with empty `cycle_read` return.
+//! 2. Input source with empty `poll_into` return.
 //! 3. Input source emitting events that get routed + queued.
 //!
 //! All three must reuse the pre-allocated `event_buffer` inside
@@ -21,7 +21,7 @@ use parking_lot::Mutex;
 use tutti_core::processor::{AudioProcessor, GraphProcessor, MidiProcessor};
 use tutti_core::{TransportClock, TransportManager, GraphNet};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiInputSource, MidiOut, MidiRoute, MidiRoutingSnapshot, MidiUnitId};
+use tutti_midi_types::{MidiIn, MidiOut, MidiRoute, MidiRoutingSnapshot, MidiUnitId};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -57,15 +57,24 @@ fn build_graph_processor() -> GraphProcessor {
     GraphProcessor::new(transport, backend)
 }
 
-// A MIDI input source that returns a fixed pre-built slice every call —
-// zero allocation during cycle_read.
+// A MIDI input source that copies a fixed pre-built set of events into the
+// caller buffer every call — zero allocation during poll_into. Mirrors the
+// hardware `MidiIn`: ignores the unit id, returns everything pending.
 struct FixedInput {
-    events: Vec<(usize, MidiEvent)>,
+    events: Vec<MidiEvent>,
 }
 
-impl MidiInputSource for FixedInput {
-    fn cycle_read(&self, _nframes: usize) -> &[(usize, MidiEvent)] {
-        &self.events
+impl MidiIn for FixedInput {
+    fn poll_into(
+        &self,
+        _unit_id: MidiUnitId,
+        _block_start_sample: u64,
+        _block_size: usize,
+        buffer: &mut [MidiEvent],
+    ) -> usize {
+        let n = self.events.len().min(buffer.len());
+        buffer[..n].copy_from_slice(&self.events[..n]);
+        n
     }
 }
 
@@ -126,14 +135,8 @@ fn midi_processor_process_with_routed_events_is_allocation_free() {
     // Input: two note events at different frame offsets (forces the
     // sub-buffer split path).
     let events = vec![
-        (
-            0usize,
-            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
-        ),
-        (
-            0usize,
-            MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(128),
-        ),
+        MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
+        MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(128),
     ];
 
     let mut mp = MidiProcessor::new(build_graph_processor(), routing);

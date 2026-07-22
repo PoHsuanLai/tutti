@@ -29,15 +29,14 @@ struct MidiSourceHandle(Arc<dyn MidiIn>);
 /// The outbound routing target for a plugin that emits MIDI. Installed once at
 /// wiring time; read per block by [`Midi::emit`].
 ///
-/// The plugin's MIDI-out re-enters routing exactly like a hardware input port:
-/// each emitted event is fanned out through the shared [`MidiRoutingSnapshot`]
-/// (keyed on this handle's `port`) to whatever destination units the route
-/// resolves, and delivered via the same lock-free [`MidiOut`]. This is the
-/// four-trait model — a plugin's output is just another source port.
+/// The plugin's MIDI-out re-enters routing exactly like a hardware input: each
+/// emitted event is fanned out through the shared [`MidiRoutingSnapshot`] (keyed
+/// on the event's channel) to whatever destination units the route resolves, and
+/// delivered via the same lock-free [`MidiOut`]. A plugin's output is just
+/// another source.
 struct OutHandle {
     queue: Arc<dyn MidiOut>,
     routing: Arc<ArcSwap<MidiRoutingSnapshot>>,
-    port: usize,
 }
 
 fn empty_poll_scratch() -> Vec<MidiEvent> {
@@ -149,21 +148,11 @@ impl Midi {
     }
 
     /// Install the outbound routing target so this plugin's MIDI-out re-enters
-    /// routing. `port` is an allocated plugin-out port index
-    /// ([`next_plugin_out_port`](tutti_midi_types::next_plugin_out_port)),
-    /// `routing` the shared snapshot the engine already uses for hardware input,
-    /// and `queue` the fan-out bus. Off-RT (call once at wiring time).
-    pub fn set_out(
-        &self,
-        queue: Arc<dyn MidiOut>,
-        routing: Arc<ArcSwap<MidiRoutingSnapshot>>,
-        port: usize,
-    ) {
-        self.out.store(Some(Arc::new(OutHandle {
-            queue,
-            routing,
-            port,
-        })));
+    /// routing. `routing` is the shared snapshot the engine already uses for
+    /// hardware input, and `queue` the fan-out bus. Off-RT (call once at wiring
+    /// time).
+    pub fn set_out(&self, queue: Arc<dyn MidiOut>, routing: Arc<ArcSwap<MidiRoutingSnapshot>>) {
+        self.out.store(Some(Arc::new(OutHandle { queue, routing })));
     }
 
     /// Drop the outbound routing target; subsequent blocks discard MIDI-out.
@@ -173,13 +162,13 @@ impl Midi {
 
     /// Route this block's plugin MIDI-out back into the graph. No-op when no
     /// outbound target is installed. For each event, fan out through the shared
-    /// routing snapshot (keyed on this plugin's out-port) to every destination
-    /// unit and deliver via the lock-free queue — byte-for-byte the path
-    /// `MidiProcessor::route_events_in_range` runs for hardware input, so it's
-    /// RT-safe. Each event keeps its own `frame_offset`; the destination unit
-    /// sub-buffer-splits on it next block. Non-recursive: delivery lands in the
-    /// destination's inbox, drained on *its* next poll — `emit` never re-enters
-    /// any `process()`.
+    /// routing snapshot (keyed on the event's channel, like any source) to every
+    /// destination unit and deliver via the lock-free queue — byte-for-byte the
+    /// path `MidiProcessor::route_events_in_range` runs for hardware input, so
+    /// it's RT-safe. Each event keeps its own `frame_offset`; the destination
+    /// unit sub-buffer-splits on it next block. Non-recursive: delivery lands in
+    /// the destination's inbox, drained on *its* next poll — `emit` never
+    /// re-enters any `process()`.
     #[inline]
     pub fn emit(&self, events: &[MidiEvent]) {
         let handle = self.out.load();
@@ -188,7 +177,7 @@ impl Midi {
         };
         let routing = handle.routing.load();
         for event in events {
-            for target in routing.route(handle.port, event) {
+            for target in routing.route(event) {
                 handle.queue.queue(target, std::slice::from_ref(event));
             }
         }
@@ -314,7 +303,7 @@ mod tests {
         let clone_b = original.clone();
 
         // Install on clone_a; the running box could be any clone.
-        clone_a.set_out(queue.clone(), routing, 1 << 20);
+        clone_a.set_out(queue.clone(), routing);
 
         let ev = [MidiEvent::note_on(0, 0, 60, 0x8000)];
         clone_b.emit(&ev);

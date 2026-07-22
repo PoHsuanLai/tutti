@@ -96,9 +96,8 @@ impl InProcessVst2Client {
         &self,
         queue: Arc<dyn tutti_midi_types::MidiOut>,
         routing: Arc<arc_swap::ArcSwap<tutti_midi_types::MidiRoutingSnapshot>>,
-        port: usize,
     ) {
-        self.midi.set_out(queue, routing, port);
+        self.midi.set_out(queue, routing);
     }
 
     /// Drop the outbound routing target; subsequent blocks discard MIDI-out.

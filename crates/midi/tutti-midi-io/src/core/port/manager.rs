@@ -53,8 +53,9 @@ const CYCLE_SCRATCH_CAP: usize = 256;
 /// `sample_rate` and `timestamped_buffer` use [`AudioThreadCell`] (scoped
 /// guards, never lent out). `event_buffer` / `output_event_buffer` use
 /// [`RtScratchBuf`] precisely because their filled slice is returned out of the
-/// `cycle_*` methods with `&self` lifetime (see [`MidiInputSource::cycle_read`])
-/// — the "lend a borrow back to the caller" shape `AudioThreadCell` can't give.
+/// `cycle_*` methods with `&self` lifetime (the manager's `MidiIn::poll_into`
+/// copies from it) — the "lend a borrow back to the caller" shape
+/// `AudioThreadCell` can't give.
 struct CycleScratch {
     sample_rate: AudioThreadCell<f64>,
     timestamped_buffer: AudioThreadCell<Vec<(Instant, usize, MidiEvent)>>,
@@ -100,7 +101,7 @@ impl CycleScratch {
         let timestamped_snapshot = timestamped;
 
         // SAFETY: single-audio-thread access — `read_inputs` is only reached
-        // from the audio callback (`MidiInputSource::cycle_read`).
+        // from the audio callback (`MidiIn::poll_into`).
         unsafe {
             self.event_buffer.fill_and_read(|out| {
                 for &(midi_instant, port_index, mut event) in timestamped_snapshot.iter() {
@@ -305,9 +306,27 @@ impl Default for MidiPortManager {
     }
 }
 
-impl tutti_midi_types::MidiInputSource for MidiPortManager {
-    fn cycle_read(&self, nframes: usize) -> &[(usize, MidiEvent)] {
-        self.cycle_start_read_all_inputs(nframes)
+impl tutti_midi_types::MidiIn for MidiPortManager {
+    /// Drain all connected hardware inputs for this block into `buffer`. The
+    /// hardware is pre-routing — it isn't addressed to one unit, so `unit_id` is
+    /// ignored and every pending event is returned; the caller (the
+    /// `MidiProcessor`) routes them. `block_size` drives the timestamp →
+    /// `frame_offset` conversion (it is the block's `nframes`). RT-safe: the
+    /// events already sit in the manager's internal scratch, so this is a bounded
+    /// copy with no allocation.
+    fn poll_into(
+        &self,
+        _unit_id: tutti_midi_types::MidiUnitId,
+        _block_start_sample: u64,
+        block_size: usize,
+        buffer: &mut [MidiEvent],
+    ) -> usize {
+        let events = self.cycle_start_read_all_inputs(block_size);
+        let n = events.len().min(buffer.len());
+        for (slot, &(_port, event)) in buffer.iter_mut().zip(events.iter()).take(n) {
+            *slot = event;
+        }
+        n
     }
 }
 

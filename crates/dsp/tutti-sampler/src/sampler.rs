@@ -1,6 +1,6 @@
 //! The sampler streaming-engine handle. See [`Sampler`].
 
-use crate::butler::{BufferConfig, ButlerCommand, ButlerThread, LruCache};
+use crate::butler::{BufferConfig, ButlerCommand, ButlerThread};
 use crate::error::Result;
 use crate::ports::{Commands, Status};
 use arc_swap::ArcSwap;
@@ -12,22 +12,17 @@ use tutti_core::PdcState;
 
 /// The sampler subsystem handle, held as a Bevy [`Resource`].
 ///
-/// Owns the butler thread (which drives all disk I/O) along with the
-/// audio-input manager. The engine builds one at startup with
-/// [`new`](Self::new) and inserts it directly; the ECS layer reads it as
-/// `Res<Sampler>` and reaches the subsystems through
-/// [`audio_input`](Self::audio_input), or builds an
-/// [`Auditioner`](crate::Auditioner) via [`auditioner`](Self::auditioner).
+/// Owns the butler thread, which drives all disk I/O. The engine builds one at
+/// startup with [`new`](Self::new) and inserts it directly; the ECS layer reads
+/// it as `Res<Sampler>`.
 ///
 /// Stream control is split MIDI-device-style into two cloneable ports: the
 /// WRITE port [`commands`](Self::commands) (a [`Commands`] over the butler
 /// command channel) and the READ port [`status`](Self::status) (a [`Status`]
 /// carrying the sample rate + the reader-factory).
 ///
-/// Playback, recording, and preview are driven the idiomatic Bevy way — spawn
-/// a [`PlayAudio`](crate::PlayAudio) entity, write a
-/// [`StartRecording`](crate::StartRecording) message, or a
-/// [`PreviewFile`](crate::PreviewFile) message — not through this handle.
+/// One-shot playback is driven the idiomatic Bevy way — spawn a
+/// [`PlayAudio`](crate::PlayAudio) entity — not through this handle.
 ///
 /// # Example
 ///
@@ -44,7 +39,6 @@ use tutti_core::PdcState;
 pub struct Sampler {
     butler_tx: Sender<ButlerCommand>,
     butler: ButlerThread,
-    audio_input: Arc<crate::input::manager::InputEngine>,
     sample_rate: f64,
 }
 
@@ -64,12 +58,9 @@ impl Sampler {
         let butler_tx = butler.command_sender();
         butler.start();
 
-        let audio_input = Arc::new(crate::input::manager::InputEngine::new(sample_rate as u32));
-
         Ok(Sampler {
             butler_tx,
             butler,
-            audio_input,
             sample_rate,
         })
     }
@@ -84,22 +75,6 @@ impl Sampler {
     /// the channel-plan map (the reader-factory).
     pub fn status(&self) -> Status {
         Status::new(self.sample_rate, self.butler.plans())
-    }
-
-    /// Hardware audio-input manager (cpal capture stream + MPMC channel).
-    pub fn audio_input(&self) -> &crate::input::manager::InputEngine {
-        &self.audio_input
-    }
-
-    /// Build a low-latency [`Auditioner`](crate::Auditioner) for previewing
-    /// files. The auditioner uses a reserved internal channel for streaming
-    /// and the LRU cache for instant replay of recently-accessed files.
-    pub fn auditioner(&self) -> crate::Auditioner {
-        crate::Auditioner::new(self)
-    }
-
-    pub(crate) fn butler_cache(&self) -> Arc<LruCache> {
-        self.butler.cache()
     }
 }
 

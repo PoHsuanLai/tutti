@@ -65,9 +65,10 @@ mod macros;
 mod node_id;
 
 /// The two-trait I/O vocabulary ([`AudioIn`] / [`AudioOut`]) every source and
-/// sink speaks.
+/// sink speaks, plus the [`pump`](io::pump) that moves frames from one to the
+/// other (the whole of "recording", minus the caller's loop + stop policy).
 pub mod io;
-pub use io::{AudioIn, AudioOut};
+pub use io::{pump, AudioIn, AudioOut};
 
 // Each domain is a self-contained module owning its audio engine + (under the
 // `bevy` feature) its Components / Systems / Plugin. The disk-streaming engine —

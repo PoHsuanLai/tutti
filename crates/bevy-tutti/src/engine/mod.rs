@@ -15,12 +15,20 @@ mod build;
 mod driver;
 mod error;
 
+// Microphone capture as an `AudioIn` — the input-device twin of `audio_io`'s
+// output stream. Gated on `sampler` because it implements `tutti_sampler`'s
+// `AudioIn` trait (and recording pumps a `MicSource` into a sampler `WavSink`).
+#[cfg(feature = "sampler")]
+mod mic;
+
 #[cfg(all(feature = "midi", feature = "export"))]
 pub mod midi_export;
 
 pub use build::{build_into, DefaultProcessor};
 pub use driver::{DeviceInfo, TuttiDriver};
 pub use error::{Error, Result};
+#[cfg(feature = "sampler")]
+pub use mic::MicSource;
 // `AudioGraph` (plus `isolate_output` / `GraphDot`) live in tutti-core's `graph`
 // module; the engine surfaces them so existing `engine::AudioGraph` paths hold.
 pub use tutti_core::{isolate_output, AudioGraph, GraphDot};

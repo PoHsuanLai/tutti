@@ -6,8 +6,6 @@ mod handle;
 pub(crate) mod manager;
 mod offline;
 pub(crate) mod position;
-pub mod sync;
-pub(crate) mod tempo_map;
 
 pub use automation_reader::{AutomationEnvelopeFn, AutomationReaderInput};
 pub use click::{click, ClickNode, ClickSettings, ClickState, MetronomeMode};
@@ -15,8 +13,6 @@ pub use clock::TransportClock;
 pub use handle::{MetronomeHandle, TransportHandle};
 pub use manager::{Direction, MotionState, TransportManager};
 pub use offline::{OfflineTransport, OfflineTransportConfig};
-pub use sync::{SmpteFrameRate, SyncSnapshot, SyncSource, SyncState, SyncStatus};
-pub use tempo_map::{TempoMap, TimeSignature, BBT};
 
 #[cfg(feature = "bevy")]
 pub mod plugin;

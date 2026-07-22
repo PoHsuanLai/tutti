@@ -56,9 +56,7 @@ pub mod transport;
 pub use transport::{
     click, AutomationEnvelopeFn, AutomationReaderInput, ClickNode, ClickSettings, ClickState,
     Direction, MetronomeHandle, MetronomeMode, MotionState, OfflineTransport,
-    OfflineTransportConfig, SmpteFrameRate, SyncSnapshot, SyncSource, SyncState, SyncStatus,
-    TempoMap, TimeSignature, TransportClock, TransportHandle, TransportManager, TransportReader,
-    BBT,
+    OfflineTransportConfig, TransportClock, TransportHandle, TransportManager, TransportReader,
 };
 
 pub mod metering;

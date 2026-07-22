@@ -2,13 +2,10 @@
 
 use std::sync::Arc;
 use crate::AudioThreadCell;
-use arc_swap::ArcSwap;
 use crossbeam_queue::ArrayQueue;
 
 use super::fsm::{LocateState, TransportEvent, TransportFSM};
 use super::position::{LoopRange, MusicalPosition};
-use super::sync::{SyncSnapshot, SyncSource, SyncState};
-use super::tempo_map::{TempoMap, TempoMapSnapshot, TimeSignature, BBT};
 use std::sync::atomic::Ordering;
 use crate::params::{Bpm, SampleRate};
 use crate::{AtomicBool, AtomicF64, AtomicU32, AtomicU8};
@@ -63,9 +60,6 @@ pub struct TransportManager {
     declick_remaining: Arc<AtomicU32>,
     /// Total declick duration in samples (set when fade starts).
     declick_total: Arc<AtomicU32>,
-    tempo_map: Arc<ArcSwap<TempoMap>>,
-    tempo_map_shared: Arc<ArcSwap<TempoMapSnapshot>>,
-    sync_state: Arc<SyncState>,
 
     sample_rate: f64,
 }
@@ -79,9 +73,6 @@ pub struct TransportManager {
 impl TransportManager {
     pub fn new(sample_rate: impl Into<SampleRate>) -> Self {
         let sample_rate = sample_rate.into().get();
-        let tempo_map = TempoMap::new(Bpm(120.0), sample_rate);
-        let tempo_map_shared = Arc::new(ArcSwap::new(tempo_map.snapshot()));
-
         let command_queue = Arc::new(ArrayQueue::new(64));
         let fsm = AudioThreadCell::new(TransportFSM::new());
 
@@ -102,9 +93,6 @@ impl TransportManager {
             seek_pending: Arc::new(AtomicBool::new(false)),
             declick_remaining: Arc::new(AtomicU32::new(0)),
             declick_total: Arc::new(AtomicU32::new(0)),
-            tempo_map: Arc::new(ArcSwap::new(Arc::new(tempo_map))),
-            tempo_map_shared,
-            sync_state: Arc::new(SyncState::new()),
             sample_rate,
         }
     }
@@ -174,10 +162,6 @@ impl TransportManager {
 
     pub fn seek_pending(&self) -> &Arc<AtomicBool> {
         &self.seek_pending
-    }
-
-    pub fn tempo_map_shared(&self) -> &Arc<ArcSwap<TempoMapSnapshot>> {
-        &self.tempo_map_shared
     }
 
     pub fn get_tempo(&self) -> Bpm {
@@ -404,67 +388,6 @@ impl TransportManager {
         self.loop_end_beat.store(end, Ordering::Release);
     }
 
-    pub fn tempo_map_snapshot(&self) -> Arc<TempoMapSnapshot> {
-        self.tempo_map.load().snapshot()
-    }
-
-    fn publish_tempo_map(&self) {
-        let tempo_map = self.tempo_map.load();
-        self.tempo_map_shared.store(tempo_map.snapshot());
-    }
-
-    fn mutate_tempo_map(&self, f: impl FnOnce(&mut TempoMap)) {
-        let mut new_map = (**self.tempo_map.load()).clone();
-        f(&mut new_map);
-        self.tempo_map.store(Arc::new(new_map));
-        self.publish_tempo_map();
-    }
-
-    pub fn add_tempo_point(&self, beat: f64, bpm: impl Into<Bpm>) {
-        let bpm = bpm.into();
-        self.mutate_tempo_map(|m| m.add_tempo_point(beat, bpm));
-    }
-
-    pub fn remove_tempo_point(&self, beat: f64) {
-        self.mutate_tempo_map(|m| m.remove_tempo_point(beat));
-    }
-
-    pub fn clear_tempo_automation(&self) {
-        self.mutate_tempo_map(|m| m.clear_tempo_automation());
-    }
-
-    pub fn set_time_signature(&self, numerator: u32, denominator: u32) {
-        self.mutate_tempo_map(|m| m.set_time_signature(numerator, denominator));
-    }
-
-    pub fn time_signature(&self) -> TimeSignature {
-        self.tempo_map.load().time_signature()
-    }
-
-    pub fn beats_to_bbt(&self, beats: f64) -> BBT {
-        self.tempo_map.load().beats_to_bbt(beats)
-    }
-
-    pub fn bbt_to_beats(&self, bbt: BBT) -> f64 {
-        self.tempo_map.load().bbt_to_beats(bbt)
-    }
-
-    pub fn beats_to_seconds(&self, beats: f64) -> f64 {
-        self.tempo_map.load().beats_to_seconds(beats)
-    }
-
-    pub fn seconds_to_beats(&self, seconds: f64) -> f64 {
-        self.tempo_map.load().seconds_to_beats(seconds)
-    }
-
-    pub fn beats_to_samples(&self, beats: f64) -> u64 {
-        self.tempo_map.load().beats_to_samples(beats)
-    }
-
-    pub fn samples_to_beats(&self, samples: u64) -> f64 {
-        self.tempo_map.load().samples_to_beats(samples)
-    }
-
     pub fn sample_rate(&self) -> SampleRate {
         SampleRate(self.sample_rate)
     }
@@ -476,66 +399,6 @@ impl TransportManager {
     pub fn samples_per_beat(&self) -> f64 {
         self.sample_rate / self.beats_per_second()
     }
-
-    pub fn sync_state(&self) -> &Arc<SyncState> {
-        &self.sync_state
-    }
-
-    pub fn set_sync_source(&self, source: SyncSource) {
-        self.sync_state.set_source(source);
-    }
-
-    pub fn get_sync_source(&self) -> SyncSource {
-        self.sync_state.source()
-    }
-
-    pub fn sync_snapshot(&self) -> SyncSnapshot {
-        self.sync_state.snapshot()
-    }
-
-    /// Returns true only when external, following, AND locked.
-    pub fn is_slaved(&self) -> bool {
-        self.sync_state.is_external()
-            && self.sync_state.is_following()
-            && self.sync_state.is_locked()
-    }
-
-    pub fn receive_external_position(&self, beats: f64) {
-        self.sync_state.set_external_position(beats);
-
-        if self.sync_state.is_following() && self.sync_state.is_locked() {
-            let offset_samples = self.sync_state.offset_samples();
-            let offset_beats = if offset_samples != 0.0 {
-                offset_samples / self.samples_per_beat()
-            } else {
-                0.0
-            };
-            self.current_beat
-                .store(beats + offset_beats, Ordering::Release);
-        }
-    }
-
-    pub fn receive_external_tempo(&self, bpm: impl Into<Bpm>) {
-        let bpm = bpm.into().get();
-        self.sync_state.set_external_tempo(bpm);
-
-        if self.sync_state.is_following() && self.sync_state.is_locked() {
-            self.tempo.store(bpm, Ordering::Release);
-        }
-    }
-
-    /// Positive = delay internal, negative = advance.
-    pub fn set_sync_offset(&self, samples: f64) {
-        self.sync_state.set_offset_samples(samples);
-    }
-
-    pub fn set_following(&self, follow: bool) {
-        self.sync_state.set_following(follow);
-    }
-
-    pub fn set_smpte_frame_rate(&self, rate: super::sync::SmpteFrameRate) {
-        self.sync_state.set_smpte_frame_rate(rate);
-    }
 }
 
 impl Default for TransportManager {
@@ -546,7 +409,6 @@ impl Default for TransportManager {
 
 #[cfg(test)]
 mod tests {
-    use super::super::sync::SyncStatus;
     use super::*;
 
     #[test]
@@ -632,84 +494,6 @@ mod tests {
         assert_eq!(manager.get_loop_range(), None);
     }
 
-    #[test]
-    fn test_tempo_map_conversions() {
-        let manager = TransportManager::new(48000.0);
-
-        // Test basic conversions at 120 BPM
-        let beats = 4.0;
-        let seconds = manager.beats_to_seconds(beats);
-        let beats_back = manager.seconds_to_beats(seconds);
-
-        assert!((beats - beats_back).abs() < 0.0001);
-    }
-
-    #[test]
-    fn test_beats_per_second() {
-        let manager = TransportManager::new(48000.0);
-
-        // 120 BPM = 2 beats per second
-        assert!((manager.beats_per_second() - 2.0).abs() < 0.0001);
-
-        manager.set_tempo(60.0);
-        // 60 BPM = 1 beat per second
-        assert!((manager.beats_per_second() - 1.0).abs() < 0.0001);
-    }
-
-    #[test]
-    fn test_samples_per_beat() {
-        let manager = TransportManager::new(48000.0);
-
-        // 120 BPM at 48kHz = 24000 samples per beat
-        assert!((manager.samples_per_beat() - 24000.0).abs() < 0.1);
-
-        manager.set_tempo(60.0);
-        // 60 BPM at 48kHz = 48000 samples per beat
-        assert!((manager.samples_per_beat() - 48000.0).abs() < 0.1);
-    }
-
-    #[test]
-    fn test_tempo_automation() {
-        let manager = TransportManager::new(48000.0);
-
-        manager.add_tempo_point(8.0, 140.0);
-
-        // Tempo changes take effect, so conversion should differ
-        let t1 = manager.beats_to_seconds(4.0); // Before tempo change
-        let t2 = manager.beats_to_seconds(12.0); // After tempo change
-        assert!(t2 > t1);
-    }
-
-    #[test]
-    fn test_time_signature() {
-        let manager = TransportManager::new(48000.0);
-
-        // Default is 4/4
-        let sig = manager.time_signature();
-        assert_eq!(sig.numerator, 4);
-        assert_eq!(sig.denominator, 4);
-
-        // Change to 3/4
-        manager.set_time_signature(3, 4);
-        let sig = manager.time_signature();
-        assert_eq!(sig.numerator, 3);
-        assert_eq!(sig.denominator, 4);
-    }
-
-    #[test]
-    fn test_bbt_conversion() {
-        let manager = TransportManager::new(48000.0);
-
-        // 4 beats at 4/4 = bar 2, beat 1
-        let bbt = manager.beats_to_bbt(4.0);
-        assert_eq!(bbt.bar, 2);
-        assert_eq!(bbt.beat, 1);
-
-        // Convert back
-        let beats = manager.bbt_to_beats(bbt);
-        assert!((beats - 4.0).abs() < 0.0001);
-    }
-
     #[cfg(feature = "std")]
     #[test]
     fn test_concurrent_access() {
@@ -744,106 +528,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_sync_default_state() {
-        let manager = TransportManager::new(48000.0);
-
-        assert_eq!(manager.get_sync_source(), SyncSource::Internal);
-        assert!(!manager.is_slaved());
-
-        let snap = manager.sync_snapshot();
-        assert_eq!(snap.source, SyncSource::Internal);
-        assert_eq!(snap.status, SyncStatus::Unlocked);
-        assert!(!snap.following);
-    }
-
-    #[test]
-    fn test_sync_source_change() {
-        let manager = TransportManager::new(48000.0);
-
-        manager.set_sync_source(SyncSource::MidiTimecode);
-        assert_eq!(manager.get_sync_source(), SyncSource::MidiTimecode);
-
-        let snap = manager.sync_snapshot();
-        assert_eq!(snap.source, SyncSource::MidiTimecode);
-        // Status should be Locking when switching to external
-        assert_eq!(snap.status, SyncStatus::Locking);
-
-        // Switch back to internal
-        manager.set_sync_source(SyncSource::Internal);
-        assert_eq!(manager.get_sync_source(), SyncSource::Internal);
-        let snap = manager.sync_snapshot();
-        assert_eq!(snap.status, SyncStatus::Unlocked);
-    }
-
-    #[test]
-    fn test_external_position_following() {
-        let manager = TransportManager::new(48000.0);
-
-        // Set up external sync
-        manager.set_sync_source(SyncSource::MidiClock);
-        manager.sync_state().set_status(SyncStatus::Locked);
-        manager.set_following(true);
-
-        assert!(manager.is_slaved());
-
-        // Receive external position
-        manager.receive_external_position(16.0);
-
-        // Position should be updated
-        assert!((manager.get_current_beat() - 16.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_external_tempo_following() {
-        let manager = TransportManager::new(48000.0);
-
-        // Set up external sync
-        manager.set_sync_source(SyncSource::MidiClock);
-        manager.sync_state().set_status(SyncStatus::Locked);
-        manager.set_following(true);
-
-        // Receive external tempo
-        manager.receive_external_tempo(140.0);
-
-        // Tempo should be updated
-        assert!((manager.get_tempo().get() - 140.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_sync_offset() {
-        let manager = TransportManager::new(48000.0);
-
-        // Set up external sync with offset
-        manager.set_sync_source(SyncSource::MidiTimecode);
-        manager.sync_state().set_status(SyncStatus::Locked);
-        manager.set_following(true);
-
-        // Set offset of 24000 samples (1 beat at 120 BPM, 48kHz)
-        manager.set_sync_offset(24000.0);
-
-        // Receive external position
-        manager.receive_external_position(8.0);
-
-        // Position should include offset: 8.0 + 1.0 = 9.0 beats
-        assert!((manager.get_current_beat() - 9.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_not_following_when_unlocked() {
-        let manager = TransportManager::new(48000.0);
-
-        // Set external source but don't lock
-        manager.set_sync_source(SyncSource::MidiClock);
-        manager.set_following(true);
-
-        // Not slaved because status is Locking, not Locked
-        assert!(!manager.is_slaved());
-
-        // Receive external position
-        manager.receive_external_position(32.0);
-
-        // Position should NOT be updated (still at 0)
-        assert!((manager.get_current_beat() - 0.0).abs() < 0.001);
-    }
 }

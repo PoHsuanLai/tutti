@@ -11,7 +11,7 @@
 
 pub use tutti_midi_types::MidiEvent;
 
-use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue};
+use tutti_plugin_types::{note_id_for, NoteExpressionType, NoteExpressionValue};
 
 use vst3::Steinberg::Vst::Event_::EventTypes_;
 
@@ -505,24 +505,6 @@ pub(crate) unsafe fn from_c_event(
         }
         _ => None,
     }
-}
-
-/// Deterministic VST3 `noteId` for a `(channel, note)` pair.
-///
-/// VST3 addresses per-note events (note-on/off and note expression) by a host-
-/// chosen `noteId` token that the plugin echoes back. We don't track live
-/// voices, so we derive a stable id from the channel and note instead: a note-on
-/// and any per-note expression for the *same* `(channel, note)` compute the same
-/// id and therefore bind to the same VST3 voice. The mapping is a bijection into
-/// `0..2048`, comfortably inside `i32`.
-///
-/// This is distinct from the spec's "use `noteId = -1` for channel/pitch
-/// matching" fallback: that fallback only covers note-on/off, *not* note
-/// expression — note-expression events carry no channel/pitch, only a `noteId`,
-/// so they have no voice to attach to unless the host assigns real ids.
-#[inline]
-pub fn note_id_for(channel: u8, note: u8) -> i32 {
-    (channel as i32) * 128 + (note as i32)
 }
 
 /// Encode a Tutti UMP [`MidiEvent`] as a [`Vst3Event`].

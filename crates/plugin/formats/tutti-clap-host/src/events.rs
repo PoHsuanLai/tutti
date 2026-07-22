@@ -7,6 +7,7 @@ use crate::types::{
     MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterPoint,
     ParameterQueue,
 };
+use tutti_plugin_types::{note_id_for, note_id_to_channel_note};
 use smallvec::SmallVec;
 use clap_sys::events::{
     clap_event_header, clap_event_midi, clap_event_midi_sysex, clap_event_note,
@@ -58,36 +59,6 @@ unsafe impl Sync for ClapEvent {}
 /// per-note bend range) so a note bent to full scale here lands where the
 /// engine's own MPE voices would put it.
 const PER_NOTE_PITCH_BEND_RANGE_SEMITONES: f64 = 48.0;
-
-/// Deterministic CLAP `note_id` for a `(channel, note)` pair.
-///
-/// CLAP addresses per-note events by a host-chosen `note_id` the plugin echoes
-/// back. We derive a stable id from channel and note so a note-on and any
-/// note-expression for the same `(channel, note)` compute the same id and bind
-/// to the same voice — matching the VST3 host's `note_id_for` scheme
-/// (`channel * 128 + note`), keeping voice identity consistent across formats.
-#[inline]
-pub fn note_id_for(channel: u8, note: u8) -> i32 {
-    (channel as i32) * 128 + (note as i32)
-}
-
-/// Largest `note_id` [`note_id_for`] can mint: channel 15, note 127.
-const MAX_HOST_NOTE_ID: i32 = 15 * 128 + 127;
-
-/// Recover the `(channel, note)` a [`note_id_for`] id was built from, or `None`
-/// if `note_id` is outside the host-minted range `0..=MAX_HOST_NOTE_ID`.
-///
-/// A CLAP plugin may assign per-note events its *own* `note_id` space; such an
-/// id is not `channel * 128 + note` and must not be force-decoded — masking it
-/// would bind the event to a phantom `(channel, note)`. Callers skip the event
-/// instead. (The `-1` wildcard is likewise out of range → `None`.)
-#[inline]
-fn note_id_to_channel_note(note_id: i32) -> Option<(u8, u8)> {
-    if !(0..=MAX_HOST_NOTE_ID).contains(&note_id) {
-        return None;
-    }
-    Some(((note_id / 128) as u8, (note_id % 128) as u8))
-}
 
 /// Map a MIDI-2 per-note controller index to the CLAP note-expression it
 /// corresponds to (volume = 7, pan = 10, brightness = 74), or `None` when

@@ -15,6 +15,7 @@ pub mod load_stage;
 pub mod main_thread;
 pub mod metadata;
 pub mod note_expression;
+pub mod note_id;
 pub mod parameters;
 pub mod transport;
 
@@ -33,6 +34,7 @@ pub use harmony::{
 pub use load_stage::LoadStage;
 pub use metadata::{BusChannels, LoadedPlugin};
 pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpressionValue};
+pub use note_id::{note_id_for, note_id_to_channel_note, MAX_HOST_NOTE_ID};
 pub use parameters::{ParameterFlags, ParameterInfo};
 pub use transport::{
     BarInfo, LoopRegion, MusicalTiming, TransportInfo, TransportPosition, TransportState,

@@ -51,8 +51,9 @@ pub use note_id::{NoteId, PerNoteMap};
 pub use routing::{MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterator};
 pub use traits::{MidiIn, MidiOut};
 pub use ump::{
-    BarAccents, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
-    FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
+    Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,
+    EndpointCapabilities, EndpointDiscoveryRequest, FlexTextKind, FunctionBlockDirection,
+    FunctionBlocks, JrTimestamps, KeySharpsFlats, MidiEvent, Protocol, Tonic, UmpVersion,
 };
 pub use unit_id::MidiUnitId;
 

@@ -187,7 +187,9 @@ mod utility;
 
 pub use controllers::{RPN_BANK_MPE, RPN_INDEX_MCM, RPN_INDEX_PITCH_BEND_SENSITIVITY};
 pub use flex_data::{
-    bpm_to_ten_ns_per_quarter, flex_tempo_bpm, ten_ns_per_quarter_to_bpm, BarAccents,
+    bpm_to_ten_ns_per_quarter, flex_chord_name, flex_key_signature, flex_tempo_bpm, flex_text,
+    push_flex_text, ten_ns_per_quarter_to_bpm, Alteration, BarAccents, ChordBass, ChordName,
+    ChordSharpsFlats, ChordType, FlexTextKind, KeySharpsFlats, Tonic,
 };
 pub use stream::{
     endpoint_name, product_instance_id, EndpointCapabilities, EndpointDiscoveryRequest,

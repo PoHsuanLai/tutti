@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tutti_midi_types::{MidiTarget, MidiUnitId};
+use tutti_midi_types::MidiUnitId;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
 use tutti_midi_runtime::MidiSender;
 use tutti_vst2_host::{PluginInfo, ProcessContext, RenderScratch, Vst2Instance};
@@ -408,8 +408,9 @@ impl AudioUnit<F64> for InProcessVst2Client {
     }
 }
 
-impl MidiTarget for InProcessVst2Client {
-    fn midi_unit_id(&self) -> MidiUnitId {
+impl InProcessVst2Client {
+    /// This unit's MIDI routing address.
+    pub fn midi_unit_id(&self) -> MidiUnitId {
         self.midi.unit_id()
     }
 }

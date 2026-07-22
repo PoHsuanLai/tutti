@@ -4,7 +4,7 @@ use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use smallvec::SmallVec;
-use tutti_midi_types::{cc, MidiSource, MidiTarget, MidiUnitId, NoteId};
+use tutti_midi_types::{cc, MidiSource, MidiUnitId, NoteId};
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Shared, SignalFrame};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
@@ -827,8 +827,9 @@ impl AudioUnit for PolySynth {
     }
 }
 
-impl MidiTarget for PolySynth {
-    fn midi_unit_id(&self) -> MidiUnitId {
+impl PolySynth {
+    /// This unit's MIDI routing address.
+    pub fn midi_unit_id(&self) -> MidiUnitId {
         self.midi_unit_id
     }
 }

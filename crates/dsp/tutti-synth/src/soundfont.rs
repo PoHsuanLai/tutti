@@ -12,7 +12,7 @@ pub use rustysynth::SoundFontAsset;
 use rustysynth::Synthesizer;
 use smallvec::SmallVec;
 use arc_swap::ArcSwapOption;
-use tutti_midi_types::{MidiSource, MidiTarget, MidiUnitId};
+use tutti_midi_types::{MidiSource, MidiUnitId};
 use tutti_core::Arc;
 
 /// `Sized` wrapper so a `dyn MidiSource` trait object can live in an
@@ -324,8 +324,9 @@ impl Clone for SoundFontUnit {
     }
 }
 
-impl MidiTarget for SoundFontUnit {
-    fn midi_unit_id(&self) -> MidiUnitId {
+impl SoundFontUnit {
+    /// This unit's MIDI routing address.
+    pub fn midi_unit_id(&self) -> MidiUnitId {
         self.midi_unit_id
     }
 }

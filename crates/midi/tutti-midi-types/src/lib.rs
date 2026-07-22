@@ -49,7 +49,7 @@ pub use mpe::{
 };
 pub use note_id::{NoteId, PerNoteMap};
 pub use routing::{MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterator};
-pub use traits::{MidiInputSource, MidiQueue, MidiSource, MidiTarget, NoMidiInput};
+pub use traits::{MidiInputSource, MidiQueue, MidiSource, NoMidiInput};
 pub use ump::{
     BarAccents, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
     FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
@@ -60,10 +60,9 @@ pub use unit_id::{next_plugin_out_port, MidiUnitId, PLUGIN_OUT_PORT_BASE};
 ///
 /// Pulls in what building and decoding MIDI needs: the wire event
 /// ([`MidiEvent`]) and its decoded view ([`MidiMessage`] via
-/// [`MidiEvent::message`]), per-note identity ([`NoteId`]), the routing-address
-/// trait ([`MidiTarget`]) and unit id, the [`normalize`] seam, and the MIDI 2.0
-/// Clip File codec (beat-domain [`write_clip_file_from_beats`] /
-/// [`read_clip_file`] / [`ParsedClipFile`]).
+/// [`MidiEvent::message`]), per-note identity ([`NoteId`]), the unit id, the
+/// [`normalize`] seam, and the MIDI 2.0 Clip File codec (beat-domain
+/// [`write_clip_file_from_beats`] / [`read_clip_file`] / [`ParsedClipFile`]).
 ///
 /// Deliberately *narrow* — the advanced surfaces (UMP-Stream endpoint
 /// negotiation, Flex Data, RPN/NRPN translation state, MPE zone config, the sync
@@ -94,7 +93,7 @@ pub use unit_id::{next_plugin_out_port, MidiUnitId, PLUGIN_OUT_PORT_BASE};
 pub mod prelude {
     pub use crate::{
         normalize, read_clip_file, write_clip_file, write_clip_file_from_beats, ClipEvent,
-        ClipFileError, MidiEvent, MidiMessage, MidiSource, MidiTarget, MidiUnitId, NoteAttribute,
+        ClipFileError, MidiEvent, MidiMessage, MidiSource, MidiUnitId, NoteAttribute,
         NoteId, ParsedClipFile, PerNoteController, Protocol,
     };
 }

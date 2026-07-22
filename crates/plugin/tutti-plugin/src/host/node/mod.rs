@@ -1,8 +1,8 @@
 //! `PluginClient` — fundsp-graph-facing audio node for an out-of-process
 //! plugin.
 //!
-//! `AudioUnit<F32> + AudioUnit<F64>` and `MidiTarget` impls live in
-//! [`audio_unit`]. Subprocess lifetime guard is [`ProcessGuard`] —
+//! `AudioUnit<F32> + AudioUnit<F64>` impls (and the inherent `midi_unit_id`)
+//! live in [`audio_unit`]. Subprocess lifetime guard is [`ProcessGuard`] —
 //! held behind `Arc` here and in [`crate::host::handles::PluginHandle`], so the
 //! subprocess dies when the LAST Arc drops.
 //!

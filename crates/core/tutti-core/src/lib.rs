@@ -122,7 +122,7 @@ pub use fundsp::{Sample, F32, F64};
 
 pub mod node_id;
 
-// MIDI vocabulary types (MidiTarget, MidiUnitId, MidiQueue, …) live in the
+// MIDI vocabulary types (MidiUnitId, MidiIn, MidiOut, …) live in the
 // `tutti-midi-types` crate; consumers import them from there directly rather
 // than through a tutti-core pass-through. tutti-core owns only `MidiProcessor`
 // (the RT buffer-splitting processor), exported from `processor`.

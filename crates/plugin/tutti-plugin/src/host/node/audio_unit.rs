@@ -3,7 +3,7 @@
 
 use crate::util::node::route_with_latency;
 use super::PluginClient;
-use tutti_midi_types::{MidiTarget, MidiUnitId};
+use tutti_midi_types::MidiUnitId;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
 
 impl AudioUnit for PluginClient {
@@ -134,8 +134,9 @@ impl AudioUnit<F64> for PluginClient {
     }
 }
 
-impl MidiTarget for PluginClient {
-    fn midi_unit_id(&self) -> MidiUnitId {
+impl PluginClient {
+    /// This unit's MIDI routing address.
+    pub fn midi_unit_id(&self) -> MidiUnitId {
         self.midi_ref().unit_id()
     }
 }

@@ -1,17 +1,16 @@
 //! The audio-thread MIDI plumbing traits: how events enter, get delivered to,
-//! and are pulled by audio units, plus how a unit reports its routing address.
+//! and are pulled by audio units.
 //!
-//! Four small traits that work together on the hot path:
+//! Small traits that work together on the hot path:
 //! - [`MidiInputSource`] — produces raw `(port, event)` pairs from hardware /
 //!   virtual / Web-MIDI sources, frame offsets already computed.
 //! - [`MidiQueue`] — the write side: routing code hands events to per-unit queues.
 //! - [`MidiSource`] — the read side: a unit drains its queue into a buffer during
 //!   `process()`.
-//! - [`MidiTarget`] — a unit's stable routing address (so callers can ask "where
-//!   do I route MIDI to?" without conflating it with fundsp's type id).
 //!
-//! All four are `MidiEvent` + [`MidiUnitId`] plumbing; they live together because
-//! they *are* the routing hot path.
+//! All are `MidiEvent` + [`MidiUnitId`] plumbing; they live together because
+//! they *are* the routing hot path. A unit's routing address (its
+//! [`MidiUnitId`]) is exposed by each unit's own inherent `midi_unit_id()`.
 
 use crate::ump::MidiEvent;
 use crate::unit_id::MidiUnitId;
@@ -91,22 +90,3 @@ pub trait MidiSource: Send + Sync {
     ) -> usize;
 }
 
-// -----------------------------------------------------------------------------
-// Routing address
-// -----------------------------------------------------------------------------
-
-/// Self-reported MIDI routing address, implemented by audio units that can
-/// receive MIDI events.
-///
-/// Fills the gap between insertion into the graph and routing: outside callers
-/// need a way to ask a unit "what is your routing address?" without conflating
-/// that with fundsp's type-fingerprint `get_id()`. Only units that actually
-/// receive MIDI implement this, so attempting to route MIDI to a plain DSP node
-/// is a downcast miss, not a silent ID collision.
-pub trait MidiTarget {
-    /// Return the unit's MIDI routing address.
-    ///
-    /// The returned value must be stable for the unit's lifetime and should have
-    /// been allocated via [`MidiUnitId::next`].
-    fn midi_unit_id(&self) -> MidiUnitId;
-}

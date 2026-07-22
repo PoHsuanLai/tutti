@@ -4,7 +4,7 @@ use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use smallvec::SmallVec;
-use tutti_midi_types::{cc, MidiSource, MidiUnitId, NoteId};
+use tutti_midi_types::{cc, MidiIn, MidiUnitId, NoteId};
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Shared, SignalFrame};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
@@ -17,9 +17,9 @@ use arc_swap::ArcSwapOption;
 
 const FINISHED_NOTES_CAPACITY: usize = 16;
 
-/// `Sized` wrapper so a `dyn MidiSource` trait object can live in an
+/// `Sized` wrapper so a `dyn MidiIn` trait object can live in an
 /// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
-struct MidiSourceHandle(Arc<dyn MidiSource>);
+struct MidiSourceHandle(Arc<dyn MidiIn>);
 
 /// Polyphonic synthesizer combining tutti-synth building blocks with FunDSP.
 ///
@@ -139,7 +139,7 @@ impl PolySynth {
     /// the unit-clone fundsp performs on each `commit()`.
     ///
     /// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
-    pub fn set_midi_source(&mut self, source: Arc<dyn MidiSource>) {
+    pub fn set_midi_source(&mut self, source: Arc<dyn MidiIn>) {
         self.midi_source_override
             .store(Some(Arc::new(MidiSourceHandle(source))));
     }
@@ -975,7 +975,7 @@ mod tests {
     struct NoteOnceSource {
         note: u8,
     }
-    impl MidiSource for NoteOnceSource {
+    impl MidiIn for NoteOnceSource {
         fn poll_into(
             &self,
             _unit: MidiUnitId,

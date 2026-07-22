@@ -12,12 +12,12 @@ pub use rustysynth::SoundFontAsset;
 use rustysynth::Synthesizer;
 use smallvec::SmallVec;
 use arc_swap::ArcSwapOption;
-use tutti_midi_types::{MidiSource, MidiUnitId};
+use tutti_midi_types::{MidiIn, MidiUnitId};
 use tutti_core::Arc;
 
-/// `Sized` wrapper so a `dyn MidiSource` trait object can live in an
+/// `Sized` wrapper so a `dyn MidiIn` trait object can live in an
 /// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
-struct MidiSourceHandle(Arc<dyn MidiSource>);
+struct MidiSourceHandle(Arc<dyn MidiIn>);
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
@@ -92,7 +92,7 @@ impl SoundFontUnit {
     /// fundsp performs on each `commit()`.
     ///
     /// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
-    pub fn set_midi_source(&mut self, source: Arc<dyn MidiSource>) {
+    pub fn set_midi_source(&mut self, source: Arc<dyn MidiIn>) {
         self.midi_source_override
             .store(Some(Arc::new(MidiSourceHandle(source))));
     }
@@ -382,7 +382,7 @@ impl AssetLoader for SoundFontAssetLoader {
 /// Compile-time proof that [`SoundFontUnit`] is `Send`, which is what lets us
 /// build it on the [`AsyncComputeTaskPool`] instead of the Bevy main thread
 /// (the B5 gate). It holds a rustysynth `Synthesizer` (plain `Vec`/`Arc`
-/// struct) plus `Arc<dyn MidiSource>` where `MidiSource: Send + Sync`, so this
+/// struct) plus `Arc<dyn MidiIn>` where `MidiIn: Send + Sync`, so this
 /// assertion holds. If it ever stops compiling, the async decode below is
 /// unsound and the decode must move back onto the main thread.
 const _: () = {

@@ -1,6 +1,6 @@
 //! MIDI event collection for `PluginClient`. Each block it polls this client's
 //! own [`tutti_midi_runtime::MidiReceiver`] (or an installed
-//! [`tutti_midi_types::MidiSource`] override — typically a
+//! [`tutti_midi_types::MidiIn`] override — typically a
 //! [`tutti_midi_runtime::MidiClipSource`]) into a single buffer for the audio
 //! path. Callers route MIDI to the plugin via either:
 //!
@@ -15,16 +15,16 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 
 use crate::protocol::MidiEventVec;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::MidiSource;
-use tutti_midi_types::{MidiQueue, MidiRoutingSnapshot, MidiUnitId};
+use tutti_midi_types::MidiIn;
+use tutti_midi_types::{MidiOut, MidiRoutingSnapshot, MidiUnitId};
 use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
 
 const POLL_BUFFER_SIZE: usize = 256;
 
-/// `Sized` wrapper so a `dyn MidiSource` trait object can live in an
+/// `Sized` wrapper so a `dyn MidiIn` trait object can live in an
 /// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
 /// One extra `Arc` hop on install/read — negligible next to the poll itself.
-struct MidiSourceHandle(Arc<dyn MidiSource>);
+struct MidiSourceHandle(Arc<dyn MidiIn>);
 
 /// The outbound routing target for a plugin that emits MIDI. Installed once at
 /// wiring time; read per block by [`Midi::emit`].
@@ -32,10 +32,10 @@ struct MidiSourceHandle(Arc<dyn MidiSource>);
 /// The plugin's MIDI-out re-enters routing exactly like a hardware input port:
 /// each emitted event is fanned out through the shared [`MidiRoutingSnapshot`]
 /// (keyed on this handle's `port`) to whatever destination units the route
-/// resolves, and delivered via the same lock-free [`MidiQueue`]. This is the
+/// resolves, and delivered via the same lock-free [`MidiOut`]. This is the
 /// four-trait model — a plugin's output is just another source port.
 struct OutHandle {
-    queue: Arc<dyn MidiQueue>,
+    queue: Arc<dyn MidiOut>,
     routing: Arc<ArcSwap<MidiRoutingSnapshot>>,
     port: usize,
 }
@@ -76,7 +76,7 @@ pub struct Midi {
     out: Arc<ArcSwapOption<OutHandle>>,
     /// Running sample position. Bumped by 1 per `drain_for_tick` and
     /// by `block_size` per `drain_for_process`. Passed to the
-    /// `MidiSource::poll_into` call so clip players know what beat
+    /// `MidiIn::poll_into` call so clip players know what beat
     /// range to emit events for.
     sample_pos: u64,
 }
@@ -133,11 +133,11 @@ impl Midi {
         self.sender.clone()
     }
 
-    /// Install an `Arc`-backed [`MidiSource`] override. Polled per
+    /// Install an `Arc`-backed [`MidiIn`] override. Polled per
     /// block in `drain_for_process` instead of the live `MidiReceiver`.
     /// Used by clip players (`tutti_midi_runtime::MidiClipSource`) to
     /// drive plugin synths from MIDI clips.
-    pub fn set_source(&mut self, source: Arc<dyn MidiSource>) {
+    pub fn set_source(&mut self, source: Arc<dyn MidiIn>) {
         self.source_override
             .store(Some(Arc::new(MidiSourceHandle(source))));
     }
@@ -155,7 +155,7 @@ impl Midi {
     /// and `queue` the fan-out bus. Off-RT (call once at wiring time).
     pub fn set_out(
         &self,
-        queue: Arc<dyn MidiQueue>,
+        queue: Arc<dyn MidiOut>,
         routing: Arc<ArcSwap<MidiRoutingSnapshot>>,
         port: usize,
     ) {
@@ -243,7 +243,7 @@ mod tests {
     struct CountingSource {
         n: usize,
     }
-    impl MidiSource for CountingSource {
+    impl MidiIn for CountingSource {
         fn poll_into(
             &self,
             _unit: MidiUnitId,
@@ -291,7 +291,7 @@ mod tests {
     struct RecordingQueue {
         queued: Mutex<Vec<(MidiUnitId, usize)>>,
     }
-    impl MidiQueue for RecordingQueue {
+    impl MidiOut for RecordingQueue {
         fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) {
             self.queued.lock().unwrap().push((unit_id, events.len()));
         }

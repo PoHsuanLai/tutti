@@ -6,7 +6,7 @@ use std::sync::Arc;
 use atomic_float::AtomicF64;
 use tutti_core::transport::OfflineTransport;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiSource, MidiUnitId};
+use tutti_midi_types::{MidiIn, MidiUnitId};
 
 use crate::snapshot::MidiSnapshot;
 
@@ -36,7 +36,7 @@ impl MidiSnapshotReader {
     }
 }
 
-impl MidiSource for MidiSnapshotReader {
+impl MidiIn for MidiSnapshotReader {
     fn poll_into(
         &self,
         unit_id: MidiUnitId,

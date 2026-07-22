@@ -124,7 +124,7 @@ mod midi_processor {
     use crate::RtEventBuf;
     use arc_swap::ArcSwap;
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiInputSource, MidiQueue, MidiRoutingSnapshot};
+    use tutti_midi_types::{MidiInputSource, MidiOut, MidiRoutingSnapshot};
 
     const MIDI_EVENT_BUFFER_CAPACITY: usize = 512;
     const MAX_SPLIT_POINTS: usize = 258;
@@ -136,13 +136,13 @@ mod midi_processor {
     /// 2. Computes split points at event boundaries
     /// 3. For each segment: routes events to target nodes, then delegates to inner
     ///
-    /// Routes events to a caller-supplied [`MidiQueue`] (typically a
+    /// Routes events to a caller-supplied [`MidiOut`] (typically a
     /// `MidiBus` from `tutti-midi-runtime`, but any queue impl works —
     /// for example a single `MidiSender`).
     pub struct MidiProcessor<P: AudioProcessor> {
         inner: P,
         input: Option<Arc<dyn MidiInputSource>>,
-        queue: Option<Arc<dyn MidiQueue>>,
+        queue: Option<Arc<dyn MidiOut>>,
         routing: Arc<ArcSwap<MidiRoutingSnapshot>>,
         /// `(frame_offset, port, event)` collected per buffer, sorted by
         /// offset. Fixed capacity: events past `MIDI_EVENT_BUFFER_CAPACITY`
@@ -165,7 +165,7 @@ mod midi_processor {
             self.input = Some(input);
         }
 
-        pub fn set_queue(&mut self, queue: Arc<dyn MidiQueue>) {
+        pub fn set_queue(&mut self, queue: Arc<dyn MidiOut>) {
             self.queue = Some(queue);
         }
 

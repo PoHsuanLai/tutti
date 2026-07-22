@@ -1,4 +1,4 @@
-//! Beat-scheduled MIDI clip playback as a [`MidiSource`].
+//! Beat-scheduled MIDI clip playback as a [`MidiIn`].
 //!
 //! A `MidiClipSource` holds a sorted `Vec<TimedClipEvent>` (events tagged
 //! with absolute beats) and a [`TransportReader`]. On each
@@ -18,7 +18,7 @@ use std::sync::Arc;
 use atomic_float::AtomicF64;
 use tutti_core::transport::TransportReader;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::MidiSource;
+use tutti_midi_types::MidiIn;
 use tutti_midi_types::unit_id::MidiUnitId;
 
 /// One MIDI event scheduled at an absolute beat — the clip player's name for the
@@ -179,7 +179,7 @@ struct PollWindow {
     max_offset: u32,
 }
 
-impl MidiSource for MidiClipSource {
+impl MidiIn for MidiClipSource {
     fn poll_into(
         &self,
         unit_id: MidiUnitId,
@@ -200,20 +200,20 @@ impl MidiSource for MidiClipSource {
     }
 }
 
-/// Fan multiple [`MidiSource`]s into one. Used to merge live preview
+/// Fan multiple [`MidiIn`]s into one. Used to merge live preview
 /// events (from `MidiBus` registry) with clip playback for the same
 /// synth. Events are concatenated in source order; the receiving
 /// synth re-sorts by `frame_offset` before processing.
 pub struct CompositeMidiSource {
-    sources: Vec<Box<dyn MidiSource>>,
+    sources: Vec<Box<dyn MidiIn>>,
 }
 
 impl CompositeMidiSource {
-    pub fn new(sources: Vec<Box<dyn MidiSource>>) -> Self {
+    pub fn new(sources: Vec<Box<dyn MidiIn>>) -> Self {
         Self { sources }
     }
 
-    pub fn push(&mut self, source: Box<dyn MidiSource>) {
+    pub fn push(&mut self, source: Box<dyn MidiIn>) {
         self.sources.push(source);
     }
 
@@ -226,7 +226,7 @@ impl CompositeMidiSource {
     }
 }
 
-impl MidiSource for CompositeMidiSource {
+impl MidiIn for CompositeMidiSource {
     fn poll_into(
         &self,
         unit_id: MidiUnitId,
@@ -423,7 +423,7 @@ mod tests {
             }],
             Arc::clone(&transport) as Arc<dyn TransportReader>,
             44100.0,
-        )) as Box<dyn MidiSource>;
+        )) as Box<dyn MidiIn>;
         let s2 = Box::new(MidiClipSource::new(
             unit,
             vec![TimedClipEvent {
@@ -432,7 +432,7 @@ mod tests {
             }],
             Arc::clone(&transport) as Arc<dyn TransportReader>,
             44100.0,
-        )) as Box<dyn MidiSource>;
+        )) as Box<dyn MidiIn>;
 
         let comp = CompositeMidiSource::new(vec![s1, s2]);
         let mut buf = [MidiEvent::noop(); 8];

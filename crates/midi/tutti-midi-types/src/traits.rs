@@ -4,8 +4,8 @@
 //! Small traits that work together on the hot path:
 //! - [`MidiInputSource`] — produces raw `(port, event)` pairs from hardware /
 //!   virtual / Web-MIDI sources, frame offsets already computed.
-//! - [`MidiQueue`] — the write side: routing code hands events to per-unit queues.
-//! - [`MidiSource`] — the read side: a unit drains its queue into a buffer during
+//! - [`MidiOut`] — the write side: routing code hands events to per-unit queues.
+//! - [`MidiIn`] — the read side: a unit drains its queue into a buffer during
 //!   `process()`.
 //!
 //! All are `MidiEvent` + [`MidiUnitId`] plumbing; they live together because
@@ -49,21 +49,21 @@ impl MidiInputSource for NoMidiInput {
 // -----------------------------------------------------------------------------
 
 /// Deliver MIDI events to registered audio units — the write-side complement to
-/// [`MidiSource`]. Routing code on the audio thread calls [`MidiQueue::queue`]
+/// [`MidiIn`]. Routing code on the audio thread calls [`MidiOut::queue`]
 /// to hand events to per-unit queues, which the consuming units drain via
-/// [`MidiSource::poll_into`].
+/// [`MidiIn::poll_into`].
 ///
 /// Implementations must be **lock-free** and **alloc-free** — `queue` is called
 /// on the audio thread, once per routed event. Events for unknown unit ids
 /// should be silently dropped.
-pub trait MidiQueue: Send + Sync {
+pub trait MidiOut: Send + Sync {
     fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]);
 }
 
 /// Pull MIDI events in the audio thread — the read-side complement to
-/// [`MidiQueue`].
+/// [`MidiOut`].
 ///
-/// Audio units store `Option<Box<dyn MidiSource>>` and call `poll_into()`
+/// Audio units store `Option<Box<dyn MidiIn>>` and call `poll_into()`
 /// during `tick()`/`process()`. The concrete implementation determines whether
 /// events come from a live registry (destructively draining SPSC channels), an
 /// export snapshot, or a beat-scheduled clip player.
@@ -75,7 +75,7 @@ pub trait MidiQueue: Send + Sync {
 /// don't track absolute sample positions (e.g. the lock-free MIDI registry,
 /// where producers stamp `frame_offset` themselves) can ignore both arguments
 /// and pass the queue contents through unchanged.
-pub trait MidiSource: Send + Sync {
+pub trait MidiIn: Send + Sync {
     /// Poll available MIDI events for the given unit into the buffer.
     ///
     /// Returns the number of events written to `buffer`. Each event's

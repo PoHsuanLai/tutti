@@ -94,7 +94,7 @@ impl InProcessVst2Client {
     /// the graph. See [`Midi::set_out`]. Off-RT; call once at wiring time.
     pub fn set_midi_out(
         &self,
-        queue: Arc<dyn tutti_midi_types::MidiQueue>,
+        queue: Arc<dyn tutti_midi_types::MidiOut>,
         routing: Arc<arc_swap::ArcSwap<tutti_midi_types::MidiRoutingSnapshot>>,
         port: usize,
     ) {

@@ -49,7 +49,7 @@ pub use mpe::{
 };
 pub use note_id::{NoteId, PerNoteMap};
 pub use routing::{MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterator};
-pub use traits::{MidiInputSource, MidiQueue, MidiSource, NoMidiInput};
+pub use traits::{MidiInputSource, MidiOut, MidiIn, NoMidiInput};
 pub use ump::{
     BarAccents, EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
     FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
@@ -93,7 +93,7 @@ pub use unit_id::{next_plugin_out_port, MidiUnitId, PLUGIN_OUT_PORT_BASE};
 pub mod prelude {
     pub use crate::{
         normalize, read_clip_file, write_clip_file, write_clip_file_from_beats, ClipEvent,
-        ClipFileError, MidiEvent, MidiMessage, MidiSource, MidiUnitId, NoteAttribute,
+        ClipFileError, MidiEvent, MidiMessage, MidiIn, MidiUnitId, NoteAttribute,
         NoteId, ParsedClipFile, PerNoteController, Protocol,
     };
 }

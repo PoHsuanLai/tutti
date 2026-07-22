@@ -138,7 +138,7 @@ impl PluginClient {
     /// re-enters the graph. See [`Midi::set_out`]. Off-RT; call at wiring time.
     pub fn set_midi_out(
         &self,
-        queue: Arc<dyn tutti_midi_types::MidiQueue>,
+        queue: Arc<dyn tutti_midi_types::MidiOut>,
         routing: Arc<arc_swap::ArcSwap<tutti_midi_types::MidiRoutingSnapshot>>,
         port: usize,
     ) {
@@ -354,7 +354,7 @@ impl PluginClient {
         self.midi.sender()
     }
 
-    /// Install a [`tutti_midi_types::MidiSource`] override (typically
+    /// Install a [`tutti_midi_types::MidiIn`] override (typically
     /// [`tutti_midi_runtime::MidiClipSource`] from a track's MIDI
     /// clips) that the plugin polls per block instead of its live
     /// `MidiReceiver`. Mirrors `PolySynth::set_midi_source` so
@@ -363,7 +363,7 @@ impl PluginClient {
     ///
     /// The source is held in an `Arc`, so the same instance survives
     /// the unit-clone fundsp performs on each `commit()`.
-    pub fn set_midi_source(&mut self, source: std::sync::Arc<dyn tutti_midi_types::MidiSource>) {
+    pub fn set_midi_source(&mut self, source: std::sync::Arc<dyn tutti_midi_types::MidiIn>) {
         self.midi.set_source(source);
     }
 

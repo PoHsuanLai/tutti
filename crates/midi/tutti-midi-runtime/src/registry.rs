@@ -9,7 +9,7 @@
 //! sender clones, lets the caller queue by id, and broadcasts system
 //! events to every registered sender. Standalone consumers of this
 //! crate don't have to use it — wiring individual [`MidiSender`]s into
-//! your own [`tutti_midi_types::MidiQueue`] impl works just as well — but the
+//! your own [`tutti_midi_types::MidiOut`] impl works just as well — but the
 //! `tutti` engine installs a [`MidiBus`] as its audio-thread dispatch
 //! target so apps can register node senders without writing any glue.
 
@@ -70,7 +70,7 @@ impl MidiEventSlot {
 
 /// Producer handle for a [`MidiEventSlot`]. Cheap to clone.
 ///
-/// Implements [`tutti_midi_types::MidiQueue`], so MIDI input drivers, sequencers,
+/// Implements [`tutti_midi_types::MidiOut`], so MIDI input drivers, sequencers,
 /// or arbitrary user code can all push events through the same trait.
 #[derive(Clone)]
 pub struct MidiSender {
@@ -126,7 +126,7 @@ impl MidiSender {
     }
 }
 
-impl tutti_midi_types::MidiQueue for MidiSender {
+impl tutti_midi_types::MidiOut for MidiSender {
     fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) {
         if unit_id != self.unit_id {
             return;
@@ -137,7 +137,7 @@ impl tutti_midi_types::MidiQueue for MidiSender {
 
 /// Consumer handle for a [`MidiEventSlot`]. Owned by the audio unit.
 ///
-/// Implements [`tutti_midi_types::MidiSource`] so it can plug into any node that
+/// Implements [`tutti_midi_types::MidiIn`] so it can plug into any node that
 /// polls events through the trait.
 ///
 /// Cloneable via [`Clone`] to support fundsp graph commits that duplicate
@@ -208,7 +208,7 @@ impl MidiReceiver {
     }
 }
 
-impl tutti_midi_types::MidiSource for MidiReceiver {
+impl tutti_midi_types::MidiIn for MidiReceiver {
     fn poll_into(
         &self,
         unit_id: MidiUnitId,
@@ -235,7 +235,7 @@ impl tutti_midi_types::MidiSource for MidiReceiver {
 ///
 /// The `tutti` engine wires one of these as its default audio-thread
 /// dispatch target, exposed as `engine.midi`. Standalone consumers of
-/// this crate can pick any [`tutti_midi_types::MidiQueue`] impl instead —
+/// this crate can pick any [`tutti_midi_types::MidiOut`] impl instead —
 /// a single [`MidiSender`], a custom routing struct, anything with a
 /// `queue(MidiUnitId, &[MidiEvent])` method.
 ///
@@ -471,7 +471,7 @@ impl MidiBus {
     }
 }
 
-impl tutti_midi_types::MidiQueue for MidiBus {
+impl tutti_midi_types::MidiOut for MidiBus {
     fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) {
         self.queue(unit_id, events);
     }

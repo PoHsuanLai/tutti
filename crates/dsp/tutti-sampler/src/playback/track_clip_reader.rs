@@ -541,33 +541,11 @@ pub enum ClipCommand {
     /// tiers.
     AddVoice {
         id: SlotId,
-        source: VoiceSource,
-        play: Playback,
-        /// Butler channel index for a `Disk` source; `None` for `Ram`. Rides on
-        /// the command (not inside `Playback`, which is tier-agnostic intent) so
-        /// the drain can store it on the `Voice` for the butler loop routing.
-        channel_index: Option<usize>,
-    },
-    /// **Deprecated shim** — kept only until L3 updates dawai's emit sites to
-    /// send [`ClipCommand::AddVoice`]. The drain converts this to an `AddVoice`
-    /// (`VoiceSource::Ram` + a `Playback` carrying just `direction`), so no
-    /// application logic is duplicated.
-    Add {
-        id: SlotId,
-        sampler: SamplerUnit,
-        direction: Direction,
-    },
-    /// **Deprecated shim** — kept only until L3. The `StreamingClipReader` is
-    /// built on the ECS/butler side (butler stream registration, ring
-    /// allocation, placement gate); the drain converts this to an `AddVoice`
-    /// (`VoiceSource::Disk` + `channel_index`), so it shares the one insert path.
-    AddStreaming {
-        id: SlotId,
-        reader: StreamingClipReader,
-        direction: Direction,
-        /// Butler channel index the stream occupies. Stored on the slot so the
-        /// reader drain can forward streaming loop ops to the right channel.
-        channel_index: usize,
+        /// Boxed: a [`Voice`] carries a whole `SamplerUnit`/`StreamingClipReader`,
+        /// far larger than the other command variants — boxing keeps the bounded
+        /// command channel's per-slot footprint small. Cold path (drained off the
+        /// per-sample loop), so the indirection costs nothing audible.
+        voice: Box<Voice>,
     },
     Remove(SlotId),
     ReplaceWave {
@@ -846,10 +824,6 @@ impl TrackClipReaderUnit {
     /// primes the range in-unit, streaming forwards `Command::Loop` to the
     /// butler). Stretch/pitch are primed by `ClipSlot::new` from `play`. Runs on
     /// the COLD command drain, so the loop's butler send is RT-safe.
-    fn insert_voice_parts(&mut self, id: SlotId, source: VoiceSource, play: Playback, channel_index: Option<usize>) {
-        self.insert_voice(id, Voice { source, play, channel_index });
-    }
-
     /// Insert a fully-built [`Voice`] as a new slot and REALISE its `Playback`
     /// intent per-tier. Public so a clip-aware caller (the offline region
     /// render's `Populate` step) can hand the reader a `Voice` it built from
@@ -884,52 +858,8 @@ impl TrackClipReaderUnit {
     fn drain_commands(&mut self) {
         while let Ok(cmd) = self.rx.try_recv() {
             match cmd {
-                ClipCommand::AddVoice {
-                    id,
-                    source,
-                    play,
-                    channel_index,
-                } => {
-                    self.insert_voice_parts(id, source, play, channel_index);
-                }
-                ClipCommand::Add {
-                    id,
-                    sampler,
-                    direction,
-                } => {
-                    // Deprecated shim: dawai still pre-pokes the `SamplerUnit`
-                    // (gain / speed / loop) before sending. Fold that pre-baked
-                    // state OUT of the source and INTO a `Playback` record, so the
-                    // one insert path re-applies it faithfully (idempotent) — no
-                    // clobbering the pre-set values with `Playback::default()`.
-                    // L3 deletes this arm once dawai hands a fresh producer + a
-                    // fully-populated `Playback` directly via `AddVoice`.
-                    let play = Playback {
-                        gain: sampler.gain(),
-                        speed: sampler.speed(),
-                        loop_: sampler.loop_setting(),
-                        direction,
-                        ..Playback::default()
-                    };
-                    self.insert_voice_parts(id, VoiceSource::Ram(sampler), play, None);
-                }
-                ClipCommand::AddStreaming {
-                    id,
-                    reader,
-                    direction,
-                    channel_index,
-                } => {
-                    // Deprecated shim: same insert path with a `Disk` source and
-                    // the butler channel. dawai pre-sets gain on the streaming
-                    // reader; fold it into the `Playback` (loop/speed arrive at
-                    // their defaults — the disk tier is registered fresh). L3
-                    // deletes this arm.
-                    let play = Playback {
-                        gain: reader.gain(),
-                        direction,
-                        ..Playback::default()
-                    };
-                    self.insert_voice_parts(id, VoiceSource::Disk(reader), play, Some(channel_index));
+                ClipCommand::AddVoice { id, voice } => {
+                    self.insert_voice(id, *voice);
                 }
                 ClipCommand::Remove(id) => {
                     self.clips.retain(|s| s.id != id);
@@ -1311,6 +1241,19 @@ mod tests {
         Arc::new(Wave::from_samples(44100.0, &data))
     }
 
+    /// Send an in-RAM clip through the one `AddVoice` path — the test-setup
+    /// mirror of the timeline's `promote_pending_clip_waves` emit.
+    fn add_ram_clip(handle: &TrackClipReaderHandle, id: SlotId, sampler: SamplerUnit) {
+        handle.send(ClipCommand::AddVoice {
+            id,
+            voice: Box::new(Voice {
+                source: VoiceSource::Ram(sampler),
+                play: Playback::default(),
+                channel_index: None,
+            }),
+        });
+    }
+
     #[test]
     fn add_and_remove_clips() {
         let (mut unit, handle) = TrackClipReaderUnit::new();
@@ -1318,11 +1261,7 @@ mod tests {
         let wave = make_wave(100);
 
         let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), BeatPosition::new(0.0), None);
-        handle.send(ClipCommand::Add {
-            id: SlotId(1),
-            sampler,
-            direction: Direction::Forward,
-        });
+        add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
         unit.tick(&[], &mut out);
@@ -1341,11 +1280,7 @@ mod tests {
         let wave = make_wave(100);
 
         let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
-        handle.send(ClipCommand::Add {
-            id: SlotId(1),
-            sampler,
-            direction: Direction::Forward,
-        });
+        add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
         unit.tick(&[], &mut out);
@@ -1362,11 +1297,7 @@ mod tests {
         for i in 0..3 {
             let sampler =
                 SamplerUnit::with_transport(wave.clone(), transport.clone(), BeatPosition::new(0.0), None);
-            handle.send(ClipCommand::Add {
-                id: SlotId(i),
-                sampler,
-                direction: Direction::Forward,
-            });
+            add_ram_clip(&handle, SlotId(i), sampler);
         }
 
         let mut out_3 = [0.0f32; 2];
@@ -1374,11 +1305,7 @@ mod tests {
 
         let (mut unit2, handle2) = TrackClipReaderUnit::new();
         let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), BeatPosition::new(0.0), None);
-        handle2.send(ClipCommand::Add {
-            id: SlotId(0),
-            sampler,
-            direction: Direction::Forward,
-        });
+        add_ram_clip(&handle2, SlotId(0), sampler);
         let mut out_1 = [0.0f32; 2];
         unit2.tick(&[], &mut out_1);
 
@@ -1394,11 +1321,7 @@ mod tests {
         let wave = make_wave(100);
 
         let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
-        handle.send(ClipCommand::Add {
-            id: SlotId(1),
-            sampler,
-            direction: Direction::Forward,
-        });
+        add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
         unit.tick(&[], &mut out);
@@ -1469,11 +1392,7 @@ mod tests {
         let wave = make_wave(100);
 
         let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
-        handle.send(ClipCommand::Add {
-            id: SlotId(1),
-            sampler,
-            direction: Direction::Forward,
-        });
+        add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out_before = [0.0f32; 2];
         unit.tick(&[], &mut out_before);
@@ -1496,11 +1415,7 @@ mod tests {
         let wave = make_wave(4096);
 
         let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
-        handle.send(ClipCommand::Add {
-            id: SlotId(1),
-            sampler,
-            direction: Direction::Forward,
-        });
+        add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
         unit.tick(&[], &mut out);

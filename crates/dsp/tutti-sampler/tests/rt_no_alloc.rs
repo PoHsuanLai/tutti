@@ -20,7 +20,10 @@ use tutti_core::{
     AudioUnit, BeatPosition, Bpm, BufferVec, Cents, Ratio, SampleRate, TransportReader, Wave,
 };
 use tutti_sampler::stretch::{Algorithm, Unit as TimeStretchUnit};
-use tutti_sampler::{ClipCommand, ClipSpec, Direction, SamplerUnit, SlotId, TrackClipReaderUnit};
+use tutti_sampler::{
+    ClipCommand, ClipSpec, Direction, Playback, SamplerUnit, SlotId, TrackClipReaderUnit, Voice,
+    VoiceSource,
+};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -312,10 +315,13 @@ fn run_stretch_drain_under_guard() {
         BeatPosition::new(0.0),
         None,
     );
-    handle.send(ClipCommand::Add {
+    handle.send(ClipCommand::AddVoice {
         id: SlotId(1),
-        sampler,
-        direction: Direction::Forward,
+        voice: Box::new(Voice {
+            source: VoiceSource::Ram(sampler),
+            play: Playback::default(),
+            channel_index: None,
+        }),
     });
 
     let mut output = [0.0f32; 2];

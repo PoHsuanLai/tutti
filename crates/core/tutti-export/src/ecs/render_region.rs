@@ -437,7 +437,9 @@ mod tests {
     use super::*;
     use tutti_core::{Bpm, SampleRate, Wave};
     use tutti_core::BeatPosition;
-    use tutti_sampler::{ClipCommand, Direction, SamplerUnit, SlotId, TrackClipReaderUnit};
+    use tutti_sampler::{
+        ClipCommand, Direction, Playback, SamplerUnit, SlotId, TrackClipReaderUnit, Voice, VoiceSource,
+    };
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     struct MockTransport {
@@ -519,10 +521,13 @@ mod tests {
             BeatPosition::new(0.0),
             None,
         );
-        handle.send(ClipCommand::Add {
+        handle.send(ClipCommand::AddVoice {
             id: SlotId(1),
-            sampler,
-            direction: Direction::Forward,
+            voice: Box::new(Voice {
+                source: VoiceSource::Ram(sampler),
+                play: Playback::default(),
+                channel_index: None,
+            }),
         });
 
         net.set_sample_rate(SampleRate(44100.0));

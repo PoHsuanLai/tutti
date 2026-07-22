@@ -16,6 +16,46 @@ use ringbuf::{
 };
 use rustfft::{num_complex::Complex, FftPlanner};
 use std::sync::Arc;
+use tutti_core::io::AudioIn;
+
+/// [`AudioIn`] adapter over the metering tap's SPSC ring. Pops `(f32, f32)`
+/// pairs from the ring and hands them out as `[f32; 2]` frames — the cold-path
+/// read half the analysis thread drains through. (The ring element stays
+/// `(f32, f32)` because the audio-thread metering tap writes tuples; the
+/// tuple → `[f32; 2]` conversion is confined to this adapter.)
+struct RingIn {
+    consumer: HeapCons<(f32, f32)>,
+    /// Reused `(f32, f32)` staging so a `poll_into` allocates nothing.
+    scratch: Vec<(f32, f32)>,
+}
+
+impl RingIn {
+    fn new(consumer: HeapCons<(f32, f32)>, capacity: usize) -> Self {
+        Self {
+            consumer,
+            scratch: vec![(0.0, 0.0); capacity],
+        }
+    }
+
+    /// Frames currently sitting in the ring (an upper bound on the next poll).
+    fn available(&self) -> usize {
+        self.consumer.occupied_len()
+    }
+}
+
+impl AudioIn for RingIn {
+    fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
+        let n = out.len().min(self.scratch.len());
+        if n == 0 {
+            return 0;
+        }
+        let read = self.consumer.pop_slice(&mut self.scratch[..n]);
+        for (slot, &(l, r)) in out.iter_mut().zip(&self.scratch[..read]) {
+            *slot = [l, r];
+        }
+        read
+    }
+}
 
 /// Shared state between the analysis thread and `AnalysisHandle`.
 ///
@@ -58,10 +98,11 @@ const MAX_RECENT_TRANSIENTS: usize = 64;
 /// pitch/transient/waveform analysis on a sliding window.
 /// Blocks until `state.stop()` is called.
 pub fn run_analysis_thread(
-    mut consumer: HeapCons<(f32, f32)>,
+    consumer: HeapCons<(f32, f32)>,
     state: Arc<LiveAnalysisState>,
     sample_rate: f64,
 ) {
+    let mut input = RingIn::new(consumer, 1024);
     let mut pitch_detector = PitchDetector::new(sample_rate);
     let mut transient_detector = TransientDetector::new(sample_rate);
 
@@ -86,20 +127,17 @@ pub fn run_analysis_thread(
     let mut recent_transients: Vec<Transient> = Vec::new();
     let mut total_samples_processed = 0usize;
 
-    let mut drain_buf = [(0.0f32, 0.0f32); 1024];
+    let mut drain_buf = [[0.0f32; 2]; 1024];
 
     while state.is_running() {
-        let available = consumer.occupied_len();
-
-        if available == 0 {
+        if input.available() == 0 {
             std::thread::sleep(std::time::Duration::from_millis(5));
             continue;
         }
 
-        let to_read = available.min(drain_buf.len());
-        let read = consumer.pop_slice(&mut drain_buf[..to_read]);
+        let read = input.poll_into(&mut drain_buf);
 
-        for &(l, r) in &drain_buf[..read] {
+        for &[l, r] in &drain_buf[..read] {
             let mono = (l + r) * 0.5;
 
             window[window_pos % WINDOW_SIZE] = mono;
@@ -464,4 +502,49 @@ mod tests {
         }
     }
 }
+}
+
+#[cfg(test)]
+mod ring_tests {
+    use super::*;
+    use ringbuf::{traits::Producer, traits::Split, HeapRb};
+
+    #[test]
+    fn ring_in_pops_pairs_as_frames() {
+        let rb = HeapRb::<(f32, f32)>::new(16);
+        let (mut prod, cons) = rb.split();
+        for i in 0..4 {
+            prod.try_push((i as f32, -(i as f32))).unwrap();
+        }
+
+        let mut input = RingIn::new(cons, 8);
+        assert_eq!(input.available(), 4);
+
+        let mut out = [[0.0f32; 2]; 8];
+        let read = input.poll_into(&mut out);
+        assert_eq!(read, 4);
+        assert_eq!(&out[..4], &[[0.0, 0.0], [1.0, -1.0], [2.0, -2.0], [3.0, -3.0]]);
+    }
+
+    #[test]
+    fn ring_in_empty_polls_zero() {
+        let rb = HeapRb::<(f32, f32)>::new(16);
+        let (_prod, cons) = rb.split();
+        let mut input = RingIn::new(cons, 8);
+        let mut out = [[0.0f32; 2]; 8];
+        assert_eq!(input.poll_into(&mut out), 0);
+    }
+
+    #[test]
+    fn ring_in_bounded_by_scratch_capacity() {
+        let rb = HeapRb::<(f32, f32)>::new(64);
+        let (mut prod, cons) = rb.split();
+        for i in 0..10 {
+            prod.try_push((i as f32, i as f32)).unwrap();
+        }
+        // scratch capacity 3 caps each poll to 3 frames even with a bigger out.
+        let mut input = RingIn::new(cons, 3);
+        let mut out = [[0.0f32; 2]; 8];
+        assert_eq!(input.poll_into(&mut out), 3);
+    }
 }

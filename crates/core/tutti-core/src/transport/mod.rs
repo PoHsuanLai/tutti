@@ -14,12 +14,14 @@ pub use clock::TransportClock;
 pub use handle::{MetronomeHandle, TransportHandle};
 pub use manager::{Direction, MotionState, TransportManager};
 pub use offline::{OfflineTransport, OfflineTransportConfig};
-pub use state::{ClockInputs, Declick, LoopSpan, SeekSlot, TransportState};
+pub use state::{
+    beat_from_ports, ClockInputs, Declick, LoopSpan, SeekSlot, TransportState, BEAT_PORTS,
+};
 
 #[cfg(feature = "bevy")]
 pub mod plugin;
 #[cfg(feature = "bevy")]
-pub use plugin::{PendingTransport, TransportRes, TuttiTransportPlugin};
+pub use plugin::{PendingTransport, TransportClockNode, TransportRes, TuttiTransportPlugin};
 
 /// Trait for reading transport state.
 ///

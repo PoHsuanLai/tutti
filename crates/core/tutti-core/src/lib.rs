@@ -54,9 +54,10 @@ pub use processor::{AudioProcessor, GraphProcessor};
 
 pub mod transport;
 pub use transport::{
-    click, AutomationEnvelopeFn, AutomationReaderInput, ClickNode, ClickSettings, ClickState,
-    Direction, MetronomeHandle, MetronomeMode, MotionState, OfflineTransport,
+    beat_from_ports, click, AutomationEnvelopeFn, AutomationReaderInput, ClickNode, ClickSettings,
+    ClickState, Direction, MetronomeHandle, MetronomeMode, MotionState, OfflineTransport,
     OfflineTransportConfig, TransportClock, TransportHandle, TransportManager, TransportReader,
+    BEAT_PORTS,
 };
 
 pub mod metering;

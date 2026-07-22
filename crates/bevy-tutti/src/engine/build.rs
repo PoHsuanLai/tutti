@@ -29,7 +29,7 @@ use tutti_core::{
 // subsystem's `*Res` (synchronously, before frame 1).
 use tutti_core::graph::{AudioConfig, PendingGraph};
 use tutti_core::metering::PendingMetering;
-use tutti_core::transport::PendingTransport;
+use tutti_core::transport::{PendingTransport, TransportClockNode};
 
 #[cfg(feature = "midi")]
 use tutti_core::processor::MidiProcessor;
@@ -94,10 +94,12 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
 
     let mut net = GraphNet::new(inputs, outputs);
 
-    // Transport clock — infrastructure node writing back beat position via atomics.
+    // Transport clock — emits the beat on two ports and writes it back to the
+    // manager's atomic. Its NodeId is retained so beat-driven nodes can wire an
+    // edge to it (published below as `TransportClockNode`).
     let clock = TransportClock::from_inputs(transport_mgr.clock_inputs(), sample_rate)
         .with_position_writeback(transport_mgr.current_beat().clone());
-    net.inner_mut().push(Box::new(clock));
+    let clock_id = net.inner_mut().push(Box::new(clock));
 
     // Metronome — mixed into master output.
     let click_transport = TransportHandle::new(transport_mgr.clone(), click_settings.clone());
@@ -167,6 +169,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     app.insert_resource(PendingGraph(Some((graph, config))));
     app.insert_non_send_resource(driver);
     app.insert_resource(PendingTransport(Some(transport)));
+    app.insert_resource(TransportClockNode(clock_id));
     app.insert_resource(PendingMetering(Some(metering)));
 
     #[cfg(feature = "midi")]

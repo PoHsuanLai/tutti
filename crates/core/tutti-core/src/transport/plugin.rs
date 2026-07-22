@@ -30,6 +30,23 @@ impl std::ops::Deref for TransportRes {
 #[derive(Resource)]
 pub struct PendingTransport(pub Option<TransportHandle>);
 
+/// Graph address of the global [`TransportClock`](crate::TransportClock) node.
+///
+/// The clock emits the current beat on two output ports — port 0 whole beats,
+/// port 1 the fraction (see [`crate::transport::BEAT_PORTS`]). Beat-driven
+/// nodes take those as inputs, so they need the clock's `NodeId` to wire an
+/// edge to it:
+///
+/// ```ignore
+/// graph.connect(clock.0, 0, node, 0);
+/// graph.connect(clock.0, 1, node, 1);
+/// ```
+///
+/// Re-published on device-switch graph rebuilds, since the rebuilt clock is a
+/// different node.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct TransportClockNode(pub crate::NodeId);
+
 /// Bevy plugin: owns transport's Bevy surface. Claims [`PendingTransport`] →
 /// [`TransportRes`] during plugin build (the handle already exists — `build_into`
 /// ran synchronously before this plugin was added).

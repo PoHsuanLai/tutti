@@ -17,6 +17,26 @@ use std::sync::Arc;
 
 use crate::{AtomicBool, AtomicF64, AtomicU32};
 
+/// Number of ports a beat signal occupies: whole beats, then fraction.
+///
+/// `TransportClock` emits the beat split across two channels because a single
+/// `f32` cannot carry a musical position accurately — past beat 16384 its ULP
+/// exceeds 0.002 beats, which is audible as automation stair-stepping. Port 0
+/// carries the integer part and port 1 the fraction in `[0, 1)`, so precision
+/// stays constant no matter how far into a session the playhead is.
+///
+/// Every beat-driven node uses this convention. Reconstruct with [`beat_from_ports`].
+pub const BEAT_PORTS: usize = 2;
+
+/// Rebuild a beat from the two port values written by `TransportClock`.
+///
+/// The inverse of the clock's split: `whole` is the integer part, `frac` the
+/// remainder in `[0, 1)`.
+#[inline]
+pub fn beat_from_ports(whole: f32, frac: f32) -> f64 {
+    whole as f64 + frac as f64
+}
+
 /// A pending absolute jump. `pending` is the one-shot flag the clock
 /// consumes; `target` is where to land.
 ///

@@ -11,12 +11,13 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::graph::AudioNode;
 use crate::dsp_params::{BeatSynced, FilterMode, Frequency, LfoShapeKind, ModDepth};
 use crate::node_markers::LfoNodeMarker;
+use tutti_core::graph::AudioNode;
 
+use tutti_core::graph::AudioGraphRes;
 use tutti_core::graph::GraphDirty;
-use tutti_core::graph::{TransportRes, AudioGraphRes};
+use tutti_core::transport::{TransportClockNode, BEAT_PORTS};
 
 // ---------------------------------------------------------------------------
 // Mirror-enum mapping helpers (tutti-core mirror → real tutti-units enum)
@@ -57,19 +58,28 @@ fn lfo_shape_of(kind: LfoShapeKind) -> crate::LfoShape {
 // registered via `App::add_dsp_node::<T>()`. Their per-unit construction now
 // lives in the `impl DspNode for …` blocks there.
 //
-// The LFO stays bespoke below: it reads `TransportRes` at construction and can
-// decline to build (beat-synced with no transport) — neither fits the generic
-// `build(params) -> Box<dyn AudioUnit>` shape.
+// The LFO stays bespoke below: a beat-synced LFO must be wired to the transport
+// clock's two beat ports after it is added, which the generic
+// `build(params) -> Box<dyn AudioUnit>` shape has no room for.
 // ===========================================================================
 
-#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
+#[allow(
+    clippy::type_complexity,
+    reason = "Bevy queries are tuple-shaped by design"
+)]
 pub fn spawn_lfo_nodes(
     mut commands: Commands,
     mut graph: ResMut<AudioGraphRes>,
-    transport: Res<TransportRes>,
+    clock: Option<Res<TransportClockNode>>,
     mut dirty: ResMut<GraphDirty>,
     query: Query<
-        (Entity, &Frequency, &ModDepth, &LfoShapeKind, Option<&BeatSynced>),
+        (
+            Entity,
+            &Frequency,
+            &ModDepth,
+            &LfoShapeKind,
+            Option<&BeatSynced>,
+        ),
         (Added<LfoNodeMarker>, Without<AudioNode>),
     >,
 ) {
@@ -77,10 +87,22 @@ pub fn spawn_lfo_nodes(
         let synced = synced.map(|s| s.0).unwrap_or(false);
         let lfo_shape = lfo_shape_of(*shape);
         let node_id = if synced {
-            let lfo = crate::LfoNode::new(lfo_shape)
-                .with_beat_sync(transport.0.clone(), freq.0);
+            let lfo = crate::LfoNode::new(lfo_shape).with_beat_sync(freq.0);
             lfo.set_depth(depth.0);
-            graph.0.add(lfo)
+            let id = graph.0.add(lfo);
+            // Feed the beat in: port 0 whole beats, port 1 the fraction.
+            match clock.as_deref() {
+                Some(TransportClockNode(clock_id)) => {
+                    for port in 0..BEAT_PORTS {
+                        graph.0.connect(*clock_id, port, id, port);
+                    }
+                }
+                None => bevy_log::warn!(
+                    "beat-synced LFO (entity {entity:?}) has no TransportClockNode; \
+                     it will read silence and stay at phase 0"
+                ),
+            }
+            id
         } else {
             let lfo = crate::LfoNode::new(lfo_shape).with_frequency(freq.0);
             lfo.set_depth(depth.0);
@@ -99,11 +121,11 @@ mod marker_spawn_tests {
     use super::*;
     use crate::dsp_params::{FilterQ, GainDb};
     use crate::node_markers::FilterNode;
+    use bevy_app::{App, Update};
+    use tutti_core::graph::AudioGraphRes;
     use tutti_core::graph::NodeKind;
     use tutti_core::graph::{commit_graph, reconcile_node_despawn, GraphReconcileSystems};
-    use tutti_core::graph::AudioGraphRes;
     use tutti_core::AudioGraph;
-    use bevy_app::{App, Update};
 
     fn bare_graph(channels: usize) -> AudioGraph {
         // Feature-agnostic (tutti-core owns the `midi` cfg) — correct under
@@ -178,5 +200,4 @@ mod marker_spawn_tests {
             "built unit carries the overridden Q"
         );
     }
-
 }

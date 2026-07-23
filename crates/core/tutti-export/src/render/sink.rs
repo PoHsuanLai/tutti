@@ -4,7 +4,7 @@
 //! The driver gates each block through a [`BlockCursor`] (latency-trim +
 //! output-length cap) *before* handing it to a sink, so the gate stays off the
 //! sink trait: a sink just accepts the frames it is given. Two sinks cover the
-//! current needs — [`BufferedSink`] collects frames into two `Vec<f32>` planes
+//! current needs — [`RenderOut`] collects frames into two `Vec<f32>` planes
 //! (read back with `into_stereo`, since [`AudioOut::finalize`] returns `()` not
 //! data), and [`StreamSink`] forwards each block to a user closure that pushes
 //! it into an encoder.
@@ -48,12 +48,12 @@ impl BlockCursor {
 }
 
 /// Collects gated stereo frames into two `Vec<f32>` planes.
-pub(crate) struct BufferedSink {
+pub(crate) struct RenderOut {
     left: Vec<f32>,
     right: Vec<f32>,
 }
 
-impl BufferedSink {
+impl RenderOut {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             left: Vec::with_capacity(capacity),
@@ -66,7 +66,7 @@ impl BufferedSink {
     }
 }
 
-impl AudioOut for BufferedSink {
+impl AudioOut for RenderOut {
     fn write(&mut self, frames: &[[f32; 2]]) {
         self.left.reserve(frames.len());
         self.right.reserve(frames.len());
@@ -180,7 +180,7 @@ mod tests {
 
     #[test]
     fn buffered_sink_collects_frames() {
-        let mut sink = BufferedSink::with_capacity(16);
+        let mut sink = RenderOut::with_capacity(16);
         let block = frames(&[1.0; 8], &[2.0; 8]);
         sink.write(&block);
         sink.write(&block);

@@ -11,7 +11,7 @@
 //!
 //! `cpal` runs the input callback on its own real-time thread (the producer); it
 //! only ever `try_push`es interleaved frames into lock-free SPSC rings, never
-//! allocating or blocking. A background pump thread owns the [`MicSource`] (the
+//! allocating or blocking. A background pump thread owns the [`MicIn`] (the
 //! consumer) and drains the recording ring via [`poll_into`](AudioIn::poll_into).
 //! If the consumer falls behind, the ring fills and the callback drops the newest
 //! frames rather than block the audio thread — an overrun, surfaced as a gap,
@@ -19,7 +19,7 @@
 //!
 //! # Live monitoring
 //!
-//! [`open_with_monitor`](MicSource::open_with_monitor) tees the same capture
+//! [`open_with_monitor`](MicIn::open_with_monitor) tees the same capture
 //! callback into a *second*, shallow ring drained by a [`MicMonitorNode`] (a
 //! `tutti_sampler` `AudioUnit`, so it's device-free and lives in the graph).
 //! Add that node to the audio graph — through effects if you like — to hear the
@@ -63,16 +63,16 @@ unsafe impl Send for StreamHandle {}
 
 /// A live microphone as an [`AudioIn`]: the consumer end of the capture ring
 /// plus the stream handle that feeds it. Poll it with [`poll_into`](AudioIn::poll_into);
-/// pump it into any [`AudioOut`](tutti_sampler::AudioOut) (e.g. a `WavSink`) to
+/// pump it into any [`AudioOut`](tutti_sampler::AudioOut) (e.g. a `WavOut`) to
 /// record.
-pub struct MicSource {
+pub struct MicIn {
     cons: HeapCons<[f32; 2]>,
     sample_rate: f64,
     // Held to keep the input stream running; dropped with the source.
     _stream: StreamHandle,
 }
 
-impl MicSource {
+impl MicIn {
     /// Open the default input device (or the `index`-th input device) and start
     /// capturing into the ring. Returns once the stream is live.
     pub fn open(device_index: Option<usize>) -> Result<Self> {
@@ -82,7 +82,7 @@ impl MicSource {
 
     /// Open the mic *and* a live-monitor tap in one stream: the capture callback
     /// pushes each frame into both the recording ring (drained by
-    /// [`poll_into`](AudioIn::poll_into) / `pump` → a `WavSink`) and a shallow
+    /// [`poll_into`](AudioIn::poll_into) / `pump` → a `WavOut`) and a shallow
     /// monitor ring drained by the returned [`MicMonitorNode`]. Add that node to
     /// the audio graph to hear the mic live — through effects — *while*
     /// recording the same input.
@@ -164,7 +164,7 @@ impl MicSource {
     }
 }
 
-impl AudioIn for MicSource {
+impl AudioIn for MicIn {
     fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
         // Pop up to out.len() frames the callback has pushed. A short/zero count
         // is normal for a live source — the pump backs off and tries again.

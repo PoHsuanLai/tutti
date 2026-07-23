@@ -1,4 +1,4 @@
-//! [`WavSink`] — the live WAV implementation of [`AudioOut`](crate::AudioOut).
+//! [`WavOut`] — the live WAV implementation of [`AudioOut`](crate::AudioOut).
 //!
 //! An [`AudioOut`](crate::AudioOut) is "push frames → destination"; this is that
 //! destination for a WAV file. It writes 32-bit float (default) or 24-bit int,
@@ -12,7 +12,7 @@
 //! `StreamingEncoder`: a live sink wants the simplest possible path (open →
 //! write → finalize), no dither / no mono downmix, no extra crate boundary.
 //!
-//! The live driver is bevy-tutti's `Recorder`, which pumps a `MicSource`
+//! The live driver is bevy-tutti's `Recorder`, which pumps a `MicIn`
 //! ([`AudioIn`](crate::AudioIn)) into this sink ([`AudioOut`](crate::AudioOut))
 //! on a background thread and calls [`finalize`](AudioOut::finalize) once at stop.
 
@@ -22,7 +22,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
 
-/// On-disk sample format for a [`WavSink`].
+/// On-disk sample format for a [`WavOut`].
 ///
 /// Defaults to `F32` — the simplest, lossless-for-our-graph path. `I24` trades a
 /// little precision for smaller files where 24-bit int is desired.
@@ -37,13 +37,13 @@ pub enum CaptureFormat {
 
 /// Live WAV [`AudioOut`]. Owns the `hound` writer plus the channel count and
 /// on-disk format needed to encode each frame.
-pub struct WavSink {
+pub struct WavOut {
     writer: WavWriter<BufWriter<File>>,
     channels: usize,
     format: CaptureFormat,
 }
 
-impl WavSink {
+impl WavOut {
     /// Create the file and WAV header for `file_path`. Returns `None` if the
     /// file can't be created or the header can't be written.
     pub fn create(
@@ -74,7 +74,7 @@ impl WavSink {
     }
 }
 
-impl AudioOut for WavSink {
+impl AudioOut for WavOut {
     fn write(&mut self, frames: &[[f32; 2]]) {
         for &[left, right] in frames {
             match self.format {
@@ -129,7 +129,7 @@ mod tests {
         let path = dir.path().join("capture.wav");
 
         let mut sink =
-            WavSink::create(&path, 48_000.0, 2, CaptureFormat::F32).expect("sink should open");
+            WavOut::create(&path, 48_000.0, 2, CaptureFormat::F32).expect("sink should open");
 
         let block: Vec<[f32; 2]> = (0..256)
             .map(|i| [i as f32 / 256.0, -(i as f32) / 256.0])
@@ -155,7 +155,7 @@ mod tests {
         let path = dir.path().join("mono.wav");
 
         let mut sink =
-            WavSink::create(&path, 44_100.0, 1, CaptureFormat::F32).expect("sink should open");
+            WavOut::create(&path, 44_100.0, 1, CaptureFormat::F32).expect("sink should open");
         let frames = vec![[0.5f32, 0.9f32]; 128];
         sink.write(&frames);
         sink.finalize().unwrap();

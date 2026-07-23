@@ -5,9 +5,9 @@
 //! a *capture device* fills. Both are `AudioUnit`s with 0 inputs / 2 outputs
 //! whose whole job is "pop the next frame the producer pushed, or emit silence
 //! on underrun." The producer end lives in the device layer (`bevy-tutti`'s
-//! `MicSource`); this node is device-free so it can sit anywhere in the graph —
+//! `MicIn`); this node is device-free so it can sit anywhere in the graph —
 //! `pipe` it through effects and you hear the mic live, effected, while
-//! recording the same ring to a `WavSink`.
+//! recording the same ring to a `WavOut`.
 //!
 //! # The ring handle
 //!

@@ -3,7 +3,7 @@
 use super::super::cache::LruCache;
 use super::super::metrics::Metrics;
 use super::super::plan::ChannelPlan;
-use super::super::prefetch::RegionWriter;
+use super::super::prefetch::RegionOut;
 use super::super::region_map::RegionMap;
 use super::wave_io::{wave_frame, wrap_position, WaveIn};
 use dashmap::DashMap;
@@ -155,7 +155,7 @@ struct RefillWorkItem {
 
 /// Parallel refill using rayon's par_iter_mut with varifill strategy.
 ///
-/// Uses Vec<RegionWriter> with par_iter_mut which only requires Send, not Sync.
+/// Uses Vec<RegionOut> with par_iter_mut which only requires Send, not Sync.
 /// Each rayon worker gets exclusive &mut access to a different producer.
 /// Only used when parallel_io is enabled and there are 3+ streams.
 pub(crate) fn refill_all_parallel(
@@ -243,7 +243,7 @@ pub(crate) fn refill_all_parallel(
 /// reference to the writer from `par_iter_mut`.
 #[allow(clippy::too_many_arguments)]
 fn refill_one(
-    writer: &mut RegionWriter,
+    writer: &mut RegionOut,
     cache: &LruCache,
     chunk_size: usize,
     is_reverse: bool,
@@ -292,7 +292,7 @@ fn refill_one(
 /// loop, each run stops at `loop_end` and the next seeks back to `loop_start`.
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 fn refill_forward_stream(
-    writer: &mut RegionWriter,
+    writer: &mut RegionOut,
     file_position: usize,
     chunk_size: usize,
     interleave_buffer: &mut Vec<[f32; 2]>,
@@ -345,7 +345,7 @@ fn refill_forward_stream(
 /// hand-rolled.
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 fn refill_reverse_stream(
-    writer: &mut RegionWriter,
+    writer: &mut RegionOut,
     file_position: usize,
     chunk_size: usize,
     interleave_buffer: &mut Vec<[f32; 2]>,
@@ -383,7 +383,7 @@ fn refill_reverse_stream(
 /// source (mono up-mix + loop wrap + zero-pad past end confined there) and
 /// pushes it via the [`AudioOut`](tutti_core::io::AudioOut) sink.
 fn refill_forward(
-    writer: &mut RegionWriter,
+    writer: &mut RegionOut,
     wave: &Wave,
     file_position: usize,
     chunk_size: usize,
@@ -410,7 +410,7 @@ fn refill_forward(
 /// through [`wave_frame`], then pushes them reversed into the ring. `pump` can't
 /// express reversal, so this stays hand-rolled.
 fn refill_reverse(
-    writer: &mut RegionWriter,
+    writer: &mut RegionOut,
     wave: &Wave,
     file_position: usize,
     chunk_size: usize,

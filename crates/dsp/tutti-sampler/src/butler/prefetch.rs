@@ -12,7 +12,7 @@ use arc_swap::ArcSwap;
 use tutti_core::{AtomicU64, Ordering};
 
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-use tutti_core::StreamDecoder;
+use tutti_core::FileIn;
 
 use super::command::RegionId;
 
@@ -77,7 +77,7 @@ impl RegionMeta {
     }
 }
 
-pub(crate) struct RegionWriter {
+pub(crate) struct RegionOut {
     prod: SendProd<(f32, f32)>,
     meta: Arc<RegionMeta>,
     /// Frames accepted by the most recent [`AudioOut::write`](tutti_core::io::AudioOut::write)
@@ -89,10 +89,10 @@ pub(crate) struct RegionWriter {
     /// format, or no frame count). `Box<dyn FormatReader/Decoder>` are `Send`,
     /// so the rayon `par_iter_mut` refill path is fine.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-    decoder: Option<StreamDecoder>,
+    decoder: Option<FileIn>,
 }
 
-impl RegionWriter {
+impl RegionOut {
     pub fn file_position(&self) -> u64 {
         self.meta.file_position()
     }
@@ -101,13 +101,13 @@ impl RegionWriter {
     /// real-streaming refill path. Without one, refill uses the whole-file
     /// fallback.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-    pub(crate) fn set_decoder(&mut self, decoder: StreamDecoder) {
+    pub(crate) fn set_decoder(&mut self, decoder: FileIn) {
         self.decoder = Some(decoder);
     }
 
     /// Mutable access to the streaming decoder, if this region streams.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-    pub(crate) fn decoder_mut(&mut self) -> Option<&mut StreamDecoder> {
+    pub(crate) fn decoder_mut(&mut self) -> Option<&mut FileIn> {
         self.decoder.as_mut()
     }
 
@@ -330,7 +330,7 @@ impl RegionBuffer {
         region_id: RegionId,
         file_path: PathBuf,
         capacity: usize,
-    ) -> (RegionWriter, RegionReader) {
+    ) -> (RegionOut, RegionReader) {
         let capacity = capacity.max(4096);
 
         let rb = HeapRb::<(f32, f32)>::new(capacity);
@@ -342,7 +342,7 @@ impl RegionBuffer {
             file_position: AtomicU64::new(0),
         });
 
-        let producer = RegionWriter {
+        let producer = RegionOut {
             prod: SendProd::new(prod),
             meta: meta.clone(),
             accepted: 0,

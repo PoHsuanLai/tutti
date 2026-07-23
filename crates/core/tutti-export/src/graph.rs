@@ -11,7 +11,7 @@ use crate::options::{
 };
 use crate::process::{self, ResampleQuality, StreamProcessor};
 use crate::progress::{Phase, PhaseGuard, ProgressEmitter};
-use crate::render::{self, BufferedSink, RenderRequest, StreamSink};
+use crate::render::{self, RenderOut, RenderRequest, StreamSink};
 use crate::run::{Rendered, Run, Written};
 #[cfg(feature = "midi")]
 use crate::MidiTrack;
@@ -322,7 +322,7 @@ fn render_buffered(
         timeline: Some(&timeline),
     };
 
-    let mut sink = BufferedSink::with_capacity(total_samples);
+    let mut sink = RenderOut::with_capacity(total_samples);
     let mut progress =
         ProgressEmitter::new(on_progress, Phase::Render, total_samples, spec.sample_rate);
     render::render(request, &mut sink, &mut progress)?;

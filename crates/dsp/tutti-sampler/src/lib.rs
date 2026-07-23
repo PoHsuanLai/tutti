@@ -27,7 +27,7 @@
 //! - [`AudioIn`] / [`AudioOut`] / [`pump`] — the engine's I/O edge vocabulary,
 //!   re-exported from [`tutti_types::io`]. Recording is a pump from one to the
 //!   other.
-//! - [`capture`] — the write side's live impl: [`WavSink`](capture::WavSink),
+//! - [`capture`] — the write side's live impl: [`WavOut`](capture::WavOut),
 //!   an [`AudioOut`]
 //! - [`stretch`] — time-stretch / pitch-shift DSP unit
 //!
@@ -82,7 +82,7 @@ pub mod playback;
 
 // Bevy-free DSP leaves + value types from `playback` — usable for direct
 // FunDSP-graph integration without the ECS layer.
-pub use butler::{LruCache, StreamPin, WavSink};
+pub use butler::{LruCache, StreamPin, WavOut};
 pub use playback::{
     share_mic_ring, ClipCommand, ClipReader, ClipSpec, Direction, LoopSetting, MicMonitorNode,
     MicRing, PendingPlayback, Playback, SamplerUnit, SamplerUnitConfig, SlotId, StreamingClipConfig,
@@ -151,14 +151,14 @@ impl bevy_app::Plugin for TuttiSamplerPlugin {
     }
 }
 
-/// The write side's live impl: [`WavSink`], an [`AudioOut`] that streams stereo
+/// The write side's live impl: [`WavOut`], an [`AudioOut`] that streams stereo
 /// frames to a WAV file, plus its [`CaptureFormat`](capture::CaptureFormat).
 ///
 /// The record-mic→WAV flow is an explicit [`AudioIn`] → [`AudioOut`] pump
-/// driving this sink, lived out by bevy-tutti's `Recorder` (a `MicSource`
-/// pumped into a `WavSink` on a background thread).
+/// driving this sink, lived out by bevy-tutti's `Recorder` (a `MicIn`
+/// pumped into a `WavOut` on a background thread).
 pub mod capture {
-    pub use crate::butler::{CaptureFormat, WavSink};
+    pub use crate::butler::{CaptureFormat, WavOut};
 }
 
 /// Time-stretching and pitch-shifting DSP unit.

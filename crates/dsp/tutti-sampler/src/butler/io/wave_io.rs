@@ -6,16 +6,16 @@
 //! - [`WaveIn`] is the one place the planar `wave.at(0,i)/at(1,i)` unpack lives
 //!   — an [`AudioIn`] over a `Wave` with a cursor, mono up-mix, optional loop
 //!   wrap, and zero-pad past end.
-//! - [`RegionWriter`] implements [`AudioOut`]: `write` pushes frames into the
+//! - [`RegionOut`] implements [`AudioOut`]: `write` pushes frames into the
 //!   bounded ring until it fills (recording how many landed so the caller can
 //!   advance the file cursor); `finalize` is a no-op since the ring is a live
 //!   SPSC channel, never closed.
 //!
 //! The butler ring stores `(f32, f32)` frames (the shape the RT sampler reads);
 //! the vocabulary is `[f32; 2]`. The `[l, r] <-> (l, r)` conversion is confined
-//! to these adapters and [`RegionWriter::push_frames`].
+//! to these adapters and [`RegionOut::push_frames`].
 
-use super::super::prefetch::RegionWriter;
+use super::super::prefetch::RegionOut;
 use tutti_core::io::{AudioIn, AudioOut};
 use tutti_core::Wave;
 
@@ -99,7 +99,7 @@ impl AudioIn for WaveIn<'_> {
     }
 }
 
-impl AudioOut for RegionWriter {
+impl AudioOut for RegionOut {
     fn write(&mut self, frames: &[[f32; 2]]) {
         let n = self.push_frames(frames);
         self.record_accepted(n);
@@ -113,9 +113,9 @@ impl AudioOut for RegionWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::super::command::RegionId;
     use super::super::super::prefetch::RegionBuffer;
+    use super::*;
     use std::path::PathBuf;
     use tutti_core::io::pump;
 

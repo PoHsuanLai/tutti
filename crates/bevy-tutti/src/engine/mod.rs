@@ -17,11 +17,11 @@ mod error;
 
 // Microphone capture as an `AudioIn` — the input-device twin of `audio_io`'s
 // output stream. Gated on `sampler` because it implements `tutti_sampler`'s
-// `AudioIn` trait (and recording pumps a `MicSource` into a sampler `WavSink`).
+// `AudioIn` trait (and recording pumps a `MicIn` into a sampler `WavOut`).
 #[cfg(feature = "sampler")]
 mod mic;
 
-// The live mic→WAV driver: pumps a `MicSource` into a sampler `WavSink` on a
+// The live mic→WAV driver: pumps a `MicIn` into a sampler `WavOut` on a
 // background thread. Gated on `sampler` to match `mic` — it drives that source.
 #[cfg(feature = "sampler")]
 mod recorder;
@@ -33,8 +33,8 @@ pub use build::{build_into, DefaultProcessor};
 pub use driver::{DeviceInfo, TuttiDriver};
 pub use error::{Error, Result};
 #[cfg(feature = "sampler")]
-pub use mic::MicSource;
-// The live-monitor graph node paired with `MicSource::open_with_monitor`.
+pub use mic::MicIn;
+// The live-monitor graph node paired with `MicIn::open_with_monitor`.
 // Defined in the (device-free) sampler; re-exported here so the whole mic API —
 // capture, record, monitor — is reachable from one place.
 pub use tutti_sampler::MicMonitorNode;

@@ -1,4 +1,4 @@
-//! [`Recorder`] — the live driver that turns a [`MicSource`] into a WAV file.
+//! [`Recorder`] — the live driver that turns a [`MicIn`] into a WAV file.
 //!
 //! Recording is `pump(mic, wav)`: poll a block of frames from the
 //! [`AudioIn`](tutti_sampler::AudioIn) mic, write it to the
@@ -9,9 +9,9 @@
 //! # Threading
 //!
 //! The pump runs on its own background thread, NOT `cpal`'s real-time input
-//! callback (that thread only ever `try_push`es into [`MicSource`]'s ring; see
-//! [`mic`](super::mic)). The pump thread owns both the `MicSource` and the
-//! [`WavSink`] outright, so [`finalize`](tutti_sampler::AudioOut::finalize) —
+//! callback (that thread only ever `try_push`es into [`MicIn`]'s ring; see
+//! [`mic`](super::mic)). The pump thread owns both the `MicIn` and the
+//! [`WavOut`] outright, so [`finalize`](tutti_sampler::AudioOut::finalize) —
 //! which consumes the sink by value and can happen only once — has a clear home:
 //! the thread breaks its loop on the stop flag, finalizes, and returns the
 //! `io::Result`, which [`stop`](Recorder::stop) recovers by joining.
@@ -28,9 +28,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use tutti_sampler::capture::CaptureFormat;
-use tutti_sampler::{pump, AudioOut, WavSink};
+use tutti_sampler::{pump, AudioOut, WavOut};
 
-use super::mic::MicSource;
+use super::mic::MicIn;
 use crate::engine::error::{Error, Result};
 
 /// Frames moved per pump pass. One bufferful, allocated once before the loop so
@@ -45,7 +45,7 @@ const IDLE_PARK: Duration = Duration::from_millis(5);
 
 /// A live microphone→WAV recorder.
 ///
-/// [`start`](Self::start) opens the input device, creates a [`WavSink`] at the
+/// [`start`](Self::start) opens the input device, creates a [`WavOut`] at the
 /// mic's native sample rate, and spawns a background thread that pumps mic
 /// frames into the sink. [`stop`](Self::stop) signals that thread to finish,
 /// joins it, and finalizes the WAV — the once-only close is guaranteed because
@@ -63,10 +63,10 @@ impl Recorder {
     /// stereo 32-bit-float WAV at `path` matching the mic's native sample rate,
     /// and spawn the background pump thread. Returns once recording is live.
     pub fn start(path: PathBuf, device_index: Option<usize>) -> Result<Self> {
-        let mut mic = MicSource::open(device_index)?;
+        let mut mic = MicIn::open(device_index)?;
         // The sink's header must match the frames it's fed: same rate as the
-        // mic, stereo (the shape `MicSource` produces), float (the simple path).
-        let mut wav = WavSink::create(&path, mic.sample_rate(), 2, CaptureFormat::F32)
+        // mic, stereo (the shape `MicIn` produces), float (the simple path).
+        let mut wav = WavOut::create(&path, mic.sample_rate(), 2, CaptureFormat::F32)
             .ok_or_else(|| Error::InvalidConfig(format!("Cannot create WAV file: {path:?}")))?;
 
         let running = Arc::new(AtomicBool::new(true));
@@ -116,7 +116,7 @@ mod tests {
 
     /// A finite in-memory [`AudioIn`] standing in for a live mic: hands out its
     /// frames in bounded chunks, returning a short-then-zero count at
-    /// end-of-stream. Lets the pump→`WavSink`→readback path be proven without
+    /// end-of-stream. Lets the pump→`WavOut`→readback path be proven without
     /// touching real hardware. Mirrors the `SliceSource` fixture in
     /// `tutti_types::io`'s own tests.
     struct SliceSource {
@@ -133,10 +133,10 @@ mod tests {
         }
     }
 
-    /// Pumping a fake source into a real [`WavSink`] and finalizing yields a WAV
+    /// Pumping a fake source into a real [`WavOut`] and finalizing yields a WAV
     /// whose frame count matches what was fed — the round trip the `Recorder`
     /// runs, minus only the mic and the thread (both untestable without a
-    /// device). Proves `WavSink::create` is reachable from this crate and that
+    /// device). Proves `WavOut::create` is reachable from this crate and that
     /// the pump moves every frame into a readable file.
     #[test]
     fn pump_into_wav_sink_round_trips_frame_count() {
@@ -151,7 +151,7 @@ mod tests {
             pos: 0,
         };
         let mut wav =
-            WavSink::create(&path, 48_000.0, 2, CaptureFormat::F32).expect("sink should open");
+            WavOut::create(&path, 48_000.0, 2, CaptureFormat::F32).expect("sink should open");
 
         // The exact loop the pump thread runs — allocate the scratch once, drain
         // to exhaustion. (No idle-park: the fake source never returns 0 early.)

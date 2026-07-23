@@ -1,6 +1,6 @@
 //! Incremental disk streaming on top of Symphonia's public API.
 //!
-//! [`StreamDecoder`] decodes an audio file sequentially, frame by frame, without
+//! [`FileIn`] decodes an audio file sequentially, frame by frame, without
 //! loading the whole file into RAM. It is an [`AudioIn`]: [`poll_into`] fills a
 //! caller buffer of `[f32; 2]` frames from the current cursor and reports how
 //! many it produced (a short count then `0` at end-of-stream). To read from an
@@ -9,8 +9,8 @@
 //! requested frame) and decodes-and-discards the preroll to hit the exact frame,
 //! so a following `poll_into` is a clean sequential read from there.
 //!
-//! [`poll_into`]: StreamDecoder::poll_into
-//! [`seek`]: StreamDecoder::seek
+//! [`poll_into`]: FileIn::poll_into
+//! [`seek`]: FileIn::seek
 //!
 //! It shares `read.rs`'s codec feature gates and the `decode_packet_into`
 //! one-packet helper. All decode/seek/file I/O runs on the butler thread; the
@@ -37,7 +37,7 @@ use symphonia::core::probe::Hint;
 /// buffer retains the tail of the last-decoded packet so back-to-back
 /// sequential reads consume it before pulling another packet — keeping the
 /// common refill path both seek-free and allocation-free.
-pub struct StreamDecoder {
+pub struct FileIn {
     reader: Box<dyn FormatReader>,
     decoder: Box<dyn Decoder>,
     track_id: u32,
@@ -56,7 +56,7 @@ pub struct StreamDecoder {
     seekable: bool,
 }
 
-impl StreamDecoder {
+impl FileIn {
     /// Total sample frames if the container reports it.
     pub fn total_frames(&self) -> Option<u64> {
         self.total_frames
@@ -276,9 +276,9 @@ impl StreamDecoder {
 
 /// Sequential stereo-`f32` read half. A decode error surfaces as end-of-stream
 /// (`0`): the butler refill treats a short/zero poll as a boundary, and the
-/// fallible detail is available through [`fill_sequential`](StreamDecoder::fill_sequential)
+/// fallible detail is available through [`fill_sequential`](FileIn::fill_sequential)
 /// for callers that want it.
-impl AudioIn for StreamDecoder {
+impl AudioIn for FileIn {
     fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
         self.fill_sequential(out).unwrap_or(0)
     }
@@ -315,7 +315,7 @@ mod tests {
         let path = write_test_wav(frames);
         let expected = loaded_stereo(&path);
 
-        let mut dec = StreamDecoder::open(&path, None).expect("open");
+        let mut dec = FileIn::open(&path, None).expect("open");
         assert!(dec.seekable());
 
         // Poll the whole file in several sequential chunks (all fast-path, no
@@ -349,7 +349,7 @@ mod tests {
         let path = write_test_wav(frames);
         let expected = loaded_stereo(&path);
 
-        let mut dec = StreamDecoder::open(&path, None).expect("open");
+        let mut dec = FileIn::open(&path, None).expect("open");
 
         let start = 12_345u64;
         let len = 2_000usize;
@@ -379,7 +379,7 @@ mod tests {
         let path = write_test_wav(frames);
         let expected = loaded_stereo(&path);
 
-        let mut dec = StreamDecoder::open(&path, None).expect("open");
+        let mut dec = FileIn::open(&path, None).expect("open");
 
         // Straddle EOF: seek to 500 before the end, then ask for 1000 frames.
         let start = (frames - 500) as u64;

@@ -139,11 +139,11 @@ pub(super) fn handle_command(
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
 fn open_stream(
     file_path: &std::path::Path,
-) -> Option<(tutti_core::WaveMetadata, tutti_core::StreamDecoder)> {
+) -> Option<(tutti_core::WaveMetadata, tutti_core::FileIn)> {
     let meta = tutti_core::Wave::probe_metadata(file_path).ok()?;
     // Non-seekable formats (no reported frame count) fall back to whole-file.
     meta.total_frames?;
-    let decoder = tutti_core::StreamDecoder::open(file_path, None).ok()?;
+    let decoder = tutti_core::FileIn::open(file_path, None).ok()?;
     // Guard against a decoder that reports itself non-seekable despite a
     // frame count (defensive; open() only sets seekable when n_frames exists).
     if !decoder.seekable() {

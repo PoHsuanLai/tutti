@@ -6,7 +6,7 @@
 //!
 //! - [`plan::RenderPlan`] — derive sample counts.
 //! - [`driver::drive`] — the single block loop (owns the [`BlockCursor`] gate).
-//! - [`sink`] — the [`AudioOut`] block consumers ([`BufferedSink`]/[`StreamSink`]).
+//! - [`sink`] — the [`AudioOut`] block consumers ([`RenderOut`]/[`StreamSink`]).
 //!
 //! The public entry [`render`] is pure composition over those three.
 
@@ -15,7 +15,7 @@ pub(crate) mod plan;
 pub(crate) mod sink;
 
 pub(crate) use plan::RenderPlan;
-pub(crate) use sink::{BlockCursor, BufferedSink, StreamSink};
+pub(crate) use sink::{BlockCursor, RenderOut, StreamSink};
 
 use crate::progress::ProgressEmitter;
 use crate::Result;

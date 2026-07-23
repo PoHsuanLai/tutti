@@ -34,11 +34,14 @@
 //! discover each other *before* either knows the other speaks MIDI 2.0.
 //! `midi1_wire_sysex_promotes_to_a_typed_ci_message` covers that seam.
 //!
-//! **UMP-Stream inbound is the genuine gap.** That family has no MIDI-1.0
-//! encoding, so it can only arrive over a native-UMP endpoint; midir is a
-//! MIDI-1.0 API, so the `UmpStream` arm never fires from midir hardware. It
-//! needs a native-UMP *input* (the output counterpart exists as
-//! `UmpVirtualSource` on macOS), not a decode fix.
+//! **UMP-Stream needs a native-UMP transport.** That family has no MIDI-1.0
+//! encoding, so it cannot arrive over midir (a MIDI-1.0 API) at all. On macOS
+//! [`UmpVirtualDestination`](crate::UmpVirtualDestination) provides the
+//! MIDI-2.0-protocol endpoint it needs — point it at the same input ring with
+//! `with_producer` and UMP-Stream messages join the ordinary inbound stream,
+//! reaching the `UmpStream` arm of the app's drain. (Its outbound counterpart is
+//! `UmpVirtualSource`.) On other platforms the arm stays dormant until an
+//! equivalent endpoint exists.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader, MessageWriter};

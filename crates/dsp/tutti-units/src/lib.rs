@@ -14,23 +14,14 @@ pub use tutti_core::{
     params, Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio, SampleRate, Seconds, Semitones, Unit,
 };
 
-// The shared DSP parameter pool (Frequency, FilterQ, GainDb, WetMix, …) and the
-// node authoring markers — the cross-cutting ECS vocabulary the reconcile/spawn
-// systems below read. Moved out of tutti-core (which keeps only the foundational
-// graph params) so the API sits in the crate whose DSP it drives. Bevy-only.
-#[cfg(feature = "bevy")]
-pub mod dsp_params;
-#[cfg(feature = "bevy")]
-pub mod node_markers;
-#[cfg(feature = "bevy")]
-pub use dsp_params::{
-    Attack, Azimuth, BeatSynced, CeilingDb, CompressorRatio, DelayTime, Drive, Elevation, Feedback,
-    FilterMode, FilterQ, Frequency, GainDb, LfoShapeKind, MaxDelay, ModDepth, ModRate, Release,
-    ReverbAlgo, ReverbDamping, ReverbRoomSize, ReverbTime, StereoChannels, ThresholdDb, WetMix,
-};
-// `node_markers` is NOT glob-re-exported: its `ChorusNode` marker would collide
-// with the `ChorusNode` DSP unit re-exported below. Reach markers via
-// `tutti_units::node_markers::*`.
+// NOTE: the shared DSP param pool (`Frequency`/`FilterQ`/`WetMix`/…), the node
+// authoring markers (`FilterNode`/`ReverbNode`/…), the generic marker spawner
+// (`spawn_dsp_node`/`TuttiDspPlugin`), the param reconcilers
+// (`reconcile_unit_params`/`reconcile_reverb_params`/`reconcile_convolver_params`),
+// and the deferred convolver load moved OUT of this crate to
+// `dawai_model::engine_bind` — they are DAW-param ECS policy, not DSP. This
+// crate keeps only the pure DSP unit types + the `set(UnitParam)` surface the
+// app drives them through. (Engine Bevy = Net pump only.)
 
 pub mod buffer;
 
@@ -79,34 +70,14 @@ pub use convolution::{
 #[cfg(feature = "automation")]
 pub mod automation;
 
-// Bevy ECS integration for the units domain — the audio-graph reconcile pieces
-// that bind the DSP / spatial / convolution units into tutti's entity-as-node
-// graph. Each duty is its own crate-root module carrying its own `Tutti*Plugin`
-// (the bevy_text shape — no central `ecs` hub).
+// Bevy ECS integration for the units domain that STILL lives here — the spatial
+// panner + automation graph bindings (they bind onto tutti-core's foundational
+// `Volume`/`Pan`/`PluginParam` params, which have not moved out yet). The DSP
+// param/marker/spawn/reconcile cluster moved to `dawai_model::engine_bind`.
 //
 // The `spatial_graph` suffix disambiguates the graph-binding layer from the
 // same-named `spatial/` DSP-unit module it drives (the panner nodes). The
 // automation graph binding lives inside `automation::graph` alongside its DSP.
-#[cfg(feature = "bevy")]
-pub mod dsp;
-#[cfg(feature = "bevy")]
-pub mod reconcile;
-#[cfg(feature = "bevy")]
-pub use dsp::{spawn_dsp_node, spawn_lfo_nodes, AddDspNode, DspNode, SpawnParams, TuttiDspPlugin};
-#[cfg(feature = "bevy")]
-pub use reconcile::{
-    bump_param_epoch_dsp, reconcile_reverb_params, reconcile_unit_params, EffectParams,
-};
-
-#[cfg(all(feature = "bevy", feature = "convolution"))]
-pub mod pending_convolver;
-#[cfg(all(feature = "bevy", feature = "convolution"))]
-pub use pending_convolver::{
-    promote_pending_convolvers, start_convolver_loads, PendingConvolverLoad,
-};
-#[cfg(all(feature = "bevy", feature = "convolution"))]
-pub use reconcile::reconcile_convolver_params;
-
 #[cfg(all(feature = "bevy", feature = "spatial"))]
 pub mod spatial_graph;
 #[cfg(all(feature = "bevy", feature = "spatial"))]

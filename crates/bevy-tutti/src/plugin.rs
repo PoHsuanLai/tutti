@@ -26,7 +26,6 @@ use tutti_sampler::TuttiSamplerPlugin;
 use tutti_synth::TuttiSoundFontPlugin;
 #[cfg(feature = "automation")]
 use tutti_units::TuttiAutomationPlugin;
-use tutti_units::TuttiDspPlugin;
 #[cfg(feature = "spatial")]
 use tutti_units::TuttiSpatialPlugin;
 
@@ -103,7 +102,10 @@ impl Plugin for TuttiPlugin {
         // only because it configures the `GraphReconcileSystems` sets the others
         // schedule against.
         app.add_plugins(GraphReconcilePlugin);
-        app.add_plugins(TuttiDspPlugin);
+        // NOTE: the DSP param/marker/spawn/reconcile cluster (was `TuttiDspPlugin`)
+        // moved to `dawai_model::engine_bind::EngineBindPlugin`, added by the app
+        // (dawai-frontend) — bevy-tutti (the engine umbrella) must not depend on
+        // the app layer. "Engine Bevy = Net pump only."
 
         // Transport + metering own their Bevy surface (resource + claim) next to
         // their subsystem, like MIDI/sampler/analysis.

@@ -342,3 +342,75 @@ fn run_stretch_drain_under_guard() {
         unit.tick(&[], &mut output);
     });
 }
+
+// ---------------------------------------------------------------------------
+// MicMonitorNode — live-input monitoring. Drains a shared capture ring on the
+// audio thread; the pop goes through `AudioThreadCell::borrow_mut` (no lock, no
+// alloc) and underruns emit silence. Both `tick` and `process` must be
+// per-buffer allocation-free just like the playback units.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn mic_monitor_tick_is_allocation_free() {
+    use ringbuf::{
+        traits::{Producer, Split},
+        HeapRb,
+    };
+    use tutti_sampler::{share_mic_ring, MicMonitorNode};
+
+    let rb = HeapRb::<[f32; 2]>::new(1024);
+    let (mut prod, cons) = rb.split();
+    let mut node = MicMonitorNode::new(share_mic_ring(cons));
+
+    // Prime the ring, then warm up.
+    for _ in 0..512 {
+        let _ = prod.try_push([0.1, -0.1]);
+    }
+    let mut output = [0.0f32; 2];
+    for _ in 0..64 {
+        node.tick(&[], &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        // Exercise both the ring-has-data and the underrun (empty) branches:
+        // the loop far outlasts the 512 primed frames, so it goes silent.
+        for _ in 0..100_000 {
+            node.tick(&[], &mut output);
+        }
+    });
+}
+
+#[test]
+fn mic_monitor_process_is_allocation_free() {
+    use ringbuf::{
+        traits::{Producer, Split},
+        HeapRb,
+    };
+    use tutti_sampler::{share_mic_ring, MicMonitorNode};
+
+    let rb = HeapRb::<[f32; 2]>::new(4096);
+    let (mut prod, cons) = rb.split();
+    let mut node = MicMonitorNode::new(share_mic_ring(cons));
+    node.set_sample_rate(SampleRate(48_000.0));
+
+    for _ in 0..2048 {
+        let _ = prod.try_push([0.2, 0.2]);
+    }
+
+    let input_vec = BufferVec::new(0);
+    let mut output_vec = BufferVec::new(2);
+
+    for _ in 0..8 {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        node.process(64, &input, &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..2_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            node.process(64, &input, &mut output);
+        }
+    });
+}

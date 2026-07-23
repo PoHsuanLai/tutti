@@ -34,6 +34,10 @@ pub use driver::{DeviceInfo, TuttiDriver};
 pub use error::{Error, Result};
 #[cfg(feature = "sampler")]
 pub use mic::MicSource;
+// The live-monitor graph node paired with `MicSource::open_with_monitor`.
+// Defined in the (device-free) sampler; re-exported here so the whole mic API —
+// capture, record, monitor — is reachable from one place.
+pub use tutti_sampler::MicMonitorNode;
 #[cfg(feature = "sampler")]
 pub use recorder::Recorder;
 // `AudioGraph` (plus `isolate_output` / `GraphDot`) live in tutti-core's `graph`

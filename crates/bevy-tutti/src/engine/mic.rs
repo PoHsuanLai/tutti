@@ -10,12 +10,22 @@
 //! # Threading
 //!
 //! `cpal` runs the input callback on its own real-time thread (the producer); it
-//! only ever `try_push`es interleaved frames into a lock-free SPSC ring, never
+//! only ever `try_push`es interleaved frames into lock-free SPSC rings, never
 //! allocating or blocking. A background pump thread owns the [`MicSource`] (the
-//! consumer) and drains the ring via [`poll_into`](AudioIn::poll_into). If the
-//! consumer falls behind, the ring fills and the callback drops the newest
+//! consumer) and drains the recording ring via [`poll_into`](AudioIn::poll_into).
+//! If the consumer falls behind, the ring fills and the callback drops the newest
 //! frames rather than block the audio thread — an overrun, surfaced as a gap,
 //! never a glitch on the output stream.
+//!
+//! # Live monitoring
+//!
+//! [`open_with_monitor`](MicSource::open_with_monitor) tees the same capture
+//! callback into a *second*, shallow ring drained by a [`MicMonitorNode`] (a
+//! `tutti_sampler` `AudioUnit`, so it's device-free and lives in the graph).
+//! Add that node to the audio graph — through effects if you like — to hear the
+//! mic live while recording the same input. The two rings are independent: the
+//! recording ring is deep (dropout-resistant, latency irrelevant to a file); the
+//! monitor ring is shallow (low-latency, so you don't hear yourself slapped-back).
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::{
@@ -23,13 +33,23 @@ use ringbuf::{
     HeapCons, HeapProd, HeapRb,
 };
 
-use tutti_sampler::AudioIn;
+use tutti_sampler::{share_mic_ring, AudioIn, MicMonitorNode, MicRing};
 
 use crate::engine::error::{Error, Result};
 
-/// Ring capacity in stereo frames — ~1s at 48kHz. Large enough that a briefly
-/// descheduled pump thread doesn't overrun, small enough to bound latency/RAM.
+/// Capture-ring capacity in stereo frames — ~1s at 48kHz. Large enough that a
+/// briefly descheduled pump thread doesn't overrun, small enough to bound
+/// latency/RAM. This is the *recording* ring; the pump thread drains it, so a
+/// deep buffer trades latency (irrelevant to a file) for dropout resistance.
 const RING_FRAMES: usize = 48_000;
+
+/// Monitor-ring capacity in stereo frames — ~10ms at 48kHz. The audio callback
+/// drains this one *per block*, so it needs only enough slack to bridge one
+/// buffer's jitter. It is deliberately SHALLOW: a deep monitor ring would be
+/// heard as latency (you'd hear yourself slapped-back), and a full ring just
+/// drops the oldest-unread frames, which for live monitoring is the right
+/// failure — always hear "now", never a growing delay.
+const MONITOR_RING_FRAMES: usize = 480;
 
 /// Keeps the `cpal` input [`Stream`](cpal::Stream) alive. The callback runs for
 /// as long as this value exists; dropping it stops capture. The field is never
@@ -56,6 +76,30 @@ impl MicSource {
     /// Open the default input device (or the `index`-th input device) and start
     /// capturing into the ring. Returns once the stream is live.
     pub fn open(device_index: Option<usize>) -> Result<Self> {
+        let (source, _) = Self::open_inner(device_index, false)?;
+        Ok(source)
+    }
+
+    /// Open the mic *and* a live-monitor tap in one stream: the capture callback
+    /// pushes each frame into both the recording ring (drained by
+    /// [`poll_into`](AudioIn::poll_into) / `pump` → a `WavSink`) and a shallow
+    /// monitor ring drained by the returned [`MicMonitorNode`]. Add that node to
+    /// the audio graph to hear the mic live — through effects — *while*
+    /// recording the same input.
+    ///
+    /// One device, one callback, two independent rings: recording tolerates
+    /// jitter with a deep buffer; monitoring stays low-latency with a shallow
+    /// one. Neither can stall the other or the capture thread.
+    pub fn open_with_monitor(device_index: Option<usize>) -> Result<(Self, MicMonitorNode)> {
+        let (source, monitor) = Self::open_inner(device_index, true)?;
+        // `open_inner(_, true)` always returns the monitor.
+        Ok((source, monitor.expect("monitor requested")))
+    }
+
+    fn open_inner(
+        device_index: Option<usize>,
+        with_monitor: bool,
+    ) -> Result<(Self, Option<MicMonitorNode>)> {
         let device = input_device(device_index)?;
         let config = device.default_input_config()?;
         let sample_rate = f64::from(config.sample_rate().0);
@@ -64,15 +108,27 @@ impl MicSource {
         let rb = HeapRb::<[f32; 2]>::new(RING_FRAMES);
         let (prod, cons) = rb.split();
 
-        let stream = match config.sample_format() {
-            cpal::SampleFormat::I8 => build_input::<i8>(&device, &config.into(), channels, prod)?,
-            cpal::SampleFormat::I16 => build_input::<i16>(&device, &config.into(), channels, prod)?,
-            cpal::SampleFormat::I32 => build_input::<i32>(&device, &config.into(), channels, prod)?,
-            cpal::SampleFormat::U8 => build_input::<u8>(&device, &config.into(), channels, prod)?,
-            cpal::SampleFormat::U16 => build_input::<u16>(&device, &config.into(), channels, prod)?,
-            cpal::SampleFormat::U32 => build_input::<u32>(&device, &config.into(), channels, prod)?,
-            cpal::SampleFormat::F32 => build_input::<f32>(&device, &config.into(), channels, prod)?,
-            cpal::SampleFormat::F64 => build_input::<f64>(&device, &config.into(), channels, prod)?,
+        // Optional monitor tap: a second, shallow ring the callback also feeds.
+        let (mon_prod, monitor) = if with_monitor {
+            let mon_rb = HeapRb::<[f32; 2]>::new(MONITOR_RING_FRAMES);
+            let (mon_prod, mon_cons) = mon_rb.split();
+            let ring: MicRing = share_mic_ring(mon_cons);
+            (Some(mon_prod), Some(MicMonitorNode::new(ring)))
+        } else {
+            (None, None)
+        };
+
+        let sample_format = config.sample_format();
+        let cfg = config.into();
+        let stream = match sample_format {
+            cpal::SampleFormat::I8 => build_input::<i8>(&device, &cfg, channels, prod, mon_prod)?,
+            cpal::SampleFormat::I16 => build_input::<i16>(&device, &cfg, channels, prod, mon_prod)?,
+            cpal::SampleFormat::I32 => build_input::<i32>(&device, &cfg, channels, prod, mon_prod)?,
+            cpal::SampleFormat::U8 => build_input::<u8>(&device, &cfg, channels, prod, mon_prod)?,
+            cpal::SampleFormat::U16 => build_input::<u16>(&device, &cfg, channels, prod, mon_prod)?,
+            cpal::SampleFormat::U32 => build_input::<u32>(&device, &cfg, channels, prod, mon_prod)?,
+            cpal::SampleFormat::F32 => build_input::<f32>(&device, &cfg, channels, prod, mon_prod)?,
+            cpal::SampleFormat::F64 => build_input::<f64>(&device, &cfg, channels, prod, mon_prod)?,
             format => {
                 return Err(Error::InvalidConfig(format!(
                     "Unsupported input sample format: {format:?}"
@@ -82,11 +138,14 @@ impl MicSource {
 
         stream.play()?;
 
-        Ok(Self {
-            cons,
-            sample_rate,
-            _stream: StreamHandle(stream),
-        })
+        Ok((
+            Self {
+                cons,
+                sample_rate,
+                _stream: StreamHandle(stream),
+            },
+            monitor,
+        ))
     }
 
     /// The capture device's native sample rate. A recorder passes this to the
@@ -142,13 +201,16 @@ fn input_device(index: Option<usize>) -> Result<cpal::Device> {
 }
 
 /// Build the `cpal` input stream: the callback downmixes each interleaved
-/// device frame to stereo and `try_push`es it into the ring. Alloc-free and
-/// non-blocking — a full ring drops the frame (overrun) rather than stall.
+/// device frame to stereo and `try_push`es it into the recording ring — and,
+/// when monitoring, into a second (shallow) monitor ring. Alloc-free and
+/// non-blocking — a full ring drops the frame (overrun) rather than stall, so
+/// neither tap can ever block the RT input thread or the other tap.
 fn build_input<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     channels: usize,
     mut prod: HeapProd<[f32; 2]>,
+    mut mon_prod: Option<HeapProd<[f32; 2]>>,
 ) -> Result<cpal::Stream>
 where
     T: cpal::SizedSample,
@@ -165,9 +227,18 @@ where
                 } else {
                     left
                 };
-                // Drop on overrun: a full ring means the pump fell behind. Never
-                // block the RT input thread.
-                let _ = prod.try_push([left, right]);
+                let stereo = [left, right];
+                // Drop on overrun: a full ring means the consumer fell behind.
+                // Never block the RT input thread.
+                let _ = prod.try_push(stereo);
+                // Tee into the monitor ring when present. A full monitor ring
+                // drops this frame (the graph consumer briefly fell behind); the
+                // node reads silence for those and catches up on the next block.
+                // The ring is sized shallow (~10ms) so the monitor never builds
+                // a growing backlog of latency even under sustained pressure.
+                if let Some(ref mut mon) = mon_prod {
+                    let _ = mon.try_push(stereo);
+                }
             }
         },
         |_err| {},

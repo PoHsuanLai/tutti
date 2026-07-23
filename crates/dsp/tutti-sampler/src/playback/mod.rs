@@ -32,6 +32,9 @@ pub mod sampler_unit;
 // Disk streaming — the unit is Bevy-free; it's fed by the (Bevy-free) butler
 // engine, which a non-Bevy host drives via `Sampler` / `Auditioner`.
 pub mod streaming_sampler;
+// Live-input monitoring — the mic twin of the streaming unit. Device-free
+// (holds only a ring consumer); the device layer in `bevy-tutti` fills it.
+pub mod mic_monitor;
 // `time_stretch` / `track_clip_reader` hold Bevy-free DSP (their ECS pieces are
 // gated inside each module).
 pub mod time_stretch;
@@ -58,8 +61,16 @@ pub use reconcile::{bump_param_epoch_sampler, reconcile_sampler_params, reconcil
 #[cfg(feature = "bevy")]
 pub use time_stretch::{time_stretch_sync_system, TimeStretch, TimeStretchControl};
 // Bevy-free reader value types + DSP unit.
-pub use track_clip_reader::{ClipCommand, ClipSpec, Direction, PendingPlayback, Playback, SlotId,
-    TrackClipReaderHandle, TrackClipReaderUnit, Voice, VoiceNode, VoiceSource};
+pub use clip_reader::ClipReader;
+#[cfg(feature = "bevy")]
+pub use node::{SamplerLooping, SamplerNode, SamplerSpeed};
+pub use sampler_unit::{LoopSetting, SamplerUnit, SamplerUnitConfig, TransportPlacement};
+pub use streaming_sampler::{StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit};
+pub use mic_monitor::{share_mic_ring, MicMonitorNode, MicRing};
+pub use track_clip_reader::{
+    ClipCommand, ClipSpec, Direction, PendingPlayback, Playback, SlotId, TrackClipReaderHandle,
+    TrackClipReaderUnit, Voice, VoiceNode, VoiceSource,
+};
 #[cfg(feature = "bevy")]
 pub use track_clip_reader::{TrackClipReaderNode, TrackClipReaderRef};
 #[cfg(feature = "bevy")]
@@ -67,11 +78,6 @@ pub use trigger::{
     audio_cleanup_system, audio_parameter_sync_system, audio_playback_system, AudioEmitter,
     AudioPlaybackState, AudioVolume, DespawnOnFinish, PlayAudio,
 };
-#[cfg(feature = "bevy")]
-pub use node::{SamplerLooping, SamplerNode, SamplerSpeed};
-pub use clip_reader::ClipReader;
-pub use sampler_unit::{LoopSetting, SamplerUnit, SamplerUnitConfig, TransportPlacement};
-pub use streaming_sampler::{StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit};
 #[cfg(feature = "bevy")]
 pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 

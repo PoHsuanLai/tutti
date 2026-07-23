@@ -84,10 +84,10 @@ pub mod playback;
 // FunDSP-graph integration without the ECS layer.
 pub use butler::{LruCache, StreamPin, WavSink};
 pub use playback::{
-    ClipCommand, ClipReader, ClipSpec, Direction, LoopSetting, PendingPlayback, Playback,
-    SamplerUnit, SamplerUnitConfig, SlotId, StreamingClipConfig, StreamingClipReader,
-    StreamingSamplerUnit, TrackClipReaderHandle, TrackClipReaderUnit, TransportPlacement, Voice,
-    VoiceNode, VoiceSource,
+    share_mic_ring, ClipCommand, ClipReader, ClipSpec, Direction, LoopSetting, MicMonitorNode,
+    MicRing, PendingPlayback, Playback, SamplerUnit, SamplerUnitConfig, SlotId, StreamingClipConfig,
+    StreamingClipReader, StreamingSamplerUnit, TrackClipReaderHandle, TrackClipReaderUnit,
+    TransportPlacement, Voice, VoiceNode, VoiceSource,
 };
 // Bevy ECS surface of `playback`.
 #[cfg(feature = "bevy")]

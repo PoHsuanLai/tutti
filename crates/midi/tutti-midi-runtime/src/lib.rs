@@ -43,7 +43,8 @@ pub use endpoint::{
 };
 pub use jr_timestamp::{JrClock, JrReceiver, JrStamper};
 pub use output_collector::{
-    midi_output_channel, midi_output_channel_with_capacity, MidiOutputConsumer, MidiOutputProducer,
+    midi_output_channel, midi_output_channel_with_capacity, shared_midi_output_channel,
+    MidiOutHandle, MidiOutputConsumer, MidiOutputProducer,
 };
 pub use registry::{MidiBus, MidiEventSlot, MidiReceiver, MidiSender};
 pub use routing_table::MidiRoutingTable;

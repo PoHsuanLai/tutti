@@ -2,6 +2,9 @@
 //! engine-produced MIDI out (e.g. the clock master's Beat Clock / MTC) from the
 //! audio thread to an off-RT pump that forwards it to hardware output.
 
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use ringbuf::{traits::*, HeapCons, HeapProd, HeapRb};
 use tutti_midi_types::ump::MidiEvent;
 
@@ -57,6 +60,49 @@ impl MidiOutputConsumer {
         }
         n
     }
+}
+
+/// A cheaply-clonable, `Send + Sync` push handle onto a MIDI output ring.
+///
+/// [`MidiOutputProducer`] is a single-producer `!Sync` ring half — fine for the
+/// clock master (one owner on the audio thread), but the *track MIDI-out* path
+/// needs many off-RT callers (an ECS send system, the UI, a clip player) to push
+/// to the same ring. This wraps the producer in an `Arc<Mutex<…>>` so they can.
+/// The lock is uncontended in practice (off-RT, brief) and never taken on the
+/// audio thread — the consumer side stays lock-free.
+#[derive(Clone)]
+pub struct MidiOutHandle {
+    producer: Arc<Mutex<MidiOutputProducer>>,
+}
+
+impl MidiOutHandle {
+    /// Push one event; returns `false` if the ring is full (event dropped).
+    #[inline]
+    pub fn push(&self, event: MidiEvent) -> bool {
+        self.producer.lock().push(event)
+    }
+
+    /// Push a batch; returns how many were accepted (fewer than `events.len()`
+    /// only if the ring filled).
+    #[inline]
+    pub fn push_slice(&self, events: &[MidiEvent]) -> usize {
+        self.producer.lock().push_slice(events)
+    }
+}
+
+/// A shareable MIDI-out ring: a [`MidiOutHandle`] anyone can push into and the
+/// [`MidiOutputConsumer`] the off-RT pump drains. Use for the track MIDI-out path
+/// (vs. [`midi_output_channel`], whose bare producer suits a single owner).
+pub fn shared_midi_output_channel(
+    capacity: usize,
+) -> (MidiOutHandle, MidiOutputConsumer) {
+    let (producer, consumer) = midi_output_channel_with_capacity(capacity);
+    (
+        MidiOutHandle {
+            producer: Arc::new(Mutex::new(producer)),
+        },
+        consumer,
+    )
 }
 
 pub fn midi_output_channel() -> (MidiOutputProducer, MidiOutputConsumer) {

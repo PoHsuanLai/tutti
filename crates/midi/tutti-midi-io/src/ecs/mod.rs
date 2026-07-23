@@ -18,6 +18,7 @@ pub mod negotiation;
 pub mod routing;
 pub mod scheduled;
 pub mod sequence;
+pub mod track_out;
 
 #[cfg(feature = "midi-hardware")]
 pub mod device;
@@ -41,6 +42,9 @@ pub use negotiation::{
 };
 pub use routing::{midi_routing_sync_system, MidiRoutingPlugin, MidiSink};
 pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi, ScheduledMidiPlugin};
+pub use track_out::{
+    midi_out_send_system, pump_midi_out_system, MidiOutPlugin, MidiOutRes, SendMidiOut,
+};
 pub use sequence::{
     midi_sequence_setup_system, midi_sequence_tick_system, MidiSequence, MidiSequenceNote,
     MidiSequencePlugin, MidiSequenceState,

@@ -151,7 +151,7 @@ pub use ecs::{
 pub use ecs::{
     BroadcastFlexMetadata, CiDeviceDiscovered, CiRes, EndpointDiscovered, EndpointDiscoveryRes,
     InboundCiMessage, InboundEndpointReply, JrStamperRes, MidiMetadataPlugin, MidiNegotiationPlugin,
-    StartCiDiscovery, StartEndpointDiscovery,
+    MidiOutPlugin, MidiOutRes, SendMidiOut, StartCiDiscovery, StartEndpointDiscovery,
 };
 
 #[cfg(all(feature = "bevy", target_os = "macos", feature = "midi-hardware"))]

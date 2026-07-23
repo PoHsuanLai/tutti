@@ -5,10 +5,11 @@
 //! gains `#[derive(Component)]` and becomes the ECS component the reconcile hub
 //! reads; without it it stays a plain newtype a non-Bevy host can carry.
 //!
-//! The DAW param components (`Volume`/`Pan`/`Mute`/`ModParam`/`LayerKey`/
-//! `PluginParam`) moved OUT of the engine to `dawai_model::engine_bind::foundational`
-//! — the graph's job is to produce samples from whatever is wired, not to carry
-//! the DAW's notion of a track's volume. ("Engine Bevy = Net pump only.")
+//! This is the whole of what used to be the `graph` module: the DAW param
+//! components (`Volume`/`Pan`/`Mute`/`ModParam`/`LayerKey`/`PluginParam`) moved
+//! OUT of the engine to `dawai_model::engine_bind::foundational`, leaving only
+//! this one node handle — so the two-file `graph/` wrapper collapsed into this
+//! single file. ("Engine Bevy = Net pump only.")
 
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::Component;

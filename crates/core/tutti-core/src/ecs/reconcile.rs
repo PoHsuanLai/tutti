@@ -22,7 +22,7 @@ use bevy_ecs::system::EntityCommands;
 
 use crate::dsp::AudioUnit;
 use crate::ecs::AudioGraphRes;
-use crate::graph::AudioNode;
+use crate::node::AudioNode;
 
 /// System-set ordering anchor for the reconcile pipeline.
 ///

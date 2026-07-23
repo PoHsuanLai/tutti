@@ -84,10 +84,9 @@ impl PluginsRes {
 ///   should override the resource at startup with a
 ///   `Plugins::with_config(...).with_fresh_scan()`).
 ///
-/// Schedules:
-/// - The editor-lifecycle + crash-detect + scan systems in `Update`.
-/// - [`bump_param_epoch_plugin`] in `Update`.
-/// - [`reconcile_plugin_params`] in [`GraphReconcileSystems::Params`].
+/// Schedules the editor-lifecycle + crash-detect + scan systems in `Update`.
+/// (The `PluginParam` reconcile + epoch bump moved to
+/// `dawai_model::engine_bind::plugin_host` with the `PluginParam` component.)
 ///
 /// Requires [`tutti_core::ecs::GraphReconcilePlugin`] (which configures the
 /// `GraphReconcileSystems` set) to be added before this plugin.

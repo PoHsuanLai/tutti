@@ -16,15 +16,16 @@
 //! - and the per-subsystem Bevy wrappers for metering ([`MeteringRes`]) and
 //!   transport ([`TransportRes`], [`MetronomeRes`]).
 //!
-//! The param *component types* themselves ([`AudioNode`](crate::graph::AudioNode),
-//! [`Volume`](crate::graph::Volume), …) stay in [`crate::graph`] — they are
-//! always-compiled plain data whose Bevy `derive`s are feature-gated in place,
-//! so they degrade to plain structs without this module.
+//! The one node handle [`AudioNode`](crate::node::AudioNode) stays in
+//! [`crate::node`] — always-compiled plain data whose Bevy `derive` is
+//! feature-gated in place, so it degrades to a plain newtype without this
+//! module. The DAW param components (`Volume`/`Pan`/`Mute`/…) that used to live
+//! beside it moved app-side to `dawai_model::engine_bind::foundational`.
 //!
-//! Everything here is re-exported from its historical path
-//! (`tutti_core::graph::*`, `tutti_core::metering::*`, `tutti_core::transport::*`)
-//! so existing imports keep resolving; this module is the physical home, those
-//! are the compatibility surface.
+//! Metering / transport wrappers are re-exported from their historical paths
+//! (`tutti_core::metering::*`, `tutti_core::transport::*`) so existing imports
+//! keep resolving; this module is the physical home, those are the
+//! compatibility surface.
 
 pub mod emitter;
 pub mod metering;

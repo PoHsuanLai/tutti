@@ -134,9 +134,9 @@ impl Midi {
     /// outbound target is installed. For each event, fan out through the shared
     /// routing snapshot (keyed on the event's channel, like any source) to every
     /// destination unit and deliver via the lock-free queue — byte-for-byte the
-    /// path `MidiProcessor::route_events_in_range` runs for hardware input, so
-    /// it's RT-safe. Each event keeps its own `frame_offset`; the destination
-    /// unit sub-buffer-splits on it next block. Non-recursive: delivery lands in
+    /// path `MidiPreBlock::run` runs for hardware input, so it's RT-safe. Each
+    /// event keeps its own `frame_offset`; the destination unit self-splits on
+    /// it next block. Non-recursive: delivery lands in
     /// the destination's inbox, drained on *its* next poll — `emit` never
     /// re-enters any `process()`.
     #[inline]

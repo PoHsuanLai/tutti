@@ -7,7 +7,7 @@
 //! The table is *not* part of the audio graph: it maps a MIDI channel to a
 //! destination unit's mailbox, and no fundsp edge is involved. It is owned here,
 //! next to the hardware inputs it serves. Only the inbound device edge reads it
-//! — `MidiProcessor` for hardware in, `PluginMidiOut` for a plugin's MIDI-out
+//! — `MidiPreBlock` for hardware in, `PluginMidiOut` for a plugin's MIDI-out
 //! re-entering as if it were a device. Everything already bound to a unit (clip
 //! playback, musical typing, previews) writes to that unit's `MidiInPort`
 //! directly and never consults a route.
@@ -25,7 +25,7 @@ use tutti_midi_types::MidiRoutingTable;
 /// [`MidiRoutingTable::snapshot_arc`].
 ///
 /// Deliberately not [`Default`]: the table must be the *same* instance whose
-/// snapshot the RT `MidiProcessor` was built with. It only ever arrives via the
+/// snapshot the RT `MidiPreBlock` was built with. It only ever arrives via the
 /// engine's `PendingMidi` handoff — a default-initialised one would publish
 /// routes nothing reads, silently dropping all hardware MIDI.
 #[derive(Resource)]

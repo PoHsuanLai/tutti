@@ -37,9 +37,9 @@ pub struct PendingMidi {
     /// The audio-thread clock master + its output-ring consumer, if the engine
     /// built one. Claimed into [`ClockMasterRes`](super::clock_out::ClockMasterRes).
     pub clock_out: Option<super::clock_out::ClockMasterRes>,
-    /// The routing table whose snapshot the RT `MidiProcessor` already holds.
+    /// The routing table whose snapshot the RT `MidiPreBlock` already holds.
     /// Claimed into [`MidiRoutingRes`]; the writer half must be the *same* table
-    /// the processor reads, so it is built by the engine and handed over here
+    /// the producer reads, so it is built by the engine and handed over here
     /// rather than default-initialised.
     pub routing: Option<tutti_midi_types::MidiRoutingTable>,
 }

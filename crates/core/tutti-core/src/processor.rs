@@ -35,7 +35,7 @@ impl GraphProcessor {
         }
     }
 
-    /// Process a segment of the buffer. Called directly or from a decorator.
+    /// Process a segment of the buffer.
     ///
     /// Drives the graph through fundsp's SIMD block path
     /// ([`NetBackend::process`]) in [`MAX_BUFFER_SIZE`] chunks rather than one

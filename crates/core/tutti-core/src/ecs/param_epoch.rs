@@ -23,14 +23,15 @@
 //! the reconciler list: a new effect's params are covered the moment its
 //! component type is added to the filter tuple here.
 //!
-//! Only the core (track/bus-level) param sweep lives here. Leaf-specific bumps
-//! (sampler / plugin / dsp-family) are added by their own feature-gated systems
-//! in bevy-tutti, since `cfg` can't be applied to elements of an `Or<>` tuple.
+//! The bumps that read the DAW param components (`Volume`/`Mute` core sweep,
+//! sampler, plugin, dsp-family) all live app-side now (in
+//! `dawai_model::engine_bind`), since those components moved out of the engine.
+//! This module keeps only the [`NodeParamEpoch`] resource + its `bump` API,
+//! which the app-side bump systems drive.
 
-use bevy_ecs::prelude::*;
+use bevy_ecs::prelude::Resource;
 use std::collections::HashMap;
 
-use crate::graph::{AudioNode, Mute, Volume};
 use crate::NodeId;
 
 /// Monotonic per-node parameter version. Distinct from
@@ -64,21 +65,5 @@ impl NodeParamEpoch {
     /// a one-comparison "did anything change?" gate.
     pub fn generation(&self) -> u64 {
         self.generation
-    }
-}
-
-/// Change filter for core params: track/bus level. Sampler and plugin params
-/// are bumped by their own feature-gated systems (in bevy-tutti), since `cfg`
-/// can't be applied to elements of an `Or<>` tuple — separate systems keep each
-/// feature's components self-contained and the tuples within arity limits.
-type CoreParamChanged = Or<(Changed<Volume>, Changed<Mute>)>;
-
-/// Bump the epoch for every node whose core param component changed this frame.
-pub fn bump_param_epoch_core(
-    mut epoch: ResMut<NodeParamEpoch>,
-    changed: Query<&AudioNode, CoreParamChanged>,
-) {
-    for node in changed.iter() {
-        epoch.bump(node.0);
     }
 }

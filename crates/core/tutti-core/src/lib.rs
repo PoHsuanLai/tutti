@@ -39,12 +39,12 @@ pub use error::{Error, Result};
 // (`setting` / `from_setting`) come from `fundsp-tutti` (which owns fundsp's
 // `Setting`). There is no longer a `tutti_core::param` module — the vocabulary
 // has no engine-side home to gather under.
+pub use fundsp::params::SampleRate;
+pub use fundsp::unit_param;
 pub use tutti_types::value::{
     AtomicSamplePosition, Beat, BeatDuration, Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio,
     SamplePosition, Seconds, Semitones, Unit, UnitParam,
 };
-pub use fundsp::params::SampleRate;
-pub use fundsp::unit_param;
 
 /// Back-compat alias for the unit newtypes' old module path
 /// (`tutti_core::params::Bpm`, …). The vocabulary now lives in
@@ -143,7 +143,7 @@ pub mod node_id;
 // (the RT buffer-splitting processor), exported from `processor`.
 
 pub mod graph;
-pub use graph::{AudioNode, LayerKey, ModParam, Mute, Pan, PluginParam, Volume};
+pub use graph::AudioNode;
 
 // The Bevy ECS integration layer — the reconcile hub, graph resources, and the
 // per-subsystem Bevy wrappers, all gathered under one `#[cfg(feature = "bevy")]`

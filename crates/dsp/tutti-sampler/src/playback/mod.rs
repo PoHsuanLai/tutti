@@ -41,30 +41,23 @@ pub mod time_stretch;
 pub mod track_clip_reader;
 
 // Pure Bevy-glue modules.
-#[cfg(feature = "bevy")]
-pub mod node;
-#[cfg(feature = "bevy")]
-pub mod pending_load;
-#[cfg(feature = "bevy")]
-pub mod reconcile;
+//
+// NOTE: `node` (SamplerNode/Speed/Looping markers), `pending_load`
+// (PendingSamplerLoad/WaveImportQueue/promote), and `reconcile` (sampler param
+// write-through) moved app-side to `dawai_model::engine_bind::sampler` — they
+// bind the DAW `Volume`/`Mute` components (which left the engine) into
+// `SamplerUnit`. This crate keeps `SamplerUnit` (pure DSP) + the `trigger`
+// one-shot lifecycle + the wave-asset loader.
 #[cfg(feature = "bevy")]
 pub mod trigger;
 #[cfg(feature = "bevy")]
 pub mod wave_loader;
 
 #[cfg(feature = "bevy")]
-pub use pending_load::{
-    poll_wave_imports, promote_pending_samplers, PendingSamplerLoad, WaveImportQueue,
-};
-#[cfg(feature = "bevy")]
-pub use reconcile::{bump_param_epoch_sampler, reconcile_sampler_params, reconcile_sampler_volume};
-#[cfg(feature = "bevy")]
 pub use time_stretch::{time_stretch_sync_system, TimeStretch, TimeStretchControl};
 // Bevy-free reader value types + DSP unit.
 pub use clip_reader::ClipReader;
 pub use mic_monitor::{share_mic_ring, MicMonitorNode, MicRing};
-#[cfg(feature = "bevy")]
-pub use node::{SamplerLooping, SamplerNode, SamplerSpeed};
 pub use sampler_unit::{LoopSetting, SamplerUnit, SamplerUnitConfig, TransportPlacement};
 pub use streaming_sampler::{StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit};
 pub use track_clip_reader::{
@@ -101,10 +94,8 @@ impl Plugin for TuttiPlaybackPlugin {
             .register_type::<DespawnOnFinish>()
             .register_type::<AudioVolume>()
             .register_type::<PlayAudio>()
-            .register_type::<TimeStretch>()
-            .register_type::<node::SamplerNode>()
-            .register_type::<node::SamplerSpeed>()
-            .register_type::<node::SamplerLooping>();
+            .register_type::<TimeStretch>();
+        // SamplerNode/Speed/Looping are registered app-side (engine_bind::sampler).
 
         // Trigger lifecycle. These stage graph edits + set GraphDirty; anchor
         // the chain before the Commit phase so the once-per-frame `commit_graph`
@@ -129,24 +120,8 @@ impl Plugin for TuttiPlaybackPlugin {
             time_stretch::time_stretch_sync_system.after(trigger::audio_playback_system),
         );
 
-        // Sampler param-epoch bump (core bump is added by the core plugin).
-        app.add_systems(Update, reconcile::bump_param_epoch_sampler);
-
-        // Param reconcilers + deferred-load promotion in the shared reconcile
-        // schedule. `poll_wave_imports` only touches `WaveImportQueue` + assets
-        // (no engine resource), so it stays ungated.
-        app.init_resource::<WaveImportQueue>()
-            .add_systems(
-                Update,
-                (
-                    reconcile::reconcile_sampler_volume.in_set(GraphReconcileSystems::Params),
-                    reconcile::reconcile_sampler_params.in_set(GraphReconcileSystems::Params),
-                    pending_load::promote_pending_samplers
-                        .after(pending_load::poll_wave_imports)
-                        .in_set(GraphReconcileSystems::Spawn),
-                )
-                    .run_if(engine_ready),
-            )
-            .add_systems(Update, pending_load::poll_wave_imports);
+        // The sampler param reconcilers, epoch bump, and deferred-load promotion
+        // moved app-side (dawai_model::engine_bind::sampler) with the DAW param
+        // components they read.
     }
 }

@@ -7,19 +7,18 @@
 //! (typed node access, unboxed `add`, output isolation, a readable sample rate)
 //! now lives on `Net` itself.
 //!
-//! The parameter *types* ([`AudioNode`], [`Volume`], [`Pan`],
-//! [`Mute`], [`PluginParam`], [`ModParam`], [`LayerKey`]) live in [`params`]
-//! and are always compiled as plain structs; under the `bevy` feature they
-//! gain `#[derive(Component, Reflect)]`.
+//! The graph handle [`AudioNode`] lives in [`params`] and is always compiled
+//! as a plain newtype; under the `bevy` feature it gains `#[derive(Component)]`.
+//! The DAW param components (`Volume`/`Pan`/`Mute`/`ModParam`/`PluginParam`)
+//! moved out of the engine to `dawai_model::engine_bind::foundational`.
 //!
 //! The Bevy ECS integration that used to live here now sits in [`crate::ecs`]
 //! (the reconcile pipeline, graph resources, param epoch, emitter markers,
 //! `GraphReconcilePlugin`, and the transport/metering wrappers). Import those
-//! from `tutti_core::ecs::*`. This module keeps only the always-compiled
-//! parameter *types*, which stay plain data a non-Bevy host can carry.
+//! from `tutti_core::ecs::*`.
 
-// Always-compiled parameter types. The Bevy `derive`s on these are feature-gated
-// in `params.rs` itself, so they degrade to plain structs without `ecs`.
+// Always-compiled node handle. The Bevy `derive` is feature-gated in `params.rs`
+// itself, so it degrades to a plain newtype without `ecs`.
 pub mod params;
 
-pub use params::{AudioNode, LayerKey, ModParam, Mute, Pan, PluginParam, Volume};
+pub use params::AudioNode;

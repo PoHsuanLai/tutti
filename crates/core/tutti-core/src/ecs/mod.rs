@@ -10,7 +10,8 @@
 //! - the four-phase reconcile pipeline ([`GraphReconcileSystems`],
 //!   [`commit_graph`], [`reconcile_node_despawn`], [`SpawnAudioNode`],
 //!   [`crossfade_audio_node`]) and its [`GraphReconcilePlugin`],
-//! - the per-node param epoch ([`NodeParamEpoch`], [`bump_param_epoch_core`]),
+//! - the per-node param epoch ([`NodeParamEpoch`]; the bump systems that read
+//!   the DAW param components live app-side now),
 //! - the audio-emitter markers ([`AudioEmitter`], [`AudioPlaybackState`]),
 //! - and the per-subsystem Bevy wrappers for metering ([`MeteringRes`]) and
 //!   transport ([`TransportRes`], [`MetronomeRes`]).
@@ -35,8 +36,8 @@ pub mod transport;
 
 pub use emitter::{AudioEmitter, AudioPlaybackState};
 pub use metering::{MeteringRes, PendingMetering, TuttiMeteringPlugin};
-pub use param_epoch::{bump_param_epoch_core, NodeParamEpoch};
-pub use plugin::{register_core_node_types, GraphReconcilePlugin};
+pub use param_epoch::NodeParamEpoch;
+pub use plugin::GraphReconcilePlugin;
 pub use reconcile::{
     commit_graph, crossfade_audio_node, engine_ready, reconcile_node_despawn, GraphDirty,
     GraphReconcileSystems, SpawnAudioNode,

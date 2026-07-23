@@ -6,16 +6,17 @@
 //! the `audio_automation` crate — re-exported here so consumers only need
 //! one import path.
 //!
-//! Three pieces, one domain:
+//! Two pieces, one domain:
 //! - [`lane`] — the playback-side [`AutomationLane`] `AudioUnit` (envelope
 //!   value at the transport's beat position).
 //! - [`recording`] — the recording-side [`Manager`] / [`Recorder`] /
 //!   [`RecordingTarget`] (write / touch / latch capture during a take).
-//! - [`graph`] — the Bevy ECS binding: lane-node spawn + param reconcile +
-//!   [`TuttiAutomationPlugin`](graph::TuttiAutomationPlugin).
+//!
+//! The Bevy ECS binding (lane-node spawn + param reconcile +
+//! `TuttiAutomationPlugin`) moved app-side to
+//! `dawai_model::engine_bind::automation` — it wrote the `Volume`/`Pan`/
+//! `PluginParam` DAW components, which left the engine.
 
-#[cfg(feature = "bevy")]
-pub mod graph;
 mod lane;
 mod recording;
 

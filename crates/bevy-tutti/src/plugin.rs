@@ -24,10 +24,9 @@ use tutti_plugin_host::TuttiHostingPlugin;
 use tutti_sampler::TuttiSamplerPlugin;
 #[cfg(feature = "soundfont")]
 use tutti_synth::TuttiSoundFontPlugin;
-#[cfg(feature = "automation")]
-use tutti_units::TuttiAutomationPlugin;
-#[cfg(feature = "spatial")]
-use tutti_units::TuttiSpatialPlugin;
+// NOTE: TuttiSpatialPlugin + TuttiAutomationPlugin moved app-side into
+// dawai_model::engine_bind (their graph bindings wrote the DAW Volume/Pan/
+// PluginParam components, which left the engine).
 
 /// Bevy plugin that creates a `TuttiEngine`, starts the audio stream,
 /// and registers ECS components, asset loaders, and systems.
@@ -112,22 +111,19 @@ impl Plugin for TuttiPlugin {
         app.add_plugins(TuttiTransportPlugin);
         app.add_plugins(TuttiMeteringPlugin);
 
-        #[cfg(feature = "spatial")]
-        app.add_plugins(TuttiSpatialPlugin);
+        // (TuttiSpatialPlugin moved app-side to dawai_model::engine_bind.)
         #[cfg(feature = "soundfont")]
         app.add_plugins(TuttiSoundFontPlugin);
         #[cfg(feature = "midi")]
         app.add_plugins(TuttiMidiPlugin);
         #[cfg(feature = "plugin")]
         app.add_plugins(TuttiHostingPlugin);
-        // The whole sampler ECS surface (playback, recording, audio-input,
-        // time-stretch, auditioner, sampler reconcilers, pending-load
-        // promotion, param-epoch bump, ContentBounds) is one plugin now,
-        // owned by tutti-sampler.
+        // The sampler's playback/trigger/time-stretch/wave-loader ECS. The
+        // SamplerNode marker path + param reconcilers moved app-side
+        // (dawai_model::engine_bind::sampler) with the DAW Volume/Mute components.
         #[cfg(feature = "sampler")]
         app.add_plugins(TuttiSamplerPlugin);
-        #[cfg(feature = "automation")]
-        app.add_plugins(TuttiAutomationPlugin);
+        // (TuttiAutomationPlugin moved app-side to dawai_model::engine_bind.)
         #[cfg(feature = "analysis")]
         app.add_plugins(TuttiAnalysisPlugin);
         // Offline region render (sampler/clip-reader units → PCM); needs both

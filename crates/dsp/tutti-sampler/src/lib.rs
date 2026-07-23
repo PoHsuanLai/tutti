@@ -91,16 +91,15 @@ pub use playback::{
     StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit, TrackClipReaderHandle,
     TrackClipReaderUnit, TransportPlacement, Voice, VoiceNode, VoiceSource,
 };
-// Bevy ECS surface of `playback`.
+// Bevy ECS surface of `playback`. The SamplerNode marker/param path
+// (SamplerNode/Speed/Looping, PendingSamplerLoad, WaveImportQueue, the sampler
+// reconcilers + epoch bump) moved to `dawai_model::engine_bind::sampler`.
 #[cfg(feature = "bevy")]
 pub use playback::{
     audio_cleanup_system, audio_parameter_sync_system, audio_playback_system,
-    bump_param_epoch_sampler, poll_wave_imports, promote_pending_samplers,
-    reconcile_sampler_params, reconcile_sampler_volume, time_stretch_sync_system, AudioEmitter,
-    AudioPlaybackState, AudioVolume, DespawnOnFinish, PendingSamplerLoad, PlayAudio,
-    SamplerLooping, SamplerNode, SamplerSpeed, TimeStretch, TimeStretchControl,
-    TrackClipReaderNode, TrackClipReaderRef, TuttiPlaybackPlugin, WaveAssetLoader,
-    WaveAssetLoaderError, WaveImportQueue,
+    time_stretch_sync_system, AudioEmitter, AudioPlaybackState, AudioVolume, DespawnOnFinish,
+    PlayAudio, TimeStretch, TimeStretchControl, TrackClipReaderNode, TrackClipReaderRef,
+    TuttiPlaybackPlugin, WaveAssetLoader, WaveAssetLoaderError,
 };
 
 // The async disk-streaming engine (butler thread + the `Sampler` handle). All

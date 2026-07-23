@@ -151,10 +151,6 @@ assert_no_alloc = { version = "1", default-features = false }
 hound = "3.5"
 tempfile = "3.8"
 
-[[example]]
-name = "29_node_entities"
-required-features = ["sampler", "wav"]
-
-[[example]]
-name = "30_full_pipeline"
-required-features = ["sampler", "wav", "automation"]
+# NOTE: examples 29_node_entities / 30_full_pipeline were removed — they
+# demonstrated engine-side ECS param reconcile (Volume/SamplerSpeed/…), which
+# moved app-side to dawai_model::engine_bind ("engine Bevy = Net pump only").

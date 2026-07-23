@@ -70,24 +70,9 @@ pub use convolution::{
 #[cfg(feature = "automation")]
 pub mod automation;
 
-// Bevy ECS integration for the units domain that STILL lives here — the spatial
-// panner + automation graph bindings (they bind onto tutti-core's foundational
-// `Volume`/`Pan`/`PluginParam` params, which have not moved out yet). The DSP
-// param/marker/spawn/reconcile cluster moved to `dawai_model::engine_bind`.
-//
-// The `spatial_graph` suffix disambiguates the graph-binding layer from the
-// same-named `spatial/` DSP-unit module it drives (the panner nodes). The
-// automation graph binding lives inside `automation::graph` alongside its DSP.
-#[cfg(all(feature = "bevy", feature = "spatial"))]
-pub mod spatial_graph;
-#[cfg(all(feature = "bevy", feature = "spatial"))]
-pub use spatial_graph::{
-    spatial_audio_sync_system, AttenuationModel, AudioListener, SpatialAudio, TuttiSpatialPlugin,
-};
-
-#[cfg(all(feature = "bevy", feature = "automation"))]
-pub use automation::graph::{
-    automation_lane_system, reconcile_automation_writes, update_automation_envelope_system,
-    AddAutomationLane, AutomationDrivesParam, AutomationLaneEmitter, AutomationLaneNode,
-    AutomationParam, TuttiAutomationPlugin, UpdateAutomationEnvelope,
-};
+// NOTE: the spatial-panner graph binding (`spatial_graph`) and the automation
+// graph binding (`automation::graph`) moved app-side to
+// `dawai_model::engine_bind::{spatial, automation}` — they bound the DAW
+// `Volume`/`Pan`/`PluginParam` components, which left the engine. This crate
+// keeps only the pure DSP: the spatial panner nodes (`spatial/`) + the
+// automation `AudioUnit` (`automation::{lane, recording}`).

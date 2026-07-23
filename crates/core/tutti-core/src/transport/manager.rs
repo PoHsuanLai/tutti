@@ -183,18 +183,6 @@ impl TransportManager {
         self.in_preroll.load(Ordering::Acquire)
     }
 
-    pub fn is_reverse(&self) -> bool {
-        self.reverse.load(Ordering::Acquire)
-    }
-
-    pub fn direction(&self) -> Direction {
-        if self.reverse.load(Ordering::Acquire) {
-            Direction::Backwards
-        } else {
-            Direction::Forwards
-        }
-    }
-
     pub fn get_current_beat(&self) -> f64 {
         self.current_beat.load(Ordering::Acquire)
     }
@@ -240,22 +228,12 @@ impl TransportManager {
         self.send_command(TransportEvent::StopWithDeclick);
     }
 
-    pub fn stop_immediate(&self) {
-        self.send_command(TransportEvent::Stop);
-    }
-
     fn locate_to(&self, beats: f64, event: fn(MusicalPosition) -> TransportEvent) {
         self.send_command(event(MusicalPosition::from_beats(beats)));
     }
 
     pub fn locate(&self, beats: f64) {
         self.locate_to(beats, TransportEvent::Locate)
-    }
-    pub fn locate_and_play(&self, beats: f64) {
-        self.locate_to(beats, TransportEvent::LocateAndPlay)
-    }
-    pub fn locate_with_declick(&self, beats: f64) {
-        self.locate_to(beats, TransportEvent::LocateWithDeclick)
     }
 
     pub fn toggle_loop(&self) {
@@ -269,27 +247,6 @@ impl TransportManager {
         self.loop_span.set_enabled(true);
         let range = LoopRange::new(start, end);
         self.send_command(TransportEvent::SetLoopRange(range));
-    }
-
-    pub fn clear_loop(&self) {
-        self.loop_span.set_enabled(false);
-        self.send_command(TransportEvent::ClearLoop);
-    }
-
-    pub fn fast_forward(&self) {
-        self.send_command(TransportEvent::FastForward);
-    }
-
-    pub fn rewind(&self) {
-        self.send_command(TransportEvent::Rewind);
-    }
-
-    pub fn end_scrub(&self) {
-        self.send_command(TransportEvent::EndScrub);
-    }
-
-    pub fn reverse(&self) {
-        self.send_command(TransportEvent::Reverse);
     }
 
     pub fn motion_state(&self) -> MotionState {

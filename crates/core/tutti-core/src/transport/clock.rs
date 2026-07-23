@@ -69,8 +69,8 @@ impl TransportClock {
 
     /// Build a clock from the transport's whole input surface.
     ///
-    /// Replaces the `new(..).with_seek(..).with_loop(..)` chain and the eight
-    /// loose `Arc` clones it required at each construction site.
+    /// The only way to build a clock wired to a live transport: takes the
+    /// whole input surface at once rather than eight loose `Arc` clones.
     pub fn from_inputs(inputs: ClockInputs, sample_rate: impl Into<crate::SampleRate>) -> Self {
         let ClockInputs {
             tempo,
@@ -82,16 +82,6 @@ impl TransportClock {
         clock.seek = seek;
         clock.loop_span = Some(loop_span);
         clock
-    }
-
-    pub fn with_seek(mut self, seek: SeekSlot) -> Self {
-        self.seek = seek;
-        self
-    }
-
-    pub fn with_loop(mut self, loop_span: LoopSpan) -> Self {
-        self.loop_span = Some(loop_span);
-        self
     }
 
     pub fn with_position_writeback(mut self, writeback: Arc<AtomicF64>) -> Self {
@@ -128,20 +118,6 @@ impl TransportClock {
         derived
     }
 
-    /// Derive an independent stream that wraps within `range`.
-    ///
-    /// Wrapping happens in the clock, so consumers downstream receive an
-    /// already-wrapped beat and need no loop handling of their own.
-    pub fn looped(&self, range: core::ops::Range<f64>) -> Self {
-        let mut derived = self.clone();
-        derived.isolate();
-        derived.current_beat = range.start;
-        let span = LoopSpan::new(range.start, range.end);
-        span.set_enabled(true);
-        derived.loop_span = Some(span);
-        derived
-    }
-
     /// Derive an independent stream running at a fixed `bpm`.
     pub fn at_tempo(&self, bpm: impl Into<crate::Bpm>) -> Self {
         let mut derived = self.clone();
@@ -156,14 +132,6 @@ impl TransportClock {
         self.tempo.store(bpm, Ordering::Release);
         self.beat_per_sample = Self::calculate_beat_per_sample(bpm, self.sample_rate);
         self.last_tempo = bpm;
-    }
-
-    pub fn seek_slot(&self) -> SeekSlot {
-        self.seek.clone()
-    }
-
-    pub fn seek(&self, beat: f64) {
-        self.seek.request(beat);
     }
 
     pub fn current_beat(&self) -> f64 {
@@ -357,6 +325,41 @@ mod tests {
         )
     }
 
+    /// A clock wired to a loop span, via the one real constructor.
+    fn clock_with_loop(
+        tempo: Arc<AtomicF64>,
+        paused: Arc<AtomicBool>,
+        loop_span: LoopSpan,
+    ) -> TransportClock {
+        TransportClock::from_inputs(
+            ClockInputs {
+                tempo,
+                paused,
+                seek: SeekSlot::new(),
+                loop_span,
+            },
+            44100.0,
+        )
+    }
+
+    /// A clock plus the seek slot that drives it.
+    fn clock_with_seek(
+        tempo: Arc<AtomicF64>,
+        paused: Arc<AtomicBool>,
+    ) -> (TransportClock, SeekSlot) {
+        let seek = SeekSlot::new();
+        let clock = TransportClock::from_inputs(
+            ClockInputs {
+                tempo,
+                paused,
+                seek: seek.clone(),
+                loop_span: LoopSpan::default(),
+            },
+            44100.0,
+        );
+        (clock, seek)
+    }
+
     fn reconstruct_beat(output: &[f32; 2]) -> f32 {
         output[0] + output[1]
     }
@@ -451,11 +454,10 @@ mod tests {
     #[test]
     fn test_transport_clock_seek() {
         let (tempo, paused) = create_test_atomics();
-        let clock = TransportClock::new(tempo, paused, 44100.0);
+        let (mut clock, seek) = clock_with_seek(tempo, paused);
 
-        clock.seek(4.0);
+        seek.request(4.0);
 
-        let mut clock = clock;
         let mut output = [0.0f32; 2];
         clock.tick(&[], &mut output);
 
@@ -488,7 +490,7 @@ mod tests {
         let loop_span = LoopSpan::new(0.0, 4.0);
         loop_span.set_enabled(true);
 
-        let mut clock = TransportClock::new(tempo, paused, 44100.0).with_loop(loop_span);
+        let mut clock = clock_with_loop(tempo, paused, loop_span);
 
         let mut output = [0.0f32; 2];
 
@@ -507,7 +509,7 @@ mod tests {
         let loop_span = LoopSpan::new(0.0, 4.0);
         loop_span.set_enabled(false);
 
-        let mut clock = TransportClock::new(tempo, paused, 44100.0).with_loop(loop_span);
+        let mut clock = clock_with_loop(tempo, paused, loop_span);
 
         let mut output = [0.0f32; 2];
 
@@ -529,9 +531,18 @@ mod tests {
         let loop_span = LoopSpan::new(0.0, 1.0);
         loop_span.set_enabled(true);
 
-        let mut clock = TransportClock::new(tempo, paused, 44100.0).with_loop(loop_span);
+        let seek = SeekSlot::new();
+        let mut clock = TransportClock::from_inputs(
+            ClockInputs {
+                tempo,
+                paused,
+                seek: seek.clone(),
+                loop_span,
+            },
+            44100.0,
+        );
 
-        clock.seek(0.99999);
+        seek.request(0.99999);
         let mut output = [0.0f32; 2];
         clock.tick(&[], &mut output);
 
@@ -549,12 +560,12 @@ mod tests {
     #[test]
     fn test_transport_clock_dual_channel_precision() {
         let (tempo, paused) = create_test_atomics();
-        let mut clock = TransportClock::new(tempo, paused, 44100.0);
+        let (mut clock, seek) = clock_with_seek(tempo, paused);
 
         let mut output = [0.0f32; 2];
 
         // Advance to beat ~16384 where f32 truncation would lose precision
-        clock.seek(16384.5);
+        seek.request(16384.5);
         clock.tick(&[], &mut output);
 
         // Channel 0 should be the floor (16384.0)
@@ -612,9 +623,15 @@ mod tests {
         let seek = SeekSlot::new();
         let loop_span = LoopSpan::new(0.0, 4.0);
         loop_span.set_enabled(true);
-        let live = TransportClock::new(tempo, paused, 44100.0)
-            .with_seek(seek.clone())
-            .with_loop(loop_span.clone());
+        let live = TransportClock::from_inputs(
+            ClockInputs {
+                tempo,
+                paused,
+                seek: seek.clone(),
+                loop_span: loop_span.clone(),
+            },
+            44100.0,
+        );
 
         let mut derived = live.starting_at(20.0);
 
@@ -629,25 +646,6 @@ mod tests {
         );
         // ...and the live seek is still pending for the live clock.
         assert!(seek.is_pending(), "derived stream consumed the live seek");
-    }
-
-    #[test]
-    fn looped_wraps_within_its_own_range() {
-        let (tempo, paused) = create_test_atomics();
-        let live = TransportClock::new(tempo, paused, 44100.0);
-
-        // 120 BPM at 44.1 kHz = 2 beats/sec. 90000 samples > 2 seconds > 4 beats.
-        let mut derived = live.looped(0.0..4.0);
-        let mut output = [0.0f32; 2];
-        for _ in 0..90000 {
-            derived.tick(&[], &mut output);
-        }
-
-        let beat = reconstruct_beat(&output);
-        assert!(
-            (0.0..4.0).contains(&beat),
-            "beat {beat} escaped the 0..4 loop"
-        );
     }
 
     #[test]

@@ -8,7 +8,7 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use crate::ecs::param_epoch::{bump_param_epoch_core, NodeParamEpoch};
+use crate::ecs::param_epoch::NodeParamEpoch;
 use crate::ecs::reconcile::{
     commit_graph, engine_ready, reconcile_node_despawn, GraphDirty, GraphReconcileSystems,
 };
@@ -24,10 +24,9 @@ pub struct GraphReconcilePlugin;
 
 impl Plugin for GraphReconcilePlugin {
     fn build(&self, app: &mut App) {
-        // Register the core entity-as-node reflectable types (scalar
-        // params, construction data). Leaf authoring markers register themselves
-        // in their own subsystem plugins. Idempotent.
-        register_core_node_types(app);
+        // The DAW param components (`Volume`/`Pan`/`Mute`/`PluginParam`/`ModParam`)
+        // + their reflection registration + the `Changed<T>` epoch bumps all moved
+        // app-side (`dawai_model::engine_bind`) — the pump carries none of them.
 
         app.init_resource::<GraphDirty>()
             .init_resource::<NodeParamEpoch>()
@@ -53,12 +52,6 @@ impl Plugin for GraphReconcilePlugin {
             app.insert_resource(config);
         }
 
-        // Per-node param-epoch bumps. Driven by `Changed<T>` on the param
-        // components themselves (not the reconcilers), so they fire even when a
-        // reconciler doesn't, and can't drift out of sync with the reconciler
-        // list. Leaf-family bumps (sampler/plugin/dsp) are added in bevy-tutti.
-        app.add_systems(Update, bump_param_epoch_core);
-
         // Graph-node removal is handled by an `On<Remove, AudioNode>`
         // observer (fires at command-flush, reads the still-present NodeId).
         app.add_observer(reconcile_node_despawn);
@@ -70,20 +63,4 @@ impl Plugin for GraphReconcilePlugin {
                 .run_if(engine_ready),
         );
     }
-}
-
-/// Register the core entity-as-node reflectable types: the
-/// foundational graph params (`Volume`/`Pan`/`Mute`/`PluginParam`/`ModParam`).
-///
-/// The DSP param pool + node markers live in tutti-units (registered by
-/// `TuttiDspPlugin`); the sampler params/marker in tutti-sampler. Idempotent —
-/// Bevy's `register_type` ignores duplicates.
-pub fn register_core_node_types(app: &mut App) {
-    use crate::graph::*;
-
-    app.register_type::<Volume>()
-        .register_type::<Pan>()
-        .register_type::<Mute>()
-        .register_type::<PluginParam>()
-        .register_type::<ModParam>();
 }

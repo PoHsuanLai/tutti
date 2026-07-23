@@ -52,7 +52,7 @@ pub use mpe::{
 };
 pub use note_id::{NoteId, PerNoteMap};
 pub use routing::{MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterator};
-pub use traits::{MidiIn, MidiOut};
+pub use traits::{MidiIn, MidiOut, MidiRouter};
 pub use translation::{normalize, Midi1ToMidi2Translator, MidiParseError};
 pub use ump::{
     Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,

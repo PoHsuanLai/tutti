@@ -39,12 +39,12 @@ pub use error::{Error, Result};
 // (`setting` / `from_setting`) come from `fundsp-tutti` (which owns fundsp's
 // `Setting`). There is no longer a `tutti_core::param` module — the vocabulary
 // has no engine-side home to gather under.
+pub use fundsp::params::SampleRate;
+pub use fundsp::unit_param;
 pub use tutti_types::value::{
     AtomicSamplePosition, Beat, BeatDuration, Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio,
     SamplePosition, Seconds, Semitones, Unit, UnitParam,
 };
-pub use fundsp::params::SampleRate;
-pub use fundsp::unit_param;
 
 /// Back-compat alias for the unit newtypes' old module path
 /// (`tutti_core::params::Bpm`, …). The vocabulary now lives in
@@ -57,8 +57,8 @@ pub mod params {
     pub use fundsp::params::SampleRate;
 }
 
-pub mod processor;
-pub use processor::{AudioProcessor, GraphProcessor};
+pub mod engine;
+pub use engine::Engine;
 
 pub mod transport;
 pub use transport::{
@@ -139,17 +139,20 @@ pub mod node_id;
 
 // MIDI vocabulary types (MidiUnitId, MidiIn, MidiOut, …) live in the
 // `tutti-midi-types` crate; consumers import them from there directly rather
-// than through a tutti-core pass-through. tutti-core owns only `MidiProcessor`
-// (the RT buffer-splitting processor), exported from `processor`.
+// than through a tutti-core pass-through.
 
-pub mod graph;
-pub use graph::{AudioNode, LayerKey, ModParam, Mute, Pan, PluginParam, Volume};
+// The graph-node handle. Was the `graph` module (params + Bevy hub), but the
+// DAW param components moved app-side, leaving only `AudioNode` — so it
+// collapsed to this one file. Consumers reach it via the crate root
+// (`tutti_core::AudioNode`) or `tutti_core::node::AudioNode`.
+pub mod node;
+pub use node::AudioNode;
 
 // The Bevy ECS integration layer — the reconcile hub, graph resources, and the
 // per-subsystem Bevy wrappers, all gathered under one `#[cfg(feature = "bevy")]`
 // roof. The engine itself (fundsp's `Net`, transport, metering) needs none of
 // it; this is the adapter a Bevy host uses to reconcile ECS state into the
-// graph. Its items stay re-exported from their historical `graph::` /
-// `metering::` / `transport::` paths, so this move is invisible to consumers.
+// graph. Its items stay re-exported from their historical `metering::` /
+// `transport::` paths, so this move is invisible to consumers.
 #[cfg(feature = "bevy")]
 pub mod ecs;

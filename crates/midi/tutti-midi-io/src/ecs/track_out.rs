@@ -194,11 +194,11 @@ mod tests {
 
     #[test]
     fn sender_reaches_mailbox_through_the_midi_out_trait() {
-        // The clip tap holds this sender as `Arc<dyn MidiOut>` and must address
-        // the resource's unit id — prove the trait path lands the event.
+        // The clip tap holds this sender as a terminal `Arc<dyn MidiOut>` sink
+        // (its own address baked in) — prove the trait path lands the event.
         let out = MidiOutRes::default();
         let tap: std::sync::Arc<dyn MidiOut> = std::sync::Arc::new(out.sender());
-        tap.queue(out.unit_id(), &[MidiEvent::note_on(0, 0, 67, 0x8000)]);
+        tap.queue(&[MidiEvent::note_on(0, 0, 67, 0x8000)]);
 
         let events = drain(&out);
         assert_eq!(events.len(), 1);

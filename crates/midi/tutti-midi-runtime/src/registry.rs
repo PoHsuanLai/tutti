@@ -127,10 +127,7 @@ impl MidiSender {
 }
 
 impl tutti_midi_types::MidiOut for MidiSender {
-    fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) {
-        if unit_id != self.unit_id {
-            return;
-        }
+    fn queue(&self, events: &[MidiEvent]) {
         self.queue(events);
     }
 }
@@ -192,7 +189,6 @@ impl tutti_midi_types::MidiIn for MidiReceiver {
     fn poll_into(
         &self,
         unit_id: MidiUnitId,
-        _block_start_sample: u64,
         _block_size: usize,
         out: &mut [MidiEvent],
     ) -> usize {
@@ -347,7 +343,7 @@ impl MidiBus {
 
 }
 
-impl tutti_midi_types::MidiOut for MidiBus {
+impl tutti_midi_types::MidiRouter for MidiBus {
     fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) {
         self.queue(unit_id, events);
     }

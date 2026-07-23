@@ -2,11 +2,10 @@
 //!
 //! A `MidiClipSource` holds a sorted `Vec<TimedClipEvent>` (events tagged
 //! with absolute beats) and a [`Timeline`]. On each
-//! `poll_into(unit_id, block_start_sample, block_size, …)` it reads the
-//! transport beat, computes the beat range covered by the upcoming
-//! audio block, and emits events whose beat falls in that range with
-//! their `frame_offset` set to the sample-accurate position inside the
-//! block.
+//! `poll_into(unit_id, block_size, …)` it reads the transport beat,
+//! computes the beat range covered by the upcoming audio block, and emits
+//! events whose beat falls in that range with their `frame_offset` set to
+//! the sample-accurate position inside the block.
 //!
 //! Installing a source on a [`MidiInPort`](crate::MidiInPort) *replaces* its
 //! live receiver, so a synth plays either its clip or live preview events, not
@@ -58,16 +57,12 @@ pub struct MidiClipSource {
     /// for an off-RT pump to forward to external MIDI. `None` for the ordinary
     /// case.
     ///
-    /// It is a `dyn MidiOut` — the audio-thread write side of the two MIDI traits,
-    /// whose `queue(&self, …)` is contractually lock-free — so the clip player
-    /// needs no ring/lock machinery of its own. Shared across fundsp's
-    /// clone-on-commit like [`Self::cursor`].
-    ///
-    /// The paired `out_tap_unit` is the [`MidiUnitId`] the tap routes on — the
-    /// *mailbox's* id, distinct from [`Self::target_unit`] (the synth address).
-    /// The tee queues to this id so a [`MidiSender`](crate::MidiSender) tap
-    /// accepts it (its `MidiOut` impl drops mismatched ids).
-    out_tap: Option<(Arc<dyn MidiOut>, MidiUnitId)>,
+    /// It is a `dyn MidiOut` — a terminal sink (typically a
+    /// [`MidiSender`](crate::MidiSender)) whose `queue(&self, …)` is contractually
+    /// lock-free — so the clip player needs no ring/lock machinery of its own.
+    /// Shared across fundsp's clone-on-commit like [`Self::cursor`]. Being a sink,
+    /// it carries its own address; the tee needs no id.
+    out_tap: Option<Arc<dyn MidiOut>>,
 }
 
 impl MidiClipSource {
@@ -96,13 +91,11 @@ impl MidiClipSource {
     }
 
     /// Attach a hardware-out tap: every event this source emits to the synth is
-    /// *also* handed to `tap`, addressed to `tap_unit` (already sample-stamped).
-    /// Use when the parent track routes its clip MIDI out to hardware; the
-    /// `MidiOut` is typically a [`MidiSender`](crate::MidiSender) whose receiver
-    /// an off-RT pump drains, and `tap_unit` is that sender's own id (not this
-    /// source's `target_unit`).
-    pub fn with_out_tap(mut self, tap: Arc<dyn MidiOut>, tap_unit: MidiUnitId) -> Self {
-        self.out_tap = Some((tap, tap_unit));
+    /// *also* handed to `tap` (already sample-stamped). Use when the parent track
+    /// routes its clip MIDI out to hardware; the `MidiOut` is typically a
+    /// [`MidiSender`](crate::MidiSender) whose receiver an off-RT pump drains.
+    pub fn with_out_tap(mut self, tap: Arc<dyn MidiOut>) -> Self {
+        self.out_tap = Some(tap);
         self
     }
 
@@ -181,10 +174,9 @@ impl MidiClipSource {
             event.frame_offset = window.offset_of(beat);
             out[written] = event;
             // Hardware-out tap: forward the same sample-stamped event through the
-            // `MidiOut` trait (lock-free, drops if full — benign backpressure),
-            // addressed to the tap's own mailbox id (not the synth target).
-            if let Some((tap, tap_unit)) = &self.out_tap {
-                tap.queue(*tap_unit, &[event]);
+            // `MidiOut` sink (lock-free, drops if full — benign backpressure).
+            if let Some(tap) = &self.out_tap {
+                tap.queue(&[event]);
             }
             written += 1;
             cursor += 1;
@@ -199,7 +191,6 @@ impl MidiIn for MidiClipSource {
     fn poll_into(
         &self,
         unit_id: MidiUnitId,
-        _block_start_sample: u64,
         block_size: usize,
         out: &mut [MidiEvent],
     ) -> usize {
@@ -292,7 +283,7 @@ mod tests {
 
         // First block: cover [0.0, 1.0) beats = [0, 22050) samples.
         let mut buf = [MidiEvent::noop(); 8];
-        let n = source.poll_into(unit, 0, 22050, &mut buf);
+        let n = source.poll_into(unit, 22050, &mut buf);
         assert_eq!(n, 2);
         assert_eq!(buf[0].frame_offset, 0);
         // Second event at beat 0.5 → 11025 samples.
@@ -303,7 +294,7 @@ mod tests {
         );
 
         // Polling again at the same beat: cursor advanced, no new events.
-        let n2 = source.poll_into(unit, 22050, 22050, &mut buf);
+        let n2 = source.poll_into(unit, 22050, &mut buf);
         assert_eq!(n2, 0);
     }
 
@@ -322,7 +313,7 @@ mod tests {
             44100.0,
         );
         let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(source.poll_into(other, 0, 1024, &mut buf), 0);
+        assert_eq!(source.poll_into(other, 1024, &mut buf), 0);
     }
 
     #[test]
@@ -340,7 +331,7 @@ mod tests {
             44100.0,
         );
         let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(source.poll_into(unit, 0, 1024, &mut buf), 0);
+        assert_eq!(source.poll_into(unit, 1024, &mut buf), 0);
     }
 
     #[test]
@@ -366,13 +357,13 @@ mod tests {
         let mut buf = [MidiEvent::noop(); 4];
 
         // First block @ beat 0
-        assert_eq!(source.poll_into(unit, 0, 22050, &mut buf), 2);
+        assert_eq!(source.poll_into(unit, 22050, &mut buf), 2);
         // Move forward — cursor exhausted, nothing emitted.
         transport.set_beat(2.0);
-        assert_eq!(source.poll_into(unit, 22050, 22050, &mut buf), 0);
+        assert_eq!(source.poll_into(unit, 22050, &mut buf), 0);
         // Seek back to start — events should fire again.
         transport.set_beat(0.0);
-        assert_eq!(source.poll_into(unit, 0, 22050, &mut buf), 2);
+        assert_eq!(source.poll_into(unit, 22050, &mut buf), 2);
     }
 
     #[test]
@@ -382,11 +373,9 @@ mod tests {
         let unit = MidiUnitId::new(3);
         let transport = Arc::new(TestTransport::new(120.0));
         // The tap is a plain MidiOut → MidiIn mailbox (the real wiring): the clip
-        // pushes into the sender, an off-RT drain reads the receiver. The mailbox
-        // has its *own* id, distinct from the clip's synth-routing `target_unit`
-        // — the tee addresses the mailbox id, not `target_unit`.
-        let tap_unit = MidiUnitId::new(999);
-        let (sender, receiver) = MidiMailbox::pair(tap_unit);
+        // pushes into the sender, an off-RT drain reads the receiver. The sender is
+        // a terminal sink — the tee pushes at it with no id.
+        let (sender, receiver) = MidiMailbox::pair(MidiUnitId::new(999));
 
         let source = MidiClipSource::new(
             unit,
@@ -403,11 +392,11 @@ mod tests {
             Arc::clone(&transport) as Arc<dyn Timeline>,
             44100.0,
         )
-        .with_out_tap(Arc::new(sender), tap_unit);
+        .with_out_tap(Arc::new(sender));
 
         // Poll one block wide enough to cover both events.
         let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(source.poll_into(unit, 0, 22050, &mut buf), 2);
+        assert_eq!(source.poll_into(unit, 22050, &mut buf), 2);
 
         // The tap received the *same* events the synth did, sample-stamped.
         let mut tapped = [MidiEvent::noop(); 4];
@@ -440,7 +429,7 @@ mod tests {
             44100.0,
         );
         let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(source.poll_into(unit, 0, 22050, &mut buf), 1);
+        assert_eq!(source.poll_into(unit, 22050, &mut buf), 1);
     }
 
     // --- isolated-half tests for the poll_into decomposition ----------------
@@ -487,7 +476,7 @@ mod tests {
         // the next sync must rewind the cursor so the events replay.
         let mut buf = [MidiEvent::noop(); 8];
         transport.set_beat(0.0);
-        let _ = source.poll_into(MidiUnitId::new(1), 0, 44100, &mut buf); // drains both
+        let _ = source.poll_into(MidiUnitId::new(1), 44100, &mut buf); // drains both
         transport.set_beat(2.0);
         let _ = source.sync_to_transport(22050); // last_beat now ~2.0
         assert!(source.cursor.load(Ordering::Relaxed) >= 2);

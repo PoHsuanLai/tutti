@@ -30,10 +30,9 @@ bevy_tasks.workspace = true
 # (relocated into src/engine/).
 tutti-core = { path = "../tutti/crates/core/tutti-core", default-features = false, features = ["bevy_ecs", "bevy_asset"] }
 tutti-midi-types = { path = "../tutti/crates/midi/tutti-midi-types", default-features = false }
-# tutti-units' Bevy modules (the DSP / spatial / automation / convolution spawn
-# pipelines + reconcilers + plugins that bevy-tutti schedules) are always-on; the
-# optional features below add spatial / convolution / automation on top.
-tutti-units = { path = "../tutti/crates/dsp/tutti-units", default-features = false, features = ["bevy"] }
+# tutti-units is pure DSP now (its ECS binding moved to dawai_model::engine_bind).
+# The optional features below add spatial / convolution / automation DSP on top.
+tutti-units = { path = "../tutti/crates/dsp/tutti-units", default-features = false }
 
 # Optional subsystems (gated by bevy-tutti features below).
 tutti-sampler = { path = "../tutti/crates/dsp/tutti-sampler", optional = true, default-features = false }
@@ -146,10 +145,6 @@ assert_no_alloc = { version = "1", default-features = false }
 hound = "3.5"
 tempfile = "3.8"
 
-[[example]]
-name = "29_node_entities"
-required-features = ["sampler", "wav"]
-
-[[example]]
-name = "30_full_pipeline"
-required-features = ["sampler", "wav", "automation"]
+# NOTE: examples 29_node_entities / 30_full_pipeline were removed — they
+# demonstrated engine-side ECS param reconcile (Volume/SamplerSpeed/…), which
+# moved app-side to dawai_model::engine_bind ("engine Bevy = Net pump only").

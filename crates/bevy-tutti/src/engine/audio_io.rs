@@ -1,14 +1,17 @@
 //! CPAL audio I/O — callback state, RT entry point, and device stream management.
 //!
-//! The RT callback is generic over [`AudioProcessor`]: it calls `processor.process()`
-//! and updates metering. All audio logic (graph ticking, MIDI splitting, transport)
-//! lives in the processor implementation, which is constructed in the engine builder.
+//! The RT callback runs two steps per block: an optional MIDI *pre-block*
+//! producer ([`MidiPreBlock`]) that delivers events into node inboxes, then the
+//! graph render ([`Engine`]). Metering runs over the result.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::Arc;
+use tutti_core::engine::Engine;
 use tutti_core::metering::{meter_output, AudioTap, MasterMeter, MeteringContext};
-use tutti_core::processor::AudioProcessor;
 use tutti_core::ScopedNoDenormals;
+
+#[cfg(feature = "midi")]
+use tutti_midi_runtime::MidiPreBlock;
 
 use crate::engine::error::{Error, Result};
 
@@ -17,31 +20,58 @@ use crate::engine::error::{Error, Result};
 const MAX_FRAMES: usize = 8192;
 
 /// State shared between the engine and the RT audio callback.
-pub(crate) struct AudioCallbackState<P: AudioProcessor> {
-    pub(crate) processor: P,
+///
+/// Holds the [`Engine`] and, under `midi`, the pre-block MIDI producer that runs
+/// before each render. Both are RT-safe; the callback owns the ordering
+/// (`pre_block.run` then `engine.process`).
+pub(crate) struct AudioCallbackState {
+    pub(crate) engine: Engine,
+    /// The once-per-block MIDI producer, run before the graph render to deliver
+    /// events into node inboxes. `None` when no MIDI subsystem is wired.
+    #[cfg(feature = "midi")]
+    pub(crate) pre_block: Option<MidiPreBlock>,
     pub(crate) meter: MasterMeter,
     pub(crate) tap: AudioTap,
 }
 
-impl<P: AudioProcessor> AudioCallbackState<P> {
-    pub(crate) fn new(processor: P, meter: MasterMeter, tap: AudioTap) -> Self {
+impl AudioCallbackState {
+    pub(crate) fn new(engine: Engine, meter: MasterMeter, tap: AudioTap) -> Self {
         Self {
-            processor,
+            engine,
+            #[cfg(feature = "midi")]
+            pre_block: None,
             meter,
             tap,
         }
     }
 
+    /// Install the pre-block MIDI producer (called once at engine build).
+    #[cfg(feature = "midi")]
+    pub(crate) fn with_pre_block(mut self, pre_block: MidiPreBlock) -> Self {
+        self.pre_block = Some(pre_block);
+        self
+    }
+
     pub(crate) fn reset_owners(&self) {
-        self.processor.reset_owners();
+        self.engine.reset_owners();
+        #[cfg(feature = "midi")]
+        if let Some(pre_block) = &self.pre_block {
+            pre_block.reset_owners();
+        }
     }
 }
 
 #[inline]
-pub(crate) fn process_audio<P: AudioProcessor>(state: &AudioCallbackState<P>, output: &mut [f32]) {
+pub(crate) fn process_audio(state: &AudioCallbackState, output: &mut [f32]) {
     let _no_denormals = ScopedNoDenormals::new();
     let frames = output.len() / 2;
-    state.processor.process(output, frames);
+    // Pre-block MIDI: deliver this block's events into node inboxes before the
+    // graph renders.
+    #[cfg(feature = "midi")]
+    if let Some(pre_block) = &state.pre_block {
+        pre_block.run(frames);
+    }
+    state.engine.process(output, frames);
 }
 
 /// Holds a [`cpal::Stream`] to keep it alive. CPAL runs the audio callback
@@ -74,10 +104,7 @@ impl AudioEngine {
         })
     }
 
-    pub(crate) fn start<P: AudioProcessor>(
-        &mut self,
-        state: Arc<AudioCallbackState<P>>,
-    ) -> Result<()> {
+    pub(crate) fn start(&mut self, state: Arc<AudioCallbackState>) -> Result<()> {
         if self.is_running {
             return Ok(());
         }
@@ -86,14 +113,14 @@ impl AudioEngine {
         let config = device.default_output_config()?;
 
         let stream = match config.sample_format() {
-            cpal::SampleFormat::I8 => build_stream::<i8, P>(&device, &config.into(), state)?,
-            cpal::SampleFormat::I16 => build_stream::<i16, P>(&device, &config.into(), state)?,
-            cpal::SampleFormat::I32 => build_stream::<i32, P>(&device, &config.into(), state)?,
-            cpal::SampleFormat::U8 => build_stream::<u8, P>(&device, &config.into(), state)?,
-            cpal::SampleFormat::U16 => build_stream::<u16, P>(&device, &config.into(), state)?,
-            cpal::SampleFormat::U32 => build_stream::<u32, P>(&device, &config.into(), state)?,
-            cpal::SampleFormat::F32 => build_stream::<f32, P>(&device, &config.into(), state)?,
-            cpal::SampleFormat::F64 => build_stream::<f64, P>(&device, &config.into(), state)?,
+            cpal::SampleFormat::I8 => build_stream::<i8>(&device, &config.into(), state)?,
+            cpal::SampleFormat::I16 => build_stream::<i16>(&device, &config.into(), state)?,
+            cpal::SampleFormat::I32 => build_stream::<i32>(&device, &config.into(), state)?,
+            cpal::SampleFormat::U8 => build_stream::<u8>(&device, &config.into(), state)?,
+            cpal::SampleFormat::U16 => build_stream::<u16>(&device, &config.into(), state)?,
+            cpal::SampleFormat::U32 => build_stream::<u32>(&device, &config.into(), state)?,
+            cpal::SampleFormat::F32 => build_stream::<f32>(&device, &config.into(), state)?,
+            cpal::SampleFormat::F64 => build_stream::<f64>(&device, &config.into(), state)?,
             format => {
                 return Err(Error::InvalidConfig(format!(
                     "Unsupported sample format: {format:?}"
@@ -158,10 +185,10 @@ fn get_device(index: Option<usize>) -> Result<cpal::Device> {
     }
 }
 
-fn build_stream<T, P: AudioProcessor>(
+fn build_stream<T>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
-    state: Arc<AudioCallbackState<P>>,
+    state: Arc<AudioCallbackState>,
 ) -> Result<cpal::Stream>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
@@ -227,13 +254,13 @@ fn write_output<T: cpal::SizedSample + cpal::FromSample<f32>>(
 mod tests {
     use super::*;
     use parking_lot::Mutex;
-    use tutti_core::processor::GraphProcessor;
+    use tutti_core::engine::Engine;
     use tutti_core::{dsp::Net, MotionEvent, Transport, TransportClock};
 
-    /// Build a minimal processor + transport pair for callback-level tests.
+    /// Build a minimal engine + transport pair for callback-level tests.
     /// Bypasses the engine builder — these tests exercise the RT callback
     /// in isolation, not the full engine.
-    fn build_callback_state(sample_rate: f64) -> (Transport, AudioCallbackState<GraphProcessor>) {
+    fn build_callback_state(sample_rate: f64) -> (Transport, AudioCallbackState) {
         let transport = Transport::new(sample_rate);
 
         let mut net = Net::new(0, 2);
@@ -243,11 +270,11 @@ mod tests {
         let backend = net.backend();
 
         // Hold the net alive for the duration of the test via a leaked arc —
-        // the backend borrows the graph processor via its inner NetBackend.
+        // the backend borrows the engine via its inner NetBackend.
         let _keep_net_alive: &'static Mutex<Net> = Box::leak(Box::new(Mutex::new(net)));
 
-        let processor = GraphProcessor::new(transport.motion.clone(), backend);
-        let state = AudioCallbackState::new(processor, MasterMeter::new(), AudioTap::new());
+        let engine = Engine::new(transport.motion.clone(), backend);
+        let state = AudioCallbackState::new(engine, MasterMeter::new(), AudioTap::new());
         (transport, state)
     }
 

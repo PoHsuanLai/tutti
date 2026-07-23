@@ -9,7 +9,7 @@
 //! Grouping is by **data-flow direction**:
 //!
 //! - [`ClockInputs`] — what `TransportClock` reads to advance time.
-//! - [`Declick`] — the fade contract between the FSM and `GraphProcessor`.
+//! - [`Declick`] — the fade contract between the FSM and `Engine`.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -195,7 +195,7 @@ impl Default for LoopSpan {
     }
 }
 
-/// Declick fade contract between the transport FSM and `GraphProcessor`.
+/// Declick fade contract between the transport FSM and `Engine`.
 ///
 /// The FSM arms a fade; the processor reads `remaining` every buffer to
 /// shape the output gain and reports completion. Both halves are load-bearing

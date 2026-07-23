@@ -19,15 +19,28 @@ use crate::unit_id::MidiUnitId;
 // Delivery: write side (out) and read side (in)
 // -----------------------------------------------------------------------------
 
-/// Deliver MIDI events to registered audio units — the write-side complement to
-/// [`MidiIn`]. Routing code on the audio thread calls [`MidiOut::queue`]
-/// to hand events to per-unit queues, which the consuming units drain via
-/// [`MidiIn::poll_into`].
+/// Push MIDI events at a single **terminal sink** — the write-side complement to
+/// [`MidiIn`]. A sink is already addressed: it *is* the destination (a per-unit
+/// mailbox, a hardware wire), so `queue` carries no id. Consuming units drain
+/// the delivered events via [`MidiIn::poll_into`].
 ///
-/// Implementations must be **lock-free** and **alloc-free** — `queue` is called
-/// on the audio thread, once per routed event. Events for unknown unit ids
-/// should be silently dropped.
+/// Implementations must be **lock-free** and **alloc-free** — `queue` runs on
+/// the audio thread, once per routed event.
+///
+/// To deliver to *one of many* sinks selected by id (a fan-out bus), use
+/// [`MidiRouter`] instead — the id belongs to the routing step, not the sink.
 pub trait MidiOut: Send + Sync {
+    fn queue(&self, events: &[MidiEvent]);
+}
+
+/// Route MIDI events to a registered sink selected by [`MidiUnitId`] — a fan-out
+/// over many [`MidiOut`] sinks. The id names *which* sink; events for an unknown
+/// id are silently dropped.
+///
+/// Distinct from [`MidiOut`] (a single terminal sink, no id): a `MidiRouter`
+/// owns the address→sink map and does the lookup. Implementations must be
+/// **lock-free** and **alloc-free** — `queue` runs on the audio thread.
+pub trait MidiRouter: Send + Sync {
     fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]);
 }
 
@@ -39,13 +52,13 @@ pub trait MidiOut: Send + Sync {
 /// events come from a live registry (destructively draining SPSC channels), an
 /// export snapshot, or a beat-scheduled clip player.
 ///
-/// `block_start_sample` and `block_size` describe the audio block currently
-/// being rendered. Schedulers use them to convert beat-domain events into
-/// per-block `MidiEvent::frame_offset` values that the consuming unit's
-/// `process()` loop can split on for sample-accurate timing. Live sources that
-/// don't track absolute sample positions (e.g. the lock-free MIDI registry,
-/// where producers stamp `frame_offset` themselves) can ignore both arguments
-/// and pass the queue contents through unchanged.
+/// `block_size` describes the audio block currently being rendered. Schedulers
+/// use it to convert beat-domain events into per-block `MidiEvent::frame_offset`
+/// values that the consuming unit's `process()` loop can split on for
+/// sample-accurate timing (the beat position comes from the source's own
+/// `Timeline`, not from an absolute sample count). Live sources that stamp
+/// `frame_offset` themselves (e.g. the lock-free MIDI registry) ignore it and
+/// pass the queue contents through unchanged.
 pub trait MidiIn: Send + Sync {
     /// Poll available MIDI events for the given unit into the buffer.
     ///
@@ -55,7 +68,6 @@ pub trait MidiIn: Send + Sync {
     fn poll_into(
         &self,
         unit_id: MidiUnitId,
-        block_start_sample: u64,
         block_size: usize,
         buffer: &mut [MidiEvent],
     ) -> usize;

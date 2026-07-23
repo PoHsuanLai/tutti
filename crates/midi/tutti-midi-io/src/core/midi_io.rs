@@ -258,6 +258,26 @@ impl MidiIo {
     }
 }
 
+/// A connected hardware output port is a terminal MIDI sink, so it presents the
+/// same push interface as an in-graph synth/plugin inbox: hold a `MidiSender` and
+/// a `MidiIo` both as `Arc<dyn MidiOut>` and feed them identically.
+///
+/// Fidelity is a property of the sink, not the trait: `send` downscales UMP to
+/// MIDI 1.0 on the wire (dropping MIDI-2-only messages), whereas a synth inbox
+/// stores native UMP. A caller that must preserve full UMP should reach for the
+/// concrete port rather than this erased handle.
+///
+/// RT-safe in the same sense the mailbox is: `send` is a non-blocking `try_send`
+/// onto the output channel; the blocking `midir` syscall runs on the dedicated
+/// output thread, never the caller's.
+impl tutti_midi_types::MidiOut for MidiIo {
+    fn queue(&self, events: &[MidiEvent]) {
+        for &event in events {
+            self.send(event);
+        }
+    }
+}
+
 // --- Input thread ---
 
 fn run_input_thread(

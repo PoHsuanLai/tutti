@@ -253,14 +253,13 @@ impl tutti_midi_types::MidiIn for HardwareMidiInputs {
     /// Drain all connected hardware inputs for this block into `buffer`. The
     /// hardware is pre-routing — it isn't addressed to one unit, so `unit_id` is
     /// ignored and every pending event is returned; the caller (the
-    /// `MidiProcessor`) routes them. `block_size` drives the timestamp →
+    /// `MidiPreBlock`) routes them. `block_size` drives the timestamp →
     /// `frame_offset` conversion (it is the block's `nframes`). RT-safe: the
     /// events already sit in the manager's internal scratch, so this is a bounded
     /// copy with no allocation.
     fn poll_into(
         &self,
         _unit_id: tutti_midi_types::MidiUnitId,
-        _block_start_sample: u64,
         block_size: usize,
         buffer: &mut [MidiEvent],
     ) -> usize {

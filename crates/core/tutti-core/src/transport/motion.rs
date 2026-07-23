@@ -12,7 +12,7 @@
 //! |---|---|---|
 //! | [`MotionFsm::motion`] | the UI | the FSM is audio-thread-only |
 //! | `seek` ([`SeekSlot`]) | `TransportClock` | consumed once per buffer |
-//! | `declick` ([`Declick`]) | `GraphProcessor` | read every buffer to shape gain |
+//! | `declick` ([`Declick`]) | `Engine` | read every buffer to shape gain |
 //!
 //! The settings half — tempo, loop region, recording — lives in
 //! [`TransportSettings`](super::TransportSettings) and is not routed through
@@ -98,7 +98,7 @@ pub struct MotionFsm {
     motion: Arc<AtomicU8>,
     /// Pending absolute jump. Consumed by `TransportClock` once per buffer.
     pub seek: SeekSlot,
-    /// Fade contract with `GraphProcessor`.
+    /// Fade contract with `Engine`.
     pub declick: Declick,
     /// The FSM writes the playhead on a locate, and pausedness tracks motion,
     /// so it needs the settings it publishes into.

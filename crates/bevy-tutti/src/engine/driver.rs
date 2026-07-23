@@ -14,7 +14,6 @@
 use std::sync::Arc;
 
 use crate::engine::audio_io::{AudioCallbackState, AudioEngine};
-use crate::engine::DefaultProcessor;
 use crate::engine::Result;
 
 /// One enumerated audio output device.
@@ -31,14 +30,14 @@ pub struct DeviceInfo {
 /// Owns the CPAL stream and drives the audio thread.
 pub struct TuttiDriver {
     audio_engine: AudioEngine,
-    callback_state: Arc<AudioCallbackState<DefaultProcessor>>,
+    callback_state: Arc<AudioCallbackState>,
 }
 
 impl TuttiDriver {
     /// Construct from pre-built parts. Called by `TuttiEngineBuilder`.
     pub(crate) fn from_parts(
         audio_engine: AudioEngine,
-        callback_state: Arc<AudioCallbackState<DefaultProcessor>>,
+        callback_state: Arc<AudioCallbackState>,
     ) -> Self {
         Self {
             audio_engine,

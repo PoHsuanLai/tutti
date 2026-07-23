@@ -21,7 +21,7 @@ use crate::protocol::MidiEventVec;
 use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiIn;
-use tutti_midi_types::{MidiOut, MidiRoutingSnapshot, MidiUnitId};
+use tutti_midi_types::{MidiRouter, MidiRoutingSnapshot, MidiUnitId};
 
 const POLL_BUFFER_SIZE: usize = 256;
 
@@ -31,10 +31,10 @@ const POLL_BUFFER_SIZE: usize = 256;
 /// The plugin's MIDI-out re-enters routing exactly like a hardware input: each
 /// emitted event is fanned out through the shared [`MidiRoutingSnapshot`] (keyed
 /// on the event's channel) to whatever destination units the route resolves, and
-/// delivered via the same lock-free [`MidiOut`]. A plugin's output is just
-/// another source.
+/// delivered via the same lock-free [`MidiRouter`] (the fan-out bus). A plugin's
+/// output is just another source.
 struct OutHandle {
-    queue: Arc<dyn MidiOut>,
+    queue: Arc<dyn MidiRouter>,
     routing: Arc<ArcSwap<MidiRoutingSnapshot>>,
 }
 
@@ -61,11 +61,6 @@ pub struct Midi {
     /// an install on any clone visible to the running box, lock-free.
     /// See [[plugin-source-install-shared-cell]].
     out: Arc<ArcSwapOption<OutHandle>>,
-    /// Running sample position. Bumped by 1 per `drain_for_tick` and
-    /// by `block_size` per `drain_for_process`. Passed to the
-    /// `MidiIn::poll_into` call so clip players know what beat
-    /// range to emit events for.
-    sample_pos: u64,
 }
 
 impl Clone for Midi {
@@ -79,7 +74,6 @@ impl Clone for Midi {
             // Share the outbound SLOT (Arc clone) too — same shared-cell
             // rationale as the port's input cell.
             out: Arc::clone(&self.out),
-            sample_pos: self.sample_pos,
         }
     }
 }
@@ -97,7 +91,6 @@ impl Midi {
             drain: MidiEventVec::new(),
             poll_scratch: empty_poll_scratch(),
             out: Arc::new(ArcSwapOption::empty()),
-            sample_pos: 0,
         }
     }
 
@@ -128,7 +121,7 @@ impl Midi {
     /// routing. `routing` is the shared snapshot the engine already uses for
     /// hardware input, and `queue` the fan-out bus. Off-RT (call once at wiring
     /// time).
-    pub fn set_out(&self, queue: Arc<dyn MidiOut>, routing: Arc<ArcSwap<MidiRoutingSnapshot>>) {
+    pub fn set_out(&self, queue: Arc<dyn MidiRouter>, routing: Arc<ArcSwap<MidiRoutingSnapshot>>) {
         self.out.store(Some(Arc::new(OutHandle { queue, routing })));
     }
 
@@ -141,9 +134,9 @@ impl Midi {
     /// outbound target is installed. For each event, fan out through the shared
     /// routing snapshot (keyed on the event's channel, like any source) to every
     /// destination unit and deliver via the lock-free queue — byte-for-byte the
-    /// path `MidiProcessor::route_events_in_range` runs for hardware input, so
-    /// it's RT-safe. Each event keeps its own `frame_offset`; the destination
-    /// unit sub-buffer-splits on it next block. Non-recursive: delivery lands in
+    /// path `MidiPreBlock::run` runs for hardware input, so it's RT-safe. Each
+    /// event keeps its own `frame_offset`; the destination unit self-splits on
+    /// it next block. Non-recursive: delivery lands in
     /// the destination's inbox, drained on *its* next poll — `emit` never
     /// re-enters any `process()`.
     #[inline]
@@ -160,34 +153,22 @@ impl Midi {
         }
     }
 
-    /// Reset the running sample position. Called on `reset()` /
-    /// `set_sample_rate()` so the source override sees a clean
-    /// playhead at transport restarts.
-    pub fn reset_sample_pos(&mut self) {
-        self.sample_pos = 0;
-    }
-
     /// Drain the override-or-receiver events for this block into one buffer and
-    /// return it. Bumps `sample_pos` by `block_size` so the next call
-    /// sees the next block's window.
+    /// return it.
     pub fn drain_for_process(&mut self, block_size: usize) -> &MidiEventVec {
         self.drain.clear();
         // One lock-free poll: the port resolves receiver-or-installed-source
         // itself, so there is no branch (and no second code path) here.
-        let count = self
-            .port
-            .poll(self.sample_pos, block_size, &mut self.poll_scratch);
+        let count = self.port.poll(block_size, &mut self.poll_scratch);
         // Clamp to scratch capacity so `drain` never spills its SmallVec
         // inline storage and allocates on the audio thread.
         let count = count.min(self.poll_scratch.len());
         self.drain
             .extend(self.poll_scratch[..count].iter().copied());
-        self.sample_pos = self.sample_pos.wrapping_add(block_size as u64);
         &self.drain
     }
 
-    /// Sample-by-sample variant for the `tick` path. Bumps the
-    /// sample_pos by 1 each call.
+    /// Sample-by-sample variant for the `tick` path.
     pub fn drain_for_tick(&mut self) -> &MidiEventVec {
         self.drain_for_process(1)
     }
@@ -206,7 +187,6 @@ mod tests {
         fn poll_into(
             &self,
             _unit: MidiUnitId,
-            _start: u64,
             _block: usize,
             buffer: &mut [MidiEvent],
         ) -> usize {
@@ -262,7 +242,7 @@ mod tests {
     struct RecordingQueue {
         queued: Mutex<Vec<(MidiUnitId, usize)>>,
     }
-    impl MidiOut for RecordingQueue {
+    impl MidiRouter for RecordingQueue {
         fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) {
             self.queued.lock().unwrap().push((unit_id, events.len()));
         }

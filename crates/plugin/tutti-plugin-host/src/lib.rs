@@ -22,8 +22,7 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use tutti_core::ecs::{GraphReconcileSystems, NodeParamEpoch};
-use tutti_core::graph::{AudioNode, PluginParam};
+use tutti_core::ecs::GraphReconcileSystems;
 
 pub mod crash;
 pub mod editor;
@@ -69,28 +68,10 @@ impl PluginsRes {
     }
 }
 
-/// Reconciles `Changed<PluginParam>` into the bound [`PluginEmitter`].
-///
-/// `PluginHandle::set_parameter` is RT-safe fire-and-forget; the call
-/// publishes to a lock-free channel that the audio thread drains. No
-/// graph mutation happens here, so we don't touch `GraphDirty`.
-pub fn reconcile_plugin_params(
-    changed: Query<(&PluginEmitter, &PluginParam), Changed<PluginParam>>,
-) {
-    for (emitter, param) in changed.iter() {
-        emitter.handle.set_parameter(param.id, param.value);
-    }
-}
-
-/// Bump the epoch for plugin param changes (`PluginParam`).
-pub fn bump_param_epoch_plugin(
-    mut epoch: ResMut<NodeParamEpoch>,
-    changed: Query<&AudioNode, Changed<PluginParam>>,
-) {
-    for node in changed.iter() {
-        epoch.bump(node.0);
-    }
-}
+// NOTE: `reconcile_plugin_params` + `bump_param_epoch_plugin` moved to
+// `dawai_model::engine_bind::plugin_host` with the `PluginParam` component they
+// read (which left tutti-core). `PluginEmitter` stays here; the app imports it
+// via the `bevy_tutti` umbrella.
 
 /// Bevy plugin: plugin editor lifecycle + crash detection + async catalog
 /// scanning + param reconciliation.
@@ -103,10 +84,9 @@ pub fn bump_param_epoch_plugin(
 ///   should override the resource at startup with a
 ///   `Plugins::with_config(...).with_fresh_scan()`).
 ///
-/// Schedules:
-/// - The editor-lifecycle + crash-detect + scan systems in `Update`.
-/// - [`bump_param_epoch_plugin`] in `Update`.
-/// - [`reconcile_plugin_params`] in [`GraphReconcileSystems::Params`].
+/// Schedules the editor-lifecycle + crash-detect + scan systems in `Update`.
+/// (The `PluginParam` reconcile + epoch bump moved to
+/// `dawai_model::engine_bind::plugin_host` with the `PluginParam` component.)
 ///
 /// Requires [`tutti_core::ecs::GraphReconcilePlugin`] (which configures the
 /// `GraphReconcileSystems` set) to be added before this plugin.
@@ -154,16 +134,9 @@ impl Plugin for TuttiHostingPlugin {
                     .run_if(tutti_core::ecs::engine_ready),
                 trigger_plugin_scan,
                 poll_plugin_scan.after(trigger_plugin_scan),
-                // Param-epoch bump for plugin param changes.
-                bump_param_epoch_plugin,
             ),
         );
-
-        // `reconcile_plugin_params` writes through `PluginEmitter`, holds no
-        // engine resource, so it stays ungated within the Params phase.
-        app.add_systems(
-            Update,
-            reconcile_plugin_params.in_set(GraphReconcileSystems::Params),
-        );
+        // The PluginParam reconcile + epoch bump moved to
+        // dawai_model::engine_bind::plugin_host (with the PluginParam component).
     }
 }

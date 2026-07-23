@@ -28,6 +28,7 @@ pub mod clock_master;
 pub mod endpoint;
 pub mod jr_timestamp;
 pub mod port;
+pub mod pre_block;
 pub mod registry;
 pub mod routing_table;
 pub mod snapshot;
@@ -44,6 +45,7 @@ pub use endpoint::{
 };
 pub use jr_timestamp::{JrClock, JrReceiver, JrStamper};
 pub use port::MidiInPort;
+pub use pre_block::{BlockClock, MidiPreBlock};
 pub use registry::{MidiBus, MidiMailbox, MidiReceiver, MidiSender};
 pub use routing_table::MidiRoutingTable;
 pub use snapshot::{MidiSnapshot, TimedMidiEvent};

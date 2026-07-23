@@ -22,7 +22,7 @@ use bevy_ecs::system::EntityCommands;
 
 use crate::dsp::AudioUnit;
 use crate::ecs::AudioGraphRes;
-use crate::graph::AudioNode;
+use crate::node::AudioNode;
 
 /// System-set ordering anchor for the reconcile pipeline.
 ///
@@ -240,8 +240,13 @@ mod tests {
     use crate::dsp::sine_hz;
     use crate::dsp::Net;
     use crate::ecs::AudioGraphRes;
-    use crate::graph::Volume;
     use bevy_app::App;
+
+    /// Local probe component: the DAW param components moved out of the engine,
+    /// so these pump tests use a self-contained marker to prove the chained
+    /// `.insert(..)` on `spawn_audio_node`'s returned `EntityCommands` survives.
+    #[derive(bevy_ecs::prelude::Component, Debug, Clone, Copy, PartialEq)]
+    struct Probe(f32);
 
     /// Build a bare `Net` directly (no `TuttiEngine`, which lives in
     /// bevy-tutti). Allocates the fundsp backend so `commit()` has something
@@ -311,16 +316,16 @@ mod tests {
         let mut commands_q = app.world_mut().commands();
         commands_q
             .spawn_audio_node(sine_hz::<f32>(440.0))
-            .insert(Volume(0.5));
+            .insert(Probe(0.5));
         app.update();
 
         // The entity is bound to the graph via `AudioNode`, keeps its chained
-        // `Volume` insert, and the underlying node is in the graph.
-        let mut q = app.world_mut().query::<(&AudioNode, &Volume)>();
+        // `Probe` insert, and the underlying node is in the graph.
+        let mut q = app.world_mut().query::<(&AudioNode, &Probe)>();
         let mut count = 0;
-        for (node, vol) in q.iter(app.world()) {
+        for (node, probe) in q.iter(app.world()) {
             count += 1;
-            assert_eq!(vol.0, 0.5);
+            assert_eq!(probe.0, 0.5);
             assert!(app.world().resource::<AudioGraphRes>().0.contains(node.0));
         }
         assert_eq!(count, 1);
@@ -331,8 +336,7 @@ mod tests {
         let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(sine_hz::<f32>(440.0))
-                .id()
+            c.spawn_audio_node(sine_hz::<f32>(440.0)).id()
         };
         app.update();
 
@@ -363,8 +367,7 @@ mod tests {
         // the spawn command flushed).
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(sine_hz::<f32>(440.0))
-                .id()
+            c.spawn_audio_node(sine_hz::<f32>(440.0)).id()
         };
         app.update();
         let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
@@ -416,8 +419,7 @@ mod tests {
         let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(sine_hz::<f32>(440.0))
-                .id()
+            c.spawn_audio_node(sine_hz::<f32>(440.0)).id()
         };
         app.update();
 

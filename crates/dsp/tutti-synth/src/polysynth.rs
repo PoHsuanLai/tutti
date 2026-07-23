@@ -39,11 +39,6 @@ pub struct PolySynth {
     midi_buffer: Vec<MidiEvent>,
     mix_buffer: [f32; 2],
     finished_indices: SmallVec<[usize; FINISHED_NOTES_CAPACITY]>,
-    /// Running absolute-sample counter. Incremented by the block size
-    /// in `process()` (or `1` in `tick()`) and handed to MIDI sources
-    /// so beat-scheduled events can compute their `frame_offset`
-    /// relative to the start of the next block.
-    sample_pos: u64,
 }
 
 impl PolySynth {
@@ -98,7 +93,6 @@ impl PolySynth {
             midi_buffer: vec![MidiEvent::noop(); 256],
             mix_buffer: [0.0; 2],
             finished_indices: SmallVec::new(),
-            sample_pos: 0,
         })
     }
 
@@ -127,8 +121,7 @@ impl PolySynth {
     }
 
     fn poll_count(&mut self, block_size: usize) -> usize {
-        self.midi
-            .poll(self.sample_pos, block_size, &mut self.midi_buffer)
+        self.midi.poll(block_size, &mut self.midi_buffer)
     }
 
     fn poll_midi_events(&mut self) {
@@ -641,7 +634,6 @@ impl AudioUnit for PolySynth {
         }
 
         self.allocator.advance_time(1);
-        self.sample_pos = self.sample_pos.wrapping_add(1);
 
         let volume = self.master_volume.value();
         output[0] = self.mix_buffer[0] * volume;
@@ -743,8 +735,6 @@ impl AudioUnit for PolySynth {
                 output.set_f32(1, i, mix_right[i] * volume);
             }
         }
-
-        self.sample_pos = self.sample_pos.wrapping_add(size as u64);
     }
 
     fn inputs(&self) -> usize {
@@ -810,7 +800,6 @@ impl Clone for PolySynth {
             midi_buffer: vec![MidiEvent::noop(); 256],
             mix_buffer: [0.0; 2],
             finished_indices: SmallVec::new(),
-            sample_pos: 0,
         }
     }
 }
@@ -931,7 +920,6 @@ mod tests {
         fn poll_into(
             &self,
             _unit: MidiUnitId,
-            _start: u64,
             _block: usize,
             buffer: &mut [MidiEvent],
         ) -> usize {

@@ -15,7 +15,7 @@ Vocabulary crate for DAW-oriented audio processing. Built on FunDSP's `Net` for 
 - [`MeteringManager`] — level, LUFS, correlation, CPU meters
 - [`PdcManager`] — plugin delay compensation state
 - [`MidiBus`] — MIDI event fan-out to audio-node inboxes (feature-gated)
-- [`GraphProcessor`] / [`MidiProcessor`] / [`AudioProcessor`] — RT callback processors
+- [`Engine`] — the RT callback graph render (MIDI-free; delivery is `MidiPreBlock` in tutti-midi-runtime)
 - FunDSP re-exports (`AudioUnit`, `Net`, `Wave`, …)
 
 ## Features

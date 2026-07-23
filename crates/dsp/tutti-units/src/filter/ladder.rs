@@ -7,6 +7,11 @@ use tutti_core::{
 
 use tutti_core::{Hz, Linear, Param, Ratio};
 
+/// Below these deltas a freq/resonance change doesn't warrant recomputing the
+/// coefficients — the change guard shared by the atomic and modulation paths.
+const FREQ_EPS: f32 = 0.01;
+const RES_EPS: f32 = 0.0001;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LadderType {
     #[default]
@@ -19,6 +24,7 @@ pub enum LadderType {
 /// Runtime DSP state for a ladder filter instance — the four stage
 /// integrators plus the coefficient cache. Split out so the struct proper
 /// reads as a bag of typed parameters.
+#[derive(Clone)]
 struct LadderState<F: Real> {
     stages: [F; 4],
     last_freq: f32,
@@ -48,17 +54,6 @@ impl<F: Real> LadderState<F> {
     }
 }
 
-impl<F: Real> Clone for LadderState<F> {
-    fn clone(&self) -> Self {
-        Self {
-            stages: self.stages,
-            last_freq: self.last_freq,
-            last_res: self.last_res,
-            g: self.g,
-            k: self.k,
-        }
-    }
-}
 
 /// Moog-style ladder filter with resonance and drive.
 /// 1 input, 1 output.
@@ -130,21 +125,25 @@ impl<F: Real> LadderFilterNode<F> {
     fn maybe_update(&mut self) {
         let freq = self.frequency.load().get();
         let res = self.resonance.load().get();
-        if (freq - self.state.last_freq).abs() > 0.01 || (res - self.state.last_res).abs() > 0.0001
+        self.maybe_update_modulated(freq, res);
+    }
+
+    /// Recompute coefficients only when freq/resonance moved past a small
+    /// epsilon, so a held value doesn't recompute every sample. Shared by the
+    /// atomic ([`Self::maybe_update`]) and audio-rate modulation paths.
+    #[inline]
+    fn maybe_update_modulated(&mut self, freq: f32, res: f32) {
+        if (freq - self.state.last_freq).abs() > FREQ_EPS
+            || (res - self.state.last_res).abs() > RES_EPS
         {
             self.update_coefficients(freq, res);
         }
     }
 
-    /// Recompute coefficients from explicit per-sample freq/resonance (the
-    /// audio-rate modulation path), reusing the same change guard as
-    /// [`Self::maybe_update`] so a held value doesn't recompute every sample.
     #[inline]
-    fn maybe_update_modulated(&mut self, freq: f32, res: f32) {
-        if (freq - self.state.last_freq).abs() > 0.01 || (res - self.state.last_res).abs() > 0.0001
-        {
-            self.update_coefficients(freq, res);
-        }
+    fn process_one(&mut self, input: F) -> F {
+        let drive = self.drive.load().get();
+        self.process_one_with_drive(input, drive)
     }
 
     /// One sample using an explicit drive (the audio-rate modulation path);
@@ -153,44 +152,6 @@ impl<F: Real> LadderFilterNode<F> {
     fn process_one_with_drive(&mut self, input: F, drive: f32) -> F {
         let one = F::from_f64(1.0);
         let drive = F::from_f32(drive);
-        let x = input * drive;
-
-        let st = &mut self.state;
-        let feedback = st.stages[3];
-        let u = (x - st.k * feedback).tanh();
-
-        let g = st.g;
-        let g1 = g / (one + g);
-
-        let v0 = u;
-        let v1 = g1 * (v0 - st.stages[0]);
-        let lp1 = v1 + st.stages[0];
-        st.stages[0] = lp1 + v1;
-
-        let v2 = g1 * (lp1 - st.stages[1]);
-        let lp2 = v2 + st.stages[1];
-        st.stages[1] = lp2 + v2;
-
-        let v3 = g1 * (lp2 - st.stages[2]);
-        let lp3 = v3 + st.stages[2];
-        st.stages[2] = lp3 + v3;
-
-        let v4 = g1 * (lp3 - st.stages[3]);
-        let lp4 = v4 + st.stages[3];
-        st.stages[3] = lp4 + v4;
-
-        match self.ladder_type {
-            LadderType::LP12 => lp2,
-            LadderType::LP24 => lp4,
-            LadderType::HP12 => u - lp2,
-            LadderType::HP24 => u - lp4,
-        }
-    }
-
-    #[inline]
-    fn process_one(&mut self, input: F) -> F {
-        let one = F::from_f64(1.0);
-        let drive = F::from_f32(self.drive.load().get());
         let x = input * drive;
 
         let st = &mut self.state;

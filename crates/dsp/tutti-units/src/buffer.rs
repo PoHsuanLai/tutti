@@ -1,8 +1,8 @@
-//! Shared ring-buffer primitives: `CircularBuffer` and `MonotonicMaxDeque`.
+//! Shared ring-buffer primitives: `CircularBuffer` and `MonotonicMinDeque`.
 //!
 //! `CircularBuffer` centralizes the write-index + wrap logic that the delay,
-//! modulation, and limiter modules previously hand-rolled. `MonotonicMaxDeque`
-//! powers the lookahead-limiter's O(1) sliding-window maximum.
+//! modulation, and limiter modules previously hand-rolled. `MonotonicMinDeque`
+//! powers the lookahead-limiter's O(1) sliding-window minimum.
 
 use std::collections::VecDeque;
 
@@ -11,6 +11,7 @@ use std::collections::VecDeque;
 /// `len()` returns the backing storage length (capacity). `push` overwrites
 /// the oldest sample; `get(delay)` reads `delay` samples back from the most
 /// recent write.
+#[derive(Clone)]
 pub struct CircularBuffer<T: Copy + Default> {
     buf: Vec<T>,
     write: usize,
@@ -83,20 +84,12 @@ impl<T: Copy + Default> CircularBuffer<T> {
     }
 }
 
-impl<T: Copy + Default> Clone for CircularBuffer<T> {
-    fn clone(&self) -> Self {
-        Self {
-            buf: self.buf.clone(),
-            write: self.write,
-        }
-    }
-}
-
 /// Sliding-window minimum via a monotonic deque. O(1) amortized per push.
 ///
 /// Used by the lookahead limiter to track the smallest gain (greatest
 /// reduction) over the lookahead window. Stores `(age_index, value)` pairs
 /// so stale entries can be evicted by age.
+#[derive(Clone)]
 pub struct MonotonicMinDeque {
     entries: VecDeque<(u64, f32)>,
 }
@@ -154,10 +147,3 @@ impl MonotonicMinDeque {
     }
 }
 
-impl Clone for MonotonicMinDeque {
-    fn clone(&self) -> Self {
-        Self {
-            entries: self.entries.clone(),
-        }
-    }
-}

@@ -12,6 +12,7 @@ pub enum InterpolationMode {
     CubicHermite,
 }
 
+#[derive(Clone)]
 pub struct DelayLine {
     pub(crate) buffer: Vec<f32>,
     write_pos: usize,
@@ -85,16 +86,6 @@ impl DelayLine {
         let len = self.buffer.len();
         let idx = (self.write_pos + len - 1 - delay_samples.min(self.max_delay_samples)) % len;
         self.buffer[idx]
-    }
-}
-
-impl Clone for DelayLine {
-    fn clone(&self) -> Self {
-        Self {
-            buffer: self.buffer.clone(),
-            write_pos: self.write_pos,
-            max_delay_samples: self.max_delay_samples,
-        }
     }
 }
 

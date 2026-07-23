@@ -8,9 +8,9 @@
 //! their `frame_offset` set to the sample-accurate position inside the
 //! block.
 //!
-//! Multiple sources can be merged via [`CompositeMidiSource`] so a
-//! single synth can receive both live preview events (from the
-//! ordinary `MidiBus` registry) and clip-driven events at the same time.
+//! Installing a source on a [`MidiInPort`](crate::MidiInPort) *replaces* its
+//! live receiver, so a synth plays either its clip or live preview events, not
+//! both. Layering the two would be a change to `MidiInPort::poll`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -234,52 +234,6 @@ impl MidiIn for MidiClipSource {
             return 0;
         };
         self.emit_window(&window, out)
-    }
-}
-
-/// Fan multiple [`MidiIn`]s into one. Used to merge live preview
-/// events (from `MidiBus` registry) with clip playback for the same
-/// synth. Events are concatenated in source order; the receiving
-/// synth re-sorts by `frame_offset` before processing.
-pub struct CompositeMidiSource {
-    sources: Vec<Box<dyn MidiIn>>,
-}
-
-impl CompositeMidiSource {
-    pub fn new(sources: Vec<Box<dyn MidiIn>>) -> Self {
-        Self { sources }
-    }
-
-    pub fn push(&mut self, source: Box<dyn MidiIn>) {
-        self.sources.push(source);
-    }
-
-    pub fn len(&self) -> usize {
-        self.sources.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.sources.is_empty()
-    }
-}
-
-impl MidiIn for CompositeMidiSource {
-    fn poll_into(
-        &self,
-        unit_id: MidiUnitId,
-        block_start_sample: u64,
-        block_size: usize,
-        out: &mut [MidiEvent],
-    ) -> usize {
-        let mut written = 0;
-        for src in &self.sources {
-            if written >= out.len() {
-                break;
-            }
-            let n = src.poll_into(unit_id, block_start_sample, block_size, &mut out[written..]);
-            written += n;
-        }
-        written
     }
 }
 
@@ -508,36 +462,6 @@ mod tests {
         );
         let mut buf = [MidiEvent::noop(); 4];
         assert_eq!(source.poll_into(unit, 0, 22050, &mut buf), 1);
-    }
-
-    #[test]
-    fn composite_concatenates_outputs() {
-        let unit = MidiUnitId::new(7);
-        let transport = Arc::new(TestTransport::new(120.0));
-
-        let s1 = Box::new(MidiClipSource::new(
-            unit,
-            vec![TimedClipEvent {
-                beat: 0.0,
-                event: note_on(60, 100),
-            }],
-            Arc::clone(&transport) as Arc<dyn Timeline>,
-            44100.0,
-        )) as Box<dyn MidiIn>;
-        let s2 = Box::new(MidiClipSource::new(
-            unit,
-            vec![TimedClipEvent {
-                beat: 0.25,
-                event: note_on(64, 100),
-            }],
-            Arc::clone(&transport) as Arc<dyn Timeline>,
-            44100.0,
-        )) as Box<dyn MidiIn>;
-
-        let comp = CompositeMidiSource::new(vec![s1, s2]);
-        let mut buf = [MidiEvent::noop(); 8];
-        let n = comp.poll_into(unit, 0, 22050, &mut buf);
-        assert_eq!(n, 2);
     }
 
     // --- isolated-half tests for the poll_into decomposition ----------------

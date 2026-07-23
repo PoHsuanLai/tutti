@@ -1,30 +1,29 @@
-//! MIDI event collection for `PluginClient`. Each block it polls this client's
-//! own [`tutti_midi_runtime::MidiReceiver`] (or an installed
-//! [`tutti_midi_types::MidiIn`] override — typically a
-//! [`tutti_midi_runtime::MidiClipSource`]) into a single buffer for the audio
-//! path. Callers route MIDI to the plugin via either:
+//! MIDI for `PluginClient` — the plugin node's two halves.
+//!
+//! **In:** a [`tutti_midi_runtime::MidiInPort`], the same port a built-in synth
+//! owns. Each block it is polled into one buffer for the audio path; the port
+//! resolves live-mailbox vs installed source itself. Callers route MIDI to the
+//! plugin via either:
 //!
 //! - [`Midi::sender`] for live producers (hardware drivers, panel
 //!   previews) that push events as they arrive.
 //! - [`Midi::set_source`] for clip-driven playback that polls the
 //!   transport-aware source per block.
+//!
+//! **Out:** an optional routing target ([`Midi::set_out`]) through which the
+//! plugin's own MIDI-out re-enters the graph like any other source.
 
 use std::sync::Arc;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 
 use crate::protocol::MidiEventVec;
-use tutti_midi_runtime::{MidiMailbox, MidiReceiver, MidiSender};
+use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiIn;
 use tutti_midi_types::{MidiOut, MidiRoutingSnapshot, MidiUnitId};
 
 const POLL_BUFFER_SIZE: usize = 256;
-
-/// `Sized` wrapper so a `dyn MidiIn` trait object can live in an
-/// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
-/// One extra `Arc` hop on install/read — negligible next to the poll itself.
-struct MidiSourceHandle(Arc<dyn MidiIn>);
 
 /// The outbound routing target for a plugin that emits MIDI. Installed once at
 /// wiring time; read per block by [`Midi::emit`].
@@ -44,33 +43,22 @@ fn empty_poll_scratch() -> Vec<MidiEvent> {
 }
 
 pub struct Midi {
-    unit_id: MidiUnitId,
+    /// The inbound half: this plugin's mailbox plus the swappable source
+    /// installed over it. Identical in duty to a built-in synth's port, so it
+    /// *is* one — including the shared-cell clone semantics that survive
+    /// fundsp's clone-on-commit (see [[plugin-source-install-shared-cell]]).
+    port: MidiInPort,
     drain: MidiEventVec,
-    sender: MidiSender,
-    receiver: MidiReceiver,
     poll_scratch: Vec<MidiEvent>,
-    /// Optional override polled per block instead of `receiver`. Set
-    /// via [`Self::set_source`]; mirrors PolySynth's
-    /// `midi_source_override` so clip-driven playback feeds plugins
-    /// the same way it feeds built-in synths.
-    ///
-    /// Wrapped in a **shared** `Arc<ArcSwapOption<…>>` (not a plain per-clone
-    /// `Option`): fundsp's frontend/backend split means the box the audio
-    /// thread runs is a *different clone* than the one `PluginClient::set_*`
-    /// mutates, and `node_mut`/clone edits are discarded by `Net::migrate` on
-    /// commit. Sharing the slot itself makes an install on any clone visible to
-    /// the running box, lock-free, with no commit needed. See
-    /// [[plugin-source-install-shared-cell]].
-    source_override: Arc<ArcSwapOption<MidiSourceHandle>>,
     /// Optional outbound routing target for a plugin that emits MIDI. `None`
     /// (the default) means the plugin's MIDI-out is dropped. Set via
     /// [`Self::set_out`]; read per block by [`Self::emit`].
     ///
-    /// Wrapped in the same **shared** `Arc<ArcSwapOption<…>>` as
-    /// `source_override`, and for the same reason: fundsp's frontend/backend
-    /// split runs a *different clone* than the one `PluginClient::set_midi_out`
-    /// mutates, so a per-clone `Option` would silently never fire. Sharing the
-    /// slot makes an install on any clone visible to the running box, lock-free.
+    /// Wrapped in a **shared** `Arc<ArcSwapOption<…>>` for the same reason the
+    /// port shares its input cell: fundsp's frontend/backend split runs a
+    /// *different clone* than the one `PluginClient::set_midi_out` mutates, so
+    /// a per-clone `Option` would silently never fire. Sharing the slot makes
+    /// an install on any clone visible to the running box, lock-free.
     /// See [[plugin-source-install-shared-cell]].
     out: Arc<ArcSwapOption<OutHandle>>,
     /// Running sample position. Bumped by 1 per `drain_for_tick` and
@@ -83,18 +71,13 @@ pub struct Midi {
 impl Clone for Midi {
     fn clone(&self) -> Self {
         Self {
-            unit_id: self.unit_id,
+            // `MidiInPort::clone` shares the mailbox + input cell, which is the
+            // clone-on-commit contract this node depends on.
+            port: self.port.clone(),
             drain: MidiEventVec::new(),
-            sender: self.sender.clone(),
-            receiver: self.receiver.clone(),
             poll_scratch: empty_poll_scratch(),
-            // Share the override SLOT (Arc clone) across fundsp's graph-commit
-            // clones — a later install on any clone is then seen by the box the
-            // audio thread runs. Cloning the `Option` instead (the old bug)
-            // gave each clone a private slot that never propagated.
-            source_override: Arc::clone(&self.source_override),
             // Share the outbound SLOT (Arc clone) too — same shared-cell
-            // rationale as `source_override`.
+            // rationale as the port's input cell.
             out: Arc::clone(&self.out),
             sample_pos: self.sample_pos,
         }
@@ -109,42 +92,36 @@ impl Default for Midi {
 
 impl Midi {
     pub fn new() -> Self {
-        let unit_id = MidiUnitId::next();
-        let (sender, receiver) = MidiMailbox::pair(unit_id);
         Self {
-            unit_id,
+            port: MidiInPort::new(),
             drain: MidiEventVec::new(),
-            sender,
-            receiver,
             poll_scratch: empty_poll_scratch(),
-            source_override: Arc::new(ArcSwapOption::empty()),
             out: Arc::new(ArcSwapOption::empty()),
             sample_pos: 0,
         }
     }
 
     pub fn unit_id(&self) -> MidiUnitId {
-        self.unit_id
+        self.port.unit_id()
     }
 
     /// Producer handle for this plugin's MIDI inbox.
     pub fn sender(&self) -> MidiSender {
-        self.sender.clone()
+        self.port.sender()
     }
 
     /// Install an `Arc`-backed [`MidiIn`] override. Polled per
-    /// block in `drain_for_process` instead of the live `MidiReceiver`.
+    /// block in `drain_for_process` instead of the live receiver.
     /// Used by clip players (`tutti_midi_runtime::MidiClipSource`) to
     /// drive plugin synths from MIDI clips.
     pub fn set_source(&mut self, source: Arc<dyn MidiIn>) {
-        self.source_override
-            .store(Some(Arc::new(MidiSourceHandle(source))));
+        self.port.install(source);
     }
 
     /// Drop a previously-installed source override. Subsequent ticks
     /// poll the live receiver again.
     pub fn clear_source(&mut self) {
-        self.source_override.store(None);
+        self.port.clear();
     }
 
     /// Install the outbound routing target so this plugin's MIDI-out re-enters
@@ -195,18 +172,11 @@ impl Midi {
     /// sees the next block's window.
     pub fn drain_for_process(&mut self, block_size: usize) -> &MidiEventVec {
         self.drain.clear();
-        // `load()` is lock-free; the guard holds the current source (if any)
-        // for the duration of the poll.
-        let source = self.source_override.load();
-        let count = match source.as_ref() {
-            Some(handle) => handle.0.poll_into(
-                self.unit_id,
-                self.sample_pos,
-                block_size,
-                &mut self.poll_scratch,
-            ),
-            None => self.receiver.poll_into(&mut self.poll_scratch),
-        };
+        // One lock-free poll: the port resolves receiver-or-installed-source
+        // itself, so there is no branch (and no second code path) here.
+        let count = self
+            .port
+            .poll(self.sample_pos, block_size, &mut self.poll_scratch);
         // Clamp to scratch capacity so `drain` never spills its SmallVec
         // inline storage and allocates on the audio thread.
         let count = count.min(self.poll_scratch.len());

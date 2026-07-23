@@ -110,8 +110,7 @@ impl PolySynth {
 
     /// Override the MIDI source. Used by offline export to swap the live
     /// receiver for a [`MidiSnapshotReader`], or by clip playback to
-    /// install a [`tutti_midi_runtime::MidiClipSource`] /
-    /// [`tutti_midi_runtime::CompositeMidiSource`].
+    /// install a [`tutti_midi_runtime::MidiClipSource`].
     ///
     /// The install is visible across fundsp's clone-on-commit (see
     /// [`MidiInPort`]), so the same instance reaches the box the audio thread runs.

@@ -117,7 +117,7 @@ pub use smf::{
 /// let (tx, rx) = MidiMailbox::pair(MidiUnitId::new(1));
 /// let bus = MidiBus::new();
 /// bus.insert(tx);
-/// bus.note_on(MidiUnitId::new(1), 0, 60, 100);
+/// bus.queue(MidiUnitId::new(1), &[ev]);
 /// let mut buf = [ev; 4];
 /// assert_eq!(rx.poll_into(&mut buf), 1);
 /// ```

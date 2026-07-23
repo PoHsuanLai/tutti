@@ -369,22 +369,6 @@ impl MidiBus {
         }
     }
 
-    /// Convenience: queue a note-on to a subscribed unit without building the
-    /// [`MidiEvent`] yourself (`velocity` is 7-bit MIDI 1.0). Mirrors
-    /// [`MidiSender::note_on`] for callers that hold only the bus + a unit id.
-    pub fn note_on(&self, unit_id: MidiUnitId, channel: u8, note: u8, velocity: u8) {
-        self.queue(
-            unit_id,
-            &[MidiEvent::note_on_7bit(0, channel, note, velocity)],
-        );
-    }
-
-    /// Convenience: queue a note-off to a subscribed unit. Mirrors
-    /// [`MidiSender::note_off`].
-    pub fn note_off(&self, unit_id: MidiUnitId, channel: u8, note: u8) {
-        self.queue(unit_id, &[MidiEvent::note_off(0, channel, note, 0)]);
-    }
-
     /// Broadcast a system event to every subscribed unit. RT-safe: reads a
     /// flat snapshot via a single atomic load. **Bypasses MPE** — system
     /// events (clock, start/stop, song-position) aren't channel/voice
@@ -557,16 +541,14 @@ mod tests {
     }
 
     #[test]
-    fn bus_note_helpers_reach_the_addressed_unit() {
-        // A caller holding only the bus + a unit id can send notes without
-        // building a MidiEvent or knowing UMP.
+    fn bus_queue_reaches_the_addressed_unit() {
         let bus = MidiBus::new();
         let unit = MidiUnitId::new(1);
         let (s, r) = MidiMailbox::pair(unit);
         bus.insert(s);
 
-        bus.note_on(unit, 0, 60, 100);
-        bus.note_off(unit, 0, 60);
+        bus.queue(unit, &[MidiEvent::note_on_7bit(0, 0, 60, 100)]);
+        bus.queue(unit, &[MidiEvent::note_off(0, 0, 60, 0)]);
 
         let mut buf = [MidiEvent::noop(); 4];
         assert_eq!(r.poll_into(&mut buf), 2);

@@ -10,7 +10,10 @@ use std::sync::Arc;
 use crate::transport::TransportManager;
 use crate::{AtomicU32, AudioThreadCell, Ordering};
 use fundsp::audiounit::AudioUnit;
+use fundsp::buffer::BufferArray;
+use fundsp::prelude::{BufferRef, U2};
 use fundsp::realnet::NetBackend;
+use fundsp::MAX_BUFFER_SIZE;
 
 /// Per-buffer audio processor, called from the audio callback.
 ///
@@ -45,14 +48,49 @@ impl GraphProcessor {
     }
 
     /// Process a segment of the buffer. Called directly or from a decorator.
+    ///
+    /// Drives the graph through fundsp's SIMD block path
+    /// ([`NetBackend::process`]) in [`MAX_BUFFER_SIZE`] chunks rather than one
+    /// frame at a time. The graph root has no inputs, so the input buffer is
+    /// empty; the planar per-channel output is interleaved into `output`.
+    /// A mono net (1 output) duplicates channel 0 into both L/R, matching the
+    /// old per-sample `get_stereo()` behaviour exactly. The scratch
+    /// [`BufferArray`] is stack-allocated, so the hot path stays alloc-free.
     #[inline]
     pub fn process_segment(&self, output: &mut [f32], frames: usize) {
-        if let Some(ref mut backend) = *self.net_backend.borrow_mut() {
-            for i in 0..frames {
-                let (l, r) = backend.get_stereo();
-                output[i * 2] = l;
-                output[i * 2 + 1] = r;
+        let Some(ref mut backend) = *self.net_backend.borrow_mut() else {
+            return;
+        };
+
+        // 0 inputs on the graph root; 1 output → duplicate, 2 → straight L/R.
+        // Any other count is a graph misconfiguration the old path panicked on.
+        let outputs = backend.outputs();
+        debug_assert!(backend.inputs() == 0);
+        debug_assert!(
+            outputs == 1 || outputs == 2,
+            "graph root must have 1 or 2 outputs"
+        );
+        let mono = outputs == 1;
+
+        let empty_input = BufferRef::new(&[]);
+        let mut scratch = BufferArray::<U2>::new();
+
+        let mut done = 0;
+        while done < frames {
+            let block = (frames - done).min(MAX_BUFFER_SIZE);
+
+            let mut buffer_mut = scratch.buffer_mut();
+            backend.process(block, &empty_input, &mut buffer_mut);
+
+            let left = buffer_mut.channel_f32(0);
+            let right = if mono { left } else { buffer_mut.channel_f32(1) };
+            for i in 0..block {
+                let o = (done + i) * 2;
+                output[o] = left[i];
+                output[o + 1] = right[i];
             }
+
+            done += block;
         }
     }
 

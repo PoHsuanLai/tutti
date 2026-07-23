@@ -69,6 +69,41 @@ fn is_log_unit(unit: &str) -> bool {
     unit.contains("dB") || unit.contains("Hz") || unit.contains("hz")
 }
 
+/// Used by formats that don't expose per-parameter automation / bypass /
+/// read-only flags (VST2, AUv2). Every parameter is reported as automatable.
+pub const ALL_AUTOMATABLE: ParameterFlags = ParameterFlags {
+    automatable: true,
+    read_only: false,
+    wrap: false,
+    is_bypass: false,
+    hidden: false,
+};
+
+/// Assemble a [`ParameterInfo`]. The argument order follows the struct
+/// layout so field-by-field reading stays natural at the call site.
+#[allow(clippy::too_many_arguments)]
+pub fn make_param_info(
+    id: u32,
+    name: String,
+    unit: String,
+    min_value: f64,
+    max_value: f64,
+    default_value: f64,
+    step_count: u32,
+    flags: ParameterFlags,
+) -> ParameterInfo {
+    ParameterInfo {
+        id,
+        name,
+        unit,
+        min_value,
+        max_value,
+        default_value,
+        step_count,
+        flags,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

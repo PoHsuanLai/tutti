@@ -3,7 +3,7 @@
 use std::path::Path;
 use tutti_plugin::server::{
     BusChannels, EditorSize, Features, LoadedPlugin, NoteExpressionChanges, ParameterChanges,
-    ParameterFlags, ParameterInfo, PluginClass, PluginDescriptor, WindowHandle,
+    ParameterFlags, ParameterInfo, PluginClass, PluginDescriptor, PluginResult, WindowHandle,
 };
 use tutti_plugin::server::{PluginInstance, ProcessContext, ProcessOutput};
 
@@ -312,7 +312,7 @@ impl PluginInstance for ClapInstance {
         &mut self,
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
-    ) -> Result<ProcessOutput> {
+    ) -> PluginResult<ProcessOutput> {
         use tutti_plugin::server::AudioBufferMut;
         // The buffer format must match the format the instance was activated
         // with (the `ClapInner` arm). A mismatch is a negotiation bug upstream;
@@ -353,7 +353,8 @@ impl PluginInstance for ClapInstance {
                 "audio buffer sample format does not match the format the CLAP \
                  plugin was activated with"
                     .to_string(),
-            )),
+            )
+            .into()),
         }
     }
 
@@ -380,7 +381,7 @@ impl PluginInstance for ClapInstance {
             .collect()
     }
 
-    fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
+    fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
         // Safety: WindowHandle was validated at the IPC boundary in server.rs
         let handle = unsafe { tutti_clap_host::WindowHandle::from_raw(parent.as_ptr()) };
         clap_dispatch_mut!(self, i => i.open_editor(handle))
@@ -388,7 +389,7 @@ impl PluginInstance for ClapInstance {
                 width: s.width,
                 height: s.height,
             })
-            .map_err(|e| BridgeError::EditorError(e.to_string()))
+            .map_err(|e| BridgeError::EditorError(e.to_string()).into())
     }
 
     fn close_editor(&mut self) {
@@ -397,14 +398,14 @@ impl PluginInstance for ClapInstance {
         });
     }
 
-    fn get_state(&mut self) -> Result<Vec<u8>> {
+    fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         clap_dispatch_mut!(self, i => i.state())
-            .map_err(|e| BridgeError::StateSaveError(e.to_string()))
+            .map_err(|e| BridgeError::StateSaveError(e.to_string()).into())
     }
 
-    fn set_state(&mut self, data: &[u8]) -> Result<()> {
+    fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
         clap_dispatch_mut!(self, i => i.set_state(data))
-            .map_err(|e| BridgeError::StateRestoreError(e.to_string()))
+            .map_err(|e| BridgeError::StateRestoreError(e.to_string()).into())
     }
 }
 

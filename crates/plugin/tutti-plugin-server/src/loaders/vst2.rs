@@ -9,9 +9,12 @@ use std::path::Path;
 
 use tutti_plugin::server::{
     AudioBufferMut, EditorSize, Features, LoadedPlugin, MidiEventVec, NoteExpressionChanges,
-    ParameterChanges, ParameterInfo, PluginClass, PluginDescriptor, PluginInstance, ProcessContext,
-    ProcessOutput, WindowHandle,
+    ParameterChanges, ParameterInfo, PluginClass, PluginDescriptor, PluginInstance, PluginResult,
+    ProcessContext, ProcessOutput, WindowHandle,
 };
+// Only the `not(vst2)` fallback arms construct `PluginError` directly.
+#[cfg(not(feature = "vst2"))]
+use tutti_plugin::server::PluginError;
 use tutti_plugin::{BridgeError, Result};
 
 #[cfg(feature = "vst2")]
@@ -125,9 +128,7 @@ fn translate_error(err: Vst2Error, _path: &Path) -> BridgeError {
             reason,
         },
         Vst2Error::EditorError(s) => BridgeError::EditorError(s),
-        Vst2Error::StateSaveError(s) => BridgeError::StateSaveError(s),
         Vst2Error::StateRestoreError(s) => BridgeError::StateRestoreError(s),
-        Vst2Error::ProcessError(s) => BridgeError::ProcessError(s),
     }
 }
 
@@ -144,7 +145,7 @@ impl PluginInstance for Vst2Instance {
         &mut self,
         buffer: AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
-    ) -> Result<ProcessOutput> {
+    ) -> PluginResult<ProcessOutput> {
         #[cfg(feature = "vst2")]
         {
             // VST3/CLAP-style param change events become direct writes for VST2.
@@ -207,9 +208,7 @@ impl PluginInstance for Vst2Instance {
         #[cfg(not(feature = "vst2"))]
         {
             let _ = (buffer, ctx);
-            Err(BridgeError::ProcessError(
-                "VST2 support not compiled".into(),
-            ))
+            Err(PluginError::Process("VST2 support not compiled".into()))
         }
     }
 
@@ -262,7 +261,7 @@ impl PluginInstance for Vst2Instance {
         Vec::new()
     }
 
-    fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
+    fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
         #[cfg(feature = "vst2")]
         {
             // Adapt tutti-plugin's WindowHandle (own pointer) to vst2-host's
@@ -274,12 +273,14 @@ impl PluginInstance for Vst2Instance {
                     width: sz.width,
                     height: sz.height,
                 })
-                .map_err(|e| translate_error(e, Path::new("")))
+                .map_err(|e| translate_error(e, Path::new("")).into())
         }
         #[cfg(not(feature = "vst2"))]
         {
             let _ = parent;
-            Err(BridgeError::EditorError("VST2 support not compiled".into()))
+            Err(PluginError::Editor(tutti_plugin::EditorError::PluginError(
+                "VST2 support not compiled".into(),
+            )))
         }
     }
 
@@ -288,23 +289,23 @@ impl PluginInstance for Vst2Instance {
         self.inner.close_editor();
     }
 
-    fn get_state(&mut self) -> Result<Vec<u8>> {
+    fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         #[cfg(feature = "vst2")]
         {
             self.inner
                 .save_state()
-                .map_err(|e| translate_error(e, Path::new("")))
+                .map_err(|e| translate_error(e, Path::new("")).into())
         }
         #[cfg(not(feature = "vst2"))]
         Ok(Vec::new())
     }
 
-    fn set_state(&mut self, data: &[u8]) -> Result<()> {
+    fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
         #[cfg(feature = "vst2")]
         {
             self.inner
                 .load_state(data)
-                .map_err(|e| translate_error(e, Path::new("")))
+                .map_err(|e| translate_error(e, Path::new("")).into())
         }
         #[cfg(not(feature = "vst2"))]
         {

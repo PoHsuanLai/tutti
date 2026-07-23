@@ -5,7 +5,7 @@ use std::path::Path;
 use tutti_plugin::server::{
     BusChannels, ChordChanges, EditorSize, Features, LoadedPlugin, NoteExpressionChanges,
     NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterFlags, ParameterInfo,
-    PluginClass, PluginDescriptor, ScaleChanges, WindowHandle,
+    PluginClass, PluginDescriptor, PluginResult, ScaleChanges, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -488,14 +488,16 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
         &mut self,
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &tutti_plugin::server::ProcessContext,
-    ) -> Result<tutti_plugin::server::ProcessOutput> {
+    ) -> PluginResult<tutti_plugin::server::ProcessOutput> {
         use tutti_plugin::server::AudioBufferMut;
         match (&mut self.inner, buffer) {
             (VstInner::F32(inner), AudioBufferMut::F32(buf)) => {
                 process_block(inner, buf.inputs, buf.outputs, buf.sample_rate, ctx)
+                    .map_err(Into::into)
             }
             (VstInner::F64(inner), AudioBufferMut::F64(buf)) => {
                 process_block(inner, buf.inputs, buf.outputs, buf.sample_rate, ctx)
+                    .map_err(Into::into)
             }
             _ => Err(BridgeError::LoadFailed {
                 path: std::path::PathBuf::new(),
@@ -503,7 +505,8 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
                 reason:
                     "Buffer format mismatch: plugin was activated with a different sample format"
                         .to_string(),
-            }),
+            }
+            .into()),
         }
     }
 
@@ -533,22 +536,22 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
         Vst3Instance::get_parameter_list(self)
     }
 
-    fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
-        Vst3Instance::open_editor(self, parent)
+    fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
+        Vst3Instance::open_editor(self, parent).map_err(Into::into)
     }
 
     fn close_editor(&mut self) {
         vst_dispatch_mut!(self, inner => inner.close_editor());
     }
 
-    fn get_state(&mut self) -> Result<Vec<u8>> {
+    fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         vst_dispatch_mut!(self, inner => inner.state())
-            .map_err(|e| BridgeError::StateSaveError(e.to_string()))
+            .map_err(|e| BridgeError::StateSaveError(e.to_string()).into())
     }
 
-    fn set_state(&mut self, data: &[u8]) -> Result<()> {
+    fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
         vst_dispatch_mut!(self, inner => inner.set_state(data))
-            .map_err(|e| BridgeError::StateRestoreError(e.to_string()))
+            .map_err(|e| BridgeError::StateRestoreError(e.to_string()).into())
     }
 }
 

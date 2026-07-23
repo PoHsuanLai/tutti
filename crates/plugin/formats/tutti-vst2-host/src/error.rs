@@ -25,12 +25,6 @@ pub enum Vst2Error {
     #[error("Editor error: {0}")]
     EditorError(String),
 
-    #[error("State save error: {0}")]
-    StateSaveError(String),
-
     #[error("State restore error: {0}")]
     StateRestoreError(String),
-
-    #[error("Processing error: {0}")]
-    ProcessError(String),
 }

@@ -10,7 +10,8 @@ use tutti_plugin::server::{
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    EditorSize, ParameterInfo, PluginInstance, ProcessContext, ProcessOutput, WindowHandle,
+    EditorSize, ParameterInfo, PluginInstance, PluginResult, ProcessContext, ProcessOutput,
+    WindowHandle,
 };
 
 #[cfg(all(target_os = "macos", feature = "au"))]
@@ -237,7 +238,7 @@ impl PluginInstance for AuInstance {
         &mut self,
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
-    ) -> Result<ProcessOutput> {
+    ) -> PluginResult<ProcessOutput> {
         if let Some(changes) = ctx.param_changes {
             for queue in &changes.queues {
                 if let Some(point) = queue.points.last() {
@@ -318,7 +319,7 @@ impl PluginInstance for AuInstance {
             .collect()
     }
 
-    fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
+    fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
         let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
         let editor = unsafe { AuEditor::open(self.inner.raw_unit(), Some(parent_handle)) }
             .map_err(|e| BridgeError::EditorError(e.to_string()))?;
@@ -336,16 +337,16 @@ impl PluginInstance for AuInstance {
         }
     }
 
-    fn get_state(&mut self) -> Result<Vec<u8>> {
+    fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         self.inner
             .save_state()
-            .map_err(|e| BridgeError::StateSaveError(e.to_string()))
+            .map_err(|e| BridgeError::StateSaveError(e.to_string()).into())
     }
 
-    fn set_state(&mut self, data: &[u8]) -> Result<()> {
+    fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
         self.inner
             .load_state(data)
-            .map_err(|e| BridgeError::StateRestoreError(e.to_string()))
+            .map_err(|e| BridgeError::StateRestoreError(e.to_string()).into())
     }
 }
 

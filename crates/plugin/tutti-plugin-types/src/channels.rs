@@ -168,3 +168,33 @@ impl<'t, 'd: 't, T: Sample> AudioBuffer<'t, 'd, T> {
 
 pub type AudioBuffer32<'t, 'd> = AudioBuffer<'t, 'd, f32>;
 pub type AudioBuffer64<'t, 'd> = AudioBuffer<'t, 'd, f64>;
+
+/// Sample-format-tagged buffer handed to
+/// [`PluginFormatHost::process`](crate::PluginFormatHost::process).
+///
+/// The enum keeps the trait dyn-compatible while letting each format's
+/// implementation match once and delegate into a single generic inner body.
+///
+/// Carries [`AudioBuffer`]'s two lifetimes verbatim (`'t` = channel tables,
+/// `'d` = sample data, `'d: 't`) so the split survives the enum boundary — a
+/// caller can still build the output table with a short-lived borrow.
+pub enum AudioBufferMut<'t, 'd: 't> {
+    F32(AudioBuffer<'t, 'd, f32>),
+    F64(AudioBuffer<'t, 'd, f64>),
+}
+
+impl<'t, 'd: 't> AudioBufferMut<'t, 'd> {
+    pub fn num_samples(&self) -> usize {
+        match self {
+            Self::F32(b) => b.num_samples,
+            Self::F64(b) => b.num_samples,
+        }
+    }
+
+    pub fn sample_rate(&self) -> f64 {
+        match self {
+            Self::F32(b) => b.sample_rate,
+            Self::F64(b) => b.sample_rate,
+        }
+    }
+}

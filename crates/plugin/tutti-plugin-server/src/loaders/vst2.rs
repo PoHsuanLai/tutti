@@ -22,7 +22,6 @@ use tutti_vst2_host::{
     ProcessContext as Vst2ProcessContext, RenderScratch, Vst2Error, Vst2Instance as Vst2Host,
 };
 
-use crate::loaders::common::params::{make_param_info, ALL_AUTOMATABLE};
 use crate::loaders::common::{single_bus, Meta};
 
 pub struct Vst2Instance {
@@ -240,22 +239,10 @@ impl PluginInstance for Vst2Instance {
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         #[cfg(feature = "vst2")]
         {
-            self.inner
-                .parameters()
-                .into_iter()
-                .map(|p| {
-                    make_param_info(
-                        p.id,
-                        p.name,
-                        p.unit,
-                        0.0,
-                        1.0,
-                        p.current as f64,
-                        0,
-                        ALL_AUTOMATABLE,
-                    )
-                })
-                .collect()
+            // The narrow→shared mapping lives on the host crate's
+            // `Vst2Instance::parameter_list`; the in-process ControlBackend
+            // calls the same helper, so there is one VST2 param map.
+            self.inner.parameter_list()
         }
         #[cfg(not(feature = "vst2"))]
         Vec::new()

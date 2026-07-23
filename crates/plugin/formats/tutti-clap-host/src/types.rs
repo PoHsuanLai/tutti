@@ -98,9 +98,11 @@ impl fmt::Display for PluginInfo {
 /// [`NoteExpressionValue`](tutti_plugin_types::NoteExpressionValue): besides
 /// `note_id` it can scope to a `port_index` / `channel` / `key`. This local
 /// wrapper carries those extra fields; [`expression_type`](Self::expression_type)
-/// uses the shared [`NoteExpressionType`].
+/// uses the shared [`NoteExpressionType`]. Consumers crossing the crate
+/// boundary use the shared `NoteExpressionValue`; the loader converts to/from
+/// this CLAP-native shape at its edge.
 #[derive(Debug, Clone, Copy)]
-pub struct NoteExpressionValue {
+pub struct ClapNoteExpression {
     pub sample_offset: i32,
     pub note_id: i32,
     pub port_index: i16,
@@ -110,7 +112,7 @@ pub struct NoteExpressionValue {
     pub value: f64,
 }
 
-impl NoteExpressionValue {
+impl ClapNoteExpression {
     /// Create a new note expression. Defaults to port 0, any channel, any key;
     /// refine with the `port`/`on_channel`/`on_key`/`at` builders.
     pub fn new(expression_type: NoteExpressionType, note_id: i32, value: f64) -> Self {
@@ -148,13 +150,23 @@ impl NoteExpressionValue {
         self.key = key;
         self
     }
+
+    /// Build a CLAP-native expression from the shared, format-agnostic
+    /// [`NoteExpressionValue`](tutti_plugin_types::NoteExpressionValue). The
+    /// shared form carries no voice addressing, so `port`/`channel`/`key`
+    /// default to port 0 / any-channel / any-key.
+    pub fn from_shared(expr: &tutti_plugin_types::NoteExpressionValue) -> Self {
+        Self::new(expr.expression_type, expr.note_id, expr.value).at(expr.sample_offset)
+    }
 }
 
 bitflags! {
     /// Parameter behaviour flags from `clap_param_info`. See the CLAP spec
-    /// for precise semantics of each bit.
+    /// for precise semantics of each bit. CLAP-native; the loader projects the
+    /// subset it needs onto the shared `tutti_plugin_types::ParameterFlags` at
+    /// the crate boundary.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-    pub struct ParameterFlags: u32 {
+    pub struct ClapParamFlags: u32 {
         const STEPPED                 = 1 << 0;
         const PERIODIC                = 1 << 1;
         const HIDDEN                  = 1 << 2;
@@ -174,19 +186,22 @@ bitflags! {
     }
 }
 
-/// Description of a single plugin parameter.
+/// Description of a single plugin parameter, CLAP-native. Richer than the
+/// shared `tutti_plugin_types::ParameterInfo`: it carries CLAP's full
+/// [`ClapParamFlags`] and a `module` grouping path. The loader projects it
+/// down to the shared shape at the crate boundary.
 #[derive(Debug, Clone)]
-pub struct ParameterInfo {
+pub struct ClapParamInfo {
     pub id: u32,
     pub name: String,
     pub module: String,
     pub min_value: f64,
     pub max_value: f64,
     pub default_value: f64,
-    pub flags: ParameterFlags,
+    pub flags: ClapParamFlags,
 }
 
-impl ParameterInfo {
+impl ClapParamInfo {
     /// Create a new parameter with the given ID and display name. Defaults
     /// to range `[0.0, 1.0]` with default `0.0` and no flags — use the
     /// builder methods to refine.
@@ -198,7 +213,7 @@ impl ParameterInfo {
             min_value: 0.0,
             max_value: 1.0,
             default_value: 0.0,
-            flags: ParameterFlags::default(),
+            flags: ClapParamFlags::default(),
         }
     }
 
@@ -217,7 +232,7 @@ impl ParameterInfo {
     }
 
     /// Set the parameter flags.
-    pub fn flags(mut self, flags: ParameterFlags) -> Self {
+    pub fn flags(mut self, flags: ClapParamFlags) -> Self {
         self.flags = flags;
         self
     }

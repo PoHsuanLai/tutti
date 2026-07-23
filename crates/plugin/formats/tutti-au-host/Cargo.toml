@@ -8,6 +8,9 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 
 [dependencies]
 tutti-plugin-types = { path = "../../tutti-plugin-types" }
+# UMP MidiEvent decode (message view + MIDI 2.0→1.0 value scaling) for
+# MusicDeviceMIDIEvent delivery to instrument / music-effect AUs.
+tutti-midi-types = { path = "../../../midi/tutti-midi-types", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"

@@ -10,12 +10,10 @@ use tutti_plugin::server::{
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    EditorSize, ParameterInfo, PluginInstance, PluginResult, ProcessContext, ProcessOutput,
-    WindowHandle,
+    make_param_info, EditorSize, ParameterFlags, ParameterInfo, PluginInstance, PluginResult,
+    ProcessContext, ProcessOutput, WindowHandle,
 };
 
-#[cfg(all(target_os = "macos", feature = "au"))]
-use crate::loaders::common::params::{make_param_info, ALL_AUTOMATABLE};
 use crate::loaders::common::{single_bus, Meta};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -247,6 +245,13 @@ impl PluginInstance for AuInstance {
             }
         }
 
+        // Deliver MIDI to instrument / music-effect AUs before rendering, so
+        // note-ons scheduled this block sound in it. Plain effects don't
+        // consume MIDI (`receives_midi()` is false) — skip the decode for them.
+        if !ctx.midi_events.is_empty() && self.inner.au_type().receives_midi() {
+            self.inner.send_midi(ctx.midi_events);
+        }
+
         match buffer {
             tutti_plugin::server::AudioBufferMut::F32(buf) => {
                 self.inner
@@ -305,6 +310,21 @@ impl PluginInstance for AuInstance {
         parameters::list(self.inner.raw_unit())
             .into_iter()
             .map(|p| {
+                // Boolean-unit params are 0/1 toggles → one step; everything
+                // else is continuous → no step quantization.
+                let step_count = if p.unit == parameters::ParameterUnit::Boolean {
+                    1
+                } else {
+                    0
+                };
+                // AU advertises IsReadable/IsWritable per parameter; a readable-
+                // but-not-writable param is read-only. AUv2 has no automation /
+                // bypass / hidden metadata, so those flags stay false.
+                let flags = ParameterFlags {
+                    automatable: p.writable,
+                    read_only: !p.writable,
+                    ..ParameterFlags::default()
+                };
                 make_param_info(
                     p.id,
                     p.name,
@@ -312,8 +332,8 @@ impl PluginInstance for AuInstance {
                     p.range.min as f64,
                     p.range.max as f64,
                     p.range.default as f64,
-                    0,
-                    ALL_AUTOMATABLE,
+                    step_count,
+                    flags,
                 )
             })
             .collect()

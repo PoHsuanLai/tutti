@@ -23,11 +23,16 @@ mod load;
 mod params;
 mod polling;
 mod ports;
+/// Plugin resource-directory extension — speculative, gated behind `clap-extras`.
+#[cfg(feature = "clap-extras")]
 mod resources;
 mod state;
+/// Plugin undo/redo delta extension — speculative, gated behind `clap-extras`.
+#[cfg(feature = "clap-extras")]
 mod undo;
 
 pub use audio::{ClapSample, ProcessContext, ProcessOutput, ProcessOutputRef};
+#[cfg(feature = "clap-extras")]
 pub use params::ParamMapping;
 
 use crate::host::{ClapHost, HostState};
@@ -84,7 +89,7 @@ pub struct ClapActive<T: ClapSample = f32> {
 // Safety: CLAP plugins are designed to be called from a single thread
 unsafe impl Send for ClapLoaded {}
 
-#[cfg(test)]
+#[cfg(all(test, feature = "clap-extras"))]
 mod tests {
     use super::polling::{context_menu_builder_add_item, context_menu_builder_supports};
     use crate::types::ContextMenuItem;

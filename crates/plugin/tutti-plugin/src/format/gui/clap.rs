@@ -1,4 +1,11 @@
 //! In-process CLAP GUI instance (editor only, no audio processing).
+//
+// TODO(phase3): collapse `GuiInstance` into the unified `PluginFormatHost`
+// surface. `ClapGuiInstance` wraps the same `ClapLoaded` the server-side loader
+// activates; once the GUI-only editor path folds into the trait (editor_idle /
+// poll_gui_param_changes handled per the frozen contract), this parallel
+// adapter goes away. Left as-is this phase — the GuiInstance def / gui/mod.rs
+// are an atomic later step, out of scope here.
 
 use super::GuiInstance;
 use crate::error::{BridgeError, LoadStage, Result};

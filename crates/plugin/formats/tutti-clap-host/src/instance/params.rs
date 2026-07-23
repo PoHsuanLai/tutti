@@ -3,16 +3,22 @@
 use super::ext;
 use super::ClapLoaded;
 use crate::events::{ClapEvent, InputEventList, OutputEventList};
-use crate::types::{Color, ParamAutomationState, ParameterFlags, ParameterInfo};
+use crate::types::{ClapParamFlags, ClapParamInfo};
+#[cfg(feature = "clap-extras")]
+use crate::types::{Color, ParamAutomationState};
+#[cfg(feature = "clap-extras")]
 use clap_sys::ext::param_indication::{
     CLAP_PARAM_INDICATION_AUTOMATION_NONE, CLAP_PARAM_INDICATION_AUTOMATION_OVERRIDING,
     CLAP_PARAM_INDICATION_AUTOMATION_PLAYING, CLAP_PARAM_INDICATION_AUTOMATION_PRESENT,
     CLAP_PARAM_INDICATION_AUTOMATION_RECORDING,
 };
+#[cfg(feature = "clap-extras")]
 use std::ptr;
 
 /// How a host surface control (e.g. a hardware knob) is bound to a plugin
-/// parameter, per `CLAP_EXT_PARAM_INDICATION`.
+/// parameter, per `CLAP_EXT_PARAM_INDICATION`. Speculative — gated behind
+/// `clap-extras`.
+#[cfg(feature = "clap-extras")]
 #[derive(Debug, Clone)]
 pub struct ParamMapping {
     pub param_id: u32,
@@ -22,6 +28,7 @@ pub struct ParamMapping {
     pub description: Option<String>,
 }
 
+#[cfg(feature = "clap-extras")]
 impl ParamMapping {
     /// Create a mapping entry for the given parameter.
     /// Set `has_mapping = false` to tell the plugin the parameter is no
@@ -55,6 +62,7 @@ impl ParamMapping {
     }
 }
 
+#[cfg(feature = "clap-extras")]
 fn color_to_clap(color: Color) -> clap_sys::color::clap_color {
     clap_sys::color::clap_color {
         alpha: color.alpha,
@@ -86,9 +94,13 @@ impl ClapLoaded {
         unsafe { get_value_fn(self.plugin.as_ptr(), id, &mut value) }.then_some(value)
     }
 
-    /// Full metadata for the parameter at the given `index` (0-based,
-    /// `< parameter_count()`).
-    pub fn parameter_info(&self, index: u32) -> Option<ParameterInfo> {
+    /// Full CLAP-native metadata for the parameter at the given `index`
+    /// (0-based, `< parameter_count()`). Private to the crate: the rich native
+    /// [`ClapParamInfo`] (with `module` and the full [`ClapParamFlags`]) stays
+    /// inside; the crate boundary hands out the shared
+    /// [`ParameterInfo`](tutti_plugin_types::ParameterInfo) via
+    /// [`parameter_list`](Self::parameter_list).
+    pub(crate) fn parameter_info(&self, index: u32) -> Option<ClapParamInfo> {
         let ext = unsafe { ext::opt(self.extensions.params.params) }?;
         let get_info_fn = ext.get_info?;
 
@@ -97,21 +109,34 @@ impl ClapLoaded {
             return None;
         }
 
-        Some(ParameterInfo {
+        Some(ClapParamInfo {
             id: info.id,
             name: unsafe { crate::cstr_to_string(info.name.as_ptr()) },
             module: unsafe { crate::cstr_to_string(info.module.as_ptr()) },
             min_value: info.min_value,
             max_value: info.max_value,
             default_value: info.default_value,
-            flags: ParameterFlags::from_bits_truncate(info.flags),
+            flags: ClapParamFlags::from_bits_truncate(info.flags),
         })
     }
 
-    /// Collect metadata for every parameter.
-    pub fn parameters(&self) -> Vec<ParameterInfo> {
+    /// Collect CLAP-native metadata for every parameter. Crate-private (see
+    /// [`parameter_info`](Self::parameter_info)).
+    pub(crate) fn parameters(&self) -> Vec<ClapParamInfo> {
         let count = self.parameter_count() as u32;
         (0..count).filter_map(|i| self.parameter_info(i)).collect()
+    }
+
+    /// Every parameter projected onto the shared, format-agnostic
+    /// [`ParameterInfo`](tutti_plugin_types::ParameterInfo) — the value that
+    /// crosses the crate boundary. CLAP has no unit string, so `unit` is empty;
+    /// `step_count` is derived from the `STEPPED` flag (CLAP reports steppedness
+    /// as a flag, not a count, so a stepped param maps to `step_count = 1`).
+    pub fn parameter_list(&self) -> Vec<tutti_plugin_types::ParameterInfo> {
+        self.parameters()
+            .into_iter()
+            .map(project_param_info)
+            .collect()
     }
 
     /// Deliver parameter changes outside of `process()` via
@@ -180,7 +205,9 @@ impl ClapLoaded {
     }
 
     /// Inform the plugin about a host-surface → parameter mapping. No-op if
-    /// the plugin does not implement `CLAP_EXT_PARAM_INDICATION`.
+    /// the plugin does not implement `CLAP_EXT_PARAM_INDICATION`. Speculative —
+    /// gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn set_param_mapping(&self, mapping: &ParamMapping) {
         let Some(ext) = (unsafe { ext::opt(self.extensions.params.indication) }) else {
             return;
@@ -218,7 +245,8 @@ impl ClapLoaded {
 
     /// Inform the plugin of a parameter's automation state so it can update
     /// UI feedback (e.g. knob rings). No-op if the plugin does not implement
-    /// `CLAP_EXT_PARAM_INDICATION`.
+    /// `CLAP_EXT_PARAM_INDICATION`. Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn set_param_automation(
         &self,
         param_id: u32,
@@ -244,4 +272,35 @@ impl ClapLoaded {
 
         unsafe { set_automation(self.plugin.as_ptr(), param_id, automation_state, color_ptr) };
     }
+}
+
+/// Project CLAP's native [`ClapParamInfo`] onto the shared, format-agnostic
+/// [`ParameterInfo`](tutti_plugin_types::ParameterInfo). Maps the CLAP flag
+/// subset the shared vocabulary models (automatable / read-only / periodic→wrap
+/// / bypass / hidden), derives `step_count` from the `STEPPED` bit, and leaves
+/// `unit` empty (CLAP carries no unit string). CLAP parameter values are in the
+/// plugin's native plain range, so `min_value`/`max_value` pass through verbatim.
+fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo {
+    let flags = tutti_plugin_types::ParameterFlags {
+        automatable: info.flags.contains(ClapParamFlags::AUTOMATABLE),
+        read_only: info.flags.contains(ClapParamFlags::READONLY),
+        wrap: info.flags.contains(ClapParamFlags::PERIODIC),
+        is_bypass: info.flags.contains(ClapParamFlags::BYPASS),
+        hidden: info.flags.contains(ClapParamFlags::HIDDEN),
+    };
+    let step_count = if info.flags.contains(ClapParamFlags::STEPPED) {
+        1
+    } else {
+        0
+    };
+    tutti_plugin_types::make_param_info(
+        info.id,
+        info.name,
+        String::new(),
+        info.min_value,
+        info.max_value,
+        info.default_value,
+        step_count,
+        flags,
+    )
 }

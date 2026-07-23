@@ -1190,6 +1190,7 @@ fn test_needs_restart_non_clearing() {
 // ── New extension type tests ──
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_color_type() {
     use tutti_clap_host::Color;
     let c = Color {
@@ -1203,6 +1204,7 @@ fn test_color_type() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_track_info_default() {
     use tutti_clap_host::TrackInfo;
     let info = TrackInfo::default();
@@ -1214,6 +1216,7 @@ fn test_track_info_default() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_param_automation_state_variants() {
     use tutti_clap_host::ParamAutomationState;
     let states = [
@@ -1228,6 +1231,7 @@ fn test_param_automation_state_variants() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_remote_controls_page() {
     use tutti_clap_host::RemoteControlsPage;
     let page = RemoteControlsPage {
@@ -1242,6 +1246,7 @@ fn test_remote_controls_page() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_transport_request_variants() {
     use tutti_clap_host::TransportRequest;
     let req = TransportRequest::Jump {
@@ -1261,6 +1266,7 @@ fn test_transport_request_variants() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_context_menu_target() {
     use tutti_clap_host::ContextMenuTarget;
     let global = ContextMenuTarget::Global;
@@ -1270,6 +1276,7 @@ fn test_context_menu_target() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_context_menu_item_variants() {
     use tutti_clap_host::ContextMenuItem;
     let items = [
@@ -1299,6 +1306,7 @@ fn test_context_menu_item_variants() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_audio_port_config_request() {
     use tutti_clap_host::AudioPortConfigRequest;
     let req = AudioPortConfigRequest {
@@ -1735,6 +1743,7 @@ fn test_host_posix_fd_modify() {
 
 #[cfg(unix)]
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_posix_fd_flags_type() {
     use tutti_clap_host::PosixFdFlags;
 
@@ -1752,6 +1761,7 @@ fn test_posix_fd_flags_type() {
 // ── Triggers extension tests ──
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_trigger_info_type() {
     use tutti_clap_host::TriggerInfo;
 
@@ -1805,6 +1815,7 @@ fn test_host_triggers_rescan_callback() {
 // ── Tuning extension tests ──
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_tuning_info_type() {
     use tutti_clap_host::TuningInfo;
 
@@ -1887,6 +1898,7 @@ fn test_host_resource_directory_callbacks() {
 // ── Undo extension tests ──
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_undo_delta_properties_type() {
     use tutti_clap_host::UndoDeltaProperties;
 
@@ -1901,6 +1913,7 @@ fn test_undo_delta_properties_type() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_undo_change_type() {
     use tutti_clap_host::UndoChange;
 

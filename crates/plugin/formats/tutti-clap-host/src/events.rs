@@ -4,7 +4,7 @@
 //! `input_events_get` have the correct C memory layout for plugins to cast.
 
 use crate::types::{
-    MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterPoint,
+    ClapNoteExpression, MidiEvent, NoteExpressionType, ParameterChanges, ParameterPoint,
     ParameterQueue,
 };
 use clap_sys::events::{
@@ -512,8 +512,8 @@ impl InputEventList {
         self
     }
 
-    /// Append each [`NoteExpressionValue`] as a CLAP `NOTE_EXPRESSION` event.
-    pub fn add_note_expressions(&mut self, expressions: &[NoteExpressionValue]) -> &mut Self {
+    /// Append each [`ClapNoteExpression`] as a CLAP `NOTE_EXPRESSION` event.
+    pub fn add_note_expressions(&mut self, expressions: &[ClapNoteExpression]) -> &mut Self {
         for expr in expressions {
             self.events.push(ClapEvent::note_expression(
                 expr.sample_offset as u32,
@@ -683,8 +683,8 @@ impl OutputEventList {
     }
 
     /// Extract note-expression events into the safe
-    /// [`NoteExpressionValue`] form, dropping other events.
-    pub fn to_note_expressions(&self) -> Vec<NoteExpressionValue> {
+    /// [`ClapNoteExpression`] form, dropping other events.
+    pub fn to_note_expressions(&self) -> Vec<ClapNoteExpression> {
         self.events
             .iter()
             .filter_map(clap_event_to_note_expression)
@@ -693,7 +693,7 @@ impl OutputEventList {
 
     /// RT-safe variant of [`Self::to_note_expressions`] that drains into a
     /// caller-supplied pooled `SmallVec`.
-    pub fn fill_note_expressions(&self, out: &mut SmallVec<[NoteExpressionValue; 16]>) {
+    pub fn fill_note_expressions(&self, out: &mut SmallVec<[ClapNoteExpression; 16]>) {
         out.clear();
         for event in &self.events {
             if let Some(ne) = clap_event_to_note_expression(event) {
@@ -722,9 +722,9 @@ impl OutputEventList {
     }
 }
 
-/// Decode a single [`ClapEvent`] into a [`NoteExpressionValue`]. Returns
+/// Decode a single [`ClapEvent`] into a [`ClapNoteExpression`]. Returns
 /// `None` for unsupported expression ids or non-NoteExpression events.
-fn clap_event_to_note_expression(event: &ClapEvent) -> Option<NoteExpressionValue> {
+fn clap_event_to_note_expression(event: &ClapEvent) -> Option<ClapNoteExpression> {
     let ClapEvent::NoteExpression(ne) = event else {
         return None;
     };
@@ -738,7 +738,7 @@ fn clap_event_to_note_expression(event: &ClapEvent) -> Option<NoteExpressionValu
         id if id == CLAP_NOTE_EXPRESSION_EXPRESSION => NoteExpressionType::Expression,
         _ => return None,
     };
-    Some(NoteExpressionValue {
+    Some(ClapNoteExpression {
         sample_offset: ne.header.time as i32,
         note_id: ne.note_id,
         port_index: ne.port_index,

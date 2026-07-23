@@ -51,6 +51,13 @@ pub trait PluginFormatHost: Send {
 
     fn close_editor(&mut self);
 
+    /// Pump one editor idle tick. Only the in-process VST2 host needs this
+    /// (its `AEffect` editor is driven by host-timer idle calls); the
+    /// subprocess-hosted formats run their editor on the platform GUI toolkit's
+    /// own run loop and inherit this default no-op. Folds in the last
+    /// `GuiInstance`-only method so that trait can be dissolved.
+    fn editor_idle(&mut self) {}
+
     fn get_state(&mut self) -> Result<Vec<u8>>;
 
     fn set_state(&mut self, data: &[u8]) -> Result<()>;

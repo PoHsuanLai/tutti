@@ -1,5 +1,10 @@
 //! In-process Audio Unit GUI instance (editor only, no audio processing).
 //! macOS only.
+//
+// TODO(phase3): collapse this `GuiInstance` adapter into the unified
+// `PluginFormatHost` — `AuInstance` already owns the editor open/close/state
+// paths (see `loaders/au.rs`), so this parallel wrapper becomes redundant once
+// the GUI world is folded in. Do not delete before phase 3.
 
 use super::GuiInstance;
 use crate::error::{BridgeError, LoadStage, Result};

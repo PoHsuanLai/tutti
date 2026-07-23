@@ -3,9 +3,10 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    BusChannels, ChordChanges, EditorSize, Features, LoadedPlugin, NoteExpressionChanges,
-    NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterFlags, ParameterInfo,
-    PluginClass, PluginDescriptor, PluginResult, ScaleChanges, WindowHandle,
+    AudioBufferMut, BusChannels, ChordChanges, EditorSize, Features, LoadedPlugin,
+    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterFlags,
+    ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginInstance, PluginResult,
+    ProcessContext, ProcessOutput, ScaleChanges, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -475,7 +476,10 @@ fn convert_expr_ints_to_vst3(
         .collect()
 }
 
-impl tutti_plugin::server::PluginInstance for Vst3Instance {
+// `PluginInstance` is a re-export alias of `tutti_plugin_types::PluginFormatHost`
+// (tutti-plugin-server reaches the shared trait through tutti-plugin, its only
+// path to the vocabulary crate).
+impl PluginInstance for Vst3Instance {
     fn descriptor(&self) -> &PluginDescriptor {
         &self.meta.descriptor
     }
@@ -486,10 +490,9 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
 
     fn process(
         &mut self,
-        buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
-        ctx: &tutti_plugin::server::ProcessContext,
-    ) -> PluginResult<tutti_plugin::server::ProcessOutput> {
-        use tutti_plugin::server::AudioBufferMut;
+        buffer: AudioBufferMut<'_, '_>,
+        ctx: &ProcessContext,
+    ) -> PluginResult<ProcessOutput> {
         match (&mut self.inner, buffer) {
             (VstInner::F32(inner), AudioBufferMut::F32(buf)) => {
                 process_block(inner, buf.inputs, buf.outputs, buf.sample_rate, ctx)
@@ -499,14 +502,10 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
                 process_block(inner, buf.inputs, buf.outputs, buf.sample_rate, ctx)
                     .map_err(Into::into)
             }
-            _ => Err(BridgeError::LoadFailed {
-                path: std::path::PathBuf::new(),
-                stage: LoadStage::Initialization,
-                reason:
-                    "Buffer format mismatch: plugin was activated with a different sample format"
-                        .to_string(),
-            }
-            .into()),
+            _ => Err(PluginError::Process(
+                "Buffer format mismatch: plugin was activated with a different sample format"
+                    .to_string(),
+            )),
         }
     }
 
@@ -532,7 +531,7 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
         vst_dispatch_mut!(self, inner => { inner.set_automation_state(state); });
     }
 
-    fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
+    fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         Vst3Instance::get_parameter_list(self)
     }
 
@@ -546,12 +545,12 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
 
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         vst_dispatch_mut!(self, inner => inner.state())
-            .map_err(|e| BridgeError::StateSaveError(e.to_string()).into())
+            .map_err(|e| PluginError::State(e.to_string()))
     }
 
     fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
         vst_dispatch_mut!(self, inner => inner.set_state(data))
-            .map_err(|e| BridgeError::StateRestoreError(e.to_string()).into())
+            .map_err(|e| PluginError::State(e.to_string()))
     }
 }
 

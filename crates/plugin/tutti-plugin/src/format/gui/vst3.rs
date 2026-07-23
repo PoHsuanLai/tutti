@@ -1,4 +1,13 @@
 //! In-process VST3 GUI instance (editor only, no audio processing).
+//
+// TODO(phase3): GuiInstance folds into PluginFormatHost. Every method here is
+// already reachable via a PluginFormatHost trait method (open_editor,
+// close_editor, set_parameter, set_state) or a host-crate inherent method on
+// `Vst3Loaded` (editor_idle is a no-op, editor_capabilities / set_editor_size /
+// resize_editor / poll_editor_resize_request, and poll_gui_param_changes drains
+// via the inherent `poll_plugin_notifications` — a bridge concern that stays
+// inherent, not a trait method). This collapse is a later ATOMIC cross-format
+// step; do not delete GuiInstance here.
 
 use super::GuiInstance;
 use crate::error::{BridgeError, LoadStage, Result};

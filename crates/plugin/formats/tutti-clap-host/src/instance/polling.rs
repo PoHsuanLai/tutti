@@ -3,13 +3,17 @@
 //! main-thread host-interaction methods.
 
 use super::ClapLoaded;
+#[cfg(feature = "clap-extras")]
 use crate::cstr_to_string;
 use crate::error::{ClapError, Result};
 use crate::host::HostState;
+use crate::types::{EditorCapabilities, EditorSize, WindowHandle};
+#[cfg(feature = "clap-extras")]
 use crate::types::{
-    ContextMenuItem, ContextMenuTarget, EditorCapabilities, EditorSize, RemoteControlsPage,
-    TrackInfo, TransportRequest, TriggerInfo, WindowHandle,
+    ContextMenuItem, ContextMenuTarget, RemoteControlsPage, TrackInfo, TransportRequest,
+    TriggerInfo,
 };
+#[cfg(feature = "clap-extras")]
 use clap_sys::ext::context_menu::{
     clap_context_menu_builder, clap_context_menu_check_entry, clap_context_menu_entry,
     clap_context_menu_item_title, clap_context_menu_submenu, clap_context_menu_target,
@@ -18,8 +22,10 @@ use clap_sys::ext::context_menu::{
     CLAP_CONTEXT_MENU_ITEM_SEPARATOR, CLAP_CONTEXT_MENU_ITEM_TITLE,
     CLAP_CONTEXT_MENU_TARGET_KIND_GLOBAL, CLAP_CONTEXT_MENU_TARGET_KIND_PARAM,
 };
+#[cfg(feature = "clap-extras")]
 use clap_sys::ext::draft::triggers::clap_trigger_info;
 use clap_sys::ext::gui::{clap_window, clap_window_handle};
+#[cfg(feature = "clap-extras")]
 use clap_sys::ext::remote_controls::clap_remote_controls_page;
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -368,14 +374,18 @@ impl ClapLoaded {
             .poll(&self.host_state.audio_ports.config_changed)
     }
 
-    /// Consume and return the `remote_controls.changed` flag.
+    /// Consume and return the `remote_controls.changed` flag. Speculative —
+    /// gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn poll_remote_controls_changed(&self) -> bool {
         self.host_state
             .poll(&self.host_state.remote_controls.changed)
     }
 
     /// Consume and return the page ID the plugin most recently suggested
-    /// the host switch to, or `None` if no suggestion is pending.
+    /// the host switch to, or `None` if no suggestion is pending. Speculative —
+    /// gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn poll_suggested_remote_page(&self) -> Option<u32> {
         let val = self
             .host_state
@@ -390,6 +400,8 @@ impl ClapLoaded {
     }
 
     /// Drain all pending [`TransportRequest`]s the plugin has emitted.
+    /// Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn drain_transport_requests(&self) -> Vec<TransportRequest> {
         if let Ok(mut reqs) = self.host_state.transport.requests.lock() {
             std::mem::take(&mut *reqs)
@@ -409,7 +421,9 @@ impl ClapLoaded {
             .poll(&self.host_state.notes.voice_info_changed)
     }
 
-    /// Consume and return the `preset_loaded` flag.
+    /// Consume and return the `preset_loaded` flag. Speculative — gated behind
+    /// `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn poll_preset_loaded(&self) -> bool {
         self.host_state
             .poll(&self.host_state.processing.preset_loaded)
@@ -427,14 +441,17 @@ impl ClapLoaded {
 
     /// Publish track metadata for the plugin to read via
     /// `CLAP_EXT_TRACK_INFO`. Call [`Self::notify_track_info_changed`]
-    /// afterwards to ping the plugin.
+    /// afterwards to ping the plugin. Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn set_track_info(&self, info: TrackInfo) {
         if let Ok(mut guard) = self.host_state.resources.track_info.lock() {
             *guard = Some(info);
         }
     }
 
-    /// Tell the plugin its track info has changed.
+    /// Tell the plugin its track info has changed. Speculative — gated behind
+    /// `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn notify_track_info_changed(&self) {
         if self.extensions.system.track_info.is_null() {
             return;
@@ -445,7 +462,9 @@ impl ClapLoaded {
         }
     }
 
-    /// Number of remote-control pages the plugin exposes.
+    /// Number of remote-control pages the plugin exposes. Speculative — gated
+    /// behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn remote_controls_page_count(&self) -> usize {
         if self.extensions.params.remote_controls.is_null() {
             return 0;
@@ -457,7 +476,9 @@ impl ClapLoaded {
         }
     }
 
-    /// Describe the remote-controls page at `index`.
+    /// Describe the remote-controls page at `index`. Speculative — gated behind
+    /// `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn get_remote_controls_page(&self, index: usize) -> Option<RemoteControlsPage> {
         if self.extensions.params.remote_controls.is_null() {
             return None;
@@ -479,6 +500,8 @@ impl ClapLoaded {
 
     /// Ask the plugin to supply the context-menu entries for `target`.
     /// Returns `None` if the plugin does not implement context menus.
+    /// Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn context_menu_populate(&self, target: ContextMenuTarget) -> Option<Vec<ContextMenuItem>> {
         if self.extensions.gui.context_menu.is_null() {
             return None;
@@ -514,7 +537,8 @@ impl ClapLoaded {
     }
 
     /// Invoke a context-menu action the plugin previously reported via
-    /// [`Self::context_menu_populate`].
+    /// [`Self::context_menu_populate`]. Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn context_menu_perform(&self, target: ContextMenuTarget, action_id: u32) -> bool {
         if self.extensions.gui.context_menu.is_null() {
             return false;
@@ -538,7 +562,9 @@ impl ClapLoaded {
     }
 
     /// Number of trigger "parameters" (stateless momentary actions) the
-    /// plugin exposes via the draft `CLAP_EXT_TRIGGERS`.
+    /// plugin exposes via the draft `CLAP_EXT_TRIGGERS`. Speculative — gated
+    /// behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn trigger_count(&self) -> usize {
         if self.extensions.system.triggers.is_null() {
             return 0;
@@ -550,7 +576,8 @@ impl ClapLoaded {
         }
     }
 
-    /// Describe the trigger at `index`.
+    /// Describe the trigger at `index`. Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn get_trigger_info(&self, index: usize) -> Option<TriggerInfo> {
         if self.extensions.system.triggers.is_null() {
             return None;
@@ -570,7 +597,8 @@ impl ClapLoaded {
     }
 
     /// Run a task that the plugin enqueued via `CLAP_EXT_THREAD_POOL`.
-    /// Call from a worker thread.
+    /// Call from a worker thread. Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn thread_pool_exec(&self, task_index: u32) {
         if self.extensions.system.thread_pool.is_null() {
             return;
@@ -581,7 +609,9 @@ impl ClapLoaded {
         }
     }
 
-    /// Tell the plugin its tuning table set has changed.
+    /// Tell the plugin its tuning table set has changed. Speculative — gated
+    /// behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn notify_tuning_changed(&self) {
         if self.extensions.system.tuning.is_null() {
             return;
@@ -593,8 +623,9 @@ impl ClapLoaded {
     }
 
     /// Fire `on_fd` for every POSIX FD the plugin has registered.
-    /// Returns the number of callbacks invoked.
-    #[cfg(unix)]
+    /// Returns the number of callbacks invoked. Speculative — gated behind
+    /// `clap-extras`.
+    #[cfg(all(unix, feature = "clap-extras"))]
     pub fn poll_posix_fds(&mut self) -> usize {
         if self.extensions.system.posix_fd_support.is_null() {
             return 0;
@@ -620,6 +651,7 @@ impl ClapLoaded {
     }
 }
 
+#[cfg(feature = "clap-extras")]
 pub(super) unsafe extern "C" fn context_menu_builder_add_item(
     builder: *const clap_context_menu_builder,
     item_kind: u32,
@@ -681,6 +713,7 @@ pub(super) unsafe extern "C" fn context_menu_builder_add_item(
     true
 }
 
+#[cfg(feature = "clap-extras")]
 pub(super) unsafe extern "C" fn context_menu_builder_supports(
     _builder: *const clap_context_menu_builder,
     item_kind: u32,

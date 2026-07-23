@@ -17,6 +17,7 @@ use crate::handle::AuHandle;
 use crate::parameters::{self, AuParameter, ParamView};
 use crate::stream::{ChannelLayout, StreamConfig};
 use crate::types::*;
+use tutti_midi_types::MidiEvent;
 
 /// An AU that has been instantiated but not yet initialized.
 ///
@@ -189,6 +190,85 @@ impl AuInstance {
     /// Read a parameter value.
     pub fn get_parameter(&self, id: u32) -> Result<f32> {
         parameters::get(self.raw_unit(), id)
+    }
+
+    /// Deliver a block of UMP MIDI events to an instrument / music-effect AU as
+    /// legacy `MusicDeviceMIDIEvent` calls.
+    ///
+    /// Each event is decoded to a 3-byte MIDI 1.0 channel-voice message (status
+    /// byte + up to two data bytes, MIDI 2.0 resolutions scaled down per spec)
+    /// and delivered at its `frame_offset`. Message families with no legacy
+    /// 3-byte form (SysEx, per-note MIDI 2.0 messages, system real-time) are
+    /// skipped — AUv2's `MusicDeviceMIDIEvent` only speaks legacy channel voice.
+    ///
+    /// Only meaningful for AUs whose type [`AuType::receives_midi`] is true;
+    /// the caller gates on that. Errors from individual events are ignored so a
+    /// single rejected message can't abort the whole block.
+    pub fn send_midi(&self, events: &[MidiEvent]) {
+        use tutti_midi_types::convert::{midi2_cc_to_midi1, midi2_pitch_bend_to_midi1};
+        use tutti_midi_types::MidiMessage;
+
+        let unit = self.raw_unit();
+        for ev in events {
+            // (status, data1, data2) for the legacy 3-byte message, or None if
+            // this message has no legacy channel-voice representation.
+            let (status, d1, d2) = match ev.message() {
+                MidiMessage::NoteOn {
+                    channel,
+                    note,
+                    velocity,
+                    ..
+                } => {
+                    let vel = tutti_midi_types::convert::midi2_velocity_to_midi1(velocity);
+                    // A zero-velocity note-on is a note-off; keep it as note-on
+                    // 0x90 with velocity 0 (a legal legacy note-off encoding).
+                    (0x90 | (channel & 0x0F), note & 0x7F, vel & 0x7F)
+                }
+                MidiMessage::NoteOff {
+                    channel,
+                    note,
+                    velocity,
+                    ..
+                } => {
+                    let vel = tutti_midi_types::convert::midi2_velocity_to_midi1(velocity);
+                    (0x80 | (channel & 0x0F), note & 0x7F, vel & 0x7F)
+                }
+                MidiMessage::ControlChange {
+                    channel,
+                    index,
+                    value,
+                    ..
+                } => (
+                    0xB0 | (channel & 0x0F),
+                    index & 0x7F,
+                    midi2_cc_to_midi1(value) & 0x7F,
+                ),
+                MidiMessage::ProgramChange {
+                    channel, program, ..
+                } => (0xC0 | (channel & 0x0F), program & 0x7F, 0),
+                MidiMessage::ChannelPressure {
+                    channel, pressure, ..
+                } => (
+                    0xD0 | (channel & 0x0F),
+                    midi2_cc_to_midi1(pressure) & 0x7F,
+                    0,
+                ),
+                MidiMessage::PitchBend { channel, value, .. } => {
+                    let bend14 = midi2_pitch_bend_to_midi1(value);
+                    (0xE0 | (channel & 0x0F), (bend14 & 0x7F) as u8, (bend14 >> 7) as u8 & 0x7F)
+                }
+                _ => continue,
+            };
+            unsafe {
+                MusicDeviceMIDIEvent(
+                    unit,
+                    status as u32,
+                    d1 as u32,
+                    d2 as u32,
+                    ev.frame_offset,
+                );
+            }
+        }
     }
 
     /// Enumerate all parameters exposed by the AU.

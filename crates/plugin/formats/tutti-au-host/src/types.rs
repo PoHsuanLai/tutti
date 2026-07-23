@@ -472,6 +472,19 @@ extern "C" {
     ) -> OSStatus;
 
     pub fn AudioComponentCount(in_desc: *const AudioComponentDescription) -> u32;
+
+    /// Deliver a single legacy (MIDI 1.0) channel-voice message to a music
+    /// device / music-effect AU. `in_status` is the status byte (command nibble
+    /// | channel), `in_data1`/`in_data2` the two data bytes, and
+    /// `in_offset_sample_frame` the sample offset within the current render
+    /// block. See Apple's `MusicDeviceMIDIEvent` (MusicDevice.h).
+    pub fn MusicDeviceMIDIEvent(
+        in_unit: AudioUnit,
+        in_status: u32,
+        in_data1: u32,
+        in_data2: u32,
+        in_offset_sample_frame: u32,
+    ) -> OSStatus;
 }
 
 /// Convert a big-endian four-character code (e.g. `b"aufx"`) to its string form.

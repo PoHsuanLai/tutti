@@ -6,7 +6,7 @@
 //! `process`).
 
 use crate::events::{ClapEvent, InputEventList, OutputEventList};
-use crate::types::{MidiEvent, NoteExpressionValue, ParameterChanges};
+use crate::types::{MidiEvent, ClapNoteExpression, ParameterChanges};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::process::{clap_process_status, CLAP_PROCESS_CONTINUE};
 use smallvec::SmallVec;
@@ -102,7 +102,7 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     /// the call can hand back borrowed slices.
     pub out_midi: SmallVec<[MidiEvent; 64]>,
     pub out_param_changes: ParameterChanges,
-    pub out_note_expressions: SmallVec<[NoteExpressionValue; 16]>,
+    pub out_note_expressions: SmallVec<[ClapNoteExpression; 16]>,
     /// Output-side param gestures (begin/end) and param-mod events the plugin
     /// emits. The shared `ParameterChanges`/`ProcessOutput` vocabulary carries
     /// only param *values* this phase, so these are kept CLAP-private and

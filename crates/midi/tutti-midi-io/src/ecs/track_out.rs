@@ -68,6 +68,14 @@ impl MidiOutRes {
     pub fn unit_id(&self) -> MidiUnitId {
         self.sender.unit_id()
     }
+
+    /// The drain half, for tests that assert a producer reached this mailbox
+    /// without standing up the whole hardware pump. Production code drains via
+    /// [`pump_midi_out_system`].
+    #[cfg(test)]
+    pub(crate) fn receiver_for_test(&self) -> &MidiReceiver {
+        &self.receiver
+    }
 }
 
 /// Fire-and-forget request: send these events to external MIDI hardware.

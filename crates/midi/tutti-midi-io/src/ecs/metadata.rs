@@ -4,13 +4,13 @@
 //!
 //! - **Flex metadata** — [`BroadcastFlexMetadata`] is a fire-and-forget request
 //!   to emit one of the Flex Data musical-metadata messages (chord name, key
-//!   signature, or a text/metadata string like project or composition name) in
-//!   band on the [`MidiBusRes`](super::bus::MidiBusRes). The `MidiBus` already has
-//!   `broadcast_tempo` / `broadcast_time_signature` / `broadcast_metronome`; this
-//!   covers the *rest* of Flex Data (chord/key/text), which take structured
-//!   values rather than scalars and so are cleaner as an ECS message than as bus
-//!   one-liners. The app raises it whenever the corresponding project metadata
-//!   changes.
+//!   signature, or a text/metadata string like project or composition name) to
+//!   external MIDI out, via [`MidiOutRes`](super::track_out::MidiOutRes). The app
+//!   raises it whenever the corresponding project metadata changes.
+//!
+//!   Destination is the hardware-out mailbox, *not* the `MidiBus` synth fan-out:
+//!   Flex metadata describes the session to downstream gear, and only the
+//!   outbound mailbox is drained to the wire.
 //!
 //! - **JR timestamps** — [`JrStamperRes`] carries the jitter-reduction stamping
 //!   config (reference clock + group). The *stamping itself* belongs on the
@@ -28,7 +28,6 @@ use tutti_midi_runtime::tutti_midi_types::ump::MidiEvent;
 use tutti_midi_runtime::tutti_midi_types::ump::{ChordName, FlexTextKind, KeySharpsFlats, Tonic};
 use tutti_midi_runtime::JrStamper;
 
-use super::bus::MidiBusRes;
 
 /// The group Flex Data metadata is broadcast on (function-block-wide).
 const FLEX_GROUP: u8 = 0;
@@ -53,16 +52,21 @@ pub enum BroadcastFlexMetadata {
     Text { kind: FlexTextKind, text: String },
 }
 
-/// Broadcast each requested Flex metadata value on the bus as one or more UMP
-/// packets (text may span several 128-bit packets).
+/// Send each requested Flex metadata value to external MIDI out as one or more
+/// UMP packets (text may span several 128-bit packets).
+///
+/// Destination is the hardware-out mailbox, not the synth fan-out bus: Flex
+/// metadata describes the session to *downstream gear*, and only
+/// [`MidiOutRes`](super::track_out::MidiOutRes) is drained to the wire.
 pub fn flex_metadata_broadcast_system(
-    bus: Option<Res<MidiBusRes>>,
+    out: Option<Res<super::track_out::MidiOutRes>>,
     mut requests: MessageReader<BroadcastFlexMetadata>,
 ) {
-    let Some(bus) = bus else {
+    let Some(out) = out else {
         requests.clear();
         return;
     };
+    let sender = out.sender();
     let mut packets: Vec<MidiEvent> = Vec::new();
     for request in requests.read() {
         packets.clear();
@@ -89,9 +93,7 @@ pub fn flex_metadata_broadcast_system(
                 );
             }
         }
-        for packet in &packets {
-            bus.queue_system(packet);
-        }
+        sender.queue(&packets);
     }
 }
 
@@ -180,7 +182,10 @@ impl Plugin for MidiMetadataPlugin {
         app.add_message::<BroadcastFlexMetadata>();
         app.add_systems(
             Update,
-            flex_metadata_broadcast_system.run_if(tutti_core::graph::engine_ready),
+            flex_metadata_broadcast_system
+                .run_if(tutti_core::graph::engine_ready)
+                // Fill the outbound mailbox before the pump drains it.
+                .before(super::track_out::pump_midi_out_system),
         );
     }
 }

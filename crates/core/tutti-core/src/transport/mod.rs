@@ -1,4 +1,5 @@
 mod automation_reader;
+mod beat_window;
 mod click;
 mod clock;
 pub(crate) mod fsm;
@@ -11,6 +12,7 @@ mod settings;
 mod state;
 
 pub use automation_reader::{AutomationEnvelopeFn, AutomationReaderInput};
+pub use beat_window::{BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeHandle, MetronomeMode};
 pub use clock::TransportClock;
 pub use fsm::Direction;

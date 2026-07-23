@@ -77,12 +77,21 @@ impl MidiSnapshot {
 
     /// Add one event, keeping the unit's stream beat-sorted.
     ///
-    /// Sorts on every call, so feeding a whole clip through this in a loop is
-    /// O(n²) — use [`add_events`](Self::add_events) to bulk-insert and sort once.
+    /// Appending at or after the last event — the usual case, since callers
+    /// build a track forward in time — is O(1) and skips the sort entirely.
+    /// Only an out-of-order insert pays to re-sort, so building a whole clip
+    /// through this is O(n) sorted / O(n log n) worst case, not the O(n²) a
+    /// sort-every-call would cost. [`add_events`](Self::add_events) is still
+    /// preferable when the events are already in hand.
     pub fn add_event(&mut self, unit_id: MidiUnitId, beat: f64, event: MidiEvent) {
         let events = self.events.entry(unit_id).or_default();
+        // NaN never compares >=, so a NaN beat takes the re-sort path, where
+        // `sort_by_beat`'s total order handles it.
+        let in_order = events.last().is_none_or(|last| beat >= last.beat);
         events.push(TimedMidiEvent::new(beat, event));
-        sort_by_beat(events);
+        if !in_order {
+            sort_by_beat(events);
+        }
         self.cursors
             .entry(unit_id)
             .or_insert_with(|| AtomicUsize::new(0));
@@ -244,6 +253,28 @@ mod tests {
 
     fn buf16() -> [MidiEvent; 16] {
         [MidiEvent::noop(); 16]
+    }
+
+    /// `add_event` skips the sort when events arrive in beat order, so the
+    /// out-of-order path is the one that can regress: inserting backwards must
+    /// still yield a beat-sorted stream.
+    #[test]
+    fn add_event_sorts_out_of_order_inserts() {
+        let mut snapshot = MidiSnapshot::new();
+        let unit = MidiUnitId::new(1);
+
+        // Deliberately backwards, plus a duplicate beat.
+        snapshot.add_event(unit, 3.0, note_on(67, 100));
+        snapshot.add_event(unit, 1.0, note_on(60, 100));
+        snapshot.add_event(unit, 2.0, note_on(64, 100));
+        snapshot.add_event(unit, 1.0, note_off(60));
+
+        let mut out = buf16();
+        let n = snapshot.poll_range(unit, 0.0, 10.0, &mut out);
+        assert_eq!(n, 4);
+        let notes: Vec<_> = out[..n].iter().filter_map(|e| e.note()).collect();
+        // Beat order: 1.0 (note-on 60), 1.0 (note-off 60, stable), 2.0, 3.0.
+        assert_eq!(notes, vec![60, 60, 64, 67]);
     }
 
     #[test]

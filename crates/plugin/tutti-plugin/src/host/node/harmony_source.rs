@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use atomic_float::AtomicF64;
-use tutti_core::transport::Timeline;
+use tutti_core::transport::{BeatWindow, BeatWindowSync, Timeline};
 
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
@@ -89,42 +89,35 @@ impl HarmonySource {
     }
 
     /// Reconcile against the live transport and compute this block's beat
-    /// window, mirroring `MidiClipSource::sync_to_transport`. Returns `None`
-    /// when nothing should be emitted (paused, or non-positive tempo / rate).
-    fn window(&self, block_size: usize) -> Option<HarmonyWindow> {
-        if !self.transport.is_rolling() {
-            self.last_beat
-                .store(self.transport.beat().get(), Ordering::Release);
-            return None;
-        }
-        let start_beat = self.transport.beat().get();
-        let last_beat = self.last_beat.load(Ordering::Acquire);
-        if start_beat + 1e-9 < last_beat {
+    /// window. The transport arithmetic — paused check, seek epsilon, tempo
+    /// guard, offset clamp — is [`BeatWindow`]'s, shared with
+    /// `MidiClipSource`; only the two-cursor rewind is harmony-specific.
+    fn window(&self, block_size: usize) -> Option<BeatWindow> {
+        let mut last_beat = self.last_beat.load(Ordering::Acquire);
+        let synced = BeatWindow::from_timeline(
+            self.transport.as_ref(),
+            self.sample_rate,
+            block_size,
+            &mut last_beat,
+        );
+        // Written even on the paused path, so store before the `?`.
+        self.last_beat.store(last_beat, Ordering::Release);
+
+        let (window, sync) = synced?;
+        if sync == BeatWindowSync::Rewound {
             // Backward seek: rewind both cursors to the new position.
             self.rewind(
                 &self.chord_cursor,
                 self.chords.iter().map(|c| c.beat),
-                start_beat,
+                window.start_beat,
             );
             self.rewind(
                 &self.scale_cursor,
                 self.scales.iter().map(|s| s.beat),
-                start_beat,
+                window.start_beat,
             );
         }
-        self.last_beat.store(start_beat, Ordering::Release);
-
-        let tempo_bpm = self.transport.tempo().get();
-        if tempo_bpm <= 0.0 || self.sample_rate <= 0.0 {
-            return None;
-        }
-        let beats_per_sample = tempo_bpm / 60.0 / self.sample_rate;
-        Some(HarmonyWindow {
-            start_beat,
-            end_beat: start_beat + (block_size as f64) * beats_per_sample,
-            beats_per_sample,
-            max_offset: (block_size.saturating_sub(1)) as i32,
-        })
+        Some(window)
     }
 
     fn rewind(&self, cursor: &AtomicU64, beats: impl Iterator<Item = f64>, beat: f64) {
@@ -170,7 +163,7 @@ impl HarmonySource {
     fn emit<T: HasBeat>(
         items: &[T],
         cursor: &AtomicU64,
-        window: &HarmonyWindow,
+        window: &BeatWindow,
         mut push: impl FnMut(&T, i32),
     ) {
         let mut idx = cursor.load(Ordering::Relaxed) as usize;
@@ -178,8 +171,9 @@ impl HarmonySource {
             idx += 1;
         }
         while idx < items.len() && items[idx].beat() < window.end_beat {
-            let beat_delta = (items[idx].beat() - window.start_beat).max(0.0);
-            let off = ((beat_delta / window.beats_per_sample) as i32).min(window.max_offset);
+            // Harmony change offsets are `i32` on the wire; the window clamps to
+            // `block_size - 1`, so the cast is always in range.
+            let off = window.offset_of(items[idx].beat()) as i32;
             push(&items[idx], off);
             idx += 1;
         }
@@ -203,15 +197,6 @@ impl BlockReset for HarmonyInputs {
         self.expr_texts.changes.clear();
         self.expr_ints.changes.clear();
     }
-}
-
-/// Beat range one audio block covers + conversion factors. Mirrors
-/// `MidiClipSource`'s `PollWindow`.
-struct HarmonyWindow {
-    start_beat: f64,
-    end_beat: f64,
-    beats_per_sample: f64,
-    max_offset: i32,
 }
 
 /// Lets [`HarmonySource::emit`] read the beat of either change kind.

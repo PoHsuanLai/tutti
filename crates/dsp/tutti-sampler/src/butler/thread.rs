@@ -12,7 +12,7 @@ use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use smol::channel::{bounded, Receiver, Sender};
 use thread_priority::ThreadPriority;
-use tutti_core::PdcState;
+use tutti_core::Samples;
 
 use super::cache::LruCache;
 use super::command::ButlerCommand;
@@ -58,12 +58,11 @@ impl ButlerThread {
         }
     }
 
-    /// Subscribe to PDC snapshots for automatic delay compensation.
+    /// Subscribe to a per-channel delay-compensation table.
     ///
-    /// The `Arc<ArcSwap<PdcState>>` is published by whoever owns the graph
-    /// (typically `AudioGraph`). Readers call `.load()` to obtain a current
-    /// snapshot; writers clone + mutate + store to publish.
-    pub fn with_pdc(mut self, snapshot: Arc<ArcSwap<PdcState>>) -> Self {
+    /// Published by whoever runs `tutti_core::latency::compensate` over the
+    /// audio graph. Readers call `.load()` to obtain a current snapshot.
+    pub fn with_pdc(mut self, snapshot: Arc<ArcSwap<Vec<Samples>>>) -> Self {
         self.shared.pdc = Some(snapshot);
         self
     }

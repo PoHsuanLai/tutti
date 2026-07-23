@@ -24,7 +24,7 @@ pub mod net;
 pub mod params;
 
 pub use editable::{isolate_output, AudioGraph, GraphDot};
-pub use net::{CommitOutcome, GraphNet};
+pub use net::GraphNet;
 pub use params::{AudioNode, LayerKey, ModParam, Mute, NodeKind, Pan, PluginParam, Volume};
 
 // Bevy ECS reconcile hub — only compiled with the `bevy` feature.

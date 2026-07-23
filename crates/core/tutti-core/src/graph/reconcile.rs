@@ -23,8 +23,8 @@ use crate::graph::{AudioGraphRes, AudioNode, Mute, NodeKind, Volume};
 /// System-set ordering anchor for the reconcile pipeline.
 ///
 /// Apps can schedule their own systems against these sets. The plugin
-/// runs them in the order: `Spawn` → `Params` → `Despawn` → `Commit`,
-/// all inside `Update`.
+/// runs them in the order: `Spawn` → `Params` → `Despawn` → `Compensate` →
+/// `Commit`, all inside `Update`.
 #[derive(SystemSet, Debug, Clone, Copy, Hash, PartialEq, Eq)]
 pub enum GraphReconcileSystems {
     /// Initial spawn of new graph nodes (rare; mostly app-driven via
@@ -38,6 +38,14 @@ pub enum GraphReconcileSystems {
     /// (`reconcile_node_despawn`), which fires at command-flush time rather
     /// than in this set.
     Despawn,
+    /// Latency compensation, if the app opted into it.
+    ///
+    /// **Empty by default** — nothing in this crate runs here. It sits between
+    /// `Despawn` and `Commit` because compensation must see the frame's final
+    /// topology, yet must reach the audio thread in the same commit. Apps that
+    /// want delay compensation add a system here; `bevy_tutti` ships
+    /// `LatencyCompensationPlugin` for exactly that.
+    Compensate,
     /// Single `graph.commit()` if any earlier set mutated the graph.
     Commit,
 }
@@ -252,23 +260,14 @@ mod tests {
     use crate::dsp::sine_hz;
     use crate::graph::AudioGraphRes;
     use crate::AudioGraph;
-    use crate::{GraphNet, PdcManager};
     use bevy_app::App;
 
     /// Build a bare `AudioGraph` directly (no `TuttiEngine`, which lives in
     /// bevy-tutti). Allocates the fundsp backend so `commit()` has something
     /// to publish into; we never drive audio through it in these tests.
-    fn bare_graph(channels: usize) -> AudioGraph {
-        let mut net = GraphNet::new(0, channels);
-        let _backend = net.backend();
-        let pdc = PdcManager::new(channels, 0);
-        let midi_route = tutti_midi_types::MidiRoutingTable::new();
-        AudioGraph::from_parts(net, pdc, midi_route, 48_000.0, channels)
-    }
-
     fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes(bare_graph(2)));
+        app.insert_resource(AudioGraphRes(AudioGraph::empty(2)));
         app.init_resource::<GraphDirty>();
         app.add_observer(reconcile_node_despawn);
         app.add_systems(
@@ -319,7 +318,7 @@ mod tests {
         );
 
         // Insert the resource (engine built): the gate now passes.
-        app.insert_resource(AudioGraphRes(bare_graph(2)));
+        app.insert_resource(AudioGraphRes(AudioGraph::empty(2)));
         app.update();
         assert_eq!(
             ran.load(Ordering::SeqCst),

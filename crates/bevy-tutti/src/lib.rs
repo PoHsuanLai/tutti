@@ -52,6 +52,7 @@
 //! ```
 
 mod device_state;
+pub mod latency;
 mod plugin;
 
 // The graph reconcile hub + `GraphReconcilePlugin` live in `tutti_core::graph`; the
@@ -71,6 +72,11 @@ mod plugin;
 pub mod engine;
 
 pub use plugin::TuttiPlugin;
+
+// Latency (plugin delay) compensation. Opt-in: `TuttiPlugin` does not add it,
+// because it costs a graph walk per commit and a host with no latency-reporting
+// nodes never needs it. See the `latency` module docs for ordering.
+pub use latency::{ChannelCompensation, LatencyCompensationPlugin};
 
 // Plugin-hosting surface. `tutti-plugin-host` is the Bevy-only plugin-editor /
 // scan / crash-detect layer — an implementation detail of this adapter. Consumers

@@ -40,6 +40,7 @@ impl Plugin for GraphReconcilePlugin {
                     GraphReconcileSystems::Spawn,
                     GraphReconcileSystems::Params,
                     GraphReconcileSystems::Despawn,
+                    GraphReconcileSystems::Compensate,
                     GraphReconcileSystems::Commit,
                 )
                     .chain(),

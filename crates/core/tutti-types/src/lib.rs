@@ -16,14 +16,23 @@
 //! traits every audio source and sink in the engine speaks (mic, file, disk,
 //! plugin boundary), plus [`pump`](io::pump). Homed here, at the root leaf, so
 //! every subsystem can implement them without an absurd dependency edge.
+//!
+//! **Latency compensation** ([`latency`]): the [`LatencyGraph`] trait and the
+//! [`plan`](latency::plan) / [`compensate`] algorithm that aligns unequal signal
+//! paths, plus the [`Samples`] count it speaks ([`units`]). Pure graph math with
+//! no audio dependency, so any graph representation can drive it.
 
 mod audio_thread_cell;
 mod rt_event_buf;
 mod rt_scratch_buf;
 
 pub mod io;
+pub mod latency;
+pub mod units;
 
 pub use audio_thread_cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use io::{pump, AudioIn, AudioOut};
+pub use latency::{compensate, Compensation, DelayInsertion, LatencyGraph};
 pub use rt_event_buf::RtEventBuf;
 pub use rt_scratch_buf::RtScratchBuf;
+pub use units::Samples;

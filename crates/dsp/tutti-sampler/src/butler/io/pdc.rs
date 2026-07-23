@@ -1,4 +1,7 @@
-//! Plugin delay compensation (PDC) integration for butler thread.
+//! Delay compensation for streaming playback.
+//!
+//! A source outside the audio graph cannot be delayed by a node inside it —
+//! instead it seeks its read head earlier, so its audio arrives already aligned.
 
 use super::super::cache::LruCache;
 use super::super::config::BufferConfig;
@@ -9,12 +12,12 @@ use super::loops::{fadein_samples, fadeout_samples};
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use std::sync::Arc;
-use tutti_core::PdcState;
+use tutti_core::Samples;
 
-/// Called each refill cycle. Detects plugin latency changes and
-/// adjusts stream positions with smooth crossfades.
+/// Called each refill cycle. Detects compensation changes and adjusts stream
+/// positions with smooth crossfades.
 pub(crate) fn apply_pdc_updates(
-    pdc: &Option<Arc<ArcSwap<PdcState>>>,
+    pdc: &Option<Arc<ArcSwap<Vec<Samples>>>>,
     plans: &DashMap<usize, ChannelPlan>,
     regions: &mut RegionMap,
     cache: &LruCache,
@@ -26,9 +29,6 @@ pub(crate) fn apply_pdc_updates(
     };
 
     let snapshot = pdc.load_full();
-    if !snapshot.enabled() {
-        return;
-    }
 
     for mut entry in plans.iter_mut() {
         let channel_index = *entry.key();
@@ -36,10 +36,10 @@ pub(crate) fn apply_pdc_updates(
 
         let current_preroll = stream_state.pdc_preroll;
         let new_preroll = snapshot
-            .channel_compensations()
             .get(channel_index)
             .copied()
-            .unwrap_or(0) as u64;
+            .unwrap_or_default()
+            .get() as u64;
 
         if new_preroll == current_preroll {
             continue;
@@ -96,10 +96,16 @@ mod tests {
     use crate::butler::command::RegionId;
     use crate::butler::prefetch::RegionBuffer;
     use std::path::PathBuf;
-    use tutti_core::PdcManager;
 
     fn region(i: usize) -> RegionId {
         RegionId(i as u64 + 1)
+    }
+
+    /// A published compensation table, as `latency::compensate` would produce.
+    fn table(compensations: [usize; 3]) -> Arc<ArcSwap<Vec<Samples>>> {
+        Arc::new(ArcSwap::from_pointee(
+            compensations.into_iter().map(Samples).collect(),
+        ))
     }
 
     fn create_test_fixtures(
@@ -138,11 +144,6 @@ mod tests {
         regions.get(region(channel)).unwrap().file_position()
     }
 
-    /// Build a PDC subscription from a `PdcManager` (used as test-setup helper).
-    fn pdc_sub(mgr: &PdcManager) -> Arc<ArcSwap<PdcState>> {
-        mgr.snapshot_arc()
-    }
-
     #[test]
     fn test_pdc_new_position_directions_and_saturation() {
         // Preroll increased -> seek backward by the delta.
@@ -165,43 +166,12 @@ mod tests {
     }
 
     #[test]
-    fn test_pdc_disabled_is_noop() {
-        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(1);
-
-        let mgr = PdcManager::new(4, 0);
-        mgr.set_channel_latency(0, 500);
-        mgr.set_enabled(false);
-
-        regions.get_mut(region(0)).unwrap().set_file_position(1000);
-
-        apply_pdc_updates(
-            &Some(pdc_sub(&mgr)),
-            &plans,
-            &mut regions,
-            &cache,
-            &metrics,
-            &config,
-        );
-
-        assert_eq!(file_pos(&regions, 0), 1000);
-    }
-
-    #[test]
     fn test_preroll_unchanged_no_seek() {
         let (plans, mut regions, cache, metrics, config) = create_test_fixtures(1);
-
-        let mgr = PdcManager::new(4, 0);
-
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
-        apply_pdc_updates(
-            &Some(pdc_sub(&mgr)),
-            &plans,
-            &mut regions,
-            &cache,
-            &metrics,
-            &config,
-        );
+        let pdc = table([0, 0, 0]);
+        apply_pdc_updates(&Some(pdc), &plans, &mut regions, &cache, &metrics, &config);
 
         assert_eq!(file_pos(&regions, 0), 1000);
     }
@@ -209,25 +179,14 @@ mod tests {
     #[test]
     fn test_preroll_increased_seeks_backward() {
         let (plans, mut regions, cache, metrics, config) = create_test_fixtures(2);
-
-        let mgr = PdcManager::new(4, 0);
-        mgr.set_channel_latency(1, 500);
-
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
         regions.get_mut(region(1)).unwrap().set_file_position(1000);
 
-        apply_pdc_updates(
-            &Some(pdc_sub(&mgr)),
-            &plans,
-            &mut regions,
-            &cache,
-            &metrics,
-            &config,
-        );
+        // Channel 0 must pre-roll 500; channel 1 is already the worst case.
+        let pdc = table([500, 0, 0]);
+        apply_pdc_updates(&Some(pdc), &plans, &mut regions, &cache, &metrics, &config);
 
-        // Channel 0 gets 500 compensation -> seeks back to 500.
         assert_eq!(file_pos(&regions, 0), 500);
-        // Channel 1 is the max latency -> no compensation.
         assert_eq!(file_pos(&regions, 1), 1000);
 
         assert_eq!(plans.get(&0).unwrap().pdc_preroll, 500);
@@ -237,13 +196,11 @@ mod tests {
     #[test]
     fn test_preroll_decreased_seeks_forward() {
         let (plans, mut regions, cache, metrics, config) = create_test_fixtures(1);
-
-        let mgr = PdcManager::new(4, 0);
-        mgr.set_channel_latency(1, 500);
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
+        let pdc = table([500, 0, 0]);
         apply_pdc_updates(
-            &Some(pdc_sub(&mgr)),
+            &Some(Arc::clone(&pdc)),
             &plans,
             &mut regions,
             &cache,
@@ -254,40 +211,23 @@ mod tests {
         assert_eq!(plans.get(&0).unwrap().pdc_preroll, 500);
         assert_eq!(file_pos(&regions, 0), 500);
 
-        mgr.remove_channel(1);
-
-        apply_pdc_updates(
-            &Some(pdc_sub(&mgr)),
-            &plans,
-            &mut regions,
-            &cache,
-            &metrics,
-            &config,
-        );
+        // The latency goes away — republish, and the read head seeks back forward.
+        pdc.store(Arc::new(vec![Samples(0)]));
+        apply_pdc_updates(&Some(pdc), &plans, &mut regions, &cache, &metrics, &config);
 
         assert_eq!(file_pos(&regions, 0), 1000);
         assert_eq!(plans.get(&0).unwrap().pdc_preroll, 0);
     }
 
     #[test]
-    fn test_seeking_flag_set_during_update() {
+    fn test_seeking_flag_clear_after_update() {
         let (plans, mut regions, cache, metrics, config) = create_test_fixtures(1);
-
-        let mgr = PdcManager::new(4, 0);
-        mgr.set_channel_latency(1, 500);
-
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
         assert!(!plans.get(&0).unwrap().rt_state.is_seeking());
 
-        apply_pdc_updates(
-            &Some(pdc_sub(&mgr)),
-            &plans,
-            &mut regions,
-            &cache,
-            &metrics,
-            &config,
-        );
+        let pdc = table([500, 0, 0]);
+        apply_pdc_updates(&Some(pdc), &plans, &mut regions, &cache, &metrics, &config);
 
         assert!(!plans.get(&0).unwrap().rt_state.is_seeking());
     }
@@ -295,24 +235,12 @@ mod tests {
     #[test]
     fn test_multiple_channels_independent_compensation() {
         let (plans, mut regions, cache, metrics, config) = create_test_fixtures(3);
+        for i in 0..3 {
+            regions.get_mut(region(i)).unwrap().set_file_position(1000);
+        }
 
-        let mgr = PdcManager::new(4, 0);
-        mgr.set_channel_latency(0, 100);
-        mgr.set_channel_latency(1, 300);
-        mgr.set_channel_latency(2, 200);
-
-        regions.get_mut(region(0)).unwrap().set_file_position(1000);
-        regions.get_mut(region(1)).unwrap().set_file_position(1000);
-        regions.get_mut(region(2)).unwrap().set_file_position(1000);
-
-        apply_pdc_updates(
-            &Some(pdc_sub(&mgr)),
-            &plans,
-            &mut regions,
-            &cache,
-            &metrics,
-            &config,
-        );
+        let pdc = table([200, 0, 100]);
+        apply_pdc_updates(&Some(pdc), &plans, &mut regions, &cache, &metrics, &config);
 
         assert_eq!(file_pos(&regions, 0), 800);
         assert_eq!(plans.get(&0).unwrap().pdc_preroll, 200);
@@ -325,20 +253,13 @@ mod tests {
     }
 
     #[test]
-    fn test_channel_not_in_pdc_snapshot() {
+    fn test_channel_beyond_table_is_uncompensated() {
         let (plans, mut regions, cache, metrics, config) = create_test_fixtures(1);
-
-        let mgr = PdcManager::new(0, 0);
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
-        apply_pdc_updates(
-            &Some(pdc_sub(&mgr)),
-            &plans,
-            &mut regions,
-            &cache,
-            &metrics,
-            &config,
-        );
+        // Empty table — channel 0 has no entry.
+        let pdc = Arc::new(ArcSwap::from_pointee(Vec::new()));
+        apply_pdc_updates(&Some(pdc), &plans, &mut regions, &cache, &metrics, &config);
 
         assert_eq!(file_pos(&regions, 0), 1000);
     }

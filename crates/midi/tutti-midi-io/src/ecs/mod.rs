@@ -31,6 +31,8 @@ pub use clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
 pub use metadata::{
     flex_metadata_broadcast_system, BroadcastFlexMetadata, JrStamperRes, MidiMetadataPlugin,
 };
+#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
+pub use metadata::UmpOutRes;
 pub use midi_plugin::{PendingMidi, TuttiMidiPlugin};
 pub use negotiation::{
     ci_discovery_system, ci_ingest_system, endpoint_discovery_system, endpoint_ingest_system,

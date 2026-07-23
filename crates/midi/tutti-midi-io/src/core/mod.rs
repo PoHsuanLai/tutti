@@ -27,4 +27,4 @@ pub use midi_io::MidiIo;
 pub use port::{InputProducerHandle, MidiPortManager, PortInfo, PortType};
 
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-pub use hardware::{VirtualMidiDestination, VirtualMidiSource};
+pub use hardware::{UmpVirtualSource, VirtualMidiDestination, VirtualMidiSource};

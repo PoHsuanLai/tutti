@@ -68,3 +68,9 @@ midi2 = { version = "0.11", default-features = false, features = [
     "std",
 ] }
 coremidi = "0.8"
+# Raw CoreMIDI FFI + Core Foundation strings — needed only for the native-UMP
+# virtual source (MIDISourceCreateWithProtocol / MIDIReceivedEventList), which
+# coremidi 0.8's safe wrapper doesn't expose. Versions pinned to what coremidi
+# 0.8 already pulls, so no new tree.
+coremidi-sys = "3.2"
+core-foundation = "0.9"

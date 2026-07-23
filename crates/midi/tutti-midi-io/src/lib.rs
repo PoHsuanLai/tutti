@@ -28,7 +28,7 @@ pub use core::{InputProducerHandle, MidiPortManager, PortInfo, PortType};
 pub use core::port;
 
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-pub use core::{VirtualMidiDestination, VirtualMidiSource};
+pub use core::{UmpVirtualSource, VirtualMidiDestination, VirtualMidiSource};
 
 // --- Re-exports from tutti-midi-types (the pure MIDI vocabulary) ---
 
@@ -153,6 +153,9 @@ pub use ecs::{
     InboundCiMessage, InboundEndpointReply, JrStamperRes, MidiMetadataPlugin, MidiNegotiationPlugin,
     StartCiDiscovery, StartEndpointDiscovery,
 };
+
+#[cfg(all(feature = "bevy", target_os = "macos", feature = "midi-hardware"))]
+pub use ecs::UmpOutRes;
 
 #[cfg(feature = "bevy")]
 pub use ecs::{MpeExpressionResource, MpeModeConfig, MpePlugin, MpeReceiver};

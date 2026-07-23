@@ -23,6 +23,9 @@ use parking_lot::Mutex;
 use tutti_midi_runtime::{ClockMaster, MidiOutputConsumer};
 use tutti_midi_types::ump::MidiEvent;
 
+#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
+use super::metadata::{JrStamperRes, UmpOutRes};
+
 /// The clock master + its output-ring consumer, claimed from the engine handoff.
 ///
 /// Present only when the engine was built with a clock master (i.e. the `midi`
@@ -54,13 +57,30 @@ const DRAIN_CHUNK: usize = 256;
 /// Per-frame: drain the clock-master ring and send each event to hardware MIDI
 /// out. Under `midi-hardware` this reaches the OS; otherwise it drains and
 /// drops (keeping the ring from backing up).
+///
+/// **JR-out routing (macOS):** when a [`UmpOutRes`] native-UMP source is present
+/// and [`JrStamperRes`] is enabled, each drained event is JR-stamped (a JR
+/// Timestamp prefix derived from its `frame_offset` at the reference clock) and
+/// sent as UMP words to that source — the one transport where JR Timestamps
+/// actually reach the wire. Otherwise events go to the MIDI-1 [`MidiIoRes`] port
+/// as before (which drops the JR words, so we don't stamp for it).
 pub fn pump_clock_out_system(
     clock_out: Option<Res<ClockMasterRes>>,
     #[cfg(feature = "midi-hardware")] midi_io: Option<Res<super::device::MidiIoRes>>,
+    #[cfg(all(target_os = "macos", feature = "midi-hardware"))] ump_out: Option<ResMut<UmpOutRes>>,
+    #[cfg(all(target_os = "macos", feature = "midi-hardware"))] jr: Option<Res<JrStamperRes>>,
 ) {
     let Some(clock_out) = clock_out else {
         return;
     };
+
+    // JR-out is active only with an enabled stamper *and* a native-UMP source.
+    #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
+    let mut jr_out = match (ump_out, jr) {
+        (Some(ump), Some(jr)) if jr.enabled => Some((ump, jr)),
+        _ => None,
+    };
+
     let mut consumer = clock_out.consumer.lock();
     let mut buf = [MidiEvent::noop(); DRAIN_CHUNK];
     loop {
@@ -68,6 +88,16 @@ pub fn pump_clock_out_system(
         if n == 0 {
             break;
         }
+
+        #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
+        if let Some((ump, jr)) = jr_out.as_mut() {
+            ump.send_stamped(&buf[..n], &jr.stamper);
+            if n < DRAIN_CHUNK {
+                break;
+            }
+            continue;
+        }
+
         #[cfg(feature = "midi-hardware")]
         if let Some(io) = &midi_io {
             for ev in &buf[..n] {

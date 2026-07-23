@@ -93,8 +93,8 @@ pub fn flex_metadata_broadcast_system(
 ///
 /// Holds the [`JrStamper`] the hardware-out pump reads to prefix each outbound
 /// event with a JR Timestamp. Inserted disabled (`enabled = false`) so nothing
-/// stamps until an app opts in; the pump that consumes it lives on the
-/// `midi-hardware` output path and is wired in a later pass.
+/// stamps until an app opts in; the pump reads it on the native-UMP output path
+/// (see [`UmpOutRes`]) — the one transport where JR Timestamps reach the wire.
 #[derive(Resource)]
 pub struct JrStamperRes {
     /// The stamper (reference clock + group).
@@ -113,12 +113,60 @@ impl JrStamperRes {
     }
 }
 
+/// A native-UMP MIDI output source (macOS), the JR-out transport.
+///
+/// Wraps a [`UmpVirtualSource`](crate::UmpVirtualSource) — a MIDI-2.0-protocol
+/// endpoint that carries UMP words to the wire, unlike the MIDI-1.0 `MidiIoRes`
+/// port that drops JR Timestamps. The clock-out pump routes here (JR-stamped)
+/// when a [`JrStamperRes`] is enabled. Not inserted by default — an app that
+/// wants JR-out creates the source and inserts this resource.
+#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
+#[derive(Resource)]
+pub struct UmpOutRes {
+    source: crate::UmpVirtualSource,
+    /// Running absolute sample position of the next block's frame-offset zero,
+    /// so JR stamps stay monotonic across pump frames.
+    origin_samples: u64,
+}
+
+#[cfg(all(target_os = "macos", feature = "midi-hardware"))]
+impl UmpOutRes {
+    /// Wrap a native-UMP source as the JR-out target.
+    pub fn new(source: crate::UmpVirtualSource) -> Self {
+        Self {
+            source,
+            origin_samples: 0,
+        }
+    }
+
+    /// JR-stamp `events` at the running origin and send each resulting UMP
+    /// message (the timestamp prefixes + the events) to the source. Advances the
+    /// origin past this block's largest frame offset so the next block's stamps
+    /// continue monotonically.
+    pub fn send_stamped(&mut self, events: &[MidiEvent], stamper: &JrStamper) {
+        let stamped = stamper.stamp_block(events, self.origin_samples);
+        for ev in &stamped {
+            if let Err(e) = self.source.send_ump(ev.data_words()) {
+                tracing::debug!("JR-out UMP send: {e}");
+            }
+        }
+        // Advance the origin past the furthest frame offset seen this block.
+        let span = events
+            .iter()
+            .map(|e| e.frame_offset as u64)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
+        self.origin_samples = self.origin_samples.wrapping_add(span);
+    }
+}
+
 /// Wires Flex-metadata broadcast (and the JR-stamper config home) into the ECS.
 ///
 /// Registers [`BroadcastFlexMetadata`] and its broadcast system. It does **not**
-/// insert [`JrStamperRes`] — the sample rate is engine-supplied, so the app (or a
-/// later hardware-out pass) inserts it; the stamper has no consumer in this crate
-/// yet.
+/// insert [`JrStamperRes`] or [`UmpOutRes`] — the sample rate and the UMP source
+/// are engine/app-supplied, so an app that wants JR-out inserts both; the
+/// clock-out pump ([`super::clock_out::pump_clock_out_system`]) consumes them.
 pub struct MidiMetadataPlugin;
 
 impl Plugin for MidiMetadataPlugin {
@@ -128,5 +176,30 @@ impl Plugin for MidiMetadataPlugin {
             Update,
             flex_metadata_broadcast_system.run_if(tutti_core::graph::engine_ready),
         );
+    }
+}
+
+#[cfg(all(test, target_os = "macos", feature = "midi-hardware"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn send_stamped_advances_origin_and_sends() {
+        let source = crate::UmpVirtualSource::new("Test JR-Out").expect("creates ump source");
+        let mut out = UmpOutRes::new(source);
+        let stamper = JrStamper::new(48_000.0, 0);
+
+        // Two events, the later at a non-zero frame offset.
+        let events = [
+            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
+            MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(24_000),
+        ];
+        out.send_stamped(&events, &stamper);
+        // Origin advanced past the furthest frame offset (+1).
+        assert_eq!(out.origin_samples, 24_001);
+
+        // A second block continues monotonically from the new origin.
+        out.send_stamped(&events, &stamper);
+        assert_eq!(out.origin_samples, 48_002);
     }
 }

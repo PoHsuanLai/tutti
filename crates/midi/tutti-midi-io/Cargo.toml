@@ -22,7 +22,7 @@ bevy = ["dep:bevy_ecs", "dep:bevy_app", "dep:bevy_reflect", "dep:bevy_tasks", "d
 # linked. This is the engine-vs-OS-I/O axis. The Bevy `device` ECS surface
 # (MidiIoRes / connect systems) + the clock-master send half additionally need
 # `bevy`.
-midi-hardware = ["dep:midir", "coremidi"]
+midi-hardware = ["dep:midir", "coremidi", "coremidi-sys", "core-foundation"]
 
 [dependencies]
 thiserror = "2"
@@ -59,6 +59,10 @@ midly = { workspace = true, features = ["std", "parallel"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 coremidi = { workspace = true, optional = true }
+# Raw FFI for the native-UMP virtual source (the safe `coremidi` wrapper only
+# exposes MIDI-1.0 virtual sources). Enabled with `coremidi` via `midi-hardware`.
+coremidi-sys = { workspace = true, optional = true }
+core-foundation = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-subscriber = "0.3"

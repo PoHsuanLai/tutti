@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+#[derive(Debug)]
 pub struct BufferExport {
     left: Vec<f32>,
     right: Vec<f32>,

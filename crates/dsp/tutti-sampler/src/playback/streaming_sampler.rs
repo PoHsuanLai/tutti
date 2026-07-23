@@ -50,6 +50,21 @@ pub struct StreamingSamplerUnit {
     fetch_scratch: Vec<(f32, f32)>,
 }
 
+// Hand-rolled: `consumer` (a `SharedReader` `ArcSwap`) and `shared_state`
+// (`Arc<RtState>`) aren't `Debug`. Print the scalar params + a note; never
+// load the ring consumer or read its occupancy from a Debug impl.
+impl std::fmt::Debug for StreamingSamplerUnit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamingSamplerUnit")
+            .field("playing", &self.playing.load(Ordering::Relaxed))
+            .field("gain", &self.gain)
+            .field("sample_rate", &self.sample_rate)
+            .field("has_shared_state", &self.shared_state.is_some())
+            .field("applied_reset_epoch", &self.applied_reset_epoch)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Clone for StreamingSamplerUnit {
     fn clone(&self) -> Self {
         Self {
@@ -167,10 +182,9 @@ impl StreamingSamplerUnit {
 
         let mut fetch_idx = 0;
         for i in 0..size {
-            let speed = self
-                .shared_state
-                .as_ref()
-                .map_or(1.0, |s| s.effective_speed().get() as f64 * s.src_ratio().get() as f64);
+            let speed = self.shared_state.as_ref().map_or(1.0, |s| {
+                s.effective_speed().get() as f64 * s.src_ratio().get() as f64
+            });
 
             self.fractional_pos += speed;
 
@@ -260,10 +274,9 @@ impl AudioUnit for StreamingSamplerUnit {
 
         self.apply_pending_reset();
 
-        let speed = self
-            .shared_state
-            .as_ref()
-            .map_or(1.0, |s| s.effective_speed().get() as f64 * s.src_ratio().get() as f64);
+        let speed = self.shared_state.as_ref().map_or(1.0, |s| {
+            s.effective_speed().get() as f64 * s.src_ratio().get() as f64
+        });
 
         self.fractional_pos += speed;
 
@@ -395,6 +408,7 @@ const SEEK_EPSILON_SAMPLES: f64 = 4096.0;
 /// cluster so the streaming path and `SamplerUnit` speak the same value type;
 /// `shared_state` stays a separate wiring arg (it must be the same `RtState` the
 /// `inner` unit holds).
+#[derive(Debug, Clone)]
 pub struct StreamingClipConfig {
     /// Transport binding — the placement gate. Whole-or-nothing, mirroring
     /// `SamplerUnit`'s use of [`TransportPlacement`].
@@ -428,6 +442,21 @@ pub struct StreamingClipReader {
     /// Whether the previous frame was inside the clip window. A false→true edge
     /// (playhead entering the clip) always forces a seek.
     was_inside: bool,
+}
+
+// Hand-rolled: wraps a non-`Debug` `StreamingSamplerUnit` + `Arc<RtState>` +
+// `TransportPlacement` (holds an `Arc<dyn TransportReader>`). Print the gate
+// scalars + inner unit; nothing here touches the ring.
+impl std::fmt::Debug for StreamingClipReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamingClipReader")
+            .field("inner", &self.inner)
+            .field("placement", &self.placement)
+            .field("file_sample_rate", &self.file_sample_rate)
+            .field("streamed_offset", &self.streamed_offset)
+            .field("was_inside", &self.was_inside)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Clone for StreamingClipReader {
@@ -513,7 +542,8 @@ impl StreamingClipReader {
     #[inline]
     fn request_seek(&mut self, target_offset: f64) {
         self.streamed_offset = target_offset;
-        self.shared_state.request_seek(target_offset.max(0.0) as u64);
+        self.shared_state
+            .request_seek(target_offset.max(0.0) as u64);
     }
 
     /// Set the playback speed magnitude. Routes directly to the shared
@@ -681,7 +711,6 @@ impl AudioUnit for StreamingClipReader {
     audio_unit_boilerplate!(id = crate::node_id::STREAMING_SAMPLER_ID, outputs = 2);
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,9 +725,7 @@ mod tests {
         crate::butler::share_reader(reader)
     }
 
-    fn make_unit(
-        samples: &[(f32, f32)],
-    ) -> (StreamingSamplerUnit, Arc<RtState>) {
+    fn make_unit(samples: &[(f32, f32)]) -> (StreamingSamplerUnit, Arc<RtState>) {
         let reader = make_reader_with_samples(samples);
         let state = Arc::new(RtState::new());
         let unit = StreamingSamplerUnit::new(reader, Arc::clone(&state));
@@ -838,7 +865,9 @@ mod tests {
 
     #[test]
     fn clip_reader_process_steady_state_is_allocation_free() {
-        let samples: Vec<_> = (1..2048).map(|i| (i as f32 * 0.001, i as f32 * 0.001)).collect();
+        let samples: Vec<_> = (1..2048)
+            .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
+            .collect();
         let transport = MockTransport::new(120.0, 5.0, true); // inside window
         let mut reader = make_clip_reader(
             &samples,
@@ -876,7 +905,9 @@ mod tests {
     /// regression that reintroduces allocation on the seek path is caught.
     #[test]
     fn clip_reader_seek_edge_is_allocation_free() {
-        let samples: Vec<_> = (1..2048).map(|i| (i as f32 * 0.001, i as f32 * 0.001)).collect();
+        let samples: Vec<_> = (1..2048)
+            .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
+            .collect();
         let transport = MockTransport::new(120.0, 5.0, true); // inside [4, 8)
         let mut reader = make_clip_reader(
             &samples,
@@ -911,7 +942,9 @@ mod tests {
 
     #[test]
     fn clip_reader_tick_steady_state_is_allocation_free() {
-        let samples: Vec<_> = (1..2048).map(|i| (i as f32 * 0.001, i as f32 * 0.001)).collect();
+        let samples: Vec<_> = (1..2048)
+            .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
+            .collect();
         let transport = MockTransport::new(120.0, 5.0, true);
         let mut reader = make_clip_reader(
             &samples,
@@ -1038,7 +1071,9 @@ mod tests {
 
     #[test]
     fn process_block_produces_output() {
-        let samples: Vec<_> = (0..256).map(|i| (i as f32 * 0.01, -(i as f32) * 0.01)).collect();
+        let samples: Vec<_> = (0..256)
+            .map(|i| (i as f32 * 0.01, -(i as f32) * 0.01))
+            .collect();
         let (mut unit, _state) = make_unit(&samples);
 
         let input_vec = BufferVec::new(0);

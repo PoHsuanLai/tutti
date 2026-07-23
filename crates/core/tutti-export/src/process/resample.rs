@@ -8,6 +8,7 @@ use crate::error::{Error, Result};
 use rubato::{FftFixedIn, Resampler};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum ResampleQuality {
     Fast,
     #[default]

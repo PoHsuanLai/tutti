@@ -18,6 +18,14 @@
 
 use std::sync::Arc;
 
+use crate::stretch;
+use crate::ClipReader;
+use crate::Command;
+use crate::Commands;
+use crate::LoopSetting;
+use crate::SamplerUnit;
+use crate::StreamingClipReader;
+use crate::TransportPlacement;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
@@ -25,14 +33,6 @@ use tutti_core::{
     AudioUnit, BeatDuration, BeatPosition, BufferMut, BufferRef, Cents, Linear, Ratio,
     SamplePosition, SignalFrame, TransportReader, Wave,
 };
-use crate::stretch;
-use crate::ClipReader;
-use crate::Command;
-use crate::Commands;
-use crate::LoopSetting;
-use crate::StreamingClipReader;
-use crate::SamplerUnit;
-use crate::TransportPlacement;
 
 const COMMAND_CAPACITY: usize = 64;
 const TRACK_CLIP_READER_ID: u64 = 0x_0000_0000_0000_DA03;
@@ -93,9 +93,21 @@ impl Direction {
 // clone and the stretch wrapper work uniformly across them.
 // ---------------------------------------------------------------------------
 
+#[non_exhaustive]
 pub enum VoiceSource {
     Ram(SamplerUnit),
     Disk(StreamingClipReader),
+}
+
+// Hand-rolled: both variants wrap non-`Debug`-deriving units (`SamplerUnit` /
+// `StreamingClipReader`), each with its own hand-rolled summary Debug.
+impl std::fmt::Debug for VoiceSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ram(s) => f.debug_tuple("Ram").field(s).finish(),
+            Self::Disk(s) => f.debug_tuple("Disk").field(s).finish(),
+        }
+    }
 }
 
 impl Clone for VoiceSource {
@@ -134,6 +146,7 @@ impl VoiceSource {
 // would ship silent (`gain = 0`) and frozen (`speed = 0` / `stretch = 0`).
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct Playback {
     pub gain: Linear,
     pub speed: Ratio,
@@ -168,6 +181,7 @@ impl Default for Playback {
 /// `playback_rate`), plus the loop range, reverse, and stretch/pitch intent.
 /// Grouped so both the RAM promote and the Disk poll build a `Playback` from
 /// one shape.
+#[derive(Debug, Clone, Default)]
 pub struct PendingPlayback {
     pub gain: Linear,
     pub speed: Ratio,
@@ -246,6 +260,7 @@ impl Clone for Playback {
 // needs it.
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct Voice {
     pub source: VoiceSource,
     pub play: Playback,
@@ -480,7 +495,12 @@ impl ClipSlot {
 /// matches the streaming tier, where gain lives in the source's shared state,
 /// and keeps a single, well-defined gain application point per tier.
 #[inline]
-fn read_clip_sample(sampler: &SamplerUnit, direction: Direction, pos: f64, gain: Linear) -> (f32, f32) {
+fn read_clip_sample(
+    sampler: &SamplerUnit,
+    direction: Direction,
+    pos: f64,
+    gain: Linear,
+) -> (f32, f32) {
     let (l, r) = match direction {
         Direction::Reverse => {
             let len = sampler.duration_samples() as f64;
@@ -521,6 +541,7 @@ fn read_source_frame(source: &mut VoiceSource, direction: Direction, gain: Linea
 // Commands sent from ECS → audio thread.
 // ---------------------------------------------------------------------------
 
+#[non_exhaustive]
 pub enum ClipCommand {
     /// Add a clip by handing the reader a fully-formed [`Voice`]: a
     /// [`VoiceSource`] (in-RAM `SamplerUnit` or streaming `StreamingClipReader`)
@@ -581,6 +602,76 @@ pub enum ClipCommand {
     },
 }
 
+// Hand-rolled: `ReplaceWave` carries a non-`Debug` `Arc<Wave>` (summarize it by
+// frame count); `AddVoice`'s `Box<Voice>` is `Debug`, forwarded as-is.
+impl std::fmt::Debug for ClipCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AddVoice { id, voice } => f
+                .debug_struct("AddVoice")
+                .field("id", id)
+                .field("voice", voice)
+                .finish(),
+            Self::Remove(id) => f.debug_tuple("Remove").field(id).finish(),
+            Self::ReplaceWave { id, wave } => f
+                .debug_struct("ReplaceWave")
+                .field("id", id)
+                .field("wave_frames", &wave.len())
+                .finish(),
+            Self::UpdatePlacement {
+                id,
+                start_beat,
+                duration_beats,
+            } => f
+                .debug_struct("UpdatePlacement")
+                .field("id", id)
+                .field("start_beat", start_beat)
+                .field("duration_beats", duration_beats)
+                .finish(),
+            Self::UpdateGain { id, gain } => f
+                .debug_struct("UpdateGain")
+                .field("id", id)
+                .field("gain", gain)
+                .finish(),
+            Self::UpdateSpeed { id, speed } => f
+                .debug_struct("UpdateSpeed")
+                .field("id", id)
+                .field("speed", speed)
+                .finish(),
+            Self::UpdateLoop {
+                id,
+                looping,
+                loop_start,
+                loop_end,
+                crossfade_samples,
+            } => f
+                .debug_struct("UpdateLoop")
+                .field("id", id)
+                .field("looping", looping)
+                .field("loop_start", loop_start)
+                .field("loop_end", loop_end)
+                .field("crossfade_samples", crossfade_samples)
+                .finish(),
+            Self::ClearLoop(id) => f.debug_tuple("ClearLoop").field(id).finish(),
+            Self::UpdateReverse { id, direction } => f
+                .debug_struct("UpdateReverse")
+                .field("id", id)
+                .field("direction", direction)
+                .finish(),
+            Self::UpdateStretch {
+                id,
+                stretch_factor,
+                pitch_cents,
+            } => f
+                .debug_struct("UpdateStretch")
+                .field("id", id)
+                .field("stretch_factor", stretch_factor)
+                .field("pitch_cents", pitch_cents)
+                .finish(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ClipSpec — a fully-described in-memory clip for synchronous insertion.
 // ---------------------------------------------------------------------------
@@ -599,6 +690,7 @@ pub enum ClipCommand {
 ///
 /// (Kept as flat fields rather than a nested `Voice` so its existing offline
 /// callers build it unchanged; the L4 spectral pass migrates those call sites.)
+#[derive(Debug)]
 pub struct ClipSpec {
     pub id: SlotId,
     /// Already transport-bound, with gain / loop range applied.
@@ -635,7 +727,7 @@ impl ClipSpec {
 // Handle — held by ECS systems, sends commands to the audio-thread unit.
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TrackClipReaderHandle {
     tx: Sender<ClipCommand>,
 }
@@ -658,7 +750,7 @@ impl TrackClipReaderHandle {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "bevy")]
-#[derive(Component)]
+#[derive(Component, Debug)]
 pub struct TrackClipReaderRef(pub TrackClipReaderHandle);
 
 #[cfg(feature = "bevy")]
@@ -680,6 +772,20 @@ pub struct TrackClipReaderUnit {
     /// loop ops (`Command::Loop`) — loop is butler-owned and not reachable from
     /// the reader itself. Cloning it is cheap (a `Sender` + an `Arc` map).
     butler: Option<Commands>,
+}
+
+// Hand-rolled: `clips` holds non-`Debug` `ClipSlot`s (each wraps a sampler +
+// stretch DSP) and `transport` is an `Arc<dyn TransportReader>`. Print the slot
+// count + scalars rather than the slot internals.
+impl std::fmt::Debug for TrackClipReaderUnit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrackClipReaderUnit")
+            .field("clips", &self.clips.len())
+            .field("sample_rate", &self.sample_rate)
+            .field("has_transport", &self.transport.is_some())
+            .field("has_butler", &self.butler.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl TrackClipReaderUnit {
@@ -847,7 +953,10 @@ impl TrackClipReaderUnit {
             slot.voice.source.as_clip_reader_mut().set_speed(speed);
             slot.voice.play.speed = speed;
             slot.voice.play.direction = direction;
-            slot.voice.source.as_clip_reader_mut().set_direction(direction);
+            slot.voice
+                .source
+                .as_clip_reader_mut()
+                .set_direction(direction);
         }
         self.apply_loop(id, loop_);
     }
@@ -960,7 +1069,6 @@ impl TrackClipReaderUnit {
             }
         }
     }
-
 }
 
 impl Clone for TrackClipReaderUnit {
@@ -1119,6 +1227,16 @@ impl VoiceNode {
     }
 }
 
+// Hand-rolled: wraps a non-`Debug` `ClipSlot`. Print the wrapped `Voice`
+// (which is `Debug`) and leave the resident stretch DSP out.
+impl std::fmt::Debug for VoiceNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VoiceNode")
+            .field("voice", &self.0.voice)
+            .finish_non_exhaustive()
+    }
+}
+
 impl From<Voice> for VoiceNode {
     fn from(voice: Voice) -> Self {
         Self::new(voice)
@@ -1235,7 +1353,9 @@ mod tests {
     }
 
     fn make_wave(samples: usize) -> Arc<Wave> {
-        let data: Vec<f32> = (0..samples).map(|i| (i as f32 + 1.0) / samples as f32).collect();
+        let data: Vec<f32> = (0..samples)
+            .map(|i| (i as f32 + 1.0) / samples as f32)
+            .collect();
         Arc::new(Wave::from_samples(44100.0, &data))
     }
 
@@ -1258,7 +1378,12 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, true);
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), BeatPosition::new(0.0), None);
+        let sampler = SamplerUnit::with_transport(
+            wave.clone(),
+            transport.clone(),
+            BeatPosition::new(0.0),
+            None,
+        );
         add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
@@ -1293,8 +1418,12 @@ mod tests {
         let wave = make_wave(100);
 
         for i in 0..3 {
-            let sampler =
-                SamplerUnit::with_transport(wave.clone(), transport.clone(), BeatPosition::new(0.0), None);
+            let sampler = SamplerUnit::with_transport(
+                wave.clone(),
+                transport.clone(),
+                BeatPosition::new(0.0),
+                None,
+            );
             add_ram_clip(&handle, SlotId(i), sampler);
         }
 
@@ -1302,7 +1431,12 @@ mod tests {
         unit.tick(&[], &mut out_3);
 
         let (mut unit2, handle2) = TrackClipReaderUnit::new();
-        let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), BeatPosition::new(0.0), None);
+        let sampler = SamplerUnit::with_transport(
+            wave.clone(),
+            transport.clone(),
+            BeatPosition::new(0.0),
+            None,
+        );
         add_ram_clip(&handle2, SlotId(0), sampler);
         let mut out_1 = [0.0f32; 2];
         unit2.tick(&[], &mut out_1);
@@ -1351,7 +1485,10 @@ mod tests {
 
         let mut out = [0.0f32; 2];
         unit.tick(&[], &mut out);
-        assert!(out[0] != 0.0 || out[1] != 0.0, "inserted clip should produce audio");
+        assert!(
+            out[0] != 0.0 || out[1] != 0.0,
+            "inserted clip should produce audio"
+        );
     }
 
     #[test]
@@ -1477,8 +1614,7 @@ mod tests {
         );
 
         // It reads the SAME single-voice frame the mixer does for one slot.
-        let sampler2 =
-            SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
+        let sampler2 = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
         let (mut mixer, _handle) = TrackClipReaderUnit::new();
         mixer.insert_clip(ClipSpec {
             id: SlotId(1),
@@ -1513,8 +1649,7 @@ mod tests {
     fn voice_replace_transport_rebinds_clock() {
         let wave = make_wave(100);
         let t1 = MockTransport::new(120.0, 0.0, true);
-        let sampler =
-            SamplerUnit::with_transport(wave, t1, BeatPosition::new(0.0), None);
+        let sampler = SamplerUnit::with_transport(wave, t1, BeatPosition::new(0.0), None);
         let mut voice = Voice {
             source: VoiceSource::Ram(sampler),
             play: Playback {
@@ -1532,6 +1667,9 @@ mod tests {
         voice.replace_transport(t2);
         let placement = voice.play.placement.as_ref().expect("placement present");
         assert_eq!(placement.start_beat, BeatPosition::new(2.0));
-        assert!(!placement.transport.is_playing(), "clock swapped to the stopped one");
+        assert!(
+            !placement.transport.is_playing(),
+            "clock swapped to the stopped one"
+        );
     }
 }

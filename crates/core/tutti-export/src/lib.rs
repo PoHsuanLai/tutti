@@ -64,6 +64,7 @@ pub use process::ResampleQuality;
 pub mod ecs;
 
 /// Entry-point namespace for both export starting points.
+#[derive(Debug)]
 pub struct Export;
 
 impl Export {

@@ -50,16 +50,41 @@ use tutti_core::{AudioThreadCell, AudioUnit, BufferMut, BufferRef, Linear};
 
 /// A stereo capture-ring consumer, shared across fundsp's graph-commit clones.
 ///
-/// Built by the device layer: it splits a [`HeapRb`](ringbuf::HeapRb), keeps the
-/// producer to push captured frames, and wraps the consumer in this handle for
-/// [`MicMonitorNode::new`]. See the module docs for the single-consumer
-/// invariant that makes the shared `&self` pop sound.
-pub type MicRing = Arc<AudioThreadCell<HeapCons<[f32; 2]>>>;
+/// Built by the device layer via [`share_mic_ring`]: it splits a
+/// [`HeapRb`](ringbuf::HeapRb), keeps the producer to push captured frames, and
+/// hands the consumer here for [`MicMonitorNode::new`]. This is an **opaque
+/// handle** — the inner `Arc<AudioThreadCell<HeapCons<_>>>` is deliberately
+/// private so the ring's single-consumer invariant (see the module docs) can't
+/// be broken by a consumer popping the raw ring off the audio thread. `Clone`
+/// shares the one underlying consumer (that's the whole point — fundsp clones
+/// the node on graph commit).
+#[derive(Clone)]
+pub struct MicRing(Arc<AudioThreadCell<HeapCons<[f32; 2]>>>);
+
+impl MicRing {
+    /// Pop the next captured frame. Crate-internal so only `MicMonitorNode`'s
+    /// audio-thread `tick`/`process` can advance the SPSC read index.
+    #[inline]
+    pub(crate) fn try_pop(&self) -> Option<[f32; 2]> {
+        self.0.borrow_mut().try_pop()
+    }
+}
+
+impl std::fmt::Debug for MicRing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The inner `HeapCons` isn't `Debug` and its occupancy is a hot-path
+        // read we shouldn't take here; a shared-count summary is enough.
+        f.debug_struct("MicRing")
+            .field("shared", &Arc::strong_count(&self.0))
+            .finish_non_exhaustive()
+    }
+}
 
 /// Wrap a freshly-split ring consumer into a [`MicRing`] for handoff to the
 /// audio thread. Mirrors `butler::share_reader` for the disk-stream path.
+#[must_use = "the returned MicRing is the only handle to the capture ring; drop it and the monitor node has nothing to drain"]
 pub fn share_mic_ring(consumer: HeapCons<[f32; 2]>) -> MicRing {
-    Arc::new(AudioThreadCell::new(consumer))
+    MicRing(Arc::new(AudioThreadCell::new(consumer)))
 }
 
 /// Live microphone monitoring as an `AudioUnit` (0 in → 2 out).
@@ -69,6 +94,10 @@ pub fn share_mic_ring(consumer: HeapCons<[f32; 2]>) -> MicRing {
 /// than stalling — the live-source analogue of the streaming unit's underrun
 /// hold. No pitch/speed/interpolation: the mic is already at the graph rate
 /// (the device layer opens it so), so this is a straight per-frame passthrough.
+///
+/// `Clone` shares the one ring consumer (fundsp clones the node on graph commit;
+/// only one clone is ticked per buffer — see the module's single-consumer note).
+#[derive(Clone, Debug)]
 pub struct MicMonitorNode {
     ring: MicRing,
     gain: Linear,
@@ -93,19 +122,9 @@ impl MicMonitorNode {
     #[inline]
     fn next_frame(&self) -> (f32, f32) {
         let g = self.gain.get();
-        match self.ring.borrow_mut().try_pop() {
+        match self.ring.try_pop() {
             Some([l, r]) => (l * g, r * g),
             None => (0.0, 0.0),
-        }
-    }
-}
-
-impl Clone for MicMonitorNode {
-    fn clone(&self) -> Self {
-        // Share the one ring consumer; only one clone is ticked per buffer.
-        Self {
-            ring: Arc::clone(&self.ring),
-            gain: self.gain,
         }
     }
 }

@@ -43,6 +43,17 @@ pub struct WavOut {
     format: CaptureFormat,
 }
 
+// Hand-rolled: `hound::WavWriter` isn't `Debug`. Print the channel count +
+// on-disk format; the writer itself is opaque.
+impl std::fmt::Debug for WavOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WavOut")
+            .field("channels", &self.channels)
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
+}
+
 impl WavOut {
     /// Create the file and WAV header for `file_path`. Returns `None` if the
     /// file can't be created or the header can't be written.

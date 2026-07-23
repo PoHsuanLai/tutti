@@ -81,8 +81,10 @@ pub use tutti_core::io::{pump, AudioIn, AudioOut};
 pub mod playback;
 
 // Bevy-free DSP leaves + value types from `playback` — usable for direct
-// FunDSP-graph integration without the ECS layer.
-pub use butler::{LruCache, StreamPin, WavOut};
+// FunDSP-graph integration without the ECS layer. Only `WavOut` (the public
+// `AudioOut` sink) is re-exported; the butler's `LruCache` / `StreamPin` are
+// internal machinery a consumer never constructs, so they stay `pub(crate)`.
+pub use butler::WavOut;
 pub use playback::{
     share_mic_ring, ClipCommand, ClipReader, ClipSpec, Direction, LoopSetting, MicMonitorNode,
     MicRing, PendingPlayback, Playback, SamplerUnit, SamplerUnitConfig, SlotId, StreamingClipConfig,
@@ -119,7 +121,7 @@ use bevy_ecs::prelude::Resource;
 /// `PendingX` init handshake: the builder inserts the freshly-built [`Sampler`]
 /// and [`TuttiSamplerPlugin`]'s `build()` claims it into a real resource.
 #[cfg(feature = "bevy")]
-#[derive(Resource)]
+#[derive(Resource, Debug)]
 pub struct PendingSampler(pub Option<Sampler>);
 
 /// Bevy plugin: the whole sampler ECS surface.
@@ -130,6 +132,7 @@ pub struct PendingSampler(pub Option<Sampler>);
 /// Requires the core graph plugin ([`tutti_core::graph::GraphReconcilePlugin`])
 /// to have configured `GraphReconcileSystems` first.
 #[cfg(feature = "bevy")]
+#[derive(Debug)]
 pub struct TuttiSamplerPlugin;
 
 #[cfg(feature = "bevy")]

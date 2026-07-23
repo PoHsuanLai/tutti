@@ -37,6 +37,7 @@ pub type LoopRange = (f64, f64);
 /// Two groups: the render/transport knobs (source rate, duration, tempo,
 /// timeline) live inline, and the shared output stage (format, mastering,
 /// codecs) lives in [`Output`].
+#[derive(Debug)]
 struct Spec {
     sample_rate: f64,
     duration_seconds: Option<f64>,
@@ -93,6 +94,15 @@ pub struct GraphExport {
     spec: Spec,
 }
 
+impl std::fmt::Debug for GraphExport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `Net` isn't `Debug`; the useful part is the export configuration.
+        f.debug_struct("GraphExport")
+            .field("spec", &self.spec)
+            .finish_non_exhaustive()
+    }
+}
+
 impl GraphExport {
     pub(crate) fn new(net: tutti_core::dsp::Net, sample_rate: f64) -> Self {
         Self {
@@ -114,16 +124,19 @@ impl GraphExport {
 
     // ---- duration ----
 
+    #[must_use]
     pub fn duration(mut self, d: Duration) -> Self {
         self.spec.duration_seconds = Some(d.as_secs_f64());
         self
     }
 
+    #[must_use]
     pub fn duration_seconds(mut self, seconds: f64) -> Self {
         self.spec.duration_seconds = Some(seconds);
         self
     }
 
+    #[must_use]
     pub fn duration_beats(mut self, beats: f64, tempo: f64) -> Self {
         self.spec.duration_seconds = Some((beats / tempo) * 60.0);
         self.spec.tempo_bpm = tempo;
@@ -142,12 +155,14 @@ impl GraphExport {
 
     /// Trim initial latency (look-ahead limiters, linear-phase filters) from
     /// the rendered audio.
+    #[must_use]
     pub fn compensate_latency(mut self, on: bool) -> Self {
         self.spec.compensate_latency = on;
         self
     }
 
     /// Run the offline transport at `bpm`. Defaults to 120.
+    #[must_use]
     pub fn at_tempo(mut self, bpm: impl Into<tutti_core::Bpm>) -> Self {
         self.spec.tempo_bpm = bpm.into().get();
         self
@@ -158,6 +173,7 @@ impl GraphExport {
     /// Pairs with [`duration_beats`](Self::duration_beats) to render a region
     /// `[beat, beat + length]` without rendering (and discarding) the lead-in
     /// — the transport seeks here before the first sample is produced.
+    #[must_use]
     pub fn start_beat(mut self, beat: f64) -> Self {
         self.spec.start_beat = beat;
         self
@@ -165,6 +181,7 @@ impl GraphExport {
 
     /// Loop a beat range during the render (passes through to
     /// [`OfflineTransport`]).
+    #[must_use]
     pub fn loop_range(mut self, range: LoopRange) -> Self {
         self.spec.loop_range = Some(range);
         self
@@ -178,6 +195,7 @@ impl GraphExport {
     /// them to this `Arc` before rendering, or they read a transport nothing
     /// drives and produce silence. `start_beat` / `at_tempo` / `loop_range` are
     /// ignored when a transport is supplied (it already carries them).
+    #[must_use]
     pub fn transport(mut self, transport: Arc<OfflineTransport>) -> Self {
         self.spec.transport = Some(transport);
         self
@@ -185,6 +203,7 @@ impl GraphExport {
 
     /// Attach a [`MidiTrack`] for MIDI-driven offline render.
     #[cfg(feature = "midi")]
+    #[must_use]
     pub fn with_midi(mut self, midi: MidiTrack) -> Self {
         self.spec.midi = Some(midi);
         self

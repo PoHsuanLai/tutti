@@ -5,7 +5,7 @@ use crate::error::{Error, Result};
 use crate::process::ResampleQuality;
 use std::path::Path;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
 pub enum AudioFormat {
     #[default]
@@ -44,7 +44,8 @@ impl AudioFormat {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum BitDepth {
     Int16,
     #[default]
@@ -79,6 +80,7 @@ impl ChannelMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Dither {
     Off,
     Rectangular,
@@ -94,6 +96,7 @@ pub enum NoiseShapeOrder {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
 pub enum Normalize {
     #[default]
     Off,
@@ -120,7 +123,7 @@ impl Normalize {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Flac {
     pub compression_level: u8,
 }
@@ -166,7 +169,7 @@ pub struct BroadcastWavMetadata {
 ///
 /// `target_sample_rate` is `None` until a caller asks to resample; the derived
 /// [`sample_rate`](Self::sample_rate) resolves it against a source rate.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Output {
     pub format: Option<AudioFormat>,
     pub bit_depth: BitDepth,
@@ -199,56 +202,68 @@ impl Output {
 /// Emit the fluent output/mastering setters on a builder that stores its
 /// [`Output`] at `self.$out` — pass the field path (`output`, or `spec.output`
 /// for a nested spec). Both export builders invoke this so the shared surface
-/// is written — and documented — once.
+/// is written — and documented — once. Each setter consumes and returns `self`,
+/// so every one is `#[must_use]`: dropping the returned builder silently loses
+/// the setting.
 macro_rules! output_setters {
     ($($out:ident).+) => {
         /// Override the container format. If unset, it's inferred from the
         /// destination path's extension at the terminal.
+        #[must_use]
         pub fn format(mut self, f: $crate::options::AudioFormat) -> Self {
             self.$($out).+.format = Some(f);
             self
         }
         /// Output bit depth.
+        #[must_use]
         pub fn bit_depth(mut self, b: $crate::options::BitDepth) -> Self {
             self.$($out).+.bit_depth = b;
             self
         }
         /// Stereo or mono-folded output.
+        #[must_use]
         pub fn channels(mut self, c: $crate::options::ChannelMode) -> Self {
             self.$($out).+.channels = c;
             self
         }
         /// Resample to `rate` on output (independent of the source rate).
+        #[must_use]
         pub fn sample_rate(mut self, rate: u32) -> Self {
             self.$($out).+.target_sample_rate = Some(rate);
             self
         }
         /// Resampler quality (only matters when a resample is requested).
+        #[must_use]
         pub fn resample_quality(mut self, q: $crate::process::ResampleQuality) -> Self {
             self.$($out).+.resample_quality = q;
             self
         }
         /// Dither applied when quantizing to an integer bit depth.
+        #[must_use]
         pub fn dither(mut self, d: $crate::options::Dither) -> Self {
             self.$($out).+.dither = d;
             self
         }
         /// Peak or loudness normalization (forces whole-signal buffering).
+        #[must_use]
         pub fn normalize(mut self, mode: $crate::options::Normalize) -> Self {
             self.$($out).+.normalize = mode;
             self
         }
         /// FLAC codec settings (used only for FLAC output).
+        #[must_use]
         pub fn flac(mut self, opts: $crate::options::Flac) -> Self {
             self.$($out).+.flac = opts;
             self
         }
         /// Ogg Vorbis codec settings (used only for Ogg output).
+        #[must_use]
         pub fn ogg(mut self, opts: $crate::options::Ogg) -> Self {
             self.$($out).+.ogg = opts;
             self
         }
         /// Broadcast-WAV (BWF) metadata chunk (used only for WAV output).
+        #[must_use]
         pub fn bwav(mut self, meta: $crate::options::BroadcastWavMetadata) -> Self {
             self.$($out).+.bwav = Some(meta);
             self

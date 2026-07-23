@@ -88,6 +88,7 @@ pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 /// Requires the core graph plugin ([`tutti_core::graph::GraphReconcilePlugin`]) to
 /// have configured `GraphReconcileSystems` first.
 #[cfg(feature = "bevy")]
+#[derive(Debug)]
 pub struct TuttiPlaybackPlugin;
 
 #[cfg(feature = "bevy")]

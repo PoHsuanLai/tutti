@@ -12,11 +12,12 @@ use tutti_core::WaveAsset;
 pub struct WaveAssetLoader;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum WaveAssetLoaderError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Decode(tutti_core::WaveError),
+    Decode(#[from] tutti_core::WaveError),
 }
 
 impl AssetLoader for WaveAssetLoader {

@@ -42,6 +42,16 @@ pub struct Sampler {
     sample_rate: f64,
 }
 
+// `butler`/`butler_tx` hold a thread handle + command channel that can't
+// derive `Debug`; print the sample rate and note the live butler thread.
+impl std::fmt::Debug for Sampler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sampler")
+            .field("sample_rate", &self.sample_rate)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Sampler {
     /// Build the system and spawn the butler thread.
     ///
@@ -67,12 +77,14 @@ impl Sampler {
 
     /// WRITE port: a cloneable [`Commands`] handle over the butler command
     /// channel. Drive streaming with `commands().send(Command::…)`.
+    #[must_use]
     pub fn commands(&self) -> Commands {
         Commands::new(self.butler_tx.clone())
     }
 
     /// READ port: a cloneable [`Status`] snapshot carrying the sample rate and
     /// the channel-plan map (the reader-factory).
+    #[must_use]
     pub fn status(&self) -> Status {
         Status::new(self.sample_rate, self.butler.plans())
     }
@@ -81,7 +93,7 @@ impl Sampler {
 // `butler` has its own `Drop` impl; auto-drop handles cleanup.
 
 /// Configuration for [`Sampler::new`]. `Default` + struct-update.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SamplerConfig {
     /// Butler buffer / cache configuration. Default is tuned for
     /// 64-channel streaming on a typical desktop.
@@ -92,6 +104,17 @@ pub struct SamplerConfig {
     /// downstream effects stay sample-aligned. Typically obtained from
     /// `AudioGraph::pdc_snapshot()`.
     pub pdc: Option<Arc<ArcSwap<PdcState>>>,
+}
+
+// Hand-rolled: `PdcState` (inside the `ArcSwap`) isn't `Debug`. Print the
+// buffer config + whether a PDC subscription is set, not the snapshot itself.
+impl std::fmt::Debug for SamplerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SamplerConfig")
+            .field("buffer_config", &self.buffer_config)
+            .field("has_pdc", &self.pdc.is_some())
+            .finish()
+    }
 }
 
 #[cfg(test)]

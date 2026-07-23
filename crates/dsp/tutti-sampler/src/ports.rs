@@ -55,6 +55,7 @@ impl std::fmt::Debug for Source {
 /// Each variant maps to exactly one internal `ButlerCommand`; the [`Commands`]
 /// port performs that mapping in [`send`](Commands::send).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Command {
     /// Register a disk-streaming source for a timeline clip on `channel_index`,
     /// starting at `offset` in file samples. Maps to `StreamAudioFile`.
@@ -92,7 +93,7 @@ pub enum Command {
 ///
 /// Mirrors [`TrackClipReaderHandle`](crate::TrackClipReaderHandle) — a thin,
 /// `Clone` handle over a `Sender` with a single [`send`](Self::send) method.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Commands {
     tx: Sender<ButlerCommand>,
 }
@@ -179,6 +180,17 @@ impl Commands {
 pub struct Status {
     sample_rate: f64,
     plans: Arc<DashMap<usize, ChannelPlan>>,
+}
+
+// `ChannelPlan` isn't `Debug` (it holds butler-internal cache/link state), so
+// hand-roll a summary rather than deriving — never touch the map's contents to
+// avoid contending with the butler thread.
+impl std::fmt::Debug for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Status")
+            .field("sample_rate", &self.sample_rate)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Status {

@@ -16,7 +16,6 @@ mod rt_state;
 mod thread;
 mod varispeed;
 
-pub use cache::{LruCache, StreamPin};
 pub(crate) use command::ButlerCommand;
 pub(crate) use config::BufferConfig;
 pub use io::capture::{CaptureFormat, WavOut};

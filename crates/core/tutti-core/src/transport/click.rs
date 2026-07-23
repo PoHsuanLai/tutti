@@ -11,7 +11,8 @@ use fundsp::prelude::*;
 use std::sync::Arc;
 
 /// Metronome operating mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
 pub enum MetronomeMode {
     /// Metronome is disabled.
     #[default]
@@ -33,6 +34,24 @@ impl From<u8> for MetronomeMode {
             3 => MetronomeMode::Always,
             _ => MetronomeMode::Off,
         }
+    }
+}
+
+impl From<MetronomeMode> for u8 {
+    #[inline]
+    fn from(mode: MetronomeMode) -> u8 {
+        mode as u8
+    }
+}
+
+impl core::fmt::Display for MetronomeMode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Off => "off",
+            Self::PrerollOnly => "preroll only",
+            Self::RecordingOnly => "recording only",
+            Self::Always => "always",
+        })
     }
 }
 
@@ -72,7 +91,7 @@ impl ClickSettings {
     }
 
     pub fn set_mode(&self, mode: MetronomeMode) {
-        self.mode.store(mode as u8, Ordering::Release);
+        self.mode.store(mode.into(), Ordering::Release);
     }
 
     pub fn mode(&self) -> MetronomeMode {

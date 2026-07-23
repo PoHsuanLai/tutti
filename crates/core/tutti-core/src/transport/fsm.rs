@@ -3,7 +3,8 @@
 use super::motion::MotionEvent;
 use super::position::MusicalPosition;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
 pub enum MotionState {
     #[default]
     Stopped,
@@ -14,19 +15,25 @@ pub enum MotionState {
     DeclickToLocate,
 }
 
-impl MotionState {
-    pub(crate) fn to_u8(self) -> u8 {
-        match self {
-            Self::Stopped => 0,
-            Self::Rolling => 1,
-            Self::FastForward => 2,
-            Self::Rewind => 3,
-            Self::DeclickToStop => 4,
-            Self::DeclickToLocate => 5,
-        }
+/// Encode for the published `AtomicU8` mirror. `#[repr(u8)]` makes the cast
+/// exact, and the discriminants are the enum's own — not a parallel table that
+/// could drift from it.
+impl From<MotionState> for u8 {
+    #[inline]
+    fn from(state: MotionState) -> u8 {
+        state as u8
     }
+}
 
-    pub(crate) fn from_u8(val: u8) -> Self {
+/// Decode from the published mirror.
+///
+/// Total rather than fallible: the only writer is [`MotionFsm`], which encodes
+/// via the `From` above, so an out-of-range byte cannot occur through the
+/// public API. A torn or corrupt read degrades to `Stopped` — the safe
+/// interpretation for a transport — rather than panicking on the audio thread.
+impl From<u8> for MotionState {
+    #[inline]
+    fn from(val: u8) -> Self {
         match val {
             1 => Self::Rolling,
             2 => Self::FastForward,
@@ -38,7 +45,20 @@ impl MotionState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+impl core::fmt::Display for MotionState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Stopped => "stopped",
+            Self::Rolling => "rolling",
+            Self::FastForward => "fast-forward",
+            Self::Rewind => "rewind",
+            Self::DeclickToStop => "stopping",
+            Self::DeclickToLocate => "seeking",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Direction {
     #[default]
     Forwards,
@@ -318,5 +338,32 @@ mod tests {
             result,
             Some(TransitionResult::DirectionChanged(Direction::Forwards))
         ));
+    }
+
+    #[test]
+    fn motion_state_u8_roundtrip_is_exact() {
+        for state in [
+            MotionState::Stopped,
+            MotionState::Rolling,
+            MotionState::FastForward,
+            MotionState::Rewind,
+            MotionState::DeclickToStop,
+            MotionState::DeclickToLocate,
+        ] {
+            let byte: u8 = state.into();
+            assert_eq!(
+                MotionState::from(byte),
+                state,
+                "{state} did not survive the atomic round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn motion_state_decodes_unknown_bytes_as_stopped() {
+        // Not reachable through the public API — the only writer encodes via
+        // `From` — but a transport must degrade to "not moving", never panic.
+        assert_eq!(MotionState::from(6), MotionState::Stopped);
+        assert_eq!(MotionState::from(u8::MAX), MotionState::Stopped);
     }
 }

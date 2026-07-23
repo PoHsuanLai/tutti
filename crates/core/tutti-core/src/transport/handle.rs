@@ -27,7 +27,7 @@ use crate::params::{Beat, Bpm, SampleRate};
 /// spans both halves — a reader wants the beat (settings) *and* whether we are
 /// rolling (motion) — and needs one `Clone + Send + Sync + 'static` type to be
 /// erased behind `Arc<dyn …>`.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Transport {
     pub motion: MotionFsm,
     pub settings: TransportSettings,

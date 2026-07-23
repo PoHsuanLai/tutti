@@ -105,12 +105,25 @@ pub struct MotionFsm {
     settings: TransportSettings,
 }
 
+/// Reports the *published* state only. The FSM behind `AudioThreadCell` is
+/// audio-thread-only, so formatting must not reach into it.
+impl core::fmt::Debug for MotionFsm {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("MotionFsm")
+            .field("motion", &self.motion())
+            .field("queued", &self.queue.len())
+            .field("seek_pending", &self.seek.is_pending())
+            .field("declick_active", &self.declick.is_active())
+            .finish_non_exhaustive()
+    }
+}
+
 impl MotionFsm {
     pub fn new(settings: TransportSettings) -> Self {
         Self {
             queue: Arc::new(ArrayQueue::new(COMMAND_QUEUE_CAPACITY)),
             fsm: Arc::new(AudioThreadCell::new(TransportFsm::new())),
-            motion: Arc::new(AtomicU8::new(MotionState::Stopped.to_u8())),
+            motion: Arc::new(AtomicU8::new(MotionState::Stopped.into())),
             seek: SeekSlot::new(),
             declick: Declick::new(),
             settings,
@@ -143,7 +156,7 @@ impl MotionFsm {
 
     /// The current motion, as published by the last drain.
     pub fn motion(&self) -> MotionState {
-        MotionState::from_u8(self.motion.load(Ordering::Acquire))
+        MotionState::from(self.motion.load(Ordering::Acquire))
     }
 
     pub fn is_playing(&self) -> bool {
@@ -177,7 +190,7 @@ impl MotionFsm {
     }
 
     fn set_motion(&self, motion: MotionState) {
-        self.motion.store(motion.to_u8(), Ordering::Release);
+        self.motion.store(motion.into(), Ordering::Release);
         self.settings
             .paused
             .store(motion == MotionState::Stopped, Ordering::Release);

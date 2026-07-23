@@ -19,7 +19,7 @@ use crate::{AtomicBool, AtomicF64};
 /// Transport values shared between threads.
 ///
 /// Clone shares every field — this is a handle, not a snapshot.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TransportSettings {
     /// Beats per minute. Read by the clock every buffer.
     pub tempo: Arc<AtomicF64>,

@@ -65,8 +65,15 @@ impl FftPartitionState {
     /// block with the result, and reset both cursors.
     #[inline]
     fn drain_through(&mut self, fft: &mut FFTConvolver<f32>) {
-        fft.process(&self.input, &mut self.output)
-            .expect("FFTConvolver::process failed on pre-sized buffers");
+        // Buffers are pre-sized to `block_size`, so `process` cannot fail here.
+        // On the audio thread we still degrade to silence rather than panic
+        // across the callback boundary; `debug_assert` catches a sizing
+        // regression in tests.
+        let result = fft.process(&self.input, &mut self.output);
+        debug_assert!(result.is_ok(), "FFTConvolver::process failed on pre-sized buffers");
+        if result.is_err() {
+            self.output.fill(0.0);
+        }
         self.input_fill = 0;
         self.output_cursor = 0;
     }

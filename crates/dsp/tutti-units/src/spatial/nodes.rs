@@ -186,8 +186,8 @@ impl AudioUnit for SpatialPannerNode {
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
-        self.sample_rate = sample_rate as f32;
+        self.sample_rate = sample_rate.get() as f32;
+        self.panner.set_sample_rate(sample_rate);
     }
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {

@@ -11,6 +11,7 @@ use tutti_core::{Db, Param, Seconds};
 /// Lookahead ring buffers + sliding-window-minimum tracker for the limiter.
 /// Split out so `LimiterNode` reads as a list of parameters plus a lookahead
 /// block, not a flat field soup.
+#[derive(Clone)]
 struct LookaheadRing {
     buffers: StereoPair<CircularBuffer<f32>>,
     min_deque: MonotonicMinDeque,
@@ -68,16 +69,6 @@ impl LookaheadRing {
     }
 }
 
-impl Clone for LookaheadRing {
-    fn clone(&self) -> Self {
-        Self {
-            buffers: self.buffers.clone(),
-            min_deque: self.min_deque.clone(),
-            sample_counter: self.sample_counter,
-            lookahead_samples: self.lookahead_samples,
-        }
-    }
-}
 
 /// Lookahead limiter with stereo-linked gain reduction.
 /// 2 inputs (L/R), 2 outputs (L/R).
@@ -257,7 +248,13 @@ impl LimiterNode {
 
         let (delayed_l, delayed_r, min_gain) = self.ring.step(left, right, self.envelope);
 
-        self.gain_reduction_db = -20.0 * min_gain.log10();
+        // Metering only. Guard log10(0) so a fully-closed gain reports a large
+        // finite reduction instead of +inf.
+        self.gain_reduction_db = if min_gain > 0.0 {
+            -20.0 * min_gain.log10()
+        } else {
+            96.0
+        };
         (delayed_l * min_gain, delayed_r * min_gain)
     }
 }

@@ -70,26 +70,77 @@ impl BinauralPanner {
             .store(elevation.clamp(-90.0, 90.0), Ordering::Release);
     }
 
+    /// Render a mono input to the binaural pair. Production uses
+    /// [`Self::process_stereo`] (its `width < 0.001` branch is this path); kept
+    /// as the direct mono entry point exercised by the unit tests.
+    #[cfg(test)]
     pub(crate) fn process_mono(&mut self, input: f32) -> (f32, f32) {
+        let (smoothed_azimuth, elevation_factor) = self.step_smoothers();
+        let contribution = self.spatialize(input, smoothed_azimuth, elevation_factor);
+        self.advance_delay_line(contribution)
+    }
+
+    pub(crate) fn process_stereo(&mut self, left: f32, right: f32, width: f32) -> (f32, f32) {
+        let width = width.clamp(0.0, 2.0);
+
+        // Step the smoothers exactly once per output sample, then render both
+        // virtual sources from the single smoothed base azimuth +/- an offset.
+        // Re-entering `process_mono` per source would double-advance the shared
+        // smoothers and delay cursor, halving the ITD and preventing the
+        // smoother from ever settling.
+        let (smoothed_azimuth, elevation_factor) = self.step_smoothers();
+
+        let contribution = if width < 0.001 {
+            let mono = (left + right) * 0.5;
+            self.spatialize(mono, smoothed_azimuth, elevation_factor)
+        } else {
+            let angle_offset = 15.0 * width;
+            let l = self.spatialize(left, smoothed_azimuth + angle_offset, elevation_factor);
+            let r = self.spatialize(right, smoothed_azimuth - angle_offset, elevation_factor);
+            DelayedSample {
+                left_level: (l.left_level + r.left_level) * 0.5,
+                right_level: (l.right_level + r.right_level) * 0.5,
+                itd_samples: l.itd_samples,
+            }
+        };
+
+        self.advance_delay_line(contribution)
+    }
+
+    /// Advance both position smoothers by one sample; returns the smoothed
+    /// azimuth (degrees) and the elevation attenuation factor.
+    fn step_smoothers(&mut self) -> (f32, f32) {
         let target_azimuth = self.azimuth_target.load(Ordering::Acquire);
         let target_elevation = self.elevation_target.load(Ordering::Acquire);
 
         let smoothed_azimuth = self.azimuth_smoother.process(target_azimuth);
         let smoothed_elevation = self.elevation_smoother.process(target_elevation);
 
-        let azimuth_rad = smoothed_azimuth.to_radians();
-        let (itd_samples, left_gain, right_gain) = compute_itd_ild(azimuth_rad, self.sample_rate);
-
         let elevation_factor = (1.0 - (smoothed_elevation.abs() / 90.0) * 0.3).max(0.7);
-        let left_level = input * left_gain * elevation_factor;
-        let right_level = input * right_gain * elevation_factor;
+        (smoothed_azimuth, elevation_factor)
+    }
 
-        self.delay_buffer_left[self.delay_write_pos] = left_level;
-        self.delay_buffer_right[self.delay_write_pos] = right_level;
+    /// Pure per-source ILD/ITD: no shared state touched, so it is safe to call
+    /// more than once per output sample.
+    fn spatialize(&self, input: f32, azimuth_deg: f32, elevation_factor: f32) -> DelayedSample {
+        let (itd_samples, left_gain, right_gain) =
+            compute_itd_ild(azimuth_deg.to_radians(), self.sample_rate);
+        DelayedSample {
+            left_level: input * left_gain * elevation_factor,
+            right_level: input * right_gain * elevation_factor,
+            itd_samples,
+        }
+    }
+
+    /// Write one sample into the ITD delay line and read the ear-delayed pair;
+    /// advances the write cursor by exactly one.
+    fn advance_delay_line(&mut self, sample: DelayedSample) -> (f32, f32) {
+        self.delay_buffer_left[self.delay_write_pos] = sample.left_level;
+        self.delay_buffer_right[self.delay_write_pos] = sample.right_level;
 
         let buffer_len = self.delay_buffer_left.len();
-        let left_delay_samples = itd_samples.max(0) as usize;
-        let right_delay_samples = (-itd_samples).max(0) as usize;
+        let left_delay_samples = sample.itd_samples.max(0) as usize;
+        let right_delay_samples = (-sample.itd_samples).max(0) as usize;
 
         let left_read_pos = (self.delay_write_pos + buffer_len - left_delay_samples) % buffer_len;
         let right_read_pos = (self.delay_write_pos + buffer_len - right_delay_samples) % buffer_len;
@@ -101,30 +152,13 @@ impl BinauralPanner {
 
         (left_out, right_out)
     }
+}
 
-    pub(crate) fn process_stereo(&mut self, left: f32, right: f32, width: f32) -> (f32, f32) {
-        let width = width.clamp(0.0, 2.0);
-
-        if width < 0.001 {
-            let mono = (left + right) * 0.5;
-            self.process_mono(mono)
-        } else {
-            let angle_offset = 15.0 * width;
-
-            let original_az = self.azimuth_target.load(Ordering::Acquire);
-            let original_el = self.elevation_target.load(Ordering::Acquire);
-
-            self.set_position(original_az + angle_offset, original_el);
-            let (l_left, l_right) = self.process_mono(left);
-
-            self.set_position(original_az - angle_offset, original_el);
-            let (r_left, r_right) = self.process_mono(right);
-
-            self.set_position(original_az, original_el);
-
-            ((l_left + r_left) * 0.5, (l_right + r_right) * 0.5)
-        }
-    }
+/// One spatialized source sample: post-gain levels plus the ear ITD to apply.
+struct DelayedSample {
+    left_level: f32,
+    right_level: f32,
+    itd_samples: i32,
 }
 
 #[cfg(test)]

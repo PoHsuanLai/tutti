@@ -200,20 +200,11 @@ mod tests {
     use super::*;
     use crate::graph::reconcile::GraphReconcileSystems;
     use crate::AudioGraph;
-    use crate::{GraphNet, PdcManager};
     use bevy_app::App;
-
-    fn bare_graph(channels: usize) -> AudioGraph {
-        let mut net = GraphNet::new(0, channels);
-        let _backend = net.backend();
-        let pdc = PdcManager::new(channels, 0);
-        let midi_route = tutti_midi_types::MidiRoutingTable::new();
-        AudioGraph::from_parts(net, pdc, midi_route, 48_000.0, channels)
-    }
 
     fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(crate::graph::AudioGraphRes(bare_graph(2)));
+        app.insert_resource(crate::graph::AudioGraphRes(AudioGraph::empty(2)));
         app.init_resource::<GraphDirty>();
         app.configure_sets(
             bevy_app::Update,

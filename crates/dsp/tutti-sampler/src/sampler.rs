@@ -8,7 +8,7 @@ use arc_swap::ArcSwap;
 use bevy_ecs::resource::Resource;
 use smol::channel::Sender;
 use std::sync::Arc;
-use tutti_core::PdcState;
+use tutti_core::Samples;
 
 /// The sampler subsystem handle, held as a Bevy [`Resource`].
 ///
@@ -98,16 +98,17 @@ pub struct SamplerConfig {
     /// Butler buffer / cache configuration. Default is tuned for
     /// 64-channel streaming on a typical desktop.
     pub buffer_config: BufferConfig,
-    /// PDC snapshot subscription for automatic plugin-delay compensation.
+    /// Subscription to a per-channel delay-compensation table.
     ///
-    /// While set, butler pre-rolls each stream by the channel's latency so
-    /// downstream effects stay sample-aligned. Typically obtained from
-    /// `AudioGraph::pdc_snapshot()`.
-    pub pdc: Option<Arc<ArcSwap<PdcState>>>,
+    /// While set, butler pre-rolls each stream by its channel's entry so
+    /// downstream effects stay sample-aligned. Published by whoever runs
+    /// `tutti_core::latency::compensate` over the audio graph — see
+    /// [`DelayPlan::channel_compensations`](tutti_types::DelayPlan::channel_compensations).
+    pub pdc: Option<Arc<ArcSwap<Vec<Samples>>>>,
 }
 
-// Hand-rolled: `PdcState` (inside the `ArcSwap`) isn't `Debug`. Print the
-// buffer config + whether a PDC subscription is set, not the snapshot itself.
+// Hand-rolled: print the buffer config + whether a subscription is set, not
+// the snapshot itself.
 impl std::fmt::Debug for SamplerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SamplerConfig")
@@ -131,23 +132,21 @@ mod tests {
     }
 
     #[test]
-    fn test_pdc_passthrough() {
-        use tutti_core::PdcManager;
-        let pdc = PdcManager::new(4, 2);
-        pdc.set_channel_latency(0, 100);
-        pdc.set_channel_latency(1, 200);
-        let sampler = Sampler::new(
+    fn pdc_subscription_is_shared_not_copied() {
+        // The caller owns the table and keeps publishing to it after the
+        // sampler is built; the sampler must observe those later stores.
+        let pdc = Arc::new(ArcSwap::from_pointee(vec![Samples(100), Samples(0)]));
+
+        let _sampler = Sampler::new(
             44100.0,
             SamplerConfig {
-                pdc: Some(pdc.snapshot_arc()),
+                pdc: Some(Arc::clone(&pdc)),
                 ..Default::default()
             },
         )
         .unwrap();
-        // Sampler doesn't expose PDC state — caller keeps the manager.
-        let _ = sampler;
-        assert_eq!(pdc.max_latency(), 200);
-        assert_eq!(pdc.get_channel_compensation(0), 100);
-        assert_eq!(pdc.get_channel_compensation(1), 0);
+
+        pdc.store(Arc::new(vec![Samples(512), Samples(0)]));
+        assert_eq!(pdc.load()[0], Samples(512));
     }
 }

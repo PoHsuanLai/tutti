@@ -1,9 +1,9 @@
 //! `AudioGraph` — the editable DSP graph.
 //!
-//! Owns the fundsp-backed [`GraphNet`], the [`PdcManager`] that tracks plugin
-//! delay compensation, and (with feature `midi`) the [`MidiRoutingTable`] that
-//! publishes hardware-MIDI → node routing snapshots. Edits take `&mut self`
-//! directly. No `Mutex`, no closure, no `Arc<TuttiEngine>`.
+//! Owns the fundsp-backed [`GraphNet`] and (with feature `midi`) the
+//! [`MidiRoutingTable`] that publishes hardware-MIDI → node routing snapshots.
+//! Edits take `&mut self` directly. No `Mutex`, no closure, no
+//! `Arc<TuttiEngine>`.
 //!
 //! # Edit and commit
 //!
@@ -19,22 +19,11 @@
 //! Panic safety: if anything between the edit and `commit()` panics, the
 //! audio thread keeps playing the last committed graph. The next successful
 //! `commit()` flushes whatever is staged.
-//!
-//! # PDC
-//!
-//! [`PdcManager`] is fully private to the graph. Readers subscribe via
-//! [`pdc_snapshot`](AudioGraph::pdc_snapshot), which hands back an
-//! [`Arc`]`<`[`ArcSwap`]`<`[`PdcState`](crate::PdcState)`>>` — the only
-//! channel through which PDC state escapes. Typical consumer is the sampler's
-//! butler thread.
-
-use arc_swap::ArcSwap;
-use std::sync::Arc;
 
 use crate::dsp::AudioUnit;
 use crate::{
     dsp::{Fade, Net, NodeId, Source},
-    GraphNet, PdcManager, PdcState,
+    GraphNet,
 };
 
 use tutti_midi_types::MidiRoutingTable;
@@ -42,12 +31,10 @@ use tutti_midi_types::MidiRoutingTable;
 /// The editable DSP graph.
 ///
 /// Owned by a single `&mut` thread; no locks. Wraps a [`GraphNet`](crate::GraphNet)
-/// and its associated [`PdcManager`](crate::PdcManager) (plus, under the
-/// `midi` feature, a [`MidiRoutingTable`]). Edits are staged until
-/// [`commit`](Self::commit) publishes them to the audio thread.
+/// (plus, under the `midi` feature, a [`MidiRoutingTable`]). Edits are staged
+/// until [`commit`](Self::commit) publishes them to the audio thread.
 pub struct AudioGraph {
     net: GraphNet,
-    pdc: PdcManager,
     midi_route: MidiRoutingTable,
     sample_rate: f64,
     channels: usize,
@@ -55,17 +42,14 @@ pub struct AudioGraph {
 
 impl AudioGraph {
     /// Construct from pre-built parts. Called by `TuttiEngineBuilder`.
-    #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         net: GraphNet,
-        pdc: PdcManager,
         midi_route: MidiRoutingTable,
         sample_rate: f64,
         channels: usize,
     ) -> Self {
         Self {
             net,
-            pdc,
             midi_route,
             sample_rate,
             channels,
@@ -73,21 +57,14 @@ impl AudioGraph {
     }
 
     /// Build an empty graph with the given output `channels` (0 inputs,
-    /// 48 kHz). Constructs the net / PDC / routing table internally.
+    /// 48 kHz). Constructs the net and routing table internally.
     pub fn empty(channels: usize) -> Self {
         let mut net = GraphNet::new(0, channels);
         // Allocate the fundsp realtime backend (as the real builder does) so
         // `commit()` has a backend to publish into. Discarded here — nothing
         // drives audio through a test/bootstrap graph.
         let _backend = net.backend();
-        let pdc = PdcManager::new(channels, 0);
-        Self {
-            net,
-            pdc,
-            midi_route: MidiRoutingTable::new(),
-            sample_rate: 48_000.0,
-            channels,
-        }
+        Self::from_parts(net, MidiRoutingTable::new(), 48_000.0, channels)
     }
 
     /// Sample rate the graph was built with.
@@ -155,16 +132,6 @@ impl AudioGraph {
     /// Returns `None` if `id` is not in the graph or does not refer to a `T`.
     pub fn node_mut<T: AudioUnit + 'static>(&mut self, id: NodeId) -> Option<&mut T> {
         self.net.downcast_mut::<T>(id)
-    }
-
-    /// Lock-free PDC snapshot subscription.
-    ///
-    /// The returned [`Arc`]`<`[`ArcSwap`]`<`[`PdcState`](crate::PdcState)`>>`
-    /// is cheap to clone and safe to share with RT readers (e.g. the sampler
-    /// butler thread). Each reader calls `.load()` whenever it needs a current
-    /// snapshot. Snapshots are republished by [`commit`](Self::commit).
-    pub fn pdc_snapshot(&self) -> Arc<ArcSwap<PdcState>> {
-        self.pdc.snapshot_arc()
     }
 
     /// Snapshot the fundsp [`Net`] for offline processing (e.g. export).
@@ -320,31 +287,15 @@ impl AudioGraph {
 
     /// Publish pending edits to the audio thread.
     ///
-    /// Runs PDC analysis (inserting compensation delays automatically),
-    /// commits fundsp's [`Net`] backend, and publishes a fresh PDC snapshot
-    /// plus (under the `midi` feature) a fresh MIDI routing snapshot. Returns
-    /// total graph latency in samples (informational).
+    /// Commits fundsp's [`Net`] backend and publishes a fresh MIDI routing
+    /// snapshot.
     ///
     /// If a panic occurs between edits and `commit`, the audio thread keeps
     /// running the last successfully committed graph; the next `commit` call
     /// flushes whatever is currently staged.
-    pub fn commit(&mut self) -> usize {
-        let outcome = self.net.commit();
-        // Publish per-output-channel latency into PDC. Sampler streams
-        // (and any other external PDC consumer) index into
-        // `channel_latencies` by their own channel identity — see
-        // `apply_pdc_updates` in the sampler butler.
-        for (ch, &lat) in outcome.channel_latencies.iter().enumerate() {
-            self.pdc.set_channel_latency(ch, lat);
-        }
-        // Return-bus PDC: `PdcManager::set_return_latency` exists but is
-        // unused here — `AudioGraph` has no bus topology yet, so we can't
-        // split "track" latency from "return" latency. Returns continue
-        // to get zero compensation (same as prior behaviour). When bus
-        // identity lands on the graph, add a parallel `set_return_latency`
-        // loop here.
+    pub fn commit(&mut self) {
+        self.net.commit();
         self.midi_route.commit();
-        outcome.total_latency
     }
 
     /// [`Display`](core::fmt::Display)-able Graphviz `digraph { … }` summary
@@ -474,63 +425,14 @@ impl<'a> core::fmt::Display for GraphDot<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsp::{dc, limiter};
-    use crate::PdcManager;
-
-    fn graph_with(channels: usize) -> AudioGraph {
-        let mut net = GraphNet::new(0, channels);
-        // Allocate the fundsp backend so `commit()` has something to
-        // publish into. We never drive audio through it in this test —
-        // we only care that the commit path runs and updates PDC state.
-        let _backend = net.backend();
-        let pdc = PdcManager::new(channels, 0);
-        AudioGraph::from_parts(net, pdc, MidiRoutingTable::new(), 48_000.0, channels)
-    }
-
-    #[test]
-    fn commit_publishes_per_channel_latency() {
-        // 2-output graph: channel 0 has a limiter in front, channel 1 is
-        // a direct dc. After commit, PdcState.channel_latencies should
-        // reflect each channel's latency independently — previously the
-        // lumped total went to channel 0 and channel 1 was ignored.
-        let mut graph = graph_with(2);
-
-        let a = graph.add(dc(1.0));
-        let eff = graph.add(limiter(0.01, 0.01));
-        let b = graph.add(dc(1.0));
-
-        graph.connect(a, 0, eff, 0);
-        // Wire eff → output 0 and b → output 1 individually via the inner
-        // Net (pipe_output only does contiguous-from-0 wiring).
-        {
-            let net = graph.net_mut();
-            net.set_output_source(0, Source::Local(eff, 0));
-            net.set_output_source(1, Source::Local(b, 0));
-        }
-
-        let eff_lat = graph
-            .net_mut()
-            .node_mut(eff)
-            .latency()
-            .unwrap_or(0.0)
-            .round() as usize;
-        assert!(eff_lat > 0, "limiter must report latency");
-
-        let total = graph.commit();
-        assert_eq!(total, eff_lat);
-
-        let snap = graph.pdc_snapshot().load_full();
-        assert!(snap.channel_latencies().len() >= 2);
-        assert_eq!(snap.channel_latencies()[0], eff_lat);
-        assert_eq!(snap.channel_latencies()[1], 0);
-    }
+    use crate::dsp::dc;
 
     #[test]
     fn isolate_output_taps_target_and_keeps_upstream_alive() {
         // Two independent sources both feed the global output. Isolating `b`
         // must yield exactly b's signal — proving (1) the output bus repoints
         // to the target, and (2) the unreferenced `a` branch does not leak in.
-        let mut graph = graph_with(2);
+        let mut graph = AudioGraph::empty(2);
         let a = graph.add(dc(0.25));
         let b = graph.add(dc(0.75));
         graph.net_mut().set_output_source(0, Source::Local(a, 0));
@@ -550,7 +452,7 @@ mod tests {
 
     #[test]
     fn isolate_output_mono_target_fans_to_both_channels() {
-        let mut graph = graph_with(2);
+        let mut graph = AudioGraph::empty(2);
         let m = graph.add(dc(0.5)); // single-output source
         let mut net = graph.clone_net();
         assert!(isolate_output(&mut net, m));

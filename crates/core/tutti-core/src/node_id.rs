@@ -87,10 +87,10 @@ pub const fn assert_unique(ids: &[u64]) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// PDC markers (scanned by graph/net.rs to find auto-inserted delays)
+// PDC marker (scanned by pdc::clear_delays to find auto-inserted delays)
 // ──────────────────────────────────────────────────────────────────────
+/// Marks every `PdcDelay<CH>`, whatever its channel count.
 pub const PDC_DELAY_ID: u64 = 0x_0000_0050_4443_4445; // "PDCDE"
-pub const MONO_PDC_DELAY_ID: u64 = 0x_0000_0000_4D50_4443; // "MPDC"
 
 // ──────────────────────────────────────────────────────────────────────
 // Transport / control nodes
@@ -99,9 +99,4 @@ pub const TRANSPORT_CLOCK_ID: u64 = 0x_5452_4E53_434C_4B00; // "TRNSCLK\0"
 pub const AUTOMATION_INPUT_ID: u64 = 0x_4155_544F_494E_5054; // "AUTOINPT"
 
 // Compile-time intra-crate uniqueness guard for core's own ids.
-const _: () = assert_unique(&[
-    PDC_DELAY_ID,
-    MONO_PDC_DELAY_ID,
-    TRANSPORT_CLOCK_ID,
-    AUTOMATION_INPUT_ID,
-]);
+const _: () = assert_unique(&[PDC_DELAY_ID, TRANSPORT_CLOCK_ID, AUTOMATION_INPUT_ID]);

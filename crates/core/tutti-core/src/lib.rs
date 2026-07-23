@@ -10,7 +10,7 @@
 //! - [`GraphNet`]: DSP graph manipulation
 //! - [`TransportHandle`]: Playback control (play/stop/seek/loop)
 //! - [`MeteringManager`]: Audio level monitoring
-//! - [`PdcManager`]: Plugin delay compensation
+//! - [`PdcDelay`]: Delay compensation node, inserted automatically on commit
 //!
 //! # Feature-gated APIs
 //!
@@ -67,7 +67,11 @@ pub use metering::{
 };
 
 pub(crate) mod pdc;
-pub use pdc::{PdcDelayUnit, PdcManager, PdcState};
+pub use pdc::PdcDelay;
+// Delay-compensation vocabulary + the graph-agnostic planner, homed in
+// `tutti-types` and surfaced here so consumers reach it via the engine root.
+pub use tutti_types::latency::{self, Compensation, DelayInsertion, LatencyGraph};
+pub use tutti_types::units::Samples;
 
 pub use atomic_float::{AtomicF32, AtomicF64};
 // Convenience re-exports of the std primitives the RT/DSP vocabulary leans on,
@@ -134,6 +138,6 @@ pub mod node_id;
 
 pub mod graph;
 pub use graph::{
-    isolate_output, AudioGraph, AudioNode, CommitOutcome, GraphDot, GraphNet, LayerKey, ModParam,
-    Mute, NodeKind, Pan, PluginParam, Volume,
+    isolate_output, AudioGraph, AudioNode, GraphDot, GraphNet, LayerKey, ModParam, Mute, NodeKind,
+    Pan, PluginParam, Volume,
 };

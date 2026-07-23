@@ -2,7 +2,7 @@
 name = "tutti-types"
 version = "0.0.1"
 edition = "2021"
-description = "Shared vocabulary for the Tutti audio engine — RT primitives + the AudioIn/AudioOut I/O traits"
+description = "Shared vocabulary for the Tutti audio engine — RT primitives, the AudioIn/AudioOut I/O traits, and latency compensation"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "real-time"]

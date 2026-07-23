@@ -20,8 +20,7 @@ use tutti_core::dsp::An;
 use tutti_core::processor::GraphProcessor;
 use tutti_core::Arc;
 use tutti_core::{
-    ClickNode, ClickSettings, GraphNet, MeteringHandle, MeteringManager, PdcManager, Transport,
-    TransportClock,
+    ClickNode, ClickSettings, GraphNet, MeteringHandle, MeteringManager, Transport, TransportClock,
 };
 
 // Each subsystem owns its own transient `PendingX` (defined next to its plugin).
@@ -91,8 +90,11 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let transport = Transport::new(sample_rate);
     let metering_mgr = Arc::new(MeteringManager::new(sample_rate));
     let click_settings = Arc::new(ClickSettings::new());
-    let pdc = PdcManager::new(outputs, 0);
-    let pdc_snapshot = pdc.snapshot_arc();
+
+    // Per-channel pre-roll for sources outside the graph. Stays empty unless the
+    // app adds `LatencyCompensationPlugin`, which owns publishing into it; the
+    // sampler subscribes here so the wiring exists either way.
+    let compensation = crate::latency::ChannelCompensation::default();
 
     let mut net = GraphNet::new(inputs, outputs);
 
@@ -160,15 +162,12 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let sampler = Sampler::new(
         sample_rate,
         tutti_sampler::SamplerConfig {
-            pdc: Some(pdc_snapshot.clone()),
+            pdc: Some(Arc::clone(&compensation.0)),
             ..Default::default()
         },
     )?;
-    // Silence the unused warning in the non-sampler config.
-    #[cfg(not(feature = "sampler"))]
-    let _ = &pdc_snapshot;
 
-    let graph = AudioGraph::from_parts(net, pdc, midi_route, sample_rate, channels);
+    let graph = AudioGraph::from_parts(net, midi_route, sample_rate, channels);
 
     let driver = TuttiDriver::from_parts(audio_engine, callback_state);
 
@@ -188,6 +187,10 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         channels,
     };
     app.insert_resource(PendingGraph(Some((graph, config))));
+    // Inserted whether or not the app opts into compensation: the sampler already
+    // holds a clone of this Arc, so the resource must be *this* one, not a fresh
+    // default. `LatencyCompensationPlugin` uses `init_resource`, which leaves it.
+    app.insert_resource(compensation);
     app.insert_non_send(driver);
     app.insert_resource(PendingTransport(Some(transport)));
     app.insert_resource(PendingMetronome(Some(metronome)));

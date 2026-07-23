@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use tutti_core::PdcState;
+use tutti_core::Samples;
 
 use super::cache::LruCache;
 use super::command::{ButlerCommand, RegionId};
@@ -28,8 +28,8 @@ pub(super) struct Handles {
     pub plans: Arc<DashMap<usize, ChannelPlan>>,
     pub cache: Arc<LruCache>,
     pub metrics: Arc<Metrics>,
-    /// Lock-free PDC snapshot subscription. `None` = no PDC wiring.
-    pub pdc: Option<Arc<ArcSwap<PdcState>>>,
+    /// Lock-free subscription to the compensation table. `None` = no PDC wiring.
+    pub pdc: Option<Arc<ArcSwap<Vec<Samples>>>>,
 }
 
 /// Butler-thread-local state. Never shared. Plain data.
@@ -198,14 +198,11 @@ fn handle_stream_file(
     }
 
     let pdc_preroll = shared.pdc.as_ref().map_or(0, |pdc| {
-        let snap = pdc.load();
-        if !snap.is_active() {
-            return 0;
-        }
-        snap.channel_compensations()
+        pdc.load()
             .get(channel_index)
             .copied()
-            .unwrap_or(0) as u64
+            .unwrap_or_default()
+            .get() as u64
     });
 
     let adjusted_offset = (offset_samples as u64).saturating_sub(pdc_preroll);

@@ -180,7 +180,9 @@ impl RtState {
     /// only the latest target survives if the butler hasn't caught up.
     #[inline]
     pub fn request_seek(&self, file_offset: u64) {
-        self.health.seek_target.store(file_offset, Ordering::Relaxed);
+        self.health
+            .seek_target
+            .store(file_offset, Ordering::Relaxed);
         self.health
             .seek_request_epoch
             .fetch_add(1, Ordering::Release);

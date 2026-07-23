@@ -6,7 +6,7 @@ use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use tutti_core::graph::{AudioConfig, GraphDirty, AudioGraphRes};
+use tutti_core::graph::{AudioConfig, AudioGraphRes, GraphDirty};
 use tutti_core::WaveAsset;
 
 use super::time_stretch::{TimeStretch, TimeStretchControl};
@@ -260,7 +260,7 @@ mod tests {
     use bevy_app::{App, Update};
     use bevy_asset::{AssetApp, AssetPlugin, Assets};
     use std::sync::Arc;
-    use tutti_core::graph::{AudioConfig, GraphDirty, AudioGraphRes};
+    use tutti_core::graph::{AudioConfig, AudioGraphRes, GraphDirty};
     use tutti_core::AudioGraph;
 
     /// Build a bare `AudioGraph` directly (no `TuttiEngine`, which lives in
@@ -295,14 +295,14 @@ mod tests {
 
         // Reserve a handle with NO backing asset yet — simulates `AssetServer::load`
         // returning before decode finishes.
-        let handle = app
-            .world()
-            .resource::<Assets<WaveAsset>>()
-            .reserve_handle();
+        let handle = app.world().resource::<Assets<WaveAsset>>().reserve_handle();
 
         let entity = app
             .world_mut()
-            .spawn(PlayAudio { source: handle.clone(), ..Default::default() })
+            .spawn(PlayAudio {
+                source: handle.clone(),
+                ..Default::default()
+            })
             .id();
 
         // Frame 1: asset still unresolved → no emitter, but the trigger survives.
@@ -349,7 +349,13 @@ mod tests {
             assets.add(WaveAsset(Arc::new(wave)))
         };
 
-        let entity = app.world_mut().spawn(PlayAudio { source: handle, ..Default::default() }).id();
+        let entity = app
+            .world_mut()
+            .spawn(PlayAudio {
+                source: handle,
+                ..Default::default()
+            })
+            .id();
         app.update();
         let node_before = app
             .world()
@@ -365,6 +371,9 @@ mod tests {
             .get::<AudioEmitter>(entity)
             .expect("emitter")
             .node_id;
-        assert_eq!(node_before, node_after, "no re-processing of a played entity");
+        assert_eq!(
+            node_before, node_after,
+            "no re-processing of a played entity"
+        );
     }
 }

@@ -116,4 +116,3 @@ impl Metrics {
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
     }
 }
-

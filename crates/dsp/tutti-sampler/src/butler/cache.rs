@@ -234,7 +234,10 @@ mod tests {
 
         assert!(cache.get(&a).is_some(), "pinned LRU victim must survive");
         assert!(cache.get(&c).is_some(), "new entry admitted");
-        assert!(cache.get(&b).is_none(), "unpinned next-oldest evicted instead");
+        assert!(
+            cache.get(&b).is_none(),
+            "unpinned next-oldest evicted instead"
+        );
     }
 
     #[test]
@@ -277,7 +280,10 @@ mod tests {
         let pin_a = cache.pin(&a);
         cache.insert(b.clone(), make_wave(100));
         let _pin_b = cache.pin(&b);
-        assert!(cache.get(&a).is_some(), "pinned `a` survives the over-budget insert");
+        assert!(
+            cache.get(&a).is_some(),
+            "pinned `a` survives the over-budget insert"
+        );
         drop(pin_a);
 
         // With `a`'s pin gone it is the sole unpinned entry: the next over-budget

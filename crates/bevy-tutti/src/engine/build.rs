@@ -15,13 +15,13 @@
 use bevy_app::App;
 
 use crate::engine::audio_io::{AudioCallbackState, AudioEngine};
-use crate::engine::{Result, TuttiDriver, AudioGraph};
+use crate::engine::{AudioGraph, Result, TuttiDriver};
 use tutti_core::dsp::An;
 use tutti_core::processor::GraphProcessor;
 use tutti_core::Arc;
 use tutti_core::{
-    ClickNode, ClickSettings, MeteringHandle, MeteringManager, PdcManager, TransportClock,
-    TransportHandle, TransportManager, GraphNet,
+    ClickNode, ClickSettings, GraphNet, MeteringHandle, MeteringManager, PdcManager,
+    TransportClock, TransportHandle, TransportManager,
 };
 
 // Each subsystem owns its own transient `PendingX` (defined next to its plugin).
@@ -33,10 +33,10 @@ use tutti_core::transport::PendingTransport;
 
 #[cfg(feature = "midi")]
 use tutti_core::processor::MidiProcessor;
-#[cfg(feature = "midi")]
-use tutti_midi_io::PendingMidi;
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_io::MidiIo;
+#[cfg(feature = "midi")]
+use tutti_midi_io::PendingMidi;
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::MidiBus;
 // `MidiRoutingTable` is a plain type (from tutti-midi-types, a hard dep) that
@@ -80,7 +80,11 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let channels = audio_engine.channels();
 
     let inputs = plugin.inputs;
-    let outputs = if plugin.outputs == 0 { 2 } else { plugin.outputs };
+    let outputs = if plugin.outputs == 0 {
+        2
+    } else {
+        plugin.outputs
+    };
 
     let transport_mgr = Arc::new(TransportManager::new(sample_rate));
     let metering_mgr = Arc::new(MeteringManager::new(sample_rate));
@@ -154,13 +158,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     #[cfg(not(feature = "sampler"))]
     let _ = &pdc_snapshot;
 
-    let graph = AudioGraph::from_parts(
-        net,
-        pdc,
-        midi_route,
-        sample_rate,
-        channels,
-    );
+    let graph = AudioGraph::from_parts(net, pdc, midi_route, sample_rate, channels);
 
     let driver = TuttiDriver::from_parts(audio_engine, callback_state);
 

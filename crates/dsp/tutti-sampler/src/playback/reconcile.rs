@@ -9,7 +9,7 @@
 use bevy_ecs::prelude::*;
 
 use tutti_core::graph::{
-    AudioNode, GraphDirty, Mute, NodeKind, NodeParamEpoch, AudioGraphRes, Volume,
+    AudioGraphRes, AudioNode, GraphDirty, Mute, NodeKind, NodeParamEpoch, Volume,
 };
 
 use super::node::{SamplerLooping, SamplerNode, SamplerSpeed};
@@ -95,9 +95,9 @@ pub fn bump_param_epoch_sampler(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::graph::{GraphReconcileSystems, AudioGraphRes};
-    use tutti_core::AudioGraph;
     use bevy_app::App;
+    use tutti_core::graph::{AudioGraphRes, GraphReconcileSystems};
+    use tutti_core::AudioGraph;
 
     fn bare_graph(channels: usize) -> AudioGraph {
         // Feature-agnostic: tutti-core owns the `midi` cfg, so this stays correct
@@ -167,7 +167,10 @@ mod tests {
 
         let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        let unit = graph.0.node_mut::<SamplerUnit>(node_id).expect("SamplerUnit");
+        let unit = graph
+            .0
+            .node_mut::<SamplerUnit>(node_id)
+            .expect("SamplerUnit");
         assert_eq!(unit.speed(), tutti_core::Ratio::new(2.0));
         assert!(unit.is_looping());
     }

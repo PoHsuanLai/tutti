@@ -231,7 +231,7 @@ mod tests {
     use super::*;
     use parking_lot::Mutex;
     use tutti_core::processor::GraphProcessor;
-    use tutti_core::{MeteringManager, Ordering, TransportClock, TransportManager, GraphNet};
+    use tutti_core::{GraphNet, MeteringManager, Ordering, TransportClock, TransportManager};
 
     /// Build a minimal processor + transport pair for callback-level tests.
     /// Bypasses the engine builder — these tests exercise the RT callback

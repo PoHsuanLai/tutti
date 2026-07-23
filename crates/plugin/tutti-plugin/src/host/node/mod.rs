@@ -27,23 +27,23 @@ mod tests;
 // in `crate::util::node`; re-exported here so the existing
 // `crate::host::node::{Midi, ...}` paths (used by `crate::backend`) keep
 // resolving.
-pub use crate::util::node::{LatencyChangeSink, Midi, ParameterChangeSink, route_with_latency};
 pub(crate) use crate::util::node::ResyncSink;
+pub use crate::util::node::{route_with_latency, LatencyChangeSink, Midi, ParameterChangeSink};
 pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
 pub use param_automation_source::{ParamAutomationSource, TimedParam};
 pub(crate) use process::ProcessGuard;
 
-use crate::host::ipc_client::audio::BridgeEvent;
-use crate::host::ipc_client::PluginBridge;
-use crate::util::config::BridgeConfig;
 use crate::error::Result;
-use crate::protocol::{
-    Features, LoadedPlugin, ParameterChanges, PluginDescriptor, SampleFormat, TransportInfo,
-};
+use crate::host::ipc_client::audio::BridgeEvent;
 use crate::host::ipc_client::audio::HarmonyInputs;
+use crate::host::ipc_client::PluginBridge;
 use crate::host::node::input_slot::{BlockCtx, InputSlot};
 use crate::host::node::transport_source::TransportSource;
 use crate::host::subprocess;
+use crate::protocol::{
+    Features, LoadedPlugin, ParameterChanges, PluginDescriptor, SampleFormat, TransportInfo,
+};
+use crate::util::config::BridgeConfig;
 use batcher::Batcher;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};

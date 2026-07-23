@@ -1,7 +1,7 @@
-use crate::host::node::{LatencyChangeSink, ParameterChangeSink, ResyncSink};
-use crate::host::ipc_client::audio::ResyncKind;
-use crate::host::handles::control_backend::ControlBackend;
 use crate::error::EditorError;
+use crate::host::handles::control_backend::ControlBackend;
+use crate::host::ipc_client::audio::ResyncKind;
+use crate::host::node::{LatencyChangeSink, ParameterChangeSink, ResyncSink};
 use crate::protocol::{LoadedPlugin, ParameterInfo, PluginDescriptor};
 use crate::util::window::{EditorCapabilities, EditorSize};
 use raw_window_handle::HasWindowHandle;
@@ -132,10 +132,7 @@ impl PluginHandle {
     }
 
     /// Returns the snapped/clamped size the plugin applied.
-    pub fn set_editor_size(
-        &self,
-        requested: EditorSize,
-    ) -> Result<EditorSize, EditorError> {
+    pub fn set_editor_size(&self, requested: EditorSize) -> Result<EditorSize, EditorError> {
         self.inner.set_editor_size(requested)
     }
 

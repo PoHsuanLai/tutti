@@ -205,7 +205,11 @@ impl MidiSnapshot {
     /// the whole track as a single ordered stream rather than a cursor poll.
     pub fn events_in_beat_order(&self) -> Vec<TimedMidiEvent> {
         let mut all: Vec<TimedMidiEvent> = self.events.values().flatten().copied().collect();
-        all.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(core::cmp::Ordering::Equal));
+        all.sort_by(|a, b| {
+            a.beat
+                .partial_cmp(&b.beat)
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
         all
     }
 }
@@ -214,7 +218,11 @@ impl MidiSnapshot {
 /// rather than panicking, unlike a bare `partial_cmp(..).unwrap()`.
 #[inline]
 fn sort_by_beat(events: &mut [TimedMidiEvent]) {
-    events.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(core::cmp::Ordering::Equal));
+    events.sort_by(|a, b| {
+        a.beat
+            .partial_cmp(&b.beat)
+            .unwrap_or(core::cmp::Ordering::Equal)
+    });
 }
 
 #[cfg(test)]
@@ -382,7 +390,10 @@ mod tests {
         one_by_one.add_event(unit, 2.0, note_off(60));
 
         // Both end beat-sorted and identical.
-        assert_eq!(bulk.events_in_beat_order(), one_by_one.events_in_beat_order());
+        assert_eq!(
+            bulk.events_in_beat_order(),
+            one_by_one.events_in_beat_order()
+        );
         let beats: Vec<f64> = bulk.events_in_beat_order().iter().map(|e| e.beat).collect();
         assert_eq!(beats, [0.0, 1.0, 2.0]);
     }
@@ -390,7 +401,10 @@ mod tests {
     #[test]
     fn timed_event_from_tuple_and_new_agree() {
         let ev = note_on(60, 100);
-        assert_eq!(TimedMidiEvent::new(1.5, ev), TimedMidiEvent::from((1.5, ev)));
+        assert_eq!(
+            TimedMidiEvent::new(1.5, ev),
+            TimedMidiEvent::from((1.5, ev))
+        );
     }
 
     #[test]

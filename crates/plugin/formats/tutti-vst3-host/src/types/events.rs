@@ -400,18 +400,19 @@ pub(crate) unsafe fn from_c_event(
 
     // Copy a plugin-supplied (ptr, len) UTF-16 string into the arena, returning
     // the TextRef. Null pointer or zero length yields an empty ref.
-    let intern = |arena: &mut smallvec::SmallVec<[u16; 256]>,
-                  ptr: *const u16,
-                  len: usize|
-     -> TextRef {
-        let n = len.min(MAX_EVENT_TEXT_LEN);
-        if ptr.is_null() || n == 0 {
-            return TextRef::default();
-        }
-        let start = arena.len() as u32;
-        arena.extend(std::slice::from_raw_parts(ptr, n).iter().copied());
-        TextRef { start, len: n as u32 }
-    };
+    let intern =
+        |arena: &mut smallvec::SmallVec<[u16; 256]>, ptr: *const u16, len: usize| -> TextRef {
+            let n = len.min(MAX_EVENT_TEXT_LEN);
+            if ptr.is_null() || n == 0 {
+                return TextRef::default();
+            }
+            let start = arena.len() as u32;
+            arena.extend(std::slice::from_raw_parts(ptr, n).iter().copied());
+            TextRef {
+                start,
+                len: n as u32,
+            }
+        };
 
     match event.r#type as u32 {
         t if t == EventTypes_::kNoteOnEvent as u32 => {
@@ -804,10 +805,8 @@ pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
 /// CCs; the synthetic slots map to their channel-voice messages, with `value2`
 /// supplying the second data byte for pitch bend and poly-pressure.
 fn legacy_cc_to_midi(e: &LegacyMidiCcOutEvent, frame: u32) -> Option<MidiEvent> {
-    use vst3::Steinberg::Vst::ControllerNumbers_::{
-        kAfterTouch, kCtrlPolyPressure, kPitchBend,
-    };
     use tutti_midi_types::convert::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2};
+    use vst3::Steinberg::Vst::ControllerNumbers_::{kAfterTouch, kCtrlPolyPressure, kPitchBend};
 
     let channel = (e.channel as u8) & 0x0F;
     let v1 = (e.value as u8) & 0x7F;
@@ -914,7 +913,10 @@ fn intern_utf16(arena: &mut TextArena, text: &[u16]) -> TextRef {
     }
     let start = arena.len() as u32;
     arena.extend_from_slice(&text[..n]);
-    TextRef { start, len: n as u32 }
+    TextRef {
+        start,
+        len: n as u32,
+    }
 }
 
 fn text_header(sample_offset: i32, event_type: u16) -> EventHeader {
@@ -1048,7 +1050,10 @@ pub fn vst3_to_scale(event: &Vst3Event, arena: &[u16]) -> Option<ScaleValue> {
 }
 
 /// See [`vst3_to_chord`].
-pub fn vst3_to_note_expression_text(event: &Vst3Event, arena: &[u16]) -> Option<NoteExpressionText> {
+pub fn vst3_to_note_expression_text(
+    event: &Vst3Event,
+    arena: &[u16],
+) -> Option<NoteExpressionText> {
     match event {
         Vst3Event::NoteExpressionText(e) => Some(NoteExpressionText {
             sample_offset: e.header.sample_offset,
@@ -1076,7 +1081,10 @@ pub fn vst3_to_note_expression_int(event: &Vst3Event) -> Option<NoteExpressionIn
 fn resolve_text(t: &TextRef, arena: &[u16]) -> Vec<u16> {
     let start = t.start as usize;
     let end = start + t.len as usize;
-    arena.get(start..end).map(|s| s.to_vec()).unwrap_or_default()
+    arena
+        .get(start..end)
+        .map(|s| s.to_vec())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1098,7 +1106,10 @@ mod tests {
 
         let event = MidiEvent::cc(0, 1, 74, midi1_cc_to_midi2(100));
         let vst3 = vst3_event_from_midi(&event).expect("CC -> Data");
-        assert!(matches!(vst3, Vst3Event::Data(_)), "CC should be a Data event");
+        assert!(
+            matches!(vst3, Vst3Event::Data(_)),
+            "CC should be a Data event"
+        );
         let back = vst3_to_midi_event(&vst3).expect("cc decodes");
         match UmpMessage::try_from(back.data_words()).expect("valid UMP") {
             UmpMessage::ChannelVoice2(Cv2::ControlChange(m)) => {
@@ -1271,9 +1282,8 @@ mod tests {
         use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
         // Center bend on note 67, channel 5 → Tuning expression at value 0.5,
         // bound to the same noteId the note-on for (5, 67) would carry.
-        let event =
-            MidiEvent::per_note_pitch_bend(0, 5, 67, midi1_pitch_bend_to_midi2(8192))
-                .with_frame_offset(12);
+        let event = MidiEvent::per_note_pitch_bend(0, 5, 67, midi1_pitch_bend_to_midi2(8192))
+            .with_frame_offset(12);
         let vst3 = vst3_event_from_midi(&event).expect("per-note bend should map");
         let expr = vst3_to_note_expression(&vst3).expect("is a note expression");
         assert_eq!(expr.expression_type, NoteExpressionType::Tuning);
@@ -1288,8 +1298,7 @@ mod tests {
     fn per_note_controller_maps_known_indices_only() {
         use tutti_midi_types::convert::midi1_cc_to_midi2;
         // CC 74 (brightness) is a known dimension → Brightness expression.
-        let known =
-            MidiEvent::per_note_controller(0, 0, 60, 74, midi1_cc_to_midi2(100), false);
+        let known = MidiEvent::per_note_controller(0, 0, 60, 74, midi1_cc_to_midi2(100), false);
         match vst3_event_from_midi(&known) {
             Some(Vst3Event::NoteExpression(e)) => {
                 assert_eq!(
@@ -1301,8 +1310,7 @@ mod tests {
             other => panic!("expected Brightness note expression, got {other:?}"),
         }
         // An index with no VST3 expression counterpart is dropped.
-        let unknown =
-            MidiEvent::per_note_controller(0, 0, 60, 33, midi1_cc_to_midi2(100), false);
+        let unknown = MidiEvent::per_note_controller(0, 0, 60, 33, midi1_cc_to_midi2(100), false);
         assert!(vst3_event_from_midi(&unknown).is_none());
     }
 

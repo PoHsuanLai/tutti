@@ -3,8 +3,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tutti_core::{
-    AtomicSamplePosition, AudioUnit, BeatDuration, Beat, BufferMut, BufferRef, Linear,
-    Ratio, SamplePosition, SampleRate, Timeline, Wave,
+    AtomicSamplePosition, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Linear, Ratio,
+    SamplePosition, SampleRate, Timeline, Wave,
 };
 
 use super::loop_crossfade::LoopCrossfade;
@@ -277,11 +277,7 @@ impl SamplerUnit {
         });
     }
 
-    pub fn set_placement(
-        &mut self,
-        start_beat: Beat,
-        duration_beats: Option<BeatDuration>,
-    ) {
+    pub fn set_placement(&mut self, start_beat: Beat, duration_beats: Option<BeatDuration>) {
         if let Some(placement) = &mut self.placement {
             placement.start_beat = start_beat;
             placement.duration_beats = duration_beats;
@@ -1201,8 +1197,7 @@ mod tests {
         // ramp_wave has sample[i] = i+1, so sample[22050] = 22051.0.
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(1.0, 120.0);
-        let mut sampler =
-            SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1220,8 +1215,7 @@ mod tests {
     fn transport_stopped_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::stopped();
-        let mut sampler =
-            SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1234,8 +1228,7 @@ mod tests {
     fn transport_before_start_beat_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(1.0, 120.0);
-        let mut sampler =
-            SamplerUnit::with_transport(wave, transport, Beat::new(4.0), None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(4.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1264,8 +1257,7 @@ mod tests {
     fn transport_process_block() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(0.0, 120.0);
-        let mut sampler =
-            SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
@@ -1283,8 +1275,7 @@ mod tests {
     fn transport_process_block_silence_when_stopped() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::stopped();
-        let mut sampler =
-            SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);

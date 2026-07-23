@@ -4,7 +4,7 @@ use crossbeam_channel::Receiver;
 use vst3::Steinberg::{
     IPlugView,
     Vst::{
-        IAudioPresentationLatency, IAutomationState, IAudioProcessor, IComponent, IEditController,
+        IAudioPresentationLatency, IAudioProcessor, IAutomationState, IComponent, IEditController,
         IKeyswitchController, INoteExpressionController, INoteExpressionPhysicalUIMapping,
         IParameterFunctionName, IPrefetchableSupport, IRemapParamID, IXmlRepresentationController,
     },

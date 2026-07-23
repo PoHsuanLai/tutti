@@ -449,7 +449,10 @@ mod tests {
     #[test]
     fn errors_distinguish_failure_modes() {
         // Not a clip file at all.
-        assert_eq!(read_clip_file(b"NOTACLIP\0\0\0\0"), Err(ClipFileError::BadMagic));
+        assert_eq!(
+            read_clip_file(b"NOTACLIP\0\0\0\0"),
+            Err(ClipFileError::BadMagic)
+        );
         assert_eq!(read_clip_file(b"short"), Err(ClipFileError::BadMagic));
         // Right magic, but the body isn't word-aligned.
         assert_eq!(

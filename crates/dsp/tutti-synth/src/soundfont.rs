@@ -11,11 +11,11 @@ pub use rustysynth::SoundFontAsset;
 
 use rustysynth::Synthesizer;
 use smallvec::SmallVec;
-use tutti_midi_types::{MidiIn, MidiUnitId};
 use tutti_core::Arc;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
-use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_runtime::{MidiInPort, MidiSender};
+use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::{MidiIn, MidiUnitId};
 
 /// Capacity of the scratch buffer used to poll MIDI events per audio callback.
 ///
@@ -156,16 +156,23 @@ impl SoundFontUnit {
                 // `normalize` already folded true velocity-0 to NoteOff, so any
                 // NoteOn here is audible — clamp the 7-bit floor to 1.
                 let vel_u7 = midi2_velocity_to_midi1(m.velocity()).max(1);
-                self.synthesizer
-                    .note_on(ch, i32::from(u8::from(m.note_number())), i32::from(vel_u7));
+                self.synthesizer.note_on(
+                    ch,
+                    i32::from(u8::from(m.note_number())),
+                    i32::from(vel_u7),
+                );
             }
             Cv2::NoteOff(m) => {
                 self.synthesizer
                     .note_off(ch, i32::from(u8::from(m.note_number())));
             }
             Cv2::ProgramChange(m) => {
-                self.synthesizer
-                    .process_midi_message(ch, 0xC0, i32::from(u8::from(m.program())), 0);
+                self.synthesizer.process_midi_message(
+                    ch,
+                    0xC0,
+                    i32::from(u8::from(m.program())),
+                    0,
+                );
             }
             Cv2::ChannelPitchBend(m) => {
                 let bend14 = midi2_pitch_bend_to_midi1(m.pitch_bend_data());
@@ -310,9 +317,11 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
-use tutti_core::graph::engine_ready;
-use tutti_core::graph::{AudioConfig, AudioEmitter, GraphDirty, GraphReconcileSystems, AudioGraphRes};
 use bevy_tasks::{block_on, futures_lite::future};
+use tutti_core::graph::engine_ready;
+use tutti_core::graph::{
+    AudioConfig, AudioEmitter, AudioGraphRes, GraphDirty, GraphReconcileSystems,
+};
 
 /// In-memory Bevy loader for [`SoundFontAsset`]. Reads the whole `.sf2`
 /// payload, then delegates to [`SoundFontAsset::from_bytes`].

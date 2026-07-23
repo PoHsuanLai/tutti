@@ -3,9 +3,7 @@
 //! Framing: u32 big-endian length prefix + bincode payload.
 
 use interprocess::local_socket::{
-    GenericFilePath, ListenerOptions, Stream,
-    traits::Listener as _,
-    ToFsName as _,
+    traits::Listener as _, GenericFilePath, ListenerOptions, Stream, ToFsName as _,
 };
 use std::io::{Read, Write};
 use tutti_plugin::server::{BridgeMessage, HostMessage};

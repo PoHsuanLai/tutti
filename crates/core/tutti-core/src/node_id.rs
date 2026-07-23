@@ -61,7 +61,10 @@
 /// the mnemonic convention + the reserved-mnemonic ledger in this module's docs.
 pub const fn mnemonic(s: &[u8; 8]) -> u64 {
     let v = u64::from_be_bytes(*s);
-    assert!(v > 100, "node-id mnemonic collides with fundsp's reserved range");
+    assert!(
+        v > 100,
+        "node-id mnemonic collides with fundsp's reserved range"
+    );
     v
 }
 

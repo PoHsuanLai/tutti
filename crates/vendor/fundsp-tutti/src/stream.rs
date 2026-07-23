@@ -16,10 +16,10 @@
 //! one-packet helper. All decode/seek/file I/O runs on the butler thread; the
 //! audio thread never touches this type.
 
-use super::read::{decode_packet_into, WaveResult};
-use tutti_types::io::AudioIn;
+use super::read::{WaveResult, decode_packet_into};
 use std::fs::File;
 use std::path::Path;
+use tutti_types::io::AudioIn;
 extern crate alloc;
 use alloc::boxed::Box;
 use symphonia::core::audio::{AudioBuffer, Signal};
@@ -125,8 +125,7 @@ impl FileIn {
             .unwrap_or(2);
 
         let decode_opts = DecoderOptions::default();
-        let decoder =
-            symphonia::default::get_codecs().make(&track.codec_params, &decode_opts)?;
+        let decoder = symphonia::default::get_codecs().make(&track.codec_params, &decode_opts)?;
 
         // Seekable only when the container reports a frame count. Formats
         // without n_frames (some VBR/streamed) fall back to whole-file load.
@@ -165,9 +164,7 @@ impl FileIn {
         loop {
             let packet = match self.reader.next_packet() {
                 Ok(p) => p,
-                Err(Error::IoError(e))
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
+                Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     return Ok(0);
                 }
                 Err(e) => return Err(e),

@@ -164,9 +164,12 @@ pub fn reconcile_audio_routing(
             );
             continue;
         }
-        graph
-            .0
-            .connect(src_node.0, link.src_port as usize, target_node.0, link.dst_port as usize);
+        graph.0.connect(
+            src_node.0,
+            link.src_port as usize,
+            target_node.0,
+            link.dst_port as usize,
+        );
         tracked.insert(src_entity, (target_entity, link.dst_port));
         dirty.0 = true;
     }
@@ -197,7 +200,7 @@ mod tests {
     use super::*;
     use crate::graph::reconcile::GraphReconcileSystems;
     use crate::AudioGraph;
-    use crate::{PdcManager, GraphNet};
+    use crate::{GraphNet, PdcManager};
     use bevy_app::App;
 
     fn bare_graph(channels: usize) -> AudioGraph {
@@ -205,13 +208,7 @@ mod tests {
         let _backend = net.backend();
         let pdc = PdcManager::new(channels, 0);
         let midi_route = tutti_midi_types::MidiRoutingTable::new();
-        AudioGraph::from_parts(
-            net,
-            pdc,
-            midi_route,
-            48_000.0,
-            channels,
-        )
+        AudioGraph::from_parts(net, pdc, midi_route, 48_000.0, channels)
     }
 
     fn test_app() -> App {
@@ -281,9 +278,9 @@ mod tests {
         // Spawn two AudioNodes (a sine generator and a stereo
         // ChannelStripUnit-equivalent — using `pass` for simplicity)
         // and verify `AudioFeedsTo` produces an actual graph edge.
+        use crate::dsp::sine_hz;
         use crate::graph::reconcile::SpawnAudioNode;
         use crate::graph::NodeKind;
-        use crate::dsp::sine_hz;
         // `crate::dsp::pass` is a stereo pass-through (2 in, 2 out)
         // — exactly what we need as a sink with addressable input ports.
         let mut app = test_app();
@@ -326,9 +323,9 @@ mod tests {
 
     #[test]
     fn audio_feeds_to_disconnects_on_remove() {
+        use crate::dsp::sine_hz;
         use crate::graph::reconcile::SpawnAudioNode;
         use crate::graph::NodeKind;
-        use crate::dsp::sine_hz;
 
         let mut app = test_app();
 

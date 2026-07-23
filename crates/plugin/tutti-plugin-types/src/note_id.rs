@@ -69,10 +69,7 @@ mod tests {
     #[test]
     fn max_id_is_channel_15_note_127() {
         assert_eq!(note_id_for(15, 127), MAX_HOST_NOTE_ID);
-        assert_eq!(
-            note_id_to_channel_note(MAX_HOST_NOTE_ID),
-            Some((15, 127))
-        );
+        assert_eq!(note_id_to_channel_note(MAX_HOST_NOTE_ID), Some((15, 127)));
     }
 
     #[test]

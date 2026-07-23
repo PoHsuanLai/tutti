@@ -1,8 +1,8 @@
 //! Plugin Delay Compensation (PDC) Manager.
 
-use std::sync::Arc;
 use crate::{AtomicUsize, Ordering};
 use arc_swap::ArcSwap;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct PdcState {

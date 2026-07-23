@@ -50,12 +50,11 @@ pub use types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
     AudioBuffer64, AudioPortConfig, AudioPortConfigRequest, AudioPortFlags, AudioPortInfo,
     AudioPortType, Color, ContextMenuItem, ContextMenuTarget, EditorCapabilities, EditorSize,
-    MidiEvent, NoteDialect,
-    NoteDialects, NoteExpressionType, NoteExpressionValue, NoteName, NotePortInfo,
-    ParamAutomationState, ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint,
-    ParameterQueue, PluginInfo, RemoteControlsPage, StateContext, SurroundChannel, TrackInfo,
-    TransportInfo, TransportRequest, TriggerInfo, TuningInfo, UndoChange, UndoDeltaProperties,
-    VoiceInfo, WindowHandle,
+    MidiEvent, NoteDialect, NoteDialects, NoteExpressionType, NoteExpressionValue, NoteName,
+    NotePortInfo, ParamAutomationState, ParameterChanges, ParameterFlags, ParameterInfo,
+    ParameterPoint, ParameterQueue, PluginInfo, RemoteControlsPage, StateContext, SurroundChannel,
+    TrackInfo, TransportInfo, TransportRequest, TriggerInfo, TuningInfo, UndoChange,
+    UndoDeltaProperties, VoiceInfo, WindowHandle,
 };
 
 // Test-only global allocator for RT-safety regression tests.

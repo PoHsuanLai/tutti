@@ -7,8 +7,8 @@
 use crate::error::{BridgeError, Result};
 use crate::protocol::{BridgeMessage, HostMessage};
 
-use interprocess::local_socket::{Stream, GenericFilePath, ToFsName as _};
 use interprocess::local_socket::traits::Stream as _;
+use interprocess::local_socket::{GenericFilePath, Stream, ToFsName as _};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Duration;
@@ -52,8 +52,9 @@ pub fn recv_within(stream: &mut ControlStream, timeout: Duration) -> Result<Brid
     // Reset to blocking (no timeout).
     let _ = stream.set_recv_timeout(None);
     result.map_err(|e| match e {
-        BridgeError::Io(io) if io.kind() == std::io::ErrorKind::TimedOut
-            || io.kind() == std::io::ErrorKind::WouldBlock =>
+        BridgeError::Io(io)
+            if io.kind() == std::io::ErrorKind::TimedOut
+                || io.kind() == std::io::ErrorKind::WouldBlock =>
         {
             BridgeError::Timeout {
                 operation: "recv".to_string(),

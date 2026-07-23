@@ -39,9 +39,7 @@ impl MidiEvent {
         m.set_ump_version_major(ump_major);
         m.set_ump_version_minor(ump_minor);
         m.set_request_endpoint_info(request.contains(EndpointDiscoveryRequest::ENDPOINT_INFO));
-        m.set_request_device_identity(
-            request.contains(EndpointDiscoveryRequest::DEVICE_IDENTITY),
-        );
+        m.set_request_device_identity(request.contains(EndpointDiscoveryRequest::DEVICE_IDENTITY));
         m.set_request_endpoint_name(request.contains(EndpointDiscoveryRequest::ENDPOINT_NAME));
         m.set_request_product_instance_id(
             request.contains(EndpointDiscoveryRequest::PRODUCT_INSTANCE_ID),
@@ -97,9 +95,7 @@ impl MidiEvent {
         m.set_supports_midi2_protocol(supports.contains(EndpointCapabilities::MIDI2_PROTOCOL));
         m.set_supports_midi1_protocol(supports.contains(EndpointCapabilities::MIDI1_PROTOCOL));
         m.set_supports_sending_jr_timestamps(supports.contains(EndpointCapabilities::SEND_JR));
-        m.set_supports_receiving_jr_timestamps(
-            supports.contains(EndpointCapabilities::RECEIVE_JR),
-        );
+        m.set_supports_receiving_jr_timestamps(supports.contains(EndpointCapabilities::RECEIVE_JR));
         Self::from_ump(0, m.data())
     }
 

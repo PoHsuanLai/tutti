@@ -37,13 +37,11 @@ impl AuGuiInstance {
                 })?;
 
         // Create instance but do NOT initialize — GUI works without audio setup.
-        let inner =
-            unsafe { tutti_au_host::AuInstance::new(component_handle, 44100.0, 512) }.map_err(|e| {
-                BridgeError::LoadFailed {
-                    path: path.to_path_buf(),
-                    stage: LoadStage::Instantiation,
-                    reason: format!("AU GUI-only load failed: {e}"),
-                }
+        let inner = unsafe { tutti_au_host::AuInstance::new(component_handle, 44100.0, 512) }
+            .map_err(|e| BridgeError::LoadFailed {
+                path: path.to_path_buf(),
+                stage: LoadStage::Instantiation,
+                reason: format!("AU GUI-only load failed: {e}"),
             })?;
 
         Ok(Self {

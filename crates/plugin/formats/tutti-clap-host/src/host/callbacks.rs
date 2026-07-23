@@ -573,11 +573,17 @@ unsafe extern "C" fn host_transport_request_toggle_loop(host: *const ClapHostVta
     push_transport_request(host, TransportRequest::ToggleLoop);
 }
 
-unsafe extern "C" fn host_transport_request_enable_loop(host: *const ClapHostVtable, is_enabled: bool) {
+unsafe extern "C" fn host_transport_request_enable_loop(
+    host: *const ClapHostVtable,
+    is_enabled: bool,
+) {
     push_transport_request(host, TransportRequest::EnableLoop(is_enabled));
 }
 
-unsafe extern "C" fn host_transport_request_record(host: *const ClapHostVtable, is_recording: bool) {
+unsafe extern "C" fn host_transport_request_record(
+    host: *const ClapHostVtable,
+    is_recording: bool,
+) {
     push_transport_request(host, TransportRequest::Record(is_recording));
 }
 
@@ -652,7 +658,10 @@ pub(super) static HOST_THREAD_POOL: clap_host_thread_pool = clap_host_thread_poo
     request_exec: Some(host_thread_pool_request_exec),
 };
 
-unsafe extern "C" fn host_thread_pool_request_exec(host: *const ClapHostVtable, num_tasks: u32) -> bool {
+unsafe extern "C" fn host_thread_pool_request_exec(
+    host: *const ClapHostVtable,
+    num_tasks: u32,
+) -> bool {
     if let Some(state) = get_host_state(host) {
         state
             .processing
@@ -678,7 +687,12 @@ unsafe extern "C" fn host_triggers_rescan(host: *const ClapHostVtable, _flags: u
     }
 }
 
-unsafe extern "C" fn host_triggers_clear(_host: *const ClapHostVtable, _trigger_id: u32, _flags: u32) {}
+unsafe extern "C" fn host_triggers_clear(
+    _host: *const ClapHostVtable,
+    _trigger_id: u32,
+    _flags: u32,
+) {
+}
 
 pub(super) static HOST_TUNING: clap_host_tuning = clap_host_tuning {
     get_relative: Some(host_tuning_get_relative),
@@ -855,7 +869,11 @@ pub(super) static HOST_POSIX_FD_SUPPORT: clap_host_posix_fd_support = clap_host_
 };
 
 #[cfg(unix)]
-unsafe extern "C" fn host_posix_fd_register(host: *const ClapHostVtable, fd: i32, flags: u32) -> bool {
+unsafe extern "C" fn host_posix_fd_register(
+    host: *const ClapHostVtable,
+    fd: i32,
+    flags: u32,
+) -> bool {
     let Some(state) = get_host_state(host) else {
         return false;
     };
@@ -871,7 +889,11 @@ unsafe extern "C" fn host_posix_fd_register(host: *const ClapHostVtable, fd: i32
 }
 
 #[cfg(unix)]
-unsafe extern "C" fn host_posix_fd_modify(host: *const ClapHostVtable, fd: i32, flags: u32) -> bool {
+unsafe extern "C" fn host_posix_fd_modify(
+    host: *const ClapHostVtable,
+    fd: i32,
+    flags: u32,
+) -> bool {
     let Some(state) = get_host_state(host) else {
         return false;
     };

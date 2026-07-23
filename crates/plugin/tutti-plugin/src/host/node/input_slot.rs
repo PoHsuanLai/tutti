@@ -175,11 +175,23 @@ mod tests {
             fills: AtomicUsize::new(0),
         }));
 
-        assert_eq!(clone_b.drain(CTX, Features::empty()).0, 7, "clone_b sees install");
-        assert_eq!(original.drain(CTX, Features::empty()).0, 7, "original sees install");
+        assert_eq!(
+            clone_b.drain(CTX, Features::empty()).0,
+            7,
+            "clone_b sees install"
+        );
+        assert_eq!(
+            original.drain(CTX, Features::empty()).0,
+            7,
+            "original sees install"
+        );
 
         clone_b.clear();
-        assert_eq!(original.drain(CTX, Features::empty()).0, 0, "clear propagates");
+        assert_eq!(
+            original.drain(CTX, Features::empty()).0,
+            0,
+            "clear propagates"
+        );
     }
 
     /// An empty gate always sends; a non-empty gate suppresses the fill entirely
@@ -195,7 +207,11 @@ mod tests {
 
         // Plugin lacks TRANSPORT → gated off, fill never runs, output stays reset.
         assert_eq!(slot.drain(CTX, Features::empty()).0, 0);
-        assert_eq!(src.fills.load(Ordering::Relaxed), 0, "fill suppressed by gate");
+        assert_eq!(
+            src.fills.load(Ordering::Relaxed),
+            0,
+            "fill suppressed by gate"
+        );
 
         // Plugin has TRANSPORT → fills.
         assert_eq!(slot.drain(CTX, Features::TRANSPORT).0, 5);

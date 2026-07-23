@@ -23,10 +23,7 @@
 //! computation: r(τ) = IFFT(|FFT(x)|²)
 
 #[derive(Debug, Clone, Copy, Default)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PitchResult {
     /// Hz, 0.0 if unvoiced
     pub frequency: f32,

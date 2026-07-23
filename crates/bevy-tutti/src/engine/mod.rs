@@ -40,9 +40,9 @@ pub use mic::MicIn;
 // like its `MicIn`/`Recorder` neighbours: `tutti-sampler` is only a dep under
 // that feature, so an ungated re-export breaks the no-sampler build.
 #[cfg(feature = "sampler")]
-pub use tutti_sampler::MicMonitorNode;
-#[cfg(feature = "sampler")]
 pub use recorder::Recorder;
+#[cfg(feature = "sampler")]
+pub use tutti_sampler::MicMonitorNode;
 // `AudioGraph` (plus `isolate_output` / `GraphDot`) live in tutti-core's `graph`
 // module; the engine surfaces them so existing `engine::AudioGraph` paths hold.
 pub use tutti_core::{isolate_output, AudioGraph, GraphDot};

@@ -105,7 +105,8 @@ impl PerNoteExpression {
     #[inline]
     pub fn set_pressure(&self, id: NoteId, value: f32) {
         if let Some(slot) = self.notes.entry(id) {
-            slot.pressure.store(value.clamp(0.0, 1.0), Ordering::Release);
+            slot.pressure
+                .store(value.clamp(0.0, 1.0), Ordering::Release);
         }
     }
 

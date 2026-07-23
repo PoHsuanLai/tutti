@@ -22,8 +22,8 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use tutti_midi_types::ump::MidiEvent as UmpMidiEvent;
 
 use tutti_plugin::server::MidiEventVec;
-use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin::server::{BusChannels, Features, LoadedPlugin, PluginClass, PluginDescriptor};
+use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::{ParameterFlags, ParameterInfo};
 
 use crate::runtime::{self, EPOCH_DEADLINE_TICKS};
@@ -98,8 +98,7 @@ impl WasmInstance {
     }
 
     pub(super) fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
-        let engine =
-            runtime::engine().map_err(|e| load_failed(path, LoadStage::Opening, e))?;
+        let engine = runtime::engine().map_err(|e| load_failed(path, LoadStage::Opening, e))?;
         let component = Component::from_file(&engine, path).map_err(|e| {
             load_failed(
                 path,
@@ -473,11 +472,7 @@ mod tests {
             out_l[0]
         );
 
-        let tail_energy: f32 = out_l[1700..]
-            .iter()
-            .map(|s| s * s)
-            .sum::<f32>()
-            .sqrt();
+        let tail_energy: f32 = out_l[1700..].iter().map(|s| s * s).sum::<f32>().sqrt();
         assert!(
             tail_energy > 0.0,
             "expected reverb tail energy > 0 at sample 1700+, got {}",
@@ -543,7 +538,9 @@ mod tests {
         assert!(
             matches!(
                 inst.descriptor().class,
-                PluginClass::Wasm { receives_midi: true }
+                PluginClass::Wasm {
+                    receives_midi: true
+                }
             ),
             "synth should declare MIDI receive"
         );

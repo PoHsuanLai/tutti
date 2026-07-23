@@ -10,11 +10,11 @@
 //! the bottom of this module. Audio-thread consumers typically hold an
 //! `Arc<ArcSwap<MidiRoutingSnapshot>>` and call `.load().route(&event)`.
 
-use std::vec::Vec;
 use crate::ump::MidiEvent;
 use crate::unit_id::MidiUnitId;
-use std::sync::Arc;
 use arc_swap::ArcSwap;
+use std::sync::Arc;
+use std::vec::Vec;
 
 /// Maximum number of targets per routing rule.
 /// Supports layering up to 8 synths on a single channel.

@@ -3,11 +3,11 @@
 //! a [`LaunchedServer`] ready for the RT bridge thread to connect.
 
 use super::locate::find_plugin_server;
-use crate::util::config::BridgeConfig;
 use crate::error::{BridgeError, Result};
 use crate::protocol::{
     BridgeMessage, BusChannels, HostMessage, LoadedPlugin, PluginDescriptor, SampleFormat,
 };
+use crate::util::config::BridgeConfig;
 use crate::util::transport::control::{self as ipc, ControlStream};
 use crate::util::transport::shm::{AudioSlab, SlabLayout};
 use std::path::Path;

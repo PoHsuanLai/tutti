@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use tutti_midi_io::{MidiEvent, MidiIo, MidiMessage, HardwareMidiInputs, NoteId};
+use tutti_midi_io::{HardwareMidiInputs, MidiEvent, MidiIo, MidiMessage, NoteId};
 
 fn main() {
     let pm = Arc::new(HardwareMidiInputs::new(256));

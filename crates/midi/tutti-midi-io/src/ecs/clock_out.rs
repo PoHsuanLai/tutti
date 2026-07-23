@@ -101,10 +101,7 @@ impl MidiOutRouter<'_> {
 /// [`MidiOut`](tutti_midi_types::MidiOut), and this reads the paired receiver
 /// off-RT via [`MidiIn::poll_into`]. Uses the inherent `poll_into` (the whole
 /// mailbox is one output stream, not addressed per-unit).
-pub(super) fn drain_receiver_through(
-    receiver: &MidiReceiver,
-    router: &mut MidiOutRouter<'_>,
-) {
+pub(super) fn drain_receiver_through(receiver: &MidiReceiver, router: &mut MidiOutRouter<'_>) {
     let mut buf = [MidiEvent::noop(); DRAIN_CHUNK];
     loop {
         let n = receiver.poll_into(&mut buf);

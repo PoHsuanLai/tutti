@@ -46,7 +46,6 @@ pub use clip_file::{
     ParsedClipFile,
 };
 pub use message::{MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage};
-pub use translation::{normalize, Midi1ToMidi2Translator, MidiParseError};
 pub use mpe::{
     MpeChannelVoiceMap, MpeMode, MpeZone, MpeZoneConfig, NoteRotationAllocator,
     PitchBendSensitivity,
@@ -54,6 +53,7 @@ pub use mpe::{
 pub use note_id::{NoteId, PerNoteMap};
 pub use routing::{MidiRoute, MidiRoutingSnapshot, MidiRoutingTable, RouteIterator};
 pub use traits::{MidiIn, MidiOut};
+pub use translation::{normalize, Midi1ToMidi2Translator, MidiParseError};
 pub use ump::{
     Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,
     EndpointCapabilities, EndpointDiscoveryRequest, FlexTextKind, FunctionBlockDirection,
@@ -99,7 +99,7 @@ pub use unit_id::MidiUnitId;
 pub mod prelude {
     pub use crate::{
         normalize, read_clip_file, write_clip_file, write_clip_file_from_beats, ClipEvent,
-        ClipFileError, MidiEvent, MidiMessage, MidiIn, MidiUnitId, NoteAttribute,
-        NoteId, ParsedClipFile, PerNoteController, Protocol,
+        ClipFileError, MidiEvent, MidiIn, MidiMessage, MidiUnitId, NoteAttribute, NoteId,
+        ParsedClipFile, PerNoteController, Protocol,
     };
 }

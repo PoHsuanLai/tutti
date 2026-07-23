@@ -191,7 +191,7 @@ mod tests {
         assert!(map.entry(a).is_some());
         assert!(map.entry(b).is_some());
         assert!(map.entry(c).is_none()); // full — no blocking, just None
-        // existing id still resolves when full
+                                         // existing id still resolves when full
         assert!(map.entry(a).is_some());
     }
 

@@ -26,16 +26,16 @@
 //! let plugins = Plugins::with_catalog(catalog, PluginsConfig::new(db, vec![]));
 //! ```
 
-use crate::host::node::PluginClient;
-use crate::host::handles::control_handle::PluginHandle;
+use crate::error::{BridgeError, Result};
 use crate::host::discovery::format_from_path;
 use crate::host::discovery::record::PluginFormat;
 use crate::host::discovery::{CatalogExt, PluginCatalog, PluginRecord, PluginScanner, ScanResult};
 #[cfg(feature = "json")]
 use crate::host::discovery::{JsonCatalog, ScanHandle};
-use crate::error::{BridgeError, Result};
-use crate::util::config::PluginsConfig;
+use crate::host::handles::control_handle::PluginHandle;
+use crate::host::node::PluginClient;
 use crate::protocol::PluginDescriptor;
+use crate::util::config::PluginsConfig;
 use std::path::{Path, PathBuf};
 
 /// Opaque identifier for a plugin in a [`Plugins`] catalog.
@@ -210,8 +210,7 @@ impl Plugins {
         let _ = format_from_path; // keep import live without the vst2 feature
         let _ = PluginFormat::Vst2;
 
-        let client =
-            PluginClient::new(self.config.to_bridge_config(), id.0.clone(), sample_rate)?;
+        let client = PluginClient::new(self.config.to_bridge_config(), id.0.clone(), sample_rate)?;
         let handle = PluginHandle::from_client(&client);
         Ok((Box::new(client), handle))
     }
@@ -229,12 +228,10 @@ impl Plugins {
             return Err(BridgeError::LoadFailed {
                 path: id.0.clone(),
                 stage: crate::error::LoadStage::Opening,
-                reason: "WASM plugins are in-process only; use Plugins::load()"
-                    .to_string(),
+                reason: "WASM plugins are in-process only; use Plugins::load()".to_string(),
             });
         }
-        let client =
-            PluginClient::new(self.config.to_bridge_config(), id.0.clone(), sample_rate)?;
+        let client = PluginClient::new(self.config.to_bridge_config(), id.0.clone(), sample_rate)?;
         let handle = PluginHandle::from_client(&client);
         Ok((client, handle))
     }
@@ -292,7 +289,8 @@ impl Plugins {
         })?;
 
         let descriptor = crate::host::subprocess::probe_metadata(plugin_path)?;
-        let modification_time = crate::host::discovery::file_modification_time(plugin_path).unwrap_or(0);
+        let modification_time =
+            crate::host::discovery::file_modification_time(plugin_path).unwrap_or(0);
 
         self.catalog.upsert(PluginRecord {
             path: plugin_path.to_path_buf(),

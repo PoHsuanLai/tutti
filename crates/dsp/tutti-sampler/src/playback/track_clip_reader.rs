@@ -1369,12 +1369,8 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, true);
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(
-            wave.clone(),
-            transport.clone(),
-            Beat::new(0.0),
-            None,
-        );
+        let sampler =
+            SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
         add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
@@ -1409,12 +1405,8 @@ mod tests {
         let wave = make_wave(100);
 
         for i in 0..3 {
-            let sampler = SamplerUnit::with_transport(
-                wave.clone(),
-                transport.clone(),
-                Beat::new(0.0),
-                None,
-            );
+            let sampler =
+                SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
             add_ram_clip(&handle, SlotId(i), sampler);
         }
 
@@ -1422,12 +1414,8 @@ mod tests {
         unit.tick(&[], &mut out_3);
 
         let (mut unit2, handle2) = TrackClipReaderUnit::new();
-        let sampler = SamplerUnit::with_transport(
-            wave.clone(),
-            transport.clone(),
-            Beat::new(0.0),
-            None,
-        );
+        let sampler =
+            SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
         add_ram_clip(&handle2, SlotId(0), sampler);
         let mut out_1 = [0.0f32; 2];
         unit2.tick(&[], &mut out_1);
@@ -1580,12 +1568,8 @@ mod tests {
         let wave = make_wave(100);
 
         // Same voice the mixer would hold for one clip.
-        let sampler = SamplerUnit::with_transport(
-            wave.clone(),
-            transport.clone(),
-            Beat::new(0.0),
-            None,
-        );
+        let sampler =
+            SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
         let voice = Voice {
             source: VoiceSource::Ram(sampler),
             play: Playback::default(),

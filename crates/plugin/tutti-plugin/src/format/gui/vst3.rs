@@ -112,9 +112,11 @@ impl GuiInstance for Vst3GuiInstance {
     }
 
     fn poll_editor_resize_request(&mut self) -> Option<EditorSize> {
-        self.inner.poll_editor_resize_request().map(|sz| EditorSize {
-            width: sz.width,
-            height: sz.height,
-        })
+        self.inner
+            .poll_editor_resize_request()
+            .map(|sz| EditorSize {
+                width: sz.width,
+                height: sz.height,
+            })
     }
 }

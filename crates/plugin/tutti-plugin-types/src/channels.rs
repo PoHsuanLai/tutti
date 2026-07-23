@@ -137,11 +137,7 @@ impl<'t, 'd: 't, T: Sample> AudioBuffer<'t, 'd, T> {
     ///
     /// # Panics
     /// Panics if both `inputs` and `outputs` are empty.
-    pub fn new(
-        inputs: &'t [&'d [T]],
-        outputs: &'t mut [&'d mut [T]],
-        sample_rate: f64,
-    ) -> Self {
+    pub fn new(inputs: &'t [&'d [T]], outputs: &'t mut [&'d mut [T]], sample_rate: f64) -> Self {
         let num_samples = outputs
             .first()
             .map(|s| s.len())

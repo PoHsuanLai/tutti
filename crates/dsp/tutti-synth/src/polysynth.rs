@@ -4,10 +4,10 @@ use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use smallvec::SmallVec;
-use tutti_midi_types::{cc, MidiIn, MidiUnitId, NoteId};
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Shared, SignalFrame};
-use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_runtime::{MidiInPort, MidiSender};
+use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::{cc, MidiIn, MidiUnitId, NoteId};
 
 extern crate alloc;
 use alloc::sync::Arc;
@@ -213,9 +213,7 @@ impl PolySynth {
     }
 
     fn process_midi_event(&mut self, event: &MidiEvent) {
-        use tutti_midi_types::convert::{
-            bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32,
-        };
+        use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
         use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
         use tutti_midi_types::midi2::{Channeled, UmpMessage};
 
@@ -1917,7 +1915,10 @@ mod tests {
         assert!(bent(&synth, 64) > 40.0, "note 64 should start bent");
 
         // Per-Note Management Reset addressed to note 60 only.
-        queue_midi(&synth, &[MidiEvent::per_note_management(0, 1, 60, false, true)]);
+        queue_midi(
+            &synth,
+            &[MidiEvent::per_note_management(0, 1, 60, false, true)],
+        );
         synth.tick(&[], &mut output);
 
         assert!(
@@ -1964,7 +1965,14 @@ mod tests {
         // Registered per-note Brightness (index 74) addressed to note 60, full value.
         queue_midi(
             &synth,
-            &[MidiEvent::per_note_controller(0, 1, 60, 74, 0xFFFF_FFFF, true)],
+            &[MidiEvent::per_note_controller(
+                0,
+                1,
+                60,
+                74,
+                0xFFFF_FFFF,
+                true,
+            )],
         );
         synth.tick(&[], &mut output);
 
@@ -2031,7 +2039,14 @@ mod tests {
         // Assignable per-note CC7 (the clip Gain-lane encoding) → half gain on 60.
         queue_midi(
             &synth,
-            &[MidiEvent::per_note_controller(0, 1, 60, 7, 0x8000_0000, false)],
+            &[MidiEvent::per_note_controller(
+                0,
+                1,
+                60,
+                7,
+                0x8000_0000,
+                false,
+            )],
         );
         synth.tick(&[], &mut output);
         assert!(

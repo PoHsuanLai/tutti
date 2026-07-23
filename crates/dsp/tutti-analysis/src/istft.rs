@@ -245,7 +245,13 @@ mod tests {
             .collect();
 
         let s = compute_stft_complex(&original, sample_rate, 2048, 512);
-        let recon = istft_complex(&s.bins, s.bins_per_frame, s.time_frames, s.window_size, s.hop_size);
+        let recon = istft_complex(
+            &s.bins,
+            s.bins_per_frame,
+            s.time_frames,
+            s.window_size,
+            s.hop_size,
+        );
 
         let skip = 2048;
         let end = original.len().min(recon.len()) - skip;
@@ -270,14 +276,29 @@ mod tests {
 
         let masked: Vec<Complex<f32>> =
             s.bins.iter().map(|b| *b * Complex::new(1.0, 0.0)).collect();
-        let a = istft_complex(&s.bins, s.bins_per_frame, s.time_frames, s.window_size, s.hop_size);
-        let b = istft_complex(&masked, s.bins_per_frame, s.time_frames, s.window_size, s.hop_size);
+        let a = istft_complex(
+            &s.bins,
+            s.bins_per_frame,
+            s.time_frames,
+            s.window_size,
+            s.hop_size,
+        );
+        let b = istft_complex(
+            &masked,
+            s.bins_per_frame,
+            s.time_frames,
+            s.window_size,
+            s.hop_size,
+        );
 
         let mut max_error = 0.0f32;
         for (x, y) in a.iter().zip(b.iter()) {
             max_error = max_error.max((x - y).abs());
         }
-        assert!(max_error < 1e-6, "neutral complex mask must be identity, got {max_error}");
+        assert!(
+            max_error < 1e-6,
+            "neutral complex mask must be identity, got {max_error}"
+        );
     }
 
     #[test]
@@ -294,17 +315,32 @@ mod tests {
             })
             .collect();
         let s = compute_stft_complex(&original, sample_rate, 2048, 512);
-        let base = istft_complex(&s.bins, s.bins_per_frame, s.time_frames, s.window_size, s.hop_size);
+        let base = istft_complex(
+            &s.bins,
+            s.bins_per_frame,
+            s.time_frames,
+            s.window_size,
+            s.hop_size,
+        );
 
         // Neutral mask: correction must be silent.
         let neutral: Vec<Complex<f32>> = s.bins.clone();
-        let recon_n = istft_complex(&neutral, s.bins_per_frame, s.time_frames, s.window_size, s.hop_size);
+        let recon_n = istft_complex(
+            &neutral,
+            s.bins_per_frame,
+            s.time_frames,
+            s.window_size,
+            s.hop_size,
+        );
         let max_corr_neutral = base
             .iter()
             .zip(recon_n.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
-        assert!(max_corr_neutral < 1e-6, "neutral correction not silent: {max_corr_neutral}");
+        assert!(
+            max_corr_neutral < 1e-6,
+            "neutral correction not silent: {max_corr_neutral}"
+        );
 
         // Edit: zero out the high band (top half of bins). Correction should
         // carry real energy.
@@ -314,7 +350,13 @@ mod tests {
                 edited[f * s.bins_per_frame + b] = Complex::new(0.0, 0.0);
             }
         }
-        let recon_e = istft_complex(&edited, s.bins_per_frame, s.time_frames, s.window_size, s.hop_size);
+        let recon_e = istft_complex(
+            &edited,
+            s.bins_per_frame,
+            s.time_frames,
+            s.window_size,
+            s.hop_size,
+        );
         let max_corr_edit = base
             .iter()
             .zip(recon_e.iter())
@@ -341,10 +383,19 @@ mod tests {
         let s = compute_stft_complex(&original, sample_rate, 2048, 512);
 
         let zeroed = vec![Complex::new(0.0, 0.0); s.bins.len()];
-        let recon = istft_complex(&zeroed, s.bins_per_frame, s.time_frames, s.window_size, s.hop_size);
+        let recon = istft_complex(
+            &zeroed,
+            s.bins_per_frame,
+            s.time_frames,
+            s.window_size,
+            s.hop_size,
+        );
 
         let max_val = recon.iter().copied().fold(0.0f32, |a, b| a.max(b.abs()));
-        assert!(max_val < 1e-6, "erased complex spectrum should be silent, got {max_val}");
+        assert!(
+            max_val < 1e-6,
+            "erased complex spectrum should be silent, got {max_val}"
+        );
     }
 
     #[test]

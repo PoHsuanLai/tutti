@@ -4,8 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tutti_core::{
-    AudioUnit, BeatDuration, Beat, BufferMut, BufferRef, Linear, Ratio, SamplePosition,
-    Wave,
+    AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Linear, Ratio, SamplePosition, Wave,
 };
 
 use super::clip_reader::ClipReader;

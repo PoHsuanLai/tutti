@@ -14,9 +14,9 @@
 use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 
-use std::sync::Arc;
 use crate::param::units::Unit;
 use atomic_float::AtomicF32;
+use std::sync::Arc;
 
 pub struct Param<U: Unit<Raw = f32>> {
     inner: Arc<AtomicF32>,

@@ -16,9 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::{
-    AudioUnit, Beat, Bpm, BufferVec, Cents, Ratio, SampleRate, Timeline, Wave,
-};
+use tutti_core::{AudioUnit, Beat, Bpm, BufferVec, Cents, Ratio, SampleRate, Timeline, Wave};
 use tutti_sampler::stretch::{Algorithm, Unit as TimeStretchUnit};
 use tutti_sampler::{
     ClipCommand, ClipSpec, Direction, Playback, SamplerUnit, SlotId, TrackClipReaderUnit, Voice,
@@ -170,12 +168,8 @@ fn track_clip_reader_process_steady_state_is_allocation_free() {
     unit.set_sample_rate(SampleRate(48_000.0));
 
     for i in 0..2u128 {
-        let sampler = SamplerUnit::with_transport(
-            wave.clone(),
-            transport.clone(),
-            Beat::new(0.0),
-            None,
-        );
+        let sampler =
+            SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
         unit.insert_clip(ClipSpec {
             id: SlotId(i),
             sampler,
@@ -215,12 +209,8 @@ fn track_clip_reader_tick_steady_state_is_allocation_free() {
     unit.set_sample_rate(SampleRate(48_000.0));
 
     for i in 0..2u128 {
-        let sampler = SamplerUnit::with_transport(
-            wave.clone(),
-            transport.clone(),
-            Beat::new(0.0),
-            None,
-        );
+        let sampler =
+            SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
         unit.insert_clip(ClipSpec {
             id: SlotId(i),
             sampler,
@@ -300,12 +290,8 @@ fn run_stretch_drain_under_guard() {
     let (mut unit, handle) = TrackClipReaderUnit::with_transport(transport.clone(), None);
     unit.set_sample_rate(SampleRate(48_000.0));
 
-    let sampler = SamplerUnit::with_transport(
-        wave.clone(),
-        transport.clone(),
-        Beat::new(0.0),
-        None,
-    );
+    let sampler =
+        SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
     handle.send(ClipCommand::AddVoice {
         id: SlotId(1),
         voice: Box::new(Voice {

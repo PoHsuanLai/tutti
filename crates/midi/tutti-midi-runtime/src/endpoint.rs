@@ -232,8 +232,14 @@ impl EndpointInquiry {
                     minor: m.ump_version_minor(),
                 });
                 let mut caps = EndpointCapabilities::empty();
-                caps.set(EndpointCapabilities::MIDI2_PROTOCOL, m.supports_midi2_protocol());
-                caps.set(EndpointCapabilities::MIDI1_PROTOCOL, m.supports_midi1_protocol());
+                caps.set(
+                    EndpointCapabilities::MIDI2_PROTOCOL,
+                    m.supports_midi2_protocol(),
+                );
+                caps.set(
+                    EndpointCapabilities::MIDI1_PROTOCOL,
+                    m.supports_midi1_protocol(),
+                );
                 caps.set(
                     EndpointCapabilities::SEND_JR,
                     m.supports_sending_jr_timestamps(),
@@ -419,11 +425,7 @@ mod tests {
     fn partial_discovery_only_returns_requested_plus_blocks() {
         let n = negotiator();
         // Ask for identity only.
-        let req = MidiEvent::endpoint_discovery(
-            1,
-            1,
-            EndpointDiscoveryRequest::DEVICE_IDENTITY,
-        );
+        let req = MidiEvent::endpoint_discovery(1, 1, EndpointDiscoveryRequest::DEVICE_IDENTITY);
         let replies = n.respond_to(&req);
         // identity + the (always-announced) function block.
         assert_eq!(replies.len(), 2);
@@ -444,11 +446,17 @@ mod tests {
         for r in &replies {
             inquiry.ingest(r);
         }
-        let d = inquiry.result().expect("Endpoint Info was in the reply stream");
+        let d = inquiry
+            .result()
+            .expect("Endpoint Info was in the reply stream");
 
         assert_eq!(d.ump_version, Some(UmpVersion::V1_1));
-        assert!(d.capabilities.contains(EndpointCapabilities::MIDI2_PROTOCOL));
-        assert!(d.capabilities.contains(EndpointCapabilities::MIDI1_PROTOCOL));
+        assert!(d
+            .capabilities
+            .contains(EndpointCapabilities::MIDI2_PROTOCOL));
+        assert!(d
+            .capabilities
+            .contains(EndpointCapabilities::MIDI1_PROTOCOL));
         assert_eq!(d.protocol, Some(Protocol::Midi2));
         assert_eq!(
             d.identity,
@@ -482,7 +490,9 @@ mod tests {
     #[test]
     fn non_discovery_event_yields_no_reply() {
         let n = negotiator();
-        assert!(n.respond_to(&MidiEvent::note_on(0, 0, 60, 0x8000)).is_empty());
+        assert!(n
+            .respond_to(&MidiEvent::note_on(0, 0, 60, 0x8000))
+            .is_empty());
         // A Flex message isn't UMP Stream either.
         let ev = MidiEvent::flex_set_tempo(0, 120.0);
         assert!(matches!(

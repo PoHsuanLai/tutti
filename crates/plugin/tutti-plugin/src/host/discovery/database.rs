@@ -93,8 +93,8 @@ impl PluginCatalog for JsonCatalog {
 mod tests {
     use super::super::catalog::CatalogExt;
     use super::super::record::{Blacklist, PluginFormat};
-    use super::*;
     use super::super::record::{PluginClass, PluginDescriptor};
+    use super::*;
     use tempfile::TempDir;
 
     fn test_record(name: &str) -> PluginRecord {

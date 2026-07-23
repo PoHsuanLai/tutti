@@ -696,11 +696,17 @@ mod tests {
         let (mut s, _shm) = load_clap("rt_state_clap", SampleFormat::Float32);
 
         let first = save_state_bytes(&mut s);
-        assert_none(s.handle(HostMessage::LoadState { data: first.clone() }).unwrap());
+        assert_none(
+            s.handle(HostMessage::LoadState {
+                data: first.clone(),
+            })
+            .unwrap(),
+        );
         let second = save_state_bytes(&mut s);
 
         assert_eq!(
-            first, second,
+            first,
+            second,
             "state blob changed across save → load → save \
              (len {} vs {}) — the IPC path or plugin mutated it",
             first.len(),

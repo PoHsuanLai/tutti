@@ -34,7 +34,7 @@ use std::sync::Arc;
 use crate::dsp::AudioUnit;
 use crate::{
     dsp::{Fade, Net, NodeId, Source},
-    PdcManager, PdcState, GraphNet,
+    GraphNet, PdcManager, PdcState,
 };
 
 use tutti_midi_types::MidiRoutingTable;
@@ -484,13 +484,7 @@ mod tests {
         // we only care that the commit path runs and updates PDC state.
         let _backend = net.backend();
         let pdc = PdcManager::new(channels, 0);
-        AudioGraph::from_parts(
-            net,
-            pdc,
-            MidiRoutingTable::new(),
-            48_000.0,
-            channels,
-        )
+        AudioGraph::from_parts(net, pdc, MidiRoutingTable::new(), 48_000.0, channels)
     }
 
     #[test]

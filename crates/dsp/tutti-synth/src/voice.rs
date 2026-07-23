@@ -318,7 +318,14 @@ impl VoiceAllocator {
             let voice_id = self.next_voice_id;
             self.next_voice_id = self.next_voice_id.next();
 
-            self.slots[slot_index].activate(voice_id, id, note, channel, velocity, self.current_time);
+            self.slots[slot_index].activate(
+                voice_id,
+                id,
+                note,
+                channel,
+                velocity,
+                self.current_time,
+            );
 
             self.id_to_slot.insert(id, slot_index);
 
@@ -350,7 +357,8 @@ impl VoiceAllocator {
             }
         }
 
-        if self.config.mode == VoiceMode::Legato && self.legato_last_note == Some(id.note_number()) {
+        if self.config.mode == VoiceMode::Legato && self.legato_last_note == Some(id.note_number())
+        {
             self.legato_last_note = None;
         }
 
@@ -685,8 +693,17 @@ mod tests {
         assert_eq!(alloc.slots()[0].note(), 64);
 
         // Note mapping should be updated
-        assert!(alloc.id_to_slot.get(NoteId::from_channel_note(0, 60)).is_none());
-        assert_eq!(alloc.id_to_slot.get(NoteId::from_channel_note(0, 64)).copied(), Some(0));
+        assert!(alloc
+            .id_to_slot
+            .get(NoteId::from_channel_note(0, 60))
+            .is_none());
+        assert_eq!(
+            alloc
+                .id_to_slot
+                .get(NoteId::from_channel_note(0, 64))
+                .copied(),
+            Some(0)
+        );
     }
 
     #[test]
@@ -1005,11 +1022,25 @@ mod tests {
     #[test]
     fn test_steal_score_releasing_lower_priority_than_active() {
         let mut releasing = VoiceSlot::default();
-        releasing.activate(VoiceId::new(1), NoteId::from_channel_note(0, 60), 60, 0, 0.8, 0);
+        releasing.activate(
+            VoiceId::new(1),
+            NoteId::from_channel_note(0, 60),
+            60,
+            0,
+            0.8,
+            0,
+        );
         releasing.set_state(VoiceState::Releasing);
 
         let mut active = VoiceSlot::default();
-        active.activate(VoiceId::new(2), NoteId::from_channel_note(0, 64), 64, 0, 0.7, 100);
+        active.activate(
+            VoiceId::new(2),
+            NoteId::from_channel_note(0, 64),
+            64,
+            0,
+            0.7,
+            100,
+        );
 
         let r_score = steal_score(&releasing, AllocationStrategy::Oldest).unwrap();
         let a_score = steal_score(&active, AllocationStrategy::Oldest).unwrap();
@@ -1022,10 +1053,24 @@ mod tests {
     #[test]
     fn test_steal_score_oldest_strategy() {
         let mut old = VoiceSlot::default();
-        old.activate(VoiceId::new(1), NoteId::from_channel_note(0, 60), 60, 0, 0.8, 100);
+        old.activate(
+            VoiceId::new(1),
+            NoteId::from_channel_note(0, 60),
+            60,
+            0,
+            0.8,
+            100,
+        );
 
         let mut new = VoiceSlot::default();
-        new.activate(VoiceId::new(2), NoteId::from_channel_note(0, 64), 64, 0, 0.7, 200);
+        new.activate(
+            VoiceId::new(2),
+            NoteId::from_channel_note(0, 64),
+            64,
+            0,
+            0.7,
+            200,
+        );
 
         let old_score = steal_score(&old, AllocationStrategy::Oldest).unwrap();
         let new_score = steal_score(&new, AllocationStrategy::Oldest).unwrap();
@@ -1038,7 +1083,14 @@ mod tests {
     #[test]
     fn test_steal_score_no_steal_returns_none() {
         let mut slot = VoiceSlot::default();
-        slot.activate(VoiceId::new(1), NoteId::from_channel_note(0, 60), 60, 0, 0.8, 0);
+        slot.activate(
+            VoiceId::new(1),
+            NoteId::from_channel_note(0, 60),
+            60,
+            0,
+            0.8,
+            0,
+        );
         assert!(steal_score(&slot, AllocationStrategy::NoSteal).is_none());
     }
 }

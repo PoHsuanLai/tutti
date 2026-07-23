@@ -136,7 +136,10 @@ fn connect_device(device_index: usize) -> Result<(Midi1Port, String), crate::cor
     let midi_output = MidiOutput::new("tutti-midi-output")?;
     let ports = midi_output.ports();
     let port = ports.get(device_index).ok_or_else(|| {
-        crate::core::error::Error::MidiDevice(format!("MIDI output device {} not found", device_index))
+        crate::core::error::Error::MidiDevice(format!(
+            "MIDI output device {} not found",
+            device_index
+        ))
     })?;
     let name = midi_output
         .port_name(port)

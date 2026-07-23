@@ -17,6 +17,7 @@ pub use loaded::{PluginNotifications, RestartOutcome, Vst3Loaded};
 
 // ── IComponent extension trait ────────────────────────────────────────────────
 
+use vst3::ComPtr;
 use vst3::Steinberg::{
     kResultOk,
     Vst::{
@@ -25,7 +26,6 @@ use vst3::Steinberg::{
         MediaTypes_::kAudio,
     },
 };
-use vst3::ComPtr;
 
 use crate::types::BusInfo as BusInfoWrap;
 

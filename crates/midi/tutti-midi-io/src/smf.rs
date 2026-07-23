@@ -418,21 +418,24 @@ mod tests {
     #[test]
     fn tracks_pairs_note_on_off_with_duration() {
         // One note: on at beat 0, off at beat 1, on a named track.
-        let events = vec![SmfTimedEvent {
-            time_beats: 0.0,
-            channel: 0,
-            msg: SmfMessage::NoteOn {
-                key: 60.into(),
-                vel: 100.into(),
+        let events = vec![
+            SmfTimedEvent {
+                time_beats: 0.0,
+                channel: 0,
+                msg: SmfMessage::NoteOn {
+                    key: 60.into(),
+                    vel: 100.into(),
+                },
             },
-        }, SmfTimedEvent {
-            time_beats: 1.0,
-            channel: 0,
-            msg: SmfMessage::NoteOff {
-                key: 60.into(),
-                vel: 0.into(),
+            SmfTimedEvent {
+                time_beats: 1.0,
+                channel: 0,
+                msg: SmfMessage::NoteOff {
+                    key: 60.into(),
+                    vel: 0.into(),
+                },
             },
-        }];
+        ];
         let data = encode_midi_file(
             &[events],
             &MidiWriteOptions {
@@ -454,28 +457,40 @@ mod tests {
 
     #[test]
     fn tracks_treats_velocity_zero_note_on_as_off() {
-        let events = vec![SmfTimedEvent {
-            time_beats: 0.0,
-            channel: 0,
-            msg: SmfMessage::NoteOn {
-                key: 64.into(),
-                vel: 80.into(),
+        let events = vec![
+            SmfTimedEvent {
+                time_beats: 0.0,
+                channel: 0,
+                msg: SmfMessage::NoteOn {
+                    key: 64.into(),
+                    vel: 80.into(),
+                },
             },
-        }, SmfTimedEvent {
-            time_beats: 2.0,
-            channel: 0,
-            // Running-status note-off: NoteOn with velocity 0.
-            msg: SmfMessage::NoteOn {
-                key: 64.into(),
-                vel: 0.into(),
+            SmfTimedEvent {
+                time_beats: 2.0,
+                channel: 0,
+                // Running-status note-off: NoteOn with velocity 0.
+                msg: SmfMessage::NoteOn {
+                    key: 64.into(),
+                    vel: 0.into(),
+                },
             },
-        }];
-        let data =
-            encode_midi_file(&[events], &MidiWriteOptions { ticks_per_beat: 480, ..Default::default() })
-                .unwrap();
+        ];
+        let data = encode_midi_file(
+            &[events],
+            &MidiWriteOptions {
+                ticks_per_beat: 480,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let parsed = tracks(&data).unwrap();
-        assert_eq!(parsed[0].notes.len(), 1, "vel-0 NoteOn should close the note");
+        assert_eq!(
+            parsed[0].notes.len(),
+            1,
+            "vel-0 NoteOn should close the note"
+        );
         assert!((parsed[0].notes[0].duration_beats - 2.0).abs() < 1e-3);
     }
 }

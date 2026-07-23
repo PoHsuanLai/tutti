@@ -114,7 +114,6 @@ impl CycleScratch {
             })
         }
     }
-
 }
 
 pub struct HardwareMidiInputs {
@@ -143,7 +142,10 @@ impl HardwareMidiInputs {
     /// Append `port` to `ports` (clone-and-swap) and return its index. The
     /// port owns its own name and active flag — there is no parallel metadata
     /// to keep in sync.
-    fn push_port(ports: &ArcSwap<Vec<Arc<HardwareMidiInput>>>, port: Arc<HardwareMidiInput>) -> usize {
+    fn push_port(
+        ports: &ArcSwap<Vec<Arc<HardwareMidiInput>>>,
+        port: Arc<HardwareMidiInput>,
+    ) -> usize {
         let mut new_ports = (**ports.load()).clone();
         let port_index = new_ports.len();
         new_ports.push(port);
@@ -191,7 +193,10 @@ impl HardwareMidiInputs {
     }
 
     pub fn set_port_active(&self, port_type: PortType, port_index: usize, active: bool) -> bool {
-        match self.ports_of(port_type).and_then(|p| p.load().get(port_index).cloned()) {
+        match self
+            .ports_of(port_type)
+            .and_then(|p| p.load().get(port_index).cloned())
+        {
             Some(port) => {
                 port.set_active(active);
                 true

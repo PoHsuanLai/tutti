@@ -96,9 +96,8 @@ impl ProfileState {
     }
 
     pub(super) fn decode_body(sub_id2: u8, b: &[u8]) -> Option<ProfileState> {
-        let read_id = |b: &[u8]| -> Option<ProfileId> {
-            Some(ProfileId(b.get(..5)?.try_into().ok()?))
-        };
+        let read_id =
+            |b: &[u8]| -> Option<ProfileId> { Some(ProfileId(b.get(..5)?.try_into().ok()?)) };
         match sub_id2 {
             SUB_ID2_PROFILE_INQUIRY => Some(ProfileState::Inquiry),
             SUB_ID2_PROFILE_INQUIRY_REPLY => {

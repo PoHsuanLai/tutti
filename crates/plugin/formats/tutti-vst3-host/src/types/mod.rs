@@ -16,13 +16,12 @@ pub(crate) use audio::K_SAMPLE_64_INT;
 pub(crate) use events::{from_c_event, to_c_event};
 pub use events::{
     note_expression_to_vst3, note_expression_type_from_id, note_expression_type_to_id,
-    vst3_to_chord, vst3_to_note_expression,
-    vst3_to_note_expression_int, vst3_to_note_expression_text, vst3_to_scale, ChordEvent,
-    ChordValue, DataEvent, EventHeader, LegacyMidiCcOutEvent, NoteExpressionIntValue,
-    NoteExpressionIntValueEvent, NoteExpressionText, NoteExpressionTextEvent,
-    NoteExpressionValueEvent, NoteOffEvent, NoteOnEvent, PolyPressureEvent, ScaleEvent, ScaleValue,
-    TextRef, Vst3Event, K_CHORD_EVENT, K_DATA_EVENT, K_LEGACY_MIDI_CC_OUT_EVENT,
-    K_NOTE_EXPRESSION_INT_VALUE_EVENT, K_NOTE_EXPRESSION_TEXT_EVENT,
+    vst3_to_chord, vst3_to_note_expression, vst3_to_note_expression_int,
+    vst3_to_note_expression_text, vst3_to_scale, ChordEvent, ChordValue, DataEvent, EventHeader,
+    LegacyMidiCcOutEvent, NoteExpressionIntValue, NoteExpressionIntValueEvent, NoteExpressionText,
+    NoteExpressionTextEvent, NoteExpressionValueEvent, NoteOffEvent, NoteOnEvent,
+    PolyPressureEvent, ScaleEvent, ScaleValue, TextRef, Vst3Event, K_CHORD_EVENT, K_DATA_EVENT,
+    K_LEGACY_MIDI_CC_OUT_EVENT, K_NOTE_EXPRESSION_INT_VALUE_EVENT, K_NOTE_EXPRESSION_TEXT_EVENT,
     K_NOTE_EXPRESSION_VALUE_EVENT, K_NOTE_OFF_EVENT, K_NOTE_ON_EVENT, K_POLY_PRESSURE_EVENT,
     K_SCALE_EVENT,
 };

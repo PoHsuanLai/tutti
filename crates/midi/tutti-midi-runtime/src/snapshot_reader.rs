@@ -31,7 +31,9 @@ impl std::fmt::Debug for MidiSnapshotReader {
             .field("snapshot", &self.snapshot)
             .field(
                 "last_poll_beat",
-                &self.last_poll_beat.load(std::sync::atomic::Ordering::Relaxed),
+                &self
+                    .last_poll_beat
+                    .load(std::sync::atomic::Ordering::Relaxed),
             )
             .finish_non_exhaustive()
     }

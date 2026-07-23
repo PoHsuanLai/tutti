@@ -18,7 +18,7 @@ use bevy_ecs::schedule::SystemSet;
 use bevy_ecs::system::EntityCommands;
 
 use crate::dsp::AudioUnit;
-use crate::graph::{AudioNode, Mute, NodeKind, AudioGraphRes, Volume};
+use crate::graph::{AudioGraphRes, AudioNode, Mute, NodeKind, Volume};
 
 /// System-set ordering anchor for the reconcile pipeline.
 ///
@@ -166,7 +166,9 @@ pub fn crossfade_audio_node(
             );
             return;
         };
-        graph.0.crossfade_boxed(node.0, crate::Fade::Smooth, 0.005, new_unit);
+        graph
+            .0
+            .crossfade_boxed(node.0, crate::Fade::Smooth, 0.005, new_unit);
         if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
             dirty.0 = true;
         }
@@ -250,7 +252,7 @@ mod tests {
     use crate::dsp::sine_hz;
     use crate::graph::AudioGraphRes;
     use crate::AudioGraph;
-    use crate::{PdcManager, GraphNet};
+    use crate::{GraphNet, PdcManager};
     use bevy_app::App;
 
     /// Build a bare `AudioGraph` directly (no `TuttiEngine`, which lives in
@@ -261,13 +263,7 @@ mod tests {
         let _backend = net.backend();
         let pdc = PdcManager::new(channels, 0);
         let midi_route = tutti_midi_types::MidiRoutingTable::new();
-        AudioGraph::from_parts(
-            net,
-            pdc,
-            midi_route,
-            48_000.0,
-            channels,
-        )
+        AudioGraph::from_parts(net, pdc, midi_route, 48_000.0, channels)
     }
 
     fn test_app() -> App {
@@ -316,12 +312,20 @@ mod tests {
         let mut app = App::new();
         app.add_systems(bevy_app::Update, sys.run_if(engine_ready));
         app.update();
-        assert_eq!(ran.load(Ordering::SeqCst), 0, "gated system skipped with no engine");
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            0,
+            "gated system skipped with no engine"
+        );
 
         // Insert the resource (engine built): the gate now passes.
         app.insert_resource(AudioGraphRes(bare_graph(2)));
         app.update();
-        assert_eq!(ran.load(Ordering::SeqCst), 1, "gated system runs once engine present");
+        assert_eq!(
+            ran.load(Ordering::SeqCst),
+            1,
+            "gated system runs once engine present"
+        );
     }
 
     #[test]
@@ -349,7 +353,8 @@ mod tests {
         let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator).id()
+            c.spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator)
+                .id()
         };
         app.update();
 
@@ -385,11 +390,7 @@ mod tests {
         };
         app.update();
         let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
-        assert!(app
-            .world()
-            .resource::<AudioGraphRes>()
-            .0
-            .contains(node_id));
+        assert!(app.world().resource::<AudioGraphRes>().0.contains(node_id));
 
         // A `Last`-phase system (runs after GraphReconcileSystems::Commit)
         // despawns the entity exactly once.
@@ -415,10 +416,7 @@ mod tests {
 
         assert!(app.world().get::<AudioNode>(entity).is_none());
         assert!(
-            !app.world()
-                .resource::<AudioGraphRes>()
-                .0
-                .contains(node_id),
+            !app.world().resource::<AudioGraphRes>().0.contains(node_id),
             "late-despawned node removed from graph"
         );
         assert!(
@@ -440,12 +438,17 @@ mod tests {
         let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator).id()
+            c.spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator)
+                .id()
         };
         app.update();
 
         let node_id_before = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
-        assert!(app.world().resource::<AudioGraphRes>().0.contains(node_id_before));
+        assert!(app
+            .world()
+            .resource::<AudioGraphRes>()
+            .0
+            .contains(node_id_before));
 
         // Replace with a different oscillator — same NodeId, new unit.
         {
@@ -457,6 +460,10 @@ mod tests {
         // Same NodeId stays — that's the contract of crossfade.
         let node_id_after = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
         assert_eq!(node_id_before, node_id_after);
-        assert!(app.world().resource::<AudioGraphRes>().0.contains(node_id_after));
+        assert!(app
+            .world()
+            .resource::<AudioGraphRes>()
+            .0
+            .contains(node_id_after));
     }
 }

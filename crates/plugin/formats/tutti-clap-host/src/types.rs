@@ -590,4 +590,3 @@ pub struct UndoChange {
     pub delta: Vec<u8>,
     pub delta_can_undo: bool,
 }
-

@@ -76,7 +76,9 @@ fn process_steady_state_does_not_allocate() {
     let Some(mut inst) = load_or_skip() else {
         return;
     };
-    let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
+    let transport = TransportInfo::default()
+        .with_tempo(120.0)
+        .with_playing(true);
 
     // Warm up — primes plugin internal state and the host's pooled
     // return buffers (first call grows them to needed capacity).
@@ -94,7 +96,9 @@ fn process_with_midi_does_not_allocate() {
     let Some(mut inst) = load_or_skip() else {
         return;
     };
-    let transport = TransportInfo::default().with_tempo(120.0).with_playing(true);
+    let transport = TransportInfo::default()
+        .with_tempo(120.0)
+        .with_playing(true);
 
     let mut out_l = [0.0f32; 64];
     let mut out_r = [0.0f32; 64];
@@ -110,7 +114,17 @@ fn process_with_midi_does_not_allocate() {
             MidiEvent::note_on(0, 0, 60, 0x8000),
             MidiEvent::note_off(0, 0, 60, 0),
         ];
-        let _ = inst.process(&mut buffer, &warm, None, &[], &[], &[], &[], &[], &transport);
+        let _ = inst.process(
+            &mut buffer,
+            &warm,
+            None,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+            &transport,
+        );
     }
     drive_silent(&mut inst, 32, &transport);
 
@@ -127,7 +141,17 @@ fn process_with_midi_does_not_allocate() {
             let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
             let ins: &[&[f32]] = &[];
             let mut buffer = AudioBuffer::new(ins, outs, 48_000.0);
-            let _ = inst.process(&mut buffer, events, None, &[], &[], &[], &[], &[], &transport);
+            let _ = inst.process(
+                &mut buffer,
+                events,
+                None,
+                &[],
+                &[],
+                &[],
+                &[],
+                &[],
+                &transport,
+            );
         }
     });
 }

@@ -13,9 +13,9 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tutti_vst2_host::Vst2Instance;
 
-use crate::host::node::ParameterChangeSink;
-use crate::host::handles::control_backend::ControlBackend;
 use crate::error::EditorError;
+use crate::host::handles::control_backend::ControlBackend;
+use crate::host::node::ParameterChangeSink;
 use crate::protocol::ParameterInfo;
 use crate::util::window::EditorSize;
 

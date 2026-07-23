@@ -135,7 +135,9 @@ fn reference_plugin_loads_and_identifies() {
 
 #[test]
 fn host_presents_correct_buffer_geometry() {
-    let Some(mut inst) = load_or_skip() else { return };
+    let Some(mut inst) = load_or_skip() else {
+        return;
+    };
     let ctx = ProcessContext::default();
     let cap = drive_once(&mut inst, 128, &ctx);
 
@@ -154,7 +156,9 @@ fn host_presents_correct_buffer_geometry() {
 
 #[test]
 fn host_sorts_events_by_sample_offset() {
-    let Some(mut inst) = load_or_skip() else { return };
+    let Some(mut inst) = load_or_skip() else {
+        return;
+    };
     // Feed note-ons deliberately OUT of sample-offset order. The host must
     // present them to the plugin in non-decreasing time order
     // (instance/audio.rs `sort_by_time`).
@@ -183,7 +187,9 @@ fn host_sorts_events_by_sample_offset() {
 
 #[test]
 fn host_delivers_param_points_with_offsets() {
-    let Some(mut inst) = load_or_skip() else { return };
+    let Some(mut inst) = load_or_skip() else {
+        return;
+    };
     let mut params = ParameterChanges::new();
     // Two points on param 7, again out of order to confirm sorting + that
     // value/offset survive the trip across the FFI.
@@ -211,8 +217,12 @@ fn host_delivers_param_points_with_offsets() {
 
 #[test]
 fn host_supplies_transport_when_present() {
-    let Some(mut inst) = load_or_skip() else { return };
-    let transport = TransportInfo::default().with_tempo(140.0).with_playing(true);
+    let Some(mut inst) = load_or_skip() else {
+        return;
+    };
+    let transport = TransportInfo::default()
+        .with_tempo(140.0)
+        .with_playing(true);
     let ctx = ProcessContext {
         transport: Some(&transport),
         ..Default::default()
@@ -232,7 +242,9 @@ fn host_supplies_transport_when_present() {
 
 #[test]
 fn host_callback_round_trips() {
-    let Some(mut inst) = load_or_skip() else { return };
+    let Some(mut inst) = load_or_skip() else {
+        return;
+    };
     // The reference plugin calls host.request_callback() during process.
     let ctx = ProcessContext::default();
     let _ = drive_once(&mut inst, 64, &ctx);

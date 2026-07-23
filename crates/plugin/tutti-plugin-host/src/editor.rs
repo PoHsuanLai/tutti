@@ -195,12 +195,10 @@ pub fn plugin_editor_attach_system(
                         let handle = emitter.handle.clone();
                         let cb: crate::live_resize::ResizeCallback =
                             std::sync::Arc::new(move |w, h| {
-                                let _ = handle.set_editor_size(
-                                    tutti_plugin::handles::EditorSize {
-                                        width: w,
-                                        height: h,
-                                    },
-                                );
+                                let _ = handle.set_editor_size(tutti_plugin::handles::EditorSize {
+                                    width: w,
+                                    height: h,
+                                });
                             });
                         // SAFETY: main-thread context.
                         unsafe {
@@ -292,10 +290,8 @@ pub fn plugin_editor_window_resize_system(
                         e
                     );
                     if let Ok(mut win) = windows.get_mut(ev.window) {
-                        win.resolution.set(
-                            editor.last_applied.0 as f32,
-                            editor.last_applied.1 as f32,
-                        );
+                        win.resolution
+                            .set(editor.last_applied.0 as f32, editor.last_applied.1 as f32);
                     }
                 }
             }

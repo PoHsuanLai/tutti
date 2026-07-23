@@ -1,16 +1,16 @@
 use std::ffi::c_void;
 
-use tutti_clap_host::{
-    ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, MidiEvent,
-    NoteExpressionType, NoteName, OutputEventList, OutputStream, ParameterChanges, ParameterQueue,
-    VoiceInfo,
-};
 use clap_sys::events::{
     clap_event_header, clap_event_note, clap_event_note_expression, clap_event_param_gesture,
     clap_event_param_mod, clap_event_param_value, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI,
     CLAP_EVENT_NOTE_CHOKE, CLAP_EVENT_NOTE_END, CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_ON,
     CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_MOD,
     CLAP_EVENT_PARAM_VALUE,
+};
+use tutti_clap_host::{
+    ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, MidiEvent,
+    NoteExpressionType, NoteName, OutputEventList, OutputStream, ParameterChanges, ParameterQueue,
+    VoiceInfo,
 };
 
 // ── MIDI conversion via tutti_midi_types::MidiEvent ──

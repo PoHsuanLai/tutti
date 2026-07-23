@@ -10,7 +10,7 @@
 use bevy_ecs::prelude::*;
 
 use tutti_core::dsp::AudioUnit;
-use tutti_core::graph::{AudioNode, NodeParamEpoch, AudioGraphRes};
+use tutti_core::graph::{AudioGraphRes, AudioNode, NodeParamEpoch};
 
 use tutti_core::graph::GraphReconcileSystems;
 
@@ -81,7 +81,10 @@ pub struct EffectParams {
 /// Generic per-frame param reconciler: pushes every changed scalar param into
 /// its node via the uniform `UnitParam` → `AudioUnit::set` path. Replaces the
 /// dozen per-effect `reconcile_*_params` systems (reverb excepted).
-#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
+#[allow(
+    clippy::type_complexity,
+    reason = "Bevy queries are tuple-shaped by design"
+)]
 pub fn reconcile_unit_params(
     mut graph: ResMut<AudioGraphRes>,
     changed: Query<EffectParams, AnyParamChanged>,
@@ -152,7 +155,10 @@ type ReverbChangedFilter = Or<(
     Changed<crate::dsp_params::ReverbAlgo>,
 )>;
 
-#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
+#[allow(
+    clippy::type_complexity,
+    reason = "Bevy queries are tuple-shaped by design"
+)]
 pub fn reconcile_reverb_params(
     mut commands: Commands,
     changed: Query<
@@ -170,14 +176,18 @@ pub fn reconcile_reverb_params(
         ),
     >,
 ) {
-    use tutti_core::graph::crossfade_audio_node;
     use crate::dsp_params::ReverbAlgo;
+    use tutti_core::graph::crossfade_audio_node;
     for (entity, room, damp, _wet, algo) in changed.iter() {
         // fundsp reverb opcodes have no `set()`, so a param change rebuilds the
         // node with a crossfade. The algorithm tag picks the constructor;
         // absent (pre-`ReverbAlgo` projects) defaults to the 32-channel FDN.
         let unit: Box<dyn AudioUnit> = match algo.copied().unwrap_or_default() {
-            ReverbAlgo::Fdn32 => Box::new(tutti_core::dsp::reverb_stereo(room.0 as f64, 3.0, damp.0 as f64)),
+            ReverbAlgo::Fdn32 => Box::new(tutti_core::dsp::reverb_stereo(
+                room.0 as f64,
+                3.0,
+                damp.0 as f64,
+            )),
             ReverbAlgo::Fdn4 => Box::new(tutti_core::dsp::reverb4_stereo(room.0 as f64, 3.0)),
         };
         crossfade_audio_node(&mut commands, entity, unit);
@@ -191,7 +201,10 @@ pub fn reconcile_reverb_params(
 #[cfg(feature = "convolution")]
 type ChangedConvolverParams<'w> = (&'w AudioNode, &'w WetMix);
 #[cfg(feature = "convolution")]
-type ChangedConvolverFilter = (With<crate::node_markers::ConvolutionReverbNode>, Changed<WetMix>);
+type ChangedConvolverFilter = (
+    With<crate::node_markers::ConvolutionReverbNode>,
+    Changed<WetMix>,
+);
 
 #[cfg(feature = "convolution")]
 pub fn reconcile_convolver_params(

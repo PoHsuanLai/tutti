@@ -83,9 +83,15 @@ pub struct RestartChanges {
 /// Map a `tutti_vst3_host::Vst3Error` to the server's `BridgeError`.
 fn map_vst3_error(e: tutti_vst3_host::Vst3Error, path: &Path) -> BridgeError {
     match e {
-        tutti_vst3_host::Vst3Error::LoadFailed { path, stage, reason } => {
-            BridgeError::LoadFailed { path, stage, reason }
-        }
+        tutti_vst3_host::Vst3Error::LoadFailed {
+            path,
+            stage,
+            reason,
+        } => BridgeError::LoadFailed {
+            path,
+            stage,
+            reason,
+        },
         tutti_vst3_host::Vst3Error::PluginError { stage, code } => {
             BridgeError::PluginError { stage, code }
         }
@@ -217,7 +223,12 @@ impl Vst3Instance {
     /// inner instance is activated as `Vst3Instance<f64>`; otherwise `f32` is
     /// used. The chosen format is reflected in `metadata().features`
     /// ([`Features::F64_AUDIO`]).
-    pub fn load(path: &Path, sample_rate: f64, block_size: usize, prefer_f64: bool) -> Result<Self> {
+    pub fn load(
+        path: &Path,
+        sample_rate: f64,
+        block_size: usize,
+        prefer_f64: bool,
+    ) -> Result<Self> {
         let reload = ReloadParams {
             path: path.to_path_buf(),
             sample_rate,
@@ -252,7 +263,6 @@ impl Vst3Instance {
         Ok(())
     }
 
-
     /// Drain the plugin's `restartComponent` requests and apply every host-side
     /// effect, returning the residual [`RestartChanges`] the server / client
     /// still needs to react to.
@@ -277,8 +287,7 @@ impl Vst3Instance {
         let mut changes = RestartChanges::default();
 
         if restart.latency_changed {
-            let samples =
-                vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize;
+            let samples = vst_dispatch_mut!(self, inner => inner.read_latency_samples()) as usize;
             self.meta.loaded.latency_samples = samples;
             changes.latency = Some(samples);
         }
@@ -325,7 +334,10 @@ impl Vst3Instance {
         // Safety: WindowHandle was validated at the IPC boundary in server.rs
         let handle = unsafe { tutti_vst3_host::WindowHandle::from_raw(parent.as_ptr()) };
         vst_dispatch_mut!(self, inner => inner.open_editor(handle))
-            .map(|size| EditorSize { width: size.width, height: size.height })
+            .map(|size| EditorSize {
+                width: size.width,
+                height: size.height,
+            })
             .map_err(|e| BridgeError::EditorError(e.to_string()))
     }
 }
@@ -383,7 +395,6 @@ fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
         note_expression: NoteExpressionChanges::new(),
     })
 }
-
 
 /// Build a Tutti [`ParameterInfo`] from a VST3 parameter descriptor. Both the
 /// `get_parameter_list` and the cache-warming paths go through here so they
@@ -489,7 +500,9 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
             _ => Err(BridgeError::LoadFailed {
                 path: std::path::PathBuf::new(),
                 stage: LoadStage::Initialization,
-                reason: "Buffer format mismatch: plugin was activated with a different sample format".to_string(),
+                reason:
+                    "Buffer format mismatch: plugin was activated with a different sample format"
+                        .to_string(),
             }),
         }
     }
@@ -571,7 +584,8 @@ mod tests {
     fn test_vst3_metadata() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(VST3_PLUGIN);
-        let instance = Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
+        let instance =
+            Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
         let outputs = instance.loaded().total_outputs();
 
         assert!(outputs > 0, "Expected audio outputs > 0, got {outputs}");
@@ -581,7 +595,8 @@ mod tests {
     fn test_vst3_parameter_count() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(VST3_PLUGIN);
-        let instance = Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
+        let instance =
+            Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
 
         let count = instance.get_parameter_list().len();
         assert!(
@@ -595,7 +610,8 @@ mod tests {
     fn test_vst3_parameter_list() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(VST3_PLUGIN);
-        let instance = Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
+        let instance =
+            Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
 
         let params = instance.get_parameter_list();
         assert!(
@@ -616,7 +632,8 @@ mod tests {
     fn test_vst3_get_parameter() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(VST3_PLUGIN);
-        let instance = Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
+        let instance =
+            Vst3Instance::load(path, 44100.0, 512, false).expect("Failed to load VST3 plugin");
 
         let params = instance.get_parameter_list();
         assert!(!params.is_empty(), "Need at least one parameter");
@@ -810,7 +827,8 @@ mod tests {
             return;
         }
         // Load with f64 preference — if the plugin supports it, inner will be F64.
-        let mut instance = Vst3Instance::load(&path, 44100.0, 512, true).expect("Failed to load SPAN");
+        let mut instance =
+            Vst3Instance::load(&path, 44100.0, 512, true).expect("Failed to load SPAN");
 
         if !instance.loaded().features.contains(Features::F64_AUDIO) {
             eprintln!("SPAN does not report f64 support, skipping f64 test");
@@ -867,7 +885,8 @@ mod tests {
             return;
         }
         // Load with f64 preference — if the plugin supports it, inner will be F64.
-        let mut instance = Vst3Instance::load(&path, 44100.0, 512, true).expect("Failed to load Boogex");
+        let mut instance =
+            Vst3Instance::load(&path, 44100.0, 512, true).expect("Failed to load Boogex");
 
         if !instance.loaded().features.contains(Features::F64_AUDIO) {
             eprintln!("Boogex does not report f64 support, skipping f64 test");

@@ -459,8 +459,7 @@ mod note_expression_info_tests {
     /// surfaces the flag bits through the boolean accessors.
     #[test]
     fn from_c_decodes_fields_and_flags() {
-        let mut raw: vst3::Steinberg::Vst::NoteExpressionTypeInfo =
-            unsafe { std::mem::zeroed() };
+        let mut raw: vst3::Steinberg::Vst::NoteExpressionTypeInfo = unsafe { std::mem::zeroed() };
         raw.typeId = 1; // Pan, conventionally.
         raw.title = string128("Pan");
         raw.units = string128("L/R");

@@ -201,7 +201,10 @@ mod tests {
         }
         // At most the channel capacity survived; the rest were dropped.
         let forwarded = consumer.forward_pending();
-        assert!(forwarded <= CC_CHANNEL_CAPACITY, "forwarded {forwarded} > cap");
+        assert!(
+            forwarded <= CC_CHANNEL_CAPACITY,
+            "forwarded {forwarded} > cap"
+        );
         assert!(forwarded > 0);
     }
 

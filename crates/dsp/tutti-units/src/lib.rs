@@ -89,12 +89,16 @@ pub mod reconcile;
 #[cfg(feature = "bevy")]
 pub use dsp::{spawn_dsp_node, spawn_lfo_nodes, AddDspNode, DspNode, SpawnParams, TuttiDspPlugin};
 #[cfg(feature = "bevy")]
-pub use reconcile::{bump_param_epoch_dsp, reconcile_reverb_params, reconcile_unit_params, EffectParams};
+pub use reconcile::{
+    bump_param_epoch_dsp, reconcile_reverb_params, reconcile_unit_params, EffectParams,
+};
 
 #[cfg(all(feature = "bevy", feature = "convolution"))]
 pub mod pending_convolver;
 #[cfg(all(feature = "bevy", feature = "convolution"))]
-pub use pending_convolver::{promote_pending_convolvers, start_convolver_loads, PendingConvolverLoad};
+pub use pending_convolver::{
+    promote_pending_convolvers, start_convolver_loads, PendingConvolverLoad,
+};
 #[cfg(all(feature = "bevy", feature = "convolution"))]
 pub use reconcile::reconcile_convolver_params;
 

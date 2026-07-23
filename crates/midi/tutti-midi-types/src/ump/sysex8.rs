@@ -143,7 +143,9 @@ mod tests {
 
     #[test]
     fn sysex8_status_rejects_non_sysex8() {
-        assert!(MidiEvent::note_on(0, 0, 60, 0x8000).sysex8_status().is_none());
+        assert!(MidiEvent::note_on(0, 0, 60, 0x8000)
+            .sysex8_status()
+            .is_none());
         assert!(sysex8_message(&[MidiEvent::note_on(0, 0, 60, 0x8000)]).is_none());
         assert!(sysex8_message(&[]).is_none());
     }

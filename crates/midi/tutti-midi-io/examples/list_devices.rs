@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use tutti_midi_io::{MidiIo, HardwareMidiInputs};
+use tutti_midi_io::{HardwareMidiInputs, MidiIo};
 
 fn main() {
     let io = MidiIo::new(Arc::new(HardwareMidiInputs::new(256)));

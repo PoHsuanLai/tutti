@@ -16,13 +16,14 @@ impl ClapGuiInstance {
         // Editor-only load: gui/params/state work without activation, and this
         // instance must never be activated or process audio (audio runs in the
         // subprocess instance). `load_editor_only` encodes that contract.
-        let inner = tutti_clap_host::ClapLoaded::load_editor_only(&resolved, None).map_err(
-            |e| BridgeError::LoadFailed {
-                path: path.to_path_buf(),
-                stage: LoadStage::Opening,
-                reason: format!("CLAP GUI-only load failed: {e}"),
-            },
-        )?;
+        let inner =
+            tutti_clap_host::ClapLoaded::load_editor_only(&resolved, None).map_err(|e| {
+                BridgeError::LoadFailed {
+                    path: path.to_path_buf(),
+                    stage: LoadStage::Opening,
+                    reason: format!("CLAP GUI-only load failed: {e}"),
+                }
+            })?;
         Ok(Self { inner })
     }
 }
@@ -89,9 +90,11 @@ impl GuiInstance for ClapGuiInstance {
     }
 
     fn poll_editor_resize_request(&mut self) -> Option<EditorSize> {
-        self.inner.poll_editor_resize_request().map(|sz| EditorSize {
-            width: sz.width,
-            height: sz.height,
-        })
+        self.inner
+            .poll_editor_resize_request()
+            .map(|sz| EditorSize {
+                width: sz.width,
+                height: sz.height,
+            })
     }
 }

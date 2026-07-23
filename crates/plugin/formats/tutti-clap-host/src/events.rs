@@ -7,8 +7,6 @@ use crate::types::{
     MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterPoint,
     ParameterQueue,
 };
-use tutti_plugin_types::{note_id_for, note_id_to_channel_note};
-use smallvec::SmallVec;
 use clap_sys::events::{
     clap_event_header, clap_event_midi, clap_event_midi_sysex, clap_event_note,
     clap_event_note_expression, clap_event_param_gesture, clap_event_param_mod,
@@ -20,7 +18,9 @@ use clap_sys::events::{
     CLAP_NOTE_EXPRESSION_PAN, CLAP_NOTE_EXPRESSION_PRESSURE, CLAP_NOTE_EXPRESSION_TUNING,
     CLAP_NOTE_EXPRESSION_VIBRATO, CLAP_NOTE_EXPRESSION_VOLUME,
 };
+use smallvec::SmallVec;
 use std::ptr;
+use tutti_plugin_types::{note_id_for, note_id_to_channel_note};
 
 /// A single CLAP event, wrapping the underlying `#[repr(C)]` `clap_sys`
 /// struct so a pointer to its `header` field can be cast back by the plugin.
@@ -230,7 +230,8 @@ impl ClapEvent {
             let (bytes, _len) = event.to_midi1_bytes()?;
             Some(ClapEvent::midi(time, 0, bytes))
         };
-        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(normalized.data_words()) else {
+        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(normalized.data_words())
+        else {
             let (bytes, _len) = event.to_midi1_bytes()?;
             return Some(ClapEvent::midi(time, 0, bytes));
         };
@@ -615,10 +616,7 @@ impl OutputEventList {
     /// Extract MIDI events from the output as UMP [`MidiEvent`]s,
     /// dropping non-MIDI events.
     pub fn to_midi_events(&self) -> Vec<MidiEvent> {
-        self.events
-            .iter()
-            .filter_map(|e| e.to_midi())
-            .collect()
+        self.events.iter().filter_map(|e| e.to_midi()).collect()
     }
 
     /// RT-safe variant of [`Self::to_midi_events`] that drains into a
@@ -842,7 +840,11 @@ mod tests {
                 assert_eq!(e.channel, 3);
                 assert_eq!(e.key, 60);
                 let expected = 0.5 * PER_NOTE_PITCH_BEND_RANGE_SEMITONES;
-                assert!((e.value - expected).abs() < 0.1, "tuning {} vs {expected}", e.value);
+                assert!(
+                    (e.value - expected).abs() < 0.1,
+                    "tuning {} vs {expected}",
+                    e.value
+                );
             }
             _ => panic!("expected NoteExpression(Tuning)"),
         }

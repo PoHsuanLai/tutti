@@ -1,10 +1,10 @@
 //! PDC delay compensation AudioUnit.
 
 use super::delay_buffer::DelayBuffer;
-use std::any;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::{AudioUnit, BufferMut, BufferRef};
 use fundsp::signal::SignalFrame;
+use std::any;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct PdcDelayUnit {
     delay_buffer: DelayBuffer,

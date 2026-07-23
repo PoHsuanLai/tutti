@@ -30,9 +30,8 @@ pub(crate) fn decode_packet_into<'d>(
     dest: &'d mut Option<AudioBuffer<f32>>,
 ) -> WaveResult<(&'d AudioBuffer<f32>, usize)> {
     let decoded = decoder.decode(packet)?;
-    let buf = dest.get_or_insert_with(|| {
-        AudioBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec())
-    });
+    let buf = dest
+        .get_or_insert_with(|| AudioBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec()));
     buf.clear();
     buf.render_silence(Some(decoded.frames()));
     decoded.convert(buf);

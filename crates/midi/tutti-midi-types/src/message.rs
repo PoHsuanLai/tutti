@@ -258,8 +258,7 @@ impl MidiMessage {
     /// `true` for a note-off (including a folded velocity-0 note-on).
     #[inline]
     pub fn is_note_off(&self) -> bool {
-        matches!(self, Self::NoteOff { .. })
-            || matches!(self, Self::NoteOn { velocity: 0, .. })
+        matches!(self, Self::NoteOff { .. }) || matches!(self, Self::NoteOn { velocity: 0, .. })
     }
 }
 
@@ -623,7 +622,12 @@ mod tests {
     fn control_change_carries_32bit_value() {
         let msg = MidiEvent::cc(0, 5, 74, 0xDEAD_BEEF).message();
         match msg {
-            MidiMessage::ControlChange { channel, index, value, .. } => {
+            MidiMessage::ControlChange {
+                channel,
+                index,
+                value,
+                ..
+            } => {
                 assert_eq!(channel, 5);
                 assert_eq!(index, 74);
                 assert_eq!(value, 0xDEAD_BEEF);
@@ -663,7 +667,10 @@ mod tests {
             MidiEvent::start(0).message(),
             MidiMessage::Start { .. }
         ));
-        assert!(matches!(MidiEvent::stop(0).message(), MidiMessage::Stop { .. }));
+        assert!(matches!(
+            MidiEvent::stop(0).message(),
+            MidiMessage::Stop { .. }
+        ));
         assert!(matches!(
             MidiEvent::continue_msg(0).message(),
             MidiMessage::Continue { .. }

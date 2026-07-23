@@ -10,8 +10,10 @@
 
 use crate::Result;
 
-pub use crate::protocol::audio::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, Sample};
-pub use crate::util::config::BridgeConfig;
+pub use crate::host::subprocess::resolve_bundle;
+pub use crate::protocol::audio::{
+    AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, Sample,
+};
 pub use crate::protocol::{
     AuComponentType, BridgeMessage, BusChannels, ChordChanges, ChordValue, Features, HostMessage,
     IpcMidiEvent, IpcMidiEventVec, LoadedPlugin, MidiEvent, MidiEventVec, NoteExpressionChanges,
@@ -21,7 +23,7 @@ pub use crate::protocol::{
     ProcessAudioData, SampleFormat, ScaleChanges, ScaleValue, SlabLayout, TransportInfo,
     Vst2Category, MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
 };
-pub use crate::host::subprocess::resolve_bundle;
+pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::AudioSlab;
 pub use crate::util::window::{EditorSize, WindowHandle};
 

@@ -227,7 +227,10 @@ impl CiResponder {
                     body: prop.body.clone(),
                 },
             }],
-            None => self.nak(dest, tutti_midi_types::ci::property::SUB_ID2_GET_PROPERTY_DATA),
+            None => self.nak(
+                dest,
+                tutti_midi_types::ci::property::SUB_ID2_GET_PROPERTY_DATA,
+            ),
         }
     }
 

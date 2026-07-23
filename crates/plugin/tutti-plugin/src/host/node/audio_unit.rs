@@ -1,10 +1,10 @@
 //! fundsp trait impls for [`PluginClient`]. Dual f32/f64 dispatch lives
 //! here so the core struct + API in `mod.rs` stays focused.
 
-use crate::util::node::route_with_latency;
 use super::PluginClient;
-use tutti_midi_types::MidiUnitId;
+use crate::util::node::route_with_latency;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
+use tutti_midi_types::MidiUnitId;
 
 impl AudioUnit for PluginClient {
     fn inputs(&self) -> usize {

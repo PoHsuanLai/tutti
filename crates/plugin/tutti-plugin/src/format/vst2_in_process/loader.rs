@@ -9,9 +9,9 @@ use tutti_vst2_host::Vst2Instance;
 
 use super::audio_unit::InProcessVst2Client;
 use super::control_backend::InProcessVst2Backend;
-use crate::host::node::{LatencyChangeSink, ParameterChangeSink};
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::host::handles::PluginHandle;
+use crate::host::node::{LatencyChangeSink, ParameterChangeSink};
 use crate::protocol::{Features, LoadedPlugin, PluginClass, PluginDescriptor};
 use smallvec::SmallVec;
 

@@ -53,8 +53,8 @@
 //! [`Owner`]: Ownership::Owner
 //! [`View`]: Ownership::View
 
-use crate::protocol::audio::Sample;
 use crate::error::{BridgeError, Result};
+use crate::protocol::audio::Sample;
 use crate::protocol::{SampleFormat, SlabLayout};
 use memmap2::MmapMut;
 use std::fs::OpenOptions;

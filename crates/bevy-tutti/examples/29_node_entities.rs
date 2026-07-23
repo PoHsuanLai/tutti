@@ -33,9 +33,9 @@ use bevy_ecs::prelude::*;
 use bevy_log::LogPlugin;
 
 use bevy_tutti::TuttiPlugin;
-use tutti_core::MotionEvent;
 use tutti_core::dsp::sine_hz;
 use tutti_core::graph::{AudioGraphRes, MeteringRes, SpawnAudioNode};
+use tutti_core::MotionEvent;
 use tutti_core::{AudioNode, NodeKind, Volume};
 
 fn main() {

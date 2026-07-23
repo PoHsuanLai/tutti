@@ -19,9 +19,9 @@ pub use core::{Error, Result};
 // OS hardware orchestrator, the device descriptor, and the record its observer
 // channel carries — only present under `midi-hardware` (they own the `midir`
 // edge).
+pub use core::{HardwareMidiInputs, InputProducerHandle, PortInfo, PortType};
 #[cfg(feature = "midi-hardware")]
 pub use core::{MidiDevice, MidiInputRecord, MidiIo};
-pub use core::{InputProducerHandle, HardwareMidiInputs, PortInfo, PortType};
 
 /// `HardwareMidiInputs` and friends live in [`core::port`]; kept as a crate-root
 /// module path for the `tutti_midi_io::port::*` spelling consumers already use.
@@ -35,8 +35,8 @@ pub use core::{UmpVirtualSource, VirtualMidiDestination, VirtualMidiSource};
 pub use tutti_midi_types::Protocol;
 
 pub use tutti_midi_types::{
-    midi2, midly, normalize, MidiEvent, MidiIn, MidiMessage, MidiOut, MidiUnitId,
-    NoteAttribute, NoteId, PerNoteController, UmpMessageType, UnencodableMessage,
+    midi2, midly, normalize, MidiEvent, MidiIn, MidiMessage, MidiOut, MidiUnitId, NoteAttribute,
+    NoteId, PerNoteController, UmpMessageType, UnencodableMessage,
 };
 
 /// MIDI-CI (M2-101) message codec + SysEx7 wire bridge. Re-exported so the app's
@@ -150,8 +150,9 @@ pub use ecs::{
 #[cfg(feature = "bevy")]
 pub use ecs::{
     BroadcastFlexMetadata, CiDeviceDiscovered, CiRes, EndpointDiscovered, EndpointDiscoveryRes,
-    InboundCiMessage, InboundEndpointReply, JrStamperRes, MidiMetadataPlugin, MidiNegotiationPlugin,
-    MidiOutPlugin, MidiOutRes, SendMidiOut, StartCiDiscovery, StartEndpointDiscovery,
+    InboundCiMessage, InboundEndpointReply, JrStamperRes, MidiMetadataPlugin,
+    MidiNegotiationPlugin, MidiOutPlugin, MidiOutRes, SendMidiOut, StartCiDiscovery,
+    StartEndpointDiscovery,
 };
 
 #[cfg(all(feature = "bevy", target_os = "macos", feature = "midi-hardware"))]

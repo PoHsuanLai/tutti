@@ -14,10 +14,10 @@
 //! - [`graph`] — the Bevy ECS binding: lane-node spawn + param reconcile +
 //!   [`TuttiAutomationPlugin`](graph::TuttiAutomationPlugin).
 
-mod lane;
-mod recording;
 #[cfg(feature = "bevy")]
 pub mod graph;
+mod lane;
+mod recording;
 
 pub use lane::{AutomationLane, LiveAutomationLane};
 pub use recording::{

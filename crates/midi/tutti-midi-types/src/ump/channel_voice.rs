@@ -121,7 +121,10 @@ impl MidiEvent {
     pub fn program_change(group: u8, channel: u8, program: u8, bank: Option<u16>) -> Self {
         use midi2::channel_voice2::ProgramChange;
         debug_assert_fields(group, channel, None);
-        debug_assert!(program < 128, "MIDI program {program} out of range (0..128)");
+        debug_assert!(
+            program < 128,
+            "MIDI program {program} out of range (0..128)"
+        );
         let mut m = ProgramChange::<[u32; 2]>::new();
         m.set_group(u4::new(group & 0x0F));
         m.set_channel(u4::new(channel & 0x0F));

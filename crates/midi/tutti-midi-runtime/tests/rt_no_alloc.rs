@@ -4,9 +4,9 @@
 //! the midi-runtime step of the RT-safety audit).
 
 use assert_no_alloc::AllocDisabler;
+use tutti_midi_runtime::{MidiBus, MidiMailbox};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
-use tutti_midi_runtime::{MidiBus, MidiMailbox};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;

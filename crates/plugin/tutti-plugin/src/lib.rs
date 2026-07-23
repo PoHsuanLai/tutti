@@ -150,10 +150,8 @@ pub use tutti_plugin_types::mark_main_thread;
 /// without re-implementing them. End users loading plugins should stick to
 /// [`catalog`] and [`handles`].
 pub mod backend {
-    pub use crate::host::node::{
-        route_with_latency, LatencyChangeSink, Midi, ParameterChangeSink,
-    };
     pub use crate::host::handles::control_backend::ControlBackend;
+    pub use crate::host::node::{route_with_latency, LatencyChangeSink, Midi, ParameterChangeSink};
     pub use crate::util::node::node_id::PLUGIN_CLIENT_ID;
 }
 

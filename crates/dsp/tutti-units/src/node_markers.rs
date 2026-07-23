@@ -21,7 +21,7 @@ use bevy_reflect::prelude::*;
 use tutti_core::graph::NodeKind;
 
 use crate::dsp_params::{
-    Attack, BeatSynced, CompressorRatio, DelayTime, Feedback, Frequency, FilterQ, GainDb, ModDepth,
+    Attack, BeatSynced, CompressorRatio, DelayTime, Feedback, FilterQ, Frequency, GainDb, ModDepth,
     ModRate, Release, ReverbAlgo, ReverbDamping, ReverbRoomSize, ThresholdDb, WetMix,
 };
 

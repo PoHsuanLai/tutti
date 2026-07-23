@@ -206,7 +206,15 @@ impl ClapLoaded {
         let get_fn = ext.get?;
 
         let mut info: clap_audio_port_info = unsafe { std::mem::zeroed() };
-        if !unsafe { get_fn(self.plugin.as_ptr(), config_id, port_index, is_input, &mut info) } {
+        if !unsafe {
+            get_fn(
+                self.plugin.as_ptr(),
+                config_id,
+                port_index,
+                is_input,
+                &mut info,
+            )
+        } {
             return None;
         }
         Some(audio_port_info_from_clap(&info))

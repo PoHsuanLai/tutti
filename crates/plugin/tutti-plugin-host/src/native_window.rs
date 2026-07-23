@@ -36,10 +36,8 @@ pub fn attach_child_window(
         use objc2_app_kit::{NSView, NSWindowOrderingMode};
 
         unsafe {
-            let child_view: &NSView =
-                &*(native_view_ptr(child).unwrap() as *const NSView);
-            let parent_view: &NSView =
-                &*(native_view_ptr(parent).unwrap() as *const NSView);
+            let child_view: &NSView = &*(native_view_ptr(child).unwrap() as *const NSView);
+            let parent_view: &NSView = &*(native_view_ptr(parent).unwrap() as *const NSView);
 
             let child_window = child_view.window().expect("child must be in a window");
             let parent_window = parent_view.window().expect("parent must be in a window");
@@ -51,8 +49,7 @@ pub fn attach_child_window(
     #[cfg(target_os = "windows")]
     {
         use raw_window_handle::RawWindowHandle;
-        if let (RawWindowHandle::Win32(child_h), RawWindowHandle::Win32(parent_h)) =
-            (child, parent)
+        if let (RawWindowHandle::Win32(child_h), RawWindowHandle::Win32(parent_h)) = (child, parent)
         {
             unsafe {
                 #[cfg(target_pointer_width = "64")]
@@ -97,8 +94,7 @@ pub fn enable_subview_autoresize(host: raw_window_handle::RawWindowHandle) {
         use objc2_app_kit::{NSAutoresizingMaskOptions, NSView};
 
         unsafe {
-            let host_view: &NSView =
-                &*(native_view_ptr(host).unwrap() as *const NSView);
+            let host_view: &NSView = &*(native_view_ptr(host).unwrap() as *const NSView);
             host_view.setAutoresizesSubviews(true);
             let mask = NSAutoresizingMaskOptions::ViewWidthSizable
                 | NSAutoresizingMaskOptions::ViewHeightSizable;

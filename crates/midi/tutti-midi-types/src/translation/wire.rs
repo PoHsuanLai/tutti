@@ -216,7 +216,10 @@ mod tests {
     fn try_from_bytes_parses_and_errors() {
         // Note-on wire bytes → a valid MidiEvent at frame 0.
         let ev = MidiEvent::try_from(&[0x93u8, 60, 100][..]).expect("valid note-on");
-        assert_eq!(ev, MidiEvent::from_midi1_bytes(0, &[0x93, 60, 100]).unwrap());
+        assert_eq!(
+            ev,
+            MidiEvent::from_midi1_bytes(0, &[0x93, 60, 100]).unwrap()
+        );
         assert_eq!(ev.frame_offset, 0);
         // Garbage → the typed error.
         assert_eq!(MidiEvent::try_from(&[0x00u8][..]), Err(MidiParseError));

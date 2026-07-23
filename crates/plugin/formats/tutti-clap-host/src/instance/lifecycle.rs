@@ -94,7 +94,10 @@ impl ClapLoaded {
         scratch.input_events.reserve(EVENT_SCRATCH_CAPACITY);
         scratch.output_events.reserve(EVENT_SCRATCH_CAPACITY);
         scratch.out_midi.reserve(EVENT_SCRATCH_CAPACITY);
-        scratch.out_param_changes.queues.reserve(PARAM_QUEUE_CAPACITY);
+        scratch
+            .out_param_changes
+            .queues
+            .reserve(PARAM_QUEUE_CAPACITY);
         scratch.out_note_expressions.reserve(EVENT_SCRATCH_CAPACITY);
 
         Ok(ClapActive {

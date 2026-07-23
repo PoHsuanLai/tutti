@@ -196,7 +196,9 @@ mod tests {
         let mut body = Vec::new();
         d.encode_body(&mut body);
         let back = DiscoveryData::decode_body(&body).expect("decodes");
-        assert!(back.categories.contains(CiCategories::PROFILE_CONFIGURATION));
+        assert!(back
+            .categories
+            .contains(CiCategories::PROFILE_CONFIGURATION));
         assert!(back.categories.contains(CiCategories::PROPERTY_EXCHANGE));
         assert!(!back.categories.contains(CiCategories::PROCESS_INQUIRY));
     }

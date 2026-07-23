@@ -49,8 +49,8 @@ impl MpeProcessor {
                 Some(MpeChannelVoiceMap::new(*upper)),
             ),
         };
-        let rotation = matches!(mode, MpeMode::SingleChannelRotation { .. })
-            .then(NoteRotationAllocator::new);
+        let rotation =
+            matches!(mode, MpeMode::SingleChannelRotation { .. }).then(NoteRotationAllocator::new);
 
         Self {
             mode,
@@ -86,7 +86,8 @@ impl MpeProcessor {
         // channel-voice arm to handle. This is the same `normalize()` the synths
         // apply before dispatch — the MPE processor is not a second translator.
         let normalized = tutti_midi_types::normalize(event);
-        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(normalized.data_words()) else {
+        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(normalized.data_words())
+        else {
             return;
         };
         if let MpeMode::SingleChannelRotation { channel } = self.mode {
@@ -121,7 +122,8 @@ impl MpeProcessor {
                 self.handle_channel_pressure(u8::from(m.channel()), m.channel_pressure_data());
             }
             ChannelVoice2::KeyPressure(m) => {
-                let id = NoteId::from_channel_note(u8::from(m.channel()), u8::from(m.note_number()));
+                let id =
+                    NoteId::from_channel_note(u8::from(m.channel()), u8::from(m.note_number()));
                 self.expression
                     .set_pressure(id, u32_to_unit_f32(m.key_pressure_data()));
             }
@@ -134,7 +136,8 @@ impl MpeProcessor {
                 self.handle_cc(ch, cc, v);
             }
             ChannelVoice2::PerNotePitchBend(m) => {
-                let id = NoteId::from_channel_note(u8::from(m.channel()), u8::from(m.note_number()));
+                let id =
+                    NoteId::from_channel_note(u8::from(m.channel()), u8::from(m.note_number()));
                 self.expression
                     .set_pitch_bend(id, bend_u32_to_signed_f32(m.pitch_bend_data()));
             }
@@ -150,7 +153,8 @@ impl MpeProcessor {
             // Assignable per-note controllers accept any 8-bit index; we
             // interpret index 74 (CC74 / Brightness) as the MPE slide.
             ChannelVoice2::AssignablePerNoteController(m) if m.index() == 74 => {
-                let id = NoteId::from_channel_note(u8::from(m.channel()), u8::from(m.note_number()));
+                let id =
+                    NoteId::from_channel_note(u8::from(m.channel()), u8::from(m.note_number()));
                 self.expression
                     .set_slide(id, u32_to_unit_f32(m.controller_data()));
             }
@@ -235,7 +239,6 @@ impl MpeProcessor {
         }
     }
 
-
     fn handle_note_on(&mut self, channel: u8, note: u8, velocity_u16: u16) {
         let Some(zone_info) = self.get_zone_info(channel) else {
             return;
@@ -248,7 +251,8 @@ impl MpeProcessor {
                     map.bind_channel(channel, note);
                 }
             }
-            self.expression.note_on(NoteId::from_channel_note(channel, note));
+            self.expression
+                .note_on(NoteId::from_channel_note(channel, note));
         } else {
             self.handle_note_off_internal(channel, note, zone_info.is_lower_zone);
         }
@@ -393,7 +397,6 @@ impl MpeProcessor {
     }
 }
 
-
 /// Extract the CC74 (Brightness / MPE slide) value from a per-note
 /// controller, if that's the dimension encoded.
 fn slide_value(c: Controller) -> Option<u32> {
@@ -464,7 +467,10 @@ mod tests {
         // Same routing as the native-CV2 pitch-bend test: the held note on ch2
         // receives the bend via the classic channel→note map.
         let routed = processor.expression().get_pitch_bend(nid(2, 60));
-        assert!((routed - 1.0).abs() < 0.01, "raw-wire bend reached the note, got {routed}");
+        assert!(
+            (routed - 1.0).abs() < 0.01,
+            "raw-wire bend reached the note, got {routed}"
+        );
     }
 
     #[test]
@@ -528,7 +534,11 @@ mod tests {
         processor.process(&note_on(2, 64, 100));
         processor.process(&pitch_bend_14bit(2, 16383));
         assert_eq!(
-            processor.lower_zone_map.as_ref().unwrap().get_note_for_channel(2),
+            processor
+                .lower_zone_map
+                .as_ref()
+                .unwrap()
+                .get_note_for_channel(2),
             Some(64)
         );
 
@@ -609,7 +619,11 @@ mod tests {
         processor.process(&MidiEvent::per_note_management(0, 2, 60, false, true));
 
         assert!(
-            processor.expression().get_pitch_bend_per_note(nid(2, 60)).abs() < 0.01,
+            processor
+                .expression()
+                .get_pitch_bend_per_note(nid(2, 60))
+                .abs()
+                < 0.01,
             "note 60 must reset to neutral"
         );
         assert!(

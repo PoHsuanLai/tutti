@@ -47,7 +47,7 @@ pub use scan::{
 /// Non-Send marker resource that forces plugin editor systems to run on the
 /// main thread. AppKit (macOS), Win32, and X11 window operations must happen
 /// on the main thread. JUCE, VSTGUI, and other plugin GUI frameworks assume
-/// this. Inserted as `insert_non_send_resource` so any system that takes
+/// this. Inserted as `insert_non_send` so any system that takes
 /// `NonSend<PluginEditorMainThread>` is pinned to the main thread.
 pub struct PluginEditorMainThread;
 
@@ -118,7 +118,7 @@ impl Plugin for TuttiHostingPlugin {
 
         app.add_observer(close_editor_observer);
 
-        app.insert_non_send_resource(PluginEditorMainThread);
+        app.insert_non_send(PluginEditorMainThread);
 
         // Default plugin catalog: empty in-memory, no scan dirs. Apps
         // that want a real disk-backed catalog should overwrite this

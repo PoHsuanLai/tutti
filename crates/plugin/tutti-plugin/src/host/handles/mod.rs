@@ -12,11 +12,11 @@
 pub(crate) mod control_backend;
 pub(crate) mod control_handle;
 
+pub use crate::host::ipc_client::audio::ResyncKind;
 pub use crate::host::node::PluginClient;
 pub use crate::host::node::{
     HarmonySource, ParamAutomationSource, TimedChord, TimedParam, TimedScale,
 };
-pub use crate::host::ipc_client::audio::ResyncKind;
 pub use crate::protocol::{ChordValue, ScaleValue};
 pub use crate::util::window::{EditorCapabilities, EditorSize};
 pub use control_handle::PluginHandle;

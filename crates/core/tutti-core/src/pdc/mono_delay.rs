@@ -1,9 +1,9 @@
 //! Mono PDC delay compensation AudioUnit (1 in → 1 out).
 
-use std::any;
-use std::vec::Vec;
 use crate::{AudioUnit, BufferMut, BufferRef};
 use fundsp::signal::SignalFrame;
+use std::any;
+use std::vec::Vec;
 
 /// Mono PDC delay compensation as an AudioUnit.
 ///

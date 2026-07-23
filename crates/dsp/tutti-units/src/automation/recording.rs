@@ -475,7 +475,10 @@ impl<T: RecordingTarget + Eq + Hash> Manager<T> {
         self.default_config = config;
     }
 
-    pub fn get_or_create_lane(&self, target: T) -> dashmap::mapref::one::RefMut<'_, T, Recorder<T>> {
+    pub fn get_or_create_lane(
+        &self,
+        target: T,
+    ) -> dashmap::mapref::one::RefMut<'_, T, Recorder<T>> {
         self.lanes.entry(target.clone()).or_insert_with(|| {
             let mut lane = Recorder::new(target);
             lane.set_config(self.default_config);

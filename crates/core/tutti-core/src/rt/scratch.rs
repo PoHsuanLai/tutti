@@ -4,8 +4,8 @@
 //! API, so RT code cannot reallocate through it. The active length per block is
 //! chosen by slicing ([`RtScratch::active`]), not by changing the backing length.
 
-use std::vec::Vec;
 use core::fmt;
+use std::vec::Vec;
 
 /// Fixed-capacity, no-grow scratch buffer for the audio thread.
 ///

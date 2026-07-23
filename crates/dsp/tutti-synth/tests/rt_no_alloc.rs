@@ -152,7 +152,11 @@ fn polysynth_process_with_midi_events_inside_block_is_allocation_free() {
     let mut output_vec = BufferVec::new(2);
 
     // Warm up the voice pool + finished-indices SmallVec at full size.
-    sender.queue(&[note_on(0, 48, 100), note_on(0, 60, 100), note_on(0, 72, 100)]);
+    sender.queue(&[
+        note_on(0, 48, 100),
+        note_on(0, 60, 100),
+        note_on(0, 72, 100),
+    ]);
     for _ in 0..64 {
         let input = input_vec.buffer_ref();
         let mut output = output_vec.buffer_mut();

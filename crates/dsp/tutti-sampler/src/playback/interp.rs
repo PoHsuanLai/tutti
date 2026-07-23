@@ -11,7 +11,7 @@
 //! so it is safe to call from `process`/`tick` hot paths.
 
 use std::sync::Arc;
-use tutti_core::{BeatDuration, Beat, Timeline, Wave};
+use tutti_core::{Beat, BeatDuration, Timeline, Wave};
 
 /// Clip-relative sample offset the playhead sits at, or `None` when it is
 /// outside the clip's transport window.

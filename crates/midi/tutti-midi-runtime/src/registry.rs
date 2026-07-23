@@ -373,7 +373,10 @@ impl MidiBus {
     /// [`MidiEvent`] yourself (`velocity` is 7-bit MIDI 1.0). Mirrors
     /// [`MidiSender::note_on`] for callers that hold only the bus + a unit id.
     pub fn note_on(&self, unit_id: MidiUnitId, channel: u8, note: u8, velocity: u8) {
-        self.queue(unit_id, &[MidiEvent::note_on_7bit(0, channel, note, velocity)]);
+        self.queue(
+            unit_id,
+            &[MidiEvent::note_on_7bit(0, channel, note, velocity)],
+        );
     }
 
     /// Convenience: queue a note-off to a subscribed unit. Mirrors
@@ -505,7 +508,12 @@ mod tests {
     use tutti_midi_types::midi2::{system_common, UmpMessage};
 
     fn note_on(note: u8, vel_u7: u8) -> MidiEvent {
-        MidiEvent::note_on(0, 0, note, tutti_midi_types::convert::midi1_velocity_to_midi2(vel_u7))
+        MidiEvent::note_on(
+            0,
+            0,
+            note,
+            tutti_midi_types::convert::midi1_velocity_to_midi2(vel_u7),
+        )
     }
 
     fn note_off(note: u8) -> MidiEvent {
@@ -758,7 +766,12 @@ mod tests {
         bus.insert(sender);
 
         // Note on, channel 2 (a member channel of the lower zone).
-        let note_on = MidiEvent::note_on(0, 2, 60, tutti_midi_types::convert::midi1_velocity_to_midi2(100));
+        let note_on = MidiEvent::note_on(
+            0,
+            2,
+            60,
+            tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+        );
         // Channel pitch-bend on channel 2 — under MPE classic mapping
         // this routes to note 60.
         let bend = MidiEvent::pitch_bend(0, 2, midi1_pitch_bend_to_midi2(16383));
@@ -789,14 +802,19 @@ mod tests {
 
         let processor = MpeProcessor::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
         let installed = bus.install_mpe(processor);
-        let read_back = bus.mpe_expression().expect("expression published on install");
+        let read_back = bus
+            .mpe_expression()
+            .expect("expression published on install");
         assert!(
             Arc::ptr_eq(&installed, &read_back),
             "mpe_expression() must hand back the same handle install_mpe returned"
         );
 
         bus.uninstall_mpe();
-        assert!(bus.mpe_expression().is_none(), "uninstall clears the expression");
+        assert!(
+            bus.mpe_expression().is_none(),
+            "uninstall clears the expression"
+        );
     }
 
     #[test]
@@ -815,7 +833,12 @@ mod tests {
 
         // Without MPE installed, queueing a note-on shouldn't update
         // the expression atomics.
-        let note_on = MidiEvent::note_on(0, 2, 60, tutti_midi_types::convert::midi1_velocity_to_midi2(100));
+        let note_on = MidiEvent::note_on(
+            0,
+            2,
+            60,
+            tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+        );
         bus.queue(id, &[note_on]);
 
         assert!(
@@ -835,7 +858,12 @@ mod tests {
         let (sender, receiver) = MidiMailbox::pair(id);
         bus.insert(sender);
 
-        let note_on = MidiEvent::note_on(0, 0, 60, tutti_midi_types::convert::midi1_velocity_to_midi2(100));
+        let note_on = MidiEvent::note_on(
+            0,
+            0,
+            60,
+            tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+        );
         bus.queue(id, &[note_on]);
 
         assert!(receiver.has_events());

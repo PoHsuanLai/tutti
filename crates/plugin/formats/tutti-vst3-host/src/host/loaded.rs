@@ -9,13 +9,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use vst3::com_scrape_types::Unknown;
+use vst3::ComPtr;
 use vst3::Steinberg::{
-    kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPluginCompatibility,
-    IPluginCompatibilityTrait, IPlugView, IPlugViewTrait, IPluginBaseTrait, ViewRect,
+    kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPlugView, IPlugViewTrait,
+    IPluginBaseTrait, IPluginCompatibility, IPluginCompatibilityTrait, ViewRect,
     Vst::{
-        IAudioProcessor, IAudioProcessorTrait, IComponent, IComponentTrait, IConnectionPoint,
-        IAudioPresentationLatency, IAudioPresentationLatencyTrait, IAutomationState,
-        IAutomationStateTrait, IConnectionPointTrait, IEditController, IEditControllerTrait,
+        IAudioPresentationLatency, IAudioPresentationLatencyTrait, IAudioProcessor,
+        IAudioProcessorTrait, IAutomationState, IAutomationStateTrait, IComponent, IComponentTrait,
+        IConnectionPoint, IConnectionPointTrait, IEditController, IEditControllerTrait,
         IKeyswitchController, IKeyswitchControllerTrait, IMidiLearn, INoteExpressionController,
         INoteExpressionControllerTrait, INoteExpressionPhysicalUIMapping,
         INoteExpressionPhysicalUIMappingTrait, IParameterFunctionName, IParameterFunctionNameTrait,
@@ -25,7 +26,6 @@ use vst3::Steinberg::{
         PhysicalUIMapList, RepresentationInfo,
     },
 };
-use vst3::ComPtr;
 
 #[cfg(target_os = "windows")]
 use vst3::Steinberg::kPlatformTypeHWND;
@@ -42,14 +42,14 @@ use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
 use crate::types::{
     EditorCapabilities, EditorSize, PluginInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo,
-    Vst3ParameterInfo, WindowHandle, Vst3Sample,
+    Vst3ParameterInfo, Vst3Sample, WindowHandle,
 };
 
-use super::midi_learn::MidiLearnConsumer;
-use super::{IComponentExt, K_INPUT, K_OUTPUT};
 use super::instance::Vst3Instance;
 use super::library::Vst3Library;
+use super::midi_learn::MidiLearnConsumer;
 use super::plugin_state::{Controller, EditorState, HostContext, PluginInterfaces};
+use super::{IComponentExt, K_INPUT, K_OUTPUT};
 
 const DEFAULT_EDITOR_SIZE: (u32, u32) = (800, 600);
 
@@ -233,9 +233,8 @@ impl Vst3Loaded {
             .and_then(|c| c.cast::<IXmlRepresentationController>());
         let prefetchable_support = processor.cast::<IPrefetchableSupport>();
         let audio_presentation_latency = processor.cast::<IAudioPresentationLatency>();
-        let midi_learn = MidiLearnConsumer::new(
-            controller.as_ref().and_then(|c| c.cast::<IMidiLearn>()),
-        );
+        let midi_learn =
+            MidiLearnConsumer::new(controller.as_ref().and_then(|c| c.cast::<IMidiLearn>()));
 
         Self {
             _library: library,
@@ -274,7 +273,11 @@ impl Vst3Loaded {
     /// `T` fixes the sample format: `f32` (the default) uses `kSample32`;
     /// `f64` uses `kSample64` and returns [`Vst3Error::NotSupported`] if the
     /// plugin does not advertise 64-bit support.
-    pub fn activate<T: Vst3Sample>(self, sample_rate: f64, block_size: usize) -> Result<Vst3Instance<T>> {
+    pub fn activate<T: Vst3Sample>(
+        self,
+        sample_rate: f64,
+        block_size: usize,
+    ) -> Result<Vst3Instance<T>> {
         Vst3Instance::from_loaded(self, sample_rate, block_size)
     }
 
@@ -442,7 +445,11 @@ impl Vst3Loaded {
     /// The host does **not** call this automatically anywhere — like JUCE, it's
     /// exposed for a caller-driven migration flow to use. Must run on the
     /// main/UI thread.
-    pub fn remap_param_id(&self, plugin_to_replace_uid: &[i8; 16], old_param_id: u32) -> Option<u32> {
+    pub fn remap_param_id(
+        &self,
+        plugin_to_replace_uid: &[i8; 16],
+        old_param_id: u32,
+    ) -> Option<u32> {
         tutti_plugin_types::assert_main_thread();
         let remap = self.interfaces.remap_param_id.as_ref()?;
         let mut new_param_id: u32 = 0;
@@ -535,8 +542,7 @@ impl Vst3Loaded {
 
         let stream = BStream::new();
         let stream_ptr = stream.as_com_ref::<IBStream>()?;
-        let result =
-            unsafe { ctrl.getXmlRepresentationStream(&mut info, stream_ptr.as_ptr()) };
+        let result = unsafe { ctrl.getXmlRepresentationStream(&mut info, stream_ptr.as_ptr()) };
         if result != kResultOk {
             return None;
         }
@@ -841,7 +847,11 @@ impl Vst3Loaded {
         }
 
         let (width, height) = query_view_size(&view).unwrap_or(DEFAULT_EDITOR_SIZE);
-        self.editor = EditorState::Open { view, plug_frame, resize_rx };
+        self.editor = EditorState::Open {
+            view,
+            plug_frame,
+            resize_rx,
+        };
 
         Ok(EditorSize { width, height })
     }
@@ -858,7 +868,9 @@ impl Vst3Loaded {
     /// [`close_editor`](Self::close_editor) asserts the main thread before
     /// delegating here; `Drop` calls this directly to avoid panicking off it.
     fn close_editor_unchecked(&mut self) {
-        if let EditorState::Open { view, .. } = std::mem::replace(&mut self.editor, EditorState::Closed) {
+        if let EditorState::Open { view, .. } =
+            std::mem::replace(&mut self.editor, EditorState::Closed)
+        {
             unsafe {
                 view.removed();
             }
@@ -979,12 +991,20 @@ impl Vst3Loaded {
     /// Re-query bus counts from the component — `initialize` may have changed
     /// them (some plugins don't declare bus counts until after init).
     fn reconcile_bus_counts(&mut self) {
-        if let Some(ch) = self.interfaces.component.audio_bus_channel_count(K_INPUT, 0) {
+        if let Some(ch) = self
+            .interfaces
+            .component
+            .audio_bus_channel_count(K_INPUT, 0)
+        {
             if ch != self.info.num_inputs {
                 self.info = self.info.clone().audio_io(ch, self.info.num_outputs);
             }
         }
-        if let Some(ch) = self.interfaces.component.audio_bus_channel_count(K_OUTPUT, 1) {
+        if let Some(ch) = self
+            .interfaces
+            .component
+            .audio_bus_channel_count(K_OUTPUT, 1)
+        {
             if ch != self.info.num_outputs {
                 self.info = self.info.clone().audio_io(self.info.num_inputs, ch);
             }
@@ -1109,8 +1129,7 @@ fn build_plugin_info_raw(
         .unwrap_or(false);
     let receives_midi =
         unsafe { component.getBusCount(crate::host::instance::K_EVENT, K_INPUT) > 0 };
-    let emits_midi =
-        unsafe { component.getBusCount(crate::host::instance::K_EVENT, K_OUTPUT) > 0 };
+    let emits_midi = unsafe { component.getBusCount(crate::host::instance::K_EVENT, K_OUTPUT) > 0 };
 
     PluginInfo::new(
         format!("vst3.{}", cid_to_string(&class.cid_bytes)),

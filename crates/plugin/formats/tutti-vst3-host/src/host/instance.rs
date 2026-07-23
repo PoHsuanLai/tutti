@@ -208,7 +208,9 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         // SmallVec doesn't expose a sized constructor for inline capacity;
         // pre-reserve via grow_to_capacity-by-clear-after-push. Cheaper
         // approach: just call reserve to pump heap capacity once.
-        emitted_param_changes.queues.reserve(OUTPUT_PARAM_QUEUE_RESERVE);
+        emitted_param_changes
+            .queues
+            .reserve(OUTPUT_PARAM_QUEUE_RESERVE);
 
         let audio = AudioIO {
             config: ProcessConfig {
@@ -300,8 +302,7 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         // Fill bus-0 channel pointers from the (flat) caller buffer, then build
         // the per-bus `AudioBusBuffers` arrays: bus 0 maps onto the live
         // channels, extra input buses get silence, extra output buses a sink.
-        let (input_ptrs, output_ptrs) =
-            self.audio.ptrs.prepare(buffer.inputs, buffer.outputs);
+        let (input_ptrs, output_ptrs) = self.audio.ptrs.prepare(buffer.inputs, buffer.outputs);
         let num_input_buses = self.audio.input.buses.num_buses();
         let num_output_buses = self.audio.output.buses.num_buses();
         // SAFETY: `input_ptrs`/`output_ptrs` point at the just-filled per-channel
@@ -377,8 +378,10 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         }
         self.audio.output.param_changes.clear_in_place();
 
-        let mut process_context =
-            to_process_context(transport, self.loaded.interfaces.process_context_requirements);
+        let mut process_context = to_process_context(
+            transport,
+            self.loaded.interfaces.process_context_requirements,
+        );
         process_context.sampleRate = buffer.sample_rate;
 
         let mut process_data = vst3::Steinberg::Vst::ProcessData {

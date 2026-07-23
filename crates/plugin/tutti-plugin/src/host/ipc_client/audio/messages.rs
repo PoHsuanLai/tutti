@@ -101,8 +101,13 @@ pub(super) enum AudioResponse {
 /// `set_listener`; the bridge thread invokes it after draining replies.
 #[derive(Debug, Clone)]
 pub enum BridgeEvent {
-    LatencyChanged { samples: usize },
-    ParameterChanged { index: i32, value: f32 },
+    LatencyChanged {
+        samples: usize,
+    },
+    ParameterChanged {
+        index: i32,
+        value: f32,
+    },
     /// The plugin asked the host to resync some aspect of its state at runtime
     /// (preset load, param-title change, IO change, full reload). Carries no
     /// payload — the host re-reads from the plugin in response.

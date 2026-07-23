@@ -32,7 +32,10 @@ fn main() {
     // Emit the expected path unconditionally; the cdylib is produced by the
     // dev-dependency during this same `cargo test` run. The test verifies
     // existence at load time.
-    println!("cargo:rustc-env=TUTTI_CLAP_TEST_PLUGIN={}", artifact.display());
+    println!(
+        "cargo:rustc-env=TUTTI_CLAP_TEST_PLUGIN={}",
+        artifact.display()
+    );
 }
 
 /// The cdylib filename for the current platform.

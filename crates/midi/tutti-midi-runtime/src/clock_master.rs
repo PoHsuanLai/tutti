@@ -94,11 +94,7 @@ impl ClockMaster {
     /// Build a clock master reading `transport`, emitting into `out`.
     /// Starts **disabled**; call [`set_enabled`](Self::set_enabled) once a
     /// hardware output is connected.
-    pub fn new(
-        transport: Arc<dyn Timeline>,
-        sample_rate: f64,
-        out: MidiSender,
-    ) -> Self {
+    pub fn new(transport: Arc<dyn Timeline>, sample_rate: f64, out: MidiSender) -> Self {
         Self {
             transport,
             sample_rate,
@@ -158,7 +154,10 @@ impl ClockMaster {
             if beat.abs() <= START_EPSILON_BEATS {
                 self.emit(MidiEvent::start(self.group));
             } else {
-                self.emit(MidiEvent::song_position(self.group, beats_to_midi_beats(beat)));
+                self.emit(MidiEvent::song_position(
+                    self.group,
+                    beats_to_midi_beats(beat),
+                ));
                 self.emit(MidiEvent::continue_msg(self.group));
             }
             // Realign the tick + MTC phase to the (possibly non-zero) start beat.
@@ -184,7 +183,10 @@ impl ClockMaster {
         let expected_advance = block_size as f64 * beats_per_sample;
         let is_edge = playing && !was_playing;
         if !is_edge && (beat - prev_beat).abs() > expected_advance + SEEK_EPSILON_BEATS {
-            self.emit(MidiEvent::song_position(self.group, beats_to_midi_beats(beat)));
+            self.emit(MidiEvent::song_position(
+                self.group,
+                beats_to_midi_beats(beat),
+            ));
             self.mtc_qf_phase.store(0.0, Ordering::Release);
             self.mtc_piece.store(0, Ordering::Release);
         }
@@ -255,8 +257,7 @@ impl ClockMaster {
             let tc = seconds_to_smpte(seconds, fps);
             let nibble = mtc_nibble(&tc, piece, fps);
             self.emit(
-                MidiEvent::mtc_quarter_frame(self.group, nibble)
-                    .with_frame_offset(sample_offset),
+                MidiEvent::mtc_quarter_frame(self.group, nibble).with_frame_offset(sample_offset),
             );
             piece = (piece + 1) & 0x07;
             next_qf += samples_per_qf;
@@ -323,7 +324,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool as StdAtomicBool;
     use tutti_core::params::Bpm;
-    use tutti_midi_types::sync::{MidiClockDecoder, ClockTransportState, MtcDecoder};
+    use tutti_midi_types::sync::{ClockTransportState, MidiClockDecoder, MtcDecoder};
 
     /// Minimal `Timeline` for tests: tempo + beat + playing under a
     /// switch (mirrors the one in `clip_player.rs`).
@@ -364,11 +365,18 @@ mod tests {
         }
     }
 
-    fn master(tempo: f64, sample_rate: f64) -> (ClockMaster, Arc<TestTransport>, crate::MidiReceiver) {
+    fn master(
+        tempo: f64,
+        sample_rate: f64,
+    ) -> (ClockMaster, Arc<TestTransport>, crate::MidiReceiver) {
         use tutti_midi_types::MidiUnitId;
         let transport = Arc::new(TestTransport::new(tempo));
         let (sender, receiver) = crate::MidiMailbox::pair(MidiUnitId::next());
-        let cm = ClockMaster::new(Arc::clone(&transport) as Arc<dyn Timeline>, sample_rate, sender);
+        let cm = ClockMaster::new(
+            Arc::clone(&transport) as Arc<dyn Timeline>,
+            sample_rate,
+            sender,
+        );
         cm.set_enabled(true);
         (cm, transport, receiver)
     }
@@ -432,8 +440,14 @@ mod tests {
         transport.set_playing(true);
         cm.tick(512);
         let events = drain_all(&cons);
-        assert!(events.iter().any(|e| is_status(e, 0xFA)), "expected Start (0xFA)");
-        assert!(!events.iter().any(|e| is_status(e, 0xFB)), "no Continue at beat 0");
+        assert!(
+            events.iter().any(|e| is_status(e, 0xFA)),
+            "expected Start (0xFA)"
+        );
+        assert!(
+            !events.iter().any(|e| is_status(e, 0xFB)),
+            "no Continue at beat 0"
+        );
     }
 
     #[test]
@@ -443,9 +457,18 @@ mod tests {
         transport.set_playing(true);
         cm.tick(512);
         let events = drain_all(&cons);
-        assert!(events.iter().any(|e| is_status(e, 0xFB)), "expected Continue (0xFB)");
-        assert!(events.iter().any(|e| is_status(e, 0xF2)), "expected Song Position (0xF2)");
-        assert!(!events.iter().any(|e| is_status(e, 0xFA)), "no Start mid-song");
+        assert!(
+            events.iter().any(|e| is_status(e, 0xFB)),
+            "expected Continue (0xFB)"
+        );
+        assert!(
+            events.iter().any(|e| is_status(e, 0xF2)),
+            "expected Song Position (0xF2)"
+        );
+        assert!(
+            !events.iter().any(|e| is_status(e, 0xFA)),
+            "no Start mid-song"
+        );
     }
 
     #[test]
@@ -457,7 +480,10 @@ mod tests {
         transport.set_playing(false);
         cm.tick(512);
         let events = drain_all(&cons);
-        assert!(events.iter().any(|e| is_status(e, 0xFC)), "expected Stop (0xFC)");
+        assert!(
+            events.iter().any(|e| is_status(e, 0xFC)),
+            "expected Stop (0xFC)"
+        );
     }
 
     #[test]
@@ -466,7 +492,10 @@ mod tests {
         cm.set_enabled(false);
         transport.set_playing(true);
         cm.tick(512);
-        assert!(drain_all(&cons).is_empty(), "disabled master must be silent");
+        assert!(
+            drain_all(&cons).is_empty(),
+            "disabled master must be silent"
+        );
     }
 
     #[test]
@@ -480,9 +509,15 @@ mod tests {
         // One beat = 24000 samples; 1/24 beat = 1000 samples. A 2500-sample
         // block starting at beat 0 covers tick boundaries at 1000 and 2000.
         cm.tick(2500);
-        let events: Vec<_> = drain_all(&cons).into_iter().filter(|e| is_status(e, 0xF8)).collect();
+        let events: Vec<_> = drain_all(&cons)
+            .into_iter()
+            .filter(|e| is_status(e, 0xF8))
+            .collect();
         assert_eq!(events.len(), 2, "expected 2 ticks in the block");
-        assert!(events[0].frame_offset < events[1].frame_offset, "ticks ordered");
+        assert!(
+            events[0].frame_offset < events[1].frame_offset,
+            "ticks ordered"
+        );
         assert!((events[0].frame_offset as i64 - 1000).abs() < 4);
         assert!((events[1].frame_offset as i64 - 2000).abs() < 4);
     }
@@ -516,7 +551,10 @@ mod tests {
 
         assert_eq!(decoder.transport_state(), ClockTransportState::Playing);
         let tempo = decoder.tempo_bpm().expect("decoder derived a tempo");
-        assert!((tempo - 120.0).abs() < 2.0, "round-trip tempo ~120, got {tempo}");
+        assert!(
+            (tempo - 120.0).abs() < 2.0,
+            "round-trip tempo ~120, got {tempo}"
+        );
     }
 
     #[test]

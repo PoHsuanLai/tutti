@@ -8,7 +8,7 @@ use crate::core::hardware::{
     connect_midi_input, list_input_devices, list_output_devices, MidiDevice, MidiInputRecord,
     OutputCmd, OutputThread,
 };
-use crate::core::{InputProducerHandle, HardwareMidiInputs};
+use crate::core::{HardwareMidiInputs, InputProducerHandle};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use midir::MidiInputConnection;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -31,7 +31,10 @@ impl core::fmt::Debug for MidiIo {
         // Owns background I/O threads + channels; report the input-port count,
         // not the internals.
         f.debug_struct("MidiIo")
-            .field("input_ports", &self.inner.port_manager.list_input_ports().len())
+            .field(
+                "input_ports",
+                &self.inner.port_manager.list_input_ports().len(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -79,8 +82,9 @@ impl MidiIo {
     pub fn new(port_manager: Arc<HardwareMidiInputs>) -> Self {
         let (input_tx, input_rx) = bounded(16);
         let connected_inputs = Arc::new(arc_swap::ArcSwap::new(Arc::new(Vec::<String>::new())));
-        let connected_input_ids =
-            Arc::new(arc_swap::ArcSwap::new(Arc::new(Vec::<(u32, String)>::new())));
+        let connected_input_ids = Arc::new(arc_swap::ArcSwap::new(Arc::new(
+            Vec::<(u32, String)>::new(),
+        )));
         let connected_for_thread = Arc::clone(&connected_inputs);
         let connected_ids_for_thread = Arc::clone(&connected_input_ids);
 
@@ -147,9 +151,8 @@ impl MidiIo {
     /// Open an input device by case-insensitive substring match. Idempotent.
     pub fn connect_input_by_name(&self, name: &str) -> Result<()> {
         let devices = list_input_devices();
-        let device = find_device(&devices, name).ok_or_else(|| {
-            Error::MidiDevice(format!("No MIDI input device matching '{name}'"))
-        })?;
+        let device = find_device(&devices, name)
+            .ok_or_else(|| Error::MidiDevice(format!("No MIDI input device matching '{name}'")))?;
         if self.is_input_connected(&device.name) {
             return Ok(());
         }
@@ -176,11 +179,7 @@ impl MidiIo {
 
     /// True if a device with the given name is currently connected.
     pub fn is_input_connected(&self, name: &str) -> bool {
-        self.inner
-            .connected_inputs
-            .load()
-            .iter()
-            .any(|n| n == name)
+        self.inner.connected_inputs.load().iter().any(|n| n == name)
     }
 
     /// Snapshot of all currently-connected input device names.
@@ -229,9 +228,7 @@ impl MidiIo {
         let devices = list_output_devices();
         let idx = find_device(&devices, name)
             .map(|d| d.index)
-            .ok_or_else(|| {
-                Error::MidiDevice(format!("No MIDI output device matching '{name}'"))
-            })?;
+            .ok_or_else(|| Error::MidiDevice(format!("No MIDI output device matching '{name}'")))?;
         self.connect_output(idx)
     }
 

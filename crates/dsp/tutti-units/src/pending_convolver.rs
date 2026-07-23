@@ -8,12 +8,12 @@
 use bevy_asset::{AssetServer, Assets, Handle};
 use bevy_ecs::prelude::*;
 
+use crate::StereoConvolverNode;
 use tutti_core::graph::{AudioNode, NodeKind};
 use tutti_core::WaveAsset;
-use crate::StereoConvolverNode;
 
-use tutti_core::graph::GraphDirty;
 use tutti_core::graph::AudioGraphRes;
+use tutti_core::graph::GraphDirty;
 
 /// Insert on an effect entity to request convolution reverb construction
 /// once the IR file is loaded. The system handles `AssetServer::load()`

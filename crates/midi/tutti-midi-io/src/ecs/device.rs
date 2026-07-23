@@ -103,11 +103,20 @@ pub fn midi_device_poll_system(
     let live: std::collections::HashSet<String> =
         midi_io.0.connected_input_names().into_iter().collect();
 
-    for name in state.connected.difference(&live).cloned().collect::<Vec<_>>() {
+    for name in state
+        .connected
+        .difference(&live)
+        .cloned()
+        .collect::<Vec<_>>()
+    {
         state.connected.remove(&name);
         device_events.write(MidiDeviceEvent::Disconnected { name });
     }
-    for name in live.difference(&state.connected).cloned().collect::<Vec<_>>() {
+    for name in live
+        .difference(&state.connected)
+        .cloned()
+        .collect::<Vec<_>>()
+    {
         state.connected.insert(name.clone());
         device_events.write(MidiDeviceEvent::Connected { name });
     }

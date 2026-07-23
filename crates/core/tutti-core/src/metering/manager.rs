@@ -1,16 +1,16 @@
 //! Central metering manager.
 
 use super::{AtomicAmplitude, AtomicLufs, AtomicStereoAnalysis, CpuMeter, StereoAnalysisSnapshot};
-use std::sync::Arc;
-use hashbrown::HashMap;
-use parking_lot::Mutex;
 use crate::Ordering;
 use crossbeam_channel::Receiver;
 use ebur128::{EbuR128, Mode};
+use hashbrown::HashMap;
+use parking_lot::Mutex;
 use ringbuf::{
     traits::{Producer, Split},
     HeapCons, HeapProd, HeapRb,
 };
+use std::sync::Arc;
 
 /// Stereo sample pair (left, right).
 type StereoSample = (f32, f32);

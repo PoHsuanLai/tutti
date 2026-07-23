@@ -87,9 +87,9 @@ pub mod playback;
 pub use butler::WavOut;
 pub use playback::{
     share_mic_ring, ClipCommand, ClipReader, ClipSpec, Direction, LoopSetting, MicMonitorNode,
-    MicRing, PendingPlayback, Playback, SamplerUnit, SamplerUnitConfig, SlotId, StreamingClipConfig,
-    StreamingClipReader, StreamingSamplerUnit, TrackClipReaderHandle, TrackClipReaderUnit,
-    TransportPlacement, Voice, VoiceNode, VoiceSource,
+    MicRing, PendingPlayback, Playback, SamplerUnit, SamplerUnitConfig, SlotId,
+    StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit, TrackClipReaderHandle,
+    TrackClipReaderUnit, TransportPlacement, Voice, VoiceNode, VoiceSource,
 };
 // Bevy ECS surface of `playback`.
 #[cfg(feature = "bevy")]

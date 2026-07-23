@@ -10,7 +10,9 @@
 //! list the server can drain after each audio block.
 
 use std::path::Path;
-use tutti_plugin::server::{Features, LoadedPlugin, PluginDescriptor, PluginInstance, SampleFormat};
+use tutti_plugin::server::{
+    Features, LoadedPlugin, PluginDescriptor, PluginInstance, SampleFormat,
+};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 #[cfg(feature = "vst2")]
@@ -42,8 +44,13 @@ pub(crate) enum Plugin {
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Variants are constructed only under vst2/clap/vst3 features.
 pub(crate) enum AsyncEvent {
-    ParameterChanged { index: i32, value: f32 },
-    LatencyChanged { samples: usize },
+    ParameterChanged {
+        index: i32,
+        value: f32,
+    },
+    LatencyChanged {
+        samples: usize,
+    },
     /// Plugin changed its own parameter values at runtime (e.g. preset load).
     /// The client should re-read parameter values.
     ParamValuesChanged,
@@ -117,7 +124,12 @@ impl Plugin {
             #[cfg(feature = "vst3")]
             "vst3" => {
                 let prefer_f64 = preferred_format == SampleFormat::Float64;
-                Plugin::Vst3(Vst3Instance::load(path, sample_rate, block_size, prefer_f64)?)
+                Plugin::Vst3(Vst3Instance::load(
+                    path,
+                    sample_rate,
+                    block_size,
+                    prefer_f64,
+                )?)
             }
 
             #[cfg(feature = "vst2")]

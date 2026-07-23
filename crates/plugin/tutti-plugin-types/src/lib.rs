@@ -22,16 +22,16 @@ pub mod transport;
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
 pub use channels::{AudioBuffer, AudioBuffer32, AudioBuffer64, BufferPtrs, Sample};
 pub use classification::Vst2Category;
-pub use features::Features;
-pub use main_thread::{assert_main_thread, mark_main_thread};
 pub use editor::{
     AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,
 };
+pub use features::Features;
 pub use harmony::{
     ChordChanges, ChordValue, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,
 };
 pub use load_stage::LoadStage;
+pub use main_thread::{assert_main_thread, mark_main_thread};
 pub use metadata::{BusChannels, LoadedPlugin};
 pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpressionValue};
 pub use note_id::{note_id_for, note_id_to_channel_note, MAX_HOST_NOTE_ID};

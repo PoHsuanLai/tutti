@@ -49,10 +49,7 @@ impl MpeExpressionResource {
     /// Combined per-note + global pitch bend, -1.0..=1.0, for the note addressed
     /// by `id`. Returns 0.0 when no processor is wired.
     pub fn pitch_bend(&self, id: tutti_midi_types::NoteId) -> f32 {
-        self.0
-            .as_ref()
-            .map(|e| e.get_pitch_bend(id))
-            .unwrap_or(0.0)
+        self.0.as_ref().map(|e| e.get_pitch_bend(id)).unwrap_or(0.0)
     }
 
     /// max(per-note, global) pressure, 0.0..=1.0, for the note addressed by `id`.
@@ -198,14 +195,21 @@ mod tests {
         let (sender, _recv) = tutti_midi_runtime::MidiMailbox::pair(id);
         bus.insert(sender);
 
-        let note_on =
-            MidiEvent::note_on(0, 2, 60, tutti_midi_types::convert::midi1_velocity_to_midi2(100));
+        let note_on = MidiEvent::note_on(
+            0,
+            2,
+            60,
+            tutti_midi_types::convert::midi1_velocity_to_midi2(100),
+        );
         bus.queue(id, &[note_on]);
 
         // Channel 2 is a lower-zone member; the processor keys expression by the
         // (channel, note) identity.
         let n60 = tutti_midi_types::NoteId::from_channel_note(2, 60);
-        assert!(r.is_note_active(n60), "note 60 should be active after queue");
+        assert!(
+            r.is_note_active(n60),
+            "note 60 should be active after queue"
+        );
     }
 
     #[test]

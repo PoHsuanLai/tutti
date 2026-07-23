@@ -62,11 +62,11 @@ pub use reconcile::{bump_param_epoch_sampler, reconcile_sampler_params, reconcil
 pub use time_stretch::{time_stretch_sync_system, TimeStretch, TimeStretchControl};
 // Bevy-free reader value types + DSP unit.
 pub use clip_reader::ClipReader;
+pub use mic_monitor::{share_mic_ring, MicMonitorNode, MicRing};
 #[cfg(feature = "bevy")]
 pub use node::{SamplerLooping, SamplerNode, SamplerSpeed};
 pub use sampler_unit::{LoopSetting, SamplerUnit, SamplerUnitConfig, TransportPlacement};
 pub use streaming_sampler::{StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit};
-pub use mic_monitor::{share_mic_ring, MicMonitorNode, MicRing};
 pub use track_clip_reader::{
     ClipCommand, ClipSpec, Direction, PendingPlayback, Playback, SlotId, TrackClipReaderHandle,
     TrackClipReaderUnit, Voice, VoiceNode, VoiceSource,

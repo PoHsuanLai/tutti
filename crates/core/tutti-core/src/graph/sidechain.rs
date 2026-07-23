@@ -166,7 +166,9 @@ pub fn reconcile_sidechain_remove(
     mut dirty: ResMut<GraphDirty>,
 ) {
     let src_entity = remove.event_target();
-    let Ok(link) = links.get(src_entity) else { return };
+    let Ok(link) = links.get(src_entity) else {
+        return;
+    };
     let Some(mut graph) = graph else { return };
 
     let Ok(target_node) = nodes.get(link.target) else {
@@ -186,7 +188,7 @@ mod tests {
     use super::*;
     use crate::graph::reconcile::GraphReconcileSystems;
     use crate::AudioGraph;
-    use crate::{PdcManager, GraphNet};
+    use crate::{GraphNet, PdcManager};
     use bevy_app::App;
 
     fn bare_graph(channels: usize) -> AudioGraph {
@@ -194,13 +196,7 @@ mod tests {
         let _backend = net.backend();
         let pdc = PdcManager::new(channels, 0);
         let midi_route = tutti_midi_types::MidiRoutingTable::new();
-        AudioGraph::from_parts(
-            net,
-            pdc,
-            midi_route,
-            48_000.0,
-            channels,
-        )
+        AudioGraph::from_parts(net, pdc, midi_route, 48_000.0, channels)
     }
 
     fn test_app() -> App {
@@ -238,10 +234,15 @@ mod tests {
 
         let src = app.world_mut().spawn_empty().id();
         let target = app.world_mut().spawn_empty().id();
-        app.world_mut().entity_mut(src).insert(SidechainOf::at_port_one(target));
+        app.world_mut()
+            .entity_mut(src)
+            .insert(SidechainOf::at_port_one(target));
         app.update();
 
-        let sources = app.world().get::<SidechainSources>(target).expect("SidechainSources");
+        let sources = app
+            .world()
+            .get::<SidechainSources>(target)
+            .expect("SidechainSources");
         assert_eq!(sources.len(), 1);
         assert_eq!(sources.iter().next(), Some(src));
     }
@@ -252,9 +253,9 @@ mod tests {
         // Build a 3-input target (three stacked passes = 3 in / 3 out) and
         // sidechain into port 2; the reconcile must connect there without
         // panicking and clear the dirty flag via commit.
+        use crate::dsp::sine_hz;
         use crate::graph::reconcile::SpawnAudioNode;
         use crate::graph::NodeKind;
-        use crate::dsp::sine_hz;
         let mut app = test_app();
 
         let src = app
@@ -273,18 +274,32 @@ mod tests {
             .id();
         app.update();
 
-        app.world_mut().entity_mut(src).insert(SidechainOf::new(target, 2));
+        app.world_mut()
+            .entity_mut(src)
+            .insert(SidechainOf::new(target, 2));
         app.update();
 
-        let sources = app.world().get::<SidechainSources>(target).expect("SidechainSources");
+        let sources = app
+            .world()
+            .get::<SidechainSources>(target)
+            .expect("SidechainSources");
         assert_eq!(sources.len(), 1);
         // commit ran (connect at port 2 succeeded, no panic).
-        assert!(!app.world().resource::<GraphDirty>().0, "commit cleared dirty flag");
+        assert!(
+            !app.world().resource::<GraphDirty>().0,
+            "commit cleared dirty flag"
+        );
 
         // Removing the link disconnects the same port — also no panic.
         app.world_mut().entity_mut(src).remove::<SidechainOf>();
         app.update();
-        assert!(app.world().get::<SidechainSources>(target).map(|s| s.len()).unwrap_or(0) == 0);
+        assert!(
+            app.world()
+                .get::<SidechainSources>(target)
+                .map(|s| s.len())
+                .unwrap_or(0)
+                == 0
+        );
     }
 
     #[test]
@@ -292,9 +307,9 @@ mod tests {
         // Target has only 2 inputs (ports 0,1); declaring a sidechain at
         // port 2 must be skipped with a warning, never connected (would
         // panic in fundsp's Net), and must not raise the dirty flag.
+        use crate::dsp::sine_hz;
         use crate::graph::reconcile::SpawnAudioNode;
         use crate::graph::NodeKind;
-        use crate::dsp::sine_hz;
         let mut app = test_app();
 
         let src = app
@@ -310,7 +325,9 @@ mod tests {
         app.update();
 
         // port 2 is out of range for a 2-input node.
-        app.world_mut().entity_mut(src).insert(SidechainOf::new(target, 2));
+        app.world_mut()
+            .entity_mut(src)
+            .insert(SidechainOf::new(target, 2));
         app.update();
 
         // Relationship target still grows (Bevy machinery), but no graph

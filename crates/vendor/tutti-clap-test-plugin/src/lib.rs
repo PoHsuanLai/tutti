@@ -354,8 +354,7 @@ struct SyncPtrs<T>(T);
 unsafe impl<T> Sync for SyncPtrs<T> {}
 
 // Feature list must be a null-terminated array of C strings.
-static FEATURES: SyncPtrs<[*const c_char; 2]> =
-    SyncPtrs([c"audio-effect".as_ptr(), ptr::null()]);
+static FEATURES: SyncPtrs<[*const c_char; 2]> = SyncPtrs([c"audio-effect".as_ptr(), ptr::null()]);
 
 static SYNC_DESCRIPTOR: SyncPtrs<clap_plugin_descriptor> = SyncPtrs(clap_plugin_descriptor {
     clap_version: CLAP_VERSION,

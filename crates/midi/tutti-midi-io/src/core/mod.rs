@@ -24,7 +24,7 @@ pub use error::{Error, Result};
 pub use hardware::{MidiDevice, MidiInputRecord};
 #[cfg(feature = "midi-hardware")]
 pub use midi_io::MidiIo;
-pub use port::{InputProducerHandle, HardwareMidiInputs, PortInfo, PortType};
+pub use port::{HardwareMidiInputs, InputProducerHandle, PortInfo, PortType};
 
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 pub use hardware::{UmpVirtualSource, VirtualMidiDestination, VirtualMidiSource};

@@ -79,7 +79,11 @@ impl MidiClipSource {
         sample_rate: f64,
     ) -> Self {
         let mut v: Vec<TimedClipEvent> = events.into_iter().collect();
-        v.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(std::cmp::Ordering::Equal));
+        v.sort_by(|a, b| {
+            a.beat
+                .partial_cmp(&b.beat)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Self {
             events: v.into(),
             transport,
@@ -272,8 +276,7 @@ impl MidiIn for CompositeMidiSource {
             if written >= out.len() {
                 break;
             }
-            let n =
-                src.poll_into(unit_id, block_start_sample, block_size, &mut out[written..]);
+            let n = src.poll_into(unit_id, block_start_sample, block_size, &mut out[written..]);
             written += n;
         }
         written
@@ -322,7 +325,12 @@ mod tests {
     }
 
     fn note_on(note: u8, vel: u8) -> MidiEvent {
-        MidiEvent::note_on(0, 0, note, tutti_midi_types::convert::midi1_velocity_to_midi2(vel))
+        MidiEvent::note_on(
+            0,
+            0,
+            note,
+            tutti_midi_types::convert::midi1_velocity_to_midi2(vel),
+        )
     }
 
     #[test]
@@ -450,8 +458,14 @@ mod tests {
         let source = MidiClipSource::new(
             unit,
             vec![
-                TimedClipEvent { beat: 0.0, event: note_on(60, 100) },
-                TimedClipEvent { beat: 0.25, event: note_on(64, 100) },
+                TimedClipEvent {
+                    beat: 0.0,
+                    event: note_on(60, 100),
+                },
+                TimedClipEvent {
+                    beat: 0.25,
+                    event: note_on(64, 100),
+                },
             ],
             Arc::clone(&transport) as Arc<dyn Timeline>,
             44100.0,
@@ -468,8 +482,14 @@ mod tests {
         assert_eq!(n, 2, "tap forwards both emitted events");
         assert_eq!(tapped[0].note(), buf[0].note());
         assert_eq!(tapped[1].note(), buf[1].note());
-        assert_eq!(tapped[0].frame_offset, buf[0].frame_offset, "stamp preserved");
-        assert_eq!(tapped[1].frame_offset, buf[1].frame_offset, "stamp preserved");
+        assert_eq!(
+            tapped[0].frame_offset, buf[0].frame_offset,
+            "stamp preserved"
+        );
+        assert_eq!(
+            tapped[1].frame_offset, buf[1].frame_offset,
+            "stamp preserved"
+        );
     }
 
     #[test]
@@ -479,7 +499,10 @@ mod tests {
         let transport = Arc::new(TestTransport::new(120.0));
         let source = MidiClipSource::new(
             unit,
-            vec![TimedClipEvent { beat: 0.0, event: note_on(60, 100) }],
+            vec![TimedClipEvent {
+                beat: 0.0,
+                event: note_on(60, 100),
+            }],
             Arc::clone(&transport) as Arc<dyn Timeline>,
             44100.0,
         );
@@ -523,8 +546,14 @@ mod tests {
         MidiClipSource::new(
             MidiUnitId::new(1),
             vec![
-                TimedClipEvent { beat: 0.0, event: note_on(60, 100) },
-                TimedClipEvent { beat: 0.5, event: note_on(64, 100) },
+                TimedClipEvent {
+                    beat: 0.0,
+                    event: note_on(60, 100),
+                },
+                TimedClipEvent {
+                    beat: 0.5,
+                    event: note_on(64, 100),
+                },
             ],
             Arc::clone(transport) as Arc<dyn Timeline>,
             44100.0,

@@ -62,8 +62,7 @@ pub fn midi_routing_sync_system(
     mut removed: RemovedComponents<MidiSink>,
     mut mpe: MpeReceiverQueries,
 ) {
-    let has_changes =
-        !changed.is_empty() || removed.read().next().is_some() || mpe.has_changes();
+    let has_changes = !changed.is_empty() || removed.read().next().is_some() || mpe.has_changes();
 
     if !has_changes {
         return;

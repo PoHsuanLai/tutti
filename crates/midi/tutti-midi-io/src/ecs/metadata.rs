@@ -24,8 +24,8 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
 
-use tutti_midi_runtime::tutti_midi_types::ump::{ChordName, FlexTextKind, KeySharpsFlats, Tonic};
 use tutti_midi_runtime::tutti_midi_types::ump::MidiEvent;
+use tutti_midi_runtime::tutti_midi_types::ump::{ChordName, FlexTextKind, KeySharpsFlats, Tonic};
 use tutti_midi_runtime::JrStamper;
 
 use super::bus::MidiBusRes;
@@ -44,7 +44,10 @@ pub enum BroadcastFlexMetadata {
     /// Set Chord Name (M2-104 §7.5.10).
     ChordName(ChordName),
     /// Set Key Signature (M2-104 §7.5.9).
-    KeySignature { tonic: Tonic, sharps_flats: KeySharpsFlats },
+    KeySignature {
+        tonic: Tonic,
+        sharps_flats: KeySharpsFlats,
+    },
     /// One of the ~19 text/metadata messages (project / composition / clip name,
     /// lyrics, copyright, composer/performer names, …).
     Text { kind: FlexTextKind, text: String },
@@ -79,7 +82,10 @@ pub fn flex_metadata_broadcast_system(
             }
             BroadcastFlexMetadata::Text { kind, text } => {
                 tutti_midi_runtime::tutti_midi_types::ump::push_flex_text(
-                    *kind, text, FLEX_GROUP, &mut packets,
+                    *kind,
+                    text,
+                    FLEX_GROUP,
+                    &mut packets,
                 );
             }
         }

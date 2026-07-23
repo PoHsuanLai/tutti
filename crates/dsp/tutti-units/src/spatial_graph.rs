@@ -13,7 +13,9 @@ use bevy_transform::components::GlobalTransform;
 
 use tutti_core::NodeId;
 
-use tutti_core::graph::{engine_ready, AudioEmitter, GraphDirty, GraphReconcileSystems, AudioGraphRes, Volume};
+use tutti_core::graph::{
+    engine_ready, AudioEmitter, AudioGraphRes, GraphDirty, GraphReconcileSystems, Volume,
+};
 
 /// Marks an entity as the audio listener (typically the camera).
 ///
@@ -66,7 +68,10 @@ pub enum AttenuationModel {
 ///
 /// Lazily creates a `SpatialPannerNode` for each emitter with `SpatialAudio`.
 /// Computes listener-relative azimuth/elevation and applies distance attenuation.
-#[allow(clippy::type_complexity, reason = "Bevy queries are tuple-shaped by design")]
+#[allow(
+    clippy::type_complexity,
+    reason = "Bevy queries are tuple-shaped by design"
+)]
 pub fn spatial_audio_sync_system(
     mut graph: ResMut<AudioGraphRes>,
     mut dirty: ResMut<GraphDirty>,

@@ -15,9 +15,9 @@
 //! format-tagged enum; only one variant exists per `Batcher` instance at
 //! runtime.
 
+use crate::error::Result;
 use crate::host::ipc_client::PluginBridge;
 use crate::host::node::BlockPayload;
-use crate::error::Result;
 use crate::protocol::{MidiEventVec, SampleFormat};
 use tutti_core::{BufferMut, BufferRef, Sample as FundspSample, F32, F64};
 

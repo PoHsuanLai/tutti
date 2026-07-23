@@ -1,10 +1,7 @@
 //! Stereo correlation, phase analysis, and M/S metering.
 
 #[derive(Debug, Clone, Copy, Default)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StereoAnalysis {
     /// Phase correlation (-1.0 to 1.0)
     /// - 1.0 = Mono (L and R identical)

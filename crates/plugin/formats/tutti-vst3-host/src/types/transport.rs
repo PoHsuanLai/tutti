@@ -153,7 +153,9 @@ pub fn to_process_context(
 mod tests {
     use super::process_context_flags as need;
     use super::*;
-    use tutti_plugin_types::{BarInfo, LoopRegion, MusicalTiming, TransportPosition, TransportState};
+    use tutti_plugin_types::{
+        BarInfo, LoopRegion, MusicalTiming, TransportPosition, TransportState,
+    };
     use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
 
     /// A TransportInfo with every field set to a recognisable non-zero value,

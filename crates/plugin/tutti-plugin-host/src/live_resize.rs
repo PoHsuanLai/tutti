@@ -69,8 +69,7 @@ impl LiveResizeHandle {
     ) -> Option<Self> {
         let _mtm = MainThreadMarker::new()?;
 
-        let host_view: &NSView =
-            unsafe { &*(native_view_ptr(host)? as *const NSView) };
+        let host_view: &NSView = unsafe { &*(native_view_ptr(host)? as *const NSView) };
         let host_window = host_view.window()?;
 
         let ivars = ObserverIvars {

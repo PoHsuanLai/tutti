@@ -33,13 +33,13 @@ use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 use std::sync::Arc;
 
+use crate::{Error as ExportError, Rendered};
+use bevy_tasks::{block_on, futures_lite::future};
 use tutti_core::dsp::Net;
+use tutti_core::NodeId;
 use tutti_core::{
     AudioUnit, OfflineTimeline, OfflineTimelineConfig, SampleRate, Timeline, TransportClock,
 };
-use bevy_tasks::{block_on, futures_lite::future};
-use tutti_core::NodeId;
-use crate::{Error as ExportError, Rendered};
 
 use tutti_core::graph::engine_ready;
 use tutti_core::graph::{AudioConfig, AudioGraphRes};
@@ -455,12 +455,13 @@ impl Plugin for TuttiRegionRenderPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::{Bpm, SampleRate, Wave};
-    use tutti_core::Beat;
-    use tutti_sampler::{
-        ClipCommand, Direction, Playback, SamplerUnit, SlotId, TrackClipReaderUnit, Voice, VoiceSource,
-    };
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use tutti_core::Beat;
+    use tutti_core::{Bpm, SampleRate, Wave};
+    use tutti_sampler::{
+        ClipCommand, Direction, Playback, SamplerUnit, SlotId, TrackClipReaderUnit, Voice,
+        VoiceSource,
+    };
 
     struct MockTransport {
         playing: AtomicBool,
@@ -526,12 +527,8 @@ mod tests {
             44100.0,
             &(0..64).map(|i| (i as f32 + 1.0) / 64.0).collect::<Vec<_>>(),
         ));
-        let sampler = SamplerUnit::with_transport(
-            wave,
-            live_transport.clone(),
-            Beat::new(0.0),
-            None,
-        );
+        let sampler =
+            SamplerUnit::with_transport(wave, live_transport.clone(), Beat::new(0.0), None);
         handle.send(ClipCommand::AddVoice {
             id: SlotId(1),
             voice: Box::new(Voice {
@@ -571,9 +568,9 @@ mod tests {
         );
     }
 
+    use bevy_ecs::world::World;
     use tutti_core::dsp::dc;
     use tutti_core::graph::AudioConfig;
-    use bevy_ecs::world::World;
 
     /// The clock node is severed by `isolate()` but keeps the LIVE playhead's
     /// beat. `rebind_net_transport` must re-seat it on the render's own
@@ -734,9 +731,7 @@ mod tests {
     /// only cover the `TrackClipReaderUnit` arm, so this one closes the gap.
     #[test]
     fn offline_rebinds_bare_voice_node_transport() {
-        use tutti_sampler::{
-            LoopSetting, Playback, TransportPlacement, Voice, VoiceSource,
-        };
+        use tutti_sampler::{LoopSetting, Playback, TransportPlacement, Voice, VoiceSource};
 
         // The live transport is rolling; the offline one is stopped — so the RAM
         // source's `transport_sample_position()` (which reads its OWN placement
@@ -750,12 +745,8 @@ mod tests {
             44100.0,
             &(0..64).map(|i| (i as f32 + 1.0) / 64.0).collect::<Vec<_>>(),
         ));
-        let sampler = SamplerUnit::with_transport(
-            wave,
-            live_transport.clone(),
-            Beat::new(0.0),
-            None,
-        );
+        let sampler =
+            SamplerUnit::with_transport(wave, live_transport.clone(), Beat::new(0.0), None);
         assert!(
             sampler.transport_sample_position().is_some(),
             "sanity: the RAM source reads a live position before rebind"

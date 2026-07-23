@@ -188,7 +188,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         channels,
     };
     app.insert_resource(PendingGraph(Some((graph, config))));
-    app.insert_non_send_resource(driver);
+    app.insert_non_send(driver);
     app.insert_resource(PendingTransport(Some(transport)));
     app.insert_resource(PendingMetronome(Some(metronome)));
     app.insert_resource(TransportClockNode(clock_id));

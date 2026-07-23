@@ -52,10 +52,10 @@ impl Plugin for TuttiDspPlugin {
                 .run_if(engine_ready),
         );
 
-        use spawn::AddDspNode as _;
         use crate::node_markers::{
             ChorusNode, CompressorNode, DelayNode, FilterNode, GateNode, ReverbNode,
         };
+        use spawn::AddDspNode as _;
 
         // Marker-driven spawners (preferred). One generic `spawn_dsp_node::<T>`
         // per node type, registered via the `AddDspNode` App ext. All land in
@@ -93,4 +93,3 @@ impl Plugin for TuttiDspPlugin {
         }
     }
 }
-

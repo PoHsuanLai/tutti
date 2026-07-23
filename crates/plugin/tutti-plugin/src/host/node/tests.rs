@@ -5,16 +5,16 @@
 //! socket, then drives `PluginHandle` IPC round-trips through it. The
 //! `respond` callback lets each test script the server's replies.
 
+use crate::host::handles::control_handle::PluginHandle;
 use crate::host::ipc_client::audio::{BridgeEvent, BridgeThread};
 use crate::host::ipc_client::PluginBridge;
-use crate::host::handles::control_handle::PluginHandle;
 use crate::protocol::{
     BridgeMessage, Features, HostMessage, LoadedPlugin, ParameterInfo, PluginDescriptor,
     PROTOCOL_VERSION,
 };
 use crate::protocol::{PluginClass, SampleFormat, SlabLayout};
-use smallvec::smallvec;
 use crate::util::transport::shm::AudioSlab;
+use smallvec::smallvec;
 use std::sync::Arc;
 
 fn unique_socket_path(label: &str) -> std::path::PathBuf {

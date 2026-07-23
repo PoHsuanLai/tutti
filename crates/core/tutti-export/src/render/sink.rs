@@ -167,11 +167,9 @@ impl<S: AudioOut> BufferingOut<S> {
 
         // Interleave to the `[f32; 2]` frames the inner AudioOut expects.
         let frames: Vec<[f32; 2]> = match mastered {
-            Chunk::Stereo { left, right } => left
-                .iter()
-                .zip(&right)
-                .map(|(&l, &r)| [l, r])
-                .collect(),
+            Chunk::Stereo { left, right } => {
+                left.iter().zip(&right).map(|(&l, &r)| [l, r]).collect()
+            }
             // Mono duplicates its single channel so the inner sink still sees
             // stereo frames; the encoder keeps what its channel mode wants.
             Chunk::Mono(m) => m.iter().map(|&s| [s, s]).collect(),

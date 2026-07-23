@@ -5,8 +5,8 @@
 //! `Net` directly for all pure graph operations (push, connect, remove, etc.).
 //! The rest of the API is intentionally minimal.
 
-use std::boxed::Box;
 use crate::pdc;
+use std::boxed::Box;
 
 use fundsp::net::{Net, NodeId, Source};
 use fundsp::prelude::AudioUnit;

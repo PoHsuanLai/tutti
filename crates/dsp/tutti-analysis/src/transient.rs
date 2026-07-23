@@ -6,10 +6,7 @@ const DEFAULT_FFT_SIZE: usize = 1024;
 const DEFAULT_HOP_SIZE: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Transient {
     pub sample_position: usize,
     /// Seconds
@@ -19,10 +16,7 @@ pub struct Transient {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize, serde::Deserialize)
-)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DetectionMethod {
     /// Spectral flux (default, good for most audio)
     #[default]

@@ -91,7 +91,10 @@ impl std::fmt::Debug for Unit {
             .field("algorithm", &self.algorithm)
             .field("enabled", &self.enabled)
             .field("sample_rate", &self.sample_rate)
-            .field("stretch_factor", &self.stretch_factor.load(Ordering::Acquire))
+            .field(
+                "stretch_factor",
+                &self.stretch_factor.load(Ordering::Acquire),
+            )
             .field("pitch_cents", &self.pitch_cents.load(Ordering::Acquire))
             .finish_non_exhaustive()
     }

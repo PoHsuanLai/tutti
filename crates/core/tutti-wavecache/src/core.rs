@@ -194,14 +194,24 @@ impl WaveCacheCore {
         match self.entries.get_mut(path) {
             // Fresh `Ready` (stamp matches): bump recency + revalidation and serve.
             // A changed stamp falls through to the re-load below.
-            Some(Entry::Ready { stamp: s, wave, checked, used: u, .. }) if Some(*s) == stamp => {
+            Some(Entry::Ready {
+                stamp: s,
+                wave,
+                checked,
+                used: u,
+                ..
+            }) if Some(*s) == stamp => {
                 *checked = Instant::now();
                 *u = used;
                 return LoadAction::State(WaveState::Ready(wave.clone()));
             }
             // Stay failed unless the on-disk stamp changed (file replaced/fixed).
             // A corrupt/unsupported file keeps the same stamp → no re-decode spin.
-            Some(Entry::Failed { stamp: s, err, checked }) if *s == stamp => {
+            Some(Entry::Failed {
+                stamp: s,
+                err,
+                checked,
+            }) if *s == stamp => {
                 *checked = Instant::now();
                 return LoadAction::State(WaveState::Failed(err.clone()));
             }
@@ -224,8 +234,7 @@ impl WaveCacheCore {
             return LoadAction::State(WaveState::Failed(err));
         };
         let key: Arc<str> = Arc::from(path);
-        self.entries
-            .insert(key.clone(), Entry::Loading { stamp });
+        self.entries.insert(key.clone(), Entry::Loading { stamp });
         LoadAction::Spawn {
             key,
             path: path.to_string(),

@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use tutti_core::{AudioUnit, BeatDuration, Beat, Linear, Ratio, SamplePosition, Wave};
+use tutti_core::{AudioUnit, Beat, BeatDuration, Linear, Ratio, SamplePosition, Wave};
 
 use super::sampler_unit::LoopSetting;
 use super::track_clip_reader::Direction;

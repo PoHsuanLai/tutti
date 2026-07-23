@@ -60,4 +60,3 @@ pub trait MidiIn: Send + Sync {
         buffer: &mut [MidiEvent],
     ) -> usize;
 }
-

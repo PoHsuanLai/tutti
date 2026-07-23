@@ -78,4 +78,3 @@ pub use stft::{
 pub use rustfft::num_complex::Complex;
 pub use transient::{DetectionMethod, Transient, TransientDetector};
 pub use waveform::{MultiResolutionSummary, WaveformBlock, WaveformSummary};
-

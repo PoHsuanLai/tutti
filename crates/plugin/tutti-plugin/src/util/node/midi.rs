@@ -14,10 +14,10 @@ use std::sync::Arc;
 use arc_swap::{ArcSwap, ArcSwapOption};
 
 use crate::protocol::MidiEventVec;
+use tutti_midi_runtime::{MidiMailbox, MidiReceiver, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiIn;
 use tutti_midi_types::{MidiOut, MidiRoutingSnapshot, MidiUnitId};
-use tutti_midi_runtime::{MidiMailbox, MidiReceiver, MidiSender};
 
 const POLL_BUFFER_SIZE: usize = 256;
 
@@ -262,9 +262,21 @@ mod tests {
         // slot itself is shared (Arc<ArcSwapOption>).
         clone_a.set_source(Arc::new(CountingSource { n: 3 }));
 
-        assert_eq!(clone_b.drain_for_process(64).len(), 3, "clone_b sees install");
-        assert_eq!(original.drain_for_process(64).len(), 3, "original sees install");
-        assert_eq!(clone_a.drain_for_process(64).len(), 3, "clone_a sees install");
+        assert_eq!(
+            clone_b.drain_for_process(64).len(),
+            3,
+            "clone_b sees install"
+        );
+        assert_eq!(
+            original.drain_for_process(64).len(),
+            3,
+            "original sees install"
+        );
+        assert_eq!(
+            clone_a.drain_for_process(64).len(),
+            3,
+            "clone_a sees install"
+        );
 
         // Clearing on one clone clears for all.
         clone_b.clear_source();

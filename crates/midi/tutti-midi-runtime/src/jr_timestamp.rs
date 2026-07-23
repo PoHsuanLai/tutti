@@ -202,7 +202,11 @@ mod tests {
         assert_eq!(nonzero.len(), 1, "exactly one inter-event gap");
         let gap = *nonzero[0];
         let expected = Duration::from_secs_f64(0.25);
-        let diff = if gap > expected { gap - expected } else { expected - gap };
+        let diff = if gap > expected {
+            gap - expected
+        } else {
+            expected - gap
+        };
         assert!(
             diff < Duration::from_secs_f64(JR_SECONDS_PER_TICK * 2.0),
             "recovered {gap:?} within one tick of {expected:?}"

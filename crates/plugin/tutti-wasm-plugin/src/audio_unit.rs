@@ -20,9 +20,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tutti_midi_types::MidiUnitId;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
 use tutti_midi_runtime::MidiSender;
+use tutti_midi_types::MidiUnitId;
 
 use tutti_plugin::backend::Midi;
 use tutti_plugin::server::LoadedPlugin;
@@ -68,8 +68,7 @@ impl InProcessWasmClient {
         sample_rate: f64,
         contention_count: Arc<AtomicU64>,
     ) -> Self {
-        let process_scratch =
-            ProcessScratch::new(loaded.total_inputs(), loaded.total_outputs());
+        let process_scratch = ProcessScratch::new(loaded.total_inputs(), loaded.total_outputs());
         Self {
             inner,
             loaded,

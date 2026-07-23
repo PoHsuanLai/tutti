@@ -19,7 +19,8 @@ impl core::fmt::Debug for InputProducerHandle {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // The inner SPSC producer is a raw-pointer handle with no inspectable
         // state; just name the type.
-        f.debug_struct("InputProducerHandle").finish_non_exhaustive()
+        f.debug_struct("InputProducerHandle")
+            .finish_non_exhaustive()
     }
 }
 
@@ -82,8 +83,9 @@ impl HardwareMidiInput {
         sink: &mut impl Extend<(Instant, usize, MidiEvent)>,
         port_index: usize,
     ) {
-        self.input
-            .drain_each(|(timestamp, event)| sink.extend(core::iter::once((timestamp, port_index, event))));
+        self.input.drain_each(|(timestamp, event)| {
+            sink.extend(core::iter::once((timestamp, port_index, event)))
+        });
     }
 }
 
@@ -133,11 +135,18 @@ mod tests {
 
         for i in 0..4 {
             let event = note_on(0x3C, 0x7F).with_frame_offset(i);
-            assert!(input_handle.push(event, Instant::now()), "Failed to write event {}", i);
+            assert!(
+                input_handle.push(event, Instant::now()),
+                "Failed to write event {}",
+                i
+            );
         }
 
         let event = note_on(0x3C, 0x7F);
-        assert!(!input_handle.push(event, Instant::now()), "FIFO should be full");
+        assert!(
+            !input_handle.push(event, Instant::now()),
+            "FIFO should be full"
+        );
     }
 
     #[test]

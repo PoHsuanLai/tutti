@@ -1,8 +1,8 @@
 //! Plugin bridge — composites out-of-process audio with in-process GUI.
 
 use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs};
-use crate::format::gui::GuiInstance;
 use crate::error::{EditorError, Result};
+use crate::format::gui::GuiInstance;
 use crate::protocol::{
     MidiEventVec, NoteExpressionChanges, ParameterChanges, ParameterInfo, TransportInfo,
 };
@@ -121,9 +121,10 @@ impl PluginBridge {
         // Lazy-load the in-process GUI instance on first open.
         if guard.is_none() {
             tracing::info!("[bridge] open_editor: lazy-loading in-process GUI");
-            let instance = crate::format::gui::load_gui_instance(&self.plugin_path).map_err(|e| {
-                EditorError::PluginError(format!("failed to load in-process GUI: {e}"))
-            })?;
+            let instance =
+                crate::format::gui::load_gui_instance(&self.plugin_path).map_err(|e| {
+                    EditorError::PluginError(format!("failed to load in-process GUI: {e}"))
+                })?;
             tracing::info!("[bridge] open_editor: in-process GUI loaded successfully");
             *guard = Some(instance);
         }

@@ -53,7 +53,9 @@ pub use soundfont::{
 };
 
 mod synth;
-pub use synth::{EnvelopeConfig, FilterModConfig, FilterType, OscillatorType, SvfMode, SynthConfig};
+pub use synth::{
+    EnvelopeConfig, FilterModConfig, FilterType, OscillatorType, SvfMode, SynthConfig,
+};
 
 #[cfg(feature = "midi")]
 mod polysynth;

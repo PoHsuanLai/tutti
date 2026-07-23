@@ -462,7 +462,10 @@ mod tests {
         fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
-        fn open_editor(&mut self, _parent: WindowHandle) -> Result<tutti_plugin::server::EditorSize> {
+        fn open_editor(
+            &mut self,
+            _parent: WindowHandle,
+        ) -> Result<tutti_plugin::server::EditorSize> {
             unreachable!("editor not used in this test")
         }
         fn close_editor(&mut self) {}
@@ -506,7 +509,12 @@ mod tests {
                 // Echo input[c] -> output[c] for the channels both directions
                 // share, so the test can read outputs back from the slab.
                 for (c, out) in b.outputs.iter_mut().enumerate() {
-                    let v = b.inputs.get(c).and_then(|i| i.first()).copied().unwrap_or(0.0);
+                    let v = b
+                        .inputs
+                        .get(c)
+                        .and_then(|i| i.first())
+                        .copied()
+                        .unwrap_or(0.0);
                     out.fill(v);
                 }
             }
@@ -520,7 +528,10 @@ mod tests {
         fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
-        fn open_editor(&mut self, _parent: WindowHandle) -> Result<tutti_plugin::server::EditorSize> {
+        fn open_editor(
+            &mut self,
+            _parent: WindowHandle,
+        ) -> Result<tutti_plugin::server::EditorSize> {
             unreachable!("editor not used in this test")
         }
         fn close_editor(&mut self) {}
@@ -608,12 +619,21 @@ mod tests {
         let mut out1 = vec![0.0f32; N];
         shm.read_channel_into::<f32>(3, &mut out0).unwrap();
         shm.read_channel_into::<f32>(4, &mut out1).unwrap();
-        assert!(out0.iter().all(|&s| s == 11.0), "output bus ch0 == main in ch0");
-        assert!(out1.iter().all(|&s| s == 22.0), "output bus ch1 == main in ch1");
+        assert!(
+            out0.iter().all(|&s| s == 11.0),
+            "output bus ch0 == main in ch0"
+        );
+        assert!(
+            out1.iter().all(|&s| s == 22.0),
+            "output bus ch1 == main in ch1"
+        );
 
         let mut sc = vec![0.0f32; N];
         shm.read_channel_into::<f32>(2, &mut sc).unwrap();
-        assert!(sc.iter().all(|&s| s == 33.0), "sidechain input survived the output write");
+        assert!(
+            sc.iter().all(|&s| s == 33.0),
+            "sidechain input survived the output write"
+        );
     }
 
     /// Drive `AudioPipeline::process` with a plugin that emits `fill` into

@@ -107,13 +107,12 @@ impl ClapInstance {
             } else {
                 None
             };
-            let info = ClapLoaded::probe(path, library_path).map_err(|e| {
-                BridgeError::LoadFailed {
+            let info =
+                ClapLoaded::probe(path, library_path).map_err(|e| BridgeError::LoadFailed {
                     path: path.to_path_buf(),
                     stage: LoadStage::Scanning,
                     reason: e.to_string(),
-                }
-            })?;
+                })?;
 
             Ok(clap_descriptor(&info, false))
         }
@@ -134,22 +133,18 @@ impl ClapInstance {
             } else {
                 None
             };
-            let loaded = ClapLoaded::load_with_library(
-                path,
-                library_path,
-                sample_rate,
-                block_size as u32,
-            )
-            .map_err(|e| BridgeError::LoadFailed {
-                path: path.to_path_buf(),
-                // Host and bridge LoadStage are now the same shared type
-                // (tutti-plugin-types); pass the stage through unchanged.
-                stage: match e {
-                    tutti_clap_host::ClapError::LoadFailed { stage, .. } => stage,
-                    _ => LoadStage::Opening,
-                },
-                reason: e.to_string(),
-            })?;
+            let loaded =
+                ClapLoaded::load_with_library(path, library_path, sample_rate, block_size as u32)
+                    .map_err(|e| BridgeError::LoadFailed {
+                    path: path.to_path_buf(),
+                    // Host and bridge LoadStage are now the same shared type
+                    // (tutti-plugin-types); pass the stage through unchanged.
+                    stage: match e {
+                        tutti_clap_host::ClapError::LoadFailed { stage, .. } => stage,
+                        _ => LoadStage::Opening,
+                    },
+                    reason: e.to_string(),
+                })?;
 
             // Read metadata off the loaded (pre-activation) instance.
             let info = loaded.info();
@@ -424,8 +419,12 @@ fn convert_note_expressions(
         .changes
         .iter()
         .map(|expr| {
-            tutti_clap_host::NoteExpressionValue::new(expr.expression_type, expr.note_id, expr.value)
-                .at(expr.sample_offset)
+            tutti_clap_host::NoteExpressionValue::new(
+                expr.expression_type,
+                expr.note_id,
+                expr.value,
+            )
+            .at(expr.sample_offset)
         })
         .collect()
 }
@@ -461,7 +460,9 @@ fn convert_transport(
 }
 
 #[cfg(feature = "clap")]
-fn convert_process_output(output: tutti_clap_host::instance::ProcessOutputRef<'_>) -> ProcessOutput {
+fn convert_process_output(
+    output: tutti_clap_host::instance::ProcessOutputRef<'_>,
+) -> ProcessOutput {
     let midi_events: tutti_plugin::server::MidiEventVec =
         output.midi_events.iter().copied().collect();
 
@@ -497,9 +498,15 @@ fn convert_process_output(output: tutti_clap_host::instance::ProcessOutputRef<'_
 #[cfg(feature = "clap")]
 fn convert_param_info(info: tutti_clap_host::ParameterInfo) -> ParameterInfo {
     let flags = ParameterFlags {
-        automatable: info.flags.contains(tutti_clap_host::ParameterFlags::AUTOMATABLE),
-        read_only: info.flags.contains(tutti_clap_host::ParameterFlags::READONLY),
-        wrap: info.flags.contains(tutti_clap_host::ParameterFlags::PERIODIC),
+        automatable: info
+            .flags
+            .contains(tutti_clap_host::ParameterFlags::AUTOMATABLE),
+        read_only: info
+            .flags
+            .contains(tutti_clap_host::ParameterFlags::READONLY),
+        wrap: info
+            .flags
+            .contains(tutti_clap_host::ParameterFlags::PERIODIC),
         is_bypass: info.flags.contains(tutti_clap_host::ParameterFlags::BYPASS),
         hidden: info.flags.contains(tutti_clap_host::ParameterFlags::HIDDEN),
     };
@@ -569,8 +576,7 @@ mod tests {
     fn test_clap_parameter_count() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(CLAP_PLUGIN);
-        let instance =
-            ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+        let instance = ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
 
         let count = instance.get_parameter_list().len();
         assert!(
@@ -584,8 +590,7 @@ mod tests {
     fn test_clap_parameter_list() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(CLAP_PLUGIN);
-        let instance =
-            ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+        let instance = ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
 
         let params = instance.get_parameter_list();
         assert!(
@@ -606,8 +611,7 @@ mod tests {
     fn test_clap_get_parameter() {
         let _lock = crate::test_utils::plugin_load_lock();
         let path = Path::new(CLAP_PLUGIN);
-        let instance =
-            ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
+        let instance = ClapInstance::load(path, 44100.0, 512).expect("Failed to load CLAP plugin");
 
         let params = instance.get_parameter_list();
         assert!(!params.is_empty(), "Need at least one parameter");
@@ -1310,8 +1314,8 @@ mod tests {
         assert!(output_count > 0, "Surge XT should have output ports");
 
         let port = instance
-                .clap_loaded()
-                .audio_port_info(0, false)
+            .clap_loaded()
+            .audio_port_info(0, false)
             .expect("Should have at least one output port");
         assert!(
             port.channel_count >= 2,
@@ -1382,7 +1386,10 @@ mod tests {
         let mut instance =
             ClapInstance::load(Path::new(SURGE_XT), 44100.0, 512).expect("Failed to load Surge XT");
 
-        assert!(instance.descriptor().has_editor, "Surge XT should have a GUI");
+        assert!(
+            instance.descriptor().has_editor,
+            "Surge XT should have a GUI"
+        );
 
         let parent = create_nsview();
         assert!(!parent.is_null());
@@ -1563,8 +1570,8 @@ mod tests {
 
         // Save with ForProject context (falls back to regular save if unsupported)
         let saved = instance
-                .clap_loaded()
-                .state_with_context(tutti_clap_host::StateContext::ForProject)
+            .clap_loaded()
+            .state_with_context(tutti_clap_host::StateContext::ForProject)
             .expect("state_with_context should succeed");
         assert!(!saved.is_empty());
 
@@ -1583,8 +1590,8 @@ mod tests {
 
         // ForDuplicate context — used when duplicating a plugin instance
         let saved = instance
-                .clap_loaded()
-                .state_with_context(tutti_clap_host::StateContext::ForDuplicate)
+            .clap_loaded()
+            .state_with_context(tutti_clap_host::StateContext::ForDuplicate)
             .expect("save should succeed");
         assert!(!saved.is_empty());
 

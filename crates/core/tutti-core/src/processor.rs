@@ -81,7 +81,11 @@ impl GraphProcessor {
             backend.process(block, &empty_input, &mut buffer_mut);
 
             let left = buffer_mut.channel_f32(0);
-            let right = if mono { left } else { buffer_mut.channel_f32(1) };
+            let right = if mono {
+                left
+            } else {
+                buffer_mut.channel_f32(1)
+            };
             for i in 0..block {
                 let o = (done + i) * 2;
                 output[o] = left[i];

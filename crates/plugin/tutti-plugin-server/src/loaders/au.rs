@@ -19,7 +19,9 @@ use crate::loaders::common::{single_bus, Meta};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
 #[cfg(all(target_os = "macos", feature = "au"))]
-use tutti_au_host::{component, editor::AuEditor, instance::AuInstance as AuHostInstance, parameters};
+use tutti_au_host::{
+    component, editor::AuEditor, instance::AuInstance as AuHostInstance, parameters,
+};
 
 /// Map the AU host's native component type to the wire `AuComponentType` mirror.
 #[cfg(all(target_os = "macos", feature = "au"))]
@@ -362,7 +364,8 @@ mod tests {
     fn test_au_enumerate_and_load() {
         use tutti_au_host::component;
 
-        let effects = component::enumerate_components_of_type(tutti_au_host::component::AuType::Effect);
+        let effects =
+            component::enumerate_components_of_type(tutti_au_host::component::AuType::Effect);
         assert!(
             !effects.is_empty(),
             "Should find at least one AU effect on macOS"

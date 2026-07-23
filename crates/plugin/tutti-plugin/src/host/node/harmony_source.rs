@@ -62,9 +62,17 @@ impl HarmonySource {
         sample_rate: f64,
     ) -> Self {
         let mut c: Vec<TimedChord> = chords.into_iter().collect();
-        c.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(std::cmp::Ordering::Equal));
+        c.sort_by(|a, b| {
+            a.beat
+                .partial_cmp(&b.beat)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         let mut s: Vec<TimedScale> = scales.into_iter().collect();
-        s.sort_by(|a, b| a.beat.partial_cmp(&b.beat).unwrap_or(std::cmp::Ordering::Equal));
+        s.sort_by(|a, b| {
+            a.beat
+                .partial_cmp(&b.beat)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Self {
             chords: c.into(),
             scales: s.into(),
@@ -93,8 +101,16 @@ impl HarmonySource {
         let last_beat = self.last_beat.load(Ordering::Acquire);
         if start_beat + 1e-9 < last_beat {
             // Backward seek: rewind both cursors to the new position.
-            self.rewind(&self.chord_cursor, self.chords.iter().map(|c| c.beat), start_beat);
-            self.rewind(&self.scale_cursor, self.scales.iter().map(|s| s.beat), start_beat);
+            self.rewind(
+                &self.chord_cursor,
+                self.chords.iter().map(|c| c.beat),
+                start_beat,
+            );
+            self.rewind(
+                &self.scale_cursor,
+                self.scales.iter().map(|s| s.beat),
+                start_beat,
+            );
         }
         self.last_beat.store(start_beat, Ordering::Release);
 
@@ -136,26 +152,16 @@ impl HarmonySource {
         let Some(window) = self.window(block_size) else {
             return;
         };
-        Self::emit(
-            &self.chords,
-            &self.chord_cursor,
-            &window,
-            |tc, off| {
-                let mut v = tc.value.clone();
-                v.sample_offset = off;
-                out.chords.changes.push(v);
-            },
-        );
-        Self::emit(
-            &self.scales,
-            &self.scale_cursor,
-            &window,
-            |ts, off| {
-                let mut v = ts.value.clone();
-                v.sample_offset = off;
-                out.scales.changes.push(v);
-            },
-        );
+        Self::emit(&self.chords, &self.chord_cursor, &window, |tc, off| {
+            let mut v = tc.value.clone();
+            v.sample_offset = off;
+            out.chords.changes.push(v);
+        });
+        Self::emit(&self.scales, &self.scale_cursor, &window, |ts, off| {
+            let mut v = ts.value.clone();
+            v.sample_offset = off;
+            out.scales.changes.push(v);
+        });
     }
 
     /// Walk a sorted change list, emitting every entry in the window with a
@@ -300,7 +306,7 @@ mod tests {
         assert_eq!(out.chords.changes.len(), 2);
         assert_eq!(out.scales.changes.len(), 1);
         assert_eq!(out.chords.changes[0].sample_offset, 0); // beat 0.0
-        // beat 0.5 → ~11025 samples.
+                                                            // beat 0.5 → ~11025 samples.
         assert!((out.chords.changes[1].sample_offset - 11025).abs() < 4);
     }
 

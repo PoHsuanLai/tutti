@@ -16,10 +16,10 @@
 //! instance, so the editor cannot live in a different process from audio —
 //! there is no subprocess VST2 path.
 
+use crate::error::Result;
+use crate::host::handles::control_handle::PluginHandle;
 use crate::host::node::PluginClient;
 use crate::util::config::BridgeConfig;
-use crate::host::handles::control_handle::PluginHandle;
-use crate::error::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};

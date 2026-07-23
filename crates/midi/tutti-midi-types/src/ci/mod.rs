@@ -82,10 +82,12 @@ impl Muid {
     /// Reassemble from four little-endian 7-bit wire bytes.
     #[inline]
     pub fn from_bytes(b: [u8; 4]) -> Self {
-        Muid((b[0] as u32 & 0x7F)
-            | ((b[1] as u32 & 0x7F) << 7)
-            | ((b[2] as u32 & 0x7F) << 14)
-            | ((b[3] as u32 & 0x7F) << 21))
+        Muid(
+            (b[0] as u32 & 0x7F)
+                | ((b[1] as u32 & 0x7F) << 7)
+                | ((b[2] as u32 & 0x7F) << 14)
+                | ((b[3] as u32 & 0x7F) << 21),
+        )
     }
 }
 

@@ -351,8 +351,7 @@ mod tests {
     fn cc_decodes_to_controller_and_normalized_value() {
         use tutti_midi_types::convert::midi1_cc_to_midi2;
         // CC 74 (brightness) = 64 on channel 2.
-        let (ch, ctrl, value) =
-            mapped(&MidiEvent::cc(0, 2, 74, midi1_cc_to_midi2(64))).unwrap();
+        let (ch, ctrl, value) = mapped(&MidiEvent::cc(0, 2, 74, midi1_cc_to_midi2(64))).unwrap();
         assert_eq!(ch, 2);
         assert_eq!(ctrl, 74);
         assert!((value - 64.0 / 127.0).abs() < 0.01);
@@ -371,8 +370,12 @@ mod tests {
     #[test]
     fn pitch_bend_center_is_half() {
         use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
-        let (ch, ctrl, value) =
-            mapped(&MidiEvent::pitch_bend(0, 4, midi1_pitch_bend_to_midi2(8192))).unwrap();
+        let (ch, ctrl, value) = mapped(&MidiEvent::pitch_bend(
+            0,
+            4,
+            midi1_pitch_bend_to_midi2(8192),
+        ))
+        .unwrap();
         assert_eq!(ch, 4);
         assert_eq!(ctrl, CTRL_PITCH_BEND);
         // Center bend maps to the middle of the unit range.
@@ -410,7 +413,9 @@ mod tests {
         route_cc_events(&mapping, &events, &mut filtered, &mut params);
 
         // Mod wheel went to params.
-        let queue = params.get_queue(500).expect("mod wheel mapped to param 500");
+        let queue = params
+            .get_queue(500)
+            .expect("mod wheel mapped to param 500");
         assert_eq!(queue.points.len(), 1);
         assert_eq!(queue.points[0].sample_offset, 8);
         // Value decoded at MIDI-2 width then normalized; ~64/127, not bit-exact

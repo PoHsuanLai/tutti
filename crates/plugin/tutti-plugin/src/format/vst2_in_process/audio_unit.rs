@@ -15,9 +15,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tutti_midi_types::MidiUnitId;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
 use tutti_midi_runtime::MidiSender;
+use tutti_midi_types::MidiUnitId;
 use tutti_vst2_host::{PluginInfo, ProcessContext, RenderScratch, Vst2Instance};
 
 use crate::host::node::Midi;

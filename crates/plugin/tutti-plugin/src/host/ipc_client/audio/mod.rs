@@ -166,7 +166,9 @@ impl AudioBridge {
             return false;
         }
         match self.channels.pop_audio_response() {
-            Some(AudioResponse::AudioProcessed { midi_out: mut events }) => {
+            Some(AudioResponse::AudioProcessed {
+                midi_out: mut events,
+            }) => {
                 midi_out.append(&mut events);
                 true
             }

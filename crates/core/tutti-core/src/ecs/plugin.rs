@@ -8,11 +8,11 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use crate::graph::param_epoch::{bump_param_epoch_core, NodeParamEpoch};
-use crate::graph::reconcile::{
+use crate::ecs::param_epoch::{bump_param_epoch_core, NodeParamEpoch};
+use crate::ecs::reconcile::{
     commit_graph, engine_ready, reconcile_node_despawn, GraphDirty, GraphReconcileSystems,
 };
-use crate::graph::resources::{AudioGraphRes, PendingGraph};
+use crate::ecs::resources::{AudioGraphRes, PendingGraph};
 
 /// Bevy plugin: the generic graph reconciliation pipeline.
 ///

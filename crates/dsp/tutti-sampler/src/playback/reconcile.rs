@@ -8,9 +8,8 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::graph::{
-    AudioGraphRes, AudioNode, GraphDirty, Mute, NodeKind, NodeParamEpoch, Volume,
-};
+use tutti_core::ecs::{AudioGraphRes, GraphDirty, NodeParamEpoch};
+use tutti_core::graph::{AudioNode, Mute, NodeKind, Volume};
 
 use super::node::{SamplerLooping, SamplerNode, SamplerSpeed};
 
@@ -97,7 +96,7 @@ mod tests {
     use super::*;
     use bevy_app::App;
     use tutti_core::dsp::Net;
-    use tutti_core::graph::{AudioGraphRes, GraphReconcileSystems};
+    use tutti_core::ecs::{AudioGraphRes, GraphReconcileSystems};
 
     fn bare_graph(channels: usize) -> Net {
         // Feature-agnostic: tutti-core owns the `midi` cfg, so this stays correct
@@ -126,7 +125,7 @@ mod tests {
     #[test]
     fn sampler_speed_and_looping_change_writes_through() {
         use std::sync::Arc;
-        use tutti_core::graph::SpawnAudioNode;
+        use tutti_core::ecs::SpawnAudioNode;
         use tutti_core::Wave;
 
         let mut app = test_app();

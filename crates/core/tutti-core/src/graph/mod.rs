@@ -12,48 +12,14 @@
 //! and are always compiled as plain structs; under the `bevy` feature they
 //! gain `#[derive(Component, Reflect)]`.
 //!
-//! Everything else in this module is the Bevy ECS integration — the reconcile
-//! pipeline (spawn / despawn / commit / emitter markers / resources /
-//! `GraphReconcilePlugin`) — and is gated behind the `bevy` feature. It
-//! translates ECS component changes into `Net` operations; nothing in the
-//! runtime calls back into ECS. Edges are wired by the host (dawai's
-//! `Connection` model); leaf-specific reconcilers (sampler/plugin/convolution/
-//! midi) stay in bevy-tutti.
+//! The Bevy ECS integration that used to live here now sits in [`crate::ecs`]
+//! (the reconcile pipeline, graph resources, param epoch, emitter markers,
+//! `GraphReconcilePlugin`, and the transport/metering wrappers). Import those
+//! from `tutti_core::ecs::*`. This module keeps only the always-compiled
+//! parameter *types*, which stay plain data a non-Bevy host can carry.
 
-// Always-compiled parameter types.
+// Always-compiled parameter types. The Bevy `derive`s on these are feature-gated
+// in `params.rs` itself, so they degrade to plain structs without `ecs`.
 pub mod params;
 
 pub use params::{AudioNode, LayerKey, ModParam, Mute, NodeKind, Pan, PluginParam, Volume};
-
-// Bevy ECS reconcile hub — only compiled with the `bevy` feature.
-#[cfg(feature = "bevy")]
-pub mod emitter;
-#[cfg(feature = "bevy")]
-pub mod param_epoch;
-#[cfg(feature = "bevy")]
-pub mod plugin;
-#[cfg(feature = "bevy")]
-pub mod reconcile;
-#[cfg(feature = "bevy")]
-pub mod resources;
-
-#[cfg(feature = "bevy")]
-pub use emitter::{AudioEmitter, AudioPlaybackState};
-#[cfg(feature = "bevy")]
-pub use param_epoch::{bump_param_epoch_core, NodeParamEpoch};
-#[cfg(feature = "bevy")]
-pub use plugin::{register_core_node_types, GraphReconcilePlugin};
-#[cfg(feature = "bevy")]
-pub use reconcile::{
-    commit_graph, crossfade_audio_node, engine_ready, reconcile_node_despawn, GraphDirty,
-    GraphReconcileSystems, SpawnAudioNode,
-};
-#[cfg(feature = "bevy")]
-pub use resources::{AudioConfig, AudioGraphRes, PendingGraph};
-// `TransportRes`/`MeteringRes` and their plugins now live next to their own
-// subsystem (the `bevy_audio`-style per-subsystem co-location). Re-exported here
-// so existing `tutti_core::graph::{TransportRes, MeteringRes}` paths keep resolving.
-#[cfg(feature = "bevy")]
-pub use crate::metering::{MeteringRes, PendingMetering, TuttiMeteringPlugin};
-#[cfg(feature = "bevy")]
-pub use crate::transport::{PendingTransport, TransportRes, TuttiTransportPlugin};

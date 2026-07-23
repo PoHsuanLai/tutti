@@ -21,7 +21,8 @@ use bevy_ecs::schedule::SystemSet;
 use bevy_ecs::system::EntityCommands;
 
 use crate::dsp::AudioUnit;
-use crate::graph::{AudioGraphRes, AudioNode, NodeKind};
+use crate::ecs::AudioGraphRes;
+use crate::graph::{AudioNode, NodeKind};
 
 /// System-set ordering anchor for the reconcile pipeline.
 ///
@@ -234,7 +235,8 @@ mod tests {
     use super::*;
     use crate::dsp::sine_hz;
     use crate::dsp::Net;
-    use crate::graph::{AudioGraphRes, Volume};
+    use crate::ecs::AudioGraphRes;
+    use crate::graph::Volume;
     use bevy_app::App;
 
     /// Build a bare `Net` directly (no `TuttiEngine`, which lives in

@@ -129,7 +129,7 @@ pub struct PendingSampler(pub Option<Sampler>);
 /// Composes the per-duty sub-plugins (playback, time-stretch) and adds the
 /// sampler reconcilers + pending-load promotion + param-epoch bump into the
 /// shared `GraphReconcileSystems` schedule owned by [`tutti_core::graph`].
-/// Requires the core graph plugin ([`tutti_core::graph::GraphReconcilePlugin`])
+/// Requires the core graph plugin ([`tutti_core::ecs::GraphReconcilePlugin`])
 /// to have configured `GraphReconcileSystems` first.
 #[cfg(feature = "bevy")]
 #[derive(Debug)]

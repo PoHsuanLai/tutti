@@ -134,3 +134,12 @@ pub mod node_id;
 
 pub mod graph;
 pub use graph::{AudioNode, LayerKey, ModParam, Mute, NodeKind, Pan, PluginParam, Volume};
+
+// The Bevy ECS integration layer — the reconcile hub, graph resources, and the
+// per-subsystem Bevy wrappers, all gathered under one `#[cfg(feature = "bevy")]`
+// roof. The engine itself (fundsp's `Net`, transport, metering) needs none of
+// it; this is the adapter a Bevy host uses to reconcile ECS state into the
+// graph. Its items stay re-exported from their historical `graph::` /
+// `metering::` / `transport::` paths, so this move is invisible to consumers.
+#[cfg(feature = "bevy")]
+pub mod ecs;

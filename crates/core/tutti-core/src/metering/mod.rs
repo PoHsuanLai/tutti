@@ -17,7 +17,5 @@ pub use amplitude::{AtomicAmplitude, MasterMeter};
 pub use rt::{meter_output, MeteringContext};
 pub use tap::AudioTap;
 
-#[cfg(feature = "bevy")]
-pub mod plugin;
-#[cfg(feature = "bevy")]
-pub use plugin::{MeteringRes, PendingMetering, TuttiMeteringPlugin};
+// The Bevy wrapper (`MeteringRes` + its claim + `TuttiMeteringPlugin`) lives in
+// `crate::ecs::metering` — import it from `tutti_core::ecs`.

@@ -134,7 +134,7 @@ impl Plugin for MidiDevicePlugin {
         app.add_systems(
             Update,
             (midi_device_connect_system, midi_device_poll_system)
-                .run_if(tutti_core::graph::engine_ready),
+                .run_if(tutti_core::ecs::engine_ready),
         );
     }
 }

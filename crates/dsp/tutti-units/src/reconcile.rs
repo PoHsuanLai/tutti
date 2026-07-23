@@ -10,9 +10,10 @@
 use bevy_ecs::prelude::*;
 
 use tutti_core::dsp::AudioUnit;
-use tutti_core::graph::{AudioGraphRes, AudioNode, NodeParamEpoch};
+use tutti_core::ecs::{AudioGraphRes, NodeParamEpoch};
+use tutti_core::graph::AudioNode;
 
-use tutti_core::graph::GraphReconcileSystems;
+use tutti_core::ecs::GraphReconcileSystems;
 
 // =============================================================================
 // Generic parameter reconciler.
@@ -177,7 +178,7 @@ pub fn reconcile_reverb_params(
     >,
 ) {
     use crate::dsp_params::ReverbAlgo;
-    use tutti_core::graph::crossfade_audio_node;
+    use tutti_core::ecs::crossfade_audio_node;
     for (entity, room, damp, _wet, algo) in changed.iter() {
         // fundsp reverb opcodes have no `set()`, so a param change rebuilds the
         // node with a crossfade. The algorithm tag picks the constructor;
@@ -258,7 +259,7 @@ pub fn bump_param_epoch_dsp(
 /// Called by [`crate::dsp::TuttiDspPlugin`]. The graph-touching reconcilers run
 /// in the `Params` set gated on `engine_ready`; the epoch bump stays ungated.
 pub(crate) fn build(app: &mut bevy_app::App) {
-    use tutti_core::graph::engine_ready;
+    use tutti_core::ecs::engine_ready;
     app.add_systems(
         bevy_app::Update,
         (

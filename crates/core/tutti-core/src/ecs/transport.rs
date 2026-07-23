@@ -1,9 +1,10 @@
 //! Transport's Bevy surface: the `TransportRes` resource, its engine-claim
 //! handoff, and `TuttiTransportPlugin`.
 //!
-//! Co-located with the transport subsystem (rather than in a central ECS hub),
-//! matching the per-subsystem plugin shape the rest of tutti follows. Only
-//! compiled with the `bevy_ecs` feature.
+//! Part of the [`crate::ecs`] hub (all of tutti-core's Bevy integration under
+//! one roof); the transport value types it wraps stay in [`crate::transport`].
+//! Re-exported from `tutti_core::transport` so that path keeps resolving. Only
+//! compiled with the `bevy` feature.
 //!
 //! Construction stays in bevy-tutti's `build_into` (the transport manager Arc is
 //! born mid-sequence and shared with the RT callback) — this module owns only the

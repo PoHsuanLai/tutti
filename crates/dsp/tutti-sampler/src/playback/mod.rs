@@ -18,7 +18,7 @@ use bevy_asset::AssetApp;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 
 #[cfg(feature = "bevy")]
-use tutti_core::graph::{engine_ready, GraphReconcileSystems};
+use tutti_core::ecs::{engine_ready, GraphReconcileSystems};
 #[cfg(feature = "bevy")]
 use tutti_core::WaveAsset;
 
@@ -85,7 +85,7 @@ pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 /// deferred wave-load promotion, `SamplerUnit` param reconcilers, the sampler
 /// param-epoch bump, and time-stretch control sync.
 ///
-/// Requires the core graph plugin ([`tutti_core::graph::GraphReconcilePlugin`]) to
+/// Requires the core graph plugin ([`tutti_core::ecs::GraphReconcilePlugin`]) to
 /// have configured `GraphReconcileSystems` first.
 #[cfg(feature = "bevy")]
 #[derive(Debug)]

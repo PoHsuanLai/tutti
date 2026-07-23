@@ -26,9 +26,10 @@ use tutti_core::{
 // Each subsystem owns its own transient `PendingX` (defined next to its plugin).
 // `build_into` fills them; the subsystem's plugin `build()` claims each into the
 // subsystem's `*Res` (synchronously, before frame 1).
-use tutti_core::graph::{AudioConfig, PendingGraph};
-use tutti_core::metering::PendingMetering;
-use tutti_core::transport::{PendingMetronome, PendingTransport, TransportClockNode};
+use tutti_core::ecs::{
+    AudioConfig, PendingGraph, PendingMetering, PendingMetronome, PendingTransport,
+    TransportClockNode,
+};
 
 #[cfg(feature = "midi")]
 use tutti_core::processor::MidiProcessor;

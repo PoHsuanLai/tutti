@@ -182,7 +182,7 @@ impl Plugin for MidiMetadataPlugin {
         app.add_systems(
             Update,
             flex_metadata_broadcast_system
-                .run_if(tutti_core::graph::engine_ready)
+                .run_if(tutti_core::ecs::engine_ready)
                 // Fill the outbound mailbox before the pump drains it.
                 .before(super::track_out::pump_midi_out_system),
         );

@@ -21,13 +21,9 @@ pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use settings::TransportSettings;
 pub use state::{beat_from_ports, ClockInputs, Declick, LoopRange, LoopSpan, SeekSlot, BEAT_PORTS};
 
-#[cfg(feature = "bevy")]
-pub mod plugin;
-#[cfg(feature = "bevy")]
-pub use plugin::{
-    MetronomeRes, PendingMetronome, PendingTransport, TransportClockNode, TransportRes,
-    TuttiTransportPlugin,
-};
+// The Bevy wrappers (`TransportRes` / `MetronomeRes` + their claims +
+// `TuttiTransportPlugin`) live in `crate::ecs::transport` — import them from
+// `tutti_core::ecs`.
 
 /// A musical timeline: where we are, how fast, and whether it is moving.
 ///

@@ -1,8 +1,10 @@
 //! Metering's Bevy surface: the `MeteringRes` resource, its engine-claim
 //! handoff, the default-enable, and `TuttiMeteringPlugin`.
 //!
-//! Co-located with the metering subsystem, matching the per-subsystem plugin
-//! shape the rest of tutti follows. Only compiled with the `bevy_ecs` feature.
+//! Part of the [`crate::ecs`] hub (all of tutti-core's Bevy integration under
+//! one roof); the metering value types it wraps stay in [`crate::metering`].
+//! Re-exported from `tutti_core::metering` so that path keeps resolving. Only
+//! compiled with the `bevy` feature.
 //!
 //! Construction stays in bevy-tutti's `build_into` (the meter is born
 //! mid-sequence and shared with the RT callback) — this module owns the

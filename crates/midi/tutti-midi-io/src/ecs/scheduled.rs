@@ -119,7 +119,7 @@ impl Plugin for ScheduledMidiPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            tick_scheduled_midi.run_if(tutti_core::graph::engine_ready),
+            tick_scheduled_midi.run_if(tutti_core::ecs::engine_ready),
         );
     }
 }

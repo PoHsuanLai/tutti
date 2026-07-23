@@ -260,7 +260,7 @@ impl Plugin for MidiNegotiationPlugin {
                 endpoint_discovery_system,
                 endpoint_ingest_system,
             )
-                .run_if(tutti_core::graph::engine_ready)
+                .run_if(tutti_core::ecs::engine_ready)
                 // Push into the outbound mailbox before the pump drains it, so a
                 // probe requested this frame reaches the wire this frame rather
                 // than waiting one.

@@ -39,7 +39,8 @@ use bevy_ecs::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
 use bevy_tasks::{block_on, futures_lite::future};
-use tutti_core::graph::{AudioGraphRes, AudioNode, GraphDirty, NodeKind, Volume};
+use tutti_core::ecs::{AudioGraphRes, GraphDirty};
+use tutti_core::graph::{AudioNode, NodeKind, Volume};
 
 use super::node::{SamplerLooping, SamplerNode, SamplerSpeed};
 use tutti_core::{Linear, Ratio, SamplePosition, Wave, WaveAsset};

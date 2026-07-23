@@ -3,8 +3,8 @@
 
 use bevy_ecs::prelude::*;
 
-use tutti_core::graph::AudioEmitter;
-use tutti_core::graph::AudioGraphRes;
+use tutti_core::ecs::AudioEmitter;
+use tutti_core::ecs::AudioGraphRes;
 
 use crate::editor::{PluginEditorOpen, PluginEmitter};
 
@@ -15,7 +15,7 @@ use crate::editor::{PluginEditorOpen, PluginEmitter};
 pub fn plugin_crash_detect_system(
     mut commands: Commands,
     mut graph: ResMut<AudioGraphRes>,
-    mut dirty: ResMut<tutti_core::graph::GraphDirty>,
+    mut dirty: ResMut<tutti_core::ecs::GraphDirty>,
     query: Query<(Entity, &AudioEmitter, &PluginEmitter)>,
 ) {
     let mut edited = false;

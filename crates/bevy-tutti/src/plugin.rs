@@ -9,9 +9,9 @@ use bevy_app::{App, Plugin, Startup, Update};
 use bevy_log::{error, info};
 
 use crate::device_state;
-use tutti_core::graph::{AudioConfig, GraphReconcilePlugin};
-use tutti_core::metering::TuttiMeteringPlugin;
-use tutti_core::transport::TuttiTransportPlugin;
+use tutti_core::ecs::{
+    AudioConfig, GraphReconcilePlugin, TuttiMeteringPlugin, TuttiTransportPlugin,
+};
 
 use crate::AudioDeviceState;
 #[cfg(feature = "analysis")]

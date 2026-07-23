@@ -13,9 +13,10 @@ use bevy_transform::components::GlobalTransform;
 
 use tutti_core::NodeId;
 
-use tutti_core::graph::{
-    engine_ready, AudioEmitter, AudioGraphRes, GraphDirty, GraphReconcileSystems, Volume,
+use tutti_core::ecs::{
+    engine_ready, AudioEmitter, AudioGraphRes, GraphDirty, GraphReconcileSystems,
 };
+use tutti_core::graph::Volume;
 
 /// Marks an entity as the audio listener (typically the camera).
 ///

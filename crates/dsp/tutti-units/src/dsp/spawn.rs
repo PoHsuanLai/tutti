@@ -36,8 +36,8 @@ use crate::dsp_params::{
 use tutti_core::dsp::AudioUnit;
 use tutti_core::graph::{AudioNode, NodeKind};
 
-use tutti_core::graph::AudioGraphRes;
-use tutti_core::graph::GraphDirty;
+use tutti_core::ecs::AudioGraphRes;
+use tutti_core::ecs::GraphDirty;
 
 use super::systems::svf_type_of;
 
@@ -122,12 +122,12 @@ impl AddDspNode for bevy_app::App {
             bevy_app::Update,
             spawn_dsp_node::<T>
                 .in_set(GraphReconcileSystems::Spawn)
-                .run_if(tutti_core::graph::engine_ready),
+                .run_if(tutti_core::ecs::engine_ready),
         )
     }
 }
 
-use tutti_core::graph::GraphReconcileSystems;
+use tutti_core::ecs::GraphReconcileSystems;
 
 // ---------------------------------------------------------------------------
 // Per-node builders — mechanical lifts of the old `spawn_*_nodes` bodies.

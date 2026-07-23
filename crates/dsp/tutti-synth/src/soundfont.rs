@@ -318,8 +318,8 @@ use bevy_reflect::prelude::*;
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
 use bevy_tasks::{block_on, futures_lite::future};
-use tutti_core::graph::engine_ready;
-use tutti_core::graph::{
+use tutti_core::ecs::engine_ready;
+use tutti_core::ecs::{
     AudioConfig, AudioEmitter, AudioGraphRes, GraphDirty, GraphReconcileSystems,
 };
 

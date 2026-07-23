@@ -6,7 +6,7 @@ use bevy_asset::{Assets, Handle};
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use tutti_core::graph::{AudioConfig, AudioGraphRes, GraphDirty};
+use tutti_core::ecs::{AudioConfig, AudioGraphRes, GraphDirty};
 use tutti_core::WaveAsset;
 
 use super::time_stretch::{TimeStretch, TimeStretchControl};
@@ -14,7 +14,7 @@ use crate::SamplerUnit;
 
 // `AudioEmitter` + `AudioPlaybackState` are leaf-agnostic value types; they
 // live in tutti-core's ECS hub. Re-export so consumers keep one import site.
-pub use tutti_core::graph::{AudioEmitter, AudioPlaybackState};
+pub use tutti_core::ecs::{AudioEmitter, AudioPlaybackState};
 
 /// Trigger component: spawn an entity with this to start audio playback.
 ///
@@ -261,7 +261,7 @@ mod tests {
     use bevy_asset::{AssetApp, AssetPlugin, Assets};
     use std::sync::Arc;
     use tutti_core::dsp::Net;
-    use tutti_core::graph::{AudioConfig, AudioGraphRes, GraphDirty};
+    use tutti_core::ecs::{AudioConfig, AudioGraphRes, GraphDirty};
 
     /// Build a bare `Net` directly (no `TuttiEngine`, which lives in
     /// bevy-tutti). Feature-agnostic via `Net::with_backend` — tutti-core owns

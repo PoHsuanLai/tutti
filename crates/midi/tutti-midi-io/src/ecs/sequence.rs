@@ -61,7 +61,7 @@ pub fn midi_sequence_setup_system(
 /// Ticks all [`MidiSequence`] entities, firing note_on/note_off based on
 /// the transport's current beat position.
 pub fn midi_sequence_tick_system(
-    transport: Res<tutti_core::graph::TransportRes>,
+    transport: Res<tutti_core::ecs::TransportRes>,
     midi: Res<crate::MidiBusRes>,
     mut query: Query<(&MidiSequence, &mut MidiSequenceState)>,
 ) {
@@ -153,8 +153,8 @@ impl Plugin for MidiSequencePlugin {
             Update,
             (midi_sequence_setup_system, midi_sequence_tick_system)
                 .chain()
-                .run_if(tutti_core::graph::engine_ready)
-                .before(tutti_core::graph::GraphReconcileSystems::Commit),
+                .run_if(tutti_core::ecs::engine_ready)
+                .before(tutti_core::ecs::GraphReconcileSystems::Commit),
         );
     }
 }

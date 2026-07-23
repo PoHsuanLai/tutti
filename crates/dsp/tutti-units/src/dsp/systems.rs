@@ -15,9 +15,10 @@ use crate::dsp_params::{BeatSynced, FilterMode, Frequency, LfoShapeKind, ModDept
 use crate::node_markers::LfoNodeMarker;
 use tutti_core::graph::AudioNode;
 
-use tutti_core::graph::AudioGraphRes;
-use tutti_core::graph::GraphDirty;
-use tutti_core::transport::{TransportClockNode, BEAT_PORTS};
+use tutti_core::ecs::AudioGraphRes;
+use tutti_core::ecs::GraphDirty;
+use tutti_core::ecs::TransportClockNode;
+use tutti_core::transport::BEAT_PORTS;
 
 // ---------------------------------------------------------------------------
 // Mirror-enum mapping helpers (tutti-core mirror → real tutti-units enum)
@@ -123,9 +124,9 @@ mod marker_spawn_tests {
     use crate::node_markers::FilterNode;
     use bevy_app::{App, Update};
     use tutti_core::dsp::Net;
-    use tutti_core::graph::AudioGraphRes;
+    use tutti_core::ecs::AudioGraphRes;
     use tutti_core::graph::NodeKind;
-    use tutti_core::graph::{commit_graph, reconcile_node_despawn, GraphReconcileSystems};
+    use tutti_core::ecs::{commit_graph, reconcile_node_despawn, GraphReconcileSystems};
 
     fn bare_graph(channels: usize) -> Net {
         // Feature-agnostic (tutti-core owns the `midi` cfg) — correct under
@@ -190,7 +191,7 @@ mod marker_spawn_tests {
         assert_eq!(*kind, NodeKind::Filter);
 
         // The overridden Q reached the actual built unit (no first-frame drift).
-        let graph = &world.resource::<tutti_core::graph::AudioGraphRes>().0;
+        let graph = &world.resource::<tutti_core::ecs::AudioGraphRes>().0;
         assert!(graph.contains(node.0), "node is in the graph");
         let unit = graph
             .node_as::<crate::StereoSvfFilterNode<f64>>(node.0)

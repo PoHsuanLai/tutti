@@ -34,7 +34,7 @@ use bevy_log::LogPlugin;
 
 use bevy_tutti::TuttiPlugin;
 use tutti_core::dsp::sine_hz;
-use tutti_core::graph::{AudioGraphRes, MeteringRes, SpawnAudioNode};
+use tutti_core::ecs::{AudioGraphRes, MeteringRes, SpawnAudioNode};
 use tutti_core::MotionEvent;
 use tutti_core::{AudioNode, NodeKind, Volume};
 
@@ -51,7 +51,7 @@ fn main() {
         .run();
 }
 
-fn start_transport(transport: Res<tutti_core::graph::TransportRes>) {
+fn start_transport(transport: Res<tutti_core::ecs::TransportRes>) {
     let _ = transport.motion.try_send(MotionEvent::Play);
 }
 

@@ -40,7 +40,7 @@ use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use tutti_core::graph::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
+use tutti_core::ecs::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
 use tutti_core::{latency, Samples};
 
 /// Per-output-channel pre-roll for sources outside the audio graph.

@@ -41,8 +41,8 @@ use tutti_core::{
     AudioUnit, OfflineTimeline, OfflineTimelineConfig, SampleRate, Timeline, TransportClock,
 };
 
-use tutti_core::graph::engine_ready;
-use tutti_core::graph::{AudioConfig, AudioGraphRes};
+use tutti_core::ecs::engine_ready;
+use tutti_core::ecs::{AudioConfig, AudioGraphRes};
 use tutti_sampler::TrackClipReaderUnit;
 use tutti_sampler::VoiceNode;
 
@@ -570,7 +570,7 @@ mod tests {
 
     use bevy_ecs::world::World;
     use tutti_core::dsp::dc;
-    use tutti_core::graph::AudioConfig;
+    use tutti_core::ecs::AudioConfig;
 
     /// The clock node is severed by `isolate()` but keeps the LIVE playhead's
     /// beat. `rebind_net_transport` must re-seat it on the render's own

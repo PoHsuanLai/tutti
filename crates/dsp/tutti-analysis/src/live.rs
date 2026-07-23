@@ -261,7 +261,7 @@ mod ecs {
     use std::thread::JoinHandle;
     use tutti_core::metering::AudioTap;
 
-    use tutti_core::graph::engine_ready;
+    use tutti_core::ecs::engine_ready;
 
     /// The running analysis thread plus the state it publishes into.
     struct RunningAnalysis {

@@ -21,6 +21,7 @@
 
 pub use tutti_midi_types;
 
+pub mod capability_inquiry;
 pub mod clip_player;
 pub mod clock_master;
 pub mod endpoint;
@@ -33,6 +34,7 @@ pub mod snapshot_reader;
 
 pub mod mpe;
 
+pub use capability_inquiry::{CiInitiator, CiProperty, CiResponder, DiscoveredCiDevice};
 pub use clip_player::{CompositeMidiSource, MidiClipSource, TimedClipEvent};
 pub use clock_master::ClockMaster;
 pub use endpoint::{

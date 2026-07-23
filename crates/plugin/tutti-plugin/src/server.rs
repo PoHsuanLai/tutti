@@ -115,7 +115,7 @@ pub trait PluginInstance: Send {
     /// into a single generic inner body.
     fn process(
         &mut self,
-        buffer: AudioBufferMut<'_>,
+        buffer: AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
     ) -> Result<ProcessOutput>;
 

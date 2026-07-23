@@ -233,7 +233,7 @@ impl PluginInstance for AuInstance {
 
     fn process(
         &mut self,
-        buffer: tutti_plugin::server::AudioBufferMut<'_>,
+        buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
     ) -> Result<ProcessOutput> {
         if let Some(changes) = ctx.param_changes {

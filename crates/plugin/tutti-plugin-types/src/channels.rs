@@ -115,20 +115,33 @@ impl<T> BufferPtrs<T> {
 ///
 /// `inputs` and `outputs` borrow channel slices owned by the host. `T`
 /// picks 32-bit or 64-bit processing.
-pub struct AudioBuffer<'a, T: Sample = f32> {
-    pub inputs: &'a [&'a [T]],
-    pub outputs: &'a mut [&'a mut [T]],
+///
+/// Two lifetimes, not one: `'t` is how long the *channel tables* (the outer
+/// `&[…]` / `&mut […]`) are borrowed, `'d` how long the per-channel sample
+/// *data* lives, with `'d: 't` (data outlives the table). Splitting them lets
+/// a caller build the output table with a plain `for … zip` loop — the borrow
+/// checker sees the short-lived outer array's `Drop` as ending at `'t`, so it
+/// no longer collides with the `'d` data borrows. A single coincident lifetime
+/// forced the old hand-unrolled `split_first_mut` recursion in the server's
+/// `with_audio_buffer_*` to sidestep exactly that false conflict.
+pub struct AudioBuffer<'t, 'd: 't, T: Sample = f32> {
+    pub inputs: &'t [&'d [T]],
+    pub outputs: &'t mut [&'d mut [T]],
     pub num_samples: usize,
     pub sample_rate: f64,
 }
 
-impl<'a, T: Sample> AudioBuffer<'a, T> {
+impl<'t, 'd: 't, T: Sample> AudioBuffer<'t, 'd, T> {
     /// `num_samples` is derived from the first output channel's length, or
     /// the first input channel's length if there are no outputs.
     ///
     /// # Panics
     /// Panics if both `inputs` and `outputs` are empty.
-    pub fn new(inputs: &'a [&'a [T]], outputs: &'a mut [&'a mut [T]], sample_rate: f64) -> Self {
+    pub fn new(
+        inputs: &'t [&'d [T]],
+        outputs: &'t mut [&'d mut [T]],
+        sample_rate: f64,
+    ) -> Self {
         let num_samples = outputs
             .first()
             .map(|s| s.len())
@@ -157,5 +170,5 @@ impl<'a, T: Sample> AudioBuffer<'a, T> {
     }
 }
 
-pub type AudioBuffer32<'a> = AudioBuffer<'a, f32>;
-pub type AudioBuffer64<'a> = AudioBuffer<'a, f64>;
+pub type AudioBuffer32<'t, 'd> = AudioBuffer<'t, 'd, f32>;
+pub type AudioBuffer64<'t, 'd> = AudioBuffer<'t, 'd, f64>;

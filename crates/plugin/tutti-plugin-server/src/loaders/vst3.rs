@@ -331,10 +331,10 @@ impl Vst3Instance {
 }
 
 /// Process one audio block through a typed `Vst3Instance<T>`.
-fn process_block<'a, T: tutti_vst3_host::Vst3Sample>(
+fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
     inner: &mut tutti_vst3_host::Vst3Instance<T>,
-    inputs: &'a [&'a [T]],
-    outputs: &'a mut [&'a mut [T]],
+    inputs: &'t [&'d [T]],
+    outputs: &'t mut [&'d mut [T]],
     sample_rate: f64,
     ctx: &tutti_plugin::server::ProcessContext,
 ) -> Result<tutti_plugin::server::ProcessOutput> {
@@ -475,7 +475,7 @@ impl tutti_plugin::server::PluginInstance for Vst3Instance {
 
     fn process(
         &mut self,
-        buffer: tutti_plugin::server::AudioBufferMut<'_>,
+        buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &tutti_plugin::server::ProcessContext,
     ) -> Result<tutti_plugin::server::ProcessOutput> {
         use tutti_plugin::server::AudioBufferMut;

@@ -315,7 +315,7 @@ impl PluginInstance for ClapInstance {
 
     fn process(
         &mut self,
-        buffer: tutti_plugin::server::AudioBufferMut<'_>,
+        buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
     ) -> Result<ProcessOutput> {
         use tutti_plugin::server::AudioBufferMut;

@@ -142,7 +142,7 @@ impl PluginInstance for Vst2Instance {
 
     fn process(
         &mut self,
-        buffer: AudioBufferMut<'_>,
+        buffer: AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
     ) -> Result<ProcessOutput> {
         #[cfg(feature = "vst2")]

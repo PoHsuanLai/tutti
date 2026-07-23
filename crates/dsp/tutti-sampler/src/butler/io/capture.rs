@@ -12,10 +12,9 @@
 //! `StreamingEncoder`: a live sink wants the simplest possible path (open →
 //! write → finalize), no dither / no mono downmix, no extra crate boundary.
 //!
-//! NOTE: as of the recording teardown this sink has no live driver — the mic
-//! capture ring and `Recorder` were deleted. It is retained as the working
-//! `AudioOut` building block that the two-trait (`AudioIn`/`AudioOut`) rebuild
-//! will drive. Its unit tests keep it exercised so it isn't dead-code-pruned.
+//! The live driver is bevy-tutti's `Recorder`, which pumps a `MicSource`
+//! ([`AudioIn`](crate::AudioIn)) into this sink ([`AudioOut`](crate::AudioOut))
+//! on a background thread and calls [`finalize`](AudioOut::finalize) once at stop.
 
 use crate::io::AudioOut;
 use hound::{SampleFormat, WavSpec, WavWriter};
@@ -47,8 +46,7 @@ pub struct WavSink {
 impl WavSink {
     /// Create the file and WAV header for `file_path`. Returns `None` if the
     /// file can't be created or the header can't be written.
-    #[allow(dead_code)] // No live driver post-teardown; kept for the two-trait rebuild.
-    pub(crate) fn create(
+    pub fn create(
         file_path: &PathBuf,
         sample_rate: f64,
         channels: usize,

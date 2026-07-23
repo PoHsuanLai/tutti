@@ -154,9 +154,9 @@ impl bevy_app::Plugin for TuttiSamplerPlugin {
 /// The write side's live impl: [`WavSink`], an [`AudioOut`] that streams stereo
 /// frames to a WAV file, plus its [`CaptureFormat`](capture::CaptureFormat).
 ///
-/// The former recording subsystem (recorder / sessions / punch-preroll / mic
-/// capture) was torn out; the record-mic→WAV flow will be rebuilt as an explicit
-/// [`AudioIn`] → [`AudioOut`] pump, driving this sink.
+/// The record-mic→WAV flow is an explicit [`AudioIn`] → [`AudioOut`] pump
+/// driving this sink, lived out by bevy-tutti's `Recorder` (a `MicSource`
+/// pumped into a `WavSink` on a background thread).
 pub mod capture {
     pub use crate::butler::{CaptureFormat, WavSink};
 }

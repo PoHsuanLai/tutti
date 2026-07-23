@@ -21,6 +21,11 @@ mod error;
 #[cfg(feature = "sampler")]
 mod mic;
 
+// The live mic→WAV driver: pumps a `MicSource` into a sampler `WavSink` on a
+// background thread. Gated on `sampler` to match `mic` — it drives that source.
+#[cfg(feature = "sampler")]
+mod recorder;
+
 #[cfg(all(feature = "midi", feature = "export"))]
 pub mod midi_export;
 
@@ -29,6 +34,8 @@ pub use driver::{DeviceInfo, TuttiDriver};
 pub use error::{Error, Result};
 #[cfg(feature = "sampler")]
 pub use mic::MicSource;
+#[cfg(feature = "sampler")]
+pub use recorder::Recorder;
 // `AudioGraph` (plus `isolate_output` / `GraphDot`) live in tutti-core's `graph`
 // module; the engine surfaces them so existing `engine::AudioGraph` paths hold.
 pub use tutti_core::{isolate_output, AudioGraph, GraphDot};

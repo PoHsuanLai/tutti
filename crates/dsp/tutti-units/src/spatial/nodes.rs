@@ -2,7 +2,6 @@ use crate::Result;
 use tutti_core::AudioUnit;
 use tutti_core::{BufferMut, BufferRef, Degrees, Linear, Param, SignalFrame};
 
-use super::binaural_panner::BinauralPanner;
 use super::vbap_panner::SpatialPanner;
 
 /// Azimuth/elevation pair as typed parameters. Both spatial panner nodes
@@ -254,150 +253,6 @@ impl AudioUnit for SpatialPannerNode {
     }
 }
 
-/// ITD/ILD binaural panner for headphone 3D audio.
-/// Position controlled via lock-free atomics for RT-safe automation.
-pub struct BinauralPannerNode {
-    panner: BinauralPanner,
-    target: SpatialTarget,
-    width: Param<Linear>,
-    sample_rate: f32,
-}
-
-impl Clone for BinauralPannerNode {
-    fn clone(&self) -> Self {
-        let mut new_panner = BinauralPanner::new(self.sample_rate);
-        let (azimuth, elevation) = self.target.load();
-        new_panner.set_position(azimuth, elevation);
-
-        Self {
-            panner: new_panner,
-            target: self.target.clone(),
-            width: self.width.handle(),
-            sample_rate: self.sample_rate,
-        }
-    }
-}
-
-impl BinauralPannerNode {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            panner: BinauralPanner::new(sample_rate),
-            target: SpatialTarget::new(),
-            width: Param::new(Linear(1.0)),
-            sample_rate,
-        }
-    }
-
-    /// Azimuth in degrees (-180..180, 0=front, 90=left), elevation (-90..90, 0=ear level).
-    /// Lock-free.
-    pub fn set_position(&self, azimuth: f32, elevation: f32) {
-        self.target.store(azimuth, elevation);
-    }
-
-    pub fn azimuth(&self) -> f32 {
-        self.target.azimuth.load().0
-    }
-
-    pub fn elevation(&self) -> f32 {
-        self.target.elevation.load().0
-    }
-
-    /// 0.0 = mono, 1.0 = full stereo, up to 2.0 for extra-wide.
-    pub fn set_width(&self, width: f32) {
-        self.width.store(Linear(width.clamp(0.0, 2.0)));
-    }
-
-    pub fn width(&self) -> f32 {
-        self.width.load().0
-    }
-
-    #[inline]
-    fn sync_position(&mut self) {
-        let (azimuth, elevation) = self.target.load();
-        self.panner.set_position(azimuth, elevation);
-    }
-}
-
-impl AudioUnit for BinauralPannerNode {
-    fn inputs(&self) -> usize {
-        2
-    }
-
-    fn outputs(&self) -> usize {
-        2
-    }
-
-    fn reset(&mut self) {
-        self.target.reset_origin();
-        self.width.store(Linear(1.0));
-        self.panner = BinauralPanner::new(self.sample_rate);
-    }
-
-    fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        let sample_rate: f64 = sample_rate.get();
-        self.sample_rate = sample_rate as f32;
-        self.panner = BinauralPanner::new(self.sample_rate);
-    }
-
-    fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        self.sync_position();
-
-        let width = self.width.load().0;
-
-        let left = input.first().copied().unwrap_or(0.0);
-        let right = input.get(1).copied().unwrap_or(left);
-
-        let (out_left, out_right) = self.panner.process_stereo(left, right, width);
-
-        if output.len() >= 2 {
-            output[0] = out_left;
-            output[1] = out_right;
-        }
-    }
-
-    fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        self.sync_position();
-
-        let width = self.width.load().0;
-
-        for i in 0..size {
-            let left = input.at_f32(0, i);
-            let right = if input.channels() > 1 {
-                input.at_f32(1, i)
-            } else {
-                left
-            };
-
-            let (out_left, out_right) = self.panner.process_stereo(left, right, width);
-            output.set_f32(0, i, out_left);
-            output.set_f32(1, i, out_right);
-        }
-    }
-
-    fn get_id(&self) -> u64 {
-        crate::node_id::BINAURAL_PANNER_ID
-    }
-
-    fn as_any(&self) -> &dyn core::any::Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-        self
-    }
-
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut output = SignalFrame::new(2);
-        output.set(0, input.at(0));
-        output.set(1, input.at(0));
-        output
-    }
-
-    fn footprint(&self) -> usize {
-        core::mem::size_of::<Self>()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,24 +272,6 @@ mod tests {
     }
 
     #[test]
-    fn test_binaural_panner_tick() {
-        let mut panner = BinauralPannerNode::new(48000.0);
-        panner.set_position(90.0, 0.0);
-
-        let input = [1.0f32, 1.0f32];
-        let mut output = [0.0f32; 2];
-        for _ in 0..100 {
-            panner.tick(&input, &mut output);
-        }
-
-        panner.tick(&input, &mut output);
-        assert!(
-            output[0] > output[1],
-            "Left should be louder for left position"
-        );
-    }
-
-    #[test]
     fn test_spatial_panner_clone() {
         let panner = SpatialPannerNode::surround_5_1().unwrap();
         panner.set_position(45.0, 15.0);
@@ -449,19 +286,6 @@ mod tests {
     }
 
     #[test]
-    fn test_binaural_panner_clone() {
-        let panner = BinauralPannerNode::new(44100.0);
-        panner.set_position(-45.0, 10.0);
-        panner.set_width(0.5);
-
-        let cloned = panner.clone();
-
-        assert!((cloned.azimuth() - panner.azimuth()).abs() < 0.001);
-        assert!((cloned.elevation() - panner.elevation()).abs() < 0.001);
-        assert!((cloned.width() - panner.width()).abs() < 0.001);
-    }
-
-    #[test]
     fn test_spatial_clone_shares_atomics() {
         let panner = SpatialPannerNode::stereo().unwrap();
         let cloned = panner.clone();
@@ -472,20 +296,6 @@ mod tests {
         assert!((cloned.elevation() - 45.0).abs() < 0.001);
 
         // And vice versa
-        cloned.set_position(-60.0, 10.0);
-        assert!((panner.azimuth() - (-60.0)).abs() < 0.001);
-        assert!((panner.elevation() - 10.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn test_binaural_clone_shares_atomics() {
-        let panner = BinauralPannerNode::new(48000.0);
-        let cloned = panner.clone();
-
-        panner.set_position(90.0, 45.0);
-        assert!((cloned.azimuth() - 90.0).abs() < 0.001);
-        assert!((cloned.elevation() - 45.0).abs() < 0.001);
-
         cloned.set_position(-60.0, 10.0);
         assert!((panner.azimuth() - (-60.0)).abs() < 0.001);
         assert!((panner.elevation() - 10.0).abs() < 0.001);

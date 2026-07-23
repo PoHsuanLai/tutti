@@ -15,6 +15,11 @@ default = []
 # surface the app drives it through, so there is no longer a `bevy` feature.
 # VBAP + binaural panning DSP.
 spatial = ["dep:vbap"]
+# Real HRTF (head-related transfer function) binaural rendering via FFT
+# convolution against a measured HRIR sphere, replacing the crude ITD/ILD
+# `BinauralPanner`. Builds on `spatial`; pulls the `hrtf` crate. The HRIR
+# dataset is supplied by the caller as bytes (see `HrtfBinauralNode::new`).
+hrtf = ["spatial", "dep:hrtf"]
 # FFT convolution reverb (partitioned IR). The convolver DSP unit is Bevy-free;
 # its deferred-load ECS glue lives app-side now.
 convolution = ["dep:fft-convolver"]
@@ -30,6 +35,9 @@ tutti-core = { path = "../../core/tutti-core", default-features = false }
 
 # Spatial audio VBAP library (optional)
 vbap = { version = "0.1", optional = true }
+
+# Real HRTF binaural rendering (optional, gated by the `hrtf` feature).
+hrtf = { version = "0.8", optional = true }
 
 # Partitioned FFT convolver (optional, gated by `convolution` feature)
 fft-convolver = { version = "0.3", optional = true }

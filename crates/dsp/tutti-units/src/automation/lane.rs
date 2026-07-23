@@ -1,9 +1,13 @@
 //! AutomationLane AudioUnit node.
 
-use audio_automation::AutomationEnvelope;
-use tutti_core::{beat_from_ports, AudioUnit, BufferMut, BufferRef, SignalFrame, BEAT_PORTS};
+use std::sync::Arc;
 
-/// An automation lane that evaluates an envelope against musical time.
+use tutti_core::{beat_from_ports, AudioUnit, BufferMut, BufferRef, SignalFrame, BEAT_PORTS};
+use tutti_types::Beat;
+
+use super::Curve;
+
+/// An automation lane that evaluates a [`Curve`] against musical time.
 ///
 /// The beat arrives on the node's [`BEAT_PORTS`] inputs (port 0 whole beats,
 /// port 1 the fraction), wired from `TransportClock`. The lane holds no
@@ -13,6 +17,12 @@ use tutti_core::{beat_from_ports, AudioUnit, BufferMut, BufferRef, SignalFrame, 
 ///
 /// The beat arriving here is already loop-wrapped by the clock, so the lane
 /// does not consult a loop range.
+///
+/// The curve is held behind `Arc<dyn Curve>` so the node stays cheap to clone
+/// (the fundsp graph-commit clones nodes) and agnostic to how the curve is
+/// stored — an [`AutomationEnvelope`], a constant, an LFO shape.
+///
+/// [`AutomationEnvelope`]: audio_automation::AutomationEnvelope
 ///
 /// # Example
 ///
@@ -25,33 +35,25 @@ use tutti_core::{beat_from_ports, AudioUnit, BufferMut, BufferRef, SignalFrame, 
 /// graph.connect(clock_id, 0, lane_id, 0);
 /// graph.connect(clock_id, 1, lane_id, 1);
 /// ```
-pub struct AutomationLane<T> {
-    envelope: AutomationEnvelope<T>,
+pub struct AutomationLane {
+    curve: Arc<dyn Curve>,
     last_value: f32,
 }
 
-/// Type alias kept for the typed `graph.node_as::<LiveAutomationLane<f32>>(..)`
-/// lookups in consumers.
-pub type LiveAutomationLane<T> = AutomationLane<T>;
+/// Alias kept for the `graph.node_as::<LiveAutomationLane>(..)` lookups in
+/// consumers. The lane is no longer generic over the envelope's label.
+pub type LiveAutomationLane = AutomationLane;
 
-impl<T> AutomationLane<T> {
-    pub fn new(envelope: AutomationEnvelope<T>) -> Self {
+impl AutomationLane {
+    pub fn new(curve: impl Curve + 'static) -> Self {
         Self {
-            envelope,
+            curve: Arc::new(curve),
             last_value: 0.0,
         }
     }
 
-    pub fn set_envelope(&mut self, envelope: AutomationEnvelope<T>) {
-        self.envelope = envelope;
-    }
-
-    pub fn envelope(&self) -> &AutomationEnvelope<T> {
-        &self.envelope
-    }
-
-    pub fn envelope_mut(&mut self) -> &mut AutomationEnvelope<T> {
-        &mut self.envelope
+    pub fn set_curve(&mut self, curve: impl Curve + 'static) {
+        self.curve = Arc::new(curve);
     }
 
     /// Most recent value emitted by `tick()` / `process()`.
@@ -64,7 +66,7 @@ impl<T> AutomationLane<T> {
     }
 
     pub fn get_value_at(&self, beat: f64) -> f32 {
-        self.envelope.get_value_at(beat).unwrap_or(0.0)
+        self.curve.value_at(Beat::new(beat)).unwrap_or(0.0)
     }
 
     /// Evaluate at `beat` and record it as the last value.
@@ -74,7 +76,7 @@ impl<T> AutomationLane<T> {
     }
 }
 
-impl<T: Clone + Send + Sync + 'static> AudioUnit for AutomationLane<T> {
+impl AudioUnit for AutomationLane {
     fn inputs(&self) -> usize {
         BEAT_PORTS
     }
@@ -127,10 +129,10 @@ impl<T: Clone + Send + Sync + 'static> AudioUnit for AutomationLane<T> {
     }
 }
 
-impl<T: Clone> Clone for AutomationLane<T> {
+impl Clone for AutomationLane {
     fn clone(&self) -> Self {
         Self {
-            envelope: self.envelope.clone(),
+            curve: Arc::clone(&self.curve),
             last_value: self.last_value,
         }
     }
@@ -141,7 +143,7 @@ mod tests {
     extern crate alloc;
     use super::*;
     use alloc::vec;
-    use audio_automation::AutomationPoint;
+    use audio_automation::{AutomationEnvelope, AutomationPoint};
     use tutti_core::BufferVec;
 
     /// Split a beat the way `TransportClock` does, for feeding the input ports.
@@ -224,14 +226,14 @@ mod tests {
     }
 
     #[test]
-    fn test_set_envelope_changes_output() {
+    fn test_set_curve_changes_output() {
         let mut lane = AutomationLane::new(ramp_envelope());
         assert!((lane.update_to(2.0) - 0.5).abs() < 0.01);
 
         let mut flat: AutomationEnvelope<&str> = AutomationEnvelope::new("flat");
         flat.add_point(AutomationPoint::new(0.0, 0.9));
         flat.add_point(AutomationPoint::new(8.0, 0.9));
-        lane.set_envelope(flat);
+        lane.set_curve(flat);
 
         assert!((lane.update_to(2.0) - 0.9).abs() < 0.01);
     }

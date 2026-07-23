@@ -21,12 +21,18 @@ convolution = ["dep:fft-convolver"]
 # Transport-driven envelope nodes (`AutomationLane`). Folded in from the
 # old `tutti-automation` crate; envelope primitives come from the
 # `audio_automation` crate, re-exported via `tutti_units::automation`.
-automation = ["dep:audio-automation", "dep:dashmap", "dep:parking_lot", "dep:serde"]
+automation = ["dep:audio-automation", "dep:tutti-types", "dep:dashmap", "dep:parking_lot", "dep:serde"]
 
 [dependencies]
 # AudioUnit trait + DSP primitives from tutti-core. default-features = false:
 # tutti-units is pure DSP and needs none of tutti-core's Bevy layer.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
+
+# Value vocabulary (the `Curve` trait), for `impl Curve for AutomationEnvelope`.
+# Optional + gated by `automation`: only that path names the trait. tutti-core
+# re-exports these too, but the impl needs to name `Curve` directly.
+# default-features = false so bevy does not re-leak.
+tutti-types = { path = "../../core/tutti-types", default-features = false, optional = true }
 
 # Spatial audio VBAP library (optional)
 vbap = { version = "0.1", optional = true }

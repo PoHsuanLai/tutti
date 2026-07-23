@@ -7,46 +7,26 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
-default = ["bevy"]
-# Bevy ECS integration: the param/marker components (`dsp_params`,
-# `node_markers`), the reconcile/spawn systems (`dsp`, `reconcile`), and the
-# graph-binding glue (`spatial_graph`, `pending_convolver`, `automation::graph`).
-# Off → the DSP units (LFO/filter/delay/dynamics/modulation/spatial panners/
-# convolver) compile Bevy-free; a non-Bevy host drives them through the tutti-core
-# `AudioGraph` API directly.
-# `tutti-core/bevy_asset` gives the `pending_convolver` glue (all(bevy,convolution))
-# the `WaveAsset` loader; it also implies `tutti-core/bevy`.
-bevy = ["dep:bevy_ecs", "dep:bevy_app", "dep:bevy_reflect", "dep:bevy_log", "dep:bevy_asset", "tutti-core/bevy", "tutti-core/bevy_asset"]
-# VBAP + binaural panning DSP (Bevy-free) plus the position-sync graph binding
-# (`spatial_graph`, Bevy-only — gated on `all(bevy, spatial)`). `bevy_transform`
-# is only consumed by that binding.
-spatial = ["dep:vbap", "dep:bevy_transform"]
-# FFT convolution reverb (partitioned IR). The `pending_convolver` graph module
-# loads IRs via `bevy_asset` + the `WaveAsset`, so the feature pulls
-# tutti-core's `bevy_asset` + a default decode codec (`wav`). That graph binding
-# is Bevy-only; the convolver DSP unit itself is Bevy-free.
-convolution = ["dep:fft-convolver", "tutti-core/wav"]
+default = []
+# NOTE: tutti-units is now fully Bevy-free — the entire ECS binding layer
+# (param/marker components, reconcile/spawn systems, spatial + automation graph
+# glue, deferred convolver load) moved app-side to `dawai_model::engine_bind`
+# ("engine Bevy = Net pump only"). This crate is pure DSP + the `set(UnitParam)`
+# surface the app drives it through, so there is no longer a `bevy` feature.
+# VBAP + binaural panning DSP.
+spatial = ["dep:vbap"]
+# FFT convolution reverb (partitioned IR). The convolver DSP unit is Bevy-free;
+# its deferred-load ECS glue lives app-side now.
+convolution = ["dep:fft-convolver"]
 # Transport-driven envelope nodes (`AutomationLane`). Folded in from the
 # old `tutti-automation` crate; envelope primitives come from the
 # `audio_automation` crate, re-exported via `tutti_units::automation`.
 automation = ["dep:audio-automation", "dep:dashmap", "dep:parking_lot", "dep:serde"]
 
 [dependencies]
-# AudioUnit trait, DSP primitives, and (under `bevy`) the entity-as-node ECS hub
-# from tutti-core. default-features = false so tutti-core's default `bevy` only
-# comes in when this crate's `bevy` feature re-adds `tutti-core/bevy`.
+# AudioUnit trait + DSP primitives from tutti-core. default-features = false:
+# tutti-units is pure DSP and needs none of tutti-core's Bevy layer.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
-
-# Bevy ECS integration (the `dsp` / `reconcile` / `*_graph` modules): Components
-# / Systems / Plugins live next to the audio logic. Optional, gated by `bevy`.
-bevy_ecs = { version = "0.19", default-features = false, optional = true }
-bevy_app = { version = "0.19", default-features = false, optional = true }
-bevy_reflect = { version = "0.19", default-features = false, optional = true }
-bevy_log = { version = "0.19", default-features = false, optional = true }
-# `pending_convolver` (convolution+bevy) loads IR files via the AssetServer.
-bevy_asset = { version = "0.19", default-features = false, optional = true }
-# Spatial position sync reads `GlobalTransform` (spatial+bevy module).
-bevy_transform = { version = "0.19", optional = true }
 
 # Spatial audio VBAP library (optional)
 vbap = { version = "0.1", optional = true }

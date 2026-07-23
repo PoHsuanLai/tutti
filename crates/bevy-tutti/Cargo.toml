@@ -30,10 +30,9 @@ bevy_tasks.workspace = true
 # (relocated into src/engine/).
 tutti-core = { path = "../tutti/crates/core/tutti-core", default-features = false, features = ["bevy_ecs", "bevy_asset"] }
 tutti-midi-types = { path = "../tutti/crates/midi/tutti-midi-types", default-features = false }
-# tutti-units' Bevy modules (the DSP / spatial / automation / convolution spawn
-# pipelines + reconcilers + plugins that bevy-tutti schedules) are always-on; the
-# optional features below add spatial / convolution / automation on top.
-tutti-units = { path = "../tutti/crates/dsp/tutti-units", default-features = false, features = ["bevy"] }
+# tutti-units is pure DSP now (its ECS binding moved to dawai_model::engine_bind).
+# The optional features below add spatial / convolution / automation DSP on top.
+tutti-units = { path = "../tutti/crates/dsp/tutti-units", default-features = false }
 # Decode-once wave cache (Bevy-native). It is a non-optional dep that always
 # needs at least one codec (its API uses tutti-core's fundsp `Wave::load` /
 # `WaveMetadata`, which are codec-gated), so enable `wav` unconditionally here;

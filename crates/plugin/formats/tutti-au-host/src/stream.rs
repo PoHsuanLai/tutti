@@ -55,7 +55,7 @@ impl StreamConfig {
                 0,
             )
         }
-        .map(|asbd| asbd.channels_per_frame)
+        .map(|asbd| asbd.mChannelsPerFrame)
         .unwrap_or(2);
 
         let inputs = unsafe {
@@ -66,7 +66,7 @@ impl StreamConfig {
                 0,
             )
         }
-        .map(|asbd| asbd.channels_per_frame)
+        .map(|asbd| asbd.mChannelsPerFrame)
         .unwrap_or(0);
 
         ChannelLayout { inputs, outputs }
@@ -113,7 +113,7 @@ impl StreamConfig {
                 K_AUDIO_UNIT_SCOPE_OUTPUT,
                 0,
             )
-            .map(|asbd| asbd.channels_per_frame)
+            .map(|asbd| asbd.mChannelsPerFrame)
             .unwrap_or(self.channels.outputs);
 
             let mut effective_inputs = self.channels.inputs;
@@ -134,7 +134,7 @@ impl StreamConfig {
                     K_AUDIO_UNIT_SCOPE_INPUT,
                     0,
                 )
-                .map(|asbd| asbd.channels_per_frame)
+                .map(|asbd| asbd.mChannelsPerFrame)
                 .unwrap_or(self.channels.inputs);
             }
 

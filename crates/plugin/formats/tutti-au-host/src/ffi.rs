@@ -85,7 +85,8 @@ pub(crate) unsafe fn property_size(
     element: u32,
 ) -> Result<u32> {
     let mut size: u32 = 0;
-    let mut writable: i32 = 0;
+    // `outWritable` is `*mut Boolean` (a C `unsigned char`) in AudioToolbox.
+    let mut writable: u8 = 0;
     check(
         "AudioUnitGetPropertyInfo",
         AudioUnitGetPropertyInfo(unit, id, scope, element, &mut size, &mut writable),

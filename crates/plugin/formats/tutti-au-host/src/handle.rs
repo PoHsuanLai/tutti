@@ -54,7 +54,7 @@ impl AuHandle {
             "AudioComponentGetDescription",
             AudioComponentGetDescription(component, &mut desc),
         )?;
-        let au_type = AuType::from_raw(desc.component_type);
+        let au_type = AuType::from_raw(desc.componentType);
 
         Ok(Self {
             instance,
@@ -81,7 +81,7 @@ impl AuHandle {
     /// Copy the AU's display name. Returns `"<unknown>"` on failure.
     pub fn get_name(&self) -> String {
         unsafe {
-            let mut name_ref: core_foundation_sys::string::CFStringRef = std::ptr::null();
+            let mut name_ref: coreaudio_sys::CFStringRef = std::ptr::null();
             let status = AudioComponentCopyName(self.component, &mut name_ref);
             if status != NO_ERR {
                 return String::from("<unknown>");

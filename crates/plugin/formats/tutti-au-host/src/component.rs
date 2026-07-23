@@ -145,7 +145,7 @@ pub fn enumerate_components() -> Vec<AuComponentInfo> {
 #[cfg(target_os = "macos")]
 pub fn enumerate_components_of_type(au_type: AuType) -> Vec<AuComponentInfo> {
     enumerate_with_desc(AudioComponentDescription {
-        component_type: au_type.to_raw(),
+        componentType: au_type.to_raw(),
         ..Default::default()
     })
 }
@@ -162,7 +162,7 @@ pub fn find_component(desc: &AudioComponentDescription) -> Option<AudioComponent
 #[cfg(target_os = "macos")]
 fn component_info(component: AudioComponent) -> Option<AuComponentInfo> {
     let name = unsafe {
-        let mut name_ref: core_foundation_sys::string::CFStringRef = std::ptr::null();
+        let mut name_ref: coreaudio_sys::CFStringRef = std::ptr::null();
         let status = AudioComponentCopyName(component, &mut name_ref);
         if status == NO_ERR {
             CfString::from_copied(name_ref)
@@ -181,10 +181,10 @@ fn component_info(component: AudioComponent) -> Option<AuComponentInfo> {
 
     Some(AuComponentInfo {
         name,
-        manufacturer: fourcc_to_string(comp_desc.component_manufacturer),
-        manufacturer_code: comp_desc.component_manufacturer,
-        sub_type: comp_desc.component_sub_type,
-        component_type: AuType::from_raw(comp_desc.component_type),
+        manufacturer: fourcc_to_string(comp_desc.componentManufacturer),
+        manufacturer_code: comp_desc.componentManufacturer,
+        sub_type: comp_desc.componentSubType,
+        component_type: AuType::from_raw(comp_desc.componentType),
         component,
     })
 }
@@ -253,11 +253,11 @@ mod tests {
     #[test]
     fn test_find_apple_au_delay() {
         let desc = AudioComponentDescription {
-            component_type: K_AUDIO_UNIT_TYPE_EFFECT,
-            component_sub_type: u32::from_be_bytes(*b"dely"),
-            component_manufacturer: u32::from_be_bytes(*b"appl"),
-            component_flags: 0,
-            component_flags_mask: 0,
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+componentFlagsMask: 0,
         };
         assert!(find_component(&desc).is_some());
     }

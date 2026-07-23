@@ -531,8 +531,8 @@ impl AuReady {
         self.callback_installs
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let callback = AURenderCallbackStruct {
-            input_proc: au_input_render_callback,
-            input_proc_ref_con: scratch_ptr as *mut c_void,
+            inputProc: Some(au_input_render_callback),
+            inputProcRefCon: scratch_ptr as *mut c_void,
         };
         set_property(
             self.loaded.handle.raw_unit(),
@@ -578,7 +578,7 @@ unsafe extern "C" fn au_input_render_callback(
     let frames = in_number_frames as usize;
 
     for (ch, buf) in iter_buffers_mut(io_data).enumerate() {
-        let dst = std::slice::from_raw_parts_mut(buf.data as *mut f32, frames);
+        let dst = std::slice::from_raw_parts_mut(buf.mData as *mut f32, frames);
         match scratch.inputs.get(ch) {
             Some(src) => {
                 let n = frames.min(src.len());
@@ -589,7 +589,7 @@ unsafe extern "C" fn au_input_render_callback(
             }
             None => dst.fill(0.0),
         }
-        buf.data_byte_size = (frames * std::mem::size_of::<f32>()) as u32;
+        buf.mDataByteSize = (frames * std::mem::size_of::<f32>()) as u32;
     }
 
     NO_ERR
@@ -606,11 +606,11 @@ mod tests {
 
     fn find_apple_delay() -> Option<AudioComponent> {
         let desc = AudioComponentDescription {
-            component_type: K_AUDIO_UNIT_TYPE_EFFECT,
-            component_sub_type: u32::from_be_bytes(*b"dely"),
-            component_manufacturer: u32::from_be_bytes(*b"appl"),
-            component_flags: 0,
-            component_flags_mask: 0,
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+componentFlagsMask: 0,
         };
         find_component(&desc)
     }

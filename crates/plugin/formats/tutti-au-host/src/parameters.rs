@@ -199,9 +199,9 @@ fn info(unit: AudioUnit, param_id: u32) -> Result<AuParameter> {
         id: param_id,
         name,
         range: ParamRange {
-            min: raw.min_value,
-            max: raw.max_value,
-            default: raw.default_value,
+            min: raw.minValue,
+            max: raw.maxValue,
+            default: raw.defaultValue,
         },
         unit: ParameterUnit::from_raw(raw.unit),
         writable: raw.flags & K_AUDIO_UNIT_PARAMETER_FLAG_IS_WRITABLE != 0,
@@ -212,20 +212,23 @@ fn info(unit: AudioUnit, param_id: u32) -> Result<AuParameter> {
 /// 52-byte fixed buffer (null-terminated or full-width).
 fn extract_name(info: &AudioUnitParameterInfo) -> String {
     if info.flags & K_AUDIO_UNIT_PARAMETER_FLAG_HAS_CF_NAME_STRING != 0
-        && !info.name_string.is_null()
+        && !info.cfNameString.is_null()
     {
         unsafe {
-            crate::cf::CfString::from_copied(info.name_string)
+            crate::cf::CfString::from_copied(info.cfNameString)
                 .map(|s| s.to_string())
                 .unwrap_or_default()
         }
     } else {
-        let end = info
-            .name
+        // `name` is `[c_char; 52]` (i8 on macOS); reinterpret as bytes for
+        // the null-terminated fallback decode.
+        let name_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(info.name.as_ptr() as *const u8, info.name.len()) };
+        let end = name_bytes
             .iter()
             .position(|&b| b == 0)
-            .unwrap_or(info.name.len());
-        String::from_utf8_lossy(&info.name[..end]).to_string()
+            .unwrap_or(name_bytes.len());
+        String::from_utf8_lossy(&name_bytes[..end]).to_string()
     }
 }
 
@@ -237,11 +240,11 @@ mod tests {
 
     fn apple_delay_unit() -> AudioUnit {
         let desc = AudioComponentDescription {
-            component_type: K_AUDIO_UNIT_TYPE_EFFECT,
-            component_sub_type: u32::from_be_bytes(*b"dely"),
-            component_manufacturer: u32::from_be_bytes(*b"appl"),
-            component_flags: 0,
-            component_flags_mask: 0,
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+componentFlagsMask: 0,
         };
         let comp = find_component(&desc).expect("AUDelay should be present");
         let mut instance: AudioComponentInstance = std::ptr::null_mut();

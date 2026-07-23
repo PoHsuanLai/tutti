@@ -13,6 +13,7 @@ mod cocoa;
 
 use objc2::msg_send;
 use objc2::runtime::AnyObject;
+use objc2_foundation::NSRect;
 use std::os::raw::c_void;
 
 use tutti_plugin_types::{EditorSize, WindowHandle};
@@ -142,11 +143,11 @@ mod tests {
     #[test]
     fn test_has_editor() {
         let desc = AudioComponentDescription {
-            component_type: K_AUDIO_UNIT_TYPE_EFFECT,
-            component_sub_type: u32::from_be_bytes(*b"dely"),
-            component_manufacturer: u32::from_be_bytes(*b"appl"),
-            component_flags: 0,
-            component_flags_mask: 0,
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+componentFlagsMask: 0,
         };
         let comp = find_component(&desc).expect("AUDelay should be present");
         let mut instance: AudioComponentInstance = std::ptr::null_mut();

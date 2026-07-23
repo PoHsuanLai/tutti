@@ -15,7 +15,9 @@ tutti-midi-types = { path = "../../../midi/tutti-midi-types", default-features =
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
+coreaudio-sys = "0.2"
 objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSGeometry", "NSObject"] }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

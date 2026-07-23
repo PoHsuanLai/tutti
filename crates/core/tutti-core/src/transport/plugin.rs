@@ -12,6 +12,7 @@
 use bevy_app::{App, Plugin};
 use bevy_ecs::prelude::*;
 
+use crate::transport::MetronomeHandle;
 use crate::TransportHandle;
 
 /// Lock-free transport handle (play/stop/seek/tempo/loop).
@@ -29,6 +30,25 @@ impl std::ops::Deref for TransportRes {
 /// claimed into [`TransportRes`] by [`TuttiTransportPlugin`]'s `build()`.
 #[derive(Resource)]
 pub struct PendingTransport(pub Option<TransportHandle>);
+
+/// Metronome control (volume / accent / mode).
+///
+/// Separate from [`TransportRes`]: the metronome shares no state with the
+/// transport — it is a wrapper over `Arc<ClickSettings>` — and was only bundled
+/// into the transport handle for call-site convenience.
+#[derive(Resource, Clone)]
+pub struct MetronomeRes(pub MetronomeHandle);
+
+impl std::ops::Deref for MetronomeRes {
+    type Target = MetronomeHandle;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// Transient handoff for [`MetronomeRes`], mirroring [`PendingTransport`].
+#[derive(Resource)]
+pub struct PendingMetronome(pub Option<MetronomeHandle>);
 
 /// Graph address of the global [`TransportClock`](crate::TransportClock) node.
 ///
@@ -58,6 +78,11 @@ impl Plugin for TuttiTransportPlugin {
             app.world_mut().remove_resource::<PendingTransport>()
         {
             app.insert_resource(TransportRes(handle));
+        }
+        if let Some(PendingMetronome(Some(handle))) =
+            app.world_mut().remove_resource::<PendingMetronome>()
+        {
+            app.insert_resource(MetronomeRes(handle));
         }
     }
 }

@@ -9,9 +9,9 @@ pub(crate) mod position;
 mod state;
 
 pub use automation_reader::{AutomationEnvelopeFn, AutomationReaderInput};
-pub use click::{click, ClickNode, ClickSettings, ClickState, MetronomeMode};
+pub use click::{ClickNode, ClickSettings, ClickState, MetronomeHandle, MetronomeMode};
 pub use clock::TransportClock;
-pub use handle::{MetronomeHandle, TransportHandle};
+pub use handle::TransportHandle;
 pub use manager::{Direction, MotionState, TransportManager};
 pub use offline::{OfflineTransport, OfflineTransportConfig};
 pub use state::{
@@ -21,7 +21,10 @@ pub use state::{
 #[cfg(feature = "bevy")]
 pub mod plugin;
 #[cfg(feature = "bevy")]
-pub use plugin::{PendingTransport, TransportClockNode, TransportRes, TuttiTransportPlugin};
+pub use plugin::{
+    MetronomeRes, PendingMetronome, PendingTransport, TransportClockNode, TransportRes,
+    TuttiTransportPlugin,
+};
 
 /// Read-only view of transport state — "what time is it, and are we rolling".
 ///

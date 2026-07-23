@@ -4,7 +4,8 @@
 //! (volume, accent, mode) from [`ClickSettings`].
 
 use super::TransportClockRead;
-use crate::{AtomicF32, AtomicU32, AtomicU8, Ordering, TransportHandle};
+use crate::params::Linear;
+use crate::{AtomicF32, AtomicU32, AtomicU8, Ordering};
 use fundsp::audionode::AudioNode;
 use fundsp::prelude::*;
 use std::sync::Arc;
@@ -90,10 +91,12 @@ pub type ClickState = ClickSettings;
 /// Click generator AudioNode.
 ///
 /// Outputs stereo click sounds synced to the transport beat.
-/// Generic over `R: TransportClockRead` so it works with both live
-/// `TransportHandle` and `OfflineTransport`.
+///
+/// Generic over `R: TransportClockRead` — anything that can report the beat
+/// and whether we are rolling/recording drives it, live or offline. The node
+/// holds no transport *control*; it only reads.
 #[derive(Clone)]
-pub struct ClickNode<R: TransportClockRead = TransportHandle> {
+pub struct ClickNode<R: TransportClockRead> {
     transport: R,
     settings: Arc<ClickSettings>,
     sample_rate: f64,
@@ -102,16 +105,6 @@ pub struct ClickNode<R: TransportClockRead = TransportHandle> {
     click_pos: usize,
     is_accent: bool,
     last_click_beat: i64,
-}
-
-impl ClickNode<TransportHandle> {
-    pub fn new(
-        transport: TransportHandle,
-        settings: Arc<ClickSettings>,
-        sample_rate: impl Into<crate::SampleRate>,
-    ) -> Self {
-        Self::with_transport(transport, settings, sample_rate)
-    }
 }
 
 impl<R: TransportClockRead + Clone> ClickNode<R> {
@@ -235,19 +228,75 @@ impl<R: TransportClockRead + Clone + Send + Sync + 'static> AudioNode for ClickN
     }
 }
 
-/// Create a click generator unit with a live transport.
+/// Fluent API handle for metronome control.
 ///
-/// Note: The metronome is automatically mixed into output when building a `TuttiEngine`.
-/// You typically don't need to call this directly — just use:
+/// Created via `transport.metronome()`.
+///
+/// # Example
 /// ```ignore
-/// engine.transport().metronome().always();
+/// engine.transport()
+///     .metronome()
+///     .volume(0.7)
+///     .accent_every(4)
+///     .always();
 /// ```
-pub fn click(
-    transport: TransportHandle,
-    settings: Arc<ClickSettings>,
-    sample_rate: impl Into<crate::SampleRate>,
-) -> An<ClickNode<TransportHandle>> {
-    An(ClickNode::new(transport, settings, sample_rate))
+#[derive(Clone)]
+pub struct MetronomeHandle {
+    state: Arc<ClickState>,
+}
+
+impl MetronomeHandle {
+    pub fn new(state: Arc<ClickState>) -> Self {
+        Self { state }
+    }
+
+    /// Volume: 0.0 to 1.0.
+    pub fn volume(&self, volume: impl Into<Linear>) -> &Self {
+        self.state.set_volume(volume.into().get());
+        self
+    }
+
+    pub fn get_volume(&self) -> Linear {
+        Linear(self.state.volume())
+    }
+
+    pub fn accent_every(&self, beats: u32) -> &Self {
+        self.state.set_accent_every(beats);
+        self
+    }
+
+    pub fn get_accent_every(&self) -> u32 {
+        self.state.accent_every()
+    }
+
+    pub fn mode(&self, mode: MetronomeMode) -> &Self {
+        self.state.set_mode(mode);
+        self
+    }
+
+    pub fn get_mode(&self) -> MetronomeMode {
+        self.state.mode()
+    }
+
+    pub fn off(&self) -> &Self {
+        self.state.set_mode(MetronomeMode::Off);
+        self
+    }
+
+    pub fn always(&self) -> &Self {
+        self.state.set_mode(MetronomeMode::Always);
+        self
+    }
+
+    pub fn recording_only(&self) -> &Self {
+        self.state.set_mode(MetronomeMode::RecordingOnly);
+        self
+    }
+
+    pub fn preroll_only(&self) -> &Self {
+        self.state.set_mode(MetronomeMode::PrerollOnly);
+        self
+    }
 }
 
 #[cfg(test)]

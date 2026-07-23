@@ -29,7 +29,9 @@ use tutti_core::{
 // subsystem's `*Res` (synchronously, before frame 1).
 use tutti_core::graph::{AudioConfig, PendingGraph};
 use tutti_core::metering::PendingMetering;
-use tutti_core::transport::{PendingTransport, TransportClockNode};
+use tutti_core::transport::{
+    MetronomeHandle, PendingMetronome, PendingTransport, TransportClockNode,
+};
 
 #[cfg(feature = "midi")]
 use tutti_core::processor::MidiProcessor;
@@ -101,9 +103,10 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         .with_position_writeback(transport_mgr.current_beat().clone());
     let clock_id = net.inner_mut().push(Box::new(clock));
 
-    // Metronome — mixed into master output.
-    let click_transport = TransportHandle::new(transport_mgr.clone(), click_settings.clone());
-    let click = ClickNode::new(click_transport, click_settings.clone(), sample_rate);
+    // Metronome — mixed into master output. It only READS the transport
+    // (beat + rolling/recording), so it takes a read view, not a control handle.
+    let click_transport = TransportHandle::new(transport_mgr.clone());
+    let click = ClickNode::with_transport(click_transport, click_settings.clone(), sample_rate);
     let click_id = net.inner_mut().push(Box::new(An(click)));
     net.inner_mut().pipe_output(click_id);
 
@@ -151,7 +154,8 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
 
     let driver = TuttiDriver::from_parts(audio_engine, callback_state);
 
-    let transport = TransportHandle::new(transport_mgr, click_settings);
+    let transport = TransportHandle::new(transport_mgr);
+    let metronome = MetronomeHandle::new(click_settings);
 
     #[cfg(feature = "analysis")]
     let analysis = tutti_analysis::AnalysisRes::new(sample_rate, metering_mgr.clone());
@@ -169,6 +173,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     app.insert_resource(PendingGraph(Some((graph, config))));
     app.insert_non_send_resource(driver);
     app.insert_resource(PendingTransport(Some(transport)));
+    app.insert_resource(PendingMetronome(Some(metronome)));
     app.insert_resource(TransportClockNode(clock_id));
     app.insert_resource(PendingMetering(Some(metering)));
 

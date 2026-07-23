@@ -1,80 +1,8 @@
-//! Fluent API handles for transport and metronome control
+//! Fluent API handle for transport control.
 
-use super::click::{ClickState, MetronomeMode};
 use super::{MotionState, TransportManager};
+use crate::params::Bpm;
 use std::sync::Arc;
-use crate::params::{Bpm, Linear};
-
-/// Fluent API handle for metronome control.
-///
-/// Created via `transport.metronome()`.
-///
-/// # Example
-/// ```ignore
-/// engine.transport()
-///     .metronome()
-///     .volume(0.7)
-///     .accent_every(4)
-///     .always();
-/// ```
-#[derive(Clone)]
-pub struct MetronomeHandle {
-    state: Arc<ClickState>,
-}
-
-impl MetronomeHandle {
-    pub(crate) fn new(state: Arc<ClickState>) -> Self {
-        Self { state }
-    }
-
-    /// Volume: 0.0 to 1.0.
-    pub fn volume(&self, volume: impl Into<Linear>) -> &Self {
-        self.state.set_volume(volume.into().get());
-        self
-    }
-
-    pub fn get_volume(&self) -> Linear {
-        Linear(self.state.volume())
-    }
-
-    pub fn accent_every(&self, beats: u32) -> &Self {
-        self.state.set_accent_every(beats);
-        self
-    }
-
-    pub fn get_accent_every(&self) -> u32 {
-        self.state.accent_every()
-    }
-
-    pub fn mode(&self, mode: MetronomeMode) -> &Self {
-        self.state.set_mode(mode);
-        self
-    }
-
-    pub fn get_mode(&self) -> MetronomeMode {
-        self.state.mode()
-    }
-
-    pub fn off(&self) -> &Self {
-        self.state.set_mode(MetronomeMode::Off);
-        self
-    }
-
-    pub fn always(&self) -> &Self {
-        self.state.set_mode(MetronomeMode::Always);
-        self
-    }
-
-    pub fn recording_only(&self) -> &Self {
-        self.state.set_mode(MetronomeMode::RecordingOnly);
-        self
-    }
-
-    pub fn preroll_only(&self) -> &Self {
-        self.state.set_mode(MetronomeMode::PrerollOnly);
-        self
-    }
-}
 
 /// Fluent API handle for transport control.
 ///
@@ -86,30 +14,19 @@ impl MetronomeHandle {
 ///     .tempo(128.0)
 ///     .loop_range(0.0, 16.0)
 ///     .enable_loop()
-///     .metronome()
-///         .volume(0.7)
-///         .accent_every(4)
-///         .always()
 ///     .play();
 /// ```
 #[derive(Clone)]
 pub struct TransportHandle {
     transport: Arc<TransportManager>,
-    click_state: Arc<ClickState>,
-    metronome: MetronomeHandle,
 }
 
 impl TransportHandle {
-    /// Wire a transport handle around shared transport + click state.
+    /// Wire a transport handle around shared transport state.
     /// Normally built through the engine; exposed here so custom constructions
     /// (e.g. export contexts, standalone vocabulary use) can attach a handle.
-    pub fn new(transport: Arc<TransportManager>, click_state: Arc<ClickState>) -> Self {
-        let metronome = MetronomeHandle::new(click_state.clone());
-        Self {
-            transport,
-            click_state,
-            metronome,
-        }
+    pub fn new(transport: Arc<TransportManager>) -> Self {
+        Self { transport }
     }
 
     pub fn tempo(&self, bpm: impl Into<Bpm>) -> &Self {
@@ -184,18 +101,6 @@ impl TransportHandle {
     pub fn stop_recording(&self) -> &Self {
         self.transport.set_recording(false);
         self
-    }
-
-    /// Borrow the metronome control handle owned by this transport.
-    ///
-    /// Returns a reference to a `MetronomeHandle` built once at
-    /// construction time. The metronome's setters chain via `&self`
-    /// just like the transport's, but the chain ends at the metronome
-    /// — re-entering the transport from within a metronome chain
-    /// is not supported. Split the chain into separate statements
-    /// when both need to be configured.
-    pub fn metronome(&self) -> &MetronomeHandle {
-        &self.metronome
     }
 }
 

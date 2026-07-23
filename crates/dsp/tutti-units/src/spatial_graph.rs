@@ -127,7 +127,7 @@ pub fn spatial_audio_sync_system(
             (az, el, pos.length())
         };
 
-        if let Some(panner) = graph.0.node::<crate::SpatialPannerNode>(panner_id) {
+        if let Some(panner) = graph.0.node_as::<crate::SpatialPannerNode>(panner_id) {
             panner.set_position(azimuth, elevation);
         }
 

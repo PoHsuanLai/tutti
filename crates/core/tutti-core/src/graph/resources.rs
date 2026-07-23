@@ -11,7 +11,7 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use crate::AudioGraph;
+use crate::dsp::Net;
 
 /// Audio device configuration captured at engine build time.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Reflect)]
@@ -21,14 +21,15 @@ pub struct AudioConfig {
     pub channels: usize,
 }
 
-/// Owns the editable DSP graph. `&mut` edits; call `commit()` once per frame
-/// after a batch of edits to publish them to the audio thread.
+/// Owns the editable DSP graph — fundsp's [`Net`]. `&mut` edits; call
+/// `commit()` once per frame after a batch of edits to publish them to the
+/// audio thread.
 ///
 /// Intentionally no `Deref`: graph mutation is paired with the per-frame
 /// `commit()` discipline (see `commit_graph`). Keeping access through `.0`
 /// makes the dirty/commit boundary visible at the call site.
 #[derive(Resource)]
-pub struct AudioGraphRes(pub AudioGraph);
+pub struct AudioGraphRes(pub Net);
 
 /// Transient handoff: the freshly-built graph + its device config.
 ///
@@ -37,4 +38,4 @@ pub struct AudioGraphRes(pub AudioGraph);
 /// `build()` — promoting it into `AudioGraphRes` + `AudioConfig` synchronously,
 /// before frame 1 — then drops this transient.
 #[derive(Resource)]
-pub struct PendingGraph(pub Option<(AudioGraph, AudioConfig)>);
+pub struct PendingGraph(pub Option<(Net, AudioConfig)>);

@@ -5,7 +5,7 @@
 //! and the layered [`ModParam`]. Under the `bevy` feature they gain
 //! `#[derive(Component, Reflect)]` and become the ECS parameter components the
 //! reconcile hub reads; without it they stay plain structs a non-Bevy host can
-//! carry and pass to [`AudioGraph`](super::AudioGraph)'s imperative API.
+//! carry and pass to the graph's imperative API.
 //!
 //! No `Entity` fields and no relationship semantics live here — that's what lets
 //! them degrade cleanly. The Bevy-only wiring (`AudioFeedsTo`, the reconcile

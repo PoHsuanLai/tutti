@@ -52,7 +52,6 @@ use tutti_midi_runtime::tutti_midi_types::EndpointDiscoveryRequest;
 use tutti_midi_runtime::{CiInitiator, CiResponder, DiscoveredCiDevice};
 use tutti_midi_runtime::{DiscoveredEndpoint, EndpointInquiry};
 
-
 /// The default group MIDI-CI negotiation runs on (function-block-wide).
 const CI_GROUP: u8 = 0;
 
@@ -272,8 +271,8 @@ impl Plugin for MidiNegotiationPlugin {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::track_out::MidiOutRes;
+    use super::*;
     use tutti_midi_runtime::tutti_midi_types::ci::CiCategories;
 
     fn identity(mfr: [u8; 3]) -> DiscoveryData {

@@ -117,7 +117,7 @@ pub type ClickState = ClickSettings;
 /// reads — no transport control.
 ///
 /// A click node does end up inside offline-cloned nets (the clone copies every
-/// node), but `isolate_output` repoints the output bus away from it, so its
+/// node), but `Net::clone_isolated` repoints the output bus away from it, so its
 /// samples go nowhere.
 #[derive(Clone)]
 pub struct ClickNode {

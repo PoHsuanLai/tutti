@@ -30,7 +30,7 @@ pub struct AutomationLane<T> {
     last_value: f32,
 }
 
-/// Type alias kept for the typed `graph.node::<LiveAutomationLane<f32>>(..)`
+/// Type alias kept for the typed `graph.node_as::<LiveAutomationLane<f32>>(..)`
 /// lookups in consumers.
 pub type LiveAutomationLane<T> = AutomationLane<T>;
 

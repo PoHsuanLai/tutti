@@ -122,15 +122,15 @@ mod marker_spawn_tests {
     use crate::dsp_params::{FilterQ, GainDb};
     use crate::node_markers::FilterNode;
     use bevy_app::{App, Update};
+    use tutti_core::dsp::Net;
     use tutti_core::graph::AudioGraphRes;
     use tutti_core::graph::NodeKind;
     use tutti_core::graph::{commit_graph, reconcile_node_despawn, GraphReconcileSystems};
-    use tutti_core::AudioGraph;
 
-    fn bare_graph(channels: usize) -> AudioGraph {
+    fn bare_graph(channels: usize) -> Net {
         // Feature-agnostic (tutti-core owns the `midi` cfg) — correct under
         // workspace feature unification even though tutti-units has no `midi` feature.
-        AudioGraph::empty(channels)
+        Net::with_backend(channels)
     }
 
     fn test_app() -> App {
@@ -193,7 +193,7 @@ mod marker_spawn_tests {
         let graph = &world.resource::<tutti_core::graph::AudioGraphRes>().0;
         assert!(graph.contains(node.0), "node is in the graph");
         let unit = graph
-            .node::<crate::StereoSvfFilterNode<f64>>(node.0)
+            .node_as::<crate::StereoSvfFilterNode<f64>>(node.0)
             .expect("built StereoSvfFilterNode");
         assert!(
             (unit.q().load(std::sync::atomic::Ordering::Relaxed) - 2.0).abs() < 1e-5,

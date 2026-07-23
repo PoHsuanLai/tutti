@@ -5,7 +5,7 @@
 //! a clip's raw source file. This module renders exactly that: spawn an entity
 //! with [`StartRegionRender`] naming a `NodeId` and a beat range; the start
 //! system clones the live net, repoints its output bus at that node (via
-//! [`AudioGraph::clone_net_isolated`]), and renders it offline on a worker
+//! [`Net::clone_isolated`]), and renders it offline on a worker
 //! thread. When the render finishes, the result lands on the same entity as a
 //! [`RegionRenderComplete`] component carrying the PCM.
 //!
@@ -66,7 +66,7 @@ pub enum RegionRenderSystems {
 /// Admission policy for offline region renders.
 ///
 /// Each admitted [`StartRegionRender`] does one **main-thread** deep clone of
-/// the live net (`clone_net_isolated` → `DynClone` of every DSP node) in
+/// the live net (`clone_isolated` → `DynClone` of every DSP node) in
 /// [`prepare_region_render_system`]. When a consumer enters a mode that taps
 /// many nodes at once (e.g. spectral view, one tap per track), every view
 /// misses its cache and spawns a request in the *same frame*; admitting them all
@@ -295,8 +295,8 @@ pub fn prepare_region_render_system(
         // `rebind` also walk every node, so measure all three separately to see
         // which dominates the spectral-entry glitch.
         let clone = {
-            let _span = bevy_log::info_span!("region_render::clone_net_isolated").entered();
-            graph.0.clone_net_isolated(start.target)
+            let _span = bevy_log::info_span!("region_render::clone_isolated").entered();
+            graph.0.clone_isolated(start.target)
         };
         let Some(mut net) = clone else {
             // No-output target never occupied a slot — don't count it.
@@ -638,10 +638,9 @@ mod tests {
     }
 
     /// Build a real (tiny, CPAL-free) 2-output graph with one node piped to the
-    /// output bus, so `clone_net_isolated(target)` succeeds in `prepare`.
-    /// `AudioGraph::empty` is feature-agnostic (tutti-core owns the `midi` cfg).
+    /// output bus, so `clone_isolated(target)` succeeds in `prepare`.
     fn graph_res_with_one_target() -> (AudioGraphRes, NodeId) {
-        let mut graph = tutti_core::AudioGraph::empty(2);
+        let mut graph = Net::with_backend(2);
         let target = graph.master(dc(1.0)); // one node, wired to the output bus
         (AudioGraphRes(graph), target)
     }

@@ -132,8 +132,8 @@ pub fn audio_playback_system(
             // The stretcher is now a pure filter that owns no source: add the
             // sampler as its own node and pipe it into the filter, then the
             // filter to the output. `AudioEmitter` points at the SAMPLER node so
-            // volume sync (`node_mut::<SamplerUnit>`) and finish detection
-            // (`node::<SamplerUnit>`) resolve against the real source.
+            // volume sync (`node_as_mut::<SamplerUnit>`) and finish detection
+            // (`node_as::<SamplerUnit>`) resolve against the real source.
             let stretch = crate::stretch::Unit::new(sample_rate);
             stretch.set_stretch_factor(tutti_core::Ratio::new(ts.stretch_factor));
             stretch.set_pitch_cents(tutti_core::Cents::new(ts.pitch_cents));
@@ -189,7 +189,7 @@ pub fn audio_parameter_sync_system(
 ) {
     let mut edited = false;
     for (emitter, volume) in query.iter() {
-        if let Some(sampler) = graph.0.node_mut::<SamplerUnit>(emitter.node_id) {
+        if let Some(sampler) = graph.0.node_as_mut::<SamplerUnit>(emitter.node_id) {
             sampler.set_gain(tutti_core::Linear::new(volume.0));
             edited = true;
         }
@@ -229,7 +229,7 @@ pub fn audio_cleanup_system(
 
         let is_playing = graph
             .0
-            .node::<SamplerUnit>(emitter.node_id)
+            .node_as::<SamplerUnit>(emitter.node_id)
             .map(|s| s.is_playing())
             .unwrap_or(false);
 
@@ -260,14 +260,14 @@ mod tests {
     use bevy_app::{App, Update};
     use bevy_asset::{AssetApp, AssetPlugin, Assets};
     use std::sync::Arc;
+    use tutti_core::dsp::Net;
     use tutti_core::graph::{AudioConfig, AudioGraphRes, GraphDirty};
-    use tutti_core::AudioGraph;
 
-    /// Build a bare `AudioGraph` directly (no `TuttiEngine`, which lives in
-    /// bevy-tutti). Feature-agnostic via `AudioGraph::empty` — tutti-core owns
+    /// Build a bare `Net` directly (no `TuttiEngine`, which lives in
+    /// bevy-tutti). Feature-agnostic via `Net::with_backend` — tutti-core owns
     /// the `midi` cfg, so this is correct under workspace feature unification.
-    fn bare_graph(channels: usize) -> AudioGraph {
-        AudioGraph::empty(channels)
+    fn bare_graph(channels: usize) -> Net {
+        Net::with_backend(channels)
     }
 
     /// Builds an `App` with the playback system, a real graph, an

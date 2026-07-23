@@ -88,8 +88,8 @@ pub use tutti_plugin_host as plugin_host;
 #[cfg(feature = "plugin")]
 pub use tutti_plugin_host::{OpenPluginEditor, PluginEmitter, PluginsRes, TuttiHostingPlugin};
 
-// Engine types.
-pub use engine::{AudioGraph, DefaultProcessor, DeviceInfo, Error, Result, TuttiDriver};
+// Engine types. The audio graph itself is `Net` (fundsp) — no wrapper.
+pub use engine::{DefaultProcessor, DeviceInfo, Error, Net, Result, TuttiDriver};
 
 // bevy-tutti's own UI-mirror resource (audio device state). Its CPAL driver
 // is bevy-tutti's, so the mirror lives here. Transport state + master metering

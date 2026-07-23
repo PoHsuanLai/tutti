@@ -1,9 +1,11 @@
 //! [`PdcDelay`] — the compensation delay node.
 
-use crate::{AudioUnit, BufferMut, BufferRef};
-use fundsp::signal::SignalFrame;
-use std::any;
-use tutti_types::Samples;
+use super::PDC_DELAY_ID;
+use crate::audiounit::AudioUnit;
+use crate::buffer::{BufferMut, BufferRef};
+use crate::signal::SignalFrame;
+use core::any;
+use tutti_types::units::Samples;
 
 /// A fixed delay line, inserted automatically to align signal paths.
 ///
@@ -77,7 +79,7 @@ impl<const CH: usize> AudioUnit for PdcDelay<CH> {
         self.write = 0;
     }
 
-    fn set_sample_rate(&mut self, _sample_rate: crate::params::SampleRate) {}
+    fn set_sample_rate(&mut self, _sample_rate: crate::SampleRate) {}
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         let frame = std::array::from_fn(|ch| input.get(ch).copied().unwrap_or(0.0));
@@ -97,7 +99,7 @@ impl<const CH: usize> AudioUnit for PdcDelay<CH> {
     }
 
     fn get_id(&self) -> u64 {
-        crate::node_id::PDC_DELAY_ID
+        PDC_DELAY_ID
     }
 
     fn as_any(&self) -> &dyn any::Any {

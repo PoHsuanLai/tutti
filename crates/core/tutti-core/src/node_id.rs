@@ -87,10 +87,10 @@ pub const fn assert_unique(ids: &[u64]) {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// PDC marker (scanned by pdc::clear_delays to find auto-inserted delays)
+// PDC marker — re-exported from fundsp, which owns the delay node and the
+// `clear_delays` scan that looks for it.
 // ──────────────────────────────────────────────────────────────────────
-/// Marks every `PdcDelay<CH>`, whatever its channel count.
-pub const PDC_DELAY_ID: u64 = 0x_0000_0050_4443_4445; // "PDCDE"
+pub use fundsp::latency::PDC_DELAY_ID;
 
 // ──────────────────────────────────────────────────────────────────────
 // Transport / control nodes

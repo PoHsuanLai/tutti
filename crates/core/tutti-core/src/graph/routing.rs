@@ -154,7 +154,7 @@ pub fn reconcile_audio_routing(
             );
             continue;
         };
-        let target_inputs = graph.0.inputs(target_node.0);
+        let target_inputs = graph.0.inputs_in(target_node.0);
         if (link.dst_port as usize) >= target_inputs {
             bevy_log::warn!(
                 "AudioFeedsTo: target {:?} has only {} inputs (dst_port={} out of range); skipping connect",
@@ -185,7 +185,7 @@ pub fn reconcile_audio_routing(
         if !graph.0.contains(target_node.0) {
             continue;
         }
-        if (dst_port as usize) >= graph.0.inputs(target_node.0) {
+        if (dst_port as usize) >= graph.0.inputs_in(target_node.0) {
             // Mismatched inputs (unlikely — would mean the unit was swapped
             // under us). Skip rather than panic.
             continue;
@@ -198,13 +198,13 @@ pub fn reconcile_audio_routing(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsp::Net;
     use crate::graph::reconcile::GraphReconcileSystems;
-    use crate::AudioGraph;
     use bevy_app::App;
 
     fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(crate::graph::AudioGraphRes(AudioGraph::empty(2)));
+        app.insert_resource(crate::graph::AudioGraphRes(Net::with_backend(2)));
         app.init_resource::<GraphDirty>();
         app.configure_sets(
             bevy_app::Update,

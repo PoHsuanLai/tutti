@@ -122,7 +122,7 @@ impl Plugin for MidiRoutingPlugin {
                 // graph flush so a route and the node it points at still land in
                 // the same frame — the ordering the old `GraphDirty` batching
                 // gave us, now expressed as a schedule constraint rather than a
-                // field on `AudioGraph`.
+                // field on the graph.
                 .before(tutti_core::graph::GraphReconcileSystems::Commit),
         );
     }

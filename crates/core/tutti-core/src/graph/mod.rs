@@ -1,9 +1,11 @@
-//! The audio graph: runtime + (optional) Bevy ECS reconcile hub.
+//! The audio graph: parameter types + (optional) Bevy ECS reconcile hub.
 //!
-//! The editable DSP graph itself is always compiled — [`AudioGraph`]
-//! (`editable`) over the [`GraphNet`] fundsp facade (`net`) — and carries no
-//! Bevy dependency. A non-Bevy host wires nodes through [`AudioGraph`]'s
-//! imperative API (`connect`/`disconnect`/`add`/`remove`) directly.
+//! **The graph itself is fundsp's [`Net`](crate::dsp::Net)** — there is no
+//! tutti wrapper around it. A host wires nodes through `Net`'s imperative API
+//! (`add`/`connect`/`disconnect`/`remove`) and calls `commit()` to publish a
+//! batch of edits to the audio thread. Everything tutti used to add on top
+//! (typed node access, unboxed `add`, output isolation, a readable sample rate)
+//! now lives on `Net` itself.
 //!
 //! The parameter *types* ([`AudioNode`], [`NodeKind`], [`Volume`], [`Pan`],
 //! [`Mute`], [`PluginParam`], [`ModParam`], [`LayerKey`]) live in [`params`]
@@ -13,18 +15,13 @@
 //! Everything else in this module is the Bevy ECS integration — the reconcile
 //! pipeline (reconcile / routing / sidechain relationships / emitter markers /
 //! resources / `GraphReconcilePlugin`) — and is gated behind the `bevy`
-//! feature. It translates ECS component/relationship changes into
-//! [`AudioGraph`] operations; nothing in the runtime calls back into ECS.
-//! Leaf-specific reconcilers (sampler/plugin/convolution/midi) stay in
-//! bevy-tutti.
+//! feature. It translates ECS component/relationship changes into `Net`
+//! operations; nothing in the runtime calls back into ECS. Leaf-specific
+//! reconcilers (sampler/plugin/convolution/midi) stay in bevy-tutti.
 
-// Always-compiled runtime + parameter types.
-pub mod editable;
-pub mod net;
+// Always-compiled parameter types.
 pub mod params;
 
-pub use editable::{isolate_output, AudioGraph, GraphDot};
-pub use net::GraphNet;
 pub use params::{AudioNode, LayerKey, ModParam, Mute, NodeKind, Pan, PluginParam, Volume};
 
 // Bevy ECS reconcile hub — only compiled with the `bevy` feature.

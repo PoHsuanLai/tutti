@@ -12,7 +12,7 @@ use assert_no_alloc::AllocDisabler;
 use parking_lot::Mutex;
 use tutti_core::dsp::{bell_hz, limiter_stereo, pan, sine_hz, AudioUnit};
 use tutti_core::processor::{AudioProcessor, GraphProcessor};
-use tutti_core::{GraphNet, SampleRate, Transport, TransportClock};
+use tutti_core::{dsp::Net, SampleRate, Transport, TransportClock};
 
 use std::sync::Arc;
 
@@ -26,16 +26,16 @@ fn build_graph_processor_with_chain() -> GraphProcessor {
     let sample_rate = 48_000.0;
     let transport = Transport::new(sample_rate);
 
-    let mut net = GraphNet::new(0, 2);
+    let mut net = Net::new(0, 2);
 
     // Transport clock — matches what every real GraphProcessor sees.
     let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
         .with_position_writeback(Arc::clone(&transport.settings.beat));
-    net.inner_mut().push(Box::new(clock));
+    net.push(Box::new(clock));
 
     // sine → pan → bell → limiter, wired with `chain` so each node feeds
     // the next and the final output drives both stereo channels.
-    let inner = net.inner_mut();
+    let inner = &mut net;
     inner.chain(Box::new(sine_hz::<f32>(440.0)));
     inner.chain(Box::new(pan(0.0)));
     inner.chain(Box::new(bell_hz::<f32>(1_000.0, 1.0, 6.0)));
@@ -45,7 +45,7 @@ fn build_graph_processor_with_chain() -> GraphProcessor {
     let backend = net.backend();
 
     // The backend holds a pointer back into the net; keep it alive.
-    let _keep: &'static Mutex<GraphNet> = Box::leak(Box::new(Mutex::new(net)));
+    let _keep: &'static Mutex<Net> = Box::leak(Box::new(Mutex::new(net)));
 
     GraphProcessor::new(transport.motion.clone(), backend)
 }

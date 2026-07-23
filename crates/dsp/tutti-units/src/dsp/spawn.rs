@@ -15,7 +15,7 @@
 //! [`spawn_dsp_node`] runs (in [`GraphReconcileSystems::Spawn`]) every value
 //! the unit needs is on the entity. The system reads them through the shared
 //! [`SpawnParams`] superset query, builds the unit via [`DspNode::build`],
-//! `add_boxed`es it, and attaches `(AudioNode(id), T::KIND)`.
+//! `push`es it, and attaches `(AudioNode(id), T::KIND)`.
 //!
 //! Because the unit is built from the *same* components `#[require]` defaulted,
 //! the first-frame [`reconcile_unit_params`](crate::reconcile::reconcile_unit_params)
@@ -100,7 +100,7 @@ pub fn spawn_dsp_node<T: DspNode>(
 ) {
     for (entity, params) in query.iter() {
         let unit = T::build(&params);
-        let node_id = graph.0.add_boxed(unit);
+        let node_id = graph.0.push(unit);
         dirty.0 = true;
         commands
             .entity(entity)

@@ -207,6 +207,19 @@ impl Net {
         net
     }
 
+    /// Create a network with `channels` outputs, no inputs, and a live
+    /// backend already taken.
+    ///
+    /// [`new`](Self::new) leaves the network without a backend, so
+    /// [`commit`](Self::commit) has nowhere to publish. This is the shape the
+    /// engine builder produces — convenient for tests and bootstrap graphs that
+    /// commit but never drive audio (the backend is dropped).
+    pub fn with_backend(channels: usize) -> Self {
+        let mut net = Self::new(0, channels);
+        let _backend = net.backend();
+        net
+    }
+
     /// Return current error condition, if any.
     /// The only possible error so far is a connection cycle.
     /// If all cycles are removed, then the error will be cleared.
@@ -251,6 +264,48 @@ impl Net {
     /// `push`.
     pub fn add<U: AudioUnit + 'static>(&mut self, unit: U) -> NodeId {
         self.push(Box::new(unit))
+    }
+
+    /// Add `unit` and wire all of its outputs to the global output bus,
+    /// returning its id. [`add`](Self::add) + [`pipe_output`](Self::pipe_output).
+    pub fn master<U: AudioUnit + 'static>(&mut self, unit: U) -> NodeId {
+        let id = self.add(unit);
+        self.pipe_output(id);
+        id
+    }
+
+    /// Boxed-input variant of [`master`](Self::master).
+    pub fn master_boxed(&mut self, unit: Box<dyn AudioUnit>) -> NodeId {
+        let id = self.push(unit);
+        self.pipe_output(id);
+        id
+    }
+
+    /// Clone the network with its global output bus repointed at `target`, so
+    /// rendering the clone captures `target`'s signal post-everything-upstream.
+    ///
+    /// A mono target fans to every bus channel; a wider target maps port→channel
+    /// and clamps any extra bus channels to the target's last port. The upstream
+    /// cone keeps ticking — *all* vertices are ordered, not just those reachable
+    /// from the output bus (running nodes may have side effects) — so nothing is
+    /// pruned. Sibling branches that no longer feed an output are never read.
+    ///
+    /// Returns `None` if `target` produces no output channels. Clones rather
+    /// than mutating in place because this rewrites the output edges; the live
+    /// network keeps its own.
+    pub fn clone_isolated(&self, target: NodeId) -> Option<Net> {
+        let outs = self.outputs_in(target);
+        if outs == 0 {
+            return None;
+        }
+        let mut clone = self.clone();
+        for ch in 0..clone.outputs() {
+            // Mono target fans to every bus channel; multi-out target maps
+            // port→ch, clamping extra bus channels to the target's last port.
+            let port = core::cmp::min(ch, outs - 1);
+            clone.set_output_source(ch, Source::Local(target, port));
+        }
+        Some(clone)
     }
 
     /// Add a new unit to the network with a fade-in. Return its ID handle.

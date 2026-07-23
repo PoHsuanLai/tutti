@@ -1,4 +1,4 @@
-//! Reconcile entity-as-node component changes into [`AudioGraph`] operations.
+//! Reconcile entity-as-node component changes into [`Net`](crate::dsp::Net) operations.
 //!
 //! See [`crate::graph`] for the component types. This module provides:
 //!
@@ -140,7 +140,7 @@ impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
 /// Queues a deferred world command that:
 ///
 /// 1. Looks up the entity's [`AudioNode(NodeId)`](AudioNode).
-/// 2. Calls [`AudioGraph::crossfade_boxed`] with a 5 ms `Smooth` fade.
+/// 2. Calls [`Net::crossfade`](crate::dsp::Net::crossfade) with a 5 ms `Smooth` fade.
 /// 3. Marks [`GraphDirty`] so the per-frame [`commit_graph`] flushes.
 ///
 /// The same `NodeId` survives the crossfade — connections to/from this node
@@ -176,7 +176,7 @@ pub fn crossfade_audio_node(
         };
         graph
             .0
-            .crossfade_boxed(node.0, crate::Fade::Smooth, 0.005, new_unit);
+            .crossfade(node.0, crate::Fade::Smooth, 0.005, new_unit);
         if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
             dirty.0 = true;
         }
@@ -258,16 +258,16 @@ pub fn commit_graph(
 mod tests {
     use super::*;
     use crate::dsp::sine_hz;
+    use crate::dsp::Net;
     use crate::graph::AudioGraphRes;
-    use crate::AudioGraph;
     use bevy_app::App;
 
-    /// Build a bare `AudioGraph` directly (no `TuttiEngine`, which lives in
+    /// Build a bare `Net` directly (no `TuttiEngine`, which lives in
     /// bevy-tutti). Allocates the fundsp backend so `commit()` has something
     /// to publish into; we never drive audio through it in these tests.
     fn test_app() -> App {
         let mut app = App::new();
-        app.insert_resource(AudioGraphRes(AudioGraph::empty(2)));
+        app.insert_resource(AudioGraphRes(Net::with_backend(2)));
         app.init_resource::<GraphDirty>();
         app.add_observer(reconcile_node_despawn);
         app.add_systems(
@@ -318,7 +318,7 @@ mod tests {
         );
 
         // Insert the resource (engine built): the gate now passes.
-        app.insert_resource(AudioGraphRes(AudioGraph::empty(2)));
+        app.insert_resource(AudioGraphRes(Net::with_backend(2)));
         app.update();
         assert_eq!(
             ran.load(Ordering::SeqCst),

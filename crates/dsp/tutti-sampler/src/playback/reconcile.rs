@@ -36,7 +36,7 @@ pub fn reconcile_sampler_volume(
         }
         let muted = mute.map(|m| m.0).unwrap_or(false);
         let target = if muted { 0.0 } else { volume.0 };
-        if let Some(unit) = graph.0.node_mut::<SamplerUnit>(node.0) {
+        if let Some(unit) = graph.0.node_as_mut::<SamplerUnit>(node.0) {
             unit.set_gain(tutti_core::Linear::new(target));
             dirty.0 = true;
         }
@@ -57,8 +57,8 @@ type ChangedSamplerFilter = (
 /// the underlying [`SamplerUnit`].
 ///
 /// `SamplerSpeed` writes through `SamplerUnit::set_speed` (`&mut self`,
-/// reached via `node_mut::<SamplerUnit>`). `SamplerLooping` writes through
-/// `SamplerUnit::set_looping` (`&mut self`), also reached via `node_mut`;
+/// reached via `node_as_mut::<SamplerUnit>`). `SamplerLooping` writes through
+/// `SamplerUnit::set_looping` (`&mut self`), also reached via `node_as_mut`;
 /// coalescing both through the same dirty flag lets a single commit per
 /// frame cover whichever sampler param changed.
 pub fn reconcile_sampler_params(
@@ -67,7 +67,7 @@ pub fn reconcile_sampler_params(
     mut dirty: ResMut<GraphDirty>,
 ) {
     for (node, speed, looping) in changed.iter() {
-        let Some(unit) = graph.0.node_mut::<SamplerUnit>(node.0) else {
+        let Some(unit) = graph.0.node_as_mut::<SamplerUnit>(node.0) else {
             continue;
         };
         if let Some(s) = speed {
@@ -96,14 +96,14 @@ pub fn bump_param_epoch_sampler(
 mod tests {
     use super::*;
     use bevy_app::App;
+    use tutti_core::dsp::Net;
     use tutti_core::graph::{AudioGraphRes, GraphReconcileSystems};
-    use tutti_core::AudioGraph;
 
-    fn bare_graph(channels: usize) -> AudioGraph {
+    fn bare_graph(channels: usize) -> Net {
         // Feature-agnostic: tutti-core owns the `midi` cfg, so this stays correct
         // under workspace feature unification (tutti-sampler has no `midi` feature
         // of its own, but tutti-core may have midi enabled transitively).
-        AudioGraph::empty(channels)
+        Net::with_backend(channels)
     }
 
     fn test_app() -> App {
@@ -169,7 +169,7 @@ mod tests {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let unit = graph
             .0
-            .node_mut::<SamplerUnit>(node_id)
+            .node_as_mut::<SamplerUnit>(node_id)
             .expect("SamplerUnit");
         assert_eq!(unit.speed(), tutti_core::Ratio::new(2.0));
         assert!(unit.is_looping());

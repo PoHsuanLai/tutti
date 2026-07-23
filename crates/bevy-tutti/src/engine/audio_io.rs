@@ -228,7 +228,7 @@ mod tests {
     use super::*;
     use parking_lot::Mutex;
     use tutti_core::processor::GraphProcessor;
-    use tutti_core::{GraphNet, MotionEvent, Transport, TransportClock};
+    use tutti_core::{dsp::Net, MotionEvent, Transport, TransportClock};
 
     /// Build a minimal processor + transport pair for callback-level tests.
     /// Bypasses the engine builder — these tests exercise the RT callback
@@ -236,15 +236,15 @@ mod tests {
     fn build_callback_state(sample_rate: f64) -> (Transport, AudioCallbackState<GraphProcessor>) {
         let transport = Transport::new(sample_rate);
 
-        let mut net = GraphNet::new(0, 2);
+        let mut net = Net::new(0, 2);
         let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
             .with_position_writeback(Arc::clone(&transport.settings.beat));
-        net.inner_mut().push(Box::new(clock));
+        net.push(Box::new(clock));
         let backend = net.backend();
 
         // Hold the net alive for the duration of the test via a leaked arc —
         // the backend borrows the graph processor via its inner NetBackend.
-        let _keep_net_alive: &'static Mutex<GraphNet> = Box::leak(Box::new(Mutex::new(net)));
+        let _keep_net_alive: &'static Mutex<Net> = Box::leak(Box::new(Mutex::new(net)));
 
         let processor = GraphProcessor::new(transport.motion.clone(), backend);
         let state = AudioCallbackState::new(processor, MasterMeter::new(), AudioTap::new());

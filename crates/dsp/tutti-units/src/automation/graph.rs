@@ -184,7 +184,10 @@ pub fn update_automation_envelope_system(
     let mut edited = false;
 
     for (entity, emitter, update) in query.iter() {
-        if let Some(lane) = graph.0.node_mut::<LiveAutomationLane<f32>>(emitter.node_id) {
+        if let Some(lane) = graph
+            .0
+            .node_as_mut::<LiveAutomationLane<f32>>(emitter.node_id)
+        {
             lane.set_envelope(update.envelope.clone());
             edited = true;
         }
@@ -212,7 +215,7 @@ pub fn reconcile_automation_writes(
     mut plugin_targets: Query<&mut PluginParam>,
 ) {
     for (node, drives) in drivers.iter() {
-        let Some(lane) = graph.0.node::<LiveAutomationLane<f32>>(node.0) else {
+        let Some(lane) = graph.0.node_as::<LiveAutomationLane<f32>>(node.0) else {
             continue;
         };
         let value = lane.last_value();

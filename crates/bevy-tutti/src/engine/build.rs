@@ -15,12 +15,12 @@
 use bevy_app::App;
 
 use crate::engine::audio_io::{AudioCallbackState, AudioEngine};
-use crate::engine::{AudioGraph, Result, TuttiDriver};
+use crate::engine::{Result, TuttiDriver};
 use tutti_core::dsp::An;
 use tutti_core::processor::GraphProcessor;
 use tutti_core::Arc;
 use tutti_core::{
-    AudioTap, ClickNode, ClickSettings, GraphNet, MasterMeter, Transport, TransportClock,
+    dsp::Net, AudioTap, ClickNode, ClickSettings, MasterMeter, Transport, TransportClock,
 };
 
 // Each subsystem owns its own transient `PendingX` (defined next to its plugin).
@@ -95,20 +95,20 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // sampler subscribes here so the wiring exists either way.
     let compensation = crate::latency::ChannelCompensation::default();
 
-    let mut net = GraphNet::new(inputs, outputs);
+    let mut net = Net::new(inputs, outputs);
 
     // Transport clock — emits the beat on two ports and writes it back to the
     // manager's atomic. Its NodeId is retained so beat-driven nodes can wire an
     // edge to it (published below as `TransportClockNode`).
     let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
         .with_position_writeback(Arc::clone(&transport.settings.beat));
-    let clock_id = net.inner_mut().push(Box::new(clock));
+    let clock_id = net.push(Box::new(clock));
 
     // Metronome — mixed into master output. It only READS the transport
     // (beat + rolling/recording), so it takes a read view, not a control handle.
     let click = ClickNode::with_transport(transport.clone(), click_settings.clone(), sample_rate);
-    let click_id = net.inner_mut().push(Box::new(An(click)));
-    net.inner_mut().pipe_output(click_id);
+    let click_id = net.push(Box::new(An(click)));
+    net.pipe_output(click_id);
 
     let backend = net.backend();
 
@@ -159,7 +159,11 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     #[cfg(not(feature = "midi"))]
     let processor: DefaultProcessor = graph_processor;
 
-    let callback_state = Arc::new(AudioCallbackState::new(processor, meter.clone(), tap.clone()));
+    let callback_state = Arc::new(AudioCallbackState::new(
+        processor,
+        meter.clone(),
+        tap.clone(),
+    ));
     audio_engine.start(callback_state.clone())?;
 
     #[cfg(feature = "sampler")]
@@ -171,7 +175,9 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         },
     )?;
 
-    let graph = AudioGraph::from_parts(net, sample_rate, channels);
+    // The net *is* the graph — its backend was taken above, and the sample rate
+    // and channel count it already carries are what `AudioConfig` publishes.
+    let graph = net;
 
     let driver = TuttiDriver::from_parts(audio_engine, callback_state);
 

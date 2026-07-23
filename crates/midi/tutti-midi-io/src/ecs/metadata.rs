@@ -28,7 +28,6 @@ use tutti_midi_runtime::tutti_midi_types::ump::MidiEvent;
 use tutti_midi_runtime::tutti_midi_types::ump::{ChordName, FlexTextKind, KeySharpsFlats, Tonic};
 use tutti_midi_runtime::JrStamper;
 
-
 /// The group Flex Data metadata is broadcast on (function-block-wide).
 const FLEX_GROUP: u8 = 0;
 

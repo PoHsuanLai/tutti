@@ -305,7 +305,7 @@ impl PluginClient {
     /// `BridgeMessage::LatencyChanged` (installed by `PluginClient::new`);
     /// exposed publicly so callers can also force a value. Note: updating
     /// what `AudioUnit::latency()` reports does **not** re-run PDC on its
-    /// own — a graph edit (`GraphNet::commit()`) is required. Register a
+    /// own — a graph edit (`Net::commit()`) is required. Register a
     /// callback via `PluginHandle::on_latency_changed` to get notified.
     pub fn set_latency(&self, samples: usize) {
         self.latency.store(samples, Ordering::Release);

@@ -43,6 +43,6 @@ pub use mic::MicIn;
 pub use recorder::Recorder;
 #[cfg(feature = "sampler")]
 pub use tutti_sampler::MicMonitorNode;
-// `AudioGraph` (plus `isolate_output` / `GraphDot`) live in tutti-core's `graph`
-// module; the engine surfaces them so existing `engine::AudioGraph` paths hold.
-pub use tutti_core::{isolate_output, AudioGraph, GraphDot};
+// The audio graph is fundsp's `Net` — there is no tutti wrapper. Surfaced here
+// so hosts reach it without naming fundsp directly.
+pub use tutti_core::dsp::Net;

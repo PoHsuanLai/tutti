@@ -91,7 +91,7 @@ pub fn reconcile_unit_params(
 ) {
     use tutti_core::dsp::AudioUnit as _;
     use tutti_core::UnitParam;
-    let net = graph.0.net_mut();
+    let net = &mut graph.0;
     for p in changed.iter() {
         let id = p.node.0;
         // Each present component addresses the node by id; the unit's own `set`
@@ -212,7 +212,7 @@ pub fn reconcile_convolver_params(
     changed: Query<ChangedConvolverParams, ChangedConvolverFilter>,
 ) {
     for (node, wet) in changed.iter() {
-        let Some(unit) = graph.0.node_mut::<crate::StereoConvolverNode>(node.0) else {
+        let Some(unit) = graph.0.node_as_mut::<crate::StereoConvolverNode>(node.0) else {
             continue;
         };
         unit.set_mix(wet.0);

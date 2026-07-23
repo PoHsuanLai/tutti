@@ -98,13 +98,13 @@ pub fn compensate_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_core::dsp::Net;
     use tutti_core::dsp::{dc, limiter};
-    use tutti_core::graph::AudioGraph;
     use tutti_core::Source;
 
     /// App with the graph resource + dirty flag, but no reconcile pipeline —
     /// enough to drive the compensation system directly.
-    fn test_app(graph: AudioGraph) -> App {
+    fn test_app(graph: Net) -> App {
         let mut app = App::new();
         app.insert_resource(AudioGraphRes(graph));
         app.init_resource::<GraphDirty>();
@@ -113,14 +113,14 @@ mod tests {
     }
 
     /// ch0 through a limiter, ch1 dry — ch1's source must pre-roll to match.
-    fn skewed_graph() -> (AudioGraph, Samples) {
-        let mut graph = AudioGraph::empty(2);
+    fn skewed_graph() -> (Net, Samples) {
+        let mut graph = Net::with_backend(2);
         let a = graph.add(dc(1.0));
         let eff = graph.add(limiter(0.01, 0.01));
         let b = graph.add(dc(1.0));
         graph.connect(a, 0, eff, 0);
-        graph.net_mut().set_output_source(0, Source::Local(eff, 0));
-        graph.net_mut().set_output_source(1, Source::Local(b, 0));
+        graph.set_output_source(0, Source::Local(eff, 0));
+        graph.set_output_source(1, Source::Local(b, 0));
 
         let lat = tutti_core::LatencyGraph::latency(&graph, eff);
         (graph, lat)

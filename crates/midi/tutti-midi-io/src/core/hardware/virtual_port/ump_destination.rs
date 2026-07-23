@@ -60,23 +60,25 @@ impl UmpVirtualDestination {
     where
         F: FnMut(MidiEvent) + Send + 'static,
     {
-        let client = Client::new(&format!("tutti-ump-dst-{name}")).map_err(|status| {
-            Error::CoreMidi {
+        let client =
+            Client::new(&format!("tutti-ump-dst-{name}")).map_err(|status| Error::CoreMidi {
                 operation: "create client (ump destination)",
                 status,
-            }
-        })?;
+            })?;
 
         let destination = client
-            .virtual_destination_with_protocol(name, Protocol::Midi20, move |event_list: &
-                EventList| {
-                for packet in event_list.iter() {
-                    // One packet carries several concatenated UMP messages.
-                    for event in split_ump_stream(packet.data()) {
-                        on_event(event);
+            .virtual_destination_with_protocol(
+                name,
+                Protocol::Midi20,
+                move |event_list: &EventList| {
+                    for packet in event_list.iter() {
+                        // One packet carries several concatenated UMP messages.
+                        for event in split_ump_stream(packet.data()) {
+                            on_event(event);
+                        }
                     }
-                }
-            })
+                },
+            )
             .map_err(|status| Error::CoreMidi {
                 operation: "create ump virtual destination",
                 status,

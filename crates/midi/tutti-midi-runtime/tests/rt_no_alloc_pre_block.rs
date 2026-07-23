@@ -1,12 +1,7 @@
 //! Regression gate for `MidiPreBlock::run` — the once-per-block MIDI producer
 //! the CPAL callback runs before the graph render. Called every buffer whenever
-//! MIDI is enabled.
-//!
-//! Retargeted from the old `tutti-core` `rt_no_alloc_midi` test that covered
-//! `MidiProcessor::process` (the deleted buffer-splitting decorator). The
-//! capability is the same — poll hardware, route events into unit inboxes, tick
-//! the clock, all alloc-free — but it now lives here, next to `MidiPreBlock`,
-//! since tutti-core is MIDI-free.
+//! MIDI is enabled: poll hardware, route events into unit inboxes, tick the
+//! clock — all alloc-free.
 //!
 //! Covers three cases:
 //! 1. No MIDI input source attached (fast-path).
@@ -98,9 +93,8 @@ fn pre_block_run_with_routed_events_is_allocation_free() {
     let snapshot = MidiRoutingSnapshot::from_routes(vec![route], None);
     let routing = Arc::new(ArcSwap::new(Arc::new(snapshot)));
 
-    // Input: two note events at different frame offsets. Under the old
-    // decorator this forced the sub-buffer split; `MidiPreBlock` just delivers
-    // both (each keeps its `frame_offset`), which must also be alloc-free.
+    // Input: two note events at different frame offsets. `MidiPreBlock` delivers
+    // both (each keeps its `frame_offset`), which must be alloc-free.
     let events = vec![
         MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
         MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(128),

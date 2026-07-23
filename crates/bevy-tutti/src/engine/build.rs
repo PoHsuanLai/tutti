@@ -17,7 +17,7 @@ use bevy_app::App;
 use crate::engine::audio_io::{AudioCallbackState, AudioEngine};
 use crate::engine::{Result, TuttiDriver};
 use tutti_core::dsp::An;
-use tutti_core::processor::GraphProcessor;
+use tutti_core::engine::Engine;
 use tutti_core::Arc;
 use tutti_core::{
     dsp::Net, AudioTap, ClickNode, ClickSettings, MasterMeter, Transport, TransportClock,
@@ -108,7 +108,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     #[cfg(feature = "midi")]
     let midi_bus = MidiBus::new();
 
-    let graph_processor = GraphProcessor::new(transport.motion.clone(), backend);
+    let engine = Engine::new(transport.motion.clone(), backend);
 
     // Clock master — outbound MIDI Beat Clock / MTC generator. Reads the
     // transport, pushes into its own output ring (independent of the routing
@@ -128,10 +128,9 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         (master, receiver)
     };
 
-    // MIDI now runs as a once-per-block *producer* before the graph render, not
-    // as a decorator that wraps and splits the render. It ticks the clock, polls
-    // hardware, and routes events into node inboxes; the nodes self-split on each
-    // event's `frame_offset`. See `MidiPreBlock`.
+    // MIDI runs as a once-per-block producer before the graph render: it ticks
+    // the clock, polls hardware, and routes events into node inboxes (which time
+    // each event by its `frame_offset`). See `MidiPreBlock`.
     #[cfg(feature = "midi")]
     let pre_block = {
         let mut pre_block = MidiPreBlock::new(midi_route.snapshot_arc());
@@ -148,7 +147,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     };
 
     let callback_state = {
-        let state = AudioCallbackState::new(graph_processor, meter.clone(), tap.clone());
+        let state = AudioCallbackState::new(engine, meter.clone(), tap.clone());
         #[cfg(feature = "midi")]
         let state = state.with_pre_block(pre_block);
         Arc::new(state)

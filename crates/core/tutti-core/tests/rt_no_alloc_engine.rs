@@ -1,4 +1,4 @@
-//! Regression gate for `GraphProcessor::process` over a real DSP chain.
+//! Regression gate for `Engine::process` over a real DSP chain.
 //!
 //! The existing `process_audio_is_allocation_free` test in `tutti/src/audio_io.rs`
 //! only exercises the bare `TransportClock` — no signal nodes. This test
@@ -11,7 +11,7 @@
 use assert_no_alloc::AllocDisabler;
 use parking_lot::Mutex;
 use tutti_core::dsp::{bell_hz, limiter_stereo, pan, sine_hz, AudioUnit};
-use tutti_core::processor::GraphProcessor;
+use tutti_core::engine::Engine;
 use tutti_core::{dsp::Net, SampleRate, Transport, TransportClock};
 
 use std::sync::Arc;
@@ -19,16 +19,16 @@ use std::sync::Arc;
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-/// Build a `GraphProcessor` whose net is `sine → pan → bell EQ → limiter`.
+/// Build an [`Engine`] whose net is `sine → pan → bell EQ → limiter`.
 /// The transport-clock node is also pushed so transport advancement runs
 /// through the same `process` path.
-fn build_graph_processor_with_chain() -> GraphProcessor {
+fn build_engine_with_chain() -> Engine {
     let sample_rate = 48_000.0;
     let transport = Transport::new(sample_rate);
 
     let mut net = Net::new(0, 2);
 
-    // Transport clock — matches what every real GraphProcessor sees.
+    // Transport clock — matches what every real Engine sees.
     let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
         .with_position_writeback(Arc::clone(&transport.settings.beat));
     net.push(Box::new(clock));
@@ -47,41 +47,41 @@ fn build_graph_processor_with_chain() -> GraphProcessor {
     // The backend holds a pointer back into the net; keep it alive.
     let _keep: &'static Mutex<Net> = Box::leak(Box::new(Mutex::new(net)));
 
-    GraphProcessor::new(transport.motion.clone(), backend)
+    Engine::new(transport.motion.clone(), backend)
 }
 
 #[test]
-fn graph_processor_process_real_chain_is_allocation_free() {
-    let proc = build_graph_processor_with_chain();
+fn engine_process_real_chain_is_allocation_free() {
+    let engine = build_engine_with_chain();
 
     let mut output = vec![0.0f32; 512 * 2];
 
     // Warm up outside the gate — prime any first-call state on the
     // limiter / svf filters and the transport clock.
     for _ in 0..16 {
-        proc.process(&mut output, 512);
+        engine.process(&mut output, 512);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            proc.process(&mut output, 512);
+            engine.process(&mut output, 512);
         }
     });
 }
 
 #[test]
-fn graph_processor_process_real_chain_small_buffer_is_allocation_free() {
+fn engine_process_real_chain_small_buffer_is_allocation_free() {
     // Small buffers stress the per-buffer setup overhead.
-    let proc = build_graph_processor_with_chain();
+    let engine = build_engine_with_chain();
 
     let mut output = vec![0.0f32; 64 * 2];
     for _ in 0..16 {
-        proc.process(&mut output, 64);
+        engine.process(&mut output, 64);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..5_000 {
-            proc.process(&mut output, 64);
+            engine.process(&mut output, 64);
         }
     });
 }

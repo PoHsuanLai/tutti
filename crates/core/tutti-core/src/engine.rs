@@ -1,12 +1,7 @@
 //! The per-buffer graph render, called from the audio callback.
 //!
-//! [`GraphProcessor`] ticks the DSP graph + transport and renders one output
-//! buffer per block. It is **MIDI-free**: sample-accurate event timing lives in
-//! the consuming nodes (each self-splits on its events' `frame_offset`), and
-//! event *delivery* is a separate once-per-block producer
-//! (`tutti_midi_runtime::MidiPreBlock`) the audio-callback assembly runs before
-//! this render. So this crate carries no MIDI code and the render is a single
-//! un-split call.
+//! [`Engine`] ticks the DSP graph + transport and renders one output buffer per
+//! block.
 
 use crate::transport::Declick;
 use crate::transport::MotionFsm;
@@ -17,15 +12,16 @@ use fundsp::prelude::{BufferRef, U2};
 use fundsp::realnet::NetBackend;
 use fundsp::MAX_BUFFER_SIZE;
 
-/// Base processor: ticks the DSP graph and transport.
-pub struct GraphProcessor {
+/// The audio engine: ticks the DSP graph + transport and renders one output
+/// buffer per block from the audio callback.
+pub struct Engine {
     motion: MotionFsm,
     net_backend: AudioThreadCell<Option<NetBackend>>,
     /// Cached from the transport so the fade path avoids a double deref.
     declick: Declick,
 }
 
-impl GraphProcessor {
+impl Engine {
     pub fn new(motion: MotionFsm, net_backend: NetBackend) -> Self {
         let declick = motion.declick.clone();
         Self {
@@ -124,12 +120,11 @@ impl GraphProcessor {
 
         new_remaining == 0
     }
-    
+
     /// Render `frames` stereo samples into `output` (interleaved L/R).
     ///
-    /// Called once per block from the audio callback, after the MIDI pre-block
-    /// producer has delivered this block's events into node inboxes. RT-safe:
-    /// no allocation, no locks, no I/O.
+    /// Called once per block from the audio callback. RT-safe: no allocation,
+    /// no locks, no I/O.
     #[inline]
     pub fn process(&self, output: &mut [f32], frames: usize) {
         self.motion.drain();

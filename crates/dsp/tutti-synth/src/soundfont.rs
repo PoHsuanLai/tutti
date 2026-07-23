@@ -239,9 +239,9 @@ impl AudioUnit for SoundFontUnit {
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
         // Poll the whole block's events (sorted by offset) and interleave their
         // application with rendering: apply every event due at `pos`, emit one
-        // sample, advance. This keeps events sample-accurate on our own — no
-        // outer buffer-split required (the MIDI subsystem delivers all events to
-        // our inbox once per block, each carrying its `frame_offset`).
+        // sample, advance. Events are sample-accurate — the MIDI subsystem
+        // delivers them to our inbox once per block, each carrying its
+        // `frame_offset`.
         let count = self.poll_midi_events_sorted(size);
         let mut event_idx = 0;
 
@@ -602,9 +602,9 @@ mod tests {
 
     /// Render one `process` block of `size` frames (≤ [`MAX_BUFFER_SIZE`]) after
     /// pushing `events` into the unit's own MIDI inbox — the RT path the engine
-    /// drives (poll + self-split on `frame_offset`), not the per-sample `tick`
-    /// path. `BufferVec` holds exactly one SIMD block per channel, so `size` is
-    /// capped at 64.
+    /// drives (poll + apply each event at its `frame_offset`), not the per-sample
+    /// `tick` path. `BufferVec` holds exactly one SIMD block per channel, so
+    /// `size` is capped at 64.
     fn render_process_block(
         unit: &mut SoundFontUnit,
         size: usize,
@@ -622,15 +622,11 @@ mod tests {
             .collect()
     }
 
-    /// The self-split guarantee: a note-on carried at a non-zero `frame_offset`
-    /// within a `process` block must sound *later* in the block than the same
-    /// note at offset 0 — i.e. `process` honors each event's offset itself,
-    /// with no outer buffer-split. Regression guard for the pre-block-producer
-    /// refactor (which removed the outer split).
-    ///
-    /// A single 64-frame block matches [`MAX_BUFFER_SIZE`] — the granularity the
-    /// real engine's chunked render already uses, so this is exactly what the
-    /// removed outer split used to provide.
+    /// A note-on carried at a non-zero `frame_offset` within a `process` block
+    /// must sound *later* in the block than the same note at offset 0 — i.e.
+    /// `process` honors each event's offset itself. A single 64-frame block
+    /// matches [`MAX_BUFFER_SIZE`], the granularity the engine's chunked render
+    /// uses.
     #[test]
     fn process_honors_frame_offset_within_block() {
         let sf = match load_test_soundfont() {
@@ -667,7 +663,7 @@ mod tests {
         assert!(
             late_head < early_head * 0.5,
             "offset-{OFFSET} note must be much quieter in the pre-offset head \
-             (self-split honored the offset): late_head={late_head}, early_head={early_head}"
+             (the offset was honored): late_head={late_head}, early_head={early_head}"
         );
     }
 

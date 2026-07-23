@@ -2,15 +2,12 @@
 //!
 //! The RT callback runs two steps per block: an optional MIDI *pre-block*
 //! producer ([`MidiPreBlock`]) that delivers events into node inboxes, then the
-//! graph render ([`GraphProcessor`]). There is no MIDI-aware processor
-//! decorator — consuming nodes self-split on each event's `frame_offset`, so the
-//! callback renders the whole block in one un-split `process` call. Metering runs
-//! over the result.
+//! graph render ([`Engine`]). Metering runs over the result.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::Arc;
+use tutti_core::engine::Engine;
 use tutti_core::metering::{meter_output, AudioTap, MasterMeter, MeteringContext};
-use tutti_core::processor::GraphProcessor;
 use tutti_core::ScopedNoDenormals;
 
 #[cfg(feature = "midi")]
@@ -24,11 +21,11 @@ const MAX_FRAMES: usize = 8192;
 
 /// State shared between the engine and the RT audio callback.
 ///
-/// Holds the graph processor and, under `midi`, the pre-block MIDI producer that
-/// runs before each render. Both are RT-safe; the callback owns the ordering
-/// (`pre_block.run` then `processor.process`).
+/// Holds the [`Engine`] and, under `midi`, the pre-block MIDI producer that runs
+/// before each render. Both are RT-safe; the callback owns the ordering
+/// (`pre_block.run` then `engine.process`).
 pub(crate) struct AudioCallbackState {
-    pub(crate) processor: GraphProcessor,
+    pub(crate) engine: Engine,
     /// The once-per-block MIDI producer, run before the graph render to deliver
     /// events into node inboxes. `None` when no MIDI subsystem is wired.
     #[cfg(feature = "midi")]
@@ -38,9 +35,9 @@ pub(crate) struct AudioCallbackState {
 }
 
 impl AudioCallbackState {
-    pub(crate) fn new(processor: GraphProcessor, meter: MasterMeter, tap: AudioTap) -> Self {
+    pub(crate) fn new(engine: Engine, meter: MasterMeter, tap: AudioTap) -> Self {
         Self {
-            processor,
+            engine,
             #[cfg(feature = "midi")]
             pre_block: None,
             meter,
@@ -56,7 +53,7 @@ impl AudioCallbackState {
     }
 
     pub(crate) fn reset_owners(&self) {
-        self.processor.reset_owners();
+        self.engine.reset_owners();
         #[cfg(feature = "midi")]
         if let Some(pre_block) = &self.pre_block {
             pre_block.reset_owners();
@@ -69,13 +66,12 @@ pub(crate) fn process_audio(state: &AudioCallbackState, output: &mut [f32]) {
     let _no_denormals = ScopedNoDenormals::new();
     let frames = output.len() / 2;
     // Pre-block MIDI: deliver this block's events into node inboxes before the
-    // graph renders. Nodes self-split on each event's `frame_offset`, so the
-    // render below is a single un-split call.
+    // graph renders.
     #[cfg(feature = "midi")]
     if let Some(pre_block) = &state.pre_block {
         pre_block.run(frames);
     }
-    state.processor.process(output, frames);
+    state.engine.process(output, frames);
 }
 
 /// Holds a [`cpal::Stream`] to keep it alive. CPAL runs the audio callback
@@ -258,10 +254,10 @@ fn write_output<T: cpal::SizedSample + cpal::FromSample<f32>>(
 mod tests {
     use super::*;
     use parking_lot::Mutex;
-    use tutti_core::processor::GraphProcessor;
+    use tutti_core::engine::Engine;
     use tutti_core::{dsp::Net, MotionEvent, Transport, TransportClock};
 
-    /// Build a minimal processor + transport pair for callback-level tests.
+    /// Build a minimal engine + transport pair for callback-level tests.
     /// Bypasses the engine builder — these tests exercise the RT callback
     /// in isolation, not the full engine.
     fn build_callback_state(sample_rate: f64) -> (Transport, AudioCallbackState) {
@@ -274,11 +270,11 @@ mod tests {
         let backend = net.backend();
 
         // Hold the net alive for the duration of the test via a leaked arc —
-        // the backend borrows the graph processor via its inner NetBackend.
+        // the backend borrows the engine via its inner NetBackend.
         let _keep_net_alive: &'static Mutex<Net> = Box::leak(Box::new(Mutex::new(net)));
 
-        let processor = GraphProcessor::new(transport.motion.clone(), backend);
-        let state = AudioCallbackState::new(processor, MasterMeter::new(), AudioTap::new());
+        let engine = Engine::new(transport.motion.clone(), backend);
+        let state = AudioCallbackState::new(engine, MasterMeter::new(), AudioTap::new());
         (transport, state)
     }
 

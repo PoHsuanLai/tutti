@@ -57,8 +57,8 @@ pub mod params {
     pub use fundsp::params::SampleRate;
 }
 
-pub mod processor;
-pub use processor::GraphProcessor;
+pub mod engine;
+pub use engine::Engine;
 
 pub mod transport;
 pub use transport::{
@@ -139,10 +139,7 @@ pub mod node_id;
 
 // MIDI vocabulary types (MidiUnitId, MidiIn, MidiOut, …) live in the
 // `tutti-midi-types` crate; consumers import them from there directly rather
-// than through a tutti-core pass-through. tutti-core itself is MIDI-free: the
-// per-block MIDI *delivery* is `tutti_midi_runtime::MidiPreBlock` and
-// sample-accurate timing lives in the consuming nodes. `processor` owns only
-// the MIDI-free graph render (`GraphProcessor`).
+// than through a tutti-core pass-through.
 
 // The graph-node handle. Was the `graph` module (params + Bevy hub), but the
 // DAW param components moved app-side, leaving only `AudioNode` — so it

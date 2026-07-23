@@ -1,16 +1,12 @@
 //! [`MidiPreBlock`] — the once-per-block MIDI producer that runs *before* the
 //! graph renders.
 //!
-//! This is MIDI's answer to "be a graph-side capability like PDC/declick, not a
-//! decorator that drives the render loop." Every event-consuming node already
-//! owns a [`MidiInPort`](crate::MidiInPort) inbox, drains the whole block in one
-//! poll, and self-splits on each event's `frame_offset` (see `PolySynth`,
-//! `SoundFontUnit`, and the plugin nodes). So the audio callback never needs to
-//! split its output buffer on MIDI boundaries — it only needs the events
-//! *delivered into those inboxes* before it renders.
-//!
-//! `MidiPreBlock` is exactly that delivery step. Once per audio block, before
-//! the graph's `process`, it:
+//! Every event-consuming node owns a [`MidiInPort`](crate::MidiInPort) inbox,
+//! drains the whole block in one poll, and times each event by its
+//! `frame_offset` (see `PolySynth`, `SoundFontUnit`, and the plugin nodes). So
+//! the audio callback needs only to have this block's events *delivered into
+//! those inboxes* before it renders — which is exactly this producer's job.
+//! Once per audio block, before the graph's `process`, it:
 //!
 //! 1. ticks the outbound clock/timecode generator ([`BlockClock`]);
 //! 2. polls the hardware MIDI input for the whole block;
@@ -18,10 +14,7 @@
 //!    fan-out — each event keeps its own `frame_offset`, so the consuming node
 //!    times it correctly.
 //!
-//! It replaces `tutti_core::processor::MidiProcessor`: the graph-rendering half
-//! is now a plain un-split `GraphProcessor::process`, and `tutti-core` carries
-//! no MIDI code at all. The RT contract is unchanged — every method is
-//! **lock-free** and **alloc-free**, safe on the audio thread.
+//! Every method is **lock-free** and **alloc-free**, safe on the audio thread.
 
 use std::sync::Arc;
 
@@ -52,10 +45,9 @@ const HARDWARE_POLL_UNIT: MidiUnitId = MidiUnitId::new(0);
 /// The once-per-block MIDI producer: polls the hardware input, routes events into
 /// unit inboxes, and ticks the outbound clock — all *before* the graph renders.
 ///
-/// Held by the audio-callback assembly alongside the graph processor; the
-/// callback calls [`run`](Self::run) then `graph.process(..)`. There is no wrap
-/// of the graph and no buffer split — consuming nodes self-split on the
-/// `frame_offset` each delivered event carries.
+/// Held by the audio-callback assembly alongside the engine; the callback calls
+/// [`run`](Self::run) then `engine.process(..)`. Consuming nodes read the
+/// `frame_offset` on each delivered event to time it within the block.
 pub struct MidiPreBlock {
     /// Hardware / live MIDI source, polled once per block. `None` when no
     /// hardware input is compiled or connected (software fan-out still works —
@@ -112,8 +104,8 @@ impl MidiPreBlock {
     ///
     /// Ticks the clock, polls the hardware input, and routes every event into
     /// its destination unit's inbox. Consuming nodes drain those inboxes and
-    /// self-split on `frame_offset` when *they* render — this call does no
-    /// buffer splitting itself. RT-safe: lock-free, alloc-free.
+    /// time each event by its `frame_offset` when *they* render. RT-safe:
+    /// lock-free, alloc-free.
     #[inline]
     pub fn run(&self, frames: usize) {
         // Tick the outbound clock/timecode generator first — it reads the
@@ -127,13 +119,12 @@ impl MidiPreBlock {
         if event_count == 0 {
             return;
         }
-        // Deliver the whole block at once — each event keeps its `frame_offset`;
-        // the destination unit sub-splits on it. No range loop, no buffer split.
-        self.route_events(frames);
+        // Deliver the whole block at once — each event keeps its `frame_offset`
+        // for the destination unit to time it.
+        self.route_events();
     }
 
-    /// Reset the interior-mutable RT owner (device switch). Mirrors the reset the
-    /// old `MidiProcessor::reset_owners` did for its event buffer.
+    /// Reset the interior-mutable RT owner (device switch).
     pub fn reset_owners(&self) {
         self.events.reset_owner();
         self.poll_scratch.reset_owner();
@@ -169,7 +160,7 @@ impl MidiPreBlock {
     }
 
     #[inline]
-    fn route_events(&self, _frames: usize) {
+    fn route_events(&self) {
         let Some(queue) = &self.queue else {
             return;
         };

@@ -26,6 +26,16 @@ pub struct MidiIo {
     inner: Arc<Inner>,
 }
 
+impl core::fmt::Debug for MidiIo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Owns background I/O threads + channels; report the input-port count,
+        // not the internals.
+        f.debug_struct("MidiIo")
+            .field("input_ports", &self.inner.port_manager.list_input_ports().len())
+            .finish_non_exhaustive()
+    }
+}
+
 struct Inner {
     port_manager: Arc<HardwareMidiInputs>,
     input_tx: Sender<InputCmd>,

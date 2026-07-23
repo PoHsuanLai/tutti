@@ -42,7 +42,7 @@ pub struct MidiSequence {
 }
 
 /// Tracks which notes are currently sounding for a [`MidiSequence`].
-#[derive(Component, Default)]
+#[derive(Component, Default, Debug)]
 pub struct MidiSequenceState {
     active_notes: std::collections::HashSet<u8>,
 }

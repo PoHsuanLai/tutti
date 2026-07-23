@@ -121,7 +121,7 @@ impl JrStamperRes {
 /// when a [`JrStamperRes`] is enabled. Not inserted by default — an app that
 /// wants JR-out creates the source and inserts this resource.
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-#[derive(Resource)]
+#[derive(Resource, Debug)]
 pub struct UmpOutRes {
     source: crate::UmpVirtualSource,
     /// Running absolute sample position of the next block's frame-offset zero,

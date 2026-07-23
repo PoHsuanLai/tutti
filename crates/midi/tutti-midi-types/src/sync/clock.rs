@@ -20,6 +20,7 @@ pub enum ClockTransportState {
 }
 
 /// Decodes 24-PPQN MIDI timing clock messages into beat position and tempo.
+#[derive(Debug, Clone)]
 pub struct MidiClockDecoder {
     tick_count: u64,
     transport: ClockTransportState,

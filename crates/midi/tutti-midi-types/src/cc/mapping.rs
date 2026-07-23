@@ -19,7 +19,7 @@ pub enum CCTarget {
     Tempo,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CCMapping {
     /// `None` = all channels.
     pub channel: Option<MidiChannel>,

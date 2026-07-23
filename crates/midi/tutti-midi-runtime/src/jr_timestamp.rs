@@ -32,7 +32,7 @@ pub const JR_SECONDS_PER_TICK: f64 = 1.0 / JR_TICKS_PER_SECOND as f64;
 /// Converts sample positions to 16-bit JR ticks at a fixed sample rate. Cheap,
 /// `Copy`, and stateless — the shared reference both [`JrStamper`] and
 /// [`JrReceiver`] reason in.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct JrClock {
     sample_rate: f64,
 }
@@ -58,7 +58,7 @@ impl JrClock {
 /// event's `frame_offset`. Stateless across calls (each `stamp_block` is relative
 /// to the block it's given); carry a running sample origin in the caller if you
 /// need cross-block continuity.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct JrStamper {
     clock: JrClock,
     group: u8,
@@ -90,7 +90,7 @@ impl JrStamper {
 /// Inbound JR reconstruction: reads JR Timestamps out of a stream and reports the
 /// intended delay before the *next* non-timestamp event. Stateful — it remembers
 /// the previous stamp to compute a 16-bit-wrap-correct delta.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct JrReceiver {
     /// The last-seen JR tick, `None` until the first timestamp arrives.
     prev: Option<u16>,

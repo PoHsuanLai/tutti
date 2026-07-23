@@ -42,7 +42,7 @@ use super::clock_out::{drain_receiver_through, MidiOutRouter};
 /// The outbound MIDI-out mailbox: a push [`sender`](Self::sender) any caller
 /// clones to send events to external hardware (off-RT or, as a clip `out_tap`,
 /// on the audio thread), and the [`MidiReceiver`] the pump drains.
-#[derive(Resource)]
+#[derive(Resource, Debug)]
 pub struct MidiOutRes {
     sender: MidiSender,
     receiver: MidiReceiver,

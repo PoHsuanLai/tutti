@@ -17,7 +17,7 @@ pub enum PortType {
 /// `HardwareMidiInput`. The port is the single source of truth for `name` and
 /// `active` — `PortInfo` just bundles them with the port's index/type for
 /// listing. `active` is a point-in-time value, not a live handle.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortInfo {
     pub index: usize,
     pub name: String,

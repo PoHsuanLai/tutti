@@ -40,6 +40,15 @@ pub struct UmpVirtualSource {
     name: String,
 }
 
+impl core::fmt::Debug for UmpVirtualSource {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Owns opaque CoreMIDI FFI handles; report the endpoint name only.
+        f.debug_struct("UmpVirtualSource")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
 // SAFETY: `MIDIClientRef` / `MIDIEndpointRef` are opaque `UInt32` handles into
 // CoreMIDI; the framework's own objects are internally synchronized and the
 // handles are just identifiers. Sending them across threads (the pump runs on a

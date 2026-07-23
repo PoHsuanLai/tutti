@@ -23,7 +23,7 @@ use crate::cc;
 use crate::ump::MidiEvent;
 
 /// Per-channel accumulator for an in-progress (N)RPN run.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 struct ParamState {
     /// Selected parameter MSB / LSB (CC 101/100 for RPN, 99/98 for NRPN).
     bank: u8,
@@ -38,7 +38,7 @@ struct ParamState {
 }
 
 /// Stateful MIDI 1.0 → MIDI 2.0 translator. One per endpoint/channel-group.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Midi1ToMidi2Translator {
     /// One accumulator per MIDI channel (0..16).
     channels: [ParamState; 16],

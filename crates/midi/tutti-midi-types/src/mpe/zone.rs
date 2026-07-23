@@ -7,7 +7,7 @@ pub enum MpeZone {
     SingleChannel(u8),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MpeZoneConfig {
     pub zone: MpeZone,
     pub master_channel: u8,
@@ -133,7 +133,7 @@ impl MpeZoneConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MpeMode {
     #[default]
     Disabled,

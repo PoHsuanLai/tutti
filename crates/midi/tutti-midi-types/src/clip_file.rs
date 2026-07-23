@@ -35,7 +35,7 @@ pub const CLIP_FILE_MAGIC: [u8; 8] = *b"SMF2CLIP";
 /// beats — as most callers do — prefer [`write_clip_file_from_beats`] and
 /// [`ParsedClipFile::timed`], which own the beat↔tick↔delta conversion so you
 /// never build these by hand.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClipEvent {
     pub delta_ticks: u32,
     pub event: MidiEvent,
@@ -127,7 +127,7 @@ pub fn write_clip_file_from_beats(
 }
 
 /// A parsed MIDI Clip File.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedClipFile {
     pub ticks_per_quarter: u16,
     pub events: Vec<ClipEvent>,

@@ -41,6 +41,17 @@ pub struct MidiMailbox {
     sys_events: ArrayQueue<MidiEvent>,
 }
 
+impl std::fmt::Debug for MidiMailbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Report occupancy, not contents — the queues are drained on the audio
+        // thread and dumping them would be both racy and noisy.
+        f.debug_struct("MidiMailbox")
+            .field("events", &self.events.len())
+            .field("sys_events", &self.sys_events.len())
+            .finish()
+    }
+}
+
 impl MidiMailbox {
     fn new() -> Self {
         Self {
@@ -70,7 +81,7 @@ impl MidiMailbox {
 ///
 /// Implements [`tutti_midi_types::MidiOut`], so MIDI input drivers, sequencers,
 /// or arbitrary user code can all push events through the same trait.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MidiSender {
     slot: Arc<MidiMailbox>,
     unit_id: MidiUnitId,
@@ -143,7 +154,7 @@ impl tutti_midi_types::MidiOut for MidiSender {
 /// through any [`MidiSender`] for the unit continue to reach whichever
 /// receiver is currently being polled. Polling from multiple receivers in
 /// parallel races: keep only one live at a time per slot.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct MidiReceiver {
     slot: Arc<MidiMailbox>,
     unit_id: MidiUnitId,
@@ -266,6 +277,15 @@ pub struct MidiBus {
     /// atomic load — without locking the processor (which the audio thread
     /// may be holding). `None` = MPE disabled.
     mpe_expression: Arc<ArcSwap<Option<Arc<PerNoteExpression>>>>,
+}
+
+impl std::fmt::Debug for MidiBus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MidiBus")
+            .field("subscribers", &self.senders.len())
+            .field("mpe_enabled", &self.mpe.load().is_some())
+            .finish()
+    }
 }
 
 impl MidiBus {

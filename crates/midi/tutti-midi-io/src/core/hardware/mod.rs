@@ -29,7 +29,7 @@ pub use virtual_port::{UmpVirtualSource, VirtualMidiDestination, VirtualMidiSour
 
 /// A detected MIDI device (input or output).
 #[cfg(feature = "midi-hardware")]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MidiDevice {
     pub index: usize,
     pub name: String,

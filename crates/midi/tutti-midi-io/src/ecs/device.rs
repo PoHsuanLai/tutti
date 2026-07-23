@@ -14,7 +14,7 @@ use bevy_log::warn;
 /// Hardware MIDI I/O (OS port management + virtual ports). Only present when
 /// the `midi-hardware` feature is compiled; claimed into the world by
 /// [`TuttiMidiPlugin`](crate::TuttiMidiPlugin) from the engine handoff.
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Debug)]
 pub struct MidiIoRes(pub crate::MidiIo);
 
 impl std::ops::Deref for MidiIoRes {
@@ -42,7 +42,7 @@ pub enum MidiDeviceEvent {
     Disconnected { name: String },
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Debug)]
 pub struct MidiDeviceState {
     pub(crate) connected: std::collections::HashSet<String>,
     pub(crate) last_check: Option<std::time::Instant>,

@@ -15,6 +15,15 @@ pub struct VirtualMidiSource {
     name: String,
 }
 
+impl core::fmt::Debug for VirtualMidiSource {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Owns opaque CoreMIDI handles; report the endpoint name only.
+        f.debug_struct("VirtualMidiSource")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
 impl VirtualMidiSource {
     pub fn new(name: &str) -> Result<Self> {
         let client_name = format!("tutti-virtual-src-{}", name);
@@ -63,6 +72,14 @@ pub struct VirtualMidiDestination {
     _client: Client,
     _destination: VirtualDestination,
     name: String,
+}
+
+impl core::fmt::Debug for VirtualMidiDestination {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("VirtualMidiDestination")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
 }
 
 impl VirtualMidiDestination {

@@ -10,7 +10,7 @@
 use bevy_ecs::prelude::*;
 
 /// MIDI fan-out bus — audio-thread event dispatch to per-unit inboxes.
-#[derive(Resource, Clone)]
+#[derive(Resource, Clone, Debug)]
 pub struct MidiBusRes(pub tutti_midi_runtime::MidiBus);
 
 impl std::ops::Deref for MidiBusRes {

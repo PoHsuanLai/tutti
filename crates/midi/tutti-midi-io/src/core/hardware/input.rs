@@ -22,7 +22,7 @@ use tutti_midi_types::ump::MidiEvent;
 /// `timestamp_us` is the midir-provided timestamp in microseconds
 /// since the connection opened — monotonic per device, useful for
 /// clock-tempo derivation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiInputRecord {
     pub device_id: u32,
     pub device_name: String,

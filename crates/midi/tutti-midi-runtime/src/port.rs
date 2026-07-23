@@ -57,6 +57,16 @@ pub struct MidiInPort {
     input: Arc<ArcSwap<Arc<dyn MidiIn>>>,
 }
 
+impl std::fmt::Debug for MidiInPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The installed `input` is a `dyn MidiIn` (no Debug bound), so report
+        // the routing address; the source's guts aren't Debug-inspectable.
+        f.debug_struct("MidiInPort")
+            .field("unit_id", &self.unit_id)
+            .finish_non_exhaustive()
+    }
+}
+
 impl MidiInPort {
     /// Build a fresh port with a new unique [`MidiUnitId`] and an empty mailbox,
     /// its input defaulting to the live receiver.

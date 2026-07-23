@@ -25,6 +25,18 @@ pub struct MidiSnapshotReader {
     last_poll_beat: AtomicF64,
 }
 
+impl std::fmt::Debug for MidiSnapshotReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MidiSnapshotReader")
+            .field("snapshot", &self.snapshot)
+            .field(
+                "last_poll_beat",
+                &self.last_poll_beat.load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 impl MidiSnapshotReader {
     pub fn new(snapshot: MidiSnapshot, timeline: Arc<OfflineTransport>) -> Self {
         let start_beat = timeline.current_beat();

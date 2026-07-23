@@ -15,6 +15,14 @@ pub struct InputProducerHandle {
     producer: SpscProducer<(Instant, MidiEvent)>,
 }
 
+impl core::fmt::Debug for InputProducerHandle {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The inner SPSC producer is a raw-pointer handle with no inspectable
+        // state; just name the type.
+        f.debug_struct("InputProducerHandle").finish_non_exhaustive()
+    }
+}
+
 impl InputProducerHandle {
     #[inline]
     pub fn push(&self, event: MidiEvent, timestamp: Instant) -> bool {

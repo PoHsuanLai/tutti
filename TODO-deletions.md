@@ -1,11 +1,13 @@
-# tutti-core deletion queue
+# tutti-core deletion queue — COMPLETE
 
-Remaining work from the four-agent audit of tutti-core (the one that concluded
-the PDC *pattern* does not generalize, but the PDC *census discipline* does).
-Full reasoning: `~/.claude/plans/deep-wiggling-token.md`.
+The four-agent audit of tutti-core (the one that concluded the PDC *pattern*
+does not generalize, but the PDC *census discipline* does) is fully applied.
+All three deletion stages plus the graph-wrapper removal have landed; nothing
+here is outstanding. Full reasoning: `~/.claude/plans/deep-wiggling-token.md`.
 
-Rule for every item: verify the caller count still reads zero before deleting —
-these were measured on 2026-07-24 and the tree has moved since.
+Kept as a record of what was removed and why, and of the surfaces deliberately
+kept (below). Before deleting anything *else* in this vein, re-verify the caller
+count reads zero — the tree keeps moving.
 
 ---
 
@@ -24,57 +26,22 @@ these were measured on 2026-07-24 and the tree has moved since.
   `node_as::<T>` / `node_as_mut::<T>` / `clone_isolated` / `with_backend`
   (commit `eda830a1` + the follow-up). PDC moved wholesale into
   `fundsp-tutti/src/latency/` — compensation is now a `Net` capability.
+- **Stage 2 — graph.** `graph/routing.rs` (AudioFeedsTo/AudioFedBy) +
+  `graph/sidechain.rs` (SidechainOf/SidechainSources) deleted wholesale with
+  their reconcilers/observer and every re-export; `reconcile_params` (the
+  discard-the-target no-op) deleted and the tutti-units automation ordering
+  retargeted; the example's sidechain block + stale `metering.amplitude()`
+  cleaned up. Commit `098d550a`, −777. SidechainOf's real question — "which
+  port is the key input?" — belongs on the node type (a KEY_PORT const), not
+  an edge component; a sidechain is a plain Connection edge into a non-main
+  input port and earns PDC for free that way.
+- **Stage 3 — transport.** `transport/automation_reader.rs` (+ its exports),
+  `tutti_core::transport::TransportState` (0 readers; distinct from the live
+  dawai_model type), and `MetronomeHandle` all deleted. `MetronomeRes` is now
+  `MetronomeRes(pub Arc<ClickState>)`; the one consumer (dawai-model playback)
+  calls ClickState's atomic setters directly. Commit `b895626f`, −347.
 
 ---
-
-## TODO — Stage 2 remainder (graph)
-
-- [ ] **Delete `graph/routing.rs` (354) + `graph/sidechain.rs` (331).**
-      Zero production consumers; registered every frame by
-      `GraphReconcilePlugin`. Remove their `graph/mod.rs` re-exports and their
-      registration in `graph/plugin.rs` (`reconcile_audio_routing`,
-      `reconcile_sidechain_links`, the `reconcile_sidechain_remove` observer).
-      - Verified: the router-sidecar branch builds its `Connection` model
-        entirely in `dawai-router/src/routing.rs` and never touches these, so
-        `AudioFeedsTo` is not its landing site.
-      - Also update `bevy-tutti/examples/30_full_pipeline.rs`: drop the
-        sidechain block (self-described as illustrative; its `connect` is
-        already skipped because "port 1 doesn't exist"), the module doc at
-        line 16, and the `report_status` signature.
-      - **Carry forward in the commit message:** the question `SidechainOf` was
-        answering — *"which port is the key input?"* — is real and belongs on
-        the node type (e.g. a `KEY_PORT` const), not on an edge component. A
-        sidechain is just an edge into a non-main input port; as a plain
-        `Connection` edge it also gets latency compensation for free, which the
-        sidecar excluded it from.
-
-- [ ] **Resolve `reconcile_params`** (`graph/reconcile.rs:220-234`). It computes
-      `target` then discards it (`let _ = (target, node, kind);`) while running
-      every frame over `Or<(Changed<Volume>, Changed<Mute>)>`. Its only
-      remaining role is an ordering anchor for
-      `tutti-units/src/automation/graph.rs:277` (`.before(reconcile_params)`).
-      Delete the system; retarget that ordering to
-      `GraphReconcileSystems::Params`, which is what it actually means.
-
-## TODO — Stage 3 (transport, ~330 lines)
-
-- [ ] **Delete `transport/automation_reader.rs`** (236 lines, 0 callers) plus
-      `transport/mod.rs:1,13` and the `lib.rs` export of `AutomationEnvelopeFn`
-      / `AutomationReaderInput`. Superseded by the beat-as-signal convention it
-      prototyped (`8864ed15`, `a6bd5dca`).
-
-- [ ] **Delete `tutti_core::transport::TransportState`** (`state.rs:258-262`)
-      and its `mod.rs:23` export. Never constructed or read.
-      ⚠️ The identically-named `dawai_model::transport::TransportState` is a
-      **different type** used in ~60 places across frontend / timeline /
-      spectral / chat / extension-runtime. Do not grep-and-delete.
-
-- [ ] **Delete `MetronomeHandle`** (`click.rs:268-323`). Ten one-line forwards
-      to an already-public `Arc<ClickSettings>`; two are called. Make
-      `MetronomeRes(pub Arc<ClickSettings>)`, update `transport/plugin.rs:39-50,84`
-      and `bevy-tutti/src/engine/build.rs`, and convert the two call sites in
-      `dawai-model/src/transport/playback.rs:181,191` to `set_mode` /
-      `set_volume` directly.
 
 ## Explicitly KEEP (decided, do not revisit)
 

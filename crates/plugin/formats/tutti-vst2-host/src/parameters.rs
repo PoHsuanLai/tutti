@@ -9,9 +9,7 @@
 use std::sync::Arc;
 use vst::plugin::Plugin as _;
 
-use tutti_plugin_types::{
-    make_param_info, ParameterInfo as SharedParameterInfo, ALL_AUTOMATABLE,
-};
+use tutti_plugin_types::{ParameterInfo as SharedParameterInfo, ALL_AUTOMATABLE};
 
 use crate::host::ParameterChange;
 use crate::instance::Vst2Instance;
@@ -72,16 +70,18 @@ impl Vst2Instance {
         self.parameters()
             .into_iter()
             .map(|p| {
-                make_param_info(
-                    p.id,
-                    p.name,
-                    p.unit,
-                    0.0,
-                    1.0,
-                    p.current as f64,
-                    0,
-                    ALL_AUTOMATABLE,
-                )
+                SharedParameterInfo {
+                    id: p.id,
+                    name: p.name,
+                    unit: p.unit,
+                    // VST2 exposes no min/max/step metadata: every parameter is
+                    // reported normalized 0..1, default = current, no steps.
+                    min_value: 0.0,
+                    max_value: 1.0,
+                    default_value: p.current as f64,
+                    step_count: 0,
+                    flags: ALL_AUTOMATABLE,
+                }
             })
             .collect()
     }

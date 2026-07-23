@@ -20,8 +20,7 @@ use vst3::Steinberg::{
 use vst3::{Class, ComWrapper};
 
 use crate::types::{
-    from_c_event, note_expression_to_vst3, to_c_event, ChordValue, MidiEvent,
-    NoteExpressionIntValue, NoteExpressionText, NoteExpressionValue, ScaleValue, Vst3Event,
+    from_c_event, note_expression_to_vst3, to_c_event, MidiEvent, Vst3Event, Vst3InputEvents,
 };
 use tutti_types::AudioThreadCell;
 
@@ -87,35 +86,30 @@ impl EventList {
     /// for chord/scale/text events is interned into the arena so the borrowed
     /// `text` pointers stay valid for the block. Events are sorted by frame
     /// offset, as VST3's event list requires.
-    #[allow(clippy::too_many_arguments)]
-    pub fn update_from_sources(
-        &self,
-        midi_events: &[MidiEvent],
-        note_expressions: &[NoteExpressionValue],
-        chords: &[ChordValue],
-        scales: &[ScaleValue],
-        expr_texts: &[NoteExpressionText],
-        expr_ints: &[NoteExpressionIntValue],
-    ) {
+    pub fn update_from_sources(&self, src: &Vst3InputEvents) {
         let mut inner = self.inner.borrow_mut();
         inner.clear();
         let Inner {
             events, text_arena, ..
         } = &mut *inner;
-        events.extend(midi_events.iter().filter_map(Vst3Event::from_midi));
+        events.extend(src.midi.iter().filter_map(Vst3Event::from_midi));
         // `note_expression_to_vst3` returns `None` for a dimension VST3 can't
         // encode (Pressure/Expression); those are skipped, not coerced.
-        events.extend(note_expressions.iter().filter_map(note_expression_to_vst3));
-        for expr in expr_ints {
+        events.extend(
+            src.note_expressions
+                .iter()
+                .filter_map(note_expression_to_vst3),
+        );
+        for expr in src.expr_ints {
             events.push(expr.to_vst3_event());
         }
-        for chord in chords {
+        for chord in src.chords {
             events.push(chord.to_vst3_event(text_arena));
         }
-        for scale in scales {
+        for scale in src.scales {
             events.push(scale.to_vst3_event(text_arena));
         }
-        for text in expr_texts {
+        for text in src.expr_texts {
             events.push(text.to_vst3_event(text_arena));
         }
         events.sort_by_key(|e| e.sample_offset());
@@ -202,7 +196,10 @@ pub fn event_list_ptr(list: &ComWrapper<EventList>) -> *mut IEventList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{EventHeader, NoteOnEvent, K_NOTE_ON_EVENT};
+    use crate::types::{
+        ChordValue, EventHeader, NoteExpressionIntValue, NoteExpressionText, NoteExpressionValue,
+        NoteOnEvent, ScaleValue, K_NOTE_ON_EVENT,
+    };
 
     fn make_note_on() -> NoteOnEvent {
         NoteOnEvent {
@@ -331,13 +328,22 @@ mod tests {
             value: 1,
         }];
 
+        let src = Vst3InputEvents {
+            midi: &midi,
+            note_expressions: &note_expr,
+            chords: &chords,
+            scales: &scales,
+            expr_texts: &texts,
+            expr_ints: &ints,
+        };
+
         // Warm up every buffer (events / data scratch / text arena).
-        list.update_from_sources(&midi, &note_expr, &chords, &scales, &texts, &ints);
+        list.update_from_sources(&src);
         list.clear();
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..10_000 {
-                list.update_from_sources(&midi, &note_expr, &chords, &scales, &texts, &ints);
+                list.update_from_sources(&src);
                 list.clear();
             }
         });

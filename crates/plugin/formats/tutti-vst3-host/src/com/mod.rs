@@ -30,12 +30,6 @@ pub(crate) use plug_frame::HostPlugFrame;
 pub use stream::BStream;
 
 #[cfg(test)]
-#[allow(unused_imports)]
-pub use attr_list::AttributeList;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub use message::Message;
-#[cfg(test)]
 pub use param_queue::ParamValueQueueImpl;
 #[cfg(test)]
 pub use progress::ProgressHandler;

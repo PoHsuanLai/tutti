@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use tutti_vst3_host::{AudioBuffer, MidiEvent, TransportInfo, Vst3Instance};
+use tutti_vst3_host::{AudioBuffer, MidiEvent, TransportInfo, Vst3InputEvents, Vst3Instance};
 
 /// Resolve a macOS `.vst3` bundle directory to its inner binary so
 /// `Vst3Instance::load` can `dlopen` it. Mirrors the helper in
@@ -161,13 +161,11 @@ fn test_process_silence() {
 
     let _output_events = plugin.process(
         &mut buffer,
-        &midi,
+        &Vst3InputEvents {
+            midi: &midi,
+            ..Default::default()
+        },
         None,
-        &[],
-        &[],
-        &[],
-        &[],
-        &[],
         &transport,
     );
     println!("Processing completed successfully");
@@ -205,13 +203,11 @@ fn test_process_with_midi() {
 
     let _output_events = plugin.process(
         &mut buffer,
-        &midi,
+        &Vst3InputEvents {
+            midi: &midi,
+            ..Default::default()
+        },
         None,
-        &[],
-        &[],
-        &[],
-        &[],
-        &[],
         &transport,
     );
 
@@ -258,13 +254,11 @@ fn test_process_multiple_buffers() {
 
         plugin.process(
             &mut buffer,
-            &midi,
+            &Vst3InputEvents {
+                midi: &midi,
+                ..Default::default()
+            },
             None,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
             &transport,
         );
     }
@@ -377,13 +371,11 @@ fn test_rapid_process_calls() {
         let mut buffer = AudioBuffer::new(&inputs, &mut outputs, 44100.0);
         plugin.process(
             &mut buffer,
-            &midi,
+            &Vst3InputEvents {
+                midi: &midi,
+                ..Default::default()
+            },
             None,
-            &[],
-            &[],
-            &[],
-            &[],
-            &[],
             &transport,
         );
     }

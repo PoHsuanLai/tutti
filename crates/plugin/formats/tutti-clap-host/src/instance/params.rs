@@ -293,14 +293,16 @@ fn project_param_info(info: ClapParamInfo) -> tutti_plugin_types::ParameterInfo 
     } else {
         0
     };
-    tutti_plugin_types::make_param_info(
-        info.id,
-        info.name,
-        String::new(),
-        info.min_value,
-        info.max_value,
-        info.default_value,
+    tutti_plugin_types::ParameterInfo {
+        id: info.id,
+        name: info.name,
+        // CLAP carries no unit string.
+        unit: String::new(),
+        // CLAP values are in the plugin's native plain range.
+        min_value: info.min_value,
+        max_value: info.max_value,
+        default_value: info.default_value,
         step_count,
         flags,
-    )
+    }
 }

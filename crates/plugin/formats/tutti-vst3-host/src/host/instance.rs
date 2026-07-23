@@ -25,9 +25,8 @@ use vst3::Steinberg::{
 use crate::com::{event_list_ptr, param_changes_ptr, EventList, ParameterChangesImpl};
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::types::{
-    to_process_context, AudioBuffer, BufferPtrs, ChordValue, MidiEvent, NoteExpressionIntValue,
-    NoteExpressionText, NoteExpressionValue, ParameterChanges, PluginInfo, ProcessOutputRef,
-    ScaleValue, TransportInfo, Vst3Sample,
+    to_process_context, AudioBuffer, BufferPtrs, MidiEvent, ParameterChanges, PluginInfo,
+    ProcessOutputRef, TransportInfo, Vst3InputEvents, Vst3Sample,
 };
 
 use super::bus_buffers::{BusBuffers, DirectionScratch};
@@ -309,28 +308,22 @@ impl<T: Vst3Sample> Vst3Instance<T> {
 
     /// Run one realtime processing block.
     ///
-    /// `midi_events`, `note_expressions`, `chords`, `scales`, `expr_texts`, and
-    /// `expr_ints` are staged into the plugin's input event list (sorted by
-    /// `sample_offset`); chord/scale/text strings are interned into the event
-    /// list's arena for the duration of the call. `param_changes` is forwarded
-    /// as `inputParameterChanges`; `transport` populates `ProcessContext`. The
-    /// returned [`ProcessOutput`] carries any MIDI / parameter-change events the
-    /// plugin emitted (plugin-emitted legacy-MIDI-CC-out is decoded to MIDI).
+    /// `events` bundles the MIDI and per-note-expressive streams staged into the
+    /// plugin's input event list (sorted by `sample_offset`); chord/scale/text
+    /// strings are interned into the event list's arena for the duration of the
+    /// call. `param_changes` is forwarded as `inputParameterChanges`;
+    /// `transport` populates `ProcessContext`. The returned [`ProcessOutput`]
+    /// carries any MIDI / parameter-change events the plugin emitted
+    /// (plugin-emitted legacy-MIDI-CC-out is decoded to MIDI).
     ///
     /// Falls back to an empty output if `buffer.num_samples == 0` or if the
     /// plugin returns a non-OK `tresult` (in which case `buffer.outputs` is
     /// also cleared).
-    #[allow(clippy::too_many_arguments)]
     pub fn process(
         &mut self,
         buffer: &mut AudioBuffer<T>,
-        midi_events: &[MidiEvent],
+        events: &Vst3InputEvents,
         param_changes: Option<&ParameterChanges>,
-        note_expressions: &[NoteExpressionValue],
-        chords: &[ChordValue],
-        scales: &[ScaleValue],
-        expr_texts: &[NoteExpressionText],
-        expr_ints: &[NoteExpressionIntValue],
         transport: &TransportInfo,
     ) -> ProcessOutputRef<'_> {
         // Reset the return pools up front so the bail-out paths below return a
@@ -371,7 +364,7 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         // from the *raw* MIDI — before CC routing can divert mapped CCs into
         // parameter changes — so the plugin can learn even controllers that have
         // no mapping yet. A single relaxed atomic load when disarmed (the norm).
-        self.capture_midi_learn(midi_events);
+        self.capture_midi_learn(events.midi);
 
         // Route IMidiMapping-mapped CCs into parameter changes. When the plugin
         // exposes a non-empty CC→param table, `CcRoute::route` pulls mapped
@@ -380,28 +373,19 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         // returning the filtered MIDI + merged params to forward; otherwise the
         // caller's own inputs are forwarded untouched.
         let (effective_midi, effective_params): (&[MidiEvent], Option<&ParameterChanges>) =
-            match self.audio.cc.route(midi_events, param_changes) {
+            match self.audio.cc.route(events.midi, param_changes) {
                 Some((midi, params)) => (midi, Some(params)),
-                None => (midi_events, param_changes),
+                None => (events.midi, param_changes),
             };
 
         // Stage the (possibly CC-filtered) MIDI plus every other input event
         // source into the input event list, or clear it when there's nothing.
-        let have_events = !effective_midi.is_empty()
-            || !note_expressions.is_empty()
-            || !chords.is_empty()
-            || !scales.is_empty()
-            || !expr_texts.is_empty()
-            || !expr_ints.is_empty();
-        if have_events {
-            self.audio.input.events.update_from_sources(
-                effective_midi,
-                note_expressions,
-                chords,
-                scales,
-                expr_texts,
-                expr_ints,
-            );
+        let effective = Vst3InputEvents {
+            midi: effective_midi,
+            ..*events
+        };
+        if !effective.is_empty() {
+            self.audio.input.events.update_from_sources(&effective);
         } else {
             self.audio.input.events.clear();
         }

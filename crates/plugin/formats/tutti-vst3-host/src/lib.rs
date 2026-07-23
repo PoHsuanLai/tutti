@@ -25,7 +25,7 @@ pub use types::{
     vst3_to_scale, AudioBuffer, BufferPtrs, BusInfo, ChordValue, EditorCapabilities, EditorSize,
     MidiEvent, NoteExpressionIntValue, NoteExpressionText, NoteExpressionType, NoteExpressionValue,
     ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo, ProcessOutput, ProcessOutputRef,
-    Sample, ScaleValue, TransportInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo,
+    Sample, ScaleValue, TransportInfo, Vst3InputEvents, Vst3KeyswitchInfo, Vst3NoteExpressionInfo,
     Vst3ParameterInfo, Vst3Sample, WindowHandle,
 };
 

@@ -37,6 +37,6 @@ pub use tutti_plugin_types::PluginFormatHost as PluginInstance;
 /// The lean, format-agnostic error the trait returns, plus its `Result` alias
 /// and the shared `ParameterInfo` builders — re-exported so the loaders reach
 /// them through the same `tutti_plugin::server::*` import point.
-pub use tutti_plugin_types::{make_param_info, PluginError, PluginResult, ALL_AUTOMATABLE};
+pub use tutti_plugin_types::{PluginError, PluginResult, ALL_AUTOMATABLE};
 /// Per-block process inputs/outputs, re-exported from `tutti-plugin-types`.
 pub use tutti_plugin_types::{ExpressiveContext, ProcessContext, ProcessOutput};

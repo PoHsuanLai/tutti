@@ -15,6 +15,33 @@ use tutti_plugin_types::{note_id_for, NoteExpressionType, NoteExpressionValue};
 
 use vst3::Steinberg::Vst::Event_::EventTypes_;
 
+/// Borrowed bundle of every input event stream staged into a VST3 plugin's
+/// event list for one processing block: MIDI plus the four per-note-expressive
+/// families (chords, scales, expression texts, integer expressions). Grouping
+/// them keeps the `process` / `update_from_sources` signatures readable rather
+/// than threading six parallel slices.
+#[derive(Clone, Copy, Default)]
+pub struct Vst3InputEvents<'a> {
+    pub midi: &'a [MidiEvent],
+    pub note_expressions: &'a [NoteExpressionValue],
+    pub chords: &'a [ChordValue],
+    pub scales: &'a [ScaleValue],
+    pub expr_texts: &'a [NoteExpressionText],
+    pub expr_ints: &'a [NoteExpressionIntValue],
+}
+
+impl Vst3InputEvents<'_> {
+    /// True when at least one stream carries an event this block.
+    pub fn is_empty(&self) -> bool {
+        self.midi.is_empty()
+            && self.note_expressions.is_empty()
+            && self.chords.is_empty()
+            && self.scales.is_empty()
+            && self.expr_texts.is_empty()
+            && self.expr_ints.is_empty()
+    }
+}
+
 /// `type_` discriminant for note-on events.
 pub const K_NOTE_ON_EVENT: u16 = EventTypes_::kNoteOnEvent as u16;
 /// `type_` discriminant for note-off events.
@@ -40,6 +67,9 @@ pub const K_LEGACY_MIDI_CC_OUT_EVENT: u16 = EventTypes_::kLegacyMIDICCOutEvent a
 /// Cast explicitly like the discriminants above: the generated `vst3` bindings
 /// give this constant `u32` on Unix but `i32` on Windows, so an uncast
 /// initializer only compiles on one of them.
+// The cast is a no-op on Unix (where the binding is already `u32`) and a real
+// `i32 as u32` on Windows; allow the former's `unnecessary_cast` lint.
+#[allow(clippy::unnecessary_cast)]
 pub const K_DATA_TYPE_MIDI_SYSEX: u32 =
     vst3::Steinberg::Vst::DataEvent_::DataTypes_::kMidiSysEx as u32;
 

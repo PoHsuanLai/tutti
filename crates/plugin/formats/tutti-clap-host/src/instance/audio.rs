@@ -443,16 +443,11 @@ impl<T: ClapSample> ClapActive<T> {
             out_midi,
             out_param_changes,
             out_note_expressions,
-            out_gestures,
             ..
         } = &mut self.scratch;
         output_events.fill_midi_events(out_midi);
         output_events.fill_param_changes(out_param_changes);
         output_events.fill_note_expressions(out_note_expressions);
-        // H4: capture output-side param gestures (begin/end) + param-mod so
-        // they are no longer silently dropped. Kept CLAP-private (not folded
-        // into the shared `ParameterChanges`); drain via `drain_output_gestures`.
-        output_events.fill_gestures(out_gestures);
 
         Ok(ProcessOutputRef {
             midi_events: &self.scratch.out_midi,

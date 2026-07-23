@@ -59,6 +59,10 @@ impl ClapLoaded {
     /// `T` fixes the processing sample format. `ClapActive<f64>` requires the
     /// plugin to advertise 64-bit support; otherwise this returns
     /// [`ClapError::NotSupported`].
+    // The `Err` variant deliberately hands `self` (a large `ClapLoaded`) back so
+    // the caller can retry or fall back; boxing it would defeat that ownership
+    // return and add a heap alloc on the (rare) failure path.
+    #[allow(clippy::result_large_err)]
     pub fn activate<T: super::ClapSample>(
         mut self,
     ) -> std::result::Result<ClapActive<T>, (Self, ClapError)> {
@@ -201,24 +205,6 @@ impl<T: super::ClapSample> ClapActive<T> {
         // H2: the CLAP steady_time counter is per start/stop cycle — reset it so
         // the next start_processing begins the monotonic sequence at 0.
         self.scratch.steady_time = 0;
-    }
-
-    /// The `clap_process_status` the plugin returned on the most recent
-    /// `process` block (H3). CLAP-private this phase — the shared
-    /// `ProcessOutput` carries no status field, so TAIL/SLEEP are observable
-    /// only here. Defaults to `CLAP_PROCESS_CONTINUE` before the first block.
-    #[allow(dead_code)] // consumed by the trait/adapter phase + conformance tests
-    pub(crate) fn last_process_status(&self) -> clap_sys::process::clap_process_status {
-        self.scratch.last_process_status
-    }
-
-    /// Drain the output-side param gestures (begin/end) + param-mod the plugin
-    /// emitted on the most recent block (H4), leaving the pool empty. Kept
-    /// CLAP-private — these events have no home in the shared param vocabulary
-    /// this phase, so they'd otherwise be silently dropped.
-    #[allow(dead_code)] // consumed by the trait/adapter phase + conformance tests
-    pub(crate) fn drain_output_gestures(&mut self) -> Vec<crate::events::ClapEvent> {
-        std::mem::take(&mut self.scratch.out_gestures)
     }
 
     /// Grow the activated maximum block size to `max_frames`, resizing the RT

@@ -2,16 +2,14 @@
 //!
 //! Follows the same pattern as `vst3_loader.rs` and `clap_loader.rs`.
 
-#![allow(dead_code)]
-
 use std::path::Path;
 use tutti_plugin::server::{
     AuComponentType, Features, LoadedPlugin, PluginClass, PluginDescriptor,
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    make_param_info, EditorSize, ParameterFlags, ParameterInfo, PluginInstance, PluginResult,
-    ProcessContext, ProcessOutput, WindowHandle,
+    EditorSize, ParameterFlags, ParameterInfo, PluginInstance, PluginResult, ProcessContext,
+    ProcessOutput, WindowHandle,
 };
 
 use crate::loaders::common::{single_bus, Meta};
@@ -217,9 +215,6 @@ impl AuInstance {
         }
     }
 
-    pub fn descriptor(&self) -> &PluginDescriptor {
-        &self.meta.descriptor
-    }
 }
 
 #[cfg(all(target_os = "macos", feature = "au"))]
@@ -325,16 +320,16 @@ impl PluginInstance for AuInstance {
                     read_only: !p.writable,
                     ..ParameterFlags::default()
                 };
-                make_param_info(
-                    p.id,
-                    p.name,
-                    p.unit.to_string(),
-                    p.range.min as f64,
-                    p.range.max as f64,
-                    p.range.default as f64,
+                ParameterInfo {
+                    id: p.id,
+                    name: p.name,
+                    unit: p.unit.to_string(),
+                    min_value: p.range.min as f64,
+                    max_value: p.range.max as f64,
+                    default_value: p.range.default as f64,
                     step_count,
                     flags,
-                )
+                }
             })
             .collect()
     }
@@ -406,11 +401,11 @@ mod tests {
 
         // Use Apple's AUDelay directly
         let desc = AudioComponentDescription {
-            component_type: K_AUDIO_UNIT_TYPE_EFFECT,
-            component_sub_type: u32::from_be_bytes(*b"dely"),
-            component_manufacturer: u32::from_be_bytes(*b"appl"),
-            component_flags: 0,
-            component_flags_mask: 0,
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");
@@ -439,11 +434,11 @@ mod tests {
         use tutti_plugin::server::{AudioBuffer as TuttiAudioBuffer, AudioBufferMut};
 
         let desc = AudioComponentDescription {
-            component_type: K_AUDIO_UNIT_TYPE_EFFECT,
-            component_sub_type: u32::from_be_bytes(*b"dely"),
-            component_manufacturer: u32::from_be_bytes(*b"appl"),
-            component_flags: 0,
-            component_flags_mask: 0,
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");
@@ -484,11 +479,11 @@ mod tests {
         use tutti_au_host::types::K_AUDIO_UNIT_TYPE_EFFECT;
 
         let desc = AudioComponentDescription {
-            component_type: K_AUDIO_UNIT_TYPE_EFFECT,
-            component_sub_type: u32::from_be_bytes(*b"dely"),
-            component_manufacturer: u32::from_be_bytes(*b"appl"),
-            component_flags: 0,
-            component_flags_mask: 0,
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");

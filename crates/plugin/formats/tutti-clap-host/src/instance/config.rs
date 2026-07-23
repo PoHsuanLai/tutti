@@ -5,7 +5,7 @@
 //! and lives only on the active `ClapActive<T>` (it exists solely for
 //! `process`).
 
-use crate::events::{ClapEvent, InputEventList, OutputEventList};
+use crate::events::{InputEventList, OutputEventList};
 use crate::types::{MidiEvent, ClapNoteExpression, ParameterChanges};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::process::{clap_process_status, CLAP_PROCESS_CONTINUE};
@@ -103,18 +103,13 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     pub out_midi: SmallVec<[MidiEvent; 64]>,
     pub out_param_changes: ParameterChanges,
     pub out_note_expressions: SmallVec<[ClapNoteExpression; 16]>,
-    /// Output-side param gestures (begin/end) and param-mod events the plugin
-    /// emits. The shared `ParameterChanges`/`ProcessOutput` vocabulary carries
-    /// only param *values* this phase, so these are kept CLAP-private and
-    /// drained via `ClapActive::drain_output_gestures`. Cleared each block.
-    pub out_gestures: Vec<ClapEvent>,
     /// Monotonic sample counter fed to CLAP's `steady_time`. Init 0 at
     /// activate; advances by `frames_count` each processed block; reset to 0
     /// on stop_processing/reactivate. Never derived from transport seconds.
     pub steady_time: i64,
     /// The `clap_process_status` the plugin returned on the most recent block.
-    /// Exposed via `ClapActive::last_process_status`; TAIL/SLEEP are surfaced
-    /// here rather than through the shared output vocabulary.
+    /// Drives the TAIL/SLEEP transition logging in `process`; the shared output
+    /// vocabulary carries no status field.
     pub last_process_status: clap_process_status,
 }
 
@@ -127,7 +122,6 @@ impl<T: super::ClapSample> AudioScratch<T> {
             out_midi: SmallVec::new(),
             out_param_changes: ParameterChanges::new(),
             out_note_expressions: SmallVec::new(),
-            out_gestures: Vec::new(),
             steady_time: 0,
             last_process_status: CLAP_PROCESS_CONTINUE,
         }

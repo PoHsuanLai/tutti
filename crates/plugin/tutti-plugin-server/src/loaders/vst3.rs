@@ -10,7 +10,6 @@ use tutti_plugin::server::{
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
-use crate::loaders::common::params::make_param_info;
 use crate::loaders::common::{single_bus, Meta};
 
 pub use tutti_vst3_host;
@@ -377,15 +376,18 @@ fn process_block<'t, 'd: 't, T: tutti_vst3_host::Vst3Sample>(
         .and_then(|e| e.expr_ints)
         .map(convert_expr_ints_to_vst3)
         .unwrap_or_default();
+    let vst3_events = tutti_vst3_host::Vst3InputEvents {
+        midi: ctx.midi_events,
+        note_expressions: vst3_note_expr,
+        chords: &vst3_chords,
+        scales: &vst3_scales,
+        expr_texts: &vst3_expr_texts,
+        expr_ints: &vst3_expr_ints,
+    };
     let output = inner.process(
         &mut vst3_buffer,
-        ctx.midi_events,
+        &vst3_events,
         ctx.param_changes,
-        vst3_note_expr,
-        &vst3_chords,
-        &vst3_scales,
-        &vst3_expr_texts,
-        &vst3_expr_ints,
         &vst3_transport,
     );
     let midi_events = output.midi_events.iter().copied().collect();
@@ -408,16 +410,17 @@ fn build_param_info(info: tutti_vst3_host::Vst3ParameterInfo) -> ParameterInfo {
         is_bypass: info.is_bypass(),
         hidden: info.is_hidden(),
     };
-    make_param_info(
-        info.id,
-        info.title_string(),
-        info.units_string(),
-        0.0, // VST3 uses normalized 0-1
-        1.0,
-        info.default_normalized_value,
-        info.step_count as u32,
+    ParameterInfo {
+        id: info.id,
+        name: info.title_string(),
+        unit: info.units_string(),
+        // VST3 exposes parameters in a normalized 0..1 range.
+        min_value: 0.0,
+        max_value: 1.0,
+        default_value: info.default_normalized_value,
+        step_count: info.step_count as u32,
         flags,
-    )
+    }
 }
 
 fn convert_chords_to_vst3(chords: &ChordChanges) -> Vec<tutti_vst3_host::ChordValue> {

@@ -27,7 +27,6 @@ use tutti_plugin_types::{note_id_for, note_id_to_channel_note};
 ///
 /// Construct via the `note_on`/`note_off`/`midi`/`param_value`/`note_expression`
 /// helpers, or from [`MidiEvent`] via [`ClapEvent::from_midi`].
-#[allow(dead_code)]
 pub enum ClapEvent {
     NoteOn(clap_event_note),
     NoteOff(clap_event_note),

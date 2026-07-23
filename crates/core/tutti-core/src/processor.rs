@@ -1,10 +1,12 @@
-//! Audio processor trait and per-buffer implementations.
+//! The per-buffer graph render, called from the audio callback.
 //!
-//! [`AudioProcessor`] abstracts the per-buffer audio processing pipeline.
-//! Implementations compose via the decorator pattern: [`GraphProcessor`]
-//! ticks the DSP graph directly, while [`MidiProcessor`] (feature `midi`)
-//! wraps another processor to split the buffer on MIDI event boundaries for
-//! sample-accurate event timing.
+//! [`GraphProcessor`] ticks the DSP graph + transport and renders one output
+//! buffer per block. It is **MIDI-free**: sample-accurate event timing lives in
+//! the consuming nodes (each self-splits on its events' `frame_offset`), and
+//! event *delivery* is a separate once-per-block producer
+//! (`tutti_midi_runtime::MidiPreBlock`) the audio-callback assembly runs before
+//! this render. So this crate carries no MIDI code and the render is a single
+//! un-split call.
 
 use crate::transport::Declick;
 use crate::transport::MotionFsm;
@@ -14,18 +16,6 @@ use fundsp::buffer::BufferArray;
 use fundsp::prelude::{BufferRef, U2};
 use fundsp::realnet::NetBackend;
 use fundsp::MAX_BUFFER_SIZE;
-
-/// Per-buffer audio processor, called from the audio callback.
-///
-/// Implementations must be real-time safe: no allocation, no locks,
-/// no I/O, no unbounded work.
-pub trait AudioProcessor: Send + Sync + 'static {
-    /// Process `frames` stereo samples into `output` (interleaved L/R).
-    fn process(&self, output: &mut [f32], frames: usize);
-
-    /// Reset AudioThreadCell owners for device switching.
-    fn reset_owners(&self);
-}
 
 /// Base processor: ticks the DSP graph and transport.
 pub struct GraphProcessor {
@@ -134,11 +124,14 @@ impl GraphProcessor {
 
         new_remaining == 0
     }
-}
-
-impl AudioProcessor for GraphProcessor {
+    
+    /// Render `frames` stereo samples into `output` (interleaved L/R).
+    ///
+    /// Called once per block from the audio callback, after the MIDI pre-block
+    /// producer has delivered this block's events into node inboxes. RT-safe:
+    /// no allocation, no locks, no I/O.
     #[inline]
-    fn process(&self, output: &mut [f32], frames: usize) {
+    pub fn process(&self, output: &mut [f32], frames: usize) {
         self.motion.drain();
         self.process_segment(output, frames);
 
@@ -147,226 +140,9 @@ impl AudioProcessor for GraphProcessor {
         }
     }
 
-    fn reset_owners(&self) {
+    /// Reset `AudioThreadCell` owners for device switching.
+    pub fn reset_owners(&self) {
         self.net_backend.reset_owner();
         self.motion.reset_owner();
     }
 }
-
-/// MIDI-aware audio processor decorator — splits the audio buffer on MIDI
-/// event boundaries for sample-accurate event timing.
-///
-/// Implementation detail module so the `#[cfg(feature = "midi")]` gate stays
-/// localized. Re-exported as [`MidiProcessor`] below.
-#[cfg(feature = "midi")]
-mod midi_processor {
-    use super::AudioProcessor;
-    use crate::RtEventBuf;
-    use arc_swap::ArcSwap;
-    use std::sync::Arc;
-    use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiIn, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
-    use tutti_types::AudioThreadCell;
-
-    /// Per-block outbound clock/timecode generator (e.g. a `ClockMaster`).
-    /// Ticked once per audio block, before event splitting, so it emits
-    /// regardless of whether any inbound MIDI is present this block.
-    pub trait BlockClock: Send + Sync {
-        /// Generate this block's clock/timecode output. `block_size` is the
-        /// frame count of the upcoming audio block.
-        fn tick(&self, block_size: usize);
-    }
-
-    const MIDI_EVENT_BUFFER_CAPACITY: usize = 512;
-    const MAX_SPLIT_POINTS: usize = 258;
-
-    /// Sentinel unit id passed to the pre-routing hardware [`MidiIn`], which
-    /// ignores it and returns every pending event (routing decides targets).
-    const HARDWARE_POLL_UNIT: MidiUnitId = MidiUnitId::new(0);
-
-    /// Decorates an [`AudioProcessor`] with MIDI sub-buffer splitting and routing.
-    ///
-    /// On each `process()` call:
-    /// 1. Collects MIDI events from the input source
-    /// 2. Computes split points at event boundaries
-    /// 3. For each segment: routes events to target nodes, then delegates to inner
-    ///
-    /// Routes events to a caller-supplied [`MidiRouter`] (typically a
-    /// `MidiBus` from `tutti-midi-runtime`) — it addresses events by unit id,
-    /// which is exactly the router's job.
-    pub struct MidiProcessor<P: AudioProcessor> {
-        inner: P,
-        input: Option<Arc<dyn MidiIn>>,
-        queue: Option<Arc<dyn MidiRouter>>,
-        routing: Arc<ArcSwap<MidiRoutingSnapshot>>,
-        /// `(frame_offset, event)` collected per buffer, sorted by offset. Fixed
-        /// capacity: events past `MIDI_EVENT_BUFFER_CAPACITY` are dropped (never
-        /// allocated) on the audio thread.
-        events: RtEventBuf<(usize, MidiEvent), MIDI_EVENT_BUFFER_CAPACITY>,
-        /// Scratch the hardware [`MidiIn`] fills each block via `poll_into`,
-        /// before we copy it into `events`. Interior-mutable so the whole
-        /// processor stays `&self` on the audio path; single-audio-thread access
-        /// (the same contract `events` relies on).
-        poll_scratch: AudioThreadCell<[MidiEvent; MIDI_EVENT_BUFFER_CAPACITY]>,
-        /// Optional outbound clock/timecode generator, ticked once per block.
-        /// Emits into its own output ring, independent of the routing path
-        /// above — so System Real-Time messages reach hardware-out rather than
-        /// being dropped by the unit-keyed router.
-        clock: Option<Arc<dyn BlockClock>>,
-    }
-
-    impl<P: AudioProcessor> MidiProcessor<P> {
-        pub fn new(inner: P, routing: Arc<ArcSwap<MidiRoutingSnapshot>>) -> Self {
-            Self {
-                inner,
-                input: None,
-                queue: None,
-                routing,
-                events: RtEventBuf::new(),
-                poll_scratch: AudioThreadCell::new([MidiEvent::noop(); MIDI_EVENT_BUFFER_CAPACITY]),
-                clock: None,
-            }
-        }
-
-        pub fn set_input(&mut self, input: Arc<dyn MidiIn>) {
-            self.input = Some(input);
-        }
-
-        pub fn set_queue(&mut self, queue: Arc<dyn MidiRouter>) {
-            self.queue = Some(queue);
-        }
-
-        /// Install the per-block clock/timecode generator (see [`BlockClock`]).
-        pub fn set_clock(&mut self, clock: Arc<dyn BlockClock>) {
-            self.clock = Some(clock);
-        }
-
-        /// Access the inner processor.
-        pub fn inner(&self) -> &P {
-            &self.inner
-        }
-
-        #[inline]
-        fn collect_events(&self, frames: usize) -> usize {
-            self.events.clear();
-
-            let Some(input) = &self.input else {
-                return 0;
-            };
-
-            // Drain the input into scratch, then copy the routed subset into
-            // `events` — all inside one `borrow_mut` (the cell allows a single
-            // live borrow at a time). `poll_into` ignores the unit id (hardware
-            // is pre-routing) and returns everything pending; the copy is bounded
-            // and allocation-free. We drain even when nothing is routed, so the
-            // hardware rings don't back up.
-            let mut scratch = self.poll_scratch.borrow_mut();
-            let n = input.poll_into(HARDWARE_POLL_UNIT, frames, &mut scratch[..]);
-
-            let routing = self.routing.load();
-            if !routing.has_routes() || n == 0 {
-                return 0;
-            }
-
-            // Capped push reproduces the fixed-budget drop-overflow behaviour;
-            // it never allocates on the audio thread.
-            for &event in &scratch[..n] {
-                let _ = self.events.push((event.frame_offset as usize, event));
-            }
-
-            // Sort by frame offset for sub-buffer splitting.
-            self.events.sort_by_key(|&(offset, _)| offset);
-            self.events.len()
-        }
-
-        #[inline]
-        fn route_events_in_range(&self, start: usize, end: usize) {
-            let Some(queue) = &self.queue else {
-                return;
-            };
-            let routing = self.routing.load();
-
-            // Events are sorted by offset; skip those at or past `end` rather
-            // than breaking (for_each visits the whole active region).
-            self.events.for_each(|&(offset, event)| {
-                if offset >= start && offset < end {
-                    for target in routing.route(&event) {
-                        queue.queue(target, &[event]);
-                    }
-                }
-            });
-        }
-    }
-
-    impl<P: AudioProcessor> AudioProcessor for MidiProcessor<P> {
-        #[inline]
-        fn process(&self, output: &mut [f32], frames: usize) {
-            // Tick the outbound clock/timecode generator first — it reads the
-            // transport and pushes into its own output ring every block,
-            // independent of inbound MIDI or event splitting below.
-            if let Some(clock) = &self.clock {
-                clock.tick(frames);
-            }
-
-            // Process transport commands via the inner processor's first call
-            let event_count = self.collect_events(frames);
-
-            if event_count == 0 {
-                // No MIDI events — process the whole buffer at once
-                self.inner.process(output, frames);
-                return;
-            }
-
-            // Compute split points from MIDI event offsets. Events are sorted,
-            // so adjacent duplicates collapse via the `split_points[..-1]`
-            // check; once `MAX_SPLIT_POINTS` is reached the body no-ops.
-            let mut split_points = [0usize; MAX_SPLIT_POINTS];
-            let mut split_count = 0;
-            self.events.for_each(|&(offset, _)| {
-                if split_count < MAX_SPLIT_POINTS
-                    && offset > 0
-                    && offset < frames
-                    && (split_count == 0 || split_points[split_count - 1] != offset)
-                {
-                    split_points[split_count] = offset;
-                    split_count += 1;
-                }
-            });
-
-            // Process each segment between split points
-            let mut segment_start = 0;
-            let mut split_idx = 0;
-
-            loop {
-                let segment_end = if split_idx < split_count {
-                    split_points[split_idx]
-                } else {
-                    frames
-                };
-
-                if segment_end > segment_start {
-                    self.route_events_in_range(segment_start, segment_end);
-
-                    let segment_frames = segment_end - segment_start;
-                    let output_slice = &mut output[segment_start * 2..segment_end * 2];
-                    self.inner.process(output_slice, segment_frames);
-                }
-
-                if segment_end >= frames {
-                    break;
-                }
-
-                segment_start = segment_end;
-                split_idx += 1;
-            }
-        }
-
-        fn reset_owners(&self) {
-            self.events.reset_owner();
-            self.inner.reset_owners();
-        }
-    }
-}
-
-#[cfg(feature = "midi")]
-pub use midi_processor::{BlockClock, MidiProcessor};

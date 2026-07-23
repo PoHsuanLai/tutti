@@ -83,7 +83,7 @@ pub struct ClockMaster {
     mtc_piece: AtomicU8,
 }
 
-impl tutti_core::processor::BlockClock for ClockMaster {
+impl crate::pre_block::BlockClock for ClockMaster {
     #[inline]
     fn tick(&self, block_size: usize) {
         ClockMaster::tick(self, block_size)

@@ -31,14 +31,12 @@ use tutti_core::ecs::{
     TransportClockNode,
 };
 
-#[cfg(feature = "midi")]
-use tutti_core::processor::MidiProcessor;
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_io::MidiIo;
 #[cfg(feature = "midi")]
 use tutti_midi_io::PendingMidi;
 #[cfg(feature = "midi")]
-use tutti_midi_runtime::MidiBus;
+use tutti_midi_runtime::{MidiBus, MidiPreBlock};
 #[cfg(feature = "midi")]
 use tutti_midi_types::MidiRoutingTable;
 
@@ -47,16 +45,6 @@ use tutti_sampler::{PendingSampler, Sampler};
 
 #[cfg(feature = "analysis")]
 use tutti_analysis::PendingAnalysis;
-
-/// The audio processor type that runs on the RT callback thread.
-///
-/// - With `midi`: `MidiProcessor<GraphProcessor>` — splits buffers on MIDI
-///   events, routes them through the caller-supplied queue, then ticks the graph.
-/// - Without `midi`: `GraphProcessor` — just ticks the graph.
-#[cfg(feature = "midi")]
-pub type DefaultProcessor = MidiProcessor<GraphProcessor>;
-#[cfg(not(feature = "midi"))]
-pub type DefaultProcessor = GraphProcessor;
 
 /// Build the engine from a [`TuttiPlugin`](crate::TuttiPlugin) config and insert
 /// every subsystem resource into `app`. The audio callback is live on return.
@@ -113,7 +101,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
 
     // The routing table is a MIDI-subsystem concern, not a graph one: it maps a
     // MIDI channel to a destination unit's mailbox, with no fundsp edge behind
-    // it. Built here only because the RT `MidiProcessor` needs its snapshot at
+    // it. Built here only because the RT `MidiPreBlock` needs its snapshot at
     // assembly time; the writer half is handed to `TuttiMidiPlugin` below.
     #[cfg(feature = "midi")]
     let midi_route = MidiRoutingTable::new();
@@ -140,29 +128,31 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         (master, receiver)
     };
 
+    // MIDI now runs as a once-per-block *producer* before the graph render, not
+    // as a decorator that wraps and splits the render. It ticks the clock, polls
+    // hardware, and routes events into node inboxes; the nodes self-split on each
+    // event's `frame_offset`. See `MidiPreBlock`.
     #[cfg(feature = "midi")]
-    let processor: DefaultProcessor = {
-        let mut midi_proc = MidiProcessor::new(graph_processor, midi_route.snapshot_arc());
-        midi_proc.set_queue(Arc::new(midi_bus.clone()));
-        midi_proc.set_clock(clock_master.clone());
+    let pre_block = {
+        let mut pre_block = MidiPreBlock::new(midi_route.snapshot_arc());
+        pre_block.set_queue(Arc::new(midi_bus.clone()));
+        pre_block.set_clock(clock_master.clone());
 
         // Hardware MIDI input only exists under `midi-hardware`.
         #[cfg(feature = "midi-hardware")]
         if let Some(ref io) = midi_io {
-            midi_proc.set_input(io.port_manager().clone());
+            pre_block.set_input(io.port_manager().clone());
         }
 
-        midi_proc
+        pre_block
     };
 
-    #[cfg(not(feature = "midi"))]
-    let processor: DefaultProcessor = graph_processor;
-
-    let callback_state = Arc::new(AudioCallbackState::new(
-        processor,
-        meter.clone(),
-        tap.clone(),
-    ));
+    let callback_state = {
+        let state = AudioCallbackState::new(graph_processor, meter.clone(), tap.clone());
+        #[cfg(feature = "midi")]
+        let state = state.with_pre_block(pre_block);
+        Arc::new(state)
+    };
     audio_engine.start(callback_state.clone())?;
 
     #[cfg(feature = "sampler")]

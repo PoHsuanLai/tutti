@@ -11,7 +11,7 @@
 use assert_no_alloc::AllocDisabler;
 use parking_lot::Mutex;
 use tutti_core::dsp::{bell_hz, limiter_stereo, pan, sine_hz, AudioUnit};
-use tutti_core::processor::{AudioProcessor, GraphProcessor};
+use tutti_core::processor::GraphProcessor;
 use tutti_core::{dsp::Net, SampleRate, Transport, TransportClock};
 
 use std::sync::Arc;

@@ -15,6 +15,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+use crate::params::Beat;
 use crate::{AtomicBool, AtomicF64, AtomicU32};
 
 /// Number of ports a beat signal occupies: whole beats, then fraction.
@@ -57,16 +58,16 @@ impl SeekSlot {
     }
 
     /// Request a jump to `beat`. Applied by the clock on its next buffer.
-    pub fn request(&self, beat: f64) {
-        self.target.store(beat, Ordering::Release);
+    pub fn request(&self, beat: impl Into<Beat>) {
+        self.target.store(beat.into().get(), Ordering::Release);
         self.pending.store(true, Ordering::Release);
     }
 
     /// Take a pending target, clearing the flag. `None` if no seek is due.
-    pub fn take(&self) -> Option<f64> {
+    pub fn take(&self) -> Option<Beat> {
         self.pending
             .swap(false, Ordering::AcqRel)
-            .then(|| self.target.load(Ordering::Acquire))
+            .then(|| Beat(self.target.load(Ordering::Acquire)))
     }
 
     pub fn is_pending(&self) -> bool {
@@ -77,6 +78,61 @@ impl SeekSlot {
 impl Default for SeekSlot {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A loop region on the timeline: `start..end`, guaranteed non-empty and
+/// correctly ordered.
+///
+/// The `(f64, f64)` tuple this replaces carried no invariant, so every
+/// consumer re-checked `end > start` before using it — the clock did so in two
+/// separate places. Constructing this type performs that check once, and
+/// `None` means "not a usable loop" rather than "a loop you must validate".
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoopRange {
+    start: Beat,
+    end: Beat,
+}
+
+impl LoopRange {
+    /// Build a region, or `None` if it is empty or inverted.
+    pub fn new(start: impl Into<Beat>, end: impl Into<Beat>) -> Option<Self> {
+        let (start, end) = (start.into(), end.into());
+        (end.get() > start.get()).then_some(Self { start, end })
+    }
+
+    #[inline]
+    pub fn start(&self) -> Beat {
+        self.start
+    }
+
+    #[inline]
+    pub fn end(&self) -> Beat {
+        self.end
+    }
+
+    /// Length in beats. Always positive, by construction.
+    #[inline]
+    pub fn len(&self) -> f64 {
+        self.end.get() - self.start.get()
+    }
+
+    #[inline]
+    pub fn contains(&self, beat: Beat) -> bool {
+        beat.get() >= self.start.get() && beat.get() < self.end.get()
+    }
+
+    /// Wrap `beat` back into the region, preserving overshoot.
+    ///
+    /// The division is safe because `len()` is positive by construction — the
+    /// guard every caller used to write is now unnecessary.
+    #[inline]
+    pub fn wrap(&self, beat: Beat) -> Beat {
+        if beat.get() < self.end.get() {
+            return beat;
+        }
+        let offset = (beat.get() - self.start.get()) % self.len();
+        Beat(self.start.get() + offset)
     }
 }
 
@@ -108,13 +164,19 @@ impl LoopSpan {
         self.enabled.store(enabled, Ordering::Release);
     }
 
-    /// The region, or `None` when looping is disabled. Callers that need the
-    /// bounds regardless of arming should read `start`/`end` directly.
-    pub fn range(&self) -> Option<(f64, f64)> {
-        self.is_enabled().then(|| self.bounds())
+    /// The active region: `None` when looping is disarmed *or* when the stored
+    /// bounds are not a usable range. Consumers get a validated region or
+    /// nothing, and no longer re-check `end > start` themselves.
+    pub fn range(&self) -> Option<LoopRange> {
+        if !self.is_enabled() {
+            return None;
+        }
+        let (start, end) = self.bounds();
+        LoopRange::new(start, end)
     }
 
-    /// The region regardless of whether looping is armed.
+    /// The raw stored bounds, regardless of arming or validity. For UI that
+    /// must render a brace the user is mid-drag on.
     pub fn bounds(&self) -> (f64, f64) {
         (
             self.start.load(Ordering::Acquire),
@@ -210,7 +272,7 @@ mod tests {
 
         seek.request(8.0);
         assert!(seek.is_pending());
-        assert_eq!(seek.take(), Some(8.0));
+        assert_eq!(seek.take(), Some(Beat(8.0)));
         // Consumed — a second take sees nothing.
         assert_eq!(seek.take(), None);
         assert!(!seek.is_pending());
@@ -224,7 +286,7 @@ mod tests {
         assert_eq!(span.bounds(), (2.0, 6.0), "bounds survive disarming");
 
         span.set_enabled(true);
-        assert_eq!(span.range(), Some((2.0, 6.0)));
+        assert_eq!(span.range(), LoopRange::new(2.0, 6.0));
     }
 
     #[test]
@@ -241,5 +303,49 @@ mod tests {
         assert!(!declick.is_active());
         // Total is retained so a fade's length stays inspectable.
         assert_eq!(declick.total.load(Ordering::Acquire), 480);
+    }
+
+    #[test]
+    fn loop_range_rejects_empty_and_inverted() {
+        assert!(LoopRange::new(0.0, 4.0).is_some());
+        assert!(
+            LoopRange::new(4.0, 4.0).is_none(),
+            "an empty region is not a loop"
+        );
+        assert!(
+            LoopRange::new(8.0, 4.0).is_none(),
+            "an inverted region is not a loop"
+        );
+    }
+
+    #[test]
+    fn loop_range_wrap_preserves_overshoot() {
+        let r = LoopRange::new(4.0, 8.0).unwrap();
+
+        // Inside the region: untouched.
+        assert_eq!(r.wrap(Beat(6.0)), Beat(6.0));
+        // One beat past the end wraps to one beat past the start.
+        assert_eq!(r.wrap(Beat(9.0)), Beat(5.0));
+        // Exactly at the end wraps to the start.
+        assert_eq!(r.wrap(Beat(8.0)), Beat(4.0));
+        // More than one length past still lands inside.
+        let far = r.wrap(Beat(4.0 + 4.0 * 3.5));
+        assert!(far.get() >= 4.0 && far.get() < 8.0, "got {far:?}");
+    }
+
+    #[test]
+    fn loop_span_range_is_none_when_bounds_are_unusable() {
+        let span = LoopSpan::new(0.0, 0.0);
+        span.set_enabled(true);
+        assert!(
+            span.range().is_none(),
+            "armed but empty must not yield a region"
+        );
+
+        span.set_range(8.0, 4.0);
+        assert!(span.range().is_none(), "armed but inverted likewise");
+
+        span.set_range(0.0, 4.0);
+        assert_eq!(span.range(), LoopRange::new(0.0, 4.0));
     }
 }

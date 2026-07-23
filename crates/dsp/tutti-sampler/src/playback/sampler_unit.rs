@@ -319,7 +319,7 @@ impl SamplerUnit {
         if !transport.is_rolling() {
             return None;
         }
-        let current_beat = transport.beat();
+        let current_beat = transport.beat().get();
         let beat_offset = current_beat - self.start_beat;
         if beat_offset < 0.0 {
             return None;
@@ -585,10 +585,10 @@ mod tests {
     }
 
     impl Timeline for MockTransport {
-        fn beat(&self) -> f64 {
-            self.beat
+        fn beat(&self) -> tutti_core::Beat {
+            tutti_core::Beat(self.beat)
         }
-        fn loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
             None
         }
         fn is_rolling(&self) -> bool {

@@ -5,7 +5,8 @@ use std::sync::Arc;
 use super::motion::MotionFsm;
 use super::settings::TransportSettings;
 use super::state::ClockInputs;
-use crate::params::{Bpm, SampleRate};
+use super::state::LoopRange;
+use crate::params::{Beat, Bpm, SampleRate};
 
 /// The two halves of a transport, held together.
 ///
@@ -67,8 +68,8 @@ impl Transport {
 }
 
 impl super::Timeline for Transport {
-    fn beat(&self) -> f64 {
-        self.settings.beat()
+    fn beat(&self) -> Beat {
+        Beat(self.settings.beat())
     }
 
     fn tempo(&self) -> Bpm {
@@ -79,7 +80,7 @@ impl super::Timeline for Transport {
         self.motion.is_playing()
     }
 
-    fn loop_range(&self) -> Option<(f64, f64)> {
+    fn loop_range(&self) -> Option<LoopRange> {
         self.settings.loop_span.range()
     }
 }
@@ -113,7 +114,7 @@ mod tests {
 
         // beat/tempo come from settings, is_playing from the FSM — the reason
         // this type exists.
-        assert_eq!(t.beat(), 8.0);
+        assert_eq!(t.beat(), Beat(8.0));
         assert_eq!(t.tempo().get(), 90.0);
         assert!(t.is_rolling());
     }
@@ -132,7 +133,7 @@ mod tests {
 
         let _ = t.motion.try_send(MotionEvent::Locate(4.0));
         t.motion.drain();
-        assert_eq!(inputs.seek.take(), Some(4.0));
+        assert_eq!(inputs.seek.take(), Some(Beat(4.0)));
     }
 
     #[test]

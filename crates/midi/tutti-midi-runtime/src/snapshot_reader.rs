@@ -27,7 +27,7 @@ pub struct MidiSnapshotReader {
 
 impl MidiSnapshotReader {
     pub fn new(snapshot: MidiSnapshot, timeline: Arc<OfflineTimeline>) -> Self {
-        let start_beat = timeline.beat();
+        let start_beat = timeline.beat().get();
         Self {
             snapshot,
             timeline,
@@ -44,7 +44,7 @@ impl MidiSource for MidiSnapshotReader {
         block_size: usize,
         buffer: &mut [MidiEvent],
     ) -> usize {
-        let current_beat = self.timeline.beat();
+        let current_beat = self.timeline.beat().get();
         let last_beat = self.last_poll_beat.load(Ordering::Acquire);
 
         if current_beat <= last_beat {

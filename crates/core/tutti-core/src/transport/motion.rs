@@ -248,6 +248,7 @@ impl MotionFsm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::params::Beat;
 
     fn fsm() -> MotionFsm {
         MotionFsm::new(TransportSettings::new())
@@ -310,7 +311,7 @@ mod tests {
         let _ = m.try_send(MotionEvent::Locate(8.0));
         m.drain();
 
-        assert_eq!(m.seek.take(), Some(8.0), "the clock must see a seek");
+        assert_eq!(m.seek.take(), Some(Beat(8.0)), "the clock must see a seek");
         assert_eq!(m.settings.beat.load(Ordering::Acquire), 8.0);
     }
 
@@ -320,7 +321,7 @@ mod tests {
         let _ = m.try_send(MotionEvent::LocateAndPlay(4.0));
         m.drain();
 
-        assert_eq!(m.seek.take(), Some(4.0));
+        assert_eq!(m.seek.take(), Some(Beat(4.0)));
         assert!(m.is_playing());
     }
 
@@ -345,7 +346,7 @@ mod tests {
             .is_ok());
         m.drain();
 
-        assert_eq!(m.seek.take(), Some(16.0));
+        assert_eq!(m.seek.take(), Some(Beat(16.0)));
         assert!(m.is_playing());
     }
 

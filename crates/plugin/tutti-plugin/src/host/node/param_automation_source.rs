@@ -84,7 +84,7 @@ impl ParamAutomationSource {
         if !self.transport.is_rolling() {
             return;
         }
-        let start_beat = self.transport.beat();
+        let start_beat = self.transport.beat().get();
         let tempo_bpm = self.transport.tempo().get();
         if tempo_bpm <= 0.0 || self.sample_rate <= 0.0 {
             return;
@@ -103,9 +103,11 @@ impl ParamAutomationSource {
             let mut offset = 0usize;
             loop {
                 let beat = start_beat + offset as f64 * beats_per_sample;
+                // `LoopRange::wrap` is a no-op outside the region and needs no
+                // `end > start` guard — the type cannot hold an inverted range.
                 let eff_beat = match loop_range {
-                    Some((ls, le)) if le > ls && beat >= le => ls + ((beat - ls) % (le - ls)),
-                    _ => beat,
+                    Some(region) => region.wrap(tutti_core::Beat(beat)).get(),
+                    None => beat,
                 };
                 if let Some(v) = param.envelope.get_value_at(eff_beat) {
                     queue.add_point(offset as i32, v as f64);
@@ -163,10 +165,10 @@ mod tests {
         }
     }
     impl Timeline for TestTransport {
-        fn beat(&self) -> f64 {
-            self.beat.load(Ordering::Acquire)
+        fn beat(&self) -> tutti_core::Beat {
+            tutti_core::Beat(self.beat.load(Ordering::Acquire))
         }
-        fn loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
             None
         }
         fn is_rolling(&self) -> bool {

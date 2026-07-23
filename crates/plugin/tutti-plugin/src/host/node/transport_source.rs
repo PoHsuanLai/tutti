@@ -68,9 +68,8 @@ impl TransportSource {
             0.0
         };
         info = info.with_position_beats(beats, seconds);
-        let span = &reader.settings.loop_span;
-        if let Some((start, end)) = span.range() {
-            info = info.with_loop(true, start, end);
+        if let Some(region) = reader.settings.loop_span.range() {
+            info = info.with_loop(true, region.start().get(), region.end().get());
         }
         *out = info;
     }

@@ -86,10 +86,10 @@ impl HarmonySource {
     fn window(&self, block_size: usize) -> Option<HarmonyWindow> {
         if !self.transport.is_rolling() {
             self.last_beat
-                .store(self.transport.beat(), Ordering::Release);
+                .store(self.transport.beat().get(), Ordering::Release);
             return None;
         }
-        let start_beat = self.transport.beat();
+        let start_beat = self.transport.beat().get();
         let last_beat = self.last_beat.load(Ordering::Acquire);
         if start_beat + 1e-9 < last_beat {
             // Backward seek: rewind both cursors to the new position.
@@ -247,10 +247,10 @@ mod tests {
         }
     }
     impl Timeline for TestTransport {
-        fn beat(&self) -> f64 {
-            self.beat.load(Ordering::Acquire)
+        fn beat(&self) -> tutti_core::Beat {
+            tutti_core::Beat(self.beat.load(Ordering::Acquire))
         }
-        fn loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
             None
         }
         fn is_rolling(&self) -> bool {

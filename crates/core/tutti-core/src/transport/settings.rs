@@ -95,6 +95,7 @@ impl Default for TransportSettings {
 
 #[cfg(test)]
 mod tests {
+    use super::super::LoopRange;
     use super::*;
 
     #[test]
@@ -107,7 +108,7 @@ mod tests {
 
         b.loop_span.set_range(2.0, 6.0);
         b.loop_span.set_enabled(true);
-        assert_eq!(a.loop_span.range(), Some((2.0, 6.0)));
+        assert_eq!(a.loop_span.range(), LoopRange::new(2.0, 6.0));
     }
 
     #[test]

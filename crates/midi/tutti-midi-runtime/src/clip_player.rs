@@ -108,11 +108,11 @@ impl MidiClipSource {
             // Track the beat anyway so a seek-while-paused doesn't
             // surprise us when playback resumes.
             self.last_beat
-                .store(self.transport.beat(), Ordering::Release);
+                .store(self.transport.beat().get(), Ordering::Release);
             return None;
         }
 
-        let block_start_beat = self.transport.beat();
+        let block_start_beat = self.transport.beat().get();
         let last_beat = self.last_beat.load(Ordering::Acquire);
         // Detect rewinds / seeks. Tolerate a tiny epsilon so float
         // jitter at exactly-equal beats doesn't trigger reseeking.
@@ -274,10 +274,10 @@ mod tests {
     }
 
     impl Timeline for TestTransport {
-        fn beat(&self) -> f64 {
-            self.beat.load(Ordering::Acquire)
+        fn beat(&self) -> tutti_core::Beat {
+            tutti_core::Beat(self.beat.load(Ordering::Acquire))
         }
-        fn loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
             None
         }
         fn is_rolling(&self) -> bool {

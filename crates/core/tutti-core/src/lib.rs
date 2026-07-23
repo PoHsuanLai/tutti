@@ -36,7 +36,7 @@ pub use error::{Error, Result};
 // addressing — grouped under one `param` module by what they do.
 pub mod param;
 pub use param::{
-    Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio, SampleRate, Seconds, Semitones, Unit,
+    Beat, Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio, SampleRate, Seconds, Semitones, Unit,
     UnitParam,
 };
 
@@ -55,9 +55,9 @@ pub use processor::{AudioProcessor, GraphProcessor};
 pub mod transport;
 pub use transport::{
     beat_from_ports, AutomationEnvelopeFn, AutomationReaderInput, ClickNode, ClickSettings,
-    ClickState, Direction, MetronomeHandle, MetronomeMode, MotionEvent, MotionFsm, MotionState,
-    OfflineTimeline, OfflineTimelineConfig, QueueFull, Timeline, Transport, TransportClock,
-    TransportSettings, BEAT_PORTS,
+    ClickState, Direction, LoopRange, MetronomeHandle, MetronomeMode, MotionEvent, MotionFsm,
+    MotionState, OfflineTimeline, OfflineTimelineConfig, QueueFull, Timeline, Transport,
+    TransportClock, TransportSettings, BEAT_PORTS,
 };
 
 pub mod metering;

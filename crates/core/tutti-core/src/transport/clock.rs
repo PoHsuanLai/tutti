@@ -1,18 +1,11 @@
 //! Sample-accurate transport clock.
 
 use super::state::{ClockInputs, LoopSpan, SeekSlot};
+use crate::params::Beat;
 use crate::{AtomicBool, AtomicF64, Ordering};
 use fundsp::prelude::*;
 use std::any;
 use std::sync::Arc;
-
-/// Wrap a beat position back into the loop range, preserving overshoot.
-#[inline]
-fn wrap_beat(beat: f64, loop_start: f64, loop_end: f64) -> f64 {
-    let overshoot = beat - loop_end;
-    let loop_length = loop_end - loop_start;
-    loop_start + (overshoot % loop_length)
-}
 
 /// Split a beat into floor (whole beats) and fractional part.
 /// Returns (floor as f32, fraction as f32) for dual-channel output.
@@ -150,19 +143,17 @@ impl TransportClock {
     #[inline]
     fn apply_pending_seek(&mut self) {
         if let Some(target) = self.seek.take() {
-            self.current_beat = target;
+            self.current_beat = target.get();
         }
     }
 
     #[inline]
     fn apply_loop_wrap(&mut self) {
-        let Some((loop_start, loop_end)) = self.loop_span.as_ref().and_then(LoopSpan::range) else {
+        let Some(region) = self.loop_span.as_ref().and_then(LoopSpan::range) else {
             return;
         };
-
-        if loop_end > loop_start && self.current_beat >= loop_end {
-            self.current_beat = wrap_beat(self.current_beat, loop_start, loop_end);
-        }
+        // `LoopRange` is non-empty by construction, so `wrap` needs no guard.
+        self.current_beat = region.wrap(Beat(self.current_beat)).get();
     }
 }
 
@@ -247,17 +238,13 @@ impl AudioUnit for TransportClock {
                 output.set_f32(0, i, whole);
                 output.set_f32(1, i, frac);
             }
-        } else if let Some((loop_start, loop_end)) = active_loop.filter(|(start, end)| end > start)
-        {
+        } else if let Some(region) = active_loop {
             for i in 0..size {
                 let (whole, frac) = split_beat(self.current_beat);
                 output.set_f32(0, i, whole);
                 output.set_f32(1, i, frac);
                 self.current_beat += self.beat_per_sample;
-
-                if self.current_beat >= loop_end {
-                    self.current_beat = wrap_beat(self.current_beat, loop_start, loop_end);
-                }
+                self.current_beat = region.wrap(Beat(self.current_beat)).get();
             }
         } else {
             for i in 0..size {

@@ -100,6 +100,20 @@ unit_newtype!(
     f64
 );
 unit_newtype!(
+    /// A position on the musical timeline, in beats.
+    ///
+    /// A *position*, not a duration — beat 4.0 is where the fifth beat starts,
+    /// not "four beats long". Distinct from [`Bpm`], which is a rate.
+    ///
+    /// `f64`-backed for the same reason as `Bpm`: an `f32` cannot resolve
+    /// sub-beat detail past ~beat 16384 (its ULP exceeds 0.002 beats), which is
+    /// audible as automation stair-stepping in a long session. `TransportClock`
+    /// splits the beat across two `f32` ports precisely to dodge that; the
+    /// scalar form must not reintroduce it.
+    Beat,
+    f64
+);
+unit_newtype!(
     /// Pitch offset in semitones. 12 semitones = 1 octave.
     Semitones
 );

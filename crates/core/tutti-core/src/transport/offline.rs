@@ -5,7 +5,8 @@
 //! reproducible timeline without a real CPAL callback (golden tests,
 //! automation scrubbing) can use it.
 
-use crate::params::{Bpm, SampleRate};
+use super::state::LoopRange;
+use crate::params::{Beat, Bpm, SampleRate};
 use crate::{AtomicBool, AtomicF64, Ordering};
 
 /// Configuration for constructing an [`OfflineTimeline`].
@@ -50,7 +51,7 @@ impl Default for OfflineTimelineConfig {
 /// // Advance by 44100 samples (1 second at 44.1kHz)
 /// // At 120 BPM, that's 2 beats
 /// timeline.advance(44100);
-/// assert!((timeline.beat() - 2.0).abs() < 0.001);
+/// assert!((timeline.beat().get() - 2.0).abs() < 0.001);
 /// ```
 #[derive(Debug)]
 #[repr(align(64))]
@@ -119,8 +120,8 @@ impl OfflineTimeline {
     }
 
     #[inline]
-    pub fn beat(&self) -> f64 {
-        self.current_beat.load(Ordering::Acquire)
+    pub fn beat(&self) -> Beat {
+        Beat(self.current_beat.load(Ordering::Acquire))
     }
 
     #[inline]
@@ -144,7 +145,7 @@ impl OfflineTimeline {
 }
 
 impl super::Timeline for OfflineTimeline {
-    fn beat(&self) -> f64 {
+    fn beat(&self) -> Beat {
         self.beat()
     }
 
@@ -158,13 +159,14 @@ impl super::Timeline for OfflineTimeline {
         true
     }
 
-    fn loop_range(&self) -> Option<(f64, f64)> {
-        self.loop_enabled.load(Ordering::Acquire).then(|| {
-            (
-                self.loop_start.load(Ordering::Acquire),
-                self.loop_end.load(Ordering::Acquire),
-            )
-        })
+    fn loop_range(&self) -> Option<LoopRange> {
+        if !self.loop_enabled.load(Ordering::Acquire) {
+            return None;
+        }
+        LoopRange::new(
+            self.loop_start.load(Ordering::Acquire),
+            self.loop_end.load(Ordering::Acquire),
+        )
     }
 }
 
@@ -210,9 +212,9 @@ mod tests {
         clock.tick(&[], &mut out);
         let clock_beat = out[0] as f64 + out[1] as f64;
         assert!(
-            (clock_beat - timeline.beat()).abs() < 1e-9,
+            (clock_beat - timeline.beat().get()).abs() < 1e-9,
             "first sample disagrees: clock={clock_beat} timeline={}",
-            timeline.beat()
+            timeline.beat().get()
         );
 
         // And they must stay in step across a block boundary. The driver ticks
@@ -229,10 +231,10 @@ mod tests {
         // EMITTED sample, because emit-then-advance means sample N-1 carried
         // the beat before the final increment.
         assert!(
-            ((timeline.beat() - clock_beat) - expected_lag).abs() < 1e-9,
+            ((timeline.beat().get() - clock_beat) - expected_lag).abs() < 1e-9,
             "drifted across the block: clock={clock_beat} timeline={} \
              (expected exactly one beats_per_sample apart)",
-            timeline.beat()
+            timeline.beat().get()
         );
     }
 
@@ -248,10 +250,10 @@ mod tests {
         // At 120 BPM, 2 beats/second, 44100 samples/second
         // So 22050 samples = 1 beat
         timeline.advance(22050);
-        assert!((timeline.beat() - 1.0).abs() < 0.001);
+        assert!((timeline.beat().get() - 1.0).abs() < 0.001);
 
         timeline.advance(22050);
-        assert!((timeline.beat() - 2.0).abs() < 0.001);
+        assert!((timeline.beat().get() - 2.0).abs() < 0.001);
     }
 
     #[test]
@@ -268,11 +270,11 @@ mod tests {
 
         // Advance to beat 3
         timeline.advance((3.0 * samples_per_beat) as usize);
-        assert!((timeline.beat() - 3.0).abs() < 0.01);
+        assert!((timeline.beat().get() - 3.0).abs() < 0.01);
 
         // Advance 2 more beats - should wrap to beat 1
         timeline.advance((2.0 * samples_per_beat) as usize);
-        assert!((timeline.beat() - 1.0).abs() < 0.01);
+        assert!((timeline.beat().get() - 1.0).abs() < 0.01);
     }
 
     #[test]
@@ -288,7 +290,7 @@ mod tests {
 
         // Advance past where loop end would be
         timeline.advance((10.0 * samples_per_beat) as usize);
-        assert!((timeline.beat() - 10.0).abs() < 0.01);
+        assert!((timeline.beat().get() - 10.0).abs() < 0.01);
     }
 
     #[test]
@@ -300,11 +302,11 @@ mod tests {
             loop_range: None,
         });
 
-        assert!((timeline.beat() - 4.0).abs() < 0.001);
+        assert!((timeline.beat().get() - 4.0).abs() < 0.001);
 
         let samples_per_beat = 44100.0 / 2.0;
         timeline.advance(samples_per_beat as usize);
-        assert!((timeline.beat() - 5.0).abs() < 0.01);
+        assert!((timeline.beat().get() - 5.0).abs() < 0.01);
     }
 
     #[test]
@@ -318,11 +320,11 @@ mod tests {
 
         let samples_per_beat = 44100.0 / 2.0;
         timeline.advance((5.0 * samples_per_beat) as usize);
-        assert!((timeline.beat() - 5.0).abs() < 0.01);
+        assert!((timeline.beat().get() - 5.0).abs() < 0.01);
 
         // Reset to beat 2
         timeline.reset(2.0);
-        assert!((timeline.beat() - 2.0).abs() < 0.001);
+        assert!((timeline.beat().get() - 2.0).abs() < 0.001);
     }
 
     #[test]
@@ -336,7 +338,7 @@ mod tests {
             loop_range: Some((0.0, 8.0)),
         });
 
-        assert_eq!(timeline.loop_range(), Some((0.0, 8.0)));
+        assert_eq!(timeline.loop_range(), LoopRange::new(0.0, 8.0));
         assert_eq!(timeline.tempo().get(), 120.0);
         // An offline timeline has nothing to pause it.
         assert!(timeline.is_rolling());

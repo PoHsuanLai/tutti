@@ -474,13 +474,13 @@ mod tests {
         fn is_rolling(&self) -> bool {
             self.playing.load(Ordering::Relaxed)
         }
-        fn beat(&self) -> f64 {
-            f64::from_bits(self.beat.load(Ordering::Relaxed))
+        fn beat(&self) -> tutti_core::Beat {
+            tutti_core::Beat(f64::from_bits(self.beat.load(Ordering::Relaxed)))
         }
         fn tempo(&self) -> Bpm {
             Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
         }
-        fn loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
             None
         }
     }

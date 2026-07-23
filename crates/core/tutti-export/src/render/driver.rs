@@ -170,10 +170,10 @@ mod tests {
         // shows up here as N+1, which is the desync this test exists to catch.
         let expected = start_beat + 512.0 * timeline.beats_per_sample();
         assert!(
-            (timeline.beat() - expected).abs() < 1e-9,
+            (timeline.beat().get() - expected).abs() < 1e-9,
             "timeline advanced by {} samples' worth, expected exactly 512 \
              (a priming advance() desyncs it from the net's clock)",
-            (timeline.beat() - start_beat) / timeline.beats_per_sample()
+            (timeline.beat().get() - start_beat) / timeline.beats_per_sample()
         );
     }
 }

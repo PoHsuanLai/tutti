@@ -18,7 +18,8 @@ pub use motion::{MotionEvent, MotionFsm, MotionState, QueueFull};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use settings::TransportSettings;
 pub use state::{
-    beat_from_ports, ClockInputs, Declick, LoopSpan, SeekSlot, TransportState, BEAT_PORTS,
+    beat_from_ports, ClockInputs, Declick, LoopRange, LoopSpan, SeekSlot, TransportState,
+    BEAT_PORTS,
 };
 
 #[cfg(feature = "bevy")]
@@ -57,12 +58,13 @@ pub use plugin::{
 /// [`TransportSettings`] and are read directly by the one consumer that needs
 /// them (the metronome).
 pub trait Timeline: Send + Sync {
-    /// Current position in beats.
-    fn beat(&self) -> f64;
+    /// Current position on the timeline.
+    fn beat(&self) -> crate::params::Beat;
     /// Current tempo.
     fn tempo(&self) -> crate::params::Bpm;
     /// Whether time is advancing. An offline render is always rolling.
     fn is_rolling(&self) -> bool;
-    /// The active loop region, or `None` when not looping.
-    fn loop_range(&self) -> Option<(f64, f64)>;
+    /// The active loop region, or `None` when not looping. Always a valid,
+    /// non-empty region — see [`LoopRange`].
+    fn loop_range(&self) -> Option<LoopRange>;
 }

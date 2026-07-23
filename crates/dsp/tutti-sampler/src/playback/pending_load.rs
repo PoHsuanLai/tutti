@@ -42,9 +42,9 @@ use tutti_core::graph::{AudioNode, GraphDirty, NodeKind, AudioGraphRes, Volume};
 use bevy_tasks::{block_on, futures_lite::future};
 
 use super::node::{SamplerLooping, SamplerNode, SamplerSpeed};
-use tutti_core::{Wave, WaveAsset};
+use tutti_core::{Linear, Ratio, SamplePosition, Wave, WaveAsset};
 
-use crate::SamplerUnit;
+use crate::{LoopSetting, SamplerUnit, SamplerUnitConfig};
 
 /// Level-0 waveform peaks (256 samples per peak, min/max pairs) — the same
 /// shape tutti-sampler's `PeakData` alias names. Not re-exported publicly
@@ -70,8 +70,8 @@ type WaveLoad = Result<(Arc<Wave>, PeakData), String>;
 #[derive(Component, Debug, Clone)]
 pub struct PendingSamplerLoad {
     pub wave: Handle<WaveAsset>,
-    pub gain: f32,
-    pub speed: f32,
+    pub gain: Linear,
+    pub speed: Ratio,
     pub looping: bool,
 }
 
@@ -80,19 +80,19 @@ impl PendingSamplerLoad {
     pub fn new(wave: Handle<WaveAsset>) -> Self {
         Self {
             wave,
-            gain: 1.0,
-            speed: 1.0,
+            gain: Linear::new(1.0),
+            speed: Ratio::new(1.0),
             looping: false,
         }
     }
 
     pub fn gain(mut self, gain: f32) -> Self {
-        self.gain = gain;
+        self.gain = Linear::new(gain);
         self
     }
 
     pub fn speed(mut self, speed: f32) -> Self {
-        self.speed = speed;
+        self.speed = Ratio::new(speed);
         self
     }
 
@@ -222,11 +222,25 @@ pub fn promote_pending_samplers(
             continue;
         };
         let wave = asset.0.clone();
-        let unit = SamplerUnit::with_settings(
+        // A looping pending load loops over the whole sample; `SamplerUnit` fills
+        // in the range from the wave length.
+        let loop_setting = if pending_load.looping {
+            LoopSetting::On {
+                start: SamplePosition::new(0.0),
+                end: SamplePosition::new(wave.len() as f64),
+                crossfade_samples: 0,
+            }
+        } else {
+            LoopSetting::Off
+        };
+        let unit = SamplerUnit::with_config(
             wave,
-            pending_load.gain,
-            pending_load.speed,
-            pending_load.looping,
+            SamplerUnitConfig {
+                gain: pending_load.gain,
+                speed: pending_load.speed,
+                loop_setting,
+                ..Default::default()
+            },
         );
         let id = graph.0.add(unit);
         dirty.0 = true;
@@ -240,8 +254,8 @@ pub fn promote_pending_samplers(
                 SamplerNode,
                 AudioNode(id),
                 NodeKind::Sampler,
-                Volume(pending_load.gain),
-                SamplerSpeed(pending_load.speed),
+                Volume(pending_load.gain.get()),
+                SamplerSpeed(pending_load.speed.get()),
                 SamplerLooping(pending_load.looping),
             ));
     }

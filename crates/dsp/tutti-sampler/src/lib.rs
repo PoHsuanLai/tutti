@@ -59,12 +59,17 @@
 //!
 //! let wave = Arc::new(Wave::with_capacity(1, 44_100.0, 0));
 //! let unit = SamplerUnit::new(wave);
-//! let stretched = stretch::Unit::new(Box::new(unit), 44_100.0);
-//! # let _ = stretched;
+//! // The stretcher is a pure frame-in → frame-out filter: it owns no source.
+//! // The caller ticks `unit` and feeds each frame into `stretched`.
+//! let stretched = stretch::Unit::new(44_100.0);
+//! # let _ = (unit, stretched);
 //! ```
 
 pub mod error;
-pub use error::{Error, Result};
+pub use error::{Error, RecordingError, Result};
+
+#[macro_use]
+mod macros;
 
 mod node_id;
 
@@ -79,6 +84,7 @@ pub mod playback;
 pub mod input;
 pub mod preview;
 pub mod recording;
+pub mod tiering;
 
 // Bevy ECS surface of the input / preview / recording domains.
 #[cfg(feature = "bevy")]
@@ -100,8 +106,10 @@ pub use preview::{
 pub use preview::Auditioner;
 // Bevy-free DSP leaves + value types from `playback` — usable for direct
 // FunDSP-graph integration without the ECS layer.
-pub use playback::{ClipCommand, ClipSpec, SamplerUnit, SlotId, StreamingSamplerUnit,
-    TrackClipReaderHandle, TrackClipReaderUnit};
+pub use butler::{LruCache, StreamPin};
+pub use playback::{ClipCommand, ClipReader, ClipSpec, Direction, LoopSetting, SamplerUnit,
+    SamplerUnitConfig, SlotId, StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit,
+    TransportPlacement, TrackClipReaderHandle, TrackClipReaderUnit};
 // Bevy ECS surface of `playback`.
 #[cfg(feature = "bevy")]
 pub use playback::{
@@ -127,6 +135,9 @@ pub(crate) mod butler;
 
 mod sampler;
 pub use sampler::{Sampler, SamplerConfig};
+
+mod ports;
+pub use ports::{ClipControl, Command, Commands, Source, Status};
 
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::Resource;
@@ -184,7 +195,9 @@ impl bevy_app::Plugin for TuttiSamplerPlugin {
 /// [`Mode`](capture::Mode), …) that those messages and the [`Recorder`](capture::Recorder)
 /// speak.
 pub mod capture {
-    pub use crate::recording::capture::config::{Config, Mode, QuantizeSettings, Source};
+    pub use crate::recording::capture::config::{
+        CaptureFormat, Config, Mode, QuantizeSettings, Source,
+    };
     pub use crate::recording::capture::events::Buffer;
     pub use crate::recording::capture::manager::Recorder;
     pub use crate::recording::capture::session::{
@@ -194,5 +207,5 @@ pub mod capture {
 
 /// Time-stretching and pitch-shifting DSP unit.
 pub mod stretch {
-    pub use crate::playback::time_stretch::{Algorithm, FftSize, GrainSize, Params, Unit};
+    pub use crate::playback::time_stretch::{Algorithm, FftSize, Params, Unit};
 }

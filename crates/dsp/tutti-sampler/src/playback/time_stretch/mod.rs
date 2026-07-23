@@ -10,10 +10,11 @@
 //! use std::sync::Arc;
 //!
 //! // Create a sampler with a loaded audio file
-//! let sampler = SamplerUnit::new(Arc::new(wave));
+//! let mut sampler = SamplerUnit::new(Arc::new(wave));
 //!
-//! // Wrap with time-stretch capability
-//! let mut stretched = stretch::Unit::new(Box::new(sampler), 44100.0);
+//! // The stretcher is a pure filter: the caller ticks `sampler` and feeds each
+//! // frame into `stretched` (it owns no source of its own).
+//! let mut stretched = stretch::Unit::new(44100.0);
 //!
 //! // Slow down to half speed
 //! stretched.set_stretch_factor(2.0);
@@ -33,17 +34,15 @@
 //! lives at the bottom of this module; the playback system wraps a
 //! `SamplerUnit` in a [`Unit`] when a `TimeStretch` is present.
 
-mod granular;
 mod phase_vocoder;
 mod types;
 mod unit;
 
-pub use granular::GrainSize;
 pub use types::{Algorithm, FftSize, Params};
 pub use unit::Unit;
 
 // ───────────────────────────── ECS layer ───────────────────────────
-// Gated behind `bevy`: the DSP (granular / phase_vocoder / unit) above is free.
+// Gated behind `bevy`: the DSP (phase_vocoder / unit) above is free.
 
 #[cfg(feature = "bevy")]
 pub use ecs::*;

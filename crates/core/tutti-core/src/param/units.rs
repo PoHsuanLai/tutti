@@ -107,6 +107,66 @@ unit_newtype!(
     /// Pitch offset in cents. 100 cents = 1 semitone.
     Cents
 );
+unit_newtype!(
+    /// Absolute position within a wave, measured in samples.
+    ///
+    /// Fractional positions are allowed so interpolating readers can address
+    /// between two integer sample indices. `f64`-backed because sample offsets
+    /// into long buffers routinely exceed `f32`'s integer-precision range and
+    /// the fractional part must survive sample-accurate arithmetic.
+    SamplePosition,
+    f64
+);
+unit_newtype!(
+    /// Absolute position on the timeline, measured in beats.
+    ///
+    /// A point on the musical grid (distinct from [`BeatDuration`], which is a
+    /// span). `f64`-backed for sample-accurate beat ↔ time conversions.
+    BeatPosition,
+    f64
+);
+unit_newtype!(
+    /// A span on the timeline, measured in beats.
+    ///
+    /// Distinct from [`BeatPosition`]: subtracting one position from another
+    /// yields a duration, not a position. `f64`-backed to match beat-position
+    /// precision.
+    BeatDuration,
+    f64
+);
+
+/// Lock-free [`SamplePosition`] cell, shareable with the audio thread.
+///
+/// Stores the `f64` position as its raw bits inside an [`AtomicU64`], so the
+/// sampler no longer has to sprinkle `f64::to_bits`/`from_bits` across its call
+/// sites. `load`/`store` take/return [`SamplePosition`] directly.
+#[derive(Debug)]
+pub struct AtomicSamplePosition(core::sync::atomic::AtomicU64);
+
+impl AtomicSamplePosition {
+    #[inline]
+    pub fn new(v: SamplePosition) -> Self {
+        Self(core::sync::atomic::AtomicU64::new(v.get().to_bits()))
+    }
+
+    #[inline]
+    pub fn load(&self, order: core::sync::atomic::Ordering) -> SamplePosition {
+        SamplePosition::new(f64::from_bits(self.0.load(order)))
+    }
+
+    #[inline]
+    pub fn store(&self, v: SamplePosition, order: core::sync::atomic::Ordering) {
+        self.0.store(v.get().to_bits(), order)
+    }
+}
+
+impl Default for AtomicSamplePosition {
+    #[inline]
+    fn default() -> Self {
+        Self::new(SamplePosition::default())
+    }
+}
+
 /// Audio sample rate in Hertz. `f64`-backed because sample rates routinely
 /// exceed `f32`'s integer-precision range (e.g., 192_000) and are used in
 /// time arithmetic where precision matters.
@@ -127,5 +187,30 @@ impl Unit for SampleRate {
     #[inline]
     fn to_raw(self) -> f64 {
         self.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::Ordering;
+
+    #[test]
+    fn newtype_raw_round_trip() {
+        assert_eq!(SamplePosition::from_raw(123.456).to_raw(), 123.456);
+        assert_eq!(BeatPosition::from_raw(4.25).to_raw(), 4.25);
+        assert_eq!(BeatDuration::from_raw(-2.5).to_raw(), -2.5);
+    }
+
+    #[test]
+    fn atomic_sample_position_load_after_store() {
+        let cell = AtomicSamplePosition::new(SamplePosition::new(0.0));
+        cell.store(SamplePosition::new(123.456), Ordering::Relaxed);
+        assert_eq!(cell.load(Ordering::Relaxed), SamplePosition::new(123.456));
+
+        let cell = AtomicSamplePosition::default();
+        assert_eq!(cell.load(Ordering::Relaxed), SamplePosition::new(0.0));
+        cell.store(SamplePosition::new(-7.0), Ordering::Relaxed);
+        assert_eq!(cell.load(Ordering::Relaxed), SamplePosition::new(-7.0));
     }
 }

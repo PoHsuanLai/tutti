@@ -13,6 +13,19 @@ pub enum Mode {
     Loop,
 }
 
+/// On-disk sample format for audio-input capture WAV files.
+///
+/// Defaults to `F32` — the simplest, lossless-for-our-graph path. `I24`
+/// trades a little precision for smaller files where 24-bit int is desired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaptureFormat {
+    /// 32-bit IEEE float (default).
+    #[default]
+    F32,
+    /// 24-bit signed integer.
+    I24,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub channel_index: usize,
@@ -23,6 +36,8 @@ pub struct Config {
     pub preroll_beats: f64,
     pub punch_in: Option<f64>,
     pub punch_out: Option<f64>,
+    /// On-disk WAV sample format for audio-input capture. Default `F32`.
+    pub capture_format: CaptureFormat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,6 +58,7 @@ impl Default for Config {
             preroll_beats: 0.0,
             punch_in: None,
             punch_out: None,
+            capture_format: CaptureFormat::default(),
         }
     }
 }
@@ -123,6 +139,7 @@ mod tests {
             preroll_beats: 1.0,
             punch_in: Some(4.0),
             punch_out: Some(8.0),
+            capture_format: CaptureFormat::default(),
         };
 
         assert_eq!(config.channel_index, 2);

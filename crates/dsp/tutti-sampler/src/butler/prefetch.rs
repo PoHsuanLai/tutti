@@ -4,9 +4,15 @@ use ringbuf::{
     traits::{Consumer, Observer, Producer, Split},
     HeapCons, HeapProd, HeapRb,
 };
+use std::cell::UnsafeCell;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+use arc_swap::ArcSwap;
 use tutti_core::{AtomicU64, Ordering};
+
+#[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+use tutti_core::StreamDecoder;
 
 use super::command::RegionId;
 
@@ -56,6 +62,7 @@ impl<T> SendCons<T> {
 }
 
 pub(crate) struct RegionMeta {
+    region_id: RegionId,
     file_path: PathBuf,
     file_position: AtomicU64,
 }
@@ -73,11 +80,31 @@ impl RegionMeta {
 pub(crate) struct RegionWriter {
     prod: SendProd<(f32, f32)>,
     meta: Arc<RegionMeta>,
+    /// Incremental disk decoder for real streaming. `None` means this region
+    /// uses the whole-file `load_wave` + `LruCache` fallback path (non-seekable
+    /// format, or no frame count). `Box<dyn FormatReader/Decoder>` are `Send`,
+    /// so the rayon `par_iter_mut` refill path is fine.
+    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    decoder: Option<StreamDecoder>,
 }
 
 impl RegionWriter {
     pub fn file_position(&self) -> u64 {
         self.meta.file_position()
+    }
+
+    /// Install an incremental disk decoder, switching this region onto the
+    /// real-streaming refill path. Without one, refill uses the whole-file
+    /// fallback.
+    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    pub(crate) fn set_decoder(&mut self, decoder: StreamDecoder) {
+        self.decoder = Some(decoder);
+    }
+
+    /// Mutable access to the streaming decoder, if this region streams.
+    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    pub(crate) fn decoder_mut(&mut self) -> Option<&mut StreamDecoder> {
+        self.decoder.as_mut()
     }
 
     pub fn set_file_position(&self, pos: u64) {
@@ -121,6 +148,10 @@ impl RegionWriter {
     pub fn file_path(&self) -> &PathBuf {
         &self.meta.file_path
     }
+
+    pub(crate) fn region_id(&self) -> RegionId {
+        self.meta.region_id
+    }
 }
 
 pub struct RegionReader {
@@ -154,14 +185,108 @@ impl RegionReader {
             .fetch_add(count as u64, Ordering::Relaxed);
     }
 
-    pub fn available(&self) -> usize {
-        self.cons.occupied_len()
-    }
-
     /// Get a shared handle to the read position for lock-free access.
     pub(crate) fn read_position_shared(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.read_position)
     }
+}
+
+/// Interior-mutable wrapper over a [`RegionReader`] that lets the single audio
+/// consumer pop through a shared `&self`, so the reader can be held behind an
+/// [`ArcSwap`] instead of a `Mutex`.
+///
+/// # Why this exists
+///
+/// The old design put the reader behind `Arc<Mutex<RegionReader>>` and had the
+/// audio thread `try_lock()` it in `tick`/`process`. That is wrong on two
+/// counts: (1) locking on the audio hot path, and (2) a `try_lock` *miss* was
+/// counted as an underrun even though the ring was full — the butler merely
+/// happened to hold the lock. A [`RegionReader`] wraps a single-consumer SPSC
+/// ring, so no lock is architecturally required: exactly one party ever pops.
+///
+/// # Single-consumer safety invariant (why the `UnsafeCell` is sound)
+///
+/// [`HeapCons::try_pop`] needs `&mut` because it advances the read index. This
+/// cell hands out that mutation through `&self`, which is only sound if **no two
+/// threads ever pop/clear concurrently**. That invariant holds because:
+///
+///   * The **audio thread** is the sole popper. `read()` / `clear()` are called
+///     only from `StreamingSamplerUnit` / `StreamingClipReader` on the audio
+///     thread. Those units may hold several clones of the same `SharedReader`
+///     (the direct-read reader plus the time-stretch processor's internal
+///     clone), but only one clone is *active* per buffer and both live on the
+///     one audio thread — so the pops are serialized by that thread, never
+///     concurrent.
+///   * The **butler thread** never pops or clears the live reader. It only
+///     *replaces* the reader wholesale via [`SharedReaderExt::store`] on a
+///     stream (re)start; the audio thread observes the new reader on its next
+///     buffer through a wait-free [`ArcSwap::load`]. Ring resets on
+///     seek/loop-wrap are requested by the butler through a lock-free
+///     `RtState` flag and applied by the audio thread (the owning consumer),
+///     never by the butler touching the ring.
+///
+/// Under that discipline every access to the inner `HeapCons` happens from a
+/// single thread at a time, so the `&self` → `&mut` reborrow is race-free.
+pub(crate) struct ReaderCell {
+    inner: UnsafeCell<RegionReader>,
+    region_id: RegionId,
+    read_position: Arc<AtomicU64>,
+}
+
+// SAFETY: the inner `RegionReader` is only ever mutated by the single audio
+// consumer (see the invariant on `ReaderCell`). The butler never pops; it swaps
+// the whole cell. `Send`/`Sync` let the cell cross to the audio thread inside an
+// `Arc<ArcSwap<_>>`; concurrent aliasing of the inner ring is prevented by the
+// single-consumer discipline, not by the type system.
+unsafe impl Send for ReaderCell {}
+unsafe impl Sync for ReaderCell {}
+
+impl ReaderCell {
+    fn new(reader: RegionReader) -> Self {
+        let region_id = reader.region_id();
+        let read_position = reader.read_position_shared();
+        Self {
+            inner: UnsafeCell::new(reader),
+            region_id,
+            read_position,
+        }
+    }
+
+    /// Pop the next sample. Audio-thread only (see the single-consumer
+    /// invariant on [`ReaderCell`]).
+    #[inline]
+    pub(crate) fn read(&self) -> Option<(f32, f32)> {
+        // SAFETY: single-consumer invariant — only the audio thread calls this,
+        // and its several `SharedReader` clones are serialized on that thread.
+        unsafe { (*self.inner.get()).read() }
+    }
+
+    /// Discard all buffered samples. Audio-thread only, applied when the butler
+    /// has requested a ring reset (seek / loop-wrap) via `RtState`.
+    pub(crate) fn clear(&self) {
+        // SAFETY: same single-consumer invariant as `read`.
+        unsafe { (*self.inner.get()).clear() }
+    }
+
+    pub(crate) fn region_id(&self) -> RegionId {
+        self.region_id
+    }
+
+    pub(crate) fn read_position_shared(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.read_position)
+    }
+}
+
+/// The audio-thread reader handle: a wait-free-loadable, butler-replaceable
+/// [`ReaderCell`]. Replaces the former `Arc<Mutex<RegionReader>>`. The audio
+/// thread `load`s it (wait-free) and pops; the butler `store`s a replacement on
+/// a stream (re)start. No lock ever sits on the audio hot path.
+pub(crate) type SharedReader = Arc<ArcSwap<ReaderCell>>;
+
+/// Wrap a freshly-built [`RegionReader`] into a [`SharedReader`] for handoff to
+/// the audio thread.
+pub(crate) fn share_reader(reader: RegionReader) -> SharedReader {
+    Arc::new(ArcSwap::from_pointee(ReaderCell::new(reader)))
 }
 
 pub(crate) struct RegionBuffer;
@@ -178,6 +303,7 @@ impl RegionBuffer {
         let (prod, cons) = rb.split();
 
         let meta = Arc::new(RegionMeta {
+            region_id,
             file_path,
             file_position: AtomicU64::new(0),
         });
@@ -185,6 +311,13 @@ impl RegionBuffer {
         let producer = RegionWriter {
             prod: SendProd::new(prod),
             meta: meta.clone(),
+            #[cfg(any(
+                feature = "wav",
+                feature = "flac",
+                feature = "mp3",
+                feature = "ogg"
+            ))]
+            decoder: None,
         };
 
         let consumer = RegionReader {
@@ -201,6 +334,7 @@ pub(crate) struct CaptureMeta {
     file_path: PathBuf,
     frames_written: AtomicU64,
     frames_captured: AtomicU64,
+    frames_dropped: AtomicU64,
 }
 
 impl CaptureMeta {
@@ -210,6 +344,14 @@ impl CaptureMeta {
 
     fn add_frames_captured(&self, count: u64) {
         self.frames_captured.fetch_add(count, Ordering::Relaxed);
+    }
+
+    fn add_frames_dropped(&self, count: u64) {
+        self.frames_dropped.fetch_add(count, Ordering::Relaxed);
+    }
+
+    fn frames_dropped(&self) -> u64 {
+        self.frames_dropped.load(Ordering::Relaxed)
     }
 }
 
@@ -229,8 +371,15 @@ impl CaptureWriter {
             self.meta.add_frames_captured(1);
             true
         } else {
+            self.meta.add_frames_dropped(1);
             false
         }
+    }
+
+    /// Frames dropped because the capture ring was full when audio tried to
+    /// push. Nonzero means overruns occurred and the recording lost samples.
+    pub fn frames_dropped(&self) -> u64 {
+        self.meta.frames_dropped()
     }
 
     pub fn file_path(&self) -> &PathBuf {
@@ -270,6 +419,11 @@ impl CaptureReader {
     pub(crate) fn add_frames_written(&self, count: u64) {
         self.meta.add_frames_written(count);
     }
+
+    /// Frames dropped by the producer due to a full ring (overruns).
+    pub(crate) fn frames_dropped(&self) -> u64 {
+        self.meta.frames_dropped()
+    }
 }
 
 pub(crate) struct CaptureBuffer;
@@ -290,6 +444,7 @@ impl CaptureBuffer {
             file_path,
             frames_written: AtomicU64::new(0),
             frames_captured: AtomicU64::new(0),
+            frames_dropped: AtomicU64::new(0),
         });
 
         let producer = CaptureWriter {
@@ -462,5 +617,32 @@ mod tests {
             "After refill, should get high-freq data with larger sample diff, got {}",
             sample_diff.abs()
         );
+    }
+
+    #[test]
+    fn test_capture_overrun_records_drops() {
+        // Small ring (clamped to 4096) with no consumer draining it.
+        let (mut writer, reader) =
+            CaptureBuffer::new(PathBuf::from("test.wav"), 44100.0, 0.0);
+
+        let capacity = writer.write_space();
+        assert!(capacity > 0);
+        assert_eq!(writer.frames_dropped(), 0);
+
+        // Push exactly enough to fill the ring; all should succeed.
+        for _ in 0..capacity {
+            assert!(writer.write((0.0, 0.0)));
+        }
+        assert_eq!(writer.frames_dropped(), 0);
+
+        // Overrun: nothing is draining, so these must be dropped.
+        let overrun = 100;
+        for _ in 0..overrun {
+            assert!(!writer.write((0.0, 0.0)));
+        }
+
+        assert_eq!(writer.frames_dropped(), overrun as u64);
+        // The reader observes the same shared counter.
+        assert_eq!(reader.frames_dropped(), overrun as u64);
     }
 }

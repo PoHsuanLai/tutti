@@ -1,12 +1,13 @@
 //! Per-channel butler plan for a streaming playback.
 
-use parking_lot::Mutex;
 use std::sync::Arc;
 use tutti_core::{AtomicU64, Ordering};
 
+use super::cache::StreamPin;
 use super::command::RegionId;
-use super::prefetch::RegionReader;
+use super::prefetch::SharedReader;
 use super::rt_state::RtState;
+use crate::Direction;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LoopStatus {
@@ -29,13 +30,23 @@ pub(crate) struct LoopConfig {
 ///
 /// Groups the ring buffer consumer, region identity, and optional loop config
 /// into one value. Created by `start_streaming`, dropped by `stop_streaming`.
-/// `region_id` and `read_position` are cached so the audio thread reads them
-/// without locking the consumer.
+/// `region_id` and `read_position` are cached so the butler reads them without
+/// touching the [`SharedReader`]. The reader itself sits behind an `ArcSwap`
+/// (not a `Mutex`): the audio thread loads it wait-free and is its sole
+/// consumer; the butler only ever *replaces* it and requests ring resets via
+/// `RtState`.
 pub(crate) struct Link {
-    pub(crate) consumer: Arc<Mutex<RegionReader>>,
+    pub(crate) consumer: SharedReader,
     pub(crate) region_id: RegionId,
     pub(crate) read_position: Arc<AtomicU64>,
     pub(crate) loop_config: Option<LoopConfig>,
+    /// Keeps the streamed wave pinned in the [`LruCache`](super::cache::LruCache)
+    /// for exactly the stream's lifetime, so a fully-buffered (hence cold)
+    /// stream is never evicted mid-read. `None` when the region streams
+    /// incrementally from disk and holds no resident cache entry to protect.
+    /// Dropped by `stop_streaming` (which drops the whole `Link`), releasing the
+    /// pin.
+    pub(crate) _cache_pin: Option<StreamPin>,
 }
 
 /// Per-channel butler-thread state.
@@ -66,16 +77,22 @@ impl Default for ChannelPlan {
 impl ChannelPlan {
     /// Attach a ring buffer consumer. Reads region_id + read_position once
     /// under one lock so the audio thread never re-locks to get them.
-    pub fn start_streaming(&mut self, consumer: Arc<Mutex<RegionReader>>) {
+    ///
+    /// `cache_pin` keeps the streamed wave resident in the LRU cache for the
+    /// stream's lifetime; it is stored in the `Link` and released when
+    /// `stop_streaming` drops the link. Pass `None` for a stream that holds no
+    /// resident cache entry (incremental disk streaming).
+    pub fn start_streaming(&mut self, consumer: SharedReader, cache_pin: Option<StreamPin>) {
         let (region_id, read_position) = {
-            let guard = consumer.lock();
-            (guard.region_id(), guard.read_position_shared())
+            let cell = consumer.load();
+            (cell.region_id(), cell.read_position_shared())
         };
         self.link = Some(Link {
             consumer,
             region_id,
             read_position,
             loop_config: None,
+            _cache_pin: cache_pin,
         });
     }
 
@@ -86,7 +103,7 @@ impl ChannelPlan {
         self.link = None;
         self.pdc_preroll = 0;
         self.rt_state.set_speed(1.0);
-        self.rt_state.set_reverse(false);
+        self.rt_state.set_direction(Direction::Forward);
         self.rt_state.set_seeking(false);
         self.rt_state.set_src_ratio(1.0);
         self.rt_state.clear_loop_crossfade();
@@ -97,11 +114,16 @@ impl ChannelPlan {
         Arc::clone(&self.rt_state)
     }
 
-    /// Clear ring buffer without busy-waiting. Bounded lock hold time.
+    /// Request the audio thread drop the ring's stale contents (after the butler
+    /// repositions the stream on a seek / loop-wrap).
+    ///
+    /// The butler must not pop the SPSC consumer itself — that would race the
+    /// audio thread. Instead it bumps a lock-free reset epoch in `RtState`; the
+    /// audio thread, which owns the ring, clears it when it next observes the
+    /// bump. Safe to call even when idle (no active link): the epoch simply has
+    /// no consumer to act on it.
     pub fn flush_buffer(&self) {
-        if let Some(link) = self.link.as_ref() {
-            link.consumer.lock().clear();
-        }
+        self.rt_state.request_ring_reset();
     }
 
     /// The active loop config, if streaming and looping.
@@ -165,7 +187,7 @@ mod tests {
         assert_eq!(state.pdc_preroll, 0);
         assert!(state.link.is_none());
         assert!(state.loop_config().is_none());
-        assert_eq!(state.rt_state.speed(), 1.0);
+        assert_eq!(state.rt_state.speed(), tutti_core::Ratio::new(1.0));
         assert!(!state.rt_state.is_reverse());
     }
 }

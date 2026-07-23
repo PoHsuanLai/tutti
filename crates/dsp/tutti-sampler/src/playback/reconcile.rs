@@ -37,7 +37,7 @@ pub fn reconcile_sampler_volume(
         let muted = mute.map(|m| m.0).unwrap_or(false);
         let target = if muted { 0.0 } else { volume.0 };
         if let Some(unit) = graph.0.node_mut::<SamplerUnit>(node.0) {
-            unit.set_gain(target);
+            unit.set_gain(tutti_core::Linear::new(target));
             dirty.0 = true;
         }
     }
@@ -58,10 +58,9 @@ type ChangedSamplerFilter = (
 ///
 /// `SamplerSpeed` writes through `SamplerUnit::set_speed` (`&mut self`,
 /// reached via `node_mut::<SamplerUnit>`). `SamplerLooping` writes through
-/// `SamplerUnit::set_looping` (atomic, `&self`) — it doesn't strictly
-/// require `node_mut`, but using it here keeps the dispatch shape uniform
-/// and lets the dirty flag coalesce a single commit per frame regardless
-/// of which sampler param changed.
+/// `SamplerUnit::set_looping` (`&mut self`), also reached via `node_mut`;
+/// coalescing both through the same dirty flag lets a single commit per
+/// frame cover whichever sampler param changed.
 pub fn reconcile_sampler_params(
     mut graph: ResMut<AudioGraphRes>,
     changed: Query<ChangedSamplerParams, ChangedSamplerFilter>,
@@ -72,7 +71,7 @@ pub fn reconcile_sampler_params(
             continue;
         };
         if let Some(s) = speed {
-            unit.set_speed(s.0);
+            unit.set_speed(tutti_core::Ratio::new(s.0));
         }
         if let Some(l) = looping {
             unit.set_looping(l.0);
@@ -169,7 +168,7 @@ mod tests {
         let node_id = app.world().get::<AudioNode>(entity).expect("AudioNode").0;
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         let unit = graph.0.node_mut::<SamplerUnit>(node_id).expect("SamplerUnit");
-        assert_eq!(unit.speed(), 2.0);
+        assert_eq!(unit.speed(), tutti_core::Ratio::new(2.0));
         assert!(unit.is_looping());
     }
 }

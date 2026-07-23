@@ -24,6 +24,10 @@ use tutti_core::WaveAsset;
 
 // Bevy-free DSP leaves — always compiled.
 mod loop_crossfade;
+// The cold-path control trait shared by both clip-playback backends.
+pub mod clip_reader;
+// Shared zero-alloc interpolation kernel (one cubic Hermite for both units).
+pub mod interp;
 pub mod sampler_unit;
 // Disk streaming — the unit is Bevy-free; it's fed by the (Bevy-free) butler
 // engine, which a non-Bevy host drives via `Sampler` / `Auditioner`.
@@ -54,7 +58,7 @@ pub use reconcile::{bump_param_epoch_sampler, reconcile_sampler_params, reconcil
 #[cfg(feature = "bevy")]
 pub use time_stretch::{time_stretch_sync_system, TimeStretch, TimeStretchControl};
 // Bevy-free reader value types + DSP unit.
-pub use track_clip_reader::{ClipCommand, ClipSpec, SlotId, TrackClipReaderHandle,
+pub use track_clip_reader::{ClipCommand, ClipSpec, Direction, SlotId, TrackClipReaderHandle,
     TrackClipReaderUnit};
 #[cfg(feature = "bevy")]
 pub use track_clip_reader::{TrackClipReaderNode, TrackClipReaderRef};
@@ -65,8 +69,9 @@ pub use trigger::{
 };
 #[cfg(feature = "bevy")]
 pub use node::{SamplerLooping, SamplerNode, SamplerSpeed};
-pub use sampler_unit::SamplerUnit;
-pub use streaming_sampler::StreamingSamplerUnit;
+pub use clip_reader::ClipReader;
+pub use sampler_unit::{LoopSetting, SamplerUnit, SamplerUnitConfig, TransportPlacement};
+pub use streaming_sampler::{StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit};
 #[cfg(feature = "bevy")]
 pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 

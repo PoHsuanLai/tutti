@@ -1,13 +1,11 @@
 //! The sampler streaming-engine handle. See [`Sampler`].
 
-use crate::butler::{
-    BufferConfig, ButlerCommand, ButlerThread, CaptureIdGen, LruCache, ChannelPlan,
-};
+use crate::butler::{BufferConfig, ButlerCommand, ButlerThread, CaptureIdGen, LruCache};
 use crate::error::Result;
+use crate::ports::{Commands, Status};
 use arc_swap::ArcSwap;
 #[cfg(feature = "bevy")]
 use bevy_ecs::resource::Resource;
-use dashmap::DashMap;
 use smol::channel::Sender;
 use std::sync::Arc;
 use tutti_core::PdcState;
@@ -21,6 +19,11 @@ use tutti_core::PdcState;
 /// [`recording`](Self::recording) / [`audio_input`](Self::audio_input), or
 /// builds an [`Auditioner`](crate::Auditioner) via [`auditioner`](Self::auditioner).
 ///
+/// Stream control is split MIDI-device-style into two cloneable ports: the
+/// WRITE port [`commands`](Self::commands) (a [`Commands`] over the butler
+/// command channel) and the READ port [`status`](Self::status) (a [`Status`]
+/// carrying the sample rate + the reader-factory).
+///
 /// Playback, recording, and preview are driven the idiomatic Bevy way — spawn
 /// a [`PlayAudio`](crate::PlayAudio) entity, write a
 /// [`StartRecording`](crate::StartRecording) message, or a
@@ -33,7 +36,7 @@ use tutti_core::PdcState;
 ///
 /// # fn main() -> tutti_sampler::Result<()> {
 /// let sampler = Sampler::new(48_000.0, Default::default())?;
-/// let _ = sampler.sample_rate();
+/// let _ = sampler.status().sample_rate();
 /// # Ok(())
 /// # }
 /// ```
@@ -42,7 +45,7 @@ pub struct Sampler {
     butler_tx: Sender<ButlerCommand>,
     butler: ButlerThread,
     recording: Arc<crate::recording::capture::manager::Recorder>,
-    audio_input: Arc<crate::input::manager::Manager>,
+    audio_input: Arc<crate::input::manager::InputEngine>,
     sample_rate: f64,
 }
 
@@ -69,7 +72,7 @@ impl Sampler {
             sample_rate,
             capture_ids,
         ));
-        let audio_input = Arc::new(crate::input::manager::Manager::new(sample_rate as u32));
+        let audio_input = Arc::new(crate::input::manager::InputEngine::new(sample_rate as u32));
 
         Ok(Sampler {
             butler_tx,
@@ -80,9 +83,16 @@ impl Sampler {
         })
     }
 
-    /// Sample rate the system was built with.
-    pub fn sample_rate(&self) -> f64 {
-        self.sample_rate
+    /// WRITE port: a cloneable [`Commands`] handle over the butler command
+    /// channel. Drive streaming with `commands().send(Command::…)`.
+    pub fn commands(&self) -> Commands {
+        Commands::new(self.butler_tx.clone(), self.butler.plans())
+    }
+
+    /// READ port: a cloneable [`Status`] snapshot carrying the sample rate and
+    /// the channel-plan map (the reader-factory).
+    pub fn status(&self) -> Status {
+        Status::new(self.sample_rate, self.butler.plans())
     }
 
     /// Recording-session bookkeeper for MIDI / audio / automation captures.
@@ -91,7 +101,7 @@ impl Sampler {
     }
 
     /// Hardware audio-input manager (cpal capture stream + MPMC channel).
-    pub fn audio_input(&self) -> &crate::input::manager::Manager {
+    pub fn audio_input(&self) -> &crate::input::manager::InputEngine {
         &self.audio_input
     }
 
@@ -100,16 +110,6 @@ impl Sampler {
     /// and the LRU cache for instant replay of recently-accessed files.
     pub fn auditioner(&self) -> crate::Auditioner {
         crate::Auditioner::new(self)
-    }
-
-    /// Clone of the butler command channel, for handles (auditioner) that
-    /// drive the butler without a back-reference to the whole `Sampler`.
-    pub(crate) fn butler_sender(&self) -> Sender<ButlerCommand> {
-        self.butler_tx.clone()
-    }
-
-    pub(crate) fn butler_plans(&self) -> Arc<DashMap<usize, ChannelPlan>> {
-        self.butler.plans()
     }
 
     pub(crate) fn butler_cache(&self) -> Arc<LruCache> {
@@ -141,9 +141,9 @@ mod tests {
     fn test_io_metrics_zeroed_on_fresh_system() {
         let sampler = Sampler::new(44100.0, Default::default()).unwrap();
         // A fresh butler has read nothing and an empty cache.
-        let plans = sampler.butler_plans();
+        let plans = sampler.butler.plans();
         assert!(plans.is_empty());
-        assert_eq!(sampler.sample_rate(), 44100.0);
+        assert_eq!(sampler.status().sample_rate(), 44100.0);
     }
 
     #[test]

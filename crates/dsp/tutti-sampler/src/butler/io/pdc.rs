@@ -54,14 +54,16 @@ pub(crate) fn apply_pdc_updates(
         };
 
         let current_pos = writer.file_position();
-        let new_pos = if new_preroll > current_preroll {
-            current_pos.saturating_sub(new_preroll - current_preroll)
-        } else {
-            current_pos + (current_preroll - new_preroll)
-        };
+        let new_pos = pdc_new_position(current_pos, current_preroll, new_preroll);
 
         let crossfade_len = config.seek_crossfade_samples;
-        let fadeout = fadeout_samples(stream_state, crossfade_len);
+        let fadeout = fadeout_samples(
+            stream_state,
+            cache,
+            metrics,
+            writer.file_path(),
+            crossfade_len,
+        );
 
         stream_state.set_seeking(true);
         stream_state.flush_buffer();
@@ -75,6 +77,16 @@ pub(crate) fn apply_pdc_updates(
 
         stream_state.pdc_preroll = new_preroll;
         stream_state.set_seeking(false);
+    }
+}
+
+/// New file position after a preroll change. A larger preroll seeks backward
+/// (saturating at 0); a smaller preroll seeks forward by the same delta.
+fn pdc_new_position(current: u64, old_preroll: u64, new_preroll: u64) -> u64 {
+    if new_preroll > old_preroll {
+        current.saturating_sub(new_preroll - old_preroll)
+    } else {
+        current + (old_preroll - new_preroll)
     }
 }
 
@@ -109,7 +121,7 @@ mod tests {
             regions.register(region_id, writer);
 
             let mut state = ChannelPlan::default();
-            state.start_streaming(Arc::new(parking_lot::Mutex::new(reader)));
+            state.start_streaming(crate::butler::share_reader(reader), None);
             plans.insert(i, state);
         }
 
@@ -129,6 +141,16 @@ mod tests {
     /// Build a PDC subscription from a `PdcManager` (used as test-setup helper).
     fn pdc_sub(mgr: &PdcManager) -> Arc<ArcSwap<PdcState>> {
         mgr.snapshot_arc()
+    }
+
+    #[test]
+    fn test_pdc_new_position_directions_and_saturation() {
+        // Preroll increased -> seek backward by the delta.
+        assert_eq!(pdc_new_position(1000, 0, 500), 500);
+        // Preroll decreased -> seek forward by the delta.
+        assert_eq!(pdc_new_position(500, 500, 0), 1000);
+        // Backward seek saturates at 0 instead of underflowing.
+        assert_eq!(pdc_new_position(100, 0, 500), 0);
     }
 
     #[test]

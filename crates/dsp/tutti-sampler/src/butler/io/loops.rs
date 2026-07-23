@@ -4,7 +4,7 @@ use super::super::cache::LruCache;
 use super::super::metrics::Metrics;
 use super::super::plan::{ChannelPlan, LoopStatus};
 use super::super::region_map::RegionMap;
-use super::refill::load_wave;
+use super::refill::{load_wave, wave_frame};
 use dashmap::DashMap;
 use std::path::PathBuf;
 use tutti_core::Wave;
@@ -98,56 +98,43 @@ pub(crate) fn capture_samples(wave: &Wave, start: usize, count: usize) -> Vec<(f
     let mut samples = Vec::with_capacity(count);
     let channels = wave.channels();
     for i in 0..count {
-        let idx = start + i;
-        if idx < wave.len() {
-            let left = wave.at(0, idx);
-            let right = if channels > 1 { wave.at(1, idx) } else { left };
-            samples.push((left, right));
-        } else {
-            samples.push((0.0, 0.0));
-        }
+        samples.push(wave_frame(wave, start + i, channels));
     }
     samples
 }
 
-/// Capture samples from the current ring buffer for fadeout during seek.
+/// Capture the fadeout samples for a seek crossfade — the `count` samples about
+/// to play next, i.e. the ring's unplayed head.
 ///
-/// Reads the last N samples that would have been played from the ring buffer.
-pub(crate) fn fadeout_samples(stream_state: &ChannelPlan, count: usize) -> Vec<(f32, f32)> {
+/// Sourced from the wave file (via the cache) at the stream's current
+/// `read_position` rather than by popping the SPSC ring. The butler must never
+/// pop the consumer — that is the audio thread's sole province (see
+/// [`ReaderCell`](crate::butler::prefetch::ReaderCell)'s single-consumer
+/// invariant). The ring head at `read_position` is bit-identical to
+/// `file[read_position..]`, so reading from the file yields the same fadeout
+/// tail without touching the consumer.
+pub(crate) fn fadeout_samples(
+    stream_state: &ChannelPlan,
+    cache: &LruCache,
+    metrics: &Metrics,
+    file_path: &PathBuf,
+    count: usize,
+) -> Vec<(f32, f32)> {
     if count == 0 {
         return Vec::new();
     }
 
-    let Some(consumer_arc) = stream_state.link.as_ref().map(|l| l.consumer.clone()) else {
+    let Some(link) = stream_state.link.as_ref() else {
         return Vec::new();
     };
 
-    let Some(mut consumer) = consumer_arc.try_lock() else {
-        return Vec::new();
-    };
+    let read_position = link
+        .read_position
+        .load(tutti_core::Ordering::Relaxed);
 
-    let available = consumer.available();
-    let to_read = available.min(count);
-
-    if to_read == 0 {
-        return Vec::new();
-    }
-
-    let mut samples = Vec::with_capacity(to_read);
-    for _ in 0..to_read {
-        if let Some(sample) = consumer.read() {
-            samples.push(sample);
-        } else {
-            break;
-        }
-    }
-
-    if samples.len() < count {
-        let pad_sample = samples.last().copied().unwrap_or((0.0, 0.0));
-        samples.resize(count, pad_sample);
-    }
-
-    samples
+    // Same file-sourced capture as `fadein_samples`, anchored at the position
+    // the ring is about to hand to the audio thread.
+    fadein_samples(cache, metrics, file_path, read_position, count)
 }
 
 /// Capture samples from the Wave file at the new seek position for fadein.
@@ -170,14 +157,7 @@ pub(crate) fn fadein_samples(
     let channels = wave.channels();
 
     for i in 0..count {
-        let idx = position_samples as usize + i;
-        if idx >= wave.len() {
-            samples.push((0.0, 0.0));
-        } else {
-            let left = wave.at(0, idx);
-            let right = if channels > 1 { wave.at(1, idx) } else { left };
-            samples.push((left, right));
-        }
+        samples.push(wave_frame(&wave, position_samples as usize + i, channels));
     }
 
     samples
@@ -346,8 +326,11 @@ mod tests {
     fn test_capture_fadeout_zero_count() {
         use crate::butler::plan::ChannelPlan;
 
+        let cache = LruCache::new(10, 1024 * 1024);
+        let metrics = Metrics::new();
+        let path = PathBuf::from("nonexistent.wav");
         let state = ChannelPlan::default();
-        let samples = fadeout_samples(&state, 0);
+        let samples = fadeout_samples(&state, &cache, &metrics, &path, 0);
 
         assert!(samples.is_empty());
     }
@@ -356,9 +339,12 @@ mod tests {
     fn test_capture_fadeout_no_consumer() {
         use crate::butler::plan::ChannelPlan;
 
+        let cache = LruCache::new(10, 1024 * 1024);
+        let metrics = Metrics::new();
+        let path = PathBuf::from("nonexistent.wav");
         let state = ChannelPlan::default();
-        // No consumer attached
-        let samples = fadeout_samples(&state, 100);
+        // No active link → nothing to fade out.
+        let samples = fadeout_samples(&state, &cache, &metrics, &path, 100);
 
         assert!(samples.is_empty());
     }

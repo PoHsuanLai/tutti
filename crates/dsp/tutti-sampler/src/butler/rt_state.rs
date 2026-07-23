@@ -6,9 +6,10 @@
 //! ownership story obvious.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use tutti_core::AtomicF32;
+use tutti_core::{AtomicF32, Ratio};
 
 use super::crossfader::StreamingCrossfader;
+use crate::Direction;
 
 /// Playback parameters read by the audio thread every sample.
 #[repr(align(64))]
@@ -37,6 +38,24 @@ pub struct BufferHealth {
     underrun_count: AtomicU64,
     /// 0-1000 representing 0.0-1.0.
     buffer_fill_level: AtomicU32,
+    /// Butler-bumped ring-reset request. The butler increments this when it
+    /// repositions the stream (seek / loop-wrap) and needs the audio thread to
+    /// drop the stale buffered samples. The audio thread — the sole ring
+    /// consumer — clears the ring when it observes a change vs. its last-applied
+    /// value, keeping the SPSC pop single-threaded (the butler never pops).
+    reset_epoch: AtomicU64,
+    /// Audio-bumped timeline-seek request (the mirror image of `reset_epoch`:
+    /// audio requests, butler applies). The audio thread stores the absolute
+    /// file offset in `seek_target` and bumps `seek_request_epoch`; the butler
+    /// polls the epoch and, on a change vs. `applied_seek_epoch`, repositions the
+    /// live stream to `seek_target` (flush + seek + crossfade). Both stores are
+    /// lock-free and allocation-free — safe on the audio hot path.
+    seek_target: AtomicU64,
+    seek_request_epoch: AtomicU64,
+    /// Butler-only last-applied seek epoch. Never touched by the audio thread —
+    /// the symmetric counterpart to the audio-side `applied_reset_epoch`. Lets
+    /// the butler coalesce rapid seeks (only the latest `seek_target` survives).
+    applied_seek_epoch: AtomicU64,
 }
 
 impl Default for BufferHealth {
@@ -45,6 +64,10 @@ impl Default for BufferHealth {
             seeking: AtomicBool::new(false),
             underrun_count: AtomicU64::new(0),
             buffer_fill_level: AtomicU32::new(0),
+            reset_epoch: AtomicU64::new(0),
+            seek_target: AtomicU64::new(0),
+            seek_request_epoch: AtomicU64::new(0),
+            applied_seek_epoch: AtomicU64::new(0),
         }
     }
 }
@@ -74,8 +97,8 @@ impl RtState {
     }
 
     #[inline]
-    pub fn speed(&self) -> f32 {
-        self.playback.speed.load(Ordering::Acquire)
+    pub fn speed(&self) -> Ratio {
+        Ratio::new(self.playback.speed.load(Ordering::Acquire))
     }
 
     /// Clamped to 0.25..4.0.
@@ -88,24 +111,40 @@ impl RtState {
     /// raw atomic load for the audio-thread call site which reads it every
     /// sample.
     #[inline]
-    pub fn effective_speed(&self) -> f32 {
+    pub fn effective_speed(&self) -> Ratio {
         self.speed()
+    }
+
+    /// Current playback direction. Backed by the `AtomicU8` (0 = forward,
+    /// 1 = reverse); the [`Direction`] enum is the API surface.
+    #[inline]
+    pub fn direction(&self) -> Direction {
+        if self.playback.direction.load(Ordering::Acquire) == 1 {
+            Direction::Reverse
+        } else {
+            Direction::Forward
+        }
+    }
+
+    pub fn set_direction(&self, direction: Direction) {
+        self.playback
+            .direction
+            .store(u8::from(direction.is_reverse()), Ordering::Release);
     }
 
     #[inline]
     pub fn is_reverse(&self) -> bool {
-        self.playback.direction.load(Ordering::Acquire) == 1
+        self.direction().is_reverse()
     }
 
+    #[cfg(test)]
     pub fn set_reverse(&self, reverse: bool) {
-        self.playback
-            .direction
-            .store(u8::from(reverse), Ordering::Release);
+        self.set_direction(Direction::from_reverse(reverse));
     }
 
     #[inline]
-    pub fn src_ratio(&self) -> f32 {
-        self.playback.src_ratio.load(Ordering::Acquire)
+    pub fn src_ratio(&self) -> Ratio {
+        Ratio::new(self.playback.src_ratio.load(Ordering::Acquire))
     }
 
     pub fn set_src_ratio(&self, ratio: f32) {
@@ -119,6 +158,58 @@ impl RtState {
 
     pub fn set_seeking(&self, seeking: bool) {
         self.health.seeking.store(seeking, Ordering::Release);
+    }
+
+    /// Butler side: request the audio thread drop the ring's stale contents
+    /// after repositioning the stream. Lock-free; the butler never touches the
+    /// SPSC consumer itself.
+    pub fn request_ring_reset(&self) {
+        self.health.reset_epoch.fetch_add(1, Ordering::Release);
+    }
+
+    /// Current ring-reset epoch. The audio thread compares this against its
+    /// last-applied value to decide whether a butler-requested clear is pending.
+    #[inline]
+    pub fn reset_epoch(&self) -> u64 {
+        self.health.reset_epoch.load(Ordering::Acquire)
+    }
+
+    /// Audio side: request the butler reposition the live stream to absolute file
+    /// offset `file_offset` (timeline seek). Two atomic stores, zero alloc, zero
+    /// I/O — safe to call from the audio hot path. Coalescing is intentional:
+    /// only the latest target survives if the butler hasn't caught up.
+    #[inline]
+    pub fn request_seek(&self, file_offset: u64) {
+        self.health.seek_target.store(file_offset, Ordering::Relaxed);
+        self.health
+            .seek_request_epoch
+            .fetch_add(1, Ordering::Release);
+    }
+
+    /// Butler side: read the pending seek request as `(epoch, target)`. The
+    /// butler compares `epoch` against its last-applied value (see
+    /// [`take_seek_request`](Self::take_seek_request)) to decide whether to act.
+    #[inline]
+    pub fn seek_request(&self) -> (u64, u64) {
+        let epoch = self.health.seek_request_epoch.load(Ordering::Acquire);
+        let target = self.health.seek_target.load(Ordering::Relaxed);
+        (epoch, target)
+    }
+
+    /// Butler side: if a new seek has been requested since the last poll, mark it
+    /// applied and return `Some(target)`; otherwise `None`. Coalesces rapid
+    /// seeks — only the latest `seek_target` is returned. Butler-only: never
+    /// touched by the audio thread.
+    #[inline]
+    pub fn take_seek_request(&self) -> Option<u64> {
+        let (epoch, target) = self.seek_request();
+        if epoch == self.health.applied_seek_epoch.load(Ordering::Relaxed) {
+            return None;
+        }
+        self.health
+            .applied_seek_epoch
+            .store(epoch, Ordering::Relaxed);
+        Some(target)
     }
 
     #[inline]
@@ -181,7 +272,7 @@ mod tests {
     #[test]
     fn test_default_values() {
         let state = RtState::new();
-        assert_eq!(state.speed(), 1.0);
+        assert_eq!(state.speed(), Ratio::new(1.0));
         assert!(!state.is_reverse());
         assert!(!state.is_seeking());
     }
@@ -191,13 +282,13 @@ mod tests {
         let state = RtState::new();
 
         state.set_speed(0.1);
-        assert_eq!(state.speed(), 0.25);
+        assert_eq!(state.speed(), Ratio::new(0.25));
 
         state.set_speed(10.0);
-        assert_eq!(state.speed(), 4.0);
+        assert_eq!(state.speed(), Ratio::new(4.0));
 
         state.set_speed(2.0);
-        assert_eq!(state.speed(), 2.0);
+        assert_eq!(state.speed(), Ratio::new(2.0));
     }
 
     #[test]

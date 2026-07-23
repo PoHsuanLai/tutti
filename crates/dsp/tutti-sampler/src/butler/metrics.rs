@@ -13,6 +13,8 @@ pub struct Metrics {
     write_ops: AtomicU64,
     cache_hits: AtomicU64,
     cache_misses: AtomicU64,
+    /// Frames dropped by capture ring overruns across all captures.
+    capture_frames_dropped: AtomicU64,
     /// Only accessed from butler thread
     throughput: Mutex<ThroughputTracker>,
 }
@@ -26,6 +28,7 @@ impl Default for Metrics {
             write_ops: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
             cache_misses: AtomicU64::new(0),
+            capture_frames_dropped: AtomicU64::new(0),
             throughput: Mutex::new(ThroughputTracker::new()),
         }
     }
@@ -113,4 +116,36 @@ impl Metrics {
         self.cache_misses.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record frames dropped by a capture ring overrun.
+    #[inline]
+    pub fn record_capture_drops(&self, frames: u64) {
+        self.capture_frames_dropped
+            .fetch_add(frames, Ordering::Relaxed);
+    }
+
+    /// Total frames dropped across all captures due to ring overruns.
+    ///
+    /// Aggregate diagnostic accessor (the per-session count is also surfaced on
+    /// `Recorded::Audio.frames_dropped`); part of the `Metrics` observability
+    /// surface, not yet read by an in-tree consumer.
+    #[allow(dead_code)]
+    pub fn capture_frames_dropped(&self) -> u64 {
+        self.capture_frames_dropped.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_drops_accumulate() {
+        let metrics = Metrics::new();
+        assert_eq!(metrics.capture_frames_dropped(), 0);
+
+        metrics.record_capture_drops(3);
+        metrics.record_capture_drops(4);
+
+        assert_eq!(metrics.capture_frames_dropped(), 7);
+    }
 }

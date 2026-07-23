@@ -1048,6 +1048,18 @@ pub mod write;
 ))]
 pub mod read;
 
+#[cfg(all(
+    feature = "std",
+    any(
+        feature = "wav",
+        feature = "flac",
+        feature = "mp3",
+        feature = "ogg",
+        feature = "files"
+    )
+))]
+pub mod stream;
+
 #[cfg(all(feature = "std", feature = "fft"))]
 pub mod convolve;
 

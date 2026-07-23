@@ -51,17 +51,22 @@ impl MidiEvent {
     }
 
     /// Note-on from a 7-bit MIDI 1.0 velocity (0-127), widened to the 16-bit
-    /// MIDI 2.0 field by left-shifting 9 bits.
+    /// MIDI 2.0 field with the spec Min-Center-Max scaler
+    /// ([`convert::midi1_velocity_to_midi2`](crate::convert::midi1_velocity_to_midi2)).
     ///
-    /// This is the shift-widen many callers were open-coding as
-    /// `note_on(g, c, n, (vel as u16) << 9)`. Note it is *not* the spec
-    /// Min-Center-Max upconvert (`convert::midi1_velocity_to_midi2`): `<< 9`
-    /// maps 127 → 65024, not 65535. Preserved here verbatim so the helper is a
-    /// drop-in for the existing call sites; reach for `note_on` +
-    /// `midi1_velocity_to_midi2` when exact full-range fidelity matters.
+    /// This is the one MIDI-1→2 upconvert used across the engine's edges, so a
+    /// note delivered via this helper carries the same native 16-bit value as one
+    /// promoted from the wire — 0 → 0, 64 → 0x8000, 127 → 65535. (It previously
+    /// used a lossy `<< 9` that mapped 127 → 65024; unified here to the spec
+    /// scaler so the default delivery path isn't the lossy one.)
     #[inline]
     pub fn note_on_7bit(group: u8, channel: u8, note: u8, velocity_u7: u8) -> Self {
-        Self::note_on(group, channel, note, (velocity_u7 as u16) << 9)
+        Self::note_on(
+            group,
+            channel,
+            note,
+            crate::convert::midi1_velocity_to_midi2(velocity_u7),
+        )
     }
 
     #[inline]

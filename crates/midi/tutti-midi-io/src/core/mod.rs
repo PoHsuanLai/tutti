@@ -8,7 +8,7 @@
 //!   connections, the background send thread, macOS virtual ports). `Midi1Port`
 //!   translates engine [`MidiEvent`](tutti_midi_types::MidiEvent)s to MIDI 1.0
 //!   wire bytes at its edge.
-//! - [`port`] — the audio-thread ring-buffer plumbing ([`MidiPortManager`] and
+//! - [`port`] — the audio-thread ring-buffer plumbing ([`HardwareMidiInputs`] and
 //!   its lock-free SPSC rings) that carries events between hardware and the
 //!   audio graph.
 
@@ -24,7 +24,7 @@ pub use error::{Error, Result};
 pub use hardware::{MidiDevice, MidiInputRecord};
 #[cfg(feature = "midi-hardware")]
 pub use midi_io::MidiIo;
-pub use port::{InputProducerHandle, MidiPortManager, PortInfo, PortType};
+pub use port::{InputProducerHandle, HardwareMidiInputs, PortInfo, PortType};
 
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 pub use hardware::{UmpVirtualSource, VirtualMidiDestination, VirtualMidiSource};

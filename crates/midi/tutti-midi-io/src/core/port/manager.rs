@@ -4,7 +4,7 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use tutti_core::{AudioThreadCell, RtScratchBuf};
 
-use super::async_port::AsyncMidiPort;
+use super::async_port::HardwareMidiInput;
 use tutti_midi_types::ump::MidiEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,7 +14,7 @@ pub enum PortType {
 }
 
 /// A snapshot view of one port, computed on demand from the underlying
-/// `AsyncMidiPort`. The port is the single source of truth for `name` and
+/// `HardwareMidiInput`. The port is the single source of truth for `name` and
 /// `active` — `PortInfo` just bundles them with the port's index/type for
 /// listing. `active` is a point-in-time value, not a live handle.
 #[derive(Debug, Clone)]
@@ -26,7 +26,7 @@ pub struct PortInfo {
 }
 
 impl PortInfo {
-    fn of(port: &AsyncMidiPort, index: usize, port_type: PortType) -> Self {
+    fn of(port: &HardwareMidiInput, index: usize, port_type: PortType) -> Self {
         Self {
             index,
             name: port.name().to_string(),
@@ -45,22 +45,20 @@ const CYCLE_SCRATCH_CAP: usize = 256;
 ///
 /// Every field is touched **only** from the audio callback, one borrow at a
 /// time. Isolating them here keeps that single-thread reasoning contained to
-/// one small type rather than spread across the whole [`MidiPortManager`] — and
+/// one small type rather than spread across the whole [`HardwareMidiInputs`] — and
 /// because every field is a `Sync` primitive ([`AudioThreadCell`] /
 /// [`RtScratchBuf`]), this type *derives* `Sync` with no hand-written
 /// `unsafe impl`.
 ///
 /// `sample_rate` and `timestamped_buffer` use [`AudioThreadCell`] (scoped
-/// guards, never lent out). `event_buffer` / `output_event_buffer` use
-/// [`RtScratchBuf`] precisely because their filled slice is returned out of the
-/// `cycle_*` methods with `&self` lifetime (the manager's `MidiIn::poll_into`
-/// copies from it) — the "lend a borrow back to the caller" shape
-/// `AudioThreadCell` can't give.
+/// guards, never lent out). `event_buffer` uses [`RtScratchBuf`] precisely
+/// because its filled slice is returned out of the `cycle_*` methods with
+/// `&self` lifetime (the manager's `MidiIn::poll_into` copies from it) — the
+/// "lend a borrow back to the caller" shape `AudioThreadCell` can't give.
 struct CycleScratch {
     sample_rate: AudioThreadCell<f64>,
     timestamped_buffer: AudioThreadCell<Vec<(Instant, usize, MidiEvent)>>,
     event_buffer: RtScratchBuf<(usize, MidiEvent), CYCLE_SCRATCH_CAP>,
-    output_event_buffer: RtScratchBuf<(usize, MidiEvent), CYCLE_SCRATCH_CAP>,
 }
 
 impl CycleScratch {
@@ -69,7 +67,6 @@ impl CycleScratch {
             sample_rate: AudioThreadCell::new(44100.0),
             timestamped_buffer: AudioThreadCell::new(Vec::with_capacity(CYCLE_SCRATCH_CAP)),
             event_buffer: RtScratchBuf::new(),
-            output_event_buffer: RtScratchBuf::new(),
         }
     }
 
@@ -82,7 +79,7 @@ impl CycleScratch {
     /// internal scratch buffer. RT-safe (lock-free, no heap allocation).
     fn read_inputs(
         &self,
-        input_ports: &[Arc<AsyncMidiPort>],
+        input_ports: &[Arc<HardwareMidiInput>],
         nframes: usize,
     ) -> &[(usize, MidiEvent)] {
         let buffer_start = Instant::now();
@@ -118,26 +115,10 @@ impl CycleScratch {
         }
     }
 
-    /// Drain `output_ports`' active rings into a flat slice borrowing the
-    /// internal scratch buffer. RT-safe (lock-free, no heap allocation).
-    fn flush_outputs(&self, output_ports: &[Arc<AsyncMidiPort>]) -> &[(usize, MidiEvent)] {
-        // SAFETY: single-audio-thread access; see `read_inputs`.
-        unsafe {
-            self.output_event_buffer.fill_and_read(|out| {
-                for (port_index, port) in output_ports.iter().enumerate() {
-                    if !port.is_active() {
-                        continue;
-                    }
-                    port.cycle_end_flush_output_into(out, port_index);
-                }
-            })
-        }
-    }
 }
 
-pub struct MidiPortManager {
-    input_ports: ArcSwap<Vec<Arc<AsyncMidiPort>>>,
-    output_ports: ArcSwap<Vec<Arc<AsyncMidiPort>>>,
+pub struct HardwareMidiInputs {
+    input_ports: ArcSwap<Vec<Arc<HardwareMidiInput>>>,
     fifo_size: usize,
     /// Audio-thread-only scratch buffers. All the manager's `unsafe` lives in
     /// `CycleScratch`; everything else here is `Sync` on its own, so the
@@ -145,11 +126,10 @@ pub struct MidiPortManager {
     scratch: CycleScratch,
 }
 
-impl MidiPortManager {
+impl HardwareMidiInputs {
     pub fn new(fifo_size: usize) -> Self {
         Self {
             input_ports: ArcSwap::from_pointee(Vec::new()),
-            output_ports: ArcSwap::from_pointee(Vec::new()),
             fifo_size,
             scratch: CycleScratch::new(),
         }
@@ -163,7 +143,7 @@ impl MidiPortManager {
     /// Append `port` to `ports` (clone-and-swap) and return its index. The
     /// port owns its own name and active flag — there is no parallel metadata
     /// to keep in sync.
-    fn push_port(ports: &ArcSwap<Vec<Arc<AsyncMidiPort>>>, port: Arc<AsyncMidiPort>) -> usize {
+    fn push_port(ports: &ArcSwap<Vec<Arc<HardwareMidiInput>>>, port: Arc<HardwareMidiInput>) -> usize {
         let mut new_ports = (**ports.load()).clone();
         let port_index = new_ports.len();
         new_ports.push(port);
@@ -172,24 +152,23 @@ impl MidiPortManager {
     }
 
     pub fn create_input_port(&self, name: impl Into<String>) -> usize {
-        let port = Arc::new(AsyncMidiPort::new(name.into(), self.fifo_size));
+        let port = Arc::new(HardwareMidiInput::new(name.into(), self.fifo_size));
         Self::push_port(&self.input_ports, port)
     }
 
-    pub fn create_output_port(&self, name: impl Into<String>) -> usize {
-        let port = Arc::new(AsyncMidiPort::new(name.into(), self.fifo_size));
-        Self::push_port(&self.output_ports, port)
-    }
-
-    fn ports_of(&self, port_type: PortType) -> &ArcSwap<Vec<Arc<AsyncMidiPort>>> {
+    /// The port vec for `port_type`. Only [`PortType::Input`] is backed by an
+    /// `HardwareMidiInput` ring — outbound MIDI rides the engine mailbox →
+    /// [`OutputThread`](crate) sink, not a port ring — so `Output` returns
+    /// `None` (lists as empty / no-op).
+    fn ports_of(&self, port_type: PortType) -> Option<&ArcSwap<Vec<Arc<HardwareMidiInput>>>> {
         match port_type {
-            PortType::Input => &self.input_ports,
-            PortType::Output => &self.output_ports,
+            PortType::Input => Some(&self.input_ports),
+            PortType::Output => None,
         }
     }
 
     pub fn get_port_info(&self, port_type: PortType, port_index: usize) -> Option<PortInfo> {
-        self.ports_of(port_type)
+        self.ports_of(port_type)?
             .load()
             .get(port_index)
             .map(|port| PortInfo::of(port, port_index, port_type))
@@ -199,12 +178,11 @@ impl MidiPortManager {
         self.list_ports(PortType::Input)
     }
 
-    pub fn list_output_ports(&self) -> Vec<PortInfo> {
-        self.list_ports(PortType::Output)
-    }
-
     fn list_ports(&self, port_type: PortType) -> Vec<PortInfo> {
-        self.ports_of(port_type)
+        let Some(ports) = self.ports_of(port_type) else {
+            return Vec::new();
+        };
+        ports
             .load()
             .iter()
             .enumerate()
@@ -213,7 +191,7 @@ impl MidiPortManager {
     }
 
     pub fn set_port_active(&self, port_type: PortType, port_index: usize, active: bool) -> bool {
-        match self.ports_of(port_type).load().get(port_index) {
+        match self.ports_of(port_type).and_then(|p| p.load().get(port_index).cloned()) {
             Some(port) => {
                 port.set_active(active);
                 true
@@ -224,28 +202,8 @@ impl MidiPortManager {
 
     pub fn is_port_active(&self, port_type: PortType, port_index: usize) -> bool {
         self.ports_of(port_type)
-            .load()
-            .get(port_index)
-            .is_some_and(|port| port.is_active())
-    }
-
-    pub fn output_port_count(&self) -> usize {
-        self.output_ports.load().len()
-    }
-
-    pub fn output_ports(&self) -> arc_swap::Guard<Arc<Vec<Arc<AsyncMidiPort>>>> {
-        self.output_ports.load()
-    }
-
-    /// RT-safe (lock-free). Pushes regardless of the port's active flag.
-    ///
-    /// # Safety
-    /// Must only be called from a single thread (the audio thread).
-    pub fn write_output_event(&self, port_index: usize, event: MidiEvent) -> bool {
-        self.output_ports
-            .load()
-            .get(port_index)
-            .is_some_and(|port| port.output_producer_handle().push(event))
+            .and_then(|p| p.load().get(port_index).map(|port| port.is_active()))
+            .unwrap_or(false)
     }
 
     /// RT-safe (lock-free, no heap allocation).
@@ -257,26 +215,6 @@ impl MidiPortManager {
         // swapped out mid-read; the scratch borrows from it.
         let input_ports = self.input_ports.load();
         self.scratch.read_inputs(&input_ports, nframes)
-    }
-
-    /// RT-safe (lock-free, no heap allocation).
-    ///
-    /// Returns a flat slice of (port_index, event) pairs from all active output ports.
-    pub fn cycle_end_flush_all_outputs(&self) -> &[(usize, MidiEvent)] {
-        let output_ports = self.output_ports.load();
-        self.scratch.flush_outputs(&output_ports)
-    }
-
-    /// RT-safe (lock-free). Skips inactive ports.
-    ///
-    /// # Safety
-    /// Must only be called from a single thread (the audio thread).
-    pub fn write_event_to_port(&self, port_index: usize, event: MidiEvent) -> bool {
-        self.output_ports
-            .load()
-            .get(port_index)
-            .filter(|port| port.is_active())
-            .is_some_and(|port| port.output_producer_handle().push(event))
     }
 
     pub fn get_input_producer_handle(
@@ -300,13 +238,13 @@ impl MidiPortManager {
     }
 }
 
-impl Default for MidiPortManager {
+impl Default for HardwareMidiInputs {
     fn default() -> Self {
         Self::new(2048)
     }
 }
 
-impl tutti_midi_types::MidiIn for MidiPortManager {
+impl tutti_midi_types::MidiIn for HardwareMidiInputs {
     /// Drain all connected hardware inputs for this block into `buffer`. The
     /// hardware is pre-routing — it isn't addressed to one unit, so `unit_id` is
     /// ignored and every pending event is returned; the caller (the
@@ -330,14 +268,12 @@ impl tutti_midi_types::MidiIn for MidiPortManager {
     }
 }
 
-impl core::fmt::Debug for MidiPortManager {
+impl core::fmt::Debug for HardwareMidiInputs {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let input_ports = self.input_ports.load();
-        let output_ports = self.output_ports.load();
 
-        f.debug_struct("MidiPortManager")
+        f.debug_struct("HardwareMidiInputs")
             .field("num_input_ports", &input_ports.len())
-            .field("num_output_ports", &output_ports.len())
             .field("fifo_size", &self.fifo_size)
             .finish()
     }
@@ -353,13 +289,10 @@ mod tests {
 
     #[test]
     fn test_create_ports() {
-        let manager = MidiPortManager::new(256);
+        let manager = HardwareMidiInputs::new(256);
 
         let input_id = manager.create_input_port("Test Input");
-        let output_id = manager.create_output_port("Test Output");
-
         assert_eq!(input_id, 0);
-        assert_eq!(output_id, 0);
 
         let input_ports = manager.list_input_ports();
         assert_eq!(input_ports.len(), 1);
@@ -368,35 +301,27 @@ mod tests {
         assert_eq!(input_info.port_type, PortType::Input);
         assert!(input_info.active);
 
-        let output_ports = manager.list_output_ports();
-        assert_eq!(output_ports.len(), 1);
-        let output_info = &output_ports[0];
-        assert_eq!(output_info.name, "Test Output");
-        assert_eq!(output_info.port_type, PortType::Output);
-        assert!(output_info.active);
+        // Output is not a port-manager concern: it has no backing store, so it
+        // always lists empty (outbound MIDI rides the mailbox → OutputThread).
+        assert!(manager.get_port_info(PortType::Output, 0).is_none());
     }
 
     #[test]
     fn test_list_ports() {
-        let manager = MidiPortManager::new(256);
+        let manager = HardwareMidiInputs::new(256);
 
         let id1 = manager.create_input_port("Input 1");
         let id2 = manager.create_input_port("Input 2");
-        let id3 = manager.create_output_port("Output 1");
 
         let inputs = manager.list_input_ports();
         assert_eq!(inputs.len(), 2);
         assert!(inputs.iter().any(|p| p.index == id1));
         assert!(inputs.iter().any(|p| p.index == id2));
-
-        let outputs = manager.list_output_ports();
-        assert_eq!(outputs.len(), 1);
-        assert!(outputs.iter().any(|p| p.index == id3));
     }
 
     #[test]
     fn test_port_active_state() {
-        let manager = MidiPortManager::new(256);
+        let manager = HardwareMidiInputs::new(256);
 
         let port_id = manager.create_input_port("Test");
         assert!(manager.is_port_active(PortType::Input, port_id));
@@ -409,11 +334,10 @@ mod tests {
     }
 
     #[test]
-    fn test_input_output_flow() {
-        let manager = MidiPortManager::new(256);
+    fn test_input_flow() {
+        let manager = HardwareMidiInputs::new(256);
 
         let input_id = manager.create_input_port("Input");
-        let output_id = manager.create_output_port("Output");
 
         let producer_handle = manager.get_input_producer_handle(input_id).unwrap();
         // Upconvert 7-bit 127 so the downconverted velocity_u7 round-trips.
@@ -431,20 +355,11 @@ mod tests {
         assert!(events[0].1.is_note_on());
         assert_eq!(events[0].1.note(), Some(0x3C));
         assert_eq!(events[0].1.velocity_u7(), Some(0x7F));
-
-        let out_event = MidiEvent::note_off(10, 0, 0x3C, 0);
-        assert!(manager.write_event_to_port(output_id, out_event));
-
-        let output_events = manager.cycle_end_flush_all_outputs();
-        assert_eq!(output_events.len(), 1);
-        assert_eq!(output_events[0].0, output_id);
-        assert!(output_events[0].1.is_note_off());
-        assert_eq!(output_events[0].1.note(), Some(0x3C));
     }
 
     #[test]
     fn test_inactive_ports_ignored() {
-        let manager = MidiPortManager::new(256);
+        let manager = HardwareMidiInputs::new(256);
 
         let input_id = manager.create_input_port("Input");
         let producer_handle = manager.get_input_producer_handle(input_id).unwrap();
@@ -460,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_multiple_input_ports() {
-        let manager = MidiPortManager::new(256);
+        let manager = HardwareMidiInputs::new(256);
 
         let id1 = manager.create_input_port("Input 1");
         let id2 = manager.create_input_port("Input 2");
@@ -481,7 +396,7 @@ mod tests {
 
     #[test]
     fn test_timestamp_to_frame_offset_conversion() {
-        let manager = MidiPortManager::new(256);
+        let manager = HardwareMidiInputs::new(256);
         let input_id = manager.create_input_port("Input");
         let handle = manager.get_input_producer_handle(input_id).unwrap();
 

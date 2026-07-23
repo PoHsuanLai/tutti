@@ -1,6 +1,17 @@
 //! SysEx 7-bit: single-packet and multi-packet fragmentation (UMP type 0x3).
+//!
+//! Like [`super::sysex8`], the emit side leans on midi2's [`midi2::sysex7::Sysex7`]
+//! rather than hand-packing words: build one growable message with the full 7-bit
+//! payload and split its words into 2-word [`MidiEvent`]s — midi2 owns the
+//! Start/Continue/End fragmentation and the status-nibble/count assignment. The
+//! decode side keeps a direct first-word reader ([`MidiEvent::sysex7_payload`])
+//! because the [`Sysex7Reassembler`](crate) + CI/VST3 callers want the raw
+//! `(status, [u8; 6], n)` per-packet view, not a whole-message payload iterator.
 
 use std::vec::Vec;
+
+use midi2::prelude::*;
+use midi2::sysex7::Sysex7;
 
 use super::MidiEvent;
 
@@ -16,43 +27,34 @@ impl MidiEvent {
     /// Build SysEx 7-bit packets (UMP type 0x3, 64-bit each) for `data` and
     /// push them onto `out`. `data` is the payload *between* 0xF0 and 0xF7
     /// (no delimiters). Payloads ≤ 6 bytes produce a single packet; longer
-    /// payloads produce `Start` + `Continue*` + `End`.
+    /// payloads produce `Start` + `Continue*` + `End` — midi2 owns the split.
     pub fn sysex7_fragments(group: u8, data: &[u8], out: &mut Vec<MidiEvent>) {
-        if data.len() <= 6 {
-            out.push(Self::sysex7_packet(group, SYSEX7_STATUS_SINGLE, data));
-            return;
-        }
-        let total = data.len();
-        let mut emitted = 0usize;
-        let mut chunks = data.chunks(6);
-        let first = chunks.next().unwrap_or(&[]);
-        emitted += first.len();
-        out.push(Self::sysex7_packet(group, SYSEX7_STATUS_START, first));
-        for chunk in chunks {
-            emitted += chunk.len();
-            let status = if emitted >= total {
-                SYSEX7_STATUS_END
-            } else {
-                SYSEX7_STATUS_CONTINUE
-            };
-            out.push(Self::sysex7_packet(group, status, chunk));
+        let mut m = Sysex7::<Vec<u32>>::new();
+        m.set_group(u4::new(group & 0x0F));
+        m.set_payload(data.iter().map(|&b| u7::new(b & 0x7F)));
+        // Each SysEx7 packet is 2 words; split the message stream into events.
+        for packet in m.data().chunks(2) {
+            out.push(MidiEvent::from_ump(0, packet));
         }
     }
 
     /// Build a single self-contained SysEx 7-bit packet (UMP type 0x3) from a
     /// payload of up to 6 bytes (the data *between* 0xF0 and 0xF7, no
     /// delimiters). Returns `None` if the payload exceeds one packet — use
-    /// [`Self::sysex7_fragments`] for longer messages. The no-`alloc`
-    /// single-packet counterpart to `sysex7_fragments`.
+    /// [`Self::sysex7_fragments`] for longer messages.
     pub fn sysex7_single(group: u8, payload: &[u8]) -> Option<Self> {
         if payload.len() > 6 {
             return None;
         }
-        Some(Self::sysex7_packet(group, SYSEX7_STATUS_SINGLE, payload))
+        let mut m = Sysex7::<Vec<u32>>::new();
+        m.set_group(u4::new(group & 0x0F));
+        m.set_payload(payload.iter().map(|&b| u7::new(b & 0x7F)));
+        // A ≤6-byte payload is a single 2-word packet.
+        Some(MidiEvent::from_ump(0, &m.data()[..2]))
     }
 
     /// Decode a single SysEx 7-bit packet (UMP type 0x3) into its
-    /// `(status, payload)` — the inverse of [`Self::sysex7_packet`]. Returns the
+    /// `(status, payload)` — the inverse of [`Self::sysex7_fragments`]. Returns the
     /// status nibble ([`SYSEX7_STATUS_SINGLE`]/`START`/`CONTINUE`/`END`) and the
     /// up-to-6 payload bytes (no 0xF0/0xF7 delimiters). `None` for any event
     /// that isn't a type-0x3 packet, or one whose declared length exceeds 6.
@@ -83,29 +85,6 @@ impl MidiEvent {
             } as u8;
         }
         Some((status, out, n))
-    }
-
-    fn sysex7_packet(group: u8, status: u8, payload: &[u8]) -> Self {
-        debug_assert!(payload.len() <= 6);
-        let n = payload.len() as u8;
-        let mut w0 = (0x3u32 << 28)
-            | (((group & 0x0F) as u32) << 24)
-            | (((status & 0x0F) as u32) << 20)
-            | (((n & 0x0F) as u32) << 16);
-        let mut w1 = 0u32;
-        for (i, &b) in payload.iter().enumerate() {
-            let byte = (b & 0x7F) as u32;
-            match i {
-                0 => w0 |= byte << 8,
-                1 => w0 |= byte,
-                2 => w1 |= byte << 24,
-                3 => w1 |= byte << 16,
-                4 => w1 |= byte << 8,
-                5 => w1 |= byte,
-                _ => unreachable!(),
-            }
-        }
-        Self::from_ump(0, &[w0, w1])
     }
 }
 

@@ -3,4 +3,4 @@ mod manager;
 mod spsc;
 
 pub use async_port::InputProducerHandle;
-pub use manager::{MidiPortManager, PortInfo, PortType};
+pub use manager::{HardwareMidiInputs, PortInfo, PortType};

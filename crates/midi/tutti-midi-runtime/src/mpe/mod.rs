@@ -10,11 +10,7 @@
 
 use std::sync::Arc;
 
-use tutti_midi_types::convert::{
-    bend_u32_to_signed_f32, midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
-    u32_to_unit_f32,
-};
-use tutti_midi_types::midi2::channel_voice1::ChannelVoice1;
+use tutti_midi_types::convert::{bend_u32_to_signed_f32, u32_to_unit_f32};
 use tutti_midi_types::midi2::channel_voice2::{ChannelVoice2, Controller};
 use tutti_midi_types::midi2::{Channeled, UmpMessage};
 use tutti_midi_types::ump::MidiEvent;
@@ -84,20 +80,20 @@ impl MpeProcessor {
             return;
         }
 
-        let Ok(msg) = UmpMessage::try_from(event.data_words()) else {
+        // Promote to MIDI 2.0 first — the engine's single MIDI-1→2 seam. A MIDI
+        // 1.0 channel-voice input becomes its CV2 form (velocity/CC/pressure/bend
+        // widened with the spec Min-Center-Max scalers), so there is exactly one
+        // channel-voice arm to handle. This is the same `normalize()` the synths
+        // apply before dispatch — the MPE processor is not a second translator.
+        let normalized = tutti_midi_types::normalize(event);
+        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(normalized.data_words()) else {
             return;
         };
         if let MpeMode::SingleChannelRotation { channel } = self.mode {
-            if let UmpMessage::ChannelVoice2(cv2) = msg {
-                self.process_rotation_cv2(channel, cv2);
-            }
+            self.process_rotation_cv2(channel, cv2);
             return;
         }
-        match msg {
-            UmpMessage::ChannelVoice2(cv2) => self.process_cv2(cv2),
-            UmpMessage::ChannelVoice1(cv1) => self.process_cv1(cv1),
-            _ => {}
-        }
+        self.process_cv2(cv2);
     }
 
     /// MIDI 2.0 channel voice — 16-bit velocity, 32-bit CC/pressure/bend,
@@ -239,57 +235,6 @@ impl MpeProcessor {
         }
     }
 
-    /// MIDI 1.0 channel voice — 7-bit velocity + 7-bit CC etc. Scaled into
-    /// MPE's unit-normalised expression fields.
-    fn process_cv1(&mut self, cv1: ChannelVoice1<&[u32]>) {
-        match cv1 {
-            ChannelVoice1::NoteOn(m) => {
-                let ch = u8::from(m.channel());
-                let note = u8::from(m.note_number());
-                let vel = u8::from(m.velocity());
-                // MIDI 1.0 velocity-0 NoteOn is NoteOff per spec.
-                if vel == 0 {
-                    if let Some(zone_info) = self.get_zone_info(ch) {
-                        self.handle_note_off_internal(ch, note, zone_info.is_lower_zone);
-                    }
-                } else {
-                    self.handle_note_on(ch, note, midi1_velocity_to_midi2(vel));
-                }
-            }
-            ChannelVoice1::NoteOff(m) => {
-                let ch = u8::from(m.channel());
-                let note = u8::from(m.note_number());
-                if let Some(zone_info) = self.get_zone_info(ch) {
-                    self.handle_note_off_internal(ch, note, zone_info.is_lower_zone);
-                }
-            }
-            ChannelVoice1::PitchBend(m) => {
-                let bend14 = u16::from(m.bend());
-                self.handle_pitch_bend(u8::from(m.channel()), midi1_pitch_bend_to_midi2(bend14));
-            }
-            ChannelVoice1::ChannelPressure(m) => {
-                self.handle_channel_pressure(
-                    u8::from(m.channel()),
-                    midi1_cc_to_midi2(u8::from(m.pressure())),
-                );
-            }
-            ChannelVoice1::KeyPressure(m) => {
-                let id = NoteId::from_channel_note(u8::from(m.channel()), u8::from(m.note_number()));
-                self.expression.set_pressure(
-                    id,
-                    u32_to_unit_f32(midi1_cc_to_midi2(u8::from(m.pressure()))),
-                );
-            }
-            ChannelVoice1::ControlChange(m) => {
-                self.handle_cc(
-                    u8::from(m.channel()),
-                    u8::from(m.control()),
-                    midi1_cc_to_midi2(u8::from(m.control_data())),
-                );
-            }
-            _ => {}
-        }
-    }
 
     fn handle_note_on(&mut self, channel: u8, note: u8, velocity_u16: u16) {
         let Some(zone_info) = self.get_zone_info(channel) else {
@@ -461,6 +406,9 @@ fn slide_value(c: Controller) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::convert::{
+        midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
+    };
 
     fn note_on(channel: u8, note: u8, vel_u7: u8) -> MidiEvent {
         // Spec Min-Center-Max upconvert of 7-bit velocity to the MIDI 2.0 range.
@@ -494,6 +442,29 @@ mod tests {
 
         let bend = processor.expression().get_pitch_bend(nid(2, 60));
         assert!((bend - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn raw_midi1_wire_input_routes_through_normalize_seam() {
+        // Guards the removal of the old `process_cv1` arm: a genuine MIDI 1.0
+        // wire event (a type-0x2 Channel Voice 1 UMP, NOT pre-promoted) must
+        // still route classically, because `process` now `normalize()`s to CV2
+        // first. Note-on ch2, then a full-up channel pitch bend on ch2.
+        let mut processor = MpeProcessor::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
+
+        // 0x92 = NoteOn ch2, note 60, vel 100 — raw MIDI-1.0 bytes.
+        let note = MidiEvent::from_midi1_bytes(0, &[0x92, 60, 100]).expect("cv1 note-on");
+        // 0xE2 = PitchBend ch2, LSB 0x7F, MSB 0x7F → 14-bit max (bend up).
+        let bend = MidiEvent::from_midi1_bytes(0, &[0xE2, 0x7F, 0x7F]).expect("cv1 pitch bend");
+        assert!(note.is_note_on(), "built a real CV1 note-on off the wire");
+
+        processor.process(&note);
+        processor.process(&bend);
+
+        // Same routing as the native-CV2 pitch-bend test: the held note on ch2
+        // receives the bend via the classic channel→note map.
+        let routed = processor.expression().get_pitch_bend(nid(2, 60));
+        assert!((routed - 1.0).abs() < 0.01, "raw-wire bend reached the note, got {routed}");
     }
 
     #[test]

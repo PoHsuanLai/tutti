@@ -22,37 +22,25 @@ impl InputProducerHandle {
     }
 }
 
-/// Producer handle for a port's output ring.
-///
-/// # Safety
-/// Must only be used from a single thread (the audio thread) — the SPSC
-/// single-producer invariant.
-#[derive(Clone)]
-pub struct OutputProducerHandle {
-    producer: SpscProducer<MidiEvent>,
-}
-
-impl OutputProducerHandle {
-    #[inline]
-    pub fn push(&self, event: MidiEvent) -> bool {
-        self.producer.push(event)
-    }
-}
-
-pub struct AsyncMidiPort {
+/// A hardware **input** port: a lock-free ring fed by the midir callback thread
+/// (each event paired with its arrival `Instant`) and drained by the engine
+/// cycle. This is the one MIDI path that genuinely needs [`SpscRing`] — a
+/// cross-thread producer/consumer with wall-clock timestamps — which the
+/// engine-internal [`MidiMailbox`](tutti_midi_runtime::MidiMailbox) mailbox
+/// (the single MIDI-*out* ring) does not model. There is no output counterpart
+/// here: outbound MIDI rides the mailbox → [`OutputThread`](crate) sink instead.
+pub struct HardwareMidiInput {
     name: String,
     active: std::sync::atomic::AtomicBool,
     input: SpscRing<(Instant, MidiEvent)>,
-    output: SpscRing<MidiEvent>,
 }
 
-impl AsyncMidiPort {
+impl HardwareMidiInput {
     pub fn new(name: impl Into<String>, fifo_size: usize) -> Self {
         Self {
             name: name.into(),
             active: std::sync::atomic::AtomicBool::new(true),
             input: SpscRing::new(fifo_size),
-            output: SpscRing::new(fifo_size),
         }
     }
 
@@ -77,12 +65,6 @@ impl AsyncMidiPort {
         }
     }
 
-    pub fn output_producer_handle(&self) -> OutputProducerHandle {
-        OutputProducerHandle {
-            producer: self.output.producer(),
-        }
-    }
-
     /// Drain this port's input ring into `sink`, tagging each event with
     /// `port_index`. Generic over the sink (`Vec`, `SmallVec`, …) so callers
     /// can use whatever RT buffer they hold.
@@ -95,23 +77,11 @@ impl AsyncMidiPort {
         self.input
             .drain_each(|(timestamp, event)| sink.extend(core::iter::once((timestamp, port_index, event))));
     }
-
-    /// Drain this port's output ring into `sink`, tagging each event with
-    /// `port_index`. Generic over the sink as above.
-    #[inline]
-    pub fn cycle_end_flush_output_into(
-        &self,
-        sink: &mut impl Extend<(usize, MidiEvent)>,
-        port_index: usize,
-    ) {
-        self.output
-            .drain_each(|event| sink.extend(core::iter::once((port_index, event))));
-    }
 }
 
-impl core::fmt::Debug for AsyncMidiPort {
+impl core::fmt::Debug for HardwareMidiInput {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("AsyncMidiPort")
+        f.debug_struct("HardwareMidiInput")
             .field("name", &self.name)
             .finish()
     }
@@ -126,27 +96,16 @@ mod tests {
         MidiEvent::note_on(0, 0, note, midi1_velocity_to_midi2(vel))
     }
 
-    fn note_off(note: u8) -> MidiEvent {
-        MidiEvent::note_off(0, 0, note, 0)
-    }
-
     /// Test helper: drain input into a fresh Vec.
-    fn read_input(port: &AsyncMidiPort) -> Vec<MidiEvent> {
+    fn read_input(port: &HardwareMidiInput) -> Vec<MidiEvent> {
         let mut buf = Vec::new();
         port.cycle_start_read_input_into(&mut buf, 0);
         buf.into_iter().map(|(_, _, e)| e).collect()
     }
 
-    /// Test helper: drain output into a fresh Vec.
-    fn flush_output(port: &AsyncMidiPort) -> Vec<MidiEvent> {
-        let mut buf = Vec::new();
-        port.cycle_end_flush_output_into(&mut buf, 0);
-        buf.into_iter().map(|(_, e)| e).collect()
-    }
-
     #[test]
     fn test_input_flow() {
-        let port = AsyncMidiPort::new("Input", 256);
+        let port = HardwareMidiInput::new("Input", 256);
         let producer_handle = port.input_producer_handle();
 
         let event = note_on(0x3C, 0x7F);
@@ -160,36 +119,22 @@ mod tests {
     }
 
     #[test]
-    fn test_output_flow() {
-        let port = AsyncMidiPort::new("Output", 256);
-        let output_handle = port.output_producer_handle();
-
-        let event = note_off(0x3C);
-        assert!(output_handle.push(event));
-
-        let events = flush_output(&port);
-        assert_eq!(events.len(), 1);
-        assert!(events[0].is_note_off());
-        assert_eq!(events[0].note(), Some(0x3C));
-    }
-
-    #[test]
     fn test_fifo_full() {
-        let port = AsyncMidiPort::new("Full", 4);
-        let output_handle = port.output_producer_handle();
+        let port = HardwareMidiInput::new("Full", 4);
+        let input_handle = port.input_producer_handle();
 
         for i in 0..4 {
             let event = note_on(0x3C, 0x7F).with_frame_offset(i);
-            assert!(output_handle.push(event), "Failed to write event {}", i);
+            assert!(input_handle.push(event, Instant::now()), "Failed to write event {}", i);
         }
 
         let event = note_on(0x3C, 0x7F);
-        assert!(!output_handle.push(event), "FIFO should be full");
+        assert!(!input_handle.push(event, Instant::now()), "FIFO should be full");
     }
 
     #[test]
     fn test_active_flag_toggle() {
-        let port = AsyncMidiPort::new("ActiveTest", 256);
+        let port = HardwareMidiInput::new("ActiveTest", 256);
         assert!(port.is_active());
 
         port.set_active(false);
@@ -197,28 +142,5 @@ mod tests {
 
         port.set_active(true);
         assert!(port.is_active());
-    }
-
-    #[test]
-    fn test_input_output_isolation() {
-        let port = AsyncMidiPort::new("Isolation", 256);
-        let input_handle = port.input_producer_handle();
-        let output_handle = port.output_producer_handle();
-
-        input_handle.push(note_on(60, 100), Instant::now());
-
-        assert!(
-            flush_output(&port).is_empty(),
-            "Output should not receive input events"
-        );
-        assert_eq!(read_input(&port).len(), 1);
-
-        output_handle.push(note_off(60));
-
-        assert!(
-            read_input(&port).is_empty(),
-            "Input should not receive output events"
-        );
-        assert_eq!(flush_output(&port).len(), 1);
     }
 }

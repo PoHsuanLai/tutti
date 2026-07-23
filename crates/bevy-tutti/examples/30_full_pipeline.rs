@@ -13,9 +13,6 @@
 //!    `AudioNode(NodeId)` survives, so any wires stay valid.
 //! 3. **A4 Automation lane** — a `LiveAutomationLane<f32>` entity drives
 //!    a target's `Volume` from 0.0 → 1.0 → 0.0 over 4 beats.
-//! 4. **A7 Sidechain relationship** — illustrative `SidechainOf` insertion
-//!    (the bare oscillator has no input port 1, so the warning-skip path
-//!    runs, but the relationship-target list is populated as expected).
 //!
 //! Run with:
 //!
@@ -34,9 +31,7 @@ use bevy_log::LogPlugin;
 
 use bevy_tutti::TuttiPlugin;
 use tutti_core::dsp::sine_hz;
-use tutti_core::graph::{
-    crossfade_audio_node, MeteringRes, SidechainOf, SidechainSources, SpawnAudioNode, TransportRes,
-};
+use tutti_core::graph::{crossfade_audio_node, MeteringRes, SpawnAudioNode, TransportRes};
 use tutti_core::MotionEvent;
 use tutti_core::{AudioNode, NodeKind, Volume};
 use tutti_sampler::PendingSamplerLoad;
@@ -113,16 +108,7 @@ fn spawn_demo(mut commands: Commands, transport: Res<TransportRes>) {
             },
         ));
 
-    // Illustrative sidechain wiring. With a bare oscillator on the target
-    // side the connect call is skipped (port 1 doesn't exist), but the
-    // relationship-target list still grows.
     let _ = (target, &transport);
-    let driver = commands
-        .spawn_audio_node(sine_hz::<f32>(60.0), NodeKind::Generator)
-        .id();
-    commands
-        .entity(driver)
-        .insert(SidechainOf { target, port: 2 });
 
     // Pending-sampler-load illustration: with no asset present we can't
     // promote, but the queue would resolve it when the asset arrives.
@@ -158,20 +144,17 @@ fn periodic_crossfade(
 fn report_status(
     metering: Res<MeteringRes>,
     targets: Query<&Volume, With<AutomationTarget>>,
-    sources: Query<&SidechainSources>,
     tick: Res<DemoTick>,
 ) {
     if !tick.0.is_multiple_of(60) {
         return;
     }
     let vol = targets.single().map(|v| v.0).unwrap_or(0.0);
-    let sidechain_count = sources.iter().map(|s| s.len()).sum::<usize>();
-    let (peak_l, peak_r, _, _) = metering.amplitude();
+    let (peak_l, peak_r, _, _) = metering.get();
     bevy_log::info!(
-        "tick {:>4} | target Volume = {:.3} | sidechain links = {} | peak L/R = {:.3} / {:.3}",
+        "tick {:>4} | target Volume = {:.3} | peak L/R = {:.3} / {:.3}",
         tick.0,
         vol,
-        sidechain_count,
         peak_l,
         peak_r
     );

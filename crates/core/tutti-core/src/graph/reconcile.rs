@@ -6,10 +6,13 @@
 //!   and attach `AudioNode` + `NodeKind` to a fresh entity.
 //! - [`reconcile_node_despawn`] — an `On<Remove, AudioNode>` observer that
 //!   removes the underlying graph node when its `AudioNode` is removed.
-//! - [`reconcile_params`] — sweeps `Changed<Volume>` (and friends) and writes
-//!   the new value through a typed `node_mut::<T>` call.
 //! - [`commit_graph`] — `graph.commit()` once per frame iff any reconcile
 //!   system mutated the graph.
+//!
+//! Param write-through is not done here: the core graph has no first-class
+//! typed setter. Each leaf crate layers its own param reconciler against
+//! [`GraphReconcileSystems::Params`] (the sampler volume write-through, the
+//! automation writes), keyed off its own node type.
 //! - [`GraphReconcileSystems`] — system-set ordering anchor for hosts that
 //!   want to schedule their own logic before/after reconciliation.
 
@@ -18,7 +21,7 @@ use bevy_ecs::schedule::SystemSet;
 use bevy_ecs::system::EntityCommands;
 
 use crate::dsp::AudioUnit;
-use crate::graph::{AudioGraphRes, AudioNode, Mute, NodeKind, Volume};
+use crate::graph::{AudioGraphRes, AudioNode, NodeKind};
 
 /// System-set ordering anchor for the reconcile pipeline.
 ///
@@ -205,34 +208,6 @@ pub fn reconcile_node_despawn(
     }
 }
 
-type ChangedParams<'w> = (&'w AudioNode, &'w NodeKind, &'w Volume, Option<&'w Mute>);
-type ChangedParamFilter = Or<(Changed<Volume>, Changed<Mute>)>;
-
-/// Reconciles `Changed<Volume>` and `Changed<Mute>` into the underlying
-/// graph node. Dispatch is keyed off [`NodeKind`]; unknown kinds are
-/// skipped (apps can layer their own systems for custom kinds).
-///
-/// The core build of this system carries no per-kind arms: the sampler
-/// volume write-through is re-added in the tutti-sampler stage as a layered
-/// system. Hosts wanting first-class typed setters for other kinds layer
-/// their own systems against [`GraphReconcileSystems::Params`].
-#[allow(unused_mut, unused_variables)]
-pub fn reconcile_params(
-    mut graph: ResMut<AudioGraphRes>,
-    changed_vol: Query<ChangedParams, ChangedParamFilter>,
-    mut dirty: ResMut<GraphDirty>,
-) {
-    for (node, kind, volume, mute) in changed_vol.iter() {
-        let muted = mute.map(|m| m.0).unwrap_or(false);
-        let target = if muted { 0.0 } else { volume.0 };
-
-        // No first-class typed setter at this layer; hosts (and the leaf
-        // crates) layer their own systems matching on `kind`. See module docs
-        // for the extension pattern.
-        let _ = (target, node, kind);
-    }
-}
-
 /// Runs `graph.commit()` once iff any reconcile system mutated the graph.
 ///
 /// **Pinned to the main thread** via [`NonSendMarker`]. `commit()` deallocates
@@ -259,7 +234,7 @@ mod tests {
     use super::*;
     use crate::dsp::sine_hz;
     use crate::dsp::Net;
-    use crate::graph::AudioGraphRes;
+    use crate::graph::{AudioGraphRes, Volume};
     use bevy_app::App;
 
     /// Build a bare `Net` directly (no `TuttiEngine`, which lives in
@@ -272,10 +247,7 @@ mod tests {
         app.add_observer(reconcile_node_despawn);
         app.add_systems(
             bevy_app::Update,
-            (
-                reconcile_params.in_set(GraphReconcileSystems::Params),
-                commit_graph.in_set(GraphReconcileSystems::Commit),
-            ),
+            commit_graph.in_set(GraphReconcileSystems::Commit),
         );
         app.configure_sets(
             bevy_app::Update,

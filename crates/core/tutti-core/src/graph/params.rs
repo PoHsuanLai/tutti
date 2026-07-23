@@ -8,9 +8,10 @@
 //! carry and pass to the graph's imperative API.
 //!
 //! No `Entity` fields and no relationship semantics live here — that's what lets
-//! them degrade cleanly. The Bevy-only wiring (`AudioFeedsTo`, the reconcile
-//! systems, the `GraphReconcilePlugin`) lives in the sibling `#[cfg(feature =
-//! "bevy")]` modules.
+//! them degrade cleanly. The Bevy-only wiring (the reconcile systems, the
+//! `GraphReconcilePlugin`) lives in the sibling `#[cfg(feature = "bevy")]`
+//! modules; edges themselves are wired by the host through `Net`'s imperative
+//! `connect`/`disconnect` API.
 
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::Component;

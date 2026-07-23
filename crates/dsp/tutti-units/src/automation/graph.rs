@@ -19,7 +19,7 @@ use crate::automation::LiveAutomationLane;
 use tutti_core::graph::{AudioNode, Pan, PluginParam, Volume};
 
 use tutti_core::graph::AudioGraphRes;
-use tutti_core::graph::{reconcile_params, GraphReconcileSystems};
+use tutti_core::graph::GraphReconcileSystems;
 use tutti_core::transport::{TransportClockNode, BEAT_PORTS};
 
 /// Trigger component: spawn an entity with this to create an automation lane.
@@ -277,7 +277,6 @@ impl Plugin for TuttiAutomationPlugin {
             Update,
             reconcile_automation_writes
                 .in_set(GraphReconcileSystems::Params)
-                .before(reconcile_params)
                 .run_if(tutti_core::graph::engine_ready),
         );
     }

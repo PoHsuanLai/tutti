@@ -13,11 +13,12 @@
 //! gain `#[derive(Component, Reflect)]`.
 //!
 //! Everything else in this module is the Bevy ECS integration — the reconcile
-//! pipeline (reconcile / routing / sidechain relationships / emitter markers /
-//! resources / `GraphReconcilePlugin`) — and is gated behind the `bevy`
-//! feature. It translates ECS component/relationship changes into `Net`
-//! operations; nothing in the runtime calls back into ECS. Leaf-specific
-//! reconcilers (sampler/plugin/convolution/midi) stay in bevy-tutti.
+//! pipeline (spawn / despawn / commit / emitter markers / resources /
+//! `GraphReconcilePlugin`) — and is gated behind the `bevy` feature. It
+//! translates ECS component changes into `Net` operations; nothing in the
+//! runtime calls back into ECS. Edges are wired by the host (dawai's
+//! `Connection` model); leaf-specific reconcilers (sampler/plugin/convolution/
+//! midi) stay in bevy-tutti.
 
 // Always-compiled parameter types.
 pub mod params;
@@ -35,10 +36,6 @@ pub mod plugin;
 pub mod reconcile;
 #[cfg(feature = "bevy")]
 pub mod resources;
-#[cfg(feature = "bevy")]
-pub mod routing;
-#[cfg(feature = "bevy")]
-pub mod sidechain;
 
 #[cfg(feature = "bevy")]
 pub use emitter::{AudioEmitter, AudioPlaybackState};
@@ -48,8 +45,8 @@ pub use param_epoch::{bump_param_epoch_core, NodeParamEpoch};
 pub use plugin::{register_core_node_types, GraphReconcilePlugin};
 #[cfg(feature = "bevy")]
 pub use reconcile::{
-    commit_graph, crossfade_audio_node, engine_ready, reconcile_node_despawn, reconcile_params,
-    GraphDirty, GraphReconcileSystems, SpawnAudioNode,
+    commit_graph, crossfade_audio_node, engine_ready, reconcile_node_despawn, GraphDirty,
+    GraphReconcileSystems, SpawnAudioNode,
 };
 #[cfg(feature = "bevy")]
 pub use resources::{AudioConfig, AudioGraphRes, PendingGraph};
@@ -60,9 +57,3 @@ pub use resources::{AudioConfig, AudioGraphRes, PendingGraph};
 pub use crate::metering::{MeteringRes, PendingMetering, TuttiMeteringPlugin};
 #[cfg(feature = "bevy")]
 pub use crate::transport::{PendingTransport, TransportRes, TuttiTransportPlugin};
-#[cfg(feature = "bevy")]
-pub use routing::{reconcile_audio_routing, AudioFedBy, AudioFeedsTo};
-#[cfg(feature = "bevy")]
-pub use sidechain::{
-    reconcile_sidechain_links, reconcile_sidechain_remove, SidechainOf, SidechainSources,
-};

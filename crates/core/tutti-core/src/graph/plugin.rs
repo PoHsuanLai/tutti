@@ -10,12 +10,9 @@ use bevy_ecs::prelude::*;
 
 use crate::graph::param_epoch::{bump_param_epoch_core, NodeParamEpoch};
 use crate::graph::reconcile::{
-    commit_graph, engine_ready, reconcile_node_despawn, reconcile_params, GraphDirty,
-    GraphReconcileSystems,
+    commit_graph, engine_ready, reconcile_node_despawn, GraphDirty, GraphReconcileSystems,
 };
 use crate::graph::resources::{AudioGraphRes, PendingGraph};
-use crate::graph::routing::reconcile_audio_routing;
-use crate::graph::sidechain::{reconcile_sidechain_links, reconcile_sidechain_remove};
 
 /// Bevy plugin: the generic graph reconciliation pipeline.
 ///
@@ -64,19 +61,12 @@ impl Plugin for GraphReconcilePlugin {
 
         // Graph-node removal is handled by an `On<Remove, AudioNode>`
         // observer (fires at command-flush, reads the still-present NodeId).
-        // Sidechain teardown is handled by an `On<Remove, SidechainOf>`
-        // observer; only the *add* half stays a Spawn-set system.
-        app.add_observer(reconcile_node_despawn)
-            .add_observer(reconcile_sidechain_remove);
+        app.add_observer(reconcile_node_despawn);
 
         app.add_systems(
             Update,
-            (
-                reconcile_params.in_set(GraphReconcileSystems::Params),
-                commit_graph.in_set(GraphReconcileSystems::Commit),
-                reconcile_sidechain_links.in_set(GraphReconcileSystems::Spawn),
-                reconcile_audio_routing.in_set(GraphReconcileSystems::Spawn),
-            )
+            commit_graph
+                .in_set(GraphReconcileSystems::Commit)
                 .run_if(engine_ready),
         );
     }

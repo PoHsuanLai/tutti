@@ -11,8 +11,9 @@
 
 use bevy_app::{App, Plugin};
 use bevy_ecs::prelude::*;
+use std::sync::Arc;
 
-use crate::transport::{MetronomeHandle, Transport};
+use crate::transport::{ClickState, Transport};
 
 /// The live transport: `.0.motion` for transitions, `.0.settings` for values.
 #[derive(Resource, Clone)]
@@ -30,16 +31,17 @@ impl std::ops::Deref for TransportRes {
 #[derive(Resource)]
 pub struct PendingTransport(pub Option<Transport>);
 
-/// Metronome control (volume / accent / mode).
+/// Metronome control: the shared [`ClickState`] the click node reads.
 ///
 /// Separate from [`TransportRes`]: the metronome shares no state with the
-/// transport — it is a wrapper over `Arc<ClickSettings>` — and was only bundled
-/// into the transport handle for call-site convenience.
+/// transport. Callers set volume/accent/mode through `ClickState`'s atomic
+/// setters (`set_volume` / `set_mode` / `set_accent_every`) directly — there
+/// is no fluent wrapper.
 #[derive(Resource, Clone)]
-pub struct MetronomeRes(pub MetronomeHandle);
+pub struct MetronomeRes(pub Arc<ClickState>);
 
 impl std::ops::Deref for MetronomeRes {
-    type Target = MetronomeHandle;
+    type Target = ClickState;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -47,7 +49,7 @@ impl std::ops::Deref for MetronomeRes {
 
 /// Transient handoff for [`MetronomeRes`], mirroring [`PendingTransport`].
 #[derive(Resource)]
-pub struct PendingMetronome(pub Option<MetronomeHandle>);
+pub struct PendingMetronome(pub Option<Arc<ClickState>>);
 
 /// Graph address of the global [`TransportClock`](crate::TransportClock) node.
 ///

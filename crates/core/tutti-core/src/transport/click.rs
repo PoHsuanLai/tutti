@@ -4,7 +4,6 @@
 //! (volume, accent, mode) from [`ClickSettings`].
 
 use super::Transport;
-use crate::params::Linear;
 use crate::{AtomicF32, AtomicU32, AtomicU8, Ordering};
 use fundsp::audionode::AudioNode;
 use fundsp::prelude::*;
@@ -249,77 +248,6 @@ impl AudioNode for ClickNode {
             self.click_normal = Self::generate_click(sample_rate, false);
             self.click_accent = Self::generate_click(sample_rate, true);
         }
-    }
-}
-
-/// Fluent API handle for metronome control.
-///
-/// Created via `transport.metronome()`.
-///
-/// # Example
-/// ```ignore
-/// engine.transport()
-///     .metronome()
-///     .volume(0.7)
-///     .accent_every(4)
-///     .always();
-/// ```
-#[derive(Clone)]
-pub struct MetronomeHandle {
-    state: Arc<ClickState>,
-}
-
-impl MetronomeHandle {
-    pub fn new(state: Arc<ClickState>) -> Self {
-        Self { state }
-    }
-
-    /// Volume: 0.0 to 1.0.
-    pub fn volume(&self, volume: impl Into<Linear>) -> &Self {
-        self.state.set_volume(volume.into().get());
-        self
-    }
-
-    pub fn get_volume(&self) -> Linear {
-        Linear(self.state.volume())
-    }
-
-    pub fn accent_every(&self, beats: u32) -> &Self {
-        self.state.set_accent_every(beats);
-        self
-    }
-
-    pub fn get_accent_every(&self) -> u32 {
-        self.state.accent_every()
-    }
-
-    pub fn mode(&self, mode: MetronomeMode) -> &Self {
-        self.state.set_mode(mode);
-        self
-    }
-
-    pub fn get_mode(&self) -> MetronomeMode {
-        self.state.mode()
-    }
-
-    pub fn off(&self) -> &Self {
-        self.state.set_mode(MetronomeMode::Off);
-        self
-    }
-
-    pub fn always(&self) -> &Self {
-        self.state.set_mode(MetronomeMode::Always);
-        self
-    }
-
-    pub fn recording_only(&self) -> &Self {
-        self.state.set_mode(MetronomeMode::RecordingOnly);
-        self
-    }
-
-    pub fn preroll_only(&self) -> &Self {
-        self.state.set_mode(MetronomeMode::PrerollOnly);
-        self
     }
 }
 

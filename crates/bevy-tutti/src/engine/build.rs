@@ -28,9 +28,7 @@ use tutti_core::{
 // subsystem's `*Res` (synchronously, before frame 1).
 use tutti_core::graph::{AudioConfig, PendingGraph};
 use tutti_core::metering::PendingMetering;
-use tutti_core::transport::{
-    MetronomeHandle, PendingMetronome, PendingTransport, TransportClockNode,
-};
+use tutti_core::transport::{PendingMetronome, PendingTransport, TransportClockNode};
 
 #[cfg(feature = "midi")]
 use tutti_core::processor::MidiProcessor;
@@ -181,7 +179,9 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
 
     let driver = TuttiDriver::from_parts(audio_engine, callback_state);
 
-    let metronome = MetronomeHandle::new(click_settings);
+    // The metronome resource is just the shared click settings — callers set
+    // volume/mode via `ClickState`'s atomic setters directly.
+    let metronome = click_settings;
 
     #[cfg(feature = "analysis")]
     let analysis = tutti_analysis::AnalysisRes::new(sample_rate, tap);

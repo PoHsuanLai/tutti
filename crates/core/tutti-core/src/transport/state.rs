@@ -9,7 +9,6 @@
 //! Grouping is by **data-flow direction**:
 //!
 //! - [`ClockInputs`] — what `TransportClock` reads to advance time.
-//! - [`TransportState`] — what the clock publishes; what readers observe.
 //! - [`Declick`] — the fade contract between the FSM and `GraphProcessor`.
 
 use std::sync::atomic::Ordering;
@@ -248,17 +247,6 @@ pub struct ClockInputs {
     pub paused: Arc<AtomicBool>,
     pub seek: SeekSlot,
     pub loop_span: LoopSpan,
-}
-
-/// What the clock publishes and every reader observes — "what time is it".
-///
-/// This is the read-only half of the transport. Sources that only need to
-/// know the position want this, not the command side.
-#[derive(Clone, Debug)]
-pub struct TransportState {
-    pub beat: Arc<AtomicF64>,
-    pub recording: Arc<AtomicBool>,
-    pub in_preroll: Arc<AtomicBool>,
 }
 
 #[cfg(test)]

@@ -1,4 +1,3 @@
-mod automation_reader;
 mod beat_window;
 mod click;
 mod clock;
@@ -11,9 +10,8 @@ pub(crate) mod position;
 mod settings;
 mod state;
 
-pub use automation_reader::{AutomationEnvelopeFn, AutomationReaderInput};
 pub use beat_window::{BeatWindow, BeatWindowSync};
-pub use click::{ClickNode, ClickSettings, ClickState, MetronomeHandle, MetronomeMode};
+pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub use clock::TransportClock;
 pub use fsm::Direction;
 pub use handle::Transport;
@@ -21,10 +19,7 @@ pub use meter::TimeSignature;
 pub use motion::{MotionEvent, MotionFsm, MotionState, QueueFull};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use settings::TransportSettings;
-pub use state::{
-    beat_from_ports, ClockInputs, Declick, LoopRange, LoopSpan, SeekSlot, TransportState,
-    BEAT_PORTS,
-};
+pub use state::{beat_from_ports, ClockInputs, Declick, LoopRange, LoopSpan, SeekSlot, BEAT_PORTS};
 
 #[cfg(feature = "bevy")]
 pub mod plugin;

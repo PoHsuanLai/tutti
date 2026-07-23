@@ -36,7 +36,12 @@ pub const K_NOTE_EXPRESSION_INT_VALUE_EVENT: u16 = EventTypes_::kNoteExpressionI
 /// `type_` discriminant for legacy-MIDI-CC-out events (plugin → host, value 0xFFFF).
 pub const K_LEGACY_MIDI_CC_OUT_EVENT: u16 = EventTypes_::kLegacyMIDICCOutEvent as u16;
 /// `DataEvent.type` subtype marking the payload as a MIDI SysEx message.
-pub const K_DATA_TYPE_MIDI_SYSEX: u32 = vst3::Steinberg::Vst::DataEvent_::DataTypes_::kMidiSysEx;
+///
+/// Cast explicitly like the discriminants above: the generated `vst3` bindings
+/// give this constant `u32` on Unix but `i32` on Windows, so an uncast
+/// initializer only compiles on one of them.
+pub const K_DATA_TYPE_MIDI_SYSEX: u32 =
+    vst3::Steinberg::Vst::DataEvent_::DataTypes_::kMidiSysEx as u32;
 
 /// Flat Rust-facing header merging the `busIndex` / `sampleOffset` /
 /// `ppqPosition` / `flags` / `type_` fields of `vst3::Steinberg::Vst::Event`

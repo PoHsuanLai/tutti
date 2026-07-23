@@ -56,11 +56,6 @@ arc-swap = "1.7"
 hashbrown = { version = "0.16", default-features = false }
 parking_lot = { version = "0.12", default-features = false }
 
-# Metering (EBU R128 loudness measurement). Unconditional now that tutti-core
-# is std. crossbeam-channel carries the metering sample pipe.
-crossbeam-channel = { version = "0.5" }
-ebur128 = { version = "0.1" }
-
 # Bevy — optional, gated by the `bevy` feature. tutti-core hosts the ECS
 # graph-reconcile hub (GraphReconcileSystems, AudioGraphRes,
 # GraphReconcilePlugin, the param components) that every leaf audio crate

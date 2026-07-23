@@ -6,8 +6,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::Arc;
-use std::time::Instant;
-use tutti_core::metering::{MeteringContext, MeteringManager};
+use tutti_core::metering::{meter_output, AudioTap, MasterMeter, MeteringContext};
 use tutti_core::processor::AudioProcessor;
 use tutti_core::ScopedNoDenormals;
 
@@ -20,14 +19,16 @@ const MAX_FRAMES: usize = 8192;
 /// State shared between the engine and the RT audio callback.
 pub(crate) struct AudioCallbackState<P: AudioProcessor> {
     pub(crate) processor: P,
-    pub(crate) metering: Arc<MeteringManager>,
+    pub(crate) meter: MasterMeter,
+    pub(crate) tap: AudioTap,
 }
 
 impl<P: AudioProcessor> AudioCallbackState<P> {
-    pub(crate) fn new(processor: P, metering: Arc<MeteringManager>) -> Self {
+    pub(crate) fn new(processor: P, meter: MasterMeter, tap: AudioTap) -> Self {
         Self {
             processor,
-            metering,
+            meter,
+            tap,
         }
     }
 
@@ -185,7 +186,6 @@ where
                 "CPAL callback frames {raw_frames} exceeds MAX_FRAMES {MAX_FRAMES}"
             );
 
-            let start = Instant::now();
             let needed = frames * 2;
             let mix = &mut buffer[..needed];
             // Zero before rendering — the previous callback's contents are not
@@ -193,10 +193,7 @@ where
             mix.fill(0.0);
             process_audio(&state, mix);
 
-            let elapsed = start.elapsed();
-            state
-                .metering
-                .update_rt(mix, frames, elapsed, &mut metering_ctx);
+            meter_output(mix, frames, &state.meter, &state.tap, &mut metering_ctx);
 
             write_output(data, channels, mix, frames);
         },
@@ -231,14 +228,13 @@ mod tests {
     use super::*;
     use parking_lot::Mutex;
     use tutti_core::processor::GraphProcessor;
-    use tutti_core::{GraphNet, MeteringManager, MotionEvent, Transport, TransportClock};
+    use tutti_core::{GraphNet, MotionEvent, Transport, TransportClock};
 
     /// Build a minimal processor + transport pair for callback-level tests.
     /// Bypasses the engine builder — these tests exercise the RT callback
     /// in isolation, not the full engine.
     fn build_callback_state(sample_rate: f64) -> (Transport, AudioCallbackState<GraphProcessor>) {
         let transport = Transport::new(sample_rate);
-        let metering = Arc::new(MeteringManager::new(sample_rate));
 
         let mut net = GraphNet::new(0, 2);
         let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
@@ -251,7 +247,7 @@ mod tests {
         let _keep_net_alive: &'static Mutex<GraphNet> = Box::leak(Box::new(Mutex::new(net)));
 
         let processor = GraphProcessor::new(transport.motion.clone(), backend);
-        let state = AudioCallbackState::new(processor, metering);
+        let state = AudioCallbackState::new(processor, MasterMeter::new(), AudioTap::new());
         (transport, state)
     }
 

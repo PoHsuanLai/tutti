@@ -259,7 +259,7 @@ mod ecs {
     use bevy_ecs::message::{Message, MessageReader};
     use bevy_ecs::prelude::*;
     use std::thread::JoinHandle;
-    use tutti_core::metering::MeteringManager;
+    use tutti_core::metering::AudioTap;
 
     use tutti_core::graph::engine_ready;
 
@@ -271,29 +271,26 @@ mod ecs {
 
     /// Live-analysis engine state, as a Bevy resource.
     ///
-    /// Holds the metering manager (the audio-thread tap source) and, while live,
-    /// the running analysis thread + its published [`LiveAnalysisState`]. The
-    /// control system mutates this through `ResMut` (Bevy guarantees exclusive
-    /// access), so no interior locking is needed — enable spawns the thread, disable
-    /// joins it. Built by bevy-tutti and claimed from [`PendingAnalysis`] in
+    /// Holds the audio-thread tap and, while live, the running analysis thread
+    /// plus its published [`LiveAnalysisState`]. The control system mutates
+    /// this through `ResMut` (Bevy guarantees exclusive access), so no interior
+    /// locking is needed — enable spawns the thread, disable joins it. Built by
+    /// bevy-tutti and claimed from [`PendingAnalysis`] in
     /// [`TuttiAnalysisPlugin`]'s `build()`.
     #[derive(Resource)]
     pub struct AnalysisRes {
         sample_rate: f64,
-        metering: Arc<MeteringManager>,
+        tap: AudioTap,
         running: Option<RunningAnalysis>,
     }
 
     impl AnalysisRes {
-        /// Construct from the engine's metering manager. Live analysis is off until
+        /// Construct from the engine's audio tap. Live analysis is off until
         /// [`EnableLiveAnalysis`] is sent.
-        pub fn new(
-            sample_rate: impl Into<tutti_core::SampleRate>,
-            metering: Arc<MeteringManager>,
-        ) -> Self {
+        pub fn new(sample_rate: impl Into<tutti_core::SampleRate>, tap: AudioTap) -> Self {
             Self {
                 sample_rate: sample_rate.into().get(),
-                metering,
+                tap,
                 running: None,
             }
         }
@@ -302,12 +299,12 @@ mod ecs {
             self.running.is_some()
         }
 
-        /// Enable the metering tap and spawn the analysis thread. Idempotent.
+        /// Open the audio tap and spawn the analysis thread. Idempotent.
         fn enable(&mut self) {
             if self.running.is_some() {
                 return;
             }
-            let consumer = self.metering.enable_tap();
+            let consumer = self.tap.open();
             let state = Arc::new(LiveAnalysisState::new(512));
             let thread_state = state.clone();
             let sample_rate = self.sample_rate;
@@ -321,13 +318,13 @@ mod ecs {
             });
         }
 
-        /// Stop the analysis thread and disable the tap. Idempotent.
+        /// Stop the analysis thread and close the tap. Idempotent.
         fn disable(&mut self) {
             let Some(mut running) = self.running.take() else {
                 return;
             };
             running.state.stop();
-            self.metering.disable_tap();
+            self.tap.close();
             if let Some(handle) = running.thread.take() {
                 let _ = handle.join();
             }

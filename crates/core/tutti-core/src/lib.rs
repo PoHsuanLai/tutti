@@ -9,7 +9,7 @@
 //!
 //! - [`GraphNet`]: DSP graph manipulation
 //! - [`TransportHandle`]: Playback control (play/stop/seek/loop)
-//! - [`MeteringManager`]: Audio level monitoring
+//! - [`MasterMeter`] / [`AudioTap`]: Audio level monitoring + the analysis tap
 //! - [`PdcDelay`]: Delay compensation node, inserted automatically on commit
 //!
 //! # Feature-gated APIs
@@ -61,10 +61,7 @@ pub use transport::{
 };
 
 pub mod metering;
-pub use metering::{
-    AtomicAmplitude, AtomicStereoAnalysis, CpuMeter, CpuMetrics, MeteringContext, MeteringHandle,
-    MeteringManager, StereoAnalysisSnapshot,
-};
+pub use metering::{meter_output, AtomicAmplitude, AudioTap, MasterMeter, MeteringContext};
 
 pub(crate) mod pdc;
 pub use pdc::PdcDelay;

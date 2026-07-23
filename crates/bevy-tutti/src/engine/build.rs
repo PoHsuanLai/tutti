@@ -20,7 +20,7 @@ use tutti_core::dsp::An;
 use tutti_core::processor::GraphProcessor;
 use tutti_core::Arc;
 use tutti_core::{
-    ClickNode, ClickSettings, GraphNet, MeteringHandle, MeteringManager, Transport, TransportClock,
+    AudioTap, ClickNode, ClickSettings, GraphNet, MasterMeter, Transport, TransportClock,
 };
 
 // Each subsystem owns its own transient `PendingX` (defined next to its plugin).
@@ -88,7 +88,8 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     };
 
     let transport = Transport::new(sample_rate);
-    let metering_mgr = Arc::new(MeteringManager::new(sample_rate));
+    let meter = MasterMeter::new();
+    let tap = AudioTap::new();
     let click_settings = Arc::new(ClickSettings::new());
 
     // Per-channel pre-roll for sources outside the graph. Stays empty unless the
@@ -155,7 +156,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     #[cfg(not(feature = "midi"))]
     let processor: DefaultProcessor = graph_processor;
 
-    let callback_state = Arc::new(AudioCallbackState::new(processor, metering_mgr.clone()));
+    let callback_state = Arc::new(AudioCallbackState::new(processor, meter.clone(), tap.clone()));
     audio_engine.start(callback_state.clone())?;
 
     #[cfg(feature = "sampler")]
@@ -174,9 +175,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let metronome = MetronomeHandle::new(click_settings);
 
     #[cfg(feature = "analysis")]
-    let analysis = tutti_analysis::AnalysisRes::new(sample_rate, metering_mgr.clone());
-
-    let metering = MeteringHandle::new(metering_mgr);
+    let analysis = tutti_analysis::AnalysisRes::new(sample_rate, tap);
 
     // --- Hand each subsystem its transient `PendingX` (claimed in each
     // subsystem plugin's `build()`). The non-send CPAL driver has no subsystem
@@ -195,7 +194,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     app.insert_resource(PendingTransport(Some(transport)));
     app.insert_resource(PendingMetronome(Some(metronome)));
     app.insert_resource(TransportClockNode(clock_id));
-    app.insert_resource(PendingMetering(Some(metering)));
+    app.insert_resource(PendingMetering(Some(meter)));
 
     #[cfg(feature = "midi")]
     app.insert_resource(PendingMidi {

@@ -1,20 +1,21 @@
-//! Real-time audio metering — amplitude, stereo analysis, CPU tracking.
+//! Real-time audio metering.
+//!
+//! Two independent, opt-in things, both fed from the audio callback by
+//! [`meter_output`]:
+//!
+//! - [`MasterMeter`] — peak/RMS for the master output, published into an
+//!   [`AtomicAmplitude`] the UI reads lock-free. Per-track meters use the same
+//!   [`AtomicAmplitude`] directly, one per channel strip.
+//! - [`AudioTap`] — a ring-buffer copy of the output for off-thread analysis
+//!   (spectrum, pitch, transients). See `tutti-analysis`.
 
 mod amplitude;
-mod atomic_lufs;
-mod cpu;
-mod handle;
-mod manager;
 mod rt;
-mod stereo;
+mod tap;
 
-pub use amplitude::AtomicAmplitude;
-pub use atomic_lufs::AtomicLufs;
-pub use cpu::{CpuMeter, CpuMetrics};
-pub use handle::MeteringHandle;
-pub use manager::MeteringManager;
-pub use rt::MeteringContext;
-pub use stereo::{AtomicStereoAnalysis, StereoAnalysisSnapshot};
+pub use amplitude::{AtomicAmplitude, MasterMeter};
+pub use rt::{meter_output, MeteringContext};
+pub use tap::AudioTap;
 
 #[cfg(feature = "bevy")]
 pub mod plugin;

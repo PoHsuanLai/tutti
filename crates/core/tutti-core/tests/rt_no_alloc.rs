@@ -1,11 +1,9 @@
-//! Regression gate for RT-safety: metering's audio-thread update path
-//! must not allocate. Covers `MeteringManager::update_rt`, which is
-//! called from the CPAL callback every buffer, and the LUFS publish
-//! step that writes into the `AtomicLufs` snapshot.
+//! Regression gate for RT-safety: metering's audio-thread path must not
+//! allocate. Covers `meter_output`, which the CPAL callback runs every buffer
+//! — both the peak/RMS measure and the analysis-tap push.
 
 use assert_no_alloc::AllocDisabler;
-use std::time::Duration;
-use tutti_core::{MeteringContext, MeteringManager};
+use tutti_core::metering::{meter_output, AudioTap, MasterMeter, MeteringContext};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -21,93 +19,69 @@ fn interleaved_stereo(frames: usize) -> Vec<f32> {
 }
 
 #[test]
-fn update_rt_is_allocation_free_with_amp_and_corr() {
-    let mgr = MeteringManager::new(48_000.0);
-    mgr.enable_amp();
-    mgr.enable_corr();
+fn meter_output_is_allocation_free_with_meter_enabled() {
+    let meter = MasterMeter::new();
+    meter.enable();
+    let tap = AudioTap::new();
 
     let buffer = interleaved_stereo(512);
     let mut ctx = MeteringContext::new();
-    let elapsed = Duration::from_micros(100);
 
-    mgr.update_rt(&buffer, 512, elapsed, &mut ctx);
+    meter_output(&buffer, 512, &meter, &tap, &mut ctx);
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            mgr.update_rt(&buffer, 512, elapsed, &mut ctx);
+            meter_output(&buffer, 512, &meter, &tap, &mut ctx);
         }
     });
+
+    // The meter actually ran — a sine at ±1.0 has a nonzero peak.
+    let (peak_l, _, _, _) = meter.get();
+    assert!(peak_l > 0.0, "meter published nothing");
 }
 
 #[test]
-fn update_rt_is_allocation_free_with_lufs_enabled() {
-    // With `Mode::HISTOGRAM` set in `MeteringManager::new`, the ebur128
-    // per-block history is a fixed `Box<[u64; 1000]>` — no VecDeque
-    // growth, no `add_frames_*` allocation on steady state.
-    //
-    // This also covers the short-term 3-second window: we run enough
-    // buffers (10_000 × 512 frames at 48 kHz ≈ 107 s of audio) for the
-    // short-term path to take its periodic `short_term_block_energy_history.add`
-    // branch many times, exercising the histogram add inside the harness.
-    let mgr = MeteringManager::new(48_000.0);
-    mgr.enable_amp();
-    mgr.enable_corr();
-    mgr.enable_lufs();
+fn meter_output_is_allocation_free_with_tap_open() {
+    let meter = MasterMeter::new();
+    meter.enable();
+    let tap = AudioTap::new();
+    // The ring holds ~3 s; draining is the consumer's job, so this also
+    // exercises the ring-full drop path once it saturates.
+    let _consumer = tap.open();
 
     let buffer = interleaved_stereo(512);
     let mut ctx = MeteringContext::new();
-    let elapsed = Duration::from_micros(100);
 
-    // Warm-up: prime the `AtomicLufs` snapshot and let ebur128 settle
-    // past its first integrated block.
-    for _ in 0..16 {
-        mgr.update_rt(&buffer, 512, elapsed, &mut ctx);
-    }
+    meter_output(&buffer, 512, &meter, &tap, &mut ctx);
 
     assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..10_000 {
-            mgr.update_rt(&buffer, 512, elapsed, &mut ctx);
+        for _ in 0..1_000 {
+            meter_output(&buffer, 512, &meter, &tap, &mut ctx);
         }
     });
 }
 
 #[test]
-fn update_rt_is_allocation_free_with_none_enabled() {
-    let mgr = MeteringManager::new(48_000.0);
-    // All meters disabled by default — update_rt should be a no-op
-    // beyond the CPU counter.
+fn meter_output_is_allocation_free_with_nothing_enabled() {
+    // Meter disabled, tap closed — the deinterleave must be skipped entirely.
+    let meter = MasterMeter::new();
+    let tap = AudioTap::new();
+
     let buffer = interleaved_stereo(256);
     let mut ctx = MeteringContext::new();
-    let elapsed = Duration::from_micros(50);
 
-    mgr.update_rt(&buffer, 256, elapsed, &mut ctx);
+    meter_output(&buffer, 256, &meter, &tap, &mut ctx);
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            mgr.update_rt(&buffer, 256, elapsed, &mut ctx);
+            meter_output(&buffer, 256, &meter, &tap, &mut ctx);
         }
     });
-}
 
-#[test]
-fn lufs_snapshot_read_is_allocation_free() {
-    let mgr = MeteringManager::new(48_000.0);
-    mgr.enable_lufs();
-
-    let buffer = interleaved_stereo(1024);
-    let mut ctx = MeteringContext::new();
-    // Run enough to populate the snapshot.
-    for _ in 0..8 {
-        mgr.update_rt(&buffer, 1024, Duration::from_micros(500), &mut ctx);
-    }
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for _ in 0..10_000 {
-            let _ = mgr.lufs();
-            let _ = mgr.lufs_short();
-            let _ = mgr.lufs_range();
-            let _ = mgr.true_peak(0);
-            let _ = mgr.true_peak(1);
-        }
-    });
+    let (peak_l, peak_r, rms_l, rms_r) = meter.get();
+    assert_eq!(
+        (peak_l, peak_r, rms_l, rms_r),
+        (0.0, 0.0, 0.0, 0.0),
+        "disabled meter published readings"
+    );
 }

@@ -349,6 +349,6 @@ mod tests {
         let fed_by = app.world().get::<AudioFedBy>(target);
         // Bevy retains the empty AudioFedBy (or removes it — both are
         // acceptable, as long as the entry is gone).
-        assert!(fed_by.map_or(true, |f| f.is_empty()));
+        assert!(fed_by.is_none_or(|f| f.is_empty()));
     }
 }

@@ -242,6 +242,17 @@ impl Net {
         id
     }
 
+    /// Add a new unit to the network, boxing it. Return its ID handle.
+    ///
+    /// Convenience over [`push`](Self::push) for the common case of a unit that
+    /// is not already boxed — `net.add(sine_hz(440.0))` rather than
+    /// `net.push(Box::new(sine_hz(440.0)))`. Callers holding a
+    /// `Box<dyn AudioUnit>` (plugin loaders, trait-object factories) want
+    /// `push`.
+    pub fn add<U: AudioUnit + 'static>(&mut self, unit: U) -> NodeId {
+        self.push(Box::new(unit))
+    }
+
     /// Add a new unit to the network with a fade-in. Return its ID handle.
     /// Unit inputs are initially set to zero.
     pub fn fade_in(&mut self, fade: Fade, fade_time: f32, unit: Box<dyn AudioUnit>) -> NodeId {
@@ -263,6 +274,16 @@ impl Net {
     /// cache-invalidation key for anything derived from the graph's audio.
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// The sample rate every contained unit was last set to.
+    ///
+    /// Read counterpart to [`AudioUnit::set_sample_rate`], which is what
+    /// writes it. Callers that snapshot a net and re-rate the copy (offline
+    /// render) can read back what they imposed rather than tracking it
+    /// alongside.
+    pub fn sample_rate(&self) -> f64 {
+        self.sample_rate
     }
 
     /// Get the signal source for `node` input `channel`.
@@ -839,6 +860,31 @@ impl Net {
     /// query for frequency responses.
     pub fn node_mut(&mut self, node: NodeId) -> &mut dyn AudioUnit {
         &mut *self.vertex[self.node_index[&node]].unit
+    }
+
+    /// Typed read-access to `node`.
+    ///
+    /// Total where [`node`](Self::node) panics: returns `None` if `node` is not
+    /// in the network (e.g. a stale id from a previous edit) or does not refer
+    /// to a `T`.
+    pub fn node_as<T: AudioUnit + 'static>(&self, node: NodeId) -> Option<&T> {
+        let index = *self.node_index.get(&node)?;
+        <dyn AudioUnit>::as_any(&*self.vertex[index].unit).downcast_ref::<T>()
+    }
+
+    /// Typed mutable access to `node`.
+    ///
+    /// Total where [`node_mut`](Self::node_mut) panics: returns `None` if
+    /// `node` is not in the network or does not refer to a `T`.
+    ///
+    /// Carries the same caveat as `node_mut`: on a frontend the vertices are
+    /// clones, so a mutation here reaches the audio thread only via the next
+    /// [`commit`](Self::commit). Installing shared state (an `Arc` slot, a
+    /// source handle) through this accessor is a silent no-op unless the state
+    /// is itself shared — the clone discards anything stored by value.
+    pub fn node_as_mut<T: AudioUnit + 'static>(&mut self, node: NodeId) -> Option<&mut T> {
+        let index = *self.node_index.get(&node)?;
+        <dyn AudioUnit>::as_any_mut(&mut *self.vertex[index].unit).downcast_mut::<T>()
     }
 
     /// Compute and store node order for this network.

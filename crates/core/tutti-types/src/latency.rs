@@ -30,7 +30,7 @@
 //! measures and applies in one call. Both return a [`Compensation`], whose
 //! per-channel figures tell sources *outside* the graph how far to pre-roll.
 
-use crate::units::Samples;
+use crate::value::Samples;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 

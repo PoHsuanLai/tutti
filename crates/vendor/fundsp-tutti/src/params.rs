@@ -61,6 +61,23 @@ impl core::fmt::Display for SampleRate {
     }
 }
 
+// `SampleRate` participates in the shared `Unit` vocabulary. The trait lives in
+// `tutti-types` (which this crate already depends on for `latency`), and the
+// type lives here — so the `impl` belongs here, next to the definition, rather
+// than in `tutti-core` (which would own neither trait nor type — an orphan
+// violation). `tutti-core` re-exports both, so consumers are unaffected.
+impl tutti_types::Unit for SampleRate {
+    type Raw = f64;
+    #[inline]
+    fn from_raw(v: f64) -> Self {
+        Self(v)
+    }
+    #[inline]
+    fn to_raw(self) -> f64 {
+        self.0
+    }
+}
+
 /// Convenience constant for 44.1 kHz (the historic CD-audio rate).
 pub const SR_44K1: SampleRate = SampleRate(44_100.0);
 

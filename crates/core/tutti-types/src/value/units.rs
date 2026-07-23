@@ -1,10 +1,14 @@
 //! Unit newtypes for DSP and transport parameters.
 //!
 //! Each newtype is `#[repr(transparent)]` around its raw float type (`f32` by
-//! default, `f64` for wide-range values like `SampleRate`) — zero-cost at
+//! default, `f64` for wide-range values like `Bpm`/`Beat`) — zero-cost at
 //! runtime, but distinct at compile time so `Hz` and `Seconds` cannot be
-//! swapped by accident. The `Unit` marker trait carries the raw type as an
-//! associated type so `Param<U>` can be generic over the unit.
+//! swapped by accident. The [`Unit`] marker trait carries the raw type as an
+//! associated type so [`Param`](super::Param) can be generic over the unit.
+//!
+//! `fundsp`'s `SampleRate` also implements [`Unit`] — but that `impl` lives in
+//! `fundsp-tutti` (where the type is defined), since `fundsp-tutti` depends on
+//! this crate, not the reverse.
 
 /// Marker trait implemented by every unit newtype.
 ///
@@ -170,29 +174,6 @@ impl Default for AtomicSamplePosition {
     #[inline]
     fn default() -> Self {
         Self::new(SamplePosition::default())
-    }
-}
-
-/// Audio sample rate in Hertz. `f64`-backed because sample rates routinely
-/// exceed `f32`'s integer-precision range (e.g., 192_000) and are used in
-/// time arithmetic where precision matters.
-///
-/// Re-exported from `fundsp-tutti` so the [`AudioNode`](fundsp::audionode::AudioNode)
-/// and [`AudioUnit`](fundsp::audiounit::AudioUnit) trait surfaces (which live
-/// below `tutti-core` in the dependency graph) can take this same nominal
-/// type. This crate cannot define its own copy because `tutti-core` depends
-/// on `fundsp-tutti`, not the other way around.
-pub use fundsp::params::SampleRate;
-
-impl Unit for SampleRate {
-    type Raw = f64;
-    #[inline]
-    fn from_raw(v: f64) -> Self {
-        Self(v)
-    }
-    #[inline]
-    fn to_raw(self) -> f64 {
-        self.0
     }
 }
 

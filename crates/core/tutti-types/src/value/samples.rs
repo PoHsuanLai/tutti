@@ -1,15 +1,15 @@
 //! [`Samples`] — a count of audio frames.
 //!
 //! A discrete count, distinct from the float-backed *measure* units (`Hz`,
-//! `Seconds`, `Beat`, `SamplePosition`, …) in `tutti_core::param::units`. Those
-//! are continuous quantities you interpolate and feed to `Param<U>`; this is an
-//! integer you compare and add.
+//! `Seconds`, `Beat`, `SamplePosition`, …) in [`super::units`]. Those are
+//! continuous quantities you interpolate and feed to [`Param`](super::Param);
+//! this is an integer you compare and add.
 //!
-//! Deliberately **not** implementing that crate's `Unit` marker trait — a
+//! Deliberately **not** implementing the [`Unit`](super::Unit) marker trait — a
 //! compensation delay is not an automatable DSP parameter and must not be
-//! reachable through `Param<U>`. The practical difference shows up in the
-//! derives: `Eq + Ord + Hash`, which counts need for map keys and `max()`, and
-//! which the float units cannot have.
+//! reachable through [`Param`](super::Param). The practical difference shows up
+//! in the derives: `Eq + Ord + Hash`, which counts need for map keys and
+//! `max()`, and which the float units cannot have.
 
 /// A count of audio frames: reported latency, compensation delay, ring length.
 ///

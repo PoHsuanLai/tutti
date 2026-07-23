@@ -5,7 +5,7 @@ use crate::audiounit::AudioUnit;
 use crate::buffer::{BufferMut, BufferRef};
 use crate::signal::SignalFrame;
 use core::any;
-use tutti_types::units::Samples;
+use tutti_types::Samples;
 
 /// A fixed delay line, inserted automatically to align signal paths.
 ///

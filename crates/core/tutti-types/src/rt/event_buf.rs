@@ -1,6 +1,6 @@
 //! Fixed-inline-capacity event collector for the audio thread.
 
-use crate::audio_thread_cell::AudioThreadCell;
+use super::cell::AudioThreadCell;
 use smallvec::SmallVec;
 
 /// An RT-safe event collector: a `SmallVec` with `N` inline slots behind an

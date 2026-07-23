@@ -42,11 +42,13 @@ pub use param::{
 
 /// Back-compat alias for the unit newtypes' old module path
 /// (`tutti_core::params::Bpm`, …). The vocabulary now lives in
-/// [`param::units`]; this keeps existing `tutti_core::params::*` imports
-/// resolving. Prefer `tutti_core::param::units` (or the crate-root re-exports)
-/// in new code.
+/// [`tutti_types::value`]; this keeps existing `tutti_core::params::*` imports
+/// resolving. Prefer the crate-root re-exports in new code.
 pub mod params {
-    pub use crate::param::units::*;
+    pub use tutti_types::value::*;
+    // `SampleRate` is fundsp's, not part of tutti-types' value vocabulary, but
+    // it belonged to this alias before the move — keep it here.
+    pub use fundsp::params::SampleRate;
 }
 
 pub mod processor;
@@ -67,7 +69,7 @@ pub use metering::{meter_output, AtomicAmplitude, AudioTap, MasterMeter, Meterin
 // already lives). Surfaced here so consumers reach both via the engine root.
 pub use fundsp::latency::PdcDelay;
 pub use tutti_types::latency::{self, Compensation, DelayInsertion, LatencyGraph};
-pub use tutti_types::units::Samples;
+pub use tutti_types::value::Samples;
 
 pub use atomic_float::{AtomicF32, AtomicF64};
 // Convenience re-exports of the std primitives the RT/DSP vocabulary leans on,
@@ -77,14 +79,16 @@ pub use atomic_float::{AtomicF32, AtomicF64};
 pub use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 pub use std::sync::Arc;
 
-pub use tutti_types::{AudioThreadCell, RtEventBuf, RtScratchBuf};
+// Real-time audio-thread primitives, all homed in `tutti-types` (the bottom
+// leaf, no engine dependency) and surfaced here so consumers reach them via the
+// engine root: the one-borrow cell, the event/scratch buffers, the fixed
+// scratch, and the denormals guard.
+pub use tutti_types::{
+    AudioThreadCell, RtEventBuf, RtScratch, RtScratchBuf, RtScratchOverflow, ScopedNoDenormals,
+};
 // The engine's I/O edge vocabulary (mic/file/plugin sources + sinks), homed in
 // `tutti-types` and surfaced here so consumers reach it via the engine root.
 pub use tutti_types::io::{self, pump, AudioIn, AudioOut};
-
-// Real-time audio-thread primitives: the scratch buffer + the denormals guard.
-pub mod rt;
-pub use rt::{RtScratch, RtScratchOverflow, ScopedNoDenormals};
 
 pub mod dsp {
     //! Re-export of fundsp::prelude for DSP building blocks.

@@ -1,64 +1,72 @@
 //! Arbitrary MIDI-out to external hardware — the track/UI outbound path.
 //!
 //! The [`MidiBus`](tutti_midi_runtime::MidiBus) fans MIDI *inward* to synths; it
-//! has no tap for sending to external gear. This module adds the outbound ring:
-//! a shareable [`MidiOutHandle`](tutti_midi_runtime::MidiOutHandle) anyone off-RT
-//! (a track system, a clip player, the UI) can push into, drained each frame and
-//! routed to hardware through the *same* [`MidiOutRouter`](super::clock_out) the
-//! clock-master pump uses — so track MIDI out gets the identical JR-stamp/UMP-vs-
+//! has no tap for sending to external gear. This module adds the outbound
+//! mailbox: a [`MidiEventSlot`](tutti_midi_runtime::MidiEventSlot) whose
+//! [`MidiSender`] anyone off-RT (a track system, the UI) — or a clip source on
+//! the audio thread — can push into lock-free, drained each frame and routed to
+//! hardware through the *same* [`MidiOutRouter`](super::clock_out) the
+//! clock-master pump uses. So track MIDI out gets the identical JR-stamp/UMP-vs-
 //! MIDI-1 treatment (JR Timestamps reach the wire iff a native-UMP source +
 //! enabled stamper are present).
 //!
+//! **One primitive, both roles.** This mailbox is exactly the pair of MIDI
+//! traits: the [`MidiSender`] is the [`MidiOut`] push half (lock-free `&self`,
+//! audio-thread-safe), the [`MidiReceiver`] is the [`MidiIn`] pull half the pump
+//! drains. It replaced a separate `ringbuf`-backed output ring — there is now
+//! one output-mailbox type across the clock master, the track path, and the RT
+//! clip tap, and no mutex anywhere on the push side.
+//!
 //! Two ways to push:
 //! - [`SendMidiOut`] — a fire-and-forget ECS message, for systems that already
-//!   speak messages; [`midi_out_send_system`] forwards it into the ring.
-//! - [`MidiOutRes::handle`] — the raw push handle, for a hot producer (a clip
-//!   player) that wants to push directly without the message round-trip.
+//!   speak messages; [`midi_out_send_system`] forwards it into the mailbox.
+//! - [`MidiOutRes::sender`] — a clone of the [`MidiSender`], for a hot producer
+//!   (a clip source's `out_tap`) that pushes directly without the message
+//!   round-trip. Because it's a `dyn MidiOut`, the RT clip tap needs nothing
+//!   bespoke — it holds this sender and queues stamped events straight in.
 //!
 //! [`MidiOutRes`] is created and inserted by [`MidiOutPlugin`] (no engine
-//! handoff needed — the ring is off-RT only), so the surface is always present
-//! once the plugin is added.
+//! handoff needed — the mailbox lives entirely off/on the audio thread via the
+//! traits), so the surface is always present once the plugin is added.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
-use parking_lot::Mutex;
 
-use tutti_midi_runtime::{shared_midi_output_channel, MidiOutHandle, MidiOutputConsumer};
+use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
+use tutti_midi_types::MidiUnitId;
 
-use super::clock_out::{drain_ring_through, MidiOutRouter};
+use super::clock_out::{drain_receiver_through, MidiOutRouter};
 
-/// Capacity of the track MIDI-out ring — several frames of dense output.
-const MIDI_OUT_CAPACITY: usize = 1024;
-
-/// The outbound MIDI-out ring: a push [`handle`](Self::handle) any off-RT caller
-/// clones to send events to external hardware, and the consumer the pump drains.
-///
-/// The consumer is behind a `Mutex` because the ring's consumer half is `!Sync`
-/// and a Bevy `Resource` must be `Sync`; only the single per-frame pump locks it,
-/// so it's uncontended.
+/// The outbound MIDI-out mailbox: a push [`sender`](Self::sender) any caller
+/// clones to send events to external hardware (off-RT or, as a clip `out_tap`,
+/// on the audio thread), and the [`MidiReceiver`] the pump drains.
 #[derive(Resource)]
 pub struct MidiOutRes {
-    handle: MidiOutHandle,
-    consumer: Mutex<MidiOutputConsumer>,
+    sender: MidiSender,
+    receiver: MidiReceiver,
 }
 
 impl Default for MidiOutRes {
     fn default() -> Self {
-        let (handle, consumer) = shared_midi_output_channel(MIDI_OUT_CAPACITY);
-        Self {
-            handle,
-            consumer: Mutex::new(consumer),
-        }
+        let (sender, receiver) = MidiEventSlot::pair(MidiUnitId::next());
+        Self { sender, receiver }
     }
 }
 
 impl MidiOutRes {
-    /// A cheaply-clonable push handle onto the ring, for a caller that pushes
-    /// directly (a clip player, the UI) rather than via [`SendMidiOut`].
-    pub fn handle(&self) -> MidiOutHandle {
-        self.handle.clone()
+    /// A cheaply-clonable push handle onto the mailbox, for a caller that pushes
+    /// directly — the UI, or a clip source's `out_tap` (`Arc<dyn MidiOut>`).
+    pub fn sender(&self) -> MidiSender {
+        self.sender.clone()
+    }
+
+    /// The [`MidiUnitId`] this mailbox routes on — a caller pushing through the
+    /// [`MidiOut`] trait must address this id (a [`MidiSender`] clone already
+    /// carries it).
+    pub fn unit_id(&self) -> MidiUnitId {
+        self.sender.unit_id()
     }
 }
 
@@ -69,18 +77,15 @@ impl MidiOutRes {
 #[derive(Message, Debug, Clone)]
 pub struct SendMidiOut(pub Vec<MidiEvent>);
 
-/// Forward each [`SendMidiOut`] request into the outbound ring.
-pub fn midi_out_send_system(
-    out: Res<MidiOutRes>,
-    mut requests: MessageReader<SendMidiOut>,
-) {
+/// Forward each [`SendMidiOut`] request into the outbound mailbox.
+pub fn midi_out_send_system(out: Res<MidiOutRes>, mut requests: MessageReader<SendMidiOut>) {
     for SendMidiOut(events) in requests.read() {
-        out.handle.push_slice(events);
+        out.sender.queue(events);
     }
 }
 
-/// Per-frame: drain the track MIDI-out ring and route it to hardware, through the
-/// same [`MidiOutRouter`] the clock-out pump uses.
+/// Per-frame: drain the track MIDI-out mailbox and route it to hardware, through
+/// the same [`MidiOutRouter`] the clock-out pump uses.
 pub fn pump_midi_out_system(
     out: Option<Res<MidiOutRes>>,
     #[cfg(feature = "midi-hardware")] midi_io: Option<Res<super::device::MidiIoRes>>,
@@ -104,8 +109,7 @@ pub fn pump_midi_out_system(
         _marker: std::marker::PhantomData,
     };
 
-    let mut consumer = out.consumer.lock();
-    drain_ring_through(&mut consumer, &mut router);
+    drain_receiver_through(&out.receiver, &mut router);
 }
 
 /// Wires the track MIDI-out path: inserts [`MidiOutRes`], registers
@@ -132,9 +136,24 @@ impl Plugin for MidiOutPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_midi_types::MidiOut;
+
+    /// Drain the resource's receiver fully into a `Vec`.
+    fn drain(out: &MidiOutRes) -> Vec<MidiEvent> {
+        let mut events = Vec::new();
+        let mut buf = [MidiEvent::noop(); 16];
+        loop {
+            let n = out.receiver.poll_into(&mut buf);
+            events.extend_from_slice(&buf[..n]);
+            if n < buf.len() {
+                break;
+            }
+        }
+        events
+    }
 
     #[test]
-    fn send_system_forwards_into_ring() {
+    fn send_system_forwards_into_mailbox() {
         let mut world = World::new();
         world.init_resource::<MidiOutRes>();
         world.init_resource::<Messages<SendMidiOut>>();
@@ -148,23 +167,33 @@ mod tests {
         schedule.add_systems(midi_out_send_system);
         schedule.run(&mut world);
 
-        // The event landed in the ring: drain it out and check.
         let out = world.resource::<MidiOutRes>();
-        let mut buf = [MidiEvent::noop(); 4];
-        let n = out.consumer.lock().drain_into(&mut buf);
-        assert_eq!(n, 1);
-        assert_eq!(buf[0].note(), Some(60));
+        let events = drain(out);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].note(), Some(60));
     }
 
     #[test]
-    fn handle_pushes_directly() {
+    fn sender_pushes_directly() {
         let out = MidiOutRes::default();
-        let handle = out.handle();
-        assert!(handle.push(MidiEvent::note_on(0, 0, 64, 0x8000)));
+        let sender = out.sender();
+        assert_eq!(sender.queue(&[MidiEvent::note_on(0, 0, 64, 0x8000)]), 1);
 
-        let mut buf = [MidiEvent::noop(); 4];
-        let n = out.consumer.lock().drain_into(&mut buf);
-        assert_eq!(n, 1);
-        assert_eq!(buf[0].note(), Some(64));
+        let events = drain(&out);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].note(), Some(64));
+    }
+
+    #[test]
+    fn sender_reaches_mailbox_through_the_midi_out_trait() {
+        // The clip tap holds this sender as `Arc<dyn MidiOut>` and must address
+        // the resource's unit id — prove the trait path lands the event.
+        let out = MidiOutRes::default();
+        let tap: std::sync::Arc<dyn MidiOut> = std::sync::Arc::new(out.sender());
+        tap.queue(out.unit_id(), &[MidiEvent::note_on(0, 0, 67, 0x8000)]);
+
+        let events = drain(&out);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].note(), Some(67));
     }
 }

@@ -35,7 +35,7 @@ pub use core::{UmpVirtualSource, VirtualMidiDestination, VirtualMidiSource};
 pub use tutti_midi_types::Protocol;
 
 pub use tutti_midi_types::{
-    midi2, midly, normalize, MidiEvent, MidiMessage, MidiIn, MidiUnitId,
+    midi2, midly, normalize, MidiEvent, MidiIn, MidiMessage, MidiOut, MidiUnitId,
     NoteAttribute, NoteId, PerNoteController, UmpMessageType, UnencodableMessage,
 };
 

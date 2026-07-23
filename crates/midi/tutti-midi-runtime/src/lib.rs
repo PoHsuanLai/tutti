@@ -13,9 +13,10 @@
 //!   reads a snapshot on an offline timeline
 //! - [`MidiRoutingTable`] — UI-thread writer for routing rules, publishing
 //!   immutable [`tutti_midi_types::MidiRoutingSnapshot`] values via [`arc_swap::ArcSwap`]
-//! - [`midi_output_channel`] — a lock-free [`MidiOutputProducer`] /
-//!   [`MidiOutputConsumer`] ring for carrying engine-produced MIDI out
-//!   (e.g. the [`ClockMaster`]'s Beat Clock / MTC) to a hardware-out pump
+//! - Engine-produced MIDI *out* (e.g. the [`ClockMaster`]'s Beat Clock / MTC)
+//!   rides the *same* [`MidiEventSlot`] mailbox as MIDI in: the producer holds a
+//!   [`MidiSender`] (lock-free `&self` push via [`tutti_midi_types::MidiOut`]),
+//!   an off-RT pump drains the paired [`MidiReceiver`] to a hardware-out port
 //! - [`MpeProcessor`] / [`PerNoteExpression`] — MPE state machine mapping
 //!   channel voice messages to per-note expression
 
@@ -26,7 +27,6 @@ pub mod clip_player;
 pub mod clock_master;
 pub mod endpoint;
 pub mod jr_timestamp;
-pub mod output_collector;
 pub mod port;
 pub mod registry;
 pub mod routing_table;
@@ -43,10 +43,6 @@ pub use endpoint::{
     DeviceIdentity, DiscoveredEndpoint, EndpointInquiry, EndpointNegotiator, FunctionBlock,
 };
 pub use jr_timestamp::{JrClock, JrReceiver, JrStamper};
-pub use output_collector::{
-    midi_output_channel, midi_output_channel_with_capacity, shared_midi_output_channel,
-    MidiOutHandle, MidiOutputConsumer, MidiOutputProducer,
-};
 pub use port::MidiInPort;
 pub use registry::{MidiBus, MidiEventSlot, MidiReceiver, MidiSender};
 pub use routing_table::MidiRoutingTable;

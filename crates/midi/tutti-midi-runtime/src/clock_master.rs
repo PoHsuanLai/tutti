@@ -13,8 +13,11 @@
 //! It is **not** a [`MidiIn`](tutti_midi_types::MidiIn): the processor input
 //! feeds internal synth routing (keyed by [`MidiUnitId`]), and System
 //! Real-Time messages aren't addressed to a unit, so they'd be dropped there.
-//! Instead the master pushes into a [`MidiOutputProducer`] whose consumer an
-//! off-RT pump drains to the hardware MIDI-out.
+//! Instead the master pushes into a [`MidiSender`](crate::MidiSender) — the
+//! push half of a [`MidiEventSlot`](crate::MidiEventSlot) mailbox — whose paired
+//! [`MidiReceiver`](crate::MidiReceiver) an off-RT pump drains to hardware
+//! MIDI-out. The sender's `queue(&self)` is lock-free, so there is no mutex on
+//! the audio path.
 //!
 //! Emitted (all MIDI 2.0 UMP System messages, M2-104 §7.6):
 //! - **Timing Clock** (0xF8) at every 1/24-beat while playing.
@@ -29,12 +32,11 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use atomic_float::AtomicF64;
-use parking_lot::Mutex;
 use tutti_core::transport::TransportReader;
 use tutti_midi_types::sync::SmpteFrameRate;
 use tutti_midi_types::ump::MidiEvent;
 
-use crate::output_collector::MidiOutputProducer;
+use crate::registry::MidiSender;
 
 /// MIDI clocks per quarter-note (24 PPQN — the MIDI Beat Clock standard).
 const PPQN: f64 = 24.0;
@@ -48,18 +50,18 @@ const SEEK_EPSILON_BEATS: f64 = 1e-3;
 /// Generates outbound MIDI clock / timecode from a [`TransportReader`].
 ///
 /// Ticked once per audio block via [`ClockMaster::tick`]. RT-safe: reads the
-/// transport, mutates only atomics, and pushes into a lock-free ring — no
-/// allocation, no locks on the audio path (the `producer` mutex is
-/// `try_lock`ed and never contended in steady state, since only the audio
-/// thread pushes).
+/// transport, mutates only atomics, and pushes into a lock-free mailbox — no
+/// allocation, no locks on the audio path ([`MidiSender::queue`] takes `&self`
+/// and never blocks).
 pub struct ClockMaster {
     transport: Arc<dyn TransportReader>,
     sample_rate: f64,
     /// UMP group nibble stamped on every emitted event (0-15).
     group: u8,
-    /// The output ring. Behind a `Mutex` only so `&self` can push; the audio
-    /// thread is the sole pusher, so the lock is uncontended.
-    producer: Mutex<MidiOutputProducer>,
+    /// The output mailbox's push half — lock-free `&self` queueing. The paired
+    /// [`MidiReceiver`](crate::MidiReceiver) is drained off-RT by the hardware
+    /// pump.
+    out: MidiSender,
 
     /// Master enabled. A disabled master is a cheap early-return in `tick`.
     enabled: AtomicBool,
@@ -89,19 +91,19 @@ impl tutti_core::processor::BlockClock for ClockMaster {
 }
 
 impl ClockMaster {
-    /// Build a clock master reading `transport`, emitting into `producer`.
+    /// Build a clock master reading `transport`, emitting into `out`.
     /// Starts **disabled**; call [`set_enabled`](Self::set_enabled) once a
     /// hardware output is connected.
     pub fn new(
         transport: Arc<dyn TransportReader>,
         sample_rate: f64,
-        producer: MidiOutputProducer,
+        out: MidiSender,
     ) -> Self {
         Self {
             transport,
             sample_rate,
             group: 0,
-            producer: Mutex::new(producer),
+            out,
             enabled: AtomicBool::new(false),
             send_mtc: AtomicBool::new(false),
             mtc_fps: AtomicU8::new(SmpteFrameRate::Fps25 as u8),
@@ -128,13 +130,11 @@ impl ClockMaster {
         self.mtc_fps.store(fps as u8, Ordering::Release);
     }
 
-    /// Push an event into the output ring (drops if full — a bounded, benign
-    /// backpressure, like a saturated hardware MIDI wire).
+    /// Push an event into the output mailbox (drops if full — a bounded, benign
+    /// backpressure, like a saturated hardware MIDI wire). Lock-free `&self`.
     #[inline]
     fn emit(&self, event: MidiEvent) {
-        if let Some(mut prod) = self.producer.try_lock() {
-            let _ = prod.push(event);
-        }
+        let _ = self.out.queue(&[event]);
     }
 
     /// Generate this block's clock/timecode. Call once per audio block with the
@@ -373,12 +373,28 @@ mod tests {
         }
     }
 
-    fn master(tempo: f64, sample_rate: f64) -> (ClockMaster, Arc<TestTransport>, crate::MidiOutputConsumer) {
+    fn master(tempo: f64, sample_rate: f64) -> (ClockMaster, Arc<TestTransport>, crate::MidiReceiver) {
+        use tutti_midi_types::MidiUnitId;
         let transport = Arc::new(TestTransport::new(tempo));
-        let (prod, cons) = crate::midi_output_channel_with_capacity(4096);
-        let cm = ClockMaster::new(Arc::clone(&transport) as Arc<dyn TransportReader>, sample_rate, prod);
+        let (sender, receiver) = crate::MidiEventSlot::pair(MidiUnitId::next());
+        let cm = ClockMaster::new(Arc::clone(&transport) as Arc<dyn TransportReader>, sample_rate, sender);
         cm.set_enabled(true);
-        (cm, transport, cons)
+        (cm, transport, receiver)
+    }
+
+    /// Drain a receiver fully into a `Vec` — the test-side stand-in for the old
+    /// consumer's `drain_all`.
+    fn drain_all(receiver: &crate::MidiReceiver) -> Vec<MidiEvent> {
+        let mut out = Vec::new();
+        let mut buf = [MidiEvent::noop(); 256];
+        loop {
+            let n = receiver.poll_into(&mut buf);
+            out.extend_from_slice(&buf[..n]);
+            if n < buf.len() {
+                break;
+            }
+        }
+        out
     }
 
     fn is_status(ev: &MidiEvent, status: u8) -> bool {
@@ -389,7 +405,7 @@ mod tests {
     #[test]
     fn emits_24_ticks_per_beat_at_120bpm() {
         let sr = 48_000.0;
-        let (cm, transport, mut cons) = master(120.0, sr);
+        let (cm, transport, cons) = master(120.0, sr);
         transport.set_playing(true);
         // 120 BPM → 0.5s/beat → 24000 samples/beat. Process one beat's worth of
         // audio in blocks of 512 and count 0xF8 ticks.
@@ -405,7 +421,7 @@ mod tests {
             cm.tick(block);
             beat += block as f64 * beats_per_sample;
         }
-        let events = cons.drain_all();
+        let events = drain_all(&cons);
         for ev in &events {
             if is_status(ev, 0xF8) {
                 clock_ticks += 1;
@@ -420,22 +436,22 @@ mod tests {
 
     #[test]
     fn play_at_zero_emits_start_not_continue() {
-        let (cm, transport, mut cons) = master(120.0, 48_000.0);
+        let (cm, transport, cons) = master(120.0, 48_000.0);
         transport.set_beat(0.0);
         transport.set_playing(true);
         cm.tick(512);
-        let events = cons.drain_all();
+        let events = drain_all(&cons);
         assert!(events.iter().any(|e| is_status(e, 0xFA)), "expected Start (0xFA)");
         assert!(!events.iter().any(|e| is_status(e, 0xFB)), "no Continue at beat 0");
     }
 
     #[test]
     fn play_mid_song_emits_continue_and_song_position() {
-        let (cm, transport, mut cons) = master(120.0, 48_000.0);
+        let (cm, transport, cons) = master(120.0, 48_000.0);
         transport.set_beat(8.0); // 2 bars in
         transport.set_playing(true);
         cm.tick(512);
-        let events = cons.drain_all();
+        let events = drain_all(&cons);
         assert!(events.iter().any(|e| is_status(e, 0xFB)), "expected Continue (0xFB)");
         assert!(events.iter().any(|e| is_status(e, 0xF2)), "expected Song Position (0xF2)");
         assert!(!events.iter().any(|e| is_status(e, 0xFA)), "no Start mid-song");
@@ -443,23 +459,23 @@ mod tests {
 
     #[test]
     fn stop_emits_stop_message() {
-        let (cm, transport, mut cons) = master(120.0, 48_000.0);
+        let (cm, transport, cons) = master(120.0, 48_000.0);
         transport.set_playing(true);
         cm.tick(512);
-        let _ = cons.drain_all();
+        let _ = drain_all(&cons);
         transport.set_playing(false);
         cm.tick(512);
-        let events = cons.drain_all();
+        let events = drain_all(&cons);
         assert!(events.iter().any(|e| is_status(e, 0xFC)), "expected Stop (0xFC)");
     }
 
     #[test]
     fn disabled_master_emits_nothing() {
-        let (cm, transport, mut cons) = master(120.0, 48_000.0);
+        let (cm, transport, cons) = master(120.0, 48_000.0);
         cm.set_enabled(false);
         transport.set_playing(true);
         cm.tick(512);
-        assert!(cons.drain_all().is_empty(), "disabled master must be silent");
+        assert!(drain_all(&cons).is_empty(), "disabled master must be silent");
     }
 
     #[test]
@@ -467,13 +483,13 @@ mod tests {
         // A block that spans exactly two clock ticks should place them at
         // distinct, ordered frame offsets inside the block.
         let sr = 48_000.0;
-        let (cm, transport, mut cons) = master(120.0, sr);
+        let (cm, transport, cons) = master(120.0, sr);
         transport.set_playing(true);
         transport.set_beat(0.0);
         // One beat = 24000 samples; 1/24 beat = 1000 samples. A 2500-sample
         // block starting at beat 0 covers tick boundaries at 1000 and 2000.
         cm.tick(2500);
-        let events: Vec<_> = cons.drain_all().into_iter().filter(|e| is_status(e, 0xF8)).collect();
+        let events: Vec<_> = drain_all(&cons).into_iter().filter(|e| is_status(e, 0xF8)).collect();
         assert_eq!(events.len(), 2, "expected 2 ticks in the block");
         assert!(events[0].frame_offset < events[1].frame_offset, "ticks ordered");
         assert!((events[0].frame_offset as i64 - 1000).abs() < 4);
@@ -485,7 +501,7 @@ mod tests {
         // The strongest check: feed our own output into the decoder and confirm
         // it recovers the tempo and beat — the in-repo loopback from the plan.
         let sr = 48_000.0;
-        let (cm, transport, mut cons) = master(120.0, sr);
+        let (cm, transport, cons) = master(120.0, sr);
         transport.set_playing(true);
 
         let block = 256usize;
@@ -499,7 +515,7 @@ mod tests {
         for _ in 0..((sr * 2.0 / block as f64) as usize) {
             transport.set_beat(beat);
             cm.tick(block);
-            for ev in cons.drain_all() {
+            for ev in drain_all(&cons) {
                 let ts_us = ((sample_clock + ev.frame_offset as u64) as f64 * us_per_sample) as u64;
                 decoder.feed(&ev, ts_us);
             }
@@ -515,7 +531,7 @@ mod tests {
     #[test]
     fn mtc_quarter_frames_round_trip_to_a_timecode() {
         let sr = 48_000.0;
-        let (cm, transport, mut cons) = master(120.0, sr);
+        let (cm, transport, cons) = master(120.0, sr);
         cm.set_send_mtc(true);
         cm.set_mtc_fps(SmpteFrameRate::Fps25);
         transport.set_playing(true);
@@ -530,7 +546,7 @@ mod tests {
         for _ in 0..40 {
             transport.set_beat(beat);
             cm.tick(block);
-            for ev in cons.drain_all() {
+            for ev in drain_all(&cons) {
                 if is_status(&ev, 0xF1) {
                     // The quarter-frame data byte is the 2nd wire byte; decode
                     // via the message view's TimeCode.

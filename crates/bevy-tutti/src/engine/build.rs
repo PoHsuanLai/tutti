@@ -129,15 +129,17 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // Starts disabled — no output until the UI connects a device + enables it.
     #[cfg(feature = "midi")]
     let (clock_master, clock_out_consumer) = {
-        let (producer, consumer) = tutti_midi_runtime::midi_output_channel_with_capacity(1024);
+        let (sender, receiver) = tutti_midi_runtime::MidiEventSlot::pair(
+            tutti_midi_runtime::tutti_midi_types::MidiUnitId::next(),
+        );
         let clock_transport =
             TransportHandle::new(transport_mgr.clone(), click_settings.clone());
         let master = Arc::new(tutti_midi_runtime::ClockMaster::new(
             Arc::new(clock_transport),
             sample_rate,
-            producer,
+            sender,
         ));
-        (master, consumer)
+        (master, receiver)
     };
 
     #[cfg(feature = "midi")]

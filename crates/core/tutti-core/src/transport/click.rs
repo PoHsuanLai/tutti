@@ -312,7 +312,7 @@ mod tests {
     /// recording/preroll, which only the live transport has, and a mock would
     /// just restate its fields.
     fn playing(t: &Transport) {
-        t.motion.send(super::super::MotionEvent::Play);
+        let _ = t.motion.try_send(super::super::MotionEvent::Play);
         t.motion.drain();
     }
 

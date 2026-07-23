@@ -262,7 +262,7 @@ mod tests {
 
         transport.settings.set_beat(0.0);
         transport.settings.set_tempo(120.0);
-        transport.motion.send(MotionEvent::Play);
+        let _ = transport.motion.try_send(MotionEvent::Play);
         transport.motion.drain();
 
         let frames = 256;
@@ -285,7 +285,7 @@ mod tests {
         transport.settings.set_tempo(120.0);
         transport.settings.loop_span.set_range(0.0, 4.0);
         transport.settings.loop_span.set_enabled(true);
-        transport.motion.send(MotionEvent::Play);
+        let _ = transport.motion.try_send(MotionEvent::Play);
         transport.motion.drain();
         transport.motion.seek.request(3.99);
 
@@ -306,7 +306,7 @@ mod tests {
         let sample_rate = 48_000.0;
         let (transport, state) = build_callback_state(sample_rate);
         transport.settings.set_tempo(120.0);
-        transport.motion.send(MotionEvent::Play);
+        let _ = transport.motion.try_send(MotionEvent::Play);
         transport.motion.drain();
 
         // Warm up outside the no-alloc scope — first call primes any

@@ -64,13 +64,31 @@ pub enum MotionEvent {
 /// user-driven and rare; overflowing means something is spamming events.
 const COMMAND_QUEUE_CAPACITY: usize = 64;
 
+/// The command queue was full, so `event` never reached the state machine.
+///
+/// Distinct from the FSM *rejecting* a transition (`Play` while already
+/// rolling is a legitimate no-op): this means the event was lost, which is a
+/// bug — the queue holds 64 user-driven commands.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QueueFull {
+    pub event: MotionEvent,
+}
+
+impl core::fmt::Display for QueueFull {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "transport command queue full; dropped {:?}", self.event)
+    }
+}
+
+impl std::error::Error for QueueFull {}
+
 /// The motion state machine plus the outputs it publishes.
 ///
 /// Clone shares every field — this is a handle, not a value.
 #[derive(Clone)]
 pub struct MotionFsm {
-    /// MPMC lock-free bounded queue. A full queue drops the command; `send`
-    /// reports that rather than hiding it.
+    /// MPMC lock-free bounded queue. A full queue drops the command;
+    /// [`MotionFsm::try_send`] reports that rather than hiding it.
     queue: Arc<ArrayQueue<MotionEvent>>,
     /// Mutated only from the audio thread, via [`MotionFsm::drain`].
     /// `AudioThreadCell` enforces this in debug builds.
@@ -101,17 +119,26 @@ impl MotionFsm {
 
     /// Request a transition. Lock-free, callable from any thread.
     ///
-    /// Returns `false` if the queue was full and the event was dropped. The
-    /// FSM may still reject an accepted event — acceptance here means only
-    /// that it will be *considered*.
-    pub fn send(&self, event: MotionEvent) -> bool {
-        self.queue.push(event).is_ok()
+    /// `Ok` means only that the event was *queued* — the FSM decides on the
+    /// audio thread whether it actually applies, and that decision is not
+    /// available synchronously. Observe the outcome by reading
+    /// [`MotionFsm::motion`] on a later frame.
+    ///
+    /// `Err` means the queue was full and the event is gone. That is the one
+    /// failure a caller can act on, so it is `#[must_use]`.
+    pub fn try_send(&self, event: MotionEvent) -> Result<(), QueueFull> {
+        self.queue.push(event).map_err(|event| QueueFull { event })
     }
 
-    /// Request several transitions in order. Returns `false` if any was
-    /// dropped; earlier events in the batch still stand.
-    pub fn send_all(&self, events: impl IntoIterator<Item = MotionEvent>) -> bool {
-        events.into_iter().fold(true, |ok, e| self.send(e) && ok)
+    /// Request several transitions, in order.
+    ///
+    /// Stops at the first drop and reports it; events queued before that point
+    /// still stand, so the transport may be left partway through the batch.
+    pub fn try_send_all(
+        &self,
+        events: impl IntoIterator<Item = MotionEvent>,
+    ) -> Result<(), QueueFull> {
+        events.into_iter().try_for_each(|e| self.try_send(e))
     }
 
     /// The current motion, as published by the last drain.
@@ -231,7 +258,7 @@ mod tests {
         let m = fsm();
         assert!(m.is_stopped());
 
-        assert!(m.send(MotionEvent::Play));
+        assert!(m.try_send(MotionEvent::Play).is_ok());
         // Nothing happens until the audio thread drains.
         assert!(m.is_stopped(), "send must not apply the transition itself");
 
@@ -243,21 +270,24 @@ mod tests {
     fn send_reports_a_full_queue() {
         let m = fsm();
         for _ in 0..COMMAND_QUEUE_CAPACITY {
-            assert!(m.send(MotionEvent::Play));
+            assert!(m.try_send(MotionEvent::Play).is_ok());
         }
-        assert!(
-            !m.send(MotionEvent::Play),
-            "a full queue must report the drop, not hide it"
+        assert_eq!(
+            m.try_send(MotionEvent::Play),
+            Err(QueueFull {
+                event: MotionEvent::Play
+            }),
+            "a full queue must report the drop, and hand the event back"
         );
     }
 
     #[test]
     fn stop_fades_and_stop_now_does_not() {
         let m = fsm();
-        m.send(MotionEvent::Play);
+        let _ = m.try_send(MotionEvent::Play);
         m.drain();
 
-        m.send(MotionEvent::Stop);
+        let _ = m.try_send(MotionEvent::Stop);
         m.drain();
         assert_eq!(m.motion(), MotionState::DeclickToStop);
         assert!(m.declick.is_active(), "Stop must fade out");
@@ -266,9 +296,9 @@ mod tests {
         m.complete_declick();
         assert!(m.is_stopped());
 
-        m.send(MotionEvent::Play);
+        let _ = m.try_send(MotionEvent::Play);
         m.drain();
-        m.send(MotionEvent::StopNow);
+        let _ = m.try_send(MotionEvent::StopNow);
         m.drain();
         assert!(m.is_stopped(), "StopNow stops immediately");
         assert!(!m.declick.is_active(), "StopNow must not fade");
@@ -277,7 +307,7 @@ mod tests {
     #[test]
     fn locate_requests_a_seek_and_moves_the_beat() {
         let m = fsm();
-        m.send(MotionEvent::Locate(8.0));
+        let _ = m.try_send(MotionEvent::Locate(8.0));
         m.drain();
 
         assert_eq!(m.seek.take(), Some(8.0), "the clock must see a seek");
@@ -287,7 +317,7 @@ mod tests {
     #[test]
     fn locate_and_play_rolls_after_the_jump() {
         let m = fsm();
-        m.send(MotionEvent::LocateAndPlay(4.0));
+        let _ = m.try_send(MotionEvent::LocateAndPlay(4.0));
         m.drain();
 
         assert_eq!(m.seek.take(), Some(4.0));
@@ -299,7 +329,7 @@ mod tests {
         let m = fsm();
         assert!(m.settings.paused.load(Ordering::Acquire));
 
-        m.send(MotionEvent::Play);
+        let _ = m.try_send(MotionEvent::Play);
         m.drain();
         assert!(
             !m.settings.paused.load(Ordering::Acquire),
@@ -310,7 +340,9 @@ mod tests {
     #[test]
     fn send_all_preserves_order() {
         let m = fsm();
-        assert!(m.send_all([MotionEvent::Locate(16.0), MotionEvent::Play]));
+        assert!(m
+            .try_send_all([MotionEvent::Locate(16.0), MotionEvent::Play])
+            .is_ok());
         m.drain();
 
         assert_eq!(m.seek.take(), Some(16.0));
@@ -320,14 +352,14 @@ mod tests {
     #[test]
     fn scrub_returns_to_the_previous_motion() {
         let m = fsm();
-        m.send(MotionEvent::Play);
+        let _ = m.try_send(MotionEvent::Play);
         m.drain();
 
-        m.send(MotionEvent::FastForward);
+        let _ = m.try_send(MotionEvent::FastForward);
         m.drain();
         assert_eq!(m.motion(), MotionState::FastForward);
 
-        m.send(MotionEvent::EndScrub);
+        let _ = m.try_send(MotionEvent::EndScrub);
         m.drain();
         assert!(m.is_playing(), "EndScrub restores what was playing before");
     }

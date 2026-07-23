@@ -101,7 +101,7 @@ mod tests {
     fn source(tempo: f64, rate: f64) -> (Transport, TransportSource) {
         let t = Transport::new(rate);
         t.settings.set_tempo(tempo);
-        t.motion.send(tutti_core::MotionEvent::Play);
+        let _ = t.motion.try_send(tutti_core::MotionEvent::Play);
         t.motion.drain();
         let src = TransportSource::new(t.clone(), rate);
         (t, src)

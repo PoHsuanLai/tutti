@@ -98,7 +98,7 @@ mod tests {
         a.settings.set_tempo(140.0);
         assert_eq!(b.settings.tempo().get(), 140.0);
 
-        a.motion.send(MotionEvent::Play);
+        let _ = a.motion.try_send(MotionEvent::Play);
         b.motion.drain();
         assert!(a.motion.is_playing(), "the FSM is shared, not copied");
     }
@@ -108,7 +108,7 @@ mod tests {
         let t = Transport::new(48000.0);
         t.settings.set_beat(8.0);
         t.settings.set_tempo(90.0);
-        t.motion.send(MotionEvent::Play);
+        let _ = t.motion.try_send(MotionEvent::Play);
         t.motion.drain();
 
         // beat/tempo come from settings, is_playing from the FSM — the reason
@@ -130,7 +130,7 @@ mod tests {
             "the clock must see later tempo changes"
         );
 
-        t.motion.send(MotionEvent::Locate(4.0));
+        let _ = t.motion.try_send(MotionEvent::Locate(4.0));
         t.motion.drain();
         assert_eq!(inputs.seek.take(), Some(4.0));
     }

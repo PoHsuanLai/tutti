@@ -52,7 +52,7 @@ fn main() {
 }
 
 fn start_transport(transport: Res<tutti_core::graph::TransportRes>) {
-    transport.motion.send(MotionEvent::Play);
+    let _ = transport.motion.try_send(MotionEvent::Play);
 }
 
 fn spawn_sine(mut commands: Commands) {

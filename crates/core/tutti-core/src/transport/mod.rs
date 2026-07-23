@@ -14,7 +14,7 @@ pub use click::{ClickNode, ClickSettings, ClickState, MetronomeHandle, Metronome
 pub use clock::TransportClock;
 pub use fsm::Direction;
 pub use handle::Transport;
-pub use motion::{MotionEvent, MotionFsm, MotionState};
+pub use motion::{MotionEvent, MotionFsm, MotionState, QueueFull};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use settings::TransportSettings;
 pub use state::{

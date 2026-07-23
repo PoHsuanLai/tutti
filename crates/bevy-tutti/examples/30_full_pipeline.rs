@@ -74,7 +74,7 @@ fn main() {
 
 fn start_transport(transport: Res<TransportRes>) {
     transport.settings.set_tempo(120.0);
-    transport.motion.send(MotionEvent::Play);
+    let _ = transport.motion.try_send(MotionEvent::Play);
 }
 
 fn spawn_demo(mut commands: Commands, transport: Res<TransportRes>) {

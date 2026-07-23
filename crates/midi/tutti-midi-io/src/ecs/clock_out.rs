@@ -3,7 +3,7 @@
 //!
 //! The [`ClockMaster`](tutti_midi_runtime::ClockMaster) runs on the audio
 //! thread (installed on the RT processor by bevy-tutti) and pushes outbound
-//! MIDI Beat Clock / MTC into a lock-free [`MidiEventSlot`] mailbox. This module
+//! MIDI Beat Clock / MTC into a lock-free [`MidiMailbox`] mailbox. This module
 //! owns the *off-RT* half: [`ClockMasterRes`] holds the master handle (for
 //! enable/config from the UI) plus the mailbox's [`MidiReceiver`], and
 //! [`pump_clock_out_system`] drains it each frame to the OS MIDI output via
@@ -97,7 +97,7 @@ impl MidiOutRouter<'_> {
 /// Drain a [`MidiReceiver`] mailbox fully and route every event.
 ///
 /// The single output-drain primitive: the clock master, track MIDI-out, and the
-/// clip tap all push into a [`MidiEventSlot`] mailbox via
+/// clip tap all push into a [`MidiMailbox`] mailbox via
 /// [`MidiOut`](tutti_midi_types::MidiOut), and this reads the paired receiver
 /// off-RT via [`MidiIn::poll_into`]. Uses the inherent `poll_into` (the whole
 /// mailbox is one output stream, not addressed per-unit).

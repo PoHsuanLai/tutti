@@ -17,7 +17,7 @@ use crate::protocol::MidiEventVec;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiIn;
 use tutti_midi_types::{MidiOut, MidiRoutingSnapshot, MidiUnitId};
-use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
+use tutti_midi_runtime::{MidiMailbox, MidiReceiver, MidiSender};
 
 const POLL_BUFFER_SIZE: usize = 256;
 
@@ -110,7 +110,7 @@ impl Default for Midi {
 impl Midi {
     pub fn new() -> Self {
         let unit_id = MidiUnitId::next();
-        let (sender, receiver) = MidiEventSlot::pair(unit_id);
+        let (sender, receiver) = MidiMailbox::pair(unit_id);
         Self {
             unit_id,
             drain: MidiEventVec::new(),

@@ -14,7 +14,7 @@
 //! feeds internal synth routing (keyed by [`MidiUnitId`]), and System
 //! Real-Time messages aren't addressed to a unit, so they'd be dropped there.
 //! Instead the master pushes into a [`MidiSender`](crate::MidiSender) — the
-//! push half of a [`MidiEventSlot`](crate::MidiEventSlot) mailbox — whose paired
+//! push half of a [`MidiMailbox`](crate::MidiMailbox) mailbox — whose paired
 //! [`MidiReceiver`](crate::MidiReceiver) an off-RT pump drains to hardware
 //! MIDI-out. The sender's `queue(&self)` is lock-free, so there is no mutex on
 //! the audio path.
@@ -376,7 +376,7 @@ mod tests {
     fn master(tempo: f64, sample_rate: f64) -> (ClockMaster, Arc<TestTransport>, crate::MidiReceiver) {
         use tutti_midi_types::MidiUnitId;
         let transport = Arc::new(TestTransport::new(tempo));
-        let (sender, receiver) = crate::MidiEventSlot::pair(MidiUnitId::next());
+        let (sender, receiver) = crate::MidiMailbox::pair(MidiUnitId::next());
         let cm = ClockMaster::new(Arc::clone(&transport) as Arc<dyn TransportReader>, sample_rate, sender);
         cm.set_enabled(true);
         (cm, transport, receiver)

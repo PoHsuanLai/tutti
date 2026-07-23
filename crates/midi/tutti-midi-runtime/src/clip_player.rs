@@ -445,7 +445,7 @@ mod tests {
 
     #[test]
     fn out_tap_forwards_the_same_stamped_events() {
-        use crate::registry::MidiEventSlot;
+        use crate::registry::MidiMailbox;
 
         let unit = MidiUnitId::new(3);
         let transport = Arc::new(TestTransport::new(120.0));
@@ -454,7 +454,7 @@ mod tests {
         // has its *own* id, distinct from the clip's synth-routing `target_unit`
         // — the tee addresses the mailbox id, not `target_unit`.
         let tap_unit = MidiUnitId::new(999);
-        let (sender, receiver) = MidiEventSlot::pair(tap_unit);
+        let (sender, receiver) = MidiMailbox::pair(tap_unit);
 
         let source = MidiClipSource::new(
             unit,

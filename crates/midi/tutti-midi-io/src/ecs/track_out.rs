@@ -2,7 +2,7 @@
 //!
 //! The [`MidiBus`](tutti_midi_runtime::MidiBus) fans MIDI *inward* to synths; it
 //! has no tap for sending to external gear. This module adds the outbound
-//! mailbox: a [`MidiEventSlot`](tutti_midi_runtime::MidiEventSlot) whose
+//! mailbox: a [`MidiMailbox`](tutti_midi_runtime::MidiMailbox) whose
 //! [`MidiSender`] anyone off-RT (a track system, the UI) — or a clip source on
 //! the audio thread — can push into lock-free, drained each frame and routed to
 //! hardware through the *same* [`MidiOutRouter`](super::clock_out) the
@@ -33,7 +33,7 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
 
-use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
+use tutti_midi_runtime::{MidiMailbox, MidiReceiver, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
 
@@ -50,7 +50,7 @@ pub struct MidiOutRes {
 
 impl Default for MidiOutRes {
     fn default() -> Self {
-        let (sender, receiver) = MidiEventSlot::pair(MidiUnitId::next());
+        let (sender, receiver) = MidiMailbox::pair(MidiUnitId::next());
         Self { sender, receiver }
     }
 }

@@ -8,7 +8,7 @@ use crate::core::hardware::{
     connect_midi_input, list_input_devices, list_output_devices, MidiDevice, MidiInputRecord,
     OutputCmd, OutputThread,
 };
-use crate::core::{InputProducerHandle, MidiPortManager};
+use crate::core::{InputProducerHandle, HardwareMidiInputs};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use midir::MidiInputConnection;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -27,7 +27,7 @@ pub struct MidiIo {
 }
 
 struct Inner {
-    port_manager: Arc<MidiPortManager>,
+    port_manager: Arc<HardwareMidiInputs>,
     input_tx: Sender<InputCmd>,
     /// Snapshot of currently-connected input device names. Mutated only by the
     /// input thread; readers see a consistent view via `ArcSwap`.
@@ -66,7 +66,7 @@ fn find_device<'a>(devices: &'a [MidiDevice], name: &str) -> Option<&'a MidiDevi
 
 impl MidiIo {
     /// Create a new MIDI I/O system. Spawns input and output threads immediately.
-    pub fn new(port_manager: Arc<MidiPortManager>) -> Self {
+    pub fn new(port_manager: Arc<HardwareMidiInputs>) -> Self {
         let (input_tx, input_rx) = bounded(16);
         let connected_inputs = Arc::new(arc_swap::ArcSwap::new(Arc::new(Vec::<String>::new())));
         let connected_input_ids =
@@ -246,7 +246,7 @@ impl MidiIo {
 
     // --- Port manager access ---
 
-    pub fn port_manager(&self) -> &Arc<MidiPortManager> {
+    pub fn port_manager(&self) -> &Arc<HardwareMidiInputs> {
         &self.inner.port_manager
     }
 }
@@ -324,7 +324,7 @@ mod tests {
 
     #[test]
     fn test_create_and_clone() {
-        let pm = Arc::new(MidiPortManager::new(256));
+        let pm = Arc::new(HardwareMidiInputs::new(256));
         let io = MidiIo::new(pm);
         let io2 = io.clone();
 
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_list_devices() {
-        let pm = Arc::new(MidiPortManager::new(256));
+        let pm = Arc::new(HardwareMidiInputs::new(256));
         let io = MidiIo::new(pm);
 
         // Just verify these don't panic
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn test_disconnect_unknown_is_noop() {
-        let pm = Arc::new(MidiPortManager::new(256));
+        let pm = Arc::new(HardwareMidiInputs::new(256));
         let io = MidiIo::new(pm);
         io.disconnect_input("nonexistent");
         // Give the thread a moment to drain.

@@ -1,6 +1,6 @@
 //! Lock-free MIDI event delivery primitives.
 //!
-//! [`MidiEventSlot`] is the underlying lock-free ring-buffer pair (one queue
+//! [`MidiMailbox`] is the underlying lock-free ring-buffer pair (one queue
 //! for routed channel/voice events, one for broadcast system events). Each
 //! MIDI-receiving audio unit owns a [`MidiReceiver`] half and hands out
 //! cheap-to-clone [`MidiSender`] handles to anyone that wants to push events.
@@ -36,12 +36,12 @@ const SYSTEM_EVENTS_PER_UNIT: usize = 64;
 /// Holds two bounded ring buffers — one for routed channel/voice events and
 /// one for broadcast system messages. Push and pop are wait-free, so they're
 /// safe to call from the audio thread.
-pub struct MidiEventSlot {
+pub struct MidiMailbox {
     events: ArrayQueue<MidiEvent>,
     sys_events: ArrayQueue<MidiEvent>,
 }
 
-impl MidiEventSlot {
+impl MidiMailbox {
     fn new() -> Self {
         Self {
             events: ArrayQueue::new(EVENTS_PER_UNIT),
@@ -66,13 +66,13 @@ impl MidiEventSlot {
     }
 }
 
-/// Producer handle for a [`MidiEventSlot`]. Cheap to clone.
+/// Producer handle for a [`MidiMailbox`]. Cheap to clone.
 ///
 /// Implements [`tutti_midi_types::MidiOut`], so MIDI input drivers, sequencers,
 /// or arbitrary user code can all push events through the same trait.
 #[derive(Clone)]
 pub struct MidiSender {
-    slot: Arc<MidiEventSlot>,
+    slot: Arc<MidiMailbox>,
     unit_id: MidiUnitId,
 }
 
@@ -133,7 +133,7 @@ impl tutti_midi_types::MidiOut for MidiSender {
     }
 }
 
-/// Consumer handle for a [`MidiEventSlot`]. Owned by the audio unit.
+/// Consumer handle for a [`MidiMailbox`]. Owned by the audio unit.
 ///
 /// Implements [`tutti_midi_types::MidiIn`] so it can plug into any node that
 /// polls events through the trait.
@@ -145,7 +145,7 @@ impl tutti_midi_types::MidiOut for MidiSender {
 /// parallel races: keep only one live at a time per slot.
 #[derive(Clone)]
 pub struct MidiReceiver {
-    slot: Arc<MidiEventSlot>,
+    slot: Arc<MidiMailbox>,
     unit_id: MidiUnitId,
 }
 
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn sender_pushes_to_receiver() {
         let id = MidiUnitId::new(12345);
-        let (sender, receiver) = MidiEventSlot::pair(id);
+        let (sender, receiver) = MidiMailbox::pair(id);
 
         sender.queue(&[note_on(60, 100), note_off(60)]);
         assert!(receiver.has_events());
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn cloned_sender_pushes_to_same_receiver() {
-        let (sender, receiver) = MidiEventSlot::pair(MidiUnitId::next());
+        let (sender, receiver) = MidiMailbox::pair(MidiUnitId::next());
         let s2 = sender.clone();
 
         sender.queue(&[note_on(60, 100)]);
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn sender_note_helpers_match_explicit_events() {
-        let (sender, receiver) = MidiEventSlot::pair(MidiUnitId::next());
+        let (sender, receiver) = MidiMailbox::pair(MidiUnitId::next());
         sender.note_on(0, 60, 100);
         sender.note_off(0, 60);
 
@@ -534,7 +534,7 @@ mod tests {
         // building a MidiEvent or knowing UMP.
         let bus = MidiBus::new();
         let unit = MidiUnitId::new(1);
-        let (s, r) = MidiEventSlot::pair(unit);
+        let (s, r) = MidiMailbox::pair(unit);
         bus.insert(s);
 
         bus.note_on(unit, 0, 60, 100);
@@ -552,7 +552,7 @@ mod tests {
         // Sender holds an Arc to the slot; dropping the receiver doesn't
         // invalidate pushes. Events accumulate in the slot until the sender
         // is also dropped.
-        let (sender, receiver) = MidiEventSlot::pair(MidiUnitId::next());
+        let (sender, receiver) = MidiMailbox::pair(MidiUnitId::next());
         drop(receiver);
         sender.queue(&[note_on(60, 100)]);
         // No assertion possible without the receiver — but no crash is the test.
@@ -560,7 +560,7 @@ mod tests {
 
     #[test]
     fn back_pressure_drops_when_full() {
-        let (sender, receiver) = MidiEventSlot::pair(MidiUnitId::next());
+        let (sender, receiver) = MidiMailbox::pair(MidiUnitId::next());
         let events: Vec<_> = (0..512).map(|i| note_on((i % 128) as u8, 100)).collect();
         sender.queue(&events);
 
@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn receiver_drains_into_snapshot() {
         let id = MidiUnitId::new(7);
-        let (sender, receiver) = MidiEventSlot::pair(id);
+        let (sender, receiver) = MidiMailbox::pair(id);
         sender.queue(&[note_on(60, 100), note_off(60)]);
 
         let mut snap = MidiSnapshot::new();
@@ -586,8 +586,8 @@ mod tests {
         let bus = MidiBus::new();
         let id1 = MidiUnitId::new(1);
         let id2 = MidiUnitId::new(2);
-        let (s1, r1) = MidiEventSlot::pair(id1);
-        let (s2, r2) = MidiEventSlot::pair(id2);
+        let (s1, r1) = MidiMailbox::pair(id1);
+        let (s2, r2) = MidiMailbox::pair(id2);
         bus.insert(s1);
         bus.insert(s2);
 
@@ -610,7 +610,7 @@ mod tests {
     fn bus_remove_drops_routing() {
         let bus = MidiBus::new();
         let id = MidiUnitId::new(42);
-        let (sender, receiver) = MidiEventSlot::pair(id);
+        let (sender, receiver) = MidiMailbox::pair(id);
         bus.insert(sender);
         bus.remove(id);
 
@@ -624,8 +624,8 @@ mod tests {
         let bus = MidiBus::new();
         let id1 = MidiUnitId::new(1);
         let id2 = MidiUnitId::new(2);
-        let (s1, r1) = MidiEventSlot::pair(id1);
-        let (s2, r2) = MidiEventSlot::pair(id2);
+        let (s1, r1) = MidiMailbox::pair(id1);
+        let (s2, r2) = MidiMailbox::pair(id2);
         bus.insert(s1);
         bus.insert(s2);
 
@@ -651,8 +651,8 @@ mod tests {
         let bus = MidiBus::new();
         let id1 = MidiUnitId::new(1);
         let id2 = MidiUnitId::new(2);
-        let (s1, r1) = MidiEventSlot::pair(id1);
-        let (s2, r2) = MidiEventSlot::pair(id2);
+        let (s1, r1) = MidiMailbox::pair(id1);
+        let (s2, r2) = MidiMailbox::pair(id2);
         bus.insert(s1);
         bus.insert(s2);
 
@@ -668,7 +668,7 @@ mod tests {
     fn bus_broadcasts_flex_tempo_in_band() {
         use tutti_midi_types::midi2::flex_data::FlexData;
         let bus = MidiBus::new();
-        let (s, r) = MidiEventSlot::pair(MidiUnitId::new(1));
+        let (s, r) = MidiMailbox::pair(MidiUnitId::new(1));
         bus.insert(s);
 
         bus.broadcast_tempo(140.0);
@@ -691,7 +691,7 @@ mod tests {
         use tutti_midi_types::midi2::ump_stream::UmpStream;
         use tutti_midi_types::FunctionBlockDirection;
         let bus = MidiBus::new();
-        let (s, r) = MidiEventSlot::pair(MidiUnitId::new(1));
+        let (s, r) = MidiMailbox::pair(MidiUnitId::new(1));
         bus.insert(s);
 
         bus.broadcast_time_signature(TimeSignature::new(7, 8));
@@ -734,7 +734,7 @@ mod tests {
 
         // Subscribe a unit so the bus has somewhere to deliver events.
         let id = MidiUnitId::new(1);
-        let (sender, _receiver) = MidiEventSlot::pair(id);
+        let (sender, _receiver) = MidiMailbox::pair(id);
         bus.insert(sender);
 
         // Note on, channel 2 (a member channel of the lower zone).
@@ -790,7 +790,7 @@ mod tests {
         bus.uninstall_mpe();
 
         let id = MidiUnitId::new(1);
-        let (sender, _receiver) = MidiEventSlot::pair(id);
+        let (sender, _receiver) = MidiMailbox::pair(id);
         bus.insert(sender);
 
         // Without MPE installed, queueing a note-on shouldn't update
@@ -812,7 +812,7 @@ mod tests {
         assert!(bus.mpe_expression().is_none());
 
         let id = MidiUnitId::new(1);
-        let (sender, receiver) = MidiEventSlot::pair(id);
+        let (sender, receiver) = MidiMailbox::pair(id);
         bus.insert(sender);
 
         let note_on = MidiEvent::note_on(0, 0, 60, tutti_midi_types::convert::midi1_velocity_to_midi2(100));

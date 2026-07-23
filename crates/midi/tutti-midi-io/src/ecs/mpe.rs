@@ -195,7 +195,7 @@ mod tests {
 
         // Subscribe a unit so the bus has somewhere to deliver to.
         let id = MidiUnitId::new(1);
-        let (sender, _recv) = tutti_midi_runtime::MidiEventSlot::pair(id);
+        let (sender, _recv) = tutti_midi_runtime::MidiMailbox::pair(id);
         bus.insert(sender);
 
         let note_on =

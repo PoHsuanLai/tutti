@@ -36,7 +36,7 @@ use arc_swap::ArcSwap;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiIn, MidiUnitId};
 
-use crate::registry::{MidiEventSlot, MidiReceiver, MidiSender};
+use crate::registry::{MidiMailbox, MidiReceiver, MidiSender};
 
 /// A MIDI-receiving unit's input endpoint: a routing address, a push mailbox,
 /// and the currently-plugged-in pull source (the receiver by default).
@@ -67,7 +67,7 @@ impl MidiInPort {
     /// Build a port bound to a specific [`MidiUnitId`] (used by
     /// [`isolate`](Self::isolate) to keep the address stable across the re-pair).
     fn with_unit_id(unit_id: MidiUnitId) -> Self {
-        let (sender, receiver) = MidiEventSlot::pair(unit_id);
+        let (sender, receiver) = MidiMailbox::pair(unit_id);
         let input: Arc<dyn MidiIn> = Arc::new(receiver.clone());
         Self {
             unit_id,

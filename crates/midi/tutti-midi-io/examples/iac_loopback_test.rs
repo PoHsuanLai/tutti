@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use tutti_midi_io::{MidiEvent, MidiIo, MidiMessage, MidiPortManager, NoteId};
+use tutti_midi_io::{MidiEvent, MidiIo, MidiMessage, HardwareMidiInputs, NoteId};
 
 fn main() {
-    let pm = Arc::new(MidiPortManager::new(256));
+    let pm = Arc::new(HardwareMidiInputs::new(256));
     let io = MidiIo::new(pm.clone());
 
     let inputs = io.list_input_devices();

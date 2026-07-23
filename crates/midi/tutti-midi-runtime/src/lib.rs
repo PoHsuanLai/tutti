@@ -3,7 +3,7 @@
 //! Pure MIDI types live in [`tutti_midi_types`]. Hardware I/O lives in
 //! `tutti-midi-io`. This crate owns the *runtime state* that connects them:
 //!
-//! - [`MidiEventSlot`] / [`MidiSender`] / [`MidiReceiver`] — lock-free
+//! - [`MidiMailbox`] / [`MidiSender`] / [`MidiReceiver`] — lock-free
 //!   per-unit MIDI inboxes; nodes own a receiver, callers push via senders
 //! - [`MidiBus`] — fan-out mapping [`tutti_midi_types::MidiUnitId`] to
 //!   [`MidiSender`], dispatching queued events to the right inbox; the
@@ -14,7 +14,7 @@
 //! - [`MidiRoutingTable`] — UI-thread writer for routing rules, publishing
 //!   immutable [`tutti_midi_types::MidiRoutingSnapshot`] values via [`arc_swap::ArcSwap`]
 //! - Engine-produced MIDI *out* (e.g. the [`ClockMaster`]'s Beat Clock / MTC)
-//!   rides the *same* [`MidiEventSlot`] mailbox as MIDI in: the producer holds a
+//!   rides the *same* [`MidiMailbox`] mailbox as MIDI in: the producer holds a
 //!   [`MidiSender`] (lock-free `&self` push via [`tutti_midi_types::MidiOut`]),
 //!   an off-RT pump drains the paired [`MidiReceiver`] to a hardware-out port
 //! - [`MpeProcessor`] / [`PerNoteExpression`] — MPE state machine mapping
@@ -44,7 +44,7 @@ pub use endpoint::{
 };
 pub use jr_timestamp::{JrClock, JrReceiver, JrStamper};
 pub use port::MidiInPort;
-pub use registry::{MidiBus, MidiEventSlot, MidiReceiver, MidiSender};
+pub use registry::{MidiBus, MidiMailbox, MidiReceiver, MidiSender};
 pub use routing_table::MidiRoutingTable;
 pub use snapshot::{MidiSnapshot, TimedMidiEvent};
 pub use snapshot_reader::MidiSnapshotReader;

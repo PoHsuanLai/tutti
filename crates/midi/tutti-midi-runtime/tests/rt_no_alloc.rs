@@ -6,7 +6,7 @@
 use assert_no_alloc::AllocDisabler;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
-use tutti_midi_runtime::{MidiBus, MidiEventSlot};
+use tutti_midi_runtime::{MidiBus, MidiMailbox};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -24,7 +24,7 @@ fn midi_bus_queue_is_allocation_free() {
     let mut receivers = Vec::with_capacity(8);
     for i in 0..8u64 {
         let id = MidiUnitId::new(i);
-        let (sender, receiver) = MidiEventSlot::pair(id);
+        let (sender, receiver) = MidiMailbox::pair(id);
         bus.insert(sender);
         ids.push(id);
         receivers.push(receiver);
@@ -51,7 +51,7 @@ fn midi_bus_queue_system_broadcast_is_allocation_free() {
     let mut receivers = Vec::with_capacity(16);
     for i in 0..16u64 {
         let id = MidiUnitId::new(i);
-        let (sender, receiver) = MidiEventSlot::pair(id);
+        let (sender, receiver) = MidiMailbox::pair(id);
         bus.insert(sender);
         receivers.push(receiver);
     }

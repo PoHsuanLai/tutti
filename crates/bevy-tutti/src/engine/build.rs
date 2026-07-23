@@ -71,7 +71,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // (Software MIDI fan-out via `MidiBus` is always present under `midi`.)
     #[cfg(feature = "midi-hardware")]
     let midi_io = {
-        let port_manager = Arc::new(tutti_midi_io::MidiPortManager::new(256));
+        let port_manager = Arc::new(tutti_midi_io::HardwareMidiInputs::new(256));
         Some(MidiIo::new(port_manager))
     };
 
@@ -129,7 +129,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // Starts disabled — no output until the UI connects a device + enables it.
     #[cfg(feature = "midi")]
     let (clock_master, clock_out_consumer) = {
-        let (sender, receiver) = tutti_midi_runtime::MidiEventSlot::pair(
+        let (sender, receiver) = tutti_midi_runtime::MidiMailbox::pair(
             tutti_midi_runtime::tutti_midi_types::MidiUnitId::next(),
         );
         let clock_transport =

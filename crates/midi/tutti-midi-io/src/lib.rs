@@ -21,9 +21,9 @@ pub use core::{Error, Result};
 // edge).
 #[cfg(feature = "midi-hardware")]
 pub use core::{MidiDevice, MidiInputRecord, MidiIo};
-pub use core::{InputProducerHandle, MidiPortManager, PortInfo, PortType};
+pub use core::{InputProducerHandle, HardwareMidiInputs, PortInfo, PortType};
 
-/// `MidiPortManager` and friends live in [`core::port`]; kept as a crate-root
+/// `HardwareMidiInputs` and friends live in [`core::port`]; kept as a crate-root
 /// module path for the `tutti_midi_io::port::*` spelling consumers already use.
 pub use core::port;
 
@@ -73,7 +73,7 @@ pub use tutti_midi_types::sync::{
 // app depends on this one umbrella crate rather than reaching into the runtime.
 
 pub use tutti_midi_runtime::{
-    MidiBus, MidiClipSource, MidiEventSlot, MidiReceiver, MidiSender, MidiSnapshot,
+    MidiBus, MidiClipSource, MidiMailbox, MidiReceiver, MidiSender, MidiSnapshot,
     Sysex7Reassembler, TimedClipEvent, TimedMidiEvent,
 };
 
@@ -114,7 +114,7 @@ pub use smf::{
 /// assert!(ev.message().is_note_on());
 ///
 /// // And the delivery types are here too — fan an event to a unit's inbox.
-/// let (tx, rx) = MidiEventSlot::pair(MidiUnitId::new(1));
+/// let (tx, rx) = MidiMailbox::pair(MidiUnitId::new(1));
 /// let bus = MidiBus::new();
 /// bus.insert(tx);
 /// bus.note_on(MidiUnitId::new(1), 0, 60, 100);
@@ -125,7 +125,7 @@ pub mod prelude {
     pub use tutti_midi_types::prelude::*;
 
     pub use crate::{
-        MidiBus, MidiClipSource, MidiEventSlot, MidiReceiver, MidiSender, MidiSnapshot,
+        MidiBus, MidiClipSource, MidiMailbox, MidiReceiver, MidiSender, MidiSnapshot,
         TimedMidiEvent,
     };
 

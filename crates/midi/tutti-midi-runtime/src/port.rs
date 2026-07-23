@@ -98,11 +98,15 @@ impl MidiInPort {
         self.sender.clone()
     }
 
-    /// Install a pull source (a [`MidiClipSource`](crate::MidiClipSource), a
-    /// [`MidiSnapshotReader`](crate::MidiSnapshotReader), a
-    /// [`CompositeMidiSource`](crate::CompositeMidiSource) merging live+clip) as
-    /// the current input, replacing the live receiver until [`clear`](Self::clear).
+    /// Install a pull source (a [`MidiClipSource`](crate::MidiClipSource) or a
+    /// [`MidiSnapshotReader`](crate::MidiSnapshotReader)) as the current input,
+    /// **replacing** the live receiver until [`clear`](Self::clear).
     /// Lock-free; visible to every clone sharing this port.
+    ///
+    /// Replacement, not layering: while a source is installed, events pushed to
+    /// this port's own mailbox (live preview, musical typing) are not polled.
+    /// Merging the two belongs here — poll both the receiver and the installed
+    /// source — not in a separate "composite source" type.
     pub fn install(&self, source: Arc<dyn MidiIn>) {
         self.input.store(Arc::new(source));
     }

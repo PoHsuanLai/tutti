@@ -1,7 +1,7 @@
 //! Regression gate for RT-safety: MIDI runtime hot paths must not
-//! allocate. Covers `MidiBus::queue` (per-unit) and
-//! `MidiBus::queue_system` (broadcast via the ArcSwap snapshot added in
-//! the midi-runtime step of the RT-safety audit).
+//! allocate. Covers `MidiBus::queue` (addressed per-unit delivery) and the
+//! outbound `MidiSender::queue` push that the hardware-out mailbox and the RT
+//! clip tap both use.
 
 use assert_no_alloc::AllocDisabler;
 use tutti_midi_runtime::{MidiBus, MidiMailbox};
@@ -45,25 +45,26 @@ fn midi_bus_queue_is_allocation_free() {
     });
 }
 
+/// The outbound mailbox push — the path the clock master, the RT clip tap, and
+/// the protocol producers (MIDI-CI, endpoint discovery, Flex metadata) all take
+/// to reach hardware out. The clock master runs it once per audio block, so it
+/// must not allocate.
 #[test]
-fn midi_bus_queue_system_broadcast_is_allocation_free() {
-    let bus = MidiBus::new();
-    let mut receivers = Vec::with_capacity(16);
-    for i in 0..16u64 {
-        let id = MidiUnitId::new(i);
-        let (sender, receiver) = MidiMailbox::pair(id);
-        bus.insert(sender);
-        receivers.push(receiver);
-    }
-
+fn outbound_mailbox_push_is_allocation_free() {
+    let (sender, receiver) = MidiMailbox::pair(MidiUnitId::new(1));
     let clock = MidiEvent::timing_clock(0);
 
-    // Warm up: confirm the snapshot is reachable before the no-alloc scope.
-    bus.queue_system(&clock);
+    // Warm up outside the no-alloc scope.
+    sender.queue(&[clock]);
+    let mut drain = [note_on(0, 0); 8];
+    let _ = receiver.poll_into(&mut drain);
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..10_000 {
-            bus.queue_system(&clock);
+            sender.queue(&[clock]);
+            // Drain so the bounded ring never fills and starts rejecting —
+            // this exercises both halves of the mailbox.
+            let _ = receiver.poll_into(&mut drain);
         }
     });
 }

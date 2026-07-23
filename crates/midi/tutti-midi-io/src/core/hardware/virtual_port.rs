@@ -6,7 +6,9 @@ use tracing::debug;
 
 use crate::core::error::{Error, Result};
 
+mod ump_destination;
 mod ump_source;
+pub use ump_destination::UmpVirtualDestination;
 pub use ump_source::UmpVirtualSource;
 
 pub struct VirtualMidiSource {

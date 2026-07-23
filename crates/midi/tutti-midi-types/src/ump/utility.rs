@@ -58,7 +58,7 @@ mod tests {
         let ev = MidiEvent::jr_timestamp(0, 0x1234);
         match UmpMessage::try_from(ev.data_words()).unwrap() {
             UmpMessage::Utility(utility::Utility::Timestamp(m)) => {
-                assert_eq!(u16::from(m.time_data()), 0x1234);
+                assert_eq!(m.time_data(), 0x1234);
             }
             other => panic!("expected JR Timestamp, got {other:?}"),
         }

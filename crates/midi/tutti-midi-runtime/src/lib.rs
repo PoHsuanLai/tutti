@@ -37,7 +37,7 @@ pub mod sysex_reassembler;
 pub mod mpe;
 
 pub use capability_inquiry::{CiInitiator, CiProperty, CiResponder, DiscoveredCiDevice};
-pub use clip_player::{CompositeMidiSource, MidiClipSource, TimedClipEvent};
+pub use clip_player::{MidiClipSource, TimedClipEvent};
 pub use clock_master::ClockMaster;
 pub use endpoint::{
     DeviceIdentity, DiscoveredEndpoint, EndpointInquiry, EndpointNegotiator, FunctionBlock,

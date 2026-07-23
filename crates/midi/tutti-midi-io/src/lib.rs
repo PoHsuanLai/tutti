@@ -28,7 +28,9 @@ pub use core::{MidiDevice, MidiInputRecord, MidiIo};
 pub use core::port;
 
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-pub use core::{UmpVirtualSource, VirtualMidiDestination, VirtualMidiSource};
+pub use core::{
+    UmpVirtualDestination, UmpVirtualSource, VirtualMidiDestination, VirtualMidiSource,
+};
 
 // --- Re-exports from tutti-midi-types (the pure MIDI vocabulary) ---
 
@@ -117,7 +119,7 @@ pub use smf::{
 /// let (tx, rx) = MidiMailbox::pair(MidiUnitId::new(1));
 /// let bus = MidiBus::new();
 /// bus.insert(tx);
-/// bus.note_on(MidiUnitId::new(1), 0, 60, 100);
+/// bus.queue(MidiUnitId::new(1), &[ev]);
 /// let mut buf = [ev; 4];
 /// assert_eq!(rx.poll_into(&mut buf), 1);
 /// ```
@@ -143,8 +145,9 @@ pub mod ecs;
 pub use ecs::{
     midi_routing_sync_system, midi_sequence_setup_system, midi_sequence_tick_system,
     pump_clock_out_system, tick_scheduled_midi, ClockMasterRes, ClockOutPlugin, MidiBusRes,
-    MidiRoutingPlugin, MidiSequence, MidiSequenceNote, MidiSequencePlugin, MidiSequenceState,
-    MidiSink, MidiSynthMarker, PendingMidi, ScheduledMidi, ScheduledMidiPlugin, TuttiMidiPlugin,
+    MidiRoutingPlugin, MidiRoutingRes, MidiSequence, MidiSequenceNote, MidiSequencePlugin,
+    MidiSequenceState, MidiSink, MidiSynthMarker, PendingMidi, ScheduledMidi, ScheduledMidiPlugin,
+    TuttiMidiPlugin,
 };
 
 #[cfg(feature = "bevy")]

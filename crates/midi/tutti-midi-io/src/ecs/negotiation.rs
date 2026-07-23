@@ -4,27 +4,44 @@
 //! machines that live in `tutti-midi-runtime`. It follows the same shape as
 //! [`super::device`]: a resource holding the pure state machine, fire-and-forget
 //! request [`Message`]s, and systems that drive the machine and push its output
-//! onto the [`MidiBusRes`](super::bus::MidiBusRes) as system events.
+//! at external MIDI out via [`MidiOutRes`](super::track_out::MidiOutRes).
+//!
+//! Both protocols negotiate with *peer devices*, so their output goes to the
+//! hardware-out mailbox, never the `MidiBus` synth fan-out — a synth inbox is
+//! not a wire, and nothing would carry these to a peer.
 //!
 //! Two duties, one module because they share the pattern:
 //!
 //! - **MIDI-CI** — [`CiRes`] holds a [`CiResponder`] (this device's declared
 //!   identity/profiles/properties) and a [`CiInitiator`] (the inquiring side).
-//!   [`StartCiDiscovery`] broadcasts a Discovery probe; [`InboundCiMessage`]
-//!   feeds a decoded reply into both halves, emitting any responses back onto the
-//!   bus and raising [`CiDeviceDiscovered`] when a peer's identity arrives.
+//!   [`StartCiDiscovery`] sends a Discovery probe; [`InboundCiMessage`]
+//!   feeds a decoded reply into both halves, emitting any responses back out
+//!   and raising [`CiDeviceDiscovered`] when a peer's identity arrives.
 //! - **UMP-Stream** — [`EndpointDiscoveryRes`] holds an [`EndpointInquiry`];
 //!   [`StartEndpointDiscovery`] sends the Endpoint Discovery probe;
 //!   [`InboundEndpointReply`] feeds reply events in, raising [`EndpointDiscovered`]
 //!   once the endpoint assembles.
 //!
-//! **Inbound is a stub seam.** Nothing decodes live SysEx off the hardware input
-//! yet (`core/hardware/input.rs` drops SysEx before it reaches the UMP stream),
-//! so [`InboundCiMessage`] / [`InboundEndpointReply`] have no producer in this
-//! crate today — they're the injection point a future inbound-decode pass (or a
-//! test / loopback) writes into. The negotiators themselves are fully exercised
-//! by the runtime crate's loopback tests; this layer only wires their *outbound*
-//! path to the bus and surfaces their *results* as ECS messages.
+//! **Inbound arrives from the app layer, not from here.**
+//! [`InboundCiMessage`] / [`InboundEndpointReply`] have no producer *in this
+//! crate*; the live one is the app's hardware drain (dawai's
+//! `input::midi::hardware_route`), which classifies by UMP message type and
+//! feeds these. The chain behind it is real: `core/hardware/input.rs`
+//! reassembles MIDI-1.0 SysEx across driver callbacks and promotes it to UMP
+//! SysEx7, which a `Sysex7Reassembler` + `ci::sysex7_to_ci` turn back into a
+//! typed [`CiMessage`]. That works because MIDI-CI is Universal SysEx by design
+//! (M2-101) — it has to survive a MIDI-1.0 transport, since it's how two devices
+//! discover each other *before* either knows the other speaks MIDI 2.0.
+//! `midi1_wire_sysex_promotes_to_a_typed_ci_message` covers that seam.
+//!
+//! **UMP-Stream needs a native-UMP transport.** That family has no MIDI-1.0
+//! encoding, so it cannot arrive over midir (a MIDI-1.0 API) at all. On macOS
+//! [`UmpVirtualDestination`](crate::UmpVirtualDestination) provides the
+//! MIDI-2.0-protocol endpoint it needs — point it at the same input ring with
+//! `with_producer` and UMP-Stream messages join the ordinary inbound stream,
+//! reaching the `UmpStream` arm of the app's drain. (Its outbound counterpart is
+//! `UmpVirtualSource`.) On other platforms the arm stays dormant until an
+//! equivalent endpoint exists.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader, MessageWriter};
@@ -35,7 +52,6 @@ use tutti_midi_runtime::tutti_midi_types::EndpointDiscoveryRequest;
 use tutti_midi_runtime::{CiInitiator, CiResponder, DiscoveredCiDevice};
 use tutti_midi_runtime::{DiscoveredEndpoint, EndpointInquiry};
 
-use super::bus::MidiBusRes;
 
 /// The default group MIDI-CI negotiation runs on (function-block-wide).
 const CI_GROUP: u8 = 0;
@@ -84,19 +100,32 @@ pub struct InboundCiMessage(pub CiMessage);
 #[derive(Message, Debug, Clone)]
 pub struct CiDeviceDiscovered(pub DiscoveredCiDevice);
 
-/// Broadcast a Discovery probe when [`StartCiDiscovery`] is requested.
+/// Send a Discovery probe to external MIDI out when [`StartCiDiscovery`] fires.
+///
+/// MIDI-CI negotiates with *peer devices*, so the destination is the hardware-out
+/// mailbox rather than the synth fan-out bus.
 pub fn ci_discovery_system(
     ci: Option<Res<CiRes>>,
-    bus: Option<Res<MidiBusRes>>,
+    out: Option<Res<super::track_out::MidiOutRes>>,
     mut requests: MessageReader<StartCiDiscovery>,
 ) {
-    let (Some(ci), Some(bus)) = (ci, bus) else {
+    let (Some(ci), Some(out)) = (ci, out) else {
         requests.clear();
         return;
     };
+    let sender = out.sender();
     for _ in requests.read() {
-        bus.broadcast_ci(CI_GROUP, &ci.initiator.discovery());
+        send_ci(&sender, &ci.initiator.discovery());
     }
+}
+
+/// Fragment a CI message into SysEx7 UMP packets and push them at the
+/// hardware-out mailbox. The wire encoding matches `MidiBus::broadcast_ci`'s;
+/// only the destination differs.
+fn send_ci(sender: &tutti_midi_runtime::MidiSender, message: &CiMessage) {
+    let mut packets = Vec::new();
+    tutti_midi_runtime::tutti_midi_types::ci::ci_to_sysex7(CI_GROUP, message, &mut packets);
+    sender.queue(&packets);
 }
 
 /// Feed decoded inbound CI messages into both negotiator halves: the responder
@@ -105,23 +134,24 @@ pub fn ci_discovery_system(
 /// Invalidate it must send.
 pub fn ci_ingest_system(
     ci: Option<ResMut<CiRes>>,
-    bus: Option<Res<MidiBusRes>>,
+    out: Option<Res<super::track_out::MidiOutRes>>,
     mut inbound: MessageReader<InboundCiMessage>,
     mut discovered: MessageWriter<CiDeviceDiscovered>,
 ) {
-    let (Some(mut ci), Some(bus)) = (ci, bus) else {
+    let (Some(mut ci), Some(out)) = (ci, out) else {
         inbound.clear();
         return;
     };
+    let sender = out.sender();
     for InboundCiMessage(message) in inbound.read() {
         // Responder: any replies this message warrants go straight back out.
         for reply in ci.responder.respond_to(message) {
-            bus.broadcast_ci(CI_GROUP, &reply);
+            send_ci(&sender, &reply);
         }
         // Initiator: record what we learn; emit any collision Invalidate it asks for.
         let before = ci.initiator.discovered().cloned();
         for feedback in ci.initiator.ingest(message) {
-            bus.broadcast_ci(CI_GROUP, &feedback);
+            send_ci(&sender, &feedback);
         }
         // A newly discovered peer (identity we didn't have before) → surface it.
         if let Some(peer) = ci.initiator.discovered() {
@@ -158,17 +188,26 @@ pub struct InboundEndpointReply(pub tutti_midi_runtime::tutti_midi_types::ump::M
 #[derive(Message, Debug, Clone)]
 pub struct EndpointDiscovered(pub DiscoveredEndpoint);
 
-/// Broadcast an Endpoint Discovery probe when [`StartEndpointDiscovery`] fires.
+/// Send an Endpoint Discovery probe to external MIDI out when
+/// [`StartEndpointDiscovery`] fires. Like MIDI-CI, this asks a *peer endpoint*
+/// about itself, so it goes to the hardware-out mailbox.
 pub fn endpoint_discovery_system(
-    bus: Option<Res<MidiBusRes>>,
+    out: Option<Res<super::track_out::MidiOutRes>>,
     mut requests: MessageReader<StartEndpointDiscovery>,
 ) {
-    let Some(bus) = bus else {
+    let Some(out) = out else {
         requests.clear();
         return;
     };
+    let sender = out.sender();
     for _ in requests.read() {
-        bus.request_endpoint_discovery(EndpointDiscoveryRequest::all());
+        sender.queue(&[
+            tutti_midi_runtime::tutti_midi_types::ump::MidiEvent::endpoint_discovery(
+                1,
+                1,
+                EndpointDiscoveryRequest::all(),
+            ),
+        ]);
     }
 }
 
@@ -222,7 +261,11 @@ impl Plugin for MidiNegotiationPlugin {
                 endpoint_discovery_system,
                 endpoint_ingest_system,
             )
-                .run_if(tutti_core::graph::engine_ready),
+                .run_if(tutti_core::graph::engine_ready)
+                // Push into the outbound mailbox before the pump drains it, so a
+                // probe requested this frame reaches the wire this frame rather
+                // than waiting one.
+                .before(super::track_out::pump_midi_out_system),
         );
     }
 }
@@ -230,8 +273,8 @@ impl Plugin for MidiNegotiationPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::track_out::MidiOutRes;
     use tutti_midi_runtime::tutti_midi_types::ci::CiCategories;
-    use tutti_midi_runtime::MidiBus;
 
     fn identity(mfr: [u8; 3]) -> DiscoveryData {
         DiscoveryData {
@@ -250,7 +293,7 @@ mod tests {
     #[test]
     fn inbound_reply_surfaces_discovered_device() {
         let mut world = World::new();
-        world.insert_resource(MidiBusRes(MidiBus::new()));
+        world.init_resource::<MidiOutRes>();
         world.insert_resource(CiRes::new(identity([0x11, 0x22, 0x33]), 0xABCD));
         world.init_resource::<Messages<InboundCiMessage>>();
         world.init_resource::<Messages<CiDeviceDiscovered>>();
@@ -276,5 +319,36 @@ mod tests {
         let events = world.resource::<Messages<CiDeviceDiscovered>>();
         let mut cursor = events.get_cursor();
         assert_eq!(cursor.read(events).count(), 1, "one device surfaced");
+    }
+
+    /// A Discovery probe must land in the mailbox the hardware pump drains.
+    ///
+    /// Regression: these broadcasts used to go to `MidiBus`'s per-unit *system*
+    /// ring, which nothing ever polled — so every CI probe, endpoint-discovery
+    /// request, and Flex-metadata message was silently dropped. Loopback tests
+    /// of the negotiators couldn't catch it; only checking the destination can.
+    #[test]
+    fn discovery_probe_reaches_the_hardware_out_mailbox() {
+        let mut world = World::new();
+        world.init_resource::<MidiOutRes>();
+        world.insert_resource(CiRes::new(identity([0x11, 0x22, 0x33]), 0xABCD));
+        world.init_resource::<Messages<StartCiDiscovery>>();
+        world
+            .resource_mut::<Messages<StartCiDiscovery>>()
+            .write(StartCiDiscovery);
+
+        let mut schedule = Schedule::default();
+        schedule.add_systems(ci_discovery_system);
+        schedule.run(&mut world);
+
+        // Drain the outbound mailbox the way `pump_midi_out_system` does.
+        let out = world.resource::<MidiOutRes>();
+        let (_, receiver) = (out.sender(), out.receiver_for_test());
+        let mut buf = [tutti_midi_runtime::tutti_midi_types::ump::MidiEvent::noop(); 64];
+        let n = receiver.poll_into(&mut buf);
+        assert!(
+            n > 0,
+            "the Discovery probe must reach the hardware-out mailbox, not a ring nobody drains"
+        );
     }
 }

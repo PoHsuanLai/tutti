@@ -1,9 +1,13 @@
 //! `AudioGraph` — the editable DSP graph.
 //!
-//! Owns the fundsp-backed [`GraphNet`] and (with feature `midi`) the
-//! [`MidiRoutingTable`] that publishes hardware-MIDI → node routing snapshots.
-//! Edits take `&mut self` directly. No `Mutex`, no closure, no
-//! `Arc<TuttiEngine>`.
+//! Owns the fundsp-backed [`GraphNet`], and nothing else. Edits take
+//! `&mut self` directly. No `Mutex`, no closure, no `Arc<TuttiEngine>`.
+//!
+//! Two things that used to live here have moved out, for the same reason:
+//! neither is a property of the DSP graph. Latency compensation is now the
+//! caller's (`tutti_core::pdc`), and MIDI routing — a MIDI channel to a
+//! destination unit's mailbox, with no fundsp edge behind it — belongs to the
+//! MIDI subsystem as `tutti_midi_io::MidiRoutingRes`.
 //!
 //! # Edit and commit
 //!
@@ -26,45 +30,36 @@ use crate::{
     GraphNet,
 };
 
-use tutti_midi_types::MidiRoutingTable;
-
 /// The editable DSP graph.
 ///
-/// Owned by a single `&mut` thread; no locks. Wraps a [`GraphNet`](crate::GraphNet)
-/// (plus, under the `midi` feature, a [`MidiRoutingTable`]). Edits are staged
-/// until [`commit`](Self::commit) publishes them to the audio thread.
+/// Owned by a single `&mut` thread; no locks. Wraps a [`GraphNet`](crate::GraphNet).
+/// Edits are staged until [`commit`](Self::commit) publishes them to the audio
+/// thread.
 pub struct AudioGraph {
     net: GraphNet,
-    midi_route: MidiRoutingTable,
     sample_rate: f64,
     channels: usize,
 }
 
 impl AudioGraph {
     /// Construct from pre-built parts. Called by `TuttiEngineBuilder`.
-    pub fn from_parts(
-        net: GraphNet,
-        midi_route: MidiRoutingTable,
-        sample_rate: f64,
-        channels: usize,
-    ) -> Self {
+    pub fn from_parts(net: GraphNet, sample_rate: f64, channels: usize) -> Self {
         Self {
             net,
-            midi_route,
             sample_rate,
             channels,
         }
     }
 
     /// Build an empty graph with the given output `channels` (0 inputs,
-    /// 48 kHz). Constructs the net and routing table internally.
+    /// 48 kHz). Constructs the net internally.
     pub fn empty(channels: usize) -> Self {
         let mut net = GraphNet::new(0, channels);
         // Allocate the fundsp realtime backend (as the real builder does) so
         // `commit()` has a backend to publish into. Discarded here — nothing
         // drives audio through a test/bootstrap graph.
         let _backend = net.backend();
-        Self::from_parts(net, MidiRoutingTable::new(), 48_000.0, channels)
+        Self::from_parts(net, 48_000.0, channels)
     }
 
     /// Sample rate the graph was built with.
@@ -277,25 +272,16 @@ impl AudioGraph {
         self.net.inner_mut().set_source(node, port, src)
     }
 
-    /// Mutable access to the MIDI routing table.
-    ///
-    /// Edits are staged alongside graph edits and only reach the audio thread
-    /// after the next [`commit`](Self::commit).
-    pub fn midi_route_mut(&mut self) -> &mut MidiRoutingTable {
-        &mut self.midi_route
-    }
-
     /// Publish pending edits to the audio thread.
     ///
-    /// Commits fundsp's [`Net`] backend and publishes a fresh MIDI routing
-    /// snapshot.
+    /// Commits fundsp's [`Net`] backend. Latency compensation and MIDI routing
+    /// publish themselves — neither rides this call any more.
     ///
     /// If a panic occurs between edits and `commit`, the audio thread keeps
     /// running the last successfully committed graph; the next `commit` call
     /// flushes whatever is currently staged.
     pub fn commit(&mut self) {
         self.net.commit();
-        self.midi_route.commit();
     }
 
     /// [`Display`](core::fmt::Display)-able Graphviz `digraph { … }` summary

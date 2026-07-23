@@ -1,17 +1,21 @@
 //! Lock-free MIDI event delivery primitives.
 //!
-//! [`MidiMailbox`] is the underlying lock-free ring-buffer pair (one queue
-//! for routed channel/voice events, one for broadcast system events). Each
+//! [`MidiMailbox`] is the underlying lock-free ring buffer. Each
 //! MIDI-receiving audio unit owns a [`MidiReceiver`] half and hands out
 //! cheap-to-clone [`MidiSender`] handles to anyone that wants to push events.
 //!
 //! [`MidiBus`] is a fan-out `DashMap` keyed by [`MidiUnitId`] that holds
-//! sender clones, lets the caller queue by id, and broadcasts system
-//! events to every registered sender. Standalone consumers of this
+//! sender clones and lets the caller queue by id. Standalone consumers of this
 //! crate don't have to use it — wiring individual [`MidiSender`]s into
 //! your own [`tutti_midi_types::MidiOut`] impl works just as well — but the
 //! `tutti` engine installs a [`MidiBus`] as its audio-thread dispatch
 //! target so apps can register node senders without writing any glue.
+//!
+//! Delivery here is *inbound only*: a mailbox feeds a unit that polls it.
+//! Protocol messages aimed at peer devices (MIDI-CI, UMP-Stream discovery,
+//! Flex metadata) are not delivered through this bus — they go to the
+//! hardware-out mailbox (`tutti_midi_io::MidiOutRes`), the only path drained to
+//! the wire.
 
 use std::sync::Arc;
 
@@ -20,34 +24,28 @@ use crossbeam_queue::ArrayQueue;
 use dashmap::DashMap;
 use parking_lot::Mutex;
 
-use tutti_core::transport::TimeSignature;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{BarAccents, EndpointDiscoveryRequest, MidiUnitId};
+use tutti_midi_types::MidiUnitId;
 
-use crate::endpoint::FunctionBlock;
 use crate::mpe::{MpeProcessor, PerNoteExpression};
 use crate::snapshot::MidiSnapshot;
 
 const EVENTS_PER_UNIT: usize = 256;
-const SYSTEM_EVENTS_PER_UNIT: usize = 64;
 
 /// Lock-free per-unit MIDI inbox.
 ///
-/// Holds two bounded ring buffers — one for routed channel/voice events and
-/// one for broadcast system messages. Push and pop are wait-free, so they're
-/// safe to call from the audio thread.
+/// One bounded ring buffer. Push and pop are wait-free, so they're safe to call
+/// from the audio thread.
 pub struct MidiMailbox {
     events: ArrayQueue<MidiEvent>,
-    sys_events: ArrayQueue<MidiEvent>,
 }
 
 impl std::fmt::Debug for MidiMailbox {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Report occupancy, not contents — the queues are drained on the audio
-        // thread and dumping them would be both racy and noisy.
+        // Report occupancy, not contents — the queue is drained on the audio
+        // thread and dumping it would be both racy and noisy.
         f.debug_struct("MidiMailbox")
             .field("events", &self.events.len())
-            .field("sys_events", &self.sys_events.len())
             .finish()
     }
 }
@@ -56,7 +54,6 @@ impl MidiMailbox {
     fn new() -> Self {
         Self {
             events: ArrayQueue::new(EVENTS_PER_UNIT),
-            sys_events: ArrayQueue::new(SYSTEM_EVENTS_PER_UNIT),
         }
     }
 
@@ -108,12 +105,6 @@ impl MidiSender {
             accepted += 1;
         }
         accepted
-    }
-
-    /// Push a single system event (clock, start/stop, addressed SysEx). Returns
-    /// `false` if the system ring was full and the event was dropped.
-    pub fn queue_system(&self, event: &MidiEvent) -> bool {
-        self.slot.sys_events.push(*event).is_ok()
     }
 
     /// Convenience: send a MIDI 1.0 note-on (velocity is 7-bit). Returns `false`
@@ -181,32 +172,12 @@ impl MidiReceiver {
         count
     }
 
-    /// Drain pending system events. Audio-thread-safe.
-    pub fn poll_system(&self, out: &mut [MidiEvent]) -> usize {
-        let mut written = 0;
-        while written < out.len() {
-            match self.slot.sys_events.pop() {
-                Some(event) => {
-                    out[written] = event;
-                    written += 1;
-                }
-                None => break,
-            }
-        }
-        written
-    }
-
     pub fn has_events(&self) -> bool {
         !self.slot.events.is_empty()
     }
 
-    pub fn has_system_events(&self) -> bool {
-        !self.slot.sys_events.is_empty()
-    }
-
     pub fn clear(&self) {
         while self.slot.events.pop().is_some() {}
-        while self.slot.sys_events.pop().is_some() {}
     }
 
     /// Drain pending events into a snapshot at the given beat position.
@@ -239,8 +210,7 @@ impl tutti_midi_types::MidiIn for MidiReceiver {
 ///
 /// Use when you have many MIDI-receiving nodes and want to address them
 /// through a single object — for example, to feed hardware MIDI input
-/// through a routing table that targets nodes by id, or to broadcast
-/// system real-time messages (clock, start/stop) to everything at once.
+/// through a routing table that targets nodes by id.
 ///
 /// The `tutti` engine wires one of these as its default audio-thread
 /// dispatch target, exposed as `engine.midi`. Standalone consumers of
@@ -248,23 +218,20 @@ impl tutti_midi_types::MidiIn for MidiReceiver {
 /// a single [`MidiSender`], a custom routing struct, anything with a
 /// `queue(MidiUnitId, &[MidiEvent])` method.
 ///
+/// Delivery is *addressed only*: this bus feeds units that poll their inbox.
+/// Messages destined for external peer devices go to the hardware-out mailbox
+/// (`tutti_midi_io::MidiOutRes`) instead — a synth inbox is not a wire.
+///
 /// # Real-time safety
 ///
-/// [`queue_system`](MidiBus::queue_system) reads a flat [`ArcSwap`]
-/// snapshot of the current senders — a single atomic load on the RT
-/// side, no DashMap shard locks. The snapshot is rebuilt off-RT in
-/// [`insert`](MidiBus::insert) / [`remove`](MidiBus::remove).
-/// [`queue`](MidiBus::queue) and [`queue_system_to`](MidiBus::queue_system_to)
-/// still read the DashMap (O(1) hash lookup, brief shard read-lock) —
-/// keep addressed delivery on the fast path and avoid `insert`/`remove`
-/// at playback time.
+/// [`queue`](MidiBus::queue) reads the DashMap (O(1) hash lookup, brief shard
+/// read-lock) — keep addressed delivery on the fast path and avoid
+/// `insert`/`remove` at playback time.
 #[derive(Clone, Default)]
 pub struct MidiBus {
     senders: Arc<DashMap<MidiUnitId, MidiSender>>,
-    broadcast: Arc<ArcSwap<Box<[MidiSender]>>>,
-    /// Optional MPE processor: every event passing through `queue`
-    /// (and addressed `queue_system_to`) is also fed to this
-    /// processor before delivery, populating the per-note
+    /// Optional MPE processor: every event passing through `queue` is also fed
+    /// to this processor before delivery, populating the per-note
     /// expression atomics that voices read on the audio thread.
     /// `None` = MPE disabled (the default).
     ///
@@ -293,10 +260,8 @@ impl MidiBus {
         Self::default()
     }
 
-    /// Install an MPE processor. Every event going through `queue` /
-    /// `queue_system_to` will be fed to the processor before being
-    /// delivered to subscribers. `queue_system` (true broadcast — clock,
-    /// start/stop) bypasses the processor.
+    /// Install an MPE processor. Every event going through `queue` will be fed
+    /// to the processor before being delivered to subscribers.
     ///
     /// Replaces any previously-installed processor. Returns the
     /// processor's `Arc<PerNoteExpression>` so callers (typically
@@ -348,13 +313,11 @@ impl MidiBus {
     /// Attach (or replace) the sender for a unit id.
     pub fn insert(&self, sender: MidiSender) {
         self.senders.insert(sender.unit_id(), sender);
-        self.rebuild_broadcast();
     }
 
     /// Drop the sender for a unit id. Subsequent queues for it are no-ops.
     pub fn remove(&self, unit_id: MidiUnitId) {
         self.senders.remove(&unit_id);
-        self.rebuild_broadcast();
     }
 
     /// Queue events for a subscribed unit. Unknown ids are silently dropped.
@@ -366,107 +329,6 @@ impl MidiBus {
         }
         if let Some(sender) = self.senders.get(&unit_id) {
             sender.queue(events);
-        }
-    }
-
-    /// Convenience: queue a note-on to a subscribed unit without building the
-    /// [`MidiEvent`] yourself (`velocity` is 7-bit MIDI 1.0). Mirrors
-    /// [`MidiSender::note_on`] for callers that hold only the bus + a unit id.
-    pub fn note_on(&self, unit_id: MidiUnitId, channel: u8, note: u8, velocity: u8) {
-        self.queue(
-            unit_id,
-            &[MidiEvent::note_on_7bit(0, channel, note, velocity)],
-        );
-    }
-
-    /// Convenience: queue a note-off to a subscribed unit. Mirrors
-    /// [`MidiSender::note_off`].
-    pub fn note_off(&self, unit_id: MidiUnitId, channel: u8, note: u8) {
-        self.queue(unit_id, &[MidiEvent::note_off(0, channel, note, 0)]);
-    }
-
-    /// Broadcast a system event to every subscribed unit. RT-safe: reads a
-    /// flat snapshot via a single atomic load. **Bypasses MPE** — system
-    /// events (clock, start/stop, song-position) aren't channel/voice
-    /// data and don't carry per-note expression.
-    pub fn queue_system(&self, event: &MidiEvent) {
-        for sender in self.broadcast.load().iter() {
-            sender.queue_system(event);
-        }
-    }
-
-    /// Deliver a system event to a single subscribed unit.
-    pub fn queue_system_to(&self, unit_id: MidiUnitId, event: &MidiEvent) {
-        if let Some(sender) = self.senders.get(&unit_id) {
-            sender.queue_system(event);
-        }
-    }
-
-    /// Broadcast the current tempo as a MIDI 2.0 **Flex Data Set Tempo** message
-    /// (M2-104 §7.5), so subscribers see tempo *in-band* in the UMP stream rather
-    /// than only via out-of-band transport state. Call on every tempo change.
-    /// Like [`queue_system`](Self::queue_system), this bypasses MPE.
-    pub fn broadcast_tempo(&self, bpm: f64) {
-        self.queue_system(&MidiEvent::flex_set_tempo(0, bpm));
-    }
-
-    /// Broadcast the current meter as a MIDI 2.0 **Flex Data Set Time Signature**
-    /// message (M2-104 §7.5). Takes the musical [`TimeSignature`]; the wire field
-    /// `num_32nd_notes` (1/32 notes per quarter) is fixed at the standard `8`.
-    /// Companion to [`broadcast_tempo`](Self::broadcast_tempo); call on every meter
-    /// change.
-    pub fn broadcast_time_signature(&self, time_signature: TimeSignature) {
-        self.queue_system(&MidiEvent::flex_set_time_signature(
-            0,
-            time_signature.numerator as u8,
-            time_signature.denominator as u8,
-            8,
-        ));
-    }
-
-    /// Announce a Function Block's topology as a MIDI 2.0 **UMP Stream Function
-    /// Block Info** message (M2-104 §7.1.1), so a downstream peer learns which
-    /// groups this endpoint spans and in which direction. Takes the same
-    /// [`FunctionBlock`] you configured the endpoint with — no field
-    /// re-destructuring. This is one outbound message of UMP Stream endpoint
-    /// negotiation; the inbound-discovery reply stream is built by
-    /// [`crate::EndpointNegotiator`].
-    pub fn broadcast_function_block(&self, block: &FunctionBlock) {
-        self.queue_system(&MidiEvent::function_block_info(
-            true,
-            block.block_number,
-            block.first_group,
-            block.num_groups,
-            block.direction,
-        ));
-    }
-
-    /// Broadcast the click configuration as a MIDI 2.0 **Flex Data Set Metronome**
-    /// message (M2-104 §7.5). `clocks_per_click` is MIDI clocks per primary click;
-    /// `accents` marks the accented bar subdivisions. Companion to
-    /// [`broadcast_tempo`](Self::broadcast_tempo) / [`broadcast_time_signature`](Self::broadcast_time_signature).
-    pub fn broadcast_metronome(&self, clocks_per_click: u8, accents: BarAccents) {
-        self.queue_system(&MidiEvent::flex_set_metronome(0, clocks_per_click, accents));
-    }
-
-    /// Broadcast an **Endpoint Discovery** request — the probe tutti sends as the
-    /// *discoverer* to learn a peer's capabilities. `request` selects which
-    /// replies to ask for. The peer's reply stream is interpreted by
-    /// [`crate::EndpointNegotiator`] on the answering side.
-    pub fn request_endpoint_discovery(&self, request: EndpointDiscoveryRequest) {
-        self.queue_system(&MidiEvent::endpoint_discovery(1, 1, request));
-    }
-
-    /// Broadcast a MIDI-CI message (M2-101) on `group`. The message is fragmented
-    /// into SysEx7 UMP packets via [`tutti_midi_types::ci::ci_to_sysex7`] and each
-    /// packet is queued as a system event — the outbound half of MIDI-CI
-    /// negotiation. The peer's replies are interpreted by
-    /// [`crate::CiResponder`] / [`crate::CiInitiator`] on the receiving side.
-    pub fn broadcast_ci(&self, group: u8, message: &tutti_midi_types::ci::CiMessage) {
-        let mut packets = Vec::new();
-        tutti_midi_types::ci::ci_to_sysex7(group, message, &mut packets);
-        for packet in &packets {
-            self.queue_system(packet);
         }
     }
 
@@ -483,17 +345,6 @@ impl MidiBus {
         self.senders.is_empty()
     }
 
-    /// Rebuild the broadcast snapshot from the current DashMap contents.
-    /// Called off-RT after every insert/remove. The RT side sees one
-    /// atomic swap of the snapshot.
-    fn rebuild_broadcast(&self) {
-        let snapshot: Box<[MidiSender]> = self
-            .senders
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect();
-        self.broadcast.store(Arc::new(snapshot));
-    }
 }
 
 impl tutti_midi_types::MidiOut for MidiBus {
@@ -505,7 +356,6 @@ impl tutti_midi_types::MidiOut for MidiBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::midi2::{system_common, UmpMessage};
 
     fn note_on(note: u8, vel_u7: u8) -> MidiEvent {
         MidiEvent::note_on(
@@ -557,16 +407,14 @@ mod tests {
     }
 
     #[test]
-    fn bus_note_helpers_reach_the_addressed_unit() {
-        // A caller holding only the bus + a unit id can send notes without
-        // building a MidiEvent or knowing UMP.
+    fn bus_queue_reaches_the_addressed_unit() {
         let bus = MidiBus::new();
         let unit = MidiUnitId::new(1);
         let (s, r) = MidiMailbox::pair(unit);
         bus.insert(s);
 
-        bus.note_on(unit, 0, 60, 100);
-        bus.note_off(unit, 0, 60);
+        bus.queue(unit, &[MidiEvent::note_on_7bit(0, 0, 60, 100)]);
+        bus.queue(unit, &[MidiEvent::note_off(0, 0, 60, 0)]);
 
         let mut buf = [MidiEvent::noop(); 4];
         assert_eq!(r.poll_into(&mut buf), 2);
@@ -645,107 +493,6 @@ mod tests {
         bus.queue(id, &[note_on(60, 100)]);
         let mut buf = [note_on(0, 0); 4];
         assert_eq!(receiver.poll_into(&mut buf), 0);
-    }
-
-    #[test]
-    fn bus_broadcasts_system_events() {
-        let bus = MidiBus::new();
-        let id1 = MidiUnitId::new(1);
-        let id2 = MidiUnitId::new(2);
-        let (s1, r1) = MidiMailbox::pair(id1);
-        let (s2, r2) = MidiMailbox::pair(id2);
-        bus.insert(s1);
-        bus.insert(s2);
-
-        let clock = MidiEvent::timing_clock(0);
-        bus.queue_system(&clock);
-
-        assert!(r1.has_system_events());
-        assert!(r2.has_system_events());
-
-        let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(r1.poll_system(&mut buf), 1);
-        assert!(matches!(
-            UmpMessage::try_from(buf[0].data_words()),
-            Ok(UmpMessage::SystemCommon(
-                system_common::SystemCommon::TimingClock(_)
-            ))
-        ));
-        assert_eq!(r2.poll_system(&mut buf), 1);
-    }
-
-    #[test]
-    fn bus_queue_system_to_targets_one_unit() {
-        let bus = MidiBus::new();
-        let id1 = MidiUnitId::new(1);
-        let id2 = MidiUnitId::new(2);
-        let (s1, r1) = MidiMailbox::pair(id1);
-        let (s2, r2) = MidiMailbox::pair(id2);
-        bus.insert(s1);
-        bus.insert(s2);
-
-        let mut sysex = Vec::new();
-        MidiEvent::sysex7_fragments(0, &[0x7E, 0x7F, 0x09, 0x01], &mut sysex);
-        bus.queue_system_to(id1, &sysex[0]);
-
-        assert!(r1.has_system_events());
-        assert!(!r2.has_system_events());
-    }
-
-    #[test]
-    fn bus_broadcasts_flex_tempo_in_band() {
-        use tutti_midi_types::midi2::flex_data::FlexData;
-        let bus = MidiBus::new();
-        let (s, r) = MidiMailbox::pair(MidiUnitId::new(1));
-        bus.insert(s);
-
-        bus.broadcast_tempo(140.0);
-
-        let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(r.poll_system(&mut buf), 1);
-        let UmpMessage::FlexData(FlexData::SetTempo(_)) =
-            UmpMessage::try_from(buf[0].data_words()).unwrap()
-        else {
-            panic!("expected a Flex Set Tempo broadcast");
-        };
-        // The decoded BPM round-trips through the Flex tempo field.
-        let bpm = tutti_midi_types::ump::flex_tempo_bpm(&buf[0]).expect("is a tempo");
-        assert!((bpm - 140.0).abs() < 0.05);
-    }
-
-    #[test]
-    fn bus_broadcasts_flex_time_signature_and_function_block() {
-        use tutti_midi_types::midi2::flex_data::FlexData;
-        use tutti_midi_types::midi2::ump_stream::UmpStream;
-        use tutti_midi_types::FunctionBlockDirection;
-        let bus = MidiBus::new();
-        let (s, r) = MidiMailbox::pair(MidiUnitId::new(1));
-        bus.insert(s);
-
-        bus.broadcast_time_signature(TimeSignature::new(7, 8));
-        bus.broadcast_function_block(&FunctionBlock {
-            block_number: 2,
-            first_group: 4,
-            num_groups: 1,
-            direction: FunctionBlockDirection::Output,
-        });
-        bus.broadcast_metronome(24, BarAccents::default());
-
-        // All three broadcasts land on the system ring in order.
-        let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(r.poll_system(&mut buf), 3);
-        assert!(matches!(
-            UmpMessage::try_from(buf[0].data_words()).unwrap(),
-            UmpMessage::FlexData(FlexData::SetTimeSignature(_))
-        ));
-        assert!(matches!(
-            UmpMessage::try_from(buf[1].data_words()).unwrap(),
-            UmpMessage::UmpStream(UmpStream::FunctionBlockInfo(_))
-        ));
-        assert!(matches!(
-            UmpMessage::try_from(buf[2].data_words()).unwrap(),
-            UmpMessage::FlexData(FlexData::SetMetronome(_))
-        ));
     }
 
     #[test]

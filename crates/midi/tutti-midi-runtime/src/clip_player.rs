@@ -8,15 +8,15 @@
 //! their `frame_offset` set to the sample-accurate position inside the
 //! block.
 //!
-//! Multiple sources can be merged via [`CompositeMidiSource`] so a
-//! single synth can receive both live preview events (from the
-//! ordinary `MidiBus` registry) and clip-driven events at the same time.
+//! Installing a source on a [`MidiInPort`](crate::MidiInPort) *replaces* its
+//! live receiver, so a synth plays either its clip or live preview events, not
+//! both. Layering the two would be a change to `MidiInPort::poll`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use atomic_float::AtomicF64;
-use tutti_core::transport::Timeline;
+use tutti_core::transport::{BeatWindow, BeatWindowSync, Timeline};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::unit_id::MidiUnitId;
 use tutti_midi_types::{MidiIn, MidiOut};
@@ -134,35 +134,27 @@ impl MidiClipSource {
     ///
     /// Returns `None` when nothing should be emitted this block — the
     /// transport is paused, or the tempo/sample-rate is non-positive.
-    fn sync_to_transport(&self, block_size: usize) -> Option<PollWindow> {
-        if !self.transport.is_rolling() {
-            // Track the beat anyway so a seek-while-paused doesn't
-            // surprise us when playback resumes.
-            self.last_beat
-                .store(self.transport.beat().get(), Ordering::Release);
-            return None;
-        }
+    fn sync_to_transport(&self, block_size: usize) -> Option<BeatWindow> {
+        // `BeatWindow` owns the paused check, the seek epsilon, the tempo guard
+        // and the offset clamp; this method keeps only what is clip-specific —
+        // publishing `last_beat` back to the shared atomic and rewinding the
+        // cursor when the transport jumped backwards.
+        let mut last_beat = self.last_beat.load(Ordering::Acquire);
+        let synced = BeatWindow::from_timeline(
+            self.transport.as_ref(),
+            self.sample_rate,
+            block_size,
+            &mut last_beat,
+        );
+        // `from_timeline` updates `last_beat` even on the paused path, which is
+        // why it is stored before the `?`.
+        self.last_beat.store(last_beat, Ordering::Release);
 
-        let block_start_beat = self.transport.beat().get();
-        let last_beat = self.last_beat.load(Ordering::Acquire);
-        // Detect rewinds / seeks. Tolerate a tiny epsilon so float
-        // jitter at exactly-equal beats doesn't trigger reseeking.
-        if block_start_beat + 1e-9 < last_beat {
-            self.rewind_to(block_start_beat);
+        let (window, sync) = synced?;
+        if sync == BeatWindowSync::Rewound {
+            self.rewind_to(window.start_beat);
         }
-        self.last_beat.store(block_start_beat, Ordering::Release);
-
-        let tempo_bpm = self.transport.tempo().get();
-        if tempo_bpm <= 0.0 || self.sample_rate <= 0.0 {
-            return None;
-        }
-        let beats_per_sample = tempo_bpm / 60.0 / self.sample_rate;
-        Some(PollWindow {
-            start_beat: block_start_beat,
-            end_beat: block_start_beat + (block_size as f64) * beats_per_sample,
-            beats_per_sample,
-            max_offset: (block_size - 1) as u32,
-        })
+        Some(window)
     }
 
     /// Emit events whose beat falls in `window`, stamping each with a
@@ -172,7 +164,7 @@ impl MidiClipSource {
     /// Advances the persisted cursor solely past events actually written to
     /// `out`; if `out` fills up, the remainder reappear on the next poll at
     /// the same beat.
-    fn emit_window(&self, window: &PollWindow, out: &mut [MidiEvent]) -> usize {
+    fn emit_window(&self, window: &BeatWindow, out: &mut [MidiEvent]) -> usize {
         // Skip past anything before the window (cursor may have lagged due to
         // a seek, looping, or a buffer that filled up earlier).
         let mut cursor = self.cursor.load(Ordering::Relaxed) as usize;
@@ -186,9 +178,7 @@ impl MidiClipSource {
             && written < out.len()
         {
             let TimedClipEvent { beat, mut event } = self.events[cursor];
-            let beat_delta = (beat - window.start_beat).max(0.0);
-            let sample_offset = (beat_delta / window.beats_per_sample) as u32;
-            event.frame_offset = sample_offset.min(window.max_offset);
+            event.frame_offset = window.offset_of(beat);
             out[written] = event;
             // Hardware-out tap: forward the same sample-stamped event through the
             // `MidiOut` trait (lock-free, drops if full — benign backpressure),
@@ -203,17 +193,6 @@ impl MidiClipSource {
         self.cursor.store(cursor as u64, Ordering::Release);
         written
     }
-}
-
-/// The beat range an audio block covers, plus the conversion factors needed to
-/// place events inside it. Produced by [`MidiClipSource::sync_to_transport`],
-/// consumed by [`MidiClipSource::emit_window`] — the explicit hand-off between
-/// "what time is it" and "what to emit".
-struct PollWindow {
-    start_beat: f64,
-    end_beat: f64,
-    beats_per_sample: f64,
-    max_offset: u32,
 }
 
 impl MidiIn for MidiClipSource {
@@ -234,52 +213,6 @@ impl MidiIn for MidiClipSource {
             return 0;
         };
         self.emit_window(&window, out)
-    }
-}
-
-/// Fan multiple [`MidiIn`]s into one. Used to merge live preview
-/// events (from `MidiBus` registry) with clip playback for the same
-/// synth. Events are concatenated in source order; the receiving
-/// synth re-sorts by `frame_offset` before processing.
-pub struct CompositeMidiSource {
-    sources: Vec<Box<dyn MidiIn>>,
-}
-
-impl CompositeMidiSource {
-    pub fn new(sources: Vec<Box<dyn MidiIn>>) -> Self {
-        Self { sources }
-    }
-
-    pub fn push(&mut self, source: Box<dyn MidiIn>) {
-        self.sources.push(source);
-    }
-
-    pub fn len(&self) -> usize {
-        self.sources.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.sources.is_empty()
-    }
-}
-
-impl MidiIn for CompositeMidiSource {
-    fn poll_into(
-        &self,
-        unit_id: MidiUnitId,
-        block_start_sample: u64,
-        block_size: usize,
-        out: &mut [MidiEvent],
-    ) -> usize {
-        let mut written = 0;
-        for src in &self.sources {
-            if written >= out.len() {
-                break;
-            }
-            let n = src.poll_into(unit_id, block_start_sample, block_size, &mut out[written..]);
-            written += n;
-        }
-        written
     }
 }
 
@@ -510,36 +443,6 @@ mod tests {
         assert_eq!(source.poll_into(unit, 0, 22050, &mut buf), 1);
     }
 
-    #[test]
-    fn composite_concatenates_outputs() {
-        let unit = MidiUnitId::new(7);
-        let transport = Arc::new(TestTransport::new(120.0));
-
-        let s1 = Box::new(MidiClipSource::new(
-            unit,
-            vec![TimedClipEvent {
-                beat: 0.0,
-                event: note_on(60, 100),
-            }],
-            Arc::clone(&transport) as Arc<dyn Timeline>,
-            44100.0,
-        )) as Box<dyn MidiIn>;
-        let s2 = Box::new(MidiClipSource::new(
-            unit,
-            vec![TimedClipEvent {
-                beat: 0.25,
-                event: note_on(64, 100),
-            }],
-            Arc::clone(&transport) as Arc<dyn Timeline>,
-            44100.0,
-        )) as Box<dyn MidiIn>;
-
-        let comp = CompositeMidiSource::new(vec![s1, s2]);
-        let mut buf = [MidiEvent::noop(); 8];
-        let n = comp.poll_into(unit, 0, 22050, &mut buf);
-        assert_eq!(n, 2);
-    }
-
     // --- isolated-half tests for the poll_into decomposition ----------------
 
     fn one_note_source(transport: &Arc<TestTransport>) -> MidiClipSource {
@@ -612,7 +515,7 @@ mod tests {
 
         // 120 BPM @ 44.1kHz → 22050 samples/beat. Window [0.0, 1.0) covers both.
         let beats_per_sample = 120.0 / 60.0 / 44100.0;
-        let window = PollWindow {
+        let window = BeatWindow {
             start_beat: 0.0,
             end_beat: 1.0,
             beats_per_sample,
@@ -634,7 +537,7 @@ mod tests {
         let transport = Arc::new(TestTransport::new(120.0));
         let source = one_note_source(&transport);
         let beats_per_sample = 120.0 / 60.0 / 44100.0;
-        let window = PollWindow {
+        let window = BeatWindow {
             start_beat: 0.0,
             end_beat: 1.0,
             beats_per_sample,

@@ -229,6 +229,34 @@ pub(crate) const fn ump_word_count(type_nibble: u8) -> usize {
     }
 }
 
+/// Split a packed UMP word stream into its individual messages.
+///
+/// A native-UMP transport (CoreMIDI's `MIDIEventPacket`, a MIDI-2.0 USB packet)
+/// delivers *several* concatenated messages in one buffer, with no separators —
+/// each message's length is implied by its type nibble (§2.1.3). This walks the
+/// stream by that length and yields one [`MidiEvent`] per message.
+///
+/// A trailing run too short for its declared type is dropped: it is a truncated
+/// message, not a decodable one. Every yielded event carries `frame_offset` 0;
+/// the caller stamps timing from its own transport if it needs to.
+pub fn split_ump_stream(words: &[u32]) -> impl Iterator<Item = MidiEvent> + '_ {
+    let mut idx = 0usize;
+    core::iter::from_fn(move || {
+        if idx >= words.len() {
+            return None;
+        }
+        let n = ump_word_count((words[idx] >> 28) as u8);
+        if idx + n > words.len() {
+            // Truncated tail — nothing decodable remains.
+            idx = words.len();
+            return None;
+        }
+        let event = MidiEvent::from_ump(0, &words[idx..idx + n]);
+        idx += n;
+        Some(event)
+    })
+}
+
 // UMP message families — each extends `MidiEvent` in its own module. The MIDI
 // 1.0 wire codec (`from/to_midi1_bytes`) is a `MidiEvent` family too, but it
 // lives in `crate::midi1` alongside the rest of the MIDI-1 boundary.
@@ -287,5 +315,41 @@ mod tests {
         // System messages carry no channel.
         assert_eq!(MidiEvent::timing_clock(0).channel(), None);
         assert_eq!(MidiEvent::noop().channel(), None);
+    }
+
+    #[test]
+    fn split_ump_stream_walks_mixed_word_lengths() {
+        // A native-UMP packet concatenates messages of different lengths with no
+        // separators: 1-word JR Timestamp, 2-word CV2 note-on, 1-word clock.
+        let jr = MidiEvent::jr_timestamp(0, 0x1234);
+        let note = MidiEvent::note_on(0, 3, 60, 0x8000);
+        let clock = MidiEvent::timing_clock(0);
+
+        let mut words = Vec::new();
+        words.extend_from_slice(jr.data_words());
+        words.extend_from_slice(note.data_words());
+        words.extend_from_slice(clock.data_words());
+        assert_eq!(words.len(), 4, "1 + 2 + 1 words");
+
+        let split: Vec<_> = split_ump_stream(&words).collect();
+        assert_eq!(split, vec![jr, note, clock]);
+    }
+
+    #[test]
+    fn split_ump_stream_drops_a_truncated_tail() {
+        // A 2-word CV2 note-on with only its first word present is not decodable.
+        let note = MidiEvent::note_on(0, 0, 60, 0x8000);
+        let words = [note.data_words()[0]];
+        assert_eq!(split_ump_stream(&words).count(), 0);
+
+        // …but a complete message before the truncated tail still comes out.
+        let clock = MidiEvent::timing_clock(0);
+        let words = [clock.data_words()[0], note.data_words()[0]];
+        assert_eq!(split_ump_stream(&words).collect::<Vec<_>>(), vec![clock]);
+    }
+
+    #[test]
+    fn split_ump_stream_is_empty_for_no_words() {
+        assert_eq!(split_ump_stream(&[]).count(), 0);
     }
 }

@@ -2,18 +2,38 @@
 //!
 //! [`MidiSink`] (and, under `mpe`, `MpeReceiver`) components declare which
 //! audio-graph node each MIDI channel feeds. [`midi_routing_sync_system`]
-//! rebuilds the engine's `MidiRoutingTable` whenever those components change and
-//! stages the edit for the Commit phase (it sets `GraphDirty` rather than
-//! committing inline, so the route-table flush coalesces with the fundsp net
-//! flush in `AudioGraph::commit()`).
+//! rebuilds and publishes [`MidiRoutingRes`] whenever those components change.
+//!
+//! The table is *not* part of the audio graph: it maps a MIDI channel to a
+//! destination unit's mailbox, and no fundsp edge is involved. It is owned here,
+//! next to the hardware inputs it serves. Only the inbound device edge reads it
+//! — `MidiProcessor` for hardware in, `PluginMidiOut` for a plugin's MIDI-out
+//! re-entering as if it were a device. Everything already bound to a unit (clip
+//! playback, musical typing, previews) writes to that unit's `MidiInPort`
+//! directly and never consults a route.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use tutti_core::NodeId;
+use tutti_midi_types::MidiRoutingTable;
+
+/// The MIDI routing table: MIDI channel → destination unit mailbox.
+///
+/// Rebuilt from [`MidiSink`] / [`MpeReceiver`] components by
+/// [`midi_routing_sync_system`]. Audio-thread readers hold the
+/// `Arc<ArcSwap<MidiRoutingSnapshot>>` handed out by
+/// [`MidiRoutingTable::snapshot_arc`].
+///
+/// Deliberately not [`Default`]: the table must be the *same* instance whose
+/// snapshot the RT `MidiProcessor` was built with. It only ever arrives via the
+/// engine's `PendingMidi` handoff — a default-initialised one would publish
+/// routes nothing reads, silently dropping all hardware MIDI.
+#[derive(Resource)]
+pub struct MidiRoutingRes(pub MidiRoutingTable);
 
 /// Marks an audio-graph node as a **MIDI sink** — a destination that incoming
-/// MIDI events flow into, for one channel or all. The engine's `MidiRoutingTable`
-/// is rebuilt automatically whenever these components change.
+/// MIDI events flow into, for one channel or all. [`MidiRoutingRes`] is rebuilt
+/// automatically whenever these components change.
 ///
 /// Distinct from `tutti_midi_runtime::MidiReceiver`, which is the lock-free inbox
 /// *half* a node owns; this is the ECS-side *routing declaration* that points
@@ -55,8 +75,7 @@ impl MpeReceiverQueries<'_, '_> {
 }
 
 pub fn midi_routing_sync_system(
-    mut graph: ResMut<tutti_core::graph::AudioGraphRes>,
-    mut dirty: ResMut<tutti_core::graph::GraphDirty>,
+    mut table: ResMut<MidiRoutingRes>,
     changed: Query<&MidiSink, Changed<MidiSink>>,
     all_receivers: Query<&MidiSink>,
     mut removed: RemovedComponents<MidiSink>,
@@ -86,17 +105,11 @@ pub fn midi_routing_sync_system(
         fallback = Some(tutti_midi_types::MidiUnitId::new(mpe_recv.node_id.value()));
     }
 
-    graph.0.midi_route_mut().set_routes(routes, fallback);
-
-    // The staged route-table edits are published by the Commit-phase
-    // `commit_graph` — `AudioGraph::commit()` flushes both the fundsp net
-    // and the MIDI routing snapshot in one step, so coalescing here is
-    // equivalent to committing inline. This system is anchored before the
-    // Commit phase.
-    dirty.0 = true;
+    table.0.set_routes(routes, fallback);
+    table.0.commit();
 }
 
-/// Rebuilds the engine MIDI routing table from [`MidiSink`] components.
+/// Rebuilds the MIDI routing table from [`MidiSink`] components.
 pub struct MidiRoutingPlugin;
 
 impl Plugin for MidiRoutingPlugin {
@@ -105,6 +118,11 @@ impl Plugin for MidiRoutingPlugin {
             Update,
             midi_routing_sync_system
                 .run_if(tutti_core::graph::engine_ready)
+                // The table publishes itself, but stays anchored ahead of the
+                // graph flush so a route and the node it points at still land in
+                // the same frame — the ordering the old `GraphDirty` batching
+                // gave us, now expressed as a schedule constraint rather than a
+                // field on `AudioGraph`.
                 .before(tutti_core::graph::GraphReconcileSystems::Commit),
         );
     }

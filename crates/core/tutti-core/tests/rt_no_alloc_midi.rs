@@ -21,7 +21,7 @@ use parking_lot::Mutex;
 use tutti_core::processor::{AudioProcessor, GraphProcessor, MidiProcessor};
 use tutti_core::{dsp::Net, Transport, TransportClock};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiIn, MidiOut, MidiRoute, MidiRoutingSnapshot, MidiUnitId};
+use tutti_midi_types::{MidiIn, MidiRoute, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
 
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
@@ -70,7 +70,7 @@ struct CountingQueue {
     count: std::sync::atomic::AtomicUsize,
 }
 
-impl MidiOut for CountingQueue {
+impl MidiRouter for CountingQueue {
     fn queue(&self, _unit_id: MidiUnitId, events: &[MidiEvent]) {
         self.count
             .fetch_add(events.len(), std::sync::atomic::Ordering::Relaxed);

@@ -57,16 +57,12 @@ pub struct MidiClipSource {
     /// for an off-RT pump to forward to external MIDI. `None` for the ordinary
     /// case.
     ///
-    /// It is a `dyn MidiOut` — the audio-thread write side of the two MIDI traits,
-    /// whose `queue(&self, …)` is contractually lock-free — so the clip player
-    /// needs no ring/lock machinery of its own. Shared across fundsp's
-    /// clone-on-commit like [`Self::cursor`].
-    ///
-    /// The paired `out_tap_unit` is the [`MidiUnitId`] the tap routes on — the
-    /// *mailbox's* id, distinct from [`Self::target_unit`] (the synth address).
-    /// The tee queues to this id so a [`MidiSender`](crate::MidiSender) tap
-    /// accepts it (its `MidiOut` impl drops mismatched ids).
-    out_tap: Option<(Arc<dyn MidiOut>, MidiUnitId)>,
+    /// It is a `dyn MidiOut` — a terminal sink (typically a
+    /// [`MidiSender`](crate::MidiSender)) whose `queue(&self, …)` is contractually
+    /// lock-free — so the clip player needs no ring/lock machinery of its own.
+    /// Shared across fundsp's clone-on-commit like [`Self::cursor`]. Being a sink,
+    /// it carries its own address; the tee needs no id.
+    out_tap: Option<Arc<dyn MidiOut>>,
 }
 
 impl MidiClipSource {
@@ -95,13 +91,11 @@ impl MidiClipSource {
     }
 
     /// Attach a hardware-out tap: every event this source emits to the synth is
-    /// *also* handed to `tap`, addressed to `tap_unit` (already sample-stamped).
-    /// Use when the parent track routes its clip MIDI out to hardware; the
-    /// `MidiOut` is typically a [`MidiSender`](crate::MidiSender) whose receiver
-    /// an off-RT pump drains, and `tap_unit` is that sender's own id (not this
-    /// source's `target_unit`).
-    pub fn with_out_tap(mut self, tap: Arc<dyn MidiOut>, tap_unit: MidiUnitId) -> Self {
-        self.out_tap = Some((tap, tap_unit));
+    /// *also* handed to `tap` (already sample-stamped). Use when the parent track
+    /// routes its clip MIDI out to hardware; the `MidiOut` is typically a
+    /// [`MidiSender`](crate::MidiSender) whose receiver an off-RT pump drains.
+    pub fn with_out_tap(mut self, tap: Arc<dyn MidiOut>) -> Self {
+        self.out_tap = Some(tap);
         self
     }
 
@@ -180,10 +174,9 @@ impl MidiClipSource {
             event.frame_offset = window.offset_of(beat);
             out[written] = event;
             // Hardware-out tap: forward the same sample-stamped event through the
-            // `MidiOut` trait (lock-free, drops if full — benign backpressure),
-            // addressed to the tap's own mailbox id (not the synth target).
-            if let Some((tap, tap_unit)) = &self.out_tap {
-                tap.queue(*tap_unit, &[event]);
+            // `MidiOut` sink (lock-free, drops if full — benign backpressure).
+            if let Some(tap) = &self.out_tap {
+                tap.queue(&[event]);
             }
             written += 1;
             cursor += 1;
@@ -380,11 +373,9 @@ mod tests {
         let unit = MidiUnitId::new(3);
         let transport = Arc::new(TestTransport::new(120.0));
         // The tap is a plain MidiOut → MidiIn mailbox (the real wiring): the clip
-        // pushes into the sender, an off-RT drain reads the receiver. The mailbox
-        // has its *own* id, distinct from the clip's synth-routing `target_unit`
-        // — the tee addresses the mailbox id, not `target_unit`.
-        let tap_unit = MidiUnitId::new(999);
-        let (sender, receiver) = MidiMailbox::pair(tap_unit);
+        // pushes into the sender, an off-RT drain reads the receiver. The sender is
+        // a terminal sink — the tee pushes at it with no id.
+        let (sender, receiver) = MidiMailbox::pair(MidiUnitId::new(999));
 
         let source = MidiClipSource::new(
             unit,
@@ -401,7 +392,7 @@ mod tests {
             Arc::clone(&transport) as Arc<dyn Timeline>,
             44100.0,
         )
-        .with_out_tap(Arc::new(sender), tap_unit);
+        .with_out_tap(Arc::new(sender));
 
         // Poll one block wide enough to cover both events.
         let mut buf = [MidiEvent::noop(); 4];

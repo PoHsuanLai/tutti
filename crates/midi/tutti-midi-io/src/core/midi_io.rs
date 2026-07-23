@@ -258,16 +258,9 @@ impl MidiIo {
     }
 }
 
-/// A connected hardware output port is a terminal MIDI sink, so it can present
-/// the same push interface as an in-graph synth/plugin inbox: hold a
-/// `MidiSender`, a `MidiBus`, and a `MidiIo` all as `Arc<dyn MidiOut>` and feed
-/// them identically.
-///
-/// The `unit_id` is vacuous here — a hardware port has no [`MidiUnitId`] and
-/// isn't one of many entries in a registry to disambiguate; every event routed
-/// to a terminal port is already destined for it, so there is nothing to filter.
-/// (Contrast `MidiSender`/`MidiBus`, which drop mismatched ids precisely because
-/// they *are* registry entries.)
+/// A connected hardware output port is a terminal MIDI sink, so it presents the
+/// same push interface as an in-graph synth/plugin inbox: hold a `MidiSender` and
+/// a `MidiIo` both as `Arc<dyn MidiOut>` and feed them identically.
 ///
 /// Fidelity is a property of the sink, not the trait: `send` downscales UMP to
 /// MIDI 1.0 on the wire (dropping MIDI-2-only messages), whereas a synth inbox
@@ -278,7 +271,7 @@ impl MidiIo {
 /// onto the output channel; the blocking `midir` syscall runs on the dedicated
 /// output thread, never the caller's.
 impl tutti_midi_types::MidiOut for MidiIo {
-    fn queue(&self, _unit_id: tutti_midi_types::MidiUnitId, events: &[MidiEvent]) {
+    fn queue(&self, events: &[MidiEvent]) {
         for &event in events {
             self.send(event);
         }

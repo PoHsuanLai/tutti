@@ -21,7 +21,7 @@ use crate::protocol::MidiEventVec;
 use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiIn;
-use tutti_midi_types::{MidiOut, MidiRoutingSnapshot, MidiUnitId};
+use tutti_midi_types::{MidiRouter, MidiRoutingSnapshot, MidiUnitId};
 
 const POLL_BUFFER_SIZE: usize = 256;
 
@@ -31,10 +31,10 @@ const POLL_BUFFER_SIZE: usize = 256;
 /// The plugin's MIDI-out re-enters routing exactly like a hardware input: each
 /// emitted event is fanned out through the shared [`MidiRoutingSnapshot`] (keyed
 /// on the event's channel) to whatever destination units the route resolves, and
-/// delivered via the same lock-free [`MidiOut`]. A plugin's output is just
-/// another source.
+/// delivered via the same lock-free [`MidiRouter`] (the fan-out bus). A plugin's
+/// output is just another source.
 struct OutHandle {
-    queue: Arc<dyn MidiOut>,
+    queue: Arc<dyn MidiRouter>,
     routing: Arc<ArcSwap<MidiRoutingSnapshot>>,
 }
 
@@ -121,7 +121,7 @@ impl Midi {
     /// routing. `routing` is the shared snapshot the engine already uses for
     /// hardware input, and `queue` the fan-out bus. Off-RT (call once at wiring
     /// time).
-    pub fn set_out(&self, queue: Arc<dyn MidiOut>, routing: Arc<ArcSwap<MidiRoutingSnapshot>>) {
+    pub fn set_out(&self, queue: Arc<dyn MidiRouter>, routing: Arc<ArcSwap<MidiRoutingSnapshot>>) {
         self.out.store(Some(Arc::new(OutHandle { queue, routing })));
     }
 
@@ -242,7 +242,7 @@ mod tests {
     struct RecordingQueue {
         queued: Mutex<Vec<(MidiUnitId, usize)>>,
     }
-    impl MidiOut for RecordingQueue {
+    impl MidiRouter for RecordingQueue {
         fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) {
             self.queued.lock().unwrap().push((unit_id, events.len()));
         }

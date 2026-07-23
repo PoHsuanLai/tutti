@@ -165,7 +165,7 @@ mod midi_processor {
     use arc_swap::ArcSwap;
     use std::sync::Arc;
     use tutti_midi_types::ump::MidiEvent;
-    use tutti_midi_types::{MidiIn, MidiOut, MidiRoutingSnapshot, MidiUnitId};
+    use tutti_midi_types::{MidiIn, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
     use tutti_types::AudioThreadCell;
 
     /// Per-block outbound clock/timecode generator (e.g. a `ClockMaster`).
@@ -191,13 +191,13 @@ mod midi_processor {
     /// 2. Computes split points at event boundaries
     /// 3. For each segment: routes events to target nodes, then delegates to inner
     ///
-    /// Routes events to a caller-supplied [`MidiOut`] (typically a
-    /// `MidiBus` from `tutti-midi-runtime`, but any queue impl works —
-    /// for example a single `MidiSender`).
+    /// Routes events to a caller-supplied [`MidiRouter`] (typically a
+    /// `MidiBus` from `tutti-midi-runtime`) — it addresses events by unit id,
+    /// which is exactly the router's job.
     pub struct MidiProcessor<P: AudioProcessor> {
         inner: P,
         input: Option<Arc<dyn MidiIn>>,
-        queue: Option<Arc<dyn MidiOut>>,
+        queue: Option<Arc<dyn MidiRouter>>,
         routing: Arc<ArcSwap<MidiRoutingSnapshot>>,
         /// `(frame_offset, event)` collected per buffer, sorted by offset. Fixed
         /// capacity: events past `MIDI_EVENT_BUFFER_CAPACITY` are dropped (never
@@ -232,7 +232,7 @@ mod midi_processor {
             self.input = Some(input);
         }
 
-        pub fn set_queue(&mut self, queue: Arc<dyn MidiOut>) {
+        pub fn set_queue(&mut self, queue: Arc<dyn MidiRouter>) {
             self.queue = Some(queue);
         }
 

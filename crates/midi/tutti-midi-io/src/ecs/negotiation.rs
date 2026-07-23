@@ -22,13 +22,23 @@
 //!   [`InboundEndpointReply`] feeds reply events in, raising [`EndpointDiscovered`]
 //!   once the endpoint assembles.
 //!
-//! **Inbound is a stub seam.** Nothing decodes live SysEx off the hardware input
-//! yet (`core/hardware/input.rs` drops SysEx before it reaches the UMP stream),
-//! so [`InboundCiMessage`] / [`InboundEndpointReply`] have no producer in this
-//! crate today — they're the injection point a future inbound-decode pass (or a
-//! test / loopback) writes into. The negotiators themselves are fully exercised
-//! by the runtime crate's loopback tests; this layer only wires their *outbound*
-//! path to hardware out and surfaces their *results* as ECS messages.
+//! **Inbound arrives from the app layer, not from here.**
+//! [`InboundCiMessage`] / [`InboundEndpointReply`] have no producer *in this
+//! crate*; the live one is the app's hardware drain (dawai's
+//! `input::midi::hardware_route`), which classifies by UMP message type and
+//! feeds these. The chain behind it is real: `core/hardware/input.rs`
+//! reassembles MIDI-1.0 SysEx across driver callbacks and promotes it to UMP
+//! SysEx7, which a `Sysex7Reassembler` + `ci::sysex7_to_ci` turn back into a
+//! typed [`CiMessage`]. That works because MIDI-CI is Universal SysEx by design
+//! (M2-101) — it has to survive a MIDI-1.0 transport, since it's how two devices
+//! discover each other *before* either knows the other speaks MIDI 2.0.
+//! `midi1_wire_sysex_promotes_to_a_typed_ci_message` covers that seam.
+//!
+//! **UMP-Stream inbound is the genuine gap.** That family has no MIDI-1.0
+//! encoding, so it can only arrive over a native-UMP endpoint; midir is a
+//! MIDI-1.0 API, so the `UmpStream` arm never fires from midir hardware. It
+//! needs a native-UMP *input* (the output counterpart exists as
+//! `UmpVirtualSource` on macOS), not a decode fix.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader, MessageWriter};

@@ -195,6 +195,59 @@ mod tests {
         out
     }
 
+    /// The MIDI-1 wire → MIDI-CI seam, end to end.
+    ///
+    /// MIDI-CI (M2-101) is Universal SysEx precisely so it works over a MIDI-1.0
+    /// transport — that's how two devices negotiate *before* either knows the
+    /// other speaks MIDI 2.0. midir is such a transport, so a real CI probe
+    /// arrives here as raw `F0 7E … F7` bytes.
+    ///
+    /// This asserts the whole promotion chain: raw bytes → `accumulate_sysex` →
+    /// UMP SysEx7 fragments → `Sysex7Reassembler` → a typed `CiMessage`. The
+    /// codec's own round-trip tests start from UMP and so can't catch a break at
+    /// the wire edge (a dropped `0xF0`, a mis-sized payload split).
+    #[test]
+    fn midi1_wire_sysex_promotes_to_a_typed_ci_message() {
+        use tutti_midi_runtime::{CiInitiator, Sysex7Reassembler};
+        use tutti_midi_types::ci::{ci_to_sysex7, sysex7_to_ci, DiscoveryData, Muid};
+
+        // A Discovery probe exactly as a peer device would send it.
+        let peer = CiInitiator::new(
+            Muid::from_seed(0x1234),
+            DiscoveryData {
+                manufacturer: [0x00, 0x21, 0x09],
+                family: 0x0042,
+                family_model: 0x0007,
+                software_revision: [1, 2, 3, 4],
+                categories: Default::default(),
+                max_sysex_size: 512,
+            },
+        );
+        let probe = peer.discovery();
+
+        // Encode it, then flatten back to the MIDI-1.0 byte stream a hardware
+        // port actually delivers: F0 <payload> F7.
+        let mut ump = Vec::new();
+        ci_to_sysex7(0, &probe, &mut ump);
+        let mut wire = vec![0xF0];
+        wire.extend_from_slice(&payload_of(&ump));
+        wire.push(0xF7);
+
+        // Drive the driver's reassembly, then the UMP-side reassembler.
+        let mut buf = Vec::new();
+        let fragments = accumulate_sysex(&mut buf, &wire).expect("complete on the F7");
+        let mut reassembler = Sysex7Reassembler::new();
+        let decoded = fragments
+            .iter()
+            .find_map(|ev| reassembler.push(ev).and_then(|run| sysex7_to_ci(&run)));
+
+        assert_eq!(
+            decoded,
+            Some(probe),
+            "a CI probe off the MIDI-1 wire must reach the negotiators intact"
+        );
+    }
+
     #[test]
     fn single_buffer_sysex_fragments_payload() {
         let mut buf = Vec::new();

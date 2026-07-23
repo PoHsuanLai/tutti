@@ -36,8 +36,13 @@ pub use tutti_midi_types::Protocol;
 
 pub use tutti_midi_types::{
     midi2, midly, normalize, MidiEvent, MidiMessage, MidiIn, MidiUnitId,
-    NoteAttribute, NoteId, PerNoteController, UnencodableMessage,
+    NoteAttribute, NoteId, PerNoteController, UmpMessageType, UnencodableMessage,
 };
+
+/// MIDI-CI (M2-101) message codec + SysEx7 wire bridge. Re-exported so the app's
+/// inbound-decode path can turn a reassembled SysEx7 run into a `CiMessage`
+/// (`ci::sysex7_to_ci`) to feed the negotiators.
+pub use tutti_midi_types::ci;
 
 /// Stateful MIDI 1.0 → 2.0 translation (RPN/NRPN reassembly). Feed inbound CV1
 /// events through [`Midi1ToMidi2Translator`] when a hardware source needs
@@ -68,8 +73,8 @@ pub use tutti_midi_types::sync::{
 // app depends on this one umbrella crate rather than reaching into the runtime.
 
 pub use tutti_midi_runtime::{
-    MidiBus, MidiClipSource, MidiEventSlot, MidiReceiver, MidiSender, MidiSnapshot, TimedClipEvent,
-    TimedMidiEvent,
+    MidiBus, MidiClipSource, MidiEventSlot, MidiReceiver, MidiSender, MidiSnapshot,
+    Sysex7Reassembler, TimedClipEvent, TimedMidiEvent,
 };
 
 pub use crossbeam_channel;

@@ -31,6 +31,7 @@ pub mod registry;
 pub mod routing_table;
 pub mod snapshot;
 pub mod snapshot_reader;
+pub mod sysex_reassembler;
 
 pub mod mpe;
 
@@ -48,5 +49,6 @@ pub use registry::{MidiBus, MidiEventSlot, MidiReceiver, MidiSender};
 pub use routing_table::MidiRoutingTable;
 pub use snapshot::{MidiSnapshot, TimedMidiEvent};
 pub use snapshot_reader::MidiSnapshotReader;
+pub use sysex_reassembler::Sysex7Reassembler;
 
 pub use mpe::{MpeMode, MpeProcessor, MpeZone, MpeZoneConfig, PerNoteExpression};

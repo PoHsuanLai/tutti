@@ -57,7 +57,8 @@ pub use traits::{MidiIn, MidiOut};
 pub use ump::{
     Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,
     EndpointCapabilities, EndpointDiscoveryRequest, FlexTextKind, FunctionBlockDirection,
-    FunctionBlocks, JrTimestamps, KeySharpsFlats, MidiEvent, Protocol, Tonic, UmpVersion,
+    FunctionBlocks, JrTimestamps, KeySharpsFlats, MidiEvent, Protocol, Tonic, UmpMessageType,
+    UmpVersion,
 };
 pub use unit_id::MidiUnitId;
 

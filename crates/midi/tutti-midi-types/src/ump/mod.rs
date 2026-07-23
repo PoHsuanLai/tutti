@@ -61,6 +61,61 @@ impl MidiEvent {
         let n = ump_word_count((self.data[0] >> 28) as u8);
         &self.data[..n]
     }
+
+    /// The UMP Message Type — the top nibble of word 0 (MIDI 2.0 spec §2.1.4).
+    /// A cheap classifier for routing a raw event without a full `midi2` decode
+    /// (e.g. "is this a SysEx7 packet I should reassemble?").
+    #[inline]
+    pub fn message_type(&self) -> UmpMessageType {
+        UmpMessageType::from_nibble((self.data[0] >> 28) as u8)
+    }
+
+    /// The UMP group (0–15) — bits 24–27 of word 0. Meaningful for the
+    /// group-scoped message types (channel voice, SysEx, Flex Data); the
+    /// group-less types (Utility, UMP Stream) ignore it.
+    #[inline]
+    pub fn group(&self) -> u8 {
+        ((self.data[0] >> 24) & 0x0F) as u8
+    }
+}
+
+/// A UMP Message Type (the top nibble of word 0), as a named classifier
+/// (MIDI 2.0 spec §2.1.4). Only the types tutti routes on are named; the rest
+/// fold into [`Other`](UmpMessageType::Other) carrying the raw nibble.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UmpMessageType {
+    /// 0x1 — System Real Time / System Common.
+    System,
+    /// 0x2 — MIDI 1.0 Channel Voice.
+    ChannelVoice1,
+    /// 0x3 — Data (64-bit): SysEx7.
+    Sysex7,
+    /// 0x4 — MIDI 2.0 Channel Voice.
+    ChannelVoice2,
+    /// 0x5 — Data (128-bit): SysEx8 / Mixed Data.
+    Sysex8,
+    /// 0xD — Flex Data.
+    FlexData,
+    /// 0xF — UMP Stream.
+    UmpStream,
+    /// Any other message type, carrying its raw nibble.
+    Other(u8),
+}
+
+impl UmpMessageType {
+    #[inline]
+    fn from_nibble(nibble: u8) -> Self {
+        match nibble & 0x0F {
+            0x1 => Self::System,
+            0x2 => Self::ChannelVoice1,
+            0x3 => Self::Sysex7,
+            0x4 => Self::ChannelVoice2,
+            0x5 => Self::Sysex8,
+            0xD => Self::FlexData,
+            0xF => Self::UmpStream,
+            other => Self::Other(other),
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 //! Node parameter types — plain data, always compiled.
 //!
 //! These are the foundational parameter values every leaf audio crate speaks:
-//! [`Volume`], [`Pan`], [`Mute`], [`NodeKind`], [`AudioNode`], [`PluginParam`],
+//! [`Volume`], [`Pan`], [`Mute`], [`AudioNode`], [`PluginParam`],
 //! and the layered [`ModParam`]. Under the `bevy` feature they gain
 //! `#[derive(Component, Reflect)]` and become the ECS parameter components the
 //! reconcile hub reads; without it they stay plain structs a non-Bevy host can
@@ -59,70 +59,6 @@ impl From<AudioNode> for NodeId {
     fn from(node: AudioNode) -> Self {
         node.0
     }
-}
-
-/// Typed dispatch tag for reconcile systems.
-///
-/// The graph erases concrete unit types behind `dyn AudioUnit`; reconcile
-/// systems use this tag to pick the right typed `node_mut::<T>(id)` call
-/// when a parameter component changes. Hosts pick the variant when
-/// spawning the node.
-#[cfg_attr(feature = "bevy", derive(Component, Reflect))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum NodeKind {
-    /// No specialized parameter routing; reconcile systems skip this entity.
-    #[default]
-    Generic,
-    /// `tutti-sampler::SamplerUnit` — gain, speed, etc. routed through it.
-    Sampler,
-    /// SoundFont voice / synth wrapper.
-    SoundFont,
-    /// Hosted audio plugin (VST3 / VST2 / CLAP / AU).
-    Plugin,
-    /// Compressor DSP node.
-    Compressor,
-    /// Gate DSP node.
-    Gate,
-    /// LFO modulator.
-    Lfo,
-    /// Generator (oscillator, noise, etc.).
-    Generator,
-    /// State-variable filter (mono `SvfFilterNode` or stereo
-    /// `StereoSvfFilterNode`). Frequency / Q / gain-db params reconcile
-    /// through the node's atomic param accessors.
-    Filter,
-    /// Parametric EQ band (`EqBandNode`). Frequency / Q / gain reconcile
-    /// the same way.
-    Eq,
-    /// Stereo reverb (e.g. fundsp `reverb_stereo`). Wet / room-size /
-    /// damping params, reconciled via the unit's setters.
-    Reverb,
-    /// Stereo delay (`StereoDelayLineNode` and friends). Time /
-    /// feedback / wet params.
-    Delay,
-    /// Stereo chorus (`ChorusNode`). Rate / depth / feedback / mix.
-    Chorus,
-    /// Stereo flanger (`FlangerNode`). Rate / depth / feedback / mix.
-    Flanger,
-    /// Stereo phaser (`StereoPhaserNode`). Rate / depth / feedback / mix.
-    Phaser,
-    /// Waveshaping distortion (`DistortionNode`). Drive param; shape kind is
-    /// fixed at construction.
-    Distortion,
-    /// Moog-style ladder filter (`StereoLadderFilterNode`). Frequency /
-    /// resonance / drive params.
-    Ladder,
-    /// Lookahead limiter (`LimiterNode`). Threshold / ceiling / release.
-    Limiter,
-    /// Hard clipper (`BrickwallLimiter`). Ceiling only, zero latency.
-    BrickwallLimiter,
-    /// Spatial VBAP panner (`SpatialPannerNode`). Azimuth / elevation params.
-    SpatialPanner,
-    /// FFT convolution reverb (`StereoConvolverNode`). Mix param.
-    ConvolutionReverb,
-    /// Caller-defined; reconcile systems fall through to `set_parameter`-style
-    /// hooks if registered, otherwise skip.
-    Custom,
 }
 
 /// Linear gain component, applied to the node's primary level setter.

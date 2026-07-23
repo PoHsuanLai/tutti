@@ -6,7 +6,7 @@
 //! `Frequency` by filter + LFO, `ThresholdDb`/`Attack`/`Release` by compressor +
 //! gate + limiter. They live in tutti-units (the crate whose reconcile systems
 //! read them) rather than tutti-core, which keeps only the foundational graph
-//! vocabulary (`Volume`/`Pan`/`Mute`/`PluginParam`/`NodeKind`/`AudioNode`).
+//! vocabulary (`Volume`/`Pan`/`Mute`/`PluginParam`/`AudioNode`).
 
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
@@ -77,7 +77,7 @@ pub enum LfoShapeKind {
 pub struct BeatSynced(pub bool);
 
 // =============================================================================
-// Filter / EQ params (NodeKind::Filter, NodeKind::Eq)
+// Filter / EQ params (FilterNode / EqBand)
 // =============================================================================
 
 /// Cutoff / center frequency in Hz. Also used by LFO rate (beat-synced or Hz).
@@ -110,7 +110,7 @@ impl Default for FilterQ {
 pub struct GainDb(pub f32);
 
 // =============================================================================
-// Reverb params (NodeKind::Reverb)
+// Reverb params (ReverbNode)
 // =============================================================================
 
 /// Reverberation time to -60 dB, in seconds. Construction-only for
@@ -151,7 +151,7 @@ impl Default for ReverbDamping {
     }
 }
 
-/// Which fundsp reverb opcode backs a `NodeKind::Reverb` node. Carried as a
+/// Which fundsp reverb opcode backs a reverb node. Carried as a
 /// component because the opcodes have no `set()` — the reverb reconciler reads
 /// it to pick the constructor when crossfade-rebuilding. Mirrors
 /// `dawai_types::ReverbAlgorithm`; the host maps between them.
@@ -179,7 +179,7 @@ impl Default for WetMix {
 }
 
 // =============================================================================
-// Delay params (NodeKind::Delay)
+// Delay params (DelayNode)
 // =============================================================================
 
 /// Delay time in seconds (per channel for stereo delays).
@@ -208,7 +208,7 @@ impl Default for Feedback {
 }
 
 // =============================================================================
-// Chorus / modulation params (NodeKind::Chorus, …)
+// Chorus / modulation params (ChorusNode, …)
 // =============================================================================
 
 /// LFO rate in Hz for chorus / flanger / phaser modulators.
@@ -301,7 +301,7 @@ impl Default for CeilingDb {
 }
 
 // =============================================================================
-// Ladder filter param (NodeKind::Ladder)
+// Ladder filter param (ladder)
 // =============================================================================
 
 /// Drive / saturation amount for the ladder filter. `1.0` is unity (no extra
@@ -318,7 +318,7 @@ impl Default for Drive {
 }
 
 // =============================================================================
-// Spatial panner params (NodeKind::SpatialPanner)
+// Spatial panner params (spatial panner)
 // =============================================================================
 
 /// Azimuth angle in degrees. 0=front, 90=left, -90=right, ±180=rear.

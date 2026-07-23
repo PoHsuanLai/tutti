@@ -7,7 +7,7 @@
 //! (typed node access, unboxed `add`, output isolation, a readable sample rate)
 //! now lives on `Net` itself.
 //!
-//! The parameter *types* ([`AudioNode`], [`NodeKind`], [`Volume`], [`Pan`],
+//! The parameter *types* ([`AudioNode`], [`Volume`], [`Pan`],
 //! [`Mute`], [`PluginParam`], [`ModParam`], [`LayerKey`]) live in [`params`]
 //! and are always compiled as plain structs; under the `bevy` feature they
 //! gain `#[derive(Component, Reflect)]`.
@@ -22,4 +22,4 @@
 // in `params.rs` itself, so they degrade to plain structs without `ecs`.
 pub mod params;
 
-pub use params::{AudioNode, LayerKey, ModParam, Mute, NodeKind, Pan, PluginParam, Volume};
+pub use params::{AudioNode, LayerKey, ModParam, Mute, Pan, PluginParam, Volume};

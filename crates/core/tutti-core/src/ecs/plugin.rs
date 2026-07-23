@@ -24,7 +24,7 @@ pub struct GraphReconcilePlugin;
 
 impl Plugin for GraphReconcilePlugin {
     fn build(&self, app: &mut App) {
-        // Register the core entity-as-node reflectable types (NodeKind, scalar
+        // Register the core entity-as-node reflectable types (scalar
         // params, construction data). Leaf authoring markers register themselves
         // in their own subsystem plugins. Idempotent.
         register_core_node_types(app);
@@ -72,7 +72,7 @@ impl Plugin for GraphReconcilePlugin {
     }
 }
 
-/// Register the core entity-as-node reflectable types: `NodeKind` + the
+/// Register the core entity-as-node reflectable types: the
 /// foundational graph params (`Volume`/`Pan`/`Mute`/`PluginParam`/`ModParam`).
 ///
 /// The DSP param pool + node markers live in tutti-units (registered by
@@ -81,8 +81,7 @@ impl Plugin for GraphReconcilePlugin {
 pub fn register_core_node_types(app: &mut App) {
     use crate::graph::*;
 
-    app.register_type::<NodeKind>()
-        .register_type::<Volume>()
+    app.register_type::<Volume>()
         .register_type::<Pan>()
         .register_type::<Mute>()
         .register_type::<PluginParam>()

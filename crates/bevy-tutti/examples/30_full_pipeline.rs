@@ -33,7 +33,7 @@ use bevy_tutti::TuttiPlugin;
 use tutti_core::dsp::sine_hz;
 use tutti_core::ecs::{crossfade_audio_node, MeteringRes, SpawnAudioNode, TransportRes};
 use tutti_core::MotionEvent;
-use tutti_core::{AudioNode, NodeKind, Volume};
+use tutti_core::{AudioNode, Volume};
 use tutti_sampler::PendingSamplerLoad;
 use tutti_sampler::{SamplerLooping, SamplerSpeed};
 use tutti_units::automation::{AutomationEnvelope, AutomationPoint, CurveType, LiveAutomationLane};
@@ -76,7 +76,7 @@ fn spawn_demo(mut commands: Commands, transport: Res<TransportRes>) {
     // shape. A real example would use SamplerUnit + a wave handle via
     // PendingSamplerLoad.
     let target = commands
-        .spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator)
+        .spawn_audio_node(sine_hz::<f32>(440.0))
         .insert((
             Volume(0.5),
             SamplerSpeed(1.0),
@@ -99,7 +99,7 @@ fn spawn_demo(mut commands: Commands, transport: Res<TransportRes>) {
     let lane: LiveAutomationLane<f32> = LiveAutomationLane::new(envelope);
 
     commands
-        .spawn_audio_node(lane, NodeKind::Generator)
+        .spawn_audio_node(lane)
         .insert((
             AutomationLaneNode,
             AutomationDrivesParam {

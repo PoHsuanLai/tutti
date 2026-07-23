@@ -26,7 +26,7 @@ use tutti_core::ecs::GraphReconcileSystems;
 // backend is attached (the setting is enqueued to the audio thread) — the
 // RT-correct param path. The destination unit's `AudioUnit::set` decodes the
 // `UnitParam` and stores its atomic; a unit silently ignores params it does
-// not own, so no `NodeKind` dispatch or concrete-type downcast is needed here.
+// not own, so no node-type dispatch or concrete-type downcast is needed here.
 //
 // `GainDb` is intentionally polymorphic: a filter's `set` treats it as EQ
 // gain, a compressor's as make-up gain — each unit owns the interpretation.

@@ -7,14 +7,14 @@
 //!
 //! What this demo proves:
 //!
-//! 1. A graph node is owned by a Bevy entity (`AudioNode(NodeId)` + `NodeKind`).
+//! 1. A graph node is owned by a Bevy entity (`AudioNode(NodeId)`).
 //! 2. Mutating an entity's `Volume` triggers reconciliation automatically.
 //! 3. Despawning the entity removes the underlying graph node + commits.
 //!
 //! The bare oscillator used here (`sine_hz`) doesn't expose a `set_gain`
 //! setter at the AudioUnit level, so the `Volume` change is logged rather
 //! than physically attenuating the output. To attenuate audio, swap the
-//! `NodeKind::Generator` for `NodeKind::Sampler` and use a `SamplerUnit`
+//! the `sine_hz` generator for a `SamplerUnit` (+ its `SamplerNode` marker)
 //! source; the existing `reconcile_params` Sampler arm will route the
 //! gain change through `SamplerUnit::set_gain`.
 //!
@@ -36,7 +36,7 @@ use bevy_tutti::TuttiPlugin;
 use tutti_core::dsp::sine_hz;
 use tutti_core::ecs::{AudioGraphRes, MeteringRes, SpawnAudioNode};
 use tutti_core::MotionEvent;
-use tutti_core::{AudioNode, NodeKind, Volume};
+use tutti_core::{AudioNode, Volume};
 
 fn main() {
     App::new()
@@ -57,7 +57,7 @@ fn start_transport(transport: Res<tutti_core::ecs::TransportRes>) {
 
 fn spawn_sine(mut commands: Commands) {
     let entity = commands
-        .spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator)
+        .spawn_audio_node(sine_hz::<f32>(440.0))
         .insert(Volume(1.0))
         .id();
 

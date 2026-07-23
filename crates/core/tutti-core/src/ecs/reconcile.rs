@@ -3,7 +3,7 @@
 //! See [`crate::graph`] for the component types. This module provides:
 //!
 //! - [`SpawnAudioNode`] — `Commands` extension to atomically `graph.add(unit)`
-//!   and attach `AudioNode` + `NodeKind` to a fresh entity.
+//!   and attach `AudioNode` to a fresh entity.
 //! - [`reconcile_node_despawn`] — an `On<Remove, AudioNode>` observer that
 //!   removes the underlying graph node when its `AudioNode` is removed.
 //! - [`commit_graph`] — `graph.commit()` once per frame iff any reconcile
@@ -22,7 +22,7 @@ use bevy_ecs::system::EntityCommands;
 
 use crate::dsp::AudioUnit;
 use crate::ecs::AudioGraphRes;
-use crate::graph::{AudioNode, NodeKind};
+use crate::graph::AudioNode;
 
 /// System-set ordering anchor for the reconcile pipeline.
 ///
@@ -83,7 +83,7 @@ pub fn engine_ready(graph: Option<Res<AudioGraphRes>>) -> bool {
 pub struct GraphDirty(pub bool);
 
 /// `Commands` extension that adds a unit to the graph and spawns an entity
-/// with `AudioNode(id)` + `NodeKind` attached.
+/// with `AudioNode(id)` attached.
 ///
 /// The graph mutation is queued as a deferred command and applies at the
 /// next command-buffer flush — the returned `EntityCommands` lets the
@@ -98,19 +98,23 @@ pub struct GraphDirty(pub bool);
 /// use crate::core::dsp::sine_hz;
 ///
 /// fn setup(mut commands: Commands) {
-///     commands.spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator)
+///     commands.spawn_audio_node(sine_hz::<f32>(440.0))
 ///             .insert(Volume(0.5));
 /// }
 /// ```
+///
+/// The entity is bound to the node via [`AudioNode`] only. A host that needs to
+/// distinguish node types (for a type-specific reconciler) attaches its own
+/// marker component alongside — e.g. `.insert(SamplerNode)`.
 pub trait SpawnAudioNode {
-    /// Add `unit` to the graph and spawn an entity bound to it.
-    fn spawn_audio_node<U>(&mut self, unit: U, kind: NodeKind) -> EntityCommands<'_>
+    /// Add `unit` to the graph and spawn an entity bound to it via [`AudioNode`].
+    fn spawn_audio_node<U>(&mut self, unit: U) -> EntityCommands<'_>
     where
         U: AudioUnit + 'static;
 }
 
 impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
-    fn spawn_audio_node<U>(&mut self, unit: U, kind: NodeKind) -> EntityCommands<'_>
+    fn spawn_audio_node<U>(&mut self, unit: U) -> EntityCommands<'_>
     where
         U: AudioUnit + 'static,
     {
@@ -132,7 +136,7 @@ impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
                 dirty.0 = true;
             }
             if let Ok(mut e) = world.get_entity_mut(entity) {
-                e.insert((AudioNode(id), kind));
+                e.insert(AudioNode(id));
             }
         });
         self.entity(entity)
@@ -306,15 +310,16 @@ mod tests {
         let mut app = test_app();
         let mut commands_q = app.world_mut().commands();
         commands_q
-            .spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator)
+            .spawn_audio_node(sine_hz::<f32>(440.0))
             .insert(Volume(0.5));
         app.update();
 
-        let mut q = app.world_mut().query::<(&AudioNode, &NodeKind, &Volume)>();
+        // The entity is bound to the graph via `AudioNode`, keeps its chained
+        // `Volume` insert, and the underlying node is in the graph.
+        let mut q = app.world_mut().query::<(&AudioNode, &Volume)>();
         let mut count = 0;
-        for (node, kind, vol) in q.iter(app.world()) {
+        for (node, vol) in q.iter(app.world()) {
             count += 1;
-            assert_eq!(*kind, NodeKind::Generator);
             assert_eq!(vol.0, 0.5);
             assert!(app.world().resource::<AudioGraphRes>().0.contains(node.0));
         }
@@ -326,7 +331,7 @@ mod tests {
         let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator)
+            c.spawn_audio_node(sine_hz::<f32>(440.0))
                 .id()
         };
         app.update();
@@ -358,7 +363,7 @@ mod tests {
         // the spawn command flushed).
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator)
+            c.spawn_audio_node(sine_hz::<f32>(440.0))
                 .id()
         };
         app.update();
@@ -401,7 +406,7 @@ mod tests {
     #[test]
     fn sampler_volume_change_writes_through() {
         // Only verifies the dispatch path: a Changed<Volume> on a
-        // NodeKind::Sampler entity sets the dirty flag. Real sampler
+        // sampler-like entity sets the dirty flag. Real sampler
         // construction needs an asset, which is beyond a unit test here.
         // The dispatch arm itself is covered by the example.
     }
@@ -411,7 +416,7 @@ mod tests {
         let mut app = test_app();
         let entity = {
             let mut c = app.world_mut().commands();
-            c.spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator)
+            c.spawn_audio_node(sine_hz::<f32>(440.0))
                 .id()
         };
         app.update();

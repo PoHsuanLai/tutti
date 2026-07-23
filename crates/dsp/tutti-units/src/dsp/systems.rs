@@ -110,9 +110,7 @@ pub fn spawn_lfo_nodes(
             graph.0.add(lfo)
         };
         dirty.0 = true;
-        commands
-            .entity(entity)
-            .insert((AudioNode(node_id), LfoNodeMarker::KIND));
+        commands.entity(entity).insert(AudioNode(node_id));
         bevy_log::info!("LFO added (entity {entity:?}, beat_synced={synced}, node {node_id:?})");
     }
 }
@@ -125,7 +123,6 @@ mod marker_spawn_tests {
     use bevy_app::{App, Update};
     use tutti_core::dsp::Net;
     use tutti_core::ecs::AudioGraphRes;
-    use tutti_core::graph::NodeKind;
     use tutti_core::ecs::{commit_graph, reconcile_node_despawn, GraphReconcileSystems};
 
     fn bare_graph(channels: usize) -> Net {
@@ -162,7 +159,7 @@ mod marker_spawn_tests {
 
     /// Spawning a bare `FilterNode` marker:
     /// - `#[require]` fills `Frequency` / `FilterQ` / `GainDb` with defaults,
-    /// - the spawn system inserts `AudioNode` + `NodeKind::Filter`,
+    /// - the spawn system inserts `AudioNode` (the `FilterNode` marker stays),
     /// - an overridden param (FilterQ) survives all the way into the built unit.
     #[test]
     fn filter_marker_requires_params_and_builds_unit() {
@@ -185,10 +182,13 @@ mod marker_spawn_tests {
         let q = world.get::<FilterQ>(entity).expect("FilterQ present");
         assert_eq!(q.0, 2.0, "overridden FilterQ survives");
 
-        // AudioNode + NodeKind inserted together (marker stays in sync).
+        // AudioNode inserted; the FilterNode marker (the node-type identity)
+        // stays on the entity.
         let node = world.get::<AudioNode>(entity).expect("AudioNode inserted");
-        let kind = world.get::<NodeKind>(entity).expect("NodeKind inserted");
-        assert_eq!(*kind, NodeKind::Filter);
+        assert!(
+            world.get::<FilterNode>(entity).is_some(),
+            "FilterNode marker present"
+        );
 
         // The overridden Q reached the actual built unit (no first-frame drift).
         let graph = &world.resource::<tutti_core::ecs::AudioGraphRes>().0;

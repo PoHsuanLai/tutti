@@ -9,7 +9,7 @@ use bevy_asset::{AssetServer, Assets, Handle};
 use bevy_ecs::prelude::*;
 
 use crate::StereoConvolverNode;
-use tutti_core::graph::{AudioNode, NodeKind};
+use tutti_core::graph::AudioNode;
 use tutti_core::WaveAsset;
 
 use tutti_core::ecs::AudioGraphRes;
@@ -54,7 +54,7 @@ pub fn start_convolver_loads(
 /// Promotes [`PendingConvolverLoad`] entities whose IR asset has finished
 /// loading. Extracts samples from the `Wave`, builds a
 /// `StereoConvolverNode`, adds it to the graph, and replaces the pending
-/// component with `(AudioNode, NodeKind::ConvolutionReverb, WetMix)`.
+/// component with `(ConvolutionReverbNode, AudioNode, WetMix)`.
 pub fn promote_pending_convolvers(
     mut commands: Commands,
     audio_assets: Res<Assets<WaveAsset>>,
@@ -90,7 +90,7 @@ pub fn promote_pending_convolvers(
         let id = graph.0.add(node);
         dirty.0 = true;
 
-        // `ConvolutionReverbNode` B7 marker rides alongside the NodeKind so the
+        // The `ConvolutionReverbNode` marker identifies the node so the
         // convolver param reconciler can filter on `With<ConvolutionReverbNode>`.
         commands
             .entity(entity)
@@ -98,7 +98,6 @@ pub fn promote_pending_convolvers(
             .insert((
                 crate::node_markers::ConvolutionReverbNode,
                 AudioNode(id),
-                NodeKind::ConvolutionReverb,
                 crate::dsp_params::WetMix(load.mix),
             ));
     }

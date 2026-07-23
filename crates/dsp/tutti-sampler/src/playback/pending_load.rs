@@ -12,7 +12,7 @@
 //! together with a [`Handle<WaveAsset>`](bevy_asset::Handle) and the
 //! sampler settings; once the asset finishes loading, the
 //! [`promote_pending_samplers`] system swaps the pending component for
-//! `AudioNode(id)` + [`NodeKind::Sampler`] + the typed parameter
+//! `AudioNode(id)` + `SamplerNode` + the typed parameter
 //! components, just as if you had called `commands.spawn_audio_node`
 //! synchronously with the wave on hand.
 //!
@@ -40,7 +40,7 @@ use bevy_tasks::{AsyncComputeTaskPool, Task};
 
 use bevy_tasks::{block_on, futures_lite::future};
 use tutti_core::ecs::{AudioGraphRes, GraphDirty};
-use tutti_core::graph::{AudioNode, NodeKind, Volume};
+use tutti_core::graph::{AudioNode, Volume};
 
 use super::node::{SamplerLooping, SamplerNode, SamplerSpeed};
 use tutti_core::{Linear, Ratio, SamplePosition, Wave, WaveAsset};
@@ -62,7 +62,7 @@ type WaveLoad = Result<(Arc<Wave>, PeakData), String>;
 /// Insert on a new entity to defer sampler creation until the wave is
 /// available. Once the asset resolves, [`promote_pending_samplers`]
 /// constructs the unit, calls `graph.add(...)`, and replaces this
-/// component with `(AudioNode(id), NodeKind::Sampler, Volume(gain),
+/// component with `(SamplerNode, AudioNode(id), Volume(gain),
 /// SamplerSpeed(speed), SamplerLooping(looping))`.
 ///
 /// Hosts are free to attach additional components on the same entity
@@ -205,7 +205,7 @@ pub fn poll_wave_imports(
 
 /// Promotes [`PendingSamplerLoad`] entities whose asset has finished
 /// loading into full entity-as-node form: builds a `SamplerUnit`, adds
-/// it to the graph, and inserts `(AudioNode, NodeKind::Sampler, Volume,
+/// it to the graph, and inserts `(SamplerNode, AudioNode, Volume,
 /// SamplerSpeed, SamplerLooping)`. Removes [`PendingSamplerLoad`].
 ///
 /// Entities whose handle is still loading are left alone for the next
@@ -246,15 +246,14 @@ pub fn promote_pending_samplers(
         let id = graph.0.add(unit);
         dirty.0 = true;
 
-        // The `SamplerNode` B7 marker rides alongside `NodeKind::Sampler` so
-        // the kind-matching reconcilers can filter on `With<SamplerNode>`.
+        // The `SamplerNode` marker identifies this node so the sampler
+        // reconcilers can filter on `With<SamplerNode>`.
         commands
             .entity(entity)
             .remove::<PendingSamplerLoad>()
             .insert((
                 SamplerNode,
                 AudioNode(id),
-                NodeKind::Sampler,
                 Volume(pending_load.gain.get()),
                 SamplerSpeed(pending_load.speed.get()),
                 SamplerLooping(pending_load.looping),

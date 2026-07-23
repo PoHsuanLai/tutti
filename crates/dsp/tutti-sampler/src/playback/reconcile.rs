@@ -9,7 +9,7 @@
 use bevy_ecs::prelude::*;
 
 use tutti_core::ecs::{AudioGraphRes, GraphDirty, NodeParamEpoch};
-use tutti_core::graph::{AudioNode, Mute, NodeKind, Volume};
+use tutti_core::graph::{AudioNode, Mute, Volume};
 
 use super::node::{SamplerLooping, SamplerNode, SamplerSpeed};
 
@@ -18,21 +18,18 @@ use crate::SamplerUnit;
 /// Sampler volume write-through.
 ///
 /// Mirrors the generic `reconcile_params` skeleton in tutti-core, layering the
-/// `NodeKind::Sampler` arm that core deliberately omits (it can't reference
-/// `SamplerUnit`). A `Changed<Volume>`/`Changed<Mute>` on a sampler entity sets
-/// the unit gain and marks the graph dirty.
-type ChangedSamplerVolume<'w> = (&'w AudioNode, &'w NodeKind, &'w Volume, Option<&'w Mute>);
-type ChangedSamplerVolumeFilter = Or<(Changed<Volume>, Changed<Mute>)>;
+/// sampler-specific write that core deliberately omits (it can't reference
+/// `SamplerUnit`). A `Changed<Volume>`/`Changed<Mute>` on a `SamplerNode` entity
+/// sets the unit gain and marks the graph dirty.
+type ChangedSamplerVolume<'w> = (&'w AudioNode, &'w Volume, Option<&'w Mute>);
+type ChangedSamplerVolumeFilter = (With<SamplerNode>, Or<(Changed<Volume>, Changed<Mute>)>);
 
 pub fn reconcile_sampler_volume(
     mut graph: ResMut<AudioGraphRes>,
     changed: Query<ChangedSamplerVolume, ChangedSamplerVolumeFilter>,
     mut dirty: ResMut<GraphDirty>,
 ) {
-    for (node, kind, volume, mute) in changed.iter() {
-        if *kind != NodeKind::Sampler {
-            continue;
-        }
+    for (node, volume, mute) in changed.iter() {
         let muted = mute.map(|m| m.0).unwrap_or(false);
         let target = if muted { 0.0 } else { volume.0 };
         if let Some(unit) = graph.0.node_as_mut::<SamplerUnit>(node.0) {
@@ -143,12 +140,12 @@ mod tests {
 
         let entity = {
             let mut c = app.world_mut().commands();
-            // `spawn_audio_node` attaches only `AudioNode` + `NodeKind`; the
-            // `SamplerNode` authoring marker must be inserted alongside, exactly
-            // as every production sampler spawn path does (e.g.
-            // `promote_pending_samplers`). `reconcile_sampler_params` filters on
-            // `With<SamplerNode>`, so without it the reconcile is skipped.
-            c.spawn_audio_node(unit, NodeKind::Sampler)
+            // `spawn_audio_node` attaches only `AudioNode`; the `SamplerNode`
+            // authoring marker must be inserted alongside, exactly as every
+            // production sampler spawn path does (e.g. `promote_pending_samplers`).
+            // `reconcile_sampler_params` filters on `With<SamplerNode>`, so
+            // without it the reconcile is skipped.
+            c.spawn_audio_node(unit)
                 .insert((SamplerNode, SamplerSpeed(1.0), SamplerLooping(false)))
                 .id()
         };

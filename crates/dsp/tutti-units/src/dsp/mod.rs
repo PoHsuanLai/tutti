@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! AudioNode(id)        — wraps the tutti NodeId
-//! NodeKind::*          — dispatch tag for parameter reconcilers
+//! <marker>             — node-type identity (FilterNode, DelayNode, …)
 //! <typed param components> — Frequency / FilterQ / DelayTime / …
 //! ```
 
@@ -38,7 +38,7 @@ impl Plugin for TuttiDspPlugin {
 
         // Register the DSP param pool + authoring markers (both owned by this
         // crate now). The core graph plugin registers only the foundational
-        // params (`Volume`/`Pan`/`Mute`/`NodeKind`).
+        // params (`Volume`/`Pan`/`Mute`).
         crate::dsp_params::register_param_types(app);
         crate::node_markers::register_node_markers(app);
 

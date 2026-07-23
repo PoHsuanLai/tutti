@@ -2,14 +2,13 @@
 //! sampler-specific param components.
 //!
 //! These live in tutti-sampler (next to the playback reconcile that reads them
-//! via `With<SamplerNode>` on `Changed<SamplerSpeed>`), not in tutti-core. The
-//! marker's `KIND` ties into the core `NodeKind` dispatch enum; `Volume` (the
-//! shared level param) stays in tutti-core.
+//! via `With<SamplerNode>` on `Changed<SamplerSpeed>`), not in tutti-core.
+//! `Volume` (the shared level param) stays in tutti-core.
 
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use tutti_core::graph::{NodeKind, Volume};
+use tutti_core::graph::Volume;
 
 /// Sampler playback speed multiplier. `1.0` is normal speed, `2.0` is
 /// double-speed (one octave up for a wavetable, twice as fast for a
@@ -36,14 +35,9 @@ impl Default for SamplerSpeed {
 pub struct SamplerLooping(pub bool);
 
 /// Authoring marker for a sample-playback node. `#[require]`s the sampler
-/// params (with `Volume` from tutti-core); the spawn path inserts
-/// `(SamplerNode, NodeKind::Sampler)` so the kind-matching reconcilers can
-/// filter on `With<SamplerNode>`.
+/// params (with `Volume` from tutti-core); the spawn path inserts `SamplerNode`
+/// so the sampler reconcilers can filter on `With<SamplerNode>`.
 #[derive(Component, Reflect, Default, Clone, Copy, Debug)]
 #[reflect(Component, Default)]
 #[require(Volume, SamplerSpeed, SamplerLooping)]
 pub struct SamplerNode;
-
-impl SamplerNode {
-    pub const KIND: NodeKind = NodeKind::Sampler;
-}

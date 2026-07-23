@@ -143,7 +143,7 @@ pub mod node_id;
 // (the RT buffer-splitting processor), exported from `processor`.
 
 pub mod graph;
-pub use graph::{AudioNode, LayerKey, ModParam, Mute, NodeKind, Pan, PluginParam, Volume};
+pub use graph::{AudioNode, LayerKey, ModParam, Mute, Pan, PluginParam, Volume};
 
 // The Bevy ECS integration layer — the reconcile hub, graph resources, and the
 // per-subsystem Bevy wrappers, all gathered under one `#[cfg(feature = "bevy")]`

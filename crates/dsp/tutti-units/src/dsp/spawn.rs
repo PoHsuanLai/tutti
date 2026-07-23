@@ -15,7 +15,7 @@
 //! [`spawn_dsp_node`] runs (in [`GraphReconcileSystems::Spawn`]) every value
 //! the unit needs is on the entity. The system reads them through the shared
 //! [`SpawnParams`] superset query, builds the unit via [`DspNode::build`],
-//! `push`es it, and attaches `(AudioNode(id), T::KIND)`.
+//! `push`es it, and attaches `AudioNode(id)` (the marker is already on the entity).
 //!
 //! Because the unit is built from the *same* components `#[require]` defaulted,
 //! the first-frame [`reconcile_unit_params`](crate::reconcile::reconcile_unit_params)
@@ -34,7 +34,7 @@ use crate::dsp_params::{
     ReverbTime, StereoChannels, ThresholdDb, WetMix,
 };
 use tutti_core::dsp::AudioUnit;
-use tutti_core::graph::{AudioNode, NodeKind};
+use tutti_core::graph::AudioNode;
 
 use tutti_core::ecs::AudioGraphRes;
 use tutti_core::ecs::GraphDirty;
@@ -74,20 +74,17 @@ pub struct SpawnParams {
 
 /// A DSP node type that materialises generically from a bare authoring marker.
 ///
-/// `KIND` is the by-value dispatch tag inserted alongside `AudioNode` (mirrors
-/// the marker's own `KIND` const). `build` constructs the unit from the
-/// entity's param components.
+/// The marker `T` itself *is* the node-type identity (a reconciler filters on
+/// `With<T>`); no separate dispatch tag is attached. `build` constructs the unit
+/// from the entity's param components.
 pub trait DspNode: Component + Default {
-    /// Dispatch tag attached with `AudioNode`. Mirrors `Self::KIND` on the
-    /// tutti-core marker.
-    const KIND: NodeKind;
-
     /// Build the concrete unit from the entity's (defaulted) param components.
     fn build(p: &SpawnParamsItem<'_, '_>) -> Box<dyn AudioUnit>;
 }
 
 /// Generic spawn system: for each entity that just gained marker `T` and has no
-/// `AudioNode` yet, build the unit and attach `(AudioNode(id), T::KIND)`.
+/// `AudioNode` yet, build the unit and attach `AudioNode(id)` (the marker `T` is
+/// already on the entity — that's what `Added<T>` matched).
 ///
 /// Steady-state-safe: the `Without<AudioNode>` filter (not `Added` alone) means
 /// an entity is still materialised next frame if the graph resource was briefly
@@ -102,10 +99,11 @@ pub fn spawn_dsp_node<T: DspNode>(
         let unit = T::build(&params);
         let node_id = graph.0.push(unit);
         dirty.0 = true;
-        commands
-            .entity(entity)
-            .insert((AudioNode(node_id), T::KIND));
-        bevy_log::debug!("{:?} added (entity {entity:?}, node {node_id:?})", T::KIND);
+        commands.entity(entity).insert(AudioNode(node_id));
+        bevy_log::debug!(
+            "{} added (entity {entity:?}, node {node_id:?})",
+            std::any::type_name::<T>()
+        );
     }
 }
 
@@ -143,7 +141,6 @@ use crate::node_markers::{
 };
 
 impl DspNode for CompressorNode {
-    const KIND: NodeKind = NodeKind::Compressor;
     fn build(p: &SpawnParamsItem<'_, '_>) -> Box<dyn AudioUnit> {
         let thr = p.threshold.map_or(ThresholdDb::default().0, |c| c.0);
         let ratio = p.ratio.map_or(CompressorRatio::default().0, |c| c.0);
@@ -162,7 +159,6 @@ impl DspNode for CompressorNode {
 }
 
 impl DspNode for GateNode {
-    const KIND: NodeKind = NodeKind::Gate;
     fn build(p: &SpawnParamsItem<'_, '_>) -> Box<dyn AudioUnit> {
         let thr = p.threshold.map_or(ThresholdDb::default().0, |c| c.0);
         let attack = p.attack.map_or(Attack::default().0, |c| c.0);
@@ -180,7 +176,6 @@ impl DspNode for GateNode {
 }
 
 impl DspNode for FilterNode {
-    const KIND: NodeKind = NodeKind::Filter;
     fn build(p: &SpawnParamsItem<'_, '_>) -> Box<dyn AudioUnit> {
         let freq = p.frequency.map_or(Frequency::default().0, |c| c.0);
         let q = p.filter_q.map_or(FilterQ::default().0, |c| c.0);
@@ -195,7 +190,6 @@ impl DspNode for FilterNode {
 }
 
 impl DspNode for ReverbNode {
-    const KIND: NodeKind = NodeKind::Reverb;
     fn build(p: &SpawnParamsItem<'_, '_>) -> Box<dyn AudioUnit> {
         let room = p.reverb_room.map_or(ReverbRoomSize::default().0, |c| c.0);
         let damp = p.reverb_damp.map_or(ReverbDamping::default().0, |c| c.0);
@@ -212,7 +206,6 @@ impl DspNode for ReverbNode {
 }
 
 impl DspNode for DelayNode {
-    const KIND: NodeKind = NodeKind::Delay;
     fn build(p: &SpawnParamsItem<'_, '_>) -> Box<dyn AudioUnit> {
         let time = p.delay_time.map_or(DelayTime::default().0, |c| c.0);
         let feedback = p.feedback.map_or(Feedback::default().0, |c| c.0);
@@ -225,7 +218,6 @@ impl DspNode for DelayNode {
 }
 
 impl DspNode for ChorusNode {
-    const KIND: NodeKind = NodeKind::Chorus;
     fn build(p: &SpawnParamsItem<'_, '_>) -> Box<dyn AudioUnit> {
         let rate = p.mod_rate.map_or(ModRate::default().0, |c| c.0);
         let depth = p.mod_depth.map_or(ModDepth::default().0, |c| c.0);

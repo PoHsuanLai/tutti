@@ -43,7 +43,8 @@
 //!
 //! ```rust,ignore
 //! fn control_audio(transport: Res<TransportRes>, mut graph: ResMut<AudioGraphRes>) {
-//!     transport.tempo(128.0).play();
+//!     transport.settings.set_tempo(128.0);
+//!     transport.motion.send(MotionEvent::Play);
 //!     let id = graph.0.add(tutti_core::dsp::sine_hz(440.0));
 //!     graph.0.pipe_output(id);
 //!     graph.0.commit();

@@ -1,6 +1,7 @@
 //! Transport state machine.
 
-use super::position::{LoopRange, MusicalPosition};
+use super::motion::MotionEvent;
+use super::position::MusicalPosition;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MotionState {
@@ -11,6 +12,30 @@ pub enum MotionState {
     Rewind,
     DeclickToStop,
     DeclickToLocate,
+}
+
+impl MotionState {
+    pub(crate) fn to_u8(self) -> u8 {
+        match self {
+            Self::Stopped => 0,
+            Self::Rolling => 1,
+            Self::FastForward => 2,
+            Self::Rewind => 3,
+            Self::DeclickToStop => 4,
+            Self::DeclickToLocate => 5,
+        }
+    }
+
+    pub(crate) fn from_u8(val: u8) -> Self {
+        match val {
+            1 => Self::Rolling,
+            2 => Self::FastForward,
+            3 => Self::Rewind,
+            4 => Self::DeclickToStop,
+            5 => Self::DeclickToLocate,
+            _ => Self::Stopped,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -28,35 +53,20 @@ pub(crate) enum LocateState {
     LocateAndRoll,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum TransportEvent {
-    Play,
-    Stop,
-    StopWithDeclick,
-    Locate(MusicalPosition),
-    LocateWithDeclick(MusicalPosition),
-    LocateAndPlay(MusicalPosition),
-    SetLoopEnabled(bool),
-    SetLoopRange(LoopRange),
-    ClearLoop,
-    FastForward,
-    Rewind,
-    EndScrub,
-    Reverse,
-}
-
-#[derive(Debug, Clone, PartialEq)]
+/// What a transition changed. Loop state is deliberately absent: the FSM
+/// holds none, so routing loop writes through it was a round-trip that
+/// computed nothing.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum TransitionResult {
     MotionChanged(MotionState),
     Locating(MusicalPosition),
-    LoopModeChanged(bool),
     DirectionChanged(Direction),
     DeclickStarted(MotionState),
 }
 
 pub(crate) const DEFAULT_DECLICK_SAMPLES: usize = 480;
 
-pub(crate) struct TransportFSM {
+pub(crate) struct TransportFsm {
     motion: MotionState,
     locate: LocateState,
     pending_locate: Option<MusicalPosition>,
@@ -65,7 +75,7 @@ pub(crate) struct TransportFSM {
     declick_samples: usize,
 }
 
-impl TransportFSM {
+impl TransportFsm {
     pub fn new() -> Self {
         Self {
             motion: MotionState::Stopped,
@@ -89,8 +99,8 @@ impl TransportFSM {
         self.declick_samples
     }
 
-    pub fn transition(&mut self, event: TransportEvent) -> Option<TransitionResult> {
-        use TransportEvent::*;
+    pub fn transition(&mut self, event: MotionEvent) -> Option<TransitionResult> {
+        use MotionEvent::*;
 
         match event {
             Play => match self.motion {
@@ -105,7 +115,7 @@ impl TransportFSM {
                 MotionState::Rolling | MotionState::DeclickToLocate => None,
             },
 
-            Stop => match self.motion {
+            StopNow => match self.motion {
                 MotionState::Rolling | MotionState::FastForward | MotionState::Rewind => {
                     self.motion = MotionState::Stopped;
                     self.locate = LocateState::Idle;
@@ -118,7 +128,7 @@ impl TransportFSM {
                 MotionState::Stopped => None,
             },
 
-            StopWithDeclick => match self.motion {
+            Stop => match self.motion {
                 MotionState::Rolling => {
                     self.motion = MotionState::DeclickToStop;
                     self.locate = LocateState::Idle;
@@ -131,42 +141,34 @@ impl TransportFSM {
                 _ => None,
             },
 
-            Locate(pos) => {
+            Locate(beats) => {
+                let pos = MusicalPosition::from_beats(beats);
                 self.pending_locate = Some(pos);
                 self.locate = LocateState::LocateAndStop;
                 Some(TransitionResult::Locating(pos))
             }
 
-            LocateWithDeclick(pos) => match self.motion {
-                MotionState::Rolling => {
-                    self.pending_locate = Some(pos);
-                    self.locate = LocateState::LocateAndStop;
+            LocateWithDeclick(beats) => {
+                let pos = MusicalPosition::from_beats(beats);
+                self.pending_locate = Some(pos);
+                self.locate = LocateState::LocateAndStop;
+                if self.motion == MotionState::Rolling {
+                    // Fade out first; the locate lands when the fade completes.
                     self.motion = MotionState::DeclickToLocate;
                     Some(TransitionResult::DeclickStarted(
                         MotionState::DeclickToLocate,
                     ))
-                }
-                _ => {
-                    self.pending_locate = Some(pos);
-                    self.locate = LocateState::LocateAndStop;
+                } else {
                     Some(TransitionResult::Locating(pos))
                 }
-            },
+            }
 
-            LocateAndPlay(pos) => {
+            LocateAndPlay(beats) => {
+                let pos = MusicalPosition::from_beats(beats);
                 self.pending_locate = Some(pos);
                 self.locate = LocateState::LocateAndRoll;
                 Some(TransitionResult::Locating(pos))
             }
-
-            SetLoopEnabled(enabled) => Some(TransitionResult::LoopModeChanged(enabled)),
-
-            SetLoopRange(range) => {
-                let _ = range; // Loop range is stored in manager atomics
-                Some(TransitionResult::LoopModeChanged(true))
-            }
-
-            ClearLoop => Some(TransitionResult::LoopModeChanged(false)),
 
             FastForward => {
                 self.prev_motion = self.motion;
@@ -196,7 +198,7 @@ impl TransportFSM {
     }
 }
 
-impl Default for TransportFSM {
+impl Default for TransportFsm {
     fn default() -> Self {
         Self::new()
     }
@@ -208,102 +210,69 @@ mod tests {
 
     #[test]
     fn test_play_stop_transitions() {
-        let mut fsm = TransportFSM::new();
+        let mut fsm = TransportFsm::new();
 
         // Play from stopped
-        let result = fsm.transition(TransportEvent::Play);
+        let result = fsm.transition(MotionEvent::Play);
         assert!(matches!(
             result,
             Some(TransitionResult::MotionChanged(MotionState::Rolling))
         ));
 
         // Stop while rolling
-        let result = fsm.transition(TransportEvent::Stop);
+        let result = fsm.transition(MotionEvent::StopNow);
         assert!(matches!(
             result,
             Some(TransitionResult::MotionChanged(MotionState::Stopped))
         ));
 
         // Play again (idempotent)
-        fsm.transition(TransportEvent::Play);
-        let result = fsm.transition(TransportEvent::Play);
+        fsm.transition(MotionEvent::Play);
+        let result = fsm.transition(MotionEvent::Play);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_locate_events() {
-        let mut fsm = TransportFSM::new();
+        let mut fsm = TransportFsm::new();
 
-        let target = MusicalPosition::from_beats(8.0);
-        let result = fsm.transition(TransportEvent::Locate(target));
+        let target = 8.0;
+        let result = fsm.transition(MotionEvent::Locate(target));
         assert!(matches!(result, Some(TransitionResult::Locating(_))));
 
-        let target = MusicalPosition::from_beats(4.0);
-        let result = fsm.transition(TransportEvent::LocateAndPlay(target));
+        let target = 4.0;
+        let result = fsm.transition(MotionEvent::LocateAndPlay(target));
         assert!(matches!(result, Some(TransitionResult::Locating(_))));
-    }
-
-    #[test]
-    fn test_loop_events() {
-        let mut fsm = TransportFSM::new();
-
-        // Set loop range
-        let result = fsm.transition(TransportEvent::SetLoopRange(LoopRange::new(0.0, 8.0)));
-        assert!(matches!(
-            result,
-            Some(TransitionResult::LoopModeChanged(true))
-        ));
-
-        // Disable
-        let result = fsm.transition(TransportEvent::SetLoopEnabled(false));
-        assert!(matches!(
-            result,
-            Some(TransitionResult::LoopModeChanged(false))
-        ));
-
-        // Enable
-        let result = fsm.transition(TransportEvent::SetLoopEnabled(true));
-        assert!(matches!(
-            result,
-            Some(TransitionResult::LoopModeChanged(true))
-        ));
-
-        // Clear loop
-        let result = fsm.transition(TransportEvent::ClearLoop);
-        assert!(matches!(
-            result,
-            Some(TransitionResult::LoopModeChanged(false))
-        ));
     }
 
     #[test]
     fn test_scrub_events() {
-        let mut fsm = TransportFSM::new();
-        fsm.transition(TransportEvent::Play);
+        let mut fsm = TransportFsm::new();
+        fsm.transition(MotionEvent::Play);
 
         // Fast forward
-        let result = fsm.transition(TransportEvent::FastForward);
+        let result = fsm.transition(MotionEvent::FastForward);
         assert!(matches!(
             result,
             Some(TransitionResult::MotionChanged(MotionState::FastForward))
         ));
 
         // End scrub - should return to rolling
-        let result = fsm.transition(TransportEvent::EndScrub);
+        let result = fsm.transition(MotionEvent::EndScrub);
         assert!(matches!(
             result,
             Some(TransitionResult::MotionChanged(MotionState::Rolling))
         ));
 
         // Rewind
-        let result = fsm.transition(TransportEvent::Rewind);
+        let result = fsm.transition(MotionEvent::Rewind);
         assert!(matches!(
             result,
             Some(TransitionResult::MotionChanged(MotionState::Rewind))
         ));
 
         // End scrub again
-        let result = fsm.transition(TransportEvent::EndScrub);
+        let result = fsm.transition(MotionEvent::EndScrub);
         assert!(matches!(
             result,
             Some(TransitionResult::MotionChanged(MotionState::Rolling))
@@ -312,20 +281,20 @@ mod tests {
 
     #[test]
     fn test_declick_events() {
-        let mut fsm = TransportFSM::new();
-        fsm.transition(TransportEvent::Play);
+        let mut fsm = TransportFsm::new();
+        fsm.transition(MotionEvent::Play);
 
         // Stop with declick
-        let result = fsm.transition(TransportEvent::StopWithDeclick);
+        let result = fsm.transition(MotionEvent::Stop);
         assert!(matches!(
             result,
             Some(TransitionResult::DeclickStarted(MotionState::DeclickToStop))
         ));
 
         // Locate with declick
-        fsm.transition(TransportEvent::Play);
-        let target = MusicalPosition::from_beats(4.0);
-        let result = fsm.transition(TransportEvent::LocateWithDeclick(target));
+        fsm.transition(MotionEvent::Play);
+        let target = 4.0;
+        let result = fsm.transition(MotionEvent::LocateWithDeclick(target));
         assert!(matches!(
             result,
             Some(TransitionResult::DeclickStarted(
@@ -336,15 +305,15 @@ mod tests {
 
     #[test]
     fn test_reverse_direction() {
-        let mut fsm = TransportFSM::new();
+        let mut fsm = TransportFsm::new();
 
-        let result = fsm.transition(TransportEvent::Reverse);
+        let result = fsm.transition(MotionEvent::Reverse);
         assert!(matches!(
             result,
             Some(TransitionResult::DirectionChanged(Direction::Backwards))
         ));
 
-        let result = fsm.transition(TransportEvent::Reverse);
+        let result = fsm.transition(MotionEvent::Reverse);
         assert!(matches!(
             result,
             Some(TransitionResult::DirectionChanged(Direction::Forwards))

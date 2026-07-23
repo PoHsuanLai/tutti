@@ -7,11 +7,10 @@
 //! sample-accurate event timing.
 
 use crate::transport::Declick;
-use crate::transport::TransportManager;
+use crate::transport::MotionFsm;
 use crate::{AudioThreadCell, Ordering};
 use fundsp::audiounit::AudioUnit;
 use fundsp::realnet::NetBackend;
-use std::sync::Arc;
 
 /// Per-buffer audio processor, called from the audio callback.
 ///
@@ -27,17 +26,17 @@ pub trait AudioProcessor: Send + Sync + 'static {
 
 /// Base processor: ticks the DSP graph and transport.
 pub struct GraphProcessor {
-    transport: Arc<TransportManager>,
+    motion: MotionFsm,
     net_backend: AudioThreadCell<Option<NetBackend>>,
     /// Cached from the transport so the fade path avoids a double deref.
     declick: Declick,
 }
 
 impl GraphProcessor {
-    pub fn new(transport: Arc<TransportManager>, net_backend: NetBackend) -> Self {
-        let declick = transport.declick().clone();
+    pub fn new(motion: MotionFsm, net_backend: NetBackend) -> Self {
+        let declick = motion.declick.clone();
         Self {
-            transport,
+            motion,
             net_backend: AudioThreadCell::new(Some(net_backend)),
             declick,
         }
@@ -98,17 +97,17 @@ impl GraphProcessor {
 impl AudioProcessor for GraphProcessor {
     #[inline]
     fn process(&self, output: &mut [f32], frames: usize) {
-        self.transport.process_commands();
+        self.motion.drain();
         self.process_segment(output, frames);
 
         if self.apply_declick(output, frames) {
-            self.transport.complete_declick();
+            self.motion.complete_declick();
         }
     }
 
     fn reset_owners(&self) {
         self.net_backend.reset_owner();
-        self.transport.reset_fsm_owner();
+        self.motion.reset_owner();
     }
 }
 

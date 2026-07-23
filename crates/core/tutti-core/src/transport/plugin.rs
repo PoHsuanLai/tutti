@@ -12,15 +12,14 @@
 use bevy_app::{App, Plugin};
 use bevy_ecs::prelude::*;
 
-use crate::transport::MetronomeHandle;
-use crate::TransportHandle;
+use crate::transport::{MetronomeHandle, Transport};
 
-/// Lock-free transport handle (play/stop/seek/tempo/loop).
+/// The live transport: `.0.motion` for transitions, `.0.settings` for values.
 #[derive(Resource, Clone)]
-pub struct TransportRes(pub TransportHandle);
+pub struct TransportRes(pub Transport);
 
 impl std::ops::Deref for TransportRes {
-    type Target = TransportHandle;
+    type Target = Transport;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -29,7 +28,7 @@ impl std::ops::Deref for TransportRes {
 /// Transient handoff: the built transport handle. Inserted by `build_into`;
 /// claimed into [`TransportRes`] by [`TuttiTransportPlugin`]'s `build()`.
 #[derive(Resource)]
-pub struct PendingTransport(pub Option<TransportHandle>);
+pub struct PendingTransport(pub Option<Transport>);
 
 /// Metronome control (volume / accent / mode).
 ///

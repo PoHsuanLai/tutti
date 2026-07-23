@@ -231,20 +231,18 @@ mod tests {
     use super::*;
     use parking_lot::Mutex;
     use tutti_core::processor::GraphProcessor;
-    use tutti_core::{GraphNet, MeteringManager, TransportClock, TransportManager};
+    use tutti_core::{GraphNet, MeteringManager, MotionEvent, Transport, TransportClock};
 
     /// Build a minimal processor + transport pair for callback-level tests.
     /// Bypasses the engine builder — these tests exercise the RT callback
     /// in isolation, not the full engine.
-    fn build_callback_state(
-        sample_rate: f64,
-    ) -> (Arc<TransportManager>, AudioCallbackState<GraphProcessor>) {
-        let transport = Arc::new(TransportManager::new(sample_rate));
+    fn build_callback_state(sample_rate: f64) -> (Transport, AudioCallbackState<GraphProcessor>) {
+        let transport = Transport::new(sample_rate);
         let metering = Arc::new(MeteringManager::new(sample_rate));
 
         let mut net = GraphNet::new(0, 2);
         let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
-            .with_position_writeback(transport.current_beat().clone());
+            .with_position_writeback(Arc::clone(&transport.settings.beat));
         net.inner_mut().push(Box::new(clock));
         let backend = net.backend();
 
@@ -252,7 +250,7 @@ mod tests {
         // the backend borrows the graph processor via its inner NetBackend.
         let _keep_net_alive: &'static Mutex<GraphNet> = Box::leak(Box::new(Mutex::new(net)));
 
-        let processor = GraphProcessor::new(transport.clone(), backend);
+        let processor = GraphProcessor::new(transport.motion.clone(), backend);
         let state = AudioCallbackState::new(processor, metering);
         (transport, state)
     }
@@ -262,16 +260,17 @@ mod tests {
         let sample_rate = 44100.0;
         let (transport, state) = build_callback_state(sample_rate);
 
-        transport.set_paused(false);
-        transport.set_current_beat(0.0);
-        transport.set_tempo(120.0);
+        transport.settings.set_beat(0.0);
+        transport.settings.set_tempo(120.0);
+        transport.motion.send(MotionEvent::Play);
+        transport.motion.drain();
 
         let frames = 256;
         let mut output = vec![0.0f32; frames * 2];
         process_audio(&state, &mut output);
 
         let expected_beat = 256.0 * (120.0 / 60.0) / 44100.0;
-        let actual_beat = transport.get_current_beat();
+        let actual_beat = transport.settings.beat();
         assert!(
             (actual_beat - expected_beat).abs() < 1e-6,
             "expected {expected_beat}, got {actual_beat}"
@@ -283,18 +282,18 @@ mod tests {
         let sample_rate = 44100.0;
         let (transport, state) = build_callback_state(sample_rate);
 
-        transport.set_paused(false);
-        transport.set_tempo(120.0);
-        transport.set_loop_range(0.0, 4.0);
-        transport.set_loop_enabled(true);
-        transport.process_commands();
-        transport.seek_slot().request(3.99);
+        transport.settings.set_tempo(120.0);
+        transport.settings.loop_span.set_range(0.0, 4.0);
+        transport.settings.loop_span.set_enabled(true);
+        transport.motion.send(MotionEvent::Play);
+        transport.motion.drain();
+        transport.motion.seek.request(3.99);
 
         let frames = 1024;
         let mut output = vec![0.0f32; frames * 2];
         process_audio(&state, &mut output);
 
-        let beat = transport.get_current_beat();
+        let beat = transport.settings.beat();
         assert!(beat < 4.0, "expected beat wrapped below 4.0, got {beat}");
     }
 
@@ -306,8 +305,9 @@ mod tests {
     fn process_audio_is_allocation_free() {
         let sample_rate = 48_000.0;
         let (transport, state) = build_callback_state(sample_rate);
-        transport.set_paused(false);
-        transport.set_tempo(120.0);
+        transport.settings.set_tempo(120.0);
+        transport.motion.send(MotionEvent::Play);
+        transport.motion.drain();
 
         // Warm up outside the no-alloc scope — first call primes any
         // internal state on the transport / clock.

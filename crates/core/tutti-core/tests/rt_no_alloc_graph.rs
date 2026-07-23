@@ -14,7 +14,7 @@ use assert_no_alloc::AllocDisabler;
 use parking_lot::Mutex;
 use tutti_core::dsp::{bell_hz, limiter_stereo, pan, sine_hz, AudioUnit};
 use tutti_core::processor::{AudioProcessor, GraphProcessor};
-use tutti_core::{GraphNet, SampleRate, TransportClock, TransportManager};
+use tutti_core::{GraphNet, SampleRate, Transport, TransportClock};
 
 use std::sync::Arc;
 
@@ -26,13 +26,13 @@ static A: AllocDisabler = AllocDisabler;
 /// through the same `process` path.
 fn build_graph_processor_with_chain() -> GraphProcessor {
     let sample_rate = 48_000.0;
-    let transport = Arc::new(TransportManager::new(sample_rate));
+    let transport = Transport::new(sample_rate);
 
     let mut net = GraphNet::new(0, 2);
 
     // Transport clock — matches what every real GraphProcessor sees.
     let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
-        .with_position_writeback(transport.current_beat().clone());
+        .with_position_writeback(Arc::clone(&transport.settings.beat));
     net.inner_mut().push(Box::new(clock));
 
     // sine → pan → bell → limiter, wired with `chain` so each node feeds
@@ -49,7 +49,7 @@ fn build_graph_processor_with_chain() -> GraphProcessor {
     // The backend holds a pointer back into the net; keep it alive.
     let _keep: &'static Mutex<GraphNet> = Box::leak(Box::new(Mutex::new(net)));
 
-    GraphProcessor::new(transport, backend)
+    GraphProcessor::new(transport.motion.clone(), backend)
 }
 
 #[test]

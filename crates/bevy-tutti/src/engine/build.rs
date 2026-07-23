@@ -20,8 +20,8 @@ use tutti_core::dsp::An;
 use tutti_core::processor::GraphProcessor;
 use tutti_core::Arc;
 use tutti_core::{
-    ClickNode, ClickSettings, GraphNet, MeteringHandle, MeteringManager, PdcManager,
-    TransportClock, TransportHandle, TransportManager,
+    ClickNode, ClickSettings, GraphNet, MeteringHandle, MeteringManager, PdcManager, Transport,
+    TransportClock,
 };
 
 // Each subsystem owns its own transient `PendingX` (defined next to its plugin).
@@ -88,7 +88,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         plugin.outputs
     };
 
-    let transport_mgr = Arc::new(TransportManager::new(sample_rate));
+    let transport = Transport::new(sample_rate);
     let metering_mgr = Arc::new(MeteringManager::new(sample_rate));
     let click_settings = Arc::new(ClickSettings::new());
     let pdc = PdcManager::new(outputs, 0);
@@ -99,14 +99,13 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // Transport clock — emits the beat on two ports and writes it back to the
     // manager's atomic. Its NodeId is retained so beat-driven nodes can wire an
     // edge to it (published below as `TransportClockNode`).
-    let clock = TransportClock::from_inputs(transport_mgr.clock_inputs(), sample_rate)
-        .with_position_writeback(transport_mgr.current_beat().clone());
+    let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
+        .with_position_writeback(Arc::clone(&transport.settings.beat));
     let clock_id = net.inner_mut().push(Box::new(clock));
 
     // Metronome — mixed into master output. It only READS the transport
     // (beat + rolling/recording), so it takes a read view, not a control handle.
-    let click_transport = TransportHandle::new(transport_mgr.clone());
-    let click = ClickNode::with_transport(click_transport, click_settings.clone(), sample_rate);
+    let click = ClickNode::with_transport(transport.clone(), click_settings.clone(), sample_rate);
     let click_id = net.inner_mut().push(Box::new(An(click)));
     net.inner_mut().pipe_output(click_id);
 
@@ -116,7 +115,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     #[cfg(feature = "midi")]
     let midi_bus = MidiBus::new();
 
-    let graph_processor = GraphProcessor::new(transport_mgr.clone(), backend);
+    let graph_processor = GraphProcessor::new(transport.motion.clone(), backend);
 
     #[cfg(feature = "midi")]
     let processor: DefaultProcessor = {
@@ -154,7 +153,6 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
 
     let driver = TuttiDriver::from_parts(audio_engine, callback_state);
 
-    let transport = TransportHandle::new(transport_mgr);
     let metronome = MetronomeHandle::new(click_settings);
 
     #[cfg(feature = "analysis")]

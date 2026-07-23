@@ -37,6 +37,7 @@ use tutti_core::dsp::sine_hz;
 use tutti_core::graph::{
     crossfade_audio_node, MeteringRes, SidechainOf, SidechainSources, SpawnAudioNode, TransportRes,
 };
+use tutti_core::MotionEvent;
 use tutti_core::{AudioNode, NodeKind, Volume};
 use tutti_sampler::{SamplerLooping, SamplerSpeed};
 use tutti_sampler::PendingSamplerLoad;
@@ -72,7 +73,8 @@ fn main() {
 }
 
 fn start_transport(transport: Res<TransportRes>) {
-    transport.tempo(120.0).play();
+    transport.settings.set_tempo(120.0);
+    transport.motion.send(MotionEvent::Play);
 }
 
 fn spawn_demo(mut commands: Commands, transport: Res<TransportRes>) {

@@ -1,135 +1,158 @@
-//! Fluent API handle for transport control.
+//! The transport: a motion state machine plus the values it runs against.
 
-use super::{MotionState, TransportManager};
-use crate::params::Bpm;
 use std::sync::Arc;
 
-/// Fluent API handle for transport control.
+use super::motion::MotionFsm;
+use super::settings::TransportSettings;
+use super::state::ClockInputs;
+use crate::params::{Bpm, SampleRate};
+
+/// The two halves of a transport, held together.
 ///
-/// Created via `engine.transport()`.
+/// There is no facade here — the fields are public and carry their own APIs:
 ///
-/// # Example
 /// ```ignore
-/// engine.transport()
-///     .tempo(128.0)
-///     .loop_range(0.0, 16.0)
-///     .enable_loop()
-///     .play();
+/// transport.motion.send(MotionEvent::Play);      // a request; may be refused
+/// transport.settings.set_tempo(140.0);           // a value; cannot fail
+/// transport.settings.loop_span.set_range(0.0, 4.0);
 /// ```
+///
+/// The split is by *who decides*. A motion change goes through a state
+/// machine on the audio thread, which may reject or defer it. A setting is
+/// just a store. Fusing them is what made the old `TransportManager` carry 19
+/// fields and 11 atomic getters.
+///
+/// This type exists because [`TransportClockRead`](super::TransportClockRead)
+/// spans both halves — a reader wants the beat (settings) *and* whether we are
+/// rolling (motion) — and needs one `Clone + Send + Sync + 'static` type to be
+/// erased behind `Arc<dyn …>`.
 #[derive(Clone)]
-pub struct TransportHandle {
-    transport: Arc<TransportManager>,
+pub struct Transport {
+    pub motion: MotionFsm,
+    pub settings: TransportSettings,
+    sample_rate: f64,
 }
 
-impl TransportHandle {
-    /// Wire a transport handle around shared transport state.
-    /// Normally built through the engine; exposed here so custom constructions
-    /// (e.g. export contexts, standalone vocabulary use) can attach a handle.
-    pub fn new(transport: Arc<TransportManager>) -> Self {
-        Self { transport }
+impl Transport {
+    pub fn new(sample_rate: impl Into<SampleRate>) -> Self {
+        let settings = TransportSettings::new();
+        Self {
+            motion: MotionFsm::new(settings.clone()),
+            settings,
+            sample_rate: sample_rate.into().get(),
+        }
     }
 
-    pub fn tempo(&self, bpm: impl Into<Bpm>) -> &Self {
-        self.transport.set_tempo(bpm.into());
-        self
+    /// Everything `TransportClock` reads to advance time.
+    pub fn clock_inputs(&self) -> ClockInputs {
+        ClockInputs {
+            tempo: Arc::clone(&self.settings.tempo),
+            paused: Arc::clone(&self.settings.paused),
+            seek: self.motion.seek.clone(),
+            loop_span: self.settings.loop_span.clone(),
+        }
     }
 
-    pub fn get_tempo(&self) -> Bpm {
-        self.transport.get_tempo()
+    pub fn sample_rate(&self) -> SampleRate {
+        SampleRate(self.sample_rate)
     }
 
-    pub fn play(&self) -> &Self {
-        self.transport.play();
-        self
+    pub fn beats_per_second(&self) -> f64 {
+        self.settings.tempo().get() / 60.0
     }
 
-    pub fn stop(&self) -> &Self {
-        self.transport.stop();
-        self
-    }
-
-    pub fn seek(&self, beats: f64) -> &Self {
-        self.transport.locate(beats);
-        self
-    }
-
-    pub fn loop_range(&self, start: f64, end: f64) -> &Self {
-        self.transport.set_loop_range_fsm(start, end);
-        self
-    }
-
-    pub fn enable_loop(&self) -> &Self {
-        self.transport.set_loop_enabled(true);
-        self
-    }
-
-    pub fn disable_loop(&self) -> &Self {
-        self.transport.set_loop_enabled(false);
-        self
-    }
-
-    pub fn toggle_loop(&self) -> &Self {
-        self.transport.toggle_loop();
-        self
-    }
-
-    pub fn get_loop_range(&self) -> Option<(f64, f64)> {
-        self.transport.get_loop_range()
-    }
-
-    pub fn is_loop_enabled(&self) -> bool {
-        self.transport.is_loop_enabled()
-    }
-
-    pub fn current_beat(&self) -> f64 {
-        self.transport.get_current_beat()
-    }
-
-    pub fn is_playing(&self) -> bool {
-        matches!(self.transport.motion_state(), MotionState::Rolling)
-    }
-
-    pub fn is_recording(&self) -> bool {
-        self.transport.is_recording()
-    }
-
-    pub fn record(&self) -> &Self {
-        self.transport.set_recording(true);
-        self
-    }
-
-    pub fn stop_recording(&self) -> &Self {
-        self.transport.set_recording(false);
-        self
+    pub fn samples_per_beat(&self) -> f64 {
+        self.sample_rate / self.beats_per_second()
     }
 }
 
-impl super::TransportClockRead for TransportHandle {
+impl super::TransportClockRead for Transport {
     fn current_beat(&self) -> f64 {
-        self.transport.get_current_beat()
+        self.settings.beat()
     }
 
     fn is_loop_enabled(&self) -> bool {
-        self.transport.is_loop_enabled()
+        self.settings.loop_span.is_enabled()
     }
 
     fn get_loop_range(&self) -> Option<(f64, f64)> {
-        self.transport.get_loop_range()
+        self.settings.loop_span.range()
     }
 
     fn is_playing(&self) -> bool {
-        matches!(self.transport.motion_state(), MotionState::Rolling)
+        self.motion.is_playing()
     }
 
     fn is_recording(&self) -> bool {
-        self.transport.is_recording()
+        self.settings.is_recording()
     }
 
     fn is_in_preroll(&self) -> bool {
-        self.transport.is_in_preroll()
+        self.settings.is_in_preroll()
     }
 
     fn tempo(&self) -> Bpm {
-        self.transport.get_tempo()
+        self.settings.tempo()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::motion::MotionEvent;
+    use super::super::TransportClockRead;
+    use super::*;
+
+    #[test]
+    fn clone_shares_both_halves() {
+        let a = Transport::new(48000.0);
+        let b = a.clone();
+
+        a.settings.set_tempo(140.0);
+        assert_eq!(b.settings.tempo().get(), 140.0);
+
+        a.motion.send(MotionEvent::Play);
+        b.motion.drain();
+        assert!(a.motion.is_playing(), "the FSM is shared, not copied");
+    }
+
+    #[test]
+    fn read_view_spans_both_halves() {
+        let t = Transport::new(48000.0);
+        t.settings.set_beat(8.0);
+        t.settings.set_tempo(90.0);
+        t.motion.send(MotionEvent::Play);
+        t.motion.drain();
+
+        // beat/tempo come from settings, is_playing from the FSM — the reason
+        // this type exists.
+        assert_eq!(t.current_beat(), 8.0);
+        assert_eq!(t.tempo().get(), 90.0);
+        assert!(t.is_playing());
+    }
+
+    #[test]
+    fn clock_inputs_track_live_edits() {
+        let t = Transport::new(48000.0);
+        let inputs = t.clock_inputs();
+
+        t.settings.set_tempo(160.0);
+        assert_eq!(
+            inputs.tempo.load(std::sync::atomic::Ordering::Acquire),
+            160.0,
+            "the clock must see later tempo changes"
+        );
+
+        t.motion.send(MotionEvent::Locate(4.0));
+        t.motion.drain();
+        assert_eq!(inputs.seek.take(), Some(4.0));
+    }
+
+    #[test]
+    fn samples_per_beat_follows_tempo() {
+        let t = Transport::new(44100.0);
+        assert!((t.samples_per_beat() - 22050.0).abs() < 1e-6, "120 BPM");
+
+        t.settings.set_tempo(60.0);
+        assert!((t.samples_per_beat() - 44100.0).abs() < 1e-6, "60 BPM");
     }
 }

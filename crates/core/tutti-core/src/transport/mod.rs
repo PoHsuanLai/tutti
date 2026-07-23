@@ -3,17 +3,20 @@ mod click;
 mod clock;
 pub(crate) mod fsm;
 mod handle;
-pub(crate) mod manager;
+mod motion;
 mod offline;
 pub(crate) mod position;
+mod settings;
 mod state;
 
 pub use automation_reader::{AutomationEnvelopeFn, AutomationReaderInput};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeHandle, MetronomeMode};
 pub use clock::TransportClock;
-pub use handle::TransportHandle;
-pub use manager::{Direction, MotionState, TransportManager};
+pub use fsm::Direction;
+pub use handle::Transport;
+pub use motion::{MotionEvent, MotionFsm, MotionState};
 pub use offline::{OfflineTransport, OfflineTransportConfig};
+pub use settings::TransportSettings;
 pub use state::{
     beat_from_ports, ClockInputs, Declick, LoopSpan, SeekSlot, TransportState, BEAT_PORTS,
 };

@@ -35,8 +35,7 @@ use std::sync::Arc;
 
 use tutti_core::dsp::Net;
 use tutti_core::{
-    AudioUnit, OfflineTransport, OfflineTransportConfig, SampleRate, TransportClock,
-    TransportClockRead,
+    AudioUnit, OfflineTimeline, OfflineTimelineConfig, SampleRate, Timeline, TransportClock,
 };
 use bevy_tasks::{block_on, futures_lite::future};
 use tutti_core::NodeId;
@@ -121,7 +120,7 @@ impl Default for RegionRenderConfig {
 ///      live one.
 fn rebind_net_transport(
     net: &mut Net,
-    transport: &Arc<dyn TransportClockRead>,
+    transport: &Arc<dyn Timeline>,
     start_beat: f64,
     tempo: impl Into<tutti_core::Bpm>,
 ) {
@@ -230,7 +229,7 @@ pub struct RegionRenderNet {
     /// The offline transport the clip readers (and the export) are bound to.
     /// Public so the `Populate` step binds freshly-built samplers to the same
     /// timeline.
-    pub transport: Arc<OfflineTransport>,
+    pub transport: Arc<OfflineTimeline>,
     pub target: NodeId,
     pub start_beat: f64,
     pub len_beats: f64,
@@ -322,13 +321,13 @@ pub fn prepare_region_render_system(
         // so we rebind every transport-aware unit to this one — without it the
         // clip samplers read a stale playhead and render silence. The export is
         // handed the same transport in `Spawn`, tying both ends together.
-        let timeline = Arc::new(OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: start.start_beat,
             tempo: start.tempo.into(),
             sample_rate: SampleRate(config.sample_rate),
             loop_range: None,
         }));
-        let reader_transport: Arc<dyn TransportClockRead> = timeline.clone();
+        let reader_transport: Arc<dyn Timeline> = timeline.clone();
         {
             let _span = bevy_log::info_span!("region_render::rebind_net_transport").entered();
             rebind_net_transport(&mut net, &reader_transport, start.start_beat, start.tempo);
@@ -471,27 +470,18 @@ mod tests {
             })
         }
     }
-    impl TransportClockRead for MockTransport {
-        fn is_playing(&self) -> bool {
+    impl Timeline for MockTransport {
+        fn is_rolling(&self) -> bool {
             self.playing.load(Ordering::Relaxed)
         }
-        fn current_beat(&self) -> f64 {
+        fn beat(&self) -> f64 {
             f64::from_bits(self.beat.load(Ordering::Relaxed))
         }
         fn tempo(&self) -> Bpm {
             Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
         }
-        fn is_loop_enabled(&self) -> bool {
-            false
-        }
-        fn get_loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<(f64, f64)> {
             None
-        }
-        fn is_recording(&self) -> bool {
-            false
-        }
-        fn is_in_preroll(&self) -> bool {
-            false
         }
     }
 
@@ -510,7 +500,7 @@ mod tests {
 
         // Clone the net (as the render does) and rebind it to an offline
         // transport — this should swap the cloned reader for a fresh one.
-        let offline = MockTransport::new(true) as Arc<dyn TransportClockRead>;
+        let offline = MockTransport::new(true) as Arc<dyn Timeline>;
         let mut clone = net.clone();
         rebind_net_transport(&mut clone, &offline, 0.0, tutti_core::Bpm(120.0));
 
@@ -604,13 +594,13 @@ mod tests {
             assert!(clock.current_beat() > 1.0, "live clock should have moved");
         }
 
-        let timeline = Arc::new(OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 32.0,
             tempo: tutti_core::Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: None,
         }));
-        let reader: Arc<dyn TransportClockRead> = timeline;
+        let reader: Arc<dyn Timeline> = timeline;
         rebind_net_transport(&mut net, &reader, 32.0, tutti_core::Bpm(120.0));
 
         let clock = net

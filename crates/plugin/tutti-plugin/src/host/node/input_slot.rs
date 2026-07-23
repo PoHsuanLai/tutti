@@ -50,7 +50,7 @@ pub(crate) trait BlockReset {
 
 /// Something the host produces once per audio block and feeds to the plugin.
 /// The producer reads the live transport itself (it holds its own
-/// `Arc<dyn TransportClockRead>`), so `fill` needs only the block size via `ctx`.
+/// `Arc<dyn Timeline>`), so `fill` needs only the block size via `ctx`.
 pub(crate) trait BlockInput: Send + Sync {
     /// The per-block payload this input fills. Reused across blocks as scratch.
     type Out: Default + BlockReset;

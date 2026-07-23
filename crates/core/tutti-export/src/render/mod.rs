@@ -19,7 +19,7 @@ pub(crate) use sink::{BlockCursor, BufferedSink, RenderSink, StreamSink};
 use crate::progress::ProgressEmitter;
 use crate::Result;
 use std::sync::Arc;
-use tutti_core::transport::OfflineTransport;
+use tutti_core::transport::OfflineTimeline;
 
 /// All the inputs needed to render one offline pass. Separating the
 /// specification (this struct) from the consumer interface (`sink`,
@@ -30,7 +30,7 @@ pub(crate) struct RenderRequest<'a> {
     pub duration_seconds: f64,
     pub compensate_latency: bool,
     /// Optional offline transport whose timeline advances with each block.
-    pub timeline: Option<&'a Arc<OfflineTransport>>,
+    pub timeline: Option<&'a Arc<OfflineTimeline>>,
 }
 
 /// Run one offline render: derive a plan from `request`, drive the net,

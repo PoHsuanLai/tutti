@@ -350,10 +350,7 @@ impl PluginClient {
     /// transport source stamped with the current sample rate (updated live on
     /// device changes). The snapshot is only sent to plugins advertising
     /// [`Features::TRANSPORT`]; others always get a default.
-    pub fn set_transport_source(
-        &mut self,
-        reader: std::sync::Arc<dyn tutti_core::transport::TransportClockRead>,
-    ) {
+    pub fn set_transport_source(&mut self, reader: tutti_core::transport::Transport) {
         self.inputs
             .transport
             .install(Arc::new(TransportSource::new(reader, self.sample_rate)));

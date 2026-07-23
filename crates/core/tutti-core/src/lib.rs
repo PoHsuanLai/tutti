@@ -56,8 +56,8 @@ pub mod transport;
 pub use transport::{
     beat_from_ports, AutomationEnvelopeFn, AutomationReaderInput, ClickNode, ClickSettings,
     ClickState, Direction, MetronomeHandle, MetronomeMode, MotionEvent, MotionFsm, MotionState,
-    OfflineTransport, OfflineTransportConfig, Transport, TransportClock, TransportClockRead,
-    TransportSettings, BEAT_PORTS,
+    OfflineTimeline, OfflineTimelineConfig, Timeline, Transport, TransportClock, TransportSettings,
+    BEAT_PORTS,
 };
 
 pub mod metering;

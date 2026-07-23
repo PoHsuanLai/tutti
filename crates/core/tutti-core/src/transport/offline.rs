@@ -1,4 +1,4 @@
-//! Offline transport — a simulated [`super::TransportClockRead`] that advances
+//! Offline transport — a simulated [`super::Timeline`] that advances
 //! deterministically by sample count rather than wall clock.
 //!
 //! Primary consumer is offline audio export, but anything that needs a
@@ -8,9 +8,9 @@
 use crate::params::{Bpm, SampleRate};
 use crate::{AtomicBool, AtomicF64, Ordering};
 
-/// Configuration for constructing an [`OfflineTransport`].
+/// Configuration for constructing an [`OfflineTimeline`].
 #[derive(Debug, Clone)]
-pub struct OfflineTransportConfig {
+pub struct OfflineTimelineConfig {
     /// Start position in beats.
     pub start_beat: f64,
     /// Tempo in BPM.
@@ -21,7 +21,7 @@ pub struct OfflineTransportConfig {
     pub loop_range: Option<(f64, f64)>,
 }
 
-impl Default for OfflineTransportConfig {
+impl Default for OfflineTimelineConfig {
     fn default() -> Self {
         Self {
             start_beat: 0.0,
@@ -34,13 +34,13 @@ impl Default for OfflineTransportConfig {
 
 /// Simulated transport that advances by sample count.
 ///
-/// Implements [`super::TransportClockRead`], so any node that accepts a
-/// `&dyn TransportClockRead` treats it interchangeably with the live
+/// Implements [`super::Timeline`], so any node that accepts a
+/// `&dyn Timeline` treats it interchangeably with the live
 /// [`super::TransportHandle`].
 ///
 /// # Example
 /// ```ignore
-/// let timeline = OfflineTransport::new(&OfflineTransportConfig {
+/// let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
 ///     start_beat: 0.0,
 ///     tempo: Bpm(120.0),
 ///     sample_rate: SampleRate(44100.0),
@@ -50,11 +50,11 @@ impl Default for OfflineTransportConfig {
 /// // Advance by 44100 samples (1 second at 44.1kHz)
 /// // At 120 BPM, that's 2 beats
 /// timeline.advance(44100);
-/// assert!((timeline.current_beat() - 2.0).abs() < 0.001);
+/// assert!((timeline.beat() - 2.0).abs() < 0.001);
 /// ```
 #[derive(Debug)]
 #[repr(align(64))]
-pub struct OfflineTransport {
+pub struct OfflineTimeline {
     /// Current position in beats.
     current_beat: AtomicF64,
     /// Tempo in BPM.
@@ -71,8 +71,8 @@ pub struct OfflineTransport {
     loop_enabled: AtomicBool,
 }
 
-impl OfflineTransport {
-    pub fn new(config: &OfflineTransportConfig) -> Self {
+impl OfflineTimeline {
+    pub fn new(config: &OfflineTimelineConfig) -> Self {
         let tempo_raw = config.tempo.get();
         let sr_raw = config.sample_rate.get();
         let beats_per_second = tempo_raw / 60.0;
@@ -119,7 +119,7 @@ impl OfflineTransport {
     }
 
     #[inline]
-    pub fn current_beat(&self) -> f64 {
+    pub fn beat(&self) -> f64 {
         self.current_beat.load(Ordering::Acquire)
     }
 
@@ -143,39 +143,28 @@ impl OfflineTransport {
     }
 }
 
-impl super::TransportClockRead for OfflineTransport {
-    fn current_beat(&self) -> f64 {
-        self.current_beat.load(Ordering::Acquire)
+impl super::Timeline for OfflineTimeline {
+    fn beat(&self) -> f64 {
+        self.beat()
     }
 
-    fn is_loop_enabled(&self) -> bool {
-        self.loop_enabled.load(Ordering::Acquire)
+    fn tempo(&self) -> Bpm {
+        self.tempo()
     }
 
-    fn get_loop_range(&self) -> Option<(f64, f64)> {
+    fn is_rolling(&self) -> bool {
+        // An offline timeline advances whenever asked — there is nothing to
+        // pause it.
+        true
+    }
+
+    fn loop_range(&self) -> Option<(f64, f64)> {
         self.loop_enabled.load(Ordering::Acquire).then(|| {
             (
                 self.loop_start.load(Ordering::Acquire),
                 self.loop_end.load(Ordering::Acquire),
             )
         })
-    }
-
-    fn is_playing(&self) -> bool {
-        // Offline transport is always "playing" — it advances whenever asked.
-        true
-    }
-
-    fn is_recording(&self) -> bool {
-        false
-    }
-
-    fn is_in_preroll(&self) -> bool {
-        false
-    }
-
-    fn tempo(&self) -> Bpm {
-        Bpm(self.tempo.load(Ordering::Acquire))
     }
 }
 
@@ -185,7 +174,7 @@ mod tests {
 
     /// A region render drives BOTH clocks over the same net: the in-net
     /// `TransportClock` feeds beat-input nodes (LFO, AutomationLane) while this
-    /// `OfflineTransport` feeds clip readers and samplers. Started at the same
+    /// `OfflineTimeline` feeds clip readers and samplers. Started at the same
     /// beat, they must report the same beat for the same sample.
     ///
     /// Regression: the export driver used to `advance(1)` before the first
@@ -209,7 +198,7 @@ mod tests {
         )
         .starting_at(start_beat);
 
-        let timeline = OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat,
             tempo: Bpm(tempo),
             sample_rate: SampleRate(sample_rate),
@@ -221,9 +210,9 @@ mod tests {
         clock.tick(&[], &mut out);
         let clock_beat = out[0] as f64 + out[1] as f64;
         assert!(
-            (clock_beat - timeline.current_beat()).abs() < 1e-9,
+            (clock_beat - timeline.beat()).abs() < 1e-9,
             "first sample disagrees: clock={clock_beat} timeline={}",
-            timeline.current_beat()
+            timeline.beat()
         );
 
         // And they must stay in step across a block boundary. The driver ticks
@@ -240,16 +229,16 @@ mod tests {
         // EMITTED sample, because emit-then-advance means sample N-1 carried
         // the beat before the final increment.
         assert!(
-            ((timeline.current_beat() - clock_beat) - expected_lag).abs() < 1e-9,
+            ((timeline.beat() - clock_beat) - expected_lag).abs() < 1e-9,
             "drifted across the block: clock={clock_beat} timeline={} \
              (expected exactly one beats_per_sample apart)",
-            timeline.current_beat()
+            timeline.beat()
         );
     }
 
     #[test]
     fn test_timeline_advances() {
-        let timeline = OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
@@ -259,15 +248,15 @@ mod tests {
         // At 120 BPM, 2 beats/second, 44100 samples/second
         // So 22050 samples = 1 beat
         timeline.advance(22050);
-        assert!((timeline.current_beat() - 1.0).abs() < 0.001);
+        assert!((timeline.beat() - 1.0).abs() < 0.001);
 
         timeline.advance(22050);
-        assert!((timeline.current_beat() - 2.0).abs() < 0.001);
+        assert!((timeline.beat() - 2.0).abs() < 0.001);
     }
 
     #[test]
     fn test_timeline_loop_wrap() {
-        let timeline = OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
@@ -279,16 +268,16 @@ mod tests {
 
         // Advance to beat 3
         timeline.advance((3.0 * samples_per_beat) as usize);
-        assert!((timeline.current_beat() - 3.0).abs() < 0.01);
+        assert!((timeline.beat() - 3.0).abs() < 0.01);
 
         // Advance 2 more beats - should wrap to beat 1
         timeline.advance((2.0 * samples_per_beat) as usize);
-        assert!((timeline.current_beat() - 1.0).abs() < 0.01);
+        assert!((timeline.beat() - 1.0).abs() < 0.01);
     }
 
     #[test]
     fn test_timeline_no_loop() {
-        let timeline = OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
@@ -299,28 +288,28 @@ mod tests {
 
         // Advance past where loop end would be
         timeline.advance((10.0 * samples_per_beat) as usize);
-        assert!((timeline.current_beat() - 10.0).abs() < 0.01);
+        assert!((timeline.beat() - 10.0).abs() < 0.01);
     }
 
     #[test]
     fn test_timeline_start_offset() {
-        let timeline = OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 4.0,
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: None,
         });
 
-        assert!((timeline.current_beat() - 4.0).abs() < 0.001);
+        assert!((timeline.beat() - 4.0).abs() < 0.001);
 
         let samples_per_beat = 44100.0 / 2.0;
         timeline.advance(samples_per_beat as usize);
-        assert!((timeline.current_beat() - 5.0).abs() < 0.01);
+        assert!((timeline.beat() - 5.0).abs() < 0.01);
     }
 
     #[test]
     fn test_timeline_reset() {
-        let timeline = OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
@@ -329,44 +318,41 @@ mod tests {
 
         let samples_per_beat = 44100.0 / 2.0;
         timeline.advance((5.0 * samples_per_beat) as usize);
-        assert!((timeline.current_beat() - 5.0).abs() < 0.01);
+        assert!((timeline.beat() - 5.0).abs() < 0.01);
 
         // Reset to beat 2
         timeline.reset(2.0);
-        assert!((timeline.current_beat() - 2.0).abs() < 0.001);
+        assert!((timeline.beat() - 2.0).abs() < 0.001);
     }
 
     #[test]
-    fn test_transport_reader_impl() {
-        use crate::TransportClockRead;
+    fn timeline_impl_reports_the_loop_region() {
+        use crate::Timeline;
 
-        let timeline = OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: Some((0.0, 8.0)),
         });
 
-        // TransportClockRead methods
-        assert!(timeline.is_playing());
-        assert!(!timeline.is_recording());
-        assert!(!timeline.is_in_preroll());
-        assert!(timeline.is_loop_enabled());
-        assert_eq!(timeline.get_loop_range(), Some((0.0, 8.0)));
+        assert_eq!(timeline.loop_range(), Some((0.0, 8.0)));
+        assert_eq!(timeline.tempo().get(), 120.0);
+        // An offline timeline has nothing to pause it.
+        assert!(timeline.is_rolling());
     }
 
     #[test]
-    fn test_transport_reader_no_loop() {
-        use crate::TransportClockRead;
+    fn timeline_impl_reports_no_loop_when_unset() {
+        use crate::Timeline;
 
-        let timeline = OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
             loop_range: None,
         });
 
-        assert!(!timeline.is_loop_enabled());
-        assert_eq!(timeline.get_loop_range(), None);
+        assert_eq!(timeline.loop_range(), None);
     }
 }

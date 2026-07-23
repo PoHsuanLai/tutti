@@ -1,7 +1,7 @@
 //! Beat-scheduled MIDI clip playback as a [`MidiSource`].
 //!
 //! A `MidiClipSource` holds a sorted `Vec<TimedClipEvent>` (events tagged
-//! with absolute beats) and a [`TransportClockRead`]. On each
+//! with absolute beats) and a [`Timeline`]. On each
 //! `poll_into(unit_id, block_start_sample, block_size, …)` it reads the
 //! transport beat, computes the beat range covered by the upcoming
 //! audio block, and emits events whose beat falls in that range with
@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use atomic_float::AtomicF64;
-use tutti_core::transport::TransportClockRead;
+use tutti_core::transport::Timeline;
 use tutti_midi_types::source::MidiSource;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::unit_id::MidiUnitId;
@@ -40,7 +40,7 @@ pub struct TimedClipEvent {
 #[derive(Clone)]
 pub struct MidiClipSource {
     events: Arc<[TimedClipEvent]>,
-    transport: Arc<dyn TransportClockRead>,
+    transport: Arc<dyn Timeline>,
     sample_rate: f64,
     /// Index into `events` of the first event we haven't emitted yet.
     /// Atomic so `poll_into` is `&self`.
@@ -60,7 +60,7 @@ impl MidiClipSource {
     pub fn new(
         target_unit: MidiUnitId,
         events: impl IntoIterator<Item = TimedClipEvent>,
-        transport: Arc<dyn TransportClockRead>,
+        transport: Arc<dyn Timeline>,
         sample_rate: f64,
     ) -> Self {
         let mut v: Vec<TimedClipEvent> = events.into_iter().collect();
@@ -104,15 +104,15 @@ impl MidiClipSource {
     /// Returns `None` when nothing should be emitted this block — the
     /// transport is paused, or the tempo/sample-rate is non-positive.
     fn sync_to_transport(&self, block_size: usize) -> Option<PollWindow> {
-        if !self.transport.is_playing() {
+        if !self.transport.is_rolling() {
             // Track the beat anyway so a seek-while-paused doesn't
             // surprise us when playback resumes.
             self.last_beat
-                .store(self.transport.current_beat(), Ordering::Release);
+                .store(self.transport.beat(), Ordering::Release);
             return None;
         }
 
-        let block_start_beat = self.transport.current_beat();
+        let block_start_beat = self.transport.beat();
         let last_beat = self.last_beat.load(Ordering::Acquire);
         // Detect rewinds / seeks. Tolerate a tiny epsilon so float
         // jitter at exactly-equal beats doesn't trigger reseeking.
@@ -253,7 +253,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
     use tutti_core::params::Bpm;
 
-    /// Minimal `TransportClockRead` for tests: tempo + beat under a switch.
+    /// Minimal `Timeline` for tests: tempo + beat under a switch.
     struct TestTransport {
         beat: AtomicF64,
         tempo: f64,
@@ -273,24 +273,15 @@ mod tests {
         }
     }
 
-    impl TransportClockRead for TestTransport {
-        fn current_beat(&self) -> f64 {
+    impl Timeline for TestTransport {
+        fn beat(&self) -> f64 {
             self.beat.load(Ordering::Acquire)
         }
-        fn is_loop_enabled(&self) -> bool {
-            false
-        }
-        fn get_loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<(f64, f64)> {
             None
         }
-        fn is_playing(&self) -> bool {
+        fn is_rolling(&self) -> bool {
             self.playing.load(Ordering::Acquire)
-        }
-        fn is_recording(&self) -> bool {
-            false
-        }
-        fn is_in_preroll(&self) -> bool {
-            false
         }
         fn tempo(&self) -> Bpm {
             Bpm(self.tempo)
@@ -321,7 +312,7 @@ mod tests {
         let source = MidiClipSource::new(
             unit,
             events,
-            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
+            Arc::clone(&transport) as Arc<dyn Timeline>,
             sample_rate,
         );
 
@@ -353,7 +344,7 @@ mod tests {
                 beat: 0.0,
                 event: note_on(60, 100),
             }],
-            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
+            Arc::clone(&transport) as Arc<dyn Timeline>,
             44100.0,
         );
         let mut buf = [MidiEvent::noop(); 4];
@@ -371,7 +362,7 @@ mod tests {
                 beat: 0.0,
                 event: note_on(60, 100),
             }],
-            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
+            Arc::clone(&transport) as Arc<dyn Timeline>,
             44100.0,
         );
         let mut buf = [MidiEvent::noop(); 4];
@@ -394,7 +385,7 @@ mod tests {
                     event: note_on(64, 100),
                 },
             ],
-            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
+            Arc::clone(&transport) as Arc<dyn Timeline>,
             44100.0,
         );
 
@@ -421,7 +412,7 @@ mod tests {
                 beat: 0.0,
                 event: note_on(60, 100),
             }],
-            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
+            Arc::clone(&transport) as Arc<dyn Timeline>,
             44100.0,
         )) as Box<dyn MidiSource>;
         let s2 = Box::new(MidiClipSource::new(
@@ -430,7 +421,7 @@ mod tests {
                 beat: 0.25,
                 event: note_on(64, 100),
             }],
-            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
+            Arc::clone(&transport) as Arc<dyn Timeline>,
             44100.0,
         )) as Box<dyn MidiSource>;
 
@@ -449,7 +440,7 @@ mod tests {
                 TimedClipEvent { beat: 0.0, event: note_on(60, 100) },
                 TimedClipEvent { beat: 0.5, event: note_on(64, 100) },
             ],
-            Arc::clone(transport) as Arc<dyn TransportClockRead>,
+            Arc::clone(transport) as Arc<dyn Timeline>,
             44100.0,
         )
     }

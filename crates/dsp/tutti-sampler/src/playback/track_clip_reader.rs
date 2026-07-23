@@ -16,7 +16,7 @@ use crate::SamplerUnit;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, TransportClockRead, Wave};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, Timeline, Wave};
 
 const COMMAND_CAPACITY: usize = 64;
 const TRACK_CLIP_READER_ID: u64 = 0x_0000_0000_0000_DA03;
@@ -172,7 +172,7 @@ pub struct TrackClipReaderUnit {
     clips: Vec<ClipSlot>,
     rx: Receiver<ClipCommand>,
     sample_rate: f64,
-    transport: Option<Arc<dyn TransportClockRead>>,
+    transport: Option<Arc<dyn Timeline>>,
 }
 
 impl TrackClipReaderUnit {
@@ -188,7 +188,7 @@ impl TrackClipReaderUnit {
         (unit, handle)
     }
 
-    pub fn with_transport(transport: Arc<dyn TransportClockRead>) -> (Self, TrackClipReaderHandle) {
+    pub fn with_transport(transport: Arc<dyn Timeline>) -> (Self, TrackClipReaderHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
         let handle = TrackClipReaderHandle { tx };
         let unit = Self {
@@ -221,7 +221,7 @@ impl TrackClipReaderUnit {
     /// channel-less, so it shares zero mutable state with the live graph at any
     /// instant. Clips are then rebuilt from ECS in the Populate step via
     /// [`Self::insert_clip`].
-    pub fn detached(transport: Arc<dyn TransportClockRead>) -> Self {
+    pub fn detached(transport: Arc<dyn Timeline>) -> Self {
         let (_tx, rx) = bounded(0);
         Self {
             clips: Vec::new(),
@@ -528,27 +528,18 @@ mod tests {
         }
     }
 
-    impl TransportClockRead for MockTransport {
-        fn is_playing(&self) -> bool {
+    impl Timeline for MockTransport {
+        fn is_rolling(&self) -> bool {
             self.playing.load(Ordering::Relaxed)
         }
-        fn current_beat(&self) -> f64 {
+        fn beat(&self) -> f64 {
             f64::from_bits(self.beat.load(Ordering::Relaxed))
         }
         fn tempo(&self) -> tutti_core::Bpm {
             tutti_core::Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
         }
-        fn is_loop_enabled(&self) -> bool {
-            false
-        }
-        fn get_loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<(f64, f64)> {
             None
-        }
-        fn is_recording(&self) -> bool {
-            false
-        }
-        fn is_in_preroll(&self) -> bool {
-            false
         }
     }
 

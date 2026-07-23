@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, TransportClockRead, Wave};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, Timeline, Wave};
 
 use super::loop_crossfade::LoopCrossfade;
 
@@ -38,7 +38,7 @@ pub struct SamplerUnit {
     /// Optional transport for beat-synced playback.
     /// When set, sampler only plays when transport is rolling
     /// and uses beat position to compute sample offset.
-    transport: Option<Arc<dyn TransportClockRead>>,
+    transport: Option<Arc<dyn Timeline>>,
 
     /// Start position in beats on the timeline.
     start_beat: f64,
@@ -108,7 +108,7 @@ impl SamplerUnit {
 
     pub fn with_transport(
         wave: Arc<Wave>,
-        transport: Arc<dyn TransportClockRead>,
+        transport: Arc<dyn Timeline>,
         start_beat: f64,
         duration_beats: Option<f64>,
     ) -> Self {
@@ -132,7 +132,7 @@ impl SamplerUnit {
 
     pub fn set_transport(
         &mut self,
-        transport: Arc<dyn TransportClockRead>,
+        transport: Arc<dyn Timeline>,
         start_beat: f64,
         duration_beats: Option<f64>,
     ) {
@@ -147,7 +147,7 @@ impl SamplerUnit {
     }
 
     /// Used by export to inject export timeline.
-    pub fn replace_transport(&mut self, transport: Arc<dyn TransportClockRead>) {
+    pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
         self.transport = Some(transport);
     }
 
@@ -316,10 +316,10 @@ impl SamplerUnit {
     #[inline]
     pub fn transport_sample_position(&self) -> Option<f64> {
         let transport = self.transport.as_ref()?;
-        if !transport.is_playing() {
+        if !transport.is_rolling() {
             return None;
         }
-        let current_beat = transport.current_beat();
+        let current_beat = transport.beat();
         let beat_offset = current_beat - self.start_beat;
         if beat_offset < 0.0 {
             return None;
@@ -584,24 +584,15 @@ mod tests {
         }
     }
 
-    impl TransportClockRead for MockTransport {
-        fn current_beat(&self) -> f64 {
+    impl Timeline for MockTransport {
+        fn beat(&self) -> f64 {
             self.beat
         }
-        fn is_loop_enabled(&self) -> bool {
-            false
-        }
-        fn get_loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<(f64, f64)> {
             None
         }
-        fn is_playing(&self) -> bool {
+        fn is_rolling(&self) -> bool {
             self.playing
-        }
-        fn is_recording(&self) -> bool {
-            false
-        }
-        fn is_in_preroll(&self) -> bool {
-            false
         }
         fn tempo(&self) -> tutti_core::params::Bpm {
             tutti_core::params::Bpm::new(self.tempo)

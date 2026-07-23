@@ -15,7 +15,7 @@ pub use clock::TransportClock;
 pub use fsm::Direction;
 pub use handle::Transport;
 pub use motion::{MotionEvent, MotionFsm, MotionState};
-pub use offline::{OfflineTransport, OfflineTransportConfig};
+pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use settings::TransportSettings;
 pub use state::{
     beat_from_ports, ClockInputs, Declick, LoopSpan, SeekSlot, TransportState, BEAT_PORTS,
@@ -29,34 +29,40 @@ pub use plugin::{
     TuttiTransportPlugin,
 };
 
-/// Read-only view of transport state — "what time is it, and are we rolling".
+/// A musical timeline: where we are, how fast, and whether it is moving.
 ///
-/// Implemented by both the live [`TransportHandle`] and [`OfflineTransport`],
-/// so a consumer can be driven by either.
+/// Implemented by the live [`Transport`] and by [`OfflineTimeline`], so a
+/// beat-driven source can be handed either one and not care which.
 ///
 /// # When to use this instead of a beat edge
 ///
 /// Pure DSP nodes should **not** implement against this trait. A node that is a
 /// function of musical time takes the beat as a signal on its input ports (see
 /// [`BEAT_PORTS`]) — that is per-sample accurate, works unchanged offline, and
-/// makes the transport→node relationship a visible graph edge.
+/// makes the timeline→node relationship a visible graph edge.
 ///
 /// What legitimately remains here is what a beat signal cannot express:
 ///
-/// - **Boolean gating** — `is_playing` / `is_recording` / `is_in_preroll` drive
-///   early returns with state-reset side effects. "Emit nothing" is not the
-///   same as "emit a level", and a paused transport still has a valid beat, so
-///   pausedness is not recoverable from the beat.
+/// - **Boolean gating** — `is_rolling` drives early returns with state-reset
+///   side effects. "Emit nothing" is not the same as "emit a level", and a
+///   paused timeline still has a valid beat, so rolling-ness is not
+///   recoverable from the beat.
 /// - **Nodes with no ports** — the MIDI sources implement `poll_into` and have
 ///   no `BufferRef` to read a beat from.
-/// - **Non-audio consumers** — the UI playhead and the plugin ABI bridge
-///   (`TransportSource`), which are not in the audio graph at all.
-pub trait TransportClockRead: Send + Sync {
-    fn current_beat(&self) -> f64;
-    fn is_loop_enabled(&self) -> bool;
-    fn get_loop_range(&self) -> Option<(f64, f64)>;
-    fn is_playing(&self) -> bool;
-    fn is_recording(&self) -> bool;
-    fn is_in_preroll(&self) -> bool;
+///
+/// # What is deliberately NOT here
+///
+/// Recording and preroll are live-session facts, not timeline facts: an
+/// offline render answers `false` to both forever. They live on
+/// [`TransportSettings`] and are read directly by the one consumer that needs
+/// them (the metronome).
+pub trait Timeline: Send + Sync {
+    /// Current position in beats.
+    fn beat(&self) -> f64;
+    /// Current tempo.
     fn tempo(&self) -> crate::params::Bpm;
+    /// Whether time is advancing. An offline render is always rolling.
+    fn is_rolling(&self) -> bool;
+    /// The active loop region, or `None` when not looping.
+    fn loop_range(&self) -> Option<(f64, f64)>;
 }

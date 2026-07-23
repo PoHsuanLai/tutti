@@ -22,7 +22,7 @@ use crate::params::{Bpm, SampleRate};
 /// just a store. Fusing them is what made the old `TransportManager` carry 19
 /// fields and 11 atomic getters.
 ///
-/// This type exists because [`TransportClockRead`](super::TransportClockRead)
+/// This type exists because [`Timeline`](super::Timeline)
 /// spans both halves — a reader wants the beat (settings) *and* whether we are
 /// rolling (motion) — and needs one `Clone + Send + Sync + 'static` type to be
 /// erased behind `Arc<dyn …>`.
@@ -66,40 +66,28 @@ impl Transport {
     }
 }
 
-impl super::TransportClockRead for Transport {
-    fn current_beat(&self) -> f64 {
+impl super::Timeline for Transport {
+    fn beat(&self) -> f64 {
         self.settings.beat()
-    }
-
-    fn is_loop_enabled(&self) -> bool {
-        self.settings.loop_span.is_enabled()
-    }
-
-    fn get_loop_range(&self) -> Option<(f64, f64)> {
-        self.settings.loop_span.range()
-    }
-
-    fn is_playing(&self) -> bool {
-        self.motion.is_playing()
-    }
-
-    fn is_recording(&self) -> bool {
-        self.settings.is_recording()
-    }
-
-    fn is_in_preroll(&self) -> bool {
-        self.settings.is_in_preroll()
     }
 
     fn tempo(&self) -> Bpm {
         self.settings.tempo()
+    }
+
+    fn is_rolling(&self) -> bool {
+        self.motion.is_playing()
+    }
+
+    fn loop_range(&self) -> Option<(f64, f64)> {
+        self.settings.loop_span.range()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::motion::MotionEvent;
-    use super::super::TransportClockRead;
+    use super::super::Timeline;
     use super::*;
 
     #[test]
@@ -125,9 +113,9 @@ mod tests {
 
         // beat/tempo come from settings, is_playing from the FSM — the reason
         // this type exists.
-        assert_eq!(t.current_beat(), 8.0);
+        assert_eq!(t.beat(), 8.0);
         assert_eq!(t.tempo().get(), 90.0);
-        assert!(t.is_playing());
+        assert!(t.is_rolling());
     }
 
     #[test]

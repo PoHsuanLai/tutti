@@ -2,7 +2,7 @@
 //!
 //! The parameter-automation counterpart of [`super::harmony_source::HarmonySource`]:
 //! a [`ParamAutomationSource`] holds one [`AutomationEnvelope`] per plugin
-//! parameter id plus a [`TransportClockRead`]. Each block it reads the transport
+//! parameter id plus a [`Timeline`]. Each block it reads the transport
 //! beat, walks the block sample-by-sample stepping the beat cursor, and fills a
 //! reused [`ParameterChanges`] with one [`ParameterPoint`] per parameter at
 //! sample-accurate offsets across the block window.
@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use audio_automation::AutomationEnvelope;
-use tutti_core::transport::TransportClockRead;
+use tutti_core::transport::Timeline;
 
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
 use crate::protocol::ParameterChanges;
@@ -47,7 +47,7 @@ const SAMPLE_STRIDE: usize = 8;
 #[derive(Clone)]
 pub struct ParamAutomationSource {
     params: Arc<[TimedParam]>,
-    transport: Arc<dyn TransportClockRead>,
+    transport: Arc<dyn Timeline>,
     sample_rate: f64,
 }
 
@@ -55,7 +55,7 @@ impl ParamAutomationSource {
     /// Build a parameter-automation source from one envelope per parameter id.
     pub fn new(
         params: impl IntoIterator<Item = TimedParam>,
-        transport: Arc<dyn TransportClockRead>,
+        transport: Arc<dyn Timeline>,
         sample_rate: f64,
     ) -> Self {
         Self {
@@ -81,16 +81,16 @@ impl ParamAutomationSource {
         if block_size == 0 || self.params.is_empty() {
             return;
         }
-        if !self.transport.is_playing() {
+        if !self.transport.is_rolling() {
             return;
         }
-        let start_beat = self.transport.current_beat();
+        let start_beat = self.transport.beat();
         let tempo_bpm = self.transport.tempo().get();
         if tempo_bpm <= 0.0 || self.sample_rate <= 0.0 {
             return;
         }
         let beats_per_sample = tempo_bpm / 60.0 / self.sample_rate;
-        let loop_range = self.transport.get_loop_range();
+        let loop_range = self.transport.loop_range();
         let last = block_size - 1;
 
         for param in self.params.iter() {
@@ -162,24 +162,15 @@ mod tests {
             self.beat.store(b, Ordering::Release);
         }
     }
-    impl TransportClockRead for TestTransport {
-        fn current_beat(&self) -> f64 {
+    impl Timeline for TestTransport {
+        fn beat(&self) -> f64 {
             self.beat.load(Ordering::Acquire)
         }
-        fn is_loop_enabled(&self) -> bool {
-            false
-        }
-        fn get_loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<(f64, f64)> {
             None
         }
-        fn is_playing(&self) -> bool {
+        fn is_rolling(&self) -> bool {
             self.playing.load(Ordering::Acquire)
-        }
-        fn is_recording(&self) -> bool {
-            false
-        }
-        fn is_in_preroll(&self) -> bool {
-            false
         }
         fn tempo(&self) -> Bpm {
             Bpm(self.tempo)
@@ -202,7 +193,7 @@ mod tests {
         let transport = Arc::new(TestTransport::new(120.0)); // 22050 samples/beat @ 44.1k
         let src = ParamAutomationSource::new(
             vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
+            Arc::clone(&transport) as Arc<dyn Timeline>,
             44100.0,
         );
         let mut out = ParameterChanges::new();
@@ -227,7 +218,7 @@ mod tests {
         transport.playing.store(false, Ordering::Release);
         let src = ParamAutomationSource::new(
             vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
+            Arc::clone(&transport) as Arc<dyn Timeline>,
             44100.0,
         );
         let mut out = ParameterChanges::new();
@@ -240,7 +231,7 @@ mod tests {
         let transport = Arc::new(TestTransport::new(120.0));
         let src = ParamAutomationSource::new(
             vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn TransportClockRead>,
+            Arc::clone(&transport) as Arc<dyn Timeline>,
             44100.0,
         );
         let mut out = ParameterChanges::new();
@@ -256,7 +247,7 @@ mod tests {
 
     #[test]
     fn empty_source_and_empty_envelope_emit_nothing() {
-        let transport = Arc::new(TestTransport::new(120.0)) as Arc<dyn TransportClockRead>;
+        let transport = Arc::new(TestTransport::new(120.0)) as Arc<dyn Timeline>;
         let empty_src = ParamAutomationSource::new(Vec::new(), Arc::clone(&transport), 44100.0);
         let mut out = ParameterChanges::new();
         empty_src.fill(64, &mut out);

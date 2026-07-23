@@ -3,7 +3,7 @@
 //! Sets the net's sample rate, then pumps the net through [`MAX_BUFFER_SIZE`]
 //! blocks until `plan.total_samples` have been produced. Each block is
 //! handed to the [`RenderSink`] along with a [`BlockCursor`] describing its
-//! position in the full render. The optional [`OfflineTransport`] advances
+//! position in the full render. The optional [`OfflineTimeline`] advances
 //! in lockstep with the net so transport-aware nodes see the correct beat
 //! position for each block. Progress is reported via the supplied
 //! [`ProgressEmitter`].
@@ -12,7 +12,7 @@ use crate::progress::ProgressEmitter;
 use crate::render::{BlockCursor, RenderPlan, RenderSink};
 use crate::Result;
 use std::sync::Arc;
-use tutti_core::transport::OfflineTransport;
+use tutti_core::transport::OfflineTimeline;
 use tutti_core::{AudioUnit, BufferRef, BufferVec, MAX_BUFFER_SIZE};
 
 /// Drive `net` for `plan.total_samples` samples, pumping each block into
@@ -23,7 +23,7 @@ pub(crate) fn drive(
     net: &mut tutti_core::dsp::Net,
     sample_rate: f64,
     plan: &RenderPlan,
-    timeline: Option<&Arc<OfflineTransport>>,
+    timeline: Option<&Arc<OfflineTimeline>>,
     sink: &mut dyn RenderSink,
     progress: &mut ProgressEmitter<'_>,
 ) -> Result<()> {
@@ -85,7 +85,7 @@ mod tests {
     use super::*;
     use crate::progress::Phase;
     use crate::render::BlockCursor;
-    use tutti_core::transport::{OfflineTransportConfig, TransportClock};
+    use tutti_core::transport::{OfflineTimelineConfig, TransportClock};
     use tutti_core::{AtomicBool, AtomicF64, Bpm, SampleRate as Sr};
 
     /// Captures the beat the net's `TransportClock` emitted on the very first
@@ -130,7 +130,7 @@ mod tests {
         let clock_id = net.push(Box::new(clock));
         net.pipe_output(clock_id);
 
-        let timeline = Arc::new(OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat,
             tempo: Bpm(120.0),
             sample_rate: Sr(sample_rate),
@@ -170,10 +170,10 @@ mod tests {
         // shows up here as N+1, which is the desync this test exists to catch.
         let expected = start_beat + 512.0 * timeline.beats_per_sample();
         assert!(
-            (timeline.current_beat() - expected).abs() < 1e-9,
+            (timeline.beat() - expected).abs() < 1e-9,
             "timeline advanced by {} samples' worth, expected exactly 512 \
              (a priming advance() desyncs it from the net's clock)",
-            (timeline.current_beat() - start_beat) / timeline.beats_per_sample()
+            (timeline.beat() - start_beat) / timeline.beats_per_sample()
         );
     }
 }

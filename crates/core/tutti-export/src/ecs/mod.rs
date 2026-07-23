@@ -1,16 +1,13 @@
 //! Bevy ECS surface for the offline export pipeline.
 //!
-//! - [`export`] — `StartExport` message → file render ([`TuttiExportPlugin`]).
-//!   Unconditional; depends only on tutti-core's graph + task hub.
 //! - [`render_region`] — offline per-node region render
 //!   ([`TuttiRegionRenderPlugin`]). Gated on the `sampler` feature: it isolates
 //!   and rebinds clip-reader / sampler units from `tutti-sampler`.
-
-pub mod export;
-pub use export::{
-    export_poll_system, export_start_system, ExportComplete, ExportFailed, ExportInProgress,
-    StartExport, TuttiExportPlugin,
-};
+//!
+//! (The message-driven whole-graph `StartExport` pipeline was removed as dead
+//! scaffolding — nothing ever sent the message. Offline whole-graph export is
+//! driven directly through the [`GraphExport`](crate::GraphExport) builder, as
+//! `dawai-frontend`'s project export does.)
 
 #[cfg(feature = "sampler")]
 pub mod render_region;

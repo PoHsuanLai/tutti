@@ -9,8 +9,8 @@
 //! thread. When the render finishes, the result lands on the same entity as a
 //! [`RegionRenderComplete`] component carrying the PCM.
 //!
-//! Mirrors the `StartExport` / `ExportInProgress` poll pattern in
-//! [`crate::ecs::export`], with two differences: the node isolation, and the
+//! Uses the standard message → spawn-task → poll-completion pattern, with two
+//! notable traits: the node isolation, and the
 //! render runs on the shared [`AsyncComputeTaskPool`] via the `to_buffers`
 //! (in-memory) terminal — a bounded, Bevy-managed pool rather than `Run::spawn`'s
 //! raw OS thread, so it cannot pin every core and starve the real-time audio

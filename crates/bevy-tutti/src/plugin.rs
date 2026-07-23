@@ -13,24 +13,22 @@ use tutti_core::graph::{AudioConfig, GraphReconcilePlugin};
 use tutti_core::metering::TuttiMeteringPlugin;
 use tutti_core::transport::TuttiTransportPlugin;
 
-#[cfg(feature = "midi")]
-use tutti_midi_io::TuttiMidiPlugin;
-#[cfg(feature = "spatial")]
-use tutti_units::TuttiSpatialPlugin;
-#[cfg(feature = "soundfont")]
-use tutti_synth::TuttiSoundFontPlugin;
-#[cfg(feature = "sampler")]
-use tutti_sampler::TuttiSamplerPlugin;
-#[cfg(feature = "automation")]
-use tutti_units::TuttiAutomationPlugin;
+use crate::AudioDeviceState;
 #[cfg(feature = "analysis")]
 use tutti_analysis::TuttiAnalysisPlugin;
-#[cfg(feature = "export")]
-use tutti_export::ecs::TuttiExportPlugin;
+#[cfg(feature = "midi")]
+use tutti_midi_io::TuttiMidiPlugin;
 #[cfg(feature = "plugin")]
 use tutti_plugin_host::TuttiHostingPlugin;
+#[cfg(feature = "sampler")]
+use tutti_sampler::TuttiSamplerPlugin;
+#[cfg(feature = "soundfont")]
+use tutti_synth::TuttiSoundFontPlugin;
+#[cfg(feature = "automation")]
+use tutti_units::TuttiAutomationPlugin;
 use tutti_units::TuttiDspPlugin;
-use crate::AudioDeviceState;
+#[cfg(feature = "spatial")]
+use tutti_units::TuttiSpatialPlugin;
 
 /// Bevy plugin that creates a `TuttiEngine`, starts the audio stream,
 /// and registers ECS components, asset loaders, and systems.
@@ -130,9 +128,10 @@ impl Plugin for TuttiPlugin {
         app.add_plugins(TuttiAutomationPlugin);
         #[cfg(feature = "analysis")]
         app.add_plugins(TuttiAnalysisPlugin);
-        #[cfg(feature = "export")]
-        app.add_plugins(TuttiExportPlugin);
-        // Region render renders sampler/clip-reader units → needs `sampler` too.
+        // Offline region render (sampler/clip-reader units → PCM); needs both
+        // `export` and `sampler`. (The old message-driven whole-graph export
+        // plugin was removed as dead scaffolding — whole-graph export runs
+        // directly via the `GraphExport` builder, not an ECS message.)
         #[cfg(all(feature = "export", feature = "sampler"))]
         app.add_plugins(tutti_export::ecs::TuttiRegionRenderPlugin);
 
@@ -141,4 +140,3 @@ impl Plugin for TuttiPlugin {
         app.add_plugins(tutti_wavecache::WaveCachePlugin);
     }
 }
-

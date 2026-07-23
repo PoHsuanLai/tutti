@@ -6,6 +6,7 @@ mod handle;
 pub(crate) mod manager;
 mod offline;
 pub(crate) mod position;
+mod state;
 
 pub use automation_reader::{AutomationEnvelopeFn, AutomationReaderInput};
 pub use click::{click, ClickNode, ClickSettings, ClickState, MetronomeMode};
@@ -13,6 +14,7 @@ pub use clock::TransportClock;
 pub use handle::{MetronomeHandle, TransportHandle};
 pub use manager::{Direction, MotionState, TransportManager};
 pub use offline::{OfflineTransport, OfflineTransportConfig};
+pub use state::{ClockInputs, Declick, LoopSpan, SeekSlot, TransportState};
 
 #[cfg(feature = "bevy")]
 pub mod plugin;

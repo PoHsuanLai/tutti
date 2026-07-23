@@ -1,9 +1,10 @@
 //! Sample-accurate transport clock.
 
-use std::any;
-use std::sync::Arc;
+use super::state::{ClockInputs, LoopSpan, SeekSlot};
 use crate::{AtomicBool, AtomicF64, Ordering};
 use fundsp::prelude::*;
+use std::any;
+use std::sync::Arc;
 
 /// Wrap a beat position back into the loop range, preserving overshoot.
 #[inline]
@@ -25,12 +26,10 @@ pub struct TransportClock {
     current_beat: f64,
     tempo: Arc<AtomicF64>,
     paused: Arc<AtomicBool>,
-    seek_target: Arc<AtomicF64>,
-    seek_pending: Arc<AtomicBool>,
+    seek: SeekSlot,
     position_writeback: Option<Arc<AtomicF64>>,
-    loop_enabled: Option<Arc<AtomicBool>>,
-    loop_start: Option<Arc<AtomicF64>>,
-    loop_end: Option<Arc<AtomicF64>>,
+    /// `None` = this clock ignores looping entirely (offline renders).
+    loop_span: Option<LoopSpan>,
     sample_rate: f64,
     beat_per_sample: f64,
     last_tempo: f64,
@@ -59,33 +58,39 @@ impl TransportClock {
             current_beat: 0.0,
             tempo,
             paused,
-            seek_target: Arc::new(AtomicF64::new(0.0)),
-            seek_pending: Arc::new(AtomicBool::new(false)),
+            seek: SeekSlot::new(),
             position_writeback: None,
-            loop_enabled: None,
-            loop_start: None,
-            loop_end: None,
+            loop_span: None,
             sample_rate,
             beat_per_sample: Self::calculate_beat_per_sample(initial_tempo, sample_rate),
             last_tempo: initial_tempo,
         }
     }
 
-    pub fn with_seek(mut self, seek_target: Arc<AtomicF64>, seek_pending: Arc<AtomicBool>) -> Self {
-        self.seek_target = seek_target;
-        self.seek_pending = seek_pending;
+    /// Build a clock from the transport's whole input surface.
+    ///
+    /// Replaces the `new(..).with_seek(..).with_loop(..)` chain and the eight
+    /// loose `Arc` clones it required at each construction site.
+    pub fn from_inputs(inputs: ClockInputs, sample_rate: impl Into<crate::SampleRate>) -> Self {
+        let ClockInputs {
+            tempo,
+            paused,
+            seek,
+            loop_span,
+        } = inputs;
+        let mut clock = Self::new(tempo, paused, sample_rate);
+        clock.seek = seek;
+        clock.loop_span = Some(loop_span);
+        clock
+    }
+
+    pub fn with_seek(mut self, seek: SeekSlot) -> Self {
+        self.seek = seek;
         self
     }
 
-    pub fn with_loop(
-        mut self,
-        loop_enabled: Arc<AtomicBool>,
-        loop_start: Arc<AtomicF64>,
-        loop_end: Arc<AtomicF64>,
-    ) -> Self {
-        self.loop_enabled = Some(loop_enabled);
-        self.loop_start = Some(loop_start);
-        self.loop_end = Some(loop_end);
+    pub fn with_loop(mut self, loop_span: LoopSpan) -> Self {
+        self.loop_span = Some(loop_span);
         self
     }
 
@@ -94,17 +99,12 @@ impl TransportClock {
         self
     }
 
-    pub fn seek_target(&self) -> Arc<AtomicF64> {
-        Arc::clone(&self.seek_target)
-    }
-
-    pub fn seek_pending(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.seek_pending)
+    pub fn seek_slot(&self) -> SeekSlot {
+        self.seek.clone()
     }
 
     pub fn seek(&self, beat: f64) {
-        self.seek_target.store(beat, Ordering::Release);
-        self.seek_pending.store(true, Ordering::Release);
+        self.seek.request(beat);
     }
 
     pub fn current_beat(&self) -> f64 {
@@ -122,30 +122,16 @@ impl TransportClock {
 
     #[inline]
     fn apply_pending_seek(&mut self) {
-        if self.seek_pending.load(Ordering::Acquire) {
-            self.current_beat = self.seek_target.load(Ordering::Acquire);
-            self.seek_pending.store(false, Ordering::Release);
+        if let Some(target) = self.seek.take() {
+            self.current_beat = target;
         }
     }
 
     #[inline]
     fn apply_loop_wrap(&mut self) {
-        let loop_enabled = self
-            .loop_enabled
-            .as_ref()
-            .is_some_and(|l| l.load(Ordering::Acquire));
-        if !loop_enabled {
+        let Some((loop_start, loop_end)) = self.loop_span.as_ref().and_then(LoopSpan::range) else {
             return;
-        }
-
-        let loop_start = self
-            .loop_start
-            .as_ref()
-            .map_or(0.0, |l| l.load(Ordering::Acquire));
-        let loop_end = self
-            .loop_end
-            .as_ref()
-            .map_or(f64::MAX, |l| l.load(Ordering::Acquire));
+        };
 
         if loop_end > loop_start && self.current_beat >= loop_end {
             self.current_beat = wrap_beat(self.current_beat, loop_start, loop_end);
@@ -189,12 +175,9 @@ impl AudioUnit for TransportClock {
         let tempo_now = self.tempo.load(Ordering::Acquire);
         self.tempo = Arc::new(AtomicF64::new(tempo_now));
         self.paused = Arc::new(AtomicBool::new(false));
-        self.seek_target = Arc::new(AtomicF64::new(0.0));
-        self.seek_pending = Arc::new(AtomicBool::new(false));
+        self.seek = SeekSlot::new();
         self.position_writeback = None;
-        self.loop_enabled = None;
-        self.loop_start = None;
-        self.loop_end = None;
+        self.loop_span = None;
     }
 
     fn set_sample_rate(&mut self, sample_rate: crate::params::SampleRate) {
@@ -228,18 +211,8 @@ impl AudioUnit for TransportClock {
         self.update_tempo_if_changed();
 
         let is_paused = self.paused.load(Ordering::Acquire);
-        let loop_enabled = self
-            .loop_enabled
-            .as_ref()
-            .is_some_and(|l| l.load(Ordering::Acquire));
-        let loop_start = self
-            .loop_start
-            .as_ref()
-            .map_or(0.0, |l| l.load(Ordering::Acquire));
-        let loop_end = self
-            .loop_end
-            .as_ref()
-            .map_or(f64::MAX, |l| l.load(Ordering::Acquire));
+        // Hoisted once per buffer: the loop region cannot change mid-block.
+        let active_loop = self.loop_span.as_ref().and_then(LoopSpan::range);
 
         if is_paused {
             let (whole, frac) = split_beat(self.current_beat);
@@ -247,7 +220,8 @@ impl AudioUnit for TransportClock {
                 output.set_f32(0, i, whole);
                 output.set_f32(1, i, frac);
             }
-        } else if loop_enabled && loop_end > loop_start {
+        } else if let Some((loop_start, loop_end)) = active_loop.filter(|(start, end)| end > start)
+        {
             for i in 0..size {
                 let (whole, frac) = split_beat(self.current_beat);
                 output.set_f32(0, i, whole);
@@ -303,12 +277,9 @@ impl Clone for TransportClock {
             current_beat: self.current_beat,
             tempo: Arc::clone(&self.tempo),
             paused: Arc::clone(&self.paused),
-            seek_target: Arc::clone(&self.seek_target),
-            seek_pending: Arc::clone(&self.seek_pending),
+            seek: self.seek.clone(),
             position_writeback: self.position_writeback.as_ref().map(Arc::clone),
-            loop_enabled: self.loop_enabled.as_ref().map(Arc::clone),
-            loop_start: self.loop_start.as_ref().map(Arc::clone),
-            loop_end: self.loop_end.as_ref().map(Arc::clone),
+            loop_span: self.loop_span.clone(),
             sample_rate: self.sample_rate,
             beat_per_sample: self.beat_per_sample,
             last_tempo: self.last_tempo,
@@ -455,15 +426,10 @@ mod tests {
     #[test]
     fn test_transport_clock_loop_wrapping() {
         let (tempo, paused) = create_test_atomics();
-        let loop_enabled = Arc::new(AtomicBool::new(true));
-        let loop_start = Arc::new(AtomicF64::new(0.0));
-        let loop_end = Arc::new(AtomicF64::new(4.0));
+        let loop_span = LoopSpan::new(0.0, 4.0);
+        loop_span.set_enabled(true);
 
-        let mut clock = TransportClock::new(tempo, paused, 44100.0).with_loop(
-            loop_enabled,
-            loop_start,
-            loop_end,
-        );
+        let mut clock = TransportClock::new(tempo, paused, 44100.0).with_loop(loop_span);
 
         let mut output = [0.0f32; 2];
 
@@ -479,15 +445,10 @@ mod tests {
     #[test]
     fn test_transport_clock_loop_disabled() {
         let (tempo, paused) = create_test_atomics();
-        let loop_enabled = Arc::new(AtomicBool::new(false));
-        let loop_start = Arc::new(AtomicF64::new(0.0));
-        let loop_end = Arc::new(AtomicF64::new(4.0));
+        let loop_span = LoopSpan::new(0.0, 4.0);
+        loop_span.set_enabled(false);
 
-        let mut clock = TransportClock::new(tempo, paused, 44100.0).with_loop(
-            loop_enabled,
-            loop_start,
-            loop_end,
-        );
+        let mut clock = TransportClock::new(tempo, paused, 44100.0).with_loop(loop_span);
 
         let mut output = [0.0f32; 2];
 
@@ -506,15 +467,10 @@ mod tests {
     #[test]
     fn test_transport_clock_loop_overshoot_precision() {
         let (tempo, paused) = create_test_atomics();
-        let loop_enabled = Arc::new(AtomicBool::new(true));
-        let loop_start = Arc::new(AtomicF64::new(0.0));
-        let loop_end = Arc::new(AtomicF64::new(1.0));
+        let loop_span = LoopSpan::new(0.0, 1.0);
+        loop_span.set_enabled(true);
 
-        let mut clock = TransportClock::new(tempo, paused, 44100.0).with_loop(
-            loop_enabled,
-            loop_start,
-            loop_end,
-        );
+        let mut clock = TransportClock::new(tempo, paused, 44100.0).with_loop(loop_span);
 
         clock.seek(0.99999);
         let mut output = [0.0f32; 2];

@@ -231,7 +231,7 @@ mod tests {
     use super::*;
     use parking_lot::Mutex;
     use tutti_core::processor::GraphProcessor;
-    use tutti_core::{MeteringManager, Ordering, TransportClock, TransportManager, GraphNet};
+    use tutti_core::{GraphNet, MeteringManager, Ordering, TransportClock, TransportManager};
 
     /// Build a minimal processor + transport pair for callback-level tests.
     /// Bypasses the engine builder — these tests exercise the RT callback
@@ -243,21 +243,8 @@ mod tests {
         let metering = Arc::new(MeteringManager::new(sample_rate));
 
         let mut net = GraphNet::new(0, 2);
-        let clock = TransportClock::new(
-            transport.tempo().clone(),
-            transport.paused().clone(),
-            sample_rate,
-        )
-        .with_seek(
-            transport.seek_target().clone(),
-            transport.seek_pending().clone(),
-        )
-        .with_loop(
-            transport.loop_enabled_flag().clone(),
-            transport.loop_start_beat_atomic().clone(),
-            transport.loop_end_beat_atomic().clone(),
-        )
-        .with_position_writeback(transport.current_beat().clone());
+        let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
+            .with_position_writeback(transport.current_beat().clone());
         net.inner_mut().push(Box::new(clock));
         let backend = net.backend();
 
@@ -301,8 +288,7 @@ mod tests {
         transport.set_loop_range(0.0, 4.0);
         transport.set_loop_enabled(true);
         transport.process_commands();
-        transport.seek_target().store(3.99, Ordering::Release);
-        transport.seek_pending().store(true, Ordering::Release);
+        transport.seek_slot().request(3.99);
 
         let frames = 1024;
         let mut output = vec![0.0f32; frames * 2];

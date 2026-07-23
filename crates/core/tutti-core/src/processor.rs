@@ -6,11 +6,12 @@
 //! wraps another processor to split the buffer on MIDI event boundaries for
 //! sample-accurate event timing.
 
-use std::sync::Arc;
+use crate::transport::Declick;
 use crate::transport::TransportManager;
-use crate::{AtomicU32, AudioThreadCell, Ordering};
+use crate::{AudioThreadCell, Ordering};
 use fundsp::audiounit::AudioUnit;
 use fundsp::realnet::NetBackend;
+use std::sync::Arc;
 
 /// Per-buffer audio processor, called from the audio callback.
 ///
@@ -28,19 +29,17 @@ pub trait AudioProcessor: Send + Sync + 'static {
 pub struct GraphProcessor {
     transport: Arc<TransportManager>,
     net_backend: AudioThreadCell<Option<NetBackend>>,
-    declick_remaining: Arc<AtomicU32>,
-    declick_total: Arc<AtomicU32>,
+    /// Cached from the transport so the fade path avoids a double deref.
+    declick: Declick,
 }
 
 impl GraphProcessor {
     pub fn new(transport: Arc<TransportManager>, net_backend: NetBackend) -> Self {
-        let declick_remaining = Arc::clone(transport.declick_remaining());
-        let declick_total = Arc::clone(transport.declick_total());
+        let declick = transport.declick().clone();
         Self {
             transport,
             net_backend: AudioThreadCell::new(Some(net_backend)),
-            declick_remaining,
-            declick_total,
+            declick,
         }
     }
 
@@ -60,12 +59,12 @@ impl GraphProcessor {
     /// Returns true if the fade completed during this buffer.
     #[inline]
     fn apply_declick(&self, output: &mut [f32], frames: usize) -> bool {
-        let remaining = self.declick_remaining.load(Ordering::Acquire);
+        let remaining = self.declick.remaining.load(Ordering::Acquire);
         if remaining == 0 {
             return false;
         }
 
-        let total = self.declick_total.load(Ordering::Acquire) as f32;
+        let total = self.declick.total.load(Ordering::Acquire) as f32;
         if total == 0.0 {
             return false;
         }
@@ -88,7 +87,8 @@ impl GraphProcessor {
         }
 
         let new_remaining = remaining.saturating_sub(frames as u32);
-        self.declick_remaining
+        self.declick
+            .remaining
             .store(new_remaining, Ordering::Release);
 
         new_remaining == 0
@@ -120,9 +120,9 @@ impl AudioProcessor for GraphProcessor {
 #[cfg(feature = "midi")]
 mod midi_processor {
     use super::AudioProcessor;
-    use std::sync::Arc;
     use crate::RtEventBuf;
     use arc_swap::ArcSwap;
+    use std::sync::Arc;
     use tutti_midi_types::ump::MidiEvent;
     use tutti_midi_types::{MidiInputSource, MidiQueue, MidiRoutingSnapshot};
 

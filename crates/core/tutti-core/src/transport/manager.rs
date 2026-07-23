@@ -1,14 +1,15 @@
 //! Transport manager with FSM-based state management.
 
-use std::sync::Arc;
 use crate::AudioThreadCell;
 use crossbeam_queue::ArrayQueue;
+use std::sync::Arc;
 
 use super::fsm::{LocateState, TransportEvent, TransportFSM};
 use super::position::{LoopRange, MusicalPosition};
-use std::sync::atomic::Ordering;
+use super::state::{ClockInputs, Declick, LoopSpan, SeekSlot, TransportState};
 use crate::params::{Bpm, SampleRate};
-use crate::{AtomicBool, AtomicF64, AtomicU32, AtomicU8};
+use crate::{AtomicBool, AtomicF64, AtomicU8};
+use std::sync::atomic::Ordering;
 
 pub use super::fsm::{Direction, MotionState};
 
@@ -50,16 +51,13 @@ pub struct TransportManager {
     recording: Arc<AtomicBool>,
     in_preroll: Arc<AtomicBool>,
     current_beat: Arc<AtomicF64>,
-    loop_enabled: Arc<AtomicBool>,
-    loop_start_beat: Arc<AtomicF64>,
-    loop_end_beat: Arc<AtomicF64>,
+    /// Loop region + arming, as one value.
+    loop_span: LoopSpan,
     motion_state: Arc<AtomicU8>,
-    seek_target: Arc<AtomicF64>,
-    seek_pending: Arc<AtomicBool>,
-    /// Declick fade: remaining samples in the fade-out. 0 = no fade active.
-    declick_remaining: Arc<AtomicU32>,
-    /// Total declick duration in samples (set when fade starts).
-    declick_total: Arc<AtomicU32>,
+    /// Pending absolute jump, as one value.
+    seek: SeekSlot,
+    /// Fade contract with `GraphProcessor`.
+    declick: Declick,
 
     sample_rate: f64,
 }
@@ -85,14 +83,10 @@ impl TransportManager {
             recording: Arc::new(AtomicBool::new(false)),
             in_preroll: Arc::new(AtomicBool::new(false)),
             current_beat: Arc::new(AtomicF64::new(0.0)),
-            loop_enabled: Arc::new(AtomicBool::new(false)),
-            loop_start_beat: Arc::new(AtomicF64::new(0.0)),
-            loop_end_beat: Arc::new(AtomicF64::new(16.0)),
+            loop_span: LoopSpan::new(0.0, 16.0),
             motion_state: Arc::new(AtomicU8::new(MotionState::Stopped.to_u8())),
-            seek_target: Arc::new(AtomicF64::new(0.0)),
-            seek_pending: Arc::new(AtomicBool::new(false)),
-            declick_remaining: Arc::new(AtomicU32::new(0)),
-            declick_total: Arc::new(AtomicU32::new(0)),
+            seek: SeekSlot::new(),
+            declick: Declick::new(),
             sample_rate,
         }
     }
@@ -144,24 +138,33 @@ impl TransportManager {
         &self.in_preroll
     }
 
-    pub fn loop_enabled_flag(&self) -> &Arc<AtomicBool> {
-        &self.loop_enabled
+    /// The loop region as one value.
+    pub fn loop_span(&self) -> &LoopSpan {
+        &self.loop_span
     }
 
-    pub fn loop_start_beat_atomic(&self) -> &Arc<AtomicF64> {
-        &self.loop_start_beat
+    /// The pending-seek slot as one value.
+    pub fn seek_slot(&self) -> &SeekSlot {
+        &self.seek
     }
 
-    pub fn loop_end_beat_atomic(&self) -> &Arc<AtomicF64> {
-        &self.loop_end_beat
+    /// Everything `TransportClock` reads to advance time.
+    pub fn clock_inputs(&self) -> ClockInputs {
+        ClockInputs {
+            tempo: Arc::clone(&self.tempo),
+            paused: Arc::clone(&self.paused),
+            seek: self.seek.clone(),
+            loop_span: self.loop_span.clone(),
+        }
     }
 
-    pub fn seek_target(&self) -> &Arc<AtomicF64> {
-        &self.seek_target
-    }
-
-    pub fn seek_pending(&self) -> &Arc<AtomicBool> {
-        &self.seek_pending
+    /// The read-only "what time is it" half that the clock publishes.
+    pub fn state(&self) -> TransportState {
+        TransportState {
+            beat: Arc::clone(&self.current_beat),
+            recording: Arc::clone(&self.recording),
+            in_preroll: Arc::clone(&self.in_preroll),
+        }
     }
 
     pub fn get_tempo(&self) -> Bpm {
@@ -197,14 +200,14 @@ impl TransportManager {
     }
 
     pub fn is_loop_enabled(&self) -> bool {
-        self.loop_enabled.load(Ordering::Acquire)
+        self.loop_span.is_enabled()
     }
 
     pub fn get_loop_range(&self) -> Option<(f64, f64)> {
-        self.loop_enabled.load(Ordering::Acquire).then(|| {
+        self.loop_span.is_enabled().then(|| {
             (
-                self.loop_start_beat.load(Ordering::Acquire),
-                self.loop_end_beat.load(Ordering::Acquire),
+                self.loop_span.start.load(Ordering::Acquire),
+                self.loop_span.end.load(Ordering::Acquire),
             )
         })
     }
@@ -256,21 +259,20 @@ impl TransportManager {
     }
 
     pub fn toggle_loop(&self) {
-        let current = self.loop_enabled.load(Ordering::Acquire);
-        self.loop_enabled.store(!current, Ordering::Release);
+        let current = self.loop_span.is_enabled();
+        self.loop_span.set_enabled(!current);
         self.send_command(TransportEvent::SetLoopEnabled(!current));
     }
 
     pub fn set_loop_range_fsm(&self, start: f64, end: f64) {
-        self.loop_start_beat.store(start, Ordering::Release);
-        self.loop_end_beat.store(end, Ordering::Release);
-        self.loop_enabled.store(true, Ordering::Release);
+        self.loop_span.set_range(start, end);
+        self.loop_span.set_enabled(true);
         let range = LoopRange::new(start, end);
         self.send_command(TransportEvent::SetLoopRange(range));
     }
 
     pub fn clear_loop(&self) {
-        self.loop_enabled.store(false, Ordering::Release);
+        self.loop_span.set_enabled(false);
         self.send_command(TransportEvent::ClearLoop);
     }
 
@@ -294,18 +296,15 @@ impl TransportManager {
         MotionState::from_u8(self.motion_state.load(Ordering::Acquire))
     }
 
-    pub fn declick_remaining(&self) -> &Arc<AtomicU32> {
-        &self.declick_remaining
-    }
-
-    pub fn declick_total(&self) -> &Arc<AtomicU32> {
-        &self.declick_total
+    /// The declick fade contract shared with `GraphProcessor`.
+    pub fn declick(&self) -> &Declick {
+        &self.declick
     }
 
     /// Called by the processor when the declick fade reaches zero.
     /// Completes the pending action (stop or locate).
     pub fn complete_declick(&self) {
-        self.declick_remaining.store(0, Ordering::Release);
+        self.declick.clear();
 
         let motion = self.motion_state();
         match motion {
@@ -319,8 +318,7 @@ impl TransportManager {
                 let fsm = self.fsm.borrow();
                 if let Some(pos) = fsm.pending_locate() {
                     self.current_beat.store(pos.beats, Ordering::Release);
-                    self.seek_target.store(pos.beats, Ordering::Release);
-                    self.seek_pending.store(true, Ordering::Release);
+                    self.seek.request(pos.beats);
                 }
                 // Resume rolling or stop based on locate state
                 if fsm.locate_state() == LocateState::LocateAndRoll {
@@ -346,20 +344,18 @@ impl TransportManager {
                 let paused = matches!(motion, MotionState::Stopped);
                 self.paused.store(paused, Ordering::Release);
                 // Cancel any active declick on direct state change
-                self.declick_remaining.store(0, Ordering::Release);
+                self.declick.clear();
             }
             TransitionResult::DeclickStarted(motion) => {
                 self.motion_state.store(motion.to_u8(), Ordering::Release);
                 // Start the fade-out. Audio keeps playing while gain ramps to zero.
                 let fsm = self.fsm.borrow();
                 let total = fsm.declick_samples() as u32;
-                self.declick_total.store(total, Ordering::Release);
-                self.declick_remaining.store(total, Ordering::Release);
+                self.declick.start(total);
             }
             TransitionResult::Locating(pos) => {
                 self.current_beat.store(pos.beats, Ordering::Release);
-                self.seek_target.store(pos.beats, Ordering::Release);
-                self.seek_pending.store(true, Ordering::Release);
+                self.seek.request(pos.beats);
                 // If LocateAndRoll, resume playback after seek
                 let fsm = self.fsm.borrow();
                 if fsm.locate_state() == LocateState::LocateAndRoll {
@@ -369,7 +365,7 @@ impl TransportManager {
                 }
             }
             TransitionResult::LoopModeChanged(enabled) => {
-                self.loop_enabled.store(enabled, Ordering::Release);
+                self.loop_span.set_enabled(enabled);
             }
             TransitionResult::DirectionChanged(direction) => {
                 self.reverse
@@ -379,13 +375,12 @@ impl TransportManager {
     }
 
     pub fn set_loop_enabled(&self, enabled: bool) {
-        self.loop_enabled.store(enabled, Ordering::Release);
+        self.loop_span.set_enabled(enabled);
         self.send_command(TransportEvent::SetLoopEnabled(enabled));
     }
 
     pub fn set_loop_range(&self, start: f64, end: f64) {
-        self.loop_start_beat.store(start, Ordering::Release);
-        self.loop_end_beat.store(end, Ordering::Release);
+        self.loop_span.set_range(start, end);
     }
 
     pub fn sample_rate(&self) -> SampleRate {
@@ -527,5 +522,4 @@ mod tests {
             handle.join().expect("Thread panicked");
         }
     }
-
 }

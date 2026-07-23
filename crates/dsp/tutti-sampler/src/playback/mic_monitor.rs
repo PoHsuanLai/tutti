@@ -26,10 +26,22 @@
 //! # Single-consumer invariant
 //!
 //! [`HeapCons::try_pop`] advances the read index, so exactly one party may pop.
-//! Here the **audio thread** is that sole popper: `tick`/`process` are the only
-//! callers, and though fundsp may hold several clones of one `MicRing`, only one
-//! is ticked per buffer and all live on the one audio thread, so pops serialize.
-//! The device callback only ever *pushes* (the producer half), never pops.
+//! The invariant that keeps the shared `&self`→`&mut` pop sound: **the ring is
+//! popped ONLY from `tick`/`process`, and only the graph *backend* clone is
+//! ticked.**
+//!
+//! This needs care because fundsp's `Net::commit` clones every vertex unit and
+//! keeps the clone on the main-thread *frontend* net (it swaps the original
+//! vertices to the backend — see `Net::commit`). So a second `MicMonitorNode`
+//! clone, sharing this exact `Arc`'d consumer, lives on the frontend. The rule
+//! is therefore: the frontend clone must **never** touch the ring — hence
+//! [`reset`](MicMonitorNode::reset) is a deliberate no-op (fundsp drives `reset`
+//! / `set_sample_rate` on the frontend, on the main thread, and popping there
+//! would race the backend's `tick`). Only `tick`/`process` pop, and fundsp ticks
+//! only the backend copy on the one audio thread, so pops serialize. This is the
+//! same discipline `StreamingSamplerUnit` follows — its `reset` likewise leaves
+//! the shared `SharedReader` untouched. The device callback only ever *pushes*
+//! (the producer half, holding `HeapProd` directly), never pops.
 
 use std::sync::Arc;
 
@@ -108,10 +120,19 @@ impl AudioUnit for MicMonitorNode {
     }
 
     fn reset(&mut self) {
-        // Discard whatever the device buffered so monitoring resumes from
-        // "now" rather than replaying a stale backlog.
-        let mut cons = self.ring.borrow_mut();
-        while cons.try_pop().is_some() {}
+        // Deliberately does NOT touch the ring. fundsp's commit clones every
+        // vertex unit (Net::commit swaps original vertices to the backend, keeps
+        // the clones on the frontend), so a `MicMonitorNode` clone lives on the
+        // main-thread frontend net sharing this same `Arc`'d consumer. `reset`
+        // can be driven on that frontend clone (via `Net::reset` /
+        // `set_sample_rate`) concurrently with the backend clone's `tick` on the
+        // audio thread. Popping here would be a second `&mut` into the shared
+        // `HeapCons` from another thread — a data race on the SPSC read index.
+        //
+        // So the ring is popped ONLY from `tick`/`process` (the single backend
+        // consumer), exactly as `StreamingSamplerUnit::reset` leaves its shared
+        // `SharedReader` untouched. The monitor ring self-limits to ~10ms, so
+        // there's no stale backlog worth draining anyway.
     }
 
     fn set_sample_rate(&mut self, _sample_rate: tutti_core::SampleRate) {
@@ -197,6 +218,20 @@ mod tests {
         let mut out = [0.0f32; 2];
         node.tick(&[], &mut out);
         assert_eq!(out, [0.5, 0.5]);
+    }
+
+    #[test]
+    fn reset_does_not_consume_the_ring() {
+        // reset() must NOT pop — the frontend clone can be reset on the main
+        // thread while the backend clone ticks, and a pop there would race the
+        // backend. So after reset, the frames are still there for `tick`.
+        let (ring, _prod) = ring_with(&[[9.0, 9.0]]);
+        let mut node = MicMonitorNode::new(ring);
+        node.reset();
+
+        let mut out = [0.0f32; 2];
+        node.tick(&[], &mut out);
+        assert_eq!(out, [9.0, 9.0], "reset left the ring untouched");
     }
 
     #[test]

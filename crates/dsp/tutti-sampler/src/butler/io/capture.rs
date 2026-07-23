@@ -3,8 +3,8 @@
 //! An [`AudioOut`](crate::AudioOut) is "push frames → destination"; this is that
 //! destination for a WAV file. It writes 32-bit float (default) or 24-bit int,
 //! INCREMENTALLY — a recording is minutes long and never held resident. That is
-//! the deliberate contrast with `tutti-export`'s offline `FileSink`, which
-//! buffers a whole signal before encoding (inherent for compressed formats).
+//! the deliberate contrast with `tutti-export`'s offline render path (its
+//! `StreamingEncoder`), which can buffer/dither a whole signal before encoding.
 //! Same "push frames → file" concept, two impls; they share the vocabulary
 //! ([`AudioOut`](crate::AudioOut)), not the implementation.
 //!
@@ -124,7 +124,7 @@ mod tests {
     /// and finalizing must yield a valid WAV whose frame count is the sum of
     /// every block — the sink never has to see the whole recording at once.
     #[test]
-    fn wav_sink_writes_incrementally_and_finalizes() {
+    fn wav_out_writes_incrementally_and_finalizes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("capture.wav");
 
@@ -150,7 +150,7 @@ mod tests {
 
     /// Mono capture writes one sample per frame (the right channel is dropped).
     #[test]
-    fn wav_sink_mono_writes_one_sample_per_frame() {
+    fn wav_out_mono_writes_one_sample_per_frame() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mono.wav");
 

@@ -11,7 +11,7 @@ use crate::options::{
 };
 use crate::process::{self, ResampleQuality, StreamProcessor};
 use crate::progress::{Phase, PhaseGuard, ProgressEmitter};
-use crate::render::{self, RenderOut, RenderRequest, StreamSink};
+use crate::render::{self, RenderOut, RenderRequest, StreamOut};
 use crate::run::{Rendered, Run, Written};
 #[cfg(feature = "midi")]
 use crate::MidiTrack;
@@ -441,7 +441,7 @@ fn run_stream_to_file(
     let (render_result, sink_result) = {
         let encoder_ref = &mut *encoder;
         let processor_ref = &mut processor;
-        let mut sink = StreamSink::new(|l: &[f32], r: &[f32]| {
+        let mut sink = StreamOut::new(|l: &[f32], r: &[f32]| {
             let chunk = processor_ref.process_chunk(l, r);
             encoder_ref
                 .write_chunk(chunk)

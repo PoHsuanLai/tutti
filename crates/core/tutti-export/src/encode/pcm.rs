@@ -6,16 +6,23 @@
 
 /// Quantize a normalized `f32` (`[-1.0, 1.0]`) to signed 16-bit PCM, clamping
 /// out-of-range input.
+///
+/// Rounds to nearest rather than truncating: bare `as i16` truncation biases
+/// every sample toward zero (a consistent negative DC error on the negative
+/// half), whereas `.round()` is unbiased. Matches the sampler's `WavOut`
+/// quantization so a recorded and an exported file quantize a given sample
+/// identically.
 #[inline]
 pub(crate) fn f32_to_i16(sample: f32) -> i16 {
-    (sample.clamp(-1.0, 1.0) * 32767.0) as i16
+    (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16
 }
 
 /// Quantize a normalized `f32` (`[-1.0, 1.0]`) to signed 24-bit PCM (stored in
-/// an `i32`), clamping out-of-range input.
+/// an `i32`), clamping out-of-range input. Rounds to nearest — see
+/// [`f32_to_i16`] for why truncation is wrong.
 #[inline]
 pub(crate) fn f32_to_i24(sample: f32) -> i32 {
-    (sample.clamp(-1.0, 1.0) * 8388607.0) as i32
+    (sample.clamp(-1.0, 1.0) * 8388607.0).round() as i32
 }
 
 #[cfg(test)]

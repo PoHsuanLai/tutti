@@ -6,7 +6,7 @@
 //! sink trait: a sink just accepts the frames it is given. Two sinks cover the
 //! current needs — [`RenderOut`] collects frames into two `Vec<f32>` planes
 //! (read back with `into_stereo`, since [`AudioOut::finalize`] returns `()` not
-//! data), and [`StreamSink`] forwards each block to a user closure that pushes
+//! data), and [`StreamOut`] forwards each block to a user closure that pushes
 //! it into an encoder.
 
 use std::io;
@@ -85,7 +85,7 @@ impl AudioOut for RenderOut {
 /// Forwards each block to an `FnMut` closure as planar slices. The closure
 /// typically pushes the chunk into a streaming encoder; any error it returns is
 /// stashed and surfaced at [`finalize`](AudioOut::finalize).
-pub(crate) struct StreamSink<F: FnMut(&[f32], &[f32]) -> io::Result<()>> {
+pub(crate) struct StreamOut<F: FnMut(&[f32], &[f32]) -> io::Result<()>> {
     f: F,
     /// Reusable planar staging so the closure keeps its `&[f32], &[f32]` shape.
     left: Vec<f32>,
@@ -93,7 +93,7 @@ pub(crate) struct StreamSink<F: FnMut(&[f32], &[f32]) -> io::Result<()>> {
     deferred: io::Result<()>,
 }
 
-impl<F: FnMut(&[f32], &[f32]) -> io::Result<()>> StreamSink<F> {
+impl<F: FnMut(&[f32], &[f32]) -> io::Result<()>> StreamOut<F> {
     pub fn new(f: F) -> Self {
         Self {
             f,
@@ -104,7 +104,7 @@ impl<F: FnMut(&[f32], &[f32]) -> io::Result<()>> StreamSink<F> {
     }
 }
 
-impl<F: FnMut(&[f32], &[f32]) -> io::Result<()>> AudioOut for StreamSink<F> {
+impl<F: FnMut(&[f32], &[f32]) -> io::Result<()>> AudioOut for StreamOut<F> {
     fn write(&mut self, frames: &[[f32; 2]]) {
         if self.deferred.is_err() || frames.is_empty() {
             return;
@@ -179,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn buffered_sink_collects_frames() {
+    fn render_out_collects_frames() {
         let mut sink = RenderOut::with_capacity(16);
         let block = frames(&[1.0; 8], &[2.0; 8]);
         sink.write(&block);
@@ -192,10 +192,10 @@ mod tests {
     }
 
     #[test]
-    fn stream_sink_forwards_to_closure() {
+    fn stream_out_forwards_to_closure() {
         let mut captured = Vec::new();
         {
-            let mut sink = StreamSink::new(|l: &[f32], _r: &[f32]| {
+            let mut sink = StreamOut::new(|l: &[f32], _r: &[f32]| {
                 captured.extend_from_slice(l);
                 Ok(())
             });
@@ -206,8 +206,8 @@ mod tests {
     }
 
     #[test]
-    fn stream_sink_defers_closure_error_to_finalize() {
-        let mut sink = StreamSink::new(|_l: &[f32], _r: &[f32]| Err(io::Error::other("boom")));
+    fn stream_out_defers_closure_error_to_finalize() {
+        let mut sink = StreamOut::new(|_l: &[f32], _r: &[f32]| Err(io::Error::other("boom")));
         // write() must not surface the error…
         sink.write(&frames(&[1.0; 4], &[1.0; 4]));
         // …finalize() does.

@@ -59,7 +59,7 @@ thread-priority = "1.1"
 smol = "2"
 futures-lite = "2"
 
-# WAV encode for the WavSink AudioOut impl
+# WAV encode for the WavOut AudioOut impl
 hound = "3.5"
 
 

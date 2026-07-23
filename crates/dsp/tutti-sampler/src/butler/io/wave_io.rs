@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn region_writer_audio_out_accepts_frames() {
+    fn region_out_audio_out_accepts_frames() {
         let (mut writer, mut reader) =
             RegionBuffer::with_capacity(RegionId(1), PathBuf::from("t.wav"), 8);
         let frames = [[0.1f32, 0.2], [0.3, 0.4]];

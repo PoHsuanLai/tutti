@@ -27,6 +27,7 @@ pub mod clock_master;
 pub mod endpoint;
 pub mod jr_timestamp;
 pub mod output_collector;
+pub mod port;
 pub mod registry;
 pub mod routing_table;
 pub mod snapshot;
@@ -46,6 +47,7 @@ pub use output_collector::{
     midi_output_channel, midi_output_channel_with_capacity, shared_midi_output_channel,
     MidiOutHandle, MidiOutputConsumer, MidiOutputProducer,
 };
+pub use port::MidiInPort;
 pub use registry::{MidiBus, MidiEventSlot, MidiReceiver, MidiSender};
 pub use routing_table::MidiRoutingTable;
 pub use snapshot::{MidiSnapshot, TimedMidiEvent};

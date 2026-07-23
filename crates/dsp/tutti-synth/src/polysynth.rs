@@ -7,19 +7,13 @@ use smallvec::SmallVec;
 use tutti_midi_types::{cc, MidiIn, MidiUnitId, NoteId};
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Shared, SignalFrame};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
+use tutti_midi_runtime::{MidiInPort, MidiSender};
 
 extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use arc_swap::ArcSwapOption;
-
 const FINISHED_NOTES_CAPACITY: usize = 16;
-
-/// `Sized` wrapper so a `dyn MidiIn` trait object can live in an
-/// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
-struct MidiSourceHandle(Arc<dyn MidiIn>);
 
 /// Polyphonic synthesizer combining tutti-synth building blocks with FunDSP.
 ///
@@ -37,21 +31,11 @@ pub struct PolySynth {
     unison: Option<UnisonEngine>,
     pitch_bend: f32,
     master_volume: Shared,
-    midi_unit_id: MidiUnitId,
-    midi_sender: MidiSender,
-    midi_receiver: MidiReceiver,
-    /// Optional override (e.g. `MidiSnapshotReader` for offline export
-    /// or `MidiClipSource` for beat-scheduled clip playback). When set,
-    /// `tick()`/`process()` poll this instead of `midi_receiver`.
-    ///
-    /// A **shared** `Arc<ArcSwapOption<…>>`, not a per-clone `Option`: fundsp's
-    /// frontend/backend split runs a *different* clone than the one
-    /// `set_midi_source` mutates, and `node_mut`/clone edits are discarded by
-    /// `Net::migrate` on commit. Sharing the slot makes an install on any clone
-    /// visible to the running box, lock-free — otherwise clip playback silently
-    /// never reaches the audio thread. `isolate()` (offline export) deliberately
-    /// swaps in a FRESH private slot to sever this sharing.
-    midi_source_override: Arc<ArcSwapOption<MidiSourceHandle>>,
+    /// This synth's MIDI input endpoint: routing address, push mailbox, and the
+    /// current pull source (the live receiver by default; an override installs a
+    /// `MidiClipSource`/`MidiSnapshotReader`). See [`MidiInPort`] for the fundsp
+    /// clone/isolate sharing semantics that used to be open-coded here.
+    midi: MidiInPort,
     midi_buffer: Vec<MidiEvent>,
     mix_buffer: [f32; 2],
     finished_indices: SmallVec<[usize; FINISHED_NOTES_CAPACITY]>,
@@ -102,9 +86,6 @@ impl PolySynth {
 
         let master_volume = tutti_core::shared(1.0);
 
-        let midi_unit_id = MidiUnitId::next();
-        let (midi_sender, midi_receiver) = MidiEventSlot::pair(midi_unit_id);
-
         Ok(Self {
             config,
             allocator,
@@ -113,10 +94,7 @@ impl PolySynth {
             unison,
             pitch_bend: 0.0,
             master_volume,
-            midi_unit_id,
-            midi_sender,
-            midi_receiver,
-            midi_source_override: Arc::new(ArcSwapOption::empty()),
+            midi: MidiInPort::new(),
             midi_buffer: vec![MidiEvent::noop(); 256],
             mix_buffer: [0.0; 2],
             finished_indices: SmallVec::new(),
@@ -127,7 +105,7 @@ impl PolySynth {
     /// Producer handle for this synth's MIDI inbox. Cheap to clone; insert
     /// into a `MidiBus` or hand to anything that pushes MIDI events.
     pub fn midi_sender(&self) -> MidiSender {
-        self.midi_sender.clone()
+        self.midi.sender()
     }
 
     /// Override the MIDI source. Used by offline export to swap the live
@@ -135,34 +113,23 @@ impl PolySynth {
     /// install a [`tutti_midi_runtime::MidiClipSource`] /
     /// [`tutti_midi_runtime::CompositeMidiSource`].
     ///
-    /// The source is held in an `Arc`, so the same instance survives
-    /// the unit-clone fundsp performs on each `commit()`.
+    /// The install is visible across fundsp's clone-on-commit (see
+    /// [`MidiInPort`]), so the same instance reaches the box the audio thread runs.
     ///
     /// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
     pub fn set_midi_source(&mut self, source: Arc<dyn MidiIn>) {
-        self.midi_source_override
-            .store(Some(Arc::new(MidiSourceHandle(source))));
+        self.midi.install(source);
     }
 
     /// Drop a previously-installed override; subsequent ticks poll the
     /// live `MidiReceiver` again.
     pub fn clear_midi_source(&mut self) {
-        self.midi_source_override.store(None);
+        self.midi.clear();
     }
 
     fn poll_count(&mut self, block_size: usize) -> usize {
-        let block_start = self.sample_pos;
-        // `load()` is lock-free; the guard holds the current source for the poll.
-        let source = self.midi_source_override.load();
-        match source.as_ref() {
-            Some(handle) => handle.0.poll_into(
-                self.midi_unit_id,
-                block_start,
-                block_size,
-                &mut self.midi_buffer,
-            ),
-            None => self.midi_receiver.poll_into(&mut self.midi_buffer),
-        }
+        self.midi
+            .poll(self.sample_pos, block_size, &mut self.midi_buffer)
     }
 
     fn poll_midi_events(&mut self) {
@@ -582,11 +549,12 @@ impl AudioUnit for PolySynth {
     /// commit-clone, where only the original is ticked, but unsafe for an offline
     /// render ticked on a worker thread while the live synth keeps playing):
     ///
-    /// 1. **MIDI inbox** — `midi_receiver` + `midi_source_override`. A shared
-    ///    inbox is drained to exactly one consumer, so the worker would *steal*
-    ///    the live synth's note-ons/offs/CC. Fixed by minting a fresh,
-    ///    unconnected sender/receiver pair (nothing holds this sender, so the
-    ///    receiver stays permanently empty) and dropping the override.
+    /// 1. **MIDI input** — the [`MidiInPort`]. A shared inbox is drained to
+    ///    exactly one consumer, so the worker would *steal* the live synth's
+    ///    note-ons/offs/CC, and a shared source cell means clearing here would
+    ///    sever the live clip. Both are fixed by [`MidiInPort::isolate`], which
+    ///    mints a fresh private mailbox + source cell (nothing holds this new
+    ///    sender, so the port stays permanently empty).
     ///
     /// 2. **Per-voice `Shared` params** — every [`SynthVoice`] (and its
     ///    sub-voices) holds `gate`/`pitch`/`filter_cutoff`/`filter_resonance` as
@@ -602,16 +570,10 @@ impl AudioUnit for PolySynth {
     /// the live world — it renders silence until its own (now-empty) inbox feeds
     /// it events, which it never will.
     fn isolate(&mut self) {
-        let (sender, receiver) = MidiEventSlot::pair(self.midi_unit_id);
-        self.midi_sender = sender;
-        self.midi_receiver = receiver;
-        // Swap in a FRESH private slot (not `store(None)` on the shared one):
-        // the override slot is now shared across clones, so clearing the shared
-        // slot would sever the LIVE synth's clip source mid-export. A brand-new
-        // empty slot detaches this export clone alone, which is exactly what
-        // isolation wants — this clone renders silence, the live synth is
-        // untouched.
-        self.midi_source_override = Arc::new(ArcSwapOption::empty());
+        // Fresh private mailbox + source cell, same unit id — severs both the
+        // shared inbox (no event theft) and the shared source (clearing here
+        // can't disturb the live clip). See [`MidiInPort::isolate`].
+        self.midi.isolate();
 
         // Rebuild voices with fresh `Shared` atomics (see #2 above).
         let unison_count = self
@@ -830,19 +792,15 @@ impl AudioUnit for PolySynth {
 impl PolySynth {
     /// This unit's MIDI routing address.
     pub fn midi_unit_id(&self) -> MidiUnitId {
-        self.midi_unit_id
+        self.midi.unit_id()
     }
 }
 
 impl Clone for PolySynth {
     fn clone(&self) -> Self {
-        // Share the underlying MIDI inbox so events queued via any
-        // outstanding `MidiSender` keep reaching whichever PolySynth
-        // fundsp is currently polling. Same for the MIDI source override:
-        // the `Arc<ArcSwapOption>` SLOT is shared (Arc clone), so an install
-        // on any clone is seen by the box the audio thread runs — a plain
-        // `Option` clone (the old bug) gave each clone a private slot that
-        // never propagated.
+        // The `MidiInPort` clone shares the mailbox + source cell (so an
+        // outstanding sender and any install keep reaching the running box);
+        // `isolate()` is what severs it for an offline render.
         Self {
             config: self.config.clone(),
             allocator: self.allocator.clone(),
@@ -851,10 +809,7 @@ impl Clone for PolySynth {
             unison: self.unison.clone(),
             pitch_bend: self.pitch_bend,
             master_volume: self.master_volume.clone(),
-            midi_unit_id: self.midi_unit_id,
-            midi_sender: self.midi_sender.clone(),
-            midi_receiver: self.midi_receiver.clone(),
-            midi_source_override: self.midi_source_override.clone(),
+            midi: self.midi.clone(),
             midi_buffer: vec![MidiEvent::noop(); 256],
             mix_buffer: [0.0; 2],
             finished_indices: SmallVec::new(),

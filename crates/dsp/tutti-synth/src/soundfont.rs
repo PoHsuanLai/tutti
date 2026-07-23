@@ -11,16 +11,11 @@ pub use rustysynth::SoundFontAsset;
 
 use rustysynth::Synthesizer;
 use smallvec::SmallVec;
-use arc_swap::ArcSwapOption;
 use tutti_midi_types::{MidiIn, MidiUnitId};
 use tutti_core::Arc;
-
-/// `Sized` wrapper so a `dyn MidiIn` trait object can live in an
-/// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
-struct MidiSourceHandle(Arc<dyn MidiIn>);
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
+use tutti_midi_runtime::{MidiInPort, MidiSender};
 
 /// Capacity of the scratch buffer used to poll MIDI events per audio callback.
 ///
@@ -36,13 +31,9 @@ pub struct SoundFontUnit {
     right_buffer: Vec<f32>,
     buffer_pos: usize,
     pending_midi: SmallVec<[MidiEvent; 128]>,
-    midi_unit_id: MidiUnitId,
-    midi_sender: MidiSender,
-    midi_receiver: MidiReceiver,
-    /// Shared `Arc<ArcSwapOption<…>>` (see [`super::polysynth`]): an install on
-    /// any fundsp graph-commit clone reaches the box the audio thread runs.
-    /// `isolate()` swaps in a fresh private slot to sever the sharing.
-    midi_source_override: Arc<ArcSwapOption<MidiSourceHandle>>,
+    /// This unit's MIDI input endpoint (routing address + mailbox + current pull
+    /// source). See [`MidiInPort`] for the fundsp clone/isolate sharing semantics.
+    midi: MidiInPort,
     midi_buffer: Vec<MidiEvent>,
     /// Running absolute-sample counter, handed to MIDI sources so
     /// beat-scheduled events can compute their `frame_offset` for
@@ -59,8 +50,6 @@ impl SoundFontUnit {
             .map_err(|e| crate::Error::SoundFont(e.to_string()))?;
 
         let buffer_size = 64;
-        let midi_unit_id = MidiUnitId::next();
-        let (midi_sender, midi_receiver) = MidiEventSlot::pair(midi_unit_id);
 
         Ok(Self {
             synthesizer,
@@ -70,10 +59,7 @@ impl SoundFontUnit {
             right_buffer: vec![0.0; buffer_size],
             buffer_pos: buffer_size,
             pending_midi: SmallVec::new(),
-            midi_unit_id,
-            midi_sender,
-            midi_receiver,
-            midi_source_override: Arc::new(ArcSwapOption::empty()),
+            midi: MidiInPort::new(),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
             sample_pos: 0,
         })
@@ -81,24 +67,23 @@ impl SoundFontUnit {
 
     /// Producer handle for this unit's MIDI inbox.
     pub fn midi_sender(&self) -> MidiSender {
-        self.midi_sender.clone()
+        self.midi.sender()
     }
 
     /// Override the MIDI source. Used by offline export to swap the
     /// live receiver for a [`MidiSnapshotReader`], or by clip playback
     /// to install a [`tutti_midi_runtime::MidiClipSource`].
     ///
-    /// Held in an `Arc` so the same source survives the unit-clone
-    /// fundsp performs on each `commit()`.
+    /// The install is visible across fundsp's clone-on-commit (see
+    /// [`MidiInPort`]), so the same source reaches the box the audio thread runs.
     ///
     /// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
     pub fn set_midi_source(&mut self, source: Arc<dyn MidiIn>) {
-        self.midi_source_override
-            .store(Some(Arc::new(MidiSourceHandle(source))));
+        self.midi.install(source);
     }
 
     pub fn clear_midi_source(&mut self) {
-        self.midi_source_override.store(None);
+        self.midi.clear();
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -127,17 +112,9 @@ impl SoundFontUnit {
     }
 
     fn poll_midi_events(&mut self, block_size: usize) {
-        let block_start = self.sample_pos;
-        let source = self.midi_source_override.load();
-        let count = match source.as_ref() {
-            Some(handle) => handle.0.poll_into(
-                self.midi_unit_id,
-                block_start,
-                block_size,
-                &mut self.midi_buffer,
-            ),
-            None => self.midi_receiver.poll_into(&mut self.midi_buffer),
-        };
+        let count = self
+            .midi
+            .poll(self.sample_pos, block_size, &mut self.midi_buffer);
         for i in 0..count {
             self.pending_midi.push(self.midi_buffer[i]);
         }
@@ -219,22 +196,15 @@ impl AudioUnit for SoundFontUnit {
         self.buffer_pos = self.buffer_size;
     }
 
-    /// Sever the live MIDI inbox this clone shares with the original synth.
+    /// Sever the live MIDI input this clone shares with the original synth.
     ///
-    /// Same rationale as [`crate::PolySynth::isolate`]:
-    /// `clone()` shares `midi_receiver` + `midi_source_override` by `Arc` so the
-    /// inbox follows the unit across the commit-clone (where only the original is
-    /// ticked), but an offline render ticks this clone on a worker thread while
-    /// the live synth plays, and a shared inbox is drained to exactly one
-    /// consumer — the worker would steal the live synth's events. Mint a fresh,
-    /// unconnected pair and drop the override so this clone reads nothing.
+    /// Same rationale as [`crate::PolySynth::isolate`]: an offline render ticks
+    /// this clone on a worker thread while the live synth plays, so a shared inbox
+    /// would let the worker *steal* the live synth's events and a shared source
+    /// cell would let clearing here sever the live clip. [`MidiInPort::isolate`]
+    /// mints a fresh private mailbox + source cell so this clone reads nothing.
     fn isolate(&mut self) {
-        let (sender, receiver) = MidiEventSlot::pair(self.midi_unit_id);
-        self.midi_sender = sender;
-        self.midi_receiver = receiver;
-        // Fresh PRIVATE slot, not `store(None)` on the shared one — clearing the
-        // shared slot would sever the live synth's clip source mid-export.
-        self.midi_source_override = Arc::new(ArcSwapOption::empty());
+        self.midi.isolate();
     }
 
     fn set_sample_rate(&mut self, _sample_rate: tutti_core::SampleRate) {
@@ -314,10 +284,9 @@ impl Clone for SoundFontUnit {
             right_buffer: self.right_buffer.clone(),
             buffer_pos: self.buffer_pos,
             pending_midi: SmallVec::new(),
-            midi_unit_id: self.midi_unit_id,
-            midi_sender: self.midi_sender.clone(),
-            midi_receiver: self.midi_receiver.clone(),
-            midi_source_override: self.midi_source_override.clone(),
+            // Shares the mailbox + source cell (fundsp clone-on-commit); see
+            // [`MidiInPort`]. `isolate()` severs it for an offline render.
+            midi: self.midi.clone(),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
             sample_pos: 0,
         }
@@ -327,7 +296,7 @@ impl Clone for SoundFontUnit {
 impl SoundFontUnit {
     /// This unit's MIDI routing address.
     pub fn midi_unit_id(&self) -> MidiUnitId {
-        self.midi_unit_id
+        self.midi.unit_id()
     }
 }
 

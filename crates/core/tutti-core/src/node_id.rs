@@ -11,7 +11,8 @@
 //!    auto-inserted delay nodes without carrying state between commits.
 //!
 //! Per-instance routing identity (for MIDI dispatch) lives on
-//! [`MidiUnitId`] via [`MidiTarget`], *not* on `get_id()`.
+//! [`MidiUnitId`], exposed by each MIDI-receiving unit's inherent
+//! `midi_unit_id()`, *not* on `get_id()`.
 //!
 //! ## Ownership — each crate owns its own ids
 //!
@@ -46,7 +47,6 @@
 //!
 //! [`AudioUnit::get_id`]: fundsp::audiounit::AudioUnit::get_id
 //! [`MidiUnitId`]: tutti_midi_types::MidiUnitId
-//! [`MidiTarget`]: tutti_midi_types::MidiTarget
 
 /// Pack an 8-byte ASCII mnemonic into a `get_id()` fingerprint (big-endian).
 ///

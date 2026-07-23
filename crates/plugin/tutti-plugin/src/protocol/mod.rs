@@ -12,8 +12,31 @@ pub mod process;
 pub mod sample;
 pub mod shm;
 
+/// Wire protocol version, exchanged in the [`BridgeMessage::Ready`] handshake.
+/// Bump on ANY change to the host↔server wire shape (a new/reordered field on a
+/// serialized enum), since bincode is not self-describing and a skew would
+/// mis-parse silently. Host and subprocess refuse to handshake on a mismatch.
+///
+/// - v1: baseline.
+/// - v2: `BridgeMessage::AudioProcessed` carries plugin `midi_out`.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
+/// Called at each handshake consumer so a version skew fails loudly instead of
+/// mis-parsing later messages.
+pub fn check_protocol_version(got: u32) -> crate::error::Result<()> {
+    if got == PROTOCOL_VERSION {
+        Ok(())
+    } else {
+        Err(crate::error::BridgeError::ProtocolMismatch {
+            expected: PROTOCOL_VERSION,
+            got,
+        })
+    }
+}
+
 pub use envelope::{BridgeMessage, HostMessage};
-pub use midi::{IpcMidiEvent, IpcMidiEventVec, MidiEventVec};
+pub use midi::{IpcMidiEvent, IpcMidiEventVec, MidiEventVec, MIDI_STACK_CAPACITY};
 pub use process::ProcessAudioData;
 pub use sample::SampleFormat;
 pub use shm::SlabLayout;
@@ -91,6 +114,46 @@ mod tests {
             UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(m)) => Some(u8::from(m.note_number())),
             _ => None,
         }
+    }
+
+    #[test]
+    fn audio_processed_round_trips_midi_out() {
+        // The plugin's MIDI-out must survive the AudioProcessed reply wire trip.
+        let midi_out: IpcMidiEventVec = [
+            MidiEvent::note_on(0, 0, 60, midi1_velocity_to_midi2(100)).with_frame_offset(0),
+            MidiEvent::cc(0, 0, 7, midi1_cc_to_midi2(64)).with_frame_offset(64),
+        ]
+        .iter()
+        .map(IpcMidiEvent::from)
+        .collect();
+        let msg = BridgeMessage::AudioProcessed {
+            latency_us: 42,
+            midi_out,
+        };
+        let bytes = bincode::serialize(&msg).unwrap();
+        let back: BridgeMessage = bincode::deserialize(&bytes).unwrap();
+        match back {
+            BridgeMessage::AudioProcessed {
+                latency_us,
+                midi_out,
+            } => {
+                assert_eq!(latency_us, 42);
+                assert_eq!(midi_out.len(), 2);
+                let events: Vec<MidiEvent> = midi_out.iter().map(|&e| e.into()).collect();
+                assert_eq!(events[0].frame_offset, 0);
+                assert!(is_note_on(&events[0]));
+                assert_eq!(events[1].frame_offset, 64);
+            }
+            _ => panic!("wrong message type"),
+        }
+    }
+
+    #[test]
+    fn protocol_version_matches_and_mismatches() {
+        assert!(super::check_protocol_version(super::PROTOCOL_VERSION).is_ok());
+        // A skew (0 = an ancient binary predating the version field) is rejected.
+        assert!(super::check_protocol_version(0).is_err());
+        assert!(super::check_protocol_version(super::PROTOCOL_VERSION + 1).is_err());
     }
 
     #[test]

@@ -10,6 +10,7 @@ use crate::host::ipc_client::PluginBridge;
 use crate::host::handles::control_handle::PluginHandle;
 use crate::protocol::{
     BridgeMessage, Features, HostMessage, LoadedPlugin, ParameterInfo, PluginDescriptor,
+    PROTOCOL_VERSION,
 };
 use crate::protocol::{PluginClass, SampleFormat, SlabLayout};
 use smallvec::smallvec;
@@ -93,7 +94,12 @@ fn handle_with_mock_server(
         PluginBridge::new(path.clone(), buffer, std::path::PathBuf::from("test.vst3")).unwrap();
 
     let server_stream = listener.accept().unwrap();
-    send_bridge_msg(&server_stream, &BridgeMessage::Ready);
+    send_bridge_msg(
+        &server_stream,
+        &BridgeMessage::Ready {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    );
 
     let path_cleanup = path;
     let server_thread = std::thread::Builder::new()
@@ -186,7 +192,12 @@ fn handle_with_multi_reply_server(
         PluginBridge::new(path.clone(), buffer, std::path::PathBuf::from("test.vst3")).unwrap();
 
     let server_stream = listener.accept().unwrap();
-    send_bridge_msg(&server_stream, &BridgeMessage::Ready);
+    send_bridge_msg(
+        &server_stream,
+        &BridgeMessage::Ready {
+            protocol_version: PROTOCOL_VERSION,
+        },
+    );
 
     let path_cleanup = path;
     let server_thread = std::thread::Builder::new()

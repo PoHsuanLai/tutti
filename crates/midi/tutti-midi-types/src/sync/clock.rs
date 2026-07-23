@@ -1,3 +1,15 @@
+//! MIDI Beat Clock decoder: 24-PPQN timing clock + transport messages →
+//! transport state, beat position, and tempo inferred from clock intervals.
+//!
+//! Feed the relevant inbound System Real-Time events (Timing Clock 0xF8, Start
+//! 0xFA, Continue 0xFB, Stop 0xFC) via [`MidiClockDecoder::feed`] — the
+//! [`MidiEvent`](crate::MidiEvent)-taking entry that mirrors
+//! [`MtcDecoder::feed`](crate::sync::MtcDecoder::feed) — or, if you've already
+//! demultiplexed the stream, call [`tick`](MidiClockDecoder::tick) /
+//! [`start_msg`](MidiClockDecoder::start_msg) etc. directly.
+
+use crate::ump::MidiEvent;
+
 const PPQN: u32 = 24;
 const TEMPO_WINDOW: usize = 24;
 
@@ -8,6 +20,7 @@ pub enum ClockTransportState {
 }
 
 /// Decodes 24-PPQN MIDI timing clock messages into beat position and tempo.
+#[derive(Debug, Clone)]
 pub struct MidiClockDecoder {
     tick_count: u64,
     transport: ClockTransportState,
@@ -29,6 +42,30 @@ impl MidiClockDecoder {
             interval_count: 0,
             derived_tempo: None,
         }
+    }
+
+    /// Feed one inbound [`MidiEvent`], dispatching System Real-Time transport
+    /// messages to the right handler — the ergonomic entry that mirrors
+    /// [`MtcDecoder::feed`](crate::sync::MtcDecoder::feed), so you can route raw
+    /// input events straight in without demultiplexing the stream yourself.
+    ///
+    /// Recognises Timing Clock (0xF8, uses `timestamp_us` for tempo), Start
+    /// (0xFA), Continue (0xFB), and Stop (0xFC). Any other event is ignored.
+    /// Returns `true` if the event was a recognised transport message.
+    pub fn feed(&mut self, event: &MidiEvent, timestamp_us: u64) -> bool {
+        // System Real-Time is UMP type 0x1; the status byte is in bits 16..24.
+        let w0 = event.data[0];
+        if (w0 >> 28) & 0x0F != 0x1 {
+            return false;
+        }
+        match ((w0 >> 16) & 0xFF) as u8 {
+            0xF8 => self.tick(timestamp_us),
+            0xFA => self.start_msg(),
+            0xFB => self.continue_msg(),
+            0xFC => self.stop_msg(),
+            _ => return false,
+        }
+        true
     }
 
     /// Process a timing clock message (0xF8). Call with the host timestamp in microseconds.
@@ -139,6 +176,28 @@ mod tests {
             ts += interval;
         }
         assert!((clock.beat_position() - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn feed_dispatches_transport_events_like_the_direct_methods() {
+        let mut clock = MidiClockDecoder::new();
+        // Start via a real MidiEvent, then advance a beat of clock ticks.
+        assert!(clock.feed(&MidiEvent::start(0), 0));
+        assert_eq!(clock.transport_state(), ClockTransportState::Playing);
+
+        let interval = us_per_tick(120.0);
+        let mut ts = 0u64;
+        for _ in 0..24 {
+            assert!(clock.feed(&MidiEvent::timing_clock(0), ts));
+            ts += interval;
+        }
+        assert!((clock.beat_position() - 1.0).abs() < 0.001);
+
+        assert!(clock.feed(&MidiEvent::stop(0), ts));
+        assert_eq!(clock.transport_state(), ClockTransportState::Stopped);
+
+        // A non-transport event is ignored and reported as unrecognised.
+        assert!(!clock.feed(&MidiEvent::note_on(0, 0, 60, 0x8000), ts));
     }
 
     #[test]

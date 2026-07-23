@@ -28,7 +28,6 @@ use vst3::Steinberg::Vst::{
 };
 
 use crate::types::{MidiEvent, ParameterChanges};
-use tutti_midi_types::{decode, SemanticEvent};
 
 /// Number of MIDI channels VST3 enumerates mappings for.
 pub(crate) const NUM_CHANNELS: usize = 16;
@@ -136,27 +135,41 @@ impl MidiCcMapping {
     }
 }
 
-/// Decompose a decoded [`SemanticEvent`] into the `(channel, controller,
-/// normalized_value)` a VST3 `IMidiMapping` parameter expects, or `None` if the
-/// event is not a mappable controller (CC / channel pressure / pitch bend).
+/// Decompose a [`MidiEvent`] into the `(channel, controller, normalized_value)`
+/// a VST3 `IMidiMapping` parameter expects, or `None` if the event is not a
+/// mappable controller (CC / channel pressure / pitch bend).
 ///
-/// Values arrive from [`tutti_midi_types::decode`] already normalized to the
-/// canonical unit range, so this only translates ranges to the VST3 host
-/// contract — no bit-width quantization:
-/// - CC / channel pressure: unit `0.0..=1.0` pass straight through.
+/// The event is matched on `midi2`'s Channel Voice 2 vocabulary via
+/// [`tutti_midi_types::normalize`], so MIDI-2 controllers keep their full width
+/// here; values are normalized to the VST3 host contract at this edge:
+/// - CC / channel pressure: 32-bit → unit `0.0..=1.0`.
 /// - Pitch bend: signed `-1.0..=1.0` (center `0.0`) → `0.0..=1.0` (center
 ///   `0.5`), matching what the plugin's parameter funnel expects.
-pub(crate) fn semantic_to_mapped_controller(event: &SemanticEvent) -> Option<(u8, usize, f64)> {
-    match *event {
-        SemanticEvent::ControlChange { channel, cc, value } => {
-            Some((channel, cc as usize, value as f64))
-        }
-        SemanticEvent::ChannelPressure { channel, value } => {
-            Some((channel, CTRL_AFTERTOUCH, value as f64))
-        }
-        SemanticEvent::PitchBend { channel, value } => {
+pub(crate) fn midi_to_mapped_controller(event: &MidiEvent) -> Option<(u8, usize, f64)> {
+    use tutti_midi_types::convert::{bend_u32_to_signed_f32, u32_to_unit_f32};
+    use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+    use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
+    let normalized = tutti_midi_types::normalize(event);
+    let UmpMessage::ChannelVoice2(cv2) = UmpMessage::try_from(normalized.data_words()).ok()? else {
+        return None;
+    };
+    let channel = u8::from(cv2.channel());
+    match cv2 {
+        Cv2::ControlChange(m) => Some((
+            channel,
+            u8::from(m.control()) as usize,
+            f64::from(u32_to_unit_f32(m.control_change_data())),
+        )),
+        Cv2::ChannelPressure(m) => Some((
+            channel,
+            CTRL_AFTERTOUCH,
+            f64::from(u32_to_unit_f32(m.channel_pressure_data())),
+        )),
+        Cv2::ChannelPitchBend(m) => {
             // Signed [-1, 1] (center 0) → unit [0, 1] (center 0.5).
-            Some((channel, CTRL_PITCH_BEND, (value as f64 + 1.0) / 2.0))
+            let value = bend_u32_to_signed_f32(m.pitch_bend_data());
+            Some((channel, CTRL_PITCH_BEND, (f64::from(value) + 1.0) / 2.0))
         }
         _ => None,
     }
@@ -181,9 +194,7 @@ pub(crate) fn route_cc_events(
     out_params: &mut ParameterChanges,
 ) {
     for event in midi_events {
-        let mapped = decode(event)
-            .as_ref()
-            .and_then(semantic_to_mapped_controller);
+        let mapped = midi_to_mapped_controller(event);
         match mapped {
             Some((channel, controller, value)) => match mapping.lookup(channel, controller) {
                 Some(param_id) => {
@@ -256,7 +267,7 @@ impl CcRoute {
     ///
     /// Allocation-free after warmup: both scratch buffers are cleared in place
     /// and reuse their heap capacity. Decoding goes through MIDI-1 bytes, the
-    /// same lossless path `vst3_event_from_midi` already uses for events.
+    /// same lossless path `Vst3Event::from_midi` already uses for events.
     pub(crate) fn route(
         &mut self,
         midi_events: &[MidiEvent],
@@ -331,9 +342,9 @@ mod tests {
         assert_eq!(m.lookup(0, NUM_CONTROLLERS), None);
     }
 
-    /// Decode a `MidiEvent` and run it through `semantic_to_mapped_controller`.
+    /// Run a `MidiEvent` through `midi_to_mapped_controller`.
     fn mapped(event: &MidiEvent) -> Option<(u8, usize, f64)> {
-        decode(event).as_ref().and_then(semantic_to_mapped_controller)
+        midi_to_mapped_controller(event)
     }
 
     #[test]

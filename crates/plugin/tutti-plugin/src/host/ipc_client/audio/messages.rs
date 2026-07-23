@@ -80,9 +80,19 @@ pub(super) enum Command {
 ///
 /// `Process` is on the RT path so it stays on a dedicated lock-free
 /// queue, not on a per-request `Reply` (audio thread can't block).
+///
+/// `AudioProcessed` carries the plugin's MIDI-out for the block. The
+/// `IpcMidiEvent → MidiEvent` conversion happens on the bridge thread (off-RT,
+/// see `dispatch`), so the SmallVec moves through the queue already built; the
+/// RT thread only drains it into caller storage.
+// `AudioProcessed` holds an inline-256 `MidiEventVec` (~5 KB) vs the zero-size
+// `Error`. Intentional: the SmallVec stays inline so popping + dropping it on the
+// RT audio thread never touches the heap (see `process`). Boxing would defeat
+// that by moving the free onto the RT thread.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub(super) enum AudioResponse {
-    AudioProcessed,
+    AudioProcessed { midi_out: MidiEventVec },
     Error,
 }
 

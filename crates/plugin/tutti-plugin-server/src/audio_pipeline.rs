@@ -11,7 +11,7 @@
 //! resulting `AudioOutput`.
 
 use tutti_plugin::server::{
-    AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, Features, MidiEvent,
+    AudioBufferMut, AudioSlab, ChordChanges, ExpressiveContext, Features, MidiEvent, MidiEventVec,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterChanges,
     PluginInstance, ProcessContext, SampleFormat, ScaleChanges, TransportInfo,
 };
@@ -112,13 +112,13 @@ pub(crate) struct AudioBlock<'a> {
     pub extras: Option<ProcessExtras<'a>>,
 }
 
-/// One processed block's result. The plugin's audio output is written back
-/// into the shared slab in place; only the measured latency travels onward.
-/// (Plugin-emitted MIDI / parameter output is produced but not routed back to
-/// the host — see [`BridgeMessage::AudioProcessed`].)
+/// One processed block's result. The plugin's audio output is written back into
+/// the shared slab in place; the measured latency and the plugin's emitted MIDI
+/// travel onward to the host. (Parameter output is still dropped.)
 #[derive(Default)]
 pub(crate) struct AudioOutput {
     pub latency_us: u64,
+    pub midi_out: MidiEventVec,
 }
 
 /// Driver for one audio block. Holds scratch across calls so the audio
@@ -280,12 +280,12 @@ impl AudioPipeline {
             }
         };
 
-        // Plugin output (`plugin_output.{midi_events, param_changes,
-        // note_expression}`) is intentionally dropped here — the host doesn't
-        // consume it. Audio was written back into the slab above.
-        let _ = plugin_output;
+        // The plugin's MIDI-out travels back to the host so it can re-enter
+        // routing. `param_changes` / `note_expression` are still dropped (no
+        // host consumer yet). Audio was written back into the slab above.
         Ok(AudioOutput {
             latency_us: start.elapsed().as_micros() as u64,
+            midi_out: plugin_output.midi_events,
         })
     }
 }

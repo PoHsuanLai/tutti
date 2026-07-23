@@ -1,9 +1,8 @@
-//! MIDI event collection for `PluginClient`. Merges direct [`Midi::queue`]
-//! events with events polled from this client's own
-//! [`tutti_midi_runtime::MidiReceiver`] (or an installed
-//! [`tutti_midi_types::MidiSource`] override — typically a
-//! [`tutti_midi_runtime::MidiClipSource`]) into a single buffer for
-//! the audio path. Callers route MIDI to the plugin via either:
+//! MIDI event collection for `PluginClient`. Each block it polls this client's
+//! own [`tutti_midi_runtime::MidiReceiver`] (or an installed
+//! [`tutti_midi_types::MidiIn`] override — typically a
+//! [`tutti_midi_runtime::MidiClipSource`]) into a single buffer for the audio
+//! path. Callers route MIDI to the plugin via either:
 //!
 //! - [`Midi::sender`] for live producers (hardware drivers, panel
 //!   previews) that push events as they arrive.
@@ -12,20 +11,33 @@
 
 use std::sync::Arc;
 
-use arc_swap::ArcSwapOption;
+use arc_swap::{ArcSwap, ArcSwapOption};
 
 use crate::protocol::MidiEventVec;
-use tutti_midi_types::MidiUnitId;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::MidiSource;
-use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
+use tutti_midi_types::MidiIn;
+use tutti_midi_types::{MidiOut, MidiRoutingSnapshot, MidiUnitId};
+use tutti_midi_runtime::{MidiMailbox, MidiReceiver, MidiSender};
 
 const POLL_BUFFER_SIZE: usize = 256;
 
-/// `Sized` wrapper so a `dyn MidiSource` trait object can live in an
+/// `Sized` wrapper so a `dyn MidiIn` trait object can live in an
 /// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
 /// One extra `Arc` hop on install/read — negligible next to the poll itself.
-struct MidiSourceHandle(Arc<dyn MidiSource>);
+struct MidiSourceHandle(Arc<dyn MidiIn>);
+
+/// The outbound routing target for a plugin that emits MIDI. Installed once at
+/// wiring time; read per block by [`Midi::emit`].
+///
+/// The plugin's MIDI-out re-enters routing exactly like a hardware input: each
+/// emitted event is fanned out through the shared [`MidiRoutingSnapshot`] (keyed
+/// on the event's channel) to whatever destination units the route resolves, and
+/// delivered via the same lock-free [`MidiOut`]. A plugin's output is just
+/// another source.
+struct OutHandle {
+    queue: Arc<dyn MidiOut>,
+    routing: Arc<ArcSwap<MidiRoutingSnapshot>>,
+}
 
 fn empty_poll_scratch() -> Vec<MidiEvent> {
     vec![MidiEvent::noop(); POLL_BUFFER_SIZE]
@@ -33,7 +45,6 @@ fn empty_poll_scratch() -> Vec<MidiEvent> {
 
 pub struct Midi {
     unit_id: MidiUnitId,
-    pending: Vec<MidiEvent>,
     drain: MidiEventVec,
     sender: MidiSender,
     receiver: MidiReceiver,
@@ -51,9 +62,20 @@ pub struct Midi {
     /// the running box, lock-free, with no commit needed. See
     /// [[plugin-source-install-shared-cell]].
     source_override: Arc<ArcSwapOption<MidiSourceHandle>>,
+    /// Optional outbound routing target for a plugin that emits MIDI. `None`
+    /// (the default) means the plugin's MIDI-out is dropped. Set via
+    /// [`Self::set_out`]; read per block by [`Self::emit`].
+    ///
+    /// Wrapped in the same **shared** `Arc<ArcSwapOption<…>>` as
+    /// `source_override`, and for the same reason: fundsp's frontend/backend
+    /// split runs a *different clone* than the one `PluginClient::set_midi_out`
+    /// mutates, so a per-clone `Option` would silently never fire. Sharing the
+    /// slot makes an install on any clone visible to the running box, lock-free.
+    /// See [[plugin-source-install-shared-cell]].
+    out: Arc<ArcSwapOption<OutHandle>>,
     /// Running sample position. Bumped by 1 per `drain_for_tick` and
     /// by `block_size` per `drain_for_process`. Passed to the
-    /// `MidiSource::poll_into` call so clip players know what beat
+    /// `MidiIn::poll_into` call so clip players know what beat
     /// range to emit events for.
     sample_pos: u64,
 }
@@ -62,7 +84,6 @@ impl Clone for Midi {
     fn clone(&self) -> Self {
         Self {
             unit_id: self.unit_id,
-            pending: Vec::new(),
             drain: MidiEventVec::new(),
             sender: self.sender.clone(),
             receiver: self.receiver.clone(),
@@ -72,6 +93,9 @@ impl Clone for Midi {
             // audio thread runs. Cloning the `Option` instead (the old bug)
             // gave each clone a private slot that never propagated.
             source_override: Arc::clone(&self.source_override),
+            // Share the outbound SLOT (Arc clone) too — same shared-cell
+            // rationale as `source_override`.
+            out: Arc::clone(&self.out),
             sample_pos: self.sample_pos,
         }
     }
@@ -86,15 +110,15 @@ impl Default for Midi {
 impl Midi {
     pub fn new() -> Self {
         let unit_id = MidiUnitId::next();
-        let (sender, receiver) = MidiEventSlot::pair(unit_id);
+        let (sender, receiver) = MidiMailbox::pair(unit_id);
         Self {
             unit_id,
-            pending: Vec::new(),
             drain: MidiEventVec::new(),
             sender,
             receiver,
             poll_scratch: empty_poll_scratch(),
             source_override: Arc::new(ArcSwapOption::empty()),
+            out: Arc::new(ArcSwapOption::empty()),
             sample_pos: 0,
         }
     }
@@ -108,21 +132,11 @@ impl Midi {
         self.sender.clone()
     }
 
-    /// Replace the pending queue. Sent on next process.
-    pub fn queue(&mut self, events: &[MidiEvent]) {
-        self.pending.clear();
-        self.pending.extend_from_slice(events);
-    }
-
-    pub fn clear(&mut self) {
-        self.pending.clear();
-    }
-
-    /// Install an `Arc`-backed [`MidiSource`] override. Polled per
+    /// Install an `Arc`-backed [`MidiIn`] override. Polled per
     /// block in `drain_for_process` instead of the live `MidiReceiver`.
     /// Used by clip players (`tutti_midi_runtime::MidiClipSource`) to
     /// drive plugin synths from MIDI clips.
-    pub fn set_source(&mut self, source: Arc<dyn MidiSource>) {
+    pub fn set_source(&mut self, source: Arc<dyn MidiIn>) {
         self.source_override
             .store(Some(Arc::new(MidiSourceHandle(source))));
     }
@@ -133,6 +147,42 @@ impl Midi {
         self.source_override.store(None);
     }
 
+    /// Install the outbound routing target so this plugin's MIDI-out re-enters
+    /// routing. `routing` is the shared snapshot the engine already uses for
+    /// hardware input, and `queue` the fan-out bus. Off-RT (call once at wiring
+    /// time).
+    pub fn set_out(&self, queue: Arc<dyn MidiOut>, routing: Arc<ArcSwap<MidiRoutingSnapshot>>) {
+        self.out.store(Some(Arc::new(OutHandle { queue, routing })));
+    }
+
+    /// Drop the outbound routing target; subsequent blocks discard MIDI-out.
+    pub fn clear_out(&self) {
+        self.out.store(None);
+    }
+
+    /// Route this block's plugin MIDI-out back into the graph. No-op when no
+    /// outbound target is installed. For each event, fan out through the shared
+    /// routing snapshot (keyed on the event's channel, like any source) to every
+    /// destination unit and deliver via the lock-free queue — byte-for-byte the
+    /// path `MidiProcessor::route_events_in_range` runs for hardware input, so
+    /// it's RT-safe. Each event keeps its own `frame_offset`; the destination
+    /// unit sub-buffer-splits on it next block. Non-recursive: delivery lands in
+    /// the destination's inbox, drained on *its* next poll — `emit` never
+    /// re-enters any `process()`.
+    #[inline]
+    pub fn emit(&self, events: &[MidiEvent]) {
+        let handle = self.out.load();
+        let Some(handle) = handle.as_ref() else {
+            return;
+        };
+        let routing = handle.routing.load();
+        for event in events {
+            for target in routing.route(event) {
+                handle.queue.queue(target, std::slice::from_ref(event));
+            }
+        }
+    }
+
     /// Reset the running sample position. Called on `reset()` /
     /// `set_sample_rate()` so the source override sees a clean
     /// playhead at transport restarts.
@@ -140,12 +190,11 @@ impl Midi {
         self.sample_pos = 0;
     }
 
-    /// Merge pending + override-or-receiver events into one buffer and
+    /// Drain the override-or-receiver events for this block into one buffer and
     /// return it. Bumps `sample_pos` by `block_size` so the next call
     /// sees the next block's window.
     pub fn drain_for_process(&mut self, block_size: usize) -> &MidiEventVec {
         self.drain.clear();
-        self.drain.extend(self.pending.drain(..));
         // `load()` is lock-free; the guard holds the current source (if any)
         // for the duration of the poll.
         let source = self.source_override.load();
@@ -183,7 +232,7 @@ mod tests {
     struct CountingSource {
         n: usize,
     }
-    impl MidiSource for CountingSource {
+    impl MidiIn for CountingSource {
         fn poll_into(
             &self,
             _unit: MidiUnitId,
@@ -221,5 +270,61 @@ mod tests {
         clone_b.clear_source();
         assert_eq!(clone_a.drain_for_process(64).len(), 0, "clear propagates");
         assert_eq!(original.drain_for_process(64).len(), 0, "clear propagates");
+    }
+
+    use std::sync::Mutex;
+    use tutti_midi_types::{MidiRoute, MidiRoutingSnapshot};
+
+    /// Records every `(unit, event-count)` queued, to prove `emit` routed.
+    #[derive(Default)]
+    struct RecordingQueue {
+        queued: Mutex<Vec<(MidiUnitId, usize)>>,
+    }
+    impl MidiOut for RecordingQueue {
+        fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) {
+            self.queued.lock().unwrap().push((unit_id, events.len()));
+        }
+    }
+
+    /// The outbound analogue of [`source_install_propagates_across_clones`]:
+    /// installing an out-target on ONE clone must be visible to ANOTHER, since
+    /// fundsp runs a different clone than the one `set_midi_out` mutates.
+    #[test]
+    fn out_install_propagates_across_clones() {
+        let dest = MidiUnitId::new(77);
+        let queue = Arc::new(RecordingQueue::default());
+        let routing = Arc::new(ArcSwap::from_pointee(MidiRoutingSnapshot::from_routes(
+            vec![MidiRoute::new().with_target(dest)],
+            None,
+        )));
+
+        let original = Midi::new();
+        let clone_a = original.clone();
+        let clone_b = original.clone();
+
+        // Install on clone_a; the running box could be any clone.
+        clone_a.set_out(queue.clone(), routing);
+
+        let ev = [MidiEvent::note_on(0, 0, 60, 0x8000)];
+        clone_b.emit(&ev);
+        original.emit(&ev);
+        clone_a.emit(&ev);
+
+        let queued = queue.queued.lock().unwrap();
+        assert_eq!(
+            queued.as_slice(),
+            &[(dest, 1), (dest, 1), (dest, 1)],
+            "emit on any clone routes to the destination unit"
+        );
+        drop(queued);
+
+        // Clearing on one clone clears for all.
+        clone_b.clear_out();
+        clone_a.emit(&ev);
+        assert_eq!(
+            queue.queued.lock().unwrap().len(),
+            3,
+            "no new events after clear_out"
+        );
     }
 }

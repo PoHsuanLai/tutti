@@ -18,9 +18,8 @@ categories = ["multimedia::audio"]
 default = ["bevy"]
 bevy = ["dep:bevy_ecs", "dep:bevy_reflect", "dep:bevy_app", "dep:bevy_tasks", "dep:bevy_log"]
 
-# Back-compat aliases: sibling crates still pass `features = ["std"|"bevy_ecs"]`.
-# `std` is unconditional now (no-op); `bevy_ecs` maps onto the `bevy` feature.
-std = []
+# Back-compat alias: sibling crates still pass `features = ["bevy_ecs"]`, which
+# maps onto the `bevy` feature.
 bevy_ecs = ["bevy"]
 # Bevy asset loading is a distinct axis (fundsp WaveAsset derives); it also
 # implies `bevy` since the loaders live in the ECS layer.
@@ -31,9 +30,6 @@ wav = ["fundsp/wav"]
 flac = ["fundsp/flac"]
 mp3 = ["fundsp/mp3"]
 ogg = ["fundsp/ogg"]
-
-# All file formats
-files = ["wav", "flac", "mp3", "ogg"]
 
 # Optional subsystems
 midi = []
@@ -47,7 +43,7 @@ serde = { version = "1", default-features = false, features = ["derive"] }
 fundsp = { package = "fundsp-tutti", version = "0.23.0", path = "../../vendor/fundsp-tutti", default-features = false, features = ["std"] }
 
 # MIDI types (pure types from tutti-midi-types) — always included for SmpteFrameRate etc.
-tutti-midi-types = { version = "0.0.1", path = "../../midi/tutti-midi-types", default-features = false, features = ["std"] }
+tutti-midi-types = { version = "0.0.1", path = "../../midi/tutti-midi-types" }
 
 # Shared RT primitives (AudioThreadCell, RtEventBuf).
 tutti-types = { version = "0.0.1", path = "../tutti-types" }

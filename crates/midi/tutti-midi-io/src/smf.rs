@@ -1,7 +1,14 @@
 use crate::error::{Error, Result};
-use midly::{
-    Format, Header, MetaMessage, MidiMessage, Smf, Timing, Track, TrackEvent, TrackEventKind,
-};
+// NOTE: `midly::MidiMessage` is the *MIDI 1.0 7-bit* SMF message — a different
+// type from `tutti_midi_io::MidiMessage` (the decoded MIDI-2 view). It is
+// imported under the alias `SmfMessage` so this SMF-1.0 codec never shadows the
+// engine's `MidiMessage` in a `use tutti_midi_io::*` context.
+use midly::{Format, Header, MetaMessage, Smf, Timing, Track, TrackEvent, TrackEventKind};
+
+/// The MIDI 1.0 7-bit channel-voice message carried by [`SmfTimedEvent`] — a
+/// re-export of `midly::MidiMessage`, aliased so an SMF caller never confuses it
+/// with the engine's MIDI-2 [`MidiMessage`](crate::MidiMessage).
+pub use midly::MidiMessage as SmfMessage;
 use std::path::Path;
 use tracing::debug;
 
@@ -12,8 +19,10 @@ pub struct SmfTimedEvent {
     pub time_beats: f64,
     /// MIDI channel (0-15).
     pub channel: u8,
-    /// The channel-voice message.
-    pub msg: MidiMessage,
+    /// The channel-voice message. This is a **MIDI 1.0** `midly` message
+    /// (re-exported as [`SmfMessage`]), not the engine's MIDI-2
+    /// [`MidiMessage`](crate::MidiMessage).
+    pub msg: SmfMessage,
 }
 
 #[derive(Debug, Clone)]
@@ -203,7 +212,7 @@ fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
         let beat = now_ticks as f64 / ticks_per_beat;
         if let TrackEventKind::Midi { message, .. } = event.kind {
             match message {
-                MidiMessage::NoteOn { key, vel } => {
+                SmfMessage::NoteOn { key, vel } => {
                     let (key, vel) = (key.as_int(), vel.as_int());
                     if vel == 0 {
                         close(&mut held, key, beat);
@@ -211,7 +220,7 @@ fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
                         held.entry(key).or_default().push((beat, vel));
                     }
                 }
-                MidiMessage::NoteOff { key, .. } => close(&mut held, key.as_int(), beat),
+                SmfMessage::NoteOff { key, .. } => close(&mut held, key.as_int(), beat),
                 _ => {}
             }
         }
@@ -369,7 +378,7 @@ mod tests {
             SmfTimedEvent {
                 time_beats: 0.0,
                 channel: 0,
-                msg: MidiMessage::NoteOn {
+                msg: SmfMessage::NoteOn {
                     key: 60.into(),
                     vel: 100.into(),
                 },
@@ -377,7 +386,7 @@ mod tests {
             SmfTimedEvent {
                 time_beats: 1.0,
                 channel: 0,
-                msg: MidiMessage::NoteOff {
+                msg: SmfMessage::NoteOff {
                     key: 60.into(),
                     vel: 0.into(),
                 },
@@ -412,14 +421,14 @@ mod tests {
         let events = vec![SmfTimedEvent {
             time_beats: 0.0,
             channel: 0,
-            msg: MidiMessage::NoteOn {
+            msg: SmfMessage::NoteOn {
                 key: 60.into(),
                 vel: 100.into(),
             },
         }, SmfTimedEvent {
             time_beats: 1.0,
             channel: 0,
-            msg: MidiMessage::NoteOff {
+            msg: SmfMessage::NoteOff {
                 key: 60.into(),
                 vel: 0.into(),
             },
@@ -448,7 +457,7 @@ mod tests {
         let events = vec![SmfTimedEvent {
             time_beats: 0.0,
             channel: 0,
-            msg: MidiMessage::NoteOn {
+            msg: SmfMessage::NoteOn {
                 key: 64.into(),
                 vel: 80.into(),
             },
@@ -456,7 +465,7 @@ mod tests {
             time_beats: 2.0,
             channel: 0,
             // Running-status note-off: NoteOn with velocity 0.
-            msg: MidiMessage::NoteOn {
+            msg: SmfMessage::NoteOn {
                 key: 64.into(),
                 vel: 0.into(),
             },

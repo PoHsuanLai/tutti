@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use super::midi::IpcMidiEventVec;
 use super::process::ProcessAudioData;
 use super::sample::SampleFormat;
 use super::shm::SlabLayout;
@@ -72,6 +73,12 @@ pub enum HostMessage {
     Shutdown,
 }
 
+// `AudioProcessed` carries an inline-256 `IpcMidiEventVec` (~5 KB), dwarfing the
+// other variants. This is deliberate: the inline capacity keeps the common
+// (0–handful of events) case heap-free. `BridgeMessage` is only ever
+// (de)serialized on the off-RT bridge thread, so its stack size is not an RT
+// concern, and boxing would just add an off-RT allocation.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BridgeMessage {
     PluginLoaded {
@@ -87,10 +94,14 @@ pub enum BridgeMessage {
     },
     PluginUnloaded,
     /// Acknowledges a processed block. Audio output is written back into the
-    /// shared `AudioSlab` in place; only the measured latency travels here.
-    /// (Plugin MIDI / parameter output is not routed back to the host.)
+    /// shared `AudioSlab` in place; the measured latency and any MIDI the plugin
+    /// emitted this block travel here. (Parameter / note-expression output is
+    /// still not routed back.) `midi_out` is capped at `MIDI_STACK_CAPACITY`
+    /// server-side so it stays inline (no heap on the RT-adjacent path).
     AudioProcessed {
         latency_us: u64,
+        #[serde(default)]
+        midi_out: IpcMidiEventVec,
     },
     ParameterValue {
         value: Option<f32>,
@@ -137,6 +148,14 @@ pub enum BridgeMessage {
     Error {
         message: String,
     },
-    Ready,
+    /// Handshake sent once the subprocess is live. Carries the wire
+    /// [`PROTOCOL_VERSION`](super::PROTOCOL_VERSION) so a host and subprocess
+    /// built from mismatched commits refuse to proceed rather than mis-parsing
+    /// each other's messages (bincode is not self-describing). `#[serde(default)]`
+    /// = 0 for an ancient binary that predates the field → treated as a mismatch.
+    Ready {
+        #[serde(default)]
+        protocol_version: u32,
+    },
     Shutdown,
 }

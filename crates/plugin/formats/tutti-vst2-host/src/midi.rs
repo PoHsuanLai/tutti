@@ -40,15 +40,26 @@ impl MidiIo {
 
 /// Parse a VST2 `vst::api::MidiEvent` (MIDI 1.0 wire bytes) into a Tutti
 /// UMP [`MidiEvent`]. Tags the event with the original `delta_frames`.
-pub(crate) fn api_event_to_midi(event: &vst::api::MidiEvent) -> Option<MidiEvent> {
+pub(crate) fn to_midi(event: &vst::api::MidiEvent) -> Option<MidiEvent> {
     let bytes = event.midi_data;
     let frame = event.delta_frames.max(0) as u32;
-    MidiEvent::from_midi1_bytes(frame, &bytes)
+    // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the engine
+    // sees one vocabulary regardless of source — matching the hardware input
+    // path. System / SysEx messages pass through `normalize` unchanged.
+    MidiEvent::from_midi1_bytes(frame, &bytes).map(|e| tutti_midi_types::normalize(&e))
 }
 
 /// Serialize a Tutti UMP [`MidiEvent`] to a VST2 `vst::api::MidiEvent`.
-/// Returns `None` for MIDI 2.0-only events that have no MIDI 1.0 form.
-pub(crate) fn midi_to_api_event(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
+///
+/// MIDI 1.0 boundary. VST2 is a MIDI-1-only host: `to_midi1_bytes` performs the
+/// spec Min-Center-Max downscale (16-bit velocity / 32-bit CC / bend → 7/14-bit;
+/// `convert.rs`), so no precision is lost beyond MIDI-1's inherent width.
+/// Translated: NoteOn/Off, CC, channel pitch bend, channel/poly pressure,
+/// program change (everything with a 3-byte MIDI-1 form).
+/// Dropped (returns `None` — no MIDI-1 analogue): per-note pitch bend, per-note
+/// controllers, per-note management (Detach/Reset), and any resolution beyond
+/// 7/14 bits.
+pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
     use std::mem;
     use vst::api;
 
@@ -142,7 +153,7 @@ impl MidiSendBuffer {
         // capacity holds.
         self.api_events.clear();
         for ev in midi_events {
-            if let Some(api) = midi_to_api_event(ev) {
+            if let Some(api) = from_midi(ev) {
                 self.api_events.push(api);
             }
         }
@@ -209,14 +220,14 @@ mod tests {
     fn note_on_off_roundtrip() {
         let event =
             MidiEvent::note_on(0, 1, 60, midi1_velocity_to_midi2(127)).with_frame_offset(10);
-        let api = midi_to_api_event(&event).expect("NoteOn should convert");
+        let api = from_midi(&event).expect("NoteOn should convert");
         assert_eq!(api.midi_data[0], 0x91);
         assert_eq!(api.midi_data[1], 60);
         assert_eq!(api.midi_data[2], 127);
         assert_eq!(api.delta_frames, 10);
 
         let event = MidiEvent::note_off(0, 9, 48, midi1_velocity_to_midi2(64));
-        let api = midi_to_api_event(&event).expect("NoteOff should convert");
+        let api = from_midi(&event).expect("NoteOff should convert");
         assert_eq!(api.midi_data[0], 0x80 | 9);
         assert_eq!(api.midi_data[1], 48);
         assert_eq!(api.midi_data[2], 64);
@@ -225,7 +236,7 @@ mod tests {
     #[test]
     fn cc_roundtrip() {
         let event = MidiEvent::cc(0, 1, 74, midi1_cc_to_midi2(100));
-        let api = midi_to_api_event(&event).expect("CC should convert");
+        let api = from_midi(&event).expect("CC should convert");
         assert_eq!(api.midi_data[0], 0xB1);
         assert_eq!(api.midi_data[1], 74);
         assert_eq!(api.midi_data[2], 100);
@@ -234,7 +245,7 @@ mod tests {
     #[test]
     fn pitch_bend_roundtrip() {
         let event = MidiEvent::pitch_bend(0, 1, midi1_pitch_bend_to_midi2(8192));
-        let api = midi_to_api_event(&event).expect("PitchBend should convert");
+        let api = from_midi(&event).expect("PitchBend should convert");
         assert_eq!(api.midi_data[0], 0xE1);
         let bend14 = (api.midi_data[1] as u16) | ((api.midi_data[2] as u16) << 7);
         assert!(
@@ -244,12 +255,12 @@ mod tests {
         );
 
         let event = MidiEvent::pitch_bend(0, 1, midi1_pitch_bend_to_midi2(0));
-        let api = midi_to_api_event(&event).expect("PitchBend min should convert");
+        let api = from_midi(&event).expect("PitchBend min should convert");
         assert_eq!(api.midi_data[1], 0x00);
         assert_eq!(api.midi_data[2], 0x00);
 
         let event = MidiEvent::pitch_bend(0, 1, midi1_pitch_bend_to_midi2(16383));
-        let api = midi_to_api_event(&event).expect("PitchBend max should convert");
+        let api = from_midi(&event).expect("PitchBend max should convert");
         assert_eq!(api.midi_data[1], 0x7F);
         assert_eq!(api.midi_data[2], 0x7F);
     }
@@ -257,7 +268,7 @@ mod tests {
     #[test]
     fn program_change_roundtrip() {
         let event = MidiEvent::program_change(0, 1, 42, None);
-        let api = midi_to_api_event(&event).expect("ProgramChange should convert");
+        let api = from_midi(&event).expect("ProgramChange should convert");
         assert_eq!(api.midi_data[0], 0xC1);
         assert_eq!(api.midi_data[1], 42);
         assert_eq!(api.midi_data[2], 0);
@@ -266,7 +277,7 @@ mod tests {
     #[test]
     fn channel_pressure_roundtrip() {
         let event = MidiEvent::channel_pressure(0, 1, midi1_cc_to_midi2(100));
-        let api = midi_to_api_event(&event).expect("ChannelPressure should convert");
+        let api = from_midi(&event).expect("ChannelPressure should convert");
         assert_eq!(api.midi_data[0], 0xD1);
         assert_eq!(api.midi_data[1], 100);
         assert_eq!(api.midi_data[2], 0);
@@ -275,10 +286,67 @@ mod tests {
     #[test]
     fn poly_pressure_roundtrip() {
         let event = MidiEvent::poly_pressure(0, 1, 60, midi1_cc_to_midi2(80));
-        let api = midi_to_api_event(&event).expect("PolyPressure should convert");
+        let api = from_midi(&event).expect("PolyPressure should convert");
         assert_eq!(api.midi_data[0], 0xA1);
         assert_eq!(api.midi_data[1], 60);
         assert_eq!(api.midi_data[2], 80);
+    }
+
+    /// Build a raw VST2 `api::MidiEvent` from 3 MIDI-1 status/data bytes.
+    fn api_from_bytes(data: [u8; 3]) -> vst::api::MidiEvent {
+        use std::mem;
+        use vst::api;
+        api::MidiEvent {
+            event_type: api::EventType::Midi,
+            byte_size: mem::size_of::<api::MidiEvent>() as i32,
+            delta_frames: 0,
+            flags: api::MidiEventFlags::REALTIME_EVENT.bits(),
+            note_length: 0,
+            note_offset: 0,
+            midi_data: data,
+            _midi_reserved: 0,
+            detune: 0,
+            note_off_velocity: 0,
+            _reserved1: 0,
+            _reserved2: 0,
+        }
+    }
+
+    /// A plugin-emitted MIDI-1 CC must arrive as MIDI-2 Channel Voice 2, not
+    /// CV1 — the engine sees one vocabulary regardless of source (mirrors the
+    /// hardware input path's `normalize` promotion).
+    #[test]
+    fn inbound_cc_promotes_to_cv2() {
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
+        // 0xB1 = CC on channel 1, controller 74, value 100.
+        let midi = to_midi(&api_from_bytes([0xB1, 74, 100])).expect("CC decodes");
+        match UmpMessage::try_from(midi.data_words()).expect("valid UMP") {
+            UmpMessage::ChannelVoice2(Cv2::ControlChange(m)) => {
+                assert_eq!(u8::from(m.channel()), 1);
+                assert_eq!(u8::from(m.control()), 74);
+                // Widened to 32-bit, not left as 7-bit.
+                assert_eq!(m.control_change_data(), midi1_cc_to_midi2(100));
+            }
+            other => panic!("expected CV2 ControlChange, got {other:?}"),
+        }
+    }
+
+    /// A System real-time message (Timing Clock 0xF8) has no CV form and must
+    /// pass through `normalize` unchanged, not be dropped or promoted.
+    #[test]
+    fn inbound_system_message_passes_through() {
+        use tutti_midi_types::midi2::UmpMessage;
+
+        let midi = to_midi(&api_from_bytes([0xF8, 0, 0])).expect("clock decodes");
+        assert!(
+            matches!(
+                UmpMessage::try_from(midi.data_words()),
+                Ok(UmpMessage::SystemCommon(_))
+            ),
+            "timing clock should stay a System Real-Time message"
+        );
     }
 
     #[test]

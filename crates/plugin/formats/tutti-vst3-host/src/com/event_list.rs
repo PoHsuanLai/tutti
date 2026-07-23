@@ -20,9 +20,9 @@ use vst3::Steinberg::{
 use vst3::{Class, ComWrapper};
 
 use crate::types::{
-    from_c_event, note_expression_to_vst3, to_c_event, vst3_event_from_midi, vst3_to_midi_event,
-    vst3_to_note_expression, ChordValue, MidiEvent, NoteExpressionIntValue, NoteExpressionText,
-    NoteExpressionValue, ScaleValue, Vst3Event,
+    from_c_event, note_expression_to_vst3, to_c_event, vst3_to_note_expression, ChordValue,
+    MidiEvent, NoteExpressionIntValue, NoteExpressionText, NoteExpressionValue, ScaleValue,
+    Vst3Event,
 };
 use tutti_types::AudioThreadCell;
 
@@ -77,7 +77,7 @@ impl EventList {
         inner.clear();
         inner
             .events
-            .extend(midi_events.iter().filter_map(vst3_event_from_midi));
+            .extend(midi_events.iter().filter_map(Vst3Event::from_midi));
     }
 
     /// Stage MIDI plus per-note expression into the event list, sorted by frame
@@ -111,7 +111,7 @@ impl EventList {
         let Inner {
             events, text_arena, ..
         } = &mut *inner;
-        events.extend(midi_events.iter().filter_map(vst3_event_from_midi));
+        events.extend(midi_events.iter().filter_map(Vst3Event::from_midi));
         // `note_expression_to_vst3` returns `None` for a dimension VST3 can't
         // encode (Pressure/Expression); those are skipped, not coerced.
         events.extend(note_expressions.iter().filter_map(note_expression_to_vst3));
@@ -147,7 +147,7 @@ impl EventList {
             .borrow()
             .events
             .iter()
-            .filter_map(vst3_to_midi_event)
+            .filter_map(Vst3Event::to_midi)
             .collect()
     }
 
@@ -166,7 +166,7 @@ impl EventList {
     pub fn fill_midi_events(&self, out: &mut SmallVec<[MidiEvent; 64]>) {
         out.clear();
         for event in self.inner.borrow().events.iter() {
-            if let Some(midi) = vst3_to_midi_event(event) {
+            if let Some(midi) = event.to_midi() {
                 out.push(midi);
             }
         }

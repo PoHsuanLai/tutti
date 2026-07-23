@@ -41,6 +41,9 @@ pub enum BridgeError {
     #[error("Unexpected bridge message: expected {expected}, got {got}")]
     UnexpectedMessage { expected: &'static str, got: String },
 
+    #[error("Plugin protocol version mismatch: host speaks {expected}, subprocess speaks {got} (rebuild the plugin-server)")]
+    ProtocolMismatch { expected: u32, got: u32 },
+
     #[error("IPC error: {0}")]
     IpcError(String),
 

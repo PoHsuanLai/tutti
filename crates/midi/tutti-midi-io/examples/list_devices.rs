@@ -1,8 +1,8 @@
 use std::sync::Arc;
-use tutti_midi_io::{MidiIo, MidiPortManager};
+use tutti_midi_io::{MidiIo, HardwareMidiInputs};
 
 fn main() {
-    let io = MidiIo::new(Arc::new(MidiPortManager::new(256)));
+    let io = MidiIo::new(Arc::new(HardwareMidiInputs::new(256)));
 
     println!("=== MIDI Input Devices ===");
     let inputs = io.list_input_devices();

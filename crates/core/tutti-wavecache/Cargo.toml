@@ -26,7 +26,7 @@ files = ["wav", "flac", "mp3", "ogg"]
 # `Wave` + `Wave::load` / `Wave::probe_metadata` live here (re-exported from
 # fundsp-tutti). We need `std` for filesystem decode. No bevy — the core /
 # threaded cache is Bevy-free.
-tutti-core = { path = "../tutti-core", default-features = false, features = ["std"] }
+tutti-core = { path = "../tutti-core", default-features = false }
 
 # Bevy front-end: the cache is a Resource and decodes on the async compute pool.
 # Optional, gated by the `bevy` feature.

@@ -241,10 +241,13 @@ impl WasmInstance {
         }
         let input_view = &self.inputs_planar[..n_in];
 
-        // Convert UMP MIDI events to MIDI 1.0 bytes for the guest. UMP
-        // events with no MIDI 1.0 representation (per-note CC, RPN/NRPN,
-        // SysEx, utility) are dropped — the audio plugin v0.1 contract
-        // is MIDI 1.0 only.
+        // MIDI 1.0 boundary — the audio-plugin v0.1 guest contract is MIDI 1.0
+        // only. `to_midi1_bytes` downscales via spec Min-Center-Max (convert.rs),
+        // so no precision is lost beyond MIDI-1's inherent 7/14-bit width.
+        // Translated: NoteOn/Off, CC, channel pitch bend, channel/poly pressure,
+        // program change. Dropped (no MIDI-1 form): per-note pitch bend, per-note
+        // controllers, per-note management (Detach/Reset), RPN/NRPN, SysEx,
+        // utility, and resolution beyond 7/14 bits.
         self.midi_in.clear();
         for ev in midi_events {
             if let Some((bytes, len)) = ev.to_midi1_bytes() {
@@ -288,8 +291,10 @@ impl WasmInstance {
 
         let mut midi_out = MidiEventVec::new();
         for ev in process_output.midi {
+            // Promote the guest's MIDI-1 bytes to Channel Voice 2 at this edge so
+            // the engine sees one vocabulary, matching the hardware input path.
             if let Some(ump) = UmpMidiEvent::from_midi1_bytes(ev.time_frames, &ev.data) {
-                midi_out.push(ump);
+                midi_out.push(tutti_midi_types::normalize(&ump));
             }
         }
 

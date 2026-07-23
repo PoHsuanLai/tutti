@@ -4,23 +4,16 @@ use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use smallvec::SmallVec;
-use tutti_midi_types::{cc, MidiSource, MidiTarget, MidiUnitId};
+use tutti_midi_types::{cc, MidiIn, MidiUnitId, NoteId};
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Shared, SignalFrame};
-use tutti_midi_types::semantic::SemanticEvent;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
+use tutti_midi_runtime::{MidiInPort, MidiSender};
 
 extern crate alloc;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use arc_swap::ArcSwapOption;
-
 const FINISHED_NOTES_CAPACITY: usize = 16;
-
-/// `Sized` wrapper so a `dyn MidiSource` trait object can live in an
-/// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
-struct MidiSourceHandle(Arc<dyn MidiSource>);
 
 /// Polyphonic synthesizer combining tutti-synth building blocks with FunDSP.
 ///
@@ -38,21 +31,11 @@ pub struct PolySynth {
     unison: Option<UnisonEngine>,
     pitch_bend: f32,
     master_volume: Shared,
-    midi_unit_id: MidiUnitId,
-    midi_sender: MidiSender,
-    midi_receiver: MidiReceiver,
-    /// Optional override (e.g. `MidiSnapshotReader` for offline export
-    /// or `MidiClipSource` for beat-scheduled clip playback). When set,
-    /// `tick()`/`process()` poll this instead of `midi_receiver`.
-    ///
-    /// A **shared** `Arc<ArcSwapOption<…>>`, not a per-clone `Option`: fundsp's
-    /// frontend/backend split runs a *different* clone than the one
-    /// `set_midi_source` mutates, and `node_mut`/clone edits are discarded by
-    /// `Net::migrate` on commit. Sharing the slot makes an install on any clone
-    /// visible to the running box, lock-free — otherwise clip playback silently
-    /// never reaches the audio thread. `isolate()` (offline export) deliberately
-    /// swaps in a FRESH private slot to sever this sharing.
-    midi_source_override: Arc<ArcSwapOption<MidiSourceHandle>>,
+    /// This synth's MIDI input endpoint: routing address, push mailbox, and the
+    /// current pull source (the live receiver by default; an override installs a
+    /// `MidiClipSource`/`MidiSnapshotReader`). See [`MidiInPort`] for the fundsp
+    /// clone/isolate sharing semantics that used to be open-coded here.
+    midi: MidiInPort,
     midi_buffer: Vec<MidiEvent>,
     mix_buffer: [f32; 2],
     finished_indices: SmallVec<[usize; FINISHED_NOTES_CAPACITY]>,
@@ -103,9 +86,6 @@ impl PolySynth {
 
         let master_volume = tutti_core::shared(1.0);
 
-        let midi_unit_id = MidiUnitId::next();
-        let (midi_sender, midi_receiver) = MidiEventSlot::pair(midi_unit_id);
-
         Ok(Self {
             config,
             allocator,
@@ -114,10 +94,7 @@ impl PolySynth {
             unison,
             pitch_bend: 0.0,
             master_volume,
-            midi_unit_id,
-            midi_sender,
-            midi_receiver,
-            midi_source_override: Arc::new(ArcSwapOption::empty()),
+            midi: MidiInPort::new(),
             midi_buffer: vec![MidiEvent::noop(); 256],
             mix_buffer: [0.0; 2],
             finished_indices: SmallVec::new(),
@@ -128,7 +105,7 @@ impl PolySynth {
     /// Producer handle for this synth's MIDI inbox. Cheap to clone; insert
     /// into a `MidiBus` or hand to anything that pushes MIDI events.
     pub fn midi_sender(&self) -> MidiSender {
-        self.midi_sender.clone()
+        self.midi.sender()
     }
 
     /// Override the MIDI source. Used by offline export to swap the live
@@ -136,34 +113,23 @@ impl PolySynth {
     /// install a [`tutti_midi_runtime::MidiClipSource`] /
     /// [`tutti_midi_runtime::CompositeMidiSource`].
     ///
-    /// The source is held in an `Arc`, so the same instance survives
-    /// the unit-clone fundsp performs on each `commit()`.
+    /// The install is visible across fundsp's clone-on-commit (see
+    /// [`MidiInPort`]), so the same instance reaches the box the audio thread runs.
     ///
     /// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
-    pub fn set_midi_source(&mut self, source: Arc<dyn MidiSource>) {
-        self.midi_source_override
-            .store(Some(Arc::new(MidiSourceHandle(source))));
+    pub fn set_midi_source(&mut self, source: Arc<dyn MidiIn>) {
+        self.midi.install(source);
     }
 
     /// Drop a previously-installed override; subsequent ticks poll the
     /// live `MidiReceiver` again.
     pub fn clear_midi_source(&mut self) {
-        self.midi_source_override.store(None);
+        self.midi.clear();
     }
 
     fn poll_count(&mut self, block_size: usize) -> usize {
-        let block_start = self.sample_pos;
-        // `load()` is lock-free; the guard holds the current source for the poll.
-        let source = self.midi_source_override.load();
-        match source.as_ref() {
-            Some(handle) => handle.0.poll_into(
-                self.midi_unit_id,
-                block_start,
-                block_size,
-                &mut self.midi_buffer,
-            ),
-            None => self.midi_receiver.poll_into(&mut self.midi_buffer),
-        }
+        self.midi
+            .poll(self.sample_pos, block_size, &mut self.midi_buffer)
     }
 
     fn poll_midi_events(&mut self) {
@@ -247,24 +213,37 @@ impl PolySynth {
     }
 
     fn process_midi_event(&mut self, event: &MidiEvent) {
-        let Some(sem) = tutti_midi_types::decode(event) else {
+        use tutti_midi_types::convert::{
+            bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32,
+        };
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
+        // `normalize` folds velocity-0 NoteOn→NoteOff and promotes any inbound
+        // MIDI 1.0 channel voice to MIDI 2.0, so we match a single vocabulary.
+        let normalized = tutti_midi_types::normalize(event);
+        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(normalized.data_words())
+        else {
             return;
         };
-        match sem {
-            SemanticEvent::NoteOn {
-                channel,
-                note,
-                velocity,
-            } => {
-                self.handle_note_on(note, velocity, channel);
+        let channel = u8::from(cv2.channel());
+        match cv2 {
+            Cv2::NoteOn(m) => {
+                let note = u8::from(m.note_number());
+                self.handle_note_on(note, u16_to_unit_f32(m.velocity()), channel);
             }
-            SemanticEvent::NoteOff { channel, note } => {
-                self.handle_note_off(note, channel);
+            Cv2::NoteOff(m) => {
+                self.handle_note_off(u8::from(m.note_number()), channel);
             }
-            SemanticEvent::ControlChange { channel, cc, value } => {
-                self.handle_cc(cc, value, channel);
+            Cv2::ControlChange(m) => {
+                self.handle_cc(
+                    u8::from(m.control()),
+                    u32_to_unit_f32(m.control_change_data()),
+                    channel,
+                );
             }
-            SemanticEvent::PitchBend { channel, value } => {
+            Cv2::ChannelPitchBend(m) => {
+                let value = bend_u32_to_signed_f32(m.pitch_bend_data());
                 if self.config.mpe_enabled {
                     self.handle_mpe_pitch_bend_normalized(channel, value);
                 } else {
@@ -272,15 +251,82 @@ impl PolySynth {
                     self.apply_pitch_bend();
                 }
             }
-            SemanticEvent::ChannelPressure { channel, value } if self.config.mpe_enabled => {
-                self.handle_mpe_pressure_normalized(channel, value);
+            Cv2::ChannelPressure(m) if self.config.mpe_enabled => {
+                self.handle_mpe_pressure_normalized(
+                    channel,
+                    u32_to_unit_f32(m.channel_pressure_data()),
+                );
+            }
+            // MIDI 2.0 native per-note messages address one voice by note-id —
+            // two same-pitch notes stay independent even on one channel.
+            Cv2::PerNotePitchBend(m) => {
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                self.set_voice_mpe_pitch_bend(id, bend_u32_to_signed_f32(m.pitch_bend_data()));
+            }
+            Cv2::KeyPressure(m) => {
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                self.set_voice_mpe_pressure(id, u32_to_unit_f32(m.key_pressure_data()));
+            }
+            // Assignable per-note controllers carry a raw index. We honor the dims
+            // the synth voice can apply: CC74 → slide, CC7 → per-note gain.
+            Cv2::AssignablePerNoteController(m) => {
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                let data = u32_to_unit_f32(m.controller_data());
+                match m.index() {
+                    cc::BRIGHTNESS => self.set_voice_mpe_slide(id, data),
+                    cc::VOLUME => self.set_voice_mpe_gain(id, data),
+                    _ => {}
+                }
+            }
+            // Registered per-note controllers carry a *semantic* controller enum
+            // (index resolved to Volume/Pan/Brightness/…). We honor the dims the
+            // synth voice can apply: Volume → per-note gain, Brightness (CC74 /
+            // SoundController index 5) → slide. Pan stays recognized-but-unwired
+            // (no per-note pan DSP on `SynthVoice` yet — don't invent it).
+            Cv2::RegisteredPerNoteController(m) => {
+                use tutti_midi_types::midi2::channel_voice2::Controller;
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                match m.controller() {
+                    Controller::Volume(data) => {
+                        self.set_voice_mpe_gain(id, u32_to_unit_f32(data));
+                    }
+                    Controller::Brightness(data)
+                    | Controller::SoundController { index: 5, data } => {
+                        self.set_voice_mpe_slide(id, u32_to_unit_f32(data));
+                    }
+                    _ => {}
+                }
+            }
+            // MIDI 2.0 Per-Note Management (M2-104 §7.4.15).
+            //
+            // **Reset (S)**: reset the addressed note's per-note controllers to
+            // their defaults — pitch bend→0, pressure→0, slide→center — while the
+            // note keeps sounding. Fully honored via `reset_voice_mpe`.
+            //
+            // **Detach (D)**: spec-intent is to detach ongoing per-note controllers
+            // from the note so a subsequent note-off / same-pitch note-on does not
+            // disturb them. `SynthVoice` has no separate "detached controller"
+            // lifetime — per-note expression lives *on* the voice and dies with it —
+            // so there is nothing to re-home. We treat Detach as a lighter-touch
+            // reset of the voice's accumulated per-note expression: it clears the
+            // current per-note state but does NOT (and cannot, given this voice
+            // model) preserve controllers past the voice's own lifetime. This is
+            // spec-faithful in effect (per-note controllers stop influencing the
+            // note) without pretending to a controller-persistence model the synth
+            // does not have.
+            Cv2::PerNoteManagement(m) => {
+                let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
+                if m.reset() || m.detach() {
+                    self.reset_voice_mpe(id);
+                }
             }
             _ => {}
         }
     }
 
     fn handle_note_on(&mut self, note: u8, vel_norm: f32, channel: u8) {
-        let result = self.allocator.allocate(note, channel, vel_norm);
+        let id = NoteId::from_channel_note(channel, note);
+        let result = self.allocator.allocate(id, note, channel, vel_norm);
 
         let slot_index = match result {
             AllocationResult::Allocated { slot_index } => Some(slot_index),
@@ -314,23 +360,60 @@ impl PolySynth {
     }
 
     fn handle_note_off(&mut self, note: u8, channel: u8) {
-        self.allocator.release(note, channel);
-
-        let slot_still_active = self.allocator.slots().iter().any(|s| {
-            s.note() == note
-                && s.channel() == channel
-                && s.state() == crate::voice::VoiceState::Active
-        });
-
-        if !slot_still_active {
-            if let Some(voice) = self
-                .voices
-                .iter_mut()
-                .find(|v| v.is_active() && v.note() == note && v.channel() == channel)
-            {
-                voice.note_off();
-            }
+        let id = NoteId::from_channel_note(channel, note);
+        // `release` resolves the exact voice by id and tells us whether it truly
+        // stopped (vs. held by a pedal). Gate that voice by index — never by a
+        // (note, channel) scan, which would alias two same-pitch voices.
+        if let Some(slot_index) = self.allocator.release(id, channel) {
+            self.voices[slot_index].note_off();
         }
+    }
+
+    /// Index of the voice currently bound to `id` (matches the allocator slot).
+    #[inline]
+    fn voice_index_for_id(&self, id: NoteId) -> Option<usize> {
+        self.allocator
+            .slots()
+            .iter()
+            .position(|s| s.id() == id && s.state() != crate::voice::VoiceState::Idle)
+    }
+
+    /// Apply `f` to the single voice bound to `id` (the per-note addressing
+    /// primitive every MIDI 2.0 per-note message routes through). No-op if no
+    /// voice currently holds `id`, so other voices are never disturbed.
+    #[inline]
+    fn with_voice_for_id(&mut self, id: NoteId, f: impl FnOnce(&mut SynthVoice)) {
+        if let Some(i) = self.voice_index_for_id(id) {
+            f(&mut self.voices[i]);
+        }
+    }
+
+    /// MIDI 2.0 per-note pitch bend: modulate only the voice addressed by `id`.
+    fn set_voice_mpe_pitch_bend(&mut self, id: NoteId, bend_norm: f32) {
+        let semitones = tutti_core::Semitones(bend_norm * self.config.mpe_pitch_bend_range.get());
+        self.with_voice_for_id(id, |v| v.set_mpe_pitch_bend(semitones));
+    }
+
+    /// MIDI 2.0 per-note pressure (poly key pressure): only the addressed voice.
+    fn set_voice_mpe_pressure(&mut self, id: NoteId, norm: f32) {
+        self.with_voice_for_id(id, |v| v.set_mpe_pressure(norm));
+    }
+
+    /// MIDI 2.0 per-note slide (CC74 / Brightness): only the addressed voice.
+    fn set_voice_mpe_slide(&mut self, id: NoteId, value: f32) {
+        self.with_voice_for_id(id, |v| v.set_mpe_slide(value));
+    }
+
+    /// MIDI 2.0 per-note gain (per-note Volume / CC7): only the addressed voice.
+    fn set_voice_mpe_gain(&mut self, id: NoteId, value: f32) {
+        self.with_voice_for_id(id, |v| v.set_mpe_gain(value));
+    }
+
+    /// MIDI 2.0 Per-Note Management *Reset* (M2-104 §7.4.15): snap the addressed
+    /// voice's per-note controllers (pitch bend, pressure, slide, gain) back to
+    /// their note-on defaults, leaving the note sounding. Others are untouched.
+    fn reset_voice_mpe(&mut self, id: NoteId) {
+        self.with_voice_for_id(id, |v| v.reset_mpe());
     }
 
     fn handle_cc(&mut self, cc_num: u8, value: f32, channel: u8) {
@@ -466,11 +549,12 @@ impl AudioUnit for PolySynth {
     /// commit-clone, where only the original is ticked, but unsafe for an offline
     /// render ticked on a worker thread while the live synth keeps playing):
     ///
-    /// 1. **MIDI inbox** — `midi_receiver` + `midi_source_override`. A shared
-    ///    inbox is drained to exactly one consumer, so the worker would *steal*
-    ///    the live synth's note-ons/offs/CC. Fixed by minting a fresh,
-    ///    unconnected sender/receiver pair (nothing holds this sender, so the
-    ///    receiver stays permanently empty) and dropping the override.
+    /// 1. **MIDI input** — the [`MidiInPort`]. A shared inbox is drained to
+    ///    exactly one consumer, so the worker would *steal* the live synth's
+    ///    note-ons/offs/CC, and a shared source cell means clearing here would
+    ///    sever the live clip. Both are fixed by [`MidiInPort::isolate`], which
+    ///    mints a fresh private mailbox + source cell (nothing holds this new
+    ///    sender, so the port stays permanently empty).
     ///
     /// 2. **Per-voice `Shared` params** — every [`SynthVoice`] (and its
     ///    sub-voices) holds `gate`/`pitch`/`filter_cutoff`/`filter_resonance` as
@@ -486,16 +570,10 @@ impl AudioUnit for PolySynth {
     /// the live world — it renders silence until its own (now-empty) inbox feeds
     /// it events, which it never will.
     fn isolate(&mut self) {
-        let (sender, receiver) = MidiEventSlot::pair(self.midi_unit_id);
-        self.midi_sender = sender;
-        self.midi_receiver = receiver;
-        // Swap in a FRESH private slot (not `store(None)` on the shared one):
-        // the override slot is now shared across clones, so clearing the shared
-        // slot would sever the LIVE synth's clip source mid-export. A brand-new
-        // empty slot detaches this export clone alone, which is exactly what
-        // isolation wants — this clone renders silence, the live synth is
-        // untouched.
-        self.midi_source_override = Arc::new(ArcSwapOption::empty());
+        // Fresh private mailbox + source cell, same unit id — severs both the
+        // shared inbox (no event theft) and the shared source (clearing here
+        // can't disturb the live clip). See [`MidiInPort::isolate`].
+        self.midi.isolate();
 
         // Rebuild voices with fresh `Shared` atomics (see #2 above).
         let unison_count = self
@@ -711,21 +789,18 @@ impl AudioUnit for PolySynth {
     }
 }
 
-impl MidiTarget for PolySynth {
-    fn midi_unit_id(&self) -> MidiUnitId {
-        self.midi_unit_id
+impl PolySynth {
+    /// This unit's MIDI routing address.
+    pub fn midi_unit_id(&self) -> MidiUnitId {
+        self.midi.unit_id()
     }
 }
 
 impl Clone for PolySynth {
     fn clone(&self) -> Self {
-        // Share the underlying MIDI inbox so events queued via any
-        // outstanding `MidiSender` keep reaching whichever PolySynth
-        // fundsp is currently polling. Same for the MIDI source override:
-        // the `Arc<ArcSwapOption>` SLOT is shared (Arc clone), so an install
-        // on any clone is seen by the box the audio thread runs — a plain
-        // `Option` clone (the old bug) gave each clone a private slot that
-        // never propagated.
+        // The `MidiInPort` clone shares the mailbox + source cell (so an
+        // outstanding sender and any install keep reaching the running box);
+        // `isolate()` is what severs it for an offline render.
         Self {
             config: self.config.clone(),
             allocator: self.allocator.clone(),
@@ -734,10 +809,7 @@ impl Clone for PolySynth {
             unison: self.unison.clone(),
             pitch_bend: self.pitch_bend,
             master_volume: self.master_volume.clone(),
-            midi_unit_id: self.midi_unit_id,
-            midi_sender: self.midi_sender.clone(),
-            midi_receiver: self.midi_receiver.clone(),
-            midi_source_override: self.midi_source_override.clone(),
+            midi: self.midi.clone(),
             midi_buffer: vec![MidiEvent::noop(); 256],
             mix_buffer: [0.0; 2],
             finished_indices: SmallVec::new(),
@@ -858,7 +930,7 @@ mod tests {
     struct NoteOnceSource {
         note: u8,
     }
-    impl MidiSource for NoteOnceSource {
+    impl MidiIn for NoteOnceSource {
         fn poll_into(
             &self,
             _unit: MidiUnitId,
@@ -1736,6 +1808,241 @@ mod tests {
             voice_ch2.mpe_state().pitch_bend_semitones.get().abs() < 0.01,
             "Channel 2 should have no pitch bend, got {}",
             voice_ch2.mpe_state().pitch_bend_semitones
+        );
+    }
+
+    #[test]
+    fn test_midi2_per_note_pitch_bend_addresses_one_voice() {
+        // MIDI 2.0 native per-note pitch bend carries the note number on the
+        // wire, so it must move ONLY the addressed voice — even when both notes
+        // sound on the same channel (where the classic per-channel MPE handler
+        // would have bent both). This is the per-note-addressing proof.
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Sine,
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            },
+            mpe_enabled: true,
+            mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+            ..Default::default()
+        });
+
+        // Two notes, same channel, different pitches.
+        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+        assert_eq!(synth.active_voice_count(), 2);
+
+        // Native per-note pitch bend addressed to note 60 only (full positive).
+        let bend = MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF);
+        queue_midi(&synth, &[bend]);
+        synth.tick(&[], &mut output);
+
+        let voice_60 = synth
+            .voices
+            .iter()
+            .find(|v| v.is_active() && v.note() == 60)
+            .unwrap();
+        let voice_64 = synth
+            .voices
+            .iter()
+            .find(|v| v.is_active() && v.note() == 64)
+            .unwrap();
+
+        assert!(
+            voice_60.mpe_state().pitch_bend_semitones.get() > 40.0,
+            "note 60 should be bent, got {}",
+            voice_60.mpe_state().pitch_bend_semitones
+        );
+        assert!(
+            voice_64.mpe_state().pitch_bend_semitones.get().abs() < 0.01,
+            "note 64 (same channel) must be untouched, got {}",
+            voice_64.mpe_state().pitch_bend_semitones
+        );
+    }
+
+    #[test]
+    fn test_midi2_per_note_management_reset_zeroes_only_addressed_voice() {
+        // MIDI 2.0 Per-Note Management {reset:true} must reset ONLY the addressed
+        // note's per-note expression, leaving another sounding voice's bend intact.
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Sine,
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            },
+            mpe_enabled: true,
+            mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+            ..Default::default()
+        });
+
+        // Two notes on the same channel.
+        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+        assert_eq!(synth.active_voice_count(), 2);
+
+        // Bend BOTH notes fully (per-note, so each is addressed independently).
+        queue_midi(
+            &synth,
+            &[
+                MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF),
+                MidiEvent::per_note_pitch_bend(0, 1, 64, 0xFFFF_FFFF),
+            ],
+        );
+        synth.tick(&[], &mut output);
+
+        let bent = |synth: &PolySynth, note: u8| {
+            synth
+                .voices
+                .iter()
+                .find(|v| v.is_active() && v.note() == note)
+                .unwrap()
+                .mpe_state()
+                .pitch_bend_semitones
+                .get()
+        };
+        assert!(bent(&synth, 60) > 40.0, "note 60 should start bent");
+        assert!(bent(&synth, 64) > 40.0, "note 64 should start bent");
+
+        // Per-Note Management Reset addressed to note 60 only.
+        queue_midi(&synth, &[MidiEvent::per_note_management(0, 1, 60, false, true)]);
+        synth.tick(&[], &mut output);
+
+        assert!(
+            bent(&synth, 60).abs() < 0.01,
+            "note 60 per-note expression must be reset to 0, got {}",
+            bent(&synth, 60)
+        );
+        assert!(
+            bent(&synth, 64) > 40.0,
+            "note 64 (unaddressed) must keep its bend, got {}",
+            bent(&synth, 64)
+        );
+    }
+
+    #[test]
+    fn test_midi2_registered_per_note_controller_brightness_sets_only_addressed_slide() {
+        // A Registered Per-Note Controller for Brightness (CC74 / SoundController
+        // index 5) addressed to note X must set ONLY note X's slide.
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Saw,
+            filter: FilterType::Moog {
+                cutoff: 1000.0,
+                resonance: 0.5,
+            },
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            },
+            mpe_enabled: true,
+            ..Default::default()
+        });
+
+        // Two notes on the same channel.
+        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+        assert_eq!(synth.active_voice_count(), 2);
+
+        // Registered per-note Brightness (index 74) addressed to note 60, full value.
+        queue_midi(
+            &synth,
+            &[MidiEvent::per_note_controller(0, 1, 60, 74, 0xFFFF_FFFF, true)],
+        );
+        synth.tick(&[], &mut output);
+
+        let slide = |synth: &PolySynth, note: u8| {
+            synth
+                .voices
+                .iter()
+                .find(|v| v.is_active() && v.note() == note)
+                .unwrap()
+                .mpe_state()
+                .slide
+        };
+        assert!(
+            (slide(&synth, 60) - 1.0).abs() < 0.01,
+            "note 60 slide should be full, got {}",
+            slide(&synth, 60)
+        );
+        // The unaddressed voice must keep its neutral default (center = no timbre
+        // shift), not be dragged along with note 60.
+        assert!(
+            (slide(&synth, 64) - crate::voice::SLIDE_CENTER).abs() < 0.01,
+            "note 64 (unaddressed) slide must stay at center, got {}",
+            slide(&synth, 64)
+        );
+    }
+
+    #[test]
+    fn test_midi2_per_note_gain_addresses_only_one_voice() {
+        // Per-note Volume (CC7) — as clip Gain lanes emit it (Assignable index 7)
+        // and as a Registered Volume controller — must reach the addressed voice
+        // as gain, and leave others at unity.
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Sine,
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            },
+            mpe_enabled: true,
+            ..Default::default()
+        });
+
+        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+
+        let gain = |synth: &PolySynth, note: u8| {
+            synth
+                .voices
+                .iter()
+                .find(|v| v.is_active() && v.note() == note)
+                .unwrap()
+                .mpe_state()
+                .gain
+        };
+        // Fresh voices are at unity gain.
+        assert!((gain(&synth, 60) - 1.0).abs() < 0.01);
+        assert!((gain(&synth, 64) - 1.0).abs() < 0.01);
+
+        // Assignable per-note CC7 (the clip Gain-lane encoding) → half gain on 60.
+        queue_midi(
+            &synth,
+            &[MidiEvent::per_note_controller(0, 1, 60, 7, 0x8000_0000, false)],
+        );
+        synth.tick(&[], &mut output);
+        assert!(
+            (gain(&synth, 60) - 0.5).abs() < 0.02,
+            "note 60 gain should follow CC7, got {}",
+            gain(&synth, 60)
+        );
+        assert!(
+            (gain(&synth, 64) - 1.0).abs() < 0.01,
+            "note 64 (unaddressed) gain must stay unity, got {}",
+            gain(&synth, 64)
         );
     }
 

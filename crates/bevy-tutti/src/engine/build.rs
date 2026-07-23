@@ -71,7 +71,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // (Software MIDI fan-out via `MidiBus` is always present under `midi`.)
     #[cfg(feature = "midi-hardware")]
     let midi_io = {
-        let port_manager = Arc::new(tutti_midi_io::MidiPortManager::new(256));
+        let port_manager = Arc::new(tutti_midi_io::HardwareMidiInputs::new(256));
         Some(MidiIo::new(port_manager))
     };
 
@@ -122,10 +122,31 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
 
     let graph_processor = GraphProcessor::new(transport_mgr.clone(), backend);
 
+    // Clock master — outbound MIDI Beat Clock / MTC generator. Reads the
+    // transport, pushes into its own output ring (independent of the routing
+    // path, so System Real-Time reaches hardware-out). Ticked once per block by
+    // the RT processor; its consumer is drained to the OS by the frontend pump.
+    // Starts disabled — no output until the UI connects a device + enables it.
+    #[cfg(feature = "midi")]
+    let (clock_master, clock_out_consumer) = {
+        let (sender, receiver) = tutti_midi_runtime::MidiMailbox::pair(
+            tutti_midi_runtime::tutti_midi_types::MidiUnitId::next(),
+        );
+        let clock_transport =
+            TransportHandle::new(transport_mgr.clone(), click_settings.clone());
+        let master = Arc::new(tutti_midi_runtime::ClockMaster::new(
+            Arc::new(clock_transport),
+            sample_rate,
+            sender,
+        ));
+        (master, receiver)
+    };
+
     #[cfg(feature = "midi")]
     let processor: DefaultProcessor = {
         let mut midi_proc = MidiProcessor::new(graph_processor, midi_route.snapshot_arc());
         midi_proc.set_queue(Arc::new(midi_bus.clone()));
+        midi_proc.set_clock(clock_master.clone());
 
         // Hardware MIDI input only exists under `midi-hardware`.
         #[cfg(feature = "midi-hardware")]
@@ -189,6 +210,10 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         bus: Some(midi_bus),
         #[cfg(feature = "midi-hardware")]
         io: midi_io,
+        clock_out: Some(tutti_midi_io::ClockMasterRes::new(
+            clock_master,
+            clock_out_consumer,
+        )),
     });
 
     #[cfg(feature = "sampler")]

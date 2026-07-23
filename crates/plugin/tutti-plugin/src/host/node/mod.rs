@@ -1,8 +1,8 @@
 //! `PluginClient` — fundsp-graph-facing audio node for an out-of-process
 //! plugin.
 //!
-//! `AudioUnit<F32> + AudioUnit<F64>` and `MidiTarget` impls live in
-//! [`audio_unit`]. Subprocess lifetime guard is [`ProcessGuard`] —
+//! `AudioUnit<F32> + AudioUnit<F64>` impls (and the inherent `midi_unit_id`)
+//! live in [`audio_unit`]. Subprocess lifetime guard is [`ProcessGuard`] —
 //! held behind `Arc` here and in [`crate::host::handles::PluginHandle`], so the
 //! subprocess dies when the LAST Arc drops.
 //!
@@ -48,7 +48,6 @@ use batcher::Batcher;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tutti_midi_types::ump::MidiEvent;
 
 /// Cheap to clone: clones share `bridge`, `latency`, and `process_guard`
 /// (all Arc) but get independent `io` and `midi` state (fundsp clones
@@ -72,6 +71,10 @@ pub struct PluginClient {
     process_guard: Arc<ProcessGuard>,
     io: Batcher,
     midi: Midi,
+    /// Per-block scratch the subprocess plugin's MIDI-out is drained into, then
+    /// re-injected into routing via [`Midi::emit`]. Cleared at the start of each
+    /// `process`; steady-state capacity makes the drain alloc-free.
+    midi_out: crate::protocol::MidiEventVec,
     inputs: PluginInputs,
     /// Last-known sample rate, used to stamp a freshly-installed
     /// [`TransportSource`]. Updated by `AudioUnit::set_sample_rate`.
@@ -131,6 +134,21 @@ impl PluginClient {
         &mut self.midi
     }
 
+    /// Install the outbound routing target so this subprocess plugin's MIDI-out
+    /// re-enters the graph. See [`Midi::set_out`]. Off-RT; call at wiring time.
+    pub fn set_midi_out(
+        &self,
+        queue: Arc<dyn tutti_midi_types::MidiOut>,
+        routing: Arc<arc_swap::ArcSwap<tutti_midi_types::MidiRoutingSnapshot>>,
+    ) {
+        self.midi.set_out(queue, routing);
+    }
+
+    /// Drop the outbound routing target; subsequent blocks discard MIDI-out.
+    pub fn clear_midi_out(&self) {
+        self.midi.clear_out();
+    }
+
     /// Assemble this block's [`BlockPayload`]: MIDI (from the receiver-fallback
     /// [`Midi`]) plus each gated [`InputSlot`] (harmony/params/transport). Every
     /// send/gate decision lives in [`InputSlot::drain`] keyed on the plugin's
@@ -150,6 +168,29 @@ impl PluginClient {
 
     pub(super) fn bridge_ref(&self) -> &Arc<PluginBridge> {
         &self.bridge
+    }
+
+    /// Flush the tick batch through the bridge, then re-inject the plugin's
+    /// MIDI-out into routing. Split-borrows `io` / `bridge` / `midi_out` / `midi`
+    /// so the sink and the emit sidestep an aliasing `&mut self`.
+    pub(in crate::host::node) fn flush_batch<T: batcher::Scalar>(&mut self, payload: BlockPayload) {
+        let bridge = self.bridge.clone();
+        self.io.flush::<T>(&bridge, payload, &mut self.midi_out);
+        self.midi.emit(&self.midi_out);
+    }
+
+    /// Block-mode counterpart of [`Self::flush_batch`].
+    pub(in crate::host::node) fn process_block<T: batcher::Scalar>(
+        &mut self,
+        size: usize,
+        input: &tutti_core::BufferRef<'_, T::Marker>,
+        output: &mut tutti_core::BufferMut<'_, T::Marker>,
+        payload: BlockPayload,
+    ) {
+        let bridge = self.bridge.clone();
+        self.io
+            .process::<T>(&bridge, size, input, output, payload, &mut self.midi_out);
+        self.midi.emit(&self.midi_out);
     }
 
     /// Update the sample rate stamped onto the transport snapshot. Called from
@@ -228,6 +269,7 @@ impl PluginClient {
             process_guard,
             io: Batcher::new(inputs, outputs, output_base, server.format, max_buffer_size),
             midi: Midi::new(),
+            midi_out: crate::protocol::MidiEventVec::new(),
             // No transport source yet — the host installs one via
             // `set_transport_source` right after load; it's stamped with
             // `sample_rate` below (updated live on device rate changes).
@@ -304,21 +346,14 @@ impl PluginClient {
         let _ = self.bridge.set_automation_state_rt(state);
     }
 
-    /// Producer handle for this plugin's MIDI inbox.
+    /// Producer handle for this plugin's MIDI inbox. Route live MIDI to the
+    /// plugin by pushing through this sender (or by inserting it into a
+    /// [`tutti_midi_runtime::MidiBus`]); clip playback uses [`Self::set_midi_source`].
     pub fn midi_sender(&self) -> tutti_midi_runtime::MidiSender {
         self.midi.sender()
     }
 
-    /// Events are buffered and sent on the next `process()`.
-    pub fn queue_midi(&mut self, events: &[MidiEvent]) {
-        self.midi.queue(events);
-    }
-
-    pub fn clear_midi(&mut self) {
-        self.midi.clear();
-    }
-
-    /// Install a [`tutti_midi_types::MidiSource`] override (typically
+    /// Install a [`tutti_midi_types::MidiIn`] override (typically
     /// [`tutti_midi_runtime::MidiClipSource`] from a track's MIDI
     /// clips) that the plugin polls per block instead of its live
     /// `MidiReceiver`. Mirrors `PolySynth::set_midi_source` so
@@ -327,7 +362,7 @@ impl PluginClient {
     ///
     /// The source is held in an `Arc`, so the same instance survives
     /// the unit-clone fundsp performs on each `commit()`.
-    pub fn set_midi_source(&mut self, source: std::sync::Arc<dyn tutti_midi_types::MidiSource>) {
+    pub fn set_midi_source(&mut self, source: std::sync::Arc<dyn tutti_midi_types::MidiIn>) {
         self.midi.set_source(source);
     }
 

@@ -1,4 +1,4 @@
-//! Beat-scheduled MIDI clip playback as a [`MidiSource`].
+//! Beat-scheduled MIDI clip playback as a [`MidiIn`].
 //!
 //! A `MidiClipSource` holds a sorted `Vec<TimedClipEvent>` (events tagged
 //! with absolute beats) and a [`TransportReader`]. On each
@@ -17,18 +17,18 @@ use std::sync::Arc;
 
 use atomic_float::AtomicF64;
 use tutti_core::transport::TransportReader;
-use tutti_midi_types::source::MidiSource;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::unit_id::MidiUnitId;
+use tutti_midi_types::{MidiIn, MidiOut};
 
-/// One MIDI event scheduled at an absolute beat position. Note-on
-/// and note-off both arrive as fully-formed [`MidiEvent`]s so the
-/// player is agnostic to message shape.
-#[derive(Clone, Copy, Debug)]
-pub struct TimedClipEvent {
-    pub beat: f64,
-    pub event: MidiEvent,
-}
+/// One MIDI event scheduled at an absolute beat — the clip player's name for the
+/// runtime's one timed-event type, [`TimedMidiEvent`](crate::TimedMidiEvent).
+///
+/// It is the *same type*, so a `MidiSnapshot`'s events, a parsed clip file's
+/// `(beat, event)` tuples, and a clip all speak one currency and move between
+/// each other without repacking. Build with `TimedMidiEvent::new(beat, event)`,
+/// `.into()` from a `(beat, event)` tuple, or the field literal (`beat`/`event`).
+pub type TimedClipEvent = crate::snapshot::TimedMidiEvent;
 
 /// MIDI clip player. Constructed with a sorted-by-beat event list,
 /// a transport reader, and the audio sample rate. Events are emitted
@@ -53,6 +53,21 @@ pub struct MidiClipSource {
     /// doesn't match are skipped (a single composite source can fan to
     /// many synths via per-unit clip players).
     target_unit: MidiUnitId,
+    /// Optional **hardware-out tap**. When present, every event this source emits
+    /// to the synth is *also* handed to this [`MidiOut`] (already sample-stamped),
+    /// for an off-RT pump to forward to external MIDI. `None` for the ordinary
+    /// case.
+    ///
+    /// It is a `dyn MidiOut` — the audio-thread write side of the two MIDI traits,
+    /// whose `queue(&self, …)` is contractually lock-free — so the clip player
+    /// needs no ring/lock machinery of its own. Shared across fundsp's
+    /// clone-on-commit like [`Self::cursor`].
+    ///
+    /// The paired `out_tap_unit` is the [`MidiUnitId`] the tap routes on — the
+    /// *mailbox's* id, distinct from [`Self::target_unit`] (the synth address).
+    /// The tee queues to this id so a [`MidiSender`](crate::MidiSender) tap
+    /// accepts it (its `MidiOut` impl drops mismatched ids).
+    out_tap: Option<(Arc<dyn MidiOut>, MidiUnitId)>,
 }
 
 impl MidiClipSource {
@@ -72,7 +87,19 @@ impl MidiClipSource {
             cursor: Arc::new(AtomicU64::new(0)),
             last_beat: Arc::new(AtomicF64::new(f64::NEG_INFINITY)),
             target_unit,
+            out_tap: None,
         }
+    }
+
+    /// Attach a hardware-out tap: every event this source emits to the synth is
+    /// *also* handed to `tap`, addressed to `tap_unit` (already sample-stamped).
+    /// Use when the parent track routes its clip MIDI out to hardware; the
+    /// `MidiOut` is typically a [`MidiSender`](crate::MidiSender) whose receiver
+    /// an off-RT pump drains, and `tap_unit` is that sender's own id (not this
+    /// source's `target_unit`).
+    pub fn with_out_tap(mut self, tap: Arc<dyn MidiOut>, tap_unit: MidiUnitId) -> Self {
+        self.out_tap = Some((tap, tap_unit));
+        self
     }
 
     pub fn target_unit(&self) -> MidiUnitId {
@@ -159,6 +186,12 @@ impl MidiClipSource {
             let sample_offset = (beat_delta / window.beats_per_sample) as u32;
             event.frame_offset = sample_offset.min(window.max_offset);
             out[written] = event;
+            // Hardware-out tap: forward the same sample-stamped event through the
+            // `MidiOut` trait (lock-free, drops if full — benign backpressure),
+            // addressed to the tap's own mailbox id (not the synth target).
+            if let Some((tap, tap_unit)) = &self.out_tap {
+                tap.queue(*tap_unit, &[event]);
+            }
             written += 1;
             cursor += 1;
         }
@@ -179,7 +212,7 @@ struct PollWindow {
     max_offset: u32,
 }
 
-impl MidiSource for MidiClipSource {
+impl MidiIn for MidiClipSource {
     fn poll_into(
         &self,
         unit_id: MidiUnitId,
@@ -200,20 +233,20 @@ impl MidiSource for MidiClipSource {
     }
 }
 
-/// Fan multiple [`MidiSource`]s into one. Used to merge live preview
+/// Fan multiple [`MidiIn`]s into one. Used to merge live preview
 /// events (from `MidiBus` registry) with clip playback for the same
 /// synth. Events are concatenated in source order; the receiving
 /// synth re-sorts by `frame_offset` before processing.
 pub struct CompositeMidiSource {
-    sources: Vec<Box<dyn MidiSource>>,
+    sources: Vec<Box<dyn MidiIn>>,
 }
 
 impl CompositeMidiSource {
-    pub fn new(sources: Vec<Box<dyn MidiSource>>) -> Self {
+    pub fn new(sources: Vec<Box<dyn MidiIn>>) -> Self {
         Self { sources }
     }
 
-    pub fn push(&mut self, source: Box<dyn MidiSource>) {
+    pub fn push(&mut self, source: Box<dyn MidiIn>) {
         self.sources.push(source);
     }
 
@@ -226,7 +259,7 @@ impl CompositeMidiSource {
     }
 }
 
-impl MidiSource for CompositeMidiSource {
+impl MidiIn for CompositeMidiSource {
     fn poll_into(
         &self,
         unit_id: MidiUnitId,
@@ -298,7 +331,7 @@ mod tests {
     }
 
     fn note_on(note: u8, vel: u8) -> MidiEvent {
-        MidiEvent::note_on(0, 0, note, (vel as u16) << 9)
+        MidiEvent::note_on(0, 0, note, tutti_midi_types::convert::midi1_velocity_to_midi2(vel))
     }
 
     #[test]
@@ -411,6 +444,59 @@ mod tests {
     }
 
     #[test]
+    fn out_tap_forwards_the_same_stamped_events() {
+        use crate::registry::MidiMailbox;
+
+        let unit = MidiUnitId::new(3);
+        let transport = Arc::new(TestTransport::new(120.0));
+        // The tap is a plain MidiOut → MidiIn mailbox (the real wiring): the clip
+        // pushes into the sender, an off-RT drain reads the receiver. The mailbox
+        // has its *own* id, distinct from the clip's synth-routing `target_unit`
+        // — the tee addresses the mailbox id, not `target_unit`.
+        let tap_unit = MidiUnitId::new(999);
+        let (sender, receiver) = MidiMailbox::pair(tap_unit);
+
+        let source = MidiClipSource::new(
+            unit,
+            vec![
+                TimedClipEvent { beat: 0.0, event: note_on(60, 100) },
+                TimedClipEvent { beat: 0.25, event: note_on(64, 100) },
+            ],
+            Arc::clone(&transport) as Arc<dyn TransportReader>,
+            44100.0,
+        )
+        .with_out_tap(Arc::new(sender), tap_unit);
+
+        // Poll one block wide enough to cover both events.
+        let mut buf = [MidiEvent::noop(); 4];
+        assert_eq!(source.poll_into(unit, 0, 22050, &mut buf), 2);
+
+        // The tap received the *same* events the synth did, sample-stamped.
+        let mut tapped = [MidiEvent::noop(); 4];
+        let n = receiver.poll_into(&mut tapped);
+        assert_eq!(n, 2, "tap forwards both emitted events");
+        assert_eq!(tapped[0].note(), buf[0].note());
+        assert_eq!(tapped[1].note(), buf[1].note());
+        assert_eq!(tapped[0].frame_offset, buf[0].frame_offset, "stamp preserved");
+        assert_eq!(tapped[1].frame_offset, buf[1].frame_offset, "stamp preserved");
+    }
+
+    #[test]
+    fn no_tap_emits_only_to_synth() {
+        // Without a tap, behavior is unchanged (regression guard).
+        let unit = MidiUnitId::new(4);
+        let transport = Arc::new(TestTransport::new(120.0));
+        let source = MidiClipSource::new(
+            unit,
+            vec![TimedClipEvent { beat: 0.0, event: note_on(60, 100) }],
+            Arc::clone(&transport) as Arc<dyn TransportReader>,
+            44100.0,
+        );
+        let mut buf = [MidiEvent::noop(); 4];
+        assert_eq!(source.poll_into(unit, 0, 22050, &mut buf), 1);
+    }
+
+    #[test]
     fn composite_concatenates_outputs() {
         let unit = MidiUnitId::new(7);
         let transport = Arc::new(TestTransport::new(120.0));
@@ -423,7 +509,7 @@ mod tests {
             }],
             Arc::clone(&transport) as Arc<dyn TransportReader>,
             44100.0,
-        )) as Box<dyn MidiSource>;
+        )) as Box<dyn MidiIn>;
         let s2 = Box::new(MidiClipSource::new(
             unit,
             vec![TimedClipEvent {
@@ -432,7 +518,7 @@ mod tests {
             }],
             Arc::clone(&transport) as Arc<dyn TransportReader>,
             44100.0,
-        )) as Box<dyn MidiSource>;
+        )) as Box<dyn MidiIn>;
 
         let comp = CompositeMidiSource::new(vec![s1, s2]);
         let mut buf = [MidiEvent::noop(); 8];

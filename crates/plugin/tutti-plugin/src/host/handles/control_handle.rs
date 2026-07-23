@@ -83,7 +83,7 @@ impl PluginHandle {
         ));
         let backend = crate::host::ipc_client::SubprocessBackend::new(bridge, guard);
         let (sender, _receiver) =
-            tutti_midi_runtime::MidiEventSlot::pair(tutti_midi_types::MidiUnitId::next());
+            tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
         Self {
             inner: Arc::new(backend),
             descriptor,

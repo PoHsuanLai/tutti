@@ -1,12 +1,23 @@
 use crate::sync::SmpteFrameRate;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SmpteTimecode {
     pub hours: u8,
     pub minutes: u8,
     pub seconds: u8,
     pub frames: u8,
     pub frame_rate: SmpteFrameRate,
+}
+
+impl core::fmt::Display for SmpteTimecode {
+    /// Canonical `HH:MM:SS:FF` SMPTE form (colon-separated, zero-padded).
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{:02}:{:02}:{:02}:{:02}",
+            self.hours, self.minutes, self.seconds, self.frames
+        )
+    }
 }
 
 impl SmpteTimecode {
@@ -26,6 +37,7 @@ impl SmpteTimecode {
 ///
 /// MTC sends timecode as 8 sequential quarter-frame messages (0xF1 data),
 /// each carrying a nibble of the full HH:MM:SS:FF timecode.
+#[derive(Debug, Clone)]
 pub struct MtcDecoder {
     nibbles: [u8; 8],
     count: u8,

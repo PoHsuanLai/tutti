@@ -1,4 +1,84 @@
 use super::zone::MpeZoneConfig;
+use crate::note_id::NoteId;
+
+/// Single-channel **Note Number Rotation** allocator: full 128-note polyphony on
+/// one MIDI channel, minting a distinct [`NoteId`] per note-on so the downstream
+/// voice allocator gives even two same-pitch notes their own voices.
+///
+/// This is the alternative to classic MPE (which spreads notes across member
+/// channels). Here everything stays on one channel and per-note identity is
+/// host-internal: each note-on mints an opaque [`NoteId::from_raw`] id from a
+/// monotonic counter.
+///
+/// **Wire-addressing caveat (per M2-104):** MIDI 2.0 per-note messages carry a
+/// *note number*, not a note-id, so a per-note message can only be routed to a
+/// note *by its number*. When two same-number notes are live, wire per-note
+/// messages resolve to the most recently started one — the spec's own limit.
+/// Rotation's win is distinct *voice* identity at allocation time, not
+/// disambiguating same-number wire messages.
+#[derive(Debug)]
+pub struct NoteRotationAllocator {
+    /// note number → the id most recently minted for it (for routing per-note
+    /// messages that arrive by note number). `None` when no live note of that
+    /// number.
+    active: [Option<NoteId>; 128],
+    /// Monotonic mint counter; the low bit space is the raw id. Starts at 1 so
+    /// a minted id is never 0 (keeps `Default`/zero distinguishable) and never
+    /// `u32::MAX` (reserved as the storage sentinel elsewhere).
+    next: u32,
+}
+
+impl Default for NoteRotationAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NoteRotationAllocator {
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            active: [None; 128],
+            next: 1,
+        }
+    }
+
+    /// Mint a fresh id for a note-on of `note`, recording it as the active id
+    /// for that note number. Returns the minted id.
+    #[inline]
+    pub fn note_on(&mut self, note: u8) -> NoteId {
+        let id = NoteId::from_raw(self.next);
+        // Advance, skipping the two reserved values (0 and u32::MAX).
+        self.next = match self.next.wrapping_add(1) {
+            0 | u32::MAX => 1,
+            n => n,
+        };
+        if let Some(slot) = self.active.get_mut(note as usize) {
+            *slot = Some(id);
+        }
+        id
+    }
+
+    /// Resolve the active id for `note` (for routing a per-note message that
+    /// arrived by note number). `None` if no live note of that number.
+    #[inline]
+    pub fn resolve(&self, note: u8) -> Option<NoteId> {
+        self.active.get(note as usize).copied().flatten()
+    }
+
+    /// Clear the active id for `note` on note-off, returning the id that was
+    /// freed (so the caller can release the matching voice/expression).
+    #[inline]
+    pub fn note_off(&mut self, note: u8) -> Option<NoteId> {
+        self.active.get_mut(note as usize).and_then(Option::take)
+    }
+
+    /// Forget all live notes (e.g. all-notes-off / reset).
+    #[inline]
+    pub fn clear(&mut self) {
+        self.active = [None; 128];
+    }
+}
 
 /// Tracks which MPE member channel is playing which note, enabling
 /// per-channel expression to be routed to per-note expression.
@@ -159,6 +239,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rotation_mints_distinct_ids_for_same_pitch() {
+        // Two note-ons at the same pitch on one channel get independent ids —
+        // the point of Note Number Rotation.
+        let mut rot = NoteRotationAllocator::new();
+        let a = rot.note_on(60);
+        let b = rot.note_on(60);
+        assert_ne!(a, b, "same-pitch notes must mint distinct ids");
+        // The most recent is what a by-number per-note message resolves to.
+        assert_eq!(rot.resolve(60), Some(b));
+    }
+
+    #[test]
+    fn rotation_note_off_frees_and_returns_id() {
+        let mut rot = NoteRotationAllocator::new();
+        let a = rot.note_on(64);
+        assert_eq!(rot.resolve(64), Some(a));
+        assert_eq!(rot.note_off(64), Some(a));
+        assert_eq!(rot.resolve(64), None);
+        assert_eq!(rot.note_off(64), None); // idempotent
+    }
+
+    #[test]
+    fn rotation_minted_ids_avoid_reserved_values() {
+        // The mint counter never yields 0 or u32::MAX (both reserved sentinels).
+        let mut rot = NoteRotationAllocator::new();
+        for _ in 0..300 {
+            let id = rot.note_on(60).raw();
+            assert_ne!(id, 0);
+            assert_ne!(id, u32::MAX);
+        }
+    }
+
+    #[test]
     fn test_channel_voice_map() {
         let config = MpeZoneConfig::lower(3);
         let mut map = MpeChannelVoiceMap::new(config);
@@ -229,13 +342,22 @@ mod tests {
             map.get_channel_for_note(60).is_none(),
             "oldest note (60) must be evicted"
         );
-        assert!(map.get_channel_for_note(64).is_some(), "64 must still sound");
+        assert!(
+            map.get_channel_for_note(64).is_some(),
+            "64 must still sound"
+        );
         assert_eq!(map.get_channel_for_note(72), Some(ch_new));
 
         // A second steal must take note 64 (now the oldest survivor), not 67.
         map.assign_note(76).unwrap();
-        assert!(map.get_channel_for_note(64).is_none(), "64 is now oldest, evict it");
-        assert!(map.get_channel_for_note(67).is_some(), "67 is newer, must survive");
+        assert!(
+            map.get_channel_for_note(64).is_none(),
+            "64 is now oldest, evict it"
+        );
+        assert!(
+            map.get_channel_for_note(67).is_some(),
+            "67 is newer, must survive"
+        );
     }
 
     #[test]

@@ -4,15 +4,14 @@
 //! VST3's native event list is richer than raw MIDI-1 wire data (typed
 //! note-on/off/poly-pressure structs with `f32` velocity plus generic
 //! `Data` events for CC / ProgramChange / ChannelPressure / PitchBend). The
-//! [`vst3_event_from_midi`] / [`vst3_to_midi_event`] helpers bridge it to the
+//! [`Vst3Event::from_midi`] / [`Vst3Event::to_midi`] helpers bridge it to the
 //! workspace's canonical [`MidiEvent`] UMP type — one `MidiEvent` maps to one
 //! [`Vst3Event`] and round-trips losslessly for the MIDI-representable
 //! variants.
 
 pub use tutti_midi_types::MidiEvent;
 
-use tutti_midi_types::{decode, encode, SemanticEvent};
-use tutti_plugin_types::{NoteExpressionType, NoteExpressionValue};
+use tutti_plugin_types::{note_id_for, NoteExpressionType, NoteExpressionValue};
 
 use vst3::Steinberg::Vst::Event_::EventTypes_;
 
@@ -189,7 +188,7 @@ pub struct LegacyMidiCcOutEvent {
 }
 
 /// Safe tagged-enum form of the VST3 `Event` union. See
-/// [`vst3_event_from_midi`] / [`vst3_to_midi_event`] for round-trip MIDI
+/// [`Vst3Event::from_midi`] / [`Vst3Event::to_midi`] for round-trip MIDI
 /// conversion. Text-bearing variants reference the owning event list's arena
 /// (see [`TextRef`]) so the enum stays `Copy`.
 #[derive(Debug, Clone, Copy)]
@@ -227,6 +226,23 @@ impl Vst3Event {
             Vst3Event::NoteExpressionInt(e) => &e.header,
             Vst3Event::LegacyMidiCcOut(e) => &e.header,
         }
+    }
+
+    /// Encode a Tutti UMP [`MidiEvent`] as a [`Vst3Event`]. Notes and
+    /// poly-pressure keep MIDI-2 full-width resolution; per-note messages become
+    /// note-expression events; everything else becomes a MIDI-1 [`Vst3Event::Data`]
+    /// frame. `None` only for messages with no MIDI-1 form and no per-note mapping.
+    #[inline]
+    pub fn from_midi(event: &MidiEvent) -> Option<Self> {
+        vst3_event_from_midi(event)
+    }
+
+    /// Decode this [`Vst3Event`] into a Tutti UMP [`MidiEvent`], promoting any
+    /// MIDI-1 payload to Channel Voice 2. `None` for non-MIDI events. The inverse
+    /// of [`Vst3Event::from_midi`].
+    #[inline]
+    pub fn to_midi(&self) -> Option<MidiEvent> {
+        vst3_to_midi_event(self)
     }
 }
 
@@ -508,37 +524,24 @@ pub(crate) unsafe fn from_c_event(
     }
 }
 
-/// Deterministic VST3 `noteId` for a `(channel, note)` pair.
-///
-/// VST3 addresses per-note events (note-on/off and note expression) by a host-
-/// chosen `noteId` token that the plugin echoes back. We don't track live
-/// voices, so we derive a stable id from the channel and note instead: a note-on
-/// and any per-note expression for the *same* `(channel, note)` compute the same
-/// id and therefore bind to the same VST3 voice. The mapping is a bijection into
-/// `0..2048`, comfortably inside `i32`.
-///
-/// This is distinct from the spec's "use `noteId = -1` for channel/pitch
-/// matching" fallback: that fallback only covers note-on/off, *not* note
-/// expression — note-expression events carry no channel/pitch, only a `noteId`,
-/// so they have no voice to attach to unless the host assigns real ids.
-#[inline]
-pub fn note_id_for(channel: u8, note: u8) -> i32 {
-    (channel as i32) * 128 + (note as i32)
-}
-
 /// Encode a Tutti UMP [`MidiEvent`] as a [`Vst3Event`].
 ///
-/// Notes and poly-pressure decode through [`tutti_midi_types::decode`] into
-/// VST3's typed structs, so velocity / pressure arrive at the plugin at the
-/// source event's full bit width (`f32` 0..1) rather than re-quantized through
-/// 7-bit MIDI-1 — a MIDI-2 note-on keeps its 16-bit velocity. MIDI-2 per-note
-/// pitch bend and per-note controllers become [`Vst3Event::NoteExpression`]
-/// events bound to the matching voice via [`note_id_for`]. Everything else (CC,
-/// channel-wide pitch bend, program change, channel pressure, SysEx) becomes a
-/// [`Vst3Event::Data`] event, which is a 3-byte MIDI-1 frame by definition, so
-/// that branch stays on the byte form. Returns `None` only for messages with no
-/// MIDI-1 byte representation and no semantic mapping.
-pub fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
+/// Notes and poly-pressure are matched on `midi2`'s Channel Voice 2 vocabulary
+/// via [`tutti_midi_types::normalize`], so velocity / pressure arrive at the
+/// plugin at the source event's full bit width (converted to VST3's `f32` 0..1
+/// here) rather than re-quantized through 7-bit MIDI-1 — a MIDI-2 note-on keeps
+/// its 16-bit velocity. MIDI-2 per-note pitch bend and per-note controllers
+/// become [`Vst3Event::NoteExpression`] events bound to the matching voice via
+/// [`note_id_for`]. Everything else (CC, channel-wide pitch bend, program change,
+/// channel pressure, SysEx) becomes a [`Vst3Event::Data`] event, which is a
+/// 3-byte MIDI-1 frame by definition, so that branch stays on the byte form.
+/// Returns `None` only for messages with no MIDI-1 byte representation and no
+/// per-note mapping.
+pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
+    use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
+    use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+    use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
     let sample_offset = event.frame_offset as i32;
     let header = EventHeader {
         bus_index: 0,
@@ -550,92 +553,101 @@ pub fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
 
     // Notes, poly-pressure, and per-note expression get VST3's typed structs
     // with full-width f32 values; the rest fall through to a 3-byte Data event.
-    match decode(event) {
-        Some(SemanticEvent::NoteOn {
-            channel,
-            note,
-            velocity,
-        }) => {
-            return Some(Vst3Event::NoteOn(NoteOnEvent {
-                header: EventHeader {
-                    event_type: K_NOTE_ON_EVENT,
-                    ..header
-                },
-                channel: channel as i16,
-                pitch: note as i16,
-                tuning: 0.0,
-                velocity,
-                length: 0,
-                note_id: note_id_for(channel, note),
-            }));
-        }
-        Some(SemanticEvent::NoteOff { channel, note }) => {
-            return Some(Vst3Event::NoteOff(NoteOffEvent {
-                header: EventHeader {
-                    event_type: K_NOTE_OFF_EVENT,
-                    ..header
-                },
-                channel: channel as i16,
-                pitch: note as i16,
-                velocity: 0.0,
-                note_id: note_id_for(channel, note),
-                tuning: 0.0,
-            }));
-        }
-        Some(SemanticEvent::KeyPressure {
-            channel,
-            note,
-            value,
-        }) => {
-            return Some(Vst3Event::PolyPressure(PolyPressureEvent {
-                header: EventHeader {
-                    event_type: K_POLY_PRESSURE_EVENT,
-                    ..header
-                },
-                channel: channel as i16,
-                pitch: note as i16,
-                pressure: value,
-                note_id: note_id_for(channel, note),
-            }));
-        }
-        // MIDI-2 per-note pitch bend → VST3 tuning expression. Signed [-1, 1]
-        // (center 0) maps to the unit [0, 1] (center 0.5 = no detune) VST3's
-        // note-expression value convention uses.
-        Some(SemanticEvent::PerNotePitchBend {
-            channel,
-            note,
-            value,
-        }) => {
-            // Tuning is VST3-encodable, so `note_expression_to_vst3` is `Some`.
-            return note_expression_to_vst3(&NoteExpressionValue {
-                sample_offset,
-                note_id: note_id_for(channel, note),
-                expression_type: NoteExpressionType::Tuning,
-                value: (value as f64 + 1.0) / 2.0,
-            });
-        }
-        // MIDI-2 per-note controllers map onto VST3 note-expression dimensions
-        // for the indices that have a standard expression counterpart; other
-        // per-note CCs have no VST3 expression equivalent and are dropped.
-        Some(SemanticEvent::PerNoteController {
-            channel,
-            note,
-            index,
-            value,
-        }) => {
-            return per_note_controller_expression(index).and_then(|expression_type| {
-                note_expression_to_vst3(&NoteExpressionValue {
+    let normalized = tutti_midi_types::normalize(event);
+    if let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(normalized.data_words()) {
+        let channel = u8::from(cv2.channel());
+        match cv2 {
+            Cv2::NoteOn(m) => {
+                let note = u8::from(m.note_number());
+                return Some(Vst3Event::NoteOn(NoteOnEvent {
+                    header: EventHeader {
+                        event_type: K_NOTE_ON_EVENT,
+                        ..header
+                    },
+                    channel: channel as i16,
+                    pitch: note as i16,
+                    tuning: 0.0,
+                    velocity: u16_to_unit_f32(m.velocity()),
+                    length: 0,
+                    note_id: note_id_for(channel, note),
+                }));
+            }
+            Cv2::NoteOff(m) => {
+                let note = u8::from(m.note_number());
+                return Some(Vst3Event::NoteOff(NoteOffEvent {
+                    header: EventHeader {
+                        event_type: K_NOTE_OFF_EVENT,
+                        ..header
+                    },
+                    channel: channel as i16,
+                    pitch: note as i16,
+                    velocity: 0.0,
+                    note_id: note_id_for(channel, note),
+                    tuning: 0.0,
+                }));
+            }
+            Cv2::KeyPressure(m) => {
+                let note = u8::from(m.note_number());
+                return Some(Vst3Event::PolyPressure(PolyPressureEvent {
+                    header: EventHeader {
+                        event_type: K_POLY_PRESSURE_EVENT,
+                        ..header
+                    },
+                    channel: channel as i16,
+                    pitch: note as i16,
+                    pressure: u32_to_unit_f32(m.key_pressure_data()),
+                    note_id: note_id_for(channel, note),
+                }));
+            }
+            // MIDI-2 per-note pitch bend → VST3 tuning expression. Signed [-1, 1]
+            // (center 0) maps to the unit [0, 1] (center 0.5 = no detune) VST3's
+            // note-expression value convention uses.
+            Cv2::PerNotePitchBend(m) => {
+                let note = u8::from(m.note_number());
+                let value = bend_u32_to_signed_f32(m.pitch_bend_data());
+                // Tuning is VST3-encodable, so `note_expression_to_vst3` is `Some`.
+                return note_expression_to_vst3(&NoteExpressionValue {
                     sample_offset,
                     note_id: note_id_for(channel, note),
-                    expression_type,
-                    value: value as f64,
-                })
-            });
+                    expression_type: NoteExpressionType::Tuning,
+                    value: (f64::from(value) + 1.0) / 2.0,
+                });
+            }
+            // MIDI-2 per-note controllers map onto VST3 note-expression
+            // dimensions for the indices that have a standard expression
+            // counterpart; other per-note CCs have no VST3 equivalent and drop.
+            // Both Registered and Assignable per-note controllers are handled;
+            // the index namespace is the same 8-bit space.
+            Cv2::RegisteredPerNoteController(m) => {
+                let note = u8::from(m.note_number());
+                return registered_controller_expression(m.controller()).and_then(
+                    |(expression_type, data)| {
+                        note_expression_to_vst3(&NoteExpressionValue {
+                            sample_offset,
+                            note_id: note_id_for(channel, note),
+                            expression_type,
+                            value: f64::from(u32_to_unit_f32(data)),
+                        })
+                    },
+                );
+            }
+            Cv2::AssignablePerNoteController(m) => {
+                let note = u8::from(m.note_number());
+                let value = u32_to_unit_f32(m.controller_data());
+                return per_note_controller_expression(m.index()).and_then(|expression_type| {
+                    note_expression_to_vst3(&NoteExpressionValue {
+                        sample_offset,
+                        note_id: note_id_for(channel, note),
+                        expression_type,
+                        value: f64::from(value),
+                    })
+                });
+            }
+            // CC / channel pressure / channel pitch bend / program change carry
+            // no extra resolution VST3 can use here — they ride the plugin's
+            // parameter funnel (see `CcRoute`) or land as a raw Data event below.
+            _ => {}
         }
-        // CC / channel pressure / channel pitch bend / program change carry no
-        // extra resolution VST3 can use here — they ride the plugin's parameter
-        // funnel (see `CcRoute`) or land as a raw Data event below.
-        _ => {}
     }
 
     // SysEx → DataEvent with the kMidiSysEx subtype. VST3 wants the complete
@@ -697,6 +709,28 @@ fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
     }
 }
 
+/// Map a MIDI-2 *registered* per-note controller (a spec-named
+/// [`Controller`](tutti_midi_types::midi2::channel_voice2::Controller)) to the
+/// VST3 note-expression dimension it corresponds to, with its raw 32-bit data.
+///
+/// Registered controllers carry spec meaning by *name*, not by a bare index, so
+/// we match the enum directly. Only the dimensions with a VST3 standard
+/// expression counterpart are forwarded (Volume, Pan, Brightness = CC74 /
+/// SoundController #5); the rest have no VST3 equivalent and are dropped.
+fn registered_controller_expression(
+    controller: tutti_midi_types::midi2::channel_voice2::Controller,
+) -> Option<(NoteExpressionType, u32)> {
+    use tutti_midi_types::midi2::channel_voice2::Controller;
+    match controller {
+        Controller::Volume(data) => Some((NoteExpressionType::Volume, data)),
+        Controller::Pan(data) => Some((NoteExpressionType::Pan, data)),
+        Controller::Brightness(data) | Controller::SoundController { index: 5, data } => {
+            Some((NoteExpressionType::Brightness, data))
+        }
+        _ => None,
+    }
+}
+
 /// Decode a [`Vst3Event`] into a Tutti UMP [`MidiEvent`].
 ///
 /// Notes and poly-pressure go through [`tutti_midi_types::encode`], so the
@@ -708,23 +742,28 @@ fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
 /// for the non-MIDI events (note-expression value/text/int, chord, scale), for
 /// `Data` payloads shorter than 2 bytes, and for a SysEx too long for one UMP
 /// packet.
-pub fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
+pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
+    use tutti_midi_types::convert::{unit_f32_to_u16, unit_f32_to_u32};
+
     let frame = event.sample_offset().max(0) as u32;
-    let semantic = match event {
-        Vst3Event::NoteOn(e) => SemanticEvent::NoteOn {
-            channel: (e.channel as u8) & 0x0F,
-            note: (e.pitch as u8) & 0x7F,
-            velocity: e.velocity,
-        },
-        Vst3Event::NoteOff(e) => SemanticEvent::NoteOff {
-            channel: (e.channel as u8) & 0x0F,
-            note: (e.pitch as u8) & 0x7F,
-        },
-        Vst3Event::PolyPressure(e) => SemanticEvent::KeyPressure {
-            channel: (e.channel as u8) & 0x0F,
-            note: (e.pitch as u8) & 0x7F,
-            value: e.pressure,
-        },
+    // Notes and poly-pressure build native MIDI-2 Channel Voice events so the
+    // plugin's f32 velocity / pressure is preserved at full 16/32-bit width.
+    let built = match event {
+        Vst3Event::NoteOn(e) => MidiEvent::note_on(
+            0,
+            (e.channel as u8) & 0x0F,
+            (e.pitch as u8) & 0x7F,
+            unit_f32_to_u16(e.velocity),
+        ),
+        Vst3Event::NoteOff(e) => {
+            MidiEvent::note_off(0, (e.channel as u8) & 0x0F, (e.pitch as u8) & 0x7F, 0)
+        }
+        Vst3Event::PolyPressure(e) => MidiEvent::poly_pressure(
+            0,
+            (e.channel as u8) & 0x0F,
+            (e.pitch as u8) & 0x7F,
+            unit_f32_to_u32(e.pressure),
+        ),
         Vst3Event::Data(e) => {
             if e.size < 2 {
                 return None;
@@ -741,7 +780,11 @@ pub fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
                 let inner = inner.strip_suffix(&[0xF7]).unwrap_or(inner);
                 return MidiEvent::sysex7_single(0, inner).map(|m| m.with_frame_offset(frame));
             }
-            return MidiEvent::from_midi1_bytes(frame, bytes);
+            // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the
+            // engine sees one vocabulary regardless of source — matching the
+            // hardware input path. System messages pass through unchanged.
+            return MidiEvent::from_midi1_bytes(frame, bytes)
+                .map(|e| tutti_midi_types::normalize(&e));
         }
         Vst3Event::LegacyMidiCcOut(e) => {
             return legacy_cc_to_midi(e, frame);
@@ -753,7 +796,7 @@ pub fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
         | Vst3Event::Scale(_)
         | Vst3Event::NoteExpressionInt(_) => return None,
     };
-    Some(encode(&semantic).with_frame_offset(frame))
+    Some(built.with_frame_offset(frame))
 }
 
 /// Rebuild the UMP MIDI message a plugin-emitted [`LegacyMidiCcOutEvent`] stands
@@ -1038,9 +1081,49 @@ fn resolve_text(t: &TextRef, arena: &[u16]) -> Vec<u16> {
 
 #[cfg(test)]
 mod tests {
-    //! MIDI round-trip tests through `vst3_event_from_midi` + `vst3_to_midi_event`.
+    //! MIDI round-trip tests through `Vst3Event::from_midi` + `Vst3Event::to_midi`.
 
     use super::*;
+    use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
+    use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+    use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
+    #[test]
+    fn inbound_generic_data_cc_promotes_to_cv2() {
+        // A CC has no typed VST3 slot, so it rounds through a generic `Data`
+        // (3-byte MIDI-1) event. Decoding that must yield MIDI-2 Channel Voice
+        // 2, not CV1 — the engine sees one vocabulary regardless of source
+        // (mirrors the hardware input path's `normalize` promotion).
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+
+        let event = MidiEvent::cc(0, 1, 74, midi1_cc_to_midi2(100));
+        let vst3 = vst3_event_from_midi(&event).expect("CC -> Data");
+        assert!(matches!(vst3, Vst3Event::Data(_)), "CC should be a Data event");
+        let back = vst3_to_midi_event(&vst3).expect("cc decodes");
+        match UmpMessage::try_from(back.data_words()).expect("valid UMP") {
+            UmpMessage::ChannelVoice2(Cv2::ControlChange(m)) => {
+                assert_eq!(u8::from(m.channel()), 1);
+                assert_eq!(u8::from(m.control()), 74);
+            }
+            other => panic!("expected CV2 ControlChange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn inbound_system_message_passes_through() {
+        // A System real-time message (Timing Clock 0xF8) has no CV form and must
+        // pass through `normalize` unchanged, not be dropped or promoted.
+        let event = MidiEvent::timing_clock(0);
+        let vst3 = vst3_event_from_midi(&event).expect("clock -> Data");
+        let back = vst3_to_midi_event(&vst3).expect("clock decodes");
+        assert!(
+            matches!(
+                UmpMessage::try_from(back.data_words()),
+                Ok(UmpMessage::SystemCommon(_))
+            ),
+            "timing clock should stay a System Real-Time message"
+        );
+    }
 
     #[test]
     fn note_on_lands_in_note_on_variant() {
@@ -1272,9 +1355,9 @@ mod tests {
         let event = MidiEvent::note_on(0, 0, 60, velocity_u16);
         let vst3 = vst3_event_from_midi(&event).expect("converts");
         let back = vst3_to_midi_event(&vst3).expect("round-trips");
-        let dec = tutti_midi_types::decode(&back).expect("decodes");
-        match dec {
-            SemanticEvent::NoteOn { velocity, .. } => {
+        match UmpMessage::try_from(back.data_words()).expect("decodes") {
+            UmpMessage::ChannelVoice2(Cv2::NoteOn(m)) => {
+                let velocity = u16_to_unit_f32(m.velocity());
                 let expected = velocity_u16 as f32 / u16::MAX as f32;
                 // f32 velocity carries far more than 7 bits — error stays tiny.
                 assert!(
@@ -1419,9 +1502,10 @@ mod tests {
         });
         let m = vst3_to_midi_event(&cc).expect("CC decodes");
         assert_eq!(m.frame_offset, 5);
-        match tutti_midi_types::decode(&m).unwrap() {
-            SemanticEvent::ControlChange { channel, cc, value } => {
-                assert_eq!((channel, cc), (3, 74));
+        match UmpMessage::try_from(m.data_words()).expect("UMP") {
+            UmpMessage::ChannelVoice2(Cv2::ControlChange(msg)) => {
+                assert_eq!((u8::from(msg.channel()), u8::from(msg.control())), (3, 74));
+                let value = u32_to_unit_f32(msg.control_change_data());
                 assert!((value - 100.0 / 127.0).abs() < 0.01);
             }
             other => panic!("expected CC, got {other:?}"),
@@ -1441,8 +1525,11 @@ mod tests {
             value: 0,
             value2: 0x40,
         });
-        match tutti_midi_types::decode(&vst3_to_midi_event(&pb).unwrap()).unwrap() {
-            SemanticEvent::PitchBend { value, .. } => assert!(value.abs() < 0.01),
+        let pb_m = vst3_to_midi_event(&pb).unwrap();
+        match UmpMessage::try_from(pb_m.data_words()).expect("UMP") {
+            UmpMessage::ChannelVoice2(Cv2::ChannelPitchBend(msg)) => {
+                assert!(bend_u32_to_signed_f32(msg.pitch_bend_data()).abs() < 0.01)
+            }
             other => panic!("expected PitchBend, got {other:?}"),
         }
 
@@ -1460,10 +1547,13 @@ mod tests {
             value: 127,
             value2: 0,
         });
-        assert!(matches!(
-            tutti_midi_types::decode(&vst3_to_midi_event(&at).unwrap()).unwrap(),
-            SemanticEvent::ChannelPressure { channel: 1, .. }
-        ));
+        let at_m = vst3_to_midi_event(&at).unwrap();
+        match UmpMessage::try_from(at_m.data_words()).expect("UMP") {
+            UmpMessage::ChannelVoice2(Cv2::ChannelPressure(msg)) => {
+                assert_eq!(u8::from(msg.channel()), 1)
+            }
+            other => panic!("expected ChannelPressure, got {other:?}"),
+        }
     }
 
     /// Chord / scale / text / int events are not channel-voice MIDI.

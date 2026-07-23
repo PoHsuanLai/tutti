@@ -2,18 +2,18 @@
 //!
 //! Defines the data types ([`MidiRoute`], [`MidiRoutingSnapshot`]) and the
 //! pure routing function ([`MidiRoutingSnapshot::route`]): given a set of
-//! rules and an incoming `(port, event)`, produce an iterator of target unit
-//! IDs. No interior mutability, no allocations in the hot path, no threading
-//! primitives.
+//! rules and an incoming event, produce an iterator of target unit IDs (routes
+//! key on channel). No interior mutability, no allocations in the hot path, no
+//! threading primitives.
 //!
 //! The mutable writer with atomic publishing ([`MidiRoutingTable`]) lives at
 //! the bottom of this module. Audio-thread consumers typically hold an
-//! `Arc<ArcSwap<MidiRoutingSnapshot>>` and call `.load().route(port, &event)`.
+//! `Arc<ArcSwap<MidiRoutingSnapshot>>` and call `.load().route(&event)`.
 
-use crate::compat::Vec;
+use std::vec::Vec;
 use crate::ump::MidiEvent;
 use crate::unit_id::MidiUnitId;
-use alloc::sync::Arc;
+use std::sync::Arc;
 use arc_swap::ArcSwap;
 
 /// Maximum number of targets per routing rule.
@@ -22,8 +22,6 @@ pub const MAX_TARGETS_PER_ROUTE: usize = 8;
 
 #[derive(Clone, Debug)]
 pub struct MidiRoute {
-    /// Port filter: `None` = any port, `Some(n)` = port n only
-    pub port: Option<usize>,
     /// Channel filter: `None` = any channel, `Some(n)` = channel n only (0-15)
     pub channel: Option<u8>,
     /// Target unit IDs to receive matching events
@@ -35,7 +33,6 @@ pub struct MidiRoute {
 impl MidiRoute {
     pub fn new() -> Self {
         Self {
-            port: None,
             channel: None,
             targets: Vec::new(),
             enabled: true,
@@ -44,25 +41,6 @@ impl MidiRoute {
 
     pub fn for_channel(channel: u8) -> Self {
         Self {
-            port: None,
-            channel: Some(channel),
-            targets: Vec::new(),
-            enabled: true,
-        }
-    }
-
-    pub fn for_port(port: usize) -> Self {
-        Self {
-            port: Some(port),
-            channel: None,
-            targets: Vec::new(),
-            enabled: true,
-        }
-    }
-
-    pub fn for_port_channel(port: usize, channel: u8) -> Self {
-        Self {
-            port: Some(port),
             channel: Some(channel),
             targets: Vec::new(),
             enabled: true,
@@ -87,16 +65,14 @@ impl MidiRoute {
     }
 
     #[inline]
-    pub fn matches(&self, port: usize, event: &MidiEvent) -> bool {
+    pub fn matches(&self, event: &MidiEvent) -> bool {
         if !self.enabled {
             return false;
         }
-        let port_matches = self.port.is_none_or(|p| p == port);
-        let channel_matches = match self.channel {
+        match self.channel {
             None => true,
             Some(c) => event.channel() == Some(c),
-        };
-        port_matches && channel_matches
+        }
     }
 }
 
@@ -150,9 +126,6 @@ impl MidiRoutingSnapshot {
             if !route.enabled {
                 continue;
             }
-            if route.port.is_some() {
-                continue;
-            }
 
             let channel_idx = route.channel.map_or(16, |c| c as usize);
             for &target in &route.targets {
@@ -165,13 +138,11 @@ impl MidiRoutingSnapshot {
 
     /// Returns iterator over targets. Zero allocations, deduplicates.
     #[inline]
-    pub fn route<'a>(&'a self, port: usize, event: &'a MidiEvent) -> RouteIterator<'a> {
+    pub fn route<'a>(&'a self, event: &'a MidiEvent) -> RouteIterator<'a> {
         RouteIterator {
             snapshot: self,
-            port,
             event,
             phase: RoutePhase::ChannelLookup,
-            route_idx: 0,
             target_idx: 0,
             seen: [MidiUnitId::new(0); 16],
             seen_count: 0,
@@ -179,7 +150,7 @@ impl MidiRoutingSnapshot {
     }
 
     #[inline]
-    pub fn route_single(&self, port: usize, event: &MidiEvent) -> Option<MidiUnitId> {
+    pub fn route_single(&self, event: &MidiEvent) -> Option<MidiUnitId> {
         // Non-channel-voice messages (system, SysEx, utility) skip the
         // channel-indexed fast path.
         if let Some(channel) = event.channel() {
@@ -193,7 +164,7 @@ impl MidiRoutingSnapshot {
         }
 
         for route in &self.routes {
-            if route.matches(port, event) {
+            if route.matches(event) {
                 if let Some(&target) = route.targets.first() {
                     return Some(target);
                 }
@@ -244,7 +215,6 @@ impl Default for MidiRoutingSnapshot {
 enum RoutePhase {
     ChannelLookup,
     AnyChannelLookup,
-    PortRoutes,
     Fallback,
     Done,
 }
@@ -252,10 +222,8 @@ enum RoutePhase {
 /// Zero allocations - uses stack-allocated seen buffer.
 pub struct RouteIterator<'a> {
     snapshot: &'a MidiRoutingSnapshot,
-    port: usize,
     event: &'a MidiEvent,
     phase: RoutePhase,
-    route_idx: usize,
     target_idx: usize,
     seen: [MidiUnitId; 16],
     seen_count: usize,
@@ -312,24 +280,6 @@ impl Iterator for RouteIterator<'_> {
                         }
                     }
                     self.target_idx = 0;
-                    self.phase = RoutePhase::PortRoutes;
-                }
-                RoutePhase::PortRoutes => {
-                    while self.route_idx < self.snapshot.routes.len() {
-                        let route = &self.snapshot.routes[self.route_idx];
-                        if route.port.is_some() && route.matches(self.port, self.event) {
-                            while self.target_idx < route.targets.len() {
-                                let target = route.targets[self.target_idx];
-                                self.target_idx += 1;
-                                if !self.is_seen(target) {
-                                    self.mark_seen(target);
-                                    return Some(target);
-                                }
-                            }
-                        }
-                        self.target_idx = 0;
-                        self.route_idx += 1;
-                    }
                     self.phase = RoutePhase::Fallback;
                 }
                 RoutePhase::Fallback => {
@@ -429,7 +379,6 @@ impl Default for MidiRoutingTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
 
     const fn id(n: u64) -> MidiUnitId {
         MidiUnitId::new(n)
@@ -443,7 +392,7 @@ mod tests {
     fn test_empty_routing() {
         let snapshot = MidiRoutingSnapshot::empty();
         let event = note_on(0, 60);
-        let targets: Vec<_> = snapshot.route(0, &event).collect();
+        let targets: Vec<_> = snapshot.route(&event).collect();
         assert!(targets.is_empty());
     }
 
@@ -451,7 +400,7 @@ mod tests {
     fn test_fallback_routing() {
         let snapshot = MidiRoutingSnapshot::from_routes(Vec::new(), Some(id(42)));
         let event = note_on(0, 60);
-        let targets: Vec<_> = snapshot.route(0, &event).collect();
+        let targets: Vec<_> = snapshot.route(&event).collect();
         assert_eq!(targets, vec![id(42)]);
     }
 
@@ -465,17 +414,17 @@ mod tests {
 
         // Channel 0 → unit 100
         let event = note_on(0, 60);
-        let targets: Vec<_> = snapshot.route(0, &event).collect();
+        let targets: Vec<_> = snapshot.route(&event).collect();
         assert_eq!(targets, vec![id(100)]);
 
         // Channel 1 → unit 200
         let event = note_on(1, 60);
-        let targets: Vec<_> = snapshot.route(0, &event).collect();
+        let targets: Vec<_> = snapshot.route(&event).collect();
         assert_eq!(targets, vec![id(200)]);
 
         // Channel 2 → no targets
         let event = note_on(2, 60);
-        let targets: Vec<_> = snapshot.route(0, &event).collect();
+        let targets: Vec<_> = snapshot.route(&event).collect();
         assert!(targets.is_empty());
     }
 
@@ -485,52 +434,8 @@ mod tests {
         let snapshot = MidiRoutingSnapshot::from_routes(routes, None);
 
         let event = note_on(0, 60);
-        let targets: Vec<_> = snapshot.route(0, &event).collect();
+        let targets: Vec<_> = snapshot.route(&event).collect();
         assert_eq!(targets, vec![id(100), id(200), id(300)]);
-    }
-
-    #[test]
-    fn test_port_routing() {
-        let routes = vec![
-            MidiRoute::for_port(0).with_target(id(100)),
-            MidiRoute::for_port(1).with_target(id(200)),
-        ];
-        let snapshot = MidiRoutingSnapshot::from_routes(routes, None);
-
-        let event = note_on(0, 60);
-
-        // Port 0 → unit 100
-        let targets: Vec<_> = snapshot.route(0, &event).collect();
-        assert_eq!(targets, vec![id(100)]);
-
-        // Port 1 → unit 200
-        let targets: Vec<_> = snapshot.route(1, &event).collect();
-        assert_eq!(targets, vec![id(200)]);
-    }
-
-    #[test]
-    fn test_port_channel_routing() {
-        let routes = vec![
-            MidiRoute::for_port_channel(0, 0).with_target(id(100)),
-            MidiRoute::for_port_channel(0, 1).with_target(id(200)),
-            MidiRoute::for_port_channel(1, 0).with_target(id(300)),
-        ];
-        let snapshot = MidiRoutingSnapshot::from_routes(routes, None);
-
-        // Port 0, Channel 0 → 100
-        let event = note_on(0, 60);
-        let targets: Vec<_> = snapshot.route(0, &event).collect();
-        assert_eq!(targets, vec![id(100)]);
-
-        // Port 0, Channel 1 → 200
-        let event = note_on(1, 60);
-        let targets: Vec<_> = snapshot.route(0, &event).collect();
-        assert_eq!(targets, vec![id(200)]);
-
-        // Port 1, Channel 0 → 300
-        let event = note_on(0, 60);
-        let targets: Vec<_> = snapshot.route(1, &event).collect();
-        assert_eq!(targets, vec![id(300)]);
     }
 
     #[test]
@@ -540,7 +445,7 @@ mod tests {
 
         // Any channel, any port → both units
         let event = note_on(5, 60);
-        let targets: Vec<_> = snapshot.route(2, &event).collect();
+        let targets: Vec<_> = snapshot.route(&event).collect();
         assert_eq!(targets, vec![id(100), id(200)]);
     }
 
@@ -551,11 +456,11 @@ mod tests {
 
         // Channel 0 → 100 (via route)
         let event = note_on(0, 60);
-        assert_eq!(snapshot.route_single(0, &event), Some(id(100)));
+        assert_eq!(snapshot.route_single(&event), Some(id(100)));
 
         // Channel 5 → 999 (via fallback)
         let event = note_on(5, 60);
-        assert_eq!(snapshot.route_single(0, &event), Some(id(999)));
+        assert_eq!(snapshot.route_single(&event), Some(id(999)));
     }
 
     #[test]
@@ -567,7 +472,7 @@ mod tests {
         let snapshot = MidiRoutingSnapshot::from_routes(routes, None);
 
         let event = note_on(0, 60);
-        let targets: Vec<_> = snapshot.route(0, &event).collect();
+        let targets: Vec<_> = snapshot.route(&event).collect();
 
         // Should not have duplicates
         assert_eq!(targets.len(), 2);
@@ -613,7 +518,7 @@ mod tests {
 
         let snapshot = table.load();
         let event = note_on(0, 60);
-        let targets: Vec<_> = snapshot.route(0, &event).collect();
+        let targets: Vec<_> = snapshot.route(&event).collect();
         assert_eq!(targets, vec![id(42)]);
     }
 
@@ -631,7 +536,7 @@ mod tests {
 
         let snapshot = table.load();
         let event = note_on(0, 60);
-        let targets: Vec<_> = snapshot.route(0, &event).collect();
+        let targets: Vec<_> = snapshot.route(&event).collect();
         assert_eq!(targets, vec![id(100)]);
     }
 
@@ -650,7 +555,7 @@ mod tests {
 
         let snapshot = table.load();
         let event = note_on(0, 60);
-        let targets: Vec<_> = snapshot.route(0, &event).collect();
+        let targets: Vec<_> = snapshot.route(&event).collect();
         assert_eq!(targets, vec![id(200)]);
         assert_eq!(snapshot.fallback(), None);
     }

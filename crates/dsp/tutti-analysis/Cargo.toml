@@ -11,7 +11,7 @@ categories = ["multimedia::audio"]
 [dependencies]
 # default-features = false so tutti-core's default `bevy` doesn't leak in; this
 # crate's own `bevy` feature re-adds `tutti-core/bevy` when wanted.
-tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["std"] }
+tutti-core = { path = "../../core/tutti-core", default-features = false }
 
 # Bevy — optional, gated by the `bevy` feature. tutti-analysis defines its own
 # ECS integration (TuttiAnalysisPlugin, AnalysisRes, LiveAnalysisData) in the

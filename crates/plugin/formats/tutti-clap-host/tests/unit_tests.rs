@@ -24,9 +24,9 @@ use clap_sys::events::{
 fn test_note_on_roundtrip() {
     // Build with MIDI-2 velocity (half of u16 max ≈ 0x8000).
     let event = MidiEvent::note_on(0, 3, 60, 0x8000).with_frame_offset(10);
-    let clap = ClapEvent::from_midi_event(&event).expect("NoteOn should convert");
+    let clap = ClapEvent::from_midi(&event).expect("NoteOn should convert");
     assert!(matches!(clap, ClapEvent::NoteOn(_)));
-    let back = clap.to_midi_event().expect("round-trip should succeed");
+    let back = clap.to_midi().expect("round-trip should succeed");
     assert_eq!(back.frame_offset, 10);
     assert!(back.is_note_on());
     assert_eq!(back.note(), Some(60));
@@ -36,9 +36,9 @@ fn test_note_on_roundtrip() {
 #[test]
 fn test_note_off_roundtrip() {
     let event = MidiEvent::note_off(0, 5, 72, 0x4000).with_frame_offset(20);
-    let clap = ClapEvent::from_midi_event(&event).expect("NoteOff should convert");
+    let clap = ClapEvent::from_midi(&event).expect("NoteOff should convert");
     assert!(matches!(clap, ClapEvent::NoteOff(_)));
-    let back = clap.to_midi_event().expect("round-trip should succeed");
+    let back = clap.to_midi().expect("round-trip should succeed");
     assert_eq!(back.frame_offset, 20);
     assert!(back.is_note_off());
     assert_eq!(back.note(), Some(72));
@@ -49,7 +49,7 @@ fn test_note_off_roundtrip() {
 fn test_control_change_roundtrip() {
     use tutti_midi_types::convert::midi1_cc_to_midi2;
     let event = MidiEvent::cc(0, 2, 74, midi1_cc_to_midi2(100)).with_frame_offset(5);
-    let clap = ClapEvent::from_midi_event(&event).expect("CC should convert");
+    let clap = ClapEvent::from_midi(&event).expect("CC should convert");
     // CC goes through the generic Midi event
     match clap {
         ClapEvent::Midi(e) => {
@@ -68,7 +68,7 @@ fn test_pitch_bend_roundtrip() {
     use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
     // MIDI-1 center = 8192 (0x2000).
     let event = MidiEvent::pitch_bend(0, 0, midi1_pitch_bend_to_midi2(8192));
-    let clap = ClapEvent::from_midi_event(&event).expect("PitchBend should convert");
+    let clap = ClapEvent::from_midi(&event).expect("PitchBend should convert");
     match clap {
         ClapEvent::Midi(e) => {
             assert_eq!(e.data[0] & 0xF0, 0xE0, "PitchBend status nibble");
@@ -84,7 +84,7 @@ fn test_pitch_bend_roundtrip() {
 #[test]
 fn test_program_change_roundtrip() {
     let event = MidiEvent::program_change(0, 9, 42, None).with_frame_offset(100);
-    let clap = ClapEvent::from_midi_event(&event).expect("ProgramChange should convert");
+    let clap = ClapEvent::from_midi(&event).expect("ProgramChange should convert");
     match clap {
         ClapEvent::Midi(e) => {
             assert_eq!(e.data[0], 0xC0 | 9, "ProgramChange status byte");

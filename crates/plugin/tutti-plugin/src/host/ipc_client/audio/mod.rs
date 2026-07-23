@@ -130,7 +130,10 @@ impl AudioBridge {
 
     // --- RT request+response ---
 
-    /// RT-safe, lock-free. Waits for the bridge thread's AudioResponse.
+    /// RT-safe, lock-free. Waits for the bridge thread's AudioResponse. The
+    /// plugin's MIDI-out for the block is drained into `midi_out` (cleared
+    /// first); the caller-owned buffer reaches steady-state capacity so the
+    /// `append` is alloc-free. Returns `false` on crash / failure.
     #[allow(clippy::too_many_arguments)]
     pub fn process(
         &self,
@@ -140,7 +143,9 @@ impl AudioBridge {
         note_expression: NoteExpressionChanges,
         harmony: HarmonyInputs,
         transport: TransportInfo,
+        midi_out: &mut MidiEventVec,
     ) -> bool {
+        midi_out.clear();
         if self.lifecycle.is_crashed() {
             return false;
         }
@@ -160,10 +165,13 @@ impl AudioBridge {
         if !self.channels.push_command(Command::Process(payload)) {
             return false;
         }
-        matches!(
-            self.channels.pop_audio_response(),
-            Some(AudioResponse::AudioProcessed)
-        )
+        match self.channels.pop_audio_response() {
+            Some(AudioResponse::AudioProcessed { midi_out: mut events }) => {
+                midi_out.append(&mut events);
+                true
+            }
+            _ => false,
+        }
     }
 
     // --- Main-thread sync request+response ---

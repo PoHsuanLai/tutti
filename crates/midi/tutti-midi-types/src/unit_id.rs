@@ -1,7 +1,7 @@
 //! Opaque identifier for a MIDI-receiving audio unit.
 
 use core::sync::atomic::Ordering;
-use portable_atomic::AtomicU64;
+use std::sync::atomic::AtomicU64;
 
 /// Opaque per-instance identifier for a MIDI-receiving audio unit.
 ///
@@ -13,7 +13,7 @@ use portable_atomic::AtomicU64;
 /// `From<u64>` / [`MidiUnitId::new`] stay available for deserialization
 /// and for tests that need deterministic values; they do **not** increment
 /// the allocator.
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub struct MidiUnitId(u64);
 
 /// Process-wide allocator for `MidiUnitId`s. Starts at 1 so that the
@@ -46,6 +46,14 @@ impl From<u64> for MidiUnitId {
     #[inline]
     fn from(id: u64) -> Self {
         Self(id)
+    }
+}
+
+impl From<MidiUnitId> for u64 {
+    /// The raw id (see [`MidiUnitId::as_u64`]).
+    #[inline]
+    fn from(id: MidiUnitId) -> Self {
+        id.0
     }
 }
 

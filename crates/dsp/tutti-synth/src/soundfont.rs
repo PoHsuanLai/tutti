@@ -11,17 +11,11 @@ pub use rustysynth::SoundFontAsset;
 
 use rustysynth::Synthesizer;
 use smallvec::SmallVec;
-use arc_swap::ArcSwapOption;
-use tutti_midi_types::{MidiSource, MidiTarget, MidiUnitId};
+use tutti_midi_types::{MidiIn, MidiUnitId};
 use tutti_core::Arc;
-
-/// `Sized` wrapper so a `dyn MidiSource` trait object can live in an
-/// [`ArcSwapOption`] (arc-swap needs the stored `Arc`'s pointee to be `Sized`).
-struct MidiSourceHandle(Arc<dyn MidiSource>);
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
-use tutti_midi_types::semantic::SemanticEvent;
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_runtime::{MidiEventSlot, MidiReceiver, MidiSender};
+use tutti_midi_runtime::{MidiInPort, MidiSender};
 
 /// Capacity of the scratch buffer used to poll MIDI events per audio callback.
 ///
@@ -37,13 +31,9 @@ pub struct SoundFontUnit {
     right_buffer: Vec<f32>,
     buffer_pos: usize,
     pending_midi: SmallVec<[MidiEvent; 128]>,
-    midi_unit_id: MidiUnitId,
-    midi_sender: MidiSender,
-    midi_receiver: MidiReceiver,
-    /// Shared `Arc<ArcSwapOption<…>>` (see [`super::polysynth`]): an install on
-    /// any fundsp graph-commit clone reaches the box the audio thread runs.
-    /// `isolate()` swaps in a fresh private slot to sever the sharing.
-    midi_source_override: Arc<ArcSwapOption<MidiSourceHandle>>,
+    /// This unit's MIDI input endpoint (routing address + mailbox + current pull
+    /// source). See [`MidiInPort`] for the fundsp clone/isolate sharing semantics.
+    midi: MidiInPort,
     midi_buffer: Vec<MidiEvent>,
     /// Running absolute-sample counter, handed to MIDI sources so
     /// beat-scheduled events can compute their `frame_offset` for
@@ -60,8 +50,6 @@ impl SoundFontUnit {
             .map_err(|e| crate::Error::SoundFont(e.to_string()))?;
 
         let buffer_size = 64;
-        let midi_unit_id = MidiUnitId::next();
-        let (midi_sender, midi_receiver) = MidiEventSlot::pair(midi_unit_id);
 
         Ok(Self {
             synthesizer,
@@ -71,10 +59,7 @@ impl SoundFontUnit {
             right_buffer: vec![0.0; buffer_size],
             buffer_pos: buffer_size,
             pending_midi: SmallVec::new(),
-            midi_unit_id,
-            midi_sender,
-            midi_receiver,
-            midi_source_override: Arc::new(ArcSwapOption::empty()),
+            midi: MidiInPort::new(),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
             sample_pos: 0,
         })
@@ -82,24 +67,23 @@ impl SoundFontUnit {
 
     /// Producer handle for this unit's MIDI inbox.
     pub fn midi_sender(&self) -> MidiSender {
-        self.midi_sender.clone()
+        self.midi.sender()
     }
 
     /// Override the MIDI source. Used by offline export to swap the
     /// live receiver for a [`MidiSnapshotReader`], or by clip playback
     /// to install a [`tutti_midi_runtime::MidiClipSource`].
     ///
-    /// Held in an `Arc` so the same source survives the unit-clone
-    /// fundsp performs on each `commit()`.
+    /// The install is visible across fundsp's clone-on-commit (see
+    /// [`MidiInPort`]), so the same source reaches the box the audio thread runs.
     ///
     /// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
-    pub fn set_midi_source(&mut self, source: Arc<dyn MidiSource>) {
-        self.midi_source_override
-            .store(Some(Arc::new(MidiSourceHandle(source))));
+    pub fn set_midi_source(&mut self, source: Arc<dyn MidiIn>) {
+        self.midi.install(source);
     }
 
     pub fn clear_midi_source(&mut self) {
-        self.midi_source_override.store(None);
+        self.midi.clear();
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -128,17 +112,9 @@ impl SoundFontUnit {
     }
 
     fn poll_midi_events(&mut self, block_size: usize) {
-        let block_start = self.sample_pos;
-        let source = self.midi_source_override.load();
-        let count = match source.as_ref() {
-            Some(handle) => handle.0.poll_into(
-                self.midi_unit_id,
-                block_start,
-                block_size,
-                &mut self.midi_buffer,
-            ),
-            None => self.midi_receiver.poll_into(&mut self.midi_buffer),
-        };
+        let count = self
+            .midi
+            .poll(self.sample_pos, block_size, &mut self.midi_buffer);
         for i in 0..count {
             self.pending_midi.push(self.midi_buffer[i]);
         }
@@ -147,69 +123,67 @@ impl SoundFontUnit {
         // before we call back into `&mut self` dispatchers.
         let events: SmallVec<[MidiEvent; 128]> = self.pending_midi.drain(..).collect();
         for event in events {
-            // RustySynth speaks MIDI 1.0 wire format. Decode once via the
-            // semantic decoder, then re-encode at MIDI 1.0 resolution.
-            let Some(sem) = tutti_midi_types::decode(&event) else {
-                continue;
-            };
-            self.dispatch(sem);
+            // RustySynth speaks MIDI 1.0 wire format. `normalize` gives us a
+            // single MIDI-2 vocabulary; `dispatch` downscales to 7-bit via the
+            // spec Min-Center-Max converters (this is a documented 1.0 boundary:
+            // per-note messages have no rustysynth analogue and are dropped).
+            self.dispatch(&tutti_midi_types::normalize(&event));
         }
     }
 
-    fn dispatch(&mut self, sem: SemanticEvent) {
-        match sem {
-            SemanticEvent::NoteOn {
-                channel,
-                note,
-                velocity,
-            } => {
-                let vel_u7 = unit_to_u7(velocity).max(1);
+    /// MIDI 1.0 boundary. Values downscale via spec Min-Center-Max (convert.rs).
+    /// Translated: NoteOn/Off, CC, channel pitch bend, program change.
+    /// (Channel pressure / key pressure arrive as CC/poly-pressure UMP but
+    /// rustysynth exposes no dedicated setter, so they fall through the `_`
+    /// arm — see Dropped.)
+    /// Dropped (no rustysynth MIDI-1 analogue): per-note pitch bend, per-note
+    /// controllers, per-note management (Detach/Reset), channel/poly pressure,
+    /// RPN/NRPN, and any 16-bit velocity / 32-bit CC precision beyond 7 bits.
+    fn dispatch(&mut self, event: &MidiEvent) {
+        use tutti_midi_types::convert::{
+            midi2_cc_to_midi1, midi2_pitch_bend_to_midi1, midi2_velocity_to_midi1,
+        };
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::{Channeled, UmpMessage};
+
+        let Ok(UmpMessage::ChannelVoice2(cv2)) = UmpMessage::try_from(event.data_words()) else {
+            return;
+        };
+        let ch = i32::from(u8::from(cv2.channel()));
+        match cv2 {
+            Cv2::NoteOn(m) => {
+                // A zero after downscale would read as NoteOff to rustysynth;
+                // `normalize` already folded true velocity-0 to NoteOff, so any
+                // NoteOn here is audible — clamp the 7-bit floor to 1.
+                let vel_u7 = midi2_velocity_to_midi1(m.velocity()).max(1);
                 self.synthesizer
-                    .note_on(i32::from(channel), i32::from(note), i32::from(vel_u7));
+                    .note_on(ch, i32::from(u8::from(m.note_number())), i32::from(vel_u7));
             }
-            SemanticEvent::NoteOff { channel, note } => {
+            Cv2::NoteOff(m) => {
                 self.synthesizer
-                    .note_off(i32::from(channel), i32::from(note));
+                    .note_off(ch, i32::from(u8::from(m.note_number())));
             }
-            SemanticEvent::ProgramChange { channel, program } => {
-                self.synthesizer.process_midi_message(
-                    i32::from(channel),
-                    0xC0,
-                    i32::from(program),
-                    0,
-                );
+            Cv2::ProgramChange(m) => {
+                self.synthesizer
+                    .process_midi_message(ch, 0xC0, i32::from(u8::from(m.program())), 0);
             }
-            SemanticEvent::PitchBend { channel, value } => {
-                let bend14 = unit_signed_to_u14(value);
+            Cv2::ChannelPitchBend(m) => {
+                let bend14 = midi2_pitch_bend_to_midi1(m.pitch_bend_data());
                 let lsb = i32::from(bend14 & 0x7F);
                 let msb = i32::from((bend14 >> 7) & 0x7F);
-                self.synthesizer
-                    .process_midi_message(i32::from(channel), 0xE0, lsb, msb);
+                self.synthesizer.process_midi_message(ch, 0xE0, lsb, msb);
             }
-            SemanticEvent::ControlChange { channel, cc, value } => {
+            Cv2::ControlChange(m) => {
                 self.synthesizer.process_midi_message(
-                    i32::from(channel),
+                    ch,
                     0xB0,
-                    i32::from(cc),
-                    i32::from(unit_to_u7(value)),
+                    i32::from(u8::from(m.control())),
+                    i32::from(midi2_cc_to_midi1(m.control_change_data())),
                 );
             }
             _ => {}
         }
     }
-}
-
-/// `[0.0, 1.0]` → `[0, 127]` (rounded).
-#[inline]
-fn unit_to_u7(v: f32) -> u8 {
-    (v.clamp(0.0, 1.0) * 127.0).round() as u8
-}
-
-/// `[-1.0, 1.0]` → 14-bit (center 8192).
-#[inline]
-fn unit_signed_to_u14(v: f32) -> u16 {
-    let scaled = (v.clamp(-1.0, 1.0) * 8192.0).round() as i32 + 8192;
-    scaled.clamp(0, 16383) as u16
 }
 
 impl AudioUnit for SoundFontUnit {
@@ -222,22 +196,15 @@ impl AudioUnit for SoundFontUnit {
         self.buffer_pos = self.buffer_size;
     }
 
-    /// Sever the live MIDI inbox this clone shares with the original synth.
+    /// Sever the live MIDI input this clone shares with the original synth.
     ///
-    /// Same rationale as [`crate::PolySynth::isolate`]:
-    /// `clone()` shares `midi_receiver` + `midi_source_override` by `Arc` so the
-    /// inbox follows the unit across the commit-clone (where only the original is
-    /// ticked), but an offline render ticks this clone on a worker thread while
-    /// the live synth plays, and a shared inbox is drained to exactly one
-    /// consumer — the worker would steal the live synth's events. Mint a fresh,
-    /// unconnected pair and drop the override so this clone reads nothing.
+    /// Same rationale as [`crate::PolySynth::isolate`]: an offline render ticks
+    /// this clone on a worker thread while the live synth plays, so a shared inbox
+    /// would let the worker *steal* the live synth's events and a shared source
+    /// cell would let clearing here sever the live clip. [`MidiInPort::isolate`]
+    /// mints a fresh private mailbox + source cell so this clone reads nothing.
     fn isolate(&mut self) {
-        let (sender, receiver) = MidiEventSlot::pair(self.midi_unit_id);
-        self.midi_sender = sender;
-        self.midi_receiver = receiver;
-        // Fresh PRIVATE slot, not `store(None)` on the shared one — clearing the
-        // shared slot would sever the live synth's clip source mid-export.
-        self.midi_source_override = Arc::new(ArcSwapOption::empty());
+        self.midi.isolate();
     }
 
     fn set_sample_rate(&mut self, _sample_rate: tutti_core::SampleRate) {
@@ -317,19 +284,19 @@ impl Clone for SoundFontUnit {
             right_buffer: self.right_buffer.clone(),
             buffer_pos: self.buffer_pos,
             pending_midi: SmallVec::new(),
-            midi_unit_id: self.midi_unit_id,
-            midi_sender: self.midi_sender.clone(),
-            midi_receiver: self.midi_receiver.clone(),
-            midi_source_override: self.midi_source_override.clone(),
+            // Shares the mailbox + source cell (fundsp clone-on-commit); see
+            // [`MidiInPort`]. `isolate()` severs it for an offline render.
+            midi: self.midi.clone(),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
             sample_pos: 0,
         }
     }
 }
 
-impl MidiTarget for SoundFontUnit {
-    fn midi_unit_id(&self) -> MidiUnitId {
-        self.midi_unit_id
+impl SoundFontUnit {
+    /// This unit's MIDI routing address.
+    pub fn midi_unit_id(&self) -> MidiUnitId {
+        self.midi.unit_id()
     }
 }
 
@@ -384,7 +351,7 @@ impl AssetLoader for SoundFontAssetLoader {
 /// Compile-time proof that [`SoundFontUnit`] is `Send`, which is what lets us
 /// build it on the [`AsyncComputeTaskPool`] instead of the Bevy main thread
 /// (the B5 gate). It holds a rustysynth `Synthesizer` (plain `Vec`/`Arc`
-/// struct) plus `Arc<dyn MidiSource>` where `MidiSource: Send + Sync`, so this
+/// struct) plus `Arc<dyn MidiIn>` where `MidiIn: Send + Sync`, so this
 /// assertion holds. If it ever stops compiling, the async decode below is
 /// unsound and the decode must move back onto the main thread.
 const _: () = {
@@ -607,6 +574,20 @@ mod tests {
             samples.push((output[0], output[1]));
         }
         samples
+    }
+
+    /// The MIDI-1 boundary (`dispatch`) must scale 16-bit UMP velocity through
+    /// the spec Min-Center-Max downscaler, not an open-coded multiply. Assert
+    /// the representative spec vectors so a regression to `* 127 / 65535` (which
+    /// maps center `0x8000` to 63, not 64) is caught.
+    #[test]
+    fn midi1_boundary_uses_spec_downscalers() {
+        use tutti_midi_types::convert::{midi2_cc_to_midi1, midi2_velocity_to_midi1};
+        assert_eq!(midi2_velocity_to_midi1(0xFFFF), 127);
+        assert_eq!(midi2_velocity_to_midi1(0x8000), 64); // center → center
+        assert_eq!(midi2_velocity_to_midi1(0x0000), 0);
+        assert_eq!(midi2_cc_to_midi1(0xFFFF_FFFF), 127);
+        assert_eq!(midi2_cc_to_midi1(0x8000_0000), 64); // center → center
     }
 
     #[test]

@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use tutti_midi_types::{MidiTarget, MidiUnitId};
+use tutti_midi_types::MidiUnitId;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
 use tutti_midi_runtime::MidiSender;
 use tutti_vst2_host::{PluginInfo, ProcessContext, RenderScratch, Vst2Instance};
@@ -88,6 +88,21 @@ impl InProcessVst2Client {
     /// Producer handle for this plugin's MIDI inbox. Cheap to clone.
     pub fn midi_sender(&self) -> MidiSender {
         self.midi.sender()
+    }
+
+    /// Install the outbound routing target so this plugin's MIDI-out re-enters
+    /// the graph. See [`Midi::set_out`]. Off-RT; call once at wiring time.
+    pub fn set_midi_out(
+        &self,
+        queue: Arc<dyn tutti_midi_types::MidiOut>,
+        routing: Arc<arc_swap::ArcSwap<tutti_midi_types::MidiRoutingSnapshot>>,
+    ) {
+        self.midi.set_out(queue, routing);
+    }
+
+    /// Drop the outbound routing target; subsequent blocks discard MIDI-out.
+    pub fn clear_midi_out(&self) {
+        self.midi.clear_out();
     }
 
     /// Cumulative audio-thread `try_lock` failures since construction.
@@ -392,8 +407,9 @@ impl AudioUnit<F64> for InProcessVst2Client {
     }
 }
 
-impl MidiTarget for InProcessVst2Client {
-    fn midi_unit_id(&self) -> MidiUnitId {
+impl InProcessVst2Client {
+    /// This unit's MIDI routing address.
+    pub fn midi_unit_id(&self) -> MidiUnitId {
         self.midi.unit_id()
     }
 }
@@ -439,7 +455,11 @@ fn drive_f32(
                 size,
                 |out_slice| {
                     let ctx = ProcessContext::new(sample_rate).midi(&midi_events);
-                    let _midi_out = instance.process_f32(in_slice, out_slice, size, &ctx, scratch);
+                    let midi_out = instance.process_f32(in_slice, out_slice, size, &ctx, scratch);
+                    // Re-inject the plugin's MIDI-out into routing (no-op if no
+                    // out-target installed). Emitting here, inside the block,
+                    // keeps each event's frame_offset intact.
+                    midi.emit(midi_out);
                 },
             );
             true
@@ -482,7 +502,9 @@ fn drive_f64(
                 size,
                 |out_slice| {
                     let ctx = ProcessContext::new(sample_rate).midi(&midi_events);
-                    let _midi_out = instance.process_f64(in_slice, out_slice, size, &ctx, scratch);
+                    let midi_out = instance.process_f64(in_slice, out_slice, size, &ctx, scratch);
+                    // Re-inject the plugin's MIDI-out into routing (see `drive_f32`).
+                    midi.emit(midi_out);
                 },
             );
             true

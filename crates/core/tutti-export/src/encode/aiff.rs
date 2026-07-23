@@ -1,13 +1,14 @@
 //! AIFF encoder (hand-rolled IFF chunks + 80-bit IEEE 754 extended sample
 //! rate). No streaming support — AIFF requires total size up front.
 
+use crate::encode::pcm::{f32_to_i16, f32_to_i24};
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
-use crate::process::ProcessedAudio;
+use crate::process::Chunk;
 use std::io::Write;
 
-pub(crate) fn encode(audio: ProcessedAudio, request: &EncodeRequest<'_>) -> Result<()> {
+pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
     if request.bit_depth == BitDepth::Float32 {
         return Err(Error::UnsupportedFormat(
             "AIFF does not support 32-bit float (use AIFF-C for float)".into(),
@@ -15,8 +16,8 @@ pub(crate) fn encode(audio: ProcessedAudio, request: &EncodeRequest<'_>) -> Resu
     }
 
     let channels: Vec<&[f32]> = match &audio {
-        ProcessedAudio::Stereo { left, right } => vec![left, right],
-        ProcessedAudio::Mono(samples) => vec![samples],
+        Chunk::Stereo { left, right } => vec![left, right],
+        Chunk::Mono(samples) => vec![samples],
     };
 
     write_aiff(request, &channels)
@@ -130,16 +131,6 @@ fn ieee_extended_to_f64(bytes: &[u8; 10]) -> f64 {
     } else {
         val
     }
-}
-
-#[inline]
-fn f32_to_i16(sample: f32) -> i16 {
-    (sample.clamp(-1.0, 1.0) * 32767.0) as i16
-}
-
-#[inline]
-fn f32_to_i24(sample: f32) -> i32 {
-    (sample.clamp(-1.0, 1.0) * 8388607.0) as i32
 }
 
 #[cfg(test)]

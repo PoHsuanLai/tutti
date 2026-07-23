@@ -39,8 +39,8 @@ use tutti_core::graph::{
 };
 use tutti_core::MotionEvent;
 use tutti_core::{AudioNode, NodeKind, Volume};
-use tutti_sampler::{SamplerLooping, SamplerSpeed};
 use tutti_sampler::PendingSamplerLoad;
+use tutti_sampler::{SamplerLooping, SamplerSpeed};
 use tutti_units::automation::{AutomationEnvelope, AutomationPoint, CurveType, LiveAutomationLane};
 use tutti_units::{AutomationDrivesParam, AutomationLaneNode, AutomationParam};
 
@@ -63,11 +63,7 @@ fn main() {
         .add_systems(Startup, (start_transport, spawn_demo).chain())
         .add_systems(
             Update,
-            (
-                wiggle_sampler_speed,
-                periodic_crossfade,
-                report_status,
-            ),
+            (wiggle_sampler_speed, periodic_crossfade, report_status),
         )
         .run();
 }

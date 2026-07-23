@@ -1,6 +1,6 @@
-//! Butler-thread-local map of `RegionId` → `RegionWriter`.
+//! Butler-thread-local map of `RegionId` → `RegionOut`.
 //!
-//! Structurally a `Vec<RegionWriter>` with a `HashMap<RegionId, usize>`
+//! Structurally a `Vec<RegionOut>` with a `HashMap<RegionId, usize>`
 //! side-index. The `Vec` is required because the parallel refill path uses
 //! rayon's `par_iter_mut` (which needs `Send`, not `Sync`), and a `DashMap`
 //! would force `Sync`. The index collapses the lookup pattern
@@ -12,10 +12,10 @@
 use std::collections::HashMap;
 
 use super::command::RegionId;
-use super::prefetch::RegionWriter;
+use super::prefetch::RegionOut;
 
 pub(super) struct RegionMap {
-    writers: Vec<RegionWriter>,
+    writers: Vec<RegionOut>,
     index: HashMap<RegionId, usize>,
 }
 
@@ -27,7 +27,7 @@ impl RegionMap {
         }
     }
 
-    pub(super) fn register(&mut self, region_id: RegionId, writer: RegionWriter) {
+    pub(super) fn register(&mut self, region_id: RegionId, writer: RegionOut) {
         let idx = self.writers.len();
         self.writers.push(writer);
         self.index.insert(region_id, idx);
@@ -51,25 +51,25 @@ impl RegionMap {
         true
     }
 
-    pub(super) fn get(&self, region_id: RegionId) -> Option<&RegionWriter> {
+    pub(super) fn get(&self, region_id: RegionId) -> Option<&RegionOut> {
         self.index
             .get(&region_id)
             .and_then(|&idx| self.writers.get(idx))
     }
 
-    pub(super) fn get_mut(&mut self, region_id: RegionId) -> Option<&mut RegionWriter> {
+    pub(super) fn get_mut(&mut self, region_id: RegionId) -> Option<&mut RegionOut> {
         let idx = *self.index.get(&region_id)?;
         self.writers.get_mut(idx)
     }
 
     /// Read-only slice — used by the parallel refill path when collecting
     /// work items (before handing `writers_mut` to rayon).
-    pub(super) fn writers(&self) -> &[RegionWriter] {
+    pub(super) fn writers(&self) -> &[RegionOut] {
         &self.writers
     }
 
     /// Mutable slice for the parallel refill path (rayon `par_iter_mut`).
-    pub(super) fn writers_mut(&mut self) -> &mut [RegionWriter] {
+    pub(super) fn writers_mut(&mut self) -> &mut [RegionOut] {
         &mut self.writers
     }
 
@@ -86,7 +86,7 @@ mod tests {
     use crate::butler::prefetch::RegionBuffer;
     use std::path::PathBuf;
 
-    fn make_writer(region_id: RegionId) -> RegionWriter {
+    fn make_writer(region_id: RegionId) -> RegionOut {
         let (writer, _reader) =
             RegionBuffer::with_capacity(region_id, PathBuf::from("t.wav"), 1024);
         writer

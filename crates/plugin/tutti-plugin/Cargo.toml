@@ -33,6 +33,9 @@ vst2 = ["dep:tutti-vst2-host"]
 [dependencies]
 # Core types (for AudioUnit trait)
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
+# The AudioIn/AudioOut I/O vocabulary — the slab is the concrete process edge
+# realising those two roles (see util/transport/shm/slab.rs).
+tutti-types = { path = "../../core/tutti-types" }
 
 # Parameter range/scaling
 audio-automation = "0.4"

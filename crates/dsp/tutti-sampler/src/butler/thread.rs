@@ -116,10 +116,6 @@ impl ButlerThread {
     pub fn plans(&self) -> Arc<DashMap<usize, ChannelPlan>> {
         Arc::clone(&self.shared.plans)
     }
-
-    pub fn cache(&self) -> Arc<LruCache> {
-        Arc::clone(&self.shared.cache)
-    }
 }
 
 impl Drop for ButlerThread {

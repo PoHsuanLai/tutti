@@ -1,16 +1,23 @@
 //! Incremental disk streaming on top of Symphonia's public API.
 //!
-//! [`StreamDecoder`] decodes an arbitrary `[start, start+len)` sample-frame
-//! range from an audio file without loading the whole file into RAM. It hooks
+//! [`FileIn`] decodes an audio file sequentially, frame by frame, without
+//! loading the whole file into RAM. It is an [`AudioIn`]: [`poll_into`] fills a
+//! caller buffer of `[f32; 2]` frames from the current cursor and reports how
+//! many it produced (a short count then `0` at end-of-stream). To read from an
+//! arbitrary position, call [`seek`] first — it hooks
 //! `FormatReader::seek(SeekMode::Accurate, ...)` (which lands *before* the
-//! requested frame) and then decodes-and-discards the preroll to hit the exact
-//! frame — no fork of Symphonia.
+//! requested frame) and decodes-and-discards the preroll to hit the exact frame,
+//! so a following `poll_into` is a clean sequential read from there.
+//!
+//! [`poll_into`]: FileIn::poll_into
+//! [`seek`]: FileIn::seek
 //!
 //! It shares `read.rs`'s codec feature gates and the `decode_packet_into`
 //! one-packet helper. All decode/seek/file I/O runs on the butler thread; the
 //! audio thread never touches this type.
 
 use super::read::{decode_packet_into, WaveResult};
+use tutti_types::io::AudioIn;
 use std::fs::File;
 use std::path::Path;
 extern crate alloc;
@@ -30,7 +37,7 @@ use symphonia::core::probe::Hint;
 /// buffer retains the tail of the last-decoded packet so back-to-back
 /// sequential reads consume it before pulling another packet — keeping the
 /// common refill path both seek-free and allocation-free.
-pub struct StreamDecoder {
+pub struct FileIn {
     reader: Box<dyn FormatReader>,
     decoder: Box<dyn Decoder>,
     track_id: u32,
@@ -40,7 +47,7 @@ pub struct StreamDecoder {
     /// Scratch buffer reused by `decode_packet_into` (allocated on first decode).
     convert_buf: Option<AudioBuffer<f32>>,
     /// Decoded-but-unconsumed stereo frames from the last packet.
-    leftover: Vec<(f32, f32)>,
+    leftover: Vec<[f32; 2]>,
     /// Read offset into `leftover`; frames `[leftover_pos..]` are unconsumed.
     leftover_pos: usize,
     /// Next file sample-frame a sequential read produces.
@@ -49,7 +56,7 @@ pub struct StreamDecoder {
     seekable: bool,
 }
 
-impl StreamDecoder {
+impl FileIn {
     /// Total sample frames if the container reports it.
     pub fn total_frames(&self) -> Option<u64> {
         self.total_frames
@@ -179,37 +186,35 @@ impl StreamDecoder {
                 let left = &buf.chan(0)[..frames];
                 let right = &buf.chan(1)[..frames];
                 for i in 0..frames {
-                    self.leftover.push((left[i], right[i]));
+                    self.leftover.push([left[i], right[i]]);
                 }
             } else {
                 let mono = &buf.chan(0)[..frames];
                 for &s in mono.iter() {
-                    self.leftover.push((s, s));
+                    self.leftover.push([s, s]);
                 }
             }
             return Ok(frames);
         }
     }
 
-    /// Decode exactly `[start, start + out.len())` into `out`. Zero-pads past
-    /// EOF. Returns the number of frames actually produced from the file
-    /// (i.e. before zero-padding kicks in).
+    /// The next file sample-frame a sequential [`poll_into`](Self::poll_into)
+    /// will produce.
+    pub fn cursor(&self) -> u64 {
+        self.cursor
+    }
+
+    /// Fill the front of `out` with the next sequential frames from the current
+    /// cursor and return how many were produced (`0..=out.len()`). A short count
+    /// (then `0`) marks end-of-stream; frames past the returned count are left
+    /// untouched. This is the fallible core of the [`AudioIn`] impl — the trait
+    /// method calls it and treats a decode error as end-of-stream.
     ///
-    /// Fast path: when `start == cursor` no seek/preroll happens — the
-    /// `leftover` remainder is drained first, then packets are pulled forward.
-    /// This is >99% of butler refills. The seek path resets the decoder and
-    /// decodes-and-discards the preroll from the accurate seek landing point.
-    pub fn read_range(&mut self, start: u64, out: &mut [(f32, f32)]) -> WaveResult<usize> {
-        if out.is_empty() {
-            return Ok(0);
-        }
-
-        if start != self.cursor {
-            self.seek_to(start)?;
-        }
-
+    /// The `leftover` remainder from the last packet is drained first
+    /// (seek-free, alloc-free), then packets are pulled forward. To read from a
+    /// non-current position, call [`seek`](Self::seek) first.
+    pub fn fill_sequential(&mut self, out: &mut [[f32; 2]]) -> WaveResult<usize> {
         let mut filled = 0usize;
-        let mut produced = 0usize;
 
         while filled < out.len() {
             // Drain any retained remainder first (seek-free, alloc-free).
@@ -220,7 +225,6 @@ impl StreamDecoder {
                 out[filled..filled + want].copy_from_slice(src);
                 self.leftover_pos += want;
                 filled += want;
-                produced += want;
                 self.cursor += want as u64;
                 continue;
             }
@@ -228,19 +232,17 @@ impl StreamDecoder {
             // Need another packet.
             let decoded = self.decode_next_packet()?;
             if decoded == 0 {
-                // EOF — zero-pad the remainder.
-                for slot in out[filled..].iter_mut() {
-                    *slot = (0.0, 0.0);
-                }
+                // End-of-stream — leave the untouched tail for the caller.
                 break;
             }
         }
 
-        Ok(produced)
+        Ok(filled)
     }
 
-    /// Accurate-seek to `start` and discard the preroll so `cursor == start`.
-    fn seek_to(&mut self, start: u64) -> WaveResult<()> {
+    /// Accurate-seek to `start` so the next [`poll_into`](Self::poll_into)
+    /// produces frame `start`. Discards the preroll so `cursor == start`.
+    pub fn seek(&mut self, start: u64) -> WaveResult<()> {
         self.leftover.clear();
         self.leftover_pos = 0;
 
@@ -272,12 +274,25 @@ impl StreamDecoder {
     }
 }
 
+/// Sequential stereo-`f32` read half. A decode error surfaces as end-of-stream
+/// (`0`): the butler refill treats a short/zero poll as a boundary, and the
+/// fallible detail is available through [`fill_sequential`](FileIn::fill_sequential)
+/// for callers that want it.
+impl AudioIn for FileIn {
+    fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
+        self.fill_sequential(out).unwrap_or(0)
+    }
+}
+
 #[cfg(all(test, feature = "wav"))]
 mod tests {
     use super::*;
     use crate::wave::Wave;
 
-    fn write_test_wav(frames: usize) -> std::path::PathBuf {
+    /// Write a scratch WAV for one test. `tag` must be unique per caller:
+    /// tests run in parallel, and a shared filename means one test reads the
+    /// file while another is still writing it.
+    fn write_test_wav(frames: usize, tag: &str) -> std::path::PathBuf {
         let sample_rate = 44100.0;
         let mut wave = Wave::new(2, sample_rate);
         for i in 0..frames {
@@ -287,42 +302,41 @@ mod tests {
             wave.push((l, r));
         }
         let mut path = std::env::temp_dir();
-        path.push(format!("tutti_stream_decoder_{}.wav", frames));
+        path.push(format!("tutti_stream_decoder_{tag}_{frames}.wav"));
         wave.save_wav16(&path).expect("save wav");
         path
     }
 
-    fn loaded_stereo(path: &std::path::Path) -> Vec<(f32, f32)> {
+    fn loaded_stereo(path: &std::path::Path) -> Vec<[f32; 2]> {
         let w = Wave::load(path).expect("load");
-        (0..w.len()).map(|i| (w.at(0, i), w.at(1, i))).collect()
+        (0..w.len()).map(|i| [w.at(0, i), w.at(1, i)]).collect()
     }
 
     #[test]
     fn full_sequential_read_matches_full_load() {
         let frames = 20_000usize;
-        let path = write_test_wav(frames);
+        let path = write_test_wav(frames, "sequential");
         let expected = loaded_stereo(&path);
 
-        let mut dec = StreamDecoder::open(&path, None).expect("open");
+        let mut dec = FileIn::open(&path, None).expect("open");
         assert!(dec.seekable());
 
-        // Read the whole file in several sequential chunks (all fast-path).
-        let mut got = vec![(0.0f32, 0.0f32); frames];
+        // Poll the whole file in several sequential chunks (all fast-path, no
+        // seek — the cursor advances on its own).
+        let mut got = vec![[0.0f32; 2]; frames];
         let chunk = 3000usize;
         let mut pos = 0usize;
         while pos < frames {
             let end = (pos + chunk).min(frames);
-            let n = dec
-                .read_range(pos as u64, &mut got[pos..end])
-                .expect("read");
+            let n = dec.poll_into(&mut got[pos..end]);
             assert_eq!(n, end - pos);
             pos = end;
         }
 
         for i in 0..frames {
             assert!(
-                (got[i].0 - expected[i].0).abs() < 1e-4
-                    && (got[i].1 - expected[i].1).abs() < 1e-4,
+                (got[i][0] - expected[i][0]).abs() < 1e-4
+                    && (got[i][1] - expected[i][1]).abs() < 1e-4,
                 "frame {} mismatch: got {:?} expected {:?}",
                 i,
                 got[i],
@@ -333,23 +347,25 @@ mod tests {
     }
 
     #[test]
-    fn seek_to_midfile_matches_slice() {
+    fn seek_then_poll_matches_slice() {
         let frames = 20_000usize;
-        let path = write_test_wav(frames);
+        let path = write_test_wav(frames, "seek");
         let expected = loaded_stereo(&path);
 
-        let mut dec = StreamDecoder::open(&path, None).expect("open");
+        let mut dec = FileIn::open(&path, None).expect("open");
 
         let start = 12_345u64;
         let len = 2_000usize;
-        let mut got = vec![(0.0f32, 0.0f32); len];
-        let n = dec.read_range(start, &mut got).expect("read");
+        dec.seek(start).expect("seek");
+        assert_eq!(dec.cursor(), start);
+        let mut got = vec![[0.0f32; 2]; len];
+        let n = dec.poll_into(&mut got);
         assert_eq!(n, len);
 
         for i in 0..len {
             let e = expected[start as usize + i];
             assert!(
-                (got[i].0 - e.0).abs() < 1e-4 && (got[i].1 - e.1).abs() < 1e-4,
+                (got[i][0] - e[0]).abs() < 1e-4 && (got[i][1] - e[1]).abs() < 1e-4,
                 "frame {} (file {}) mismatch: got {:?} expected {:?}",
                 i,
                 start as usize + i,
@@ -361,31 +377,37 @@ mod tests {
     }
 
     #[test]
-    fn read_past_eof_zero_pads() {
+    fn poll_past_eof_returns_short_count() {
         let frames = 5_000usize;
-        let path = write_test_wav(frames);
+        let path = write_test_wav(frames, "eof");
         let expected = loaded_stereo(&path);
 
-        let mut dec = StreamDecoder::open(&path, None).expect("open");
+        let mut dec = FileIn::open(&path, None).expect("open");
 
-        // Straddle EOF: request 1000 frames starting 500 before the end.
+        // Straddle EOF: seek to 500 before the end, then ask for 1000 frames.
         let start = (frames - 500) as u64;
         let len = 1000usize;
-        let mut got = vec![(1.0f32, 1.0f32); len];
-        let n = dec.read_range(start, &mut got).expect("read");
+        dec.seek(start).expect("seek");
+        // Pre-fill with a sentinel so we can assert the untouched tail stays put.
+        let mut got = vec![[1.0f32; 2]; len];
+        let n = dec.poll_into(&mut got);
         assert_eq!(n, 500, "only 500 frames of real audio remain");
 
         for i in 0..500 {
             let e = expected[start as usize + i];
             assert!(
-                (got[i].0 - e.0).abs() < 1e-4 && (got[i].1 - e.1).abs() < 1e-4,
+                (got[i][0] - e[0]).abs() < 1e-4 && (got[i][1] - e[1]).abs() < 1e-4,
                 "frame {} mismatch",
                 i
             );
         }
+        // AudioIn leaves the tail past the returned count untouched (no zero-pad).
         for i in 500..len {
-            assert_eq!(got[i], (0.0, 0.0), "frame {} should be zero-padded", i);
+            assert_eq!(got[i], [1.0, 1.0], "frame {} should be left untouched", i);
         }
+        // A further poll at EOF yields nothing.
+        let mut more = [[0.0f32; 2]; 8];
+        assert_eq!(dec.poll_into(&mut more), 0);
         let _ = std::fs::remove_file(&path);
     }
 }

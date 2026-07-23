@@ -4,3 +4,4 @@ pub(super) mod capture;
 pub(super) mod loops;
 pub(super) mod pdc;
 pub(super) mod refill;
+pub(super) mod wave_io;

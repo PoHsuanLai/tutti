@@ -1,11 +1,12 @@
 //! Offline rendering stage.
 //!
-//! Drives a `tutti_core::dsp::Net` block-by-block and pumps the produced
-//! stereo blocks into a [`RenderSink`]. Composed of three children:
+//! Drives a `tutti_core::dsp::Net` block-by-block, gates each block, and pushes
+//! the kept stereo frames into an [`AudioOut`] sink. Composed of three
+//! children:
 //!
 //! - [`plan::RenderPlan`] — derive sample counts.
-//! - [`driver::drive`] — the single block loop.
-//! - [`sink::RenderSink`] — what happens with each block.
+//! - [`driver::drive`] — the single block loop (owns the [`BlockCursor`] gate).
+//! - [`sink`] — the [`AudioOut`] block consumers ([`RenderOut`]/[`StreamOut`]).
 //!
 //! The public entry [`render`] is pure composition over those three.
 
@@ -14,11 +15,14 @@ pub(crate) mod plan;
 pub(crate) mod sink;
 
 pub(crate) use plan::RenderPlan;
-pub(crate) use sink::{BlockCursor, BufferedSink, RenderSink, StreamSink};
+#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
+pub(crate) use sink::{BufferingOut, Mastering};
+pub(crate) use sink::{BlockCursor, RenderOut, StreamOut};
 
 use crate::progress::ProgressEmitter;
 use crate::Result;
 use std::sync::Arc;
+use tutti_core::io::AudioOut;
 use tutti_core::transport::OfflineTimeline;
 
 /// All the inputs needed to render one offline pass. Separating the
@@ -37,7 +41,7 @@ pub(crate) struct RenderRequest<'a> {
 /// and pump every block into `sink`.
 pub(crate) fn render(
     request: RenderRequest<'_>,
-    sink: &mut dyn RenderSink,
+    sink: &mut dyn AudioOut,
     progress: &mut ProgressEmitter<'_>,
 ) -> Result<()> {
     let mut net = request.net;

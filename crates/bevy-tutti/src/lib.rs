@@ -58,9 +58,10 @@ mod plugin;
 // leaf reconcilers in their subsystem crates (`tutti_units::{dsp, reconcile}`,
 // `tutti_sampler::ecs`, `tutti_plugin_host`, and the MIDI subsystem). `plugin.rs`
 // (the composition root) adds them directly — bevy-tutti no longer wraps any of it.
-// The export pipeline ECS (StartExport / TuttiExportPlugin) and the offline
-// region render (TuttiRegionRenderPlugin) now live in `tutti_export::ecs`;
-// bevy-tutti re-exports them via the prelude under the same feature gates.
+// The offline region render (TuttiRegionRenderPlugin) lives in
+// `tutti_export::ecs`; bevy-tutti re-exports it via the prelude under the same
+// feature gates. (Whole-graph export runs directly through the `GraphExport`
+// builder — there is no ECS message plugin for it.)
 // The MIDI subsystem is grouped by function — input / routing / sequence /
 // scheduled / device / mpe sub-plugins composed by `tutti_midi_io::TuttiMidiPlugin`.
 // bevy-tutti re-exports it via the prelude under the same feature gates.
@@ -79,12 +80,10 @@ pub use plugin::TuttiPlugin;
 #[cfg(feature = "plugin")]
 pub use tutti_plugin_host as plugin_host;
 #[cfg(feature = "plugin")]
-pub use tutti_plugin_host::{
-    OpenPluginEditor, PluginEmitter, PluginsRes, TuttiHostingPlugin,
-};
+pub use tutti_plugin_host::{OpenPluginEditor, PluginEmitter, PluginsRes, TuttiHostingPlugin};
 
 // Engine types.
-pub use engine::{DefaultProcessor, DeviceInfo, Error, Result, TuttiDriver, AudioGraph};
+pub use engine::{AudioGraph, DefaultProcessor, DeviceInfo, Error, Result, TuttiDriver};
 
 // bevy-tutti's own UI-mirror resource (audio device state). Its CPAL driver
 // is bevy-tutti's, so the mirror lives here. Transport state + master metering

@@ -12,7 +12,7 @@ use arc_swap::ArcSwap;
 use tutti_core::{AtomicU64, Ordering};
 
 #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-use tutti_core::StreamDecoder;
+use tutti_core::FileIn;
 
 use super::command::RegionId;
 
@@ -77,18 +77,22 @@ impl RegionMeta {
     }
 }
 
-pub(crate) struct RegionWriter {
+pub(crate) struct RegionOut {
     prod: SendProd<(f32, f32)>,
     meta: Arc<RegionMeta>,
+    /// Frames accepted by the most recent [`AudioOut::write`](tutti_core::io::AudioOut::write)
+    /// run. `write` returns `()`, so the count the caller needs to advance the
+    /// file cursor is stashed here and drained via [`take_accepted`](Self::take_accepted).
+    accepted: usize,
     /// Incremental disk decoder for real streaming. `None` means this region
     /// uses the whole-file `load_wave` + `LruCache` fallback path (non-seekable
     /// format, or no frame count). `Box<dyn FormatReader/Decoder>` are `Send`,
     /// so the rayon `par_iter_mut` refill path is fine.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-    decoder: Option<StreamDecoder>,
+    decoder: Option<FileIn>,
 }
 
-impl RegionWriter {
+impl RegionOut {
     pub fn file_position(&self) -> u64 {
         self.meta.file_position()
     }
@@ -97,13 +101,13 @@ impl RegionWriter {
     /// real-streaming refill path. Without one, refill uses the whole-file
     /// fallback.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-    pub(crate) fn set_decoder(&mut self, decoder: StreamDecoder) {
+    pub(crate) fn set_decoder(&mut self, decoder: FileIn) {
         self.decoder = Some(decoder);
     }
 
     /// Mutable access to the streaming decoder, if this region streams.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-    pub(crate) fn decoder_mut(&mut self) -> Option<&mut StreamDecoder> {
+    pub(crate) fn decoder_mut(&mut self) -> Option<&mut FileIn> {
         self.decoder.as_mut()
     }
 
@@ -119,6 +123,34 @@ impl RegionWriter {
         self.prod.capacity().get()
     }
 
+    /// Push `[f32; 2]` frames into the ring until it fills, returning how many
+    /// landed. The frame-native counterpart of [`write`](Self::write); the
+    /// [`AudioOut`](tutti_core::io::AudioOut) impl (in [`io::wave_io`](super::io::wave_io))
+    /// drives this.
+    pub fn push_frames(&mut self, frames: &[[f32; 2]]) -> usize {
+        let mut written = 0;
+        for &f in frames {
+            if self.prod.try_push((f[0], f[1])).is_ok() {
+                written += 1;
+            } else {
+                break;
+            }
+        }
+        written
+    }
+
+    /// Record how many frames the last `AudioOut::write` accepted, to be read
+    /// back by [`take_accepted`](Self::take_accepted).
+    pub fn record_accepted(&mut self, n: usize) {
+        self.accepted = n;
+    }
+
+    /// Take (and clear) the frames-accepted count stashed by the `AudioOut`
+    /// impl, so the refill can advance the file cursor after a `pump`.
+    pub fn take_accepted(&mut self) -> usize {
+        core::mem::take(&mut self.accepted)
+    }
+
     pub fn write(&mut self, samples: &[(f32, f32)]) -> usize {
         let mut written = 0;
         for &sample in samples {
@@ -131,12 +163,14 @@ impl RegionWriter {
         written
     }
 
-    /// Write samples in reverse order (for reverse playback).
-    /// Samples are taken from the end of the slice first.
-    pub fn write_reversed(&mut self, samples: &[(f32, f32)]) -> usize {
+    /// Write frames in reverse order (for reverse playback). Frames are taken
+    /// from the end of the slice first; returns how many landed before the ring
+    /// filled. `pump` can't express the reversal, so the reverse refill path
+    /// calls this directly.
+    pub fn write_frames_reversed(&mut self, frames: &[[f32; 2]]) -> usize {
         let mut written = 0;
-        for &sample in samples.iter().rev() {
-            if self.prod.try_push(sample).is_ok() {
+        for &f in frames.iter().rev() {
+            if self.prod.try_push((f[0], f[1])).is_ok() {
                 written += 1;
             } else {
                 break;
@@ -296,7 +330,7 @@ impl RegionBuffer {
         region_id: RegionId,
         file_path: PathBuf,
         capacity: usize,
-    ) -> (RegionWriter, RegionReader) {
+    ) -> (RegionOut, RegionReader) {
         let capacity = capacity.max(4096);
 
         let rb = HeapRb::<(f32, f32)>::new(capacity);
@@ -308,15 +342,11 @@ impl RegionBuffer {
             file_position: AtomicU64::new(0),
         });
 
-        let producer = RegionWriter {
+        let producer = RegionOut {
             prod: SendProd::new(prod),
             meta: meta.clone(),
-            #[cfg(any(
-                feature = "wav",
-                feature = "flac",
-                feature = "mp3",
-                feature = "ogg"
-            ))]
+            accepted: 0,
+            #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
             decoder: None,
         };
 
@@ -324,137 +354,6 @@ impl RegionBuffer {
             cons: SendCons::new(cons),
             read_position: Arc::new(AtomicU64::new(0)),
             region_id,
-        };
-
-        (producer, consumer)
-    }
-}
-
-pub(crate) struct CaptureMeta {
-    file_path: PathBuf,
-    frames_written: AtomicU64,
-    frames_captured: AtomicU64,
-    frames_dropped: AtomicU64,
-}
-
-impl CaptureMeta {
-    fn add_frames_written(&self, count: u64) {
-        self.frames_written.fetch_add(count, Ordering::Relaxed);
-    }
-
-    fn add_frames_captured(&self, count: u64) {
-        self.frames_captured.fetch_add(count, Ordering::Relaxed);
-    }
-
-    fn add_frames_dropped(&self, count: u64) {
-        self.frames_dropped.fetch_add(count, Ordering::Relaxed);
-    }
-
-    fn frames_dropped(&self) -> u64 {
-        self.frames_dropped.load(Ordering::Relaxed)
-    }
-}
-
-pub struct CaptureWriter {
-    prod: SendProd<(f32, f32)>,
-    meta: Arc<CaptureMeta>,
-}
-
-impl CaptureWriter {
-    pub fn write_space(&self) -> usize {
-        self.prod.vacant_len()
-    }
-
-    #[inline]
-    pub fn write(&mut self, sample: (f32, f32)) -> bool {
-        if self.prod.try_push(sample).is_ok() {
-            self.meta.add_frames_captured(1);
-            true
-        } else {
-            self.meta.add_frames_dropped(1);
-            false
-        }
-    }
-
-    /// Frames dropped because the capture ring was full when audio tried to
-    /// push. Nonzero means overruns occurred and the recording lost samples.
-    pub fn frames_dropped(&self) -> u64 {
-        self.meta.frames_dropped()
-    }
-
-    pub fn file_path(&self) -> &PathBuf {
-        &self.meta.file_path
-    }
-}
-
-pub(crate) struct CaptureReader {
-    cons: SendCons<(f32, f32)>,
-    meta: Arc<CaptureMeta>,
-}
-
-impl std::fmt::Debug for CaptureReader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CaptureReader").finish_non_exhaustive()
-    }
-}
-
-impl CaptureReader {
-    pub(crate) fn available(&self) -> usize {
-        self.cons.occupied_len()
-    }
-
-    pub(crate) fn read_into(&mut self, buffer: &mut [(f32, f32)]) -> usize {
-        let mut read = 0;
-        for slot in buffer.iter_mut() {
-            if let Some(sample) = self.cons.try_pop() {
-                *slot = sample;
-                read += 1;
-            } else {
-                break;
-            }
-        }
-        read
-    }
-
-    pub(crate) fn add_frames_written(&self, count: u64) {
-        self.meta.add_frames_written(count);
-    }
-
-    /// Frames dropped by the producer due to a full ring (overruns).
-    pub(crate) fn frames_dropped(&self) -> u64 {
-        self.meta.frames_dropped()
-    }
-}
-
-pub(crate) struct CaptureBuffer;
-
-impl CaptureBuffer {
-    #[allow(clippy::new_ret_no_self)]
-    pub(crate) fn new(
-        file_path: PathBuf,
-        sample_rate: f64,
-        buffer_size_ms: f32,
-    ) -> (CaptureWriter, CaptureReader) {
-        let capacity = ((buffer_size_ms / 1000.0 * sample_rate as f32) as usize).max(4096);
-
-        let rb = HeapRb::<(f32, f32)>::new(capacity);
-        let (prod, cons) = rb.split();
-
-        let meta = Arc::new(CaptureMeta {
-            file_path,
-            frames_written: AtomicU64::new(0),
-            frames_captured: AtomicU64::new(0),
-            frames_dropped: AtomicU64::new(0),
-        });
-
-        let producer = CaptureWriter {
-            prod: SendProd::new(prod),
-            meta: Arc::clone(&meta),
-        };
-
-        let consumer = CaptureReader {
-            cons: SendCons::new(cons),
-            meta,
         };
 
         (producer, consumer)
@@ -617,32 +516,5 @@ mod tests {
             "After refill, should get high-freq data with larger sample diff, got {}",
             sample_diff.abs()
         );
-    }
-
-    #[test]
-    fn test_capture_overrun_records_drops() {
-        // Small ring (clamped to 4096) with no consumer draining it.
-        let (mut writer, reader) =
-            CaptureBuffer::new(PathBuf::from("test.wav"), 44100.0, 0.0);
-
-        let capacity = writer.write_space();
-        assert!(capacity > 0);
-        assert_eq!(writer.frames_dropped(), 0);
-
-        // Push exactly enough to fill the ring; all should succeed.
-        for _ in 0..capacity {
-            assert!(writer.write((0.0, 0.0)));
-        }
-        assert_eq!(writer.frames_dropped(), 0);
-
-        // Overrun: nothing is draining, so these must be dropped.
-        let overrun = 100;
-        for _ in 0..overrun {
-            assert!(!writer.write((0.0, 0.0)));
-        }
-
-        assert_eq!(writer.frames_dropped(), overrun as u64);
-        // The reader observes the same shared counter.
-        assert_eq!(reader.frames_dropped(), overrun as u64);
     }
 }

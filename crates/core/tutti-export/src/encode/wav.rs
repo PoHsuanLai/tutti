@@ -1,23 +1,24 @@
 //! WAV encoder (hound-backed). Whole-signal and streaming.
 
+use crate::encode::pcm::{f32_to_i16, f32_to_i24};
 use crate::encode::sink::StreamingEncoder;
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
 use crate::options::{BitDepth, ChannelMode};
-use crate::process::{Chunk, ProcessedAudio};
+use crate::process::Chunk;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
 
-pub(crate) fn encode(audio: ProcessedAudio, request: &EncodeRequest<'_>) -> Result<()> {
+pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
     match audio {
-        ProcessedAudio::Stereo { left, right } => {
+        Chunk::Stereo { left, right } => {
             let spec = spec(request.sample_rate, request.bit_depth, ChannelMode::Stereo);
             let mut writer = WavWriter::create(request.path, spec).map_err(io_err)?;
             write_stereo(&mut writer, &left, &right, request.bit_depth)?;
             writer.finalize().map_err(io_err)?;
         }
-        ProcessedAudio::Mono(samples) => {
+        Chunk::Mono(samples) => {
             let spec = spec(request.sample_rate, request.bit_depth, ChannelMode::Mono);
             let mut writer = WavWriter::create(request.path, spec).map_err(io_err)?;
             write_mono(&mut writer, &samples, request.bit_depth)?;
@@ -131,16 +132,6 @@ fn write_mono<W: Write + Seek>(
     Ok(())
 }
 
-#[inline]
-fn f32_to_i16(sample: f32) -> i16 {
-    (sample.clamp(-1.0, 1.0) * 32767.0) as i16
-}
-
-#[inline]
-fn f32_to_i24(sample: f32) -> i32 {
-    (sample.clamp(-1.0, 1.0) * 8388607.0) as i32
-}
-
 fn io_err(e: hound::Error) -> Error {
     Error::Io(std::io::Error::other(e))
 }
@@ -148,22 +139,6 @@ fn io_err(e: hound::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn f32_to_i16_clamps() {
-        assert_eq!(f32_to_i16(0.0), 0);
-        assert_eq!(f32_to_i16(1.0), 32767);
-        assert_eq!(f32_to_i16(-1.0), -32767);
-        assert_eq!(f32_to_i16(1.5), 32767);
-        assert_eq!(f32_to_i16(-1.5), -32767);
-    }
-
-    #[test]
-    fn f32_to_i24_clamps() {
-        assert_eq!(f32_to_i24(0.0), 0);
-        assert_eq!(f32_to_i24(1.0), 8388607);
-        assert_eq!(f32_to_i24(-1.0), -8388607);
-    }
 
     #[test]
     fn export_buffers_writes_valid_wav() {

@@ -17,20 +17,16 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use smol::channel::Sender;
 
-use crate::butler::{ButlerCommand, ChannelPlan, RtState};
+use crate::butler::{ButlerCommand, ChannelPlan};
 use crate::playback::{
     Direction, LoopSetting, StreamingClipConfig, StreamingClipReader, TransportPlacement,
 };
-use crate::StreamingSamplerUnit;
 use tutti_core::{BeatDuration, Beat, Ratio, SamplePosition, Timeline, Wave};
 
 /// The caller's stated choice of playback tier for a clip: whole-file in RAM
 /// (`Memory`) or incremental disk streaming (`Disk`). Plain data — the sampler
 /// never decides the tier on its own; it plays whichever variant it is handed.
-///
-/// Use [`from_duration`](Source::from_duration) to opt into the shared duration
-/// heuristic ([`crate::tiering::should_stream`]); otherwise construct the
-/// variant directly.
+/// The caller owns the tier decision (e.g. dawai-model's `TieringPolicy`).
 #[derive(Clone)]
 pub enum Source {
     /// Whole file decoded into RAM, played by a `SamplerUnit`.
@@ -54,23 +50,12 @@ impl std::fmt::Debug for Source {
     }
 }
 
-impl Source {
-    /// Pick the tier via the shared heuristic: stream from `path` when the wave
-    /// is longer than [`crate::tiering::IN_MEMORY_SECS`], else keep it in RAM.
-    pub fn from_duration(wave: Arc<Wave>, path: PathBuf, sample_rate: f64) -> Source {
-        if crate::tiering::should_stream(wave.len(), sample_rate) {
-            Source::Disk(path)
-        } else {
-            Source::Memory(wave)
-        }
-    }
-}
-
 /// A butler stream-control command, one public variant per streaming operation.
 ///
 /// Each variant maps to exactly one internal `ButlerCommand`; the [`Commands`]
 /// port performs that mapping in [`send`](Commands::send).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Command {
     /// Register a disk-streaming source for a timeline clip on `channel_index`,
     /// starting at `offset` in file samples. Maps to `StreamAudioFile`.
@@ -108,27 +93,14 @@ pub enum Command {
 ///
 /// Mirrors [`TrackClipReaderHandle`](crate::TrackClipReaderHandle) — a thin,
 /// `Clone` handle over a `Sender` with a single [`send`](Self::send) method.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Commands {
     tx: Sender<ButlerCommand>,
-    plans: Arc<DashMap<usize, ChannelPlan>>,
 }
 
 impl Commands {
-    pub(crate) fn new(tx: Sender<ButlerCommand>, plans: Arc<DashMap<usize, ChannelPlan>>) -> Self {
-        Self { tx, plans }
-    }
-
-    /// Bind an ergonomic per-channel [`ClipControl`] over this write port.
-    ///
-    /// The returned handle is a thin façade that fills in `channel_index` and
-    /// routes every verb back through [`send`](Self::send) — one mapping.
-    pub fn channel(&self, channel_index: usize) -> ClipControl {
-        ClipControl {
-            commands: self.clone(),
-            plans: Arc::clone(&self.plans),
-            channel_index,
-        }
+    pub(crate) fn new(tx: Sender<ButlerCommand>) -> Self {
+        Self { tx }
     }
 
     /// Dispatch a single command to the butler.
@@ -202,112 +174,23 @@ impl Commands {
     }
 }
 
-/// Ergonomic per-channel handle over the [`Commands`] write port.
-///
-/// A thin façade bound to one `channel_index`: every verb assembles the
-/// matching [`Command`] and dispatches it through the *same*
-/// [`Commands::send`] mapping — there is no second mapping. Hand-written
-/// callers (e.g. the preview [`Auditioner`](crate::Auditioner)) prefer this to
-/// building `Command`s and repeating `channel_index` by hand; machine-generated
-/// call sites stay on explicit [`Command`]/[`send`](Commands::send).
-#[derive(Clone)]
-pub struct ClipControl {
-    commands: Commands,
-    plans: Arc<DashMap<usize, ChannelPlan>>,
-    channel_index: usize,
-}
-
-impl ClipControl {
-    /// Start streaming `file` from the beginning.
-    pub fn stream(&self, file: impl Into<PathBuf>) {
-        self.stream_from(file, SamplePosition::new(0.0));
-    }
-
-    /// Start streaming `file` from file-sample offset `at`.
-    pub fn stream_from(&self, file: impl Into<PathBuf>, at: impl Into<SamplePosition>) {
-        self.commands.send(Command::Stream {
-            channel_index: self.channel_index,
-            file_path: file.into(),
-            offset: at.into(),
-        });
-    }
-
-    /// Reposition the live stream to absolute file-sample offset `to`.
-    pub fn seek(&self, to: impl Into<SamplePosition>) {
-        self.commands.send(Command::Seek {
-            channel_index: self.channel_index,
-            file_position: to.into(),
-        });
-    }
-
-    /// Set forward playback speed.
-    pub fn speed(&self, speed: impl Into<Ratio>) {
-        self.commands.send(Command::SetSpeed {
-            channel_index: self.channel_index,
-            speed: speed.into(),
-            direction: Direction::Forward,
-        });
-    }
-
-    /// Set reverse playback speed (magnitude).
-    pub fn reverse(&self, speed: impl Into<Ratio>) {
-        self.commands.send(Command::SetSpeed {
-            channel_index: self.channel_index,
-            speed: speed.into(),
-            direction: Direction::Reverse,
-        });
-    }
-
-    /// Loop the stream over `range`, using the default 256-sample crossfade.
-    pub fn looping(&self, range: core::ops::Range<SamplePosition>) {
-        self.looping_xfade(range, 256);
-    }
-
-    /// Loop the stream over `range` with an explicit crossfade length.
-    pub fn looping_xfade(
-        &self,
-        range: core::ops::Range<SamplePosition>,
-        crossfade_samples: usize,
-    ) {
-        self.commands.send(Command::Loop {
-            channel_index: self.channel_index,
-            setting: LoopSetting::On {
-                start: range.start,
-                end: range.end,
-                crossfade_samples,
-            },
-        });
-    }
-
-    /// Disable looping (one-shot playback).
-    pub fn one_shot(&self) {
-        self.commands.send(Command::Loop {
-            channel_index: self.channel_index,
-            setting: LoopSetting::Off,
-        });
-    }
-
-    /// Stop the stream on this channel.
-    pub fn stop(&self) {
-        self.commands.send(Command::Stop {
-            channel_index: self.channel_index,
-        });
-    }
-
-    /// Take the un-gated streaming consumer for this channel (free-running
-    /// handoff the preview path uses). `None` while the butler hasn't installed
-    /// the link yet.
-    pub fn take_streaming_unit(&self) -> Option<(StreamingSamplerUnit, Arc<RtState>)> {
-        crate::butler::control::take_streaming_unit(&self.plans, self.channel_index)
-    }
-}
-
 /// READ port onto the streaming engine: a cloneable snapshot of the sample rate
 /// and the channel-plan map, exposing state reads plus the reader-factory.
 #[derive(Clone)]
 pub struct Status {
     sample_rate: f64,
     plans: Arc<DashMap<usize, ChannelPlan>>,
+}
+
+// `ChannelPlan` isn't `Debug` (it holds butler-internal cache/link state), so
+// hand-roll a summary rather than deriving — never touch the map's contents to
+// avoid contending with the butler thread.
+impl std::fmt::Debug for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Status")
+            .field("sample_rate", &self.sample_rate)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Status {

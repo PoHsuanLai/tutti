@@ -16,12 +16,16 @@ pub use tutti_plugin_types::{AudioBuffer, AudioBuffer32, AudioBuffer64, Sample};
 ///
 /// The enum keeps the trait dyn-compatible while letting each format's
 /// implementation match once and delegate into a single generic inner body.
-pub enum AudioBufferMut<'a> {
-    F32(AudioBuffer<'a, f32>),
-    F64(AudioBuffer<'a, f64>),
+///
+/// Carries [`AudioBuffer`]'s two lifetimes verbatim (`'t` = channel tables,
+/// `'d` = sample data, `'d: 't`) so the split survives the enum boundary — a
+/// caller can still build the output table with a short-lived borrow.
+pub enum AudioBufferMut<'t, 'd: 't> {
+    F32(AudioBuffer<'t, 'd, f32>),
+    F64(AudioBuffer<'t, 'd, f64>),
 }
 
-impl<'a> AudioBufferMut<'a> {
+impl<'t, 'd: 't> AudioBufferMut<'t, 'd> {
     pub fn num_samples(&self) -> usize {
         match self {
             Self::F32(b) => b.num_samples,

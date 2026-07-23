@@ -146,6 +146,10 @@ automation = ["tutti-units/automation"]
 # RT-safety regression tests (relocated engine audio_io/graph tests) use the
 # allocation-disabling global allocator via the harness in lib.rs.
 assert_no_alloc = "1"
+# The `Recorder` round-trip test writes a real `WavOut` to a temp dir and reads
+# it back with `hound` — same crates the sampler's own capture tests use.
+hound = "3.5"
+tempfile = "3.8"
 
 [[example]]
 name = "29_node_entities"

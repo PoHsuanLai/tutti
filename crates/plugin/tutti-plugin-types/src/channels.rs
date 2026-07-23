@@ -1,6 +1,21 @@
 //! Deinterleaved channel buffers and the C-FFI pointer marshalling that hands
 //! them to a plugin's process call.
 //!
+//! # The plugin boundary in the engine's I/O vocabulary
+//!
+//! In [`tutti_types::io`] terms a plugin is an [`AudioOut`](tutti_types::io::AudioOut)
+//! back-to-back with an [`AudioIn`](tutti_types::io::AudioIn): its **input** side
+//! is written (the host pushes a block in), its **output** side is polled (the
+//! host pulls the processed block out), and the format-native `process` is the
+//! private in→out step wedged between. [`AudioBuffer<T>`] is that back-to-back
+//! carrier for one block — `inputs` is the AudioOut side, `outputs` the AudioIn
+//! side. It does *not* implement the two traits literally: those speak
+//! *interleaved* `[S; CH]` frames on a cold/block path, whereas the plugin ABI
+//! is *deinterleaved* (one buffer per channel) on the RT audio thread, so the
+//! two shapes deliberately don't unify — forcing an interleave transpose here
+//! would add work to the hot path. The vocabulary names the *roles*; this
+//! module owns the RT-planar realisation.
+//!
 //! Audio crosses the plugin boundary one buffer *per channel* (deinterleaved),
 //! and the C plugin ABIs (VST3, AU) take those channel buffers as a `void**` —
 //! a pointer to an array of per-channel pointers (`*mut *mut c_void` in Rust).
@@ -24,54 +39,15 @@ use std::ffi::c_void;
 ///
 /// Generic process code such as `Vst3Instance::process` / `ClapInstance::process`
 /// is written `<T: Sample>`, so the compiler monomorphizes one specialization
-/// per concrete width. The plugin *instance*, however, is **not** generic over
-/// `T`: it is one concrete struct that must serve whichever format gets
-/// negotiated at runtime — and VST3 plugins can re-negotiate f32 ⇄ f64 across
-/// their lifetime. So the instance holds a [`BufferPtrs`] of *each* width and
-/// this trait's [`prepare_ffi_buffers`](Sample::prepare_ffi_buffers) selects the
-/// one matching `T`.
-pub trait Sample: Copy + Default + Send + 'static {
-    /// Fill the matching-width [`BufferPtrs`] from the caller's channel slices
-    /// and return its `(inputs, outputs)` `void**` arrays for the C plugin API.
-    ///
-    /// Both `BufferPtrs<f32>` and `BufferPtrs<f64>` are passed because the caller
-    /// (`process::<T>`) is generic and owns *both* widths of scratch, but only
-    /// one matches `T`. Each impl uses the one whose element type is `Self` and
-    /// ignores the other (a no-op `&mut` borrow, zero cost) — this is the
-    /// compile-time switch that bridges the generic `process::<T>` and the
-    /// instance's two concrete, typed scratch buffers. (The scratch can't be a
-    /// single `BufferPtrs<T>`: `Vec<*mut f32>` and `Vec<*mut f64>` are distinct
-    /// Rust types even though the bytes are identical, so one can't stand in for
-    /// the other without a transmute.)
-    fn prepare_ffi_buffers(
-        ptrs_f32: &mut BufferPtrs<f32>,
-        ptrs_f64: &mut BufferPtrs<f64>,
-        inputs: &[&[Self]],
-        outputs: &mut [&mut [Self]],
-    ) -> (*mut *mut c_void, *mut *mut c_void);
-}
+/// per concrete width. This is the element type `S` of the engine's
+/// [`AudioIn`](tutti_types::io::AudioIn) / [`AudioOut`](tutti_types::io::AudioOut)
+/// vocabulary, narrowed to the two widths a plugin bus can negotiate: `f32`
+/// (the whole edge world) and `f64` (a 64-bit plugin bus).
+pub trait Sample: Copy + Default + Send + 'static {}
 
-impl Sample for f32 {
-    fn prepare_ffi_buffers(
-        ptrs_f32: &mut BufferPtrs<f32>,
-        _ptrs_f64: &mut BufferPtrs<f64>,
-        inputs: &[&[Self]],
-        outputs: &mut [&mut [Self]],
-    ) -> (*mut *mut c_void, *mut *mut c_void) {
-        ptrs_f32.prepare(inputs, outputs)
-    }
-}
+impl Sample for f32 {}
 
-impl Sample for f64 {
-    fn prepare_ffi_buffers(
-        _ptrs_f32: &mut BufferPtrs<f32>,
-        ptrs_f64: &mut BufferPtrs<f64>,
-        inputs: &[&[Self]],
-        outputs: &mut [&mut [Self]],
-    ) -> (*mut *mut c_void, *mut *mut c_void) {
-        ptrs_f64.prepare(inputs, outputs)
-    }
-}
+impl Sample for f64 {}
 
 /// Pre-allocated channel-pointer arrays handed to a C plugin API on each
 /// process call — one array per process direction (input / output).
@@ -139,20 +115,33 @@ impl<T> BufferPtrs<T> {
 ///
 /// `inputs` and `outputs` borrow channel slices owned by the host. `T`
 /// picks 32-bit or 64-bit processing.
-pub struct AudioBuffer<'a, T: Sample = f32> {
-    pub inputs: &'a [&'a [T]],
-    pub outputs: &'a mut [&'a mut [T]],
+///
+/// Two lifetimes, not one: `'t` is how long the *channel tables* (the outer
+/// `&[…]` / `&mut […]`) are borrowed, `'d` how long the per-channel sample
+/// *data* lives, with `'d: 't` (data outlives the table). Splitting them lets
+/// a caller build the output table with a plain `for … zip` loop — the borrow
+/// checker sees the short-lived outer array's `Drop` as ending at `'t`, so it
+/// no longer collides with the `'d` data borrows. A single coincident lifetime
+/// forced the old hand-unrolled `split_first_mut` recursion in the server's
+/// `with_audio_buffer_*` to sidestep exactly that false conflict.
+pub struct AudioBuffer<'t, 'd: 't, T: Sample = f32> {
+    pub inputs: &'t [&'d [T]],
+    pub outputs: &'t mut [&'d mut [T]],
     pub num_samples: usize,
     pub sample_rate: f64,
 }
 
-impl<'a, T: Sample> AudioBuffer<'a, T> {
+impl<'t, 'd: 't, T: Sample> AudioBuffer<'t, 'd, T> {
     /// `num_samples` is derived from the first output channel's length, or
     /// the first input channel's length if there are no outputs.
     ///
     /// # Panics
     /// Panics if both `inputs` and `outputs` are empty.
-    pub fn new(inputs: &'a [&'a [T]], outputs: &'a mut [&'a mut [T]], sample_rate: f64) -> Self {
+    pub fn new(
+        inputs: &'t [&'d [T]],
+        outputs: &'t mut [&'d mut [T]],
+        sample_rate: f64,
+    ) -> Self {
         let num_samples = outputs
             .first()
             .map(|s| s.len())
@@ -181,5 +170,5 @@ impl<'a, T: Sample> AudioBuffer<'a, T> {
     }
 }
 
-pub type AudioBuffer32<'a> = AudioBuffer<'a, f32>;
-pub type AudioBuffer64<'a> = AudioBuffer<'a, f64>;
+pub type AudioBuffer32<'t, 'd> = AudioBuffer<'t, 'd, f32>;
+pub type AudioBuffer64<'t, 'd> = AudioBuffer<'t, 'd, f64>;

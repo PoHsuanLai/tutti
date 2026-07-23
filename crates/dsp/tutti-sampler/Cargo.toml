@@ -2,15 +2,15 @@
 name = "tutti-sampler"
 version = "0.0.1"
 edition = "2021"
-description = "Sampler, Butler thread, Recording, Audio input, Time stretch"
+description = "Sampler, Butler disk-streaming thread, time stretch"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
 default = ["bevy", "wav"]
 
-# Bevy ECS integration: the playback/recording/input/preview Plugins, Components,
-# Systems, and asset loaders. Off → the DSP leaves (SamplerUnit,
+# Bevy ECS integration: the playback Plugins, Components, Systems, and asset
+# loaders. Off → the DSP leaves (SamplerUnit,
 # StreamingSamplerUnit, TrackClipReaderUnit, the butler streaming engine, the
 # stretch::Unit) compile Bevy-free for direct FunDSP-graph use. Pulls
 # `tutti-core/bevy` (the playback systems schedule against the graph hub and
@@ -42,9 +42,6 @@ bevy_log = { version = "0.19", default-features = false, optional = true }
 
 thiserror = "2"
 
-# Audio
-cpal = "0.15"
-
 # Lock-free
 ringbuf = "0.4"
 crossbeam-channel = "0.5"
@@ -62,12 +59,8 @@ thread-priority = "1.1"
 smol = "2"
 futures-lite = "2"
 
-# DSP / Files
+# WAV encode for the WavOut AudioOut impl
 hound = "3.5"
-
-# Stable OS recording directory (dirs::audio_dir), consistent with the
-# dawai model side.
-dirs = "6"
 
 
 [dev-dependencies]

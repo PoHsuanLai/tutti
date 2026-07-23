@@ -46,8 +46,16 @@ pub(crate) type Job<T> = Box<dyn FnOnce(&ProgressFn, &Arc<AtomicBool>) -> Result
 /// Produced by every terminal on `GraphExport` / `BufferExport`. The
 /// caller picks how to execute it via [`Run::run`], [`Run::run_with`], or
 /// [`Run::spawn`].
+#[must_use = "a Run is inert until executed — call .run(), .run_with(), or .spawn()"]
 pub struct Run<T> {
     pub(crate) job: Job<T>,
+}
+
+impl<T> std::fmt::Debug for Run<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The job is a boxed `FnOnce` (not Debug); the type is opaque by design.
+        f.debug_struct("Run").finish_non_exhaustive()
+    }
 }
 
 impl<T: Send + 'static> Run<T> {
@@ -107,11 +115,21 @@ impl<T: Send + 'static> Run<T> {
 /// Handle to a background export. Poll [`Self::poll`] each frame, or call
 /// [`Self::wait`] / [`Self::wait_with`] to block. [`Self::cancel`] signals
 /// the worker to abort at the next safe point (between blocks).
+#[must_use = "dropping a Handle detaches the export thread — hold it to poll(), wait(), or cancel()"]
 pub struct Handle<T> {
     rx: Receiver<(Phase, f32)>,
     thread: Option<JoinHandle<Result<T>>>,
     cancel: Arc<AtomicBool>,
     last: Option<(Phase, f32)>,
+}
+
+impl<T> std::fmt::Debug for Handle<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Handle")
+            .field("running", &self.thread.is_some())
+            .field("last", &self.last)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]

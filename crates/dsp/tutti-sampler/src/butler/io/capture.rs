@@ -1,33 +1,121 @@
-//! Audio capture (recording) functionality for butler thread.
+//! [`WavOut`] — the live WAV implementation of [`AudioOut`](crate::AudioOut).
 //!
-//! Writes WAV files for live capture — 32-bit float (default) or 24-bit int.
-//! This intentionally stays a thin direct use of `hound` rather than going
-//! through `tutti-export`'s `StreamingEncoder` — live capture wants the
-//! simplest possible path (open → write_chunk → flush), no dither / no mono
-//! downmix, and no extra crate boundary on the hot path. The export crate
-//! handles the offline-render side with the full pipeline.
+//! An [`AudioOut`](crate::AudioOut) is "push frames → destination"; this is that
+//! destination for a WAV file. It writes 32-bit float (default) or 24-bit int,
+//! INCREMENTALLY — a recording is minutes long and never held resident. That is
+//! the deliberate contrast with `tutti-export`'s offline render path (its
+//! `StreamingEncoder`), which can buffer/dither a whole signal before encoding.
+//! Same "push frames → file" concept, two impls; they share the vocabulary
+//! ([`AudioOut`](crate::AudioOut)), not the implementation.
+//!
+//! Kept a thin direct use of `hound` rather than routing through `tutti-export`'s
+//! `StreamingEncoder`: a live sink wants the simplest possible path (open →
+//! write → finalize), no dither / no mono downmix, no extra crate boundary.
+//!
+//! The live driver is bevy-tutti's `Recorder`, which pumps a `MicIn`
+//! ([`AudioIn`](crate::AudioIn)) into this sink ([`AudioOut`](crate::AudioOut))
+//! on a background thread and calls [`finalize`](AudioOut::finalize) once at stop.
 
-use super::super::command::CaptureId;
-use super::super::metrics::Metrics;
-use super::super::prefetch::CaptureReader;
-use crate::capture::CaptureFormat;
+use crate::io::AudioOut;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
 
-pub struct ActiveCapture {
-    pub consumer: CaptureReader,
-    pub writer: Option<WavWriter<BufWriter<File>>>,
-    pub channels: usize,
-    pub format: CaptureFormat,
+/// On-disk sample format for a [`WavOut`].
+///
+/// Defaults to `F32` — the simplest, lossless-for-our-graph path. `I24` trades a
+/// little precision for smaller files where 24-bit int is desired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaptureFormat {
+    /// 32-bit IEEE float (default).
+    #[default]
+    F32,
+    /// 24-bit signed integer.
+    I24,
 }
 
-/// Bytes written per interleaved sample for a given capture format.
-fn bytes_per_sample(format: CaptureFormat) -> u64 {
-    match format {
-        CaptureFormat::F32 => 4,
-        CaptureFormat::I24 => 3,
+/// Live WAV [`AudioOut`]. Owns the `hound` writer plus the channel count and
+/// on-disk format needed to encode each frame.
+pub struct WavOut {
+    writer: WavWriter<BufWriter<File>>,
+    channels: usize,
+    format: CaptureFormat,
+}
+
+// Hand-rolled: `hound::WavWriter` isn't `Debug`. Print the channel count +
+// on-disk format; the writer itself is opaque.
+impl std::fmt::Debug for WavOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WavOut")
+            .field("channels", &self.channels)
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
+}
+
+impl WavOut {
+    /// Create the file and WAV header for `file_path`. Returns `None` if the
+    /// file can't be created or the header can't be written.
+    pub fn create(
+        file_path: &PathBuf,
+        sample_rate: f64,
+        channels: usize,
+        format: CaptureFormat,
+    ) -> Option<Self> {
+        let (bits_per_sample, sample_format) = match format {
+            CaptureFormat::F32 => (32, SampleFormat::Float),
+            CaptureFormat::I24 => (24, SampleFormat::Int),
+        };
+        let spec = WavSpec {
+            channels: channels as u16,
+            sample_rate: sample_rate as u32,
+            bits_per_sample,
+            sample_format,
+        };
+
+        let file = File::create(file_path).ok()?;
+        let buf_writer = BufWriter::new(file);
+        let writer = WavWriter::new(buf_writer, spec).ok()?;
+        Some(Self {
+            writer,
+            channels,
+            format,
+        })
+    }
+}
+
+impl AudioOut for WavOut {
+    fn write(&mut self, frames: &[[f32; 2]]) {
+        for &[left, right] in frames {
+            match self.format {
+                CaptureFormat::F32 => {
+                    if self.writer.write_sample(left).is_err() {
+                        return;
+                    }
+                    if self.channels > 1 && self.writer.write_sample(right).is_err() {
+                        return;
+                    }
+                }
+                CaptureFormat::I24 => {
+                    if self.writer.write_sample(f32_to_i24(left)).is_err() {
+                        return;
+                    }
+                    if self.channels > 1 && self.writer.write_sample(f32_to_i24(right)).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    fn finalize(self) -> std::io::Result<()> {
+        // `hound::Error` -> io error: finalize flushes the sample buffer and
+        // back-patches the RIFF/data chunk sizes. On failure the file is left
+        // with a stale header and is unreadable — a real integrity loss.
+        self.writer
+            .finalize()
+            .map_err(|e| std::io::Error::other(e.to_string()))
     }
 }
 
@@ -39,81 +127,52 @@ fn f32_to_i24(sample: f32) -> i32 {
     (clamped * 8_388_607.0).round() as i32
 }
 
-pub(crate) fn open_wav(
-    file_path: &PathBuf,
-    sample_rate: f64,
-    channels: usize,
-    format: CaptureFormat,
-) -> Option<WavWriter<BufWriter<File>>> {
-    let (bits_per_sample, sample_format) = match format {
-        CaptureFormat::F32 => (32, SampleFormat::Float),
-        CaptureFormat::I24 => (24, SampleFormat::Int),
-    };
-    let spec = WavSpec {
-        channels: channels as u16,
-        sample_rate: sample_rate as u32,
-        bits_per_sample,
-        sample_format,
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let file = File::create(file_path).ok()?;
-    let buf_writer = BufWriter::new(file);
-    WavWriter::new(buf_writer, spec).ok()
-}
+    /// The sink writes INCREMENTALLY: feeding frames across many `write` calls
+    /// and finalizing must yield a valid WAV whose frame count is the sum of
+    /// every block — the sink never has to see the whole recording at once.
+    #[test]
+    fn wav_out_writes_incrementally_and_finalizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.wav");
 
-pub(crate) fn flush_capture(state: &mut ActiveCapture, metrics: &Metrics, max_samples: usize) {
-    let Some(writer) = state.writer.as_mut() else {
-        return;
-    };
+        let mut sink =
+            WavOut::create(&path, 48_000.0, 2, CaptureFormat::F32).expect("sink should open");
 
-    let available = state.consumer.available();
-    let to_read = available.min(max_samples);
+        let block: Vec<[f32; 2]> = (0..256)
+            .map(|i| [i as f32 / 256.0, -(i as f32) / 256.0])
+            .collect();
+        let blocks = 5;
+        for _ in 0..blocks {
+            sink.write(&block);
+        }
+        sink.finalize()
+            .expect("finalize should back-patch the header");
 
-    if to_read == 0 {
-        return;
+        let reader = hound::WavReader::open(&path).expect("finalized WAV should be readable");
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 2);
+        assert_eq!(spec.sample_rate, 48_000);
+        assert_eq!(reader.len() as usize, block.len() * blocks * 2);
     }
 
-    let mut buffer = vec![(0.0f32, 0.0f32); to_read];
-    let read = state.consumer.read_into(&mut buffer);
+    /// Mono capture writes one sample per frame (the right channel is dropped).
+    #[test]
+    fn wav_out_mono_writes_one_sample_per_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mono.wav");
 
-    for &(left, right) in &buffer[..read] {
-        match state.format {
-            CaptureFormat::F32 => {
-                if writer.write_sample(left).is_err() {
-                    return;
-                }
-                if state.channels > 1 && writer.write_sample(right).is_err() {
-                    return;
-                }
-            }
-            CaptureFormat::I24 => {
-                if writer.write_sample(f32_to_i24(left)).is_err() {
-                    return;
-                }
-                if state.channels > 1 && writer.write_sample(f32_to_i24(right)).is_err() {
-                    return;
-                }
-            }
-        }
-    }
+        let mut sink =
+            WavOut::create(&path, 44_100.0, 1, CaptureFormat::F32).expect("sink should open");
+        let frames = vec![[0.5f32, 0.9f32]; 128];
+        sink.write(&frames);
+        sink.finalize().unwrap();
 
-    let bytes_written = read as u64 * state.channels as u64 * bytes_per_sample(state.format);
-    metrics.record_write(bytes_written);
-
-    state.consumer.add_frames_written(read as u64);
-}
-
-pub(crate) fn flush_all(
-    capture_consumers: &mut std::collections::HashMap<CaptureId, ActiveCapture>,
-    metrics: &Metrics,
-    threshold: usize,
-    force: bool,
-) {
-    for state in capture_consumers.values_mut() {
-        let available = state.consumer.available();
-
-        if force || available >= threshold {
-            flush_capture(state, metrics, if force { usize::MAX } else { threshold });
-        }
+        let reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.spec().channels, 1);
+        assert_eq!(reader.len() as usize, frames.len());
     }
 }

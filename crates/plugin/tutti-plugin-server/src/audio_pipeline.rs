@@ -290,153 +290,71 @@ impl AudioPipeline {
     }
 }
 
-/// Build stack-allocated `&[&[f32]]` / `&mut [&mut [f32]]` slice tables
-/// from owned channel vecs and hand them to `f`. Allocation-free — both
-/// slice tables live in stack frames. Recurses through the output
-/// channels via `split_first_mut` to build the mutable slice-of-slices
-/// without violating borrow-check (mirrors
-/// `tutti_plugin::in_process::vst2::audio_unit`). The input table is
-/// built by a single loop; mutable borrowing of the output channels
-/// runs concurrently with shared borrows of the input channels because
-/// they're disjoint allocations.
-/// Build a stack-allocated [`AudioBufferMut::F32`] from owned channel
-/// vecs and hand it to the FnOnce `f`. Allocation-free — both slice
-/// tables and the `AudioBuffer` itself live in the recursion's terminal
-/// stack frame, with all field lifetimes unified there. The `&mut`
-/// slice-of-slices is built via `split_first_mut` recursion (mirrors
-/// `tutti_plugin::in_process::vst2::audio_unit::run_with_mut_channels_f32`).
+/// Build a stack-allocated [`AudioBufferMut::F32`] from owned channel vecs
+/// and hand it to the FnOnce `f`. Allocation-free — the `&[&[f32]]` and
+/// `&mut [&mut [f32]]` slice tables live in fixed `MAX_CHANNELS`-wide stack
+/// arrays.
+///
+/// The output table is filled by a plain `for … zip` loop rather than the old
+/// `split_first_mut` recursion: [`AudioBuffer`]'s split lifetimes (`'t` table,
+/// `'d` data) let the borrow checker see the `out_refs` array's borrow ending
+/// at the `f(...)` call, so it no longer collides with the per-channel data
+/// borrows the way a single coincident lifetime did.
 fn with_audio_buffer_f32<R>(
     inputs: &[Vec<f32>],
     outputs: &mut [Vec<f32>],
     size: usize,
     sample_rate: f64,
-    f: impl FnOnce(AudioBufferMut<'_>) -> R,
+    f: impl FnOnce(AudioBufferMut<'_, '_>) -> R,
 ) -> R {
-    fn recurse<'a, R>(
-        in_refs: &'a [&'a [f32]],
-        rest: &'a mut [Vec<f32>],
-        size: usize,
-        out_acc: &'a mut [&'a mut [f32]],
-        depth: usize,
-        sample_rate: f64,
-        f: impl FnOnce(AudioBufferMut<'_>) -> R,
-    ) -> R {
-        if depth == out_acc.len() {
-            let buf = AudioBufferMut::F32(tutti_plugin::server::AudioBuffer {
-                inputs: in_refs,
-                outputs: out_acc,
-                num_samples: size,
-                sample_rate,
-            });
-            return f(buf);
-        }
-        let (head, tail) = rest
-            .split_first_mut()
-            .expect("channel count mismatch (f32)");
-        out_acc[depth] = &mut head[..size];
-        recurse(in_refs, tail, size, out_acc, depth + 1, sample_rate, f)
-    }
-
     let in_n = inputs.len().min(MAX_CHANNELS);
     let out_n = outputs.len().min(MAX_CHANNELS);
+
     let mut in_refs: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
-    for ch in 0..in_n {
-        in_refs[ch] = &inputs[ch][..size];
+    for (slot, chan) in in_refs[..in_n].iter_mut().zip(inputs) {
+        *slot = &chan[..size];
     }
-    let mut out_acc: [&mut [f32]; MAX_CHANNELS] = [
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-    ];
-    recurse(
-        &in_refs[..in_n],
-        outputs,
-        size,
-        &mut out_acc[..out_n],
-        0,
+
+    let mut out_refs: [&mut [f32]; MAX_CHANNELS] = Default::default();
+    for (slot, chan) in out_refs[..out_n].iter_mut().zip(outputs.iter_mut()) {
+        *slot = &mut chan[..size];
+    }
+
+    f(AudioBufferMut::F32(tutti_plugin::server::AudioBuffer {
+        inputs: &in_refs[..in_n],
+        outputs: &mut out_refs[..out_n],
+        num_samples: size,
         sample_rate,
-        f,
-    )
+    }))
 }
 
+/// The f64 twin of [`with_audio_buffer_f32`]; see it for the lifetime note.
 fn with_audio_buffer_f64<R>(
     inputs: &[Vec<f64>],
     outputs: &mut [Vec<f64>],
     size: usize,
     sample_rate: f64,
-    f: impl FnOnce(AudioBufferMut<'_>) -> R,
+    f: impl FnOnce(AudioBufferMut<'_, '_>) -> R,
 ) -> R {
-    fn recurse<'a, R>(
-        in_refs: &'a [&'a [f64]],
-        rest: &'a mut [Vec<f64>],
-        size: usize,
-        out_acc: &'a mut [&'a mut [f64]],
-        depth: usize,
-        sample_rate: f64,
-        f: impl FnOnce(AudioBufferMut<'_>) -> R,
-    ) -> R {
-        if depth == out_acc.len() {
-            let buf = AudioBufferMut::F64(tutti_plugin::server::AudioBuffer64 {
-                inputs: in_refs,
-                outputs: out_acc,
-                num_samples: size,
-                sample_rate,
-            });
-            return f(buf);
-        }
-        let (head, tail) = rest
-            .split_first_mut()
-            .expect("channel count mismatch (f64)");
-        out_acc[depth] = &mut head[..size];
-        recurse(in_refs, tail, size, out_acc, depth + 1, sample_rate, f)
-    }
-
     let in_n = inputs.len().min(MAX_CHANNELS);
     let out_n = outputs.len().min(MAX_CHANNELS);
+
     let mut in_refs: [&[f64]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
-    for ch in 0..in_n {
-        in_refs[ch] = &inputs[ch][..size];
+    for (slot, chan) in in_refs[..in_n].iter_mut().zip(inputs) {
+        *slot = &chan[..size];
     }
-    let mut out_acc: [&mut [f64]; MAX_CHANNELS] = [
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-        &mut [],
-    ];
-    recurse(
-        &in_refs[..in_n],
-        outputs,
-        size,
-        &mut out_acc[..out_n],
-        0,
+
+    let mut out_refs: [&mut [f64]; MAX_CHANNELS] = Default::default();
+    for (slot, chan) in out_refs[..out_n].iter_mut().zip(outputs.iter_mut()) {
+        *slot = &mut chan[..size];
+    }
+
+    f(AudioBufferMut::F64(tutti_plugin::server::AudioBuffer64 {
+        inputs: &in_refs[..in_n],
+        outputs: &mut out_refs[..out_n],
+        num_samples: size,
         sample_rate,
-        f,
-    )
+    }))
 }
 
 #[cfg(test)]
@@ -526,7 +444,7 @@ mod tests {
         }
         fn process(
             &mut self,
-            buffer: AudioBufferMut<'_>,
+            buffer: AudioBufferMut<'_, '_>,
             _ctx: &ProcessContext,
         ) -> Result<ProcessOutput> {
             if let AudioBufferMut::F32(b) = buffer {
@@ -576,7 +494,7 @@ mod tests {
         }
         fn process(
             &mut self,
-            buffer: AudioBufferMut<'_>,
+            buffer: AudioBufferMut<'_, '_>,
             _ctx: &ProcessContext,
         ) -> Result<ProcessOutput> {
             if let AudioBufferMut::F32(b) = buffer {

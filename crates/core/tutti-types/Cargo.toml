@@ -2,11 +2,11 @@
 name = "tutti-types"
 version = "0.0.1"
 edition = "2021"
-description = "Shared real-time primitives for the Tutti audio engine — AudioThreadCell, RtEventBuf"
+description = "Shared vocabulary for the Tutti audio engine — RT primitives + the AudioIn/AudioOut I/O traits"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
-keywords = ["audio", "real-time", "no-std"]
-categories = ["multimedia::audio", "no-std"]
+keywords = ["audio", "real-time"]
+categories = ["multimedia::audio"]
 
 [dependencies]
 # `const_generics` provides the blanket `Array for [T; N]` impl so RtEventBuf

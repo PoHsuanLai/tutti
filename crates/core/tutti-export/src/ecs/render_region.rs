@@ -9,8 +9,8 @@
 //! thread. When the render finishes, the result lands on the same entity as a
 //! [`RegionRenderComplete`] component carrying the PCM.
 //!
-//! Mirrors the `StartExport` / `ExportInProgress` poll pattern in
-//! [`crate::ecs::export`], with two differences: the node isolation, and the
+//! Uses the standard message → spawn-task → poll-completion pattern, with two
+//! notable traits: the node isolation, and the
 //! render runs on the shared [`AsyncComputeTaskPool`] via the `to_buffers`
 //! (in-memory) terminal — a bounded, Bevy-managed pool rather than `Run::spawn`'s
 //! raw OS thread, so it cannot pin every core and starve the real-time audio
@@ -44,7 +44,7 @@ use crate::{Error as ExportError, Rendered};
 use tutti_core::graph::engine_ready;
 use tutti_core::graph::{AudioConfig, AudioGraphRes};
 use tutti_sampler::TrackClipReaderUnit;
-use tutti_sampler::SamplerUnit;
+use tutti_sampler::VoiceNode;
 
 /// Ordering anchor for the three-step region render. A clip-aware downstream
 /// crate schedules its clip-population system in [`Self::Populate`]; this crate
@@ -114,10 +114,13 @@ impl Default for RegionRenderConfig {
 ///      [`TrackClipReaderUnit::insert_clip`]. (This also severs the reader's
 ///      live command `Receiver`; it predates `isolate()` and can migrate onto
 ///      it in a follow-up.)
-///    - **Bare in-memory samplers** ([`SamplerUnit`]) keep their cloned content
+///    - **Bare standalone voices** ([`VoiceNode`]) keep their cloned content
 ///      (their clone is already independent) and are just re-pointed at the
 ///      offline transport so they read the render's playhead, not the (undriven)
-///      live one.
+///      live one. `dawai-spectral`'s resynth is the sole producer of these bare
+///      voice nodes; this arm and that producer move together (a mismatch would
+///      silently render the correction with the live transport — see the
+///      `offline_rebinds_bare_voice_node_transport` test).
 fn rebind_net_transport(
     net: &mut Net,
     transport: &Arc<dyn Timeline>,
@@ -155,8 +158,8 @@ fn rebind_net_transport(
                 id,
                 Box::new(TrackClipReaderUnit::detached(transport.clone())),
             );
-        } else if let Some(sampler) = net.node_mut(id).as_any_mut().downcast_mut::<SamplerUnit>() {
-            sampler.replace_transport(transport.clone());
+        } else if let Some(voice) = net.node_mut(id).as_any_mut().downcast_mut::<VoiceNode>() {
+            voice.replace_transport(transport.clone());
         }
     }
 }
@@ -454,7 +457,9 @@ mod tests {
     use super::*;
     use tutti_core::{Bpm, SampleRate, Wave};
     use tutti_core::Beat;
-    use tutti_sampler::{ClipCommand, Direction, SlotId, TrackClipReaderUnit};
+    use tutti_sampler::{
+        ClipCommand, Direction, Playback, SamplerUnit, SlotId, TrackClipReaderUnit, Voice, VoiceSource,
+    };
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     struct MockTransport {
@@ -527,10 +532,13 @@ mod tests {
             Beat::new(0.0),
             None,
         );
-        handle.send(ClipCommand::Add {
+        handle.send(ClipCommand::AddVoice {
             id: SlotId(1),
-            sampler,
-            direction: Direction::Forward,
+            voice: Box::new(Voice {
+                source: VoiceSource::Ram(sampler),
+                play: Playback::default(),
+                channel_index: None,
+            }),
         });
 
         net.set_sample_rate(SampleRate(44100.0));
@@ -713,6 +721,105 @@ mod tests {
             0,
             "backlog fully drained"
         );
+    }
+
+    /// A bare standalone [`VoiceNode`] correction node (as `dawai-spectral`'s
+    /// resynth adds) must have its placement transport rebound to the offline
+    /// transport by `rebind_net_transport`. This guards the silent-correctness
+    /// coupling: resynth is the sole producer of these bare voice nodes, and
+    /// this rebind arm is the sole consumer. If the `downcast_mut::<VoiceNode>()`
+    /// arm ever stops matching resynth's node type, the arm silently never fires
+    /// and the offline render would run the correction against the (undriven)
+    /// live transport with NO compile error — rendering silence. Existing tests
+    /// only cover the `TrackClipReaderUnit` arm, so this one closes the gap.
+    #[test]
+    fn offline_rebinds_bare_voice_node_transport() {
+        use tutti_sampler::{
+            LoopSetting, Playback, TransportPlacement, Voice, VoiceSource,
+        };
+
+        // The live transport is rolling; the offline one is stopped — so the RAM
+        // source's `transport_sample_position()` (which reads its OWN placement
+        // clock) returns `Some(..)` while bound to the live clock and `None` once
+        // rebound to the stopped offline clock. That distinction is the real
+        // guard: the sampler reads its own transport, not `play.placement`, so a
+        // rebind that only touched `play.placement` would leave this probe on the
+        // live clock and the offline render would read the wrong playhead.
+        let live_transport = MockTransport::new(true);
+        let wave = Arc::new(Wave::from_samples(
+            44100.0,
+            &(0..64).map(|i| (i as f32 + 1.0) / 64.0).collect::<Vec<_>>(),
+        ));
+        let sampler = SamplerUnit::with_transport(
+            wave,
+            live_transport.clone(),
+            Beat::new(0.0),
+            None,
+        );
+        assert!(
+            sampler.transport_sample_position().is_some(),
+            "sanity: the RAM source reads a live position before rebind"
+        );
+        // A standalone voice carrying a placement bound to the LIVE clock — the
+        // exact shape resynth builds before the graph add.
+        let voice = Voice {
+            source: VoiceSource::Ram(sampler),
+            play: Playback {
+                placement: Some(TransportPlacement {
+                    transport: live_transport.clone(),
+                    start_beat: Beat::new(0.0),
+                    duration_beats: None,
+                }),
+                loop_: LoopSetting::Off,
+                direction: Direction::Forward,
+                ..Playback::default()
+            },
+            channel_index: None,
+        };
+
+        // Put the bare voice node in a net feeding the output, clone it (as the
+        // render does), and rebind to a STOPPED offline transport.
+        let mut net = Net::new(0, 2);
+        let id = net.push(Box::new(VoiceNode::from(voice)));
+        net.pipe_output(id);
+
+        let offline = MockTransport::new(false) as Arc<dyn Timeline>;
+        let mut clone = net.clone();
+        rebind_net_transport(&mut clone, &offline, 0.0, tutti_core::Bpm(120.0));
+
+        let voice_node = clone
+            .node_mut(id)
+            .as_any_mut()
+            .downcast_mut::<VoiceNode>()
+            .expect("still a voice node after rebind");
+
+        // The control-intent record's clock must have swapped.
+        let placement = voice_node
+            .voice()
+            .play
+            .placement
+            .as_ref()
+            .expect("placement present");
+        assert!(
+            !placement.transport.is_playing(),
+            "the bare voice node's play.placement clock must be rebound to the \
+             (stopped) offline transport, not left on the live one"
+        );
+
+        // And — the load-bearing half — the RAM SOURCE's OWN read clock must have
+        // swapped too. The sampler reads its position from its own placement, so
+        // if the rebind only touched `play.placement` this would still read the
+        // (playing) live clock and the offline render would use the wrong
+        // playhead with NO compile error.
+        match &voice_node.voice().source {
+            VoiceSource::Ram(sampler) => assert!(
+                sampler.transport_sample_position().is_none(),
+                "the RAM source's own read clock must be rebound to the stopped \
+                 offline transport (else the offline render reads the live \
+                 playhead and renders the correction wrong)"
+            ),
+            VoiceSource::Disk(_) => panic!("expected a Ram source"),
+        }
     }
 
     /// With the cap reached, the highest-`priority` pending request is admitted

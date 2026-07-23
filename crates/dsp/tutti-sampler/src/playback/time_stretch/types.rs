@@ -64,8 +64,11 @@ impl Params {
     }
 
     pub fn pitch_cents(mut self, cents: Cents) -> Self {
-        self.pitch_cents =
-            Cents::new(cents.get().clamp(Self::MIN_PITCH_CENTS, Self::MAX_PITCH_CENTS));
+        self.pitch_cents = Cents::new(
+            cents
+                .get()
+                .clamp(Self::MIN_PITCH_CENTS, Self::MAX_PITCH_CENTS),
+        );
         self
     }
 

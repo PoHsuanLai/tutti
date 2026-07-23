@@ -83,7 +83,7 @@ impl std::fmt::Debug for TransportPlacement {
 
 /// Configuration for building a [`SamplerUnit`], passed to
 /// [`SamplerUnit::with_config`]. Matches tutti's config-struct constructor
-/// convention (`PolySynth::new(SynthConfig)`, `OfflineTransport::new(..)`).
+/// convention (`PolySynth::new(SynthConfig)`, `OfflineTimeline::new(..)`).
 ///
 /// `Default` yields the same audible baseline as [`SamplerUnit::new`]: unity
 /// gain, normal speed, one-shot, no transport binding. It is hand-written (not
@@ -162,6 +162,25 @@ pub struct SamplerUnit {
 
     /// Optional transport binding for beat-synced playback.
     placement: Option<TransportPlacement>,
+}
+
+// Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>` and `placement` holds an
+// `Arc<dyn Timeline>`. Print the wave length + scalar params; never
+// borrow the `Wave` samples.
+impl std::fmt::Debug for SamplerUnit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SamplerUnit")
+            .field("wave_frames", &self.wave.len())
+            .field("position", &self.position.load(Ordering::Relaxed))
+            .field("playing", &self.playing.load(Ordering::Relaxed))
+            .field("gain", &self.gain)
+            .field("speed", &self.speed)
+            .field("sample_rate", &self.sample_rate)
+            .field("src_ratio", &self.src_ratio)
+            .field("loop_mode", &self.loop_mode)
+            .field("has_placement", &self.placement.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Clone for SamplerUnit {
@@ -258,7 +277,11 @@ impl SamplerUnit {
         });
     }
 
-    pub fn set_placement(&mut self, start_beat: Beat, duration_beats: Option<BeatDuration>) {
+    pub fn set_placement(
+        &mut self,
+        start_beat: Beat,
+        duration_beats: Option<BeatDuration>,
+    ) {
         if let Some(placement) = &mut self.placement {
             placement.start_beat = start_beat;
             placement.duration_beats = duration_beats;
@@ -433,6 +456,22 @@ impl SamplerUnit {
         match &self.loop_mode {
             LoopMode::Looping { range, .. } => Some(*range),
             LoopMode::OneShot => None,
+        }
+    }
+
+    /// The current loop as a public [`LoopSetting`] intent (crossfade length
+    /// recovered from the live [`LoopCrossfade`]). Lets a caller that built this
+    /// unit imperatively read its loop back as a value — used by the
+    /// `TrackClipReader` add shim to fold a pre-configured `SamplerUnit`'s loop
+    /// into a `Playback` record.
+    pub fn loop_setting(&self) -> LoopSetting {
+        match &self.loop_mode {
+            LoopMode::Looping { range, crossfade } => LoopSetting::On {
+                start: range.0,
+                end: range.1,
+                crossfade_samples: crossfade.as_ref().map_or(0, |x| x.len()),
+            },
+            LoopMode::OneShot => LoopSetting::Off,
         }
     }
 
@@ -1162,7 +1201,8 @@ mod tests {
         // ramp_wave has sample[i] = i+1, so sample[22050] = 22051.0.
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(1.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler =
+            SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1180,7 +1220,8 @@ mod tests {
     fn transport_stopped_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::stopped();
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler =
+            SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1193,7 +1234,8 @@ mod tests {
     fn transport_before_start_beat_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(1.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(4.0), None);
+        let mut sampler =
+            SamplerUnit::with_transport(wave, transport, Beat::new(4.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1205,8 +1247,12 @@ mod tests {
     fn transport_past_duration_beats_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(10.0, 120.0);
-        let mut sampler =
-            SamplerUnit::with_transport(wave, transport, Beat::new(0.0), Some(BeatDuration::new(4.0)));
+        let mut sampler = SamplerUnit::with_transport(
+            wave,
+            transport,
+            Beat::new(0.0),
+            Some(BeatDuration::new(4.0)),
+        );
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1218,7 +1264,8 @@ mod tests {
     fn transport_process_block() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(0.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler =
+            SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
@@ -1226,14 +1273,18 @@ mod tests {
         let mut output = output_vec.buffer_mut();
         sampler.process(4, &input, &mut output);
 
-        assert!((output.at_f32(0, 0) - 1.0).abs() < 1e-6, "beat 0 → sample 0");
+        assert!(
+            (output.at_f32(0, 0) - 1.0).abs() < 1e-6,
+            "beat 0 → sample 0"
+        );
     }
 
     #[test]
     fn transport_process_block_silence_when_stopped() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::stopped();
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler =
+            SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);

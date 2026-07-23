@@ -38,7 +38,7 @@ pub use progress::Phase;
 mod options;
 pub use options::{
     AudioFormat, BitDepth, BroadcastWavMetadata, ChannelMode, Dither, Flac, NoiseShapeOrder,
-    Normalize, Ogg,
+    Normalize, Ogg, Output,
 };
 
 #[cfg(feature = "midi")]
@@ -64,6 +64,7 @@ pub use process::ResampleQuality;
 pub mod ecs;
 
 /// Entry-point namespace for both export starting points.
+#[derive(Debug)]
 pub struct Export;
 
 impl Export {

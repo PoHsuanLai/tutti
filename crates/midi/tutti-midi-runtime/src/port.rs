@@ -121,15 +121,10 @@ impl MidiInPort {
     /// Poll the current input for this block. One trait call — the receiver and
     /// any installed source are both [`MidiIn`], so there is nothing to branch on.
     #[inline]
-    pub fn poll(
-        &self,
-        block_start_sample: u64,
-        block_size: usize,
-        buffer: &mut [MidiEvent],
-    ) -> usize {
+    pub fn poll(&self, block_size: usize, buffer: &mut [MidiEvent]) -> usize {
         self.input
             .load()
-            .poll_into(self.unit_id, block_start_sample, block_size, buffer)
+            .poll_into(self.unit_id, block_size, buffer)
     }
 
     /// Sever all sharing with sibling clones: a fresh private mailbox (so this
@@ -175,7 +170,7 @@ mod tests {
     /// A source that emits one note-on on its first poll — proves it was polled.
     struct OneNote(u8);
     impl MidiIn for OneNote {
-        fn poll_into(&self, _u: MidiUnitId, _s: u64, _b: usize, out: &mut [MidiEvent]) -> usize {
+        fn poll_into(&self, _u: MidiUnitId, _b: usize, out: &mut [MidiEvent]) -> usize {
             if out.is_empty() {
                 return 0;
             }
@@ -190,7 +185,7 @@ mod tests {
         // Push via the sender; poll drains it (the receiver is the default input).
         port.sender().queue(&[note_on(60)]);
         let mut buf = [MidiEvent::noop(); 8];
-        let n = port.poll(0, 64, &mut buf);
+        let n = port.poll(64, &mut buf);
         assert_eq!(n, 1);
         assert_eq!(buf[0].note(), Some(60));
     }
@@ -201,12 +196,12 @@ mod tests {
         port.install(Arc::new(OneNote(72)));
         // Even with the mailbox empty, the installed source yields a note.
         let mut buf = [MidiEvent::noop(); 8];
-        assert_eq!(port.poll(0, 64, &mut buf), 1);
+        assert_eq!(port.poll(64, &mut buf), 1);
         assert_eq!(buf[0].note(), Some(72));
 
         // Clearing swaps the receiver back; empty mailbox → nothing polled.
         port.clear();
-        assert_eq!(port.poll(0, 64, &mut buf), 0);
+        assert_eq!(port.poll(64, &mut buf), 0);
     }
 
     #[test]
@@ -219,14 +214,14 @@ mod tests {
         clone_a.install(Arc::new(OneNote(60)));
         let mut buf = [MidiEvent::noop(); 8];
         assert_eq!(
-            audio_clone.poll(0, 64, &mut buf),
+            audio_clone.poll(64, &mut buf),
             1,
             "install must be shared"
         );
 
         clone_a.clear();
         let fresh = live.clone();
-        assert_eq!(fresh.poll(0, 64, &mut buf), 0, "clear must be shared");
+        assert_eq!(fresh.poll(64, &mut buf), 0, "clear must be shared");
     }
 
     #[test]
@@ -239,17 +234,17 @@ mod tests {
         live.sender().queue(&[note_on(60)]);
         let mut buf = [MidiEvent::noop(); 8];
         assert_eq!(
-            render.poll(0, 64, &mut buf),
+            render.poll(64, &mut buf),
             0,
             "isolated clone sees nothing"
         );
         // The live port still has its note (not stolen by the clone's poll).
-        assert_eq!(live.poll(0, 64, &mut buf), 1, "live keeps its event");
+        assert_eq!(live.poll(64, &mut buf), 1, "live keeps its event");
 
         // An install on the live port must NOT leak into the isolated clone.
         live.install(Arc::new(OneNote(64)));
         assert_eq!(
-            render.poll(0, 64, &mut buf),
+            render.poll(64, &mut buf),
             0,
             "install doesn't reach isolate"
         );

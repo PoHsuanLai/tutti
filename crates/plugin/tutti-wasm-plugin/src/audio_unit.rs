@@ -131,7 +131,6 @@ impl AudioUnit for InProcessWasmClient {
     }
 
     fn reset(&mut self) {
-        self.midi.reset_sample_pos();
         // No discrete `reset` call in WIT v0.1; the guest exposes one
         // but it's optional and we don't need to disturb its state here.
         // Sample-rate reapply mimics VST2 reset behavior as a best
@@ -251,7 +250,6 @@ impl AudioUnit<F64> for InProcessWasmClient {
     }
 
     fn reset(&mut self) {
-        self.midi.reset_sample_pos();
         if let Some(mut inst) = self.inner.try_lock() {
             inst.set_sample_rate(self.sample_rate);
         }

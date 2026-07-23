@@ -55,7 +55,6 @@ impl MidiIn for FixedInput {
     fn poll_into(
         &self,
         _unit_id: MidiUnitId,
-        _block_start_sample: u64,
         _block_size: usize,
         buffer: &mut [MidiEvent],
     ) -> usize {

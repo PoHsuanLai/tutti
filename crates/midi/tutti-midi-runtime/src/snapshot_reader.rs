@@ -54,7 +54,6 @@ impl MidiIn for MidiSnapshotReader {
     fn poll_into(
         &self,
         unit_id: MidiUnitId,
-        _block_start_sample: u64,
         block_size: usize,
         buffer: &mut [MidiEvent],
     ) -> usize {
@@ -147,27 +146,27 @@ mod tests {
         let block = samples_per_beat as usize; // pretend each call covers one beat-sized block
 
         // At beat 0, nothing yet (no advance)
-        let count = reader.poll_into(unit_id, 0, block, &mut buffer);
+        let count = reader.poll_into(unit_id, block, &mut buffer);
         assert_eq!(count, 0);
 
         // Advance to beat 0.5 — should get event at beat 0
         timeline.advance((0.5 * samples_per_beat) as usize);
-        let count = reader.poll_into(unit_id, 0, block, &mut buffer);
+        let count = reader.poll_into(unit_id, block, &mut buffer);
         assert_eq!(count, 1);
 
         // Advance to beat 1.5 — should get event at beat 1
         timeline.advance((1.0 * samples_per_beat) as usize);
-        let count = reader.poll_into(unit_id, block as u64, block, &mut buffer);
+        let count = reader.poll_into(unit_id, block, &mut buffer);
         assert_eq!(count, 1);
 
         // Advance to beat 3.0 — should get event at beat 2
         timeline.advance((1.5 * samples_per_beat) as usize);
-        let count = reader.poll_into(unit_id, (block * 2) as u64, block, &mut buffer);
+        let count = reader.poll_into(unit_id, block, &mut buffer);
         assert_eq!(count, 1);
 
         // No more events
         timeline.advance((1.0 * samples_per_beat) as usize);
-        let count = reader.poll_into(unit_id, (block * 3) as u64, block, &mut buffer);
+        let count = reader.poll_into(unit_id, block, &mut buffer);
         assert_eq!(count, 0);
     }
 
@@ -195,18 +194,18 @@ mod tests {
 
         // First poll: buffer holds only 2 → overflow.
         let mut small = [MidiEvent::noop(); 2];
-        assert_eq!(reader.poll_into(unit_id, 0, 22050, &mut small), 2);
+        assert_eq!(reader.poll_into(unit_id, 22050, &mut small), 2);
 
         // Second poll at the SAME beat: the remaining event must surface.
         let mut rest = [MidiEvent::noop(); 8];
         assert_eq!(
-            reader.poll_into(unit_id, 0, 22050, &mut rest),
+            reader.poll_into(unit_id, 22050, &mut rest),
             1,
             "the overflowed event must be delivered, not dropped"
         );
 
         // No further events at this beat.
-        assert_eq!(reader.poll_into(unit_id, 0, 22050, &mut rest), 0);
+        assert_eq!(reader.poll_into(unit_id, 22050, &mut rest), 0);
     }
 
     #[test]
@@ -217,7 +216,7 @@ mod tests {
 
         let mut buffer = [MidiEvent::noop(); 16];
         timeline.advance(1000);
-        let count = reader.poll_into(MidiUnitId::new(999), 0, 1024, &mut buffer);
+        let count = reader.poll_into(MidiUnitId::new(999), 1024, &mut buffer);
         assert_eq!(count, 0);
     }
 
@@ -244,7 +243,7 @@ mod tests {
         timeline.advance(samples_per_beat);
 
         let mut buffer = [MidiEvent::noop(); 8];
-        let count = reader.poll_into(unit_id, 0, samples_per_beat, &mut buffer);
+        let count = reader.poll_into(unit_id, samples_per_beat, &mut buffer);
         assert_eq!(count, 3);
 
         // First event sits at the head of the block.

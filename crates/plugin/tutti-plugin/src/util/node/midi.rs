@@ -61,11 +61,6 @@ pub struct Midi {
     /// an install on any clone visible to the running box, lock-free.
     /// See [[plugin-source-install-shared-cell]].
     out: Arc<ArcSwapOption<OutHandle>>,
-    /// Running sample position. Bumped by 1 per `drain_for_tick` and
-    /// by `block_size` per `drain_for_process`. Passed to the
-    /// `MidiIn::poll_into` call so clip players know what beat
-    /// range to emit events for.
-    sample_pos: u64,
 }
 
 impl Clone for Midi {
@@ -79,7 +74,6 @@ impl Clone for Midi {
             // Share the outbound SLOT (Arc clone) too — same shared-cell
             // rationale as the port's input cell.
             out: Arc::clone(&self.out),
-            sample_pos: self.sample_pos,
         }
     }
 }
@@ -97,7 +91,6 @@ impl Midi {
             drain: MidiEventVec::new(),
             poll_scratch: empty_poll_scratch(),
             out: Arc::new(ArcSwapOption::empty()),
-            sample_pos: 0,
         }
     }
 
@@ -160,34 +153,22 @@ impl Midi {
         }
     }
 
-    /// Reset the running sample position. Called on `reset()` /
-    /// `set_sample_rate()` so the source override sees a clean
-    /// playhead at transport restarts.
-    pub fn reset_sample_pos(&mut self) {
-        self.sample_pos = 0;
-    }
-
     /// Drain the override-or-receiver events for this block into one buffer and
-    /// return it. Bumps `sample_pos` by `block_size` so the next call
-    /// sees the next block's window.
+    /// return it.
     pub fn drain_for_process(&mut self, block_size: usize) -> &MidiEventVec {
         self.drain.clear();
         // One lock-free poll: the port resolves receiver-or-installed-source
         // itself, so there is no branch (and no second code path) here.
-        let count = self
-            .port
-            .poll(self.sample_pos, block_size, &mut self.poll_scratch);
+        let count = self.port.poll(block_size, &mut self.poll_scratch);
         // Clamp to scratch capacity so `drain` never spills its SmallVec
         // inline storage and allocates on the audio thread.
         let count = count.min(self.poll_scratch.len());
         self.drain
             .extend(self.poll_scratch[..count].iter().copied());
-        self.sample_pos = self.sample_pos.wrapping_add(block_size as u64);
         &self.drain
     }
 
-    /// Sample-by-sample variant for the `tick` path. Bumps the
-    /// sample_pos by 1 each call.
+    /// Sample-by-sample variant for the `tick` path.
     pub fn drain_for_tick(&mut self) -> &MidiEventVec {
         self.drain_for_process(1)
     }
@@ -206,7 +187,6 @@ mod tests {
         fn poll_into(
             &self,
             _unit: MidiUnitId,
-            _start: u64,
             _block: usize,
             buffer: &mut [MidiEvent],
         ) -> usize {

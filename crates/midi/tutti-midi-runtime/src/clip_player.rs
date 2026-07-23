@@ -2,11 +2,10 @@
 //!
 //! A `MidiClipSource` holds a sorted `Vec<TimedClipEvent>` (events tagged
 //! with absolute beats) and a [`Timeline`]. On each
-//! `poll_into(unit_id, block_start_sample, block_size, …)` it reads the
-//! transport beat, computes the beat range covered by the upcoming
-//! audio block, and emits events whose beat falls in that range with
-//! their `frame_offset` set to the sample-accurate position inside the
-//! block.
+//! `poll_into(unit_id, block_size, …)` it reads the transport beat,
+//! computes the beat range covered by the upcoming audio block, and emits
+//! events whose beat falls in that range with their `frame_offset` set to
+//! the sample-accurate position inside the block.
 //!
 //! Installing a source on a [`MidiInPort`](crate::MidiInPort) *replaces* its
 //! live receiver, so a synth plays either its clip or live preview events, not
@@ -199,7 +198,6 @@ impl MidiIn for MidiClipSource {
     fn poll_into(
         &self,
         unit_id: MidiUnitId,
-        _block_start_sample: u64,
         block_size: usize,
         out: &mut [MidiEvent],
     ) -> usize {
@@ -292,7 +290,7 @@ mod tests {
 
         // First block: cover [0.0, 1.0) beats = [0, 22050) samples.
         let mut buf = [MidiEvent::noop(); 8];
-        let n = source.poll_into(unit, 0, 22050, &mut buf);
+        let n = source.poll_into(unit, 22050, &mut buf);
         assert_eq!(n, 2);
         assert_eq!(buf[0].frame_offset, 0);
         // Second event at beat 0.5 → 11025 samples.
@@ -303,7 +301,7 @@ mod tests {
         );
 
         // Polling again at the same beat: cursor advanced, no new events.
-        let n2 = source.poll_into(unit, 22050, 22050, &mut buf);
+        let n2 = source.poll_into(unit, 22050, &mut buf);
         assert_eq!(n2, 0);
     }
 
@@ -322,7 +320,7 @@ mod tests {
             44100.0,
         );
         let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(source.poll_into(other, 0, 1024, &mut buf), 0);
+        assert_eq!(source.poll_into(other, 1024, &mut buf), 0);
     }
 
     #[test]
@@ -340,7 +338,7 @@ mod tests {
             44100.0,
         );
         let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(source.poll_into(unit, 0, 1024, &mut buf), 0);
+        assert_eq!(source.poll_into(unit, 1024, &mut buf), 0);
     }
 
     #[test]
@@ -366,13 +364,13 @@ mod tests {
         let mut buf = [MidiEvent::noop(); 4];
 
         // First block @ beat 0
-        assert_eq!(source.poll_into(unit, 0, 22050, &mut buf), 2);
+        assert_eq!(source.poll_into(unit, 22050, &mut buf), 2);
         // Move forward — cursor exhausted, nothing emitted.
         transport.set_beat(2.0);
-        assert_eq!(source.poll_into(unit, 22050, 22050, &mut buf), 0);
+        assert_eq!(source.poll_into(unit, 22050, &mut buf), 0);
         // Seek back to start — events should fire again.
         transport.set_beat(0.0);
-        assert_eq!(source.poll_into(unit, 0, 22050, &mut buf), 2);
+        assert_eq!(source.poll_into(unit, 22050, &mut buf), 2);
     }
 
     #[test]
@@ -407,7 +405,7 @@ mod tests {
 
         // Poll one block wide enough to cover both events.
         let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(source.poll_into(unit, 0, 22050, &mut buf), 2);
+        assert_eq!(source.poll_into(unit, 22050, &mut buf), 2);
 
         // The tap received the *same* events the synth did, sample-stamped.
         let mut tapped = [MidiEvent::noop(); 4];
@@ -440,7 +438,7 @@ mod tests {
             44100.0,
         );
         let mut buf = [MidiEvent::noop(); 4];
-        assert_eq!(source.poll_into(unit, 0, 22050, &mut buf), 1);
+        assert_eq!(source.poll_into(unit, 22050, &mut buf), 1);
     }
 
     // --- isolated-half tests for the poll_into decomposition ----------------
@@ -487,7 +485,7 @@ mod tests {
         // the next sync must rewind the cursor so the events replay.
         let mut buf = [MidiEvent::noop(); 8];
         transport.set_beat(0.0);
-        let _ = source.poll_into(MidiUnitId::new(1), 0, 44100, &mut buf); // drains both
+        let _ = source.poll_into(MidiUnitId::new(1), 44100, &mut buf); // drains both
         transport.set_beat(2.0);
         let _ = source.sync_to_transport(22050); // last_beat now ~2.0
         assert!(source.cursor.load(Ordering::Relaxed) >= 2);

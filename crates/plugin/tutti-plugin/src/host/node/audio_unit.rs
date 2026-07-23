@@ -17,14 +17,12 @@ impl AudioUnit for PluginClient {
 
     fn reset(&mut self) {
         self.io_mut().reset();
-        self.midi_mut().reset_sample_pos();
         let _ = self.bridge_ref().reset_rt();
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         self.io_mut().reset();
-        self.midi_mut().reset_sample_pos();
         self.set_transport_sample_rate(sample_rate);
         let _ = self.bridge_ref().set_sample_rate_rt(sample_rate);
     }
@@ -81,14 +79,12 @@ impl AudioUnit<F64> for PluginClient {
 
     fn reset(&mut self) {
         self.io_mut().reset();
-        self.midi_mut().reset_sample_pos();
         let _ = self.bridge_ref().reset_rt();
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         self.io_mut().reset();
-        self.midi_mut().reset_sample_pos();
         self.set_transport_sample_rate(sample_rate);
         let _ = self.bridge_ref().set_sample_rate_rt(sample_rate);
     }

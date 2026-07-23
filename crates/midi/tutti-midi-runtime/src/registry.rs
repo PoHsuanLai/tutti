@@ -192,7 +192,6 @@ impl tutti_midi_types::MidiIn for MidiReceiver {
     fn poll_into(
         &self,
         unit_id: MidiUnitId,
-        _block_start_sample: u64,
         _block_size: usize,
         out: &mut [MidiEvent],
     ) -> usize {

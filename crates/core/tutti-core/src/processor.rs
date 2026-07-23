@@ -261,7 +261,7 @@ mod midi_processor {
             // and allocation-free. We drain even when nothing is routed, so the
             // hardware rings don't back up.
             let mut scratch = self.poll_scratch.borrow_mut();
-            let n = input.poll_into(HARDWARE_POLL_UNIT, 0, frames, &mut scratch[..]);
+            let n = input.poll_into(HARDWARE_POLL_UNIT, frames, &mut scratch[..]);
 
             let routing = self.routing.load();
             if !routing.has_routes() || n == 0 {

@@ -130,10 +130,6 @@ impl PluginClient {
         &self.midi
     }
 
-    pub(super) fn midi_mut(&mut self) -> &mut Midi {
-        &mut self.midi
-    }
-
     /// Install the outbound routing target so this subprocess plugin's MIDI-out
     /// re-enters the graph. See [`Midi::set_out`]. Off-RT; call at wiring time.
     pub fn set_midi_out(

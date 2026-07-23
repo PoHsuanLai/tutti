@@ -260,7 +260,6 @@ impl tutti_midi_types::MidiIn for HardwareMidiInputs {
     fn poll_into(
         &self,
         _unit_id: tutti_midi_types::MidiUnitId,
-        _block_start_sample: u64,
         block_size: usize,
         buffer: &mut [MidiEvent],
     ) -> usize {

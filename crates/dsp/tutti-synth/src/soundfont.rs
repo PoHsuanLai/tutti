@@ -35,10 +35,6 @@ pub struct SoundFontUnit {
     /// source). See [`MidiInPort`] for the fundsp clone/isolate sharing semantics.
     midi: MidiInPort,
     midi_buffer: Vec<MidiEvent>,
-    /// Running absolute-sample counter, handed to MIDI sources so
-    /// beat-scheduled events can compute their `frame_offset` for
-    /// the upcoming poll window.
-    sample_pos: u64,
 }
 
 impl SoundFontUnit {
@@ -61,7 +57,6 @@ impl SoundFontUnit {
             pending_midi: SmallVec::new(),
             midi: MidiInPort::new(),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
-            sample_pos: 0,
         })
     }
 
@@ -112,9 +107,7 @@ impl SoundFontUnit {
     }
 
     fn poll_midi_events(&mut self, block_size: usize) {
-        let count = self
-            .midi
-            .poll(self.sample_pos, block_size, &mut self.midi_buffer);
+        let count = self.midi.poll(block_size, &mut self.midi_buffer);
         for i in 0..count {
             self.pending_midi.push(self.midi_buffer[i]);
         }
@@ -229,7 +222,6 @@ impl AudioUnit for SoundFontUnit {
         output[0] = self.left_buffer[self.buffer_pos];
         output[1] = self.right_buffer[self.buffer_pos];
         self.buffer_pos += 1;
-        self.sample_pos = self.sample_pos.wrapping_add(1);
     }
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
@@ -243,7 +235,6 @@ impl AudioUnit for SoundFontUnit {
             output.set_f32(1, i, self.right_buffer[self.buffer_pos]);
             self.buffer_pos += 1;
         });
-        self.sample_pos = self.sample_pos.wrapping_add(size as u64);
     }
 
     fn inputs(&self) -> usize {
@@ -295,7 +286,6 @@ impl Clone for SoundFontUnit {
             // [`MidiInPort`]. `isolate()` severs it for an offline render.
             midi: self.midi.clone(),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
-            sample_pos: 0,
         }
     }
 }

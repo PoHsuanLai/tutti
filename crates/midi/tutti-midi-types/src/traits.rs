@@ -39,13 +39,13 @@ pub trait MidiOut: Send + Sync {
 /// events come from a live registry (destructively draining SPSC channels), an
 /// export snapshot, or a beat-scheduled clip player.
 ///
-/// `block_start_sample` and `block_size` describe the audio block currently
-/// being rendered. Schedulers use them to convert beat-domain events into
-/// per-block `MidiEvent::frame_offset` values that the consuming unit's
-/// `process()` loop can split on for sample-accurate timing. Live sources that
-/// don't track absolute sample positions (e.g. the lock-free MIDI registry,
-/// where producers stamp `frame_offset` themselves) can ignore both arguments
-/// and pass the queue contents through unchanged.
+/// `block_size` describes the audio block currently being rendered. Schedulers
+/// use it to convert beat-domain events into per-block `MidiEvent::frame_offset`
+/// values that the consuming unit's `process()` loop can split on for
+/// sample-accurate timing (the beat position comes from the source's own
+/// `Timeline`, not from an absolute sample count). Live sources that stamp
+/// `frame_offset` themselves (e.g. the lock-free MIDI registry) ignore it and
+/// pass the queue contents through unchanged.
 pub trait MidiIn: Send + Sync {
     /// Poll available MIDI events for the given unit into the buffer.
     ///
@@ -55,7 +55,6 @@ pub trait MidiIn: Send + Sync {
     fn poll_into(
         &self,
         unit_id: MidiUnitId,
-        block_start_sample: u64,
         block_size: usize,
         buffer: &mut [MidiEvent],
     ) -> usize;

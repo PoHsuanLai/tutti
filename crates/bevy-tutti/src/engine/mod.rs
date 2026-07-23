@@ -36,7 +36,10 @@ pub use error::{Error, Result};
 pub use mic::MicIn;
 // The live-monitor graph node paired with `MicIn::open_with_monitor`.
 // Defined in the (device-free) sampler; re-exported here so the whole mic API —
-// capture, record, monitor — is reachable from one place.
+// capture, record, monitor — is reachable from one place. Gated on `sampler`
+// like its `MicIn`/`Recorder` neighbours: `tutti-sampler` is only a dep under
+// that feature, so an ungated re-export breaks the no-sampler build.
+#[cfg(feature = "sampler")]
 pub use tutti_sampler::MicMonitorNode;
 #[cfg(feature = "sampler")]
 pub use recorder::Recorder;

@@ -45,8 +45,15 @@ impl AuHandle {
             AudioComponentInstanceNew(component, &mut instance),
         )?;
 
+        // The component came from `AudioComponentFindNext`, so describing it
+        // must not fail. Swallowing a failure here would silently misclassify
+        // the AU as `Unknown(0)`, breaking MIDI routing / type-gated behavior
+        // downstream — surface it as an error instead.
         let mut desc = AudioComponentDescription::default();
-        let _ = AudioComponentGetDescription(component, &mut desc);
+        check(
+            "AudioComponentGetDescription",
+            AudioComponentGetDescription(component, &mut desc),
+        )?;
         let au_type = AuType::from_raw(desc.component_type);
 
         Ok(Self {

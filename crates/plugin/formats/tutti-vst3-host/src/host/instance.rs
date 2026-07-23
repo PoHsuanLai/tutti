@@ -9,6 +9,7 @@
 //! `Vst3Loaded::load(path)?.activate(rate, block)?`. To drop back to
 //! non-processing state: [`Vst3Instance::deactivate`].
 
+use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 
@@ -17,7 +18,7 @@ use vst3::Steinberg::{
     kResultFalse, kResultOk,
     Vst::{
         IAudioProcessorTrait, IComponentTrait, MediaTypes_::kEvent, ProcessModes_::kRealtime,
-        ProcessSetup,
+        ProcessSetup, SpeakerArr, SpeakerArrangement,
     },
 };
 
@@ -42,6 +43,28 @@ const K_REALTIME: i32 = kRealtime as i32;
 /// distinct param_id the plugin might emit in a single block; growing
 /// beyond this allocates once and then sticks.
 const OUTPUT_PARAM_QUEUE_RESERVE: usize = 32;
+
+/// Derive a VST3 `SpeakerArrangement` (a speaker bit mask) from a plain channel
+/// count for `setBusArrangements`.
+///
+/// `0` → empty (a disabled bus), `1` → mono, `2` → stereo (the two overwhelming
+/// common cases get their canonical named arrangements). For higher counts we
+/// fall back to an N-bit low mask — a well-formed arrangement with the right
+/// `getChannelCount`, sufficient to propose "give me N channels on this bus"
+/// even when we don't know the exact surround topology. A plugin that wants a
+/// specific named layout refuses via `kResultFalse`, and the caller reads its
+/// choice back with `getBusArrangement`.
+fn arrangement_for_channel_count(count: usize) -> SpeakerArrangement {
+    match count {
+        0 => SpeakerArr::kEmpty,
+        1 => SpeakerArr::kMono,
+        2 => SpeakerArr::kStereo,
+        // `count` is a channel total (≤ 64 in practice); a low-bit mask of that
+        // width is a valid arrangement whose popcount equals `count`.
+        n if n < 64 => (1u64 << n) - 1,
+        _ => u64::MAX,
+    }
+}
 
 /// Sample rate / block size / channel counts captured at activation. Read by
 /// `apply_process_setup` to fill `ProcessSetup` and by `process` to size
@@ -143,8 +166,17 @@ struct AudioIO<T: Vst3Sample> {
 /// [`Vst3Loaded::activate`], and drop back to a non-processing
 /// [`Vst3Loaded`] with [`Vst3Instance::deactivate`].
 pub struct Vst3Instance<T: Vst3Sample = f32> {
-    loaded: Vst3Loaded,
+    /// The embedded loaded state. Wrapped in [`ManuallyDrop`] so
+    /// [`deactivate`](Vst3Instance::deactivate) can move it out by value
+    /// without triggering this type's `Drop` (which would deactivate a second
+    /// time). `deactivated` records whether that move happened, so `Drop` knows
+    /// whether the field is still live and must be dropped.
+    loaded: ManuallyDrop<Vst3Loaded>,
     audio: AudioIO<T>,
+    /// Set by [`deactivate`](Vst3Instance::deactivate) once it has taken
+    /// `loaded` out. When true, `Drop` neither re-runs the deactivation
+    /// sequence nor drops `loaded` (already moved out).
+    deactivated: bool,
 }
 
 impl<T: Vst3Sample> Vst3Instance<T> {
@@ -236,7 +268,16 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             midi_learn: loaded.midi_learn.producer(),
         };
 
-        let mut instance = Self { loaded, audio };
+        let mut instance = Self {
+            loaded: ManuallyDrop::new(loaded),
+            audio,
+            deactivated: false,
+        };
+        // VST3 activation order: setBusArrangements → setupProcessing →
+        // activateBus → setActive. Arrangements must be negotiated first so the
+        // plugin has decided its channel layout before we size scratch and set
+        // up processing.
+        instance.negotiate_bus_arrangements()?;
         instance.apply_process_setup()?;
         instance.activate_buses()?;
         instance.set_active(true)?;
@@ -248,11 +289,14 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     pub fn deactivate(mut self) -> Vst3Loaded {
         self.stop_processing();
         let _ = self.set_active(false);
-        // Move `loaded` out without running `Vst3Instance::Drop` (which would
-        // deactivate a second time).
-        let loaded = unsafe { std::ptr::read(&self.loaded as *const Vst3Loaded) };
-        std::mem::forget(self);
-        loaded
+        // Take `loaded` out by value. Marking `deactivated` first means the
+        // `Drop` that runs when `self` falls out of scope neither re-runs the
+        // deactivation sequence nor drops the (now moved-out) `loaded`.
+        self.deactivated = true;
+        // SAFETY: `loaded` is live here (only `deactivate` ever takes it, and it
+        // consumes `self`), and `deactivated` is now set so `Drop` will not
+        // touch it again.
+        unsafe { ManuallyDrop::take(&mut self.loaded) }
     }
 
     /// Change the sample rate and re-run `setupProcessing`. Must be called
@@ -448,6 +492,102 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         }
     }
 
+    /// Negotiate per-bus speaker arrangements with the plugin via
+    /// `IAudioProcessor::setBusArrangements`, before `setupProcessing`.
+    ///
+    /// We propose one arrangement per bus derived from the channel counts the
+    /// component already enumerated (1 → mono, 2 → stereo, N → an N-bit low
+    /// mask). Multichannel / surround / sidechain plugins need this: without it
+    /// they fall back to a default layout that may not match the buses the host
+    /// wired.
+    ///
+    /// A `kResultFalse` return means the plugin **kept its own layout** rather
+    /// than accepting ours — not an error. In that case we read back the
+    /// plugin's chosen arrangement per bus with `getBusArrangement`, re-derive
+    /// the channel counts, and re-resolve the audio scratch so `process` stages
+    /// the right number of channels. (`activate_buses` re-resolves again from
+    /// the live component after activation, covering plugins that only finalise
+    /// their layout once active.)
+    fn negotiate_bus_arrangements(&mut self) -> Result<()> {
+        let processor = self.loaded.interfaces.processor.clone();
+        let component = &self.loaded.interfaces.component;
+
+        let mut inputs: Vec<SpeakerArrangement> = component
+            .audio_bus_channels(K_INPUT)
+            .into_iter()
+            .map(arrangement_for_channel_count)
+            .collect();
+        let mut outputs: Vec<SpeakerArrangement> = component
+            .audio_bus_channels(K_OUTPUT)
+            .into_iter()
+            .map(arrangement_for_channel_count)
+            .collect();
+
+        let result = unsafe {
+            processor.setBusArrangements(
+                inputs.as_mut_ptr(),
+                inputs.len() as i32,
+                outputs.as_mut_ptr(),
+                outputs.len() as i32,
+            )
+        };
+
+        // `kResultTrue`/`kResultOk`: plugin accepted our proposal — the counts
+        // we derived it from are already correct.
+        if result == kResultOk || result == vst3::Steinberg::kResultTrue {
+            return Ok(());
+        }
+
+        // Anything else (typically `kResultFalse`): the plugin kept its own
+        // layout. Read it back and re-resolve scratch to match. Not an error.
+        let in_counts = self.read_back_arrangement_counts(&processor, K_INPUT, inputs.len());
+        let out_counts = self.read_back_arrangement_counts(&processor, K_OUTPUT, outputs.len());
+        self.resolve_scratch_from_counts(&in_counts, &out_counts);
+        Ok(())
+    }
+
+    /// Read the plugin's chosen `SpeakerArrangement` for each of `num_buses`
+    /// buses in `direction` and translate each to a channel count (popcount of
+    /// the speaker mask). A bus whose query fails contributes 0, so the length
+    /// always equals `num_buses`.
+    fn read_back_arrangement_counts(
+        &self,
+        processor: &vst3::ComPtr<vst3::Steinberg::Vst::IAudioProcessor>,
+        direction: i32,
+        num_buses: usize,
+    ) -> Vec<usize> {
+        (0..num_buses)
+            .map(|i| {
+                let mut arr: SpeakerArrangement = 0;
+                let res = unsafe { processor.getBusArrangement(direction, i as i32, &mut arr) };
+                if res == kResultOk {
+                    arr.count_ones() as usize
+                } else {
+                    0
+                }
+            })
+            .collect()
+    }
+
+    /// Re-resolve the per-direction audio scratch and pointer tables from
+    /// explicit per-bus channel counts (the plugin's chosen layout after a
+    /// `setBusArrangements` refusal). Mirrors the resolve in `activate_buses`,
+    /// but from counts rather than a fresh component enumeration.
+    fn resolve_scratch_from_counts(&mut self, in_counts: &[usize], out_counts: &[usize]) {
+        let block_size = self.audio.config.block_size;
+        let num_in: usize = in_counts.first().copied().unwrap_or(0);
+        let num_out: usize = out_counts.first().copied().unwrap_or(0).max(1);
+        let in_scratch = DirectionScratch::<T>::resolve(in_counts, num_in, block_size);
+        let out_scratch = DirectionScratch::<T>::resolve(out_counts, num_out, block_size);
+
+        self.audio.config.num_input_channels = num_in;
+        self.audio.config.num_output_channels = num_out;
+        self.audio.ptrs.resize_inputs(in_scratch.ptr_count);
+        self.audio.ptrs.resize_outputs(out_scratch.ptr_count);
+        self.audio.input.buses = in_scratch.buses;
+        self.audio.output.buses = out_scratch.buses;
+    }
+
     fn apply_process_setup(&mut self) -> Result<()> {
         let mut setup = ProcessSetup {
             processMode: K_REALTIME,
@@ -545,8 +685,19 @@ impl<T: Vst3Sample> DerefMut for Vst3Instance<T> {
 
 impl<T: Vst3Sample> Drop for Vst3Instance<T> {
     fn drop(&mut self) {
+        // If `deactivate` already ran, `loaded` was moved out and the plugin
+        // was deactivated there — nothing to do, and dropping the (empty)
+        // `ManuallyDrop` would be a double-free.
+        if self.deactivated {
+            return;
+        }
         self.stop_processing();
         let _ = self.set_active(false);
-        // Drop order then terminates via Vst3Loaded's Drop.
+        // Drop the embedded loaded state, which terminates via Vst3Loaded's Drop.
+        // SAFETY: not deactivated, so `loaded` is still live and dropped exactly
+        // once here.
+        unsafe {
+            ManuallyDrop::drop(&mut self.loaded);
+        }
     }
 }

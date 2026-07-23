@@ -4,7 +4,7 @@
 //! with #[ignore] by default. Run with:
 //!
 //! ```bash
-//! cargo test -p vst3-host --test integration_tests -- --ignored
+//! cargo test -p tutti-vst3-host --test integration_tests -- --ignored
 //! ```
 
 use std::path::{Path, PathBuf};

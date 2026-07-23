@@ -198,6 +198,61 @@ impl<T: super::ClapSample> ClapActive<T> {
         }
         self.loaded.host_state.audio_thread_id.store(None);
         self.loaded.flags.processing = false;
+        // H2: the CLAP steady_time counter is per start/stop cycle — reset it so
+        // the next start_processing begins the monotonic sequence at 0.
+        self.scratch.steady_time = 0;
+    }
+
+    /// The `clap_process_status` the plugin returned on the most recent
+    /// `process` block (H3). CLAP-private this phase — the shared
+    /// `ProcessOutput` carries no status field, so TAIL/SLEEP are observable
+    /// only here. Defaults to `CLAP_PROCESS_CONTINUE` before the first block.
+    #[allow(dead_code)] // consumed by the trait/adapter phase + conformance tests
+    pub(crate) fn last_process_status(&self) -> clap_sys::process::clap_process_status {
+        self.scratch.last_process_status
+    }
+
+    /// Drain the output-side param gestures (begin/end) + param-mod the plugin
+    /// emitted on the most recent block (H4), leaving the pool empty. Kept
+    /// CLAP-private — these events have no home in the shared param vocabulary
+    /// this phase, so they'd otherwise be silently dropped.
+    #[allow(dead_code)] // consumed by the trait/adapter phase + conformance tests
+    pub(crate) fn drain_output_gestures(&mut self) -> Vec<crate::events::ClapEvent> {
+        std::mem::take(&mut self.scratch.out_gestures)
+    }
+
+    /// Grow the activated maximum block size to `max_frames`, resizing the RT
+    /// scratch to match (C1). Only GROWS: a request no larger than the current
+    /// ceiling is a no-op, so shrinking never strands allocated capacity.
+    ///
+    /// CLAP fixes `max_frames` at `activate()`, so a genuine grow must
+    /// deactivate → re-activate the plugin at the new ceiling. **Main-thread /
+    /// setup only** — never call on the audio thread (it deactivates the
+    /// plugin and reallocates). The next `process` self-starts processing.
+    pub fn set_max_block_size(&mut self, max_frames: u32) -> &mut Self {
+        if max_frames <= self.loaded.audio.max_frames {
+            return self;
+        }
+        self.loaded.assert_main_thread();
+        self.stop_processing();
+        self.loaded.deactivate_plugin();
+        self.loaded.audio.max_frames = max_frames;
+        // Re-size the channel scratch for the larger block. Port layout and
+        // channel counts are unchanged; only per-channel length grows.
+        let input_total = self.loaded.ports.input_channel_total();
+        let output_total = self.loaded.ports.output_channel_total();
+        let num_in = self.loaded.ports.inputs.len();
+        let num_out = self.loaded.ports.outputs.len();
+        self.scratch.process.resize_for(
+            input_total,
+            output_total,
+            max_frames as usize,
+            num_in,
+            num_out,
+        );
+        // Re-activate at the new ceiling; the next `process` self-starts.
+        let _ = self.loaded.activate_plugin();
+        self
     }
 
     /// Change the sample rate in place. CLAP requires deactivation around a

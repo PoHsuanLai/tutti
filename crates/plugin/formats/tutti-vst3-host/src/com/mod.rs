@@ -7,8 +7,6 @@
 
 mod attr_list;
 mod component_handler;
-mod connection_point;
-mod data_exchange;
 mod event_list;
 mod host_application;
 mod message;
@@ -34,10 +32,6 @@ pub use stream::BStream;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use attr_list::AttributeList;
-#[cfg(test)]
-pub use connection_point::ConnectionPoint;
-#[cfg(test)]
-pub use data_exchange::DataExchangeHandler;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub use message::Message;

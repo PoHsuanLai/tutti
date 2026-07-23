@@ -20,9 +20,8 @@ use vst3::Steinberg::{
 use vst3::{Class, ComWrapper};
 
 use crate::types::{
-    from_c_event, note_expression_to_vst3, to_c_event, vst3_to_note_expression, ChordValue,
-    MidiEvent, NoteExpressionIntValue, NoteExpressionText, NoteExpressionValue, ScaleValue,
-    Vst3Event,
+    from_c_event, note_expression_to_vst3, to_c_event, ChordValue, MidiEvent,
+    NoteExpressionIntValue, NoteExpressionText, NoteExpressionValue, ScaleValue, Vst3Event,
 };
 use tutti_types::AudioThreadCell;
 
@@ -72,23 +71,15 @@ impl EventList {
         })
     }
 
+    /// Stage MIDI (only) into the event list. Test-harness helper; the live RT
+    /// path uses [`Self::update_from_sources`].
+    #[cfg(test)]
     pub fn update_from_midi(&self, midi_events: &[MidiEvent]) {
         let mut inner = self.inner.borrow_mut();
         inner.clear();
         inner
             .events
             .extend(midi_events.iter().filter_map(Vst3Event::from_midi));
-    }
-
-    /// Stage MIDI plus per-note expression into the event list, sorted by frame
-    /// offset. Thin wrapper over [`Self::update_from_sources`] for callers with
-    /// no chord / scale / text / int inputs.
-    pub fn update_from_midi_and_expression(
-        &self,
-        midi_events: &[MidiEvent],
-        note_expressions: &[NoteExpressionValue],
-    ) {
-        self.update_from_sources(midi_events, note_expressions, &[], &[], &[], &[]);
     }
 
     /// Stage every input event source into the list: MIDI (transcoded),
@@ -134,35 +125,19 @@ impl EventList {
         self.inner.borrow_mut().clear();
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.inner.borrow().events.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.inner.borrow().events.is_empty()
     }
 
-    pub fn to_midi_events(&self) -> SmallVec<[MidiEvent; 64]> {
-        self.inner
-            .borrow()
-            .events
-            .iter()
-            .filter_map(Vst3Event::to_midi)
-            .collect()
-    }
-
-    pub fn to_note_expressions(&self) -> SmallVec<[NoteExpressionValue; 16]> {
-        self.inner
-            .borrow()
-            .events
-            .iter()
-            .filter_map(vst3_to_note_expression)
-            .collect()
-    }
-
-    /// RT-safe variant of [`Self::to_midi_events`] that drains into a
-    /// caller-supplied pooled `SmallVec`. Clears `out` first; reuses
-    /// existing heap capacity.
+    /// Drain the plugin's emitted MIDI events into a caller-supplied pooled
+    /// `SmallVec`. Clears `out` first; reuses existing heap capacity, so it is
+    /// allocation-free after warmup.
     pub fn fill_midi_events(&self, out: &mut SmallVec<[MidiEvent; 64]>) {
         out.clear();
         for event in self.inner.borrow().events.iter() {
@@ -170,22 +145,6 @@ impl EventList {
                 out.push(midi);
             }
         }
-    }
-
-    /// RT-safe variant of [`Self::to_note_expressions`].
-    pub fn fill_note_expressions(&self, out: &mut SmallVec<[NoteExpressionValue; 16]>) {
-        out.clear();
-        for event in self.inner.borrow().events.iter() {
-            if let Some(expr) = vst3_to_note_expression(event) {
-                out.push(expr);
-            }
-        }
-    }
-
-    /// Reset the audio-thread owner. Call when the host switches to a new
-    /// audio stream (the next `process` call will re-claim ownership).
-    pub fn reset_owner(&self) {
-        self.inner.reset_owner();
     }
 }
 

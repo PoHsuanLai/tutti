@@ -32,10 +32,15 @@ impl Message {
 
 impl IMessageTrait for Message {
     unsafe fn getMessageID(&self) -> FIDString {
-        // CString's ptr lives as long as self holds the lock... but FIDString
-        // has no lifetime. In practice VST3 hosts compare the string immediately;
-        // we document the constraint by holding the lock for the call duration.
-        // To avoid dangling we leak-once into a stable allocation.
+        // Returns a borrowed pointer into the `CString` this message owns.
+        // `FIDString` carries no lifetime, so the contract is by convention:
+        // the pointer is valid until the next `setMessageID` on this message
+        // (which replaces the `CString` and frees the old allocation). VST3's
+        // component↔controller messaging reads the id synchronously inside the
+        // receiver's `IConnectionPoint::notify` before returning control, so a
+        // caller that follows the protocol never observes a dangling pointer.
+        // The lock is released when `guard` drops at the end of this call — it
+        // guards concurrent access to the `Option`, not the returned pointer.
         let guard = self.message_id.lock();
         match guard.as_ref() {
             Some(c) => c.as_ptr(),

@@ -35,6 +35,10 @@ pub(crate) struct HostState {
     param_tx: crossbeam_channel::Sender<ParameterChange>,
     midi_out_tx: crossbeam_channel::Sender<MidiEvent>,
     time_info: Arc<arc_swap::ArcSwap<Option<vst::api::TimeInfo>>>,
+    /// Maximum block size the host will render, in samples. Served back
+    /// through `audioMasterGetBlockSize` for plugins that poll it rather
+    /// than caching the `effSetBlockSize` setter value.
+    block_size: isize,
 }
 
 impl HostState {
@@ -42,11 +46,13 @@ impl HostState {
         param_tx: crossbeam_channel::Sender<ParameterChange>,
         midi_out_tx: crossbeam_channel::Sender<MidiEvent>,
         time_info: Arc<arc_swap::ArcSwap<Option<vst::api::TimeInfo>>>,
+        block_size: usize,
     ) -> Self {
         Self {
             param_tx,
             midi_out_tx,
             time_info,
+            block_size: block_size as isize,
         }
     }
 }
@@ -81,4 +87,27 @@ impl Host for HostState {
     fn get_time_info(&self, _mask: i32) -> Option<vst::api::TimeInfo> {
         **self.time_info.load()
     }
+
+    /// Host identification, in vst-rs's `(version, vendor, product)` form.
+    /// vst-rs's default returns placeholder strings ("vendor string" /
+    /// "product string"); we report Tutti's real identity so plugins that
+    /// key behaviour off the host name see the truth.
+    fn get_info(&self) -> (isize, String, String) {
+        (1, "Tutti".to_string(), "Tutti VST2 Host".to_string())
+    }
+
+    /// Maximum render block size, in samples. vst-rs's default returns 0,
+    /// which mis-signals plugins that poll `audioMasterGetBlockSize` (they
+    /// then either allocate for a zero-size block or fall back to a guess).
+    fn get_block_size(&self) -> isize {
+        self.block_size
+    }
+
+    // Note: `audioMasterGetSampleRate` cannot be answered here — vst-rs
+    // 0.3.0's `Host` trait has no `get_sample_rate` hook, so the callback
+    // falls through to vst-rs's internal default (0). This is an upstream
+    // limitation. Plugins that cache the `effSetSampleRate` setter value
+    // (the common case) are unaffected; only plugins that *poll* the sample
+    // rate via the master callback see 0. Fixing it requires a vst-rs
+    // change (add a `Host::get_sample_rate` default) and is out of scope.
 }

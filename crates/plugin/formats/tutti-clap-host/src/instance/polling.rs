@@ -77,6 +77,12 @@ impl ClapLoaded {
                 return Err(ClapError::GuiError("GUI create failed".to_string()));
             }
             self.flags.gui_created = true;
+            // H5: a fresh editor exists now — clear any stale "already
+            // destroyed" latch from the previous editor's teardown.
+            self.host_state
+                .gui
+                .already_destroyed
+                .store(false, std::sync::atomic::Ordering::Release);
         }
 
         if let Some(set_parent_fn) = gui.set_parent {
@@ -209,6 +215,19 @@ impl ClapLoaded {
     pub fn close_editor(&mut self) {
         self.assert_main_thread();
         if !self.flags.gui_created {
+            return;
+        }
+        // H5: if the plugin already destroyed its own editor (it reported
+        // `gui.closed(was_destroyed = true)`), skip hide/destroy entirely —
+        // calling `gui.destroy` again would be a double-destroy. Just clear our
+        // bookkeeping and consume the latch.
+        if self
+            .host_state
+            .gui
+            .already_destroyed
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            self.flags.gui_created = false;
             return;
         }
         let gui = unsafe { &*self.extensions.gui.gui };

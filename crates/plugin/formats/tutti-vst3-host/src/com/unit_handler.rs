@@ -2,17 +2,20 @@
 //! implements these interfaces too; this handler is used only by the
 //! unit-test harness.
 
+#[cfg(test)]
 use crossbeam_channel::{Receiver, Sender};
+#[cfg(test)]
 use vst3::Steinberg::{
     kResultOk, tresult,
     Vst::{
         IUnitHandler, IUnitHandler2, IUnitHandler2Trait, IUnitHandlerTrait, ProgramListID, UnitID,
     },
 };
+#[cfg(test)]
 use vst3::{Class, ComWrapper};
 
 /// Unit / program-list change notifications from the plugin. Delivered via
-/// [`Vst3Loaded::unit_event_receiver`](crate::Vst3Loaded::unit_event_receiver).
+/// [`Vst3Loaded::poll_plugin_notifications`](crate::Vst3Loaded::poll_plugin_notifications).
 #[derive(Debug, Clone)]
 pub enum UnitEvent {
     /// Plugin has selected a different unit (preset category / voice).
@@ -23,14 +26,17 @@ pub enum UnitEvent {
     UnitByBusChanged,
 }
 
+#[cfg(test)]
 pub struct UnitHandler {
     event_sender: Sender<UnitEvent>,
 }
 
+#[cfg(test)]
 impl Class for UnitHandler {
     type Interfaces = (IUnitHandler, IUnitHandler2);
 }
 
+#[cfg(test)]
 impl UnitHandler {
     pub fn new() -> (ComWrapper<Self>, Receiver<UnitEvent>) {
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -39,6 +45,7 @@ impl UnitHandler {
     }
 }
 
+#[cfg(test)]
 impl IUnitHandlerTrait for UnitHandler {
     unsafe fn notifyUnitSelection(&self, unit_id: UnitID) -> tresult {
         let _ = self.event_sender.send(UnitEvent::UnitSelected(unit_id));
@@ -58,6 +65,7 @@ impl IUnitHandlerTrait for UnitHandler {
     }
 }
 
+#[cfg(test)]
 impl IUnitHandler2Trait for UnitHandler {
     unsafe fn notifyUnitByBusChange(&self) -> tresult {
         let _ = self.event_sender.send(UnitEvent::UnitByBusChanged);

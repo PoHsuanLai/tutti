@@ -237,9 +237,16 @@ unsafe extern "C" fn host_gui_request_hide(_host: *const ClapHostVtable) -> bool
     true
 }
 
-unsafe extern "C" fn host_gui_closed(host: *const ClapHostVtable, _was_destroyed: bool) {
+unsafe extern "C" fn host_gui_closed(host: *const ClapHostVtable, was_destroyed: bool) {
     if let Some(state) = get_host_state(host) {
         state.gui.closed.store(true, Ordering::Release);
+        // H5: `was_destroyed` means the plugin already destroyed its own
+        // editor. Record it so `close_editor` skips hide/destroy and only
+        // clears the created flag — calling `gui.destroy` again is a
+        // double-destroy the spec forbids.
+        if was_destroyed {
+            state.gui.already_destroyed.store(true, Ordering::Release);
+        }
     }
 }
 

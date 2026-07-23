@@ -118,7 +118,39 @@ impl ClapLoaded {
     /// `clap_plugin_params.flush()`. Returns events produced by the plugin
     /// in response. Returns empty if the plugin does not implement params
     /// or lacks a flush function.
+    ///
+    /// # Thread interlock (H1)
+    /// CLAP declares `params.flush` as `[active ? audio-thread : main-thread]`
+    /// and forbids it running concurrently with `process`. This method has no
+    /// direct access to the active instance's scratch, so it cannot enqueue
+    /// into the next `process` block itself; instead it gates by state:
+    ///
+    /// - **Inactive** (`!flags.processing`) — the plugin has not
+    ///   `start_processing`'d, so a main-thread flush is safe. This is the
+    ///   GUI-only / setup path and is unchanged.
+    /// - **Active** (`flags.processing`) — flush must happen on the audio
+    ///   thread and must not overlap `process`. We debug-assert we are on the
+    ///   published audio thread. Callers driving an active instance should
+    ///   route param changes through the next `process` block (via
+    ///   `ProcessContext::params`) rather than calling flush here; the full
+    ///   enqueue path is deferred to the trait/adapter phase.
     pub fn flush_params(&mut self, input_events: Vec<ClapEvent>) -> Vec<ClapEvent> {
+        if self.flags.processing {
+            // Active: the only sound caller is the audio thread. A main-thread
+            // call here would race the plugin's `process`.
+            debug_assert!(
+                self.host_state
+                    .audio_thread_id
+                    .load()
+                    .as_deref()
+                    .is_some_and(|id| *id == std::thread::current().id()),
+                "flush_params on an ACTIVE instance must run on the audio thread \
+                 (or route param changes through the next process block)"
+            );
+        } else {
+            self.assert_main_thread();
+        }
+
         let Some(ext) = (unsafe { ext::opt(self.extensions.params.params) }) else {
             return Vec::new();
         };

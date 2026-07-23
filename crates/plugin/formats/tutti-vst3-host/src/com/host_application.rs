@@ -4,10 +4,14 @@
 use std::ffi::c_void;
 
 use vst3::Steinberg::{
-    kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, tresult,
+    kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue, tresult,
+    IPlugFrame_iid,
     Vst::{
-        IAttributeList, IHostApplication, IHostApplicationTrait, IMessage, IPlugInterfaceSupport,
-        IPlugInterfaceSupportTrait, String128,
+        IAttributeList, IComponentHandler2_iid, IComponentHandler3_iid,
+        IComponentHandlerBusActivation_iid, IComponentHandler_iid, IHostApplication,
+        IHostApplicationTrait, IHostApplication_iid, IMessage, IPlugInterfaceSupport,
+        IPlugInterfaceSupportTrait, IPlugInterfaceSupport_iid, IProgress_iid, IUnitHandler2_iid,
+        IUnitHandler_iid, String128,
     },
     TUID,
 };
@@ -76,10 +80,83 @@ impl IHostApplicationTrait for HostApplication {
     }
 }
 
+/// The host interfaces this host actually implements and installs, so
+/// `isPlugInterfaceSupported` can answer truthfully. Covers the two interfaces
+/// on this `IHostApplication` object (`IHostApplication`,
+/// `IPlugInterfaceSupport`), the seven vtables on the installed
+/// `ComponentHandler` (component-handler v1/v2/v3, bus-activation, progress,
+/// unit-handler v1/v2), and the `IPlugFrame` installed per open editor.
+const SUPPORTED_IIDS: &[TUID] = &[
+    IHostApplication_iid,
+    IPlugInterfaceSupport_iid,
+    IComponentHandler_iid,
+    IComponentHandler2_iid,
+    IComponentHandler3_iid,
+    IComponentHandlerBusActivation_iid,
+    IProgress_iid,
+    IUnitHandler_iid,
+    IUnitHandler2_iid,
+    IPlugFrame_iid,
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vst3::Steinberg::Vst::IMidiMapping_iid;
+
+    #[test]
+    fn reports_installed_host_interfaces_supported() {
+        let host = HostApplication::new("test");
+        let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
+        unsafe {
+            assert_eq!(
+                ptr.isPlugInterfaceSupported(&IHostApplication_iid),
+                kResultTrue
+            );
+            assert_eq!(
+                ptr.isPlugInterfaceSupported(&IComponentHandler_iid),
+                kResultTrue
+            );
+            assert_eq!(ptr.isPlugInterfaceSupported(&IProgress_iid), kResultTrue);
+        }
+    }
+
+    #[test]
+    fn reports_uninstalled_interfaces_unsupported() {
+        let host = HostApplication::new("test");
+        let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
+        // The host does not install IMidiMapping (that's a plugin-side interface).
+        unsafe {
+            assert_eq!(
+                ptr.isPlugInterfaceSupported(&IMidiMapping_iid),
+                kResultFalse
+            );
+        }
+    }
+
+    #[test]
+    fn null_iid_is_invalid_argument() {
+        let host = HostApplication::new("test");
+        let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
+        unsafe {
+            assert_eq!(
+                ptr.isPlugInterfaceSupported(std::ptr::null()),
+                kInvalidArgument
+            );
+        }
+    }
+}
+
 impl IPlugInterfaceSupportTrait for HostApplication {
-    unsafe fn isPlugInterfaceSupported(&self, _iid: *const TUID) -> tresult {
-        // We don't yet track which host interfaces we "implement" — plugins
-        // can still query them and will fall back gracefully.
-        kResultFalse
+    unsafe fn isPlugInterfaceSupported(&self, iid: *const TUID) -> tresult {
+        if iid.is_null() {
+            return kInvalidArgument;
+        }
+        let queried = *iid;
+        if SUPPORTED_IIDS.contains(&queried) {
+            kResultTrue
+        } else {
+            kResultFalse
+        }
     }
 }

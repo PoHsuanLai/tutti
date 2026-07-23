@@ -56,6 +56,11 @@ impl ProcessingState {
 
 pub struct GuiState {
     pub closed: AtomicBool,
+    /// Set when the plugin reported `gui.closed(was_destroyed = true)` — it
+    /// already tore its own editor down, so `close_editor` must NOT call
+    /// `gui.destroy` again (double-destroy). Latched until the next editor is
+    /// opened. (H5)
+    pub already_destroyed: AtomicBool,
     pub resize_hints_changed: AtomicBool,
     pub request_resize_width: AtomicU32,
     pub request_resize_height: AtomicU32,
@@ -67,6 +72,7 @@ impl GuiState {
     fn new() -> Self {
         Self {
             closed: AtomicBool::new(false),
+            already_destroyed: AtomicBool::new(false),
             resize_hints_changed: AtomicBool::new(false),
             request_resize_width: AtomicU32::new(0),
             request_resize_height: AtomicU32::new(0),

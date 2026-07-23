@@ -684,6 +684,46 @@ fn test_clap_host_stores_host_data() {
 }
 
 #[test]
+fn host_gui_closed_was_destroyed_latches_already_destroyed() {
+    // H5: gui.closed(was_destroyed = true) must record that the plugin already
+    // tore its own editor down, so a later close_editor skips gui.destroy.
+    // With was_destroyed = false the latch stays clear.
+    use clap_sys::ext::gui::{clap_host_gui, CLAP_EXT_GUI};
+    use std::sync::atomic::Ordering;
+
+    let host = ClapHost::default();
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let gui_ext = unsafe { get_ext(raw, CLAP_EXT_GUI.as_ptr()) as *const clap_host_gui };
+    assert!(!gui_ext.is_null());
+    let closed = unsafe { (*gui_ext).closed.unwrap() };
+
+    // was_destroyed = false: closed flag set, but no already_destroyed latch.
+    unsafe { closed(raw, false) };
+    assert!(host.state().gui.closed.load(Ordering::Acquire));
+    assert!(
+        !host.state().gui.already_destroyed.load(Ordering::Acquire),
+        "was_destroyed=false must not latch already_destroyed"
+    );
+
+    // was_destroyed = true: latch set — close_editor will skip hide/destroy.
+    unsafe { closed(raw, true) };
+    assert!(
+        host.state().gui.already_destroyed.load(Ordering::Acquire),
+        "was_destroyed=true must latch already_destroyed"
+    );
+
+    // Emulate close_editor consuming the latch (swap → false).
+    let was = host
+        .state()
+        .gui
+        .already_destroyed
+        .swap(false, Ordering::AcqRel);
+    assert!(was, "latch was set");
+    assert!(!host.state().gui.already_destroyed.load(Ordering::Acquire));
+}
+
+#[test]
 fn test_host_get_extension_returns_non_null_for_supported() {
     use clap_sys::ext::audio_ports::CLAP_EXT_AUDIO_PORTS;
     use clap_sys::ext::gui::CLAP_EXT_GUI;

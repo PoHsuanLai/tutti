@@ -13,8 +13,12 @@ use clap_sys::events::{
     CLAP_TRANSPORT_IS_PLAYING, CLAP_TRANSPORT_IS_RECORDING,
 };
 use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
-use clap_sys::process::{clap_process, CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR};
+use clap_sys::process::{
+    clap_process, CLAP_PROCESS_CONTINUE, CLAP_PROCESS_CONTINUE_IF_NOT_QUIET, CLAP_PROCESS_ERROR,
+    CLAP_PROCESS_SLEEP, CLAP_PROCESS_TAIL,
+};
 use std::ptr;
+use std::sync::Arc;
 
 /// Owned snapshot of the plugin's per-block output. Returned for
 /// non-RT consumers (tests, offline render) via
@@ -76,6 +80,10 @@ pub trait ClapSample: tutti_plugin_types::Sample {
     /// Construct a `clap_audio_buffer` from a base pointer into a channel-
     /// pointer array (`data32` / `data64` selected per sample type).
     fn make_port_buffer(ptrs_base: *mut *mut Self, channel_count: u32) -> clap_audio_buffer;
+
+    /// The channel-pointer array (`data32` / `data64`) matching this sample
+    /// type, or null if the buffer carries the other precision.
+    fn channel_ptrs(buf: &clap_audio_buffer) -> *mut *mut Self;
 }
 
 impl ClapSample for f32 {
@@ -92,6 +100,10 @@ impl ClapSample for f32 {
             constant_mask: 0,
         }
     }
+
+    fn channel_ptrs(buf: &clap_audio_buffer) -> *mut *mut f32 {
+        buf.data32
+    }
 }
 
 impl ClapSample for f64 {
@@ -106,6 +118,31 @@ impl ClapSample for f64 {
             channel_count,
             latency: 0,
             constant_mask: 0,
+        }
+    }
+
+    fn channel_ptrs(buf: &clap_audio_buffer) -> *mut *mut f64 {
+        buf.data64
+    }
+}
+
+/// Zero the first `num_samples` of every channel of a CLAP output buffer.
+/// Used on `CLAP_PROCESS_ERROR` so undefined plugin output never leaks out.
+///
+/// SAFETY: the channel pointers were populated in `refill_port_buffers` from
+/// the caller's output slices (or scratch pads), each valid for at least
+/// `num_samples` frames (the C1 guard rejects oversized blocks).
+fn zero_clap_output<T: ClapSample>(buf: &clap_audio_buffer, num_samples: u32) {
+    let ptrs_base = T::channel_ptrs(buf);
+    if ptrs_base.is_null() {
+        return;
+    }
+    for ch in 0..buf.channel_count as usize {
+        unsafe {
+            let ch_ptr = *ptrs_base.add(ch);
+            if !ch_ptr.is_null() {
+                ptr::write_bytes(ch_ptr, 0, num_samples as usize);
+            }
         }
     }
 }
@@ -216,6 +253,19 @@ impl<T: ClapSample> ClapActive<T> {
     ) -> Result<ProcessOutputRef<'_>> {
         let num_samples = buffer.num_samples as u32;
 
+        // C1: the scratch channel buffers were sized to `max_frames` in
+        // `activate()`; `do_process` passes `num_samples` as `frames_count`.
+        // A block larger than `max_frames` would make the plugin read/write
+        // past the scratch → out-of-bounds. Reject it here (RT-safe: no alloc,
+        // just a compare). Callers that legitimately need a bigger block must
+        // grow the scratch off the audio thread via `set_max_block_size`.
+        if num_samples > self.loaded.audio.max_frames {
+            return Err(ClapError::ProcessError(format!(
+                "block size {num_samples} exceeds activated max_frames {}",
+                self.loaded.audio.max_frames
+            )));
+        }
+
         // Refill the pooled input event list in place. `clear()` keeps the
         // heap capacity reserved in `activate()`; the subsequent `add_*`
         // calls push into that capacity without touching the allocator
@@ -294,15 +344,37 @@ impl<T: ClapSample> ClapActive<T> {
         // do_process path is lock-free and allocation-free here.
         self.ensure_processing()?;
 
+        // C2: `ensure_processing` publishes the audio-thread id once, on the
+        // first block. A spec-compliant host may run later blocks on a
+        // different pool thread, which would leave the stored id stale and
+        // make the plugin's `is_audio_thread` callback lie on the real audio
+        // thread. Re-publish only on mismatch: the steady state (same thread
+        // every block) pays just an atomic load + compare — no alloc, no store.
+        let current = std::thread::current().id();
+        let stale = self
+            .loaded
+            .host_state
+            .audio_thread_id
+            .load()
+            .as_deref()
+            .is_none_or(|id| *id != current);
+        if stale {
+            self.loaded
+                .host_state
+                .audio_thread_id
+                .store(Some(Arc::new(current)));
+        }
+
         let clap_transport = transport.map(build_clap_transport);
         let transport_ptr = clap_transport
             .as_ref()
             .map(|t| t as *const _)
             .unwrap_or(ptr::null());
 
-        let steady_time = transport
-            .map(|t| (t.position.seconds * self.loaded.audio.sample_rate) as i64)
-            .unwrap_or(0);
+        // H2: `steady_time` is a monotonic sample counter, not derived from
+        // transport seconds. Pass the current value, then advance by the block
+        // size. It resets to 0 on stop_processing/reactivate.
+        let steady_time = self.scratch.steady_time;
 
         // Build FFI pointers into the pooled event lists. The plugin's
         // `process` runs synchronously and must not retain either pointer
@@ -330,7 +402,35 @@ impl<T: ClapSample> ClapActive<T> {
             CLAP_PROCESS_CONTINUE
         };
 
+        // H2: advance the monotonic counter now that this block was processed.
+        // `saturating_add` keeps it monotone even across a very long session.
+        self.scratch.steady_time = self.scratch.steady_time.saturating_add(num_samples as i64);
+
+        // H3: record the full status (not just ERROR) so callers can observe
+        // TAIL/SLEEP via `last_process_status`. The shared `ProcessOutput`
+        // does not carry a status field this phase, so it stays CLAP-private.
+        // Log only on a *transition* (avoids per-block spam under SLEEP/TAIL,
+        // and keeps the steady-state hot path allocation-free).
+        let prev_status = self.scratch.last_process_status;
+        self.scratch.last_process_status = status;
+        if status != prev_status {
+            match status {
+                CLAP_PROCESS_TAIL => {
+                    eprintln!("[clap-host] process → TAIL (plugin has a decaying tail)")
+                }
+                CLAP_PROCESS_SLEEP => eprintln!("[clap-host] process → SLEEP (plugin is idle)"),
+                CLAP_PROCESS_ERROR
+                | CLAP_PROCESS_CONTINUE
+                | CLAP_PROCESS_CONTINUE_IF_NOT_QUIET => {}
+                other => eprintln!("[clap-host] process → unknown status {other}"),
+            }
+        }
         if status == CLAP_PROCESS_ERROR {
+            // On error the plugin's output is undefined — zero the caller's
+            // output channels so no garbage/uninitialised audio leaks out.
+            for buf in audio_outputs.iter() {
+                zero_clap_output::<T>(buf, num_samples);
+            }
             return Err(ClapError::ProcessError("Plugin returned error".to_string()));
         }
 
@@ -343,11 +443,16 @@ impl<T: ClapSample> ClapActive<T> {
             out_midi,
             out_param_changes,
             out_note_expressions,
+            out_gestures,
             ..
         } = &mut self.scratch;
         output_events.fill_midi_events(out_midi);
         output_events.fill_param_changes(out_param_changes);
         output_events.fill_note_expressions(out_note_expressions);
+        // H4: capture output-side param gestures (begin/end) + param-mod so
+        // they are no longer silently dropped. Kept CLAP-private (not folded
+        // into the shared `ParameterChanges`); drain via `drain_output_gestures`.
+        output_events.fill_gestures(out_gestures);
 
         Ok(ProcessOutputRef {
             midi_events: &self.scratch.out_midi,

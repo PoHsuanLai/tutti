@@ -10,7 +10,6 @@
 //!
 //! See the crate's `README.md` for a worked example.
 
-#[allow(dead_code)]
 pub(crate) mod com;
 pub mod error;
 pub(crate) mod helpers;

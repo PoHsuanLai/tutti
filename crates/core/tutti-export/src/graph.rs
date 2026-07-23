@@ -1,17 +1,21 @@
 //! Graph export — render a Tutti audio graph to a file or to memory.
 //!
-//! Configure the export with fluent setters; pick exactly one terminal
-//! (`to_file`, `stream_to_file`, or `to_buffers`); then choose how to
-//! execute the resulting [`Run`] (`run`, `run_with`, `spawn`).
+//! Configure the export with fluent setters; pick a terminal (`to_file` or
+//! `to_buffers`); then choose how to execute the resulting [`Run`] (`run`,
+//! `run_with`, `spawn`).
+//!
+//! `to_file` has NO streaming-vs-buffered variant: whether the export buffers
+//! the whole signal is *derived* from the requested mastering
+//! ([`Mastering::needs_whole_signal`] — true iff it resamples or normalizes),
+//! not selected by the caller. Ask for normalize/resample and it buffers; ask
+//! for neither and it streams — one terminal either way.
 
 use crate::encode;
 use crate::error::{Error, Result};
-use crate::options::{
-    AudioFormat, BitDepth, BroadcastWavMetadata, ChannelMode, Dither, Flac, Normalize, Ogg,
-};
-use crate::process::{self, ResampleQuality, StreamProcessor};
-use crate::progress::{Phase, PhaseGuard, ProgressEmitter};
-use crate::render::{self, RenderOut, RenderRequest, StreamOut};
+use crate::options::{output_setters, AudioFormat, BitDepth, ChannelMode, Output};
+use crate::process::{StreamConfig, StreamProcessor};
+use crate::progress::{Phase, ProgressEmitter};
+use crate::render::{self, BufferingOut, Mastering, RenderOut, RenderRequest, StreamOut};
 use crate::run::{Rendered, Run, Written};
 #[cfg(feature = "midi")]
 use crate::MidiTrack;
@@ -29,19 +33,14 @@ pub type LoopRange = (f64, f64);
 /// Everything except the net: the configuration surface of a graph export.
 /// Kept separate so the net can be consumed by the render stage without
 /// having to disassemble and reconstitute the whole builder.
+///
+/// Two groups: the render/transport knobs (source rate, duration, tempo,
+/// timeline) live inline, and the shared output stage (format, mastering,
+/// codecs) lives in [`Output`].
 struct Spec {
     sample_rate: f64,
     duration_seconds: Option<f64>,
-    format: Option<AudioFormat>,
-    bit_depth: BitDepth,
-    channels: ChannelMode,
-    target_sample_rate: Option<u32>,
-    resample_quality: ResampleQuality,
-    dither: Dither,
-    normalize: Normalize,
-    flac: Flac,
-    ogg: Ogg,
-    bwav: Option<BroadcastWavMetadata>,
+    output: Output,
     compensate_latency: bool,
     tempo_bpm: f64,
     start_beat: f64,
@@ -65,8 +64,7 @@ impl Spec {
     }
 
     fn output_sample_rate(&self) -> u32 {
-        self.target_sample_rate
-            .unwrap_or_else(|| self.sample_rate.round() as u32)
+        self.output.sample_rate(self.sample_rate)
     }
 
     fn build_timeline(&self) -> Arc<OfflineTransport> {
@@ -84,10 +82,7 @@ impl Spec {
     }
 
     fn resolve_format(&self, path: &Path) -> Result<AudioFormat> {
-        match self.format {
-            Some(f) => Ok(f),
-            None => AudioFormat::from_path(path),
-        }
+        self.output.resolve_format(path)
     }
 }
 
@@ -105,16 +100,7 @@ impl GraphExport {
             spec: Spec {
                 sample_rate,
                 duration_seconds: None,
-                format: None,
-                bit_depth: BitDepth::default(),
-                channels: ChannelMode::default(),
-                target_sample_rate: None,
-                resample_quality: ResampleQuality::default(),
-                dither: Dither::default(),
-                normalize: Normalize::default(),
-                flac: Flac::default(),
-                ogg: Ogg::default(),
-                bwav: None,
+                output: Output::default(),
                 compensate_latency: false,
                 tempo_bpm: 120.0,
                 start_beat: 0.0,
@@ -144,60 +130,13 @@ impl GraphExport {
         self
     }
 
-    // ---- format / quality ----
-
-    /// Override the output format. Optional; if left unset, the format is
-    /// inferred from the path extension on `to_file`/`stream_to_file`.
-    pub fn format(mut self, f: AudioFormat) -> Self {
-        self.spec.format = Some(f);
-        self
-    }
-
-    pub fn bit_depth(mut self, b: BitDepth) -> Self {
-        self.spec.bit_depth = b;
-        self
-    }
-
-    pub fn channels(mut self, c: ChannelMode) -> Self {
-        self.spec.channels = c;
-        self
-    }
-
-    /// Resample to `rate` on output (independent of the engine's sample rate).
-    pub fn sample_rate(mut self, rate: u32) -> Self {
-        self.spec.target_sample_rate = Some(rate);
-        self
-    }
-
-    pub fn resample_quality(mut self, q: ResampleQuality) -> Self {
-        self.spec.resample_quality = q;
-        self
-    }
-
-    pub fn dither(mut self, d: Dither) -> Self {
-        self.spec.dither = d;
-        self
-    }
-
-    pub fn normalize(mut self, mode: Normalize) -> Self {
-        self.spec.normalize = mode;
-        self
-    }
-
-    pub fn flac(mut self, opts: Flac) -> Self {
-        self.spec.flac = opts;
-        self
-    }
-
-    pub fn ogg(mut self, opts: Ogg) -> Self {
-        self.spec.ogg = opts;
-        self
-    }
-
-    pub fn bwav(mut self, meta: BroadcastWavMetadata) -> Self {
-        self.spec.bwav = Some(meta);
-        self
-    }
+    // ---- output stage (format / mastering / codecs) ----
+    //
+    // The shared output setters — `format`, `bit_depth`, `channels`,
+    // `sample_rate`, `resample_quality`, `dither`, `normalize`, `flac`, `ogg`,
+    // `bwav` — are generated from one definition in `options` so this builder
+    // and `BufferExport` stay in lockstep. They write into `self.spec.output`.
+    output_setters!(spec.output);
 
     // ---- render-time ----
 
@@ -253,19 +192,13 @@ impl GraphExport {
 
     // ---- terminals ----
 
+    /// Export to a file. Buffers the whole signal iff the mastering needs it
+    /// (resample / normalize); otherwise streams block-by-block. The choice is
+    /// derived, not a mode — see the module docs.
     pub fn to_file(self, path: impl AsRef<Path>) -> Run<Written> {
         let path = path.as_ref().to_path_buf();
         Run {
             job: Box::new(move |on_progress, cancel| run_to_file(self, path, on_progress, cancel)),
-        }
-    }
-
-    pub fn stream_to_file(self, path: impl AsRef<Path>) -> Run<Written> {
-        let path = path.as_ref().to_path_buf();
-        Run {
-            job: Box::new(move |on_progress, cancel| {
-                run_stream_to_file(self, path, on_progress, cancel)
-            }),
         }
     }
 
@@ -300,6 +233,27 @@ fn check_cancel(cancel: &Arc<AtomicBool>) -> Result<()> {
         Err(Error::Cancelled)
     } else {
         Ok(())
+    }
+}
+
+/// Wrap already-mastered planar blocks as a [`Chunk`](crate::process::Chunk) for
+/// the encoder, folding to mono if requested. No dither/normalize — the caller
+/// (a `BufferingOut`) has already applied all mastering; this only picks the
+/// channel shape. `left`/`right` are equal for mono blocks the buffer emitted.
+fn raw_chunk(
+    left: &[f32],
+    right: &[f32],
+    channels: ChannelMode,
+    _bit_depth: BitDepth,
+) -> crate::process::Chunk {
+    use crate::process::Chunk;
+    match channels {
+        ChannelMode::Stereo => Chunk::Stereo {
+            left: left.to_vec(),
+            right: right.to_vec(),
+        },
+        // `BufferingOut` already mono-folded (both channels equal), so take one.
+        ChannelMode::Mono => Chunk::Mono(left.to_vec()),
     }
 }
 
@@ -339,90 +293,39 @@ fn run_to_file(
     check_cancel(cancel)?;
 
     let GraphExport { net, spec } = g;
-    let (left, right) = render_buffered(&spec, net, on_progress)?;
-    check_cancel(cancel)?;
-
+    let format = spec.resolve_format(&path)?;
     let target_rate = spec.output_sample_rate();
-    let format = spec.resolve_format(&path)?;
 
-    let processed = {
-        let _phase = PhaseGuard::new(on_progress, Phase::Process);
-        process::process(process::ProcessRequest {
-            left: &left,
-            right: &right,
-            source_sample_rate: spec.sample_rate.round() as u32,
-            target_sample_rate: target_rate,
-            normalize: spec.normalize,
-            dither: spec.dither,
-            bit_depth: spec.bit_depth,
-            channels: spec.channels,
-            resample_quality: spec.resample_quality,
-        })?
+    let mastering = Mastering {
+        source_sample_rate: spec.sample_rate.round() as u32,
+        target_sample_rate: target_rate,
+        normalize: spec.output.normalize,
+        dither: spec.output.dither,
+        bit_depth: spec.output.bit_depth,
+        channels: spec.output.channels,
+        resample_quality: spec.output.resample_quality,
     };
-    check_cancel(cancel)?;
 
-    encode::encode(
-        processed,
-        encode::EncodeRequest {
-            path: &path,
-            format,
-            sample_rate: target_rate,
-            bit_depth: spec.bit_depth,
-            flac: spec.flac,
-            ogg: spec.ogg,
-            bwav_metadata: spec.bwav.as_ref(),
-        },
-        on_progress,
-    )?;
-
-    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    Ok(Written { path, bytes })
-}
-
-fn run_stream_to_file(
-    g: GraphExport,
-    path: PathBuf,
-    on_progress: &(dyn Fn(Phase, f32) + Send + Sync),
-    cancel: &Arc<AtomicBool>,
-) -> Result<Written> {
-    check_cancel(cancel)?;
-
-    let GraphExport { net, spec } = g;
-    let format = spec.resolve_format(&path)?;
-
-    if !matches!(spec.normalize, Normalize::Off) {
-        return Err(Error::InvalidConfig(
-            "Normalization requires the full signal and is not available in streaming mode".into(),
-        ));
-    }
-    if spec
-        .target_sample_rate
-        .is_some_and(|r| r != spec.sample_rate.round() as u32)
-    {
-        return Err(Error::InvalidConfig(
-            "Resampling is not available in streaming mode".into(),
-        ));
-    }
+    // The one decision, DERIVED from the mastering — not a terminal the caller
+    // picked, not a runtime InvalidConfig guard: resample/normalize force the
+    // whole signal to be collected first.
+    let buffered = mastering.needs_whole_signal();
 
     let duration = spec.require_duration()?;
     let total_samples = (duration * spec.sample_rate).round() as usize;
-    let target_rate = spec.output_sample_rate();
 
+    // A buffering export writes at the resampled rate; a streaming export can't
+    // resample, so it writes at the source rate. `target_rate` already resolves
+    // to source when no resample was requested, so it's correct for both.
     let mut encoder = encode::sink::open_stream_encoder(
         &path,
         format,
         target_rate,
-        spec.bit_depth,
-        spec.channels,
-        spec.flac,
-        spec.ogg,
+        spec.output.bit_depth,
+        spec.output.channels,
+        spec.output.flac,
+        spec.output.ogg,
     )?;
-
-    let mut processor = StreamProcessor::new(process::StreamConfig {
-        dither: spec.dither,
-        bit_depth: spec.bit_depth,
-        channels: spec.channels,
-    });
 
     let timeline = spec.build_timeline();
     let request = RenderRequest {
@@ -436,19 +339,45 @@ fn run_stream_to_file(
     let mut progress =
         ProgressEmitter::new(on_progress, Phase::Render, total_samples, spec.sample_rate);
 
-    // The sink defers its per-block encoder error to finalize (the AudioOut
-    // contract); surface it after the render loop.
+    // Both paths drive ONE render loop into an `AudioOut`. The sink stack is
+    // the only difference:
+    //   streaming → master per block in the closure, encode.
+    //   buffered  → collect raw in a `BufferingOut`; it runs the whole-signal
+    //               pass + the same per-block master at finalize, then feeds the
+    //               interleaved result into the bare encoding sink below.
+    // The sink defers its encoder error to finalize (the AudioOut contract).
     let (render_result, sink_result) = {
         let encoder_ref = &mut *encoder;
-        let processor_ref = &mut processor;
-        let mut sink = StreamOut::new(|l: &[f32], r: &[f32]| {
-            let chunk = processor_ref.process_chunk(l, r);
-            encoder_ref
-                .write_chunk(chunk)
-                .map_err(|e| std::io::Error::other(e.to_string()))
-        });
-        let render_result = render::render(request, &mut sink, &mut progress);
-        (render_result, sink.finalize())
+
+        if buffered {
+            // Bare encoding sink: `BufferingOut` has already mastered, so this
+            // just encodes the finished stereo frames as a Chunk.
+            let bit_depth = spec.output.bit_depth;
+            let channels = spec.output.channels;
+            let inner = StreamOut::new(move |l: &[f32], r: &[f32]| {
+                let chunk = raw_chunk(l, r, channels, bit_depth);
+                encoder_ref
+                    .write_chunk(chunk)
+                    .map_err(|e| std::io::Error::other(e.to_string()))
+            });
+            let mut sink = BufferingOut::new(inner, mastering);
+            let render_result = render::render(request, &mut sink, &mut progress);
+            (render_result, sink.finalize())
+        } else {
+            let mut processor = StreamProcessor::new(StreamConfig {
+                dither: spec.output.dither,
+                bit_depth: spec.output.bit_depth,
+                channels: spec.output.channels,
+            });
+            let mut sink = StreamOut::new(|l: &[f32], r: &[f32]| {
+                let chunk = processor.process_chunk(l, r);
+                encoder_ref
+                    .write_chunk(chunk)
+                    .map_err(|e| std::io::Error::other(e.to_string()))
+            });
+            let render_result = render::render(request, &mut sink, &mut progress);
+            (render_result, sink.finalize())
+        }
     };
     progress.finish();
     render_result?;

@@ -1,12 +1,20 @@
 //! Mastering pipeline for rendered audio.
 //!
-//! Whole-signal processing (resample → normalize → dither → mono) via
-//! [`Chain`] + [`process`], or per-chunk processing for streaming exports via
-//! [`StreamProcessor`]. Leaves are feature-gated to match the encoder
-//! features that consume them.
+//! Mastering splits by CAPABILITY, not by mode:
+//!
+//! - **Whole-signal** steps ([`whole_signal`]) — resample, normalize — need the
+//!   entire signal at once, so they run only where it's already collected (a
+//!   [`BufferingOut`](crate::render::BufferingOut)'s `finalize`).
+//! - **Streamable** steps ([`StreamProcessor`]) — dither (stateful across
+//!   blocks), mono-fold — run per block on the way to the sink and never need
+//!   the whole signal.
+//!
+//! This split is why there's no "streaming mode" to pick: whether an export
+//! buffers is DERIVED from whether the requested mastering has a whole-signal
+//! step ([`needs_whole_signal`](crate::graph)), not from which terminal was
+//! called. One mastered-block type ([`Chunk`]) flows to the encoder either way.
+//! Leaves are feature-gated to match the encoder features that consume them.
 
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) mod chain;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 pub(crate) mod dither;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
@@ -17,8 +25,6 @@ pub(crate) mod resample;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 pub(crate) mod stream;
 
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) use chain::Chain;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 pub(crate) use dither::{apply_dither, DitherState};
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
@@ -32,47 +38,88 @@ pub use resample::ResampleQuality;
 pub(crate) use stream::{Chunk, StreamConfig, StreamProcessor};
 
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-use crate::options::{BitDepth, ChannelMode, Dither, Normalize};
+use crate::options::Normalize;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 use crate::Result;
 
-/// Inputs for one whole-signal pass through the mastering chain.
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) struct ProcessRequest<'a> {
-    pub left: &'a [f32],
-    pub right: &'a [f32],
-    pub source_sample_rate: u32,
-    /// Output rate. Equal to `source_sample_rate` for a no-op.
-    pub target_sample_rate: u32,
-    pub normalize: Normalize,
-    pub dither: Dither,
-    pub bit_depth: BitDepth,
-    pub channels: ChannelMode,
-    pub resample_quality: ResampleQuality,
-}
-
-/// Output of [`process`]. Shape is determined by [`ProcessRequest::channels`].
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) enum ProcessedAudio {
-    Stereo { left: Vec<f32>, right: Vec<f32> },
-    Mono(Vec<f32>),
-}
-
-/// Run the mastering chain: resample → normalize → dither → finalize (mono
-/// downmix if requested).
+/// Whole-signal mastering — the steps that CANNOT run per block: resample then
+/// normalize, in place on collected buffers. Runs once, when the full signal is
+/// available (a [`BufferingOut`](crate::render::BufferingOut)'s `finalize`).
 ///
-/// The body is pure composition of [`Chain`] methods.
+/// Dither and mono-fold are deliberately NOT here — those are streamable and
+/// run per block afterward via [`StreamProcessor`], so a streaming export never
+/// materializes the whole signal and the dither noise-shaper stays continuous.
+/// Splitting mastering this way is what lets "buffered vs streaming" be
+/// *derived* from the config ([`needs_whole_signal`](Normalize)) rather than
+/// selected as a mode. Returns the (possibly resampled) output rate.
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) fn process(request: ProcessRequest<'_>) -> Result<ProcessedAudio> {
-    let mut chain = Chain::new(request.left, request.right, request.source_sample_rate);
-    chain.resample_to(request.target_sample_rate, request.resample_quality)?;
-    chain.normalize(request.normalize);
-    chain.dither(request.dither, request.bit_depth);
-    Ok(match request.channels {
-        ChannelMode::Stereo => {
-            let (left, right) = chain.into_stereo();
-            ProcessedAudio::Stereo { left, right }
+pub(crate) fn whole_signal(
+    left: &mut Vec<f32>,
+    right: &mut Vec<f32>,
+    source_sample_rate: u32,
+    target_sample_rate: u32,
+    normalize: Normalize,
+    resample_quality: ResampleQuality,
+) -> Result<u32> {
+    if target_sample_rate != source_sample_rate {
+        let (l, r) = resample_stereo(
+            left,
+            right,
+            source_sample_rate,
+            target_sample_rate,
+            resample_quality,
+        )?;
+        *left = l;
+        *right = r;
+    }
+
+    match normalize {
+        Normalize::Off => {}
+        Normalize::Peak { target_db } => normalize_peak(left, right, target_db),
+        Normalize::Loudness {
+            target_lufs,
+            true_peak_dbtp,
+        } => {
+            let current = analyze_loudness(left, right, target_sample_rate);
+            normalize_loudness(left, right, current.lufs, target_lufs, true_peak_dbtp);
         }
-        ChannelMode::Mono => ProcessedAudio::Mono(chain.into_mono()),
-    })
+    }
+
+    Ok(target_sample_rate)
+}
+
+/// Master an ALREADY-COLLECTED whole signal end to end: the whole-signal pass
+/// (resample → normalize) then the streamable pass (dither → mono-fold), in one
+/// shot. Returns the mastered [`Chunk`] plus the output rate.
+///
+/// This is the whole-signal analogue of the per-block streaming path — a
+/// caller that already holds the full buffers (an in-memory `BufferExport`, or
+/// a `BufferingOut` at finalize) masters through here instead of block-by-block.
+#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn master_collected(
+    mut left: Vec<f32>,
+    mut right: Vec<f32>,
+    source_sample_rate: u32,
+    target_sample_rate: u32,
+    normalize: Normalize,
+    resample_quality: ResampleQuality,
+    dither: crate::options::Dither,
+    bit_depth: crate::options::BitDepth,
+    channels: crate::options::ChannelMode,
+) -> Result<(Chunk, u32)> {
+    let out_rate = whole_signal(
+        &mut left,
+        &mut right,
+        source_sample_rate,
+        target_sample_rate,
+        normalize,
+        resample_quality,
+    )?;
+    let mut stream = StreamProcessor::new(StreamConfig {
+        dither,
+        bit_depth,
+        channels,
+    });
+    Ok((stream.process_chunk(&left, &right), out_rate))
 }

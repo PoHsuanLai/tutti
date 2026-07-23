@@ -4,7 +4,7 @@
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
-use crate::process::ProcessedAudio;
+use crate::process::Chunk;
 use flacenc::bitsink::ByteSink;
 use flacenc::component::BitRepr;
 use flacenc::config::Encoder as EncoderConfig;
@@ -16,7 +16,7 @@ use std::io::Write;
 
 const BLOCK_SIZE: usize = 4096;
 
-pub(crate) fn encode(audio: ProcessedAudio, request: &EncodeRequest<'_>) -> Result<()> {
+pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
     if request.bit_depth == BitDepth::Float32 {
         return Err(Error::UnsupportedFormat(
             "FLAC does not support 32-bit float".into(),
@@ -25,8 +25,8 @@ pub(crate) fn encode(audio: ProcessedAudio, request: &EncodeRequest<'_>) -> Resu
     let bits_per_sample = bits_for(request.bit_depth);
 
     let (samples, channels) = match audio {
-        ProcessedAudio::Stereo { left, right } => (interleave(&left, &right, request.bit_depth), 2),
-        ProcessedAudio::Mono(samples) => (
+        Chunk::Stereo { left, right } => (interleave(&left, &right, request.bit_depth), 2),
+        Chunk::Mono(samples) => (
             samples
                 .iter()
                 .map(|&s| f32_to_i32(s, request.bit_depth))

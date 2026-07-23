@@ -5,20 +5,20 @@ use crate::encode::sink::StreamingEncoder;
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
 use crate::options::{BitDepth, ChannelMode};
-use crate::process::{Chunk, ProcessedAudio};
+use crate::process::Chunk;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
 
-pub(crate) fn encode(audio: ProcessedAudio, request: &EncodeRequest<'_>) -> Result<()> {
+pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
     match audio {
-        ProcessedAudio::Stereo { left, right } => {
+        Chunk::Stereo { left, right } => {
             let spec = spec(request.sample_rate, request.bit_depth, ChannelMode::Stereo);
             let mut writer = WavWriter::create(request.path, spec).map_err(io_err)?;
             write_stereo(&mut writer, &left, &right, request.bit_depth)?;
             writer.finalize().map_err(io_err)?;
         }
-        ProcessedAudio::Mono(samples) => {
+        Chunk::Mono(samples) => {
             let spec = spec(request.sample_rate, request.bit_depth, ChannelMode::Mono);
             let mut writer = WavWriter::create(request.path, spec).map_err(io_err)?;
             write_mono(&mut writer, &samples, request.bit_depth)?;

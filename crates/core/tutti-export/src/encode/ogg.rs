@@ -2,19 +2,19 @@
 
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
-use crate::process::ProcessedAudio;
+use crate::process::Chunk;
 use std::io::BufWriter;
 use std::num::{NonZeroU32, NonZeroU8};
 use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoderBuilder};
 
 const BLOCK_SIZE: usize = 4096;
 
-pub(crate) fn encode(audio: ProcessedAudio, request: &EncodeRequest<'_>) -> Result<()> {
+pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
     let quality = request.ogg.quality;
 
     let channels: Vec<Vec<f32>> = match audio {
-        ProcessedAudio::Stereo { left, right } => vec![left, right],
-        ProcessedAudio::Mono(samples) => vec![samples],
+        Chunk::Stereo { left, right } => vec![left, right],
+        Chunk::Mono(samples) => vec![samples],
     };
 
     let num_channels = channels.len();

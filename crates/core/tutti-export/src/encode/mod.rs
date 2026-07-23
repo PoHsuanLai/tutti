@@ -1,6 +1,6 @@
 //! Audio encoding stage.
 //!
-//! Accepts a [`ProcessedAudio`] buffer from the `process` stage and writes
+//! Accepts a [`Chunk`] buffer from the `process` stage and writes
 //! it to disk via a format-specific encoder. Also defines the chunk-based
 //! [`StreamingEncoder`] trait that the streaming export path uses.
 //!
@@ -31,12 +31,12 @@ pub(crate) mod ogg;
 
 use crate::error::Result;
 use crate::options::{AudioFormat, BitDepth, BroadcastWavMetadata, Flac, Ogg};
-use crate::process::ProcessedAudio;
+use crate::process::Chunk;
 use crate::progress::{Phase, PhaseGuard};
 use std::path::Path;
 
 /// Everything an encoder needs to write one file: where, what format, what
-/// per-format knobs. Channel mode is carried by the [`ProcessedAudio`]
+/// per-format knobs. Channel mode is carried by the [`Chunk`]
 /// enum itself, so it is not duplicated here.
 pub(crate) struct EncodeRequest<'a> {
     pub path: &'a Path,
@@ -53,7 +53,7 @@ pub(crate) struct EncodeRequest<'a> {
 /// Encode `audio` to `request.path`. A [`PhaseGuard`] brackets the operation
 /// with `(Encode, 0.0)` / `(Encode, 1.0)` progress events.
 pub(crate) fn encode(
-    audio: ProcessedAudio,
+    audio: Chunk,
     request: EncodeRequest<'_>,
     on_progress: &(dyn Fn(Phase, f32) + Send + Sync),
 ) -> Result<()> {

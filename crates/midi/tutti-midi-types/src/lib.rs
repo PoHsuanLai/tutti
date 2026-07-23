@@ -17,6 +17,10 @@ pub use midi2;
 pub use midly;
 
 pub mod cc;
+/// MIDI Capability Inquiry (MIDI-CI, M2-101) — Discovery, Profile Configuration,
+/// and Property Exchange over Universal SysEx, transported by the SysEx7
+/// fragmenter. Hand-rolled (midi2's `ci` module is a WIP stub).
+pub mod ci;
 pub mod clip_file;
 pub mod message;
 pub mod mpe;

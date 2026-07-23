@@ -135,8 +135,9 @@ impl Plugin for TuttiPlugin {
         #[cfg(all(feature = "export", feature = "sampler"))]
         app.add_plugins(tutti_export::ecs::TuttiRegionRenderPlugin);
 
-        // Decode-once wave cache: one Arc<Wave> per file, shared by playback,
-        // analysis, and the offline render. Decodes off-thread.
-        app.add_plugins(tutti_wavecache::WaveCachePlugin);
+        // Note: the decode-once wave cache (Arc<Wave> residency for clip
+        // playback + spectral render) is an app-side policy, not an engine
+        // capability — it lives in `dawai_model::audio_io::wave_cache` and is
+        // installed by dawai-model's `AudioGraphPlugin`.
     }
 }

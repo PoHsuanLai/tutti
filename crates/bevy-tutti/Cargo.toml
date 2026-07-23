@@ -34,11 +34,6 @@ tutti-midi-types = { path = "../tutti/crates/midi/tutti-midi-types", default-fea
 # pipelines + reconcilers + plugins that bevy-tutti schedules) are always-on; the
 # optional features below add spatial / convolution / automation on top.
 tutti-units = { path = "../tutti/crates/dsp/tutti-units", default-features = false, features = ["bevy"] }
-# Decode-once wave cache (Bevy-native). It is a non-optional dep that always
-# needs at least one codec (its API uses tutti-core's fundsp `Wave::load` /
-# `WaveMetadata`, which are codec-gated), so enable `wav` unconditionally here;
-# bevy-tutti's own wav/mp3/flac/ogg features add the rest.
-tutti-wavecache = { path = "../tutti/crates/core/tutti-wavecache", default-features = false, features = ["bevy", "wav"] }
 
 # Optional subsystems (gated by bevy-tutti features below).
 tutti-sampler = { path = "../tutti/crates/dsp/tutti-sampler", optional = true, default-features = false }
@@ -93,11 +88,11 @@ dsp = ["tutti-units/spatial"]
 # FFT convolution reverb (partitioned IR) in tutti-units.
 convolution = ["tutti-units/convolution"]
 
-# Audio formats (codec on tutti-core + the wave cache decoder).
-wav = ["tutti-core/wav", "tutti-sampler?/wav", "tutti-wavecache/wav"]
-flac = ["tutti-core/flac", "tutti-sampler?/flac", "tutti-wavecache/flac"]
-mp3 = ["tutti-core/mp3", "tutti-sampler?/mp3", "tutti-wavecache/mp3"]
-ogg = ["tutti-core/ogg", "tutti-sampler?/ogg", "tutti-wavecache/ogg"]
+# Audio formats (codec on tutti-core + the sampler decoder).
+wav = ["tutti-core/wav", "tutti-sampler?/wav"]
+flac = ["tutti-core/flac", "tutti-sampler?/flac"]
+mp3 = ["tutti-core/mp3", "tutti-sampler?/mp3"]
+ogg = ["tutti-core/ogg", "tutti-sampler?/ogg"]
 
 # MIDI — two axes. `midi` is the hardware-free engine: types, bus, routing, clip
 # playback, sequencer, MPE, the clock-master *generation*, built-in synth MIDI —

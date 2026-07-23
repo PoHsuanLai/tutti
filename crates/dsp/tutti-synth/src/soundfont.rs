@@ -10,7 +10,6 @@ pub use rustysynth::{SoundFont, SynthesizerSettings};
 pub use rustysynth::SoundFontAsset;
 
 use rustysynth::Synthesizer;
-use smallvec::SmallVec;
 use tutti_core::Arc;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};
 use tutti_midi_runtime::{MidiInPort, MidiSender};
@@ -30,7 +29,6 @@ pub struct SoundFontUnit {
     left_buffer: Vec<f32>,
     right_buffer: Vec<f32>,
     buffer_pos: usize,
-    pending_midi: SmallVec<[MidiEvent; 128]>,
     /// This unit's MIDI input endpoint (routing address + mailbox + current pull
     /// source). See [`MidiInPort`] for the fundsp clone/isolate sharing semantics.
     midi: MidiInPort,
@@ -54,7 +52,6 @@ impl SoundFontUnit {
             left_buffer: vec![0.0; buffer_size],
             right_buffer: vec![0.0; buffer_size],
             buffer_pos: buffer_size,
-            pending_midi: SmallVec::new(),
             midi: MidiInPort::new(),
             midi_buffer: vec![MidiEvent::noop(); MIDI_BUFFER_CAPACITY],
         })
@@ -106,22 +103,36 @@ impl SoundFontUnit {
         self.buffer_pos = 0;
     }
 
-    fn poll_midi_events(&mut self, block_size: usize) {
+    /// Poll this block's events into `midi_buffer`, sorted by `frame_offset`,
+    /// and return the count. Does **not** dispatch — the caller applies each
+    /// event at its offset (see [`Self::process`]) so timing stays
+    /// sample-accurate rather than collapsing every event to the block start.
+    fn poll_midi_events_sorted(&mut self, block_size: usize) -> usize {
         let count = self.midi.poll(block_size, &mut self.midi_buffer);
-        for i in 0..count {
-            self.pending_midi.push(self.midi_buffer[i]);
+        if count > 1 {
+            self.midi_buffer[..count].sort_unstable_by_key(|e| e.frame_offset);
         }
+        count
+    }
 
-        // Take ownership of the queued events so the drain borrow releases
-        // before we call back into `&mut self` dispatchers.
-        let events: SmallVec<[MidiEvent; 128]> = self.pending_midi.drain(..).collect();
-        for event in events {
-            // RustySynth speaks MIDI 1.0 wire format. `normalize` gives us a
-            // single MIDI-2 vocabulary; `dispatch` downscales to 7-bit via the
-            // spec Min-Center-Max converters (this is a documented 1.0 boundary:
-            // per-note messages have no rustysynth analogue and are dropped).
-            self.dispatch(&tutti_midi_types::normalize(&event));
+    /// Apply one polled event to the synthesizer. RustySynth speaks MIDI 1.0
+    /// wire format. `normalize` gives us a single MIDI-2 vocabulary; `dispatch`
+    /// downscales to 7-bit via the spec Min-Center-Max converters (a documented
+    /// 1.0 boundary: per-note messages have no rustysynth analogue, dropped).
+    fn apply_event(&mut self, event: &MidiEvent) {
+        self.dispatch(&tutti_midi_types::normalize(event));
+    }
+
+    /// Pull one output sample from the rustysynth render buffer, refilling the
+    /// 64-sample chunk on demand.
+    #[inline]
+    fn next_output_sample(&mut self) -> (f32, f32) {
+        if self.buffer_pos >= self.buffer_size {
+            self.refill_buffers();
         }
+        let s = (self.left_buffer[self.buffer_pos], self.right_buffer[self.buffer_pos]);
+        self.buffer_pos += 1;
+        s
     }
 
     /// MIDI 1.0 boundary. Values downscale via spec Min-Center-Max (convert.rs).
@@ -213,28 +224,43 @@ impl AudioUnit for SoundFontUnit {
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         assert_eq!(output.len(), 2, "SoundFontUnit is stereo (2 outputs)");
-        self.poll_midi_events(1);
-
-        if self.buffer_pos >= self.buffer_size {
-            self.refill_buffers();
+        // Single-sample block: every event lands at this one sample.
+        let count = self.poll_midi_events_sorted(1);
+        for i in 0..count {
+            let event = self.midi_buffer[i];
+            self.apply_event(&event);
         }
 
-        output[0] = self.left_buffer[self.buffer_pos];
-        output[1] = self.right_buffer[self.buffer_pos];
-        self.buffer_pos += 1;
+        let (l, r) = self.next_output_sample();
+        output[0] = l;
+        output[1] = r;
     }
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        self.poll_midi_events(size);
+        // Poll the whole block's events (sorted by offset) and interleave their
+        // application with rendering: apply every event due at `pos`, emit one
+        // sample, advance. This keeps events sample-accurate on our own — no
+        // outer buffer-split required (the MIDI subsystem delivers all events to
+        // our inbox once per block, each carrying its `frame_offset`).
+        let count = self.poll_midi_events_sorted(size);
+        let mut event_idx = 0;
 
-        (0..size).for_each(|i| {
-            if self.buffer_pos >= self.buffer_size {
-                self.refill_buffers();
+        for pos in 0..size {
+            // Apply every event whose offset is at or before this sample. Events
+            // past `size` are clamped in so a stray late offset still fires.
+            while event_idx < count
+                && (self.midi_buffer[event_idx].frame_offset as usize).min(size.saturating_sub(1))
+                    <= pos
+            {
+                let event = self.midi_buffer[event_idx];
+                self.apply_event(&event);
+                event_idx += 1;
             }
-            output.set_f32(0, i, self.left_buffer[self.buffer_pos]);
-            output.set_f32(1, i, self.right_buffer[self.buffer_pos]);
-            self.buffer_pos += 1;
-        });
+
+            let (l, r) = self.next_output_sample();
+            output.set_f32(0, pos, l);
+            output.set_f32(1, pos, r);
+        }
     }
 
     fn inputs(&self) -> usize {
@@ -281,7 +307,6 @@ impl Clone for SoundFontUnit {
             left_buffer: self.left_buffer.clone(),
             right_buffer: self.right_buffer.clone(),
             buffer_pos: self.buffer_pos,
-            pending_midi: SmallVec::new(),
             // Shares the mailbox + source cell (fundsp clone-on-commit); see
             // [`MidiInPort`]. `isolate()` severs it for an offline render.
             midi: self.midi.clone(),
@@ -575,6 +600,77 @@ mod tests {
         samples
     }
 
+    /// Render one `process` block of `size` frames (≤ [`MAX_BUFFER_SIZE`]) after
+    /// pushing `events` into the unit's own MIDI inbox — the RT path the engine
+    /// drives (poll + self-split on `frame_offset`), not the per-sample `tick`
+    /// path. `BufferVec` holds exactly one SIMD block per channel, so `size` is
+    /// capped at 64.
+    fn render_process_block(
+        unit: &mut SoundFontUnit,
+        size: usize,
+        events: &[MidiEvent],
+    ) -> Vec<(f32, f32)> {
+        assert!(size <= tutti_core::MAX_BUFFER_SIZE, "one BufferVec block only");
+        unit.midi_sender().queue(events);
+
+        let mut buffer = tutti_core::BufferVec::new(2);
+        let input = tutti_core::BufferRef::new(&[]);
+        unit.process(size, &input, &mut buffer.buffer_mut());
+
+        (0..size)
+            .map(|i| (buffer.at_f32(0, i), buffer.at_f32(1, i)))
+            .collect()
+    }
+
+    /// The self-split guarantee: a note-on carried at a non-zero `frame_offset`
+    /// within a `process` block must sound *later* in the block than the same
+    /// note at offset 0 — i.e. `process` honors each event's offset itself,
+    /// with no outer buffer-split. Regression guard for the pre-block-producer
+    /// refactor (which removed the outer split).
+    ///
+    /// A single 64-frame block matches [`MAX_BUFFER_SIZE`] — the granularity the
+    /// real engine's chunked render already uses, so this is exactly what the
+    /// removed outer split used to provide.
+    #[test]
+    fn process_honors_frame_offset_within_block() {
+        let sf = match load_test_soundfont() {
+            Some(sf) => sf,
+            None => {
+                eprintln!("Skipping: test soundfont not found");
+                return;
+            }
+        };
+        let settings = SynthesizerSettings::new(44100);
+        const BLOCK: usize = 64;
+        const OFFSET: u32 = 48;
+
+        // Note at offset 0 — audible from the block start.
+        let mut early =
+            SoundFontUnit::new(Arc::clone(&sf), &settings).expect("create SoundFontUnit");
+        let s_early =
+            render_process_block(&mut early, BLOCK, &[MidiEvent::note_on_7bit(0, 0, 60, 100)]);
+
+        // Same note delayed to OFFSET — the [0, OFFSET) head must be near-silent.
+        let mut late = SoundFontUnit::new(sf, &settings).expect("create SoundFontUnit");
+        let s_late = render_process_block(
+            &mut late,
+            BLOCK,
+            &[MidiEvent::note_on_7bit(0, 0, 60, 100).with_frame_offset(OFFSET)],
+        );
+
+        let early_head = rms(&s_early[..OFFSET as usize]);
+        let late_head = rms(&s_late[..OFFSET as usize]);
+        assert!(
+            early_head > 0.0005,
+            "offset-0 note should sound in the block head, RMS={early_head}"
+        );
+        assert!(
+            late_head < early_head * 0.5,
+            "offset-{OFFSET} note must be much quieter in the pre-offset head \
+             (self-split honored the offset): late_head={late_head}, early_head={early_head}"
+        );
+    }
+
     /// The MIDI-1 boundary (`dispatch`) must scale 16-bit UMP velocity through
     /// the spec Min-Center-Max downscaler, not an open-coded multiply. Assert
     /// the representative spec vectors so a regression to `* 127 / 65535` (which
@@ -777,8 +873,7 @@ mod tests {
         let mut clone = unit.clone();
 
         // Clone should NOT have the note playing (fresh state)
-        // Note: the synthesizer itself is cloned with state, but pending_midi is fresh
-        // Actually RustySynth clones the synthesizer state, so both will have the note
+        // RustySynth clones the synthesizer state, so both start with the note
 
         // But we can verify they're independent by playing different notes
         clone.note_on(0, 72, 100); // Different note on clone

@@ -1015,6 +1015,7 @@ pub mod snoop;
 pub mod sound;
 pub mod svf;
 pub mod system;
+pub mod unit_param;
 pub mod vertex;
 pub mod wave;
 pub mod wavetable;

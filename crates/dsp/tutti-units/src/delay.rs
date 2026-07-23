@@ -210,7 +210,7 @@ impl AudioUnit for DelayLineNode {
     }
 
     fn set(&mut self, setting: tutti_core::dsp::Setting) {
-        if let Some((param, value)) = tutti_core::UnitParam::from_setting(&setting) {
+        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
             match param {
                 tutti_core::UnitParam::DelayTime => self.set_delay_time(value),
                 tutti_core::UnitParam::Feedback => self.set_feedback(value),
@@ -558,7 +558,7 @@ impl AudioUnit for StereoDelayLineNode {
     }
 
     fn set(&mut self, setting: tutti_core::dsp::Setting) {
-        if let Some((param, value)) = tutti_core::UnitParam::from_setting(&setting) {
+        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
             match param {
                 tutti_core::UnitParam::DelayTime => self.set_delay_time(value),
                 tutti_core::UnitParam::Feedback => self.set_feedback(value),

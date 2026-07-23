@@ -4,7 +4,7 @@
 //! Previous state is restored on drop.
 //!
 //! ```
-//! use tutti_core::ScopedNoDenormals;
+//! use tutti_types::ScopedNoDenormals;
 //!
 //! fn audio_callback(buffer: &mut [f32]) {
 //!     let _guard = ScopedNoDenormals::new();

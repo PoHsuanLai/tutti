@@ -32,13 +32,19 @@
 pub mod error;
 pub use error::{Error, Result};
 
-// Parameter vocabulary: units (Bpm/Hz/Db…), the atomic Param cell, and UnitParam
-// addressing — grouped under one `param` module by what they do.
-pub mod param;
-pub use param::{
+// Parameter vocabulary: the measurement newtypes (Bpm/Hz/Db…), the atomic
+// `Param` cell, and the `UnitParam` address enum all live in `tutti-types`
+// (pure vocabulary, no engine dependency) and are re-exported here so consumers
+// reach them via the engine root. `SampleRate` and the `unit_param` fundsp-glue
+// (`setting` / `from_setting`) come from `fundsp-tutti` (which owns fundsp's
+// `Setting`). There is no longer a `tutti_core::param` module — the vocabulary
+// has no engine-side home to gather under.
+pub use tutti_types::value::{
     AtomicSamplePosition, Beat, BeatDuration, Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio,
-    SamplePosition, SampleRate, Seconds, Semitones, Unit, UnitParam,
+    SamplePosition, Seconds, Semitones, Unit, UnitParam,
 };
+pub use fundsp::params::SampleRate;
+pub use fundsp::unit_param;
 
 /// Back-compat alias for the unit newtypes' old module path
 /// (`tutti_core::params::Bpm`, …). The vocabulary now lives in

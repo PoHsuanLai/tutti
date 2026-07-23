@@ -23,4 +23,4 @@ dashmap = "6.1"
 parking_lot = "0.12"
 
 [dev-dependencies]
-assert_no_alloc = "1"
+assert_no_alloc = { version = "1", default-features = false }

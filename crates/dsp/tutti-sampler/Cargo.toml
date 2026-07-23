@@ -70,4 +70,4 @@ approx = "0.5"
 tempfile = "3.8"
 rand = "0.8"
 serde_json = "1"
-assert_no_alloc = "1"
+assert_no_alloc = { version = "1", default-features = false }

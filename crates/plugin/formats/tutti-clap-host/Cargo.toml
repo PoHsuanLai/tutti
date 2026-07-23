@@ -20,7 +20,7 @@ tutti-midi-types = { path = "../../../midi/tutti-midi-types" }
 tutti-plugin-types = { path = "../../tutti-plugin-types" }
 
 [dev-dependencies]
-assert_no_alloc = "1"
+assert_no_alloc = { version = "1", default-features = false }
 tempfile = "3"
 # The reference plugin used by the clap_conformance harness. As a
 # dev-dependency, Cargo builds its cdylib in the same `cargo test`

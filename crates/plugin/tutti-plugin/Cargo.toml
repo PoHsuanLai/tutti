@@ -109,5 +109,5 @@ optional = true
 
 [dev-dependencies]
 tempfile = "3"
-assert_no_alloc = "1"
+assert_no_alloc = { version = "1", default-features = false }
 tutti-midi-types = { path = "../../midi/tutti-midi-types" }

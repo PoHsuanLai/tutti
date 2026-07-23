@@ -300,7 +300,7 @@ impl<F: Real + 'static> AudioUnit for SvfFilterNode<F> {
     }
 
     fn set(&mut self, setting: tutti_core::dsp::Setting) {
-        if let Some((param, value)) = tutti_core::UnitParam::from_setting(&setting) {
+        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
             match param {
                 tutti_core::UnitParam::Cutoff => self.set_frequency(value),
                 tutti_core::UnitParam::Q => self.set_q(value),
@@ -592,7 +592,7 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
     }
 
     fn set(&mut self, setting: tutti_core::dsp::Setting) {
-        if let Some((param, value)) = tutti_core::UnitParam::from_setting(&setting) {
+        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
             match param {
                 tutti_core::UnitParam::Cutoff => self.set_frequency(value),
                 tutti_core::UnitParam::Q => self.set_q(value),
@@ -793,16 +793,17 @@ mod tests {
     fn test_svf_set_via_unit_param() {
         // The generic param path: a UnitParam Setting flows through AudioUnit::set
         // and lands in the same atomic the bespoke setter writes.
+        use tutti_core::unit_param;
         use tutti_core::{AudioUnit, UnitParam};
         let mut node = StereoSvfFilterNode::<f64>::new(SvfType::LowPass, 1000.0, 0.707);
-        node.set(UnitParam::Cutoff.setting(5000.0));
-        node.set(UnitParam::Q.setting(2.5));
+        node.set(unit_param::setting(UnitParam::Cutoff, 5000.0));
+        node.set(unit_param::setting(UnitParam::Q, 2.5));
         assert!(
             (node.frequency().load(std::sync::atomic::Ordering::Acquire) - 5000.0).abs() < 1e-3
         );
         assert!((node.q().load(std::sync::atomic::Ordering::Acquire) - 2.5).abs() < 1e-3);
         // An unknown-to-this-unit param is a silent no-op (no panic).
-        node.set(UnitParam::Wet.setting(0.5));
+        node.set(unit_param::setting(UnitParam::Wet, 0.5));
     }
 
     #[test]

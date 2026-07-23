@@ -297,7 +297,7 @@ impl AudioUnit for Gate {
     }
 
     fn set(&mut self, setting: tutti_core::dsp::Setting) {
-        if let Some((param, value)) = tutti_core::UnitParam::from_setting(&setting) {
+        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
             match param {
                 tutti_core::UnitParam::Threshold => self.set_threshold(value),
                 tutti_core::UnitParam::Attack => self.set_attack(value),

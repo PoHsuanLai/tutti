@@ -38,7 +38,7 @@ bevy_reflect = { version = "0.19", default-features = false, optional = true }
 anyhow = "1.0.89"
 criterion = "0.8.1"
 cpal = { version = "0.17.0", features = ["audio_thread_priority"] }
-assert_no_alloc = "1.1.2"
+assert_no_alloc = { version = "1.1.2", default-features = false }
 eframe = "0.33.3"
 plotters = "0.3.7"
 midi-msg = "0.5.0"

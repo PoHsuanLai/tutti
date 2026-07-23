@@ -16,4 +16,4 @@ smallvec = { version = "1", default-features = false, features = ["const_generic
 atomic_float = { version = "1.1", default-features = false, features = ["atomic_f64"] }
 
 [dev-dependencies]
-assert_no_alloc = "1"
+assert_no_alloc = { version = "1", default-features = false }

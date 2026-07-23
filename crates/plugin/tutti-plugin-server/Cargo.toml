@@ -82,4 +82,4 @@ libloading = "0.8"
 
 [dev-dependencies]
 # RT-safety regression: prove the per-block audio path never allocates.
-assert_no_alloc = "1"
+assert_no_alloc = { version = "1", default-features = false }

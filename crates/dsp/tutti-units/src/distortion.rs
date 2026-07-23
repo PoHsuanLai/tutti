@@ -232,7 +232,7 @@ impl AudioUnit for DistortionNode {
     }
 
     fn set(&mut self, setting: tutti_core::dsp::Setting) {
-        if let Some((param, value)) = tutti_core::UnitParam::from_setting(&setting) {
+        if let Some((param, value)) = tutti_core::unit_param::from_setting(&setting) {
             if matches!(param, tutti_core::UnitParam::Drive) {
                 self.set_drive(value);
             }
@@ -340,12 +340,13 @@ mod tests {
     #[test]
     fn drive_settable_via_unit_param() {
         use std::sync::atomic::Ordering;
+        use tutti_core::unit_param;
         use tutti_core::{AudioUnit, UnitParam};
         let mut n = DistortionNode::new(ShapeKind::Tanh, 1.0);
-        n.set(UnitParam::Drive.setting(5.0));
+        n.set(unit_param::setting(UnitParam::Drive, 5.0));
         assert!((n.drive().load(Ordering::Acquire) - 5.0).abs() < 1e-3);
         // A param this unit doesn't own is a silent no-op.
-        n.set(UnitParam::Cutoff.setting(1000.0));
+        n.set(unit_param::setting(UnitParam::Cutoff, 1000.0));
     }
 
     #[test]

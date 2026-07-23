@@ -19,4 +19,4 @@ midi2 = { workspace = true }
 midly = { workspace = true, features = ["alloc"] }
 
 [dev-dependencies]
-assert_no_alloc = "1"
+assert_no_alloc = { version = "1", default-features = false }

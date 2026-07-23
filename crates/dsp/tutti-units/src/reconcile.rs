@@ -20,7 +20,7 @@ use tutti_core::ecs::GraphReconcileSystems;
 //
 // ONE system handles every effect's scalar params. Each typed ECS param
 // component maps to a [`tutti_core::UnitParam`]; a `Changed<component>` is
-// pushed to the node via `net.set(param.setting(v).node(id))`.
+// pushed to the node via `net.set(unit_param::setting(param, v).node(id))`.
 //
 // This rides fundsp's `Net::set`, which is **lock-free** when a realtime
 // backend is attached (the setting is enqueued to the audio thread) — the
@@ -98,7 +98,7 @@ pub fn reconcile_unit_params(
         // Each present component addresses the node by id; the unit's own `set`
         // honors (or ignores) the param. Routes via fundsp's lock-free Net::set.
         let mut push = |param: UnitParam, value: f32| {
-            net.set(param.setting(value).node(id));
+            net.set(tutti_core::unit_param::setting(param, value).node(id));
         };
         if let Some(c) = p.frequency {
             push(UnitParam::Cutoff, c.0);

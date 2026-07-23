@@ -21,7 +21,7 @@ tutti-types = { path = "../../../core/tutti-types" }
 vst3 = "0.3"
 
 [dev-dependencies]
-assert_no_alloc = "1"
+assert_no_alloc = { version = "1", default-features = false }
 tempfile = "3"
 winit = "0.30"
 raw-window-handle = "0.6"

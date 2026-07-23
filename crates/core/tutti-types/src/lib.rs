@@ -40,7 +40,7 @@ pub use rt::{
 // Value vocabulary.
 pub use value::{
     AtomicSamplePosition, Beat, BeatDuration, Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio,
-    SamplePosition, Samples, Seconds, Semitones, Unit,
+    SamplePosition, Samples, Seconds, Semitones, Unit, UnitParam, UnitParamOutOfRange,
 };
 
 // I/O edge + latency.

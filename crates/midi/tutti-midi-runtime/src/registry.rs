@@ -434,6 +434,19 @@ impl MidiBus {
         self.queue_system(&MidiEvent::endpoint_discovery(1, 1, request));
     }
 
+    /// Broadcast a MIDI-CI message (M2-101) on `group`. The message is fragmented
+    /// into SysEx7 UMP packets via [`tutti_midi_types::ci::ci_to_sysex7`] and each
+    /// packet is queued as a system event — the outbound half of MIDI-CI
+    /// negotiation. The peer's replies are interpreted by
+    /// [`crate::CiResponder`] / [`crate::CiInitiator`] on the receiving side.
+    pub fn broadcast_ci(&self, group: u8, message: &tutti_midi_types::ci::CiMessage) {
+        let mut packets = Vec::new();
+        tutti_midi_types::ci::ci_to_sysex7(group, message, &mut packets);
+        for packet in &packets {
+            self.queue_system(packet);
+        }
+    }
+
     /// True if the bus has a subscriber for the unit id.
     pub fn contains(&self, unit_id: MidiUnitId) -> bool {
         self.senders.contains_key(&unit_id)

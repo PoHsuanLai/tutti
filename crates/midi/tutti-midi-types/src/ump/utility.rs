@@ -32,7 +32,7 @@ impl MidiEvent {
         use midi2::utility::Utility;
         use midi2::UmpMessage;
         match UmpMessage::try_from(self.data_words()).ok()? {
-            UmpMessage::Utility(Utility::Timestamp(m)) => Some(u16::from(m.time_data())),
+            UmpMessage::Utility(Utility::Timestamp(m)) => Some(m.time_data()),
             _ => None,
         }
     }

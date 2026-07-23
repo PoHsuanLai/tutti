@@ -143,6 +143,13 @@ pub use ecs::{
 };
 
 #[cfg(feature = "bevy")]
+pub use ecs::{
+    BroadcastFlexMetadata, CiDeviceDiscovered, CiRes, EndpointDiscovered, EndpointDiscoveryRes,
+    InboundCiMessage, InboundEndpointReply, JrStamperRes, MidiMetadataPlugin, MidiNegotiationPlugin,
+    StartCiDiscovery, StartEndpointDiscovery,
+};
+
+#[cfg(feature = "bevy")]
 pub use ecs::{MpeExpressionResource, MpeModeConfig, MpePlugin, MpeReceiver};
 
 #[cfg(all(feature = "bevy", feature = "midi-hardware"))]

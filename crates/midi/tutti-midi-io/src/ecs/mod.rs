@@ -13,6 +13,8 @@
 
 pub mod bus;
 pub mod clock_out;
+pub mod metadata;
+pub mod negotiation;
 pub mod routing;
 pub mod scheduled;
 pub mod sequence;
@@ -26,7 +28,15 @@ pub mod midi_plugin;
 
 pub use bus::MidiBusRes;
 pub use clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
+pub use metadata::{
+    flex_metadata_broadcast_system, BroadcastFlexMetadata, JrStamperRes, MidiMetadataPlugin,
+};
 pub use midi_plugin::{PendingMidi, TuttiMidiPlugin};
+pub use negotiation::{
+    ci_discovery_system, ci_ingest_system, endpoint_discovery_system, endpoint_ingest_system,
+    CiDeviceDiscovered, CiRes, EndpointDiscovered, EndpointDiscoveryRes, InboundCiMessage,
+    InboundEndpointReply, MidiNegotiationPlugin, StartCiDiscovery, StartEndpointDiscovery,
+};
 pub use routing::{midi_routing_sync_system, MidiRoutingPlugin, MidiSink};
 pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi, ScheduledMidiPlugin};
 pub use sequence::{

@@ -7,6 +7,8 @@
 //! - [`MidiRoutingPlugin`](super::routing::MidiRoutingPlugin) — component-driven route table
 //! - [`MidiSequencePlugin`](super::sequence::MidiSequencePlugin) — transport-beat note firing
 //! - [`ScheduledMidiPlugin`](super::scheduled::ScheduledMidiPlugin) — time-delayed dispatch
+//! - [`MidiNegotiationPlugin`](super::negotiation::MidiNegotiationPlugin) — MIDI-CI + UMP-Stream discovery
+//! - [`MidiMetadataPlugin`](super::metadata::MidiMetadataPlugin) — Flex Data metadata broadcast
 //! - `MidiDevicePlugin` — hardware connect/poll (`midi-hardware`)
 //! - `MpePlugin` — per-note expression read side (`mpe`)
 //!
@@ -60,6 +62,8 @@ impl Plugin for TuttiMidiPlugin {
         app.add_plugins(super::sequence::MidiSequencePlugin);
         app.add_plugins(super::scheduled::ScheduledMidiPlugin);
         app.add_plugins(super::clock_out::ClockOutPlugin);
+        app.add_plugins(super::negotiation::MidiNegotiationPlugin);
+        app.add_plugins(super::metadata::MidiMetadataPlugin);
 
         #[cfg(feature = "midi-hardware")]
         app.add_plugins(super::device::MidiDevicePlugin);

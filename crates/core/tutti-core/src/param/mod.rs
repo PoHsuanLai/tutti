@@ -15,6 +15,6 @@ pub mod units;
 pub use addressing::UnitParam;
 pub use atomic::Param;
 pub use units::{
-    AtomicSamplePosition, BeatDuration, BeatPosition, Bpm, Cents, Db, Degrees, Hz, Linear, Ratio,
+    AtomicSamplePosition, Beat, BeatDuration, Bpm, Cents, Db, Degrees, Hz, Linear, Ratio,
     SamplePosition, SampleRate, Seconds, Semitones, Unit,
 };

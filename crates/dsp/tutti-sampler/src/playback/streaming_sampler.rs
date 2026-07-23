@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tutti_core::{
-    AudioUnit, BeatDuration, BeatPosition, BufferMut, BufferRef, Linear, Ratio, SamplePosition,
+    AudioUnit, BeatDuration, Beat, BufferMut, BufferRef, Linear, Ratio, SamplePosition,
     Wave,
 };
 
@@ -461,7 +461,7 @@ impl StreamingClipReader {
         }
     }
 
-    pub fn set_placement(&mut self, start_beat: BeatPosition, duration: Option<BeatDuration>) {
+    pub fn set_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
         self.placement.start_beat = start_beat;
         self.placement.duration_beats = duration;
         // A placement change may move the window out from under the playhead;
@@ -555,7 +555,7 @@ impl ClipReader for StreamingClipReader {
         StreamingClipReader::set_gain(self, gain);
     }
 
-    fn set_placement(&mut self, start_beat: BeatPosition, duration: Option<BeatDuration>) {
+    fn set_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
         StreamingClipReader::set_placement(self, start_beat, duration);
     }
 
@@ -673,7 +673,7 @@ mod tests {
     use super::*;
     use crate::butler::{RegionBuffer, RegionId};
     use std::path::PathBuf;
-    use tutti_core::{BufferVec, TransportReader};
+    use tutti_core::{BufferVec, Timeline};
 
     fn make_reader_with_samples(samples: &[(f32, f32)]) -> SharedReader {
         let (mut writer, reader) =
@@ -714,34 +714,25 @@ mod tests {
         }
     }
 
-    impl TransportReader for MockTransport {
-        fn is_playing(&self) -> bool {
+    impl Timeline for MockTransport {
+        fn is_rolling(&self) -> bool {
             self.playing.load(Ordering::Relaxed)
         }
-        fn current_beat(&self) -> f64 {
-            f64::from_bits(self.beat.load(Ordering::Relaxed))
+        fn beat(&self) -> Beat {
+            Beat::new(f64::from_bits(self.beat.load(Ordering::Relaxed)))
         }
         fn tempo(&self) -> tutti_core::Bpm {
             tutti_core::Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
         }
-        fn is_loop_enabled(&self) -> bool {
-            false
-        }
-        fn get_loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<tutti_core::transport::LoopRange> {
             None
-        }
-        fn is_recording(&self) -> bool {
-            false
-        }
-        fn is_in_preroll(&self) -> bool {
-            false
         }
     }
 
     fn make_clip_reader(
         samples: &[(f32, f32)],
-        transport: Arc<dyn TransportReader>,
-        start_beat: BeatPosition,
+        transport: Arc<dyn Timeline>,
+        start_beat: Beat,
         duration: Option<BeatDuration>,
     ) -> StreamingClipReader {
         let (inner, state) = make_unit(samples);
@@ -767,7 +758,7 @@ mod tests {
         let mut reader = make_clip_reader(
             &samples,
             transport.clone(),
-            BeatPosition::new(4.0),
+            Beat::new(4.0),
             Some(BeatDuration::new(4.0)),
         );
 
@@ -802,7 +793,7 @@ mod tests {
         let mut reader = make_clip_reader(
             &samples,
             transport,
-            BeatPosition::new(4.0),
+            Beat::new(4.0),
             Some(BeatDuration::new(4.0)),
         );
 
@@ -829,7 +820,7 @@ mod tests {
         let mut reader = make_clip_reader(
             &samples,
             transport,
-            BeatPosition::new(4.0),
+            Beat::new(4.0),
             Some(BeatDuration::new(4.0)),
         );
         reader.set_sample_rate(tutti_core::SampleRate::new(48_000.0));
@@ -866,8 +857,8 @@ mod tests {
         let transport = MockTransport::new(120.0, 5.0, true); // inside [4, 8)
         let mut reader = make_clip_reader(
             &samples,
-            Arc::clone(&transport) as Arc<dyn TransportReader>,
-            BeatPosition::new(4.0),
+            Arc::clone(&transport) as Arc<dyn Timeline>,
+            Beat::new(4.0),
             Some(BeatDuration::new(4.0)),
         );
         reader.set_sample_rate(tutti_core::SampleRate::new(48_000.0));
@@ -902,7 +893,7 @@ mod tests {
         let mut reader = make_clip_reader(
             &samples,
             transport,
-            BeatPosition::new(4.0),
+            Beat::new(4.0),
             Some(BeatDuration::new(4.0)),
         );
         reader.set_sample_rate(tutti_core::SampleRate::new(48_000.0));

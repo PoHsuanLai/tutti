@@ -3,8 +3,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tutti_core::{
-    AtomicSamplePosition, AudioUnit, BeatDuration, BeatPosition, BufferMut, BufferRef, Linear,
-    Ratio, SamplePosition, SampleRate, TransportReader, Wave,
+    AtomicSamplePosition, AudioUnit, BeatDuration, Beat, BufferMut, BufferRef, Linear,
+    Ratio, SamplePosition, SampleRate, Timeline, Wave,
 };
 
 use super::loop_crossfade::LoopCrossfade;
@@ -55,9 +55,9 @@ pub enum LoopSetting {
 pub struct TransportPlacement {
     /// Transport clock. The sampler only plays when it is rolling, and uses its
     /// beat position to compute the sample offset.
-    pub transport: Arc<dyn TransportReader>,
+    pub transport: Arc<dyn Timeline>,
     /// Start position in beats on the timeline.
-    pub start_beat: BeatPosition,
+    pub start_beat: Beat,
     /// Duration in beats, or None to play the entire sample.
     pub duration_beats: Option<BeatDuration>,
 }
@@ -228,8 +228,8 @@ impl SamplerUnit {
     /// alongside its config one).
     pub fn with_transport(
         wave: Arc<Wave>,
-        transport: Arc<dyn TransportReader>,
-        start_beat: BeatPosition,
+        transport: Arc<dyn Timeline>,
+        start_beat: Beat,
         duration_beats: Option<BeatDuration>,
     ) -> Self {
         Self::with_config(
@@ -247,8 +247,8 @@ impl SamplerUnit {
 
     pub fn set_transport(
         &mut self,
-        transport: Arc<dyn TransportReader>,
-        start_beat: BeatPosition,
+        transport: Arc<dyn Timeline>,
+        start_beat: Beat,
         duration_beats: Option<BeatDuration>,
     ) {
         self.placement = Some(TransportPlacement {
@@ -258,7 +258,7 @@ impl SamplerUnit {
         });
     }
 
-    pub fn set_placement(&mut self, start_beat: BeatPosition, duration_beats: Option<BeatDuration>) {
+    pub fn set_placement(&mut self, start_beat: Beat, duration_beats: Option<BeatDuration>) {
         if let Some(placement) = &mut self.placement {
             placement.start_beat = start_beat;
             placement.duration_beats = duration_beats;
@@ -268,13 +268,13 @@ impl SamplerUnit {
     /// Used by export to inject export timeline. Preserves the existing
     /// start-beat / duration when a placement is already present; otherwise
     /// binds the transport at beat 0 for the whole sample.
-    pub fn replace_transport(&mut self, transport: Arc<dyn TransportReader>) {
+    pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
         match &mut self.placement {
             Some(placement) => placement.transport = transport,
             None => {
                 self.placement = Some(TransportPlacement {
                     transport,
-                    start_beat: BeatPosition::new(0.0),
+                    start_beat: Beat::new(0.0),
                     duration_beats: None,
                 });
             }
@@ -337,10 +337,10 @@ impl SamplerUnit {
         self.position.load(Ordering::Relaxed)
     }
 
-    pub fn start_beat(&self) -> BeatPosition {
+    pub fn start_beat(&self) -> Beat {
         self.placement
             .as_ref()
-            .map_or(BeatPosition::new(0.0), |p| p.start_beat)
+            .map_or(Beat::new(0.0), |p| p.start_beat)
     }
 
     /// None means play entire sample.
@@ -472,7 +472,7 @@ impl super::clip_reader::ClipReader for SamplerUnit {
         SamplerUnit::set_gain(self, gain);
     }
 
-    fn set_placement(&mut self, start_beat: BeatPosition, duration: Option<BeatDuration>) {
+    fn set_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
         SamplerUnit::set_placement(self, start_beat, duration);
     }
 
@@ -775,24 +775,15 @@ mod tests {
         }
     }
 
-    impl TransportReader for MockTransport {
-        fn current_beat(&self) -> f64 {
-            self.beat
+    impl Timeline for MockTransport {
+        fn beat(&self) -> tutti_core::Beat {
+            tutti_core::Beat(self.beat)
         }
-        fn is_loop_enabled(&self) -> bool {
-            false
-        }
-        fn get_loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
             None
         }
-        fn is_playing(&self) -> bool {
+        fn is_rolling(&self) -> bool {
             self.playing
-        }
-        fn is_recording(&self) -> bool {
-            false
-        }
-        fn is_in_preroll(&self) -> bool {
-            false
         }
         fn tempo(&self) -> tutti_core::params::Bpm {
             tutti_core::params::Bpm::new(self.tempo)
@@ -1171,7 +1162,7 @@ mod tests {
         // ramp_wave has sample[i] = i+1, so sample[22050] = 22051.0.
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(1.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1189,7 +1180,7 @@ mod tests {
     fn transport_stopped_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::stopped();
-        let mut sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1202,7 +1193,7 @@ mod tests {
     fn transport_before_start_beat_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(1.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(4.0), None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(4.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1215,7 +1206,7 @@ mod tests {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(10.0, 120.0);
         let mut sampler =
-            SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), Some(BeatDuration::new(4.0)));
+            SamplerUnit::with_transport(wave, transport, Beat::new(0.0), Some(BeatDuration::new(4.0)));
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1227,7 +1218,7 @@ mod tests {
     fn transport_process_block() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::new(0.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
@@ -1242,7 +1233,7 @@ mod tests {
     fn transport_process_block_silence_when_stopped() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::stopped();
-        let mut sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
+        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);

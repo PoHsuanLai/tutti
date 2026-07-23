@@ -22,7 +22,7 @@ use crate::playback::{
     Direction, LoopSetting, StreamingClipConfig, StreamingClipReader, TransportPlacement,
 };
 use crate::StreamingSamplerUnit;
-use tutti_core::{BeatDuration, BeatPosition, Ratio, SamplePosition, TransportReader, Wave};
+use tutti_core::{BeatDuration, Beat, Ratio, SamplePosition, Timeline, Wave};
 
 /// The caller's stated choice of playback tier for a clip: whole-file in RAM
 /// (`Memory`) or incremental disk streaming (`Disk`). Plain data — the sampler
@@ -330,8 +330,8 @@ impl Status {
     pub fn take_clip_reader(
         &self,
         channel_index: usize,
-        transport: Arc<dyn TransportReader>,
-        start_beat: BeatPosition,
+        transport: Arc<dyn Timeline>,
+        start_beat: Beat,
         duration: Option<BeatDuration>,
     ) -> Option<StreamingClipReader> {
         let (inner, rt_state) =

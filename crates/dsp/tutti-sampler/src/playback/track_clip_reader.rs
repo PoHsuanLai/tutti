@@ -19,16 +19,17 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use tutti_core::{
-    AudioUnit, BeatDuration, BeatPosition, BufferMut, BufferRef, Cents, Linear, Ratio,
-    SamplePosition, SignalFrame, TransportReader, Wave,
+    AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Cents, Linear, Ratio, SamplePosition,
+    SignalFrame, Timeline, Wave,
 };
+
 use crate::stretch;
 use crate::ClipReader;
 use crate::Command;
 use crate::Commands;
 use crate::LoopSetting;
-use crate::StreamingClipReader;
 use crate::SamplerUnit;
+use crate::StreamingClipReader;
 
 const COMMAND_CAPACITY: usize = 64;
 const TRACK_CLIP_READER_ID: u64 = 0x_0000_0000_0000_DA03;
@@ -233,7 +234,7 @@ pub enum ClipCommand {
     },
     UpdatePlacement {
         id: SlotId,
-        start_beat: BeatPosition,
+        start_beat: Beat,
         duration_beats: Option<BeatDuration>,
     },
     UpdateGain {
@@ -324,7 +325,7 @@ pub struct TrackClipReaderUnit {
     clips: Vec<ClipSlot>,
     rx: Receiver<ClipCommand>,
     sample_rate: f64,
-    transport: Option<Arc<dyn TransportReader>>,
+    transport: Option<Arc<dyn Timeline>>,
     /// Typed butler write handle. `Some` on the live path (threaded in from the
     /// [`Sampler`](crate::Sampler)); `None` for tests / detached / offline
     /// readers with no live butler. Used by the drain to forward *streaming*
@@ -339,7 +340,7 @@ impl TrackClipReaderUnit {
     /// `detached`.
     fn from_parts(
         rx: Receiver<ClipCommand>,
-        transport: Option<Arc<dyn TransportReader>>,
+        transport: Option<Arc<dyn Timeline>>,
         butler: Option<Commands>,
     ) -> Self {
         Self {
@@ -358,7 +359,7 @@ impl TrackClipReaderUnit {
     }
 
     pub fn with_transport(
-        transport: Arc<dyn TransportReader>,
+        transport: Arc<dyn Timeline>,
         butler: Option<Commands>,
     ) -> (Self, TrackClipReaderHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
@@ -387,7 +388,7 @@ impl TrackClipReaderUnit {
     /// channel-less, so it shares zero mutable state with the live graph at any
     /// instant. Clips are then rebuilt from ECS in the Populate step via
     /// [`Self::insert_clip`].
-    pub fn detached(transport: Arc<dyn TransportReader>) -> Self {
+    pub fn detached(transport: Arc<dyn Timeline>) -> Self {
         let (_tx, rx) = bounded(0);
         // No butler: the offline render never forwards streaming loop ops (it
         // rebuilds in-RAM clips from ECS), so a `None` handle is correct here.
@@ -842,32 +843,25 @@ mod tests {
         }
     }
 
-    impl TransportReader for MockTransport {
-        fn is_playing(&self) -> bool {
+    impl Timeline for MockTransport {
+        fn is_rolling(&self) -> bool {
             self.playing.load(Ordering::Relaxed)
         }
-        fn current_beat(&self) -> f64 {
-            f64::from_bits(self.beat.load(Ordering::Relaxed))
+        fn beat(&self) -> tutti_core::Beat {
+            tutti_core::Beat(f64::from_bits(self.beat.load(Ordering::Relaxed)))
         }
         fn tempo(&self) -> tutti_core::Bpm {
             tutti_core::Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
         }
-        fn is_loop_enabled(&self) -> bool {
-            false
-        }
-        fn get_loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
             None
-        }
-        fn is_recording(&self) -> bool {
-            false
-        }
-        fn is_in_preroll(&self) -> bool {
-            false
         }
     }
 
     fn make_wave(samples: usize) -> Arc<Wave> {
-        let data: Vec<f32> = (0..samples).map(|i| (i as f32 + 1.0) / samples as f32).collect();
+        let data: Vec<f32> = (0..samples)
+            .map(|i| (i as f32 + 1.0) / samples as f32)
+            .collect();
         Arc::new(Wave::from_samples(44100.0, &data))
     }
 
@@ -877,7 +871,7 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, true);
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), BeatPosition::new(0.0), None);
+        let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
@@ -900,7 +894,7 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, false);
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
+        let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
@@ -921,7 +915,7 @@ mod tests {
 
         for i in 0..3 {
             let sampler =
-                SamplerUnit::with_transport(wave.clone(), transport.clone(), BeatPosition::new(0.0), None);
+                SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
             handle.send(ClipCommand::Add {
                 id: SlotId(i),
                 sampler,
@@ -933,7 +927,7 @@ mod tests {
         unit.tick(&[], &mut out_3);
 
         let (mut unit2, handle2) = TrackClipReaderUnit::new();
-        let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), BeatPosition::new(0.0), None);
+        let sampler = SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
         handle2.send(ClipCommand::Add {
             id: SlotId(0),
             sampler,
@@ -953,7 +947,7 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, true);
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
+        let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
@@ -976,7 +970,7 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, true);
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
+        let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
         unit.insert_clip(ClipSpec {
             id: SlotId(1),
             sampler,
@@ -990,7 +984,10 @@ mod tests {
 
         let mut out = [0.0f32; 2];
         unit.tick(&[], &mut out);
-        assert!(out[0] != 0.0 || out[1] != 0.0, "inserted clip should produce audio");
+        assert!(
+            out[0] != 0.0 || out[1] != 0.0,
+            "inserted clip should produce audio"
+        );
     }
 
     #[test]
@@ -1010,7 +1007,7 @@ mod tests {
         assert_eq!(out[1], 0.0);
 
         // But clips inserted directly (the Populate path) are audible.
-        let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
+        let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
         unit.insert_clip(ClipSpec {
             id: SlotId(1),
             sampler,
@@ -1028,7 +1025,7 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, true);
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
+        let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,
@@ -1055,7 +1052,7 @@ mod tests {
         let transport = MockTransport::new(120.0, 0.0, true);
         let wave = make_wave(4096);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, BeatPosition::new(0.0), None);
+        let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
         handle.send(ClipCommand::Add {
             id: SlotId(1),
             sampler,

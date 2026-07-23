@@ -15,13 +15,13 @@
 use bevy_app::App;
 
 use crate::engine::audio_io::{AudioCallbackState, AudioEngine};
-use crate::engine::{Result, TuttiDriver, AudioGraph};
+use crate::engine::{AudioGraph, Result, TuttiDriver};
 use tutti_core::dsp::An;
 use tutti_core::processor::GraphProcessor;
 use tutti_core::Arc;
 use tutti_core::{
-    ClickNode, ClickSettings, MeteringHandle, MeteringManager, PdcManager, TransportClock,
-    TransportHandle, TransportManager, GraphNet,
+    ClickNode, ClickSettings, GraphNet, MeteringHandle, MeteringManager, PdcManager, Transport,
+    TransportClock,
 };
 
 // Each subsystem owns its own transient `PendingX` (defined next to its plugin).
@@ -29,14 +29,16 @@ use tutti_core::{
 // subsystem's `*Res` (synchronously, before frame 1).
 use tutti_core::graph::{AudioConfig, PendingGraph};
 use tutti_core::metering::PendingMetering;
-use tutti_core::transport::PendingTransport;
+use tutti_core::transport::{
+    MetronomeHandle, PendingMetronome, PendingTransport, TransportClockNode,
+};
 
 #[cfg(feature = "midi")]
 use tutti_core::processor::MidiProcessor;
-#[cfg(feature = "midi")]
-use tutti_midi_io::PendingMidi;
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_io::MidiIo;
+#[cfg(feature = "midi")]
+use tutti_midi_io::PendingMidi;
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::MidiBus;
 // `MidiRoutingTable` is a plain type (from tutti-midi-types, a hard dep) that
@@ -80,9 +82,13 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let channels = audio_engine.channels();
 
     let inputs = plugin.inputs;
-    let outputs = if plugin.outputs == 0 { 2 } else { plugin.outputs };
+    let outputs = if plugin.outputs == 0 {
+        2
+    } else {
+        plugin.outputs
+    };
 
-    let transport_mgr = Arc::new(TransportManager::new(sample_rate));
+    let transport = Transport::new(sample_rate);
     let metering_mgr = Arc::new(MeteringManager::new(sample_rate));
     let click_settings = Arc::new(ClickSettings::new());
     let pdc = PdcManager::new(outputs, 0);
@@ -90,27 +96,16 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
 
     let mut net = GraphNet::new(inputs, outputs);
 
-    // Transport clock — infrastructure node writing back beat position via atomics.
-    let clock = TransportClock::new(
-        transport_mgr.tempo().clone(),
-        transport_mgr.paused().clone(),
-        sample_rate,
-    )
-    .with_seek(
-        transport_mgr.seek_target().clone(),
-        transport_mgr.seek_pending().clone(),
-    )
-    .with_loop(
-        transport_mgr.loop_enabled_flag().clone(),
-        transport_mgr.loop_start_beat_atomic().clone(),
-        transport_mgr.loop_end_beat_atomic().clone(),
-    )
-    .with_position_writeback(transport_mgr.current_beat().clone());
-    net.inner_mut().push(Box::new(clock));
+    // Transport clock — emits the beat on two ports and writes it back to the
+    // manager's atomic. Its NodeId is retained so beat-driven nodes can wire an
+    // edge to it (published below as `TransportClockNode`).
+    let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
+        .with_position_writeback(Arc::clone(&transport.settings.beat));
+    let clock_id = net.inner_mut().push(Box::new(clock));
 
-    // Metronome — mixed into master output.
-    let click_transport = TransportHandle::new(transport_mgr.clone(), click_settings.clone());
-    let click = ClickNode::new(click_transport, click_settings.clone(), sample_rate);
+    // Metronome — mixed into master output. It only READS the transport
+    // (beat + rolling/recording), so it takes a read view, not a control handle.
+    let click = ClickNode::with_transport(transport.clone(), click_settings.clone(), sample_rate);
     let click_id = net.inner_mut().push(Box::new(An(click)));
     net.inner_mut().pipe_output(click_id);
 
@@ -120,7 +115,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     #[cfg(feature = "midi")]
     let midi_bus = MidiBus::new();
 
-    let graph_processor = GraphProcessor::new(transport_mgr.clone(), backend);
+    let graph_processor = GraphProcessor::new(transport.motion.clone(), backend);
 
     // Clock master — outbound MIDI Beat Clock / MTC generator. Reads the
     // transport, pushes into its own output ring (independent of the routing
@@ -132,10 +127,8 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         let (sender, receiver) = tutti_midi_runtime::MidiMailbox::pair(
             tutti_midi_runtime::tutti_midi_types::MidiUnitId::next(),
         );
-        let clock_transport =
-            TransportHandle::new(transport_mgr.clone(), click_settings.clone());
         let master = Arc::new(tutti_midi_runtime::ClockMaster::new(
-            Arc::new(clock_transport),
+            Arc::new(transport.clone()),
             sample_rate,
             sender,
         ));
@@ -175,17 +168,11 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     #[cfg(not(feature = "sampler"))]
     let _ = &pdc_snapshot;
 
-    let graph = AudioGraph::from_parts(
-        net,
-        pdc,
-        midi_route,
-        sample_rate,
-        channels,
-    );
+    let graph = AudioGraph::from_parts(net, pdc, midi_route, sample_rate, channels);
 
     let driver = TuttiDriver::from_parts(audio_engine, callback_state);
 
-    let transport = TransportHandle::new(transport_mgr, click_settings);
+    let metronome = MetronomeHandle::new(click_settings);
 
     #[cfg(feature = "analysis")]
     let analysis = tutti_analysis::AnalysisRes::new(sample_rate, metering_mgr.clone());
@@ -203,6 +190,8 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     app.insert_resource(PendingGraph(Some((graph, config))));
     app.insert_non_send_resource(driver);
     app.insert_resource(PendingTransport(Some(transport)));
+    app.insert_resource(PendingMetronome(Some(metronome)));
+    app.insert_resource(TransportClockNode(clock_id));
     app.insert_resource(PendingMetering(Some(metering)));
 
     #[cfg(feature = "midi")]

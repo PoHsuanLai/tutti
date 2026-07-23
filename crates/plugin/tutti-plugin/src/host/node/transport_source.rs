@@ -17,21 +17,26 @@ use std::sync::Arc;
 
 use atomic_float::AtomicF64;
 use std::sync::atomic::Ordering;
-use tutti_core::transport::TransportReader;
+use tutti_core::transport::Transport;
 
 use crate::host::node::input_slot::{BlockCtx, BlockInput};
 use crate::protocol::TransportInfo;
 
-/// Beat-scheduled transport-info producer. Cheap to clone (reader + rate shared
-/// via `Arc`).
+/// Beat-scheduled transport-info producer for the plugin ABI.
+///
+/// Takes the live [`Transport`] concretely rather than a
+/// [`Timeline`](tutti_core::transport::Timeline): the `TransportInfo` it fills
+/// for hosted plugins carries `recording` and loop-armed state, which are
+/// live-session facts outside a timeline's vocabulary. Cheap to clone (all
+/// state shared via `Arc`).
 #[derive(Clone)]
 pub struct TransportSource {
-    reader: Arc<dyn TransportReader>,
+    reader: Transport,
     sample_rate: Arc<AtomicF64>,
 }
 
 impl TransportSource {
-    pub fn new(reader: Arc<dyn TransportReader>, sample_rate: f64) -> Self {
+    pub fn new(reader: Transport, sample_rate: f64) -> Self {
         Self {
             reader,
             sample_rate: Arc::new(AtomicF64::new(sample_rate)),
@@ -49,18 +54,22 @@ impl TransportSource {
     fn snapshot_into(&self, out: &mut TransportInfo) {
         let sample_rate = self.sample_rate.load(Ordering::Acquire);
         let reader = &self.reader;
+        let tempo = reader.settings.tempo().get();
         let mut info = TransportInfo::new()
-            .with_tempo(reader.tempo().get())
-            .with_playing(reader.is_playing())
-            .with_recording(reader.is_recording())
+            .with_tempo(tempo)
+            .with_playing(reader.motion.is_playing())
+            .with_recording(reader.settings.is_recording())
             .with_sample_rate(sample_rate);
         // CLAP-style beats position; seconds derived from beats + tempo.
-        let beats = reader.current_beat_f64();
-        let tempo = reader.tempo().get();
-        let seconds = if tempo > 0.0 { beats * 60.0 / tempo } else { 0.0 };
+        let beats = reader.settings.beat();
+        let seconds = if tempo > 0.0 {
+            beats * 60.0 / tempo
+        } else {
+            0.0
+        };
         info = info.with_position_beats(beats, seconds);
-        if let Some((start, end)) = reader.get_loop_range() {
-            info = info.with_loop(reader.is_loop_enabled(), start, end);
+        if let Some(region) = reader.settings.loop_span.range() {
+            info = info.with_loop(true, region.start().get(), region.end().get());
         }
         *out = info;
     }
@@ -85,45 +94,15 @@ impl crate::host::node::input_slot::BlockReset for TransportInfo {
 mod tests {
     use super::*;
     use crate::host::node::input_slot::BlockCtx;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use tutti_core::params::Bpm;
 
-    struct TestTransport {
-        beat: AtomicF64,
-        tempo: f64,
-        playing: AtomicBool,
-    }
-    impl TransportReader for TestTransport {
-        fn current_beat(&self) -> f64 {
-            self.beat.load(Ordering::Acquire)
-        }
-        fn is_loop_enabled(&self) -> bool {
-            false
-        }
-        fn get_loop_range(&self) -> Option<(f64, f64)> {
-            None
-        }
-        fn is_playing(&self) -> bool {
-            self.playing.load(Ordering::Acquire)
-        }
-        fn is_recording(&self) -> bool {
-            false
-        }
-        fn is_in_preroll(&self) -> bool {
-            false
-        }
-        fn tempo(&self) -> Bpm {
-            Bpm(self.tempo)
-        }
-    }
-
-    fn source(tempo: f64, rate: f64) -> (Arc<TestTransport>, TransportSource) {
-        let t = Arc::new(TestTransport {
-            beat: AtomicF64::new(0.0),
-            tempo,
-            playing: AtomicBool::new(true),
-        });
-        let src = TransportSource::new(Arc::clone(&t) as Arc<dyn TransportReader>, rate);
+    /// Drive the real `Transport` — TransportSource is a live-only ABI
+    /// bridge, so a mock would only restate its fields.
+    fn source(tempo: f64, rate: f64) -> (Transport, TransportSource) {
+        let t = Transport::new(rate);
+        t.settings.set_tempo(tempo);
+        let _ = t.motion.try_send(tutti_core::MotionEvent::Play);
+        t.motion.drain();
+        let src = TransportSource::new(t.clone(), rate);
         (t, src)
     }
 
@@ -132,7 +111,7 @@ mod tests {
     #[test]
     fn snapshot_reflects_transport() {
         let (t, src) = source(120.0, 44100.0);
-        t.beat.store(2.0, Ordering::Release);
+        t.settings.set_beat(2.0);
         let mut out = TransportInfo::default();
         src.fill(CTX, &mut out);
         assert!((out.timing.tempo - 120.0).abs() < 1e-9);

@@ -100,6 +100,20 @@ unit_newtype!(
     f64
 );
 unit_newtype!(
+    /// A position on the musical timeline, in beats.
+    ///
+    /// A *position*, not a duration — beat 4.0 is where the fifth beat starts,
+    /// not "four beats long". Distinct from [`Bpm`], which is a rate.
+    ///
+    /// `f64`-backed for the same reason as `Bpm`: an `f32` cannot resolve
+    /// sub-beat detail past ~beat 16384 (its ULP exceeds 0.002 beats), which is
+    /// audible as automation stair-stepping in a long session. `TransportClock`
+    /// splits the beat across two `f32` ports precisely to dodge that; the
+    /// scalar form must not reintroduce it.
+    Beat,
+    f64
+);
+unit_newtype!(
     /// Pitch offset in semitones. 12 semitones = 1 octave.
     Semitones
 );
@@ -118,17 +132,9 @@ unit_newtype!(
     f64
 );
 unit_newtype!(
-    /// Absolute position on the timeline, measured in beats.
-    ///
-    /// A point on the musical grid (distinct from [`BeatDuration`], which is a
-    /// span). `f64`-backed for sample-accurate beat ↔ time conversions.
-    BeatPosition,
-    f64
-);
-unit_newtype!(
     /// A span on the timeline, measured in beats.
     ///
-    /// Distinct from [`BeatPosition`]: subtracting one position from another
+    /// Distinct from [`Beat`]: subtracting one position from another
     /// yields a duration, not a position. `f64`-backed to match beat-position
     /// precision.
     BeatDuration,
@@ -198,7 +204,7 @@ mod tests {
     #[test]
     fn newtype_raw_round_trip() {
         assert_eq!(SamplePosition::from_raw(123.456).to_raw(), 123.456);
-        assert_eq!(BeatPosition::from_raw(4.25).to_raw(), 4.25);
+        assert_eq!(Beat::from_raw(4.25).to_raw(), 4.25);
         assert_eq!(BeatDuration::from_raw(-2.5).to_raw(), -2.5);
     }
 

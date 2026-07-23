@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 
 use atomic_float::AtomicF64;
-use tutti_core::transport::TransportReader;
+use tutti_core::transport::Timeline;
 use tutti_midi_types::sync::SmpteFrameRate;
 use tutti_midi_types::ump::MidiEvent;
 
@@ -47,14 +47,14 @@ const START_EPSILON_BEATS: f64 = 1e-6;
 /// normal forward creep of one block — triggers a fresh Song Position.
 const SEEK_EPSILON_BEATS: f64 = 1e-3;
 
-/// Generates outbound MIDI clock / timecode from a [`TransportReader`].
+/// Generates outbound MIDI clock / timecode from a [`Timeline`].
 ///
 /// Ticked once per audio block via [`ClockMaster::tick`]. RT-safe: reads the
 /// transport, mutates only atomics, and pushes into a lock-free mailbox — no
 /// allocation, no locks on the audio path ([`MidiSender::queue`] takes `&self`
 /// and never blocks).
 pub struct ClockMaster {
-    transport: Arc<dyn TransportReader>,
+    transport: Arc<dyn Timeline>,
     sample_rate: f64,
     /// UMP group nibble stamped on every emitted event (0-15).
     group: u8,
@@ -95,7 +95,7 @@ impl ClockMaster {
     /// Starts **disabled**; call [`set_enabled`](Self::set_enabled) once a
     /// hardware output is connected.
     pub fn new(
-        transport: Arc<dyn TransportReader>,
+        transport: Arc<dyn Timeline>,
         sample_rate: f64,
         out: MidiSender,
     ) -> Self {
@@ -144,13 +144,13 @@ impl ClockMaster {
             // Keep prev_playing honest so re-enabling mid-playback emits a fresh
             // Start/Continue rather than silently assuming we were already going.
             self.prev_playing
-                .store(self.transport.is_playing(), Ordering::Release);
+                .store(self.transport.is_rolling(), Ordering::Release);
             return;
         }
 
-        let playing = self.transport.is_playing();
+        let playing = self.transport.is_rolling();
         let was_playing = self.prev_playing.swap(playing, Ordering::AcqRel);
-        let beat = self.transport.current_beat_f64();
+        let beat = self.transport.beat().get();
         let prev_beat = self.prev_beat.swap(beat, Ordering::AcqRel);
 
         // --- transport edges -------------------------------------------------
@@ -325,7 +325,7 @@ mod tests {
     use tutti_core::params::Bpm;
     use tutti_midi_types::sync::{MidiClockDecoder, ClockTransportState, MtcDecoder};
 
-    /// Minimal `TransportReader` for tests: tempo + beat + playing under a
+    /// Minimal `Timeline` for tests: tempo + beat + playing under a
     /// switch (mirrors the one in `clip_player.rs`).
     struct TestTransport {
         beat: AtomicF64,
@@ -349,24 +349,15 @@ mod tests {
         }
     }
 
-    impl TransportReader for TestTransport {
-        fn current_beat(&self) -> f64 {
-            self.beat.load(Ordering::Acquire)
+    impl Timeline for TestTransport {
+        fn beat(&self) -> tutti_core::Beat {
+            tutti_core::Beat::new(self.beat.load(Ordering::Acquire))
         }
-        fn is_loop_enabled(&self) -> bool {
-            false
-        }
-        fn get_loop_range(&self) -> Option<(f64, f64)> {
-            None
-        }
-        fn is_playing(&self) -> bool {
+        fn is_rolling(&self) -> bool {
             self.playing.load(Ordering::Acquire)
         }
-        fn is_recording(&self) -> bool {
-            false
-        }
-        fn is_in_preroll(&self) -> bool {
-            false
+        fn loop_range(&self) -> Option<tutti_core::transport::LoopRange> {
+            None
         }
         fn tempo(&self) -> Bpm {
             Bpm(self.tempo)
@@ -377,7 +368,7 @@ mod tests {
         use tutti_midi_types::MidiUnitId;
         let transport = Arc::new(TestTransport::new(tempo));
         let (sender, receiver) = crate::MidiMailbox::pair(MidiUnitId::next());
-        let cm = ClockMaster::new(Arc::clone(&transport) as Arc<dyn TransportReader>, sample_rate, sender);
+        let cm = ClockMaster::new(Arc::clone(&transport) as Arc<dyn Timeline>, sample_rate, sender);
         cm.set_enabled(true);
         (cm, transport, receiver)
     }

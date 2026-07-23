@@ -18,8 +18,9 @@ use bevy_reflect::prelude::*;
 use crate::automation::LiveAutomationLane;
 use tutti_core::graph::{AudioNode, Pan, PluginParam, Volume};
 
+use tutti_core::graph::AudioGraphRes;
 use tutti_core::graph::{reconcile_params, GraphReconcileSystems};
-use tutti_core::graph::{TransportRes, AudioGraphRes};
+use tutti_core::transport::{TransportClockNode, BEAT_PORTS};
 
 /// Trigger component: spawn an entity with this to create an automation lane.
 ///
@@ -81,27 +82,87 @@ pub struct UpdateAutomationEnvelope {
     pub envelope: crate::automation::AutomationEnvelope<f32>,
 }
 
+/// Wire the transport clock's two beat ports into a beat-driven node.
+///
+/// Returns false (and warns) when no clock has been published yet — the node
+/// then reads silence, which for an automation lane means holding its value at
+/// beat 0.
+fn connect_beat_ports(
+    graph: &mut AudioGraphRes,
+    clock: Option<&TransportClockNode>,
+    node_id: tutti_core::NodeId,
+    what: &str,
+) -> bool {
+    match clock {
+        Some(TransportClockNode(clock_id)) => {
+            for port in 0..BEAT_PORTS {
+                graph.0.connect(*clock_id, port, node_id, port);
+            }
+            true
+        }
+        None => {
+            bevy_log::warn!(
+                "{what} has no TransportClockNode; it will read silence \
+                 and hold its envelope value at beat 0"
+            );
+            false
+        }
+    }
+}
+
+/// Wire beat ports for lanes spawned directly (via `spawn_audio_node`) rather
+/// than through [`AddAutomationLane`]. Without this, a hand-spawned lane has
+/// unconnected beat inputs and emits a constant.
+pub fn connect_direct_automation_lanes(
+    mut graph: ResMut<AudioGraphRes>,
+    clock: Option<Res<TransportClockNode>>,
+    mut dirty: ResMut<tutti_core::graph::GraphDirty>,
+    query: Query<
+        (Entity, &AudioNode),
+        (
+            With<AutomationLaneNode>,
+            Added<AudioNode>,
+            Without<AutomationLaneEmitter>,
+        ),
+    >,
+) {
+    for (entity, node) in query.iter() {
+        if connect_beat_ports(
+            &mut graph,
+            clock.as_deref(),
+            node.0,
+            &format!("directly-spawned automation lane (entity {entity:?})"),
+        ) {
+            dirty.0 = true;
+        }
+    }
+}
+
 pub fn automation_lane_system(
     mut commands: Commands,
     mut graph: ResMut<AudioGraphRes>,
-    transport: Res<TransportRes>,
+    clock: Option<Res<TransportClockNode>>,
     mut dirty: ResMut<tutti_core::graph::GraphDirty>,
     query: Query<(Entity, &AddAutomationLane), Added<AddAutomationLane>>,
 ) {
     let mut edited = false;
 
     for (entity, add) in query.iter() {
-        let lane = crate::automation::AutomationLane::new(add.envelope.clone(), transport.0.clone());
+        let lane = crate::automation::AutomationLane::new(add.envelope.clone());
         let node_id = graph.0.add(lane);
+        // Feed the beat in: port 0 whole beats, port 1 the fraction.
+        connect_beat_ports(
+            &mut graph,
+            clock.as_deref(),
+            node_id,
+            &format!("automation lane (entity {entity:?})"),
+        );
         edited = true;
 
         commands
             .entity(entity)
             .remove::<AddAutomationLane>()
-            .insert((
-                AutomationLaneEmitter { node_id },
-                AudioNode(node_id),
-            ));
+            .insert((AutomationLaneEmitter { node_id }, AudioNode(node_id)));
 
         bevy_log::info!("Automation lane added (entity {entity:?}, node {node_id:?})");
     }
@@ -201,7 +262,11 @@ impl Plugin for TuttiAutomationPlugin {
         // phase so `commit_graph` coalesces (they no longer commit inline).
         app.add_systems(
             Update,
-            (automation_lane_system, update_automation_envelope_system)
+            (
+                automation_lane_system,
+                connect_direct_automation_lanes,
+                update_automation_envelope_system,
+            )
                 .before(GraphReconcileSystems::Commit)
                 .run_if(tutti_core::graph::engine_ready),
         )

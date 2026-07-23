@@ -3,8 +3,9 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{
+    beat_from_ports,
     dsp::{Signal, DEFAULT_SR},
-    AudioUnit, BufferMut, BufferRef, SignalFrame, TransportHandle, TransportReader,
+    AudioUnit, BufferMut, BufferRef, SignalFrame, BEAT_PORTS,
 };
 
 use tutti_core::{Hz, Linear, Param};
@@ -113,7 +114,7 @@ impl core::fmt::Display for LfoMode {
     }
 }
 
-pub struct LfoNode<R: TransportReader = TransportHandle> {
+pub struct LfoNode {
     shape: LfoShape,
     mode: LfoMode,
     /// In `FreeRunning` mode: oscillator frequency in Hz.
@@ -125,7 +126,6 @@ pub struct LfoNode<R: TransportReader = TransportHandle> {
     phase: f32,
     sample_rate: f64,
     random_state: RandomState,
-    transport: Option<R>,
 }
 
 #[derive(Debug, Clone)]
@@ -175,15 +175,13 @@ impl RandomState {
 impl LfoNode {
     /// Create a free-running LFO with default frequency 1.0 Hz.
     ///
-    /// Chain `.with_frequency(hz)`, `.with_beat_sync(transport, beats)`, or
-    /// `.with_beat_sync_input(beats)` to configure further.
+    /// Chain `.with_frequency(hz)` or `.with_beat_sync(beats)` to configure
+    /// further.
     pub fn new(shape: LfoShape) -> Self {
-        Self::build(shape, LfoMode::FreeRunning, 1.0, None)
+        Self::build(shape, LfoMode::FreeRunning, 1.0)
     }
-}
 
-impl<R: TransportReader> LfoNode<R> {
-    fn build(shape: LfoShape, mode: LfoMode, freq_or_beats: f32, transport: Option<R>) -> Self {
+    fn build(shape: LfoShape, mode: LfoMode, freq_or_beats: f32) -> Self {
         Self {
             shape,
             mode,
@@ -193,7 +191,6 @@ impl<R: TransportReader> LfoNode<R> {
             phase: 0.0,
             sample_rate: DEFAULT_SR,
             random_state: RandomState::default(),
-            transport,
         }
     }
 
@@ -207,23 +204,12 @@ impl<R: TransportReader> LfoNode<R> {
         self
     }
 
-    /// Switch to beat-synced mode reading the beat position from `transport`.
+    /// Switch to beat-synced mode, taking the beat on the input ports.
     ///
-    /// In this mode the LFO has 0 inputs — it reads the current beat directly
-    /// from the transport reader.
-    pub fn with_beat_sync(mut self, transport: R, beats_per_cycle: impl Into<Hz>) -> Self {
+    /// The LFO gains [`BEAT_PORTS`] inputs, wired from `TransportClock`:
+    /// port 0 whole beats, port 1 the fraction. This is per-sample accurate.
+    pub fn with_beat_sync(mut self, beats_per_cycle: impl Into<Hz>) -> Self {
         self.mode = LfoMode::BeatSynced;
-        self.transport = Some(transport);
-        self.frequency.store(beats_per_cycle.into());
-        self
-    }
-
-    /// Switch to beat-synced mode reading the beat position from input 0.
-    ///
-    /// In this mode the LFO has 1 input (the current beat).
-    pub fn with_beat_sync_input(mut self, beats_per_cycle: impl Into<Hz>) -> Self {
-        self.mode = LfoMode::BeatSynced;
-        self.transport = None;
         self.frequency.store(beats_per_cycle.into());
         self
     }
@@ -283,11 +269,11 @@ impl<R: TransportReader> LfoNode<R> {
     }
 }
 
-impl<R: TransportReader + Clone + 'static> AudioUnit for LfoNode<R> {
+impl AudioUnit for LfoNode {
     fn inputs(&self) -> usize {
         match self.mode {
             LfoMode::FreeRunning => 0,
-            LfoMode::BeatSynced => usize::from(self.transport.is_none()),
+            LfoMode::BeatSynced => BEAT_PORTS,
         }
     }
 
@@ -319,11 +305,7 @@ impl<R: TransportReader + Clone + 'static> AudioUnit for LfoNode<R> {
                 (self.phase + phase_offset) % 1.0
             }
             LfoMode::BeatSynced => {
-                let beat = if let Some(ref transport) = self.transport {
-                    transport.current_beat() as f32
-                } else {
-                    input[0]
-                };
+                let beat = beat_from_ports(input[0], input[1]) as f32;
                 let beats_per_cycle = self.frequency.load().get();
                 if beats_per_cycle > 0.0 {
                     ((beat / beats_per_cycle) + phase_offset) % 1.0
@@ -357,27 +339,14 @@ impl<R: TransportReader + Clone + 'static> AudioUnit for LfoNode<R> {
             LfoMode::BeatSynced => {
                 let beats_per_cycle = self.frequency.load().get();
 
-                if let Some(ref transport) = self.transport {
-                    let beat = transport.current_beat() as f32;
+                for i in 0..size {
+                    let beat = beat_from_ports(input.at_f32(0, i), input.at_f32(1, i)) as f32;
                     let phase = if beats_per_cycle > 0.0 {
                         ((beat / beats_per_cycle) + phase_offset) % 1.0
                     } else {
                         phase_offset
                     };
-                    let value = self.evaluate(phase);
-                    for i in 0..size {
-                        output.set_f32(0, i, value);
-                    }
-                } else {
-                    for i in 0..size {
-                        let beat = input.at_f32(0, i);
-                        let phase = if beats_per_cycle > 0.0 {
-                            ((beat / beats_per_cycle) + phase_offset) % 1.0
-                        } else {
-                            phase_offset
-                        };
-                        output.set_f32(0, i, self.evaluate(phase));
-                    }
+                    output.set_f32(0, i, self.evaluate(phase));
                 }
             }
         }
@@ -405,7 +374,9 @@ impl<R: TransportReader + Clone + 'static> AudioUnit for LfoNode<R> {
         }
 
         if self.mode == LfoMode::BeatSynced {
-            if let Signal::Value(beat) = input.at(0) {
+            // Both beat ports must be constant to fold this to a constant.
+            if let (Signal::Value(whole), Signal::Value(frac)) = (input.at(0), input.at(1)) {
+                let beat = whole + frac;
                 let beats_per_cycle = self.frequency.load().get() as f64;
                 let phase_offset = self.phase_offset.load().get() as f64;
                 let phase = if beats_per_cycle > 0.0 {
@@ -431,7 +402,7 @@ impl<R: TransportReader + Clone + 'static> AudioUnit for LfoNode<R> {
     }
 }
 
-impl<R: TransportReader + Clone> Clone for LfoNode<R> {
+impl Clone for LfoNode {
     fn clone(&self) -> Self {
         Self {
             shape: self.shape,
@@ -442,7 +413,6 @@ impl<R: TransportReader + Clone> Clone for LfoNode<R> {
             phase: self.phase,
             sample_rate: self.sample_rate,
             random_state: self.random_state.clone(),
-            transport: self.transport.clone(),
         }
     }
 }
@@ -489,22 +459,63 @@ mod tests {
 
     #[test]
     fn test_beat_synced_lfo() {
-        let mut lfo = LfoNode::new(LfoShape::Sine).with_beat_sync_input(4.0);
+        let mut lfo = LfoNode::new(LfoShape::Sine).with_beat_sync(4.0);
+        assert_eq!(lfo.inputs(), BEAT_PORTS);
 
         let mut output = [0.0f32];
 
-        lfo.tick(&[1.0], &mut output);
+        // Beat 1.0 of a 4-beat cycle = quarter phase = sine peak.
+        lfo.tick(&[1.0, 0.0], &mut output);
         assert!(
             (output[0] - 1.0).abs() < 0.01,
             "Expected 1.0, got {}",
             output[0]
         );
 
-        lfo.tick(&[2.0], &mut output);
+        lfo.tick(&[2.0, 0.0], &mut output);
         assert!(
             (output[0] - 0.0).abs() < 0.01,
             "Expected 0.0, got {}",
             output[0]
+        );
+    }
+
+    #[test]
+    fn beat_synced_lfo_reads_fraction_from_port_1() {
+        let mut lfo = LfoNode::new(LfoShape::Sine).with_beat_sync(4.0);
+        let mut split = [0.0f32];
+        let mut whole = [0.0f32];
+
+        // Beat 1.0 delivered as (0.0 whole + 1.0 frac) must equal (1.0 + 0.0):
+        // the node reconstructs the beat by summing both ports.
+        lfo.tick(&[0.0, 1.0], &mut split);
+        lfo.tick(&[1.0, 0.0], &mut whole);
+        assert!(
+            (split[0] - whole[0]).abs() < 1e-6,
+            "port split changed the beat: {} vs {}",
+            split[0],
+            whole[0]
+        );
+    }
+
+    /// The split exists so precision does not decay at high beat counts: a
+    /// single f32 cannot resolve sub-beat detail past ~16384 beats.
+    #[test]
+    fn beat_synced_lfo_keeps_sub_beat_precision_at_high_beats() {
+        let mut lfo = LfoNode::new(LfoShape::Sine).with_beat_sync(4.0);
+        let mut at_edge = [0.0f32];
+        let mut past_edge = [0.0f32];
+
+        // Same fractional offset (0.5 beat) at beat 0 and at beat 20000.
+        lfo.tick(&[0.0, 0.5], &mut at_edge);
+        lfo.tick(&[20000.0, 0.5], &mut past_edge);
+
+        // 20000 is a multiple of the 4-beat cycle, so both are the same phase.
+        assert!(
+            (at_edge[0] - past_edge[0]).abs() < 0.01,
+            "sub-beat precision lost at high beat count: {} vs {}",
+            at_edge[0],
+            past_edge[0]
         );
     }
 

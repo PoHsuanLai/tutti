@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use tutti_core::{AudioUnit, BeatDuration, BeatPosition, Linear, Ratio, SamplePosition, Wave};
+use tutti_core::{AudioUnit, BeatDuration, Beat, Linear, Ratio, SamplePosition, Wave};
 
 use super::sampler_unit::LoopSetting;
 use super::track_clip_reader::Direction;
@@ -38,7 +38,7 @@ pub trait ClipReader: AudioUnit {
     fn set_gain(&mut self, gain: Linear);
 
     /// Update the timeline placement window (start + optional duration in beats).
-    fn set_placement(&mut self, start_beat: BeatPosition, duration: Option<BeatDuration>);
+    fn set_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>);
 
     /// Set the playback speed magnitude. Direction is carried separately (see
     /// [`set_direction`](Self::set_direction)).

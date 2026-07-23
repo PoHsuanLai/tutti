@@ -1,16 +1,18 @@
 //! Metronome click AudioUnit - generates click sounds synced to transport.
 //!
-//! The click node reads transport state via [`TransportReader`] and settings
+//! The click node reads transport state via [`Timeline`] and settings
 //! (volume, accent, mode) from [`ClickSettings`].
 
-use super::TransportReader;
-use std::sync::Arc;
-use crate::{AtomicF32, AtomicU32, AtomicU8, Ordering, TransportHandle};
+use super::Transport;
+use crate::params::Linear;
+use crate::{AtomicF32, AtomicU32, AtomicU8, Ordering};
 use fundsp::audionode::AudioNode;
 use fundsp::prelude::*;
+use std::sync::Arc;
 
 /// Metronome operating mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
 pub enum MetronomeMode {
     /// Metronome is disabled.
     #[default]
@@ -35,9 +37,27 @@ impl From<u8> for MetronomeMode {
     }
 }
 
+impl From<MetronomeMode> for u8 {
+    #[inline]
+    fn from(mode: MetronomeMode) -> u8 {
+        mode as u8
+    }
+}
+
+impl core::fmt::Display for MetronomeMode {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::Off => "off",
+            Self::PrerollOnly => "preroll only",
+            Self::RecordingOnly => "recording only",
+            Self::Always => "always",
+        })
+    }
+}
+
 /// Click-specific settings (volume, accent pattern, mode).
 ///
-/// Transport state (beat, playing, recording, preroll) comes from `TransportReader`.
+/// Transport state (beat, playing, recording, preroll) comes from `Timeline`.
 #[repr(align(64))]
 pub struct ClickSettings {
     volume: AtomicF32,
@@ -71,7 +91,7 @@ impl ClickSettings {
     }
 
     pub fn set_mode(&self, mode: MetronomeMode) {
-        self.mode.store(mode as u8, Ordering::Release);
+        self.mode.store(mode.into(), Ordering::Release);
     }
 
     pub fn mode(&self) -> MetronomeMode {
@@ -90,11 +110,18 @@ pub type ClickState = ClickSettings;
 /// Click generator AudioNode.
 ///
 /// Outputs stereo click sounds synced to the transport beat.
-/// Generic over `R: TransportReader` so it works with both live
-/// `TransportHandle` and `OfflineTransport`.
+///
+/// Takes the live [`Transport`] concretely rather than a [`Timeline`]: the
+/// metronome's modes depend on `recording` / `in_preroll`, which are
+/// live-session facts an offline timeline has no answer for. It only ever
+/// reads — no transport control.
+///
+/// A click node does end up inside offline-cloned nets (the clone copies every
+/// node), but `isolate_output` repoints the output bus away from it, so its
+/// samples go nowhere.
 #[derive(Clone)]
-pub struct ClickNode<R: TransportReader = TransportHandle> {
-    transport: R,
+pub struct ClickNode {
+    transport: Transport,
     settings: Arc<ClickSettings>,
     sample_rate: f64,
     click_normal: Vec<f32>,
@@ -104,19 +131,9 @@ pub struct ClickNode<R: TransportReader = TransportHandle> {
     last_click_beat: i64,
 }
 
-impl ClickNode<TransportHandle> {
-    pub fn new(
-        transport: TransportHandle,
-        settings: Arc<ClickSettings>,
-        sample_rate: impl Into<crate::SampleRate>,
-    ) -> Self {
-        Self::with_transport(transport, settings, sample_rate)
-    }
-}
-
-impl<R: TransportReader + Clone> ClickNode<R> {
+impl ClickNode {
     pub fn with_transport(
-        transport: R,
+        transport: Transport,
         settings: Arc<ClickSettings>,
         sample_rate: impl Into<crate::SampleRate>,
     ) -> Self {
@@ -168,7 +185,7 @@ impl<R: TransportReader + Clone> ClickNode<R> {
     }
 }
 
-impl<R: TransportReader + Clone + Send + Sync + 'static> AudioNode for ClickNode<R> {
+impl AudioNode for ClickNode {
     const ID: u64 = 0x436c69636b_u64; // "Click"
 
     type Inputs = U0;
@@ -177,9 +194,9 @@ impl<R: TransportReader + Clone + Send + Sync + 'static> AudioNode for ClickNode
     #[inline]
     fn tick(&mut self, _input: &Frame<f32, Self::Inputs>) -> Frame<f32, Self::Outputs> {
         let mode = self.settings.mode();
-        let is_playing = self.transport.is_playing();
-        let is_recording = self.transport.is_recording();
-        let is_in_preroll = self.transport.is_in_preroll();
+        let is_playing = self.transport.motion.is_playing();
+        let is_recording = self.transport.settings.is_recording();
+        let is_in_preroll = self.transport.settings.is_in_preroll();
 
         let should_play = match mode {
             MetronomeMode::Off => false,
@@ -194,7 +211,7 @@ impl<R: TransportReader + Clone + Send + Sync + 'static> AudioNode for ClickNode
             return [0.0, 0.0].into();
         }
 
-        let current_beat = self.transport.current_beat();
+        let current_beat = self.transport.settings.beat();
         let beat_int = current_beat.floor() as i64;
 
         // Trigger click on new beat. The `beat_int != self.last_click_beat` check
@@ -235,89 +252,91 @@ impl<R: TransportReader + Clone + Send + Sync + 'static> AudioNode for ClickNode
     }
 }
 
-/// Create a click generator unit with a live transport.
+/// Fluent API handle for metronome control.
 ///
-/// Note: The metronome is automatically mixed into output when building a `TuttiEngine`.
-/// You typically don't need to call this directly — just use:
+/// Created via `transport.metronome()`.
+///
+/// # Example
 /// ```ignore
-/// engine.transport().metronome().always();
+/// engine.transport()
+///     .metronome()
+///     .volume(0.7)
+///     .accent_every(4)
+///     .always();
 /// ```
-pub fn click(
-    transport: TransportHandle,
-    settings: Arc<ClickSettings>,
-    sample_rate: impl Into<crate::SampleRate>,
-) -> An<ClickNode<TransportHandle>> {
-    An(ClickNode::new(transport, settings, sample_rate))
+#[derive(Clone)]
+pub struct MetronomeHandle {
+    state: Arc<ClickState>,
+}
+
+impl MetronomeHandle {
+    pub fn new(state: Arc<ClickState>) -> Self {
+        Self { state }
+    }
+
+    /// Volume: 0.0 to 1.0.
+    pub fn volume(&self, volume: impl Into<Linear>) -> &Self {
+        self.state.set_volume(volume.into().get());
+        self
+    }
+
+    pub fn get_volume(&self) -> Linear {
+        Linear(self.state.volume())
+    }
+
+    pub fn accent_every(&self, beats: u32) -> &Self {
+        self.state.set_accent_every(beats);
+        self
+    }
+
+    pub fn get_accent_every(&self) -> u32 {
+        self.state.accent_every()
+    }
+
+    pub fn mode(&self, mode: MetronomeMode) -> &Self {
+        self.state.set_mode(mode);
+        self
+    }
+
+    pub fn get_mode(&self) -> MetronomeMode {
+        self.state.mode()
+    }
+
+    pub fn off(&self) -> &Self {
+        self.state.set_mode(MetronomeMode::Off);
+        self
+    }
+
+    pub fn always(&self) -> &Self {
+        self.state.set_mode(MetronomeMode::Always);
+        self
+    }
+
+    pub fn recording_only(&self) -> &Self {
+        self.state.set_mode(MetronomeMode::RecordingOnly);
+        self
+    }
+
+    pub fn preroll_only(&self) -> &Self {
+        self.state.set_mode(MetronomeMode::PrerollOnly);
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::AtomicF64;
-    use core::sync::atomic::AtomicBool;
 
-    /// Mock transport reader for tests.
-    #[derive(Clone)]
-    struct MockTransport {
-        beat: Arc<AtomicF64>,
-        playing: Arc<AtomicBool>,
-        recording: Arc<AtomicBool>,
-        in_preroll: Arc<AtomicBool>,
+    /// Drive the real `Transport` rather than a mock: the click node needs
+    /// recording/preroll, which only the live transport has, and a mock would
+    /// just restate its fields.
+    fn playing(t: &Transport) {
+        let _ = t.motion.try_send(super::super::MotionEvent::Play);
+        t.motion.drain();
     }
 
-    impl MockTransport {
-        fn new() -> Self {
-            Self {
-                beat: Arc::new(AtomicF64::new(0.0)),
-                playing: Arc::new(AtomicBool::new(false)),
-                recording: Arc::new(AtomicBool::new(false)),
-                in_preroll: Arc::new(AtomicBool::new(false)),
-            }
-        }
-
-        fn set_beat(&self, beat: f64) {
-            self.beat.store(beat, Ordering::Release);
-        }
-
-        fn set_playing(&self, playing: bool) {
-            self.playing.store(playing, Ordering::Relaxed);
-        }
-
-        fn set_recording(&self, recording: bool) {
-            self.recording.store(recording, Ordering::Relaxed);
-        }
-
-        fn set_in_preroll(&self, in_preroll: bool) {
-            self.in_preroll.store(in_preroll, Ordering::Relaxed);
-        }
-    }
-
-    impl TransportReader for MockTransport {
-        fn current_beat(&self) -> f64 {
-            self.beat.load(Ordering::Acquire)
-        }
-        fn is_playing(&self) -> bool {
-            self.playing.load(Ordering::Relaxed)
-        }
-        fn is_recording(&self) -> bool {
-            self.recording.load(Ordering::Relaxed)
-        }
-        fn is_in_preroll(&self) -> bool {
-            self.in_preroll.load(Ordering::Relaxed)
-        }
-        fn is_loop_enabled(&self) -> bool {
-            false
-        }
-        fn get_loop_range(&self) -> Option<(f64, f64)> {
-            None
-        }
-        fn tempo(&self) -> crate::params::Bpm {
-            crate::params::Bpm(120.0)
-        }
-    }
-
-    fn make_click() -> (MockTransport, Arc<ClickSettings>, ClickNode<MockTransport>) {
-        let transport = MockTransport::new();
+    fn make_click() -> (Transport, Arc<ClickSettings>, ClickNode) {
+        let transport = Transport::new(44100.0);
         let settings = Arc::new(ClickSettings::new());
         let node = ClickNode::with_transport(transport.clone(), Arc::clone(&settings), 44100.0);
         (transport, settings, node)
@@ -344,7 +363,7 @@ mod tests {
     #[test]
     fn test_click_node_plays_on_beat() {
         let (transport, settings, mut node) = make_click();
-        transport.set_playing(true);
+        playing(&transport);
         settings.set_mode(MetronomeMode::Always);
         settings.set_volume(1.0);
 
@@ -359,7 +378,7 @@ mod tests {
         assert!(found_nonzero, "Click should produce non-zero output");
 
         // Advance to beat 1
-        transport.set_beat(1.0);
+        transport.settings.set_beat(1.0);
         found_nonzero = false;
         for _ in 0..100 {
             let output = node.tick(&Frame::default());
@@ -377,17 +396,17 @@ mod tests {
     #[test]
     fn test_click_plays_after_loop_wrap() {
         let (transport, settings, mut node) = make_click();
-        transport.set_playing(true);
+        playing(&transport);
         settings.set_mode(MetronomeMode::Always);
         settings.set_volume(1.0);
 
         // Advance to beat 7
-        transport.set_beat(7.0);
+        transport.settings.set_beat(7.0);
         let _ = node.tick(&Frame::default());
         assert_eq!(node.last_click_beat, 7);
 
         // Simulate loop wrap: beat jumps backward from 7 to 4
-        transport.set_beat(4.0);
+        transport.settings.set_beat(4.0);
         let mut found_nonzero = false;
         for _ in 0..100 {
             let output = node.tick(&Frame::default());
@@ -416,7 +435,7 @@ mod tests {
     #[test]
     fn test_preroll_only_mode() {
         let (transport, settings, mut node) = make_click();
-        transport.set_playing(true);
+        playing(&transport);
         settings.set_mode(MetronomeMode::PrerollOnly);
         settings.set_volume(1.0);
 
@@ -425,7 +444,7 @@ mod tests {
         assert_eq!(output[0], 0.0);
 
         // Enable preroll - should play
-        transport.set_in_preroll(true);
+        transport.settings.set_in_preroll(true);
         node.reset();
         let mut found_nonzero = false;
         for _ in 0..100 {
@@ -441,7 +460,7 @@ mod tests {
     #[test]
     fn test_recording_only_mode() {
         let (transport, settings, mut node) = make_click();
-        transport.set_playing(true);
+        playing(&transport);
         settings.set_mode(MetronomeMode::RecordingOnly);
         settings.set_volume(1.0);
 
@@ -450,7 +469,7 @@ mod tests {
         assert_eq!(output[0], 0.0);
 
         // Enable recording - should play
-        transport.set_recording(true);
+        transport.settings.set_recording(true);
         node.reset();
         let mut found_nonzero = false;
         for _ in 0..100 {
@@ -463,7 +482,7 @@ mod tests {
         assert!(found_nonzero, "Click should play during recording");
 
         // In preroll while recording - should NOT play
-        transport.set_in_preroll(true);
+        transport.settings.set_in_preroll(true);
         node.reset();
         let output = node.tick(&Frame::default());
         assert_eq!(

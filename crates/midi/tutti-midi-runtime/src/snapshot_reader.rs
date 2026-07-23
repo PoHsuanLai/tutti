@@ -1,10 +1,10 @@
-//! Offline-mode MIDI source backed by [`MidiSnapshot`] + [`OfflineTransport`].
+//! Offline-mode MIDI source backed by [`MidiSnapshot`] + [`OfflineTimeline`].
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use atomic_float::AtomicF64;
-use tutti_core::transport::OfflineTransport;
+use tutti_core::transport::OfflineTimeline;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiIn, MidiUnitId};
 
@@ -12,7 +12,7 @@ use crate::snapshot::MidiSnapshot;
 
 /// Export-mode MIDI source that reads from a snapshot based on transport beat.
 ///
-/// Wraps a [`MidiSnapshot`] and an [`OfflineTransport`] to provide the same
+/// Wraps a [`MidiSnapshot`] and an [`OfflineTimeline`] to provide the same
 /// `poll_into()` interface as `MidiBus`, but for offline rendering.
 ///
 /// Each call to `poll_into` reads the current beat from the timeline,
@@ -21,7 +21,7 @@ use crate::snapshot::MidiSnapshot;
 /// advancing the timeline between calls.
 pub struct MidiSnapshotReader {
     snapshot: MidiSnapshot,
-    timeline: Arc<OfflineTransport>,
+    timeline: Arc<OfflineTimeline>,
     last_poll_beat: AtomicF64,
 }
 
@@ -38,8 +38,8 @@ impl std::fmt::Debug for MidiSnapshotReader {
 }
 
 impl MidiSnapshotReader {
-    pub fn new(snapshot: MidiSnapshot, timeline: Arc<OfflineTransport>) -> Self {
-        let start_beat = timeline.current_beat();
+    pub fn new(snapshot: MidiSnapshot, timeline: Arc<OfflineTimeline>) -> Self {
+        let start_beat = timeline.beat().get();
         Self {
             snapshot,
             timeline,
@@ -56,7 +56,7 @@ impl MidiIn for MidiSnapshotReader {
         block_size: usize,
         buffer: &mut [MidiEvent],
     ) -> usize {
-        let current_beat = self.timeline.current_beat();
+        let current_beat = self.timeline.beat().get();
         let last_beat = self.last_poll_beat.load(Ordering::Acquire);
 
         if current_beat <= last_beat {
@@ -111,7 +111,7 @@ impl Clone for MidiSnapshotReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::transport::OfflineTransportConfig;
+    use tutti_core::transport::OfflineTimelineConfig;
 
     fn note_on(note: u8, vel: u8) -> MidiEvent {
         MidiEvent::note_on(
@@ -130,7 +130,7 @@ mod tests {
         snapshot.add_event(unit_id, 1.0, note_on(64, 100));
         snapshot.add_event(unit_id, 2.0, note_on(67, 100));
 
-        let timeline = Arc::new(OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
             tempo: tutti_core::Bpm(120.0),
             sample_rate: tutti_core::SampleRate(44100.0),
@@ -180,7 +180,7 @@ mod tests {
         snapshot.add_event(unit_id, 0.1, note_on(62, 100));
         snapshot.add_event(unit_id, 0.2, note_on(64, 100));
 
-        let timeline = Arc::new(OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
             tempo: tutti_core::Bpm(120.0),
             sample_rate: tutti_core::SampleRate(44100.0),
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn test_snapshot_reader_no_events_for_unknown_unit() {
         let snapshot = MidiSnapshot::new();
-        let timeline = Arc::new(OfflineTransport::new(&OfflineTransportConfig::default()));
+        let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig::default()));
         let reader = MidiSnapshotReader::new(snapshot, Arc::clone(&timeline));
 
         let mut buffer = [MidiEvent::noop(); 16];
@@ -228,7 +228,7 @@ mod tests {
         snapshot.add_event(unit_id, 0.25, note_on(62, 100));
         snapshot.add_event(unit_id, 0.5, note_on(64, 100));
 
-        let timeline = Arc::new(OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
             tempo: tutti_core::Bpm(120.0),
             sample_rate: tutti_core::SampleRate(44100.0),

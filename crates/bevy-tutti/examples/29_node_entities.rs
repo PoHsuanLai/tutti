@@ -34,7 +34,8 @@ use bevy_log::LogPlugin;
 
 use bevy_tutti::TuttiPlugin;
 use tutti_core::dsp::sine_hz;
-use tutti_core::graph::{MeteringRes, SpawnAudioNode, AudioGraphRes};
+use tutti_core::graph::{AudioGraphRes, MeteringRes, SpawnAudioNode};
+use tutti_core::MotionEvent;
 use tutti_core::{AudioNode, NodeKind, Volume};
 
 fn main() {
@@ -51,7 +52,7 @@ fn main() {
 }
 
 fn start_transport(transport: Res<tutti_core::graph::TransportRes>) {
-    transport.play();
+    let _ = transport.motion.try_send(MotionEvent::Play);
 }
 
 fn spawn_sine(mut commands: Commands) {
@@ -79,11 +80,7 @@ fn fade_volume(mut q: Query<&mut Volume, With<AudioNode>>) {
     }
 }
 
-fn log_state(
-    metering: Res<MeteringRes>,
-    q: Query<&Volume, With<AudioNode>>,
-    mut tick: Local<u32>,
-) {
+fn log_state(metering: Res<MeteringRes>, q: Query<&Volume, With<AudioNode>>, mut tick: Local<u32>) {
     *tick = tick.wrapping_add(1);
     if (*tick).is_multiple_of(30) {
         let vol = q.single().map(|v| v.0).unwrap_or(0.0);

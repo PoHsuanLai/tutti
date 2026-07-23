@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tutti_core::transport::{OfflineTransport, OfflineTransportConfig};
+use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 
 /// `(start_beat, end_beat)`. Convenience alias for offline-transport loop
 /// ranges; matches the tuple shape used by `tutti_core`.
@@ -50,7 +50,7 @@ struct Spec {
     /// the caller can bind transport-aware units in the net to the *same*
     /// transport the driver advances (the net's clip samplers otherwise read a
     /// transport no one drives and stay silent). See `GraphExport::transport`.
-    transport: Option<Arc<OfflineTransport>>,
+    transport: Option<Arc<OfflineTimeline>>,
     #[cfg(feature = "midi")]
     #[allow(dead_code)] // held for lifetime; `midi_snapshot_reader` is what the render sees.
     midi: Option<MidiTrack>,
@@ -68,13 +68,13 @@ impl Spec {
             .unwrap_or_else(|| self.sample_rate.round() as u32)
     }
 
-    fn build_timeline(&self) -> Arc<OfflineTransport> {
+    fn build_timeline(&self) -> Arc<OfflineTimeline> {
         // Prefer a caller-supplied transport so units the caller bound to it
         // (clip samplers) advance with the render. Fall back to building one.
         if let Some(t) = &self.transport {
             return t.clone();
         }
-        Arc::new(OfflineTransport::new(&OfflineTransportConfig {
+        Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: self.start_beat,
             tempo: self.tempo_bpm.into(),
             sample_rate: tutti_core::SampleRate(self.sample_rate),
@@ -224,13 +224,13 @@ impl GraphExport {
     }
 
     /// Loop a beat range during the render (passes through to
-    /// [`OfflineTransport`]).
+    /// [`OfflineTimeline`]).
     pub fn loop_range(mut self, range: LoopRange) -> Self {
         self.spec.loop_range = Some(range);
         self
     }
 
-    /// Supply the [`OfflineTransport`] the render advances, instead of letting
+    /// Supply the [`OfflineTimeline`] the render advances, instead of letting
     /// the render build one from `start_beat`/`at_tempo`.
     ///
     /// Use this when the net contains transport-aware units (clip samplers)
@@ -238,7 +238,7 @@ impl GraphExport {
     /// them to this `Arc` before rendering, or they read a transport nothing
     /// drives and produce silence. `start_beat` / `at_tempo` / `loop_range` are
     /// ignored when a transport is supplied (it already carries them).
-    pub fn transport(mut self, transport: Arc<OfflineTransport>) -> Self {
+    pub fn transport(mut self, transport: Arc<OfflineTimeline>) -> Self {
         self.spec.transport = Some(transport);
         self
     }

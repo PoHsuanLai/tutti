@@ -37,6 +37,7 @@ use tutti_core::dsp::sine_hz;
 use tutti_core::graph::{
     crossfade_audio_node, MeteringRes, SidechainOf, SidechainSources, SpawnAudioNode, TransportRes,
 };
+use tutti_core::MotionEvent;
 use tutti_core::{AudioNode, NodeKind, Volume};
 use tutti_sampler::{SamplerLooping, SamplerSpeed};
 use tutti_sampler::PendingSamplerLoad;
@@ -72,7 +73,8 @@ fn main() {
 }
 
 fn start_transport(transport: Res<TransportRes>) {
-    transport.tempo(120.0).play();
+    transport.settings.set_tempo(120.0);
+    let _ = transport.motion.try_send(MotionEvent::Play);
 }
 
 fn spawn_demo(mut commands: Commands, transport: Res<TransportRes>) {
@@ -101,7 +103,9 @@ fn spawn_demo(mut commands: Commands, transport: Res<TransportRes>) {
     envelope.add_point(AutomationPoint::with_curve(2.0, 1.0, CurveType::Linear));
     envelope.add_point(AutomationPoint::with_curve(4.0, 0.0, CurveType::Linear));
 
-    let lane: LiveAutomationLane<f32> = LiveAutomationLane::new(envelope, transport.0.clone());
+    // The lane holds no transport — it reads the beat from its two input
+    // ports, which the automation spawner wires from the transport clock.
+    let lane: LiveAutomationLane<f32> = LiveAutomationLane::new(envelope);
 
     commands
         .spawn_audio_node(lane, NodeKind::Generator)

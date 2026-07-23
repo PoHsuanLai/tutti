@@ -11,7 +11,7 @@
 //! so it is safe to call from `process`/`tick` hot paths.
 
 use std::sync::Arc;
-use tutti_core::{BeatDuration, BeatPosition, TransportReader, Wave};
+use tutti_core::{BeatDuration, Beat, Timeline, Wave};
 
 /// Clip-relative sample offset the playhead sits at, or `None` when it is
 /// outside the clip's transport window.
@@ -32,15 +32,15 @@ use tutti_core::{BeatDuration, BeatPosition, TransportReader, Wave};
 /// paths.
 #[inline]
 pub fn transport_sample_offset(
-    transport: &dyn TransportReader,
-    start_beat: BeatPosition,
+    transport: &dyn Timeline,
+    start_beat: Beat,
     duration: Option<BeatDuration>,
     file_sample_rate: f64,
 ) -> Option<f64> {
-    if !transport.is_playing() {
+    if !transport.is_rolling() {
         return None;
     }
-    let beat_offset = transport.current_beat() - start_beat.get();
+    let beat_offset = transport.beat().get() - start_beat.get();
     if beat_offset < 0.0 {
         return None;
     }

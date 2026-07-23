@@ -19,7 +19,7 @@ use arc_swap::ArcSwap;
 use assert_no_alloc::AllocDisabler;
 use parking_lot::Mutex;
 use tutti_core::processor::{AudioProcessor, GraphProcessor, MidiProcessor};
-use tutti_core::{TransportClock, TransportManager, GraphNet};
+use tutti_core::{GraphNet, Transport, TransportClock};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiIn, MidiOut, MidiRoute, MidiRoutingSnapshot, MidiUnitId};
 
@@ -30,31 +30,18 @@ static A: AllocDisabler = AllocDisabler;
 /// pattern in `tutti/src/audio_io.rs::tests::build_callback_state`.
 fn build_graph_processor() -> GraphProcessor {
     let sample_rate = 48_000.0;
-    let transport = Arc::new(TransportManager::new(sample_rate));
+    let transport = Transport::new(sample_rate);
 
     let mut net = GraphNet::new(0, 2);
-    let clock = TransportClock::new(
-        transport.tempo().clone(),
-        transport.paused().clone(),
-        sample_rate,
-    )
-    .with_seek(
-        transport.seek_target().clone(),
-        transport.seek_pending().clone(),
-    )
-    .with_loop(
-        transport.loop_enabled_flag().clone(),
-        transport.loop_start_beat_atomic().clone(),
-        transport.loop_end_beat_atomic().clone(),
-    )
-    .with_position_writeback(transport.current_beat().clone());
+    let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
+        .with_position_writeback(Arc::clone(&transport.settings.beat));
     net.inner_mut().push(Box::new(clock));
     let backend = net.backend();
 
     // Keep the net alive for the test's lifetime — the backend borrows it.
     let _leaked: &'static Mutex<GraphNet> = Box::leak(Box::new(Mutex::new(net)));
 
-    GraphProcessor::new(transport, backend)
+    GraphProcessor::new(transport.motion.clone(), backend)
 }
 
 // A MIDI input source that copies a fixed pre-built set of events into the

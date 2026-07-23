@@ -52,28 +52,6 @@ impl core::ops::Sub<MusicalPosition> for MusicalPosition {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct LoopRange {
-    pub(crate) start: f64,
-    pub(crate) end: f64,
-}
-
-impl LoopRange {
-    #[inline]
-    pub(crate) const fn new(start: f64, end: f64) -> Self {
-        Self { start, end }
-    }
-}
-
-impl Default for LoopRange {
-    fn default() -> Self {
-        Self {
-            start: 0.0,
-            end: 4.0, // Default 4-beat loop
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,16 +70,5 @@ mod tests {
 
         let diff = pos2 - pos;
         assert_eq!(diff, 1.5);
-    }
-
-    #[test]
-    fn test_loop_range_creation() {
-        let range = LoopRange::new(0.0, 4.0);
-        assert_eq!(range.start, 0.0);
-        assert_eq!(range.end, 4.0);
-
-        let range_with_offset = LoopRange::new(4.0, 8.0);
-        assert_eq!(range_with_offset.start, 4.0);
-        assert_eq!(range_with_offset.end, 8.0);
     }
 }

@@ -3,43 +3,70 @@ mod click;
 mod clock;
 pub(crate) mod fsm;
 mod handle;
-pub(crate) mod manager;
+mod meter;
+mod motion;
 mod offline;
 pub(crate) mod position;
-pub mod sync;
-pub(crate) mod tempo_map;
+mod settings;
+mod state;
 
 pub use automation_reader::{AutomationEnvelopeFn, AutomationReaderInput};
-pub use click::{click, ClickNode, ClickSettings, ClickState, MetronomeMode};
+pub use click::{ClickNode, ClickSettings, ClickState, MetronomeHandle, MetronomeMode};
 pub use clock::TransportClock;
-pub use handle::{MetronomeHandle, TransportHandle};
-pub use manager::{Direction, MotionState, TransportManager};
-pub use offline::{OfflineTransport, OfflineTransportConfig};
-pub use sync::{SmpteFrameRate, SyncSnapshot, SyncSource, SyncState, SyncStatus};
-pub use tempo_map::{TempoMap, TimeSignature, BBT};
+pub use fsm::Direction;
+pub use handle::Transport;
+pub use meter::TimeSignature;
+pub use motion::{MotionEvent, MotionFsm, MotionState, QueueFull};
+pub use offline::{OfflineTimeline, OfflineTimelineConfig};
+pub use settings::TransportSettings;
+pub use state::{
+    beat_from_ports, ClockInputs, Declick, LoopRange, LoopSpan, SeekSlot, TransportState,
+    BEAT_PORTS,
+};
 
 #[cfg(feature = "bevy")]
 pub mod plugin;
 #[cfg(feature = "bevy")]
-pub use plugin::{PendingTransport, TransportRes, TuttiTransportPlugin};
+pub use plugin::{
+    MetronomeRes, PendingMetronome, PendingTransport, TransportClockNode, TransportRes,
+    TuttiTransportPlugin,
+};
 
-/// Trait for reading transport state.
+/// A musical timeline: where we are, how fast, and whether it is moving.
 ///
-/// This abstraction allows both live transport (`TransportHandle`) and
-/// offline transport (`OfflineTransport`) to be used interchangeably by
-/// nodes like `AutomationLane` that need beat position information.
-pub trait TransportReader: Send + Sync {
-    fn current_beat(&self) -> f64;
-    /// Full f64 precision beat position. Defaults to `current_beat()`.
-    /// Use this when sub-tick accuracy matters at high beat counts
-    /// (f32 ULP exceeds ~0.002 past beat 16384).
-    fn current_beat_f64(&self) -> f64 {
-        self.current_beat()
-    }
-    fn is_loop_enabled(&self) -> bool;
-    fn get_loop_range(&self) -> Option<(f64, f64)>;
-    fn is_playing(&self) -> bool;
-    fn is_recording(&self) -> bool;
-    fn is_in_preroll(&self) -> bool;
+/// Implemented by the live [`Transport`] and by [`OfflineTimeline`], so a
+/// beat-driven source can be handed either one and not care which.
+///
+/// # When to use this instead of a beat edge
+///
+/// Pure DSP nodes should **not** implement against this trait. A node that is a
+/// function of musical time takes the beat as a signal on its input ports (see
+/// [`BEAT_PORTS`]) — that is per-sample accurate, works unchanged offline, and
+/// makes the timeline→node relationship a visible graph edge.
+///
+/// What legitimately remains here is what a beat signal cannot express:
+///
+/// - **Boolean gating** — `is_rolling` drives early returns with state-reset
+///   side effects. "Emit nothing" is not the same as "emit a level", and a
+///   paused timeline still has a valid beat, so rolling-ness is not
+///   recoverable from the beat.
+/// - **Nodes with no ports** — the MIDI sources implement `poll_into` and have
+///   no `BufferRef` to read a beat from.
+///
+/// # What is deliberately NOT here
+///
+/// Recording and preroll are live-session facts, not timeline facts: an
+/// offline render answers `false` to both forever. They live on
+/// [`TransportSettings`] and are read directly by the one consumer that needs
+/// them (the metronome).
+pub trait Timeline: Send + Sync {
+    /// Current position on the timeline.
+    fn beat(&self) -> crate::params::Beat;
+    /// Current tempo.
     fn tempo(&self) -> crate::params::Bpm;
+    /// Whether time is advancing. An offline render is always rolling.
+    fn is_rolling(&self) -> bool;
+    /// The active loop region, or `None` when not looping. Always a valid,
+    /// non-empty region — see [`LoopRange`].
+    fn loop_range(&self) -> Option<LoopRange>;
 }

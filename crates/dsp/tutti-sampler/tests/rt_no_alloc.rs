@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{
-    AudioUnit, BeatPosition, Bpm, BufferVec, Cents, Ratio, SampleRate, TransportReader, Wave,
+    AudioUnit, Beat, Bpm, BufferVec, Cents, Ratio, SampleRate, Timeline, Wave,
 };
 use tutti_sampler::stretch::{Algorithm, Unit as TimeStretchUnit};
 use tutti_sampler::{ClipCommand, ClipSpec, Direction, SamplerUnit, SlotId, TrackClipReaderUnit};
@@ -137,27 +137,18 @@ impl MockTransport {
     }
 }
 
-impl TransportReader for MockTransport {
-    fn is_playing(&self) -> bool {
+impl Timeline for MockTransport {
+    fn is_rolling(&self) -> bool {
         self.playing.load(Ordering::Relaxed)
     }
-    fn current_beat(&self) -> f64 {
-        f64::from_bits(self.beat.load(Ordering::Relaxed))
+    fn beat(&self) -> Beat {
+        Beat::new(f64::from_bits(self.beat.load(Ordering::Relaxed)))
     }
     fn tempo(&self) -> Bpm {
         Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
     }
-    fn is_loop_enabled(&self) -> bool {
-        false
-    }
-    fn get_loop_range(&self) -> Option<(f64, f64)> {
+    fn loop_range(&self) -> Option<tutti_core::transport::LoopRange> {
         None
-    }
-    fn is_recording(&self) -> bool {
-        false
-    }
-    fn is_in_preroll(&self) -> bool {
-        false
     }
 }
 
@@ -179,7 +170,7 @@ fn track_clip_reader_process_steady_state_is_allocation_free() {
         let sampler = SamplerUnit::with_transport(
             wave.clone(),
             transport.clone(),
-            BeatPosition::new(0.0),
+            Beat::new(0.0),
             None,
         );
         unit.insert_clip(ClipSpec {
@@ -224,7 +215,7 @@ fn track_clip_reader_tick_steady_state_is_allocation_free() {
         let sampler = SamplerUnit::with_transport(
             wave.clone(),
             transport.clone(),
-            BeatPosition::new(0.0),
+            Beat::new(0.0),
             None,
         );
         unit.insert_clip(ClipSpec {
@@ -307,7 +298,7 @@ fn run_stretch_drain_under_guard() {
     let sampler = SamplerUnit::with_transport(
         wave.clone(),
         transport.clone(),
-        BeatPosition::new(0.0),
+        Beat::new(0.0),
         None,
     );
     handle.send(ClipCommand::Add {

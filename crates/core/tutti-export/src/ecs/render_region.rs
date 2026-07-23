@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use tutti_core::dsp::Net;
 use tutti_core::{
-    AudioUnit, OfflineTransport, OfflineTransportConfig, SampleRate, TransportReader,
+    AudioUnit, OfflineTimeline, OfflineTimelineConfig, SampleRate, Timeline, TransportClock,
 };
 use bevy_tasks::{block_on, futures_lite::future};
 use tutti_core::NodeId;
@@ -118,12 +118,32 @@ impl Default for RegionRenderConfig {
 ///      (their clone is already independent) and are just re-pointed at the
 ///      offline transport so they read the render's playhead, not the (undriven)
 ///      live one.
-fn rebind_net_transport(net: &mut Net, transport: &Arc<dyn TransportReader>) {
+fn rebind_net_transport(
+    net: &mut Net,
+    transport: &Arc<dyn Timeline>,
+    start_beat: f64,
+    tempo: impl Into<tutti_core::Bpm>,
+) {
+    let tempo = tempo.into();
     let ids: Vec<NodeId> = net.ids().copied().collect();
     for id in ids {
         // 1. Generic: sever any shared live input on this clone before the
         //    worker ticks it. No-op for pure-DSP nodes.
         net.node_mut(id).isolate();
+
+        // 1b. The clock is severed by `isolate()` but keeps whatever beat the
+        //     LIVE playhead happened to be at. Re-seat it on the render's own
+        //     timeline, or every edge-driven node (LFO, AutomationLane) renders
+        //     from the wrong beat. This is the beat-signal counterpart of the
+        //     `Arc` rebinds below.
+        if let Some(clock) = net
+            .node_mut(id)
+            .as_any_mut()
+            .downcast_mut::<TransportClock>()
+        {
+            *clock = clock.at_tempo(tempo).starting_at(start_beat);
+            continue;
+        }
 
         // 2. Type-specific offline rebind. Decide with a scoped borrow, then
         //    act — `net.replace` needs `&mut net`, which can't coexist with the
@@ -209,7 +229,7 @@ pub struct RegionRenderNet {
     /// The offline transport the clip readers (and the export) are bound to.
     /// Public so the `Populate` step binds freshly-built samplers to the same
     /// timeline.
-    pub transport: Arc<OfflineTransport>,
+    pub transport: Arc<OfflineTimeline>,
     pub target: NodeId,
     pub start_beat: f64,
     pub len_beats: f64,
@@ -301,16 +321,16 @@ pub fn prepare_region_render_system(
         // so we rebind every transport-aware unit to this one — without it the
         // clip samplers read a stale playhead and render silence. The export is
         // handed the same transport in `Spawn`, tying both ends together.
-        let timeline = Arc::new(OfflineTransport::new(&OfflineTransportConfig {
+        let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: start.start_beat,
             tempo: start.tempo.into(),
             sample_rate: SampleRate(config.sample_rate),
             loop_range: None,
         }));
-        let reader_transport: Arc<dyn TransportReader> = timeline.clone();
+        let reader_transport: Arc<dyn Timeline> = timeline.clone();
         {
             let _span = bevy_log::info_span!("region_render::rebind_net_transport").entered();
-            rebind_net_transport(&mut net, &reader_transport);
+            rebind_net_transport(&mut net, &reader_transport, start.start_beat, start.tempo);
         }
 
         ecmd.insert(RegionRenderNet {
@@ -433,7 +453,7 @@ impl Plugin for TuttiRegionRenderPlugin {
 mod tests {
     use super::*;
     use tutti_core::{Bpm, SampleRate, Wave};
-    use tutti_core::BeatPosition;
+    use tutti_core::Beat;
     use tutti_sampler::{ClipCommand, Direction, SlotId, TrackClipReaderUnit};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -451,27 +471,18 @@ mod tests {
             })
         }
     }
-    impl TransportReader for MockTransport {
-        fn is_playing(&self) -> bool {
+    impl Timeline for MockTransport {
+        fn is_rolling(&self) -> bool {
             self.playing.load(Ordering::Relaxed)
         }
-        fn current_beat(&self) -> f64 {
-            f64::from_bits(self.beat.load(Ordering::Relaxed))
+        fn beat(&self) -> tutti_core::Beat {
+            tutti_core::Beat(f64::from_bits(self.beat.load(Ordering::Relaxed)))
         }
         fn tempo(&self) -> Bpm {
             Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
         }
-        fn is_loop_enabled(&self) -> bool {
-            false
-        }
-        fn get_loop_range(&self) -> Option<(f64, f64)> {
+        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
             None
-        }
-        fn is_recording(&self) -> bool {
-            false
-        }
-        fn is_in_preroll(&self) -> bool {
-            false
         }
     }
 
@@ -490,9 +501,9 @@ mod tests {
 
         // Clone the net (as the render does) and rebind it to an offline
         // transport — this should swap the cloned reader for a fresh one.
-        let offline = MockTransport::new(true) as Arc<dyn TransportReader>;
+        let offline = MockTransport::new(true) as Arc<dyn Timeline>;
         let mut clone = net.clone();
-        rebind_net_transport(&mut clone, &offline);
+        rebind_net_transport(&mut clone, &offline, 0.0, tutti_core::Bpm(120.0));
 
         let cloned_reader = clone
             .node_mut(id)
@@ -513,7 +524,7 @@ mod tests {
         let sampler = SamplerUnit::with_transport(
             wave,
             live_transport.clone(),
-            BeatPosition::new(0.0),
+            Beat::new(0.0),
             None,
         );
         handle.send(ClipCommand::Add {
@@ -555,6 +566,71 @@ mod tests {
     use tutti_core::dsp::dc;
     use tutti_core::graph::AudioConfig;
     use bevy_ecs::world::World;
+
+    /// The clock node is severed by `isolate()` but keeps the LIVE playhead's
+    /// beat. `rebind_net_transport` must re-seat it on the render's own
+    /// timeline — otherwise every edge-driven node (LFO, AutomationLane) reads
+    /// the wrong beat for the whole render.
+    #[test]
+    fn rebind_reseats_the_clock_on_the_render_start_beat() {
+        use tutti_core::{AtomicBool, AtomicF64, Ordering};
+
+        let tempo = Arc::new(AtomicF64::new(120.0));
+        let paused = Arc::new(AtomicBool::new(false));
+        let writeback = Arc::new(AtomicF64::new(0.0));
+
+        let mut net = Net::new(0, 2);
+        let live_clock = TransportClock::new(Arc::clone(&tempo), paused, 44100.0)
+            .with_position_writeback(Arc::clone(&writeback));
+        let clock_id = net.push(Box::new(live_clock));
+        net.pipe_output(clock_id);
+
+        // Advance the "live" clock away from 0 so a stale beat is detectable.
+        {
+            let clock = net
+                .node_mut(clock_id)
+                .as_any_mut()
+                .downcast_mut::<TransportClock>()
+                .unwrap();
+            let mut out = [0.0f32; 2];
+            for _ in 0..44100 {
+                clock.tick(&[], &mut out);
+            }
+            assert!(clock.current_beat() > 1.0, "live clock should have moved");
+        }
+
+        let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+            start_beat: 32.0,
+            tempo: tutti_core::Bpm(120.0),
+            sample_rate: SampleRate(44100.0),
+            loop_range: None,
+        }));
+        let reader: Arc<dyn Timeline> = timeline;
+        rebind_net_transport(&mut net, &reader, 32.0, tutti_core::Bpm(120.0));
+
+        let clock = net
+            .node_mut(clock_id)
+            .as_any_mut()
+            .downcast_mut::<TransportClock>()
+            .unwrap();
+        assert!(
+            (clock.current_beat() - 32.0).abs() < 1e-6,
+            "clock not re-seated on the render start beat: {}",
+            clock.current_beat()
+        );
+
+        // And it must no longer write into the live playhead.
+        let before = writeback.load(Ordering::Acquire);
+        let mut out = [0.0f32; 2];
+        for _ in 0..256 {
+            clock.tick(&[], &mut out);
+        }
+        assert_eq!(
+            writeback.load(Ordering::Acquire),
+            before,
+            "render clock stomped the live playhead"
+        );
+    }
 
     /// Build a real (tiny, CPAL-free) 2-output graph with one node piped to the
     /// output bus, so `clone_net_isolated(target)` succeeds in `prepare`.

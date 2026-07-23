@@ -65,7 +65,7 @@ pub fn midi_sequence_tick_system(
     midi: Res<crate::MidiBusRes>,
     mut query: Query<(&MidiSequence, &mut MidiSequenceState)>,
 ) {
-    if !transport.0.is_playing() {
+    if !transport.0.motion.is_playing() {
         // All-notes-off when transport is not rolling
         for (seq, mut state) in query.iter_mut() {
             let unit_id = tutti_midi_types::MidiUnitId::new(seq.target.value());
@@ -77,7 +77,7 @@ pub fn midi_sequence_tick_system(
         return;
     }
 
-    let beat = transport.0.current_beat();
+    let beat = transport.0.settings.beat();
 
     for (seq, mut state) in query.iter_mut() {
         let unit_id = tutti_midi_types::MidiUnitId::new(seq.target.value());

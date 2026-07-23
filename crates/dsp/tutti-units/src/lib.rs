@@ -52,6 +52,11 @@ pub use filter::{
 mod dynamics;
 pub use dynamics::{BrickwallLimiter, Compressor, Gate, LimiterNode};
 
+// A node declares its own audio-rate param-input ports (cutoff, drive, …). No
+// Bevy dependency — pure node capability.
+mod param_ports;
+pub use param_ports::ParamPorts;
+
 #[cfg(feature = "spatial")]
 mod spatial;
 #[cfg(feature = "spatial")]

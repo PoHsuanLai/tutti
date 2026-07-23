@@ -183,6 +183,70 @@ impl super::TransportClockRead for OfflineTransport {
 mod tests {
     use super::*;
 
+    /// A region render drives BOTH clocks over the same net: the in-net
+    /// `TransportClock` feeds beat-input nodes (LFO, AutomationLane) while this
+    /// `OfflineTransport` feeds clip readers and samplers. Started at the same
+    /// beat, they must report the same beat for the same sample.
+    ///
+    /// Regression: the export driver used to `advance(1)` before the first
+    /// block, justified as matching "advance-then-tick semantics". The clock is
+    /// emit-then-advance, so that prime put the two exactly one
+    /// `beats_per_sample` apart for the entire render.
+    #[test]
+    fn offline_timeline_agrees_with_transport_clock_sample_for_sample() {
+        use crate::transport::TransportClock;
+        use crate::{AtomicBool, AtomicF64, AudioUnit};
+        use std::sync::Arc;
+
+        let sample_rate = 44100.0;
+        let tempo = 120.0;
+        let start_beat = 4.0;
+
+        let mut clock = TransportClock::new(
+            Arc::new(AtomicF64::new(tempo)),
+            Arc::new(AtomicBool::new(false)),
+            sample_rate,
+        )
+        .starting_at(start_beat);
+
+        let timeline = OfflineTransport::new(&OfflineTransportConfig {
+            start_beat,
+            tempo: Bpm(tempo),
+            sample_rate: SampleRate(sample_rate),
+            loop_range: None,
+        });
+
+        // Sample 0: both must report the start beat, before either advances.
+        let mut out = [0.0f32; 2];
+        clock.tick(&[], &mut out);
+        let clock_beat = out[0] as f64 + out[1] as f64;
+        assert!(
+            (clock_beat - timeline.current_beat()).abs() < 1e-9,
+            "first sample disagrees: clock={clock_beat} timeline={}",
+            timeline.current_beat()
+        );
+
+        // And they must stay in step across a block boundary. The driver ticks
+        // the net per sample, then advances the timeline by the block size.
+        let block = 512;
+        for _ in 1..block {
+            clock.tick(&[], &mut out);
+        }
+        timeline.advance(block);
+
+        let clock_beat = out[0] as f64 + out[1] as f64;
+        let expected_lag = timeline.beats_per_sample();
+        // After the block the timeline sits one sample ahead of the last
+        // EMITTED sample, because emit-then-advance means sample N-1 carried
+        // the beat before the final increment.
+        assert!(
+            ((timeline.current_beat() - clock_beat) - expected_lag).abs() < 1e-9,
+            "drifted across the block: clock={clock_beat} timeline={} \
+             (expected exactly one beats_per_sample apart)",
+            timeline.current_beat()
+        );
+    }
+
     #[test]
     fn test_timeline_advances() {
         let timeline = OfflineTransport::new(&OfflineTransportConfig {

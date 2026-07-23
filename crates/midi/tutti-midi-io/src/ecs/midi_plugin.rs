@@ -21,6 +21,7 @@ use bevy_app::{App, Plugin};
 use bevy_ecs::prelude::*;
 
 use super::bus::MidiBusRes;
+use super::routing::MidiRoutingRes;
 
 #[cfg(feature = "midi-hardware")]
 use super::device::MidiIoRes;
@@ -36,6 +37,11 @@ pub struct PendingMidi {
     /// The audio-thread clock master + its output-ring consumer, if the engine
     /// built one. Claimed into [`ClockMasterRes`](super::clock_out::ClockMasterRes).
     pub clock_out: Option<super::clock_out::ClockMasterRes>,
+    /// The routing table whose snapshot the RT `MidiProcessor` already holds.
+    /// Claimed into [`MidiRoutingRes`]; the writer half must be the *same* table
+    /// the processor reads, so it is built by the engine and handed over here
+    /// rather than default-initialised.
+    pub routing: Option<tutti_midi_types::MidiRoutingTable>,
 }
 
 /// Bevy plugin: MIDI input + routing + sequence playback + time-delayed
@@ -56,6 +62,9 @@ impl Plugin for TuttiMidiPlugin {
             }
             if let Some(clock_out) = pending.clock_out.take() {
                 app.insert_resource(clock_out);
+            }
+            if let Some(routing) = pending.routing.take() {
+                app.insert_resource(MidiRoutingRes(routing));
             }
         }
 

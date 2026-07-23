@@ -1,9 +1,13 @@
 //! `AudioGraph` — the editable DSP graph.
 //!
-//! Owns the fundsp-backed [`GraphNet`], the [`PdcManager`] that tracks plugin
-//! delay compensation, and (with feature `midi`) the [`MidiRoutingTable`] that
-//! publishes hardware-MIDI → node routing snapshots. Edits take `&mut self`
-//! directly. No `Mutex`, no closure, no `Arc<TuttiEngine>`.
+//! Owns the fundsp-backed [`GraphNet`] and the [`PdcManager`] that tracks
+//! plugin delay compensation. Edits take `&mut self` directly. No `Mutex`, no
+//! closure, no `Arc<TuttiEngine>`.
+//!
+//! MIDI routing is deliberately *not* here: the routing table maps a MIDI
+//! channel to a destination unit's mailbox, which is a device-edge concern with
+//! no fundsp edge behind it. It lives in the MIDI subsystem as
+//! `tutti_midi_io::MidiRoutingRes`.
 //!
 //! # Edit and commit
 //!
@@ -37,43 +41,36 @@ use crate::{
     GraphNet, PdcManager, PdcState,
 };
 
-use tutti_midi_types::MidiRoutingTable;
-
 /// The editable DSP graph.
 ///
 /// Owned by a single `&mut` thread; no locks. Wraps a [`GraphNet`](crate::GraphNet)
-/// and its associated [`PdcManager`](crate::PdcManager) (plus, under the
-/// `midi` feature, a [`MidiRoutingTable`]). Edits are staged until
+/// and its associated [`PdcManager`](crate::PdcManager). Edits are staged until
 /// [`commit`](Self::commit) publishes them to the audio thread.
 pub struct AudioGraph {
     net: GraphNet,
     pdc: PdcManager,
-    midi_route: MidiRoutingTable,
     sample_rate: f64,
     channels: usize,
 }
 
 impl AudioGraph {
     /// Construct from pre-built parts. Called by `TuttiEngineBuilder`.
-    #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
         net: GraphNet,
         pdc: PdcManager,
-        midi_route: MidiRoutingTable,
         sample_rate: f64,
         channels: usize,
     ) -> Self {
         Self {
             net,
             pdc,
-            midi_route,
             sample_rate,
             channels,
         }
     }
 
     /// Build an empty graph with the given output `channels` (0 inputs,
-    /// 48 kHz). Constructs the net / PDC / routing table internally.
+    /// 48 kHz). Constructs the net and PDC internally.
     pub fn empty(channels: usize) -> Self {
         let mut net = GraphNet::new(0, channels);
         // Allocate the fundsp realtime backend (as the real builder does) so
@@ -84,7 +81,6 @@ impl AudioGraph {
         Self {
             net,
             pdc,
-            midi_route: MidiRoutingTable::new(),
             sample_rate: 48_000.0,
             channels,
         }
@@ -310,20 +306,11 @@ impl AudioGraph {
         self.net.inner_mut().set_source(node, port, src)
     }
 
-    /// Mutable access to the MIDI routing table.
-    ///
-    /// Edits are staged alongside graph edits and only reach the audio thread
-    /// after the next [`commit`](Self::commit).
-    pub fn midi_route_mut(&mut self) -> &mut MidiRoutingTable {
-        &mut self.midi_route
-    }
-
     /// Publish pending edits to the audio thread.
     ///
     /// Runs PDC analysis (inserting compensation delays automatically),
-    /// commits fundsp's [`Net`] backend, and publishes a fresh PDC snapshot
-    /// plus (under the `midi` feature) a fresh MIDI routing snapshot. Returns
-    /// total graph latency in samples (informational).
+    /// commits fundsp's [`Net`] backend, and publishes a fresh PDC snapshot.
+    /// Returns total graph latency in samples (informational).
     ///
     /// If a panic occurs between edits and `commit`, the audio thread keeps
     /// running the last successfully committed graph; the next `commit` call
@@ -343,7 +330,6 @@ impl AudioGraph {
         // to get zero compensation (same as prior behaviour). When bus
         // identity lands on the graph, add a parallel `set_return_latency`
         // loop here.
-        self.midi_route.commit();
         outcome.total_latency
     }
 
@@ -484,7 +470,7 @@ mod tests {
         // we only care that the commit path runs and updates PDC state.
         let _backend = net.backend();
         let pdc = PdcManager::new(channels, 0);
-        AudioGraph::from_parts(net, pdc, MidiRoutingTable::new(), 48_000.0, channels)
+        AudioGraph::from_parts(net, pdc, 48_000.0, channels)
     }
 
     #[test]

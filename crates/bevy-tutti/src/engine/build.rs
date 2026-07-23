@@ -41,9 +41,7 @@ use tutti_midi_io::MidiIo;
 use tutti_midi_io::PendingMidi;
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::MidiBus;
-// `MidiRoutingTable` is a plain type (from tutti-midi-types, a hard dep) that
-// `AudioGraph` always carries — import it unconditionally so the `from_parts`
-// call shape doesn't depend on the `midi` feature.
+#[cfg(feature = "midi")]
 use tutti_midi_types::MidiRoutingTable;
 
 #[cfg(feature = "sampler")]
@@ -111,6 +109,11 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
 
     let backend = net.backend();
 
+    // The routing table is a MIDI-subsystem concern, not a graph one: it maps a
+    // MIDI channel to a destination unit's mailbox, with no fundsp edge behind
+    // it. Built here only because the RT `MidiProcessor` needs its snapshot at
+    // assembly time; the writer half is handed to `TuttiMidiPlugin` below.
+    #[cfg(feature = "midi")]
     let midi_route = MidiRoutingTable::new();
     #[cfg(feature = "midi")]
     let midi_bus = MidiBus::new();
@@ -168,7 +171,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     #[cfg(not(feature = "sampler"))]
     let _ = &pdc_snapshot;
 
-    let graph = AudioGraph::from_parts(net, pdc, midi_route, sample_rate, channels);
+    let graph = AudioGraph::from_parts(net, pdc, sample_rate, channels);
 
     let driver = TuttiDriver::from_parts(audio_engine, callback_state);
 
@@ -203,6 +206,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
             clock_master,
             clock_out_consumer,
         )),
+        routing: Some(midi_route),
     });
 
     #[cfg(feature = "sampler")]

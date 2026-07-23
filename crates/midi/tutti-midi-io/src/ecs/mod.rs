@@ -4,8 +4,9 @@
 //! focused sub-plugin in its own module. [`TuttiMidiPlugin`] (in [`midi_plugin`])
 //! is the composition root that claims the engine handles and adds the
 //! sub-plugins. Each resource lives with the duty that owns it: [`MidiBusRes`] in
-//! [`bus`], `MidiIoRes` in `device` (behind `midi-hardware`), the transient
-//! [`PendingMidi`] next to its claimant in [`midi_plugin`]. The whole surface
+//! [`bus`], [`MidiRoutingRes`] in [`routing`], `MidiIoRes` in `device` (behind
+//! `midi-hardware`), the transient [`PendingMidi`] next to its claimant in
+//! [`midi_plugin`]. The whole surface
 //! re-exports at the crate root so consumers write `tutti_midi_io::TuttiMidiPlugin`.
 //!
 //! This is the only Bevy-dependent part of the crate; everything under
@@ -40,7 +41,7 @@ pub use negotiation::{
     CiDeviceDiscovered, CiRes, EndpointDiscovered, EndpointDiscoveryRes, InboundCiMessage,
     InboundEndpointReply, MidiNegotiationPlugin, StartCiDiscovery, StartEndpointDiscovery,
 };
-pub use routing::{midi_routing_sync_system, MidiRoutingPlugin, MidiSink};
+pub use routing::{midi_routing_sync_system, MidiRoutingPlugin, MidiRoutingRes, MidiSink};
 pub use scheduled::{tick_scheduled_midi, MidiSynthMarker, ScheduledMidi, ScheduledMidiPlugin};
 pub use sequence::{
     midi_sequence_setup_system, midi_sequence_tick_system, MidiSequence, MidiSequenceNote,

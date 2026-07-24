@@ -69,31 +69,259 @@ macro_rules! unit_newtype {
     };
 }
 
+// ── Operator opt-ins ────────────────────────────────────────────────────────
+//
+// Deliberately NOT part of `unit_newtype!`. A blanket set would generate
+// operators that compile but mean nothing — `Beat + Beat` (adding two timeline
+// positions), `Db * 2.0` (which squares the amplitude, it does not double the
+// gain), `Degrees(350) < Degrees(10)` (false on a circle). Each type opts into
+// exactly the algebra it has, next to its own definition, and what is *omitted*
+// is as load-bearing as what is included.
+
+/// Ordering by magnitude.
+///
+/// `PartialOrd` only: these are float-backed, so `NaN` denies totality exactly
+/// as it does for the raw `f64`. (`Samples` has full `Ord` because it is
+/// integer-backed.)
+macro_rules! unit_ordered {
+    ($name:ident) => {
+        impl PartialOrd for $name {
+            #[inline]
+            fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+                self.0.partial_cmp(&other.0)
+            }
+        }
+    };
+}
+
+/// `min` / `max` / `clamp` in the unit's own type, replacing the
+/// `Unit(x.get().clamp(a, b))` idiom.
+macro_rules! unit_bounded {
+    ($name:ident, $raw:ty) => {
+        impl $name {
+            #[inline]
+            pub fn min(self, other: Self) -> Self {
+                Self(<$raw>::min(self.0, other.0))
+            }
+            #[inline]
+            pub fn max(self, other: Self) -> Self {
+                Self(<$raw>::max(self.0, other.0))
+            }
+            /// Panics if `lo > hi`, matching `f32::clamp` / `f64::clamp`.
+            #[inline]
+            pub fn clamp(self, lo: Self, hi: Self) -> Self {
+                Self(<$raw>::clamp(self.0, lo.0, hi.0))
+            }
+        }
+    };
+}
+
+/// A magnitude that composes with itself: `T ± T -> T`.
+macro_rules! unit_additive {
+    ($name:ident) => {
+        impl core::ops::Add for $name {
+            type Output = Self;
+            #[inline]
+            fn add(self, rhs: Self) -> Self {
+                Self(self.0 + rhs.0)
+            }
+        }
+        impl core::ops::Sub for $name {
+            type Output = Self;
+            #[inline]
+            fn sub(self, rhs: Self) -> Self {
+                Self(self.0 - rhs.0)
+            }
+        }
+        impl core::ops::AddAssign for $name {
+            #[inline]
+            fn add_assign(&mut self, rhs: Self) {
+                self.0 += rhs.0;
+            }
+        }
+        impl core::ops::SubAssign for $name {
+            #[inline]
+            fn sub_assign(&mut self, rhs: Self) {
+                self.0 -= rhs.0;
+            }
+        }
+    };
+}
+
+/// A signed quantity: negation reverses its direction.
+macro_rules! unit_signed {
+    ($name:ident) => {
+        impl core::ops::Neg for $name {
+            type Output = Self;
+            #[inline]
+            fn neg(self) -> Self {
+                Self(-self.0)
+            }
+        }
+    };
+}
+
+/// Scaling by a bare scalar. **Never** apply to a logarithmic unit.
+macro_rules! unit_scalable {
+    ($name:ident, $raw:ty) => {
+        impl core::ops::Mul<$raw> for $name {
+            type Output = Self;
+            #[inline]
+            fn mul(self, k: $raw) -> Self {
+                Self(self.0 * k)
+            }
+        }
+        impl core::ops::Div<$raw> for $name {
+            type Output = Self;
+            #[inline]
+            fn div(self, k: $raw) -> Self {
+                Self(self.0 / k)
+            }
+        }
+        impl core::ops::MulAssign<$raw> for $name {
+            #[inline]
+            fn mul_assign(&mut self, k: $raw) {
+                self.0 *= k;
+            }
+        }
+        impl core::ops::DivAssign<$raw> for $name {
+            #[inline]
+            fn div_assign(&mut self, k: $raw) {
+                self.0 /= k;
+            }
+        }
+    };
+}
+
+/// Ratio of two commensurable magnitudes — a bare number.
+macro_rules! unit_ratio {
+    ($name:ident, $raw:ty) => {
+        impl core::ops::Div for $name {
+            type Output = $raw;
+            #[inline]
+            fn div(self, rhs: Self) -> $raw {
+                self.0 / rhs.0
+            }
+        }
+    };
+}
+
+/// The affine relationship between a position and its displacement.
+///
+/// Generates exactly the operators an affine space has — and, critically, **no
+/// `$pos + $pos`**: adding two positions has no meaning without an origin
+/// convention. That omission is the entire point of splitting a position type
+/// from a duration type.
+macro_rules! unit_affine {
+    ($pos:ident, $dur:ident) => {
+        impl core::ops::Sub<$pos> for $pos {
+            type Output = $dur;
+            #[inline]
+            fn sub(self, rhs: $pos) -> $dur {
+                $dur(self.0 - rhs.0)
+            }
+        }
+        impl core::ops::Add<$dur> for $pos {
+            type Output = $pos;
+            #[inline]
+            fn add(self, rhs: $dur) -> $pos {
+                $pos(self.0 + rhs.0)
+            }
+        }
+        impl core::ops::Sub<$dur> for $pos {
+            type Output = $pos;
+            #[inline]
+            fn sub(self, rhs: $dur) -> $pos {
+                $pos(self.0 - rhs.0)
+            }
+        }
+        impl core::ops::AddAssign<$dur> for $pos {
+            #[inline]
+            fn add_assign(&mut self, rhs: $dur) {
+                self.0 += rhs.0;
+            }
+        }
+        impl core::ops::SubAssign<$dur> for $pos {
+            #[inline]
+            fn sub_assign(&mut self, rhs: $dur) {
+                self.0 -= rhs.0;
+            }
+        }
+    };
+}
+
+/// Modular remainder within a repeating span.
+macro_rules! unit_modular {
+    ($name:ident) => {
+        impl core::ops::Rem for $name {
+            type Output = Self;
+            #[inline]
+            fn rem(self, rhs: Self) -> Self {
+                Self(self.0 % rhs.0)
+            }
+        }
+    };
+}
+
 unit_newtype!(
     /// Frequency in Hertz. Used for filter cutoffs, LFO rates, EQ centers.
     Hz
 );
+unit_ordered!(Hz);
+unit_bounded!(Hz, f32);
+unit_additive!(Hz);
+unit_scalable!(Hz, f32);
+unit_ratio!(Hz, f32);
 unit_newtype!(
     /// Time in seconds. Used for attack/release, delay times, lookahead.
     Seconds
 );
+unit_ordered!(Seconds);
+unit_bounded!(Seconds, f32);
+unit_additive!(Seconds);
+unit_scalable!(Seconds, f32);
+unit_ratio!(Seconds, f32);
 unit_newtype!(
     /// Amplitude in decibels. Used for thresholds, gains, makeup, ceilings.
     Db
 );
+unit_ordered!(Db);
+unit_bounded!(Db, f32);
+// dB is logarithmic, so cascaded gain stages ADD — unlike `Beat + Beat`, this
+// is meaningful. `Neg` inverts a gain (cut <-> boost).
+unit_additive!(Db);
+unit_signed!(Db);
+// NOT `unit_scalable!`: `Db(-6.0) * 2.0 == Db(-12.0)` squares the *amplitude*,
+// it does not double the gain. Convert through `Linear` for amplitude scaling.
+// NOT `unit_ratio!`: a quotient of logarithms is not a quantity.
 unit_newtype!(
     /// Unitless normalized amount. Used for mix (0..1), feedback (0..~0.99),
     /// depth, LFO amplitude, and similar ratio-of-range controls.
     Linear
 );
+unit_ordered!(Linear);
+unit_bounded!(Linear, f32);
+unit_scalable!(Linear, f32);
+// NOT `unit_additive!`: two 0..1 mixes summing to 1.4 is out of range and means
+// nothing. `Linear` is a position on a normalized scale, not a magnitude.
 unit_newtype!(
     /// Dimensionless ratio. Used for compressor ratio and filter Q.
     Ratio
 );
+unit_ordered!(Ratio);
+unit_bounded!(Ratio, f32);
+unit_scalable!(Ratio, f32);
+// NOT `unit_additive!`: 4:1 plus 4:1 is not 8:1.
 unit_newtype!(
     /// Angle in degrees. Used for spatial azimuth and elevation.
     Degrees
 );
+// A WRAPPING coordinate: azimuth runs -180..180 with 0 = front. Ordering and
+// addition are both traps here — `Degrees(350) < Degrees(10)` is true under a
+// naive compare, but 350 deg is 20 deg *clockwise* of 10 deg, and a
+// non-wrapping `+` silently leaves the circle. Angular arithmetic wants named
+// methods (shortest_arc_to, wrap_signed), not operators.
+unit_signed!(Degrees);
 unit_newtype!(
     /// Tempo in beats per minute. Distinct from `Hz`: beats/minute, not cycles/second.
     ///
@@ -103,6 +331,22 @@ unit_newtype!(
     Bpm,
     f64
 );
+unit_ordered!(Bpm);
+unit_bounded!(Bpm, f64);
+// NOT `unit_additive!`: the difference of two tempos is not a tempo, and
+// returning `Bpm` would let it be fed to a beat-rate calculation. Use
+// `differs_from` for the "did the tempo move?" test.
+impl Bpm {
+    /// Whether this tempo differs from `other` by more than `epsilon` BPM.
+    ///
+    /// The transport clock re-derives its per-sample beat increment only when
+    /// the tempo actually moved; comparing floats for equality would re-derive
+    /// on every buffer from ULP noise.
+    #[inline]
+    pub fn differs_from(self, other: Bpm, epsilon: f64) -> bool {
+        (self.0 - other.0).abs() > epsilon
+    }
+}
 unit_newtype!(
     /// A position on the musical timeline, in beats.
     ///
@@ -117,14 +361,47 @@ unit_newtype!(
     Beat,
     f64
 );
+unit_ordered!(Beat);
+unit_bounded!(Beat, f64);
+unit_affine!(Beat, BeatDuration);
+// NOT `unit_additive!`: `Beat + Beat` has no meaning without an origin.
+// NOT `unit_scalable!`: scaling a position depends on where zero is — scale the
+// duration and add it.
+// NOT `unit_modular!`: `beat % len` silently assumes the cycle starts at beat 0,
+// which invites an off-by-a-loop-start bug. The real operation is
+// `(beat - start) % len + start`, where the origin is explicit.
+impl Beat {
+    /// The start of the beat this position falls in.
+    #[inline]
+    pub fn floor(self) -> Beat {
+        Beat(self.0.floor())
+    }
+
+    /// How far into the current beat this position is — a *displacement* from
+    /// [`floor`](Self::floor), not a position.
+    #[inline]
+    pub fn fract(self) -> BeatDuration {
+        BeatDuration(self.0 - self.0.floor())
+    }
+}
 unit_newtype!(
     /// Pitch offset in semitones. 12 semitones = 1 octave.
     Semitones
 );
+unit_ordered!(Semitones);
+unit_bounded!(Semitones, f32);
+unit_additive!(Semitones);
+unit_signed!(Semitones);
+unit_scalable!(Semitones, f32);
 unit_newtype!(
     /// Pitch offset in cents. 100 cents = 1 semitone.
     Cents
 );
+unit_ordered!(Cents);
+unit_bounded!(Cents, f32);
+unit_additive!(Cents);
+unit_signed!(Cents);
+unit_scalable!(Cents, f32);
 unit_newtype!(
     /// Absolute position within a wave, measured in samples.
     ///
@@ -135,6 +412,29 @@ unit_newtype!(
     SamplePosition,
     f64
 );
+unit_ordered!(SamplePosition);
+unit_bounded!(SamplePosition, f64);
+// Self-closed rather than paired with a duration type: `Samples`
+// (samples.rs) is the frame-count vocabulary but is `usize`-backed, and
+// `SamplePosition` is deliberately fractional so interpolating readers can
+// address between integer indices — a `Sub` returning `Samples` would silently
+// truncate.
+unit_additive!(SamplePosition);
+unit_scalable!(SamplePosition, f64);
+
+impl SamplePosition {
+    /// The integer sample index this position falls in.
+    #[inline]
+    pub fn floor(self) -> SamplePosition {
+        SamplePosition(self.0.floor())
+    }
+
+    /// The interpolation fraction between this index and the next.
+    #[inline]
+    pub fn fract(self) -> f64 {
+        self.0 - self.0.floor()
+    }
+}
 unit_newtype!(
     /// A span on the timeline, measured in beats.
     ///
@@ -144,6 +444,38 @@ unit_newtype!(
     BeatDuration,
     f64
 );
+unit_ordered!(BeatDuration);
+unit_bounded!(BeatDuration, f64);
+unit_additive!(BeatDuration);
+unit_signed!(BeatDuration);
+unit_scalable!(BeatDuration, f64);
+// `dur / dur -> f64` answers "how many of these fit", which is how a beat span
+// converts to a sample count against a per-sample span.
+unit_ratio!(BeatDuration, f64);
+unit_modular!(BeatDuration);
+
+impl BeatDuration {
+    /// Magnitude, discarding direction.
+    #[inline]
+    pub fn abs(self) -> BeatDuration {
+        BeatDuration(self.0.abs())
+    }
+
+    /// Whether this span moves forward. `LoopRange`'s non-empty invariant.
+    #[inline]
+    pub fn is_positive(self) -> bool {
+        self.0 > 0.0
+    }
+
+    /// Always-non-negative remainder.
+    ///
+    /// `%` on floats keeps the sign of the dividend, so a negative overshoot
+    /// would wrap *outside* the span. This is the wrapping-safe form.
+    #[inline]
+    pub fn rem_euclid(self, rhs: BeatDuration) -> BeatDuration {
+        BeatDuration(self.0.rem_euclid(rhs.0))
+    }
+}
 
 /// Lock-free [`SamplePosition`] cell, shareable with the audio thread.
 ///
@@ -187,6 +519,89 @@ mod tests {
         assert_eq!(SamplePosition::from_raw(123.456).to_raw(), 123.456);
         assert_eq!(Beat::from_raw(4.25).to_raw(), 4.25);
         assert_eq!(BeatDuration::from_raw(-2.5).to_raw(), -2.5);
+    }
+
+    /// The affine discipline: subtracting two positions yields a *displacement*,
+    /// and only a displacement can be added back to a position.
+    #[test]
+    fn beat_and_beat_duration_form_an_affine_pair() {
+        let a = Beat(4.0);
+        let b = Beat(6.5);
+
+        let span: BeatDuration = b - a;
+        assert_eq!(span, BeatDuration(2.5));
+
+        assert_eq!(a + span, b);
+        assert_eq!(b - span, a);
+
+        let mut cursor = Beat(0.0);
+        cursor += BeatDuration(0.25);
+        assert_eq!(cursor, Beat(0.25));
+    }
+
+    /// What is deliberately *absent* is as load-bearing as what is present.
+    /// These must not compile; the ledger is here so a future contributor does
+    /// not "helpfully" add them.
+    ///
+    /// - `Beat + Beat` — adding two timeline positions has no meaning.
+    /// - `Beat * f64` — scaling a position depends on where zero is.
+    /// - `Beat % BeatDuration` — hides the loop-start origin.
+    /// - `Db * f32` — squares the amplitude rather than doubling the gain.
+    /// - `Db / Db` — a quotient of logarithms is not a quantity.
+    /// - `Linear + Linear`, `Ratio + Ratio` — normalized scales do not compose.
+    /// - `Degrees < Degrees`, `Degrees + Degrees` — a wrapping coordinate.
+    /// - `Bpm - Bpm` — a tempo difference is not a tempo.
+    #[test]
+    fn omitted_operators_are_documented() {}
+
+    #[test]
+    fn beat_splits_into_floor_and_fraction() {
+        let b = Beat(4.75);
+        assert_eq!(b.floor(), Beat(4.0));
+        assert_eq!(b.fract(), BeatDuration(0.75));
+        // The two halves recombine, and are visibly different kinds of thing.
+        assert_eq!(b.floor() + b.fract(), b);
+    }
+
+    #[test]
+    fn beat_duration_ratio_counts_how_many_fit() {
+        // "how many samples fit in this beat span" — the dimensional analysis
+        // a rate type would otherwise be invented for.
+        let span = BeatDuration(1.0);
+        let per_sample = BeatDuration(0.25);
+        let n: f64 = span / per_sample;
+        assert_eq!(n, 4.0);
+    }
+
+    #[test]
+    fn rem_euclid_wraps_negative_overshoot_inside_the_span() {
+        let len = BeatDuration(4.0);
+        // Plain `%` keeps the dividend's sign, landing outside the span.
+        assert_eq!(BeatDuration(-1.0) % len, BeatDuration(-1.0));
+        // `rem_euclid` is the wrapping-safe form.
+        assert_eq!(BeatDuration(-1.0).rem_euclid(len), BeatDuration(3.0));
+    }
+
+    #[test]
+    fn db_adds_because_gain_stages_cascade() {
+        // Two -6 dB stages in series is -12 dB. This is why `Db` is additive
+        // while `Beat` is not.
+        assert_eq!(Db(-6.0) + Db(-6.0), Db(-12.0));
+        assert_eq!(-Db(6.0), Db(-6.0));
+        assert!(Db(-3.0) > Db(-6.0));
+    }
+
+    #[test]
+    fn bpm_differs_from_ignores_ulp_noise() {
+        let a = Bpm(120.0);
+        assert!(!a.differs_from(Bpm(120.000_000_1), 0.001));
+        assert!(a.differs_from(Bpm(140.0), 0.001));
+    }
+
+    #[test]
+    fn clamp_stays_in_the_unit_type() {
+        assert_eq!(Hz(20_000.0).clamp(Hz(20.0), Hz(18_000.0)), Hz(18_000.0));
+        assert_eq!(Linear(1.5).clamp(Linear(0.0), Linear(1.0)), Linear(1.0));
     }
 
     #[test]

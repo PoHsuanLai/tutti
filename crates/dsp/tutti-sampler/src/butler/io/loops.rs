@@ -8,7 +8,7 @@ use super::refill::load_wave;
 use super::wave_io::wave_frame;
 use dashmap::DashMap;
 use std::path::PathBuf;
-use tutti_core::Wave;
+use tutti_core::{ChannelLayout, Wave};
 
 /// Check and handle stream loop conditions with crossfade support.
 ///
@@ -97,9 +97,9 @@ pub(crate) fn handle_loops(
 /// Capture samples from a wave file into a Vec for crossfade.
 pub(crate) fn capture_samples(wave: &Wave, start: usize, count: usize) -> Vec<(f32, f32)> {
     let mut samples = Vec::with_capacity(count);
-    let channels = wave.channels();
+    let layout = ChannelLayout::from(wave.channels());
     for i in 0..count {
-        let [l, r] = wave_frame(wave, channels, start + i);
+        let [l, r] = wave_frame(wave, layout, start + i);
         samples.push((l, r));
     }
     samples
@@ -154,10 +154,10 @@ pub(crate) fn fadein_samples(
     };
 
     let mut samples = Vec::with_capacity(count);
-    let channels = wave.channels();
+    let layout = ChannelLayout::from(wave.channels());
 
     for i in 0..count {
-        let [l, r] = wave_frame(&wave, channels, position_samples as usize + i);
+        let [l, r] = wave_frame(&wave, layout, position_samples as usize + i);
         samples.push((l, r));
     }
 

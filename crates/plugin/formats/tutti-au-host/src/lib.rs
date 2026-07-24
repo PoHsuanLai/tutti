@@ -81,4 +81,4 @@ pub use instance::{AuInstance, AuLoaded, AuReady};
 // not surfaced as flat crate-root re-exports. Consumers speak the shared
 // `tutti_plugin_types::ParameterInfo` produced by the loader's trait impl.
 #[cfg(target_os = "macos")]
-pub use stream::{ChannelLayout, StreamConfig};
+pub use stream::{AuBusLayout, StreamConfig};

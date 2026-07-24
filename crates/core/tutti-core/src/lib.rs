@@ -95,6 +95,9 @@ pub use tutti_types::{
 // The engine's I/O edge vocabulary (mic/file/plugin sources + sinks), homed in
 // `tutti-types` and surfaced here so consumers reach it via the engine root.
 pub use tutti_types::io::{self, pump, AudioIn, AudioOut};
+// The unified channel-layout enum, homed in `tutti-types` and surfaced here so
+// consumers (incl. `bevy-tutti`) reach it via the engine root.
+pub use tutti_types::ChannelLayout;
 
 pub mod dsp {
     //! Re-export of fundsp::prelude for DSP building blocks.

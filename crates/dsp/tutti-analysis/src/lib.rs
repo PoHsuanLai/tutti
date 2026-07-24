@@ -16,6 +16,7 @@
 //!
 //! ```rust
 //! use tutti_analysis::{
+//!     ChannelLayout,
 //!     waveform::compute_summary,
 //!     transient::TransientDetector,
 //!     pitch::PitchDetector,
@@ -26,7 +27,7 @@
 //! let sample_rate = 44100.0;
 //!
 //! // Waveform thumbnail
-//! let summary = compute_summary(&samples, 1, 512);
+//! let summary = compute_summary(&samples, ChannelLayout::Mono, 512);
 //!
 //! // Transient detection
 //! let mut detector = TransientDetector::new(sample_rate);
@@ -52,6 +53,8 @@ pub mod spectrum;
 pub mod stft;
 pub mod transient;
 pub mod waveform;
+
+pub use tutti_core::ChannelLayout;
 
 pub use cache::ThumbnailCache;
 pub use correlation::{CorrelationMeter, StereoAnalysis};

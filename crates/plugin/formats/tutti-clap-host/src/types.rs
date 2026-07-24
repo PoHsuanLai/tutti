@@ -10,8 +10,8 @@ use bitflags::bitflags;
 use std::fmt;
 
 pub use tutti_plugin_types::{
-    AudioBuffer, AudioBuffer32, AudioBuffer64, EditorCapabilities, EditorSize, MidiEvent,
-    NoteExpressionType, ParameterChanges, ParameterPoint, ParameterQueue, TransportInfo,
+    AudioBuffer, AudioBuffer32, AudioBuffer64, ChannelLayout, EditorCapabilities, EditorSize,
+    MidiEvent, NoteExpressionType, ParameterChanges, ParameterPoint, ParameterQueue, TransportInfo,
     WindowHandle,
 };
 
@@ -289,9 +289,11 @@ impl ParamRescan {
 pub struct AudioPortInfo {
     pub id: u32,
     pub name: String,
-    pub channel_count: u32,
+    /// The port's channel layout. Carries the count directly; a CLAP port tag we
+    /// don't recognize as mono/stereo becomes `Multi(channel_count)` — the tag
+    /// string itself is dropped (nothing consumes it).
+    pub layout: ChannelLayout,
     pub flags: AudioPortFlags,
-    pub port_type: AudioPortType,
     pub in_place_pair_id: u32,
 }
 
@@ -304,15 +306,6 @@ bitflags! {
         const PREFERS_64BIT             = 1 << 2;
         const REQUIRES_COMMON_SAMPLE_SIZE = 1 << 3;
     }
-}
-
-/// Standard or custom audio port channel layout.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AudioPortType {
-    Mono,
-    Stereo,
-    /// Non-standard layout identified by its CLAP string tag.
-    Custom(String),
 }
 
 /// Description of a note (MIDI) port exposed by the plugin.

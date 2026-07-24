@@ -22,7 +22,7 @@ fn per_bus_channels(loaded: &tutti_clap_host::ClapLoaded, is_input: bool) -> Bus
     let count = loaded.audio_port_count(is_input);
     let buses: BusChannels = (0..count)
         .filter_map(|i| loaded.audio_port_info(i, is_input))
-        .map(|p| p.channel_count as usize)
+        .map(|p| p.layout)
         .collect();
     if buses.is_empty() {
         // No `audio-ports` extension: fall back to the aggregate total the
@@ -735,7 +735,7 @@ mod tests {
         assert!(port_info.is_some(), "Expected at least one output port");
 
         let port = port_info.unwrap();
-        assert!(port.channel_count >= 2, "Expected stereo output");
+        assert!(port.layout.count() >= 2, "Expected stereo output");
         // Note: most CLAP synths (including Surge XT) do not advertise
         // CLAP_AUDIO_PORT_SUPPORTS_64BITS. f64 processing is rare in practice.
     }
@@ -1095,7 +1095,7 @@ mod tests {
                 .clap_loaded()
                 .audio_port_info(i, false)
                 .expect("audio_port_info should return Some");
-            assert!(info.channel_count > 0, "Port {} should have channels", i);
+            assert!(info.layout.count() > 0, "Port {} should have channels", i);
             assert!(!info.name.is_empty(), "Port {} should have a name", i);
         }
     }
@@ -1282,9 +1282,9 @@ mod tests {
             .audio_port_info(0, false)
             .expect("Should have at least one output port");
         assert!(
-            port.channel_count >= 2,
+            port.layout.count() >= 2,
             "Expected stereo output, got {} channels",
-            port.channel_count
+            port.layout.count()
         );
     }
 

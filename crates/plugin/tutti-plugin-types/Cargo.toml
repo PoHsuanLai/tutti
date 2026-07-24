@@ -12,7 +12,7 @@ default = []
 # ParameterChanges, EditorSize, EditorCapabilities, WindowHandle). Required
 # by tutti-plugin's bincode IPC protocol; host crates that don't need IPC
 # don't pay for the serde dep.
-serde = ["dep:serde", "smallvec/serde", "bitflags/serde"]
+serde = ["dep:serde", "smallvec/serde", "bitflags/serde", "tutti-types/serde"]
 
 [dependencies]
 smallvec = "1"

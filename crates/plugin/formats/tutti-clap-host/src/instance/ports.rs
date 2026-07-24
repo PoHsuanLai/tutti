@@ -4,7 +4,7 @@
 use super::ClapLoaded;
 use crate::types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioPortConfig, AudioPortFlags,
-    AudioPortInfo, AudioPortType, NoteDialect, NoteDialects, NoteName, NotePortInfo,
+    AudioPortInfo, ChannelLayout, NoteDialect, NoteDialects, NoteName, NotePortInfo,
     SurroundChannel, VoiceInfo,
 };
 // Audio-port *reconfiguration* is speculative (gated); the type it consumes.
@@ -66,7 +66,7 @@ impl ClapLoaded {
         let count = self.audio_port_count(true);
         (0..count)
             .filter_map(|i| self.audio_port_info(i, true))
-            .map(|p| p.channel_count as usize)
+            .map(|p| p.layout.count() as usize)
             .sum()
     }
 
@@ -75,7 +75,7 @@ impl ClapLoaded {
         let count = self.audio_port_count(false);
         (0..count)
             .filter_map(|i| self.audio_port_info(i, false))
-            .map(|p| p.channel_count as usize)
+            .map(|p| p.layout.count() as usize)
             .sum()
     }
 
@@ -579,27 +579,34 @@ impl ClapLoaded {
 /// Shared by [`ClapLoaded::audio_port_info`] and
 /// [`ClapLoaded::audio_port_config_port_info`].
 fn audio_port_info_from_clap(info: &clap_audio_port_info) -> AudioPortInfo {
-    let port_type = if info.port_type.is_null() {
-        AudioPortType::Custom(String::new())
-    } else {
-        let type_cstr = unsafe { CStr::from_ptr(info.port_type) };
-        if type_cstr == CLAP_PORT_MONO {
-            AudioPortType::Mono
-        } else if type_cstr == CLAP_PORT_STEREO {
-            AudioPortType::Stereo
-        } else {
-            AudioPortType::Custom(type_cstr.to_string_lossy().into_owned())
-        }
-    };
-
     AudioPortInfo {
         id: info.id,
         name: unsafe { cstr_to_string(info.name.as_ptr()) },
-        channel_count: info.channel_count,
+        layout: layout_from_clap_port(info.port_type, info.channel_count),
         flags: AudioPortFlags::from_bits_truncate(info.flags),
-        port_type,
         in_place_pair_id: info.in_place_pair,
     }
+}
+
+/// Lossy FFI-inbound conversion of a CLAP port's `port_type` tag + reported
+/// `channel_count` into a [`ChannelLayout`].
+///
+/// Kept a named boundary fn rather than a `From` impl: it needs the
+/// `channel_count` fallback for tags we don't recognize (the tag string itself
+/// is dropped — nothing downstream reads it), and it borrows a raw FFI pointer.
+/// `CLAP_PORT_MONO`/`CLAP_PORT_STEREO` map to the named variants; any other tag
+/// (surround, ambisonic, vendor-specific) becomes `Multi(channel_count)`.
+fn layout_from_clap_port(port_type: *const std::os::raw::c_char, channel_count: u32) -> ChannelLayout {
+    if !port_type.is_null() {
+        let tag = unsafe { CStr::from_ptr(port_type) };
+        if tag == CLAP_PORT_MONO {
+            return ChannelLayout::Mono;
+        }
+        if tag == CLAP_PORT_STEREO {
+            return ChannelLayout::Stereo;
+        }
+    }
+    ChannelLayout::from_count(channel_count as u16)
 }
 
 #[cfg(feature = "clap-extras")]

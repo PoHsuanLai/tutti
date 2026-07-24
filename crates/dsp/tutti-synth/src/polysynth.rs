@@ -4,7 +4,7 @@ use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use smallvec::SmallVec;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, Shared, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, Shared, SignalFrame};
 use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{cc, MidiIn, MidiUnitId, NoteId};
@@ -707,7 +707,10 @@ impl AudioUnit for PolySynth {
         }
 
         let midi_count = self.poll_midi_events_sorted(size);
-        let stereo = output.channels() > 1;
+        let stereo = matches!(
+            ChannelLayout::from(output.channels()),
+            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
+        );
 
         let mut mix_left = [0.0f32; 64];
         let mut mix_right = [0.0f32; 64];

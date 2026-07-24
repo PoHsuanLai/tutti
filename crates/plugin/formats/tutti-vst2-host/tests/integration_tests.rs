@@ -8,7 +8,9 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
-use tutti_vst2_host::{MidiEvent, ProcessContext, RenderScratch, TransportInfo, Vst2Instance};
+use tutti_vst2_host::{
+    ChannelLayout, MidiEvent, ProcessContext, RenderScratch, TransportInfo, Vst2Instance,
+};
 
 const VST2_PLUGIN: &str = "/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst";
 
@@ -54,7 +56,7 @@ fn load_and_metadata() {
     let meta = instance.metadata();
     assert!(!meta.name.is_empty());
     assert!(!meta.id.is_empty());
-    assert!(meta.num_outputs > 0);
+    assert!(meta.num_outputs.count() > 0);
 }
 
 #[test]
@@ -208,8 +210,8 @@ fn process_with_transport() {
     transport.loop_region.end_quarters = 4.0;
 
     let num_samples = 512;
-    let input_data = vec![vec![0.0f32; num_samples]; meta.num_inputs.max(1)];
-    let mut output_data = vec![vec![0.0f32; num_samples]; meta.num_outputs];
+    let input_data = vec![vec![0.0f32; num_samples]; (meta.num_inputs.count() as usize).max(1)];
+    let mut output_data = vec![vec![0.0f32; num_samples]; meta.num_outputs.count() as usize];
 
     let input_slices: Vec<&[f32]> = input_data.iter().map(|v| v.as_slice()).collect();
     let mut output_slices: Vec<&mut [f32]> =
@@ -229,7 +231,11 @@ fn process_with_transport() {
 #[ignore]
 fn process_empty_buffer() {
     let mut instance = load();
-    let mut scratch = RenderScratch::new(0, 0, 512);
+    let mut scratch = RenderScratch::new(
+        ChannelLayout::from(0u16),
+        ChannelLayout::from(0u16),
+        512,
+    );
     let input_slices: Vec<&[f32]> = vec![];
     let mut output_slices: Vec<&mut [f32]> = vec![];
     let ctx = ProcessContext::new(44_100.0);

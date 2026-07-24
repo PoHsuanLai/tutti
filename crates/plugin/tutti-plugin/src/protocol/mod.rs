@@ -58,7 +58,8 @@ pub use crate::host::discovery::record::{
     AuComponentType, PluginClass, PluginDescriptor, Vst2Category,
 };
 pub use tutti_plugin_types::{
-    BusChannels, ChordChanges, ChordValue, Features, LoadedPlugin, NoteExpressionChanges,
+    BusChannels, ChannelLayout, ChordChanges, ChordValue, Features, LoadedPlugin,
+    NoteExpressionChanges,
     NoteExpressionIntChanges, NoteExpressionIntValue, NoteExpressionTextChanges,
     NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue, ParameterChanges,
     ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, ScaleChanges, ScaleValue,

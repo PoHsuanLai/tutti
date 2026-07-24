@@ -24,6 +24,8 @@ pub mod parameters;
 pub mod process;
 pub mod transport;
 
+pub use tutti_types::ChannelLayout;
+
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
 pub use channels::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, BufferPtrs, Sample};
 pub use classification::Vst2Category;

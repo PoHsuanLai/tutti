@@ -4,8 +4,9 @@ use crate::encode::pcm::{f32_to_i16, f32_to_i24};
 use crate::encode::sink::StreamingEncoder;
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
-use crate::options::{BitDepth, ChannelMode};
+use crate::options::BitDepth;
 use crate::process::Chunk;
+use tutti_types::ChannelLayout;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
@@ -13,13 +14,13 @@ use std::path::Path;
 pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
     match audio {
         Chunk::Stereo { left, right } => {
-            let spec = spec(request.sample_rate, request.bit_depth, ChannelMode::Stereo);
+            let spec = spec(request.sample_rate, request.bit_depth, ChannelLayout::Stereo);
             let mut writer = WavWriter::create(request.path, spec).map_err(io_err)?;
             write_stereo(&mut writer, &left, &right, request.bit_depth)?;
             writer.finalize().map_err(io_err)?;
         }
         Chunk::Mono(samples) => {
-            let spec = spec(request.sample_rate, request.bit_depth, ChannelMode::Mono);
+            let spec = spec(request.sample_rate, request.bit_depth, ChannelLayout::Mono);
             let mut writer = WavWriter::create(request.path, spec).map_err(io_err)?;
             write_mono(&mut writer, &samples, request.bit_depth)?;
             writer.finalize().map_err(io_err)?;
@@ -32,7 +33,7 @@ pub(crate) fn open_stream(
     path: &Path,
     sample_rate: u32,
     bit_depth: BitDepth,
-    channels: ChannelMode,
+    channels: ChannelLayout,
 ) -> Result<Box<dyn StreamingEncoder>> {
     let writer = WavWriter::create(path, spec(sample_rate, bit_depth, channels)).map_err(io_err)?;
     Ok(Box::new(StreamingWavEncoder { writer, bit_depth }))
@@ -59,7 +60,7 @@ impl StreamingEncoder for StreamingWavEncoder {
     }
 }
 
-fn spec(sample_rate: u32, bit_depth: BitDepth, channels: ChannelMode) -> WavSpec {
+fn spec(sample_rate: u32, bit_depth: BitDepth, channels: ChannelLayout) -> WavSpec {
     let (bits_per_sample, sample_format) = match bit_depth {
         BitDepth::Int16 => (16, SampleFormat::Int),
         BitDepth::Int24 => (24, SampleFormat::Int),
@@ -164,7 +165,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("streaming.wav");
 
-        let mut encoder = open_stream(&path, 44100, BitDepth::Int16, ChannelMode::Stereo).unwrap();
+        let mut encoder = open_stream(&path, 44100, BitDepth::Int16, ChannelLayout::Stereo).unwrap();
 
         encoder
             .write_chunk(Chunk::Stereo {

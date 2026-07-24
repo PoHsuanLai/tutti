@@ -73,7 +73,7 @@ impl InProcessVst2Client {
         contention_count: Arc<AtomicU64>,
     ) -> Self {
         let scratch = RenderScratch::new(metadata.num_inputs, metadata.num_outputs, BLOCK_SIZE);
-        let process_scratch = ProcessScratch::new(metadata.num_inputs, metadata.num_outputs);
+        let process_scratch = ProcessScratch::new(metadata.num_inputs.count() as usize, metadata.num_outputs.count() as usize);
         Self {
             inner,
             metadata,
@@ -124,7 +124,7 @@ impl Clone for InProcessVst2Client {
             BLOCK_SIZE,
         );
         let process_scratch =
-            ProcessScratch::new(self.metadata.num_inputs, self.metadata.num_outputs);
+            ProcessScratch::new(self.metadata.num_inputs.count() as usize, self.metadata.num_outputs.count() as usize);
         Self {
             inner: Arc::clone(&self.inner),
             metadata: self.metadata.clone(),
@@ -168,11 +168,11 @@ impl InProcessVst2Client {
 
 impl AudioUnit for InProcessVst2Client {
     fn inputs(&self) -> usize {
-        self.metadata.num_inputs
+        self.metadata.num_inputs.count() as usize
     }
 
     fn outputs(&self) -> usize {
-        self.metadata.num_outputs
+        self.metadata.num_outputs.count() as usize
     }
 
     fn reset(&mut self) {
@@ -194,7 +194,7 @@ impl AudioUnit for InProcessVst2Client {
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         // Single-sample tick reuses process() with size=1.
-        for (ch, &sample) in input.iter().enumerate().take(self.metadata.num_inputs) {
+        for (ch, &sample) in input.iter().enumerate().take(self.metadata.num_inputs.count() as usize) {
             self.process_scratch.f32_in[ch][0] = sample;
         }
         let processed = drive_f32(
@@ -203,8 +203,8 @@ impl AudioUnit for InProcessVst2Client {
             &mut self.midi,
             &mut self.scratch,
             &mut self.process_scratch,
-            self.metadata.num_inputs,
-            self.metadata.num_outputs,
+            self.metadata.num_inputs.count() as usize,
+            self.metadata.num_outputs.count() as usize,
             1,
             self.sample_rate,
         );
@@ -217,7 +217,7 @@ impl AudioUnit for InProcessVst2Client {
         for (ch, slot) in output
             .iter_mut()
             .enumerate()
-            .take(self.metadata.num_outputs)
+            .take(self.metadata.num_outputs.count() as usize)
         {
             *slot = self.process_scratch.f32_out[ch][0];
         }
@@ -227,7 +227,7 @@ impl AudioUnit for InProcessVst2Client {
         self.ensure_scratch_size(size);
 
         // Stage caller samples into our pre-allocated f32 channel buffers.
-        for ch in 0..self.metadata.num_inputs {
+        for ch in 0..self.metadata.num_inputs.count() as usize {
             let slot = &mut self.process_scratch.f32_in[ch][..size];
             for (i, dst) in slot.iter_mut().enumerate() {
                 *dst = input.at_f32(ch, i);
@@ -240,14 +240,14 @@ impl AudioUnit for InProcessVst2Client {
             &mut self.midi,
             &mut self.scratch,
             &mut self.process_scratch,
-            self.metadata.num_inputs,
-            self.metadata.num_outputs,
+            self.metadata.num_inputs.count() as usize,
+            self.metadata.num_outputs.count() as usize,
             size,
             self.sample_rate,
         );
 
         if !processed {
-            for ch in 0..self.metadata.num_outputs {
+            for ch in 0..self.metadata.num_outputs.count() as usize {
                 for i in 0..size {
                     output.set_f32(ch, i, 0.0);
                 }
@@ -255,7 +255,7 @@ impl AudioUnit for InProcessVst2Client {
             return;
         }
 
-        for ch in 0..self.metadata.num_outputs {
+        for ch in 0..self.metadata.num_outputs.count() as usize {
             let slot = &self.process_scratch.f32_out[ch][..size];
             for (i, &v) in slot.iter().enumerate() {
                 output.set_f32(ch, i, v);
@@ -277,8 +277,8 @@ impl AudioUnit for InProcessVst2Client {
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         crate::host::node::route_with_latency(
-            self.metadata.num_inputs,
-            self.metadata.num_outputs,
+            self.metadata.num_inputs.count() as usize,
+            self.metadata.num_outputs.count() as usize,
             self.metadata.latency_samples as f64,
             input,
         )
@@ -291,11 +291,11 @@ impl AudioUnit for InProcessVst2Client {
 
 impl AudioUnit<F64> for InProcessVst2Client {
     fn inputs(&self) -> usize {
-        self.metadata.num_inputs
+        self.metadata.num_inputs.count() as usize
     }
 
     fn outputs(&self) -> usize {
-        self.metadata.num_outputs
+        self.metadata.num_outputs.count() as usize
     }
 
     fn reset(&mut self) {
@@ -313,7 +313,7 @@ impl AudioUnit<F64> for InProcessVst2Client {
     }
 
     fn tick(&mut self, input: &[f64], output: &mut [f64]) {
-        for (ch, &sample) in input.iter().enumerate().take(self.metadata.num_inputs) {
+        for (ch, &sample) in input.iter().enumerate().take(self.metadata.num_inputs.count() as usize) {
             self.process_scratch.f64_in[ch][0] = sample;
         }
         let processed = drive_f64(
@@ -322,8 +322,8 @@ impl AudioUnit<F64> for InProcessVst2Client {
             &mut self.midi,
             &mut self.scratch,
             &mut self.process_scratch,
-            self.metadata.num_inputs,
-            self.metadata.num_outputs,
+            self.metadata.num_inputs.count() as usize,
+            self.metadata.num_outputs.count() as usize,
             1,
             self.sample_rate,
         );
@@ -336,7 +336,7 @@ impl AudioUnit<F64> for InProcessVst2Client {
         for (ch, slot) in output
             .iter_mut()
             .enumerate()
-            .take(self.metadata.num_outputs)
+            .take(self.metadata.num_outputs.count() as usize)
         {
             *slot = self.process_scratch.f64_out[ch][0];
         }
@@ -345,7 +345,7 @@ impl AudioUnit<F64> for InProcessVst2Client {
     fn process(&mut self, size: usize, input: &BufferRef<F64>, output: &mut BufferMut<F64>) {
         self.ensure_scratch_size(size);
 
-        for ch in 0..self.metadata.num_inputs {
+        for ch in 0..self.metadata.num_inputs.count() as usize {
             let slot = &mut self.process_scratch.f64_in[ch][..size];
             for (i, dst) in slot.iter_mut().enumerate() {
                 *dst = input.at_scalar(ch, i);
@@ -358,14 +358,14 @@ impl AudioUnit<F64> for InProcessVst2Client {
             &mut self.midi,
             &mut self.scratch,
             &mut self.process_scratch,
-            self.metadata.num_inputs,
-            self.metadata.num_outputs,
+            self.metadata.num_inputs.count() as usize,
+            self.metadata.num_outputs.count() as usize,
             size,
             self.sample_rate,
         );
 
         if !processed {
-            for ch in 0..self.metadata.num_outputs {
+            for ch in 0..self.metadata.num_outputs.count() as usize {
                 for i in 0..size {
                     output.set_scalar(ch, i, 0.0);
                 }
@@ -373,7 +373,7 @@ impl AudioUnit<F64> for InProcessVst2Client {
             return;
         }
 
-        for ch in 0..self.metadata.num_outputs {
+        for ch in 0..self.metadata.num_outputs.count() as usize {
             let slot = &self.process_scratch.f64_out[ch][..size];
             for (i, &v) in slot.iter().enumerate() {
                 output.set_scalar(ch, i, v);
@@ -395,8 +395,8 @@ impl AudioUnit<F64> for InProcessVst2Client {
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         crate::host::node::route_with_latency(
-            self.metadata.num_inputs,
-            self.metadata.num_outputs,
+            self.metadata.num_inputs.count() as usize,
+            self.metadata.num_outputs.count() as usize,
             self.metadata.latency_samples as f64,
             input,
         )

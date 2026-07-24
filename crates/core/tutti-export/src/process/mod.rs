@@ -106,7 +106,7 @@ pub(crate) fn master_collected(
     resample_quality: ResampleQuality,
     dither: crate::options::Dither,
     bit_depth: crate::options::BitDepth,
-    channels: crate::options::ChannelMode,
+    channels: tutti_types::ChannelLayout,
 ) -> Result<(Chunk, u32)> {
     let out_rate = whole_signal(
         &mut left,

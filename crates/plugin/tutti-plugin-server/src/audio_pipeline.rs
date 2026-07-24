@@ -423,8 +423,8 @@ mod tests {
 
     use crate::loaders::common::Meta;
     use tutti_plugin::server::{
-        Features, LoadedPlugin, PluginDescriptor, PluginResult, ProcessOutput, SlabLayout,
-        WindowHandle,
+        ChannelLayout, Features, LoadedPlugin, PluginDescriptor, PluginResult, ProcessOutput,
+        SlabLayout, WindowHandle,
     };
 
     /// A stand-in plugin whose `process` fills every output sample with a
@@ -552,8 +552,8 @@ mod tests {
         Meta {
             descriptor: PluginDescriptor::default(),
             loaded: LoadedPlugin {
-                inputs: inputs.iter().copied().collect(),
-                outputs: outputs.iter().copied().collect(),
+                inputs: inputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
+                outputs: outputs.iter().map(|&c| ChannelLayout::from(c)).collect(),
                 latency_samples: 0,
                 features: Features::empty(),
             },
@@ -572,11 +572,11 @@ mod tests {
         const N: usize = 32;
         // total_in = 3, total_out = 2 → 5 flat channels.
         let layout = SlabLayout {
-            channels: 5,
+            channels: ChannelLayout::from(5u16),
             samples_per_channel: N,
             format: SF::Float32,
-            inputs: smallvec![2, 1], // stereo main + mono sidechain
-            outputs: smallvec![2],
+            inputs: smallvec![ChannelLayout::Stereo, ChannelLayout::Mono], // stereo main + mono sidechain
+            outputs: smallvec![ChannelLayout::Stereo],
         };
         let name = format!("tutti_multibus_test_{}", std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
@@ -644,7 +644,7 @@ mod tests {
         const CH: usize = 2;
         const N: usize = 64;
         let layout = SlabLayout {
-            channels: CH,
+            channels: ChannelLayout::from(CH),
             samples_per_channel: N,
             format: SampleFormat::Float32,
             inputs: smallvec![],
@@ -703,7 +703,7 @@ mod tests {
         const CH: usize = 2;
         const N: usize = 128;
         let layout = SlabLayout {
-            channels: CH,
+            channels: ChannelLayout::from(CH),
             samples_per_channel: N,
             format: SampleFormat::Float32,
             inputs: smallvec![],
@@ -764,11 +764,11 @@ mod tests {
         const N: usize = 128;
         // stereo main in + mono sidechain in + stereo out → 5 flat channels.
         let layout = SlabLayout {
-            channels: 5,
+            channels: ChannelLayout::from(5u16),
             samples_per_channel: N,
             format: SampleFormat::Float32,
-            inputs: smallvec![2, 1],
-            outputs: smallvec![2],
+            inputs: smallvec![ChannelLayout::Stereo, ChannelLayout::Mono],
+            outputs: smallvec![ChannelLayout::Stereo],
         };
         let name = format!("tutti_noalloc_mb_test_{}", std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();

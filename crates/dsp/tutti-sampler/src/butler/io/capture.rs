@@ -18,6 +18,7 @@
 
 use crate::io::AudioOut;
 use hound::{SampleFormat, WavSpec, WavWriter};
+use tutti_core::ChannelLayout;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
@@ -39,7 +40,7 @@ pub enum CaptureFormat {
 /// on-disk format needed to encode each frame.
 pub struct WavOut {
     writer: WavWriter<BufWriter<File>>,
-    channels: usize,
+    layout: ChannelLayout,
     format: CaptureFormat,
 }
 
@@ -48,7 +49,7 @@ pub struct WavOut {
 impl std::fmt::Debug for WavOut {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WavOut")
-            .field("channels", &self.channels)
+            .field("layout", &self.layout)
             .field("format", &self.format)
             .finish_non_exhaustive()
     }
@@ -67,8 +68,9 @@ impl WavOut {
             CaptureFormat::F32 => (32, SampleFormat::Float),
             CaptureFormat::I24 => (24, SampleFormat::Int),
         };
+        let layout = ChannelLayout::from(channels);
         let spec = WavSpec {
-            channels: channels as u16,
+            channels: layout.count(),
             sample_rate: sample_rate as u32,
             bits_per_sample,
             sample_format,
@@ -79,7 +81,7 @@ impl WavOut {
         let writer = WavWriter::new(buf_writer, spec).ok()?;
         Some(Self {
             writer,
-            channels,
+            layout,
             format,
         })
     }
@@ -87,13 +89,19 @@ impl WavOut {
 
 impl AudioOut for WavOut {
     fn write(&mut self, frames: &[[f32; 2]]) {
+        // Write the right channel only when the sink is stereo (or wider); a mono
+        // sink drops it.
+        let write_right = match self.layout {
+            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_) => true,
+            ChannelLayout::Mono => false,
+        };
         for &[left, right] in frames {
             match self.format {
                 CaptureFormat::F32 => {
                     if self.writer.write_sample(left).is_err() {
                         return;
                     }
-                    if self.channels > 1 && self.writer.write_sample(right).is_err() {
+                    if write_right && self.writer.write_sample(right).is_err() {
                         return;
                     }
                 }
@@ -101,7 +109,7 @@ impl AudioOut for WavOut {
                     if self.writer.write_sample(f32_to_i24(left)).is_err() {
                         return;
                     }
-                    if self.channels > 1 && self.writer.write_sample(f32_to_i24(right)).is_err() {
+                    if write_right && self.writer.write_sample(f32_to_i24(right)).is_err() {
                         return;
                     }
                 }

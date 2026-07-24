@@ -27,6 +27,8 @@ use vst3::Steinberg::{
     },
 };
 
+use tutti_types::ChannelLayout;
+
 use crate::types::BusInfo as BusInfoWrap;
 
 pub(super) const K_AUDIO: i32 = kAudio as i32;
@@ -34,10 +36,10 @@ pub(super) const K_INPUT: i32 = kInput as i32;
 pub(super) const K_OUTPUT: i32 = kOutput as i32;
 
 pub(super) trait IComponentExt {
-    /// Channel count of the first audio bus in `direction`.
+    /// Channel layout of the first audio bus in `direction`.
     /// Returns `None` when the plugin reports no buses or the query fails.
     /// `min_channels` clamps the result upward (e.g. 1 for outputs).
-    fn audio_bus_channel_count(&self, direction: i32, min_channels: i32) -> Option<usize>;
+    fn audio_bus_channel_count(&self, direction: i32, min_channels: i32) -> Option<ChannelLayout>;
 
     /// Channel count of every audio bus in `direction`, in bus-index order.
     /// A bus whose query fails contributes 0 so the vec length always equals
@@ -46,14 +48,16 @@ pub(super) trait IComponentExt {
 }
 
 impl IComponentExt for ComPtr<IComponent> {
-    fn audio_bus_channel_count(&self, direction: i32, min_channels: i32) -> Option<usize> {
+    fn audio_bus_channel_count(&self, direction: i32, min_channels: i32) -> Option<ChannelLayout> {
         unsafe {
             if self.getBusCount(K_AUDIO, direction) <= 0 {
                 return None;
             }
             let mut bus = BusInfoWrap::default();
             if self.getBusInfo(K_AUDIO, direction, 0, bus.as_mut_inner()) == kResultOk {
-                Some(bus.channel_count().max(min_channels) as usize)
+                Some(ChannelLayout::from(
+                    bus.channel_count().max(min_channels) as u16
+                ))
             } else {
                 None
             }

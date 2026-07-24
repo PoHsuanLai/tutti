@@ -4,7 +4,7 @@
 //! VST2-specific shapes (`PluginInfo` with `unique_id`-derived id,
 //! `ParameterInfo` with normalized-only values, `ProcessContext`).
 
-pub use tutti_plugin_types::{EditorSize, MidiEvent, TransportInfo, WindowHandle};
+pub use tutti_plugin_types::{ChannelLayout, EditorSize, MidiEvent, TransportInfo, WindowHandle};
 
 /// Plugin metadata gathered at load time.
 #[derive(Debug, Clone, Default)]
@@ -14,8 +14,8 @@ pub struct PluginInfo {
     pub name: String,
     pub vendor: String,
     pub version: String,
-    pub num_inputs: usize,
-    pub num_outputs: usize,
+    pub num_inputs: ChannelLayout,
+    pub num_outputs: ChannelLayout,
     /// The plugin's declared VST2 category, carried verbatim. Callers classify
     /// it themselves rather than relying on the derived `receives_midi` flag.
     pub category: Vst2Category,

@@ -9,8 +9,8 @@ use crate::host::handles::control_handle::PluginHandle;
 use crate::host::ipc_client::audio::{BridgeEvent, BridgeThread};
 use crate::host::ipc_client::PluginBridge;
 use crate::protocol::{
-    BridgeMessage, Features, HostMessage, LoadedPlugin, ParameterInfo, PluginDescriptor,
-    PROTOCOL_VERSION,
+    BridgeMessage, ChannelLayout, Features, HostMessage, LoadedPlugin, ParameterInfo,
+    PluginDescriptor, PROTOCOL_VERSION,
 };
 use crate::protocol::{PluginClass, SampleFormat, SlabLayout};
 use crate::util::transport::shm::AudioSlab;
@@ -81,7 +81,7 @@ fn handle_with_mock_server(
         AudioSlab::create(
             unique_shm_name("handle"),
             SlabLayout {
-                channels: 2,
+                channels: ChannelLayout::Stereo,
                 samples_per_channel: 512,
                 format: SampleFormat::Float32,
                 inputs: smallvec![],
@@ -144,8 +144,8 @@ fn handle_with_mock_server(
         has_editor: true,
     };
     let loaded = LoadedPlugin {
-        inputs: smallvec![2],
-        outputs: smallvec![2],
+        inputs: smallvec![ChannelLayout::Stereo],
+        outputs: smallvec![ChannelLayout::Stereo],
         latency_samples: 0,
         features: Features::EDITOR,
     };
@@ -179,7 +179,7 @@ fn handle_with_multi_reply_server(
         AudioSlab::create(
             unique_shm_name("handle-multi"),
             SlabLayout {
-                channels: 2,
+                channels: ChannelLayout::Stereo,
                 samples_per_channel: 512,
                 format: SampleFormat::Float32,
                 inputs: smallvec![],
@@ -242,8 +242,8 @@ fn handle_with_multi_reply_server(
         has_editor: true,
     };
     let loaded = LoadedPlugin {
-        inputs: smallvec![2],
-        outputs: smallvec![2],
+        inputs: smallvec![ChannelLayout::Stereo],
+        outputs: smallvec![ChannelLayout::Stereo],
         latency_samples: 0,
         features: Features::EDITOR,
     };

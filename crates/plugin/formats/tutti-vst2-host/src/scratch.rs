@@ -10,6 +10,8 @@
 //! caller's `f64` samples down to `f32` on the way in, and
 //! [`copy_out_f64`] casts back on the way out.
 
+use tutti_plugin_types::ChannelLayout;
+
 /// Scratch buffers for VST2's f32 audio pointer tables.
 ///
 /// Owns contiguous per-channel `Vec<f32>` plus parallel `Vec<*const f32>`
@@ -34,9 +36,13 @@ unsafe impl Send for RenderScratch {}
 unsafe impl Sync for RenderScratch {}
 
 impl RenderScratch {
-    pub fn new(num_inputs: usize, num_outputs: usize, block_size: usize) -> Self {
-        let inputs: Vec<Vec<f32>> = (0..num_inputs).map(|_| vec![0.0f32; block_size]).collect();
-        let outputs: Vec<Vec<f32>> = (0..num_outputs).map(|_| vec![0.0f32; block_size]).collect();
+    pub fn new(num_inputs: ChannelLayout, num_outputs: ChannelLayout, block_size: usize) -> Self {
+        let inputs: Vec<Vec<f32>> = (0..num_inputs.count())
+            .map(|_| vec![0.0f32; block_size])
+            .collect();
+        let outputs: Vec<Vec<f32>> = (0..num_outputs.count())
+            .map(|_| vec![0.0f32; block_size])
+            .collect();
         let input_ptrs: Vec<*const f32> = inputs.iter().map(|v| v.as_ptr()).collect();
         let output_ptrs: Vec<*mut f32> = outputs.iter().map(|v| v.as_ptr() as *mut f32).collect();
         Self {

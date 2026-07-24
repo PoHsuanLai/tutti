@@ -22,7 +22,9 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use tutti_midi_types::ump::MidiEvent as UmpMidiEvent;
 
 use tutti_plugin::server::MidiEventVec;
-use tutti_plugin::server::{BusChannels, Features, LoadedPlugin, PluginClass, PluginDescriptor};
+use tutti_plugin::server::{
+    BusChannels, ChannelLayout, Features, LoadedPlugin, PluginClass, PluginDescriptor,
+};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 use tutti_plugin_types::{ParameterFlags, ParameterInfo};
 
@@ -173,8 +175,8 @@ impl WasmInstance {
         let mut features = Features::empty();
         features.set(Features::MIDI_IN, metadata_wit.midi.receives);
         let loaded = LoadedPlugin {
-            inputs: BusChannels::from_slice(&[metadata_wit.audio.inputs as usize]),
-            outputs: BusChannels::from_slice(&[metadata_wit.audio.outputs as usize]),
+            inputs: BusChannels::from_slice(&[ChannelLayout::from(metadata_wit.audio.inputs as usize)]),
+            outputs: BusChannels::from_slice(&[ChannelLayout::from(metadata_wit.audio.outputs as usize)]),
             latency_samples: metadata_wit.latency_samples as usize,
             features,
         };

@@ -8,12 +8,18 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 keywords = ["audio", "real-time"]
 categories = ["multimedia::audio"]
 
+[features]
+# Enables `Serialize`/`Deserialize` on wire-carried value types (currently
+# `ChannelLayout`, which rides the plugin-load IPC reply via `BusChannels`).
+serde = ["dep:serde"]
+
 [dependencies]
 # `const_generics` provides the blanket `Array for [T; N]` impl so RtEventBuf
 # can be generic over its inline capacity `N`.
 smallvec = { version = "1", default-features = false, features = ["const_generics"] }
 # `Param<U>` wraps an `AtomicF32`; `AtomicSamplePosition` an `AtomicF64`.
 atomic_float = { version = "1.1", default-features = false, features = ["atomic_f64"] }
+serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

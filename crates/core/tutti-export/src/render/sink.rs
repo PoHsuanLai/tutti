@@ -14,7 +14,9 @@ use std::ops::Range;
 use tutti_core::io::AudioOut;
 
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-use crate::options::{BitDepth, ChannelMode, Dither, Normalize};
+use crate::options::{BitDepth, Dither, Normalize};
+#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
+use tutti_types::ChannelLayout;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 use crate::process::{whole_signal, Chunk, ResampleQuality, StreamConfig, StreamProcessor};
 
@@ -98,7 +100,7 @@ pub(crate) struct Mastering {
     pub normalize: Normalize,
     pub dither: Dither,
     pub bit_depth: BitDepth,
-    pub channels: ChannelMode,
+    pub channels: ChannelLayout,
     pub resample_quality: ResampleQuality,
 }
 

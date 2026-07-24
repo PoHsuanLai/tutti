@@ -12,7 +12,8 @@
 
 use crate::encode;
 use crate::error::{Error, Result};
-use crate::options::{output_setters, AudioFormat, BitDepth, ChannelMode, Output};
+use crate::options::{output_setters, AudioFormat, BitDepth, Output};
+use tutti_types::ChannelLayout;
 use crate::process::{StreamConfig, StreamProcessor};
 use crate::progress::{Phase, ProgressEmitter};
 use crate::render::{self, BufferingOut, Mastering, RenderOut, RenderRequest, StreamOut};
@@ -262,17 +263,17 @@ fn check_cancel(cancel: &Arc<AtomicBool>) -> Result<()> {
 fn raw_chunk(
     left: &[f32],
     right: &[f32],
-    channels: ChannelMode,
+    channels: ChannelLayout,
     _bit_depth: BitDepth,
 ) -> crate::process::Chunk {
     use crate::process::Chunk;
     match channels {
-        ChannelMode::Stereo => Chunk::Stereo {
+        // `BufferingOut` already mono-folded (both channels equal), so take one.
+        ChannelLayout::Mono => Chunk::Mono(left.to_vec()),
+        ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_) => Chunk::Stereo {
             left: left.to_vec(),
             right: right.to_vec(),
         },
-        // `BufferingOut` already mono-folded (both channels equal), so take one.
-        ChannelMode::Mono => Chunk::Mono(left.to_vec()),
     }
 }
 

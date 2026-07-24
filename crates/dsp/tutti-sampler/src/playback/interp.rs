@@ -11,7 +11,7 @@
 //! so it is safe to call from `process`/`tick` hot paths.
 
 use std::sync::Arc;
-use tutti_core::{Beat, BeatDuration, Timeline, Wave};
+use tutti_core::{Beat, BeatDuration, ChannelLayout, Timeline, Wave};
 
 /// Clip-relative sample offset the playhead sits at, or `None` when it is
 /// outside the clip's transport window.
@@ -93,30 +93,36 @@ pub fn read_stereo_frame(wave: &Arc<Wave>, position: f64) -> (f32, f32) {
     let i1 = (idx + 1).min(last);
     let i2 = (idx + 2).min(last);
 
-    if wave.channels() >= 2 {
-        let left = cubic_hermite(
-            wave.at(0, im1),
-            wave.at(0, i0),
-            wave.at(0, i1),
-            wave.at(0, i2),
-            frac,
-        );
-        let right = cubic_hermite(
-            wave.at(1, im1),
-            wave.at(1, i0),
-            wave.at(1, i1),
-            wave.at(1, i2),
-            frac,
-        );
-        (left, right)
-    } else {
-        let mono = cubic_hermite(
-            wave.at(0, im1),
-            wave.at(0, i0),
-            wave.at(0, i1),
-            wave.at(0, i2),
-            frac,
-        );
-        (mono, mono)
+    // Stereo (or wider — we read the first two channels as L/R and ignore the
+    // rest); mono fans the single channel out to both sides. A degenerate
+    // 0-channel wave can't occur here (the `len == 0` guard above covers empty).
+    match ChannelLayout::from(wave.channels()) {
+        ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_) => {
+            let left = cubic_hermite(
+                wave.at(0, im1),
+                wave.at(0, i0),
+                wave.at(0, i1),
+                wave.at(0, i2),
+                frac,
+            );
+            let right = cubic_hermite(
+                wave.at(1, im1),
+                wave.at(1, i0),
+                wave.at(1, i1),
+                wave.at(1, i2),
+                frac,
+            );
+            (left, right)
+        }
+        ChannelLayout::Mono => {
+            let mono = cubic_hermite(
+                wave.at(0, im1),
+                wave.at(0, i0),
+                wave.at(0, i1),
+                wave.at(0, i2),
+                frac,
+            );
+            (mono, mono)
+        }
     }
 }

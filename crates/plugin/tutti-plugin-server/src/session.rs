@@ -550,7 +550,7 @@ mod tests {
 
         let buffer_name = format!("tutti_vst_buffer_{}_{}", name, std::process::id());
         let layout = tutti_plugin::server::SlabLayout {
-            channels: 2,
+            channels: tutti_plugin::server::ChannelLayout::Stereo,
             samples_per_channel: 8192,
             format: preferred_format,
             inputs: smallvec::smallvec![],

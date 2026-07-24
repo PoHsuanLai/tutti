@@ -9,7 +9,8 @@
 //! opener returns `UnsupportedFormat` for them.
 
 use crate::error::{Error, Result};
-use crate::options::{AudioFormat, BitDepth, ChannelMode, Flac, Ogg};
+use crate::options::{AudioFormat, BitDepth, Flac, Ogg};
+use tutti_types::ChannelLayout;
 use crate::process::Chunk;
 use std::path::Path;
 
@@ -31,7 +32,7 @@ pub(crate) fn open_stream_encoder(
     format: AudioFormat,
     sample_rate: u32,
     bit_depth: BitDepth,
-    channels: ChannelMode,
+    channels: ChannelLayout,
     _flac: Flac,
     _ogg: Ogg,
 ) -> Result<Box<dyn StreamingEncoder>> {

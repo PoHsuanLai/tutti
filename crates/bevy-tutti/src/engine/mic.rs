@@ -33,6 +33,7 @@ use ringbuf::{
     HeapCons, HeapProd, HeapRb,
 };
 
+use tutti_core::ChannelLayout;
 use tutti_sampler::{share_mic_ring, AudioIn, MicMonitorNode, MicRing};
 
 use crate::engine::error::{Error, Result};
@@ -103,7 +104,7 @@ impl MicIn {
         let device = input_device(device_index)?;
         let config = device.default_input_config()?;
         let sample_rate = f64::from(config.sample_rate().0);
-        let channels = usize::from(config.channels());
+        let channels = ChannelLayout::from(usize::from(config.channels()));
 
         let rb = HeapRb::<[f32; 2]>::new(RING_FRAMES);
         let (prod, cons) = rb.split();
@@ -118,17 +119,21 @@ impl MicIn {
             (None, None)
         };
 
+        // Raw interleaved buffer math (`data.chunks(..)`) needs the device's
+        // channel count as a `usize`; derive it from the layout at the boundary.
+        let channel_count = channels.count() as usize;
+
         let sample_format = config.sample_format();
         let cfg = config.into();
         let stream = match sample_format {
-            cpal::SampleFormat::I8 => build_input::<i8>(&device, &cfg, channels, prod, mon_prod)?,
-            cpal::SampleFormat::I16 => build_input::<i16>(&device, &cfg, channels, prod, mon_prod)?,
-            cpal::SampleFormat::I32 => build_input::<i32>(&device, &cfg, channels, prod, mon_prod)?,
-            cpal::SampleFormat::U8 => build_input::<u8>(&device, &cfg, channels, prod, mon_prod)?,
-            cpal::SampleFormat::U16 => build_input::<u16>(&device, &cfg, channels, prod, mon_prod)?,
-            cpal::SampleFormat::U32 => build_input::<u32>(&device, &cfg, channels, prod, mon_prod)?,
-            cpal::SampleFormat::F32 => build_input::<f32>(&device, &cfg, channels, prod, mon_prod)?,
-            cpal::SampleFormat::F64 => build_input::<f64>(&device, &cfg, channels, prod, mon_prod)?,
+            cpal::SampleFormat::I8 => build_input::<i8>(&device, &cfg, channel_count, prod, mon_prod)?,
+            cpal::SampleFormat::I16 => build_input::<i16>(&device, &cfg, channel_count, prod, mon_prod)?,
+            cpal::SampleFormat::I32 => build_input::<i32>(&device, &cfg, channel_count, prod, mon_prod)?,
+            cpal::SampleFormat::U8 => build_input::<u8>(&device, &cfg, channel_count, prod, mon_prod)?,
+            cpal::SampleFormat::U16 => build_input::<u16>(&device, &cfg, channel_count, prod, mon_prod)?,
+            cpal::SampleFormat::U32 => build_input::<u32>(&device, &cfg, channel_count, prod, mon_prod)?,
+            cpal::SampleFormat::F32 => build_input::<f32>(&device, &cfg, channel_count, prod, mon_prod)?,
+            cpal::SampleFormat::F64 => build_input::<f64>(&device, &cfg, channel_count, prod, mon_prod)?,
             format => {
                 return Err(Error::InvalidConfig(format!(
                     "Unsupported input sample format: {format:?}"

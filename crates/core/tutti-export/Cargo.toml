@@ -34,6 +34,7 @@ sampler = ["bevy", "dep:tutti-sampler", "tutti-sampler/wav"]
 [dependencies]
 thiserror = "1.0"
 tutti-core = { path = "../tutti-core", default-features = false }
+tutti-types = { path = "../tutti-types", default-features = false }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", optional = true, default-features = false }
 # Optional: only the `ecs::render_region` module references sampler units.
 tutti-sampler = { path = "../../dsp/tutti-sampler", optional = true, default-features = false }

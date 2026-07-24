@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, BusChannels, ChordChanges, EditorSize, Features, LoadedPlugin,
+    AudioBufferMut, BusChannels, ChannelLayout, ChordChanges, EditorSize, Features, LoadedPlugin,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterFlags,
     ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginInstance, PluginResult,
     ProcessContext, ProcessOutput, ScaleChanges, WindowHandle,
@@ -199,7 +199,7 @@ fn bus_channels(host_buses: &[usize], main_channels: usize) -> BusChannels {
     if host_buses.is_empty() {
         single_bus(main_channels)
     } else {
-        host_buses.iter().copied().collect()
+        host_buses.iter().map(|&c| ChannelLayout::from(c)).collect()
     }
 }
 

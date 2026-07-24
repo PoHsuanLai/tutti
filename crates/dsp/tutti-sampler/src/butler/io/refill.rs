@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tutti_core::io::{AudioIn, AudioOut};
-use tutti_core::Wave;
+use tutti_core::{ChannelLayout, Wave};
 
 /// Calculate optimal chunk size using varifill strategy.
 ///
@@ -426,10 +426,10 @@ fn refill_reverse(
         return;
     }
 
-    let channels = wave.channels();
+    let layout = ChannelLayout::from(wave.channels());
     interleave_buffer.clear();
     for i in 0..actual_chunk {
-        interleave_buffer.push(wave_frame(wave, channels, read_start + i));
+        interleave_buffer.push(wave_frame(wave, layout, read_start + i));
     }
 
     let written = writer.write_frames_reversed(interleave_buffer);

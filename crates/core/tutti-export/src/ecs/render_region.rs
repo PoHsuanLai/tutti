@@ -659,7 +659,7 @@ mod tests {
         world.insert_resource(graph);
         world.insert_resource(AudioConfig {
             sample_rate: 48_000.0,
-            channels: 2,
+            channels: tutti_core::ChannelLayout::Stereo,
         });
         world.insert_resource(RegionRenderConfig { max_in_flight: 1 });
 
@@ -822,7 +822,7 @@ mod tests {
         world.insert_resource(graph);
         world.insert_resource(AudioConfig {
             sample_rate: 48_000.0,
-            channels: 2,
+            channels: tutti_core::ChannelLayout::Stereo,
         });
         world.insert_resource(RegionRenderConfig { max_in_flight: 1 });
 

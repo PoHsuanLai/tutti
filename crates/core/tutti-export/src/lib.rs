@@ -37,9 +37,10 @@ pub use progress::Phase;
 
 mod options;
 pub use options::{
-    AudioFormat, BitDepth, BroadcastWavMetadata, ChannelMode, Dither, Flac, NoiseShapeOrder,
-    Normalize, Ogg, Output,
+    AudioFormat, BitDepth, BroadcastWavMetadata, Dither, Flac, NoiseShapeOrder, Normalize, Ogg,
+    Output,
 };
+pub use tutti_types::ChannelLayout;
 
 #[cfg(feature = "midi")]
 mod midi;

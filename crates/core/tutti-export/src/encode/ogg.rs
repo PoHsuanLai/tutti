@@ -56,7 +56,7 @@ pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{AudioFormat, ChannelMode, Export};
+    use crate::{AudioFormat, ChannelLayout, Export};
 
     #[test]
     fn ogg_stereo_sine_produces_valid_ogg() {
@@ -93,7 +93,7 @@ mod tests {
         let path = dir.path().join("test_mono.ogg");
         Export::buffers(left, right, 44100.0)
             .format(AudioFormat::OggVorbis)
-            .channels(ChannelMode::Mono)
+            .channels(ChannelLayout::Mono)
             .to_file(&path)
             .run()
             .unwrap();

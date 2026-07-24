@@ -68,7 +68,7 @@ pub use types::{
 };
 pub use types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
-    AudioBuffer64, AudioPortConfig, AudioPortFlags, AudioPortInfo, AudioPortType,
+    AudioBuffer64, AudioPortConfig, AudioPortFlags, AudioPortInfo, ChannelLayout,
     EditorCapabilities, EditorSize, MidiEvent, NoteDialect, NoteDialects, NoteExpressionType,
     NoteName, NotePortInfo, ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo,
     StateContext, SurroundChannel, TransportInfo, VoiceInfo, WindowHandle,

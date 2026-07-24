@@ -6,6 +6,7 @@
 //! difference: HRTF rendering needs a measured HRIR sphere, so
 //! [`HrtfBinauralNode::new`] takes the dataset bytes.
 
+use tutti_core::ChannelLayout;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Linear, Param, SignalFrame};
 
 use super::hrtf_panner::{HrtfBinaural, HrtfBinauralError};
@@ -130,9 +131,15 @@ impl AudioUnit for HrtfBinauralNode {
         self.sync_position();
         let width = self.width.load().0;
 
+        // Hoisted once per block: is a second input channel present?
+        let has_stereo_in = matches!(
+            ChannelLayout::from(input.channels()),
+            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
+        );
+
         for i in 0..size {
             let left = input.at_f32(0, i);
-            let right = if input.channels() > 1 {
+            let right = if has_stereo_in {
                 input.at_f32(1, i)
             } else {
                 left

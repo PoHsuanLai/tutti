@@ -8,8 +8,9 @@
 //! dither and optional mono downmix. Normalization and resampling require
 //! the whole signal and are enforced upstream.
 
-use crate::options::{BitDepth, ChannelMode, Dither};
+use crate::options::{BitDepth, Dither};
 use crate::process::{apply_dither, stereo_to_mono, DitherState};
+use tutti_types::ChannelLayout;
 
 /// Per-chunk configuration. Values are fixed at construction so the processor
 /// does not have to dispatch on runtime flags inside the hot path.
@@ -17,7 +18,7 @@ use crate::process::{apply_dither, stereo_to_mono, DitherState};
 pub(crate) struct StreamConfig {
     pub dither: Dither,
     pub bit_depth: BitDepth,
-    pub channels: ChannelMode,
+    pub channels: ChannelLayout,
 }
 
 /// One processed chunk ready for the encoder.
@@ -57,11 +58,11 @@ impl StreamProcessor {
         }
 
         match self.config.channels {
-            ChannelMode::Stereo => Chunk::Stereo {
+            ChannelLayout::Mono => Chunk::Mono(stereo_to_mono(&left_buf, &right_buf)),
+            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_) => Chunk::Stereo {
                 left: left_buf,
                 right: right_buf,
             },
-            ChannelMode::Mono => Chunk::Mono(stereo_to_mono(&left_buf, &right_buf)),
         }
     }
 }

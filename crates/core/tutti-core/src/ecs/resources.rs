@@ -11,6 +11,8 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
+use tutti_types::ChannelLayout;
+
 use crate::dsp::Net;
 
 /// Audio device configuration captured at engine build time.
@@ -18,7 +20,11 @@ use crate::dsp::Net;
 #[reflect(Resource, Clone)]
 pub struct AudioConfig {
     pub sample_rate: f64,
-    pub channels: usize,
+    // `ChannelLayout` is a `tutti-types` value type without a `Reflect` impl (its
+    // API is frozen), so it's skipped for reflection; on reflect-construction it
+    // falls back to `ChannelLayout::default()` (Stereo).
+    #[reflect(ignore)]
+    pub channels: ChannelLayout,
 }
 
 /// Owns the editable DSP graph — fundsp's [`Net`]. `&mut` edits; call

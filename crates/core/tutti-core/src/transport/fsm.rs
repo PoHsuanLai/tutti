@@ -58,13 +58,6 @@ impl core::fmt::Display for MotionState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum Direction {
-    #[default]
-    Forwards,
-    Backwards,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum LocateState {
     #[default]
@@ -80,7 +73,6 @@ pub(crate) enum LocateState {
 pub(crate) enum TransitionResult {
     MotionChanged(MotionState),
     Locating(MusicalPosition),
-    DirectionChanged(Direction),
     DeclickStarted(MotionState),
 }
 
@@ -91,7 +83,6 @@ pub(crate) struct TransportFsm {
     locate: LocateState,
     pending_locate: Option<MusicalPosition>,
     prev_motion: MotionState,
-    direction: Direction,
     declick_samples: usize,
 }
 
@@ -102,7 +93,6 @@ impl TransportFsm {
             locate: LocateState::Idle,
             pending_locate: None,
             prev_motion: MotionState::Stopped,
-            direction: Direction::Forwards,
             declick_samples: DEFAULT_DECLICK_SAMPLES,
         }
     }
@@ -205,14 +195,6 @@ impl TransportFsm {
             EndScrub => {
                 self.motion = self.prev_motion;
                 Some(TransitionResult::MotionChanged(self.motion))
-            }
-
-            Reverse => {
-                self.direction = match self.direction {
-                    Direction::Forwards => Direction::Backwards,
-                    Direction::Backwards => Direction::Forwards,
-                };
-                Some(TransitionResult::DirectionChanged(self.direction))
             }
         }
     }
@@ -320,23 +302,6 @@ mod tests {
             Some(TransitionResult::DeclickStarted(
                 MotionState::DeclickToLocate
             ))
-        ));
-    }
-
-    #[test]
-    fn test_reverse_direction() {
-        let mut fsm = TransportFsm::new();
-
-        let result = fsm.transition(MotionEvent::Reverse);
-        assert!(matches!(
-            result,
-            Some(TransitionResult::DirectionChanged(Direction::Backwards))
-        ));
-
-        let result = fsm.transition(MotionEvent::Reverse);
-        assert!(matches!(
-            result,
-            Some(TransitionResult::DirectionChanged(Direction::Forwards))
         ));
     }
 

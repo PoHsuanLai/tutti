@@ -56,8 +56,6 @@ pub enum MotionEvent {
     Rewind,
     /// Leave fast-forward/rewind, returning to the previous motion.
     EndScrub,
-    /// Flip playback direction.
-    Reverse,
 }
 
 /// Capacity of the UI → audio-thread command queue. Transport commands are
@@ -219,12 +217,6 @@ impl MotionFsm {
                 if self.fsm.borrow().locate_state() == LocateState::LocateAndRoll {
                     self.set_motion(MotionState::Rolling);
                 }
-            }
-            TransitionResult::DirectionChanged(direction) => {
-                self.settings.reverse.store(
-                    direction == super::fsm::Direction::Backwards,
-                    Ordering::Release,
-                );
             }
         }
     }

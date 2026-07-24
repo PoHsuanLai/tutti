@@ -33,8 +33,6 @@ pub struct TransportSettings {
     /// Derived from motion by [`MotionFsm`](super::MotionFsm) — the clock
     /// reads it to decide whether to advance. Not set directly.
     pub paused: Arc<AtomicBool>,
-    /// Playback direction. Flipped by `MotionEvent::Reverse`.
-    pub reverse: Arc<AtomicBool>,
 }
 
 impl TransportSettings {
@@ -46,7 +44,6 @@ impl TransportSettings {
             recording: Arc::new(AtomicBool::new(false)),
             in_preroll: Arc::new(AtomicBool::new(false)),
             paused: Arc::new(AtomicBool::new(true)),
-            reverse: Arc::new(AtomicBool::new(false)),
         }
     }
 

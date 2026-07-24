@@ -13,7 +13,6 @@ mod state;
 pub use beat_window::{BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub use clock::TransportClock;
-pub use fsm::Direction;
 pub use handle::Transport;
 pub use meter::TimeSignature;
 pub use motion::{MotionEvent, MotionFsm, MotionState, QueueFull};

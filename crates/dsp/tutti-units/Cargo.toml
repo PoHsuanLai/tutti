@@ -18,15 +18,16 @@ spatial = ["dep:vbap"]
 # FFT convolution reverb (partitioned IR). The convolver DSP unit is Bevy-free;
 # its deferred-load ECS glue lives app-side now.
 convolution = ["dep:fft-convolver"]
-# Transport-driven envelope nodes (`AutomationLane`). Folded in from the
-# old `tutti-automation` crate; envelope primitives come from the
-# `audio_automation` crate, re-exported via `tutti_units::automation`.
-automation = ["dep:audio-automation", "dep:dashmap", "dep:parking_lot", "dep:serde"]
 
 [dependencies]
 # AudioUnit trait + DSP primitives from tutti-core. default-features = false:
 # tutti-units is pure DSP and needs none of tutti-core's Bevy layer.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
+
+# Value vocabulary (the `Curve` trait), for `impl Curve for AutomationEnvelope`.
+# tutti-core re-exports these too, but the impl needs to name `Curve` directly.
+# default-features = false so bevy does not re-leak.
+tutti-types = { path = "../../core/tutti-types", default-features = false }
 
 # Spatial audio VBAP library (optional)
 vbap = { version = "0.1", optional = true }
@@ -34,14 +35,14 @@ vbap = { version = "0.1", optional = true }
 # Partitioned FFT convolver (optional, gated by `convolution` feature)
 fft-convolver = { version = "0.3", optional = true }
 
-# Envelope primitives consumed by `AutomationLane` (optional, gated by
-# the `automation` feature).
-audio-automation = { version = "0.4", default-features = false, optional = true }
+# Envelope primitives consumed by `AutomationLane`, re-exported via
+# `tutti_units::automation`.
+audio-automation = { version = "0.4", default-features = false }
 # Automation *recording* (`Recorder`/`Manager`): concurrent lane map, envelope
-# lock, and snapshot (de)serialization. All gated by `automation`.
-dashmap = { version = "6.1", optional = true }
-parking_lot = { version = "0.12", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
+# lock, and snapshot (de)serialization.
+dashmap = "6.1"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
 
 # Error handling
 thiserror = { version = "2", default-features = false }

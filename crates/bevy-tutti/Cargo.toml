@@ -76,7 +76,6 @@ full = [
     "synth", "soundfont",
     "sampler",
     "export", "analysis",
-    "automation",
     "dsp", "spatial",
 ]
 
@@ -137,9 +136,6 @@ au = ["plugin", "tutti-plugin-host/au", "tutti-plugin/au"]
 # Export & analysis.
 export = ["dep:tutti-export"]
 analysis = ["dep:tutti-analysis"]
-
-# Automation (transport-driven envelope AudioUnit in tutti-units::automation).
-automation = ["tutti-units/automation"]
 
 [dev-dependencies]
 # RT-safety regression tests (relocated engine audio_io/graph tests) use the

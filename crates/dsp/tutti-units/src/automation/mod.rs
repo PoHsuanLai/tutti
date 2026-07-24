@@ -17,9 +17,11 @@
 //! `dawai_model::engine_bind::automation` — it wrote the `Volume`/`Pan`/
 //! `PluginParam` DAW components, which left the engine.
 
+mod curve;
 mod lane;
 mod recording;
 
+pub use curve::Curve;
 pub use lane::{AutomationLane, LiveAutomationLane};
 pub use recording::{
     AutomationRecordingConfig, AutomationSnapshot, AutomationTarget, Manager, Recorder,

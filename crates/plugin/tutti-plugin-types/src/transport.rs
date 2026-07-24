@@ -31,9 +31,9 @@ pub struct TransportInfo {
 /// Playback / record / cycle flags.
 ///
 /// Named `TransportFlags` after the plugin-SDK term for exactly this bundle —
-/// CLAP and VST2 both call the field `flags`. Distinct from the
-/// [`TransportState`](tutti_core::transport::TransportState) *trait*, which is
-/// the live-timeline reader plugins consume; this is the wire snapshot.
+/// CLAP and VST2 both call the field `flags`. Distinct from tutti-core's
+/// `TransportState` *trait* (the live-timeline reader plugins consume); this is
+/// the wire snapshot.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransportFlags {

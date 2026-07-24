@@ -39,7 +39,9 @@ pub use editor::{
 };
 pub use error::{PluginError, Result, Result as PluginResult};
 pub use features::Features;
-pub use format_host::PluginFormatHost;
+pub use format_host::{
+    PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginState,
+};
 pub use harmony::{
     ChordChanges, ChordValue, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,

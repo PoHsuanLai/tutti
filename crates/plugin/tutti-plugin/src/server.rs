@@ -4,14 +4,17 @@
 //! can build the other end of the IPC. Regular library users should not
 //! reach into this module.
 //!
-//! Contains the [`PluginInstance`](crate::server::PluginInstance) trait
-//! (what a loader must implement) and re-exports every wire-frame type the
-//! IPC carries.
+//! Contains the fine-grained plugin-instance capability traits
+//! ([`PluginMeta`](crate::server::PluginMeta), [`PluginAudio`](crate::server::PluginAudio),
+//! [`PluginParams`](crate::server::PluginParams), [`PluginState`](crate::server::PluginState),
+//! [`PluginEditorHost`](crate::server::PluginEditorHost)) and the
+//! [`PluginInstance`](crate::server::PluginInstance) bundle a loader satisfies,
+//! plus re-exports of every wire-frame type the IPC carries.
 //!
-//! The trait itself and its per-block process types now live in
-//! `tutti-plugin-types` as [`PluginFormatHost`](tutti_plugin_types::PluginFormatHost)
-//! (so any crate can implement it without depending on `tutti-plugin`);
-//! `PluginInstance` here is a re-export alias kept for the existing call sites.
+//! The traits and their per-block process types live in `tutti-plugin-types`
+//! (so any crate can implement them without depending on `tutti-plugin`);
+//! this module re-exports them at the historical `tutti_plugin::server::*`
+//! import point.
 
 pub use crate::host::subprocess::resolve_bundle;
 pub use crate::protocol::audio::{
@@ -30,12 +33,17 @@ pub use crate::protocol::{
 pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::AudioSlab;
 pub use crate::util::window::{EditorSize, WindowHandle};
-/// The unified plugin-format host trait, re-exported from `tutti-plugin-types`
-/// under its historical `PluginInstance` name so existing `impl PluginInstance`
-/// / `dyn PluginInstance` / `Box<dyn PluginInstance>` sites keep resolving.
-pub use tutti_plugin_types::PluginFormatHost as PluginInstance;
 /// Per-block process inputs/outputs, re-exported from `tutti-plugin-types`.
 pub use tutti_plugin_types::{ExpressiveContext, ProcessContext, ProcessOutput};
+/// The fine-grained plugin-instance capability traits plus the
+/// [`PluginInstance`](tutti_plugin_types::PluginInstance) bundle, re-exported
+/// from `tutti-plugin-types` so the loaders reach them through the same
+/// `tutti_plugin::server::*` import point. A loader implements the small traits
+/// ([`PluginMeta`], [`PluginAudio`], [`PluginParams`], [`PluginState`],
+/// [`PluginEditorHost`]) and gets `PluginInstance` via its blanket impl.
+pub use tutti_plugin_types::{
+    PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginState,
+};
 /// The lean, format-agnostic error the trait returns, plus its `Result` alias
 /// and the shared `ParameterInfo` builders — re-exported so the loaders reach
 /// them through the same `tutti_plugin::server::*` import point.

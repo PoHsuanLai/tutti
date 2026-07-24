@@ -5,8 +5,9 @@ use std::path::Path;
 use tutti_plugin::server::{
     AudioBufferMut, BusChannels, ChannelLayout, ChordChanges, EditorSize, Features, LoadedPlugin,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterFlags,
-    ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginInstance, PluginResult,
-    ProcessContext, ProcessOutput, ScaleChanges, WindowHandle,
+    ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError,
+    PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput,
+    ScaleChanges, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -482,7 +483,7 @@ fn convert_expr_ints_to_vst3(
 // `PluginInstance` is a re-export alias of `tutti_plugin_types::PluginFormatHost`
 // (tutti-plugin-server reaches the shared trait through tutti-plugin, its only
 // path to the vocabulary crate).
-impl PluginInstance for Vst3Instance {
+impl PluginMeta for Vst3Instance {
     fn descriptor(&self) -> &PluginDescriptor {
         &self.meta.descriptor
     }
@@ -490,7 +491,9 @@ impl PluginInstance for Vst3Instance {
     fn loaded(&self) -> &LoadedPlugin {
         &self.meta.loaded
     }
+}
 
+impl PluginAudio for Vst3Instance {
     fn process(
         &mut self,
         buffer: AudioBufferMut<'_, '_>,
@@ -517,7 +520,9 @@ impl PluginInstance for Vst3Instance {
             inner.set_sample_rate(rate);
         });
     }
+}
 
+impl PluginParams for Vst3Instance {
     fn get_parameter(&self, id: u32) -> f64 {
         vst_dispatch!(self, inner => inner.parameter(id))
     }
@@ -537,7 +542,9 @@ impl PluginInstance for Vst3Instance {
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
         Vst3Instance::get_parameter_list(self)
     }
+}
 
+impl PluginEditorHost for Vst3Instance {
     fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
         Vst3Instance::open_editor(self, parent).map_err(Into::into)
     }
@@ -545,7 +552,9 @@ impl PluginInstance for Vst3Instance {
     fn close_editor(&mut self) {
         vst_dispatch_mut!(self, inner => inner.close_editor());
     }
+}
 
+impl PluginState for Vst3Instance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         vst_dispatch_mut!(self, inner => inner.state())
             .map_err(|e| PluginError::State(e.to_string()))
@@ -562,9 +571,7 @@ impl PluginInstance for Vst3Instance {
 mod tests {
     use super::*;
     use std::path::Path;
-    use tutti_plugin::server::{
-        AudioBuffer, AudioBuffer64, AudioBufferMut, MidiEvent, PluginInstance,
-    };
+    use tutti_plugin::server::{AudioBuffer, AudioBuffer64, AudioBufferMut, MidiEvent};
 
     const VST3_PLUGIN: &str = "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3";
 
@@ -644,7 +651,7 @@ mod tests {
         assert!(!params.is_empty(), "Need at least one parameter");
 
         let first_id = params[0].id;
-        let value = PluginInstance::get_parameter(&instance, first_id);
+        let value = PluginParams::get_parameter(&instance, first_id);
         assert!(
             value.is_finite(),
             "Parameter value should be finite, got {}",

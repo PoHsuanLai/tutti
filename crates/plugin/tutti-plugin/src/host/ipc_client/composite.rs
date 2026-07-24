@@ -2,7 +2,7 @@
 
 use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs};
 use crate::error::{EditorError, Result};
-use crate::format::gui::GuiInstance;
+use crate::format::gui::PluginEditor;
 use crate::protocol::{
     MidiEventVec, NoteExpressionChanges, ParameterChanges, ParameterInfo, TransportInfo,
 };
@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 pub struct PluginBridge {
     audio: AudioBridge,
     plugin_path: PathBuf,
-    gui: Mutex<Option<Box<dyn GuiInstance>>>,
+    gui: Mutex<Option<Box<dyn PluginEditor>>>,
 }
 
 impl PluginBridge {

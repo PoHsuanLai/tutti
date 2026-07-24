@@ -4,7 +4,7 @@
 //! parameter automation, note expression, transport, sequencer context) a
 //! plugin may consume; [`ProcessOutput`] gathers the per-block *outputs* it may
 //! emit. Both are format-agnostic so the shared
-//! [`PluginFormatHost`](crate::PluginFormatHost) trait and the four format host
+//! [`PluginAudio`](crate::PluginAudio) trait and the four format host
 //! crates speak the same vocabulary.
 
 use crate::{
@@ -27,7 +27,7 @@ pub struct ExpressiveContext<'a> {
     pub expr_ints: Option<&'a crate::NoteExpressionIntChanges>,
 }
 
-/// Per-block inputs to [`PluginFormatHost::process`](crate::PluginFormatHost::process)
+/// Per-block inputs to [`PluginAudio::process`](crate::PluginAudio::process)
 /// beyond the audio buffer.
 ///
 /// Each best-effort field is `Some` only when the plugin advertised the
@@ -78,7 +78,7 @@ impl<'a> ProcessContext<'a> {
 }
 
 /// Per-block outputs from
-/// [`PluginFormatHost::process`](crate::PluginFormatHost::process) beyond the
+/// [`PluginAudio::process`](crate::PluginAudio::process) beyond the
 /// audio buffer.
 #[derive(Default)]
 pub struct ProcessOutput {

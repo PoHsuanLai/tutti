@@ -201,8 +201,10 @@ mod tests {
         let start_beat = 4.0;
 
         let mut clock = TransportClock::new(
-            Arc::new(AtomicF64::new(tempo)),
-            Arc::new(AtomicBool::new(false)),
+            crate::transport::ClockLinks::bare(
+                Arc::new(AtomicF64::new(tempo)),
+                Arc::new(AtomicBool::new(false)),
+            ),
             sample_rate,
         )
         .starting_at(start_beat);
@@ -336,7 +338,6 @@ mod tests {
 
     #[test]
     fn timeline_impl_reports_the_loop_region() {
-        use crate::Timeline;
 
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
@@ -344,6 +345,8 @@ mod tests {
             sample_rate: SampleRate(44100.0),
             loop_range: Some((0.0, 8.0)),
         });
+
+        use crate::Timeline;
 
         assert_eq!(timeline.loop_range(), LoopRange::new(0.0, 8.0));
         assert_eq!(timeline.tempo().get(), 120.0);
@@ -353,7 +356,6 @@ mod tests {
 
     #[test]
     fn timeline_impl_reports_no_loop_when_unset() {
-        use crate::Timeline;
 
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,

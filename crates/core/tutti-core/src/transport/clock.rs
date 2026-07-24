@@ -1,11 +1,10 @@
 //! Sample-accurate transport clock.
 
-use super::state::{ClockInputs, LoopSpan, SeekSlot};
+use super::state::{ClockLinks, LoopSpan};
 use crate::params::{Beat, BeatDuration, Bpm};
-use crate::{AtomicBool, AtomicF64, Ordering};
+use crate::Ordering;
 use fundsp::prelude::*;
 use std::any;
-use std::sync::Arc;
 
 /// How far the tempo must move before the cached per-sample increment is
 /// re-derived. Comparing for equality would re-derive on every buffer from ULP
@@ -21,15 +20,13 @@ fn split_beat(beat: Beat) -> (f32, f32) {
     (beat.floor().get() as f32, beat.fract().get() as f32)
 }
 
+#[derive(Clone)]
 pub struct TransportClock {
+    /// Everything shared with the live transport. `isolate()` replaces this
+    /// wholesale; every other field is this clock's own.
+    links: ClockLinks,
     /// The playhead. Advanced once per sample in `tick`/`process`.
     current_beat: Beat,
-    tempo: Arc<AtomicF64>,
-    paused: Arc<AtomicBool>,
-    seek: SeekSlot,
-    position_writeback: Option<Arc<AtomicF64>>,
-    /// `None` = this clock ignores looping entirely (offline renders).
-    loop_span: Option<LoopSpan>,
     sample_rate: crate::SampleRate,
     /// Beats advanced per output sample — the cached
     /// `tempo / 60 / sample_rate`. A derived rate, invalidated whenever
@@ -49,47 +46,23 @@ impl TransportClock {
         BeatDuration((tempo.into().get() / 60.0) / sample_rate.into().get())
     }
 
-    pub fn new(
-        tempo: Arc<AtomicF64>,
-        paused: Arc<AtomicBool>,
-        sample_rate: impl Into<crate::SampleRate>,
-    ) -> Self {
+    /// Build a clock over `links`.
+    ///
+    /// One constructor rather than three: the old `new` / `from_inputs` /
+    /// `with_position_writeback` trio built a clock and then patched shared
+    /// fields into it one at a time, so the two halves of the position
+    /// handshake were assembled by convention at every call site.
+    pub fn new(links: ClockLinks, sample_rate: impl Into<crate::SampleRate>) -> Self {
         let sample_rate = sample_rate.into();
-        let initial_tempo = Bpm(tempo.load(Ordering::Acquire));
+        let initial_tempo = Bpm(links.tempo.load(Ordering::Acquire));
 
         Self {
+            links,
             current_beat: Beat(0.0),
-            tempo,
-            paused,
-            seek: SeekSlot::new(),
-            position_writeback: None,
-            loop_span: None,
             sample_rate,
             beat_per_sample: Self::calculate_beat_per_sample(initial_tempo, sample_rate),
             last_tempo: initial_tempo,
         }
-    }
-
-    /// Build a clock from the transport's whole input surface.
-    ///
-    /// The only way to build a clock wired to a live transport: takes the
-    /// whole input surface at once rather than eight loose `Arc` clones.
-    pub fn from_inputs(inputs: ClockInputs, sample_rate: impl Into<crate::SampleRate>) -> Self {
-        let ClockInputs {
-            tempo,
-            paused,
-            seek,
-            loop_span,
-        } = inputs;
-        let mut clock = Self::new(tempo, paused, sample_rate);
-        clock.seek = seek;
-        clock.loop_span = Some(loop_span);
-        clock
-    }
-
-    pub fn with_position_writeback(mut self, writeback: Arc<AtomicF64>) -> Self {
-        self.position_writeback = Some(writeback);
-        self
     }
 
     // ---- Derived beat streams -------------------------------------------
@@ -132,7 +105,7 @@ impl TransportClock {
     /// Set this clock's tempo, refreshing the cached per-sample increment.
     fn set_tempo(&mut self, bpm: impl Into<crate::Bpm>) {
         let bpm = bpm.into();
-        self.tempo.store(bpm.get(), Ordering::Release);
+        self.links.tempo.store(bpm.get(), Ordering::Release);
         self.beat_per_sample = Self::calculate_beat_per_sample(bpm, self.sample_rate);
         self.last_tempo = bpm;
     }
@@ -143,7 +116,7 @@ impl TransportClock {
 
     #[inline]
     fn update_tempo_if_changed(&mut self) {
-        let current_tempo = Bpm(self.tempo.load(Ordering::Acquire));
+        let current_tempo = Bpm(self.links.tempo.load(Ordering::Acquire));
         if current_tempo.differs_from(self.last_tempo, TEMPO_EPSILON) {
             self.beat_per_sample = Self::calculate_beat_per_sample(current_tempo, self.sample_rate);
             self.last_tempo = current_tempo;
@@ -152,14 +125,14 @@ impl TransportClock {
 
     #[inline]
     fn apply_pending_seek(&mut self) {
-        if let Some(target) = self.seek.take() {
+        if let Some(target) = self.links.seek.take() {
             self.current_beat = target;
         }
     }
 
     #[inline]
     fn apply_loop_wrap(&mut self) {
-        let Some(region) = self.loop_span.as_ref().and_then(LoopSpan::range) else {
+        let Some(region) = self.links.loop_span.as_ref().and_then(LoopSpan::range) else {
             return;
         };
         // `LoopRange` is non-empty by construction, so `wrap` needs no guard.
@@ -200,18 +173,13 @@ impl AudioUnit for TransportClock {
     /// render's actual length/start is governed by the offline transport and
     /// region bounds, not by this clock's loop fields.
     fn isolate(&mut self) {
-        let tempo_now = self.tempo.load(Ordering::Acquire);
-        self.tempo = Arc::new(AtomicF64::new(tempo_now));
-        self.paused = Arc::new(AtomicBool::new(false));
-        self.seek = SeekSlot::new();
-        self.position_writeback = None;
-        self.loop_span = None;
+        self.links = self.links.severed();
     }
 
     fn set_sample_rate(&mut self, sample_rate: crate::params::SampleRate) {
         self.sample_rate = sample_rate;
         self.beat_per_sample =
-            Self::calculate_beat_per_sample(self.tempo.load(Ordering::Acquire), sample_rate);
+            Self::calculate_beat_per_sample(self.links.tempo.load(Ordering::Acquire), sample_rate);
     }
 
     #[inline]
@@ -223,12 +191,12 @@ impl AudioUnit for TransportClock {
         output[0] = whole;
         output[1] = frac;
 
-        if !self.paused.load(Ordering::Acquire) {
+        if !self.links.paused.load(Ordering::Acquire) {
             self.current_beat += self.beat_per_sample;
             self.apply_loop_wrap();
         }
 
-        if let Some(ref writeback) = self.position_writeback {
+        if let Some(ref writeback) = self.links.position_writeback {
             writeback.store(self.current_beat.get(), Ordering::Release);
         }
     }
@@ -237,9 +205,9 @@ impl AudioUnit for TransportClock {
         self.apply_pending_seek();
         self.update_tempo_if_changed();
 
-        let is_paused = self.paused.load(Ordering::Acquire);
+        let is_paused = self.links.paused.load(Ordering::Acquire);
         // Hoisted once per buffer: the loop region cannot change mid-block.
-        let active_loop = self.loop_span.as_ref().and_then(LoopSpan::range);
+        let active_loop = self.links.loop_span.as_ref().and_then(LoopSpan::range);
 
         if is_paused {
             let (whole, frac) = split_beat(self.current_beat);
@@ -264,7 +232,7 @@ impl AudioUnit for TransportClock {
             }
         }
 
-        if let Some(ref writeback) = self.position_writeback {
+        if let Some(ref writeback) = self.links.position_writeback {
             writeback.store(self.current_beat.get(), Ordering::Release);
         }
     }
@@ -294,25 +262,12 @@ impl AudioUnit for TransportClock {
     }
 }
 
-impl Clone for TransportClock {
-    fn clone(&self) -> Self {
-        Self {
-            current_beat: self.current_beat,
-            tempo: Arc::clone(&self.tempo),
-            paused: Arc::clone(&self.paused),
-            seek: self.seek.clone(),
-            position_writeback: self.position_writeback.as_ref().map(Arc::clone),
-            loop_span: self.loop_span.clone(),
-            sample_rate: self.sample_rate,
-            beat_per_sample: self.beat_per_sample,
-            last_tempo: self.last_tempo,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::state::SeekSlot;
+    use crate::{AtomicBool, AtomicF64};
+    use std::sync::Arc;
 
     fn create_test_atomics() -> (Arc<AtomicF64>, Arc<AtomicBool>) {
         (
@@ -327,12 +282,13 @@ mod tests {
         paused: Arc<AtomicBool>,
         loop_span: LoopSpan,
     ) -> TransportClock {
-        TransportClock::from_inputs(
-            ClockInputs {
+        TransportClock::new(
+            ClockLinks {
                 tempo,
                 paused,
                 seek: SeekSlot::new(),
-                loop_span,
+                loop_span: Some(loop_span),
+                position_writeback: None,
             },
             44100.0,
         )
@@ -344,12 +300,13 @@ mod tests {
         paused: Arc<AtomicBool>,
     ) -> (TransportClock, SeekSlot) {
         let seek = SeekSlot::new();
-        let clock = TransportClock::from_inputs(
-            ClockInputs {
+        let clock = TransportClock::new(
+            ClockLinks {
                 tempo,
                 paused,
                 seek: seek.clone(),
-                loop_span: LoopSpan::default(),
+                loop_span: Some(LoopSpan::default()),
+                position_writeback: None,
             },
             44100.0,
         );
@@ -363,7 +320,7 @@ mod tests {
     #[test]
     fn test_transport_clock_creation() {
         let (tempo, paused) = create_test_atomics();
-        let clock = TransportClock::new(tempo, paused, 44100.0);
+        let clock = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
 
         assert_eq!(clock.inputs(), 0);
         assert_eq!(clock.outputs(), 2);
@@ -373,7 +330,7 @@ mod tests {
     #[test]
     fn test_transport_clock_tick() {
         let (tempo, paused) = create_test_atomics();
-        let mut clock = TransportClock::new(tempo, paused, 44100.0);
+        let mut clock = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
 
         let mut output = [0.0f32; 2];
 
@@ -397,8 +354,8 @@ mod tests {
     fn isolate_severs_live_position_writeback() {
         let (tempo, paused) = create_test_atomics();
         let live_position = Arc::new(AtomicF64::new(7.5)); // live playhead "now"
-        let clock = TransportClock::new(tempo, paused, 44100.0)
-            .with_position_writeback(Arc::clone(&live_position));
+        let clock = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0)
+            ;
 
         // The render's clone, isolated as the render's rebind pass does.
         let mut render = clock.clone();
@@ -429,7 +386,7 @@ mod tests {
     #[test]
     fn test_transport_clock_pause() {
         let (tempo, paused) = create_test_atomics();
-        let mut clock = TransportClock::new(tempo, paused.clone(), 44100.0);
+        let mut clock = TransportClock::new(ClockLinks::bare(tempo, paused.clone()), 44100.0);
 
         let mut output = [0.0f32; 2];
 
@@ -463,7 +420,7 @@ mod tests {
     #[test]
     fn test_transport_clock_tempo_change() {
         let (tempo, paused) = create_test_atomics();
-        let mut clock = TransportClock::new(tempo.clone(), paused, 44100.0);
+        let mut clock = TransportClock::new(ClockLinks::bare(tempo.clone(), paused), 44100.0);
 
         let mut output = [0.0f32; 2];
 
@@ -528,12 +485,13 @@ mod tests {
         loop_span.set_enabled(true);
 
         let seek = SeekSlot::new();
-        let mut clock = TransportClock::from_inputs(
-            ClockInputs {
+        let mut clock = TransportClock::new(
+            ClockLinks {
                 tempo,
                 paused,
                 seek: seek.clone(),
-                loop_span,
+                loop_span: Some(loop_span),
+                position_writeback: None,
             },
             44100.0,
         );
@@ -579,7 +537,7 @@ mod tests {
     #[test]
     fn starting_at_emits_that_beat_first() {
         let (tempo, paused) = create_test_atomics();
-        let live = TransportClock::new(tempo, paused, 44100.0);
+        let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
 
         let mut derived = live.starting_at(8.0);
         let mut output = [0.0f32; 2];
@@ -596,8 +554,8 @@ mod tests {
     fn derived_stream_does_not_disturb_the_live_playhead() {
         let (tempo, paused) = create_test_atomics();
         let writeback = Arc::new(AtomicF64::new(0.0));
-        let live = TransportClock::new(tempo, paused, 44100.0)
-            .with_position_writeback(Arc::clone(&writeback));
+        let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0)
+            ;
 
         // Tick a derived stream for a while; the live writeback must not move.
         let mut derived = live.starting_at(100.0);
@@ -619,12 +577,13 @@ mod tests {
         let seek = SeekSlot::new();
         let loop_span = LoopSpan::new(0.0, 4.0);
         loop_span.set_enabled(true);
-        let live = TransportClock::from_inputs(
-            ClockInputs {
+        let live = TransportClock::new(
+            ClockLinks {
                 tempo,
                 paused,
                 seek: seek.clone(),
-                loop_span: loop_span.clone(),
+                loop_span: Some(loop_span.clone()),
+                position_writeback: None,
             },
             44100.0,
         );
@@ -647,7 +606,7 @@ mod tests {
     #[test]
     fn at_tempo_changes_the_beat_rate() {
         let (tempo, paused) = create_test_atomics();
-        let live = TransportClock::new(tempo, paused, 44100.0);
+        let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
 
         // One second of samples at 240 BPM = 4 beats.
         let mut derived = live.at_tempo(240.0);
@@ -666,7 +625,7 @@ mod tests {
     #[test]
     fn combinators_compose() {
         let (tempo, paused) = create_test_atomics();
-        let live = TransportClock::new(tempo, paused, 44100.0);
+        let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
 
         let mut derived = live.at_tempo(240.0).starting_at(8.0);
         let mut output = [0.0f32; 2];

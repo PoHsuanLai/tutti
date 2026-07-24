@@ -8,7 +8,7 @@
 //!
 //! Grouping is by **data-flow direction**:
 //!
-//! - [`ClockInputs`] — what `TransportClock` reads to advance time.
+//! - [`ClockLinks`] — what `TransportClock` shares with the live transport.
 //! - [`Declick`] — the fade contract between the FSM and `Engine`.
 
 use std::sync::atomic::Ordering;
@@ -237,17 +237,69 @@ impl Default for Declick {
     }
 }
 
-/// What [`TransportClock`](super::TransportClock) reads to advance time.
+/// Everything [`TransportClock`](super::TransportClock) shares with the live
+/// transport.
 ///
-/// This is the clock's entire input surface. Handing one of these over
-/// replaces eight separate `.clone()`s of loose atomics at every clock
-/// construction site.
+/// The membership rule is exactly `AudioUnit::isolate`'s cut: every field here
+/// is `Arc`-shared, so an offline render ticking a clone must drop all of them
+/// or it stomps live playback. Fields the clock owns privately — its beat,
+/// sample rate, cached increment — are deliberately *not* here; that is the
+/// whole distinction the type draws.
+///
+/// Four are read to advance time; `position_writeback` is the output half of
+/// the same handshake, written every buffer. Naming it `Inputs` was accurate
+/// only while the writeback lived outside.
 #[derive(Clone, Debug)]
-pub struct ClockInputs {
+pub struct ClockLinks {
     pub tempo: Arc<AtomicF64>,
     pub paused: Arc<AtomicBool>,
     pub seek: SeekSlot,
-    pub loop_span: LoopSpan,
+    /// `None` = this clock ignores looping entirely (offline renders).
+    pub loop_span: Option<LoopSpan>,
+    /// Where the clock publishes the playhead. `None` = writes nothing live.
+    pub position_writeback: Option<Arc<AtomicF64>>,
+}
+
+impl ClockLinks {
+    /// Minimal links for a clock under test: live tempo and pausedness, nothing
+    /// else shared.
+    #[cfg(test)]
+    pub(crate) fn bare(tempo: Arc<AtomicF64>, paused: Arc<AtomicBool>) -> Self {
+        Self {
+            tempo,
+            paused,
+            seek: SeekSlot::new(),
+            loop_span: None,
+            position_writeback: None,
+        }
+    }
+
+    /// A copy sharing nothing with the live transport.
+    ///
+    /// Tempo is snapshotted into a private cell, playback forced unpaused with
+    /// no pending seek, and the loop and writeback dropped — so a clock built
+    /// from this reads no live state and writes to nothing live.
+    ///
+    /// The destructure is exhaustive on purpose: adding a sixth shared field
+    /// becomes a compile error here rather than a silently-forgotten `isolate`,
+    /// which is the bug class this cut exists to prevent.
+    pub fn severed(&self) -> Self {
+        let Self {
+            tempo,
+            paused: _,
+            seek: _,
+            loop_span: _,
+            position_writeback: _,
+        } = self;
+
+        Self {
+            tempo: Arc::new(AtomicF64::new(tempo.load(Ordering::Acquire))),
+            paused: Arc::new(AtomicBool::new(false)),
+            seek: SeekSlot::new(),
+            loop_span: None,
+            position_writeback: None,
+        }
+    }
 }
 
 #[cfg(test)]

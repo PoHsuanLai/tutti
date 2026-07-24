@@ -15,6 +15,21 @@ use alloc::vec::Vec;
 
 const FINISHED_NOTES_CAPACITY: usize = 16;
 
+/// Convert a Q7.25 fixed-point pitch (Registered Per-Note Controller #3, M2-104
+/// §7.4.15.2) to a fractional MIDI note number: 7 integer bits = the 12-TET note,
+/// 25 fractional bits = fraction of one semitone (HCU).
+#[inline]
+fn q7_25_to_fractional_note(bits: u32) -> f32 {
+    bits as f32 / (1u32 << 25) as f32
+}
+
+/// Convert a Q7.9 fixed-point pitch (Note-On Attribute #3, M2-104 §7.4.15.3) to a
+/// fractional MIDI note number: 7 integer bits + 9 fractional bits.
+#[inline]
+fn q7_9_to_fractional_note(bits: u16) -> f32 {
+    bits as f32 / (1u16 << 9) as f32
+}
+
 /// Polyphonic synthesizer combining tutti-synth building blocks with FunDSP.
 ///
 /// Construct one from a [`SynthConfig`] via [`PolySynth::new`]. The synth always
@@ -206,7 +221,7 @@ impl PolySynth {
 
     fn process_midi_event(&mut self, event: &MidiEvent) {
         use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
-        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::channel_voice2::{ChannelVoice2 as Cv2, NoteAttribute};
         use tutti_midi_types::midi2::{Channeled, UmpMessage};
 
         // `normalize` folds velocity-0 NoteOn→NoteOff and promotes any inbound
@@ -221,6 +236,13 @@ impl PolySynth {
             Cv2::NoteOn(m) => {
                 let note = u8::from(m.note_number());
                 self.handle_note_on(note, u16_to_unit_f32(m.velocity()), channel);
+                // Note-On Attribute #3: Pitch 7.9 (M2-104 §7.4.15.3) — an absolute
+                // per-note tuning override delivered at note start. Applied after
+                // allocation so it lands on the voice this note just claimed.
+                if let Some(NoteAttribute::Pitch7_9(p)) = m.attribute() {
+                    let id = NoteId::from_channel_note(channel, note);
+                    self.set_voice_tuning(id, q7_9_to_fractional_note(p.to_bits()));
+                }
             }
             Cv2::NoteOff(m) => {
                 self.handle_note_off(u8::from(m.note_number()), channel);
@@ -232,20 +254,13 @@ impl PolySynth {
                     channel,
                 );
             }
+            // Channel pitch bend is a *global* (whole-synth) bend. Under MPE, a
+            // member-channel bend is rewritten to a native Per-Note Pitch Bend at
+            // the input edge (see `MpeIngest`), so anything reaching here — the
+            // master-channel bend, or a non-MPE bend — is genuinely global.
             Cv2::ChannelPitchBend(m) => {
-                let value = bend_u32_to_signed_f32(m.pitch_bend_data());
-                if self.config.mpe_enabled {
-                    self.handle_mpe_pitch_bend_normalized(channel, value);
-                } else {
-                    self.pitch_bend = value;
-                    self.apply_pitch_bend();
-                }
-            }
-            Cv2::ChannelPressure(m) if self.config.mpe_enabled => {
-                self.handle_mpe_pressure_normalized(
-                    channel,
-                    u32_to_unit_f32(m.channel_pressure_data()),
-                );
+                self.pitch_bend = bend_u32_to_signed_f32(m.pitch_bend_data());
+                self.apply_pitch_bend();
             }
             // MIDI 2.0 native per-note messages address one voice by note-id —
             // two same-pitch notes stay independent even on one channel.
@@ -284,31 +299,54 @@ impl PolySynth {
                     | Controller::SoundController { index: 5, data } => {
                         self.set_voice_mpe_slide(id, u32_to_unit_f32(data));
                     }
+                    // Registered Per-Note Controller #3: Pitch 7.25 (M2-104
+                    // §7.4.15.2) — an absolute per-note tuning override. The note
+                    // number becomes an index; the Q7.25 value is the sounding
+                    // pitch (integer = 12-TET note, fraction = fraction of a
+                    // semitone). Pitch bend then offsets from it.
+                    Controller::Pitch7_25(v) => {
+                        self.set_voice_tuning(id, q7_25_to_fractional_note(v.to_bits()));
+                    }
                     _ => {}
                 }
             }
-            // MIDI 2.0 Per-Note Management (M2-104 §7.4.15).
+            // MIDI 2.0 Per-Note Management (M2-104 §7.4.5). D and S are distinct:
             //
-            // **Reset (S)**: reset the addressed note's per-note controllers to
-            // their defaults — pitch bend→0, pressure→0, slide→center — while the
-            // note keeps sounding. Fully honored via `reset_voice_mpe`.
+            // **Detach (D=1)**: currently-playing notes on this note number keep
+            // their current per-note controller values but stop responding to any
+            // further per-note controllers (they play out frozen).
             //
-            // **Detach (D)**: spec-intent is to detach ongoing per-note controllers
-            // from the note so a subsequent note-off / same-pitch note-on does not
-            // disturb them. `SynthVoice` has no separate "detached controller"
-            // lifetime — per-note expression lives *on* the voice and dies with it —
-            // so there is nothing to re-home. We treat Detach as a lighter-touch
-            // reset of the voice's accumulated per-note expression: it clears the
-            // current per-note state but does NOT (and cannot, given this voice
-            // model) preserve controllers past the voice's own lifetime. This is
-            // spec-faithful in effect (per-note controllers stop influencing the
-            // note) without pretending to a controller-persistence model the synth
-            // does not have.
+            // **Reset (S=1)**: reset the note's per-note controllers to defaults
+            // (pitch bend→0, pressure→0, slide→center) while it keeps sounding
+            // *and* keeps responding.
+            //
+            // **D=1 & S=1**: the spec detaches the *currently playing* note (it
+            // holds its values) while the Reset "applies to future notes only".
+            // In this voice model a new note-on already starts at defaults, so the
+            // future-notes reset needs no state — the live voice is simply detached.
+            // Hence: detach wins for the live voice when both bits are set.
             Cv2::PerNoteManagement(m) => {
                 let id = NoteId::from_channel_note(channel, u8::from(m.note_number()));
-                if m.reset() || m.detach() {
+                if m.detach() {
+                    self.detach_voice_mpe(id);
+                } else if m.reset() {
                     self.reset_voice_mpe(id);
                 }
+            }
+            // Registered Controller for Sensitivity of Per-Note Pitch Bend
+            // (RPN #00/07, M2-104 §7.4.13). The 32-bit data is a 7.25 fixed-point
+            // semitone range shared by all note numbers on the channel; it sets
+            // the range subsequent Per-Note Pitch Bend messages sweep.
+            Cv2::RegisteredController(m)
+                if u8::from(m.bank()) == tutti_midi_types::ump::RPN_BANK_MPE
+                    && u8::from(m.index())
+                        == tutti_midi_types::ump::RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY =>
+            {
+                let range = tutti_midi_types::mpe::PitchBendSensitivity::from_rpn_bits(
+                    m.controller_data(),
+                )
+                .as_semitones_f32();
+                self.set_mpe_pitch_bend_range(tutti_core::Semitones(range));
             }
             _ => {}
         }
@@ -399,11 +437,43 @@ impl PolySynth {
         self.with_voice_for_id(id, |v| v.set_mpe_gain(value));
     }
 
+    /// Absolute per-note tuning override (Pitch 7.25 / 7.9). `fractional_note` is
+    /// the target as a fractional MIDI note number (integer = 12-TET note, e.g.
+    /// 69.0 = A440); the voice's tuning table maps it to a frequency. Pitch bend
+    /// then offsets from this. Only the addressed voice is retuned.
+    fn set_voice_tuning(&mut self, id: NoteId, fractional_note: f32) {
+        let freq = self.config.tuning.fractional_note_to_freq(fractional_note);
+        // Borrow `voices` and `unison` disjointly (can't hold a `&self.unison`
+        // across the `&mut self` in `with_voice_for_id`).
+        if let Some(i) = self.voice_index_for_id(id) {
+            let unison = self.unison.as_ref();
+            self.voices[i].set_tuning_freq(tutti_core::Hz(freq), unison);
+        }
+    }
+
     /// MIDI 2.0 Per-Note Management *Reset* (M2-104 §7.4.15): snap the addressed
     /// voice's per-note controllers (pitch bend, pressure, slide, gain) back to
     /// their note-on defaults, leaving the note sounding. Others are untouched.
     fn reset_voice_mpe(&mut self, id: NoteId) {
         self.with_voice_for_id(id, |v| v.reset_mpe());
+    }
+
+    /// MIDI 2.0 Per-Note Management *Detach* (M2-104 §7.4.5, D=1): the addressed
+    /// voice holds its current per-note controllers but stops responding to
+    /// further ones, playing out frozen.
+    fn detach_voice_mpe(&mut self, id: NoteId) {
+        self.with_voice_for_id(id, |v| v.detach_mpe());
+    }
+
+    /// Set the per-note pitch-bend range (semitones) from the sensitivity RPN
+    /// (M2-104 §7.4.13). Updates both the scaling range used to convert an
+    /// incoming per-note bend to semitones and every voice's clamp range, so
+    /// currently-sounding notes and future ones share the new sensitivity.
+    fn set_mpe_pitch_bend_range(&mut self, range: tutti_core::Semitones) {
+        self.config.mpe_pitch_bend_range = range;
+        for voice in &mut self.voices {
+            voice.set_mpe_pitch_bend_range(range);
+        }
     }
 
     fn handle_cc(&mut self, cc_num: u8, value: f32, channel: u8) {
@@ -417,12 +487,12 @@ impl PolySynth {
                     .iter_mut()
                     .for_each(|v| v.set_filter_resonance(value));
             }
+            // CC74 (Brightness). Under MPE a member-channel CC74 is rewritten to a
+            // native per-note controller at the input edge (routed per-voice via
+            // the `AssignablePerNoteController` arm above), so a channel-wide CC74
+            // reaching here is a plain global brightness/cutoff.
             cc::BRIGHTNESS => {
-                if self.config.mpe_enabled {
-                    self.handle_mpe_slide(channel, value);
-                } else {
-                    self.voices.iter_mut().for_each(|v| v.set_cc_cutoff(value));
-                }
+                self.voices.iter_mut().for_each(|v| v.set_cc_cutoff(value));
             }
             cc::SUSTAIN => {
                 self.allocator.sustain_pedal(channel, on);
@@ -435,6 +505,20 @@ impl PolySynth {
                 if !on {
                     self.sync_voice_gates();
                 }
+            }
+            // Reset All Controllers (M2-104 Appendix B.2): reset the *channel*
+            // controllers (mod wheel, cutoff, resonance) and the global pitch bend
+            // to their defaults — but explicitly NOT the per-note controllers,
+            // which the spec says RAC must leave alone (they belong to individual
+            // notes, not the channel).
+            cc::RESET_ALL => {
+                for v in &mut self.voices {
+                    v.set_mod_wheel(0.0);
+                    v.set_cc_cutoff(0.0);
+                    v.set_filter_resonance(0.0);
+                }
+                self.pitch_bend = 0.0;
+                self.apply_pitch_bend();
             }
             cc::ALL_SOUND_OFF => {
                 self.voices
@@ -483,31 +567,6 @@ impl PolySynth {
                 && slots[i].state() == crate::voice::VoiceState::Releasing
             {
                 voice.note_off();
-            }
-        }
-    }
-
-    fn handle_mpe_pitch_bend_normalized(&mut self, channel: u8, bend_norm: f32) {
-        let semitones = tutti_core::Semitones(bend_norm * self.config.mpe_pitch_bend_range.get());
-        for voice in &mut self.voices {
-            if voice.is_active() && voice.channel() == channel {
-                voice.set_mpe_pitch_bend(semitones);
-            }
-        }
-    }
-
-    fn handle_mpe_pressure_normalized(&mut self, channel: u8, norm: f32) {
-        for voice in &mut self.voices {
-            if voice.is_active() && voice.channel() == channel {
-                voice.set_mpe_pressure(norm);
-            }
-        }
-    }
-
-    fn handle_mpe_slide(&mut self, channel: u8, value: f32) {
-        for voice in &mut self.voices {
-            if voice.is_active() && voice.channel() == channel {
-                voice.set_mpe_slide(value);
             }
         }
     }
@@ -1768,8 +1827,11 @@ mod tests {
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 2);
 
-        // Pitch bend on channel 1 should only affect voice on channel 1
-        let bend = ev_bend(1, 16383);
+        // A native per-note pitch bend addressed to the ch1 note (60) must affect
+        // only that voice. Classic-MPE channel bends are rewritten to this native
+        // form at the input edge (`MpeIngest`); the synth is zone-agnostic and only
+        // ever sees native per-note messages.
+        let bend = MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF);
         queue_midi(&synth, &[bend]);
         synth.tick(&[], &mut output);
 
@@ -1786,12 +1848,12 @@ mod tests {
 
         assert!(
             voice_ch1.mpe_state().pitch_bend_semitones.get() > 40.0,
-            "Channel 1 should have large pitch bend, got {}",
+            "the addressed note should have a large pitch bend, got {}",
             voice_ch1.mpe_state().pitch_bend_semitones
         );
         assert!(
             voice_ch2.mpe_state().pitch_bend_semitones.get().abs() < 0.01,
-            "Channel 2 should have no pitch bend, got {}",
+            "the other note should be untouched, got {}",
             voice_ch2.mpe_state().pitch_bend_semitones
         );
     }
@@ -1917,6 +1979,208 @@ mod tests {
             bent(&synth, 64) > 40.0,
             "note 64 (unaddressed) must keep its bend, got {}",
             bent(&synth, 64)
+        );
+    }
+
+    #[test]
+    fn test_pitch_7_25_retunes_only_the_addressed_note() {
+        // Registered Per-Note Controller #3: Pitch 7.25 (M2-104 §7.4.15.2) sets an
+        // absolute pitch for the addressed note. Note 60 retuned to note 69.0
+        // (A440) should sound at 440 Hz; another note is untouched.
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Sine,
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            },
+            mpe_enabled: true,
+            ..Default::default()
+        });
+
+        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+
+        // Pitch 7.25 for note 60 = 69.0 (A440). Q7.25: 69 << 25. Registered
+        // per-note controller index 3 (Pitch 7.25).
+        let pitch = MidiEvent::per_note_controller(0, 1, 60, 3, 69u32 << 25, true);
+        queue_midi(&synth, &[pitch]);
+        synth.tick(&[], &mut output);
+
+        let freq = |synth: &PolySynth, note: u8| {
+            synth
+                .voices
+                .iter()
+                .find(|v| v.is_active() && v.note() == note)
+                .unwrap()
+                .base_note_freq()
+                .get()
+        };
+        assert!(
+            (freq(&synth, 60) - 440.0).abs() < 1.0,
+            "note 60 retuned to A440, got {}",
+            freq(&synth, 60)
+        );
+        // Note 64's default pitch (~329.6 Hz) must be untouched.
+        assert!(
+            (freq(&synth, 64) - 329.6).abs() < 2.0,
+            "note 64 must keep its default pitch, got {}",
+            freq(&synth, 64)
+        );
+    }
+
+    #[test]
+    fn test_per_note_management_detach_freezes_the_note() {
+        // Detach (D=1): the addressed voice keeps its current per-note bend but
+        // stops responding to further per-note controllers (M2-104 §7.4.5).
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Sine,
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            },
+            mpe_enabled: true,
+            mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+            ..Default::default()
+        });
+
+        queue_midi(&synth, &[ev_note_on(1, 60, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+
+        // Bend fully, then Detach.
+        queue_midi(&synth, &[MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF)]);
+        synth.tick(&[], &mut output);
+        let bent = |synth: &PolySynth| {
+            synth
+                .voices
+                .iter()
+                .find(|v| v.is_active() && v.note() == 60)
+                .unwrap()
+                .mpe_state()
+                .pitch_bend_semitones
+                .get()
+        };
+        let frozen_at = bent(&synth);
+        assert!(frozen_at > 40.0, "note should be bent before detach");
+
+        // Detach (D=1, S=0).
+        queue_midi(&synth, &[MidiEvent::per_note_management(0, 1, 60, true, false)]);
+        synth.tick(&[], &mut output);
+
+        // A further per-note bend to zero must be IGNORED — the note holds its value.
+        queue_midi(&synth, &[MidiEvent::per_note_pitch_bend(0, 1, 60, 0x8000_0000)]);
+        synth.tick(&[], &mut output);
+        assert!(
+            (bent(&synth) - frozen_at).abs() < 0.01,
+            "detached note must ignore further per-note bend (held {frozen_at}, got {})",
+            bent(&synth)
+        );
+    }
+
+    #[test]
+    fn test_per_note_pitch_bend_sensitivity_rpn_updates_range() {
+        // RPN #00/07 sets the per-note pitch-bend range (M2-104 §7.4.13). After a
+        // 12-semitone sensitivity, a full per-note bend should reach ~12 semitones
+        // (not the default 48).
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Sine,
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            },
+            mpe_enabled: true,
+            mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+            ..Default::default()
+        });
+
+        // Sensitivity RPN: 12 semitones (7.25 fixed-point).
+        let sens = tutti_midi_types::mpe::PitchBendSensitivity::from_semitones(12);
+        let rpn = MidiEvent::registered_controller(
+            0,
+            1,
+            tutti_midi_types::ump::RPN_BANK_MPE,
+            tutti_midi_types::ump::RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+            sens.to_rpn_bits(),
+        );
+        queue_midi(&synth, &[ev_note_on(1, 60, 100), rpn]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+
+        // Full per-note bend up — now clamped to the 12-semitone range.
+        queue_midi(&synth, &[MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF)]);
+        synth.tick(&[], &mut output);
+        let bend = synth
+            .voices
+            .iter()
+            .find(|v| v.is_active() && v.note() == 60)
+            .unwrap()
+            .mpe_state()
+            .pitch_bend_semitones
+            .get();
+        assert!(
+            (bend - 12.0).abs() < 0.5,
+            "per-note bend should clamp to the 12-semitone sensitivity, got {bend}"
+        );
+    }
+
+    #[test]
+    fn test_reset_all_controllers_spares_per_note() {
+        // Reset All Controllers (CC121) resets channel controllers + global pitch
+        // bend but must NOT touch per-note controllers (M2-104 Appendix B.2).
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Sine,
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            },
+            mpe_enabled: true,
+            mpe_pitch_bend_range: tutti_core::Semitones(48.0),
+            ..Default::default()
+        });
+
+        queue_midi(&synth, &[ev_note_on(1, 60, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+        // Set a per-note bend.
+        queue_midi(&synth, &[MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF)]);
+        synth.tick(&[], &mut output);
+
+        // Reset All Controllers on channel 1.
+        queue_midi(&synth, &[ev_cc(1, cc::RESET_ALL, 0)]);
+        synth.tick(&[], &mut output);
+
+        let bend = synth
+            .voices
+            .iter()
+            .find(|v| v.is_active() && v.note() == 60)
+            .unwrap()
+            .mpe_state()
+            .pitch_bend_semitones
+            .get();
+        assert!(
+            bend > 40.0,
+            "Reset All Controllers must NOT clear per-note bend, got {bend}"
         );
     }
 
@@ -2072,8 +2336,9 @@ mod tests {
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
-        // Channel pressure on channel 1 only
-        let pressure = ev_aftertouch(1, 127);
+        // Native per-note pressure addressed to the ch1 note (60) only. Classic-MPE
+        // channel pressure is rewritten to this form at the input edge.
+        let pressure = MidiEvent::poly_pressure(0, 1, 60, 0xFFFF_FFFF);
         queue_midi(&synth, &[pressure]);
         synth.tick(&[], &mut output);
 
@@ -2090,11 +2355,11 @@ mod tests {
 
         assert!(
             (voice_ch1.mpe_state().pressure - 1.0).abs() < 0.01,
-            "Channel 1 should have full pressure"
+            "the addressed note should have full pressure"
         );
         assert!(
             voice_ch2.mpe_state().pressure.abs() < 0.01,
-            "Channel 2 should have no pressure"
+            "the other note should have no pressure"
         );
     }
 
@@ -2125,8 +2390,9 @@ mod tests {
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
-        // CC74 (slide) on channel 1
-        let slide = ev_cc(1, 74, 127);
+        // Native per-note CC74 (slide) addressed to the ch1 note (60). Classic-MPE
+        // channel CC74 is rewritten to this form at the input edge.
+        let slide = MidiEvent::per_note_controller(0, 1, 60, 74, 0xFFFF_FFFF, false);
         queue_midi(&synth, &[slide]);
         synth.tick(&[], &mut output);
 
@@ -2137,7 +2403,7 @@ mod tests {
             .unwrap();
         assert!(
             (voice.mpe_state().slide - 1.0).abs() < 0.01,
-            "Channel 1 should have full slide"
+            "the addressed note should have full slide"
         );
     }
 
@@ -2209,8 +2475,8 @@ mod tests {
             max_no_pressure = max_no_pressure.max(output[0].abs().max(output[1].abs()));
         }
 
-        // Apply full pressure
-        let pressure = ev_aftertouch(1, 127);
+        // Apply full pressure as a native per-note pressure on the note (60).
+        let pressure = MidiEvent::poly_pressure(0, 1, 60, 0xFFFF_FFFF);
         queue_midi(&synth, &[pressure]);
 
         let mut max_with_pressure = 0.0f32;

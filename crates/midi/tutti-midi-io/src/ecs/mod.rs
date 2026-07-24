@@ -51,7 +51,7 @@ pub use track_out::{
     midi_out_send_system, pump_midi_out_system, MidiOutPlugin, MidiOutRes, SendMidiOut,
 };
 
-pub use mpe::{MpeExpressionResource, MpeModeConfig, MpePlugin};
+pub use mpe::MpeModeConfig;
 pub use routing::MpeReceiver;
 
 #[cfg(feature = "midi-hardware")]

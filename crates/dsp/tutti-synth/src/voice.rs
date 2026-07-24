@@ -39,6 +39,11 @@ pub struct MpeVoiceState {
     pub slide: f32,
     /// Per-note gain (0.0..1.0), from per-note Volume (CC7). `1.0` is unity.
     pub gain: f32,
+    /// Detached (M2-104 §7.4.5, Per-Note Management D=1): once set, this voice
+    /// keeps its current per-note controller values but stops responding to any
+    /// further per-note controllers — the note plays out frozen. Distinct from
+    /// Reset (S), which snaps values back to defaults but keeps responding.
+    pub detached: bool,
 }
 
 impl Default for MpeVoiceState {
@@ -48,13 +53,21 @@ impl Default for MpeVoiceState {
             pressure: 0.0,
             slide: SLIDE_CENTER,
             gain: 1.0,
+            detached: false,
         }
     }
 }
 
 impl MpeVoiceState {
+    /// Reset (S): controllers back to defaults; the voice keeps responding.
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Detach (D): stop responding to further per-note controllers, but hold the
+    /// current values until the note ends.
+    pub fn detach(&mut self) {
+        self.detached = true;
     }
 }
 

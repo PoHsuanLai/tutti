@@ -269,7 +269,10 @@ mod sysex8;
 mod system;
 mod utility;
 
-pub use controllers::{RPN_BANK_MPE, RPN_INDEX_MCM, RPN_INDEX_PITCH_BEND_SENSITIVITY};
+pub use controllers::{
+    RPN_BANK_MPE, RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY, RPN_INDEX_MCM,
+    RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
+};
 pub use flex_data::{
     bpm_to_ten_ns_per_quarter, flex_chord_name, flex_key_signature, flex_tempo_bpm, flex_text,
     push_flex_text, ten_ns_per_quarter_to_bpm, Alteration, BarAccents, ChordBass, ChordName,

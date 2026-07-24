@@ -79,6 +79,9 @@ impl Plugin for TuttiMidiPlugin {
         #[cfg(feature = "midi-hardware")]
         app.add_plugins(super::device::MidiDevicePlugin);
 
-        app.add_plugins(super::mpe::MpePlugin);
+        // MPE is configured via `MpeModeConfig`; the engine build reads it to
+        // construct the input-edge `MpeIngest`. Ensure the resource exists (the
+        // app / inspector may override it).
+        app.init_resource::<super::mpe::MpeModeConfig>();
     }
 }

@@ -137,6 +137,18 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         pre_block.set_queue(Arc::new(midi_bus.clone()));
         pre_block.set_clock(clock_master.clone());
 
+        // Input-edge translation: assemble (N)RPN runs, then rewrite classic-MPE
+        // channel-spread into native per-note messages, so downstream synths see
+        // only native MIDI-2. MPE mode comes from the app's `MpeModeConfig`
+        // (inserted before the engine builds); default `Disabled` = passthrough.
+        pre_block.set_translator(tutti_midi_runtime::tutti_midi_types::Midi1ToMidi2Translator::new());
+        let mpe_mode = app
+            .world()
+            .get_resource::<tutti_midi_io::MpeModeConfig>()
+            .map(|c| c.0)
+            .unwrap_or(tutti_midi_io::MpeMode::Disabled);
+        pre_block.set_mpe_ingest(tutti_midi_runtime::MpeIngest::new(mpe_mode));
+
         // Hardware MIDI input only exists under `midi-hardware`.
         #[cfg(feature = "midi-hardware")]
         if let Some(ref io) = midi_io {

@@ -45,9 +45,14 @@ pub const RPN_BANK_MPE: u8 = 0x00;
 /// carries the member-channel count for the zone the message's channel names
 /// (RP-053 / M2-104): a master channel + N members, `0` disables the zone.
 pub const RPN_INDEX_MCM: u8 = 0x06;
-/// RPN index of **Pitch Bend Sensitivity**: `0x00`. Data is the 7.25 fixed-point
-/// semitone range (see [`crate::mpe::PitchBendSensitivity`]).
-pub const RPN_INDEX_PITCH_BEND_SENSITIVITY: u8 = 0x00;
+/// RPN index of **Channel Pitch Bend Sensitivity** (RPN #00.00): `0x00`. Data is
+/// the classic MSB=semitones / LSB=cents form — *not* the per-note format.
+pub const RPN_INDEX_CHANNEL_PITCH_BEND_SENSITIVITY: u8 = 0x00;
+/// RPN index of **Sensitivity of Per-Note Pitch Bend** (RPN #00/07, M2-104
+/// §7.4.13.1): `0x07`. Data is the 7.25 fixed-point semitone range (see
+/// [`crate::mpe::PitchBendSensitivity`]) — the range shared by all note numbers
+/// on the channel for subsequent Per-Note Pitch Bend messages.
+pub const RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY: u8 = 0x07;
 
 #[cfg(test)]
 mod tests {

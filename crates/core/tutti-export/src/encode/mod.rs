@@ -5,18 +5,11 @@
 //! [`StreamingEncoder`] trait that the streaming export path uses.
 //!
 //! The root [`encode`] function is pure orchestration: a [`PhaseGuard`] for
-//! progress, a `match` on [`AudioFormat`], and an optional BWAV injection
-//! afterward.
+//! progress and a `match` on [`AudioFormat`].
 
 #[cfg(any(feature = "wav", feature = "flac"))]
 pub(crate) mod sink;
 
-// Shared float→PCM quantization used by the WAV and AIFF encoders.
-#[cfg(any(feature = "wav", feature = "aiff"))]
-pub(crate) mod pcm;
-
-#[cfg(feature = "wav")]
-pub(crate) mod bwav;
 #[cfg(feature = "wav")]
 pub(crate) mod wav;
 
@@ -30,7 +23,7 @@ pub(crate) mod aiff;
 pub(crate) mod ogg;
 
 use crate::error::Result;
-use crate::options::{AudioFormat, BitDepth, BroadcastWavMetadata, Flac, Ogg};
+use crate::options::{AudioFormat, BitDepth, Flac, Ogg};
 use crate::process::Chunk;
 use crate::progress::{Phase, PhaseGuard};
 use std::path::Path;
@@ -47,7 +40,6 @@ pub(crate) struct EncodeRequest<'a> {
     pub flac: Flac,
     #[allow(dead_code)]
     pub ogg: Ogg,
-    pub bwav_metadata: Option<&'a BroadcastWavMetadata>,
 }
 
 /// Encode `audio` to `request.path`. A [`PhaseGuard`] brackets the operation
@@ -86,11 +78,6 @@ pub(crate) fn encode(
         AudioFormat::OggVorbis => {
             return Err(crate::Error::UnsupportedFormat("OGG not enabled".into()));
         }
-    }
-
-    #[cfg(feature = "wav")]
-    if let Some(bwav) = request.bwav_metadata {
-        bwav::inject(request.path, bwav)?;
     }
 
     Ok(())

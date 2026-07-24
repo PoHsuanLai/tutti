@@ -86,13 +86,6 @@ pub enum Dither {
     Rectangular,
     #[default]
     Triangular,
-    NoiseShaped(NoiseShapeOrder),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NoiseShapeOrder {
-    Third,
-    Ninth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -148,18 +141,6 @@ impl Default for Ogg {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct BroadcastWavMetadata {
-    pub originator: String,
-    pub originator_reference: String,
-    pub origination_date: String,
-    pub origination_time: String,
-    pub time_reference: u64,
-    pub loudness_value: f64,
-    pub loudness_range: f64,
-    pub max_true_peak_level: f64,
-}
-
 /// The output knobs shared by every export builder: the container format, the
 /// mastering chain (resample / normalize / dither / channel-fold), and the
 /// per-codec settings. Every builder ([`GraphExport`](crate::GraphExport),
@@ -180,7 +161,6 @@ pub struct Output {
     pub normalize: Normalize,
     pub flac: Flac,
     pub ogg: Ogg,
-    pub bwav: Option<BroadcastWavMetadata>,
 }
 
 impl Output {
@@ -260,12 +240,6 @@ macro_rules! output_setters {
         #[must_use]
         pub fn ogg(mut self, opts: $crate::options::Ogg) -> Self {
             self.$($out).+.ogg = opts;
-            self
-        }
-        /// Broadcast-WAV (BWF) metadata chunk (used only for WAV output).
-        #[must_use]
-        pub fn bwav(mut self, meta: $crate::options::BroadcastWavMetadata) -> Self {
-            self.$($out).+.bwav = Some(meta);
             self
         }
     };

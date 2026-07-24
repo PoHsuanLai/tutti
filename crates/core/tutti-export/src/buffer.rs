@@ -5,14 +5,12 @@
 //! time/transport/MIDI knobs (which are render-stage concepts).
 
 use crate::encode;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::options::{output_setters, AudioFormat, Output};
 use crate::process;
 use crate::progress::{Phase, PhaseGuard};
 use crate::run::{Rendered, Run, Written};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct BufferExport {
@@ -33,21 +31,21 @@ impl BufferExport {
     }
 
     // The shared output/mastering setters (`format`, `bit_depth`, `channels`,
-    // `sample_rate`, `resample_quality`, `dither`, `normalize`, `flac`, `ogg`,
-    // `bwav`), generated from the one definition in `options` — same surface as
+    // `sample_rate`, `resample_quality`, `dither`, `normalize`, `flac`, `ogg`),
+    // generated from the one definition in `options` — same surface as
     // `GraphExport`. They write into `self.output`.
     output_setters!(output);
 
     pub fn to_file(self, path: impl AsRef<Path>) -> Run<Written> {
         let path = path.as_ref().to_path_buf();
         Run {
-            job: Box::new(move |on_progress, cancel| run_to_file(self, path, on_progress, cancel)),
+            job: Box::new(move |on_progress| run_to_file(self, path, on_progress)),
         }
     }
 
     pub fn to_buffers(self) -> Run<Rendered> {
         Run {
-            job: Box::new(move |on_progress, cancel| run_to_buffers(self, on_progress, cancel)),
+            job: Box::new(move |on_progress| run_to_buffers(self, on_progress)),
         }
     }
 }
@@ -60,12 +58,7 @@ fn run_to_file(
     b: BufferExport,
     path: PathBuf,
     on_progress: &(dyn Fn(Phase, f32) + Send + Sync),
-    cancel: &Arc<AtomicBool>,
 ) -> Result<Written> {
-    if cancel.load(Ordering::Relaxed) {
-        return Err(Error::Cancelled);
-    }
-
     let target_rate = output_sample_rate(&b);
     let format = match b.output.format {
         Some(f) => f,
@@ -87,10 +80,6 @@ fn run_to_file(
         )?
     };
 
-    if cancel.load(Ordering::Relaxed) {
-        return Err(Error::Cancelled);
-    }
-
     encode::encode(
         processed,
         encode::EncodeRequest {
@@ -100,7 +89,6 @@ fn run_to_file(
             bit_depth: b.output.bit_depth,
             flac: b.output.flac,
             ogg: b.output.ogg,
-            bwav_metadata: b.output.bwav.as_ref(),
         },
         on_progress,
     )?;
@@ -112,7 +100,6 @@ fn run_to_file(
 fn run_to_buffers(
     b: BufferExport,
     on_progress: &(dyn Fn(Phase, f32) + Send + Sync),
-    _cancel: &Arc<AtomicBool>,
 ) -> Result<Rendered> {
     let target_rate = output_sample_rate(&b);
     let (processed, target_rate) = {

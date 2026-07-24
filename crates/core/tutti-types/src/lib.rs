@@ -28,13 +28,14 @@
 
 pub mod io;
 pub mod latency;
+pub mod pcm;
 pub mod rt;
 pub mod value;
 
 // RT-callback primitives.
 pub use rt::{
-    AudioThreadCell, BorrowGuard, BorrowRef, RtEventBuf, RtScratch, RtScratchBuf, RtScratchOverflow,
-    ScopedNoDenormals,
+    AudioThreadCell, BorrowGuard, BorrowRef, RtEventBuf, RtScratch, RtScratchBuf,
+    RtScratchOverflow, ScopedNoDenormals,
 };
 
 // Value vocabulary.
@@ -46,3 +47,6 @@ pub use value::{
 // I/O edge + latency.
 pub use io::{pump, AudioIn, AudioOut};
 pub use latency::{compensate, Compensation, DelayInsertion, LatencyGraph};
+
+// PCM quantization.
+pub use pcm::{f32_to_i16, f32_to_i24};

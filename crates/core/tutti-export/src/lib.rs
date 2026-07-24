@@ -21,13 +21,12 @@
 //!     .run()?;
 //! ```
 //!
-//! ## Three execution modes
+//! ## Two execution modes
 //!
 //! Every terminal returns a [`Run<T>`]. Pick one of:
 //!
 //! - [`Run::run`] — block this thread.
-//! - [`Run::run_with`] — block this thread with a `Fn(Phase, f32)` callback.
-//! - [`Run::spawn`] — run on a worker thread; poll/wait via [`Handle`].
+//! - [`Run::spawn`] — run on a worker thread; poll via [`Handle`].
 
 mod error;
 pub use error::{Error, Result};
@@ -36,15 +35,7 @@ mod progress;
 pub use progress::Phase;
 
 mod options;
-pub use options::{
-    AudioFormat, BitDepth, BroadcastWavMetadata, ChannelMode, Dither, Flac, NoiseShapeOrder,
-    Normalize, Ogg, Output,
-};
-
-#[cfg(feature = "midi")]
-mod midi;
-#[cfg(feature = "midi")]
-pub use midi::MidiTrack;
+pub use options::{AudioFormat, BitDepth, ChannelMode, Dither, Flac, Normalize, Ogg};
 
 mod run;
 pub use run::{Handle, Rendered, Run, State, Written};

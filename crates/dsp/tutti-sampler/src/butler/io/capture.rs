@@ -21,6 +21,7 @@ use hound::{SampleFormat, WavSpec, WavWriter};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
+use tutti_core::pcm::f32_to_i24;
 
 /// On-disk sample format for a [`WavOut`].
 ///
@@ -117,14 +118,6 @@ impl AudioOut for WavOut {
             .finalize()
             .map_err(|e| std::io::Error::other(e.to_string()))
     }
-}
-
-/// Clamp an f32 sample to `[-1.0, 1.0]` and scale to a 24-bit signed integer.
-#[inline]
-fn f32_to_i24(sample: f32) -> i32 {
-    let clamped = sample.clamp(-1.0, 1.0);
-    // 24-bit signed range: [-8_388_608, 8_388_607].
-    (clamped * 8_388_607.0).round() as i32
 }
 
 #[cfg(test)]

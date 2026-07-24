@@ -1,12 +1,12 @@
 //! AIFF encoder (hand-rolled IFF chunks + 80-bit IEEE 754 extended sample
 //! rate). No streaming support — AIFF requires total size up front.
 
-use crate::encode::pcm::{f32_to_i16, f32_to_i24};
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
 use crate::process::Chunk;
 use std::io::Write;
+use tutti_core::pcm::{f32_to_i16, f32_to_i24};
 
 pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
     if request.bit_depth == BitDepth::Float32 {

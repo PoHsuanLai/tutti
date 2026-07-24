@@ -1,6 +1,5 @@
 //! WAV encoder (hound-backed). Whole-signal and streaming.
 
-use crate::encode::pcm::{f32_to_i16, f32_to_i24};
 use crate::encode::sink::StreamingEncoder;
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
@@ -9,6 +8,7 @@ use crate::process::Chunk;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
+use tutti_core::pcm::{f32_to_i16, f32_to_i24};
 
 pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
     match audio {

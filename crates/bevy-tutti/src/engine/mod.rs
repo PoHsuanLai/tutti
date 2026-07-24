@@ -26,9 +26,6 @@ mod mic;
 #[cfg(feature = "sampler")]
 mod recorder;
 
-#[cfg(all(feature = "midi", feature = "export"))]
-pub mod midi_export;
-
 pub use build::build_into;
 pub use driver::{DeviceInfo, TuttiDriver};
 pub use error::{Error, Result};

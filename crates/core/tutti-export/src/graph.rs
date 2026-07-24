@@ -2,7 +2,7 @@
 //!
 //! Configure the export with fluent setters; pick a terminal (`to_file` or
 //! `to_buffers`); then choose how to execute the resulting [`Run`] (`run`,
-//! `run_with`, `spawn`).
+//! `spawn`).
 //!
 //! `to_file` has NO streaming-vs-buffered variant: whether the export buffers
 //! the whole signal is *derived* from the requested mastering
@@ -17,10 +17,7 @@ use crate::process::{StreamConfig, StreamProcessor};
 use crate::progress::{Phase, ProgressEmitter};
 use crate::render::{self, BufferingOut, Mastering, RenderOut, RenderRequest, StreamOut};
 use crate::run::{Rendered, Run, Written};
-#[cfg(feature = "midi")]
-use crate::MidiTrack;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tutti_core::io::AudioOut;
@@ -52,9 +49,6 @@ struct Spec {
     /// transport the driver advances (the net's clip samplers otherwise read a
     /// transport no one drives and stay silent). See `GraphExport::transport`.
     transport: Option<Arc<OfflineTimeline>>,
-    #[cfg(feature = "midi")]
-    #[allow(dead_code)] // held for lifetime; `midi_snapshot_reader` is what the render sees.
-    midi: Option<MidiTrack>,
 }
 
 impl Spec {
@@ -116,8 +110,6 @@ impl GraphExport {
                 start_beat: 0.0,
                 loop_range: None,
                 transport: None,
-                #[cfg(feature = "midi")]
-                midi: None,
             },
         }
     }
@@ -201,14 +193,6 @@ impl GraphExport {
         self
     }
 
-    /// Attach a [`MidiTrack`] for MIDI-driven offline render.
-    #[cfg(feature = "midi")]
-    #[must_use]
-    pub fn with_midi(mut self, midi: MidiTrack) -> Self {
-        self.spec.midi = Some(midi);
-        self
-    }
-
     // ---- terminals ----
 
     /// Export to a file. Buffers the whole signal iff the mastering needs it
@@ -217,43 +201,20 @@ impl GraphExport {
     pub fn to_file(self, path: impl AsRef<Path>) -> Run<Written> {
         let path = path.as_ref().to_path_buf();
         Run {
-            job: Box::new(move |on_progress, cancel| run_to_file(self, path, on_progress, cancel)),
+            job: Box::new(move |on_progress| run_to_file(self, path, on_progress)),
         }
     }
 
     pub fn to_buffers(self) -> Run<Rendered> {
         Run {
-            job: Box::new(move |on_progress, cancel| run_to_buffers(self, on_progress, cancel)),
+            job: Box::new(move |on_progress| run_to_buffers(self, on_progress)),
         }
-    }
-
-    /// Render synchronously to a `(left, right, sample_rate)` tuple.
-    ///
-    /// Equivalent to `.to_buffers().run()` followed by tuple destructuring,
-    /// but fits in a single chained call which is often what test code wants.
-    /// For named field access, use [`to_buffers`](Self::to_buffers) directly.
-    pub fn render(self) -> Result<(Vec<f32>, Vec<f32>, f64)> {
-        let Rendered {
-            left,
-            right,
-            sample_rate,
-        } = self.to_buffers().run()?;
-        Ok((left, right, sample_rate))
     }
 }
 
 // ---------------------------------------------------------------------------
 // internal execution paths
 // ---------------------------------------------------------------------------
-
-#[inline]
-fn check_cancel(cancel: &Arc<AtomicBool>) -> Result<()> {
-    if cancel.load(Ordering::Relaxed) {
-        Err(Error::Cancelled)
-    } else {
-        Ok(())
-    }
-}
 
 /// Wrap already-mastered planar blocks as a [`Chunk`](crate::process::Chunk) for
 /// the encoder, folding to mono if requested. No dither/normalize — the caller
@@ -307,10 +268,7 @@ fn run_to_file(
     g: GraphExport,
     path: PathBuf,
     on_progress: &(dyn Fn(Phase, f32) + Send + Sync),
-    cancel: &Arc<AtomicBool>,
 ) -> Result<Written> {
-    check_cancel(cancel)?;
-
     let GraphExport { net, spec } = g;
     let format = spec.resolve_format(&path)?;
     let target_rate = spec.output_sample_rate();
@@ -410,7 +368,6 @@ fn run_to_file(
 fn run_to_buffers(
     g: GraphExport,
     on_progress: &(dyn Fn(Phase, f32) + Send + Sync),
-    _cancel: &Arc<AtomicBool>,
 ) -> Result<Rendered> {
     let GraphExport { net, spec } = g;
     let sample_rate = spec.sample_rate;

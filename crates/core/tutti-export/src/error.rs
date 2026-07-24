@@ -24,9 +24,6 @@ pub enum Error {
 
     #[error("Invalid audio data: {0}")]
     InvalidData(String),
-
-    #[error("Cancelled")]
-    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

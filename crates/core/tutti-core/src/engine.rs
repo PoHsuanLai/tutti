@@ -8,9 +8,21 @@ use crate::transport::MotionFsm;
 use crate::{AudioThreadCell, ChannelLayout, Ordering};
 use fundsp::audiounit::AudioUnit;
 use fundsp::buffer::BufferArray;
-use fundsp::prelude::{BufferRef, U2};
+use fundsp::prelude::{BufferRef, U8};
 use fundsp::realnet::NetBackend;
 use fundsp::MAX_BUFFER_SIZE;
+
+/// Widest graph root [`Engine::process_segment`] renders without dropping
+/// channels.
+///
+/// The scratch is stack-allocated, so this is a fixed ceiling rather than the
+/// root's actual width. Eight covers mono through 7.1; a wider root still
+/// renders, but only its first two channels reach the interleaved stereo
+/// output — the device stream this feeds is stereo regardless.
+pub const MAX_ROOT_CHANNELS: usize = 8;
+
+/// Type-level [`MAX_ROOT_CHANNELS`], for sizing the scratch [`BufferArray`].
+type MaxRootChannels = U8;
 
 /// The audio engine: ticks the DSP graph + transport and renders one output
 /// buffer per block from the audio callback.
@@ -36,37 +48,44 @@ impl Engine {
     /// Drives the graph through fundsp's SIMD block path
     /// ([`NetBackend::process`]) in [`MAX_BUFFER_SIZE`] chunks rather than one
     /// frame at a time. The graph root has no inputs, so the input buffer is
-    /// empty; the planar per-channel output is interleaved into `output`.
-    /// A mono net (1 output) duplicates channel 0 into both L/R, matching the
-    /// old per-sample `get_stereo()` behaviour exactly. The scratch
-    /// [`BufferArray`] is stack-allocated, so the hot path stays alloc-free.
+    /// empty; the planar per-channel output is interleaved into `output` as
+    /// stereo — a mono root duplicates channel 0 into both sides, a wider root
+    /// takes its first two channels.
+    ///
+    /// The scratch is a stack-allocated [`BufferArray`] sized to
+    /// [`MAX_ROOT_CHANNELS`], sliced down to the root's actual output count
+    /// before each `process` call. **The slicing is load-bearing**:
+    /// `Net::process` iterates `output.channels()` and indexes its own
+    /// `output_edge` table by that channel, so handing it a two-channel buffer
+    /// for a one-output net indexes past the end and panics — in release, inside
+    /// the audio callback. Sizing the buffer to the net is what makes a mono
+    /// root reach the duplication below at all.
     #[inline]
     pub fn process_segment(&self, output: &mut [f32], frames: usize) {
         let Some(ref mut backend) = *self.net_backend.borrow_mut() else {
             return;
         };
 
-        // 0 inputs on the graph root; Mono → duplicate channel 0 into L/R,
-        // Stereo → straight L/R. Any wider layout is a graph misconfiguration the
-        // old path panicked on (the root is always mono or stereo here).
         debug_assert!(backend.inputs() == 0);
-        let mono = match ChannelLayout::from(backend.outputs()) {
-            ChannelLayout::Mono => true,
-            ChannelLayout::Stereo => false,
-            other => {
-                debug_assert!(false, "graph root must be mono or stereo, got {other:?}");
-                false
-            }
-        };
+
+        // Channels the root actually produces, clamped to what the scratch can
+        // hold. A root wider than the scratch has its extra channels dropped —
+        // the interleave below is stereo either way — but it must not be allowed
+        // to index past the buffer.
+        let root_channels = backend.outputs().clamp(1, MAX_ROOT_CHANNELS);
+        let mono = ChannelLayout::from(root_channels) == ChannelLayout::Mono;
 
         let empty_input = BufferRef::new(&[]);
-        let mut scratch = BufferArray::<U2>::new();
+        let mut scratch = BufferArray::<MaxRootChannels>::new();
 
         let mut done = 0;
         while done < frames {
             let block = (frames - done).min(MAX_BUFFER_SIZE);
 
-            let mut buffer_mut = scratch.buffer_mut();
+            // Slice to the root's width so `Net::process` iterates exactly the
+            // channels it has edges for.
+            let mut full = scratch.buffer_mut();
+            let mut buffer_mut = full.subset(0, root_channels);
             backend.process(block, &empty_input, &mut buffer_mut);
 
             let left = buffer_mut.channel_f32(0);

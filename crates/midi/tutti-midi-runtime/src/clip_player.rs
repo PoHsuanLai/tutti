@@ -14,8 +14,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use atomic_float::AtomicF64;
-use tutti_core::transport::{BeatWindow, BeatWindowSync, Timeline};
+use tutti_core::transport::{BeatCursor, BeatWindow, BeatWindowSync, Timeline};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::unit_id::MidiUnitId;
 use tutti_midi_types::{MidiIn, MidiOut};
@@ -39,15 +38,12 @@ pub type TimedClipEvent = crate::snapshot::TimedMidiEvent;
 #[derive(Clone)]
 pub struct MidiClipSource {
     events: Arc<[TimedClipEvent]>,
-    transport: Arc<dyn Timeline>,
-    sample_rate: f64,
+    /// The live transport plus this source's last-block beat. Owns the
+    /// backwards-seek detection that used to be open-coded here.
+    beats: BeatCursor,
     /// Index into `events` of the first event we haven't emitted yet.
     /// Atomic so `poll_into` is `&self`.
     cursor: Arc<AtomicU64>,
-    /// The transport beat at the most recent poll. We compare against
-    /// this to detect a backwards seek (transport rewound) and reset
-    /// the cursor accordingly.
-    last_beat: Arc<AtomicF64>,
     /// Only events targeting this unit are emitted. Events whose unit
     /// doesn't match are skipped (a single composite source can fan to
     /// many synths via per-unit clip players).
@@ -81,10 +77,8 @@ impl MidiClipSource {
         });
         Self {
             events: v.into(),
-            transport,
-            sample_rate,
+            beats: BeatCursor::new(transport, sample_rate),
             cursor: Arc::new(AtomicU64::new(0)),
-            last_beat: Arc::new(AtomicF64::new(f64::NEG_INFINITY)),
             target_unit,
             out_tap: None,
         }
@@ -128,22 +122,10 @@ impl MidiClipSource {
     /// Returns `None` when nothing should be emitted this block — the
     /// transport is paused, or the tempo/sample-rate is non-positive.
     fn sync_to_transport(&self, block_size: usize) -> Option<BeatWindow> {
-        // `BeatWindow` owns the paused check, the seek epsilon, the tempo guard
-        // and the offset clamp; this method keeps only what is clip-specific —
-        // publishing `last_beat` back to the shared atomic and rewinding the
-        // cursor when the transport jumped backwards.
-        let mut last_beat = self.last_beat.load(Ordering::Acquire);
-        let synced = BeatWindow::from_timeline(
-            self.transport.as_ref(),
-            self.sample_rate,
-            block_size,
-            &mut last_beat,
-        );
-        // `from_timeline` updates `last_beat` even on the paused path, which is
-        // why it is stored before the `?`.
-        self.last_beat.store(last_beat, Ordering::Release);
-
-        let (window, sync) = synced?;
+        // `BeatCursor` owns the paused check, the seek epsilon, the tempo guard,
+        // the offset clamp, and publishing the cursor; all that is left here is
+        // the clip-specific part — rewinding on a backwards jump.
+        let (window, sync) = self.beats.advance(block_size)?;
         if sync == BeatWindowSync::Rewound {
             self.rewind_to(window.start_beat);
         }
@@ -205,6 +187,7 @@ impl MidiIn for MidiClipSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atomic_float::AtomicF64;
     use std::sync::atomic::AtomicBool;
     use tutti_core::params::Bpm;
 
@@ -450,13 +433,15 @@ mod tests {
         let source = one_note_source(&transport);
 
         // Paused → no window, but the beat watermark is still tracked so a
-        // seek-while-paused doesn't surprise us on resume.
+        // seek-while-paused doesn't surprise us on resume. Observable through
+        // the rewind below: if the paused poll had skipped the cursor write,
+        // resuming lower would not register as a backwards jump.
         transport.playing.store(false, Ordering::Release);
         transport.set_beat(3.0);
         assert!(source.sync_to_transport(512).is_none());
-        assert_eq!(source.last_beat.load(Ordering::Acquire), 3.0);
 
-        // Playing → a window covering this block.
+        // Playing, and *below* the paused watermark → a window, and the
+        // backwards jump is detected.
         transport.playing.store(true, Ordering::Release);
         transport.set_beat(0.5);
         let w = source.sync_to_transport(22050).expect("playing → window");

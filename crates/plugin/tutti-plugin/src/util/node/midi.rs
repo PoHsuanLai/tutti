@@ -184,12 +184,7 @@ mod tests {
         n: usize,
     }
     impl MidiIn for CountingSource {
-        fn poll_into(
-            &self,
-            _unit: MidiUnitId,
-            _block: usize,
-            buffer: &mut [MidiEvent],
-        ) -> usize {
+        fn poll_into(&self, _unit: MidiUnitId, _block: usize, buffer: &mut [MidiEvent]) -> usize {
             let n = self.n.min(buffer.len());
             for slot in buffer.iter_mut().take(n) {
                 *slot = MidiEvent::noop();

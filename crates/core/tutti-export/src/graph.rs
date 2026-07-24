@@ -68,9 +68,7 @@ impl Spec {
             start_beat: self.start_beat,
             tempo: self.tempo_bpm.into(),
             sample_rate: tutti_core::SampleRate(self.sample_rate),
-            // The offline config still speaks the raw beat tuple; unwrap the
-            // validated `LoopRange` back into it at this one boundary.
-            loop_range: self.loop_range.map(|r| (r.start().get(), r.end().get())),
+            loop_range: self.loop_range,
         }))
     }
 

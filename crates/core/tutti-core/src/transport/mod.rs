@@ -6,20 +6,21 @@ mod handle;
 mod meter;
 mod motion;
 mod offline;
-pub(crate) mod position;
 mod settings;
 mod state;
 
-pub use beat_window::{BeatWindow, BeatWindowSync};
+pub use beat_window::{BeatCursor, BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub use clock::TransportClock;
-pub use fsm::Direction;
 pub use handle::Transport;
 pub use meter::TimeSignature;
-pub use motion::{MotionEvent, MotionFsm, MotionState, QueueFull};
+pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use settings::TransportSettings;
-pub use state::{beat_from_ports, ClockInputs, Declick, LoopRange, LoopSpan, SeekSlot, BEAT_PORTS};
+pub use state::{
+    beat_from_ports, beats_per_sample, ClockLinks, Declick, LoopRange, LoopSpan, SeekSlot,
+    BEAT_PORTS,
+};
 
 // The Bevy wrappers (`TransportRes` / `MetronomeRes` + their claims +
 // `TuttiTransportPlugin`) live in `crate::ecs::transport` — import them from

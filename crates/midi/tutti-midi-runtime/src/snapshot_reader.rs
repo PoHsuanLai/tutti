@@ -51,12 +51,7 @@ impl MidiSnapshotReader {
 }
 
 impl MidiIn for MidiSnapshotReader {
-    fn poll_into(
-        &self,
-        unit_id: MidiUnitId,
-        block_size: usize,
-        buffer: &mut [MidiEvent],
-    ) -> usize {
+    fn poll_into(&self, unit_id: MidiUnitId, block_size: usize, buffer: &mut [MidiEvent]) -> usize {
         let current_beat = self.timeline.beat().get();
         let last_beat = self.last_poll_beat.load(Ordering::Acquire);
 
@@ -64,7 +59,7 @@ impl MidiIn for MidiSnapshotReader {
             return 0;
         }
 
-        let beats_per_sample = self.timeline.beats_per_sample();
+        let beats_per_sample = self.timeline.beats_per_sample().get();
         let count = self.snapshot.poll_range_timed(
             unit_id,
             last_beat,

@@ -87,8 +87,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // Transport clock — emits the beat on two ports and writes it back to the
     // manager's atomic. Its NodeId is retained so beat-driven nodes can wire an
     // edge to it (published below as `TransportClockNode`).
-    let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
-        .with_position_writeback(Arc::clone(&transport.settings.beat));
+    let clock = TransportClock::new(transport.clock_links(), sample_rate);
     let clock_id = net.push(Box::new(clock));
 
     // Metronome — mixed into master output. It only READS the transport

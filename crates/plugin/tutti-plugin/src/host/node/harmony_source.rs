@@ -17,8 +17,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use atomic_float::AtomicF64;
-use tutti_core::transport::{BeatWindow, BeatWindowSync, Timeline};
+use tutti_core::transport::{BeatCursor, BeatWindow, BeatWindowSync, Timeline};
 
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
@@ -45,11 +44,10 @@ pub struct TimedScale {
 pub struct HarmonySource {
     chords: Arc<[TimedChord]>,
     scales: Arc<[TimedScale]>,
-    transport: Arc<dyn Timeline>,
-    sample_rate: f64,
+    /// The live transport plus this source's last-block beat.
+    beats: BeatCursor,
     chord_cursor: Arc<AtomicU64>,
     scale_cursor: Arc<AtomicU64>,
-    last_beat: Arc<AtomicF64>,
 }
 
 impl HarmonySource {
@@ -76,11 +74,9 @@ impl HarmonySource {
         Self {
             chords: c.into(),
             scales: s.into(),
-            transport,
-            sample_rate,
+            beats: BeatCursor::new(transport, sample_rate),
             chord_cursor: Arc::new(AtomicU64::new(0)),
             scale_cursor: Arc::new(AtomicU64::new(0)),
-            last_beat: Arc::new(AtomicF64::new(f64::NEG_INFINITY)),
         }
     }
 
@@ -93,17 +89,7 @@ impl HarmonySource {
     /// guard, offset clamp — is [`BeatWindow`]'s, shared with
     /// `MidiClipSource`; only the two-cursor rewind is harmony-specific.
     fn window(&self, block_size: usize) -> Option<BeatWindow> {
-        let mut last_beat = self.last_beat.load(Ordering::Acquire);
-        let synced = BeatWindow::from_timeline(
-            self.transport.as_ref(),
-            self.sample_rate,
-            block_size,
-            &mut last_beat,
-        );
-        // Written even on the paused path, so store before the `?`.
-        self.last_beat.store(last_beat, Ordering::Release);
-
-        let (window, sync) = synced?;
+        let (window, sync) = self.beats.advance(block_size)?;
         if sync == BeatWindowSync::Rewound {
             // Backward seek: rewind both cursors to the new position.
             self.rewind(
@@ -217,6 +203,7 @@ impl HasBeat for TimedScale {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use atomic_float::AtomicF64;
     use std::sync::atomic::AtomicBool;
     use tutti_core::params::Bpm;
 

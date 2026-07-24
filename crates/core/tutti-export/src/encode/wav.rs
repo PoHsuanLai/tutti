@@ -160,7 +160,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("streaming.wav");
 
-        let mut encoder = open_stream(&path, 44100, BitDepth::Int16, ChannelLayout::Stereo).unwrap();
+        let mut encoder =
+            open_stream(&path, 44100, BitDepth::Int16, ChannelLayout::Stereo).unwrap();
 
         encoder
             .write_frames(&[[0.0, 0.1], [0.25, -0.1], [0.5, 0.0]])

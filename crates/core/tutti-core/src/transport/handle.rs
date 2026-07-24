@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::motion::MotionFsm;
 use super::settings::TransportSettings;
-use super::state::ClockInputs;
+use super::state::ClockLinks;
 use super::state::LoopRange;
 use crate::params::{Beat, Bpm, SampleRate};
 
@@ -44,13 +44,20 @@ impl Transport {
         }
     }
 
-    /// Everything `TransportClock` reads to advance time.
-    pub fn clock_inputs(&self) -> ClockInputs {
-        ClockInputs {
+    /// Everything a `TransportClock` shares with this transport — the inputs it
+    /// reads *and* the playhead it writes.
+    ///
+    /// Supplying both halves here is the point: the writeback used to be a
+    /// separate builder call, so every construction site had to remember to
+    /// chain it. `settings.beat` is documented as "written by `TransportClock`
+    /// via its position writeback"; this is what closes that loop.
+    pub fn clock_links(&self) -> ClockLinks {
+        ClockLinks {
             tempo: Arc::clone(&self.settings.tempo),
             paused: Arc::clone(&self.settings.paused),
             seek: self.motion.seek.clone(),
-            loop_span: self.settings.loop_span.clone(),
+            loop_span: Some(self.settings.loop_span.clone()),
+            position_writeback: Some(Arc::clone(&self.settings.beat)),
         }
     }
 
@@ -69,7 +76,7 @@ impl Transport {
 
 impl super::Timeline for Transport {
     fn beat(&self) -> Beat {
-        Beat(self.settings.beat())
+        self.settings.beat()
     }
 
     fn tempo(&self) -> Bpm {
@@ -128,7 +135,7 @@ mod tests {
     #[test]
     fn clock_inputs_track_live_edits() {
         let t = Transport::new(48000.0);
-        let inputs = t.clock_inputs();
+        let inputs = t.clock_links();
 
         t.settings.set_tempo(160.0);
         assert_eq!(
@@ -137,7 +144,7 @@ mod tests {
             "the clock must see later tempo changes"
         );
 
-        let _ = t.motion.try_send(MotionEvent::Locate(4.0));
+        let _ = t.motion.try_send(MotionEvent::locate(4.0));
         t.motion.drain();
         assert_eq!(inputs.seek.take(), Some(Beat(4.0)));
     }

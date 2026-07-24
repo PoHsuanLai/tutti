@@ -14,8 +14,6 @@ use tutti_core::dsp::{bell_hz, limiter_stereo, pan, sine_hz, AudioUnit};
 use tutti_core::engine::Engine;
 use tutti_core::{dsp::Net, SampleRate, Transport, TransportClock};
 
-use std::sync::Arc;
-
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
@@ -29,8 +27,9 @@ fn build_engine_with_chain() -> Engine {
     let mut net = Net::new(0, 2);
 
     // Transport clock — matches what every real Engine sees.
-    let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
-        .with_position_writeback(Arc::clone(&transport.settings.beat));
+    // `clock_links()` supplies the writeback too — it is no longer a separate
+    // builder call a caller can forget.
+    let clock = TransportClock::new(transport.clock_links(), sample_rate);
     net.push(Box::new(clock));
 
     // sine → pan → bell → limiter, wired with `chain` so each node feeds

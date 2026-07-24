@@ -6,8 +6,8 @@
 //! automation scrubbing) can use it.
 
 use super::state::LoopRange;
-use crate::params::{Beat, Bpm, SampleRate};
-use crate::{AtomicBool, AtomicF64, Ordering};
+use crate::params::{Beat, BeatDuration, Bpm, SampleRate};
+use crate::{AtomicF64, Ordering};
 
 /// Configuration for constructing an [`OfflineTimeline`].
 #[derive(Debug, Clone)]
@@ -18,8 +18,9 @@ pub struct OfflineTimelineConfig {
     pub tempo: Bpm,
     /// Sample rate in Hz.
     pub sample_rate: SampleRate,
-    /// Loop range (start, end) in beats, if looping.
-    pub loop_range: Option<(f64, f64)>,
+    /// Loop region, if looping. Already validated — build one with
+    /// [`LoopRange::new`], which rejects empty and inverted regions.
+    pub loop_range: Option<LoopRange>,
 }
 
 impl Default for OfflineTimelineConfig {
@@ -53,70 +54,63 @@ impl Default for OfflineTimelineConfig {
 /// timeline.advance(44100);
 /// assert!((timeline.beat().get() - 2.0).abs() < 0.001);
 /// ```
+///
+/// # Shared vs. fixed state
+///
+/// Only `current_beat` is shared: `advance`/`reset` take `&self` because the
+/// timeline is held as an `Arc` and read by clip readers and samplers while the
+/// export driver advances it. Everything else is render configuration fixed at
+/// construction — there are no setters — so it is a plain value. As atomics
+/// they cost an `Acquire` load per read on `advance()` and put nothing on the
+/// other end of the release/acquire edge.
+///
+/// The alignment keeps `current_beat` — the one genuinely contended word — on
+/// its own cache line, away from the immutable fields readers also touch.
 #[derive(Debug)]
 #[repr(align(64))]
 pub struct OfflineTimeline {
-    /// Current position in beats.
+    /// Current position. The only mutable, shared field.
     current_beat: AtomicF64,
-    /// Tempo in BPM.
-    tempo: AtomicF64,
-    /// Sample rate in Hz.
-    sample_rate: f64,
-    /// Beats per sample (precomputed for efficiency).
-    beats_per_sample: f64,
-    /// Loop start in beats.
-    loop_start: AtomicF64,
-    /// Loop end in beats.
-    loop_end: AtomicF64,
-    /// Whether loop is enabled.
-    loop_enabled: AtomicBool,
+    tempo: Bpm,
+    sample_rate: SampleRate,
+    /// Musical time per sample, precomputed from `tempo` and `sample_rate`.
+    beats_per_sample: BeatDuration,
+    /// The active loop region, validated at construction — so `advance()` needs
+    /// no `end > start` guard of its own.
+    loop_range: Option<LoopRange>,
 }
 
 impl OfflineTimeline {
     pub fn new(config: &OfflineTimelineConfig) -> Self {
-        let tempo_raw = config.tempo.get();
-        let sr_raw = config.sample_rate.get();
-        let beats_per_second = tempo_raw / 60.0;
-        let beats_per_sample = beats_per_second / sr_raw;
-
-        let (loop_start, loop_end, loop_enabled) = match config.loop_range {
-            Some((start, end)) => (start, end, true),
-            None => (0.0, 0.0, false),
-        };
-
         Self {
             current_beat: AtomicF64::new(config.start_beat),
-            tempo: AtomicF64::new(tempo_raw),
-            sample_rate: sr_raw,
-            beats_per_sample,
-            loop_start: AtomicF64::new(loop_start),
-            loop_end: AtomicF64::new(loop_end),
-            loop_enabled: AtomicBool::new(loop_enabled),
+            tempo: config.tempo,
+            sample_rate: config.sample_rate,
+            beats_per_sample: super::state::beats_per_sample(config.tempo, config.sample_rate),
+            loop_range: config.loop_range,
         }
     }
 
     /// Advance the timeline by the given number of samples.
     ///
-    /// If loop is enabled and the timeline crosses the loop end,
-    /// it will wrap back to the loop start.
+    /// If a loop region is set and the timeline crosses its end, the position
+    /// wraps back into the region.
+    ///
+    /// The increment is added in **bulk** for the whole block and wrapped once,
+    /// not accumulated per sample. That is what keeps this timeline
+    /// bit-identical to the in-net `TransportClock` for the unlooped case every
+    /// production render uses — see the sample-for-sample test below.
     pub fn advance(&self, samples: usize) {
-        let mut beat = self.current_beat.load(Ordering::Acquire);
-        beat += samples as f64 * self.beats_per_sample;
+        let mut beat = Beat(self.current_beat.load(Ordering::Acquire));
+        beat += self.beats_per_sample * samples as f64;
 
-        // Handle loop wrap
-        if self.loop_enabled.load(Ordering::Acquire) {
-            let loop_start = self.loop_start.load(Ordering::Acquire);
-            let loop_end = self.loop_end.load(Ordering::Acquire);
-
-            if beat >= loop_end {
-                let loop_length = loop_end - loop_start;
-                if loop_length > 0.0 {
-                    beat = loop_start + ((beat - loop_start) % loop_length);
-                }
-            }
+        if let Some(region) = self.loop_range {
+            // `LoopRange` is non-empty by construction, so `wrap` needs no
+            // guard — the same reason `TransportClock` needs none.
+            beat = region.wrap(beat);
         }
 
-        self.current_beat.store(beat, Ordering::Release);
+        self.current_beat.store(beat.get(), Ordering::Release);
     }
 
     #[inline]
@@ -126,12 +120,12 @@ impl OfflineTimeline {
 
     #[inline]
     pub fn tempo(&self) -> Bpm {
-        Bpm(self.tempo.load(Ordering::Acquire))
+        self.tempo
     }
 
     #[inline]
     pub fn sample_rate(&self) -> SampleRate {
-        SampleRate(self.sample_rate)
+        self.sample_rate
     }
 
     pub fn reset(&self, start_beat: f64) {
@@ -139,7 +133,7 @@ impl OfflineTimeline {
     }
 
     #[inline]
-    pub fn beats_per_sample(&self) -> f64 {
+    pub fn beats_per_sample(&self) -> BeatDuration {
         self.beats_per_sample
     }
 
@@ -148,16 +142,10 @@ impl OfflineTimeline {
     /// An inherent method, not a [`Timeline`](super::Timeline) one: looping is a
     /// live-transport concept ([`TransportState`](super::TransportState)), and
     /// the offline render never reads it through a trait — `advance()` folds the
-    /// wrap in via direct field access. Kept here for the tests and any direct
-    /// caller that holds a concrete `OfflineTimeline`.
+    /// wrap in directly.
+    #[inline]
     pub fn loop_range(&self) -> Option<LoopRange> {
-        if !self.loop_enabled.load(Ordering::Acquire) {
-            return None;
-        }
-        LoopRange::new(
-            self.loop_start.load(Ordering::Acquire),
-            self.loop_end.load(Ordering::Acquire),
-        )
+        self.loop_range
     }
 }
 
@@ -181,6 +169,81 @@ impl super::Timeline for OfflineTimeline {
 mod tests {
     use super::*;
 
+    /// Regression: the config used to carry an unvalidated `(f64, f64)`. An
+    /// inverted pair produced `loop_enabled: true` with `end < start`, so
+    /// `advance` armed the loop and then silently never wrapped — the render ran
+    /// straight past the loop end with no diagnostic. `Option<LoopRange>` makes
+    /// that state unrepresentable: it is rejected at the boundary and the
+    /// timeline is honestly un-looped.
+    #[test]
+    fn an_inverted_loop_region_is_rejected_not_silently_ignored() {
+        let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
+            start_beat: 0.0,
+            tempo: Bpm(120.0),
+            sample_rate: SampleRate(44100.0),
+            loop_range: LoopRange::new(8.0, 4.0),
+        });
+
+        assert_eq!(
+            timeline.loop_range(),
+            None,
+            "an inverted region must not report as an active loop"
+        );
+
+        // ...and the timeline runs free rather than pretending to loop.
+        let samples_per_beat = 44100.0 / 2.0;
+        timeline.advance((10.0 * samples_per_beat) as usize);
+        assert!(
+            (timeline.beat().get() - 10.0).abs() < 0.01,
+            "expected free-running beat 10.0, got {}",
+            timeline.beat().get()
+        );
+    }
+
+    /// The empty region is what the deleted `loop_length > 0.0` guard existed to
+    /// catch. `LoopRange` catches it one layer earlier.
+    #[test]
+    fn an_empty_loop_region_is_rejected() {
+        let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
+            start_beat: 0.0,
+            tempo: Bpm(120.0),
+            sample_rate: SampleRate(44100.0),
+            loop_range: LoopRange::new(4.0, 4.0),
+        });
+        assert_eq!(timeline.loop_range(), None);
+    }
+
+    /// `advance` adds the whole block's beats at once and wraps ONCE, rather
+    /// than accumulating and wrapping per sample. For a loop shorter than one
+    /// block the two differ — a per-sample walk would wrap repeatedly and land
+    /// elsewhere. This is a lock, not a new assertion: it passes identically
+    /// before and after the refactor, and exists so a future "simplification"
+    /// into a per-sample loop fails loudly.
+    #[test]
+    fn advance_wraps_once_per_block_not_once_per_sample() {
+        let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
+            start_beat: 0.0,
+            tempo: Bpm(120.0),
+            sample_rate: SampleRate(44100.0),
+            loop_range: LoopRange::new(0.0, 1.0),
+        });
+
+        // Five beats over a one-beat loop. Bulk: `5.0 % 1.0` → 0.0, the modulo
+        // absorbing all four intervening crossings at once.
+        let samples_per_beat = 22050usize;
+        timeline.advance(5 * samples_per_beat);
+
+        let beat = timeline.beat().get();
+        assert!(
+            (0.0..1.0).contains(&beat),
+            "must land inside the region, got {beat}"
+        );
+        assert!(
+            beat.abs() < 1e-9,
+            "5 beats over a 1-beat loop must land exactly at the start, got {beat}"
+        );
+    }
+
     /// A region render drives BOTH clocks over the same net: the in-net
     /// `TransportClock` feeds beat-input nodes (LFO, AutomationLane) while this
     /// `OfflineTimeline` feeds clip readers and samplers. Started at the same
@@ -201,8 +264,10 @@ mod tests {
         let start_beat = 4.0;
 
         let mut clock = TransportClock::new(
-            Arc::new(AtomicF64::new(tempo)),
-            Arc::new(AtomicBool::new(false)),
+            crate::transport::ClockLinks::bare(
+                Arc::new(AtomicF64::new(tempo)),
+                Arc::new(AtomicBool::new(false)),
+            ),
             sample_rate,
         )
         .starting_at(start_beat);
@@ -238,7 +303,7 @@ mod tests {
         // EMITTED sample, because emit-then-advance means sample N-1 carried
         // the beat before the final increment.
         assert!(
-            ((timeline.beat().get() - clock_beat) - expected_lag).abs() < 1e-9,
+            ((timeline.beat().get() - clock_beat) - expected_lag.get()).abs() < 1e-9,
             "drifted across the block: clock={clock_beat} timeline={} \
              (expected exactly one beats_per_sample apart)",
             timeline.beat().get()
@@ -269,7 +334,7 @@ mod tests {
             start_beat: 0.0,
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
-            loop_range: Some((0.0, 4.0)),
+            loop_range: LoopRange::new(0.0, 4.0),
         });
 
         // 4 beats at 120 BPM = 2 seconds = 88200 samples
@@ -336,14 +401,14 @@ mod tests {
 
     #[test]
     fn timeline_impl_reports_the_loop_region() {
-        use crate::Timeline;
-
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
             tempo: Bpm(120.0),
             sample_rate: SampleRate(44100.0),
-            loop_range: Some((0.0, 8.0)),
+            loop_range: LoopRange::new(0.0, 8.0),
         });
+
+        use crate::Timeline;
 
         assert_eq!(timeline.loop_range(), LoopRange::new(0.0, 8.0));
         assert_eq!(timeline.tempo().get(), 120.0);
@@ -353,8 +418,6 @@ mod tests {
 
     #[test]
     fn timeline_impl_reports_no_loop_when_unset() {
-        use crate::Timeline;
-
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
             tempo: Bpm(120.0),

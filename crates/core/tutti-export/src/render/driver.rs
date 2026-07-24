@@ -180,8 +180,13 @@ mod tests {
         // A net that just emits the clock's two beat ports as its output.
         let mut net = tutti_core::dsp::Net::new(0, 2);
         let clock = TransportClock::new(
-            Arc::new(AtomicF64::new(120.0)),
-            Arc::new(AtomicBool::new(false)),
+            tutti_core::transport::ClockLinks {
+                tempo: Arc::new(AtomicF64::new(120.0)),
+                paused: Arc::new(AtomicBool::new(false)),
+                seek: Default::default(),
+                loop_span: None,
+                position_writeback: None,
+            },
             sample_rate,
         )
         .starting_at(start_beat);
@@ -226,12 +231,12 @@ mod tests {
         // The load-bearing assertion: after rendering N samples the timeline
         // must have advanced by exactly N — no more. A priming `advance(1)`
         // shows up here as N+1, which is the desync this test exists to catch.
-        let expected = start_beat + 512.0 * timeline.beats_per_sample();
+        let expected = start_beat + (timeline.beats_per_sample() * 512.0).get();
         assert!(
             (timeline.beat().get() - expected).abs() < 1e-9,
             "timeline advanced by {} samples' worth, expected exactly 512 \
              (a priming advance() desyncs it from the net's clock)",
-            (timeline.beat().get() - start_beat) / timeline.beats_per_sample()
+            (timeline.beat().get() - start_beat) / timeline.beats_per_sample().get()
         );
     }
 }

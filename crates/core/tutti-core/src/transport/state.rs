@@ -8,13 +8,13 @@
 //!
 //! Grouping is by **data-flow direction**:
 //!
-//! - [`ClockInputs`] — what `TransportClock` reads to advance time.
+//! - [`ClockLinks`] — what `TransportClock` shares with the live transport.
 //! - [`Declick`] — the fade contract between the FSM and `Engine`.
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::params::Beat;
+use crate::params::{Beat, BeatDuration};
 use crate::{AtomicBool, AtomicF64, AtomicU32};
 
 /// Number of ports a beat signal occupies: whole beats, then fraction.
@@ -35,6 +35,24 @@ pub const BEAT_PORTS: usize = 2;
 #[inline]
 pub fn beat_from_ports(whole: f32, frac: f32) -> f64 {
     whole as f64 + frac as f64
+}
+
+/// Musical time covered by one audio sample at `tempo` and `sample_rate`.
+///
+/// The conversion every beat-driven consumer needs: the clock caches it per
+/// buffer, `BeatWindow` derives a block's span from it, `OfflineTimeline`
+/// precomputes it once. Written out by hand in each of those before this
+/// existed.
+///
+/// The association is load-bearing: `(tempo / 60) / sample_rate`, **not**
+/// `tempo / (60 * sample_rate)`. The two round differently, and the offline
+/// timeline is pinned to agree with the clock sample-for-sample.
+#[inline]
+pub fn beats_per_sample(
+    tempo: impl Into<crate::Bpm>,
+    sample_rate: impl Into<crate::SampleRate>,
+) -> BeatDuration {
+    BeatDuration((tempo.into().get() / 60.0) / sample_rate.into().get())
 }
 
 /// A pending absolute jump. `pending` is the one-shot flag the clock
@@ -97,7 +115,7 @@ impl LoopRange {
     /// Build a region, or `None` if it is empty or inverted.
     pub fn new(start: impl Into<Beat>, end: impl Into<Beat>) -> Option<Self> {
         let (start, end) = (start.into(), end.into());
-        (end.get() > start.get()).then_some(Self { start, end })
+        (end > start).then_some(Self { start, end })
     }
 
     #[inline]
@@ -112,26 +130,27 @@ impl LoopRange {
 
     /// Length in beats. Always positive, by construction.
     #[inline]
-    pub fn len(&self) -> f64 {
-        self.end.get() - self.start.get()
+    pub fn len(&self) -> BeatDuration {
+        self.end - self.start
     }
 
     #[inline]
     pub fn contains(&self, beat: Beat) -> bool {
-        beat.get() >= self.start.get() && beat.get() < self.end.get()
+        beat >= self.start && beat < self.end
     }
 
     /// Wrap `beat` back into the region, preserving overshoot.
     ///
-    /// The division is safe because `len()` is positive by construction — the
-    /// guard every caller used to write is now unnecessary.
+    /// The remainder is safe because `len()` is positive by construction — the
+    /// guard every caller used to write is now unnecessary. `rem_euclid` rather
+    /// than `%` so a beat below `start` wraps *into* the region instead of
+    /// landing outside it on the negative side.
     #[inline]
     pub fn wrap(&self, beat: Beat) -> Beat {
-        if beat.get() < self.end.get() {
+        if beat < self.end {
             return beat;
         }
-        let offset = (beat.get() - self.start.get()) % self.len();
-        Beat(self.start.get() + offset)
+        self.start + (beat - self.start).rem_euclid(self.len())
     }
 }
 
@@ -236,17 +255,69 @@ impl Default for Declick {
     }
 }
 
-/// What [`TransportClock`](super::TransportClock) reads to advance time.
+/// Everything [`TransportClock`](super::TransportClock) shares with the live
+/// transport.
 ///
-/// This is the clock's entire input surface. Handing one of these over
-/// replaces eight separate `.clone()`s of loose atomics at every clock
-/// construction site.
+/// The membership rule is exactly `AudioUnit::isolate`'s cut: every field here
+/// is `Arc`-shared, so an offline render ticking a clone must drop all of them
+/// or it stomps live playback. Fields the clock owns privately — its beat,
+/// sample rate, cached increment — are deliberately *not* here; that is the
+/// whole distinction the type draws.
+///
+/// Four are read to advance time; `position_writeback` is the output half of
+/// the same handshake, written every buffer. Naming it `Inputs` was accurate
+/// only while the writeback lived outside.
 #[derive(Clone, Debug)]
-pub struct ClockInputs {
+pub struct ClockLinks {
     pub tempo: Arc<AtomicF64>,
     pub paused: Arc<AtomicBool>,
     pub seek: SeekSlot,
-    pub loop_span: LoopSpan,
+    /// `None` = this clock ignores looping entirely (offline renders).
+    pub loop_span: Option<LoopSpan>,
+    /// Where the clock publishes the playhead. `None` = writes nothing live.
+    pub position_writeback: Option<Arc<AtomicF64>>,
+}
+
+impl ClockLinks {
+    /// Minimal links for a clock under test: live tempo and pausedness, nothing
+    /// else shared.
+    #[cfg(test)]
+    pub(crate) fn bare(tempo: Arc<AtomicF64>, paused: Arc<AtomicBool>) -> Self {
+        Self {
+            tempo,
+            paused,
+            seek: SeekSlot::new(),
+            loop_span: None,
+            position_writeback: None,
+        }
+    }
+
+    /// A copy sharing nothing with the live transport.
+    ///
+    /// Tempo is snapshotted into a private cell, playback forced unpaused with
+    /// no pending seek, and the loop and writeback dropped — so a clock built
+    /// from this reads no live state and writes to nothing live.
+    ///
+    /// The destructure is exhaustive on purpose: adding a sixth shared field
+    /// becomes a compile error here rather than a silently-forgotten `isolate`,
+    /// which is the bug class this cut exists to prevent.
+    pub fn severed(&self) -> Self {
+        let Self {
+            tempo,
+            paused: _,
+            seek: _,
+            loop_span: _,
+            position_writeback: _,
+        } = self;
+
+        Self {
+            tempo: Arc::new(AtomicF64::new(tempo.load(Ordering::Acquire))),
+            paused: Arc::new(AtomicBool::new(false)),
+            seek: SeekSlot::new(),
+            loop_span: None,
+            position_writeback: None,
+        }
+    }
 }
 
 #[cfg(test)]

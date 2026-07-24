@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use super::state::LoopSpan;
-use crate::params::Bpm;
+use crate::params::{Beat, Bpm};
 use crate::{AtomicBool, AtomicF64};
 
 /// Transport values shared between threads.
@@ -33,8 +33,6 @@ pub struct TransportSettings {
     /// Derived from motion by [`MotionFsm`](super::MotionFsm) — the clock
     /// reads it to decide whether to advance. Not set directly.
     pub paused: Arc<AtomicBool>,
-    /// Playback direction. Flipped by `MotionEvent::Reverse`.
-    pub reverse: Arc<AtomicBool>,
 }
 
 impl TransportSettings {
@@ -46,7 +44,6 @@ impl TransportSettings {
             recording: Arc::new(AtomicBool::new(false)),
             in_preroll: Arc::new(AtomicBool::new(false)),
             paused: Arc::new(AtomicBool::new(true)),
-            reverse: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -58,12 +55,12 @@ impl TransportSettings {
         self.tempo.store(bpm.into().get(), Ordering::Release);
     }
 
-    pub fn beat(&self) -> f64 {
-        self.beat.load(Ordering::Acquire)
+    pub fn beat(&self) -> Beat {
+        Beat(self.beat.load(Ordering::Acquire))
     }
 
-    pub fn set_beat(&self, beat: f64) {
-        self.beat.store(beat, Ordering::Release);
+    pub fn set_beat(&self, beat: impl Into<Beat>) {
+        self.beat.store(beat.into().get(), Ordering::Release);
     }
 
     pub fn is_recording(&self) -> bool {
@@ -115,7 +112,7 @@ mod tests {
     fn defaults_are_stopped_at_120() {
         let s = TransportSettings::new();
         assert_eq!(s.tempo().get(), 120.0);
-        assert_eq!(s.beat(), 0.0);
+        assert_eq!(s.beat(), Beat(0.0));
         assert!(s.is_paused());
         assert!(!s.is_recording());
         assert_eq!(s.loop_span.range(), None, "looping starts disarmed");

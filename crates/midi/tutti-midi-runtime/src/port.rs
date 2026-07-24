@@ -213,11 +213,7 @@ mod tests {
 
         clone_a.install(Arc::new(OneNote(60)));
         let mut buf = [MidiEvent::noop(); 8];
-        assert_eq!(
-            audio_clone.poll(64, &mut buf),
-            1,
-            "install must be shared"
-        );
+        assert_eq!(audio_clone.poll(64, &mut buf), 1, "install must be shared");
 
         clone_a.clear();
         let fresh = live.clone();
@@ -233,11 +229,7 @@ mod tests {
         // A note queued to the live sender must NOT reach the isolated clone.
         live.sender().queue(&[note_on(60)]);
         let mut buf = [MidiEvent::noop(); 8];
-        assert_eq!(
-            render.poll(64, &mut buf),
-            0,
-            "isolated clone sees nothing"
-        );
+        assert_eq!(render.poll(64, &mut buf), 0, "isolated clone sees nothing");
         // The live port still has its note (not stolen by the clone's poll).
         assert_eq!(live.poll(64, &mut buf), 1, "live keeps its event");
 

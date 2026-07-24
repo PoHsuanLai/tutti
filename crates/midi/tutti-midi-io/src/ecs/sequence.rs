@@ -81,11 +81,15 @@ pub fn midi_sequence_tick_system(
 
     for (seq, mut state) in query.iter_mut() {
         let unit_id = tutti_midi_types::MidiUnitId::new(seq.target.value());
+        // Position minus position is a *span* into the sequence, which is what
+        // the `duration_beats` comparisons below actually test against.
+        let offset = beat - tutti_core::Beat(seq.start_beat);
         let local_beat = if seq.loop_enabled && seq.duration_beats > 0.0 {
-            let offset = beat - seq.start_beat;
-            ((offset % seq.duration_beats) + seq.duration_beats) % seq.duration_beats
+            offset
+                .rem_euclid(tutti_core::BeatDuration(seq.duration_beats))
+                .get()
         } else {
-            beat - seq.start_beat
+            offset.get()
         };
 
         // Outside range (non-looped)

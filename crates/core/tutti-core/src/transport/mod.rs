@@ -9,7 +9,7 @@ mod offline;
 mod settings;
 mod state;
 
-pub use beat_window::{BeatWindow, BeatWindowSync};
+pub use beat_window::{BeatCursor, BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub use clock::TransportClock;
 pub use handle::Transport;

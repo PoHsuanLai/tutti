@@ -7,11 +7,13 @@
 //! backward-seek epsilon, the tempo guard, the offset clamp — so it lives here
 //! once rather than being re-derived per source.
 //!
-//! The caller keeps its own cursor(s) and decides what to do on a seek; this
-//! type owns only the window, so it stays allocation-free and `&self`-safe for
-//! the audio thread.
+//! [`BeatCursor`] pairs that arithmetic with the caller's persisted
+//! last-block beat, so the source keeps only what is genuinely its own.
+
+use std::sync::Arc;
 
 use crate::transport::Timeline;
+use crate::AtomicF64;
 
 /// Beat range one audio block covers, plus the factors to place an event inside
 /// it. Produced by [`BeatWindow::from_timeline`].
@@ -109,3 +111,68 @@ impl BeatWindow {
 /// Backward-jump tolerance, in beats. Below this a beat decrease is treated as
 /// float jitter rather than a seek.
 const SEEK_EPSILON: f64 = 1e-9;
+
+/// A beat-scheduled source's transport reading plus its persisted last-block
+/// beat.
+///
+/// Every such source needs exactly this triple, and each one used to hold it
+/// separately: an `Arc<dyn Timeline>`, a sample rate, and an `Arc<AtomicF64>`
+/// cursor that it hand-lowered to a `&mut f64` for [`BeatWindow::from_timeline`]
+/// and hand-raised afterwards. That dance had a trap in it — the paused path
+/// still advances the cursor, so the store had to happen *before* the `?`, and
+/// writing the call as one line silently broke seek-while-paused. Both existing
+/// callers carried a comment warning about it.
+///
+/// Owning the cursor here removes the trap rather than documenting it: there is
+/// no local to forget, and `?` cannot skip a write that happens inside
+/// [`advance`](Self::advance).
+///
+/// Cheap to clone — shares the cursor, so fundsp's clone-on-commit of the
+/// parent node does not restart playback.
+#[derive(Clone)]
+pub struct BeatCursor {
+    transport: Arc<dyn Timeline>,
+    sample_rate: f64,
+    last_beat: Arc<AtomicF64>,
+}
+
+impl BeatCursor {
+    pub fn new(transport: Arc<dyn Timeline>, sample_rate: f64) -> Self {
+        Self {
+            transport,
+            sample_rate,
+            last_beat: Arc::new(AtomicF64::new(f64::NEG_INFINITY)),
+        }
+    }
+
+    /// This block's beat window, advancing the cursor.
+    ///
+    /// `None` when nothing should be emitted — the transport is paused, or the
+    /// tempo / sample rate / block size is non-positive. The cursor advances on
+    /// the paused path too, so a seek-while-paused does not surprise playback on
+    /// resume.
+    ///
+    /// RT-safe: `&self`, no allocation, no locks.
+    pub fn advance(&self, block_size: usize) -> Option<(BeatWindow, BeatWindowSync)> {
+        let mut last = self.last_beat.load(crate::Ordering::Acquire);
+        let out = BeatWindow::from_timeline(
+            self.transport.as_ref(),
+            self.sample_rate,
+            block_size,
+            &mut last,
+        );
+        // Written even on the paused path, so it is stored unconditionally —
+        // this is the ordering the old call sites had to remember by hand.
+        self.last_beat.store(last, crate::Ordering::Release);
+        out
+    }
+
+    /// The live transport this cursor reads.
+    pub fn timeline(&self) -> &Arc<dyn Timeline> {
+        &self.transport
+    }
+
+    pub fn sample_rate(&self) -> f64 {
+        self.sample_rate
+    }
+}

@@ -2,19 +2,26 @@
 
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
-use crate::process::Chunk;
+use crate::process::fold_frame;
 use std::io::BufWriter;
 use std::num::{NonZeroU32, NonZeroU8};
 use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoderBuilder};
 
 const BLOCK_SIZE: usize = 4096;
 
-pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
+pub(crate) fn encode(frames: &[[f32; 2]], request: &EncodeRequest<'_>) -> Result<()> {
     let quality = request.ogg.quality;
 
-    let channels: Vec<Vec<f32>> = match audio {
-        Chunk::Stereo { left, right } => vec![left, right],
-        Chunk::Mono(samples) => vec![samples],
+    // vorbis_rs wants planar per-channel slices; deinterleave (folding to mono
+    // when asked) into planes here. A layout wider than stereo is written as
+    // stereo — the pipeline has only two source channels.
+    let channels: Vec<Vec<f32>> = if request.channels.count() == 1 {
+        vec![frames.iter().map(|&f| fold_frame(f)).collect()]
+    } else {
+        vec![
+            frames.iter().map(|&[l, _]| l).collect(),
+            frames.iter().map(|&[_, r]| r).collect(),
+        ]
     };
 
     let num_channels = channels.len();

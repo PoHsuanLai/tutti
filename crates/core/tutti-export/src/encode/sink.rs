@@ -1,8 +1,9 @@
 //! Streaming-encoder abstraction.
 //!
-//! Used by the streaming export path: the render driver hands blocks to a
-//! [`StreamProcessor`], which produces [`Chunk`]s that go to a
-//! [`StreamingEncoder`].
+//! Used by the streaming export path: the render driver pushes `[f32; 2]` frame
+//! blocks (already dithered by a [`DitherOut`](crate::process::DitherOut)) to a
+//! [`StreamingEncoder`], which writes them incrementally. The encoder knows its
+//! own [`ChannelLayout`] and folds to mono at the file boundary if asked.
 //!
 //! Encoders that can stream (currently WAV) implement the trait. Encoders
 //! that cannot (AIFF, OGG at present) are not wired into the opener — the
@@ -11,13 +12,11 @@
 use crate::error::{Error, Result};
 use crate::options::{AudioFormat, BitDepth, Flac, Ogg};
 use tutti_types::ChannelLayout;
-use crate::process::Chunk;
 use std::path::Path;
 
-/// Accepts pre-dithered, pre-downmixed chunks produced by
-/// [`crate::process::StreamProcessor`].
+/// Accepts stereo `[f32; 2]` frame blocks and encodes them incrementally.
 pub(crate) trait StreamingEncoder {
-    fn write_chunk(&mut self, chunk: Chunk) -> Result<()>;
+    fn write_frames(&mut self, frames: &[[f32; 2]]) -> Result<()>;
 
     /// Flush any pending buffers, update headers, and close the file. Must
     /// be called exactly once.

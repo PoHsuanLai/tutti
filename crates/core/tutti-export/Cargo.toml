@@ -18,10 +18,6 @@ wav = ["hound"]
 flac = ["flacenc"]
 aiff = []
 ogg = ["vorbis_rs"]
-# Expose `MidiTrack` and `GraphExport::with_midi` for MIDI-driven offline
-# renders. Also lets the umbrella engine inject live MIDI events into the
-# export snapshot.
-midi = ["tutti-core/midi", "dep:tutti-midi-runtime"]
 # Offline per-node region render (`ecs::render_region`). It isolates and
 # rebinds clip-reader / sampler units from tutti-sampler, so it needs that
 # crate. VERIFIED acyclic: tutti-sampler does NOT depend on tutti-export.
@@ -35,7 +31,6 @@ sampler = ["bevy", "dep:tutti-sampler", "tutti-sampler/wav"]
 thiserror = "1.0"
 tutti-core = { path = "../tutti-core", default-features = false }
 tutti-types = { path = "../tutti-types", default-features = false }
-tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", optional = true, default-features = false }
 # Optional: only the `ecs::render_region` module references sampler units.
 tutti-sampler = { path = "../../dsp/tutti-sampler", optional = true, default-features = false }
 rubato = "0.16"

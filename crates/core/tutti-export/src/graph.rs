@@ -2,7 +2,7 @@
 //!
 //! Configure the export with fluent setters; pick a terminal (`to_file` or
 //! `to_buffers`); then choose how to execute the resulting [`Run`] (`run`,
-//! `run_with`, `spawn`).
+//! `spawn`).
 //!
 //! `to_file` has NO streaming-vs-buffered variant: whether the export buffers
 //! the whole signal is *derived* from the requested mastering
@@ -12,24 +12,16 @@
 
 use crate::encode;
 use crate::error::{Error, Result};
-use crate::options::{output_setters, AudioFormat, BitDepth, Output};
-use tutti_types::ChannelLayout;
-use crate::process::{StreamConfig, StreamProcessor};
+use crate::options::{output_setters, AudioFormat, Output};
+use crate::process::{DitherOut, Mastering};
 use crate::progress::{Phase, ProgressEmitter};
-use crate::render::{self, BufferingOut, Mastering, RenderOut, RenderRequest, StreamOut};
+use crate::render::{self, BufferingOut, EncoderOut, RenderOut, RenderRequest};
 use crate::run::{Rendered, Run, Written};
-#[cfg(feature = "midi")]
-use crate::MidiTrack;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tutti_core::io::AudioOut;
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
-
-/// `(start_beat, end_beat)`. Convenience alias for offline-transport loop
-/// ranges; matches the tuple shape used by `tutti_core`.
-pub type LoopRange = (f64, f64);
+use tutti_core::transport::{LoopRange, OfflineTimeline, OfflineTimelineConfig};
 
 /// Everything except the net: the configuration surface of a graph export.
 /// Kept separate so the net can be consumed by the render stage without
@@ -53,9 +45,6 @@ struct Spec {
     /// transport the driver advances (the net's clip samplers otherwise read a
     /// transport no one drives and stay silent). See `GraphExport::transport`.
     transport: Option<Arc<OfflineTimeline>>,
-    #[cfg(feature = "midi")]
-    #[allow(dead_code)] // held for lifetime; `midi_snapshot_reader` is what the render sees.
-    midi: Option<MidiTrack>,
 }
 
 impl Spec {
@@ -79,7 +68,9 @@ impl Spec {
             start_beat: self.start_beat,
             tempo: self.tempo_bpm.into(),
             sample_rate: tutti_core::SampleRate(self.sample_rate),
-            loop_range: self.loop_range,
+            // The offline config still speaks the raw beat tuple; unwrap the
+            // validated `LoopRange` back into it at this one boundary.
+            loop_range: self.loop_range.map(|r| (r.start().get(), r.end().get())),
         }))
     }
 
@@ -117,8 +108,6 @@ impl GraphExport {
                 start_beat: 0.0,
                 loop_range: None,
                 transport: None,
-                #[cfg(feature = "midi")]
-                midi: None,
             },
         }
     }
@@ -202,14 +191,6 @@ impl GraphExport {
         self
     }
 
-    /// Attach a [`MidiTrack`] for MIDI-driven offline render.
-    #[cfg(feature = "midi")]
-    #[must_use]
-    pub fn with_midi(mut self, midi: MidiTrack) -> Self {
-        self.spec.midi = Some(midi);
-        self
-    }
-
     // ---- terminals ----
 
     /// Export to a file. Buffers the whole signal iff the mastering needs it
@@ -218,64 +199,20 @@ impl GraphExport {
     pub fn to_file(self, path: impl AsRef<Path>) -> Run<Written> {
         let path = path.as_ref().to_path_buf();
         Run {
-            job: Box::new(move |on_progress, cancel| run_to_file(self, path, on_progress, cancel)),
+            job: Box::new(move |on_progress| run_to_file(self, path, on_progress)),
         }
     }
 
     pub fn to_buffers(self) -> Run<Rendered> {
         Run {
-            job: Box::new(move |on_progress, cancel| run_to_buffers(self, on_progress, cancel)),
+            job: Box::new(move |on_progress| run_to_buffers(self, on_progress)),
         }
-    }
-
-    /// Render synchronously to a `(left, right, sample_rate)` tuple.
-    ///
-    /// Equivalent to `.to_buffers().run()` followed by tuple destructuring,
-    /// but fits in a single chained call which is often what test code wants.
-    /// For named field access, use [`to_buffers`](Self::to_buffers) directly.
-    pub fn render(self) -> Result<(Vec<f32>, Vec<f32>, f64)> {
-        let Rendered {
-            left,
-            right,
-            sample_rate,
-        } = self.to_buffers().run()?;
-        Ok((left, right, sample_rate))
     }
 }
 
 // ---------------------------------------------------------------------------
 // internal execution paths
 // ---------------------------------------------------------------------------
-
-#[inline]
-fn check_cancel(cancel: &Arc<AtomicBool>) -> Result<()> {
-    if cancel.load(Ordering::Relaxed) {
-        Err(Error::Cancelled)
-    } else {
-        Ok(())
-    }
-}
-
-/// Wrap already-mastered planar blocks as a [`Chunk`](crate::process::Chunk) for
-/// the encoder, folding to mono if requested. No dither/normalize — the caller
-/// (a `BufferingOut`) has already applied all mastering; this only picks the
-/// channel shape. `left`/`right` are equal for mono blocks the buffer emitted.
-fn raw_chunk(
-    left: &[f32],
-    right: &[f32],
-    channels: ChannelLayout,
-    _bit_depth: BitDepth,
-) -> crate::process::Chunk {
-    use crate::process::Chunk;
-    match channels {
-        // `BufferingOut` already mono-folded (both channels equal), so take one.
-        ChannelLayout::Mono => Chunk::Mono(left.to_vec()),
-        ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_) => Chunk::Stereo {
-            left: left.to_vec(),
-            right: right.to_vec(),
-        },
-    }
-}
 
 /// Consume the net + render into stereo `Vec`s. `spec` is left untouched so
 /// the caller can still use it for the downstream process + encode stages.
@@ -308,10 +245,7 @@ fn run_to_file(
     g: GraphExport,
     path: PathBuf,
     on_progress: &(dyn Fn(Phase, f32) + Send + Sync),
-    cancel: &Arc<AtomicBool>,
 ) -> Result<Written> {
-    check_cancel(cancel)?;
-
     let GraphExport { net, spec } = g;
     let format = spec.resolve_format(&path)?;
     let target_rate = spec.output_sample_rate();
@@ -322,7 +256,6 @@ fn run_to_file(
         normalize: spec.output.normalize,
         dither: spec.output.dither,
         bit_depth: spec.output.bit_depth,
-        channels: spec.output.channels,
         resample_quality: spec.output.resample_quality,
     };
 
@@ -337,7 +270,7 @@ fn run_to_file(
     // A buffering export writes at the resampled rate; a streaming export can't
     // resample, so it writes at the source rate. `target_rate` already resolves
     // to source when no resample was requested, so it's correct for both.
-    let mut encoder = encode::sink::open_stream_encoder(
+    let encoder = encode::sink::open_stream_encoder(
         &path,
         format,
         target_rate,
@@ -346,6 +279,7 @@ fn run_to_file(
         spec.output.flac,
         spec.output.ogg,
     )?;
+    let encoder_sink = EncoderOut::new(encoder);
 
     let timeline = spec.build_timeline();
     let request = RenderRequest {
@@ -359,50 +293,23 @@ fn run_to_file(
     let mut progress =
         ProgressEmitter::new(on_progress, Phase::Render, total_samples, spec.sample_rate);
 
-    // Both paths drive ONE render loop into an `AudioOut`. The sink stack is
-    // the only difference:
-    //   streaming → master per block in the closure, encode.
-    //   buffered  → collect raw in a `BufferingOut`; it runs the whole-signal
-    //               pass + the same per-block master at finalize, then feeds the
-    //               interleaved result into the bare encoding sink below.
-    // The sink defers its encoder error to finalize (the AudioOut contract).
-    let (render_result, sink_result) = {
-        let encoder_ref = &mut *encoder;
-
-        if buffered {
-            // Bare encoding sink: `BufferingOut` has already mastered, so this
-            // just encodes the finished stereo frames as a Chunk.
-            let bit_depth = spec.output.bit_depth;
-            let channels = spec.output.channels;
-            let inner = StreamOut::new(move |l: &[f32], r: &[f32]| {
-                let chunk = raw_chunk(l, r, channels, bit_depth);
-                encoder_ref
-                    .write_chunk(chunk)
-                    .map_err(|e| std::io::Error::other(e.to_string()))
-            });
-            let mut sink = BufferingOut::new(inner, mastering);
-            let render_result = render::render(request, &mut sink, &mut progress);
-            (render_result, sink.finalize())
-        } else {
-            let mut processor = StreamProcessor::new(StreamConfig {
-                dither: spec.output.dither,
-                bit_depth: spec.output.bit_depth,
-                channels: spec.output.channels,
-            });
-            let mut sink = StreamOut::new(|l: &[f32], r: &[f32]| {
-                let chunk = processor.process_chunk(l, r);
-                encoder_ref
-                    .write_chunk(chunk)
-                    .map_err(|e| std::io::Error::other(e.to_string()))
-            });
-            let render_result = render::render(request, &mut sink, &mut progress);
-            (render_result, sink.finalize())
-        }
+    // Both paths are `pump(NetSource, decorated_encoder_sink)`; the only
+    // difference is the decorator that wraps the encoder:
+    //   buffered  → `BufferingOut` collects, then masters (resample → normalize
+    //               → dither) the whole signal at finalize.
+    //   streaming → `DitherOut` dithers each block on its way through.
+    // Each decorator finalizes its encoder for us.
+    let sink_result = if buffered {
+        let mut sink = BufferingOut::new(encoder_sink, mastering);
+        render::render(request, &mut sink, &mut progress)?;
+        sink.finalize()
+    } else {
+        let mut sink = DitherOut::new(encoder_sink, spec.output.dither, spec.output.bit_depth);
+        render::render(request, &mut sink, &mut progress)?;
+        sink.finalize()
     };
     progress.finish();
-    render_result?;
     sink_result.map_err(Error::Io)?;
-    encoder.finalize()?;
 
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     Ok(Written { path, bytes })
@@ -411,7 +318,6 @@ fn run_to_file(
 fn run_to_buffers(
     g: GraphExport,
     on_progress: &(dyn Fn(Phase, f32) + Send + Sync),
-    _cancel: &Arc<AtomicBool>,
 ) -> Result<Rendered> {
     let GraphExport { net, spec } = g;
     let sample_rate = spec.sample_rate;
@@ -421,4 +327,73 @@ fn run_to_buffers(
         right,
         sample_rate,
     })
+}
+
+#[cfg(all(test, feature = "wav"))]
+mod tests {
+    use crate::{Export, Normalize};
+    use fundsp::prelude32::*;
+
+    /// A net emitting a constant stereo signal, so the rendered file is
+    /// deterministic and non-silent.
+    fn dc_net() -> tutti_core::dsp::Net {
+        let mut net = tutti_core::dsp::Net::new(0, 2);
+        let id = net.push(Box::new(dc((0.5, 0.5))));
+        net.pipe_output(id);
+        net
+    }
+
+    fn peak(path: &std::path::Path) -> f32 {
+        let reader = hound::WavReader::open(path).unwrap();
+        reader
+            .into_samples::<f32>()
+            .map(|s| s.unwrap().abs())
+            .fold(0.0f32, f32::max)
+    }
+
+    /// The streaming branch of `run_to_file` (no resample/normalize) writes a
+    /// valid, non-silent WAV through the `DitherOut → EncoderOut` sink stack.
+    #[test]
+    fn graph_to_file_streaming_path_writes_valid_wav() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stream.wav");
+        Export::graph(dc_net(), 44100.0)
+            .duration_seconds(0.05)
+            .bit_depth(crate::BitDepth::Float32)
+            .to_file(&path)
+            .run()
+            .unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert!(peak(&path) > 0.4, "constant 0.5 signal should survive");
+    }
+
+    /// The buffered branch (normalize forces whole-signal buffering) writes a
+    /// valid WAV through the `BufferingOut → EncoderOut` sink stack, and the
+    /// peak normalization applies gain (a 0.5 constant is pushed up toward 0
+    /// dBFS). The exact landing point is set by the true-peak meter's
+    /// oversampling and is not asserted here — only that the buffered path ran
+    /// its whole-signal pass and lifted the level.
+    #[test]
+    fn graph_to_file_buffered_path_normalizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("buffered.wav");
+        Export::graph(dc_net(), 44100.0)
+            .duration_seconds(0.05)
+            .bit_depth(crate::BitDepth::Float32)
+            .normalize(Normalize::peak(0.0)) // 0 dBFS
+            .to_file(&path)
+            .run()
+            .unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        // 0.5 constant normalized toward 0 dBFS is pushed up, not down.
+        let p = peak(&path);
+        assert!(
+            p > 0.7 && p <= 1.0,
+            "peak-normalized output should be lifted toward full scale, got {p}"
+        );
+    }
 }

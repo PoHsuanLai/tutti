@@ -15,9 +15,9 @@ pub(crate) mod plan;
 pub(crate) mod sink;
 
 pub(crate) use plan::RenderPlan;
-pub(crate) use sink::{BlockCursor, RenderOut, StreamOut};
+pub(crate) use sink::{BlockCursor, RenderOut};
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) use sink::{BufferingOut, Mastering};
+pub(crate) use sink::{BufferingOut, EncoderOut};
 
 use crate::progress::ProgressEmitter;
 use crate::Result;

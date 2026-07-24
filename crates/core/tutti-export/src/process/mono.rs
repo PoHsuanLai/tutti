@@ -1,6 +1,10 @@
 //! Stereo → mono downmix.
+//!
+//! Encoders that emit a mono file fold each `[f32; 2]` frame with this; every
+//! stage upstream stays stereo, so the fold happens once, at the encoder edge.
 
-/// Convert stereo to mono by averaging channels.
-pub(crate) fn stereo_to_mono(left: &[f32], right: &[f32]) -> Vec<f32> {
-    left.iter().zip(right).map(|(l, r)| (l + r) * 0.5).collect()
+/// Average a stereo frame to a single mono sample.
+#[inline]
+pub(crate) fn fold_frame([l, r]: [f32; 2]) -> f32 {
+    (l + r) * 0.5
 }

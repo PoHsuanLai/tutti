@@ -21,13 +21,12 @@
 //!     .run()?;
 //! ```
 //!
-//! ## Three execution modes
+//! ## Two execution modes
 //!
 //! Every terminal returns a [`Run<T>`]. Pick one of:
 //!
 //! - [`Run::run`] — block this thread.
-//! - [`Run::run_with`] — block this thread with a `Fn(Phase, f32)` callback.
-//! - [`Run::spawn`] — run on a worker thread; poll/wait via [`Handle`].
+//! - [`Run::spawn`] — run on a worker thread; poll via [`Handle`].
 
 mod error;
 pub use error::{Error, Result};
@@ -36,16 +35,8 @@ mod progress;
 pub use progress::Phase;
 
 mod options;
-pub use options::{
-    AudioFormat, BitDepth, BroadcastWavMetadata, Dither, Flac, NoiseShapeOrder, Normalize, Ogg,
-    Output,
-};
+pub use options::{AudioFormat, BitDepth, Dither, Flac, Normalize, Ogg};
 pub use tutti_types::ChannelLayout;
-
-#[cfg(feature = "midi")]
-mod midi;
-#[cfg(feature = "midi")]
-pub use midi::MidiTrack;
 
 mod run;
 pub use run::{Handle, Rendered, Run, State, Written};
@@ -53,7 +44,11 @@ pub use run::{Handle, Rendered, Run, State, Written};
 mod buffer;
 mod graph;
 pub use buffer::BufferExport;
-pub use graph::{GraphExport, LoopRange};
+pub use graph::GraphExport;
+// The loop-range type is the engine's one validated `LoopRange` (a beat span
+// with `end > start` checked once), re-exported so `GraphExport::loop_range`
+// callers can name it without depending on `tutti_core` directly.
+pub use tutti_core::transport::LoopRange;
 
 pub(crate) mod encode;
 pub(crate) mod process;

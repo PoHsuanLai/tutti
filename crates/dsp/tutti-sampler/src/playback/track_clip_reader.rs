@@ -849,6 +849,19 @@ impl TrackClipReaderUnit {
         Self::from_parts(rx, Some(transport), None)
     }
 
+    /// Re-point the reader at a new transport. The offline region render calls
+    /// this after [`isolate`](AudioUnit::isolate) has emptied the reader, so it
+    /// only needs to seat the render's transport; any clips inserted afterward
+    /// (via [`insert_clip`](Self::insert_clip)) are built against it. Mirrors
+    /// [`VoiceNode::replace_transport`] so both transport-aware nodes rebind the
+    /// same way in the render's isolation pass.
+    pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
+        for slot in &mut self.clips {
+            slot.voice.replace_transport(transport.clone());
+        }
+        self.transport = Some(transport);
+    }
+
     /// Insert a clip slot directly, bypassing the command channel.
     ///
     /// The live path adds clips by sending `ClipCommand::AddVoice` and letting the
@@ -1118,6 +1131,24 @@ impl AudioUnit for TrackClipReaderUnit {
             slot.voice.source.as_clip_reader_mut().reset();
             slot.stretch.reset();
         }
+    }
+
+    /// Sever the live command channel and clear live clip state so an offline
+    /// clone can be ticked on a worker thread without stealing commands from —
+    /// or sharing clips with — the live reader. Leaves the unit *born empty and
+    /// channel-less* (the [`detached`](Self::detached) state), minus the
+    /// transport: re-pointing at the render's offline transport is the caller's
+    /// separate data-carrying step (via [`replace_transport`](Self::replace_transport)),
+    /// per the `isolate` contract.
+    fn isolate(&mut self) {
+        // A `bounded(0)` receiver whose sender is dropped can never deliver, so
+        // the worker's drain sees nothing and steals nothing from the live rx.
+        let (_tx, rx) = bounded(0);
+        self.rx = rx;
+        self.clips.clear();
+        // The offline render rebuilds clips from ECS and never forwards
+        // streaming loop ops, so it needs no butler handle.
+        self.butler = None;
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {

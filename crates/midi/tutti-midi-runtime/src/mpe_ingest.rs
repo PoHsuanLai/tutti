@@ -26,7 +26,7 @@
 use tutti_midi_types::midi2::channel_voice2::ChannelVoice2;
 use tutti_midi_types::midi2::{Channeled, UmpMessage};
 use tutti_midi_types::mpe::{
-    MpeChannelVoiceMap, MpeMode, NoteRotationAllocator, ZoneInfo,
+    MpeChannelVoiceMap, MpeMode, MpeZoneConfig, NoteRotationAllocator, ZoneInfo,
 };
 use tutti_midi_types::ump::MidiEvent;
 
@@ -87,6 +87,15 @@ impl MpeIngest {
     /// `None` means "drop this event" (e.g. a member-channel message with no note
     /// currently held on that channel).
     pub fn translate(&mut self, event: &MidiEvent) -> Option<MidiEvent> {
+        // An MPE Configuration Message (RPN 0x00/0x06, M2-104 §7.4.7) reconfigures
+        // the zone from the wire — handled in *any* mode, including Disabled (a
+        // controller declaring its zone should enable MPE). Absorbed (returns
+        // `None`): it's configuration, not a musical event.
+        if let Some((master, members)) = MpeZoneConfig::from_mcm(event) {
+            self.reconfigure_from_mcm(master, members);
+            return None;
+        }
+
         if matches!(self.mode, MpeMode::Disabled) {
             return Some(*event);
         }
@@ -100,6 +109,37 @@ impl MpeIngest {
             return self.translate_rotation(channel, event, cv2);
         }
         self.translate_zoned(event, cv2)
+    }
+
+    /// Apply an MPE Configuration Message: a master channel of 0 selects the lower
+    /// zone, 15 the upper zone (RP-053 / M2-104). `members == 0` disables that
+    /// zone. Existing zones on the *other* side are preserved (dual-zone setups
+    /// configure each zone with its own MCM).
+    fn reconfigure_from_mcm(&mut self, master: u8, members: u8) {
+        // Snapshot the current per-side configs so one MCM only touches its side.
+        let (mut lower, mut upper) = match &self.mode {
+            MpeMode::LowerZone(l) => (Some(*l), None),
+            MpeMode::UpperZone(u) => (None, Some(*u)),
+            MpeMode::DualZone { lower, upper } => (Some(*lower), Some(*upper)),
+            MpeMode::Disabled | MpeMode::SingleChannelRotation { .. } => (None, None),
+        };
+
+        // Master channel 0 = lower zone, 15 = upper zone (the spec's fixed master
+        // assignment). `members == 0` disables that side.
+        if master == 0 {
+            lower = (members > 0).then(|| MpeZoneConfig::lower(members));
+        } else if master == 15 {
+            upper = (members > 0).then(|| MpeZoneConfig::upper(members));
+        }
+
+        let mode = match (lower, upper) {
+            (Some(l), Some(u)) => MpeMode::DualZone { lower: l, upper: u },
+            (Some(l), None) => MpeMode::LowerZone(l),
+            (None, Some(u)) => MpeMode::UpperZone(u),
+            (None, None) => MpeMode::Disabled,
+        };
+        // Rebuild the voice maps for the new mode (also clears stale bindings).
+        *self = Self::new(mode);
     }
 
     /// Zone (lower/upper/dual) mode: member-channel channel-messages fold onto the
@@ -390,5 +430,39 @@ mod tests {
         assert!(ingest.translate(&note_on(5, 60, 100)).is_some());
         // Off-channel note is ignored (this mode owns channel 5).
         assert!(ingest.translate(&note_on(7, 64, 100)).is_none());
+    }
+
+    #[test]
+    fn mcm_from_the_wire_configures_the_lower_zone() {
+        // Start disabled; an MCM on the master channel (0) declaring 7 members
+        // must enable the lower zone from the wire (M2-104 §7.4.7).
+        let mut ingest = MpeIngest::new(MpeMode::Disabled);
+        let mcm = MpeZoneConfig::lower(7).to_mcm();
+
+        // The MCM is absorbed (configuration, not a musical event).
+        assert!(ingest.translate(&mcm).is_none());
+        assert!(matches!(ingest.mode(), MpeMode::LowerZone(_)));
+
+        // Now a member-channel bend folds to per-note, proving the zone is live.
+        ingest.translate(&note_on(1, 60, 100));
+        let out = ingest.translate(&pitch_bend14(1, 16383)).expect("emits");
+        assert_cv2!(out, ChannelVoice2::PerNotePitchBend(m) if u8::from(m.note_number()) == 60);
+    }
+
+    #[test]
+    fn mcm_with_zero_members_disables_the_zone() {
+        let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(7)));
+        // A raw MCM on master channel 0 with member_count == 0 disables the lower
+        // zone. (`MpeZoneConfig::lower` clamps to >= 1, so the disabling value can
+        // only come off the wire — build it directly.)
+        let disable = MidiEvent::registered_controller(
+            0,
+            0, // lower-zone master channel
+            tutti_midi_types::ump::RPN_BANK_MPE,
+            tutti_midi_types::ump::RPN_INDEX_MCM,
+            0, // 0 members → disable
+        );
+        assert!(ingest.translate(&disable).is_none());
+        assert!(matches!(ingest.mode(), MpeMode::Disabled));
     }
 }

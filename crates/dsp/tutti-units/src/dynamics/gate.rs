@@ -4,7 +4,9 @@ use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame};
 
 use super::envelope::GateEnvelopeFollower;
 use super::params::AttackRelease;
-use super::utils::{amplitude_to_db, compute_gate_gain};
+use super::utils::{
+    amplitude_to_db, compute_gate_gain, sidechain_level_buffer, sidechain_level_slice,
+};
 use tutti_core::{Db, Param, Seconds};
 
 /// Shared gate state used by the per-sample gain computation.
@@ -231,14 +233,6 @@ impl Gate {
             .store(Seconds(seconds.into().get().max(0.0)));
     }
 
-    #[inline]
-    fn sidechain_level(input: &[f32], ch: usize) -> f32 {
-        let end = (2 * ch).min(input.len());
-        input[ch..end]
-            .iter()
-            .map(|s| s.abs())
-            .fold(0.0f32, f32::max)
-    }
 }
 
 impl AudioUnit for Gate {
@@ -266,7 +260,7 @@ impl AudioUnit for Gate {
         let threshold = self.threshold_port().map(|p| input[p]);
         let gain = self
             .core
-            .compute_gain_with_threshold(Self::sidechain_level(input, ch), threshold);
+            .compute_gain_with_threshold(sidechain_level_slice(input, ch), threshold);
         for c in 0..ch {
             output[c] = input[c] * gain;
         }
@@ -275,19 +269,10 @@ impl AudioUnit for Gate {
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         self.core.update_coefficients();
         let ch = self.channels as usize;
-        let in_channels = input.channels();
         let threshold_port = self.threshold_port();
 
         for i in 0..size {
-            let mut sc = 0.0f32;
-            for c in 0..ch {
-                let src = if ch + c < in_channels {
-                    input.at_f32(ch + c, i)
-                } else {
-                    input.at_f32(c, i)
-                };
-                sc = sc.max(src.abs());
-            }
+            let sc = sidechain_level_buffer(input, ch, i);
             let threshold = threshold_port.map(|p| input.at_f32(p, i));
             let gain = self.core.compute_gain_with_threshold(sc, threshold);
             for c in 0..ch {

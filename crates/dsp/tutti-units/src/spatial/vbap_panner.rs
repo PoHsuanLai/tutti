@@ -86,6 +86,13 @@ impl SpatialPanner {
         self.spread = spread.clamp(0.0, 1.0);
     }
 
+    /// Retune the position smoothers so the 50ms de-zipper ramp holds at any
+    /// sample rate (the smoothers are built at 48kHz in `new_with_layout`).
+    pub(crate) fn set_sample_rate(&mut self, sample_rate: SampleRate) {
+        self.azimuth_smoother.set_sample_rate(sample_rate);
+        self.elevation_smoother.set_sample_rate(sample_rate);
+    }
+
     /// Apply spread to `gains[..count]` in place. Normalises the result
     /// so the sum of squares stays 1.0.
     #[inline]

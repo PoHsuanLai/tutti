@@ -297,12 +297,16 @@ impl AudioUnit for LfoNode {
 
         let phase = match self.mode {
             LfoMode::FreeRunning => {
+                // Evaluate the current phase, then advance — must match the
+                // ordering in `process` and `route` so one sample through
+                // `tick` equals the same sample through `process`.
                 let freq = self.frequency.load().get();
+                let phase = (self.phase + phase_offset) % 1.0;
                 self.phase += freq / self.sample_rate as f32;
                 if self.phase >= 1.0 {
                     self.phase -= 1.0;
                 }
-                (self.phase + phase_offset) % 1.0
+                phase
             }
             LfoMode::BeatSynced => {
                 let beat = beat_from_ports(input[0], input[1]) as f32;

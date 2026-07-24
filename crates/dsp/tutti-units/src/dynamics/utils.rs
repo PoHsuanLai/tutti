@@ -1,4 +1,37 @@
-use tutti_core::{Db, Linear, Ratio, SampleRate, Seconds};
+use tutti_core::{BufferRef, Db, Linear, Ratio, SampleRate, Seconds};
+
+/// Max-abs sidechain detector level for the `tick` (single-sample slice) path.
+///
+/// `input[0..ch]` are audio channels, `input[ch..2*ch]` sidechain channels.
+/// A sidechain channel the caller didn't supply falls back to its paired audio
+/// channel, so an unconnected sidechain detects the audio itself — matching
+/// [`sidechain_level_buffer`] rather than reading silence.
+#[inline]
+pub(crate) fn sidechain_level_slice(input: &[f32], ch: usize) -> f32 {
+    let mut level = 0.0f32;
+    for c in 0..ch {
+        let src = input.get(ch + c).copied().unwrap_or(input[c]);
+        level = level.max(src.abs());
+    }
+    level
+}
+
+/// Max-abs sidechain detector level for one sample `i` of the `process`
+/// (block) path. Same audio-fallback rule as [`sidechain_level_slice`].
+#[inline]
+pub(crate) fn sidechain_level_buffer(input: &BufferRef, ch: usize, i: usize) -> f32 {
+    let in_channels = input.channels();
+    let mut level = 0.0f32;
+    for c in 0..ch {
+        let src = if ch + c < in_channels {
+            input.at_f32(ch + c, i)
+        } else {
+            input.at_f32(c, i)
+        };
+        level = level.max(src.abs());
+    }
+    level
+}
 
 #[inline]
 pub(crate) fn amplitude_to_db(amp: impl Into<Linear>) -> Db {

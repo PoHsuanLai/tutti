@@ -7,6 +7,12 @@ use tutti_core::{
 
 use tutti_core::{Db, Hz, Param, Ratio};
 
+/// Below these deltas a freq/Q/gain change doesn't warrant recomputing the
+/// coefficients — the change guard shared by the atomic and modulation paths.
+const FREQ_EPS: f32 = 0.01;
+const Q_EPS: f32 = 0.0001;
+const GAIN_EPS: f32 = 0.01;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SvfType {
     #[default]
@@ -81,6 +87,7 @@ pub(super) fn compute_svf_coeffs(
 /// State is split into [`SvfCoefficients`] (parameter-derived; shared across
 /// channels in stereo / multi-channel variants) and [`SvfIntegrator`] (the
 /// per-channel z-1 / z-2 delay registers).
+#[derive(Clone)]
 struct SvfCoefficients<F: Real> {
     a1: F,
     a2: F,
@@ -123,22 +130,6 @@ impl<F: Real> SvfCoefficients<F> {
         self.last_freq = freq;
         self.last_q = q;
         self.last_gain_db = gain_db;
-    }
-}
-
-impl<F: Real> Clone for SvfCoefficients<F> {
-    fn clone(&self) -> Self {
-        Self {
-            a1: self.a1,
-            a2: self.a2,
-            a3: self.a3,
-            m0: self.m0,
-            m1: self.m1,
-            m2: self.m2,
-            last_freq: self.last_freq,
-            last_q: self.last_q,
-            last_gain_db: self.last_gain_db,
-        }
     }
 }
 
@@ -252,9 +243,9 @@ impl<F: Real> SvfFilterNode<F> {
         let freq = self.frequency.load().get();
         let q = self.q.load().get();
         let gain_db = self.gain_db.load().get();
-        if (freq - self.coeffs.last_freq).abs() > 0.01
-            || (q - self.coeffs.last_q).abs() > 0.0001
-            || (gain_db - self.coeffs.last_gain_db).abs() > 0.01
+        if (freq - self.coeffs.last_freq).abs() > FREQ_EPS
+            || (q - self.coeffs.last_q).abs() > Q_EPS
+            || (gain_db - self.coeffs.last_gain_db).abs() > GAIN_EPS
         {
             self.update_coefficients(freq, q, gain_db);
         }
@@ -492,24 +483,19 @@ impl<F: Real> StereoSvfFilterNode<F> {
     fn maybe_update(&mut self) {
         let freq = self.frequency.load().0;
         let q = self.q.load().0;
-        let gain_db = self.gain_db.load().0;
-        if (freq - self.coeffs.last_freq).abs() > 0.01
-            || (q - self.coeffs.last_q).abs() > 0.0001
-            || (gain_db - self.coeffs.last_gain_db).abs() > 0.01
-        {
-            self.update_coefficients(freq, q, gain_db);
-        }
+        self.maybe_update_modulated(freq, q);
     }
 
-    /// Recompute coefficients from per-sample effective freq/Q (audio-rate
-    /// modulation path). Reuses the same `maybe_update`-style change guard so a
-    /// held modulation value doesn't recompute every sample needlessly.
+    /// Recompute coefficients only when freq/Q/gain moved past a small epsilon,
+    /// so a held value doesn't recompute every sample. Shared by the atomic
+    /// ([`Self::maybe_update`]) and audio-rate modulation paths; gain always
+    /// comes from its atomic.
     #[inline]
     fn maybe_update_modulated(&mut self, freq: f32, q: f32) {
         let gain_db = self.gain_db.load().0;
-        if (freq - self.coeffs.last_freq).abs() > 0.01
-            || (q - self.coeffs.last_q).abs() > 0.0001
-            || (gain_db - self.coeffs.last_gain_db).abs() > 0.01
+        if (freq - self.coeffs.last_freq).abs() > FREQ_EPS
+            || (q - self.coeffs.last_q).abs() > Q_EPS
+            || (gain_db - self.coeffs.last_gain_db).abs() > GAIN_EPS
         {
             self.update_coefficients(freq, q, gain_db);
         }

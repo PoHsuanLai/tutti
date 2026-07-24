@@ -49,6 +49,11 @@
 //! # Ok::<(), tutti_vst2_host::Vst2Error>(())
 //! ```
 
+// The VST2 FFI layer is our vendored fork of vst-rs (`vst-tutti`), which adds
+// the host-side audioMaster callbacks upstream swallowed. Alias it to `vst` at
+// the crate root so every `vst::` path in the submodules resolves unchanged.
+extern crate vst_tutti as vst;
+
 pub mod error;
 pub mod types;
 

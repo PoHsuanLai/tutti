@@ -99,6 +99,7 @@ impl Vst2Instance {
             midi_out_tx,
             Arc::clone(&time_info),
             block_size,
+            sample_rate,
         )));
 
         let mut loader = PluginLoader::load(&resolved, Arc::clone(&host)).map_err(|e| {

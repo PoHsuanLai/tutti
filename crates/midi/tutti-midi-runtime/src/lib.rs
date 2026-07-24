@@ -17,8 +17,9 @@
 //!   rides the *same* [`MidiMailbox`] mailbox as MIDI in: the producer holds a
 //!   [`MidiSender`] (lock-free `&self` push via [`tutti_midi_types::MidiOut`]),
 //!   an off-RT pump drains the paired [`MidiReceiver`] to a hardware-out port
-//! - [`MpeProcessor`] / [`PerNoteExpression`] — MPE state machine mapping
-//!   channel voice messages to per-note expression
+//! - [`MpeIngest`] — input-edge transform rewriting classic-MPE channel-spread
+//!   into native MIDI-2 per-note messages (per M2-104, MPE is an ingestion
+//!   concern; synth voices track per-note expression themselves)
 
 pub use tutti_midi_types;
 
@@ -36,8 +37,6 @@ pub mod snapshot;
 pub mod snapshot_reader;
 pub mod sysex_reassembler;
 
-pub mod mpe;
-
 pub use capability_inquiry::{CiInitiator, CiProperty, CiResponder, DiscoveredCiDevice};
 pub use clip_player::{MidiClipSource, TimedClipEvent};
 pub use clock_master::ClockMaster;
@@ -53,5 +52,8 @@ pub use snapshot::{MidiSnapshot, TimedMidiEvent};
 pub use snapshot_reader::MidiSnapshotReader;
 pub use sysex_reassembler::Sysex7Reassembler;
 
-pub use mpe::{MpeMode, MpeProcessor, MpeZone, MpeZoneConfig, PerNoteExpression};
+// MPE mode/zone value types live in tutti-midi-types; re-exported here for
+// source compatibility (the runtime's own MPE state machine is gone — MPE is now
+// an input-edge transform, `MpeIngest`).
 pub use mpe_ingest::MpeIngest;
+pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};

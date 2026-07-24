@@ -68,36 +68,3 @@ fn outbound_mailbox_push_is_allocation_free() {
         }
     });
 }
-
-/// The per-note expression store (`AtomicPerNoteMap`) is touched on the audio
-/// thread on every note-on/off and every expression update. Claiming, updating,
-/// reading, and releasing a slot must all be allocation-free.
-#[test]
-fn per_note_expression_hot_path_is_allocation_free() {
-    use tutti_midi_runtime::PerNoteExpression;
-    use tutti_midi_types::NoteId;
-
-    let expr = PerNoteExpression::new();
-    // Warm up: claim + release once outside the no-alloc scope so any lazy
-    // init (there is none, but be safe) happens first.
-    let warm = NoteId::from_channel_note(0, 60);
-    expr.note_on(warm);
-    expr.note_off(warm);
-
-    assert_no_alloc::assert_no_alloc(|| {
-        for round in 0..10_000u32 {
-            // Spread across channels + notes so many distinct ids are claimed
-            // and released, exercising the probe/claim/free paths.
-            let ch = (round % 15) as u8 + 1;
-            let note = (round % 60) as u8 + 24;
-            let id = NoteId::from_channel_note(ch, note);
-            expr.note_on(id);
-            expr.set_pitch_bend(id, 0.5);
-            expr.set_pressure(id, 0.25);
-            expr.set_slide(id, 0.75);
-            let _ = expr.get_pitch_bend(id);
-            let _ = expr.get_slide(id);
-            expr.note_off(id);
-        }
-    });
-}

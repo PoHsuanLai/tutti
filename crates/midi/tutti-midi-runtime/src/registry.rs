@@ -19,15 +19,12 @@
 
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use crossbeam_queue::ArrayQueue;
 use dashmap::DashMap;
-use parking_lot::Mutex;
 
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
 
-use crate::mpe::{MpeProcessor, PerNoteExpression};
 use crate::snapshot::MidiSnapshot;
 
 const EVENTS_PER_UNIT: usize = 256;
@@ -208,11 +205,9 @@ impl tutti_midi_types::MidiIn for MidiReceiver {
 /// through a single object — for example, to feed hardware MIDI input
 /// through a routing table that targets nodes by id.
 ///
-/// The `tutti` engine wires one of these as its default audio-thread
-/// dispatch target, exposed as `engine.midi`. Standalone consumers of
-/// this crate can pick any [`tutti_midi_types::MidiOut`] impl instead —
-/// a single [`MidiSender`], a custom routing struct, anything with a
-/// `queue(MidiUnitId, &[MidiEvent])` method.
+/// It is a pure router — a `DashMap<MidiUnitId, MidiSender>` and nothing more.
+/// (MPE ingestion is an *input-edge* concern — [`MpeIngest`](crate::MpeIngest)
+/// in [`MidiPreBlock`](crate::MidiPreBlock) — not the bus's job.)
 ///
 /// Delivery is *addressed only*: this bus feeds units that poll their inbox.
 /// Messages destined for external peer devices go to the hardware-out mailbox
@@ -226,27 +221,12 @@ impl tutti_midi_types::MidiIn for MidiReceiver {
 #[derive(Clone, Default)]
 pub struct MidiBus {
     senders: Arc<DashMap<MidiUnitId, MidiSender>>,
-    /// Optional MPE processor: every event passing through `queue` is also fed
-    /// to this processor before delivery, populating the per-note
-    /// expression atomics that voices read on the audio thread.
-    /// `None` = MPE disabled (the default).
-    ///
-    /// The `Mutex` is taken with `try_lock` on the audio-thread feed path
-    /// (see [`feed_mpe`](MidiBus::feed_mpe)) so the RT thread never blocks on
-    /// it; the only other locker is the off-RT `process`-mutation itself.
-    mpe: Arc<ArcSwap<Option<Arc<Mutex<MpeProcessor>>>>>,
-    /// The installed processor's `PerNoteExpression`, published separately so
-    /// [`mpe_expression`](MidiBus::mpe_expression) reads it with a single
-    /// atomic load — without locking the processor (which the audio thread
-    /// may be holding). `None` = MPE disabled.
-    mpe_expression: Arc<ArcSwap<Option<Arc<PerNoteExpression>>>>,
 }
 
 impl std::fmt::Debug for MidiBus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MidiBus")
             .field("subscribers", &self.senders.len())
-            .field("mpe_enabled", &self.mpe.load().is_some())
             .finish()
     }
 }
@@ -254,56 +234,6 @@ impl std::fmt::Debug for MidiBus {
 impl MidiBus {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Install an MPE processor. Every event going through `queue` will be fed
-    /// to the processor before being delivered to subscribers.
-    ///
-    /// Replaces any previously-installed processor. Returns the
-    /// processor's `Arc<PerNoteExpression>` so callers (typically
-    /// bevy-tutti's `mpe_setup_system`) can hand it to readers without
-    /// touching the bus again.
-    pub fn install_mpe(&self, processor: MpeProcessor) -> Arc<PerNoteExpression> {
-        let expression = processor.expression();
-        // Publish the expression separately *before* the processor, so any
-        // concurrent `mpe_expression()` reader never has to lock the processor.
-        self.mpe_expression
-            .store(Arc::new(Some(Arc::clone(&expression))));
-        self.mpe
-            .store(Arc::new(Some(Arc::new(Mutex::new(processor)))));
-        expression
-    }
-
-    /// Read-only access to the live `PerNoteExpression`, if MPE is installed.
-    /// Lock-free: a single atomic load + `Arc` clone. Does **not** lock the
-    /// processor (which the audio-thread feed may hold), so a UI-thread caller
-    /// can never stall the RT thread by reading the expression handle.
-    pub fn mpe_expression(&self) -> Option<Arc<PerNoteExpression>> {
-        self.mpe_expression.load().as_ref().as_ref().map(Arc::clone)
-    }
-
-    /// Uninstall the MPE processor. Subsequent events bypass the feed.
-    pub fn uninstall_mpe(&self) {
-        self.mpe.store(Arc::new(None));
-        self.mpe_expression.store(Arc::new(None));
-    }
-
-    /// If MPE is installed, feed an event to the processor.
-    ///
-    /// Uses `try_lock`: this runs on the audio thread (`MidiBus::queue` is the
-    /// engine's RT dispatch target), so it must never block. The only
-    /// competing locker is `process`-mutation itself; under the rare
-    /// contention window this skips the feed for one event rather than
-    /// stalling the RT thread — a dropped expression update is far cheaper
-    /// than an audio dropout, and the next event re-syncs the state.
-    /// No-op when no MPE processor is installed (the default).
-    #[inline]
-    fn feed_mpe(&self, event: &MidiEvent) {
-        if let Some(processor) = self.mpe.load().as_ref().as_ref() {
-            if let Some(mut guard) = processor.try_lock() {
-                guard.process(event);
-            }
-        }
     }
 
     /// Attach (or replace) the sender for a unit id.
@@ -318,11 +248,6 @@ impl MidiBus {
 
     /// Queue events for a subscribed unit. Unknown ids are silently dropped.
     pub fn queue(&self, unit_id: MidiUnitId, events: &[MidiEvent]) {
-        // Feed MPE first so the per-note state is current before
-        // voices receive the event and start producing audio.
-        for event in events {
-            self.feed_mpe(event);
-        }
         if let Some(sender) = self.senders.get(&unit_id) {
             sender.queue(events);
         }
@@ -492,111 +417,11 @@ mod tests {
     }
 
     #[test]
-    fn bus_mpe_feed_updates_per_note_expression() {
-        // Install MPE on the bus, queue a note-on + pitch-bend, verify
-        // the per-note expression atomic reflects the bend.
-        use crate::mpe::{MpeMode, MpeProcessor, MpeZoneConfig};
-        use tutti_midi_types::convert::midi1_pitch_bend_to_midi2;
-        use tutti_midi_types::NoteId;
-
+    fn bus_routes_to_subscribed_unit() {
+        // The bus is pure routing: an event queued for a subscribed unit lands
+        // in that unit's inbox. (MPE ingestion now lives at the input edge —
+        // `MpeIngest` in `MidiPreBlock` — not on the bus.)
         let bus = MidiBus::new();
-        let processor = MpeProcessor::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
-        let expression = bus.install_mpe(processor);
-
-        // Subscribe a unit so the bus has somewhere to deliver events.
-        let id = MidiUnitId::new(1);
-        let (sender, _receiver) = MidiMailbox::pair(id);
-        bus.insert(sender);
-
-        // Note on, channel 2 (a member channel of the lower zone).
-        let note_on = MidiEvent::note_on(
-            0,
-            2,
-            60,
-            tutti_midi_types::convert::midi1_velocity_to_midi2(100),
-        );
-        // Channel pitch-bend on channel 2 — under MPE classic mapping
-        // this routes to note 60.
-        let bend = MidiEvent::pitch_bend(0, 2, midi1_pitch_bend_to_midi2(16383));
-
-        bus.queue(id, &[note_on, bend]);
-
-        let n60 = NoteId::from_channel_note(2, 60);
-        let actual = expression.get_pitch_bend(n60);
-        assert!(
-            (actual - 1.0).abs() < 0.01,
-            "expected pitch_bend ≈ 1.0 after bend, got {actual}"
-        );
-        assert!(expression.is_active(n60), "note 60 should be active");
-    }
-
-    #[test]
-    fn bus_mpe_expression_readable_without_processor_lock() {
-        // mpe_expression() must read the published expression handle via the
-        // separate ArcSwap, NOT by locking the processor — so it stays
-        // readable even while the processor mutex is held (which on the audio
-        // thread it transiently is). We can't easily hold the RT lock from a
-        // test, but we can at least assert install publishes it and uninstall
-        // clears it, and that the returned handle is the same one install gave.
-        use crate::mpe::{MpeMode, MpeProcessor, MpeZoneConfig};
-
-        let bus = MidiBus::new();
-        assert!(bus.mpe_expression().is_none());
-
-        let processor = MpeProcessor::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
-        let installed = bus.install_mpe(processor);
-        let read_back = bus
-            .mpe_expression()
-            .expect("expression published on install");
-        assert!(
-            Arc::ptr_eq(&installed, &read_back),
-            "mpe_expression() must hand back the same handle install_mpe returned"
-        );
-
-        bus.uninstall_mpe();
-        assert!(
-            bus.mpe_expression().is_none(),
-            "uninstall clears the expression"
-        );
-    }
-
-    #[test]
-    fn bus_mpe_uninstall_stops_feed() {
-        use crate::mpe::{MpeMode, MpeProcessor, MpeZoneConfig};
-        use tutti_midi_types::NoteId;
-
-        let bus = MidiBus::new();
-        let processor = MpeProcessor::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
-        let expression = bus.install_mpe(processor);
-        bus.uninstall_mpe();
-
-        let id = MidiUnitId::new(1);
-        let (sender, _receiver) = MidiMailbox::pair(id);
-        bus.insert(sender);
-
-        // Without MPE installed, queueing a note-on shouldn't update
-        // the expression atomics.
-        let note_on = MidiEvent::note_on(
-            0,
-            2,
-            60,
-            tutti_midi_types::convert::midi1_velocity_to_midi2(100),
-        );
-        bus.queue(id, &[note_on]);
-
-        assert!(
-            !expression.is_active(NoteId::from_channel_note(2, 60)),
-            "note should not register after uninstall"
-        );
-    }
-
-    #[test]
-    fn bus_mpe_disabled_by_default_no_overhead() {
-        // No processor installed → `feed_mpe` is a single ArcSwap load
-        // and a None-check. Confirm the bus still routes events.
-        let bus = MidiBus::new();
-        assert!(bus.mpe_expression().is_none());
-
         let id = MidiUnitId::new(1);
         let (sender, receiver) = MidiMailbox::pair(id);
         bus.insert(sender);
@@ -610,5 +435,8 @@ mod tests {
         bus.queue(id, &[note_on]);
 
         assert!(receiver.has_events());
+
+        // An event for an unsubscribed unit is silently dropped.
+        bus.queue(MidiUnitId::new(999), &[note_on]);
     }
 }

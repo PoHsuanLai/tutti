@@ -162,7 +162,7 @@ pub use ecs::{
 pub use ecs::UmpOutRes;
 
 #[cfg(feature = "bevy")]
-pub use ecs::{MpeExpressionResource, MpeModeConfig, MpePlugin, MpeReceiver};
+pub use ecs::{MpeModeConfig, MpeReceiver};
 
 #[cfg(all(feature = "bevy", feature = "midi-hardware"))]
 pub use ecs::{

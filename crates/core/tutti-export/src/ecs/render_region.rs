@@ -108,12 +108,12 @@ impl Default for RegionRenderConfig {
 ///
 /// 2. **Re-point at offline data** — inherently external (needs the render's
 ///    transport / ECS clips), so it stays an explicit per-type step:
-///    - **Clip readers** ([`TrackClipReaderUnit`]) are *replaced wholesale* with
-///      a fresh [`TrackClipReaderUnit::detached`] — born empty and channel-less.
-///      The render's clips are rebuilt from ECS in the `Populate` step via
-///      [`TrackClipReaderUnit::insert_clip`]. (This also severs the reader's
-///      live command `Receiver`; it predates `isolate()` and can migrate onto
-///      it in a follow-up.)
+///    - **Clip readers** ([`TrackClipReaderUnit`]) are severed by the generic
+///      `isolate()` above — it drops the live command channel and clears the
+///      cloned clips, leaving the reader born empty and channel-less — and then
+///      just re-pointed at the offline transport here. The render's clips are
+///      rebuilt from ECS in the `Populate` step via
+///      [`TrackClipReaderUnit::insert_clip`].
 ///    - **Bare standalone voices** ([`VoiceNode`]) keep their cloned content
 ///      (their clone is already independent) and are just re-pointed at the
 ///      offline transport so they read the render's playhead, not the (undriven)
@@ -148,17 +148,14 @@ fn rebind_net_transport(
             continue;
         }
 
-        // 2. Type-specific offline rebind. Decide with a scoped borrow, then
-        //    act — `net.replace` needs `&mut net`, which can't coexist with the
-        //    `node_mut` borrow.
-        let is_reader = net.node_mut(id).as_any_mut().is::<TrackClipReaderUnit>();
-        if is_reader {
-            // Same 0-in/2-out arity, so `replace` is legal.
-            net.replace(
-                id,
-                Box::new(TrackClipReaderUnit::detached(transport.clone())),
-            );
-        } else if let Some(voice) = net.node_mut(id).as_any_mut().downcast_mut::<VoiceNode>() {
+        // 2. Type-specific transport re-point. `isolate()` already severed the
+        //    live inputs (the reader's command channel + clips); all that's left
+        //    is to aim each transport-aware unit at the render's offline
+        //    playhead. Clip readers and bare voices both carry a transport.
+        let node = net.node_mut(id);
+        if let Some(reader) = node.as_any_mut().downcast_mut::<TrackClipReaderUnit>() {
+            reader.replace_transport(transport.clone());
+        } else if let Some(voice) = node.as_any_mut().downcast_mut::<VoiceNode>() {
             voice.replace_transport(transport.clone());
         }
     }
@@ -791,7 +788,7 @@ mod tests {
             .as_ref()
             .expect("placement present");
         assert!(
-            !placement.transport.is_playing(),
+            !placement.transport.is_rolling(),
             "the bare voice node's play.placement clock must be rebound to the \
              (stopped) offline transport, not left on the live one"
         );
@@ -808,7 +805,7 @@ mod tests {
                  offline transport (else the offline render reads the live \
                  playhead and renders the correction wrong)"
             ),
-            VoiceSource::Disk(_) => panic!("expected a Ram source"),
+            other => panic!("expected a Ram source, got {other:?}"),
         }
     }
 

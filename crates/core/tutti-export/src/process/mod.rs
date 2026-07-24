@@ -12,10 +12,14 @@
 //!
 //! This split is why there's no "streaming mode" to pick: whether an export
 //! buffers is DERIVED from whether the requested mastering has a whole-signal
-//! step ([`needs_whole_signal`](crate::render::Mastering)), not from which
-//! terminal was called. Everything downstream of mastering is plain stereo
-//! `[f32; 2]` frames. Leaves are feature-gated to match the encoder features
-//! that consume them.
+//! step ([`needs_whole_signal`](Mastering)), not from which terminal was
+//! called. Everything downstream of mastering is plain stereo `[f32; 2]` frames.
+//!
+//! The whole module is gated on `any(wav, flac, aiff, ogg)` rather than a
+//! standalone `mastering` feature. Mastering exists only to feed an encoder — a
+//! build with no codec has no encoder to feed (and export does not compile
+//! without one), so a separate feature would be config nobody could
+//! meaningfully turn on. It gates with the codecs on purpose.
 
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 pub(crate) mod dither;

@@ -43,7 +43,11 @@ pub use run::{Handle, Rendered, Run, State, Written};
 mod buffer;
 mod graph;
 pub use buffer::BufferExport;
-pub use graph::{GraphExport, LoopRange};
+pub use graph::GraphExport;
+// The loop-range type is the engine's one validated `LoopRange` (a beat span
+// with `end > start` checked once), re-exported so `GraphExport::loop_range`
+// callers can name it without depending on `tutti_core` directly.
+pub use tutti_core::transport::LoopRange;
 
 pub(crate) mod encode;
 pub(crate) mod process;

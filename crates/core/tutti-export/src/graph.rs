@@ -21,11 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tutti_core::io::AudioOut;
-use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
-
-/// `(start_beat, end_beat)`. Convenience alias for offline-transport loop
-/// ranges; matches the tuple shape used by `tutti_core`.
-pub type LoopRange = (f64, f64);
+use tutti_core::transport::{LoopRange, OfflineTimeline, OfflineTimelineConfig};
 
 /// Everything except the net: the configuration surface of a graph export.
 /// Kept separate so the net can be consumed by the render stage without
@@ -72,7 +68,9 @@ impl Spec {
             start_beat: self.start_beat,
             tempo: self.tempo_bpm.into(),
             sample_rate: tutti_core::SampleRate(self.sample_rate),
-            loop_range: self.loop_range,
+            // The offline config still speaks the raw beat tuple; unwrap the
+            // validated `LoopRange` back into it at this one boundary.
+            loop_range: self.loop_range.map(|r| (r.start().get(), r.end().get())),
         }))
     }
 

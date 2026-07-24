@@ -196,7 +196,7 @@ impl AudioSlab {
 
     /// Reject channel indices past the slab's channel count.
     fn check_channel(&self, channel: usize) -> Result<()> {
-        if channel >= self.layout.channels {
+        if channel >= self.layout.channels.count() as usize {
             Err(oob("channel index out of bounds"))
         } else {
             Ok(())
@@ -283,7 +283,7 @@ mod tests {
 
     fn layout(channels: usize, samples: usize, format: SampleFormat) -> SlabLayout {
         SlabLayout {
-            channels,
+            channels: crate::protocol::ChannelLayout::from(channels),
             samples_per_channel: samples,
             format,
             inputs: Default::default(),

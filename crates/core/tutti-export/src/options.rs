@@ -4,6 +4,7 @@
 use crate::error::{Error, Result};
 use crate::process::ResampleQuality;
 use std::path::Path;
+use tutti_types::ChannelLayout;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
@@ -59,22 +60,6 @@ impl BitDepth {
             Self::Int16 => 16,
             Self::Int24 => 24,
             Self::Float32 => 32,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ChannelMode {
-    #[default]
-    Stereo,
-    Mono,
-}
-
-impl ChannelMode {
-    pub fn count(&self) -> u16 {
-        match self {
-            Self::Stereo => 2,
-            Self::Mono => 1,
         }
     }
 }
@@ -154,7 +139,7 @@ impl Default for Ogg {
 pub struct Output {
     pub format: Option<AudioFormat>,
     pub bit_depth: BitDepth,
-    pub channels: ChannelMode,
+    pub channels: ChannelLayout,
     pub target_sample_rate: Option<u32>,
     pub resample_quality: ResampleQuality,
     pub dither: Dither,
@@ -202,7 +187,7 @@ macro_rules! output_setters {
         }
         /// Stereo or mono-folded output.
         #[must_use]
-        pub fn channels(mut self, c: $crate::options::ChannelMode) -> Self {
+        pub fn channels(mut self, c: tutti_types::ChannelLayout) -> Self {
             self.$($out).+.channels = c;
             self
         }

@@ -35,7 +35,8 @@ mod progress;
 pub use progress::Phase;
 
 mod options;
-pub use options::{AudioFormat, BitDepth, ChannelMode, Dither, Flac, Normalize, Ogg};
+pub use options::{AudioFormat, BitDepth, Dither, Flac, Normalize, Ogg};
+pub use tutti_types::ChannelLayout;
 
 mod run;
 pub use run::{Handle, Rendered, Run, State, Written};

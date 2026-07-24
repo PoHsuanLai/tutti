@@ -3,6 +3,7 @@ use bevy_reflect::prelude::*;
 
 use crate::TuttiDriver;
 use tutti_core::ecs::AudioConfig;
+use tutti_core::ChannelLayout;
 
 /// Audio device state synced from Tutti every frame.
 #[derive(Resource, Debug, Clone, Reflect)]
@@ -11,7 +12,8 @@ pub struct AudioDeviceState {
     pub output_devices: Vec<String>,
     pub current_device: String,
     pub is_running: bool,
-    pub channels: usize,
+    #[reflect(ignore)]
+    pub channels: ChannelLayout,
 }
 
 impl Default for AudioDeviceState {
@@ -20,7 +22,7 @@ impl Default for AudioDeviceState {
             output_devices: Vec::new(),
             current_device: String::new(),
             is_running: false,
-            channels: 2,
+            channels: ChannelLayout::Stereo,
         }
     }
 }

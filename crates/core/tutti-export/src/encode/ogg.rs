@@ -2,7 +2,6 @@
 
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
-use crate::options::ChannelMode;
 use crate::process::fold_frame;
 use std::io::BufWriter;
 use std::num::{NonZeroU32, NonZeroU8};
@@ -14,13 +13,15 @@ pub(crate) fn encode(frames: &[[f32; 2]], request: &EncodeRequest<'_>) -> Result
     let quality = request.ogg.quality;
 
     // vorbis_rs wants planar per-channel slices; deinterleave (folding to mono
-    // when asked) into planes here.
-    let channels: Vec<Vec<f32>> = match request.channels {
-        ChannelMode::Stereo => vec![
+    // when asked) into planes here. A layout wider than stereo is written as
+    // stereo — the pipeline has only two source channels.
+    let channels: Vec<Vec<f32>> = if request.channels.count() == 1 {
+        vec![frames.iter().map(|&f| fold_frame(f)).collect()]
+    } else {
+        vec![
             frames.iter().map(|&[l, _]| l).collect(),
             frames.iter().map(|&[_, r]| r).collect(),
-        ],
-        ChannelMode::Mono => vec![frames.iter().map(|&f| fold_frame(f)).collect()],
+        ]
     };
 
     let num_channels = channels.len();
@@ -62,7 +63,7 @@ pub(crate) fn encode(frames: &[[f32; 2]], request: &EncodeRequest<'_>) -> Result
 
 #[cfg(test)]
 mod tests {
-    use crate::{AudioFormat, ChannelMode, Export};
+    use crate::{AudioFormat, ChannelLayout, Export};
 
     #[test]
     fn ogg_stereo_sine_produces_valid_ogg() {
@@ -99,7 +100,7 @@ mod tests {
         let path = dir.path().join("test_mono.ogg");
         Export::buffers(left, right, 44100.0)
             .format(AudioFormat::OggVorbis)
-            .channels(ChannelMode::Mono)
+            .channels(ChannelLayout::Mono)
             .to_file(&path)
             .run()
             .unwrap();

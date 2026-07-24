@@ -68,8 +68,8 @@ impl Vst2Instance {
 
             // VST2 is single-bus: one main input bus, one main output bus.
             let loaded = LoadedPlugin {
-                inputs: single_bus(host_meta.num_inputs),
-                outputs: single_bus(host_meta.num_outputs),
+                inputs: single_bus(host_meta.num_inputs.count() as usize),
+                outputs: single_bus(host_meta.num_outputs.count() as usize),
                 latency_samples: host_meta.latency_samples,
                 features,
             };

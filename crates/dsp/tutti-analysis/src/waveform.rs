@@ -1,5 +1,7 @@
 //! Multi-resolution min/max/RMS waveform summaries for visualization.
 
+use tutti_core::ChannelLayout;
+
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WaveformBlock {
@@ -100,12 +102,14 @@ fn compute_block(samples: &[f32]) -> WaveformBlock {
     }
 }
 
-/// Summarizes the first channel. For interleaved stereo, set `channels = 2`.
+/// Summarizes the first channel. For interleaved stereo, pass
+/// [`ChannelLayout::Stereo`].
 pub fn compute_summary(
     samples: &[f32],
-    channels: usize,
+    layout: ChannelLayout,
     samples_per_block: usize,
 ) -> WaveformSummary {
+    let channels = layout.count() as usize;
     if samples.is_empty() || samples_per_block == 0 || channels == 0 {
         return WaveformSummary::new(samples_per_block);
     }
@@ -153,13 +157,13 @@ impl MultiResolutionSummary {
     /// Each level is 2x coarser than the previous.
     pub fn from_samples(
         samples: &[f32],
-        channels: usize,
+        layout: ChannelLayout,
         base_samples_per_block: usize,
         num_levels: usize,
     ) -> Self {
         let mut levels = Vec::with_capacity(num_levels);
 
-        levels.push(compute_summary(samples, channels, base_samples_per_block));
+        levels.push(compute_summary(samples, layout, base_samples_per_block));
 
         for level in 1..num_levels {
             let prev = &levels[level - 1];
@@ -221,7 +225,7 @@ mod tests {
     fn test_compute_summary_mono() {
         let samples: Vec<f32> = (0..1000).map(|i| (i as f32 / 100.0).sin()).collect();
 
-        let summary = compute_summary(&samples, 1, 100);
+        let summary = compute_summary(&samples, ChannelLayout::Mono, 100);
 
         assert_eq!(summary.len(), 10);
         assert_eq!(summary.samples_per_block, 100);
@@ -237,7 +241,7 @@ mod tests {
     fn test_multi_resolution() {
         let samples: Vec<f32> = (0..1024).map(|i| (i as f32 / 50.0).sin()).collect();
 
-        let multi = MultiResolutionSummary::from_samples(&samples, 1, 64, 4);
+        let multi = MultiResolutionSummary::from_samples(&samples, ChannelLayout::Mono, 64, 4);
 
         assert_eq!(multi.levels.len(), 4);
         assert_eq!(multi.levels[0].samples_per_block, 64);
@@ -251,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_empty_samples() {
-        let summary = compute_summary(&[], 1, 100);
+        let summary = compute_summary(&[], ChannelLayout::Mono, 100);
         assert!(summary.is_empty());
     }
 

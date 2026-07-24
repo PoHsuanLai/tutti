@@ -6,7 +6,7 @@
 
 use crate::encode;
 use crate::error::Result;
-use crate::options::{output_setters, AudioFormat, ChannelMode, Output};
+use crate::options::{output_setters, AudioFormat, Output};
 use crate::process;
 use crate::progress::{Phase, PhaseGuard};
 use crate::run::{Rendered, Run, Written};
@@ -110,16 +110,15 @@ fn run_to_buffers(
     };
     // Deinterleave the mastered frames back to planes. Mono folds each frame
     // and duplicates it into both planes so a mono request still round-trips as
-    // a (left, right) pair.
-    let (left, right) = match b.output.channels {
-        ChannelMode::Stereo => (
+    // a (left, right) pair; wider-than-stereo is served as stereo.
+    let (left, right) = if b.output.channels.count() == 1 {
+        let mono: Vec<f32> = frames.iter().map(|&f| process::fold_frame(f)).collect();
+        (mono.clone(), mono)
+    } else {
+        (
             frames.iter().map(|&[l, _]| l).collect(),
             frames.iter().map(|&[_, r]| r).collect(),
-        ),
-        ChannelMode::Mono => {
-            let mono: Vec<f32> = frames.iter().map(|&f| process::fold_frame(f)).collect();
-            (mono.clone(), mono)
-        }
+        )
     };
     Ok(Rendered {
         left,

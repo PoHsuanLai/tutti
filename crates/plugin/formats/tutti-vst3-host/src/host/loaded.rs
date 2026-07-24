@@ -1090,20 +1090,24 @@ impl Vst3Loaded {
     /// Re-query bus counts from the component — `initialize` may have changed
     /// them (some plugins don't declare bus counts until after init).
     fn reconcile_bus_counts(&mut self) {
-        if let Some(ch) = self
+        if let Some(layout) = self
             .interfaces
             .component
             .audio_bus_channel_count(K_INPUT, 0)
         {
+            // `PluginInfo` carries raw usize channel counts; take the count at
+            // this boundary.
+            let ch = layout.count() as usize;
             if ch != self.info.num_inputs {
                 self.info = self.info.clone().audio_io(ch, self.info.num_outputs);
             }
         }
-        if let Some(ch) = self
+        if let Some(layout) = self
             .interfaces
             .component
             .audio_bus_channel_count(K_OUTPUT, 1)
         {
+            let ch = layout.count() as usize;
             if ch != self.info.num_outputs {
                 self.info = self.info.clone().audio_io(self.info.num_inputs, ch);
             }
@@ -1247,8 +1251,14 @@ fn build_plugin_info_raw(
         .get_factory_info()
         .map(|info| info.vendor)
         .unwrap_or_default();
-    let num_inputs = component.audio_bus_channel_count(K_INPUT, 0).unwrap_or(0);
-    let num_outputs = component.audio_bus_channel_count(K_OUTPUT, 1).unwrap_or(2);
+    // `PluginInfo` carries raw usize channel counts; take the count at this
+    // boundary (default 0 inputs / 2 outputs when the plugin reports no bus).
+    let num_inputs = component
+        .audio_bus_channel_count(K_INPUT, 0)
+        .map_or(0, |l| l.count() as usize);
+    let num_outputs = component
+        .audio_bus_channel_count(K_OUTPUT, 1)
+        .map_or(2, |l| l.count() as usize);
     let input_bus_channels = component.audio_bus_channels(K_INPUT);
     let output_bus_channels = component.audio_bus_channels(K_OUTPUT);
     let supports_f64 = processor

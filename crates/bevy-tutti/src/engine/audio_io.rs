@@ -8,7 +8,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::Arc;
 use tutti_core::engine::Engine;
 use tutti_core::metering::{meter_output, AudioTap, MasterMeter, MeteringContext};
-use tutti_core::ScopedNoDenormals;
+use tutti_core::{ChannelLayout, ScopedNoDenormals};
 
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::MidiPreBlock;
@@ -84,7 +84,7 @@ unsafe impl Send for StreamHandle {}
 /// Owns the CPAL stream and device configuration. Private to the engine.
 pub(crate) struct AudioEngine {
     sample_rate: f64,
-    channels: usize,
+    channels: ChannelLayout,
     is_running: bool,
     device_index: Option<usize>,
     _stream: Option<StreamHandle>,
@@ -97,7 +97,7 @@ impl AudioEngine {
 
         Ok(Self {
             sample_rate: f64::from(config.sample_rate().0),
-            channels: usize::from(config.channels()),
+            channels: ChannelLayout::from(usize::from(config.channels())),
             is_running: false,
             device_index,
             _stream: None,
@@ -144,7 +144,7 @@ impl AudioEngine {
         self.sample_rate
     }
 
-    pub(crate) fn channels(&self) -> usize {
+    pub(crate) fn channels(&self) -> ChannelLayout {
         self.channels
     }
 

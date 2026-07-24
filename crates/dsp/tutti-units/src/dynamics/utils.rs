@@ -1,4 +1,4 @@
-use tutti_core::{BufferRef, Db, Linear, Ratio, SampleRate, Seconds};
+use tutti_core::{BufferRef, ChannelLayout, Db, Linear, Ratio, SampleRate, Seconds};
 
 /// Max-abs sidechain detector level for the `tick` (single-sample slice) path.
 ///
@@ -20,7 +20,7 @@ pub(crate) fn sidechain_level_slice(input: &[f32], ch: usize) -> f32 {
 /// (block) path. Same audio-fallback rule as [`sidechain_level_slice`].
 #[inline]
 pub(crate) fn sidechain_level_buffer(input: &BufferRef, ch: usize, i: usize) -> f32 {
-    let in_channels = input.channels();
+    let in_channels = ChannelLayout::from(input.channels()).count() as usize;
     let mut level = 0.0f32;
     for c in 0..ch {
         let src = if ch + c < in_channels {

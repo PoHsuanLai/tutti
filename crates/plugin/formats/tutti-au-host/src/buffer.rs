@@ -7,7 +7,9 @@
 
 use std::os::raw::c_void;
 
-use crate::stream::ChannelLayout;
+use tutti_plugin_types::ChannelLayout;
+
+use crate::stream::AuBusLayout;
 use crate::types::*;
 
 /// Backing storage for an `AudioBufferList` plus its trailing `AudioBuffer`s.
@@ -16,12 +18,13 @@ use crate::types::*;
 /// correctly-sized byte slab and reinterpret it.
 pub(crate) struct RenderBufferList {
     storage: Box<[u8]>,
-    channels: usize,
+    channels: ChannelLayout,
 }
 
 impl RenderBufferList {
-    pub fn new(channels: usize) -> Self {
-        let bytes = std::mem::size_of::<u32>() + channels * std::mem::size_of::<AudioBuffer>();
+    pub fn new(channels: ChannelLayout) -> Self {
+        let bytes = std::mem::size_of::<u32>()
+            + channels.count() as usize * std::mem::size_of::<AudioBuffer>();
         Self {
             storage: vec![0u8; bytes].into_boxed_slice(),
             channels,
@@ -33,8 +36,8 @@ impl RenderBufferList {
     pub fn bind(&mut self, buffers: &mut [Vec<f32>], frames: u32) -> *mut AudioBufferList {
         let ptr = self.storage.as_mut_ptr() as *mut AudioBufferList;
         unsafe {
-            (*ptr).mNumberBuffers = self.channels as u32;
-            for (ch, buf) in buffers.iter_mut().take(self.channels).enumerate() {
+            (*ptr).mNumberBuffers = self.channels.count() as u32;
+            for (ch, buf) in buffers.iter_mut().take(self.channels.count() as usize).enumerate() {
                 let audio_buf = &mut *((&mut (*ptr).mBuffers[0] as *mut AudioBuffer).add(ch));
                 audio_buf.mNumberChannels = 1;
                 audio_buf.mDataByteSize = frames * std::mem::size_of::<f32>() as u32;
@@ -68,9 +71,13 @@ pub(crate) struct RenderScratch {
 }
 
 impl RenderScratch {
-    pub fn new(layout: ChannelLayout, block_size: u32) -> Self {
-        let out_ch = layout.outputs as usize;
-        let in_ch = layout.inputs as usize;
+    pub fn new(layout: AuBusLayout, block_size: u32) -> Self {
+        let out_ch = layout.outputs.count() as usize;
+        let in_ch = if layout.has_input {
+            layout.inputs.count() as usize
+        } else {
+            0
+        };
         let size = block_size as usize;
 
         let outputs = (0..out_ch).map(|_| vec![0.0f32; size]).collect();
@@ -79,7 +86,7 @@ impl RenderScratch {
         let inputs = (0..in_ch.max(out_ch)).map(|_| vec![0.0f32; size]).collect();
 
         Self {
-            list: RenderBufferList::new(out_ch),
+            list: RenderBufferList::new(layout.outputs),
             outputs,
             inputs,
             sample_position: 0.0,

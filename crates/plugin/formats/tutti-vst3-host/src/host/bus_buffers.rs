@@ -10,6 +10,8 @@ use std::marker::PhantomData;
 
 use smallvec::SmallVec;
 
+use tutti_types::ChannelLayout;
+
 use crate::types::Vst3Sample;
 
 /// Minimum pointer-table width per bus. A defensive over-read of a stereo
@@ -41,12 +43,16 @@ impl<T: Vst3Sample> DirectionScratch<T> {
     /// Resolve one direction from its per-bus channel layout.
     ///
     /// `bus_channels` is the live per-bus channel count vec (empty == a single
-    /// bus of `main_channels`); `main_channels` is bus 0's channel count, used
+    /// bus of `main_channels`); `main_channels` is bus 0's channel layout, used
     /// as the fallback and to size the per-bus scratch. `block_size` sizes the
     /// aux silence/sink block.
-    pub fn resolve(bus_channels: &[usize], main_channels: usize, block_size: usize) -> Self {
+    ///
+    /// `bus_channels` stays a raw `&[usize]` slice: it originates as per-bus
+    /// host counts (`PluginInfo::input_bus_channels` / the read-back
+    /// `SpeakerArrangement` popcounts), never as `ChannelLayout` values.
+    pub fn resolve(bus_channels: &[usize], main_channels: ChannelLayout, block_size: usize) -> Self {
         let total: usize = if bus_channels.is_empty() {
-            main_channels
+            main_channels.count() as usize
         } else {
             bus_channels.iter().sum()
         };
@@ -60,9 +66,9 @@ impl<T: Vst3Sample> DirectionScratch<T> {
 /// Build an `AudioBusBuffers` from a channel count, leaving the channel-pointer
 /// union member null (zeroed) — refreshed every `prepare` via
 /// [`Vst3Sample::set_channel_buffers`].
-fn make_audio_bus(num_channels: usize) -> vst3::Steinberg::Vst::AudioBusBuffers {
+fn make_audio_bus(num_channels: ChannelLayout) -> vst3::Steinberg::Vst::AudioBusBuffers {
     let mut bus: vst3::Steinberg::Vst::AudioBusBuffers = unsafe { std::mem::zeroed() };
-    bus.numChannels = num_channels as i32;
+    bus.numChannels = num_channels.count() as i32;
     bus.silenceFlags = 0;
     bus
 }
@@ -111,9 +117,16 @@ impl<T: Vst3Sample> BusBuffers<T> {
     ///
     /// `bus_channels` is the per-bus channel layout (empty == single bus of
     /// `fallback_channels`). `block_size` sizes the aux silence/sink block.
-    pub(super) fn new(bus_channels: &[usize], fallback_channels: usize, block_size: usize) -> Self {
+    ///
+    /// `bus_channels` stays a raw `&[usize]` slice (per-bus host counts); only
+    /// the single-scalar `fallback_channels` is a `ChannelLayout`.
+    pub(super) fn new(
+        bus_channels: &[usize],
+        fallback_channels: ChannelLayout,
+        block_size: usize,
+    ) -> Self {
         let bus_channels: SmallVec<[usize; 4]> = if bus_channels.is_empty() {
-            SmallVec::from_slice(&[fallback_channels])
+            SmallVec::from_slice(&[fallback_channels.count() as usize])
         } else {
             SmallVec::from_slice(bus_channels)
         };
@@ -123,7 +136,7 @@ impl<T: Vst3Sample> BusBuffers<T> {
             let table = vec![std::ptr::null_mut::<std::ffi::c_void>(); ch.max(MIN_PTR_COUNT)];
             // channelBuffers pointer is left null (zeroed) and refreshed every
             // `prepare`, so a stale (about-to-move) Vec pointer is never read.
-            bus_arrays.push(make_audio_bus(ch));
+            bus_arrays.push(make_audio_bus(ChannelLayout::from(ch)));
             ptr_tables.push(table);
         }
         Self {
@@ -254,6 +267,7 @@ impl<T: Vst3Sample> BusBuffers<T> {
 mod tests {
     use super::{BusBuffers, MIN_PTR_COUNT};
     use std::ffi::c_void;
+    use tutti_types::ChannelLayout;
 
     const BLOCK: usize = 64;
 
@@ -261,7 +275,7 @@ mod tests {
     /// channel count, and bus 0 maps straight onto the live channels.
     #[test]
     fn empty_layout_is_single_bus() {
-        let mut bb = BusBuffers::<f32>::new(&[], 2, BLOCK);
+        let mut bb = BusBuffers::<f32>::new(&[], ChannelLayout::from(2u16), BLOCK);
         assert_eq!(bb.num_buses(), 1);
         assert_eq!(bb.bus_channels[0], 2);
 
@@ -286,7 +300,7 @@ mod tests {
     #[test]
     fn extra_input_bus_gets_silence() {
         // main = stereo, sidechain = mono.
-        let mut bb = BusBuffers::<f32>::new(&[2, 1], 2, BLOCK);
+        let mut bb = BusBuffers::<f32>::new(&[2, 1], ChannelLayout::from(2u16), BLOCK);
         assert_eq!(bb.num_buses(), 2);
 
         let mut l = [5.0f32; BLOCK];
@@ -323,7 +337,7 @@ mod tests {
     #[test]
     fn output_direction_never_declares_silence() {
         // main = stereo out, plus an aux output bus the host doesn't drive.
-        let mut bb = BusBuffers::<f32>::new(&[2, 2], 2, BLOCK);
+        let mut bb = BusBuffers::<f32>::new(&[2, 2], ChannelLayout::from(2u16), BLOCK);
         let mut l = [0.0f32; BLOCK];
         let mut r = [0.0f32; BLOCK];
         let live = [l.as_mut_ptr() as *mut c_void, r.as_mut_ptr() as *mut c_void];
@@ -342,7 +356,7 @@ mod tests {
     #[test]
     fn fully_unconnected_input_bus_flags_only_real_channels() {
         // One stereo bus, but the caller supplies zero channels.
-        let mut bb = BusBuffers::<f32>::new(&[2], 2, BLOCK);
+        let mut bb = BusBuffers::<f32>::new(&[2], ChannelLayout::from(2u16), BLOCK);
         let live: [*mut c_void; 0] = [];
         unsafe {
             let arrays = bb.prepare(live.as_ptr(), 0, true);
@@ -359,7 +373,7 @@ mod tests {
     #[test]
     fn sidechain_bus_reads_supplied_channel() {
         // main = stereo, sidechain = mono.
-        let mut bb = BusBuffers::<f32>::new(&[2, 1], 2, BLOCK);
+        let mut bb = BusBuffers::<f32>::new(&[2, 1], ChannelLayout::from(2u16), BLOCK);
 
         let mut l = [5.0f32; BLOCK];
         let mut r = [6.0f32; BLOCK];
@@ -391,7 +405,7 @@ mod tests {
     /// pointer tables and re-zeros the aux block.
     #[test]
     fn prepare_is_alloc_free() {
-        let mut bb = BusBuffers::<f32>::new(&[2, 1], 2, BLOCK);
+        let mut bb = BusBuffers::<f32>::new(&[2, 1], ChannelLayout::from(2u16), BLOCK);
         let mut l = [0.5f32; BLOCK];
         let mut r = [0.5f32; BLOCK];
         let live = [l.as_mut_ptr() as *mut c_void, r.as_mut_ptr() as *mut c_void];
@@ -412,7 +426,7 @@ mod tests {
     #[test]
     fn output_padding_slots_are_non_null() {
         // Single mono output bus → table padded to MIN_PTR_COUNT.
-        let mut bb = BusBuffers::<f32>::new(&[1], 1, BLOCK);
+        let mut bb = BusBuffers::<f32>::new(&[1], ChannelLayout::from(1u16), BLOCK);
         assert!(bb.ptr_tables[0].len() >= MIN_PTR_COUNT);
         let mut m = [9.0f32; BLOCK];
         let live = [m.as_mut_ptr() as *mut c_void];
@@ -433,7 +447,7 @@ mod tests {
     /// 64-bit member is the one we wrote through.
     #[test]
     fn f64_direction_writes_channel_buffers_64() {
-        let mut bb = BusBuffers::<f64>::new(&[2], 2, BLOCK);
+        let mut bb = BusBuffers::<f64>::new(&[2], ChannelLayout::from(2u16), BLOCK);
         let mut l = [1.0f64; BLOCK];
         let mut r = [2.0f64; BLOCK];
         let live = [l.as_mut_ptr() as *mut c_void, r.as_mut_ptr() as *mut c_void];

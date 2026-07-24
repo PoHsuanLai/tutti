@@ -3,12 +3,21 @@
 use crate::encode::sink::StreamingEncoder;
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
-use crate::options::{BitDepth, ChannelMode};
+use crate::options::BitDepth;
 use crate::process::fold_frame;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
 use tutti_core::pcm::{f32_to_i16, f32_to_i24};
+use tutti_types::ChannelLayout;
+
+/// The stereo render pipeline emits either 1 channel (a folded mono file) or 2
+/// (stereo). A `ChannelLayout` asking for more than stereo is served as stereo —
+/// there are only two source channels to write. So both the header and the
+/// per-frame write key off "is this a mono request?".
+fn is_mono(channels: ChannelLayout) -> bool {
+    channels.count() == 1
+}
 
 pub(crate) fn encode(frames: &[[f32; 2]], request: &EncodeRequest<'_>) -> Result<()> {
     let spec = spec(request.sample_rate, request.bit_depth, request.channels);
@@ -22,7 +31,7 @@ pub(crate) fn open_stream(
     path: &Path,
     sample_rate: u32,
     bit_depth: BitDepth,
-    channels: ChannelMode,
+    channels: ChannelLayout,
 ) -> Result<Box<dyn StreamingEncoder>> {
     let writer = WavWriter::create(path, spec(sample_rate, bit_depth, channels)).map_err(io_err)?;
     Ok(Box::new(StreamingWavEncoder {
@@ -35,7 +44,7 @@ pub(crate) fn open_stream(
 struct StreamingWavEncoder {
     writer: WavWriter<BufWriter<std::fs::File>>,
     bit_depth: BitDepth,
-    channels: ChannelMode,
+    channels: ChannelLayout,
 }
 
 impl StreamingEncoder for StreamingWavEncoder {
@@ -49,14 +58,15 @@ impl StreamingEncoder for StreamingWavEncoder {
     }
 }
 
-fn spec(sample_rate: u32, bit_depth: BitDepth, channels: ChannelMode) -> WavSpec {
+fn spec(sample_rate: u32, bit_depth: BitDepth, channels: ChannelLayout) -> WavSpec {
     let (bits_per_sample, sample_format) = match bit_depth {
         BitDepth::Int16 => (16, SampleFormat::Int),
         BitDepth::Int24 => (24, SampleFormat::Int),
         BitDepth::Float32 => (32, SampleFormat::Float),
     };
     WavSpec {
-        channels: channels.count(),
+        // 1 for a mono fold, else 2 — the pipeline only has two source channels.
+        channels: if is_mono(channels) { 1 } else { 2 },
         sample_rate,
         bits_per_sample,
         sample_format,
@@ -67,7 +77,7 @@ fn write_frames<W: Write + Seek>(
     writer: &mut WavWriter<W>,
     frames: &[[f32; 2]],
     bit_depth: BitDepth,
-    channels: ChannelMode,
+    channels: ChannelLayout,
 ) -> Result<()> {
     // One closure quantizes a sample to the target bit depth; the channel loop
     // decides how many samples per frame (folding to mono when asked).
@@ -78,17 +88,14 @@ fn write_frames<W: Write + Seek>(
             BitDepth::Float32 => writer.write_sample(s).map_err(io_err),
         }
     };
-    match channels {
-        ChannelMode::Stereo => {
-            for &[l, r] in frames {
-                emit(writer, l)?;
-                emit(writer, r)?;
-            }
+    if is_mono(channels) {
+        for &frame in frames {
+            emit(writer, fold_frame(frame))?;
         }
-        ChannelMode::Mono => {
-            for &frame in frames {
-                emit(writer, fold_frame(frame))?;
-            }
+    } else {
+        for &[l, r] in frames {
+            emit(writer, l)?;
+            emit(writer, r)?;
         }
     }
     Ok(())
@@ -123,7 +130,7 @@ mod tests {
 
     #[test]
     fn export_buffers_mono_folds_and_averages_channels() {
-        use crate::{ChannelMode, Export};
+        use crate::{ChannelLayout, Export};
 
         // Distinct L/R so the mono fold (average) is observable.
         let left = vec![1.0, 0.0, -1.0];
@@ -133,7 +140,7 @@ mod tests {
         let path = dir.path().join("mono.wav");
         Export::buffers(left, right, 44100.0)
             .bit_depth(BitDepth::Float32)
-            .channels(ChannelMode::Mono)
+            .channels(ChannelLayout::Mono)
             .to_file(&path)
             .run()
             .unwrap();
@@ -153,7 +160,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("streaming.wav");
 
-        let mut encoder = open_stream(&path, 44100, BitDepth::Int16, ChannelMode::Stereo).unwrap();
+        let mut encoder = open_stream(&path, 44100, BitDepth::Int16, ChannelLayout::Stereo).unwrap();
 
         encoder
             .write_frames(&[[0.0, 0.1], [0.25, -0.1], [0.5, 0.0]])

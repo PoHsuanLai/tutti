@@ -7,7 +7,7 @@
 //!
 //! Mono downmix is deliberately NOT here: channel count is the encoder's
 //! concern (it needs it for the file header anyway), so each encoder folds
-//! `[f32; 2]` frames to mono from its `ChannelMode`. Every stage upstream of the
+//! `[f32; 2]` frames to mono from its `ChannelLayout`. Every stage upstream of the
 //! encoder speaks plain stereo `[f32; 2]`.
 
 use crate::options::{BitDepth, Dither};

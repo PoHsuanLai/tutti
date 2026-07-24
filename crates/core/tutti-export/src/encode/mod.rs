@@ -25,19 +25,22 @@ pub(crate) mod aiff;
 pub(crate) mod ogg;
 
 use crate::error::Result;
-use crate::options::{AudioFormat, BitDepth, ChannelMode, Flac, Ogg};
+use crate::options::{AudioFormat, BitDepth, Flac, Ogg};
 use crate::progress::{Phase, PhaseGuard};
 use std::path::Path;
+use tutti_types::ChannelLayout;
 
 /// Everything an encoder needs to write one file: where, what format, what
-/// per-format knobs, and the [`ChannelMode`] it should emit (the frames it
-/// receives are always stereo; a mono file is folded inside the encoder).
+/// per-format knobs, and the [`ChannelLayout`] it should emit (the frames it
+/// receives are always stereo; a mono file is folded inside the encoder, and a
+/// layout wider than stereo is served as stereo — there are only two source
+/// channels).
 pub(crate) struct EncodeRequest<'a> {
     pub path: &'a Path,
     pub format: AudioFormat,
     pub sample_rate: u32,
     pub bit_depth: BitDepth,
-    pub channels: ChannelMode,
+    pub channels: ChannelLayout,
     #[allow(dead_code)]
     pub flac: Flac,
     #[allow(dead_code)]

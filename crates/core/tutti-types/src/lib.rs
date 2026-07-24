@@ -13,6 +13,10 @@
 //! (fixed-inline event collector), [`RtScratchBuf`] (fill-then-lend) and its
 //! sibling [`RtScratch`] (own-and-slice), and the [`ScopedNoDenormals`] guard.
 //!
+//! **[`channels`]** — [`ChannelLayout`] (`Mono`/`Stereo`/`Multi(n)`): the one
+//! answer to "mono, stereo, or how many?" that every subsystem shares instead of
+//! a private enum or a bare channel-count integer.
+//!
 //! **[`io`]** — the I/O edge vocabulary: [`AudioIn`] / [`AudioOut`] — the two
 //! traits every audio source and sink in the engine speaks (mic, file, disk,
 //! plugin boundary), plus [`pump`](io::pump). Homed here, at the root leaf, so
@@ -26,6 +30,7 @@
 //! Everything is re-exported at the crate root, so `tutti_types::AudioThreadCell`,
 //! `tutti_types::Bpm`, `tutti_types::Samples`, etc. resolve directly.
 
+pub mod channels;
 pub mod io;
 pub mod latency;
 pub mod pcm;
@@ -43,6 +48,9 @@ pub use value::{
     AtomicSamplePosition, Beat, BeatDuration, Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio,
     SamplePosition, Samples, Seconds, Semitones, Unit, UnitParam, UnitParamOutOfRange,
 };
+
+// Channel layout.
+pub use channels::ChannelLayout;
 
 // I/O edge + latency.
 pub use io::{pump, AudioIn, AudioOut};

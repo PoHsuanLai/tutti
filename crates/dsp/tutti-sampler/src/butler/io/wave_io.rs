@@ -17,17 +17,21 @@
 
 use super::super::prefetch::RegionOut;
 use tutti_core::io::{AudioIn, AudioOut};
-use tutti_core::Wave;
+use tutti_core::{ChannelLayout, Wave};
 
 /// The canonical planar→stereo-frame unpack: left = `at(0,i)`, right =
 /// `at(1,i)` (or the left sample duplicated for mono), zero past the end.
 #[inline]
-pub(crate) fn wave_frame(wave: &Wave, channels: usize, idx: usize) -> [f32; 2] {
+pub(crate) fn wave_frame(wave: &Wave, layout: ChannelLayout, idx: usize) -> [f32; 2] {
     if idx >= wave.len() {
         return [0.0, 0.0];
     }
     let left = wave.at(0, idx);
-    let right = if channels > 1 { wave.at(1, idx) } else { left };
+    // Stereo or wider reads channel 1 as right; mono duplicates left.
+    let right = match layout {
+        ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_) => wave.at(1, idx),
+        ChannelLayout::Mono => left,
+    };
     [left, right]
 }
 
@@ -54,7 +58,7 @@ pub(crate) fn wrap_position(pos: usize, loop_range: Option<(u64, u64)>) -> usize
 /// buffer, mirroring the old zero-pad-to-`chunk_size` fill).
 pub(crate) struct WaveIn<'w> {
     wave: &'w Wave,
-    channels: usize,
+    layout: ChannelLayout,
     cursor: usize,
     /// `(start, end)` half-open loop bounds in samples, if looping.
     loop_bounds: Option<(usize, usize)>,
@@ -69,7 +73,7 @@ impl<'w> WaveIn<'w> {
         });
         Self {
             wave,
-            channels: wave.channels(),
+            layout: ChannelLayout::from(wave.channels()),
             cursor: start,
             loop_bounds,
         }
@@ -91,7 +95,7 @@ impl AudioIn for WaveIn<'_> {
     fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
         for slot in out.iter_mut() {
             self.cursor = self.wrap(self.cursor);
-            *slot = wave_frame(self.wave, self.channels, self.cursor);
+            *slot = wave_frame(self.wave, self.layout, self.cursor);
             self.cursor += 1;
         }
         self.cursor = self.wrap(self.cursor);
@@ -130,21 +134,21 @@ mod tests {
     #[test]
     fn wave_frame_reads_stereo() {
         let wave = test_wave(&[(0.1, 0.2), (0.3, 0.4)]);
-        assert_eq!(wave_frame(&wave, 2, 0), [0.1, 0.2]);
-        assert_eq!(wave_frame(&wave, 2, 1), [0.3, 0.4]);
+        assert_eq!(wave_frame(&wave, ChannelLayout::Stereo, 0), [0.1, 0.2]);
+        assert_eq!(wave_frame(&wave, ChannelLayout::Stereo, 1), [0.3, 0.4]);
     }
 
     #[test]
     fn wave_frame_pads_zeros_past_end() {
         let wave = test_wave(&[(0.5, 0.6)]);
-        assert_eq!(wave_frame(&wave, 2, 1), [0.0, 0.0]);
+        assert_eq!(wave_frame(&wave, ChannelLayout::Stereo, 1), [0.0, 0.0]);
     }
 
     #[test]
     fn wave_frame_duplicates_left_for_mono() {
         // channels=1 → right takes the left sample.
         let wave = test_wave(&[(0.7, -0.7)]);
-        assert_eq!(wave_frame(&wave, 1, 0), [0.7, 0.7]);
+        assert_eq!(wave_frame(&wave, ChannelLayout::Mono, 0), [0.7, 0.7]);
     }
 
     #[test]

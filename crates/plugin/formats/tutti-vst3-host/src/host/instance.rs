@@ -22,6 +22,8 @@ use vst3::Steinberg::{
     },
 };
 
+use tutti_types::ChannelLayout;
+
 use crate::com::{event_list_ptr, param_changes_ptr, EventList, ParameterChangesImpl};
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::types::{
@@ -43,25 +45,37 @@ const K_REALTIME: i32 = kRealtime as i32;
 /// beyond this allocates once and then sticks.
 const OUTPUT_PARAM_QUEUE_RESERVE: usize = 32;
 
-/// Derive a VST3 `SpeakerArrangement` (a speaker bit mask) from a plain channel
-/// count for `setBusArrangements`.
+/// A VST3 `SpeakerArrangement` (a u64 speaker bit mask) as a local newtype, so it
+/// can carry `From`/`Into` conversions with [`ChannelLayout`] — both the raw alias
+/// and `ChannelLayout` are foreign to this crate, so the impls have to hang off a
+/// type we own.
 ///
-/// `0` → empty (a disabled bus), `1` → mono, `2` → stereo (the two overwhelming
-/// common cases get their canonical named arrangements). For higher counts we
-/// fall back to an N-bit low mask — a well-formed arrangement with the right
-/// `getChannelCount`, sufficient to propose "give me N channels on this bus"
-/// even when we don't know the exact surround topology. A plugin that wants a
-/// specific named layout refuses via `kResultFalse`, and the caller reads its
-/// choice back with `getBusArrangement`.
-fn arrangement_for_channel_count(count: usize) -> SpeakerArrangement {
-    match count {
-        0 => SpeakerArr::kEmpty,
-        1 => SpeakerArr::kMono,
-        2 => SpeakerArr::kStereo,
-        // `count` is a channel total (≤ 64 in practice); a low-bit mask of that
-        // width is a valid arrangement whose popcount equals `count`.
-        n if n < 64 => (1u64 << n) - 1,
-        _ => u64::MAX,
+/// The conversion is deliberately lossy on placement: we translate a count to a
+/// well-formed mask and back, never the specific surround topology (which speaker
+/// is where). A plugin that needs a named layout refuses our proposal via
+/// `kResultFalse`, and the caller reads its choice back with `getBusArrangement`.
+#[derive(Debug, Clone, Copy)]
+struct Vst3SpeakerArrangement(SpeakerArrangement);
+
+impl From<ChannelLayout> for Vst3SpeakerArrangement {
+    /// `0` → empty (disabled bus), mono/stereo → their canonical named masks; any
+    /// other width → an N-bit low mask whose popcount equals the channel count —
+    /// a valid arrangement to propose even without the exact topology.
+    fn from(layout: ChannelLayout) -> Self {
+        Self(match layout.count() {
+            0 => SpeakerArr::kEmpty,
+            1 => SpeakerArr::kMono,
+            2 => SpeakerArr::kStereo,
+            n if n < 64 => (1u64 << n) - 1,
+            _ => u64::MAX,
+        })
+    }
+}
+
+impl From<Vst3SpeakerArrangement> for ChannelLayout {
+    /// Recover the channel count as the mask's popcount.
+    fn from(arr: Vst3SpeakerArrangement) -> Self {
+        ChannelLayout::from_count(arr.0.count_ones() as u16)
     }
 }
 
@@ -72,8 +86,8 @@ fn arrangement_for_channel_count(count: usize) -> SpeakerArrangement {
 struct ProcessConfig {
     sample_rate: f64,
     block_size: usize,
-    num_input_channels: usize,
-    num_output_channels: usize,
+    num_input_channels: ChannelLayout,
+    num_output_channels: ChannelLayout,
 }
 
 /// The input half of `ProcessData`: per-bus audio scratch plus the COM-wrapped
@@ -218,8 +232,8 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             ));
         }
 
-        let num_input_channels = loaded.info.num_inputs;
-        let num_output_channels = loaded.info.num_outputs;
+        let num_input_channels = ChannelLayout::from(loaded.info.num_inputs);
+        let num_output_channels = ChannelLayout::from(loaded.info.num_outputs);
         // Resolve the per-direction scratch from the initial bus layout in the
         // PluginInfo snapshot. `activate_buses` re-resolves the same way from
         // the live component afterward, since some plugins only finalise their
@@ -499,12 +513,12 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         let mut inputs: Vec<SpeakerArrangement> = component
             .audio_bus_channels(K_INPUT)
             .into_iter()
-            .map(arrangement_for_channel_count)
+            .map(|c| Vst3SpeakerArrangement::from(ChannelLayout::from(c)).0)
             .collect();
         let mut outputs: Vec<SpeakerArrangement> = component
             .audio_bus_channels(K_OUTPUT)
             .into_iter()
-            .map(arrangement_for_channel_count)
+            .map(|c| Vst3SpeakerArrangement::from(ChannelLayout::from(c)).0)
             .collect();
 
         let result = unsafe {
@@ -545,7 +559,7 @@ impl<T: Vst3Sample> Vst3Instance<T> {
                 let mut arr: SpeakerArrangement = 0;
                 let res = unsafe { processor.getBusArrangement(direction, i as i32, &mut arr) };
                 if res == kResultOk {
-                    arr.count_ones() as usize
+                    ChannelLayout::from(Vst3SpeakerArrangement(arr)).count() as usize
                 } else {
                     0
                 }
@@ -559,8 +573,8 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     /// but from counts rather than a fresh component enumeration.
     fn resolve_scratch_from_counts(&mut self, in_counts: &[usize], out_counts: &[usize]) {
         let block_size = self.audio.config.block_size;
-        let num_in: usize = in_counts.first().copied().unwrap_or(0);
-        let num_out: usize = out_counts.first().copied().unwrap_or(0).max(1);
+        let num_in = ChannelLayout::from(in_counts.first().copied().unwrap_or(0));
+        let num_out = ChannelLayout::from(out_counts.first().copied().unwrap_or(0).max(1));
         let in_scratch = DirectionScratch::<T>::resolve(in_counts, num_in, block_size);
         let out_scratch = DirectionScratch::<T>::resolve(out_counts, num_out, block_size);
 

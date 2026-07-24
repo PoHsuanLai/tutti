@@ -1,6 +1,7 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame};
+use tutti_types::ChannelLayout;
 
 use super::envelope::GateEnvelopeFollower;
 use super::params::AttackRelease;
@@ -112,7 +113,7 @@ impl GateCore {
 /// bit-identical output to the unmodulated path (the common case).
 pub struct Gate {
     core: GateCore,
-    channels: u8,
+    channels: ChannelLayout,
     /// When true, a threshold param-input port (dB) follows all audio +
     /// sidechain inputs at index `2*channels` and overrides the threshold
     /// atomic per sample.
@@ -150,7 +151,7 @@ impl Gate {
     ) -> Self {
         Self {
             core: GateCore::new(threshold_db, attack, hold, release),
-            channels: channels.max(1),
+            channels: ChannelLayout::from_count(channels.max(1) as u16),
             mod_threshold: false,
         }
     }
@@ -175,7 +176,7 @@ impl Gate {
     /// all audio + sidechain inputs, i.e. at `2 * channels`).
     #[inline]
     pub fn threshold_port(&self) -> Option<usize> {
-        self.mod_threshold.then_some(2 * self.channels as usize)
+        self.mod_threshold.then_some(2 * self.channels.count() as usize)
     }
 
     pub fn with_range(mut self, range_db: impl Into<Db>) -> Self {
@@ -184,7 +185,7 @@ impl Gate {
     }
 
     pub fn channels(&self) -> u8 {
-        self.channels
+        self.channels.count() as u8
     }
 
     pub fn threshold(&self) -> Arc<AtomicF32> {
@@ -236,11 +237,11 @@ impl Gate {
 
 impl AudioUnit for Gate {
     fn inputs(&self) -> usize {
-        2 * self.channels as usize + self.mod_threshold as usize
+        2 * self.channels.count() as usize + self.mod_threshold as usize
     }
 
     fn outputs(&self) -> usize {
-        self.channels as usize
+        self.channels.count() as usize
     }
 
     fn reset(&mut self) {
@@ -254,7 +255,7 @@ impl AudioUnit for Gate {
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         self.core.update_coefficients();
-        let ch = self.channels as usize;
+        let ch = self.channels.count() as usize;
         // A present threshold port (at 2*ch) overrides the atomic.
         let threshold = self.threshold_port().map(|p| input[p]);
         let gain = self
@@ -267,7 +268,7 @@ impl AudioUnit for Gate {
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         self.core.update_coefficients();
-        let ch = self.channels as usize;
+        let ch = self.channels.count() as usize;
         let threshold_port = self.threshold_port();
 
         for i in 0..size {
@@ -292,10 +293,9 @@ impl AudioUnit for Gate {
     }
 
     fn get_id(&self) -> u64 {
-        if self.channels == 1 {
-            crate::node_id::GATE_ID
-        } else {
-            crate::node_id::STEREO_GATE_ID
+        match self.channels {
+            ChannelLayout::Mono => crate::node_id::GATE_ID,
+            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_) => crate::node_id::STEREO_GATE_ID,
         }
     }
 
@@ -308,7 +308,7 @@ impl AudioUnit for Gate {
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let ch = self.channels as usize;
+        let ch = self.channels.count() as usize;
         let mut output = SignalFrame::new(ch);
         for c in 0..ch {
             output.set(c, input.at(c));

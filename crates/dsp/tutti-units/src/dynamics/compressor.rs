@@ -1,6 +1,7 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame};
+use tutti_types::ChannelLayout;
 
 use super::envelope::EnvelopeFollower;
 use super::params::{AttackRelease, ThresholdParams};
@@ -121,7 +122,7 @@ impl CompressorCore {
 /// cost (the common case).
 pub struct Compressor {
     core: CompressorCore,
-    channels: u8,
+    channels: ChannelLayout,
     /// When true, a threshold param-input port (dB) follows all audio +
     /// sidechain inputs at index `2*channels` and overrides the threshold
     /// atomic per sample.
@@ -159,7 +160,7 @@ impl Compressor {
     ) -> Self {
         Self {
             core: CompressorCore::new(threshold_db, ratio, attack, release),
-            channels: channels.max(1),
+            channels: ChannelLayout::from_count(channels.max(1) as u16),
             mod_threshold: false,
         }
     }
@@ -184,7 +185,7 @@ impl Compressor {
     /// all audio + sidechain inputs, i.e. at `2 * channels`).
     #[inline]
     pub fn threshold_port(&self) -> Option<usize> {
-        self.mod_threshold.then_some(2 * self.channels as usize)
+        self.mod_threshold.then_some(2 * self.channels.count() as usize)
     }
 
     pub fn with_soft_knee(mut self, knee_db: impl Into<Db>) -> Self {
@@ -198,7 +199,7 @@ impl Compressor {
     }
 
     pub fn channels(&self) -> u8 {
-        self.channels
+        self.channels.count() as u8
     }
 
     pub fn threshold(&self) -> Arc<AtomicF32> {
@@ -262,11 +263,11 @@ impl Compressor {
 
 impl AudioUnit for Compressor {
     fn inputs(&self) -> usize {
-        2 * self.channels as usize + self.mod_threshold as usize
+        2 * self.channels.count() as usize + self.mod_threshold as usize
     }
 
     fn outputs(&self) -> usize {
-        self.channels as usize
+        self.channels.count() as usize
     }
 
     fn reset(&mut self) {
@@ -280,7 +281,7 @@ impl AudioUnit for Compressor {
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         self.core.update_coefficients();
-        let ch = self.channels as usize;
+        let ch = self.channels.count() as usize;
         // A present threshold port (at 2*ch) overrides the atomic; the atomic
         // carries the base for the fast path / UI handle.
         let threshold = self.threshold_port().map(|p| input[p]);
@@ -294,7 +295,7 @@ impl AudioUnit for Compressor {
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         self.core.update_coefficients();
-        let ch = self.channels as usize;
+        let ch = self.channels.count() as usize;
         let threshold_port = self.threshold_port();
 
         for i in 0..size {
@@ -321,10 +322,11 @@ impl AudioUnit for Compressor {
     }
 
     fn get_id(&self) -> u64 {
-        if self.channels == 1 {
-            crate::node_id::COMPRESSOR_ID
-        } else {
-            crate::node_id::STEREO_COMPRESSOR_ID
+        match self.channels {
+            ChannelLayout::Mono => crate::node_id::COMPRESSOR_ID,
+            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_) => {
+                crate::node_id::STEREO_COMPRESSOR_ID
+            }
         }
     }
 
@@ -337,7 +339,7 @@ impl AudioUnit for Compressor {
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let ch = self.channels as usize;
+        let ch = self.channels.count() as usize;
         let mut output = SignalFrame::new(ch);
         for c in 0..ch {
             output.set(c, input.at(c));

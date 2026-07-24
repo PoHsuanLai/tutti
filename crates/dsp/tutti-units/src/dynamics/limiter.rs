@@ -1,5 +1,6 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
+use tutti_core::ChannelLayout;
 use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame};
 
 use super::envelope::EnvelopeFollower;
@@ -299,7 +300,15 @@ impl AudioUnit for LimiterNode {
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         self.update_coefficients();
-        let has_stereo = input.channels() > 1;
+        // Hoisted once per block: whether a second input/output channel exists.
+        let has_stereo = matches!(
+            ChannelLayout::from(input.channels()),
+            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
+        );
+        let stereo_out = matches!(
+            ChannelLayout::from(output.channels()),
+            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
+        );
         let ceiling_port = self.ceiling_port();
         let threshold_port = self.threshold_port();
 
@@ -312,7 +321,7 @@ impl AudioUnit for LimiterNode {
                 let right = if has_stereo { input.at_f32(1, i) } else { left };
                 let (out_l, out_r) = self.process_sample_with(left, right, threshold, ceiling);
                 output.set_f32(0, i, out_l);
-                if output.channels() > 1 {
+                if stereo_out {
                     output.set_f32(1, i, out_r);
                 }
             }
@@ -329,7 +338,7 @@ impl AudioUnit for LimiterNode {
             let ceiling = ceiling_port.map_or(base_ceiling, |p| Db(input.at_f32(p, i)));
             let (out_l, out_r) = self.process_sample_with(left, right, threshold, ceiling);
             output.set_f32(0, i, out_l);
-            if output.channels() > 1 {
+            if stereo_out {
                 output.set_f32(1, i, out_r);
             }
         }
@@ -491,14 +500,23 @@ impl AudioUnit for BrickwallLimiter {
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let has_stereo = input.channels() > 1;
+        // Hoisted once per block: whether a second input/output channel exists.
+        let has_stereo = matches!(
+            ChannelLayout::from(input.channels()),
+            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
+        );
+        let stereo_out = matches!(
+            ChannelLayout::from(output.channels()),
+            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
+        );
+        let stereo = has_stereo && stereo_out;
 
         // Modulated path: read the ceiling port per sample.
         if let Some(p) = self.ceiling_port() {
             for i in 0..size {
                 let ceiling_linear = db_to_amplitude(Db(input.at_f32(p, i))).get();
                 output.set_f32(0, i, Self::clip_at(input.at_f32(0, i), ceiling_linear));
-                if has_stereo && output.channels() > 1 {
+                if stereo {
                     output.set_f32(1, i, Self::clip_at(input.at_f32(1, i), ceiling_linear));
                 }
             }
@@ -512,7 +530,7 @@ impl AudioUnit for BrickwallLimiter {
 
         for i in 0..size {
             output.set_f32(0, i, self.clip(input.at_f32(0, i)));
-            if has_stereo && output.channels() > 1 {
+            if stereo {
                 output.set_f32(1, i, self.clip(input.at_f32(1, i)));
             }
         }

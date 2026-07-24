@@ -5,7 +5,8 @@
 use super::locate::find_plugin_server;
 use crate::error::{BridgeError, Result};
 use crate::protocol::{
-    BridgeMessage, BusChannels, HostMessage, LoadedPlugin, PluginDescriptor, SampleFormat,
+    BridgeMessage, BusChannels, ChannelLayout, HostMessage, LoadedPlugin, PluginDescriptor,
+    SampleFormat,
 };
 use crate::util::config::BridgeConfig;
 use crate::util::transport::control::{self as ipc, ControlStream};
@@ -137,7 +138,7 @@ fn setup_shm(
         (loaded.inputs.clone(), loaded.outputs.clone())
     };
     let layout = SlabLayout {
-        channels,
+        channels: ChannelLayout::from(channels),
         samples_per_channel: config.max_buffer_size,
         format,
         inputs,

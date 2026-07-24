@@ -1,5 +1,6 @@
 use crate::Result;
 use tutti_core::AudioUnit;
+use tutti_core::ChannelLayout;
 use tutti_core::{BufferMut, BufferRef, Degrees, Linear, Param, SignalFrame};
 
 use super::vbap_panner::SpatialPanner;
@@ -46,7 +47,7 @@ impl Default for SpatialTarget {
 /// Position controlled via lock-free atomics for RT-safe automation.
 pub struct SpatialPannerNode {
     panner: SpatialPanner,
-    num_outputs: usize,
+    layout: ChannelLayout,
     target: SpatialTarget,
     spread: Param<Linear>,
     width: Param<Linear>,
@@ -56,12 +57,12 @@ pub struct SpatialPannerNode {
 
 impl Clone for SpatialPannerNode {
     fn clone(&self) -> Self {
-        let mut new_panner = match self.num_outputs {
-            2 => SpatialPanner::stereo().expect("stereo preset"),
-            4 => SpatialPanner::quad().expect("quad preset"),
-            6 => SpatialPanner::surround_5_1().expect("5.1 preset"),
-            8 => SpatialPanner::surround_7_1().expect("7.1 preset"),
-            12 => SpatialPanner::atmos_7_1_4().expect("Atmos preset"),
+        let mut new_panner = match self.layout {
+            ChannelLayout::Stereo => SpatialPanner::stereo().expect("stereo preset"),
+            ChannelLayout::Quad => SpatialPanner::quad().expect("quad preset"),
+            ChannelLayout::Multi(6) => SpatialPanner::surround_5_1().expect("5.1 preset"),
+            ChannelLayout::Multi(8) => SpatialPanner::surround_7_1().expect("7.1 preset"),
+            ChannelLayout::Multi(12) => SpatialPanner::atmos_7_1_4().expect("Atmos preset"),
             _ => SpatialPanner::stereo().expect("stereo fallback"),
         };
 
@@ -72,12 +73,12 @@ impl Clone for SpatialPannerNode {
 
         Self {
             panner: new_panner,
-            num_outputs: self.num_outputs,
+            layout: self.layout,
             target: self.target.clone(),
             spread: self.spread.handle(),
             width: self.width.handle(),
             sample_rate: self.sample_rate,
-            scratch_output: vec![0.0; self.num_outputs],
+            scratch_output: vec![0.0; self.layout.count() as usize],
         }
     }
 }
@@ -85,38 +86,38 @@ impl Clone for SpatialPannerNode {
 impl SpatialPannerNode {
     pub fn stereo() -> Result<Self> {
         let panner = SpatialPanner::stereo()?;
-        Ok(Self::from_panner(panner, 2))
+        Ok(Self::from_panner(panner, ChannelLayout::Stereo))
     }
 
     pub fn quad() -> Result<Self> {
         let panner = SpatialPanner::quad()?;
-        Ok(Self::from_panner(panner, 4))
+        Ok(Self::from_panner(panner, ChannelLayout::from(4u16)))
     }
 
     pub fn surround_5_1() -> Result<Self> {
         let panner = SpatialPanner::surround_5_1()?;
-        Ok(Self::from_panner(panner, 6))
+        Ok(Self::from_panner(panner, ChannelLayout::from(6u16)))
     }
 
     pub fn surround_7_1() -> Result<Self> {
         let panner = SpatialPanner::surround_7_1()?;
-        Ok(Self::from_panner(panner, 8))
+        Ok(Self::from_panner(panner, ChannelLayout::from(8u16)))
     }
 
     pub fn atmos_7_1_4() -> Result<Self> {
         let panner = SpatialPanner::atmos_7_1_4()?;
-        Ok(Self::from_panner(panner, 12))
+        Ok(Self::from_panner(panner, ChannelLayout::from(12u16)))
     }
 
-    fn from_panner(panner: SpatialPanner, num_outputs: usize) -> Self {
+    fn from_panner(panner: SpatialPanner, layout: ChannelLayout) -> Self {
         Self {
             panner,
-            num_outputs,
+            layout,
             target: SpatialTarget::new(),
             spread: Param::new(Linear(0.0)),
             width: Param::new(Linear(1.0)),
             sample_rate: 48000.0,
-            scratch_output: vec![0.0; num_outputs],
+            scratch_output: vec![0.0; layout.count() as usize],
         }
     }
 
@@ -155,7 +156,7 @@ impl SpatialPannerNode {
     }
 
     pub fn num_channels(&self) -> usize {
-        self.num_outputs
+        self.layout.count() as usize
     }
 
     #[inline]
@@ -173,7 +174,7 @@ impl AudioUnit for SpatialPannerNode {
     }
 
     fn outputs(&self) -> usize {
-        self.num_outputs
+        self.layout.count() as usize
     }
 
     fn reset(&mut self) {
@@ -203,15 +204,21 @@ impl AudioUnit for SpatialPannerNode {
         self.sync_position();
 
         let width = self.width.load().0;
-        let num_outputs = self.num_outputs;
+        let num_outputs = self.layout.count() as usize;
 
         // scratch_output is pre-sized to num_outputs in from_panner and Clone.
         // num_outputs is fixed for the node's lifetime, so this never grows at RT.
         debug_assert_eq!(self.scratch_output.len(), num_outputs);
 
+        // Hoisted once per block: is a second input channel present?
+        let has_stereo_in = matches!(
+            ChannelLayout::from(input.channels()),
+            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
+        );
+
         for i in 0..size {
             let left = input.at_f32(0, i);
-            let right = if input.channels() > 1 {
+            let right = if has_stereo_in {
                 input.at_f32(1, i)
             } else {
                 left
@@ -229,7 +236,7 @@ impl AudioUnit for SpatialPannerNode {
     }
 
     fn get_id(&self) -> u64 {
-        crate::node_id::SPATIAL_PANNER_BASE_ID | (self.num_outputs as u64)
+        crate::node_id::SPATIAL_PANNER_BASE_ID | (self.layout.count() as u64)
     }
 
     fn as_any(&self) -> &dyn core::any::Any {
@@ -241,8 +248,9 @@ impl AudioUnit for SpatialPannerNode {
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut output = SignalFrame::new(self.num_outputs);
-        for i in 0..self.num_outputs {
+        let num_outputs = self.layout.count() as usize;
+        let mut output = SignalFrame::new(num_outputs);
+        for i in 0..num_outputs {
             output.set(i, input.at(0));
         }
         output

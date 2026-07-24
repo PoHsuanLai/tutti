@@ -262,12 +262,13 @@ mod tests {
     use std::sync::Arc;
     use tutti_core::dsp::Net;
     use tutti_core::ecs::{AudioConfig, AudioGraphRes, GraphDirty};
+    use tutti_core::ChannelLayout;
 
     /// Build a bare `Net` directly (no `TuttiEngine`, which lives in
     /// bevy-tutti). Feature-agnostic via `Net::with_backend` — tutti-core owns
     /// the `midi` cfg, so this is correct under workspace feature unification.
-    fn bare_graph(channels: usize) -> Net {
-        Net::with_backend(channels)
+    fn bare_graph(layout: ChannelLayout) -> Net {
+        Net::with_backend(layout.count() as usize)
     }
 
     /// Builds an `App` with the playback system, a real graph, an
@@ -276,10 +277,10 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(AssetPlugin::default());
         app.init_asset::<WaveAsset>();
-        app.insert_resource(AudioGraphRes(bare_graph(2)));
+        app.insert_resource(AudioGraphRes(bare_graph(ChannelLayout::Stereo)));
         app.insert_resource(AudioConfig {
             sample_rate: 48_000.0,
-            channels: 2,
+            channels: ChannelLayout::Stereo,
         });
         app.init_resource::<GraphDirty>();
         app.add_systems(Update, audio_playback_system);

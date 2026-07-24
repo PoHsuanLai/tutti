@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::sample::SampleFormat;
-use super::BusChannels;
+use super::{BusChannels, ChannelLayout};
 
 /// Shared-memory slab descriptor. `channels` is the **flat total** across all
 /// buses; `inputs`/`outputs` (when non-empty) describe how that flat channel
@@ -20,7 +20,7 @@ use super::BusChannels;
 /// reference on the hot read path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlabLayout {
-    pub channels: usize,
+    pub channels: ChannelLayout,
     pub samples_per_channel: usize,
     pub format: SampleFormat,
     /// Per-bus input channel counts, in bus-index order. Empty == single flat
@@ -39,7 +39,7 @@ impl SlabLayout {
             SampleFormat::Float32 => std::mem::size_of::<f32>(),
             SampleFormat::Float64 => std::mem::size_of::<f64>(),
         };
-        self.channels * self.samples_per_channel * sample_size
+        self.channels.count() as usize * self.samples_per_channel * sample_size
     }
 
     /// True when a per-bus partition was negotiated. When false the slab is a
@@ -52,9 +52,9 @@ impl SlabLayout {
     /// buses). Falls back to the whole flat `channels` when single-bus legacy.
     pub fn input_channels(&self) -> usize {
         if self.is_multibus() {
-            self.inputs.iter().sum()
+            self.inputs.iter().map(|l| l.count() as usize).sum()
         } else {
-            self.channels
+            self.channels.count() as usize
         }
     }
 
@@ -62,9 +62,9 @@ impl SlabLayout {
     /// buses). Falls back to the whole flat `channels` when single-bus legacy.
     pub fn output_channels(&self) -> usize {
         if self.is_multibus() {
-            self.outputs.iter().sum()
+            self.outputs.iter().map(|l| l.count() as usize).sum()
         } else {
-            self.channels
+            self.channels.count() as usize
         }
     }
 
@@ -85,6 +85,7 @@ impl SlabLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::ChannelLayout;
     use smallvec::SmallVec;
 
     /// Empty bus lists (single-bus legacy): bincode round-trips and `byte_size`
@@ -92,7 +93,7 @@ mod tests {
     #[test]
     fn empty_buses_round_trips() {
         let layout = SlabLayout {
-            channels: 2,
+            channels: ChannelLayout::Stereo,
             samples_per_channel: 512,
             format: SampleFormat::Float32,
             inputs: BusChannels::new(),
@@ -111,11 +112,12 @@ mod tests {
     #[test]
     fn multi_bus_round_trips_without_changing_byte_size() {
         let layout = SlabLayout {
-            channels: 5,
+            channels: ChannelLayout::from(5u16),
             samples_per_channel: 256,
             format: SampleFormat::Float32,
-            inputs: SmallVec::from_slice(&[2, 1]), // stereo main + mono sidechain
-            outputs: SmallVec::from_slice(&[2]),
+            // stereo main + mono sidechain
+            inputs: SmallVec::from_slice(&[ChannelLayout::Stereo, ChannelLayout::Mono]),
+            outputs: SmallVec::from_slice(&[ChannelLayout::Stereo]),
         };
         let bytes = bincode::serialize(&layout).unwrap();
         let back: SlabLayout = bincode::deserialize(&bytes).unwrap();

@@ -15,9 +15,10 @@ use crate::error::{AuError, Result};
 use crate::ffi::{check, get_property, set_property};
 use crate::handle::AuHandle;
 use crate::parameters::{self, AuParameter, ParamView};
-use crate::stream::{ChannelLayout, StreamConfig};
+use crate::stream::{AuBusLayout, StreamConfig};
 use crate::types::*;
 use tutti_midi_types::MidiEvent;
+use tutti_plugin_types::ChannelLayout;
 
 /// An AU that has been instantiated but not yet initialized.
 ///
@@ -147,14 +148,20 @@ impl AuInstance {
         self.handle().au_type()
     }
 
-    /// Configured input channel count.
+    /// Configured input channel count (`0` for generators / instruments, which
+    /// have no input bus).
     pub fn num_inputs(&self) -> u32 {
-        self.config().channels.inputs
+        let channels = self.config().channels;
+        if channels.has_input {
+            channels.inputs.count() as u32
+        } else {
+            0
+        }
     }
 
     /// Configured output channel count.
     pub fn num_outputs(&self) -> u32 {
-        self.config().channels.outputs
+        self.config().channels.outputs.count() as u32
     }
 
     /// Configured sample rate in Hz.
@@ -392,9 +399,10 @@ impl AuLoaded {
         let handle = AuHandle::new(component)?;
 
         let probed = StreamConfig::probe(&handle);
-        let channels = ChannelLayout {
+        let channels = AuBusLayout {
             inputs: probed.inputs,
-            outputs: probed.outputs.max(2),
+            outputs: ChannelLayout::from(probed.outputs.count().max(2)),
+            has_input: probed.has_input,
         };
         let mut config = StreamConfig::new(sample_rate, block_size, channels);
         // `apply` returns the layout the AU actually accepted, which may differ

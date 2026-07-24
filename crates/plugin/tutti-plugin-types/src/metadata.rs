@@ -12,18 +12,18 @@
 
 use smallvec::SmallVec;
 
-use crate::Features;
+use crate::{ChannelLayout, Features};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-/// Per-bus channel counts for one process direction, in bus-index order.
+/// Per-bus channel layouts for one process direction, in bus-index order.
 ///
 /// An empty list means "single main bus" — the legacy single-bus convention,
-/// where the one main bus's channel count is recovered from elsewhere. A
-/// populated list is `[main, aux/sidechain, …]`, so summing it gives the total
-/// channel width the host must supply flat (see `tutti-vst3-host`'s bus buffers).
-pub type BusChannels = SmallVec<[usize; 4]>;
+/// where the one main bus's layout is recovered from elsewhere. A populated list
+/// is `[main, aux/sidechain, …]`, so summing the counts gives the total channel
+/// width the host must supply flat (see `tutti-vst3-host`'s bus buffers).
+pub type BusChannels = SmallVec<[ChannelLayout; 4]>;
 
 /// Engine-wiring data for a freshly instantiated plugin.
 ///
@@ -54,12 +54,12 @@ impl LoadedPlugin {
     /// back to `0` for an empty bus list — callers that need the single-bus main
     /// width supply it themselves (the count isn't carried here).
     pub fn total_inputs(&self) -> usize {
-        self.inputs.iter().sum()
+        self.inputs.iter().map(|l| l.count() as usize).sum()
     }
 
     /// Total output channel width across all buses.
     pub fn total_outputs(&self) -> usize {
-        self.outputs.iter().sum()
+        self.outputs.iter().map(|l| l.count() as usize).sum()
     }
 
     /// `true` if the plugin exposes more than one bus in either direction
@@ -85,8 +85,9 @@ mod tests {
     #[test]
     fn multi_bus_round_trips() {
         let loaded = LoadedPlugin {
-            inputs: SmallVec::from_slice(&[2, 1]), // stereo main + mono sidechain
-            outputs: SmallVec::from_slice(&[2]),
+            // stereo main + mono sidechain
+            inputs: SmallVec::from_slice(&[ChannelLayout::Stereo, ChannelLayout::Mono]),
+            outputs: SmallVec::from_slice(&[ChannelLayout::Stereo]),
             latency_samples: 128,
             features: Features::F64_AUDIO | Features::MIDI_IN,
         };

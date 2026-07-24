@@ -1,6 +1,6 @@
 //! Shared helpers used by format-specific loaders.
 
-use tutti_plugin::server::{BusChannels, LoadedPlugin, PluginDescriptor};
+use tutti_plugin::server::{BusChannels, ChannelLayout, LoadedPlugin, PluginDescriptor};
 
 /// The two metadata snapshots every loaded plugin carries: the catalog
 /// [`PluginDescriptor`] (identity + native class) and the runtime
@@ -15,6 +15,6 @@ pub(crate) struct Meta {
 /// Build a [`BusChannels`] holding a single main bus of `channels`.
 pub(crate) fn single_bus(channels: usize) -> BusChannels {
     let mut v = BusChannels::new();
-    v.push(channels);
+    v.push(ChannelLayout::from(channels));
     v
 }

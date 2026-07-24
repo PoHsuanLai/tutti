@@ -3,7 +3,7 @@
 
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
-use crate::options::{BitDepth, ChannelMode};
+use crate::options::BitDepth;
 use crate::process::fold_frame;
 use flacenc::bitsink::ByteSink;
 use flacenc::component::BitRepr;
@@ -24,22 +24,23 @@ pub(crate) fn encode(frames: &[[f32; 2]], request: &EncodeRequest<'_>) -> Result
     }
     let bits_per_sample = bits_for(request.bit_depth);
 
-    let (samples, channels): (Vec<i32>, usize) = match request.channels {
-        ChannelMode::Stereo => {
-            let mut out = Vec::with_capacity(frames.len() * 2);
-            for &[l, r] in frames {
-                out.push(f32_to_i32(l, request.bit_depth));
-                out.push(f32_to_i32(r, request.bit_depth));
-            }
-            (out, 2)
-        }
-        ChannelMode::Mono => (
+    // A layout wider than stereo is written as stereo — the pipeline has only
+    // two source channels.
+    let (samples, channels): (Vec<i32>, usize) = if request.channels.count() == 1 {
+        (
             frames
                 .iter()
                 .map(|&f| f32_to_i32(fold_frame(f), request.bit_depth))
                 .collect(),
             1,
-        ),
+        )
+    } else {
+        let mut out = Vec::with_capacity(frames.len() * 2);
+        for &[l, r] in frames {
+            out.push(f32_to_i32(l, request.bit_depth));
+            out.push(f32_to_i32(r, request.bit_depth));
+        }
+        (out, 2)
     };
 
     let encoder_config = EncoderConfig::default()

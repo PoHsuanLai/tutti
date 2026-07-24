@@ -974,20 +974,19 @@ fn test_state_context_enum() {
 
 #[test]
 fn test_audio_port_info_types() {
-    use tutti_clap_host::{AudioPortFlags, AudioPortInfo, AudioPortType};
+    use tutti_clap_host::{AudioPortFlags, AudioPortInfo, ChannelLayout};
 
     let port = AudioPortInfo {
         id: 0,
         name: "Main".to_string(),
-        channel_count: 2,
+        layout: ChannelLayout::Stereo,
         flags: AudioPortFlags::MAIN | AudioPortFlags::SUPPORTS_64BIT,
-        port_type: AudioPortType::Stereo,
         in_place_pair_id: u32::MAX,
     };
 
     assert!(port.flags.contains(AudioPortFlags::MAIN));
-    assert_eq!(port.channel_count, 2);
-    assert_eq!(port.port_type, AudioPortType::Stereo);
+    assert_eq!(port.layout, ChannelLayout::Stereo);
+    assert_eq!(port.layout.count(), 2);
 }
 
 #[test]

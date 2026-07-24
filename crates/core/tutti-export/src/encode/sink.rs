@@ -3,14 +3,15 @@
 //! Used by the streaming export path: the render driver pushes `[f32; 2]` frame
 //! blocks (already dithered by a [`DitherOut`](crate::process::DitherOut)) to a
 //! [`StreamingEncoder`], which writes them incrementally. The encoder knows its
-//! own [`ChannelMode`] and folds to mono at the file boundary if asked.
+//! own [`ChannelLayout`] and folds to mono at the file boundary if asked.
 //!
 //! Encoders that can stream (currently WAV) implement the trait. Encoders
 //! that cannot (AIFF, OGG at present) are not wired into the opener — the
 //! opener returns `UnsupportedFormat` for them.
 
 use crate::error::{Error, Result};
-use crate::options::{AudioFormat, BitDepth, ChannelMode, Flac, Ogg};
+use crate::options::{AudioFormat, BitDepth, Flac, Ogg};
+use tutti_types::ChannelLayout;
 use std::path::Path;
 
 /// Accepts stereo `[f32; 2]` frame blocks and encodes them incrementally.
@@ -30,7 +31,7 @@ pub(crate) fn open_stream_encoder(
     format: AudioFormat,
     sample_rate: u32,
     bit_depth: BitDepth,
-    channels: ChannelMode,
+    channels: ChannelLayout,
     _flac: Flac,
     _ogg: Ogg,
 ) -> Result<Box<dyn StreamingEncoder>> {

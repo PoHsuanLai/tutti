@@ -36,8 +36,10 @@
 //! let meta = plugin.metadata().clone();
 //! let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, 512);
 //!
-//! let inputs: Vec<Vec<f32>> = (0..meta.num_inputs).map(|_| vec![0.0; 512]).collect();
-//! let mut outputs: Vec<Vec<f32>> = (0..meta.num_outputs).map(|_| vec![0.0; 512]).collect();
+//! let inputs: Vec<Vec<f32>> =
+//!     (0..meta.num_inputs.count()).map(|_| vec![0.0; 512]).collect();
+//! let mut outputs: Vec<Vec<f32>> =
+//!     (0..meta.num_outputs.count()).map(|_| vec![0.0; 512]).collect();
 //!
 //! let in_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
 //! let mut out_refs: Vec<&mut [f32]> =
@@ -73,8 +75,8 @@ pub use host::ParameterChange;
 pub use instance::Vst2Instance;
 pub use scratch::RenderScratch;
 pub use types::{
-    EditorSize, MidiEvent, MidiEventVec, ParameterInfo, PluginInfo, ProcessContext, TransportInfo,
-    Vst2Category, WindowHandle,
+    ChannelLayout, EditorSize, MidiEvent, MidiEventVec, ParameterInfo, PluginInfo, ProcessContext,
+    TransportInfo, Vst2Category, WindowHandle,
 };
 
 // Test-only global allocator for RT-safety regression tests. Panics on

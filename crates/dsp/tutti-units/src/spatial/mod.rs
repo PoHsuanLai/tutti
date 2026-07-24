@@ -5,8 +5,17 @@ pub use types::ChannelLayout;
 // Lives here because spatial is the only consumer.
 mod smoothing;
 
-mod binaural_panner;
 mod nodes;
 mod vbap_panner;
 
-pub use nodes::{BinauralPannerNode, SpatialPannerNode};
+#[cfg(feature = "hrtf")]
+mod hrtf_node;
+#[cfg(feature = "hrtf")]
+mod hrtf_panner;
+
+pub use nodes::SpatialPannerNode;
+
+#[cfg(feature = "hrtf")]
+pub use hrtf_node::HrtfBinauralNode;
+#[cfg(feature = "hrtf")]
+pub use hrtf_panner::HrtfBinauralError;

@@ -232,7 +232,6 @@ impl Gate {
             .release
             .store(Seconds(seconds.into().get().max(0.0)));
     }
-
 }
 
 impl AudioUnit for Gate {

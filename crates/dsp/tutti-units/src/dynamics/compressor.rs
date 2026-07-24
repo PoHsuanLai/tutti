@@ -258,7 +258,6 @@ impl Compressor {
     pub fn envelope_level(&self) -> f32 {
         self.core.envelope_level()
     }
-
 }
 
 impl AudioUnit for Compressor {

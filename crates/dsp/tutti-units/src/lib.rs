@@ -51,7 +51,9 @@ pub use param_ports::ParamPorts;
 #[cfg(feature = "spatial")]
 mod spatial;
 #[cfg(feature = "spatial")]
-pub use spatial::{BinauralPannerNode, ChannelLayout, SpatialPannerNode};
+pub use spatial::{ChannelLayout, SpatialPannerNode};
+#[cfg(feature = "hrtf")]
+pub use spatial::{HrtfBinauralError, HrtfBinauralNode};
 
 mod modulation;
 pub use modulation::{ChorusNode, FlangerNode, PhaserNode, StereoPhaserNode};

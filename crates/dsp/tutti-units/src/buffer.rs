@@ -146,4 +146,3 @@ impl MonotonicMinDeque {
         self.entries.is_empty()
     }
 }
-

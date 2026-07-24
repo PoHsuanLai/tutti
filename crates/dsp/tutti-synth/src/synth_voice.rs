@@ -51,6 +51,12 @@ impl SynthVoice {
     pub(crate) fn channel(&self) -> u8 {
         self.channel
     }
+    /// The voice's base (pre-bend) frequency — reflects any Pitch 7.25 / 7.9
+    /// tuning override. Observability for tests.
+    #[cfg(test)]
+    pub(crate) fn base_note_freq(&self) -> Hz {
+        self.base_note_freq
+    }
     pub(crate) fn is_active(&self) -> bool {
         self.active
     }
@@ -387,6 +393,18 @@ impl SynthVoice {
     /// Set by the per-note pitch-bend sensitivity RPN (M2-104 §7.4.13).
     pub(crate) fn set_mpe_pitch_bend_range(&mut self, range: Semitones) {
         self.mpe_pitch_bend_range = range;
+    }
+
+    /// Override this voice's pitch to an absolute frequency (M2-104 §7.4.15.2/3:
+    /// Registered Per-Note Controller #3 Pitch 7.25 and Note-On Attribute #3
+    /// Pitch 7.9). The note number loses its pitch meaning and becomes an index;
+    /// `freq` is the sounding pitch. This updates `base_note_freq` so per-note /
+    /// channel pitch bend correctly acts as an **offset from** the overridden
+    /// pitch (per the spec), and drives the oscillators to it immediately.
+    pub(crate) fn set_tuning_freq(&mut self, freq: impl Into<Hz>, unison: Option<&UnisonEngine>) {
+        let freq = freq.into();
+        self.base_note_freq = freq;
+        self.set_pitch(freq, unison);
     }
 
     fn apply_mpe_modulation(&mut self, unison: Option<&UnisonEngine>) {

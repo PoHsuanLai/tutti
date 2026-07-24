@@ -15,6 +15,21 @@ use alloc::vec::Vec;
 
 const FINISHED_NOTES_CAPACITY: usize = 16;
 
+/// Convert a Q7.25 fixed-point pitch (Registered Per-Note Controller #3, M2-104
+/// §7.4.15.2) to a fractional MIDI note number: 7 integer bits = the 12-TET note,
+/// 25 fractional bits = fraction of one semitone (HCU).
+#[inline]
+fn q7_25_to_fractional_note(bits: u32) -> f32 {
+    bits as f32 / (1u32 << 25) as f32
+}
+
+/// Convert a Q7.9 fixed-point pitch (Note-On Attribute #3, M2-104 §7.4.15.3) to a
+/// fractional MIDI note number: 7 integer bits + 9 fractional bits.
+#[inline]
+fn q7_9_to_fractional_note(bits: u16) -> f32 {
+    bits as f32 / (1u16 << 9) as f32
+}
+
 /// Polyphonic synthesizer combining tutti-synth building blocks with FunDSP.
 ///
 /// Construct one from a [`SynthConfig`] via [`PolySynth::new`]. The synth always
@@ -206,7 +221,7 @@ impl PolySynth {
 
     fn process_midi_event(&mut self, event: &MidiEvent) {
         use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
-        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::channel_voice2::{ChannelVoice2 as Cv2, NoteAttribute};
         use tutti_midi_types::midi2::{Channeled, UmpMessage};
 
         // `normalize` folds velocity-0 NoteOn→NoteOff and promotes any inbound
@@ -221,6 +236,13 @@ impl PolySynth {
             Cv2::NoteOn(m) => {
                 let note = u8::from(m.note_number());
                 self.handle_note_on(note, u16_to_unit_f32(m.velocity()), channel);
+                // Note-On Attribute #3: Pitch 7.9 (M2-104 §7.4.15.3) — an absolute
+                // per-note tuning override delivered at note start. Applied after
+                // allocation so it lands on the voice this note just claimed.
+                if let Some(NoteAttribute::Pitch7_9(p)) = m.attribute() {
+                    let id = NoteId::from_channel_note(channel, note);
+                    self.set_voice_tuning(id, q7_9_to_fractional_note(p.to_bits()));
+                }
             }
             Cv2::NoteOff(m) => {
                 self.handle_note_off(u8::from(m.note_number()), channel);
@@ -276,6 +298,14 @@ impl PolySynth {
                     Controller::Brightness(data)
                     | Controller::SoundController { index: 5, data } => {
                         self.set_voice_mpe_slide(id, u32_to_unit_f32(data));
+                    }
+                    // Registered Per-Note Controller #3: Pitch 7.25 (M2-104
+                    // §7.4.15.2) — an absolute per-note tuning override. The note
+                    // number becomes an index; the Q7.25 value is the sounding
+                    // pitch (integer = 12-TET note, fraction = fraction of a
+                    // semitone). Pitch bend then offsets from it.
+                    Controller::Pitch7_25(v) => {
+                        self.set_voice_tuning(id, q7_25_to_fractional_note(v.to_bits()));
                     }
                     _ => {}
                 }
@@ -405,6 +435,20 @@ impl PolySynth {
     /// MIDI 2.0 per-note gain (per-note Volume / CC7): only the addressed voice.
     fn set_voice_mpe_gain(&mut self, id: NoteId, value: f32) {
         self.with_voice_for_id(id, |v| v.set_mpe_gain(value));
+    }
+
+    /// Absolute per-note tuning override (Pitch 7.25 / 7.9). `fractional_note` is
+    /// the target as a fractional MIDI note number (integer = 12-TET note, e.g.
+    /// 69.0 = A440); the voice's tuning table maps it to a frequency. Pitch bend
+    /// then offsets from this. Only the addressed voice is retuned.
+    fn set_voice_tuning(&mut self, id: NoteId, fractional_note: f32) {
+        let freq = self.config.tuning.fractional_note_to_freq(fractional_note);
+        // Borrow `voices` and `unison` disjointly (can't hold a `&self.unison`
+        // across the `&mut self` in `with_voice_for_id`).
+        if let Some(i) = self.voice_index_for_id(id) {
+            let unison = self.unison.as_ref();
+            self.voices[i].set_tuning_freq(tutti_core::Hz(freq), unison);
+        }
     }
 
     /// MIDI 2.0 Per-Note Management *Reset* (M2-104 §7.4.15): snap the addressed
@@ -1935,6 +1979,58 @@ mod tests {
             bent(&synth, 64) > 40.0,
             "note 64 (unaddressed) must keep its bend, got {}",
             bent(&synth, 64)
+        );
+    }
+
+    #[test]
+    fn test_pitch_7_25_retunes_only_the_addressed_note() {
+        // Registered Per-Note Controller #3: Pitch 7.25 (M2-104 §7.4.15.2) sets an
+        // absolute pitch for the addressed note. Note 60 retuned to note 69.0
+        // (A440) should sound at 440 Hz; another note is untouched.
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 4,
+            voice_mode: VoiceMode::Poly,
+            oscillator: OscillatorType::Sine,
+            envelope: EnvelopeConfig {
+                attack: 0.001,
+                decay: 0.0,
+                sustain: 1.0,
+                release: 0.1,
+            },
+            mpe_enabled: true,
+            ..Default::default()
+        });
+
+        queue_midi(&synth, &[ev_note_on(1, 60, 100), ev_note_on(1, 64, 100)]);
+        let mut output = [0.0f32; 2];
+        synth.tick(&[], &mut output);
+
+        // Pitch 7.25 for note 60 = 69.0 (A440). Q7.25: 69 << 25. Registered
+        // per-note controller index 3 (Pitch 7.25).
+        let pitch = MidiEvent::per_note_controller(0, 1, 60, 3, 69u32 << 25, true);
+        queue_midi(&synth, &[pitch]);
+        synth.tick(&[], &mut output);
+
+        let freq = |synth: &PolySynth, note: u8| {
+            synth
+                .voices
+                .iter()
+                .find(|v| v.is_active() && v.note() == note)
+                .unwrap()
+                .base_note_freq()
+                .get()
+        };
+        assert!(
+            (freq(&synth, 60) - 440.0).abs() < 1.0,
+            "note 60 retuned to A440, got {}",
+            freq(&synth, 60)
+        );
+        // Note 64's default pitch (~329.6 Hz) must be untouched.
+        assert!(
+            (freq(&synth, 64) - 329.6).abs() < 2.0,
+            "note 64 must keep its default pitch, got {}",
+            freq(&synth, 64)
         );
     }
 

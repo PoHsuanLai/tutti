@@ -62,8 +62,8 @@ pub use engine::Engine;
 
 pub mod transport;
 pub use transport::{
-    beat_from_ports, ClickNode, ClickSettings, ClickState, LoopRange, MetronomeMode,
-    MotionEvent, MotionFsm, MotionState, OfflineTimeline, OfflineTimelineConfig, QueueFull,
+    beat_from_ports, ClickNode, ClickSettings, ClickState, FadeOut, LoopRange, MetronomeMode,
+    MotionEvent, MotionFsm, MotionState, OfflineTimeline, OfflineTimelineConfig, QueueFull, Then,
     Timeline, Transport, TransportClock, TransportSettings, TransportState, BEAT_PORTS,
 };
 

@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use crossbeam_queue::ArrayQueue;
 
-use super::fsm::{LocateState, TransitionResult, TransportFsm};
+use super::fsm::{DeclickOutcome, TransitionResult, TransportFsm};
 use super::position::MusicalPosition;
 use super::settings::TransportSettings;
 use super::state::{Declick, SeekSlot};
@@ -31,31 +31,109 @@ use crate::{AtomicU8, AudioThreadCell};
 
 pub use super::fsm::MotionState;
 
+/// How a motion change reaches the output.
+///
+/// The transport's only real fade decision: ramp the gain to zero first, or
+/// switch on the next buffer. This was previously encoded by having two
+/// variants per verb (`Stop`/`StopNow`, `Locate`/`LocateWithDeclick`) — a
+/// parameter promoted to a type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FadeOut {
+    /// Ramp out over the declick window, then complete the action. What a
+    /// user-facing button should almost always be.
+    #[default]
+    Declick,
+    /// Take effect on the next buffer. Clicks unless output is already silent.
+    Immediate,
+}
+
+/// What the transport should be doing once a locate lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Then {
+    /// Stay (or become) stopped at the target.
+    #[default]
+    Stop,
+    /// Roll from the target.
+    Roll,
+    /// Keep whatever the transport was doing — a locate while rolling keeps
+    /// rolling, a locate while stopped stays stopped.
+    Keep,
+}
+
 /// A requested transport transition.
 ///
 /// Every variant is a genuine state-machine input — the FSM may reject it
-/// (`Play` while already rolling does nothing) or defer it (`Stop` while
-/// rolling starts a declick fade first). Settings changes are deliberately
-/// *not* here; see [`TransportSettings`](super::TransportSettings).
+/// (`Play` while already rolling does nothing) or defer it (a `Declick` stop
+/// while rolling fades out first). Settings changes are deliberately *not*
+/// here; see [`TransportSettings`](super::TransportSettings).
+///
+/// `fade` and `then` are orthogonal: `fade` is about the output gain, `then`
+/// about the motion after landing. Neither constrains the other, which is what
+/// makes them parameters rather than more variants.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MotionEvent {
     Play,
-    /// Stop after a declick fade-out. This is what a user-facing "stop"
-    /// should almost always be — see [`MotionEvent::StopNow`].
-    Stop,
-    /// Stop on the next buffer with no fade. Clicks unless the output is
-    /// already silent.
-    StopNow,
-    /// Jump to a beat, staying stopped.
-    Locate(f64),
-    /// Jump to a beat, fading out first if currently rolling.
-    LocateWithDeclick(f64),
-    /// Jump to a beat and start rolling.
-    LocateAndPlay(f64),
+    /// Stop where we are.
+    Stop { fade: FadeOut },
+    /// Jump to `beat`.
+    Locate {
+        beat: f64,
+        fade: FadeOut,
+        then: Then,
+    },
     FastForward,
     Rewind,
     /// Leave fast-forward/rewind, returning to the previous motion.
     EndScrub,
+}
+
+impl MotionEvent {
+    /// Stop with a fade-out. The default stop.
+    pub const fn stop() -> Self {
+        Self::Stop {
+            fade: FadeOut::Declick,
+        }
+    }
+
+    /// Stop on the next buffer. For teardown, and for tests that assert the
+    /// unfaded path.
+    pub const fn stop_now() -> Self {
+        Self::Stop {
+            fade: FadeOut::Immediate,
+        }
+    }
+
+    /// Jump to `beat` without disturbing the current motion — the scrub-bar
+    /// seek.
+    pub const fn locate(beat: f64) -> Self {
+        Self::Locate {
+            beat,
+            fade: FadeOut::Declick,
+            then: Then::Keep,
+        }
+    }
+
+    /// Jump to `beat` and roll from there.
+    pub const fn locate_and_play(beat: f64) -> Self {
+        Self::Locate {
+            beat,
+            fade: FadeOut::Declick,
+            then: Then::Roll,
+        }
+    }
+
+    /// Fade out, then return to `beat` when the fade completes.
+    ///
+    /// The Stop button. Sending a stop and a locate as two events drains both
+    /// in one callback, so the seek lands immediately and the fade ramps down
+    /// audio rendered from the *new* position — protecting nothing.
+    pub const fn stop_and_return(beat: f64) -> Self {
+        Self::Locate {
+            beat,
+            fade: FadeOut::Declick,
+            then: Then::Stop,
+        }
+    }
 }
 
 /// Capacity of the UI → audio-thread command queue. Transport commands are
@@ -203,51 +281,61 @@ impl MotionFsm {
         match result {
             TransitionResult::MotionChanged(motion) => {
                 self.set_motion(motion);
-                // A direct state change cancels any fade in progress.
-                self.declick.clear();
+                // A settled state change cancels any fade. Retargeting one
+                // declick state to another must NOT clear it — that ramp is
+                // mid-count, and restarting it would step the gain back to
+                // full and click.
+                if !is_declicking(motion) {
+                    self.declick.clear();
+                }
             }
-            TransitionResult::DeclickStarted(motion) => {
+            TransitionResult::DeclickStarted {
+                motion, samples, ..
+            } => {
                 self.set_motion(motion);
                 // Audio keeps playing while the gain ramps to zero.
-                let total = self.fsm.borrow().declick_samples() as u32;
-                self.declick.start(total);
+                self.declick.start(samples);
             }
-            TransitionResult::Locating(pos) => {
+            TransitionResult::Located { pos, motion } => {
                 self.locate_to(pos);
-                if self.fsm.borrow().locate_state() == LocateState::LocateAndRoll {
-                    self.set_motion(MotionState::Rolling);
-                }
+                self.set_motion(motion);
+                self.declick.clear();
             }
         }
     }
 
     /// Called by the processor when a declick fade reaches zero: finish the
     /// action the fade was covering for.
+    ///
+    /// Driven by the outcome the FSM parked when the fade started, not by
+    /// reading the published mirror back — the mirror is a projection, and
+    /// dispatching on it is how a desynced FSM used to go unnoticed.
     pub fn complete_declick(&self) {
         self.declick.clear();
 
-        match self.motion() {
-            MotionState::DeclickToStop => self.set_motion(MotionState::Stopped),
-            MotionState::DeclickToLocate => {
-                let (pending, roll) = {
-                    let fsm = self.fsm.borrow();
-                    (
-                        fsm.pending_locate(),
-                        fsm.locate_state() == LocateState::LocateAndRoll,
-                    )
-                };
-                if let Some(pos) = pending {
-                    self.locate_to(pos);
-                }
-                self.set_motion(if roll {
-                    MotionState::Rolling
-                } else {
-                    MotionState::Stopped
-                });
+        let outcome = { self.fsm.borrow_mut().take_declick_outcome() };
+        let Some(outcome) = outcome else {
+            return;
+        };
+
+        match outcome {
+            DeclickOutcome::Stop => self.set_motion(MotionState::Stopped),
+            DeclickOutcome::Locate { pos, motion } => {
+                self.locate_to(pos);
+                self.set_motion(motion);
             }
-            _ => {}
         }
     }
+}
+
+/// Whether `motion` is a fade in progress. A retarget between two declick
+/// states must leave the ramp counting; only a settled state clears it.
+#[inline]
+fn is_declicking(motion: MotionState) -> bool {
+    matches!(
+        motion,
+        MotionState::DeclickToStop | MotionState::DeclickToLocate
+    )
 }
 
 #[cfg(test)]
@@ -293,7 +381,7 @@ mod tests {
         let _ = m.try_send(MotionEvent::Play);
         m.drain();
 
-        let _ = m.try_send(MotionEvent::Stop);
+        let _ = m.try_send(MotionEvent::stop());
         m.drain();
         assert_eq!(m.motion(), MotionState::DeclickToStop);
         assert!(m.declick.is_active(), "Stop must fade out");
@@ -304,7 +392,7 @@ mod tests {
 
         let _ = m.try_send(MotionEvent::Play);
         m.drain();
-        let _ = m.try_send(MotionEvent::StopNow);
+        let _ = m.try_send(MotionEvent::stop_now());
         m.drain();
         assert!(m.is_stopped(), "StopNow stops immediately");
         assert!(!m.declick.is_active(), "StopNow must not fade");
@@ -313,7 +401,7 @@ mod tests {
     #[test]
     fn locate_requests_a_seek_and_moves_the_beat() {
         let m = fsm();
-        let _ = m.try_send(MotionEvent::Locate(8.0));
+        let _ = m.try_send(MotionEvent::locate(8.0));
         m.drain();
 
         assert_eq!(m.seek.take(), Some(Beat(8.0)), "the clock must see a seek");
@@ -323,11 +411,71 @@ mod tests {
     #[test]
     fn locate_and_play_rolls_after_the_jump() {
         let m = fsm();
-        let _ = m.try_send(MotionEvent::LocateAndPlay(4.0));
+        let _ = m.try_send(MotionEvent::locate_and_play(4.0));
         m.drain();
 
         assert_eq!(m.seek.take(), Some(Beat(4.0)));
         assert!(m.is_playing());
+
+        // D3 regression. The assertion above passed even while the FSM was
+        // desynced from its published mirror — the mirror said `Rolling` while
+        // the FSM still held `Stopped`, so both stop arms hit their `None` case
+        // and the transport could not be stopped at all. Proving it *stops* is
+        // what actually pins the fix.
+        let _ = m.try_send(MotionEvent::stop_now());
+        m.drain();
+        assert!(
+            m.is_stopped(),
+            "a transport that started rolling must be stoppable"
+        );
+    }
+
+    /// D1: the Stop button used to send `Stop` + `Locate(0.0)`. `drain` pops
+    /// both in one callback, so the seek landed immediately while 480 samples of
+    /// fade remained — the declick then ramped down audio rendered from the new
+    /// position, protecting nothing, and the click it exists to suppress
+    /// happened unmasked at the seek instant.
+    ///
+    /// One event now carries both halves, and the jump waits for silence.
+    #[test]
+    fn stop_and_return_holds_the_playhead_until_the_fade_ends() {
+        let m = fsm();
+        let _ = m.try_send(MotionEvent::Play);
+        m.drain();
+        m.settings.set_beat(12.0);
+
+        let _ = m.try_send(MotionEvent::stop_and_return(0.0));
+        m.drain();
+
+        assert_eq!(m.motion(), MotionState::DeclickToLocate);
+        assert!(m.declick.is_active(), "the fade must be armed");
+        assert_eq!(m.seek.take(), None, "the seek must wait for the fade");
+        assert_eq!(
+            m.settings.beat.load(Ordering::Acquire),
+            12.0,
+            "the playhead must not move while audio is still fading"
+        );
+
+        m.complete_declick();
+        assert_eq!(m.seek.take(), Some(Beat(0.0)), "the jump lands on silence");
+        assert_eq!(m.settings.beat.load(Ordering::Acquire), 0.0);
+        assert!(m.is_stopped());
+    }
+
+    /// Pressing Stop while already stopped has nothing to fade, so it returns
+    /// to zero immediately — matching the old two-event behaviour and the
+    /// standard DAW second-press-rewinds idiom.
+    #[test]
+    fn stop_and_return_from_a_stop_jumps_immediately() {
+        let m = fsm();
+        m.settings.set_beat(9.0);
+
+        let _ = m.try_send(MotionEvent::stop_and_return(0.0));
+        m.drain();
+
+        assert!(m.is_stopped());
+        assert_eq!(m.seek.take(), Some(Beat(0.0)));
+        assert!(!m.declick.is_active(), "nothing audible to fade");
     }
 
     #[test]
@@ -347,7 +495,7 @@ mod tests {
     fn send_all_preserves_order() {
         let m = fsm();
         assert!(m
-            .try_send_all([MotionEvent::Locate(16.0), MotionEvent::Play])
+            .try_send_all([MotionEvent::locate(16.0), MotionEvent::Play])
             .is_ok());
         m.drain();
 

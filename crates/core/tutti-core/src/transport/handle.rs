@@ -69,7 +69,7 @@ impl Transport {
 
 impl super::Timeline for Transport {
     fn beat(&self) -> Beat {
-        Beat(self.settings.beat())
+        self.settings.beat()
     }
 
     fn tempo(&self) -> Bpm {

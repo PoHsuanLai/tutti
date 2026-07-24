@@ -210,7 +210,7 @@ impl AudioNode for ClickNode {
             return [0.0, 0.0].into();
         }
 
-        let current_beat = self.transport.settings.beat();
+        let current_beat = self.transport.settings.beat().get();
         let beat_int = current_beat.floor() as i64;
 
         // Trigger click on new beat. The `beat_int != self.last_click_beat` check

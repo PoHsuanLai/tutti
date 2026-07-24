@@ -6,7 +6,6 @@ mod handle;
 mod meter;
 mod motion;
 mod offline;
-pub(crate) mod position;
 mod settings;
 mod state;
 

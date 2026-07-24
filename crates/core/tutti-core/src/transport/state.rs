@@ -14,7 +14,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::params::Beat;
+use crate::params::{Beat, BeatDuration};
 use crate::{AtomicBool, AtomicF64, AtomicU32};
 
 /// Number of ports a beat signal occupies: whole beats, then fraction.
@@ -97,7 +97,7 @@ impl LoopRange {
     /// Build a region, or `None` if it is empty or inverted.
     pub fn new(start: impl Into<Beat>, end: impl Into<Beat>) -> Option<Self> {
         let (start, end) = (start.into(), end.into());
-        (end.get() > start.get()).then_some(Self { start, end })
+        (end > start).then_some(Self { start, end })
     }
 
     #[inline]
@@ -112,26 +112,27 @@ impl LoopRange {
 
     /// Length in beats. Always positive, by construction.
     #[inline]
-    pub fn len(&self) -> f64 {
-        self.end.get() - self.start.get()
+    pub fn len(&self) -> BeatDuration {
+        self.end - self.start
     }
 
     #[inline]
     pub fn contains(&self, beat: Beat) -> bool {
-        beat.get() >= self.start.get() && beat.get() < self.end.get()
+        beat >= self.start && beat < self.end
     }
 
     /// Wrap `beat` back into the region, preserving overshoot.
     ///
-    /// The division is safe because `len()` is positive by construction — the
-    /// guard every caller used to write is now unnecessary.
+    /// The remainder is safe because `len()` is positive by construction — the
+    /// guard every caller used to write is now unnecessary. `rem_euclid` rather
+    /// than `%` so a beat below `start` wraps *into* the region instead of
+    /// landing outside it on the negative side.
     #[inline]
     pub fn wrap(&self, beat: Beat) -> Beat {
-        if beat.get() < self.end.get() {
+        if beat < self.end {
             return beat;
         }
-        let offset = (beat.get() - self.start.get()) % self.len();
-        Beat(self.start.get() + offset)
+        self.start + (beat - self.start).rem_euclid(self.len())
     }
 }
 

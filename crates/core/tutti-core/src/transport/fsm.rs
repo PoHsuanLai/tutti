@@ -1,7 +1,7 @@
 //! Transport state machine.
 
 use super::motion::{FadeOut, MotionEvent, Then};
-use super::position::MusicalPosition;
+use crate::params::Beat;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[repr(u8)]
@@ -71,7 +71,7 @@ pub(crate) enum DeclickOutcome {
     Stop,
     /// Jump to `pos`, landing in `motion`.
     Locate {
-        pos: MusicalPosition,
+        pos: Beat,
         motion: MotionState,
     },
 }
@@ -90,7 +90,7 @@ pub(crate) enum TransitionResult {
     MotionChanged(MotionState),
     /// Jump now, landing in `motion`.
     Located {
-        pos: MusicalPosition,
+        pos: Beat,
         motion: MotionState,
     },
     /// Fade out over `samples`, then perform `on_complete`.
@@ -159,7 +159,7 @@ impl TransportFsm {
     #[inline]
     fn locate_now(
         &mut self,
-        pos: MusicalPosition,
+        pos: Beat,
         motion: MotionState,
     ) -> Option<TransitionResult> {
         self.motion = motion;
@@ -248,7 +248,7 @@ impl TransportFsm {
             },
 
             MotionEvent::Locate { beat, fade, then } => {
-                let pos = MusicalPosition::from_beats(beat);
+                let pos = Beat(beat);
 
                 // Resolve `Keep` against the *settled* motion, so a locate
                 // during a fade means "whatever the fade was heading for",

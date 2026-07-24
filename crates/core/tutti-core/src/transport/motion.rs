@@ -24,9 +24,9 @@ use std::sync::Arc;
 use crossbeam_queue::ArrayQueue;
 
 use super::fsm::{DeclickOutcome, TransitionResult, TransportFsm};
-use super::position::MusicalPosition;
 use super::settings::TransportSettings;
 use super::state::{Declick, SeekSlot};
+use crate::params::Beat;
 use crate::{AtomicU8, AudioThreadCell};
 
 pub use super::fsm::MotionState;
@@ -272,9 +272,9 @@ impl MotionFsm {
             .store(motion == MotionState::Stopped, Ordering::Release);
     }
 
-    fn locate_to(&self, pos: MusicalPosition) {
-        self.settings.beat.store(pos.beats, Ordering::Release);
-        self.seek.request(pos.beats);
+    fn locate_to(&self, pos: Beat) {
+        self.settings.beat.store(pos.get(), Ordering::Release);
+        self.seek.request(pos);
     }
 
     fn publish(&self, result: TransitionResult) {

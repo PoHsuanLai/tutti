@@ -4,27 +4,17 @@ use crate::encode::sink::StreamingEncoder;
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
 use crate::options::{BitDepth, ChannelMode};
-use crate::process::Chunk;
+use crate::process::fold_frame;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
 use tutti_core::pcm::{f32_to_i16, f32_to_i24};
 
-pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
-    match audio {
-        Chunk::Stereo { left, right } => {
-            let spec = spec(request.sample_rate, request.bit_depth, ChannelMode::Stereo);
-            let mut writer = WavWriter::create(request.path, spec).map_err(io_err)?;
-            write_stereo(&mut writer, &left, &right, request.bit_depth)?;
-            writer.finalize().map_err(io_err)?;
-        }
-        Chunk::Mono(samples) => {
-            let spec = spec(request.sample_rate, request.bit_depth, ChannelMode::Mono);
-            let mut writer = WavWriter::create(request.path, spec).map_err(io_err)?;
-            write_mono(&mut writer, &samples, request.bit_depth)?;
-            writer.finalize().map_err(io_err)?;
-        }
-    }
+pub(crate) fn encode(frames: &[[f32; 2]], request: &EncodeRequest<'_>) -> Result<()> {
+    let spec = spec(request.sample_rate, request.bit_depth, request.channels);
+    let mut writer = WavWriter::create(request.path, spec).map_err(io_err)?;
+    write_frames(&mut writer, frames, request.bit_depth, request.channels)?;
+    writer.finalize().map_err(io_err)?;
     Ok(())
 }
 
@@ -35,22 +25,22 @@ pub(crate) fn open_stream(
     channels: ChannelMode,
 ) -> Result<Box<dyn StreamingEncoder>> {
     let writer = WavWriter::create(path, spec(sample_rate, bit_depth, channels)).map_err(io_err)?;
-    Ok(Box::new(StreamingWavEncoder { writer, bit_depth }))
+    Ok(Box::new(StreamingWavEncoder {
+        writer,
+        bit_depth,
+        channels,
+    }))
 }
 
 struct StreamingWavEncoder {
     writer: WavWriter<BufWriter<std::fs::File>>,
     bit_depth: BitDepth,
+    channels: ChannelMode,
 }
 
 impl StreamingEncoder for StreamingWavEncoder {
-    fn write_chunk(&mut self, chunk: Chunk) -> Result<()> {
-        match chunk {
-            Chunk::Stereo { left, right } => {
-                write_stereo(&mut self.writer, &left, &right, self.bit_depth)
-            }
-            Chunk::Mono(samples) => write_mono(&mut self.writer, &samples, self.bit_depth),
-        }
+    fn write_frames(&mut self, frames: &[[f32; 2]]) -> Result<()> {
+        write_frames(&mut self.writer, frames, self.bit_depth, self.channels)
     }
 
     fn finalize(self: Box<Self>) -> Result<()> {
@@ -73,59 +63,31 @@ fn spec(sample_rate: u32, bit_depth: BitDepth, channels: ChannelMode) -> WavSpec
     }
 }
 
-fn write_stereo<W: Write + Seek>(
+fn write_frames<W: Write + Seek>(
     writer: &mut WavWriter<W>,
-    left: &[f32],
-    right: &[f32],
+    frames: &[[f32; 2]],
     bit_depth: BitDepth,
+    channels: ChannelMode,
 ) -> Result<()> {
-    if left.len() != right.len() {
-        return Err(Error::InvalidData(
-            "Left and right channels have different lengths".into(),
-        ));
-    }
-    match bit_depth {
-        BitDepth::Int16 => {
-            for (&l, &r) in left.iter().zip(right) {
-                writer.write_sample(f32_to_i16(l)).map_err(io_err)?;
-                writer.write_sample(f32_to_i16(r)).map_err(io_err)?;
+    // One closure quantizes a sample to the target bit depth; the channel loop
+    // decides how many samples per frame (folding to mono when asked).
+    let emit = |writer: &mut WavWriter<W>, s: f32| -> Result<()> {
+        match bit_depth {
+            BitDepth::Int16 => writer.write_sample(f32_to_i16(s)).map_err(io_err),
+            BitDepth::Int24 => writer.write_sample(f32_to_i24(s)).map_err(io_err),
+            BitDepth::Float32 => writer.write_sample(s).map_err(io_err),
+        }
+    };
+    match channels {
+        ChannelMode::Stereo => {
+            for &[l, r] in frames {
+                emit(writer, l)?;
+                emit(writer, r)?;
             }
         }
-        BitDepth::Int24 => {
-            for (&l, &r) in left.iter().zip(right) {
-                writer.write_sample(f32_to_i24(l)).map_err(io_err)?;
-                writer.write_sample(f32_to_i24(r)).map_err(io_err)?;
-            }
-        }
-        BitDepth::Float32 => {
-            for (&l, &r) in left.iter().zip(right) {
-                writer.write_sample(l).map_err(io_err)?;
-                writer.write_sample(r).map_err(io_err)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn write_mono<W: Write + Seek>(
-    writer: &mut WavWriter<W>,
-    samples: &[f32],
-    bit_depth: BitDepth,
-) -> Result<()> {
-    match bit_depth {
-        BitDepth::Int16 => {
-            for &s in samples {
-                writer.write_sample(f32_to_i16(s)).map_err(io_err)?;
-            }
-        }
-        BitDepth::Int24 => {
-            for &s in samples {
-                writer.write_sample(f32_to_i24(s)).map_err(io_err)?;
-            }
-        }
-        BitDepth::Float32 => {
-            for &s in samples {
-                writer.write_sample(s).map_err(io_err)?;
+        ChannelMode::Mono => {
+            for &frame in frames {
+                emit(writer, fold_frame(frame))?;
             }
         }
     }
@@ -160,6 +122,33 @@ mod tests {
     }
 
     #[test]
+    fn export_buffers_mono_folds_and_averages_channels() {
+        use crate::{ChannelMode, Export};
+
+        // Distinct L/R so the mono fold (average) is observable.
+        let left = vec![1.0, 0.0, -1.0];
+        let right = vec![0.0, 0.0, 1.0];
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mono.wav");
+        Export::buffers(left, right, 44100.0)
+            .bit_depth(BitDepth::Float32)
+            .channels(ChannelMode::Mono)
+            .to_file(&path)
+            .run()
+            .unwrap();
+
+        let reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.spec().channels, 1, "mono file has one channel");
+        let samples: Vec<f32> = reader.into_samples::<f32>().map(|s| s.unwrap()).collect();
+        assert_eq!(samples.len(), 3, "one sample per frame");
+        // (1+0)/2, (0+0)/2, (-1+1)/2
+        assert!((samples[0] - 0.5).abs() < 1e-6);
+        assert!(samples[1].abs() < 1e-6);
+        assert!(samples[2].abs() < 1e-6);
+    }
+
+    #[test]
     fn streaming_wav_encoder_writes_expected_frames() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("streaming.wav");
@@ -167,17 +156,9 @@ mod tests {
         let mut encoder = open_stream(&path, 44100, BitDepth::Int16, ChannelMode::Stereo).unwrap();
 
         encoder
-            .write_chunk(Chunk::Stereo {
-                left: vec![0.0, 0.25, 0.5],
-                right: vec![0.1, -0.1, 0.0],
-            })
+            .write_frames(&[[0.0, 0.1], [0.25, -0.1], [0.5, 0.0]])
             .unwrap();
-        encoder
-            .write_chunk(Chunk::Stereo {
-                left: vec![-0.5, 0.75],
-                right: vec![0.3, -0.3],
-            })
-            .unwrap();
+        encoder.write_frames(&[[-0.5, 0.3], [0.75, -0.3]]).unwrap();
         encoder.finalize().unwrap();
 
         let reader = hound::WavReader::open(&path).unwrap();

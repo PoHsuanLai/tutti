@@ -6,7 +6,7 @@
 
 use crate::encode;
 use crate::error::Result;
-use crate::options::{output_setters, AudioFormat, Output};
+use crate::options::{output_setters, AudioFormat, ChannelMode, Output};
 use crate::process;
 use crate::progress::{Phase, PhaseGuard};
 use crate::run::{Rendered, Run, Written};
@@ -54,6 +54,17 @@ fn output_sample_rate(b: &BufferExport) -> u32 {
     b.output.sample_rate(b.sample_rate)
 }
 
+fn mastering(b: &BufferExport, target_rate: u32) -> process::Mastering {
+    process::Mastering {
+        source_sample_rate: b.sample_rate.round() as u32,
+        target_sample_rate: target_rate,
+        normalize: b.output.normalize,
+        dither: b.output.dither,
+        bit_depth: b.output.bit_depth,
+        resample_quality: b.output.resample_quality,
+    }
+}
+
 fn run_to_file(
     b: BufferExport,
     path: PathBuf,
@@ -65,28 +76,19 @@ fn run_to_file(
         None => AudioFormat::from_path(&path)?,
     };
 
-    let (processed, target_rate) = {
+    let (frames, target_rate) = {
         let _phase = PhaseGuard::new(on_progress, Phase::Process);
-        process::master_collected(
-            b.left.clone(),
-            b.right.clone(),
-            b.sample_rate.round() as u32,
-            target_rate,
-            b.output.normalize,
-            b.output.resample_quality,
-            b.output.dither,
-            b.output.bit_depth,
-            b.output.channels,
-        )?
+        process::master_collected(b.left.clone(), b.right.clone(), &mastering(&b, target_rate))?
     };
 
     encode::encode(
-        processed,
+        &frames,
         encode::EncodeRequest {
             path: &path,
             format,
             sample_rate: target_rate,
             bit_depth: b.output.bit_depth,
+            channels: b.output.channels,
             flac: b.output.flac,
             ogg: b.output.ogg,
         },
@@ -102,23 +104,22 @@ fn run_to_buffers(
     on_progress: &(dyn Fn(Phase, f32) + Send + Sync),
 ) -> Result<Rendered> {
     let target_rate = output_sample_rate(&b);
-    let (processed, target_rate) = {
+    let (frames, target_rate) = {
         let _phase = PhaseGuard::new(on_progress, Phase::Process);
-        process::master_collected(
-            b.left.clone(),
-            b.right.clone(),
-            b.sample_rate.round() as u32,
-            target_rate,
-            b.output.normalize,
-            b.output.resample_quality,
-            b.output.dither,
-            b.output.bit_depth,
-            b.output.channels,
-        )?
+        process::master_collected(b.left.clone(), b.right.clone(), &mastering(&b, target_rate))?
     };
-    let (left, right) = match processed {
-        process::Chunk::Stereo { left, right } => (left, right),
-        process::Chunk::Mono(samples) => (samples.clone(), samples),
+    // Deinterleave the mastered frames back to planes. Mono folds each frame
+    // and duplicates it into both planes so a mono request still round-trips as
+    // a (left, right) pair.
+    let (left, right) = match b.output.channels {
+        ChannelMode::Stereo => (
+            frames.iter().map(|&[l, _]| l).collect(),
+            frames.iter().map(|&[_, r]| r).collect(),
+        ),
+        ChannelMode::Mono => {
+            let mono: Vec<f32> = frames.iter().map(|&f| process::fold_frame(f)).collect();
+            (mono.clone(), mono)
+        }
     };
     Ok(Rendered {
         left,

@@ -3,24 +3,30 @@
 
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
-use crate::options::BitDepth;
-use crate::process::Chunk;
+use crate::options::{BitDepth, ChannelMode};
+use crate::process::fold_frame;
 use std::io::Write;
 use tutti_core::pcm::{f32_to_i16, f32_to_i24};
 
-pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
+pub(crate) fn encode(frames: &[[f32; 2]], request: &EncodeRequest<'_>) -> Result<()> {
     if request.bit_depth == BitDepth::Float32 {
         return Err(Error::UnsupportedFormat(
             "AIFF does not support 32-bit float (use AIFF-C for float)".into(),
         ));
     }
 
-    let channels: Vec<&[f32]> = match &audio {
-        Chunk::Stereo { left, right } => vec![left, right],
-        Chunk::Mono(samples) => vec![samples],
+    // Deinterleave (folding to mono when asked) into per-channel planes; the
+    // IFF writer wants planar access to compute chunk sizes.
+    let channels: Vec<Vec<f32>> = match request.channels {
+        ChannelMode::Stereo => vec![
+            frames.iter().map(|&[l, _]| l).collect(),
+            frames.iter().map(|&[_, r]| r).collect(),
+        ],
+        ChannelMode::Mono => vec![frames.iter().map(|&f| fold_frame(f)).collect()],
     };
+    let planes: Vec<&[f32]> = channels.iter().map(|c| c.as_slice()).collect();
 
-    write_aiff(request, &channels)
+    write_aiff(request, &planes)
 }
 
 fn write_aiff(request: &EncodeRequest<'_>, channels: &[&[f32]]) -> Result<()> {

@@ -3,8 +3,8 @@
 
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
-use crate::options::BitDepth;
-use crate::process::Chunk;
+use crate::options::{BitDepth, ChannelMode};
+use crate::process::fold_frame;
 use flacenc::bitsink::ByteSink;
 use flacenc::component::BitRepr;
 use flacenc::config::Encoder as EncoderConfig;
@@ -16,7 +16,7 @@ use std::io::Write;
 
 const BLOCK_SIZE: usize = 4096;
 
-pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
+pub(crate) fn encode(frames: &[[f32; 2]], request: &EncodeRequest<'_>) -> Result<()> {
     if request.bit_depth == BitDepth::Float32 {
         return Err(Error::UnsupportedFormat(
             "FLAC does not support 32-bit float".into(),
@@ -24,12 +24,19 @@ pub(crate) fn encode(audio: Chunk, request: &EncodeRequest<'_>) -> Result<()> {
     }
     let bits_per_sample = bits_for(request.bit_depth);
 
-    let (samples, channels) = match audio {
-        Chunk::Stereo { left, right } => (interleave(&left, &right, request.bit_depth), 2),
-        Chunk::Mono(samples) => (
-            samples
+    let (samples, channels): (Vec<i32>, usize) = match request.channels {
+        ChannelMode::Stereo => {
+            let mut out = Vec::with_capacity(frames.len() * 2);
+            for &[l, r] in frames {
+                out.push(f32_to_i32(l, request.bit_depth));
+                out.push(f32_to_i32(r, request.bit_depth));
+            }
+            (out, 2)
+        }
+        ChannelMode::Mono => (
+            frames
                 .iter()
-                .map(|&s| f32_to_i32(s, request.bit_depth))
+                .map(|&f| f32_to_i32(fold_frame(f), request.bit_depth))
                 .collect(),
             1,
         ),
@@ -67,15 +74,6 @@ fn bits_for(bit_depth: BitDepth) -> usize {
     }
 }
 
-fn interleave(left: &[f32], right: &[f32], bit_depth: BitDepth) -> Vec<i32> {
-    let mut out = Vec::with_capacity(left.len() * 2);
-    for (&l, &r) in left.iter().zip(right) {
-        out.push(f32_to_i32(l, bit_depth));
-        out.push(f32_to_i32(r, bit_depth));
-    }
-    out
-}
-
 #[inline]
 fn f32_to_i32(sample: f32, bit_depth: BitDepth) -> i32 {
     let clamped = sample.clamp(-1.0, 1.0);
@@ -91,16 +89,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn interleave_preserves_sample_values() {
-        let left = vec![0.0, 1.0];
-        let right = vec![0.5, -0.5];
-        let out = interleave(&left, &right, BitDepth::Int16);
-
-        assert_eq!(out.len(), 4);
-        assert_eq!(out[0], 0);
-        assert_eq!(out[1], 16383);
-        assert_eq!(out[2], 32767);
-        assert_eq!(out[3], -16383);
+    fn f32_to_i32_scales_to_bit_depth() {
+        assert_eq!(f32_to_i32(0.0, BitDepth::Int16), 0);
+        assert_eq!(f32_to_i32(0.5, BitDepth::Int16), 16383);
+        assert_eq!(f32_to_i32(1.0, BitDepth::Int16), 32767);
+        assert_eq!(f32_to_i32(-0.5, BitDepth::Int16), -16383);
     }
 
     #[test]

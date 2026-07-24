@@ -12,10 +12,10 @@
 
 use crate::encode;
 use crate::error::{Error, Result};
-use crate::options::{output_setters, AudioFormat, BitDepth, ChannelMode, Output};
-use crate::process::{StreamConfig, StreamProcessor};
+use crate::options::{output_setters, AudioFormat, Output};
+use crate::process::{DitherOut, Mastering};
 use crate::progress::{Phase, ProgressEmitter};
-use crate::render::{self, BufferingOut, Mastering, RenderOut, RenderRequest, StreamOut};
+use crate::render::{self, BufferingOut, EncoderOut, RenderOut, RenderRequest};
 use crate::run::{Rendered, Run, Written};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -216,27 +216,6 @@ impl GraphExport {
 // internal execution paths
 // ---------------------------------------------------------------------------
 
-/// Wrap already-mastered planar blocks as a [`Chunk`](crate::process::Chunk) for
-/// the encoder, folding to mono if requested. No dither/normalize — the caller
-/// (a `BufferingOut`) has already applied all mastering; this only picks the
-/// channel shape. `left`/`right` are equal for mono blocks the buffer emitted.
-fn raw_chunk(
-    left: &[f32],
-    right: &[f32],
-    channels: ChannelMode,
-    _bit_depth: BitDepth,
-) -> crate::process::Chunk {
-    use crate::process::Chunk;
-    match channels {
-        ChannelMode::Stereo => Chunk::Stereo {
-            left: left.to_vec(),
-            right: right.to_vec(),
-        },
-        // `BufferingOut` already mono-folded (both channels equal), so take one.
-        ChannelMode::Mono => Chunk::Mono(left.to_vec()),
-    }
-}
-
 /// Consume the net + render into stereo `Vec`s. `spec` is left untouched so
 /// the caller can still use it for the downstream process + encode stages.
 fn render_buffered(
@@ -279,7 +258,6 @@ fn run_to_file(
         normalize: spec.output.normalize,
         dither: spec.output.dither,
         bit_depth: spec.output.bit_depth,
-        channels: spec.output.channels,
         resample_quality: spec.output.resample_quality,
     };
 
@@ -294,7 +272,7 @@ fn run_to_file(
     // A buffering export writes at the resampled rate; a streaming export can't
     // resample, so it writes at the source rate. `target_rate` already resolves
     // to source when no resample was requested, so it's correct for both.
-    let mut encoder = encode::sink::open_stream_encoder(
+    let encoder = encode::sink::open_stream_encoder(
         &path,
         format,
         target_rate,
@@ -303,6 +281,7 @@ fn run_to_file(
         spec.output.flac,
         spec.output.ogg,
     )?;
+    let encoder_sink = EncoderOut::new(encoder);
 
     let timeline = spec.build_timeline();
     let request = RenderRequest {
@@ -316,50 +295,23 @@ fn run_to_file(
     let mut progress =
         ProgressEmitter::new(on_progress, Phase::Render, total_samples, spec.sample_rate);
 
-    // Both paths drive ONE render loop into an `AudioOut`. The sink stack is
-    // the only difference:
-    //   streaming → master per block in the closure, encode.
-    //   buffered  → collect raw in a `BufferingOut`; it runs the whole-signal
-    //               pass + the same per-block master at finalize, then feeds the
-    //               interleaved result into the bare encoding sink below.
-    // The sink defers its encoder error to finalize (the AudioOut contract).
-    let (render_result, sink_result) = {
-        let encoder_ref = &mut *encoder;
-
-        if buffered {
-            // Bare encoding sink: `BufferingOut` has already mastered, so this
-            // just encodes the finished stereo frames as a Chunk.
-            let bit_depth = spec.output.bit_depth;
-            let channels = spec.output.channels;
-            let inner = StreamOut::new(move |l: &[f32], r: &[f32]| {
-                let chunk = raw_chunk(l, r, channels, bit_depth);
-                encoder_ref
-                    .write_chunk(chunk)
-                    .map_err(|e| std::io::Error::other(e.to_string()))
-            });
-            let mut sink = BufferingOut::new(inner, mastering);
-            let render_result = render::render(request, &mut sink, &mut progress);
-            (render_result, sink.finalize())
-        } else {
-            let mut processor = StreamProcessor::new(StreamConfig {
-                dither: spec.output.dither,
-                bit_depth: spec.output.bit_depth,
-                channels: spec.output.channels,
-            });
-            let mut sink = StreamOut::new(|l: &[f32], r: &[f32]| {
-                let chunk = processor.process_chunk(l, r);
-                encoder_ref
-                    .write_chunk(chunk)
-                    .map_err(|e| std::io::Error::other(e.to_string()))
-            });
-            let render_result = render::render(request, &mut sink, &mut progress);
-            (render_result, sink.finalize())
-        }
+    // Both paths are `pump(NetSource, decorated_encoder_sink)`; the only
+    // difference is the decorator that wraps the encoder:
+    //   buffered  → `BufferingOut` collects, then masters (resample → normalize
+    //               → dither) the whole signal at finalize.
+    //   streaming → `DitherOut` dithers each block on its way through.
+    // Each decorator finalizes its encoder for us.
+    let sink_result = if buffered {
+        let mut sink = BufferingOut::new(encoder_sink, mastering);
+        render::render(request, &mut sink, &mut progress)?;
+        sink.finalize()
+    } else {
+        let mut sink = DitherOut::new(encoder_sink, spec.output.dither, spec.output.bit_depth);
+        render::render(request, &mut sink, &mut progress)?;
+        sink.finalize()
     };
     progress.finish();
-    render_result?;
     sink_result.map_err(Error::Io)?;
-    encoder.finalize()?;
 
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     Ok(Written { path, bytes })
@@ -377,4 +329,73 @@ fn run_to_buffers(
         right,
         sample_rate,
     })
+}
+
+#[cfg(all(test, feature = "wav"))]
+mod tests {
+    use crate::{Export, Normalize};
+    use fundsp::prelude32::*;
+
+    /// A net emitting a constant stereo signal, so the rendered file is
+    /// deterministic and non-silent.
+    fn dc_net() -> tutti_core::dsp::Net {
+        let mut net = tutti_core::dsp::Net::new(0, 2);
+        let id = net.push(Box::new(dc((0.5, 0.5))));
+        net.pipe_output(id);
+        net
+    }
+
+    fn peak(path: &std::path::Path) -> f32 {
+        let reader = hound::WavReader::open(path).unwrap();
+        reader
+            .into_samples::<f32>()
+            .map(|s| s.unwrap().abs())
+            .fold(0.0f32, f32::max)
+    }
+
+    /// The streaming branch of `run_to_file` (no resample/normalize) writes a
+    /// valid, non-silent WAV through the `DitherOut → EncoderOut` sink stack.
+    #[test]
+    fn graph_to_file_streaming_path_writes_valid_wav() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stream.wav");
+        Export::graph(dc_net(), 44100.0)
+            .duration_seconds(0.05)
+            .bit_depth(crate::BitDepth::Float32)
+            .to_file(&path)
+            .run()
+            .unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert!(peak(&path) > 0.4, "constant 0.5 signal should survive");
+    }
+
+    /// The buffered branch (normalize forces whole-signal buffering) writes a
+    /// valid WAV through the `BufferingOut → EncoderOut` sink stack, and the
+    /// peak normalization applies gain (a 0.5 constant is pushed up toward 0
+    /// dBFS). The exact landing point is set by the true-peak meter's
+    /// oversampling and is not asserted here — only that the buffered path ran
+    /// its whole-signal pass and lifted the level.
+    #[test]
+    fn graph_to_file_buffered_path_normalizes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("buffered.wav");
+        Export::graph(dc_net(), 44100.0)
+            .duration_seconds(0.05)
+            .bit_depth(crate::BitDepth::Float32)
+            .normalize(Normalize::peak(0.0)) // 0 dBFS
+            .to_file(&path)
+            .run()
+            .unwrap();
+
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        // 0.5 constant normalized toward 0 dBFS is pushed up, not down.
+        let p = peak(&path);
+        assert!(
+            p > 0.7 && p <= 1.0,
+            "peak-normalized output should be lifted toward full scale, got {p}"
+        );
+    }
 }

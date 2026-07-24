@@ -1,20 +1,90 @@
 //! Block-loop driver for offline rendering.
 //!
-//! Sets the net's sample rate, then pumps the net through [`MAX_BUFFER_SIZE`]
-//! blocks until `plan.total_samples` have been produced. Each block is *gated*
-//! through a [`BlockCursor`] (latency-trim + output-length cap) here — off the
-//! sink trait — then interleaved into `[f32; 2]` frames and pushed into the
-//! [`AudioOut`] sink. The optional [`OfflineTimeline`] advances in lockstep
-//! with the net so transport-aware nodes see the correct beat position for each
-//! block. Progress is reported via the supplied [`ProgressEmitter`].
+//! The render source is a [`NetSource`] — an [`AudioIn`] that block-renders a
+//! `tutti_core::dsp::Net` into `[f32; 2]` frames. The driver is then the
+//! [`pump`](tutti_core::io::pump) loop from the engine's I/O vocabulary: poll a
+//! block from the source, *gate* it through a [`BlockCursor`] (latency-trim +
+//! output-length cap) — off the sink trait, since the gate needs cross-block
+//! counters — then push the kept frames into the [`AudioOut`] sink. Progress is
+//! reported via the supplied [`ProgressEmitter`].
 
 use crate::progress::ProgressEmitter;
 use crate::render::{BlockCursor, RenderPlan};
 use crate::Result;
 use std::sync::Arc;
-use tutti_core::io::AudioOut;
+use tutti_core::io::{AudioIn, AudioOut};
 use tutti_core::transport::OfflineTimeline;
 use tutti_core::{AudioUnit, BufferRef, BufferVec, MAX_BUFFER_SIZE};
+
+/// The render source as an [`AudioIn`]: each [`poll_into`](AudioIn::poll_into)
+/// block-renders the net and hands back stereo frames. Mono nets have their one
+/// channel duplicated here — channel-order policy is the source's business, per
+/// the I/O vocabulary — so every sink downstream sees `[f32; 2]`. When a
+/// timeline is supplied it advances in lockstep *after* each block, matching the
+/// net clock's emit-then-advance convention (see the no-priming note below).
+pub(crate) struct NetSource<'a> {
+    net: &'a mut tutti_core::dsp::Net,
+    timeline: Option<&'a Arc<OfflineTimeline>>,
+    scratch: BufferVec,
+    stereo: bool,
+}
+
+impl<'a> NetSource<'a> {
+    pub(crate) fn new(
+        net: &'a mut tutti_core::dsp::Net,
+        sample_rate: f64,
+        timeline: Option<&'a Arc<OfflineTimeline>>,
+    ) -> Self {
+        net.set_sample_rate(tutti_core::SampleRate(sample_rate));
+        let stereo = net.outputs() >= 2;
+        let scratch = BufferVec::new(net.outputs().max(2));
+        Self {
+            net,
+            timeline,
+            scratch,
+            stereo,
+        }
+    }
+}
+
+impl AudioIn for NetSource<'_> {
+    fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
+        let block_size = out.len().min(MAX_BUFFER_SIZE);
+        if block_size == 0 {
+            return 0;
+        }
+
+        let empty_input = BufferRef::new(&[]);
+        let mut buffer_mut = self.scratch.buffer_mut();
+        self.net.process(block_size, &empty_input, &mut buffer_mut);
+
+        // Advance AFTER processing, never before: `TransportClock` is
+        // emit-then-advance (`transport/clock.rs`) — sample 0 of a block carries
+        // the block's start beat, and only then does the beat increment. The
+        // timeline must follow the same convention, because a region render
+        // drives BOTH: the net's clock feeds beat-input nodes (LFO,
+        // AutomationLane) while this timeline feeds clip readers and samplers. A
+        // priming advance put those two exactly one `beats_per_sample` apart for
+        // the whole render.
+        if let Some(t) = self.timeline {
+            t.advance(block_size);
+        }
+
+        let left = &buffer_mut.channel_f32(0)[..block_size];
+        // Mono nets duplicate their one channel so the sink always sees stereo.
+        if self.stereo {
+            let right = &buffer_mut.channel_f32(1)[..block_size];
+            for (frame, (&l, &r)) in out[..block_size].iter_mut().zip(left.iter().zip(right)) {
+                *frame = [l, r];
+            }
+        } else {
+            for (frame, &l) in out[..block_size].iter_mut().zip(left) {
+                *frame = [l, l];
+            }
+        }
+        block_size
+    }
+}
 
 /// Drive `net` for `plan.total_samples` samples, gating each block and pushing
 /// the kept frames into `sink`, emitting progress via `progress`. If `timeline`
@@ -28,67 +98,40 @@ pub(crate) fn drive(
     sink: &mut dyn AudioOut,
     progress: &mut ProgressEmitter<'_>,
 ) -> Result<()> {
-    net.set_sample_rate(tutti_core::SampleRate(sample_rate));
-
-    let mut buffer = BufferVec::new(net.outputs().max(2));
-    let empty_input = BufferRef::new(&[]);
-    let stereo = net.outputs() >= 2;
-    let mut frames: Vec<[f32; 2]> = Vec::with_capacity(MAX_BUFFER_SIZE);
+    let mut source = NetSource::new(net, sample_rate, timeline);
+    let mut block = vec![[0.0f32; 2]; MAX_BUFFER_SIZE];
+    let mut kept_frames: Vec<[f32; 2]> = Vec::with_capacity(MAX_BUFFER_SIZE);
 
     progress.start();
 
-    // No priming advance here: `TransportClock` is emit-then-advance
-    // (`transport/clock.rs`) — sample 0 of a block carries the block's start
-    // beat, and only then does the beat increment. The timeline must follow the
-    // same convention, because a region render drives BOTH: the net's clock
-    // feeds beat-input nodes (LFO, AutomationLane) while this timeline feeds
-    // clip readers and samplers. Priming by one sample here put those two
-    // exactly one `beats_per_sample` apart for the whole render.
     let mut produced = 0usize;
     let mut kept = 0usize;
     while produced < plan.total_samples {
-        let block_size = (plan.total_samples - produced).min(MAX_BUFFER_SIZE);
-
-        let mut buffer_mut = buffer.buffer_mut();
-        net.process(block_size, &empty_input, &mut buffer_mut);
-
-        if let Some(t) = timeline {
-            t.advance(block_size);
+        let want = (plan.total_samples - produced).min(MAX_BUFFER_SIZE);
+        let n = source.poll_into(&mut block[..want]);
+        if n == 0 {
+            break;
         }
 
-        let left = &buffer_mut.channel_f32(0)[..block_size];
-        // Duplicate the left channel for mono nets so the sink always sees
-        // stereo frames.
-        let right_owned: Vec<f32>;
-        let right: &[f32] = if stereo {
-            &buffer_mut.channel_f32(1)[..block_size]
-        } else {
-            right_owned = left.to_vec();
-            &right_owned
-        };
-
-        // Pre-sink gate: keep only the windowed span (latency-trim + cap).
+        // Pre-sink gate: keep only the windowed span (latency-trim + cap). It
+        // needs the running block/kept counters, so it lives here in the loop
+        // rather than on the `AudioOut` trait.
         let cursor = BlockCursor {
             block_start_sample: produced,
             latency_samples: plan.latency_samples,
             samples_kept_so_far: kept,
             output_length: plan.output_length,
         };
-        let window = cursor.window(block_size);
+        let window = cursor.window(n);
         let kept_now = window.end - window.start;
         if kept_now > 0 {
-            frames.clear();
-            frames.extend(
-                left[window.clone()]
-                    .iter()
-                    .zip(&right[window])
-                    .map(|(&l, &r)| [l, r]),
-            );
-            sink.write(&frames);
+            kept_frames.clear();
+            kept_frames.extend_from_slice(&block[window]);
+            sink.write(&kept_frames);
             kept += kept_now;
         }
 
-        produced += block_size;
+        produced += n;
         progress.tick(produced);
     }
 
@@ -99,7 +142,6 @@ pub(crate) fn drive(
 mod tests {
     use super::*;
     use crate::progress::Phase;
-    use crate::render::BlockCursor;
     use tutti_core::transport::{OfflineTimelineConfig, TransportClock};
     use tutti_core::{AtomicBool, AtomicF64, Bpm, SampleRate as Sr};
 
@@ -125,10 +167,11 @@ mod tests {
         }
     }
 
-    /// `drive` must NOT prime the timeline: the net's clock is emit-then-advance,
-    /// so the first rendered sample carries the start beat. A priming
-    /// `advance(1)` here desynced the timeline (clip readers, samplers) from the
-    /// clock (LFO, AutomationLane) by one `beats_per_sample` for a whole render.
+    /// `NetSource` must NOT prime the timeline: the net's clock is
+    /// emit-then-advance, so the first rendered sample carries the start beat. A
+    /// priming `advance(1)` desyncs the timeline (clip readers, samplers) from
+    /// the clock (LFO, AutomationLane) by one `beats_per_sample` for a whole
+    /// render. The gate stays exercised through `drive`.
     #[test]
     fn drive_does_not_prime_the_timeline_ahead_of_the_clock() {
         let sample_rate = 44100.0;

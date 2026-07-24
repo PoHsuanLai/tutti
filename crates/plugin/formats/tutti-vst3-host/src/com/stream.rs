@@ -15,7 +15,7 @@ use vst3::{Class, ComWrapper};
 /// Construct via [`BStream::new`] or [`BStream::from_data`]; the returned
 /// [`ComWrapper`] is the owned reference (it holds the object's initial +1
 /// refcount) and can be converted to a raw `FUnknown`-compatible pointer
-/// via [`BStream::as_com_ptr`].
+/// via `ComWrapper::as_com_ref`.
 pub struct BStream {
     cursor: Mutex<Cursor<Vec<u8>>>,
 }

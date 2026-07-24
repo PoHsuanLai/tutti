@@ -63,12 +63,26 @@ pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
     use std::mem;
     use vst::api;
 
-    let (midi_data, _len) = event.to_midi1_bytes()?;
+    let (midi_data, len) = event.to_midi1_bytes()?;
+    // VST2's `midi_data` is a fixed `[u8; 3]`. `to_midi1_bytes` already
+    // zero-pads shorter messages into that fixed array, so `midi_data` is
+    // wire-ready as-is and `len` is redundant here. The assert guards the
+    // invariant that we never route a >3-byte MIDI-1 message down the VST2
+    // fixed-array path (SysEx and other long-form messages are dropped by
+    // `to_midi1_bytes` returning `None` above, never reaching here).
+    debug_assert!(len <= 3, "VST2 midi_data is [u8; 3]; got len {len}");
 
     Some(api::MidiEvent {
         event_type: api::EventType::Midi,
         byte_size: mem::size_of::<api::MidiEvent>() as i32,
         delta_frames: event.frame_offset as i32,
+        // REALTIME_EVENT is hard-coded (always set). VST2 lets the host clear
+        // it for events scheduled during a non-realtime/offline render, but the
+        // engine carries no offline/realtime signal into MIDI conversion — the
+        // shared ProcessContext has no such flag, and offline export does not
+        // yet route MIDI through here. Deferred (not a code gap): the same
+        // missing plumbing blocks CLAP's CLAP_EVENT_IS_LIVE. Always-realtime is
+        // correct for live playback (the only path that reaches this today).
         flags: api::MidiEventFlags::REALTIME_EVENT.bits(),
         note_length: 0,
         note_offset: 0,

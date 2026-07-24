@@ -2,7 +2,7 @@
 name = "tutti-vst2-host"
 version = "0.0.1"
 edition = "2021"
-description = "VST2 plugin hosting (audio + native editor) via the vst crate"
+description = "VST2 plugin hosting (audio + native editor) via the vst-tutti crate"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
@@ -14,7 +14,10 @@ smallvec = "1"
 thiserror = "2"
 tutti-midi-types = { path = "../../../midi/tutti-midi-types" }
 tutti-plugin-types = { path = "../../tutti-plugin-types" }
-vst = "0.3"
+# Tutti fork of the `vst` crate: adds the host-side audioMaster callbacks
+# (get_sample_rate / size_window / io_changed / latency / process_level /
+# automation_state) that upstream vst-rs's host_dispatch swallowed.
+vst-tutti = { path = "../../vendor/vst-tutti" }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

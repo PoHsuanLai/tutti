@@ -21,12 +21,39 @@ pub enum AuError {
     /// A buffer supplied to `process` was malformed or inconsistent with the
     /// configured stream (wrong frame count, mismatched channels, etc.).
     InvalidBuffer(String),
+    /// `AudioUnitRender` returned a non-`noErr` status. `code` is the render
+    /// call's own OSStatus; `last_render_error` is the AU's
+    /// `kAudioUnitProperty_LastRenderError` at failure time, when it could be
+    /// read and was itself non-`noErr` — diagnostics only, enriching the render
+    /// status with the underlying error the AU recorded internally (A-2).
+    RenderFailed {
+        /// The failing call — always `"AudioUnitRender"`.
+        function: &'static str,
+        /// Raw `OSStatus` returned by `AudioUnitRender`.
+        code: i32,
+        /// The AU's last-render-error, if it could be queried and was non-zero.
+        last_render_error: Option<i32>,
+    },
 }
 
 /// Convenience alias for `Result<T, AuError>`.
 pub type Result<T> = std::result::Result<T, AuError>;
 
 impl AuError {
+    /// Construct a [`AuError::RenderFailed`] from a failed `AudioUnitRender`
+    /// call, optionally enriched with the AU's last-render-error (A-2).
+    pub(crate) fn render_failed(
+        function: &'static str,
+        code: i32,
+        last_render_error: Option<i32>,
+    ) -> Self {
+        AuError::RenderFailed {
+            function,
+            code,
+            last_render_error,
+        }
+    }
+
     /// Returns a human-readable description of the error.
     ///
     /// For `OsStatus` errors this decodes well-known AudioUnit status codes
@@ -36,6 +63,7 @@ impl AuError {
         {
             let code = match self {
                 AuError::OsStatus { code, .. } => *code,
+                AuError::RenderFailed { code, .. } => *code,
                 AuError::NullComponent => return "null component",
                 AuError::InvalidBuffer(_) => return "invalid buffer",
             };
@@ -83,6 +111,27 @@ impl fmt::Display for AuError {
                 code,
                 self.message()
             ),
+            AuError::RenderFailed {
+                function,
+                code,
+                last_render_error,
+            } => match last_render_error {
+                Some(last) => write!(
+                    f,
+                    "AudioUnit error in {}: OSStatus {} ({}); last render error {}",
+                    function,
+                    code,
+                    self.message(),
+                    last
+                ),
+                None => write!(
+                    f,
+                    "AudioUnit error in {}: OSStatus {} ({})",
+                    function,
+                    code,
+                    self.message()
+                ),
+            },
             AuError::NullComponent => write!(f, "null AudioComponent handle"),
             AuError::InvalidBuffer(msg) => write!(f, "invalid buffer: {msg}"),
         }

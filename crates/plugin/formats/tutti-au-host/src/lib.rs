@@ -65,7 +65,10 @@ pub use component::{AuComponentInfo, AuType};
 pub use error::{AuError, Result};
 
 // Shared host vocabulary re-exported so consumers can stay format-agnostic.
-pub use tutti_plugin_types::{EditorSize, MidiEvent, TransportInfo, WindowHandle};
+// `WindowHandle` is consumed by the GUI bridge; `MidiEvent` is the input type of
+// `AuInstance::send_midi`. `TransportInfo` is not re-exported — AUv2 host
+// callbacks are unwired, so nothing here speaks transport.
+pub use tutti_plugin_types::{EditorSize, MidiEvent, WindowHandle};
 
 #[cfg(target_os = "macos")]
 pub use editor::AuEditor;
@@ -73,13 +76,9 @@ pub use editor::AuEditor;
 pub use handle::AuHandle;
 #[cfg(target_os = "macos")]
 pub use instance::{AuInstance, AuLoaded, AuReady};
-#[cfg(target_os = "macos")]
-pub use parameters::{AuParameter, ParamRange, ParamView, ParameterUnit};
+// `AuParameter`/`ParamRange`/`ParamView`/`ParameterUnit` are AU-internal param
+// vocabulary — reachable via `tutti_au_host::parameters::*` for the loader, but
+// not surfaced as flat crate-root re-exports. Consumers speak the shared
+// `tutti_plugin_types::ParameterInfo` produced by the loader's trait impl.
 #[cfg(target_os = "macos")]
 pub use stream::{ChannelLayout, StreamConfig};
-
-// Test-only global allocator for RT-safety regression tests. Panics on
-// any heap allocation inside `assert_no_alloc::assert_no_alloc(..)` scopes.
-#[cfg(test)]
-#[global_allocator]
-static RT_NO_ALLOC_HARNESS: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;

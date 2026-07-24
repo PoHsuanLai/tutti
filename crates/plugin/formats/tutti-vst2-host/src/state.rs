@@ -21,6 +21,75 @@ use crate::instance::Vst2Instance;
 const STATE_HEADER_CHUNK: [u8; 4] = *b"CHK\0";
 const STATE_HEADER_PARAMS: [u8; 4] = *b"PRM\0";
 
+/// The parsed shape of a state blob's framing, produced by
+/// [`parse_state_header`] before any plugin interaction. Splitting this out
+/// keeps the pure framing/validation logic testable without a live plugin.
+#[derive(Debug, PartialEq)]
+pub(crate) enum StateHeader<'a> {
+    /// `CHK\0` chunk payload — hand straight to `load_preset_data`.
+    Chunk(&'a [u8]),
+    /// `PRM\0` parameter snapshot: `count` normalized f32 values follow,
+    /// carried in `values` (already length-validated against `count`).
+    Params { count: i32, values: &'a [u8] },
+}
+
+/// Validate the framing of a state blob and split off its payload.
+///
+/// Pure: performs only the header/length/count checks that don't need a live
+/// plugin (the plugin-parameter-count cross-check stays in `load_state`).
+/// Errors mirror the `load_state` early-returns exactly.
+pub(crate) fn parse_state_header(data: &[u8]) -> Result<StateHeader<'_>> {
+    if data.len() < 4 {
+        return Err(Vst2Error::StateRestoreError(
+            "State data too short (missing header)".into(),
+        ));
+    }
+
+    let header: [u8; 4] = [data[0], data[1], data[2], data[3]];
+    let payload = &data[4..];
+
+    if header == STATE_HEADER_CHUNK {
+        if payload.is_empty() {
+            return Err(Vst2Error::StateRestoreError("Empty chunk data".into()));
+        }
+        Ok(StateHeader::Chunk(payload))
+    } else if header == STATE_HEADER_PARAMS {
+        if payload.len() < 4 {
+            return Err(Vst2Error::StateRestoreError(
+                "Invalid parameter state (missing count)".into(),
+            ));
+        }
+
+        let count = i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+        if count < 0 {
+            return Err(Vst2Error::StateRestoreError(format!(
+                "Invalid parameter count: {}",
+                count
+            )));
+        }
+
+        let expected_payload = 4 + (count as usize) * 4;
+        if payload.len() != expected_payload {
+            return Err(Vst2Error::StateRestoreError(format!(
+                "Parameter state size mismatch: expected {} bytes, got {}",
+                expected_payload,
+                payload.len()
+            )));
+        }
+
+        // Strip the count prefix; leave just the f32 value bytes.
+        Ok(StateHeader::Params {
+            count,
+            values: &payload[4..],
+        })
+    } else {
+        Err(Vst2Error::StateRestoreError(format!(
+            "Unknown state header: {:?}",
+            header
+        )))
+    }
+}
+
 impl Vst2Instance {
     /// Capture the current plugin state as a portable byte blob.
     ///
@@ -55,71 +124,114 @@ impl Vst2Instance {
 
     /// Restore a state blob previously produced by [`save_state`](Self::save_state).
     pub fn load_state(&self, data: &[u8]) -> Result<()> {
-        if data.len() < 4 {
-            return Err(Vst2Error::StateRestoreError(
-                "State data too short (missing header)".into(),
-            ));
+        match parse_state_header(data)? {
+            StateHeader::Chunk(payload) => {
+                self.params.load_preset_data(payload);
+                Ok(())
+            }
+            StateHeader::Params { count, values } => {
+                let actual_count = self.handle.instance.get_info().parameters;
+                if count > actual_count {
+                    return Err(Vst2Error::StateRestoreError(format!(
+                        "State has {} parameters but plugin only has {}",
+                        count, actual_count
+                    )));
+                }
+
+                for i in 0..count {
+                    let offset = i as usize * 4;
+                    let value = f32::from_le_bytes([
+                        values[offset],
+                        values[offset + 1],
+                        values[offset + 2],
+                        values[offset + 3],
+                    ]);
+                    let value = value.clamp(0.0, 1.0);
+                    self.params.set_parameter(i, value);
+                }
+
+                Ok(())
+            }
         }
+    }
+}
 
-        let header: [u8; 4] = [data[0], data[1], data[2], data[3]];
-        let payload = &data[4..];
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        if header == STATE_HEADER_CHUNK {
-            if payload.is_empty() {
-                return Err(Vst2Error::StateRestoreError("Empty chunk data".into()));
+    #[test]
+    fn header_too_short() {
+        let err = parse_state_header(&[0x43, 0x48]).unwrap_err();
+        assert!(matches!(err, Vst2Error::StateRestoreError(_)));
+        assert!(err.to_string().contains("too short"));
+    }
+
+    #[test]
+    fn unknown_header() {
+        let err = parse_state_header(b"XXX\0payload").unwrap_err();
+        assert!(err.to_string().contains("Unknown state header"));
+    }
+
+    #[test]
+    fn chunk_empty_payload_rejected() {
+        let err = parse_state_header(&STATE_HEADER_CHUNK).unwrap_err();
+        assert!(err.to_string().contains("Empty chunk data"));
+    }
+
+    #[test]
+    fn chunk_valid() {
+        let mut data = STATE_HEADER_CHUNK.to_vec();
+        data.extend_from_slice(&[1, 2, 3, 4]);
+        assert_eq!(
+            parse_state_header(&data).unwrap(),
+            StateHeader::Chunk(&[1, 2, 3, 4])
+        );
+    }
+
+    #[test]
+    fn params_missing_count() {
+        // Header present but fewer than 4 count bytes follow.
+        let mut data = STATE_HEADER_PARAMS.to_vec();
+        data.extend_from_slice(&[0, 0]);
+        let err = parse_state_header(&data).unwrap_err();
+        assert!(err.to_string().contains("missing count"));
+    }
+
+    #[test]
+    fn params_negative_count() {
+        let mut data = STATE_HEADER_PARAMS.to_vec();
+        data.extend_from_slice(&(-1i32).to_le_bytes());
+        let err = parse_state_header(&data).unwrap_err();
+        assert!(err.to_string().contains("Invalid parameter count"));
+    }
+
+    #[test]
+    fn params_size_mismatch() {
+        // count says 2 params (needs 4 + 2*4 = 12 bytes payload) but only 1
+        // value's worth of bytes follow.
+        let mut data = STATE_HEADER_PARAMS.to_vec();
+        data.extend_from_slice(&2i32.to_le_bytes());
+        data.extend_from_slice(&1.0f32.to_le_bytes());
+        let err = parse_state_header(&data).unwrap_err();
+        assert!(err.to_string().contains("size mismatch"));
+    }
+
+    #[test]
+    fn params_valid_roundtrip() {
+        let mut data = STATE_HEADER_PARAMS.to_vec();
+        data.extend_from_slice(&2i32.to_le_bytes());
+        data.extend_from_slice(&0.25f32.to_le_bytes());
+        data.extend_from_slice(&0.75f32.to_le_bytes());
+
+        match parse_state_header(&data).unwrap() {
+            StateHeader::Params { count, values } => {
+                assert_eq!(count, 2);
+                assert_eq!(values.len(), 8);
+                assert_eq!(f32::from_le_bytes(values[0..4].try_into().unwrap()), 0.25);
+                assert_eq!(f32::from_le_bytes(values[4..8].try_into().unwrap()), 0.75);
             }
-            self.params.load_preset_data(payload);
-            Ok(())
-        } else if header == STATE_HEADER_PARAMS {
-            if payload.len() < 4 {
-                return Err(Vst2Error::StateRestoreError(
-                    "Invalid parameter state (missing count)".into(),
-                ));
-            }
-
-            let param_count = i32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-            if param_count < 0 {
-                return Err(Vst2Error::StateRestoreError(format!(
-                    "Invalid parameter count: {}",
-                    param_count
-                )));
-            }
-
-            let expected_payload = 4 + (param_count as usize) * 4;
-            if payload.len() != expected_payload {
-                return Err(Vst2Error::StateRestoreError(format!(
-                    "Parameter state size mismatch: expected {} bytes, got {}",
-                    expected_payload,
-                    payload.len()
-                )));
-            }
-
-            let actual_count = self.handle.instance.get_info().parameters;
-            if param_count > actual_count {
-                return Err(Vst2Error::StateRestoreError(format!(
-                    "State has {} parameters but plugin only has {}",
-                    param_count, actual_count
-                )));
-            }
-
-            for i in 0..param_count {
-                let offset = 4 + (i as usize * 4);
-                let value = f32::from_le_bytes([
-                    payload[offset],
-                    payload[offset + 1],
-                    payload[offset + 2],
-                    payload[offset + 3],
-                ]);
-                let value = value.clamp(0.0, 1.0);
-                self.params.set_parameter(i, value);
-            }
-
-            Ok(())
-        } else {
-            Err(Vst2Error::StateRestoreError(format!(
-                "Unknown state header: {:?}",
-                header
-            )))
+            other => panic!("expected Params, got {other:?}"),
         }
     }
 }

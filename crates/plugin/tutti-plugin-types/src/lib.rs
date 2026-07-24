@@ -8,24 +8,32 @@
 pub mod automation;
 pub mod channels;
 pub mod classification;
+pub mod descriptor;
 pub mod editor;
+pub mod error;
 pub mod features;
+pub mod format_host;
 pub mod harmony;
 pub mod load_stage;
 pub mod main_thread;
 pub mod metadata;
+pub mod midi;
 pub mod note_expression;
 pub mod note_id;
 pub mod parameters;
+pub mod process;
 pub mod transport;
 
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
-pub use channels::{AudioBuffer, AudioBuffer32, AudioBuffer64, BufferPtrs, Sample};
+pub use channels::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, BufferPtrs, Sample};
 pub use classification::Vst2Category;
+pub use descriptor::{AuComponentType, PluginClass, PluginDescriptor};
 pub use editor::{
     AspectRatio, EditorCapabilities, EditorError, EditorSize, ResizeHints, WindowHandle,
 };
+pub use error::{PluginError, Result, Result as PluginResult};
 pub use features::Features;
+pub use format_host::PluginFormatHost;
 pub use harmony::{
     ChordChanges, ChordValue, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,
@@ -33,9 +41,11 @@ pub use harmony::{
 pub use load_stage::LoadStage;
 pub use main_thread::{assert_main_thread, mark_main_thread};
 pub use metadata::{BusChannels, LoadedPlugin};
+pub use midi::{MidiEventVec, MIDI_STACK_CAPACITY};
 pub use note_expression::{NoteExpressionChanges, NoteExpressionType, NoteExpressionValue};
 pub use note_id::{note_id_for, note_id_to_channel_note, MAX_HOST_NOTE_ID};
-pub use parameters::{ParameterFlags, ParameterInfo};
+pub use parameters::{ParameterFlags, ParameterInfo, ALL_AUTOMATABLE};
+pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
 pub use transport::{
     BarInfo, LoopRegion, MusicalTiming, TransportInfo, TransportPosition, TransportState,
 };

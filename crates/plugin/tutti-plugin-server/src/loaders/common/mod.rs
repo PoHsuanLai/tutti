@@ -1,7 +1,5 @@
 //! Shared helpers used by format-specific loaders.
 
-pub(crate) mod params;
-
 use tutti_plugin::server::{BusChannels, LoadedPlugin, PluginDescriptor};
 
 /// The two metadata snapshots every loaded plugin carries: the catalog

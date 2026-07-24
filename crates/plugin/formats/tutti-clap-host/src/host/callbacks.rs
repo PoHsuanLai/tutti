@@ -141,9 +141,15 @@ pub(super) static HOST_PARAMS: clap_host_params = clap_host_params {
     request_flush: Some(host_params_request_flush),
 };
 
-unsafe extern "C" fn host_params_rescan(host: *const ClapHostVtable, _flags: u32) {
+unsafe extern "C" fn host_params_rescan(host: *const ClapHostVtable, flags: u32) {
     if let Some(state) = get_host_state(host) {
         state.params.rescan_requested.store(true, Ordering::Release);
+        // Accumulate the flags (RESCAN_ALL / RESCAN_VALUES / RESCAN_INFO /
+        // RESCAN_TEXT) so the consumer can tell a full rescan — which the spec
+        // says must be honoured only while the plugin is deactivated — from a
+        // value-only rescan applicable live. OR so multiple rescans between
+        // polls don't lose bits.
+        state.params.rescan_flags.fetch_or(flags, Ordering::Release);
     }
 }
 
@@ -237,9 +243,16 @@ unsafe extern "C" fn host_gui_request_hide(_host: *const ClapHostVtable) -> bool
     true
 }
 
-unsafe extern "C" fn host_gui_closed(host: *const ClapHostVtable, _was_destroyed: bool) {
+unsafe extern "C" fn host_gui_closed(host: *const ClapHostVtable, was_destroyed: bool) {
     if let Some(state) = get_host_state(host) {
         state.gui.closed.store(true, Ordering::Release);
+        // H5: `was_destroyed` means the plugin already destroyed its own
+        // editor. Record it so `close_editor` skips hide/destroy and only
+        // clears the created flag — calling `gui.destroy` again is a
+        // double-destroy the spec forbids.
+        if was_destroyed {
+            state.gui.already_destroyed.store(true, Ordering::Release);
+        }
     }
 }
 

@@ -32,8 +32,9 @@ impl Class for ParameterChangesImpl {
 impl ParameterChangesImpl {
     /// Build a changes list from an existing [`ParameterChanges`]. Each
     /// call allocates a fresh `ComWrapper<ParamValueQueueImpl>` per
-    /// queue; **not RT-safe** — use [`new_empty`] +
-    /// [`refill_from_changes`] on the hot path.
+    /// queue; **not RT-safe** — the live path uses [`new_empty`] +
+    /// [`refill_from_changes`]. Test-harness helper.
+    #[cfg(test)]
     pub fn from_changes(changes: &ParameterChanges) -> ComWrapper<Self> {
         let mut queues: Vec<_> = Vec::with_capacity(changes.queues.len().max(32));
         for q in &changes.queues {
@@ -94,16 +95,10 @@ impl ParameterChangesImpl {
         self.queues.borrow_mut().clear();
     }
 
-    pub fn to_changes(&self) -> ParameterChanges {
-        let mut changes = ParameterChanges::new();
-        self.fill_changes(&mut changes);
-        changes
-    }
-
-    /// RT-safe variant of [`Self::to_changes`] that drains into a
-    /// caller-supplied pooled `ParameterChanges`. Clears `out.queues`
-    /// first; reuses any per-queue inline `points` storage on the
-    /// destination side.
+    /// Drain the plugin's emitted parameter changes into a caller-supplied
+    /// pooled [`ParameterChanges`]. Clears `out.queues` first; reuses any
+    /// per-queue inline `points` storage on the destination side, so it is
+    /// allocation-free after warmup.
     pub fn fill_changes(&self, out: &mut ParameterChanges) {
         // Clear `out`'s queues — each individual queue's `points`
         // SmallVec keeps its heap capacity (clear is len=0, no realloc).
@@ -120,23 +115,14 @@ impl ParameterChangesImpl {
         }
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.queues.borrow().len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.queues.borrow().is_empty()
-    }
-
-    /// Reset the audio-thread owner (see [`AudioThreadCell::reset_owner`]).
-    /// Also resets the owner on every contained queue.
-    pub fn reset_owner(&self) {
-        self.queues.reset_owner();
-        // borrow() after reset re-claims ownership on the current thread,
-        // which is fine — this method is called off-RT during device swap.
-        for queue in self.queues.borrow().iter() {
-            queue.reset_owner();
-        }
     }
 }
 

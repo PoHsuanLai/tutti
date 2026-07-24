@@ -11,7 +11,8 @@ use std::sync::Arc;
 use vst3::com_scrape_types::Unknown;
 use vst3::ComPtr;
 use vst3::Steinberg::{
-    kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPlugView, IPlugViewTrait,
+    kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPlugView,
+    IPlugViewContentScaleSupport, IPlugViewContentScaleSupportTrait, IPlugViewTrait,
     IPluginBaseTrait, IPluginCompatibility, IPluginCompatibilityTrait, ViewRect,
     Vst::{
         IAudioPresentationLatency, IAudioPresentationLatencyTrait, IAudioProcessor,
@@ -728,6 +729,16 @@ impl Vst3Loaded {
     /// incorrectly while masquerading as faithful state.
     pub fn state(&self) -> Result<Vec<u8>> {
         tutti_plugin_types::assert_main_thread();
+        self.read_component_state()
+    }
+
+    /// Write the component's `getState` blob into a fresh `IBStream` and return
+    /// the bytes. Shared by [`state`](Self::state) and the load-time
+    /// controller state-sync in [`initialize`](Self::initialize).
+    ///
+    /// A `kResultFalse` return (plugin has no state) yields an empty blob;
+    /// only a genuine error tresult is surfaced as [`Vst3Error::PluginError`].
+    fn read_component_state(&self) -> Result<Vec<u8>> {
         let stream = BStream::new();
         let stream_ptr = stream
             .as_com_ref::<IBStream>()
@@ -743,6 +754,28 @@ impl Vst3Loaded {
         }
 
         Ok(stream.data())
+    }
+
+    /// Feed a component-state blob to the edit controller via
+    /// `IEditController::setComponentState`, so a separate controller reflects
+    /// the processor's state. No-op if the plugin has no controller or the
+    /// blob is empty. Errors from the controller are tolerated (some plugins
+    /// return `kResultFalse` when they have no controller state to load) —
+    /// this is best-effort synchronisation, shared by
+    /// [`set_state`](Self::set_state) and [`initialize`](Self::initialize).
+    fn push_controller_state(&self, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        let Some(ctrl) = self.interfaces.controller.as_ref() else {
+            return;
+        };
+        let ctrl_stream = BStream::from_data(data.to_vec());
+        if let Some(ctrl_stream_ref) = ctrl_stream.as_com_ref::<IBStream>() {
+            unsafe {
+                let _ = ctrl.setComponentState(ctrl_stream_ref.as_ptr());
+            }
+        }
     }
 
     /// Restore plugin state from a blob produced by [`state`](Self::state).
@@ -777,14 +810,9 @@ impl Vst3Loaded {
             });
         }
 
-        if let Some(ctrl) = self.interfaces.controller.as_ref() {
-            let ctrl_stream = BStream::from_data(data.to_vec());
-            if let Some(ctrl_stream_ref) = ctrl_stream.as_com_ref::<IBStream>() {
-                unsafe {
-                    let _ = ctrl.setComponentState(ctrl_stream_ref.as_ptr());
-                }
-            }
-        }
+        // Mirror into the controller (no-op for a same-object controller that
+        // already saw the state, harmless for a separate one).
+        self.push_controller_state(data);
 
         Ok(())
     }
@@ -837,6 +865,18 @@ impl Vst3Loaded {
         unsafe {
             let _ = view.setFrame(frame_ptr);
         }
+
+        // HiDPI: if the view implements IPlugViewContentScaleSupport, tell it the
+        // backing-store scale factor *before* `attached`, so scale-aware plugins
+        // lay their UI out at the right resolution from the first frame. Plugins
+        // that don't implement the interface (cast returns None) simply no-op.
+        //
+        // TODO: thread the real backing-scale from the frontend WindowHandle —
+        // `WindowHandle` is a bare `*mut c_void` today and carries no DPI, so we
+        // pass 1.0 (the neutral default: correct on standard-DPI displays, a safe
+        // no-op elsewhere). The important part is that the *call* is wired, so a
+        // real factor becomes a one-line change once the frontend supplies it.
+        set_content_scale(&view, host_backing_scale(&parent));
 
         let result = unsafe { view.attached(parent.as_ptr(), platform_type) };
         if result != kResultOk {
@@ -909,22 +949,31 @@ impl Vst3Loaded {
         let EditorState::Open { view, .. } = &self.editor else {
             return Err(Vst3Error::NotSupported("editor not open".to_string()));
         };
-        let mut rect = ViewRect {
+        let requested_rect = ViewRect {
             left: 0,
             top: 0,
             right: requested.width as i32,
             bottom: requested.height as i32,
         };
-        unsafe {
-            // checkSizeConstraint may return kResultFalse (no snap) — not an error.
-            let _ = view.checkSizeConstraint(&mut rect);
-            let res = view.onSize(&mut rect);
-            if res != kResultOk {
-                return Err(Vst3Error::PluginError {
-                    stage: LoadStage::Initialization,
-                    code: res,
-                });
-            }
+        // `checkSizeConstraint` snaps the rect to the nearest size the plugin
+        // will accept (aspect-ratio locks, min/max, integer-multiple grids). We
+        // must apply that *constrained* rect via `onSize`, not the raw request —
+        // otherwise a plugin that only accepts, say, 4:3 sizes gets handed a
+        // size it rejects. The call snaps the rect in place and returns
+        // `kResultTrue` when it changed it; a `kResultFalse` (no constraint / not
+        // implemented) leaves `constrained` equal to the request, which is the
+        // correct fallback.
+        let mut constrained = requested_rect;
+        let snapped = unsafe { view.checkSizeConstraint(&mut constrained) } == kResultTrue;
+        // On decline, honour the original request verbatim rather than any
+        // partially-written rect the plugin may have left behind.
+        let mut rect = if snapped { constrained } else { requested_rect };
+        let res = unsafe { view.onSize(&mut rect) };
+        if res != kResultOk {
+            return Err(Vst3Error::PluginError {
+                stage: LoadStage::Initialization,
+                code: res,
+            });
         }
         Ok(EditorSize {
             width: (rect.right - rect.left) as u32,
@@ -932,8 +981,14 @@ impl Vst3Loaded {
         })
     }
 
-    /// Wire the component's connection point to the separate controller's.
-    /// No-op unless both ends expose `IConnectionPoint`.
+    /// Wire the component's connection point directly to the separate
+    /// controller's. No-op unless both ends expose `IConnectionPoint`.
+    ///
+    /// The host deliberately does **not** interpose its own
+    /// `IConnectionPoint` proxy between the two halves: it direct-wires the
+    /// plugin's component and controller to each other, so their private
+    /// messages pass straight through without the host inspecting or
+    /// reformatting them.
     fn connect_separate_controller(&self, ctrl: &ComPtr<IEditController>) {
         let Some(comp_conn) = self.interfaces.component.cast::<IConnectionPoint>() else {
             return;
@@ -944,6 +999,27 @@ impl Vst3Loaded {
         unsafe {
             comp_conn.connect(ctrl_conn.as_ptr());
             ctrl_conn.connect(comp_conn.as_ptr());
+        }
+    }
+
+    /// Reverse [`connect_separate_controller`](Self::connect_separate_controller):
+    /// tell each half to drop its connection to the other before
+    /// `terminate()`. Symmetric to the connect — casts both ends to
+    /// `IConnectionPoint` and `disconnect`s each. No-op unless both ends expose
+    /// the interface. Called from `Drop` for a `Controller::Separate` plugin.
+    fn disconnect_separate_controller(&self) {
+        let Controller::Separate(ctrl) = &self.interfaces.controller else {
+            return;
+        };
+        let Some(comp_conn) = self.interfaces.component.cast::<IConnectionPoint>() else {
+            return;
+        };
+        let Some(ctrl_conn) = ctrl.cast::<IConnectionPoint>() else {
+            return;
+        };
+        unsafe {
+            comp_conn.disconnect(ctrl_conn.as_ptr());
+            ctrl_conn.disconnect(comp_conn.as_ptr());
         }
     }
 
@@ -961,6 +1037,8 @@ impl Vst3Loaded {
 
         self.reconcile_bus_counts();
 
+        let separate_controller = matches!(self.interfaces.controller, Controller::Separate(_));
+
         if let Controller::Separate(ctrl) = &self.interfaces.controller {
             unsafe {
                 let _ = ctrl.initialize(host_ptr);
@@ -970,6 +1048,27 @@ impl Vst3Loaded {
         }
 
         self.attach_component_handler();
+
+        // Bridge the processor's own state into a *separate* controller so its
+        // editor opens showing the real values, not defaults. A same-object
+        // controller already shares the component's state, so this is only
+        // needed (and only correct) for `Controller::Separate`. `setState` is
+        // the sole other path that reaches `setComponentState`; at load there is
+        // no host-supplied blob, so we read the component's current state and
+        // push it across. Tolerate a plugin with no state (empty blob / the
+        // controller returning `kResultFalse`) — never fail `load()` on a
+        // state-sync miss.
+        if separate_controller {
+            // `read_component_state` only errors if the host-side BStream can't
+            // be wrapped or the plugin's `getState` returns a hard failure;
+            // treat either as "no state to sync" and continue — the editor then
+            // opens at defaults exactly as before this fix, rather than failing
+            // the load. (No logging framework is wired into this crate.)
+            if let Ok(state) = self.read_component_state() {
+                self.push_controller_state(&state);
+            }
+        }
+
         Ok(())
     }
 
@@ -1043,6 +1142,10 @@ impl Drop for Vst3Loaded {
         // No main-thread assert: Drop can run on the audio thread when the
         // fundsp graph releases the instance. See `close_editor_unchecked`.
         self.close_editor_unchecked();
+        // Mirror the load-time connect in reverse: for a separate controller,
+        // tear the component↔controller connection down before terminating
+        // either half. No-op for same-object / no controller.
+        self.disconnect_separate_controller();
         unsafe {
             self.interfaces.component.terminate();
         }
@@ -1085,6 +1188,30 @@ fn ensure_has_classes(library: &Vst3Library, path: &Path) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// The backing-store scale factor to advertise to the plugin view.
+///
+/// The host `WindowHandle` is a raw pointer with no attached DPI/scale
+/// information, so there is nothing to read from it yet — we return the neutral
+/// `1.0`. When the frontend grows a way to carry the display's backing scale
+/// (e.g. `NSWindow.backingScaleFactor` / Win32 `GetDpiForWindow`), source it
+/// here and the wired `setContentScaleFactor` call starts delivering real
+/// values with no further plumbing.
+fn host_backing_scale(_parent: &WindowHandle) -> f32 {
+    // TODO: thread real backing-scale from frontend WindowHandle.
+    1.0
+}
+
+/// Tell the view its content scale via `IPlugViewContentScaleSupport`, if it
+/// implements that interface. No-op for views that don't (the cast returns
+/// `None`) — the common case for non-HiDPI-aware plugins.
+fn set_content_scale(view: &ComPtr<IPlugView>, scale: f32) {
+    if let Some(scale_support) = view.cast::<IPlugViewContentScaleSupport>() {
+        unsafe {
+            let _ = scale_support.setContentScaleFactor(scale);
+        }
+    }
 }
 
 /// Read the plug-view's `getSize()` and translate it into our `(width, height)`

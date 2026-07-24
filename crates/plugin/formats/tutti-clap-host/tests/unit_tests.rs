@@ -684,6 +684,46 @@ fn test_clap_host_stores_host_data() {
 }
 
 #[test]
+fn host_gui_closed_was_destroyed_latches_already_destroyed() {
+    // H5: gui.closed(was_destroyed = true) must record that the plugin already
+    // tore its own editor down, so a later close_editor skips gui.destroy.
+    // With was_destroyed = false the latch stays clear.
+    use clap_sys::ext::gui::{clap_host_gui, CLAP_EXT_GUI};
+    use std::sync::atomic::Ordering;
+
+    let host = ClapHost::default();
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let gui_ext = unsafe { get_ext(raw, CLAP_EXT_GUI.as_ptr()) as *const clap_host_gui };
+    assert!(!gui_ext.is_null());
+    let closed = unsafe { (*gui_ext).closed.unwrap() };
+
+    // was_destroyed = false: closed flag set, but no already_destroyed latch.
+    unsafe { closed(raw, false) };
+    assert!(host.state().gui.closed.load(Ordering::Acquire));
+    assert!(
+        !host.state().gui.already_destroyed.load(Ordering::Acquire),
+        "was_destroyed=false must not latch already_destroyed"
+    );
+
+    // was_destroyed = true: latch set — close_editor will skip hide/destroy.
+    unsafe { closed(raw, true) };
+    assert!(
+        host.state().gui.already_destroyed.load(Ordering::Acquire),
+        "was_destroyed=true must latch already_destroyed"
+    );
+
+    // Emulate close_editor consuming the latch (swap → false).
+    let was = host
+        .state()
+        .gui
+        .already_destroyed
+        .swap(false, Ordering::AcqRel);
+    assert!(was, "latch was set");
+    assert!(!host.state().gui.already_destroyed.load(Ordering::Acquire));
+}
+
+#[test]
 fn test_host_get_extension_returns_non_null_for_supported() {
     use clap_sys::ext::audio_ports::CLAP_EXT_AUDIO_PORTS;
     use clap_sys::ext::gui::CLAP_EXT_GUI;
@@ -1150,6 +1190,7 @@ fn test_needs_restart_non_clearing() {
 // ── New extension type tests ──
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_color_type() {
     use tutti_clap_host::Color;
     let c = Color {
@@ -1163,6 +1204,7 @@ fn test_color_type() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_track_info_default() {
     use tutti_clap_host::TrackInfo;
     let info = TrackInfo::default();
@@ -1174,6 +1216,7 @@ fn test_track_info_default() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_param_automation_state_variants() {
     use tutti_clap_host::ParamAutomationState;
     let states = [
@@ -1188,6 +1231,7 @@ fn test_param_automation_state_variants() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_remote_controls_page() {
     use tutti_clap_host::RemoteControlsPage;
     let page = RemoteControlsPage {
@@ -1202,6 +1246,7 @@ fn test_remote_controls_page() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_transport_request_variants() {
     use tutti_clap_host::TransportRequest;
     let req = TransportRequest::Jump {
@@ -1221,6 +1266,7 @@ fn test_transport_request_variants() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_context_menu_target() {
     use tutti_clap_host::ContextMenuTarget;
     let global = ContextMenuTarget::Global;
@@ -1230,6 +1276,7 @@ fn test_context_menu_target() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_context_menu_item_variants() {
     use tutti_clap_host::ContextMenuItem;
     let items = [
@@ -1259,6 +1306,7 @@ fn test_context_menu_item_variants() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_audio_port_config_request() {
     use tutti_clap_host::AudioPortConfigRequest;
     let req = AudioPortConfigRequest {
@@ -1695,6 +1743,7 @@ fn test_host_posix_fd_modify() {
 
 #[cfg(unix)]
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_posix_fd_flags_type() {
     use tutti_clap_host::PosixFdFlags;
 
@@ -1712,6 +1761,7 @@ fn test_posix_fd_flags_type() {
 // ── Triggers extension tests ──
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_trigger_info_type() {
     use tutti_clap_host::TriggerInfo;
 
@@ -1765,6 +1815,7 @@ fn test_host_triggers_rescan_callback() {
 // ── Tuning extension tests ──
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_tuning_info_type() {
     use tutti_clap_host::TuningInfo;
 
@@ -1847,6 +1898,7 @@ fn test_host_resource_directory_callbacks() {
 // ── Undo extension tests ──
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_undo_delta_properties_type() {
     use tutti_clap_host::UndoDeltaProperties;
 
@@ -1861,6 +1913,7 @@ fn test_undo_delta_properties_type() {
 }
 
 #[test]
+#[cfg(feature = "clap-extras")]
 fn test_undo_change_type() {
     use tutti_clap_host::UndoChange;
 

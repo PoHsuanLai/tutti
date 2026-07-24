@@ -1,9 +1,12 @@
 //! Standalone `IProgress` COM implementation. [`ComponentHandler`] also
 //! exposes `IProgress`; this handler is used only by the unit-test harness.
 
+#[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(test)]
 use crossbeam_channel::{Receiver, Sender};
+#[cfg(test)]
 use vst3::Steinberg::{
     kResultOk, tresult,
     Vst::{
@@ -12,13 +15,15 @@ use vst3::Steinberg::{
         ParamValue,
     },
 };
+#[cfg(test)]
 use vst3::{Class, ComWrapper};
 
+#[cfg(test)]
 use crate::helpers::utf16_to_string;
 
 /// Long-running progress notifications emitted by plugins (sample loading,
 /// offline rendering, etc.). Delivered via
-/// [`Vst3Loaded::progress_event_receiver`](crate::Vst3Loaded::progress_event_receiver).
+/// [`Vst3Loaded::poll_plugin_notifications`](crate::Vst3Loaded::poll_plugin_notifications).
 #[derive(Debug, Clone)]
 pub enum ProgressEvent {
     /// A new progress operation has begun. `id` uniquely identifies this
@@ -35,15 +40,18 @@ pub enum ProgressEvent {
     Finished { id: u64 },
 }
 
+#[cfg(test)]
 pub struct ProgressHandler {
     next_id: AtomicU64,
     event_sender: Sender<ProgressEvent>,
 }
 
+#[cfg(test)]
 impl Class for ProgressHandler {
     type Interfaces = (IProgress,);
 }
 
+#[cfg(test)]
 impl ProgressHandler {
     pub fn new() -> (ComWrapper<Self>, Receiver<ProgressEvent>) {
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -55,6 +63,7 @@ impl ProgressHandler {
     }
 }
 
+#[cfg(test)]
 impl IProgressTrait for ProgressHandler {
     unsafe fn start(
         &self,

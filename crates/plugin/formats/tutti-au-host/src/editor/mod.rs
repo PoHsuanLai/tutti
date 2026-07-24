@@ -13,6 +13,7 @@ mod cocoa;
 
 use objc2::msg_send;
 use objc2::runtime::AnyObject;
+use objc2_foundation::NSRect;
 use std::os::raw::c_void;
 
 use tutti_plugin_types::{EditorSize, WindowHandle};
@@ -80,16 +81,11 @@ impl AuEditor {
 
     /// Remove the view from its superview (if any) and release it. Safe to
     /// call multiple times; subsequent calls are no-ops. Must be called on the
-    /// macOS main thread.
+    /// macOS main thread — `removeFromSuperview`/`release` are AppKit calls and
+    /// touching AppKit off the main thread is undefined behavior. This is the
+    /// single teardown path; [`Drop`](Self::drop) routes through it too.
     pub fn close(&mut self) {
         tutti_plugin_types::assert_main_thread();
-        self.close_inner();
-    }
-
-    /// View teardown without the main-thread assertion — used by `Drop`, which
-    /// can run on the audio thread when the graph releases the editor. The
-    /// public [`close`](Self::close) asserts; this does not.
-    fn close_inner(&mut self) {
         if !self.view.is_null() {
             unsafe {
                 let _: () = msg_send![self.view, removeFromSuperview];
@@ -131,9 +127,11 @@ impl AuEditor {
 
 impl Drop for AuEditor {
     fn drop(&mut self) {
-        // No main-thread assert: Drop can run on the audio thread when the
-        // graph releases the editor. See `close_inner`.
-        self.close_inner();
+        // Single teardown path: route through `close`, which asserts main-thread
+        // affinity (debug builds). Dropping an `AuEditor` off the main thread is
+        // an AppKit UB hazard — the assert turns that latent corruption into a
+        // located panic rather than silently bypassing the check.
+        self.close();
     }
 }
 
@@ -145,11 +143,11 @@ mod tests {
     #[test]
     fn test_has_editor() {
         let desc = AudioComponentDescription {
-            component_type: K_AUDIO_UNIT_TYPE_EFFECT,
-            component_sub_type: u32::from_be_bytes(*b"dely"),
-            component_manufacturer: u32::from_be_bytes(*b"appl"),
-            component_flags: 0,
-            component_flags_mask: 0,
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+componentFlagsMask: 0,
         };
         let comp = find_component(&desc).expect("AUDelay should be present");
         let mut instance: AudioComponentInstance = std::ptr::null_mut();

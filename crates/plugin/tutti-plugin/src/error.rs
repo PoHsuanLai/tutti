@@ -10,6 +10,10 @@ pub use tutti_plugin_types::LoadStage;
 /// Re-exported so callers keep referring to `crate::error::EditorError`.
 pub use tutti_plugin_types::EditorError;
 
+/// The lean, format-agnostic error the shared `PluginFormatHost` trait speaks.
+/// Re-exported so callers keep referring to `crate::error::PluginError`.
+pub use tutti_plugin_types::PluginError;
+
 #[derive(Error, Debug)]
 pub enum BridgeError {
     #[error("Bridge connection failed: {0}")]
@@ -79,6 +83,46 @@ pub enum BridgeError {
 }
 
 pub type Result<T> = std::result::Result<T, BridgeError>;
+
+/// Widen the lean, format-agnostic [`PluginError`] (what the shared
+/// `PluginFormatHost` trait returns) into the host's richer `BridgeError` at
+/// the IPC boundary. Lets the pipeline/session `?` a trait-method result inside
+/// a `BridgeError`-returning function without losing the message.
+impl From<PluginError> for BridgeError {
+    fn from(e: PluginError) -> Self {
+        match e {
+            PluginError::Load { stage, reason } => BridgeError::LoadFailed {
+                path: PathBuf::new(),
+                stage,
+                reason,
+            },
+            PluginError::State(msg) => BridgeError::StateSaveError(msg),
+            PluginError::Process(msg) => BridgeError::ProcessError(msg),
+            PluginError::Editor(err) => BridgeError::EditorError(err.to_string()),
+            PluginError::Other(msg) => BridgeError::ProcessError(msg),
+        }
+    }
+}
+
+/// Narrow a `BridgeError` into the lean [`PluginError`] the shared trait
+/// speaks. The reverse of [`From<PluginError>`](BridgeError) — used inside the
+/// format loaders' trait-method bodies, whose helpers still produce
+/// `BridgeError`, so the value can flow out as a `PluginError`. The IPC-only
+/// `BridgeError` variants (`ServerNotFound`, `ProtocolMismatch`, `IpcError`, …)
+/// collapse into `PluginError::Other`, preserving their `Display` text.
+impl From<BridgeError> for PluginError {
+    fn from(e: BridgeError) -> Self {
+        match e {
+            BridgeError::LoadFailed { stage, reason, .. } => PluginError::Load { stage, reason },
+            BridgeError::StateSaveError(msg) | BridgeError::StateRestoreError(msg) => {
+                PluginError::State(msg)
+            }
+            BridgeError::ProcessError(msg) => PluginError::Process(msg),
+            BridgeError::EditorError(msg) => PluginError::Editor(EditorError::PluginError(msg)),
+            other => PluginError::Other(other.to_string()),
+        }
+    }
+}
 
 impl BridgeError {
     /// Build an `UnexpectedMessage` error by Debug-formatting the received

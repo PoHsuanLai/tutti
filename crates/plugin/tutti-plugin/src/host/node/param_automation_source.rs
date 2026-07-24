@@ -20,18 +20,20 @@
 
 use std::sync::Arc;
 
-use audio_automation::AutomationEnvelope;
 use tutti_core::transport::Timeline;
+use tutti_core::Beat;
+use tutti_units::automation::Curve;
 
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
 use crate::protocol::ParameterChanges;
 
 /// One plugin parameter's automation curve, keyed by the plugin's numeric
-/// parameter id. The envelope is evaluated against the transport beat.
+/// parameter id. The [`Curve`] is evaluated against the transport beat — any
+/// beat-keyed curve (breakpoint envelope, constant, LFO), not just an envelope.
 #[derive(Clone)]
 pub struct TimedParam {
     pub param_id: u32,
-    pub envelope: Arc<AutomationEnvelope<f32>>,
+    pub curve: Arc<dyn Curve>,
 }
 
 /// How many samples between successive automation points within one block. A
@@ -94,22 +96,23 @@ impl ParamAutomationSource {
         let last = block_size - 1;
 
         for param in self.params.iter() {
-            if param.envelope.is_empty() {
-                continue;
-            }
             let mut queue = crate::protocol::ParameterQueue::new(param.param_id);
             // Sample at 0, every `SAMPLE_STRIDE`, and always the final sample so
             // the block's end value is exact (the next block starts from here).
             let mut offset = 0usize;
             loop {
-                let beat = start_beat + offset as f64 * beats_per_sample;
+                let beat = Beat::new(start_beat + offset as f64 * beats_per_sample);
                 // `LoopRange::wrap` is a no-op outside the region and needs no
                 // `end > start` guard — the type cannot hold an inverted range.
                 let eff_beat = match loop_range {
-                    Some(region) => region.wrap(tutti_core::Beat(beat)).get(),
+                    Some(region) => region.wrap(beat),
                     None => beat,
                 };
-                if let Some(v) = param.envelope.get_value_at(eff_beat) {
+                // A curve with no value here (empty / disabled) yields `None`,
+                // so an empty curve simply contributes no points — the queue
+                // stays empty and is dropped below, leaving the plugin at its
+                // last value.
+                if let Some(v) = param.curve.value_at(eff_beat) {
                     queue.add_point(offset as i32, v as f64);
                 }
                 if offset == last {
@@ -143,7 +146,7 @@ impl BlockReset for ParameterChanges {
 mod tests {
     use super::*;
     use atomic_float::AtomicF64;
-    use audio_automation::AutomationPoint;
+    use audio_automation::{AutomationEnvelope, AutomationPoint};
     use std::sync::atomic::{AtomicBool, Ordering};
     use tutti_core::params::Bpm;
 
@@ -186,7 +189,7 @@ mod tests {
         env.add_point(AutomationPoint::new(4.0, 1.0));
         TimedParam {
             param_id,
-            envelope: Arc::new(env),
+            curve: Arc::new(env),
         }
     }
 
@@ -259,7 +262,7 @@ mod tests {
         let src = ParamAutomationSource::new(
             vec![TimedParam {
                 param_id: 3,
-                envelope: Arc::new(empty_env),
+                curve: Arc::new(empty_env),
             }],
             transport,
             44100.0,

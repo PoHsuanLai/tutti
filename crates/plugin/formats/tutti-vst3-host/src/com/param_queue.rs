@@ -37,9 +37,10 @@ impl Class for ParamValueQueueImpl {
 }
 
 impl ParamValueQueueImpl {
-    /// Build a queue from an existing [`ParameterQueue`]. Primarily for
-    /// tests and non-RT helpers; the RT path prefers [`new_empty`] +
-    /// [`refill_from_queue`] to reuse the ComWrapper across buffers.
+    /// Build a queue from an existing [`ParameterQueue`]. Test-harness helper;
+    /// the RT path uses [`new_empty`] + [`refill_from_queue`] to reuse the
+    /// ComWrapper across buffers.
+    #[cfg(test)]
     pub fn from_queue(queue: &ParameterQueue) -> ComWrapper<Self> {
         let mut points = SmallVec::with_capacity(queue.points.len().max(INLINE_POINTS));
         points.extend_from_slice(&queue.points);
@@ -66,6 +67,7 @@ impl ParamValueQueueImpl {
         points.extend_from_slice(&queue.points);
     }
 
+    #[cfg(test)]
     pub fn to_queue(&self) -> ParameterQueue {
         let mut queue = ParameterQueue::new(self.param_id());
         self.for_each_point(|p| {
@@ -86,18 +88,14 @@ impl ParamValueQueueImpl {
         *self.param_id.borrow()
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.points.borrow().len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.points.borrow().is_empty()
-    }
-
-    /// Reset the audio-thread owner (see [`AudioThreadCell::reset_owner`]).
-    pub fn reset_owner(&self) {
-        self.param_id.reset_owner();
-        self.points.reset_owner();
     }
 }
 

@@ -69,6 +69,16 @@ fn is_log_unit(unit: &str) -> bool {
     unit.contains("dB") || unit.contains("Hz") || unit.contains("hz")
 }
 
+/// Used by formats that don't expose per-parameter automation / bypass /
+/// read-only flags (VST2, AUv2). Every parameter is reported as automatable.
+pub const ALL_AUTOMATABLE: ParameterFlags = ParameterFlags {
+    automatable: true,
+    read_only: false,
+    wrap: false,
+    is_bypass: false,
+    hidden: false,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

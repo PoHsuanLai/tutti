@@ -9,6 +9,8 @@
 use std::sync::Arc;
 use vst::plugin::Plugin as _;
 
+use tutti_plugin_types::{ParameterInfo as SharedParameterInfo, ALL_AUTOMATABLE};
+
 use crate::host::ParameterChange;
 use crate::instance::Vst2Instance;
 use crate::types::ParameterInfo;
@@ -51,6 +53,35 @@ impl Vst2Instance {
                 name: self.params.get_parameter_name(i),
                 unit: self.params.get_parameter_label(i),
                 current: self.params.get_parameter(i),
+            })
+            .collect()
+    }
+
+    /// List every parameter as the SHARED [`tutti_plugin_types::ParameterInfo`],
+    /// the boundary vocabulary both consumers speak.
+    ///
+    /// This is the single VST2 `narrow → shared` mapping: the server loader's
+    /// `PluginFormatHost::get_parameter_list` and the in-process
+    /// `ControlBackend::parameters` both call it, so the map lives in one place.
+    /// VST2 exposes no min/max/step metadata, so every parameter is reported as
+    /// normalized `0.0..1.0`, `default = current`, `step_count = 0`, and
+    /// automatable.
+    pub fn parameter_list(&self) -> Vec<SharedParameterInfo> {
+        self.parameters()
+            .into_iter()
+            .map(|p| {
+                SharedParameterInfo {
+                    id: p.id,
+                    name: p.name,
+                    unit: p.unit,
+                    // VST2 exposes no min/max/step metadata: every parameter is
+                    // reported normalized 0..1, default = current, no steps.
+                    min_value: 0.0,
+                    max_value: 1.0,
+                    default_value: p.current as f64,
+                    step_count: 0,
+                    flags: ALL_AUTOMATABLE,
+                }
             })
             .collect()
     }

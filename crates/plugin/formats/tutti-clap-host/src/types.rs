@@ -98,9 +98,11 @@ impl fmt::Display for PluginInfo {
 /// [`NoteExpressionValue`](tutti_plugin_types::NoteExpressionValue): besides
 /// `note_id` it can scope to a `port_index` / `channel` / `key`. This local
 /// wrapper carries those extra fields; [`expression_type`](Self::expression_type)
-/// uses the shared [`NoteExpressionType`].
+/// uses the shared [`NoteExpressionType`]. Consumers crossing the crate
+/// boundary use the shared `NoteExpressionValue`; the loader converts to/from
+/// this CLAP-native shape at its edge.
 #[derive(Debug, Clone, Copy)]
-pub struct NoteExpressionValue {
+pub struct ClapNoteExpression {
     pub sample_offset: i32,
     pub note_id: i32,
     pub port_index: i16,
@@ -110,7 +112,7 @@ pub struct NoteExpressionValue {
     pub value: f64,
 }
 
-impl NoteExpressionValue {
+impl ClapNoteExpression {
     /// Create a new note expression. Defaults to port 0, any channel, any key;
     /// refine with the `port`/`on_channel`/`on_key`/`at` builders.
     pub fn new(expression_type: NoteExpressionType, note_id: i32, value: f64) -> Self {
@@ -148,13 +150,23 @@ impl NoteExpressionValue {
         self.key = key;
         self
     }
+
+    /// Build a CLAP-native expression from the shared, format-agnostic
+    /// [`NoteExpressionValue`](tutti_plugin_types::NoteExpressionValue). The
+    /// shared form carries no voice addressing, so `port`/`channel`/`key`
+    /// default to port 0 / any-channel / any-key.
+    pub fn from_shared(expr: &tutti_plugin_types::NoteExpressionValue) -> Self {
+        Self::new(expr.expression_type, expr.note_id, expr.value).at(expr.sample_offset)
+    }
 }
 
 bitflags! {
     /// Parameter behaviour flags from `clap_param_info`. See the CLAP spec
-    /// for precise semantics of each bit.
+    /// for precise semantics of each bit. CLAP-native; the loader projects the
+    /// subset it needs onto the shared `tutti_plugin_types::ParameterFlags` at
+    /// the crate boundary.
     #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-    pub struct ParameterFlags: u32 {
+    pub struct ClapParamFlags: u32 {
         const STEPPED                 = 1 << 0;
         const PERIODIC                = 1 << 1;
         const HIDDEN                  = 1 << 2;
@@ -174,19 +186,22 @@ bitflags! {
     }
 }
 
-/// Description of a single plugin parameter.
+/// Description of a single plugin parameter, CLAP-native. Richer than the
+/// shared `tutti_plugin_types::ParameterInfo`: it carries CLAP's full
+/// [`ClapParamFlags`] and a `module` grouping path. The loader projects it
+/// down to the shared shape at the crate boundary.
 #[derive(Debug, Clone)]
-pub struct ParameterInfo {
+pub struct ClapParamInfo {
     pub id: u32,
     pub name: String,
     pub module: String,
     pub min_value: f64,
     pub max_value: f64,
     pub default_value: f64,
-    pub flags: ParameterFlags,
+    pub flags: ClapParamFlags,
 }
 
-impl ParameterInfo {
+impl ClapParamInfo {
     /// Create a new parameter with the given ID and display name. Defaults
     /// to range `[0.0, 1.0]` with default `0.0` and no flags — use the
     /// builder methods to refine.
@@ -198,7 +213,7 @@ impl ParameterInfo {
             min_value: 0.0,
             max_value: 1.0,
             default_value: 0.0,
-            flags: ParameterFlags::default(),
+            flags: ClapParamFlags::default(),
         }
     }
 
@@ -217,9 +232,55 @@ impl ParameterInfo {
     }
 
     /// Set the parameter flags.
-    pub fn flags(mut self, flags: ParameterFlags) -> Self {
+    pub fn flags(mut self, flags: ClapParamFlags) -> Self {
         self.flags = flags;
         self
+    }
+}
+
+/// The scope of a plugin's `params.rescan` request, decoded from
+/// `clap_param_rescan_flags`. Returned by
+/// [`ClapLoaded::poll_params_rescan`](crate::ClapLoaded::poll_params_rescan)
+/// so the host can honour CLAP's rule that a full rescan (`all`) may only be
+/// applied while the plugin is deactivated, whereas a value-only rescan can be
+/// picked up live.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParamRescan {
+    /// Any rescan at all was requested since the last poll.
+    pub requested: bool,
+    /// `CLAP_PARAM_RESCAN_ALL` — everything changed. The plugin MUST be
+    /// deactivated before the host re-reads, per the CLAP spec.
+    pub all: bool,
+    /// `CLAP_PARAM_RESCAN_VALUES` — current values changed; safe to re-read
+    /// live.
+    pub values: bool,
+    /// `CLAP_PARAM_RESCAN_INFO` — info (name/module/flags/range) changed.
+    pub info: bool,
+    /// `CLAP_PARAM_RESCAN_TEXT` — value→text display changed.
+    pub text: bool,
+}
+
+impl ParamRescan {
+    /// Decode the accumulated `clap_param_rescan_flags` bitset. `requested`
+    /// reflects whether any rescan happened (the caller passes that separately
+    /// since the flags alone can legally be 0).
+    pub(crate) fn from_flags(requested: bool, flags: u32) -> Self {
+        use clap_sys::ext::params::{
+            CLAP_PARAM_RESCAN_ALL, CLAP_PARAM_RESCAN_INFO, CLAP_PARAM_RESCAN_TEXT,
+            CLAP_PARAM_RESCAN_VALUES,
+        };
+        Self {
+            requested,
+            all: flags & CLAP_PARAM_RESCAN_ALL != 0,
+            values: flags & CLAP_PARAM_RESCAN_VALUES != 0,
+            info: flags & CLAP_PARAM_RESCAN_INFO != 0,
+            text: flags & CLAP_PARAM_RESCAN_TEXT != 0,
+        }
+    }
+
+    /// Whether a full re-read requiring plugin deactivation is pending.
+    pub fn needs_deactivate(&self) -> bool {
+        self.all
     }
 }
 
@@ -589,4 +650,48 @@ pub struct UndoChange {
     pub name: String,
     pub delta: Vec<u8>,
     pub delta_can_undo: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap_sys::ext::params::{
+        CLAP_PARAM_RESCAN_ALL, CLAP_PARAM_RESCAN_INFO, CLAP_PARAM_RESCAN_TEXT,
+        CLAP_PARAM_RESCAN_VALUES,
+    };
+
+    #[test]
+    fn param_rescan_decodes_all_flag() {
+        let r = ParamRescan::from_flags(true, CLAP_PARAM_RESCAN_ALL);
+        assert!(r.requested);
+        assert!(r.all);
+        assert!(r.needs_deactivate(), "RESCAN_ALL requires deactivate");
+        assert!(!r.values);
+    }
+
+    #[test]
+    fn param_rescan_decodes_values_only() {
+        // A value-only rescan must NOT require deactivate — it can be picked up
+        // live, which is the whole point of distinguishing it from RESCAN_ALL.
+        let r = ParamRescan::from_flags(true, CLAP_PARAM_RESCAN_VALUES);
+        assert!(r.requested);
+        assert!(r.values);
+        assert!(!r.all);
+        assert!(!r.needs_deactivate());
+    }
+
+    #[test]
+    fn param_rescan_decodes_combined_flags() {
+        let flags = CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_INFO | CLAP_PARAM_RESCAN_TEXT;
+        let r = ParamRescan::from_flags(true, flags);
+        assert!(r.values && r.info && r.text);
+        assert!(!r.all);
+    }
+
+    #[test]
+    fn param_rescan_empty_when_not_requested() {
+        let r = ParamRescan::from_flags(false, 0);
+        assert_eq!(r, ParamRescan::default());
+        assert!(!r.requested);
+    }
 }

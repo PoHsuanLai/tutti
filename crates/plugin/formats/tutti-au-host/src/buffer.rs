@@ -33,12 +33,12 @@ impl RenderBufferList {
     pub fn bind(&mut self, buffers: &mut [Vec<f32>], frames: u32) -> *mut AudioBufferList {
         let ptr = self.storage.as_mut_ptr() as *mut AudioBufferList;
         unsafe {
-            (*ptr).number_buffers = self.channels as u32;
+            (*ptr).mNumberBuffers = self.channels as u32;
             for (ch, buf) in buffers.iter_mut().take(self.channels).enumerate() {
-                let audio_buf = &mut *((&mut (*ptr).buffers[0] as *mut AudioBuffer).add(ch));
-                audio_buf.number_channels = 1;
-                audio_buf.data_byte_size = frames * std::mem::size_of::<f32>() as u32;
-                audio_buf.data = buf.as_mut_ptr() as *mut c_void;
+                let audio_buf = &mut *((&mut (*ptr).mBuffers[0] as *mut AudioBuffer).add(ch));
+                audio_buf.mNumberChannels = 1;
+                audio_buf.mDataByteSize = frames * std::mem::size_of::<f32>() as u32;
+                audio_buf.mData = buf.as_mut_ptr() as *mut c_void;
             }
         }
         ptr
@@ -53,8 +53,8 @@ impl RenderBufferList {
 pub(crate) unsafe fn iter_buffers_mut<'a>(
     abl: *mut AudioBufferList,
 ) -> impl Iterator<Item = &'a mut AudioBuffer> {
-    let count = (*abl).number_buffers as usize;
-    let base = &mut (*abl).buffers[0] as *mut AudioBuffer;
+    let count = (*abl).mNumberBuffers as usize;
+    let base = &mut (*abl).mBuffers[0] as *mut AudioBuffer;
     (0..count).map(move |i| &mut *base.add(i))
 }
 

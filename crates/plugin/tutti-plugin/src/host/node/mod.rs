@@ -382,9 +382,10 @@ impl PluginClient {
     /// device changes). The snapshot is only sent to plugins advertising
     /// [`Features::TRANSPORT`]; others always get a default.
     pub fn set_transport_source(&mut self, reader: tutti_core::transport::Transport) {
-        self.inputs
-            .transport
-            .install(Arc::new(TransportSource::new(reader, self.sample_rate)));
+        self.inputs.transport.install(Arc::new(TransportSource::new(
+            Arc::new(reader),
+            self.sample_rate,
+        )));
     }
 
     /// Drop a previously-installed transport reader; subsequent blocks feed the

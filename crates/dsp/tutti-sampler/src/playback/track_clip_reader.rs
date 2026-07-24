@@ -1369,9 +1369,6 @@ mod tests {
         fn tempo(&self) -> tutti_core::Bpm {
             tutti_core::Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
         }
-        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
-            None
-        }
     }
 
     fn make_wave(samples: usize) -> Arc<Wave> {

@@ -484,9 +484,6 @@ mod tests {
         fn tempo(&self) -> Bpm {
             Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
         }
-        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
-            None
-        }
     }
 
     /// `rebind_net_transport` must replace each clip reader in the cloned net

@@ -188,12 +188,7 @@ impl MidiClipSource {
 }
 
 impl MidiIn for MidiClipSource {
-    fn poll_into(
-        &self,
-        unit_id: MidiUnitId,
-        block_size: usize,
-        out: &mut [MidiEvent],
-    ) -> usize {
+    fn poll_into(&self, unit_id: MidiUnitId, block_size: usize, out: &mut [MidiEvent]) -> usize {
         if unit_id != self.target_unit {
             return 0;
         }
@@ -236,9 +231,6 @@ mod tests {
     impl Timeline for TestTransport {
         fn beat(&self) -> tutti_core::Beat {
             tutti_core::Beat(self.beat.load(Ordering::Acquire))
-        }
-        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
-            None
         }
         fn is_rolling(&self) -> bool {
             self.playing.load(Ordering::Acquire)

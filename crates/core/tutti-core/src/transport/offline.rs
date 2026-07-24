@@ -142,6 +142,23 @@ impl OfflineTimeline {
     pub fn beats_per_sample(&self) -> f64 {
         self.beats_per_sample
     }
+
+    /// The active loop region, or `None` when not looping.
+    ///
+    /// An inherent method, not a [`Timeline`](super::Timeline) one: looping is a
+    /// live-transport concept ([`TransportState`](super::TransportState)), and
+    /// the offline render never reads it through a trait — `advance()` folds the
+    /// wrap in via direct field access. Kept here for the tests and any direct
+    /// caller that holds a concrete `OfflineTimeline`.
+    pub fn loop_range(&self) -> Option<LoopRange> {
+        if !self.loop_enabled.load(Ordering::Acquire) {
+            return None;
+        }
+        LoopRange::new(
+            self.loop_start.load(Ordering::Acquire),
+            self.loop_end.load(Ordering::Acquire),
+        )
+    }
 }
 
 impl super::Timeline for OfflineTimeline {
@@ -157,16 +174,6 @@ impl super::Timeline for OfflineTimeline {
         // An offline timeline advances whenever asked — there is nothing to
         // pause it.
         true
-    }
-
-    fn loop_range(&self) -> Option<LoopRange> {
-        if !self.loop_enabled.load(Ordering::Acquire) {
-            return None;
-        }
-        LoopRange::new(
-            self.loop_start.load(Ordering::Acquire),
-            self.loop_end.load(Ordering::Acquire),
-        )
     }
 }
 

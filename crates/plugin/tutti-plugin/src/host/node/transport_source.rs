@@ -17,26 +17,28 @@ use std::sync::Arc;
 
 use atomic_float::AtomicF64;
 use std::sync::atomic::Ordering;
-use tutti_core::transport::Transport;
+use tutti_core::transport::TransportState;
 
 use crate::host::node::input_slot::{BlockCtx, BlockInput};
 use crate::protocol::TransportInfo;
 
 /// Beat-scheduled transport-info producer for the plugin ABI.
 ///
-/// Takes the live [`Transport`] concretely rather than a
-/// [`Timeline`](tutti_core::transport::Timeline): the `TransportInfo` it fills
-/// for hosted plugins carries `recording` and loop-armed state, which are
-/// live-session facts outside a timeline's vocabulary. Cheap to clone (all
-/// state shared via `Arc`).
+/// Takes a [`TransportState`](tutti_core::transport::TransportState) rather than
+/// a bare [`Timeline`](tutti_core::transport::Timeline): the `TransportInfo` it
+/// fills for hosted plugins carries `recording` and loop state, which are
+/// live-session facts on the `TransportState` supertrait and outside a plain
+/// timeline's vocabulary. An offline render — a `Timeline`-only implementor —
+/// correctly cannot be plugged here. Cheap to clone (all state shared via
+/// `Arc`).
 #[derive(Clone)]
 pub struct TransportSource {
-    reader: Transport,
+    reader: Arc<dyn TransportState>,
     sample_rate: Arc<AtomicF64>,
 }
 
 impl TransportSource {
-    pub fn new(reader: Transport, sample_rate: f64) -> Self {
+    pub fn new(reader: Arc<dyn TransportState>, sample_rate: f64) -> Self {
         Self {
             reader,
             sample_rate: Arc::new(AtomicF64::new(sample_rate)),
@@ -54,21 +56,21 @@ impl TransportSource {
     fn snapshot_into(&self, out: &mut TransportInfo) {
         let sample_rate = self.sample_rate.load(Ordering::Acquire);
         let reader = &self.reader;
-        let tempo = reader.settings.tempo().get();
+        let tempo = reader.tempo().get();
         let mut info = TransportInfo::new()
             .with_tempo(tempo)
-            .with_playing(reader.motion.is_playing())
-            .with_recording(reader.settings.is_recording())
+            .with_playing(reader.is_rolling())
+            .with_recording(reader.is_recording())
             .with_sample_rate(sample_rate);
         // CLAP-style beats position; seconds derived from beats + tempo.
-        let beats = reader.settings.beat();
+        let beats = reader.beat().get();
         let seconds = if tempo > 0.0 {
             beats * 60.0 / tempo
         } else {
             0.0
         };
         info = info.with_position_beats(beats, seconds);
-        if let Some(region) = reader.settings.loop_span.range() {
+        if let Some(region) = reader.loop_range() {
             info = info.with_loop(true, region.start().get(), region.end().get());
         }
         *out = info;
@@ -94,6 +96,7 @@ impl crate::host::node::input_slot::BlockReset for TransportInfo {
 mod tests {
     use super::*;
     use crate::host::node::input_slot::BlockCtx;
+    use tutti_core::transport::Transport;
 
     /// Drive the real `Transport` — TransportSource is a live-only ABI
     /// bridge, so a mock would only restate its fields.
@@ -102,7 +105,7 @@ mod tests {
         t.settings.set_tempo(tempo);
         let _ = t.motion.try_send(tutti_core::MotionEvent::Play);
         t.motion.drain();
-        let src = TransportSource::new(t.clone(), rate);
+        let src = TransportSource::new(Arc::new(t.clone()), rate);
         (t, src)
     }
 

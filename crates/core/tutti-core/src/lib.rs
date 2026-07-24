@@ -64,7 +64,7 @@ pub mod transport;
 pub use transport::{
     beat_from_ports, ClickNode, ClickSettings, ClickState, Direction, LoopRange, MetronomeMode,
     MotionEvent, MotionFsm, MotionState, OfflineTimeline, OfflineTimelineConfig, QueueFull,
-    Timeline, Transport, TransportClock, TransportSettings, BEAT_PORTS,
+    Timeline, Transport, TransportClock, TransportSettings, TransportState, BEAT_PORTS,
 };
 
 pub mod metering;

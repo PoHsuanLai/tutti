@@ -3,7 +3,7 @@
 //! Superset of the fields VST2, VST3, and CLAP plugins consume. Formats
 //! that don't surface a given field leave it at its `Default`.
 //!
-//! Fields are grouped into focused sub-structs ([`TransportState`],
+//! Fields are grouped into focused sub-structs ([`TransportFlags`],
 //! [`MusicalTiming`], [`TransportPosition`], [`LoopRegion`], [`BarInfo`])
 //! so the top-level type stays readable; callers access via
 //! `transport.state.playing`, `transport.timing.tempo`, etc.
@@ -12,7 +12,7 @@
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransportInfo {
-    pub state: TransportState,
+    pub state: TransportFlags,
     pub timing: MusicalTiming,
     pub position: TransportPosition,
     pub loop_region: LoopRegion,
@@ -22,9 +22,14 @@ pub struct TransportInfo {
 }
 
 /// Playback / record / cycle flags.
+///
+/// Named `TransportFlags` after the plugin-SDK term for exactly this bundle —
+/// CLAP and VST2 both call the field `flags`. Distinct from the
+/// [`TransportState`](tutti_core::transport::TransportState) *trait*, which is
+/// the live-timeline reader plugins consume; this is the wire snapshot.
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct TransportState {
+pub struct TransportFlags {
     pub playing: bool,
     pub recording: bool,
     pub cycle_active: bool,
@@ -107,7 +112,7 @@ impl Default for TransportInfo {
     /// that consumers expect when no transport state has been negotiated yet.
     fn default() -> Self {
         Self {
-            state: TransportState::default(),
+            state: TransportFlags::default(),
             timing: MusicalTiming::default(),
             position: TransportPosition::default(),
             loop_region: LoopRegion::default(),

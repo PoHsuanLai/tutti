@@ -2,7 +2,7 @@
 //!
 //! The parameter-automation counterpart of [`super::harmony_source::HarmonySource`]:
 //! a [`ParamAutomationSource`] holds one [`AutomationEnvelope`] per plugin
-//! parameter id plus a [`Timeline`]. Each block it reads the transport
+//! parameter id plus a [`TransportState`]. Each block it reads the transport
 //! beat, walks the block sample-by-sample stepping the beat cursor, and fills a
 //! reused [`ParameterChanges`] with one [`ParameterPoint`] per parameter at
 //! sample-accurate offsets across the block window.
@@ -20,7 +20,7 @@
 
 use std::sync::Arc;
 
-use tutti_core::transport::Timeline;
+use tutti_core::transport::TransportState;
 use tutti_core::Beat;
 use tutti_units::automation::Curve;
 
@@ -49,15 +49,20 @@ const SAMPLE_STRIDE: usize = 8;
 #[derive(Clone)]
 pub struct ParamAutomationSource {
     params: Arc<[TimedParam]>,
-    transport: Arc<dyn Timeline>,
+    transport: Arc<dyn TransportState>,
     sample_rate: f64,
 }
 
 impl ParamAutomationSource {
     /// Build a parameter-automation source from one envelope per parameter id.
+    ///
+    /// Takes a [`TransportState`], not a bare [`Timeline`](tutti_core::transport::Timeline):
+    /// `fill` reads `loop_range()` to wrap the beat inside the active cycle, and
+    /// looping lives on the live supertrait. An offline render never drives this
+    /// source.
     pub fn new(
         params: impl IntoIterator<Item = TimedParam>,
-        transport: Arc<dyn Timeline>,
+        transport: Arc<dyn TransportState>,
         sample_rate: f64,
     ) -> Self {
         Self {
@@ -149,6 +154,7 @@ mod tests {
     use audio_automation::{AutomationEnvelope, AutomationPoint};
     use std::sync::atomic::{AtomicBool, Ordering};
     use tutti_core::params::Bpm;
+    use tutti_core::transport::Timeline;
 
     struct TestTransport {
         beat: AtomicF64,
@@ -171,14 +177,19 @@ mod tests {
         fn beat(&self) -> tutti_core::Beat {
             tutti_core::Beat(self.beat.load(Ordering::Acquire))
         }
-        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
-            None
-        }
         fn is_rolling(&self) -> bool {
             self.playing.load(Ordering::Acquire)
         }
         fn tempo(&self) -> Bpm {
             Bpm(self.tempo)
+        }
+    }
+    impl TransportState for TestTransport {
+        fn is_recording(&self) -> bool {
+            false
+        }
+        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
+            None
         }
     }
 
@@ -198,7 +209,7 @@ mod tests {
         let transport = Arc::new(TestTransport::new(120.0)); // 22050 samples/beat @ 44.1k
         let src = ParamAutomationSource::new(
             vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn Timeline>,
+            Arc::clone(&transport) as Arc<dyn TransportState>,
             44100.0,
         );
         let mut out = ParameterChanges::new();
@@ -223,7 +234,7 @@ mod tests {
         transport.playing.store(false, Ordering::Release);
         let src = ParamAutomationSource::new(
             vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn Timeline>,
+            Arc::clone(&transport) as Arc<dyn TransportState>,
             44100.0,
         );
         let mut out = ParameterChanges::new();
@@ -236,7 +247,7 @@ mod tests {
         let transport = Arc::new(TestTransport::new(120.0));
         let src = ParamAutomationSource::new(
             vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn Timeline>,
+            Arc::clone(&transport) as Arc<dyn TransportState>,
             44100.0,
         );
         let mut out = ParameterChanges::new();
@@ -252,7 +263,7 @@ mod tests {
 
     #[test]
     fn empty_source_and_empty_envelope_emit_nothing() {
-        let transport = Arc::new(TestTransport::new(120.0)) as Arc<dyn Timeline>;
+        let transport = Arc::new(TestTransport::new(120.0)) as Arc<dyn TransportState>;
         let empty_src = ParamAutomationSource::new(Vec::new(), Arc::clone(&transport), 44100.0);
         let mut out = ParameterChanges::new();
         empty_src.fill(64, &mut out);

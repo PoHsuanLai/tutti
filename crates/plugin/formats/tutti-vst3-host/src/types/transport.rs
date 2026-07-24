@@ -165,7 +165,7 @@ mod tests {
     use super::process_context_flags as need;
     use super::*;
     use tutti_plugin_types::{
-        BarInfo, LoopRegion, MusicalTiming, TransportPosition, TransportState,
+        BarInfo, LoopRegion, MusicalTiming, TransportFlags, TransportPosition,
     };
     use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
 
@@ -193,7 +193,7 @@ mod tests {
                 time_sig_numerator: 7,
                 time_sig_denominator: 8,
             },
-            state: TransportState {
+            state: TransportFlags {
                 playing: true,
                 recording: true,
                 cycle_active: true,

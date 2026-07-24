@@ -148,9 +148,6 @@ impl Timeline for MockTransport {
     fn tempo(&self) -> Bpm {
         Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
     }
-    fn loop_range(&self) -> Option<tutti_core::transport::LoopRange> {
-        None
-    }
 }
 
 /// Steady-state mixdown must be allocation-free: two clips already present in

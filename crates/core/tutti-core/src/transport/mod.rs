@@ -48,10 +48,11 @@ pub use state::{beat_from_ports, ClockInputs, Declick, LoopRange, LoopSpan, Seek
 ///
 /// # What is deliberately NOT here
 ///
-/// Recording and preroll are live-session facts, not timeline facts: an
-/// offline render answers `false` to both forever. They live on
-/// [`TransportSettings`] and are read directly by the one consumer that needs
-/// them (the metronome).
+/// Recording, looping, and preroll are live-session facts, not timeline facts:
+/// an offline render either answers `false`/`None` forever or handles them by
+/// direct field access, never through this trait. They live on the
+/// [`TransportState`] supertrait (record + loop) and on [`TransportSettings`]
+/// (preroll), read only where a genuinely live transport is required.
 pub trait Timeline: Send + Sync {
     /// Current position on the timeline.
     fn beat(&self) -> crate::params::Beat;
@@ -59,6 +60,25 @@ pub trait Timeline: Send + Sync {
     fn tempo(&self) -> crate::params::Bpm;
     /// Whether time is advancing. An offline render is always rolling.
     fn is_rolling(&self) -> bool;
+}
+
+/// A live transport: a [`Timeline`] that also carries the record/loop state a
+/// plugin host asks for.
+///
+/// This is the "transport state" bundle plugins request by name — VST3's opt-in
+/// flag is literally `kNeedTransportState`, VST2 prefixes the flags
+/// `TRANSPORT_RECORDING`/`TRANSPORT_CYCLE_ACTIVE`, CLAP groups them under
+/// `clap_transport_flags`. Splitting it off keeps [`Timeline`] minimal so an
+/// [`OfflineTimeline`] stays a first-class `Timeline`: an offline render has no
+/// record state and folds looping into its own `advance()`, so it implements
+/// `Timeline` only and keeps `loop_range` as an inherent method.
+///
+/// The live [`Transport`] implements this; a consumer that needs record or loop
+/// state (the plugin `TransportSource`, `ParamAutomationSource`) depends on
+/// `dyn TransportState`, never the concrete backend.
+pub trait TransportState: Timeline {
+    /// Whether the transport is armed and recording. Always `false` offline.
+    fn is_recording(&self) -> bool;
     /// The active loop region, or `None` when not looping. Always a valid,
     /// non-empty region — see [`LoopRange`].
     fn loop_range(&self) -> Option<LoopRange>;

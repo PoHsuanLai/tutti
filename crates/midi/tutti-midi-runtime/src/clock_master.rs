@@ -357,9 +357,6 @@ mod tests {
         fn is_rolling(&self) -> bool {
             self.playing.load(Ordering::Acquire)
         }
-        fn loop_range(&self) -> Option<tutti_core::transport::LoopRange> {
-            None
-        }
         fn tempo(&self) -> Bpm {
             Bpm(self.tempo)
         }

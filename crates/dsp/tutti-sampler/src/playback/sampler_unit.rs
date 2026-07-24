@@ -814,9 +814,6 @@ mod tests {
         fn beat(&self) -> tutti_core::Beat {
             tutti_core::Beat(self.beat)
         }
-        fn loop_range(&self) -> Option<tutti_core::LoopRange> {
-            None
-        }
         fn is_rolling(&self) -> bool {
             self.playing
         }

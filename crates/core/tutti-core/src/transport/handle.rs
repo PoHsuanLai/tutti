@@ -79,6 +79,12 @@ impl super::Timeline for Transport {
     fn is_rolling(&self) -> bool {
         self.motion.is_playing()
     }
+}
+
+impl super::TransportState for Transport {
+    fn is_recording(&self) -> bool {
+        self.settings.is_recording()
+    }
 
     fn loop_range(&self) -> Option<LoopRange> {
         self.settings.loop_span.range()

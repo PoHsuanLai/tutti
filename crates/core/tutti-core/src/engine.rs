@@ -5,7 +5,7 @@
 
 use crate::transport::Declick;
 use crate::transport::MotionFsm;
-use crate::{AudioThreadCell, Ordering};
+use crate::{AudioThreadCell, ChannelLayout, Ordering};
 use fundsp::audiounit::AudioUnit;
 use fundsp::buffer::BufferArray;
 use fundsp::prelude::{BufferRef, U2};
@@ -46,15 +46,18 @@ impl Engine {
             return;
         };
 
-        // 0 inputs on the graph root; 1 output → duplicate, 2 → straight L/R.
-        // Any other count is a graph misconfiguration the old path panicked on.
-        let outputs = backend.outputs();
+        // 0 inputs on the graph root; Mono → duplicate channel 0 into L/R,
+        // Stereo → straight L/R. Any wider layout is a graph misconfiguration the
+        // old path panicked on (the root is always mono or stereo here).
         debug_assert!(backend.inputs() == 0);
-        debug_assert!(
-            outputs == 1 || outputs == 2,
-            "graph root must have 1 or 2 outputs"
-        );
-        let mono = outputs == 1;
+        let mono = match ChannelLayout::from(backend.outputs()) {
+            ChannelLayout::Mono => true,
+            ChannelLayout::Stereo => false,
+            other => {
+                debug_assert!(false, "graph root must be mono or stereo, got {other:?}");
+                false
+            }
+        };
 
         let empty_input = BufferRef::new(&[]);
         let mut scratch = BufferArray::<U2>::new();

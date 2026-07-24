@@ -339,29 +339,54 @@ impl SynthVoice {
     }
 
     pub(crate) fn set_mpe_pitch_bend(&mut self, semitones: impl Into<Semitones>) {
+        if self.mpe.detached {
+            return;
+        }
         let semitones = semitones.into().get();
         let range = self.mpe_pitch_bend_range.get();
         self.mpe.pitch_bend_semitones = Semitones(semitones.clamp(-range, range));
     }
 
     pub(crate) fn set_mpe_pressure(&mut self, pressure: f32) {
+        if self.mpe.detached {
+            return;
+        }
         self.mpe.pressure = pressure.clamp(0.0, 1.0);
     }
 
     pub(crate) fn set_mpe_slide(&mut self, slide: f32) {
+        if self.mpe.detached {
+            return;
+        }
         self.mpe.slide = slide.clamp(0.0, 1.0);
     }
 
     pub(crate) fn set_mpe_gain(&mut self, gain: f32) {
+        if self.mpe.detached {
+            return;
+        }
         self.mpe.gain = gain.clamp(0.0, 1.0);
     }
 
     /// Reset this voice's per-note expression (pitch bend, pressure, slide) to
     /// their defaults. Backs MIDI 2.0 Per-Note Management *Reset* (M2-104
-    /// §7.4.15): the voice keeps sounding, only its accumulated per-note
-    /// controllers snap back to the note-on baseline.
+    /// §7.4.5, S=1): the voice keeps sounding *and* keeps responding, only its
+    /// accumulated per-note controllers snap back to the note-on baseline.
     pub(crate) fn reset_mpe(&mut self) {
         self.mpe.reset();
+    }
+
+    /// Detach this voice's per-note controllers (M2-104 §7.4.5, D=1): it keeps
+    /// its current per-note values but stops responding to any further per-note
+    /// controllers, playing out frozen. The opposite intent from [`reset_mpe`].
+    pub(crate) fn detach_mpe(&mut self) {
+        self.mpe.detach();
+    }
+
+    /// Update the per-note pitch-bend range (semitones) this voice clamps to.
+    /// Set by the per-note pitch-bend sensitivity RPN (M2-104 §7.4.13).
+    pub(crate) fn set_mpe_pitch_bend_range(&mut self, range: Semitones) {
+        self.mpe_pitch_bend_range = range;
     }
 
     fn apply_mpe_modulation(&mut self, unison: Option<&UnisonEngine>) {

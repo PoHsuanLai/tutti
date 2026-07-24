@@ -27,6 +27,7 @@ pub mod clip_player;
 pub mod clock_master;
 pub mod endpoint;
 pub mod jr_timestamp;
+pub mod mpe_ingest;
 pub mod port;
 pub mod pre_block;
 pub mod registry;
@@ -53,3 +54,4 @@ pub use snapshot_reader::MidiSnapshotReader;
 pub use sysex_reassembler::Sysex7Reassembler;
 
 pub use mpe::{MpeMode, MpeProcessor, MpeZone, MpeZoneConfig, PerNoteExpression};
+pub use mpe_ingest::MpeIngest;

@@ -232,20 +232,13 @@ impl PolySynth {
                     channel,
                 );
             }
+            // Channel pitch bend is a *global* (whole-synth) bend. Under MPE, a
+            // member-channel bend is rewritten to a native Per-Note Pitch Bend at
+            // the input edge (see `MpeIngest`), so anything reaching here — the
+            // master-channel bend, or a non-MPE bend — is genuinely global.
             Cv2::ChannelPitchBend(m) => {
-                let value = bend_u32_to_signed_f32(m.pitch_bend_data());
-                if self.config.mpe_enabled {
-                    self.handle_mpe_pitch_bend_normalized(channel, value);
-                } else {
-                    self.pitch_bend = value;
-                    self.apply_pitch_bend();
-                }
-            }
-            Cv2::ChannelPressure(m) if self.config.mpe_enabled => {
-                self.handle_mpe_pressure_normalized(
-                    channel,
-                    u32_to_unit_f32(m.channel_pressure_data()),
-                );
+                self.pitch_bend = bend_u32_to_signed_f32(m.pitch_bend_data());
+                self.apply_pitch_bend();
             }
             // MIDI 2.0 native per-note messages address one voice by note-id —
             // two same-pitch notes stay independent even on one channel.
@@ -417,12 +410,12 @@ impl PolySynth {
                     .iter_mut()
                     .for_each(|v| v.set_filter_resonance(value));
             }
+            // CC74 (Brightness). Under MPE a member-channel CC74 is rewritten to a
+            // native per-note controller at the input edge (routed per-voice via
+            // the `AssignablePerNoteController` arm above), so a channel-wide CC74
+            // reaching here is a plain global brightness/cutoff.
             cc::BRIGHTNESS => {
-                if self.config.mpe_enabled {
-                    self.handle_mpe_slide(channel, value);
-                } else {
-                    self.voices.iter_mut().for_each(|v| v.set_cc_cutoff(value));
-                }
+                self.voices.iter_mut().for_each(|v| v.set_cc_cutoff(value));
             }
             cc::SUSTAIN => {
                 self.allocator.sustain_pedal(channel, on);
@@ -483,31 +476,6 @@ impl PolySynth {
                 && slots[i].state() == crate::voice::VoiceState::Releasing
             {
                 voice.note_off();
-            }
-        }
-    }
-
-    fn handle_mpe_pitch_bend_normalized(&mut self, channel: u8, bend_norm: f32) {
-        let semitones = tutti_core::Semitones(bend_norm * self.config.mpe_pitch_bend_range.get());
-        for voice in &mut self.voices {
-            if voice.is_active() && voice.channel() == channel {
-                voice.set_mpe_pitch_bend(semitones);
-            }
-        }
-    }
-
-    fn handle_mpe_pressure_normalized(&mut self, channel: u8, norm: f32) {
-        for voice in &mut self.voices {
-            if voice.is_active() && voice.channel() == channel {
-                voice.set_mpe_pressure(norm);
-            }
-        }
-    }
-
-    fn handle_mpe_slide(&mut self, channel: u8, value: f32) {
-        for voice in &mut self.voices {
-            if voice.is_active() && voice.channel() == channel {
-                voice.set_mpe_slide(value);
             }
         }
     }
@@ -1768,8 +1736,11 @@ mod tests {
         synth.tick(&[], &mut output);
         assert_eq!(synth.active_voice_count(), 2);
 
-        // Pitch bend on channel 1 should only affect voice on channel 1
-        let bend = ev_bend(1, 16383);
+        // A native per-note pitch bend addressed to the ch1 note (60) must affect
+        // only that voice. Classic-MPE channel bends are rewritten to this native
+        // form at the input edge (`MpeIngest`); the synth is zone-agnostic and only
+        // ever sees native per-note messages.
+        let bend = MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF);
         queue_midi(&synth, &[bend]);
         synth.tick(&[], &mut output);
 
@@ -1786,12 +1757,12 @@ mod tests {
 
         assert!(
             voice_ch1.mpe_state().pitch_bend_semitones.get() > 40.0,
-            "Channel 1 should have large pitch bend, got {}",
+            "the addressed note should have a large pitch bend, got {}",
             voice_ch1.mpe_state().pitch_bend_semitones
         );
         assert!(
             voice_ch2.mpe_state().pitch_bend_semitones.get().abs() < 0.01,
-            "Channel 2 should have no pitch bend, got {}",
+            "the other note should be untouched, got {}",
             voice_ch2.mpe_state().pitch_bend_semitones
         );
     }
@@ -2072,8 +2043,9 @@ mod tests {
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
-        // Channel pressure on channel 1 only
-        let pressure = ev_aftertouch(1, 127);
+        // Native per-note pressure addressed to the ch1 note (60) only. Classic-MPE
+        // channel pressure is rewritten to this form at the input edge.
+        let pressure = MidiEvent::poly_pressure(0, 1, 60, 0xFFFF_FFFF);
         queue_midi(&synth, &[pressure]);
         synth.tick(&[], &mut output);
 
@@ -2090,11 +2062,11 @@ mod tests {
 
         assert!(
             (voice_ch1.mpe_state().pressure - 1.0).abs() < 0.01,
-            "Channel 1 should have full pressure"
+            "the addressed note should have full pressure"
         );
         assert!(
             voice_ch2.mpe_state().pressure.abs() < 0.01,
-            "Channel 2 should have no pressure"
+            "the other note should have no pressure"
         );
     }
 
@@ -2125,8 +2097,9 @@ mod tests {
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
 
-        // CC74 (slide) on channel 1
-        let slide = ev_cc(1, 74, 127);
+        // Native per-note CC74 (slide) addressed to the ch1 note (60). Classic-MPE
+        // channel CC74 is rewritten to this form at the input edge.
+        let slide = MidiEvent::per_note_controller(0, 1, 60, 74, 0xFFFF_FFFF, false);
         queue_midi(&synth, &[slide]);
         synth.tick(&[], &mut output);
 
@@ -2137,7 +2110,7 @@ mod tests {
             .unwrap();
         assert!(
             (voice.mpe_state().slide - 1.0).abs() < 0.01,
-            "Channel 1 should have full slide"
+            "the addressed note should have full slide"
         );
     }
 
@@ -2209,8 +2182,8 @@ mod tests {
             max_no_pressure = max_no_pressure.max(output[0].abs().max(output[1].abs()));
         }
 
-        // Apply full pressure
-        let pressure = ev_aftertouch(1, 127);
+        // Apply full pressure as a native per-note pressure on the note (60).
+        let pressure = MidiEvent::poly_pressure(0, 1, 60, 0xFFFF_FFFF);
         queue_midi(&synth, &[pressure]);
 
         let mut max_with_pressure = 0.0f32;

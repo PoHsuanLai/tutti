@@ -20,13 +20,12 @@ pub use crate::protocol::audio::{
 
 pub use crate::protocol::{
     AuComponentType, BridgeMessage, BusChannels, ChannelLayout, ChordChanges, ChordValue, Features,
-    HostMessage,
-    IpcMidiEvent, IpcMidiEventVec, LoadedPlugin, MidiEvent, MidiEventVec, NoteExpressionChanges,
-    NoteExpressionIntChanges, NoteExpressionIntValue, NoteExpressionTextChanges,
-    NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue, ParameterChanges,
-    ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, PluginClass, PluginDescriptor,
-    ProcessAudioData, SampleFormat, ScaleChanges, ScaleValue, SlabLayout, TransportInfo,
-    Vst2Category, MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
+    HostMessage, IpcMidiEvent, IpcMidiEventVec, LoadedPlugin, MidiEvent, MidiEventVec,
+    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
+    NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
+    ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, PluginClass,
+    PluginDescriptor, ProcessAudioData, SampleFormat, ScaleChanges, ScaleValue, SlabLayout,
+    TransportInfo, Vst2Category, MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
 };
 pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::AudioSlab;
@@ -35,9 +34,9 @@ pub use crate::util::window::{EditorSize, WindowHandle};
 /// under its historical `PluginInstance` name so existing `impl PluginInstance`
 /// / `dyn PluginInstance` / `Box<dyn PluginInstance>` sites keep resolving.
 pub use tutti_plugin_types::PluginFormatHost as PluginInstance;
+/// Per-block process inputs/outputs, re-exported from `tutti-plugin-types`.
+pub use tutti_plugin_types::{ExpressiveContext, ProcessContext, ProcessOutput};
 /// The lean, format-agnostic error the trait returns, plus its `Result` alias
 /// and the shared `ParameterInfo` builders — re-exported so the loaders reach
 /// them through the same `tutti_plugin::server::*` import point.
 pub use tutti_plugin_types::{PluginError, PluginResult, ALL_AUTOMATABLE};
-/// Per-block process inputs/outputs, re-exported from `tutti-plugin-types`.
-pub use tutti_plugin_types::{ExpressiveContext, ProcessContext, ProcessOutput};

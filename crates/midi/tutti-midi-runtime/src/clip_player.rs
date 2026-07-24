@@ -186,8 +186,8 @@ impl MidiIn for MidiClipSource {
 
 #[cfg(test)]
 mod tests {
-    use atomic_float::AtomicF64;
     use super::*;
+    use atomic_float::AtomicF64;
     use std::sync::atomic::AtomicBool;
     use tutti_core::params::Bpm;
 

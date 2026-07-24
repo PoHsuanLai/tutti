@@ -401,7 +401,6 @@ mod tests {
 
     #[test]
     fn timeline_impl_reports_the_loop_region() {
-
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
             tempo: Bpm(120.0),
@@ -419,7 +418,6 @@ mod tests {
 
     #[test]
     fn timeline_impl_reports_no_loop_when_unset() {
-
         let timeline = OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: 0.0,
             tempo: Bpm(120.0),

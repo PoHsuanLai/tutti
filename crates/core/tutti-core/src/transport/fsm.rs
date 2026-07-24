@@ -70,10 +70,7 @@ pub(crate) enum DeclickOutcome {
     #[default]
     Stop,
     /// Jump to `pos`, landing in `motion`.
-    Locate {
-        pos: Beat,
-        motion: MotionState,
-    },
+    Locate { pos: Beat, motion: MotionState },
 }
 
 /// What a transition changed.
@@ -89,10 +86,7 @@ pub(crate) enum TransitionResult {
     /// in place and its ramp must keep counting.
     MotionChanged(MotionState),
     /// Jump now, landing in `motion`.
-    Located {
-        pos: Beat,
-        motion: MotionState,
-    },
+    Located { pos: Beat, motion: MotionState },
     /// Fade out over `samples`, then perform `on_complete`.
     DeclickStarted {
         motion: MotionState,
@@ -157,11 +151,7 @@ impl TransportFsm {
 
     /// Jump now, landing in `motion`.
     #[inline]
-    fn locate_now(
-        &mut self,
-        pos: Beat,
-        motion: MotionState,
-    ) -> Option<TransitionResult> {
+    fn locate_now(&mut self, pos: Beat, motion: MotionState) -> Option<TransitionResult> {
         self.motion = motion;
         self.pending = None;
         Some(TransitionResult::Located { pos, motion })

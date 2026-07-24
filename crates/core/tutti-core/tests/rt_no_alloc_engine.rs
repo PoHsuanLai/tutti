@@ -14,7 +14,6 @@ use tutti_core::dsp::{bell_hz, limiter_stereo, pan, sine_hz, AudioUnit};
 use tutti_core::engine::Engine;
 use tutti_core::{dsp::Net, SampleRate, Transport, TransportClock};
 
-
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 

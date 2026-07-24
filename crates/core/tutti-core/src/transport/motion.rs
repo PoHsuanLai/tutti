@@ -74,7 +74,9 @@ pub enum Then {
 pub enum MotionEvent {
     Play,
     /// Stop where we are.
-    Stop { fade: FadeOut },
+    Stop {
+        fade: FadeOut,
+    },
     /// Jump to `beat`.
     Locate {
         beat: f64,

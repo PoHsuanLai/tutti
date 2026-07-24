@@ -144,7 +144,11 @@ impl MpeIngest {
 
     /// Zone (lower/upper/dual) mode: member-channel channel-messages fold onto the
     /// note that member channel holds; master-channel and native per-note pass.
-    fn translate_zoned(&mut self, event: &MidiEvent, cv2: ChannelVoice2<&[u32]>) -> Option<MidiEvent> {
+    fn translate_zoned(
+        &mut self,
+        event: &MidiEvent,
+        cv2: ChannelVoice2<&[u32]>,
+    ) -> Option<MidiEvent> {
         match cv2 {
             ChannelVoice2::NoteOn(m) => {
                 let (ch, note, vel) = (
@@ -209,15 +213,24 @@ impl MpeIngest {
                     Some(*event)
                 }
             }
-            ChannelVoice2::ControlChange(m) if u8::from(m.control()) == tutti_midi_types::cc::BRIGHTNESS => {
+            ChannelVoice2::ControlChange(m)
+                if u8::from(m.control()) == tutti_midi_types::cc::BRIGHTNESS =>
+            {
                 let ch = u8::from(m.channel());
                 let zone = self.get_zone_info(ch)?;
                 if zone.is_member {
                     let note = self.held_note(ch, zone.is_lower_zone)?;
                     // CC74 → Assignable Per-Note Controller index 74 (the MPE slide).
                     Some(
-                        MidiEvent::per_note_controller(0, ch, note, 74, m.control_change_data(), false)
-                            .with_frame_offset(event.frame_offset),
+                        MidiEvent::per_note_controller(
+                            0,
+                            ch,
+                            note,
+                            74,
+                            m.control_change_data(),
+                            false,
+                        )
+                        .with_frame_offset(event.frame_offset),
                     )
                 } else {
                     Some(*event)
@@ -333,7 +346,9 @@ impl MpeIngest {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_midi_types::convert::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2};
+    use tutti_midi_types::convert::{
+        midi1_cc_to_midi2, midi1_pitch_bend_to_midi2, midi1_velocity_to_midi2,
+    };
     use tutti_midi_types::mpe::MpeZoneConfig;
 
     fn note_on(channel: u8, note: u8, vel_u7: u8) -> MidiEvent {
@@ -375,7 +390,9 @@ mod tests {
     fn master_channel_bend_passes_through_as_channel_bend() {
         let mut ingest = MpeIngest::new(MpeMode::LowerZone(MpeZoneConfig::lower(15)));
         // Master channel of a lower zone is channel 0.
-        let out = ingest.translate(&pitch_bend14(0, 12288)).expect("passes through");
+        let out = ingest
+            .translate(&pitch_bend14(0, 12288))
+            .expect("passes through");
         assert_cv2!(out, ChannelVoice2::ChannelPitchBend(_));
     }
 

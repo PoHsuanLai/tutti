@@ -73,7 +73,10 @@ impl InProcessVst2Client {
         contention_count: Arc<AtomicU64>,
     ) -> Self {
         let scratch = RenderScratch::new(metadata.num_inputs, metadata.num_outputs, BLOCK_SIZE);
-        let process_scratch = ProcessScratch::new(metadata.num_inputs.count() as usize, metadata.num_outputs.count() as usize);
+        let process_scratch = ProcessScratch::new(
+            metadata.num_inputs.count() as usize,
+            metadata.num_outputs.count() as usize,
+        );
         Self {
             inner,
             metadata,
@@ -123,8 +126,10 @@ impl Clone for InProcessVst2Client {
             self.metadata.num_outputs,
             BLOCK_SIZE,
         );
-        let process_scratch =
-            ProcessScratch::new(self.metadata.num_inputs.count() as usize, self.metadata.num_outputs.count() as usize);
+        let process_scratch = ProcessScratch::new(
+            self.metadata.num_inputs.count() as usize,
+            self.metadata.num_outputs.count() as usize,
+        );
         Self {
             inner: Arc::clone(&self.inner),
             metadata: self.metadata.clone(),
@@ -194,7 +199,11 @@ impl AudioUnit for InProcessVst2Client {
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         // Single-sample tick reuses process() with size=1.
-        for (ch, &sample) in input.iter().enumerate().take(self.metadata.num_inputs.count() as usize) {
+        for (ch, &sample) in input
+            .iter()
+            .enumerate()
+            .take(self.metadata.num_inputs.count() as usize)
+        {
             self.process_scratch.f32_in[ch][0] = sample;
         }
         let processed = drive_f32(
@@ -313,7 +322,11 @@ impl AudioUnit<F64> for InProcessVst2Client {
     }
 
     fn tick(&mut self, input: &[f64], output: &mut [f64]) {
-        for (ch, &sample) in input.iter().enumerate().take(self.metadata.num_inputs.count() as usize) {
+        for (ch, &sample) in input
+            .iter()
+            .enumerate()
+            .take(self.metadata.num_inputs.count() as usize)
+        {
             self.process_scratch.f64_in[ch][0] = sample;
         }
         let processed = drive_f64(

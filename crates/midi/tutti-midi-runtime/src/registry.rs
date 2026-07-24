@@ -183,12 +183,7 @@ impl MidiReceiver {
 }
 
 impl tutti_midi_types::MidiIn for MidiReceiver {
-    fn poll_into(
-        &self,
-        unit_id: MidiUnitId,
-        _block_size: usize,
-        out: &mut [MidiEvent],
-    ) -> usize {
+    fn poll_into(&self, unit_id: MidiUnitId, _block_size: usize, out: &mut [MidiEvent]) -> usize {
         if unit_id != self.unit_id {
             return 0;
         }
@@ -265,7 +260,6 @@ impl MidiBus {
     pub fn is_empty(&self) -> bool {
         self.senders.is_empty()
     }
-
 }
 
 impl tutti_midi_types::MidiRouter for MidiBus {

@@ -256,8 +256,8 @@ impl AudioUnit for TransportClock {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::state::SeekSlot;
+    use super::*;
     use crate::{AtomicBool, AtomicF64};
     use std::sync::Arc;
 
@@ -346,8 +346,7 @@ mod tests {
     fn isolate_severs_live_position_writeback() {
         let (tempo, paused) = create_test_atomics();
         let live_position = Arc::new(AtomicF64::new(7.5)); // live playhead "now"
-        let clock = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0)
-            ;
+        let clock = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
 
         // The render's clone, isolated as the render's rebind pass does.
         let mut render = clock.clone();
@@ -546,8 +545,7 @@ mod tests {
     fn derived_stream_does_not_disturb_the_live_playhead() {
         let (tempo, paused) = create_test_atomics();
         let writeback = Arc::new(AtomicF64::new(0.0));
-        let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0)
-            ;
+        let live = TransportClock::new(ClockLinks::bare(tempo, paused), 44100.0);
 
         // Tick a derived stream for a while; the live writeback must not move.
         let mut derived = live.starting_at(100.0);

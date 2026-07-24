@@ -11,8 +11,8 @@
 
 use crate::error::{Error, Result};
 use crate::options::{AudioFormat, BitDepth, Flac, Ogg};
-use tutti_types::ChannelLayout;
 use std::path::Path;
+use tutti_types::ChannelLayout;
 
 /// Accepts stereo `[f32; 2]` frame blocks and encodes them incrementally.
 pub(crate) trait StreamingEncoder {

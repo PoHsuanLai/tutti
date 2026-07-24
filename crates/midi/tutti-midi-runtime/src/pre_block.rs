@@ -26,8 +26,8 @@ use arc_swap::ArcSwap;
 
 use tutti_core::{AudioThreadCell, RtEventBuf};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiIn, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
 use tutti_midi_types::Midi1ToMidi2Translator;
+use tutti_midi_types::{MidiIn, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
 
 use crate::mpe_ingest::MpeIngest;
 

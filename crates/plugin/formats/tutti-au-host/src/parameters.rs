@@ -1,4 +1,11 @@
 //! Parameter discovery, read, and write APIs for Audio Units.
+//!
+//! LIMITATION (A-3, intentional): every parameter access here — `list`, `get`,
+//! `set`, and `info` — is hard-wired to `kAudioUnitScope_Global` / element `0`.
+//! AUs may in principle expose parameters on other scopes (Input/Output) or on
+//! non-zero elements (per-bus / per-part). No such AU is exercised by this host
+//! today, so per-scope/per-element enumeration is deferred until a real plugin
+//! needs it rather than modeling surface nothing consumes.
 
 #![cfg(target_os = "macos")]
 // AudioUnit is an opaque C pointer (`ComponentInstanceRecord*`) that every

@@ -141,9 +141,15 @@ pub(super) static HOST_PARAMS: clap_host_params = clap_host_params {
     request_flush: Some(host_params_request_flush),
 };
 
-unsafe extern "C" fn host_params_rescan(host: *const ClapHostVtable, _flags: u32) {
+unsafe extern "C" fn host_params_rescan(host: *const ClapHostVtable, flags: u32) {
     if let Some(state) = get_host_state(host) {
         state.params.rescan_requested.store(true, Ordering::Release);
+        // Accumulate the flags (RESCAN_ALL / RESCAN_VALUES / RESCAN_INFO /
+        // RESCAN_TEXT) so the consumer can tell a full rescan — which the spec
+        // says must be honoured only while the plugin is deactivated — from a
+        // value-only rescan applicable live. OR so multiple rescans between
+        // polls don't lose bits.
+        state.params.rescan_flags.fetch_or(flags, Ordering::Release);
     }
 }
 

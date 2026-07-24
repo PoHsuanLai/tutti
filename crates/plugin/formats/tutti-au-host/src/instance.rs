@@ -503,7 +503,7 @@ impl AuReady {
         let timestamp = AudioTimeStamp::with_sample_time(self.scratch.advance(num_frames));
         let mut flags: AudioUnitRenderActionFlags = 0;
 
-        check("AudioUnitRender", unsafe {
+        let status = unsafe {
             AudioUnitRender(
                 self.loaded.handle.raw_unit(),
                 &mut flags,
@@ -512,9 +512,42 @@ impl AuReady {
                 num_frames,
                 abl,
             )
-        })?;
+        };
+        if status != NO_ERR {
+            // A-2: enrich the diagnostic with the AU's last render error. This
+            // is a global-scope/element-0 read the AU updates on each render;
+            // it's advisory only, so a failed query silently degrades to the
+            // plain `AudioUnitRender` OSStatus. Only reached when render itself
+            // failed — never on a successful steady-state block — so the extra
+            // property read does not affect the no-alloc guarantee.
+            let last = unsafe {
+                get_property::<OSStatus>(
+                    self.loaded.handle.raw_unit(),
+                    K_AUDIO_UNIT_PROPERTY_LAST_RENDER_ERROR,
+                    K_AUDIO_UNIT_SCOPE_GLOBAL,
+                    0,
+                )
+            }
+            .ok()
+            .filter(|&e| e != NO_ERR);
+            return Err(AuError::render_failed("AudioUnitRender", status, last));
+        }
 
-        self.scratch.emit_output(output, num_frames);
+        // A-1: honor the AU's OutputIsSilence signal. When the AU declares the
+        // block silent, its output buffers are not guaranteed to be zeroed
+        // (the flag is precisely how an AU says "I produced nothing, don't
+        // trust the buffer contents"). Force the destination to silence rather
+        // than emitting stale scratch. `fill` writes in place — no allocation,
+        // preserving the RT no-alloc guarantee.
+        if flags & K_AUDIO_UNIT_RENDER_ACTION_OUTPUT_IS_SILENCE != 0 {
+            let n = num_frames as usize;
+            for dst in output.iter_mut() {
+                let len = n.min(dst.len());
+                dst[..len].fill(0.0);
+            }
+        } else {
+            self.scratch.emit_output(output, num_frames);
+        }
         Ok(())
     }
 

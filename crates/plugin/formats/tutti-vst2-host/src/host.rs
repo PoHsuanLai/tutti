@@ -103,11 +103,29 @@ impl Host for HostState {
         self.block_size
     }
 
-    // Note: `audioMasterGetSampleRate` cannot be answered here — vst-rs
-    // 0.3.0's `Host` trait has no `get_sample_rate` hook, so the callback
-    // falls through to vst-rs's internal default (0). This is an upstream
-    // limitation. Plugins that cache the `effSetSampleRate` setter value
-    // (the common case) are unaffected; only plugins that *poll* the sample
-    // rate via the master callback see 0. Fixing it requires a vst-rs
-    // change (add a `Host::get_sample_rate` default) and is out of scope.
+    // ── audioMaster callbacks blocked by vst-rs 0.3.0 (documented ceiling) ──
+    //
+    // vst-rs's `Host` trait (interfaces::host_dispatch) routes only a fixed set
+    // of opcodes to trait methods; everything else falls through its internal
+    // `_ => 0` arm. The trait exposes exactly: automate, begin_edit, end_edit,
+    // get_plugin_id, idle, get_info, process_events, get_time_info,
+    // get_block_size, update_display. So these audioMaster callbacks CANNOT be
+    // answered from this host without changing vst-rs — they always return 0:
+    //
+    //   - audioMasterGetSampleRate       → plugins that *poll* SR at open see 0
+    //                                       (those caching effSetSampleRate are fine)
+    //   - audioMasterSizeWindow          → plugin-initiated editor resize dropped
+    //   - audioMasterIOChanged           → latency/IO-change notifications ignored
+    //   - audioMasterGetCurrentProcessLevel → plugin can't tell realtime vs offline
+    //   - audioMasterGetInput/OutputLatency → reported as 0
+    //   - audioMasterGetAutomationState  → reported as "unsupported"
+    //
+    // Likewise effStartProcess/effStopProcess have no host-side dispatch (only
+    // effMainsChanged is toggled). Most plugins degrade gracefully.
+    //
+    // Closing this needs one of: (a) accept the ceiling [current choice — VST2
+    // is a legacy, withdrawn SDK]; (b) vendor + patch vst-rs to add the hooks;
+    // (c) intercept the raw audioMaster callback on the AEffect before delegating
+    // to vst-rs. (b)/(c) are only worth it for a specific plugin that needs a
+    // polled callback — a project decision, not a code gap to silently fix.
 }

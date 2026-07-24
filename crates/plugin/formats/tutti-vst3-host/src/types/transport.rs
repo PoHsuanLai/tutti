@@ -57,7 +57,10 @@ pub mod process_context_flags {
 /// before the interface was wired.
 ///
 /// Field mapping:
-/// - `position.samples` → `projectTimeSamples` (always) + `continousTimeSamples`
+/// - `position.samples` → `projectTimeSamples` (always)
+/// - `position.continuous_samples` → `continousTimeSamples` (the monotonic
+///   clock that does not reset on loop; falls back to `position.samples` when
+///   unset, i.e. `0`)
 /// - `position.quarters` → `projectTimeMusic`
 /// - `bar.position_quarters` → `barPositionMusic`
 /// - `loop_region.{start,end}_quarters` → `cycleStartMusic`/`cycleEndMusic`
@@ -118,7 +121,15 @@ pub fn to_process_context(
     ctx.projectTimeSamples = t.position.samples;
 
     if wants(need::NEED_CONTINOUS_TIME_SAMPLES) {
-        ctx.continousTimeSamples = t.position.samples;
+        // The continuous clock is monotonic across loop/cycle boundaries and is
+        // distinct from `projectTimeSamples`, which jumps back on a loop. Hosts
+        // that don't keep a separate continuous counter leave it `0` (unset);
+        // fall back to `samples` there so their behaviour is unchanged.
+        ctx.continousTimeSamples = if t.position.continuous_samples != 0 {
+            t.position.continuous_samples
+        } else {
+            t.position.samples
+        };
     }
     if wants(need::NEED_SYSTEM_TIME) {
         ctx.systemTime = 0;
@@ -242,6 +253,35 @@ mod tests {
         // Transport-state not requested → no play/record/cycle bits.
         assert_eq!(ctx.state & StatesAndFlags_::kPlaying, 0);
         assert_eq!(ctx.state & StatesAndFlags_::kCycleActive, 0);
+    }
+
+    /// A loop scenario: the continuous clock has advanced past where the
+    /// project clock jumped back to, so `continousTimeSamples` must reflect the
+    /// monotonic counter, distinct from `projectTimeSamples`.
+    #[test]
+    fn continuous_samples_distinct_on_loop() {
+        let mut t = populated_transport();
+        // Project time looped back to 1_234; the monotonic clock kept counting.
+        t.position.continuous_samples = 100_000;
+        let ctx = to_process_context(&t, need::NEED_CONTINOUS_TIME_SAMPLES);
+
+        assert_eq!(ctx.projectTimeSamples, 1_234);
+        assert_eq!(ctx.continousTimeSamples, 100_000);
+        assert_ne!(ctx.projectTimeSamples, ctx.continousTimeSamples);
+    }
+
+    /// A host with no separate continuous clock leaves `continuous_samples`
+    /// unset (`0`); the continuous field then mirrors `projectTimeSamples`, so
+    /// nothing regresses for such hosts.
+    #[test]
+    fn continuous_samples_falls_back_when_unset() {
+        let t = populated_transport(); // continuous_samples defaults to 0
+        assert_eq!(t.position.continuous_samples, 0);
+        let ctx = to_process_context(&t, need::NEED_CONTINOUS_TIME_SAMPLES);
+
+        assert_eq!(ctx.projectTimeSamples, 1_234);
+        assert_eq!(ctx.continousTimeSamples, 1_234);
+        assert_eq!(ctx.projectTimeSamples, ctx.continousTimeSamples);
     }
 
     /// Always-on fields (sampleRate, projectTimeSamples) are populated even

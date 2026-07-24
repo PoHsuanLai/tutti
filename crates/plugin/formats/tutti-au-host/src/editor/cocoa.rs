@@ -43,6 +43,12 @@ unsafe fn load_cocoa_view_info(unit: AudioUnit) -> Result<(CfUrl, CfString)> {
 
     let info_ptr = bytes.as_ptr() as *const AudioUnitCocoaViewInfo;
     let url_raw = (*info_ptr).mCocoaAUViewBundleLocation;
+    // LIMITATION (A-3, intentional): `AudioUnitCocoaViewInfo` carries a
+    // variable-length `mCocoaAUViewClass` array — an AU may advertise several
+    // candidate view-factory classes. We read only `class[0]`, the AU's
+    // preferred/first factory. Multi-class AUs are rare in practice; supporting
+    // fallback across the remaining classes is deferred until a real plugin is
+    // found that requires it (don't build speculative fan-out).
     let class_raw = (*info_ptr).mCocoaAUViewClass[0];
 
     let bundle_url = CfUrl::from_copied(url_raw)

@@ -56,9 +56,14 @@ impl Default for MusicalTiming {
 #[derive(Debug, Clone, Copy, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TransportPosition {
-    /// Sample-accurate free-running counter (vst2 + vst3
-    /// `projectTimeSamples` / `continousTimeSamples`).
+    /// Sample-accurate project timeline position (vst2 `samplePos`; vst3
+    /// `projectTimeSamples`). Jumps when the transport loops/relocates.
     pub samples: i64,
+    /// Monotonic sample counter that does **not** reset on loop/cycle (vst3
+    /// `continousTimeSamples`; clap `steady_time`). Free-running plugins (LFOs,
+    /// delays) key their timing off this. `0` means "host has no separate
+    /// continuous clock" — consumers fall back to [`samples`](Self::samples).
+    pub continuous_samples: i64,
     /// Quarter notes from project start (vst2 `ppqPos`; vst3
     /// `projectTimeMusic`).
     pub quarters: f64,
@@ -155,6 +160,14 @@ impl TransportInfo {
     pub fn with_position_quarters(mut self, quarters: f64, samples: i64) -> Self {
         self.position.quarters = quarters;
         self.position.samples = samples;
+        self
+    }
+
+    /// Set the monotonic continuous sample counter (vst3 `continousTimeSamples`
+    /// / clap `steady_time`) — the one that does not reset on loop. Leave unset
+    /// (0) and consumers fall back to the project-time `samples`.
+    pub fn with_continuous_samples(mut self, continuous_samples: i64) -> Self {
+        self.position.continuous_samples = continuous_samples;
         self
     }
 

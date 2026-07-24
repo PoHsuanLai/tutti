@@ -238,6 +238,52 @@ impl ClapParamInfo {
     }
 }
 
+/// The scope of a plugin's `params.rescan` request, decoded from
+/// `clap_param_rescan_flags`. Returned by
+/// [`ClapLoaded::poll_params_rescan`](crate::ClapLoaded::poll_params_rescan)
+/// so the host can honour CLAP's rule that a full rescan (`all`) may only be
+/// applied while the plugin is deactivated, whereas a value-only rescan can be
+/// picked up live.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParamRescan {
+    /// Any rescan at all was requested since the last poll.
+    pub requested: bool,
+    /// `CLAP_PARAM_RESCAN_ALL` — everything changed. The plugin MUST be
+    /// deactivated before the host re-reads, per the CLAP spec.
+    pub all: bool,
+    /// `CLAP_PARAM_RESCAN_VALUES` — current values changed; safe to re-read
+    /// live.
+    pub values: bool,
+    /// `CLAP_PARAM_RESCAN_INFO` — info (name/module/flags/range) changed.
+    pub info: bool,
+    /// `CLAP_PARAM_RESCAN_TEXT` — value→text display changed.
+    pub text: bool,
+}
+
+impl ParamRescan {
+    /// Decode the accumulated `clap_param_rescan_flags` bitset. `requested`
+    /// reflects whether any rescan happened (the caller passes that separately
+    /// since the flags alone can legally be 0).
+    pub(crate) fn from_flags(requested: bool, flags: u32) -> Self {
+        use clap_sys::ext::params::{
+            CLAP_PARAM_RESCAN_ALL, CLAP_PARAM_RESCAN_INFO, CLAP_PARAM_RESCAN_TEXT,
+            CLAP_PARAM_RESCAN_VALUES,
+        };
+        Self {
+            requested,
+            all: flags & CLAP_PARAM_RESCAN_ALL != 0,
+            values: flags & CLAP_PARAM_RESCAN_VALUES != 0,
+            info: flags & CLAP_PARAM_RESCAN_INFO != 0,
+            text: flags & CLAP_PARAM_RESCAN_TEXT != 0,
+        }
+    }
+
+    /// Whether a full re-read requiring plugin deactivation is pending.
+    pub fn needs_deactivate(&self) -> bool {
+        self.all
+    }
+}
+
 /// Description of an audio port exposed by the plugin.
 #[derive(Debug, Clone)]
 pub struct AudioPortInfo {
@@ -604,4 +650,48 @@ pub struct UndoChange {
     pub name: String,
     pub delta: Vec<u8>,
     pub delta_can_undo: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap_sys::ext::params::{
+        CLAP_PARAM_RESCAN_ALL, CLAP_PARAM_RESCAN_INFO, CLAP_PARAM_RESCAN_TEXT,
+        CLAP_PARAM_RESCAN_VALUES,
+    };
+
+    #[test]
+    fn param_rescan_decodes_all_flag() {
+        let r = ParamRescan::from_flags(true, CLAP_PARAM_RESCAN_ALL);
+        assert!(r.requested);
+        assert!(r.all);
+        assert!(r.needs_deactivate(), "RESCAN_ALL requires deactivate");
+        assert!(!r.values);
+    }
+
+    #[test]
+    fn param_rescan_decodes_values_only() {
+        // A value-only rescan must NOT require deactivate — it can be picked up
+        // live, which is the whole point of distinguishing it from RESCAN_ALL.
+        let r = ParamRescan::from_flags(true, CLAP_PARAM_RESCAN_VALUES);
+        assert!(r.requested);
+        assert!(r.values);
+        assert!(!r.all);
+        assert!(!r.needs_deactivate());
+    }
+
+    #[test]
+    fn param_rescan_decodes_combined_flags() {
+        let flags = CLAP_PARAM_RESCAN_VALUES | CLAP_PARAM_RESCAN_INFO | CLAP_PARAM_RESCAN_TEXT;
+        let r = ParamRescan::from_flags(true, flags);
+        assert!(r.values && r.info && r.text);
+        assert!(!r.all);
+    }
+
+    #[test]
+    fn param_rescan_empty_when_not_requested() {
+        let r = ParamRescan::from_flags(false, 0);
+        assert_eq!(r, ParamRescan::default());
+        assert!(!r.requested);
+    }
 }

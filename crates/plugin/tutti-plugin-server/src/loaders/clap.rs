@@ -899,7 +899,7 @@ mod tests {
         assert!(!instance.clap_loaded().poll_callback_requested());
         assert!(!instance.clap_loaded().poll_latency_changed());
         assert!(!instance.clap_loaded().poll_tail_changed());
-        assert!(!instance.clap_loaded().poll_params_rescan());
+        assert!(!instance.clap_loaded().poll_params_rescan().requested);
         assert!(!instance.clap_loaded().poll_params_flush_requested());
         assert!(!instance.clap_loaded().poll_state_dirty());
         assert!(!instance.clap_loaded().poll_audio_ports_changed());

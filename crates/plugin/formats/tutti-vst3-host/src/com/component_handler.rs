@@ -220,6 +220,17 @@ impl IComponentHandler2Trait for ComponentHandler {
 }
 
 impl IComponentHandler3Trait for ComponentHandler {
+    /// Return `null` to decline building a host context menu.
+    ///
+    /// This is intentional and spec-legal: `IComponentHandler3` lets a plugin
+    /// ask the host for a menu it can populate with host-contributed items (and
+    /// into which the plugin then injects its own), but returning `null` is the
+    /// documented way to say "the host offers no menu here" — the plugin falls
+    /// back to its own built-in menu. We decline deliberately because nothing in
+    /// the host or frontend contributes plugin context-menu items or consumes an
+    /// `IContextMenu`; building a real host menu object would be dead surface. If
+    /// a frontend consumer is ever added, this becomes a real `IContextMenu`
+    /// implementation gated on that consumer.
     unsafe fn createContextMenu(
         &self,
         _plug_view: *mut IPlugView,

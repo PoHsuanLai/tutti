@@ -76,11 +76,13 @@ pub(crate) fn from_midi(event: &MidiEvent) -> Option<vst::api::MidiEvent> {
         event_type: api::EventType::Midi,
         byte_size: mem::size_of::<api::MidiEvent>() as i32,
         delta_frames: event.frame_offset as i32,
-        // TODO: REALTIME_EVENT is hard-coded. VST2 lets the host clear this
-        // flag for events scheduled ahead of the current block (non-realtime
-        // offline render). We always mark realtime; harmless for live playback
-        // but should be threaded from the process context once offline export
-        // routes MIDI through here.
+        // REALTIME_EVENT is hard-coded (always set). VST2 lets the host clear
+        // it for events scheduled during a non-realtime/offline render, but the
+        // engine carries no offline/realtime signal into MIDI conversion — the
+        // shared ProcessContext has no such flag, and offline export does not
+        // yet route MIDI through here. Deferred (not a code gap): the same
+        // missing plumbing blocks CLAP's CLAP_EVENT_IS_LIVE. Always-realtime is
+        // correct for live playback (the only path that reaches this today).
         flags: api::MidiEventFlags::REALTIME_EVENT.bits(),
         note_length: 0,
         note_offset: 0,

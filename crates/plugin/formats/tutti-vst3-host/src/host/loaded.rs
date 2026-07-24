@@ -11,7 +11,8 @@ use std::sync::Arc;
 use vst3::com_scrape_types::Unknown;
 use vst3::ComPtr;
 use vst3::Steinberg::{
-    kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPlugView, IPlugViewTrait,
+    kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPlugView,
+    IPlugViewContentScaleSupport, IPlugViewContentScaleSupportTrait, IPlugViewTrait,
     IPluginBaseTrait, IPluginCompatibility, IPluginCompatibilityTrait, ViewRect,
     Vst::{
         IAudioPresentationLatency, IAudioPresentationLatencyTrait, IAudioProcessor,
@@ -865,6 +866,18 @@ impl Vst3Loaded {
             let _ = view.setFrame(frame_ptr);
         }
 
+        // HiDPI: if the view implements IPlugViewContentScaleSupport, tell it the
+        // backing-store scale factor *before* `attached`, so scale-aware plugins
+        // lay their UI out at the right resolution from the first frame. Plugins
+        // that don't implement the interface (cast returns None) simply no-op.
+        //
+        // TODO: thread the real backing-scale from the frontend WindowHandle —
+        // `WindowHandle` is a bare `*mut c_void` today and carries no DPI, so we
+        // pass 1.0 (the neutral default: correct on standard-DPI displays, a safe
+        // no-op elsewhere). The important part is that the *call* is wired, so a
+        // real factor becomes a one-line change once the frontend supplies it.
+        set_content_scale(&view, host_backing_scale(&parent));
+
         let result = unsafe { view.attached(parent.as_ptr(), platform_type) };
         if result != kResultOk {
             return Err(Vst3Error::PluginError {
@@ -936,22 +949,31 @@ impl Vst3Loaded {
         let EditorState::Open { view, .. } = &self.editor else {
             return Err(Vst3Error::NotSupported("editor not open".to_string()));
         };
-        let mut rect = ViewRect {
+        let requested_rect = ViewRect {
             left: 0,
             top: 0,
             right: requested.width as i32,
             bottom: requested.height as i32,
         };
-        unsafe {
-            // checkSizeConstraint may return kResultFalse (no snap) — not an error.
-            let _ = view.checkSizeConstraint(&mut rect);
-            let res = view.onSize(&mut rect);
-            if res != kResultOk {
-                return Err(Vst3Error::PluginError {
-                    stage: LoadStage::Initialization,
-                    code: res,
-                });
-            }
+        // `checkSizeConstraint` snaps the rect to the nearest size the plugin
+        // will accept (aspect-ratio locks, min/max, integer-multiple grids). We
+        // must apply that *constrained* rect via `onSize`, not the raw request —
+        // otherwise a plugin that only accepts, say, 4:3 sizes gets handed a
+        // size it rejects. The call snaps the rect in place and returns
+        // `kResultTrue` when it changed it; a `kResultFalse` (no constraint / not
+        // implemented) leaves `constrained` equal to the request, which is the
+        // correct fallback.
+        let mut constrained = requested_rect;
+        let snapped = unsafe { view.checkSizeConstraint(&mut constrained) } == kResultTrue;
+        // On decline, honour the original request verbatim rather than any
+        // partially-written rect the plugin may have left behind.
+        let mut rect = if snapped { constrained } else { requested_rect };
+        let res = unsafe { view.onSize(&mut rect) };
+        if res != kResultOk {
+            return Err(Vst3Error::PluginError {
+                stage: LoadStage::Initialization,
+                code: res,
+            });
         }
         Ok(EditorSize {
             width: (rect.right - rect.left) as u32,
@@ -1166,6 +1188,30 @@ fn ensure_has_classes(library: &Vst3Library, path: &Path) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// The backing-store scale factor to advertise to the plugin view.
+///
+/// The host `WindowHandle` is a raw pointer with no attached DPI/scale
+/// information, so there is nothing to read from it yet — we return the neutral
+/// `1.0`. When the frontend grows a way to carry the display's backing scale
+/// (e.g. `NSWindow.backingScaleFactor` / Win32 `GetDpiForWindow`), source it
+/// here and the wired `setContentScaleFactor` call starts delivering real
+/// values with no further plumbing.
+fn host_backing_scale(_parent: &WindowHandle) -> f32 {
+    // TODO: thread real backing-scale from frontend WindowHandle.
+    1.0
+}
+
+/// Tell the view its content scale via `IPlugViewContentScaleSupport`, if it
+/// implements that interface. No-op for views that don't (the cast returns
+/// `None`) — the common case for non-HiDPI-aware plugins.
+fn set_content_scale(view: &ComPtr<IPlugView>, scale: f32) {
+    if let Some(scale_support) = view.cast::<IPlugViewContentScaleSupport>() {
+        unsafe {
+            let _ = scale_support.setContentScaleFactor(scale);
+        }
+    }
 }
 
 /// Read the plug-view's `getSize()` and translate it into our `(width, height)`

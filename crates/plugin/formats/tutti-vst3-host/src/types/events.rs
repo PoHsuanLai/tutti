@@ -687,13 +687,30 @@ pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
     }
 
     // SysEx → DataEvent with the kMidiSysEx subtype. VST3 wants the complete
-    // message *with* its 0xF0 … 0xF7 delimiters. We forward a single-packet
-    // SysEx (the payload fits a UMP type-0x3 packet, ≤ 6 bytes → ≤ 8 with
-    // delimiters, well within the 16-byte buffer). Multi-packet SysEx needs
-    // cross-event reassembly that doesn't belong in a per-event converter, so
-    // only the self-contained `SINGLE` packet is mapped here.
+    // message *with* its 0xF0 … 0xF7 delimiters, carried inline in the flat
+    // event's fixed `[u8; 16]` slot.
+    //
+    // Single-packet (`SINGLE`) SysEx is fully supported: the payload fits a UMP
+    // type-0x3 packet (≤ 6 bytes → ≤ 8 with delimiters), well within 16 bytes.
+    //
+    // Multi-packet SysEx is a KNOWN LIMITATION, not silently swallowed:
+    // reassembling Start/Continue/End fragments into one message requires an
+    // owned, growable buffer that spans events — which would force
+    // [`Vst3Event`] to heap-allocate and lose its `Copy` + no-alloc RT
+    // guarantee (see `vst3_event_is_copy` and the RT no-alloc harness). Rather
+    // than pay that cost for a rare case, we degrade explicitly:
+    // - `START`  → forward the opening 0xF0 + first-packet bytes (no 0xF7; the
+    //   message is deliberately left unterminated because the rest didn't fit).
+    //   A plugin sees the message *begin*; it is not dropped without trace.
+    // - `CONTINUE` / `END` → dropped, because a mid/tail fragment carries no
+    //   0xF0 start and cannot stand alone as a VST3 Data event.
+    //
+    // TODO: if a plugin that streams large SysEx (firmware/sample dumps) turns
+    // up, add a per-instance reassembly buffer *outside* the per-event converter
+    // (in the block-scoped EventList) and emit one complete Data event on `END`.
     if let Some((status, payload, n)) = event.sysex7_payload() {
-        if status == tutti_midi_types::ump::SYSEX7_STATUS_SINGLE {
+        use tutti_midi_types::ump::{SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START};
+        if status == SYSEX7_STATUS_SINGLE {
             let mut bytes = [0u8; 16];
             bytes[0] = 0xF0;
             bytes[1..1 + n].copy_from_slice(&payload[..n]);
@@ -708,7 +725,24 @@ pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
                 bytes,
             }));
         }
-        // Start/Continue/End fragments can't stand alone as a VST3 Data event.
+        if status == SYSEX7_STATUS_START {
+            // Best-effort: forward the message opening so a multi-packet SysEx is
+            // not dropped silently. Intentionally unterminated (no 0xF7) — the
+            // continuation fragments can't be reassembled here (see above).
+            let mut bytes = [0u8; 16];
+            bytes[0] = 0xF0;
+            bytes[1..1 + n].copy_from_slice(&payload[..n]);
+            return Some(Vst3Event::Data(DataEvent {
+                header: EventHeader {
+                    event_type: K_DATA_EVENT,
+                    ..header
+                },
+                size: (n + 1) as u32,
+                event_type: K_DATA_TYPE_MIDI_SYSEX,
+                bytes,
+            }));
+        }
+        // CONTINUE / END fragments carry no 0xF0 start and can't stand alone.
         return None;
     }
 
@@ -1378,14 +1412,37 @@ mod tests {
     }
 
     #[test]
-    fn fragmented_sysex_is_not_forwarded() {
-        // A multi-packet SysEx (>6 bytes) produces Start/Continue/End fragments;
-        // none stand alone as a VST3 Data event, so each is dropped.
+    fn fragmented_sysex_start_forwards_opening_rest_dropped() {
+        // A multi-packet SysEx (>6 bytes) produces Start/Continue/End fragments.
+        // We can't reassemble across events without breaking the Copy/no-alloc
+        // event invariant, so the host degrades explicitly (not silently):
+        // the START fragment forwards the message opening (0xF0 + first bytes,
+        // deliberately unterminated), while CONTINUE/END — which carry no 0xF0
+        // start — are dropped.
+        use tutti_midi_types::ump::SYSEX7_STATUS_START;
+
         let mut frags = Vec::new();
         MidiEvent::sysex7_fragments(0, &[1, 2, 3, 4, 5, 6, 7, 8], &mut frags);
         assert!(frags.len() > 1);
+
         for frag in &frags {
-            assert!(vst3_event_from_midi(frag).is_none());
+            let (status, payload, n) = frag.sysex7_payload().expect("is a sysex7 packet");
+            match vst3_event_from_midi(frag) {
+                Some(Vst3Event::Data(d)) => {
+                    // Only the START fragment forwards, as the message opening.
+                    assert_eq!(status, SYSEX7_STATUS_START);
+                    assert_eq!(d.event_type, K_DATA_TYPE_MIDI_SYSEX);
+                    assert_eq!(d.bytes[0], 0xF0);
+                    assert_eq!(&d.bytes[1..1 + n], &payload[..n]);
+                    // Unterminated: no 0xF7 appended (the rest didn't fit).
+                    assert_eq!(d.size, (n + 1) as u32);
+                }
+                Some(other) => panic!("unexpected non-Data event: {other:?}"),
+                None => {
+                    // CONTINUE / END fragments are dropped — never START.
+                    assert_ne!(status, SYSEX7_STATUS_START);
+                }
+            }
         }
     }
 

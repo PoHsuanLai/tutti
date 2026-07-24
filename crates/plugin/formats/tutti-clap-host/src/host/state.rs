@@ -83,6 +83,11 @@ impl GuiState {
 
 pub struct ParamState {
     pub rescan_requested: AtomicBool,
+    /// Accumulated `clap_param_rescan_flags` from every `params.rescan` call
+    /// since the last poll (OR-combined). Distinguishes RESCAN_ALL — which the
+    /// spec requires the host handle only while the plugin is deactivated —
+    /// from value-only (RESCAN_VALUES) rescans that can be applied live.
+    pub rescan_flags: AtomicU32,
     pub flush_requested: AtomicBool,
 }
 
@@ -90,6 +95,7 @@ impl ParamState {
     fn new() -> Self {
         Self {
             rescan_requested: AtomicBool::new(false),
+            rescan_flags: AtomicU32::new(0),
             flush_requested: AtomicBool::new(false),
         }
     }

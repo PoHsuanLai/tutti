@@ -81,6 +81,14 @@ fn expression_to_per_note_controller_index(ty: NoteExpressionType) -> Option<u8>
     }
 }
 
+// C-4 (deferred): host→plugin events built below leave `header.flags = 0`, so
+// `CLAP_EVENT_IS_LIVE` is never set. IS_LIVE marks an event as originating from
+// live hardware interaction (a physical knob/key) rather than sequencer
+// playback, letting a plugin treat the two differently (e.g. smoothing). The
+// live-vs-playback distinction is not threaded from the caller today — the
+// `MidiEvent` → `ClapEvent` conversion has no such signal, and neither does the
+// process/flush entry path. Rather than invent a bogus source flag, we leave
+// IS_LIVE unset until the frontend plumbs a real live/playback origin through.
 impl ClapEvent {
     /// Borrow the common CLAP event header (time, type, space ID, flags).
     pub fn header(&self) -> &clap_event_header {

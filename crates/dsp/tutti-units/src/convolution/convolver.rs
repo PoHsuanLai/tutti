@@ -70,7 +70,10 @@ impl FftPartitionState {
         // across the callback boundary; `debug_assert` catches a sizing
         // regression in tests.
         let result = fft.process(&self.input, &mut self.output);
-        debug_assert!(result.is_ok(), "FFTConvolver::process failed on pre-sized buffers");
+        debug_assert!(
+            result.is_ok(),
+            "FFTConvolver::process failed on pre-sized buffers"
+        );
         if result.is_err() {
             self.output.fill(0.0);
         }

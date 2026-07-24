@@ -69,7 +69,6 @@ impl LookaheadRing {
     }
 }
 
-
 /// Lookahead limiter with stereo-linked gain reduction.
 /// 2 inputs (L/R), 2 outputs (L/R).
 ///

@@ -54,7 +54,6 @@ impl<F: Real> LadderState<F> {
     }
 }
 
-
 /// Moog-style ladder filter with resonance and drive.
 /// 1 input, 1 output.
 ///

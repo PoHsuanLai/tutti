@@ -38,14 +38,6 @@ pub struct TransportClock {
 }
 
 impl TransportClock {
-    #[inline]
-    fn calculate_beat_per_sample(
-        tempo: impl Into<crate::Bpm>,
-        sample_rate: impl Into<crate::SampleRate>,
-    ) -> BeatDuration {
-        BeatDuration((tempo.into().get() / 60.0) / sample_rate.into().get())
-    }
-
     /// Build a clock over `links`.
     ///
     /// One constructor rather than three: the old `new` / `from_inputs` /
@@ -60,7 +52,7 @@ impl TransportClock {
             links,
             current_beat: Beat(0.0),
             sample_rate,
-            beat_per_sample: Self::calculate_beat_per_sample(initial_tempo, sample_rate),
+            beat_per_sample: super::state::beats_per_sample(initial_tempo, sample_rate),
             last_tempo: initial_tempo,
         }
     }
@@ -106,7 +98,7 @@ impl TransportClock {
     fn set_tempo(&mut self, bpm: impl Into<crate::Bpm>) {
         let bpm = bpm.into();
         self.links.tempo.store(bpm.get(), Ordering::Release);
-        self.beat_per_sample = Self::calculate_beat_per_sample(bpm, self.sample_rate);
+        self.beat_per_sample = super::state::beats_per_sample(bpm, self.sample_rate);
         self.last_tempo = bpm;
     }
 
@@ -118,7 +110,7 @@ impl TransportClock {
     fn update_tempo_if_changed(&mut self) {
         let current_tempo = Bpm(self.links.tempo.load(Ordering::Acquire));
         if current_tempo.differs_from(self.last_tempo, TEMPO_EPSILON) {
-            self.beat_per_sample = Self::calculate_beat_per_sample(current_tempo, self.sample_rate);
+            self.beat_per_sample = super::state::beats_per_sample(current_tempo, self.sample_rate);
             self.last_tempo = current_tempo;
         }
     }
@@ -179,7 +171,7 @@ impl AudioUnit for TransportClock {
     fn set_sample_rate(&mut self, sample_rate: crate::params::SampleRate) {
         self.sample_rate = sample_rate;
         self.beat_per_sample =
-            Self::calculate_beat_per_sample(self.links.tempo.load(Ordering::Acquire), sample_rate);
+            super::state::beats_per_sample(self.links.tempo.load(Ordering::Acquire), sample_rate);
     }
 
     #[inline]

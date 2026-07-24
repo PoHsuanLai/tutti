@@ -37,6 +37,24 @@ pub fn beat_from_ports(whole: f32, frac: f32) -> f64 {
     whole as f64 + frac as f64
 }
 
+/// Musical time covered by one audio sample at `tempo` and `sample_rate`.
+///
+/// The conversion every beat-driven consumer needs: the clock caches it per
+/// buffer, `BeatWindow` derives a block's span from it, `OfflineTimeline`
+/// precomputes it once. Written out by hand in each of those before this
+/// existed.
+///
+/// The association is load-bearing: `(tempo / 60) / sample_rate`, **not**
+/// `tempo / (60 * sample_rate)`. The two round differently, and the offline
+/// timeline is pinned to agree with the clock sample-for-sample.
+#[inline]
+pub fn beats_per_sample(
+    tempo: impl Into<crate::Bpm>,
+    sample_rate: impl Into<crate::SampleRate>,
+) -> BeatDuration {
+    BeatDuration((tempo.into().get() / 60.0) / sample_rate.into().get())
+}
+
 /// A pending absolute jump. `pending` is the one-shot flag the clock
 /// consumes; `target` is where to land.
 ///

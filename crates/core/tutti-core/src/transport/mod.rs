@@ -17,7 +17,7 @@ pub use meter::TimeSignature;
 pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use settings::TransportSettings;
-pub use state::{beat_from_ports, ClockLinks, Declick, LoopRange, LoopSpan, SeekSlot, BEAT_PORTS};
+pub use state::{beat_from_ports, beats_per_sample, ClockLinks, Declick, LoopRange, LoopSpan, SeekSlot, BEAT_PORTS};
 
 // The Bevy wrappers (`TransportRes` / `MetronomeRes` + their claims +
 // `TuttiTransportPlugin`) live in `crate::ecs::transport` — import them from

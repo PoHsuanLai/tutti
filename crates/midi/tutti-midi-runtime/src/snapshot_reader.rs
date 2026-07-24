@@ -64,7 +64,7 @@ impl MidiIn for MidiSnapshotReader {
             return 0;
         }
 
-        let beats_per_sample = self.timeline.beats_per_sample();
+        let beats_per_sample = self.timeline.beats_per_sample().get();
         let count = self.snapshot.poll_range_timed(
             unit_id,
             last_beat,

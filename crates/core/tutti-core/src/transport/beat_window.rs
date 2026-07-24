@@ -80,7 +80,7 @@ impl BeatWindow {
         if tempo_bpm <= 0.0 || sample_rate <= 0.0 || block_size == 0 {
             return None;
         }
-        let beats_per_sample = tempo_bpm / 60.0 / sample_rate;
+        let beats_per_sample = super::state::beats_per_sample(tempo_bpm, sample_rate).get();
         Some((
             Self {
                 start_beat,

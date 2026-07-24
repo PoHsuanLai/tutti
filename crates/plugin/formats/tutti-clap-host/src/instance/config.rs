@@ -6,8 +6,9 @@
 //! `process`).
 
 use crate::events::{InputEventList, OutputEventList};
-use crate::types::{MidiEvent, NoteExpressionValue, ParameterChanges};
+use crate::types::{MidiEvent, ClapNoteExpression, ParameterChanges};
 use clap_sys::audio_buffer::clap_audio_buffer;
+use clap_sys::process::{clap_process_status, CLAP_PROCESS_CONTINUE};
 use smallvec::SmallVec;
 
 /// Audio format the host presents to the plugin.
@@ -101,7 +102,15 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     /// the call can hand back borrowed slices.
     pub out_midi: SmallVec<[MidiEvent; 64]>,
     pub out_param_changes: ParameterChanges,
-    pub out_note_expressions: SmallVec<[NoteExpressionValue; 16]>,
+    pub out_note_expressions: SmallVec<[ClapNoteExpression; 16]>,
+    /// Monotonic sample counter fed to CLAP's `steady_time`. Init 0 at
+    /// activate; advances by `frames_count` each processed block; reset to 0
+    /// on stop_processing/reactivate. Never derived from transport seconds.
+    pub steady_time: i64,
+    /// The `clap_process_status` the plugin returned on the most recent block.
+    /// Drives the TAIL/SLEEP transition logging in `process`; the shared output
+    /// vocabulary carries no status field.
+    pub last_process_status: clap_process_status,
 }
 
 impl<T: super::ClapSample> AudioScratch<T> {
@@ -113,6 +122,8 @@ impl<T: super::ClapSample> AudioScratch<T> {
             out_midi: SmallVec::new(),
             out_param_changes: ParameterChanges::new(),
             out_note_expressions: SmallVec::new(),
+            steady_time: 0,
+            last_process_status: CLAP_PROCESS_CONTINUE,
         }
     }
 }

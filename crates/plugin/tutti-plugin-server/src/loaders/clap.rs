@@ -3,11 +3,10 @@
 use std::path::Path;
 use tutti_plugin::server::{
     BusChannels, EditorSize, Features, LoadedPlugin, NoteExpressionChanges, ParameterChanges,
-    ParameterFlags, ParameterInfo, PluginClass, PluginDescriptor, WindowHandle,
+    ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult, WindowHandle,
 };
 use tutti_plugin::server::{PluginInstance, ProcessContext, ProcessOutput};
 
-use crate::loaders::common::params::make_param_info;
 use crate::loaders::common::{single_bus, Meta};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -275,7 +274,7 @@ impl ClapInstance {
         sample_rate: f64,
     ) -> Result<tutti_clap_host::instance::ProcessOutputRef<'a>> {
         let param_changes = ctx.param_changes.cloned().unwrap_or_default();
-        let note_expressions: Vec<tutti_clap_host::NoteExpressionValue> = ctx
+        let note_expressions: Vec<tutti_clap_host::ClapNoteExpression> = ctx
             .note_expression
             .map(convert_note_expressions)
             .unwrap_or_default();
@@ -312,7 +311,7 @@ impl PluginInstance for ClapInstance {
         &mut self,
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
-    ) -> Result<ProcessOutput> {
+    ) -> PluginResult<ProcessOutput> {
         use tutti_plugin::server::AudioBufferMut;
         // The buffer format must match the format the instance was activated
         // with (the `ClapInner` arm). A mismatch is a negotiation bug upstream;
@@ -349,7 +348,7 @@ impl PluginInstance for ClapInstance {
                 )?))
             }
             (AudioBufferMut::F32(_), ClapInner::F64(_))
-            | (AudioBufferMut::F64(_), ClapInner::F32(_)) => Err(BridgeError::ProcessError(
+            | (AudioBufferMut::F64(_), ClapInner::F32(_)) => Err(PluginError::Process(
                 "audio buffer sample format does not match the format the CLAP \
                  plugin was activated with"
                     .to_string(),
@@ -374,13 +373,12 @@ impl PluginInstance for ClapInstance {
     }
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo> {
-        clap_dispatch!(self, i => i.parameters())
-            .into_iter()
-            .map(convert_param_info)
-            .collect()
+        // The host crate projects CLAP-native param info onto the shared
+        // `ParameterInfo` at its own boundary; the loader no longer maps flags.
+        clap_dispatch!(self, i => i.parameter_list())
     }
 
-    fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
+    fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
         // Safety: WindowHandle was validated at the IPC boundary in server.rs
         let handle = unsafe { tutti_clap_host::WindowHandle::from_raw(parent.as_ptr()) };
         clap_dispatch_mut!(self, i => i.open_editor(handle))
@@ -388,7 +386,9 @@ impl PluginInstance for ClapInstance {
                 width: s.width,
                 height: s.height,
             })
-            .map_err(|e| BridgeError::EditorError(e.to_string()))
+            .map_err(|e| {
+                PluginError::Editor(tutti_plugin::EditorError::PluginError(e.to_string()))
+            })
     }
 
     fn close_editor(&mut self) {
@@ -397,35 +397,26 @@ impl PluginInstance for ClapInstance {
         });
     }
 
-    fn get_state(&mut self) -> Result<Vec<u8>> {
-        clap_dispatch_mut!(self, i => i.state())
-            .map_err(|e| BridgeError::StateSaveError(e.to_string()))
+    fn get_state(&mut self) -> PluginResult<Vec<u8>> {
+        clap_dispatch_mut!(self, i => i.state()).map_err(|e| PluginError::State(e.to_string()))
     }
 
-    fn set_state(&mut self, data: &[u8]) -> Result<()> {
-        clap_dispatch_mut!(self, i => i.set_state(data))
-            .map_err(|e| BridgeError::StateRestoreError(e.to_string()))
+    fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
+        clap_dispatch_mut!(self, i => i.set_state(data)).map_err(|e| PluginError::State(e.to_string()))
     }
 }
 
 #[cfg(feature = "clap")]
 fn convert_note_expressions(
     changes: &NoteExpressionChanges,
-) -> Vec<tutti_clap_host::NoteExpressionValue> {
+) -> Vec<tutti_clap_host::ClapNoteExpression> {
     // The expression dimension is the shared `NoteExpressionType` on both
     // sides; only CLAP's voice-addressed value wrapper differs (it adds
-    // port/channel/key, defaulted here via `new`).
+    // port/channel/key). `from_shared` fills those defaults in the host crate.
     changes
         .changes
         .iter()
-        .map(|expr| {
-            tutti_clap_host::NoteExpressionValue::new(
-                expr.expression_type,
-                expr.note_id,
-                expr.value,
-            )
-            .at(expr.sample_offset)
-        })
+        .map(tutti_clap_host::ClapNoteExpression::from_shared)
         .collect()
 }
 
@@ -493,33 +484,6 @@ fn convert_process_output(
         param_changes,
         note_expression,
     }
-}
-
-#[cfg(feature = "clap")]
-fn convert_param_info(info: tutti_clap_host::ParameterInfo) -> ParameterInfo {
-    let flags = ParameterFlags {
-        automatable: info
-            .flags
-            .contains(tutti_clap_host::ParameterFlags::AUTOMATABLE),
-        read_only: info
-            .flags
-            .contains(tutti_clap_host::ParameterFlags::READONLY),
-        wrap: info
-            .flags
-            .contains(tutti_clap_host::ParameterFlags::PERIODIC),
-        is_bypass: info.flags.contains(tutti_clap_host::ParameterFlags::BYPASS),
-        hidden: info.flags.contains(tutti_clap_host::ParameterFlags::HIDDEN),
-    };
-    make_param_info(
-        info.id,
-        info.name,
-        String::new(),
-        info.min_value,
-        info.max_value,
-        info.default_value,
-        0,
-        flags,
-    )
 }
 
 #[cfg(test)]
@@ -935,7 +899,7 @@ mod tests {
         assert!(!instance.clap_loaded().poll_callback_requested());
         assert!(!instance.clap_loaded().poll_latency_changed());
         assert!(!instance.clap_loaded().poll_tail_changed());
-        assert!(!instance.clap_loaded().poll_params_rescan());
+        assert!(!instance.clap_loaded().poll_params_rescan().requested);
         assert!(!instance.clap_loaded().poll_params_flush_requested());
         assert!(!instance.clap_loaded().poll_state_dirty());
         assert!(!instance.clap_loaded().poll_audio_ports_changed());

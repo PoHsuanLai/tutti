@@ -423,7 +423,8 @@ mod tests {
 
     use crate::loaders::common::Meta;
     use tutti_plugin::server::{
-        Features, LoadedPlugin, PluginDescriptor, ProcessOutput, SlabLayout, WindowHandle,
+        Features, LoadedPlugin, PluginDescriptor, PluginResult, ProcessOutput, SlabLayout,
+        WindowHandle,
     };
 
     /// A stand-in plugin whose `process` fills every output sample with a
@@ -446,7 +447,7 @@ mod tests {
             &mut self,
             buffer: AudioBufferMut<'_, '_>,
             _ctx: &ProcessContext,
-        ) -> Result<ProcessOutput> {
+        ) -> PluginResult<ProcessOutput> {
             if let AudioBufferMut::F32(b) = buffer {
                 for chan in b.outputs.iter_mut() {
                     chan.fill(self.fill);
@@ -465,14 +466,14 @@ mod tests {
         fn open_editor(
             &mut self,
             _parent: WindowHandle,
-        ) -> Result<tutti_plugin::server::EditorSize> {
+        ) -> PluginResult<tutti_plugin::server::EditorSize> {
             unreachable!("editor not used in this test")
         }
         fn close_editor(&mut self) {}
-        fn get_state(&mut self) -> Result<Vec<u8>> {
+        fn get_state(&mut self) -> PluginResult<Vec<u8>> {
             Ok(Vec::new())
         }
-        fn set_state(&mut self, _data: &[u8]) -> Result<()> {
+        fn set_state(&mut self, _data: &[u8]) -> PluginResult<()> {
             Ok(())
         }
     }
@@ -499,7 +500,7 @@ mod tests {
             &mut self,
             buffer: AudioBufferMut<'_, '_>,
             _ctx: &ProcessContext,
-        ) -> Result<ProcessOutput> {
+        ) -> PluginResult<ProcessOutput> {
             if let AudioBufferMut::F32(b) = buffer {
                 let mut seen = self.seen_inputs.borrow_mut();
                 seen.clear();
@@ -531,14 +532,14 @@ mod tests {
         fn open_editor(
             &mut self,
             _parent: WindowHandle,
-        ) -> Result<tutti_plugin::server::EditorSize> {
+        ) -> PluginResult<tutti_plugin::server::EditorSize> {
             unreachable!("editor not used in this test")
         }
         fn close_editor(&mut self) {}
-        fn get_state(&mut self) -> Result<Vec<u8>> {
+        fn get_state(&mut self) -> PluginResult<Vec<u8>> {
             Ok(Vec::new())
         }
-        fn set_state(&mut self, _data: &[u8]) -> Result<()> {
+        fn set_state(&mut self, _data: &[u8]) -> PluginResult<()> {
             Ok(())
         }
     }

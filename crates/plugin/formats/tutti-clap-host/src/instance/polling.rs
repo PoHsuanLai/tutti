@@ -3,13 +3,17 @@
 //! main-thread host-interaction methods.
 
 use super::ClapLoaded;
+#[cfg(feature = "clap-extras")]
 use crate::cstr_to_string;
 use crate::error::{ClapError, Result};
 use crate::host::HostState;
+use crate::types::{EditorCapabilities, EditorSize, ParamRescan, WindowHandle};
+#[cfg(feature = "clap-extras")]
 use crate::types::{
-    ContextMenuItem, ContextMenuTarget, EditorCapabilities, EditorSize, RemoteControlsPage,
-    TrackInfo, TransportRequest, TriggerInfo, WindowHandle,
+    ContextMenuItem, ContextMenuTarget, RemoteControlsPage, TrackInfo, TransportRequest,
+    TriggerInfo,
 };
+#[cfg(feature = "clap-extras")]
 use clap_sys::ext::context_menu::{
     clap_context_menu_builder, clap_context_menu_check_entry, clap_context_menu_entry,
     clap_context_menu_item_title, clap_context_menu_submenu, clap_context_menu_target,
@@ -18,8 +22,10 @@ use clap_sys::ext::context_menu::{
     CLAP_CONTEXT_MENU_ITEM_SEPARATOR, CLAP_CONTEXT_MENU_ITEM_TITLE,
     CLAP_CONTEXT_MENU_TARGET_KIND_GLOBAL, CLAP_CONTEXT_MENU_TARGET_KIND_PARAM,
 };
+#[cfg(feature = "clap-extras")]
 use clap_sys::ext::draft::triggers::clap_trigger_info;
 use clap_sys::ext::gui::{clap_window, clap_window_handle};
+#[cfg(feature = "clap-extras")]
 use clap_sys::ext::remote_controls::clap_remote_controls_page;
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -51,6 +57,111 @@ fn platform_window_handle(parent: *mut c_void) -> (*const i8, clap_window_handle
     )
 }
 
+/// Result of running the CLAP editor-embed sequence.
+struct EmbedOutcome {
+    /// The editor's initial size (from `get_size`, or the 800×600 fallback).
+    size: EditorSize,
+    /// Whether the plugin's `create` fn ran (so the caller latches
+    /// `gui_created`). Floating-only plugins with no `create` fn leave this
+    /// `false`.
+    did_create: bool,
+}
+
+/// Run the CLAP GUI embed sequence against a raw `gui` vtable and `plugin`
+/// pointer, in the spec-mandated order:
+///
+/// `is_api_supported` → `create` → `set_scale` (HiDPI) → `get_size` →
+/// `set_parent` → `show`.
+///
+/// The order matters: `is_api_supported` must gate `create` (so a
+/// floating-only plugin is detected before we try to embed), `set_scale` must
+/// land before `get_size` (so the reported size already accounts for the DPI
+/// factor), and `set_parent` must follow `get_size` but precede `show`. The
+/// previous implementation created, set the parent, *then* asked for size,
+/// which reported the pre-embed size and skipped both `is_api_supported` and
+/// `set_scale`.
+///
+/// # Safety
+/// `plugin` must be a valid `clap_plugin` pointer the `gui` vtable's fns
+/// accept, and `window`'s `specific` handle must reference a live native
+/// window that outlives the editor.
+fn embed_editor_sequence(
+    gui: &clap_sys::ext::gui::clap_plugin_gui,
+    plugin: *const clap_sys::plugin::clap_plugin,
+    api: *const i8,
+    window_handle: clap_window_handle,
+    scale: f64,
+) -> Result<EmbedOutcome> {
+    // 1. is_api_supported — confirm the plugin accepts the embedded window API
+    //    before we create. If it does not, degrade gracefully: a plugin that
+    //    only supports floating windows has no embedded `create` path, which
+    //    the existing create-fails handling already covers.
+    if let Some(is_api_supported_fn) = gui.is_api_supported {
+        if !unsafe { is_api_supported_fn(plugin, api, false) } {
+            return Err(ClapError::GuiError(
+                "GUI embedded window API not supported".to_string(),
+            ));
+        }
+    }
+
+    // 2. create (embedded, is_floating = false).
+    let did_create = if let Some(create_fn) = gui.create {
+        if !unsafe { create_fn(plugin, api, false) } {
+            return Err(ClapError::GuiError("GUI create failed".to_string()));
+        }
+        true
+    } else {
+        false
+    };
+
+    // 3. set_scale (HiDPI) — before get_size so the size reflects the factor.
+    if let Some(set_scale_fn) = gui.set_scale {
+        // A false return means the plugin does not honour host-set scale; that
+        // is not an error (it will use its own).
+        unsafe { set_scale_fn(plugin, scale) };
+    }
+
+    // 4. get_size — now that scale is applied.
+    let size = if let Some(get_size_fn) = gui.get_size {
+        let mut w: u32 = 0;
+        let mut h: u32 = 0;
+        if unsafe { get_size_fn(plugin, &mut w, &mut h) } {
+            EditorSize {
+                width: w,
+                height: h,
+            }
+        } else {
+            EditorSize {
+                width: 800,
+                height: 600,
+            }
+        }
+    } else {
+        EditorSize {
+            width: 800,
+            height: 600,
+        }
+    };
+
+    // 5. set_parent — embed into the host window.
+    if let Some(set_parent_fn) = gui.set_parent {
+        let window = clap_window {
+            api,
+            specific: window_handle,
+        };
+        if !unsafe { set_parent_fn(plugin, &window) } {
+            return Err(ClapError::GuiError("Set parent failed".to_string()));
+        }
+    }
+
+    // 6. show.
+    if let Some(show_fn) = gui.show {
+        unsafe { show_fn(plugin) };
+    }
+
+    Ok(EmbedOutcome { size, did_create })
+}
+
 impl ClapLoaded {
     /// Whether the plugin implements `CLAP_EXT_GUI` and can open an editor.
     pub fn has_editor(&self) -> bool {
@@ -60,9 +171,13 @@ impl ClapLoaded {
     /// Create the plugin editor and embed it into the given native `parent`
     /// window, returning the editor's initial size.
     ///
+    /// Follows the CLAP embed sequence: `is_api_supported` → `create` →
+    /// `set_scale` → `get_size` → `set_parent` → `show`. See
+    /// [`embed_editor_sequence`] for the ordering rationale.
+    ///
     /// # Errors
-    /// [`ClapError::GuiError`] if the plugin does not expose a GUI, or if
-    /// `create`/`set_parent` fails.
+    /// [`ClapError::GuiError`] if the plugin does not expose a GUI, if the
+    /// embedded window API is unsupported, or if `create`/`set_parent` fails.
     pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         self.assert_main_thread();
         if self.extensions.gui.gui.is_null() {
@@ -72,49 +187,24 @@ impl ClapLoaded {
 
         let (api, window_handle) = platform_window_handle(parent.as_ptr());
 
-        if let Some(create_fn) = gui.create {
-            if !unsafe { create_fn(self.plugin.as_ptr(), api, false) } {
-                return Err(ClapError::GuiError("GUI create failed".to_string()));
-            }
+        // TODO: real backing-scale from frontend — the host `WindowHandle`
+        // carries no DPI today, so we pass 1.0 and wire the `set_scale` call.
+        let scale = 1.0_f64;
+
+        let outcome =
+            embed_editor_sequence(gui, self.plugin.as_ptr(), api, window_handle, scale)?;
+
+        if outcome.did_create {
             self.flags.gui_created = true;
+            // H5: a fresh editor exists now — clear any stale "already
+            // destroyed" latch from the previous editor's teardown.
+            self.host_state
+                .gui
+                .already_destroyed
+                .store(false, std::sync::atomic::Ordering::Release);
         }
 
-        if let Some(set_parent_fn) = gui.set_parent {
-            let window = clap_window {
-                api,
-                specific: window_handle,
-            };
-            if !unsafe { set_parent_fn(self.plugin.as_ptr(), &window) } {
-                return Err(ClapError::GuiError("Set parent failed".to_string()));
-            }
-        }
-
-        let size = if let Some(get_size_fn) = gui.get_size {
-            let mut w: u32 = 0;
-            let mut h: u32 = 0;
-            if unsafe { get_size_fn(self.plugin.as_ptr(), &mut w, &mut h) } {
-                EditorSize {
-                    width: w,
-                    height: h,
-                }
-            } else {
-                EditorSize {
-                    width: 800,
-                    height: 600,
-                }
-            }
-        } else {
-            EditorSize {
-                width: 800,
-                height: 600,
-            }
-        };
-
-        if let Some(show_fn) = gui.show {
-            unsafe { show_fn(self.plugin.as_ptr()) };
-        }
-
-        Ok(size)
+        Ok(outcome.size)
     }
 
     pub fn editor_capabilities(&self) -> EditorCapabilities {
@@ -211,6 +301,19 @@ impl ClapLoaded {
         if !self.flags.gui_created {
             return;
         }
+        // H5: if the plugin already destroyed its own editor (it reported
+        // `gui.closed(was_destroyed = true)`), skip hide/destroy entirely —
+        // calling `gui.destroy` again would be a double-destroy. Just clear our
+        // bookkeeping and consume the latch.
+        if self
+            .host_state
+            .gui
+            .already_destroyed
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            self.flags.gui_created = false;
+            return;
+        }
         let gui = unsafe { &*self.extensions.gui.gui };
         if let Some(hide_fn) = gui.hide {
             unsafe { hide_fn(self.plugin.as_ptr()) };
@@ -262,11 +365,23 @@ impl ClapLoaded {
             .poll(&self.host_state.processing.tail_changed)
     }
 
-    /// Consume and return the `params_rescan_requested` flag — re-read
-    /// parameter metadata when this fires.
-    pub fn poll_params_rescan(&self) -> bool {
-        self.host_state
-            .poll(&self.host_state.params.rescan_requested)
+    /// Consume and return the pending parameter-rescan request as a decoded
+    /// [`ParamRescan`], clearing both the request flag and the accumulated
+    /// flags. `ParamRescan::requested` is `false` when nothing is pending.
+    ///
+    /// The decoded scope lets the caller honour CLAP's rule that a full rescan
+    /// (`ParamRescan::all` / [`ParamRescan::needs_deactivate`]) is applied only
+    /// while the plugin is deactivated, while a value-only rescan is safe live.
+    pub fn poll_params_rescan(&self) -> ParamRescan {
+        let requested = self
+            .host_state
+            .poll(&self.host_state.params.rescan_requested);
+        let flags = self
+            .host_state
+            .params
+            .rescan_flags
+            .swap(0, std::sync::atomic::Ordering::AcqRel);
+        ParamRescan::from_flags(requested, flags)
     }
 
     /// Consume and return the `params_flush_requested` flag — call
@@ -349,14 +464,18 @@ impl ClapLoaded {
             .poll(&self.host_state.audio_ports.config_changed)
     }
 
-    /// Consume and return the `remote_controls.changed` flag.
+    /// Consume and return the `remote_controls.changed` flag. Speculative —
+    /// gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn poll_remote_controls_changed(&self) -> bool {
         self.host_state
             .poll(&self.host_state.remote_controls.changed)
     }
 
     /// Consume and return the page ID the plugin most recently suggested
-    /// the host switch to, or `None` if no suggestion is pending.
+    /// the host switch to, or `None` if no suggestion is pending. Speculative —
+    /// gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn poll_suggested_remote_page(&self) -> Option<u32> {
         let val = self
             .host_state
@@ -371,6 +490,8 @@ impl ClapLoaded {
     }
 
     /// Drain all pending [`TransportRequest`]s the plugin has emitted.
+    /// Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn drain_transport_requests(&self) -> Vec<TransportRequest> {
         if let Ok(mut reqs) = self.host_state.transport.requests.lock() {
             std::mem::take(&mut *reqs)
@@ -390,7 +511,9 @@ impl ClapLoaded {
             .poll(&self.host_state.notes.voice_info_changed)
     }
 
-    /// Consume and return the `preset_loaded` flag.
+    /// Consume and return the `preset_loaded` flag. Speculative — gated behind
+    /// `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn poll_preset_loaded(&self) -> bool {
         self.host_state
             .poll(&self.host_state.processing.preset_loaded)
@@ -408,14 +531,17 @@ impl ClapLoaded {
 
     /// Publish track metadata for the plugin to read via
     /// `CLAP_EXT_TRACK_INFO`. Call [`Self::notify_track_info_changed`]
-    /// afterwards to ping the plugin.
+    /// afterwards to ping the plugin. Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn set_track_info(&self, info: TrackInfo) {
         if let Ok(mut guard) = self.host_state.resources.track_info.lock() {
             *guard = Some(info);
         }
     }
 
-    /// Tell the plugin its track info has changed.
+    /// Tell the plugin its track info has changed. Speculative — gated behind
+    /// `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn notify_track_info_changed(&self) {
         if self.extensions.system.track_info.is_null() {
             return;
@@ -426,7 +552,9 @@ impl ClapLoaded {
         }
     }
 
-    /// Number of remote-control pages the plugin exposes.
+    /// Number of remote-control pages the plugin exposes. Speculative — gated
+    /// behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn remote_controls_page_count(&self) -> usize {
         if self.extensions.params.remote_controls.is_null() {
             return 0;
@@ -438,7 +566,9 @@ impl ClapLoaded {
         }
     }
 
-    /// Describe the remote-controls page at `index`.
+    /// Describe the remote-controls page at `index`. Speculative — gated behind
+    /// `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn get_remote_controls_page(&self, index: usize) -> Option<RemoteControlsPage> {
         if self.extensions.params.remote_controls.is_null() {
             return None;
@@ -460,6 +590,8 @@ impl ClapLoaded {
 
     /// Ask the plugin to supply the context-menu entries for `target`.
     /// Returns `None` if the plugin does not implement context menus.
+    /// Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn context_menu_populate(&self, target: ContextMenuTarget) -> Option<Vec<ContextMenuItem>> {
         if self.extensions.gui.context_menu.is_null() {
             return None;
@@ -495,7 +627,8 @@ impl ClapLoaded {
     }
 
     /// Invoke a context-menu action the plugin previously reported via
-    /// [`Self::context_menu_populate`].
+    /// [`Self::context_menu_populate`]. Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn context_menu_perform(&self, target: ContextMenuTarget, action_id: u32) -> bool {
         if self.extensions.gui.context_menu.is_null() {
             return false;
@@ -519,7 +652,9 @@ impl ClapLoaded {
     }
 
     /// Number of trigger "parameters" (stateless momentary actions) the
-    /// plugin exposes via the draft `CLAP_EXT_TRIGGERS`.
+    /// plugin exposes via the draft `CLAP_EXT_TRIGGERS`. Speculative — gated
+    /// behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn trigger_count(&self) -> usize {
         if self.extensions.system.triggers.is_null() {
             return 0;
@@ -531,7 +666,8 @@ impl ClapLoaded {
         }
     }
 
-    /// Describe the trigger at `index`.
+    /// Describe the trigger at `index`. Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn get_trigger_info(&self, index: usize) -> Option<TriggerInfo> {
         if self.extensions.system.triggers.is_null() {
             return None;
@@ -551,7 +687,8 @@ impl ClapLoaded {
     }
 
     /// Run a task that the plugin enqueued via `CLAP_EXT_THREAD_POOL`.
-    /// Call from a worker thread.
+    /// Call from a worker thread. Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn thread_pool_exec(&self, task_index: u32) {
         if self.extensions.system.thread_pool.is_null() {
             return;
@@ -562,7 +699,9 @@ impl ClapLoaded {
         }
     }
 
-    /// Tell the plugin its tuning table set has changed.
+    /// Tell the plugin its tuning table set has changed. Speculative — gated
+    /// behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn notify_tuning_changed(&self) {
         if self.extensions.system.tuning.is_null() {
             return;
@@ -574,8 +713,9 @@ impl ClapLoaded {
     }
 
     /// Fire `on_fd` for every POSIX FD the plugin has registered.
-    /// Returns the number of callbacks invoked.
-    #[cfg(unix)]
+    /// Returns the number of callbacks invoked. Speculative — gated behind
+    /// `clap-extras`.
+    #[cfg(all(unix, feature = "clap-extras"))]
     pub fn poll_posix_fds(&mut self) -> usize {
         if self.extensions.system.posix_fd_support.is_null() {
             return 0;
@@ -601,6 +741,7 @@ impl ClapLoaded {
     }
 }
 
+#[cfg(feature = "clap-extras")]
 pub(super) unsafe extern "C" fn context_menu_builder_add_item(
     builder: *const clap_context_menu_builder,
     item_kind: u32,
@@ -662,6 +803,7 @@ pub(super) unsafe extern "C" fn context_menu_builder_add_item(
     true
 }
 
+#[cfg(feature = "clap-extras")]
 pub(super) unsafe extern "C" fn context_menu_builder_supports(
     _builder: *const clap_context_menu_builder,
     item_kind: u32,
@@ -675,4 +817,155 @@ pub(super) unsafe extern "C" fn context_menu_builder_supports(
             | CLAP_CONTEXT_MENU_ITEM_BEGIN_SUBMENU
             | CLAP_CONTEXT_MENU_ITEM_END_SUBMENU
     )
+}
+
+#[cfg(test)]
+mod embed_sequence_tests {
+    use super::*;
+    use clap_sys::ext::gui::clap_plugin_gui;
+    use clap_sys::plugin::clap_plugin;
+
+    // The stub gui vtable's fns log their own name into a `Vec<&str>` reached
+    // through the stub plugin's `plugin_data`, so the test can assert the
+    // CLAP-mandated call order.
+    unsafe fn log(plugin: *const clap_plugin, name: &'static str) {
+        let vec = &mut *((*plugin).plugin_data as *mut Vec<&'static str>);
+        vec.push(name);
+    }
+
+    unsafe extern "C" fn stub_is_api_supported(
+        plugin: *const clap_plugin,
+        _api: *const i8,
+        _is_floating: bool,
+    ) -> bool {
+        log(plugin, "is_api_supported");
+        true
+    }
+
+    unsafe extern "C" fn stub_create(
+        plugin: *const clap_plugin,
+        _api: *const i8,
+        _is_floating: bool,
+    ) -> bool {
+        log(plugin, "create");
+        true
+    }
+
+    unsafe extern "C" fn stub_set_scale(plugin: *const clap_plugin, _scale: f64) -> bool {
+        log(plugin, "set_scale");
+        true
+    }
+
+    unsafe extern "C" fn stub_get_size(
+        plugin: *const clap_plugin,
+        width: *mut u32,
+        height: *mut u32,
+    ) -> bool {
+        log(plugin, "get_size");
+        *width = 640;
+        *height = 480;
+        true
+    }
+
+    unsafe extern "C" fn stub_set_parent(
+        plugin: *const clap_plugin,
+        _window: *const clap_window,
+    ) -> bool {
+        log(plugin, "set_parent");
+        true
+    }
+
+    unsafe extern "C" fn stub_show(plugin: *const clap_plugin) -> bool {
+        log(plugin, "show");
+        true
+    }
+
+    unsafe extern "C" fn stub_is_api_supported_false(
+        plugin: *const clap_plugin,
+        _api: *const i8,
+        _is_floating: bool,
+    ) -> bool {
+        log(plugin, "is_api_supported");
+        false
+    }
+
+    fn stub_gui() -> clap_plugin_gui {
+        // SAFETY: clap_plugin_gui is all Option<fn ptr> fields; zeroed = None.
+        let mut gui: clap_plugin_gui = unsafe { std::mem::zeroed() };
+        gui.is_api_supported = Some(stub_is_api_supported);
+        gui.create = Some(stub_create);
+        gui.set_scale = Some(stub_set_scale);
+        gui.get_size = Some(stub_get_size);
+        gui.set_parent = Some(stub_set_parent);
+        gui.show = Some(stub_show);
+        gui
+    }
+
+    fn stub_plugin(log: &mut Vec<&'static str>) -> clap_plugin {
+        // SAFETY: clap_plugin is POD (pointers + Option<fn>); zeroed is a valid
+        // all-null/None instance. We only ever read `plugin_data`.
+        let mut plugin: clap_plugin = unsafe { std::mem::zeroed() };
+        plugin.plugin_data = log as *mut Vec<&'static str> as *mut std::ffi::c_void;
+        plugin
+    }
+
+    #[test]
+    fn embed_sequence_calls_in_spec_order() {
+        let mut order: Vec<&'static str> = Vec::new();
+        let plugin = stub_plugin(&mut order);
+        let gui = stub_gui();
+        let handle = clap_window_handle {
+            ptr: std::ptr::null_mut(),
+        };
+
+        let outcome = embed_editor_sequence(
+            &gui,
+            &plugin as *const clap_plugin,
+            std::ptr::null(),
+            handle,
+            1.0,
+        )
+        .expect("embed sequence succeeds");
+
+        assert!(outcome.did_create, "create ran");
+        assert_eq!(outcome.size.width, 640);
+        assert_eq!(outcome.size.height, 480);
+        // The exact CLAP embed order: is_api_supported → create → set_scale →
+        // get_size → set_parent → show.
+        assert_eq!(
+            order,
+            vec![
+                "is_api_supported",
+                "create",
+                "set_scale",
+                "get_size",
+                "set_parent",
+                "show",
+            ]
+        );
+    }
+
+    #[test]
+    fn embed_sequence_rejects_unsupported_api() {
+        // is_api_supported == false must short-circuit before create — a
+        // floating-only plugin degrades gracefully instead of being embedded.
+        let mut order: Vec<&'static str> = Vec::new();
+        let plugin = stub_plugin(&mut order);
+        let mut gui = stub_gui();
+        gui.is_api_supported = Some(stub_is_api_supported_false);
+        let handle = clap_window_handle {
+            ptr: std::ptr::null_mut(),
+        };
+
+        let result = embed_editor_sequence(
+            &gui,
+            &plugin as *const clap_plugin,
+            std::ptr::null(),
+            handle,
+            1.0,
+        );
+
+        assert!(result.is_err(), "unsupported api errors");
+        assert_eq!(order, vec!["is_api_supported"], "stops before create");
+    }
 }

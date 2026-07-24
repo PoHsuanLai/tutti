@@ -73,6 +73,13 @@ use clap_sys::ext::timer_support::clap_plugin_timer_support;
 use clap_sys::ext::track_info::clap_plugin_track_info;
 use clap_sys::ext::voice_info::clap_plugin_voice_info;
 
+// Some extension slots are only read by accessor methods gated behind
+// `clap-extras` (configurable/extensible ports, param-indication,
+// remote-controls, undo, context-menu, track-info/triggers/tuning/
+// resource-directory/posix-fd). They are still queried + advertised in every
+// build (the host offers the extension regardless), so allow them to go unread
+// when the feature is off rather than gate each slot.
+#[cfg_attr(not(feature = "clap-extras"), allow(dead_code))]
 pub(crate) struct AudioExtensions {
     pub(crate) ports: *const clap_plugin_audio_ports,
     pub(crate) ports_config: *const clap_plugin_audio_ports_config,
@@ -84,6 +91,7 @@ pub(crate) struct AudioExtensions {
     pub(crate) surround: *const clap_plugin_surround,
 }
 
+#[cfg_attr(not(feature = "clap-extras"), allow(dead_code))]
 pub(crate) struct ParamExtensions {
     pub(crate) params: *const clap_plugin_params,
     pub(crate) indication: *const clap_plugin_param_indication,
@@ -96,11 +104,13 @@ pub(crate) struct StateExtensions {
     pub(crate) preset_load: *const clap_plugin_preset_load,
 }
 
+#[cfg_attr(not(feature = "clap-extras"), allow(dead_code))]
 pub(crate) struct UndoExtensions {
     pub(crate) delta: *const clap_plugin_undo_delta,
     pub(crate) context: *const clap_plugin_undo_context,
 }
 
+#[cfg_attr(not(feature = "clap-extras"), allow(dead_code))]
 pub(crate) struct GuiExtensions {
     pub(crate) gui: *const clap_plugin_gui,
     pub(crate) context_menu: *const clap_plugin_context_menu,
@@ -111,6 +121,7 @@ pub(crate) struct NoteExtensions {
     pub(crate) name: *const clap_plugin_note_name,
 }
 
+#[cfg_attr(not(feature = "clap-extras"), allow(dead_code))]
 pub(crate) struct SystemExtensions {
     pub(crate) latency: *const clap_plugin_latency,
     pub(crate) tail: *const clap_plugin_tail,
@@ -126,6 +137,7 @@ pub(crate) struct SystemExtensions {
     pub(crate) posix_fd_support: *const clap_plugin_posix_fd_support,
 }
 
+#[cfg_attr(not(feature = "clap-extras"), allow(dead_code))]
 pub(crate) struct ExtensionCache {
     pub(crate) audio: AudioExtensions,
     pub(crate) params: ParamExtensions,

@@ -4,7 +4,7 @@
 //! `input_events_get` have the correct C memory layout for plugins to cast.
 
 use crate::types::{
-    MidiEvent, NoteExpressionType, NoteExpressionValue, ParameterChanges, ParameterPoint,
+    ClapNoteExpression, MidiEvent, NoteExpressionType, ParameterChanges, ParameterPoint,
     ParameterQueue,
 };
 use clap_sys::events::{
@@ -27,7 +27,6 @@ use tutti_plugin_types::{note_id_for, note_id_to_channel_note};
 ///
 /// Construct via the `note_on`/`note_off`/`midi`/`param_value`/`note_expression`
 /// helpers, or from [`MidiEvent`] via [`ClapEvent::from_midi`].
-#[allow(dead_code)]
 pub enum ClapEvent {
     NoteOn(clap_event_note),
     NoteOff(clap_event_note),
@@ -82,6 +81,14 @@ fn expression_to_per_note_controller_index(ty: NoteExpressionType) -> Option<u8>
     }
 }
 
+// C-4 (deferred): host→plugin events built below leave `header.flags = 0`, so
+// `CLAP_EVENT_IS_LIVE` is never set. IS_LIVE marks an event as originating from
+// live hardware interaction (a physical knob/key) rather than sequencer
+// playback, letting a plugin treat the two differently (e.g. smoothing). The
+// live-vs-playback distinction is not threaded from the caller today — the
+// `MidiEvent` → `ClapEvent` conversion has no such signal, and neither does the
+// process/flush entry path. Rather than invent a bogus source flag, we leave
+// IS_LIVE unset until the frontend plumbs a real live/playback origin through.
 impl ClapEvent {
     /// Borrow the common CLAP event header (time, type, space ID, flags).
     pub fn header(&self) -> &clap_event_header {
@@ -247,7 +254,9 @@ impl ClapEvent {
                 time,
                 i16::from(channel),
                 i16::from(u8::from(m.note_number())),
-                0.0,
+                // M3: thread the MIDI-2 release velocity through, matching the
+                // NoteOn path — a hardcoded 0 discarded the release dynamic.
+                f64::from(u16_to_unit_f32(m.velocity())),
             )),
             // MIDI-2 per-note pitch bend → CLAP tuning expression. Signed
             // [-1, 1] scales to semitones by the per-note bend range.
@@ -329,8 +338,15 @@ impl ClapEvent {
                 .with_frame_offset(e.header.time),
             ),
             ClapEvent::NoteOff(e) => Some(
-                MidiEvent::note_off(0, e.channel as u8 & 0x0F, e.key as u8 & 0x7F, 0)
-                    .with_frame_offset(e.header.time),
+                // M3: preserve the plugin's release velocity on the way back to
+                // MIDI-2 too, mirroring the NoteOn path (was hardcoded 0).
+                MidiEvent::note_off(
+                    0,
+                    e.channel as u8 & 0x0F,
+                    e.key as u8 & 0x7F,
+                    unit_f32_to_u16(e.velocity as f32),
+                )
+                .with_frame_offset(e.header.time),
             ),
             ClapEvent::NoteExpression(e) => Self::note_expression_to_midi(e),
             // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the
@@ -503,8 +519,8 @@ impl InputEventList {
         self
     }
 
-    /// Append each [`NoteExpressionValue`] as a CLAP `NOTE_EXPRESSION` event.
-    pub fn add_note_expressions(&mut self, expressions: &[NoteExpressionValue]) -> &mut Self {
+    /// Append each [`ClapNoteExpression`] as a CLAP `NOTE_EXPRESSION` event.
+    pub fn add_note_expressions(&mut self, expressions: &[ClapNoteExpression]) -> &mut Self {
         for expr in expressions {
             self.events.push(ClapEvent::note_expression(
                 expr.sample_offset as u32,
@@ -674,8 +690,8 @@ impl OutputEventList {
     }
 
     /// Extract note-expression events into the safe
-    /// [`NoteExpressionValue`] form, dropping other events.
-    pub fn to_note_expressions(&self) -> Vec<NoteExpressionValue> {
+    /// [`ClapNoteExpression`] form, dropping other events.
+    pub fn to_note_expressions(&self) -> Vec<ClapNoteExpression> {
         self.events
             .iter()
             .filter_map(clap_event_to_note_expression)
@@ -684,7 +700,7 @@ impl OutputEventList {
 
     /// RT-safe variant of [`Self::to_note_expressions`] that drains into a
     /// caller-supplied pooled `SmallVec`.
-    pub fn fill_note_expressions(&self, out: &mut SmallVec<[NoteExpressionValue; 16]>) {
+    pub fn fill_note_expressions(&self, out: &mut SmallVec<[ClapNoteExpression; 16]>) {
         out.clear();
         for event in &self.events {
             if let Some(ne) = clap_event_to_note_expression(event) {
@@ -692,11 +708,30 @@ impl OutputEventList {
             }
         }
     }
+
+    /// Drain the plugin's output-side param *gestures* (begin/end) and
+    /// param *modulation* events into a caller-supplied pooled `Vec`, clearing
+    /// it first. These carry information (a knob-drag beginning/ending, or an
+    /// output modulation) that the shared param-value vocabulary can't express,
+    /// so rather than drop them silently ([`fill_param_changes`] only matches
+    /// `ParamValue`) they are surfaced here for CLAP-aware callers. The gesture
+    /// and mod C structs are POD, so this reconstructs (not clones) each event.
+    pub fn fill_gestures(&self, out: &mut Vec<ClapEvent>) {
+        out.clear();
+        for event in &self.events {
+            match event {
+                ClapEvent::ParamGestureBegin(e) => out.push(ClapEvent::ParamGestureBegin(*e)),
+                ClapEvent::ParamGestureEnd(e) => out.push(ClapEvent::ParamGestureEnd(*e)),
+                ClapEvent::ParamMod(e) => out.push(ClapEvent::ParamMod(*e)),
+                _ => {}
+            }
+        }
+    }
 }
 
-/// Decode a single [`ClapEvent`] into a [`NoteExpressionValue`]. Returns
+/// Decode a single [`ClapEvent`] into a [`ClapNoteExpression`]. Returns
 /// `None` for unsupported expression ids or non-NoteExpression events.
-fn clap_event_to_note_expression(event: &ClapEvent) -> Option<NoteExpressionValue> {
+fn clap_event_to_note_expression(event: &ClapEvent) -> Option<ClapNoteExpression> {
     let ClapEvent::NoteExpression(ne) = event else {
         return None;
     };
@@ -710,7 +745,7 @@ fn clap_event_to_note_expression(event: &ClapEvent) -> Option<NoteExpressionValu
         id if id == CLAP_NOTE_EXPRESSION_EXPRESSION => NoteExpressionType::Expression,
         _ => return None,
     };
-    Some(NoteExpressionValue {
+    Some(ClapNoteExpression {
         sample_offset: ne.header.time as i32,
         note_id: ne.note_id,
         port_index: ne.port_index,
@@ -940,6 +975,46 @@ mod tests {
     }
 
     #[test]
+    fn note_off_release_velocity_is_threaded_through() {
+        // M3: a MIDI-2 NoteOff carries a release velocity; it must reach the
+        // CLAP NoteOff's `velocity` (was hardcoded 0), and round-trip back.
+        use tutti_midi_types::convert::u16_to_unit_f32;
+        let rel = 0x6000u16; // ~0.375 of full scale
+        let midi = MidiEvent::note_off(0, 4, 55, rel).with_frame_offset(9);
+        match ClapEvent::from_midi(&midi).expect("note off converts") {
+            ClapEvent::NoteOff(e) => {
+                assert_eq!(e.key, 55);
+                let expected = f64::from(u16_to_unit_f32(rel));
+                assert!(
+                    (e.velocity - expected).abs() < 0.01,
+                    "release velocity {} vs {expected}",
+                    e.velocity
+                );
+                assert!(e.velocity > 0.0, "release velocity must not collapse to 0");
+            }
+            _ => panic!("expected NoteOff"),
+        }
+    }
+
+    #[test]
+    fn note_off_release_velocity_round_trips() {
+        // The CLAP → MIDI-2 direction must preserve release velocity too.
+        use tutti_midi_types::convert::u16_to_unit_f32;
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::UmpMessage;
+
+        let clap = ClapEvent::note_off(2, 1, 48, 0.5);
+        let midi = clap.to_midi().expect("note off -> midi");
+        match UmpMessage::try_from(midi.data_words()).expect("decodes") {
+            UmpMessage::ChannelVoice2(Cv2::NoteOff(m)) => {
+                let vel = u16_to_unit_f32(m.velocity());
+                assert!((vel - 0.5).abs() < 0.01, "release velocity {vel}");
+            }
+            other => panic!("expected CV2 NoteOff, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn from_midi_event_velocity_zero_note_on_becomes_note_off() {
         // The MIDI velocity-0 NoteOn quirk: `normalize` folds it to a NoteOff, so
         // a raw MIDI-1 velocity-0 NoteOn converts to a CLAP NoteOff.
@@ -1023,6 +1098,90 @@ mod tests {
             }
             other => panic!("expected CV2 NoteOn, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn fill_gestures_captures_gesture_and_mod_events() {
+        // H4: gesture begin/end + param-mod on the output side must no longer
+        // be silently dropped. They land in the CLAP-private gesture list, and
+        // `fill_param_changes` still ignores them (only PARAM_VALUE flows there).
+        use clap_sys::events::{
+            clap_event_param_gesture, clap_event_param_mod, CLAP_EVENT_PARAM_GESTURE_BEGIN,
+            CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_MOD,
+        };
+
+        let mut output = OutputEventList::new();
+        let list_ptr = output.as_raw_mut();
+
+        let begin = clap_event_param_gesture {
+            header: clap_event_header {
+                size: std::mem::size_of::<clap_event_param_gesture>() as u32,
+                time: 0,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_: CLAP_EVENT_PARAM_GESTURE_BEGIN,
+                flags: 0,
+            },
+            param_id: 7,
+        };
+        let end = clap_event_param_gesture {
+            header: clap_event_header {
+                size: std::mem::size_of::<clap_event_param_gesture>() as u32,
+                time: 4,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_: CLAP_EVENT_PARAM_GESTURE_END,
+                flags: 0,
+            },
+            param_id: 7,
+        };
+        let modev = clap_event_param_mod {
+            header: clap_event_header {
+                size: std::mem::size_of::<clap_event_param_mod>() as u32,
+                time: 2,
+                space_id: CLAP_CORE_EVENT_SPACE_ID,
+                type_: CLAP_EVENT_PARAM_MOD,
+                flags: 0,
+            },
+            param_id: 9,
+            cookie: ptr::null_mut(),
+            note_id: -1,
+            port_index: -1,
+            channel: -1,
+            key: -1,
+            amount: 0.25,
+        };
+        // Also push a plain PARAM_VALUE to prove the two paths stay separate.
+        let value = ClapEvent::param_value(3, 5, 0.9);
+
+        unsafe {
+            let push = (*list_ptr).try_push.unwrap();
+            assert!(push(list_ptr, &begin.header as *const _));
+            assert!(push(list_ptr, &modev.header as *const _));
+            assert!(push(list_ptr, &end.header as *const _));
+            assert!(push(list_ptr, value.header() as *const _));
+        }
+
+        let mut gestures: Vec<ClapEvent> = Vec::new();
+        output.fill_gestures(&mut gestures);
+        assert_eq!(gestures.len(), 3, "begin + mod + end captured");
+        assert!(gestures
+            .iter()
+            .any(|e| matches!(e, ClapEvent::ParamGestureBegin(_))));
+        assert!(gestures
+            .iter()
+            .any(|e| matches!(e, ClapEvent::ParamGestureEnd(_))));
+        assert!(gestures.iter().any(|e| matches!(e, ClapEvent::ParamMod(_))));
+
+        // fill_param_changes only picks up the PARAM_VALUE, not gestures/mods.
+        let mut changes = ParameterChanges::new();
+        output.fill_param_changes(&mut changes);
+        assert_eq!(changes.queues.len(), 1, "only the PARAM_VALUE queued");
+        assert_eq!(changes.queues[0].param_id, 5);
+
+        // Draining clears the pool.
+        output.fill_gestures(&mut gestures);
+        assert_eq!(gestures.len(), 3);
+        gestures.clear();
+        assert!(gestures.is_empty());
     }
 
     #[test]

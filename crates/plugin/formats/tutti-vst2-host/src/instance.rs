@@ -83,6 +83,12 @@ impl Vst2Instance {
     /// `block_size` is the maximum number of samples per process call;
     /// callers may render fewer per call, but never more.
     pub fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
+        // Loading runs the plugin's init/resume sequence and probes its
+        // editor — VST2 requires this happen on the host main thread. A
+        // no-op until `mark_main_thread()` has been called (headless tests
+        // are safe).
+        tutti_plugin_types::assert_main_thread();
+
         let resolved = resolve_bundle(path);
 
         let (param_tx, param_rx) = crossbeam_channel::unbounded();
@@ -92,6 +98,7 @@ impl Vst2Instance {
             param_tx,
             midi_out_tx,
             Arc::clone(&time_info),
+            block_size,
         )));
 
         let mut loader = PluginLoader::load(&resolved, Arc::clone(&host)).map_err(|e| {
@@ -114,9 +121,20 @@ impl Vst2Instance {
         instance.resume();
 
         let info = instance.get_info();
+        // Pin-count / category is the primary MIDI signal, but MIDI-effect
+        // plugins routinely declare 0 MIDI pins and advertise capability only
+        // via `canDo`. OR in the canDo answer so those aren't misclassified as
+        // audio-only. `Supported::Yes` is the only affirmative response.
+        use vst::api::Supported;
+        use vst::plugin::CanDo;
+        let can_receive_midi =
+            matches!(instance.can_do(CanDo::ReceiveMidiEvent), Supported::Yes);
+        let can_send_midi = matches!(instance.can_do(CanDo::SendMidiEvent), Supported::Yes);
+
         let receives_midi = info.midi_inputs > 0
             || info.midi_outputs > 0
-            || matches!(info.category, Category::Synth);
+            || matches!(info.category, Category::Synth)
+            || can_receive_midi;
         let metadata = PluginInfo {
             id: format!("vst2.{}", info.unique_id),
             name: info.name.clone(),
@@ -126,7 +144,7 @@ impl Vst2Instance {
             num_outputs: info.outputs as usize,
             category: map_category(info.category),
             receives_midi,
-            emits_midi: info.midi_outputs > 0,
+            emits_midi: info.midi_outputs > 0 || can_send_midi,
             has_editor: false, // overwritten below once we ask the handle
             latency_samples: info.initial_delay.max(0) as usize,
             supports_f64: info.f64_precision,
@@ -157,19 +175,29 @@ impl Vst2Instance {
 
     /// Notify the plugin of a sample-rate change.
     ///
-    /// Note: the `vst` crate doesn't suspend/resume around this call.
-    /// Some VST2 plugins assume the host suspends them first; if you hit
-    /// glitches or crashes after a rate change, suspend manually before
-    /// calling.
+    /// The VST2 SDK requires the plugin be suspended around a rate change —
+    /// many plugins reallocate rate-dependent buffers in `effSetSampleRate`
+    /// and assume they are not concurrently processing. We bracket the call
+    /// with `suspend()` / `resume()` so callers don't have to.
+    ///
+    /// Note: the SDK's `effStartProcess`/`effStopProcess` bracketing cannot
+    /// be issued here — vst-rs 0.3.0's host-side `PluginInstance` exposes no
+    /// method that dispatches those opcodes. `suspend`/`resume`
+    /// (`effMainsChanged`) is the coverage available.
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
+        self.handle.instance.suspend();
         self.handle.instance.set_sample_rate(sample_rate as f32);
+        self.handle.instance.resume();
     }
 
-    /// Notify the plugin of a maximum-block-size change. Like
-    /// [`set_sample_rate`](Self::set_sample_rate), the `vst` crate does
-    /// not suspend around the call.
+    /// Notify the plugin of a maximum-block-size change. Suspended around the
+    /// call for the same reason as [`set_sample_rate`](Self::set_sample_rate)
+    /// (block size drives per-block buffer sizing). Same vst-rs limitation
+    /// on `effStartProcess`/`effStopProcess` applies.
     pub fn set_block_size(&mut self, block_size: usize) {
+        self.handle.instance.suspend();
         self.handle.instance.set_block_size(block_size as i64);
+        self.handle.instance.resume();
     }
 }
 

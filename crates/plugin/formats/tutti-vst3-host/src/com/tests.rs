@@ -9,16 +9,15 @@ use std::time::Duration;
 use vst3::Steinberg::{
     kResultOk, IBStream, IBStreamTrait,
     Vst::{
-        DataExchangeBlock, IComponentHandler, IComponentHandlerTrait, IDataExchangeHandler,
-        IDataExchangeHandlerTrait, IParameterChanges, IParameterChangesTrait, IProgress,
-        IProgressTrait, IUnitHandler, IUnitHandlerTrait,
+        IComponentHandler, IComponentHandlerTrait, IParameterChanges, IParameterChangesTrait,
+        IProgress, IProgressTrait, IUnitHandler, IUnitHandlerTrait,
     },
 };
 
 use super::{
-    BStream, ComponentHandler, ConnectionPoint, DataExchangeHandler, EventList, HostApplication,
-    ParamValueQueueImpl, ParameterChangesImpl, ParameterEditEvent, ProgressEvent, ProgressHandler,
-    RestartFlags, UnitEvent, UnitHandler,
+    BStream, ComponentHandler, EventList, HostApplication, ParamValueQueueImpl,
+    ParameterChangesImpl, ParameterEditEvent, ProgressEvent, ProgressHandler, RestartFlags,
+    UnitEvent, UnitHandler,
 };
 use crate::types::{ParameterChanges, ParameterQueue};
 
@@ -238,59 +237,6 @@ fn test_unit_handler_program_list() {
 }
 
 #[test]
-fn test_data_exchange_handler_new() {
-    let (_handler, _rx) = DataExchangeHandler::new();
-}
-
-#[test]
-fn test_data_exchange_open_close_queue() {
-    let (handler, _rx) = DataExchangeHandler::new();
-    let ptr = handler.to_com_ptr::<IDataExchangeHandler>().unwrap();
-    unsafe {
-        let mut queue_id: u32 = 0;
-        let result = ptr.openQueue(std::ptr::null_mut(), 1024, 4, 16, 100, &mut queue_id);
-        assert_eq!(result, kResultOk);
-        assert_eq!(queue_id, 1);
-
-        let result = ptr.closeQueue(100);
-        assert_eq!(result, kResultOk);
-    }
-}
-
-#[test]
-fn test_data_exchange_lock_free_block() {
-    let (handler, rx) = DataExchangeHandler::new();
-    let ptr = handler.to_com_ptr::<IDataExchangeHandler>().unwrap();
-    unsafe {
-        let mut queue_id: u32 = 0;
-        let result = ptr.openQueue(std::ptr::null_mut(), 64, 2, 1, 42, &mut queue_id);
-        assert_eq!(result, kResultOk);
-
-        let mut block = DataExchangeBlock {
-            data: std::ptr::null_mut(),
-            size: 0,
-            blockID: 0,
-        };
-        let result = ptr.lockBlock(42, &mut block);
-        assert_eq!(result, kResultOk);
-        assert_eq!(block.size, 64);
-        assert!(!block.data.is_null());
-
-        let data_slice = std::slice::from_raw_parts_mut(block.data as *mut u8, 64);
-        data_slice[0] = 0xAB;
-        data_slice[1] = 0xCD;
-
-        let result = ptr.freeBlock(42, block.blockID, 1);
-        assert_eq!(result, kResultOk);
-    }
-
-    let data_block = rx.recv_timeout(Duration::from_millis(100)).unwrap();
-    assert_eq!(data_block.user_context_id, 42);
-    assert_eq!(data_block.data[0], 0xAB);
-    assert_eq!(data_block.data[1], 0xCD);
-}
-
-#[test]
 fn test_event_list_new() {
     let _list = EventList::new();
 }
@@ -384,11 +330,6 @@ fn test_parameter_changes_vtable() {
         let retrieved_ptr = ptr.getParameterData(0);
         assert!(!retrieved_ptr.is_null());
     }
-}
-
-#[test]
-fn test_connection_point_new() {
-    let _cp = ConnectionPoint::new();
 }
 
 #[test]

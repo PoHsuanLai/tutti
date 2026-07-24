@@ -2,19 +2,16 @@
 //!
 //! Follows the same pattern as `vst3_loader.rs` and `clap_loader.rs`.
 
-#![allow(dead_code)]
-
 use std::path::Path;
 use tutti_plugin::server::{
     AuComponentType, Features, LoadedPlugin, PluginClass, PluginDescriptor,
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    EditorSize, ParameterInfo, PluginInstance, ProcessContext, ProcessOutput, WindowHandle,
+    EditorSize, ParameterFlags, ParameterInfo, PluginInstance, PluginResult, ProcessContext,
+    ProcessOutput, WindowHandle,
 };
 
-#[cfg(all(target_os = "macos", feature = "au"))]
-use crate::loaders::common::params::{make_param_info, ALL_AUTOMATABLE};
 use crate::loaders::common::{single_bus, Meta};
 use tutti_plugin::{BridgeError, LoadStage, Result};
 
@@ -218,9 +215,6 @@ impl AuInstance {
         }
     }
 
-    pub fn descriptor(&self) -> &PluginDescriptor {
-        &self.meta.descriptor
-    }
 }
 
 #[cfg(all(target_os = "macos", feature = "au"))]
@@ -237,13 +231,20 @@ impl PluginInstance for AuInstance {
         &mut self,
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
-    ) -> Result<ProcessOutput> {
+    ) -> PluginResult<ProcessOutput> {
         if let Some(changes) = ctx.param_changes {
             for queue in &changes.queues {
                 if let Some(point) = queue.points.last() {
                     let _ = self.inner.set_parameter(queue.param_id, point.value as f32);
                 }
             }
+        }
+
+        // Deliver MIDI to instrument / music-effect AUs before rendering, so
+        // note-ons scheduled this block sound in it. Plain effects don't
+        // consume MIDI (`receives_midi()` is false) — skip the decode for them.
+        if !ctx.midi_events.is_empty() && self.inner.au_type().receives_midi() {
+            self.inner.send_midi(ctx.midi_events);
         }
 
         match buffer {
@@ -304,21 +305,36 @@ impl PluginInstance for AuInstance {
         parameters::list(self.inner.raw_unit())
             .into_iter()
             .map(|p| {
-                make_param_info(
-                    p.id,
-                    p.name,
-                    p.unit.to_string(),
-                    p.range.min as f64,
-                    p.range.max as f64,
-                    p.range.default as f64,
-                    0,
-                    ALL_AUTOMATABLE,
-                )
+                // Boolean-unit params are 0/1 toggles → one step; everything
+                // else is continuous → no step quantization.
+                let step_count = if p.unit == parameters::ParameterUnit::Boolean {
+                    1
+                } else {
+                    0
+                };
+                // AU advertises IsReadable/IsWritable per parameter; a readable-
+                // but-not-writable param is read-only. AUv2 has no automation /
+                // bypass / hidden metadata, so those flags stay false.
+                let flags = ParameterFlags {
+                    automatable: p.writable,
+                    read_only: !p.writable,
+                    ..ParameterFlags::default()
+                };
+                ParameterInfo {
+                    id: p.id,
+                    name: p.name,
+                    unit: p.unit.to_string(),
+                    min_value: p.range.min as f64,
+                    max_value: p.range.max as f64,
+                    default_value: p.range.default as f64,
+                    step_count,
+                    flags,
+                }
             })
             .collect()
     }
 
-    fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
+    fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
         let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
         let editor = unsafe { AuEditor::open(self.inner.raw_unit(), Some(parent_handle)) }
             .map_err(|e| BridgeError::EditorError(e.to_string()))?;
@@ -336,16 +352,16 @@ impl PluginInstance for AuInstance {
         }
     }
 
-    fn get_state(&mut self) -> Result<Vec<u8>> {
+    fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         self.inner
             .save_state()
-            .map_err(|e| BridgeError::StateSaveError(e.to_string()))
+            .map_err(|e| BridgeError::StateSaveError(e.to_string()).into())
     }
 
-    fn set_state(&mut self, data: &[u8]) -> Result<()> {
+    fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
         self.inner
             .load_state(data)
-            .map_err(|e| BridgeError::StateRestoreError(e.to_string()))
+            .map_err(|e| BridgeError::StateRestoreError(e.to_string()).into())
     }
 }
 
@@ -385,11 +401,11 @@ mod tests {
 
         // Use Apple's AUDelay directly
         let desc = AudioComponentDescription {
-            component_type: K_AUDIO_UNIT_TYPE_EFFECT,
-            component_sub_type: u32::from_be_bytes(*b"dely"),
-            component_manufacturer: u32::from_be_bytes(*b"appl"),
-            component_flags: 0,
-            component_flags_mask: 0,
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");
@@ -418,11 +434,11 @@ mod tests {
         use tutti_plugin::server::{AudioBuffer as TuttiAudioBuffer, AudioBufferMut};
 
         let desc = AudioComponentDescription {
-            component_type: K_AUDIO_UNIT_TYPE_EFFECT,
-            component_sub_type: u32::from_be_bytes(*b"dely"),
-            component_manufacturer: u32::from_be_bytes(*b"appl"),
-            component_flags: 0,
-            component_flags_mask: 0,
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");
@@ -463,11 +479,11 @@ mod tests {
         use tutti_au_host::types::K_AUDIO_UNIT_TYPE_EFFECT;
 
         let desc = AudioComponentDescription {
-            component_type: K_AUDIO_UNIT_TYPE_EFFECT,
-            component_sub_type: u32::from_be_bytes(*b"dely"),
-            component_manufacturer: u32::from_be_bytes(*b"appl"),
-            component_flags: 0,
-            component_flags_mask: 0,
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
         };
 
         let comp = component::find_component(&desc).expect("AUDelay should exist");

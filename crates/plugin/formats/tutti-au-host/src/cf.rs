@@ -1,128 +1,121 @@
-//! Ownership wrappers around CoreFoundation reference types.
+//! Thin wrappers around CoreFoundation reference types, built on the
+//! `core-foundation` 0.10 `TCFType` RAII wrappers.
 //!
-//! Each `Cf*` newtype retains the underlying `CF*Ref` and releases it on drop,
-//! giving us a consistent RAII story for strings, data, URLs, and property
-//! lists returned from AudioToolbox APIs.
+//! `CfString` / `CfUrl` / `CfPlist` keep the `from_copied` (CoreFoundation
+//! "Create" rule: take a +1 reference, release on drop) constructor the rest of
+//! the crate uses, plus the accessors those call sites need. The retain/release
+//! bookkeeping is delegated to `core-foundation`'s `CFString` / `CFURL` /
+//! `CFPropertyList` (which release on drop) rather than hand-rolled here.
+//!
+//! AudioToolbox APIs hand us `coreaudio-sys` `CF*Ref` pointers. Those are
+//! ABI-identical to `core-foundation-sys`'s opaque pointers, so we cast across
+//! at the boundary before wrapping.
 
 #![cfg(target_os = "macos")]
 
-use core_foundation_sys::base::{CFRelease, CFRetain, CFTypeRef};
-use core_foundation_sys::data::{CFDataCreate, CFDataGetBytePtr, CFDataGetLength, CFDataRef};
-use core_foundation_sys::propertylist::{
-    kCFPropertyListBinaryFormat_v1_0, kCFPropertyListImmutable, CFPropertyListCreateData,
-    CFPropertyListCreateWithData, CFPropertyListRef,
-};
-use core_foundation_sys::string::CFStringRef;
-use core_foundation_sys::url::CFURLRef;
-
-use std::os::raw::c_void;
+use core_foundation::base::TCFType;
+use core_foundation::propertylist::{self, kCFPropertyListBinaryFormat_v1_0, CFPropertyList};
+use core_foundation::string::CFString as CfCFString;
+use core_foundation::url::CFURL;
 
 use crate::error::{AuError, Result};
-use crate::types::cfstring_to_string;
 
-/// Generate a `Cf*` newtype with RAII release plus `from_copied` /
-/// `from_borrowed` constructors matching CoreFoundation's "Create" and "Get"
-/// ownership rules.
-macro_rules! cf_owned {
-    ($name:ident, $inner:ty) => {
-        pub(crate) struct $name($inner);
+/// Owned CoreFoundation string (Create rule: released on drop).
+pub(crate) struct CfString(CfCFString);
 
-        impl $name {
-            #[allow(dead_code)]
-            pub fn as_raw(&self) -> $inner {
-                self.0
-            }
-
-            /// Take ownership of a +1 reference (Create rule). Returns `None`
-            /// if `raw` is null.
-            pub unsafe fn from_copied(raw: $inner) -> Option<Self> {
-                if (raw as *const c_void).is_null() {
-                    None
-                } else {
-                    Some(Self(raw))
-                }
-            }
-
-            /// Retain a borrowed reference (Get rule). Returns `None` if
-            /// `raw` is null.
-            #[allow(dead_code)]
-            pub unsafe fn from_borrowed(raw: $inner) -> Option<Self> {
-                if (raw as *const c_void).is_null() {
-                    None
-                } else {
-                    CFRetain(raw as CFTypeRef);
-                    Some(Self(raw))
-                }
-            }
+impl CfString {
+    /// Take ownership of a +1 reference (Create rule). Returns `None` if `raw`
+    /// is null.
+    ///
+    /// # Safety
+    /// `raw` must be null or a valid `CFStringRef` owned with a +1 retain the
+    /// caller is transferring (the Create/Copy ownership rule).
+    pub unsafe fn from_copied(raw: coreaudio_sys::CFStringRef) -> Option<Self> {
+        if raw.is_null() {
+            None
+        } else {
+            let raw = raw as core_foundation_sys::string::CFStringRef;
+            Some(Self(CfCFString::wrap_under_create_rule(raw)))
         }
-
-        impl Drop for $name {
-            fn drop(&mut self) {
-                unsafe {
-                    if !(self.0 as *const c_void).is_null() {
-                        CFRelease(self.0 as CFTypeRef);
-                    }
-                }
-            }
-        }
-    };
+    }
 }
-
-cf_owned!(CfString, CFStringRef);
-cf_owned!(CfData, CFDataRef);
-cf_owned!(CfUrl, CFURLRef);
-cf_owned!(CfPlist, CFPropertyListRef);
 
 impl std::fmt::Display for CfString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = unsafe { cfstring_to_string(self.0) };
-        f.write_str(&s)
+        f.write_str(&self.0.to_string())
     }
 }
 
-impl CfData {
-    pub fn to_bytes(&self) -> Vec<u8> {
-        unsafe {
-            let len = CFDataGetLength(self.0) as usize;
-            let ptr = CFDataGetBytePtr(self.0);
-            std::slice::from_raw_parts(ptr, len).to_vec()
+/// Owned CoreFoundation URL (Create rule: released on drop).
+pub(crate) struct CfUrl(CFURL);
+
+impl CfUrl {
+    /// Underlying `CFURLRef` (coreaudio-sys flavor, for AudioToolbox / ObjC
+    /// interop). Borrowed — ownership stays with `self`.
+    pub fn as_raw(&self) -> coreaudio_sys::CFURLRef {
+        self.0.as_concrete_TypeRef() as coreaudio_sys::CFURLRef
+    }
+
+    /// Take ownership of a +1 reference (Create rule). Returns `None` if `raw`
+    /// is null.
+    ///
+    /// # Safety
+    /// `raw` must be null or a valid `CFURLRef` owned with a +1 retain the
+    /// caller is transferring (the Create/Copy ownership rule).
+    pub unsafe fn from_copied(raw: coreaudio_sys::CFURLRef) -> Option<Self> {
+        if raw.is_null() {
+            None
+        } else {
+            let raw = raw as core_foundation_sys::url::CFURLRef;
+            Some(Self(CFURL::wrap_under_create_rule(raw)))
         }
     }
 }
+
+/// Owned CoreFoundation property list (Create rule: released on drop).
+pub(crate) struct CfPlist(CFPropertyList);
 
 impl CfPlist {
+    /// The underlying `CFPropertyListRef` (core-foundation-sys flavor), for
+    /// passing to `AudioUnitSetProperty(ClassInfo)`. Borrowed.
+    pub fn as_raw(&self) -> core_foundation_sys::propertylist::CFPropertyListRef {
+        self.0.as_concrete_TypeRef()
+    }
+
+    /// Take ownership of a +1 `CFPropertyListRef` (Create rule). Returns `None`
+    /// if `raw` is null.
+    ///
+    /// # Safety
+    /// `raw` must be null or a valid `CFPropertyListRef` owned with a +1 retain
+    /// the caller is transferring (the Create/Copy ownership rule).
+    pub unsafe fn from_copied(
+        raw: core_foundation_sys::propertylist::CFPropertyListRef,
+    ) -> Option<Self> {
+        if raw.is_null() {
+            None
+        } else {
+            Some(Self(CFPropertyList::wrap_under_create_rule(raw)))
+        }
+    }
+
     /// Serialize the property list to binary plist form.
     pub fn to_binary(&self) -> Result<Vec<u8>> {
-        unsafe {
-            let raw = CFPropertyListCreateData(
-                std::ptr::null(),
-                self.0,
-                kCFPropertyListBinaryFormat_v1_0,
-                0,
-                std::ptr::null_mut(),
-            );
-            let data = CfData::from_copied(raw).ok_or_else(|| {
-                AuError::InvalidBuffer("CFPropertyListCreateData returned null".into())
-            })?;
-            Ok(data.to_bytes())
-        }
+        let data = propertylist::create_data(self.as_raw(), kCFPropertyListBinaryFormat_v1_0)
+            .map_err(|_| AuError::InvalidBuffer("CFPropertyListCreateData failed".into()))?;
+        Ok(data.bytes().to_vec())
     }
 
     /// Parse a binary plist blob back into a property list.
     pub fn from_binary(bytes: &[u8]) -> Result<Self> {
+        let data = core_foundation::data::CFData::from_buffer(bytes);
+        let (plist_ref, _format) =
+            propertylist::create_with_data(data, propertylist::kCFPropertyListImmutable)
+                .map_err(|_| AuError::InvalidBuffer("failed to decode plist".into()))?;
+        // `create_with_data` returns the property list under the Create rule
+        // (a +1 reference we now own).
         unsafe {
-            let data_raw = CFDataCreate(std::ptr::null(), bytes.as_ptr(), bytes.len() as isize);
-            let data = CfData::from_copied(data_raw)
-                .ok_or_else(|| AuError::InvalidBuffer("CFDataCreate returned null".into()))?;
-            let plist_raw = CFPropertyListCreateWithData(
-                std::ptr::null(),
-                data.as_raw(),
-                kCFPropertyListImmutable,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            );
-            CfPlist::from_copied(plist_raw)
-                .ok_or_else(|| AuError::InvalidBuffer("failed to decode plist".into()))
+            CfPlist::from_copied(plist_ref as core_foundation_sys::propertylist::CFPropertyListRef)
+                .ok_or_else(|| AuError::InvalidBuffer("decoded plist was null".into()))
         }
     }
 }

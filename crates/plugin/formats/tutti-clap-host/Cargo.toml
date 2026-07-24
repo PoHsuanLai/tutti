@@ -9,6 +9,18 @@ keywords = ["clap", "audio", "plugin", "dsp", "host"]
 categories = ["multimedia::audio"]
 readme = "README.md"
 
+[features]
+# Off by default. Gates the speculative ~40% of the CLAP surface that no
+# consumer (`tutti-plugin-server` loader, in-process GUI host) currently calls:
+# param-indication, remote-controls, context-menus, triggers, tuning,
+# audio-port reconfiguration, POSIX-fd polling, preset-load, and the plugin
+# undo/redo + resource-directory extensions. The code and its tests stay
+# compiled — enable the feature to build/test them — but the default build is
+# lean. Consumed extensions (audio/note ports, params, state, gui, latency,
+# voice-info, render-mode, note-names) are always on.
+default = []
+clap-extras = []
+
 [dependencies]
 arc-swap = "1.7"
 bitflags = "2"

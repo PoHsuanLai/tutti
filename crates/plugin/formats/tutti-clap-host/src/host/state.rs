@@ -56,6 +56,11 @@ impl ProcessingState {
 
 pub struct GuiState {
     pub closed: AtomicBool,
+    /// Set when the plugin reported `gui.closed(was_destroyed = true)` — it
+    /// already tore its own editor down, so `close_editor` must NOT call
+    /// `gui.destroy` again (double-destroy). Latched until the next editor is
+    /// opened. (H5)
+    pub already_destroyed: AtomicBool,
     pub resize_hints_changed: AtomicBool,
     pub request_resize_width: AtomicU32,
     pub request_resize_height: AtomicU32,
@@ -67,6 +72,7 @@ impl GuiState {
     fn new() -> Self {
         Self {
             closed: AtomicBool::new(false),
+            already_destroyed: AtomicBool::new(false),
             resize_hints_changed: AtomicBool::new(false),
             request_resize_width: AtomicU32::new(0),
             request_resize_height: AtomicU32::new(0),
@@ -77,6 +83,11 @@ impl GuiState {
 
 pub struct ParamState {
     pub rescan_requested: AtomicBool,
+    /// Accumulated `clap_param_rescan_flags` from every `params.rescan` call
+    /// since the last poll (OR-combined). Distinguishes RESCAN_ALL — which the
+    /// spec requires the host handle only while the plugin is deactivated —
+    /// from value-only (RESCAN_VALUES) rescans that can be applied live.
+    pub rescan_flags: AtomicU32,
     pub flush_requested: AtomicBool,
 }
 
@@ -84,6 +95,7 @@ impl ParamState {
     fn new() -> Self {
         Self {
             rescan_requested: AtomicBool::new(false),
+            rescan_flags: AtomicU32::new(0),
             flush_requested: AtomicBool::new(false),
         }
     }

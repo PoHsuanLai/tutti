@@ -20,9 +20,7 @@ use vst3::Steinberg::{
 use vst3::{Class, ComWrapper};
 
 use crate::types::{
-    from_c_event, note_expression_to_vst3, to_c_event, vst3_to_note_expression, ChordValue,
-    MidiEvent, NoteExpressionIntValue, NoteExpressionText, NoteExpressionValue, ScaleValue,
-    Vst3Event,
+    from_c_event, note_expression_to_vst3, to_c_event, MidiEvent, Vst3Event, Vst3InputEvents,
 };
 use tutti_types::AudioThreadCell;
 
@@ -72,6 +70,9 @@ impl EventList {
         })
     }
 
+    /// Stage MIDI (only) into the event list. Test-harness helper; the live RT
+    /// path uses [`Self::update_from_sources`].
+    #[cfg(test)]
     pub fn update_from_midi(&self, midi_events: &[MidiEvent]) {
         let mut inner = self.inner.borrow_mut();
         inner.clear();
@@ -80,51 +81,35 @@ impl EventList {
             .extend(midi_events.iter().filter_map(Vst3Event::from_midi));
     }
 
-    /// Stage MIDI plus per-note expression into the event list, sorted by frame
-    /// offset. Thin wrapper over [`Self::update_from_sources`] for callers with
-    /// no chord / scale / text / int inputs.
-    pub fn update_from_midi_and_expression(
-        &self,
-        midi_events: &[MidiEvent],
-        note_expressions: &[NoteExpressionValue],
-    ) {
-        self.update_from_sources(midi_events, note_expressions, &[], &[], &[], &[]);
-    }
-
     /// Stage every input event source into the list: MIDI (transcoded),
     /// per-note expression (value + int), chord, scale, and per-note text. Text
     /// for chord/scale/text events is interned into the arena so the borrowed
     /// `text` pointers stay valid for the block. Events are sorted by frame
     /// offset, as VST3's event list requires.
-    #[allow(clippy::too_many_arguments)]
-    pub fn update_from_sources(
-        &self,
-        midi_events: &[MidiEvent],
-        note_expressions: &[NoteExpressionValue],
-        chords: &[ChordValue],
-        scales: &[ScaleValue],
-        expr_texts: &[NoteExpressionText],
-        expr_ints: &[NoteExpressionIntValue],
-    ) {
+    pub fn update_from_sources(&self, src: &Vst3InputEvents) {
         let mut inner = self.inner.borrow_mut();
         inner.clear();
         let Inner {
             events, text_arena, ..
         } = &mut *inner;
-        events.extend(midi_events.iter().filter_map(Vst3Event::from_midi));
+        events.extend(src.midi.iter().filter_map(Vst3Event::from_midi));
         // `note_expression_to_vst3` returns `None` for a dimension VST3 can't
         // encode (Pressure/Expression); those are skipped, not coerced.
-        events.extend(note_expressions.iter().filter_map(note_expression_to_vst3));
-        for expr in expr_ints {
+        events.extend(
+            src.note_expressions
+                .iter()
+                .filter_map(note_expression_to_vst3),
+        );
+        for expr in src.expr_ints {
             events.push(expr.to_vst3_event());
         }
-        for chord in chords {
+        for chord in src.chords {
             events.push(chord.to_vst3_event(text_arena));
         }
-        for scale in scales {
+        for scale in src.scales {
             events.push(scale.to_vst3_event(text_arena));
         }
-        for text in expr_texts {
+        for text in src.expr_texts {
             events.push(text.to_vst3_event(text_arena));
         }
         events.sort_by_key(|e| e.sample_offset());
@@ -134,35 +119,19 @@ impl EventList {
         self.inner.borrow_mut().clear();
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.inner.borrow().events.len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.inner.borrow().events.is_empty()
     }
 
-    pub fn to_midi_events(&self) -> SmallVec<[MidiEvent; 64]> {
-        self.inner
-            .borrow()
-            .events
-            .iter()
-            .filter_map(Vst3Event::to_midi)
-            .collect()
-    }
-
-    pub fn to_note_expressions(&self) -> SmallVec<[NoteExpressionValue; 16]> {
-        self.inner
-            .borrow()
-            .events
-            .iter()
-            .filter_map(vst3_to_note_expression)
-            .collect()
-    }
-
-    /// RT-safe variant of [`Self::to_midi_events`] that drains into a
-    /// caller-supplied pooled `SmallVec`. Clears `out` first; reuses
-    /// existing heap capacity.
+    /// Drain the plugin's emitted MIDI events into a caller-supplied pooled
+    /// `SmallVec`. Clears `out` first; reuses existing heap capacity, so it is
+    /// allocation-free after warmup.
     pub fn fill_midi_events(&self, out: &mut SmallVec<[MidiEvent; 64]>) {
         out.clear();
         for event in self.inner.borrow().events.iter() {
@@ -170,22 +139,6 @@ impl EventList {
                 out.push(midi);
             }
         }
-    }
-
-    /// RT-safe variant of [`Self::to_note_expressions`].
-    pub fn fill_note_expressions(&self, out: &mut SmallVec<[NoteExpressionValue; 16]>) {
-        out.clear();
-        for event in self.inner.borrow().events.iter() {
-            if let Some(expr) = vst3_to_note_expression(event) {
-                out.push(expr);
-            }
-        }
-    }
-
-    /// Reset the audio-thread owner. Call when the host switches to a new
-    /// audio stream (the next `process` call will re-claim ownership).
-    pub fn reset_owner(&self) {
-        self.inner.reset_owner();
     }
 }
 
@@ -243,7 +196,10 @@ pub fn event_list_ptr(list: &ComWrapper<EventList>) -> *mut IEventList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{EventHeader, NoteOnEvent, K_NOTE_ON_EVENT};
+    use crate::types::{
+        ChordValue, EventHeader, NoteExpressionIntValue, NoteExpressionText, NoteExpressionValue,
+        NoteOnEvent, ScaleValue, K_NOTE_ON_EVENT,
+    };
 
     fn make_note_on() -> NoteOnEvent {
         NoteOnEvent {
@@ -372,13 +328,22 @@ mod tests {
             value: 1,
         }];
 
+        let src = Vst3InputEvents {
+            midi: &midi,
+            note_expressions: &note_expr,
+            chords: &chords,
+            scales: &scales,
+            expr_texts: &texts,
+            expr_ints: &ints,
+        };
+
         // Warm up every buffer (events / data scratch / text arena).
-        list.update_from_sources(&midi, &note_expr, &chords, &scales, &texts, &ints);
+        list.update_from_sources(&src);
         list.clear();
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..10_000 {
-                list.update_from_sources(&midi, &note_expr, &chords, &scales, &texts, &ints);
+                list.update_from_sources(&src);
                 list.clear();
             }
         });

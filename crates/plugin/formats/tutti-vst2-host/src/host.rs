@@ -35,6 +35,10 @@ pub(crate) struct HostState {
     param_tx: crossbeam_channel::Sender<ParameterChange>,
     midi_out_tx: crossbeam_channel::Sender<MidiEvent>,
     time_info: Arc<arc_swap::ArcSwap<Option<vst::api::TimeInfo>>>,
+    /// Maximum block size the host will render, in samples. Served back
+    /// through `audioMasterGetBlockSize` for plugins that poll it rather
+    /// than caching the `effSetBlockSize` setter value.
+    block_size: isize,
 }
 
 impl HostState {
@@ -42,11 +46,13 @@ impl HostState {
         param_tx: crossbeam_channel::Sender<ParameterChange>,
         midi_out_tx: crossbeam_channel::Sender<MidiEvent>,
         time_info: Arc<arc_swap::ArcSwap<Option<vst::api::TimeInfo>>>,
+        block_size: usize,
     ) -> Self {
         Self {
             param_tx,
             midi_out_tx,
             time_info,
+            block_size: block_size as isize,
         }
     }
 }
@@ -81,4 +87,45 @@ impl Host for HostState {
     fn get_time_info(&self, _mask: i32) -> Option<vst::api::TimeInfo> {
         **self.time_info.load()
     }
+
+    /// Host identification, in vst-rs's `(version, vendor, product)` form.
+    /// vst-rs's default returns placeholder strings ("vendor string" /
+    /// "product string"); we report Tutti's real identity so plugins that
+    /// key behaviour off the host name see the truth.
+    fn get_info(&self) -> (isize, String, String) {
+        (1, "Tutti".to_string(), "Tutti VST2 Host".to_string())
+    }
+
+    /// Maximum render block size, in samples. vst-rs's default returns 0,
+    /// which mis-signals plugins that poll `audioMasterGetBlockSize` (they
+    /// then either allocate for a zero-size block or fall back to a guess).
+    fn get_block_size(&self) -> isize {
+        self.block_size
+    }
+
+    // ── audioMaster callbacks blocked by vst-rs 0.3.0 (documented ceiling) ──
+    //
+    // vst-rs's `Host` trait (interfaces::host_dispatch) routes only a fixed set
+    // of opcodes to trait methods; everything else falls through its internal
+    // `_ => 0` arm. The trait exposes exactly: automate, begin_edit, end_edit,
+    // get_plugin_id, idle, get_info, process_events, get_time_info,
+    // get_block_size, update_display. So these audioMaster callbacks CANNOT be
+    // answered from this host without changing vst-rs — they always return 0:
+    //
+    //   - audioMasterGetSampleRate       → plugins that *poll* SR at open see 0
+    //                                       (those caching effSetSampleRate are fine)
+    //   - audioMasterSizeWindow          → plugin-initiated editor resize dropped
+    //   - audioMasterIOChanged           → latency/IO-change notifications ignored
+    //   - audioMasterGetCurrentProcessLevel → plugin can't tell realtime vs offline
+    //   - audioMasterGetInput/OutputLatency → reported as 0
+    //   - audioMasterGetAutomationState  → reported as "unsupported"
+    //
+    // Likewise effStartProcess/effStopProcess have no host-side dispatch (only
+    // effMainsChanged is toggled). Most plugins degrade gracefully.
+    //
+    // Closing this needs one of: (a) accept the ceiling [current choice — VST2
+    // is a legacy, withdrawn SDK]; (b) vendor + patch vst-rs to add the hooks;
+    // (c) intercept the raw audioMaster callback on the AEffect before delegating
+    // to vst-rs. (b)/(c) are only worth it for a specific plugin that needs a
+    // polled callback — a project decision, not a code gap to silently fix.
 }

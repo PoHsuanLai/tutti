@@ -3,10 +3,13 @@
 
 use super::ClapLoaded;
 use crate::types::{
-    AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioPortConfig,
-    AudioPortConfigRequest, AudioPortFlags, AudioPortInfo, AudioPortType, NoteDialect,
-    NoteDialects, NoteName, NotePortInfo, SurroundChannel, VoiceInfo,
+    AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioPortConfig, AudioPortFlags,
+    AudioPortInfo, AudioPortType, NoteDialect, NoteDialects, NoteName, NotePortInfo,
+    SurroundChannel, VoiceInfo,
 };
+// Audio-port *reconfiguration* is speculative (gated); the type it consumes.
+#[cfg(feature = "clap-extras")]
+use crate::types::AudioPortConfigRequest;
 use clap_sys::ext::ambisonic::{
     clap_ambisonic_config, CLAP_AMBISONIC_NORMALIZATION_MAXN, CLAP_AMBISONIC_NORMALIZATION_N2D,
     CLAP_AMBISONIC_NORMALIZATION_N3D, CLAP_AMBISONIC_NORMALIZATION_SN2D,
@@ -14,6 +17,7 @@ use clap_sys::ext::ambisonic::{
 };
 use clap_sys::ext::audio_ports::{clap_audio_port_info, CLAP_PORT_MONO, CLAP_PORT_STEREO};
 use clap_sys::ext::audio_ports_config::clap_audio_ports_config;
+#[cfg(feature = "clap-extras")]
 use clap_sys::ext::configurable_audio_ports::clap_audio_port_configuration_request;
 use clap_sys::ext::note_name::clap_note_name;
 use clap_sys::ext::note_ports::{
@@ -22,6 +26,7 @@ use clap_sys::ext::note_ports::{
 use clap_sys::ext::render::{CLAP_RENDER_OFFLINE, CLAP_RENDER_REALTIME};
 use clap_sys::ext::voice_info::{clap_voice_info, CLAP_VOICE_INFO_SUPPORTS_OVERLAPPING_NOTES};
 use std::ffi::CStr;
+#[cfg(feature = "clap-extras")]
 use std::ptr;
 
 use crate::cstr_to_string;
@@ -332,7 +337,9 @@ impl ClapLoaded {
     }
 
     /// Ask the plugin whether it could apply a set of port-configuration
-    /// requests without actually applying them.
+    /// requests without actually applying them. Speculative (audio-port
+    /// reconfiguration) — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn can_apply_audio_port_configuration(&self, requests: &[AudioPortConfigRequest]) -> bool {
         if self.extensions.audio.configurable_ports.is_null() {
             return false;
@@ -353,7 +360,9 @@ impl ClapLoaded {
     }
 
     /// Apply a set of port-configuration requests via
-    /// `CLAP_EXT_CONFIGURABLE_AUDIO_PORTS`. Returns success.
+    /// `CLAP_EXT_CONFIGURABLE_AUDIO_PORTS`. Returns success. Speculative — gated
+    /// behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn apply_audio_port_configuration(&mut self, requests: &[AudioPortConfigRequest]) -> bool {
         if self.extensions.audio.configurable_ports.is_null() {
             return false;
@@ -374,7 +383,8 @@ impl ClapLoaded {
     }
 
     /// Whether the plugin supports activating/deactivating ports while
-    /// processing is running.
+    /// processing is running. Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn can_activate_audio_port_while_processing(&self) -> bool {
         if self.extensions.audio.ports_activation.is_null() {
             return false;
@@ -387,7 +397,9 @@ impl ClapLoaded {
     }
 
     /// Activate or deactivate a single audio port.
-    /// `sample_size` is the bit depth (32 or 64).
+    /// `sample_size` is the bit depth (32 or 64). Speculative — gated behind
+    /// `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn set_audio_port_active(
         &mut self,
         is_input: bool,
@@ -415,6 +427,8 @@ impl ClapLoaded {
 
     /// Ask the plugin to add a new port via the draft
     /// `CLAP_EXT_EXTENSIBLE_AUDIO_PORTS`. Returns whether the plugin added it.
+    /// Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn add_audio_port(
         &mut self,
         is_input: bool,
@@ -446,7 +460,8 @@ impl ClapLoaded {
     }
 
     /// Counterpart to [`Self::add_audio_port`]. Returns whether the plugin
-    /// removed the port.
+    /// removed the port. Speculative — gated behind `clap-extras`.
+    #[cfg(feature = "clap-extras")]
     pub fn remove_audio_port(&mut self, is_input: bool, index: u32) -> bool {
         if self.extensions.audio.extensible_ports.is_null() {
             return false;
@@ -587,6 +602,7 @@ fn audio_port_info_from_clap(info: &clap_audio_port_info) -> AudioPortInfo {
     }
 }
 
+#[cfg(feature = "clap-extras")]
 fn build_port_config_requests(
     requests: &[AudioPortConfigRequest],
 ) -> Vec<clap_audio_port_configuration_request> {

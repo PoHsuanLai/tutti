@@ -125,6 +125,13 @@ impl IAttributeListTrait for AttributeList {
                 let max_chars = (size_in_bytes as usize) / std::mem::size_of::<TChar>();
                 let copy_len = v.len().min(max_chars);
                 std::ptr::copy_nonoverlapping(v.as_ptr() as *const TChar, string, copy_len);
+                // The stored value already carries its own NUL terminator, so a
+                // full copy is terminated. On truncation the terminator is lost,
+                // leaving the caller with an unterminated buffer — write one back
+                // into the final slot so the returned string is always valid.
+                if v.len() > max_chars {
+                    *string.add(max_chars - 1) = 0;
+                }
                 kResultOk
             }
             _ => kInvalidArgument,
@@ -145,6 +152,16 @@ impl IAttributeListTrait for AttributeList {
         kResultOk
     }
 
+    /// Return a borrowed pointer to the stored binary value.
+    ///
+    /// # Caveat
+    ///
+    /// The returned `*data` pointer borrows the `Vec`'s current allocation and
+    /// is valid only until the next mutation of this attribute list (a
+    /// subsequent `setBinary`/`setString`/… on the same key may reallocate or
+    /// drop the backing buffer). The caller must copy out the bytes before
+    /// mutating the list, matching how VST3 hosts consume message attributes
+    /// synchronously inside `IConnectionPoint::notify`.
     unsafe fn getBinary(
         &self,
         id: AttrID,
@@ -211,6 +228,34 @@ mod tests {
             let expected: Vec<u16> = "hello".encode_utf16().collect();
             assert_eq!(&out[..5], &expected[..]);
         }
+    }
+
+    #[test]
+    fn test_attr_get_string_truncation_is_nul_terminated() {
+        let attrs = AttributeList::new();
+        let ptr = attrs.to_com_ptr::<IAttributeList>().unwrap();
+        let key = make_key("name");
+        // Store "hello" (5 chars + terminator).
+        let utf16: Vec<u16> = "hello".encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            let result = ptr.setString(key.as_ptr(), utf16.as_ptr() as *const TChar);
+            assert_eq!(result, kResultOk);
+        }
+        // Provide a buffer that only fits 3 TChars — forces truncation.
+        let mut out = [0xFFFFu16; 3];
+        unsafe {
+            let result = ptr.getString(
+                key.as_ptr(),
+                out.as_mut_ptr() as *mut TChar,
+                (out.len() * std::mem::size_of::<TChar>()) as u32,
+            );
+            assert_eq!(result, kResultOk);
+        }
+        // First two chars copied, last slot forced to the NUL terminator so the
+        // returned buffer is a valid (truncated) C string.
+        assert_eq!(out[0], b'h' as u16);
+        assert_eq!(out[1], b'e' as u16);
+        assert_eq!(out[2], 0);
     }
 
     #[test]

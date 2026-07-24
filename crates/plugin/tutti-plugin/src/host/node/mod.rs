@@ -157,7 +157,7 @@ impl PluginClient {
             midi: self.midi.drain_for_process(block_size).clone(),
             params: self.inputs.params.drain(ctx, features).clone(),
             harmony: self.inputs.harmony.drain(ctx, features).clone(),
-            transport: self.inputs.transport.drain(ctx, features).clone(),
+            transport: *self.inputs.transport.drain(ctx, features),
             note_expression: crate::protocol::NoteExpressionChanges::new(),
         }
     }

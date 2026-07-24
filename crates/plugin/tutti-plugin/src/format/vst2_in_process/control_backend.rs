@@ -69,27 +69,10 @@ impl ControlBackend for InProcessVst2Backend {
     }
 
     fn parameters(&self) -> Option<Vec<ParameterInfo>> {
-        let raw = self.inner.lock().parameters();
-        Some(
-            raw.into_iter()
-                .map(|p| ParameterInfo {
-                    id: p.id,
-                    name: p.name,
-                    unit: p.unit,
-                    min_value: 0.0,
-                    max_value: 1.0,
-                    default_value: p.current as f64,
-                    step_count: 0,
-                    flags: crate::protocol::ParameterFlags {
-                        automatable: true,
-                        read_only: false,
-                        wrap: false,
-                        is_bypass: false,
-                        hidden: false,
-                    },
-                })
-                .collect(),
-        )
+        // Reuse the host crate's single narrow→shared map (the same one the
+        // server loader's `get_parameter_list` calls) rather than re-mapping
+        // `types::ParameterInfo` here. One mapping, two callers.
+        Some(self.inner.lock().parameter_list())
     }
 
     fn parameter(&self, id: u32) -> Option<f32> {

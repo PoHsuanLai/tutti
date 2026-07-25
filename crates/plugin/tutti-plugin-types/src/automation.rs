@@ -12,14 +12,19 @@ pub struct ParameterPoint {
 }
 
 /// Ordered list of [`ParameterPoint`]s for a single parameter id within
-/// one block. Inline storage of 8 points keeps short automation runs
-/// allocation-free.
+/// one block. Inline storage keeps a full block's automation run
+/// allocation-free on the RT path.
+///
+/// Sized for the densest producer: `ParamAutomationSource` samples one point
+/// per `SAMPLE_STRIDE` (8) samples plus the final sample, so a full
+/// `MAX_BUFFER_SIZE` (64) block yields `64/8 + 1 = 9` points — 10 inline
+/// leaves headroom and never spills mid-block.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParameterQueue {
     pub param_id: u32,
     /// Points in ascending `sample_offset` order (caller maintains order).
-    pub points: SmallVec<[ParameterPoint; 8]>,
+    pub points: SmallVec<[ParameterPoint; 10]>,
 }
 
 impl ParameterQueue {

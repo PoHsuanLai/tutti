@@ -232,10 +232,14 @@ impl PluginInstance for AuInstance {
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
     ) -> PluginResult<ProcessOutput> {
+        // AU params are treated as normalized `0..1` (the host's authoring
+        // convention); clamp defensively so an over-range value can't escape.
         if let Some(changes) = ctx.param_changes {
             for queue in &changes.queues {
                 if let Some(point) = queue.points.last() {
-                    let _ = self.inner.set_parameter(queue.param_id, point.value as f32);
+                    let _ = self
+                        .inner
+                        .set_parameter(queue.param_id, (point.value as f32).clamp(0.0, 1.0));
                 }
             }
         }

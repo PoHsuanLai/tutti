@@ -130,7 +130,10 @@ impl SoundFontUnit {
         if self.buffer_pos >= self.buffer_size {
             self.refill_buffers();
         }
-        let s = (self.left_buffer[self.buffer_pos], self.right_buffer[self.buffer_pos]);
+        let s = (
+            self.left_buffer[self.buffer_pos],
+            self.right_buffer[self.buffer_pos],
+        );
         self.buffer_pos += 1;
         s
     }
@@ -610,7 +613,10 @@ mod tests {
         size: usize,
         events: &[MidiEvent],
     ) -> Vec<(f32, f32)> {
-        assert!(size <= tutti_core::MAX_BUFFER_SIZE, "one BufferVec block only");
+        assert!(
+            size <= tutti_core::MAX_BUFFER_SIZE,
+            "one BufferVec block only"
+        );
         unit.midi_sender().queue(events);
 
         let mut buffer = tutti_core::BufferVec::new(2);

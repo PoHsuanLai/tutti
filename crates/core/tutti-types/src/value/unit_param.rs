@@ -55,6 +55,12 @@ pub enum UnitParam {
     Drive = 15,
     /// Compressor make-up gain (dB).
     Makeup = 16,
+    /// Synth / master volume (linear, 0..1).
+    Volume = 17,
+    /// Unison detune spread (cents).
+    Detune = 18,
+    /// Unison stereo spread (0..1).
+    StereoSpread = 19,
 }
 
 /// The `u16` id was not a known [`UnitParam`] discriminant. The scheme is
@@ -95,6 +101,9 @@ impl TryFrom<u16> for UnitParam {
             14 => Ceiling,
             15 => Drive,
             16 => Makeup,
+            17 => Volume,
+            18 => Detune,
+            19 => StereoSpread,
             other => return Err(UnitParamOutOfRange(other)),
         })
     }
@@ -107,13 +116,40 @@ impl From<UnitParam> for u16 {
     }
 }
 
+/// The address of a scalar parameter — either one from tutti's known
+/// [`UnitParam`] vocabulary, or a foreign param named by an opaque numeric id.
+///
+/// [`UnitParam`] is a *closed* set: the params tutti's own units define. A unit
+/// with params tutti does not model — a hosted plugin, a WASM unit, a scripted
+/// node — has an *open* space of its own numeric ids that no fixed enum can
+/// enumerate. `ParamAddr` unifies both so one API (e.g. `ModParams::mod_target`)
+/// addresses either: a native node answers on [`Unit`](ParamAddr::Unit) and
+/// ignores [`Id`](ParamAddr::Id); a foreign unit does the reverse.
+///
+/// Deliberately not "plugin"-named — the [`Id`](ParamAddr::Id) arm is any
+/// externally-numbered param, not a plugin concept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamAddr {
+    /// A param from tutti's known vocabulary.
+    Unit(UnitParam),
+    /// A param addressed by an opaque numeric id, foreign to tutti's vocabulary.
+    Id(u32),
+}
+
+impl From<UnitParam> for ParamAddr {
+    #[inline]
+    fn from(p: UnitParam) -> Self {
+        ParamAddr::Unit(p)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn u16_round_trips() {
-        for id in 0..=16u16 {
+        for id in 0..=19u16 {
             let p = UnitParam::try_from(id).expect("known id");
             assert_eq!(u16::from(p), id);
         }

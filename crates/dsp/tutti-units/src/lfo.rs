@@ -1,98 +1,37 @@
-//! Low Frequency Oscillator (LFO) node.
+//! The native audio-rate modulation adapter.
+//!
+//! [`ModulatorNode<M>`] is the fundsp adapter over a pure
+//! [`tutti_mod::Modulator`]: it owns everything *audio* — the `impl AudioUnit`,
+//! the phase accumulator, the sample rate, the beat ports, `route`/PDC — and
+//! calls the modulator only for the one pure step `phase -> value`. The
+//! modulator itself (`tutti_mod::Lfo`, `SampleHold`, …) knows nothing of
+//! transport or audio.
+//!
+//! [`LfoNode`] is `ModulatorNode<Lfo>` — the concrete, monomorphized LFO node
+//! the graph builds. Because `M` is a concrete type param (not `Box<dyn>`),
+//! `value()` inlines: codegen is identical to the old hand-inlined `LfoNode`,
+//! so the extraction is RT-cost-free.
+//!
+//! The waveform math (`LfoShape::evaluate_periodic`), the random stepper
+//! (`RandomState`), and the `Lfo` modulator now live in `tutti-mod`; this file
+//! is purely the adapter. `LfoShape` is re-exported so downstream `use
+//! tutti_units::LfoShape` keeps working.
 
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{
-    beat_from_ports,
-    dsp::{Signal, DEFAULT_SR},
-    AudioUnit, BufferMut, BufferRef, SignalFrame, BEAT_PORTS,
+    beat_from_ports, dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame, BEAT_PORTS,
 };
 
 use tutti_core::{Hz, Linear, Param};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LfoShape {
-    #[default]
-    Sine,
-    Triangle,
-    Square,
-    Sawtooth,
-    SawtoothDown,
-    Random,
-    RandomSmooth,
-}
+// The waveform vocabulary + the pure LFO modulator live in tutti-mod now. Re-
+// exported so existing `use tutti_units::LfoShape` / `Lfo` sites are untouched.
+pub use tutti_mod::{Lfo, LfoShape, Modulator};
 
-impl LfoShape {
-    /// True for shapes whose output depends on per-instance state (not just phase).
-    #[inline]
-    pub fn is_random(&self) -> bool {
-        matches!(self, Self::Random | Self::RandomSmooth)
-    }
-
-    /// Evaluate a purely phase-deterministic shape. Callers must first check
-    /// [`LfoShape::is_random`]; random shapes require per-instance state and
-    /// are not handled here.
-    #[inline]
-    pub fn evaluate_periodic(&self, phase: f32) -> f32 {
-        match self {
-            Self::Sine => (phase * core::f32::consts::TAU).sin(),
-            Self::Triangle => {
-                let p = phase * 4.0;
-                if p < 1.0 {
-                    p
-                } else if p < 3.0 {
-                    2.0 - p
-                } else {
-                    p - 4.0
-                }
-            }
-            Self::Square => {
-                if phase < 0.5 {
-                    1.0
-                } else {
-                    -1.0
-                }
-            }
-            Self::Sawtooth => phase * 2.0 - 1.0,
-            Self::SawtoothDown => 1.0 - phase * 2.0,
-            Self::Random | Self::RandomSmooth => {
-                debug_assert!(false, "evaluate_periodic called on random shape");
-                0.0
-            }
-        }
-    }
-
-    pub fn all() -> &'static [Self] {
-        &[
-            Self::Sine,
-            Self::Triangle,
-            Self::Square,
-            Self::Sawtooth,
-            Self::SawtoothDown,
-            Self::Random,
-            Self::RandomSmooth,
-        ]
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Sine => "Sine",
-            Self::Triangle => "Triangle",
-            Self::Square => "Square",
-            Self::Sawtooth => "Sawtooth",
-            Self::SawtoothDown => "Saw Down",
-            Self::Random => "Random",
-            Self::RandomSmooth => "Random (Smooth)",
-        }
-    }
-}
-
-impl core::fmt::Display for LfoShape {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
+/// Whether the adapter derives phase from a free-running oscillator or from the
+/// transport beat. This is an *adapter* concern (transport wiring), not
+/// modulation math — hence it lives here, not in `tutti-mod`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LfoMode {
     FreeRunning,
@@ -114,8 +53,22 @@ impl core::fmt::Display for LfoMode {
     }
 }
 
-pub struct LfoNode {
-    shape: LfoShape,
+/// The native audio-rate modulation node: a fundsp `AudioUnit` that computes a
+/// phase from transport (free-running or beat-synced) and drives a pure
+/// [`Modulator`] `M`.
+///
+/// Owns everything audio; `M` owns the pure `phase -> value`. `depth` is held
+/// here (a live atomic the UI can write) and multiplied onto the modulator's
+/// output — the modulator itself stays at unit depth. That keeps the depth
+/// setter path unchanged and lets a modulator be shared across backends without
+/// carrying a per-node depth.
+pub struct ModulatorNode<M: Modulator> {
+    modulator: M,
+    /// The modulator's threaded state — the node owns it (it has exclusive
+    /// access during `process`), threading it through `Modulator::value` each
+    /// sample. This is where a stateful modulator's state lives on the native
+    /// path: in the node, not in the (stateless, `Sync`) modulator.
+    mod_state: M::State,
     mode: LfoMode,
     /// In `FreeRunning` mode: oscillator frequency in Hz.
     /// In `BeatSynced` mode: beats per cycle (stored in the same atomic; the
@@ -125,72 +78,36 @@ pub struct LfoNode {
     phase_offset: Param<Linear>,
     phase: f32,
     sample_rate: f64,
-    random_state: RandomState,
 }
 
-#[derive(Debug, Clone)]
-struct RandomState {
-    current: f32,
-    previous: f32,
-    last_phase: f32,
-    seed: u32,
-}
+/// The concrete LFO node the graph builds — a [`ModulatorNode`] driving a pure
+/// [`Lfo`]. Monomorphized, so `value()` inlines to the old codegen.
+pub type LfoNode = ModulatorNode<Lfo>;
 
-impl Default for RandomState {
-    fn default() -> Self {
-        Self {
-            current: 0.0,
-            previous: 0.0,
-            last_phase: 0.0,
-            seed: 12345,
-        }
-    }
-}
-
-impl RandomState {
-    fn next(&mut self) -> f32 {
-        self.seed ^= self.seed << 13;
-        self.seed ^= self.seed >> 17;
-        self.seed ^= self.seed << 5;
-        (self.seed as f32 / u32::MAX as f32) * 2.0 - 1.0
-    }
-
-    fn update_for_phase(&mut self, phase: f32) {
-        if phase < self.last_phase - 0.5 {
-            self.previous = self.current;
-            self.current = self.next();
-        }
-        self.last_phase = phase;
-    }
-
-    fn get_random(&self) -> f32 {
-        self.current
-    }
-
-    fn get_random_smooth(&self, phase: f32) -> f32 {
-        self.previous + (self.current - self.previous) * phase
-    }
-}
-
-impl LfoNode {
+impl ModulatorNode<Lfo> {
     /// Create a free-running LFO with default frequency 1.0 Hz.
     ///
     /// Chain `.with_frequency(hz)` or `.with_beat_sync(beats)` to configure
     /// further.
     pub fn new(shape: LfoShape) -> Self {
-        Self::build(shape, LfoMode::FreeRunning, 1.0)
+        Self::with_modulator(Lfo::new(shape), LfoMode::FreeRunning, 1.0)
     }
+}
 
-    fn build(shape: LfoShape, mode: LfoMode, freq_or_beats: f32) -> Self {
+impl<M: Modulator> ModulatorNode<M> {
+    /// Build a modulation node over an arbitrary pure modulator. The generic
+    /// entry point behind [`LfoNode::new`]; also the seam any future modulator
+    /// (envelope, sample & hold, …) wires through.
+    pub fn with_modulator(modulator: M, mode: LfoMode, freq_or_beats: f32) -> Self {
         Self {
-            shape,
+            modulator,
+            mod_state: M::State::default(),
             mode,
             frequency: Param::new(Hz(freq_or_beats)),
             depth: Param::new(Linear(1.0)),
             phase_offset: Param::new(Linear(0.0)),
             phase: 0.0,
             sample_rate: DEFAULT_SR,
-            random_state: RandomState::default(),
         }
     }
 
@@ -206,7 +123,7 @@ impl LfoNode {
 
     /// Switch to beat-synced mode, taking the beat on the input ports.
     ///
-    /// The LFO gains [`BEAT_PORTS`] inputs, wired from `TransportClock`:
+    /// The node gains [`BEAT_PORTS`] inputs, wired from `TransportClock`:
     /// port 0 whole beats, port 1 the fraction. This is per-sample accurate.
     pub fn with_beat_sync(mut self, beats_per_cycle: impl Into<Hz>) -> Self {
         self.mode = LfoMode::BeatSynced;
@@ -214,7 +131,7 @@ impl LfoNode {
         self
     }
 
-    /// Set the LFO depth (0.0 - 1.0).
+    /// Set the depth (0.0 - 1.0).
     pub fn with_depth(self, depth: impl Into<Linear>) -> Self {
         self.depth.store(Linear(depth.into().get().clamp(0.0, 1.0)));
         self
@@ -250,26 +167,23 @@ impl LfoNode {
         self.phase_offset.store(Linear(offset.into().get() % 1.0));
     }
 
+    /// The one call into the pure modulator: thread the node-owned state through
+    /// `value`, store it back, and apply depth. `&mut self` here mutates only
+    /// the node's own `mod_state`/params — the modulator stays `&self`.
     #[inline]
     fn evaluate(&mut self, phase: f32) -> f32 {
         let depth = self.depth.load().get();
-
-        match self.shape {
-            LfoShape::Random => {
-                self.random_state.update_for_phase(phase);
-                self.random_state.get_random() * depth
-            }
-            LfoShape::RandomSmooth => {
-                self.random_state.update_for_phase(phase);
-                self.random_state.get_random_smooth(phase) * depth
-            }
-
-            _ => self.shape.evaluate_periodic(phase) * depth,
-        }
+        let (next, v) = self.modulator.value(self.mod_state, phase);
+        self.mod_state = next;
+        v * depth
     }
 }
 
-impl AudioUnit for LfoNode {
+// The `AudioUnit` trait itself requires `Send + Sync + Clone + 'static` (a
+// fundsp `Net` node must be movable across the RT boundary and cloneable for
+// backend swaps). Those bounds live on the *adapter* impl, not on `Modulator`,
+// so `tutti-mod` stays usable by non-audio consumers with no such constraint.
+impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M> {
     fn inputs(&self) -> usize {
         match self.mode {
             LfoMode::FreeRunning => 0,
@@ -283,7 +197,10 @@ impl AudioUnit for LfoNode {
 
     fn reset(&mut self) {
         self.phase = 0.0;
-        self.random_state = RandomState::default();
+        // The node owns the modulator's threaded state, so it resets it here to
+        // the seed — cleaner than the old node, which could not reach the
+        // modulator's internal RNG. Stateless modulators reset a `()`.
+        self.mod_state = M::State::default();
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
@@ -368,37 +285,15 @@ impl AudioUnit for LfoNode {
         self
     }
 
-    fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut output = SignalFrame::new(1);
-
-        // Random shapes are stateful; their output cannot be expressed as a
-        // constant Signal::Value, so we leave the default Signal::Unknown.
-        if self.shape.is_random() {
-            return output;
-        }
-
-        if self.mode == LfoMode::BeatSynced {
-            // Both beat ports must be constant to fold this to a constant.
-            if let (Signal::Value(whole), Signal::Value(frac)) = (input.at(0), input.at(1)) {
-                let beat = whole + frac;
-                let beats_per_cycle = self.frequency.load().get() as f64;
-                let phase_offset = self.phase_offset.load().get() as f64;
-                let phase = if beats_per_cycle > 0.0 {
-                    ((beat / beats_per_cycle) + phase_offset) % 1.0
-                } else {
-                    phase_offset
-                };
-                let value = self.shape.evaluate_periodic(phase as f32) * self.depth.load().get();
-                output.set(0, Signal::Value(value as f64));
-            }
-        } else {
-            let phase_offset = self.phase_offset.load().get();
-            let value =
-                self.shape.evaluate_periodic(self.phase + phase_offset) * self.depth.load().get();
-            output.set(0, Signal::Value(value as f64));
-        }
-
-        output
+    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
+        // A modulator's output is a running signal, not a statically-known
+        // constant, so report `Signal::Unknown` — fundsp's PDC/const-fold pass
+        // treats it as varying. (We deliberately don't try to fold a stopped
+        // deterministic LFO to a constant `Signal::Value`; that was a minor
+        // optimization whose only enabler — a per-modulator "is this foldable?"
+        // hook — has been dropped to keep the pure `Modulator` trait to
+        // `phase -> value`. `route` also must not step the modulator's state.)
+        SignalFrame::new(1)
     }
 
     fn footprint(&self) -> usize {
@@ -406,17 +301,17 @@ impl AudioUnit for LfoNode {
     }
 }
 
-impl Clone for LfoNode {
+impl<M: Modulator + Clone> Clone for ModulatorNode<M> {
     fn clone(&self) -> Self {
         Self {
-            shape: self.shape,
+            modulator: self.modulator.clone(),
+            mod_state: self.mod_state,
             mode: self.mode,
             frequency: self.frequency.handle(),
             depth: self.depth.handle(),
             phase_offset: self.phase_offset.handle(),
             phase: self.phase,
             sample_rate: self.sample_rate,
-            random_state: self.random_state.clone(),
         }
     }
 }
@@ -424,6 +319,7 @@ impl Clone for LfoNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_core::dsp::Signal;
 
     #[test]
     fn test_lfo_shapes() {
@@ -606,23 +502,20 @@ mod tests {
     }
 
     #[test]
-    fn test_route_random_reports_unknown_not_zero() {
-        // Regression: LfoShape::Random used to evaluate as 0.0 in route(),
-        // silently misreporting random-mode LFOs as constant-0 in PDC analysis.
-        let mut lfo = LfoNode::new(LfoShape::Random);
-        lfo.set_sample_rate(tutti_core::SampleRate(44100.0));
-        let out = lfo.route(&SignalFrame::new(1), 44100.0);
-        assert!(
-            matches!(out.at(0), Signal::Unknown),
-            "Random LFO route() must be Signal::Unknown"
-        );
-
-        let mut sine = LfoNode::new(LfoShape::Sine);
-        sine.set_sample_rate(tutti_core::SampleRate(44100.0));
-        let out = sine.route(&SignalFrame::new(1), 44100.0);
-        assert!(
-            matches!(out.at(0), Signal::Value(_)),
-            "Sine LFO route() must be Signal::Value"
-        );
+    fn test_route_reports_unknown_for_every_shape() {
+        // A modulator's output is a running signal, so `route` reports
+        // `Signal::Unknown` for *every* shape — never a constant. This subsumes
+        // the old regression (Random must not be misreported as constant-0);
+        // now Sine, Random, and every other shape are uniformly Unknown, since
+        // we no longer try to fold a deterministic LFO to a `Signal::Value`.
+        for shape in LfoShape::all() {
+            let mut lfo = LfoNode::new(*shape);
+            lfo.set_sample_rate(tutti_core::SampleRate(44100.0));
+            let out = lfo.route(&SignalFrame::new(1), 44100.0);
+            assert!(
+                matches!(out.at(0), Signal::Unknown),
+                "{shape} LFO route() must be Signal::Unknown"
+            );
+        }
     }
 }

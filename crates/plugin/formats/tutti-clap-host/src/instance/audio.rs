@@ -275,7 +275,14 @@ impl<T: ClapSample> ClapActive<T> {
             self.scratch.input_events.add_midi_events(midi_events);
         }
         if !param_changes.is_empty() {
-            self.scratch.input_events.add_param_changes(param_changes);
+            // Split-borrow: `add_param_changes` mutates `input_events` and reads
+            // `param_ranges` (denormalize 0..1 → the plugin's plain range).
+            let AudioScratch {
+                input_events,
+                param_ranges,
+                ..
+            } = &mut self.scratch;
+            input_events.add_param_changes(param_changes, param_ranges);
         }
         if !note_expressions.is_empty() {
             self.scratch

@@ -26,7 +26,11 @@ pub use tutti_core::{
 pub mod buffer;
 
 mod lfo;
-pub use lfo::{LfoMode, LfoNode, LfoShape};
+// `LfoNode` is now `ModulatorNode<Lfo>` — the fundsp adapter over a pure
+// `tutti_mod::Modulator`. `LfoShape`/`Lfo`/`Modulator` are re-exported from
+// `tutti-mod` through `lfo` so existing `use tutti_units::LfoShape` sites are
+// untouched.
+pub use lfo::{Lfo, LfoMode, LfoNode, LfoShape, Modulator, ModulatorNode};
 
 mod delay;
 pub use delay::{DelayLine, DelayLineNode, InterpolationMode, StereoDelayLineNode, StereoPair};
@@ -47,6 +51,15 @@ pub use dynamics::{BrickwallLimiter, Compressor, Gate, LimiterNode};
 // Bevy dependency — pure node capability.
 mod param_ports;
 pub use param_ports::ParamPorts;
+
+// The native `ModParams` impls (the trait itself lives in tutti-mod).
+mod mod_params;
+
+// Re-export the `ModParams` trait + modulation *target* surface from tutti-mod so
+// downstream crates (e.g. tutti-plugin implementing `ModParams`) reach it here
+// alongside `Lfo`, without a separate tutti-mod dep. The routing feature is on
+// (tutti-units deps tutti-mod with `features = ["routing"]`).
+pub use tutti_mod::{AtomicTarget, LayerKey, ModParams, ModTarget};
 
 #[cfg(feature = "spatial")]
 mod spatial;

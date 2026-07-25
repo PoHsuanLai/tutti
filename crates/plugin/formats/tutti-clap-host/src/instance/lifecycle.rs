@@ -84,6 +84,14 @@ impl ClapLoaded {
         // Only one sample-type pool exists (T), so the pre-split double-sizing
         // of both f32 and f64 is gone.
         let mut scratch = AudioScratch::<T>::new();
+        // Cache each param's native range for denormalizing incoming automation
+        // (host authors normalized 0..1; CLAP wants plain). Done once here, off
+        // the audio thread — `parameter_list()` queries the plugin.
+        scratch.param_ranges = self
+            .parameter_list()
+            .into_iter()
+            .map(|p| (p.id, p.min_value as f32, p.max_value as f32))
+            .collect();
         let input_total = self.ports.input_channel_total();
         let output_total = self.ports.output_channel_total();
         let max_frames = self.audio.max_frames as usize;

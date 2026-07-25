@@ -148,10 +148,14 @@ impl PluginInstance for Vst2Instance {
         #[cfg(feature = "vst2")]
         {
             // VST3/CLAP-style param change events become direct writes for VST2.
+            // VST2 `set_parameter` expects a normalized `0..1` value, which is
+            // exactly the host's authoring convention — clamp defensively so an
+            // over-range authored/modulated value can't leave `[0, 1]`.
             if let Some(changes) = ctx.param_changes {
                 for queue in &changes.queues {
                     if let Some(point) = queue.points.last() {
-                        self.inner.set_parameter(queue.param_id, point.value as f32);
+                        self.inner
+                            .set_parameter(queue.param_id, (point.value as f32).clamp(0.0, 1.0));
                     }
                 }
             }

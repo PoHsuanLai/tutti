@@ -2,6 +2,16 @@
 
 use tutti_core::Cents;
 
+// The modulatable-param plumbing (`Param`/atomics) is only used by
+// `UnisonEngine`, which is itself gated on `midi`/`test`.
+#[cfg(any(feature = "midi", test))]
+use alloc::sync::Arc;
+#[cfg(any(feature = "midi", test))]
+use tutti_core::{AtomicF32, Linear, Param};
+
+#[cfg(any(feature = "midi", test))]
+extern crate alloc;
+
 const MAX_UNISON_VOICES: usize = 16;
 
 #[derive(Debug, Clone)]
@@ -43,18 +53,55 @@ pub struct UnisonEngine {
     config: UnisonConfig,
     voices: [UnisonVoiceParams; MAX_UNISON_VOICES],
     rng_state: u32,
+    /// Control-rate-modulatable mirrors of `config.detune_cents` /
+    /// `config.stereo_spread`. A modulator writes these (via
+    /// [`ModParams`](crate::ModParams)); [`sync_from_atomics`](Self::sync_from_atomics),
+    /// called once per block, folds any change back into `config` + a
+    /// recompute. Detune/spread only affect per-voice params on recompute (not
+    /// per-sample), so a block-rate sync is exact.
+    detune: Param<Cents>,
+    spread: Param<Linear>,
 }
 
 #[cfg(any(feature = "midi", test))]
 impl UnisonEngine {
     pub fn new(config: UnisonConfig) -> Self {
+        let detune = Param::new(config.detune_cents);
+        let spread = Param::new(Linear(config.stereo_spread));
         let mut engine = Self {
             config,
             voices: [UnisonVoiceParams::default(); MAX_UNISON_VOICES],
             rng_state: 12345,
+            detune,
+            spread,
         };
         engine.recompute_params();
         engine
+    }
+
+    /// The shared detune atomic (cents), for control-rate modulation.
+    pub fn detune_atomic(&self) -> Arc<AtomicF32> {
+        self.detune.as_atomic()
+    }
+
+    /// The shared stereo-spread atomic (0..1), for control-rate modulation.
+    pub fn spread_atomic(&self) -> Arc<AtomicF32> {
+        self.spread.as_atomic()
+    }
+
+    /// Fold any control-rate change to the detune/spread atomics back into
+    /// `config` and recompute per-voice params. Called once per block. Cheap
+    /// when nothing moved (compares against the current config first).
+    pub fn sync_from_atomics(&mut self) {
+        let detune = self.detune.load();
+        let spread = self.spread.load().get().clamp(0.0, 1.0);
+        let changed = (detune.get() - self.config.detune_cents.get()).abs() > f32::EPSILON
+            || (spread - self.config.stereo_spread).abs() > f32::EPSILON;
+        if changed {
+            self.config.detune_cents = Cents(detune.get().max(0.0));
+            self.config.stereo_spread = spread;
+            self.recompute_params();
+        }
     }
 
     pub fn recompute_params(&mut self) {
@@ -118,6 +165,8 @@ impl UnisonEngine {
     }
 
     pub fn set_config(&mut self, config: UnisonConfig) {
+        self.detune.store(config.detune_cents);
+        self.spread.store(Linear(config.stereo_spread));
         self.config = config;
         self.recompute_params();
     }
@@ -133,11 +182,13 @@ impl UnisonEngine {
 
     pub fn set_detune(&mut self, cents: impl Into<Cents>) {
         self.config.detune_cents = Cents(cents.into().get().max(0.0));
+        self.detune.store(self.config.detune_cents);
         self.recompute_params();
     }
 
     pub fn set_stereo_spread(&mut self, spread: f32) {
         self.config.stereo_spread = spread.clamp(0.0, 1.0);
+        self.spread.store(Linear(self.config.stereo_spread));
         self.recompute_params();
     }
 

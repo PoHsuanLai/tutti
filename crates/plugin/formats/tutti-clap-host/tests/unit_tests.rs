@@ -257,7 +257,9 @@ fn test_param_changes_through_input_list() {
     changes.add_queue(q2);
 
     let mut list = InputEventList::new();
-    list.add_param_changes(&changes);
+    // Empty range map → pass-through (this test only asserts event count, not
+    // denormalized values; the denorm math is covered in the events unit tests).
+    list.add_param_changes(&changes, &[]);
 
     assert_eq!(list.len(), 3);
 }

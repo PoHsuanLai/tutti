@@ -16,7 +16,7 @@ pub mod units;
 
 pub use param::Param;
 pub use samples::Samples;
-pub use unit_param::{UnitParam, UnitParamOutOfRange};
+pub use unit_param::{ParamAddr, UnitParam, UnitParamOutOfRange};
 pub use units::{
     AtomicSamplePosition, Beat, BeatDuration, Bpm, Cents, Db, Degrees, Hz, Linear, Ratio,
     SamplePosition, Seconds, Semitones, Unit,

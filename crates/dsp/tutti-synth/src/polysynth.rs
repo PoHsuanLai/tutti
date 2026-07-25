@@ -4,7 +4,7 @@ use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use smallvec::SmallVec;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, Shared, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, Linear, Param, SignalFrame};
 use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{cc, MidiIn, MidiUnitId, NoteId};
@@ -45,7 +45,7 @@ pub struct PolySynth {
     portamento: Option<Portamento>,
     unison: Option<UnisonEngine>,
     pitch_bend: f32,
-    master_volume: Shared,
+    master_volume: Param<Linear>,
     /// This synth's MIDI input endpoint: routing address, push mailbox, and the
     /// current pull source (the live receiver by default; an override installs a
     /// `MidiClipSource`/`MidiSnapshotReader`). See [`MidiInPort`] for the fundsp
@@ -94,7 +94,7 @@ impl PolySynth {
             .as_ref()
             .map(|p| Portamento::new(p.clone(), config.sample_rate));
 
-        let master_volume = tutti_core::shared(1.0);
+        let master_volume = Param::new(Linear(1.0));
 
         Ok(Self {
             config,
@@ -158,11 +158,29 @@ impl PolySynth {
     }
 
     pub fn set_volume(&mut self, volume: f32) {
-        self.master_volume.set(volume.clamp(0.0, 1.0));
+        self.master_volume.store(Linear(volume.clamp(0.0, 1.0)));
     }
 
     pub fn volume(&self) -> f32 {
-        self.master_volume.value()
+        self.master_volume.load().get()
+    }
+
+    /// The shared master-volume atomic, for control-rate modulation
+    /// ([`ModParams`](crate::ModParams)). Clones the `Arc`; not for the audio path.
+    pub fn volume_atomic(&self) -> Arc<tutti_core::AtomicF32> {
+        self.master_volume.as_atomic()
+    }
+
+    /// The shared unison-detune atomic (cents), for control-rate modulation.
+    /// `None` when this synth has no unison engine.
+    pub fn detune_atomic(&self) -> Option<Arc<tutti_core::AtomicF32>> {
+        self.unison.as_ref().map(|u| u.detune_atomic())
+    }
+
+    /// The shared unison-stereo-spread atomic (0..1), for control-rate modulation.
+    /// `None` when this synth has no unison engine.
+    pub fn spread_atomic(&self) -> Option<Arc<tutti_core::AtomicF32>> {
+        self.unison.as_ref().map(|u| u.spread_atomic())
     }
 
     pub fn active_voice_count(&self) -> usize {
@@ -342,10 +360,9 @@ impl PolySynth {
                     && u8::from(m.index())
                         == tutti_midi_types::ump::RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY =>
             {
-                let range = tutti_midi_types::mpe::PitchBendSensitivity::from_rpn_bits(
-                    m.controller_data(),
-                )
-                .as_semitones_f32();
+                let range =
+                    tutti_midi_types::mpe::PitchBendSensitivity::from_rpn_bits(m.controller_data())
+                        .as_semitones_f32();
                 self.set_mpe_pitch_bend_range(tutti_core::Semitones(range));
             }
             _ => {}
@@ -652,6 +669,11 @@ impl AudioUnit for PolySynth {
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         self.poll_midi_events();
 
+        // Fold any control-rate detune/spread modulation in (no-op when unchanged).
+        if let Some(unison) = &mut self.unison {
+            unison.sync_from_atomics();
+        }
+
         if let Some(ref mut porta) = self.portamento {
             if porta.is_gliding() {
                 let porta_freq = porta.tick().get();
@@ -694,7 +716,7 @@ impl AudioUnit for PolySynth {
 
         self.allocator.advance_time(1);
 
-        let volume = self.master_volume.value();
+        let volume = self.master_volume.load().get();
         output[0] = self.mix_buffer[0] * volume;
         if output.len() > 1 {
             output[1] = self.mix_buffer[1] * volume;
@@ -704,6 +726,12 @@ impl AudioUnit for PolySynth {
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
         if size == 0 {
             return;
+        }
+
+        // Fold any control-rate detune/spread modulation into the unison params
+        // once per block before rendering (a no-op when nothing moved).
+        if let Some(unison) = &mut self.unison {
+            unison.sync_from_atomics();
         }
 
         let midi_count = self.poll_midi_events_sorted(size);
@@ -790,7 +818,7 @@ impl AudioUnit for PolySynth {
             event_idx += 1;
         }
 
-        let volume = self.master_volume.value();
+        let volume = self.master_volume.load().get();
         for i in 0..size {
             output.set_f32(0, i, mix_left[i] * volume);
             if stereo {
@@ -842,6 +870,32 @@ impl PolySynth {
     /// This unit's MIDI routing address.
     pub fn midi_unit_id(&self) -> MidiUnitId {
         self.midi.unit_id()
+    }
+}
+
+impl tutti_mod::ModParams for PolySynth {
+    /// The synth's control-rate-modulatable params. `Volume` mirrors the master
+    /// atomic directly; `Detune`/`StereoSpread` mirror the unison atomics that
+    /// [`UnisonEngine::sync_from_atomics`](crate::UnisonEngine::sync_from_atomics)
+    /// folds in once per block. Discrete params (voice count) are deliberately
+    /// not modulatable; a foreign [`ParamAddr::Id`] is not the synth's vocabulary.
+    fn mod_target(
+        &self,
+        param: tutti_core::ParamAddr,
+        base: f32,
+        min: f32,
+        max: f32,
+    ) -> Option<Arc<dyn tutti_mod::ModTarget>> {
+        use tutti_core::{ParamAddr, UnitParam};
+        let atomic = match param {
+            ParamAddr::Unit(UnitParam::Volume) => self.volume_atomic(),
+            ParamAddr::Unit(UnitParam::Detune) => self.detune_atomic()?,
+            ParamAddr::Unit(UnitParam::StereoSpread) => self.spread_atomic()?,
+            _ => return None,
+        };
+        Some(Arc::new(tutti_mod::AtomicTarget::with_mirror(
+            base, min, max, atomic,
+        )))
     }
 }
 
@@ -979,12 +1033,7 @@ mod tests {
         note: u8,
     }
     impl MidiIn for NoteOnceSource {
-        fn poll_into(
-            &self,
-            _unit: MidiUnitId,
-            _block: usize,
-            buffer: &mut [MidiEvent],
-        ) -> usize {
+        fn poll_into(&self, _unit: MidiUnitId, _block: usize, buffer: &mut [MidiEvent]) -> usize {
             if buffer.is_empty() {
                 return 0;
             }
@@ -1101,6 +1150,101 @@ mod tests {
 
         // Unison engine should be present
         assert!(synth.unison.is_some());
+    }
+
+    #[test]
+    fn mod_params_volume_moves_the_master_atomic() {
+        use tutti_core::{ParamAddr, UnitParam};
+        use tutti_mod::{LayerKey, ModParams, ModTarget};
+
+        let synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 2,
+            ..Default::default()
+        });
+        let vol_atomic = synth.volume_atomic();
+        let target = synth
+            .mod_target(ParamAddr::Unit(UnitParam::Volume), 1.0, 0.0, 1.0)
+            .expect("volume is modulatable");
+
+        target.accumulate(LayerKey(1), -0.4);
+        assert!((target.final_value() - 0.6).abs() < 1e-4);
+        assert!(
+            (vol_atomic.load(core::sync::atomic::Ordering::Acquire) - 0.6).abs() < 1e-4,
+            "the synth's master-volume atomic reflects the modulation"
+        );
+
+        // A foreign (plugin) id is not the synth's vocabulary.
+        assert!(synth.mod_target(ParamAddr::Id(0), 0.5, 0.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn mod_params_detune_is_present_with_unison_absent_without() {
+        use tutti_core::{ParamAddr, UnitParam};
+        use tutti_mod::ModParams;
+
+        let with_unison = synth(SynthConfig {
+            unison: Some(UnisonConfig {
+                voice_count: 3,
+                detune_cents: tutti_core::Cents(10.0),
+                stereo_spread: 0.5,
+                phase_randomize: false,
+            }),
+            ..Default::default()
+        });
+        assert!(with_unison
+            .mod_target(ParamAddr::Unit(UnitParam::Detune), 10.0, 0.0, 100.0)
+            .is_some());
+        assert!(with_unison
+            .mod_target(ParamAddr::Unit(UnitParam::StereoSpread), 0.5, 0.0, 1.0)
+            .is_some());
+
+        let no_unison = synth(SynthConfig::default());
+        assert!(no_unison
+            .mod_target(ParamAddr::Unit(UnitParam::Detune), 0.0, 0.0, 100.0)
+            .is_none());
+    }
+
+    #[test]
+    fn mod_params_detune_recomputes_unison_on_process() {
+        use tutti_core::{ParamAddr, UnitParam};
+        use tutti_mod::{LayerKey, ModParams};
+
+        let mut synth = synth(SynthConfig {
+            sample_rate: 44100.0,
+            max_voices: 2,
+            oscillator: OscillatorType::Saw,
+            unison: Some(UnisonConfig {
+                voice_count: 3,
+                detune_cents: tutti_core::Cents(0.0),
+                stereo_spread: 0.0,
+                phase_randomize: false,
+            }),
+            ..Default::default()
+        });
+
+        // Detune starts at 0 → all sub-voices at unity freq ratio.
+        // Index 0 is an edge sub-voice (position -1), so detune actually moves it
+        // (the center voice at index 1 stays at unity by construction).
+        let ratio_before = synth.unison.as_ref().unwrap().voice_params(0).freq_ratio;
+        assert!((ratio_before - 1.0).abs() < 1e-4, "no detune yet");
+
+        // Route a modulation offset into the detune atomic, then run a block:
+        // `sync_from_atomics` must fold it into a recompute.
+        let target = synth
+            .mod_target(ParamAddr::Unit(UnitParam::Detune), 0.0, 0.0, 100.0)
+            .expect("detune modulatable");
+        target.accumulate(LayerKey(1), 30.0);
+
+        let mut out = [0.0f32; 64];
+        synth.tick(&[], &mut out);
+
+        let ratio_after = synth.unison.as_ref().unwrap().voice_params(0).freq_ratio;
+        assert!(
+            (ratio_after - 1.0).abs() > 1e-4,
+            "detune modulation reached the unison voice params after a block \
+             (before={ratio_before}, after={ratio_after})"
+        );
     }
 
     #[test]
@@ -2062,7 +2206,10 @@ mod tests {
         synth.tick(&[], &mut output);
 
         // Bend fully, then Detach.
-        queue_midi(&synth, &[MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF)]);
+        queue_midi(
+            &synth,
+            &[MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF)],
+        );
         synth.tick(&[], &mut output);
         let bent = |synth: &PolySynth| {
             synth
@@ -2078,11 +2225,17 @@ mod tests {
         assert!(frozen_at > 40.0, "note should be bent before detach");
 
         // Detach (D=1, S=0).
-        queue_midi(&synth, &[MidiEvent::per_note_management(0, 1, 60, true, false)]);
+        queue_midi(
+            &synth,
+            &[MidiEvent::per_note_management(0, 1, 60, true, false)],
+        );
         synth.tick(&[], &mut output);
 
         // A further per-note bend to zero must be IGNORED — the note holds its value.
-        queue_midi(&synth, &[MidiEvent::per_note_pitch_bend(0, 1, 60, 0x8000_0000)]);
+        queue_midi(
+            &synth,
+            &[MidiEvent::per_note_pitch_bend(0, 1, 60, 0x8000_0000)],
+        );
         synth.tick(&[], &mut output);
         assert!(
             (bent(&synth) - frozen_at).abs() < 0.01,
@@ -2126,7 +2279,10 @@ mod tests {
         synth.tick(&[], &mut output);
 
         // Full per-note bend up — now clamped to the 12-semitone range.
-        queue_midi(&synth, &[MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF)]);
+        queue_midi(
+            &synth,
+            &[MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF)],
+        );
         synth.tick(&[], &mut output);
         let bend = synth
             .voices
@@ -2166,7 +2322,10 @@ mod tests {
         let mut output = [0.0f32; 2];
         synth.tick(&[], &mut output);
         // Set a per-note bend.
-        queue_midi(&synth, &[MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF)]);
+        queue_midi(
+            &synth,
+            &[MidiEvent::per_note_pitch_bend(0, 1, 60, 0xFFFF_FFFF)],
+        );
         synth.tick(&[], &mut output);
 
         // Reset All Controllers on channel 1.

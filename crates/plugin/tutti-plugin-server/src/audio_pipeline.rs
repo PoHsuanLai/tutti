@@ -189,12 +189,17 @@ impl AudioPipeline {
         // flag, never on the plugin's format. (The host already gates its sends
         // the same way; gating here keeps the server-side context honest even if
         // an over-eager payload arrives.)
+        //
+        // Parameter automation is the exception: the host sends it *universally*
+        // (`InputSlot::new(Features::empty())` — every plugin has automatable
+        // params, regardless of whether it advertises `PARAM_AUTOMATION`), so we
+        // forward it unconditionally to match. Gating it on `PARAM_AUTOMATION`
+        // here silently dropped automation for any plugin that didn't set that
+        // (optional) flag — host said send, server threw it away.
         let features = plugin.loaded().features;
         let mut ctx = ProcessContext::new().midi(block.midi);
         if let Some(ref ex) = block.extras {
-            if features.contains(Features::PARAM_AUTOMATION) {
-                ctx = ctx.params(ex.param_changes);
-            }
+            ctx = ctx.params(ex.param_changes);
             if features.contains(Features::NOTE_EXPRESSION) {
                 ctx = ctx.note_expression(ex.note_expression);
             }

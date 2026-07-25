@@ -30,7 +30,7 @@ mod tests;
 pub(crate) use crate::util::node::ResyncSink;
 pub use crate::util::node::{route_with_latency, LatencyChangeSink, Midi, ParameterChangeSink};
 pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
-pub use param_automation_source::{ParamAutomationSource, TimedParam};
+pub use param_automation_source::{LfoCurve, ParamAutomationSource, PluginParamTarget, TimedParam};
 pub(crate) use process::ProcessGuard;
 
 use crate::error::Result;
@@ -410,6 +410,32 @@ impl PluginClient {
         self.inputs.params.clear();
     }
 
+    /// Build a [`PluginParamTarget`] for one of this plugin's params — a
+    /// [`ModTarget`](tutti_units::ModTarget) a modulation router accumulates
+    /// into, whose value the plugin receives over the per-block
+    /// [`ParameterChanges`] path.
+    ///
+    /// The returned `Arc` is usable as BOTH a `ModTarget` (route to it) and a
+    /// [`Curve`](tutti_units::automation::Curve) (install it in a `TimedParam`
+    /// via [`set_param_automation_source`](Self::set_param_automation_source));
+    /// keep the same `Arc` for both so accumulation is visible to the per-block
+    /// read. This mirrors how a native node's `ModParams::mod_target` returns an
+    /// `AtomicTarget` — see [`impl ModParams for PluginClient`].
+    ///
+    /// `[min, max]` is the param's range (plugins are normalized `0..1`; the
+    /// caller supplies it, e.g. from `ParameterInfo::to_range`).
+    pub fn param_target(
+        &self,
+        _param_id: u32,
+        base: f32,
+        min: f32,
+        max: f32,
+    ) -> std::sync::Arc<PluginParamTarget> {
+        // param_id is carried by the caller into the `TimedParam` at install
+        // time; the target itself only accumulates a value.
+        std::sync::Arc::new(PluginParamTarget::new(base, min, max))
+    }
+
     /// Drop a previously-installed source override; subsequent ticks
     /// poll the live `MidiReceiver` again.
     pub fn clear_midi_source(&mut self) {
@@ -419,5 +445,33 @@ impl PluginClient {
     /// Used by `PluginHandle`.
     pub(crate) fn bridge(&self) -> Arc<PluginBridge> {
         Arc::clone(&self.bridge)
+    }
+}
+
+/// A hosted plugin implements the **same** `ModParams` trait as a native node —
+/// the whole point of `ParamAddr`. A plugin speaks the opaque-id vocabulary, so
+/// it answers on [`ParamAddr::Id`](tutti_core::ParamAddr::Id) (its numeric param
+/// id) and returns `None` for a native [`Unit`](tutti_core::ParamAddr::Unit)
+/// param it does not have.
+///
+/// The returned target is a [`PluginParamTarget`] — a keyed accumulator whose
+/// value the plugin receives over the per-block `ParameterChanges` path (vs a
+/// native node's target, which mirrors into an atomic). The caller installs it
+/// (as a `TimedParam` via `set_param_automation_source`) after routing.
+impl tutti_units::ModParams for PluginClient {
+    fn mod_target(
+        &self,
+        param: tutti_core::ParamAddr,
+        base: f32,
+        min: f32,
+        max: f32,
+    ) -> Option<Arc<dyn tutti_units::ModTarget>> {
+        match param {
+            tutti_core::ParamAddr::Id(param_id) => {
+                Some(self.param_target(param_id, base, min, max))
+            }
+            // A native `UnitParam` is not a hosted plugin's vocabulary.
+            tutti_core::ParamAddr::Unit(_) => None,
+        }
     }
 }

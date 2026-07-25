@@ -15,6 +15,7 @@ resolver = "2"
 members = [
     "crates/core/tutti-core",
     "crates/core/tutti-types",
+    "crates/core/tutti-mod",
     "crates/core/tutti-export",
     "crates/midi/tutti-midi-io",
     "crates/midi/tutti-midi-types",

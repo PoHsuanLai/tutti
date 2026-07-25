@@ -60,11 +60,22 @@ impl ParamValueQueueImpl {
     /// Replace this queue's contents with `queue`'s points in place.
     /// Allocation-free when `queue.points.len() <= capacity` (inline up to
     /// 16, or whatever the current heap capacity is after prior reuse).
+    ///
+    /// VST3 `IParamValueQueue` values are **normalized `0..1`** (the plugin
+    /// reads them via `getPoint` and un-normalizes internally), which matches
+    /// the host's authoring convention — so each point's value is clamped to
+    /// `[0, 1]` here, guarding against an over-range authored/modulated value.
     pub fn refill_from_queue(&self, queue: &ParameterQueue) {
         *self.param_id.borrow_mut() = queue.param_id;
         let mut points = self.points.borrow_mut();
         points.clear();
-        points.extend_from_slice(&queue.points);
+        points.reserve(queue.points.len());
+        for p in &queue.points {
+            points.push(ParameterPoint {
+                sample_offset: p.sample_offset,
+                value: p.value.clamp(0.0, 1.0),
+            });
+        }
     }
 
     #[cfg(test)]

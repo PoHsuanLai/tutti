@@ -504,15 +504,34 @@ impl InputEventList {
         self
     }
 
-    /// Flatten every [`ParameterPoint`] in `changes` into a CLAP
-    /// `PARAM_VALUE` event and append.
-    pub fn add_param_changes(&mut self, changes: &ParameterChanges) -> &mut Self {
+    /// Flatten every [`ParameterPoint`] in `changes` into a CLAP `PARAM_VALUE`
+    /// event and append.
+    ///
+    /// Host-side automation authors values normalized `0..1`, but CLAP events
+    /// carry the plugin's **plain** value (CLAP has no normalization). Each
+    /// point is therefore denormalized against `ranges` (`param_id → (min,
+    /// max)`) as `min + v·(max - min)`, clamped to `[min, max]`. A param absent
+    /// from `ranges` (or an empty map) passes through unchanged — the safe
+    /// fallback for the common `0..1` param.
+    pub fn add_param_changes(
+        &mut self,
+        changes: &ParameterChanges,
+        ranges: &[(u32, f32, f32)],
+    ) -> &mut Self {
         for queue in &changes.queues {
+            let range = ranges.iter().find(|(id, _, _)| *id == queue.param_id);
             for point in &queue.points {
+                let value = match range {
+                    Some(&(_, min, max)) => {
+                        let plain = min + (point.value as f32) * (max - min);
+                        plain.clamp(min, max) as f64
+                    }
+                    None => point.value,
+                };
                 self.events.push(ClapEvent::param_value(
                     point.sample_offset as u32,
                     queue.param_id,
-                    point.value,
+                    value,
                 ));
             }
         }
@@ -860,6 +879,49 @@ unsafe extern "C" fn output_events_try_push(
 mod tests {
     use super::*;
     use tutti_midi_types::convert::{signed_f32_to_bend_u32, unit_f32_to_u32};
+
+    // --- Param-change denormalization (host 0..1 → CLAP plain) ---
+
+    fn first_param_value(list: &InputEventList) -> f64 {
+        list.events()
+            .iter()
+            .find_map(|e| match e {
+                ClapEvent::ParamValue(v) => Some(v.value),
+                _ => None,
+            })
+            .expect("a PARAM_VALUE event")
+    }
+
+    #[test]
+    fn add_param_changes_denormalizes_against_range() {
+        // Param 9 has plain range [100, 1100]; a normalized 0.25 → 350.
+        let mut changes = ParameterChanges::new();
+        changes.add_change(9, 0, 0.25);
+        let mut list = InputEventList::new();
+        list.add_param_changes(&changes, &[(9, 100.0, 1100.0)]);
+        assert!((first_param_value(&list) - 350.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn add_param_changes_clamps_denormalized_value_into_range() {
+        // A normalized 1.5 (over-range) must clamp to the plain max, not overshoot.
+        let mut changes = ParameterChanges::new();
+        changes.add_change(9, 0, 1.5);
+        let mut list = InputEventList::new();
+        list.add_param_changes(&changes, &[(9, 0.0, 10.0)]);
+        assert!((first_param_value(&list) - 10.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn add_param_changes_passes_through_when_range_unknown() {
+        // No range for this param id → value forwarded unchanged (safe fallback
+        // for the common normalized-0..1 param).
+        let mut changes = ParameterChanges::new();
+        changes.add_change(9, 0, 0.42);
+        let mut list = InputEventList::new();
+        list.add_param_changes(&changes, &[]);
+        assert!((first_param_value(&list) - 0.42).abs() < 1e-6);
+    }
 
     // --- MIDI 2.0 per-note ↔ CLAP note-expression ---
 

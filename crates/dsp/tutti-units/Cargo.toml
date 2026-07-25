@@ -34,6 +34,13 @@ tutti-core = { path = "../../core/tutti-core", default-features = false }
 # default-features = false so bevy does not re-leak.
 tutti-types = { path = "../../core/tutti-types", default-features = false }
 
+# Pure, audio-free modulation math: the `Modulator` trait + `Lfo`/`LfoShape`,
+# plus the `routing` feature's `ModTarget`/`AtomicTarget` (for `ModParams`, the
+# node-side control-rate-modulation trait). `default-features = false` keeps
+# tutti-mod's default-on `bevy` feature (Component/Reflect) from re-leaking into
+# this deliberately bevy-free crate; `routing` is std-only, no bevy.
+tutti-mod = { path = "../../core/tutti-mod", default-features = false, features = ["routing"] }
+
 # Spatial audio VBAP library (optional)
 vbap = { version = "0.1", optional = true }
 

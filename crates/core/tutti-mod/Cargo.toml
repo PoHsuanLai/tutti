@@ -1,0 +1,46 @@
+[package]
+name = "tutti-mod"
+version = "0.0.1"
+edition = "2021"
+description = "Modulation for the Tutti engine — pure `phase -> value` sources (LFO/combinators), a keyed-accumulator target, and a MIDI-coherent mod-matrix router"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+keywords = ["audio", "modulation", "lfo"]
+categories = ["multimedia::audio"]
+
+[features]
+# `bevy` (Component/Reflect on the ids + accumulator) is default-on, matching
+# the rest of the tutti engine. The PURE FLOOR — the `Modulator` source trait,
+# `Lfo`/combinators, and the `shape`/`fold` math — needs none of these and
+# builds under `--no-default-features`.
+default = ["bevy"]
+# Unlocks the routing layer (needs std for Arc/Mutex/Vec).
+std = []
+# The mod-matrix routing subsystem: keyed accumulator, id→sink bus, routing
+# snapshot + table, and the per-frame driver.
+routing = ["std", "dep:dashmap", "dep:arc-swap", "dep:atomic_float", "dep:tutti-types"]
+# ECS surface: `Component`/`Reflect` derives on `ModTargetId`, `LayerKey`,
+# `ModAccumulator`. Implies `routing` (the accumulator/ids are only useful with
+# it) and std.
+bevy = ["routing", "dep:bevy_ecs", "dep:bevy_reflect"]
+
+[dependencies]
+# `CurveType` only for the pure floor — the project's established response-curve
+# vocabulary. Keeps a `Modulator` able to drive something non-audio.
+audio-automation = { version = "0.4", default-features = false }
+
+# `ParamAddr` (native `UnitParam` + foreign id) — the key the `ModParams` trait
+# addresses, so one trait covers native nodes and plugins. Routing-gated.
+tutti-types = { path = "../tutti-types", default-features = false, optional = true }
+
+# Routing layer — literal pins matching the tutti crates (these are NOT in
+# [workspace.dependencies]).
+arc-swap = { version = "1.7", optional = true }
+dashmap = { version = "6.1", optional = true }
+# `AtomicTarget` mirrors its final value into a shared `AtomicF32` the consumer
+# reads directly. Pin matches tutti-types.
+atomic_float = { version = "1.1", optional = true }
+
+# Bevy derives — workspace deps, gated on the `bevy` feature.
+bevy_ecs = { workspace = true, optional = true }
+bevy_reflect = { workspace = true, optional = true }

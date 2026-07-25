@@ -26,6 +26,11 @@ bevy_asset = ["bevy", "soundfont", "rustysynth?/bevy_asset"]
 # `bevy` feature above re-adds `tutti-core/bevy_asset` when wanted.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
 
+# The `ModParams` control-rate-modulation trait + its target surface
+# (`AtomicTarget`/`ModTarget`), so `PolySynth` implements the same modulation
+# trait every other node does. `routing` (std-only) keeps it bevy-free.
+tutti-mod = { path = "../../core/tutti-mod", default-features = false, features = ["routing"] }
+
 # Bevy-native ECS surface (entity-as-node SoundFont trigger). Optional, gated by
 # the `bevy` feature (implied by `soundfont`).
 bevy_app = { version = "0.19", default-features = false, optional = true }

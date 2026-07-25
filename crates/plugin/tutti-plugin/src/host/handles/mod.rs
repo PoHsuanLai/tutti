@@ -15,8 +15,13 @@ pub(crate) mod control_handle;
 pub use crate::host::ipc_client::audio::ResyncKind;
 pub use crate::host::node::PluginClient;
 pub use crate::host::node::{
-    HarmonySource, ParamAutomationSource, TimedChord, TimedParam, TimedScale,
+    HarmonySource, LfoCurve, ParamAutomationSource, PluginParamTarget, TimedChord, TimedParam,
+    TimedScale,
 };
+// The LFO shape vocabulary + the modulation-target surface (from `tutti-mod`,
+// via `tutti-units`), so the app can build an [`LfoCurve`] / route to a
+// [`PluginParamTarget`] without naming `tutti-units` directly.
+pub use tutti_units::{LfoShape, ModParams, ModTarget};
 pub use crate::protocol::{ChordValue, ScaleValue};
 pub use crate::util::window::{EditorCapabilities, EditorSize};
 pub use control_handle::PluginHandle;

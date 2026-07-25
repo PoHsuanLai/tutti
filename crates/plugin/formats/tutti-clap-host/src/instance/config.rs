@@ -96,6 +96,12 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     pub process: ProcessScratch<T>,
     /// Refilled per call (UMP → CLAP). Cleared in place; capacity persists.
     pub input_events: InputEventList,
+    /// Per-parameter native range `(param_id, min, max)`, cached at activation.
+    /// CLAP parameter events carry the plugin's **plain** value (CLAP has no
+    /// normalization), but host-side automation authors values normalized
+    /// `0..1` — so incoming param points are denormalized `min + v·(max-min)`
+    /// against this map before the plugin sees them. Empty ⇒ pass-through.
+    pub param_ranges: Vec<(u32, f32, f32)>,
     /// Filled by the plugin's `try_push` callback during `process`.
     pub output_events: OutputEventList,
     /// Return pools: `process` drains the plugin's emitted events into these so
@@ -118,6 +124,7 @@ impl<T: super::ClapSample> AudioScratch<T> {
         Self {
             process: ProcessScratch::new(),
             input_events: InputEventList::new(),
+            param_ranges: Vec::new(),
             output_events: OutputEventList::new(),
             out_midi: SmallVec::new(),
             out_param_changes: ParameterChanges::new(),

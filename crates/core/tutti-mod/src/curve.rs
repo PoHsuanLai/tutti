@@ -1,9 +1,12 @@
 //! [`Curve`] — a value as a pure function of a musical position.
 //!
-//! The trait lives here, beside its `AutomationEnvelope` impl: the envelope is
-//! foreign (`audio_automation`) and `tutti-types` cannot see it, so co-locating
-//! the trait with the impl is the orphan-rule-legal home. The one dependency on
-//! the value vocabulary is [`Beat`], which `tutti-core` already re-exports.
+//! The rate-agnostic `beat -> value` interface shared by automation and
+//! modulation: an automation envelope, an LFO, a constant, and the summing
+//! [`crate::LayeredCurve`] are all `Curve`s. Homed here (not in tutti-units)
+//! because modulation depends on it and tutti-units already depends on tutti-mod
+//! — so tutti-units re-exports it rather than owning it. The one foreign impl,
+//! [`AutomationEnvelope`], is orphan-legal here since `audio_automation` is a
+//! direct dependency.
 
 use audio_automation::AutomationEnvelope;
 use tutti_types::Beat;
@@ -19,8 +22,8 @@ use tutti_types::Beat;
 ///
 /// Returns `None` where the curve has no value (disabled / empty), so callers
 /// keep the empty-vs-zero distinction the playback consumers rely on: an
-/// [`AutomationLane`](super::AutomationLane) substitutes `0.0`, a plugin
-/// parameter source leaves the plugin at its last value.
+/// automation lane substitutes `0.0`, a plugin parameter source leaves the
+/// plugin at its last value.
 pub trait Curve: Send + Sync {
     /// Evaluate the curve at `beat`, or `None` if it has no value there.
     fn value_at(&self, beat: Beat) -> Option<f32>;

@@ -59,7 +59,7 @@ mod mod_params;
 // downstream crates (e.g. tutti-plugin implementing `ModParams`) reach it here
 // alongside `Lfo`, without a separate tutti-mod dep. The routing feature is on
 // (tutti-units deps tutti-mod with `features = ["routing"]`).
-pub use tutti_mod::{AtomicTarget, LayerKey, ModParams, ModTarget};
+pub use tutti_mod::{AtomicTarget, LayerKey, LayeredCurve, ModParams, ModTarget};
 
 #[cfg(feature = "spatial")]
 mod spatial;

@@ -19,9 +19,8 @@ std = []
 # The mod-matrix routing subsystem: keyed accumulator, id→sink bus, routing
 # snapshot + table, and the per-frame driver.
 routing = ["std", "dep:dashmap", "dep:arc-swap", "dep:atomic_float", "dep:tutti-types"]
-# ECS surface: `Component`/`Reflect` derives on `ModTargetId`, `LayerKey`,
-# `ModAccumulator`. Implies `routing` (the accumulator/ids are only useful with
-# it) and std.
+# ECS surface: `Component`/`Reflect` derives on `ModTargetId`, `LayerKey`.
+# Implies `routing` (the ids/targets are only useful with it) and std.
 bevy = ["routing", "dep:bevy_ecs", "dep:bevy_reflect"]
 
 [dependencies]

@@ -17,11 +17,13 @@
 //! `dawai_model::engine_bind::automation` — it wrote the `Volume`/`Pan`/
 //! `PluginParam` DAW components, which left the engine.
 
-mod curve;
 mod lane;
 mod recording;
 
-pub use curve::Curve;
+// The `Curve` trait (beat → value) lives in tutti-mod — modulation depends on it
+// and tutti-units already depends on tutti-mod, so the trait is homed there and
+// re-exported here for the automation consumers.
+pub use tutti_mod::Curve;
 pub use lane::{AutomationLane, LiveAutomationLane};
 pub use recording::{
     AutomationRecordingConfig, AutomationSnapshot, AutomationTarget, Manager, Recorder,

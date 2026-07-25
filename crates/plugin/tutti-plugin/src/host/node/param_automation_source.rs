@@ -51,7 +51,7 @@ pub struct TimedParam {
 /// (they never read it). The random shapes can't thread the modulator's stepper
 /// through a `&self` curve, so they derive a stable value from the integer beat
 /// index instead — a beat-synced sample & hold, one new value per cycle.
-#[derive(Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct LfoCurve {
     /// The pure modulator (config only). Deterministic shapes are sampled from
     /// it; random shapes use the per-cycle hash below.
@@ -142,68 +142,187 @@ impl Curve for LfoCurve {
     }
 }
 
-/// A hosted-plugin parameter as a modulation **target**.
+/// An LFO as a bipolar **offset** curve, for summing as a modulation *layer* on a
+/// [`PluginParamTarget`] (as opposed to [`LfoCurve`], which is an *absolute*
+/// value in `[min, max]`).
 ///
-/// The accumulator-based sibling of [`LfoCurve`]: where `LfoCurve` is a *source*
-/// curve installed on a plugin, `PluginParamTarget` is a keyed-accumulator
-/// *target* (a real [`ModTarget`]) whose modulated value reaches the plugin over
-/// the SAME per-block [`ParameterChanges`] path — it implements [`Curve`] by
-/// returning its current `final_value()` regardless of beat, so installing it as
-/// a [`TimedParam`] streams the modulated value each block.
+/// The offset is `raw · depth · span`, `raw ∈ [-1, 1]`, where `span` is the
+/// **target param's** range width — matching the native control-rate contract
+/// (`raw · depth · (max − min)` against the *target's* range, tutti-mod's
+/// `driver::run`). A layer's value swings around 0; the owning [`LayeredCurve`]
+/// adds the base and applies the param's clamp, so this must NOT clamp to its own
+/// `[-1, 1]` (that was the double-scaling bug: `LfoCurve` used its internal span
+/// of 2, doubling the depth). Clamped symmetrically to `±span` so a full-depth
+/// swing can't exceed the param range even before the target's own clamp.
+#[derive(Debug, Clone, Copy)]
+pub struct LfoOffset {
+    lfo: LfoCurve,
+    /// The target param's range width (`max − min`) — the offset scale.
+    span: f32,
+}
+
+impl LfoOffset {
+    /// `shape`/`beats_per_cycle`/`depth`/`phase_offset` as an LFO; `span` is the
+    /// target param's range width (the offset scale, e.g. `1.0` for a normalized
+    /// `[0, 1]` plugin param).
+    pub fn new(
+        shape: tutti_units::LfoShape,
+        beats_per_cycle: f32,
+        depth: f32,
+        phase_offset: f32,
+        span: f32,
+    ) -> Self {
+        // Reuse LfoCurve only for its phase/waveform (`raw_value`); base 0, unit
+        // range so the shaping here owns the scaling.
+        Self {
+            lfo: LfoCurve::new(shape, beats_per_cycle, depth, phase_offset, 0.0, 0.0, 1.0),
+            span,
+        }
+    }
+}
+
+impl Curve for LfoOffset {
+    fn value_at(&self, beat: tutti_core::Beat) -> Option<f32> {
+        let raw = self.lfo.raw_value(beat.get()); // [-1, 1]
+        let offset = raw * self.lfo.depth * self.span;
+        Some(offset.clamp(-self.span, self.span))
+    }
+}
+
+/// Turns an **absolute**-valued [`Curve`] (an automation envelope) into an
+/// **offset** layer by subtracting a fixed reference — the target's base — so it
+/// sums correctly in a [`LayeredCurve`] (`final = base + Σ offset`). Mirrors the
+/// native path's `accumulate(AUTOMATION, value − base())`.
+#[derive(Clone)]
+pub struct OffsetCurve {
+    inner: std::sync::Arc<dyn Curve>,
+    subtract: f32,
+}
+
+// `inner` is `Arc<dyn Curve>` (not `Debug`), so derive can't apply — a manual
+// impl prints the reference offset and elides the wrapped curve.
+impl std::fmt::Debug for OffsetCurve {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OffsetCurve")
+            .field("subtract", &self.subtract)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OffsetCurve {
+    pub fn new(inner: std::sync::Arc<dyn Curve>, subtract: f32) -> Self {
+        Self { inner, subtract }
+    }
+}
+
+impl Curve for OffsetCurve {
+    fn value_at(&self, beat: tutti_core::Beat) -> Option<f32> {
+        self.inner.value_at(beat).map(|v| v - self.subtract)
+    }
+}
+
+/// A hosted-plugin parameter as a modulation **target** — the *sub-block* sink
+/// over a [`LayeredCurve`](tutti_units::LayeredCurve).
+///
+/// A plugin param never enters the audio graph, so unlike the native
+/// [`AtomicTarget`](tutti_units::AtomicTarget) (which collapses its curve to one
+/// scalar per frame and mirrors it into an atomic) this target **keeps the whole
+/// curve** and re-evaluates it per beat: it implements [`Curve`] as
+/// `layered.value_at(beat)`, and the plugin's per-block [`ParameterChanges`]
+/// producer samples that several times per audio block. So a beat-varying
+/// (LFO) layer traces a smooth ramp across the block instead of stepping once
+/// per frame, while a constant (automation) layer sums in beside it — one
+/// accumulator, finer rate.
+///
+/// Two ways contributions arrive:
+/// - the [`ModTarget`] scalar API ([`accumulate`](tutti_units::ModTarget::accumulate))
+///   installs a scalar layer (a frame-rate value, e.g. a native modulator the
+///   driver already collapsed);
+/// - [`set_curve_layer`](Self::set_curve_layer) installs a **beat-varying**
+///   layer (an [`LfoCurve`], an automation envelope) that stays smooth.
 ///
 /// This is how a plugin fits the one [`tutti_units::ModParams`] trait: a native
-/// node returns an [`AtomicTarget`] over its own atomic; a plugin returns a
-/// `PluginParamTarget` that accumulates locally and flushes over IPC. The router
-/// routes to both identically.
+/// node returns an `AtomicTarget` over its own atomic; a plugin returns a
+/// `PluginParamTarget`. The router routes to both identically; only the collapse
+/// rate differs.
 ///
-/// Plugin params are normalized `0..1` (see the format-boundary convention), so
-/// the caller passes that range; the inner [`AtomicTarget`] clamps to it.
+/// Plugin params are normalized `0..1` (the format-boundary convention), so the
+/// caller passes that range; the `LayeredCurve` clamps to it.
+///
+/// **Lock-free reads.** The layers live in an [`ArcSwap`] rather than a `Mutex`:
+/// the per-block producer runs on the **audio thread** and calls `value_at`
+/// several times per block, so it must never block. Reads `load()` the current
+/// snapshot lock-free. Writes (control-rate, from the single ECS driver system)
+/// clone the snapshot, edit, and `store` a fresh `Arc` — copy-on-write. Writer
+/// edits are serialized by the one ECS system, so there is no writer/writer race;
+/// the audio thread only ever reads. (Clone is an `Arc` bump per layer — cheap,
+/// and off the hot path.)
 pub struct PluginParamTarget {
-    inner: tutti_units::AtomicTarget,
+    layered: arc_swap::ArcSwap<tutti_units::LayeredCurve<f32>>,
 }
 
 impl PluginParamTarget {
     pub fn new(base: f32, min: f32, max: f32) -> Self {
         Self {
-            inner: tutti_units::AtomicTarget::new(base, min, max),
+            layered: arc_swap::ArcSwap::from_pointee(tutti_units::LayeredCurve::new(base, min, max)),
         }
+    }
+
+    /// Copy-on-write edit: clone the current snapshot, apply `f`, store the fresh
+    /// `Arc`. Off the hot path (control-rate writers only).
+    fn edit(&self, f: impl FnOnce(&mut tutti_units::LayeredCurve<f32>)) {
+        let mut next = (**self.layered.load()).clone();
+        f(&mut next);
+        self.layered.store(std::sync::Arc::new(next));
+    }
+
+    /// Install (or replace) a **beat-varying** layer under `key` — an
+    /// [`LfoCurve`], an automation envelope, any [`Curve`]. Re-inserting the same
+    /// key updates in place. This is the path that keeps modulation smooth: the
+    /// layer is evaluated at each block beat, not collapsed to a frame scalar.
+    pub fn set_curve_layer(&self, key: tutti_units::LayerKey, curve: std::sync::Arc<dyn Curve>) {
+        self.edit(|lc| lc.set_layer(key, curve));
     }
 }
 
 impl tutti_units::ModTarget for PluginParamTarget {
     #[inline]
     fn range(&self) -> (f32, f32) {
-        self.inner.range()
+        self.layered.load().range()
     }
     #[inline]
     fn base(&self) -> f32 {
-        self.inner.base()
+        self.layered.load().base()
     }
     #[inline]
     fn set_base(&self, value: f32) {
-        self.inner.set_base(value);
+        self.edit(|lc| lc.set_base(value));
     }
+    /// A scalar contribution — an allocation-free frame-rate offset. Use
+    /// [`set_curve_layer`](Self::set_curve_layer) for a beat-varying source.
     #[inline]
     fn accumulate(&self, key: tutti_units::LayerKey, offset: f32) {
-        self.inner.accumulate(key, offset);
+        self.edit(|lc| lc.set_scalar_layer(key, offset));
     }
     #[inline]
     fn clear(&self, key: tutti_units::LayerKey) {
-        self.inner.clear(key);
+        self.edit(|lc| lc.clear_layer(key));
     }
+    /// A frame snapshot at beat 0 — for a non-`Curve` reader. The plugin path
+    /// reads the beat-accurate [`Curve::value_at`] instead.
     #[inline]
     fn final_value(&self) -> f32 {
-        self.inner.final_value()
+        self.layered.load().value_at(tutti_core::Beat(0.0)).unwrap_or(0.0)
     }
 }
 
 impl Curve for PluginParamTarget {
-    /// The target's current modulated value, independent of beat — installing
-    /// this as a [`TimedParam`] ships `final_value()` into the plugin's per-block
-    /// [`ParameterChanges`] stream, so accumulation done by the router this frame
-    /// reaches the plugin next block.
-    fn value_at(&self, _beat: tutti_core::Beat) -> Option<f32> {
-        Some(tutti_units::ModTarget::final_value(self))
+    /// `clamp(base + Σ layer(beat), range)` at the requested beat — the plugin's
+    /// per-block producer (on the audio thread) calls this several times per
+    /// block, **lock-free** (`ArcSwap::load`), so any beat-varying layer stays
+    /// smooth without blocking the callback.
+    fn value_at(&self, beat: tutti_core::Beat) -> Option<f32> {
+        self.layered.load().value_at(beat)
     }
 }
 
@@ -359,10 +478,9 @@ mod tests {
         assert_eq!(ModTarget::range(&t), (0.0, 1.0));
         assert_eq!(ModTarget::base(&t), 0.5);
 
-        // Route accumulates an offset → the Curve read (per block) reflects it.
+        // A scalar contribution is a Const layer → beat-independent.
         t.accumulate(LayerKey(1), 0.3);
         assert!((t.value_at(Beat::new(0.0)).unwrap() - 0.8).abs() < 1e-6);
-        // Beat is ignored — a mod target's value is beat-independent.
         assert!((t.value_at(Beat::new(123.4)).unwrap() - 0.8).abs() < 1e-6);
 
         // Clearing drops back to base.
@@ -377,6 +495,63 @@ mod tests {
         let t = PluginParamTarget::new(0.5, 0.0, 1.0);
         t.accumulate(LayerKey(1), 5.0); // overdrive
         assert!((t.value_at(Beat::new(0.0)).unwrap() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn temporal_curve_layer_stays_smooth_across_the_block() {
+        // The S5 payoff: a beat-varying layer is re-evaluated at each beat the
+        // plugin's per-block producer samples — so it traces the curve, NOT one
+        // frame-rate step. A frame snapshot returns the SAME value at every beat
+        // within a block; this must produce a spread of distinct values.
+        use tutti_core::Beat;
+        use tutti_units::automation::Curve;
+        use tutti_units::LayerKey;
+
+        // A beat-varying offset the test fully controls: a triangle over one
+        // beat, ±0.5 around 0 — so base 0.5 + offset spans the whole [0, 1].
+        struct Triangle;
+        impl Curve for Triangle {
+            fn value_at(&self, beat: Beat) -> Option<f32> {
+                let p = beat.get().rem_euclid(1.0) as f32; // [0, 1)
+                Some(if p < 0.5 { -0.5 + 2.0 * p } else { 1.5 - 2.0 * p })
+            }
+        }
+
+        let t = PluginParamTarget::new(0.5, 0.0, 1.0);
+        t.set_curve_layer(LayerKey(1), std::sync::Arc::new(Triangle));
+
+        // Sample densely across one beat. A frozen snapshot would give one value;
+        // a live temporal layer spans (near) the whole range.
+        let samples: Vec<f32> = (0..16)
+            .map(|i| t.value_at(Beat::new(i as f64 / 16.0)).unwrap())
+            .collect();
+        let min = samples.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max = samples.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            max - min > 0.8,
+            "a temporal layer must trace the curve within a block, not freeze — \
+             got span {min}..{max}"
+        );
+        assert!(samples.iter().all(|v| (0.0..=1.0).contains(v)));
+    }
+
+    #[test]
+    fn constant_and_temporal_layers_compose_on_plugin_target() {
+        // Automation (a Const layer) + an LFO (a temporal layer) SUM in the one
+        // accumulator — the composition the old override-based path lacked.
+        use tutti_core::Beat;
+        use tutti_units::{LayerKey, ModTarget};
+
+        let t = PluginParamTarget::new(0.4, 0.0, 1.0);
+        // Automation snapshot: +0.1 (a Const contribution via the scalar API).
+        t.accumulate(LayerKey::AUTOMATION, 0.1);
+        // LFO at its trough-crossing (sin 0 = 0) contributes 0 at beat 0.
+        let lfo = LfoCurve::new(tutti_units::LfoShape::Sine, 1.0, 0.4, 0.0, 0.0, 0.0, 1.0);
+        t.set_curve_layer(LayerKey(1), std::sync::Arc::new(lfo));
+        // base 0.4 + automation 0.1 + lfo(beat0)=0 → 0.5.
+        assert!((t.value_at(Beat::new(0.0)).unwrap() - 0.5).abs() < 1e-3);
+        // At the peak the LFO adds +0.4·1.0 → 0.4+0.1+0.4 = 0.9 (both layers live).
+        assert!((t.value_at(Beat::new(0.25)).unwrap() - 0.9).abs() < 1e-3);
     }
 
     #[test]
@@ -563,7 +738,7 @@ mod tests {
         let transport = Arc::new(TestTransport::new(120.0));
         let src = ParamAutomationSource::new(
             vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn Timeline>,
+            Arc::clone(&transport) as Arc<dyn TransportState>,
             44100.0,
         );
         let mut out = ParameterChanges::new();
@@ -584,7 +759,7 @@ mod tests {
         let transport = Arc::new(TestTransport::new(120.0));
         let src = ParamAutomationSource::new(
             vec![ramp(7)],
-            Arc::clone(&transport) as Arc<dyn Timeline>,
+            Arc::clone(&transport) as Arc<dyn TransportState>,
             44100.0,
         );
         let mut out = ParameterChanges::new();
@@ -620,5 +795,111 @@ mod tests {
         );
         src.fill(64, &mut out);
         assert!(out.is_empty());
+    }
+
+    // ── Offset layers at PRODUCTION arguments (the review gap: the existing
+    //    tests used base=0.5,min=0,max=1; the real wiring uses offset layers on a
+    //    base-0.5 target, span 1.0). ──────────────────────────────────────────
+
+    /// A single-value automation envelope (an envelope with one point holds that
+    /// value at every beat).
+    fn const_env(value: f32) -> AutomationEnvelope<f32> {
+        let mut env: AutomationEnvelope<f32> = AutomationEnvelope::new(value);
+        env.add_point(AutomationPoint::new(0.0, value));
+        env
+    }
+
+    #[test]
+    fn lfo_offset_matches_the_native_span_scaling_no_double() {
+        // Regression: LfoCurve with min=-1,max=1 multiplied the offset by
+        // (max-min)=2, so a full-depth LFO was 2× too hot. LfoOffset scales by the
+        // *target's* span, matching the native contract `raw · depth · (max-min)`
+        // (tutti-mod driver: "no 0.5"). For a [0,1] param (span 1), full depth →
+        // ±1.0 offset (clips against the param range, like native); HALF depth →
+        // ±0.5 (fills [0,1] exactly, no clip). The linear depth knob is the proof
+        // the 2× is gone.
+        use tutti_core::Beat;
+        use tutti_units::automation::Curve;
+
+        // Full depth, span 1 → peak offset +1.0 (native full-span, NOT +2.0).
+        let full = LfoOffset::new(tutti_units::LfoShape::Sine, 1.0, 1.0, 0.0, 1.0);
+        let full_peak = Curve::value_at(&full, Beat::new(0.25)).unwrap(); // sin(π/2)=+1
+        assert!(
+            (full_peak - 1.0).abs() < 1e-3,
+            "full-depth offset ±1.0 (span 1), not ±2.0 (the double-scale bug): {full_peak}"
+        );
+        // Half depth → half the offset — linear, proving no 2× factor.
+        let half = LfoOffset::new(tutti_units::LfoShape::Sine, 1.0, 0.5, 0.0, 1.0);
+        let half_peak = Curve::value_at(&half, Beat::new(0.25)).unwrap();
+        assert!(
+            (half_peak - 0.5).abs() < 1e-3,
+            "depth 0.5 → ±0.5 offset (linear): {half_peak}"
+        );
+    }
+
+    #[test]
+    fn half_depth_lfo_fills_the_param_range_without_clipping() {
+        // A depth-0.5 LFO around base 0.5 swings ±0.5 → exactly [0, 1], no clip.
+        use tutti_core::Beat;
+
+        let t = PluginParamTarget::new(0.5, 0.0, 1.0);
+        let lfo = LfoOffset::new(tutti_units::LfoShape::Sine, 1.0, 0.5, 0.0, 1.0);
+        t.set_curve_layer(tutti_units::LayerKey(1), std::sync::Arc::new(lfo));
+        let samples: Vec<f32> = (0..16)
+            .map(|i| t.value_at(Beat::new(i as f64 / 16.0)).unwrap())
+            .collect();
+        let min = samples.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max = samples.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        // Peaks near 1.0 / troughs near 0.0, none clipped flat at the rails for
+        // long (a smooth sine, not a clipped square).
+        assert!(max > 0.95 && max <= 1.0 + 1e-6, "peak near 1.0: {max}");
+        assert!(min < 0.05 && min >= -1e-6, "trough near 0.0: {min}");
+    }
+
+    #[test]
+    fn offset_curve_makes_automation_land_at_its_absolute_value() {
+        // Regression: an automation envelope (ABSOLUTE authored value) was summed
+        // straight onto base 0.5, so authored 0.7 gave clamp(0.5+0.7)=1.0.
+        // OffsetCurve subtracts the base, so base + (value - base) = value exactly.
+        use tutti_core::Beat;
+        use tutti_units::LayerKey;
+
+        for authored in [0.0_f32, 0.3, 0.5, 0.7, 1.0] {
+            let t = PluginParamTarget::new(0.5, 0.0, 1.0);
+            let offset = OffsetCurve::new(Arc::new(const_env(authored)), 0.5);
+            t.set_curve_layer(LayerKey::AUTOMATION, Arc::new(offset));
+            let got = t.value_at(Beat::new(0.0)).unwrap();
+            assert!(
+                (got - authored).abs() < 1e-6,
+                "automation {authored} must land at {authored}, got {got}"
+            );
+        }
+    }
+
+    #[test]
+    fn automation_and_lfo_sum_at_production_args() {
+        // The whole point of S6: automation (absolute, via OffsetCurve) and an LFO
+        // (bipolar offset, via LfoOffset) coexist and SUM. Authored 0.6 automation
+        // + an LFO at its zero-crossing (beat 0, sin 0 = 0) → 0.6; at the peak →
+        // 0.6 + depth·span·raw.
+        use tutti_core::Beat;
+        use tutti_units::LayerKey;
+
+        let t = PluginParamTarget::new(0.5, 0.0, 1.0);
+        t.set_curve_layer(
+            LayerKey::AUTOMATION,
+            Arc::new(OffsetCurve::new(Arc::new(const_env(0.6)), 0.5)),
+        );
+        // depth 0.2 sine, span 1: peak offset = 0.2.
+        let lfo = LfoOffset::new(tutti_units::LfoShape::Sine, 1.0, 0.2, 0.0, 1.0);
+        t.set_curve_layer(LayerKey(1), Arc::new(lfo));
+        assert!(
+            (t.value_at(Beat::new(0.0)).unwrap() - 0.6).abs() < 1e-3,
+            "at the LFO zero-crossing, just the automation value (0.6)"
+        );
+        assert!(
+            (t.value_at(Beat::new(0.25)).unwrap() - 0.8).abs() < 1e-3,
+            "peak = automation 0.6 + LFO 0.2 = 0.8 (both layers SUM)"
+        );
     }
 }

@@ -36,7 +36,8 @@
 //! ## The target + routing (the `routing`/`bevy` features)
 //! - **Receive** — [`ModTarget`]: a keyed accumulator (`base + Σ keyed offsets`,
 //!   clamped). Concrete: [`AtomicTarget`] (mirrors its value into a shared
-//!   `AtomicF32` the consumer reads lock-free), over [`ModAccumulator`].
+//!   `AtomicF32` the consumer reads lock-free), a frame-rate cap over a
+//!   [`LayeredCurve`].
 //! - **Dispatch** — [`ModRouter`] / [`ModBus`]: an id→target map keyed by
 //!   [`ModTargetId`].
 //! - **Rules** — [`ModRoutingSnapshot`] / [`ModRoutingTable`]: an `ArcSwap`-hot-
@@ -62,7 +63,11 @@ mod shape;
 mod target;
 
 #[cfg(feature = "routing")]
+mod curve;
+#[cfg(feature = "routing")]
 mod driver;
+#[cfg(feature = "routing")]
+mod layered;
 #[cfg(feature = "routing")]
 mod matrix;
 #[cfg(feature = "routing")]
@@ -82,13 +87,17 @@ pub use shape::{curve_apply, fold, shape, LfoShape, Polarity};
 pub use target::ModTarget;
 
 #[cfg(feature = "routing")]
+pub use curve::Curve;
+#[cfg(feature = "routing")]
 pub use driver::{ErasedModulator, ModPreFrame, SourceRate, Sourced};
+#[cfg(feature = "routing")]
+pub use layered::LayeredCurve;
 #[cfg(feature = "routing")]
 pub use matrix::{ModMatrix, Route, RouteTo, TargetHandle};
 #[cfg(feature = "routing")]
 pub use mod_params::ModParams;
 #[cfg(feature = "routing")]
-pub use param::{AtomicTarget, ModAccumulator};
+pub use param::AtomicTarget;
 #[cfg(feature = "routing")]
 pub use router::{ModBus, ModRouter};
 #[cfg(feature = "routing")]

@@ -30,7 +30,9 @@ mod tests;
 pub(crate) use crate::util::node::ResyncSink;
 pub use crate::util::node::{route_with_latency, LatencyChangeSink, Midi, ParameterChangeSink};
 pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
-pub use param_automation_source::{LfoCurve, ParamAutomationSource, PluginParamTarget, TimedParam};
+pub use param_automation_source::{
+    LfoCurve, LfoOffset, OffsetCurve, ParamAutomationSource, PluginParamTarget, TimedParam,
+};
 pub(crate) use process::ProcessGuard;
 
 use crate::error::Result;

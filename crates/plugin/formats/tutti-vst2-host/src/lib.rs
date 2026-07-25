@@ -76,7 +76,7 @@ pub use instance::Vst2Instance;
 pub use scratch::RenderScratch;
 pub use types::{
     ChannelLayout, EditorSize, MidiEvent, MidiEventVec, ParameterInfo, PluginInfo, ProcessContext,
-    TransportInfo, Vst2Category, WindowHandle,
+    TimeSignature, TransportInfo, Vst2Category, WindowHandle,
 };
 
 // Test-only global allocator for RT-safety regression tests. Panics on

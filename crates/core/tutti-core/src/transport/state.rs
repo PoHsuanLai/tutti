@@ -15,7 +15,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::params::{Beat, BeatDuration};
-use crate::{AtomicBool, AtomicF64, AtomicU32};
+use crate::{AtomicBool, AtomicF64, AtomicI64, AtomicU32};
 
 /// Number of ports a beat signal occupies: whole beats, then fraction.
 ///
@@ -264,9 +264,9 @@ impl Default for Declick {
 /// sample rate, cached increment — are deliberately *not* here; that is the
 /// whole distinction the type draws.
 ///
-/// Four are read to advance time; `position_writeback` is the output half of
-/// the same handshake, written every buffer. Naming it `Inputs` was accurate
-/// only while the writeback lived outside.
+/// Four are read to advance time; `position_writeback` and `steady_time` are the
+/// output half of the same handshake, written every buffer. Naming it `Inputs`
+/// was accurate only while the writeback lived outside.
 #[derive(Clone, Debug)]
 pub struct ClockLinks {
     pub tempo: Arc<AtomicF64>,
@@ -276,6 +276,17 @@ pub struct ClockLinks {
     pub loop_span: Option<LoopSpan>,
     /// Where the clock publishes the playhead. `None` = writes nothing live.
     pub position_writeback: Option<Arc<AtomicF64>>,
+    /// Samples elapsed since the stream started — a free-running counter that
+    /// does **not** reset on loop, seek, or stop.
+    ///
+    /// This is what the plugin ABIs call `continousTimeSamples` (VST3) and
+    /// `steady_time` (CLAP). Free-running effects key their timing off it
+    /// precisely *because* the musical playhead jumps, so it cannot be derived
+    /// from the beat — which is why the clock, already running once per buffer,
+    /// is the thing that counts it.
+    ///
+    /// `None` = writes nothing live, matching `position_writeback`.
+    pub steady_time: Option<Arc<AtomicI64>>,
 }
 
 impl ClockLinks {
@@ -289,6 +300,7 @@ impl ClockLinks {
             seek: SeekSlot::new(),
             loop_span: None,
             position_writeback: None,
+            steady_time: None,
         }
     }
 
@@ -298,9 +310,10 @@ impl ClockLinks {
     /// no pending seek, and the loop and writeback dropped — so a clock built
     /// from this reads no live state and writes to nothing live.
     ///
-    /// The destructure is exhaustive on purpose: adding a sixth shared field
+    /// The destructure is exhaustive on purpose: adding another shared field
     /// becomes a compile error here rather than a silently-forgotten `isolate`,
-    /// which is the bug class this cut exists to prevent.
+    /// which is the bug class this cut exists to prevent. (It has already earned
+    /// that once — `steady_time` could not be added without coming through here.)
     pub fn severed(&self) -> Self {
         let Self {
             tempo,
@@ -308,6 +321,7 @@ impl ClockLinks {
             seek: _,
             loop_span: _,
             position_writeback: _,
+            steady_time: _,
         } = self;
 
         Self {
@@ -316,6 +330,7 @@ impl ClockLinks {
             seek: SeekSlot::new(),
             loop_span: None,
             position_writeback: None,
+            steady_time: None,
         }
     }
 }

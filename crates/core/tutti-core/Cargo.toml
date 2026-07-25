@@ -34,6 +34,12 @@ ogg = ["fundsp/ogg"]
 # Optional subsystems
 midi = []
 
+# `Serialize`/`Deserialize` on the shared value vocabulary — the meter types and
+# `ChannelLayout`. Needed by hosts that persist a document (the app writes its
+# meter map into a CRDT); off by default, since the engine itself never
+# serializes.
+serde = ["tutti-types/serde"]
+
 [dependencies]
 thiserror = { version = "2", default-features = false }
 dyn-clone = { version = "1.0", default-features = false }

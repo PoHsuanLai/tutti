@@ -67,6 +67,14 @@ pub use transport::{
     Timeline, Transport, TransportClock, TransportSettings, TransportState, BEAT_PORTS,
 };
 
+// Musical meter. Lives in `tutti-types` (pure musical math, no audio), re-exported
+// here so consumers that already depend on tutti-core need no new dependency.
+pub use tutti_types::meter;
+pub use tutti_types::meter::{
+    BarCount, BarNumber, BarPosition, BeatsPerBar, Meter, MeterChange, MeterMap, NoteValue,
+    TimeSignature,
+};
+
 pub mod metering;
 pub use metering::{meter_output, AtomicAmplitude, AudioTap, MasterMeter, MeteringContext};
 
@@ -82,7 +90,9 @@ pub use atomic_float::{AtomicF32, AtomicF64};
 // so sibling crates can write `tutti_core::Arc` etc. (`parking_lot` locks and
 // `hashbrown` maps are deliberate non-std choices — sibling crates name those
 // crates directly rather than re-exporting them here.)
-pub use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+pub use std::sync::atomic::{
+    AtomicBool, AtomicI64, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+};
 pub use std::sync::Arc;
 
 // Real-time audio-thread primitives, all homed in `tutti-types` (the bottom

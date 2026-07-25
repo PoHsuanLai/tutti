@@ -148,8 +148,11 @@ pub fn to_process_context(
         ctx.tempo = t.timing.tempo;
     }
     if wants(need::NEED_TIME_SIGNATURE) {
-        ctx.timeSigNumerator = t.timing.time_sig_numerator;
-        ctx.timeSigDenominator = t.timing.time_sig_denominator;
+        // Conversion at the boundary, gating unchanged: the `kTimeSigValid` bit
+        // above is set from the same `wants` check, so folding the gate into the
+        // conversion would split a pair that has to move together.
+        ctx.timeSigNumerator = t.timing.signature.beats_per_bar().into();
+        ctx.timeSigDenominator = t.timing.signature.note_value().into();
     }
     if wants(need::NEED_SAMPLES_TO_NEXT_CLOCK) {
         ctx.samplesToNextClock = 0;
@@ -165,7 +168,8 @@ mod tests {
     use super::process_context_flags as need;
     use super::*;
     use tutti_plugin_types::{
-        BarInfo, LoopRegion, MusicalTiming, TransportFlags, TransportPosition,
+        BarInfo, BeatsPerBar, LoopRegion, MusicalTiming, NoteValue, TimeSignature, TransportFlags,
+        TransportPosition,
     };
     use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
 
@@ -190,8 +194,7 @@ mod tests {
             },
             timing: MusicalTiming {
                 tempo: 128.0,
-                time_sig_numerator: 7,
-                time_sig_denominator: 8,
+                signature: TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
             },
             state: TransportFlags {
                 playing: true,

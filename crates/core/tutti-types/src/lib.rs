@@ -27,12 +27,18 @@
 //! paths, over the [`Samples`] count. Pure graph math with no audio dependency,
 //! so any graph representation can drive it.
 //!
+//! **[`meter`]** — musical meter: [`TimeSignature`], the [`MeterMap`] timeline of
+//! changes, and the [`Meter`] trait that turns a [`Beat`] into a bar and beat.
+//! Pure musical math with no audio dependency, so it layers *over* a transport
+//! rather than living inside one.
+//!
 //! Everything is re-exported at the crate root, so `tutti_types::AudioThreadCell`,
 //! `tutti_types::Bpm`, `tutti_types::Samples`, etc. resolve directly.
 
 pub mod channels;
 pub mod io;
 pub mod latency;
+pub mod meter;
 pub mod pcm;
 pub mod rt;
 pub mod value;
@@ -56,6 +62,12 @@ pub use channels::ChannelLayout;
 // I/O edge + latency.
 pub use io::{pump, AudioIn, AudioOut};
 pub use latency::{compensate, Compensation, DelayInsertion, LatencyGraph};
+
+// Musical meter.
+pub use meter::{
+    BarCount, BarNumber, BarPosition, BeatsPerBar, Meter, MeterChange, MeterMap, NoteValue,
+    TimeSignature,
+};
 
 // PCM quantization.
 pub use pcm::{f32_to_i16, f32_to_i24};

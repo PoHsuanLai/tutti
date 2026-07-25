@@ -25,6 +25,10 @@ pub mod process;
 pub mod transport;
 
 pub use tutti_types::ChannelLayout;
+// Musical vocabulary carried on `TransportInfo`. Re-exported for the same reason
+// as `ChannelLayout`: format hosts speak these at their ABI boundary and should
+// not need a `tutti-types` dependency of their own to name them.
+pub use tutti_types::meter::{BarNumber, BeatsPerBar, NoteValue, TimeSignature};
 
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
 pub use channels::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, BufferPtrs, Sample};

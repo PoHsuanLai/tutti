@@ -1,13 +1,32 @@
-//! Metronome click AudioUnit - generates click sounds synced to transport.
+//! Metronome click AudioNode — click sounds synced to the transport.
 //!
-//! The click node reads transport state via [`Timeline`] and settings
-//! (volume, accent, mode) from [`ClickSettings`].
+//! The click node reads position and live-session flags off the concrete
+//! [`Transport`]'s shared atomics, and its own settings (volume, meter, mode)
+//! from [`ClickSettings`].
+//!
+//! # Meter arrives here, not through the transport
+//!
+//! The metronome is the one audio-thread consumer of musical meter, and it gets
+//! it through its own settings bundle rather than through the transport. That
+//! keeps meter a layer *over* the engine: `TransportSettings`, `Timeline`, and
+//! the graph know nothing about bars.
 
 use super::Transport;
-use crate::{AtomicF32, AtomicU32, AtomicU8, Ordering};
+use crate::{AtomicF32, AtomicU8, Ordering};
+use arc_swap::ArcSwap;
 use fundsp::audionode::AudioNode;
 use fundsp::prelude::*;
 use std::sync::Arc;
+use tutti_types::meter::{Meter, MeterMap};
+use tutti_types::value::Beat;
+
+/// How far two beat onsets must differ to count as different beats.
+///
+/// The playhead is an accumulated `f64`, so an exact compare would retrigger on
+/// drift alone. A thousandth of a quarter note is far below the shortest notated
+/// beat any legal meter can express (a 64th note is 0.0625 quarters) and far
+/// above the drift of a realistic session.
+const ONSET_EPSILON: f64 = 1e-3;
 
 /// Metronome operating mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -54,13 +73,32 @@ impl core::fmt::Display for MetronomeMode {
     }
 }
 
-/// Click-specific settings (volume, accent pattern, mode).
+/// Click-specific settings (volume, meter, mode).
 ///
-/// Transport state (beat, playing, recording, preroll) comes from `Timeline`.
+/// Transport state (beat, playing, recording, preroll) comes from the
+/// [`Transport`] the node holds.
+///
+/// **Shared as `Arc<ClickSettings>`, never cloned by value.** fundsp clones nodes
+/// on every graph commit, so a settings field owned per-node would leave the app's
+/// writes landing on an orphan copy — the hazard documented on
+/// `tutti_plugin::host::node::InputSlot`. Holding one `Arc` is what makes a
+/// `set_meter` from the UI thread visible to whichever clone the audio thread is
+/// running.
 #[repr(align(64))]
 pub struct ClickSettings {
     volume: AtomicF32,
-    accent_every: AtomicU32,
+    /// The project meter, driving both the click rate and the downbeat accent.
+    ///
+    /// An `ArcSwap` rather than a packed atomic because a [`MeterMap`] is a `Vec`,
+    /// not a scalar. Read once per block in [`ClickNode::process`], never per
+    /// sample — an `ArcSwap::load` is a guard acquire, far heavier than the plain
+    /// atomic loads beside it.
+    ///
+    /// Wrapped in its own `Arc` so the *cell* can be shared, not just its
+    /// contents: hosted plugins need the same meter for their transport
+    /// snapshot, and handing them this handle means one publish reaches the
+    /// metronome and every plugin at once. See [`meter_cell`](Self::meter_cell).
+    meter: Arc<ArcSwap<MeterMap>>,
     mode: AtomicU8,
 }
 
@@ -68,7 +106,7 @@ impl ClickSettings {
     pub fn new() -> Self {
         Self {
             volume: AtomicF32::new(0.5),
-            accent_every: AtomicU32::new(4),
+            meter: Arc::new(ArcSwap::from_pointee(MeterMap::default())),
             mode: AtomicU8::new(MetronomeMode::Off as u8),
         }
     }
@@ -81,12 +119,24 @@ impl ClickSettings {
         self.volume.load(Ordering::Acquire)
     }
 
-    pub fn set_accent_every(&self, beats: u32) {
-        self.accent_every.store(beats, Ordering::Release);
+    /// Publish a new meter. Lock-free; visible to the audio thread on its next
+    /// block.
+    pub fn set_meter(&self, meter: Arc<MeterMap>) {
+        self.meter.store(meter);
     }
 
-    pub fn accent_every(&self) -> u32 {
-        self.accent_every.load(Ordering::Acquire)
+    /// The meter in force. Prefer calling this once per block.
+    pub fn meter(&self) -> Arc<MeterMap> {
+        self.meter.load_full()
+    }
+
+    /// The shared meter cell, for other subsystems that must see the same value.
+    ///
+    /// Hosted plugins carry the meter in their transport snapshot; giving them
+    /// this handle rather than a copy means [`set_meter`](Self::set_meter)
+    /// reaches them too, with no second publish path to keep in sync.
+    pub fn meter_cell(&self) -> Arc<ArcSwap<MeterMap>> {
+        Arc::clone(&self.meter)
     }
 
     pub fn set_mode(&self, mode: MetronomeMode) {
@@ -127,7 +177,14 @@ pub struct ClickNode {
     click_accent: Vec<f32>,
     click_pos: usize,
     is_accent: bool,
-    last_click_beat: i64,
+    /// Timeline position of the notated beat currently sounding, or `None` when
+    /// nothing has been clicked yet.
+    ///
+    /// A position rather than a running index: an index has to be scaled by some
+    /// `beat_length`, which changes across a meter change, so it is only unique
+    /// within one segment. `Option` rather than a sentinel value, since every
+    /// finite beat — including negative pre-roll — is a legitimate onset.
+    last_click_onset: Option<Beat>,
 }
 
 impl ClickNode {
@@ -148,7 +205,7 @@ impl ClickNode {
             click_accent,
             click_pos: 0,
             is_accent: false,
-            last_click_beat: -1,
+            last_click_onset: None,
         }
     }
 
@@ -175,12 +232,84 @@ impl ClickNode {
             .collect()
     }
 
-    fn is_accent_beat(&self, beat: i64) -> bool {
-        let accent_every = self.settings.accent_every();
-        if accent_every == 0 {
-            return false;
+    /// Whether the metronome should sound at all, given mode and live state.
+    #[inline]
+    fn should_play(&self) -> bool {
+        match self.settings.mode() {
+            MetronomeMode::Off => false,
+            MetronomeMode::Always => self.transport.motion.is_playing(),
+            MetronomeMode::PrerollOnly => self.transport.settings.is_in_preroll(),
+            MetronomeMode::RecordingOnly => {
+                self.transport.settings.is_recording() && !self.transport.settings.is_in_preroll()
+            }
         }
-        (beat as u32).is_multiple_of(accent_every)
+    }
+
+    /// Silence the node and forget the last beat, so resuming re-triggers.
+    ///
+    /// Clears `is_accent` too: `advance_to` always rewrites it before the next
+    /// sample is emitted, so leaving it stale is latent rather than live — but
+    /// then `reset()` would not be a reset, and any future early-return path
+    /// would turn that into a real bug.
+    #[inline]
+    fn go_silent(&mut self) {
+        self.click_pos = 0;
+        self.is_accent = false;
+        self.last_click_onset = None;
+    }
+
+    /// Retrigger if `beat` has crossed into a new notated beat under `meter`.
+    ///
+    /// The index counts *notated* beats, not quarter notes: in 7/8 that is an
+    /// eighth, so the metronome clicks seven times per bar rather than four.
+    #[inline]
+    fn advance_to(&mut self, meter: &MeterMap, beat: Beat) {
+        let position = meter.bar_at(beat);
+
+        // Identify the beat by the *onset it belongs to*, not by a running
+        // count. A count would have to be scaled by some `beat_length`, and
+        // `beat_length` changes across a `MeterChange` — so an index computed
+        // with the current segment's scale is only valid within that segment,
+        // and collides with indices from earlier segments (suppressing clicks)
+        // the moment a meter change exists. The onset is unambiguous everywhere
+        // and needs no global numbering.
+        let onset = position.bar_start
+            + position.signature.beat_length() * (position.beat.get() - 1) as f64;
+
+        // Inequality, not `>`: a backward jump from a loop wrap must retrigger
+        // too. The epsilon is for float drift in the accumulated playhead, well
+        // below the shortest notated beat this meter can express.
+        let changed = match self.last_click_onset {
+            Some(previous) => (onset - previous).get().abs() > ONSET_EPSILON,
+            None => true,
+        };
+
+        if changed {
+            self.last_click_onset = Some(onset);
+            self.click_pos = 0;
+            // The accent is the bar's downbeat, straight from the meter. This
+            // replaces a standalone `accent_every` count that defaulted to 4 and
+            // was never set by anything.
+            self.is_accent = position.is_downbeat();
+        }
+    }
+
+    /// One sample of the click envelope, or silence once it has run out.
+    #[inline]
+    fn next_sample(&mut self, volume: f32) -> f32 {
+        let buffer = if self.is_accent {
+            &self.click_accent
+        } else {
+            &self.click_normal
+        };
+
+        if self.click_pos < buffer.len() {
+            let sample = buffer[self.click_pos] * volume;
+            self.click_pos += 1;
+            sample
+        } else {
+            0.0
+        }
     }
 }
 
@@ -192,53 +321,60 @@ impl AudioNode for ClickNode {
 
     #[inline]
     fn tick(&mut self, _input: &Frame<f32, Self::Inputs>) -> Frame<f32, Self::Outputs> {
-        let mode = self.settings.mode();
-        let is_playing = self.transport.motion.is_playing();
-        let is_recording = self.transport.settings.is_recording();
-        let is_in_preroll = self.transport.settings.is_in_preroll();
-
-        let should_play = match mode {
-            MetronomeMode::Off => false,
-            MetronomeMode::Always => is_playing,
-            MetronomeMode::PrerollOnly => is_in_preroll,
-            MetronomeMode::RecordingOnly => is_recording && !is_in_preroll,
-        };
-
-        if !should_play {
-            self.click_pos = 0;
-            self.last_click_beat = -1;
+        if !self.should_play() {
+            self.go_silent();
             return [0.0, 0.0].into();
         }
 
-        let current_beat = self.transport.settings.beat().get();
-        let beat_int = current_beat.floor() as i64;
+        let meter = self.settings.meter();
+        self.advance_to(&meter, self.transport.settings.beat());
 
-        // Trigger click on new beat. The `beat_int != self.last_click_beat` check
-        // handles both forward advancement AND backward jumps from loop wrapping.
-        if beat_int != self.last_click_beat {
-            self.last_click_beat = beat_int;
-            self.click_pos = 0;
-            self.is_accent = self.is_accent_beat(beat_int);
+        let sample = self.next_sample(self.settings.volume());
+        [sample, sample].into()
+    }
+
+    /// Per-block render, overriding the default per-sample `tick` loop.
+    ///
+    /// The default `AudioNode::process` calls `tick` once per sample, which would
+    /// put an `ArcSwap::load` — a guard acquire, not a plain atomic read — on
+    /// every one of ~2.8M samples per second. Hoisting the mode, transport flags,
+    /// volume, and meter to once per buffer is the same shape `TransportClock`
+    /// uses, and is what makes reading a `MeterMap` here affordable at all.
+    ///
+    /// The beat is likewise read once: it is published by `TransportClock` at the
+    /// end of each block, so it does not change mid-buffer anyway.
+    ///
+    /// This is *not* bit-identical to N calls of `tick` in general — `tick`
+    /// re-reads the mode, the transport flags, and the volume per sample, so a UI
+    /// write lands mid-block there and at the next block boundary here. That is
+    /// the intended trade and the granularity is bounded: `Engine::process_segment`
+    /// already chops the callback into `MAX_BUFFER_SIZE` chunks, so the worst-case
+    /// lag is ~1.3 ms at 48 kHz. The two agree exactly whenever transport state is
+    /// stable across the block, which is what the equivalence test pins.
+    fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
+        if !self.should_play() {
+            self.go_silent();
+            for channel in 0..2 {
+                for i in 0..size {
+                    output.set_f32(channel, i, 0.0);
+                }
+            }
+            return;
         }
 
-        let click_buffer = if self.is_accent {
-            &self.click_accent
-        } else {
-            &self.click_normal
-        };
+        let meter = self.settings.meter();
+        let volume = self.settings.volume();
+        self.advance_to(&meter, self.transport.settings.beat());
 
-        if self.click_pos < click_buffer.len() {
-            let sample = click_buffer[self.click_pos] * self.settings.volume();
-            self.click_pos += 1;
-            [sample, sample].into()
-        } else {
-            [0.0, 0.0].into()
+        for i in 0..size {
+            let sample = self.next_sample(volume);
+            output.set_f32(0, i, sample);
+            output.set_f32(1, i, sample);
         }
     }
 
     fn reset(&mut self) {
-        self.click_pos = 0;
-        self.last_click_beat = -1;
+        self.go_silent();
     }
 
     fn set_sample_rate(&mut self, sample_rate: crate::params::SampleRate) {
@@ -254,6 +390,7 @@ impl AudioNode for ClickNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_types::meter::{BeatsPerBar, MeterChange, NoteValue, TimeSignature};
 
     /// Drive the real `Transport` rather than a mock: the click node needs
     /// recording/preroll, which only the live transport has, and a mock would
@@ -331,7 +468,7 @@ mod tests {
         // Advance to beat 7
         transport.settings.set_beat(7.0);
         let _ = node.tick(&Frame::default());
-        assert_eq!(node.last_click_beat, 7);
+        assert_eq!(node.last_click_onset, Some(Beat(7.0)));
 
         // Simulate loop wrap: beat jumps backward from 7 to 4
         transport.settings.set_beat(4.0);
@@ -344,20 +481,182 @@ mod tests {
             }
         }
         assert_eq!(
-            node.last_click_beat, 4,
+            node.last_click_onset,
+            Some(Beat(4.0)),
             "Should reset to beat 4 after loop wrap"
         );
         assert!(found_nonzero, "Click should play after loop wrap");
     }
 
+    /// The accent is the bar's downbeat, taken from the meter — replacing the
+    /// old standalone `accent_every` count that defaulted to 4 regardless of the
+    /// project's time signature.
     #[test]
-    fn test_accent_pattern() {
-        let (_, settings, node) = make_click();
-        settings.set_accent_every(4);
+    fn accent_follows_the_meter_downbeat() {
+        let (transport, settings, mut node) = make_click();
+        playing(&transport);
+        settings.set_mode(MetronomeMode::Always);
 
-        assert!(node.is_accent_beat(0));
-        assert!(!node.is_accent_beat(1));
-        assert!(node.is_accent_beat(4));
+        let accents_at = |node: &mut ClickNode, beat: f64| {
+            transport.settings.set_beat(beat);
+            node.reset();
+            let _ = node.tick(&Frame::default());
+            node.is_accent
+        };
+
+        // Default 4/4: accent every 4 quarter notes.
+        assert!(accents_at(&mut node, 0.0));
+        assert!(!accents_at(&mut node, 1.0));
+        assert!(accents_at(&mut node, 4.0));
+
+        // 3/4: the accent moves to every 3 quarters. The old fixed count of 4
+        // would have drifted against the bar here.
+        settings.set_meter(Arc::new(MeterMap::new([MeterChange::new(
+            Beat(0.0),
+            TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER),
+        )])));
+        assert!(accents_at(&mut node, 3.0));
+        assert!(!accents_at(&mut node, 4.0));
+        assert!(accents_at(&mut node, 6.0));
+    }
+
+    /// In 7/8 the notated beat is an eighth, so a bar holds seven clicks across
+    /// 3.5 quarter notes — not four clicks on the quarters.
+    #[test]
+    fn click_rate_follows_the_notated_beat() {
+        let (transport, settings, mut node) = make_click();
+        playing(&transport);
+        settings.set_mode(MetronomeMode::Always);
+        settings.set_meter(Arc::new(MeterMap::new([MeterChange::new(
+            Beat(0.0),
+            TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
+        )])));
+
+        // Half a quarter note apart is a full notated beat in 7/8, so these are
+        // distinct clicks.
+        transport.settings.set_beat(0.0);
+        let _ = node.tick(&Frame::default());
+        assert_eq!(node.last_click_onset, Some(Beat(0.0)));
+        assert!(node.is_accent, "beat 0 is the downbeat of bar 1");
+
+        transport.settings.set_beat(0.5);
+        let _ = node.tick(&Frame::default());
+        assert_eq!(
+            node.last_click_onset,
+            Some(Beat(0.5)),
+            "an eighth is one notated beat"
+        );
+        assert!(!node.is_accent, "beat 2 of the bar is not accented");
+
+        // The next bar starts at 3.5 quarters, not 7.
+        transport.settings.set_beat(3.5);
+        let _ = node.tick(&Frame::default());
+        assert!(node.is_accent, "3.5 quarters is the downbeat of bar 2");
+    }
+
+    /// Clicks must stay distinct across a meter change.
+    ///
+    /// The first version identified a beat by a running index scaled by the
+    /// *current* segment's `beat_length` — which changes at a `MeterChange`, so
+    /// indices from a 7/8 segment collided with indices from a following 4/4
+    /// segment and silently suppressed clicks. Identifying the beat by its onset
+    /// position removes the scale entirely.
+    #[test]
+    fn clicks_stay_distinct_across_a_meter_change() {
+        let (transport, settings, mut node) = make_click();
+        playing(&transport);
+        settings.set_mode(MetronomeMode::Always);
+        // 7/8 (eighth-note beats) for three bars, then 4/4 (quarter-note beats).
+        settings.set_meter(Arc::new(MeterMap::new([
+            MeterChange::new(
+                Beat(0.0),
+                TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
+            ),
+            MeterChange::new(Beat(10.5), TimeSignature::default()),
+        ])));
+
+        // Walk every notated beat across the change and collect the onsets the
+        // node actually latched.
+        let mut onsets = Vec::new();
+        let mut beat = 0.0;
+        while beat < 14.5 {
+            transport.settings.set_beat(beat);
+            let _ = node.tick(&Frame::default());
+            if let Some(onset) = node.last_click_onset {
+                if onsets.last() != Some(&onset) {
+                    onsets.push(onset);
+                }
+            }
+            // Step by whichever notated beat is in force here.
+            beat += if beat < 10.5 { 0.5 } else { 1.0 };
+        }
+
+        // Every latched onset must be distinct and strictly increasing — a
+        // collision would show up as a missing entry.
+        for pair in onsets.windows(2) {
+            assert!(
+                pair[1] > pair[0],
+                "onsets must strictly increase across the change, got {:?} then {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+        // 21 eighths before the change (0.0..10.5) + 4 quarters after.
+        assert_eq!(
+            onsets.len(),
+            25,
+            "every notated beat must click exactly once"
+        );
+        assert!(onsets.contains(&Beat(10.5)), "the change begins a bar");
+    }
+
+    /// Pre-roll sits at negative beats. The old accent test did
+    /// `(beat as u32).is_multiple_of(..)`, which turned -1 into 4294967295.
+    #[test]
+    fn negative_beats_do_not_wrap() {
+        let (transport, settings, mut node) = make_click();
+        playing(&transport);
+        settings.set_mode(MetronomeMode::Always);
+
+        // One bar before the start: a downbeat, and no panic or wrap.
+        transport.settings.set_beat(-4.0);
+        let _ = node.tick(&Frame::default());
+        assert!(node.is_accent, "-4.0 in 4/4 is the downbeat of bar 0");
+
+        transport.settings.set_beat(-3.0);
+        let _ = node.tick(&Frame::default());
+        assert!(!node.is_accent, "-3.0 is beat 2 of bar 0");
+    }
+
+    /// `process` must render exactly what a `tick` loop would, since it exists
+    /// only to hoist the per-block reads.
+    #[test]
+    fn process_matches_tick_sample_for_sample() {
+        let (transport, settings, mut block_node) = make_click();
+        playing(&transport);
+        settings.set_mode(MetronomeMode::Always);
+        settings.set_volume(1.0);
+        transport.settings.set_beat(2.0);
+
+        let mut tick_node = block_node.clone();
+
+        const N: usize = 64;
+        let mut buffer = BufferArray::<U2>::new();
+        block_node.process(N, &BufferRef::new(&[]), &mut buffer.buffer_mut());
+
+        for i in 0..N {
+            let expected = tick_node.tick(&Frame::default());
+            assert_eq!(
+                buffer.at_f32(0, i),
+                expected[0],
+                "left channel diverged at sample {i}"
+            );
+            assert_eq!(
+                buffer.at_f32(1, i),
+                expected[1],
+                "right channel diverged at sample {i}"
+            );
+        }
     }
 
     #[test]

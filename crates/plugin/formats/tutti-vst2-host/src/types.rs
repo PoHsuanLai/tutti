@@ -4,7 +4,9 @@
 //! VST2-specific shapes (`PluginInfo` with `unique_id`-derived id,
 //! `ParameterInfo` with normalized-only values, `ProcessContext`).
 
-pub use tutti_plugin_types::{ChannelLayout, EditorSize, MidiEvent, TransportInfo, WindowHandle};
+pub use tutti_plugin_types::{
+    ChannelLayout, EditorSize, MidiEvent, TimeSignature, TransportInfo, WindowHandle,
+};
 
 /// Plugin metadata gathered at load time.
 #[derive(Debug, Clone, Default)]

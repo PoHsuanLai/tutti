@@ -4,7 +4,7 @@ use super::config::{AudioScratch, PortLayout, ProcessScratch};
 use super::ClapActive;
 use crate::error::{ClapError, Result};
 use crate::events::EventList;
-use crate::types::{AudioBuffer, MidiEvent, ClapNoteExpression, ParameterChanges, TransportInfo};
+use crate::types::{AudioBuffer, ClapNoteExpression, MidiEvent, ParameterChanges, TransportInfo};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::events::{
     clap_event_header, clap_event_transport, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_TRANSPORT,
@@ -426,9 +426,8 @@ impl<T: ClapSample> ClapActive<T> {
                     eprintln!("[clap-host] process → TAIL (plugin has a decaying tail)")
                 }
                 CLAP_PROCESS_SLEEP => eprintln!("[clap-host] process → SLEEP (plugin is idle)"),
-                CLAP_PROCESS_ERROR
-                | CLAP_PROCESS_CONTINUE
-                | CLAP_PROCESS_CONTINUE_IF_NOT_QUIET => {}
+                CLAP_PROCESS_ERROR | CLAP_PROCESS_CONTINUE | CLAP_PROCESS_CONTINUE_IF_NOT_QUIET => {
+                }
                 other => eprintln!("[clap-host] process → unknown status {other}"),
             }
         }
@@ -465,6 +464,16 @@ impl<T: ClapSample> ClapActive<T> {
 }
 
 pub(super) fn build_clap_transport(transport: &TransportInfo) -> clap_event_transport {
+    // `HAS_TIME_SIGNATURE` was already asserted here while the host only ever
+    // sent the 4/4 default — now that the meter reaches this point, the claim is
+    // finally true.
+    //
+    // `bar_start` / `bar_number` get no flag of their own because CLAP defines
+    // none: the spec's transport flags are exactly the eight in `clap_sys`
+    // (tempo, beats/seconds timeline, time signature, playing, recording, loop
+    // active, pre-roll). `bar_start` is a `clap_beattime`, the same type as
+    // `song_pos_beats`, so it rides the beats timeline that is already
+    // advertised. Both were previously sent as zeros regardless.
     let mut flags: u32 = CLAP_TRANSPORT_HAS_TEMPO
         | CLAP_TRANSPORT_HAS_BEATS_TIMELINE
         | CLAP_TRANSPORT_HAS_SECONDS_TIMELINE
@@ -498,9 +507,12 @@ pub(super) fn build_clap_transport(transport: &TransportInfo) -> clap_event_tran
         loop_start_seconds: 0,
         loop_end_seconds: 0,
         bar_start: (transport.bar.start_beats * CLAP_BEATTIME_FACTOR as f64) as i64,
-        bar_number: transport.bar.number,
-        tsig_num: transport.timing.time_sig_numerator as u16,
-        tsig_denom: transport.timing.time_sig_denominator as u16,
+        bar_number: transport.bar.number.into(),
+        // `.into()` rather than `as u16`: the old cast wrapped, so a negative
+        // numerator arrived as 65535. `BeatsPerBar`/`NoteValue` are validated on
+        // construction, so the conversion is now total and lossless.
+        tsig_num: transport.timing.signature.beats_per_bar().into(),
+        tsig_denom: transport.timing.signature.note_value().into(),
     }
 }
 

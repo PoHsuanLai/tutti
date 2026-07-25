@@ -9,7 +9,8 @@ use std::sync::Mutex;
 
 use tutti_midi_types::convert::midi1_velocity_to_midi2;
 use tutti_vst2_host::{
-    ChannelLayout, MidiEvent, ProcessContext, RenderScratch, TransportInfo, Vst2Instance,
+    ChannelLayout, MidiEvent, ProcessContext, RenderScratch, TimeSignature, TransportInfo,
+    Vst2Instance,
 };
 
 const VST2_PLUGIN: &str = "/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst";
@@ -206,7 +207,7 @@ fn process_with_transport() {
         .with_playing(true)
         .with_position_quarters(2.0, 44_100)
         .with_tempo(120.0)
-        .with_time_signature(4, 4);
+        .with_time_signature(TimeSignature::default());
     transport.loop_region.end_quarters = 4.0;
 
     let num_samples = 512;
@@ -231,11 +232,7 @@ fn process_with_transport() {
 #[ignore]
 fn process_empty_buffer() {
     let mut instance = load();
-    let mut scratch = RenderScratch::new(
-        ChannelLayout::from(0u16),
-        ChannelLayout::from(0u16),
-        512,
-    );
+    let mut scratch = RenderScratch::new(ChannelLayout::from(0u16), ChannelLayout::from(0u16), 512);
     let input_slices: Vec<&[f32]> = vec![];
     let mut output_slices: Vec<&mut [f32]> = vec![];
     let ctx = ProcessContext::new(44_100.0);

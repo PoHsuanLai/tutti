@@ -17,7 +17,9 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use assert_no_alloc::AllocDisabler;
-use tutti_vst2_host::{MidiEvent, ProcessContext, RenderScratch, TransportInfo, Vst2Instance};
+use tutti_vst2_host::{
+    MidiEvent, ProcessContext, RenderScratch, TimeSignature, TransportInfo, Vst2Instance,
+};
 
 // The `assert_no_alloc` checks below are inert unless `AllocDisabler` is the
 // active global allocator for THIS test binary. The `#[cfg(test)]` decl in
@@ -72,7 +74,7 @@ fn process_f32_steady_state_does_not_allocate() {
     let transport = TransportInfo::default()
         .with_playing(true)
         .with_tempo(120.0)
-        .with_time_signature(4, 4);
+        .with_time_signature(TimeSignature::default());
 
     // Warm-up: grows the MIDI dispatch buffer + the pooled `midi_out`
     // drain past their inline caps so subsequent calls are heap-free.
@@ -93,7 +95,7 @@ fn process_f32_with_midi_does_not_allocate() {
     let transport = TransportInfo::default()
         .with_playing(true)
         .with_tempo(120.0)
-        .with_time_signature(4, 4);
+        .with_time_signature(TimeSignature::default());
 
     let mut out_l = [0.0f32; 64];
     let mut out_r = [0.0f32; 64];

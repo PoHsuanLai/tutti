@@ -49,8 +49,8 @@ pub(crate) fn build_vst2_time_info(
         bar_start_pos: transport.bar.position_quarters,
         cycle_start_pos: transport.loop_region.start_quarters,
         cycle_end_pos: transport.loop_region.end_quarters,
-        time_sig_numerator: transport.timing.time_sig_numerator,
-        time_sig_denominator: transport.timing.time_sig_denominator,
+        time_sig_numerator: transport.timing.signature.beats_per_bar().into(),
+        time_sig_denominator: transport.timing.signature.note_value().into(),
         flags: flags.bits(),
         ..Default::default()
     }

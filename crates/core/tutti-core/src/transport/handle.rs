@@ -58,6 +58,7 @@ impl Transport {
             seek: self.motion.seek.clone(),
             loop_span: Some(self.settings.loop_span.clone()),
             position_writeback: Some(Arc::clone(&self.settings.beat)),
+            steady_time: Some(Arc::clone(&self.settings.steady_time)),
         }
     }
 
@@ -95,6 +96,10 @@ impl super::TransportState for Transport {
 
     fn loop_range(&self) -> Option<LoopRange> {
         self.settings.loop_span.range()
+    }
+
+    fn steady_time(&self) -> i64 {
+        self.settings.steady_time()
     }
 }
 

@@ -3,7 +3,6 @@ mod click;
 mod clock;
 pub(crate) mod fsm;
 mod handle;
-mod meter;
 mod motion;
 mod offline;
 mod settings;
@@ -13,7 +12,6 @@ pub use beat_window::{BeatCursor, BeatWindow, BeatWindowSync};
 pub use click::{ClickNode, ClickSettings, ClickState, MetronomeMode};
 pub use clock::TransportClock;
 pub use handle::Transport;
-pub use meter::TimeSignature;
 pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
 pub use settings::TransportSettings;
@@ -83,4 +81,17 @@ pub trait TransportState: Timeline {
     /// The active loop region, or `None` when not looping. Always a valid,
     /// non-empty region — see [`LoopRange`].
     fn loop_range(&self) -> Option<LoopRange>;
+    /// Samples elapsed since the stream started — free-running, never reset by
+    /// a loop, seek, or stop.
+    ///
+    /// Belongs here rather than on [`Timeline`] for the same reason as the two
+    /// above: it is a live-session fact.
+    ///
+    /// Required, not defaulted. A default of `0` would be defensible only for an
+    /// offline render — but an offline render implements [`Timeline`] alone and
+    /// never reaches this trait, so the default would exist for a case that
+    /// cannot occur while silently letting a real implementor report "no
+    /// continuous clock" forever. A host with no sample counter should return `0`
+    /// deliberately, which is what the plugin ABIs read as exactly that.
+    fn steady_time(&self) -> i64;
 }

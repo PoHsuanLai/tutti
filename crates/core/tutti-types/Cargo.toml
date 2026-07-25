@@ -9,8 +9,10 @@ keywords = ["audio", "real-time"]
 categories = ["multimedia::audio"]
 
 [features]
-# Enables `Serialize`/`Deserialize` on wire-carried value types (currently
-# `ChannelLayout`, which rides the plugin-load IPC reply via `BusChannels`).
+# Enables `Serialize`/`Deserialize` on wire-carried value types: `ChannelLayout`
+# (which rides the plugin-load IPC reply via `BusChannels`), the meter vocabulary
+# (which round-trips through the host's document), and the unit newtypes the
+# latter is built from.
 serde = ["dep:serde"]
 
 [dependencies]
@@ -23,3 +25,6 @@ serde = { version = "1", optional = true, default-features = false, features = [
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
+# The meter `Deserialize` impls are the untrusted-document edge, so they are
+# tested against a real format rather than a hand-rolled deserializer.
+serde_json = "1"

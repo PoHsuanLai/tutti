@@ -7,6 +7,13 @@
 //! [`MusicalTiming`], [`TransportPosition`], [`LoopRegion`], [`BarInfo`])
 //! so the top-level type stays readable; callers access via
 //! `transport.state.playing`, `transport.timing.tempo`, etc.
+//!
+//! Musical quantities are carried as their engine types ([`TimeSignature`],
+//! [`BarNumber`]) rather than as loose integers, and each format host converts at
+//! its own boundary via `From` — the same shape `ChannelLayout` uses for speaker
+//! arrangements.
+
+use tutti_types::meter::{BarNumber, TimeSignature};
 
 /// Transport snapshot passed into a plugin's process call.
 #[derive(Debug, Clone, Copy)]
@@ -40,8 +47,14 @@ pub struct TransportFlags {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MusicalTiming {
     pub tempo: f64,
-    pub time_sig_numerator: i32,
-    pub time_sig_denominator: i32,
+    /// The signature in force at the playhead.
+    ///
+    /// A [`TimeSignature`] rather than a loose `(i32, i32)` pair: each format
+    /// wants a different width (CLAP `u16`, VST2/VST3 `i32`), and casting at
+    /// three separate boundaries is how the CLAP bridge ended up doing
+    /// `as u16` on a signed value — a negative numerator became 65535. The
+    /// conversions now live on the type and validate on the way through.
+    pub signature: TimeSignature,
 }
 
 impl Default for MusicalTiming {
@@ -49,8 +62,7 @@ impl Default for MusicalTiming {
     fn default() -> Self {
         Self {
             tempo: 120.0,
-            time_sig_numerator: 4,
-            time_sig_denominator: 4,
+            signature: TimeSignature::default(),
         }
     }
 }
@@ -104,7 +116,7 @@ pub struct BarInfo {
     /// Position of the current bar in beats (clap `bar_start`).
     pub start_beats: f64,
     /// 1-based bar number (clap `bar_number`).
-    pub number: i32,
+    pub number: BarNumber,
 }
 
 impl Default for TransportInfo {
@@ -143,9 +155,8 @@ impl TransportInfo {
         self
     }
 
-    pub fn with_time_signature(mut self, numerator: i32, denominator: i32) -> Self {
-        self.timing.time_sig_numerator = numerator;
-        self.timing.time_sig_denominator = denominator;
+    pub fn with_time_signature(mut self, signature: TimeSignature) -> Self {
+        self.timing.signature = signature;
         self
     }
 
@@ -176,8 +187,17 @@ impl TransportInfo {
         self
     }
 
-    pub fn with_bar(mut self, start_beats: f64, number: i32) -> Self {
-        self.bar.start_beats = start_beats;
+    /// Set every bar field.
+    ///
+    /// `position_quarters` and `start_beats` take the same value because the
+    /// engine measures both in quarter notes — the distinction exists only for
+    /// hosts whose CLAP beat axis is notated beats rather than quarters.
+    /// Populating both matters: VST2's `bar_start_pos` and VST3's
+    /// `barPositionMusic` read `position_quarters`, which the previous
+    /// `with_bar` left at zero, so every VST plugin saw bar 0 at position 0.
+    pub fn with_bar(mut self, start_quarters: f64, number: BarNumber) -> Self {
+        self.bar.position_quarters = start_quarters;
+        self.bar.start_beats = start_quarters;
         self.bar.number = number;
         self
     }

@@ -32,6 +32,13 @@ macro_rules! unit_newtype {
         $(#[$m])*
         #[repr(transparent)]
         #[derive(Copy, Clone, Debug, PartialEq, Default)]
+        // `transparent` so a unit serializes as its bare number: a `Beat` is
+        // `1.5` on the wire, not `[1.5]` or `{"0":1.5}`. Feature-gated like every
+        // other serde derive here, and applied in the macro so a wire-carried
+        // type built from any unit (`MeterChange`, which holds a `Beat`) does not
+        // have to special-case which units happen to have it.
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "serde", serde(transparent))]
         pub struct $name(pub $raw);
 
         impl $name {

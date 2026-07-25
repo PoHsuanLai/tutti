@@ -377,13 +377,23 @@ impl PluginClient {
     }
 
     /// Install a transport reader so the plugin receives a live per-block
-    /// [`TransportInfo`] (tempo, playhead, loop). Wrapped internally in a
-    /// transport source stamped with the current sample rate (updated live on
-    /// device changes). The snapshot is only sent to plugins advertising
+    /// [`TransportInfo`] (tempo, playhead, meter, bar, loop). Wrapped internally
+    /// in a transport source stamped with the current sample rate (updated live
+    /// on device changes). The snapshot is only sent to plugins advertising
     /// [`Features::TRANSPORT`]; others always get a default.
-    pub fn set_transport_source(&mut self, reader: tutti_core::transport::Transport) {
+    ///
+    /// `meter` is a separate handle rather than something read off the transport:
+    /// meter is a layer over the timeline, not transport state. Passing the same
+    /// `Arc<ArcSwap<..>>` the host publishes elsewhere means a meter edit reaches
+    /// running plugins without re-installing anything.
+    pub fn set_transport_source(
+        &mut self,
+        reader: tutti_core::transport::Transport,
+        meter: Arc<arc_swap::ArcSwap<tutti_core::meter::MeterMap>>,
+    ) {
         self.inputs.transport.install(Arc::new(TransportSource::new(
             Arc::new(reader),
+            meter,
             self.sample_rate,
         )));
     }

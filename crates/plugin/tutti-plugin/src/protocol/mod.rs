@@ -62,7 +62,7 @@ pub use tutti_plugin_types::{
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
     ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, ScaleChanges,
-    ScaleValue, TransportInfo,
+    ScaleValue, TimeSignature, TransportInfo,
 };
 
 #[cfg(test)]
@@ -319,8 +319,9 @@ mod tests {
     fn test_transport_info_default() {
         let info = TransportInfo::default();
         assert_eq!(info.timing.tempo, 120.0);
-        assert_eq!(info.timing.time_sig_numerator, 4);
-        assert_eq!(info.timing.time_sig_denominator, 4);
+        // 4/4 — the musical default, now expressed as the type's own default.
+        assert_eq!(u32::from(info.timing.signature.beats_per_bar()), 4);
+        assert_eq!(u32::from(info.timing.signature.note_value()), 4);
         assert!(!info.state.playing);
         assert!(!info.state.recording);
     }

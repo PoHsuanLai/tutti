@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use super::state::LoopSpan;
 use crate::params::{Beat, Bpm};
-use crate::{AtomicBool, AtomicF64};
+use crate::{AtomicBool, AtomicF64, AtomicI64};
 
 /// Transport values shared between threads.
 ///
@@ -33,6 +33,14 @@ pub struct TransportSettings {
     /// Derived from motion by [`MotionFsm`](super::MotionFsm) — the clock
     /// reads it to decide whether to advance. Not set directly.
     pub paused: Arc<AtomicBool>,
+    /// Free-running sample count since the stream started, written by
+    /// `TransportClock` every buffer.
+    ///
+    /// Unlike [`beat`](Self::beat) this never jumps: it ignores loops, seeks and
+    /// stops. Hosted plugins receive it as VST3's `continousTimeSamples` /
+    /// CLAP's `steady_time`, which free-running effects key off precisely
+    /// because the playhead is discontinuous.
+    pub steady_time: Arc<AtomicI64>,
 }
 
 impl TransportSettings {
@@ -44,7 +52,14 @@ impl TransportSettings {
             recording: Arc::new(AtomicBool::new(false)),
             in_preroll: Arc::new(AtomicBool::new(false)),
             paused: Arc::new(AtomicBool::new(true)),
+            steady_time: Arc::new(AtomicI64::new(0)),
         }
+    }
+
+    /// Samples elapsed since the stream started. Free-running: never reset by a
+    /// loop, seek, or stop.
+    pub fn steady_time(&self) -> i64 {
+        self.steady_time.load(Ordering::Relaxed)
     }
 
     pub fn tempo(&self) -> Bpm {

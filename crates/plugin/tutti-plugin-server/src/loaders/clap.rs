@@ -386,9 +386,7 @@ impl PluginInstance for ClapInstance {
                 width: s.width,
                 height: s.height,
             })
-            .map_err(|e| {
-                PluginError::Editor(tutti_plugin::EditorError::PluginError(e.to_string()))
-            })
+            .map_err(|e| PluginError::Editor(tutti_plugin::EditorError::PluginError(e.to_string())))
     }
 
     fn close_editor(&mut self) {
@@ -402,7 +400,8 @@ impl PluginInstance for ClapInstance {
     }
 
     fn set_state(&mut self, data: &[u8]) -> PluginResult<()> {
-        clap_dispatch_mut!(self, i => i.set_state(data)).map_err(|e| PluginError::State(e.to_string()))
+        clap_dispatch_mut!(self, i => i.set_state(data))
+            .map_err(|e| PluginError::State(e.to_string()))
     }
 }
 
@@ -434,10 +433,7 @@ fn convert_transport(
         .with_playing(transport.state.playing)
         .with_recording(transport.state.recording)
         .with_tempo(transport.timing.tempo)
-        .with_time_signature(
-            transport.timing.time_sig_numerator,
-            transport.timing.time_sig_denominator,
-        )
+        .with_time_signature(transport.timing.signature)
         .with_position_beats(
             transport.position.quarters,
             transport.position.samples as f64 / sr,
@@ -447,7 +443,9 @@ fn convert_transport(
             transport.loop_region.start_quarters,
             transport.loop_region.end_quarters,
         )
-        .with_bar(transport.bar.position_quarters, 0)
+        // The bar number now arrives over the wire, so pass it through instead
+        // of the hardcoded 0 this used to send.
+        .with_bar(transport.bar.position_quarters, transport.bar.number)
 }
 
 #[cfg(feature = "clap")]
@@ -1218,7 +1216,7 @@ mod tests {
         let transport = TransportInfo::new()
             .with_playing(true)
             .with_tempo(120.0)
-            .with_time_signature(4, 4);
+            .with_time_signature(tutti_plugin::server::TimeSignature::default());
 
         let num_samples = 512;
         let input_data = vec![vec![0.0f32; num_samples]; 2];

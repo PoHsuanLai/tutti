@@ -130,6 +130,22 @@ impl TransportClock {
         // `LoopRange` is non-empty by construction, so `wrap` needs no guard.
         self.current_beat = region.wrap(self.current_beat);
     }
+
+    /// Advance the free-running sample counter.
+    ///
+    /// Deliberately **not** gated on `paused`: this counts samples the device
+    /// has pulled, not musical time. A delay or LFO keyed to it must keep
+    /// running while the transport is stopped — that is the entire reason the
+    /// plugin ABIs carry it separately from the playhead.
+    ///
+    /// `Relaxed` because nothing else is published alongside it; a reader wants
+    /// the latest value, not ordering against other stores.
+    #[inline]
+    fn advance_steady_time(&self, samples: usize) {
+        if let Some(ref steady) = self.links.steady_time {
+            steady.fetch_add(samples as i64, Ordering::Relaxed);
+        }
+    }
 }
 
 impl AudioUnit for TransportClock {
@@ -191,6 +207,7 @@ impl AudioUnit for TransportClock {
         if let Some(ref writeback) = self.links.position_writeback {
             writeback.store(self.current_beat.get(), Ordering::Release);
         }
+        self.advance_steady_time(1);
     }
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
@@ -227,6 +244,7 @@ impl AudioUnit for TransportClock {
         if let Some(ref writeback) = self.links.position_writeback {
             writeback.store(self.current_beat.get(), Ordering::Release);
         }
+        self.advance_steady_time(size);
     }
 
     fn get_id(&self) -> u64 {
@@ -281,6 +299,7 @@ mod tests {
                 seek: SeekSlot::new(),
                 loop_span: Some(loop_span),
                 position_writeback: None,
+                steady_time: None,
             },
             44100.0,
         )
@@ -299,6 +318,7 @@ mod tests {
                 seek: seek.clone(),
                 loop_span: Some(LoopSpan::default()),
                 position_writeback: None,
+                steady_time: None,
             },
             44100.0,
         );
@@ -371,6 +391,81 @@ mod tests {
             (render.current_beat().get() - 2.0).abs() < 0.01,
             "isolated clock must still advance its own beat, got {}",
             render.current_beat().get()
+        );
+    }
+
+    /// The counter's defining property: it counts device samples, so it keeps
+    /// running while the transport is paused and does not jump on a loop wrap.
+    /// A free-running delay or LFO keyed to it depends on exactly that.
+    #[test]
+    fn steady_time_ignores_pause_and_loop() {
+        let (tempo, paused) = create_test_atomics();
+        let steady = Arc::new(crate::AtomicI64::new(0));
+        let mut links = ClockLinks::bare(Arc::clone(&tempo), Arc::clone(&paused));
+        links.steady_time = Some(Arc::clone(&steady));
+        // A two-beat loop, so the playhead wraps repeatedly over the run.
+        links.loop_span = Some({
+            let s = LoopSpan::new(0.0, 2.0);
+            s.set_enabled(true);
+            s
+        });
+        let mut clock = TransportClock::new(links, 44100.0);
+
+        let empty = BufferRef::new(&[]);
+        let mut scratch = BufferArray::<U2>::new();
+
+        clock.process(64, &empty, &mut scratch.buffer_mut());
+        assert_eq!(steady.load(Ordering::Relaxed), 64);
+
+        // Paused: musical time stops, sample time does not.
+        paused.store(true, Ordering::Release);
+        let beat_while_paused = clock.current_beat();
+        clock.process(64, &empty, &mut scratch.buffer_mut());
+        assert_eq!(
+            steady.load(Ordering::Relaxed),
+            128,
+            "steady time must advance while paused"
+        );
+        assert_eq!(
+            clock.current_beat(),
+            beat_while_paused,
+            "the playhead must not move while paused"
+        );
+
+        // Rolling again across many loop wraps: still strictly monotonic.
+        paused.store(false, Ordering::Release);
+        for _ in 0..100 {
+            clock.process(64, &empty, &mut scratch.buffer_mut());
+        }
+        assert_eq!(
+            steady.load(Ordering::Relaxed),
+            128 + 100 * 64,
+            "loop wraps must not reset the free-running counter"
+        );
+    }
+
+    /// `steady_time` is `Arc`-shared, so it is subject to the same cut as the
+    /// position writeback: an offline render must not advance the live counter.
+    #[test]
+    fn isolate_severs_steady_time() {
+        let (tempo, paused) = create_test_atomics();
+        let steady = Arc::new(crate::AtomicI64::new(9_000));
+        let mut links = ClockLinks::bare(tempo, paused);
+        links.steady_time = Some(Arc::clone(&steady));
+        let clock = TransportClock::new(links, 44100.0);
+
+        let mut render = clock.clone();
+        render.isolate();
+
+        let mut out = [0.0f32; 2];
+        for _ in 0..1_000 {
+            render.tick(&[], &mut out);
+        }
+
+        assert_eq!(
+            steady.load(Ordering::Relaxed),
+            9_000,
+            "an isolated render clock must not advance the live steady time"
         );
     }
 
@@ -483,6 +578,7 @@ mod tests {
                 seek: seek.clone(),
                 loop_span: Some(loop_span),
                 position_writeback: None,
+                steady_time: None,
             },
             44100.0,
         );
@@ -574,6 +670,7 @@ mod tests {
                 seek: seek.clone(),
                 loop_span: Some(loop_span.clone()),
                 position_writeback: None,
+                steady_time: None,
             },
             44100.0,
         );

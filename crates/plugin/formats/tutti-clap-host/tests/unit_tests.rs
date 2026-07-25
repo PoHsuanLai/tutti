@@ -1029,20 +1029,21 @@ fn test_audio_port_config_type() {
 #[test]
 fn test_transport_info_builder() {
     use tutti_clap_host::TransportInfo;
+    use tutti_plugin_types::{BeatsPerBar, NoteValue, TimeSignature};
 
     let transport = TransportInfo::new()
         .with_tempo(140.0)
         .with_playing(true)
         .with_recording(true)
-        .with_time_signature(3, 4)
+        .with_time_signature(TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER))
         .with_position_beats(8.0, 3.5)
         .with_loop(true, 4.0, 16.0);
 
     assert!((transport.timing.tempo - 140.0).abs() < f64::EPSILON);
     assert!(transport.state.playing);
     assert!(transport.state.recording);
-    assert_eq!(transport.timing.time_sig_numerator, 3);
-    assert_eq!(transport.timing.time_sig_denominator, 4);
+    assert_eq!(u32::from(transport.timing.signature.beats_per_bar()), 3);
+    assert_eq!(u32::from(transport.timing.signature.note_value()), 4);
     assert!((transport.position.beats - 8.0).abs() < f64::EPSILON);
     assert!((transport.position.seconds - 3.5).abs() < f64::EPSILON);
     assert!(transport.state.cycle_active);

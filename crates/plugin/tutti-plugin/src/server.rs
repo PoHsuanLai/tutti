@@ -25,7 +25,7 @@ pub use crate::protocol::{
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
     ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, PluginClass,
     PluginDescriptor, ProcessAudioData, SampleFormat, ScaleChanges, ScaleValue, SlabLayout,
-    TransportInfo, Vst2Category, MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
+    TimeSignature, TransportInfo, Vst2Category, MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
 };
 pub use crate::util::config::BridgeConfig;
 pub use crate::util::transport::shm::AudioSlab;

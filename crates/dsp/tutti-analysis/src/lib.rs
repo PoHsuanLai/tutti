@@ -52,13 +52,17 @@ pub mod geometry;
 pub mod grid;
 pub mod istft;
 pub mod live;
+pub mod onset;
+pub mod peaks;
 pub mod pitch;
 pub mod spectrum;
+pub mod stereo;
 pub mod stft;
 pub mod transform;
 pub mod transient;
 pub mod waveform;
 pub mod window;
+pub mod yin;
 
 pub use tutti_core::ChannelLayout;
 
@@ -66,11 +70,26 @@ pub use error::{AnalysisError, Result};
 pub use fft::FftScratch;
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
+pub use onset::{
+    complex_domain_deviation, detect_onsets, high_frequency_content, spectral_energy,
+    spectral_flux, step_onset, suppress_close_onsets, DetectionFunction, Onset, OnsetConfig,
+    OnsetState,
+};
+pub use peaks::{
+    finish as finish_peaks, step_peaks, summarize, summarize_block, PeakBlock, PeakConfig,
+    PeakState,
+};
+pub use stereo::{
+    correlate, step_ballistics, Ballistics, BallisticsState, StereoLevels, StereoReading,
+};
 pub use transform::{
     istft as istft_transform, stft, stft_magnitude, stft_polar, HopPolicy, NormalizedMagnitudes,
     RawMagnitudes, SampleRange, Stft, StftMagnitude, StftPolar, StftRequest,
 };
 pub use window::hann;
+pub use yin::{
+    frequency_to_note, note_to_frequency, yin, yin_track, Pitch, PitchEstimate, YinConfig,
+};
 
 /// Buffer-level mono folding, re-exported from the engine's downmix module.
 ///

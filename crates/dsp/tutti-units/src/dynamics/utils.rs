@@ -1,4 +1,4 @@
-use tutti_core::{Amplitude, BufferRef, ChannelLayout, Db, Ratio, SampleRate, Seconds};
+use tutti_core::{Amplitude, BufferRef, ChannelLayout, CompressionRatio, Db, SampleRate, Seconds};
 
 /// Max-abs sidechain detector level for the `tick` (single-sample slice) path.
 ///
@@ -68,7 +68,7 @@ pub(crate) fn time_to_coeff(time: impl Into<Seconds>, sample_rate: impl Into<Sam
 pub(crate) fn compute_compressor_gain_reduction(
     input_db: impl Into<Db>,
     threshold: impl Into<Db>,
-    ratio: impl Into<Ratio>,
+    ratio: impl Into<CompressionRatio>,
     knee: impl Into<Db>,
 ) -> Db {
     let input_db = input_db.into().get();

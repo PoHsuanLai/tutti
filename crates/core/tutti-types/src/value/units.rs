@@ -652,14 +652,97 @@ impl StereoWidth {
     }
 }
 
+// ── Dimensionless ratios ────────────────────────────────────────────────────
+//
+// Three types where there was one (`Ratio`, "used for compressor ratio and
+// filter Q"). They share only the property of being bare numbers; their ranges
+// do not overlap and one cannot be substituted for another:
+//
+//   CompressionRatio  [1, inf)  1:1 is no compression; below 1 would EXPAND
+//   Q                 (0, inf)  filter sharpness; 0.707 is flat, high is a
+//                               narrow peak
+//   Resonance         [0, 1]    ladder feedback; 1.0 self-oscillates
+//
+// `Q` and `Resonance` are the sharp case: both describe "how resonant", but a
+// ladder at 1.0 self-oscillates while a Q of 1.0 is a mild bell. Passing one
+// where the other belongs is silent and sounds like a mistuned filter.
+
 unit_newtype!(
-    /// Dimensionless ratio. Used for compressor ratio and filter Q.
-    Ratio
+    /// Compressor ratio: input dB over threshold per 1 dB of output.
+    ///
+    /// `1.0` is no compression. Below 1.0 would be an *expander*, which this
+    /// type deliberately does not represent — the compressor's setter clamps
+    /// up to 1.0 rather than silently inverting its own behaviour.
+    CompressionRatio
 );
-unit_ordered!(Ratio);
-unit_bounded!(Ratio, f32);
-unit_scalable!(Ratio, f32);
+unit_ordered!(CompressionRatio);
+unit_bounded!(CompressionRatio, f32);
 // NOT `unit_additive!`: 4:1 plus 4:1 is not 8:1.
+// NOT `unit_scalable!`: doubling a ratio is not doubling anything audible —
+// the mapping from ratio to gain reduction is logarithmic.
+
+impl CompressionRatio {
+    /// No compression.
+    pub const UNITY: CompressionRatio = CompressionRatio(1.0);
+
+    /// Constrain to a real compression ratio.
+    #[inline]
+    pub fn new_clamped(v: f32) -> CompressionRatio {
+        CompressionRatio(v.max(1.0))
+    }
+}
+
+unit_newtype!(
+    /// Filter quality factor — how sharply a filter resonates at its cutoff.
+    ///
+    /// `0.707` (1/sqrt2) is the maximally-flat Butterworth response; higher is
+    /// a narrower, more peaked resonance. Must stay above zero: `Q` divides
+    /// into the filter's damping term.
+    Q
+);
+unit_ordered!(Q);
+unit_bounded!(Q, f32);
+unit_scalable!(Q, f32);
+// NOT `unit_additive!`: two Q values do not sum into a third.
+
+impl Q {
+    /// Butterworth — the maximally flat response, `1/sqrt(2)`.
+    pub const BUTTERWORTH: Q = Q(core::f32::consts::FRAC_1_SQRT_2);
+
+    /// Constrain above zero, since `Q` divides into the damping term.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Q {
+        Q(v.max(f32::MIN_POSITIVE))
+    }
+}
+
+unit_newtype!(
+    /// Ladder-filter resonance, `0..1` — the normalized feedback around the
+    /// filter's four poles.
+    ///
+    /// Distinct from [`Q`] even though both mean "how resonant": at `1.0` a
+    /// ladder self-oscillates, whereas `Q(1.0)` is a mild bell. They are
+    /// different parameterizations of different topologies, and swapping them
+    /// is silent.
+    Resonance
+);
+unit_ordered!(Resonance);
+unit_bounded!(Resonance, f32);
+// NOT `unit_scalable!` / `unit_additive!`: as with `Feedback`, scaling walks
+// the value toward self-oscillation with no check.
+
+impl Resonance {
+    /// No resonance.
+    pub const NONE: Resonance = Resonance(0.0);
+    /// The self-oscillation threshold.
+    pub const SELF_OSCILLATION: Resonance = Resonance(1.0);
+
+    /// Constrain into `0..=1`.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Resonance {
+        Resonance(v).clamp(Self::NONE, Self::SELF_OSCILLATION)
+    }
+}
 // ── Angles ──────────────────────────────────────────────────────────────────
 //
 // Three types where there was one (`Degrees`), because a circle and a segment
@@ -1743,6 +1826,27 @@ mod tests {
         // Additive and scalable, unlike `Mix` and `Feedback`.
         assert_eq!(Depth(0.25) + Depth(0.25), Depth(0.5));
         assert_eq!(Depth::FULL * 0.5, Depth(0.5));
+    }
+
+    #[test]
+    fn the_three_ratios_have_disjoint_ranges() {
+        // Which is why one `Ratio` could not serve all three: a legal value of
+        // one is an illegal value of another.
+        assert_eq!(CompressionRatio::new_clamped(0.5), CompressionRatio::UNITY);
+        assert_eq!(CompressionRatio::new_clamped(4.0), CompressionRatio(4.0));
+
+        assert_eq!(Resonance::new_clamped(4.0), Resonance::SELF_OSCILLATION);
+        assert_eq!(Resonance::new_clamped(-1.0), Resonance::NONE);
+
+        // `Q` only has to stay above zero — it divides into the damping term.
+        assert!(Q::new_clamped(0.0).get() > 0.0);
+        assert!(Q::new_clamped(-5.0).get() > 0.0);
+        assert_eq!(Q::new_clamped(10.0), Q(10.0));
+
+        // The sharp case: 1.0 means "mild bell" as a Q and "self-oscillating"
+        // as a ladder resonance. Same number, different instrument.
+        assert!(Q(1.0) > Q::BUTTERWORTH);
+        assert_eq!(Resonance(1.0), Resonance::SELF_OSCILLATION);
     }
 
     #[test]

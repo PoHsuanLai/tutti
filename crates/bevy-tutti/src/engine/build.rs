@@ -43,8 +43,6 @@ use tutti_midi_types::MidiRoutingTable;
 #[cfg(feature = "sampler")]
 use tutti_sampler::{PendingSampler, Sampler};
 
-#[cfg(feature = "analysis")]
-use tutti_analysis::PendingAnalysis;
 
 /// Build the engine from a [`TuttiPlugin`](crate::TuttiPlugin) config and insert
 /// every subsystem resource into `app`. The audio callback is live on return.
@@ -184,8 +182,6 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // volume/mode via `ClickState`'s atomic setters directly.
     let metronome = click_settings;
 
-    #[cfg(feature = "analysis")]
-    let analysis = tutti_analysis::AnalysisRes::new(sample_rate, tap);
 
     // --- Hand each subsystem its transient `PendingX` (claimed in each
     // subsystem plugin's `build()`). The non-send CPAL driver has no subsystem
@@ -221,8 +217,6 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     #[cfg(feature = "sampler")]
     app.insert_resource(PendingSampler(Some(sampler)));
 
-    #[cfg(feature = "analysis")]
-    app.insert_resource(PendingAnalysis(Some(analysis)));
 
     Ok(())
 }

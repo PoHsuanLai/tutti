@@ -14,8 +14,6 @@ use tutti_core::ecs::{
 };
 
 use crate::AudioDeviceState;
-#[cfg(feature = "analysis")]
-use tutti_analysis::TuttiAnalysisPlugin;
 #[cfg(feature = "midi")]
 use tutti_midi_io::TuttiMidiPlugin;
 #[cfg(feature = "plugin")]
@@ -124,8 +122,6 @@ impl Plugin for TuttiPlugin {
         #[cfg(feature = "sampler")]
         app.add_plugins(TuttiSamplerPlugin);
         // (TuttiAutomationPlugin moved app-side to dawai_model::engine_bind.)
-        #[cfg(feature = "analysis")]
-        app.add_plugins(TuttiAnalysisPlugin);
         // Offline region render (sampler/clip-reader units → PCM); needs both
         // `export` and `sampler`. (The old message-driven whole-graph export
         // plugin was removed as dead scaffolding — whole-graph export runs

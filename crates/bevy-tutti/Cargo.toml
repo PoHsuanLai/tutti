@@ -37,7 +37,6 @@ tutti-units = { path = "../tutti/crates/dsp/tutti-units", default-features = fal
 # Optional subsystems (gated by bevy-tutti features below).
 tutti-sampler = { path = "../tutti/crates/dsp/tutti-sampler", optional = true, default-features = false }
 tutti-synth = { path = "../tutti/crates/dsp/tutti-synth", optional = true, default-features = false }
-tutti-analysis = { path = "../tutti/crates/dsp/tutti-analysis", optional = true }
 tutti-export = { path = "../tutti/crates/core/tutti-export", optional = true }
 tutti-midi-io = { path = "../tutti/crates/midi/tutti-midi-io", optional = true }
 tutti-midi-runtime = { path = "../tutti/crates/midi/tutti-midi-runtime", optional = true, default-features = false }
@@ -70,7 +69,7 @@ full = [
     "midi", "midi-hardware",
     "synth", "soundfont",
     "sampler",
-    "export", "analysis",
+    "export",
     "dsp", "spatial",
 ]
 
@@ -128,9 +127,8 @@ vst3 = ["plugin", "tutti-plugin-host/vst3", "tutti-plugin/vst3"]
 clap = ["plugin", "tutti-plugin-host/clap", "tutti-plugin/clap"]
 au = ["plugin", "tutti-plugin-host/au", "tutti-plugin/au"]
 
-# Export & analysis.
+# Export.
 export = ["dep:tutti-export"]
-analysis = ["dep:tutti-analysis"]
 
 [dev-dependencies]
 # RT-safety regression tests (relocated engine audio_io/graph tests) use the

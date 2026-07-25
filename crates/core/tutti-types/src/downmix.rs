@@ -28,6 +28,8 @@
 //! handful of indexed reads + arithmetic), so they are safe on the RT callback
 //! thread.
 
+use crate::ChannelLayout;
+
 /// −3 dB attenuation (`1/√2`) for center and surround fold-in.
 pub const M3DB: f32 = core::f32::consts::FRAC_1_SQRT_2;
 
@@ -149,6 +151,49 @@ pub fn fold_frame(src: &[f32], dst: &mut [f32]) {
     }
 }
 
+/// Fold a whole interleaved buffer to mono, `layout`-wide frames in.
+///
+/// The buffer-level counterpart to [`fold_frame_to_mono`], for the cold-path
+/// consumers that hand a mono buffer to an analysis or a decoder. Every one of
+/// those wrote its own version, and the ones that read only channels 0 and 1
+/// silently discarded the centre and surrounds of anything wider.
+///
+/// `Mono` input is returned as-is. A trailing partial frame is ignored.
+pub fn fold_buffer_to_mono(samples: &[f32], layout: ChannelLayout) -> Vec<f32> {
+    match layout.count() {
+        0 => Vec::new(),
+        1 => samples.to_vec(),
+        n => samples
+            .chunks_exact(n as usize)
+            .map(fold_frame_to_mono)
+            .collect(),
+    }
+}
+
+/// Fold planar channels to mono — one slice per channel, rather than one
+/// interleaved buffer.
+///
+/// The shape decoders hand back. Channels shorter than the longest read as
+/// silence past their end, so a ragged decode is padded rather than truncated.
+pub fn fold_planar_to_mono(channels: &[&[f32]]) -> Vec<f32> {
+    match channels {
+        [] => Vec::new(),
+        [only] => only.to_vec(),
+        _ => {
+            let len = channels.iter().map(|c| c.len()).max().unwrap_or(0);
+            let mut frame = vec![0.0f32; channels.len()];
+            (0..len)
+                .map(|i| {
+                    for (slot, ch) in frame.iter_mut().zip(channels) {
+                        *slot = ch.get(i).copied().unwrap_or(0.0);
+                    }
+                    fold_frame_to_mono(&frame)
+                })
+                .collect()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +311,63 @@ mod tests {
         let mut dst = [0.0; 6];
         fold_frame(&src, &mut dst);
         assert_eq!(dst, src);
+    }
+
+    #[test]
+    fn fold_buffer_to_mono_handles_each_layout() {
+        let mono = [1.0, 2.0, 3.0];
+        assert_eq!(fold_buffer_to_mono(&mono, ChannelLayout::Mono), mono);
+
+        let stereo = [1.0, 3.0, -2.0, 2.0];
+        assert_eq!(
+            fold_buffer_to_mono(&stereo, ChannelLayout::Stereo),
+            vec![2.0, 0.0]
+        );
+
+        assert!(fold_buffer_to_mono(&[], ChannelLayout::Stereo).is_empty());
+    }
+
+    /// The defect in the hand-rolled consumer copies: channels 2..N vanish.
+    #[test]
+    fn fold_buffer_to_mono_keeps_the_centre_channel() {
+        // 5.1 with only the centre non-zero — an L/R-only downmix returns
+        // silence and loses the dialogue.
+        let frame = [0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+        let folded = fold_buffer_to_mono(&frame, ChannelLayout::Multi(6));
+
+        assert_eq!(folded.len(), 1);
+        assert!(folded[0] > 0.0, "centre must survive, got {}", folded[0]);
+    }
+
+    #[test]
+    fn fold_buffer_to_mono_ignores_a_trailing_partial_frame() {
+        let samples = [1.0, 1.0, 2.0, 2.0, 3.0];
+        assert_eq!(
+            fold_buffer_to_mono(&samples, ChannelLayout::Stereo),
+            vec![1.0, 2.0]
+        );
+    }
+
+    #[test]
+    fn fold_planar_matches_interleaved() {
+        let left = [1.0f32, -2.0, 3.0];
+        let right = [3.0f32, 2.0, 1.0];
+        let interleaved = [1.0, 3.0, -2.0, 2.0, 3.0, 1.0];
+
+        assert_eq!(
+            fold_planar_to_mono(&[&left, &right]),
+            fold_buffer_to_mono(&interleaved, ChannelLayout::Stereo)
+        );
+    }
+
+    #[test]
+    fn fold_planar_pads_ragged_channels_rather_than_truncating() {
+        let long = [1.0f32, 1.0, 1.0];
+        let short = [1.0f32];
+        let folded = fold_planar_to_mono(&[&long, &short]);
+
+        assert_eq!(folded.len(), 3, "the longer channel sets the length");
+        assert_eq!(folded[0], 1.0);
+        assert_eq!(folded[1], 0.5, "missing samples read as silence");
     }
 }

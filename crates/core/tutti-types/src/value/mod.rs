@@ -15,6 +15,8 @@
 #[macro_use]
 pub mod units;
 
+pub mod note;
+
 pub mod param;
 pub mod samples;
 pub mod unit_param;
@@ -22,9 +24,10 @@ pub mod unit_param;
 pub use param::Param;
 pub use samples::Samples;
 pub use unit_param::{ParamAddr, UnitParam, UnitParamOutOfRange};
+pub use note::{Note, NotOnMidiScale, NoteNumberOutOfRange, PitchClass};
 pub use units::{
     Amplitude, ArcDegrees, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm, Cents,
-    CompressionRatio, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Phase, PhaseIncrement,
-    PlaybackRate, Radians, Resonance, SamplePosition, Seconds, Semitones, Spread, SrcRatio,
-    StereoWidth, StretchFactor, Unit, Q,
+    CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Pan,
+    Phase, PhaseIncrement, PlaybackRate, Radians, Resonance, SamplePosition, Seconds, Semitones,
+    Spread, SrcRatio, StereoWidth, StretchFactor, Unit, Q,
 };

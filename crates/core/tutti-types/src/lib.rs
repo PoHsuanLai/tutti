@@ -65,8 +65,9 @@ pub use rt::{
 // Value vocabulary.
 pub use value::{
     Amplitude, ArcDegrees, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm, Cents,
-    CompressionRatio, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Param, ParamAddr, Phase,
-    PhaseIncrement, PlaybackRate, Radians, Resonance, SamplePosition, Samples, Seconds, Semitones,
+    CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Hz, Mix,
+    NotOnMidiScale, Note, NoteNumberOutOfRange, Pan, Param, ParamAddr, Phase, PhaseIncrement,
+    PitchClass, PlaybackRate, Radians, Resonance, SamplePosition, Samples, Seconds, Semitones,
     Spread, SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam, UnitParamOutOfRange, Q,
 };
 
@@ -74,7 +75,9 @@ pub use value::{
 pub use channels::ChannelLayout;
 
 // Surround → stereo / mono downmix matrices (ITU-R BS.775 / Dolby).
-pub use downmix::{fold_frame, fold_frame_to_mono, fold_frame_to_stereo};
+pub use downmix::{
+    fold_buffer_to_mono, fold_frame, fold_frame_to_mono, fold_frame_to_stereo, fold_planar_to_mono,
+};
 
 // I/O edge + latency.
 pub use io::{pump, AudioIn, AudioOut};

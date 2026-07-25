@@ -321,6 +321,172 @@ mod tests {
         }
     }
 
+    /// Onsets land on the spikes that are actually there.
+    ///
+    /// Characterization of measured behavior, not of an ideal: the signal has
+    /// four known onsets and until now nothing checked that the detector found
+    /// *those* rather than some other count at some other positions.
+    ///
+    /// Reported onsets run slightly EARLY — up to ~15 ms here. That is
+    /// inherent to framing rather than a defect: a frame spanning
+    /// `[k*hop, k*hop + fft_size)` contains the spike but is attributed to its
+    /// start offset, so the error grows with how deep into the frame the spike
+    /// falls. The tolerance below is one FFT window, which bounds it.
+    ///
+    /// `Energy` is excluded deliberately: it reports **zero** onsets for this
+    /// signal. Broadband level change is the weakest of the four detection
+    /// functions, and 50-sample decaying spikes never lift the windowed energy
+    /// enough to clear the adaptive threshold. That is a real property of the
+    /// method, so it is pinned separately below rather than papered over.
+    #[test]
+    fn onsets_land_near_the_known_spikes() {
+        let sample_rate = 44100.0;
+        let truth = [0.1f64, 0.3, 0.5, 0.7];
+        let samples = generate_test_signal(sample_rate, 1.0, &truth);
+
+        for method in [
+            DetectionMethod::SpectralFlux,
+            DetectionMethod::HighFrequencyContent,
+            DetectionMethod::ComplexDomain,
+        ] {
+            let mut detector = TransientDetector::new(sample_rate);
+            detector.set_method(method);
+            detector.set_threshold(0.2);
+            detector.set_sensitivity(2.0);
+
+            let detected = detector.detect(&samples);
+            assert_eq!(
+                detected.len(),
+                truth.len(),
+                "{method:?}: expected {} onsets, got {:?}",
+                truth.len(),
+                detected.iter().map(|t| t.time).collect::<Vec<_>>()
+            );
+
+            let tolerance = DEFAULT_FFT_SIZE as f64 / sample_rate;
+            for (found, &expected) in detected.iter().zip(&truth) {
+                assert!(
+                    (found.time - expected).abs() <= tolerance,
+                    "{method:?}: onset at {} is not within one window of {expected}",
+                    found.time
+                );
+                // `time` and `sample_position` must describe the same instant.
+                // They are stored as two fields today and can drift apart.
+                assert_eq!(
+                    found.sample_position,
+                    (found.time * sample_rate).round() as usize
+                );
+            }
+        }
+    }
+
+    /// `Energy` misses short decaying spikes that the spectral methods catch.
+    ///
+    /// Pinned so the rewrite does not silently "fix" or worsen it: this is the
+    /// documented weakness of the cheapest detection function, and a change
+    /// here should be a deliberate choice rather than a surprise.
+    #[test]
+    fn energy_method_misses_short_decaying_spikes() {
+        let sample_rate = 44100.0;
+        let samples = generate_test_signal(sample_rate, 1.0, &[0.1, 0.3, 0.5, 0.7]);
+
+        let mut detector = TransientDetector::new(sample_rate);
+        detector.set_method(DetectionMethod::Energy);
+        detector.set_threshold(0.2);
+        detector.set_sensitivity(2.0);
+
+        assert!(
+            detector.detect(&samples).is_empty(),
+            "Energy is expected to miss these; if it now finds them, the \
+             detection function changed"
+        );
+    }
+
+    /// `find_peaks` keeps strict local maxima above the adaptive threshold,
+    /// and never the first or last point.
+    #[test]
+    fn find_peaks_keeps_strict_maxima_above_the_adaptive_threshold() {
+        let detector = TransientDetector::new(44100.0);
+
+        // Flat input: no maxima, so nothing survives regardless of threshold.
+        let flat: Vec<(usize, f32)> = (0..8).map(|i| (i * 100, 1.0)).collect();
+        assert!(detector.find_peaks(&flat).is_empty());
+
+        // One clear spike among low values. mean/std put the threshold well
+        // below the spike and well above the floor.
+        let mut fn_vals: Vec<(usize, f32)> = (0..9).map(|i| (i * 100, 0.1)).collect();
+        fn_vals[4].1 = 5.0;
+        let peaks = detector.find_peaks(&fn_vals);
+        assert_eq!(peaks, vec![(400, 1.0)], "strength normalizes to the max");
+
+        // Endpoints are never reported, even when they are the largest value:
+        // the scan runs 1..len-1 because a maximum needs both neighbours.
+        let mut edge: Vec<(usize, f32)> = (0..9).map(|i| (i * 100, 0.1)).collect();
+        edge[0].1 = 5.0;
+        edge[8].1 = 5.0;
+        assert!(detector.find_peaks(&edge).is_empty());
+
+        // Too few points to have an interior at all.
+        assert!(detector.find_peaks(&[(0, 1.0)]).is_empty());
+        assert!(detector.find_peaks(&[(0, 1.0), (100, 9.0)]).is_empty());
+    }
+
+    /// `cleanup_transients` drops the weaker of any pair closer than the gap.
+    #[test]
+    fn cleanup_transients_keeps_the_stronger_of_a_close_pair() {
+        let mk = |time: f64, strength: f32| Transient {
+            sample_position: (time * 44100.0) as usize,
+            time,
+            strength,
+        };
+
+        // Second is stronger — the first goes.
+        let mut ts = vec![mk(0.10, 0.4), mk(0.11, 0.9), mk(0.50, 0.5)];
+        TransientDetector::cleanup_transients(&mut ts, 0.05);
+        assert_eq!(ts.len(), 2);
+        assert_eq!(ts[0].strength, 0.9);
+        assert_eq!(ts[1].strength, 0.5);
+
+        // First is stronger — the second goes.
+        let mut ts = vec![mk(0.10, 0.9), mk(0.11, 0.4), mk(0.50, 0.5)];
+        TransientDetector::cleanup_transients(&mut ts, 0.05);
+        assert_eq!(ts.len(), 2);
+        assert_eq!(ts[0].strength, 0.9);
+
+        // Already far enough apart: untouched.
+        let mut ts = vec![mk(0.10, 0.4), mk(0.30, 0.9)];
+        TransientDetector::cleanup_transients(&mut ts, 0.05);
+        assert_eq!(ts.len(), 2);
+
+        // Degenerate inputs are no-ops.
+        let mut ts = vec![mk(0.1, 0.5)];
+        TransientDetector::cleanup_transients(&mut ts, 0.05);
+        assert_eq!(ts.len(), 1);
+        let mut ts: Vec<Transient> = Vec::new();
+        TransientDetector::cleanup_transients(&mut ts, 0.05);
+        assert!(ts.is_empty());
+    }
+
+    /// `min_gap` suppression inside `detect` itself.
+    #[test]
+    fn min_gap_suppresses_onsets_that_are_too_close() {
+        let sample_rate = 44100.0;
+        let samples = generate_test_signal(sample_rate, 1.0, &[0.1, 0.3, 0.5, 0.7]);
+
+        let mut detector = TransientDetector::new(sample_rate);
+        detector.set_threshold(0.2);
+        detector.set_sensitivity(2.0);
+        let baseline = detector.detect(&samples).len();
+
+        // A gap wider than the spacing collapses everything after the first.
+        detector.set_min_gap_ms(500.0);
+        let widened = detector.detect(&samples);
+        assert!(
+            widened.len() < baseline,
+            "a 500 ms gap should suppress onsets spaced 200 ms apart"
+        );
+    }
+
     #[test]
     fn test_detection_methods() {
         let sample_rate = 44100.0;

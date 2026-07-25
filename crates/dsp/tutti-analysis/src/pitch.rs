@@ -485,6 +485,56 @@ mod tests {
         );
     }
 
+    /// `detect` carries nothing between calls.
+    ///
+    /// The scratch buffers are fully overwritten each call, so unlike
+    /// `TransientDetector` this really is a pure function wearing a struct.
+    /// Pinned because Stage 6 turns it into a free `yin()` on exactly that
+    /// basis — if this ever fails, the extraction is unsound.
+    #[test]
+    fn detect_is_idempotent_across_calls() {
+        let sample_rate = 44100.0;
+        let a = generate_sine(sample_rate, 440.0, 0.1);
+        let b = generate_sine(sample_rate, 220.0, 0.1);
+
+        let mut detector = PitchDetector::new(sample_rate);
+        let first = detector.detect(&a);
+        let _ = detector.detect(&b);
+        let again = detector.detect(&a);
+
+        assert_eq!(first.frequency, again.frequency);
+        assert_eq!(first.confidence, again.confidence);
+        assert_eq!(first.midi_note, again.midi_note);
+    }
+
+    /// KNOWN DEFECT, pinned: an inverted range silently detects nothing.
+    ///
+    /// `with_range(sr, 2000.0, 50.0)` constructs happily, then every `detect`
+    /// bails because `max_period <= min_period` — so the detector reports
+    /// "unvoiced" forever on a signal it would otherwise track. Two adjacent
+    /// `f32` parameters make the transposition easy and the failure silent.
+    ///
+    /// Stage 6 makes this a construction error rather than a runtime nothing.
+    #[test]
+    fn inverted_frequency_range_yields_permanent_unvoiced() {
+        let sample_rate = 44100.0;
+        let samples = generate_sine(sample_rate, 440.0, 0.2);
+
+        let mut correct = PitchDetector::with_range(sample_rate, 50.0, 2000.0);
+        assert!(
+            correct.detect(&samples).is_voiced(),
+            "sanity: the right way round finds the tone"
+        );
+
+        let mut inverted = PitchDetector::with_range(sample_rate, 2000.0, 50.0);
+        let result = inverted.detect(&samples);
+        assert!(
+            !result.is_voiced(),
+            "expected silent failure; if this now detects, the range is validated"
+        );
+        assert_eq!(result.frequency, 0.0);
+    }
+
     #[test]
     fn test_note_names() {
         let result = PitchResult {

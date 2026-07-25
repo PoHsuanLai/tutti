@@ -43,3 +43,12 @@ bevy = ["dep:bevy_ecs", "dep:bevy_app", "dep:bevy_reflect", "dep:bevy_log", "tut
 # `dep:serde` (not bare `serde`) so this feature replaces the implicit
 # optional-dep feature rather than colliding with it.
 serde = ["dep:serde"]
+
+[dev-dependencies]
+# Reproducible noise for the correlation tests, which otherwise hand-roll a
+# generator. Seeded, so an uncorrelated-input assertion is not flaky.
+#
+# No `assert_no_alloc` here, unlike most sibling crates: everything this crate
+# does is cold-path batch analysis that legitimately allocates its output. The
+# one thread-adjacent path (`live.rs`) is being removed rather than gated.
+rand = "0.8"

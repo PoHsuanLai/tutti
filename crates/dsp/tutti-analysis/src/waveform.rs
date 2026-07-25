@@ -2,7 +2,7 @@
 
 use tutti_core::ChannelLayout;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WaveformBlock {
     pub min: f32,
@@ -310,6 +310,149 @@ mod tests {
     fn test_empty_samples() {
         let summary = compute_summary(&[], ChannelLayout::Mono, 100);
         assert!(summary.is_empty());
+    }
+
+    /// Block values, not just block shape.
+    ///
+    /// The existing tests check `min <= max` and `rms >= 0`, which every
+    /// possible implementation satisfies. A ramp makes each block's numbers
+    /// exactly predictable.
+    #[test]
+    fn block_values_are_exact_for_a_ramp() {
+        let samples: Vec<f32> = (0..500).map(|i| i as f32).collect();
+        let summary = compute_summary(&samples, ChannelLayout::Mono, 100);
+
+        assert_eq!(summary.len(), 5);
+        for (i, block) in summary.blocks.iter().enumerate() {
+            let lo = (i * 100) as f32;
+            assert_eq!(block.min, lo);
+            assert_eq!(block.max, lo + 99.0);
+
+            // RMS of 100 consecutive integers starting at `lo`.
+            let expected = ((0..100)
+                .map(|k| {
+                    let s = lo + k as f32;
+                    s * s
+                })
+                .sum::<f32>()
+                / 100.0)
+                .sqrt();
+            assert!(
+                (block.rms - expected).abs() < 1e-2,
+                "block {i} rms {} != {expected}",
+                block.rms
+            );
+        }
+
+        assert_eq!(summary.peak(), 499.0);
+    }
+
+    /// A trailing partial block is kept, and summarizes only what it holds.
+    #[test]
+    fn trailing_partial_block_is_kept() {
+        let samples: Vec<f32> = (0..250).map(|i| i as f32).collect();
+        let summary = compute_summary(&samples, ChannelLayout::Mono, 100);
+
+        assert_eq!(summary.len(), 3, "div_ceil keeps the short final block");
+        assert_eq!(summary.blocks[2].min, 200.0);
+        assert_eq!(summary.blocks[2].max, 249.0, "only the 50 samples present");
+        assert_eq!(summary.total_samples, 250);
+    }
+
+    /// Interleaved input reads channel 0 and counts frames, not samples.
+    #[test]
+    fn stereo_reads_the_first_channel_only() {
+        // Left ramps up, right is constant and far larger — if the right
+        // channel leaked in, min/max would show it.
+        let samples: Vec<f32> = (0..200)
+            .flat_map(|i| [i as f32, 9999.0])
+            .collect();
+        let summary = compute_summary(&samples, ChannelLayout::Stereo, 100);
+
+        assert_eq!(summary.len(), 2);
+        assert_eq!(summary.total_samples, 200, "frames, not interleaved samples");
+        assert_eq!(summary.blocks[0].min, 0.0);
+        assert_eq!(summary.blocks[0].max, 99.0);
+        assert_eq!(summary.blocks[1].max, 199.0);
+    }
+
+    /// `downsample_summary` halves the block count, unions min/max, and takes
+    /// the quadratic mean of the two RMS values.
+    #[test]
+    fn downsampling_unions_extremes_and_rms_combines_quadratically() {
+        let samples: Vec<f32> = (0..400).map(|i| i as f32).collect();
+        let multi = MultiResolutionSummary::from_samples(&samples, ChannelLayout::Mono, 100, 2);
+
+        let fine = &multi.levels[0];
+        let coarse = &multi.levels[1];
+
+        assert_eq!(fine.len(), 4);
+        assert_eq!(coarse.len(), 2);
+        assert_eq!(coarse.samples_per_block, 200);
+        assert_eq!(
+            coarse.total_samples, fine.total_samples,
+            "downsampling changes resolution, not duration"
+        );
+
+        for (i, block) in coarse.blocks.iter().enumerate() {
+            let (a, b) = (&fine.blocks[i * 2], &fine.blocks[i * 2 + 1]);
+            assert_eq!(block.min, a.min.min(b.min));
+            assert_eq!(block.max, a.max.max(b.max));
+            let expected = ((a.rms * a.rms + b.rms * b.rms) / 2.0).sqrt();
+            assert!((block.rms - expected).abs() < 1e-2);
+        }
+    }
+
+    /// An odd block count carries the last block through unpaired.
+    #[test]
+    fn downsampling_an_odd_block_count_keeps_the_last_block_as_is() {
+        let samples: Vec<f32> = (0..300).map(|i| i as f32).collect();
+        let multi = MultiResolutionSummary::from_samples(&samples, ChannelLayout::Mono, 100, 2);
+
+        assert_eq!(multi.levels[0].len(), 3);
+        assert_eq!(multi.levels[1].len(), 2);
+        // The unpaired third block is copied verbatim, not halved or dropped.
+        assert_eq!(multi.levels[1].blocks[1], multi.levels[0].blocks[2]);
+    }
+
+    /// `at_level` saturates at the coarsest level rather than panicking.
+    #[test]
+    fn at_level_saturates_past_the_end() {
+        let samples: Vec<f32> = (0..1000).map(|i| i as f32).collect();
+        let multi = MultiResolutionSummary::from_samples(&samples, ChannelLayout::Mono, 64, 3);
+
+        assert_eq!(multi.num_levels(), 3);
+        assert_eq!(multi.at_level(0).samples_per_block, 64);
+        assert_eq!(multi.at_level(2).samples_per_block, 256);
+        assert_eq!(
+            multi.at_level(99).samples_per_block,
+            256,
+            "out of range returns the coarsest"
+        );
+    }
+
+    /// `for_zoom` picks one level finer than the first that is coarse enough.
+    ///
+    /// Characterizing the off-by-one deliberately: the loop returns
+    /// `levels[i - 1]` on match, so asking for a zoom that a level exactly
+    /// covers yields the level *below* it. Pinned as-is so the rewrite has to
+    /// decide about it explicitly rather than drift.
+    #[test]
+    fn for_zoom_picks_the_level_below_the_first_match() {
+        let samples: Vec<f32> = (0..4000).map(|i| i as f32).collect();
+        let multi = MultiResolutionSummary::from_samples(&samples, ChannelLayout::Mono, 64, 3);
+        // levels: 64, 128, 256
+
+        // Finer than every level: level 0.
+        assert_eq!(multi.for_zoom(1).samples_per_block, 64);
+        // Exactly level 0's width: still level 0 (i == 0, no step back).
+        assert_eq!(multi.for_zoom(64).samples_per_block, 64);
+        // Exactly level 1's width: steps back to level 0.
+        assert_eq!(multi.for_zoom(128).samples_per_block, 64);
+        // Exactly level 2's width: steps back to level 1.
+        assert_eq!(multi.for_zoom(256).samples_per_block, 128);
+        // Coarser than every level: the coarsest.
+        assert_eq!(multi.for_zoom(100_000).samples_per_block, 256);
     }
 
     #[test]

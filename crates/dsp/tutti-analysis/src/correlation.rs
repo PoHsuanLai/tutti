@@ -261,6 +261,103 @@ mod tests {
         );
     }
 
+    /// Independent noise sits near zero correlation.
+    ///
+    /// The sine-versus-sine case above only proves "less than 0.9", which
+    /// leaves most of the range. Seeded so this cannot go flaky.
+    #[test]
+    fn independent_noise_is_near_zero_correlation() {
+        use rand::{Rng, SeedableRng};
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0xA11CE);
+
+        let left: Vec<f32> = (0..20000).map(|_| rng.gen_range(-1.0..1.0)).collect();
+        let right: Vec<f32> = (0..20000).map(|_| rng.gen_range(-1.0..1.0)).collect();
+
+        let analysis = analyze_stereo(&left, &right);
+        assert!(
+            analysis.correlation.abs() < 0.05,
+            "independent noise should be near 0, got {}",
+            analysis.correlation
+        );
+        // Uncorrelated channels sit near the natural image width.
+        assert!((analysis.width - 1.0).abs() < 0.05);
+    }
+
+    /// `width` is exactly `1 - correlation` as produced by the kernel.
+    ///
+    /// The invariant the meter breaks (see below). Pinned on the pure path so
+    /// the rewrite can make it structural.
+    #[test]
+    fn width_is_the_complement_of_correlation() {
+        for (l, r) in [
+            (1.0f32, 1.0f32),
+            (1.0, -1.0),
+            (1.0, 0.0),
+            (0.5, 0.25),
+        ] {
+            let left = vec![l; 1000];
+            let right = vec![r; 1000];
+            let a = analyze_stereo(&left, &right);
+            assert!(
+                (a.width - (1.0 - a.correlation)).abs() < 1e-6,
+                "width {} != 1 - correlation {}",
+                a.width,
+                a.correlation
+            );
+        }
+    }
+
+    /// KNOWN DEFECT, pinned: `set_smoothing` does nothing.
+    ///
+    /// The setter stores a field that `smooth_value` never reads — only
+    /// `attack_time`/`release_time` participate. Pinned so the rewrite has to
+    /// address it deliberately: either wire it up or delete it.
+    #[test]
+    fn set_smoothing_is_currently_a_no_op() {
+        let left: Vec<f32> = (0..2000).map(|i| (i as f32 / 50.0).sin()).collect();
+        let right: Vec<f32> = left.iter().map(|s| s * 0.5).collect();
+
+        let mut slow = CorrelationMeter::new(44100.0);
+        slow.set_smoothing(0.99);
+        let mut fast = CorrelationMeter::new(44100.0);
+        fast.set_smoothing(0.0);
+
+        for chunk in left.chunks(256).zip(right.chunks(256)) {
+            slow.process(chunk.0, chunk.1);
+            fast.process(chunk.0, chunk.1);
+        }
+
+        assert_eq!(
+            slow.current().correlation,
+            fast.current().correlation,
+            "smoothing is not read; if this now differs, the field was wired up"
+        );
+    }
+
+    /// KNOWN DEFECT, pinned: smoothing can desync `width` from `correlation`.
+    ///
+    /// `analyze_stereo` guarantees `width == 1 - correlation`, but `process`
+    /// smooths the two through independent attack/release branches, so the
+    /// smoothed pair can violate the invariant the kernel establishes.
+    #[test]
+    fn smoothed_width_can_contradict_smoothed_correlation() {
+        let mut meter = CorrelationMeter::new(44100.0);
+
+        // Start correlated, then flip to anti-correlated: the two fields move
+        // in opposite directions, so they take different attack/release paths.
+        let mono: Vec<f32> = (0..512).map(|i| (i as f32 / 20.0).sin()).collect();
+        meter.process(&mono, &mono);
+        let flipped: Vec<f32> = mono.iter().map(|s| -s).collect();
+        meter.process(&mono, &flipped);
+
+        let a = meter.current();
+        assert!(
+            (a.width - (1.0 - a.correlation)).abs() > 1e-3,
+            "expected the smoothed pair to disagree; if it now holds, the \
+             desync was fixed"
+        );
+    }
+
     #[test]
     fn test_balance() {
         // Left only

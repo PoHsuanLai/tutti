@@ -1872,7 +1872,7 @@ mod tests {
 
         // Build a Disk voice with no butler channel.
         let (writer, reader) =
-            RegionBuffer::with_capacity(RegionId(1), std::path::PathBuf::new(), 128);
+            RegionBuffer::with_capacity(RegionId(1), std::path::PathBuf::new(), 128, 2);
         drop(writer);
         let state = std::sync::Arc::new(RtState::new());
         let inner = StreamingSamplerUnit::new(share_reader(reader), state.clone());

@@ -2,13 +2,13 @@
 
 use super::cache::LruCache;
 use super::io::refill::load_wave;
-use super::io::wave_io::wave_frame;
+use super::io::wave_io::wave_frame_into;
 use super::metrics::Metrics;
 use super::plan::{ChannelPlan, LoopStatus};
 use super::region_map::RegionMap;
 use dashmap::DashMap;
 use std::path::PathBuf;
-use tutti_core::{ChannelLayout, Wave};
+use tutti_core::Wave;
 
 /// Check and handle stream loop conditions with crossfade support.
 ///
@@ -46,16 +46,19 @@ pub(crate) fn handle_loops(
 
                 if let Some(writer) = regions.get(link.region_id) {
                     if let Some(wave) = load_wave(cache, metrics, writer.file_path()) {
+                        let ch = writer.channels();
                         let fadeout_start = (loop_end as usize).saturating_sub(fade_len);
-                        let fadeout = capture_samples(&wave, fadeout_start, fade_len);
+                        let fadeout = capture_frames(&wave, fadeout_start, fade_len, ch);
 
                         let fadein = if let Some(preloop) = loop_cfg.preloop_buffer.as_deref() {
                             preloop.to_vec()
                         } else {
-                            capture_samples(&wave, loop_start as usize, fade_len)
+                            capture_frames(&wave, loop_start as usize, fade_len, ch)
                         };
 
-                        stream_state.rt_state.start_loop_crossfade(fadeout, fadein);
+                        stream_state
+                            .rt_state
+                            .start_loop_crossfade(fadeout, fadein, ch);
                     }
                 }
             }
@@ -76,8 +79,10 @@ pub(crate) fn handle_loops(
                             .as_ref()
                             .map_or(wave.len(), |c| c.range.1 as usize);
                         let loop_len = loop_end - loop_start as usize;
+                        // Both sides are FRAME counts — `write_space()` is
+                        // frame-denominated, so this comparison needs no scaling.
                         let prefill_len = loop_len.min(writer.write_space());
-                        capture_samples(&wave, loop_start as usize, prefill_len)
+                        capture_frames(&wave, loop_start as usize, prefill_len, writer.channels())
                     } else {
                         Vec::new()
                     };
@@ -86,7 +91,7 @@ pub(crate) fn handle_loops(
                 writer.set_file_position(loop_start);
 
                 if !prefill_samples.is_empty() {
-                    let written = writer.write(&prefill_samples);
+                    let written = writer.push_interleaved(&prefill_samples);
                     writer.set_file_position(loop_start + written as u64);
                 }
             }
@@ -94,13 +99,16 @@ pub(crate) fn handle_loops(
     }
 }
 
-/// Capture samples from a wave file into a Vec for crossfade.
-pub(crate) fn capture_samples(wave: &Wave, start: usize, count: usize) -> Vec<(f32, f32)> {
-    let mut samples = Vec::with_capacity(count);
-    let layout = ChannelLayout::from(wave.channels());
-    for i in 0..count {
-        let [l, r] = wave_frame(wave, layout, start + i);
-        samples.push((l, r));
+/// Capture `count` frames from a wave file as a flat interleaved buffer at
+/// `channels` samples per frame, for a crossfade.
+///
+/// Butler thread only, so the allocation is fine — the whole lock-free
+/// crossfade design is built around handing the RT side a finished buffer.
+pub(crate) fn capture_frames(wave: &Wave, start: usize, count: usize, channels: usize) -> Vec<f32> {
+    let ch = channels.max(1);
+    let mut samples = vec![0.0f32; count * ch];
+    for (i, frame) in samples.chunks_exact_mut(ch).enumerate() {
+        wave_frame_into(wave, start + i, frame);
     }
     samples
 }
@@ -121,7 +129,8 @@ pub(crate) fn fadeout_samples(
     metrics: &Metrics,
     file_path: &PathBuf,
     count: usize,
-) -> Vec<(f32, f32)> {
+    channels: usize,
+) -> Vec<f32> {
     if count == 0 {
         return Vec::new();
     }
@@ -134,7 +143,7 @@ pub(crate) fn fadeout_samples(
 
     // Same file-sourced capture as `fadein_samples`, anchored at the position
     // the ring is about to hand to the audio thread.
-    fadein_samples(cache, metrics, file_path, read_position, count)
+    fadein_samples(cache, metrics, file_path, read_position, count, channels)
 }
 
 /// Capture samples from the Wave file at the new seek position for fadein.
@@ -144,7 +153,8 @@ pub(crate) fn fadein_samples(
     file_path: &PathBuf,
     position_samples: u64,
     count: usize,
-) -> Vec<(f32, f32)> {
+    channels: usize,
+) -> Vec<f32> {
     if count == 0 {
         return Vec::new();
     }
@@ -153,10 +163,13 @@ pub(crate) fn fadein_samples(
         return Vec::new();
     };
 
-    capture_samples(&wave, position_samples as usize, count)
+    capture_frames(&wave, position_samples as usize, count, channels)
 }
 
 pub(crate) fn buffer_size_for_file(file_length_samples: u64, sample_rate: f64) -> usize {
+    // Rough byte estimate for the buffer-size heuristic. Assumes stereo f32;
+    // at a wider width it under-estimates, which only makes the chosen buffer
+    // slightly generous — it never affects correctness.
     let file_size_bytes = file_length_samples * 2 * 4;
     let file_size_mb = file_size_bytes as f64 / (1024.0 * 1024.0);
 
@@ -198,43 +211,41 @@ mod tests {
     fn test_capture_samples_basic() {
         let wave = make_test_wave(&[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
 
-        let captured = capture_samples(&wave, 0, 3);
+        let captured = capture_frames(&wave, 0, 3, 2);
 
-        assert_eq!(captured.len(), 3);
-        assert_eq!(captured[0], (1.0, 2.0));
-        assert_eq!(captured[1], (3.0, 4.0));
-        assert_eq!(captured[2], (5.0, 6.0));
+        assert_eq!(captured.len(), 3 * 2, "3 frames x 2 channels");
+        assert_eq!(captured, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 
     #[test]
     fn test_capture_samples_with_offset() {
         let wave = make_test_wave(&[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
 
-        let captured = capture_samples(&wave, 2, 2);
+        let captured = capture_frames(&wave, 2, 2, 2);
 
-        assert_eq!(captured.len(), 2);
-        assert_eq!(captured[0], (5.0, 6.0));
-        assert_eq!(captured[1], (7.0, 8.0));
+        assert_eq!(captured.len(), 2 * 2);
+        assert_eq!(captured, [5.0, 6.0, 7.0, 8.0]);
     }
 
     #[test]
     fn test_capture_samples_past_end_pads_zeros() {
         let wave = make_test_wave(&[(1.0, 2.0), (3.0, 4.0)]);
 
-        let captured = capture_samples(&wave, 1, 4);
+        let captured = capture_frames(&wave, 1, 4, 2);
 
-        assert_eq!(captured.len(), 4);
-        assert_eq!(captured[0], (3.0, 4.0)); // Valid sample
-        assert_eq!(captured[1], (0.0, 0.0)); // Past end - zero
-        assert_eq!(captured[2], (0.0, 0.0));
-        assert_eq!(captured[3], (0.0, 0.0));
+        assert_eq!(captured.len(), 4 * 2);
+        assert_eq!(&captured[0..2], [3.0, 4.0]); // Valid sample
+        assert!(
+            captured[2..].iter().all(|&s| s == 0.0),
+            "past end must be zero"
+        );
     }
 
     #[test]
     fn test_capture_samples_empty_request() {
         let wave = make_test_wave(&[(1.0, 2.0)]);
 
-        let captured = capture_samples(&wave, 0, 0);
+        let captured = capture_frames(&wave, 0, 0, 2);
 
         assert!(captured.is_empty());
     }
@@ -243,12 +254,13 @@ mod tests {
     fn test_capture_samples_mono_duplicates_to_stereo() {
         let wave = make_mono_wave(&[1.0, 2.0, 3.0]);
 
-        let captured = capture_samples(&wave, 0, 3);
+        let captured = capture_frames(&wave, 0, 3, 2);
 
-        assert_eq!(captured.len(), 3);
-        assert_eq!(captured[0], (1.0, 1.0)); // Mono duplicated to stereo
-        assert_eq!(captured[1], (2.0, 2.0));
-        assert_eq!(captured[2], (3.0, 3.0));
+        assert_eq!(captured.len(), 3 * 2, "3 frames x 2 channels");
+        // Mono fans to every channel — the shared policy, same as the RT reader.
+        assert_eq!(&captured[0..2], [1.0, 1.0]);
+        assert_eq!(&captured[2..4], [2.0, 2.0]);
+        assert_eq!(&captured[4..6], [3.0, 3.0]);
     }
 
     #[test]
@@ -323,7 +335,7 @@ mod tests {
         let metrics = Metrics::new();
         let path = PathBuf::from("nonexistent.wav");
         let state = ChannelPlan::default();
-        let samples = fadeout_samples(&state, &cache, &metrics, &path, 0);
+        let samples = fadeout_samples(&state, &cache, &metrics, &path, 0, 2);
 
         assert!(samples.is_empty());
     }
@@ -337,7 +349,7 @@ mod tests {
         let path = PathBuf::from("nonexistent.wav");
         let state = ChannelPlan::default();
         // No active link → nothing to fade out.
-        let samples = fadeout_samples(&state, &cache, &metrics, &path, 100);
+        let samples = fadeout_samples(&state, &cache, &metrics, &path, 100, 2);
 
         assert!(samples.is_empty());
     }
@@ -348,7 +360,7 @@ mod tests {
         let metrics = Metrics::new();
         let path = PathBuf::from("nonexistent.wav");
 
-        let samples = fadein_samples(&cache, &metrics, &path, 0, 0);
+        let samples = fadein_samples(&cache, &metrics, &path, 0, 0, 2);
 
         assert!(samples.is_empty());
     }
@@ -359,7 +371,7 @@ mod tests {
         let metrics = Metrics::new();
         let path = PathBuf::from("nonexistent.wav");
 
-        let samples = fadein_samples(&cache, &metrics, &path, 0, 100);
+        let samples = fadein_samples(&cache, &metrics, &path, 0, 100, 2);
 
         // File not in cache and doesn't exist, so returns empty
         assert!(samples.is_empty());
@@ -371,13 +383,13 @@ mod tests {
         let wave = Wave::new(2, 48000.0);
         assert_eq!(wave.len(), 0);
 
-        let captured = capture_samples(&wave, 0, 3);
+        let captured = capture_frames(&wave, 0, 3, 2);
 
         // Should pad with zeros since wave is empty
-        assert_eq!(captured.len(), 3);
-        assert_eq!(captured[0], (0.0, 0.0));
-        assert_eq!(captured[1], (0.0, 0.0));
-        assert_eq!(captured[2], (0.0, 0.0));
+        assert_eq!(captured.len(), 3 * 2, "3 frames x 2 channels");
+        assert_eq!(&captured[0..2], [0.0, 0.0]);
+        assert_eq!(&captured[2..4], [0.0, 0.0]);
+        assert_eq!(&captured[4..6], [0.0, 0.0]);
     }
 
     #[test]
@@ -385,12 +397,10 @@ mod tests {
         let wave = make_test_wave(&[(1.0, 2.0), (3.0, 4.0)]);
 
         // Start way past wave length - should not panic, just return zeros
-        let captured = capture_samples(&wave, 1_000_000, 5);
+        let captured = capture_frames(&wave, 1_000_000, 5, 2);
 
         // All indices are way past wave.len(), so all zeros
-        assert_eq!(captured.len(), 5);
-        for sample in captured {
-            assert_eq!(sample, (0.0, 0.0));
-        }
+        assert_eq!(captured.len(), 5 * 2, "5 frames x 2 channels");
+        assert!(captured.iter().all(|&s| s == 0.0));
     }
 }

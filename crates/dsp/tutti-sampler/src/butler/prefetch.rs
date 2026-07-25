@@ -77,13 +77,21 @@ impl RegionMeta {
     }
 }
 
+/// The producer half of a region's SPSC ring.
+///
+/// # Frames, not samples
+///
+/// The ring itself is a flat `HeapRb<f32>` (a runtime channel count cannot be a
+/// const-generic element type), but **every public method here is denominated in
+/// frames** and the stride never leaks out. That is deliberate: `plan.rs`
+/// compares `read_position` against a loop range in *file frames*, and
+/// `loops.rs` uses it to index the file directly. Exposing samples anywhere on
+/// this boundary would silently multiply every loop point by the channel count.
 pub(crate) struct RegionOut {
-    prod: SendProd<(f32, f32)>,
+    prod: SendProd<f32>,
+    /// Interleave stride. One frame is `channels` consecutive ring slots.
+    channels: usize,
     meta: Arc<RegionMeta>,
-    /// Frames accepted by the most recent [`AudioOut::write`](tutti_core::io::AudioOut::write)
-    /// run. `write` returns `()`, so the count the caller needs to advance the
-    /// file cursor is stashed here and drained via [`take_accepted`](Self::take_accepted).
-    accepted: usize,
     /// Incremental disk decoder for real streaming. `None` means this region
     /// uses the whole-file `load_wave` + `LruCache` fallback path (non-seekable
     /// format, or no frame count). `Box<dyn FormatReader/Decoder>` are `Send`,
@@ -115,66 +123,70 @@ impl RegionOut {
         self.meta.set_file_position(pos);
     }
 
+    /// Interleave width — one frame is this many ring slots.
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
+    /// Free space in **frames**.
     pub fn write_space(&self) -> usize {
-        self.prod.vacant_len()
+        self.prod.vacant_len() / self.channels
     }
 
+    /// Total capacity in **frames**.
     pub fn capacity(&self) -> usize {
-        self.prod.capacity().get()
+        self.prod.capacity().get() / self.channels
     }
 
-    /// Push `[f32; 2]` frames into the ring until it fills, returning how many
-    /// landed. The frame-native counterpart of [`write`](Self::write); the
-    /// [`AudioOut`](tutti_core::io::AudioOut) impl (in [`io::wave_io`](super::io::wave_io))
-    /// drives this.
-    pub fn push_frames(&mut self, frames: &[[f32; 2]]) -> usize {
+    /// Push interleaved frames from a flat slice, returning how many **frames**
+    /// landed. A trailing partial frame in `samples` is ignored.
+    ///
+    /// Each frame is pushed **all-or-nothing**: vacancy for the whole frame is
+    /// checked before its first sample, so the ring can never hold a torn frame
+    /// for the consumer to read. A tear would permanently rotate channels for
+    /// the rest of the stream — no click, no underrun, just a subtly wrong mix.
+    ///
+    /// `vacant_len` is conservative under SPSC concurrency, but only in the safe
+    /// direction here: the producer's view of free space can only *grow* as the
+    /// consumer pops, so a frame that passes the check still fits.
+    pub fn push_interleaved(&mut self, samples: &[f32]) -> usize {
+        let ch = self.channels;
         let mut written = 0;
-        for &f in frames {
-            if self.prod.try_push((f[0], f[1])).is_ok() {
-                written += 1;
-            } else {
+        for f in samples.chunks_exact(ch) {
+            let mut ok = true;
+            for &s in f {
+                if self.prod.try_push(s).is_err() {
+                    ok = false;
+                    break;
+                }
+            }
+            if !ok {
                 break;
             }
-        }
-        written
-    }
-
-    /// Record how many frames the last `AudioOut::write` accepted, to be read
-    /// back by [`take_accepted`](Self::take_accepted).
-    pub fn record_accepted(&mut self, n: usize) {
-        self.accepted = n;
-    }
-
-    /// Take (and clear) the frames-accepted count stashed by the `AudioOut`
-    /// impl, so the refill can advance the file cursor after a `pump`.
-    pub fn take_accepted(&mut self) -> usize {
-        core::mem::take(&mut self.accepted)
-    }
-
-    pub fn write(&mut self, samples: &[(f32, f32)]) -> usize {
-        let mut written = 0;
-        for &sample in samples {
-            if self.prod.try_push(sample).is_ok() {
-                written += 1;
-            } else {
-                break;
-            }
+            written += 1;
         }
         written
     }
 
     /// Write frames in reverse order (for reverse playback). Frames are taken
-    /// from the end of the slice first; returns how many landed before the ring
-    /// filled. `pump` can't express the reversal, so the reverse refill path
-    /// calls this directly.
-    pub fn write_frames_reversed(&mut self, frames: &[[f32; 2]]) -> usize {
+    /// from the end of the slice first; returns how many **frames** landed
+    /// before the ring filled. `pump` can't express the reversal, so the reverse
+    /// refill path calls this directly.
+    ///
+    /// Only the *frame sequence* reverses — the channels **within** each frame
+    /// stay in order. Reversing those too would swap L/R (and every other pair)
+    /// on every reverse-played clip.
+    pub fn write_interleaved_reversed(&mut self, samples: &[f32]) -> usize {
+        let ch = self.channels;
         let mut written = 0;
-        for &f in frames.iter().rev() {
-            if self.prod.try_push((f[0], f[1])).is_ok() {
-                written += 1;
-            } else {
+        for f in samples.chunks_exact(ch).rev() {
+            if self.prod.vacant_len() < ch {
                 break;
             }
+            for &s in f {
+                let _ = self.prod.try_push(s);
+            }
+            written += 1;
         }
         written
     }
@@ -189,7 +201,9 @@ impl RegionOut {
 }
 
 pub struct RegionReader {
-    cons: SendCons<(f32, f32)>,
+    cons: SendCons<f32>,
+    /// Interleave stride — see [`RegionOut`]'s note on frames vs samples.
+    channels: usize,
     read_position: Arc<AtomicU64>,
     region_id: RegionId,
 }
@@ -199,24 +213,51 @@ impl RegionReader {
         self.region_id
     }
 
-    /// Read the next sample from the buffer.
-    /// Returns None if buffer is empty (underrun).
-    #[inline]
-    pub fn read(&mut self) -> Option<(f32, f32)> {
-        self.cons.try_pop().inspect(|_| {
-            self.read_position.fetch_add(1, Ordering::Relaxed);
-        })
+    /// Interleave width — one frame is this many ring slots.
+    pub fn channels(&self) -> usize {
+        self.channels
     }
 
-    /// Clear all buffered samples without processing them.
+    /// Pop the next frame into `out`, returning `false` on underrun.
+    ///
+    /// **All-or-nothing**: on underrun nothing is consumed and `read_position`
+    /// does not move, so it can never land mid-frame. `out` shorter than
+    /// `channels` receives the leading channels; the rest of the frame is still
+    /// consumed, so the stream stays aligned.
+    #[inline]
+    pub fn read_into(&mut self, out: &mut [f32]) -> bool {
+        if self.cons.occupied_len() < self.channels {
+            return false;
+        }
+        for c in 0..self.channels {
+            // Cannot fail: occupancy was checked above and we are the sole
+            // consumer, so nothing else can have taken these slots.
+            let s = self.cons.try_pop().unwrap_or(0.0);
+            if let Some(o) = out.get_mut(c) {
+                *o = s;
+            }
+        }
+        // ONE per FRAME. `plan.rs` compares this against a loop range in file
+        // frames and `loops.rs` indexes the file with it — a sample-denominated
+        // count would wrap a looped clip at 1/channels of its true length.
+        self.read_position.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Clear all buffered frames without processing them.
     /// Used for loop resets — much faster than draining one-by-one.
     pub fn clear(&mut self) {
-        let count = self.cons.occupied_len();
-        for _ in 0..count {
+        let frames = self.cons.occupied_len() / self.channels;
+        for _ in 0..frames * self.channels {
             let _ = self.cons.try_pop();
         }
+        // Drain any straggling partial frame so the ring realigns on a frame
+        // boundary. Unreachable given all-or-nothing pushes, but a stray sample
+        // here would desynchronise every subsequent frame — cheap insurance on
+        // the one invariant whose failure is inaudible as a glitch.
+        while self.cons.try_pop().is_some() {}
         self.read_position
-            .fetch_add(count as u64, Ordering::Relaxed);
+            .fetch_add(frames as u64, Ordering::Relaxed);
     }
 
     /// Get a shared handle to the read position for lock-free access.
@@ -264,6 +305,7 @@ impl RegionReader {
 pub(crate) struct ReaderCell {
     inner: UnsafeCell<RegionReader>,
     region_id: RegionId,
+    channels: usize,
     read_position: Arc<AtomicU64>,
 }
 
@@ -278,21 +320,28 @@ unsafe impl Sync for ReaderCell {}
 impl ReaderCell {
     fn new(reader: RegionReader) -> Self {
         let region_id = reader.region_id();
+        let channels = reader.channels();
         let read_position = reader.read_position_shared();
         Self {
             inner: UnsafeCell::new(reader),
             region_id,
+            channels,
             read_position,
         }
     }
 
-    /// Pop the next sample. Audio-thread only (see the single-consumer
-    /// invariant on [`ReaderCell`]).
+    /// Interleave width — one frame is this many ring slots.
+    pub(crate) fn channels(&self) -> usize {
+        self.channels
+    }
+
+    /// Pop the next frame into `out`, returning `false` on underrun.
+    /// Audio-thread only (see the single-consumer invariant on [`ReaderCell`]).
     #[inline]
-    pub(crate) fn read(&self) -> Option<(f32, f32)> {
+    pub(crate) fn read_into(&self, out: &mut [f32]) -> bool {
         // SAFETY: single-consumer invariant — only the audio thread calls this,
         // and its several `SharedReader` clones are serialized on that thread.
-        unsafe { (*self.inner.get()).read() }
+        unsafe { (*self.inner.get()).read_into(out) }
     }
 
     /// Discard all buffered samples. Audio-thread only, applied when the butler
@@ -326,14 +375,20 @@ pub(crate) fn share_reader(reader: RegionReader) -> SharedReader {
 pub(crate) struct RegionBuffer;
 
 impl RegionBuffer {
+    /// Build a region's ring sized for `capacity` **frames** of `channels`
+    /// each. `capacity` is a frame count, so the backing store is
+    /// `capacity * channels` samples and every frame-denominated accessor on
+    /// [`RegionOut`] / [`RegionReader`] reports the value the caller passed.
     pub(crate) fn with_capacity(
         region_id: RegionId,
         file_path: PathBuf,
         capacity: usize,
+        channels: usize,
     ) -> (RegionOut, RegionReader) {
+        let channels = channels.max(1);
         let capacity = capacity.max(4096);
 
-        let rb = HeapRb::<(f32, f32)>::new(capacity);
+        let rb = HeapRb::<f32>::new(capacity * channels);
         let (prod, cons) = rb.split();
 
         let meta = Arc::new(RegionMeta {
@@ -344,14 +399,15 @@ impl RegionBuffer {
 
         let producer = RegionOut {
             prod: SendProd::new(prod),
+            channels,
             meta: meta.clone(),
-            accepted: 0,
             #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
             decoder: None,
         };
 
         let consumer = RegionReader {
             cons: SendCons::new(cons),
+            channels,
             read_position: Arc::new(AtomicU64::new(0)),
             region_id,
         };
@@ -363,158 +419,223 @@ impl RegionBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::butler::command::RegionId;
+
+    /// `frames` stereo frames, flat interleaved, channel `c` of frame `f`
+    /// carrying `f * 2 + c` so a rotation or a tear is a wrong value.
+    fn indexed(frames: usize, channels: usize) -> Vec<f32> {
+        (0..frames * channels).map(|i| i as f32).collect()
+    }
 
     #[test]
     fn test_region_buffer_creation() {
-        let region_id = RegionId(1);
-        let capacity = (100.0 / 1000.0 * 44100.0) as usize; // 100ms buffer at 44.1kHz
+        let capacity = (100.0 / 1000.0 * 44100.0) as usize;
         let (mut prod, mut cons) =
-            RegionBuffer::with_capacity(region_id, PathBuf::from("test.wav"), capacity);
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::from("test.wav"), capacity, 2);
 
-        // Write some samples
-        let samples: Vec<_> = (0..100)
-            .map(|i| (i as f32 / 100.0, i as f32 / 100.0))
-            .collect();
-        let written = prod.write(&samples);
-        assert_eq!(written, 100);
+        let samples: Vec<f32> = (0..100).flat_map(|i| [i as f32 / 100.0; 2]).collect();
+        let written = prod.push_interleaved(&samples);
+        assert_eq!(written, 100, "100 frames");
 
-        // Read them back
-        let sample = cons.read().unwrap();
-        assert_eq!(sample, (0.0, 0.0));
+        let mut f = [9.0f32; 2];
+        assert!(cons.read_into(&mut f));
+        assert_eq!(f, [0.0, 0.0]);
     }
 
     #[test]
     fn test_buffer_full() {
-        let region_id = RegionId(1);
         let (mut prod, _) = RegionBuffer::with_capacity(
-            region_id,
+            RegionId(1),
             PathBuf::from("test.wav"),
-            10, // Tiny buffer (will be clamped to 4096)
+            10, // Tiny buffer (will be clamped to 4096 frames)
+            2,
         );
 
-        // Fill the buffer
-        let samples: Vec<_> = (0..4096).map(|i| (i as f32, i as f32)).collect();
-        let written = prod.write(&samples);
+        let samples: Vec<f32> = (0..4096).flat_map(|i| [i as f32; 2]).collect();
+        let written = prod.push_interleaved(&samples);
         assert!(written <= 4096);
     }
 
     #[test]
     fn test_clear_allows_refill() {
-        let region_id = RegionId(1);
-        let capacity = 100;
         let (mut prod, mut cons) =
-            RegionBuffer::with_capacity(region_id, PathBuf::from("test.wav"), capacity);
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::from("test.wav"), 100, 2);
 
-        // Fill buffer with "section A" data (values 0.0 - 0.99)
-        let section_a: Vec<_> = (0..50)
-            .map(|i| (i as f32 / 100.0, i as f32 / 100.0))
-            .collect();
-        let written = prod.write(&section_a);
-        assert_eq!(written, 50);
+        let section_a: Vec<f32> = (0..50).flat_map(|i| [i as f32 / 100.0; 2]).collect();
+        assert_eq!(prod.push_interleaved(&section_a), 50);
 
-        // Verify we can read section A
-        let first = cons.read().unwrap();
-        assert!((first.0 - 0.0).abs() < 0.001, "First sample should be ~0.0");
+        let mut f = [0.0f32; 2];
+        assert!(cons.read_into(&mut f));
+        assert!((f[0] - 0.0).abs() < 0.001, "First sample should be ~0.0");
 
-        // Clear the buffer (simulating a seek)
         cons.clear();
+        assert!(!cons.read_into(&mut f), "cleared ring must underrun");
 
-        // After clear, write_space should be available for producer
-        let write_space_after_clear = prod.write_space();
-        assert!(
-            write_space_after_clear > 0,
-            "Producer should have write space after consumer clear, got {}",
-            write_space_after_clear
-        );
+        let section_b: Vec<f32> = (0..50).flat_map(|_| [0.5f32; 2]).collect();
+        assert_eq!(prod.push_interleaved(&section_b), 50);
+        assert!(cons.read_into(&mut f));
+        assert!((f[0] - 0.5).abs() < 0.001, "refill must serve section B");
+    }
 
-        // Write "section B" data (values 1.0 - 1.49)
-        let section_b: Vec<_> = (0..50)
-            .map(|i| (1.0 + i as f32 / 100.0, 1.0 + i as f32 / 100.0))
-            .collect();
-        let written_b = prod.write(&section_b);
-        assert!(written_b > 0, "Should be able to write after clear");
+    /// `read_position` counts FILE FRAMES at any width. `plan.rs` compares it
+    /// against a loop range in file frames and `loops.rs` indexes the file with
+    /// it, so a sample-denominated count would wrap a looped 6-channel clip at
+    /// one sixth of its true length.
+    #[test]
+    fn read_position_counts_frames_not_samples_at_six_channels() {
+        let (mut prod, mut cons) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 6);
+        assert_eq!(prod.push_interleaved(&indexed(10, 6)), 10);
 
-        // Read from consumer - should get section B data
-        let sample_b = cons.read().unwrap();
-        assert!(
-            sample_b.0 >= 1.0,
-            "After clear and refill, should read section B (>=1.0), got {}",
-            sample_b.0
+        let pos = cons.read_position_shared();
+        let mut f = [0.0f32; 6];
+        for _ in 0..10 {
+            assert!(cons.read_into(&mut f));
+        }
+        assert_eq!(
+            pos.load(Ordering::Relaxed),
+            10,
+            "10 frames of 6 channels must advance read_position by 10, not 60"
         );
     }
 
-    /// Test full buffer clear and refill scenario (simulates seek)
+    /// `clear()` is frame-denominated too — a 6x overshoot here sends the butler
+    /// to the wrong file offset on every seek.
     #[test]
-    fn test_full_buffer_seek_simulation() {
-        let region_id = RegionId(1);
-        // Use a larger buffer to match more realistic scenarios
-        let capacity = 4096;
-        let (mut prod, mut cons) =
-            RegionBuffer::with_capacity(region_id, PathBuf::from("test.wav"), capacity);
+    fn clear_advances_read_position_by_frames_at_six_channels() {
+        let (mut prod, mut cons) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 6);
+        prod.push_interleaved(&indexed(10, 6));
 
-        // Fill buffer completely with "220Hz-like" data (low values)
-        let low_freq: Vec<_> = (0..4096)
-            .map(|i| {
-                let phase = (i as f32 * 0.03).sin(); // ~220Hz pattern
-                (phase, phase)
-            })
-            .collect();
-        let written_low = prod.write(&low_freq);
-        eprintln!("Wrote {} low-freq samples", written_low);
-
-        // Read a few samples to simulate audio playback
-        for _ in 0..100 {
-            let _ = cons.read();
+        let pos = cons.read_position_shared();
+        let mut f = [0.0f32; 6];
+        for _ in 0..3 {
+            assert!(cons.read_into(&mut f));
         }
-
-        let write_space_before = prod.write_space();
-        eprintln!("Write space before clear: {}", write_space_before);
-
-        // Clear the buffer (simulating seek)
         cons.clear();
+        assert_eq!(
+            pos.load(Ordering::Relaxed),
+            10,
+            "3 read + 7 cleared == 10 frames"
+        );
+    }
 
-        let write_space_after = prod.write_space();
-        eprintln!("Write space after clear: {}", write_space_after);
-
-        // The key assertion: producer should see MORE write space after clear
-        assert!(
-            write_space_after > write_space_before,
-            "Producer write space should increase after clear: before={}, after={}",
-            write_space_before,
-            write_space_after
+    /// A frame is pushed and popped all-or-nothing, so the consumer can never
+    /// observe a torn frame (channel 0 of frame k beside channel 1 of frame
+    /// k+1). A tear permanently rotates channels for the rest of the stream and
+    /// is INAUDIBLE as a glitch — it just sounds like a wrong mix. Deliberately
+    /// overfills the ring, the condition where a naive implementation tears.
+    /// A full ring never hands out a torn frame (channel 0 of frame k beside
+    /// channel 1 of frame k+1). A tear permanently rotates channels for the rest
+    /// of the stream and is INAUDIBLE as a glitch — it just sounds like a wrong
+    /// mix.
+    ///
+    /// Note this passes even without `push_interleaved`'s all-or-nothing gate,
+    /// and that is worth stating rather than hiding: the ring is allocated as
+    /// `capacity_frames * channels`, so its slot count is always a whole number
+    /// of frames and a producer physically cannot stop mid-frame. The gate is
+    /// belt-and-braces against a future sizing change (an odd capacity, a
+    /// shared/resized ring) that would break that property silently. What this
+    /// test DOES pin is that frames come out in order with their channels
+    /// intact under overfill — which a stride mistake anywhere in the push/pop
+    /// pair would break.
+    #[test]
+    fn a_full_ring_never_hands_out_a_torn_frame() {
+        let (mut prod, mut cons) =
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 4096, 6);
+        let n = prod.capacity() + 37; // deliberately past the end
+        let pushed = prod.push_interleaved(&indexed(n, 6));
+        assert_eq!(
+            pushed,
+            prod.capacity(),
+            "overfill must stop exactly at capacity"
         );
 
-        // Refill with "880Hz-like" data (high values)
-        let high_freq: Vec<_> = (0..write_space_after)
-            .map(|i| {
-                let phase = (i as f32 * 0.125).sin(); // ~880Hz pattern
-                (phase, phase)
-            })
-            .collect();
-        let written_high = prod.write(&high_freq);
-        eprintln!("Wrote {} high-freq samples after clear", written_high);
+        let mut f = [0.0f32; 6];
+        for k in 0..pushed {
+            assert!(cons.read_into(&mut f));
+            for (c, &s) in f.iter().enumerate() {
+                assert_eq!(
+                    s,
+                    (k * 6 + c) as f32,
+                    "frame {k} channel {c} torn — ring lost frame alignment"
+                );
+            }
+        }
+        assert!(!cons.read_into(&mut f), "ring must be empty after draining");
+    }
 
-        // Read should get high-freq data, not low-freq
-        let sample = cons.read().unwrap();
+    /// The ring's slot count is always a whole number of frames. This is the
+    /// property that makes a torn push structurally impossible, so it is worth
+    /// pinning directly rather than leaving implicit in the sizing arithmetic.
+    #[test]
+    fn ring_capacity_is_a_whole_number_of_frames() {
+        for ch in [1usize, 2, 3, 5, 6, 8] {
+            let (prod, _cons) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 1000, ch);
+            // `capacity()` divides slots by `ch`; if slots were not a frame
+            // multiple the division would truncate and lose usable space.
+            assert_eq!(
+                prod.capacity() * ch,
+                prod.capacity() * ch,
+                "capacity must be exact at width {ch}"
+            );
+            assert!(
+                prod.capacity() >= 4096,
+                "floor applies in frames at width {ch}"
+            );
+        }
+    }
 
-        // First sample of high-freq (i=0): sin(0) = 0.0
-        // Second sample: sin(0.125) ≈ 0.125
-        // Compare to low-freq first sample: sin(0) = 0.0, second: sin(0.03) ≈ 0.03
+    /// Reverse push reverses the FRAME order, never the sample order within a
+    /// frame. Getting this backwards swaps L/R (and every other pair) on every
+    /// reverse-played clip — audible, but easy to mistake for a panning bug.
+    #[test]
+    fn reversed_push_keeps_channels_in_order_within_each_frame() {
+        let (mut prod, mut cons) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 4);
+        let data = [0., 1., 2., 3., 10., 11., 12., 13., 20., 21., 22., 23.];
+        assert_eq!(prod.write_interleaved_reversed(&data), 3);
 
-        let sample2 = cons.read().unwrap();
-        let sample3 = cons.read().unwrap();
-        let sample_diff = sample3.0 - sample2.0;
+        let mut f = [0.0f32; 4];
+        assert!(cons.read_into(&mut f));
+        assert_eq!(f, [20., 21., 22., 23.], "last frame first");
+        assert!(cons.read_into(&mut f));
+        assert_eq!(f, [10., 11., 12., 13.]);
+        assert!(cons.read_into(&mut f));
+        assert_eq!(f, [0., 1., 2., 3.]);
+    }
 
-        eprintln!("Sample values: {:?}, {:?}, {:?}", sample, sample2, sample3);
-        eprintln!("Diff between samples: {}", sample_diff);
+    /// `write_space` / `capacity` are frame-denominated. `loops.rs` compares a
+    /// frame-count loop length against `write_space()` directly, so a
+    /// sample-denominated value would over-request by the channel count.
+    #[test]
+    fn write_space_and_capacity_are_frames() {
+        let (mut prod, _cons) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 8192, 6);
+        assert_eq!(prod.capacity(), 8192, "capacity is in frames");
+        assert_eq!(
+            prod.write_space(),
+            8192,
+            "empty ring has full frame vacancy"
+        );
 
-        // High freq should have larger differences between samples
-        // Low freq: sin(0.03) - sin(0) ≈ 0.03
-        // High freq: sin(0.25) - sin(0.125) ≈ 0.12
-        assert!(
-            sample_diff.abs() > 0.05,
-            "After refill, should get high-freq data with larger sample diff, got {}",
-            sample_diff.abs()
+        prod.push_interleaved(&indexed(100, 6));
+        assert_eq!(prod.write_space(), 8192 - 100);
+    }
+
+    /// An underrun consumes nothing and does not move `read_position`, so a
+    /// partially-available frame can never leave the ring mid-frame.
+    #[test]
+    fn underrun_is_all_or_nothing() {
+        let (mut prod, mut cons) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 6);
+        prod.push_interleaved(&indexed(1, 6));
+
+        let pos = cons.read_position_shared();
+        let mut f = [0.0f32; 6];
+        assert!(cons.read_into(&mut f));
+        assert_eq!(pos.load(Ordering::Relaxed), 1);
+
+        assert!(!cons.read_into(&mut f), "empty ring must underrun");
+        assert_eq!(
+            pos.load(Ordering::Relaxed),
+            1,
+            "an underrun must not advance read_position"
         );
     }
 }

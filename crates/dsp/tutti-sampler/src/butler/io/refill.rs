@@ -5,13 +5,12 @@ use super::super::metrics::Metrics;
 use super::super::plan::ChannelPlan;
 use super::super::prefetch::RegionOut;
 use super::super::region_map::RegionMap;
-use super::wave_io::{wave_frame, wrap_position, WaveIn};
+use super::wave_io::{wave_frame_into, wrap_position, WaveIn};
 use dashmap::DashMap;
 use rayon::prelude::*;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tutti_core::io::{AudioIn, AudioOut};
-use tutti_core::{ChannelLayout, Wave};
+use tutti_core::Wave;
 
 /// Calculate optimal chunk size using varifill strategy.
 ///
@@ -67,7 +66,7 @@ pub(crate) fn refill_all(
     metrics: &Metrics,
     base_chunk_size: usize,
     buffer_margin: f64,
-    interleave_buffer: &mut Vec<[f32; 2]>,
+    interleave_buffer: &mut Vec<f32>,
 ) {
     let read_rate = metrics.read_rate();
 
@@ -219,7 +218,7 @@ pub(crate) fn refill_all_parallel(
             };
 
             thread_local! {
-                static LOCAL_BUF: std::cell::RefCell<Vec<[f32; 2]>> =
+                static LOCAL_BUF: std::cell::RefCell<Vec<f32>> =
                     std::cell::RefCell::new(Vec::with_capacity(16384));
             }
 
@@ -251,7 +250,7 @@ fn refill_one(
     file_path: &PathBuf,
     fill_pct: f32,
     shared: &super::super::rt_state::RtState,
-    buffer: &mut Vec<[f32; 2]>,
+    buffer: &mut Vec<f32>,
     loop_range: Option<(u64, u64)>,
 ) {
     shared.set_buffer_fill(fill_pct);
@@ -300,11 +299,12 @@ fn refill_forward_stream(
     writer: &mut RegionOut,
     file_position: usize,
     chunk_size: usize,
-    interleave_buffer: &mut Vec<[f32; 2]>,
+    interleave_buffer: &mut Vec<f32>,
     loop_range: Option<(u64, u64)>,
 ) {
+    let ch = writer.channels();
     interleave_buffer.clear();
-    interleave_buffer.resize(chunk_size, [0.0, 0.0]);
+    interleave_buffer.resize(chunk_size * ch, 0.0);
 
     // Active loop end, if the range is non-empty (used to cap each run).
     let loop_end = loop_range.and_then(|(start, end)| (end > start).then_some(end as usize));
@@ -328,17 +328,17 @@ fn refill_forward_stream(
         if decoder.cursor() != pos as u64 {
             let _ = decoder.seek(pos as u64);
         }
-        let got = decoder.poll_into(&mut interleave_buffer[filled..filled + run]);
+        let got = decoder
+            .fill_sequential_interleaved(&mut interleave_buffer[filled * ch..(filled + run) * ch])
+            .unwrap_or(0);
         // Past EOF the decoder yields a short count; zero-fill the rest of this
         // run to preserve the old zero-pad behaviour and keep bookkeeping simple.
-        for slot in &mut interleave_buffer[filled + got..filled + run] {
-            *slot = [0.0, 0.0];
-        }
+        interleave_buffer[(filled + got) * ch..(filled + run) * ch].fill(0.0);
         filled += run;
         pos += run;
     }
 
-    let written = writer.push_frames(interleave_buffer);
+    let written = writer.push_interleaved(interleave_buffer);
 
     let new_pos = wrap_position(file_position + written, loop_range);
     writer.set_file_position(new_pos as u64);
@@ -353,33 +353,38 @@ fn refill_reverse_stream(
     writer: &mut RegionOut,
     file_position: usize,
     chunk_size: usize,
-    interleave_buffer: &mut Vec<[f32; 2]>,
+    interleave_buffer: &mut Vec<f32>,
 ) {
     let read_start = file_position.saturating_sub(chunk_size);
     let actual_chunk = file_position - read_start;
 
+    let ch = writer.channels();
     if actual_chunk == 0 {
         interleave_buffer.clear();
-        interleave_buffer.resize(chunk_size, [0.0, 0.0]);
-        writer.push_frames(interleave_buffer);
+        interleave_buffer.resize(chunk_size * ch, 0.0);
+        writer.push_interleaved(interleave_buffer);
         return;
     }
 
     interleave_buffer.clear();
-    interleave_buffer.resize(actual_chunk, [0.0, 0.0]);
+    interleave_buffer.resize(actual_chunk * ch, 0.0);
 
     if let Some(decoder) = writer.decoder_mut() {
         if decoder.cursor() != read_start as u64 {
             let _ = decoder.seek(read_start as u64);
         }
-        let got = decoder.poll_into(&mut interleave_buffer[..]);
-        for slot in &mut interleave_buffer[got..] {
-            *slot = [0.0, 0.0];
-        }
+        let got = decoder
+            .fill_sequential_interleaved(&mut interleave_buffer[..])
+            .unwrap_or(0);
+        interleave_buffer[got * ch..].fill(0.0);
     }
-    interleave_buffer.reverse();
 
-    let written = writer.push_frames(interleave_buffer);
+    // NOT `interleave_buffer.reverse()`: that reversed whole `[f32; 2]`
+    // elements, which only reversed frames because the element WAS a frame. On
+    // a flat buffer it would reverse individual samples and swap every channel
+    // pair. `write_interleaved_reversed` reverses the frame sequence and keeps
+    // channels in order within each frame.
+    let written = writer.write_interleaved_reversed(interleave_buffer);
     writer.set_file_position(file_position.saturating_sub(written) as u64);
 }
 
@@ -392,20 +397,17 @@ fn refill_forward(
     wave: &Wave,
     file_position: usize,
     chunk_size: usize,
-    interleave_buffer: &mut Vec<[f32; 2]>,
+    interleave_buffer: &mut Vec<f32>,
     loop_range: Option<(u64, u64)>,
 ) {
+    let ch = writer.channels();
     interleave_buffer.clear();
-    interleave_buffer.resize(chunk_size, [0.0, 0.0]);
+    interleave_buffer.resize(chunk_size * ch, 0.0);
 
-    let mut src = WaveIn::new(wave, file_position, loop_range);
-    src.poll_into(interleave_buffer);
+    let mut src = WaveIn::new(wave, file_position, loop_range, ch);
+    src.fill_interleaved(interleave_buffer);
 
-    // Push the filled block through the AudioOut sink (fully qualified to pick
-    // the frame-native trait method over the inherent tuple `write`); the ring
-    // stashes how many frames it accepted.
-    AudioOut::write(writer, interleave_buffer);
-    let written = writer.take_accepted();
+    let written = writer.push_interleaved(interleave_buffer);
 
     let new_pos = wrap_position(file_position + written, loop_range);
     writer.set_file_position(new_pos as u64);
@@ -419,25 +421,26 @@ fn refill_reverse(
     wave: &Wave,
     file_position: usize,
     chunk_size: usize,
-    interleave_buffer: &mut Vec<[f32; 2]>,
+    interleave_buffer: &mut Vec<f32>,
 ) {
     let read_start = file_position.saturating_sub(chunk_size);
     let actual_chunk = file_position - read_start;
 
+    let ch = writer.channels();
     if actual_chunk == 0 {
         interleave_buffer.clear();
-        interleave_buffer.resize(chunk_size, [0.0, 0.0]);
-        writer.push_frames(interleave_buffer);
+        interleave_buffer.resize(chunk_size * ch, 0.0);
+        writer.push_interleaved(interleave_buffer);
         return;
     }
 
-    let layout = ChannelLayout::from(wave.channels());
     interleave_buffer.clear();
-    for i in 0..actual_chunk {
-        interleave_buffer.push(wave_frame(wave, layout, read_start + i));
+    interleave_buffer.resize(actual_chunk * ch, 0.0);
+    for (i, frame) in interleave_buffer.chunks_exact_mut(ch).enumerate() {
+        wave_frame_into(wave, read_start + i, frame);
     }
 
-    let written = writer.write_frames_reversed(interleave_buffer);
+    let written = writer.write_interleaved_reversed(interleave_buffer);
     writer.set_file_position(file_position.saturating_sub(written) as u64);
 }
 
@@ -661,24 +664,24 @@ mod tests {
         // The forward whole-file fill now runs through WaveIn; verify the block
         // it produces matches the old fill_buffer_forward output shape.
         let wave = make_test_wave(&[(0.1, 0.1), (0.2, 0.2), (0.3, 0.3), (0.4, 0.4)]);
-        let mut src = WaveIn::new(&wave, 0, None);
-        let mut buffer = vec![[0.0f32; 2]; 3];
-        src.poll_into(&mut buffer);
+        let mut src = WaveIn::new(&wave, 0, None, 2);
+        let mut buffer = vec![0.0f32; 3 * 2];
+        src.fill_interleaved(&mut buffer);
 
-        assert_eq!(buffer, [[0.1, 0.1], [0.2, 0.2], [0.3, 0.3]]);
+        assert_eq!(buffer, [0.1, 0.1, 0.2, 0.2, 0.3, 0.3]);
     }
 
     #[test]
     fn test_forward_fill_past_end_pads_zeros() {
         let wave = make_test_wave(&[(0.1, 0.1), (0.2, 0.2)]);
-        let mut src = WaveIn::new(&wave, 1, None);
-        let mut buffer = vec![[9.0f32; 2]; 4];
-        src.poll_into(&mut buffer);
+        let mut src = WaveIn::new(&wave, 1, None, 2);
+        let mut buffer = vec![9.0f32; 4 * 2];
+        src.fill_interleaved(&mut buffer);
 
-        assert_eq!(buffer[0], [0.2, 0.2]); // Last valid sample
-        assert_eq!(buffer[1], [0.0, 0.0]); // Past end - zeros
-        assert_eq!(buffer[2], [0.0, 0.0]);
-        assert_eq!(buffer[3], [0.0, 0.0]);
+        assert_eq!(&buffer[0..2], [0.2, 0.2]); // Last valid sample
+        assert_eq!(&buffer[2..4], [0.0, 0.0]); // Past end - zeros
+        assert_eq!(&buffer[4..6], [0.0, 0.0]);
+        assert_eq!(&buffer[6..8], [0.0, 0.0]);
     }
 
     #[test]

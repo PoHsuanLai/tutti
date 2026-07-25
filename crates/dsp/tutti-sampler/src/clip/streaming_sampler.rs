@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::MAX_SAMPLER_CHANNELS;
+use tutti_core::SignalFrame;
 use tutti_core::{
     AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Linear, PlaybackRate, SamplePosition,
 };
@@ -255,7 +256,7 @@ impl AudioUnit for StreamingSamplerUnit {
     }
 
     fn outputs(&self) -> usize {
-        2
+        self.channels
     }
 
     fn reset(&mut self) {
@@ -387,7 +388,16 @@ impl AudioUnit for StreamingSamplerUnit {
         self.process_normal_samples(size, 0, output);
     }
 
-    audio_unit_boilerplate!(id = crate::node_id::STREAMING_SAMPLER_ID, outputs = 2);
+    audio_unit_boilerplate!(id = crate::node_id::STREAMING_SAMPLER_ID);
+
+    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
+        // Width must track `outputs()` or fundsp mis-plans this node's latency.
+        SignalFrame::new(self.outputs())
+    }
+
+    fn footprint(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -632,7 +642,9 @@ impl AudioUnit for StreamingClipReader {
     }
 
     fn outputs(&self) -> usize {
-        2
+        // Delegate rather than store a second copy: this is a thin placement
+        // gate over `inner`, and two widths could disagree.
+        self.inner.outputs()
     }
 
     fn reset(&mut self) {
@@ -679,7 +691,16 @@ impl AudioUnit for StreamingClipReader {
         }
     }
 
-    audio_unit_boilerplate!(id = crate::node_id::STREAMING_SAMPLER_ID, outputs = 2);
+    audio_unit_boilerplate!(id = crate::node_id::STREAMING_SAMPLER_ID);
+
+    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
+        // Width must track `outputs()` or fundsp mis-plans this node's latency.
+        SignalFrame::new(self.outputs())
+    }
+
+    fn footprint(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
 }
 
 #[cfg(test)]

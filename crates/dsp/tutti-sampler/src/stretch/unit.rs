@@ -71,18 +71,24 @@ const MAX_BUFFER_SIZE: usize = 8192;
 /// scratch buffers, the atomics) is what lives here. This removes the former
 /// second copy of the clip source (a boxed clone of it) and the
 /// coherence machinery that kept it in sync with the direct-read source.
+/// # Channels
+///
+/// One phase-vocoder [`Processor`] per channel, plus one in/out [`RtScratch`]
+/// pair each. The processors are **independent** — there is no phase locking
+/// between them, so a correlated source can drift channel-to-channel. That was
+/// already true of the stereo pair; widening does not make it worse, and fixing
+/// it is a separate question from width.
 pub struct Unit {
-    processor_left: Processor,
-    processor_right: Processor,
+    /// One per channel; `processors.len()` **is** the unit's width, so the
+    /// scratch vectors below are always the same length.
+    processors: Vec<Processor>,
     stretch_factor: Arc<AtomicF32>,
     pitch_cents: Arc<AtomicF32>,
     enabled: bool,
     algorithm: Algorithm,
     sample_rate: f64,
-    scratch_left: RtScratch<f32>,
-    scratch_right: RtScratch<f32>,
-    scratch_out_left: RtScratch<f32>,
-    scratch_out_right: RtScratch<f32>,
+    scratch_in: Vec<RtScratch<f32>>,
+    scratch_out: Vec<RtScratch<f32>>,
 }
 
 // Hand-rolled: holds non-`Debug` phase-vocoder `Processor`s and `RtScratch`
@@ -113,26 +119,50 @@ impl Unit {
         sample_rate: impl Into<tutti_core::SampleRate>,
         fft_size: FftSize,
     ) -> Self {
+        Self::with_fft_size_and_channels(sample_rate, fft_size, 2)
+    }
+
+    /// Create an `channels`-wide stretcher (phase vocoder, default FFT size).
+    ///
+    /// Width is fixed at construction — it sizes one phase-vocoder processor and
+    /// two scratch buffers per channel, all allocated here so the RT path never
+    /// does. Callers must pass the width of the source they will feed in: a
+    /// narrower stretcher silently truncates the frames handed to `tick`.
+    pub fn with_channels(sample_rate: impl Into<tutti_core::SampleRate>, channels: usize) -> Self {
+        Self::with_fft_size_and_channels(sample_rate, FftSize::default(), channels)
+    }
+
+    /// Full constructor: custom FFT size at a custom width.
+    pub fn with_fft_size_and_channels(
+        sample_rate: impl Into<tutti_core::SampleRate>,
+        fft_size: FftSize,
+        channels: usize,
+    ) -> Self {
         let sample_rate = sample_rate.into().get();
+        // A zero-wide filter has nothing to process and would make `inputs()` /
+        // `outputs()` lie to the graph.
+        let channels = channels.max(1);
         Self {
-            processor_left: Processor::PhaseVocoder(PhaseVocoderProcessor::new(
-                fft_size,
-                sample_rate,
-            )),
-            processor_right: Processor::PhaseVocoder(PhaseVocoderProcessor::new(
-                fft_size,
-                sample_rate,
-            )),
+            processors: (0..channels)
+                .map(|_| Processor::PhaseVocoder(PhaseVocoderProcessor::new(fft_size, sample_rate)))
+                .collect(),
             stretch_factor: Arc::new(AtomicF32::new(1.0)),
             pitch_cents: Arc::new(AtomicF32::new(0.0)),
             enabled: true,
             algorithm: Algorithm::PhaseVocoder,
             sample_rate,
-            scratch_left: RtScratch::new(MAX_BUFFER_SIZE),
-            scratch_right: RtScratch::new(MAX_BUFFER_SIZE),
-            scratch_out_left: RtScratch::new(MAX_BUFFER_SIZE),
-            scratch_out_right: RtScratch::new(MAX_BUFFER_SIZE),
+            scratch_in: (0..channels)
+                .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
+                .collect(),
+            scratch_out: (0..channels)
+                .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
+                .collect(),
         }
+    }
+
+    /// Channel width — the number of processors, and this unit's in/out arity.
+    pub fn channels(&self) -> usize {
+        self.processors.len()
     }
 
     pub fn algorithm(&self) -> Algorithm {
@@ -186,8 +216,13 @@ impl Unit {
         (stretch - 1.0).abs() > 0.001 || pitch.abs() > 0.5
     }
 
+    /// Processing latency. Every channel's processor reports the same value
+    /// (it is a function of the shared FFT size), so channel 0 speaks for all.
     pub fn latency_samples(&self) -> usize {
-        self.processor_left.latency_samples()
+        self.processors
+            .first()
+            .map(|p| p.latency_samples())
+            .unwrap_or(0)
     }
 
     #[inline]
@@ -199,56 +234,58 @@ impl Unit {
 impl Clone for Unit {
     fn clone(&self) -> Self {
         Self {
-            processor_left: self.processor_left.clone(),
-            processor_right: self.processor_right.clone(),
+            processors: self.processors.clone(),
             stretch_factor: Arc::new(AtomicF32::new(self.stretch_factor.load(Ordering::Acquire))),
             pitch_cents: Arc::new(AtomicF32::new(self.pitch_cents.load(Ordering::Acquire))),
             enabled: self.enabled,
             algorithm: self.algorithm,
             sample_rate: self.sample_rate,
-            scratch_left: self.scratch_left.clone(),
-            scratch_right: self.scratch_right.clone(),
-            scratch_out_left: self.scratch_out_left.clone(),
-            scratch_out_right: self.scratch_out_right.clone(),
+            scratch_in: self.scratch_in.clone(),
+            scratch_out: self.scratch_out.clone(),
         }
     }
 }
 
 impl AudioUnit for Unit {
     fn inputs(&self) -> usize {
-        // A filter: it consumes the stereo frame the caller feeds in (the frame
-        // already tick'd from the real clip source). Output is always stereo.
-        2
+        // A filter: it consumes the frame the caller feeds in (already tick'd
+        // from the real clip source), one channel per processor.
+        self.channels()
     }
 
     fn outputs(&self) -> usize {
-        2
+        self.channels()
     }
 
     fn reset(&mut self) {
-        self.processor_left.reset();
-        self.processor_right.reset();
+        for p in &mut self.processors {
+            p.reset();
+        }
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate;
-        self.processor_left
-            .set_sample_rate(tutti_core::SampleRate(sample_rate));
-        self.processor_right
-            .set_sample_rate(tutti_core::SampleRate(sample_rate));
+        for p in &mut self.processors {
+            p.set_sample_rate(tutti_core::SampleRate(sample_rate));
+        }
     }
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         // `input` is the source frame the caller already produced (in-RAM index
         // or streaming ring pop). This unit no longer owns/pulls a source.
-        let src_left = input.first().copied().unwrap_or(0.0);
-        let src_right = input.get(1).copied().unwrap_or(src_left);
+        //
+        // A short `input` fans channel 0 to the rest, matching the old stereo
+        // behaviour (`input.get(1).unwrap_or(src_left)`) — a mono feed into a
+        // wider stretcher stays audible on every channel rather than going
+        // silent past the first.
+        let n = self.channels().min(output.len());
+        let src0 = input.first().copied().unwrap_or(0.0);
+        let src = |c: usize| input.get(c).copied().unwrap_or(src0);
 
         if !self.is_processing() {
-            if output.len() >= 2 {
-                output[0] = src_left;
-                output[1] = src_right;
+            for (c, o) in output.iter_mut().enumerate().take(n) {
+                *o = src(c);
             }
             return;
         }
@@ -256,19 +293,16 @@ impl AudioUnit for Unit {
         let stretch = self.stretch_factor.load(Ordering::Acquire);
         let pitch_ratio = self.pitch_ratio();
 
-        self.processor_left.push_input(&[src_left]);
-        self.processor_right.push_input(&[src_right]);
+        for (c, p) in self.processors.iter_mut().enumerate() {
+            p.push_input(&[src(c)]);
+            p.process(stretch, pitch_ratio);
+        }
 
-        self.processor_left.process(stretch, pitch_ratio);
-        self.processor_right.process(stretch, pitch_ratio);
-
-        if output.len() >= 2 {
-            let mut left = [0.0f32];
-            let mut right = [0.0f32];
-            self.processor_left.pop_output(&mut left);
-            self.processor_right.pop_output(&mut right);
-            output[0] = left[0];
-            output[1] = right[0];
+        let mut one = [0.0f32];
+        for (c, o) in output.iter_mut().enumerate().take(n) {
+            one[0] = 0.0;
+            self.processors[c].pop_output(&mut one);
+            *o = one[0];
         }
     }
 
@@ -278,22 +312,38 @@ impl AudioUnit for Unit {
         //
         // `input` carries the source frames the caller already produced; this
         // unit reads them instead of tick'ing an owned source.
-        {
-            let scratch_left = self.scratch_left.active(size);
-            let scratch_right = self.scratch_right.active(size);
-            for i in 0..size {
-                let l = input.at_f32(0, i);
-                scratch_left[i] = l;
-                scratch_right[i] = input.at_f32(1, i);
+        //
+        // One scratch pair per channel (not one flat strided buffer): the
+        // phase-vocoder API is per-channel `push_input`/`pop_output` over a
+        // contiguous run of samples, so a channel-major layout is what it wants.
+        // A strided frame-major buffer would need a de-interleave here and a
+        // re-interleave after, for no gain.
+        let channels = self.channels();
+        let in_ch = input.channels();
+
+        for (c, s) in self.scratch_in.iter_mut().enumerate() {
+            let buf = s.active(size);
+            if c < in_ch {
+                for (i, b) in buf.iter_mut().enumerate().take(size) {
+                    *b = input.at_f32(c, i);
+                }
+            } else {
+                // Fewer input channels than processors: mirror `tick`'s
+                // fan-from-channel-0 rather than emitting silence.
+                for (i, b) in buf.iter_mut().enumerate().take(size) {
+                    *b = input.at_f32(0, i);
+                }
             }
         }
 
+        let out_ch = output.channels().min(channels);
+
         if !self.is_processing() {
-            let scratch_left = self.scratch_left.active_ref(size);
-            let scratch_right = self.scratch_right.active_ref(size);
-            for i in 0..size {
-                output.set_f32(0, i, scratch_left[i]);
-                output.set_f32(1, i, scratch_right[i]);
+            for c in 0..out_ch {
+                let buf = self.scratch_in[c].active_ref(size);
+                for (i, &s) in buf.iter().enumerate().take(size) {
+                    output.set_f32(c, i, s);
+                }
             }
             return;
         }
@@ -301,42 +351,41 @@ impl AudioUnit for Unit {
         let stretch = self.stretch_factor.load(Ordering::Acquire);
         let pitch_ratio = self.pitch_ratio();
 
-        self.processor_left
-            .push_input(self.scratch_left.active_ref(size));
-        self.processor_right
-            .push_input(self.scratch_right.active_ref(size));
+        for (c, p) in self.processors.iter_mut().enumerate() {
+            p.push_input(self.scratch_in[c].active_ref(size));
+            p.process(stretch, pitch_ratio);
+        }
 
-        self.processor_left.process(stretch, pitch_ratio);
-        self.processor_right.process(stretch, pitch_ratio);
-
-        let out_left = self.scratch_out_left.active(size);
-        let out_right = self.scratch_out_right.active(size);
-        out_left.fill(0.0);
-        out_right.fill(0.0);
-
-        let left_count = self.processor_left.pop_output(out_left);
-        let right_count = self.processor_right.pop_output(out_right);
-
-        for i in 0..size {
-            output.set_f32(0, i, if i < left_count { out_left[i] } else { 0.0 });
-            output.set_f32(1, i, if i < right_count { out_right[i] } else { 0.0 });
+        for c in 0..channels {
+            let out = self.scratch_out[c].active(size);
+            out.fill(0.0);
+            let count = self.processors[c].pop_output(out);
+            if c >= out_ch {
+                continue;
+            }
+            for (i, &s) in out.iter().enumerate().take(size) {
+                output.set_f32(c, i, if i < count { s } else { 0.0 });
+            }
         }
     }
 
     audio_unit_boilerplate!(id = crate::node_id::TIME_STRETCH_ID);
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        // As a filter, the incoming `input` frame IS the source signal.
-        let mut out = SignalFrame::new(2);
-        let latency = self.processor_left.latency_samples() as f64;
-        let left = input.at(0).delay(latency);
-        let right = if input.len() > 1 {
-            input.at(1).delay(latency)
-        } else {
-            left
-        };
-        out.set(0, left);
-        out.set(1, right);
+        // As a filter, the incoming `input` frame IS the source signal. Width
+        // must track `outputs()` or fundsp mis-plans this node's latency.
+        let channels = self.channels();
+        let mut out = SignalFrame::new(channels);
+        let latency = self.latency_samples() as f64;
+        let first = input.at(0).delay(latency);
+        for c in 0..channels {
+            let sig = if c < input.len() {
+                input.at(c).delay(latency)
+            } else {
+                first
+            };
+            out.set(c, sig);
+        }
         out
     }
 
@@ -416,5 +465,116 @@ mod tests {
         unit1.set_stretch_factor(StretchFactor::new(2.0));
         assert!((unit1.stretch_factor().get() - 2.0).abs() < 0.001);
         assert!((unit2.stretch_factor().get() - 1.5).abs() < 0.001);
+    }
+
+    /// Width is declared, not inferred: `new` stays stereo so every existing
+    /// call site keeps its arity, and `with_channels` is the explicit opt-in.
+    #[test]
+    fn new_is_stereo_and_with_channels_is_explicit() {
+        let two = Unit::new(44_100.0);
+        assert_eq!(two.channels(), 2);
+        assert_eq!(two.inputs(), 2);
+        assert_eq!(two.outputs(), 2);
+
+        let six = Unit::with_channels(44_100.0, 6);
+        assert_eq!(six.channels(), 6);
+        assert_eq!(six.inputs(), 6);
+        assert_eq!(six.outputs(), 6);
+    }
+
+    /// A zero-wide filter would make `inputs()`/`outputs()` lie to the graph.
+    #[test]
+    fn zero_width_is_clamped_to_one() {
+        assert_eq!(Unit::with_channels(44_100.0, 0).channels(), 1);
+    }
+
+    /// `route` must agree with `outputs()`. If it does not, fundsp mis-plans this
+    /// node's latency — which corrupts PDC without crashing or obviously
+    /// mis-routing audio, so nothing else in the suite would notice.
+    #[test]
+    fn route_width_tracks_outputs_at_every_width() {
+        for w in [1usize, 2, 6, 8] {
+            let mut u = Unit::with_channels(44_100.0, w);
+            let out = u.route(&SignalFrame::new(w), 44_100.0);
+            assert_eq!(
+                out.len(),
+                u.outputs(),
+                "route width {} != outputs {} at channels={w}",
+                out.len(),
+                u.outputs()
+            );
+        }
+    }
+
+    /// Bypass (`is_processing() == false`) must pass every channel through
+    /// untouched, not just the front pair.
+    #[test]
+    fn six_channel_bypass_passes_all_channels_through() {
+        let mut u = Unit::with_channels(44_100.0, 6);
+        u.set_stretch_factor(StretchFactor::new(1.0));
+        u.set_pitch_cents(Cents::new(0.0));
+        assert!(!u.is_processing(), "unity stretch/pitch should bypass");
+
+        let input: Vec<f32> = (0..6).map(|c| (c + 1) as f32).collect();
+        let mut output = [0.0f32; 6];
+        u.tick(&input, &mut output);
+
+        for (c, &got) in output.iter().enumerate() {
+            assert_eq!(
+                got,
+                (c + 1) as f32,
+                "channel {c} did not pass through: {output:?}"
+            );
+        }
+    }
+
+    /// With stretching active, every channel must reach the output — a 6-channel
+    /// clip through a stretcher that only ran two processors would silently lose
+    /// four channels, and no stereo test can see that.
+    ///
+    /// The phase vocoder has FFT latency, so the first blocks are legitimately
+    /// silent; this drives enough blocks to fill the pipeline and asserts that
+    /// *some* energy arrives on every channel, not on an exact value.
+    #[test]
+    fn six_channel_stretch_reaches_every_channel() {
+        let mut u = Unit::with_channels(44_100.0, 6);
+        u.set_stretch_factor(StretchFactor::new(2.0));
+        assert!(u.is_processing());
+
+        let mut seen = [false; 6];
+        let mut output = [0.0f32; 6];
+        for n in 0..8192 {
+            // Distinct per-channel tone so a cross-channel leak is not mistaken
+            // for a correct read.
+            let input: Vec<f32> = (0..6)
+                .map(|c| ((n as f32) * 0.01 * (c + 1) as f32).sin())
+                .collect();
+            u.tick(&input, &mut output);
+            for (c, &s) in output.iter().enumerate() {
+                if s.abs() > 1e-6 {
+                    seen[c] = true;
+                }
+            }
+            if seen.iter().all(|&b| b) {
+                break;
+            }
+        }
+        assert!(
+            seen.iter().all(|&b| b),
+            "channels {:?} never produced output",
+            seen.iter()
+                .enumerate()
+                .filter(|(_, &b)| !b)
+                .map(|(c, _)| c)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A clone must carry the width, not silently reset to stereo — clones happen
+    /// on every graph commit and per clip slot.
+    #[test]
+    fn clone_preserves_width() {
+        let u = Unit::with_channels(44_100.0, 6);
+        assert_eq!(u.clone().channels(), 6);
     }
 }

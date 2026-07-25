@@ -1,35 +1,51 @@
 use crate::Result;
 use tutti_core::AudioUnit;
 use tutti_core::ChannelLayout;
-use tutti_core::{BufferMut, BufferRef, Degrees, Linear, Param, SignalFrame};
+use tutti_core::{Azimuth, BufferMut, BufferRef, Elevation, Linear, Param, SignalFrame};
 
 use super::vbap_panner::SpatialPanner;
 
 /// Azimuth/elevation pair as typed parameters. Both spatial panner nodes
 /// carry exactly this pair; grouping them here names the concept and lets
 /// nodes forward a single field through their Clone impls.
+///
+/// The two fields are *different types* on purpose: a bearing wraps (190
+/// degrees is 170 to the right) and a height saturates (past straight up, you
+/// stop). They were one `Degrees` until the two behaviours had to diverge.
 #[derive(Clone)]
 pub struct SpatialTarget {
-    pub azimuth: Param<Degrees>,
-    pub elevation: Param<Degrees>,
+    pub azimuth: Param<Azimuth>,
+    pub elevation: Param<Elevation>,
 }
 
 impl SpatialTarget {
     pub fn new() -> Self {
         Self {
-            azimuth: Param::new(Degrees(0.0)),
-            elevation: Param::new(Degrees(0.0)),
+            azimuth: Param::new(Azimuth::FRONT),
+            elevation: Param::new(Elevation::LEVEL),
         }
     }
 
+    /// The raw pair, for the panners' trigonometry.
+    ///
+    /// Untyped on purpose, for now: both panners work in bare `f32` all the way
+    /// down to `sin`/`cos`, so typing this boundary would just add a `.get()`
+    /// at every use. It is the panners' *smoothing* that needs the types —
+    /// that is where the long-way-around bug lives, and it is a separate change.
     #[inline]
     pub fn load(&self) -> (f32, f32) {
         (self.azimuth.load().0, self.elevation.load().0)
     }
 
+    /// Store a bearing/height pair, normalized on the way in.
+    ///
+    /// Each coordinate is constrained the way its own space requires: the
+    /// bearing wraps onto the circle, the height clamps at the poles. Callers
+    /// pass raw degrees from UI or automation and cannot get this pairing
+    /// wrong, because the two types no longer accept each other's treatment.
     pub fn store(&self, azimuth: f32, elevation: f32) {
-        self.azimuth.store(Degrees(azimuth));
-        self.elevation.store(Degrees(elevation));
+        self.azimuth.store(Azimuth(azimuth).wrap());
+        self.elevation.store(Elevation::new_clamped(elevation));
     }
 
     pub fn reset_origin(&self) {

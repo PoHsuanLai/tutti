@@ -11,7 +11,8 @@ pub use error::{Error, Result};
 mod node_id;
 
 pub use tutti_core::{
-    params, Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio, SampleRate, Seconds, Semitones, Unit,
+    params, ArcDegrees, Azimuth, Bpm, Cents, Db, Elevation, Hz, Linear, Param, Ratio, SampleRate,
+    Seconds, Semitones, Unit,
 };
 
 // NOTE: the shared DSP param pool (`Frequency`/`FilterQ`/`WetMix`/…), the node

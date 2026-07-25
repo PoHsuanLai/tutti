@@ -319,16 +319,154 @@ unit_ordered!(Ratio);
 unit_bounded!(Ratio, f32);
 unit_scalable!(Ratio, f32);
 // NOT `unit_additive!`: 4:1 plus 4:1 is not 8:1.
+// ── Angles ──────────────────────────────────────────────────────────────────
+//
+// Three types where there was one (`Degrees`), because a circle and a segment
+// are not the same space and the single type could not tell them apart.
+//
+// The old type omitted `Ord` and `Add` for exactly the right reason — the
+// comment named `shortest_arc_to` and `wrap_signed` as the replacements — but
+// those methods were never written. With the operators gone and no replacement,
+// every call site escaped to raw `f32`, and two real bugs shipped in the escape
+// (a saturating clamp on a wrapping coordinate, and a smoother that sweeps 340
+// degrees to travel 20). The omissions below therefore ship *with* their
+// replacements; that is the rule this split exists to establish.
+//
+// The split itself is the second half of the fix. `Azimuth` wraps and
+// `Elevation` saturates, so the correct clamp for one is the shipped bug for
+// the other — and under a single `Degrees` those two call sites are textually
+// identical. Now they cannot be confused, because the wrong one no longer
+// compiles.
+
 unit_newtype!(
-    /// Angle in degrees. Used for spatial azimuth and elevation.
-    Degrees
+    /// A bearing on the horizontal circle, in degrees. 0 = front, positive =
+    /// counter-clockwise, canonical range `-180..180`.
+    ///
+    /// A *wrapping* coordinate. There is no ordering (`Azimuth(170) <
+    /// Azimuth(-170)` is a meaningless question — they are 20 degrees apart)
+    /// and no `clamp` (constraining a bearing to a range is what
+    /// [`wrap`](Self::wrap) does correctly and what a saturating clamp does
+    /// wrongly). Displacements are [`ArcDegrees`].
+    Azimuth
 );
-// A WRAPPING coordinate: azimuth runs -180..180 with 0 = front. Ordering and
-// addition are both traps here — `Degrees(350) < Degrees(10)` is true under a
-// naive compare, but 350 deg is 20 deg *clockwise* of 10 deg, and a
-// non-wrapping `+` silently leaves the circle. Angular arithmetic wants named
-// methods (shortest_arc_to, wrap_signed), not operators.
-unit_signed!(Degrees);
+// `Neg` is meaningful — mirroring a bearing across the front axis, which is how
+// a left/right flip is expressed. Everything else is a named method:
+// ordering and `clamp` are traps on a circle (see the type doc), and `+`/`-`
+// belong to `ArcDegrees` via `rotate_by` / `shortest_arc_to`.
+unit_signed!(Azimuth);
+
+impl Azimuth {
+    /// Directly ahead.
+    pub const FRONT: Azimuth = Azimuth(0.0);
+
+    /// The equivalent bearing in the canonical `-180..180` range.
+    ///
+    /// This is the operation a saturating `clamp` gets wrong: 190 degrees is
+    /// 170 degrees to the *right* (`-170`), not the extreme left (`180`).
+    /// Uses `rem_euclid`, not `%` — plain `%` preserves the dividend's sign, so
+    /// it leaves negative inputs outside the range it is supposed to enforce.
+    #[inline]
+    pub fn wrap(self) -> Azimuth {
+        Azimuth((self.0 + 180.0).rem_euclid(360.0) - 180.0)
+    }
+
+    /// The shortest signed rotation from `self` to `to`, in `-180..=180`.
+    ///
+    /// The replacement for `to - self`. A plain subtraction across the seam
+    /// gives the long way around: from 170 to -170 it reports -340 degrees
+    /// rather than the correct +20.
+    #[inline]
+    pub fn shortest_arc_to(self, to: Azimuth) -> ArcDegrees {
+        ArcDegrees(Azimuth(to.0 - self.0).wrap().0)
+    }
+
+    /// Rotate by a signed arc, wrapping. The replacement for `+`.
+    #[inline]
+    pub fn rotate_by(self, arc: ArcDegrees) -> Azimuth {
+        Azimuth(self.0 + arc.0).wrap()
+    }
+
+    /// Interpolate toward `to` along the *short* arc, `t` in `0..=1`.
+    ///
+    /// The replacement for `a + (b - a) * t`, which takes the long way around
+    /// the seam and is audible as a panner sweeping the wrong direction.
+    #[inline]
+    pub fn lerp_shortest(self, to: Azimuth, t: f32) -> Azimuth {
+        self.rotate_by(self.shortest_arc_to(to) * t)
+    }
+}
+
+unit_newtype!(
+    /// Height above the horizontal plane, in degrees. `-90` = directly below,
+    /// `0` = level, `+90` = directly overhead.
+    ///
+    /// A *saturating* coordinate, and this is the whole reason it is a separate
+    /// type from [`Azimuth`]. The poles are endpoints, not a seam: tilting past
+    /// straight up does not continue over the top and come out behind you at
+    /// this layer, it stops. So ordering and `clamp` — traps on a circle — are
+    /// exactly right here.
+    Elevation
+);
+unit_ordered!(Elevation);
+unit_bounded!(Elevation, f32);
+unit_signed!(Elevation);
+// NOT `unit_additive!`: `Elevation + Elevation` is a position sum with no
+// origin, and it would also bypass the pole clamp. `tilt_by` is the addition.
+
+impl Elevation {
+    /// Directly below.
+    pub const DOWN: Elevation = Elevation(-90.0);
+    /// The horizontal plane.
+    pub const LEVEL: Elevation = Elevation(0.0);
+    /// Directly overhead.
+    pub const UP: Elevation = Elevation(90.0);
+
+    /// Constrain to the pole-to-pole range. Saturating, unlike
+    /// [`Azimuth::wrap`] — the distinction the split exists to enforce.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Elevation {
+        Elevation(v).clamp(Self::DOWN, Self::UP)
+    }
+
+    /// Tilt by a signed arc, clamped at the poles. The replacement for `+`.
+    #[inline]
+    pub fn tilt_by(self, arc: ArcDegrees) -> Elevation {
+        Elevation::new_clamped(self.0 + arc.0)
+    }
+
+    /// Straight-line interpolation, `t` in `0..=1`. Correct here precisely
+    /// because there is no seam to cross.
+    #[inline]
+    pub fn lerp(self, to: Elevation, t: f32) -> Elevation {
+        Elevation::new_clamped(self.0 + (to.0 - self.0) * t)
+    }
+}
+
+unit_newtype!(
+    /// A signed angular *displacement* in degrees — the difference between two
+    /// angles, not an angle itself.
+    ///
+    /// The partner to [`Azimuth`] and [`Elevation`]: those name where something
+    /// is, this names how far to turn. Being a displacement, it has the full
+    /// algebra its positions cannot have — two rotations compose, and a
+    /// rotation scales.
+    ArcDegrees
+);
+unit_ordered!(ArcDegrees);
+unit_bounded!(ArcDegrees, f32);
+unit_additive!(ArcDegrees);
+unit_signed!(ArcDegrees);
+unit_scalable!(ArcDegrees, f32);
+// Deliberately NOT `unit_affine!(Azimuth, ArcDegrees)`, though the pair looks
+// exactly like `Beat`/`BeatDuration` and the macro would expand cleanly. The
+// generated `+` and `-` are plain float arithmetic with no wrap, which is the
+// precise bug class this split was made to eliminate — `Azimuth(170) +
+// ArcDegrees(20)` would give 190, a bearing outside the canonical range that
+// then compares and clamps wrongly forever after. `rotate_by` and
+// `shortest_arc_to` are the wrapping forms, and they are the only forms.
+//
+// `Elevation` is left out for a different reason: its `+` must clamp at the
+// poles, which `unit_affine!` also does not do. `tilt_by` is that form.
 unit_newtype!(
     /// Tempo in beats per minute. Distinct from `Hz`: beats/minute, not cycles/second.
     ///
@@ -702,10 +840,87 @@ mod tests {
     /// - `Db * f32` — squares the amplitude rather than doubling the gain.
     /// - `Db / Db` — a quotient of logarithms is not a quantity.
     /// - `Linear + Linear`, `Ratio + Ratio` — normalized scales do not compose.
-    /// - `Degrees < Degrees`, `Degrees + Degrees` — a wrapping coordinate.
+    /// - `Azimuth < Azimuth`, `Azimuth.clamp(..)` — a wrapping coordinate has
+    ///   no ordering and no saturating clamp. `wrap` is the constraint.
+    /// - `Azimuth + ArcDegrees` — `rotate_by`, which wraps; the operator would
+    ///   not. Same for `Elevation + ArcDegrees` vs `tilt_by`, which clamps.
+    /// - `Azimuth - Azimuth` — `shortest_arc_to`; a plain subtraction takes the
+    ///   long way around the seam.
     /// - `Bpm - Bpm` — a tempo difference is not a tempo.
     #[test]
     fn omitted_operators_are_documented() {}
+
+    #[test]
+    fn azimuth_wraps_rather_than_saturating() {
+        // The shipped bug this type exists to prevent: a saturating clamp maps
+        // 190 degrees to 180 (hard left). It is 170 degrees to the *right*.
+        assert_eq!(Azimuth(190.0).wrap(), Azimuth(-170.0));
+        assert_eq!(Azimuth(-190.0).wrap(), Azimuth(170.0));
+
+        // `rem_euclid`, not `%`: several full turns in either direction still
+        // land in range, which plain `%` does not manage for negatives.
+        assert_eq!(Azimuth(360.0 + 45.0).wrap(), Azimuth(45.0));
+        assert_eq!(Azimuth(-720.0 - 45.0).wrap(), Azimuth(-45.0));
+
+        // The range is half-open at +180: one endpoint, not two names for it.
+        assert_eq!(Azimuth(180.0).wrap(), Azimuth(-180.0));
+    }
+
+    #[test]
+    fn azimuth_takes_the_short_way_across_the_seam() {
+        // The second shipped bug: `to - self` reports -340 here. The listener
+        // hears the panner sweep almost all the way around to travel 20
+        // degrees.
+        let from = Azimuth(170.0);
+        let to = Azimuth(-170.0);
+        assert_eq!(from.shortest_arc_to(to), ArcDegrees(20.0));
+        assert_eq!(to.shortest_arc_to(from), ArcDegrees(-20.0));
+
+        // And the interpolator built on it crosses the seam rather than
+        // retreating from it: halfway from 170 to -170 is 180, not 0.
+        assert_eq!(from.lerp_shortest(to, 0.5), Azimuth(-180.0));
+        assert_eq!(from.lerp_shortest(to, 0.0), from);
+        assert_eq!(from.lerp_shortest(to, 1.0), to);
+    }
+
+    #[test]
+    fn azimuth_rotation_stays_on_the_circle() {
+        assert_eq!(Azimuth(170.0).rotate_by(ArcDegrees(20.0)), Azimuth(-170.0));
+        // Mirroring across the front axis — the one operator a bearing keeps.
+        assert_eq!(-Azimuth(45.0), Azimuth(-45.0));
+    }
+
+    #[test]
+    fn elevation_saturates_where_azimuth_wraps() {
+        // Same numbers, opposite correct answers — which is why one `Degrees`
+        // could not serve both. Past the pole, elevation stops.
+        assert_eq!(Elevation::new_clamped(120.0), Elevation::UP);
+        assert_eq!(Elevation::new_clamped(-120.0), Elevation::DOWN);
+        // Where the identical azimuth input wraps to the far side instead.
+        assert_eq!(Azimuth(120.0).wrap(), Azimuth(120.0));
+        assert_eq!(Azimuth(200.0).wrap(), Azimuth(-160.0));
+
+        assert_eq!(Elevation::LEVEL.tilt_by(ArcDegrees(30.0)), Elevation(30.0));
+        assert_eq!(Elevation(80.0).tilt_by(ArcDegrees(30.0)), Elevation::UP);
+
+        // Ordering is meaningful here and absent on `Azimuth`.
+        assert!(Elevation::DOWN < Elevation::LEVEL);
+        assert!(Elevation::LEVEL < Elevation::UP);
+    }
+
+    #[test]
+    fn elevation_lerp_needs_no_seam_handling() {
+        assert_eq!(Elevation(0.0).lerp(Elevation(90.0), 0.5), Elevation(45.0));
+        assert_eq!(Elevation(-90.0).lerp(Elevation(90.0), 0.5), Elevation::LEVEL);
+    }
+
+    #[test]
+    fn arc_degrees_composes_like_the_displacement_it_is() {
+        assert_eq!(ArcDegrees(20.0) + ArcDegrees(15.0), ArcDegrees(35.0));
+        assert_eq!(ArcDegrees(20.0) * 0.5, ArcDegrees(10.0));
+        assert_eq!(-ArcDegrees(20.0), ArcDegrees(-20.0));
+        assert!(ArcDegrees(10.0) < ArcDegrees(20.0));
+    }
 
     #[test]
     fn beat_splits_into_floor_and_fraction() {

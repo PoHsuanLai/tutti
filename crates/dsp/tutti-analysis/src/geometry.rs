@@ -30,10 +30,13 @@ pub struct StftGeometry {
 }
 
 impl StftGeometry {
-    /// An overlapping analysis grid.
+    /// An analysis grid.
     ///
-    /// Valid for analysis and display. **Not** guaranteed invertible — use
-    /// [`cola`](Self::cola) when the result must reconstruct.
+    /// Accepts any positive window and hop, **including a hop wider than the
+    /// window**: decimated display transforms deliberately sample sparsely,
+    /// skipping the audio between frames. Such a grid analyses fine and cannot
+    /// reconstruct, which is why the inverse path goes through
+    /// [`cola`](Self::cola) instead of this.
     pub fn new(
         sample_rate: impl Into<SampleRate>,
         window: impl Into<Samples>,
@@ -47,9 +50,6 @@ impl StftGeometry {
         if hop.is_zero() {
             return Err(AnalysisError::ZeroHop);
         }
-        if hop > window {
-            return Err(AnalysisError::HopExceedsWindow { window, hop });
-        }
         if !(sample_rate.get() > 0.0) {
             return Err(AnalysisError::NonPositiveSampleRate);
         }
@@ -59,6 +59,13 @@ impl StftGeometry {
             hop,
             sample_rate,
         })
+    }
+
+    /// Whether frames overlap at all. False for a decimated display grid,
+    /// which leaves gaps of unanalysed audio between frames.
+    #[inline]
+    pub fn frames_overlap(self) -> bool {
+        self.hop < self.window
     }
 
     /// A COLA-compliant grid — the only kind an inverse transform accepts.
@@ -77,6 +84,12 @@ impl StftGeometry {
         hop: impl Into<Samples>,
     ) -> Result<Self> {
         let geometry = Self::new(sample_rate, window, hop)?;
+        if !geometry.frames_overlap() {
+            return Err(AnalysisError::HopExceedsWindow {
+                window: geometry.window,
+                hop: geometry.hop,
+            });
+        }
         if !geometry.is_cola() {
             return Err(AnalysisError::NotColaCompliant {
                 window: geometry.window,
@@ -181,15 +194,24 @@ mod tests {
             Err(AnalysisError::ZeroHop)
         );
         assert_eq!(
-            StftGeometry::new(44100.0, Samples(512), Samples(2048)),
-            Err(AnalysisError::HopExceedsWindow {
-                window: Samples(512),
-                hop: Samples(2048),
-            })
-        );
-        assert_eq!(
             StftGeometry::new(0.0, Samples(2048), Samples(512)),
             Err(AnalysisError::NonPositiveSampleRate)
+        );
+    }
+
+    /// A hop wider than the window is legal for analysis and illegal for
+    /// reconstruction — decimated display grids sample sparsely on purpose.
+    #[test]
+    fn a_hop_wider_than_the_window_analyses_but_does_not_invert() {
+        let sparse = StftGeometry::new(44100.0, Samples(2048), Samples(8192)).unwrap();
+        assert!(!sparse.frames_overlap());
+
+        assert_eq!(
+            StftGeometry::cola(44100.0, Samples(2048), Samples(8192)),
+            Err(AnalysisError::HopExceedsWindow {
+                window: Samples(2048),
+                hop: Samples(8192),
+            })
         );
     }
 

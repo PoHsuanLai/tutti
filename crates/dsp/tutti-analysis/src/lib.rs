@@ -47,6 +47,7 @@
 pub mod cache;
 pub mod correlation;
 pub mod error;
+pub mod fft;
 pub mod geometry;
 pub mod grid;
 pub mod istft;
@@ -54,6 +55,7 @@ pub mod live;
 pub mod pitch;
 pub mod spectrum;
 pub mod stft;
+pub mod transform;
 pub mod transient;
 pub mod waveform;
 pub mod window;
@@ -61,8 +63,13 @@ pub mod window;
 pub use tutti_core::ChannelLayout;
 
 pub use error::{AnalysisError, Result};
+pub use fft::FftScratch;
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
+pub use transform::{
+    istft as istft_transform, stft, stft_magnitude, stft_polar, HopPolicy, NormalizedMagnitudes,
+    RawMagnitudes, SampleRange, Stft, StftMagnitude, StftPolar, StftRequest,
+};
 pub use window::hann;
 
 /// Buffer-level mono folding, re-exported from the engine's downmix module.
@@ -94,8 +101,26 @@ pub use stft::{
     IncrementalStftBuilder, StftResult,
 };
 
-/// Re-exported so consumers of [`ComplexStftResult`] / `istft_complex` can name
-/// the complex bin type without depending on `rustfft` directly.
-pub use rustfft::num_complex::Complex;
+/// The generic complex type, re-exported so consumers can name a bin without
+/// depending on `rustfft` directly. Most code wants [`Complex`] instead.
+pub use rustfft::num_complex::Complex as GenericComplex;
+
+/// A single frequency bin: a rectangular complex number.
+///
+/// A plain alias rather than a newtype, deliberately. Wrapping it would buy
+/// backend-swappability this crate does not want, and cost either `unsafe`
+/// transmutes at the `rustfft` boundary or a conversion on every bin of the
+/// spectral edit path's mask multiply. `num_complex::Complex<f32>` is stable,
+/// ubiquitous, and structurally transparent — there is no ambiguity for a
+/// newtype to close, unlike the unit types, where a bare `f32` genuinely does
+/// not say whether it means Hz or seconds.
+///
+/// **Why `rustfft` here** when the rest of the engine uses vendored fundsp's
+/// FFT (`tutti_core::Complex32`): analysis windows are arbitrary-size and
+/// cold-path, so `rustfft`'s planner and SIMD are the right trade. microfft is
+/// fixed-size and allocation-free, which is what the realtime graph needs and
+/// this crate does not. Both are `num_complex::Complex<f32>` underneath, so
+/// values cross freely — only the transform differs.
+pub type Complex = rustfft::num_complex::Complex<f32>;
 pub use transient::{DetectionMethod, Transient, TransientDetector};
 pub use waveform::{MultiResolutionSummary, WaveformBlock, WaveformSummary};

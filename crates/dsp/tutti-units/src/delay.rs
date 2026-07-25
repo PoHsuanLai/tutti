@@ -32,10 +32,14 @@ impl DelayLine {
         max_delay_secs: impl Into<Seconds>,
         sample_rate: impl Into<SampleRate>,
     ) -> Self {
-        let max_delay_secs = max_delay_secs.into().get();
-        let sample_rate = sample_rate.into().get();
-        let samples = (max_delay_secs * sample_rate as f32).ceil() as usize;
-        Self::new(samples)
+        // `to_samples_ceil`, not a nearest-rounding cast: a line sized for
+        // `max_delay` must hold *at least* that long, and rounding to nearest
+        // under-allocates for half of all inputs. The multiply also stays in
+        // f64 now — the old form narrowed the sample rate to f32 first.
+        let samples = max_delay_secs
+            .into()
+            .to_samples_ceil(sample_rate.into().get());
+        Self::new(samples.get())
     }
 
     pub fn push_sample(&mut self, sample: f32) {

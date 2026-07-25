@@ -12,6 +12,17 @@ pub(crate) struct LoudnessResult {
     pub range: f64,
 }
 
+/// True-peak amplitude as dBTP.
+///
+/// Stays `f64` end to end, and therefore stays a bare function rather than
+/// going through `tutti_types::Db`: that type is `f32`-backed, and this feeds
+/// the EBU R128 path where the LUFS targets are `f64`. Narrowing here would
+/// change rendered export gain in the low bits — the same precision boundary
+/// that keeps `RenderPlan::duration_seconds` an `f64`.
+///
+/// The `-144.0` floor is deliberately the same value as `Db::FLOOR`; the two
+/// are kept in agreement by intent, not by sharing a constant across the
+/// f32/f64 boundary.
 #[inline]
 fn linear_to_dbtp(linear: f64) -> f64 {
     if linear > 0.0 {

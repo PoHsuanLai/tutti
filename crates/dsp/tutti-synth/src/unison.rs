@@ -108,7 +108,10 @@ impl UnisonEngine {
         let count = usize::from(self.config.voice_count).clamp(1, MAX_UNISON_VOICES);
 
         let amplitude = 1.0 / (count as f32).sqrt();
-        let detune_semitones = self.config.detune_cents.get() / 100.0;
+        // A converter, not a divide: `Cents` is `unit_scalable!`, so
+        // `detune_cents / 100.0` would compile and hand back `Cents` — wrong by
+        // 100x, with a type that says it is fine.
+        let detune_semitones = self.config.detune_cents.to_semitones();
 
         for i in 0..count {
             let position = if count == 1 {
@@ -117,7 +120,10 @@ impl UnisonEngine {
                 (i as f32 / (count - 1) as f32) * 2.0 - 1.0
             };
 
-            let freq_ratio = 2.0_f32.powf(detune_semitones * position / 12.0);
+            // `Semitones * f32` is opted in, so spreading the detune across the
+            // voice's position stays in the unit, and the exponent conversion
+            // happens once at the end.
+            let freq_ratio = (detune_semitones * position).to_pitch_ratio();
             let pan = position * self.config.stereo_spread;
 
             self.voices[i] = UnisonVoiceParams {

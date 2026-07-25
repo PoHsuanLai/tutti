@@ -196,9 +196,9 @@ impl LimiterNode {
     }
 
     pub fn with_lookahead(mut self, lookahead: impl Into<Seconds>) -> Self {
-        let secs = lookahead.into().get();
-        let samples = (secs * self.sample_rate as f32).ceil() as usize;
-        self.ring.resize(samples.max(1));
+        // Ceil: a lookahead ring must hold at least the requested window.
+        let samples = lookahead.into().to_samples_ceil(self.sample_rate);
+        self.ring.resize(samples.get().max(1));
         self
     }
 

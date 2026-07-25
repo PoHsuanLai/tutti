@@ -10,6 +10,11 @@
 //! `fundsp-tutti` (where the type is defined), since `fundsp-tutti` depends on
 //! this crate, not the reverse.
 
+// `Seconds::to_samples*` lands in the frame-count vocabulary, which is
+// integer-backed and lives next door in `samples.rs` rather than being one of
+// the float units defined here.
+use super::samples::Samples;
+
 /// Marker trait implemented by every unit newtype.
 ///
 /// `Raw` is the underlying float representation. Most units use `f32`;
@@ -288,6 +293,55 @@ unit_bounded!(Seconds, f32);
 unit_additive!(Seconds);
 unit_scalable!(Seconds, f32);
 unit_ratio!(Seconds, f32);
+
+impl Seconds {
+    /// Frames in this span at `sample_rate`, rounded to nearest.
+    ///
+    /// The *measurement* form: how long is this, in frames. Three named
+    /// variants rather than one function with a rounding-mode argument —
+    /// the name puts the choice in the signature instead of making a reader
+    /// chase what a call site passed.
+    ///
+    /// Computed in `f64`: `Seconds` is `f32`, which cannot represent frame
+    /// counts past 2^24 (about 6 minutes at 48 kHz), and the export planner
+    /// already works in `f64`.
+    #[inline]
+    pub fn to_samples(self, sample_rate: f64) -> Samples {
+        Self::frames(self.0 as f64 * sample_rate, f64::round)
+    }
+
+    /// Frames fully elapsed in this span — rounds **down**.
+    ///
+    /// The *counting* form: how many whole frames have gone by.
+    #[inline]
+    pub fn to_samples_floor(self, sample_rate: f64) -> Samples {
+        Self::frames(self.0 as f64 * sample_rate, f64::floor)
+    }
+
+    /// Frames needed to hold this span — rounds **up**.
+    ///
+    /// The *allocation* form: a delay line sized for `max_delay` must hold at
+    /// least that long, so rounding to nearest would under-allocate for half
+    /// of all inputs.
+    #[inline]
+    pub fn to_samples_ceil(self, sample_rate: f64) -> Samples {
+        Self::frames(self.0 as f64 * sample_rate, f64::ceil)
+    }
+
+    /// Shared tail: apply `round`, then clamp into `usize`.
+    ///
+    /// Non-finite and negative inputs collapse to zero. `NaN as usize` is
+    /// already `0` in Rust and a negative cast already saturates, so this
+    /// changes no behaviour — it makes the behaviour *stated* rather than
+    /// inherited from a cast rule most readers do not have memorized.
+    #[inline]
+    fn frames(raw: f64, round: fn(f64) -> f64) -> Samples {
+        if !raw.is_finite() || raw <= 0.0 {
+            return Samples::ZERO;
+        }
+        Samples(round(raw) as usize)
+    }
+}
 unit_newtype!(
     /// Amplitude in decibels. Used for thresholds, gains, makeup, ceilings.
     Db
@@ -301,6 +355,62 @@ unit_signed!(Db);
 // NOT `unit_scalable!`: `Db(-6.0) * 2.0 == Db(-12.0)` squares the *amplitude*,
 // it does not double the gain. Convert through `Linear` for amplitude scaling.
 // NOT `unit_ratio!`: a quotient of logarithms is not a quantity.
+
+impl Db {
+    /// The metering floor. Silence has no logarithm, so a display needs a
+    /// finite stand-in for it; `-inf` cannot be drawn on a fader.
+    ///
+    /// −144 dB is roughly the noise floor of 24-bit audio, so it is below
+    /// anything real while staying finite.
+    pub const FLOOR: Db = Db(-144.0);
+
+    /// Unity gain.
+    pub const UNITY: Db = Db(0.0);
+
+    /// This gain as a linear amplitude multiplier.
+    #[inline]
+    pub fn to_amplitude(self) -> Linear {
+        Linear(10.0_f32.powf(self.0 / 20.0))
+    }
+
+    /// This gain as an `f64` amplitude multiplier.
+    ///
+    /// Not a convenience: the loudness path (`tutti-export`'s EBU R128
+    /// normalization) works in `f64` because LUFS targets are `f64`, and
+    /// routing it through the `f32` form would change rendered export gain in
+    /// the low bits.
+    #[inline]
+    pub fn to_amplitude_f64(self) -> f64 {
+        10.0_f64.powf(self.0 as f64 / 20.0)
+    }
+
+    /// Amplitude as decibels, with silence pinned to [`FLOOR`](Self::FLOOR).
+    ///
+    /// The metering form. Two floors exist on purpose — see
+    /// [`from_amplitude_exact`](Self::from_amplitude_exact). The engine had
+    /// three different ones before this (`-96` in `dynamics/utils.rs`, `-144`
+    /// in `loudness.rs`, and none at all elsewhere); the split here is between
+    /// *display* and *arithmetic*, not between two crates' habits.
+    #[inline]
+    pub fn from_amplitude(amp: Linear) -> Db {
+        if amp.0 <= 0.0 {
+            Db::FLOOR
+        } else {
+            Db(20.0 * amp.0.log10())
+        }
+    }
+
+    /// Amplitude as decibels, letting silence be `-inf`.
+    ///
+    /// For arithmetic that must round-trip: `to_amplitude` of `-inf` is exactly
+    /// `0.0`, whereas the clamped form loses that. Use this when the value
+    /// feeds further computation, and [`from_amplitude`](Self::from_amplitude)
+    /// when it feeds a meter.
+    #[inline]
+    pub fn from_amplitude_exact(amp: Linear) -> Db {
+        Db(20.0 * amp.0.log10())
+    }
+}
 unit_newtype!(
     /// Unitless normalized amount. Used for mix (0..1), feedback (0..~0.99),
     /// depth, LFO amplitude, and similar ratio-of-range controls.
@@ -709,6 +819,47 @@ unit_bounded!(Cents, f32);
 unit_additive!(Cents);
 unit_signed!(Cents);
 unit_scalable!(Cents, f32);
+
+impl Cents {
+    /// One semitone.
+    pub const SEMITONE: Cents = Cents(100.0);
+
+    /// This offset in semitones.
+    ///
+    /// A real converter, not `self / 100.0`: `unit_scalable!(Cents, f32)` is
+    /// opted in above, so `cents / 100.0` compiles and returns **`Cents`** —
+    /// a value wrong by 100x whose *type* says it is fine. Sites that divide
+    /// the raw `f32` today are correct by luck; this is the form that stays
+    /// correct once they hold the typed value.
+    #[inline]
+    pub fn to_semitones(self) -> Semitones {
+        Semitones(self.0 / 100.0)
+    }
+
+    /// This offset as a frequency multiplier. 1200 cents doubles the pitch.
+    #[inline]
+    pub fn to_pitch_ratio(self) -> f32 {
+        2.0_f32.powf(self.0 / 1200.0)
+    }
+}
+
+impl Semitones {
+    /// One octave.
+    pub const OCTAVE: Semitones = Semitones(12.0);
+
+    /// This offset in cents. The inverse of [`Cents::to_semitones`], and
+    /// likewise a converter rather than a scalar multiply.
+    #[inline]
+    pub fn to_cents(self) -> Cents {
+        Cents(self.0 * 100.0)
+    }
+
+    /// This offset as a frequency multiplier. 12 semitones doubles the pitch.
+    #[inline]
+    pub fn to_pitch_ratio(self) -> f32 {
+        2.0_f32.powf(self.0 / 12.0)
+    }
+}
 // ── Playback rates ──────────────────────────────────────────────────────────
 //
 // Three distinct quantities that all used to be `Ratio`, all multiplied into
@@ -908,6 +1059,27 @@ unit_ratio!(BeatDuration, f64);
 unit_modular!(BeatDuration);
 
 impl BeatDuration {
+    /// This span in seconds at `tempo`.
+    ///
+    /// For *duration* readouts — a clip length, a UI-facing time display. It is
+    /// deliberately **not** the conversion the per-sample transport path uses:
+    /// `tutti_core::transport::state::beats_per_sample` computes
+    /// `(tempo / 60) / sample_rate` and documents that association as
+    /// load-bearing (the offline timeline is pinned to agree with the clock
+    /// sample-for-sample, and the two groupings round differently). Routing
+    /// those sites through this method would silently re-associate the
+    /// arithmetic. Two conversions, two call sites, on purpose.
+    ///
+    /// That function also cannot move here: it takes a `SampleRate`, which
+    /// lives in `fundsp-tutti` — a crate that *depends on* this one.
+    #[inline]
+    pub fn to_seconds(self, tempo: Bpm) -> Seconds {
+        if tempo.0 <= 0.0 {
+            return Seconds(0.0);
+        }
+        Seconds((self.0 * 60.0 / tempo.0) as f32)
+    }
+
     /// Magnitude, discarding direction.
     #[inline]
     pub fn abs(self) -> BeatDuration {
@@ -1147,6 +1319,116 @@ mod tests {
         // hand-multiplying by pi/180 at each trig call.
         assert!((Radians::from(Azimuth(180.0)).0 - core::f32::consts::PI).abs() < 1e-6);
         assert_eq!(Radians::from(Elevation::LEVEL), Radians(0.0));
+    }
+
+    #[test]
+    fn db_round_trips_through_amplitude() {
+        assert_eq!(Db::UNITY.to_amplitude(), Linear(1.0));
+        // -6 dB is very nearly half amplitude.
+        assert!((Db(-6.0).to_amplitude().get() - 0.501_187).abs() < 1e-5);
+        // +6 dB exceeds 1.0 — amplitude is not a 0..1 quantity.
+        assert!(Db(6.0).to_amplitude().get() > 1.99);
+
+        let round = Db::from_amplitude_exact(Db(-12.0).to_amplitude());
+        assert!((round.get() - -12.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_two_db_floors_differ_only_at_silence() {
+        // The metering form pins silence to a finite value, because -inf
+        // cannot be drawn on a fader.
+        assert_eq!(Db::from_amplitude(Linear(0.0)), Db::FLOOR);
+        assert!(Db::from_amplitude(Linear(0.0)).get().is_finite());
+
+        // The arithmetic form keeps -inf, which is what round-trips exactly:
+        // 10^(-inf/20) is 0.0, while 10^(-144/20) is merely very small.
+        assert!(Db::from_amplitude_exact(Linear(0.0)).get().is_infinite());
+        assert_eq!(
+            Db::from_amplitude_exact(Linear(0.0)).to_amplitude(),
+            Linear(0.0)
+        );
+        assert!(Db::FLOOR.to_amplitude().get() > 0.0);
+
+        // Above silence the two agree.
+        assert_eq!(
+            Db::from_amplitude(Linear(0.5)),
+            Db::from_amplitude_exact(Linear(0.5))
+        );
+    }
+
+    #[test]
+    fn db_to_amplitude_f64_is_not_just_the_f32_path_widened() {
+        // The loudness path works in f64 because LUFS targets are f64. The
+        // wider form must actually be computed wide, or export gain shifts in
+        // the low bits.
+        let wide = Db(-23.0).to_amplitude_f64();
+        assert!((wide - 0.070_794_578_438_413_79).abs() < 1e-15);
+        assert_eq!(Db::UNITY.to_amplitude_f64(), 1.0);
+    }
+
+    #[test]
+    fn seconds_to_samples_names_its_rounding() {
+        // 0.5 s at 44100 is exactly 22050 frames — every variant agrees.
+        assert_eq!(Seconds(0.5).to_samples(44_100.0), Samples(22_050));
+        assert_eq!(Seconds(0.5).to_samples_floor(44_100.0), Samples(22_050));
+        assert_eq!(Seconds(0.5).to_samples_ceil(44_100.0), Samples(22_050));
+
+        // 10 ms at 44100 is 441.0; nudge it so the three diverge.
+        let odd = Seconds(0.010_5);
+        assert_eq!(odd.to_samples_floor(44_100.0), Samples(463));
+        assert_eq!(odd.to_samples_ceil(44_100.0), Samples(464));
+        assert_eq!(odd.to_samples(44_100.0), Samples(463));
+
+        // Allocation must never under-size: ceil is >= nearest, always.
+        for ms in 1..200 {
+            let s = Seconds(ms as f32 * 0.001);
+            assert!(s.to_samples_ceil(48_000.0) >= s.to_samples(48_000.0));
+            assert!(s.to_samples(48_000.0) >= s.to_samples_floor(48_000.0));
+        }
+    }
+
+    #[test]
+    fn seconds_to_samples_collapses_nonsense_to_zero() {
+        // `NaN as usize` is already 0 and a negative cast already saturates —
+        // this pins the behaviour so it is stated rather than inherited.
+        assert_eq!(Seconds(f32::NAN).to_samples(48_000.0), Samples::ZERO);
+        assert_eq!(Seconds(f32::INFINITY).to_samples(48_000.0), Samples::ZERO);
+        assert_eq!(Seconds(-1.0).to_samples(48_000.0), Samples::ZERO);
+        assert_eq!(Seconds(1.0).to_samples(0.0), Samples::ZERO);
+    }
+
+    #[test]
+    fn seconds_to_samples_computes_wide_enough_for_a_long_render() {
+        // f32 cannot represent frame counts past 2^24 (~6 min at 48k), which
+        // is why the arithmetic widens to f64 before rounding.
+        let hour = Seconds(3600.0);
+        assert_eq!(hour.to_samples(48_000.0), Samples(172_800_000));
+    }
+
+    #[test]
+    fn cents_and_semitones_convert_rather_than_scale() {
+        // `unit_scalable!(Cents, f32)` means `Cents / 100.0` COMPILES and
+        // yields `Cents` — wrong by 100x with a type that says otherwise.
+        // These are the forms that carry the unit change.
+        assert_eq!(Cents(100.0).to_semitones(), Semitones(1.0));
+        assert_eq!(Cents::SEMITONE.to_semitones(), Semitones(1.0));
+        assert_eq!(Semitones(1.0).to_cents(), Cents(100.0));
+        assert_eq!(Semitones::OCTAVE.to_cents(), Cents(1200.0));
+
+        // An octave doubles the frequency, by either spelling.
+        assert!((Semitones::OCTAVE.to_pitch_ratio() - 2.0).abs() < 1e-6);
+        assert!((Cents(1200.0).to_pitch_ratio() - 2.0).abs() < 1e-6);
+        assert!((Semitones(0.0).to_pitch_ratio() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn beat_duration_to_seconds_is_the_readout_conversion() {
+        // At 120 BPM a beat is half a second.
+        assert_eq!(BeatDuration(1.0).to_seconds(Bpm(120.0)), Seconds(0.5));
+        assert_eq!(BeatDuration(4.0).to_seconds(Bpm(120.0)), Seconds(2.0));
+        assert_eq!(BeatDuration(1.0).to_seconds(Bpm(60.0)), Seconds(1.0));
+        // A degenerate tempo yields zero rather than inf.
+        assert_eq!(BeatDuration(1.0).to_seconds(Bpm(0.0)), Seconds(0.0));
     }
 
     #[test]

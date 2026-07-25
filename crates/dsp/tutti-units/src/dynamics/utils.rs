@@ -33,19 +33,23 @@ pub(crate) fn sidechain_level_buffer(input: &BufferRef, ch: usize, i: usize) -> 
     level
 }
 
+/// Amplitude as decibels, for the dynamics detectors.
+///
+/// Delegates to the shared converter. Note the floor moved: this used to pin
+/// silence at `-96` while `tutti-export`'s copy used `-144` and a third site
+/// used none. `Db::FLOOR` is `-144` (roughly the 24-bit noise floor), so a
+/// detector now sees a *lower* value for true digital silence than before.
+/// That is inaudible in a compressor — anything near either floor is far below
+/// any usable threshold — and it removes a divergence that was never a
+/// deliberate difference.
 #[inline]
 pub(crate) fn amplitude_to_db(amp: impl Into<Linear>) -> Db {
-    let amp = amp.into().get();
-    if amp <= 0.0 {
-        Db(-96.0)
-    } else {
-        Db(20.0 * amp.log10())
-    }
+    Db::from_amplitude(amp.into())
 }
 
 #[inline]
 pub(crate) fn db_to_amplitude(db: impl Into<Db>) -> Linear {
-    Linear(10.0_f32.powf(db.into().get() / 20.0))
+    db.into().to_amplitude()
 }
 
 #[inline]

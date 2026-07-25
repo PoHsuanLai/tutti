@@ -328,11 +328,26 @@ impl AudioUnit for LimiterNode {
         self.update_coefficients();
         // A present ceiling/threshold port overrides its atomic.
         let (threshold, ceiling) = self.effective_params(|p| input[p]);
-        // Reuse the fixed output scratch (taken to avoid aliasing `self`).
+        // Build a full-width audio frame from `input`, tolerating a caller that
+        // supplies fewer audio channels than the unit width: the last available
+        // channel is duplicated (mirrors the pre-widen mono→stereo fallback), so
+        // `process_frame_with`'s `frame[..channels]` never indexes out of range.
+        let mut in_frame = core::mem::take(&mut self.in_frame);
+        let audio = self.channels.min(input.len());
+        for (c, slot) in in_frame.iter_mut().enumerate() {
+            *slot = if c < audio {
+                input[c]
+            } else if audio > 0 {
+                input[audio - 1]
+            } else {
+                0.0
+            };
+        }
         let mut out = core::mem::take(&mut self.out_frame);
-        self.process_frame_with(input, threshold, ceiling, &mut out);
+        self.process_frame_with(&in_frame, threshold, ceiling, &mut out);
         let n = self.channels.min(output.len());
         output[..n].copy_from_slice(&out[..n]);
+        self.in_frame = in_frame;
         self.out_frame = out;
     }
 
@@ -854,6 +869,23 @@ mod tests {
     }
 
     // ── Width-native (N-channel) ─────────────────────────────────────────────
+
+    #[test]
+    fn limiter_tick_tolerates_short_input_frame() {
+        // A stereo limiter handed a mono (len-1) tick frame must not panic; it
+        // duplicates the last channel (the pre-widen mono→stereo fallback).
+        let mut lim = LimiterNode::new(-6.0, -0.3);
+        lim.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut out = [0.0f32; 2];
+        // Run past the 5 ms lookahead so the delayed signal emerges.
+        for _ in 0..500 {
+            lim.tick(&[0.9], &mut out); // len 1 < channels 2 — must not panic
+        }
+        // Both outputs are driven (the mono input is duplicated to ch1), not
+        // left silent — proves the short-frame fallback wired the second channel.
+        assert!(out[0].abs() > 1e-4, "ch0 silent: {}", out[0]);
+        assert!(out[1].abs() > 1e-4, "ch1 silent (fallback not applied): {}", out[1]);
+    }
 
     #[test]
     fn limiter_with_channels_reports_arity() {

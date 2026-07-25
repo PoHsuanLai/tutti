@@ -1,12 +1,10 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::ChannelLayout;
 use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame};
 
 use super::envelope::EnvelopeFollower;
 use super::utils::{amplitude_to_db, compute_limiter_gain, db_to_amplitude, smooth_envelope};
 use crate::buffer::{CircularBuffer, MonotonicMinDeque};
-use crate::delay::StereoPair;
 use tutti_core::{Db, Param, Seconds};
 
 /// Lookahead ring buffers + sliding-window-minimum tracker for the limiter.
@@ -14,17 +12,19 @@ use tutti_core::{Db, Param, Seconds};
 /// block, not a flat field soup.
 #[derive(Clone)]
 struct LookaheadRing {
-    buffers: StereoPair<CircularBuffer<f32>>,
+    /// One lookahead ring per audio channel; `buffers.len()` == width. Built at
+    /// construction — never resized in the RT path.
+    buffers: Vec<CircularBuffer<f32>>,
     min_deque: MonotonicMinDeque,
     sample_counter: u64,
     lookahead_samples: usize,
 }
 
 impl LookaheadRing {
-    fn new(lookahead_samples: usize) -> Self {
+    fn new(channels: usize, lookahead_samples: usize) -> Self {
         let n = lookahead_samples.max(1);
         Self {
-            buffers: StereoPair::new(CircularBuffer::new(n), CircularBuffer::new(n)),
+            buffers: (0..channels.max(1)).map(|_| CircularBuffer::new(n)).collect(),
             min_deque: MonotonicMinDeque::new(n),
             sample_counter: 0,
             lookahead_samples: n,
@@ -32,31 +32,33 @@ impl LookaheadRing {
     }
 
     fn resize(&mut self, lookahead_samples: usize) {
-        *self = Self::new(lookahead_samples);
+        *self = Self::new(self.buffers.len(), lookahead_samples);
     }
 
     fn clear(&mut self) {
-        self.buffers.l.clear();
-        self.buffers.r.clear();
+        for b in &mut self.buffers {
+            b.clear();
+        }
         self.min_deque.clear();
         self.sample_counter = 0;
     }
 
     #[inline]
     fn footprint(&self) -> usize {
-        (self.buffers.l.len() + self.buffers.r.len()) * core::mem::size_of::<f32>()
+        self.buffers.iter().map(|b| b.len()).sum::<usize>() * core::mem::size_of::<f32>()
             + self.min_deque.capacity() * core::mem::size_of::<(u64, f32)>()
     }
 
-    /// Write `(left, right)` into the lookahead, push `gain` into the sliding
-    /// minimum, and return `(delayed_l, delayed_r, window_min_gain)`.
+    /// Read the lookahead-delayed sample for each channel into `delayed`, push
+    /// the current `frame` into the rings, feed `gain` to the sliding minimum,
+    /// and return the window-min gain (the linked gain reduction all channels
+    /// share). `delayed` and `frame` are both `width` long.
     #[inline]
-    fn step(&mut self, left: f32, right: f32, gain: f32) -> (f32, f32, f32) {
-        let delayed_l = self.buffers.l.read_back(self.lookahead_samples - 1);
-        let delayed_r = self.buffers.r.read_back(self.lookahead_samples - 1);
-
-        self.buffers.l.push(left);
-        self.buffers.r.push(right);
+    fn step(&mut self, frame: &[f32], gain: f32, delayed: &mut [f32]) -> f32 {
+        for (c, b) in self.buffers.iter_mut().enumerate() {
+            delayed[c] = b.read_back(self.lookahead_samples - 1);
+            b.push(frame[c]);
+        }
 
         self.min_deque.push(self.sample_counter, gain);
         let window_start = self
@@ -65,8 +67,7 @@ impl LookaheadRing {
         self.min_deque.evict_older_than(window_start);
         self.sample_counter = self.sample_counter.wrapping_add(1);
 
-        let min_gain = self.min_deque.min().unwrap_or(gain);
-        (delayed_l, delayed_r, min_gain)
+        self.min_deque.min().unwrap_or(gain)
     }
 }
 
@@ -91,12 +92,21 @@ pub struct LimiterNode {
     release: Param<Seconds>,
 
     ring: LookaheadRing,
+    /// Audio channel width. Gain reduction is linked across all channels (peak
+    /// = max-abs over the frame), matching the stereo-linked design.
+    channels: usize,
+    /// Per-channel scratch frames, sized to `channels` at construction so the
+    /// RT path builds an input frame + limited output without allocating.
+    in_frame: Vec<f32>,
+    out_frame: Vec<f32>,
+    /// Per-channel lookahead-delayed scratch (filled by the ring each sample).
+    delayed: Vec<f32>,
     envelope: f32,
     gain_reduction_db: f32,
     sample_rate: f64,
     follower: EnvelopeFollower,
-    /// When true, a ceiling param-input port (dB) follows the two audio inputs
-    /// at index 2 and overrides the ceiling atomic per sample.
+    /// When true, a ceiling param-input port (dB) follows the audio inputs and
+    /// overrides the ceiling atomic per sample.
     mod_ceiling: bool,
     /// When true, a threshold param-input port (dB) follows the audio inputs
     /// (and the ceiling port if present) and overrides the threshold atomic
@@ -106,6 +116,19 @@ pub struct LimiterNode {
 
 impl LimiterNode {
     pub fn new(threshold_db: impl Into<Db>, ceiling_db: impl Into<Db>) -> Self {
+        Self::with_channels(2, threshold_db, ceiling_db)
+    }
+
+    /// An `n`-channel lookahead limiter with gain reduction **linked** across
+    /// all channels (peak = max-abs over the frame, one gain applied to every
+    /// channel) — the surround generalization of the stereo-linked design.
+    /// `with_channels(2, …)` is bit-identical to [`Self::new`].
+    pub fn with_channels(
+        channels: usize,
+        threshold_db: impl Into<Db>,
+        ceiling_db: impl Into<Db>,
+    ) -> Self {
+        let n = channels.max(1);
         let lookahead_secs = 0.005;
         let lookahead_samples = (lookahead_secs * DEFAULT_SR as f32).ceil() as usize;
 
@@ -113,7 +136,11 @@ impl LimiterNode {
             threshold_db: Param::new(threshold_db.into()),
             ceiling_db: Param::new(ceiling_db.into()),
             release: Param::new(Seconds(0.1)),
-            ring: LookaheadRing::new(lookahead_samples),
+            ring: LookaheadRing::new(n, lookahead_samples),
+            channels: n,
+            in_frame: vec![0.0; n],
+            out_frame: vec![0.0; n],
+            delayed: vec![0.0; n],
             envelope: 0.0,
             gain_reduction_db: 0.0,
             sample_rate: DEFAULT_SR,
@@ -140,17 +167,18 @@ impl LimiterNode {
     }
 
     /// Input-port index of the ceiling param input, if present (right after the
-    /// two audio inputs).
+    /// audio inputs).
     #[inline]
     pub fn ceiling_port(&self) -> Option<usize> {
-        self.mod_ceiling.then_some(2)
+        self.mod_ceiling.then_some(self.channels)
     }
 
     /// Input-port index of the threshold param input, if present (after the
     /// audio inputs and the ceiling port).
     #[inline]
     pub fn threshold_port(&self) -> Option<usize> {
-        self.mod_threshold.then_some(2 + self.mod_ceiling as usize)
+        self.mod_threshold
+            .then_some(self.channels + self.mod_ceiling as usize)
     }
 
     /// Effective per-sample (threshold_db, ceiling_db): a present param port
@@ -224,17 +252,23 @@ impl LimiterNode {
         compute_limiter_gain(peak_db, threshold, ceiling).get()
     }
 
-    /// Process one sample using explicit threshold/ceiling (the modulated path;
-    /// the fast path passes the atomics).
+    /// Process one sample-frame with explicit threshold/ceiling (the modulated
+    /// path; the fast path passes the atomics). `frame` holds the `channels`
+    /// audio inputs; the limited, lookahead-delayed output for each channel is
+    /// written into `out` (also `channels` long). Gain reduction is linked: the
+    /// peak is the max-abs across the frame, and one min-gain scales every
+    /// channel.
     #[inline]
-    fn process_sample_with(
+    fn process_frame_with(
         &mut self,
-        left: f32,
-        right: f32,
+        frame: &[f32],
         threshold: tutti_core::Db,
         ceiling: tutti_core::Db,
-    ) -> (f32, f32) {
-        let peak = left.abs().max(right.abs());
+        out: &mut [f32],
+    ) {
+        let peak = frame[..self.channels]
+            .iter()
+            .fold(0.0f32, |m, s| m.max(s.abs()));
         let peak_db = amplitude_to_db(peak);
 
         let target_gain = self.compute_gain(peak_db, threshold, ceiling);
@@ -246,7 +280,13 @@ impl LimiterNode {
                 smooth_envelope(self.envelope, target_gain, self.follower.release_coeff());
         }
 
-        let (delayed_l, delayed_r, min_gain) = self.ring.step(left, right, self.envelope);
+        // `delayed` is a per-instance scratch sized at construction — no alloc.
+        let mut delayed = core::mem::take(&mut self.delayed);
+        let min_gain = self.ring.step(frame, self.envelope, &mut delayed);
+        for c in 0..self.channels {
+            out[c] = delayed[c] * min_gain;
+        }
+        self.delayed = delayed;
 
         // Metering only. Guard log10(0) so a fully-closed gain reports a large
         // finite reduction instead of +inf.
@@ -255,17 +295,16 @@ impl LimiterNode {
         } else {
             96.0
         };
-        (delayed_l * min_gain, delayed_r * min_gain)
     }
 }
 
 impl AudioUnit for LimiterNode {
     fn inputs(&self) -> usize {
-        2 + self.mod_ceiling as usize + self.mod_threshold as usize
+        self.channels + self.mod_ceiling as usize + self.mod_threshold as usize
     }
 
     fn outputs(&self) -> usize {
-        2
+        self.channels
     }
 
     fn reset(&mut self) {
@@ -287,61 +326,42 @@ impl AudioUnit for LimiterNode {
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         self.update_coefficients();
-        let left = input[0];
-        let right = if input.len() > 1 { input[1] } else { input[0] };
         // A present ceiling/threshold port overrides its atomic.
         let (threshold, ceiling) = self.effective_params(|p| input[p]);
-        let (out_l, out_r) = self.process_sample_with(left, right, threshold, ceiling);
-        output[0] = out_l;
-        if output.len() > 1 {
-            output[1] = out_r;
-        }
+        // Reuse the fixed output scratch (taken to avoid aliasing `self`).
+        let mut out = core::mem::take(&mut self.out_frame);
+        self.process_frame_with(input, threshold, ceiling, &mut out);
+        let n = self.channels.min(output.len());
+        output[..n].copy_from_slice(&out[..n]);
+        self.out_frame = out;
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
         self.update_coefficients();
-        // Hoisted once per block: whether a second input/output channel exists.
-        let has_stereo = matches!(
-            ChannelLayout::from(input.channels()),
-            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
-        );
-        let stereo_out = matches!(
-            ChannelLayout::from(output.channels()),
-            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
-        );
+        let in_ch = input.channels();
+        let out_ch = output.channels();
         let ceiling_port = self.ceiling_port();
         let threshold_port = self.threshold_port();
-
-        // Fast path: no param ports — read the atomics once per block.
-        if ceiling_port.is_none() && threshold_port.is_none() {
-            let threshold = self.threshold_db.load();
-            let ceiling = self.ceiling_db.load();
-            for i in 0..size {
-                let left = input.at_f32(0, i);
-                let right = if has_stereo { input.at_f32(1, i) } else { left };
-                let (out_l, out_r) = self.process_sample_with(left, right, threshold, ceiling);
-                output.set_f32(0, i, out_l);
-                if stereo_out {
-                    output.set_f32(1, i, out_r);
-                }
-            }
-            return;
-        }
-
-        // Modulated path: read the active port(s) per sample.
         let base_threshold = self.threshold_db.load();
         let base_ceiling = self.ceiling_db.load();
+
+        // Reuse the two fixed scratch frames (sized at construction). Taken so
+        // `process_frame_with` can borrow `self` without aliasing them.
+        let mut in_frame = core::mem::take(&mut self.in_frame);
+        let mut out_frame = core::mem::take(&mut self.out_frame);
         for i in 0..size {
-            let left = input.at_f32(0, i);
-            let right = if has_stereo { input.at_f32(1, i) } else { left };
+            for (c, slot) in in_frame.iter_mut().enumerate() {
+                *slot = if c < in_ch { input.at_f32(c, i) } else { 0.0 };
+            }
             let threshold = threshold_port.map_or(base_threshold, |p| Db(input.at_f32(p, i)));
             let ceiling = ceiling_port.map_or(base_ceiling, |p| Db(input.at_f32(p, i)));
-            let (out_l, out_r) = self.process_sample_with(left, right, threshold, ceiling);
-            output.set_f32(0, i, out_l);
-            if stereo_out {
-                output.set_f32(1, i, out_r);
+            self.process_frame_with(&in_frame, threshold, ceiling, &mut out_frame);
+            for (c, &y) in out_frame.iter().enumerate().take(self.channels.min(out_ch)) {
+                output.set_f32(c, i, y);
             }
         }
+        self.in_frame = in_frame;
+        self.out_frame = out_frame;
     }
 
     fn set(&mut self, setting: tutti_core::dsp::Setting) {
@@ -368,10 +388,11 @@ impl AudioUnit for LimiterNode {
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(2);
+        let mut out = SignalFrame::new(self.channels);
         let latency = self.ring.lookahead_samples as f64;
-        out.set(0, input.at(0).delay(latency));
-        out.set(1, input.at(1).delay(latency));
+        for c in 0..self.channels {
+            out.set(c, input.at(c).delay(latency));
+        }
         out
     }
 
@@ -387,6 +408,10 @@ impl Clone for LimiterNode {
             ceiling_db: self.ceiling_db.handle(),
             release: self.release.handle(),
             ring: self.ring.clone(),
+            channels: self.channels,
+            in_frame: self.in_frame.clone(),
+            out_frame: self.out_frame.clone(),
+            delayed: self.delayed.clone(),
             envelope: self.envelope,
             gain_reduction_db: self.gain_reduction_db,
             sample_rate: self.sample_rate,
@@ -411,24 +436,35 @@ impl Clone for LimiterNode {
 pub struct BrickwallLimiter {
     ceiling_db: Param<Db>,
     ceiling_linear: f32,
-    /// When true, a ceiling param-input port (dB) follows the two audio inputs
-    /// at index 2 and overrides the ceiling atomic per sample.
+    /// Audio channel width (`inputs()` audio ports == `outputs()`). The clip is
+    /// stateless and per-channel, so widening is purely the port count.
+    channels: usize,
+    /// When true, a ceiling param-input port (dB) follows the audio inputs and
+    /// overrides the ceiling atomic per sample.
     mod_ceiling: bool,
 }
 
 impl BrickwallLimiter {
     pub fn new(ceiling_db: impl Into<Db>) -> Self {
+        Self::with_channels(2, ceiling_db)
+    }
+
+    /// An `n`-channel brickwall limiter. The clip is stateless, so every
+    /// channel is clamped to the same (linked) ceiling. `with_channels(2, …)`
+    /// is bit-identical to [`Self::new`].
+    pub fn with_channels(channels: usize, ceiling_db: impl Into<Db>) -> Self {
         let ceiling_db = ceiling_db.into();
         Self {
             ceiling_db: Param::new(ceiling_db),
             ceiling_linear: db_to_amplitude(ceiling_db).get(),
+            channels: channels.max(1),
             mod_ceiling: false,
         }
     }
 
-    /// A brickwall limiter with an optional audio-rate ceiling param-input port
-    /// at index 2. When present it overrides the ceiling atomic per sample; the
-    /// atomic still holds the base.
+    /// A brickwall limiter with an optional audio-rate ceiling param-input port.
+    /// When present it overrides the ceiling atomic per sample; the atomic still
+    /// holds the base.
     pub fn with_param_inputs(ceiling_db: impl Into<Db>, mod_ceiling: bool) -> Self {
         let mut node = Self::new(ceiling_db);
         node.mod_ceiling = mod_ceiling;
@@ -436,10 +472,10 @@ impl BrickwallLimiter {
     }
 
     /// Input-port index of the ceiling param input, if present (right after the
-    /// two audio inputs).
+    /// audio inputs).
     #[inline]
     pub fn ceiling_port(&self) -> Option<usize> {
-        self.mod_ceiling.then_some(2)
+        self.mod_ceiling.then_some(self.channels)
     }
 
     pub fn ceiling(&self) -> Arc<AtomicF32> {
@@ -466,11 +502,11 @@ impl BrickwallLimiter {
 
 impl AudioUnit for BrickwallLimiter {
     fn inputs(&self) -> usize {
-        2 + self.mod_ceiling as usize
+        self.channels + self.mod_ceiling as usize
     }
 
     fn outputs(&self) -> usize {
-        2
+        self.channels
     }
 
     fn reset(&mut self) {}
@@ -479,13 +515,15 @@ impl AudioUnit for BrickwallLimiter {
 
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
+        // Guard against a graph handing fewer physical channels than the unit's
+        // width (mirrors the old `input.len() > 1` checks, now general).
+        let n = self.channels.min(input.len()).min(output.len());
         // Modulated path: a present ceiling port overrides the atomic; clip
         // against the per-sample linear ceiling without touching the cache.
         if let Some(p) = self.ceiling_port() {
             let ceiling_linear = db_to_amplitude(Db(input[p])).get();
-            output[0] = Self::clip_at(input[0], ceiling_linear);
-            if output.len() > 1 && input.len() > 1 {
-                output[1] = Self::clip_at(input[1], ceiling_linear);
+            for c in 0..n {
+                output[c] = Self::clip_at(input[c], ceiling_linear);
             }
             return;
         }
@@ -493,31 +531,21 @@ impl AudioUnit for BrickwallLimiter {
         if (db_to_amplitude(ceiling).get() - self.ceiling_linear).abs() > 0.0001 {
             self.ceiling_linear = db_to_amplitude(ceiling).get();
         }
-        output[0] = self.clip(input[0]);
-        if output.len() > 1 && input.len() > 1 {
-            output[1] = self.clip(input[1]);
+        for c in 0..n {
+            output[c] = self.clip(input[c]);
         }
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        // Hoisted once per block: whether a second input/output channel exists.
-        let has_stereo = matches!(
-            ChannelLayout::from(input.channels()),
-            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
-        );
-        let stereo_out = matches!(
-            ChannelLayout::from(output.channels()),
-            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_)
-        );
-        let stereo = has_stereo && stereo_out;
+        // Clip every channel the graph actually provides, up to the unit width.
+        let n = self.channels.min(input.channels()).min(output.channels());
 
         // Modulated path: read the ceiling port per sample.
         if let Some(p) = self.ceiling_port() {
             for i in 0..size {
                 let ceiling_linear = db_to_amplitude(Db(input.at_f32(p, i))).get();
-                output.set_f32(0, i, Self::clip_at(input.at_f32(0, i), ceiling_linear));
-                if stereo {
-                    output.set_f32(1, i, Self::clip_at(input.at_f32(1, i), ceiling_linear));
+                for c in 0..n {
+                    output.set_f32(c, i, Self::clip_at(input.at_f32(c, i), ceiling_linear));
                 }
             }
             return;
@@ -529,9 +557,8 @@ impl AudioUnit for BrickwallLimiter {
         }
 
         for i in 0..size {
-            output.set_f32(0, i, self.clip(input.at_f32(0, i)));
-            if stereo {
-                output.set_f32(1, i, self.clip(input.at_f32(1, i)));
+            for c in 0..n {
+                output.set_f32(c, i, self.clip(input.at_f32(c, i)));
             }
         }
     }
@@ -557,9 +584,10 @@ impl AudioUnit for BrickwallLimiter {
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(2);
-        out.set(0, input.at(0).distort(0.0));
-        out.set(1, input.at(1).distort(0.0));
+        let mut out = SignalFrame::new(self.channels);
+        for c in 0..self.channels {
+            out.set(c, input.at(c).distort(0.0));
+        }
         out
     }
 
@@ -573,6 +601,7 @@ impl Clone for BrickwallLimiter {
         Self {
             ceiling_db: self.ceiling_db.handle(),
             ceiling_linear: self.ceiling_linear,
+            channels: self.channels,
             mod_ceiling: self.mod_ceiling,
         }
     }
@@ -822,6 +851,70 @@ mod tests {
             high_ceiling > low_ceiling + 0.1,
             "higher ceiling via port should clip less: low={low_ceiling}, high={high_ceiling}"
         );
+    }
+
+    // ── Width-native (N-channel) ─────────────────────────────────────────────
+
+    #[test]
+    fn limiter_with_channels_reports_arity() {
+        let l = LimiterNode::with_channels(6, -6.0, -0.3);
+        assert_eq!(l.inputs(), 6);
+        assert_eq!(l.outputs(), 6);
+    }
+
+    #[test]
+    fn limiter_with_channels_2_matches_new() {
+        let mut a = LimiterNode::new(-6.0, -0.3);
+        a.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut b = LimiterNode::with_channels(2, -6.0, -0.3);
+        b.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut oa = [0.0f32; 2];
+        let mut ob = [0.0f32; 2];
+        for i in 0..2000 {
+            let s = if i % 400 < 200 { 0.95 } else { 0.05 };
+            a.tick(&[s, s * 0.5], &mut oa);
+            b.tick(&[s, s * 0.5], &mut ob);
+            assert_eq!(oa[0].to_bits(), ob[0].to_bits(), "L bit-diff at {i}");
+            assert_eq!(oa[1].to_bits(), ob[1].to_bits(), "R bit-diff at {i}");
+        }
+    }
+
+    #[test]
+    fn wide_limiter_gain_is_linked_across_all_channels() {
+        // A loud transient on one channel must reduce ALL channels by the same
+        // linked gain (max-abs across the frame), preserving inter-channel ratios.
+        let mut lim = LimiterNode::with_channels(6, -6.0, -0.3);
+        lim.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut out = [0.0f32; 6];
+        // ch0 loud, others at half — the whole frame should be limited together.
+        let inp = [1.0f32, 0.5, 0.5, 0.5, 0.5, 0.5];
+        for _ in 0..500 {
+            lim.tick(&inp, &mut out);
+        }
+        // Once limiting, every channel keeps its input ratio to ch0.
+        if out[0].abs() > 1e-3 {
+            for c in 1..6 {
+                let ratio = out[c].abs() / out[0].abs();
+                assert!(
+                    (ratio - 0.5).abs() < 0.1,
+                    "ch{c} not linked to ch0: ratio {ratio}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn brickwall_with_channels_reports_arity_and_clips_all() {
+        let mut bw = BrickwallLimiter::with_channels(6, 0.0);
+        assert_eq!(bw.inputs(), 6);
+        assert_eq!(bw.outputs(), 6);
+        let mut out = [0.0f32; 6];
+        bw.tick(&[2.0, -2.0, 3.0, -3.0, 0.5, -0.5], &mut out);
+        for (c, &y) in out.iter().enumerate() {
+            assert!((-1.0 - 1e-6..=1.0 + 1e-6).contains(&y), "ch{c} not clipped: {y}");
+        }
+        assert!((out[0] - 1.0).abs() < 1e-4);
+        assert!((out[1] + 1.0).abs() < 1e-4);
     }
 
     #[test]

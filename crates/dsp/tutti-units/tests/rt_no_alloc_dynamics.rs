@@ -105,6 +105,56 @@ fn limiter_node_process_is_allocation_free() {
 }
 
 #[test]
+fn limiter_node_wide_6ch_process_is_allocation_free() {
+    // The per-channel lookahead rings + frame scratch must be built at
+    // construction; the linked-gain wide path must not allocate per buffer.
+    let mut node = LimiterNode::with_channels(6, -3.0, -0.3).with_lookahead(0.005);
+    node.set_sample_rate(SampleRate(48_000.0));
+
+    let mut input_vec = BufferVec::new(6);
+    let mut output_vec = BufferVec::new(6);
+    fill_with_signal(&mut input_vec, 1.5);
+
+    for _ in 0..32 {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        node.process(64, &input, &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..2_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            node.process(64, &input, &mut output);
+        }
+    });
+}
+
+#[test]
+fn brickwall_limiter_wide_6ch_process_is_allocation_free() {
+    let mut node = BrickwallLimiter::with_channels(6, -0.3);
+    node.set_sample_rate(SampleRate(48_000.0));
+
+    let mut input_vec = BufferVec::new(6);
+    let mut output_vec = BufferVec::new(6);
+    fill_with_signal(&mut input_vec, 1.5);
+
+    {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        node.process(64, &input, &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..5_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            node.process(64, &input, &mut output);
+        }
+    });
+}
+
+#[test]
 fn brickwall_limiter_process_is_allocation_free() {
     let mut node = BrickwallLimiter::new(-0.3);
     node.set_sample_rate(SampleRate(48_000.0));

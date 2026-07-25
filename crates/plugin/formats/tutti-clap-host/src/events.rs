@@ -524,7 +524,12 @@ impl InputEventList {
                 let value = match range {
                     Some(&(_, min, max)) => {
                         let plain = min + (point.value as f32) * (max - min);
-                        plain.clamp(min, max) as f64
+                        // `f32::clamp` panics when `lo > hi`, and `min`/`max`
+                        // come straight from the plugin's own reported
+                        // `min_value`/`max_value` (lifecycle.rs:93). A plugin
+                        // reporting inverted bounds is malformed, but it must
+                        // not panic the audio thread — order the bounds first.
+                        plain.clamp(min.min(max), min.max(max)) as f64
                     }
                     None => point.value,
                 };
@@ -910,6 +915,19 @@ mod tests {
         let mut list = InputEventList::new();
         list.add_param_changes(&changes, &[(9, 0.0, 10.0)]);
         assert!((first_param_value(&list) - 10.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn add_param_changes_survives_a_plugin_reporting_inverted_bounds() {
+        // `f32::clamp` panics when `lo > hi`, and these bounds are whatever the
+        // plugin reported. A malformed plugin must not take down the audio
+        // thread — the value lands inside the range either way round.
+        let mut changes = ParameterChanges::new();
+        changes.add_change(9, 0, 0.5);
+        let mut list = InputEventList::new();
+        list.add_param_changes(&changes, &[(9, 10.0, 0.0)]);
+        let v = first_param_value(&list);
+        assert!((0.0..=10.0).contains(&v), "value {v} escaped the range");
     }
 
     #[test]

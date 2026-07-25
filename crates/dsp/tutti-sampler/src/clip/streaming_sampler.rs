@@ -3,6 +3,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use crate::MAX_SAMPLER_CHANNELS;
+use tutti_core::SignalFrame;
 use tutti_core::{
     AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Linear, PlaybackRate, SamplePosition,
 };
@@ -12,7 +14,24 @@ use super::sampler_unit::TransportPlacement;
 use super::track_clip_reader::Direction;
 use crate::butler::{RtState, SharedReader};
 
-/// 8192 frames at 4x speed with interpolation padding.
+/// Per-block fetch budget in **frames**, reserved once per unit so the RT
+/// `clear()` + `push()` in `process_normal_samples` can never reallocate.
+///
+/// The old comment read "8192 frames at 4x speed", and both halves are wrong in
+/// ways worth recording, because the headroom this buys is accidental rather
+/// than designed:
+///
+/// - fundsp caps a `process` block at `MAX_BUFFER_SIZE = 64`, not 8192, so the
+///   real per-block demand is ~64 frames, not ~8192.
+/// - the read rate is not capped at 4x. It is `PlaybackRate` (≤ 4.0) times
+///   `SrcRatio`, which is `file_rate / session_rate` and has no clamp — a 192k
+///   file in a 44.1k session gives ≈ 4.35, so the true ceiling is ≈ 17.4x.
+///
+/// Worst case is therefore `64 * 17.4 + 4 ≈ 1119` frames against 32,776
+/// reserved — a 29x margin. That margin survives the rate ceiling being 4x
+/// larger than documented only because the block size is 128x smaller. **If
+/// fundsp's block size ever grows, recompute this** rather than trusting the
+/// number.
 const MAX_FETCH_SAMPLES: usize = 8192 * 4 + 8;
 
 /// Disk streaming sampler with varispeed, seeking, and crossfade support.
@@ -41,11 +60,24 @@ pub struct StreamingSamplerUnit {
     /// Fractional position for sub-sample interpolation.
     fractional_pos: f64,
 
-    /// History buffer for cubic Hermite interpolation (last 4 samples).
-    history: [(f32, f32); 4],
+    /// Output width; also the interleave stride of `history` and
+    /// `fetch_scratch`.
+    channels: usize,
 
-    /// Pre-allocated scratch buffer for fetched samples (RT-safe).
-    fetch_scratch: Vec<(f32, f32)>,
+    /// 4-tap cubic-Hermite history, **frame-major**: tap `t` channel `c` lives
+    /// at `history[t * channels + c]`.
+    ///
+    /// Frame-major deliberately. Channel-major (`history[c * 4 + t]`) is the
+    /// tempting layout, because the interpolation kernel wants four consecutive
+    /// taps of one channel — but then `shift_history` has to stride, and at
+    /// width 2 a stride bug and a correct stride coincide for several access
+    /// patterns. Getting it wrong rotates channels while still producing
+    /// smooth, plausible-sounding output.
+    history: Vec<f32>,
+
+    /// Pre-allocated scratch for fetched frames, flat interleaved (RT-safe:
+    /// `clear` + `push` inside a reserved capacity, never a realloc).
+    fetch_scratch: Vec<f32>,
 }
 
 // Hand-rolled: `consumer` (a `SharedReader` `ArcSwap`) and `shared_state`
@@ -73,15 +105,20 @@ impl Clone for StreamingSamplerUnit {
             shared_state: self.shared_state.clone(),
             applied_reset_epoch: self.applied_reset_epoch,
             fractional_pos: self.fractional_pos,
-            history: self.history,
-            fetch_scratch: Vec::with_capacity(MAX_FETCH_SAMPLES),
+            channels: self.channels,
+            history: self.history.clone(),
+            fetch_scratch: Vec::with_capacity(MAX_FETCH_SAMPLES * self.channels),
         }
     }
 }
 
 impl StreamingSamplerUnit {
+    /// Width comes from the ring: the reader's stride is what this unit must
+    /// pop, so there is nothing to declare independently and nothing that can
+    /// disagree.
     pub(crate) fn new(consumer: SharedReader, shared_state: Arc<RtState>) -> Self {
         let applied_reset_epoch = shared_state.reset_epoch();
+        let channels = consumer.load().channels().clamp(1, MAX_SAMPLER_CHANNELS);
         Self {
             consumer,
             playing: AtomicBool::new(true),
@@ -90,8 +127,9 @@ impl StreamingSamplerUnit {
             shared_state: Some(shared_state),
             applied_reset_epoch,
             fractional_pos: 0.0,
-            history: [(0.0, 0.0); 4],
-            fetch_scratch: Vec::with_capacity(MAX_FETCH_SAMPLES),
+            channels,
+            history: vec![0.0; 4 * channels],
+            fetch_scratch: Vec::with_capacity(MAX_FETCH_SAMPLES * channels),
         }
     }
 
@@ -106,7 +144,7 @@ impl StreamingSamplerUnit {
             if epoch != self.applied_reset_epoch {
                 self.applied_reset_epoch = epoch;
                 self.consumer.load().clear();
-                self.history = [(0.0, 0.0); 4];
+                self.history.fill(0.0);
                 self.fractional_pos = 0.0;
             }
         }
@@ -132,17 +170,28 @@ impl StreamingSamplerUnit {
         self.gain
     }
 
+    /// Output width — this unit's `outputs()`.
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
+    /// Drop the oldest tap, shifting taps 1..3 down one frame.
     #[inline]
     fn shift_history(&mut self) {
-        self.history[0] = self.history[1];
-        self.history[1] = self.history[2];
-        self.history[2] = self.history[3];
+        let ch = self.channels;
+        self.history.copy_within(ch.., 0);
+    }
+
+    /// Tap `t`, channel `c`.
+    #[inline]
+    fn tap(&self, t: usize, c: usize) -> f32 {
+        self.history[t * self.channels + c]
     }
 
     /// Call after seek to reset interpolation state.
     pub fn reset_interpolation(&mut self) {
         self.fractional_pos = 0.0;
-        self.history = [(0.0, 0.0); 4];
+        self.history.fill(0.0);
     }
 
     fn process_normal_samples(&mut self, size: usize, offset: usize, output: &mut BufferMut) {
@@ -162,12 +211,16 @@ impl StreamingSamplerUnit {
 
         self.fetch_scratch.clear();
 
+        let ch = self.channels;
         let gain = self.gain.get();
         {
             let cell = self.consumer.load();
+            let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
             for _ in 0..samples_needed {
-                if let Some((left, right)) = cell.read() {
-                    self.fetch_scratch.push((left * gain, right * gain));
+                if cell.read_into(&mut frame[..ch]) {
+                    for &s in &frame[..ch] {
+                        self.fetch_scratch.push(s * gain);
+                    }
                 } else {
                     break;
                 }
@@ -186,35 +239,30 @@ impl StreamingSamplerUnit {
                 self.fractional_pos -= 1.0;
                 self.shift_history();
 
-                if fetch_idx < self.fetch_scratch.len() {
-                    self.history[3] = self.fetch_scratch[fetch_idx];
-                    fetch_idx += 1;
+                if fetch_idx + ch <= self.fetch_scratch.len() {
+                    self.history[3 * ch..4 * ch]
+                        .copy_from_slice(&self.fetch_scratch[fetch_idx..fetch_idx + ch]);
+                    fetch_idx += ch;
                 } else {
                     if let Some(ref state) = self.shared_state {
                         state.report_underrun();
                     }
-                    self.history[3] = self.history[2];
+                    self.history.copy_within(2 * ch..3 * ch, 3 * ch);
                 }
             }
 
             let t = self.fractional_pos as f32;
-            let left = cubic_hermite(
-                self.history[0].0,
-                self.history[1].0,
-                self.history[2].0,
-                self.history[3].0,
-                t,
-            );
-            let right = cubic_hermite(
-                self.history[0].1,
-                self.history[1].1,
-                self.history[2].1,
-                self.history[3].1,
-                t,
-            );
-
-            output.set_f32(0, offset + i, left);
-            output.set_f32(1, offset + i, right);
+            let out_ch = ch.min(output.channels());
+            for c in 0..out_ch {
+                let s = cubic_hermite(
+                    self.tap(0, c),
+                    self.tap(1, c),
+                    self.tap(2, c),
+                    self.tap(3, c),
+                    t,
+                );
+                output.set_f32(c, offset + i, s);
+            }
         }
     }
 }
@@ -225,7 +273,7 @@ impl AudioUnit for StreamingSamplerUnit {
     }
 
     fn outputs(&self) -> usize {
-        2
+        self.channels
     }
 
     fn reset(&mut self) {
@@ -239,29 +287,26 @@ impl AudioUnit for StreamingSamplerUnit {
     }
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
+        let n = self.channels.min(output.len());
+        if n == 0 {
+            return;
+        }
         if !self.playing.load(Ordering::Relaxed) {
-            if output.len() >= 2 {
-                output[0] = 0.0;
-                output[1] = 0.0;
-            }
+            output[..n].fill(0.0);
             return;
         }
 
         let gain = self.gain.get();
         if let Some(ref state) = self.shared_state {
-            if let Some((left, right)) = state.next_seek_crossfade_sample() {
-                if output.len() >= 2 {
-                    output[0] = left * gain;
-                    output[1] = right * gain;
+            if state.next_seek_crossfade_frame_into(&mut output[..n]) {
+                for s in output[..n].iter_mut() {
+                    *s *= gain;
                 }
                 return;
             }
 
             if state.is_seeking() {
-                if output.len() >= 2 {
-                    output[0] = 0.0;
-                    output[1] = 0.0;
-                }
+                output[..n].fill(0.0);
                 return;
             }
         }
@@ -274,58 +319,57 @@ impl AudioUnit for StreamingSamplerUnit {
 
         self.fractional_pos += speed;
 
+        let ch = self.channels;
         let cell = self.consumer.load();
+        let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
         while self.fractional_pos >= 1.0 {
             self.fractional_pos -= 1.0;
             self.shift_history();
 
-            if let Some((left, right)) = cell.read() {
-                self.history[3] = (left * gain, right * gain);
+            if cell.read_into(&mut frame[..ch]) {
+                for (c, &s) in frame[..ch].iter().enumerate() {
+                    self.history[3 * ch + c] = s * gain;
+                }
             } else {
                 if let Some(ref state) = self.shared_state {
                     state.report_underrun();
                 }
-                self.history[3] = self.history[2];
+                self.history.copy_within(2 * ch..3 * ch, 3 * ch);
             }
         }
 
         let t = self.fractional_pos as f32;
-        let left = cubic_hermite(
-            self.history[0].0,
-            self.history[1].0,
-            self.history[2].0,
-            self.history[3].0,
-            t,
-        );
-        let right = cubic_hermite(
-            self.history[0].1,
-            self.history[1].1,
-            self.history[2].1,
-            self.history[3].1,
-            t,
-        );
-
-        if output.len() >= 2 {
-            output[0] = left;
-            output[1] = right;
+        for (c, o) in output.iter_mut().enumerate().take(n) {
+            *o = cubic_hermite(
+                self.tap(0, c),
+                self.tap(1, c),
+                self.tap(2, c),
+                self.tap(3, c),
+                t,
+            );
         }
     }
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
+        let n = self.channels.min(output.channels());
         if !self.playing.load(Ordering::Relaxed) {
-            for i in 0..size {
-                output.set_f32(0, i, 0.0);
-                output.set_f32(1, i, 0.0);
+            for c in 0..n {
+                for i in 0..size {
+                    output.set_f32(c, i, 0.0);
+                }
             }
             return;
         }
 
+        let mut xfade = [0.0f32; MAX_SAMPLER_CHANNELS];
         if let Some(ref state) = self.shared_state {
             if state.is_seek_crossfading() {
                 for i in 0..size {
-                    if let Some((left, right)) = state.next_seek_crossfade_sample() {
-                        output.set_f32(0, i, left * self.gain.get());
-                        output.set_f32(1, i, right * self.gain.get());
+                    if state.next_seek_crossfade_frame_into(&mut xfade[..n]) {
+                        let g = self.gain.get();
+                        for (c, &s) in xfade[..n].iter().enumerate() {
+                            output.set_f32(c, i, s * g);
+                        }
                     } else {
                         self.process_normal_samples(size - i, i, output);
                         return;
@@ -336,9 +380,11 @@ impl AudioUnit for StreamingSamplerUnit {
 
             if state.is_loop_crossfading() {
                 for i in 0..size {
-                    if let Some((left, right)) = state.next_loop_crossfade_sample() {
-                        output.set_f32(0, i, left * self.gain.get());
-                        output.set_f32(1, i, right * self.gain.get());
+                    if state.next_loop_crossfade_frame_into(&mut xfade[..n]) {
+                        let g = self.gain.get();
+                        for (c, &s) in xfade[..n].iter().enumerate() {
+                            output.set_f32(c, i, s * g);
+                        }
                     } else {
                         self.process_normal_samples(size - i, i, output);
                         return;
@@ -348,9 +394,10 @@ impl AudioUnit for StreamingSamplerUnit {
             }
 
             if state.is_seeking() {
-                for i in 0..size {
-                    output.set_f32(0, i, 0.0);
-                    output.set_f32(1, i, 0.0);
+                for c in 0..n {
+                    for i in 0..size {
+                        output.set_f32(c, i, 0.0);
+                    }
                 }
                 return;
             }
@@ -359,7 +406,16 @@ impl AudioUnit for StreamingSamplerUnit {
         self.process_normal_samples(size, 0, output);
     }
 
-    audio_unit_boilerplate!(id = crate::node_id::STREAMING_SAMPLER_ID, outputs = 2);
+    audio_unit_boilerplate!(id = crate::node_id::STREAMING_SAMPLER_ID);
+
+    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
+        // Width must track `outputs()` or fundsp mis-plans this node's latency.
+        SignalFrame::new(self.outputs())
+    }
+
+    fn footprint(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -604,7 +660,9 @@ impl AudioUnit for StreamingClipReader {
     }
 
     fn outputs(&self) -> usize {
-        2
+        // Delegate rather than store a second copy: this is a thin placement
+        // gate over `inner`, and two widths could disagree.
+        self.inner.outputs()
     }
 
     fn reset(&mut self) {
@@ -626,10 +684,11 @@ impl AudioUnit for StreamingClipReader {
             }
             None => {
                 self.was_inside = false;
-                if output.len() >= 2 {
-                    output[0] = 0.0;
-                    output[1] = 0.0;
-                }
+                // Every channel, not a hardcoded pair: at width 1 the old
+                // `output.len() >= 2` guard silenced nothing at all, and at
+                // width 6 it left channels 2..6 holding the previous block.
+                let n = self.outputs().min(output.len());
+                output[..n].fill(0.0);
             }
         }
     }
@@ -643,15 +702,26 @@ impl AudioUnit for StreamingClipReader {
             }
             None => {
                 self.was_inside = false;
-                for i in 0..size {
-                    output.set_f32(0, i, 0.0);
-                    output.set_f32(1, i, 0.0);
+                let n = self.outputs().min(output.channels());
+                for c in 0..n {
+                    for i in 0..size {
+                        output.set_f32(c, i, 0.0);
+                    }
                 }
             }
         }
     }
 
-    audio_unit_boilerplate!(id = crate::node_id::STREAMING_SAMPLER_ID, outputs = 2);
+    audio_unit_boilerplate!(id = crate::node_id::STREAMING_SAMPLER_ID);
+
+    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
+        // Width must track `outputs()` or fundsp mis-plans this node's latency.
+        SignalFrame::new(self.outputs())
+    }
+
+    fn footprint(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
 }
 
 #[cfg(test)]
@@ -661,10 +731,13 @@ mod tests {
     use std::path::PathBuf;
     use tutti_core::{BufferVec, Timeline};
 
+    /// Tests still author stereo pairs for readability; flatten them at the one
+    /// boundary rather than rewriting every fixture.
     fn make_reader_with_samples(samples: &[(f32, f32)]) -> SharedReader {
         let (mut writer, reader) =
-            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), samples.len() + 64);
-        writer.write(samples);
+            RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), samples.len() + 64, 2);
+        let flat: Vec<f32> = samples.iter().flat_map(|&(l, r)| [l, r]).collect();
+        writer.push_interleaved(&flat);
         crate::butler::share_reader(reader)
     }
 
@@ -1173,7 +1246,7 @@ mod tests {
         unit.reset();
         assert!(!unit.is_playing());
         assert_eq!(unit.fractional_pos, 0.0);
-        assert_eq!(unit.history, [(0.0, 0.0); 4]);
+        assert!(unit.history.iter().all(|&s| s == 0.0));
     }
 
     // --- New: seek crossfade path ---
@@ -1183,9 +1256,9 @@ mod tests {
         let samples: Vec<_> = (0..256).map(|i| (i as f32 * 0.1, 0.0)).collect();
         let (mut unit, state) = make_unit(&samples);
 
-        let fadeout: Vec<_> = (0..4).map(|i| (1.0 - i as f32 * 0.25, 0.0)).collect();
-        let fadein: Vec<_> = (0..4).map(|i| (i as f32 * 0.25, 0.0)).collect();
-        state.start_seek_crossfade(fadeout, fadein);
+        let fadeout: Vec<f32> = (0..4).flat_map(|i| [1.0 - i as f32 * 0.25, 0.0]).collect();
+        let fadein: Vec<f32> = (0..4).flat_map(|i| [i as f32 * 0.25, 0.0]).collect();
+        state.start_seek_crossfade(fadeout, fadein, 2);
 
         assert!(state.is_seek_crossfading());
 
@@ -1205,5 +1278,122 @@ mod tests {
         // after enough samples to prime interpolation it should be > 0.
         // Just verify the process didn't panic and produced some output.
         let _ = last;
+    }
+
+    /// Build a `channels`-wide ring pre-filled with `frames` interleaved frames.
+    fn make_wide_reader(frames: &[f32], channels: usize) -> SharedReader {
+        let (mut writer, reader) = RegionBuffer::with_capacity(
+            RegionId(1),
+            PathBuf::new(),
+            frames.len() / channels + 64,
+            channels,
+        );
+        writer.push_interleaved(frames);
+        crate::butler::share_reader(reader)
+    }
+
+    /// Outside its transport window a clip must silence EVERY channel.
+    ///
+    /// At width 1 the old guard was `if output.len() >= 2 { .. }`, so a mono
+    /// streaming clip outside its window silenced nothing at all and simply
+    /// leaked whatever the caller's buffer already held. At width 6 the same
+    /// site wrote only channels 0 and 1, leaving 2..6 holding the previous
+    /// block. Both are invisible at width 2, which is what every other
+    /// streaming fixture uses.
+    #[test]
+    fn outside_the_window_silences_every_channel() {
+        for width in [1usize, 6] {
+            let frames: Vec<f32> = (0..64 * width).map(|i| (i + 1) as f32).collect();
+            let ring = make_wide_reader(&frames, width);
+            let state = Arc::new(RtState::new());
+            let inner = StreamingSamplerUnit::new(ring, state.clone());
+            assert_eq!(inner.channels(), width, "ring width must reach the unit");
+
+            // Transport parked BEFORE the clip's start beat, so the placement
+            // gate reports "outside".
+            let transport = MockTransport::new(120.0, 0.0, true);
+            let mut clip = StreamingClipReader::new(
+                inner,
+                state,
+                StreamingClipConfig {
+                    placement: TransportPlacement {
+                        transport,
+                        start_beat: Beat::new(64.0),
+                        duration_beats: None,
+                    },
+                    file_sample_rate: 44100.0,
+                },
+            );
+
+            // `tick`: pre-dirty the caller's frame so a missing write shows.
+            let mut out = vec![9.0f32; width];
+            clip.tick(&[], &mut out);
+            for (c, &s) in out.iter().enumerate() {
+                assert_eq!(
+                    s, 0.0,
+                    "width {width} tick: channel {c} not silenced outside the window"
+                );
+            }
+
+            // `process`: same, through the planar path.
+            let input = BufferVec::new(0);
+            let mut output = BufferVec::new(width);
+            {
+                let mut buf = output.buffer_mut();
+                for c in 0..width {
+                    for i in 0..8 {
+                        buf.set_f32(c, i, 9.0);
+                    }
+                }
+            }
+            clip.process(8, &input.buffer_ref(), &mut output.buffer_mut());
+            let buf = output.buffer_ref();
+            for c in 0..width {
+                for i in 0..8 {
+                    assert_eq!(
+                        buf.at_f32(c, i),
+                        0.0,
+                        "width {width} process: channel {c} sample {i} not silenced"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The seeking branch of `process` must silence every channel too — same
+    /// hardcoded-pair bug, on the path taken while a seek is in flight.
+    #[test]
+    fn seeking_silences_every_channel() {
+        let width = 6usize;
+        let frames: Vec<f32> = (0..64 * width).map(|i| (i + 1) as f32).collect();
+        let ring = make_wide_reader(&frames, width);
+        let state = Arc::new(RtState::new());
+        let mut unit = StreamingSamplerUnit::new(ring, state.clone());
+
+        state.set_seeking(true);
+        assert!(state.is_seeking());
+
+        let input = BufferVec::new(0);
+        let mut output = BufferVec::new(width);
+        {
+            let mut buf = output.buffer_mut();
+            for c in 0..width {
+                for i in 0..8 {
+                    buf.set_f32(c, i, 9.0);
+                }
+            }
+        }
+        unit.process(8, &input.buffer_ref(), &mut output.buffer_mut());
+
+        let buf = output.buffer_ref();
+        for c in 0..width {
+            for i in 0..8 {
+                assert_eq!(
+                    buf.at_f32(c, i),
+                    0.0,
+                    "channel {c} sample {i} not silenced while seeking"
+                );
+            }
+        }
     }
 }

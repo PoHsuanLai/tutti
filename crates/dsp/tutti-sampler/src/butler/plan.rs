@@ -23,7 +23,8 @@ pub(crate) struct LoopConfig {
     pub(crate) range: (u64, u64),
     pub(crate) crossfade_samples: usize,
     /// Cached fadein samples from loop start; avoids re-reading on each loop.
-    pub(crate) preloop_buffer: Option<Vec<(f32, f32)>>,
+    /// Flat interleaved at the region ring's width.
+    pub(crate) preloop_buffer: Option<Vec<f32>>,
 }
 
 /// Active streaming connection for a channel.

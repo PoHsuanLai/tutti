@@ -15,7 +15,7 @@ use super::cache::LruCache;
 use super::command::{ButlerCommand, RegionId};
 use super::config::BufferConfig;
 use super::io::refill::load_wave;
-use super::loops::{buffer_size_for_file, capture_samples};
+use super::loops::{buffer_size_for_file, capture_frames};
 use super::metrics::Metrics;
 use super::plan::{ChannelPlan, LoopConfig};
 use super::prefetch::{share_reader, RegionBuffer};
@@ -38,7 +38,8 @@ pub(super) struct Local {
     pub regions: RegionMap,
     pub buffer_margin: f64,
     pub next_region_id: u64,
-    pub interleave_buffer: Vec<[f32; 2]>,
+    /// Flat interleaved refill scratch. Butler-thread-local, so it may grow.
+    pub interleave_buffer: Vec<f32>,
 }
 
 impl Local {
@@ -165,32 +166,36 @@ fn handle_stream_file(
     // back to the whole-file `load_wave` + `LruCache` path when the format
     // isn't seekable (no frame count) or opening the stream decoder fails.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
-    let (file_length, file_sr, decoder) = match open_stream(&file_path) {
+    let (file_length, file_sr, file_channels, decoder) = match open_stream(&file_path) {
         Some((meta, decoder)) => (
             meta.total_frames.unwrap_or(0),
             meta.sample_rate as f64,
+            decoder.channels(),
             Some(decoder),
         ),
         None => {
             let Some(wave) = load_wave(&shared.cache, &shared.metrics, &file_path) else {
                 return;
             };
-            (wave.len() as u64, wave.sample_rate(), None)
+            (wave.len() as u64, wave.sample_rate(), wave.channels(), None)
         }
     };
     #[cfg(not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")))]
-    let (file_length, file_sr) = {
+    let (file_length, file_sr, file_channels) = {
         let Some(wave) = load_wave(&shared.cache, &shared.metrics, &file_path) else {
             return;
         };
-        (wave.len() as u64, wave.sample_rate())
+        (wave.len() as u64, wave.sample_rate(), wave.channels())
     };
 
     let buffer_capacity = buffer_size_for_file(file_length, sample_rate);
     let region_id = local.mint_region_id();
 
+    // The ring carries the file at its OWN width: the streaming tier reads it
+    // back through the same channel policy the in-RAM tier uses, so folding
+    // here would discard channels before that policy ever sees them.
     let (mut producer, consumer) =
-        RegionBuffer::with_capacity(region_id, file_path.clone(), buffer_capacity);
+        RegionBuffer::with_capacity(region_id, file_path.clone(), buffer_capacity, file_channels);
 
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
     if let Some(decoder) = decoder {
@@ -261,8 +266,13 @@ fn handle_set_stream_loop(
         local
             .regions
             .get(link.region_id)
-            .and_then(|writer| load_wave(&shared.cache, &shared.metrics, writer.file_path()))
-            .map(|wave| capture_samples(&wave, range.0 as usize, crossfade_samples))
+            // Width comes from the ring, not the wave: the ring's stride is what
+            // the RT crossfade will index this buffer with.
+            .and_then(|writer| {
+                load_wave(&shared.cache, &shared.metrics, writer.file_path())
+                    .map(|wave| (wave, writer.channels()))
+            })
+            .map(|(wave, ch)| capture_frames(&wave, range.0 as usize, crossfade_samples, ch))
     } else {
         None
     };

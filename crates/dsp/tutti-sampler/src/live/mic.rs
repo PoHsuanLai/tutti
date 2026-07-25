@@ -134,6 +134,14 @@ impl AudioUnit for MicMonitorNode {
         0
     }
 
+    /// Stereo, deliberately — unlike the clip units, which take a runtime width.
+    ///
+    /// The producer is the CPAL input callback in `bevy-tutti`, which downmixes
+    /// each interleaved device frame to a stereo pair before it ever reaches
+    /// [`MicRing`] (a `HeapCons<[f32; 2]>`). Widening this node without widening
+    /// that callback and the ring would declare an arity its own source can
+    /// never fill, so live capture stays stereo until the device edge is
+    /// widened with it. That edge is app-side, not engine-side.
     fn outputs(&self) -> usize {
         2
     }

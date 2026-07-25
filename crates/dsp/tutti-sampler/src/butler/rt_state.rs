@@ -253,8 +253,8 @@ impl RtState {
         self.health.buffer_fill_level.load(Ordering::Relaxed) as f32 / 1000.0
     }
 
-    pub fn start_seek_crossfade(&self, fadeout: Vec<(f32, f32)>, fadein: Vec<(f32, f32)>) {
-        self.seek_crossfade.start(fadeout, fadein);
+    pub fn start_seek_crossfade(&self, fadeout: Vec<f32>, fadein: Vec<f32>, channels: usize) {
+        self.seek_crossfade.start(fadeout, fadein, channels);
     }
 
     #[inline]
@@ -262,12 +262,12 @@ impl RtState {
         self.seek_crossfade.is_active()
     }
 
-    pub fn next_seek_crossfade_sample(&self) -> Option<(f32, f32)> {
-        self.seek_crossfade.next_sample()
+    pub fn next_seek_crossfade_frame_into(&self, out: &mut [f32]) -> bool {
+        self.seek_crossfade.next_frame_into(out)
     }
 
-    pub fn start_loop_crossfade(&self, fadeout: Vec<(f32, f32)>, fadein: Vec<(f32, f32)>) {
-        self.loop_crossfade.start(fadeout, fadein);
+    pub fn start_loop_crossfade(&self, fadeout: Vec<f32>, fadein: Vec<f32>, channels: usize) {
+        self.loop_crossfade.start(fadeout, fadein, channels);
     }
 
     #[inline]
@@ -275,8 +275,8 @@ impl RtState {
         self.loop_crossfade.is_active()
     }
 
-    pub fn next_loop_crossfade_sample(&self) -> Option<(f32, f32)> {
-        self.loop_crossfade.next_sample()
+    pub fn next_loop_crossfade_frame_into(&self, out: &mut [f32]) -> bool {
+        self.loop_crossfade.next_frame_into(out)
     }
 
     pub fn clear_loop_crossfade(&self) {
@@ -352,29 +352,33 @@ mod tests {
         let state = RtState::new();
 
         assert!(!state.is_seek_crossfading());
-        assert!(state.next_seek_crossfade_sample().is_none());
+        assert!(!state.next_seek_crossfade_frame_into(&mut [0.0f32; 2]));
 
-        let fadeout = vec![(1.0, 1.0); 4];
-        let fadein = vec![(0.0, 0.0); 4];
+        let fadeout = vec![1.0; 4 * 2];
+        let fadein = vec![0.0; 4 * 2];
 
-        state.start_seek_crossfade(fadeout, fadein);
+        state.start_seek_crossfade(fadeout, fadein, 2);
 
         assert!(state.is_seek_crossfading());
 
-        let sample = state.next_seek_crossfade_sample().unwrap();
-        assert!((sample.0 - 1.0).abs() < 0.01);
+        let mut sample = [0.0f32; 2];
+        assert!(state.next_seek_crossfade_frame_into(&mut sample));
+        assert!((sample[0] - 1.0).abs() < 0.01);
 
-        let sample = state.next_seek_crossfade_sample().unwrap();
-        assert!((sample.0 - 0.75).abs() < 0.01);
+        let mut sample = [0.0f32; 2];
+        assert!(state.next_seek_crossfade_frame_into(&mut sample));
+        assert!((sample[0] - 0.75).abs() < 0.01);
 
-        let sample = state.next_seek_crossfade_sample().unwrap();
-        assert!((sample.0 - 0.5).abs() < 0.01);
+        let mut sample = [0.0f32; 2];
+        assert!(state.next_seek_crossfade_frame_into(&mut sample));
+        assert!((sample[0] - 0.5).abs() < 0.01);
 
-        let sample = state.next_seek_crossfade_sample().unwrap();
-        assert!((sample.0 - 0.25).abs() < 0.01);
+        let mut sample = [0.0f32; 2];
+        assert!(state.next_seek_crossfade_frame_into(&mut sample));
+        assert!((sample[0] - 0.25).abs() < 0.01);
 
         assert!(!state.is_seek_crossfading());
-        assert!(state.next_seek_crossfade_sample().is_none());
+        assert!(!state.next_seek_crossfade_frame_into(&mut [0.0f32; 2]));
     }
 
     #[test]
@@ -404,57 +408,61 @@ mod tests {
         let state = RtState::new();
 
         assert!(!state.is_loop_crossfading());
-        assert!(state.next_loop_crossfade_sample().is_none());
+        assert!(!state.next_loop_crossfade_frame_into(&mut [0.0f32; 2]));
 
-        let fadeout = vec![(1.0, 1.0); 4];
-        let fadein = vec![(0.0, 0.0); 4];
+        let fadeout = vec![1.0; 4 * 2];
+        let fadein = vec![0.0; 4 * 2];
 
-        state.start_loop_crossfade(fadeout, fadein);
+        state.start_loop_crossfade(fadeout, fadein, 2);
 
         assert!(state.is_loop_crossfading());
 
-        let sample = state.next_loop_crossfade_sample().unwrap();
-        assert!((sample.0 - 1.0).abs() < 0.01);
+        let mut sample = [0.0f32; 2];
+        assert!(state.next_loop_crossfade_frame_into(&mut sample));
+        assert!((sample[0] - 1.0).abs() < 0.01);
 
-        let sample = state.next_loop_crossfade_sample().unwrap();
-        assert!((sample.0 - 0.75).abs() < 0.01);
+        let mut sample = [0.0f32; 2];
+        assert!(state.next_loop_crossfade_frame_into(&mut sample));
+        assert!((sample[0] - 0.75).abs() < 0.01);
 
-        let sample = state.next_loop_crossfade_sample().unwrap();
-        assert!((sample.0 - 0.5).abs() < 0.01);
+        let mut sample = [0.0f32; 2];
+        assert!(state.next_loop_crossfade_frame_into(&mut sample));
+        assert!((sample[0] - 0.5).abs() < 0.01);
 
-        let sample = state.next_loop_crossfade_sample().unwrap();
-        assert!((sample.0 - 0.25).abs() < 0.01);
+        let mut sample = [0.0f32; 2];
+        assert!(state.next_loop_crossfade_frame_into(&mut sample));
+        assert!((sample[0] - 0.25).abs() < 0.01);
 
         assert!(!state.is_loop_crossfading());
-        assert!(state.next_loop_crossfade_sample().is_none());
+        assert!(!state.next_loop_crossfade_frame_into(&mut [0.0f32; 2]));
     }
 
     #[test]
     fn test_loop_crossfade_clear() {
         let state = RtState::new();
 
-        let fadeout = vec![(1.0, 1.0); 10];
-        let fadein = vec![(0.0, 0.0); 10];
-        state.start_loop_crossfade(fadeout, fadein);
+        let fadeout = vec![1.0; 10 * 2];
+        let fadein = vec![0.0; 10 * 2];
+        state.start_loop_crossfade(fadeout, fadein, 2);
 
         assert!(state.is_loop_crossfading());
 
-        state.next_loop_crossfade_sample();
-        state.next_loop_crossfade_sample();
+        state.next_loop_crossfade_frame_into(&mut [0.0f32; 2]);
+        state.next_loop_crossfade_frame_into(&mut [0.0f32; 2]);
 
         state.clear_loop_crossfade();
         assert!(!state.is_loop_crossfading());
-        assert!(state.next_loop_crossfade_sample().is_none());
+        assert!(!state.next_loop_crossfade_frame_into(&mut [0.0f32; 2]));
     }
 
     #[test]
     fn test_loop_crossfade_empty_buffers() {
         let state = RtState::new();
 
-        state.start_loop_crossfade(Vec::new(), Vec::new());
+        state.start_loop_crossfade(Vec::new(), Vec::new(), 2);
         assert!(!state.is_loop_crossfading());
 
-        state.start_loop_crossfade(vec![(1.0, 1.0)], Vec::new());
+        state.start_loop_crossfade(vec![1.0, 1.0], Vec::new(), 2);
         assert!(!state.is_loop_crossfading());
     }
 }

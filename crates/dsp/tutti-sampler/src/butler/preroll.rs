@@ -86,16 +86,24 @@ pub(in crate::butler) fn reposition_click_free(
     config: &BufferConfig,
 ) {
     let crossfade_len = config.seek_crossfade_samples;
-    let fadeout = fadeout_samples(plan, cache, metrics, writer.file_path(), crossfade_len);
+    let ch = writer.channels();
+    let fadeout = fadeout_samples(plan, cache, metrics, writer.file_path(), crossfade_len, ch);
 
     plan.set_seeking(true);
     plan.flush_buffer();
     writer.set_file_position(new_pos);
 
-    let fadein = fadein_samples(cache, metrics, writer.file_path(), new_pos, crossfade_len);
+    let fadein = fadein_samples(
+        cache,
+        metrics,
+        writer.file_path(),
+        new_pos,
+        crossfade_len,
+        ch,
+    );
 
     if !fadeout.is_empty() && !fadein.is_empty() {
-        plan.rt_state.start_seek_crossfade(fadeout, fadein);
+        plan.rt_state.start_seek_crossfade(fadeout, fadein, ch);
     }
 
     plan.set_seeking(false);
@@ -145,7 +153,7 @@ mod tests {
         for i in 0..layout.count() as usize {
             let region_id = region(i);
             let (writer, reader) =
-                RegionBuffer::with_capacity(region_id, PathBuf::from("test.wav"), 4096);
+                RegionBuffer::with_capacity(region_id, PathBuf::from("test.wav"), 4096, 2);
             regions.register(region_id, writer);
 
             let mut state = ChannelPlan::default();

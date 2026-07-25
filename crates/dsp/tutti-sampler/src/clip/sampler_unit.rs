@@ -4,10 +4,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tutti_core::{
     AtomicSamplePosition, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Linear,
-    PlaybackRate, SamplePosition, SampleRate, SrcRatio, Timeline, Wave,
+    PlaybackRate, SamplePosition, SampleRate, SignalFrame, SrcRatio, Timeline, Wave,
 };
 
 use super::loop_crossfade::LoopCrossfade;
+use crate::MAX_SAMPLER_CHANNELS;
 
 /// Live loop state on a `SamplerUnit`. Internal: `Looping` carries the running
 /// [`LoopCrossfade`] DSP object, which callers can neither build nor observe —
@@ -98,6 +99,9 @@ pub struct SamplerUnitConfig {
     pub loop_setting: LoopSetting,
     /// Optional transport binding for beat-synced playback.
     pub placement: Option<TransportPlacement>,
+    /// Output width. Defaults to stereo — see [`SamplerUnit::channels`] for why
+    /// this is declared rather than taken from the wave.
+    pub channels: usize,
 }
 
 impl Default for SamplerUnitConfig {
@@ -107,6 +111,7 @@ impl Default for SamplerUnitConfig {
             speed: PlaybackRate::UNITY,
             loop_setting: LoopSetting::Off,
             placement: None,
+            channels: 2,
         }
     }
 }
@@ -167,6 +172,23 @@ pub struct SamplerUnit {
 
     /// Optional transport binding for beat-synced playback.
     placement: Option<TransportPlacement>,
+
+    /// A crossfade buffer kept resident so a loop change never allocates.
+    ///
+    /// `set_loop_range` runs on the audio thread (via the reader's command
+    /// drain), so it takes this, re-points it with `retune`, and puts it back
+    /// inside `loop_mode`. `clear_loop_range` returns it here. Built once at
+    /// construction with `MAX_CROSSFADE_FRAMES` reserved.
+    loop_crossfade: Option<LoopCrossfade>,
+
+    /// Output width — this unit's `outputs()`, fixed at construction.
+    ///
+    /// Deliberately **not** derived from `wave.channels()`: a node whose arity
+    /// followed its content would re-arity itself in the graph the moment a
+    /// wider file was loaded, and `Net` edges are built against `outputs()`.
+    /// The wave's own width is reconciled against this one by
+    /// [`read_frame`](super::interp::read_frame)'s channel policy.
+    channels: usize,
 }
 
 // Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>` and `placement` holds an
@@ -200,11 +222,17 @@ impl Clone for SamplerUnit {
             src_ratio: self.src_ratio,
             loop_mode: self.loop_mode.clone(),
             placement: self.placement.clone(),
+            loop_crossfade: self.loop_crossfade.clone(),
+            channels: self.channels,
         }
     }
 }
 
 impl SamplerUnit {
+    /// A **stereo** sampler over `wave`.
+    ///
+    /// Stays stereo even for a wider wave — see [`channels`](Self::channels).
+    /// Use [`with_channels`](Self::with_channels) to declare a different width.
     pub fn new(wave: Arc<Wave>) -> Self {
         let sample_rate = SampleRate::new(wave.sample_rate());
         Self {
@@ -217,7 +245,29 @@ impl SamplerUnit {
             src_ratio: SrcRatio::UNITY,
             loop_mode: LoopMode::OneShot,
             placement: None,
+            loop_crossfade: Some(LoopCrossfade::with_channels(0, 2)),
+            channels: 2,
         }
+    }
+
+    /// A `channels`-wide sampler over `wave`.
+    ///
+    /// The wave's own channel count is independent of this; the two are
+    /// reconciled per read by [`read_frame`](super::interp::read_frame)'s
+    /// channel policy (mono fans, anything else folds).
+    pub fn with_channels(wave: Arc<Wave>, channels: usize) -> Self {
+        let channels = channels.max(1);
+        Self {
+            channels,
+            // Reserve at THIS width: the default from `new` is stereo-sized.
+            loop_crossfade: Some(LoopCrossfade::with_channels(0, channels)),
+            ..Self::new(wave)
+        }
+    }
+
+    /// Output width — this unit's `outputs()`.
+    pub fn channels(&self) -> usize {
+        self.channels
     }
 
     /// Build from an explicit [`SamplerUnitConfig`] — the canonical
@@ -231,6 +281,8 @@ impl SamplerUnit {
             gain: config.gain,
             speed: config.speed,
             placement: config.placement,
+            loop_crossfade: Some(LoopCrossfade::with_channels(0, config.channels.max(1))),
+            channels: config.channels.max(1),
             ..Self::new(wave)
         };
         if let LoopSetting::On {
@@ -460,13 +512,36 @@ impl SamplerUnit {
         loop_end: SamplePosition,
         crossfade_samples: usize,
     ) {
+        // Reuse the resident crossfade rather than building one.
+        //
+        // This runs on the audio thread: `ClipCommand::UpdateLoop` is drained by
+        // `TrackClipReaderUnit::drain_commands`, which `tick`/`process` call. So
+        // changing a loop mid-playback used to allocate `crossfade_samples *
+        // channels` floats in the callback, plus a temporary buffer to read the
+        // wave into. Both are gone: the crossfade's buffer is reserved once at
+        // `MAX_CROSSFADE_FRAMES`, `retune` re-points it without growing, and
+        // `fill_preloop_with` writes the tail in place.
         let crossfade = if crossfade_samples > 0 {
-            let mut xfade = LoopCrossfade::new(crossfade_samples);
+            let mut xfade = self
+                .loop_crossfade
+                .take()
+                .unwrap_or_else(|| LoopCrossfade::with_channels(crossfade_samples, self.channels));
+            xfade.retune(crossfade_samples);
 
-            let preloop_samples: Vec<_> = (0..crossfade_samples)
-                .map(|i| self.get_sample_raw(loop_start.get() + i as f64))
-                .collect();
-            xfade.fill_preloop(&preloop_samples);
+            let start = loop_start.get();
+            // Split the borrow: `fill_preloop_with` holds `&mut xfade` while the
+            // closure reads `&self`, so the read cannot go through `self.
+            // get_sample_raw_into` directly.
+            let wave = Arc::clone(&self.wave);
+            let gain_free_read = |i: usize, frame: &mut [f32]| {
+                let pos = start + i as f64;
+                if pos >= wave.len() as f64 {
+                    frame.fill(0.0);
+                } else {
+                    super::interp::read_frame(&wave, pos, frame);
+                }
+            };
+            xfade.fill_preloop_with(gain_free_read);
 
             Some(xfade)
         } else {
@@ -480,7 +555,15 @@ impl SamplerUnit {
     }
 
     pub fn clear_loop_range(&mut self) {
-        self.loop_mode = LoopMode::OneShot;
+        // Reclaim the crossfade rather than dropping it, so re-enabling a loop
+        // later still finds a resident buffer and stays allocation-free.
+        if let LoopMode::Looping {
+            crossfade: Some(xfade),
+            ..
+        } = std::mem::replace(&mut self.loop_mode, LoopMode::OneShot)
+        {
+            self.loop_crossfade = Some(xfade);
+        }
     }
 
     pub fn loop_range(&self) -> Option<(SamplePosition, SamplePosition)> {
@@ -506,23 +589,50 @@ impl SamplerUnit {
         }
     }
 
+    /// Read one un-gained frame into `out` (width = `out.len()`).
+    ///
+    /// Writes every element, so the caller never pre-zeros. The wave's own
+    /// channel count need not match `out.len()` —
+    /// [`read_frame`](super::interp::read_frame) owns that policy.
     #[inline]
-    pub fn get_sample_raw(&self, position: f64) -> (f32, f32) {
+    pub fn get_sample_raw_into(&self, position: f64, out: &mut [f32]) {
         let len = self.wave.len() as f64;
         if position >= len {
-            return (0.0, 0.0);
+            out.fill(0.0);
+            return;
         }
 
         // 4-tap cubic Hermite via the shared kernel (idx-1, idx, idx+1, idx+2,
         // bound-clamped), unifying this path with `StreamingSamplerUnit`.
-        super::interp::read_stereo_frame(&self.wave, position)
+        super::interp::read_frame(&self.wave, position, out);
     }
 
+    /// [`get_sample_raw_into`](Self::get_sample_raw_into) with this unit's gain
+    /// applied. One scalar gain across every channel — per-channel level is the
+    /// mixer strip's job, not the reader's.
+    #[inline]
+    pub fn get_sample_into(&self, position: f64, out: &mut [f32]) {
+        self.get_sample_raw_into(position, out);
+        let gain = self.gain.get();
+        for s in out.iter_mut() {
+            *s *= gain;
+        }
+    }
+
+    /// Stereo shim over [`get_sample_raw_into`](Self::get_sample_raw_into).
+    #[inline]
+    pub fn get_sample_raw(&self, position: f64) -> (f32, f32) {
+        let mut out = [0.0f32; 2];
+        self.get_sample_raw_into(position, &mut out);
+        (out[0], out[1])
+    }
+
+    /// Stereo shim over [`get_sample_into`](Self::get_sample_into).
     #[inline]
     pub fn get_sample(&self, position: f64) -> (f32, f32) {
-        let (l, r) = self.get_sample_raw(position);
-        let gain = self.gain.get();
-        (l * gain, r * gain)
+        let mut out = [0.0f32; 2];
+        self.get_sample_into(position, &mut out);
+        (out[0], out[1])
     }
 
     #[inline]
@@ -562,27 +672,32 @@ impl SamplerUnit {
     /// emit-then-advance. Re-reading `beat()` for every sample would therefore
     /// return the same value all block long and emit a constant frame instead
     /// of the material under the playhead.
+    /// Writes every element of `out` on every path, so a caller never pre-zeros
+    /// and a partial write can never leave a stale channel from the previous
+    /// block in a trailing slot.
     #[inline]
-    fn next_frame(&mut self, offset_in_block: usize) -> (f32, f32) {
+    fn next_frame_into(&mut self, offset_in_block: usize, out: &mut [f32]) {
         if self.placement.is_some() {
             // Derived: the transport owns the position. Step within the block by
             // `read_rate` from the block's start beat — the transport itself
             // only moves between blocks.
-            return match self.transport_sample_position() {
-                None => (0.0, 0.0),
+            match self.transport_sample_position() {
+                None => out.fill(0.0),
                 Some(start_pos) => {
                     let pos = start_pos + offset_in_block as f64 * self.read_rate();
-                    self.get_sample(pos)
+                    self.get_sample_into(pos, out);
                 }
-            };
+            }
+            return;
         }
 
         if !self.playing.load(Ordering::Relaxed) {
-            return (0.0, 0.0);
+            out.fill(0.0);
+            return;
         }
 
         let pos = self.position.load(Ordering::Relaxed).get();
-        let (mut left, mut right) = self.get_sample(pos);
+        self.get_sample_into(pos, out);
 
         let wave_len = self.wave.len() as f64;
         let (looping, loop_start, loop_end) = match &mut self.loop_mode {
@@ -595,9 +710,7 @@ impl SamplerUnit {
                         xfade.start();
                     }
                     if xfade.is_active() {
-                        let sample = xfade.process((left, right));
-                        left = sample.0;
-                        right = sample.1;
+                        xfade.process_in_place(out);
                     }
                 }
                 (true, loop_start, loop_end)
@@ -633,8 +746,6 @@ impl SamplerUnit {
             self.position
                 .store(SamplePosition::new(new_pos), Ordering::Relaxed);
         }
-
-        (left, right)
     }
 }
 
@@ -664,7 +775,7 @@ impl AudioUnit for SamplerUnit {
     }
 
     fn outputs(&self) -> usize {
-        2
+        self.channels
     }
 
     fn reset(&mut self) {
@@ -679,22 +790,41 @@ impl AudioUnit for SamplerUnit {
     }
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        let frame = self.next_frame(0);
-        if output.len() >= 2 {
-            output[0] = frame.0;
-            output[1] = frame.1;
-        }
+        // The caller's slice IS the frame — no intermediate storage needed.
+        let n = self.channels.min(output.len());
+        self.next_frame_into(0, &mut output[..n]);
     }
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
+        // `BufferMut` is planar `(channel, index)` with no frame-shaped
+        // accessor, so unlike `tick` this one genuinely needs a frame to
+        // scatter from. Stack-allocated at the fixed ceiling and used as a
+        // prefix — the house pattern (see `tutti-export`'s `fold_net_frame` and
+        // the plugin hosts), and the only way to stay alloc-free at a runtime
+        // width.
+        let n = self
+            .channels
+            .min(output.channels())
+            .min(MAX_SAMPLER_CHANNELS);
+        let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
         for i in 0..size {
-            let (left, right) = self.next_frame(i);
-            output.set_f32(0, i, left);
-            output.set_f32(1, i, right);
+            self.next_frame_into(i, &mut frame[..n]);
+            for (c, &s) in frame.iter().enumerate().take(n) {
+                output.set_f32(c, i, s);
+            }
         }
     }
 
-    audio_unit_boilerplate!(id = crate::node_id::SAMPLER_NODE_ID, outputs = 2);
+    audio_unit_boilerplate!(id = crate::node_id::SAMPLER_NODE_ID);
+
+    fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
+        // Width must track `outputs()` or fundsp mis-plans this node's latency.
+        SignalFrame::new(self.channels)
+    }
+
+    fn footprint(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
 }
 
 #[cfg(test)]
@@ -1611,5 +1741,122 @@ mod tests {
         assert!((outputs[0] - 1.0).abs() < 1e-6, "cycle 0 sample 0");
         assert!((outputs[2] - 1.0).abs() < 1e-6, "cycle 1 sample 0");
         assert!((outputs[4] - 1.0).abs() < 1e-6, "cycle 2 sample 0");
+    }
+
+    /// Channel `c` carries the constant `c + 1`, so a wrong-channel read is a
+    /// wrong value rather than a plausible one.
+    fn indexed_wave(channels: usize, len: usize) -> Arc<Wave> {
+        let mut w = Wave::zero(channels, 44_100.0, len as f64 / 44_100.0);
+        for i in 0..w.len() {
+            for c in 0..channels {
+                w.set(c, i, (c + 1) as f32);
+            }
+        }
+        Arc::new(w)
+    }
+
+    /// Declared width, not inferred: a 6-channel wave through `new` still yields
+    /// a stereo node. A node that re-arity'd itself from its content would break
+    /// `Net` edges already wired against `outputs()`.
+    #[test]
+    fn new_stays_stereo_even_for_a_wide_wave() {
+        let u = SamplerUnit::new(indexed_wave(6, 32));
+        assert_eq!(u.channels(), 2);
+        assert_eq!(u.outputs(), 2);
+    }
+
+    #[test]
+    fn with_channels_declares_the_width() {
+        let u = SamplerUnit::with_channels(indexed_wave(6, 32), 6);
+        assert_eq!(u.channels(), 6);
+        assert_eq!(u.outputs(), 6);
+        assert_eq!(
+            SamplerUnit::with_channels(indexed_wave(2, 32), 0).channels(),
+            1
+        );
+    }
+
+    /// `route`'s width must track `outputs()` or fundsp mis-plans this node's
+    /// latency — silent except as PDC drift.
+    #[test]
+    fn route_width_tracks_outputs() {
+        for w in [1usize, 2, 6, 8] {
+            let mut u = SamplerUnit::with_channels(indexed_wave(2, 32), w);
+            let out = u.route(&SignalFrame::new(0), 44_100.0);
+            assert_eq!(
+                out.len(),
+                u.outputs(),
+                "route/outputs disagree at width {w}"
+            );
+        }
+    }
+
+    /// All six channels must reach all six outputs, through BOTH entry points.
+    /// `tick` writes the caller's slice directly while `process` scatters from a
+    /// stack frame into a planar buffer — different code, so both are checked.
+    #[test]
+    fn six_channel_wave_reaches_all_six_outputs() {
+        let mut u = SamplerUnit::with_channels(indexed_wave(6, 64), 6);
+
+        let mut out = [0.0f32; 6];
+        u.tick(&[], &mut out);
+        for (c, &got) in out.iter().enumerate() {
+            assert!(
+                (got - (c + 1) as f32).abs() < 1e-4,
+                "tick: channel {c} should carry {}, got {got} ({out:?})",
+                c + 1
+            );
+        }
+
+        let mut u = SamplerUnit::with_channels(indexed_wave(6, 64), 6);
+        let input = BufferVec::new(0);
+        let mut output = BufferVec::new(6);
+        u.process(8, &input.buffer_ref(), &mut output.buffer_mut());
+        let buf = output.buffer_ref();
+        for c in 0..6 {
+            let got = buf.at_f32(c, 0);
+            assert!(
+                (got - (c + 1) as f32).abs() < 1e-4,
+                "process: channel {c} should carry {}, got {got}",
+                c + 1
+            );
+        }
+    }
+
+    /// Gain is one scalar across every channel — per-channel level is the mixer
+    /// strip's job, not the reader's.
+    #[test]
+    fn gain_applies_uniformly_across_all_channels() {
+        let mut u = SamplerUnit::with_channels(indexed_wave(6, 64), 6);
+        u.set_gain(Linear::new(0.5));
+        let mut out = [0.0f32; 6];
+        u.tick(&[], &mut out);
+        for (c, &got) in out.iter().enumerate() {
+            let want = (c + 1) as f32 * 0.5;
+            assert!(
+                (got - want).abs() < 1e-4,
+                "channel {c}: expected {want}, got {got}"
+            );
+        }
+    }
+
+    /// A looping 6-channel clip must keep every channel through the crossfade.
+    /// The crossfade blends in place across the whole frame, so a stereo-shaped
+    /// blend would leave channels 2..6 un-faded (or worse, untouched).
+    #[test]
+    fn six_channel_loop_crossfade_covers_every_channel() {
+        let mut u = SamplerUnit::with_channels(indexed_wave(6, 64), 6);
+        u.set_loop_range(SamplePosition::new(0.0), SamplePosition::new(16.0), 4);
+        let mut out = [0.0f32; 6];
+        // Drive past the loop point so the crossfade engages at least once.
+        for _ in 0..40 {
+            u.tick(&[], &mut out);
+            for (c, &s) in out.iter().enumerate() {
+                assert!(
+                    s.is_finite(),
+                    "channel {c} produced a non-finite sample during loop crossfade"
+                );
+            }
+        }
     }
 }

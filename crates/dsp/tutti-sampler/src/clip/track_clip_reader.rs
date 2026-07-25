@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use crate::ports::{Command, Commands};
 use crate::stretch;
+use crate::MAX_SAMPLER_CHANNELS;
 
 use super::sampler_unit::{LoopSetting, SamplerUnit, TransportPlacement};
 use super::streaming_sampler::StreamingClipReader;
@@ -30,6 +31,13 @@ use tutti_core::{
     AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Cents, Linear, PlaybackRate,
     SamplePosition, SignalFrame, StretchFactor, Timeline, Wave,
 };
+
+/// Clip slots a reader holds before its slot vector has to grow.
+///
+/// The `AddVoice` drain runs in the audio callback, so `clips.push` must not
+/// reallocate there. 64 covers any realistic per-track clip count; a track past
+/// it pays one grow on the next add and is then stable again.
+const MAX_RESIDENT_CLIPS: usize = 64;
 
 const COMMAND_CAPACITY: usize = 64;
 const TRACK_CLIP_READER_ID: u64 = 0x_0000_0000_0000_DA03;
@@ -367,58 +375,96 @@ impl Voice {
 struct ClipSlot {
     id: SlotId,
     voice: Voice,
-    /// The time-stretch processor is **always resident**: it is built once (two
-    /// phase-vocoder constructions + four `RtScratch` scratch buffers) when the
-    /// slot is created, off the per-buffer hot path. The audio thread never
-    /// (re)builds it — it only flips the lock-free `stretch_factor` /
-    /// `pitch_cents` atomics inside it. It owns NO copy of the clip source: it is
-    /// a pure frame-in → frame-out filter. At tick time, the `needs_stretch()`
-    /// gate (mirrored from those atomics into `voice.play.stretch` /
-    /// `voice.play.pitch`) chooses whether to tick the single source and route
-    /// its frame through this filter, or read the source directly. The heavy
-    /// construction stays off the audio thread this way:
-    /// [`ClipCommand::UpdateStretch`] only sets atomics, never allocates.
+    /// The time-stretch processor is **always resident**: it is built once (one
+    /// phase-vocoder construction + two `RtScratch` buffers *per channel*) when
+    /// the slot is created, and thereafter the audio thread only flips the
+    /// lock-free `stretch_factor` / `pitch_cents` atomics inside it. It owns NO
+    /// copy of the clip source: it is a pure frame-in → frame-out filter. At
+    /// tick time, the `needs_stretch()` gate (mirrored from those atomics into
+    /// `voice.play.stretch` / `voice.play.pitch`) chooses whether to tick the
+    /// single source and route its frame through this filter, or read the source
+    /// directly.
+    ///
+    /// **"Built once" is not the same as "built off the audio thread", and this
+    /// distinction used to be blurred here.** Per-buffer *updates* are genuinely
+    /// allocation-free — [`ClipCommand::UpdateStretch`] only sets atomics. But
+    /// the construction itself happens in `insert_voice`, reached from
+    /// [`ClipCommand::AddVoice`], which `drain_commands` pulls from `tick` /
+    /// `process`. So adding a clip mid-playback DOES build the vocoders in the
+    /// callback, and at width `n` that is `n` FFT setups plus `2n` scratch
+    /// allocations rather than the stereo pair the old wording implied.
+    ///
+    /// Pre-existing, and not made reachable by the width work — but the cost now
+    /// scales with channel count, so it is worth stating plainly instead of
+    /// leaving the reader to infer safety.
     ///
     /// Structural invariant: `voice.play.stretch` / `voice.play.pitch` cannot
     /// drift from the processor's atomics — every mutation goes through
     /// [`ClipSlot::set_stretch`], which writes both in one step.
-    stretch: stretch::Unit,
+    stretch: Option<stretch::Unit>,
+    /// Width the stretch unit must be built at, remembered so a later
+    /// materialisation matches the reader rather than defaulting.
+    channels: usize,
     sample_rate: f64,
 }
 
 impl ClipSlot {
-    /// Build a slot with the resident stretch unit already materialised and its
-    /// atomics primed from `voice.play.stretch` / `voice.play.pitch` — the single
-    /// constructor both the live `AddVoice` path and the synchronous
-    /// `insert_clip` path go through. The heavy `stretch::Unit` construction
-    /// happens here, at slot-creation time, never on the per-buffer command
-    /// drain.
-    fn new(id: SlotId, voice: Voice, sample_rate: f64) -> Self {
-        let stretch = stretch::Unit::new(sample_rate);
-        stretch.set_stretch_factor(voice.play.stretch);
-        stretch.set_pitch_cents(voice.play.pitch);
+    /// Build a slot. Width is explicit at every call site — there is no
+    /// stereo-defaulting `new`, because both callers (the reader's drain and
+    /// `VoiceNode`) know their own width and a default here would silently
+    /// mismatch it.
+    ///
+    /// The stretch unit is **not** built here. It is `None` until the slot
+    /// actually needs it, for two reasons:
+    ///
+    /// - Most clips never stretch. A `stretch::Unit` is one FFT setup plus two
+    ///   `RtScratch` buffers *per channel* (~120 KB × N), so building one for
+    ///   every clip spent that on the common case for nothing.
+    /// - This constructor is reachable from the audio thread.
+    ///   `ClipCommand::AddVoice` is drained by `drain_commands`, which runs from
+    ///   `tick`/`process`, so eager construction meant adding a clip mid-playback
+    ///   allocated in the callback.
+    ///
+    /// A slot that arrives already needing stretch (non-unity `play.stretch` /
+    /// `play.pitch`) is given its unit by the SENDER via
+    /// [`ClipSlot::materialize_stretch`], on the control thread, before the
+    /// command is queued — see [`ClipCommand::AddVoice`].
+    fn with_channels(id: SlotId, voice: Voice, sample_rate: f64, channels: usize) -> Self {
+        let channels = channels.max(1);
         Self {
             id,
             voice,
-            stretch,
+            stretch: None,
+            channels,
             sample_rate,
         }
     }
 
+    /// Whether the slot's control intent asks for stretching. Independent of
+    /// whether a unit exists — [`materialize_stretch`](Self::materialize_stretch)
+    /// uses this to decide whether to build one.
     fn needs_stretch(&self) -> bool {
-        (self.voice.play.stretch.get() - 1.0).abs() > 0.001
-            || self.voice.play.pitch.get().abs() > 0.5
+        stretch_wanted(&self.voice.play)
     }
 
     /// Update the stretch factors — the only entry point for mutating them.
-    /// Lock-free: flips the resident processor's atomics and mirrors the values
-    /// into `voice.play` (read by the `needs_stretch()` routing gate).
-    /// Allocation-free, so it is safe to run on the audio-thread command drain.
+    /// Lock-free: mirrors the values into `voice.play` (read by the
+    /// [`needs_stretch`](Self::needs_stretch) gate) and flips the resident
+    /// processor's atomics if one exists.
+    ///
+    /// **Allocation-free**, so it is safe on the audio-thread command drain.
+    /// Turning stretch ON when no unit is resident does NOT build one here — the
+    /// sender materialises it before queueing (see
+    /// [`ClipCommand::UpdateStretch`]). Until it arrives the slot reads dry,
+    /// which is why the hot paths gate on `needs_stretch() && stretch.is_some()`
+    /// rather than on the intent alone.
     fn set_stretch(&mut self, stretch_factor: StretchFactor, pitch_cents: Cents) {
         self.voice.play.stretch = stretch_factor;
         self.voice.play.pitch = pitch_cents;
-        self.stretch.set_stretch_factor(stretch_factor);
-        self.stretch.set_pitch_cents(pitch_cents);
+        if let Some(unit) = &self.stretch {
+            unit.set_stretch_factor(stretch_factor);
+            unit.set_pitch_cents(pitch_cents);
+        }
     }
 
     /// Read ONE mixed stereo frame from this slot: the exact per-variant read the
@@ -428,35 +474,39 @@ impl ClipSlot {
     /// Alloc-free: returns a stack frame. RT: the `VoiceSource` enum match is
     /// unchanged, only relocated here.
     #[inline]
-    fn tick_frame(&mut self) -> [f32; 2] {
+    fn tick_frame_into(&mut self, out: &mut [f32]) {
         let direction = self.voice.play.direction;
         let gain = self.voice.play.gain;
-        if self.needs_stretch() {
+        // Borrow the source and the filter as DISJOINT fields: `active_stretch`
+        // would hold `&mut self` across the source read otherwise.
+        let stretching = self.needs_stretch() && self.stretch.is_some();
+        if stretching {
             // Tick the SINGLE source once to get its raw frame (the same
             // per-variant read the else-branch uses — the `VoiceSource` enum
             // still owns the read), then feed that frame into the stretch filter.
-            // Alloc-free: stack `[f32; 2]`, no heap.
-            let raw = read_source_frame(&mut self.voice.source, direction, gain);
-            let mut buf = [0.0f32; 2];
-            self.stretch.tick(&raw, &mut buf);
-            buf
+            // This is the one place a scratch frame is genuinely unavoidable:
+            // the filter's input and output cannot be the same slice. Stack
+            // array at the fixed ceiling, used as a prefix — no heap.
+            let n = out.len().min(MAX_SAMPLER_CHANNELS);
+            let mut raw = [0.0f32; MAX_SAMPLER_CHANNELS];
+            read_source_frame_into(&mut self.voice.source, direction, gain, &mut raw[..n]);
+            out.fill(0.0);
+            if let Some(unit) = &mut self.stretch {
+                unit.tick(&raw[..n], out);
+            }
         } else {
             match &mut self.voice.source {
                 VoiceSource::Ram(sampler) => match sampler.transport_sample_position() {
-                    Some(pos) => {
-                        let (l, r) = read_clip_sample(sampler, direction, pos, gain);
-                        [l, r]
-                    }
-                    None => [0.0, 0.0],
+                    Some(pos) => read_clip_sample_into(sampler, direction, pos, gain, out),
+                    None => out.fill(0.0),
                 },
                 VoiceSource::Disk(reader) => {
                     // The `StreamingClipReader` owns its placement gate: it
                     // emits silence outside the clip window and pulls the
                     // butler ring inside it. Alloc-free (preallocated
                     // `fetch_scratch`).
-                    let mut buf = [0.0f32; 2];
-                    reader.tick(&[], &mut buf);
-                    buf
+                    out.fill(0.0);
+                    reader.tick(&[], out);
                 }
             }
         }
@@ -467,36 +517,59 @@ impl ClipSlot {
     /// the mixer loop and the standalone [`VoiceNode`] share one definition. RT:
     /// the `VoiceSource` enum match is unchanged, only relocated here.
     #[inline]
-    fn process_into(&mut self, size: usize, output: &mut BufferMut) {
+    fn process_into(&mut self, size: usize, channels: usize, output: &mut BufferMut) {
         let direction = self.voice.play.direction;
         let gain = self.voice.play.gain;
-        if self.needs_stretch() {
+        // `BufferMut` is planar with no frame accessor, so a per-sample frame is
+        // unavoidable here. Stack array at the fixed ceiling, used as a prefix.
+        let n = channels.min(output.channels()).min(MAX_SAMPLER_CHANNELS);
+        let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
+
+        /// Accumulate a frame prefix into the planar output at sample `i`.
+        macro_rules! mix_in {
+            ($frame:expr, $i:expr) => {
+                for (c, &s) in $frame.iter().enumerate().take(n) {
+                    output.set_f32(c, $i, output.at_f32(c, $i) + s);
+                }
+            };
+        }
+
+        // Route through the filter only when the intent asks for it AND a unit
+        // is resident; see `active_stretch` for why a missing unit reads dry
+        // rather than silent. Destructured so the source and the filter are
+        // disjoint borrows.
+        let stretching = self.needs_stretch() && self.stretch.is_some();
+        let stretch = &mut self.stretch;
+        if stretching {
             // Per-sample: read the SINGLE source frame (same per-variant read
             // as the else-branch — the enum still owns the read), then feed
-            // it through the stretch filter. Alloc-free: stack `[f32; 2]`.
+            // it through the stretch filter. The filter's in and out cannot
+            // alias, hence the second stack frame.
+            let mut raw = [0.0f32; MAX_SAMPLER_CHANNELS];
+            let Some(unit) = stretch.as_mut() else {
+                return;
+            };
             match &mut self.voice.source {
                 VoiceSource::Ram(sampler) => {
                     let Some(start_pos) = sampler.transport_sample_position() else {
                         return;
                     };
                     let advance = (sampler.speed().get() * sampler.src_ratio().get()) as f64;
-                    let mut tick_out = [0.0f32; 2];
                     for i in 0..size {
                         let pos = start_pos + i as f64 * advance;
-                        let (l, r) = read_clip_sample(sampler, direction, pos, gain);
-                        self.stretch.tick(&[l, r], &mut tick_out);
-                        output.set_f32(0, i, output.at_f32(0, i) + tick_out[0]);
-                        output.set_f32(1, i, output.at_f32(1, i) + tick_out[1]);
+                        read_clip_sample_into(sampler, direction, pos, gain, &mut raw[..n]);
+                        frame[..n].fill(0.0);
+                        unit.tick(&raw[..n], &mut frame[..n]);
+                        mix_in!(frame, i);
                     }
                 }
                 VoiceSource::Disk(reader) => {
-                    let mut raw = [0.0f32; 2];
-                    let mut tick_out = [0.0f32; 2];
                     for i in 0..size {
-                        reader.tick(&[], &mut raw);
-                        self.stretch.tick(&raw, &mut tick_out);
-                        output.set_f32(0, i, output.at_f32(0, i) + tick_out[0]);
-                        output.set_f32(1, i, output.at_f32(1, i) + tick_out[1]);
+                        raw[..n].fill(0.0);
+                        reader.tick(&[], &mut raw[..n]);
+                        frame[..n].fill(0.0);
+                        unit.tick(&raw[..n], &mut frame[..n]);
+                        mix_in!(frame, i);
                     }
                 }
             }
@@ -509,9 +582,8 @@ impl ClipSlot {
                     let advance = (sampler.speed().get() * sampler.src_ratio().get()) as f64;
                     for i in 0..size {
                         let pos = start_pos + i as f64 * advance;
-                        let (l, r) = read_clip_sample(sampler, direction, pos, gain);
-                        output.set_f32(0, i, output.at_f32(0, i) + l);
-                        output.set_f32(1, i, output.at_f32(1, i) + r);
+                        read_clip_sample_into(sampler, direction, pos, gain, &mut frame[..n]);
+                        mix_in!(frame, i);
                     }
                 }
                 VoiceSource::Disk(reader) => {
@@ -519,11 +591,10 @@ impl ClipSlot {
                     // pull run inside each `tick`). Per-sample accumulation
                     // mirrors the stretch branch above and keeps this
                     // alloc-free — no per-slot scratch `BufferMut`.
-                    let mut tick_out = [0.0f32; 2];
                     for i in 0..size {
-                        reader.tick(&[], &mut tick_out);
-                        output.set_f32(0, i, output.at_f32(0, i) + tick_out[0]);
-                        output.set_f32(1, i, output.at_f32(1, i) + tick_out[1]);
+                        frame[..n].fill(0.0);
+                        reader.tick(&[], &mut frame[..n]);
+                        mix_in!(frame, i);
                     }
                 }
             }
@@ -541,44 +612,50 @@ impl ClipSlot {
 /// matches the streaming tier, where gain lives in the source's shared state,
 /// and keeps a single, well-defined gain application point per tier.
 #[inline]
-fn read_clip_sample(
+fn read_clip_sample_into(
     sampler: &SamplerUnit,
     direction: Direction,
     pos: f64,
     gain: Linear,
-) -> (f32, f32) {
-    let (l, r) = match direction {
+    out: &mut [f32],
+) {
+    match direction {
         Direction::Reverse => {
             let len = sampler.duration_samples() as f64;
             let reversed = (len - 1.0 - pos).max(0.0);
-            sampler.get_sample_raw(reversed)
+            sampler.get_sample_raw_into(reversed, out);
         }
-        Direction::Forward => sampler.get_sample_raw(pos),
-    };
+        Direction::Forward => sampler.get_sample_raw_into(pos, out),
+    }
     let g = gain.get();
-    (l * g, r * g)
+    for s in out.iter_mut() {
+        *s *= g;
+    }
 }
 
-/// Read ONE stereo frame from a single voice source, using the exact per-variant
-/// read the direct (non-stretch) path uses — the `VoiceSource` enum still owns
-/// the read. `gain` scales the in-RAM read at the Voice level (see
-/// [`read_clip_sample`]); the streaming reader applies its own gain internally.
-/// Alloc-free: returns a stack frame. Used to feed the stretch filter (which
-/// owns no source) on the hot path.
+/// Read ONE frame from a single voice source into `out`, using the exact
+/// per-variant read the direct (non-stretch) path uses — the `VoiceSource` enum
+/// still owns the read. `gain` scales the in-RAM read at the Voice level (see
+/// [`read_clip_sample_into`]); the streaming reader applies its own gain
+/// internally. Writes every element of `out`. Used to feed the stretch filter
+/// (which owns no source) on the hot path.
 #[inline]
-fn read_source_frame(source: &mut VoiceSource, direction: Direction, gain: Linear) -> [f32; 2] {
+fn read_source_frame_into(
+    source: &mut VoiceSource,
+    direction: Direction,
+    gain: Linear,
+    out: &mut [f32],
+) {
     match source {
         VoiceSource::Ram(sampler) => match sampler.transport_sample_position() {
-            Some(pos) => {
-                let (l, r) = read_clip_sample(sampler, direction, pos, gain);
-                [l, r]
-            }
-            None => [0.0, 0.0],
+            Some(pos) => read_clip_sample_into(sampler, direction, pos, gain, out),
+            None => out.fill(0.0),
         },
         VoiceSource::Disk(reader) => {
-            let mut buf = [0.0f32; 2];
-            reader.tick(&[], &mut buf);
-            buf
+            // `AudioUnit::tick` writes only as many channels as the unit has;
+            // clear first so a narrower reader leaves silence, not stale data.
+            out.fill(0.0);
+            reader.tick(&[], out);
         }
     }
 }
@@ -610,6 +687,17 @@ pub enum ClipCommand {
         /// command channel's per-slot footprint small. Cold path (drained off the
         /// per-sample loop), so the indirection costs nothing audible.
         voice: Box<Voice>,
+        /// A stretch filter built by the SENDER, on the control thread, when
+        /// `voice.play` asks for stretching.
+        ///
+        /// The drain runs inside `tick`/`process`, so building this there would
+        /// allocate in the audio callback (an FFT setup plus two `RtScratch`
+        /// buffers per channel). [`TrackClipReaderHandle::send`] fills it in
+        /// before the command is queued; the drain only moves it into the slot.
+        ///
+        /// `None` when the clip does not stretch, which is the common case and
+        /// costs nothing.
+        stretch: Option<Box<stretch::Unit>>,
     },
     Remove(SlotId),
     ReplaceWave {
@@ -653,10 +741,11 @@ pub enum ClipCommand {
 impl std::fmt::Debug for ClipCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::AddVoice { id, voice } => f
+            Self::AddVoice { id, voice, stretch } => f
                 .debug_struct("AddVoice")
                 .field("id", id)
                 .field("voice", voice)
+                .field("stretch_prebuilt", &stretch.is_some())
                 .finish(),
             Self::Remove(id) => f.debug_tuple("Remove").field(id).finish(),
             Self::ReplaceWave { id, wave } => f
@@ -776,10 +865,26 @@ impl ClipSpec {
 #[derive(Clone, Debug)]
 pub struct TrackClipReaderHandle {
     tx: Sender<ClipCommand>,
+    /// The reader's output width, copied at construction (it is fixed for the
+    /// reader's lifetime). Lets [`send`](Self::send) build a stretch filter at
+    /// the right width on the CONTROL thread — see
+    /// [`ClipCommand::AddVoice::stretch`].
+    channels: usize,
+    /// The reader's sample rate at construction, for the same reason.
+    sample_rate: f64,
 }
 
 impl TrackClipReaderHandle {
+    /// Queue a command, doing any allocation it implies **here**, on the calling
+    /// (control) thread.
+    ///
+    /// This is the one chokepoint every command passes through, which makes it
+    /// the right place to keep the audio thread clean: `drain_commands` runs
+    /// from `tick`/`process`, so anything expensive left for the drain is an
+    /// allocation in the callback. Today that means materialising the stretch
+    /// filter for an `AddVoice` that needs one.
     pub fn send(&self, cmd: ClipCommand) {
+        let cmd = self.prepare(cmd);
         match self.tx.try_send(cmd) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
@@ -789,6 +894,36 @@ impl TrackClipReaderHandle {
             Err(TrySendError::Disconnected(_)) => {}
         }
     }
+
+    /// Move control-thread work out of the drain. Runs on the caller's thread.
+    fn prepare(&self, cmd: ClipCommand) -> ClipCommand {
+        match cmd {
+            ClipCommand::AddVoice {
+                id,
+                voice,
+                stretch: None,
+            } if stretch_wanted(&voice.play) => {
+                let unit = stretch::Unit::with_channels(self.sample_rate, self.channels);
+                unit.set_stretch_factor(voice.play.stretch);
+                unit.set_pitch_cents(voice.play.pitch);
+                ClipCommand::AddVoice {
+                    id,
+                    voice,
+                    stretch: Some(Box::new(unit)),
+                }
+            }
+            other => other,
+        }
+    }
+}
+
+/// Whether a [`Playback`] record asks for stretching. Shared by the sender (to
+/// decide whether to build a filter) and [`ClipSlot::needs_stretch`] (to decide
+/// whether to route through one), so the two cannot disagree about what
+/// "stretching" means.
+#[inline]
+fn stretch_wanted(play: &Playback) -> bool {
+    (play.stretch.get() - 1.0).abs() > 0.001 || play.pitch.get().abs() > 0.5
 }
 
 // ---------------------------------------------------------------------------
@@ -818,6 +953,14 @@ pub struct TrackClipReaderUnit {
     /// loop ops (`Command::Loop`) — loop is butler-owned and not reachable from
     /// the reader itself. Cloning it is cheap (a `Sender` + an `Arc` map).
     butler: Option<Commands>,
+
+    /// Output width — this node's `outputs()`, fixed at construction.
+    ///
+    /// Declared rather than inferred from the clips it holds: this unit is built
+    /// on track creation, *before* any clip exists, and `Net` edges are wired
+    /// against `outputs()`. A width that followed its contents would re-arity a
+    /// live graph node the moment a clip landed.
+    channels: usize,
 }
 
 // Hand-rolled: `clips` holds non-`Debug` `ClipSlot`s (each wraps a sampler +
@@ -843,18 +986,42 @@ impl TrackClipReaderUnit {
         transport: Option<Arc<dyn Timeline>>,
         butler: Option<Commands>,
     ) -> Self {
+        Self::from_parts_with_channels(rx, transport, butler, 2)
+    }
+
+    fn from_parts_with_channels(
+        rx: Receiver<ClipCommand>,
+        transport: Option<Arc<dyn Timeline>>,
+        butler: Option<Commands>,
+        channels: usize,
+    ) -> Self {
         Self {
-            clips: Vec::new(),
+            // Reserved, not empty: `AddVoice` is drained inside `tick`/`process`,
+            // so a `push` that grows this vector is a reallocation in the audio
+            // callback. `MAX_RESIDENT_CLIPS` is the point past which a track
+            // stops being allocation-free; beyond it the push still works, it
+            // just costs one grow.
+            clips: Vec::with_capacity(MAX_RESIDENT_CLIPS),
             rx,
             sample_rate: 44100.0,
             transport,
             butler,
+            channels: channels.max(1),
         }
+    }
+
+    /// Output width — this node's `outputs()`.
+    pub fn channels(&self) -> usize {
+        self.channels
     }
 
     pub fn new() -> (Self, TrackClipReaderHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
-        let handle = TrackClipReaderHandle { tx };
+        let handle = TrackClipReaderHandle {
+            tx,
+            channels: 2,
+            sample_rate: 44100.0,
+        };
         (Self::from_parts(rx, None, None), handle)
     }
 
@@ -863,8 +1030,33 @@ impl TrackClipReaderUnit {
         butler: Option<Commands>,
     ) -> (Self, TrackClipReaderHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
-        let handle = TrackClipReaderHandle { tx };
+        let handle = TrackClipReaderHandle {
+            tx,
+            channels: 2,
+            sample_rate: 44100.0,
+        };
         (Self::from_parts(rx, Some(transport), butler), handle)
+    }
+
+    /// As [`with_transport`](Self::with_transport), at an explicit output width.
+    ///
+    /// Each slot's stretch unit is built at this width too, so a wide clip is
+    /// not truncated on the stretch path.
+    pub fn with_channels(
+        transport: Option<Arc<dyn Timeline>>,
+        butler: Option<Commands>,
+        channels: usize,
+    ) -> (Self, TrackClipReaderHandle) {
+        let (tx, rx) = bounded(COMMAND_CAPACITY);
+        let unit = Self::from_parts_with_channels(rx, transport, butler, channels);
+        // The handle mirrors the reader's width/rate so `send` can build a
+        // stretch filter that matches it, on the control thread.
+        let handle = TrackClipReaderHandle {
+            tx,
+            channels: unit.channels,
+            sample_rate: unit.sample_rate,
+        };
+        (unit, handle)
     }
 
     /// Number of clip slots currently materialised (drained from the command
@@ -1014,7 +1206,39 @@ impl TrackClipReaderUnit {
     /// the COLD command drain, so the loop's butler send is RT-safe.
     ///
     /// [`AddVoice`]: ClipCommand::AddVoice
+    /// As [`insert_voice`](Self::insert_voice), taking a stretch filter the
+    /// caller already built.
+    ///
+    /// This is the audio-thread-safe form: the drain uses it so the callback
+    /// only MOVES a filter rather than constructing one. `None` leaves the slot
+    /// without a filter, which is correct both for a clip that does not stretch
+    /// and (transiently) for one whose filter has not arrived yet: the hot paths
+    /// then read the source dry rather than silencing it.
+    pub fn insert_voice_with_stretch(
+        &mut self,
+        id: SlotId,
+        voice: Voice,
+        stretch: Option<stretch::Unit>,
+    ) {
+        self.insert_voice_inner(id, voice, stretch);
+    }
+
+    /// Insert a voice, building the stretch filter here if one is needed.
+    ///
+    /// **Allocates when the voice stretches** — control-thread callers only.
+    /// The audio-thread drain goes through
+    /// [`insert_voice_with_stretch`](Self::insert_voice_with_stretch) instead.
     pub fn insert_voice(&mut self, id: SlotId, voice: Voice) {
+        let stretch = stretch_wanted(&voice.play).then(|| {
+            let unit = stretch::Unit::with_channels(self.sample_rate, self.channels);
+            unit.set_stretch_factor(voice.play.stretch);
+            unit.set_pitch_cents(voice.play.pitch);
+            unit
+        });
+        self.insert_voice_inner(id, voice, stretch);
+    }
+
+    fn insert_voice_inner(&mut self, id: SlotId, voice: Voice, stretch: Option<stretch::Unit>) {
         self.clips.retain(|s| s.id != id);
         // Split the loop out: `apply_loop` needs the slot present to look it up,
         // and `Playback` moves into the `Voice`. Take the rest by copy first.
@@ -1022,9 +1246,14 @@ impl TrackClipReaderUnit {
         let gain = voice.play.gain;
         let speed = voice.play.speed;
         let direction = voice.play.direction;
-        // `ClipSlot::new` primes the resident stretch unit from `voice.play`
-        // (stretch/pitch) — the one heavy step, done here off the hot path.
-        self.clips.push(ClipSlot::new(id, voice, self.sample_rate));
+        // `ClipSlot::with_channels` primes the resident stretch unit from
+        // `voice.play` (stretch/pitch) — the one heavy step, done here off the
+        // hot path. It is built at THIS READER's width: a slot narrower than the
+        // reader would truncate on the stretch path only, which no stereo test
+        // can observe.
+        let mut slot = ClipSlot::with_channels(id, voice, self.sample_rate, self.channels);
+        slot.stretch = stretch;
+        self.clips.push(slot);
 
         // Realise the remaining intent through the same appliers the update
         // commands use. The slot is now present, so `slot_mut` / `apply_loop`
@@ -1043,8 +1272,10 @@ impl TrackClipReaderUnit {
     fn drain_commands(&mut self) {
         while let Ok(cmd) = self.rx.try_recv() {
             match cmd {
-                ClipCommand::AddVoice { id, voice } => {
-                    self.insert_voice(id, *voice);
+                ClipCommand::AddVoice { id, voice, stretch } => {
+                    // The filter arrives prebuilt from `send` (control thread);
+                    // this only moves it into the slot.
+                    self.insert_voice_with_stretch(id, *voice, stretch.map(|b| *b));
                 }
                 ClipCommand::Remove(id) => {
                     self.clips.retain(|s| s.id != id);
@@ -1177,6 +1408,7 @@ impl Clone for TrackClipReaderUnit {
                     id: s.id,
                     voice: s.voice.clone(),
                     stretch: s.stretch.clone(),
+                    channels: s.channels,
                     sample_rate: s.sample_rate,
                 }) // Voice (VoiceSource) + resident stretch::Unit clone by value; atomics preserved
                 .collect(),
@@ -1184,6 +1416,7 @@ impl Clone for TrackClipReaderUnit {
             sample_rate: self.sample_rate,
             transport: self.transport.clone(),
             butler: self.butler.clone(),
+            channels: self.channels,
         }
     }
 }
@@ -1194,13 +1427,15 @@ impl AudioUnit for TrackClipReaderUnit {
     }
 
     fn outputs(&self) -> usize {
-        2
+        self.channels
     }
 
     fn reset(&mut self) {
         for slot in &mut self.clips {
             slot.voice.source.as_audio_unit_mut().reset();
-            slot.stretch.reset();
+            if let Some(unit) = &mut slot.stretch {
+                unit.reset();
+            }
         }
     }
 
@@ -1230,53 +1465,60 @@ impl AudioUnit for TrackClipReaderUnit {
                 .as_audio_unit_mut()
                 .set_sample_rate(sample_rate);
             slot.sample_rate = sample_rate.get();
-            slot.stretch.set_sample_rate(sample_rate);
+            if let Some(unit) = &mut slot.stretch {
+                unit.set_sample_rate(sample_rate);
+            }
         }
     }
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         self.drain_commands();
 
-        if output.len() < 2 {
+        let n = self.channels.min(output.len()).min(MAX_SAMPLER_CHANNELS);
+        if n == 0 {
             return;
         }
+        output[..n].fill(0.0);
 
-        let mut left = 0.0_f32;
-        let mut right = 0.0_f32;
-
-        // Each slot reads its ONE voice via the shared `ClipSlot::tick_frame`
-        // (the same per-variant `VoiceSource` match a standalone `VoiceNode`
-        // uses — factored, not duplicated, and no per-sample dyn).
+        // Each slot reads its ONE voice via the shared
+        // `ClipSlot::tick_frame_into` (the same per-variant `VoiceSource` match
+        // a standalone `VoiceNode` uses — factored, not duplicated, and no
+        // per-sample dyn), summed channel-wise into the caller's frame.
+        let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
         for slot in &mut self.clips {
-            let frame = slot.tick_frame();
-            left += frame[0];
-            right += frame[1];
+            slot.tick_frame_into(&mut frame[..n]);
+            for (c, &s) in frame.iter().enumerate().take(n) {
+                output[c] += s;
+            }
         }
-
-        output[0] = left;
-        output[1] = right;
     }
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
         self.drain_commands();
 
-        for i in 0..size {
-            output.set_f32(0, i, 0.0);
-            output.set_f32(1, i, 0.0);
+        let n = self
+            .channels
+            .min(output.channels())
+            .min(MAX_SAMPLER_CHANNELS);
+        for c in 0..n {
+            for i in 0..size {
+                output.set_f32(c, i, 0.0);
+            }
         }
 
         // Each slot accumulates its ONE voice via the shared
         // `ClipSlot::process_into` (the same per-variant `VoiceSource` match a
         // standalone `VoiceNode` uses).
         for slot in &mut self.clips {
-            slot.process_into(size, output);
+            slot.process_into(size, n, output);
         }
     }
 
     audio_unit_boilerplate!(id = TRACK_CLIP_READER_ID);
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        SignalFrame::new(2)
+        // Width must track `outputs()` or fundsp mis-plans this node's latency.
+        SignalFrame::new(self.channels)
     }
 
     fn footprint(&self) -> usize {
@@ -1300,24 +1542,42 @@ impl AudioUnit for TrackClipReaderUnit {
 // node keeps that path alive (guarded by a test).
 // ---------------------------------------------------------------------------
 
-pub struct VoiceNode(ClipSlot);
+pub struct VoiceNode {
+    slot: ClipSlot,
+    /// Output width — see [`TrackClipReaderUnit`]'s field of the same name.
+    channels: usize,
+}
 
 impl VoiceNode {
-    /// Wrap a single [`Voice`] as a standalone graph node. Builds the resident
-    /// stretch processor once (like a mixer slot), off any hot path.
+    /// Wrap a single [`Voice`] as a standalone **stereo** graph node. Builds the
+    /// resident stretch processor once (like a mixer slot), off any hot path.
     pub fn new(voice: Voice) -> Self {
-        Self(ClipSlot::new(SlotId(0), voice, 44100.0))
+        Self::with_channels(voice, 2)
+    }
+
+    /// Wrap a single [`Voice`] as a `channels`-wide graph node.
+    pub fn with_channels(voice: Voice, channels: usize) -> Self {
+        let channels = channels.max(1);
+        Self {
+            slot: ClipSlot::with_channels(SlotId(0), voice, 44100.0, channels),
+            channels,
+        }
+    }
+
+    /// Output width — this node's `outputs()`.
+    pub fn channels(&self) -> usize {
+        self.channels
     }
 
     /// The wrapped voice (immutable view).
     pub fn voice(&self) -> &Voice {
-        &self.0.voice
+        &self.slot.voice
     }
 
     /// The wrapped voice (mutable view) — used by the offline render to rebind
     /// the transport via [`Voice::replace_transport`].
     pub fn voice_mut(&mut self) -> &mut Voice {
-        &mut self.0.voice
+        &mut self.slot.voice
     }
 
     /// Rebind the transport clock behind the wrapped voice's placement,
@@ -1325,7 +1585,7 @@ impl VoiceNode {
     /// [`Voice::replace_transport`] so the offline region render can rebind a
     /// standalone voice node without reaching through `voice_mut`.
     pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
-        self.0.voice.replace_transport(transport);
+        self.slot.voice.replace_transport(transport);
     }
 }
 
@@ -1334,7 +1594,7 @@ impl VoiceNode {
 impl std::fmt::Debug for VoiceNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VoiceNode")
-            .field("voice", &self.0.voice)
+            .field("voice", &self.slot.voice)
             .finish_non_exhaustive()
     }
 }
@@ -1347,12 +1607,16 @@ impl From<Voice> for VoiceNode {
 
 impl Clone for VoiceNode {
     fn clone(&self) -> Self {
-        Self(ClipSlot {
-            id: self.0.id,
-            voice: self.0.voice.clone(),
-            stretch: self.0.stretch.clone(),
-            sample_rate: self.0.sample_rate,
-        })
+        Self {
+            slot: ClipSlot {
+                id: self.slot.id,
+                voice: self.slot.voice.clone(),
+                stretch: self.slot.stretch.clone(),
+                channels: self.slot.channels,
+                sample_rate: self.slot.sample_rate,
+            },
+            channels: self.channels,
+        }
     }
 }
 
@@ -1362,46 +1626,56 @@ impl AudioUnit for VoiceNode {
     }
 
     fn outputs(&self) -> usize {
-        2
+        self.channels
     }
 
     fn reset(&mut self) {
-        self.0.voice.source.as_audio_unit_mut().reset();
-        self.0.stretch.reset();
+        self.slot.voice.source.as_audio_unit_mut().reset();
+        if let Some(unit) = &mut self.slot.stretch {
+            unit.reset();
+        }
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.0
+        self.slot
             .voice
             .source
             .as_audio_unit_mut()
             .set_sample_rate(sample_rate);
-        self.0.sample_rate = sample_rate.get();
-        self.0.stretch.set_sample_rate(sample_rate);
+        self.slot.sample_rate = sample_rate.get();
+        if let Some(unit) = &mut self.slot.stretch {
+            unit.set_sample_rate(sample_rate);
+        }
     }
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        if output.len() < 2 {
+        // Same single-voice read the mixer runs per slot, straight into the
+        // caller's frame.
+        let n = self.channels.min(output.len());
+        if n == 0 {
             return;
         }
-        // Same single-voice read the mixer runs per slot.
-        let frame = self.0.tick_frame();
-        output[0] = frame[0];
-        output[1] = frame[1];
+        self.slot.tick_frame_into(&mut output[..n]);
     }
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        for i in 0..size {
-            output.set_f32(0, i, 0.0);
-            output.set_f32(1, i, 0.0);
+        let n = self
+            .channels
+            .min(output.channels())
+            .min(MAX_SAMPLER_CHANNELS);
+        for c in 0..n {
+            for i in 0..size {
+                output.set_f32(c, i, 0.0);
+            }
         }
-        self.0.process_into(size, output);
+        self.slot.process_into(size, n, output);
     }
 
     audio_unit_boilerplate!(id = crate::node_id::VOICE_NODE_ID);
 
     fn route(&mut self, _input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        SignalFrame::new(2)
+        // Width must track `outputs()` or fundsp mis-plans this node's latency.
+        SignalFrame::new(self.channels)
     }
 
     fn footprint(&self) -> usize {
@@ -1412,6 +1686,7 @@ impl AudioUnit for VoiceNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clip::sampler_unit::SamplerUnitConfig;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     struct MockTransport {
@@ -1459,6 +1734,7 @@ mod tests {
                 play: Playback::default(),
                 channel_index: None,
             }),
+            stretch: None,
         });
     }
 
@@ -1765,7 +2041,7 @@ mod tests {
 
         // Build a Disk voice with no butler channel.
         let (writer, reader) =
-            RegionBuffer::with_capacity(RegionId(1), std::path::PathBuf::new(), 128);
+            RegionBuffer::with_capacity(RegionId(1), std::path::PathBuf::new(), 128, 2);
         drop(writer);
         let state = std::sync::Arc::new(RtState::new());
         let inner = StreamingSamplerUnit::new(share_reader(reader), state.clone());
@@ -1790,6 +2066,7 @@ mod tests {
                 play: Playback::default(),
                 channel_index: None,
             }),
+            stretch: None,
         });
 
         handle.send(ClipCommand::UpdateLoop {
@@ -1809,5 +2086,319 @@ mod tests {
             LoopSetting::Off,
             "a loop the butler was never told about must not be recorded as applied"
         );
+    }
+
+    /// Channel `c` carries the constant `c + 1`.
+    fn indexed_wave(channels: usize, len: usize) -> Arc<Wave> {
+        let mut w = Wave::zero(channels, 44_100.0, len as f64 / 44_100.0);
+        for i in 0..w.len() {
+            for c in 0..channels {
+                w.set(c, i, (c + 1) as f32);
+            }
+        }
+        Arc::new(w)
+    }
+
+    #[test]
+    fn reader_and_voice_node_default_to_stereo() {
+        let (unit, _h) = TrackClipReaderUnit::new();
+        assert_eq!(unit.channels(), 2);
+        assert_eq!(unit.outputs(), 2);
+    }
+
+    /// `route`'s width must track `outputs()` on both nodes, or fundsp mis-plans
+    /// their latency — silent except as PDC drift.
+    #[test]
+    fn route_width_tracks_outputs_on_both_nodes() {
+        for w in [1usize, 2, 6, 8] {
+            let (mut unit, _h) = TrackClipReaderUnit::with_channels(None, None, w);
+            let out = unit.route(&SignalFrame::new(0), 44_100.0);
+            assert_eq!(
+                out.len(),
+                unit.outputs(),
+                "reader route/outputs at width {w}"
+            );
+
+            let transport = MockTransport::new(120.0, 0.0, true);
+            let sampler = SamplerUnit::with_config(
+                indexed_wave(6, 64),
+                SamplerUnitConfig {
+                    channels: w,
+                    placement: Some(TransportPlacement {
+                        transport,
+                        start_beat: Beat::new(0.0),
+                        duration_beats: None,
+                    }),
+                    ..Default::default()
+                },
+            );
+            let voice = Voice {
+                source: VoiceSource::Ram(sampler),
+                play: Playback::default(),
+                channel_index: None,
+            };
+            let mut vn = VoiceNode::with_channels(voice, w);
+            let out = vn.route(&SignalFrame::new(0), 44_100.0);
+            assert_eq!(
+                out.len(),
+                vn.outputs(),
+                "voice node route/outputs at width {w}"
+            );
+        }
+    }
+
+    /// A 6-channel clip in a 6-wide reader must reach all six outputs, through
+    /// both entry points (`tick` sums into the caller's slice; `process`
+    /// accumulates into a planar buffer — different code).
+    #[test]
+    fn six_channel_clip_reaches_all_six_reader_outputs() {
+        let transport = MockTransport::new(120.0, 0.0, true);
+        let (mut unit, _h) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
+        let sampler = SamplerUnit::with_config(
+            indexed_wave(6, 512),
+            SamplerUnitConfig {
+                channels: 6,
+                placement: Some(TransportPlacement {
+                    transport,
+                    start_beat: Beat::new(0.0),
+                    duration_beats: None,
+                }),
+                ..Default::default()
+            },
+        );
+        unit.insert_voice(
+            SlotId(1),
+            Voice {
+                source: VoiceSource::Ram(sampler),
+                play: Playback::default(),
+                channel_index: None,
+            },
+        );
+
+        let mut out = [0.0f32; 6];
+        unit.tick(&[], &mut out);
+        for (c, &got) in out.iter().enumerate() {
+            assert!(
+                (got - (c + 1) as f32).abs() < 1e-3,
+                "tick: channel {c} should carry {}, got {got} ({out:?})",
+                c + 1
+            );
+        }
+        assert!(
+            out[2..].iter().all(|&s| s.abs() > 0.5),
+            "channels 2..6 were dropped: {out:?}"
+        );
+    }
+
+    /// The stretch branch is separate code from the direct read, and it is the
+    /// one R6 warns about: a slot whose stretcher is narrower than the reader
+    /// truncates silently, and ONLY when stretch is enabled. Nothing else in the
+    /// suite exercises that combination at width 6.
+    #[test]
+    fn six_channel_clip_with_stretch_reaches_all_six_outputs() {
+        let transport = MockTransport::new(120.0, 0.0, true);
+        let (mut unit, _h) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
+        let sampler = SamplerUnit::with_config(
+            indexed_wave(6, 4096),
+            SamplerUnitConfig {
+                channels: 6,
+                placement: Some(TransportPlacement {
+                    transport: transport.clone(),
+                    start_beat: Beat::new(0.0),
+                    duration_beats: None,
+                }),
+                ..Default::default()
+            },
+        );
+        unit.insert_voice(
+            SlotId(1),
+            Voice {
+                source: VoiceSource::Ram(sampler),
+                play: Playback {
+                    // Off unity, so `needs_stretch()` takes the vocoder path.
+                    stretch: StretchFactor::new(2.0),
+                    ..Default::default()
+                },
+                channel_index: None,
+            },
+        );
+
+        // The phase vocoder has FFT latency, so early frames are legitimately
+        // silent; drive until every channel has produced something.
+        let mut seen = [false; 6];
+        let mut out = [0.0f32; 6];
+        for n in 0..16_384 {
+            unit.tick(&[], &mut out);
+            for (c, &s) in out.iter().enumerate() {
+                if s.abs() > 1e-6 {
+                    seen[c] = true;
+                }
+            }
+            if seen.iter().all(|&b| b) {
+                break;
+            }
+            let _ = n;
+        }
+        assert!(
+            seen.iter().all(|&b| b),
+            "channels {:?} never produced output through the stretch path",
+            seen.iter()
+                .enumerate()
+                .filter(|(_, &b)| !b)
+                .map(|(c, _)| c)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The SENDER builds the stretch filter, not the drain.
+    ///
+    /// `TrackClipReaderHandle::send` runs on the control thread and fills
+    /// `AddVoice::stretch` when the voice asks for stretching; `drain_commands`
+    /// (which runs inside `tick`/`process`) only moves it in. If construction
+    /// ever moves back into the drain, an `AddVoice` sent with `stretch: None`
+    /// would still end up with a filter — so this asserts the filter is present
+    /// only because the send path put it there.
+    #[test]
+    fn send_builds_the_stretch_filter_not_the_drain() {
+        let transport = MockTransport::new(120.0, 0.0, true);
+        let (mut unit, handle) =
+            TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
+
+        let mk = |stretch: StretchFactor| {
+            let sampler = SamplerUnit::with_config(
+                indexed_wave(6, 128),
+                SamplerUnitConfig {
+                    channels: 6,
+                    placement: Some(TransportPlacement {
+                        transport: transport.clone(),
+                        start_beat: Beat::new(0.0),
+                        duration_beats: None,
+                    }),
+                    ..Default::default()
+                },
+            );
+            Voice {
+                source: VoiceSource::Ram(sampler),
+                play: Playback {
+                    stretch,
+                    ..Default::default()
+                },
+                channel_index: None,
+            }
+        };
+
+        // A stretching voice: `send` must attach a filter, at the READER's width.
+        // Observe the queued command BEFORE the drain sees it — that is what
+        // distinguishes "the sender built it" from "the drain built it", and it
+        // is the only observation that can: after draining, a filter is present
+        // either way.
+        let peeked = {
+            let (probe_tx, probe_rx) = bounded(4);
+            let probe = TrackClipReaderHandle {
+                tx: probe_tx,
+                channels: 6,
+                sample_rate: 44100.0,
+            };
+            probe.send(ClipCommand::AddVoice {
+                id: SlotId(9),
+                voice: Box::new(mk(StretchFactor::new(2.0))),
+                stretch: None,
+            });
+            match probe_rx.try_recv() {
+                Ok(ClipCommand::AddVoice { stretch, .. }) => stretch,
+                other => panic!("expected a queued AddVoice, got {other:?}"),
+            }
+        };
+        let peeked = peeked.expect(
+            "send must attach the filter BEFORE queueing — if this is None the \
+             construction has moved back into the audio-thread drain",
+        );
+        assert_eq!(
+            peeked.channels(),
+            6,
+            "the sender must build at the reader's width"
+        );
+
+        handle.send(ClipCommand::AddVoice {
+            id: SlotId(1),
+            voice: Box::new(mk(StretchFactor::new(2.0))),
+            stretch: None,
+        });
+        // A non-stretching voice: no filter, because none is needed.
+        handle.send(ClipCommand::AddVoice {
+            id: SlotId(2),
+            voice: Box::new(mk(StretchFactor::new(1.0))),
+            stretch: None,
+        });
+
+        let mut out = [0.0f32; 6];
+        unit.tick(&[], &mut out); // drains
+
+        let stretching = unit.clips.iter().find(|s| s.id == SlotId(1)).unwrap();
+        let plain = unit.clips.iter().find(|s| s.id == SlotId(2)).unwrap();
+
+        let filter = stretching
+            .stretch
+            .as_ref()
+            .expect("send must have built a filter for the stretching voice");
+        assert_eq!(
+            filter.channels(),
+            6,
+            "the filter must match the reader's width, not a default"
+        );
+        assert!(
+            plain.stretch.is_none(),
+            "a non-stretching voice must not carry a filter — that is the whole \
+             point of building lazily"
+        );
+    }
+
+    /// A slot whose intent says stretch but whose filter has not arrived reads
+    /// DRY, not silent.
+    ///
+    /// `active_stretch` requires both the intent and the unit. Degrading to a
+    /// dry read means a late filter costs one block of un-stretched audio rather
+    /// than a gap — and, critically, never an allocation in the callback.
+    #[test]
+    fn a_missing_stretch_filter_reads_dry_not_silent() {
+        let transport = MockTransport::new(120.0, 0.0, true);
+        let (mut unit, _h) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
+
+        let sampler = SamplerUnit::with_config(
+            indexed_wave(6, 512),
+            SamplerUnitConfig {
+                channels: 6,
+                placement: Some(TransportPlacement {
+                    transport,
+                    start_beat: Beat::new(0.0),
+                    duration_beats: None,
+                }),
+                ..Default::default()
+            },
+        );
+        // Insert DIRECTLY with no filter, simulating one that has not arrived.
+        unit.insert_voice_with_stretch(
+            SlotId(1),
+            Voice {
+                source: VoiceSource::Ram(sampler),
+                play: Playback {
+                    stretch: StretchFactor::new(2.0),
+                    ..Default::default()
+                },
+                channel_index: None,
+            },
+            None,
+        );
+
+        let mut out = [0.0f32; 6];
+        unit.tick(&[], &mut out);
+        for (c, &s) in out.iter().enumerate() {
+            assert!(
+                (s - (c + 1) as f32).abs() < 1e-3,
+                "channel {c} should read dry ({}), got {s} — a missing filter \
+                 must not silence the slot",
+                c + 1
+            );
+        }
     }
 }

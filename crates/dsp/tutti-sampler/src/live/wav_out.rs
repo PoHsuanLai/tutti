@@ -86,33 +86,64 @@ impl WavOut {
             format,
         })
     }
+
+    /// Declared channel count — what the WAV header says, and therefore exactly
+    /// how many samples per frame [`write_interleaved`](Self::write_interleaved)
+    /// must emit.
+    pub fn channels(&self) -> usize {
+        self.layout.count() as usize
+    }
+
+    /// Write flat interleaved frames at this sink's own declared width.
+    ///
+    /// Emits exactly `channels()` samples per frame — no more, no fewer. A short
+    /// trailing frame is ignored; a frame wider than the header is truncated to
+    /// it.
+    ///
+    /// This is the fix for a latent corruption: the header took the caller's
+    /// full `channels` while `write` only ever emitted two samples per frame, so
+    /// a >2-channel capture produced a file whose declared width and actual data
+    /// disagreed. Every reader would interleave-misalign, rotating channels by
+    /// `2 mod channels` each frame, and `hound` could fail to finalize on a
+    /// non-integral frame count. Unreachable from the four live call sites (all
+    /// pass 1 or 2) and untested above 2 — hence unnoticed.
+    pub fn write_interleaved(&mut self, samples: &[f32]) {
+        let ch = self.channels().max(1);
+        for frame in samples.chunks_exact(ch) {
+            for &s in frame {
+                let ok = match self.format {
+                    CaptureFormat::F32 => self.writer.write_sample(s).is_ok(),
+                    CaptureFormat::I24 => self.writer.write_sample(f32_to_i24(s)).is_ok(),
+                };
+                if !ok {
+                    return;
+                }
+            }
+        }
+    }
 }
 
 impl AudioOut for WavOut {
+    /// Stereo shim over [`write_interleaved`](WavOut::write_interleaved).
+    ///
+    /// A mono sink drops the right channel; a sink wider than stereo zero-fills
+    /// the channels this stereo-framed input cannot supply, so the data still
+    /// matches the declared header width.
     fn write(&mut self, frames: &[[f32; 2]]) {
-        // Write the right channel only when the sink is stereo (or wider); a mono
-        // sink drops it.
-        let write_right = match self.layout {
-            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_) => true,
-            ChannelLayout::Mono => false,
-        };
-        for &[left, right] in frames {
-            match self.format {
-                CaptureFormat::F32 => {
-                    if self.writer.write_sample(left).is_err() {
-                        return;
-                    }
-                    if write_right && self.writer.write_sample(right).is_err() {
-                        return;
-                    }
+        let ch = self.channels().max(1);
+        match ch {
+            1 => {
+                for &[left, _] in frames {
+                    self.write_interleaved(&[left]);
                 }
-                CaptureFormat::I24 => {
-                    if self.writer.write_sample(f32_to_i24(left)).is_err() {
-                        return;
-                    }
-                    if write_right && self.writer.write_sample(f32_to_i24(right)).is_err() {
-                        return;
-                    }
+            }
+            2 => self.write_interleaved(frames.as_flattened()),
+            _ => {
+                let mut frame = vec![0.0f32; ch];
+                for &[left, right] in frames {
+                    frame[0] = left;
+                    frame[1] = right;
+                    self.write_interleaved(&frame);
                 }
             }
         }
@@ -175,5 +206,65 @@ mod tests {
         let reader = hound::WavReader::open(&path).unwrap();
         assert_eq!(reader.spec().channels, 1);
         assert_eq!(reader.len() as usize, frames.len());
+    }
+
+    /// A 6-channel sink must write SIX samples per frame, matching the header it
+    /// declared. Before this, the header took `layout.count()` while `write`
+    /// emitted two, so the declared width and the data disagreed: a reader
+    /// interleave-misaligns and the channels rotate by `2 mod 6` every frame.
+    #[test]
+    fn six_channel_sink_writes_six_samples_per_frame() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tutti_wav_out_six_channel.wav");
+        let _ = std::fs::remove_file(&path);
+
+        let mut sink =
+            WavOut::create(&path, 48_000.0, 6, CaptureFormat::F32).expect("create 6ch sink");
+        assert_eq!(sink.channels(), 6);
+
+        let frames: Vec<f32> = (0..128)
+            .flat_map(|i| (0..6).map(move |c| (i * 6 + c) as f32 * 0.001))
+            .collect();
+        sink.write_interleaved(&frames);
+        AudioOut::finalize(sink).expect("finalize");
+
+        let reader = hound::WavReader::open(&path).expect("reopen");
+        assert_eq!(reader.spec().channels, 6, "header must declare 6 channels");
+        assert_eq!(
+            reader.len() as usize,
+            128 * 6,
+            "128 frames of 6 channels must write 768 samples, not 256"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The stereo shim must still produce a well-formed file at a wider declared
+    /// width: it zero-fills the channels it cannot supply rather than emitting
+    /// short frames.
+    #[test]
+    fn stereo_write_into_a_wide_sink_stays_frame_aligned() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tutti_wav_out_stereo_into_quad.wav");
+        let _ = std::fs::remove_file(&path);
+
+        let mut sink =
+            WavOut::create(&path, 48_000.0, 4, CaptureFormat::F32).expect("create 4ch sink");
+        let frames = [[0.25f32, -0.25]; 16];
+        AudioOut::write(&mut sink, &frames);
+        AudioOut::finalize(sink).expect("finalize");
+
+        let mut reader = hound::WavReader::open(&path).expect("reopen");
+        assert_eq!(reader.spec().channels, 4);
+        assert_eq!(
+            reader.len() as usize,
+            16 * 4,
+            "must be a whole number of frames"
+        );
+        let samples: Vec<f32> = reader.samples::<f32>().map(|s| s.unwrap()).collect();
+        assert!((samples[0] - 0.25).abs() < 1e-6);
+        assert!((samples[1] + 0.25).abs() < 1e-6);
+        assert_eq!(samples[2], 0.0, "unsupplied channels are silent");
+        assert_eq!(samples[3], 0.0);
+        let _ = std::fs::remove_file(&path);
     }
 }

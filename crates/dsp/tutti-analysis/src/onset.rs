@@ -12,6 +12,7 @@
 //! of 165 windows corrupted on the live path. Here you cannot forget to reset
 //! something you have to pass in.
 
+use tutti_core::SampleRate;
 use tutti_types::{Amplitude, Samples, Seconds};
 
 use crate::error::Result;
@@ -99,8 +100,7 @@ impl OnsetConfig {
     /// Defaults: a 0.3 threshold multiplier, unity sensitivity, and a 50 ms
     /// minimum gap.
     pub fn new(geometry: StftGeometry, function: DetectionFunction) -> Self {
-        let min_gap =
-            Samples((0.05 * geometry.sample_rate().get()) as usize);
+        let min_gap = Seconds(0.05).to_samples(geometry.sample_rate().get());
         Self {
             geometry,
             function,
@@ -128,8 +128,7 @@ impl OnsetConfig {
     /// The old pair took milliseconds on one method and seconds on another of
     /// the same type — the only ms-valued input anywhere in the engine.
     pub fn with_min_gap(mut self, gap: impl Into<Seconds>) -> Self {
-        self.min_gap =
-            Samples((gap.into().get() as f64 * self.geometry.sample_rate().get()) as usize);
+        self.min_gap = gap.into().to_samples(self.geometry.sample_rate().get());
         self
     }
 
@@ -162,8 +161,8 @@ pub struct Onset {
 
 impl Onset {
     #[inline]
-    pub fn time(&self, sample_rate: f64) -> Seconds {
-        Seconds((self.position.get() as f64 / sample_rate) as f32)
+    pub fn time(&self, sample_rate: impl Into<SampleRate>) -> Seconds {
+        Seconds((self.position.get() as f64 / sample_rate.into().get()) as f32)
     }
 }
 

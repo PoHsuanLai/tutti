@@ -11,15 +11,24 @@
 //! - [`correlate`] — inter-channel phase correlation and stereo image
 //! - [`summarize`] — min/max/RMS waveform blocks for a timeline
 //!
-//! ## Batch and streaming are the same code
+//! ## Configs, and carries where they are needed
 //!
-//! Each algorithm is a **config** (immutable, validated once), an explicit
-//! **carry** where one is genuinely needed, and a **step** function. Batch
-//! entry points fold the step, so the two paths cannot drift:
+//! Every algorithm takes a **config**: immutable, validated once, so an
+//! invalid combination fails at construction rather than silently producing
+//! nothing.
 //!
-//! ```text
-//! fold(step, cfg, state, frames) == frames.map(|f| step(cfg, &mut state, f))
-//! ```
+//! Two of them additionally need a **carry** between frames — onset detection
+//! diffs against the previous spectrum, and waveform blocking holds a partial
+//! block. Those two expose the carry as an explicit value and a `step`
+//! function, and their batch entry points ([`detect_onsets`], [`summarize`])
+//! *fold that same step*, so the two paths cannot drift. Tests pin the
+//! equality across chunk sizes and channel layouts.
+//!
+//! The rest are stateless: [`yin`] and [`correlate`] are pure functions of
+//! their input, and [`stft`] is batch-only — there is no incremental
+//! transform. Meter ballistics ([`step_ballistics`]) carries a smoothed
+//! reading, but that is a filter over results rather than a step of the
+//! correlation itself.
 //!
 //! "Live" is a property of a call site, never of an algorithm, so nothing here
 //! is named for it. A host that wants these results on a background thread or

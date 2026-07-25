@@ -7,11 +7,14 @@
 //! know it was choosing. A second estimator later gets its own name instead of
 //! displacing this one.
 //!
-//! The estimate is a pure function of its input: `PitchDetector::detect`
-//! carries nothing between calls (its scratch is fully overwritten each time),
-//! which a test pins, so this wrapper is sound.
+//! The estimate is a pure function of its input: the underlying detector's
+//! scratch is fully overwritten on every call, so nothing carries between
+//! them. [`yin`] builds a fresh detector regardless; [`yin_track`] reuses one
+//! across frames, which relies on that property — and
+//! `a_reused_detector_matches_fresh_ones` pins it.
 
-use tutti_types::{Cents, Confidence, Hz, Note, Samples};
+use tutti_core::SampleRate;
+use tutti_types::{Cents, Confidence, Hz, Note, Samples, Seconds};
 
 use crate::error::{AnalysisError, Result};
 use crate::grid::FrameCount;
@@ -20,7 +23,7 @@ use crate::pitch::PitchDetector;
 /// YIN parameters. Validated once, on construction.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct YinConfig {
-    sample_rate: f64,
+    sample_rate: SampleRate,
     min_freq: Hz,
     max_freq: Hz,
     threshold: Confidence,
@@ -34,10 +37,15 @@ impl YinConfig {
     /// then reported "unvoiced" forever, because the period bounds inverted and
     /// every call bailed. Two adjacent `f32` parameters made the transposition
     /// easy and the failure silent.
-    pub fn new(sample_rate: f64, min_freq: impl Into<Hz>, max_freq: impl Into<Hz>) -> Result<Self> {
+    pub fn new(
+        sample_rate: impl Into<SampleRate>,
+        min_freq: impl Into<Hz>,
+        max_freq: impl Into<Hz>,
+    ) -> Result<Self> {
+        let sample_rate = sample_rate.into();
         let (min_freq, max_freq) = (min_freq.into(), max_freq.into());
 
-        if !(sample_rate > 0.0) {
+        if !(sample_rate.get() > 0.0) {
             return Err(AnalysisError::NonPositiveSampleRate);
         }
         if min_freq.get() <= 0.0 || max_freq.get() <= 0.0 || min_freq >= max_freq {
@@ -47,7 +55,7 @@ impl YinConfig {
             });
         }
 
-        let nyquist = Hz((sample_rate / 2.0) as f32);
+        let nyquist = Hz((sample_rate.get() / 2.0) as f32);
         if max_freq > nyquist {
             return Err(AnalysisError::AboveNyquist {
                 freq: max_freq,
@@ -64,7 +72,7 @@ impl YinConfig {
     }
 
     /// The standard 50–2000 Hz vocal/instrument range.
-    pub fn standard(sample_rate: f64) -> Result<Self> {
+    pub fn standard(sample_rate: impl Into<SampleRate>) -> Result<Self> {
         Self::new(sample_rate, Hz(50.0), Hz(2000.0))
     }
 
@@ -76,7 +84,7 @@ impl YinConfig {
     }
 
     #[inline]
-    pub fn sample_rate(&self) -> f64 {
+    pub fn sample_rate(&self) -> SampleRate {
         self.sample_rate
     }
 
@@ -98,13 +106,13 @@ impl YinConfig {
     /// Shortest period the range can express — set by the *highest* frequency.
     #[inline]
     pub fn min_period(&self) -> Samples {
-        Samples((self.sample_rate / self.max_freq.get() as f64) as usize)
+        Samples((self.sample_rate.get() / self.max_freq.get() as f64) as usize)
     }
 
     /// Longest period — set by the *lowest* frequency.
     #[inline]
     pub fn max_period(&self) -> Samples {
-        Samples((self.sample_rate / self.min_freq.get() as f64) as usize)
+        Samples((self.sample_rate.get() / self.min_freq.get() as f64) as usize)
     }
 
     /// Minimum input length. Below this, [`yin`] returns
@@ -417,6 +425,36 @@ mod tests {
         assert_eq!(estimate.frequency(), Hz(0.0));
         assert_eq!(estimate.confidence(), Confidence::NONE);
         assert!(estimate.pitch().is_none());
+    }
+
+    /// The property `yin_track` relies on: one detector driven across many
+    /// frames agrees with a fresh detector per frame.
+    ///
+    /// `yin` builds a fresh detector every call, so the idempotence test below
+    /// does *not* exercise the reused path — this one does. Without it, the
+    /// module doc's soundness argument for reusing a detector across a track
+    /// was unpinned.
+    #[test]
+    fn a_reused_detector_matches_fresh_ones() {
+        let cfg = YinConfig::standard(44100.0).unwrap();
+        let frame = cfg.buffer_size().get();
+
+        // A sweep, so successive frames differ and a leaked carry would show.
+        let samples: Vec<f32> = (0..frame * 6)
+            .map(|i| {
+                let t = i as f32 / 44100.0;
+                let freq = 220.0 + 440.0 * t;
+                (2.0 * core::f32::consts::PI * freq * t).sin() * 0.5
+            })
+            .collect();
+
+        let reused = yin_track(&cfg, &samples, Samples(frame)).unwrap();
+
+        for (i, expected) in reused.iter().enumerate() {
+            let start = i * frame;
+            let fresh = yin(&cfg, &samples[start..start + frame]).unwrap();
+            assert_eq!(fresh, *expected, "frame {i} differs from a fresh detector");
+        }
     }
 
     #[test]

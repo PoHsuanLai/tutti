@@ -13,6 +13,7 @@
 //! panicked, and how a decimated display transform reached it and produced a
 //! comb of islands separated by silence.
 
+use tutti_core::SampleRate;
 use tutti_types::{Amplitude, Samples};
 
 use crate::error::{AnalysisError, Result};
@@ -132,10 +133,10 @@ pub struct StftPolar {
 
 /// Magnitudes with phase discarded. **Not invertible.**
 ///
-/// What a decimated display transform produces, and what an incremental
-/// builder can offer mid-stream. The old code returned this shape as a
-/// `StftResult` with an empty phase vector — statically indistinguishable from
-/// an invertible result, and a panic inside the inverse.
+/// What a decimated display transform produces. The old code returned this
+/// shape as a `StftResult` with an empty phase vector — statically
+/// indistinguishable from an invertible result, and a panic inside the
+/// inverse.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StftMagnitude {
     magnitudes: RawMagnitudes,
@@ -177,8 +178,8 @@ impl Stft {
 
     /// The magnitude a mask would leave at this bin.
     ///
-    /// The spectral view computes this by hand today, because the exported
-    /// helper only handled the unmasked case.
+    /// Offered because the unmasked accessor alone forces callers to redo the
+    /// multiply; the spectral view currently pools masked magnitudes itself.
     pub fn masked_magnitude_at(
         &self,
         mask: &Grid<Complex>,
@@ -232,8 +233,8 @@ impl Stft {
 
     /// Apply a complex mask and resynthesize.
     ///
-    /// The edit path's whole operation in one call — it is currently a
-    /// hand-written zip followed by two six-argument inverse calls.
+    /// The edit path's whole operation in one call, replacing the hand-written
+    /// zip plus two six-argument inverse calls it used to take.
     pub fn resynthesize_masked(
         &self,
         mask: &Grid<Complex>,
@@ -374,16 +375,20 @@ impl SampleRange {
 /// independently.
 #[derive(Debug, Clone, Copy)]
 pub struct StftRequest {
-    pub sample_rate: f64,
+    pub sample_rate: SampleRate,
     pub window: Samples,
     pub hop: HopPolicy,
     pub range: SampleRange,
 }
 
 impl StftRequest {
-    pub fn new(sample_rate: f64, window: impl Into<Samples>, hop: impl Into<Samples>) -> Self {
+    pub fn new(
+        sample_rate: impl Into<SampleRate>,
+        window: impl Into<Samples>,
+        hop: impl Into<Samples>,
+    ) -> Self {
         Self {
-            sample_rate,
+            sample_rate: sample_rate.into(),
             window: window.into(),
             hop: HopPolicy::Fixed(hop.into()),
             range: SampleRange::All,

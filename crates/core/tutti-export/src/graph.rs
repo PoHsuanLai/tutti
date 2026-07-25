@@ -212,13 +212,53 @@ impl GraphExport {
 // internal execution paths
 // ---------------------------------------------------------------------------
 
-/// Consume the net + render into stereo `Vec`s. `spec` is left untouched so
-/// the caller can still use it for the downstream process + encode stages.
-fn render_buffered(
+/// Dispatch a `$body` block, generic over `const CH: usize`, on a runtime
+/// [`ChannelLayout`]. The render pipeline is const-generic in its frame width,
+/// so the caller resolves the requested layout to one of the enumerated widths
+/// here (1/2/4/6/8/12 — mono through 7.1.4 Atmos, the layouts the surround
+/// producer builds) and the whole pipeline monomorphizes at it. An unenumerated
+/// width (e.g. `Multi(37)`) is a clean [`Error::UnsupportedChannels`], never a
+/// silent channel drop.
+macro_rules! dispatch_channels {
+    ($layout:expr, $ch:ident => $body:block) => {{
+        match $layout.count() {
+            1 => {
+                const $ch: usize = 1;
+                $body
+            }
+            2 => {
+                const $ch: usize = 2;
+                $body
+            }
+            4 => {
+                const $ch: usize = 4;
+                $body
+            }
+            6 => {
+                const $ch: usize = 6;
+                $body
+            }
+            8 => {
+                const $ch: usize = 8;
+                $body
+            }
+            12 => {
+                const $ch: usize = 12;
+                $body
+            }
+            n => Err(Error::UnsupportedChannels(n)),
+        }
+    }};
+}
+
+/// Consume the net + render into `CH` deinterleaved planes. `spec` is left
+/// untouched so the caller can still use it for the downstream process + encode
+/// stages.
+fn render_buffered<const CH: usize>(
     spec: &Spec,
     net: tutti_core::dsp::Net,
     on_progress: &(dyn Fn(Phase, f32) + Send + Sync),
-) -> Result<(Vec<f32>, Vec<f32>)> {
+) -> Result<[Vec<f32>; CH]> {
     let duration = spec.require_duration()?;
     let total_samples = (duration * spec.sample_rate).round() as usize;
     let timeline = spec.build_timeline();
@@ -231,12 +271,12 @@ fn render_buffered(
         timeline: Some(&timeline),
     };
 
-    let mut sink = RenderOut::with_capacity(total_samples);
+    let mut sink = RenderOut::<CH>::with_capacity(total_samples);
     let mut progress =
         ProgressEmitter::new(on_progress, Phase::Render, total_samples, spec.sample_rate);
-    render::render(request, &mut sink, &mut progress)?;
+    render::render::<CH>(request, &mut sink, &mut progress)?;
     progress.finish();
-    Ok(sink.into_stereo())
+    Ok(sink.into_planes())
 }
 
 fn run_to_file(
@@ -246,6 +286,24 @@ fn run_to_file(
 ) -> Result<Written> {
     let GraphExport { net, spec } = g;
     let format = spec.resolve_format(&path)?;
+    let channels = spec.output.channels;
+    dispatch_channels!(channels, CH => {
+        run_to_file_n::<CH>(net, spec, &path, format, on_progress)?;
+        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        Ok(Written { path, bytes })
+    })
+}
+
+/// The width-monomorphized body of [`run_to_file`]. Builds the `NetSource` (via
+/// `render`), wraps the encoder in the derived decorator (buffered vs
+/// streaming), and pumps — all at frame width `CH`.
+fn run_to_file_n<const CH: usize>(
+    net: tutti_core::dsp::Net,
+    spec: Spec,
+    path: &Path,
+    format: AudioFormat,
+    on_progress: &(dyn Fn(Phase, f32) + Send + Sync),
+) -> Result<()> {
     let target_rate = spec.output_sample_rate();
 
     let mastering = Mastering {
@@ -269,7 +327,7 @@ fn run_to_file(
     // resample, so it writes at the source rate. `target_rate` already resolves
     // to source when no resample was requested, so it's correct for both.
     let encoder = encode::sink::open_stream_encoder(
-        &path,
+        path,
         format,
         target_rate,
         spec.output.bit_depth,
@@ -277,7 +335,7 @@ fn run_to_file(
         spec.output.flac,
         spec.output.ogg,
     )?;
-    let encoder_sink = EncoderOut::new(encoder);
+    let encoder_sink = EncoderOut::<CH>::new(encoder);
 
     let timeline = spec.build_timeline();
     let request = RenderRequest {
@@ -298,19 +356,18 @@ fn run_to_file(
     //   streaming → `DitherOut` dithers each block on its way through.
     // Each decorator finalizes its encoder for us.
     let sink_result = if buffered {
-        let mut sink = BufferingOut::new(encoder_sink, mastering);
-        render::render(request, &mut sink, &mut progress)?;
+        let mut sink = BufferingOut::<_, CH>::new(encoder_sink, mastering);
+        render::render::<CH>(request, &mut sink, &mut progress)?;
         sink.finalize()
     } else {
-        let mut sink = DitherOut::new(encoder_sink, spec.output.dither, spec.output.bit_depth);
-        render::render(request, &mut sink, &mut progress)?;
+        let mut sink =
+            DitherOut::<_, CH>::new(encoder_sink, spec.output.dither, spec.output.bit_depth);
+        render::render::<CH>(request, &mut sink, &mut progress)?;
         sink.finalize()
     };
     progress.finish();
     sink_result.map_err(Error::Io)?;
-
-    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    Ok(Written { path, bytes })
+    Ok(())
 }
 
 fn run_to_buffers(
@@ -319,7 +376,13 @@ fn run_to_buffers(
 ) -> Result<Rendered> {
     let GraphExport { net, spec } = g;
     let sample_rate = spec.sample_rate;
-    let (left, right) = render_buffered(&spec, net, on_progress)?;
+    let channels = spec.output.channels;
+    // `Rendered` is a stereo (left, right) contract for the in-memory terminal;
+    // render at the requested width, then fold/pad to the two planes it exposes.
+    let (left, right) = dispatch_channels!(channels, CH => {
+        let planes = render_buffered::<CH>(&spec, net, on_progress)?;
+        Ok(planes_to_stereo(planes))
+    })?;
     Ok(Rendered {
         left,
         right,
@@ -327,9 +390,43 @@ fn run_to_buffers(
     })
 }
 
+/// Collapse `CH` rendered planes to the stereo `(left, right)` pair the
+/// in-memory [`Rendered`] terminal exposes. Mono duplicates its one plane; a
+/// **wider-than-stereo** render is folded with the same ITU/Dolby matrix the
+/// file encoders use ([`tutti_types::downmix`]), so `to_buffers()`
+/// on a surround render yields a correct stereo fold rather than just the front
+/// pair. (The file terminals keep all `CH` channels; only this in-memory shape
+/// is stereo.)
+fn planes_to_stereo<const CH: usize>(planes: [Vec<f32>; CH]) -> (Vec<f32>, Vec<f32>) {
+    match CH {
+        0 => (Vec::new(), Vec::new()),
+        1 | 2 => {
+            // Mono duplicates its single plane; stereo passes both through.
+            let mut it = planes.into_iter();
+            let left = it.next().unwrap_or_default();
+            let right = it.next().unwrap_or_else(|| left.clone());
+            (left, right)
+        }
+        _ => {
+            // Wide → stereo: apply the standards downmix per frame.
+            let len = planes.iter().map(|p| p.len()).min().unwrap_or(0);
+            let mut left = Vec::with_capacity(len);
+            let mut right = Vec::with_capacity(len);
+            for (l, r) in (0..len).map(|i| {
+                let frame: [f32; CH] = std::array::from_fn(|c| planes[c][i]);
+                tutti_types::fold_frame_to_stereo(&frame)
+            }) {
+                left.push(l);
+                right.push(r);
+            }
+            (left, right)
+        }
+    }
+}
+
 #[cfg(all(test, feature = "wav"))]
 mod tests {
-    use crate::{Export, Normalize};
+    use crate::{ChannelLayout, Export, Normalize};
     use fundsp::prelude32::*;
 
     /// A net emitting a constant stereo signal, so the rendered file is
@@ -339,6 +436,68 @@ mod tests {
         let id = net.push(Box::new(dc((0.5, 0.5))));
         net.pipe_output(id);
         net
+    }
+
+    /// A net with four outputs, each a distinct constant, so a quad render is
+    /// deterministic and every channel is separable.
+    fn quad_dc_net() -> tutti_core::dsp::Net {
+        let mut net = tutti_core::dsp::Net::new(0, 4);
+        let id = net.push(Box::new(dc((0.1, 0.2, 0.3, 0.4))));
+        net.pipe_output(id);
+        net
+    }
+
+    /// The regression test for the silent-channel-drop bug: a 4-output net
+    /// exported as `Quad` must write a real 4-channel WAV whose four channels
+    /// carry the four distinct constants — not the front pair with 2–3 dropped.
+    #[test]
+    fn graph_exports_four_distinct_channels() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("quad.wav");
+        Export::graph(quad_dc_net(), 44100.0)
+            .duration_seconds(0.02)
+            .bit_depth(crate::BitDepth::Float32)
+            .channels(ChannelLayout::Quad)
+            .to_file(&path)
+            .run()
+            .unwrap();
+
+        let reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.spec().channels, 4, "file must carry four channels");
+        let samples: Vec<f32> = reader.into_samples::<f32>().map(|s| s.unwrap()).collect();
+        assert_eq!(samples.len() % 4, 0);
+        // Average each channel across frames; each must match its constant.
+        let mut sums = [0.0f32; 4];
+        for frame in samples.chunks_exact(4) {
+            for (s, &v) in sums.iter_mut().zip(frame) {
+                *s += v;
+            }
+        }
+        let frames = (samples.len() / 4) as f32;
+        for (ch, expected) in [0.1, 0.2, 0.3, 0.4].iter().enumerate() {
+            let avg = sums[ch] / frames;
+            assert!(
+                (avg - expected).abs() < 1e-3,
+                "channel {ch} should carry {expected}, got {avg}"
+            );
+        }
+    }
+
+    /// An unenumerated width errors cleanly rather than silently degrading —
+    /// the `dispatch_channels!` fallback arm.
+    #[test]
+    fn graph_rejects_unsupported_channel_width() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wide.wav");
+        let result = Export::graph(dc_net(), 44100.0)
+            .duration_seconds(0.01)
+            .channels(ChannelLayout::from_count(37))
+            .to_file(&path)
+            .run();
+        assert!(
+            matches!(result, Err(crate::Error::UnsupportedChannels(37))),
+            "expected UnsupportedChannels(37), got {result:?}"
+        );
     }
 
     fn peak(path: &std::path::Path) -> f32 {

@@ -24,6 +24,9 @@ pub enum Error {
 
     #[error("Invalid audio data: {0}")]
     InvalidData(String),
+
+    #[error("Unsupported channel count: {0} (this export path does not support that width)")]
+    UnsupportedChannels(u16),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

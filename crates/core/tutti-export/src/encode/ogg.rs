@@ -1,31 +1,26 @@
 //! OGG Vorbis encoder (vorbis_rs-backed). Whole-signal only.
+//!
+//! vorbis_rs takes the channel count at runtime and encodes from planar
+//! per-channel slices — which is exactly the shape
+//! [`rechannel`](crate::encode::rechannel) hands us — so OGG carries any width
+//! Vorbis supports (its channel mappings cover mono, stereo, and 3–8-channel
+//! surround) with no per-format channel logic.
 
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
-use crate::process::fold_frame;
 use std::io::BufWriter;
 use std::num::{NonZeroU32, NonZeroU8};
 use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoderBuilder};
 
 const BLOCK_SIZE: usize = 4096;
 
-pub(crate) fn encode(frames: &[[f32; 2]], request: &EncodeRequest<'_>) -> Result<()> {
+pub(crate) fn encode(planes: &[Vec<f32>], request: &EncodeRequest<'_>) -> Result<()> {
     let quality = request.ogg.quality;
 
-    // vorbis_rs wants planar per-channel slices; deinterleave (folding to mono
-    // when asked) into planes here. A layout wider than stereo is written as
-    // stereo — the pipeline has only two source channels.
-    let channels: Vec<Vec<f32>> = if request.channels.count() == 1 {
-        vec![frames.iter().map(|&f| fold_frame(f)).collect()]
-    } else {
-        vec![
-            frames.iter().map(|&[l, _]| l).collect(),
-            frames.iter().map(|&[_, r]| r).collect(),
-        ]
-    };
-
+    // `planes` is already the per-channel planar shape vorbis_rs wants.
+    let channels = planes;
     let num_channels = channels.len();
-    let num_frames = channels[0].len();
+    let num_frames = channels.iter().map(|p| p.len()).min().unwrap_or(0);
 
     let file = std::fs::File::create(request.path)?;
     let writer = BufWriter::new(file);

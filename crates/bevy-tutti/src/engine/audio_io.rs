@@ -61,17 +61,19 @@ impl AudioCallbackState {
     }
 }
 
+/// Render one block into `output`, a `channels`-wide interleaved device buffer.
+/// The graph root is folded to `channels` (see [`Engine::process`]).
 #[inline]
-pub(crate) fn process_audio(state: &AudioCallbackState, output: &mut [f32]) {
+pub(crate) fn process_audio(state: &AudioCallbackState, output: &mut [f32], channels: usize) {
     let _no_denormals = ScopedNoDenormals::new();
-    let frames = output.len() / 2;
+    let frames = output.len().checked_div(channels).unwrap_or(0);
     // Pre-block MIDI: deliver this block's events into node inboxes before the
     // graph renders.
     #[cfg(feature = "midi")]
     if let Some(pre_block) = &state.pre_block {
         pre_block.run(frames);
     }
-    state.engine.process(output, frames);
+    state.engine.process(output, frames, channels);
 }
 
 /// Holds a [`cpal::Stream`] to keep it alive. CPAL runs the audio callback
@@ -193,12 +195,18 @@ fn build_stream<T>(
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
 {
-    let channels = usize::from(config.channels);
+    // The device's true channel count — the interleave stride for both the mix
+    // buffer and the device buffer. The engine folds the graph root to this
+    // width; a device wider than MAX_ROOT_CHANNELS (rare) simply gets silent
+    // extra channels (the root renders ≤ 8 and `fold_frame` zero-fills the rest).
+    let channels = usize::from(config.channels).max(1);
 
-    // Pre-allocate the internal buffer to MAX_FRAMES stereo frames. We never
-    // resize it at runtime: any over-sized CPAL callback is clamped below,
-    // and the tail of `data` gets silence. This keeps the callback alloc-free.
-    let mut buffer = vec![0.0f32; MAX_FRAMES * 2];
+    // Pre-allocate the internal mix buffer to MAX_FRAMES at the device width,
+    // plus a stereo scratch for metering. Sized once from the real device config;
+    // never resized at runtime — an over-sized CPAL callback is clamped below and
+    // the tail of `data` gets silence. This keeps the callback alloc-free.
+    let mut buffer = vec![0.0f32; MAX_FRAMES * channels];
+    let mut meter_buf = vec![0.0f32; MAX_FRAMES * 2];
     let mut metering_ctx = MeteringContext::new();
 
     let stream = device.build_output_stream(
@@ -213,14 +221,25 @@ where
                 "CPAL callback frames {raw_frames} exceeds MAX_FRAMES {MAX_FRAMES}"
             );
 
-            let needed = frames * 2;
-            let mix = &mut buffer[..needed];
+            let mix = &mut buffer[..frames * channels];
             // Zero before rendering — the previous callback's contents are not
             // meaningful input for the graph.
             mix.fill(0.0);
-            process_audio(&state, mix);
+            process_audio(&state, mix, channels);
 
-            meter_output(mix, frames, &state.meter, &state.tap, &mut metering_ctx);
+            // Meter a STEREO fold of the device buffer — `meter_output` / the UI
+            // waveform assume stereo, and a stereo monitor is meaningful at any
+            // device width. Passthrough when the device is already ≤ 2.
+            let meter = &mut meter_buf[..frames * 2];
+            if channels == 2 {
+                meter.copy_from_slice(mix);
+            } else {
+                for (i, out) in meter.chunks_exact_mut(2).enumerate() {
+                    let f = &mix[i * channels..i * channels + channels];
+                    tutti_core::fold_frame(f, out);
+                }
+            }
+            meter_output(meter, frames, &state.meter, &state.tap, &mut metering_ctx);
 
             write_output(data, channels, mix, frames);
         },
@@ -238,12 +257,14 @@ fn write_output<T: cpal::SizedSample + cpal::FromSample<f32>>(
     output: &[f32],
     rendered_frames: usize,
 ) {
+    // `output` is already `channels`-wide interleaved (the engine folded the
+    // graph root to the device width). Copy every channel through; frames past
+    // what we rendered (an over-sized CPAL callback) get silence.
     let silence = T::from_sample(0.0);
     for (i, sample) in data.iter_mut().enumerate() {
         let frame = i / channels;
-        let ch = i % channels;
-        *sample = if frame < rendered_frames && ch < 2 {
-            T::from_sample(output[frame * 2 + ch])
+        *sample = if frame < rendered_frames {
+            T::from_sample(output[i])
         } else {
             silence
         };
@@ -290,7 +311,7 @@ mod tests {
 
         let frames = 256;
         let mut output = vec![0.0f32; frames * 2];
-        process_audio(&state, &mut output);
+        process_audio(&state, &mut output, 2);
 
         let expected_beat = 256.0 * (120.0 / 60.0) / 44100.0;
         let actual_beat = transport.settings.beat();
@@ -314,7 +335,7 @@ mod tests {
 
         let frames = 1024;
         let mut output = vec![0.0f32; frames * 2];
-        process_audio(&state, &mut output);
+        process_audio(&state, &mut output, 2);
 
         let beat = transport.settings.beat();
         assert!(beat < 4.0, "expected beat wrapped below 4.0, got {beat}");
@@ -335,11 +356,11 @@ mod tests {
         // Warm up outside the no-alloc scope — first call primes any
         // internal state on the transport / clock.
         let mut output = vec![0.0f32; 1024 * 2];
-        process_audio(&state, &mut output);
+        process_audio(&state, &mut output, 2);
 
         assert_no_alloc::assert_no_alloc(|| {
             for _ in 0..1_000 {
-                process_audio(&state, &mut output);
+                process_audio(&state, &mut output, 2);
             }
         });
     }

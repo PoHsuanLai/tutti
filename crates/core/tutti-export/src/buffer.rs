@@ -75,13 +75,18 @@ fn run_to_file(
         Some(f) => f,
         None => AudioFormat::from_path(&path)?,
     };
+    let m = mastering(&b, target_rate);
 
+    // `BufferExport` always holds a stereo (left, right) source, so master and
+    // encode at `CH = 2`; the requested `channels` still shapes the *output*
+    // file (mono fold / stereo / wider-as-stereo) inside `encode::rechannel`.
     let (frames, target_rate) = {
         let _phase = PhaseGuard::new(on_progress, Phase::Process);
-        process::master_collected(b.left.clone(), b.right.clone(), &mastering(&b, target_rate))?
+        let planes = [b.left.clone(), b.right.clone()];
+        process::master_collected::<2>(planes, &m)?
     };
 
-    encode::encode(
+    encode::encode::<2>(
         &frames,
         encode::EncodeRequest {
             path: &path,
@@ -104,15 +109,21 @@ fn run_to_buffers(
     on_progress: &(dyn Fn(Phase, f32) + Send + Sync),
 ) -> Result<Rendered> {
     let target_rate = output_sample_rate(&b);
+    let m = mastering(&b, target_rate);
     let (frames, target_rate) = {
         let _phase = PhaseGuard::new(on_progress, Phase::Process);
-        process::master_collected(b.left.clone(), b.right.clone(), &mastering(&b, target_rate))?
+        let planes = [b.left.clone(), b.right.clone()];
+        process::master_collected::<2>(planes, &m)?
     };
-    // Deinterleave the mastered frames back to planes. Mono folds each frame
-    // and duplicates it into both planes so a mono request still round-trips as
-    // a (left, right) pair; wider-than-stereo is served as stereo.
+    // Deinterleave the mastered stereo frames back to planes. A mono request
+    // folds each frame and duplicates it into both planes so it still
+    // round-trips as a (left, right) pair; wider-than-stereo is served as stereo
+    // (the in-memory `Rendered` contract is two planes).
     let (left, right) = if b.output.channels.count() == 1 {
-        let mono: Vec<f32> = frames.iter().map(|&f| process::fold_frame(f)).collect();
+        let mono: Vec<f32> = frames
+            .iter()
+            .map(|&f| tutti_types::fold_frame_to_mono(&f))
+            .collect();
         (mono.clone(), mono)
     } else {
         (

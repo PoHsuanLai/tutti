@@ -4,10 +4,15 @@
 //! The driver gates each block through a [`BlockCursor`] (latency-trim +
 //! output-length cap) *before* handing it to a sink, so the gate stays off the
 //! sink trait: a sink just accepts the frames it is given. Three sinks cover the
-//! current needs — [`RenderOut`] collects frames into two `Vec<f32>` planes
-//! (read back with `into_stereo`, since [`AudioOut::finalize`] returns `()` not
+//! current needs — [`RenderOut`] collects frames into `CH` `Vec<f32>` planes
+//! (read back with `into_planes`, since [`AudioOut::finalize`] returns `()` not
 //! data), [`EncoderOut`] forwards each block into a streaming encoder, and
 //! [`BufferingOut`] collects the whole signal to master it at finalize.
+//!
+//! All three are generic over the frame width `CH`, matching the driver: a
+//! stereo export instantiates them at `CH = 2`, a surround render at `4`/`6`/`8`.
+//! [`BlockCursor`] is width-agnostic — it windows by sample index, never looking
+//! inside a frame — so it stays a plain struct.
 
 use std::io;
 use std::ops::Range;
@@ -52,67 +57,88 @@ impl BlockCursor {
     }
 }
 
-/// Collects gated stereo frames into two `Vec<f32>` planes.
-pub(crate) struct RenderOut {
-    left: Vec<f32>,
-    right: Vec<f32>,
+/// Collects gated frames into `CH` deinterleaved `Vec<f32>` planes.
+pub(crate) struct RenderOut<const CH: usize> {
+    planes: [Vec<f32>; CH],
 }
 
-impl RenderOut {
+impl<const CH: usize> RenderOut<CH> {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            left: Vec::with_capacity(capacity),
-            right: Vec::with_capacity(capacity),
+            planes: std::array::from_fn(|_| Vec::with_capacity(capacity)),
         }
     }
 
-    pub fn into_stereo(self) -> (Vec<f32>, Vec<f32>) {
-        (self.left, self.right)
+    /// The collected per-channel planes, in channel order. The buffer terminal
+    /// reads these back (a mono/stereo export takes 1/2 of them).
+    pub fn into_planes(self) -> [Vec<f32>; CH] {
+        self.planes
     }
 }
 
-impl AudioOut for RenderOut {
-    fn write(&mut self, frames: &[[f32; 2]]) {
-        self.left.reserve(frames.len());
-        self.right.reserve(frames.len());
-        for &[l, r] in frames {
-            self.left.push(l);
-            self.right.push(r);
+impl<const CH: usize> AudioOut<f32, CH> for RenderOut<CH> {
+    fn write(&mut self, frames: &[[f32; CH]]) {
+        for plane in self.planes.iter_mut() {
+            plane.reserve(frames.len());
+        }
+        for frame in frames {
+            for (plane, &s) in self.planes.iter_mut().zip(frame.iter()) {
+                plane.push(s);
+            }
         }
     }
 
     fn finalize(self) -> io::Result<()> {
-        // Buffered output is read back via `into_stereo`, not through finalize.
+        // Buffered output is read back via `into_planes`, not through finalize.
         Ok(())
     }
 }
 
-/// An [`AudioOut`] that pushes each block of stereo frames into a streaming
-/// encoder. Any encoder error is stashed and surfaced at
-/// [`finalize`](AudioOut::finalize), per the trait's deferred-error contract.
+/// An [`AudioOut`] that pushes each block of `CH`-wide frames into a streaming
+/// encoder. It flattens each `[f32; CH]` block to an interleaved `&[f32]` at the
+/// encoder seam — the encoder speaks a runtime channel count
+/// ([`ChannelLayout`](tutti_types::ChannelLayout)), matching the hound/vorbis/
+/// flac APIs, so codecs are not monomorphized per width. Any encoder error is
+/// stashed and surfaced at [`finalize`](AudioOut::finalize), per the trait's
+/// deferred-error contract.
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) struct EncoderOut {
+pub(crate) struct EncoderOut<const CH: usize> {
     encoder: Box<dyn StreamingEncoder>,
+    /// Reused interleave scratch so each block's flatten allocates at most once.
+    interleaved: Vec<f32>,
     deferred: crate::error::Result<()>,
 }
 
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-impl EncoderOut {
+impl<const CH: usize> EncoderOut<CH> {
     pub(crate) fn new(encoder: Box<dyn StreamingEncoder>) -> Self {
         Self {
             encoder,
+            interleaved: Vec::new(),
             deferred: Ok(()),
         }
     }
 }
 
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-impl AudioOut for EncoderOut {
-    fn write(&mut self, frames: &[[f32; 2]]) {
+impl<const CH: usize> AudioOut<f32, CH> for EncoderOut<CH> {
+    fn write(&mut self, frames: &[[f32; CH]]) {
         if self.deferred.is_err() || frames.is_empty() {
             return;
         }
-        if let Err(e) = self.encoder.write_frames(frames) {
+        // Flatten `[f32; CH]` frames into the interleaved buffer the encoder
+        // wants. `[[f32; CH]]` is already interleaved in memory, but we copy via
+        // a reused Vec to hand the encoder an owned `&[f32]` and keep the frame
+        // type off its trait.
+        self.interleaved.clear();
+        self.interleaved.reserve(frames.len() * CH);
+        for frame in frames {
+            self.interleaved.extend_from_slice(frame);
+        }
+        if let Err(e) = self
+            .encoder
+            .write_interleaved(&self.interleaved, CH as u16)
+        {
             self.deferred = Err(e);
         }
     }
@@ -137,20 +163,18 @@ impl AudioOut for EncoderOut {
 /// allocates it and dithers per block via a
 /// [`DitherOut`](crate::process::DitherOut) instead.
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) struct BufferingOut<S: AudioOut> {
+pub(crate) struct BufferingOut<S: AudioOut<f32, CH>, const CH: usize> {
     inner: S,
-    left: Vec<f32>,
-    right: Vec<f32>,
+    planes: [Vec<f32>; CH],
     mastering: Mastering,
 }
 
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-impl<S: AudioOut> BufferingOut<S> {
+impl<S: AudioOut<f32, CH>, const CH: usize> BufferingOut<S, CH> {
     pub(crate) fn new(inner: S, mastering: Mastering) -> Self {
         Self {
             inner,
-            left: Vec::new(),
-            right: Vec::new(),
+            planes: std::array::from_fn(|_| Vec::new()),
             mastering,
         }
     }
@@ -158,26 +182,25 @@ impl<S: AudioOut> BufferingOut<S> {
     /// Master the collected signal and push the finished frames into the inner
     /// sink. Split out so `finalize` can `?` on it.
     fn master_into_inner(&mut self) -> crate::error::Result<()> {
-        let (frames, _rate) = master_collected(
-            std::mem::take(&mut self.left),
-            std::mem::take(&mut self.right),
-            &self.mastering,
-        )?;
+        let planes = std::array::from_fn(|i| std::mem::take(&mut self.planes[i]));
+        let (frames, _rate) = master_collected::<CH>(planes, &self.mastering)?;
         self.inner.write(&frames);
         Ok(())
     }
 }
 
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-impl<S: AudioOut> AudioOut for BufferingOut<S> {
-    fn write(&mut self, frames: &[[f32; 2]]) {
+impl<S: AudioOut<f32, CH>, const CH: usize> AudioOut<f32, CH> for BufferingOut<S, CH> {
+    fn write(&mut self, frames: &[[f32; CH]]) {
         // Collect raw; no mastering yet (resample/normalize need the whole
         // signal, which we don't have until finalize).
-        self.left.reserve(frames.len());
-        self.right.reserve(frames.len());
-        for &[l, r] in frames {
-            self.left.push(l);
-            self.right.push(r);
+        for plane in self.planes.iter_mut() {
+            plane.reserve(frames.len());
+        }
+        for frame in frames {
+            for (plane, &s) in self.planes.iter_mut().zip(frame.iter()) {
+                plane.push(s);
+            }
         }
     }
 
@@ -242,14 +265,25 @@ mod tests {
 
     #[test]
     fn render_out_collects_frames() {
-        let mut sink = RenderOut::with_capacity(16);
+        let mut sink = RenderOut::<2>::with_capacity(16);
         let block = frames(&[1.0; 8], &[2.0; 8]);
         sink.write(&block);
         sink.write(&block);
-        let (l, r) = sink.into_stereo();
+        let [l, r] = sink.into_planes();
         assert_eq!(l.len(), 16);
         assert_eq!(r.len(), 16);
         assert!(l.iter().all(|&x| x == 1.0));
         assert!(r.iter().all(|&x| x == 2.0));
+    }
+
+    #[test]
+    fn render_out_collects_quad_frames() {
+        let mut sink = RenderOut::<4>::with_capacity(4);
+        sink.write(&[[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]]);
+        let [a, b, c, d] = sink.into_planes();
+        assert_eq!(a, vec![1.0, 5.0]);
+        assert_eq!(b, vec![2.0, 6.0]);
+        assert_eq!(c, vec![3.0, 7.0]);
+        assert_eq!(d, vec![4.0, 8.0]);
     }
 }

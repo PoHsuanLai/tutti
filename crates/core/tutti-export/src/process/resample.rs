@@ -38,21 +38,31 @@ impl ResampleQuality {
     }
 }
 
+/// Resample `planes.len()` channel planes from `source_rate` to `target_rate` in
+/// lockstep. rubato is natively multichannel — the resampler is built for
+/// `planes.len()` channels and every plane is processed together each chunk, so
+/// mono, stereo, and surround all take the same path. Every plane must have the
+/// same length (they are the deinterleaved channels of one signal). Returns the
+/// resampled planes in the same channel order.
 #[cfg(any(feature = "wav", feature = "flac"))]
-pub(crate) fn resample_stereo(
-    left: &[f32],
-    right: &[f32],
+pub(crate) fn resample_planar(
+    planes: &[Vec<f32>],
     source_rate: u32,
     target_rate: u32,
     quality: ResampleQuality,
-) -> Result<(Vec<f32>, Vec<f32>)> {
+) -> Result<Vec<Vec<f32>>> {
+    let channels = planes.len();
+    if channels == 0 {
+        return Ok(Vec::new());
+    }
     if source_rate == target_rate {
-        return Ok((left.to_vec(), right.to_vec()));
+        return Ok(planes.to_vec());
     }
 
-    if left.len() != right.len() {
+    let input_frames = planes[0].len();
+    if planes.iter().any(|p| p.len() != input_frames) {
         return Err(Error::InvalidData(
-            "Left and right channels have different lengths".into(),
+            "Channel planes have different lengths".into(),
         ));
     }
 
@@ -64,15 +74,15 @@ pub(crate) fn resample_stereo(
         target_rate as usize,
         chunk_size,
         sub_chunks,
-        2,
+        channels,
     )?;
 
-    let input_frames = left.len();
     let expected_output_frames =
         (input_frames as f64 * target_rate as f64 / source_rate as f64).ceil() as usize;
 
-    let mut output_left = Vec::with_capacity(expected_output_frames + chunk_size);
-    let mut output_right = Vec::with_capacity(expected_output_frames + chunk_size);
+    let mut outputs: Vec<Vec<f32>> = (0..channels)
+        .map(|_| Vec::with_capacity(expected_output_frames + chunk_size))
+        .collect();
 
     let mut pos = 0;
     while pos < input_frames {
@@ -86,26 +96,30 @@ pub(crate) fn resample_stereo(
             frames_to_process.max(input_frames_needed)
         };
 
-        let mut chunk_left = vec![0.0f32; actual_frames];
-        let mut chunk_right = vec![0.0f32; actual_frames];
-
         let copy_frames = frames_to_process.min(remaining);
-        chunk_left[..copy_frames].copy_from_slice(&left[pos..pos + copy_frames]);
-        chunk_right[..copy_frames].copy_from_slice(&right[pos..pos + copy_frames]);
+        let input_channels: Vec<Vec<f32>> = planes
+            .iter()
+            .map(|plane| {
+                let mut chunk = vec![0.0f32; actual_frames];
+                chunk[..copy_frames].copy_from_slice(&plane[pos..pos + copy_frames]);
+                chunk
+            })
+            .collect();
 
-        let input_channels = vec![chunk_left, chunk_right];
         let output = resampler.process(&input_channels, None)?;
-        output_left.extend_from_slice(&output[0]);
-        output_right.extend_from_slice(&output[1]);
+        for (out, produced) in outputs.iter_mut().zip(&output) {
+            out.extend_from_slice(produced);
+        }
 
         pos += actual_frames;
     }
 
-    let final_length = expected_output_frames.min(output_left.len());
-    output_left.truncate(final_length);
-    output_right.truncate(final_length);
+    let final_length = expected_output_frames.min(outputs[0].len());
+    for out in outputs.iter_mut() {
+        out.truncate(final_length);
+    }
 
-    Ok((output_left, output_right))
+    Ok(outputs)
 }
 
 #[cfg(test)]
@@ -114,14 +128,11 @@ mod tests {
 
     #[test]
     fn test_no_resample_needed() {
-        let left = vec![1.0, 2.0, 3.0];
-        let right = vec![4.0, 5.0, 6.0];
+        let planes = vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]];
 
-        let (out_l, out_r) =
-            resample_stereo(&left, &right, 44100, 44100, ResampleQuality::Fast).unwrap();
+        let out = resample_planar(&planes, 44100, 44100, ResampleQuality::Fast).unwrap();
 
-        assert_eq!(out_l, left);
-        assert_eq!(out_r, right);
+        assert_eq!(out, planes);
     }
 
     #[test]
@@ -134,11 +145,10 @@ mod tests {
         let left: Vec<f32> = (0..duration_samples)
             .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / sample_rate as f32).sin())
             .collect();
-        let right = left.clone();
+        let planes = vec![left.clone(), left];
 
-        let (out_l, out_r) = resample_stereo(
-            &left,
-            &right,
+        let out = resample_planar(
+            &planes,
             sample_rate,
             target_rate,
             ResampleQuality::Medium,
@@ -149,51 +159,45 @@ mod tests {
         let expected_length =
             (duration_samples as f64 * target_rate as f64 / sample_rate as f64) as usize;
         assert!(
-            (out_l.len() as i32 - expected_length as i32).abs() < 100,
+            (out[0].len() as i32 - expected_length as i32).abs() < 100,
             "Output length {} differs too much from expected {}",
-            out_l.len(),
+            out[0].len(),
             expected_length
         );
-        assert_eq!(out_l.len(), out_r.len());
+        assert_eq!(out[0].len(), out[1].len());
     }
 
     #[test]
-    fn test_resample_downsample() {
-        let sample_rate = 96000;
-        let target_rate = 44100;
-        let duration_samples = 9600; // 0.1 seconds
-
-        let left: Vec<f32> = (0..duration_samples)
-            .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / sample_rate as f32).sin())
+    fn test_resample_quad() {
+        // Four distinct planes resample together and stay aligned.
+        let sample_rate = 44100;
+        let target_rate = 48000;
+        let n = 4410;
+        let planes: Vec<Vec<f32>> = (0..4)
+            .map(|ch| {
+                (0..n)
+                    .map(|i| {
+                        (2.0 * std::f32::consts::PI * (500.0 * (ch + 1) as f32) * i as f32
+                            / sample_rate as f32)
+                            .sin()
+                    })
+                    .collect()
+            })
             .collect();
-        let right = left.clone();
 
-        let (out_l, _out_r) = resample_stereo(
-            &left,
-            &right,
-            sample_rate,
-            target_rate,
-            ResampleQuality::High,
-        )
-        .unwrap();
+        let out = resample_planar(&planes, sample_rate, target_rate, ResampleQuality::Medium)
+            .unwrap();
 
-        // Check output length is approximately correct
-        let expected_length =
-            (duration_samples as f64 * target_rate as f64 / sample_rate as f64) as usize;
-        assert!(
-            (out_l.len() as i32 - expected_length as i32).abs() < 100,
-            "Output length {} differs too much from expected {}",
-            out_l.len(),
-            expected_length
-        );
+        assert_eq!(out.len(), 4);
+        let len = out[0].len();
+        assert!(out.iter().all(|p| p.len() == len));
     }
 
     #[test]
     fn test_mismatched_channel_lengths() {
-        let left = vec![1.0, 2.0, 3.0];
-        let right = vec![4.0, 5.0];
+        let planes = vec![vec![1.0, 2.0, 3.0], vec![4.0, 5.0]];
 
-        let result = resample_stereo(&left, &right, 44100, 48000, ResampleQuality::Fast);
+        let result = resample_planar(&planes, 44100, 48000, ResampleQuality::Fast);
         assert!(result.is_err());
     }
 }

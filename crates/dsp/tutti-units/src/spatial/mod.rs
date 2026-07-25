@@ -5,6 +5,7 @@ pub use types::ChannelLayout;
 // Lives here because spatial is the only consumer.
 mod smoothing;
 
+mod mix;
 mod nodes;
 mod vbap_panner;
 
@@ -13,6 +14,7 @@ mod hrtf_node;
 #[cfg(feature = "hrtf")]
 mod hrtf_panner;
 
+pub use mix::{build_surround_mix, ChannelSumUnit, SurroundSource};
 pub use nodes::SpatialPannerNode;
 
 #[cfg(feature = "hrtf")]

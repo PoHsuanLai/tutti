@@ -1,10 +1,13 @@
 //! FLAC encoder (flacenc-backed). Whole-signal only; streaming slot is
 //! reserved but currently rejected at the opener.
+//!
+//! `flacenc::MemSource::from_samples` takes the channel count at runtime, so
+//! FLAC carries any width natively — interleave the per-channel `planes` and
+//! pass `planes.len()`.
 
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
-use crate::process::fold_frame;
 use flacenc::bitsink::ByteSink;
 use flacenc::component::BitRepr;
 use flacenc::config::Encoder as EncoderConfig;
@@ -16,7 +19,7 @@ use std::io::Write;
 
 const BLOCK_SIZE: usize = 4096;
 
-pub(crate) fn encode(frames: &[[f32; 2]], request: &EncodeRequest<'_>) -> Result<()> {
+pub(crate) fn encode(planes: &[Vec<f32>], request: &EncodeRequest<'_>) -> Result<()> {
     if request.bit_depth == BitDepth::Float32 {
         return Err(Error::UnsupportedFormat(
             "FLAC does not support 32-bit float".into(),
@@ -24,24 +27,16 @@ pub(crate) fn encode(frames: &[[f32; 2]], request: &EncodeRequest<'_>) -> Result
     }
     let bits_per_sample = bits_for(request.bit_depth);
 
-    // A layout wider than stereo is written as stereo — the pipeline has only
-    // two source channels.
-    let (samples, channels): (Vec<i32>, usize) = if request.channels.count() == 1 {
-        (
-            frames
-                .iter()
-                .map(|&f| f32_to_i32(fold_frame(f), request.bit_depth))
-                .collect(),
-            1,
-        )
-    } else {
-        let mut out = Vec::with_capacity(frames.len() * 2);
-        for &[l, r] in frames {
-            out.push(f32_to_i32(l, request.bit_depth));
-            out.push(f32_to_i32(r, request.bit_depth));
+    // Interleave the per-channel planes frame-major; the channel count is simply
+    // how many planes there are (mono/stereo/surround alike).
+    let channels = planes.len();
+    let len = planes.iter().map(|p| p.len()).min().unwrap_or(0);
+    let mut samples = Vec::with_capacity(len * channels);
+    for i in 0..len {
+        for plane in planes {
+            samples.push(f32_to_i32(plane[i], request.bit_depth));
         }
-        (out, 2)
-    };
+    }
 
     let encoder_config = EncoderConfig::default()
         .into_verified()

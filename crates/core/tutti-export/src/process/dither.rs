@@ -36,26 +36,23 @@ impl DitherState {
     }
 }
 
-pub(crate) fn apply_dither(
-    left: &mut [f32],
-    right: &mut [f32],
-    target_bits: u16,
-    state: &mut DitherState,
-) {
+/// Dither one channel plane in place. Dither is independent per channel — its
+/// only cross-block state is the shared RNG on `state` — so a multichannel
+/// signal dithers by calling this once per plane in a fixed channel order, which
+/// keeps every channel's noise drawn from the same continuous sequence.
+pub(crate) fn apply_dither(plane: &mut [f32], target_bits: u16, state: &mut DitherState) {
     let lsb = 1.0 / (1 << (target_bits - 1)) as f32;
 
     match state.dither {
         Dither::Off => {}
         Dither::Rectangular => {
-            for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-                *l += state.rectangular_noise() * lsb;
-                *r += state.rectangular_noise() * lsb;
+            for s in plane.iter_mut() {
+                *s += state.rectangular_noise() * lsb;
             }
         }
         Dither::Triangular => {
-            for (l, r) in left.iter_mut().zip(right.iter_mut()) {
-                *l += state.triangular_noise() * lsb;
-                *r += state.triangular_noise() * lsb;
+            for s in plane.iter_mut() {
+                *s += state.triangular_noise() * lsb;
             }
         }
     }
@@ -74,24 +71,20 @@ mod tests {
     #[test]
     fn test_no_dither() {
         let mut left = vec![0.5, -0.5, 0.25];
-        let mut right = vec![0.5, -0.5, 0.25];
         let original_left = left.clone();
-        let original_right = right.clone();
 
         let mut state = DitherState::new(Dither::Off);
-        apply_dither(&mut left, &mut right, 16, &mut state);
+        apply_dither(&mut left, 16, &mut state);
 
         assert_eq!(left, original_left);
-        assert_eq!(right, original_right);
     }
 
     #[test]
     fn test_rectangular_dither() {
         let mut left = vec![0.0; 1000];
-        let mut right = vec![0.0; 1000];
 
         let mut state = DitherState::new(Dither::Rectangular);
-        apply_dither(&mut left, &mut right, 16, &mut state);
+        apply_dither(&mut left, 16, &mut state);
 
         let non_zero = left.iter().filter(|&&x| x != 0.0).count();
         assert!(non_zero > 900, "Expected most samples to have dither noise");
@@ -108,10 +101,9 @@ mod tests {
     #[test]
     fn test_triangular_dither() {
         let mut left = vec![0.0; 1000];
-        let mut right = vec![0.0; 1000];
 
         let mut state = DitherState::new(Dither::Triangular);
-        apply_dither(&mut left, &mut right, 16, &mut state);
+        apply_dither(&mut left, 16, &mut state);
 
         let max_noise = 1.0 / 32768.0;
         let max_sample = left.iter().map(|x| x.abs()).fold(0.0f32, f32::max);

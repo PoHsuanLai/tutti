@@ -52,3 +52,7 @@ bevy_log = { version = "0.19", default-features = false, optional = true }
 tempfile = "3.10"
 approx = "0.5"
 fundsp = { package = "fundsp-tutti", path = "../../vendor/fundsp-tutti", default-features = false, features = ["std"] }
+# Surround producer nodes (SpatialPannerNode + ChannelSumUnit) for the
+# end-to-end multichannel-export integration test. Acyclic: tutti-units does
+# NOT depend on tutti-export.
+tutti-units = { path = "../../dsp/tutti-units", default-features = false, features = ["spatial"] }

@@ -64,7 +64,9 @@ pub use tutti_mod::{AtomicTarget, LayerKey, LayeredCurve, ModParams, ModTarget};
 #[cfg(feature = "spatial")]
 mod spatial;
 #[cfg(feature = "spatial")]
-pub use spatial::{ChannelLayout, SpatialPannerNode};
+pub use spatial::{
+    build_surround_mix, ChannelLayout, ChannelSumUnit, SpatialPannerNode, SurroundSource,
+};
 #[cfg(feature = "hrtf")]
 pub use spatial::{HrtfBinauralError, HrtfBinauralNode};
 

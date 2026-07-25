@@ -111,6 +111,11 @@ pub use tutti_types::pcm::{self, f32_to_i16, f32_to_i24};
 // The unified channel-layout enum, homed in `tutti-types` and surfaced here so
 // consumers (incl. `bevy-tutti`) reach it via the engine root.
 pub use tutti_types::ChannelLayout;
+// The general N→device-width surround fold, surfaced so the live host (the CPAL
+// callback in `bevy-tutti`) can fold the graph-root buffer to the device width.
+// The named-width variants (`fold_frame_to_stereo`/`_to_mono`) stay in
+// `tutti-types` — only the export path, which depends on it directly, needs them.
+pub use tutti_types::fold_frame;
 
 pub mod dsp {
     //! Re-export of fundsp::prelude for DSP building blocks.

@@ -83,15 +83,39 @@ pub(crate) fn normalize_loudness(
     });
 }
 
-pub(crate) fn normalize_peak(left: &mut [f32], right: &mut [f32], target_db: f64) {
-    let current_peak = analyze_true_peak(left, right);
+/// Peak-normalize any number of channel planes with one shared gain, so the
+/// loudest sample across *all* channels lands at `target_db`. Channel-count
+/// agnostic — the true-peak meter runs over every plane and a single gain keeps
+/// the inter-channel balance intact, using a 4× oversampled true-peak measurement.
+pub(crate) fn normalize_peak_planar(planes: &mut [Vec<f32>], target_db: f64) {
+    if planes.is_empty() {
+        return;
+    }
+    let current_peak = analyze_true_peak_planar(planes);
     let gain_db = target_db - current_peak;
     let gain = 10.0_f64.powf(gain_db / 20.0) as f32;
 
-    left.iter_mut().zip(&mut *right).for_each(|(l, r)| {
-        *l *= gain;
-        *r *= gain;
-    });
+    for plane in planes.iter_mut() {
+        for s in plane.iter_mut() {
+            *s *= gain;
+        }
+    }
+}
+
+/// True peak (dBTP) across an arbitrary number of planes: the max of each
+/// channel's 4×-oversampled true peak. One meter per channel, since `EbuR128`
+/// true-peak is a per-channel query.
+fn analyze_true_peak_planar(planes: &[Vec<f32>]) -> f64 {
+    let mut peak_linear = 0.0f64;
+    for plane in planes {
+        let mut meter = EbuR128::new(1, 48000, Mode::TRUE_PEAK)
+            .expect("Failed to create EBU R128 meter for peak");
+        if !plane.is_empty() {
+            let _ = meter.add_frames_planar_f32(&[plane.as_slice()]);
+        }
+        peak_linear = peak_linear.max(meter.true_peak(0).unwrap_or(0.0));
+    }
+    linear_to_dbtp(peak_linear)
 }
 
 #[cfg(test)]

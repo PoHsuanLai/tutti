@@ -1,32 +1,25 @@
 //! AIFF encoder (hand-rolled IFF chunks + 80-bit IEEE 754 extended sample
 //! rate). No streaming support — AIFF requires total size up front.
+//!
+//! The IFF writer already loops over `num_channels` planes and stamps the count
+//! into the COMM chunk, so it carries any width — it just needs the per-channel
+//! `planes` [`rechannel`](crate::encode::rechannel) produced.
 
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
-use crate::process::fold_frame;
 use std::io::Write;
 use tutti_core::pcm::{f32_to_i16, f32_to_i24};
 
-pub(crate) fn encode(frames: &[[f32; 2]], request: &EncodeRequest<'_>) -> Result<()> {
+pub(crate) fn encode(planes: &[Vec<f32>], request: &EncodeRequest<'_>) -> Result<()> {
     if request.bit_depth == BitDepth::Float32 {
         return Err(Error::UnsupportedFormat(
             "AIFF does not support 32-bit float (use AIFF-C for float)".into(),
         ));
     }
 
-    // Deinterleave (folding to mono when asked) into per-channel planes; the
-    // IFF writer wants planar access to compute chunk sizes. A layout wider than
-    // stereo is written as stereo — the pipeline has only two source channels.
-    let channels: Vec<Vec<f32>> = if request.channels.count() == 1 {
-        vec![frames.iter().map(|&f| fold_frame(f)).collect()]
-    } else {
-        vec![
-            frames.iter().map(|&[l, _]| l).collect(),
-            frames.iter().map(|&[_, r]| r).collect(),
-        ]
-    };
-    let planes: Vec<&[f32]> = channels.iter().map(|c| c.as_slice()).collect();
+    // `planes` is already the per-channel planar shape the IFF writer wants.
+    let planes: Vec<&[f32]> = planes.iter().map(|c| c.as_slice()).collect();
 
     write_aiff(request, &planes)
 }

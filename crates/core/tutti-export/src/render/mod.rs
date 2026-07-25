@@ -38,10 +38,12 @@ pub(crate) struct RenderRequest<'a> {
 }
 
 /// Run one offline render: derive a plan from `request`, drive the net,
-/// and pump every block into `sink`.
-pub(crate) fn render(
+/// and pump every block into `sink`. Generic over the frame width `CH` — the
+/// caller picks it from the requested channel layout and the whole render loop
+/// is monomorphized at that width.
+pub(crate) fn render<const CH: usize>(
     request: RenderRequest<'_>,
-    sink: &mut dyn AudioOut,
+    sink: &mut dyn AudioOut<f32, CH>,
     progress: &mut ProgressEmitter<'_>,
 ) -> Result<()> {
     let mut net = request.net;
@@ -51,7 +53,7 @@ pub(crate) fn render(
         request.duration_seconds,
         request.compensate_latency,
     );
-    driver::drive(
+    driver::drive::<CH>(
         &mut net,
         request.sample_rate,
         &plan,

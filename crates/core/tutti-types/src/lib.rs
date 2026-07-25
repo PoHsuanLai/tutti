@@ -36,6 +36,7 @@
 //! `tutti_types::Bpm`, `tutti_types::Samples`, etc. resolve directly.
 
 pub mod channels;
+pub mod downmix;
 pub mod io;
 pub mod latency;
 pub mod meter;
@@ -58,6 +59,9 @@ pub use value::{
 
 // Channel layout.
 pub use channels::ChannelLayout;
+
+// Surround → stereo / mono downmix matrices (ITU-R BS.775 / Dolby).
+pub use downmix::{fold_frame, fold_frame_to_mono, fold_frame_to_stereo};
 
 // I/O edge + latency.
 pub use io::{pump, AudioIn, AudioOut};

@@ -723,3 +723,71 @@ fn test_sequencer_passthrough() {
     assert!(sequencer.filter_mono(2.0) == 6.0);
     assert!(sequencer.filter_mono(0.5) == 1.5);
 }
+
+/// A live-backed net can change its global output arity at runtime (stereo →
+/// quad and back) via `set_output_arity_live` + `commit_output_arity_change`,
+/// and the backend renders the new channels correctly.
+///
+/// Drives the backend the way `tutti_core::Engine` does: `pump` to observe the
+/// latest committed arity, then a block `process` into a scratch sliced to
+/// `backend.outputs()` re-read each block (never a buffer cached at a fixed
+/// width). This is the RT-caller contract a runtime output-arity change relies
+/// on — regression-guards the surround master → live output path.
+#[test]
+fn live_output_arity_widen_stereo_to_quad() {
+    use fundsp_tutti::buffer::BufferArray;
+    use fundsp_tutti::prelude::{BufferRef, U8};
+
+    // Render one block through the backend into a scratch sliced to its CURRENT
+    // output arity, and return each output channel's first-sample value. Pumps
+    // pending commits FIRST so the arity read reflects the latest commit before
+    // the buffer is sized — the RT-caller contract for a live arity change.
+    fn render(backend: &mut NetBackend) -> Vec<f32> {
+        backend.pump();
+        let n = backend.outputs();
+        let empty = BufferRef::new(&[]);
+        let mut scratch = BufferArray::<U8>::new();
+        let mut full = scratch.buffer_mut();
+        let mut out = full.subset(0, n);
+        backend.process(1, &empty, &mut out);
+        (0..n).map(|c| out.channel_f32(c)[0]).collect()
+    }
+
+    // Stereo net: dc(1) → out0, dc(2) → out1.
+    let mut net = Net::new(0, 2);
+    net.set_sample_rate(fundsp_tutti::SampleRate(48000.0));
+    let a = net.push(Box::new(dc(1.0)));
+    let b = net.push(Box::new(dc(2.0)));
+    net.connect_output(a, 0, 0);
+    net.connect_output(b, 0, 1);
+
+    let mut backend = net.backend();
+    assert_eq!(backend.outputs(), 2);
+    assert_eq!(render(&mut backend), vec![1.0, 2.0]);
+
+    // Widen the live frontend to quad and wire two new sources into ch 2/3.
+    let c = net.push(Box::new(dc(3.0)));
+    let d = net.push(Box::new(dc(4.0)));
+    net.set_output_arity_live(4);
+    net.connect_output(c, 0, 2);
+    net.connect_output(d, 0, 3);
+    net.commit_output_arity_change();
+
+    // The backend should now report and render four channels, with the original
+    // two intact and the new two carrying the added sources. (pump so the arity
+    // read lands before the assert, same as an RT caller would.)
+    backend.pump();
+    assert_eq!(backend.outputs(), 4, "backend did not adopt the new arity");
+    assert_eq!(
+        render(&mut backend),
+        vec![1.0, 2.0, 3.0, 4.0],
+        "widened channels did not render the new sources"
+    );
+
+    // And narrowing back to stereo works too (ch 2/3 drop).
+    net.set_output_arity_live(2);
+    net.commit_output_arity_change();
+    backend.pump();
+    assert_eq!(backend.outputs(), 2);
+    assert_eq!(render(&mut backend), vec![1.0, 2.0]);
+}

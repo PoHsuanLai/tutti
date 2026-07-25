@@ -63,12 +63,12 @@ fn engine_process_real_chain_is_allocation_free() {
     // Warm up outside the gate — prime any first-call state on the
     // limiter / svf filters and the transport clock.
     for _ in 0..16 {
-        engine.process(&mut output, 512);
+        engine.process(&mut output, 512, 2);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..1_000 {
-            engine.process(&mut output, 512);
+            engine.process(&mut output, 512, 2);
         }
     });
 }
@@ -80,12 +80,12 @@ fn engine_process_real_chain_small_buffer_is_allocation_free() {
 
     let mut output = vec![0.0f32; 64 * 2];
     for _ in 0..16 {
-        engine.process(&mut output, 64);
+        engine.process(&mut output, 64, 2);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..5_000 {
-            engine.process(&mut output, 64);
+            engine.process(&mut output, 64, 2);
         }
     });
 }
@@ -125,7 +125,7 @@ fn engine_process_with_metronome_is_allocation_free() {
 
     let mut output = vec![0.0f32; 512 * 2];
     for _ in 0..16 {
-        engine.process(&mut output, 512);
+        engine.process(&mut output, 512, 2);
     }
 
     assert_no_alloc::assert_no_alloc(|| {
@@ -133,7 +133,7 @@ fn engine_process_with_metronome_is_allocation_free() {
             // Move the playhead so beat changes — and therefore the retrigger
             // path — run inside the gate rather than only the steady state.
             transport.settings.set_beat(i as f64 * 0.25);
-            engine.process(&mut output, 512);
+            engine.process(&mut output, 512, 2);
         }
     });
 }
@@ -190,7 +190,7 @@ fn metronome_meter_swap_does_not_free_on_the_audio_thread() {
 
     let mut output = vec![0.0f32; 512 * 2];
     for _ in 0..16 {
-        engine.process(&mut output, 512);
+        engine.process(&mut output, 512, 2);
     }
 
     for (i, map) in maps.into_iter().enumerate() {
@@ -204,7 +204,7 @@ fn metronome_meter_swap_does_not_free_on_the_audio_thread() {
         transport.settings.set_beat(i as f64 * 0.5);
 
         assert_no_alloc::assert_no_alloc(|| {
-            engine.process(&mut output, 512);
+            engine.process(&mut output, 512, 2);
         });
     }
 }

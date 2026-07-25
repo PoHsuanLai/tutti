@@ -213,9 +213,14 @@ pub fn reconcile_node_despawn(
     }
 }
 
-/// Runs `graph.commit()` once iff any reconcile system mutated the graph.
+/// Runs a graph commit once iff any reconcile system mutated the graph.
 ///
-/// **Pinned to the main thread** via [`NonSendMarker`]. `commit()` deallocates
+/// Commits via [`Net::commit_output_arity_change`](fundsp::net::Net::commit_output_arity_change)
+/// so a master layout change may alter the global output arity; that method and
+/// [`crate::Engine::process_segment`] document the RT-buffer contract this
+/// relies on. Identical to plain `commit()` when the arity is unchanged.
+///
+/// **Pinned to the main thread** via [`NonSendMarker`]. The commit deallocates
 /// the previous graph version — which includes any in-process plugin nodes
 /// whose `Drop` tears down a native editor window (AppKit/Win32/X11). Those
 /// teardowns are only legal on the host's main/UI thread; running this on a
@@ -230,7 +235,7 @@ pub fn commit_graph(
     if !dirty.0 {
         return;
     }
-    graph.0.commit();
+    graph.0.commit_output_arity_change();
     dirty.0 = false;
 }
 

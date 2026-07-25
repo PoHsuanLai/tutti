@@ -1,12 +1,19 @@
 //! Block-loop driver for offline rendering.
 //!
-//! The render source is a [`NetSource`] — an [`AudioIn`] that block-renders a
-//! `tutti_core::dsp::Net` into `[f32; 2]` frames. The driver is then the
-//! [`pump`](tutti_core::io::pump) loop from the engine's I/O vocabulary: poll a
-//! block from the source, *gate* it through a [`BlockCursor`] (latency-trim +
-//! output-length cap) — off the sink trait, since the gate needs cross-block
-//! counters — then push the kept frames into the [`AudioOut`] sink. Progress is
-//! reported via the supplied [`ProgressEmitter`].
+//! The render source is a [`NetSource`] — an [`AudioIn<f32, CH>`] that
+//! block-renders a `tutti_core::dsp::Net` into `[f32; CH]` frames. The driver is
+//! then the [`pump`](tutti_core::io::pump) loop from the engine's I/O
+//! vocabulary: poll a block from the source, *gate* it through a [`BlockCursor`]
+//! (latency-trim + output-length cap) — off the sink trait, since the gate needs
+//! cross-block counters — then push the kept frames into the [`AudioOut`] sink.
+//! Progress is reported via the supplied [`ProgressEmitter`].
+//!
+//! The whole loop is generic over the frame width `CH`: a stereo export is
+//! `CH = 2`, a mono file `CH = 1`, a quad/surround render `CH = 4`/`6`/`8`. The
+//! caller picks the width once (from the requested [`ChannelLayout`]) and the
+//! source, gate, and sink are all monomorphized at it. `NetSource` **folds** the
+//! net's actual output width onto the requested `CH` (see [`fold_net_frame`]) —
+//! a graph wider than the file is downmixed, not truncated.
 
 use crate::progress::ProgressEmitter;
 use crate::render::{BlockCursor, RenderPlan};
@@ -14,41 +21,85 @@ use crate::Result;
 use std::sync::Arc;
 use tutti_core::io::{AudioIn, AudioOut};
 use tutti_core::transport::OfflineTimeline;
-use tutti_core::{AudioUnit, BufferRef, BufferVec, MAX_BUFFER_SIZE};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, BufferVec, MAX_BUFFER_SIZE};
 
-/// The render source as an [`AudioIn`]: each [`poll_into`](AudioIn::poll_into)
-/// block-renders the net and hands back stereo frames. Mono nets have their one
-/// channel duplicated here — channel-order policy is the source's business, per
-/// the I/O vocabulary — so every sink downstream sees `[f32; 2]`. When a
-/// timeline is supplied it advances in lockstep *after* each block, matching the
-/// net clock's emit-then-advance convention (see the no-priming note below).
-pub(crate) struct NetSource<'a> {
+/// Widest net output the downmix gather handles (mono … 7.1.4 Atmos). Wider nets
+/// have their channels beyond this dropped by the gather; the export dispatch
+/// only admits 1/2/4/6/8/12 anyway.
+const MAX_NET_CHANNELS: usize = 12;
+
+/// Map one net output frame (`n_out` planar channels, read at sample `i`) onto a
+/// `CH`-wide destination frame. This is the whole up/down-mix policy, in one
+/// place — and it is a real fold, not a channel pick, so a graph WIDER than the
+/// requested file is **downmixed**, never truncated:
+///
+/// - `n_out == 1` (a mono net): duplicate channel 0 into every destination, so a
+///   mono net fills a stereo/quad/… frame with its one channel.
+/// - `CH < n_out` (**downmix**): the ITU/Dolby matrix via
+///   [`tutti_types::fold_frame`] — surround → stereo folds C + surrounds in at
+///   −3 dB (dropping LFE), surround → mono sums that further. Without this the
+///   center (dialogue) and surrounds (ambience) would be dropped.
+/// - `CH >= n_out` (equal / upmix): channels `0..n_out` straight through, extra
+///   destination channels zero-filled — no synthetic upmix.
+///
+/// The fold runs here, at the render → frame boundary, so every downstream stage
+/// (mastering, dither, the encoder) already operates at the final `CH` width.
+#[inline]
+fn fold_net_frame<const CH: usize>(
+    net: &BufferMut<'_>,
+    n_out: usize,
+    i: usize,
+    dst: &mut [f32; CH],
+) {
+    if n_out == 1 {
+        let s = net.channel_f32(0)[i];
+        dst.fill(s);
+        return;
+    }
+    let mut src = [0.0f32; MAX_NET_CHANNELS];
+    let w = n_out.min(MAX_NET_CHANNELS);
+    for (c, s) in src.iter_mut().enumerate().take(w) {
+        *s = net.channel_f32(c)[i];
+    }
+    tutti_types::fold_frame(&src[..w], dst);
+}
+
+/// The render source as an [`AudioIn<f32, CH>`]: each
+/// [`poll_into`](AudioIn::poll_into) block-renders the net and hands back
+/// `CH`-wide frames, mapping the net's output channels onto the frame via
+/// [`map_channel`]. When a timeline is supplied it advances in lockstep *after*
+/// each block, matching the net clock's emit-then-advance convention (see the
+/// no-priming note below).
+pub(crate) struct NetSource<'a, const CH: usize> {
     net: &'a mut tutti_core::dsp::Net,
     timeline: Option<&'a Arc<OfflineTimeline>>,
     scratch: BufferVec,
-    stereo: bool,
+    n_out: usize,
 }
 
-impl<'a> NetSource<'a> {
+impl<'a, const CH: usize> NetSource<'a, CH> {
     pub(crate) fn new(
         net: &'a mut tutti_core::dsp::Net,
         sample_rate: f64,
         timeline: Option<&'a Arc<OfflineTimeline>>,
     ) -> Self {
         net.set_sample_rate(tutti_core::SampleRate(sample_rate));
-        let stereo = net.outputs() >= 2;
-        let scratch = BufferVec::new(net.outputs().max(2));
+        let n_out = net.outputs();
+        // The scratch net-output buffer needs a slot per real output channel;
+        // never zero (fundsp wants a valid plane) and at least the frame width so
+        // `channel_f32` reads stay in bounds when the net is narrower than `CH`.
+        let scratch = BufferVec::new(n_out.max(CH).max(1));
         Self {
             net,
             timeline,
             scratch,
-            stereo,
+            n_out,
         }
     }
 }
 
-impl AudioIn for NetSource<'_> {
-    fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
+impl<const CH: usize> AudioIn<f32, CH> for NetSource<'_, CH> {
+    fn poll_into(&mut self, out: &mut [[f32; CH]]) -> usize {
         let block_size = out.len().min(MAX_BUFFER_SIZE);
         if block_size == 0 {
             return 0;
@@ -70,37 +121,35 @@ impl AudioIn for NetSource<'_> {
             t.advance(block_size);
         }
 
-        let left = &buffer_mut.channel_f32(0)[..block_size];
-        // Mono nets duplicate their one channel so the sink always sees stereo.
-        if self.stereo {
-            let right = &buffer_mut.channel_f32(1)[..block_size];
-            for (frame, (&l, &r)) in out[..block_size].iter_mut().zip(left.iter().zip(right)) {
-                *frame = [l, r];
-            }
-        } else {
-            for (frame, &l) in out[..block_size].iter_mut().zip(left) {
-                *frame = [l, l];
-            }
+        // Fold each net output frame onto the `CH`-wide destination frame —
+        // downmix when the net is wider than the file, upmix (zero-fill) when
+        // narrower, mono-duplicate for a mono net (see `fold_net_frame`).
+        for (i, frame) in out[..block_size].iter_mut().enumerate() {
+            fold_net_frame(&buffer_mut, self.n_out, i, frame);
         }
         block_size
     }
 }
 
 /// Drive `net` for `plan.total_samples` samples, gating each block and pushing
-/// the kept frames into `sink`, emitting progress via `progress`. If `timeline`
-/// is provided, advance it in lockstep with the net so transport-aware nodes
-/// receive correct beat positions.
-pub(crate) fn drive(
+/// the kept `CH`-wide frames into `sink`, emitting progress via `progress`. If
+/// `timeline` is provided, advance it in lockstep with the net so
+/// transport-aware nodes receive correct beat positions. `CH` is the output
+/// frame width — the caller picks it from the requested channel layout.
+pub(crate) fn drive<const CH: usize>(
     net: &mut tutti_core::dsp::Net,
     sample_rate: f64,
     plan: &RenderPlan,
     timeline: Option<&Arc<OfflineTimeline>>,
-    sink: &mut dyn AudioOut,
+    sink: &mut dyn AudioOut<f32, CH>,
     progress: &mut ProgressEmitter<'_>,
 ) -> Result<()> {
-    let mut source = NetSource::new(net, sample_rate, timeline);
-    let mut block = vec![[0.0f32; 2]; MAX_BUFFER_SIZE];
-    let mut kept_frames: Vec<[f32; 2]> = Vec::with_capacity(MAX_BUFFER_SIZE);
+    let mut source = NetSource::<CH>::new(net, sample_rate, timeline);
+    // Heap, not a stack array: at CH=8 this block is 64 KiB, past a comfortable
+    // stack frame, and it's reused across the whole render.
+    #[allow(clippy::useless_vec)]
+    let mut block = vec![[0.0f32; CH]; MAX_BUFFER_SIZE];
+    let mut kept_frames: Vec<[f32; CH]> = Vec::with_capacity(MAX_BUFFER_SIZE);
 
     progress.start();
 

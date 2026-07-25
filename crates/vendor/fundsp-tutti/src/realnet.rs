@@ -61,6 +61,21 @@ impl NetBackend {
         }
     }
 
+    /// Drain any pending frontend commits so [`outputs`](AudioUnit::outputs) (and
+    /// the rest of the backend state) reflects the latest committed net *without*
+    /// rendering a block.
+    ///
+    /// `process`/`tick` already drain messages at their start, but they read the
+    /// output arity from the buffer the caller passes — so a caller whose buffer
+    /// width tracks [`outputs`](AudioUnit::outputs) must `pump` first, read the
+    /// (possibly changed) arity, size its buffer, then `process`. This is the RT
+    /// primitive that makes a runtime output-arity change
+    /// ([`Net::commit_output_arity_change`](crate::Net::commit_output_arity_change))
+    /// observable to the caller before the render.
+    pub fn pump(&mut self) {
+        self.handle_messages();
+    }
+
     fn handle_messages(&mut self) {
         let mut latest_net: Option<Box<Net>> = None;
         #[allow(clippy::while_let_loop)]

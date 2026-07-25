@@ -43,6 +43,48 @@ impl Default for SpatialTarget {
     }
 }
 
+/// Map a VBAP gain index to the file/output channel it belongs in, for a given
+/// layout — because the VBAP speaker order is NOT the file channel order once
+/// LFE enters the picture.
+///
+/// VBAP presets are pure *spatialized* speakers with no LFE (the vbap crate's
+/// 5.1/7.1 presets are literally 5.0/7.0 — "LFE handled separately"), and their
+/// order is `[L, R, C, surrounds…]`. The file/interchange order (SMPTE / WAV
+/// `WAVEFORMATEXTENSIBLE`) is `[FL, FR, C, LFE, SL, SR, …]` with LFE at index 3.
+/// So a straight gain-i → channel-i write puts the surrounds one slot early and
+/// leaves a hole. This returns `map[i] = file channel for VBAP speaker i`; the
+/// LFE channel is deliberately absent (it is fed a separate low-passed send by
+/// [`build_surround_mix`](super::build_surround_mix), not by the panner).
+///
+/// - **Stereo / Quad**: identity — no LFE, order already matches.
+/// - **5.1** (6ch, VBAP `[L,R,C,Ls,Rs]`): `[0,1,2,4,5]` — skip LFE at 3.
+/// - **7.1** (8ch, VBAP `[L,R,C,Lss,Rss,Lrs,Rrs]`): `[0,1,2,4,5,6,7]` — skip LFE.
+/// - **Atmos 7.1.4** (12ch): the 7.1 base skips LFE, then the 4 height channels
+///   follow at 8..12: `[0,1,2,4,5,6,7,8,9,10,11]`.
+/// - Any other width: identity (best effort).
+fn speaker_channel_map(layout: ChannelLayout) -> Vec<usize> {
+    match layout.count() {
+        6 => vec![0, 1, 2, 4, 5],
+        8 => vec![0, 1, 2, 4, 5, 6, 7],
+        12 => vec![0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11],
+        n => (0..n as usize).collect(),
+    }
+}
+
+/// The LFE (`.1`) output channel index for a layout, if it has one. LFE lives at
+/// channel 3 in the 5.1 / 7.1 / 7.1.4 file order (SMPTE / WAV). Layouts without
+/// an LFE (mono / stereo / quad) return `None`.
+///
+/// LFE is *not* a panned speaker (see [`speaker_channel_map`]); this is the
+/// channel [`build_surround_mix`](super::build_surround_mix) feeds with a
+/// separate low-passed bass-management send.
+pub(crate) fn lfe_channel(layout: ChannelLayout) -> Option<usize> {
+    match layout.count() {
+        6 | 8 | 12 => Some(3),
+        _ => None,
+    }
+}
+
 /// VBAP multichannel panner (stereo/quad/5.1/7.1/Atmos).
 /// Position controlled via lock-free atomics for RT-safe automation.
 pub struct SpatialPannerNode {
@@ -53,6 +95,9 @@ pub struct SpatialPannerNode {
     width: Param<Linear>,
     sample_rate: f32,
     scratch_output: Vec<f32>,
+    /// Gain-index → output-channel scatter map (see [`speaker_channel_map`]).
+    /// Precomputed per layout so the RT path just indexes it.
+    channel_map: Vec<usize>,
 }
 
 impl Clone for SpatialPannerNode {
@@ -79,6 +124,7 @@ impl Clone for SpatialPannerNode {
             width: self.width.handle(),
             sample_rate: self.sample_rate,
             scratch_output: vec![0.0; self.layout.count() as usize],
+            channel_map: self.channel_map.clone(),
         }
     }
 }
@@ -109,6 +155,25 @@ impl SpatialPannerNode {
         Ok(Self::from_panner(panner, ChannelLayout::from(12u16)))
     }
 
+    /// Build a panner sized to a [`tutti_types::ChannelLayout`] — the count-based
+    /// width vocabulary the export / master side speaks — by dispatching to the
+    /// matching VBAP preset. This is the single place the count→preset mapping
+    /// lives, so reconcilers and graph builders call it instead of re-matching.
+    ///
+    /// Errors with [`Error::UnsupportedSpeakerLayout`] for a width that has no
+    /// preset (only 2/4/6/8/12 are defined). The node keeps the count enum and
+    /// resolves it to a VBAP speaker preset internally.
+    pub fn for_layout(layout: tutti_types::ChannelLayout) -> Result<Self> {
+        match layout.count() {
+            2 => Self::stereo(),
+            4 => Self::quad(),
+            6 => Self::surround_5_1(),
+            8 => Self::surround_7_1(),
+            12 => Self::atmos_7_1_4(),
+            n => Err(crate::Error::UnsupportedSpeakerLayout(n)),
+        }
+    }
+
     fn from_panner(panner: SpatialPanner, layout: ChannelLayout) -> Self {
         Self {
             panner,
@@ -118,6 +183,7 @@ impl SpatialPannerNode {
             width: Param::new(Linear(1.0)),
             sample_rate: 48000.0,
             scratch_output: vec![0.0; layout.count() as usize],
+            channel_map: speaker_channel_map(layout),
         }
     }
 
@@ -197,7 +263,18 @@ impl AudioUnit for SpatialPannerNode {
 
         let left = input.first().copied().unwrap_or(0.0);
         let right = input.get(1).copied().unwrap_or(left);
-        self.panner.process_stereo_into(left, right, width, output);
+        // Same speaker→file-channel scatter as `process` (see there): pan into
+        // scratch in speaker order, then map to output channels, LFE left silent.
+        self.panner
+            .process_stereo_into(left, right, width, &mut self.scratch_output);
+        for slot in output.iter_mut() {
+            *slot = 0.0;
+        }
+        for (speaker, &ch) in self.channel_map.iter().enumerate() {
+            if ch < output.len() {
+                output[ch] = self.scratch_output[speaker];
+            }
+        }
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
@@ -224,12 +301,20 @@ impl AudioUnit for SpatialPannerNode {
                 left
             };
 
+            // The panner writes its VBAP gains in *speaker* order into
+            // scratch_output[0..num_speakers]. Scatter each to its file channel
+            // via channel_map (which skips LFE), zeroing every output channel
+            // first so unmapped channels (LFE) stay silent — the panner never
+            // feeds LFE; build_surround_mix feeds it a separate low-passed send.
             self.panner
                 .process_stereo_into(left, right, width, &mut self.scratch_output);
 
-            for (ch, &sample) in self.scratch_output.iter().enumerate() {
+            for ch in 0..num_outputs {
+                output.set_f32(ch, i, 0.0);
+            }
+            for (speaker, &ch) in self.channel_map.iter().enumerate() {
                 if ch < num_outputs {
-                    output.set_f32(ch, i, sample);
+                    output.set_f32(ch, i, self.scratch_output[speaker]);
                 }
             }
         }

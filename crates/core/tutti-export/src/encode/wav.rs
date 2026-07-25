@@ -1,28 +1,29 @@
 //! WAV encoder (hound-backed). Whole-signal and streaming.
+//!
+//! hound's `WavSpec.channels` is a runtime `u16`, so WAV carries any width
+//! natively — the header is simply the plane count and the samples are written
+//! interleaved frame-major. The whole-signal path receives per-channel planes
+//! from [`rechannel`](crate::encode::rechannel); the streaming path receives
+//! already-mapped interleaved blocks and only needs the source channel count.
 
 use crate::encode::sink::StreamingEncoder;
 use crate::encode::EncodeRequest;
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
-use crate::process::fold_frame;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
 use tutti_core::pcm::{f32_to_i16, f32_to_i24};
 use tutti_types::ChannelLayout;
 
-/// The stereo render pipeline emits either 1 channel (a folded mono file) or 2
-/// (stereo). A `ChannelLayout` asking for more than stereo is served as stereo —
-/// there are only two source channels to write. So both the header and the
-/// per-frame write key off "is this a mono request?".
-fn is_mono(channels: ChannelLayout) -> bool {
-    channels.count() == 1
-}
-
-pub(crate) fn encode(frames: &[[f32; 2]], request: &EncodeRequest<'_>) -> Result<()> {
-    let spec = spec(request.sample_rate, request.bit_depth, request.channels);
+/// Encode per-channel `planes` (already mapped to `request.channels` by
+/// [`rechannel`](crate::encode::rechannel)) to a WAV file. The header carries
+/// `planes.len()` channels; samples are written interleaved.
+pub(crate) fn encode(planes: &[Vec<f32>], request: &EncodeRequest<'_>) -> Result<()> {
+    let channels = planes.len() as u16;
+    let spec = spec(request.sample_rate, request.bit_depth, channels);
     let mut writer = WavWriter::create(request.path, spec).map_err(io_err)?;
-    write_frames(&mut writer, frames, request.bit_depth, request.channels)?;
+    write_planes(&mut writer, planes, request.bit_depth)?;
     writer.finalize().map_err(io_err)?;
     Ok(())
 }
@@ -33,7 +34,8 @@ pub(crate) fn open_stream(
     bit_depth: BitDepth,
     channels: ChannelLayout,
 ) -> Result<Box<dyn StreamingEncoder>> {
-    let writer = WavWriter::create(path, spec(sample_rate, bit_depth, channels)).map_err(io_err)?;
+    let writer =
+        WavWriter::create(path, spec(sample_rate, bit_depth, channels.count())).map_err(io_err)?;
     Ok(Box::new(StreamingWavEncoder {
         writer,
         bit_depth,
@@ -48,8 +50,16 @@ struct StreamingWavEncoder {
 }
 
 impl StreamingEncoder for StreamingWavEncoder {
-    fn write_frames(&mut self, frames: &[[f32; 2]]) -> Result<()> {
-        write_frames(&mut self.writer, frames, self.bit_depth, self.channels)
+    fn write_interleaved(&mut self, interleaved: &[f32], channels: u16) -> Result<()> {
+        // Frames arrive already at the file width: the render→frame fold
+        // (`NetSource`) downmixes/upmixes the graph to `CH` = the file channel
+        // count, so samples pass straight through interleaved.
+        debug_assert_eq!(channels, self.channels.count());
+        let emit = emitter(self.bit_depth);
+        for &s in interleaved {
+            emit(&mut self.writer, s)?;
+        }
+        Ok(())
     }
 
     fn finalize(self: Box<Self>) -> Result<()> {
@@ -58,44 +68,44 @@ impl StreamingEncoder for StreamingWavEncoder {
     }
 }
 
-fn spec(sample_rate: u32, bit_depth: BitDepth, channels: ChannelLayout) -> WavSpec {
+fn spec(sample_rate: u32, bit_depth: BitDepth, channels: u16) -> WavSpec {
     let (bits_per_sample, sample_format) = match bit_depth {
         BitDepth::Int16 => (16, SampleFormat::Int),
         BitDepth::Int24 => (24, SampleFormat::Int),
         BitDepth::Float32 => (32, SampleFormat::Float),
     };
     WavSpec {
-        // 1 for a mono fold, else 2 — the pipeline only has two source channels.
-        channels: if is_mono(channels) { 1 } else { 2 },
+        channels,
         sample_rate,
         bits_per_sample,
         sample_format,
     }
 }
 
-fn write_frames<W: Write + Seek>(
-    writer: &mut WavWriter<W>,
-    frames: &[[f32; 2]],
-    bit_depth: BitDepth,
-    channels: ChannelLayout,
-) -> Result<()> {
-    // One closure quantizes a sample to the target bit depth; the channel loop
-    // decides how many samples per frame (folding to mono when asked).
-    let emit = |writer: &mut WavWriter<W>, s: f32| -> Result<()> {
+/// A closure that quantizes one sample to `bit_depth` and writes it. Shared by
+/// the whole-signal and streaming paths.
+fn emitter<W: Write + Seek>(bit_depth: BitDepth) -> impl Fn(&mut WavWriter<W>, f32) -> Result<()> {
+    move |writer: &mut WavWriter<W>, s: f32| -> Result<()> {
         match bit_depth {
             BitDepth::Int16 => writer.write_sample(f32_to_i16(s)).map_err(io_err),
             BitDepth::Int24 => writer.write_sample(f32_to_i24(s)).map_err(io_err),
             BitDepth::Float32 => writer.write_sample(s).map_err(io_err),
         }
-    };
-    if is_mono(channels) {
-        for &frame in frames {
-            emit(writer, fold_frame(frame))?;
-        }
-    } else {
-        for &[l, r] in frames {
-            emit(writer, l)?;
-            emit(writer, r)?;
+    }
+}
+
+/// Write `planes` interleaved (frame-major): sample 0 of every channel, then
+/// sample 1 of every channel, and so on.
+fn write_planes<W: Write + Seek>(
+    writer: &mut WavWriter<W>,
+    planes: &[Vec<f32>],
+    bit_depth: BitDepth,
+) -> Result<()> {
+    let emit = emitter(bit_depth);
+    let len = planes.iter().map(|p| p.len()).min().unwrap_or(0);
+    for i in 0..len {
+        for plane in planes {
+            emit(writer, plane[i])?;
         }
     }
     Ok(())
@@ -163,10 +173,13 @@ mod tests {
         let mut encoder =
             open_stream(&path, 44100, BitDepth::Int16, ChannelLayout::Stereo).unwrap();
 
+        // Interleaved stereo: 5 frames × 2 channels.
         encoder
-            .write_frames(&[[0.0, 0.1], [0.25, -0.1], [0.5, 0.0]])
+            .write_interleaved(&[0.0, 0.1, 0.25, -0.1, 0.5, 0.0], 2)
             .unwrap();
-        encoder.write_frames(&[[-0.5, 0.3], [0.75, -0.3]]).unwrap();
+        encoder
+            .write_interleaved(&[-0.5, 0.3, 0.75, -0.3], 2)
+            .unwrap();
         encoder.finalize().unwrap();
 
         let reader = hound::WavReader::open(&path).unwrap();
@@ -177,5 +190,46 @@ mod tests {
 
         let samples: Vec<i16> = reader.into_samples::<i16>().map(|s| s.unwrap()).collect();
         assert_eq!(samples.len(), 10); // 5 frames × 2 channels
+    }
+
+    #[test]
+    fn wav_encode_writes_quad_planes() {
+        use crate::encode::EncodeRequest;
+        use crate::options::{Flac, Ogg};
+        use crate::AudioFormat;
+
+        // Four distinct planes → a 4-channel WAV (calls the plane-level encoder
+        // directly, as the top-level `encode` would after `rechannel`).
+        let planes = vec![
+            vec![0.1, 0.2],
+            vec![0.3, 0.4],
+            vec![0.5, 0.6],
+            vec![-0.1, -0.2],
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("quad.wav");
+        encode(
+            &planes,
+            &EncodeRequest {
+                path: &path,
+                format: AudioFormat::Wav,
+                sample_rate: 44100,
+                bit_depth: BitDepth::Float32,
+                channels: ChannelLayout::Quad,
+                flac: Flac::default(),
+                ogg: Ogg::default(),
+            },
+        )
+        .unwrap();
+
+        let reader = hound::WavReader::open(&path).unwrap();
+        assert_eq!(reader.spec().channels, 4);
+        let samples: Vec<f32> = reader.into_samples::<f32>().map(|s| s.unwrap()).collect();
+        // 2 frames × 4 channels, interleaved frame-major.
+        assert_eq!(samples.len(), 8);
+        assert!((samples[0] - 0.1).abs() < 1e-6); // f0 c0
+        assert!((samples[1] - 0.3).abs() < 1e-6); // f0 c1
+        assert!((samples[3] - (-0.1)).abs() < 1e-6); // f0 c3
+        assert!((samples[4] - 0.2).abs() < 1e-6); // f1 c0
     }
 }

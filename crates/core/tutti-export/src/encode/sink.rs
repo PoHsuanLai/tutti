@@ -1,9 +1,14 @@
 //! Streaming-encoder abstraction.
 //!
-//! Used by the streaming export path: the render driver pushes `[f32; 2]` frame
-//! blocks (already dithered by a [`DitherOut`](crate::process::DitherOut)) to a
-//! [`StreamingEncoder`], which writes them incrementally. The encoder knows its
-//! own [`ChannelLayout`] and folds to mono at the file boundary if asked.
+//! Used by the streaming export path: the render driver pushes frame blocks
+//! (already dithered by a [`DitherOut`](crate::process::DitherOut)) to a
+//! [`StreamingEncoder`], which writes them incrementally. The
+//! [`EncoderOut`](crate::render::EncoderOut) sink flattens each `[f32; CH]`
+//! block into an interleaved `&[f32]` before handing it over, so the encoder
+//! speaks a plain runtime channel count — matching the hound/vorbis/flac APIs
+//! and keeping codecs off the const-generic frame width. The encoder knows its
+//! own [`ChannelLayout`] (folding to mono at the file boundary when `count() ==
+//! 1`).
 //!
 //! Encoders that can stream (currently WAV) implement the trait. Encoders
 //! that cannot (AIFF, OGG at present) are not wired into the opener — the
@@ -14,9 +19,13 @@ use crate::options::{AudioFormat, BitDepth, Flac, Ogg};
 use std::path::Path;
 use tutti_types::ChannelLayout;
 
-/// Accepts stereo `[f32; 2]` frame blocks and encodes them incrementally.
+/// Accepts interleaved frame blocks and encodes them incrementally.
 pub(crate) trait StreamingEncoder {
-    fn write_frames(&mut self, frames: &[[f32; 2]]) -> Result<()>;
+    /// Write one block of interleaved samples: `interleaved.len()` must be a
+    /// multiple of `channels`, laid out frame-major (`[f0c0, f0c1, …, f1c0, …]`).
+    /// `channels` is the source width; the encoder maps it onto its own
+    /// configured [`ChannelLayout`] (folding to mono when it emits a mono file).
+    fn write_interleaved(&mut self, interleaved: &[f32], channels: u16) -> Result<()>;
 
     /// Flush any pending buffers, update headers, and close the file. Must
     /// be called exactly once.

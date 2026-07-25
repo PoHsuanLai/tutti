@@ -787,6 +787,57 @@ impl Net {
         self.invalidate_order();
     }
 
+    /// Resize the network's **global output** arity to `channels`, keeping any
+    /// existing output edges for channels that remain and defaulting new
+    /// channels to silence (`Zero`). Truncating drops the trailing edges.
+    ///
+    /// This exists so an **offline** graph (a clone driven by `tick`/`process`,
+    /// e.g. surround export) can widen past the device's stereo output before
+    /// (re-)`pipe_output`ing a wider master. It must **not** be called on a live
+    /// network that has a backend taken (`has_backend()`), because the backend's
+    /// channel count is fixed at `backend()` time and `commit()` asserts the two
+    /// still agree; `Clone` clears the backend (`front: None`), which is exactly
+    /// the offline case this serves.
+    pub fn set_output_arity(&mut self, channels: usize) {
+        let old = self.outputs();
+        if channels == old {
+            return;
+        }
+        debug_assert!(
+            !self.has_backend(),
+            "set_output_arity on a live-backed net would desync the CPAL backend; \
+             use set_output_arity_live + commit_output_arity_change for the live path"
+        );
+        self.resize_output_edges(channels);
+    }
+
+    /// Grow/shrink the global output arity of a **live-backed** frontend, to be
+    /// followed by [`commit_output_arity_change`](Self::commit_output_arity_change).
+    ///
+    /// Unlike [`set_output_arity`](Self::set_output_arity) this permits a taken
+    /// backend — see `commit_output_arity_change` for the RT-buffer contract the
+    /// caller must uphold. No-op if the arity is unchanged.
+    pub fn set_output_arity_live(&mut self, channels: usize) {
+        if channels == self.outputs() {
+            return;
+        }
+        self.resize_output_edges(channels);
+    }
+
+    /// Resize `output`/`output_edge` to `channels`, normalizing each edge's
+    /// `Global` target index. New channels default to silence (`Zero`).
+    fn resize_output_edges(&mut self, channels: usize) {
+        self.output.resize(channels);
+        self.output_edge
+            .resize_with(channels, || edge(Port::Zero, Port::Global(0)));
+        // Normalize each edge's Global target index to its channel (resize_with
+        // can't know the index; truncation leaves survivors correct).
+        for (channel, e) in self.output_edge.iter_mut().enumerate() {
+            e.target = Port::Global(channel);
+        }
+        self.invalidate_order();
+    }
+
     /// Pass through global `input` to global `output`.
     ///
     /// ### Example (Stereo Pass-Through)
@@ -1230,6 +1281,27 @@ impl Net {
     /// Commit changes made to this frontend to the backend.
     /// This may be called only if the network has a backend.
     pub fn commit(&mut self) {
+        self.commit_inner(false);
+    }
+
+    /// EXPERIMENTAL: commit, permitting the global **output** arity to change.
+    ///
+    /// The standard [`commit`](Self::commit) panics if `outputs()` differs from
+    /// what it was when [`backend`](Self::backend) was taken, because the usual
+    /// RT driver allocates its output buffer once from `outputs()` and reuses it
+    /// — a changed arity would desync that buffer. This variant instead accepts
+    /// the new arity and updates the recorded `backend_outputs`, shipping the
+    /// wider/narrower net to the backend like any other commit.
+    ///
+    /// Contract: the RT `process`/`tick` caller MUST size the output buffer from
+    /// `NetBackend::outputs()` **re-read each block**, not from a value cached at
+    /// stream-build time. A caller that renders into a fresh, arity-sliced
+    /// scratch each block (e.g. `tutti_core::Engine`) satisfies this.
+    pub fn commit_output_arity_change(&mut self) {
+        self.commit_inner(true);
+    }
+
+    fn commit_inner(&mut self, allow_output_arity_change: bool) {
         assert!(self.has_backend());
         if self.inputs() != self.backend_inputs {
             panic!(
@@ -1237,9 +1309,13 @@ impl Net {
             );
         }
         if self.outputs() != self.backend_outputs {
-            panic!(
-                "The number of outputs has changed since last commit. The number of outputs must stay the same."
-            );
+            if allow_output_arity_change {
+                self.backend_outputs = self.outputs();
+            } else {
+                panic!(
+                    "The number of outputs has changed since last commit. The number of outputs must stay the same."
+                );
+            }
         }
         if !self.is_ordered() {
             self.determine_order();

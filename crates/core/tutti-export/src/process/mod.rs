@@ -8,12 +8,14 @@
 //!   `BufferExport`).
 //! - **Streamable** steps — dither — run per block on the way to the sink and
 //!   never need the whole signal. Dither is an [`AudioOut`] decorator
-//!   ([`DitherOut`]); mono downmix is the encoder's job (see [`mono`]).
+//!   ([`DitherOut`]); a mono file is the `CH = 1` case the encoder folds to (see
+//!   [`mono`]).
 //!
 //! This split is why there's no "streaming mode" to pick: whether an export
 //! buffers is DERIVED from whether the requested mastering has a whole-signal
 //! step ([`needs_whole_signal`](Mastering)), not from which terminal was
-//! called. Everything downstream of mastering is plain stereo `[f32; 2]` frames.
+//! called. Everything downstream of mastering is plain `[f32; CH]` frames, and
+//! the whole-signal stages carry the same width as `CH` deinterleaved planes.
 //!
 //! The whole module is gated on `any(wav, flac, aiff, ogg)` rather than a
 //! standalone `mastering` feature. Mastering exists only to feed an encoder — a
@@ -25,8 +27,6 @@
 pub(crate) mod dither;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 pub(crate) mod loudness;
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) mod mono;
 pub(crate) mod resample;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 pub(crate) mod stream;
@@ -34,11 +34,9 @@ pub(crate) mod stream;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 pub(crate) use dither::{apply_dither, DitherState};
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) use loudness::{analyze_loudness, normalize_loudness, normalize_peak};
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) use mono::fold_frame;
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) use resample::resample_stereo;
+pub(crate) use loudness::{analyze_loudness, normalize_loudness, normalize_peak_planar};
+#[cfg(any(feature = "wav", feature = "flac"))]
+pub(crate) use resample::resample_planar;
 pub use resample::ResampleQuality;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 pub(crate) use stream::DitherOut;
@@ -77,42 +75,54 @@ impl Mastering {
 }
 
 /// Whole-signal mastering — the steps that CANNOT run per block: resample then
-/// normalize, in place on collected buffers. Runs once, when the full signal is
-/// available (a [`BufferingOut`](crate::render::BufferingOut)'s `finalize`).
+/// normalize, in place on `CH` collected channel planes. Runs once, when the
+/// full signal is available (a [`BufferingOut`](crate::render::BufferingOut)'s
+/// `finalize`).
 ///
 /// Dither is deliberately NOT here — it is streamable and runs per block via
 /// [`DitherOut`], so a streaming export never materializes the whole signal and
 /// the dither sequence stays continuous. Splitting mastering this way is what
 /// lets "buffered vs streaming" be *derived* from the config rather than
 /// selected as a mode. Returns the (possibly resampled) output rate.
+///
+/// **Loudness normalization is stereo-only.** EBU R128 loudness (channel
+/// weighting, integrated LUFS, true-peak limiting) is genuinely channel-topology
+/// aware; the surround R128 rework is deferred. `Normalize::Loudness` on a
+/// non-stereo signal returns [`Error::UnsupportedChannels`]. Peak normalize and
+/// `Off` generalize to any width.
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) fn whole_signal(
-    left: &mut Vec<f32>,
-    right: &mut Vec<f32>,
+pub(crate) fn whole_signal<const CH: usize>(
+    planes: &mut [Vec<f32>; CH],
     source_sample_rate: u32,
     target_sample_rate: u32,
     normalize: Normalize,
     resample_quality: ResampleQuality,
 ) -> Result<u32> {
     if target_sample_rate != source_sample_rate {
-        let (l, r) = resample_stereo(
-            left,
-            right,
+        let resampled = resample_planar(
+            planes,
             source_sample_rate,
             target_sample_rate,
             resample_quality,
         )?;
-        *left = l;
-        *right = r;
+        for (dst, src) in planes.iter_mut().zip(resampled) {
+            *dst = src;
+        }
     }
 
     match normalize {
         Normalize::Off => {}
-        Normalize::Peak { target_db } => normalize_peak(left, right, target_db),
+        Normalize::Peak { target_db } => normalize_peak_planar(planes, target_db),
         Normalize::Loudness {
             target_lufs,
             true_peak_dbtp,
         } => {
+            // Loudness (R128) stays stereo-only for now — see the doc note.
+            if CH != 2 {
+                return Err(crate::error::Error::UnsupportedChannels(CH as u16));
+            }
+            let (left, right) = planes.split_at_mut(1);
+            let (left, right) = (&mut left[0], &mut right[0]);
             let current = analyze_loudness(left, right, target_sample_rate);
             normalize_loudness(left, right, current.lufs, target_lufs, true_peak_dbtp);
         }
@@ -122,22 +132,20 @@ pub(crate) fn whole_signal(
 }
 
 /// Master an ALREADY-COLLECTED whole signal end to end: the whole-signal pass
-/// (resample → normalize) then dither, returning interleaved stereo `[f32; 2]`
-/// frames plus the output rate. Mono downmix stays with the encoder.
+/// (resample → normalize) then dither, returning interleaved `[f32; CH]` frames
+/// plus the output rate. Mono downmix (the `CH = 1` case) stays with the encoder.
 ///
 /// This is the whole-signal analogue of the streaming path — a caller that
-/// already holds the full buffers (an in-memory `BufferExport`, or a
+/// already holds the full planes (an in-memory `BufferExport`, or a
 /// `BufferingOut` at finalize) masters through here in one shot instead of
 /// block-by-block. Both share this one body.
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) fn master_collected(
-    mut left: Vec<f32>,
-    mut right: Vec<f32>,
+pub(crate) fn master_collected<const CH: usize>(
+    mut planes: [Vec<f32>; CH],
     m: &Mastering,
-) -> Result<(Vec<[f32; 2]>, u32)> {
+) -> Result<(Vec<[f32; CH]>, u32)> {
     let out_rate = whole_signal(
-        &mut left,
-        &mut right,
+        &mut planes,
         m.source_sample_rate,
         m.target_sample_rate,
         m.normalize,
@@ -145,14 +153,17 @@ pub(crate) fn master_collected(
     )?;
 
     if !matches!(m.dither, Dither::Off) {
-        apply_dither(
-            &mut left,
-            &mut right,
-            m.bit_depth.bits(),
-            &mut DitherState::new(m.dither),
-        );
+        let bits = m.bit_depth.bits();
+        let mut state = DitherState::new(m.dither);
+        for plane in planes.iter_mut() {
+            apply_dither(plane, bits, &mut state);
+        }
     }
 
-    let frames = left.iter().zip(&right).map(|(&l, &r)| [l, r]).collect();
+    // Reinterleave the planes into `[f32; CH]` frames.
+    let len = planes.iter().map(|p| p.len()).min().unwrap_or(0);
+    let frames = (0..len)
+        .map(|i| std::array::from_fn(|ch| planes[ch][i]))
+        .collect();
     Ok((frames, out_rate))
 }

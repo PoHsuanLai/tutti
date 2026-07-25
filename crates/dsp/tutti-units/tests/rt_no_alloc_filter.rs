@@ -10,7 +10,8 @@
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{AudioUnit, BufferVec, SampleRate};
 use tutti_units::{
-    EqBandNode, LadderFilterNode, LadderType, StereoSvfFilterNode, SvfFilterNode, SvfType,
+    EqBandNode, LadderFilterNode, LadderType, StereoLadderFilterNode, StereoSvfFilterNode,
+    SvfFilterNode, SvfType,
 };
 
 #[global_allocator]
@@ -106,6 +107,57 @@ fn svf_filter_stereo_process_is_allocation_free() {
 
     let mut input_vec = BufferVec::new(2);
     let mut output_vec = BufferVec::new(2);
+    fill_with_signal(&mut input_vec, 0.5);
+
+    for _ in 0..16 {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        node.process(64, &input, &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..2_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            node.process(64, &input, &mut output);
+        }
+    });
+}
+
+#[test]
+fn svf_filter_wide_6ch_process_is_allocation_free() {
+    // The per-channel integrator Vec must be built at construction — a
+    // regression that (re)allocated it per buffer, or per-channel scratch in
+    // `process`, would trip here.
+    let mut node = StereoSvfFilterNode::<f64>::with_channels(6, SvfType::LowPass, 800.0, 0.707);
+    node.set_sample_rate(SampleRate(48_000.0));
+
+    let mut input_vec = BufferVec::new(6);
+    let mut output_vec = BufferVec::new(6);
+    fill_with_signal(&mut input_vec, 0.5);
+
+    for _ in 0..16 {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        node.process(64, &input, &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..2_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            node.process(64, &input, &mut output);
+        }
+    });
+}
+
+#[test]
+fn ladder_filter_wide_6ch_process_is_allocation_free() {
+    let mut node = StereoLadderFilterNode::<f64>::with_channels(6, LadderType::LP24, 1_000.0, 0.6);
+    node.set_sample_rate(SampleRate(48_000.0));
+
+    let mut input_vec = BufferVec::new(6);
+    let mut output_vec = BufferVec::new(6);
     fill_with_signal(&mut input_vec, 0.5);
 
     for _ in 0..16 {

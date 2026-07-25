@@ -267,8 +267,12 @@ impl<F: Real> Clone for LadderFilterNode<F> {
 /// recompute for cutoff/Q); absent → a plain 2-in/2-out node, bit-identical
 /// output to the unmodulated path and zero added cost.
 pub struct StereoLadderFilterNode<F: Real = f64> {
-    left: LadderFilterNode<F>,
-    right: LadderFilterNode<F>,
+    /// One filter per channel; `channels[0]` is the canonical param holder (the
+    /// UI/atomic handle path reads/writes it). All channels share the same
+    /// authored params (linked control surface) — widening replicates the
+    /// per-channel filter state, not the params. Built at construction; never
+    /// resized in `tick`/`process` (RT no-alloc).
+    channels: Vec<LadderFilterNode<F>>,
     mod_cutoff: bool,
     mod_q: bool,
     mod_drive: bool,
@@ -280,11 +284,24 @@ impl<F: Real> StereoLadderFilterNode<F> {
         frequency: impl Into<Hz>,
         resonance: impl Into<Ratio>,
     ) -> Self {
-        let left = LadderFilterNode::new(ladder_type, frequency, resonance);
-        let right = left.clone();
+        Self::with_channels(2, ladder_type, frequency, resonance)
+    }
+
+    /// An `n`-channel ladder filter. All channels share the authored params
+    /// (one linked control surface via `channels[0]`); only the per-channel
+    /// filter state is replicated. `with_channels(2, …)` is bit-identical to
+    /// [`Self::new`].
+    pub fn with_channels(
+        channels: usize,
+        ladder_type: LadderType,
+        frequency: impl Into<Hz>,
+        resonance: impl Into<Ratio>,
+    ) -> Self {
+        let n = channels.max(1);
+        let head = LadderFilterNode::new(ladder_type, frequency, resonance);
+        let channels = (0..n).map(|_| head.clone()).collect();
         Self {
-            left,
-            right,
+            channels,
             mod_cutoff: false,
             mod_q: false,
             mod_drive: false,
@@ -309,144 +326,132 @@ impl<F: Real> StereoLadderFilterNode<F> {
         node
     }
 
+    /// Audio channel width (`inputs()` audio ports == `outputs()`).
+    #[inline]
+    fn width(&self) -> usize {
+        self.channels.len()
+    }
+
     /// Input-port index of the cutoff param input, if present (right after the
-    /// two audio inputs).
+    /// audio inputs).
     #[inline]
     pub fn cutoff_port(&self) -> Option<usize> {
-        self.mod_cutoff.then_some(2)
+        self.mod_cutoff.then_some(self.width())
     }
 
     /// Input-port index of the Q param input, if present.
     #[inline]
     pub fn q_port(&self) -> Option<usize> {
-        self.mod_q.then_some(2 + self.mod_cutoff as usize)
+        self.mod_q.then_some(self.width() + self.mod_cutoff as usize)
     }
 
     /// Input-port index of the drive param input, if present.
     #[inline]
     pub fn drive_port(&self) -> Option<usize> {
         self.mod_drive
-            .then_some(2 + self.mod_cutoff as usize + self.mod_q as usize)
+            .then_some(self.width() + self.mod_cutoff as usize + self.mod_q as usize)
     }
 
     pub fn frequency(&self) -> Arc<AtomicF32> {
-        self.left.frequency()
+        self.channels[0].frequency()
     }
 
     pub fn resonance(&self) -> Arc<AtomicF32> {
-        self.left.resonance()
+        self.channels[0].resonance()
     }
 
     pub fn drive(&self) -> Arc<AtomicF32> {
-        self.left.drive()
+        self.channels[0].drive()
     }
 
     pub fn set_frequency(&self, hz: impl Into<Hz>) {
-        self.left.set_frequency(hz);
+        self.channels[0].set_frequency(hz);
     }
 
     pub fn set_resonance(&self, res: impl Into<Ratio>) {
-        self.left.set_resonance(res);
+        self.channels[0].set_resonance(res);
     }
 
     pub fn set_drive(&self, drive: impl Into<Linear>) {
-        self.left.set_drive(drive);
+        self.channels[0].set_drive(drive);
     }
 
     /// Effective per-sample (freq, resonance, drive): a present param port
-    /// overrides the corresponding atomic. `read` reads input port `p`.
+    /// overrides the corresponding atomic. `read` reads input port `p`. Params
+    /// are channel-shared, so the canonical `channels[0]` atomics are the base.
     #[inline]
     fn effective_params(&self, read: impl Fn(usize) -> f32) -> (f32, f32, f32) {
+        let head = &self.channels[0];
         let freq = self
             .cutoff_port()
-            .map_or_else(|| self.left.frequency.load().get(), |p| read(p).max(1.0));
-        let res = self.q_port().map_or_else(
-            || self.left.resonance.load().get(),
-            |p| read(p).clamp(0.0, 1.0),
-        );
+            .map_or_else(|| head.frequency.load().get(), |p| read(p).max(1.0));
+        let res = self
+            .q_port()
+            .map_or_else(|| head.resonance.load().get(), |p| read(p).clamp(0.0, 1.0));
         let drive = self
             .drive_port()
-            .map_or_else(|| self.left.drive.load().get(), |p| read(p).max(0.1));
+            .map_or_else(|| head.drive.load().get(), |p| read(p).max(0.1));
         (freq, res, drive)
-    }
-
-    /// Tick both channels with explicit effective params (the modulated path).
-    #[inline]
-    fn tick_modulated(
-        &mut self,
-        l_in: f32,
-        r_in: f32,
-        freq: f32,
-        res: f32,
-        drive: f32,
-    ) -> (f32, f32) {
-        self.left.maybe_update_modulated(freq, res);
-        self.right.maybe_update_modulated(freq, res);
-        let l = self
-            .left
-            .process_one_with_drive(F::from_f32(l_in), drive)
-            .to_f32();
-        let r = self
-            .right
-            .process_one_with_drive(F::from_f32(r_in), drive)
-            .to_f32();
-        (l, r)
     }
 }
 
 impl<F: Real + 'static> AudioUnit for StereoLadderFilterNode<F> {
     fn inputs(&self) -> usize {
-        2 + self.mod_cutoff as usize + self.mod_q as usize + self.mod_drive as usize
+        self.width() + self.mod_cutoff as usize + self.mod_q as usize + self.mod_drive as usize
     }
 
     fn outputs(&self) -> usize {
-        2
+        self.width()
     }
 
     fn reset(&mut self) {
-        self.left.reset();
-        self.right.reset();
+        for ch in &mut self.channels {
+            ch.reset();
+        }
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
-        self.left.set_sample_rate(sample_rate);
-        self.right.set_sample_rate(sample_rate);
+        for ch in &mut self.channels {
+            ch.set_sample_rate(sample_rate);
+        }
     }
 
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         if !self.mod_cutoff && !self.mod_q && !self.mod_drive {
-            // Fast path: no ports — each child reads its own atomics.
-            self.left.tick(&input[0..1], &mut output[0..1]);
-            self.right.tick(&input[1..2], &mut output[1..2]);
+            // Fast path: no ports — each channel reads its own (shared) atomics.
+            for (c, ch) in self.channels.iter_mut().enumerate() {
+                ch.tick(&input[c..c + 1], &mut output[c..c + 1]);
+            }
             return;
         }
         let (freq, res, drive) = self.effective_params(|p| input[p]);
-        let (l, r) = self.tick_modulated(input[0], input[1], freq, res, drive);
-        output[0] = l;
-        output[1] = r;
+        for (c, ch) in self.channels.iter_mut().enumerate() {
+            ch.maybe_update_modulated(freq, res);
+            output[c] = ch.process_one_with_drive(F::from_f32(input[c]), drive).to_f32();
+        }
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        // Fast path: no ports — delegate to the children's own atomic reads.
+        // Fast path: no ports — delegate to the channels' own atomic reads.
         if !self.mod_cutoff && !self.mod_q && !self.mod_drive {
             for i in 0..size {
-                let mut l_out = [0.0f32];
-                let mut r_out = [0.0f32];
-                self.left.tick(&[input.at_f32(0, i)], &mut l_out);
-                self.right.tick(&[input.at_f32(1, i)], &mut r_out);
-                output.set_f32(0, i, l_out[0]);
-                output.set_f32(1, i, r_out[0]);
+                for (c, ch) in self.channels.iter_mut().enumerate() {
+                    let mut out = [0.0f32];
+                    ch.tick(&[input.at_f32(c, i)], &mut out);
+                    output.set_f32(c, i, out[0]);
+                }
             }
             return;
         }
         // Modulated path: read the active port(s) per sample.
         for i in 0..size {
             let (freq, res, drive) = self.effective_params(|p| input.at_f32(p, i));
-            let (l, r) =
-                self.tick_modulated(input.at_f32(0, i), input.at_f32(1, i), freq, res, drive);
-            output.set_f32(0, i, l);
-            output.set_f32(1, i, r);
+            for (c, ch) in self.channels.iter_mut().enumerate() {
+                ch.maybe_update_modulated(freq, res);
+                let x = F::from_f32(input.at_f32(c, i));
+                output.set_f32(c, i, ch.process_one_with_drive(x, drive).to_f32());
+            }
         }
     }
 
@@ -474,9 +479,10 @@ impl<F: Real + 'static> AudioUnit for StereoLadderFilterNode<F> {
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(2);
-        out.set(0, input.at(0).distort(0.0));
-        out.set(1, input.at(1).distort(0.0));
+        let mut out = SignalFrame::new(self.width());
+        for c in 0..self.width() {
+            out.set(c, input.at(c).distort(0.0));
+        }
         out
     }
 
@@ -488,8 +494,7 @@ impl<F: Real + 'static> AudioUnit for StereoLadderFilterNode<F> {
 impl<F: Real> Clone for StereoLadderFilterNode<F> {
     fn clone(&self) -> Self {
         Self {
-            left: self.left.clone(),
-            right: self.right.clone(),
+            channels: self.channels.clone(),
             mod_cutoff: self.mod_cutoff,
             mod_q: self.mod_q,
             mod_drive: self.mod_drive,
@@ -678,6 +683,51 @@ mod tests {
         assert_eq!(u.cutoff_port(), None);
         assert_eq!(u.q_port(), None);
         assert_eq!(u.drive_port(), None);
+    }
+
+    #[test]
+    fn ladder_with_channels_2_is_bit_identical_to_new() {
+        let mut a = StereoLadderFilterNode::<f64>::new(LadderType::LP24, 900.0, 0.4);
+        a.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut b = StereoLadderFilterNode::<f64>::with_channels(2, LadderType::LP24, 900.0, 0.4);
+        b.set_sample_rate(tutti_core::SampleRate(44100.0));
+
+        let sig = generate_sine(440.0, 44100.0, 1024);
+        let (al, ar) = process_stereo_ladder(&mut a, &sig, &sig, &[]);
+        let (bl, br) = process_stereo_ladder(&mut b, &sig, &sig, &[]);
+        for i in 0..sig.len() {
+            assert_eq!(al[i].to_bits(), bl[i].to_bits(), "L bit-diff at {i}");
+            assert_eq!(ar[i].to_bits(), br[i].to_bits(), "R bit-diff at {i}");
+        }
+    }
+
+    #[test]
+    fn ladder_with_channels_reports_arity_and_is_independent() {
+        let mut wide = StereoLadderFilterNode::<f64>::with_channels(6, LadderType::LP24, 1000.0, 0.3);
+        wide.set_sample_rate(tutti_core::SampleRate(44100.0));
+        assert_eq!(wide.inputs(), 6);
+        assert_eq!(wide.outputs(), 6);
+
+        // Drive only channel 4; the rest must stay silent.
+        let sig = generate_sine(300.0, 44100.0, 2048);
+        let len = sig.len();
+        let mut out = vec![vec![0.0f32; len]; 6];
+        let mut inbuf = [0.0f32; 6];
+        let mut outbuf = [0.0f32; 6];
+        for i in 0..len {
+            inbuf = [0.0; 6];
+            inbuf[4] = sig[i];
+            wide.tick(&inbuf, &mut outbuf);
+            for c in 0..6 {
+                out[c][i] = outbuf[c];
+            }
+        }
+        let e4: f32 = out[4].iter().map(|s| s * s).sum();
+        assert!(e4 > 1.0, "ch4 should carry signal; energy {e4}");
+        for c in [0usize, 1, 2, 3, 5] {
+            let e: f32 = out[c].iter().map(|s| s * s).sum();
+            assert!(e < 1e-10, "ch{c} should stay silent; energy {e}");
+        }
     }
 
     #[test]

@@ -390,3 +390,98 @@ fn mic_monitor_process_is_allocation_free() {
         }
     });
 }
+
+// ---------------------------------------------------------------------------
+// Width-generic (N-channel) allocation gates.
+//
+// The stereo gates above cannot see a `vec![0.0; channels]` written as a
+// "temporary" frame buffer on the width-generic path, because at width 2 the
+// old fixed-size stack arrays are still in play. These run the same code at
+// width 6, where a runtime-sized frame is the tempting (and wrong) choice.
+// ---------------------------------------------------------------------------
+
+/// A 6-channel wave whose channel `c` carries a distinct amplitude, so a
+/// wrong-channel read is a wrong value rather than a plausible one.
+fn surround_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
+    let mut wave = Wave::zero(6, sample_rate, duration_secs);
+    let len = wave.len();
+    for i in 0..len {
+        let t = i as f64 / sample_rate;
+        let s = (t * 440.0 * core::f64::consts::TAU).sin() as f32 * 0.5;
+        for c in 0..6 {
+            wave.set(c, i, s * (c + 1) as f32 * 0.1);
+        }
+    }
+    Arc::new(wave)
+}
+
+#[test]
+fn sampler_unit_process_is_allocation_free_at_six_channels() {
+    let wave = surround_wave(2.0, 48_000.0);
+    let mut node = SamplerUnit::with_channels(wave, 6);
+    node.set_sample_rate(SampleRate(48_000.0));
+    assert_eq!(node.outputs(), 6);
+
+    let input_vec = BufferVec::new(0);
+    let mut output_vec = BufferVec::new(6);
+
+    for _ in 0..16 {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        node.process(64, &input, &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..2_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            node.process(64, &input, &mut output);
+        }
+    });
+}
+
+#[test]
+fn sampler_unit_tick_is_allocation_free_at_six_channels() {
+    let wave = surround_wave(2.0, 48_000.0);
+    let mut node = SamplerUnit::with_channels(wave, 6);
+    node.set_sample_rate(SampleRate(48_000.0));
+
+    let mut output = [0.0f32; 6];
+    for _ in 0..256 {
+        node.tick(&[], &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..100_000 {
+            node.tick(&[], &mut output);
+        }
+    });
+}
+
+/// The MISMATCHED-width path is different code from the matched path — it runs
+/// the fold — and only executes when the wave's width differs from the node's.
+/// Neither the stereo gates nor the matched 6-channel gates above reach it.
+#[test]
+fn sampler_unit_process_is_allocation_free_when_folding_six_to_two() {
+    let wave = surround_wave(2.0, 48_000.0);
+    let mut node = SamplerUnit::new(wave); // 6-channel wave, 2-channel node
+    node.set_sample_rate(SampleRate(48_000.0));
+    assert_eq!(node.outputs(), 2);
+
+    let input_vec = BufferVec::new(0);
+    let mut output_vec = BufferVec::new(2);
+
+    for _ in 0..16 {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        node.process(64, &input, &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..2_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            node.process(64, &input, &mut output);
+        }
+    });
+}

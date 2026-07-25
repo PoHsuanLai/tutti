@@ -743,6 +743,155 @@ impl Resonance {
         Resonance(v).clamp(Self::NONE, Self::SELF_OSCILLATION)
     }
 }
+
+// ── Measurements ────────────────────────────────────────────────────────────
+//
+// Everything above is a *control*: a value the caller sets on a processor.
+// These three are *readings*: values the engine measures and reports back.
+//
+// That distinction is what separates them from the controls they resemble.
+// `Correlation` and `Pan` share `Depth`'s range and most of its algebra, and
+// `Confidence` shares `Mix`'s range — but a meter's phase coherence is not an
+// LFO's modulation amount, and swapping them is silent. This is the same
+// argument `Q` and `Resonance` settle by splitting: two quantities that
+// describe different things stay different types even when their numbers line
+// up.
+
+unit_newtype!(
+    /// How certain an estimator is of its own answer, `0..1`. 0 is a guess,
+    /// 1 is certainty.
+    ///
+    /// Not a [`Mix`] despite the shared range — nothing is being blended, and
+    /// `Mix::blend`, the reason that type exists, is meaningless here. Not an
+    /// [`Amplitude`] either: a confidence is never multiplied onto a signal,
+    /// and giving it a gain's algebra would license `sample * confidence`,
+    /// silently turning an uncertain pitch estimate into a volume dip.
+    Confidence
+);
+unit_ordered!(Confidence);
+unit_bounded!(Confidence, f32);
+// Scalable because the smoothers genuinely attenuate it: a Viterbi track
+// penalizes a jump by multiplying the confidence by a decay factor.
+unit_scalable!(Confidence, f32);
+// NOT `unit_additive!`: two estimates being 0.6 confident does not make
+// anything 1.2 confident. Combining evidence is `combine`, which states the
+// independence precondition that multiplying them requires.
+
+impl Confidence {
+    /// No information — the estimator is guessing.
+    pub const NONE: Confidence = Confidence(0.0);
+    /// Certain.
+    pub const CERTAIN: Confidence = Confidence(1.0);
+
+    /// Constrain into `0..=1`.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Confidence {
+        Confidence(v).clamp(Self::NONE, Self::CERTAIN)
+    }
+
+    /// Two *independent* estimates of the same fact, combined as a joint
+    /// probability.
+    ///
+    /// Named rather than `Mul` because the multiplication is only correct when
+    /// the estimates are independent, and the name is where that precondition
+    /// is stated.
+    #[inline]
+    pub fn combine(self, other: Confidence) -> Confidence {
+        Confidence(self.0 * other.0)
+    }
+}
+
+unit_newtype!(
+    /// Phase coherence between two channels, `-1..1`. `+1` is identical
+    /// (mono-compatible), `0` uncorrelated, `-1` polarity-inverted.
+    ///
+    /// Shares [`Depth`]'s range and sign convention but not its meaning: a
+    /// modulation depth is a control you set, a correlation is a measurement
+    /// reported back. Feeding a correlation meter into an LFO's depth is not a
+    /// plausible operation, so the compiler should refuse it.
+    ///
+    /// The negative half is the whole point — `-1` is the mono-compatibility
+    /// failure a correlation meter exists to catch, and it is not "less" than
+    /// `+1` in any audible sense; it is the opposite fault.
+    Correlation
+);
+unit_ordered!(Correlation);
+unit_bounded!(Correlation, f32);
+unit_signed!(Correlation);
+// NOT `unit_scalable!`: the value is a normalized inner product, so rescaling
+// denormalizes it and the result no longer means "coherence".
+// NOT `unit_additive!`: two correlations do not sum. Averaging one over time
+// is meter ballistics, which smooths rather than accumulates.
+
+impl Correlation {
+    /// Identical channels — fully mono-compatible.
+    pub const MONO: Correlation = Correlation(1.0);
+    /// Uncorrelated channels.
+    pub const UNCORRELATED: Correlation = Correlation(0.0);
+    /// Polarity-inverted — cancels completely when summed to mono.
+    pub const INVERTED: Correlation = Correlation(-1.0);
+
+    /// Constrain into `-1..=1`.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Correlation {
+        Correlation(v).clamp(Self::INVERTED, Self::MONO)
+    }
+
+    /// Whether summing to mono would audibly cancel.
+    ///
+    /// Named because the threshold is a convention, and a bare comparison at
+    /// the call site hides that it is one.
+    #[inline]
+    pub fn has_phase_issues(self) -> bool {
+        self.0 < -0.3
+    }
+
+    /// The mid/side width this coherence implies.
+    ///
+    /// A derivation, not a second field: storing both lets a smoother move one
+    /// without the other and leave the pair contradicting itself.
+    #[inline]
+    pub fn to_stereo_width(self) -> StereoWidth {
+        StereoWidth(1.0 - self.0)
+    }
+}
+
+unit_newtype!(
+    /// Position on the left/right axis, `-1..1`. `-1` is hard left, `0`
+    /// center, `+1` hard right.
+    ///
+    /// A *position*, like [`Azimuth`] — but on a segment rather than a circle,
+    /// so it saturates at the ends instead of wrapping, and unlike `Azimuth`
+    /// it orders (left really is less than right).
+    ///
+    /// Distinct from [`Depth`] for the reason this section exists: a pan
+    /// position and a modulation amount are different quantities that happen
+    /// to share a range.
+    Pan
+);
+unit_ordered!(Pan);
+unit_bounded!(Pan, f32);
+unit_signed!(Pan);
+// NOT `unit_scalable!`: half of a pan position is not a pan position — the
+// same argument `Mix` makes. Moving a source is `Azimuth::lerp_shortest`'s
+// job on the circle, and interpolation here is a `lerp`, not a `*`.
+// NOT `unit_additive!`: two pan positions do not sum into a third.
+
+impl Pan {
+    /// Hard left.
+    pub const LEFT: Pan = Pan(-1.0);
+    /// Centered — equal in both channels.
+    pub const CENTER: Pan = Pan(0.0);
+    /// Hard right.
+    pub const RIGHT: Pan = Pan(1.0);
+
+    /// Constrain into `-1..=1`.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Pan {
+        Pan(v).clamp(Self::LEFT, Self::RIGHT)
+    }
+}
+
 // ── Angles ──────────────────────────────────────────────────────────────────
 //
 // Three types where there was one (`Degrees`), because a circle and a segment
@@ -1510,8 +1659,70 @@ mod tests {
     /// - `Phase + PhaseIncrement` — `advance`, which wraps; the operator would
     ///   not.
     /// - `Bpm - Bpm` — a tempo difference is not a tempo.
+    /// - `Confidence + Confidence` — two 0.6-confident estimates do not make a
+    ///   1.2-confident one. `combine` is the replacement, and its name states
+    ///   the independence precondition that multiplying them requires.
+    /// - `Correlation * f32` — the value is a normalized inner product, so
+    ///   rescaling denormalizes it and it stops meaning "coherence".
+    /// - `Correlation + Correlation` — coherence does not accumulate;
+    ///   time-averaging it is meter ballistics, which smooths.
+    /// - `Pan * f32`, `Pan + Pan` — a position on a segment, so the same
+    ///   argument `Mix` makes: half a pan position is not a pan position, and
+    ///   two of them do not sum. Interpolation is a `lerp`, not a `*`.
+    ///
+    /// And three *type* omissions, which the compiler enforces rather than a
+    /// missing `impl`: `Correlation` and `Pan` are not `Depth`, and
+    /// `Confidence` is not `Mix`, even though the ranges coincide. A control
+    /// you set and a measurement reported back are different quantities —
+    /// the same split `Q` and `Resonance` make.
     #[test]
     fn omitted_operators_are_documented() {}
+
+    #[test]
+    fn confidence_combines_rather_than_sums() {
+        // Independent estimates multiply into a joint probability — and the
+        // result is never larger than either input, which `+` would not
+        // preserve.
+        let joint = Confidence(0.6).combine(Confidence(0.5));
+        assert_eq!(joint, Confidence(0.3));
+        assert!(joint <= Confidence(0.6));
+
+        // The guard the shipped pitch detector lacked: YIN's aperiodicity can
+        // leave the unit interval, and only the lower bound was clamped.
+        assert_eq!(Confidence::new_clamped(1.4), Confidence::CERTAIN);
+        assert_eq!(Confidence::new_clamped(-0.2), Confidence::NONE);
+    }
+
+    #[test]
+    fn correlation_derives_width_rather_than_storing_it() {
+        // The invariant the shipped meter broke by storing `width` alongside
+        // `correlation` and smoothing the two independently.
+        assert_eq!(Correlation::MONO.to_stereo_width(), StereoWidth::MONO);
+        assert_eq!(
+            Correlation::UNCORRELATED.to_stereo_width(),
+            StereoWidth::NATURAL
+        );
+        assert_eq!(Correlation::INVERTED.to_stereo_width(), StereoWidth(2.0));
+
+        // Phase trouble is a named threshold, not a bare comparison at the
+        // call site.
+        assert!(Correlation(-0.5).has_phase_issues());
+        assert!(!Correlation(-0.1).has_phase_issues());
+        assert!(!Correlation::MONO.has_phase_issues());
+    }
+
+    #[test]
+    fn pan_saturates_and_orders() {
+        // Unlike `Azimuth`, this is a segment: past the end it stops rather
+        // than wrapping around to the opposite side.
+        assert_eq!(Pan::new_clamped(1.5), Pan::RIGHT);
+        assert_eq!(Pan::new_clamped(-1.5), Pan::LEFT);
+
+        // And unlike `Azimuth`, it orders — a segment has ends.
+        assert!(Pan::LEFT < Pan::CENTER);
+        assert!(Pan::CENTER < Pan::RIGHT);
+        assert_eq!(-Pan::LEFT, Pan::RIGHT);
+    }
 
     #[test]
     fn azimuth_wraps_rather_than_saturating() {

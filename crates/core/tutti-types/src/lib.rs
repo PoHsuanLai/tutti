@@ -35,6 +35,19 @@
 //! Everything is re-exported at the crate root, so `tutti_types::AudioThreadCell`,
 //! `tutti_types::Bpm`, `tutti_types::Samples`, etc. resolve directly.
 
+// `value` is declared first and `#[macro_use]`d so the `unit_*` operator macros
+// it defines are in scope for the modules below — `macro_rules!` are textually
+// scoped, so a module declared *before* the one defining them cannot see them.
+// `meter` hand-wrote ~90 lines of affine operators for exactly this reason.
+//
+// The macros stay crate-private rather than `#[macro_export]`ed: eight names as
+// generic as `unit_bounded!` would sit permanently at the root of a published
+// crate, un-renameable and un-feature-gateable. The only unit defined outside
+// this crate is `SampleRate` (it must live in `fundsp-tutti`, whose traits take
+// it), and it pays for that with ~17 hand-written lines there.
+#[macro_use]
+pub mod value;
+
 pub mod channels;
 pub mod downmix;
 pub mod io;
@@ -42,7 +55,6 @@ pub mod latency;
 pub mod meter;
 pub mod pcm;
 pub mod rt;
-pub mod value;
 
 // RT-callback primitives.
 pub use rt::{

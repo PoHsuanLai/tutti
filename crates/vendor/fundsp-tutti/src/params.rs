@@ -16,7 +16,9 @@
 
 /// Audio sample rate in Hertz.
 #[repr(transparent)]
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
+// `PartialOrd` only, not `Ord`: float-backed, so `NaN` denies totality exactly
+// as it does for the raw `f64` — the same rule the `tutti-types` units follow.
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Default)]
 pub struct SampleRate(pub f64);
 
 impl SampleRate {
@@ -30,6 +32,41 @@ impl SampleRate {
     #[inline]
     pub const fn get(self) -> f64 {
         self.0
+    }
+
+    // The `unit_*` op macros live in `tutti_types::value::units` and are
+    // crate-private on purpose — eight names as generic as `unit_bounded!`
+    // would be permanent public API of a published crate. `SampleRate` is the
+    // one unit defined outside that module (it must live here; see the module
+    // doc), so it pays for that choice with a hand-written copy of exactly the
+    // two opt-ins it needs: ordering, above, and bounds, here.
+    //
+    // Deliberately absent, and the omissions are load-bearing:
+    //
+    // - `Add` / `Sub` — 44.1 kHz plus 48 kHz is not a sample rate.
+    // - `Mul<f64>` / `Div<f64>` — a scaled rate is a *different device rate*;
+    //   re-derive it from the device rather than scaling a stale one.
+    // - `Div<SampleRate> -> f64` — that quotient is `SrcRatio`, and
+    //   `SrcRatio::for_rates` owns the derivation along with its unity
+    //   tolerance and its non-positive guard. A bare operator here would let
+    //   callers bypass both.
+
+    /// The lower of two rates.
+    #[inline]
+    pub fn min(self, other: Self) -> Self {
+        Self(f64::min(self.0, other.0))
+    }
+
+    /// The higher of two rates.
+    #[inline]
+    pub fn max(self, other: Self) -> Self {
+        Self(f64::max(self.0, other.0))
+    }
+
+    /// Constrain into `lo..=hi`. Panics if `lo > hi`, matching `f64::clamp`.
+    #[inline]
+    pub fn clamp(self, lo: Self, hi: Self) -> Self {
+        Self(f64::clamp(self.0, lo.0, hi.0))
     }
 }
 

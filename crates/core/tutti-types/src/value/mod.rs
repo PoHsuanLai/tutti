@@ -9,10 +9,15 @@
 //!   deliberately *not* a `Unit` (it is compared and added, not interpolated
 //!   or automated).
 
+// `#[macro_use]` propagates the `unit_*` operator macros up to the crate root,
+// so sibling modules (`meter`) can opt a type into an algebra instead of
+// hand-writing it. Declared first for the same textual-scoping reason.
+#[macro_use]
+pub mod units;
+
 pub mod param;
 pub mod samples;
 pub mod unit_param;
-pub mod units;
 
 pub use param::Param;
 pub use samples::Samples;

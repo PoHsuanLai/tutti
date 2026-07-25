@@ -117,3 +117,16 @@ pub trait HostAutomationState: Send + Sync {
     /// reacted (no format confirms the reaction).
     fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), EditorError>;
 }
+
+/// Compile-time guard that all four control capabilities stay **object-safe** —
+/// `PluginHandle` stores each as `Arc<dyn …>`, so a regression that breaks
+/// dyn-compatibility (e.g. adding a generic method) must fail here, not at a
+/// distant call site.
+#[allow(dead_code)]
+fn _assert_object_safe(
+    _p: &dyn HostParams,
+    _s: &dyn HostState,
+    _e: &dyn HostEditor,
+    _a: &dyn HostAutomationState,
+) {
+}

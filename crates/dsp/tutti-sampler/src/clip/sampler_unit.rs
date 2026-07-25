@@ -501,8 +501,21 @@ impl SamplerUnit {
         let crossfade = if crossfade_samples > 0 {
             let mut xfade = LoopCrossfade::with_channels(crossfade_samples, self.channels);
 
-            // Flat interleaved at this unit's width. Cold path (loop setup), so
-            // the allocation is fine — it never runs on the RT thread.
+            // Flat interleaved at this unit's width.
+            //
+            // This allocates, and — contrary to what a "cold path" reading of
+            // loop setup suggests — it CAN reach the audio thread: a
+            // `ClipCommand::UpdateLoop` is drained by `TrackClipReaderUnit::
+            // drain_commands`, which runs from `tick`/`process`. So changing a
+            // loop range mid-playback allocates `crossfade_samples * channels`
+            // floats in the callback and reads that many frames out of the wave.
+            //
+            // Pre-existing (the buffer was a `Vec` before this was width-generic
+            // too), and not widened here beyond the channel factor, but it is a
+            // real RT hazard rather than the safe path it looks like. Left as-is
+            // deliberately: fixing it means moving crossfade priming off the
+            // command drain, which is a behavioural change this pass does not
+            // own.
             let mut preloop = vec![0.0f32; crossfade_samples * self.channels];
             for (i, frame) in preloop.chunks_exact_mut(self.channels).enumerate() {
                 self.get_sample_raw_into(loop_start.get() + i as f64, frame);

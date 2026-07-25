@@ -14,7 +14,24 @@ use super::sampler_unit::TransportPlacement;
 use super::track_clip_reader::Direction;
 use crate::butler::{RtState, SharedReader};
 
-/// 8192 frames at 4x speed with interpolation padding.
+/// Per-block fetch budget in **frames**, reserved once per unit so the RT
+/// `clear()` + `push()` in `process_normal_samples` can never reallocate.
+///
+/// The old comment read "8192 frames at 4x speed", and both halves are wrong in
+/// ways worth recording, because the headroom this buys is accidental rather
+/// than designed:
+///
+/// - fundsp caps a `process` block at `MAX_BUFFER_SIZE = 64`, not 8192, so the
+///   real per-block demand is ~64 frames, not ~8192.
+/// - the read rate is not capped at 4x. It is `PlaybackRate` (≤ 4.0) times
+///   `SrcRatio`, which is `file_rate / session_rate` and has no clamp — a 192k
+///   file in a 44.1k session gives ≈ 4.35, so the true ceiling is ≈ 17.4x.
+///
+/// Worst case is therefore `64 * 17.4 + 4 ≈ 1119` frames against 32,776
+/// reserved — a 29x margin. That margin survives the rate ceiling being 4x
+/// larger than documented only because the block size is 128x smaller. **If
+/// fundsp's block size ever grows, recompute this** rather than trusting the
+/// number.
 const MAX_FETCH_SAMPLES: usize = 8192 * 4 + 8;
 
 /// Disk streaming sampler with varispeed, seeking, and crossfade support.
@@ -377,9 +394,10 @@ impl AudioUnit for StreamingSamplerUnit {
             }
 
             if state.is_seeking() {
-                for i in 0..size {
-                    output.set_f32(0, i, 0.0);
-                    output.set_f32(1, i, 0.0);
+                for c in 0..n {
+                    for i in 0..size {
+                        output.set_f32(c, i, 0.0);
+                    }
                 }
                 return;
             }
@@ -666,10 +684,11 @@ impl AudioUnit for StreamingClipReader {
             }
             None => {
                 self.was_inside = false;
-                if output.len() >= 2 {
-                    output[0] = 0.0;
-                    output[1] = 0.0;
-                }
+                // Every channel, not a hardcoded pair: at width 1 the old
+                // `output.len() >= 2` guard silenced nothing at all, and at
+                // width 6 it left channels 2..6 holding the previous block.
+                let n = self.outputs().min(output.len());
+                output[..n].fill(0.0);
             }
         }
     }
@@ -683,9 +702,11 @@ impl AudioUnit for StreamingClipReader {
             }
             None => {
                 self.was_inside = false;
-                for i in 0..size {
-                    output.set_f32(0, i, 0.0);
-                    output.set_f32(1, i, 0.0);
+                let n = self.outputs().min(output.channels());
+                for c in 0..n {
+                    for i in 0..size {
+                        output.set_f32(c, i, 0.0);
+                    }
                 }
             }
         }
@@ -1257,5 +1278,122 @@ mod tests {
         // after enough samples to prime interpolation it should be > 0.
         // Just verify the process didn't panic and produced some output.
         let _ = last;
+    }
+
+    /// Build a `channels`-wide ring pre-filled with `frames` interleaved frames.
+    fn make_wide_reader(frames: &[f32], channels: usize) -> SharedReader {
+        let (mut writer, reader) = RegionBuffer::with_capacity(
+            RegionId(1),
+            PathBuf::new(),
+            frames.len() / channels + 64,
+            channels,
+        );
+        writer.push_interleaved(frames);
+        crate::butler::share_reader(reader)
+    }
+
+    /// Outside its transport window a clip must silence EVERY channel.
+    ///
+    /// At width 1 the old guard was `if output.len() >= 2 { .. }`, so a mono
+    /// streaming clip outside its window silenced nothing at all and simply
+    /// leaked whatever the caller's buffer already held. At width 6 the same
+    /// site wrote only channels 0 and 1, leaving 2..6 holding the previous
+    /// block. Both are invisible at width 2, which is what every other
+    /// streaming fixture uses.
+    #[test]
+    fn outside_the_window_silences_every_channel() {
+        for width in [1usize, 6] {
+            let frames: Vec<f32> = (0..64 * width).map(|i| (i + 1) as f32).collect();
+            let ring = make_wide_reader(&frames, width);
+            let state = Arc::new(RtState::new());
+            let inner = StreamingSamplerUnit::new(ring, state.clone());
+            assert_eq!(inner.channels(), width, "ring width must reach the unit");
+
+            // Transport parked BEFORE the clip's start beat, so the placement
+            // gate reports "outside".
+            let transport = MockTransport::new(120.0, 0.0, true);
+            let mut clip = StreamingClipReader::new(
+                inner,
+                state,
+                StreamingClipConfig {
+                    placement: TransportPlacement {
+                        transport,
+                        start_beat: Beat::new(64.0),
+                        duration_beats: None,
+                    },
+                    file_sample_rate: 44100.0,
+                },
+            );
+
+            // `tick`: pre-dirty the caller's frame so a missing write shows.
+            let mut out = vec![9.0f32; width];
+            clip.tick(&[], &mut out);
+            for (c, &s) in out.iter().enumerate() {
+                assert_eq!(
+                    s, 0.0,
+                    "width {width} tick: channel {c} not silenced outside the window"
+                );
+            }
+
+            // `process`: same, through the planar path.
+            let input = BufferVec::new(0);
+            let mut output = BufferVec::new(width);
+            {
+                let mut buf = output.buffer_mut();
+                for c in 0..width {
+                    for i in 0..8 {
+                        buf.set_f32(c, i, 9.0);
+                    }
+                }
+            }
+            clip.process(8, &input.buffer_ref(), &mut output.buffer_mut());
+            let buf = output.buffer_ref();
+            for c in 0..width {
+                for i in 0..8 {
+                    assert_eq!(
+                        buf.at_f32(c, i),
+                        0.0,
+                        "width {width} process: channel {c} sample {i} not silenced"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The seeking branch of `process` must silence every channel too — same
+    /// hardcoded-pair bug, on the path taken while a seek is in flight.
+    #[test]
+    fn seeking_silences_every_channel() {
+        let width = 6usize;
+        let frames: Vec<f32> = (0..64 * width).map(|i| (i + 1) as f32).collect();
+        let ring = make_wide_reader(&frames, width);
+        let state = Arc::new(RtState::new());
+        let mut unit = StreamingSamplerUnit::new(ring, state.clone());
+
+        state.set_seeking(true);
+        assert!(state.is_seeking());
+
+        let input = BufferVec::new(0);
+        let mut output = BufferVec::new(width);
+        {
+            let mut buf = output.buffer_mut();
+            for c in 0..width {
+                for i in 0..8 {
+                    buf.set_f32(c, i, 9.0);
+                }
+            }
+        }
+        unit.process(8, &input.buffer_ref(), &mut output.buffer_mut());
+
+        let buf = output.buffer_ref();
+        for c in 0..width {
+            for i in 0..8 {
+                assert_eq!(
+                    buf.at_f32(c, i),
+                    0.0,
+                    "channel {c} sample {i} not silenced while seeking"
+                );
+            }
+        }
     }
 }

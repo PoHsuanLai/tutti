@@ -147,7 +147,12 @@ pub fn read_frame(wave: &Arc<Wave>, position: f64, out: &mut [f32]) {
     let frac = position.fract() as f32;
 
     let last = len - 1;
-    let im1 = idx.saturating_sub(1);
+    // All four taps clamp to `last`. `im1` needs it as much as the others:
+    // `saturating_sub` only guards the LOW end, so a `position` past
+    // `len` leaves it past the end too, and `Wave::at` is an unchecked
+    // index — that is a panic, not a bad sample. The one in-tree caller happens
+    // to gate on `position >= len` first, which is why it never fired.
+    let im1 = idx.saturating_sub(1).min(last);
     let i0 = idx.min(last);
     let i1 = (idx + 1).min(last);
     let i2 = (idx + 2).min(last);
@@ -407,5 +412,21 @@ mod tests {
 
         let w = stereo_ramp();
         read_frame(&w, 1.0, &mut []); // zero-width: must not panic
+    }
+
+    /// `read_frame` is `pub`, so it must survive a position past the end of the
+    /// wave rather than relying on its caller to gate first.
+    ///
+    /// `Wave::at` is an unchecked `self.vec[c][i]`, so an unclamped tap panics
+    /// instead of returning a wrong sample. `im1` used `saturating_sub(1)`,
+    /// which guards only the LOW end — every other tap was `.min(last)`.
+    #[test]
+    fn position_past_the_end_does_not_panic() {
+        let w = stereo_ramp();
+        let len = w.len() as f64;
+        let mut out = [0.0f32; 2];
+        for pos in [len - 0.5, len, len + 1.0, len * 4.0, 1e9] {
+            read_frame(&w, pos, &mut out); // must not panic
+        }
     }
 }

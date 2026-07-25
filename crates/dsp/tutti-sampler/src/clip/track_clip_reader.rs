@@ -368,17 +368,28 @@ impl Voice {
 struct ClipSlot {
     id: SlotId,
     voice: Voice,
-    /// The time-stretch processor is **always resident**: it is built once (two
-    /// phase-vocoder constructions + four `RtScratch` scratch buffers) when the
-    /// slot is created, off the per-buffer hot path. The audio thread never
-    /// (re)builds it — it only flips the lock-free `stretch_factor` /
-    /// `pitch_cents` atomics inside it. It owns NO copy of the clip source: it is
-    /// a pure frame-in → frame-out filter. At tick time, the `needs_stretch()`
-    /// gate (mirrored from those atomics into `voice.play.stretch` /
-    /// `voice.play.pitch`) chooses whether to tick the single source and route
-    /// its frame through this filter, or read the source directly. The heavy
-    /// construction stays off the audio thread this way:
-    /// [`ClipCommand::UpdateStretch`] only sets atomics, never allocates.
+    /// The time-stretch processor is **always resident**: it is built once (one
+    /// phase-vocoder construction + two `RtScratch` buffers *per channel*) when
+    /// the slot is created, and thereafter the audio thread only flips the
+    /// lock-free `stretch_factor` / `pitch_cents` atomics inside it. It owns NO
+    /// copy of the clip source: it is a pure frame-in → frame-out filter. At
+    /// tick time, the `needs_stretch()` gate (mirrored from those atomics into
+    /// `voice.play.stretch` / `voice.play.pitch`) chooses whether to tick the
+    /// single source and route its frame through this filter, or read the source
+    /// directly.
+    ///
+    /// **"Built once" is not the same as "built off the audio thread", and this
+    /// distinction used to be blurred here.** Per-buffer *updates* are genuinely
+    /// allocation-free — [`ClipCommand::UpdateStretch`] only sets atomics. But
+    /// the construction itself happens in `insert_voice`, reached from
+    /// [`ClipCommand::AddVoice`], which `drain_commands` pulls from `tick` /
+    /// `process`. So adding a clip mid-playback DOES build the vocoders in the
+    /// callback, and at width `n` that is `n` FFT setups plus `2n` scratch
+    /// allocations rather than the stereo pair the old wording implied.
+    ///
+    /// Pre-existing, and not made reachable by the width work — but the cost now
+    /// scales with channel count, so it is worth stating plainly instead of
+    /// leaving the reader to infer safety.
     ///
     /// Structural invariant: `voice.play.stretch` / `voice.play.pitch` cannot
     /// drift from the processor's atomics — every mutation goes through

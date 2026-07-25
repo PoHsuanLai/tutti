@@ -1,6 +1,3 @@
-pub mod types;
-pub use types::ChannelLayout;
-
 // Position-smoothing primitives (ExponentialSmoother) used by the panner nodes.
 // Lives here because spatial is the only consumer.
 mod smoothing;

@@ -16,7 +16,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
-use tutti_core::{AudioUnit, Beat, Bpm, BufferVec, Cents, Ratio, SampleRate, Timeline, Wave};
+use tutti_core::{
+    AudioUnit, Beat, Bpm, BufferVec, Cents, SampleRate, StretchFactor, Timeline, Wave,
+};
 use tutti_sampler::stretch::{Algorithm, Unit as TimeStretchUnit};
 use tutti_sampler::{
     ClipCommand, ClipSpec, Direction, Playback, SamplerUnit, SlotId, TrackClipReaderUnit, Voice,
@@ -89,7 +91,7 @@ fn time_stretch_process_is_allocation_free() {
     // `inputs() == 2`) primed with a constant source signal.
     let mut node = TimeStretchUnit::new(48_000.0);
     node.set_sample_rate(SampleRate(48_000.0));
-    node.set_stretch_factor(Ratio::new(1.5));
+    node.set_stretch_factor(StretchFactor::new(1.5));
     assert_eq!(node.algorithm(), Algorithm::PhaseVocoder);
 
     let mut input_vec = BufferVec::new(2);
@@ -171,7 +173,7 @@ fn track_clip_reader_process_steady_state_is_allocation_free() {
             id: SlotId(i),
             sampler,
             direction: Direction::Forward,
-            stretch_factor: Ratio::new(1.0),
+            stretch_factor: StretchFactor::new(1.0),
             pitch_cents: Cents::new(0.0),
         });
     }
@@ -212,7 +214,7 @@ fn track_clip_reader_tick_steady_state_is_allocation_free() {
             id: SlotId(i),
             sampler,
             direction: Direction::Forward,
-            stretch_factor: Ratio::new(1.0),
+            stretch_factor: StretchFactor::new(1.0),
             pitch_cents: Cents::new(0.0),
         });
     }
@@ -308,7 +310,7 @@ fn run_stretch_drain_under_guard() {
     // the stretch unit and allocates. Trips assert_no_alloc TODAY.
     handle.send(ClipCommand::UpdateStretch {
         id: SlotId(1),
-        stretch_factor: Ratio::new(2.0),
+        stretch_factor: StretchFactor::new(2.0),
         pitch_cents: Cents::new(0.0),
     });
 

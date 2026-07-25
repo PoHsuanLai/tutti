@@ -1,13 +1,13 @@
 //! Per-channel butler plan for a streaming playback.
 
 use std::sync::Arc;
-use tutti_core::{AtomicU64, Ordering};
+use tutti_core::{AtomicU64, Ordering, PlaybackRate, SrcRatio};
 
 use super::cache::StreamPin;
 use super::command::RegionId;
 use super::prefetch::SharedReader;
 use super::rt_state::RtState;
-use crate::Direction;
+use crate::clip::track_clip_reader::Direction;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LoopStatus {
@@ -102,10 +102,10 @@ impl ChannelPlan {
     pub fn stop_streaming(&mut self) {
         self.link = None;
         self.pdc_preroll = 0;
-        self.rt_state.set_speed(1.0);
+        self.rt_state.set_speed(PlaybackRate::UNITY);
         self.rt_state.set_direction(Direction::Forward);
         self.rt_state.set_seeking(false);
-        self.rt_state.set_src_ratio(1.0);
+        self.rt_state.set_src_ratio(SrcRatio::UNITY);
         self.rt_state.clear_loop_crossfade();
     }
 
@@ -179,7 +179,7 @@ mod tests {
             pdc_preroll: 1000,
             ..Default::default()
         };
-        state.rt_state.set_speed(2.0);
+        state.rt_state.set_speed(PlaybackRate::new(2.0));
         state.rt_state.set_reverse(true);
 
         state.stop_streaming();
@@ -187,7 +187,7 @@ mod tests {
         assert_eq!(state.pdc_preroll, 0);
         assert!(state.link.is_none());
         assert!(state.loop_config().is_none());
-        assert_eq!(state.rt_state.speed(), tutti_core::Ratio::new(1.0));
+        assert_eq!(state.rt_state.speed(), PlaybackRate::UNITY);
         assert!(!state.rt_state.is_reverse());
     }
 }

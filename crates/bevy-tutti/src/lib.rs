@@ -18,8 +18,8 @@
 //! }
 //!
 //! fn setup(mut commands: Commands, assets: Res<AssetServer>) {
-//!     commands.spawn((PlayAudio { source: assets.load("boom.wav"), ..default() }, DespawnOnFinish));
-//!     commands.spawn(PlayAudio { source: assets.load("wind.ogg"), looping: true, gain: 0.3, ..default() });
+//!     // Clip playback runs through tutti-sampler's TrackClipReaderUnit;
+//!     // see its docs for building and sending a `Voice`.
 //! }
 //! ```
 //!

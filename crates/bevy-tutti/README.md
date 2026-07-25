@@ -23,11 +23,11 @@ fn main() {
 }
 
 fn setup(mut commands: Commands, assets: Res<AssetServer>) {
-    // One-shot sound effect (auto-despawn when done)
-    commands.spawn((PlayAudio { source: assets.load("boom.wav"), ..default() }, DespawnOnFinish));
-
-    // Looping ambient at 30% volume
-    commands.spawn(PlayAudio { source: assets.load("wind.ogg"), looping: true, gain: 0.3, ..default() });
+    // Spawn a synth voice and play a note.
+    commands.spawn((
+        SynthNode::default(),
+        MidiUnit::default(),
+    ));
 }
 ```
 
@@ -142,24 +142,14 @@ Spawn an entity with a trigger component to perform an action. The corresponding
 
 ### Audio playback
 
-```rust
-// One-shot
-commands.spawn(PlayAudio { source: handle, ..default() });
+Clip playback goes through `tutti-sampler`'s `TrackClipReaderUnit`: build a
+`Voice` (in-RAM `SamplerUnit` or disk-streaming `StreamingClipReader`) and send
+it with `ClipCommand::AddVoice`, then drive it with `ClipCommand::Update*`. A
+clip bound to a transport derives its read position from the playhead, so it
+stays sample-aligned with the timeline.
 
-// Looping with parameters
-commands.spawn(PlayAudio { source: handle, looping: true, gain: 0.5, speed: 1.2 });
-
-// Auto-despawn on finish: add the marker
-commands.spawn((PlayAudio { source: handle, ..default() }, DespawnOnFinish));
-
-// Time-stretched: add the companion component
-commands.spawn((
-    PlayAudio { source: handle, gain: 0.8, ..default() },
-    TimeStretch { stretch_factor: 0.5, pitch_cents: -100.0 },
-));
-```
-
-After processing: `PlayAudio` is removed, `AudioEmitter { node_id }` is inserted. If time-stretched, `TimeStretchControl` is also inserted for lock-free parameter updates.
+There is no spawn-a-trigger one-shot API — an earlier `PlayAudio` component
+existed but had no consumer and was removed.
 
 ### SoundFont instruments
 
@@ -310,9 +300,9 @@ Requires `spatial` feature.
 // Mark one entity as the listener
 commands.spawn((AudioListener, Transform::default()));
 
-// Spatial emitter
+// Spatial emitter: add SpatialAudio + Transform to any entity carrying an
+// AudioEmitter (i.e. a node already in the graph).
 commands.spawn((
-    PlayAudio { source: handle, ..default() },
     SpatialAudio::default(),
     Transform::from_xyz(5.0, 0.0, -3.0),
 ));

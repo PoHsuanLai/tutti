@@ -18,6 +18,6 @@ pub use param::Param;
 pub use samples::Samples;
 pub use unit_param::{ParamAddr, UnitParam, UnitParamOutOfRange};
 pub use units::{
-    AtomicSamplePosition, Beat, BeatDuration, Bpm, Cents, Db, Degrees, Hz, Linear, Ratio,
-    SamplePosition, Seconds, Semitones, Unit,
+    AtomicSamplePosition, Beat, BeatDuration, Bpm, Cents, Db, Degrees, Hz, Linear, PlaybackRate,
+    Ratio, SamplePosition, Seconds, Semitones, SrcRatio, StretchFactor, Unit,
 };

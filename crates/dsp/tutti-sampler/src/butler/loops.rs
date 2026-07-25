@@ -1,11 +1,11 @@
 //! Loop handling and crossfade capture for butler thread.
 
-use super::super::cache::LruCache;
-use super::super::metrics::Metrics;
-use super::super::plan::{ChannelPlan, LoopStatus};
-use super::super::region_map::RegionMap;
-use super::refill::load_wave;
-use super::wave_io::wave_frame;
+use super::cache::LruCache;
+use super::io::refill::load_wave;
+use super::io::wave_io::wave_frame;
+use super::metrics::Metrics;
+use super::plan::{ChannelPlan, LoopStatus};
+use super::region_map::RegionMap;
 use dashmap::DashMap;
 use std::path::PathBuf;
 use tutti_core::{ChannelLayout, Wave};
@@ -153,15 +153,7 @@ pub(crate) fn fadein_samples(
         return Vec::new();
     };
 
-    let mut samples = Vec::with_capacity(count);
-    let layout = ChannelLayout::from(wave.channels());
-
-    for i in 0..count {
-        let [l, r] = wave_frame(&wave, layout, position_samples as usize + i);
-        samples.push((l, r));
-    }
-
-    samples
+    capture_samples(&wave, position_samples as usize, count)
 }
 
 pub(crate) fn buffer_size_for_file(file_length_samples: u64, sample_rate: f64) -> usize {

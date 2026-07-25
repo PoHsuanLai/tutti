@@ -4,12 +4,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tutti_core::{
-    AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Linear, Ratio, SamplePosition, Wave,
+    AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Linear, PlaybackRate, SamplePosition,
 };
 
-use super::clip_reader::ClipReader;
 use super::interp::cubic_hermite;
-use super::sampler_unit::{LoopSetting, TransportPlacement};
+use super::sampler_unit::TransportPlacement;
 use super::track_clip_reader::Direction;
 use crate::butler::{RtState, SharedReader};
 
@@ -153,15 +152,11 @@ impl StreamingSamplerUnit {
 
         self.apply_pending_reset();
 
-        let src_ratio = self
-            .shared_state
-            .as_ref()
-            .map_or(1.0, |s| s.src_ratio().get() as f64);
-        let base_speed = self
-            .shared_state
-            .as_ref()
-            .map_or(1.0, |s| s.effective_speed().get() as f64)
-            * src_ratio;
+        // One composition point (`RtState::read_rate`) rather than multiplying
+        // speed by src_ratio by hand — this used to be written out twice in this
+        // function, and the fetch estimate below has to agree with the per-sample
+        // advance or the ring under- or over-runs.
+        let base_speed = self.shared_state.as_ref().map_or(1.0, |s| s.read_rate());
 
         let samples_needed = (size as f64 * base_speed).ceil() as usize + 4;
 
@@ -181,9 +176,9 @@ impl StreamingSamplerUnit {
 
         let mut fetch_idx = 0;
         for i in 0..size {
-            let speed = self.shared_state.as_ref().map_or(1.0, |s| {
-                s.effective_speed().get() as f64 * s.src_ratio().get() as f64
-            });
+            // Re-read per sample so a mid-block speed change takes effect
+            // immediately; same composition as the fetch estimate above.
+            let speed = self.shared_state.as_ref().map_or(1.0, |s| s.read_rate());
 
             self.fractional_pos += speed;
 
@@ -519,6 +514,16 @@ impl StreamingClipReader {
     /// outside the clip window. Delegates to the shared
     /// [`transport_sample_offset`](super::interp::transport_sample_offset) — the
     /// one gate definition, also used by [`SamplerUnit`].
+    ///
+    /// Passes varispeed ALONE, not `read_rate` — deliberately unlike the in-RAM
+    /// tier, because the two `file_sample_rate` arguments do not mean the same
+    /// thing. `SamplerUnit` passes `wave.sample_rate()`, a raw file rate; this
+    /// reader's `file_sample_rate` is *reconstructed* as
+    /// `session_rate × src_ratio` (`ports.rs`), so it already carries the
+    /// conversion. Multiplying by `read_rate` here would apply `src_ratio`
+    /// twice: on a 48 kHz file in a 44.1 kHz session the seek target lands
+    /// ~8.8% deep, and the gate then outruns the ring by ~4.2k file samples per
+    /// second — tripping `SEEK_EPSILON_SAMPLES` about once a second, forever.
     #[inline]
     fn placement_sample_offset(&self) -> Option<f64> {
         super::interp::transport_sample_offset(
@@ -526,6 +531,7 @@ impl StreamingClipReader {
             self.placement.start_beat,
             self.placement.duration_beats,
             self.file_sample_rate,
+            self.shared_state.effective_speed().get() as f64,
         )
     }
 
@@ -551,8 +557,8 @@ impl StreamingClipReader {
     /// butler round-trip needed. Direction is a separate concern (the reader has
     /// no direction verb), so this leaves it untouched, mirroring how
     /// `ClipCommand::UpdateSpeed` carries only a magnitude.
-    pub fn set_speed(&mut self, speed: Ratio) {
-        self.shared_state.set_speed(speed.get());
+    pub fn set_speed(&mut self, speed: PlaybackRate) {
+        self.shared_state.set_speed(speed);
     }
 
     /// Set the playback direction. Routes directly to the shared [`RtState`],
@@ -589,68 +595,6 @@ impl StreamingClipReader {
             // bounded and normal advance never trips the discontinuity check.
             self.streamed_offset = offset;
         }
-    }
-}
-
-impl ClipReader for StreamingClipReader {
-    fn set_gain(&mut self, gain: Linear) {
-        StreamingClipReader::set_gain(self, gain);
-    }
-
-    fn set_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
-        StreamingClipReader::set_placement(self, start_beat, duration);
-    }
-
-    fn set_speed(&mut self, speed: Ratio) {
-        // Honest in-unit forward: the butler's `SetVarispeed` handler's speed
-        // effect is exactly `RtState::set_speed`, which this reader can reach via
-        // its `Arc<RtState>`. See [`StreamingClipReader::set_speed`].
-        StreamingClipReader::set_speed(self, speed);
-    }
-
-    fn set_direction(&mut self, direction: Direction) {
-        // Honest in-unit forward: the direction leg of the butler's `SetVarispeed`
-        // handler is `RtState::set_direction`, reachable via this reader's
-        // `Arc<RtState>`. See [`StreamingClipReader::set_direction`]. This is what
-        // makes streaming reverse produce the same effect the old butler
-        // `Command::SetSpeed { direction }` did, now driven from the reader drain.
-        StreamingClipReader::set_direction(self, direction);
-    }
-
-    fn set_loop(&mut self, _setting: LoopSetting) {
-        // NOT honestly implementable in-unit. `SetStreamLoop` mutates
-        // butler-owned state (`plan.link.loop_config`) and reads the loop-start
-        // fadein head off disk in `handle_set_stream_loop`; the reader holds only
-        // `Arc<RtState>` + the ring consumer and can reach neither. Deliberate
-        // no-op: streaming loop stays on the butler command path
-        // (`Command::Loop` → `SetStreamLoop`/`ClearStreamLoop`), which Layer 4
-        // keeps driving control-side from dawai-model. The command drain skips the
-        // streaming variant for loop ops accordingly.
-    }
-
-    fn seek(&mut self, to: SamplePosition) {
-        StreamingClipReader::seek(self, to);
-    }
-
-    fn set_wave(&mut self, _wave: Arc<Wave>) {
-        // Deliberate no-op. A streaming source has no in-RAM wave to swap; a
-        // source change means re-registering the butler stream on a different
-        // file (a control-thread / butler op — dawai-model re-issues a fresh
-        // `AddVoice` with a `Disk` source), not an in-unit mutation. Preserves
-        // the existing `ReplaceWave` behavior where the command drain skips the
-        // streaming variant.
-    }
-
-    fn play(&self) {
-        self.inner.play();
-    }
-
-    fn stop(&self) {
-        self.inner.stop();
-    }
-
-    fn is_playing(&self) -> bool {
-        self.inner.is_playing()
     }
 }
 
@@ -785,6 +729,53 @@ mod tests {
                 file_sample_rate: 44100.0,
             },
         )
+    }
+
+    /// A 48 kHz file in a 44.1 kHz session must seek to the offset the ring
+    /// will actually reach — `src_ratio` applied exactly once.
+    ///
+    /// `file_sample_rate` is reconstructed as `session_rate × src_ratio`
+    /// (`ports.rs`), so it already carries the conversion; multiplying the gate
+    /// by `read_rate` (speed × src_ratio) applied it twice. Every other
+    /// streaming fixture hardcodes 44100 against a default `src_ratio` of 1.0 —
+    /// the one value that makes a double-multiply invisible.
+    #[test]
+    fn placement_gate_applies_src_ratio_exactly_once() {
+        let samples: Vec<_> = (1..64).map(|i| (i as f32, i as f32)).collect();
+        let transport = MockTransport::new(120.0, 0.0, true);
+
+        let (inner, state) = make_unit(&samples);
+        let src = 48_000.0 / 44_100.0;
+        state.set_src_ratio(tutti_core::SrcRatio::new(src as f32));
+
+        let reader = StreamingClipReader::new(
+            inner,
+            state,
+            StreamingClipConfig {
+                placement: TransportPlacement {
+                    transport: transport.clone(),
+                    start_beat: Beat::new(0.0),
+                    duration_beats: None,
+                },
+                // What `ports.rs` reconstructs: session × src == the real file rate.
+                file_sample_rate: 44_100.0 * src,
+            },
+        );
+
+        // Two seconds in at 120 BPM = beat 4.0.
+        transport.set_beat(4.0);
+        let offset = reader
+            .placement_sample_offset()
+            .expect("inside the clip window");
+
+        // 2 s of a 48 kHz file is 96000 file samples — src_ratio applied once.
+        let expected = 2.0 * 48_000.0;
+        assert!(
+            (offset - expected).abs() < 1.0,
+            "expected ~{expected} file samples, got {offset} \
+             (a double-applied src_ratio gives ~{})",
+            expected * src
+        );
     }
 
     #[test]
@@ -982,21 +973,25 @@ mod tests {
 
     #[test]
     fn test_shared_stream_state_speed() {
+        use tutti_core::PlaybackRate;
         let state = RtState::new();
 
-        assert_eq!(state.speed(), tutti_core::Ratio::new(1.0));
+        assert_eq!(state.speed(), PlaybackRate::UNITY);
 
-        state.set_speed(0.5);
-        assert_eq!(state.speed(), tutti_core::Ratio::new(0.5));
+        state.set_speed(PlaybackRate::new(0.5));
+        assert_eq!(state.speed(), PlaybackRate::new(0.5));
 
-        state.set_speed(2.0);
-        assert_eq!(state.speed(), tutti_core::Ratio::new(2.0));
+        state.set_speed(PlaybackRate::new(2.0));
+        assert_eq!(state.speed(), PlaybackRate::new(2.0));
 
-        state.set_speed(0.1);
-        assert_eq!(state.speed(), tutti_core::Ratio::new(0.25));
+        // The range is still enforced — but by the type, at construction, so the
+        // in-RAM tier gets it too. `RtState` used to be the only place it
+        // happened, which is why the two tiers disagreed.
+        state.set_speed(PlaybackRate::new_clamped(0.1));
+        assert_eq!(state.speed(), PlaybackRate::MIN);
 
-        state.set_speed(10.0);
-        assert_eq!(state.speed(), tutti_core::Ratio::new(4.0));
+        state.set_speed(PlaybackRate::new_clamped(10.0));
+        assert_eq!(state.speed(), PlaybackRate::MAX);
     }
 
     // --- New: play/stop state ---

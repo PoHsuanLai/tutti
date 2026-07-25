@@ -11,9 +11,11 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 use smol::channel::Sender;
+use tutti_core::PlaybackRate;
 
-use super::{ButlerCommand, ChannelPlan, PlayDirection, RtState};
-use crate::StreamingSamplerUnit;
+use super::{ButlerCommand, ChannelPlan, RtState};
+use crate::clip::streaming_sampler::StreamingSamplerUnit;
+use crate::clip::track_clip_reader::Direction;
 
 /// Start a disk stream on `channel_index` from `file_path` at `offset_samples`.
 pub(crate) fn stream(
@@ -34,19 +36,13 @@ pub(crate) fn stop_stream(tx: &Sender<ButlerCommand>, channel_index: usize) {
     let _ = tx.send_blocking(ButlerCommand::StopStreaming { channel_index });
 }
 
-/// Set varispeed (speed + direction) on `channel_index`. `reverse` flips
-/// playback direction; `speed` is the magnitude.
+/// Set varispeed (speed + direction) on `channel_index`.
 pub(crate) fn set_varispeed(
     tx: &Sender<ButlerCommand>,
     channel_index: usize,
-    speed: f32,
-    reverse: bool,
+    speed: PlaybackRate,
+    direction: Direction,
 ) {
-    let direction = if reverse {
-        PlayDirection::Reverse
-    } else {
-        PlayDirection::Forward
-    };
     let _ = tx.send_blocking(ButlerCommand::SetVarispeed {
         channel_index,
         direction,
@@ -54,7 +50,7 @@ pub(crate) fn set_varispeed(
     });
 }
 
-/// Build a bare [`StreamingSamplerUnit`] over a channel whose butler link is
+/// Build a bare `StreamingSamplerUnit` over a channel whose butler link is
 /// ready, alongside the channel's shared [`RtState`]. `None` while the butler
 /// hasn't installed the [`ChannelPlan`] link yet. This is the un-gated consumer
 /// handoff the timeline path wraps in a placement-gated reader (using the

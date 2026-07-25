@@ -53,8 +53,8 @@ pub use rt::{
 // Value vocabulary.
 pub use value::{
     AtomicSamplePosition, Beat, BeatDuration, Bpm, Cents, Db, Degrees, Hz, Linear, Param,
-    ParamAddr, Ratio, SamplePosition, Samples, Seconds, Semitones, Unit, UnitParam,
-    UnitParamOutOfRange,
+    ParamAddr, PlaybackRate, Ratio, SamplePosition, Samples, Seconds, Semitones, SrcRatio,
+    StretchFactor, Unit, UnitParam, UnitParamOutOfRange,
 };
 
 // Channel layout.

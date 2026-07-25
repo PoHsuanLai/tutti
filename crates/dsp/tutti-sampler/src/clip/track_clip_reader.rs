@@ -18,20 +18,17 @@
 
 use std::sync::Arc;
 
+use crate::ports::{Command, Commands};
 use crate::stretch;
-use crate::ClipReader;
-use crate::Command;
-use crate::Commands;
-use crate::LoopSetting;
-use crate::SamplerUnit;
-use crate::StreamingClipReader;
-use crate::TransportPlacement;
+
+use super::sampler_unit::{LoopSetting, SamplerUnit, TransportPlacement};
+use super::streaming_sampler::StreamingClipReader;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use tutti_core::{
-    AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Cents, Linear, Ratio, SamplePosition,
-    SignalFrame, Timeline, Wave,
+    AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Cents, Linear, PlaybackRate,
+    SamplePosition, SignalFrame, StretchFactor, Timeline, Wave,
 };
 
 const COMMAND_CAPACITY: usize = 64;
@@ -82,13 +79,17 @@ impl Direction {
 // DESIGN INVARIANT: the two variants differ ONLY in the *essential* per-sample
 // read — `Ram` indexes an `Arc<Wave>`; `Disk` pops the butler-fed ring,
 // emitting silence while `is_seeking()` and crossfading on refill. Every *cold*
-// control op (gain, placement, loop, wave swap, seek, play/stop, reset,
-// set_sample_rate) is unified through the `ClipReader` trait — see
-// `as_clip_reader_mut` — so the command drain no longer branches per backend.
+// control op is a `match` on this enum — see `apply_gain` / `apply_speed` /
+// `apply_direction` / `apply_placement`. A `ClipReader` trait used to sit over
+// the pair, but half its methods no-opped on one side or the other, which hid
+// the divergence instead of removing it (streaming clamped speed, in-RAM did
+// not; `set_wave` silently did nothing on disk). With two in-crate impls the
+// enum is the better tool: it inlines, it surfaces the fork at the call site,
+// and adding a variant makes the compiler list every decision to make.
 //
-// The enum (not a `Box<dyn AudioUnit>`) is deliberate: RT requires monomorphized
-// dispatch on `tick`/`process`, so the per-sample read inlines and never touches
-// a vtable or the heap. `ClipReader` is a trait object only on the cold path.
+// The enum (not a `Box<dyn AudioUnit>`) is also what RT needs: monomorphized
+// dispatch on `tick`/`process`, so the per-sample read never touches a vtable
+// or the heap.
 // Both variants are `Clone` and `impl AudioUnit`, so the field-wise `Voice`
 // clone and the stretch wrapper work uniformly across them.
 // ---------------------------------------------------------------------------
@@ -120,15 +121,61 @@ impl Clone for VoiceSource {
 }
 
 impl VoiceSource {
-    /// The direct-read source as `&mut dyn ClipReader` — the single cold-path
-    /// control surface. Collapses the former `Ram`/`Disk`-specific mutation into
-    /// one `ClipReader` call, so the command drain no longer branches per
-    /// backend.
+    /// The source as an [`AudioUnit`], for the verbs every node has
+    /// (`reset`, `set_sample_rate`). Tier-specific control is a `match` at the
+    /// call site instead — see [`apply_gain`](Self::apply_gain).
     #[inline]
-    fn as_clip_reader_mut(&mut self) -> &mut dyn ClipReader {
+    fn as_audio_unit_mut(&mut self) -> &mut dyn AudioUnit {
         match self {
             Self::Ram(s) => s,
             Self::Disk(s) => s,
+        }
+    }
+
+    /// Set the output gain. Both tiers store a linear multiplier applied after
+    /// the source read, so this is genuinely one operation.
+    #[inline]
+    fn apply_gain(&mut self, gain: Linear) {
+        match self {
+            Self::Ram(s) => s.set_gain(gain),
+            Self::Disk(s) => s.set_gain(gain),
+        }
+    }
+
+    /// Set varispeed.
+    ///
+    /// The two tiers store it differently — a unit-local field in RAM, an
+    /// atomic shared with the butler and every clone on disk — which is exactly
+    /// why the bound now lives in [`PlaybackRate`] rather than in one of these
+    /// arms.
+    #[inline]
+    fn apply_speed(&mut self, speed: PlaybackRate) {
+        match self {
+            Self::Ram(s) => s.set_speed(speed),
+            Self::Disk(s) => s.set_speed(speed),
+        }
+    }
+
+    /// Set playback direction.
+    ///
+    /// In-RAM direction lives on the slot's `Playback`, not inside the unit —
+    /// the reversed index is applied at read time — so only the streaming tier
+    /// has source-side state to update. The caller writes `play.direction`
+    /// either way.
+    #[inline]
+    fn apply_direction(&mut self, direction: Direction) {
+        match self {
+            Self::Ram(_) => {}
+            Self::Disk(s) => s.set_direction(direction),
+        }
+    }
+
+    /// Update the timeline placement window.
+    #[inline]
+    fn apply_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
+        match self {
+            Self::Ram(s) => s.set_placement(start_beat, duration),
+            Self::Disk(s) => s.set_placement(start_beat, duration),
         }
     }
 }
@@ -138,9 +185,8 @@ impl VoiceSource {
 // should do (gain, speed, direction, loop, timeline placement, stretch, pitch);
 // each [`VoiceSource`] APPLIES it its own way (the in-RAM `SamplerUnit` stores
 // the state on its resident DSP; the streaming reader forwards to the butler's
-// shared `RtState`). The apply fan-out is the cold-path `ClipReader` surface via
-// [`VoiceSource::as_clip_reader_mut`] — Playback is the description, not the
-// applied state.
+// shared `RtState`). The apply fan-out is the `VoiceSource` match — Playback is
+// the description, not the applied state.
 //
 // `Default` is hand-written: the newtypes default to zero, so a derived default
 // would ship silent (`gain = 0`) and frozen (`speed = 0` / `stretch = 0`).
@@ -149,14 +195,14 @@ impl VoiceSource {
 #[derive(Debug)]
 pub struct Playback {
     pub gain: Linear,
-    pub speed: Ratio,
+    pub speed: PlaybackRate,
     pub direction: Direction,
     pub loop_: LoopSetting,
     pub placement: Option<TransportPlacement>,
     /// Time-stretch factor (1.0 = no stretch). Absorbed here so the placement,
     /// stretch, and pitch intent live in one record — `ClipSpec` no longer keeps
     /// a stretch sidecar.
-    pub stretch: Ratio,
+    pub stretch: StretchFactor,
     /// Pitch shift in cents (0.0 = no shift).
     pub pitch: Cents,
 }
@@ -165,11 +211,11 @@ impl Default for Playback {
     fn default() -> Self {
         Self {
             gain: Linear::new(1.0),
-            speed: Ratio::new(1.0),
+            speed: PlaybackRate::UNITY,
             direction: Direction::Forward,
             loop_: LoopSetting::Off,
             placement: None,
-            stretch: Ratio::new(1.0),
+            stretch: StretchFactor::UNITY,
             pitch: Cents::new(0.0),
         }
     }
@@ -184,12 +230,12 @@ impl Default for Playback {
 #[derive(Debug, Clone, Default)]
 pub struct PendingPlayback {
     pub gain: Linear,
-    pub speed: Ratio,
+    pub speed: PlaybackRate,
     pub direction: Direction,
     pub looping: bool,
     pub loop_start: SamplePosition,
     pub loop_end: SamplePosition,
-    pub stretch: Ratio,
+    pub stretch: StretchFactor,
     pub pitch: Cents,
     pub placement: Option<TransportPlacement>,
 }
@@ -368,7 +414,7 @@ impl ClipSlot {
     /// Lock-free: flips the resident processor's atomics and mirrors the values
     /// into `voice.play` (read by the `needs_stretch()` routing gate).
     /// Allocation-free, so it is safe to run on the audio-thread command drain.
-    fn set_stretch(&mut self, stretch_factor: Ratio, pitch_cents: Cents) {
+    fn set_stretch(&mut self, stretch_factor: StretchFactor, pitch_cents: Cents) {
         self.voice.play.stretch = stretch_factor;
         self.voice.play.pitch = pitch_cents;
         self.stretch.set_stretch_factor(stretch_factor);
@@ -547,8 +593,8 @@ pub enum ClipCommand {
     /// [`VoiceSource`] (in-RAM `SamplerUnit` or streaming `StreamingClipReader`)
     /// plus its [`Playback`] control-intent record. The drain builds the
     /// [`ClipSlot`] and applies the full `Playback` per-tier by reusing the same
-    /// cold-path appliers the update commands use (`ClipReader::set_*` +
-    /// [`Self::apply_loop`]) — no allocation or I/O on the hot path, since the
+    /// cold-path appliers the update commands use (`VoiceSource::apply_*` +
+    /// `apply_loop`) — no allocation or I/O on the hot path, since the
     /// source (RAM `SamplerUnit` or butler-registered `StreamingClipReader`) is
     /// built entirely on the ECS/butler side before the send.
     ///
@@ -581,7 +627,7 @@ pub enum ClipCommand {
     },
     UpdateSpeed {
         id: SlotId,
-        speed: Ratio,
+        speed: PlaybackRate,
     },
     UpdateLoop {
         id: SlotId,
@@ -597,7 +643,7 @@ pub enum ClipCommand {
     },
     UpdateStretch {
         id: SlotId,
-        stretch_factor: Ratio,
+        stretch_factor: StretchFactor,
         pitch_cents: Cents,
     },
 }
@@ -696,7 +742,7 @@ pub struct ClipSpec {
     /// Already transport-bound, with gain / loop range applied.
     pub sampler: SamplerUnit,
     pub direction: Direction,
-    pub stretch_factor: Ratio,
+    pub stretch_factor: StretchFactor,
     pub pitch_cents: Cents,
 }
 
@@ -827,6 +873,16 @@ impl TrackClipReaderUnit {
         self.clips.len()
     }
 
+    /// The control intent recorded for a slot. Test helper: lets a test assert
+    /// that a dropped command did NOT leave a `Playback` claiming it applied.
+    #[cfg(test)]
+    fn playback_of(&self, id: SlotId) -> Option<&Playback> {
+        self.clips
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| &s.voice.play)
+    }
+
     /// Build a render-only reader: empty, bound to `transport`, with no live
     /// command channel — its `rx` is a `bounded(0)` receiver that has no sender
     /// and can never deliver anything.
@@ -893,7 +949,7 @@ impl TrackClipReaderUnit {
     /// Apply a loop setting to a slot, routing by tier.
     ///
     /// - **In-RAM**: primes / clears the loop range on the `SamplerUnit` in-unit
-    ///   (`ClipReader::set_loop`).
+    ///   (`SamplerUnit::set_loop_setting`).
     /// - **Streaming**: loop is butler-owned — `SetStreamLoop` reads a loop-start
     ///   fadein head off disk and mutates `plan.link.loop_config`, neither
     ///   reachable from the reader — so the reader FORWARDS to the butler via the
@@ -911,18 +967,31 @@ impl TrackClipReaderUnit {
         };
         match &mut slot.voice.source {
             VoiceSource::Ram(sampler) => {
-                sampler.set_loop(setting.clone());
+                sampler.set_loop_setting(setting.clone());
                 slot.voice.play.loop_ = setting;
             }
             VoiceSource::Disk(_) => {
-                if let (Some(butler), Some(channel_index)) =
-                    (&self.butler, slot.voice.channel_index)
-                {
-                    butler.send(Command::Loop {
-                        channel_index,
-                        setting: setting.clone(),
-                    });
-                }
+                // Streaming loop is butler-owned, so this needs both a butler
+                // handle and a registered channel. A reader built without one
+                // (`new()`, `detached()`, `isolate()` — the offline/render
+                // paths) has neither.
+                let Some((butler, channel_index)) =
+                    self.butler.as_ref().zip(slot.voice.channel_index)
+                else {
+                    // Do NOT record the intent: the butler was never told, and
+                    // a `play.loop_` that says "looping" while the stream is
+                    // not would make `Playback` lie about the applied state —
+                    // which `insert_voice` then replays as if it were real.
+                    #[cfg(feature = "bevy")]
+                    bevy_log::warn!(
+                        "loop command dropped for slot {id:?}: streaming voice has no butler channel"
+                    );
+                    return;
+                };
+                butler.send(Command::Loop {
+                    channel_index,
+                    setting: setting.clone(),
+                });
                 slot.voice.play.loop_ = setting;
             }
         }
@@ -937,9 +1006,9 @@ impl TrackClipReaderUnit {
     ///
     /// The `Playback` is control-INTENT; each tier applies it its own way. Rather
     /// than duplicate the tier fork, we replay the exact cold-path appliers the
-    /// `Update*` commands use: `ClipReader::set_*` (unified across tiers — in-RAM
+    /// `Update*` commands use: `VoiceSource::apply_*` (per-tier match — in-RAM
     /// stores on the `SamplerUnit`, streaming forwards to the shared `RtState`)
-    /// for gain / speed / direction, and [`Self::apply_loop`] for loop (in-RAM
+    /// for gain / speed / direction, and `apply_loop` for loop (in-RAM
     /// primes the range in-unit, streaming forwards `Command::Loop` to the
     /// butler). Stretch/pitch are primed by `ClipSlot::new` from `play`. Runs on
     /// the COLD command drain, so the loop's butler send is RT-safe.
@@ -961,15 +1030,12 @@ impl TrackClipReaderUnit {
         // commands use. The slot is now present, so `slot_mut` / `apply_loop`
         // find it by id.
         if let Some(slot) = self.slot_mut(id) {
-            slot.voice.source.as_clip_reader_mut().set_gain(gain);
+            slot.voice.source.apply_gain(gain);
             slot.voice.play.gain = gain;
-            slot.voice.source.as_clip_reader_mut().set_speed(speed);
+            slot.voice.source.apply_speed(speed);
             slot.voice.play.speed = speed;
             slot.voice.play.direction = direction;
-            slot.voice
-                .source
-                .as_clip_reader_mut()
-                .set_direction(direction);
+            slot.voice.source.apply_direction(direction);
         }
         self.apply_loop(id, loop_);
     }
@@ -985,14 +1051,23 @@ impl TrackClipReaderUnit {
                 }
                 ClipCommand::ReplaceWave { id, wave } => {
                     if let Some(slot) = self.slot_mut(id) {
-                        // In-memory: swap the resident wave. Streaming has no
-                        // in-RAM wave; its `ClipReader::set_wave` is a deliberate
-                        // no-op (a source change means re-registering the butler
-                        // stream on a different file — a control-thread / butler
-                        // op, re-issued control-side from dawai-model as a fresh
-                        // `AddVoice` with a `Disk` source). One `ClipReader` call
-                        // covers both.
-                        slot.voice.source.as_clip_reader_mut().set_wave(wave);
+                        // Match the tier explicitly rather than calling through
+                        // a shared setter whose streaming half was a silent
+                        // no-op: a `ReplaceWave` aimed at a disk voice did
+                        // nothing and said nothing. Swapping a streaming
+                        // source means re-registering the butler stream on a
+                        // different file, which is a control-thread op issued
+                        // from dawai-model as a fresh `AddVoice`.
+                        match &mut slot.voice.source {
+                            VoiceSource::Ram(sampler) => sampler.set_wave(wave),
+                            VoiceSource::Disk(_) => {
+                                #[cfg(feature = "bevy")]
+                                bevy_log::warn!(
+                                    "ReplaceWave ignored for slot {id:?}: a streaming voice \
+                                     changes source by re-issuing AddVoice, not in-unit"
+                                );
+                            }
+                        }
                     }
                 }
                 ClipCommand::UpdatePlacement {
@@ -1006,8 +1081,7 @@ impl TrackClipReaderUnit {
                         // the next inside-frame).
                         slot.voice
                             .source
-                            .as_clip_reader_mut()
-                            .set_placement(start_beat, duration_beats);
+                            .apply_placement(start_beat, duration_beats);
                         if let Some(placement) = &mut slot.voice.play.placement {
                             placement.start_beat = start_beat;
                             placement.duration_beats = duration_beats;
@@ -1016,7 +1090,7 @@ impl TrackClipReaderUnit {
                 }
                 ClipCommand::UpdateGain { id, gain } => {
                     if let Some(slot) = self.slot_mut(id) {
-                        slot.voice.source.as_clip_reader_mut().set_gain(gain);
+                        slot.voice.source.apply_gain(gain);
                         slot.voice.play.gain = gain;
                     }
                 }
@@ -1026,9 +1100,9 @@ impl TrackClipReaderUnit {
                         // In-RAM stores it on the `SamplerUnit`; streaming forwards
                         // to the shared `RtState` (the exact speed effect of the
                         // butler's `SetVarispeed`, reachable from the reader). The
-                        // `ClipReader::set_speed` covers both — dawai no longer
+                        // `apply_speed` covers both — dawai no longer
                         // forks streaming speed onto a separate butler command.
-                        slot.voice.source.as_clip_reader_mut().set_speed(speed);
+                        slot.voice.source.apply_speed(speed);
                         slot.voice.play.speed = speed;
                     }
                 }
@@ -1064,10 +1138,7 @@ impl TrackClipReaderUnit {
                         // dawai sends reverse ONCE, no longer folding it into a
                         // separate butler speed command.
                         slot.voice.play.direction = direction;
-                        slot.voice
-                            .source
-                            .as_clip_reader_mut()
-                            .set_direction(direction);
+                        slot.voice.source.apply_direction(direction);
                     }
                 }
                 ClipCommand::UpdateStretch {
@@ -1128,7 +1199,7 @@ impl AudioUnit for TrackClipReaderUnit {
 
     fn reset(&mut self) {
         for slot in &mut self.clips {
-            slot.voice.source.as_clip_reader_mut().reset();
+            slot.voice.source.as_audio_unit_mut().reset();
             slot.stretch.reset();
         }
     }
@@ -1156,7 +1227,7 @@ impl AudioUnit for TrackClipReaderUnit {
         for slot in &mut self.clips {
             slot.voice
                 .source
-                .as_clip_reader_mut()
+                .as_audio_unit_mut()
                 .set_sample_rate(sample_rate);
             slot.sample_rate = sample_rate.get();
             slot.stretch.set_sample_rate(sample_rate);
@@ -1295,7 +1366,7 @@ impl AudioUnit for VoiceNode {
     }
 
     fn reset(&mut self) {
-        self.0.voice.source.as_clip_reader_mut().reset();
+        self.0.voice.source.as_audio_unit_mut().reset();
         self.0.stretch.reset();
     }
 
@@ -1303,7 +1374,7 @@ impl AudioUnit for VoiceNode {
         self.0
             .voice
             .source
-            .as_clip_reader_mut()
+            .as_audio_unit_mut()
             .set_sample_rate(sample_rate);
         self.0.sample_rate = sample_rate.get();
         self.0.stretch.set_sample_rate(sample_rate);
@@ -1483,7 +1554,7 @@ mod tests {
             id: SlotId(1),
             sampler,
             direction: Direction::Forward,
-            stretch_factor: Ratio::new(1.0),
+            stretch_factor: StretchFactor::new(1.0),
             pitch_cents: Cents::new(0.0),
         });
 
@@ -1520,7 +1591,7 @@ mod tests {
             id: SlotId(1),
             sampler,
             direction: Direction::Forward,
-            stretch_factor: Ratio::new(1.0),
+            stretch_factor: StretchFactor::new(1.0),
             pitch_cents: Cents::new(0.0),
         });
         unit.tick(&[], &mut out);
@@ -1565,7 +1636,7 @@ mod tests {
 
         handle.send(ClipCommand::UpdateStretch {
             id: SlotId(1),
-            stretch_factor: Ratio::new(2.0),
+            stretch_factor: StretchFactor::new(2.0),
             pitch_cents: Cents::new(0.0),
         });
         unit.tick(&[], &mut out);
@@ -1573,7 +1644,7 @@ mod tests {
 
         handle.send(ClipCommand::UpdateStretch {
             id: SlotId(1),
-            stretch_factor: Ratio::new(1.0),
+            stretch_factor: StretchFactor::new(1.0),
             pitch_cents: Cents::new(0.0),
         });
         unit.tick(&[], &mut out);
@@ -1623,7 +1694,7 @@ mod tests {
             id: SlotId(1),
             sampler: sampler2,
             direction: Direction::Forward,
-            stretch_factor: Ratio::new(1.0),
+            stretch_factor: StretchFactor::new(1.0),
             pitch_cents: Cents::new(0.0),
         });
         let mut node2 = VoiceNode::new(Voice {
@@ -1673,6 +1744,70 @@ mod tests {
         assert!(
             !placement.transport.is_rolling(),
             "clock swapped to the stopped one"
+        );
+    }
+
+    // --- 0e: dropped commands must not be recorded as applied ---
+
+    /// A streaming voice with no butler channel cannot have its loop applied —
+    /// the butler owns streaming loop state. The drain used to send nothing and
+    /// still write `play.loop_`, so the intent record claimed a loop that was
+    /// never set; `insert_voice` would then replay that lie. Reachable on every
+    /// offline path: `new()`, `detached()`, and `isolate()` all have no butler.
+    #[test]
+    fn loop_on_a_butlerless_streaming_voice_is_not_recorded() {
+        use crate::butler::{share_reader, RegionBuffer, RegionId, RtState};
+        use crate::clip::streaming_sampler::StreamingSamplerUnit;
+        use crate::clip::streaming_sampler::{StreamingClipConfig, StreamingClipReader};
+
+        let transport = MockTransport::new(120.0, 0.0, true);
+        let (mut unit, handle) = TrackClipReaderUnit::new();
+
+        // Build a Disk voice with no butler channel.
+        let (writer, reader) =
+            RegionBuffer::with_capacity(RegionId(1), std::path::PathBuf::new(), 128);
+        drop(writer);
+        let state = std::sync::Arc::new(RtState::new());
+        let inner = StreamingSamplerUnit::new(share_reader(reader), state.clone());
+        let clip_reader = StreamingClipReader::new(
+            inner,
+            state,
+            StreamingClipConfig {
+                placement: TransportPlacement {
+                    transport: transport.clone(),
+                    start_beat: Beat::new(0.0),
+                    duration_beats: None,
+                },
+                file_sample_rate: 44100.0,
+            },
+        );
+
+        let id = SlotId(7);
+        handle.send(ClipCommand::AddVoice {
+            id,
+            voice: Box::new(Voice {
+                source: VoiceSource::Disk(clip_reader),
+                play: Playback::default(),
+                channel_index: None,
+            }),
+        });
+
+        handle.send(ClipCommand::UpdateLoop {
+            id,
+            looping: true,
+            loop_start: SamplePosition::new(0.0),
+            loop_end: SamplePosition::new(64.0),
+            crossfade_samples: 0,
+        });
+
+        let mut out = [0.0f32; 2];
+        unit.tick(&[], &mut out);
+
+        let play = unit.playback_of(id).expect("slot exists");
+        assert_eq!(
+            play.loop_,
+            LoopSetting::Off,
+            "a loop the butler was never told about must not be recorded as applied"
         );
     }
 }

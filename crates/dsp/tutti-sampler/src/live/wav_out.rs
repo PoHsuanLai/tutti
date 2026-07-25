@@ -16,13 +16,13 @@
 //! ([`AudioIn`](crate::AudioIn)) into this sink ([`AudioOut`](crate::AudioOut))
 //! on a background thread and calls [`finalize`](AudioOut::finalize) once at stop.
 
-use crate::io::AudioOut;
 use hound::{SampleFormat, WavSpec, WavWriter};
-use tutti_core::ChannelLayout;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::PathBuf;
+use tutti_core::io::AudioOut;
 use tutti_core::pcm::f32_to_i24;
+use tutti_core::ChannelLayout;
 
 /// On-disk sample format for a [`WavOut`].
 ///

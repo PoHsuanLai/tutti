@@ -1,9 +1,9 @@
 //! [`Recorder`] — the live driver that turns a [`MicIn`] into a WAV file.
 //!
 //! Recording is `pump(mic, wav)`: poll a block of frames from the
-//! [`AudioIn`](tutti_sampler::AudioIn) mic, write it to the
-//! [`AudioOut`](tutti_sampler::AudioOut) WAV sink, repeat. This is the caller
-//! side of [`tutti_sampler::pump`] — the loop and the stop policy that the pump
+//! [`AudioIn`](tutti_core::io::AudioIn) mic, write it to the
+//! [`AudioOut`](tutti_core::io::AudioOut) WAV sink, repeat. This is the caller
+//! side of [`tutti_core::io::pump`] — the loop and the stop policy that the pump
 //! function itself deliberately leaves out.
 //!
 //! # Threading
@@ -11,14 +11,14 @@
 //! The pump runs on its own background thread, NOT `cpal`'s real-time input
 //! callback (that thread only ever `try_push`es into [`MicIn`]'s ring; see
 //! [`mic`](super::mic)). The pump thread owns both the `MicIn` and the
-//! [`WavOut`] outright, so [`finalize`](tutti_sampler::AudioOut::finalize) —
+//! [`WavOut`] outright, so [`finalize`](tutti_core::io::AudioOut::finalize) —
 //! which consumes the sink by value and can happen only once — has a clear home:
 //! the thread breaks its loop on the stop flag, finalizes, and returns the
 //! `io::Result`, which [`stop`](Recorder::stop) recovers by joining.
 //!
 //! The scratch buffer is allocated once before the loop; the loop body never
 //! allocates. A live mic frequently has nothing ready (the ring hasn't filled
-//! since the last poll), so an empty [`pump`](tutti_sampler::pump) parks briefly
+//! since the last poll), so an empty [`pump`](tutti_core::io::pump) parks briefly
 //! rather than busy-spinning a core.
 
 use std::path::PathBuf;
@@ -93,7 +93,7 @@ impl Recorder {
     }
 
     /// Signal the pump thread to stop, join it, and finalize the WAV. Returns
-    /// [`finalize`](tutti_sampler::AudioOut::finalize)'s result — an error here
+    /// [`finalize`](tutti_core::io::AudioOut::finalize)'s result — an error here
     /// means the WAV header was left unpatched and the file is unreadable.
     pub fn stop(mut self) -> std::io::Result<()> {
         self.running.store(false, Ordering::Release);
@@ -112,7 +112,7 @@ impl Recorder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_sampler::AudioIn;
+    use tutti_core::io::AudioIn;
 
     /// A finite in-memory [`AudioIn`] standing in for a live mic: hands out its
     /// frames in bounded chunks, returning a short-then-zero count at

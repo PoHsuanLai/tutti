@@ -18,10 +18,10 @@ use dashmap::DashMap;
 use smol::channel::Sender;
 
 use crate::butler::{ButlerCommand, ChannelPlan};
-use crate::playback::{
+use crate::clip::{
     Direction, LoopSetting, StreamingClipConfig, StreamingClipReader, TransportPlacement,
 };
-use tutti_core::{Beat, BeatDuration, Ratio, SamplePosition, Timeline, Wave};
+use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, Timeline, Wave};
 
 /// The caller's stated choice of playback tier for a clip: whole-file in RAM
 /// (`Memory`) or incremental disk streaming (`Disk`). Plain data — the sampler
@@ -74,7 +74,7 @@ pub enum Command {
     /// `SetVarispeed`.
     SetSpeed {
         channel_index: usize,
-        speed: Ratio,
+        speed: PlaybackRate,
         direction: Direction,
     },
     /// Enable/replace or disable looping. `LoopSetting::On { .. }` maps to
@@ -132,12 +132,7 @@ impl Commands {
                 speed,
                 direction,
             } => {
-                crate::butler::control::set_varispeed(
-                    &self.tx,
-                    channel_index,
-                    speed.get(),
-                    direction.is_reverse(),
-                );
+                crate::butler::control::set_varispeed(&self.tx, channel_index, speed, direction);
             }
             Command::Loop {
                 channel_index,

@@ -1,7 +1,9 @@
 //! Time-stretching audio unit wrapper.
 
 use std::sync::Arc;
-use tutti_core::{AtomicF32, AudioUnit, BufferMut, BufferRef, Cents, Ordering, Ratio, SignalFrame};
+use tutti_core::{
+    AtomicF32, AudioUnit, BufferMut, BufferRef, Cents, Ordering, SignalFrame, StretchFactor,
+};
 
 use tutti_core::RtScratch;
 
@@ -67,7 +69,7 @@ const MAX_BUFFER_SIZE: usize = 8192;
 /// the real clip source itself and feeds the resulting stereo frame in as this
 /// unit's `input`; the phase-vocoder latent state (the two processors, the
 /// scratch buffers, the atomics) is what lives here. This removes the former
-/// second copy of the clip source (a `Box<dyn ClipReader>` clone) and the
+/// second copy of the clip source (a boxed clone of it) and the
 /// coherence machinery that kept it in sync with the direct-read source.
 pub struct Unit {
     processor_left: Processor,
@@ -138,13 +140,13 @@ impl Unit {
     }
 
     /// Set stretch factor (1.0 = normal, 2.0 = half speed, 0.5 = double speed)
-    pub fn set_stretch_factor(&self, factor: Ratio) {
+    pub fn set_stretch_factor(&self, factor: StretchFactor) {
         self.stretch_factor
             .store(factor.get().clamp(0.25, 4.0), Ordering::Release);
     }
 
-    pub fn stretch_factor(&self) -> Ratio {
-        Ratio::new(self.stretch_factor.load(Ordering::Acquire))
+    pub fn stretch_factor(&self) -> StretchFactor {
+        StretchFactor::new(self.stretch_factor.load(Ordering::Acquire))
     }
 
     /// Get Arc for lock-free external control
@@ -359,7 +361,7 @@ mod tests {
     fn test_set_parameters() {
         let unit = Unit::new(44100.0);
 
-        unit.set_stretch_factor(Ratio::new(2.0));
+        unit.set_stretch_factor(StretchFactor::new(2.0));
         assert!((unit.stretch_factor().get() - 2.0).abs() < 0.001);
 
         unit.set_pitch_cents(Cents::new(-200.0));
@@ -370,10 +372,10 @@ mod tests {
     fn test_parameter_clamping() {
         let unit = Unit::new(44100.0);
 
-        unit.set_stretch_factor(Ratio::new(10.0));
+        unit.set_stretch_factor(StretchFactor::new(10.0));
         assert!((unit.stretch_factor().get() - 4.0).abs() < 0.001);
 
-        unit.set_stretch_factor(Ratio::new(0.1));
+        unit.set_stretch_factor(StretchFactor::new(0.1));
         assert!((unit.stretch_factor().get() - 0.25).abs() < 0.001);
     }
 
@@ -393,7 +395,7 @@ mod tests {
     fn test_enabled_flag() {
         let mut unit = Unit::new(44100.0);
 
-        unit.set_stretch_factor(Ratio::new(2.0));
+        unit.set_stretch_factor(StretchFactor::new(2.0));
         assert!(unit.is_processing());
 
         unit.set_enabled(false);
@@ -406,12 +408,12 @@ mod tests {
     #[test]
     fn test_clone() {
         let unit1 = Unit::new(44100.0);
-        unit1.set_stretch_factor(Ratio::new(1.5));
+        unit1.set_stretch_factor(StretchFactor::new(1.5));
 
         let unit2 = unit1.clone();
         assert!((unit2.stretch_factor().get() - 1.5).abs() < 0.001);
 
-        unit1.set_stretch_factor(Ratio::new(2.0));
+        unit1.set_stretch_factor(StretchFactor::new(2.0));
         assert!((unit1.stretch_factor().get() - 2.0).abs() < 0.001);
         assert!((unit2.stretch_factor().get() - 1.5).abs() < 0.001);
     }

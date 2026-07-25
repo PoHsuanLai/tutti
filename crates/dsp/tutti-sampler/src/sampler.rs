@@ -21,8 +21,6 @@ use tutti_core::Samples;
 /// command channel) and the READ port [`status`](Self::status) (a [`Status`]
 /// carrying the sample rate + the reader-factory).
 ///
-/// One-shot playback is driven the idiomatic Bevy way — spawn a
-/// [`PlayAudio`](crate::PlayAudio) entity — not through this handle.
 ///
 /// # Example
 ///

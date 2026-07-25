@@ -1,14 +1,19 @@
-//! Delay compensation for streaming playback.
+//! Stream preroll: the butler's half of delay compensation.
 //!
 //! A source outside the audio graph cannot be delayed by a node inside it —
 //! instead it seeks its read head earlier, so its audio arrives already aligned.
+//!
+//! Named `preroll`, not `pdc`, to keep the split with `tutti_types::latency`
+//! visible: that computes *how much* compensation each channel needs; this
+//! consumes the answer and moves read heads. This file was also filed under
+//! `io/`, which it is not — it repositions streams, it does not read them.
 
-use super::super::cache::LruCache;
-use super::super::config::BufferConfig;
-use super::super::metrics::Metrics;
-use super::super::plan::ChannelPlan;
-use super::super::region_map::RegionMap;
+use super::cache::LruCache;
+use super::config::BufferConfig;
 use super::loops::{fadein_samples, fadeout_samples};
+use super::metrics::Metrics;
+use super::plan::ChannelPlan;
+use super::region_map::RegionMap;
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use std::sync::Arc;
@@ -56,28 +61,44 @@ pub(crate) fn apply_pdc_updates(
         let current_pos = writer.file_position();
         let new_pos = pdc_new_position(current_pos, current_preroll, new_preroll);
 
-        let crossfade_len = config.seek_crossfade_samples;
-        let fadeout = fadeout_samples(
-            stream_state,
-            cache,
-            metrics,
-            writer.file_path(),
-            crossfade_len,
-        );
-
-        stream_state.set_seeking(true);
-        stream_state.flush_buffer();
-        writer.set_file_position(new_pos);
-
-        let fadein = fadein_samples(cache, metrics, writer.file_path(), new_pos, crossfade_len);
-
-        if !fadeout.is_empty() && !fadein.is_empty() {
-            stream_state.rt_state.start_seek_crossfade(fadeout, fadein);
-        }
+        reposition_click_free(stream_state, writer, new_pos, cache, metrics, config);
 
         stream_state.pdc_preroll = new_preroll;
-        stream_state.set_seeking(false);
     }
+}
+
+/// Move a live stream's read head to `new_pos` without a click.
+///
+/// Capture the fadeout tail at the current position, flush the ring, seek the
+/// writer, capture the fadein head at the new position, and hand both to the
+/// audio thread's seek crossfader. The `seeking` flag brackets the whole move so
+/// the audio thread mutes rather than reading a half-repositioned stream.
+///
+/// The two callers differ only in how they choose `new_pos` — a PDC preroll
+/// delta here, an explicit timeline target in `handle_seek_stream` — so the move
+/// itself lives once.
+pub(in crate::butler) fn reposition_click_free(
+    plan: &ChannelPlan,
+    writer: &mut super::prefetch::RegionOut,
+    new_pos: u64,
+    cache: &LruCache,
+    metrics: &Metrics,
+    config: &BufferConfig,
+) {
+    let crossfade_len = config.seek_crossfade_samples;
+    let fadeout = fadeout_samples(plan, cache, metrics, writer.file_path(), crossfade_len);
+
+    plan.set_seeking(true);
+    plan.flush_buffer();
+    writer.set_file_position(new_pos);
+
+    let fadein = fadein_samples(cache, metrics, writer.file_path(), new_pos, crossfade_len);
+
+    if !fadeout.is_empty() && !fadein.is_empty() {
+        plan.rt_state.start_seek_crossfade(fadeout, fadein);
+    }
+
+    plan.set_seeking(false);
 }
 
 /// New file position after a preroll change. A larger preroll seeks backward
@@ -157,7 +178,8 @@ mod tests {
 
     #[test]
     fn test_no_pdc_subscription_is_noop() {
-        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(ChannelLayout::from(1usize));
+        let (plans, mut regions, cache, metrics, config) =
+            create_test_fixtures(ChannelLayout::from(1usize));
 
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
@@ -168,7 +190,8 @@ mod tests {
 
     #[test]
     fn test_preroll_unchanged_no_seek() {
-        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(ChannelLayout::from(1usize));
+        let (plans, mut regions, cache, metrics, config) =
+            create_test_fixtures(ChannelLayout::from(1usize));
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
         let pdc = table([0, 0, 0]);
@@ -179,7 +202,8 @@ mod tests {
 
     #[test]
     fn test_preroll_increased_seeks_backward() {
-        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(ChannelLayout::from(2usize));
+        let (plans, mut regions, cache, metrics, config) =
+            create_test_fixtures(ChannelLayout::from(2usize));
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
         regions.get_mut(region(1)).unwrap().set_file_position(1000);
 
@@ -196,7 +220,8 @@ mod tests {
 
     #[test]
     fn test_preroll_decreased_seeks_forward() {
-        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(ChannelLayout::from(1usize));
+        let (plans, mut regions, cache, metrics, config) =
+            create_test_fixtures(ChannelLayout::from(1usize));
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
         let pdc = table([500, 0, 0]);
@@ -222,7 +247,8 @@ mod tests {
 
     #[test]
     fn test_seeking_flag_clear_after_update() {
-        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(ChannelLayout::from(1usize));
+        let (plans, mut regions, cache, metrics, config) =
+            create_test_fixtures(ChannelLayout::from(1usize));
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
         assert!(!plans.get(&0).unwrap().rt_state.is_seeking());
@@ -235,7 +261,8 @@ mod tests {
 
     #[test]
     fn test_multiple_channels_independent_compensation() {
-        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(ChannelLayout::from(3usize));
+        let (plans, mut regions, cache, metrics, config) =
+            create_test_fixtures(ChannelLayout::from(3usize));
         for i in 0..3 {
             regions.get_mut(region(i)).unwrap().set_file_position(1000);
         }
@@ -255,7 +282,8 @@ mod tests {
 
     #[test]
     fn test_channel_beyond_table_is_uncompensated() {
-        let (plans, mut regions, cache, metrics, config) = create_test_fixtures(ChannelLayout::from(1usize));
+        let (plans, mut regions, cache, metrics, config) =
+            create_test_fixtures(ChannelLayout::from(1usize));
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
         // Empty table — channel 0 has no entry.

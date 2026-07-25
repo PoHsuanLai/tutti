@@ -14,9 +14,9 @@ use smol::Timer;
 use super::command::ButlerCommand;
 use super::config::BufferConfig;
 use super::handlers::{handle_command, handle_seek_stream, Handles, Local};
-use super::io::loops::handle_loops;
-use super::io::pdc::apply_pdc_updates;
 use super::io::refill::{refill_all, refill_all_parallel};
+use super::loops::handle_loops;
+use super::preroll::apply_pdc_updates;
 
 /// Main butler thread entry point (async).
 pub(super) async fn butler_loop_async(

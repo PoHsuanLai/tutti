@@ -3,8 +3,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tutti_core::{
-    AtomicSamplePosition, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Linear, Ratio,
-    SamplePosition, SampleRate, Timeline, Wave,
+    AtomicSamplePosition, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Linear,
+    PlaybackRate, SamplePosition, SampleRate, SrcRatio, Timeline, Wave,
 };
 
 use super::loop_crossfade::LoopCrossfade;
@@ -92,7 +92,7 @@ impl std::fmt::Debug for TransportPlacement {
 #[derive(Clone, Debug)]
 pub struct SamplerUnitConfig {
     pub gain: Linear,
-    pub speed: Ratio,
+    pub speed: PlaybackRate,
     /// Loop intent. `Off` plays once; `On { .. }` loops over the range and
     /// [`SamplerUnit::with_config`] primes the crossfade internally.
     pub loop_setting: LoopSetting,
@@ -104,7 +104,7 @@ impl Default for SamplerUnitConfig {
     fn default() -> Self {
         Self {
             gain: Linear::new(1.0),
-            speed: Ratio::new(1.0),
+            speed: PlaybackRate::UNITY,
             loop_setting: LoopSetting::Off,
             placement: None,
         }
@@ -149,12 +149,17 @@ pub struct SamplerUnit {
 
     gain: Linear,
 
-    speed: Ratio,
+    /// Varispeed — user intent, bounded by the type. Composes with
+    /// [`src_ratio`](Self::src_ratio) through
+    /// [`PlaybackRate::read_rate`](tutti_core::PlaybackRate::read_rate); never
+    /// multiplied by a bare scalar.
+    speed: PlaybackRate,
 
     sample_rate: SampleRate,
 
-    /// SRC ratio: file_sample_rate / session_sample_rate. 1.0 = no conversion.
-    src_ratio: Ratio,
+    /// Sample-rate conversion — derived from the file and session rates, never
+    /// user intent. Distinct from [`speed`](Self::speed) for that reason.
+    src_ratio: SrcRatio,
 
     /// Loop configuration. `OneShot` plays through once; `Looping` guarantees a
     /// range and carries the optional crossfade.
@@ -207,9 +212,9 @@ impl SamplerUnit {
             position: AtomicSamplePosition::new(SamplePosition::new(0.0)),
             playing: AtomicBool::new(true),
             gain: Linear::new(1.0),
-            speed: Ratio::new(1.0),
+            speed: PlaybackRate::UNITY,
             sample_rate,
-            src_ratio: Ratio::new(1.0),
+            src_ratio: SrcRatio::UNITY,
             loop_mode: LoopMode::OneShot,
             placement: None,
         }
@@ -383,16 +388,26 @@ impl SamplerUnit {
         self.gain
     }
 
-    pub fn set_speed(&mut self, speed: Ratio) {
+    /// Set varispeed. Out-of-range and non-finite values are handled by
+    /// [`PlaybackRate`]'s bounded constructor, not here — that is the point of
+    /// the type: both playback tiers get the same range without either having
+    /// to remember to clamp.
+    pub fn set_speed(&mut self, speed: PlaybackRate) {
         self.speed = speed;
     }
 
-    pub fn speed(&self) -> Ratio {
+    pub fn speed(&self) -> PlaybackRate {
         self.speed
     }
 
-    pub fn src_ratio(&self) -> Ratio {
+    pub fn src_ratio(&self) -> SrcRatio {
         self.src_ratio
+    }
+
+    /// Source samples consumed per output sample: varispeed × conversion.
+    #[inline]
+    fn read_rate(&self) -> f64 {
+        self.speed.read_rate(self.src_ratio)
     }
 
     pub fn wave(&self) -> &Arc<Wave> {
@@ -409,14 +424,34 @@ impl SamplerUnit {
             .store(SamplePosition::new(0.0), Ordering::Release);
     }
 
-    /// Computes SRC ratio from file vs session sample rate.
+    /// Re-derive the sample-rate conversion ratio for a new session rate.
+    ///
+    /// The derivation itself lives in [`SrcRatio::for_rates`] — the butler's
+    /// streaming path calls the same function, so the two tiers cannot drift
+    /// apart on matched-rate detection or the divide-by-zero guard.
     pub fn set_session_sample_rate(&mut self, session_rate: f64) {
-        let file_rate = self.wave.sample_rate();
-        self.src_ratio = Ratio::new(if (file_rate - session_rate).abs() < 0.01 {
-            1.0
-        } else {
-            (file_rate / session_rate) as f32
-        });
+        self.src_ratio = SrcRatio::for_rates(self.wave.sample_rate(), session_rate);
+    }
+
+    /// Apply a [`LoopSetting`]: `On` primes the range + crossfade, `Off`
+    /// clears the range and disables looping.
+    ///
+    /// In-RAM only. The streaming tier's loop is butler-owned (a
+    /// `Command::Loop` from the reader's drain), which is why this is inherent
+    /// rather than a shared trait method — there is no honest way for one call
+    /// to mean both.
+    pub fn set_loop_setting(&mut self, setting: LoopSetting) {
+        match setting {
+            LoopSetting::On {
+                start,
+                end,
+                crossfade_samples,
+            } => self.set_loop_range(start, end, crossfade_samples),
+            LoopSetting::Off => {
+                self.clear_loop_range();
+                self.set_looping(false);
+            }
+        }
     }
 
     pub fn set_loop_range(
@@ -498,69 +533,129 @@ impl SamplerUnit {
             placement.start_beat,
             placement.duration_beats,
             self.wave.sample_rate(),
+            self.read_rate(),
         )
+    }
+
+    /// Produce one output frame and advance whatever state that entails.
+    ///
+    /// The single playback algorithm. `tick` calls it once, `process` calls it
+    /// per sample — the same relationship `TransportClock::tick`/`process` have
+    /// in `tutti-core`. Previously the two entry points were written out
+    /// separately and had drifted apart: `tick` ignored `speed` entirely for a
+    /// placed clip while `process` applied it, so the same unit produced
+    /// different audio depending on which the graph happened to call.
+    ///
+    /// Two position models live here, and the split is deliberate:
+    ///
+    /// - **Placed** (a timeline clip) — position is *derived* from the playhead,
+    ///   so the clip cannot drift from the transport. Varispeed is folded into
+    ///   the beat→sample mapping, not accumulated here.
+    /// - **Free-running** (no transport) — nothing else owns this clip's time,
+    ///   so it advances its own cursor by `read_rate`.
+    ///
+    /// `offset_in_block` is the sample's index within the current `process`
+    /// call (always 0 from `tick`). The placed branch NEEDS it: a transport
+    /// advances once per block, not per sample — the offline driver calls
+    /// `advance(block_size)` after `process` returns
+    /// (`tutti-export/src/render/driver.rs`), and `TransportClock` is
+    /// emit-then-advance. Re-reading `beat()` for every sample would therefore
+    /// return the same value all block long and emit a constant frame instead
+    /// of the material under the playhead.
+    #[inline]
+    fn next_frame(&mut self, offset_in_block: usize) -> (f32, f32) {
+        if self.placement.is_some() {
+            // Derived: the transport owns the position. Step within the block by
+            // `read_rate` from the block's start beat — the transport itself
+            // only moves between blocks.
+            return match self.transport_sample_position() {
+                None => (0.0, 0.0),
+                Some(start_pos) => {
+                    let pos = start_pos + offset_in_block as f64 * self.read_rate();
+                    self.get_sample(pos)
+                }
+            };
+        }
+
+        if !self.playing.load(Ordering::Relaxed) {
+            return (0.0, 0.0);
+        }
+
+        let pos = self.position.load(Ordering::Relaxed).get();
+        let (mut left, mut right) = self.get_sample(pos);
+
+        let wave_len = self.wave.len() as f64;
+        let (looping, loop_start, loop_end) = match &mut self.loop_mode {
+            LoopMode::OneShot => (false, 0.0, wave_len),
+            LoopMode::Looping { range, crossfade } => {
+                let (loop_start, loop_end) = (range.0.get(), range.1.get());
+                if let Some(xfade) = crossfade {
+                    let crossfade_start = loop_end - xfade.len() as f64;
+                    if pos >= crossfade_start && pos < loop_end && !xfade.is_active() {
+                        xfade.start();
+                    }
+                    if xfade.is_active() {
+                        let sample = xfade.process((left, right));
+                        left = sample.0;
+                        right = sample.1;
+                    }
+                }
+                (true, loop_start, loop_end)
+            }
+        };
+
+        let new_pos = pos + self.read_rate();
+
+        if new_pos >= loop_end {
+            if looping {
+                // Modulo, not `loop_start + (new_pos - loop_end)`: at high
+                // varispeed one advance can overshoot a short loop by more than
+                // its own length, and the subtraction form would land past the
+                // loop end and never recover.
+                self.position.store(
+                    SamplePosition::new(wrap_into_loop(new_pos, loop_start, loop_end)),
+                    Ordering::Relaxed,
+                );
+
+                if let LoopMode::Looping {
+                    crossfade: Some(xfade),
+                    ..
+                } = &mut self.loop_mode
+                {
+                    xfade.reset();
+                }
+            } else {
+                self.playing.store(false, Ordering::Relaxed);
+                self.position
+                    .store(SamplePosition::new(loop_end), Ordering::Relaxed);
+            }
+        } else {
+            self.position
+                .store(SamplePosition::new(new_pos), Ordering::Relaxed);
+        }
+
+        (left, right)
     }
 }
 
-impl super::clip_reader::ClipReader for SamplerUnit {
-    fn set_gain(&mut self, gain: Linear) {
-        SamplerUnit::set_gain(self, gain);
+/// Wrap a position that ran past `loop_end` back into `[loop_start, loop_end)`.
+///
+/// Modulo rather than a single subtraction so an overshoot larger than the loop
+/// itself still lands inside the region — reachable at high varispeed over a
+/// short loop. A zero-or-negative-length region has nothing to wrap into, so the
+/// position pins to `loop_start` rather than producing NaN.
+///
+/// Deliberately NOT shared with the butler's `wave_io::wrap_into`: that one is
+/// integer-domain over a range the caller has already validated, while this
+/// reads a fractional position and must survive a degenerate range. Unifying
+/// them would put a lossy cast on the per-sample read path.
+#[inline]
+fn wrap_into_loop(pos: f64, loop_start: f64, loop_end: f64) -> f64 {
+    let len = loop_end - loop_start;
+    if len <= 0.0 {
+        return loop_start;
     }
-
-    fn set_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
-        SamplerUnit::set_placement(self, start_beat, duration);
-    }
-
-    fn set_speed(&mut self, speed: Ratio) {
-        SamplerUnit::set_speed(self, speed);
-    }
-
-    fn set_direction(&mut self, _direction: super::track_clip_reader::Direction) {
-        // Deliberate no-op. For the in-RAM backend, direction is carried on the
-        // reader's per-slot `direction` (consumed by the reversed index in the hot
-        // read), not inside the `SamplerUnit`. The `UpdateReverse` drain arm sets
-        // that slot field directly; there is no source-side direction state to
-        // mutate here.
-    }
-
-    fn set_loop(&mut self, setting: LoopSetting) {
-        // Same behavior as the `ClipCommand::UpdateLoop` / `ClearLoop` drain
-        // arms: `On` primes the loop range + crossfade; `Off` clears the range
-        // and disables looping.
-        match setting {
-            LoopSetting::On {
-                start,
-                end,
-                crossfade_samples,
-            } => self.set_loop_range(start, end, crossfade_samples),
-            LoopSetting::Off => {
-                self.clear_loop_range();
-                self.set_looping(false);
-            }
-        }
-    }
-
-    fn seek(&mut self, to: SamplePosition) {
-        // In-RAM seek is the instant position store; `trigger_at` also arms
-        // playback, matching the existing manual-seek semantics.
-        self.trigger_at(to);
-    }
-
-    fn set_wave(&mut self, wave: Arc<Wave>) {
-        SamplerUnit::set_wave(self, wave);
-    }
-
-    fn play(&self) {
-        SamplerUnit::play(self);
-    }
-
-    fn stop(&self) {
-        SamplerUnit::stop(self);
-    }
-
-    fn is_playing(&self) -> bool {
-        SamplerUnit::is_playing(self)
-    }
+    loop_start + (pos - loop_start).rem_euclid(len)
 }
 
 impl AudioUnit for SamplerUnit {
@@ -584,182 +679,19 @@ impl AudioUnit for SamplerUnit {
     }
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
-        if self.placement.is_some() {
-            if output.len() >= 2 {
-                match self.transport_sample_position() {
-                    None => {
-                        output[0] = 0.0;
-                        output[1] = 0.0;
-                    }
-                    Some(pos) => {
-                        let (left, right) = self.get_sample(pos);
-                        output[0] = left;
-                        output[1] = right;
-                    }
-                }
-            }
-            return;
-        }
-
-        if !self.playing.load(Ordering::Relaxed) {
-            if output.len() >= 2 {
-                output[0] = 0.0;
-                output[1] = 0.0;
-            }
-            return;
-        }
-
-        let pos = self.position.load(Ordering::Relaxed).get();
-
-        let (mut left, mut right) = self.get_sample(pos);
-
-        let wave_len = self.wave.len() as f64;
-        let (looping, loop_start, loop_end) = match &mut self.loop_mode {
-            LoopMode::OneShot => (false, 0.0, wave_len),
-            LoopMode::Looping { range, crossfade } => {
-                let (loop_start, loop_end) = (range.0.get(), range.1.get());
-                if let Some(xfade) = crossfade {
-                    let crossfade_start = loop_end - xfade.len() as f64;
-                    if pos >= crossfade_start && pos < loop_end && !xfade.is_active() {
-                        xfade.start();
-                    }
-                    if xfade.is_active() {
-                        let sample = xfade.process((left, right));
-                        left = sample.0;
-                        right = sample.1;
-                    }
-                }
-                (true, loop_start, loop_end)
-            }
-        };
-
+        let frame = self.next_frame(0);
         if output.len() >= 2 {
-            output[0] = left;
-            output[1] = right;
-        }
-
-        let new_pos = pos + (self.speed.get() * self.src_ratio.get()) as f64;
-
-        if new_pos >= loop_end {
-            if looping {
-                let overshoot = new_pos - loop_end;
-                let wrapped = loop_start + overshoot;
-                self.position
-                    .store(SamplePosition::new(wrapped), Ordering::Relaxed);
-
-                if let LoopMode::Looping {
-                    crossfade: Some(xfade),
-                    ..
-                } = &mut self.loop_mode
-                {
-                    xfade.reset();
-                }
-            } else {
-                self.playing.store(false, Ordering::Relaxed);
-                self.position
-                    .store(SamplePosition::new(loop_end), Ordering::Relaxed);
-            }
-        } else {
-            self.position
-                .store(SamplePosition::new(new_pos), Ordering::Relaxed);
+            output[0] = frame.0;
+            output[1] = frame.1;
         }
     }
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
-        if self.placement.is_some() {
-            match self.transport_sample_position() {
-                None => {
-                    for i in 0..size {
-                        output.set_f32(0, i, 0.0);
-                        output.set_f32(1, i, 0.0);
-                    }
-                }
-                Some(start_pos) => {
-                    let advance = (self.speed.get() * self.src_ratio.get()) as f64;
-                    for i in 0..size {
-                        let pos = start_pos + i as f64 * advance;
-                        let (left, right) = self.get_sample(pos);
-                        output.set_f32(0, i, left);
-                        output.set_f32(1, i, right);
-                    }
-                }
-            }
-            return;
-        }
-
-        if !self.playing.load(Ordering::Relaxed) {
-            for i in 0..size {
-                output.set_f32(0, i, 0.0);
-                output.set_f32(1, i, 0.0);
-            }
-            return;
-        }
-
-        let mut pos = self.position.load(Ordering::Relaxed).get();
-        let wave_len = self.wave.len() as f64;
-
-        let (looping, loop_start, loop_end) = match &self.loop_mode {
-            LoopMode::OneShot => (false, 0.0, wave_len),
-            LoopMode::Looping { range, .. } => (true, range.0.get(), range.1.get()),
-        };
-
-        let crossfade_start = match &self.loop_mode {
-            LoopMode::Looping {
-                crossfade: Some(xf),
-                ..
-            } => loop_end - xf.len() as f64,
-            _ => loop_end,
-        };
-
         for i in 0..size {
-            if pos >= loop_end {
-                if looping {
-                    let overshoot = pos - loop_end;
-                    pos = loop_start + overshoot;
-
-                    if let LoopMode::Looping {
-                        crossfade: Some(xfade),
-                        ..
-                    } = &mut self.loop_mode
-                    {
-                        xfade.reset();
-                    }
-                } else {
-                    self.playing.store(false, Ordering::Relaxed);
-                    for j in i..size {
-                        output.set_f32(0, j, 0.0);
-                        output.set_f32(1, j, 0.0);
-                    }
-                    break;
-                }
-            }
-
-            let current_pos = pos;
-            let (mut left, mut right) = self.get_sample(current_pos);
-
-            if let LoopMode::Looping {
-                crossfade: Some(xfade),
-                ..
-            } = &mut self.loop_mode
-            {
-                if current_pos >= crossfade_start && current_pos < loop_end && !xfade.is_active() {
-                    xfade.start();
-                }
-                if xfade.is_active() {
-                    let sample = xfade.process((left, right));
-                    left = sample.0;
-                    right = sample.1;
-                }
-            }
-
+            let (left, right) = self.next_frame(i);
             output.set_f32(0, i, left);
             output.set_f32(1, i, right);
-
-            pos = current_pos + (self.speed.get() * self.src_ratio.get()) as f64;
         }
-
-        self.position
-            .store(SamplePosition::new(pos), Ordering::Relaxed);
     }
 
     audio_unit_boilerplate!(id = crate::node_id::SAMPLER_NODE_ID, outputs = 2);
@@ -768,6 +700,7 @@ impl AudioUnit for SamplerUnit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicU64;
     use tutti_core::BufferVec;
 
     fn ramp_wave(len: usize, sample_rate: f64) -> Arc<Wave> {
@@ -786,40 +719,337 @@ mod tests {
 
     // --- Mock transport for beat-synced tests ---
 
+    /// Interior-mutable so a test can advance the playhead BETWEEN blocks, the
+    /// way a real transport moves. A plain-`f64` mock cannot: the beat never
+    /// changes, every frame derives the same position, and an equivalence test
+    /// over it passes no matter what the code does.
     struct MockTransport {
-        playing: bool,
-        beat: f64,
-        tempo: f64,
+        playing: AtomicBool,
+        beat: AtomicU64,
+        tempo: AtomicU64,
     }
 
     impl MockTransport {
         fn new(beat: f64, tempo: f64) -> Arc<Self> {
             Arc::new(Self {
-                playing: true,
-                beat,
-                tempo,
+                playing: AtomicBool::new(true),
+                beat: AtomicU64::new(beat.to_bits()),
+                tempo: AtomicU64::new(tempo.to_bits()),
             })
         }
 
         fn stopped() -> Arc<Self> {
-            Arc::new(Self {
-                playing: false,
-                beat: 0.0,
-                tempo: 120.0,
-            })
+            let t = Self::new(0.0, 120.0);
+            t.playing.store(false, Ordering::Relaxed);
+            t
+        }
+
+        /// Rewind by `samples`, so a test can replay the same span twice.
+        fn rewind(&self, samples: usize, sample_rate: f64) {
+            let tempo = f64::from_bits(self.tempo.load(Ordering::Relaxed));
+            let beats = samples as f64 * tempo / 60.0 / sample_rate;
+            let now = f64::from_bits(self.beat.load(Ordering::Relaxed));
+            self.beat.store((now - beats).to_bits(), Ordering::Relaxed);
+        }
+
+        /// Advance by `samples` at `sample_rate`, as a block-driven transport
+        /// does after `process` returns.
+        fn advance(&self, samples: usize, sample_rate: f64) {
+            let tempo = f64::from_bits(self.tempo.load(Ordering::Relaxed));
+            let beats = samples as f64 * tempo / 60.0 / sample_rate;
+            let now = f64::from_bits(self.beat.load(Ordering::Relaxed));
+            self.beat.store((now + beats).to_bits(), Ordering::Relaxed);
         }
     }
 
     impl Timeline for MockTransport {
         fn beat(&self) -> tutti_core::Beat {
-            tutti_core::Beat(self.beat)
+            tutti_core::Beat(f64::from_bits(self.beat.load(Ordering::Relaxed)))
         }
         fn is_rolling(&self) -> bool {
-            self.playing
+            self.playing.load(Ordering::Relaxed)
         }
         fn tempo(&self) -> tutti_core::params::Bpm {
-            tutti_core::params::Bpm::new(self.tempo)
+            tutti_core::params::Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
         }
+    }
+
+    // --- tick/process equivalence ---
+    //
+    // `tick` and `process` are two entry points into one algorithm, so N ticks
+    // must equal one process(N) sample-for-sample. Modelled on tutti-core's
+    // `advance_wraps_once_per_block_not_once_per_sample`.
+    //
+    // KNOWN LIMIT: these are CONSISTENCY checks, not correctness ones. Both
+    // paths now call `next_frame`, so a change moves them together — an
+    // injected off-by-one in the placed branch still passes here, because
+    // advancing the mock one sample per tick compensates it exactly. What
+    // catches that class of bug is `placed_clip_reads_across_a_block_not_dc`
+    // and `placed_clip_block_step_follows_playback_rate`, which assert the
+    // shape of the output *within* one block. Keep these as regression guards
+    // against the two paths being rewritten apart again; do not read a pass
+    // here as proof the placed branch is right.
+
+    fn collect_ticks(unit: &mut SamplerUnit, n: usize) -> Vec<(f32, f32)> {
+        (0..n)
+            .map(|_| {
+                let mut out = [0.0f32; 2];
+                unit.tick(&[], &mut out);
+                (out[0], out[1])
+            })
+            .collect()
+    }
+
+    fn collect_process(unit: &mut SamplerUnit, n: usize) -> Vec<(f32, f32)> {
+        let input = BufferVec::new(0);
+        let mut output = BufferVec::new(2);
+        output.resize(n);
+        unit.process(n, &input.buffer_ref(), &mut output.buffer_mut());
+        (0..n)
+            .map(|i| (output.at_f32(0, i), output.at_f32(1, i)))
+            .collect()
+    }
+
+    /// `tick` is one sample per call and a transport advances once per *block*,
+    /// so the equivalent of `process(n)` is n single-sample blocks with the
+    /// playhead moving a sample's worth between each. `transport` must be the
+    /// clock both units are bound to; pass `None` for free-running units.
+    ///
+    /// Advancing matters: with a frozen playhead every placed frame derives the
+    /// same position, both paths emit the same constant, and the assertion holds
+    /// no matter what the code does.
+    fn assert_tick_matches_process(
+        mut a: SamplerUnit,
+        mut b: SamplerUnit,
+        n: usize,
+        transport: Option<&Arc<MockTransport>>,
+        case: &str,
+    ) {
+        let ticked: Vec<(f32, f32)> = (0..n)
+            .map(|_| {
+                let mut out = [0.0f32; 2];
+                a.tick(&[], &mut out);
+                if let Some(t) = transport {
+                    t.advance(1, 44100.0);
+                }
+                (out[0], out[1])
+            })
+            .collect();
+
+        // Rewind so `process` sees the same span the ticks just walked.
+        if let Some(t) = transport {
+            t.rewind(n, 44100.0);
+        }
+        let processed = collect_process(&mut b, n);
+
+        assert_eq!(
+            ticked, processed,
+            "{case}: tick x{n} diverged from process({n})"
+        );
+    }
+
+    #[test]
+    fn tick_matches_process_free_running() {
+        let wave = ramp_wave(64, 44100.0);
+        assert_tick_matches_process(
+            SamplerUnit::new(Arc::clone(&wave)),
+            SamplerUnit::new(wave),
+            16,
+            None,
+            "free-running",
+        );
+    }
+
+    #[test]
+    fn tick_matches_process_at_non_unity_speed() {
+        let wave = ramp_wave(256, 44100.0);
+        let build = || {
+            let mut u = SamplerUnit::new(Arc::clone(&wave));
+            u.set_speed(PlaybackRate::new(1.5));
+            u
+        };
+        assert_tick_matches_process(build(), build(), 32, None, "free-running @1.5x");
+    }
+
+    #[test]
+    fn tick_matches_process_when_placed() {
+        // The case that was actually broken: a placed clip at non-unity speed.
+        let wave = ramp_wave(4096, 44100.0);
+        let transport = MockTransport::new(1.0, 120.0);
+        let build = || {
+            let mut u = SamplerUnit::with_config(
+                Arc::clone(&wave),
+                SamplerUnitConfig {
+                    speed: PlaybackRate::new(0.5),
+                    placement: Some(TransportPlacement {
+                        transport: transport.clone(),
+                        start_beat: Beat::new(0.0),
+                        duration_beats: None,
+                    }),
+                    ..Default::default()
+                },
+            );
+            u.set_speed(PlaybackRate::new(0.5));
+            u
+        };
+        assert_tick_matches_process(build(), build(), 32, Some(&transport), "placed @0.5x");
+    }
+
+    #[test]
+    fn tick_matches_process_across_a_loop_wrap() {
+        // Span the loop boundary so the wrap arithmetic runs inside the block.
+        let wave = ramp_wave(64, 44100.0);
+        let build = || {
+            SamplerUnit::with_config(
+                Arc::clone(&wave),
+                SamplerUnitConfig {
+                    loop_setting: LoopSetting::On {
+                        start: SamplePosition::new(0.0),
+                        end: SamplePosition::new(8.0),
+                        crossfade_samples: 0,
+                    },
+                    ..Default::default()
+                },
+            )
+        };
+        assert_tick_matches_process(build(), build(), 32, None, "loop wrap");
+    }
+
+    // --- varispeed actually reaches a placed clip ---
+    //
+    // The equivalence tests above cannot catch the original defect on their own:
+    // both entry points now call `next_frame`, so any change affects them
+    // identically. These pin the *behaviour* instead — that speed reaches the
+    // placed path at all. Previously `tick` returned a position derived without
+    // the rate, so a placed clip played at 1x no matter what speed was set.
+
+    fn placed_unit(wave: &Arc<Wave>, transport: &Arc<MockTransport>, rate: f32) -> SamplerUnit {
+        SamplerUnit::with_config(
+            Arc::clone(wave),
+            SamplerUnitConfig {
+                speed: PlaybackRate::new(rate),
+                placement: Some(TransportPlacement {
+                    transport: transport.clone(),
+                    start_beat: Beat::new(0.0),
+                    duration_beats: None,
+                }),
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn placed_clip_honours_speed_in_tick() {
+        // A ramp wave encodes position in its amplitude, so the sample value at
+        // a fixed playhead tells us which source frame was read.
+        // Beat 0.25 @ 120 BPM / 44.1 kHz = 5512.5 samples in, comfortably
+        // inside a 16k wave at both 1x and 0.5x.
+        let wave = ramp_wave(16_384, 44100.0);
+        let transport = MockTransport::new(0.25, 120.0);
+
+        let mut unity = placed_unit(&wave, &transport, 1.0);
+        let mut half = placed_unit(&wave, &transport, 0.5);
+
+        let a = collect_ticks(&mut unity, 1)[0].0;
+        let b = collect_ticks(&mut half, 1)[0].0;
+
+        assert!(a > 0.0 && b > 0.0, "both should be sounding: {a}, {b}");
+        assert!(
+            (b - a / 2.0).abs() < 2.0,
+            "at 0.5x the clip should be half as far in ({a} -> expected ~{}, got {b})",
+            a / 2.0
+        );
+    }
+
+    #[test]
+    fn placed_clip_honours_speed_in_process() {
+        // The same assertion through the block path — this one always held, and
+        // is here so the pair documents that the two agree for the right reason.
+        let wave = ramp_wave(16_384, 44100.0);
+        let transport = MockTransport::new(0.25, 120.0);
+
+        let mut unity = placed_unit(&wave, &transport, 1.0);
+        let mut half = placed_unit(&wave, &transport, 0.5);
+
+        let a = collect_process(&mut unity, 4)[0].0;
+        let b = collect_process(&mut half, 4)[0].0;
+
+        assert!((b - a / 2.0).abs() < 2.0, "expected ~{}, got {b}", a / 2.0);
+    }
+
+    /// A placed clip must read ACROSS a block, not emit one frozen frame.
+    ///
+    /// A transport advances once per block — the offline driver calls
+    /// `advance(block_size)` after `process` returns — so deriving position from
+    /// `beat()` alone gives every sample in the block the same value. The result
+    /// is constant DC where the material should be moving. Caught only by
+    /// asserting *within* one `process` call: the tick/process equivalence tests
+    /// cannot see it, because a frozen transport freezes both paths identically.
+    #[test]
+    fn placed_clip_reads_across_a_block_not_dc() {
+        let wave = ramp_wave(16_384, 44100.0);
+        let transport = MockTransport::new(0.25, 120.0);
+        let mut u = placed_unit(&wave, &transport, 1.0);
+
+        let block = collect_process(&mut u, 8);
+        let first = block[0].0;
+        let last = block[7].0;
+
+        assert!(first > 0.0, "clip should be sounding, got {first}");
+        assert!(
+            last > first,
+            "a ramp wave must rise across the block; got constant DC \
+             (first={first}, last={last}) — the transport only moves between \
+             blocks, so position must step by read_rate within one"
+        );
+        // Unity rate over a ramp: one source sample per output sample.
+        let step = (last - first) / 7.0;
+        assert!(
+            (step - 1.0).abs() < 0.01,
+            "at 1x the ramp should advance ~1 sample per output frame, got {step}"
+        );
+    }
+
+    /// Same, at half speed: the block must still rise, but half as fast.
+    #[test]
+    fn placed_clip_block_step_follows_playback_rate() {
+        let wave = ramp_wave(16_384, 44100.0);
+        let transport = MockTransport::new(0.25, 120.0);
+        let mut u = placed_unit(&wave, &transport, 0.5);
+
+        let block = collect_process(&mut u, 8);
+        let step = (block[7].0 - block[0].0) / 7.0;
+        assert!(
+            (step - 0.5).abs() < 0.01,
+            "at 0.5x the in-block step should be ~0.5 samples/frame, got {step}"
+        );
+    }
+
+    // --- loop wrap arithmetic ---
+
+    #[test]
+    fn loop_wrap_handles_overshoot_longer_than_the_loop() {
+        // At high varispeed one advance can jump past the loop end by more than
+        // the loop's own length. The old `loop_start + (pos - loop_end)` form
+        // landed *outside* the region and never recovered; modulo lands inside.
+        let wrapped = wrap_into_loop(105.0, 10.0, 20.0);
+        assert!(
+            (10.0..20.0).contains(&wrapped),
+            "overshoot of 8.5 loop lengths must land inside [10, 20), got {wrapped}"
+        );
+        assert_eq!(wrapped, 15.0);
+    }
+
+    #[test]
+    fn loop_wrap_is_stable_for_a_single_overshoot() {
+        // The common case still behaves exactly as the subtraction form did.
+        assert_eq!(wrap_into_loop(22.0, 10.0, 20.0), 12.0);
+    }
+
+    #[test]
+    fn loop_wrap_survives_a_degenerate_region() {
+        // A zero-length region has nothing to wrap into; pin rather than NaN.
+        assert_eq!(wrap_into_loop(50.0, 10.0, 10.0), 10.0);
     }
 
     // --- Existing tests ---
@@ -910,7 +1140,7 @@ mod tests {
             Arc::clone(&wave),
             SamplerUnitConfig {
                 gain: Linear::new(0.5),
-                speed: Ratio::new(2.0),
+                speed: PlaybackRate::new(2.0),
                 loop_setting: LoopSetting::On {
                     start: SamplePosition::new(0.0),
                     end: SamplePosition::new(100.0),
@@ -923,7 +1153,7 @@ mod tests {
         assert!(sampler.is_playing());
         assert!(sampler.is_looping());
         assert_eq!(sampler.gain(), Linear::new(0.5));
-        assert_eq!(sampler.speed(), Ratio::new(2.0));
+        assert_eq!(sampler.speed(), PlaybackRate::new(2.0));
     }
 
     #[test]
@@ -934,7 +1164,7 @@ mod tests {
         // Default config must reproduce `new`'s audible baseline: unity gain,
         // normal speed, one-shot — NOT the newtypes' zero default.
         assert_eq!(sampler.gain(), Linear::new(1.0));
-        assert_eq!(sampler.speed(), Ratio::new(1.0));
+        assert_eq!(sampler.speed(), PlaybackRate::new(1.0));
         assert!(!sampler.is_looping());
     }
 
@@ -1016,7 +1246,7 @@ mod tests {
 
         let mut normal = SamplerUnit::new(Arc::clone(&wave));
         let mut fast = SamplerUnit::new(wave);
-        fast.set_speed(Ratio::new(2.0));
+        fast.set_speed(PlaybackRate::new(2.0));
 
         let mut out = [0.0f32; 2];
         for _ in 0..10 {
@@ -1106,7 +1336,7 @@ mod tests {
         let wave = ramp_wave(10, 44100.0);
         let mut sampler = SamplerUnit::new(wave);
         sampler.set_looping(true);
-        sampler.set_speed(Ratio::new(2.0));
+        sampler.set_speed(PlaybackRate::new(2.0));
 
         let mut out = [0.0f32; 2];
         // 5 ticks at speed=2 → position advances 0,2,4,6,8 → after tick 5
@@ -1294,7 +1524,7 @@ mod tests {
             wave,
             SamplerUnitConfig {
                 gain: Linear::new(0.75),
-                speed: Ratio::new(1.5),
+                speed: PlaybackRate::new(1.5),
                 loop_setting: LoopSetting::On {
                     start: SamplePosition::new(0.0),
                     end: SamplePosition::new(100.0),
@@ -1307,7 +1537,7 @@ mod tests {
 
         let cloned = sampler.clone();
         assert_eq!(cloned.gain(), Linear::new(0.75));
-        assert_eq!(cloned.speed(), Ratio::new(1.5));
+        assert_eq!(cloned.speed(), PlaybackRate::new(1.5));
         assert!(cloned.is_looping());
         assert!(cloned.is_playing());
         assert_eq!(cloned.position(), SamplePosition::new(42.0));

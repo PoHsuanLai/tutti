@@ -1,44 +1,51 @@
 //! Sample playback, disk streaming, and time-stretching for the Tutti audio
 //! engine.
 //!
-//! # Bevy-native API
+//! # Two playback tiers, one vocabulary
 //!
-//! The integration follows the `bevy_audio` shape: each duty is a crate-root
-//! module owning its Components / Systems / Plugin, composed by the single
-//! [`TuttiSamplerPlugin`]. Drive it by spawning entities and writing messages,
-//! not through handle methods:
+//! A clip plays either from RAM ([`SamplerUnit`]) or streamed from disk
+//! ([`StreamingClipReader`], fed by the butler thread). The tier is the
+//! caller's choice — the sampler never picks one on its own — and
+//! [`TrackClipReaderUnit`] mixes both behind one command surface; where a verb
+//! only makes sense on one tier, the `VoiceSource` match says so at the call
+//! site instead of silently no-opping.
 //!
-//! ```ignore
-//! // One-shot playback: spawn an entity carrying the trigger.
-//! commands.spawn(PlayAudio { source: asset_server.load("clip.wav"), ..default() });
-//! ```
+//! Rates are typed to keep the tiers honest:
+//! [`PlaybackRate`](tutti_core::PlaybackRate) is varispeed (couples pitch),
+//! [`SrcRatio`](tutti_core::SrcRatio) is sample-rate conversion (derived, never
+//! user intent), and [`StretchFactor`](tutti_core::StretchFactor) drives the
+//! phase vocoder (pitch-independent). They compose only through
+//! `PlaybackRate::read_rate`, and the varispeed range lives in one shared
+//! bounded constructor that every user-input path goes through — it used to
+//! live inside a single backend's setter, so the other tier silently accepted
+//! out-of-range speeds.
 //!
-//! The [`Sampler`] resource is the streaming-engine handle (the butler thread).
-//! The engine builds it once with [`Sampler::new`] and inserts it; systems read
-//! it as `Res<Sampler>` and drive streaming through the [`commands()`](Sampler::commands)
-//! WRITE port and the [`status()`](Sampler::status) READ port.
+//! A clip bound to a transport derives its read position from the playhead
+//! every frame rather than carrying a cursor, matching `tutti_core`'s transport:
+//! one clock advances, everything else reads.
+//!
+//! The [`Sampler`] handle owns the streaming engine. Build it once with
+//! [`Sampler::new`], then drive streaming through the
+//! [`commands()`](Sampler::commands) WRITE port and the
+//! [`status()`](Sampler::status) READ port.
 //!
 //! # Crate layout
 //!
-//! Bevy duties are crate-root modules ([`playback`], [`time_stretch`],
-//! [`pending_load`], [`reconcile`], [`track_clip_reader`]). Value types and DSP
-//! internals live in purpose-named namespaces:
-//!
+//! - [`clip`] — the two playback tiers, the per-track mixer, and the shared
+//!   interpolation / placement kernels.
+//! - [`live`] — mic in, WAV out.
+//! - [`stretch`] — phase vocoder (pitch-independent stretch).
+//! - [`live`] — mic in, WAV out.
 //! - [`AudioIn`] / [`AudioOut`] / [`pump`] — the engine's I/O edge vocabulary,
-//!   re-exported from [`tutti_types::io`]. Recording is a pump from one to the
-//!   other.
-//! - [`capture`] — the write side's live impl: [`WavOut`](capture::WavOut),
-//!   an [`AudioOut`]
-//! - [`stretch`] — time-stretch / pitch-shift DSP unit
+//!   re-exported from `tutti_types::io`.
 //!
 //! # Bevy-free use (`--no-default-features`)
 //!
-//! The whole engine is Bevy-free; only the ECS drivers (Plugins, trigger
-//! messages, reconcile systems) are behind the `bevy` feature. A non-Bevy host
-//! builds a [`Sampler`] and drives it through plain methods:
+//! The engine is Bevy-free; only the ECS drivers are behind the `bevy` feature.
+//! A non-Bevy host builds a [`Sampler`] and drives it through plain methods:
 //!
 //! - In-memory playback: construct a [`SamplerUnit`] / [`TrackClipReaderUnit`]
-//!   and add it to a [`tutti_core::graph::AudioGraph`].
+//!   and add it to a fundsp `Net`.
 //! - **Disk streaming**: [`Sampler::new`] spawns the butler thread;
 //!   [`commands()`](Sampler::commands) issues stream/seek/loop ops and
 //!   [`status()`](Sampler::status) constructs a [`StreamingClipReader`] to wire
@@ -65,41 +72,42 @@ mod macros;
 
 mod node_id;
 
-// The engine's I/O edge vocabulary lives in `tutti-types` (the root leaf) so
-// every subsystem shares one definition. Re-exported here for back-compat so
-// `tutti_sampler::{AudioIn, AudioOut, pump}` paths keep resolving.
-pub use tutti_core::io;
+// The I/O edge vocabulary is defined once in `tutti-types` and re-exported by
+// `tutti-core`; this crate's `WavOut` implements `AudioOut` against it.
 pub use tutti_core::io::{pump, AudioIn, AudioOut};
 
-// Each domain is a self-contained module owning its audio engine + (under the
-// `bevy` feature) its Components / Systems / Plugin. The disk-streaming engine —
-// the butler thread, the `Sampler` handle, `StreamingSamplerUnit` — is Bevy-free:
-// a non-Bevy host builds a `Sampler` with `Sampler::new(..)` and drives streaming
-// through its `commands()`/`status()` ports directly. Only the ECS drivers
-// (Plugins, trigger Messages, reconcile systems) that turn those into entity-spawn
-// workflows are gated.
-pub mod playback;
+// Clip playback: the two tier units, the mixer over them, and the kernels they
+// share. Bevy-free apart from the asset loader, gated inside.
+pub mod clip;
 
-// Bevy-free DSP leaves + value types from `playback` — usable for direct
+// The live audio edge — mic in, WAV out. Independent of clip playback.
+pub mod live;
+
+// Time-stretch / pitch-shift (phase vocoder). A peer DSP subsystem, not a
+// clip-playback concern: it owns no source and imports nothing from `clip`.
+pub mod stretch;
+
+// Bevy-free DSP leaves + value types from `clip` — usable for direct
 // FunDSP-graph integration without the ECS layer. Only `WavOut` (the public
 // `AudioOut` sink) is re-exported; the butler's `LruCache` / `StreamPin` are
 // internal machinery a consumer never constructs, so they stay `pub(crate)`.
-pub use butler::WavOut;
-pub use playback::{
-    share_mic_ring, ClipCommand, ClipReader, ClipSpec, Direction, LoopSetting, MicMonitorNode,
-    MicRing, PendingPlayback, Playback, SamplerUnit, SamplerUnitConfig, SlotId,
-    StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit, TrackClipReaderHandle,
-    TrackClipReaderUnit, TransportPlacement, Voice, VoiceNode, VoiceSource,
+pub use live::WavOut;
+// `StreamingClipConfig` and `StreamingSamplerUnit` are not re-exported: nothing
+// outside this crate constructs them. `StreamingSamplerUnit` in particular is
+// `StreamingClipReader`'s `inner` — one capability, and only the outer type is
+// a doorway. `ClipSpec` stays public solely for `tests/rt_no_alloc.rs`, which
+// is a separate crate; it has no production caller.
+pub use clip::{
+    ClipCommand, ClipSpec, Direction, LoopSetting, PendingPlayback, Playback, SamplerUnit,
+    SamplerUnitConfig, SlotId, StreamingClipReader, TrackClipReaderHandle, TrackClipReaderUnit,
+    TransportPlacement, Voice, VoiceNode, VoiceSource,
 };
-// Bevy ECS surface of `playback`. The SamplerNode marker/param path
-// (SamplerNode/Speed/Looping, PendingSamplerLoad, WaveImportQueue, the sampler
-// reconcilers + epoch bump) moved to `dawai_model::engine_bind::sampler`.
+pub use live::{share_mic_ring, MicMonitorNode, MicRing};
+// Bevy ECS surface of `clip`.
 #[cfg(feature = "bevy")]
-pub use playback::{
-    audio_cleanup_system, audio_parameter_sync_system, audio_playback_system,
-    time_stretch_sync_system, AudioEmitter, AudioPlaybackState, AudioVolume, DespawnOnFinish,
-    PlayAudio, TimeStretch, TimeStretchControl, TrackClipReaderNode, TrackClipReaderRef,
-    TuttiPlaybackPlugin, WaveAssetLoader, WaveAssetLoaderError,
+pub use clip::{
+    TrackClipReaderNode, TrackClipReaderRef, TuttiPlaybackPlugin, WaveAssetLoader,
+    WaveAssetLoaderError,
 };
 
 // The async disk-streaming engine (butler thread + the `Sampler` handle). All
@@ -123,13 +131,8 @@ use bevy_ecs::prelude::Resource;
 #[derive(Resource, Debug)]
 pub struct PendingSampler(pub Option<Sampler>);
 
-/// Bevy plugin: the whole sampler ECS surface.
-///
-/// Composes the per-duty sub-plugins (playback, time-stretch) and adds the
-/// sampler reconcilers + pending-load promotion + param-epoch bump into the
-/// shared `GraphReconcileSystems` schedule owned by [`tutti_core::graph`].
-/// Requires the core graph plugin ([`tutti_core::ecs::GraphReconcilePlugin`])
-/// to have configured `GraphReconcileSystems` first.
+/// Bevy plugin: the sampler's ECS surface — the wave asset loader, time-stretch
+/// control sync, and the [`Sampler`] resource handshake.
 #[cfg(feature = "bevy")]
 #[derive(Debug)]
 pub struct TuttiSamplerPlugin;
@@ -137,11 +140,7 @@ pub struct TuttiSamplerPlugin;
 #[cfg(feature = "bevy")]
 impl bevy_app::Plugin for TuttiSamplerPlugin {
     fn build(&self, app: &mut bevy_app::App) {
-        // Each domain is a self-contained plugin; this just composes them.
-        // (`TuttiPlaybackPlugin` owns the trigger lifecycle, deferred-load
-        // promotion, `SamplerUnit` reconcilers, param-epoch bump, and
-        // time-stretch sync.)
-        app.add_plugins(playback::TuttiPlaybackPlugin);
+        app.add_plugins(clip::TuttiPlaybackPlugin);
 
         // Claim the sampler out of the transient `build_into` inserted
         // (synchronous, during plugin build) — the umbrella `PendingX` handshake.
@@ -160,10 +159,5 @@ impl bevy_app::Plugin for TuttiSamplerPlugin {
 /// driving this sink, lived out by bevy-tutti's `Recorder` (a `MicIn`
 /// pumped into a `WavOut` on a background thread).
 pub mod capture {
-    pub use crate::butler::{CaptureFormat, WavOut};
-}
-
-/// Time-stretching and pitch-shifting DSP unit.
-pub mod stretch {
-    pub use crate::playback::time_stretch::{Algorithm, FftSize, Params, Unit};
+    pub use crate::live::{CaptureFormat, WavOut};
 }

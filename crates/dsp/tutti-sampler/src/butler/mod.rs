@@ -8,22 +8,21 @@ mod crossfader;
 mod handlers;
 mod io;
 mod loop_body;
+mod loops;
 mod metrics;
 mod plan;
 mod prefetch;
+mod preroll;
 mod region_map;
 mod rt_state;
 mod thread;
-mod varispeed;
 
 pub(crate) use command::ButlerCommand;
 pub(crate) use config::BufferConfig;
-pub use io::capture::{CaptureFormat, WavOut};
 pub(crate) use plan::ChannelPlan;
 pub(crate) use prefetch::SharedReader;
 pub(crate) use rt_state::RtState;
 pub(crate) use thread::ButlerThread;
-pub(crate) use varispeed::PlayDirection;
 
 // Test-only re-exports for unit tests outside the butler module tree (e.g.
 // `units::streaming_sampler`) that build readers directly. Gated so they

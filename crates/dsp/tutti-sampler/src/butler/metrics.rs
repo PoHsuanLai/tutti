@@ -1,31 +1,19 @@
-//! I/O statistics and metrics for butler thread.
+//! Butler-thread read throughput, used to size refill chunks.
 //!
-//! Tracks throughput and cache efficiency.
+//! Deliberately just the one measurement: six byte/op/cache counters used to
+//! live here too, incremented on every read and never once loaded.
 
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 pub struct Metrics {
-    bytes_read: AtomicU64,
-    bytes_written: AtomicU64,
-    read_ops: AtomicU64,
-    write_ops: AtomicU64,
-    cache_hits: AtomicU64,
-    cache_misses: AtomicU64,
-    /// Only accessed from butler thread
+    /// Only accessed from the butler thread.
     throughput: Mutex<ThroughputTracker>,
 }
 
 impl Default for Metrics {
     fn default() -> Self {
         Self {
-            bytes_read: AtomicU64::new(0),
-            bytes_written: AtomicU64::new(0),
-            read_ops: AtomicU64::new(0),
-            write_ops: AtomicU64::new(0),
-            cache_hits: AtomicU64::new(0),
-            cache_misses: AtomicU64::new(0),
             throughput: Mutex::new(ThroughputTracker::new()),
         }
     }
@@ -85,8 +73,6 @@ impl Metrics {
 
     #[inline]
     pub fn record_read(&self, bytes: u64) {
-        self.bytes_read.fetch_add(bytes, Ordering::Relaxed);
-        self.read_ops.fetch_add(1, Ordering::Relaxed);
         if let Some(mut tracker) = self.throughput.try_lock() {
             tracker.record_read(bytes);
         }
@@ -95,24 +81,5 @@ impl Metrics {
     /// Recent read throughput in bytes/second. Used by varifill to adapt chunk sizes.
     pub fn read_rate(&self) -> f64 {
         self.throughput.lock().read_rate()
-    }
-
-    /// Byte-write accounting. Orphaned by the recording teardown (its only
-    /// caller was the deleted capture flush); retained for the write-side rebuild.
-    #[inline]
-    #[allow(dead_code)]
-    pub fn record_write(&self, bytes: u64) {
-        self.bytes_written.fetch_add(bytes, Ordering::Relaxed);
-        self.write_ops.fetch_add(1, Ordering::Relaxed);
-    }
-
-    #[inline]
-    pub fn record_cache_hit(&self) {
-        self.cache_hits.fetch_add(1, Ordering::Relaxed);
-    }
-
-    #[inline]
-    pub fn record_cache_miss(&self) {
-        self.cache_misses.fetch_add(1, Ordering::Relaxed);
     }
 }

@@ -409,6 +409,152 @@ unit_bounded!(Cents, f32);
 unit_additive!(Cents);
 unit_signed!(Cents);
 unit_scalable!(Cents, f32);
+// ── Playback rates ──────────────────────────────────────────────────────────
+//
+// Three distinct quantities that all used to be `Ratio`, all multiplied into
+// one advance. Keeping them apart is the point: `SrcRatio` is derived from the
+// two sample rates and is never user intent, `PlaybackRate` is user intent that
+// couples pitch to speed, and `StretchFactor` is user intent that does not.
+// Multiplying the wrong pair is now a type error rather than a silent bug.
+
+unit_newtype!(
+    /// Sample-rate conversion ratio: source rate ÷ destination rate.
+    ///
+    /// **Derived, never user intent.** A 48 kHz file played by a 44.1 kHz
+    /// session reads at `48000/44100 ≈ 1.088` source samples per output sample,
+    /// so it sounds correct. Build it with [`SrcRatio::for_rates`] rather than
+    /// by hand — that is the one place the derivation lives.
+    ///
+    /// Distinct from [`PlaybackRate`] because they answer different questions:
+    /// this one asks "what does playing at the right pitch cost?", the other
+    /// "how fast does the user want it?". They compose (see
+    /// [`PlaybackRate::read_rate`]) but must not be confused for one another.
+    SrcRatio
+);
+unit_ordered!(SrcRatio);
+unit_bounded!(SrcRatio, f32);
+// NOT `unit_scalable!` / `unit_additive!`: a conversion ratio is derived from
+// two sample rates, never scaled or summed. Re-derive it instead.
+impl SrcRatio {
+    /// Unity — source and session agree, so no conversion.
+    pub const UNITY: Self = Self(1.0);
+
+    /// Derive the conversion ratio for a file played by a session.
+    ///
+    /// Returns exactly [`UNITY`](Self::UNITY) when the two rates agree to within
+    /// 0.01 Hz, so the common matched-rate case is bit-exact rather than
+    /// `1.0000001`. A non-positive session rate also yields unity: there is no
+    /// meaningful conversion, and propagating a NaN or infinity here would
+    /// poison every sample downstream.
+    #[inline]
+    pub fn for_rates(file_rate: f64, session_rate: f64) -> Self {
+        if session_rate <= 0.0 || (file_rate - session_rate).abs() < 0.01 {
+            Self::UNITY
+        } else {
+            Self((file_rate / session_rate) as f32)
+        }
+    }
+}
+
+unit_newtype!(
+    /// Varispeed: how fast a clip plays relative to its recorded rate.
+    ///
+    /// **Couples pitch to speed**, exactly like changing a turntable's speed —
+    /// 2.0 plays twice as fast an octave up. When pitch must stay put, that is
+    /// [`StretchFactor`], a different operation with different DSP.
+    ///
+    /// Bounded ONLY when built through [`new_clamped`](Self::new_clamped) —
+    /// the generated `new` is unchecked, so the type makes the range *visible*
+    /// and *shared*, it does not enforce it. Every path fed by user input or a
+    /// document field must use `new_clamped`; bare `new` is for reading back a
+    /// value that was already clamped on the way in (an atomic reload).
+    ///
+    /// The range is a resampler limit. It used to live inside one backend's
+    /// setter, so the other silently accepted out-of-range speeds — same
+    /// command, different audio per tier. One shared constructor is what fixed
+    /// that; a newtype alone could not.
+    PlaybackRate
+);
+unit_ordered!(PlaybackRate);
+unit_bounded!(PlaybackRate, f32);
+// NOT `unit_additive!`: 2× plus 2× is not 4× — rates compose by multiplication.
+// NOT `unit_scalable!`: scaling by a bare `f32` is how the three rate kinds got
+// multiplied together in the first place. Compose through `read_rate` instead,
+// which names both operands.
+impl PlaybackRate {
+    /// Normal speed.
+    pub const UNITY: Self = Self(1.0);
+
+    /// Slowest supported varispeed (quarter speed).
+    pub const MIN: Self = Self(0.25);
+
+    /// Fastest supported varispeed (4× speed).
+    pub const MAX: Self = Self(4.0);
+
+    /// Build a rate, clamping into [`MIN`](Self::MIN)..=[`MAX`](Self::MAX).
+    ///
+    /// Non-finite input yields [`UNITY`](Self::UNITY): a NaN rate would make the
+    /// read position NaN and silence the clip permanently, which is far worse
+    /// than ignoring the request.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Self {
+        if !v.is_finite() {
+            Self::UNITY
+        } else {
+            Self(v.clamp(Self::MIN.0, Self::MAX.0))
+        }
+    }
+
+    /// Source samples consumed per output sample: varispeed × conversion.
+    ///
+    /// The single composition point for the two rates. Both operands are named,
+    /// so the pair cannot be swapped or one of them silently dropped — which is
+    /// what happened when both were a bare `Ratio` multiplied at four separate
+    /// call sites.
+    #[inline]
+    pub fn read_rate(self, src: SrcRatio) -> f64 {
+        self.0 as f64 * src.0 as f64
+    }
+}
+
+unit_newtype!(
+    /// Time-stretch factor: how much longer a clip plays, pitch unchanged.
+    ///
+    /// 2.0 plays twice as long at unchanged pitch — the phase-vocoder
+    /// operation, not resampling. For the kind that couples pitch to duration,
+    /// see [`PlaybackRate`].
+    StretchFactor
+);
+unit_ordered!(StretchFactor);
+unit_bounded!(StretchFactor, f32);
+// NOT `unit_additive!` / `unit_scalable!`: same reasoning as `PlaybackRate` —
+// stretch factors compose by multiplication, and a bare-scalar `*` invites
+// mixing them with the other two rate kinds.
+impl StretchFactor {
+    /// No stretching.
+    pub const UNITY: Self = Self(1.0);
+
+    /// Shortest supported stretch (quarter length).
+    pub const MIN: Self = Self(0.25);
+
+    /// Longest supported stretch (4× length).
+    pub const MAX: Self = Self(4.0);
+
+    /// Build a factor, clamping into [`MIN`](Self::MIN)..=[`MAX`](Self::MAX).
+    ///
+    /// Non-finite input yields [`UNITY`](Self::UNITY), for the same reason as
+    /// [`PlaybackRate::new_clamped`]. As there, the raw `new` is unchecked —
+    /// use this on any path carrying user input.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Self {
+        if !v.is_finite() {
+            Self::UNITY
+        } else {
+            Self(v.clamp(Self::MIN.0, Self::MAX.0))
+        }
+    }
+}
+
 unit_newtype!(
     /// Absolute position within a wave, measured in samples.
     ///
@@ -609,6 +755,79 @@ mod tests {
     fn clamp_stays_in_the_unit_type() {
         assert_eq!(Hz(20_000.0).clamp(Hz(20.0), Hz(18_000.0)), Hz(18_000.0));
         assert_eq!(Linear(1.5).clamp(Linear(0.0), Linear(1.0)), Linear(1.0));
+    }
+
+    #[test]
+    fn src_ratio_is_exactly_unity_for_matched_rates() {
+        // Bit-exact, not 1.0000001 — the matched case is the common one and must
+        // not accumulate resampling error.
+        assert_eq!(SrcRatio::for_rates(44_100.0, 44_100.0), SrcRatio::UNITY);
+        // Within the 0.01 Hz tolerance.
+        assert_eq!(SrcRatio::for_rates(44_100.005, 44_100.0), SrcRatio::UNITY);
+    }
+
+    #[test]
+    fn src_ratio_converts_mismatched_rates() {
+        let r = SrcRatio::for_rates(48_000.0, 44_100.0);
+        assert!((r.get() - 48_000.0 / 44_100.0).abs() < 1e-6);
+        assert!(
+            r > SrcRatio::UNITY,
+            "a faster file reads more source samples"
+        );
+    }
+
+    #[test]
+    fn src_ratio_survives_a_nonpositive_session_rate() {
+        // Would otherwise divide by zero and poison every downstream sample.
+        assert_eq!(SrcRatio::for_rates(44_100.0, 0.0), SrcRatio::UNITY);
+        assert_eq!(SrcRatio::for_rates(44_100.0, -1.0), SrcRatio::UNITY);
+    }
+
+    #[test]
+    fn playback_rate_clamps_into_range() {
+        assert_eq!(PlaybackRate::new_clamped(8.0), PlaybackRate::MAX);
+        assert_eq!(PlaybackRate::new_clamped(0.0), PlaybackRate::MIN);
+        assert_eq!(PlaybackRate::new_clamped(-2.0), PlaybackRate::MIN);
+        assert_eq!(PlaybackRate::new_clamped(1.5), PlaybackRate::new(1.5));
+    }
+
+    #[test]
+    fn playback_rate_rejects_non_finite() {
+        // A NaN rate makes the read position NaN, silencing the clip forever.
+        assert_eq!(PlaybackRate::new_clamped(f32::NAN), PlaybackRate::UNITY);
+        assert_eq!(
+            PlaybackRate::new_clamped(f32::INFINITY),
+            PlaybackRate::UNITY
+        );
+        assert_eq!(
+            PlaybackRate::new_clamped(f32::NEG_INFINITY),
+            PlaybackRate::UNITY
+        );
+    }
+
+    #[test]
+    fn read_rate_composes_varispeed_with_conversion() {
+        // Half speed on a 48k file in a 44.1k session: both effects apply once.
+        // Tolerance is f32-scale, not f64: both rates are f32-backed, so the
+        // quotient is rounded once on the way in. Widening to f64 in `read_rate`
+        // keeps the *accumulation* exact (a read position advanced a million
+        // times must not drift), but it cannot recover precision already lost.
+        let rate = PlaybackRate::new(0.5);
+        let src = SrcRatio::for_rates(48_000.0, 44_100.0);
+        let expected = 0.5 * (48_000.0 / 44_100.0);
+        assert!((rate.read_rate(src) - expected).abs() < 1e-6);
+
+        // Unity on both sides consumes exactly one source sample per output —
+        // this one IS exact, and must stay so: it is the matched-rate path every
+        // same-sample-rate session takes.
+        assert_eq!(PlaybackRate::UNITY.read_rate(SrcRatio::UNITY), 1.0);
+    }
+
+    #[test]
+    fn stretch_factor_clamps_and_rejects_non_finite() {
+        assert_eq!(StretchFactor::new_clamped(8.0), StretchFactor::MAX);
+        assert_eq!(StretchFactor::new_clamped(0.1), StretchFactor::MIN);
+        assert_eq!(StretchFactor::new_clamped(f32::NAN), StretchFactor::UNITY);
     }
 
     #[test]

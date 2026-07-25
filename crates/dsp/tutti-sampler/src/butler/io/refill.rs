@@ -96,10 +96,7 @@ pub(crate) fn refill_all(
         }
 
         let is_reverse = stream_state.rt_state.is_reverse();
-        let speed = stream_state.rt_state.effective_speed().get();
-        let src_ratio = stream_state.rt_state.src_ratio().get();
-
-        let adjusted_speed = speed * src_ratio * buffer_margin as f32;
+        let adjusted_speed = stream_state.rt_state.read_rate() as f32 * buffer_margin as f32;
         let chunk_size = varifill_chunk(fill_pct, base_chunk_size, read_rate, adjusted_speed);
 
         let file_position = writer.file_position() as usize;
@@ -151,6 +148,11 @@ struct RefillWorkItem {
     file_path: PathBuf,
     fill_pct: f32,
     shared: Arc<super::super::rt_state::RtState>,
+    /// Carried per item so the parallel path wraps at the loop bounds exactly
+    /// like the serial one. It used to be hardcoded `None` at the refill call,
+    /// so any session with 3+ concurrent streams (the threshold that selects
+    /// this path) silently lost loop handling in refill.
+    loop_range: Option<(u64, u64)>,
 }
 
 /// Parallel refill using rayon's par_iter_mut with varifill strategy.
@@ -185,10 +187,7 @@ pub(crate) fn refill_all_parallel(
                 return None;
             }
 
-            let speed = stream_state.rt_state.effective_speed().get();
-            let src_ratio = stream_state.rt_state.src_ratio().get();
-
-            let adjusted_speed = speed * src_ratio * buffer_margin as f32;
+            let adjusted_speed = stream_state.rt_state.read_rate() as f32 * buffer_margin as f32;
             let chunk_size = varifill_chunk(fill_pct, base_chunk_size, read_rate, adjusted_speed);
 
             let shared = stream_state.rt_state();
@@ -200,6 +199,7 @@ pub(crate) fn refill_all_parallel(
                 file_path: writer.file_path().to_path_buf(),
                 fill_pct,
                 shared,
+                loop_range: stream_state.loop_config().map(|c| c.range),
             })
         })
         .collect();
@@ -234,6 +234,7 @@ pub(crate) fn refill_all_parallel(
                     item.fill_pct,
                     &item.shared,
                     &mut buf,
+                    item.loop_range,
                 );
             });
         });
@@ -251,19 +252,20 @@ fn refill_one(
     fill_pct: f32,
     shared: &super::super::rt_state::RtState,
     buffer: &mut Vec<[f32; 2]>,
+    loop_range: Option<(u64, u64)>,
 ) {
     shared.set_buffer_fill(fill_pct);
 
     let file_position = writer.file_position() as usize;
 
-    // Real incremental streaming when this region has a decoder; the parallel
-    // path (like the whole-file one) ignores loop ranges.
+    // Real incremental streaming when this region has a decoder. `loop_range`
+    // comes from the work item so this matches the serial path.
     #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
     if writer.decoder_mut().is_some() {
         if is_reverse {
             refill_reverse_stream(writer, file_position, chunk_size, buffer);
         } else {
-            refill_forward_stream(writer, file_position, chunk_size, buffer, None);
+            refill_forward_stream(writer, file_position, chunk_size, buffer, loop_range);
         }
         return;
     }
@@ -275,10 +277,13 @@ fn refill_one(
     if is_reverse {
         refill_reverse(writer, &wave, file_position, chunk_size, buffer);
     } else {
-        // Whole-file forward via the WaveIn source + AudioOut sink (no loop on
-        // the parallel path). WaveIn zero-pads past end, so one block fill of
-        // `chunk_size` frames matches the old `fill_buffer_forward` shape.
-        refill_forward(writer, &wave, file_position, chunk_size, buffer, None);
+        // Whole-file forward via the WaveIn source + AudioOut sink. WaveIn
+        // zero-pads past end, so one block fill of `chunk_size` frames matches
+        // the old `fill_buffer_forward` shape. `loop_range` is honoured here for
+        // the same reason as the decoder path above: this function serves the
+        // 3+-stream parallel refill, and dropping it there made looping depend
+        // on how many clips happened to be streaming.
+        refill_forward(writer, &wave, file_position, chunk_size, buffer, loop_range);
     }
 }
 
@@ -442,10 +447,8 @@ pub(in crate::butler) fn load_wave(
     file_path: &PathBuf,
 ) -> Option<Arc<Wave>> {
     if let Some(cached) = cache.get(file_path) {
-        metrics.record_cache_hit();
         Some(cached)
     } else {
-        metrics.record_cache_miss();
         match Wave::load(file_path) {
             Ok(w) => {
                 let arc_wave = Arc::new(w);

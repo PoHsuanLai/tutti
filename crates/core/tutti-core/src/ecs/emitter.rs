@@ -2,8 +2,8 @@
 //!
 //! [`AudioEmitter`] binds an entity to a live node in tutti's graph;
 //! [`AudioPlaybackState`] tracks whether that node is playing/stopped/finished.
-//! Both are leaf-agnostic value types. The `PlayAudio` trigger and its
-//! `audio_playback_system` (which build a `SamplerUnit`) live in bevy-tutti.
+//! Both are leaf-agnostic value types: whoever spawns an audio node inserts
+//! them, and the spatial/metering systems read them.
 
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
@@ -12,7 +12,7 @@ use crate::NodeId;
 
 /// Marks an entity as an audio emitter with a live node in tutti's graph.
 ///
-/// Added automatically by `audio_playback_system` when a `PlayAudio` trigger
+/// Inserted by whoever adds the node to the graph
 /// is processed. Remove this component (or despawn the entity) to stop
 /// playback and clean up the graph node.
 ///

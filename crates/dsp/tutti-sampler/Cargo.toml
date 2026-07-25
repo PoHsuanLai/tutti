@@ -16,7 +16,7 @@ default = ["bevy", "wav"]
 # `tutti-core/bevy` (the playback systems schedule against the graph hub and
 # `#[require(Volume)]` a core Component) and `tutti-core/bevy_asset` (the
 # `WaveAsset` loader).
-bevy = ["dep:bevy_ecs", "dep:bevy_app", "dep:bevy_reflect", "dep:bevy_asset", "dep:bevy_tasks", "dep:bevy_log", "tutti-core/bevy", "tutti-core/bevy_asset"]
+bevy = ["dep:bevy_ecs", "dep:bevy_app", "dep:bevy_reflect", "dep:bevy_asset", "dep:bevy_log", "tutti-core/bevy", "tutti-core/bevy_asset"]
 
 # Audio format support - cascade to tutti-core
 wav = ["tutti-core/wav"]
@@ -37,7 +37,6 @@ bevy_ecs = { version = "0.19", default-features = false, optional = true }
 bevy_app = { version = "0.19", default-features = false, optional = true }
 bevy_reflect = { version = "0.19", default-features = false, optional = true }
 bevy_asset = { version = "0.19", default-features = false, optional = true }
-bevy_tasks = { version = "0.19", optional = true }
 bevy_log = { version = "0.19", default-features = false, optional = true }
 
 thiserror = "2"

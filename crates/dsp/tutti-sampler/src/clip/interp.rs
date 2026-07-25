@@ -1,11 +1,14 @@
 //! Shared, zero-alloc interpolation kernel for the sampler playback units.
 //!
 //! Both the in-memory [`SamplerUnit`](super::sampler_unit::SamplerUnit) and the
-//! disk-streaming [`StreamingSamplerUnit`](super::streaming_sampler::StreamingSamplerUnit)
-//! read fractional sample positions. Historically the in-memory path used a
-//! 2-tap linear lerp while the streaming path used 4-tap cubic Hermite, so the
-//! same clip sounded different (and worse) on the live timeline. This module is
-//! the single source of truth: one `cubic_hermite`, one stereo frame reader.
+//! disk-streaming [`StreamingClipReader`](super::streaming_sampler::StreamingClipReader)
+//! read fractional sample positions, so both must interpolate the same way or
+//! the same clip sounds different on the two tiers. Shared here: one
+//! `cubic_hermite` kernel and one transport-placement gate, used by both.
+//!
+//! `read_stereo_frame` is the in-RAM reader only — the streaming tier pulls
+//! from the butler ring rather than an indexable `Wave`, so it feeds the same
+//! kernel from its own 4-tap history. Same interpolation, different fetch.
 //!
 //! Everything here is pure per-sample arithmetic — no allocation, no locks —
 //! so it is safe to call from `process`/`tick` hot paths.
@@ -24,9 +27,26 @@ use tutti_core::{Beat, BeatDuration, ChannelLayout, Timeline, Wave};
 /// unit reads `wave.sample_rate()`, the streaming reader stores it), so it is
 /// passed in to keep this source-agnostic.
 ///
+/// # A placed clip has no position of its own
+///
+/// Position is **derived** from the playhead, never accumulated here — the same
+/// model `tutti_core`'s transport uses, where `TransportClock` is the one node
+/// that advances time (`current_beat += beat_per_sample`) and everything
+/// downstream reads the result. A clip that also carried a read cursor would be
+/// a second, competing clock, and the two would drift apart the moment the
+/// transport looped, seeked, or changed tempo.
+///
+/// `read_rate` scales the derived offset rather than stepping a cursor: at 0.5
+/// the clip is half as far into its material for a given playhead position,
+/// which is what "half speed" means for something the timeline owns. That is why
+/// varispeed belongs *here*, in the beat→sample mapping, and not as a per-unit
+/// `+= speed` accumulator. Build it with
+/// [`PlaybackRate::read_rate`](tutti_core::PlaybackRate::read_rate) so the
+/// varispeed and sample-rate-conversion factors compose in exactly one place.
+///
 /// Returns `None` when the transport is stopped, the playhead is before
 /// `start_beat`, past `duration`, or the tempo is non-positive. Otherwise the
-/// value is `beat_offset * 60 / tempo * file_sample_rate`.
+/// value is `beat_offset * 60 / tempo * file_sample_rate * read_rate`.
 ///
 /// Pure arithmetic: no allocation, no locks — safe from `tick`/`process` hot
 /// paths.
@@ -36,6 +56,7 @@ pub fn transport_sample_offset(
     start_beat: Beat,
     duration: Option<BeatDuration>,
     file_sample_rate: f64,
+    read_rate: f64,
 ) -> Option<f64> {
     if !transport.is_rolling() {
         return None;
@@ -54,7 +75,7 @@ pub fn transport_sample_offset(
         return None;
     }
     let seconds_offset = beat_offset * 60.0 / tempo;
-    Some(seconds_offset * file_sample_rate)
+    Some(seconds_offset * file_sample_rate * read_rate)
 }
 
 /// Catmull-Rom cubic Hermite interpolation across four consecutive taps.

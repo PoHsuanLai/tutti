@@ -5,7 +5,9 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct RegionId(pub u64);
 
-use super::varispeed::PlayDirection;
+use tutti_core::PlaybackRate;
+
+use crate::clip::track_clip_reader::Direction;
 
 /// Command sent to the Butler thread.
 #[derive(Debug)]
@@ -42,11 +44,15 @@ pub(crate) enum ButlerCommand {
         file_position: u64,
     },
 
-    /// Set varispeed (direction and speed) for a channel. `speed = 1.0` is normal.
+    /// Set varispeed (direction and speed) for a channel.
+    ///
+    /// [`PlaybackRate::UNITY`] is normal speed. Carrying the bounded type rather
+    /// than a raw `f32` means the range is enforced where the value is built,
+    /// not re-checked (or forgotten) in each handler.
     SetVarispeed {
         channel_index: usize,
-        direction: PlayDirection,
-        speed: f32,
+        direction: Direction,
+        speed: PlaybackRate,
     },
 
     /// Shutdown the butler thread.

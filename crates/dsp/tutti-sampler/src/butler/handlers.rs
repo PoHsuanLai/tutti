@@ -9,16 +9,17 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
-use tutti_core::Samples;
+use tutti_core::{Samples, SrcRatio};
 
 use super::cache::LruCache;
 use super::command::{ButlerCommand, RegionId};
 use super::config::BufferConfig;
-use super::io::loops::{buffer_size_for_file, capture_samples, fadein_samples, fadeout_samples};
 use super::io::refill::load_wave;
+use super::loops::{buffer_size_for_file, capture_samples};
 use super::metrics::Metrics;
 use super::plan::{ChannelPlan, LoopConfig};
 use super::prefetch::{share_reader, RegionBuffer};
+use super::preroll::reposition_click_free;
 use super::region_map::RegionMap;
 
 /// Arc'd handles shared between `ButlerThread` (controller) and the butler
@@ -121,8 +122,7 @@ pub(super) fn handle_command(
         } => {
             if let Some(plan) = shared.plans.get(&channel_index) {
                 plan.rt_state.set_speed(speed);
-                plan.rt_state
-                    .set_direction(crate::Direction::from_reverse(direction.is_reverse()));
+                plan.rt_state.set_direction(direction);
             }
         }
 
@@ -212,11 +212,10 @@ fn handle_stream_file(
 
     shared.plans.entry(channel_index).or_default();
 
-    let src_ratio = if (file_sr - sample_rate).abs() < 0.01 {
-        1.0
-    } else {
-        (file_sr / sample_rate) as f32
-    };
+    // Same derivation the in-RAM tier uses (`SamplerUnit::set_session_sample_rate`),
+    // via the one shared constructor — this was a hand-rolled copy that had to
+    // agree with it by convention.
+    let src_ratio = SrcRatio::for_rates(file_sr, sample_rate);
 
     // Pin the streamed wave in the LRU cache for the stream's lifetime. On the
     // fallback path `load_wave` inserted the whole file into the cache, so this
@@ -304,32 +303,14 @@ pub(super) fn handle_seek_stream(
 
     let new_pos = file_position.saturating_sub(plan.pdc_preroll);
 
-    let crossfade_len = config.seek_crossfade_samples;
-    let fadeout = fadeout_samples(
+    reposition_click_free(
         &plan,
-        &shared.cache,
-        &shared.metrics,
-        writer.file_path(),
-        crossfade_len,
-    );
-
-    plan.set_seeking(true);
-    plan.flush_buffer();
-    writer.set_file_position(new_pos);
-
-    let fadein = fadein_samples(
-        &shared.cache,
-        &shared.metrics,
-        writer.file_path(),
+        writer,
         new_pos,
-        crossfade_len,
+        &shared.cache,
+        &shared.metrics,
+        config,
     );
-
-    if !fadeout.is_empty() && !fadein.is_empty() {
-        plan.rt_state.start_seek_crossfade(fadeout, fadein);
-    }
-
-    plan.set_seeking(false);
 }
 
 #[cfg(test)]

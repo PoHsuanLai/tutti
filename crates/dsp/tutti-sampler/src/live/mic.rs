@@ -1,6 +1,6 @@
-//! Live-input monitoring node — the mic twin of [`StreamingSamplerUnit`].
+//! Live-input monitoring node — the mic twin of the disk-streaming unit.
 //!
-//! [`StreamingSamplerUnit`](super::streaming_sampler::StreamingSamplerUnit)
+//! `StreamingSamplerUnit`
 //! drains a ring the *butler* fills off disk; [`MicMonitorNode`] drains a ring
 //! a *capture device* fills. Both are `AudioUnit`s with 0 inputs / 2 outputs
 //! whose whole job is "pop the next frame the producer pushed, or emit silence

@@ -35,20 +35,30 @@ pub(crate) fn wave_frame(wave: &Wave, layout: ChannelLayout, idx: usize) -> [f32
     [left, right]
 }
 
+/// Wrap `pos` back into `[start, end)` when it has run past the end.
+///
+/// Modulo, not a single subtraction: at high varispeed one advance can overshoot
+/// a short loop by more than its own length, and subtracting once would land
+/// outside the region. Callers guarantee `end > start`.
+#[inline]
+pub(crate) fn wrap_into(pos: usize, start: usize, end: usize) -> usize {
+    if pos >= end {
+        start + ((pos - start) % (end - start))
+    } else {
+        pos
+    }
+}
+
 /// Wrap `pos` into the half-open loop range if it has run past the end.
 /// `loop_range` is `(start, end)` in samples; `None` (or an empty range) is the
 /// identity. The single source of truth for the loop-wrap arithmetic shared by
 /// [`WaveIn`] and the streaming/whole-file forward refills.
 #[inline]
 pub(crate) fn wrap_position(pos: usize, loop_range: Option<(u64, u64)>) -> usize {
-    if let Some((start, end)) = loop_range {
-        let (start, end) = (start as usize, end as usize);
-        if end > start && pos >= end {
-            let loop_len = end - start;
-            return start + ((pos - start) % loop_len);
-        }
+    match loop_range {
+        Some((start, end)) if end > start => wrap_into(pos, start as usize, end as usize),
+        _ => pos,
     }
-    pos
 }
 
 /// A forward [`AudioIn`] over a resident `Wave`, reading from an internal
@@ -79,15 +89,14 @@ impl<'w> WaveIn<'w> {
         }
     }
 
+    /// `loop_bounds` is pre-validated non-empty at construction, so this only
+    /// has to apply the shared arithmetic.
     #[inline]
     fn wrap(&self, pos: usize) -> usize {
-        if let Some((loop_start, loop_end)) = self.loop_bounds {
-            let loop_len = loop_end - loop_start;
-            if pos >= loop_end {
-                return loop_start + ((pos - loop_start) % loop_len);
-            }
+        match self.loop_bounds {
+            Some((start, end)) => wrap_into(pos, start, end),
+            None => pos,
         }
-        pos
     }
 }
 

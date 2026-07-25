@@ -6,10 +6,10 @@
 //! ownership story obvious.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use tutti_core::{AtomicF32, Ratio};
+use tutti_core::{AtomicF32, PlaybackRate, SrcRatio};
 
 use super::crossfader::StreamingCrossfader;
-use crate::Direction;
+use crate::clip::track_clip_reader::Direction;
 
 /// Playback parameters read by the audio thread every sample.
 #[repr(align(64))]
@@ -97,22 +97,37 @@ impl RtState {
     }
 
     #[inline]
-    pub fn speed(&self) -> Ratio {
-        Ratio::new(self.playback.speed.load(Ordering::Acquire))
+    pub fn speed(&self) -> PlaybackRate {
+        PlaybackRate::new(self.playback.speed.load(Ordering::Acquire))
     }
 
-    /// Clamped to 0.25..4.0.
-    pub fn set_speed(&self, speed: f32) {
-        let clamped = speed.clamp(0.25, 4.0);
-        self.playback.speed.store(clamped, Ordering::Release);
+    /// Publish a new varispeed.
+    ///
+    /// Takes the already-bounded [`PlaybackRate`] rather than a raw `f32`: the
+    /// range used to be enforced here and *only* here, so the in-RAM tier —
+    /// which never went through this function — accepted speeds this one
+    /// clamped. Same command, different audio per tier. The type carries the
+    /// bound now, so both tiers get it.
+    pub fn set_speed(&self, speed: PlaybackRate) {
+        self.playback.speed.store(speed.get(), Ordering::Release);
     }
 
     /// Current playback speed. Same as [`speed`] — kept distinct from the
     /// raw atomic load for the audio-thread call site which reads it every
     /// sample.
     #[inline]
-    pub fn effective_speed(&self) -> Ratio {
+    pub fn effective_speed(&self) -> PlaybackRate {
         self.speed()
+    }
+
+    /// Source samples consumed per output sample: varispeed × conversion.
+    ///
+    /// The streaming twin of `SamplerUnit::read_rate`, composing through the
+    /// same [`PlaybackRate::read_rate`] so neither tier can drop a factor or
+    /// swap the pair.
+    #[inline]
+    pub fn read_rate(&self) -> f64 {
+        self.speed().read_rate(self.src_ratio())
     }
 
     /// Current playback direction. Backed by the `AtomicU8` (0 = forward,
@@ -143,12 +158,14 @@ impl RtState {
     }
 
     #[inline]
-    pub fn src_ratio(&self) -> Ratio {
-        Ratio::new(self.playback.src_ratio.load(Ordering::Acquire))
+    pub fn src_ratio(&self) -> SrcRatio {
+        SrcRatio::new(self.playback.src_ratio.load(Ordering::Acquire))
     }
 
-    pub fn set_src_ratio(&self, ratio: f32) {
-        self.playback.src_ratio.store(ratio, Ordering::Release);
+    pub fn set_src_ratio(&self, ratio: SrcRatio) {
+        self.playback
+            .src_ratio
+            .store(ratio.get(), Ordering::Release);
     }
 
     #[inline]
@@ -274,23 +291,26 @@ mod tests {
     #[test]
     fn test_default_values() {
         let state = RtState::new();
-        assert_eq!(state.speed(), Ratio::new(1.0));
+        assert_eq!(state.speed(), PlaybackRate::UNITY);
         assert!(!state.is_reverse());
         assert!(!state.is_seeking());
     }
 
     #[test]
     fn test_speed_clamping() {
+        // The clamp moved into `PlaybackRate` so BOTH playback tiers get it —
+        // this used to be the only place it happened, so the in-RAM sampler,
+        // which never called this setter, accepted out-of-range speeds.
         let state = RtState::new();
 
-        state.set_speed(0.1);
-        assert_eq!(state.speed(), Ratio::new(0.25));
+        state.set_speed(PlaybackRate::new_clamped(0.1));
+        assert_eq!(state.speed(), PlaybackRate::MIN);
 
-        state.set_speed(10.0);
-        assert_eq!(state.speed(), Ratio::new(4.0));
+        state.set_speed(PlaybackRate::new_clamped(10.0));
+        assert_eq!(state.speed(), PlaybackRate::MAX);
 
-        state.set_speed(2.0);
-        assert_eq!(state.speed(), Ratio::new(2.0));
+        state.set_speed(PlaybackRate::new_clamped(2.0));
+        assert_eq!(state.speed(), PlaybackRate::new(2.0));
     }
 
     #[test]

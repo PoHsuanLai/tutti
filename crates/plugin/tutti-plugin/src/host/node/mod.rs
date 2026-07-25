@@ -28,8 +28,8 @@ mod tests;
 // in `crate::util::node`; re-exported here so the existing
 // `crate::host::node::{Midi, ...}` paths (used by `crate::backend`) keep
 // resolving.
-pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
 pub use crate::util::node::{route_with_latency, Midi, ParameterChangeSink};
+pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
 pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
 pub use note_expression_source::NoteExpressionSource;
 pub use param_automation_source::{
@@ -38,8 +38,8 @@ pub use param_automation_source::{
 pub(crate) use process::ProcessGuard;
 
 use crate::error::Result;
-use crate::host::ipc_client::audio::{BridgeEvent, PluginInvalidation, ResyncClass};
 use crate::host::ipc_client::audio::HarmonyInputs;
+use crate::host::ipc_client::audio::{BridgeEvent, PluginInvalidation, ResyncClass};
 use crate::host::ipc_client::PluginBridge;
 use crate::host::node::input_slot::{BlockCtx, InputSlot};
 use crate::host::node::transport_source::TransportSource;
@@ -182,7 +182,11 @@ impl PluginClient {
     /// `emit` fired whenever an out-target was installed, regardless of the bit.)
     #[inline]
     fn emit_midi_out_if_declared(&self) {
-        if self.loaded.features.contains(crate::protocol::Features::MIDI_OUT) {
+        if self
+            .loaded
+            .features
+            .contains(crate::protocol::Features::MIDI_OUT)
+        {
             self.midi.emit(&self.midi_out);
         }
     }

@@ -60,18 +60,18 @@ pub use types::ClapNoteExpression;
 // track-info, audio-port reconfiguration, transport-control). Their
 // definitions stay compiled (some are referenced by always-on host callbacks),
 // but the public re-export is gated so the default API surface stays lean.
-#[cfg(feature = "clap-extras")]
-pub use types::{
-    AudioPortConfigRequest, Color, ContextMenuItem, ContextMenuTarget, ParamAutomationState,
-    RemoteControlsPage, TrackInfo, TransportRequest, TriggerInfo, TuningInfo, UndoChange,
-    UndoDeltaProperties,
-};
 pub use types::{
     AmbisonicConfig, AmbisonicNormalization, AmbisonicOrdering, AudioBuffer, AudioBuffer32,
     AudioBuffer64, AudioPortConfig, AudioPortFlags, AudioPortInfo, ChannelLayout,
     EditorCapabilities, EditorSize, MidiEvent, NoteDialect, NoteDialects, NoteExpressionType,
     NoteName, NotePortInfo, ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo,
     StateContext, SurroundChannel, TransportInfo, VoiceInfo, WindowHandle,
+};
+#[cfg(feature = "clap-extras")]
+pub use types::{
+    AudioPortConfigRequest, Color, ContextMenuItem, ContextMenuTarget, ParamAutomationState,
+    RemoteControlsPage, TrackInfo, TransportRequest, TriggerInfo, TuningInfo, UndoChange,
+    UndoDeltaProperties,
 };
 
 // Test-only global allocator for RT-safety regression tests.

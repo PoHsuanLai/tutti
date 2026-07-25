@@ -2,7 +2,7 @@ use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame};
 
-use tutti_core::{Linear, Param, SampleRate, Seconds};
+use tutti_core::{Feedback, Mix, Param, SampleRate, Seconds};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InterpolationMode {
@@ -32,10 +32,14 @@ impl DelayLine {
         max_delay_secs: impl Into<Seconds>,
         sample_rate: impl Into<SampleRate>,
     ) -> Self {
-        let max_delay_secs = max_delay_secs.into().get();
-        let sample_rate = sample_rate.into().get();
-        let samples = (max_delay_secs * sample_rate as f32).ceil() as usize;
-        Self::new(samples)
+        // `to_samples_ceil`, not a nearest-rounding cast: a line sized for
+        // `max_delay` must hold *at least* that long, and rounding to nearest
+        // under-allocates for half of all inputs. The multiply also stays in
+        // f64 now — the old form narrowed the sample rate to f32 first.
+        let samples = max_delay_secs
+            .into()
+            .to_samples_ceil(sample_rate.into().get());
+        Self::new(samples.get())
     }
 
     pub fn push_sample(&mut self, sample: f32) {
@@ -94,8 +98,8 @@ impl DelayLine {
 pub struct DelayLineNode {
     delay: DelayLine,
     delay_time: Param<Seconds>,
-    feedback: Param<Linear>,
-    mix: Param<Linear>,
+    feedback: Param<Feedback>,
+    mix: Param<Mix>,
     interpolation: InterpolationMode,
     sample_rate: f64,
     max_delay_secs: f32,
@@ -105,16 +109,16 @@ impl DelayLineNode {
     pub fn new(
         max_delay_secs: impl Into<Seconds>,
         delay_secs: impl Into<Seconds>,
-        feedback: impl Into<Linear>,
+        feedback: impl Into<Feedback>,
     ) -> Self {
         let max_delay_secs = max_delay_secs.into().get();
         let delay_secs = delay_secs.into();
-        let feedback = Linear(feedback.into().get().clamp(0.0, 0.99));
+        let feedback = Feedback::new_clamped(feedback.into().get());
         Self {
             delay: DelayLine::from_seconds(max_delay_secs, DEFAULT_SR),
             delay_time: Param::new(delay_secs),
             feedback: Param::new(feedback),
-            mix: Param::new(Linear(1.0)),
+            mix: Param::new(Mix::WET),
             interpolation: InterpolationMode::Linear,
             sample_rate: DEFAULT_SR,
             max_delay_secs,
@@ -142,13 +146,12 @@ impl DelayLineNode {
         self.delay_time.store(Seconds(secs.into().get().max(0.0)));
     }
 
-    pub fn set_feedback(&self, fb: impl Into<Linear>) {
-        self.feedback
-            .store(Linear(fb.into().get().clamp(0.0, 0.99)));
+    pub fn set_feedback(&self, fb: impl Into<Feedback>) {
+        self.feedback.store(Feedback::new_clamped(fb.into().get()));
     }
 
-    pub fn set_mix(&self, mix: impl Into<Linear>) {
-        self.mix.store(Linear(mix.into().get().clamp(0.0, 1.0)));
+    pub fn set_mix(&self, mix: impl Into<Mix>) {
+        self.mix.store(Mix::new_clamped(mix.into().get()));
     }
 
     #[inline]
@@ -285,12 +288,12 @@ pub struct StereoDelayLineNode {
     /// Per-channel delay time. At width 2 the `[0]`/`[1]` entries are the L/R
     /// times; wider widths carry one per channel.
     delay_time: Vec<Param<Seconds>>,
-    feedback: Param<Linear>,
+    feedback: Param<Feedback>,
     /// Stereo-only: L↔R cross-feedback. Applied only at width 2; for wider
     /// widths there is no meaningful N-way cross-feed, so each channel uses
     /// self-feedback alone (documented).
-    cross_feedback: Param<Linear>,
-    mix: Param<Linear>,
+    cross_feedback: Param<Feedback>,
+    mix: Param<Mix>,
     interpolation: InterpolationMode,
     sample_rate: f64,
     max_delay_secs: f32,
@@ -308,12 +311,12 @@ impl StereoDelayLineNode {
         max_delay_secs: impl Into<Seconds>,
         delay_l_secs: impl Into<Seconds>,
         delay_r_secs: impl Into<Seconds>,
-        feedback: impl Into<Linear>,
+        feedback: impl Into<Feedback>,
     ) -> Self {
         let max_delay_secs = max_delay_secs.into().get();
         let delay_l_secs = delay_l_secs.into();
         let delay_r_secs = delay_r_secs.into();
-        let feedback = Linear(feedback.into().get().clamp(0.0, 0.99));
+        let feedback = Feedback::new_clamped(feedback.into().get());
         Self {
             delays: vec![
                 DelayLine::from_seconds(max_delay_secs, DEFAULT_SR),
@@ -321,8 +324,8 @@ impl StereoDelayLineNode {
             ],
             delay_time: vec![Param::new(delay_l_secs), Param::new(delay_r_secs)],
             feedback: Param::new(feedback),
-            cross_feedback: Param::new(Linear(0.0)),
-            mix: Param::new(Linear(1.0)),
+            cross_feedback: Param::new(Feedback::NONE),
+            mix: Param::new(Mix::WET),
             interpolation: InterpolationMode::Linear,
             sample_rate: DEFAULT_SR,
             max_delay_secs,
@@ -340,20 +343,20 @@ impl StereoDelayLineNode {
         channels: usize,
         max_delay_secs: impl Into<Seconds>,
         delay_secs: impl Into<Seconds>,
-        feedback: impl Into<Linear>,
+        feedback: impl Into<Feedback>,
     ) -> Self {
         let n = channels.max(1);
         let max_delay_secs = max_delay_secs.into().get();
         let delay_secs = delay_secs.into();
-        let feedback = Linear(feedback.into().get().clamp(0.0, 0.99));
+        let feedback = Feedback::new_clamped(feedback.into().get());
         Self {
             delays: (0..n)
                 .map(|_| DelayLine::from_seconds(max_delay_secs, DEFAULT_SR))
                 .collect(),
             delay_time: (0..n).map(|_| Param::new(delay_secs)).collect(),
             feedback: Param::new(feedback),
-            cross_feedback: Param::new(Linear(0.0)),
-            mix: Param::new(Linear(1.0)),
+            cross_feedback: Param::new(Feedback::NONE),
+            mix: Param::new(Mix::WET),
             interpolation: InterpolationMode::Linear,
             sample_rate: DEFAULT_SR,
             max_delay_secs,
@@ -378,7 +381,7 @@ impl StereoDelayLineNode {
         max_delay_secs: impl Into<Seconds>,
         delay_l_secs: impl Into<Seconds>,
         delay_r_secs: impl Into<Seconds>,
-        feedback: impl Into<Linear>,
+        feedback: impl Into<Feedback>,
         mod_feedback: bool,
         mod_delay_time: bool,
     ) -> Self {
@@ -428,9 +431,9 @@ impl StereoDelayLineNode {
         self.mix.as_atomic()
     }
 
-    pub fn set_cross_feedback(&self, cf: impl Into<Linear>) {
+    pub fn set_cross_feedback(&self, cf: impl Into<Feedback>) {
         self.cross_feedback
-            .store(Linear(cf.into().get().clamp(0.0, 0.99)));
+            .store(Feedback::new_clamped(cf.into().get()));
     }
 
     /// Set all channel delay times to the same value.
@@ -451,20 +454,26 @@ impl StereoDelayLineNode {
     }
 
     pub fn set_feedback(&self, fb: f32) {
-        self.feedback.store(Linear(fb.clamp(0.0, 0.99)));
+        self.feedback.store(Feedback::new_clamped(fb));
     }
 
     pub fn set_mix(&self, mix: f32) {
-        self.mix.store(Linear(mix.clamp(0.0, 1.0)));
+        self.mix.store(Mix::new_clamped(mix));
     }
 
     #[inline]
     fn snapshot_params(&self) -> StereoDelayParams {
+        // `fb` and `cf` feed the SAME recirculation (see `process_stereo`:
+        // `in_l + fb_l*fb + fb_r*cf`), so clamping each to `MAX_STABLE`
+        // independently still admits a combined 1.98 and a runaway loop.
+        // `stable_pair` bounds the sum, scaling both to preserve their ratio.
+        let (fb, cf) =
+            Feedback::stable_pair(self.feedback.load().get(), self.cross_feedback.load().get());
         StereoDelayParams {
             dl: self.delay_time[0].load().get() * self.sample_rate as f32,
             dr: self.delay_time[1].load().get() * self.sample_rate as f32,
-            fb: self.feedback.load().get(),
-            cf: self.cross_feedback.load().get(),
+            fb: fb.get(),
+            cf: cf.get(),
             mix: self.mix.load().get(),
             interp: self.interpolation,
         }
@@ -478,9 +487,13 @@ impl StereoDelayLineNode {
     /// input port `p`.
     #[inline]
     fn effective_params(&self, read: impl Fn(usize) -> f32) -> StereoDelayParams {
-        let fb = self
-            .feedback_port()
-            .map_or_else(|| self.feedback.load().get(), |p| read(p).clamp(0.0, 0.99));
+        let fb = self.feedback_port().map_or_else(
+            || self.feedback.load(),
+            // An audio-rate port bypasses every constructor, so the
+            // stability bound has to be reapplied here or a modulated
+            // feedback can be driven past unity.
+            |p| Feedback::new_clamped(read(p)),
+        );
         let (dl, dr) = match self.delay_time_port() {
             Some(p) => {
                 let secs = read(p).clamp(0.0, self.max_delay_secs);
@@ -492,11 +505,13 @@ impl StereoDelayLineNode {
                 self.delay_time[1].load().get() * self.sample_rate as f32,
             ),
         };
+        // Bound the pair, not each half — same reason as `snapshot_params`.
+        let (fb, cf) = Feedback::stable_pair(fb.get(), self.cross_feedback.load().get());
         StereoDelayParams {
             dl,
             dr,
-            fb,
-            cf: self.cross_feedback.load().get(),
+            fb: fb.get(),
+            cf: cf.get(),
             mix: self.mix.load().get(),
             interp: self.interpolation,
         }
@@ -544,14 +559,18 @@ impl StereoDelayLineNode {
     /// channel). `read` reads input port `p`.
     #[inline]
     fn wide_channel_params(&self, c: usize, read: impl Fn(usize) -> f32) -> (f32, f32, f32) {
-        let fb = self
-            .feedback_port()
-            .map_or_else(|| self.feedback.load().get(), |p| read(p).clamp(0.0, 0.99));
+        let fb = self.feedback_port().map_or_else(
+            || self.feedback.load(),
+            // An audio-rate port bypasses every constructor, so the
+            // stability bound has to be reapplied here or a modulated
+            // feedback can be driven past unity.
+            |p| Feedback::new_clamped(read(p)),
+        );
         let d_samples = match self.delay_time_port() {
             Some(p) => read(p).clamp(0.0, self.max_delay_secs) * self.sample_rate as f32,
             None => self.delay_time[c].load().get() * self.sample_rate as f32,
         };
-        (d_samples, fb, self.mix.load().get())
+        (d_samples, fb.get(), self.mix.load().get())
     }
 }
 

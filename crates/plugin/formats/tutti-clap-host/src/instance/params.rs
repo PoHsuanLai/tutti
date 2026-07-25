@@ -435,7 +435,11 @@ mod param_text_tests {
         out_value: *mut f64,
     ) -> bool {
         let s = CStr::from_ptr(text).to_string_lossy();
-        match s.split_whitespace().next().and_then(|t| t.parse::<f64>().ok()) {
+        match s
+            .split_whitespace()
+            .next()
+            .and_then(|t| t.parse::<f64>().ok())
+        {
             Some(v) => {
                 *out_value = v;
                 true

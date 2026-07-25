@@ -50,7 +50,11 @@ impl<T: Vst3Sample> DirectionScratch<T> {
     /// `bus_channels` stays a raw `&[usize]` slice: it originates as per-bus
     /// host counts (`PluginInfo::input_bus_channels` / the read-back
     /// `SpeakerArrangement` popcounts), never as `ChannelLayout` values.
-    pub fn resolve(bus_channels: &[usize], main_channels: ChannelLayout, block_size: usize) -> Self {
+    pub fn resolve(
+        bus_channels: &[usize],
+        main_channels: ChannelLayout,
+        block_size: usize,
+    ) -> Self {
         let total: usize = if bus_channels.is_empty() {
             main_channels.count() as usize
         } else {

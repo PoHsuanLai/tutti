@@ -135,10 +135,7 @@ impl<const CH: usize> AudioOut<f32, CH> for EncoderOut<CH> {
         for frame in frames {
             self.interleaved.extend_from_slice(frame);
         }
-        if let Err(e) = self
-            .encoder
-            .write_interleaved(&self.interleaved, CH as u16)
-        {
+        if let Err(e) = self.encoder.write_interleaved(&self.interleaved, CH as u16) {
             self.deferred = Err(e);
         }
     }

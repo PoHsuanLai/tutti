@@ -23,9 +23,8 @@ pub use crate::protocol::audio::{
 
 pub use crate::protocol::{
     AuComponentType, AutomationMode, BridgeMessage, BusChannels, ChannelLayout, ChordChanges,
-    ChordValue, Features,
-    HostMessage, IpcMidiEvent, IpcMidiEventVec, LoadedPlugin, MidiEvent, MidiEventVec,
-    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
+    ChordValue, Features, HostMessage, IpcMidiEvent, IpcMidiEventVec, LoadedPlugin, MidiEvent,
+    MidiEventVec, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, NoteExpressionType, NoteExpressionValue,
     ParameterChanges, ParameterFlags, ParameterInfo, ParameterPoint, ParameterQueue, PluginClass,
     PluginDescriptor, ProcessAudioData, SampleFormat, ScaleChanges, ScaleValue, SlabLayout,

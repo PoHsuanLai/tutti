@@ -1,6 +1,6 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, Feedback, Mix, SignalFrame};
 
 use super::modulated_delay::{ModulatedDelay, ModulatedDelayConfig};
 
@@ -50,17 +50,14 @@ impl ChorusNode {
             .depth
             .store(tutti_core::Seconds(secs.into().get().clamp(0.0, 0.04)));
     }
-    pub fn set_feedback(&self, fb: impl Into<tutti_core::Linear>) {
+    pub fn set_feedback(&self, fb: impl Into<Feedback>) {
         self.core
             .mix
             .feedback
-            .store(tutti_core::Linear(fb.into().get().clamp(0.0, 0.99)));
+            .store(Feedback::new_clamped(fb.into().get()));
     }
-    pub fn set_mix(&self, mix: impl Into<tutti_core::Linear>) {
-        self.core
-            .mix
-            .mix
-            .store(tutti_core::Linear(mix.into().get().clamp(0.0, 1.0)));
+    pub fn set_mix(&self, mix: impl Into<Mix>) {
+        self.core.mix.mix.store(Mix::new_clamped(mix.into().get()));
     }
 }
 

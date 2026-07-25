@@ -65,10 +65,5 @@ pub trait MidiIn: Send + Sync {
     /// Returns the number of events written to `buffer`. Each event's
     /// `frame_offset` field must lie in `[0, block_size)`. Zero allocations, no
     /// blocking — safe for the audio thread.
-    fn poll_into(
-        &self,
-        unit_id: MidiUnitId,
-        block_size: usize,
-        buffer: &mut [MidiEvent],
-    ) -> usize;
+    fn poll_into(&self, unit_id: MidiUnitId, block_size: usize, buffer: &mut [MidiEvent]) -> usize;
 }

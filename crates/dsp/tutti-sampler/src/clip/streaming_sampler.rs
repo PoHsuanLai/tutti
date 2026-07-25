@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::MAX_SAMPLER_CHANNELS;
 use tutti_core::SignalFrame;
 use tutti_core::{
-    AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Linear, PlaybackRate, SamplePosition,
+    Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, PlaybackRate, SamplePosition,
 };
 
 use super::interp::cubic_hermite;
@@ -45,7 +45,7 @@ pub struct StreamingSamplerUnit {
     consumer: SharedReader,
     playing: AtomicBool,
 
-    gain: Linear,
+    gain: Amplitude,
     sample_rate: f32,
 
     /// Shared state for cross-thread communication (speed, direction, seeking).
@@ -122,7 +122,7 @@ impl StreamingSamplerUnit {
         Self {
             consumer,
             playing: AtomicBool::new(true),
-            gain: Linear::new(1.0),
+            gain: Amplitude::new(1.0),
             sample_rate: 44100.0,
             shared_state: Some(shared_state),
             applied_reset_epoch,
@@ -162,11 +162,11 @@ impl StreamingSamplerUnit {
         self.playing.load(Ordering::Relaxed)
     }
 
-    pub fn set_gain(&mut self, gain: Linear) {
+    pub fn set_gain(&mut self, gain: Amplitude) {
         self.gain = gain;
     }
 
-    pub fn gain(&self) -> Linear {
+    pub fn gain(&self) -> Amplitude {
         self.gain
     }
 
@@ -553,11 +553,11 @@ impl StreamingClipReader {
         self.was_inside = false;
     }
 
-    pub fn set_gain(&mut self, gain: Linear) {
+    pub fn set_gain(&mut self, gain: Amplitude) {
         self.inner.set_gain(gain);
     }
 
-    pub fn gain(&self) -> Linear {
+    pub fn gain(&self) -> Amplitude {
         self.inner.gain()
     }
 
@@ -1209,7 +1209,7 @@ mod tests {
 
         let mut full = StreamingSamplerUnit::new(reader1, state1);
         let mut half = StreamingSamplerUnit::new(reader2, state2);
-        half.set_gain(Linear::new(0.5));
+        half.set_gain(Amplitude::new(0.5));
 
         let mut out_full = [0.0f32; 2];
         let mut out_half = [0.0f32; 2];

@@ -24,7 +24,9 @@ impl LookaheadRing {
     fn new(channels: usize, lookahead_samples: usize) -> Self {
         let n = lookahead_samples.max(1);
         Self {
-            buffers: (0..channels.max(1)).map(|_| CircularBuffer::new(n)).collect(),
+            buffers: (0..channels.max(1))
+                .map(|_| CircularBuffer::new(n))
+                .collect(),
             min_deque: MonotonicMinDeque::new(n),
             sample_counter: 0,
             lookahead_samples: n,
@@ -196,9 +198,9 @@ impl LimiterNode {
     }
 
     pub fn with_lookahead(mut self, lookahead: impl Into<Seconds>) -> Self {
-        let secs = lookahead.into().get();
-        let samples = (secs * self.sample_rate as f32).ceil() as usize;
-        self.ring.resize(samples.max(1));
+        // Ceil: a lookahead ring must hold at least the requested window.
+        let samples = lookahead.into().to_samples_ceil(self.sample_rate);
+        self.ring.resize(samples.get().max(1));
         self
     }
 
@@ -884,7 +886,11 @@ mod tests {
         // Both outputs are driven (the mono input is duplicated to ch1), not
         // left silent — proves the short-frame fallback wired the second channel.
         assert!(out[0].abs() > 1e-4, "ch0 silent: {}", out[0]);
-        assert!(out[1].abs() > 1e-4, "ch1 silent (fallback not applied): {}", out[1]);
+        assert!(
+            out[1].abs() > 1e-4,
+            "ch1 silent (fallback not applied): {}",
+            out[1]
+        );
     }
 
     #[test]
@@ -943,7 +949,10 @@ mod tests {
         let mut out = [0.0f32; 6];
         bw.tick(&[2.0, -2.0, 3.0, -3.0, 0.5, -0.5], &mut out);
         for (c, &y) in out.iter().enumerate() {
-            assert!((-1.0 - 1e-6..=1.0 + 1e-6).contains(&y), "ch{c} not clipped: {y}");
+            assert!(
+                (-1.0 - 1e-6..=1.0 + 1e-6).contains(&y),
+                "ch{c} not clipped: {y}"
+            );
         }
         assert!((out[0] - 1.0).abs() < 1e-4);
         assert!((out[1] + 1.0).abs() < 1e-4);

@@ -14,7 +14,7 @@ pub mod signal;
 // out-of-crate in-process loaders (e.g. `tutti-wasm-plugin`). The refresh /
 // invalidate sinks stay crate-internal — only the out-of-process bridge fires
 // them, so in-process loaders never construct one.
-pub(crate) use listeners::{InvalidateSink, RefreshSink};
 pub use listeners::ParameterChangeSink;
+pub(crate) use listeners::{InvalidateSink, RefreshSink};
 pub use midi::Midi;
 pub use signal::route_with_latency;

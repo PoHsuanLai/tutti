@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::RtScratch;
-use tutti_core::SampleRate;
+use tutti_core::{Azimuth, Elevation, SampleRate};
 use vbap::VBAPanner;
 
 use super::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
@@ -75,10 +75,13 @@ impl SpatialPanner {
     /// - `azimuth`: Horizontal angle (-180 to 180, 0 = front, 90 = left, -90 = right)
     /// - `elevation`: Vertical angle (-90 to 90, 0 = ear level, positive = up)
     pub(crate) fn set_position(&mut self, azimuth: f32, elevation: f32) {
+        // Azimuth WRAPS, elevation SATURATES. These two lines used to be the
+        // same `clamp`, which is right for a height and wrong for a bearing:
+        // 190 degrees became 180 (hard left) when it is 170 to the right.
         self.azimuth_target
-            .store(azimuth.clamp(-180.0, 180.0), Ordering::Release);
+            .store(Azimuth(azimuth).wrap().get(), Ordering::Release);
         self.elevation_target
-            .store(elevation.clamp(-90.0, 90.0), Ordering::Release);
+            .store(Elevation::new_clamped(elevation).get(), Ordering::Release);
     }
 
     /// Set spread factor (0.0 = point source, 1.0 = diffuse)
@@ -117,7 +120,12 @@ impl SpatialPanner {
         let target_azimuth = self.azimuth_target.load(Ordering::Acquire);
         let target_elevation = self.elevation_target.load(Ordering::Acquire);
 
-        let smoothed_azimuth = self.azimuth_smoother.process(target_azimuth);
+        // Angular for the bearing, linear for the height — the smoother has
+        // one entry point per space because the arithmetic genuinely differs.
+        let smoothed_azimuth = self
+            .azimuth_smoother
+            .process_angle(Azimuth(target_azimuth))
+            .get();
         let smoothed_elevation = self.elevation_smoother.process(target_elevation);
 
         // RT invariant: must be `compute_gains_into`, not `compute_gains`.
@@ -164,7 +172,11 @@ impl SpatialPanner {
         let target_azimuth = self.azimuth_target.load(Ordering::Acquire);
         let target_elevation = self.elevation_target.load(Ordering::Acquire);
 
-        let smoothed_azimuth = self.azimuth_smoother.process(target_azimuth);
+        // Same split as `compute_gains`: the bearing takes the short arc.
+        let smoothed_azimuth = self
+            .azimuth_smoother
+            .process_angle(Azimuth(target_azimuth))
+            .get();
         let smoothed_elevation = self.elevation_smoother.process(target_elevation);
 
         let angle_offset = 15.0 * width;

@@ -100,8 +100,7 @@ impl AtomicTarget {
     #[inline]
     fn flush(&self, acc: &LayeredCurve<f32>) {
         let v = acc.value_at(FRAME_BEAT).unwrap_or_else(|| acc.base());
-        self.mirror
-            .store(v, core::sync::atomic::Ordering::Release);
+        self.mirror.store(v, core::sync::atomic::Ordering::Release);
     }
 }
 

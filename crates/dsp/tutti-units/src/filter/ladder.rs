@@ -5,7 +5,7 @@ use tutti_core::{
     AudioUnit, BufferMut, BufferRef, SignalFrame,
 };
 
-use tutti_core::{Hz, Linear, Param, Ratio};
+use tutti_core::{Drive, Hz, Param, Resonance};
 
 /// Below these deltas a freq/resonance change doesn't warrant recomputing the
 /// coefficients — the change guard shared by the atomic and modulation paths.
@@ -61,8 +61,8 @@ impl<F: Real> LadderState<F> {
 pub struct LadderFilterNode<F: Real = f64> {
     ladder_type: LadderType,
     frequency: Param<Hz>,
-    resonance: Param<Ratio>,
-    drive: Param<Linear>,
+    resonance: Param<Resonance>,
+    drive: Param<Drive>,
     sample_rate: f64,
     state: LadderState<F>,
 }
@@ -71,15 +71,15 @@ impl<F: Real> LadderFilterNode<F> {
     pub fn new(
         ladder_type: LadderType,
         frequency: impl Into<Hz>,
-        resonance: impl Into<Ratio>,
+        resonance: impl Into<Resonance>,
     ) -> Self {
         let frequency = frequency.into();
-        let resonance = Ratio(resonance.into().get().clamp(0.0, 1.0));
+        let resonance = Resonance::new_clamped(resonance.into().get());
         let mut node = Self {
             ladder_type,
             frequency: Param::new(frequency),
             resonance: Param::new(resonance),
-            drive: Param::new(Linear(1.0)),
+            drive: Param::new(Drive::UNITY),
             sample_rate: DEFAULT_SR,
             state: LadderState::zeroed(),
         };
@@ -103,13 +103,13 @@ impl<F: Real> LadderFilterNode<F> {
         self.frequency.store(Hz(hz.into().get().max(1.0)));
     }
 
-    pub fn set_resonance(&self, res: impl Into<Ratio>) {
+    pub fn set_resonance(&self, res: impl Into<Resonance>) {
         self.resonance
-            .store(Ratio(res.into().get().clamp(0.0, 1.0)));
+            .store(Resonance::new_clamped(res.into().get()));
     }
 
-    pub fn set_drive(&self, drive: impl Into<Linear>) {
-        self.drive.store(Linear(drive.into().get().max(0.1)));
+    pub fn set_drive(&self, drive: impl Into<Drive>) {
+        self.drive.store(Drive(drive.into().get().max(0.1)));
     }
 
     fn update_coefficients(&mut self, freq: f32, resonance: f32) {
@@ -282,7 +282,7 @@ impl<F: Real> StereoLadderFilterNode<F> {
     pub fn new(
         ladder_type: LadderType,
         frequency: impl Into<Hz>,
-        resonance: impl Into<Ratio>,
+        resonance: impl Into<Resonance>,
     ) -> Self {
         Self::with_channels(2, ladder_type, frequency, resonance)
     }
@@ -295,7 +295,7 @@ impl<F: Real> StereoLadderFilterNode<F> {
         channels: usize,
         ladder_type: LadderType,
         frequency: impl Into<Hz>,
-        resonance: impl Into<Ratio>,
+        resonance: impl Into<Resonance>,
     ) -> Self {
         let n = channels.max(1);
         let head = LadderFilterNode::new(ladder_type, frequency, resonance);
@@ -314,7 +314,7 @@ impl<F: Real> StereoLadderFilterNode<F> {
     pub fn with_param_inputs(
         ladder_type: LadderType,
         frequency: impl Into<Hz>,
-        resonance: impl Into<Ratio>,
+        resonance: impl Into<Resonance>,
         mod_cutoff: bool,
         mod_q: bool,
         mod_drive: bool,
@@ -342,7 +342,8 @@ impl<F: Real> StereoLadderFilterNode<F> {
     /// Input-port index of the Q param input, if present.
     #[inline]
     pub fn q_port(&self) -> Option<usize> {
-        self.mod_q.then_some(self.width() + self.mod_cutoff as usize)
+        self.mod_q
+            .then_some(self.width() + self.mod_cutoff as usize)
     }
 
     /// Input-port index of the drive param input, if present.
@@ -368,11 +369,11 @@ impl<F: Real> StereoLadderFilterNode<F> {
         self.channels[0].set_frequency(hz);
     }
 
-    pub fn set_resonance(&self, res: impl Into<Ratio>) {
+    pub fn set_resonance(&self, res: impl Into<Resonance>) {
         self.channels[0].set_resonance(res);
     }
 
-    pub fn set_drive(&self, drive: impl Into<Linear>) {
+    pub fn set_drive(&self, drive: impl Into<Drive>) {
         self.channels[0].set_drive(drive);
     }
 
@@ -428,7 +429,9 @@ impl<F: Real + 'static> AudioUnit for StereoLadderFilterNode<F> {
         let (freq, res, drive) = self.effective_params(|p| input[p]);
         for (c, ch) in self.channels.iter_mut().enumerate() {
             ch.maybe_update_modulated(freq, res);
-            output[c] = ch.process_one_with_drive(F::from_f32(input[c]), drive).to_f32();
+            output[c] = ch
+                .process_one_with_drive(F::from_f32(input[c]), drive)
+                .to_f32();
         }
     }
 
@@ -703,7 +706,8 @@ mod tests {
 
     #[test]
     fn ladder_with_channels_reports_arity_and_is_independent() {
-        let mut wide = StereoLadderFilterNode::<f64>::with_channels(6, LadderType::LP24, 1000.0, 0.3);
+        let mut wide =
+            StereoLadderFilterNode::<f64>::with_channels(6, LadderType::LP24, 1000.0, 0.3);
         wide.set_sample_rate(tutti_core::SampleRate(44100.0));
         assert_eq!(wide.inputs(), 6);
         assert_eq!(wide.outputs(), 6);

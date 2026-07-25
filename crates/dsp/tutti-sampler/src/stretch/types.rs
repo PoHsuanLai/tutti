@@ -88,8 +88,7 @@ impl Params {
     /// When pitch-shifting without formant preservation, we need to
     /// adjust playback speed to compensate for the pitch change.
     pub fn effective_stretch_factor(&self) -> f32 {
-        // Convert cents to frequency ratio: 2^(cents/1200)
-        let pitch_ratio = 2.0_f32.powf(self.pitch_cents.get() / 1200.0);
+        let pitch_ratio = self.pitch_cents.to_pitch_ratio();
 
         if self.preserve_formants {
             // Formant preservation: stretch factor is independent of pitch
@@ -115,7 +114,7 @@ impl Params {
     /// When pitch-shifting, we need to modify the phase accumulation
     /// to shift frequencies up or down.
     pub fn pitch_shift_ratio(&self) -> f32 {
-        2.0_f32.powf(self.pitch_cents.get() / 1200.0)
+        self.pitch_cents.to_pitch_ratio()
     }
 }
 

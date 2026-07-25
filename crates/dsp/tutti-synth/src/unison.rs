@@ -7,7 +7,7 @@ use tutti_core::Cents;
 #[cfg(any(feature = "midi", test))]
 use alloc::sync::Arc;
 #[cfg(any(feature = "midi", test))]
-use tutti_core::{AtomicF32, Linear, Param};
+use tutti_core::{AtomicF32, Param, Spread};
 
 #[cfg(any(feature = "midi", test))]
 extern crate alloc;
@@ -60,14 +60,14 @@ pub struct UnisonEngine {
     /// recompute. Detune/spread only affect per-voice params on recompute (not
     /// per-sample), so a block-rate sync is exact.
     detune: Param<Cents>,
-    spread: Param<Linear>,
+    spread: Param<Spread>,
 }
 
 #[cfg(any(feature = "midi", test))]
 impl UnisonEngine {
     pub fn new(config: UnisonConfig) -> Self {
         let detune = Param::new(config.detune_cents);
-        let spread = Param::new(Linear(config.stereo_spread));
+        let spread = Param::new(Spread::new_clamped(config.stereo_spread));
         let mut engine = Self {
             config,
             voices: [UnisonVoiceParams::default(); MAX_UNISON_VOICES],
@@ -108,7 +108,10 @@ impl UnisonEngine {
         let count = usize::from(self.config.voice_count).clamp(1, MAX_UNISON_VOICES);
 
         let amplitude = 1.0 / (count as f32).sqrt();
-        let detune_semitones = self.config.detune_cents.get() / 100.0;
+        // A converter, not a divide: `Cents` is `unit_scalable!`, so
+        // `detune_cents / 100.0` would compile and hand back `Cents` — wrong by
+        // 100x, with a type that says it is fine.
+        let detune_semitones = self.config.detune_cents.to_semitones();
 
         for i in 0..count {
             let position = if count == 1 {
@@ -117,7 +120,10 @@ impl UnisonEngine {
                 (i as f32 / (count - 1) as f32) * 2.0 - 1.0
             };
 
-            let freq_ratio = 2.0_f32.powf(detune_semitones * position / 12.0);
+            // `Semitones * f32` is opted in, so spreading the detune across the
+            // voice's position stays in the unit, and the exponent conversion
+            // happens once at the end.
+            let freq_ratio = (detune_semitones * position).to_pitch_ratio();
             let pan = position * self.config.stereo_spread;
 
             self.voices[i] = UnisonVoiceParams {
@@ -166,7 +172,7 @@ impl UnisonEngine {
 
     pub fn set_config(&mut self, config: UnisonConfig) {
         self.detune.store(config.detune_cents);
-        self.spread.store(Linear(config.stereo_spread));
+        self.spread.store(Spread(config.stereo_spread));
         self.config = config;
         self.recompute_params();
     }
@@ -188,7 +194,7 @@ impl UnisonEngine {
 
     pub fn set_stereo_spread(&mut self, spread: f32) {
         self.config.stereo_spread = spread.clamp(0.0, 1.0);
-        self.spread.store(Linear(self.config.stereo_spread));
+        self.spread.store(Spread(self.config.stereo_spread));
         self.recompute_params();
     }
 

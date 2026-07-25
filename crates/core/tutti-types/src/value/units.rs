@@ -10,6 +10,11 @@
 //! `fundsp-tutti` (where the type is defined), since `fundsp-tutti` depends on
 //! this crate, not the reverse.
 
+// `Seconds::to_samples*` lands in the frame-count vocabulary, which is
+// integer-backed and lives next door in `samples.rs` rather than being one of
+// the float units defined here.
+use super::samples::Samples;
+
 /// Marker trait implemented by every unit newtype.
 ///
 /// `Raw` is the underlying float representation. Most units use `f32`;
@@ -288,6 +293,55 @@ unit_bounded!(Seconds, f32);
 unit_additive!(Seconds);
 unit_scalable!(Seconds, f32);
 unit_ratio!(Seconds, f32);
+
+impl Seconds {
+    /// Frames in this span at `sample_rate`, rounded to nearest.
+    ///
+    /// The *measurement* form: how long is this, in frames. Three named
+    /// variants rather than one function with a rounding-mode argument —
+    /// the name puts the choice in the signature instead of making a reader
+    /// chase what a call site passed.
+    ///
+    /// Computed in `f64`: `Seconds` is `f32`, which cannot represent frame
+    /// counts past 2^24 (about 6 minutes at 48 kHz), and the export planner
+    /// already works in `f64`.
+    #[inline]
+    pub fn to_samples(self, sample_rate: f64) -> Samples {
+        Self::frames(self.0 as f64 * sample_rate, f64::round)
+    }
+
+    /// Frames fully elapsed in this span — rounds **down**.
+    ///
+    /// The *counting* form: how many whole frames have gone by.
+    #[inline]
+    pub fn to_samples_floor(self, sample_rate: f64) -> Samples {
+        Self::frames(self.0 as f64 * sample_rate, f64::floor)
+    }
+
+    /// Frames needed to hold this span — rounds **up**.
+    ///
+    /// The *allocation* form: a delay line sized for `max_delay` must hold at
+    /// least that long, so rounding to nearest would under-allocate for half
+    /// of all inputs.
+    #[inline]
+    pub fn to_samples_ceil(self, sample_rate: f64) -> Samples {
+        Self::frames(self.0 as f64 * sample_rate, f64::ceil)
+    }
+
+    /// Shared tail: apply `round`, then clamp into `usize`.
+    ///
+    /// Non-finite and negative inputs collapse to zero. `NaN as usize` is
+    /// already `0` in Rust and a negative cast already saturates, so this
+    /// changes no behaviour — it makes the behaviour *stated* rather than
+    /// inherited from a cast rule most readers do not have memorized.
+    #[inline]
+    fn frames(raw: f64, round: fn(f64) -> f64) -> Samples {
+        if !raw.is_finite() || raw <= 0.0 {
+            return Samples::ZERO;
+        }
+        Samples(round(raw) as usize)
+    }
+}
 unit_newtype!(
     /// Amplitude in decibels. Used for thresholds, gains, makeup, ceilings.
     Db
@@ -299,36 +353,706 @@ unit_bounded!(Db, f32);
 unit_additive!(Db);
 unit_signed!(Db);
 // NOT `unit_scalable!`: `Db(-6.0) * 2.0 == Db(-12.0)` squares the *amplitude*,
-// it does not double the gain. Convert through `Linear` for amplitude scaling.
+// it does not double the gain. Convert through `Amplitude` for amplitude scaling.
 // NOT `unit_ratio!`: a quotient of logarithms is not a quantity.
+
+impl Db {
+    /// The metering floor. Silence has no logarithm, so a display needs a
+    /// finite stand-in for it; `-inf` cannot be drawn on a fader.
+    ///
+    /// −144 dB is roughly the noise floor of 24-bit audio, so it is below
+    /// anything real while staying finite.
+    pub const FLOOR: Db = Db(-144.0);
+
+    /// Unity gain.
+    pub const UNITY: Db = Db(0.0);
+
+    /// This gain as a linear amplitude multiplier.
+    #[inline]
+    pub fn to_amplitude(self) -> Amplitude {
+        Amplitude(10.0_f32.powf(self.0 / 20.0))
+    }
+
+    /// This gain as an `f64` amplitude multiplier.
+    ///
+    /// Not a convenience: the loudness path (`tutti-export`'s EBU R128
+    /// normalization) works in `f64` because LUFS targets are `f64`, and
+    /// routing it through the `f32` form would change rendered export gain in
+    /// the low bits.
+    #[inline]
+    pub fn to_amplitude_f64(self) -> f64 {
+        10.0_f64.powf(self.0 as f64 / 20.0)
+    }
+
+    /// Amplitude as decibels, with silence pinned to [`FLOOR`](Self::FLOOR).
+    ///
+    /// The metering form. Two floors exist on purpose — see
+    /// [`from_amplitude_exact`](Self::from_amplitude_exact). The engine had
+    /// three different ones before this (`-96` in `dynamics/utils.rs`, `-144`
+    /// in `loudness.rs`, and none at all elsewhere); the split here is between
+    /// *display* and *arithmetic*, not between two crates' habits.
+    #[inline]
+    pub fn from_amplitude(amp: Amplitude) -> Db {
+        if amp.0 <= 0.0 {
+            Db::FLOOR
+        } else {
+            Db(20.0 * amp.0.log10())
+        }
+    }
+
+    /// Amplitude as decibels, letting silence be `-inf`.
+    ///
+    /// For arithmetic that must round-trip: `to_amplitude` of `-inf` is exactly
+    /// `0.0`, whereas the clamped form loses that. Use this when the value
+    /// feeds further computation, and [`from_amplitude`](Self::from_amplitude)
+    /// when it feeds a meter.
+    #[inline]
+    pub fn from_amplitude_exact(amp: Amplitude) -> Db {
+        Db(20.0 * amp.0.log10())
+    }
+}
+// ── Dimensionless amounts ───────────────────────────────────────────────────
+//
+// Five types where there was one (`Linear`), whose own doc named four roles in
+// two lines — "mix (0..1), feedback (0..~0.99), depth, LFO amplitude" — and
+// then described itself as "a position on a normalized scale, not a magnitude",
+// which is false of the one role it actually played in production (amplitude,
+// which *is* a magnitude and routinely exceeds 1.0).
+//
+// The roles differ in both range and algebra, which is the module's own test
+// for whether two quantities are the same type:
+//
+//   Amplitude  [0, inf)   scalable      a gain multiplier
+//   Mix        [0, 1]     NOT scalable  a blend position between two signals
+//   Feedback   [0, 0.99]  NOT scalable  a recirculation coefficient
+//   Depth      [-1, 1]    signed, additive, scalable
+//   Drive      [0, inf)   NOT scalable  shaper-curve intensity
+//
+// `Mix` declines scaling because half of a blend position is not a blend
+// position; `Feedback` declines it because scaling a coefficient walks it
+// through the stability bound; `Drive` declines it because it is never
+// multiplied onto a signal at all.
+
 unit_newtype!(
-    /// Unitless normalized amount. Used for mix (0..1), feedback (0..~0.99),
-    /// depth, LFO amplitude, and similar ratio-of-range controls.
-    Linear
+    /// A linear gain multiplier.
+    ///
+    /// **Not** a 0..1 quantity: a +6 dB peak is `Amplitude(2.0)`, and the
+    /// dynamics detectors routinely see values above unity. The only floor is
+    /// zero — [`SILENT`](Self::SILENT).
+    Amplitude
 );
-unit_ordered!(Linear);
-unit_bounded!(Linear, f32);
-unit_scalable!(Linear, f32);
-// NOT `unit_additive!`: two 0..1 mixes summing to 1.4 is out of range and means
-// nothing. `Linear` is a position on a normalized scale, not a magnitude.
+unit_ordered!(Amplitude);
+unit_bounded!(Amplitude, f32);
+unit_scalable!(Amplitude, f32);
+// NOT `unit_additive!`: cascading two gain stages MULTIPLIES them. Summing
+// amplitudes is what mixing two signals does, and that is the signals' job,
+// not the gains'.
+
+impl Amplitude {
+    /// Silence.
+    pub const SILENT: Amplitude = Amplitude(0.0);
+    /// Unity gain — the signal passes unchanged.
+    pub const UNITY: Amplitude = Amplitude(1.0);
+
+    /// This amplitude in decibels, with silence pinned to [`Db::FLOOR`].
+    #[inline]
+    pub fn to_db(self) -> Db {
+        Db::from_amplitude(self)
+    }
+}
+
 unit_newtype!(
-    /// Dimensionless ratio. Used for compressor ratio and filter Q.
-    Ratio
+    /// A blend position between two signals, `0..1`. 0 is fully dry, 1 fully
+    /// wet.
+    ///
+    /// A *position on a scale*, not a magnitude — which is why it does not
+    /// scale: half of a 50% blend is not a meaningful quantity, and
+    /// `mix * 0.5` reads like it dims the wet signal when it actually moves
+    /// the crossfade point.
+    Mix
 );
-unit_ordered!(Ratio);
-unit_bounded!(Ratio, f32);
-unit_scalable!(Ratio, f32);
+unit_ordered!(Mix);
+unit_bounded!(Mix, f32);
+// NOT `unit_scalable!` / `unit_additive!`: see the type doc. Two blends
+// summing to 1.4 is off the end of the crossfade.
+
+impl Mix {
+    /// Fully dry — none of the processed signal.
+    pub const DRY: Mix = Mix(0.0);
+    /// Fully wet — none of the original signal.
+    pub const WET: Mix = Mix(1.0);
+
+    /// Constrain into `0..=1`.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Mix {
+        Mix(v).clamp(Self::DRY, Self::WET)
+    }
+
+    /// Crossfade `dry` and `wet` at this position.
+    ///
+    /// The operation every consumer hand-wrote as
+    /// `dry * (1.0 - mix) + wet * mix`.
+    #[inline]
+    pub fn blend(self, dry: f32, wet: f32) -> f32 {
+        dry * (1.0 - self.0) + wet * self.0
+    }
+}
+
+unit_newtype!(
+    /// A feedback (recirculation) coefficient.
+    ///
+    /// Must stay below 1.0 or the loop it feeds grows without bound — a
+    /// delay line at unity feedback never decays. [`MAX_STABLE`](Self::MAX_STABLE)
+    /// is the ceiling every consumer used to spell as a bare `0.99`.
+    Feedback
+);
+unit_ordered!(Feedback);
+unit_bounded!(Feedback, f32);
+// NOT `unit_scalable!`: scaling a coefficient walks it across the stability
+// bound with no check. `new_clamped` is the only way in.
+// NOT `unit_additive!`: two feedback paths summing past 1.0 is exactly the
+// runaway this type exists to prevent — see the note on cross-feedback below.
+
+impl Feedback {
+    /// No recirculation.
+    pub const NONE: Feedback = Feedback(0.0);
+
+    /// The largest coefficient that still decays.
+    ///
+    /// 0.99 — repeated as a bare literal at 13 sites before this constant
+    /// existed, including two audio-rate modulation paths where the value
+    /// arrives off an input port and never passes through a constructor.
+    pub const MAX_STABLE: Feedback = Feedback(0.99);
+
+    /// Constrain into the stable range.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Feedback {
+        Feedback(v).clamp(Self::NONE, Self::MAX_STABLE)
+    }
+
+    /// Constrain a *pair* of coefficients that feed the same loop.
+    ///
+    /// Cross-coupled delays add their direct and cross terms into one
+    /// recirculation (`in_l + fb_l·fb + fb_r·cross`), so clamping each to
+    /// [`MAX_STABLE`] independently still permits a combined 1.98 and a
+    /// runaway. This scales the pair down together when their sum would
+    /// exceed the bound, preserving their ratio.
+    #[inline]
+    pub fn stable_pair(direct: f32, cross: f32) -> (Feedback, Feedback) {
+        let d = direct.max(0.0);
+        let c = cross.max(0.0);
+        let total = d + c;
+        if total <= Self::MAX_STABLE.0 {
+            return (Feedback(d), Feedback(c));
+        }
+        let scale = Self::MAX_STABLE.0 / total;
+        (Feedback(d * scale), Feedback(c * scale))
+    }
+}
+
+unit_newtype!(
+    /// A bipolar modulation amount, `-1..1`.
+    ///
+    /// Signed on purpose: a negative depth inverts the modulator, so an LFO at
+    /// `Depth(-1.0)` is the same shape phase-flipped. That is the whole reason
+    /// this is not just an [`Amplitude`] — and the reason it is additive and
+    /// scalable while `Mix` and `Feedback` are not.
+    Depth
+);
+unit_ordered!(Depth);
+unit_bounded!(Depth, f32);
+unit_additive!(Depth);
+unit_signed!(Depth);
+unit_scalable!(Depth, f32);
+
+impl Depth {
+    /// No modulation.
+    pub const NONE: Depth = Depth(0.0);
+    /// Full positive modulation.
+    pub const FULL: Depth = Depth(1.0);
+    /// Full inverted modulation.
+    pub const INVERTED: Depth = Depth(-1.0);
+
+    /// Constrain into `-1..=1`.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Depth {
+        Depth(v).clamp(Self::INVERTED, Self::FULL)
+    }
+}
+
+unit_newtype!(
+    /// Waveshaper drive — how hard a signal is pushed into a nonlinearity.
+    ///
+    /// Distinct from [`Amplitude`] despite sharing its `[0, inf)` range,
+    /// because it is **not a multiplier on the signal**: it selects or
+    /// parameterizes a shaping curve. Typing it as a gain would license
+    /// `sample * drive`, which is meaningless for a curve selector.
+    Drive
+);
+unit_ordered!(Drive);
+unit_bounded!(Drive, f32);
+// NOT `unit_scalable!`: "twice the drive" is not twice anything — the curve's
+// response is nonlinear by construction.
+// NOT `unit_additive!`: two drives do not sum.
+
+impl Drive {
+    /// No overdrive — the shaper passes the signal through.
+    pub const UNITY: Drive = Drive(1.0);
+}
+
+unit_newtype!(
+    /// Spatial diffusion, `0..1`: how widely a point source is smeared across
+    /// a speaker array. 0 is a point, 1 is fully diffuse.
+    ///
+    /// Not a [`Mix`] — it blends no pair of signals; it is a geometric
+    /// property of the panning solution, and the VBAP panner consumes it as
+    /// such. Sharing `Mix`'s range is not sharing its meaning.
+    Spread
+);
+unit_ordered!(Spread);
+unit_bounded!(Spread, f32);
+
+impl Spread {
+    /// A point source — no diffusion.
+    pub const POINT: Spread = Spread(0.0);
+    /// Fully diffuse across the array.
+    pub const DIFFUSE: Spread = Spread(1.0);
+
+    /// Constrain into `0..=1`.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Spread {
+        Spread(v).clamp(Self::POINT, Self::DIFFUSE)
+    }
+}
+
+unit_newtype!(
+    /// Mid/side stereo width. `0` collapses to mono, `1` leaves the image
+    /// unchanged, and above `1` widens it past the source.
+    ///
+    /// Not an [`Amplitude`] despite the matching range: it scales the *side*
+    /// component against the mid, so it reshapes the stereo image rather than
+    /// making the signal louder. Typing it as a gain would invite it into
+    /// signal multiplications where it does not belong.
+    StereoWidth
+);
+unit_ordered!(StereoWidth);
+unit_bounded!(StereoWidth, f32);
+
+impl StereoWidth {
+    /// Collapsed to mono.
+    pub const MONO: StereoWidth = StereoWidth(0.0);
+    /// The source image, unchanged.
+    pub const NATURAL: StereoWidth = StereoWidth(1.0);
+
+    /// Constrain to non-negative. Deliberately no upper bound — widening past
+    /// the source is a legitimate effect.
+    #[inline]
+    pub fn new_clamped(v: f32) -> StereoWidth {
+        StereoWidth(v.max(0.0))
+    }
+}
+
+// ── Dimensionless ratios ────────────────────────────────────────────────────
+//
+// Three types where there was one (`Ratio`, "used for compressor ratio and
+// filter Q"). They share only the property of being bare numbers; their ranges
+// do not overlap and one cannot be substituted for another:
+//
+//   CompressionRatio  [1, inf)  1:1 is no compression; below 1 would EXPAND
+//   Q                 (0, inf)  filter sharpness; 0.707 is flat, high is a
+//                               narrow peak
+//   Resonance         [0, 1]    ladder feedback; 1.0 self-oscillates
+//
+// `Q` and `Resonance` are the sharp case: both describe "how resonant", but a
+// ladder at 1.0 self-oscillates while a Q of 1.0 is a mild bell. Passing one
+// where the other belongs is silent and sounds like a mistuned filter.
+
+unit_newtype!(
+    /// Compressor ratio: input dB over threshold per 1 dB of output.
+    ///
+    /// `1.0` is no compression. Below 1.0 would be an *expander*, which this
+    /// type deliberately does not represent — the compressor's setter clamps
+    /// up to 1.0 rather than silently inverting its own behaviour.
+    CompressionRatio
+);
+unit_ordered!(CompressionRatio);
+unit_bounded!(CompressionRatio, f32);
 // NOT `unit_additive!`: 4:1 plus 4:1 is not 8:1.
+// NOT `unit_scalable!`: doubling a ratio is not doubling anything audible —
+// the mapping from ratio to gain reduction is logarithmic.
+
+impl CompressionRatio {
+    /// No compression.
+    pub const UNITY: CompressionRatio = CompressionRatio(1.0);
+
+    /// Constrain to a real compression ratio.
+    #[inline]
+    pub fn new_clamped(v: f32) -> CompressionRatio {
+        CompressionRatio(v.max(1.0))
+    }
+}
+
 unit_newtype!(
-    /// Angle in degrees. Used for spatial azimuth and elevation.
-    Degrees
+    /// Filter quality factor — how sharply a filter resonates at its cutoff.
+    ///
+    /// `0.707` (1/sqrt2) is the maximally-flat Butterworth response; higher is
+    /// a narrower, more peaked resonance. Must stay above zero: `Q` divides
+    /// into the filter's damping term.
+    Q
 );
-// A WRAPPING coordinate: azimuth runs -180..180 with 0 = front. Ordering and
-// addition are both traps here — `Degrees(350) < Degrees(10)` is true under a
-// naive compare, but 350 deg is 20 deg *clockwise* of 10 deg, and a
-// non-wrapping `+` silently leaves the circle. Angular arithmetic wants named
-// methods (shortest_arc_to, wrap_signed), not operators.
-unit_signed!(Degrees);
+unit_ordered!(Q);
+unit_bounded!(Q, f32);
+unit_scalable!(Q, f32);
+// NOT `unit_additive!`: two Q values do not sum into a third.
+
+impl Q {
+    /// Butterworth — the maximally flat response, `1/sqrt(2)`.
+    pub const BUTTERWORTH: Q = Q(core::f32::consts::FRAC_1_SQRT_2);
+
+    /// Constrain above zero, since `Q` divides into the damping term.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Q {
+        Q(v.max(f32::MIN_POSITIVE))
+    }
+}
+
+unit_newtype!(
+    /// Ladder-filter resonance, `0..1` — the normalized feedback around the
+    /// filter's four poles.
+    ///
+    /// Distinct from [`Q`] even though both mean "how resonant": at `1.0` a
+    /// ladder self-oscillates, whereas `Q(1.0)` is a mild bell. They are
+    /// different parameterizations of different topologies, and swapping them
+    /// is silent.
+    Resonance
+);
+unit_ordered!(Resonance);
+unit_bounded!(Resonance, f32);
+// NOT `unit_scalable!` / `unit_additive!`: as with `Feedback`, scaling walks
+// the value toward self-oscillation with no check.
+
+impl Resonance {
+    /// No resonance.
+    pub const NONE: Resonance = Resonance(0.0);
+    /// The self-oscillation threshold.
+    pub const SELF_OSCILLATION: Resonance = Resonance(1.0);
+
+    /// Constrain into `0..=1`.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Resonance {
+        Resonance(v).clamp(Self::NONE, Self::SELF_OSCILLATION)
+    }
+}
+// ── Angles ──────────────────────────────────────────────────────────────────
+//
+// Three types where there was one (`Degrees`), because a circle and a segment
+// are not the same space and the single type could not tell them apart.
+//
+// The old type omitted `Ord` and `Add` for exactly the right reason — the
+// comment named `shortest_arc_to` and `wrap_signed` as the replacements — but
+// those methods were never written. With the operators gone and no replacement,
+// every call site escaped to raw `f32`, and two real bugs shipped in the escape
+// (a saturating clamp on a wrapping coordinate, and a smoother that sweeps 340
+// degrees to travel 20). The omissions below therefore ship *with* their
+// replacements; that is the rule this split exists to establish.
+//
+// The split itself is the second half of the fix. `Azimuth` wraps and
+// `Elevation` saturates, so the correct clamp for one is the shipped bug for
+// the other — and under a single `Degrees` those two call sites are textually
+// identical. Now they cannot be confused, because the wrong one no longer
+// compiles.
+
+unit_newtype!(
+    /// A bearing on the horizontal circle, in degrees. 0 = front, positive =
+    /// counter-clockwise, canonical range `-180..180`.
+    ///
+    /// A *wrapping* coordinate. There is no ordering (`Azimuth(170) <
+    /// Azimuth(-170)` is a meaningless question — they are 20 degrees apart)
+    /// and no `clamp` (constraining a bearing to a range is what
+    /// [`wrap`](Self::wrap) does correctly and what a saturating clamp does
+    /// wrongly). Displacements are [`ArcDegrees`].
+    Azimuth
+);
+// `Neg` is meaningful — mirroring a bearing across the front axis, which is how
+// a left/right flip is expressed. Everything else is a named method:
+// ordering and `clamp` are traps on a circle (see the type doc), and `+`/`-`
+// belong to `ArcDegrees` via `rotate_by` / `shortest_arc_to`.
+unit_signed!(Azimuth);
+
+impl Azimuth {
+    /// Directly ahead.
+    pub const FRONT: Azimuth = Azimuth(0.0);
+
+    /// The equivalent bearing in the canonical `-180..180` range.
+    ///
+    /// This is the operation a saturating `clamp` gets wrong: 190 degrees is
+    /// 170 degrees to the *right* (`-170`), not the extreme left (`180`).
+    /// Uses `rem_euclid`, not `%` — plain `%` preserves the dividend's sign, so
+    /// it leaves negative inputs outside the range it is supposed to enforce.
+    #[inline]
+    pub fn wrap(self) -> Azimuth {
+        Azimuth((self.0 + 180.0).rem_euclid(360.0) - 180.0)
+    }
+
+    /// The shortest signed rotation from `self` to `to`, in `-180..=180`.
+    ///
+    /// The replacement for `to - self`. A plain subtraction across the seam
+    /// gives the long way around: from 170 to -170 it reports -340 degrees
+    /// rather than the correct +20.
+    #[inline]
+    pub fn shortest_arc_to(self, to: Azimuth) -> ArcDegrees {
+        ArcDegrees(Azimuth(to.0 - self.0).wrap().0)
+    }
+
+    /// Rotate by a signed arc, wrapping. The replacement for `+`.
+    #[inline]
+    pub fn rotate_by(self, arc: ArcDegrees) -> Azimuth {
+        Azimuth(self.0 + arc.0).wrap()
+    }
+
+    /// Interpolate toward `to` along the *short* arc, `t` in `0..=1`.
+    ///
+    /// The replacement for `a + (b - a) * t`, which takes the long way around
+    /// the seam and is audible as a panner sweeping the wrong direction.
+    #[inline]
+    pub fn lerp_shortest(self, to: Azimuth, t: f32) -> Azimuth {
+        self.rotate_by(self.shortest_arc_to(to) * t)
+    }
+}
+
+unit_newtype!(
+    /// Height above the horizontal plane, in degrees. `-90` = directly below,
+    /// `0` = level, `+90` = directly overhead.
+    ///
+    /// A *saturating* coordinate, and this is the whole reason it is a separate
+    /// type from [`Azimuth`]. The poles are endpoints, not a seam: tilting past
+    /// straight up does not continue over the top and come out behind you at
+    /// this layer, it stops. So ordering and `clamp` — traps on a circle — are
+    /// exactly right here.
+    Elevation
+);
+unit_ordered!(Elevation);
+unit_bounded!(Elevation, f32);
+unit_signed!(Elevation);
+// NOT `unit_additive!`: `Elevation + Elevation` is a position sum with no
+// origin, and it would also bypass the pole clamp. `tilt_by` is the addition.
+
+impl Elevation {
+    /// Directly below.
+    pub const DOWN: Elevation = Elevation(-90.0);
+    /// The horizontal plane.
+    pub const LEVEL: Elevation = Elevation(0.0);
+    /// Directly overhead.
+    pub const UP: Elevation = Elevation(90.0);
+
+    /// Constrain to the pole-to-pole range. Saturating, unlike
+    /// [`Azimuth::wrap`] — the distinction the split exists to enforce.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Elevation {
+        Elevation(v).clamp(Self::DOWN, Self::UP)
+    }
+
+    /// Tilt by a signed arc, clamped at the poles. The replacement for `+`.
+    #[inline]
+    pub fn tilt_by(self, arc: ArcDegrees) -> Elevation {
+        Elevation::new_clamped(self.0 + arc.0)
+    }
+
+    /// Straight-line interpolation, `t` in `0..=1`. Correct here precisely
+    /// because there is no seam to cross.
+    #[inline]
+    pub fn lerp(self, to: Elevation, t: f32) -> Elevation {
+        Elevation::new_clamped(self.0 + (to.0 - self.0) * t)
+    }
+}
+
+unit_newtype!(
+    /// A signed angular *displacement* in degrees — the difference between two
+    /// angles, not an angle itself.
+    ///
+    /// The partner to [`Azimuth`] and [`Elevation`]: those name where something
+    /// is, this names how far to turn. Being a displacement, it has the full
+    /// algebra its positions cannot have — two rotations compose, and a
+    /// rotation scales.
+    ArcDegrees
+);
+unit_ordered!(ArcDegrees);
+unit_bounded!(ArcDegrees, f32);
+unit_additive!(ArcDegrees);
+unit_signed!(ArcDegrees);
+unit_scalable!(ArcDegrees, f32);
+// Deliberately NOT `unit_affine!(Azimuth, ArcDegrees)`, though the pair looks
+// exactly like `Beat`/`BeatDuration` and the macro would expand cleanly. The
+// generated `+` and `-` are plain float arithmetic with no wrap, which is the
+// precise bug class this split was made to eliminate — `Azimuth(170) +
+// ArcDegrees(20)` would give 190, a bearing outside the canonical range that
+// then compares and clamps wrongly forever after. `rotate_by` and
+// `shortest_arc_to` are the wrapping forms, and they are the only forms.
+//
+// `Elevation` is left out for a different reason: its `+` must clamp at the
+// poles, which `unit_affine!` also does not do. `tilt_by` is that form.
+
+// ── Oscillator phase ────────────────────────────────────────────────────────
+//
+// Phase is measured in *turns* — one full cycle is 1.0, not 360 and not 2·pi.
+// That choice is why `Phase` is its own type rather than an `Azimuth`: a
+// modulator's shape table is indexed by turns, and the conversion to radians
+// happens once, at the `sin`/`cos` call.
+//
+// The engine had three different phase wraps before this type existed, and two
+// of them were wrong for negative input:
+//
+//   `%`        (lfo.rs)        keeps the dividend's sign
+//   `.fract()` (modulator.rs)  keeps the dividend's sign
+//   `rem_euclid` (driver.rs)   correct
+//
+// A negative phase escapes the `[0, 1)` range every consumer assumes, and the
+// consumers do not check — a reverse-rate LFO or a negative phase offset reads
+// off the front of a shape table. `Phase` performs exactly one wrap,
+// `rem_euclid`, and offers no other.
+
+unit_newtype!(
+    /// Oscillator phase in *turns*: `0.0` starts a cycle, `1.0` completes it.
+    ///
+    /// Always in `[0, 1)` — [`wrapped`](Self::wrapped) is the only constructor
+    /// that can be trusted with arbitrary input, and it is the only wrap this
+    /// type performs.
+    ///
+    /// Turns rather than radians because that is what a shape table is indexed
+    /// by; [`to_radians`](Self::to_radians) converts at the trig call.
+    Phase
+);
+// NOT `unit_bounded!`: clamping a phase is never the right answer — a phase
+// past the end of a cycle belongs at the *start* of the next one, not pinned to
+// 0.999. `wrapped` is the constraint.
+// NOT `unit_additive!`: `Phase + Phase` is two positions summed, with the same
+// no-origin problem as `Beat + Beat`. Advancing is `advance(PhaseIncrement)`.
+// NOT `unit_scalable!`: scaling a position depends on where zero is.
+// NOT `unit_modular!`: it generates `%`, which is one of the two wrong wraps
+// this type exists to eliminate.
+unit_ordered!(Phase);
+
+impl Phase {
+    /// The start of a cycle.
+    pub const START: Phase = Phase(0.0);
+
+    /// Wrap any value into `[0, 1)`.
+    ///
+    /// `rem_euclid`, not `%` and not `.fract()`: both of those keep the sign of
+    /// the input, so `-0.25` stays `-0.25` instead of becoming `0.75`. That is
+    /// the whole bug class — a negative phase indexes off the front of a shape
+    /// table, and no consumer checks for it.
+    #[inline]
+    pub fn wrapped(v: f32) -> Phase {
+        Phase(v.rem_euclid(1.0))
+    }
+
+    /// Advance by one step, wrapping. The replacement for `+`.
+    ///
+    /// Correct for negative increments too, which is what a reverse-rate
+    /// modulator produces.
+    #[inline]
+    pub fn advance(self, d: PhaseIncrement) -> Phase {
+        Phase::wrapped(self.0 + d.0)
+    }
+
+    /// Shift by a constant offset, wrapping — an LFO's phase-offset control.
+    #[inline]
+    pub fn offset_by(self, offset: PhaseIncrement) -> Phase {
+        self.advance(offset)
+    }
+
+    /// This phase in radians, `[0, 2·pi)` — for the `sin`/`cos` call.
+    #[inline]
+    pub fn to_radians(self) -> Radians {
+        Radians(self.0 * core::f32::consts::TAU)
+    }
+}
+
+unit_newtype!(
+    /// A per-sample phase step, in turns. The displacement partner to
+    /// [`Phase`].
+    ///
+    /// Signed: a negative increment runs a modulator backwards, which is
+    /// exactly the case the old `%`/`.fract()` wraps got wrong.
+    PhaseIncrement
+);
+unit_ordered!(PhaseIncrement);
+unit_bounded!(PhaseIncrement, f32);
+unit_additive!(PhaseIncrement);
+unit_signed!(PhaseIncrement);
+unit_scalable!(PhaseIncrement, f32);
+// Deliberately NOT `unit_affine!(Phase, PhaseIncrement)`, for the same reason
+// `Azimuth` declines it: the generated `+` does not wrap, and an unwrapped
+// phase is the bug. `advance` is the wrapping form.
+
+impl PhaseIncrement {
+    /// The step that completes `frequency` cycles per second at `sample_rate`.
+    ///
+    /// Computed in f64 and narrowed once at the end: at 20 Hz against 192 kHz
+    /// the step is ~1.04e-4, and accumulating an f32-rounded version of that
+    /// drifts audibly over a long note.
+    #[inline]
+    pub fn per_sample(frequency: Hz, sample_rate: f64) -> PhaseIncrement {
+        if sample_rate <= 0.0 {
+            return PhaseIncrement(0.0);
+        }
+        PhaseIncrement((frequency.0 as f64 / sample_rate) as f32)
+    }
+}
+
+unit_newtype!(
+    /// An angle in radians — the argument `sin`/`cos` actually take.
+    ///
+    /// Distinct from [`Phase`] (turns) and [`Azimuth`] (degrees) because all
+    /// three are bare `f32` at the call site, and feeding one where another is
+    /// expected is silent: the oscillator keeps running, just at the wrong
+    /// rate. It sounds like detuning, not like a bug.
+    Radians
+);
+unit_ordered!(Radians);
+unit_bounded!(Radians, f32);
+unit_additive!(Radians);
+unit_signed!(Radians);
+unit_scalable!(Radians, f32);
+
+impl Radians {
+    /// Full circle, `2·pi`.
+    pub const TAU: Radians = Radians(core::f32::consts::TAU);
+
+    /// `sin` of this angle.
+    #[inline]
+    pub fn sin(self) -> f32 {
+        self.0.sin()
+    }
+
+    /// `cos` of this angle.
+    #[inline]
+    pub fn cos(self) -> f32 {
+        self.0.cos()
+    }
+
+    /// The equivalent [`Phase`] in turns, wrapped into `[0, 1)`.
+    #[inline]
+    pub fn to_phase(self) -> Phase {
+        Phase::wrapped(self.0 / core::f32::consts::TAU)
+    }
+}
+
+impl From<Azimuth> for Radians {
+    #[inline]
+    fn from(a: Azimuth) -> Radians {
+        Radians(a.0.to_radians())
+    }
+}
+
+impl From<Elevation> for Radians {
+    #[inline]
+    fn from(e: Elevation) -> Radians {
+        Radians(e.0.to_radians())
+    }
+}
+
 unit_newtype!(
     /// Tempo in beats per minute. Distinct from `Hz`: beats/minute, not cycles/second.
     ///
@@ -409,6 +1133,47 @@ unit_bounded!(Cents, f32);
 unit_additive!(Cents);
 unit_signed!(Cents);
 unit_scalable!(Cents, f32);
+
+impl Cents {
+    /// One semitone.
+    pub const SEMITONE: Cents = Cents(100.0);
+
+    /// This offset in semitones.
+    ///
+    /// A real converter, not `self / 100.0`: `unit_scalable!(Cents, f32)` is
+    /// opted in above, so `cents / 100.0` compiles and returns **`Cents`** —
+    /// a value wrong by 100x whose *type* says it is fine. Sites that divide
+    /// the raw `f32` today are correct by luck; this is the form that stays
+    /// correct once they hold the typed value.
+    #[inline]
+    pub fn to_semitones(self) -> Semitones {
+        Semitones(self.0 / 100.0)
+    }
+
+    /// This offset as a frequency multiplier. 1200 cents doubles the pitch.
+    #[inline]
+    pub fn to_pitch_ratio(self) -> f32 {
+        2.0_f32.powf(self.0 / 1200.0)
+    }
+}
+
+impl Semitones {
+    /// One octave.
+    pub const OCTAVE: Semitones = Semitones(12.0);
+
+    /// This offset in cents. The inverse of [`Cents::to_semitones`], and
+    /// likewise a converter rather than a scalar multiply.
+    #[inline]
+    pub fn to_cents(self) -> Cents {
+        Cents(self.0 * 100.0)
+    }
+
+    /// This offset as a frequency multiplier. 12 semitones doubles the pitch.
+    #[inline]
+    pub fn to_pitch_ratio(self) -> f32 {
+        2.0_f32.powf(self.0 / 12.0)
+    }
+}
 // ── Playback rates ──────────────────────────────────────────────────────────
 //
 // Three distinct quantities that all used to be `Ratio`, all multiplied into
@@ -608,6 +1373,27 @@ unit_ratio!(BeatDuration, f64);
 unit_modular!(BeatDuration);
 
 impl BeatDuration {
+    /// This span in seconds at `tempo`.
+    ///
+    /// For *duration* readouts — a clip length, a UI-facing time display. It is
+    /// deliberately **not** the conversion the per-sample transport path uses:
+    /// `tutti_core::transport::state::beats_per_sample` computes
+    /// `(tempo / 60) / sample_rate` and documents that association as
+    /// load-bearing (the offline timeline is pinned to agree with the clock
+    /// sample-for-sample, and the two groupings round differently). Routing
+    /// those sites through this method would silently re-associate the
+    /// arithmetic. Two conversions, two call sites, on purpose.
+    ///
+    /// That function also cannot move here: it takes a `SampleRate`, which
+    /// lives in `fundsp-tutti` — a crate that *depends on* this one.
+    #[inline]
+    pub fn to_seconds(self, tempo: Bpm) -> Seconds {
+        if tempo.0 <= 0.0 {
+            return Seconds(0.0);
+        }
+        Seconds((self.0 * 60.0 / tempo.0) as f32)
+    }
+
     /// Magnitude, discarding direction.
     #[inline]
     pub fn abs(self) -> BeatDuration {
@@ -701,11 +1487,383 @@ mod tests {
     /// - `Beat % BeatDuration` — hides the loop-start origin.
     /// - `Db * f32` — squares the amplitude rather than doubling the gain.
     /// - `Db / Db` — a quotient of logarithms is not a quantity.
-    /// - `Linear + Linear`, `Ratio + Ratio` — normalized scales do not compose.
-    /// - `Degrees < Degrees`, `Degrees + Degrees` — a wrapping coordinate.
+    /// - `Mix + Mix`, `Mix * f32`, `Ratio + Ratio` — a blend *position* does
+    ///   not compose or scale; half of a crossfade point is not a crossfade
+    ///   point. (`Depth` *is* additive and scalable — that is the difference
+    ///   between a position and a signed magnitude.)
+    /// - `Feedback * f32` — scaling walks a coefficient across the stability
+    ///   bound unchecked. `new_clamped` / `stable_pair` are the ways in.
+    /// - `Amplitude + Amplitude` — cascading gains multiply; summing is what
+    ///   the *signals* do, not their gains.
+    /// - `Drive * f32` — a shaper's response is nonlinear, so "twice the
+    ///   drive" is not twice anything.
+    /// - `Azimuth < Azimuth`, `Azimuth.clamp(..)` — a wrapping coordinate has
+    ///   no ordering and no saturating clamp. `wrap` is the constraint.
+    /// - `Azimuth + ArcDegrees` — `rotate_by`, which wraps; the operator would
+    ///   not. Same for `Elevation + ArcDegrees` vs `tilt_by`, which clamps.
+    /// - `Azimuth - Azimuth` — `shortest_arc_to`; a plain subtraction takes the
+    ///   long way around the seam.
+    /// - `Phase + Phase`, `Phase * f32`, `Phase.clamp(..)` — a cycle position.
+    ///   Clamping pins it at 0.999 where it belongs at the next cycle's start.
+    /// - `Phase % Phase` — `%` is one of the two sign-preserving wraps this
+    ///   type was introduced to eliminate. `wrapped` is the only wrap.
+    /// - `Phase + PhaseIncrement` — `advance`, which wraps; the operator would
+    ///   not.
     /// - `Bpm - Bpm` — a tempo difference is not a tempo.
     #[test]
     fn omitted_operators_are_documented() {}
+
+    #[test]
+    fn azimuth_wraps_rather_than_saturating() {
+        // The shipped bug this type exists to prevent: a saturating clamp maps
+        // 190 degrees to 180 (hard left). It is 170 degrees to the *right*.
+        assert_eq!(Azimuth(190.0).wrap(), Azimuth(-170.0));
+        assert_eq!(Azimuth(-190.0).wrap(), Azimuth(170.0));
+
+        // `rem_euclid`, not `%`: several full turns in either direction still
+        // land in range, which plain `%` does not manage for negatives.
+        assert_eq!(Azimuth(360.0 + 45.0).wrap(), Azimuth(45.0));
+        assert_eq!(Azimuth(-720.0 - 45.0).wrap(), Azimuth(-45.0));
+
+        // The range is half-open at +180: one endpoint, not two names for it.
+        assert_eq!(Azimuth(180.0).wrap(), Azimuth(-180.0));
+    }
+
+    #[test]
+    fn azimuth_takes_the_short_way_across_the_seam() {
+        // The second shipped bug: `to - self` reports -340 here. The listener
+        // hears the panner sweep almost all the way around to travel 20
+        // degrees.
+        let from = Azimuth(170.0);
+        let to = Azimuth(-170.0);
+        assert_eq!(from.shortest_arc_to(to), ArcDegrees(20.0));
+        assert_eq!(to.shortest_arc_to(from), ArcDegrees(-20.0));
+
+        // And the interpolator built on it crosses the seam rather than
+        // retreating from it: halfway from 170 to -170 is 180, not 0.
+        assert_eq!(from.lerp_shortest(to, 0.5), Azimuth(-180.0));
+        assert_eq!(from.lerp_shortest(to, 0.0), from);
+        assert_eq!(from.lerp_shortest(to, 1.0), to);
+    }
+
+    #[test]
+    fn azimuth_rotation_stays_on_the_circle() {
+        assert_eq!(Azimuth(170.0).rotate_by(ArcDegrees(20.0)), Azimuth(-170.0));
+        // Mirroring across the front axis — the one operator a bearing keeps.
+        assert_eq!(-Azimuth(45.0), Azimuth(-45.0));
+    }
+
+    #[test]
+    fn elevation_saturates_where_azimuth_wraps() {
+        // Same numbers, opposite correct answers — which is why one `Degrees`
+        // could not serve both. Past the pole, elevation stops.
+        assert_eq!(Elevation::new_clamped(120.0), Elevation::UP);
+        assert_eq!(Elevation::new_clamped(-120.0), Elevation::DOWN);
+        // Where the identical azimuth input wraps to the far side instead.
+        assert_eq!(Azimuth(120.0).wrap(), Azimuth(120.0));
+        assert_eq!(Azimuth(200.0).wrap(), Azimuth(-160.0));
+
+        assert_eq!(Elevation::LEVEL.tilt_by(ArcDegrees(30.0)), Elevation(30.0));
+        assert_eq!(Elevation(80.0).tilt_by(ArcDegrees(30.0)), Elevation::UP);
+
+        // Ordering is meaningful here and absent on `Azimuth`.
+        assert!(Elevation::DOWN < Elevation::LEVEL);
+        assert!(Elevation::LEVEL < Elevation::UP);
+    }
+
+    #[test]
+    fn elevation_lerp_needs_no_seam_handling() {
+        assert_eq!(Elevation(0.0).lerp(Elevation(90.0), 0.5), Elevation(45.0));
+        assert_eq!(
+            Elevation(-90.0).lerp(Elevation(90.0), 0.5),
+            Elevation::LEVEL
+        );
+    }
+
+    #[test]
+    fn phase_wrap_is_correct_for_negatives_where_the_old_ones_were_not() {
+        // The two wraps this type replaces, reproduced: both keep the sign of
+        // the input, so a negative phase stays negative and indexes off the
+        // front of a shape table.
+        assert_eq!(-0.25_f32 % 1.0, -0.25);
+        assert_eq!((-0.25_f32).fract(), -0.25);
+        // `rem_euclid` — the only wrap `Phase` performs.
+        assert_eq!(Phase::wrapped(-0.25), Phase(0.75));
+
+        assert_eq!(Phase::wrapped(1.25), Phase(0.25));
+        assert_eq!(Phase::wrapped(0.5), Phase(0.5));
+        // Many turns out, either direction, still lands in range.
+        assert_eq!(Phase::wrapped(-3.25), Phase(0.75));
+        assert_eq!(Phase::wrapped(7.5), Phase(0.5));
+    }
+
+    #[test]
+    fn phase_advances_backwards_without_escaping_the_cycle() {
+        // A reverse-rate modulator: the case a sign-preserving wrap breaks.
+        let p = Phase(0.1).advance(PhaseIncrement(-0.25));
+        assert_eq!(p, Phase(0.85));
+        assert!((0.0..1.0).contains(&p.get()));
+
+        // Forward across the seam.
+        assert_eq!(
+            Phase(0.9).advance(PhaseIncrement(0.25)),
+            Phase::wrapped(1.15)
+        );
+
+        // Walking a full cycle backwards stays in range at every step.
+        let mut cursor = Phase::START;
+        for _ in 0..40 {
+            cursor = cursor.advance(PhaseIncrement(-0.1));
+            assert!((0.0..1.0).contains(&cursor.get()));
+        }
+    }
+
+    #[test]
+    fn phase_increment_derives_from_frequency_and_rate() {
+        // One cycle per second at 100 Hz sampling = 1/100 turn per sample.
+        assert_eq!(
+            PhaseIncrement::per_sample(Hz(1.0), 100.0),
+            PhaseIncrement(0.01)
+        );
+        // A degenerate rate yields a standing phase rather than inf/NaN.
+        assert_eq!(
+            PhaseIncrement::per_sample(Hz(440.0), 0.0),
+            PhaseIncrement(0.0)
+        );
+    }
+
+    #[test]
+    fn turns_and_radians_convert_both_ways() {
+        assert_eq!(Phase(0.5).to_radians(), Radians(core::f32::consts::PI));
+        assert_eq!(Phase::START.to_radians(), Radians(0.0));
+        assert_eq!(Radians::TAU.to_phase(), Phase::START);
+        assert_eq!(Radians(core::f32::consts::PI).to_phase(), Phase(0.5));
+
+        // A quarter turn is the sine peak — the check that the units line up
+        // rather than being off by tau somewhere.
+        assert!((Phase(0.25).to_radians().sin() - 1.0).abs() < 1e-6);
+        assert!(Phase::START.to_radians().cos() - 1.0 < 1e-6);
+
+        // Degrees reach radians too, so a panner converts once instead of
+        // hand-multiplying by pi/180 at each trig call.
+        assert!((Radians::from(Azimuth(180.0)).0 - core::f32::consts::PI).abs() < 1e-6);
+        assert_eq!(Radians::from(Elevation::LEVEL), Radians(0.0));
+    }
+
+    #[test]
+    fn db_round_trips_through_amplitude() {
+        assert_eq!(Db::UNITY.to_amplitude(), Amplitude(1.0));
+        // -6 dB is very nearly half amplitude.
+        assert!((Db(-6.0).to_amplitude().get() - 0.501_187).abs() < 1e-5);
+        // +6 dB exceeds 1.0 — amplitude is not a 0..1 quantity.
+        assert!(Db(6.0).to_amplitude().get() > 1.99);
+
+        let round = Db::from_amplitude_exact(Db(-12.0).to_amplitude());
+        assert!((round.get() - -12.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_two_db_floors_differ_only_at_silence() {
+        // The metering form pins silence to a finite value, because -inf
+        // cannot be drawn on a fader.
+        assert_eq!(Db::from_amplitude(Amplitude(0.0)), Db::FLOOR);
+        assert!(Db::from_amplitude(Amplitude(0.0)).get().is_finite());
+
+        // The arithmetic form keeps -inf, which is what round-trips exactly:
+        // 10^(-inf/20) is 0.0, while 10^(-144/20) is merely very small.
+        assert!(Db::from_amplitude_exact(Amplitude(0.0)).get().is_infinite());
+        assert_eq!(
+            Db::from_amplitude_exact(Amplitude::SILENT).to_amplitude(),
+            Amplitude::SILENT
+        );
+        assert!(Db::FLOOR.to_amplitude().get() > 0.0);
+
+        // Above silence the two agree.
+        assert_eq!(
+            Db::from_amplitude(Amplitude(0.5)),
+            Db::from_amplitude_exact(Amplitude(0.5))
+        );
+    }
+
+    #[test]
+    fn db_to_amplitude_f64_is_not_just_the_f32_path_widened() {
+        // The loudness path works in f64 because LUFS targets are f64. The
+        // wider form must actually be computed wide, or export gain shifts in
+        // the low bits.
+        let wide = Db(-23.0).to_amplitude_f64();
+        assert!((wide - 0.070_794_578_438_413_79).abs() < 1e-15);
+        assert_eq!(Db::UNITY.to_amplitude_f64(), 1.0);
+    }
+
+    #[test]
+    fn seconds_to_samples_names_its_rounding() {
+        // 0.5 s at 44100 is exactly 22050 frames — every variant agrees.
+        assert_eq!(Seconds(0.5).to_samples(44_100.0), Samples(22_050));
+        assert_eq!(Seconds(0.5).to_samples_floor(44_100.0), Samples(22_050));
+        assert_eq!(Seconds(0.5).to_samples_ceil(44_100.0), Samples(22_050));
+
+        // 10 ms at 44100 is 441.0; nudge it so the three diverge.
+        let odd = Seconds(0.010_5);
+        assert_eq!(odd.to_samples_floor(44_100.0), Samples(463));
+        assert_eq!(odd.to_samples_ceil(44_100.0), Samples(464));
+        assert_eq!(odd.to_samples(44_100.0), Samples(463));
+
+        // Allocation must never under-size: ceil is >= nearest, always.
+        for ms in 1..200 {
+            let s = Seconds(ms as f32 * 0.001);
+            assert!(s.to_samples_ceil(48_000.0) >= s.to_samples(48_000.0));
+            assert!(s.to_samples(48_000.0) >= s.to_samples_floor(48_000.0));
+        }
+    }
+
+    #[test]
+    fn seconds_to_samples_collapses_nonsense_to_zero() {
+        // `NaN as usize` is already 0 and a negative cast already saturates —
+        // this pins the behaviour so it is stated rather than inherited.
+        assert_eq!(Seconds(f32::NAN).to_samples(48_000.0), Samples::ZERO);
+        assert_eq!(Seconds(f32::INFINITY).to_samples(48_000.0), Samples::ZERO);
+        assert_eq!(Seconds(-1.0).to_samples(48_000.0), Samples::ZERO);
+        assert_eq!(Seconds(1.0).to_samples(0.0), Samples::ZERO);
+    }
+
+    #[test]
+    fn seconds_to_samples_computes_wide_enough_for_a_long_render() {
+        // f32 cannot represent frame counts past 2^24 (~6 min at 48k), which
+        // is why the arithmetic widens to f64 before rounding.
+        let hour = Seconds(3600.0);
+        assert_eq!(hour.to_samples(48_000.0), Samples(172_800_000));
+    }
+
+    #[test]
+    fn cents_and_semitones_convert_rather_than_scale() {
+        // `unit_scalable!(Cents, f32)` means `Cents / 100.0` COMPILES and
+        // yields `Cents` — wrong by 100x with a type that says otherwise.
+        // These are the forms that carry the unit change.
+        assert_eq!(Cents(100.0).to_semitones(), Semitones(1.0));
+        assert_eq!(Cents::SEMITONE.to_semitones(), Semitones(1.0));
+        assert_eq!(Semitones(1.0).to_cents(), Cents(100.0));
+        assert_eq!(Semitones::OCTAVE.to_cents(), Cents(1200.0));
+
+        // An octave doubles the frequency, by either spelling.
+        assert!((Semitones::OCTAVE.to_pitch_ratio() - 2.0).abs() < 1e-6);
+        assert!((Cents(1200.0).to_pitch_ratio() - 2.0).abs() < 1e-6);
+        assert!((Semitones(0.0).to_pitch_ratio() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn beat_duration_to_seconds_is_the_readout_conversion() {
+        // At 120 BPM a beat is half a second.
+        assert_eq!(BeatDuration(1.0).to_seconds(Bpm(120.0)), Seconds(0.5));
+        assert_eq!(BeatDuration(4.0).to_seconds(Bpm(120.0)), Seconds(2.0));
+        assert_eq!(BeatDuration(1.0).to_seconds(Bpm(60.0)), Seconds(1.0));
+        // A degenerate tempo yields zero rather than inf.
+        assert_eq!(BeatDuration(1.0).to_seconds(Bpm(0.0)), Seconds(0.0));
+    }
+
+    #[test]
+    fn amplitude_is_not_a_normalized_scale() {
+        // The claim the old `Linear` doc got backwards: a gain routinely
+        // exceeds 1.0. +6 dB is roughly a doubling.
+        assert!(Db(6.0).to_amplitude() > Amplitude::UNITY);
+        assert_eq!(Db::UNITY.to_amplitude(), Amplitude::UNITY);
+        assert_eq!(Amplitude::UNITY.to_db(), Db::UNITY);
+        assert_eq!(Amplitude::SILENT.to_db(), Db::FLOOR);
+
+        // Scalable, because trimming a gain is meaningful.
+        assert_eq!(Amplitude(2.0) * 0.5, Amplitude::UNITY);
+    }
+
+    #[test]
+    fn mix_blends_and_refuses_to_scale() {
+        assert_eq!(Mix::DRY.blend(1.0, 9.0), 1.0);
+        assert_eq!(Mix::WET.blend(1.0, 9.0), 9.0);
+        assert_eq!(Mix(0.5).blend(0.0, 1.0), 0.5);
+        assert_eq!(Mix::new_clamped(1.5), Mix::WET);
+        assert_eq!(Mix::new_clamped(-0.5), Mix::DRY);
+        // `Mix * f32` and `Mix + Mix` are deliberately absent — see the
+        // omission ledger.
+    }
+
+    #[test]
+    fn feedback_stops_below_unity() {
+        assert_eq!(Feedback::new_clamped(1.5), Feedback::MAX_STABLE);
+        assert_eq!(Feedback::new_clamped(-0.2), Feedback::NONE);
+        assert!(
+            Feedback::MAX_STABLE.get() < 1.0,
+            "a unity loop never decays"
+        );
+        // The literal this constant replaces, at 13 sites.
+        assert_eq!(Feedback::MAX_STABLE, Feedback(0.99));
+    }
+
+    #[test]
+    fn cross_coupled_feedback_is_bounded_as_a_pair() {
+        // The bug a per-value clamp cannot catch: two coefficients that feed
+        // the SAME recirculation, each individually legal, summing to 1.98.
+        let (d, c) = Feedback::stable_pair(0.99, 0.99);
+        assert!(
+            d.get() + c.get() <= Feedback::MAX_STABLE.get() + 1e-6,
+            "combined feedback {} still runs away",
+            d.get() + c.get()
+        );
+        // Scaled together, so the balance between them survives.
+        assert!((d.get() - c.get()).abs() < 1e-6);
+
+        // A pair that is already stable passes through untouched.
+        let (d, c) = Feedback::stable_pair(0.5, 0.2);
+        assert_eq!((d, c), (Feedback(0.5), Feedback(0.2)));
+
+        // Ratio preserved when scaling is needed.
+        let (d, c) = Feedback::stable_pair(0.8, 0.4);
+        assert!((d.get() / c.get() - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn depth_is_signed_because_inversion_is_the_point() {
+        assert_eq!(-Depth::FULL, Depth::INVERTED);
+        assert_eq!(Depth::new_clamped(-2.0), Depth::INVERTED);
+        assert_eq!(Depth::new_clamped(2.0), Depth::FULL);
+        // Additive and scalable, unlike `Mix` and `Feedback`.
+        assert_eq!(Depth(0.25) + Depth(0.25), Depth(0.5));
+        assert_eq!(Depth::FULL * 0.5, Depth(0.5));
+    }
+
+    #[test]
+    fn the_three_ratios_have_disjoint_ranges() {
+        // Which is why one `Ratio` could not serve all three: a legal value of
+        // one is an illegal value of another.
+        assert_eq!(CompressionRatio::new_clamped(0.5), CompressionRatio::UNITY);
+        assert_eq!(CompressionRatio::new_clamped(4.0), CompressionRatio(4.0));
+
+        assert_eq!(Resonance::new_clamped(4.0), Resonance::SELF_OSCILLATION);
+        assert_eq!(Resonance::new_clamped(-1.0), Resonance::NONE);
+
+        // `Q` only has to stay above zero — it divides into the damping term.
+        assert!(Q::new_clamped(0.0).get() > 0.0);
+        assert!(Q::new_clamped(-5.0).get() > 0.0);
+        assert_eq!(Q::new_clamped(10.0), Q(10.0));
+
+        // The sharp case: 1.0 means "mild bell" as a Q and "self-oscillating"
+        // as a ladder resonance. Same number, different instrument.
+        assert!(Q(1.0) > Q::BUTTERWORTH);
+        assert_eq!(Resonance(1.0), Resonance::SELF_OSCILLATION);
+    }
+
+    #[test]
+    fn drive_is_not_a_gain() {
+        // Shares `Amplitude`'s range but not its meaning: `Drive` is never
+        // multiplied onto a sample, so it is deliberately not scalable.
+        assert_eq!(Drive::UNITY, Drive(1.0));
+        assert!(Drive(10.0) > Drive::UNITY);
+    }
+
+    #[test]
+    fn arc_degrees_composes_like_the_displacement_it_is() {
+        assert_eq!(ArcDegrees(20.0) + ArcDegrees(15.0), ArcDegrees(35.0));
+        assert_eq!(ArcDegrees(20.0) * 0.5, ArcDegrees(10.0));
+        assert_eq!(-ArcDegrees(20.0), ArcDegrees(-20.0));
+        assert!(ArcDegrees(10.0) < ArcDegrees(20.0));
+    }
 
     #[test]
     fn beat_splits_into_floor_and_fraction() {
@@ -754,7 +1912,7 @@ mod tests {
     #[test]
     fn clamp_stays_in_the_unit_type() {
         assert_eq!(Hz(20_000.0).clamp(Hz(20.0), Hz(18_000.0)), Hz(18_000.0));
-        assert_eq!(Linear(1.5).clamp(Linear(0.0), Linear(1.0)), Linear(1.0));
+        assert_eq!(Mix(1.5).clamp(Mix::DRY, Mix::WET), Mix::WET);
     }
 
     #[test]

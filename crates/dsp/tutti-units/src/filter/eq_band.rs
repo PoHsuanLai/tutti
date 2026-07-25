@@ -1,7 +1,7 @@
 use tutti_core::Arc;
 use tutti_core::AtomicF32;
 use tutti_core::{dsp::Real, AudioUnit, BufferMut, BufferRef, SignalFrame};
-use tutti_core::{Db, Hz, Ratio};
+use tutti_core::{Db, Hz, Q};
 
 use super::svf::{SvfFilterNode, SvfType};
 
@@ -51,7 +51,7 @@ impl<F: Real> EqBandNode<F> {
     pub fn new(
         filter_type: SvfType,
         frequency: impl Into<Hz>,
-        q: impl Into<Ratio>,
+        q: impl Into<Q>,
         gain_db: impl Into<Db>,
     ) -> Self {
         Self {

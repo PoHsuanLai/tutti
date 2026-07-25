@@ -390,94 +390,26 @@ impl BarCount {
     }
 }
 
-// The affine pair, written out: the `unit_*` macros in `value::units` generate
-// this relationship, but only for float-backed types. Bar-space is integral.
+// The affine pair. `unit_affine!` is written against `+`/`-` only, so it applies
+// to integral bar-space unchanged — the macros are visible here because `value`
+// is `#[macro_use]`d ahead of this module in lib.rs.
 //
 // The set is complete rather than trimmed to current callers — `tutti` is a
 // library, so the algebra has to be coherent for a host that is not this DAW. A
 // half-implemented affine pair is a worse API than an unused operator.
 //
-// Deliberately absent: `BarNumber + BarNumber`, for the same reason
-// `unit_affine!` omits `Beat + Beat` — adding two positions needs an origin.
-impl core::ops::Sub<BarNumber> for BarNumber {
-    type Output = BarCount;
-    #[inline]
-    fn sub(self, rhs: BarNumber) -> BarCount {
-        BarCount(self.0 - rhs.0)
-    }
-}
-
-impl core::ops::Add<BarCount> for BarNumber {
-    type Output = BarNumber;
-    #[inline]
-    fn add(self, rhs: BarCount) -> BarNumber {
-        BarNumber(self.0 + rhs.0)
-    }
-}
-
-impl core::ops::Sub<BarCount> for BarNumber {
-    type Output = BarNumber;
-    #[inline]
-    fn sub(self, rhs: BarCount) -> BarNumber {
-        BarNumber(self.0 - rhs.0)
-    }
-}
-
-impl core::ops::AddAssign<BarCount> for BarNumber {
-    #[inline]
-    fn add_assign(&mut self, rhs: BarCount) {
-        self.0 += rhs.0;
-    }
-}
-
-impl core::ops::SubAssign<BarCount> for BarNumber {
-    #[inline]
-    fn sub_assign(&mut self, rhs: BarCount) {
-        self.0 -= rhs.0;
-    }
-}
+// Deliberately absent: `BarNumber + BarNumber`, which `unit_affine!` omits for
+// the same reason it omits `Beat + Beat` — adding two positions needs an origin.
+unit_affine!(BarNumber, BarCount);
 
 // `BarCount` composes with itself and negates, the same algebra `unit_additive!` +
-// `unit_signed!` give `BeatDuration`. Scaling is `* i64` rather than `* f64`: a
-// fraction of a bar is a `BeatDuration`, not a `BarCount`.
-impl core::ops::Add for BarCount {
-    type Output = Self;
-    #[inline]
-    fn add(self, rhs: Self) -> Self {
-        Self(self.0 + rhs.0)
-    }
-}
+// `unit_signed!` give `BeatDuration`.
+unit_additive!(BarCount);
+unit_signed!(BarCount);
 
-impl core::ops::Sub for BarCount {
-    type Output = Self;
-    #[inline]
-    fn sub(self, rhs: Self) -> Self {
-        Self(self.0 - rhs.0)
-    }
-}
-
-impl core::ops::AddAssign for BarCount {
-    #[inline]
-    fn add_assign(&mut self, rhs: Self) {
-        self.0 += rhs.0;
-    }
-}
-
-impl core::ops::SubAssign for BarCount {
-    #[inline]
-    fn sub_assign(&mut self, rhs: Self) {
-        self.0 -= rhs.0;
-    }
-}
-
-impl core::ops::Neg for BarCount {
-    type Output = Self;
-    #[inline]
-    fn neg(self) -> Self {
-        Self(-self.0)
-    }
-}
-
+// Scaling stays hand-written. `unit_scalable!` would also generate `Div`, which
+// truncates on `i64` — and a fraction of a bar is a `BeatDuration`, not a
+// `BarCount`. The omission is the point, so the macro must not be used here.
 impl core::ops::Mul<i64> for BarCount {
     type Output = Self;
     #[inline]

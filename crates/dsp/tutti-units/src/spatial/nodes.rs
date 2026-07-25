@@ -1,35 +1,53 @@
 use crate::Result;
 use tutti_core::AudioUnit;
 use tutti_core::ChannelLayout;
-use tutti_core::{BufferMut, BufferRef, Degrees, Linear, Param, SignalFrame};
+use tutti_core::{
+    Azimuth, BufferMut, BufferRef, Elevation, Param, SignalFrame, Spread, StereoWidth,
+};
 
 use super::vbap_panner::SpatialPanner;
 
 /// Azimuth/elevation pair as typed parameters. Both spatial panner nodes
 /// carry exactly this pair; grouping them here names the concept and lets
 /// nodes forward a single field through their Clone impls.
+///
+/// The two fields are *different types* on purpose: a bearing wraps (190
+/// degrees is 170 to the right) and a height saturates (past straight up, you
+/// stop). They were one `Degrees` until the two behaviours had to diverge.
 #[derive(Clone)]
 pub struct SpatialTarget {
-    pub azimuth: Param<Degrees>,
-    pub elevation: Param<Degrees>,
+    pub azimuth: Param<Azimuth>,
+    pub elevation: Param<Elevation>,
 }
 
 impl SpatialTarget {
     pub fn new() -> Self {
         Self {
-            azimuth: Param::new(Degrees(0.0)),
-            elevation: Param::new(Degrees(0.0)),
+            azimuth: Param::new(Azimuth::FRONT),
+            elevation: Param::new(Elevation::LEVEL),
         }
     }
 
+    /// The raw pair, for the panners' trigonometry.
+    ///
+    /// Untyped on purpose, for now: both panners work in bare `f32` all the way
+    /// down to `sin`/`cos`, so typing this boundary would just add a `.get()`
+    /// at every use. It is the panners' *smoothing* that needs the types —
+    /// that is where the long-way-around bug lives, and it is a separate change.
     #[inline]
     pub fn load(&self) -> (f32, f32) {
         (self.azimuth.load().0, self.elevation.load().0)
     }
 
+    /// Store a bearing/height pair, normalized on the way in.
+    ///
+    /// Each coordinate is constrained the way its own space requires: the
+    /// bearing wraps onto the circle, the height clamps at the poles. Callers
+    /// pass raw degrees from UI or automation and cannot get this pairing
+    /// wrong, because the two types no longer accept each other's treatment.
     pub fn store(&self, azimuth: f32, elevation: f32) {
-        self.azimuth.store(Degrees(azimuth));
-        self.elevation.store(Degrees(elevation));
+        self.azimuth.store(Azimuth(azimuth).wrap());
+        self.elevation.store(Elevation::new_clamped(elevation));
     }
 
     pub fn reset_origin(&self) {
@@ -91,8 +109,13 @@ pub struct SpatialPannerNode {
     panner: SpatialPanner,
     layout: ChannelLayout,
     target: SpatialTarget,
-    spread: Param<Linear>,
-    width: Param<Linear>,
+    /// VBAP diffusion, `0..1`: how many speakers a point source is smeared
+    /// across. See [`Spread`] — it is not a `Mix`, because it blends nothing.
+    spread: Param<Spread>,
+    /// Mid/side stereo width, `0..` — 1.0 is unchanged, above 1.0 is wider
+    /// than the source. NOT an `Amplitude` despite the matching range: it
+    /// scales the SIDE component against the mid. See [`StereoWidth`].
+    width: Param<StereoWidth>,
     sample_rate: f32,
     scratch_output: Vec<f32>,
     /// Gain-index → output-channel scatter map (see [`speaker_channel_map`]).
@@ -179,8 +202,8 @@ impl SpatialPannerNode {
             panner,
             layout,
             target: SpatialTarget::new(),
-            spread: Param::new(Linear(0.0)),
-            width: Param::new(Linear(1.0)),
+            spread: Param::new(Spread::POINT),
+            width: Param::new(StereoWidth::NATURAL),
             sample_rate: 48000.0,
             scratch_output: vec![0.0; layout.count() as usize],
             channel_map: speaker_channel_map(layout),
@@ -205,7 +228,7 @@ impl SpatialPannerNode {
 
     /// Set spread factor (0.0 = point source, 1.0 = diffuse)
     pub fn set_spread(&self, spread: f32) {
-        self.spread.store(Linear(spread.clamp(0.0, 1.0)));
+        self.spread.store(Spread::new_clamped(spread));
     }
 
     pub fn spread(&self) -> f32 {
@@ -214,7 +237,7 @@ impl SpatialPannerNode {
 
     /// Set stereo width for stereo input mode (0.0 = mono, 1.0 = full stereo)
     pub fn set_width(&self, width: f32) {
-        self.width.store(Linear(width.max(0.0)));
+        self.width.store(StereoWidth::new_clamped(width));
     }
 
     pub fn width(&self) -> f32 {
@@ -245,8 +268,8 @@ impl AudioUnit for SpatialPannerNode {
 
     fn reset(&mut self) {
         self.target.reset_origin();
-        self.spread.store(Linear(0.0));
-        self.width.store(Linear(1.0));
+        self.spread.store(Spread::POINT);
+        self.width.store(StereoWidth::NATURAL);
         self.panner.set_position(0.0, 0.0);
         self.panner.set_spread(0.0);
     }

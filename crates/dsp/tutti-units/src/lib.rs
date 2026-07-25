@@ -11,7 +11,9 @@ pub use error::{Error, Result};
 mod node_id;
 
 pub use tutti_core::{
-    params, Bpm, Cents, Db, Degrees, Hz, Linear, Param, Ratio, SampleRate, Seconds, Semitones, Unit,
+    params, Amplitude, ArcDegrees, Azimuth, Bpm, Cents, CompressionRatio, Db, Depth, Drive,
+    Elevation, Feedback, Hz, Mix, Param, Resonance, SampleRate, Seconds, Semitones, Spread,
+    StereoWidth, Unit, Q,
 };
 
 // NOTE: the shared DSP param pool (`Frequency`/`FilterQ`/`WetMix`/…), the node
@@ -64,9 +66,7 @@ pub use tutti_mod::{AtomicTarget, LayerKey, LayeredCurve, ModParams, ModTarget};
 #[cfg(feature = "spatial")]
 mod spatial;
 #[cfg(feature = "spatial")]
-pub use spatial::{
-    build_surround_mix, ChannelLayout, ChannelSumUnit, SpatialPannerNode, SurroundSource,
-};
+pub use spatial::{build_surround_mix, ChannelSumUnit, SpatialPannerNode, SurroundSource};
 #[cfg(feature = "hrtf")]
 pub use spatial::{HrtfBinauralError, HrtfBinauralNode};
 

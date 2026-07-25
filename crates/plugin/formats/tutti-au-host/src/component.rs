@@ -257,7 +257,7 @@ mod tests {
             componentSubType: u32::from_be_bytes(*b"dely"),
             componentManufacturer: u32::from_be_bytes(*b"appl"),
             componentFlags: 0,
-componentFlagsMask: 0,
+            componentFlagsMask: 0,
         };
         assert!(find_component(&desc).is_some());
     }

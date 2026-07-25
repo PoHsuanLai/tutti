@@ -25,8 +25,8 @@ pub use delay::PdcDelay;
 
 use crate::audiounit::AudioUnit;
 use crate::net::{Net, NodeId, Source};
-use tutti_types::latency::{DelayInsertion, LatencyGraph};
 use tutti_types::Samples;
+use tutti_types::latency::{DelayInsertion, LatencyGraph};
 
 /// Marks every [`PdcDelay<CH>`], whatever its channel count.
 ///

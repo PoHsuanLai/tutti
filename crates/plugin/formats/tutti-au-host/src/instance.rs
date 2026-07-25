@@ -179,7 +179,9 @@ impl AuInstance {
     #[cfg(test)]
     fn callback_install_count(&self) -> u32 {
         match &self.state {
-            State::Ready(r) => r.callback_installs.load(std::sync::atomic::Ordering::SeqCst),
+            State::Ready(r) => r
+                .callback_installs
+                .load(std::sync::atomic::Ordering::SeqCst),
             _ => 0,
         }
     }
@@ -262,18 +264,16 @@ impl AuInstance {
                 ),
                 MidiMessage::PitchBend { channel, value, .. } => {
                     let bend14 = midi2_pitch_bend_to_midi1(value);
-                    (0xE0 | (channel & 0x0F), (bend14 & 0x7F) as u8, (bend14 >> 7) as u8 & 0x7F)
+                    (
+                        0xE0 | (channel & 0x0F),
+                        (bend14 & 0x7F) as u8,
+                        (bend14 >> 7) as u8 & 0x7F,
+                    )
                 }
                 _ => continue,
             };
             unsafe {
-                MusicDeviceMIDIEvent(
-                    unit,
-                    status as u32,
-                    d1 as u32,
-                    d2 as u32,
-                    ev.frame_offset,
-                );
+                MusicDeviceMIDIEvent(unit, status as u32, d1 as u32, d2 as u32, ev.frame_offset);
             }
         }
     }
@@ -651,7 +651,7 @@ mod tests {
             componentSubType: u32::from_be_bytes(*b"dely"),
             componentManufacturer: u32::from_be_bytes(*b"appl"),
             componentFlags: 0,
-componentFlagsMask: 0,
+            componentFlagsMask: 0,
         };
         find_component(&desc)
     }

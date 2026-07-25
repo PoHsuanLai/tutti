@@ -7,12 +7,12 @@ use super::ClapLoaded;
 use crate::cstr_to_string;
 use crate::error::{ClapError, Result};
 use crate::host::HostState;
-use crate::types::{EditorCapabilities, EditorSize, ParamRescan, WindowHandle};
 #[cfg(feature = "clap-extras")]
 use crate::types::{
     ContextMenuItem, ContextMenuTarget, RemoteControlsPage, TrackInfo, TransportRequest,
     TriggerInfo,
 };
+use crate::types::{EditorCapabilities, EditorSize, ParamRescan, WindowHandle};
 #[cfg(feature = "clap-extras")]
 use clap_sys::ext::context_menu::{
     clap_context_menu_builder, clap_context_menu_check_entry, clap_context_menu_entry,
@@ -191,8 +191,7 @@ impl ClapLoaded {
         // carries no DPI today, so we pass 1.0 and wire the `set_scale` call.
         let scale = 1.0_f64;
 
-        let outcome =
-            embed_editor_sequence(gui, self.plugin.as_ptr(), api, window_handle, scale)?;
+        let outcome = embed_editor_sequence(gui, self.plugin.as_ptr(), api, window_handle, scale)?;
 
         if outcome.did_create {
             self.flags.gui_created = true;

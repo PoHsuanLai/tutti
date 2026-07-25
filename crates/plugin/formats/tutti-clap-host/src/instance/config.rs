@@ -6,7 +6,7 @@
 //! `process`).
 
 use crate::events::{InputEventList, OutputEventList};
-use crate::types::{MidiEvent, ClapNoteExpression, ParameterChanges};
+use crate::types::{ClapNoteExpression, MidiEvent, ParameterChanges};
 use clap_sys::audio_buffer::clap_audio_buffer;
 use clap_sys::process::{clap_process_status, CLAP_PROCESS_CONTINUE};
 use smallvec::SmallVec;

@@ -23,7 +23,7 @@ use tutti_core::{
     beat_from_ports, dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame, BEAT_PORTS,
 };
 
-use tutti_core::{Hz, Linear, Param};
+use tutti_core::{Depth, Hz, Param, Phase, PhaseIncrement};
 
 // The waveform vocabulary + the pure LFO modulator live in tutti-mod now. Re-
 // exported so existing `use tutti_units::LfoShape` / `Lfo` sites are untouched.
@@ -74,9 +74,9 @@ pub struct ModulatorNode<M: Modulator> {
     /// In `BeatSynced` mode: beats per cycle (stored in the same atomic; the
     /// unit is context-dependent on `mode`).
     frequency: Param<Hz>,
-    depth: Param<Linear>,
-    phase_offset: Param<Linear>,
-    phase: f32,
+    depth: Param<Depth>,
+    phase_offset: Param<PhaseIncrement>,
+    phase: Phase,
     sample_rate: f64,
 }
 
@@ -104,9 +104,9 @@ impl<M: Modulator> ModulatorNode<M> {
             mod_state: M::State::default(),
             mode,
             frequency: Param::new(Hz(freq_or_beats)),
-            depth: Param::new(Linear(1.0)),
-            phase_offset: Param::new(Linear(0.0)),
-            phase: 0.0,
+            depth: Param::new(Depth::FULL),
+            phase_offset: Param::new(PhaseIncrement(0.0)),
+            phase: Phase::START,
             sample_rate: DEFAULT_SR,
         }
     }
@@ -131,15 +131,25 @@ impl<M: Modulator> ModulatorNode<M> {
         self
     }
 
-    /// Set the depth (0.0 - 1.0).
-    pub fn with_depth(self, depth: impl Into<Linear>) -> Self {
-        self.depth.store(Linear(depth.into().get().clamp(0.0, 1.0)));
+    /// Set the modulation depth, `-1.0` to `1.0`.
+    ///
+    /// Bipolar since the `Depth` split: a negative depth inverts the
+    /// modulator, so `-1.0` is the same shape phase-flipped. This setter
+    /// previously clamped to `0.0..=1.0`, so a negative argument silenced
+    /// modulation instead of inverting it.
+    pub fn with_depth(self, depth: impl Into<Depth>) -> Self {
+        self.depth.store(Depth::new_clamped(depth.into().get()));
         self
     }
 
     /// Set the phase offset (0.0 - 1.0).
-    pub fn with_phase_offset(self, offset: impl Into<Linear>) -> Self {
-        self.phase_offset.store(Linear(offset.into().get() % 1.0));
+    ///
+    /// Stored as given; the wrap happens where the offset is *applied*, via
+    /// `Phase::advance`. Wrapping here as well would be redundant, and the old
+    /// `% 1.0` was actively wrong for a negative offset — it left the value
+    /// negative, which then read off the front of the shape table.
+    pub fn with_phase_offset(self, offset: impl Into<PhaseIncrement>) -> Self {
+        self.phase_offset.store(offset.into());
         self
     }
 
@@ -159,12 +169,12 @@ impl<M: Modulator> ModulatorNode<M> {
         self.frequency.store(freq.into());
     }
 
-    pub fn set_depth(&self, depth: impl Into<Linear>) {
-        self.depth.store(Linear(depth.into().get().clamp(0.0, 1.0)));
+    pub fn set_depth(&self, depth: impl Into<Depth>) {
+        self.depth.store(Depth::new_clamped(depth.into().get()));
     }
 
-    pub fn set_phase_offset(&self, offset: impl Into<Linear>) {
-        self.phase_offset.store(Linear(offset.into().get() % 1.0));
+    pub fn set_phase_offset(&self, offset: impl Into<PhaseIncrement>) {
+        self.phase_offset.store(offset.into());
     }
 
     /// The one call into the pure modulator: thread the node-owned state through
@@ -196,7 +206,7 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
     }
 
     fn reset(&mut self) {
-        self.phase = 0.0;
+        self.phase = Phase::START;
         // The node owns the modulator's threaded state, so it resets it here to
         // the seed — cleaner than the old node, which could not reach the
         // modulator's internal RNG. Stateless modulators reset a `()`.
@@ -210,7 +220,7 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
 
     #[inline]
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        let phase_offset = self.phase_offset.load().get();
+        let phase_offset = self.phase_offset.load();
 
         let phase = match self.mode {
             LfoMode::FreeRunning => {
@@ -218,43 +228,39 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
                 // ordering in `process` and `route` so one sample through
                 // `tick` equals the same sample through `process`.
                 let freq = self.frequency.load().get();
-                let phase = (self.phase + phase_offset) % 1.0;
-                self.phase += freq / self.sample_rate as f32;
-                if self.phase >= 1.0 {
-                    self.phase -= 1.0;
-                }
+                let phase = self.phase.offset_by(phase_offset);
+                self.phase = self
+                    .phase
+                    .advance(PhaseIncrement::per_sample(Hz(freq), self.sample_rate));
                 phase
             }
             LfoMode::BeatSynced => {
                 let beat = beat_from_ports(input[0], input[1]) as f32;
                 let beats_per_cycle = self.frequency.load().get();
                 if beats_per_cycle > 0.0 {
-                    ((beat / beats_per_cycle) + phase_offset) % 1.0
+                    Phase::wrapped(beat / beats_per_cycle).offset_by(phase_offset)
                 } else {
-                    phase_offset
+                    Phase::START.offset_by(phase_offset)
                 }
             }
         };
 
-        output[0] = self.evaluate(phase);
+        output[0] = self.evaluate(phase.get());
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        let phase_offset = self.phase_offset.load().get();
+        let phase_offset = self.phase_offset.load();
 
         match self.mode {
             LfoMode::FreeRunning => {
                 let freq = self.frequency.load().get();
-                let phase_increment = freq / self.sample_rate as f32;
+                let phase_increment = PhaseIncrement::per_sample(Hz(freq), self.sample_rate);
 
                 for i in 0..size {
-                    let phase = (self.phase + phase_offset) % 1.0;
-                    output.set_f32(0, i, self.evaluate(phase));
+                    let phase = self.phase.offset_by(phase_offset);
+                    output.set_f32(0, i, self.evaluate(phase.get()));
 
-                    self.phase += phase_increment;
-                    if self.phase >= 1.0 {
-                        self.phase -= 1.0;
-                    }
+                    self.phase = self.phase.advance(phase_increment);
                 }
             }
             LfoMode::BeatSynced => {
@@ -263,11 +269,11 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
                 for i in 0..size {
                     let beat = beat_from_ports(input.at_f32(0, i), input.at_f32(1, i)) as f32;
                     let phase = if beats_per_cycle > 0.0 {
-                        ((beat / beats_per_cycle) + phase_offset) % 1.0
+                        Phase::wrapped(beat / beats_per_cycle).offset_by(phase_offset)
                     } else {
-                        phase_offset
+                        Phase::START.offset_by(phase_offset)
                     };
-                    output.set_f32(0, i, self.evaluate(phase));
+                    output.set_f32(0, i, self.evaluate(phase.get()));
                 }
             }
         }
@@ -428,6 +434,39 @@ mod tests {
         lfo.tick(&[], &mut output);
 
         assert!((output[0] - 0.5).abs() < 0.01);
+    }
+
+    /// Negative depth inverts the modulator rather than silencing it.
+    ///
+    /// This is a deliberate behaviour change from the `Depth` split: the old
+    /// setter clamped to `0.0..=1.0`, so `set_depth(-1.0)` stored `0.0` and
+    /// the LFO went flat. It now stores `-1.0` and phase-flips the shape.
+    #[test]
+    fn negative_depth_inverts_instead_of_silencing() {
+        let mut positive = LfoNode::new(LfoShape::Square);
+        positive.set_depth(1.0);
+        let mut a = [0.0f32];
+        positive.tick(&[], &mut a);
+
+        let mut negative = LfoNode::new(LfoShape::Square);
+        negative.set_depth(-1.0);
+        let mut b = [0.0f32];
+        negative.tick(&[], &mut b);
+
+        assert!(a[0].abs() > 0.01, "the reference tick must be audible");
+        assert!(
+            (b[0] + a[0]).abs() < 1e-6,
+            "expected {} to invert to {}",
+            a[0],
+            -a[0]
+        );
+
+        // And the range still saturates past full scale.
+        let mut clamped = LfoNode::new(LfoShape::Square);
+        clamped.set_depth(-5.0);
+        let mut c = [0.0f32];
+        clamped.tick(&[], &mut c);
+        assert!((c[0] - b[0]).abs() < 1e-6);
     }
 
     #[test]

@@ -3,7 +3,7 @@ use tutti_core::AtomicF32;
 use tutti_core::{dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame};
 
 use super::shared::{LfoDrive, LinearModMix};
-use tutti_core::{Hz, Linear};
+use tutti_core::{Depth, Feedback, Hz, Mix};
 
 const MAX_STAGES: usize = 12;
 
@@ -90,16 +90,16 @@ impl PhaserNode {
     pub fn set_rate(&self, hz: impl Into<Hz>) {
         self.lfo.rate.store(Hz(hz.into().get().max(0.01)));
     }
-    pub fn set_depth(&self, d: impl Into<Linear>) {
-        self.mix.depth.store(Linear(d.into().get().clamp(0.0, 1.0)));
+    pub fn set_depth(&self, d: impl Into<Depth>) {
+        self.mix.depth.store(Depth::new_clamped(d.into().get()));
     }
-    pub fn set_feedback(&self, fb: impl Into<Linear>) {
+    pub fn set_feedback(&self, fb: impl Into<Feedback>) {
         self.mix
             .feedback
-            .store(Linear(fb.into().get().clamp(0.0, 0.99)));
+            .store(Feedback::new_clamped(fb.into().get()));
     }
-    pub fn set_mix(&self, mix: impl Into<Linear>) {
-        self.mix.mix.store(Linear(mix.into().get().clamp(0.0, 1.0)));
+    pub fn set_mix(&self, mix: impl Into<Mix>) {
+        self.mix.mix.store(Mix::new_clamped(mix.into().get()));
     }
 
     pub fn set_frequency_range(&mut self, min_hz: impl Into<Hz>, max_hz: impl Into<Hz>) {
@@ -245,13 +245,13 @@ impl StereoPhaserNode {
     pub fn set_rate(&self, hz: impl Into<Hz>) {
         self.left.set_rate(hz);
     }
-    pub fn set_depth(&self, d: impl Into<Linear>) {
+    pub fn set_depth(&self, d: impl Into<Depth>) {
         self.left.set_depth(d);
     }
-    pub fn set_feedback(&self, fb: impl Into<Linear>) {
+    pub fn set_feedback(&self, fb: impl Into<Feedback>) {
         self.left.set_feedback(fb);
     }
-    pub fn set_mix(&self, mix: impl Into<Linear>) {
+    pub fn set_mix(&self, mix: impl Into<Mix>) {
         self.left.set_mix(mix);
     }
 }

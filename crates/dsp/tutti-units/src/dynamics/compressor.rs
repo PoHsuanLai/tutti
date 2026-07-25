@@ -9,13 +9,13 @@ use super::utils::{
     amplitude_to_db, compute_compressor_gain_reduction, db_to_amplitude, sidechain_level_buffer,
     sidechain_level_slice,
 };
-use tutti_core::{Db, Param, Ratio, Seconds};
+use tutti_core::{CompressionRatio, Db, Param, Seconds};
 
 /// Shared compressor state used by the per-sample gain computation.
 #[derive(Clone)]
 pub(super) struct CompressorCore {
     pub threshold: ThresholdParams,
-    pub ratio: Param<Ratio>,
+    pub ratio: Param<CompressionRatio>,
     pub timing: AttackRelease,
     pub makeup_db: Param<Db>,
 
@@ -26,12 +26,12 @@ pub(super) struct CompressorCore {
 impl CompressorCore {
     pub fn new(
         threshold_db: impl Into<Db>,
-        ratio: impl Into<Ratio>,
+        ratio: impl Into<CompressionRatio>,
         attack: impl Into<Seconds>,
         release: impl Into<Seconds>,
     ) -> Self {
         let threshold_db = threshold_db.into();
-        let ratio = Ratio(ratio.into().get().max(1.0));
+        let ratio = CompressionRatio::new_clamped(ratio.into().get());
         let attack = attack.into();
         let release = release.into();
         Self {
@@ -133,7 +133,7 @@ impl Compressor {
     /// Mono + mono sidechain: 2 inputs, 1 output.
     pub fn mono(
         threshold_db: impl Into<Db>,
-        ratio: impl Into<Ratio>,
+        ratio: impl Into<CompressionRatio>,
         attack: impl Into<Seconds>,
         release: impl Into<Seconds>,
     ) -> Self {
@@ -143,7 +143,7 @@ impl Compressor {
     /// Stereo + stereo sidechain: 4 inputs, 2 outputs, linked gain.
     pub fn stereo(
         threshold_db: impl Into<Db>,
-        ratio: impl Into<Ratio>,
+        ratio: impl Into<CompressionRatio>,
         attack: impl Into<Seconds>,
         release: impl Into<Seconds>,
     ) -> Self {
@@ -153,7 +153,7 @@ impl Compressor {
     /// Arbitrary channel count (e.g. 4 for quad, 6 for 5.1).
     pub fn with_channels(
         threshold_db: impl Into<Db>,
-        ratio: impl Into<Ratio>,
+        ratio: impl Into<CompressionRatio>,
         attack: impl Into<Seconds>,
         release: impl Into<Seconds>,
         channels: u8,
@@ -170,7 +170,7 @@ impl Compressor {
     /// the threshold atomic per sample; the atomic still holds the base.
     pub fn with_param_inputs(
         threshold_db: impl Into<Db>,
-        ratio: impl Into<Ratio>,
+        ratio: impl Into<CompressionRatio>,
         attack: impl Into<Seconds>,
         release: impl Into<Seconds>,
         channels: u8,
@@ -185,7 +185,8 @@ impl Compressor {
     /// all audio + sidechain inputs, i.e. at `2 * channels`).
     #[inline]
     pub fn threshold_port(&self) -> Option<usize> {
-        self.mod_threshold.then_some(2 * self.channels.count() as usize)
+        self.mod_threshold
+            .then_some(2 * self.channels.count() as usize)
     }
 
     pub fn with_soft_knee(mut self, knee_db: impl Into<Db>) -> Self {
@@ -230,8 +231,10 @@ impl Compressor {
         self.core.threshold.threshold.store(db.into());
     }
 
-    pub fn set_ratio(&self, ratio: impl Into<Ratio>) {
-        self.core.ratio.store(Ratio(ratio.into().get().max(1.0)));
+    pub fn set_ratio(&self, ratio: impl Into<CompressionRatio>) {
+        self.core
+            .ratio
+            .store(CompressionRatio::new_clamped(ratio.into().get()));
     }
 
     pub fn set_attack(&self, seconds: impl Into<Seconds>) {

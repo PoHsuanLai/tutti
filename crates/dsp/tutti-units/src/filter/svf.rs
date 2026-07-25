@@ -5,7 +5,7 @@ use tutti_core::{
     AudioUnit, BufferMut, BufferRef, SignalFrame,
 };
 
-use tutti_core::{Db, Hz, Param, Ratio};
+use tutti_core::{Db, Hz, Param, Q};
 
 /// Below these deltas a freq/Q/gain change doesn't warrant recomputing the
 /// coefficients — the change guard shared by the atomic and modulation paths.
@@ -172,7 +172,7 @@ impl<F: Real> SvfIntegrator<F> {
 pub struct SvfFilterNode<F: Real = f64> {
     filter_type: SvfType,
     frequency: Param<Hz>,
-    q: Param<Ratio>,
+    q: Param<Q>,
     gain_db: Param<Db>,
     sample_rate: f64,
     coeffs: SvfCoefficients<F>,
@@ -180,7 +180,7 @@ pub struct SvfFilterNode<F: Real = f64> {
 }
 
 impl<F: Real> SvfFilterNode<F> {
-    pub fn new(filter_type: SvfType, frequency: impl Into<Hz>, q: impl Into<Ratio>) -> Self {
+    pub fn new(filter_type: SvfType, frequency: impl Into<Hz>, q: impl Into<Q>) -> Self {
         let frequency = frequency.into();
         let q = q.into();
         let mut node = Self {
@@ -219,8 +219,8 @@ impl<F: Real> SvfFilterNode<F> {
         self.frequency.store(Hz(hz.into().get().max(1.0)));
     }
 
-    pub fn set_q(&self, q: impl Into<Ratio>) {
-        self.q.store(Ratio(q.into().get().max(0.01)));
+    pub fn set_q(&self, q: impl Into<Q>) {
+        self.q.store(Q::new_clamped(q.into().get()));
     }
 
     pub fn set_gain_db(&self, db: impl Into<Db>) {
@@ -365,7 +365,7 @@ impl<F: Real> Clone for SvfFilterNode<F> {
 pub struct StereoSvfFilterNode<F: Real = f64> {
     filter_type: SvfType,
     frequency: Param<Hz>,
-    q: Param<Ratio>,
+    q: Param<Q>,
     gain_db: Param<Db>,
     sample_rate: f64,
     coeffs: SvfCoefficients<F>,
@@ -397,7 +397,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
         let mut node = Self {
             filter_type,
             frequency: Param::new(Hz(frequency)),
-            q: Param::new(Ratio(q)),
+            q: Param::new(Q(q)),
             gain_db: Param::new(Db(0.0)),
             sample_rate: DEFAULT_SR,
             coeffs: SvfCoefficients::zeroed(),
@@ -424,7 +424,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
         let mut node = Self {
             filter_type,
             frequency: Param::new(Hz(frequency)),
-            q: Param::new(Ratio(q)),
+            q: Param::new(Q(q)),
             gain_db: Param::new(Db(0.0)),
             sample_rate: DEFAULT_SR,
             coeffs: SvfCoefficients::zeroed(),
@@ -453,7 +453,8 @@ impl<F: Real> StereoSvfFilterNode<F> {
     /// inputs and the cutoff port).
     #[inline]
     pub fn q_port(&self) -> Option<usize> {
-        self.mod_q.then_some(self.width() + self.mod_cutoff as usize)
+        self.mod_q
+            .then_some(self.width() + self.mod_cutoff as usize)
     }
 
     pub fn with_gain_db(mut self, db: f32) -> Self {
@@ -479,7 +480,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
     }
 
     pub fn set_q(&self, q: f32) {
-        self.q.store(Ratio(q.max(0.01)));
+        self.q.store(Q::new_clamped(q));
     }
 
     pub fn set_gain_db(&self, db: f32) {

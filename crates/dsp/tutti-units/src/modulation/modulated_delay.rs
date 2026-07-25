@@ -7,7 +7,7 @@
 
 use crate::delay::{DelayLine, InterpolationMode, StereoPair};
 use tutti_core::dsp::DEFAULT_SR;
-use tutti_core::{Hz, Linear, Seconds};
+use tutti_core::{Feedback, Hz, Mix, Seconds};
 
 use super::shared::{LfoDrive, TimeModMix};
 
@@ -51,8 +51,8 @@ impl ModulatedDelay {
         config: ModulatedDelayConfig,
         rate_hz: impl Into<Hz>,
         depth_secs: impl Into<Seconds>,
-        feedback: impl Into<Linear>,
-        mix: impl Into<Linear>,
+        feedback: impl Into<Feedback>,
+        mix: impl Into<Mix>,
     ) -> Self {
         Self {
             delays: StereoPair::new(

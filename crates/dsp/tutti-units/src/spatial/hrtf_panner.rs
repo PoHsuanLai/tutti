@@ -28,7 +28,7 @@
 //! de-zippered direction vector).
 
 use hrtf::{HrirSphere, HrtfContext, HrtfProcessor, Vec3};
-use tutti_core::SampleRate;
+use tutti_core::{Azimuth, Elevation, SampleRate};
 
 use super::smoothing::{ExponentialSmoother, DEFAULT_POSITION_SMOOTH_TIME};
 
@@ -190,8 +190,10 @@ impl PositionSmoother {
 
     #[inline]
     fn aim_at(&mut self, azimuth: f32, elevation: f32) {
-        self.target_azimuth = azimuth;
-        self.target_elevation = elevation;
+        // Normalize on the way in, each coordinate by its own rule: the
+        // bearing wraps onto the circle, the height saturates at the poles.
+        self.target_azimuth = Azimuth(azimuth).wrap().get();
+        self.target_elevation = Elevation::new_clamped(elevation).get();
     }
 
     fn retune(&mut self, sample_rate: u32) {
@@ -202,9 +204,13 @@ impl PositionSmoother {
     /// Advance both smoothers one frame and return the smoothed direction.
     #[inline]
     fn step(&mut self) -> Vec3 {
-        let az = self.azimuth.process(self.target_azimuth);
+        // The bearing takes the short arc; the height is a plain ramp. Before
+        // this split both used the linear form, so a source crossing directly
+        // behind the listener (170 -> -170, a 20 degree move) swept 340 degrees
+        // the wrong way around the head.
+        let az = self.azimuth.process_angle(Azimuth(self.target_azimuth));
         let el = self.elevation.process(self.target_elevation);
-        direction_from_degrees(az, el)
+        direction_from_degrees(az.get(), el)
     }
 }
 

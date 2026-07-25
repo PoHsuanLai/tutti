@@ -1,4 +1,4 @@
-use tutti_core::{BufferRef, ChannelLayout, Db, Linear, Ratio, SampleRate, Seconds};
+use tutti_core::{Amplitude, BufferRef, ChannelLayout, CompressionRatio, Db, SampleRate, Seconds};
 
 /// Max-abs sidechain detector level for the `tick` (single-sample slice) path.
 ///
@@ -33,19 +33,23 @@ pub(crate) fn sidechain_level_buffer(input: &BufferRef, ch: usize, i: usize) -> 
     level
 }
 
+/// Amplitude as decibels, for the dynamics detectors.
+///
+/// Delegates to the shared converter. Note the floor moved: this used to pin
+/// silence at `-96` while `tutti-export`'s copy used `-144` and a third site
+/// used none. `Db::FLOOR` is `-144` (roughly the 24-bit noise floor), so a
+/// detector now sees a *lower* value for true digital silence than before.
+/// That is inaudible in a compressor — anything near either floor is far below
+/// any usable threshold — and it removes a divergence that was never a
+/// deliberate difference.
 #[inline]
-pub(crate) fn amplitude_to_db(amp: impl Into<Linear>) -> Db {
-    let amp = amp.into().get();
-    if amp <= 0.0 {
-        Db(-96.0)
-    } else {
-        Db(20.0 * amp.log10())
-    }
+pub(crate) fn amplitude_to_db(amp: impl Into<Amplitude>) -> Db {
+    Db::from_amplitude(amp.into())
 }
 
 #[inline]
-pub(crate) fn db_to_amplitude(db: impl Into<Db>) -> Linear {
-    Linear(10.0_f32.powf(db.into().get() / 20.0))
+pub(crate) fn db_to_amplitude(db: impl Into<Db>) -> Amplitude {
+    db.into().to_amplitude()
 }
 
 #[inline]
@@ -64,7 +68,7 @@ pub(crate) fn time_to_coeff(time: impl Into<Seconds>, sample_rate: impl Into<Sam
 pub(crate) fn compute_compressor_gain_reduction(
     input_db: impl Into<Db>,
     threshold: impl Into<Db>,
-    ratio: impl Into<Ratio>,
+    ratio: impl Into<CompressionRatio>,
     knee: impl Into<Db>,
 ) -> Db {
     let input_db = input_db.into().get();
@@ -100,9 +104,9 @@ pub(crate) fn smooth_envelope(current: f32, target: f32, coeff: f32) -> f32 {
 
 /// Gate gain from gate level (unitless 0..1) and range in dB.
 #[inline]
-pub(crate) fn compute_gate_gain(gate_level: f32, range_db: impl Into<Db>) -> Linear {
+pub(crate) fn compute_gate_gain(gate_level: f32, range_db: impl Into<Db>) -> Amplitude {
     let range_linear = db_to_amplitude(range_db).get();
-    Linear(range_linear + gate_level * (1.0 - range_linear))
+    Amplitude(range_linear + gate_level * (1.0 - range_linear))
 }
 
 /// Pure limiter gain computation.
@@ -112,7 +116,7 @@ pub(crate) fn compute_limiter_gain(
     peak_db: impl Into<Db>,
     threshold: impl Into<Db>,
     ceiling: impl Into<Db>,
-) -> Linear {
+) -> Amplitude {
     let peak_db = peak_db.into().get();
     let threshold = threshold.into().get();
     let ceiling = ceiling.into().get();

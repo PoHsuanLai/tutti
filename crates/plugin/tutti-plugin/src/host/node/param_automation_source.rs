@@ -605,6 +605,12 @@ mod tests {
         fn loop_range(&self) -> Option<tutti_core::LoopRange> {
             None
         }
+        // No continuous sample clock in this mock — return 0 deliberately, the
+        // value the plugin ABIs read as "host has no steady clock" (the source
+        // under test reads beat/tempo, not steady_time).
+        fn steady_time(&self) -> i64 {
+            0
+        }
     }
 
     /// A 0→1 ramp over 4 beats, labelled with parameter id `7`.

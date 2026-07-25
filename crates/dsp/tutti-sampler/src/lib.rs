@@ -67,6 +67,20 @@
 pub mod error;
 pub use error::{Error, Result};
 
+/// Widest frame the sampler reads, interpolates, or emits.
+///
+/// Deliberately equal to [`tutti_core::engine::MAX_ROOT_CHANNELS`] — the graph root's
+/// own ceiling. **The two move together:** a clip wider than the root can render
+/// is a clip nobody can hear, so there is no value in the sampler exceeding it,
+/// and letting it do so would mean the truncation happened silently downstream
+/// (at the root's fold) rather than visibly here.
+///
+/// Note the engine has several such ceilings for different paths and they are
+/// *not* interchangeable: export folds at 12 (`MAX_NET_CHANNELS`) because an
+/// offline render is not bound by the live stack scratch, and the plugin hosts
+/// use 16 because a plugin's own bus width is its business.
+pub const MAX_SAMPLER_CHANNELS: usize = tutti_core::engine::MAX_ROOT_CHANNELS;
+
 #[macro_use]
 mod macros;
 

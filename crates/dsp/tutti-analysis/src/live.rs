@@ -110,9 +110,7 @@ pub fn run_analysis_thread(
     let mut fft_planner = FftPlanner::<f32>::new();
     let fft = fft_planner.plan_fft_forward(WINDOW_SIZE);
     let mut fft_scratch = vec![Complex::<f32>::default(); fft.get_inplace_scratch_len()];
-    let hann_window: Vec<f32> = (0..WINDOW_SIZE)
-        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / WINDOW_SIZE as f32).cos()))
-        .collect();
+    let hann_window: Vec<f32> = crate::window::hann(WINDOW_SIZE);
 
     let mut window = vec![0.0f32; WINDOW_SIZE];
     let mut window_pos = 0usize;
@@ -137,8 +135,8 @@ pub fn run_analysis_thread(
 
         let read = input.poll_into(&mut drain_buf);
 
-        for &[l, r] in &drain_buf[..read] {
-            let mono = (l + r) * 0.5;
+        for frame in &drain_buf[..read] {
+            let mono = tutti_types::fold_frame_to_mono(frame);
 
             window[window_pos % WINDOW_SIZE] = mono;
             window_pos += 1;

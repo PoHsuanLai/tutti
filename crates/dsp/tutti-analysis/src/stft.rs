@@ -125,9 +125,7 @@ pub fn compute_stft_complex(
 
     let time_frames = (samples.len() - window_size) / hop_size + 1;
 
-    let hann: Vec<f32> = (0..window_size)
-        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / window_size as f32).cos()))
-        .collect();
+    let hann: Vec<f32> = crate::window::hann(window_size);
 
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(window_size);
@@ -209,9 +207,7 @@ pub fn compute_stft(
     let time_frames = (samples.len() - window_size) / effective_hop + 1;
 
     // Precompute Hann window
-    let hann: Vec<f32> = (0..window_size)
-        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / window_size as f32).cos()))
-        .collect();
+    let hann: Vec<f32> = crate::window::hann(window_size);
 
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(window_size);
@@ -314,9 +310,7 @@ pub fn compute_stft_range(
     let time_frames = (range_len - window_size) / hop_size + 1;
 
     // Precompute Hann window
-    let hann: Vec<f32> = (0..window_size)
-        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / window_size as f32).cos()))
-        .collect();
+    let hann: Vec<f32> = crate::window::hann(window_size);
 
     let mut planner = FftPlanner::<f32>::new();
     let fft = planner.plan_fft_forward(window_size);
@@ -429,11 +423,7 @@ impl IncrementalStftBuilder {
         };
 
         // Precompute Hann window
-        let hann: Vec<f32> = (0..window_size)
-            .map(|i| {
-                0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / window_size as f32).cos())
-            })
-            .collect();
+        let hann: Vec<f32> = crate::window::hann(window_size);
 
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(window_size);

@@ -46,6 +46,9 @@
 
 pub mod cache;
 pub mod correlation;
+pub mod error;
+pub mod geometry;
+pub mod grid;
 pub mod istft;
 pub mod live;
 pub mod pitch;
@@ -53,8 +56,23 @@ pub mod spectrum;
 pub mod stft;
 pub mod transient;
 pub mod waveform;
+pub mod window;
 
 pub use tutti_core::ChannelLayout;
+
+pub use error::{AnalysisError, Result};
+pub use geometry::StftGeometry;
+pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
+pub use window::hann;
+
+/// Buffer-level mono folding, re-exported from the engine's downmix module.
+///
+/// Every STFT and pitch entry point takes mono, so this is the step callers
+/// need first. It lives in `tutti-types` beside the ITU-R BS.775 matrices
+/// rather than here, so app-side consumers can reach it without depending on
+/// this crate — five of them had hand-rolled their own, two silently dropping
+/// channels 2..N.
+pub use tutti_types::{fold_buffer_to_mono, fold_planar_to_mono};
 
 pub use cache::ThumbnailCache;
 pub use correlation::{CorrelationMeter, StereoAnalysis};

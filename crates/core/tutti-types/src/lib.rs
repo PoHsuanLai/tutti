@@ -75,7 +75,9 @@ pub use value::{
 pub use channels::ChannelLayout;
 
 // Surround → stereo / mono downmix matrices (ITU-R BS.775 / Dolby).
-pub use downmix::{fold_frame, fold_frame_to_mono, fold_frame_to_stereo};
+pub use downmix::{
+    fold_buffer_to_mono, fold_frame, fold_frame_to_mono, fold_frame_to_stereo, fold_planar_to_mono,
+};
 
 // I/O edge + latency.
 pub use io::{pump, AudioIn, AudioOut};

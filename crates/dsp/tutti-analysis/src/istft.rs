@@ -39,9 +39,7 @@ pub fn istft(
     let mut window_sum = vec![0.0f32; output_len];
 
     // Hann synthesis window
-    let hann: Vec<f32> = (0..window_size)
-        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / window_size as f32).cos()))
-        .collect();
+    let hann: Vec<f32> = crate::window::hann(window_size);
 
     let mut planner = FftPlanner::<f32>::new();
     let ifft = planner.plan_fft_inverse(window_size);
@@ -132,9 +130,7 @@ pub fn istft_complex(
     let mut output = vec![0.0f32; output_len];
     let mut window_sum = vec![0.0f32; output_len];
 
-    let hann: Vec<f32> = (0..window_size)
-        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / window_size as f32).cos()))
-        .collect();
+    let hann: Vec<f32> = crate::window::hann(window_size);
 
     let mut planner = FftPlanner::<f32>::new();
     let ifft = planner.plan_fft_inverse(window_size);

@@ -12,6 +12,10 @@ categories = ["multimedia::audio"]
 # default-features = false so tutti-core's default `bevy` doesn't leak in; this
 # crate's own `bevy` feature re-adds `tutti-core/bevy` when wanted.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
+# The unit vocabulary (Hz / Seconds / Samples / Amplitude / Confidence / …) and
+# the downmix matrices. Direct rather than through tutti-core's re-exports so
+# the units this crate's signatures speak are named at their source.
+tutti-types = { path = "../../core/tutti-types", default-features = false }
 
 # Bevy — optional, gated by the `bevy` feature. tutti-analysis defines its own
 # ECS integration (TuttiAnalysisPlugin, AnalysisRes, LiveAnalysisData) in the

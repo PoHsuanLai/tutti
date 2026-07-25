@@ -56,7 +56,11 @@ impl TransientDetector {
     ) -> Self {
         let sample_rate = sample_rate.into().get();
         let fft_size = fft_size.next_power_of_two();
-        let window = Self::create_hann_window(fft_size);
+        // Periodic Hann, shared with the STFT path. This used to be a private
+        // copy dividing by `size - 1` — the *symmetric* form — which is not
+        // COLA-compatible with the window every other path in the crate uses,
+        // and divided by zero at `size == 1`.
+        let window = crate::window::hann(fft_size);
 
         Self {
             sample_rate,
@@ -94,15 +98,6 @@ impl TransientDetector {
     pub fn reset(&mut self) {
         self.prev_magnitudes.fill(0.0);
         self.fft_buffer.fill(Complex::new(0.0, 0.0));
-    }
-
-    fn create_hann_window(size: usize) -> Vec<f32> {
-        (0..size)
-            .map(|i| {
-                let angle = 2.0 * core::f32::consts::PI * i as f32 / (size - 1) as f32;
-                0.5 * (1.0 - angle.cos())
-            })
-            .collect()
     }
 
     /// Detect onsets across a whole buffer.

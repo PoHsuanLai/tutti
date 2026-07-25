@@ -1,47 +1,63 @@
 //! # Tutti Analysis
 //!
-//! Audio analysis tools for DAW applications.
+//! Audio analysis algorithms over `&[f32]`. No framework dependencies, and no
+//! opinion about where the results go.
 //!
-//! This crate provides efficient algorithms for:
-//! - **Waveform thumbnails**: Multi-resolution min/max/RMS summaries for visualization
-//! - **Transient detection**: Onset/beat detection using spectral flux and other methods
-//! - **Pitch detection**: Monophonic pitch tracking using the YIN algorithm
-//! - **Stereo correlation**: Phase correlation, stereo width, and balance analysis
-//! - **Live analysis**: Real-time analysis state with lock-free updates
-//! - **Thumbnail cache**: LRU cache for waveform thumbnails
+//! - [`stft`] / [`istft_transform`] — the short-time Fourier transform, in
+//!   three result types so invertibility is a compile-time question
+//! - [`yin`] — monophonic pitch estimation (de Cheveigné & Kawahara, 2002)
+//! - [`detect_onsets`] — onset detection over four selectable detection
+//!   functions
+//! - [`correlate`] — inter-channel phase correlation and stereo image
+//! - [`summarize`] — min/max/RMS waveform blocks for a timeline
 //!
-//! All functions operate on raw `&[f32]` sample buffers - no framework dependencies.
+//! ## Batch and streaming are the same code
+//!
+//! Each algorithm is a **config** (immutable, validated once), an explicit
+//! **carry** where one is genuinely needed, and a **step** function. Batch
+//! entry points fold the step, so the two paths cannot drift:
+//!
+//! ```text
+//! fold(step, cfg, state, frames) == frames.map(|f| step(cfg, &mut state, f))
+//! ```
+//!
+//! "Live" is a property of a call site, never of an algorithm, so nothing here
+//! is named for it. A host that wants these results on a background thread or
+//! in an ECS owns that plumbing itself.
 //!
 //! ## Example
 //!
 //! ```rust
 //! use tutti_analysis::{
-//!     ChannelLayout,
-//!     waveform::compute_summary,
-//!     transient::TransientDetector,
-//!     pitch::PitchDetector,
-//!     correlation::CorrelationMeter,
+//!     correlate, detect_onsets, summarize, yin, DetectionFunction, FftScratch,
+//!     OnsetConfig, PeakConfig, StftGeometry, YinConfig,
 //! };
+//! use tutti_types::{ChannelLayout, Samples};
 //!
-//! let samples: Vec<f32> = vec![0.0; 44100]; // 1 second of audio
 //! let sample_rate = 44100.0;
+//! let samples: Vec<f32> = vec![0.0; 44100];
+//! let mut fft = FftScratch::new();
 //!
-//! // Waveform thumbnail
-//! let summary = compute_summary(&samples, ChannelLayout::Mono, 512);
+//! // Waveform blocks for display.
+//! let blocks = summarize(
+//!     &PeakConfig::new(Samples(512), ChannelLayout::Mono),
+//!     &samples,
+//! );
 //!
-//! // Transient detection
-//! let mut detector = TransientDetector::new(sample_rate);
-//! let transients = detector.detect(&samples);
+//! // Onsets, via spectral flux.
+//! let geometry = StftGeometry::new(sample_rate, Samples(2048), Samples(512))?;
+//! let onsets = detect_onsets(
+//!     &OnsetConfig::new(geometry, DetectionFunction::SpectralFlux),
+//!     &samples,
+//!     &mut fft,
+//! )?;
 //!
-//! // Pitch detection (needs at least buffer_size() samples)
-//! let mut pitch_detector = PitchDetector::new(sample_rate);
-//! let pitch = pitch_detector.detect(&samples);
+//! // Pitch. An inverted range is refused here, not silently unvoiced later.
+//! let pitch = yin(&YinConfig::standard(sample_rate)?, &samples)?;
 //!
-//! // Stereo correlation (for stereo audio)
-//! let left = &samples[..];
-//! let right = &samples[..];
-//! let mut meter = CorrelationMeter::new(sample_rate);
-//! let analysis = meter.process(left, right);
+//! // Stereo correlation.
+//! let reading = correlate(&samples, &samples);
+//! # Ok::<(), tutti_analysis::AnalysisError>(())
 //! ```
 
 pub mod cache;
@@ -51,11 +67,9 @@ pub mod fft;
 pub mod geometry;
 pub mod grid;
 pub mod istft;
-pub mod live;
 pub mod onset;
 pub mod peaks;
 pub mod pitch;
-pub mod spectrum;
 pub mod stereo;
 pub mod stft;
 pub mod transform;
@@ -103,18 +117,9 @@ pub use tutti_types::{fold_buffer_to_mono, fold_planar_to_mono};
 pub use cache::ThumbnailCache;
 pub use correlation::{CorrelationMeter, StereoAnalysis};
 pub use istft::{istft, istft_complex};
-pub use live::{run_analysis_thread, LiveAnalysisState};
-// Bevy ECS surface of the live-analysis duty — co-located in `live` with the
-// RT engine it mirrors. Gated behind the `bevy` feature.
-#[cfg(feature = "bevy")]
-pub use live::{
-    AnalysisRes, DisableLiveAnalysis, EnableLiveAnalysis, LiveAnalysisData, PendingAnalysis,
-    TuttiAnalysisPlugin,
-};
 pub use pitch::{
     freq_to_midi, median_filter, midi_to_freq, viterbi_smooth, PitchDetector, PitchResult,
 };
-pub use spectrum::SpectrumResult;
 pub use stft::{
     compute_stft, compute_stft_complex, compute_stft_range, hann_cola_ok, ComplexStftResult,
     IncrementalStftBuilder, StftResult,

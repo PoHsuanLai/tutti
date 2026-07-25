@@ -38,6 +38,11 @@ pub(crate) trait PluginEditor: Send {
     /// Poll GUI-originated parameter changes to forward to the audio bridge.
     fn poll_gui_param_changes(&mut self) -> Vec<(u32, f32)>;
 
+    /// Push the host automation-state bitmask (VST3 `IAutomationState`) to the
+    /// GUI instance so the editor can update its automation UI feedback. Default
+    /// no-op for formats without the concept; only the VST3 GUI overrides it.
+    fn set_automation_state(&mut self, _state: i32) {}
+
     fn editor_capabilities(&mut self) -> EditorCapabilities {
         EditorCapabilities::default()
     }

@@ -63,6 +63,13 @@ impl PluginEditor for Vst3GuiInstance {
         self.inner.set_parameter(id, value);
     }
 
+    fn set_automation_state(&mut self, state: i32) {
+        // Deliver the host automation-state advisory to the GUI instance —
+        // this is the instance whose editor shows the knob-glow feedback, so
+        // this is the delivery the mode actually needs (VST3 `IAutomationState`).
+        self.inner.set_automation_state(state);
+    }
+
     fn set_state(&mut self, data: &[u8]) -> Result<()> {
         self.inner
             .set_state(data)

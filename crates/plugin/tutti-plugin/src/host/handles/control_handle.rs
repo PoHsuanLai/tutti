@@ -1,6 +1,9 @@
 use crate::error::EditorError;
-use crate::host::handles::capabilities::{HostEditor, HostParams, HostState};
+use crate::host::handles::capabilities::{
+    HostAutomationState, HostEditor, HostParams, HostState,
+};
 use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
+use crate::protocol::AutomationMode;
 use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
 use crate::protocol::{LoadedPlugin, ParameterInfo, PluginDescriptor};
 use crate::util::window::{EditorCapabilities, EditorSize};
@@ -25,6 +28,7 @@ pub struct PluginHandle {
     params: Arc<dyn HostParams>,
     state: Arc<dyn HostState>,
     editor: Option<Arc<dyn HostEditor>>,
+    automation_state: Option<Arc<dyn HostAutomationState>>,
     descriptor: PluginDescriptor,
     loaded: LoadedPlugin,
     param_sink: ParameterChangeSink,
@@ -45,7 +49,10 @@ impl PluginHandle {
         Self {
             params: backend.clone(),
             state: backend.clone(),
-            editor: Some(backend),
+            editor: Some(backend.clone()),
+            // The subprocess backend supports the automation-state advisory
+            // (VST3 IAutomationState; a no-op for CLAP/AU behind the wire).
+            automation_state: Some(backend),
             descriptor: client.descriptor().clone(),
             loaded: client.loaded().clone(),
             param_sink: client.param_sink().clone(),
@@ -74,6 +81,9 @@ impl PluginHandle {
             params: backend.clone(),
             state: backend,
             editor,
+            // In-process backends (VST2, WASM) don't implement the VST3-style
+            // automation-state advisory, so `automation_state()` is `None`.
+            automation_state: None,
             descriptor,
             loaded,
             param_sink,
@@ -101,7 +111,8 @@ impl PluginHandle {
         Self {
             params: backend.clone(),
             state: backend.clone(),
-            editor: Some(backend),
+            editor: Some(backend.clone()),
+            automation_state: Some(backend),
             descriptor,
             loaded,
             param_sink: ParameterChangeSink::default(),
@@ -128,6 +139,14 @@ impl PluginHandle {
     /// [`has_editor`](Self::has_editor) / the [`descriptor`](Self::descriptor).
     pub fn editor(&self) -> Option<&dyn HostEditor> {
         self.editor.as_deref()
+    }
+
+    /// The automation-state advisory capability (Direction C-in), or `None` when
+    /// the backend doesn't support it (in-process VST2 / WASM). Announce the
+    /// host's automation mode via [`HostAutomationState::set_automation_mode`],
+    /// or use the [`set_automation_mode`](Self::set_automation_mode) convenience.
+    pub fn automation_state(&self) -> Option<&dyn HostAutomationState> {
+        self.automation_state.as_deref()
     }
 
     // ---- Meta -------------------------------------------------------------
@@ -239,6 +258,22 @@ impl PluginHandle {
     pub fn set_parameter(&self, param_id: u32, value: f32) -> &Self {
         self.params.set_parameter_value(param_id, value);
         self
+    }
+
+    // ---- Automation-state convenience --------------------------------------
+
+    /// Announce the host's automation [`AutomationMode`] to the plugin so its
+    /// editor can update UI feedback. Returns `Ok(())` if delivered, or an
+    /// [`EditorError`] — including [`EditorError::GuiNotSupported`] when this
+    /// backend has no automation-state capability (`automation_state()` is
+    /// `None`).
+    pub fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), EditorError> {
+        match self.automation_state.as_deref() {
+            Some(a) => a.set_automation_mode(mode),
+            None => Err(EditorError::GuiNotSupported {
+                format: self.descriptor.class.format_name().to_string(),
+            }),
+        }
     }
 
     // ---- MIDI --------------------------------------------------------------

@@ -84,6 +84,16 @@ impl PluginBridge {
     }
 
     pub fn set_automation_state_rt(&self, state: i32) -> bool {
+        // Deliver to BOTH the audio subprocess AND the in-process GUI instance
+        // (mirrors `set_parameter_rt`). The automation-state advisory drives
+        // editor UI feedback (a glowing knob ring), which lives in the GUI
+        // instance — so a GUI-only delivery would leave it unlit. The audio
+        // instance also receives it for formats that gate DSP on it.
+        if let Ok(mut guard) = self.gui.lock() {
+            if let Some(gui) = guard.as_mut() {
+                gui.set_automation_state(state);
+            }
+        }
         self.audio.set_automation_state_rt(state)
     }
 
@@ -333,6 +343,27 @@ impl crate::host::handles::capabilities::HostEditor for SubprocessBackend {
 
     fn poll_editor_resize_request(&self) -> Option<EditorSize> {
         self.bridge.poll_editor_resize_request()
+    }
+}
+
+impl crate::host::handles::capabilities::HostAutomationState for SubprocessBackend {
+    fn set_automation_mode(
+        &self,
+        mode: crate::protocol::AutomationMode,
+    ) -> std::result::Result<(), EditorError> {
+        if self.bridge.is_crashed() {
+            return Err(EditorError::PluginCrashed);
+        }
+        // Delivered to both the audio subprocess and the in-process GUI (the
+        // knob-glow lives in the GUI). The `bool` says the command was queued;
+        // no format confirms the plugin visibly reacted.
+        if self.bridge.set_automation_state_rt(mode.to_vst3_bits()) {
+            Ok(())
+        } else {
+            Err(EditorError::PluginError(
+                "automation-state push not delivered".into(),
+            ))
+        }
     }
 }
 

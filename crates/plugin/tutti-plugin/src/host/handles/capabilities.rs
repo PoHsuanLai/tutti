@@ -28,7 +28,7 @@
 use std::ffi::c_void;
 
 use crate::error::EditorError;
-use crate::protocol::ParameterInfo;
+use crate::protocol::{AutomationMode, ParameterInfo};
 use crate::util::window::{EditorCapabilities, EditorSize};
 
 /// Parameter catalog, live-value read, and imperative value write — plus the
@@ -94,4 +94,26 @@ pub trait HostEditor: Send + Sync {
     fn poll_editor_resize_request(&self) -> Option<EditorSize> {
         None
     }
+}
+
+/// Host → plugin automation-state advisory — **optional**, Direction C-in.
+///
+/// The host announces what it is doing with automation (reading / writing /
+/// neither) so the plugin's editor can show UI feedback (a glowing knob ring
+/// while the host records automation onto it). The plugin does nothing audible
+/// with this — it is purely cosmetic. A backend implements this only if the
+/// underlying format supports the advisory (VST3 `IAutomationState`); others do
+/// not implement it, so [`PluginHandle::automation_state`] returns `None` — no
+/// stub.
+///
+/// [`PluginHandle::automation_state`]: super::control_handle::PluginHandle::automation_state
+pub trait HostAutomationState: Send + Sync {
+    /// Announce the host's current automation mode to the plugin. **Global** (no
+    /// `param_id`) — the only wired sink (VST3 `IAutomationState`) is global.
+    ///
+    /// Fallible: the call can fail because the backend is gone, there is no open
+    /// editor to deliver the feedback to, or the format's automation interface is
+    /// absent. `Ok(())` means *delivered / accepted*, not that the plugin visibly
+    /// reacted (no format confirms the reaction).
+    fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), EditorError>;
 }

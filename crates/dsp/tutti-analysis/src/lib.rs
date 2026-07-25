@@ -97,9 +97,11 @@ pub use transform::{
     RawMagnitudes, SampleRange, Stft, StftMagnitude, StftPolar, StftRequest,
 };
 pub use window::hann;
-pub use yin::{
-    frequency_to_note, note_to_frequency, yin, yin_track, Pitch, PitchEstimate, YinConfig,
-};
+pub use yin::{median_filter, penalize_jumps, yin, yin_track, Pitch, PitchEstimate, YinConfig};
+
+/// Notes and pitch classes, re-exported from the engine vocabulary: a
+/// [`Pitch`] names one, and callers should not need a second import to read it.
+pub use tutti_types::{Note, PitchClass};
 
 /// Buffer-level mono folding, re-exported from the engine's downmix module.
 ///

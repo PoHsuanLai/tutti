@@ -16,12 +16,12 @@
 //!
 //! One accumulator, one summation rule, the rate chosen by whoever reads it.
 //!
-//! `U` is the target param's unit (`Hz`, `Linear`, `Db`, …): `base`/`min`/`max`
+//! `U` is the target param's unit (`Hz`, `Amplitude`, `Db`, …): `base`/`min`/`max`
 //! are typed, so the range that defines the param's space can't be seeded in the
 //! wrong unit. The offsets sum in `f32` (the layers are already unit-erased
 //! `dyn Curve`s), and the clamp happens in `f32` between the `U`→`f32` range
 //! bounds — so `U` needs only `Into<f32>`, no unit arithmetic (which lets
-//! non-additive units like `Linear` gain participate).
+//! non-additive units like `Amplitude` participate).
 
 use std::sync::Arc;
 
@@ -78,7 +78,10 @@ impl<U: core::fmt::Debug> core::fmt::Debug for LayeredCurve<U> {
             .field("base", &self.base)
             .field("min", &self.min)
             .field("max", &self.max)
-            .field("layer_keys", &self.layers.iter().map(|(k, _)| k).collect::<Vec<_>>())
+            .field(
+                "layer_keys",
+                &self.layers.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            )
             .finish()
     }
 }
@@ -99,7 +102,7 @@ impl<U: Into<f32> + From<f32> + Copy> LayeredCurve<U> {
     }
 
     /// Clamp an authored base into `[min, max]` (in `f32` space, since `U` may be
-    /// a non-orderable/non-additive unit like `Linear`).
+    /// a non-orderable/non-additive unit like `Amplitude`).
     #[inline]
     fn clamp_base(base: U, min: U, max: U) -> U {
         U::from(base.into().clamp(min.into(), max.into()))
@@ -184,7 +187,7 @@ impl<U: Into<f32> + From<f32> + Copy + Send + Sync> Curve for LayeredCurve<U> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_types::{Hz, Linear};
+    use tutti_types::{Amplitude, Depth, Hz, Mix};
 
     /// A constant offset as a `Curve` (automation snapshot / static contribution).
     struct ConstOffset(f32);
@@ -217,23 +220,23 @@ mod tests {
         // `value - base`, the app driver). Regression: an unclamped base let a
         // downward mod offset bite into out-of-range headroom instead of the
         // clamped ceiling.
-        let mut lc = LayeredCurve::new(Linear(1.5), Linear(0.0), Linear(1.0));
+        let mut lc = LayeredCurve::new(Mix(1.5), Mix::DRY, Mix::WET);
         assert_eq!(lc.base(), 1.0, "over-range base clamped at construction");
-        lc.set_base(Linear(-0.3));
+        lc.set_base(Mix(-0.3));
         assert_eq!(lc.base(), 0.0, "under-range base clamped on set_base");
         // With base clamped to 1.0, a -0.3 offset lands at 0.7 (not swallowed by
         // out-of-range headroom).
-        lc.set_base(Linear(1.5));
+        lc.set_base(Mix(1.5));
         lc.set_layer(LayerKey(1), Arc::new(ConstOffset(-0.3)));
         assert!((lc.value_at(Beat(0.0)).unwrap() - 0.7).abs() < 1e-6);
     }
 
     #[test]
     fn layers_sum_over_base_order_independent() {
-        let mut a = LayeredCurve::new(Linear(0.5), Linear(0.0), Linear(2.0));
+        let mut a = LayeredCurve::new(Amplitude(0.5), Amplitude::SILENT, Amplitude(2.0));
         a.set_layer(LayerKey(1), Arc::new(ConstOffset(0.2)));
         a.set_layer(LayerKey(2), Arc::new(ConstOffset(-0.1)));
-        let mut b = LayeredCurve::new(Linear(0.5), Linear(0.0), Linear(2.0));
+        let mut b = LayeredCurve::new(Amplitude(0.5), Amplitude::SILENT, Amplitude(2.0));
         b.set_layer(LayerKey(2), Arc::new(ConstOffset(-0.1)));
         b.set_layer(LayerKey(1), Arc::new(ConstOffset(0.2)));
         // 0.5 + 0.2 - 0.1 = 0.6, same regardless of insertion order.
@@ -259,12 +262,12 @@ mod tests {
         let mut lc = LayeredCurve::new(Hz(100.0), Hz(0.0), Hz(1000.0));
         lc.set_scalar_layer(LayerKey::AUTOMATION, 50.0); // bare f32, no Arc
         lc.set_layer(LayerKey(1), Arc::new(Ramp(10.0))); // beat-varying
-        // base 100 + scalar 50 + ramp@beat2 (20) = 170.
+                                                         // base 100 + scalar 50 + ramp@beat2 (20) = 170.
         assert_eq!(lc.value_at(Beat(2.0)), Some(170.0));
         // Scalar upsert replaces in place (not stacks).
         lc.set_scalar_layer(LayerKey::AUTOMATION, 20.0);
         assert_eq!(lc.value_at(Beat(0.0)), Some(120.0)); // 100 + 20 + ramp@0 (0)
-        // A curve key can replace a scalar key and vice-versa under the same key.
+                                                         // A curve key can replace a scalar key and vice-versa under the same key.
         lc.set_layer(LayerKey::AUTOMATION, Arc::new(ConstOffset(30.0)));
         assert_eq!(lc.value_at(Beat(0.0)), Some(130.0)); // 100 + 30
     }
@@ -282,7 +285,7 @@ mod tests {
 
     #[test]
     fn set_layer_replaces_in_place() {
-        let mut lc = LayeredCurve::new(Linear(0.0), Linear(-1.0), Linear(1.0));
+        let mut lc = LayeredCurve::new(Depth::NONE, Depth::INVERTED, Depth::FULL);
         lc.set_layer(LayerKey(1), Arc::new(ConstOffset(0.3)));
         lc.set_layer(LayerKey(1), Arc::new(ConstOffset(0.4))); // same key → replace
         assert!((lc.value_at(Beat(0.0)).unwrap() - 0.4).abs() < 1e-6); // not 0.7
@@ -300,7 +303,7 @@ mod tests {
 
     #[test]
     fn value_clamps_to_range() {
-        let mut lc = LayeredCurve::new(Linear(0.9), Linear(0.0), Linear(1.0));
+        let mut lc = LayeredCurve::new(Mix(0.9), Mix::DRY, Mix::WET);
         lc.set_layer(LayerKey(1), Arc::new(ConstOffset(0.5)));
         assert_eq!(lc.value_at(Beat(0.0)), Some(1.0)); // 1.4 clamped
         lc.set_layer(LayerKey(1), Arc::new(ConstOffset(-2.0)));

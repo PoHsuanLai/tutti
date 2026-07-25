@@ -28,7 +28,7 @@ use super::streaming_sampler::StreamingClipReader;
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use tutti_core::{
-    AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Cents, Linear, PlaybackRate,
+    Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Cents, PlaybackRate,
     SamplePosition, SignalFrame, StretchFactor, Timeline, Wave,
 };
 
@@ -143,7 +143,7 @@ impl VoiceSource {
     /// Set the output gain. Both tiers store a linear multiplier applied after
     /// the source read, so this is genuinely one operation.
     #[inline]
-    fn apply_gain(&mut self, gain: Linear) {
+    fn apply_gain(&mut self, gain: Amplitude) {
         match self {
             Self::Ram(s) => s.set_gain(gain),
             Self::Disk(s) => s.set_gain(gain),
@@ -202,7 +202,7 @@ impl VoiceSource {
 
 #[derive(Debug)]
 pub struct Playback {
-    pub gain: Linear,
+    pub gain: Amplitude,
     pub speed: PlaybackRate,
     pub direction: Direction,
     pub loop_: LoopSetting,
@@ -218,7 +218,7 @@ pub struct Playback {
 impl Default for Playback {
     fn default() -> Self {
         Self {
-            gain: Linear::new(1.0),
+            gain: Amplitude::new(1.0),
             speed: PlaybackRate::UNITY,
             direction: Direction::Forward,
             loop_: LoopSetting::Off,
@@ -237,7 +237,7 @@ impl Default for Playback {
 /// one shape.
 #[derive(Debug, Clone, Default)]
 pub struct PendingPlayback {
-    pub gain: Linear,
+    pub gain: Amplitude,
     pub speed: PlaybackRate,
     pub direction: Direction,
     pub looping: bool,
@@ -616,7 +616,7 @@ fn read_clip_sample_into(
     sampler: &SamplerUnit,
     direction: Direction,
     pos: f64,
-    gain: Linear,
+    gain: Amplitude,
     out: &mut [f32],
 ) {
     match direction {
@@ -643,7 +643,7 @@ fn read_clip_sample_into(
 fn read_source_frame_into(
     source: &mut VoiceSource,
     direction: Direction,
-    gain: Linear,
+    gain: Amplitude,
     out: &mut [f32],
 ) {
     match source {
@@ -711,7 +711,7 @@ pub enum ClipCommand {
     },
     UpdateGain {
         id: SlotId,
-        gain: Linear,
+        gain: Amplitude,
     },
     UpdateSpeed {
         id: SlotId,
@@ -1888,7 +1888,7 @@ mod tests {
 
         handle.send(ClipCommand::UpdateGain {
             id: SlotId(1),
-            gain: Linear::new(0.5),
+            gain: Amplitude::new(0.5),
         });
 
         let mut out_after = [0.0f32; 2];

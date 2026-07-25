@@ -64,9 +64,10 @@ pub use rt::{
 
 // Value vocabulary.
 pub use value::{
-    ArcDegrees, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm, Cents, Db, Elevation, Hz,
-    Linear, Param, ParamAddr, Phase, PhaseIncrement, PlaybackRate, Radians, Ratio, SamplePosition,
-    Samples, Seconds, Semitones, SrcRatio, StretchFactor, Unit, UnitParam, UnitParamOutOfRange,
+    Amplitude, ArcDegrees, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm, Cents, Db,
+    Depth, Drive, Elevation, Feedback, Hz, Mix, Param, ParamAddr, Phase, PhaseIncrement,
+    PlaybackRate, Radians, Ratio, SamplePosition, Samples, Seconds, Semitones, Spread, SrcRatio,
+    StereoWidth, StretchFactor, Unit, UnitParam, UnitParamOutOfRange,
 };
 
 // Channel layout.

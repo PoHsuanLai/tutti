@@ -37,7 +37,11 @@ impl RenderBufferList {
         let ptr = self.storage.as_mut_ptr() as *mut AudioBufferList;
         unsafe {
             (*ptr).mNumberBuffers = self.channels.count() as u32;
-            for (ch, buf) in buffers.iter_mut().take(self.channels.count() as usize).enumerate() {
+            for (ch, buf) in buffers
+                .iter_mut()
+                .take(self.channels.count() as usize)
+                .enumerate()
+            {
                 let audio_buf = &mut *((&mut (*ptr).mBuffers[0] as *mut AudioBuffer).add(ch));
                 audio_buf.mNumberChannels = 1;
                 audio_buf.mDataByteSize = frames * std::mem::size_of::<f32>() as u32;

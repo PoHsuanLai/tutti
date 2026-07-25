@@ -23,7 +23,7 @@ use tutti_core::{
     beat_from_ports, dsp::DEFAULT_SR, AudioUnit, BufferMut, BufferRef, SignalFrame, BEAT_PORTS,
 };
 
-use tutti_core::{Hz, Linear, Param, Phase, PhaseIncrement};
+use tutti_core::{Depth, Hz, Param, Phase, PhaseIncrement};
 
 // The waveform vocabulary + the pure LFO modulator live in tutti-mod now. Re-
 // exported so existing `use tutti_units::LfoShape` / `Lfo` sites are untouched.
@@ -74,7 +74,7 @@ pub struct ModulatorNode<M: Modulator> {
     /// In `BeatSynced` mode: beats per cycle (stored in the same atomic; the
     /// unit is context-dependent on `mode`).
     frequency: Param<Hz>,
-    depth: Param<Linear>,
+    depth: Param<Depth>,
     phase_offset: Param<PhaseIncrement>,
     phase: Phase,
     sample_rate: f64,
@@ -104,7 +104,7 @@ impl<M: Modulator> ModulatorNode<M> {
             mod_state: M::State::default(),
             mode,
             frequency: Param::new(Hz(freq_or_beats)),
-            depth: Param::new(Linear(1.0)),
+            depth: Param::new(Depth::FULL),
             phase_offset: Param::new(PhaseIncrement(0.0)),
             phase: Phase::START,
             sample_rate: DEFAULT_SR,
@@ -131,9 +131,14 @@ impl<M: Modulator> ModulatorNode<M> {
         self
     }
 
-    /// Set the depth (0.0 - 1.0).
-    pub fn with_depth(self, depth: impl Into<Linear>) -> Self {
-        self.depth.store(Linear(depth.into().get().clamp(0.0, 1.0)));
+    /// Set the modulation depth, `-1.0` to `1.0`.
+    ///
+    /// Bipolar since the `Depth` split: a negative depth inverts the
+    /// modulator, so `-1.0` is the same shape phase-flipped. This setter
+    /// previously clamped to `0.0..=1.0`, so a negative argument silenced
+    /// modulation instead of inverting it.
+    pub fn with_depth(self, depth: impl Into<Depth>) -> Self {
+        self.depth.store(Depth::new_clamped(depth.into().get()));
         self
     }
 
@@ -164,8 +169,8 @@ impl<M: Modulator> ModulatorNode<M> {
         self.frequency.store(freq.into());
     }
 
-    pub fn set_depth(&self, depth: impl Into<Linear>) {
-        self.depth.store(Linear(depth.into().get().clamp(0.0, 1.0)));
+    pub fn set_depth(&self, depth: impl Into<Depth>) {
+        self.depth.store(Depth::new_clamped(depth.into().get()));
     }
 
     pub fn set_phase_offset(&self, offset: impl Into<PhaseIncrement>) {
@@ -429,6 +434,39 @@ mod tests {
         lfo.tick(&[], &mut output);
 
         assert!((output[0] - 0.5).abs() < 0.01);
+    }
+
+    /// Negative depth inverts the modulator rather than silencing it.
+    ///
+    /// This is a deliberate behaviour change from the `Depth` split: the old
+    /// setter clamped to `0.0..=1.0`, so `set_depth(-1.0)` stored `0.0` and
+    /// the LFO went flat. It now stores `-1.0` and phase-flips the shape.
+    #[test]
+    fn negative_depth_inverts_instead_of_silencing() {
+        let mut positive = LfoNode::new(LfoShape::Square);
+        positive.set_depth(1.0);
+        let mut a = [0.0f32];
+        positive.tick(&[], &mut a);
+
+        let mut negative = LfoNode::new(LfoShape::Square);
+        negative.set_depth(-1.0);
+        let mut b = [0.0f32];
+        negative.tick(&[], &mut b);
+
+        assert!(a[0].abs() > 0.01, "the reference tick must be audible");
+        assert!(
+            (b[0] + a[0]).abs() < 1e-6,
+            "expected {} to invert to {}",
+            a[0],
+            -a[0]
+        );
+
+        // And the range still saturates past full scale.
+        let mut clamped = LfoNode::new(LfoShape::Square);
+        clamped.set_depth(-5.0);
+        let mut c = [0.0f32];
+        clamped.tick(&[], &mut c);
+        assert!((c[0] - b[0]).abs() < 1e-6);
     }
 
     #[test]

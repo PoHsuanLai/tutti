@@ -1,7 +1,9 @@
 use crate::Result;
 use tutti_core::AudioUnit;
 use tutti_core::ChannelLayout;
-use tutti_core::{Azimuth, BufferMut, BufferRef, Elevation, Linear, Param, SignalFrame};
+use tutti_core::{
+    Azimuth, BufferMut, BufferRef, Elevation, Param, SignalFrame, Spread, StereoWidth,
+};
 
 use super::vbap_panner::SpatialPanner;
 
@@ -107,8 +109,13 @@ pub struct SpatialPannerNode {
     panner: SpatialPanner,
     layout: ChannelLayout,
     target: SpatialTarget,
-    spread: Param<Linear>,
-    width: Param<Linear>,
+    /// VBAP diffusion, `0..1`: how many speakers a point source is smeared
+    /// across. See [`Spread`] — it is not a `Mix`, because it blends nothing.
+    spread: Param<Spread>,
+    /// Mid/side stereo width, `0..` — 1.0 is unchanged, above 1.0 is wider
+    /// than the source. NOT an `Amplitude` despite the matching range: it
+    /// scales the SIDE component against the mid. See [`StereoWidth`].
+    width: Param<StereoWidth>,
     sample_rate: f32,
     scratch_output: Vec<f32>,
     /// Gain-index → output-channel scatter map (see [`speaker_channel_map`]).
@@ -195,8 +202,8 @@ impl SpatialPannerNode {
             panner,
             layout,
             target: SpatialTarget::new(),
-            spread: Param::new(Linear(0.0)),
-            width: Param::new(Linear(1.0)),
+            spread: Param::new(Spread::POINT),
+            width: Param::new(StereoWidth::NATURAL),
             sample_rate: 48000.0,
             scratch_output: vec![0.0; layout.count() as usize],
             channel_map: speaker_channel_map(layout),
@@ -221,7 +228,7 @@ impl SpatialPannerNode {
 
     /// Set spread factor (0.0 = point source, 1.0 = diffuse)
     pub fn set_spread(&self, spread: f32) {
-        self.spread.store(Linear(spread.clamp(0.0, 1.0)));
+        self.spread.store(Spread::new_clamped(spread));
     }
 
     pub fn spread(&self) -> f32 {
@@ -230,7 +237,7 @@ impl SpatialPannerNode {
 
     /// Set stereo width for stereo input mode (0.0 = mono, 1.0 = full stereo)
     pub fn set_width(&self, width: f32) {
-        self.width.store(Linear(width.max(0.0)));
+        self.width.store(StereoWidth::new_clamped(width));
     }
 
     pub fn width(&self) -> f32 {
@@ -261,8 +268,8 @@ impl AudioUnit for SpatialPannerNode {
 
     fn reset(&mut self) {
         self.target.reset_origin();
-        self.spread.store(Linear(0.0));
-        self.width.store(Linear(1.0));
+        self.spread.store(Spread::POINT);
+        self.width.store(StereoWidth::NATURAL);
         self.panner.set_position(0.0, 0.0);
         self.panner.set_spread(0.0);
     }

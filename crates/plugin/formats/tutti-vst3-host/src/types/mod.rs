@@ -21,10 +21,9 @@ pub use events::{
     LegacyMidiCcOutEvent, NoteExpressionIntValue, NoteExpressionIntValueEvent, NoteExpressionText,
     NoteExpressionTextEvent, NoteExpressionValueEvent, NoteOffEvent, NoteOnEvent,
     PolyPressureEvent, ScaleEvent, ScaleValue, TextRef, Vst3Event, Vst3InputEvents, K_CHORD_EVENT,
-    K_DATA_EVENT,
-    K_LEGACY_MIDI_CC_OUT_EVENT, K_NOTE_EXPRESSION_INT_VALUE_EVENT, K_NOTE_EXPRESSION_TEXT_EVENT,
-    K_NOTE_EXPRESSION_VALUE_EVENT, K_NOTE_OFF_EVENT, K_NOTE_ON_EVENT, K_POLY_PRESSURE_EVENT,
-    K_SCALE_EVENT,
+    K_DATA_EVENT, K_LEGACY_MIDI_CC_OUT_EVENT, K_NOTE_EXPRESSION_INT_VALUE_EVENT,
+    K_NOTE_EXPRESSION_TEXT_EVENT, K_NOTE_EXPRESSION_VALUE_EVENT, K_NOTE_OFF_EVENT, K_NOTE_ON_EVENT,
+    K_POLY_PRESSURE_EVENT, K_SCALE_EVENT,
 };
 pub use info::{
     automation_state, keyswitch_type, note_expression_flags, parameter_flags, physical_ui_type,

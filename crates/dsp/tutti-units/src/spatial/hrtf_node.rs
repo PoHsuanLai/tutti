@@ -7,7 +7,7 @@
 //! [`HrtfBinauralNode::new`] takes the dataset bytes.
 
 use tutti_core::ChannelLayout;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, Linear, Param, SignalFrame};
+use tutti_core::{AudioUnit, BufferMut, BufferRef, Mix, Param, SignalFrame};
 
 use super::hrtf_panner::{HrtfBinaural, HrtfBinauralError};
 use super::nodes::SpatialTarget;
@@ -20,7 +20,7 @@ use super::nodes::SpatialTarget;
 pub struct HrtfBinauralNode {
     panner: HrtfBinaural,
     target: SpatialTarget,
-    width: Param<Linear>,
+    width: Param<Mix>,
     sample_rate: f32,
 }
 
@@ -44,7 +44,7 @@ impl HrtfBinauralNode {
         Ok(Self {
             panner: HrtfBinaural::new(hrir_bytes, sample_rate)?,
             target: SpatialTarget::new(),
-            width: Param::new(Linear(1.0)),
+            width: Param::new(Mix::WET),
             sample_rate,
         })
     }
@@ -67,7 +67,7 @@ impl HrtfBinauralNode {
     /// full-sphere, so width is a post-render dry/processed blend rather than a
     /// virtual-source spread: 1.0 = full HRTF, 0.0 = center/mono passthrough.
     pub fn set_width(&self, width: f32) {
-        self.width.store(Linear(width.clamp(0.0, 1.0)));
+        self.width.store(Mix::new_clamped(width));
     }
 
     pub fn width(&self) -> f32 {
@@ -104,7 +104,7 @@ impl AudioUnit for HrtfBinauralNode {
 
     fn reset(&mut self) {
         self.target.reset_origin();
-        self.width.store(Linear(1.0));
+        self.width.store(Mix::WET);
         self.panner.reset_state();
     }
 

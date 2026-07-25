@@ -7,7 +7,7 @@ use tutti_core::Cents;
 #[cfg(any(feature = "midi", test))]
 use alloc::sync::Arc;
 #[cfg(any(feature = "midi", test))]
-use tutti_core::{AtomicF32, Linear, Param};
+use tutti_core::{AtomicF32, Param, Spread};
 
 #[cfg(any(feature = "midi", test))]
 extern crate alloc;
@@ -60,14 +60,14 @@ pub struct UnisonEngine {
     /// recompute. Detune/spread only affect per-voice params on recompute (not
     /// per-sample), so a block-rate sync is exact.
     detune: Param<Cents>,
-    spread: Param<Linear>,
+    spread: Param<Spread>,
 }
 
 #[cfg(any(feature = "midi", test))]
 impl UnisonEngine {
     pub fn new(config: UnisonConfig) -> Self {
         let detune = Param::new(config.detune_cents);
-        let spread = Param::new(Linear(config.stereo_spread));
+        let spread = Param::new(Spread::new_clamped(config.stereo_spread));
         let mut engine = Self {
             config,
             voices: [UnisonVoiceParams::default(); MAX_UNISON_VOICES],
@@ -172,7 +172,7 @@ impl UnisonEngine {
 
     pub fn set_config(&mut self, config: UnisonConfig) {
         self.detune.store(config.detune_cents);
-        self.spread.store(Linear(config.stereo_spread));
+        self.spread.store(Spread(config.stereo_spread));
         self.config = config;
         self.recompute_params();
     }
@@ -194,7 +194,7 @@ impl UnisonEngine {
 
     pub fn set_stereo_spread(&mut self, spread: f32) {
         self.config.stereo_spread = spread.clamp(0.0, 1.0);
-        self.spread.store(Linear(self.config.stereo_spread));
+        self.spread.store(Spread(self.config.stereo_spread));
         self.recompute_params();
     }
 

@@ -4,11 +4,10 @@ use std::path::Path;
 
 use tutti_plugin::server::{
     AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorSize, Features,
-    LoadedPlugin,
-    NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterFlags,
-    ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError,
-    PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput,
-    ScaleChanges, WindowHandle,
+    LoadedPlugin, NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges,
+    ParameterFlags, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
+    PluginError, PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext,
+    ProcessOutput, ScaleChanges, WindowHandle,
 };
 use tutti_plugin::{BridgeError, LoadStage, Result};
 

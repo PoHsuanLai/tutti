@@ -453,7 +453,8 @@ impl<F: Real> StereoSvfFilterNode<F> {
     /// inputs and the cutoff port).
     #[inline]
     pub fn q_port(&self) -> Option<usize> {
-        self.mod_q.then_some(self.width() + self.mod_cutoff as usize)
+        self.mod_q
+            .then_some(self.width() + self.mod_cutoff as usize)
     }
 
     pub fn with_gain_db(mut self, db: f32) -> Self {

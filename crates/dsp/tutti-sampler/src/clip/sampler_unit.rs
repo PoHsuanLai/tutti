@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tutti_core::{
-    AtomicSamplePosition, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Linear,
+    Amplitude, AtomicSamplePosition, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef,
     PlaybackRate, SamplePosition, SampleRate, SignalFrame, SrcRatio, Timeline, Wave,
 };
 
@@ -92,7 +92,7 @@ impl std::fmt::Debug for TransportPlacement {
 /// silent (`gain = 0`) and frozen (`speed = 0`).
 #[derive(Clone, Debug)]
 pub struct SamplerUnitConfig {
-    pub gain: Linear,
+    pub gain: Amplitude,
     pub speed: PlaybackRate,
     /// Loop intent. `Off` plays once; `On { .. }` loops over the range and
     /// [`SamplerUnit::with_config`] primes the crossfade internally.
@@ -107,7 +107,7 @@ pub struct SamplerUnitConfig {
 impl Default for SamplerUnitConfig {
     fn default() -> Self {
         Self {
-            gain: Linear::new(1.0),
+            gain: Amplitude::new(1.0),
             speed: PlaybackRate::UNITY,
             loop_setting: LoopSetting::Off,
             placement: None,
@@ -152,7 +152,7 @@ pub struct SamplerUnit {
     /// Defaults to true (auto-play).
     playing: AtomicBool,
 
-    gain: Linear,
+    gain: Amplitude,
 
     /// Varispeed — user intent, bounded by the type. Composes with
     /// [`src_ratio`](Self::src_ratio) through
@@ -239,7 +239,7 @@ impl SamplerUnit {
             wave,
             position: AtomicSamplePosition::new(SamplePosition::new(0.0)),
             playing: AtomicBool::new(true),
-            gain: Linear::new(1.0),
+            gain: Amplitude::new(1.0),
             speed: PlaybackRate::UNITY,
             sample_rate,
             src_ratio: SrcRatio::UNITY,
@@ -432,11 +432,11 @@ impl SamplerUnit {
         self.wave.duration()
     }
 
-    pub fn set_gain(&mut self, gain: Linear) {
+    pub fn set_gain(&mut self, gain: Amplitude) {
         self.gain = gain;
     }
 
-    pub fn gain(&self) -> Linear {
+    pub fn gain(&self) -> Amplitude {
         self.gain
     }
 
@@ -1269,7 +1269,7 @@ mod tests {
         let sampler = SamplerUnit::with_config(
             Arc::clone(&wave),
             SamplerUnitConfig {
-                gain: Linear::new(0.5),
+                gain: Amplitude::new(0.5),
                 speed: PlaybackRate::new(2.0),
                 loop_setting: LoopSetting::On {
                     start: SamplePosition::new(0.0),
@@ -1282,7 +1282,7 @@ mod tests {
 
         assert!(sampler.is_playing());
         assert!(sampler.is_looping());
-        assert_eq!(sampler.gain(), Linear::new(0.5));
+        assert_eq!(sampler.gain(), Amplitude::new(0.5));
         assert_eq!(sampler.speed(), PlaybackRate::new(2.0));
     }
 
@@ -1293,7 +1293,7 @@ mod tests {
 
         // Default config must reproduce `new`'s audible baseline: unity gain,
         // normal speed, one-shot — NOT the newtypes' zero default.
-        assert_eq!(sampler.gain(), Linear::new(1.0));
+        assert_eq!(sampler.gain(), Amplitude::new(1.0));
         assert_eq!(sampler.speed(), PlaybackRate::new(1.0));
         assert!(!sampler.is_looping());
     }
@@ -1333,7 +1333,7 @@ mod tests {
 
         let mut sampler_full = SamplerUnit::new(Arc::clone(&wave));
         let mut sampler_half = SamplerUnit::new(wave);
-        sampler_half.set_gain(Linear::new(0.5));
+        sampler_half.set_gain(Amplitude::new(0.5));
 
         let mut out_full = [0.0f32; 2];
         let mut out_half = [0.0f32; 2];
@@ -1653,7 +1653,7 @@ mod tests {
         let sampler = SamplerUnit::with_config(
             wave,
             SamplerUnitConfig {
-                gain: Linear::new(0.75),
+                gain: Amplitude::new(0.75),
                 speed: PlaybackRate::new(1.5),
                 loop_setting: LoopSetting::On {
                     start: SamplePosition::new(0.0),
@@ -1666,7 +1666,7 @@ mod tests {
         sampler.trigger_at(SamplePosition::new(42.0));
 
         let cloned = sampler.clone();
-        assert_eq!(cloned.gain(), Linear::new(0.75));
+        assert_eq!(cloned.gain(), Amplitude::new(0.75));
         assert_eq!(cloned.speed(), PlaybackRate::new(1.5));
         assert!(cloned.is_looping());
         assert!(cloned.is_playing());
@@ -1828,7 +1828,7 @@ mod tests {
     #[test]
     fn gain_applies_uniformly_across_all_channels() {
         let mut u = SamplerUnit::with_channels(indexed_wave(6, 64), 6);
-        u.set_gain(Linear::new(0.5));
+        u.set_gain(Amplitude::new(0.5));
         let mut out = [0.0f32; 6];
         u.tick(&[], &mut out);
         for (c, &got) in out.iter().enumerate() {

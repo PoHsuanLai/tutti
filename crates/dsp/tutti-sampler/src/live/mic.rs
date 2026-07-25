@@ -46,7 +46,7 @@
 use std::sync::Arc;
 
 use ringbuf::{traits::Consumer, HeapCons};
-use tutti_core::{AudioThreadCell, AudioUnit, BufferMut, BufferRef, Linear};
+use tutti_core::{Amplitude, AudioThreadCell, AudioUnit, BufferMut, BufferRef};
 
 /// A stereo capture-ring consumer, shared across fundsp's graph-commit clones.
 ///
@@ -100,7 +100,7 @@ pub fn share_mic_ring(consumer: HeapCons<[f32; 2]>) -> MicRing {
 #[derive(Clone, Debug)]
 pub struct MicMonitorNode {
     ring: MicRing,
-    gain: Linear,
+    gain: Amplitude,
 }
 
 impl MicMonitorNode {
@@ -108,12 +108,12 @@ impl MicMonitorNode {
     pub fn new(ring: MicRing) -> Self {
         Self {
             ring,
-            gain: Linear::new(1.0),
+            gain: Amplitude::new(1.0),
         }
     }
 
     /// Build a monitor node over a shared capture ring at `gain`.
-    pub fn with_gain(ring: MicRing, gain: Linear) -> Self {
+    pub fn with_gain(ring: MicRing, gain: Amplitude) -> Self {
         Self { ring, gain }
     }
 
@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn gain_scales_the_monitored_signal() {
         let (ring, _prod) = ring_with(&[[1.0, 1.0]]);
-        let mut node = MicMonitorNode::with_gain(ring, Linear::new(0.5));
+        let mut node = MicMonitorNode::with_gain(ring, Amplitude::new(0.5));
 
         let mut out = [0.0f32; 2];
         node.tick(&[], &mut out);

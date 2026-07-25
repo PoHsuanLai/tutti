@@ -128,8 +128,7 @@ impl Vst2Instance {
         // audio-only. `Supported::Yes` is the only affirmative response.
         use vst::api::Supported;
         use vst::plugin::CanDo;
-        let can_receive_midi =
-            matches!(instance.can_do(CanDo::ReceiveMidiEvent), Supported::Yes);
+        let can_receive_midi = matches!(instance.can_do(CanDo::ReceiveMidiEvent), Supported::Yes);
         let can_send_midi = matches!(instance.can_do(CanDo::SendMidiEvent), Supported::Yes);
 
         let receives_midi = info.midi_inputs > 0

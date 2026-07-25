@@ -251,7 +251,7 @@ mod tests {
             componentSubType: u32::from_be_bytes(*b"dely"),
             componentManufacturer: u32::from_be_bytes(*b"appl"),
             componentFlags: 0,
-componentFlagsMask: 0,
+            componentFlagsMask: 0,
         };
         let comp = find_component(&desc).expect("AUDelay should be present");
         let mut instance: AudioComponentInstance = std::ptr::null_mut();

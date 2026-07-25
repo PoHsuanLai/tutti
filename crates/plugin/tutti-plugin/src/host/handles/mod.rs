@@ -26,10 +26,10 @@ pub use crate::host::node::{
 // The LFO shape vocabulary + the modulation-target surface (from `tutti-mod`,
 // via `tutti-units`), so the app can build an [`LfoCurve`] / route to a
 // [`PluginParamTarget`] without naming `tutti-units` directly.
-pub use tutti_units::{LfoShape, ModParams, ModTarget};
 pub use crate::protocol::{ChordValue, ScaleValue};
 pub use crate::util::window::{EditorCapabilities, EditorSize};
 pub use control_handle::PluginHandle;
+pub use tutti_units::{LfoShape, ModParams, ModTarget};
 
 /// In-process VST2 audio-graph node. Used when a host loads VST2 plugins
 /// directly in the host process (via `in_process_vst2`). Hosts that dispatch

@@ -264,7 +264,9 @@ pub struct PluginParamTarget {
 impl PluginParamTarget {
     pub fn new(base: f32, min: f32, max: f32) -> Self {
         Self {
-            layered: arc_swap::ArcSwap::from_pointee(tutti_units::LayeredCurve::new(base, min, max)),
+            layered: arc_swap::ArcSwap::from_pointee(tutti_units::LayeredCurve::new(
+                base, min, max,
+            )),
         }
     }
 
@@ -312,7 +314,10 @@ impl tutti_units::ModTarget for PluginParamTarget {
     /// reads the beat-accurate [`Curve::value_at`] instead.
     #[inline]
     fn final_value(&self) -> f32 {
-        self.layered.load().value_at(tutti_core::Beat(0.0)).unwrap_or(0.0)
+        self.layered
+            .load()
+            .value_at(tutti_core::Beat(0.0))
+            .unwrap_or(0.0)
     }
 }
 
@@ -384,10 +389,7 @@ impl ParamAutomationSource {
         for q in out.queues.iter_mut() {
             q.points.clear();
         }
-        if block_size == 0
-            || self.params.is_empty()
-            || !self.transport.is_rolling()
-        {
+        if block_size == 0 || self.params.is_empty() || !self.transport.is_rolling() {
             out.queues.clear();
             return;
         }
@@ -513,7 +515,11 @@ mod tests {
         impl Curve for Triangle {
             fn value_at(&self, beat: Beat) -> Option<f32> {
                 let p = beat.get().rem_euclid(1.0) as f32; // [0, 1)
-                Some(if p < 0.5 { -0.5 + 2.0 * p } else { 1.5 - 2.0 * p })
+                Some(if p < 0.5 {
+                    -0.5 + 2.0 * p
+                } else {
+                    1.5 - 2.0 * p
+                })
             }
         }
 
@@ -709,7 +715,10 @@ mod tests {
         let small = LfoCurve::new(tutti_units::LfoShape::Sine, 4.0, 0.2, 0.0, 0.5, 0.0, 1.0);
         let f = big.value_at(Beat::new(1.0)).unwrap() - 0.5;
         let h = small.value_at(Beat::new(1.0)).unwrap() - 0.5;
-        assert!((f - 0.4).abs() < 1e-3, "0.4 depth peak swing = 0.4, got {f}");
+        assert!(
+            (f - 0.4).abs() < 1e-3,
+            "0.4 depth peak swing = 0.4, got {f}"
+        );
         assert!((f - 2.0 * h).abs() < 1e-3, "half depth = half swing");
     }
 

@@ -4,7 +4,7 @@
 //! a flat list of `Param` fields, so each node reads as "an engine plus
 //! its parameter block".
 
-use tutti_core::{Arc, AtomicF32, Linear, Param};
+use tutti_core::{Amplitude, Arc, AtomicF32, Mix, Param};
 
 /// Wet/dry mix + output gain.
 ///
@@ -12,16 +12,16 @@ use tutti_core::{Arc, AtomicF32, Linear, Param};
 /// - `gain`: linear multiplier applied to the wet signal before mixing.
 #[derive(Clone)]
 pub struct WetDry {
-    pub mix: Param<Linear>,
-    pub gain: Param<Linear>,
+    pub mix: Param<Mix>,
+    pub gain: Param<Amplitude>,
 }
 
 impl WetDry {
     /// Build with the given wet/dry mix and wet-path gain.
     pub fn new(mix: f32, gain: f32) -> Self {
         Self {
-            mix: Param::new(Linear(mix.clamp(0.0, 1.0))),
-            gain: Param::new(Linear(gain.max(0.0))),
+            mix: Param::new(Mix::new_clamped(mix)),
+            gain: Param::new(Amplitude(gain.max(0.0))),
         }
     }
 
@@ -34,11 +34,11 @@ impl WetDry {
     }
 
     pub fn set_mix(&self, mix: f32) {
-        self.mix.store(Linear(mix.clamp(0.0, 1.0)));
+        self.mix.store(Mix::new_clamped(mix));
     }
 
     pub fn set_gain(&self, gain: f32) {
-        self.gain.store(Linear(gain.max(0.0)));
+        self.gain.store(Amplitude(gain.max(0.0)));
     }
 
     /// Snapshot both atomics at the start of a block.

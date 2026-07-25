@@ -4,7 +4,7 @@ use crate::synth_voice::SynthVoice;
 use crate::SynthConfig;
 use crate::{AllocationResult, Portamento, UnisonEngine, VoiceAllocator, VoiceAllocatorConfig};
 use smallvec::SmallVec;
-use tutti_core::{AudioUnit, BufferMut, BufferRef, ChannelLayout, Linear, Param, SignalFrame};
+use tutti_core::{Amplitude, AudioUnit, BufferMut, BufferRef, ChannelLayout, Param, SignalFrame};
 use tutti_midi_runtime::{MidiInPort, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{cc, MidiIn, MidiUnitId, NoteId};
@@ -45,7 +45,7 @@ pub struct PolySynth {
     portamento: Option<Portamento>,
     unison: Option<UnisonEngine>,
     pitch_bend: f32,
-    master_volume: Param<Linear>,
+    master_volume: Param<Amplitude>,
     /// This synth's MIDI input endpoint: routing address, push mailbox, and the
     /// current pull source (the live receiver by default; an override installs a
     /// `MidiClipSource`/`MidiSnapshotReader`). See [`MidiInPort`] for the fundsp
@@ -94,7 +94,7 @@ impl PolySynth {
             .as_ref()
             .map(|p| Portamento::new(p.clone(), config.sample_rate));
 
-        let master_volume = Param::new(Linear(1.0));
+        let master_volume = Param::new(Amplitude::UNITY);
 
         Ok(Self {
             config,
@@ -158,7 +158,11 @@ impl PolySynth {
     }
 
     pub fn set_volume(&mut self, volume: f32) {
-        self.master_volume.store(Linear(volume.clamp(0.0, 1.0)));
+        // Only the lower bound is enforced. The old `.clamp(0.0, 1.0)` capped this
+        // setter at unity while `volume_atomic()` (the live modulation path) wrote
+        // the same cell with no cap at all — so the ceiling constrained nothing and
+        // contradicted `Amplitude`, where a boost above unity is legal.
+        self.master_volume.store(Amplitude(volume.max(0.0)));
     }
 
     pub fn volume(&self) -> f32 {

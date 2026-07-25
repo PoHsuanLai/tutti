@@ -1,6 +1,6 @@
 //! Parameter groupings shared by modulation effects (chorus, flanger, phaser).
 
-use tutti_core::{Hz, Linear, Param, SampleRate, Seconds};
+use tutti_core::{Depth, Feedback, Hz, Mix, Param, SampleRate, Seconds};
 
 /// LFO driver block: rate + running phase + L/R offset.
 ///
@@ -50,21 +50,21 @@ impl LfoDrive {
 /// the LFO sweep over its all-pass frequency range.
 #[derive(Clone)]
 pub struct LinearModMix {
-    pub depth: Param<Linear>,
-    pub feedback: Param<Linear>,
-    pub mix: Param<Linear>,
+    pub depth: Param<Depth>,
+    pub feedback: Param<Feedback>,
+    pub mix: Param<Mix>,
 }
 
 impl LinearModMix {
     pub fn new(
-        depth: impl Into<Linear>,
-        feedback: impl Into<Linear>,
-        mix: impl Into<Linear>,
+        depth: impl Into<Depth>,
+        feedback: impl Into<Feedback>,
+        mix: impl Into<Mix>,
     ) -> Self {
         Self {
             depth: Param::new(depth.into()),
-            feedback: Param::new(Linear(feedback.into().get().clamp(0.0, 0.99))),
-            mix: Param::new(Linear(mix.into().get().clamp(0.0, 1.0))),
+            feedback: Param::new(Feedback::new_clamped(feedback.into().get())),
+            mix: Param::new(Mix::new_clamped(mix.into().get())),
         }
     }
 
@@ -85,20 +85,20 @@ impl LinearModMix {
 #[derive(Clone)]
 pub struct TimeModMix {
     pub depth: Param<Seconds>,
-    pub feedback: Param<Linear>,
-    pub mix: Param<Linear>,
+    pub feedback: Param<Feedback>,
+    pub mix: Param<Mix>,
 }
 
 impl TimeModMix {
     pub fn new(
         depth: impl Into<Seconds>,
-        feedback: impl Into<Linear>,
-        mix: impl Into<Linear>,
+        feedback: impl Into<Feedback>,
+        mix: impl Into<Mix>,
     ) -> Self {
         Self {
             depth: Param::new(depth.into()),
-            feedback: Param::new(Linear(feedback.into().get().clamp(0.0, 0.99))),
-            mix: Param::new(Linear(mix.into().get().clamp(0.0, 1.0))),
+            feedback: Param::new(Feedback::new_clamped(feedback.into().get())),
+            mix: Param::new(Mix::new_clamped(mix.into().get())),
         }
     }
 

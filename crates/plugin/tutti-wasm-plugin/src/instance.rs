@@ -175,8 +175,12 @@ impl WasmInstance {
         let mut features = Features::empty();
         features.set(Features::MIDI_IN, metadata_wit.midi.receives);
         let loaded = LoadedPlugin {
-            inputs: BusChannels::from_slice(&[ChannelLayout::from(metadata_wit.audio.inputs as usize)]),
-            outputs: BusChannels::from_slice(&[ChannelLayout::from(metadata_wit.audio.outputs as usize)]),
+            inputs: BusChannels::from_slice(&[ChannelLayout::from(
+                metadata_wit.audio.inputs as usize,
+            )]),
+            outputs: BusChannels::from_slice(&[ChannelLayout::from(
+                metadata_wit.audio.outputs as usize,
+            )]),
             latency_samples: metadata_wit.latency_samples as usize,
             features,
         };

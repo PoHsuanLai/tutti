@@ -176,7 +176,8 @@ impl Gate {
     /// all audio + sidechain inputs, i.e. at `2 * channels`).
     #[inline]
     pub fn threshold_port(&self) -> Option<usize> {
-        self.mod_threshold.then_some(2 * self.channels.count() as usize)
+        self.mod_threshold
+            .then_some(2 * self.channels.count() as usize)
     }
 
     pub fn with_range(mut self, range_db: impl Into<Db>) -> Self {
@@ -295,7 +296,9 @@ impl AudioUnit for Gate {
     fn get_id(&self) -> u64 {
         match self.channels {
             ChannelLayout::Mono => crate::node_id::GATE_ID,
-            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_) => crate::node_id::STEREO_GATE_ID,
+            ChannelLayout::Stereo | ChannelLayout::Quad | ChannelLayout::Multi(_) => {
+                crate::node_id::STEREO_GATE_ID
+            }
         }
     }
 

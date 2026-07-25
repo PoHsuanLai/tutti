@@ -66,18 +66,14 @@ unsafe fn load_bundle(url: &CfUrl) -> Result<Retained<NSBundle>> {
     // bundleWithURL`) so we don't have to round-trip the CFURL through an
     // owned `NSURL` just to borrow it.
     let ns_url = url.as_raw() as *const AnyObject;
-    let bundle: Option<Retained<NSBundle>> =
-        msg_send![NSBundle::class(), bundleWithURL: ns_url];
+    let bundle: Option<Retained<NSBundle>> = msg_send![NSBundle::class(), bundleWithURL: ns_url];
     let bundle =
         bundle.ok_or_else(|| AuError::InvalidBuffer("Failed to load AU view bundle".into()))?;
     let _: bool = msg_send![&*bundle, load];
     Ok(bundle)
 }
 
-unsafe fn instantiate_factory(
-    _bundle: &NSBundle,
-    class_name: &CfString,
-) -> Result<*mut AnyObject> {
+unsafe fn instantiate_factory(_bundle: &NSBundle, class_name: &CfString) -> Result<*mut AnyObject> {
     let factory_name = class_name.to_string();
 
     let class = AnyClass::get(
@@ -110,8 +106,7 @@ unsafe fn make_view(factory: *mut AnyObject, unit: AudioUnit) -> Result<*mut Any
     // `*mut ComponentInstanceRecord`; erase it to `*mut c_void` (the encodable
     // pointer type the AU view protocol actually expects) before sending.
     let unit_ptr = unit as *mut c_void;
-    let view: *mut AnyObject =
-        msg_send![factory, uiViewForAudioUnit: unit_ptr, withSize: size];
+    let view: *mut AnyObject = msg_send![factory, uiViewForAudioUnit: unit_ptr, withSize: size];
 
     let _: () = msg_send![factory, release];
 

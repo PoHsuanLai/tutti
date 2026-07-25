@@ -353,7 +353,7 @@ unit_bounded!(Db, f32);
 unit_additive!(Db);
 unit_signed!(Db);
 // NOT `unit_scalable!`: `Db(-6.0) * 2.0 == Db(-12.0)` squares the *amplitude*,
-// it does not double the gain. Convert through `Linear` for amplitude scaling.
+// it does not double the gain. Convert through `Amplitude` for amplitude scaling.
 // NOT `unit_ratio!`: a quotient of logarithms is not a quantity.
 
 impl Db {
@@ -369,8 +369,8 @@ impl Db {
 
     /// This gain as a linear amplitude multiplier.
     #[inline]
-    pub fn to_amplitude(self) -> Linear {
-        Linear(10.0_f32.powf(self.0 / 20.0))
+    pub fn to_amplitude(self) -> Amplitude {
+        Amplitude(10.0_f32.powf(self.0 / 20.0))
     }
 
     /// This gain as an `f64` amplitude multiplier.
@@ -392,7 +392,7 @@ impl Db {
     /// in `loudness.rs`, and none at all elsewhere); the split here is between
     /// *display* and *arithmetic*, not between two crates' habits.
     #[inline]
-    pub fn from_amplitude(amp: Linear) -> Db {
+    pub fn from_amplitude(amp: Amplitude) -> Db {
         if amp.0 <= 0.0 {
             Db::FLOOR
         } else {
@@ -407,20 +407,251 @@ impl Db {
     /// feeds further computation, and [`from_amplitude`](Self::from_amplitude)
     /// when it feeds a meter.
     #[inline]
-    pub fn from_amplitude_exact(amp: Linear) -> Db {
+    pub fn from_amplitude_exact(amp: Amplitude) -> Db {
         Db(20.0 * amp.0.log10())
     }
 }
+// ── Dimensionless amounts ───────────────────────────────────────────────────
+//
+// Five types where there was one (`Linear`), whose own doc named four roles in
+// two lines — "mix (0..1), feedback (0..~0.99), depth, LFO amplitude" — and
+// then described itself as "a position on a normalized scale, not a magnitude",
+// which is false of the one role it actually played in production (amplitude,
+// which *is* a magnitude and routinely exceeds 1.0).
+//
+// The roles differ in both range and algebra, which is the module's own test
+// for whether two quantities are the same type:
+//
+//   Amplitude  [0, inf)   scalable      a gain multiplier
+//   Mix        [0, 1]     NOT scalable  a blend position between two signals
+//   Feedback   [0, 0.99]  NOT scalable  a recirculation coefficient
+//   Depth      [-1, 1]    signed, additive, scalable
+//   Drive      [0, inf)   NOT scalable  shaper-curve intensity
+//
+// `Mix` declines scaling because half of a blend position is not a blend
+// position; `Feedback` declines it because scaling a coefficient walks it
+// through the stability bound; `Drive` declines it because it is never
+// multiplied onto a signal at all.
+
 unit_newtype!(
-    /// Unitless normalized amount. Used for mix (0..1), feedback (0..~0.99),
-    /// depth, LFO amplitude, and similar ratio-of-range controls.
-    Linear
+    /// A linear gain multiplier.
+    ///
+    /// **Not** a 0..1 quantity: a +6 dB peak is `Amplitude(2.0)`, and the
+    /// dynamics detectors routinely see values above unity. The only floor is
+    /// zero — [`SILENT`](Self::SILENT).
+    Amplitude
 );
-unit_ordered!(Linear);
-unit_bounded!(Linear, f32);
-unit_scalable!(Linear, f32);
-// NOT `unit_additive!`: two 0..1 mixes summing to 1.4 is out of range and means
-// nothing. `Linear` is a position on a normalized scale, not a magnitude.
+unit_ordered!(Amplitude);
+unit_bounded!(Amplitude, f32);
+unit_scalable!(Amplitude, f32);
+// NOT `unit_additive!`: cascading two gain stages MULTIPLIES them. Summing
+// amplitudes is what mixing two signals does, and that is the signals' job,
+// not the gains'.
+
+impl Amplitude {
+    /// Silence.
+    pub const SILENT: Amplitude = Amplitude(0.0);
+    /// Unity gain — the signal passes unchanged.
+    pub const UNITY: Amplitude = Amplitude(1.0);
+
+    /// This amplitude in decibels, with silence pinned to [`Db::FLOOR`].
+    #[inline]
+    pub fn to_db(self) -> Db {
+        Db::from_amplitude(self)
+    }
+}
+
+unit_newtype!(
+    /// A blend position between two signals, `0..1`. 0 is fully dry, 1 fully
+    /// wet.
+    ///
+    /// A *position on a scale*, not a magnitude — which is why it does not
+    /// scale: half of a 50% blend is not a meaningful quantity, and
+    /// `mix * 0.5` reads like it dims the wet signal when it actually moves
+    /// the crossfade point.
+    Mix
+);
+unit_ordered!(Mix);
+unit_bounded!(Mix, f32);
+// NOT `unit_scalable!` / `unit_additive!`: see the type doc. Two blends
+// summing to 1.4 is off the end of the crossfade.
+
+impl Mix {
+    /// Fully dry — none of the processed signal.
+    pub const DRY: Mix = Mix(0.0);
+    /// Fully wet — none of the original signal.
+    pub const WET: Mix = Mix(1.0);
+
+    /// Constrain into `0..=1`.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Mix {
+        Mix(v).clamp(Self::DRY, Self::WET)
+    }
+
+    /// Crossfade `dry` and `wet` at this position.
+    ///
+    /// The operation every consumer hand-wrote as
+    /// `dry * (1.0 - mix) + wet * mix`.
+    #[inline]
+    pub fn blend(self, dry: f32, wet: f32) -> f32 {
+        dry * (1.0 - self.0) + wet * self.0
+    }
+}
+
+unit_newtype!(
+    /// A feedback (recirculation) coefficient.
+    ///
+    /// Must stay below 1.0 or the loop it feeds grows without bound — a
+    /// delay line at unity feedback never decays. [`MAX_STABLE`](Self::MAX_STABLE)
+    /// is the ceiling every consumer used to spell as a bare `0.99`.
+    Feedback
+);
+unit_ordered!(Feedback);
+unit_bounded!(Feedback, f32);
+// NOT `unit_scalable!`: scaling a coefficient walks it across the stability
+// bound with no check. `new_clamped` is the only way in.
+// NOT `unit_additive!`: two feedback paths summing past 1.0 is exactly the
+// runaway this type exists to prevent — see the note on cross-feedback below.
+
+impl Feedback {
+    /// No recirculation.
+    pub const NONE: Feedback = Feedback(0.0);
+
+    /// The largest coefficient that still decays.
+    ///
+    /// 0.99 — repeated as a bare literal at 13 sites before this constant
+    /// existed, including two audio-rate modulation paths where the value
+    /// arrives off an input port and never passes through a constructor.
+    pub const MAX_STABLE: Feedback = Feedback(0.99);
+
+    /// Constrain into the stable range.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Feedback {
+        Feedback(v).clamp(Self::NONE, Self::MAX_STABLE)
+    }
+
+    /// Constrain a *pair* of coefficients that feed the same loop.
+    ///
+    /// Cross-coupled delays add their direct and cross terms into one
+    /// recirculation (`in_l + fb_l·fb + fb_r·cross`), so clamping each to
+    /// [`MAX_STABLE`] independently still permits a combined 1.98 and a
+    /// runaway. This scales the pair down together when their sum would
+    /// exceed the bound, preserving their ratio.
+    #[inline]
+    pub fn stable_pair(direct: f32, cross: f32) -> (Feedback, Feedback) {
+        let d = direct.max(0.0);
+        let c = cross.max(0.0);
+        let total = d + c;
+        if total <= Self::MAX_STABLE.0 {
+            return (Feedback(d), Feedback(c));
+        }
+        let scale = Self::MAX_STABLE.0 / total;
+        (Feedback(d * scale), Feedback(c * scale))
+    }
+}
+
+unit_newtype!(
+    /// A bipolar modulation amount, `-1..1`.
+    ///
+    /// Signed on purpose: a negative depth inverts the modulator, so an LFO at
+    /// `Depth(-1.0)` is the same shape phase-flipped. That is the whole reason
+    /// this is not just an [`Amplitude`] — and the reason it is additive and
+    /// scalable while `Mix` and `Feedback` are not.
+    Depth
+);
+unit_ordered!(Depth);
+unit_bounded!(Depth, f32);
+unit_additive!(Depth);
+unit_signed!(Depth);
+unit_scalable!(Depth, f32);
+
+impl Depth {
+    /// No modulation.
+    pub const NONE: Depth = Depth(0.0);
+    /// Full positive modulation.
+    pub const FULL: Depth = Depth(1.0);
+    /// Full inverted modulation.
+    pub const INVERTED: Depth = Depth(-1.0);
+
+    /// Constrain into `-1..=1`.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Depth {
+        Depth(v).clamp(Self::INVERTED, Self::FULL)
+    }
+}
+
+unit_newtype!(
+    /// Waveshaper drive — how hard a signal is pushed into a nonlinearity.
+    ///
+    /// Distinct from [`Amplitude`] despite sharing its `[0, inf)` range,
+    /// because it is **not a multiplier on the signal**: it selects or
+    /// parameterizes a shaping curve. Typing it as a gain would license
+    /// `sample * drive`, which is meaningless for a curve selector.
+    Drive
+);
+unit_ordered!(Drive);
+unit_bounded!(Drive, f32);
+// NOT `unit_scalable!`: "twice the drive" is not twice anything — the curve's
+// response is nonlinear by construction.
+// NOT `unit_additive!`: two drives do not sum.
+
+impl Drive {
+    /// No overdrive — the shaper passes the signal through.
+    pub const UNITY: Drive = Drive(1.0);
+}
+
+unit_newtype!(
+    /// Spatial diffusion, `0..1`: how widely a point source is smeared across
+    /// a speaker array. 0 is a point, 1 is fully diffuse.
+    ///
+    /// Not a [`Mix`] — it blends no pair of signals; it is a geometric
+    /// property of the panning solution, and the VBAP panner consumes it as
+    /// such. Sharing `Mix`'s range is not sharing its meaning.
+    Spread
+);
+unit_ordered!(Spread);
+unit_bounded!(Spread, f32);
+
+impl Spread {
+    /// A point source — no diffusion.
+    pub const POINT: Spread = Spread(0.0);
+    /// Fully diffuse across the array.
+    pub const DIFFUSE: Spread = Spread(1.0);
+
+    /// Constrain into `0..=1`.
+    #[inline]
+    pub fn new_clamped(v: f32) -> Spread {
+        Spread(v).clamp(Self::POINT, Self::DIFFUSE)
+    }
+}
+
+unit_newtype!(
+    /// Mid/side stereo width. `0` collapses to mono, `1` leaves the image
+    /// unchanged, and above `1` widens it past the source.
+    ///
+    /// Not an [`Amplitude`] despite the matching range: it scales the *side*
+    /// component against the mid, so it reshapes the stereo image rather than
+    /// making the signal louder. Typing it as a gain would invite it into
+    /// signal multiplications where it does not belong.
+    StereoWidth
+);
+unit_ordered!(StereoWidth);
+unit_bounded!(StereoWidth, f32);
+
+impl StereoWidth {
+    /// Collapsed to mono.
+    pub const MONO: StereoWidth = StereoWidth(0.0);
+    /// The source image, unchanged.
+    pub const NATURAL: StereoWidth = StereoWidth(1.0);
+
+    /// Constrain to non-negative. Deliberately no upper bound — widening past
+    /// the source is a legitimate effect.
+    #[inline]
+    pub fn new_clamped(v: f32) -> StereoWidth {
+        StereoWidth(v.max(0.0))
+    }
+}
+
 unit_newtype!(
     /// Dimensionless ratio. Used for compressor ratio and filter Q.
     Ratio
@@ -1173,7 +1404,16 @@ mod tests {
     /// - `Beat % BeatDuration` — hides the loop-start origin.
     /// - `Db * f32` — squares the amplitude rather than doubling the gain.
     /// - `Db / Db` — a quotient of logarithms is not a quantity.
-    /// - `Linear + Linear`, `Ratio + Ratio` — normalized scales do not compose.
+    /// - `Mix + Mix`, `Mix * f32`, `Ratio + Ratio` — a blend *position* does
+    ///   not compose or scale; half of a crossfade point is not a crossfade
+    ///   point. (`Depth` *is* additive and scalable — that is the difference
+    ///   between a position and a signed magnitude.)
+    /// - `Feedback * f32` — scaling walks a coefficient across the stability
+    ///   bound unchecked. `new_clamped` / `stable_pair` are the ways in.
+    /// - `Amplitude + Amplitude` — cascading gains multiply; summing is what
+    ///   the *signals* do, not their gains.
+    /// - `Drive * f32` — a shaper's response is nonlinear, so "twice the
+    ///   drive" is not twice anything.
     /// - `Azimuth < Azimuth`, `Azimuth.clamp(..)` — a wrapping coordinate has
     ///   no ordering and no saturating clamp. `wrap` is the constraint.
     /// - `Azimuth + ArcDegrees` — `rotate_by`, which wraps; the operator would
@@ -1251,7 +1491,10 @@ mod tests {
     #[test]
     fn elevation_lerp_needs_no_seam_handling() {
         assert_eq!(Elevation(0.0).lerp(Elevation(90.0), 0.5), Elevation(45.0));
-        assert_eq!(Elevation(-90.0).lerp(Elevation(90.0), 0.5), Elevation::LEVEL);
+        assert_eq!(
+            Elevation(-90.0).lerp(Elevation(90.0), 0.5),
+            Elevation::LEVEL
+        );
     }
 
     #[test]
@@ -1279,7 +1522,10 @@ mod tests {
         assert!((0.0..1.0).contains(&p.get()));
 
         // Forward across the seam.
-        assert_eq!(Phase(0.9).advance(PhaseIncrement(0.25)), Phase::wrapped(1.15));
+        assert_eq!(
+            Phase(0.9).advance(PhaseIncrement(0.25)),
+            Phase::wrapped(1.15)
+        );
 
         // Walking a full cycle backwards stays in range at every step.
         let mut cursor = Phase::START;
@@ -1323,7 +1569,7 @@ mod tests {
 
     #[test]
     fn db_round_trips_through_amplitude() {
-        assert_eq!(Db::UNITY.to_amplitude(), Linear(1.0));
+        assert_eq!(Db::UNITY.to_amplitude(), Amplitude(1.0));
         // -6 dB is very nearly half amplitude.
         assert!((Db(-6.0).to_amplitude().get() - 0.501_187).abs() < 1e-5);
         // +6 dB exceeds 1.0 — amplitude is not a 0..1 quantity.
@@ -1337,22 +1583,22 @@ mod tests {
     fn the_two_db_floors_differ_only_at_silence() {
         // The metering form pins silence to a finite value, because -inf
         // cannot be drawn on a fader.
-        assert_eq!(Db::from_amplitude(Linear(0.0)), Db::FLOOR);
-        assert!(Db::from_amplitude(Linear(0.0)).get().is_finite());
+        assert_eq!(Db::from_amplitude(Amplitude(0.0)), Db::FLOOR);
+        assert!(Db::from_amplitude(Amplitude(0.0)).get().is_finite());
 
         // The arithmetic form keeps -inf, which is what round-trips exactly:
         // 10^(-inf/20) is 0.0, while 10^(-144/20) is merely very small.
-        assert!(Db::from_amplitude_exact(Linear(0.0)).get().is_infinite());
+        assert!(Db::from_amplitude_exact(Amplitude(0.0)).get().is_infinite());
         assert_eq!(
-            Db::from_amplitude_exact(Linear(0.0)).to_amplitude(),
-            Linear(0.0)
+            Db::from_amplitude_exact(Amplitude::SILENT).to_amplitude(),
+            Amplitude::SILENT
         );
         assert!(Db::FLOOR.to_amplitude().get() > 0.0);
 
         // Above silence the two agree.
         assert_eq!(
-            Db::from_amplitude(Linear(0.5)),
-            Db::from_amplitude_exact(Linear(0.5))
+            Db::from_amplitude(Amplitude(0.5)),
+            Db::from_amplitude_exact(Amplitude(0.5))
         );
     }
 
@@ -1432,6 +1678,82 @@ mod tests {
     }
 
     #[test]
+    fn amplitude_is_not_a_normalized_scale() {
+        // The claim the old `Linear` doc got backwards: a gain routinely
+        // exceeds 1.0. +6 dB is roughly a doubling.
+        assert!(Db(6.0).to_amplitude() > Amplitude::UNITY);
+        assert_eq!(Db::UNITY.to_amplitude(), Amplitude::UNITY);
+        assert_eq!(Amplitude::UNITY.to_db(), Db::UNITY);
+        assert_eq!(Amplitude::SILENT.to_db(), Db::FLOOR);
+
+        // Scalable, because trimming a gain is meaningful.
+        assert_eq!(Amplitude(2.0) * 0.5, Amplitude::UNITY);
+    }
+
+    #[test]
+    fn mix_blends_and_refuses_to_scale() {
+        assert_eq!(Mix::DRY.blend(1.0, 9.0), 1.0);
+        assert_eq!(Mix::WET.blend(1.0, 9.0), 9.0);
+        assert_eq!(Mix(0.5).blend(0.0, 1.0), 0.5);
+        assert_eq!(Mix::new_clamped(1.5), Mix::WET);
+        assert_eq!(Mix::new_clamped(-0.5), Mix::DRY);
+        // `Mix * f32` and `Mix + Mix` are deliberately absent — see the
+        // omission ledger.
+    }
+
+    #[test]
+    fn feedback_stops_below_unity() {
+        assert_eq!(Feedback::new_clamped(1.5), Feedback::MAX_STABLE);
+        assert_eq!(Feedback::new_clamped(-0.2), Feedback::NONE);
+        assert!(
+            Feedback::MAX_STABLE.get() < 1.0,
+            "a unity loop never decays"
+        );
+        // The literal this constant replaces, at 13 sites.
+        assert_eq!(Feedback::MAX_STABLE, Feedback(0.99));
+    }
+
+    #[test]
+    fn cross_coupled_feedback_is_bounded_as_a_pair() {
+        // The bug a per-value clamp cannot catch: two coefficients that feed
+        // the SAME recirculation, each individually legal, summing to 1.98.
+        let (d, c) = Feedback::stable_pair(0.99, 0.99);
+        assert!(
+            d.get() + c.get() <= Feedback::MAX_STABLE.get() + 1e-6,
+            "combined feedback {} still runs away",
+            d.get() + c.get()
+        );
+        // Scaled together, so the balance between them survives.
+        assert!((d.get() - c.get()).abs() < 1e-6);
+
+        // A pair that is already stable passes through untouched.
+        let (d, c) = Feedback::stable_pair(0.5, 0.2);
+        assert_eq!((d, c), (Feedback(0.5), Feedback(0.2)));
+
+        // Ratio preserved when scaling is needed.
+        let (d, c) = Feedback::stable_pair(0.8, 0.4);
+        assert!((d.get() / c.get() - 2.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn depth_is_signed_because_inversion_is_the_point() {
+        assert_eq!(-Depth::FULL, Depth::INVERTED);
+        assert_eq!(Depth::new_clamped(-2.0), Depth::INVERTED);
+        assert_eq!(Depth::new_clamped(2.0), Depth::FULL);
+        // Additive and scalable, unlike `Mix` and `Feedback`.
+        assert_eq!(Depth(0.25) + Depth(0.25), Depth(0.5));
+        assert_eq!(Depth::FULL * 0.5, Depth(0.5));
+    }
+
+    #[test]
+    fn drive_is_not_a_gain() {
+        // Shares `Amplitude`'s range but not its meaning: `Drive` is never
+        // multiplied onto a sample, so it is deliberately not scalable.
+        assert_eq!(Drive::UNITY, Drive(1.0));
+        assert!(Drive(10.0) > Drive::UNITY);
+    }
+
+    #[test]
     fn arc_degrees_composes_like_the_displacement_it_is() {
         assert_eq!(ArcDegrees(20.0) + ArcDegrees(15.0), ArcDegrees(35.0));
         assert_eq!(ArcDegrees(20.0) * 0.5, ArcDegrees(10.0));
@@ -1486,7 +1808,7 @@ mod tests {
     #[test]
     fn clamp_stays_in_the_unit_type() {
         assert_eq!(Hz(20_000.0).clamp(Hz(20.0), Hz(18_000.0)), Hz(18_000.0));
-        assert_eq!(Linear(1.5).clamp(Linear(0.0), Linear(1.0)), Linear(1.0));
+        assert_eq!(Mix(1.5).clamp(Mix::DRY, Mix::WET), Mix::WET);
     }
 
     #[test]

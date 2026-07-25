@@ -147,13 +147,8 @@ mod tests {
             .collect();
         let planes = vec![left.clone(), left];
 
-        let out = resample_planar(
-            &planes,
-            sample_rate,
-            target_rate,
-            ResampleQuality::Medium,
-        )
-        .unwrap();
+        let out =
+            resample_planar(&planes, sample_rate, target_rate, ResampleQuality::Medium).unwrap();
 
         // Check output length is approximately correct
         let expected_length =
@@ -185,8 +180,8 @@ mod tests {
             })
             .collect();
 
-        let out = resample_planar(&planes, sample_rate, target_rate, ResampleQuality::Medium)
-            .unwrap();
+        let out =
+            resample_planar(&planes, sample_rate, target_rate, ResampleQuality::Medium).unwrap();
 
         assert_eq!(out.len(), 4);
         let len = out[0].len();

@@ -33,7 +33,7 @@ use tutti_core::{
     dsp::{Atan, Clip, Crush, Shape, SoftCrush, Softsign, Tanh},
     AudioUnit, BufferMut, BufferRef, SignalFrame,
 };
-use tutti_core::{Linear, Param};
+use tutti_core::{Drive, Param};
 
 /// Selects which fundsp waveshaper a [`DistortionNode`] applies.
 ///
@@ -99,7 +99,7 @@ impl Shaper {
 /// `UnitParam::Drive` setting path; the waveshape `kind` is set at construction.
 pub struct DistortionNode {
     kind: ShapeKind,
-    drive: Param<Linear>,
+    drive: Param<Drive>,
     shaper: Shaper,
     last_drive: f32,
     /// Audio channel width (`inputs()` audio ports == `outputs()`). The shaper
@@ -111,14 +111,14 @@ pub struct DistortionNode {
 }
 
 impl DistortionNode {
-    pub fn new(kind: ShapeKind, drive: impl Into<Linear>) -> Self {
+    pub fn new(kind: ShapeKind, drive: impl Into<Drive>) -> Self {
         Self::with_channels(2, kind, drive)
     }
 
     /// An `n`-channel waveshaper. The shaper carries no per-channel state, so
     /// every channel is shaped by the same (linked) drive/kind.
     /// `with_channels(2, …)` is bit-identical to [`Self::new`].
-    pub fn with_channels(channels: usize, kind: ShapeKind, drive: impl Into<Linear>) -> Self {
+    pub fn with_channels(channels: usize, kind: ShapeKind, drive: impl Into<Drive>) -> Self {
         let drive = drive.into();
         let d = drive.get().max(0.0);
         Self {
@@ -135,7 +135,7 @@ impl DistortionNode {
     /// adds a drive param-input port after the audio inputs, overriding the
     /// atomic per sample when present. The atomic still holds the base (it feeds
     /// the upstream param-sum's base port), so the UI handle path is unchanged.
-    pub fn with_param_inputs(kind: ShapeKind, drive: impl Into<Linear>, mod_drive: bool) -> Self {
+    pub fn with_param_inputs(kind: ShapeKind, drive: impl Into<Drive>, mod_drive: bool) -> Self {
         let drive = drive.into();
         let d = drive.get().max(0.0);
         Self {
@@ -160,8 +160,8 @@ impl DistortionNode {
         self.drive.as_atomic()
     }
 
-    pub fn set_drive(&self, drive: impl Into<Linear>) {
-        self.drive.store(Linear(drive.into().get().max(0.0)));
+    pub fn set_drive(&self, drive: impl Into<Drive>) {
+        self.drive.store(Drive(drive.into().get().max(0.0)));
     }
 
     /// Rebuild the (stateless) shaper if drive has moved meaningfully. Cheap:

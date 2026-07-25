@@ -1,10 +1,8 @@
 use crate::error::EditorError;
-use crate::host::handles::capabilities::{
-    HostAutomationState, HostEditor, HostParams, HostState,
-};
+use crate::host::handles::capabilities::{HostAutomationState, HostEditor, HostParams, HostState};
 use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
-use crate::protocol::AutomationMode;
 use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
+use crate::protocol::AutomationMode;
 use crate::protocol::{LoadedPlugin, ParameterInfo, PluginDescriptor};
 use crate::util::window::{EditorCapabilities, EditorSize};
 use raw_window_handle::HasWindowHandle;
@@ -105,7 +103,9 @@ impl PluginHandle {
         let guard = Arc::new(crate::host::node::ProcessGuard::for_test(
             crate::util::config::BridgeConfig::default(),
         ));
-        let backend = Arc::new(crate::host::ipc_client::SubprocessBackend::new(bridge, guard));
+        let backend = Arc::new(crate::host::ipc_client::SubprocessBackend::new(
+            bridge, guard,
+        ));
         let (sender, _receiver) =
             tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
         Self {

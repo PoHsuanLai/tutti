@@ -23,12 +23,12 @@ mod recording;
 // The `Curve` trait (beat → value) lives in tutti-mod — modulation depends on it
 // and tutti-units already depends on tutti-mod, so the trait is homed there and
 // re-exported here for the automation consumers.
-pub use tutti_mod::Curve;
 pub use lane::{AutomationLane, LiveAutomationLane};
 pub use recording::{
     AutomationRecordingConfig, AutomationSnapshot, AutomationTarget, Manager, Recorder,
     RecordingTarget,
 };
+pub use tutti_mod::Curve;
 
 pub use audio_automation::{
     AutomationClip, AutomationEnvelope, AutomationPoint, AutomationState, CurveType,

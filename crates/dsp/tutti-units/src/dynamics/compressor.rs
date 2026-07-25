@@ -185,7 +185,8 @@ impl Compressor {
     /// all audio + sidechain inputs, i.e. at `2 * channels`).
     #[inline]
     pub fn threshold_port(&self) -> Option<usize> {
-        self.mod_threshold.then_some(2 * self.channels.count() as usize)
+        self.mod_threshold
+            .then_some(2 * self.channels.count() as usize)
     }
 
     pub fn with_soft_knee(mut self, knee_db: impl Into<Db>) -> Self {

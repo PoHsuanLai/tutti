@@ -61,14 +61,8 @@ pub fn load(
 
     // WASM has no embeddable editor: pass `None` for the editor slot, so
     // `handle.editor()` is `None` (no `HostEditor` impl, no stub).
-    let handle = PluginHandle::from_backend(
-        backend,
-        None,
-        descriptor,
-        loaded,
-        param_sink,
-        midi_sender,
-    );
+    let handle =
+        PluginHandle::from_backend(backend, None, descriptor, loaded, param_sink, midi_sender);
 
     Ok((Box::new(client), handle))
 }

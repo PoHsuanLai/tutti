@@ -21,8 +21,8 @@ use tutti_core::{
 };
 use tutti_sampler::stretch::{Algorithm, Unit as TimeStretchUnit};
 use tutti_sampler::{
-    ClipCommand, ClipSpec, Direction, Playback, SamplerUnit, SlotId, TrackClipReaderUnit, Voice,
-    VoiceSource,
+    ClipCommand, ClipSpec, Direction, Playback, SamplerUnit, SamplerUnitConfig, SlotId,
+    TrackClipReaderUnit, TransportPlacement, Voice, VoiceSource,
 };
 
 #[global_allocator]
@@ -482,6 +482,75 @@ fn sampler_unit_process_is_allocation_free_when_folding_six_to_two() {
             let input = input_vec.buffer_ref();
             let mut output = output_vec.buffer_mut();
             node.process(64, &input, &mut output);
+        }
+    });
+}
+
+/// End-to-end: a 6-channel wave placed on a timeline must reach all six outputs
+/// of a 6-wide reader, through `process` (the planar path), with no allocation.
+///
+/// The per-unit tests each cover one hop; this is the only one that exercises
+/// the whole in-RAM chain at width 6 — `read_frame` -> `SamplerUnit` ->
+/// `ClipSlot` -> `TrackClipReaderUnit` -> a planar `BufferMut` — and so the only
+/// one that would catch a width being dropped at a seam rather than inside a
+/// node.
+#[test]
+fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
+    let transport = MockTransport::new(120.0, 0.0, true);
+    let wave = surround_wave(2.0, 48_000.0);
+    let (mut reader, _handle) =
+        TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
+    // `ClipSpec` requires an already-transport-bound sampler: `into_voice` sets
+    // `placement: None` on the Playback record, so the sampler's OWN placement
+    // is what gates playback.
+    let sampler = SamplerUnit::with_config(
+        wave,
+        SamplerUnitConfig {
+            channels: 6,
+            placement: Some(TransportPlacement {
+                transport,
+                start_beat: Beat::new(0.0),
+                duration_beats: None,
+            }),
+            ..Default::default()
+        },
+    );
+    reader.insert_clip(ClipSpec {
+        id: SlotId(1),
+        sampler,
+        direction: Direction::Forward,
+        stretch_factor: StretchFactor::new(1.0),
+        pitch_cents: Cents::new(0.0),
+    });
+    reader.set_sample_rate(SampleRate(48_000.0));
+    assert_eq!(reader.outputs(), 6);
+
+    let input_vec = BufferVec::new(0);
+    let mut output_vec = BufferVec::new(6);
+
+    for _ in 0..16 {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        reader.process(64, &input, &mut output);
+    }
+
+    // Every channel carries the material, not just the front pair.
+    {
+        let buf = output_vec.buffer_ref();
+        for c in 0..6 {
+            let energy: f32 = (0..64).map(|i| buf.at_f32(c, i).abs()).sum();
+            assert!(
+                energy > 0.0,
+                "channel {c} produced silence — a width was dropped at a seam"
+            );
+        }
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..2_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            reader.process(64, &input, &mut output);
         }
     });
 }

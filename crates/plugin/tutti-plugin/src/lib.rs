@@ -144,7 +144,8 @@ pub use tutti_plugin_types::mark_main_thread;
 ///
 /// **Not part of the general API.** These let a sibling crate (e.g.
 /// `tutti-wasm-plugin`) implement the granular host-side capability traits
-/// ([`HostParams`], [`HostState`], and optionally [`HostEditor`]) over its own
+/// ([`HostParams`](backend::HostParams), [`HostState`](backend::HostState), and
+/// optionally [`HostEditor`](backend::HostEditor)) over its own
 /// plugin and hand the result to
 /// [`PluginHandle::from_backend`](handles::PluginHandle::from_backend),
 /// reusing this crate's main-thread control surface and audio-node wiring

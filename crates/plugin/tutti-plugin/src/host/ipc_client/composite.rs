@@ -74,8 +74,13 @@ impl PluginBridge {
     }
 
     pub fn set_parameter_rt(&self, param_id: u32, value: f32) -> bool {
-        // Also sync to GUI instance if loaded (keeps display in sync).
-        if let Ok(mut guard) = self.gui.lock() {
+        // Cosmetic GUI mirror (keeps the display in sync): `try_lock`, never
+        // block. The `_rt` contract must stay non-blocking — a blocking
+        // `lock()` here could stall the caller behind a multi-millisecond
+        // main-thread `open_editor`/`editor_idle` holding the same GUI lock. The
+        // authoritative delivery is the audio command below; a dropped GUI mirror
+        // self-heals on the next edit / editor idle.
+        if let Ok(mut guard) = self.gui.try_lock() {
             if let Some(gui) = guard.as_mut() {
                 gui.set_parameter(param_id, value as f64);
             }
@@ -89,7 +94,11 @@ impl PluginBridge {
         // editor UI feedback (a glowing knob ring), which lives in the GUI
         // instance — so a GUI-only delivery would leave it unlit. The audio
         // instance also receives it for formats that gate DSP on it.
-        if let Ok(mut guard) = self.gui.lock() {
+        //
+        // The GUI mirror is cosmetic, so `try_lock` (never block): the `_rt`
+        // contract stays non-blocking, and a dropped glow self-heals on the next
+        // mode change. See `set_parameter_rt` for the RT rationale.
+        if let Ok(mut guard) = self.gui.try_lock() {
             if let Some(gui) = guard.as_mut() {
                 gui.set_automation_state(state);
             }

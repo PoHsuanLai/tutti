@@ -20,8 +20,8 @@ pub(crate) mod control_handle;
 pub use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh, ResyncKind};
 pub use crate::host::node::PluginClient;
 pub use crate::host::node::{
-    HarmonySource, LfoCurve, LfoOffset, OffsetCurve, ParamAutomationSource, PluginParamTarget,
-    TimedChord, TimedParam, TimedScale,
+    HarmonySource, LfoCurve, LfoOffset, NoteExpressionSource, OffsetCurve, ParamAutomationSource,
+    PluginParamTarget, TimedChord, TimedParam, TimedScale,
 };
 // The LFO shape vocabulary + the modulation-target surface (from `tutti-mod`,
 // via `tutti-units`), so the app can build an [`LfoCurve`] / route to a

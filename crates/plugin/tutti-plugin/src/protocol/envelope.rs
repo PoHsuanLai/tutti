@@ -45,7 +45,9 @@ pub enum HostMessage {
         value: f32,
     },
     SetAutomationState {
-        state: i32,
+        /// Format-neutral automation mode; the format loader encodes it onto its
+        /// own ABI server-side. See [`AutomationMode`](crate::protocol::AutomationMode).
+        mode: crate::protocol::AutomationMode,
     },
     GetParameter {
         param_id: u32,

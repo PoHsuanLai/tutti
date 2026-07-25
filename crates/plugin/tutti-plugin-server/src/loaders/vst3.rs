@@ -3,7 +3,8 @@
 use std::path::Path;
 
 use tutti_plugin::server::{
-    AudioBufferMut, BusChannels, ChannelLayout, ChordChanges, EditorSize, Features, LoadedPlugin,
+    AudioBufferMut, AutomationMode, BusChannels, ChannelLayout, ChordChanges, EditorSize, Features,
+    LoadedPlugin,
     NoteExpressionChanges, NoteExpressionIntChanges, NoteExpressionTextChanges, ParameterFlags,
     ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError,
     PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput,
@@ -531,11 +532,14 @@ impl PluginParams for Vst3Instance {
         vst_dispatch_mut!(self, inner => inner.set_parameter(id, value));
     }
 
-    fn set_automation_state(&mut self, state: i32) {
-        // Forwards to `Vst3Loaded::set_automation_state` via Deref; a no-op if
-        // the plugin doesn't implement IAutomationState. Runs on the server's
-        // main thread (same as set_parameter), satisfying the host's
+    fn set_automation_state(&mut self, mode: AutomationMode) {
+        // Encode the format-neutral mode onto the VST3 `IAutomationState` bitmask
+        // HERE, at the VST3 FFI edge, via the VST3 crate's own SDK-backed
+        // conversion. Forwards to `Vst3Loaded::set_automation_state` via Deref; a
+        // no-op if the plugin doesn't implement IAutomationState. Runs on the
+        // server's main thread (same as set_parameter), satisfying the host's
         // main-thread assertion.
+        let state = tutti_vst3_host::automation_state::from_mode(mode);
         vst_dispatch_mut!(self, inner => { inner.set_automation_state(state); });
     }
 

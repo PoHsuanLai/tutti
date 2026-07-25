@@ -88,22 +88,25 @@ impl PluginBridge {
         self.audio.set_parameter_rt(param_id, value)
     }
 
-    pub fn set_automation_state_rt(&self, state: i32) -> bool {
+    pub fn set_automation_state_rt(&self, mode: crate::protocol::AutomationMode) -> bool {
         // Deliver to BOTH the audio subprocess AND the in-process GUI instance
         // (mirrors `set_parameter_rt`). The automation-state advisory drives
         // editor UI feedback (a glowing knob ring), which lives in the GUI
         // instance — so a GUI-only delivery would leave it unlit. The audio
-        // instance also receives it for formats that gate DSP on it.
+        // instance also receives it for formats that gate DSP on it. Both sides
+        // take the format-neutral `AutomationMode` and encode it at their own
+        // ABI edge (the GUI instance and the server loader) — no format bitmask
+        // here.
         //
         // The GUI mirror is cosmetic, so `try_lock` (never block): the `_rt`
         // contract stays non-blocking, and a dropped glow self-heals on the next
         // mode change. See `set_parameter_rt` for the RT rationale.
         if let Ok(mut guard) = self.gui.try_lock() {
             if let Some(gui) = guard.as_mut() {
-                gui.set_automation_state(state);
+                gui.set_automation_state(mode);
             }
         }
-        self.audio.set_automation_state_rt(state)
+        self.audio.set_automation_state_rt(mode)
     }
 
     pub fn set_sample_rate_rt(&self, rate: f64) -> bool {
@@ -365,8 +368,9 @@ impl crate::host::handles::capabilities::HostAutomationState for SubprocessBacke
         }
         // Delivered to both the audio subprocess and the in-process GUI (the
         // knob-glow lives in the GUI). The `bool` says the command was queued;
-        // no format confirms the plugin visibly reacted.
-        if self.bridge.set_automation_state_rt(mode.to_vst3_bits()) {
+        // no format confirms the plugin visibly reacted. The format-neutral
+        // `AutomationMode` flows all the way to each ABI edge, which encodes it.
+        if self.bridge.set_automation_state_rt(mode) {
             Ok(())
         } else {
             Err(EditorError::PluginError(

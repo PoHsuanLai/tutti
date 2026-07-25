@@ -360,12 +360,12 @@ impl PluginClient {
         let _ = self.bridge.set_parameter_rt(param_id, value);
     }
 
-    /// Push the host automation read/write state to the plugin (VST3
-    /// `IAutomationState`). RT-safe, fire-and-forget; a no-op for plugins /
-    /// formats without the concept. `state` is the VST3 `AutomationStates`
-    /// bitmask (`0=none, 1=read, 2=write, 3=read|write`).
-    pub fn set_automation_state(&self, state: i32) {
-        let _ = self.bridge.set_automation_state_rt(state);
+    /// Push the host [`AutomationMode`](crate::protocol::AutomationMode) to the
+    /// plugin. RT-safe, fire-and-forget; a no-op for plugins / formats without an
+    /// automation-state concept. The format-neutral mode is encoded onto the
+    /// format's own ABI at its FFI edge (server-side / GUI-side), not here.
+    pub fn set_automation_state(&self, mode: crate::protocol::AutomationMode) {
+        let _ = self.bridge.set_automation_state_rt(mode);
     }
 
     /// Producer handle for this plugin's MIDI inbox. Route live MIDI to the

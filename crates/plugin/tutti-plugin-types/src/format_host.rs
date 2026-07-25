@@ -65,10 +65,11 @@ pub trait PluginParams {
     /// (normalized for VST2/VST3/AU, native plain range for CLAP).
     fn set_parameter(&mut self, id: u32, value: f64);
 
-    /// Push the host automation read/write state to the plugin. Fire-and-forget;
-    /// the default no-op covers formats without an automation-state concept
-    /// (only VST3's `IAutomationState` implements it).
-    fn set_automation_state(&mut self, _state: i32) {}
+    /// Push the host [`AutomationMode`](crate::AutomationMode) to the plugin.
+    /// Fire-and-forget; the default no-op covers formats without an
+    /// automation-state concept. A format that supports it (VST3's
+    /// `IAutomationState`) encodes the mode onto its own ABI at the FFI edge.
+    fn set_automation_state(&mut self, _mode: crate::AutomationMode) {}
 
     fn get_parameter_list(&self) -> Vec<ParameterInfo>;
 }

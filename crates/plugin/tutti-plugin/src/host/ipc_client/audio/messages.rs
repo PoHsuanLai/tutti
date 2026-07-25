@@ -53,7 +53,10 @@ pub(super) enum Command {
         value: f32,
     },
     SetAutomationState {
-        state: i32,
+        /// Format-neutral automation mode; each format loader encodes it onto its
+        /// own ABI at the FFI edge (VST3 `IAutomationState`, etc.). The wire does
+        /// NOT carry a format-specific bitmask — see [`AutomationMode`].
+        mode: crate::protocol::AutomationMode,
     },
     SetSampleRate {
         rate: f64,

@@ -63,11 +63,13 @@ impl PluginEditor for Vst3GuiInstance {
         self.inner.set_parameter(id, value);
     }
 
-    fn set_automation_state(&mut self, state: i32) {
-        // Deliver the host automation-state advisory to the GUI instance —
-        // this is the instance whose editor shows the knob-glow feedback, so
-        // this is the delivery the mode actually needs (VST3 `IAutomationState`).
-        self.inner.set_automation_state(state);
+    fn set_automation_state(&mut self, mode: crate::protocol::AutomationMode) {
+        // Deliver the host automation-state advisory to the GUI instance — this
+        // is the instance whose editor shows the knob-glow feedback. Encode the
+        // format-neutral mode onto the VST3 `IAutomationState` bitmask HERE, at
+        // the VST3 edge, using the VST3 crate's own SDK-backed conversion.
+        self.inner
+            .set_automation_state(tutti_vst3_host::automation_state::from_mode(mode));
     }
 
     fn set_state(&mut self, data: &[u8]) -> Result<()> {

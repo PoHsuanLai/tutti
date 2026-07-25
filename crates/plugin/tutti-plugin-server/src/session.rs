@@ -126,9 +126,9 @@ impl Session {
                 }
                 Ok(Reaction::None)
             }
-            M::SetAutomationState { state } => {
+            M::SetAutomationState { mode } => {
                 if let Some(plugin) = self.plugin.as_mut() {
-                    plugin.instance_mut().set_automation_state(state);
+                    plugin.instance_mut().set_automation_state(mode);
                 }
                 Ok(Reaction::None)
             }

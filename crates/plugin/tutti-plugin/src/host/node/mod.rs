@@ -27,8 +27,8 @@ mod tests;
 // in `crate::util::node`; re-exported here so the existing
 // `crate::host::node::{Midi, ...}` paths (used by `crate::backend`) keep
 // resolving.
-pub(crate) use crate::util::node::ResyncSink;
-pub use crate::util::node::{route_with_latency, LatencyChangeSink, Midi, ParameterChangeSink};
+pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
+pub use crate::util::node::{route_with_latency, Midi, ParameterChangeSink};
 pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
 pub use param_automation_source::{
     LfoCurve, LfoOffset, OffsetCurve, ParamAutomationSource, PluginParamTarget, TimedParam,
@@ -36,7 +36,7 @@ pub use param_automation_source::{
 pub(crate) use process::ProcessGuard;
 
 use crate::error::Result;
-use crate::host::ipc_client::audio::BridgeEvent;
+use crate::host::ipc_client::audio::{BridgeEvent, PluginInvalidation, ResyncClass};
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::host::ipc_client::PluginBridge;
 use crate::host::node::input_slot::{BlockCtx, InputSlot};
@@ -66,9 +66,9 @@ pub struct PluginClient {
     /// Observers for plugin-originated unsolicited events. Shared with
     /// `PluginHandle` so callers can register callbacks via the handle
     /// and still see events driven by the bridge thread.
-    latency_sink: LatencyChangeSink,
     param_sink: ParameterChangeSink,
-    resync_sink: ResyncSink,
+    refresh_sink: RefreshSink,
+    invalidate_sink: InvalidateSink,
     /// Subprocess lifetime, shared with `PluginHandle::from_client`.
     process_guard: Arc<ProcessGuard>,
     io: Batcher,
@@ -228,31 +228,35 @@ impl PluginClient {
         let latency = Arc::new(AtomicUsize::new(server.loaded.latency_samples));
         let max_buffer_size = config.max_buffer_size;
         let process_guard = Arc::new(ProcessGuard::new(server.process, bridge_thread, config));
-        let latency_sink = LatencyChangeSink::new();
         let param_sink = ParameterChangeSink::new();
-        let resync_sink = ResyncSink::new();
+        let refresh_sink = RefreshSink::new();
+        let invalidate_sink = InvalidateSink::new();
 
-        // Route unsolicited bridge events into the shared atomic + sinks.
-        // The bridge-thread callback must be cheap; it writes the latency
-        // atomic directly so `AudioUnit::latency()` sees the new value on
-        // the next audio read, then fires the sink for the main thread.
+        // Route unsolicited bridge events into the shared atomic + sinks. The
+        // bridge-thread callback must be cheap. A latency change writes the
+        // latency atomic directly so `AudioUnit::latency()` sees the new value on
+        // the next audio read, then fires the *invalidate* sink (latency is a
+        // structural invalidation — it re-plans PDC). Resync signals split by
+        // consequence into the refresh (cosmetic) vs invalidate (structural)
+        // sinks via `ResyncKind::classify`.
         let listener_latency = Arc::clone(&latency);
-        let listener_latency_sink = latency_sink.clone();
         let listener_param_sink = param_sink.clone();
-        let listener_resync_sink = resync_sink.clone();
+        let listener_refresh_sink = refresh_sink.clone();
+        let listener_invalidate_sink = invalidate_sink.clone();
         bridge.set_listener(Some(Arc::new(move |ev| match ev {
             BridgeEvent::LatencyChanged { samples } => {
                 listener_latency.store(samples, Ordering::Release);
-                listener_latency_sink.fire(samples);
+                listener_invalidate_sink.fire(PluginInvalidation::Latency { samples });
             }
             BridgeEvent::ParameterChanged { index, value } => {
                 if let Ok(id) = u32::try_from(index) {
                     listener_param_sink.fire(id, value);
                 }
             }
-            BridgeEvent::Resync(kind) => {
-                listener_resync_sink.fire(kind);
-            }
+            BridgeEvent::Resync(kind) => match kind.classify() {
+                ResyncClass::Refresh(r) => listener_refresh_sink.fire(r),
+                ResyncClass::Invalidate(i) => listener_invalidate_sink.fire(i),
+            },
         })));
 
         Ok(Self {
@@ -261,9 +265,9 @@ impl PluginClient {
             loaded: server.loaded,
             format: server.format,
             latency,
-            latency_sink,
             param_sink,
-            resync_sink,
+            refresh_sink,
+            invalidate_sink,
             process_guard,
             io: Batcher::new(inputs, outputs, output_base, server.format, max_buffer_size),
             midi: Midi::new(),
@@ -276,16 +280,16 @@ impl PluginClient {
         })
     }
 
-    pub(crate) fn latency_sink(&self) -> &LatencyChangeSink {
-        &self.latency_sink
-    }
-
     pub(crate) fn param_sink(&self) -> &ParameterChangeSink {
         &self.param_sink
     }
 
-    pub(crate) fn resync_sink(&self) -> &ResyncSink {
-        &self.resync_sink
+    pub(crate) fn refresh_sink(&self) -> &RefreshSink {
+        &self.refresh_sink
+    }
+
+    pub(crate) fn invalidate_sink(&self) -> &InvalidateSink {
+        &self.invalidate_sink
     }
 
     /// Accessor for `PluginHandle::from_client` — not for end users.
@@ -304,7 +308,8 @@ impl PluginClient {
     /// exposed publicly so callers can also force a value. Note: updating
     /// what `AudioUnit::latency()` reports does **not** re-run PDC on its
     /// own — a graph edit (`Net::commit()`) is required. Register a
-    /// callback via `PluginHandle::on_latency_changed` to get notified.
+    /// callback via `PluginHandle::on_invalidate` (latency arrives as
+    /// `PluginInvalidation::Latency`) to get notified.
     pub fn set_latency(&self, samples: usize) {
         self.latency.store(samples, Ordering::Release);
     }

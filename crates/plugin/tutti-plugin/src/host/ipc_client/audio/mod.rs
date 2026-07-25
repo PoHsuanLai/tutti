@@ -43,7 +43,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use messages::{BridgeEvent, ResyncKind};
+pub use messages::{
+    BridgeEvent, PluginInvalidation, PluginRefresh, ResyncClass, ResyncKind,
+};
 pub use thread::BridgeThread;
 
 const STATE_TIMEOUT: Duration = Duration::from_secs(10);

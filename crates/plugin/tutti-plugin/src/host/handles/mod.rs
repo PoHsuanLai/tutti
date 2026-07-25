@@ -14,7 +14,10 @@
 pub(crate) mod capabilities;
 pub(crate) mod control_handle;
 
-pub use crate::host::ipc_client::audio::ResyncKind;
+// The public plugin→host notification vocabulary: `on_refresh` delivers
+// `PluginRefresh` (cosmetic), `on_invalidate` delivers `PluginInvalidation`
+// (structural). `ResyncKind` stays exported as the underlying wire signal.
+pub use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh, ResyncKind};
 pub use crate::host::node::PluginClient;
 pub use crate::host::node::{
     HarmonySource, LfoCurve, LfoOffset, OffsetCurve, ParamAutomationSource, PluginParamTarget,

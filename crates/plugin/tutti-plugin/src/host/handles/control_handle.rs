@@ -1,7 +1,7 @@
 use crate::error::EditorError;
 use crate::host::handles::capabilities::{HostEditor, HostParams, HostState};
-use crate::host::ipc_client::audio::ResyncKind;
-use crate::host::node::{LatencyChangeSink, ParameterChangeSink, ResyncSink};
+use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
+use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
 use crate::protocol::{LoadedPlugin, ParameterInfo, PluginDescriptor};
 use crate::util::window::{EditorCapabilities, EditorSize};
 use raw_window_handle::HasWindowHandle;
@@ -27,9 +27,9 @@ pub struct PluginHandle {
     editor: Option<Arc<dyn HostEditor>>,
     descriptor: PluginDescriptor,
     loaded: LoadedPlugin,
-    latency_sink: LatencyChangeSink,
     param_sink: ParameterChangeSink,
-    resync_sink: ResyncSink,
+    refresh_sink: RefreshSink,
+    invalidate_sink: InvalidateSink,
     midi_sender: MidiSender,
 }
 
@@ -48,9 +48,9 @@ impl PluginHandle {
             editor: Some(backend),
             descriptor: client.descriptor().clone(),
             loaded: client.loaded().clone(),
-            latency_sink: client.latency_sink().clone(),
             param_sink: client.param_sink().clone(),
-            resync_sink: client.resync_sink().clone(),
+            refresh_sink: client.refresh_sink().clone(),
+            invalidate_sink: client.invalidate_sink().clone(),
             midi_sender: client.midi_sender(),
         }
     }
@@ -67,7 +67,6 @@ impl PluginHandle {
         editor: Option<Arc<dyn HostEditor>>,
         descriptor: PluginDescriptor,
         loaded: LoadedPlugin,
-        latency_sink: LatencyChangeSink,
         param_sink: ParameterChangeSink,
         midi_sender: MidiSender,
     ) -> Self {
@@ -77,11 +76,12 @@ impl PluginHandle {
             editor,
             descriptor,
             loaded,
-            latency_sink,
             param_sink,
-            // In-process backends (VST2, WASM) have no restartComponent
-            // mechanism, so they never emit resync signals.
-            resync_sink: ResyncSink::default(),
+            // In-process backends (VST2, WASM) have no latency-change or
+            // restartComponent mechanism, so they never emit refresh /
+            // invalidate signals — these sinks stay empty.
+            refresh_sink: RefreshSink::default(),
+            invalidate_sink: InvalidateSink::default(),
             midi_sender,
         }
     }
@@ -104,9 +104,9 @@ impl PluginHandle {
             editor: Some(backend),
             descriptor,
             loaded,
-            latency_sink: LatencyChangeSink::default(),
             param_sink: ParameterChangeSink::default(),
-            resync_sink: ResyncSink::default(),
+            refresh_sink: RefreshSink::default(),
+            invalidate_sink: InvalidateSink::default(),
             midi_sender: sender,
         }
     }
@@ -253,41 +253,37 @@ impl PluginHandle {
 
     // ---- Notify sinks (plugin → host reactions) ----------------------------
 
-    /// Register a callback invoked whenever the plugin reports a new
-    /// latency. Fires on the bridge thread for the out-of-process
-    /// backend; on the GUI thread (during `editor_idle`) for the
-    /// in-process VST2 backend. Move heavy work to another thread before
-    /// touching graph state. Replaces any previous callback.
-    pub fn on_latency_changed<F: Fn(usize) + Send + Sync + 'static>(&self, f: F) -> &Self {
-        self.latency_sink.set(f);
-        self
-    }
-
     /// Register a callback invoked when the plugin writes back a
     /// parameter value internally (preset load, automation, host
-    /// write-back). See [`Self::on_latency_changed`] for thread caveats.
-    /// Replaces any previous callback.
+    /// write-back). Fires on the bridge thread for the out-of-process
+    /// backend; on the GUI thread (during `editor_idle`) for the in-process
+    /// VST2 backend. Move heavy work to another thread before touching graph
+    /// state. Replaces any previous callback.
     pub fn on_parameter_changed<F: Fn(u32, f32) + Send + Sync + 'static>(&self, f: F) -> &Self {
         self.param_sink.set(f);
         self
     }
 
-    /// Register a callback invoked when the plugin asks the host to resync some
-    /// aspect of its state at runtime — a preset load that changed parameter
-    /// values ([`ResyncKind::ParamValues`]) or titles
-    /// ([`ResyncKind::ParamTitles`]), a bus-layout change ([`ResyncKind::Io`]),
-    /// or a full in-place reload ([`ResyncKind::Reloaded`]). The callback should
-    /// re-read the affected state from the handle (e.g. `parameter_list`). See
-    /// [`Self::on_latency_changed`] for thread caveats. Only the out-of-process
-    /// VST3 backend emits these; replaces any previous callback.
-    pub fn on_plugin_resync<F: Fn(ResyncKind) + Send + Sync + 'static>(&self, f: F) -> &Self {
-        self.resync_sink.set(f);
+    /// Register a callback for **cosmetic** refresh signals: the host's cached
+    /// *view* of some plugin state is stale ([`PluginRefresh::ParamValues`] /
+    /// [`PluginRefresh::ParamTitles`]) and should be re-read, but the audio graph
+    /// is unaffected. See [`Self::on_parameter_changed`] for thread caveats. Only
+    /// the out-of-process backend emits these; replaces any previous callback.
+    pub fn on_refresh<F: Fn(PluginRefresh) + Send + Sync + 'static>(&self, f: F) -> &Self {
+        self.refresh_sink.set(f);
         self
     }
 
-    /// Clear the latency-changed callback (if any).
-    pub fn clear_latency_callback(&self) -> &Self {
-        self.latency_sink.clear();
+    /// Register a callback for **structural** invalidation signals: the plugin
+    /// changed its latency ([`PluginInvalidation::Latency`]) or bus layout
+    /// ([`PluginInvalidation::Io`]), or reloaded in place
+    /// ([`PluginInvalidation::Reloaded`]) — the host must rewire and re-run
+    /// latency compensation (PDC). Absorbs what used to be a separate
+    /// latency-changed callback. See [`Self::on_parameter_changed`] for thread
+    /// caveats. Only the out-of-process backend emits these; replaces any
+    /// previous callback.
+    pub fn on_invalidate<F: Fn(PluginInvalidation) + Send + Sync + 'static>(&self, f: F) -> &Self {
+        self.invalidate_sink.set(f);
         self
     }
 
@@ -297,9 +293,15 @@ impl PluginHandle {
         self
     }
 
-    /// Clear the plugin-resync callback (if any).
-    pub fn clear_plugin_resync_callback(&self) -> &Self {
-        self.resync_sink.clear();
+    /// Clear the refresh callback (if any).
+    pub fn clear_refresh_callback(&self) -> &Self {
+        self.refresh_sink.clear();
+        self
+    }
+
+    /// Clear the invalidate callback (if any).
+    pub fn clear_invalidate_callback(&self) -> &Self {
+        self.invalidate_sink.clear();
         self
     }
 }

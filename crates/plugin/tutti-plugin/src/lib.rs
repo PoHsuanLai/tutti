@@ -152,7 +152,7 @@ pub use tutti_plugin_types::mark_main_thread;
 /// [`catalog`] and [`handles`].
 pub mod backend {
     pub use crate::host::handles::capabilities::{HostEditor, HostParams, HostState};
-    pub use crate::host::node::{route_with_latency, LatencyChangeSink, Midi, ParameterChangeSink};
+    pub use crate::host::node::{route_with_latency, Midi, ParameterChangeSink};
     pub use crate::util::node::node_id::PLUGIN_CLIENT_ID;
 }
 

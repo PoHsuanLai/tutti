@@ -11,7 +11,7 @@ use super::audio_unit::InProcessVst2Client;
 use super::control_backend::InProcessVst2Backend;
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::host::handles::PluginHandle;
-use crate::host::node::{LatencyChangeSink, ParameterChangeSink};
+use crate::host::node::ParameterChangeSink;
 use crate::protocol::{Features, LoadedPlugin, PluginClass, PluginDescriptor};
 use smallvec::SmallVec;
 
@@ -72,7 +72,6 @@ pub fn load(
     let inner = Arc::new(Mutex::new(inner));
     let contention = Arc::new(AtomicU64::new(0));
     let param_sink = ParameterChangeSink::new();
-    let latency_sink = LatencyChangeSink::new();
 
     let backend = Arc::new(InProcessVst2Backend {
         inner: Arc::clone(&inner),
@@ -94,7 +93,6 @@ pub fn load(
         Some(editor),
         descriptor,
         loaded,
-        latency_sink,
         param_sink,
         midi_sender,
     );

@@ -163,11 +163,11 @@ pub fn run_analysis_thread(
                     waveform_blocks.drain(0..waveform_blocks.len() - max_blocks);
                 }
 
-                let summary = WaveformSummary {
-                    blocks: waveform_blocks.clone(),
-                    samples_per_block: LIVE_WAVEFORM_BLOCK_SIZE,
-                    total_samples: total_samples_processed,
-                };
+                let summary = WaveformSummary::from_blocks(
+                    waveform_blocks.clone(),
+                    LIVE_WAVEFORM_BLOCK_SIZE,
+                    total_samples_processed,
+                );
                 state.waveform.store(Arc::new(summary));
 
                 block_min = f32::MAX;

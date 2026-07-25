@@ -105,10 +105,20 @@ impl TransientDetector {
             .collect()
     }
 
+    /// Detect onsets across a whole buffer.
+    ///
+    /// A function of `samples` alone: the carry from any previous call is
+    /// cleared first, so two identical calls return identical results. Without
+    /// that, frame 0 diffs against the *previous* call's last frame, which
+    /// shifts the adaptive threshold and the strength normalization for every
+    /// peak — measured at 39 of 165 windows disagreeing on a real streaming
+    /// call pattern, with phantom onsets among them.
     pub fn detect(&mut self, samples: &[f32]) -> Vec<Transient> {
         if samples.len() < self.fft_size {
             return Vec::new();
         }
+
+        self.reset();
 
         let mut detection_function = Vec::new();
         let num_frames = (samples.len() - self.fft_size) / self.hop_size + 1;
@@ -328,5 +338,97 @@ mod tests {
 
             let _detected = detector.detect(&samples);
         }
+    }
+
+    /// `detect` must be a function of its argument, for every method.
+    ///
+    /// The shipped code carried `prev_magnitudes` across calls, so frame 0 of
+    /// each call diffed against the *previous* call's last frame. That shifted
+    /// the adaptive threshold and the strength normalization, so the second
+    /// call on identical input could return different onsets — and on a real
+    /// streaming pattern, phantom ones.
+    #[test]
+    fn detect_is_idempotent_across_calls() {
+        let sample_rate = 44100.0;
+        let samples = generate_test_signal(sample_rate, 0.5, &[0.1, 0.25]);
+
+        for method in [
+            DetectionMethod::SpectralFlux,
+            DetectionMethod::HighFrequencyContent,
+            DetectionMethod::Energy,
+            DetectionMethod::ComplexDomain,
+        ] {
+            let mut detector = TransientDetector::new(sample_rate);
+            detector.set_method(method);
+            detector.set_threshold(0.2);
+
+            let first = detector.detect(&samples);
+            let second = detector.detect(&samples);
+
+            assert_eq!(
+                first.len(),
+                second.len(),
+                "{method:?}: onset count changed on a repeated call"
+            );
+            for (a, b) in first.iter().zip(&second) {
+                assert_eq!(a.sample_position, b.sample_position, "{method:?}: position");
+                assert_eq!(a.strength, b.strength, "{method:?}: strength");
+            }
+        }
+    }
+
+    /// A reused detector must agree with a fresh one on every window.
+    ///
+    /// This is the exact shape the live path drove: successive `detect` calls
+    /// on heavily *overlapping* windows (4096 wide, 512 apart) over continuous
+    /// tonal material. The overlap is what makes the leak visible — each call
+    /// left `prev_magnitudes` at its last frame, and the next call's frame 0
+    /// then diffed against a window overlapping it by 3584 samples, producing
+    /// a phantom onset at position 512.
+    ///
+    /// Measured against the unfixed code: 39 of 165 windows disagreed. Note
+    /// that disjoint or near-silent windows do *not* expose this — the earlier
+    /// smoke tests missed it for exactly that reason.
+    #[test]
+    fn reused_detector_matches_a_fresh_one() {
+        let sample_rate = 44100.0;
+        let n = 44100 * 2;
+        let signal: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / sample_rate as f32;
+                let env = 0.3 + 0.7 * (2.0 * core::f32::consts::PI * 0.7 * t).sin().abs();
+                env * ((2.0 * core::f32::consts::PI * 220.0 * t).sin() * 0.5
+                    + (2.0 * core::f32::consts::PI * 1500.0 * t).sin() * 0.3)
+            })
+            .collect();
+
+        let (window_len, hop) = (4096usize, 512usize);
+        let mut shared = TransientDetector::new(sample_rate);
+        let mut differing = 0usize;
+        let mut total = 0usize;
+
+        let mut start = 0usize;
+        while start + window_len <= n {
+            let window = &signal[start..start + window_len];
+
+            let from_shared = shared.detect(window);
+            let mut fresh = TransientDetector::new(sample_rate);
+            let from_fresh = fresh.detect(window);
+
+            total += 1;
+            let same = from_shared.len() == from_fresh.len()
+                && from_shared.iter().zip(&from_fresh).all(|(a, b)| {
+                    a.sample_position == b.sample_position && a.strength == b.strength
+                });
+            if !same {
+                differing += 1;
+            }
+            start += hop;
+        }
+
+        assert_eq!(
+            differing, 0,
+            "reused detector disagreed with a fresh one on {differing}/{total} windows"
+        );
     }
 }

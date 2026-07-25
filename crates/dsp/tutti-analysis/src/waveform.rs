@@ -16,6 +16,14 @@ pub struct WaveformSummary {
     pub blocks: Vec<WaveformBlock>,
     pub samples_per_block: usize,
     pub total_samples: usize,
+    /// Samples of the in-progress block carried across [`append_samples`] calls.
+    ///
+    /// Not serialized and not part of the public shape: it is only meaningful
+    /// mid-stream, and a summary read back from disk is already complete.
+    ///
+    /// [`append_samples`]: Self::append_samples
+    #[cfg_attr(feature = "serde", serde(skip))]
+    pending: Vec<f32>,
 }
 
 impl WaveformSummary {
@@ -24,6 +32,7 @@ impl WaveformSummary {
             blocks: Vec::new(),
             samples_per_block,
             total_samples: 0,
+            pending: Vec::new(),
         }
     }
 
@@ -32,6 +41,25 @@ impl WaveformSummary {
             blocks: Vec::with_capacity(num_blocks),
             samples_per_block,
             total_samples: 0,
+            pending: Vec::new(),
+        }
+    }
+
+    /// Assemble a finished summary from blocks computed elsewhere — a decoded
+    /// cache payload, or a producer that already blocks its own input.
+    ///
+    /// There is no partial block to carry: the caller is handing over work
+    /// that is already complete.
+    pub fn from_blocks(
+        blocks: Vec<WaveformBlock>,
+        samples_per_block: usize,
+        total_samples: usize,
+    ) -> Self {
+        Self {
+            blocks,
+            samples_per_block,
+            total_samples,
+            pending: Vec::new(),
         }
     }
 
@@ -59,30 +87,55 @@ impl WaveformSummary {
     }
 
     /// Append samples incrementally without loading the entire file at once.
+    ///
+    /// Chunks need not align to block boundaries: samples left over from one
+    /// call are carried into the next, so streaming in arbitrary chunk sizes
+    /// produces exactly the blocks a single [`compute_summary`] over the
+    /// concatenation would. Call [`finish`](Self::finish) to emit the trailing
+    /// partial block, if any.
     pub fn append_samples(&mut self, samples: &[f32]) {
         if samples.is_empty() || self.samples_per_block == 0 {
             return;
         }
 
-        let total_so_far = self.total_samples + samples.len();
-        let complete_blocks = total_so_far / self.samples_per_block;
-        let blocks_to_add = complete_blocks.saturating_sub(self.blocks.len());
+        self.total_samples += samples.len();
 
-        for block_idx in 0..blocks_to_add {
-            let global_start = (self.blocks.len() + block_idx) * self.samples_per_block;
-            let local_start = global_start.saturating_sub(self.total_samples);
-            let local_end = (local_start + self.samples_per_block).min(samples.len());
+        // Complete the block left half-built by the previous call before
+        // consuming whole blocks out of `samples` directly. Indexing by a
+        // global offset (as this once did) cannot work — the samples those
+        // offsets refer to belong to chunks that have already been dropped.
+        let mut rest = samples;
+        if !self.pending.is_empty() {
+            let needed = self.samples_per_block - self.pending.len();
+            let take = needed.min(rest.len());
+            self.pending.extend_from_slice(&rest[..take]);
+            rest = &rest[take..];
 
-            if local_start >= samples.len() {
-                break;
+            if self.pending.len() < self.samples_per_block {
+                return;
             }
-
-            let block_samples = &samples[local_start..local_end];
-            let block = compute_block(block_samples);
-            self.blocks.push(block);
+            self.blocks.push(compute_block(&self.pending));
+            self.pending.clear();
         }
 
-        self.total_samples = total_so_far;
+        let mut chunks = rest.chunks_exact(self.samples_per_block);
+        for block in chunks.by_ref() {
+            self.blocks.push(compute_block(block));
+        }
+        self.pending.extend_from_slice(chunks.remainder());
+    }
+
+    /// Emit the trailing partial block and return the finished summary.
+    ///
+    /// [`compute_summary`] keeps a final short block, so streaming must too or
+    /// the two paths disagree on any input that is not a whole number of
+    /// blocks.
+    pub fn finish(mut self) -> Self {
+        if !self.pending.is_empty() {
+            self.blocks.push(compute_block(&self.pending));
+            self.pending.clear();
+        }
+        self
     }
 }
 
@@ -263,7 +316,6 @@ mod tests {
     fn test_streaming_append() {
         let mut summary = WaveformSummary::new(100);
 
-        // Append in chunks
         let chunk1: Vec<f32> = (0..250).map(|i| (i as f32 / 50.0).sin()).collect();
         let chunk2: Vec<f32> = (250..500).map(|i| (i as f32 / 50.0).sin()).collect();
 
@@ -271,11 +323,64 @@ mod tests {
         assert_eq!(summary.len(), 2); // 250 / 100 = 2 complete blocks
 
         summary.append_samples(&chunk2);
-        // Note: streaming mode may not perfectly handle cross-chunk blocks
-        // The important thing is that blocks are added
-        assert!(
-            summary.len() >= 4,
-            "Should have at least 4 blocks after 500 samples"
-        );
+        assert_eq!(summary.len(), 5);
+        assert_eq!(summary.total_samples, 500);
+    }
+
+    /// The law: streaming in arbitrary chunks must agree with one batch call.
+    ///
+    /// Chunk sizes deliberately coprime with the block size, so nearly every
+    /// block spans a chunk boundary. The shipped implementation indexed into
+    /// the current chunk using *global* offsets, so those spanning blocks were
+    /// computed from a remnant or skipped outright: 500 ramp samples in two
+    /// 250-chunks at block=100 produced 4 blocks instead of 5, with samples
+    /// 100..199 never read.
+    #[test]
+    fn streaming_matches_batch_on_unaligned_chunks() {
+        let samples: Vec<f32> = (0..500).map(|i| i as f32).collect();
+        let block = 100;
+
+        for chunk in [7usize, 100, 250, 333, 500, 501] {
+            let mut streamed = WaveformSummary::new(block);
+            for part in samples.chunks(chunk) {
+                streamed.append_samples(part);
+            }
+            let streamed = streamed.finish();
+            let batch = compute_summary(&samples, ChannelLayout::Mono, block);
+
+            assert_eq!(
+                streamed.len(),
+                batch.len(),
+                "block count differs at chunk size {chunk}"
+            );
+            assert_eq!(streamed.total_samples, batch.total_samples);
+            for (i, (s, b)) in streamed.blocks.iter().zip(&batch.blocks).enumerate() {
+                assert_eq!(s.min, b.min, "block {i} min differs at chunk size {chunk}");
+                assert_eq!(s.max, b.max, "block {i} max differs at chunk size {chunk}");
+                assert!(
+                    (s.rms - b.rms).abs() < 1e-3,
+                    "block {i} rms differs at chunk size {chunk}: {} vs {}",
+                    s.rms,
+                    b.rms
+                );
+            }
+        }
+    }
+
+    /// The specific case from the repro: no block may be skipped.
+    #[test]
+    fn cross_chunk_blocks_are_not_dropped() {
+        let samples: Vec<f32> = (0..500).map(|i| i as f32).collect();
+        let mut summary = WaveformSummary::new(100);
+        summary.append_samples(&samples[..250]);
+        summary.append_samples(&samples[250..]);
+        let summary = summary.finish();
+
+        assert_eq!(summary.len(), 5);
+        // Block 1 spans the chunk boundary and is the one that used to vanish.
+        assert_eq!(summary.blocks[1].min, 100.0);
+        assert_eq!(summary.blocks[1].max, 199.0);
+        assert_eq!(summary.blocks[4].min, 400.0);
+        assert_eq!(summary.blocks[4].max, 499.0);
     }
 }

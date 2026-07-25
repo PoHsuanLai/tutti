@@ -220,11 +220,11 @@ impl ThumbnailCache {
                 blocks.push(crate::waveform::WaveformBlock { min, max, rms });
             }
 
-            levels.push(crate::waveform::WaveformSummary {
+            levels.push(crate::waveform::WaveformSummary::from_blocks(
                 blocks,
                 samples_per_block,
                 total_samples,
-            });
+            ));
         }
 
         Some(MultiResolutionSummary {
@@ -242,8 +242,8 @@ mod tests {
     fn create_test_summary() -> MultiResolutionSummary {
         MultiResolutionSummary {
             levels: vec![
-                WaveformSummary {
-                    blocks: vec![
+                WaveformSummary::from_blocks(
+                    vec![
                         WaveformBlock {
                             min: -0.5,
                             max: 0.5,
@@ -255,18 +255,18 @@ mod tests {
                             rms: 0.5,
                         },
                     ],
-                    samples_per_block: 512,
-                    total_samples: 1024,
-                },
-                WaveformSummary {
-                    blocks: vec![WaveformBlock {
+                    512,
+                    1024,
+                ),
+                WaveformSummary::from_blocks(
+                    vec![WaveformBlock {
                         min: -0.8,
                         max: 0.8,
                         rms: 0.4,
                     }],
-                    samples_per_block: 1024,
-                    total_samples: 1024,
-                },
+                    1024,
+                    1024,
+                ),
             ],
             base_samples_per_block: 512,
         }

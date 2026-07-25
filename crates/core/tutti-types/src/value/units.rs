@@ -467,6 +467,168 @@ unit_scalable!(ArcDegrees, f32);
 //
 // `Elevation` is left out for a different reason: its `+` must clamp at the
 // poles, which `unit_affine!` also does not do. `tilt_by` is that form.
+
+// ── Oscillator phase ────────────────────────────────────────────────────────
+//
+// Phase is measured in *turns* — one full cycle is 1.0, not 360 and not 2·pi.
+// That choice is why `Phase` is its own type rather than an `Azimuth`: a
+// modulator's shape table is indexed by turns, and the conversion to radians
+// happens once, at the `sin`/`cos` call.
+//
+// The engine had three different phase wraps before this type existed, and two
+// of them were wrong for negative input:
+//
+//   `%`        (lfo.rs)        keeps the dividend's sign
+//   `.fract()` (modulator.rs)  keeps the dividend's sign
+//   `rem_euclid` (driver.rs)   correct
+//
+// A negative phase escapes the `[0, 1)` range every consumer assumes, and the
+// consumers do not check — a reverse-rate LFO or a negative phase offset reads
+// off the front of a shape table. `Phase` performs exactly one wrap,
+// `rem_euclid`, and offers no other.
+
+unit_newtype!(
+    /// Oscillator phase in *turns*: `0.0` starts a cycle, `1.0` completes it.
+    ///
+    /// Always in `[0, 1)` — [`wrapped`](Self::wrapped) is the only constructor
+    /// that can be trusted with arbitrary input, and it is the only wrap this
+    /// type performs.
+    ///
+    /// Turns rather than radians because that is what a shape table is indexed
+    /// by; [`to_radians`](Self::to_radians) converts at the trig call.
+    Phase
+);
+// NOT `unit_bounded!`: clamping a phase is never the right answer — a phase
+// past the end of a cycle belongs at the *start* of the next one, not pinned to
+// 0.999. `wrapped` is the constraint.
+// NOT `unit_additive!`: `Phase + Phase` is two positions summed, with the same
+// no-origin problem as `Beat + Beat`. Advancing is `advance(PhaseIncrement)`.
+// NOT `unit_scalable!`: scaling a position depends on where zero is.
+// NOT `unit_modular!`: it generates `%`, which is one of the two wrong wraps
+// this type exists to eliminate.
+unit_ordered!(Phase);
+
+impl Phase {
+    /// The start of a cycle.
+    pub const START: Phase = Phase(0.0);
+
+    /// Wrap any value into `[0, 1)`.
+    ///
+    /// `rem_euclid`, not `%` and not `.fract()`: both of those keep the sign of
+    /// the input, so `-0.25` stays `-0.25` instead of becoming `0.75`. That is
+    /// the whole bug class — a negative phase indexes off the front of a shape
+    /// table, and no consumer checks for it.
+    #[inline]
+    pub fn wrapped(v: f32) -> Phase {
+        Phase(v.rem_euclid(1.0))
+    }
+
+    /// Advance by one step, wrapping. The replacement for `+`.
+    ///
+    /// Correct for negative increments too, which is what a reverse-rate
+    /// modulator produces.
+    #[inline]
+    pub fn advance(self, d: PhaseIncrement) -> Phase {
+        Phase::wrapped(self.0 + d.0)
+    }
+
+    /// Shift by a constant offset, wrapping — an LFO's phase-offset control.
+    #[inline]
+    pub fn offset_by(self, offset: PhaseIncrement) -> Phase {
+        self.advance(offset)
+    }
+
+    /// This phase in radians, `[0, 2·pi)` — for the `sin`/`cos` call.
+    #[inline]
+    pub fn to_radians(self) -> Radians {
+        Radians(self.0 * core::f32::consts::TAU)
+    }
+}
+
+unit_newtype!(
+    /// A per-sample phase step, in turns. The displacement partner to
+    /// [`Phase`].
+    ///
+    /// Signed: a negative increment runs a modulator backwards, which is
+    /// exactly the case the old `%`/`.fract()` wraps got wrong.
+    PhaseIncrement
+);
+unit_ordered!(PhaseIncrement);
+unit_bounded!(PhaseIncrement, f32);
+unit_additive!(PhaseIncrement);
+unit_signed!(PhaseIncrement);
+unit_scalable!(PhaseIncrement, f32);
+// Deliberately NOT `unit_affine!(Phase, PhaseIncrement)`, for the same reason
+// `Azimuth` declines it: the generated `+` does not wrap, and an unwrapped
+// phase is the bug. `advance` is the wrapping form.
+
+impl PhaseIncrement {
+    /// The step that completes `frequency` cycles per second at `sample_rate`.
+    ///
+    /// Computed in f64 and narrowed once at the end: at 20 Hz against 192 kHz
+    /// the step is ~1.04e-4, and accumulating an f32-rounded version of that
+    /// drifts audibly over a long note.
+    #[inline]
+    pub fn per_sample(frequency: Hz, sample_rate: f64) -> PhaseIncrement {
+        if sample_rate <= 0.0 {
+            return PhaseIncrement(0.0);
+        }
+        PhaseIncrement((frequency.0 as f64 / sample_rate) as f32)
+    }
+}
+
+unit_newtype!(
+    /// An angle in radians — the argument `sin`/`cos` actually take.
+    ///
+    /// Distinct from [`Phase`] (turns) and [`Azimuth`] (degrees) because all
+    /// three are bare `f32` at the call site, and feeding one where another is
+    /// expected is silent: the oscillator keeps running, just at the wrong
+    /// rate. It sounds like detuning, not like a bug.
+    Radians
+);
+unit_ordered!(Radians);
+unit_bounded!(Radians, f32);
+unit_additive!(Radians);
+unit_signed!(Radians);
+unit_scalable!(Radians, f32);
+
+impl Radians {
+    /// Full circle, `2·pi`.
+    pub const TAU: Radians = Radians(core::f32::consts::TAU);
+
+    /// `sin` of this angle.
+    #[inline]
+    pub fn sin(self) -> f32 {
+        self.0.sin()
+    }
+
+    /// `cos` of this angle.
+    #[inline]
+    pub fn cos(self) -> f32 {
+        self.0.cos()
+    }
+
+    /// The equivalent [`Phase`] in turns, wrapped into `[0, 1)`.
+    #[inline]
+    pub fn to_phase(self) -> Phase {
+        Phase::wrapped(self.0 / core::f32::consts::TAU)
+    }
+}
+
+impl From<Azimuth> for Radians {
+    #[inline]
+    fn from(a: Azimuth) -> Radians {
+        Radians(a.0.to_radians())
+    }
+}
+
+impl From<Elevation> for Radians {
+    #[inline]
+    fn from(e: Elevation) -> Radians {
+        Radians(e.0.to_radians())
+    }
+}
+
 unit_newtype!(
     /// Tempo in beats per minute. Distinct from `Hz`: beats/minute, not cycles/second.
     ///
@@ -846,6 +1008,12 @@ mod tests {
     ///   not. Same for `Elevation + ArcDegrees` vs `tilt_by`, which clamps.
     /// - `Azimuth - Azimuth` — `shortest_arc_to`; a plain subtraction takes the
     ///   long way around the seam.
+    /// - `Phase + Phase`, `Phase * f32`, `Phase.clamp(..)` — a cycle position.
+    ///   Clamping pins it at 0.999 where it belongs at the next cycle's start.
+    /// - `Phase % Phase` — `%` is one of the two sign-preserving wraps this
+    ///   type was introduced to eliminate. `wrapped` is the only wrap.
+    /// - `Phase + PhaseIncrement` — `advance`, which wraps; the operator would
+    ///   not.
     /// - `Bpm - Bpm` — a tempo difference is not a tempo.
     #[test]
     fn omitted_operators_are_documented() {}
@@ -912,6 +1080,73 @@ mod tests {
     fn elevation_lerp_needs_no_seam_handling() {
         assert_eq!(Elevation(0.0).lerp(Elevation(90.0), 0.5), Elevation(45.0));
         assert_eq!(Elevation(-90.0).lerp(Elevation(90.0), 0.5), Elevation::LEVEL);
+    }
+
+    #[test]
+    fn phase_wrap_is_correct_for_negatives_where_the_old_ones_were_not() {
+        // The two wraps this type replaces, reproduced: both keep the sign of
+        // the input, so a negative phase stays negative and indexes off the
+        // front of a shape table.
+        assert_eq!(-0.25_f32 % 1.0, -0.25);
+        assert_eq!((-0.25_f32).fract(), -0.25);
+        // `rem_euclid` — the only wrap `Phase` performs.
+        assert_eq!(Phase::wrapped(-0.25), Phase(0.75));
+
+        assert_eq!(Phase::wrapped(1.25), Phase(0.25));
+        assert_eq!(Phase::wrapped(0.5), Phase(0.5));
+        // Many turns out, either direction, still lands in range.
+        assert_eq!(Phase::wrapped(-3.25), Phase(0.75));
+        assert_eq!(Phase::wrapped(7.5), Phase(0.5));
+    }
+
+    #[test]
+    fn phase_advances_backwards_without_escaping_the_cycle() {
+        // A reverse-rate modulator: the case a sign-preserving wrap breaks.
+        let p = Phase(0.1).advance(PhaseIncrement(-0.25));
+        assert_eq!(p, Phase(0.85));
+        assert!((0.0..1.0).contains(&p.get()));
+
+        // Forward across the seam.
+        assert_eq!(Phase(0.9).advance(PhaseIncrement(0.25)), Phase::wrapped(1.15));
+
+        // Walking a full cycle backwards stays in range at every step.
+        let mut cursor = Phase::START;
+        for _ in 0..40 {
+            cursor = cursor.advance(PhaseIncrement(-0.1));
+            assert!((0.0..1.0).contains(&cursor.get()));
+        }
+    }
+
+    #[test]
+    fn phase_increment_derives_from_frequency_and_rate() {
+        // One cycle per second at 100 Hz sampling = 1/100 turn per sample.
+        assert_eq!(
+            PhaseIncrement::per_sample(Hz(1.0), 100.0),
+            PhaseIncrement(0.01)
+        );
+        // A degenerate rate yields a standing phase rather than inf/NaN.
+        assert_eq!(
+            PhaseIncrement::per_sample(Hz(440.0), 0.0),
+            PhaseIncrement(0.0)
+        );
+    }
+
+    #[test]
+    fn turns_and_radians_convert_both_ways() {
+        assert_eq!(Phase(0.5).to_radians(), Radians(core::f32::consts::PI));
+        assert_eq!(Phase::START.to_radians(), Radians(0.0));
+        assert_eq!(Radians::TAU.to_phase(), Phase::START);
+        assert_eq!(Radians(core::f32::consts::PI).to_phase(), Phase(0.5));
+
+        // A quarter turn is the sine peak — the check that the units line up
+        // rather than being off by tau somewhere.
+        assert!((Phase(0.25).to_radians().sin() - 1.0).abs() < 1e-6);
+        assert!(Phase::START.to_radians().cos() - 1.0 < 1e-6);
+
+        // Degrees reach radians too, so a panner converts once instead of
+        // hand-multiplying by pi/180 at each trig call.
+        assert!((Radians::from(Azimuth(180.0)).0 - core::f32::consts::PI).abs() < 1e-6);
+        assert_eq!(Radians::from(Elevation::LEVEL), Radians(0.0));
     }
 
     #[test]

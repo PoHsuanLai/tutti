@@ -369,8 +369,11 @@ pub struct StereoSvfFilterNode<F: Real = f64> {
     gain_db: Param<Db>,
     sample_rate: f64,
     coeffs: SvfCoefficients<F>,
-    left: SvfIntegrator<F>,
-    right: SvfIntegrator<F>,
+    /// Per-channel integrator state; `channels.len()` == audio width. The
+    /// coefficients above are channel-shared (one linked control surface), so
+    /// widening only replicates the integrator state, not the params. Built at
+    /// construction — never resized in `tick`/`process` (RT no-alloc).
+    channels: Vec<SvfIntegrator<F>>,
     /// When true, a cutoff param-input port follows the audio inputs and
     /// overrides [`Self::frequency`] per sample.
     mod_cutoff: bool,
@@ -381,6 +384,16 @@ pub struct StereoSvfFilterNode<F: Real = f64> {
 
 impl<F: Real> StereoSvfFilterNode<F> {
     pub fn new(filter_type: SvfType, frequency: f32, q: f32) -> Self {
+        Self::with_channels(2, filter_type, frequency, q)
+    }
+
+    /// An `n`-channel filter. The coefficients are channel-shared (one linked
+    /// control surface across all channels); only the per-channel integrator
+    /// state is replicated. `with_channels(2, …)` is bit-identical to
+    /// [`Self::new`]. Speaker placement is the upstream panner's job — this is a
+    /// per-channel filter, not a spatial process.
+    pub fn with_channels(channels: usize, filter_type: SvfType, frequency: f32, q: f32) -> Self {
+        let n = channels.max(1);
         let mut node = Self {
             filter_type,
             frequency: Param::new(Hz(frequency)),
@@ -388,8 +401,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
             gain_db: Param::new(Db(0.0)),
             sample_rate: DEFAULT_SR,
             coeffs: SvfCoefficients::zeroed(),
-            left: SvfIntegrator::zeroed(),
-            right: SvfIntegrator::zeroed(),
+            channels: vec![SvfIntegrator::zeroed(); n],
             mod_cutoff: false,
             mod_q: false,
         };
@@ -398,7 +410,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
     }
 
     /// A filter with optional audio-rate param-input ports. `mod_cutoff` /
-    /// `mod_q` add a cutoff / Q param-input port after the two audio inputs
+    /// `mod_q` add a cutoff / Q param-input port after the audio inputs
     /// (cutoff first), each overriding its atomic per sample when present. The
     /// atomics still hold the base (they feed the upstream param-sum's base
     /// port), so the UI handle path is unchanged.
@@ -416,8 +428,7 @@ impl<F: Real> StereoSvfFilterNode<F> {
             gain_db: Param::new(Db(0.0)),
             sample_rate: DEFAULT_SR,
             coeffs: SvfCoefficients::zeroed(),
-            left: SvfIntegrator::zeroed(),
-            right: SvfIntegrator::zeroed(),
+            channels: vec![SvfIntegrator::zeroed(); 2],
             mod_cutoff,
             mod_q,
         };
@@ -425,18 +436,24 @@ impl<F: Real> StereoSvfFilterNode<F> {
         node
     }
 
+    /// Audio channel width (`inputs()` audio ports == `outputs()`).
+    #[inline]
+    fn width(&self) -> usize {
+        self.channels.len()
+    }
+
     /// Input-port index of the cutoff param input, if present (right after the
-    /// two audio inputs).
+    /// audio inputs).
     #[inline]
     pub fn cutoff_port(&self) -> Option<usize> {
-        self.mod_cutoff.then_some(2)
+        self.mod_cutoff.then_some(self.width())
     }
 
     /// Input-port index of the Q param input, if present (after the audio
     /// inputs and the cutoff port).
     #[inline]
     pub fn q_port(&self) -> Option<usize> {
-        self.mod_q.then_some(2 + self.mod_cutoff as usize)
+        self.mod_q.then_some(self.width() + self.mod_cutoff as usize)
     }
 
     pub fn with_gain_db(mut self, db: f32) -> Self {
@@ -504,16 +521,17 @@ impl<F: Real> StereoSvfFilterNode<F> {
 
 impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
     fn inputs(&self) -> usize {
-        2 + self.mod_cutoff as usize + self.mod_q as usize
+        self.width() + self.mod_cutoff as usize + self.mod_q as usize
     }
 
     fn outputs(&self) -> usize {
-        2
+        self.width()
     }
 
     fn reset(&mut self) {
-        self.left.reset_z();
-        self.right.reset_z();
+        for ch in &mut self.channels {
+            ch.reset_z();
+        }
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
@@ -534,13 +552,11 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
                 self.maybe_update_modulated(freq, q);
             }
         }
-        let l = self.left.tick(&self.coeffs, F::from_f32(input[0])).to_f32();
-        let r = self
-            .right
-            .tick(&self.coeffs, F::from_f32(input[1]))
-            .to_f32();
-        output[0] = l;
-        output[1] = r;
+        // Per-channel integrator, channel-shared coeffs. Width 2 is
+        // bit-identical to the old left/right tick.
+        for (c, ch) in self.channels.iter_mut().enumerate() {
+            output[c] = ch.tick(&self.coeffs, F::from_f32(input[c])).to_f32();
+        }
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
@@ -551,29 +567,25 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
         if cutoff_port.is_none() && q_port.is_none() {
             self.maybe_update();
             for i in 0..size {
-                let l_in = F::from_f32(input.at_f32(0, i));
-                let r_in = F::from_f32(input.at_f32(1, i));
-                let l = self.left.tick(&self.coeffs, l_in).to_f32();
-                let r = self.right.tick(&self.coeffs, r_in).to_f32();
-                output.set_f32(0, i, l);
-                output.set_f32(1, i, r);
+                for (c, ch) in self.channels.iter_mut().enumerate() {
+                    let x = F::from_f32(input.at_f32(c, i));
+                    output.set_f32(c, i, ch.tick(&self.coeffs, x).to_f32());
+                }
             }
             return;
         }
         // Modulated path: read the active port(s) per sample and recompute the
-        // (channel-shared) coeffs before ticking both channels.
+        // (channel-shared) coeffs before ticking every channel.
         let base_freq = self.frequency.load().0;
         let base_q = self.q.load().0;
         for i in 0..size {
             let freq = cutoff_port.map_or(base_freq, |p| input.at_f32(p, i).max(1.0));
             let q = q_port.map_or(base_q, |p| input.at_f32(p, i).max(0.01));
             self.maybe_update_modulated(freq, q);
-            let l_in = F::from_f32(input.at_f32(0, i));
-            let r_in = F::from_f32(input.at_f32(1, i));
-            let l = self.left.tick(&self.coeffs, l_in).to_f32();
-            let r = self.right.tick(&self.coeffs, r_in).to_f32();
-            output.set_f32(0, i, l);
-            output.set_f32(1, i, r);
+            for (c, ch) in self.channels.iter_mut().enumerate() {
+                let x = F::from_f32(input.at_f32(c, i));
+                output.set_f32(c, i, ch.tick(&self.coeffs, x).to_f32());
+            }
         }
     }
 
@@ -602,9 +614,10 @@ impl<F: Real + 'static> AudioUnit for StereoSvfFilterNode<F> {
     }
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
-        let mut out = SignalFrame::new(2);
-        out.set(0, input.at(0).filter(0.0, |z| z));
-        out.set(1, input.at(1).filter(0.0, |z| z));
+        let mut out = SignalFrame::new(self.width());
+        for c in 0..self.width() {
+            out.set(c, input.at(c).filter(0.0, |z| z));
+        }
         out
     }
 
@@ -622,8 +635,7 @@ impl<F: Real> Clone for StereoSvfFilterNode<F> {
             gain_db: self.gain_db.handle(),
             sample_rate: self.sample_rate,
             coeffs: self.coeffs.clone(),
-            left: self.left.clone(),
-            right: self.right.clone(),
+            channels: self.channels.clone(),
             mod_cutoff: self.mod_cutoff,
             mod_q: self.mod_q,
         }
@@ -945,6 +957,79 @@ mod tests {
         let mut out = [0.0f32; 2];
         stereo.tick(&[0.0, 0.0], &mut out);
         assert!(out[0].abs() < 1e-4 && out[1].abs() < 1e-4);
+    }
+
+    // ── Width-native (N-channel) ─────────────────────────────────────────────
+
+    fn process_wide(node: &mut dyn AudioUnit, frames: &[Vec<f32>]) -> Vec<Vec<f32>> {
+        let ch = node.inputs();
+        let len = frames[0].len();
+        let mut out = vec![vec![0.0f32; len]; ch];
+        let mut inbuf = vec![0.0f32; ch];
+        let mut outbuf = vec![0.0f32; ch];
+        for i in 0..len {
+            for (c, f) in frames.iter().enumerate() {
+                inbuf[c] = f[i];
+            }
+            node.tick(&inbuf, &mut outbuf);
+            for c in 0..ch {
+                out[c][i] = outbuf[c];
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn with_channels_2_is_bit_identical_to_new() {
+        // The stereo fast path must be preserved exactly.
+        let mut a = StereoSvfFilterNode::<f64>::new(SvfType::LowPass, 1200.0, 0.8);
+        a.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut b = StereoSvfFilterNode::<f64>::with_channels(2, SvfType::LowPass, 1200.0, 0.8);
+        b.set_sample_rate(tutti_core::SampleRate(44100.0));
+
+        let sig = generate_sine(440.0, 44100.0, 1024);
+        let (al, ar) = process_stereo(&mut a, &sig, &sig);
+        let (bl, br) = process_stereo(&mut b, &sig, &sig);
+        for i in 0..sig.len() {
+            assert_eq!(al[i].to_bits(), bl[i].to_bits(), "L bit-diff at {i}");
+            assert_eq!(ar[i].to_bits(), br[i].to_bits(), "R bit-diff at {i}");
+        }
+    }
+
+    #[test]
+    fn with_channels_reports_arity() {
+        let f = StereoSvfFilterNode::<f64>::with_channels(6, SvfType::HighPass, 800.0, 0.707);
+        assert_eq!(f.inputs(), 6);
+        assert_eq!(f.outputs(), 6);
+    }
+
+    #[test]
+    fn wide_channel_matches_mono_and_is_independent() {
+        // Each of 6 channels must filter exactly like a mono SVF with the same
+        // coeffs, and carry only its own input (no cross-channel bleed).
+        let mut mono = SvfFilterNode::<f64>::new(SvfType::LowPass, 1000.0, 0.707);
+        mono.set_sample_rate(tutti_core::SampleRate(44100.0));
+        let mut wide =
+            StereoSvfFilterNode::<f64>::with_channels(6, SvfType::LowPass, 1000.0, 0.707);
+        wide.set_sample_rate(tutti_core::SampleRate(44100.0));
+
+        // Drive only channel 4; the rest are silent.
+        let sig = generate_sine(300.0, 44100.0, 2048);
+        let mut frames: Vec<Vec<f32>> = (0..6).map(|_| vec![0.0f32; sig.len()]).collect();
+        frames[4] = sig.clone();
+        let out = process_wide(&mut wide, &frames);
+
+        let mono_out = process_mono(&mut mono, &sig);
+        for i in 0..sig.len() {
+            assert!(
+                (mono_out[i] - out[4][i]).abs() < 1e-5,
+                "ch4 diverges from mono at {i}"
+            );
+        }
+        for c in [0usize, 1, 2, 3, 5] {
+            let e: f32 = out[c].iter().map(|s| s * s).sum();
+            assert!(e < 1e-10, "ch{c} should stay silent; energy {e}");
+        }
     }
 
     // ── Audio-rate param-input ports ─────────────────────────────────────────

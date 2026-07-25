@@ -124,6 +124,32 @@ fn stereo_delay_line_node_process_is_allocation_free() {
 }
 
 #[test]
+fn stereo_delay_line_node_wide_6ch_process_is_allocation_free() {
+    // The per-channel delay-line Vec must be built at construction; the wide
+    // path must not allocate per buffer.
+    let mut node = StereoDelayLineNode::with_channels(6, 2.0_f32, 0.30_f32, 0.4_f32);
+    node.set_sample_rate(SampleRate(48_000.0));
+
+    let mut input_vec = BufferVec::new(6);
+    let mut output_vec = BufferVec::new(6);
+    fill_with_signal(&mut input_vec, 0.5);
+
+    for _ in 0..16 {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        node.process(64, &input, &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..2_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            node.process(64, &input, &mut output);
+        }
+    });
+}
+
+#[test]
 fn chorus_node_process_is_allocation_free() {
     let mut node = ChorusNode::new();
     node.set_sample_rate(SampleRate(48_000.0));

@@ -102,13 +102,23 @@ pub struct DistortionNode {
     drive: Param<Linear>,
     shaper: Shaper,
     last_drive: f32,
-    /// When true, a drive param-input port follows the two audio inputs (port 2)
-    /// and overrides [`Self::drive`] per sample.
+    /// Audio channel width (`inputs()` audio ports == `outputs()`). The shaper
+    /// is stateless and channel-shared, so widening is purely the port count.
+    channels: usize,
+    /// When true, a drive param-input port follows the audio inputs and
+    /// overrides [`Self::drive`] per sample.
     mod_drive: bool,
 }
 
 impl DistortionNode {
     pub fn new(kind: ShapeKind, drive: impl Into<Linear>) -> Self {
+        Self::with_channels(2, kind, drive)
+    }
+
+    /// An `n`-channel waveshaper. The shaper carries no per-channel state, so
+    /// every channel is shaped by the same (linked) drive/kind.
+    /// `with_channels(2, …)` is bit-identical to [`Self::new`].
+    pub fn with_channels(channels: usize, kind: ShapeKind, drive: impl Into<Linear>) -> Self {
         let drive = drive.into();
         let d = drive.get().max(0.0);
         Self {
@@ -116,15 +126,15 @@ impl DistortionNode {
             drive: Param::new(drive),
             shaper: Shaper::build(kind, d),
             last_drive: d,
+            channels: channels.max(1),
             mod_drive: false,
         }
     }
 
     /// A node with an optional audio-rate drive param-input port. `mod_drive`
-    /// adds a drive param-input port after the two audio inputs (port 2),
-    /// overriding the atomic per sample when present. The atomic still holds the
-    /// base (it feeds the upstream param-sum's base port), so the UI handle path
-    /// is unchanged.
+    /// adds a drive param-input port after the audio inputs, overriding the
+    /// atomic per sample when present. The atomic still holds the base (it feeds
+    /// the upstream param-sum's base port), so the UI handle path is unchanged.
     pub fn with_param_inputs(kind: ShapeKind, drive: impl Into<Linear>, mod_drive: bool) -> Self {
         let drive = drive.into();
         let d = drive.get().max(0.0);
@@ -133,15 +143,16 @@ impl DistortionNode {
             drive: Param::new(drive),
             shaper: Shaper::build(kind, d),
             last_drive: d,
+            channels: 2,
             mod_drive,
         }
     }
 
     /// Input-port index of the drive param input, if present (right after the
-    /// two audio inputs).
+    /// audio inputs).
     #[inline]
     pub fn drive_port(&self) -> Option<usize> {
-        self.mod_drive.then_some(2)
+        self.mod_drive.then_some(self.channels)
     }
 
     /// Atomic handle for the UI / automation to share the drive cell.
@@ -183,6 +194,7 @@ impl Clone for DistortionNode {
             drive: self.drive.handle(),
             shaper: self.shaper.clone(),
             last_drive: self.last_drive,
+            channels: self.channels,
             mod_drive: self.mod_drive,
         }
     }
@@ -190,11 +202,11 @@ impl Clone for DistortionNode {
 
 impl AudioUnit for DistortionNode {
     fn inputs(&self) -> usize {
-        2 + self.mod_drive as usize
+        self.channels + self.mod_drive as usize
     }
 
     fn outputs(&self) -> usize {
-        2
+        self.channels
     }
 
     fn reset(&mut self) {}
@@ -207,8 +219,9 @@ impl AudioUnit for DistortionNode {
             None => self.maybe_update(),
             Some(p) => self.maybe_update_modulated(input[p].max(0.0)),
         }
-        output[0] = self.shaper.shape(input[0]);
-        output[1] = self.shaper.shape(input[1]);
+        for c in 0..self.channels {
+            output[c] = self.shaper.shape(input[c]);
+        }
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
@@ -217,17 +230,19 @@ impl AudioUnit for DistortionNode {
         let Some(drive_port) = self.drive_port() else {
             self.maybe_update();
             for i in 0..size {
-                output.set_f32(0, i, self.shaper.shape(input.at_f32(0, i)));
-                output.set_f32(1, i, self.shaper.shape(input.at_f32(1, i)));
+                for c in 0..self.channels {
+                    output.set_f32(c, i, self.shaper.shape(input.at_f32(c, i)));
+                }
             }
             return;
         };
         // Modulated path: read the drive port per sample and rebuild the shaper
-        // when it moves before shaping both channels.
+        // when it moves before shaping every channel.
         for i in 0..size {
             self.maybe_update_modulated(input.at_f32(drive_port, i).max(0.0));
-            output.set_f32(0, i, self.shaper.shape(input.at_f32(0, i)));
-            output.set_f32(1, i, self.shaper.shape(input.at_f32(1, i)));
+            for c in 0..self.channels {
+                output.set_f32(c, i, self.shaper.shape(input.at_f32(c, i)));
+            }
         }
     }
 
@@ -253,10 +268,11 @@ impl AudioUnit for DistortionNode {
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         // Nonlinear: the output is no longer a pure scaling of the input, so
-        // mark both channels as unknown-value (latency 0, no constant prop).
-        let mut out = SignalFrame::new(2);
-        out.set(0, input.at(0).distort(0.0));
-        out.set(1, input.at(1).distort(0.0));
+        // mark every channel as unknown-value (latency 0, no constant prop).
+        let mut out = SignalFrame::new(self.channels);
+        for c in 0..self.channels {
+            out.set(c, input.at(c).distort(0.0));
+        }
         out
     }
 
@@ -284,6 +300,41 @@ mod tests {
         let n = DistortionNode::new(ShapeKind::Tanh, 1.0);
         assert_eq!(n.inputs(), 2);
         assert_eq!(n.outputs(), 2);
+    }
+
+    #[test]
+    fn with_channels_reports_arity_and_shapes_every_channel() {
+        let mut n = DistortionNode::with_channels(6, ShapeKind::HardClip, 1.0);
+        assert_eq!(n.inputs(), 6);
+        assert_eq!(n.outputs(), 6);
+
+        // Each channel gets the same (linked) shaper — hardclip clamps all 6.
+        let mut out = [0.0f32; 6];
+        n.tick(&[4.0, -4.0, 2.0, -2.0, 0.5, -0.5], &mut out);
+        for (c, &y) in out.iter().enumerate() {
+            assert!(
+                (-1.0 - 1e-6..=1.0 + 1e-6).contains(&y),
+                "ch{c} not hardclipped: {y}"
+            );
+        }
+        // The two saturating channels actually hit the rails (not silent).
+        assert!((out[0] - 1.0).abs() < 1e-6);
+        assert!((out[1] + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn with_channels_2_is_bit_identical_to_new() {
+        let mut a = DistortionNode::new(ShapeKind::Tanh, 1.7);
+        let mut b = DistortionNode::with_channels(2, ShapeKind::Tanh, 1.7);
+        for i in 0..256 {
+            let x = (i as f32 / 128.0) - 1.0;
+            let mut oa = [0.0f32; 2];
+            let mut ob = [0.0f32; 2];
+            a.tick(&[x, -x], &mut oa);
+            b.tick(&[x, -x], &mut ob);
+            assert_eq!(oa[0].to_bits(), ob[0].to_bits());
+            assert_eq!(oa[1].to_bits(), ob[1].to_bits());
+        }
     }
 
     #[test]

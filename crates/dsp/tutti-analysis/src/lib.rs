@@ -60,21 +60,17 @@
 //! # Ok::<(), tutti_analysis::AnalysisError>(())
 //! ```
 
-pub mod cache;
-pub mod correlation;
 pub mod error;
 pub mod fft;
 pub mod geometry;
 pub mod grid;
-pub mod istft;
 pub mod onset;
 pub mod peaks;
-pub mod pitch;
+/// The YIN numerics `yin` drives. Private engine, not public surface:
+/// `PitchEstimate` and `YinConfig` are the API.
+mod pitch;
 pub mod stereo;
-pub mod stft;
 pub mod transform;
-pub mod transient;
-pub mod waveform;
 pub mod window;
 pub mod yin;
 
@@ -114,16 +110,6 @@ pub use yin::{
 /// channels 2..N.
 pub use tutti_types::{fold_buffer_to_mono, fold_planar_to_mono};
 
-pub use cache::ThumbnailCache;
-pub use correlation::{CorrelationMeter, StereoAnalysis};
-pub use istft::{istft, istft_complex};
-pub use pitch::{
-    freq_to_midi, median_filter, midi_to_freq, viterbi_smooth, PitchDetector, PitchResult,
-};
-pub use stft::{
-    compute_stft, compute_stft_complex, compute_stft_range, hann_cola_ok, ComplexStftResult,
-    IncrementalStftBuilder, StftResult,
-};
 
 /// The generic complex type, re-exported so consumers can name a bin without
 /// depending on `rustfft` directly. Most code wants [`Complex`] instead.
@@ -146,5 +132,3 @@ pub use rustfft::num_complex::Complex as GenericComplex;
 /// this crate does not. Both are `num_complex::Complex<f32>` underneath, so
 /// values cross freely — only the transform differs.
 pub type Complex = rustfft::num_complex::Complex<f32>;
-pub use transient::{DetectionMethod, Transient, TransientDetector};
-pub use waveform::{MultiResolutionSummary, WaveformBlock, WaveformSummary};

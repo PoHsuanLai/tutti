@@ -20,9 +20,6 @@ tutti-types = { path = "../../core/tutti-types", default-features = false }
 # FFT for spectral analysis (transient detection, pitch detection)
 rustfft = "6"
 
-# LRU cache for thumbnail caching
-lru = "0.12"
-
 # Serialization (optional)
 serde = { version = "1", features = ["derive"], optional = true }
 

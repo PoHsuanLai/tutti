@@ -158,6 +158,18 @@ impl Stft {
         self.bins.frames()
     }
 
+    /// `(frames, bins)` as plain counts — the shape a mask or display grid
+    /// must match.
+    #[inline]
+    pub fn dims(&self) -> (usize, usize) {
+        (self.bins.frames().get(), self.bins.bins().get())
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.bins.is_empty()
+    }
+
     #[inline]
     pub fn magnitude_at(&self, frame: FrameIndex, bin: BinIndex) -> Amplitude {
         Amplitude(self.bins.at(frame, bin).norm())
@@ -304,6 +316,18 @@ impl StftMagnitude {
     #[inline]
     pub fn frames(&self) -> FrameCount {
         self.magnitudes.grid().frames()
+    }
+
+    /// `(frames, bins)` as plain counts.
+    #[inline]
+    pub fn dims(&self) -> (usize, usize) {
+        let grid = self.magnitudes.grid();
+        (grid.frames().get(), grid.bins().get())
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.magnitudes.grid().is_empty()
     }
 }
 

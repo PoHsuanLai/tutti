@@ -173,6 +173,14 @@ impl Onset {
 /// the `prev_magnitudes` that `&mut self` used to hide.
 #[derive(Debug, Clone, Default)]
 pub struct OnsetState {
+    /// The config this carry belongs to.
+    ///
+    /// A carry is only meaningful for the config that produced it, and
+    /// `OnsetConfig` is `Copy` and passed per call — so nothing stops a caller
+    /// varying it mid-run. Recording it here lets [`step_onset`] reset instead
+    /// of measuring novelty against a reference from a different detection
+    /// function or a different time grid.
+    config: Option<OnsetConfig>,
     previous: Vec<f32>,
     /// Novelty per frame, in analysis order. Thresholding is global, so peaks
     /// can only be picked once the run is complete.
@@ -186,6 +194,7 @@ impl OnsetState {
 
     /// Forget everything. Equivalent to starting with a fresh state.
     pub fn reset(&mut self) {
+        self.config = None;
         self.previous.clear();
         self.novelty.clear();
     }
@@ -208,6 +217,15 @@ pub fn step_onset(
     samples: &[f32],
     fft: &mut FftScratch,
 ) {
+    // The carry is only meaningful for the config that produced it. Comparing
+    // the whole config — not just the bin count — is what makes this correct:
+    // two geometries can share a window (and so a bin count) while differing
+    // in hop, which puts the carried frame on a different time grid.
+    if state.config != Some(*cfg) {
+        state.reset();
+        state.config = Some(*cfg);
+    }
+
     let bins = cfg.geometry.bins_per_frame().get();
     if state.previous.len() != bins {
         state.previous = vec![0.0; bins];
@@ -217,6 +235,12 @@ pub fn step_onset(
     let window = cfg.geometry.hann();
     let mut spectrum = vec![Complex::default(); bins];
 
+    // Every spectral branch stores its magnitudes, including the ones that do
+    // not read them. Skipping the store leaves `previous` stale or zeroed, so
+    // the first frame after a switch measured novelty against the wrong
+    // reference — overstating flux by ~12x and complex-domain deviation by
+    // ~15,000x in measurement, which then dominates the adaptive threshold and
+    // the strength normalization for the *whole* run.
     let value = match cfg.function {
         DetectionFunction::Energy => spectral_energy(samples),
         DetectionFunction::SpectralFlux => {
@@ -227,7 +251,9 @@ pub fn step_onset(
         }
         DetectionFunction::HighFrequencyContent => {
             fft.forward(samples, &window, &mut spectrum);
-            high_frequency_content(&spectrum) * 0.01
+            let v = high_frequency_content(&spectrum) * 0.01;
+            store_magnitudes(&mut state.previous, &spectrum);
+            v
         }
         DetectionFunction::ComplexDomain => {
             fft.forward(samples, &window, &mut spectrum);
@@ -268,14 +294,21 @@ pub fn detect_onsets(cfg: &OnsetConfig, samples: &[f32], fft: &mut FftScratch) -
 }
 
 /// Drop onsets closer together than `min_gap`, keeping the stronger of a pair.
+///
+/// Order-independent: the gap is a distance, so an unsorted list is compared
+/// correctly rather than underflowing. `pick_peaks` emits ascending positions,
+/// but this is public and takes a plain `Vec`, so it cannot assume that.
 pub fn suppress_close_onsets(onsets: &mut Vec<Onset>, min_gap: Samples) {
     if onsets.len() < 2 {
         return;
     }
     let mut i = 1;
     while i < onsets.len() {
-        let too_close =
-            onsets[i].position.get() - onsets[i - 1].position.get() < min_gap.get();
+        let too_close = onsets[i]
+            .position
+            .get()
+            .abs_diff(onsets[i - 1].position.get())
+            < min_gap.get();
         if too_close {
             let weaker = if onsets[i].strength > onsets[i - 1].strength {
                 i - 1
@@ -407,6 +440,66 @@ mod tests {
         }
     }
 
+    /// Changing the config mid-run invalidates the carry.
+    ///
+    /// `OnsetConfig` is `Copy` and passed per call, so a caller can vary it
+    /// between frames. Before this was handled, the first frame after a switch
+    /// diffed against a reference from the previous function — measured at
+    /// ~12x overstatement for flux and ~15,000x for complex-domain — which
+    /// then dominated the adaptive threshold and strength normalization for
+    /// the whole run.
+    #[test]
+    fn switching_config_mid_run_resets_the_carry() {
+        let samples = signal(0.5, &[0.1, 0.25]);
+        let mut fft = FftScratch::new();
+
+        let hfc = OnsetConfig::new(geometry(), DetectionFunction::HighFrequencyContent);
+        let flux = OnsetConfig::new(geometry(), DetectionFunction::SpectralFlux);
+
+        // Run HFC frames, then switch to flux on the same state.
+        let mut switched = OnsetState::new();
+        run(&hfc, &mut switched, &samples, &mut fft);
+        run(&flux, &mut switched, &samples, &mut fft);
+
+        // A state that only ever saw flux.
+        let mut clean = OnsetState::new();
+        run(&flux, &mut clean, &samples, &mut fft);
+
+        assert_eq!(
+            finish(&flux, &switched),
+            finish(&flux, &clean),
+            "a config switch must discard the previous function's carry"
+        );
+    }
+
+    /// Same window, different hop: the bin count is identical, so a
+    /// bins-only guard would not notice the time grid changed.
+    #[test]
+    fn a_hop_change_alone_resets_the_carry() {
+        let samples = signal(0.5, &[0.1, 0.25]);
+        let mut fft = FftScratch::new();
+
+        let coarse = OnsetConfig::new(
+            StftGeometry::new(SAMPLE_RATE, Samples(2048), Samples(1024)).unwrap(),
+            DetectionFunction::SpectralFlux,
+        );
+        let fine = OnsetConfig::new(geometry(), DetectionFunction::SpectralFlux);
+        assert_eq!(
+            coarse.geometry().bins_per_frame(),
+            fine.geometry().bins_per_frame(),
+            "the two geometries must share a bin count for this test to bite"
+        );
+
+        let mut switched = OnsetState::new();
+        run(&coarse, &mut switched, &samples, &mut fft);
+        run(&fine, &mut switched, &samples, &mut fft);
+
+        let mut clean = OnsetState::new();
+        run(&fine, &mut clean, &samples, &mut fft);
+
+        assert_eq!(finish(&fine, &switched), finish(&fine, &clean));
+    }
+
     #[test]
     fn onsets_land_near_the_known_spikes() {
         let truth = [0.1f64, 0.3, 0.5, 0.7];
@@ -496,6 +589,29 @@ mod tests {
         let mut single = vec![onset(100, 0.5)];
         suppress_close_onsets(&mut single, Samples(1000));
         assert_eq!(single.len(), 1);
+    }
+
+    /// Unsorted input must not underflow.
+    ///
+    /// `pick_peaks` emits ascending positions, so the in-crate path never hit
+    /// this — but the function is public and takes a plain `Vec`, and
+    /// subtracting `usize` positions panicked in debug and wrapped to a huge
+    /// value in release, where the pair would silently never be suppressed.
+    #[test]
+    fn suppression_handles_unsorted_input() {
+        let onset = |pos: usize, strength: f32| Onset {
+            position: Samples(pos),
+            strength: Amplitude(strength),
+        };
+
+        let mut descending = vec![onset(9000, 0.4), onset(100, 0.9)];
+        suppress_close_onsets(&mut descending, Samples(1000));
+        assert_eq!(descending.len(), 2, "far apart in either direction");
+
+        let mut close = vec![onset(150, 0.4), onset(100, 0.9)];
+        suppress_close_onsets(&mut close, Samples(1000));
+        assert_eq!(close.len(), 1);
+        assert_eq!(close[0].strength, Amplitude(0.9));
     }
 
     #[test]

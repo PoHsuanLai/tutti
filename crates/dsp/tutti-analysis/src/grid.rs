@@ -143,8 +143,19 @@ impl<T> Grid<T> {
     ///
     /// Panics if either coordinate is out of range — index semantics, like
     /// slice indexing. Use [`get`](Self::get) to check.
+    ///
+    /// Both axes are checked, not just the flattened offset. A bin past the
+    /// end of its frame lands *inside* the backing buffer, so a flat bounds
+    /// check would silently return a neighbouring frame's value instead of
+    /// panicking — which is the failure `get` was written to document.
     #[inline]
     pub fn at(&self, frame: FrameIndex, bin: BinIndex) -> &T {
+        assert!(
+            frame.get() < self.frames.get() && bin.get() < self.bins.get(),
+            "grid index ({frame}, {bin}) is outside {}x{}",
+            self.frames,
+            self.bins
+        );
         &self.data[self.offset(frame, bin)]
     }
 
@@ -179,10 +190,19 @@ impl<T> Grid<T> {
         &mut self.data[start..end]
     }
 
-    /// Every frame, in order.
+    /// Every frame, in order. Always yields [`frames`](Self::frames) rows.
+    ///
+    /// The zero-bin case is spelled out rather than papered over with
+    /// `.max(1)`: that avoided a `chunks_exact(0)` panic but made the iterator
+    /// yield nothing for a grid reporting N frames, so any loop pairing
+    /// `rows().enumerate()` with a `frames()`-derived index disagreed silently.
     #[inline]
-    pub fn rows(&self) -> impl Iterator<Item = &[T]> {
-        self.data.chunks_exact(self.bins.get().max(1))
+    pub fn rows(&self) -> Box<dyn Iterator<Item = &[T]> + '_> {
+        if self.bins.get() == 0 {
+            Box::new(core::iter::repeat(&[][..]).take(self.frames.get()))
+        } else {
+            Box::new(self.data.chunks_exact(self.bins.get()))
+        }
     }
 
     /// The backing buffer, row-major.
@@ -296,6 +316,32 @@ mod tests {
         // Without the per-axis check a flat bounds test would accept this:
         // frame 1, bin 4 flattens to offset 8, which is in range but wrong.
         assert_eq!(g.get(FrameIndex(1), BinIndex(4)), None);
+    }
+
+    /// `at` must panic on an out-of-axis bin rather than return a neighbour's
+    /// value. The offset `1 * 4 + 4 == 8` is inside the backing buffer, so a
+    /// flat bounds check accepts it and hands back frame 2's first value.
+    #[test]
+    #[should_panic(expected = "outside 3x4")]
+    fn at_panics_on_a_bin_past_the_end_of_its_frame() {
+        let g = grid();
+        let _ = g.at(FrameIndex(1), BinIndex(4));
+    }
+
+    #[test]
+    #[should_panic(expected = "outside 3x4")]
+    fn at_panics_on_a_frame_past_the_end() {
+        let g = grid();
+        let _ = g.at(FrameIndex(3), BinIndex(0));
+    }
+
+    /// A zero-bin grid still reports its frames, and `rows` agrees.
+    #[test]
+    fn rows_agrees_with_the_frame_count_even_with_no_bins() {
+        let g: Grid<f32> = Grid::new(Vec::new(), FrameCount(5), BinCount(0)).unwrap();
+        assert_eq!(g.frames(), FrameCount(5));
+        assert_eq!(g.rows().count(), 5, "rows must not disagree with frames()");
+        assert!(g.rows().all(|r| r.is_empty()));
     }
 
     #[test]

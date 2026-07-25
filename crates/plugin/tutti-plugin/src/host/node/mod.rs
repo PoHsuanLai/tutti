@@ -16,6 +16,7 @@ mod audio_unit;
 mod batcher;
 mod harmony_source;
 mod input_slot;
+mod note_expression_source;
 mod param_automation_source;
 mod process;
 mod transport_source;
@@ -30,6 +31,7 @@ mod tests;
 pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
 pub use crate::util::node::{route_with_latency, Midi, ParameterChangeSink};
 pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
+pub use note_expression_source::NoteExpressionSource;
 pub use param_automation_source::{
     LfoCurve, LfoOffset, OffsetCurve, ParamAutomationSource, PluginParamTarget, TimedParam,
 };
@@ -91,17 +93,20 @@ struct PluginInputs {
     harmony: InputSlot<HarmonySource>,
     params: InputSlot<ParamAutomationSource>,
     transport: InputSlot<TransportSource>,
+    note_expression: InputSlot<NoteExpressionSource>,
 }
 
 impl PluginInputs {
     /// Slots with the gates that decide which plugins receive each input:
-    /// harmony → `SEQUENCER_CONTEXT`, transport → `TRANSPORT`, params → universal
-    /// (empty gate = always send). Matches the former per-`drain` feature checks.
+    /// harmony → `SEQUENCER_CONTEXT`, transport → `TRANSPORT`, note-expression →
+    /// `NOTE_EXPRESSION`, params → universal (empty gate = always send). Matches
+    /// the former per-`drain` feature checks.
     fn new() -> Self {
         Self {
             harmony: InputSlot::new(Features::SEQUENCER_CONTEXT),
             params: InputSlot::new(Features::empty()),
             transport: InputSlot::new(Features::TRANSPORT),
+            note_expression: InputSlot::new(Features::NOTE_EXPRESSION),
         }
     }
 }
@@ -148,10 +153,11 @@ impl PluginClient {
     }
 
     /// Assemble this block's [`BlockPayload`]: MIDI (from the receiver-fallback
-    /// [`Midi`]) plus each gated [`InputSlot`] (harmony/params/transport). Every
-    /// send/gate decision lives in [`InputSlot::drain`] keyed on the plugin's
-    /// [`Features`] — never on the plugin's format. `note_expression` is left
-    /// default (no producer yet; delivered via the MIDI-UMP path).
+    /// [`Midi`]) plus each gated [`InputSlot`] (harmony / params / transport /
+    /// note-expression). Every send/gate decision lives in [`InputSlot::drain`]
+    /// keyed on the plugin's [`Features`] — never on the plugin's format. The
+    /// note-expression slot's producer currently emits nothing (reader deferred),
+    /// so it drains empty until a note-expression lane reader is wired in.
     pub(super) fn build_block_payload(&mut self, block_size: usize) -> BlockPayload {
         let ctx = BlockCtx { block_size };
         let features = self.loaded.features;
@@ -160,12 +166,25 @@ impl PluginClient {
             params: self.inputs.params.drain(ctx, features).clone(),
             harmony: self.inputs.harmony.drain(ctx, features).clone(),
             transport: *self.inputs.transport.drain(ctx, features),
-            note_expression: crate::protocol::NoteExpressionChanges::new(),
+            note_expression: self.inputs.note_expression.drain(ctx, features).clone(),
         }
     }
 
     pub(super) fn bridge_ref(&self) -> &Arc<PluginBridge> {
         &self.bridge
+    }
+
+    /// Re-inject the plugin's MIDI-out into routing — but only if the plugin
+    /// declared [`Features::MIDI_OUT`]. Gating the *emit* on the self-reported
+    /// capability mirrors how the per-block input feeds gate their sends on
+    /// their `Features` bit: a plugin that never advertised MIDI output has its
+    /// emission dropped rather than silently re-injected. (Without the gate,
+    /// `emit` fired whenever an out-target was installed, regardless of the bit.)
+    #[inline]
+    fn emit_midi_out_if_declared(&self) {
+        if self.loaded.features.contains(crate::protocol::Features::MIDI_OUT) {
+            self.midi.emit(&self.midi_out);
+        }
     }
 
     /// Flush the tick batch through the bridge, then re-inject the plugin's
@@ -174,7 +193,7 @@ impl PluginClient {
     pub(in crate::host::node) fn flush_batch<T: batcher::Scalar>(&mut self, payload: BlockPayload) {
         let bridge = self.bridge.clone();
         self.io.flush::<T>(&bridge, payload, &mut self.midi_out);
-        self.midi.emit(&self.midi_out);
+        self.emit_midi_out_if_declared();
     }
 
     /// Block-mode counterpart of [`Self::flush_batch`].
@@ -188,7 +207,7 @@ impl PluginClient {
         let bridge = self.bridge.clone();
         self.io
             .process::<T>(&bridge, size, input, output, payload, &mut self.midi_out);
-        self.midi.emit(&self.midi_out);
+        self.emit_midi_out_if_declared();
     }
 
     /// Update the sample rate stamped onto the transport snapshot. Called from
@@ -381,6 +400,22 @@ impl PluginClient {
     /// plugin empty chord/scale context.
     pub fn clear_harmony_source(&mut self) {
         self.inputs.harmony.clear();
+    }
+
+    /// Install a [`NoteExpressionSource`] that supplies per-block note-expression
+    /// (VST3 `kNoteExpressionValueEvent`) from a track's expression lanes. Mirrors
+    /// [`set_harmony_source`](Self::set_harmony_source). NOTE: the producer's
+    /// reader is deferred (no expression-lane storage yet), so an installed source
+    /// currently drains empty — the rail exists so the data source can be dropped
+    /// in without touching the plugin-node wiring.
+    pub fn set_note_expression_source(&mut self, source: std::sync::Arc<NoteExpressionSource>) {
+        self.inputs.note_expression.install(source);
+    }
+
+    /// Drop a previously-installed note-expression source. Subsequent blocks feed
+    /// the plugin empty note-expression.
+    pub fn clear_note_expression_source(&mut self) {
+        self.inputs.note_expression.clear();
     }
 
     /// Install a transport reader so the plugin receives a live per-block

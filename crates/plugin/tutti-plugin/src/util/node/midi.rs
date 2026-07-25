@@ -52,7 +52,9 @@ pub struct Midi {
     poll_scratch: Vec<MidiEvent>,
     /// Optional outbound routing target for a plugin that emits MIDI. `None`
     /// (the default) means the plugin's MIDI-out is dropped. Set via
-    /// [`Self::set_out`]; read per block by [`Self::emit`].
+    /// [`Self::set_out`]; read per block by [`Self::emit`] — which the node only
+    /// calls for a plugin that declared `Features::MIDI_OUT`, so an emission is
+    /// gated on the self-reported capability (the mirror of the input feeds).
     ///
     /// Wrapped in a **shared** `Arc<ArcSwapOption<…>>` for the same reason the
     /// port shares its input cell: fundsp's frontend/backend split runs a

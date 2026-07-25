@@ -170,7 +170,7 @@ pub type AudioBuffer32<'t, 'd> = AudioBuffer<'t, 'd, f32>;
 pub type AudioBuffer64<'t, 'd> = AudioBuffer<'t, 'd, f64>;
 
 /// Sample-format-tagged buffer handed to
-/// [`PluginFormatHost::process`](crate::PluginFormatHost::process).
+/// [`PluginAudio::process`](crate::PluginAudio::process).
 ///
 /// The enum keeps the trait dyn-compatible while letting each format's
 /// implementation match once and delegate into a single generic inner body.

@@ -9,8 +9,9 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 [dependencies]
 # Shared value vocabulary (PluginInfo, ParameterInfo, etc.).
 tutti-plugin-types = { path = "../tutti-plugin-types", features = ["serde"] }
-# Host machinery reused over the WASM ControlBackend: PluginHandle,
-# ControlBackend, the audio-node Midi/listener helpers, and the error type.
+# Host machinery reused over the WASM backend: PluginHandle, the granular
+# HostParams/HostState capability traits, the audio-node Midi/listener
+# helpers, and the error type.
 tutti-plugin = { path = "../tutti-plugin" }
 # Audio graph node trait + buffers.
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }

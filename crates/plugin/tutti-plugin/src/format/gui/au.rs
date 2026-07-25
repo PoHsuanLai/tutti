@@ -1,12 +1,12 @@
 //! In-process Audio Unit GUI instance (editor only, no audio processing).
 //! macOS only.
-//
-// TODO(phase3): collapse this `GuiInstance` adapter into the unified
-// `PluginFormatHost` — `AuInstance` already owns the editor open/close/state
-// paths (see `loaders/au.rs`), so this parallel wrapper becomes redundant once
-// the GUI world is folded in. Do not delete before phase 3.
+//!
+//! Implements the host-side [`PluginEditor`](super::PluginEditor) trait. Even
+//! though `AuInstance` (in `loaders/au.rs`) owns the *subprocess-side* editor
+//! open/close/state paths, this host-process object is a separate dlopen: the
+//! two editor surfaces stay distinct by design, one per world.
 
-use super::GuiInstance;
+use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::util::window::{EditorSize, WindowHandle};
 use std::path::Path;
@@ -56,7 +56,7 @@ impl AuGuiInstance {
     }
 }
 
-impl GuiInstance for AuGuiInstance {
+impl PluginEditor for AuGuiInstance {
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
         let editor =

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
-use tutti_plugin::backend::{LatencyChangeSink, ParameterChangeSink};
+use tutti_plugin::backend::ParameterChangeSink;
 use tutti_plugin::handles::PluginHandle;
 use tutti_plugin::Result;
 
@@ -50,7 +50,6 @@ pub fn load(
     let inner = Arc::new(Mutex::new(instance));
     let contention = Arc::new(AtomicU64::new(0));
     let param_sink = ParameterChangeSink::new();
-    let latency_sink = LatencyChangeSink::new();
 
     let backend = Arc::new(InProcessWasmBackend {
         inner: Arc::clone(&inner),
@@ -60,11 +59,13 @@ pub fn load(
         InProcessWasmClient::new(Arc::clone(&inner), loaded.clone(), sample_rate, contention);
     let midi_sender = client.midi_sender();
 
+    // WASM has no embeddable editor: pass `None` for the editor slot, so
+    // `handle.editor()` is `None` (no `HostEditor` impl, no stub).
     let handle = PluginHandle::from_backend(
         backend,
+        None,
         descriptor,
         loaded,
-        latency_sink,
         param_sink,
         midi_sender,
     );

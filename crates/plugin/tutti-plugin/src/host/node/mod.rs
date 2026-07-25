@@ -16,6 +16,7 @@ mod audio_unit;
 mod batcher;
 mod harmony_source;
 mod input_slot;
+mod note_expression_source;
 mod param_automation_source;
 mod process;
 mod transport_source;
@@ -27,16 +28,17 @@ mod tests;
 // in `crate::util::node`; re-exported here so the existing
 // `crate::host::node::{Midi, ...}` paths (used by `crate::backend`) keep
 // resolving.
-pub(crate) use crate::util::node::ResyncSink;
-pub use crate::util::node::{route_with_latency, LatencyChangeSink, Midi, ParameterChangeSink};
+pub(crate) use crate::util::node::{InvalidateSink, RefreshSink};
+pub use crate::util::node::{route_with_latency, Midi, ParameterChangeSink};
 pub use harmony_source::{HarmonySource, TimedChord, TimedScale};
+pub use note_expression_source::NoteExpressionSource;
 pub use param_automation_source::{
     LfoCurve, LfoOffset, OffsetCurve, ParamAutomationSource, PluginParamTarget, TimedParam,
 };
 pub(crate) use process::ProcessGuard;
 
 use crate::error::Result;
-use crate::host::ipc_client::audio::BridgeEvent;
+use crate::host::ipc_client::audio::{BridgeEvent, PluginInvalidation, ResyncClass};
 use crate::host::ipc_client::audio::HarmonyInputs;
 use crate::host::ipc_client::PluginBridge;
 use crate::host::node::input_slot::{BlockCtx, InputSlot};
@@ -66,9 +68,9 @@ pub struct PluginClient {
     /// Observers for plugin-originated unsolicited events. Shared with
     /// `PluginHandle` so callers can register callbacks via the handle
     /// and still see events driven by the bridge thread.
-    latency_sink: LatencyChangeSink,
     param_sink: ParameterChangeSink,
-    resync_sink: ResyncSink,
+    refresh_sink: RefreshSink,
+    invalidate_sink: InvalidateSink,
     /// Subprocess lifetime, shared with `PluginHandle::from_client`.
     process_guard: Arc<ProcessGuard>,
     io: Batcher,
@@ -91,17 +93,20 @@ struct PluginInputs {
     harmony: InputSlot<HarmonySource>,
     params: InputSlot<ParamAutomationSource>,
     transport: InputSlot<TransportSource>,
+    note_expression: InputSlot<NoteExpressionSource>,
 }
 
 impl PluginInputs {
     /// Slots with the gates that decide which plugins receive each input:
-    /// harmony → `SEQUENCER_CONTEXT`, transport → `TRANSPORT`, params → universal
-    /// (empty gate = always send). Matches the former per-`drain` feature checks.
+    /// harmony → `SEQUENCER_CONTEXT`, transport → `TRANSPORT`, note-expression →
+    /// `NOTE_EXPRESSION`, params → universal (empty gate = always send). Matches
+    /// the former per-`drain` feature checks.
     fn new() -> Self {
         Self {
             harmony: InputSlot::new(Features::SEQUENCER_CONTEXT),
             params: InputSlot::new(Features::empty()),
             transport: InputSlot::new(Features::TRANSPORT),
+            note_expression: InputSlot::new(Features::NOTE_EXPRESSION),
         }
     }
 }
@@ -148,10 +153,11 @@ impl PluginClient {
     }
 
     /// Assemble this block's [`BlockPayload`]: MIDI (from the receiver-fallback
-    /// [`Midi`]) plus each gated [`InputSlot`] (harmony/params/transport). Every
-    /// send/gate decision lives in [`InputSlot::drain`] keyed on the plugin's
-    /// [`Features`] — never on the plugin's format. `note_expression` is left
-    /// default (no producer yet; delivered via the MIDI-UMP path).
+    /// [`Midi`]) plus each gated [`InputSlot`] (harmony / params / transport /
+    /// note-expression). Every send/gate decision lives in [`InputSlot::drain`]
+    /// keyed on the plugin's [`Features`] — never on the plugin's format. The
+    /// note-expression slot's producer currently emits nothing (reader deferred),
+    /// so it drains empty until a note-expression lane reader is wired in.
     pub(super) fn build_block_payload(&mut self, block_size: usize) -> BlockPayload {
         let ctx = BlockCtx { block_size };
         let features = self.loaded.features;
@@ -160,12 +166,25 @@ impl PluginClient {
             params: self.inputs.params.drain(ctx, features).clone(),
             harmony: self.inputs.harmony.drain(ctx, features).clone(),
             transport: *self.inputs.transport.drain(ctx, features),
-            note_expression: crate::protocol::NoteExpressionChanges::new(),
+            note_expression: self.inputs.note_expression.drain(ctx, features).clone(),
         }
     }
 
     pub(super) fn bridge_ref(&self) -> &Arc<PluginBridge> {
         &self.bridge
+    }
+
+    /// Re-inject the plugin's MIDI-out into routing — but only if the plugin
+    /// declared [`Features::MIDI_OUT`]. Gating the *emit* on the self-reported
+    /// capability mirrors how the per-block input feeds gate their sends on
+    /// their `Features` bit: a plugin that never advertised MIDI output has its
+    /// emission dropped rather than silently re-injected. (Without the gate,
+    /// `emit` fired whenever an out-target was installed, regardless of the bit.)
+    #[inline]
+    fn emit_midi_out_if_declared(&self) {
+        if self.loaded.features.contains(crate::protocol::Features::MIDI_OUT) {
+            self.midi.emit(&self.midi_out);
+        }
     }
 
     /// Flush the tick batch through the bridge, then re-inject the plugin's
@@ -174,7 +193,7 @@ impl PluginClient {
     pub(in crate::host::node) fn flush_batch<T: batcher::Scalar>(&mut self, payload: BlockPayload) {
         let bridge = self.bridge.clone();
         self.io.flush::<T>(&bridge, payload, &mut self.midi_out);
-        self.midi.emit(&self.midi_out);
+        self.emit_midi_out_if_declared();
     }
 
     /// Block-mode counterpart of [`Self::flush_batch`].
@@ -188,7 +207,7 @@ impl PluginClient {
         let bridge = self.bridge.clone();
         self.io
             .process::<T>(&bridge, size, input, output, payload, &mut self.midi_out);
-        self.midi.emit(&self.midi_out);
+        self.emit_midi_out_if_declared();
     }
 
     /// Update the sample rate stamped onto the transport snapshot. Called from
@@ -228,31 +247,35 @@ impl PluginClient {
         let latency = Arc::new(AtomicUsize::new(server.loaded.latency_samples));
         let max_buffer_size = config.max_buffer_size;
         let process_guard = Arc::new(ProcessGuard::new(server.process, bridge_thread, config));
-        let latency_sink = LatencyChangeSink::new();
         let param_sink = ParameterChangeSink::new();
-        let resync_sink = ResyncSink::new();
+        let refresh_sink = RefreshSink::new();
+        let invalidate_sink = InvalidateSink::new();
 
-        // Route unsolicited bridge events into the shared atomic + sinks.
-        // The bridge-thread callback must be cheap; it writes the latency
-        // atomic directly so `AudioUnit::latency()` sees the new value on
-        // the next audio read, then fires the sink for the main thread.
+        // Route unsolicited bridge events into the shared atomic + sinks. The
+        // bridge-thread callback must be cheap. A latency change writes the
+        // latency atomic directly so `AudioUnit::latency()` sees the new value on
+        // the next audio read, then fires the *invalidate* sink (latency is a
+        // structural invalidation — it re-plans PDC). Resync signals split by
+        // consequence into the refresh (cosmetic) vs invalidate (structural)
+        // sinks via `ResyncKind::classify`.
         let listener_latency = Arc::clone(&latency);
-        let listener_latency_sink = latency_sink.clone();
         let listener_param_sink = param_sink.clone();
-        let listener_resync_sink = resync_sink.clone();
+        let listener_refresh_sink = refresh_sink.clone();
+        let listener_invalidate_sink = invalidate_sink.clone();
         bridge.set_listener(Some(Arc::new(move |ev| match ev {
             BridgeEvent::LatencyChanged { samples } => {
                 listener_latency.store(samples, Ordering::Release);
-                listener_latency_sink.fire(samples);
+                listener_invalidate_sink.fire(PluginInvalidation::Latency { samples });
             }
             BridgeEvent::ParameterChanged { index, value } => {
                 if let Ok(id) = u32::try_from(index) {
                     listener_param_sink.fire(id, value);
                 }
             }
-            BridgeEvent::Resync(kind) => {
-                listener_resync_sink.fire(kind);
-            }
+            BridgeEvent::Resync(kind) => match kind.classify() {
+                ResyncClass::Refresh(r) => listener_refresh_sink.fire(r),
+                ResyncClass::Invalidate(i) => listener_invalidate_sink.fire(i),
+            },
         })));
 
         Ok(Self {
@@ -261,9 +284,9 @@ impl PluginClient {
             loaded: server.loaded,
             format: server.format,
             latency,
-            latency_sink,
             param_sink,
-            resync_sink,
+            refresh_sink,
+            invalidate_sink,
             process_guard,
             io: Batcher::new(inputs, outputs, output_base, server.format, max_buffer_size),
             midi: Midi::new(),
@@ -276,16 +299,16 @@ impl PluginClient {
         })
     }
 
-    pub(crate) fn latency_sink(&self) -> &LatencyChangeSink {
-        &self.latency_sink
-    }
-
     pub(crate) fn param_sink(&self) -> &ParameterChangeSink {
         &self.param_sink
     }
 
-    pub(crate) fn resync_sink(&self) -> &ResyncSink {
-        &self.resync_sink
+    pub(crate) fn refresh_sink(&self) -> &RefreshSink {
+        &self.refresh_sink
+    }
+
+    pub(crate) fn invalidate_sink(&self) -> &InvalidateSink {
+        &self.invalidate_sink
     }
 
     /// Accessor for `PluginHandle::from_client` — not for end users.
@@ -304,7 +327,8 @@ impl PluginClient {
     /// exposed publicly so callers can also force a value. Note: updating
     /// what `AudioUnit::latency()` reports does **not** re-run PDC on its
     /// own — a graph edit (`Net::commit()`) is required. Register a
-    /// callback via `PluginHandle::on_latency_changed` to get notified.
+    /// callback via `PluginHandle::on_invalidate` (latency arrives as
+    /// `PluginInvalidation::Latency`) to get notified.
     pub fn set_latency(&self, samples: usize) {
         self.latency.store(samples, Ordering::Release);
     }
@@ -336,12 +360,12 @@ impl PluginClient {
         let _ = self.bridge.set_parameter_rt(param_id, value);
     }
 
-    /// Push the host automation read/write state to the plugin (VST3
-    /// `IAutomationState`). RT-safe, fire-and-forget; a no-op for plugins /
-    /// formats without the concept. `state` is the VST3 `AutomationStates`
-    /// bitmask (`0=none, 1=read, 2=write, 3=read|write`).
-    pub fn set_automation_state(&self, state: i32) {
-        let _ = self.bridge.set_automation_state_rt(state);
+    /// Push the host [`AutomationMode`](crate::protocol::AutomationMode) to the
+    /// plugin. RT-safe, fire-and-forget; a no-op for plugins / formats without an
+    /// automation-state concept. The format-neutral mode is encoded onto the
+    /// format's own ABI at its FFI edge (server-side / GUI-side), not here.
+    pub fn set_automation_state(&self, mode: crate::protocol::AutomationMode) {
+        let _ = self.bridge.set_automation_state_rt(mode);
     }
 
     /// Producer handle for this plugin's MIDI inbox. Route live MIDI to the
@@ -376,6 +400,22 @@ impl PluginClient {
     /// plugin empty chord/scale context.
     pub fn clear_harmony_source(&mut self) {
         self.inputs.harmony.clear();
+    }
+
+    /// Install a [`NoteExpressionSource`] that supplies per-block note-expression
+    /// (VST3 `kNoteExpressionValueEvent`) from a track's expression lanes. Mirrors
+    /// [`set_harmony_source`](Self::set_harmony_source). NOTE: the producer's
+    /// reader is deferred (no expression-lane storage yet), so an installed source
+    /// currently drains empty — the rail exists so the data source can be dropped
+    /// in without touching the plugin-node wiring.
+    pub fn set_note_expression_source(&mut self, source: std::sync::Arc<NoteExpressionSource>) {
+        self.inputs.note_expression.install(source);
+    }
+
+    /// Drop a previously-installed note-expression source. Subsequent blocks feed
+    /// the plugin empty note-expression.
+    pub fn clear_note_expression_source(&mut self) {
+        self.inputs.note_expression.clear();
     }
 
     /// Install a transport reader so the plugin receives a live per-block

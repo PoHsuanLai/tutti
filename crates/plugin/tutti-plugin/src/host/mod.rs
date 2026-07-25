@@ -11,7 +11,8 @@
 //! - [`node`] — the [`PluginClient`](node::PluginClient) fundsp node that the
 //!   out-of-process plugin presents to the audio graph.
 //! - [`handles`] — the public [`PluginHandle`](handles::PluginHandle) control
-//!   surface and the `ControlBackend` trait every host path dispatches through.
+//!   surface and the granular capability traits (`HostParams`/`HostState`/
+//!   `HostEditor`) each backend implements the subset of.
 //! - [`builder`] / [`plugins`] — the public load API.
 
 pub mod builder;

@@ -182,6 +182,7 @@ pub mod parameter_flags {
 /// [`Vst3Loaded::set_automation_state`](crate::Vst3Loaded::set_automation_state).
 pub mod automation_state {
     use super::AutomationStates_;
+    use tutti_plugin_types::AutomationMode;
 
     /// No automation read or write.
     pub const NONE: i32 = AutomationStates_::kNoAutomation;
@@ -191,6 +192,57 @@ pub mod automation_state {
     pub const WRITE: i32 = AutomationStates_::kWriteState;
     /// Host is both reading and writing automation.
     pub const READ_WRITE: i32 = AutomationStates_::kReadWriteState;
+
+    /// Encode the format-neutral [`AutomationMode`] as the VST3 `IAutomationState`
+    /// bitmask. This mapping lives here — the VST3 crate is the one that knows
+    /// both the mode vocabulary and its `IAutomationState` ABI — so
+    /// `tutti-plugin-types` stays format-agnostic. Pass the result to
+    /// [`Vst3Loaded::set_automation_state`](crate::Vst3Loaded::set_automation_state).
+    pub fn from_mode(mode: AutomationMode) -> i32 {
+        match mode {
+            AutomationMode::Off => NONE,
+            AutomationMode::Reading => READ,
+            AutomationMode::Writing => WRITE,
+            AutomationMode::ReadWriting => READ_WRITE,
+        }
+    }
+
+    /// Decode a VST3 `IAutomationState` bitmask back into an [`AutomationMode`]
+    /// (inverse of [`from_mode`]). Unknown bits beyond read|write are ignored.
+    pub fn to_mode(bits: i32) -> AutomationMode {
+        match (bits & READ != 0, bits & WRITE != 0) {
+            (false, false) => AutomationMode::Off,
+            (true, false) => AutomationMode::Reading,
+            (false, true) => AutomationMode::Writing,
+            (true, true) => AutomationMode::ReadWriting,
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn mode_bits_round_trip() {
+            for mode in [
+                AutomationMode::Off,
+                AutomationMode::Reading,
+                AutomationMode::Writing,
+                AutomationMode::ReadWriting,
+            ] {
+                assert_eq!(to_mode(from_mode(mode)), mode);
+            }
+        }
+
+        #[test]
+        fn mode_bit_values() {
+            // 0=none, 1=read, 2=write, 3=read|write (the SDK values).
+            assert_eq!(from_mode(AutomationMode::Off), 0);
+            assert_eq!(from_mode(AutomationMode::Reading), 1);
+            assert_eq!(from_mode(AutomationMode::Writing), 2);
+            assert_eq!(from_mode(AutomationMode::ReadWriting), 3);
+        }
+    }
 }
 
 /// Host-facing note-expression-type descriptor — a flat snake_case view over the

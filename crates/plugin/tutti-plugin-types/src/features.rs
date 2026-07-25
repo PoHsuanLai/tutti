@@ -64,6 +64,14 @@ bitflags! {
         /// Plugin wants the sequencer-context bundle (chords / scales /
         /// per-note text+int). Audience of one format (VST3), by spec.
         const SEQUENCER_CONTEXT = 1 << 8;
+
+        // --- Reactions (host → plugin advisories — NOT per-block feeds) ---
+        /// Plugin reacts to host automation-state changes (VST3
+        /// `IAutomationState`): the host tells it when it is reading / writing
+        /// automation so the editor can show UI feedback (a glowing knob ring).
+        /// A *reaction* gate, deliberately NOT part of [`Features::CONSUMES`] —
+        /// it gates an edge-triggered host→plugin call, not a per-block send.
+        const AUTOMATION_STATE = 1 << 9;
     }
 }
 

@@ -53,7 +53,10 @@ pub(super) enum Command {
         value: f32,
     },
     SetAutomationState {
-        state: i32,
+        /// Format-neutral automation mode; each format loader encodes it onto its
+        /// own ABI at the FFI edge (VST3 `IAutomationState`, etc.). The wire does
+        /// NOT carry a format-specific bitmask — see [`AutomationMode`].
+        mode: crate::protocol::AutomationMode,
     },
     SetSampleRate {
         rate: f64,
@@ -117,6 +120,13 @@ pub enum BridgeEvent {
 /// Which aspect of plugin state a [`BridgeEvent::Resync`] asks the host to
 /// re-read. Distinct from `LatencyChanged`/`ParameterChanged`, which carry the
 /// new value inline; these say only "your cached view of X is stale."
+///
+/// This is the internal wire vocabulary. The public [`PluginHandle`] callbacks
+/// split it *by consequence* into [`PluginRefresh`] (cosmetic, re-read a cached
+/// view) and [`PluginInvalidation`] (structural, re-plan the graph) — see
+/// [`ResyncKind::classify`].
+///
+/// [`PluginHandle`]: crate::host::handles::PluginHandle
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResyncKind {
     /// Re-read all parameter values (plugin loaded a preset / wrote them back).
@@ -126,5 +136,57 @@ pub enum ResyncKind {
     /// Re-read the bus layout and rewire the audio graph.
     Io,
     /// The plugin instance was rebuilt; resync everything.
+    Reloaded,
+}
+
+impl ResyncKind {
+    /// Split this wire signal into its host-facing consequence: a cosmetic
+    /// [`PluginRefresh`] (re-read a cached view, no graph edit) or a structural
+    /// [`PluginInvalidation`] (rewire + PDC re-plan).
+    pub fn classify(self) -> ResyncClass {
+        match self {
+            ResyncKind::ParamValues => ResyncClass::Refresh(PluginRefresh::ParamValues),
+            ResyncKind::ParamTitles => ResyncClass::Refresh(PluginRefresh::ParamTitles),
+            ResyncKind::Io => ResyncClass::Invalidate(PluginInvalidation::Io),
+            ResyncKind::Reloaded => ResyncClass::Invalidate(PluginInvalidation::Reloaded),
+        }
+    }
+}
+
+/// The consequence a [`ResyncKind`] maps to — which of the two split callbacks
+/// the host should fire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResyncClass {
+    Refresh(PluginRefresh),
+    Invalidate(PluginInvalidation),
+}
+
+/// A **cosmetic** plugin→host notification: the host's cached *view* of some
+/// plugin state is stale and should be re-read, but the audio graph is
+/// unaffected. Delivered via
+/// [`PluginHandle::on_refresh`](crate::host::handles::PluginHandle::on_refresh).
+/// Mirrors CLAP `params.rescan(flags)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginRefresh {
+    /// Re-read all parameter values (a preset load / internal write-back).
+    ParamValues,
+    /// Re-pull the parameter list (titles, units, or flags changed).
+    ParamTitles,
+}
+
+/// A **structural** plugin→host notification: the plugin changed in a way that
+/// invalidates the audio graph's plan, so the host must rewire and re-run
+/// latency compensation (PDC). Delivered via
+/// [`PluginHandle::on_invalidate`](crate::host::handles::PluginHandle::on_invalidate).
+/// Mirrors CLAP `request_restart()` + `audio_ports.rescan()` + `latency.changed()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginInvalidation {
+    /// The plugin reported new processing latency. Carries the new value; the
+    /// node's own atomic is already updated live, but compensation delays across
+    /// the graph only re-plan on a commit.
+    Latency { samples: usize },
+    /// The plugin's bus layout changed — re-read it and rewire the graph.
+    Io,
+    /// The plugin instance was rebuilt in place; re-plan everything.
     Reloaded,
 }

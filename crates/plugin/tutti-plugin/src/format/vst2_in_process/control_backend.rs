@@ -1,11 +1,11 @@
-//! `ControlBackend` impl for the in-process VST2 host.
+//! Host-side capability backend for the in-process VST2 host.
 //!
-//! Holds the same `Arc<Mutex<Vst2Instance>>` the audio unit holds. GUI
-//! thread calls take the lock for the duration of one plugin operation
-//! — short for parameter / state methods, potentially long for editor
-//! ones. The audio thread always uses `try_lock` (in
-//! `super::audio_unit`) and falls back to silence on contention so a
-//! slow `editor_idle` can't underrun audio.
+//! Implements [`HostParams`], [`HostState`], and [`HostEditor`] (VST2 has an
+//! embeddable editor). Holds the same `Arc<Mutex<Vst2Instance>>` the audio unit
+//! holds. GUI thread calls take the lock for the duration of one plugin operation
+//! — short for parameter / state methods, potentially long for editor ones. The
+//! audio thread always uses `try_lock` (in `super::audio_unit`) and falls back to
+//! silence on contention so a slow `editor_idle` can't underrun audio.
 
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use parking_lot::Mutex;
 use tutti_vst2_host::Vst2Instance;
 
 use crate::error::EditorError;
-use crate::host::handles::control_backend::ControlBackend;
+use crate::host::handles::capabilities::{HostEditor, HostParams, HostState};
 use crate::host::node::ParameterChangeSink;
 use crate::protocol::ParameterInfo;
 use crate::util::window::EditorSize;
@@ -27,7 +27,45 @@ pub(crate) struct InProcessVst2Backend {
     pub(crate) param_sink: ParameterChangeSink,
 }
 
-impl ControlBackend for InProcessVst2Backend {
+impl HostParams for InProcessVst2Backend {
+    fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
+        // Reuse the host crate's single narrow→shared map (the same one the
+        // server loader's `get_parameter_list` calls) rather than re-mapping
+        // `types::ParameterInfo` here. One mapping, two callers.
+        Some(self.inner.lock().parameter_list())
+    }
+
+    fn parameter_value(&self, id: u32) -> Option<f32> {
+        Some(self.inner.lock().parameter(id))
+    }
+
+    fn set_parameter_value(&self, id: u32, value: f32) {
+        // The audio thread can take this path (PluginHandle is shared);
+        // use `try_lock` so we never block audio. Lost writes are
+        // recoverable — the GUI thread will retry on the next idle.
+        if let Some(instance) = self.inner.try_lock() {
+            instance.set_parameter(id, value);
+        }
+    }
+
+    fn is_crashed(&self) -> bool {
+        // In-process: if the plugin crashed it took the host with it,
+        // so a returning caller can never observe a crashed state.
+        false
+    }
+}
+
+impl HostState for InProcessVst2Backend {
+    fn save_state(&self) -> Option<Vec<u8>> {
+        self.inner.lock().save_state().ok()
+    }
+
+    fn load_state(&self, data: &[u8]) {
+        let _ = self.inner.lock().load_state(data);
+    }
+}
+
+impl HostEditor for InProcessVst2Backend {
     fn open_editor(&self, parent_ptr: *mut c_void) -> std::result::Result<EditorSize, EditorError> {
         // SAFETY: caller supplied a valid native window handle (NSView*,
         // HWND, X11 window id). vst2-host only forwards it to the
@@ -58,39 +96,5 @@ impl ControlBackend for InProcessVst2Backend {
         for (index, value) in instance.drain_param_changes() {
             self.param_sink.fire(index as u32, value);
         }
-    }
-
-    fn save_state(&self) -> Option<Vec<u8>> {
-        self.inner.lock().save_state().ok()
-    }
-
-    fn load_state(&self, data: &[u8]) {
-        let _ = self.inner.lock().load_state(data);
-    }
-
-    fn parameters(&self) -> Option<Vec<ParameterInfo>> {
-        // Reuse the host crate's single narrow→shared map (the same one the
-        // server loader's `get_parameter_list` calls) rather than re-mapping
-        // `types::ParameterInfo` here. One mapping, two callers.
-        Some(self.inner.lock().parameter_list())
-    }
-
-    fn parameter(&self, id: u32) -> Option<f32> {
-        Some(self.inner.lock().parameter(id))
-    }
-
-    fn set_parameter_rt(&self, id: u32, value: f32) {
-        // The audio thread can take this path (PluginHandle is shared);
-        // use `try_lock` so we never block audio. Lost writes are
-        // recoverable — the GUI thread will retry on the next idle.
-        if let Some(instance) = self.inner.try_lock() {
-            instance.set_parameter(id, value);
-        }
-    }
-
-    fn is_crashed(&self) -> bool {
-        // In-process: if the plugin crashed it took the host with it,
-        // so a returning caller can never observe a crashed state.
-        false
     }
 }

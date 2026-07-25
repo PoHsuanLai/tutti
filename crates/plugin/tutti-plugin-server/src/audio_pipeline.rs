@@ -365,6 +365,9 @@ fn with_audio_buffer_f64<R>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tutti_plugin::server::{
+        PluginAudio, PluginEditorHost, PluginMeta, PluginParams, PluginState,
+    };
 
     #[test]
     fn buffers_default_to_f32_empty() {
@@ -441,13 +444,15 @@ mod tests {
         fill: f32,
     }
 
-    impl tutti_plugin::server::PluginInstance for NanPlugin {
+    impl PluginMeta for NanPlugin {
         fn descriptor(&self) -> &PluginDescriptor {
             &self.meta.descriptor
         }
         fn loaded(&self) -> &LoadedPlugin {
             &self.meta.loaded
         }
+    }
+    impl PluginAudio for NanPlugin {
         fn process(
             &mut self,
             buffer: AudioBufferMut<'_, '_>,
@@ -461,6 +466,8 @@ mod tests {
             Ok(ProcessOutput::default())
         }
         fn set_sample_rate(&mut self, _rate: f64) {}
+    }
+    impl PluginParams for NanPlugin {
         fn get_parameter(&self, _id: u32) -> f64 {
             0.0
         }
@@ -468,6 +475,8 @@ mod tests {
         fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
+    }
+    impl PluginEditorHost for NanPlugin {
         fn open_editor(
             &mut self,
             _parent: WindowHandle,
@@ -475,6 +484,8 @@ mod tests {
             unreachable!("editor not used in this test")
         }
         fn close_editor(&mut self) {}
+    }
+    impl PluginState for NanPlugin {
         fn get_state(&mut self) -> PluginResult<Vec<u8>> {
             Ok(Vec::new())
         }
@@ -494,13 +505,15 @@ mod tests {
         seen_inputs: std::cell::RefCell<Vec<f32>>,
     }
 
-    impl tutti_plugin::server::PluginInstance for EchoProbe {
+    impl PluginMeta for EchoProbe {
         fn descriptor(&self) -> &PluginDescriptor {
             &self.meta.descriptor
         }
         fn loaded(&self) -> &LoadedPlugin {
             &self.meta.loaded
         }
+    }
+    impl PluginAudio for EchoProbe {
         fn process(
             &mut self,
             buffer: AudioBufferMut<'_, '_>,
@@ -527,6 +540,8 @@ mod tests {
             Ok(ProcessOutput::default())
         }
         fn set_sample_rate(&mut self, _rate: f64) {}
+    }
+    impl PluginParams for EchoProbe {
         fn get_parameter(&self, _id: u32) -> f64 {
             0.0
         }
@@ -534,6 +549,8 @@ mod tests {
         fn get_parameter_list(&self) -> Vec<tutti_plugin::server::ParameterInfo> {
             Vec::new()
         }
+    }
+    impl PluginEditorHost for EchoProbe {
         fn open_editor(
             &mut self,
             _parent: WindowHandle,
@@ -541,6 +558,8 @@ mod tests {
             unreachable!("editor not used in this test")
         }
         fn close_editor(&mut self) {}
+    }
+    impl PluginState for EchoProbe {
         fn get_state(&mut self) -> PluginResult<Vec<u8>> {
             Ok(Vec::new())
         }

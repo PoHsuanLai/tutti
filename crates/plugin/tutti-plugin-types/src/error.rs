@@ -1,17 +1,20 @@
-//! Format-agnostic plugin error, returned by the [`PluginFormatHost`] trait.
+//! Format-agnostic plugin error, returned by the plugin-instance capability
+//! traits ([`PluginState`], [`PluginAudio`], [`PluginEditorHost`]).
 //!
-//! This is the *lean* error the shared trait speaks — it carries only the
+//! This is the *lean* error the shared traits speak — it carries only the
 //! failure modes a format loader can produce (load, state, process, editor),
 //! never the IPC/host-coupled variants (`ServerNotFound`, `ProtocolMismatch`,
 //! `IpcError`, …) that live on `tutti-plugin`'s `BridgeError`. The host crate
 //! maps `PluginError` into its richer `BridgeError` at the IPC boundary.
 //!
-//! [`PluginFormatHost`]: crate::PluginFormatHost
+//! [`PluginState`]: crate::PluginState
+//! [`PluginAudio`]: crate::PluginAudio
+//! [`PluginEditorHost`]: crate::PluginEditorHost
 
 use crate::editor::EditorError;
 use crate::load_stage::LoadStage;
 
-/// Failure produced by a [`PluginFormatHost`](crate::PluginFormatHost) method.
+/// Failure produced by a plugin-instance capability trait method.
 ///
 /// Deliberately narrow: only the failure modes a format loader can hit. The
 /// `tutti-plugin` host crate widens this into its `BridgeError` (which adds
@@ -60,5 +63,5 @@ impl From<EditorError> for PluginError {
     }
 }
 
-/// Result alias for [`PluginFormatHost`](crate::PluginFormatHost) methods.
+/// Result alias for the plugin-instance capability trait methods.
 pub type Result<T> = core::result::Result<T, PluginError>;

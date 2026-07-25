@@ -3,7 +3,7 @@
 //! The plugin-server subprocess owns audio processing; the editor must
 //! live in the host process because platform GUI toolkits are
 //! host-process-local. Each supported format (VST3, CLAP, AU) has its
-//! own [`GuiInstance`] implementation that dlopens the plugin library
+//! own [`PluginEditor`] implementation that dlopens the plugin library
 //! a second time purely for the editor.
 
 #[cfg(all(feature = "au", target_os = "macos"))]
@@ -17,8 +17,19 @@ use crate::error::{BridgeError, LoadStage, Result};
 use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
 
-/// In-process plugin instance used only for GUI and parameter display.
-pub(crate) trait GuiInstance: Send {
+/// The host-side, in-process plugin editor.
+///
+/// The two-world counterpart of the subprocess-side
+/// [`PluginEditorHost`](tutti_plugin_types::PluginEditorHost): this object is a
+/// *second* dlopen of the plugin, editor-only, living in the host process
+/// because platform GUI toolkits are host-process-local. It carries the display
+/// helpers the editor needs (parameter/state push, GUI-originated param polling)
+/// that the audio subprocess object does not.
+///
+/// Kept `pub(crate)` — its only consumer is the host `PluginBridge`
+/// ([`composite`](crate::host::ipc_client::composite)); promote to `pub` if a
+/// cross-crate consumer ever appears.
+pub(crate) trait PluginEditor: Send {
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize>;
     fn close_editor(&mut self);
     fn editor_idle(&mut self);
@@ -26,6 +37,12 @@ pub(crate) trait GuiInstance: Send {
     fn set_state(&mut self, data: &[u8]) -> Result<()>;
     /// Poll GUI-originated parameter changes to forward to the audio bridge.
     fn poll_gui_param_changes(&mut self) -> Vec<(u32, f32)>;
+
+    /// Push the host [`AutomationMode`](crate::protocol::AutomationMode) to the
+    /// GUI instance so the editor can update its automation UI feedback. Each
+    /// format encodes the mode onto its own ABI (VST3 `IAutomationState`, …).
+    /// Default no-op for formats without the concept; only the VST3 GUI overrides it.
+    fn set_automation_state(&mut self, _mode: crate::protocol::AutomationMode) {}
 
     fn editor_capabilities(&mut self) -> EditorCapabilities {
         EditorCapabilities::default()
@@ -43,7 +60,7 @@ pub(crate) trait GuiInstance: Send {
 }
 
 #[cfg(all(any(feature = "vst3", feature = "clap", feature = "au"), unix))]
-pub(crate) fn load_gui_instance(path: &Path) -> Result<Box<dyn GuiInstance>> {
+pub(crate) fn load_gui_instance(path: &Path) -> Result<Box<dyn PluginEditor>> {
     use crate::host::discovery::{format_from_path, PluginFormat};
 
     let format = format_from_path(path).ok_or_else(|| BridgeError::LoadFailed {
@@ -93,7 +110,7 @@ pub(crate) fn load_gui_instance(path: &Path) -> Result<Box<dyn GuiInstance>> {
 }
 
 #[cfg(not(all(any(feature = "vst3", feature = "clap", feature = "au"), unix)))]
-pub(crate) fn load_gui_instance(path: &Path) -> Result<Box<dyn GuiInstance>> {
+pub(crate) fn load_gui_instance(path: &Path) -> Result<Box<dyn PluginEditor>> {
     Err(BridgeError::LoadFailed {
         path: path.to_path_buf(),
         stage: LoadStage::Opening,

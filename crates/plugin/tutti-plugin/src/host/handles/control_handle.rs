@@ -1,7 +1,10 @@
 use crate::error::EditorError;
-use crate::host::handles::control_backend::ControlBackend;
-use crate::host::ipc_client::audio::ResyncKind;
-use crate::host::node::{LatencyChangeSink, ParameterChangeSink, ResyncSink};
+use crate::host::handles::capabilities::{
+    HostAutomationState, HostEditor, HostParams, HostState,
+};
+use crate::host::ipc_client::audio::{PluginInvalidation, PluginRefresh};
+use crate::protocol::AutomationMode;
+use crate::host::node::{InvalidateSink, ParameterChangeSink, RefreshSink};
 use crate::protocol::{LoadedPlugin, ParameterInfo, PluginDescriptor};
 use crate::util::window::{EditorCapabilities, EditorSize};
 use raw_window_handle::HasWindowHandle;
@@ -10,64 +13,85 @@ use tutti_midi_runtime::MidiSender;
 
 /// Main-thread control handle for a loaded plugin.
 ///
-/// Backend-agnostic — dispatches every method through the
-/// `ControlBackend` trait, so out-of-process VST3/CLAP/AU and in-process
-/// VST2 hosting share this surface. The backend owns whatever lifetime
-/// guard keeps its plugin alive (subprocess `ProcessGuard` for the
-/// out-of-process path; `Arc<Mutex<Vst2Instance>>` for in-process).
+/// Backend-agnostic: it holds each control capability as a separate `Arc<dyn …>`
+/// slot ([`HostParams`], [`HostState`], and an *optional* [`HostEditor`]), so
+/// out-of-process VST3/CLAP/AU and in-process VST2/WASM hosting share this surface
+/// while advertising only the capabilities they honor. One backend object
+/// implements several capability traits; construction clones the *same* backend
+/// `Arc` into each always-present slot (cheap — Arc-based — and shared state stays
+/// intact), and passes the optional editor slot explicitly. There is no stored
+/// bundle/union trait object.
 ///
 /// Clone is cheap (Arc-based). Action methods return `&Self` for chaining.
 #[derive(Clone)]
 pub struct PluginHandle {
-    inner: Arc<dyn ControlBackend>,
+    params: Arc<dyn HostParams>,
+    state: Arc<dyn HostState>,
+    editor: Option<Arc<dyn HostEditor>>,
+    automation_state: Option<Arc<dyn HostAutomationState>>,
     descriptor: PluginDescriptor,
     loaded: LoadedPlugin,
-    latency_sink: LatencyChangeSink,
     param_sink: ParameterChangeSink,
-    resync_sink: ResyncSink,
+    refresh_sink: RefreshSink,
+    invalidate_sink: InvalidateSink,
     midi_sender: MidiSender,
 }
 
 impl PluginHandle {
     /// Construct from a `PluginClient` (out-of-process backend). Call
-    /// this before moving the client into the fundsp graph.
+    /// this before moving the client into the fundsp graph. The subprocess
+    /// backend honors every capability, including the editor.
     pub fn from_client(client: &crate::host::node::PluginClient) -> Self {
-        let backend = crate::host::ipc_client::SubprocessBackend::new(
+        let backend = Arc::new(crate::host::ipc_client::SubprocessBackend::new(
             client.bridge(),
             Arc::clone(client.process_guard()),
-        );
+        ));
         Self {
-            inner: Arc::new(backend),
+            params: backend.clone(),
+            state: backend.clone(),
+            editor: Some(backend.clone()),
+            // The subprocess backend supports the automation-state advisory
+            // (VST3 IAutomationState; a no-op for CLAP/AU behind the wire).
+            automation_state: Some(backend),
             descriptor: client.descriptor().clone(),
             loaded: client.loaded().clone(),
-            latency_sink: client.latency_sink().clone(),
             param_sink: client.param_sink().clone(),
-            resync_sink: client.resync_sink().clone(),
+            refresh_sink: client.refresh_sink().clone(),
+            invalidate_sink: client.invalidate_sink().clone(),
             midi_sender: client.midi_sender(),
         }
     }
 
-    /// Construct from any [`ControlBackend`](crate::host::handles::control_backend::ControlBackend)
-    /// impl plus explicit descriptor + load snapshots. Used by every in-process
-    /// loader — the in-crate VST2 path and out-of-crate loaders like
-    /// `tutti-wasm-plugin`.
-    pub fn from_backend(
-        inner: Arc<dyn ControlBackend>,
+    /// Construct from an in-process backend that implements the always-present
+    /// capabilities, plus an optional editor. Used by every in-process loader —
+    /// the in-crate VST2 path (which passes `Some(backend)` for the editor) and
+    /// out-of-crate loaders like `tutti-wasm-plugin` (which pass `None`).
+    ///
+    /// `backend: Arc<B>` is coerced into the `params`/`state` slots at the call
+    /// site (both are clones of the same object), so shared state stays intact.
+    pub fn from_backend<B: HostParams + HostState + 'static>(
+        backend: Arc<B>,
+        editor: Option<Arc<dyn HostEditor>>,
         descriptor: PluginDescriptor,
         loaded: LoadedPlugin,
-        latency_sink: LatencyChangeSink,
         param_sink: ParameterChangeSink,
         midi_sender: MidiSender,
     ) -> Self {
         Self {
-            inner,
+            params: backend.clone(),
+            state: backend,
+            editor,
+            // In-process backends (VST2, WASM) don't implement the VST3-style
+            // automation-state advisory, so `automation_state()` is `None`.
+            automation_state: None,
             descriptor,
             loaded,
-            latency_sink,
             param_sink,
-            // In-process backends (VST2, WASM) have no restartComponent
-            // mechanism, so they never emit resync signals.
-            resync_sink: ResyncSink::default(),
+            // In-process backends (VST2, WASM) have no latency-change or
+            // restartComponent mechanism, so they never emit refresh /
+            // invalidate signals — these sinks stay empty.
+            refresh_sink: RefreshSink::default(),
+            invalidate_sink: InvalidateSink::default(),
             midi_sender,
         }
     }
@@ -81,95 +105,55 @@ impl PluginHandle {
         let guard = Arc::new(crate::host::node::ProcessGuard::for_test(
             crate::util::config::BridgeConfig::default(),
         ));
-        let backend = crate::host::ipc_client::SubprocessBackend::new(bridge, guard);
+        let backend = Arc::new(crate::host::ipc_client::SubprocessBackend::new(bridge, guard));
         let (sender, _receiver) =
             tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
         Self {
-            inner: Arc::new(backend),
+            params: backend.clone(),
+            state: backend.clone(),
+            editor: Some(backend.clone()),
+            automation_state: Some(backend),
             descriptor,
             loaded,
-            latency_sink: LatencyChangeSink::default(),
             param_sink: ParameterChangeSink::default(),
-            resync_sink: ResyncSink::default(),
+            refresh_sink: RefreshSink::default(),
+            invalidate_sink: InvalidateSink::default(),
             midi_sender: sender,
         }
     }
 
+    // ---- Capability accessors ---------------------------------------------
+
+    /// The always-present parameter capability (catalog / read / write / health).
+    pub fn params(&self) -> &dyn HostParams {
+        self.params.as_ref()
+    }
+
+    /// The always-present state (preset save/load) capability.
+    pub fn state(&self) -> &dyn HostState {
+        self.state.as_ref()
+    }
+
+    /// The editor capability, or `None` when the backend cannot host an
+    /// embeddable editor (the WASM host). The "why" is queryable separately via
+    /// [`has_editor`](Self::has_editor) / the [`descriptor`](Self::descriptor).
+    pub fn editor(&self) -> Option<&dyn HostEditor> {
+        self.editor.as_deref()
+    }
+
+    /// The automation-state advisory capability (Direction C-in), or `None` when
+    /// the backend doesn't support it (in-process VST2 / WASM). Announce the
+    /// host's automation mode via [`HostAutomationState::set_automation_mode`],
+    /// or use the [`set_automation_mode`](Self::set_automation_mode) convenience.
+    pub fn automation_state(&self) -> Option<&dyn HostAutomationState> {
+        self.automation_state.as_deref()
+    }
+
+    // ---- Meta -------------------------------------------------------------
+
+    /// `true` if this plugin exposes an embeddable editor (post-load truth).
     pub fn has_editor(&self) -> bool {
-        self.descriptor.has_editor
-    }
-
-    /// Embed the plugin's editor into `parent`. Pass anything that impls
-    /// [`HasWindowHandle`] — Bevy windows, winit windows, wgpu surfaces.
-    ///
-    /// Returns the editor's requested size on success; otherwise a
-    /// structured [`EditorError`] describing why (plugin crashed, GUI
-    /// feature not compiled in, platform not supported, plugin rejected
-    /// the call).
-    pub fn open_editor(&self, parent: impl HasWindowHandle) -> Result<EditorSize, EditorError> {
-        let raw = parent
-            .window_handle()
-            .map_err(|e| EditorError::PluginError(format!("failed to get window handle: {e}")))?
-            .as_raw();
-        let ptr = crate::util::window::extract_platform_ptr(raw)?;
-        self.inner.open_editor(ptr)
-    }
-
-    pub fn close_editor(&self) -> &Self {
-        self.inner.close_editor();
-        self
-    }
-
-    /// Call periodically (~30Hz) while editor is open.
-    pub fn editor_idle(&self) -> &Self {
-        self.inner.editor_idle();
-        self
-    }
-
-    /// Call after `open_editor`.
-    pub fn editor_capabilities(&self) -> EditorCapabilities {
-        self.inner.editor_capabilities()
-    }
-
-    /// Returns the snapped/clamped size the plugin applied.
-    pub fn set_editor_size(&self, requested: EditorSize) -> Result<EditorSize, EditorError> {
-        self.inner.set_editor_size(requested)
-    }
-
-    pub fn poll_editor_resize_request(&self) -> Option<EditorSize> {
-        self.inner.poll_editor_resize_request()
-    }
-
-    pub fn save_state(&self) -> Option<Vec<u8>> {
-        self.inner.save_state()
-    }
-
-    pub fn load_state(&self, data: &[u8]) -> &Self {
-        self.inner.load_state(data);
-        self
-    }
-
-    pub fn parameters(&self) -> Option<Vec<ParameterInfo>> {
-        self.inner.parameters()
-    }
-
-    pub fn parameter(&self, param_id: u32) -> Option<f32> {
-        self.inner.parameter(param_id)
-    }
-
-    /// RT-safe, fire-and-forget.
-    pub fn set_parameter(&self, param_id: u32, value: f32) -> &Self {
-        self.inner.set_parameter_rt(param_id, value);
-        self
-    }
-
-    /// Push the host's automation read/write state to the plugin (VST3
-    /// `IAutomationState`). Fire-and-forget; a no-op for plugins / formats that
-    /// don't implement it. `state` is the VST3 `AutomationStates` bitmask
-    /// (`0=none, 1=read, 2=write, 3=read|write`).
-    pub fn set_automation_state(&self, state: i32) -> &Self {
-        self.inner.set_automation_state_rt(state);
-        self
+        self.editor.is_some()
     }
 
     /// Catalog identity (id, name, vendor, version, native class, editor).
@@ -186,6 +170,114 @@ impl PluginHandle {
         &self.descriptor.name
     }
 
+    pub fn is_crashed(&self) -> bool {
+        self.params.is_crashed()
+    }
+
+    // ---- Editor convenience (ergonomic wrappers over the editor slot) ------
+
+    /// Embed the plugin's editor into `parent`. Pass anything that impls
+    /// [`HasWindowHandle`] — Bevy windows, winit windows, wgpu surfaces.
+    ///
+    /// Returns the editor's requested size on success; otherwise a structured
+    /// [`EditorError`] — including [`EditorError::GuiNotSupported`] when this
+    /// plugin has no editor (`editor()` is `None`).
+    pub fn open_editor(&self, parent: impl HasWindowHandle) -> Result<EditorSize, EditorError> {
+        let Some(editor) = self.editor.as_deref() else {
+            return Err(EditorError::GuiNotSupported {
+                format: self.descriptor.class.format_name().to_string(),
+            });
+        };
+        let raw = parent
+            .window_handle()
+            .map_err(|e| EditorError::PluginError(format!("failed to get window handle: {e}")))?
+            .as_raw();
+        let ptr = crate::util::window::extract_platform_ptr(raw)?;
+        editor.open_editor(ptr)
+    }
+
+    pub fn close_editor(&self) -> &Self {
+        if let Some(editor) = self.editor.as_deref() {
+            editor.close_editor();
+        }
+        self
+    }
+
+    /// Call periodically (~30Hz) while editor is open.
+    pub fn editor_idle(&self) -> &Self {
+        if let Some(editor) = self.editor.as_deref() {
+            editor.editor_idle();
+        }
+        self
+    }
+
+    /// Call after `open_editor`.
+    pub fn editor_capabilities(&self) -> EditorCapabilities {
+        self.editor
+            .as_deref()
+            .map(|e| e.editor_capabilities())
+            .unwrap_or_default()
+    }
+
+    /// Returns the snapped/clamped size the plugin applied.
+    pub fn set_editor_size(&self, requested: EditorSize) -> Result<EditorSize, EditorError> {
+        match self.editor.as_deref() {
+            Some(editor) => editor.set_editor_size(requested),
+            None => Err(EditorError::GuiNotSupported {
+                format: self.descriptor.class.format_name().to_string(),
+            }),
+        }
+    }
+
+    pub fn poll_editor_resize_request(&self) -> Option<EditorSize> {
+        self.editor.as_deref()?.poll_editor_resize_request()
+    }
+
+    // ---- State convenience -------------------------------------------------
+
+    pub fn save_state(&self) -> Option<Vec<u8>> {
+        self.state.save_state()
+    }
+
+    pub fn load_state(&self, data: &[u8]) -> &Self {
+        self.state.load_state(data);
+        self
+    }
+
+    // ---- Param convenience -------------------------------------------------
+
+    pub fn parameters(&self) -> Option<Vec<ParameterInfo>> {
+        self.params.parameter_descriptors()
+    }
+
+    pub fn parameter(&self, param_id: u32) -> Option<f32> {
+        self.params.parameter_value(param_id)
+    }
+
+    /// Main-thread, fire-and-forget.
+    pub fn set_parameter(&self, param_id: u32, value: f32) -> &Self {
+        self.params.set_parameter_value(param_id, value);
+        self
+    }
+
+    // ---- Automation-state convenience --------------------------------------
+
+    /// Announce the host's automation [`AutomationMode`] to the plugin so its
+    /// editor can update UI feedback. Returns `Ok(())` if delivered, or an
+    /// [`EditorError`] — including [`EditorError::GuiNotSupported`] when this
+    /// backend has no automation-state capability (`automation_state()` is
+    /// `None`).
+    pub fn set_automation_mode(&self, mode: AutomationMode) -> Result<(), EditorError> {
+        match self.automation_state.as_deref() {
+            Some(a) => a.set_automation_mode(mode),
+            None => Err(EditorError::GuiNotSupported {
+                format: self.descriptor.class.format_name().to_string(),
+            }),
+        }
+    }
+
+    // ---- MIDI --------------------------------------------------------------
+
     /// Producer handle for this plugin's MIDI inbox. Cheap to clone —
     /// `MidiSender` is `Arc`-backed. Send `MidiEvent`s through the
     /// returned sender; the audio thread polls them on the next
@@ -194,45 +286,39 @@ impl PluginHandle {
         self.midi_sender.clone()
     }
 
-    pub fn is_crashed(&self) -> bool {
-        self.inner.is_crashed()
-    }
-
-    /// Register a callback invoked whenever the plugin reports a new
-    /// latency. Fires on the bridge thread for the out-of-process
-    /// backend; on the GUI thread (during `editor_idle`) for the
-    /// in-process VST2 backend. Move heavy work to another thread before
-    /// touching graph state. Replaces any previous callback.
-    pub fn on_latency_changed<F: Fn(usize) + Send + Sync + 'static>(&self, f: F) -> &Self {
-        self.latency_sink.set(f);
-        self
-    }
+    // ---- Notify sinks (plugin → host reactions) ----------------------------
 
     /// Register a callback invoked when the plugin writes back a
     /// parameter value internally (preset load, automation, host
-    /// write-back). See [`Self::on_latency_changed`] for thread caveats.
-    /// Replaces any previous callback.
+    /// write-back). Fires on the bridge thread for the out-of-process
+    /// backend; on the GUI thread (during `editor_idle`) for the in-process
+    /// VST2 backend. Move heavy work to another thread before touching graph
+    /// state. Replaces any previous callback.
     pub fn on_parameter_changed<F: Fn(u32, f32) + Send + Sync + 'static>(&self, f: F) -> &Self {
         self.param_sink.set(f);
         self
     }
 
-    /// Register a callback invoked when the plugin asks the host to resync some
-    /// aspect of its state at runtime — a preset load that changed parameter
-    /// values ([`ResyncKind::ParamValues`]) or titles
-    /// ([`ResyncKind::ParamTitles`]), a bus-layout change ([`ResyncKind::Io`]),
-    /// or a full in-place reload ([`ResyncKind::Reloaded`]). The callback should
-    /// re-read the affected state from the handle (e.g. `parameter_list`). See
-    /// [`Self::on_latency_changed`] for thread caveats. Only the out-of-process
-    /// VST3 backend emits these; replaces any previous callback.
-    pub fn on_plugin_resync<F: Fn(ResyncKind) + Send + Sync + 'static>(&self, f: F) -> &Self {
-        self.resync_sink.set(f);
+    /// Register a callback for **cosmetic** refresh signals: the host's cached
+    /// *view* of some plugin state is stale ([`PluginRefresh::ParamValues`] /
+    /// [`PluginRefresh::ParamTitles`]) and should be re-read, but the audio graph
+    /// is unaffected. See [`Self::on_parameter_changed`] for thread caveats. Only
+    /// the out-of-process backend emits these; replaces any previous callback.
+    pub fn on_refresh<F: Fn(PluginRefresh) + Send + Sync + 'static>(&self, f: F) -> &Self {
+        self.refresh_sink.set(f);
         self
     }
 
-    /// Clear the latency-changed callback (if any).
-    pub fn clear_latency_callback(&self) -> &Self {
-        self.latency_sink.clear();
+    /// Register a callback for **structural** invalidation signals: the plugin
+    /// changed its latency ([`PluginInvalidation::Latency`]) or bus layout
+    /// ([`PluginInvalidation::Io`]), or reloaded in place
+    /// ([`PluginInvalidation::Reloaded`]) — the host must rewire and re-run
+    /// latency compensation (PDC). Absorbs what used to be a separate
+    /// latency-changed callback. See [`Self::on_parameter_changed`] for thread
+    /// caveats. Only the out-of-process backend emits these; replaces any
+    /// previous callback.
+    pub fn on_invalidate<F: Fn(PluginInvalidation) + Send + Sync + 'static>(&self, f: F) -> &Self {
+        self.invalidate_sink.set(f);
         self
     }
 
@@ -242,9 +328,15 @@ impl PluginHandle {
         self
     }
 
-    /// Clear the plugin-resync callback (if any).
-    pub fn clear_plugin_resync_callback(&self) -> &Self {
-        self.resync_sink.clear();
+    /// Clear the refresh callback (if any).
+    pub fn clear_refresh_callback(&self) -> &Self {
+        self.refresh_sink.clear();
+        self
+    }
+
+    /// Clear the invalidate callback (if any).
+    pub fn clear_invalidate_callback(&self) -> &Self {
+        self.invalidate_sink.clear();
         self
     }
 }

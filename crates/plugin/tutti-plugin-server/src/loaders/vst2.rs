@@ -9,8 +9,9 @@ use std::path::Path;
 
 use tutti_plugin::server::{
     AudioBufferMut, EditorSize, Features, LoadedPlugin, MidiEventVec, NoteExpressionChanges,
-    ParameterChanges, ParameterInfo, PluginClass, PluginDescriptor, PluginInstance, PluginResult,
-    ProcessContext, ProcessOutput, WindowHandle,
+    ParameterChanges, ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost,
+    PluginMeta, PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput,
+    WindowHandle,
 };
 // Only the `not(vst2)` fallback arms construct `PluginError` directly.
 #[cfg(not(feature = "vst2"))]
@@ -131,7 +132,7 @@ fn translate_error(err: Vst2Error, _path: &Path) -> BridgeError {
     }
 }
 
-impl PluginInstance for Vst2Instance {
+impl PluginMeta for Vst2Instance {
     fn descriptor(&self) -> &PluginDescriptor {
         &self.meta.descriptor
     }
@@ -139,7 +140,9 @@ impl PluginInstance for Vst2Instance {
     fn loaded(&self) -> &LoadedPlugin {
         &self.meta.loaded
     }
+}
 
+impl PluginAudio for Vst2Instance {
     fn process(
         &mut self,
         buffer: AudioBufferMut<'_, '_>,
@@ -220,7 +223,9 @@ impl PluginInstance for Vst2Instance {
         #[cfg(feature = "vst2")]
         self.inner.set_sample_rate(rate);
     }
+}
 
+impl PluginParams for Vst2Instance {
     fn get_parameter(&self, id: u32) -> f64 {
         #[cfg(feature = "vst2")]
         {
@@ -244,14 +249,16 @@ impl PluginInstance for Vst2Instance {
         #[cfg(feature = "vst2")]
         {
             // The narrow→shared mapping lives on the host crate's
-            // `Vst2Instance::parameter_list`; the in-process ControlBackend
-            // calls the same helper, so there is one VST2 param map.
+            // `Vst2Instance::parameter_list`; the in-process VST2 backend's
+            // `HostParams` impl calls the same helper, so there is one VST2 param map.
             self.inner.parameter_list()
         }
         #[cfg(not(feature = "vst2"))]
         Vec::new()
     }
+}
 
+impl PluginEditorHost for Vst2Instance {
     fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
         #[cfg(feature = "vst2")]
         {
@@ -279,7 +286,9 @@ impl PluginInstance for Vst2Instance {
         #[cfg(feature = "vst2")]
         self.inner.close_editor();
     }
+}
 
+impl PluginState for Vst2Instance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         #[cfg(feature = "vst2")]
         {

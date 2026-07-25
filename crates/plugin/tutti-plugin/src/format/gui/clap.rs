@@ -1,13 +1,13 @@
 //! In-process CLAP GUI instance (editor only, no audio processing).
-//
-// TODO(phase3): collapse `GuiInstance` into the unified `PluginFormatHost`
-// surface. `ClapGuiInstance` wraps the same `ClapLoaded` the server-side loader
-// activates; once the GUI-only editor path folds into the trait (editor_idle /
-// poll_gui_param_changes handled per the frozen contract), this parallel
-// adapter goes away. Left as-is this phase — the GuiInstance def / gui/mod.rs
-// are an atomic later step, out of scope here.
+//!
+//! Implements the host-side [`PluginEditor`](super::PluginEditor) trait. Though
+//! `ClapGuiInstance` wraps the same `ClapLoaded` shape the server-side loader
+//! activates, it is a *separate* host-process dlopen from the audio object in
+//! the plugin-server subprocess — the two editor surfaces (`PluginEditor` here,
+//! `PluginEditorHost` there) stay distinct by design, honestly modelling the
+//! two-world split rather than collapsing it.
 
-use super::GuiInstance;
+use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
@@ -35,7 +35,7 @@ impl ClapGuiInstance {
     }
 }
 
-impl GuiInstance for ClapGuiInstance {
+impl PluginEditor for ClapGuiInstance {
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         let clap_handle = unsafe { tutti_clap_host::WindowHandle::from_raw(parent.as_ptr()) };
         let size = self

@@ -8,8 +8,8 @@ use tutti_plugin::server::{
 };
 #[cfg(all(target_os = "macos", feature = "au"))]
 use tutti_plugin::server::{
-    EditorSize, ParameterFlags, ParameterInfo, PluginInstance, PluginResult, ProcessContext,
-    ProcessOutput, WindowHandle,
+    EditorSize, ParameterFlags, ParameterInfo, PluginAudio, PluginEditorHost, PluginMeta,
+    PluginParams, PluginResult, PluginState, ProcessContext, ProcessOutput, WindowHandle,
 };
 
 use crate::loaders::common::{single_bus, Meta};
@@ -214,11 +214,10 @@ impl AuInstance {
             })
         }
     }
-
 }
 
 #[cfg(all(target_os = "macos", feature = "au"))]
-impl PluginInstance for AuInstance {
+impl PluginMeta for AuInstance {
     fn descriptor(&self) -> &PluginDescriptor {
         &self.meta.descriptor
     }
@@ -226,7 +225,9 @@ impl PluginInstance for AuInstance {
     fn loaded(&self) -> &LoadedPlugin {
         &self.meta.loaded
     }
+}
 
+impl PluginAudio for AuInstance {
     fn process(
         &mut self,
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
@@ -296,7 +297,9 @@ impl PluginInstance for AuInstance {
     fn set_sample_rate(&mut self, rate: f64) {
         let _ = self.inner.set_sample_rate(rate);
     }
+}
 
+impl PluginParams for AuInstance {
     fn get_parameter(&self, id: u32) -> f64 {
         parameters::get(self.inner.raw_unit(), id).unwrap_or(0.0) as f64
     }
@@ -337,7 +340,9 @@ impl PluginInstance for AuInstance {
             })
             .collect()
     }
+}
 
+impl PluginEditorHost for AuInstance {
     fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
         let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
         let editor = unsafe { AuEditor::open(self.inner.raw_unit(), Some(parent_handle)) }
@@ -355,7 +360,9 @@ impl PluginInstance for AuInstance {
             ed.close();
         }
     }
+}
 
+impl PluginState for AuInstance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         self.inner
             .save_state()
@@ -373,7 +380,6 @@ impl PluginInstance for AuInstance {
 #[cfg(all(target_os = "macos", feature = "au"))]
 mod tests {
     use super::*;
-    use tutti_plugin::server::PluginInstance;
 
     // Apple's built-in AUDelay should always be available on macOS.
     // Note: AU loading by path requires the component name to match the bundle name.

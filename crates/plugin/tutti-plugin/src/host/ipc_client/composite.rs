@@ -2,7 +2,7 @@
 
 use super::audio::{AudioBridge, BridgeListener, BridgeThread, HarmonyInputs};
 use crate::error::{EditorError, Result};
-use crate::format::gui::GuiInstance;
+use crate::format::gui::PluginEditor;
 use crate::protocol::{
     MidiEventVec, NoteExpressionChanges, ParameterChanges, ParameterInfo, TransportInfo,
 };
@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 pub struct PluginBridge {
     audio: AudioBridge,
     plugin_path: PathBuf,
-    gui: Mutex<Option<Box<dyn GuiInstance>>>,
+    gui: Mutex<Option<Box<dyn PluginEditor>>>,
 }
 
 impl PluginBridge {
@@ -74,8 +74,13 @@ impl PluginBridge {
     }
 
     pub fn set_parameter_rt(&self, param_id: u32, value: f32) -> bool {
-        // Also sync to GUI instance if loaded (keeps display in sync).
-        if let Ok(mut guard) = self.gui.lock() {
+        // Cosmetic GUI mirror (keeps the display in sync): `try_lock`, never
+        // block. The `_rt` contract must stay non-blocking — a blocking
+        // `lock()` here could stall the caller behind a multi-millisecond
+        // main-thread `open_editor`/`editor_idle` holding the same GUI lock. The
+        // authoritative delivery is the audio command below; a dropped GUI mirror
+        // self-heals on the next edit / editor idle.
+        if let Ok(mut guard) = self.gui.try_lock() {
             if let Some(gui) = guard.as_mut() {
                 gui.set_parameter(param_id, value as f64);
             }
@@ -83,8 +88,25 @@ impl PluginBridge {
         self.audio.set_parameter_rt(param_id, value)
     }
 
-    pub fn set_automation_state_rt(&self, state: i32) -> bool {
-        self.audio.set_automation_state_rt(state)
+    pub fn set_automation_state_rt(&self, mode: crate::protocol::AutomationMode) -> bool {
+        // Deliver to BOTH the audio subprocess AND the in-process GUI instance
+        // (mirrors `set_parameter_rt`). The automation-state advisory drives
+        // editor UI feedback (a glowing knob ring), which lives in the GUI
+        // instance — so a GUI-only delivery would leave it unlit. The audio
+        // instance also receives it for formats that gate DSP on it. Both sides
+        // take the format-neutral `AutomationMode` and encode it at their own
+        // ABI edge (the GUI instance and the server loader) — no format bitmask
+        // here.
+        //
+        // The GUI mirror is cosmetic, so `try_lock` (never block): the `_rt`
+        // contract stays non-blocking, and a dropped glow self-heals on the next
+        // mode change. See `set_parameter_rt` for the RT rationale.
+        if let Ok(mut guard) = self.gui.try_lock() {
+            if let Some(gui) = guard.as_mut() {
+                gui.set_automation_state(mode);
+            }
+        }
+        self.audio.set_automation_state_rt(mode)
     }
 
     pub fn set_sample_rate_rt(&self, rate: f64) -> bool {
@@ -252,7 +274,10 @@ impl PluginBridge {
     }
 }
 
-/// `ControlBackend` impl for the out-of-process VST3 / CLAP / AU path.
+/// Host-side capability backend for the out-of-process VST3 / CLAP / AU path —
+/// implements [`HostParams`](crate::host::handles::capabilities::HostParams),
+/// [`HostState`](crate::host::handles::capabilities::HostState), and
+/// [`HostEditor`](crate::host::handles::capabilities::HostEditor).
 ///
 /// Bundles the `PluginBridge` (audio IPC + lazy in-process GUI loader)
 /// with the subprocess lifetime guard so dropping this backend tears
@@ -276,7 +301,35 @@ impl SubprocessBackend {
     }
 }
 
-impl crate::host::handles::control_backend::ControlBackend for SubprocessBackend {
+impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
+    fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
+        self.bridge.parameters()
+    }
+
+    fn parameter_value(&self, id: u32) -> Option<f32> {
+        self.bridge.parameter(id)
+    }
+
+    fn set_parameter_value(&self, id: u32, value: f32) {
+        self.bridge.set_parameter_rt(id, value);
+    }
+
+    fn is_crashed(&self) -> bool {
+        self.bridge.is_crashed()
+    }
+}
+
+impl crate::host::handles::capabilities::HostState for SubprocessBackend {
+    fn save_state(&self) -> Option<Vec<u8>> {
+        self.bridge.save_state()
+    }
+
+    fn load_state(&self, data: &[u8]) {
+        self.bridge.load_state(data);
+    }
+}
+
+impl crate::host::handles::capabilities::HostEditor for SubprocessBackend {
     fn open_editor(&self, parent_ptr: *mut c_void) -> std::result::Result<EditorSize, EditorError> {
         self.bridge.open_editor(parent_ptr)
     }
@@ -287,34 +340,6 @@ impl crate::host::handles::control_backend::ControlBackend for SubprocessBackend
 
     fn editor_idle(&self) {
         self.bridge.editor_idle();
-    }
-
-    fn save_state(&self) -> Option<Vec<u8>> {
-        self.bridge.save_state()
-    }
-
-    fn load_state(&self, data: &[u8]) {
-        self.bridge.load_state(data);
-    }
-
-    fn parameters(&self) -> Option<Vec<ParameterInfo>> {
-        self.bridge.parameters()
-    }
-
-    fn parameter(&self, id: u32) -> Option<f32> {
-        self.bridge.parameter(id)
-    }
-
-    fn set_parameter_rt(&self, id: u32, value: f32) {
-        self.bridge.set_parameter_rt(id, value);
-    }
-
-    fn set_automation_state_rt(&self, state: i32) {
-        self.bridge.set_automation_state_rt(state);
-    }
-
-    fn is_crashed(&self) -> bool {
-        self.bridge.is_crashed()
     }
 
     fn editor_capabilities(&self) -> EditorCapabilities {
@@ -330,6 +355,28 @@ impl crate::host::handles::control_backend::ControlBackend for SubprocessBackend
 
     fn poll_editor_resize_request(&self) -> Option<EditorSize> {
         self.bridge.poll_editor_resize_request()
+    }
+}
+
+impl crate::host::handles::capabilities::HostAutomationState for SubprocessBackend {
+    fn set_automation_mode(
+        &self,
+        mode: crate::protocol::AutomationMode,
+    ) -> std::result::Result<(), EditorError> {
+        if self.bridge.is_crashed() {
+            return Err(EditorError::PluginCrashed);
+        }
+        // Delivered to both the audio subprocess and the in-process GUI (the
+        // knob-glow lives in the GUI). The `bool` says the command was queued;
+        // no format confirms the plugin visibly reacted. The format-neutral
+        // `AutomationMode` flows all the way to each ABI edge, which encodes it.
+        if self.bridge.set_automation_state_rt(mode) {
+            Ok(())
+        } else {
+            Err(EditorError::PluginError(
+                "automation-state push not delivered".into(),
+            ))
+        }
     }
 }
 

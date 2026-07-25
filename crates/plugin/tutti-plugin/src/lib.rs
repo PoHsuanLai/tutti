@@ -143,15 +143,19 @@ pub use tutti_plugin_types::mark_main_thread;
 /// Building blocks for out-of-crate in-process loaders.
 ///
 /// **Not part of the general API.** These let a sibling crate (e.g.
-/// `tutti-wasm-plugin`) implement [`ControlBackend`] over its own plugin
-/// and hand the result to
+/// `tutti-wasm-plugin`) implement the granular host-side capability traits
+/// ([`HostParams`](backend::HostParams), [`HostState`](backend::HostState), and
+/// optionally [`HostEditor`](backend::HostEditor)) over its own
+/// plugin and hand the result to
 /// [`PluginHandle::from_backend`](handles::PluginHandle::from_backend),
 /// reusing this crate's main-thread control surface and audio-node wiring
 /// without re-implementing them. End users loading plugins should stick to
 /// [`catalog`] and [`handles`].
 pub mod backend {
-    pub use crate::host::handles::control_backend::ControlBackend;
-    pub use crate::host::node::{route_with_latency, LatencyChangeSink, Midi, ParameterChangeSink};
+    pub use crate::host::handles::capabilities::{
+        HostAutomationState, HostEditor, HostParams, HostState,
+    };
+    pub use crate::host::node::{route_with_latency, Midi, ParameterChangeSink};
     pub use crate::util::node::node_id::PLUGIN_CLIENT_ID;
 }
 

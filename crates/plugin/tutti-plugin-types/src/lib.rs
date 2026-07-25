@@ -6,6 +6,7 @@
 //! surface is in play.
 
 pub mod automation;
+pub mod automation_mode;
 pub mod channels;
 pub mod classification;
 pub mod descriptor;
@@ -31,6 +32,7 @@ pub use tutti_types::ChannelLayout;
 pub use tutti_types::meter::{BarNumber, BeatsPerBar, NoteValue, TimeSignature};
 
 pub use automation::{ParameterChanges, ParameterPoint, ParameterQueue};
+pub use automation_mode::AutomationMode;
 pub use channels::{AudioBuffer, AudioBuffer32, AudioBuffer64, AudioBufferMut, BufferPtrs, Sample};
 pub use classification::Vst2Category;
 pub use descriptor::{AuComponentType, PluginClass, PluginDescriptor};
@@ -39,7 +41,9 @@ pub use editor::{
 };
 pub use error::{PluginError, Result, Result as PluginResult};
 pub use features::Features;
-pub use format_host::PluginFormatHost;
+pub use format_host::{
+    PluginAudio, PluginEditorHost, PluginInstance, PluginMeta, PluginParams, PluginState,
+};
 pub use harmony::{
     ChordChanges, ChordValue, NoteExpressionIntChanges, NoteExpressionIntValue,
     NoteExpressionTextChanges, NoteExpressionTextValue, ScaleChanges, ScaleValue,

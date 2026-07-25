@@ -43,7 +43,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub use messages::{BridgeEvent, ResyncKind};
+pub use messages::{
+    BridgeEvent, PluginInvalidation, PluginRefresh, ResyncClass, ResyncKind,
+};
 pub use thread::BridgeThread;
 
 const STATE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -113,11 +115,11 @@ impl AudioBridge {
                 .push_command(Command::SetParameter { param_id, value })
     }
 
-    pub fn set_automation_state_rt(&self, state: i32) -> bool {
+    pub fn set_automation_state_rt(&self, mode: crate::protocol::AutomationMode) -> bool {
         !self.lifecycle.is_crashed()
             && self
                 .channels
-                .push_command(Command::SetAutomationState { state })
+                .push_command(Command::SetAutomationState { mode })
     }
 
     pub fn set_sample_rate_rt(&self, rate: f64) -> bool {

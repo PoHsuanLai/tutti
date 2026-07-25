@@ -10,9 +10,11 @@ pub mod midi;
 pub(crate) mod node_id;
 pub mod signal;
 
-// Public so `crate::backend` can re-export them for out-of-crate in-process
-// loaders (e.g. `tutti-wasm-plugin`). `ResyncSink` stays crate-internal.
-pub(crate) use listeners::ResyncSink;
-pub use listeners::{LatencyChangeSink, ParameterChangeSink};
+// `ParameterChangeSink` is public so `crate::backend` can re-export it for
+// out-of-crate in-process loaders (e.g. `tutti-wasm-plugin`). The refresh /
+// invalidate sinks stay crate-internal — only the out-of-process bridge fires
+// them, so in-process loaders never construct one.
+pub(crate) use listeners::{InvalidateSink, RefreshSink};
+pub use listeners::ParameterChangeSink;
 pub use midi::Midi;
 pub use signal::route_with_latency;

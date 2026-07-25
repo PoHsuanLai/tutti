@@ -87,6 +87,23 @@ pub enum PluginClass {
     Wasm { receives_midi: bool },
 }
 
+impl PluginClass {
+    /// The plugin format's short name (`"vst2"`, `"vst3"`, `"clap"`, `"au"`,
+    /// `"wasm"`, or `"unknown"`). Used e.g. to fill
+    /// [`EditorError::GuiNotSupported`](crate::error::EditorError::GuiNotSupported)
+    /// with which format has no hostable editor.
+    pub fn format_name(&self) -> &'static str {
+        match self {
+            PluginClass::Unknown => "unknown",
+            PluginClass::Vst2 { .. } => "vst2",
+            PluginClass::Vst3 { .. } => "vst3",
+            PluginClass::Clap { .. } => "clap",
+            PluginClass::Au { .. } => "au",
+            PluginClass::Wasm { .. } => "wasm",
+        }
+    }
+}
+
 /// Mirror of the AudioUnit component type. Self-contained so the wire vocab
 /// doesn't depend on `tutti-au-host`; the AU loader maps its native `AuType`
 /// here. `Unknown` carries the raw four-char code for forward-compat.

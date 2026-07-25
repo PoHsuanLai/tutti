@@ -3,9 +3,10 @@
 use std::path::Path;
 use tutti_plugin::server::{
     BusChannels, EditorSize, Features, LoadedPlugin, NoteExpressionChanges, ParameterChanges,
-    ParameterInfo, PluginClass, PluginDescriptor, PluginError, PluginResult, WindowHandle,
+    ParameterInfo, PluginAudio, PluginClass, PluginDescriptor, PluginEditorHost, PluginError,
+    PluginMeta, PluginParams, PluginResult, PluginState, WindowHandle,
 };
-use tutti_plugin::server::{PluginInstance, ProcessContext, ProcessOutput};
+use tutti_plugin::server::{ProcessContext, ProcessOutput};
 
 use crate::loaders::common::{single_bus, Meta};
 use tutti_plugin::{BridgeError, LoadStage, Result};
@@ -298,7 +299,7 @@ impl ClapInstance {
 }
 
 #[cfg(feature = "clap")]
-impl PluginInstance for ClapInstance {
+impl PluginMeta for ClapInstance {
     fn descriptor(&self) -> &PluginDescriptor {
         &self.meta.descriptor
     }
@@ -306,7 +307,9 @@ impl PluginInstance for ClapInstance {
     fn loaded(&self) -> &LoadedPlugin {
         &self.meta.loaded
     }
+}
 
+impl PluginAudio for ClapInstance {
     fn process(
         &mut self,
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
@@ -361,7 +364,9 @@ impl PluginInstance for ClapInstance {
             i.set_sample_rate(rate);
         });
     }
+}
 
+impl PluginParams for ClapInstance {
     fn get_parameter(&self, id: u32) -> f64 {
         clap_dispatch!(self, i => i.parameter(id)).unwrap_or(0.0)
     }
@@ -377,7 +382,9 @@ impl PluginInstance for ClapInstance {
         // `ParameterInfo` at its own boundary; the loader no longer maps flags.
         clap_dispatch!(self, i => i.parameter_list())
     }
+}
 
+impl PluginEditorHost for ClapInstance {
     fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
         // Safety: WindowHandle was validated at the IPC boundary in server.rs
         let handle = unsafe { tutti_clap_host::WindowHandle::from_raw(parent.as_ptr()) };
@@ -394,7 +401,9 @@ impl PluginInstance for ClapInstance {
             i.close_editor();
         });
     }
+}
 
+impl PluginState for ClapInstance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         clap_dispatch_mut!(self, i => i.state()).map_err(|e| PluginError::State(e.to_string()))
     }
@@ -490,7 +499,6 @@ mod tests {
     use super::*;
     use std::path::Path;
     use std::sync::atomic::Ordering;
-    use tutti_plugin::server::PluginInstance;
     use tutti_plugin::server::{
         NoteExpressionChanges, NoteExpressionType, NoteExpressionValue, ParameterChanges,
         ParameterQueue, TransportInfo,

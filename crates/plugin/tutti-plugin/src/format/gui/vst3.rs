@@ -1,15 +1,12 @@
 //! In-process VST3 GUI instance (editor only, no audio processing).
-//
-// TODO(phase3): GuiInstance folds into PluginFormatHost. Every method here is
-// already reachable via a PluginFormatHost trait method (open_editor,
-// close_editor, set_parameter, set_state) or a host-crate inherent method on
-// `Vst3Loaded` (editor_idle is a no-op, editor_capabilities / set_editor_size /
-// resize_editor / poll_editor_resize_request, and poll_gui_param_changes drains
-// via the inherent `poll_plugin_notifications` — a bridge concern that stays
-// inherent, not a trait method). This collapse is a later ATOMIC cross-format
-// step; do not delete GuiInstance here.
+//!
+//! Implements the host-side [`PluginEditor`](super::PluginEditor) trait — the
+//! two-world counterpart of the subprocess-side `PluginEditorHost`. The two are
+//! deliberately kept separate: this object is a second, editor-only dlopen in
+//! the host process, distinct from the audio object in the plugin-server
+//! subprocess.
 
-use super::GuiInstance;
+use super::PluginEditor;
 use crate::error::{BridgeError, LoadStage, Result};
 use crate::util::window::{EditorCapabilities, EditorSize, WindowHandle};
 use std::path::Path;
@@ -31,7 +28,7 @@ impl Vst3GuiInstance {
     }
 }
 
-impl GuiInstance for Vst3GuiInstance {
+impl PluginEditor for Vst3GuiInstance {
     fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
         tracing::info!(
             "[vst3-gui] open_editor: creating vst3 handle from ptr {:?}",
@@ -64,6 +61,15 @@ impl GuiInstance for Vst3GuiInstance {
 
     fn set_parameter(&mut self, id: u32, value: f64) {
         self.inner.set_parameter(id, value);
+    }
+
+    fn set_automation_state(&mut self, mode: crate::protocol::AutomationMode) {
+        // Deliver the host automation-state advisory to the GUI instance — this
+        // is the instance whose editor shows the knob-glow feedback. Encode the
+        // format-neutral mode onto the VST3 `IAutomationState` bitmask HERE, at
+        // the VST3 edge, using the VST3 crate's own SDK-backed conversion.
+        self.inner
+            .set_automation_state(tutti_vst3_host::automation_state::from_mode(mode));
     }
 
     fn set_state(&mut self, data: &[u8]) -> Result<()> {

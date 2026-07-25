@@ -16,20 +16,48 @@ pub(crate) struct LoopCrossfade {
     active: bool,
 }
 
+/// Longest crossfade a resident [`LoopCrossfade`] can hold without reallocating.
+///
+/// The buffer is sized to this once, at slot construction, so a later loop
+/// change only rewrites its contents — see [`LoopCrossfade::retune`]. A
+/// `ClipCommand::UpdateLoop` is drained inside `tick`/`process`, so anything
+/// that grows the buffer there is an allocation in the audio callback.
+///
+/// 4096 frames is ~93 ms at 44.1 kHz; the app asks for 256. A request past this
+/// is clamped rather than grown, costing a shorter fade instead of an RT
+/// violation.
+pub(crate) const MAX_CROSSFADE_FRAMES: usize = 4096;
+
 impl LoopCrossfade {
     /// A crossfade over `channels`-wide frames. Width is explicit at every call
     /// site: there is no stereo-defaulting `new`, because the only caller
     /// (`SamplerUnit::set_loop_range`) always knows its own width and a default
     /// here would silently mismatch it.
+    ///
+    /// Reserves [`MAX_CROSSFADE_FRAMES`] up front so [`retune`](Self::retune)
+    /// never has to grow.
     pub fn with_channels(crossfade_samples: usize, channels: usize) -> Self {
         let channels = channels.max(1);
         Self {
-            pre_loop_buffer: Vec::with_capacity(crossfade_samples * channels),
+            pre_loop_buffer: Vec::with_capacity(MAX_CROSSFADE_FRAMES * channels),
             channels,
-            crossfade_samples,
+            crossfade_samples: crossfade_samples.min(MAX_CROSSFADE_FRAMES),
             position: 0,
             active: false,
         }
+    }
+
+    /// Re-point an existing crossfade at a new length, reusing the buffer.
+    ///
+    /// **Allocation-free**, so it is safe on the audio-thread command drain —
+    /// which is the whole reason the buffer is reserved at
+    /// [`MAX_CROSSFADE_FRAMES`] rather than at the requested length. A length
+    /// past the reservation is clamped.
+    pub fn retune(&mut self, crossfade_samples: usize) {
+        self.crossfade_samples = crossfade_samples.min(MAX_CROSSFADE_FRAMES);
+        self.pre_loop_buffer.clear();
+        self.position = 0;
+        self.active = false;
     }
 
     pub fn len(&self) -> usize {
@@ -40,11 +68,38 @@ impl LoopCrossfade {
     /// own width. Extra frames past `crossfade_samples` are ignored; a short
     /// slice simply yields a shorter usable tail (`process` passes the input
     /// through once it runs past the end).
+    ///
+    /// **Test-facing.** Production goes through
+    /// [`fill_preloop_with`](Self::fill_preloop_with), which needs no caller-side
+    /// buffer and so stays allocation-free on the audio-thread command drain.
+    /// This slice form is kept because it makes the tests read as data rather
+    /// than as a closure.
+    #[cfg(test)]
     pub fn fill_preloop(&mut self, samples: &[f32]) {
         self.pre_loop_buffer.clear();
         let frames = (samples.len() / self.channels).min(self.crossfade_samples);
         self.pre_loop_buffer
             .extend_from_slice(&samples[..frames * self.channels]);
+    }
+
+    /// Fill the pre-loop tail in place from `read`, which writes one frame at a
+    /// time given its index.
+    ///
+    /// **Allocation-free** as long as the reservation from
+    /// [`with_channels`](Self::with_channels) covers `crossfade_samples`, which
+    /// is what makes a loop change safe on the audio-thread command drain. The
+    /// slice-taking [`fill_preloop`](Self::fill_preloop) needs the caller to
+    /// materialise a whole buffer first; this one does not.
+    pub fn fill_preloop_with(&mut self, mut read: impl FnMut(usize, &mut [f32])) {
+        let ch = self.channels;
+        let frames = self.crossfade_samples;
+        self.pre_loop_buffer.clear();
+        // Never grows: `with_channels` reserved MAX_CROSSFADE_FRAMES * ch and
+        // `crossfade_samples` is clamped to that ceiling.
+        self.pre_loop_buffer.resize(frames * ch, 0.0);
+        for (i, frame) in self.pre_loop_buffer.chunks_exact_mut(ch).enumerate() {
+            read(i, frame);
+        }
     }
 
     pub fn start(&mut self) {

@@ -173,6 +173,14 @@ pub struct SamplerUnit {
     /// Optional transport binding for beat-synced playback.
     placement: Option<TransportPlacement>,
 
+    /// A crossfade buffer kept resident so a loop change never allocates.
+    ///
+    /// `set_loop_range` runs on the audio thread (via the reader's command
+    /// drain), so it takes this, re-points it with `retune`, and puts it back
+    /// inside `loop_mode`. `clear_loop_range` returns it here. Built once at
+    /// construction with `MAX_CROSSFADE_FRAMES` reserved.
+    loop_crossfade: Option<LoopCrossfade>,
+
     /// Output width — this unit's `outputs()`, fixed at construction.
     ///
     /// Deliberately **not** derived from `wave.channels()`: a node whose arity
@@ -214,6 +222,7 @@ impl Clone for SamplerUnit {
             src_ratio: self.src_ratio,
             loop_mode: self.loop_mode.clone(),
             placement: self.placement.clone(),
+            loop_crossfade: self.loop_crossfade.clone(),
             channels: self.channels,
         }
     }
@@ -236,6 +245,7 @@ impl SamplerUnit {
             src_ratio: SrcRatio::UNITY,
             loop_mode: LoopMode::OneShot,
             placement: None,
+            loop_crossfade: Some(LoopCrossfade::with_channels(0, 2)),
             channels: 2,
         }
     }
@@ -246,8 +256,11 @@ impl SamplerUnit {
     /// reconciled per read by [`read_frame`](super::interp::read_frame)'s
     /// channel policy (mono fans, anything else folds).
     pub fn with_channels(wave: Arc<Wave>, channels: usize) -> Self {
+        let channels = channels.max(1);
         Self {
-            channels: channels.max(1),
+            channels,
+            // Reserve at THIS width: the default from `new` is stereo-sized.
+            loop_crossfade: Some(LoopCrossfade::with_channels(0, channels)),
             ..Self::new(wave)
         }
     }
@@ -268,6 +281,7 @@ impl SamplerUnit {
             gain: config.gain,
             speed: config.speed,
             placement: config.placement,
+            loop_crossfade: Some(LoopCrossfade::with_channels(0, config.channels.max(1))),
             channels: config.channels.max(1),
             ..Self::new(wave)
         };
@@ -498,29 +512,36 @@ impl SamplerUnit {
         loop_end: SamplePosition,
         crossfade_samples: usize,
     ) {
+        // Reuse the resident crossfade rather than building one.
+        //
+        // This runs on the audio thread: `ClipCommand::UpdateLoop` is drained by
+        // `TrackClipReaderUnit::drain_commands`, which `tick`/`process` call. So
+        // changing a loop mid-playback used to allocate `crossfade_samples *
+        // channels` floats in the callback, plus a temporary buffer to read the
+        // wave into. Both are gone: the crossfade's buffer is reserved once at
+        // `MAX_CROSSFADE_FRAMES`, `retune` re-points it without growing, and
+        // `fill_preloop_with` writes the tail in place.
         let crossfade = if crossfade_samples > 0 {
-            let mut xfade = LoopCrossfade::with_channels(crossfade_samples, self.channels);
+            let mut xfade = self
+                .loop_crossfade
+                .take()
+                .unwrap_or_else(|| LoopCrossfade::with_channels(crossfade_samples, self.channels));
+            xfade.retune(crossfade_samples);
 
-            // Flat interleaved at this unit's width.
-            //
-            // This allocates, and — contrary to what a "cold path" reading of
-            // loop setup suggests — it CAN reach the audio thread: a
-            // `ClipCommand::UpdateLoop` is drained by `TrackClipReaderUnit::
-            // drain_commands`, which runs from `tick`/`process`. So changing a
-            // loop range mid-playback allocates `crossfade_samples * channels`
-            // floats in the callback and reads that many frames out of the wave.
-            //
-            // Pre-existing (the buffer was a `Vec` before this was width-generic
-            // too), and not widened here beyond the channel factor, but it is a
-            // real RT hazard rather than the safe path it looks like. Left as-is
-            // deliberately: fixing it means moving crossfade priming off the
-            // command drain, which is a behavioural change this pass does not
-            // own.
-            let mut preloop = vec![0.0f32; crossfade_samples * self.channels];
-            for (i, frame) in preloop.chunks_exact_mut(self.channels).enumerate() {
-                self.get_sample_raw_into(loop_start.get() + i as f64, frame);
-            }
-            xfade.fill_preloop(&preloop);
+            let start = loop_start.get();
+            // Split the borrow: `fill_preloop_with` holds `&mut xfade` while the
+            // closure reads `&self`, so the read cannot go through `self.
+            // get_sample_raw_into` directly.
+            let wave = Arc::clone(&self.wave);
+            let gain_free_read = |i: usize, frame: &mut [f32]| {
+                let pos = start + i as f64;
+                if pos >= wave.len() as f64 {
+                    frame.fill(0.0);
+                } else {
+                    super::interp::read_frame(&wave, pos, frame);
+                }
+            };
+            xfade.fill_preloop_with(gain_free_read);
 
             Some(xfade)
         } else {
@@ -534,7 +555,15 @@ impl SamplerUnit {
     }
 
     pub fn clear_loop_range(&mut self) {
-        self.loop_mode = LoopMode::OneShot;
+        // Reclaim the crossfade rather than dropping it, so re-enabling a loop
+        // later still finds a resident buffer and stays allocation-free.
+        if let LoopMode::Looping {
+            crossfade: Some(xfade),
+            ..
+        } = std::mem::replace(&mut self.loop_mode, LoopMode::OneShot)
+        {
+            self.loop_crossfade = Some(xfade);
+        }
     }
 
     pub fn loop_range(&self) -> Option<(SamplePosition, SamplePosition)> {

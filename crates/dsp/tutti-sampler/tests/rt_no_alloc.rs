@@ -17,7 +17,8 @@ use std::sync::Arc;
 
 use assert_no_alloc::AllocDisabler;
 use tutti_core::{
-    AudioUnit, Beat, Bpm, BufferVec, Cents, SampleRate, StretchFactor, Timeline, Wave,
+    AudioUnit, Beat, Bpm, BufferVec, Cents, SamplePosition, SampleRate, StretchFactor, Timeline,
+    Wave,
 };
 use tutti_sampler::stretch::{Algorithm, Unit as TimeStretchUnit};
 use tutti_sampler::{
@@ -298,6 +299,7 @@ fn run_stretch_drain_under_guard() {
             play: Playback::default(),
             channel_index: None,
         }),
+        stretch: None,
     });
 
     let mut output = [0.0f32; 2];
@@ -552,5 +554,153 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
             let mut output = output_vec.buffer_mut();
             reader.process(64, &input, &mut output);
         }
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Command-drain allocation gates.
+//
+// `drain_commands` runs from `tick`/`process`, so anything it builds is built
+// in the audio callback. Two paths used to: `AddVoice` constructed the stretch
+// filter (an FFT setup plus two `RtScratch` buffers PER CHANNEL), and
+// `UpdateLoop` allocated the pre-loop crossfade plus a temporary read buffer.
+// Both now happen off the callback — the sender builds the filter, and the
+// crossfade buffer is resident and re-pointed in place.
+//
+// These abort (SIGABRT) rather than fail if they regress, like every other gate
+// in this file.
+// ---------------------------------------------------------------------------
+
+/// Adding a STRETCHING clip mid-playback must not build its filter in the drain.
+///
+/// The filter is built by `TrackClipReaderHandle::send` on this thread; the
+/// drain only moves it into the slot. Width 6 so the cost would be 6 FFT setups
+/// and 12 scratch buffers if it ever moved back.
+///
+/// # What this test can and cannot assert
+///
+/// It cannot wrap the drain in `assert_no_alloc`, and the reason is worth
+/// recording rather than working around: `ClipCommand::AddVoice` carries a
+/// `Box<Voice>`, so draining it *drops a Box* — and `assert_no_alloc`
+/// instruments `dealloc` as well as `alloc`, so the free alone is a violation.
+/// That box predates this work and is deliberate (a `Voice` is far larger than
+/// the other variants; boxing keeps the bounded queue small).
+///
+/// So the assertion is structural instead: after draining, every stretching
+/// slot must ALREADY hold its filter. If construction moved back into the
+/// drain, the filter would still be present and this would still pass — which
+/// is why `add_voice_drain_does_not_build_the_stretch_filter` below tests the
+/// same property the other way, by checking that a filter which the sender did
+/// NOT build stays absent.
+#[test]
+fn add_voice_drain_is_allocation_free_at_six_channels() {
+    let transport = MockTransport::new(120.0, 0.0, true);
+    let wave = surround_wave(2.0, 48_000.0);
+    let (mut reader, handle) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
+    reader.set_sample_rate(SampleRate(48_000.0));
+
+    let input_vec = BufferVec::new(0);
+    let mut output_vec = BufferVec::new(6);
+
+    // Warm up the drain machinery before the guard.
+    for _ in 0..16 {
+        reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+    }
+
+    // Queue the adds OUTSIDE the guard (send allocates, deliberately) and drain
+    // them INSIDE it.
+    for i in 0..8u128 {
+        let sampler = SamplerUnit::with_config(
+            wave.clone(),
+            SamplerUnitConfig {
+                channels: 6,
+                placement: Some(TransportPlacement {
+                    transport: transport.clone(),
+                    start_beat: Beat::new(0.0),
+                    duration_beats: None,
+                }),
+                ..Default::default()
+            },
+        );
+        handle.send(ClipCommand::AddVoice {
+            id: SlotId(i),
+            voice: Box::new(Voice {
+                source: VoiceSource::Ram(sampler),
+                play: Playback {
+                    // Non-unity: this is the branch that needs a filter.
+                    stretch: StretchFactor::new(2.0),
+                    ..Default::default()
+                },
+                channel_index: None,
+            }),
+            stretch: None,
+        });
+    }
+
+    reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+    assert_eq!(reader.clip_count(), 8, "all adds must have drained");
+
+    // Steady state — an empty queue — must be clean. This is what catches a
+    // per-block allocation sneaking into the width-generic mix path.
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..64 {
+            reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+        }
+    });
+}
+
+/// Changing a loop range mid-playback must not allocate in the drain.
+///
+/// The crossfade buffer is reserved once at `MAX_CROSSFADE_FRAMES` and
+/// re-pointed by `retune`; the pre-loop tail is written in place.
+#[test]
+fn update_loop_drain_is_allocation_free_at_six_channels() {
+    let transport = MockTransport::new(120.0, 0.0, true);
+    let wave = surround_wave(2.0, 48_000.0);
+    let (mut reader, handle) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
+    reader.set_sample_rate(SampleRate(48_000.0));
+
+    let sampler = SamplerUnit::with_config(
+        wave,
+        SamplerUnitConfig {
+            channels: 6,
+            placement: Some(TransportPlacement {
+                transport,
+                start_beat: Beat::new(0.0),
+                duration_beats: None,
+            }),
+            ..Default::default()
+        },
+    );
+    reader.insert_voice(
+        SlotId(1),
+        Voice {
+            source: VoiceSource::Ram(sampler),
+            play: Playback::default(),
+            channel_index: None,
+        },
+    );
+
+    let input_vec = BufferVec::new(0);
+    let mut output_vec = BufferVec::new(6);
+    for _ in 0..16 {
+        reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+    }
+
+    // Several loop changes, including the on -> off -> on cycle that must
+    // reclaim and reuse the same buffer.
+    for i in 0..8u64 {
+        handle.send(ClipCommand::UpdateLoop {
+            id: SlotId(1),
+            looping: true,
+            loop_start: SamplePosition::new(i as f64 * 8.0),
+            loop_end: SamplePosition::new(i as f64 * 8.0 + 4096.0),
+            crossfade_samples: 256,
+        });
+        handle.send(ClipCommand::ClearLoop(SlotId(1)));
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
     });
 }

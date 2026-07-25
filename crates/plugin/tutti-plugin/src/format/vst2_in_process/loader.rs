@@ -87,8 +87,11 @@ pub fn load(
     );
     let midi_sender = client.midi_sender();
 
+    // VST2 has an embeddable editor: the same backend Arc serves the editor slot.
+    let editor: Arc<dyn crate::backend::HostEditor> = backend.clone();
     let handle = PluginHandle::from_backend(
         backend,
+        Some(editor),
         descriptor,
         loaded,
         latency_sink,

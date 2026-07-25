@@ -249,8 +249,8 @@ impl PluginParams for Vst2Instance {
         #[cfg(feature = "vst2")]
         {
             // The narrow→shared mapping lives on the host crate's
-            // `Vst2Instance::parameter_list`; the in-process ControlBackend
-            // calls the same helper, so there is one VST2 param map.
+            // `Vst2Instance::parameter_list`; the in-process VST2 backend's
+            // `HostParams` impl calls the same helper, so there is one VST2 param map.
             self.inner.parameter_list()
         }
         #[cfg(not(feature = "vst2"))]

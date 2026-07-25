@@ -1,5 +1,5 @@
 use crate::error::EditorError;
-use crate::host::handles::control_backend::ControlBackend;
+use crate::host::handles::capabilities::{HostEditor, HostParams, HostState};
 use crate::host::ipc_client::audio::ResyncKind;
 use crate::host::node::{LatencyChangeSink, ParameterChangeSink, ResyncSink};
 use crate::protocol::{LoadedPlugin, ParameterInfo, PluginDescriptor};
@@ -10,16 +10,21 @@ use tutti_midi_runtime::MidiSender;
 
 /// Main-thread control handle for a loaded plugin.
 ///
-/// Backend-agnostic — dispatches every method through the
-/// `ControlBackend` trait, so out-of-process VST3/CLAP/AU and in-process
-/// VST2 hosting share this surface. The backend owns whatever lifetime
-/// guard keeps its plugin alive (subprocess `ProcessGuard` for the
-/// out-of-process path; `Arc<Mutex<Vst2Instance>>` for in-process).
+/// Backend-agnostic: it holds each control capability as a separate `Arc<dyn …>`
+/// slot ([`HostParams`], [`HostState`], and an *optional* [`HostEditor`]), so
+/// out-of-process VST3/CLAP/AU and in-process VST2/WASM hosting share this surface
+/// while advertising only the capabilities they honor. One backend object
+/// implements several capability traits; construction clones the *same* backend
+/// `Arc` into each always-present slot (cheap — Arc-based — and shared state stays
+/// intact), and passes the optional editor slot explicitly. There is no stored
+/// bundle/union trait object.
 ///
 /// Clone is cheap (Arc-based). Action methods return `&Self` for chaining.
 #[derive(Clone)]
 pub struct PluginHandle {
-    inner: Arc<dyn ControlBackend>,
+    params: Arc<dyn HostParams>,
+    state: Arc<dyn HostState>,
+    editor: Option<Arc<dyn HostEditor>>,
     descriptor: PluginDescriptor,
     loaded: LoadedPlugin,
     latency_sink: LatencyChangeSink,
@@ -30,14 +35,17 @@ pub struct PluginHandle {
 
 impl PluginHandle {
     /// Construct from a `PluginClient` (out-of-process backend). Call
-    /// this before moving the client into the fundsp graph.
+    /// this before moving the client into the fundsp graph. The subprocess
+    /// backend honors every capability, including the editor.
     pub fn from_client(client: &crate::host::node::PluginClient) -> Self {
-        let backend = crate::host::ipc_client::SubprocessBackend::new(
+        let backend = Arc::new(crate::host::ipc_client::SubprocessBackend::new(
             client.bridge(),
             Arc::clone(client.process_guard()),
-        );
+        ));
         Self {
-            inner: Arc::new(backend),
+            params: backend.clone(),
+            state: backend.clone(),
+            editor: Some(backend),
             descriptor: client.descriptor().clone(),
             loaded: client.loaded().clone(),
             latency_sink: client.latency_sink().clone(),
@@ -47,12 +55,16 @@ impl PluginHandle {
         }
     }
 
-    /// Construct from any [`ControlBackend`](crate::host::handles::control_backend::ControlBackend)
-    /// impl plus explicit descriptor + load snapshots. Used by every in-process
-    /// loader — the in-crate VST2 path and out-of-crate loaders like
-    /// `tutti-wasm-plugin`.
-    pub fn from_backend(
-        inner: Arc<dyn ControlBackend>,
+    /// Construct from an in-process backend that implements the always-present
+    /// capabilities, plus an optional editor. Used by every in-process loader —
+    /// the in-crate VST2 path (which passes `Some(backend)` for the editor) and
+    /// out-of-crate loaders like `tutti-wasm-plugin` (which pass `None`).
+    ///
+    /// `backend: Arc<B>` is coerced into the `params`/`state` slots at the call
+    /// site (both are clones of the same object), so shared state stays intact.
+    pub fn from_backend<B: HostParams + HostState + 'static>(
+        backend: Arc<B>,
+        editor: Option<Arc<dyn HostEditor>>,
         descriptor: PluginDescriptor,
         loaded: LoadedPlugin,
         latency_sink: LatencyChangeSink,
@@ -60,7 +72,9 @@ impl PluginHandle {
         midi_sender: MidiSender,
     ) -> Self {
         Self {
-            inner,
+            params: backend.clone(),
+            state: backend,
+            editor,
             descriptor,
             loaded,
             latency_sink,
@@ -81,11 +95,13 @@ impl PluginHandle {
         let guard = Arc::new(crate::host::node::ProcessGuard::for_test(
             crate::util::config::BridgeConfig::default(),
         ));
-        let backend = crate::host::ipc_client::SubprocessBackend::new(bridge, guard);
+        let backend = Arc::new(crate::host::ipc_client::SubprocessBackend::new(bridge, guard));
         let (sender, _receiver) =
             tutti_midi_runtime::MidiMailbox::pair(tutti_midi_types::MidiUnitId::next());
         Self {
-            inner: Arc::new(backend),
+            params: backend.clone(),
+            state: backend.clone(),
+            editor: Some(backend),
             descriptor,
             loaded,
             latency_sink: LatencyChangeSink::default(),
@@ -95,81 +111,30 @@ impl PluginHandle {
         }
     }
 
+    // ---- Capability accessors ---------------------------------------------
+
+    /// The always-present parameter capability (catalog / read / write / health).
+    pub fn params(&self) -> &dyn HostParams {
+        self.params.as_ref()
+    }
+
+    /// The always-present state (preset save/load) capability.
+    pub fn state(&self) -> &dyn HostState {
+        self.state.as_ref()
+    }
+
+    /// The editor capability, or `None` when the backend cannot host an
+    /// embeddable editor (the WASM host). The "why" is queryable separately via
+    /// [`has_editor`](Self::has_editor) / the [`descriptor`](Self::descriptor).
+    pub fn editor(&self) -> Option<&dyn HostEditor> {
+        self.editor.as_deref()
+    }
+
+    // ---- Meta -------------------------------------------------------------
+
+    /// `true` if this plugin exposes an embeddable editor (post-load truth).
     pub fn has_editor(&self) -> bool {
-        self.descriptor.has_editor
-    }
-
-    /// Embed the plugin's editor into `parent`. Pass anything that impls
-    /// [`HasWindowHandle`] — Bevy windows, winit windows, wgpu surfaces.
-    ///
-    /// Returns the editor's requested size on success; otherwise a
-    /// structured [`EditorError`] describing why (plugin crashed, GUI
-    /// feature not compiled in, platform not supported, plugin rejected
-    /// the call).
-    pub fn open_editor(&self, parent: impl HasWindowHandle) -> Result<EditorSize, EditorError> {
-        let raw = parent
-            .window_handle()
-            .map_err(|e| EditorError::PluginError(format!("failed to get window handle: {e}")))?
-            .as_raw();
-        let ptr = crate::util::window::extract_platform_ptr(raw)?;
-        self.inner.open_editor(ptr)
-    }
-
-    pub fn close_editor(&self) -> &Self {
-        self.inner.close_editor();
-        self
-    }
-
-    /// Call periodically (~30Hz) while editor is open.
-    pub fn editor_idle(&self) -> &Self {
-        self.inner.editor_idle();
-        self
-    }
-
-    /// Call after `open_editor`.
-    pub fn editor_capabilities(&self) -> EditorCapabilities {
-        self.inner.editor_capabilities()
-    }
-
-    /// Returns the snapped/clamped size the plugin applied.
-    pub fn set_editor_size(&self, requested: EditorSize) -> Result<EditorSize, EditorError> {
-        self.inner.set_editor_size(requested)
-    }
-
-    pub fn poll_editor_resize_request(&self) -> Option<EditorSize> {
-        self.inner.poll_editor_resize_request()
-    }
-
-    pub fn save_state(&self) -> Option<Vec<u8>> {
-        self.inner.save_state()
-    }
-
-    pub fn load_state(&self, data: &[u8]) -> &Self {
-        self.inner.load_state(data);
-        self
-    }
-
-    pub fn parameters(&self) -> Option<Vec<ParameterInfo>> {
-        self.inner.parameters()
-    }
-
-    pub fn parameter(&self, param_id: u32) -> Option<f32> {
-        self.inner.parameter(param_id)
-    }
-
-    /// RT-safe, fire-and-forget.
-    pub fn set_parameter(&self, param_id: u32, value: f32) -> &Self {
-        self.inner.set_parameter_rt(param_id, value);
-        self
-    }
-
-    /// Push the host's automation read/write state to the plugin (VST3
-    /// `IAutomationState`). Fire-and-forget; a no-op for plugins / formats that
-    /// don't implement it. `state` is the VST3 `AutomationStates` bitmask
-    /// (`0=none, 1=read, 2=write, 3=read|write`).
-    pub fn set_automation_state(&self, state: i32) -> &Self {
-        self.inner.set_automation_state_rt(state);
-        self
+        self.editor.is_some()
     }
 
     /// Catalog identity (id, name, vendor, version, native class, editor).
@@ -186,6 +151,98 @@ impl PluginHandle {
         &self.descriptor.name
     }
 
+    pub fn is_crashed(&self) -> bool {
+        self.params.is_crashed()
+    }
+
+    // ---- Editor convenience (ergonomic wrappers over the editor slot) ------
+
+    /// Embed the plugin's editor into `parent`. Pass anything that impls
+    /// [`HasWindowHandle`] — Bevy windows, winit windows, wgpu surfaces.
+    ///
+    /// Returns the editor's requested size on success; otherwise a structured
+    /// [`EditorError`] — including [`EditorError::GuiNotSupported`] when this
+    /// plugin has no editor (`editor()` is `None`).
+    pub fn open_editor(&self, parent: impl HasWindowHandle) -> Result<EditorSize, EditorError> {
+        let Some(editor) = self.editor.as_deref() else {
+            return Err(EditorError::GuiNotSupported {
+                format: self.descriptor.class.format_name().to_string(),
+            });
+        };
+        let raw = parent
+            .window_handle()
+            .map_err(|e| EditorError::PluginError(format!("failed to get window handle: {e}")))?
+            .as_raw();
+        let ptr = crate::util::window::extract_platform_ptr(raw)?;
+        editor.open_editor(ptr)
+    }
+
+    pub fn close_editor(&self) -> &Self {
+        if let Some(editor) = self.editor.as_deref() {
+            editor.close_editor();
+        }
+        self
+    }
+
+    /// Call periodically (~30Hz) while editor is open.
+    pub fn editor_idle(&self) -> &Self {
+        if let Some(editor) = self.editor.as_deref() {
+            editor.editor_idle();
+        }
+        self
+    }
+
+    /// Call after `open_editor`.
+    pub fn editor_capabilities(&self) -> EditorCapabilities {
+        self.editor
+            .as_deref()
+            .map(|e| e.editor_capabilities())
+            .unwrap_or_default()
+    }
+
+    /// Returns the snapped/clamped size the plugin applied.
+    pub fn set_editor_size(&self, requested: EditorSize) -> Result<EditorSize, EditorError> {
+        match self.editor.as_deref() {
+            Some(editor) => editor.set_editor_size(requested),
+            None => Err(EditorError::GuiNotSupported {
+                format: self.descriptor.class.format_name().to_string(),
+            }),
+        }
+    }
+
+    pub fn poll_editor_resize_request(&self) -> Option<EditorSize> {
+        self.editor.as_deref()?.poll_editor_resize_request()
+    }
+
+    // ---- State convenience -------------------------------------------------
+
+    pub fn save_state(&self) -> Option<Vec<u8>> {
+        self.state.save_state()
+    }
+
+    pub fn load_state(&self, data: &[u8]) -> &Self {
+        self.state.load_state(data);
+        self
+    }
+
+    // ---- Param convenience -------------------------------------------------
+
+    pub fn parameters(&self) -> Option<Vec<ParameterInfo>> {
+        self.params.parameter_descriptors()
+    }
+
+    pub fn parameter(&self, param_id: u32) -> Option<f32> {
+        self.params.parameter_value(param_id)
+    }
+
+    /// Main-thread, fire-and-forget.
+    pub fn set_parameter(&self, param_id: u32, value: f32) -> &Self {
+        self.params.set_parameter_value(param_id, value);
+        self
+    }
+
+    // ---- MIDI --------------------------------------------------------------
+
     /// Producer handle for this plugin's MIDI inbox. Cheap to clone —
     /// `MidiSender` is `Arc`-backed. Send `MidiEvent`s through the
     /// returned sender; the audio thread polls them on the next
@@ -194,9 +251,7 @@ impl PluginHandle {
         self.midi_sender.clone()
     }
 
-    pub fn is_crashed(&self) -> bool {
-        self.inner.is_crashed()
-    }
+    // ---- Notify sinks (plugin → host reactions) ----------------------------
 
     /// Register a callback invoked whenever the plugin reports a new
     /// latency. Fires on the bridge thread for the out-of-process

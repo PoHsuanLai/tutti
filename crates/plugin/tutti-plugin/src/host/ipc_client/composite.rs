@@ -252,7 +252,10 @@ impl PluginBridge {
     }
 }
 
-/// `ControlBackend` impl for the out-of-process VST3 / CLAP / AU path.
+/// Host-side capability backend for the out-of-process VST3 / CLAP / AU path —
+/// implements [`HostParams`](crate::host::handles::capabilities::HostParams),
+/// [`HostState`](crate::host::handles::capabilities::HostState), and
+/// [`HostEditor`](crate::host::handles::capabilities::HostEditor).
 ///
 /// Bundles the `PluginBridge` (audio IPC + lazy in-process GUI loader)
 /// with the subprocess lifetime guard so dropping this backend tears
@@ -276,7 +279,35 @@ impl SubprocessBackend {
     }
 }
 
-impl crate::host::handles::control_backend::ControlBackend for SubprocessBackend {
+impl crate::host::handles::capabilities::HostParams for SubprocessBackend {
+    fn parameter_descriptors(&self) -> Option<Vec<ParameterInfo>> {
+        self.bridge.parameters()
+    }
+
+    fn parameter_value(&self, id: u32) -> Option<f32> {
+        self.bridge.parameter(id)
+    }
+
+    fn set_parameter_value(&self, id: u32, value: f32) {
+        self.bridge.set_parameter_rt(id, value);
+    }
+
+    fn is_crashed(&self) -> bool {
+        self.bridge.is_crashed()
+    }
+}
+
+impl crate::host::handles::capabilities::HostState for SubprocessBackend {
+    fn save_state(&self) -> Option<Vec<u8>> {
+        self.bridge.save_state()
+    }
+
+    fn load_state(&self, data: &[u8]) {
+        self.bridge.load_state(data);
+    }
+}
+
+impl crate::host::handles::capabilities::HostEditor for SubprocessBackend {
     fn open_editor(&self, parent_ptr: *mut c_void) -> std::result::Result<EditorSize, EditorError> {
         self.bridge.open_editor(parent_ptr)
     }
@@ -287,34 +318,6 @@ impl crate::host::handles::control_backend::ControlBackend for SubprocessBackend
 
     fn editor_idle(&self) {
         self.bridge.editor_idle();
-    }
-
-    fn save_state(&self) -> Option<Vec<u8>> {
-        self.bridge.save_state()
-    }
-
-    fn load_state(&self, data: &[u8]) {
-        self.bridge.load_state(data);
-    }
-
-    fn parameters(&self) -> Option<Vec<ParameterInfo>> {
-        self.bridge.parameters()
-    }
-
-    fn parameter(&self, id: u32) -> Option<f32> {
-        self.bridge.parameter(id)
-    }
-
-    fn set_parameter_rt(&self, id: u32, value: f32) {
-        self.bridge.set_parameter_rt(id, value);
-    }
-
-    fn set_automation_state_rt(&self, state: i32) {
-        self.bridge.set_automation_state_rt(state);
-    }
-
-    fn is_crashed(&self) -> bool {
-        self.bridge.is_crashed()
     }
 
     fn editor_capabilities(&self) -> EditorCapabilities {

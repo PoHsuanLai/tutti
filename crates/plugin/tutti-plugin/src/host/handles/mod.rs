@@ -5,11 +5,13 @@
 //! surface — editor, parameters, state). They share subprocess lifetime via
 //! `Arc`: the plugin stays alive as long as either does.
 //!
-//! The control surface dispatches every method through the [`ControlBackend`]
-//! trait, so out-of-process VST3/CLAP/AU and in-process VST2/WASM hosting all
-//! share one [`PluginHandle`] surface.
+//! The control surface splits into granular [`capabilities`] traits
+//! ([`HostParams`](capabilities::HostParams) / [`HostState`](capabilities::HostState)
+//! / [`HostEditor`](capabilities::HostEditor)), so out-of-process VST3/CLAP/AU and
+//! in-process VST2/WASM hosting each implement exactly the subset they honor while
+//! sharing one [`PluginHandle`] surface.
 
-pub(crate) mod control_backend;
+pub(crate) mod capabilities;
 pub(crate) mod control_handle;
 
 pub use crate::host::ipc_client::audio::ResyncKind;

@@ -62,7 +62,7 @@ impl Vst2Instance {
     ///
     /// This is the single VST2 `narrow → shared` mapping: the server loader's
     /// `PluginFormatHost::get_parameter_list` and the in-process
-    /// `ControlBackend::parameters` both call it, so the map lives in one place.
+    /// `HostParams::parameter_descriptors` both call it, so the map lives in one place.
     /// VST2 exposes no min/max/step metadata, so every parameter is reported as
     /// normalized `0.0..1.0`, `default = current`, `step_count = 0`, and
     /// automatable.

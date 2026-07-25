@@ -60,8 +60,11 @@ pub fn load(
         InProcessWasmClient::new(Arc::clone(&inner), loaded.clone(), sample_rate, contention);
     let midi_sender = client.midi_sender();
 
+    // WASM has no embeddable editor: pass `None` for the editor slot, so
+    // `handle.editor()` is `None` (no `HostEditor` impl, no stub).
     let handle = PluginHandle::from_backend(
         backend,
+        None,
         descriptor,
         loaded,
         latency_sink,

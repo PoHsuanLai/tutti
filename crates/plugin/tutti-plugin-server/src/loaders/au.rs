@@ -79,14 +79,28 @@ impl ParamBounds {
     ///
     /// Mirrors `tutti_plugin_types::ParameterInfo::to_plain` — the same linear
     /// endpoint map, applied here in `f32` because that is what
-    /// `AudioUnitSetParameter` takes. A degenerate range yields `min`, and the
-    /// input is clamped, so this can never produce a value the AU did not
-    /// declare.
+    /// `AudioUnitSetParameter` takes.
+    ///
+    /// This is the *live* path: the return value goes straight into
+    /// `AudioUnitSetParameter` on a running unit, so it must never be non-finite.
+    /// `normalized` arrives over IPC and the bounds come from the plugin's own
+    /// `kAudioUnitProperty_ParameterInfo`, so neither is trusted. NaN needs an
+    /// explicit check rather than a clamp: `f32::clamp` returns NaN for NaN, and
+    /// `max <= min` is `false` when either is NaN. An infinite *value* still clamps
+    /// to an endpoint; an infinite *bound* has no endpoint to clamp to. See
+    /// `ParameterInfo::to_plain` for the full argument.
     fn to_plain(self, normalized: f64) -> f32 {
+        if !(self.min.is_finite() && self.max.is_finite()) {
+            return 0.0;
+        }
         if self.max <= self.min {
             return self.min;
         }
-        let n = normalized.clamp(0.0, 1.0) as f32;
+        let n = if normalized.is_nan() {
+            0.0
+        } else {
+            normalized.clamp(0.0, 1.0) as f32
+        };
         self.min + n * (self.max - self.min)
     }
 }
@@ -652,6 +666,45 @@ mod tests {
         // A degenerate range yields `min` rather than NaN/inf.
         let degenerate = ParamBounds { min: 3.0, max: 3.0 };
         assert_eq!(degenerate.to_plain(0.5), 3.0);
+    }
+
+    /// R3, live-path half: this `to_plain`'s return value goes straight into
+    /// `AudioUnitSetParameter` on a running unit, so a NaN escaping here is a NaN
+    /// in a live filter coefficient.
+    ///
+    /// `normalized` comes over IPC and the bounds come from the plugin's own
+    /// `kAudioUnitProperty_ParameterInfo`, so neither is trusted. Clamping does not
+    /// substitute for the check: `f32::clamp` returns NaN for NaN, and `max <= min`
+    /// is `false` when either bound is NaN.
+    #[test]
+    fn nan_never_reaches_a_live_au_parameter() {
+        let cutoff = ParamBounds {
+            min: 10.0,
+            max: 22_050.0,
+        };
+
+        assert!(
+            cutoff.to_plain(f64::NAN).is_finite(),
+            "a NaN automation point must not reach AudioUnitSetParameter"
+        );
+        assert_eq!(cutoff.to_plain(f64::INFINITY), 22_050.0);
+        assert_eq!(cutoff.to_plain(f64::NEG_INFINITY), 10.0);
+
+        // Bounds the AU itself reported as non-finite.
+        for (min, max) in [
+            (f32::NAN, 1.0),
+            (0.0, f32::NAN),
+            (f32::NEG_INFINITY, 1.0),
+            (0.0, f32::INFINITY),
+        ] {
+            let broken = ParamBounds { min, max };
+            for v in [0.0, 0.5, 1.0, f64::NAN] {
+                assert!(
+                    broken.to_plain(v).is_finite(),
+                    "to_plain({v}) with bounds [{min}, {max}] returned non-finite"
+                );
+            }
+        }
     }
 
     #[test]

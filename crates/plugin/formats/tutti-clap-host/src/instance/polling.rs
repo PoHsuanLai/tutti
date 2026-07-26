@@ -162,6 +162,54 @@ fn embed_editor_sequence(
     Ok(EmbedOutcome { size, did_create })
 }
 
+/// Read `can_resize` + `get_resize_hints` off a created editor.
+///
+/// Split out of [`ClapActive::editor_capabilities`] for the same reason as
+/// [`embed_editor_sequence`]: the CLAP call order is the contract, and a free
+/// function over a vtable can be tested against a logging stub. The caller owns
+/// the *precondition* — `create()` must already have run (R7) — because that lives
+/// in `LifecycleFlags`, not in the vtable.
+///
+/// # Safety
+/// `plugin` must be a valid `clap_plugin` pointer the `gui` vtable's fns accept,
+/// and `gui.create` must have already returned `true` for it.
+unsafe fn query_editor_capabilities(
+    gui: &clap_sys::ext::gui::clap_plugin_gui,
+    plugin: *const clap_sys::plugin::clap_plugin,
+) -> EditorCapabilities {
+    let resizable = gui.can_resize.map(|f| f(plugin)).unwrap_or(false);
+    let mut caps = EditorCapabilities {
+        resize: tutti_plugin_types::ResizeHints {
+            resizable,
+            can_resize_horizontally: resizable,
+            can_resize_vertically: resizable,
+        },
+        aspect: tutti_plugin_types::AspectRatio::default(),
+        appkit_autoresize_friendly: false,
+    };
+    if let Some(get_hints) = gui.get_resize_hints {
+        let mut hints = clap_sys::ext::gui::clap_gui_resize_hints {
+            can_resize_horizontally: false,
+            can_resize_vertically: false,
+            preserve_aspect_ratio: false,
+            aspect_ratio_width: 0,
+            aspect_ratio_height: 0,
+        };
+        if get_hints(plugin, &mut hints) {
+            caps.resize.can_resize_horizontally = hints.can_resize_horizontally;
+            caps.resize.can_resize_vertically = hints.can_resize_vertically;
+            caps.aspect.preserve = hints.preserve_aspect_ratio;
+            if hints.preserve_aspect_ratio
+                && hints.aspect_ratio_width > 0
+                && hints.aspect_ratio_height > 0
+            {
+                caps.aspect.ratio = Some((hints.aspect_ratio_width, hints.aspect_ratio_height));
+            }
+        }
+    }
+    caps
+}
+
 impl ClapLoaded {
     /// Whether the plugin implements `CLAP_EXT_GUI` and can open an editor.
     pub fn has_editor(&self) -> bool {
@@ -206,45 +254,32 @@ impl ClapLoaded {
         Ok(outcome.size)
     }
 
+    /// Query the plugin's resize/aspect capabilities.
+    ///
+    /// **R7:** requires a created editor, not merely a `gui` extension. The CLAP
+    /// spec orders every other `clap_plugin_gui` call after `create()`, and plugins
+    /// enforce it — TAL-Reverb-4's validation layer prints
+    ///
+    /// ```text
+    /// [clap-plugin HOST-MISBEHAVING] clap_plugin_gui.can_resize() was called
+    /// without a prior call to clap_plugin_gui.create()
+    /// ```
+    ///
+    /// on every call. This guarded only on the extension pointer, so it violated
+    /// that on every pre-create query; the diagnostic went to a log nobody read.
+    /// `destroy_editor` already gates on `gui_created` — this was the outlier.
+    ///
+    /// Defaults are the honest answer before create: nothing has been asked, so
+    /// nothing is claimed. A caller wanting real hints must create the editor first,
+    /// which is the same order the spec requires of it.
     pub fn editor_capabilities(&self) -> EditorCapabilities {
-        if self.extensions.gui.gui.is_null() {
+        if self.extensions.gui.gui.is_null() || !self.flags.gui_created {
             return EditorCapabilities::default();
         }
+        // SAFETY: non-null checked above, and `gui_created` means `create()` has
+        // run — the precondition every other `clap_plugin_gui` call has.
         let gui = unsafe { &*self.extensions.gui.gui };
-        let resizable = gui
-            .can_resize
-            .map(|f| unsafe { f(self.plugin.as_ptr()) })
-            .unwrap_or(false);
-        let mut caps = EditorCapabilities {
-            resize: tutti_plugin_types::ResizeHints {
-                resizable,
-                can_resize_horizontally: resizable,
-                can_resize_vertically: resizable,
-            },
-            aspect: tutti_plugin_types::AspectRatio::default(),
-            appkit_autoresize_friendly: false,
-        };
-        if let Some(get_hints) = gui.get_resize_hints {
-            let mut hints = clap_sys::ext::gui::clap_gui_resize_hints {
-                can_resize_horizontally: false,
-                can_resize_vertically: false,
-                preserve_aspect_ratio: false,
-                aspect_ratio_width: 0,
-                aspect_ratio_height: 0,
-            };
-            if unsafe { get_hints(self.plugin.as_ptr(), &mut hints) } {
-                caps.resize.can_resize_horizontally = hints.can_resize_horizontally;
-                caps.resize.can_resize_vertically = hints.can_resize_vertically;
-                caps.aspect.preserve = hints.preserve_aspect_ratio;
-                if hints.preserve_aspect_ratio
-                    && hints.aspect_ratio_width > 0
-                    && hints.aspect_ratio_height > 0
-                {
-                    caps.aspect.ratio = Some((hints.aspect_ratio_width, hints.aspect_ratio_height));
-                }
-            }
-        }
-        caps
+        unsafe { query_editor_capabilities(gui, self.plugin.as_ptr()) }
     }
 
     /// Returns the snapped size the plugin applied.
@@ -888,6 +923,23 @@ mod embed_sequence_tests {
         false
     }
 
+    unsafe extern "C" fn stub_can_resize(plugin: *const clap_plugin) -> bool {
+        log(plugin, "can_resize");
+        true
+    }
+
+    unsafe extern "C" fn stub_get_resize_hints(
+        plugin: *const clap_plugin,
+        hints: *mut clap_sys::ext::gui::clap_gui_resize_hints,
+    ) -> bool {
+        log(plugin, "get_resize_hints");
+        if !hints.is_null() {
+            (*hints).can_resize_horizontally = true;
+            (*hints).can_resize_vertically = true;
+        }
+        true
+    }
+
     fn stub_gui() -> clap_plugin_gui {
         // SAFETY: clap_plugin_gui is all Option<fn ptr> fields; zeroed = None.
         let mut gui: clap_plugin_gui = unsafe { std::mem::zeroed() };
@@ -897,6 +949,8 @@ mod embed_sequence_tests {
         gui.get_size = Some(stub_get_size);
         gui.set_parent = Some(stub_set_parent);
         gui.show = Some(stub_show);
+        gui.can_resize = Some(stub_can_resize);
+        gui.get_resize_hints = Some(stub_get_resize_hints);
         gui
     }
 
@@ -966,5 +1020,51 @@ mod embed_sequence_tests {
 
         assert!(result.is_err(), "unsupported api errors");
         assert_eq!(order, vec!["is_api_supported"], "stops before create");
+    }
+
+    /// R7: querying capabilities on a created editor calls the vtable; the
+    /// `gui_created` gate in `editor_capabilities` is what keeps it from happening
+    /// before that.
+    ///
+    /// The bug was a missing precondition, not a wrong call sequence: the vtable
+    /// calls below are correct *once `create()` has run*. CLAP orders every
+    /// `clap_plugin_gui` method after `create`, and plugins check — TAL-Reverb-4
+    /// printed `[clap-plugin HOST-MISBEHAVING] clap_plugin_gui.can_resize() was
+    /// called without a prior call to clap_plugin_gui.create()` on every query,
+    /// because the guard tested only the extension pointer.
+    #[test]
+    fn capability_query_reads_both_gui_fns() {
+        let mut order: Vec<&'static str> = Vec::new();
+        let plugin = stub_plugin(&mut order);
+        let gui = stub_gui();
+
+        let caps = unsafe { query_editor_capabilities(&gui, &plugin as *const clap_plugin) };
+
+        assert_eq!(
+            order,
+            vec!["can_resize", "get_resize_hints"],
+            "hints must refine can_resize, not replace it"
+        );
+        assert!(caps.resize.resizable);
+        assert!(caps.resize.can_resize_horizontally);
+        assert!(caps.resize.can_resize_vertically);
+    }
+
+    /// R7: a plugin advertising `gui` but exposing neither resize fn is reported as
+    /// non-resizable rather than defaulting to resizable — the safe direction, since
+    /// a host that resizes a fixed-size editor corrupts its layout.
+    #[test]
+    fn capability_query_defaults_to_not_resizable() {
+        let mut order: Vec<&'static str> = Vec::new();
+        let plugin = stub_plugin(&mut order);
+        // SAFETY: all-Option fields; zeroed = every fn absent.
+        let gui: clap_plugin_gui = unsafe { std::mem::zeroed() };
+
+        let caps = unsafe { query_editor_capabilities(&gui, &plugin as *const clap_plugin) };
+
+        assert!(order.is_empty(), "nothing to call");
+        assert!(!caps.resize.resizable);
+        assert!(!caps.aspect.preserve);
+        assert!(caps.aspect.ratio.is_none());
     }
 }

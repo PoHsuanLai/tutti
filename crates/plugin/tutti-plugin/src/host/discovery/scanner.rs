@@ -49,9 +49,9 @@ pub struct ScanResult {
     pub failed: usize,
     /// Plugins that were blacklisted (previously or newly).
     pub blacklisted: usize,
-    /// Plugins this scan added to the blacklist because they crashed or hung.
-    /// Surface this so a UI can tell the user something was hidden and point
-    /// at [`CatalogExt::unblacklist`] / [`CatalogExt::clear_blacklist`].
+    /// Plugins this scan added to the blacklist because they crashed, hung, or
+    /// failed to load. Surface this so a UI can tell the user something was hidden
+    /// and point at [`CatalogExt::unblacklist`] / [`CatalogExt::clear_blacklist`].
     pub newly_blacklisted: usize,
 }
 
@@ -187,7 +187,7 @@ impl PluginScanner {
     /// pedal was armed and disarmed unconditionally and a failure produced no
     /// catalog write at all, so `needs_rescan` stayed true and the plugin was
     /// re-probed at full cost — a 5 s hang, or a crashing subprocess — on
-    /// every scan, forever. Crash and timeout now go to the blacklist, which
+    /// every scan, forever. Crash and timeout go to the blacklist, which
     /// is exactly the case the module doc advertises and the only case the
     /// pedal could not cover (the pedal fires when the *scanner host* dies,
     /// which is what out-of-process probing prevents).
@@ -195,6 +195,18 @@ impl PluginScanner {
     /// JUCE does the same: a scan attempt that yields nothing goes into
     /// `failedFiles` and then `addToBlacklist` — failure, not just a hard
     /// crash, earns the blacklist.
+    ///
+    /// **R5:** that reasoning applies to a *load* failure too, and it used to be
+    /// the one path that still wrote nothing. A plugin whose library will not open
+    /// — a stub file, a wrong-arch binary, a broken install — fails identically on
+    /// every future scan, and each attempt costs a full subprocess spawn. It is
+    /// recorded for the same reason a crash is. What it is *not* is silently
+    /// dropped: the entry carries the loader's own reason string, `blacklisted()`
+    /// surfaces it to a UI, and [`CatalogExt::unblacklist`] is its inverse.
+    ///
+    /// The mtime stamp is what makes this safe to be wrong about — reinstalling or
+    /// updating the plugin re-admits it automatically, without the user knowing the
+    /// blacklist exists.
     fn probe_and_record(&mut self, path: &Path, format: PluginFormat) -> ScanOutcome {
         if let Err(e) = self.pedal.arm(path) {
             warn!("failed to arm dead-man's pedal: {e}");
@@ -221,6 +233,12 @@ impl PluginScanner {
                     self.catalog.blacklist(path, failure.reason);
                     ScanOutcome::NewlyBlacklisted
                 } else {
+                    // Environmental failure — no plugin-server, an IO error, a
+                    // protocol mismatch. Says nothing about the plugin, so write
+                    // nothing: `needs_rescan` must stay true so the plugin is
+                    // retried once the environment is fixed. Re-probing is the
+                    // *correct* behaviour here, and it is cheap because these
+                    // failures do not reach a subprocess spawn.
                     ScanOutcome::Failed
                 }
             }
@@ -243,7 +261,7 @@ enum ScanOutcome {
     Failed,
     /// Already blacklisted before this scan; skipped.
     Blacklisted,
-    /// Blacklisted *by* this scan after a crash or timeout.
+    /// Blacklisted *by* this scan: a crash, a timeout, or a failed load.
     NewlyBlacklisted,
     UpToDate,
 }
@@ -252,16 +270,20 @@ enum ScanOutcome {
 #[derive(Debug)]
 struct ProbeFailure {
     reason: String,
-    /// Set for a crash or a timeout: the plugin will fail the same way at the
-    /// same cost on every future scan, so hiding it behind a user-clearable
-    /// entry beats re-probing forever. Clear for environmental failures, which
-    /// say nothing about the plugin.
+    /// Set when the failure is a property of *this plugin* — it will recur
+    /// identically on every future scan, at the same cost — so recording it beats
+    /// re-probing forever. Clear for environmental failures, which say nothing
+    /// about the plugin and must stay retryable.
     blacklistable: bool,
 }
 
 impl ProbeFailure {
-    /// The whole crash/timeout → blacklist decision, in one pure function so
-    /// tests exercise *this* code rather than a copy of it.
+    /// The whole blacklist decision, in one pure function so tests exercise
+    /// *this* code rather than a copy of it.
+    ///
+    /// The split is "did we learn something about the plugin, or about our own
+    /// environment?" — not severity. A crash and a broken library are equally
+    /// informative; a missing `plugin-server` tells us nothing.
     fn from_bridge_error(e: crate::error::BridgeError) -> Self {
         use crate::error::BridgeError;
         match e {
@@ -271,6 +293,14 @@ impl ProbeFailure {
             },
             BridgeError::Timeout { .. } => Self {
                 reason: format!("timed out during probe: {e}"),
+                blacklistable: true,
+            },
+            // R5: the plugin was reached and its library would not load — a stub
+            // file, a wrong-arch binary, a broken install. Deterministic, and each
+            // retry costs a full subprocess spawn. Carries the loader's own stage
+            // and reason so the catalog entry says *why*.
+            BridgeError::LoadFailed { .. } => Self {
+                reason: format!("failed to load during probe: {e}"),
                 blacklistable: true,
             },
             // IO, a missing binary, a protocol mismatch — the environment's
@@ -517,13 +547,17 @@ mod tests {
         assert_eq!(result.new + result.failed, 2);
     }
 
-    /// Regression for DISC-C1: a crash or a probe timeout must earn a
-    /// blacklist entry, not just a `warn!`. `probe_and_record` used to arm
-    /// and disarm the pedal unconditionally and upsert nothing on failure,
-    /// so `needs_rescan` stayed true and the plugin was re-probed at full
-    /// cost — the crash, or the 5 s stall — on every scan, forever.
+    /// Regression for DISC-C1 and R5: a failure that is a property of the plugin
+    /// must earn a catalog entry, not just a `warn!`. `probe_and_record` used to
+    /// arm and disarm the pedal unconditionally and upsert nothing on failure, so
+    /// `needs_rescan` stayed true and the plugin was re-probed at full cost — the
+    /// crash, the 5 s stall, or the failing `dlopen` — on every scan, forever.
+    ///
+    /// The dividing line is "did we learn about the plugin or about ourselves?",
+    /// not severity: a broken library is as informative as a crash, while a missing
+    /// `plugin-server` is not informative at all.
     #[test]
-    fn crash_and_timeout_are_blacklistable_other_failures_are_not() {
+    fn plugin_failures_are_blacklistable_environmental_ones_are_not() {
         use crate::error::BridgeError;
 
         // Exercises the *production* classifier, not a copy of it.
@@ -540,6 +574,24 @@ mod tests {
         });
         assert!(timed_out.blacklistable, "Timeout must be blacklistable");
         assert!(timed_out.reason.contains("timed out"));
+
+        // R5: this was the one path that recorded nothing.
+        let load_failed = ProbeFailure::from_bridge_error(BridgeError::LoadFailed {
+            path: PathBuf::from("/plugins/Broken.vst3"),
+            stage: tutti_plugin_types::LoadStage::Opening,
+            reason: "dlopen failed".into(),
+        });
+        assert!(
+            load_failed.blacklistable,
+            "a library that will not open fails identically on every scan, at a \
+             full subprocess spawn each time — it must be recorded"
+        );
+        assert!(
+            load_failed.reason.contains("dlopen failed"),
+            "the loader's own reason must survive into the catalog entry, or the \
+             user sees a hidden plugin with no explanation: {}",
+            load_failed.reason
+        );
 
         // Environmental failures say nothing about the plugin — never hide it.
         assert!(
@@ -656,6 +708,64 @@ mod tests {
         let meta = probe_plugin_fallback(Path::new("/plugins/My Reverb.vst3"), PluginFormat::Vst3);
         assert_eq!(meta.name, "My Reverb");
         assert_eq!(meta.id, "vst3.my_reverb");
+    }
+
+    /// R5, the consequence rather than the classification: once a load failure is
+    /// recorded, the scanner must stop re-probing it.
+    ///
+    /// This is the property that was actually broken — `blacklistable: false` meant
+    /// no catalog write at all, so `needs_rescan` stayed true and every scan paid a
+    /// fresh subprocess spawn to rediscover the same broken library. Asserting the
+    /// classifier alone would not have caught it, because the classifier was only
+    /// half the path.
+    #[test]
+    fn a_recorded_load_failure_is_not_reprobed() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        std::fs::create_dir(&plugins_dir).unwrap();
+        let broken = create_fake_plugin(&plugins_dir, "Broken.vst3");
+
+        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
+        // What `probe_and_record` now does for a LoadFailed.
+        let failure = ProbeFailure::from_bridge_error(crate::error::BridgeError::LoadFailed {
+            path: broken.clone(),
+            stage: tutti_plugin_types::LoadStage::Opening,
+            reason: "dlopen failed".into(),
+        });
+        assert!(failure.blacklistable);
+        db.blacklist(&broken, failure.reason);
+
+        // The re-probe loop is closed.
+        assert!(
+            matches!(
+                classify(&db, &broken),
+                ScanDecision::Skip(ScanOutcome::Blacklisted)
+            ),
+            "a recorded load failure must be skipped, not re-probed at full \
+             subprocess cost on every scan"
+        );
+
+        // Hidden from `plugins()`, but not silently: the reason is retrievable.
+        assert_eq!(db.plugins().count(), 0);
+        let entry = db.blacklisted().next().expect("must be listed as hidden");
+        assert!(
+            entry
+                .blacklist
+                .reason()
+                .is_some_and(|r| r.contains("dlopen")),
+            "a UI must be able to tell the user why the plugin vanished"
+        );
+
+        // And it is not permanent: reinstalling the plugin re-admits it.
+        let record = db.get(&broken).unwrap().clone();
+        db.upsert(PluginRecord {
+            modification_time: record.modification_time.wrapping_sub(1),
+            ..record
+        });
+        assert!(
+            matches!(classify(&db, &broken), ScanDecision::Probe),
+            "a rebuilt or reinstalled plugin must be re-probed"
+        );
     }
 
     /// A missing `plugin-server` must degrade to filename metadata rather than

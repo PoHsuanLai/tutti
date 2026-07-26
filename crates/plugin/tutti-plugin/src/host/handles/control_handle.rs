@@ -63,7 +63,7 @@ impl PluginHandle {
     /// Construct from an in-process backend that implements the always-present
     /// capabilities, plus an optional editor. Used by every in-process loader —
     /// the in-crate VST2 path (which passes `Some(backend)` for the editor) and
-    /// out-of-crate loaders like `tutti-wasm-plugin` (which pass `None`).
+    /// out-of-crate loaders like `dawai-wasm-plugin` (which pass `None`).
     ///
     /// `backend: Arc<B>` is coerced into the `params`/`state` slots at the call
     /// site (both are clones of the same object), so shared state stays intact.

@@ -39,4 +39,4 @@ pub use tutti_units::{LfoShape, ModParams, ModTarget};
 pub use crate::format::vst2_in_process::InProcessVst2Client;
 
 // The in-process WASM audio-graph node (`InProcessWasmClient`) lives in the
-// `tutti-wasm-plugin` crate alongside its loader.
+// `dawai-wasm-plugin` crate alongside its loader.

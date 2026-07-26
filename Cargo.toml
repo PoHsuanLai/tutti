@@ -28,7 +28,6 @@ members = [
     "crates/plugin/tutti-plugin-server",
     "crates/plugin/tutti-plugin-host",
     "crates/plugin/tutti-plugin-types",
-    "crates/plugin/tutti-wasm-plugin",
     "crates/plugin/formats/tutti-vst3-host",
     "crates/plugin/formats/tutti-clap-host",
     "crates/plugin/formats/tutti-au-host",

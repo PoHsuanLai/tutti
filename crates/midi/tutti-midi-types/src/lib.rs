@@ -15,6 +15,7 @@
 
 pub use midi2;
 pub use midly;
+pub use tutti_types;
 
 pub mod cc;
 /// MIDI Capability Inquiry (MIDI-CI, M2-101) — Discovery, Profile Configuration,

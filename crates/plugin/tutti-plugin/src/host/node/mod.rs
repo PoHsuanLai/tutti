@@ -142,7 +142,9 @@ impl PluginClient {
     pub fn set_midi_out(
         &self,
         queue: Arc<dyn tutti_midi_types::MidiRouter>,
-        routing: Arc<arc_swap::ArcSwap<tutti_midi_types::MidiRoutingSnapshot>>,
+        routing: Arc<
+            tutti_midi_types::tutti_types::RtPublish<tutti_midi_types::MidiRoutingSnapshot>,
+        >,
     ) {
         self.midi.set_out(queue, routing);
     }
@@ -435,7 +437,7 @@ impl PluginClient {
     pub fn set_transport_source(
         &mut self,
         reader: tutti_core::transport::Transport,
-        meter: Arc<arc_swap::ArcSwap<tutti_core::meter::MeterMap>>,
+        meter: Arc<tutti_core::RtPublish<tutti_core::meter::MeterMap>>,
     ) {
         self.inputs.transport.install(Arc::new(TransportSource::new(
             Arc::new(reader),

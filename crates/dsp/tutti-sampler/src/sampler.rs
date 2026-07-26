@@ -3,11 +3,11 @@
 use crate::butler::{BufferConfig, ButlerCommand, ButlerThread};
 use crate::error::Result;
 use crate::ports::{Commands, Status};
-use arc_swap::ArcSwap;
 #[cfg(feature = "bevy")]
 use bevy_ecs::resource::Resource;
 use smol::channel::Sender;
 use std::sync::Arc;
+use tutti_core::RtPublish;
 use tutti_core::Samples;
 
 /// The sampler subsystem handle, held as a Bevy [`Resource`].
@@ -102,7 +102,7 @@ pub struct SamplerConfig {
     /// downstream effects stay sample-aligned. Published by whoever runs
     /// `tutti_core::latency::compensate` over the audio graph — see
     /// [`DelayPlan::channel_compensations`](tutti_types::DelayPlan::channel_compensations).
-    pub pdc: Option<Arc<ArcSwap<Vec<Samples>>>>,
+    pub pdc: Option<Arc<RtPublish<Vec<Samples>>>>,
 }
 
 // Hand-rolled: print the buffer config + whether a subscription is set, not
@@ -133,7 +133,7 @@ mod tests {
     fn pdc_subscription_is_shared_not_copied() {
         // The caller owns the table and keeps publishing to it after the
         // sampler is built; the sampler must observe those later stores.
-        let pdc = Arc::new(ArcSwap::from_pointee(vec![Samples(100), Samples(0)]));
+        let pdc = Arc::new(RtPublish::new(vec![Samples(100), Samples(0)]));
 
         let _sampler = Sampler::new(
             44100.0,
@@ -144,7 +144,7 @@ mod tests {
         )
         .unwrap();
 
-        pdc.store(Arc::new(vec![Samples(512), Samples(0)]));
-        assert_eq!(pdc.load()[0], Samples(512));
+        pdc.publish(Arc::new(vec![Samples(512), Samples(0)]));
+        assert_eq!(pdc.read()[0], Samples(512));
     }
 }

@@ -1,7 +1,7 @@
 //! The modulation **rules** role — the mod-matrix: [`ModEdge`],
 //! [`ModRoutingSnapshot`], and the off-thread [`ModRoutingTable`] writer.
 //!
-//! An immutable, precomputed routing table published via `Arc<ArcSwap<..>>` and
+//! An immutable, precomputed routing table published via `Arc<RtPublish<..>>` and
 //! read lock-free each frame; an off-thread writer stages a wholesale edge
 //! replacement and `commit()`s a fresh snapshot atomically.
 //!
@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use tutti_types::RtPublish;
 
 use crate::id::{LayerKey, ModTargetId};
 use crate::shape::Polarity;
@@ -70,7 +70,7 @@ impl ModEdge {
 }
 
 /// Immutable, precomputed mod-matrix. Built once, read-only, shared via
-/// `Arc<ArcSwap<..>>`.
+/// `Arc<RtPublish<..>>`.
 #[derive(Clone, Debug, Default)]
 pub struct ModRoutingSnapshot {
     edges: Vec<ModEdge>,
@@ -137,7 +137,7 @@ impl ModRoutingSnapshot {
 pub struct ModRoutingTable {
     edges: Vec<ModEdge>,
     source_count: usize,
-    snapshot: Arc<ArcSwap<ModRoutingSnapshot>>,
+    snapshot: Arc<RtPublish<ModRoutingSnapshot>>,
     dirty: bool,
 }
 
@@ -152,19 +152,19 @@ impl ModRoutingTable {
         Self {
             edges: Vec::new(),
             source_count: 0,
-            snapshot: Arc::new(ArcSwap::from_pointee(ModRoutingSnapshot::empty())),
+            snapshot: Arc::new(RtPublish::new(ModRoutingSnapshot::empty())),
             dirty: false,
         }
     }
 
     /// The read handle for the driver (the audio-adjacent side loads this).
-    pub fn snapshot_arc(&self) -> Arc<ArcSwap<ModRoutingSnapshot>> {
+    pub fn snapshot_arc(&self) -> Arc<RtPublish<ModRoutingSnapshot>> {
         Arc::clone(&self.snapshot)
     }
 
     /// Load the current snapshot directly (for tests / a co-located reader).
-    pub fn load(&self) -> arc_swap::Guard<Arc<ModRoutingSnapshot>> {
-        self.snapshot.load()
+    pub fn load(&self) -> tutti_types::RtRef<'_, ModRoutingSnapshot> {
+        self.snapshot.read()
     }
 
     /// Stage a wholesale replacement of the edge set (no incremental edit).
@@ -183,10 +183,11 @@ impl ModRoutingTable {
         if !self.dirty {
             return;
         }
-        self.snapshot.store(Arc::new(ModRoutingSnapshot::from_edges(
-            self.edges.clone(),
-            self.source_count,
-        )));
+        self.snapshot
+            .publish(Arc::new(ModRoutingSnapshot::from_edges(
+                self.edges.clone(),
+                self.source_count,
+            )));
         self.dirty = false;
     }
 }

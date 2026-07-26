@@ -249,7 +249,7 @@ impl Curve for OffsetCurve {
 /// Plugin params are normalized `0..1` (the format-boundary convention), so the
 /// caller passes that range; the `LayeredCurve` clamps to it.
 ///
-/// **Lock-free reads.** The layers live in an [`ArcSwap`] rather than a `Mutex`:
+/// **Lock-free reads.** The layers live in an [`RtPublish`] rather than a `Mutex`:
 /// the per-block producer runs on the **audio thread** and calls `value_at`
 /// several times per block, so it must never block. Reads `load()` the current
 /// snapshot lock-free. Writes (control-rate, from the single ECS driver system)
@@ -258,24 +258,22 @@ impl Curve for OffsetCurve {
 /// the audio thread only ever reads. (Clone is an `Arc` bump per layer — cheap,
 /// and off the hot path.)
 pub struct PluginParamTarget {
-    layered: arc_swap::ArcSwap<tutti_units::LayeredCurve<f32>>,
+    layered: tutti_core::RtPublish<tutti_units::LayeredCurve<f32>>,
 }
 
 impl PluginParamTarget {
     pub fn new(base: f32, min: f32, max: f32) -> Self {
         Self {
-            layered: arc_swap::ArcSwap::from_pointee(tutti_units::LayeredCurve::new(
-                base, min, max,
-            )),
+            layered: tutti_core::RtPublish::new(tutti_units::LayeredCurve::new(base, min, max)),
         }
     }
 
     /// Copy-on-write edit: clone the current snapshot, apply `f`, store the fresh
     /// `Arc`. Off the hot path (control-rate writers only).
     fn edit(&self, f: impl FnOnce(&mut tutti_units::LayeredCurve<f32>)) {
-        let mut next = (**self.layered.load()).clone();
+        let mut next = (*self.layered.read()).clone();
         f(&mut next);
-        self.layered.store(std::sync::Arc::new(next));
+        self.layered.publish(std::sync::Arc::new(next));
     }
 
     /// Install (or replace) a **beat-varying** layer under `key` — an
@@ -290,11 +288,11 @@ impl PluginParamTarget {
 impl tutti_units::ModTarget for PluginParamTarget {
     #[inline]
     fn range(&self) -> (f32, f32) {
-        self.layered.load().range()
+        self.layered.read().range()
     }
     #[inline]
     fn base(&self) -> f32 {
-        self.layered.load().base()
+        self.layered.read().base()
     }
     #[inline]
     fn set_base(&self, value: f32) {
@@ -315,7 +313,7 @@ impl tutti_units::ModTarget for PluginParamTarget {
     #[inline]
     fn final_value(&self) -> f32 {
         self.layered
-            .load()
+            .read()
             .value_at(tutti_core::Beat(0.0))
             .unwrap_or(0.0)
     }
@@ -324,10 +322,10 @@ impl tutti_units::ModTarget for PluginParamTarget {
 impl Curve for PluginParamTarget {
     /// `clamp(base + Σ layer(beat), range)` at the requested beat — the plugin's
     /// per-block producer (on the audio thread) calls this several times per
-    /// block, **lock-free** (`ArcSwap::load`), so any beat-varying layer stays
+    /// block, **lock-free** (`RtPublish::read`), so any beat-varying layer stays
     /// smooth without blocking the callback.
     fn value_at(&self, beat: tutti_core::Beat) -> Option<f32> {
-        self.layered.load().value_at(beat)
+        self.layered.read().value_at(beat)
     }
 }
 

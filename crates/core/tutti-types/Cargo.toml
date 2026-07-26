@@ -21,6 +21,9 @@ serde = ["dep:serde"]
 smallvec = { version = "1", default-features = false, features = ["const_generics"] }
 # `Param<U>` wraps an `AtomicF32`; `AtomicSamplePosition` an `AtomicF64`.
 atomic_float = { version = "1.1", default-features = false, features = ["atomic_f64"] }
+# `RtPublish` — publish-to-audio-thread cell. The debt-slot strategy is what
+# keeps the read wait-free and the retired value's free on the publisher.
+arc-swap = "1.7"
 serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
 
 [dev-dependencies]

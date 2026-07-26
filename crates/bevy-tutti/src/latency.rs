@@ -39,8 +39,8 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use tutti_core::ecs::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
+use tutti_core::RtPublish;
 use tutti_core::{latency, Samples};
 
 /// Per-output-channel pre-roll for sources outside the audio graph.
@@ -49,12 +49,12 @@ use tutti_core::{latency, Samples};
 /// sampler holds one of these; a host wanting to display or apply the figures
 /// elsewhere can clone it from the resource.
 #[derive(Resource, Clone, Default)]
-pub struct ChannelCompensation(pub Arc<ArcSwap<Vec<Samples>>>);
+pub struct ChannelCompensation(pub Arc<RtPublish<Vec<Samples>>>);
 
 impl ChannelCompensation {
     /// Pre-roll for a source feeding `channel`. Zero if uncompensated.
     pub fn for_channel(&self, channel: usize) -> Samples {
-        self.0.load().get(channel).copied().unwrap_or_default()
+        self.0.read().get(channel).copied().unwrap_or_default()
     }
 }
 
@@ -92,7 +92,7 @@ pub fn compensate_graph(
     let compensation = latency::compensate(&mut graph.0);
     published
         .0
-        .store(Arc::new(compensation.channels().to_vec()));
+        .publish(Arc::new(compensation.channels().to_vec()));
 }
 
 #[cfg(test)]
@@ -148,7 +148,7 @@ mod tests {
         app.update();
 
         let published = app.world().resource::<ChannelCompensation>();
-        assert!(published.0.load().is_empty(), "no table published");
+        assert!(published.0.read().is_empty(), "no table published");
     }
 
     #[test]

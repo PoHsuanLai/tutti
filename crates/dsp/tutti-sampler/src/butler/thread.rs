@@ -8,10 +8,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use smol::channel::{bounded, Receiver, Sender};
 use thread_priority::ThreadPriority;
+use tutti_core::RtPublish;
 use tutti_core::Samples;
 
 use super::cache::LruCache;
@@ -62,7 +62,7 @@ impl ButlerThread {
     ///
     /// Published by whoever runs `tutti_core::latency::compensate` over the
     /// audio graph. Readers call `.load()` to obtain a current snapshot.
-    pub fn with_pdc(mut self, snapshot: Arc<ArcSwap<Vec<Samples>>>) -> Self {
+    pub fn with_pdc(mut self, snapshot: Arc<RtPublish<Vec<Samples>>>) -> Self {
         self.shared.pdc = Some(snapshot);
         self
     }

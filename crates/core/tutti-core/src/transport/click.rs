@@ -13,12 +13,12 @@
 
 use super::Transport;
 use crate::{AtomicF32, AtomicU8, Ordering};
-use arc_swap::ArcSwap;
 use fundsp::audionode::AudioNode;
 use fundsp::prelude::*;
 use std::sync::Arc;
 use tutti_types::meter::{Meter, MeterMap};
 use tutti_types::value::Beat;
+use tutti_types::RtPublish;
 
 /// How far two beat onsets must differ to count as different beats.
 ///
@@ -89,16 +89,16 @@ pub struct ClickSettings {
     volume: AtomicF32,
     /// The project meter, driving both the click rate and the downbeat accent.
     ///
-    /// An `ArcSwap` rather than a packed atomic because a [`MeterMap`] is a `Vec`,
-    /// not a scalar. Read once per block in [`ClickNode::process`], never per
-    /// sample — an `ArcSwap::load` is a guard acquire, far heavier than the plain
+    /// An [`RtPublish`] rather than a packed atomic because a [`MeterMap`] is a
+    /// `Vec`, not a scalar. Read once per block in [`ClickNode::process`], never
+    /// per sample — the read is a guard acquire, far heavier than the plain
     /// atomic loads beside it.
     ///
     /// Wrapped in its own `Arc` so the *cell* can be shared, not just its
     /// contents: hosted plugins need the same meter for their transport
     /// snapshot, and handing them this handle means one publish reaches the
     /// metronome and every plugin at once. See [`meter_cell`](Self::meter_cell).
-    meter: Arc<ArcSwap<MeterMap>>,
+    meter: Arc<RtPublish<MeterMap>>,
     mode: AtomicU8,
 }
 
@@ -106,7 +106,7 @@ impl ClickSettings {
     pub fn new() -> Self {
         Self {
             volume: AtomicF32::new(0.5),
-            meter: Arc::new(ArcSwap::from_pointee(MeterMap::default())),
+            meter: Arc::new(RtPublish::new(MeterMap::default())),
             mode: AtomicU8::new(MetronomeMode::Off as u8),
         }
     }
@@ -122,28 +122,16 @@ impl ClickSettings {
     /// Publish a new meter. Lock-free; visible to the audio thread on its next
     /// block.
     pub fn set_meter(&self, meter: Arc<MeterMap>) {
-        self.meter.store(meter);
+        self.meter.publish(meter);
     }
 
     /// The meter in force. Prefer calling this once per block.
     ///
-    /// Returns a [`Guard`](arc_swap::Guard), *not* an `Arc`, and the difference is
-    /// load-bearing on the audio thread. `load_full` would hand back an owning
-    /// `Arc`; if the publisher had already retired that `MeterMap` and dropped its
-    /// own handle, the audio thread would be left holding the last reference and
-    /// would free the `Vec` inside the callback. A guard is a borrow — dropping it
-    /// is a group-counter decrement that can never deallocate, so the hazard is
-    /// absent by construction rather than by test.
-    ///
-    /// Retired values are freed by whoever calls [`set_meter`](Self::set_meter):
-    /// `ArcSwap::store` returns the old value to the *writer* after
-    /// `wait_for_readers`, which is exactly the property that keeps the free off
-    /// this thread.
-    ///
-    /// Hold it only for the block you are rendering. Parking a guard long-term
-    /// keeps a retired `MeterMap` alive and stalls the next writer.
-    pub fn meter(&self) -> arc_swap::Guard<Arc<MeterMap>> {
-        self.meter.load()
+    /// A borrow, not an owning handle — see [`RtPublish`] for why that is the
+    /// whole point on the audio thread. Hold it for the block you are rendering
+    /// and no longer.
+    pub fn meter(&self) -> tutti_types::RtRef<'_, MeterMap> {
+        self.meter.read()
     }
 
     /// The shared meter cell, for other subsystems that must see the same value.
@@ -151,7 +139,7 @@ impl ClickSettings {
     /// Hosted plugins carry the meter in their transport snapshot; giving them
     /// this handle rather than a copy means [`set_meter`](Self::set_meter)
     /// reaches them too, with no second publish path to keep in sync.
-    pub fn meter_cell(&self) -> Arc<ArcSwap<MeterMap>> {
+    pub fn meter_cell(&self) -> Arc<RtPublish<MeterMap>> {
         Arc::clone(&self.meter)
     }
 
@@ -279,7 +267,16 @@ impl ClickNode {
     /// The index counts *notated* beats, not quarter notes: in 7/8 that is an
     /// eighth, so the metronome clicks seven times per bar rather than four.
     #[inline]
-    fn advance_to(&mut self, meter: &MeterMap, beat: Beat) {
+    /// Takes its three mutable fields individually rather than `&mut self`:
+    /// the meter arrives as a read lease borrowed from `self.settings`, so a
+    /// whole-`self` mutable borrow would collide with it at every call site.
+    fn advance_to(
+        last_click_onset: &mut Option<Beat>,
+        click_pos: &mut usize,
+        is_accent: &mut bool,
+        meter: &MeterMap,
+        beat: Beat,
+    ) {
         let position = meter.bar_at(beat);
 
         // Identify the beat by the *onset it belongs to*, not by a running
@@ -295,18 +292,18 @@ impl ClickNode {
         // Inequality, not `>`: a backward jump from a loop wrap must retrigger
         // too. The epsilon is for float drift in the accumulated playhead, well
         // below the shortest notated beat this meter can express.
-        let changed = match self.last_click_onset {
+        let changed = match *last_click_onset {
             Some(previous) => (onset - previous).get().abs() > ONSET_EPSILON,
             None => true,
         };
 
         if changed {
-            self.last_click_onset = Some(onset);
-            self.click_pos = 0;
+            *last_click_onset = Some(onset);
+            *click_pos = 0;
             // The accent is the bar's downbeat, straight from the meter. This
             // replaces a standalone `accent_every` count that defaulted to 4 and
             // was never set by anything.
-            self.is_accent = position.is_downbeat();
+            *is_accent = position.is_downbeat();
         }
     }
 
@@ -342,8 +339,14 @@ impl AudioNode for ClickNode {
             return [0.0, 0.0].into();
         }
 
-        let meter = self.settings.meter();
-        self.advance_to(&meter, self.transport.settings.beat());
+        let beat = self.transport.settings.beat();
+        Self::advance_to(
+            &mut self.last_click_onset,
+            &mut self.click_pos,
+            &mut self.is_accent,
+            &self.settings.meter(),
+            beat,
+        );
 
         let sample = self.next_sample(self.settings.volume());
         [sample, sample].into()
@@ -352,7 +355,7 @@ impl AudioNode for ClickNode {
     /// Per-block render, overriding the default per-sample `tick` loop.
     ///
     /// The default `AudioNode::process` calls `tick` once per sample, which would
-    /// put an `ArcSwap::load` — a guard acquire, not a plain atomic read — on
+    /// put an `RtPublish::read` — a guard acquire, not a plain atomic read — on
     /// every one of ~2.8M samples per second. Hoisting the mode, transport flags,
     /// volume, and meter to once per buffer is the same shape `TransportClock`
     /// uses, and is what makes reading a `MeterMap` here affordable at all.
@@ -378,9 +381,15 @@ impl AudioNode for ClickNode {
             return;
         }
 
-        let meter = self.settings.meter();
         let volume = self.settings.volume();
-        self.advance_to(&meter, self.transport.settings.beat());
+        let beat = self.transport.settings.beat();
+        Self::advance_to(
+            &mut self.last_click_onset,
+            &mut self.click_pos,
+            &mut self.is_accent,
+            &self.settings.meter(),
+            beat,
+        );
 
         for i in 0..size {
             let sample = self.next_sample(volume);

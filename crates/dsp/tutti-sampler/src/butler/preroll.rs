@@ -14,15 +14,15 @@ use super::loops::{fadein_samples, fadeout_samples};
 use super::metrics::Metrics;
 use super::plan::ChannelPlan;
 use super::region_map::RegionMap;
-use arc_swap::ArcSwap;
 use dashmap::DashMap;
 use std::sync::Arc;
+use tutti_core::RtPublish;
 use tutti_core::Samples;
 
 /// Called each refill cycle. Detects compensation changes and adjusts stream
 /// positions with smooth crossfades.
 pub(crate) fn apply_pdc_updates(
-    pdc: &Option<Arc<ArcSwap<Vec<Samples>>>>,
+    pdc: &Option<Arc<RtPublish<Vec<Samples>>>>,
     plans: &DashMap<usize, ChannelPlan>,
     regions: &mut RegionMap,
     cache: &LruCache,
@@ -33,7 +33,7 @@ pub(crate) fn apply_pdc_updates(
         return;
     };
 
-    let snapshot = pdc.load_full();
+    let snapshot = pdc.read();
 
     for mut entry in plans.iter_mut() {
         let channel_index = *entry.key();
@@ -132,8 +132,8 @@ mod tests {
     }
 
     /// A published compensation table, as `latency::compensate` would produce.
-    fn table(compensations: [usize; 3]) -> Arc<ArcSwap<Vec<Samples>>> {
-        Arc::new(ArcSwap::from_pointee(
+    fn table(compensations: [usize; 3]) -> Arc<RtPublish<Vec<Samples>>> {
+        Arc::new(RtPublish::new(
             compensations.into_iter().map(Samples).collect(),
         ))
     }
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(file_pos(&regions, 0), 500);
 
         // The latency goes away — republish, and the read head seeks back forward.
-        pdc.store(Arc::new(vec![Samples(0)]));
+        pdc.publish(Arc::new(vec![Samples(0)]));
         apply_pdc_updates(&Some(pdc), &plans, &mut regions, &cache, &metrics, &config);
 
         assert_eq!(file_pos(&regions, 0), 1000);
@@ -295,7 +295,7 @@ mod tests {
         regions.get_mut(region(0)).unwrap().set_file_position(1000);
 
         // Empty table — channel 0 has no entry.
-        let pdc = Arc::new(ArcSwap::from_pointee(Vec::new()));
+        let pdc = Arc::new(RtPublish::new(Vec::new()));
         apply_pdc_updates(&Some(pdc), &plans, &mut regions, &cache, &metrics, &config);
 
         assert_eq!(file_pos(&regions, 0), 1000);

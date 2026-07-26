@@ -98,7 +98,9 @@ impl InProcessVst2Client {
     pub fn set_midi_out(
         &self,
         queue: Arc<dyn tutti_midi_types::MidiRouter>,
-        routing: Arc<arc_swap::ArcSwap<tutti_midi_types::MidiRoutingSnapshot>>,
+        routing: Arc<
+            tutti_midi_types::tutti_types::RtPublish<tutti_midi_types::MidiRoutingSnapshot>,
+        >,
     ) {
         self.midi.set_out(queue, routing);
     }

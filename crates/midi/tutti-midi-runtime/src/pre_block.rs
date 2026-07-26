@@ -22,7 +22,7 @@
 
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use tutti_midi_types::tutti_types::RtPublish;
 
 use tutti_core::{AudioThreadCell, RtEventBuf};
 use tutti_midi_types::ump::MidiEvent;
@@ -65,7 +65,7 @@ pub struct MidiPreBlock {
     queue: Option<Arc<dyn MidiRouter>>,
     /// The live routing snapshot: maps each event (by channel) to its target
     /// unit ids. Swapped atomically off-thread.
-    routing: Arc<ArcSwap<MidiRoutingSnapshot>>,
+    routing: Arc<RtPublish<MidiRoutingSnapshot>>,
     /// `(frame_offset, event)` collected per block. Fixed capacity: events past
     /// [`MIDI_EVENT_BUFFER_CAPACITY`] are dropped (never allocated) on the audio
     /// thread.
@@ -89,7 +89,7 @@ pub struct MidiPreBlock {
 impl MidiPreBlock {
     /// Build a producer reading the given routing snapshot. Input, queue, and
     /// clock are installed separately (they're wired after construction).
-    pub fn new(routing: Arc<ArcSwap<MidiRoutingSnapshot>>) -> Self {
+    pub fn new(routing: Arc<RtPublish<MidiRoutingSnapshot>>) -> Self {
         Self {
             input: None,
             queue: None,
@@ -181,7 +181,7 @@ impl MidiPreBlock {
         let mut scratch = self.poll_scratch.borrow_mut();
         let n = input.poll_into(HARDWARE_POLL_UNIT, frames, &mut scratch[..]);
 
-        let routing = self.routing.load();
+        let routing = self.routing.read();
         if !routing.has_routes() || n == 0 {
             return 0;
         }
@@ -217,7 +217,7 @@ impl MidiPreBlock {
         let Some(queue) = &self.queue else {
             return;
         };
-        let routing = self.routing.load();
+        let routing = self.routing.read();
         self.events.for_each(|&(_offset, event)| {
             for target in routing.route(&event) {
                 queue.queue(target, &[event]);

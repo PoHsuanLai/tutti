@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use tutti_types::RtPublish;
 use tutti_types::{Beat, Hz, Seconds};
 
 use crate::id::{LayerKey, ModTargetId};
@@ -135,7 +135,7 @@ impl<M: Modulator + Send + Sync> ErasedModulator for Sourced<M> {
 /// The source registry indices must line up with [`crate::ModEdge::source`].
 pub struct ModPreFrame {
     sources: Vec<Box<dyn ErasedModulator>>,
-    routing: Arc<ArcSwap<ModRoutingSnapshot>>,
+    routing: Arc<RtPublish<ModRoutingSnapshot>>,
     router: Option<Arc<dyn ModRouter>>,
     /// The `(target, key)` layers written last frame — cleared next frame if the
     /// current snapshot no longer contains them.
@@ -145,7 +145,7 @@ pub struct ModPreFrame {
 impl ModPreFrame {
     /// Build a driver reading `routing`. Install sources and a router before
     /// running.
-    pub fn new(routing: Arc<ArcSwap<ModRoutingSnapshot>>) -> Self {
+    pub fn new(routing: Arc<RtPublish<ModRoutingSnapshot>>) -> Self {
         Self {
             sources: Vec::new(),
             routing,
@@ -178,7 +178,7 @@ impl ModPreFrame {
         let Some(router) = self.router.clone() else {
             return;
         };
-        let snapshot = self.routing.load();
+        let snapshot = self.routing.read();
 
         // Sample each source ONCE (advancing its state), fan across its edges.
         let mut active: Vec<(ModTargetId, LayerKey)> = Vec::new();

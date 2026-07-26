@@ -13,9 +13,9 @@
 
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use assert_no_alloc::AllocDisabler;
 use tutti_midi_runtime::MidiPreBlock;
+use tutti_midi_types::tutti_types::RtPublish;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::{MidiIn, MidiRoute, MidiRouter, MidiRoutingSnapshot, MidiUnitId};
 
@@ -57,7 +57,7 @@ impl MidiRouter for CountingQueue {
 
 #[test]
 fn pre_block_run_no_input_is_allocation_free() {
-    let routing = Arc::new(ArcSwap::new(Arc::new(MidiRoutingSnapshot::empty())));
+    let routing = Arc::new(RtPublish::from_arc(Arc::new(MidiRoutingSnapshot::empty())));
     let pre = MidiPreBlock::new(routing);
 
     // Warm up.
@@ -72,7 +72,7 @@ fn pre_block_run_no_input_is_allocation_free() {
 
 #[test]
 fn pre_block_run_empty_events_is_allocation_free() {
-    let routing = Arc::new(ArcSwap::new(Arc::new(MidiRoutingSnapshot::empty())));
+    let routing = Arc::new(RtPublish::from_arc(Arc::new(MidiRoutingSnapshot::empty())));
     let mut pre = MidiPreBlock::new(routing);
     pre.set_input(Arc::new(FixedInput { events: Vec::new() }));
 
@@ -91,7 +91,7 @@ fn pre_block_run_with_routed_events_is_allocation_free() {
     let target = MidiUnitId::new(42);
     let route = MidiRoute::for_channel(0).with_target(target);
     let snapshot = MidiRoutingSnapshot::from_routes(vec![route], None);
-    let routing = Arc::new(ArcSwap::new(Arc::new(snapshot)));
+    let routing = Arc::new(RtPublish::from_arc(Arc::new(snapshot)));
 
     // Input: two note events at different frame offsets. `MidiPreBlock` delivers
     // both (each keeps its `frame_offset`), which must be alloc-free.

@@ -12,7 +12,7 @@
 //! - [`MidiSnapshotReader`] — [`tutti_midi_types::MidiIn`] implementation that
 //!   reads a snapshot on an offline timeline
 //! - [`MidiRoutingTable`] — UI-thread writer for routing rules, publishing
-//!   immutable [`tutti_midi_types::MidiRoutingSnapshot`] values via [`arc_swap::ArcSwap`]
+//!   immutable [`tutti_midi_types::MidiRoutingSnapshot`] values via `RtPublish`
 //! - Engine-produced MIDI *out* (e.g. the [`ClockMaster`]'s Beat Clock / MTC)
 //!   rides the *same* [`MidiMailbox`] mailbox as MIDI in: the producer holds a
 //!   [`MidiSender`] (lock-free `&self` push via [`tutti_midi_types::MidiOut`]),

@@ -8,9 +8,57 @@ use crate::protocol::{BridgeMessage, HostMessage, IpcMidiEvent, MidiEvent, Proce
 use crate::util::transport::control::{self as ipc, ControlStream};
 use std::time::Duration;
 
-const PROCESS_TIMEOUT: Duration = Duration::from_millis(500);
+/// How many block periods the bridge thread will wait for a `ProcessAudio`
+/// reply before abandoning the block.
+///
+/// This has to be bounded by the *block period*, not an absolute duration. The
+/// audio thread gives up on a block after a fraction of one period (see
+/// `wait_budget_for`); if the bridge thread waits far longer it stays blocked in
+/// `recv_reply` and — because `pump` is a single loop — dequeues no further
+/// commands while it waits. The audio thread meanwhile keeps pushing one command
+/// per block, so a single slow reply used to overflow the 128-slot command queue
+/// and produce a sustained run of silence long after the server recovered. With
+/// a 500 ms constant against a 667 µs budget (64 frames @ 48 kHz) that was a
+/// ~750x mismatch and roughly 750 queued blocks.
+///
+/// A small multiple rather than the audio thread's own budget: the bridge is
+/// allowed to still be waiting when the audio thread has already given up (its
+/// reply then lands for a later block, or is discarded by `answers`), which
+/// absorbs ordinary jitter without stalling the queue. Beyond a few periods the
+/// reply is worthless anyway — the block it answers is long gone.
+const PROCESS_TIMEOUT_PERIODS: u32 = 4;
+
+/// Floor for the `ProcessAudio` reply timeout. At very short periods the
+/// computed timeout drops under the scheduler's own wake latency (~0.7-1 ms
+/// measured on this machine), and a bridge thread that times out before the
+/// server could realistically have been scheduled would abandon every block on
+/// a busy machine. Unlike the audio thread — which genuinely cannot spend 1 ms
+/// at 64 frames / 192 kHz — the bridge thread is *not* on a deadline, so a floor
+/// is safe here and merely stops it giving up prematurely.
+const MIN_PROCESS_TIMEOUT: Duration = Duration::from_millis(2);
+
+/// Ceiling, for the degenerate case of a very large block: past this the reply
+/// cannot help any live block and continuing to wait only starves the queue.
+const MAX_PROCESS_TIMEOUT: Duration = Duration::from_millis(50);
+
 const PARAM_TIMEOUT: Duration = Duration::from_secs(5);
 const STATE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The bridge thread's reply timeout for one block: [`PROCESS_TIMEOUT_PERIODS`]
+/// of that block's own period, clamped to
+/// [`MIN_PROCESS_TIMEOUT`]..=[`MAX_PROCESS_TIMEOUT`].
+///
+/// `num_samples`/`rate` stay raw here for the same reason as in
+/// `wait_budget_for`: both come off the IPC wire, where the unit mandate stops.
+fn process_timeout(num_samples: usize, rate: f64) -> Duration {
+    let rate = if rate.is_finite() && rate > 0.0 {
+        rate
+    } else {
+        super::FALLBACK_SAMPLE_RATE
+    };
+    let period = Duration::from_secs_f64(num_samples as f64 / rate);
+    (period * PROCESS_TIMEOUT_PERIODS).clamp(MIN_PROCESS_TIMEOUT, MAX_PROCESS_TIMEOUT)
+}
 
 pub(super) fn handle(
     cmd: Command,
@@ -21,6 +69,7 @@ pub(super) fn handle(
     match cmd {
         Command::Process(mut payload) => {
             let sent_id = payload.buffer_id;
+            let num_samples = payload.num_samples;
             let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
                 buffer_id: payload.buffer_id,
                 num_samples: payload.num_samples,
@@ -38,7 +87,8 @@ pub(super) fn handle(
 
             ipc::send(stream, &msg)?;
 
-            match recv_reply(stream, channels, PROCESS_TIMEOUT)? {
+            let timeout = process_timeout(num_samples, channels.sample_rate());
+            match recv_reply(stream, channels, timeout)? {
                 BridgeMessage::AudioProcessed {
                     buffer_id,
                     midi_out,
@@ -142,6 +192,72 @@ fn recv_reply(
                 channels.push_unsolicited(BridgeEvent::Resync(ResyncKind::Reloaded));
             }
             msg => return Ok(msg),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::ipc_client::audio::wait_budget_for;
+
+    /// Every production block size / rate combination the engine can present.
+    /// `BATCH_SIZE` is 64 today, but the timeout must hold if that changes.
+    const RATES: [f64; 4] = [44_100.0, 48_000.0, 96_000.0, 192_000.0];
+    const BLOCKS: [usize; 4] = [64, 128, 256, 512];
+
+    fn period(num_samples: usize, rate: f64) -> Duration {
+        Duration::from_secs_f64(num_samples as f64 / rate)
+    }
+
+    /// The regression this fix exists for: a fixed 500 ms timeout sat ~750x
+    /// above the audio thread's 667 us budget at 64 frames / 48 kHz. While the
+    /// bridge thread blocks in `recv_reply` it dequeues nothing, so the audio
+    /// thread's one-command-per-block kept filling the 128-slot queue and one
+    /// slow reply became a sustained run of silence. Bound it to a few periods.
+    #[test]
+    fn timeout_is_a_small_multiple_of_the_block_period() {
+        for rate in RATES {
+            for n in BLOCKS {
+                let t = process_timeout(n, rate);
+                let p = period(n, rate);
+                let limit = p * PROCESS_TIMEOUT_PERIODS;
+                assert!(
+                    t <= limit.max(MIN_PROCESS_TIMEOUT),
+                    "n={n} rate={rate}: timeout {t:?} exceeds {PROCESS_TIMEOUT_PERIODS} periods ({limit:?})"
+                );
+                assert!(
+                    t <= MAX_PROCESS_TIMEOUT,
+                    "n={n} rate={rate}: timeout {t:?} over the ceiling"
+                );
+            }
+        }
+    }
+
+    /// The bridge must not be the first to give up: if it timed out before the
+    /// audio thread did, the reply would be abandoned while a caller was still
+    /// waiting for it, turning a recoverable late block into a guaranteed
+    /// silent one.
+    #[test]
+    fn timeout_outlives_the_audio_threads_wait_budget() {
+        for rate in RATES {
+            for n in BLOCKS {
+                let t = process_timeout(n, rate);
+                let budget = wait_budget_for(n, rate);
+                assert!(
+                    t > budget,
+                    "n={n} rate={rate}: bridge timeout {t:?} <= audio budget {budget:?}"
+                );
+            }
+        }
+    }
+
+    /// A garbage rate off the wire must not produce a nonsense timeout.
+    #[test]
+    fn non_finite_rate_falls_back() {
+        for bad in [f64::NAN, f64::INFINITY, 0.0, -48_000.0] {
+            let t = process_timeout(64, bad);
+            assert!(t >= MIN_PROCESS_TIMEOUT && t <= MAX_PROCESS_TIMEOUT, "rate={bad}: {t:?}");
         }
     }
 }

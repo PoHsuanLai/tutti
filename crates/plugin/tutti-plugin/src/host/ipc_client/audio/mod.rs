@@ -40,7 +40,6 @@ use messages::{AudioResponse, Command};
 use parking_lot::Mutex;
 use payload_pool::PayloadPool;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -87,7 +86,7 @@ const PROCESS_WAIT_FRACTION: u32 = 2;
 
 /// Fallback sample rate for the budget calculation when the bridge has not been
 /// told the real one yet. Only ever affects how long a stalled block waits.
-const FALLBACK_SAMPLE_RATE: f64 = 48_000.0;
+pub(super) const FALLBACK_SAMPLE_RATE: f64 = 48_000.0;
 
 /// The wait budget for one block: [`PROCESS_WAIT_FRACTION`] of the block's own
 /// period, and nothing else. Because it is a strict fraction of the period, it
@@ -127,12 +126,6 @@ pub struct AudioBridge {
     lifecycle: Lifecycle,
     listener: ListenerSlot,
     audio_buffer: Arc<AudioSlab>,
-    /// Current sample rate, as `f64` bits, for sizing the per-block wait budget
-    /// (see [`Self::wait_budget`]). Shared so a rate change seen by one clone is
-    /// seen by all; `Relaxed` throughout because it only ever tunes a timeout —
-    /// nothing is ordered against it, and a block racing a rate change simply
-    /// uses the old rate for its own budget.
-    sample_rate_bits: Arc<AtomicU64>,
 }
 
 impl AudioBridge {
@@ -141,7 +134,10 @@ impl AudioBridge {
         audio_buffer: Arc<AudioSlab>,
         sample_rate: f64,
     ) -> Result<(Self, BridgeThread)> {
-        let channels = Channels::new();
+        // The rate lives on `Channels`, not here: the bridge thread sizes its
+        // own reply timeout from the same block period, and two copies of the
+        // rate would let the two timeouts drift apart.
+        let channels = Channels::new(sample_rate);
         let payloads = PayloadPool::new();
         let lifecycle = Lifecycle::new();
         let listener: ListenerSlot = Arc::new(Mutex::new(None));
@@ -158,7 +154,6 @@ impl AudioBridge {
             lifecycle,
             listener,
             audio_buffer,
-            sample_rate_bits: Arc::new(AtomicU64::new(sample_rate.to_bits())),
         };
         Ok((bridge, thread))
     }
@@ -168,8 +163,7 @@ impl AudioBridge {
     /// deadline it exists to protect. Pure arithmetic — no allocation, no
     /// locking, safe on the audio thread.
     fn wait_budget(&self, num_samples: usize) -> Duration {
-        let rate = f64::from_bits(self.sample_rate_bits.load(Ordering::Relaxed));
-        wait_budget_for(num_samples, rate)
+        wait_budget_for(num_samples, self.channels.sample_rate())
     }
 
     /// Install a listener for plugin-originated unsolicited events. Pass
@@ -204,9 +198,9 @@ impl AudioBridge {
     }
 
     pub fn set_sample_rate_rt(&self, rate: f64) -> bool {
-        // Keep the local copy in step so the wait budget tracks the new period.
-        self.sample_rate_bits
-            .store(rate.to_bits(), Ordering::Relaxed);
+        // Publish before queueing, so both the audio thread's wait budget and
+        // the bridge thread's reply timeout track the new period from here on.
+        self.channels.set_sample_rate(rate);
         !self.lifecycle.is_crashed() && self.channels.push_command(Command::SetSampleRate { rate })
     }
 
@@ -456,15 +450,21 @@ mod tests {
 
     /// The budget follows the rate the bridge was last told about, which is what
     /// makes it track the real period after a `SetSampleRate`.
+    ///
+    /// Goes through the real `Channels` storage rather than a local atomic: the
+    /// rate now lives there precisely so the bridge thread's reply timeout reads
+    /// the same value, and a test that hand-rolls its own atomic would still pass
+    /// if that plumbing were disconnected.
     #[test]
     fn budget_tracks_the_stored_sample_rate() {
-        let bits = Arc::new(AtomicU64::new(48_000f64.to_bits()));
+        let channels = Channels::new(48_000.0);
         assert_eq!(
-            wait_budget_for(64, f64::from_bits(bits.load(Ordering::Relaxed))),
+            wait_budget_for(64, channels.sample_rate()),
             wait_budget_for(64, 48_000.0)
         );
-        bits.store(192_000f64.to_bits(), Ordering::Relaxed);
-        let after = wait_budget_for(64, f64::from_bits(bits.load(Ordering::Relaxed)));
+
+        channels.set_sample_rate(192_000.0);
+        let after = wait_budget_for(64, channels.sample_rate());
         assert_eq!(after, wait_budget_for(64, 192_000.0));
         assert!(after < wait_budget_for(64, 48_000.0));
     }

@@ -13,7 +13,7 @@
 use super::messages::{AudioResponse, BridgeEvent, Command};
 use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::Thread;
 
@@ -31,17 +31,36 @@ pub(super) struct Channels {
     /// immediately instead of waiting out its park timeout. Published once at
     /// spawn (see [`Self::register_worker`]) and read-only thereafter.
     worker: Arc<Mutex<Option<Thread>>>,
+    /// The negotiated sample rate, as `f64::to_bits`. Lives here rather than
+    /// only on `AudioBridge` because *both* threads size a timeout from the
+    /// block period — the audio thread its wait budget, the bridge thread its
+    /// reply timeout. One shared source keeps the two from drifting apart,
+    /// which is what let a 500 ms constant sit ~750x above the audio thread's
+    /// 667 µs budget and starve the command queue.
+    sample_rate_bits: Arc<AtomicU64>,
 }
 
 impl Channels {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(sample_rate: f64) -> Self {
         Self {
             commands: Arc::new(ArrayQueue::new(COMMAND_QUEUE_SIZE)),
             audio_responses: Arc::new(ArrayQueue::new(RESPONSE_QUEUE_SIZE)),
             unsolicited: Arc::new(ArrayQueue::new(EVENT_QUEUE_SIZE)),
             buffer_id_counter: Arc::new(AtomicU32::new(0)),
             worker: Arc::new(Mutex::new(None)),
+            sample_rate_bits: Arc::new(AtomicU64::new(sample_rate.to_bits())),
         }
+    }
+
+    /// The current sample rate. `Relaxed` suffices: it only sizes a timeout, so
+    /// reading a value one block stale is harmless.
+    pub(super) fn sample_rate(&self) -> f64 {
+        f64::from_bits(self.sample_rate_bits.load(Ordering::Relaxed))
+    }
+
+    pub(super) fn set_sample_rate(&self, rate: f64) {
+        self.sample_rate_bits
+            .store(rate.to_bits(), Ordering::Relaxed);
     }
 
     /// Called once by the bridge thread with its own handle, before it starts

@@ -31,9 +31,10 @@ impl PluginBridge {
     /// Returns an `Arc<Self>` (for cheap cloning into the audio graph) and
     /// a `BridgeThread` (whose `Drop` shuts down the bridge thread).
     ///
-    /// `sample_rate` seeds the per-block reply-wait budget (see
-    /// `AudioBridge::process`); `set_sample_rate_rt` keeps it current after
-    /// device rate changes.
+    /// `sample_rate` seeds the bridge thread's per-block reply timeout (see
+    /// `dispatch::process_timeout`); `set_sample_rate_rt` keeps it current after
+    /// device rate changes. The audio thread itself sizes nothing from the rate
+    /// any more — it does not wait.
     pub(crate) fn new(
         socket_path: PathBuf,
         audio_buffer: Arc<AudioSlab>,

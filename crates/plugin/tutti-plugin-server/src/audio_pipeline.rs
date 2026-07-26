@@ -628,13 +628,11 @@ mod tests {
         }
     }
 
-    /// Multi-bus channel split: a 2-input-bus layout (stereo main + mono
-    /// sidechain) plus a stereo output bus. The slab lays input at flat
-    /// `[0,3)` and output at flat `[3,5)` (`output_base = 3`). Writing distinct
-    /// markers into each input channel and a stereo output bus, the pipeline
-    /// must hand the plugin all THREE input channels (incl. the sidechain) in
-    /// flat bus order and write the echoed outputs into the disjoint output
-    /// range — never clobbering the sidechain input.
+    /// Multi-bus channel split: stereo main + mono sidechain in, stereo out.
+    /// The pipeline must hand the plugin all THREE input channels (incl. the
+    /// sidechain) in flat bus order, and write the echoed outputs into the
+    /// output region — never touching the sidechain input, which lives in a
+    /// different region entirely now rather than merely at a higher offset.
     #[test]
     fn process_splits_multibus_channels() {
         const N: usize = 32;
@@ -833,9 +831,9 @@ mod tests {
         });
     }
 
-    /// RT-safety regression for the Stage-3 multi-bus split: the per-direction
-    /// channel read/write (input from base 0, output from `output_base`) must
-    /// stay allocation-free after warm-up. Two input buses + one output bus.
+    /// RT-safety regression for the multi-bus split: the per-direction channel
+    /// read/write, the sequence checks, and the publish must all stay
+    /// allocation-free after warm-up. Two input buses + one output bus.
     #[test]
     fn process_multibus_is_alloc_free() {
         const N: usize = 128;

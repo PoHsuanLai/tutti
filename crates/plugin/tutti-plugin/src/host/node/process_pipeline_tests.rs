@@ -226,16 +226,19 @@ fn ramp_sample(block: usize, ch: usize, i: usize) -> f32 {
     1.0 + block as f32 * 10.0 + ch as f32 * 100.0 + i as f32 * 0.1
 }
 
-/// Drive `blocks` consecutive ramp blocks through a fresh single-bus batcher,
-/// returning each block's output as `[block][channel][sample]`.
+/// Drive `blocks` consecutive ramp blocks through a fresh batcher, returning
+/// each block's output as `[block][channel][sample]`.
 ///
 /// `gap` is the pause between blocks, mimicking the spacing of a real audio
-/// callback. It was load-bearing against the original bug: with a realistic gap
-/// the bridge had time to push the PREVIOUS block's response, so the old
-/// non-blocking pop returned a stale reply, whereas with a zero gap the bridge
-/// thread never got scheduled and every block saw an empty queue. The two
-/// regimes failed differently and both were wrong, so the gap is kept as a
-/// parameter to pin the realistic one.
+/// callback, and it stays a parameter because the two regimes still probe
+/// different things. With a realistic gap the server's reply has landed, so the
+/// steady state is observable and the lag must be exactly one block. With no gap
+/// the bridge thread may not be scheduled at all, so a block's output may
+/// genuinely be absent — and the requirement becomes that the result is
+/// *silence* rather than whatever the ring slot last held.
+///
+/// Under the original bug the same two regimes failed in two different ways (a
+/// stale reply with a gap, an empty queue without), which is why both are kept.
 fn drive_blocks_with_gap(blocks: usize, gap: std::time::Duration) -> Vec<Vec<Vec<f32>>> {
     let (bridge, _bridge_thread, _server) = bridge_with_doubling_server();
 

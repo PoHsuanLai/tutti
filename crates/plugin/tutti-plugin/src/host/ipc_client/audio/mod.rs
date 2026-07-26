@@ -25,7 +25,7 @@ use crate::protocol::{
 use crate::util::transport::shm::AudioSlab;
 
 /// VST3 sequencer-context inputs for one process block, bundled to keep
-/// [`AudioBridge::process`]'s signature manageable. All default to empty.
+/// [`AudioBridge::submit`]'s signature manageable. All default to empty.
 #[derive(Debug, Default, Clone)]
 pub struct HarmonyInputs {
     pub chords: ChordChanges,

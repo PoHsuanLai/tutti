@@ -91,8 +91,11 @@ impl Channels {
 
     /// Pushes, then wakes the bridge thread. `Thread::unpark` is a non-blocking
     /// futex/semaphore post — no allocation, no waiting — so it is safe from
-    /// the audio thread, and it removes the poll-interval latency from the
-    /// bounded wait in `AudioBridge::process`.
+    /// the audio thread, and it starts the socket round-trip immediately rather
+    /// than after a poll interval. That latency used to sit inside the audio
+    /// thread's wait budget; the audio thread no longer waits, but the unpark
+    /// still matters — it is what keeps a block's reply arriving in time to be
+    /// collected on the *next* block rather than the one after.
     ///
     /// `try_lock` on the worker slot keeps that promise absolute: the slot is
     /// written exactly once at spawn, so contention is effectively impossible,

@@ -6,14 +6,40 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 
+use std::sync::Arc;
+
 use crate::graph::{
     engine_ready, AudioConfig, AudioEmitter, AudioGraphRes, GraphDirty, GraphReconcileSystems,
 };
-use tutti_synth::soundfont::{SoundFontUnit, SynthesizerSettings};
-use tutti_synth::SoundFontAsset;
+use tutti_synth::soundfont::{SoundFont, SoundFontError, SoundFontUnit, SynthesizerSettings};
 
-/// In-memory Bevy loader for [`SoundFontAsset`]. Reads the whole `.sf2`
-/// payload, then delegates to [`SoundFontAsset::from_bytes`].
+/// A parsed `.sf2` as a loadable asset.
+///
+/// Wraps `Arc<SoundFont>` because that is what [`SoundFontUnit::new`] takes, so
+/// handing a loaded font to several voices costs a refcount bump rather than a
+/// re-parse.
+#[derive(Debug, Clone, bevy_asset::Asset, TypePath)]
+pub struct SoundFontAsset(pub Arc<SoundFont>);
+
+impl std::ops::Deref for SoundFontAsset {
+    type Target = SoundFont;
+    fn deref(&self) -> &SoundFont {
+        &self.0
+    }
+}
+
+impl SoundFontAsset {
+    /// File extensions the asset loader recognises.
+    pub const EXTENSIONS: &'static [&'static str] = &["sf2"];
+
+    /// Parse a complete SoundFont from an in-memory byte slice.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, SoundFontError> {
+        SoundFont::new(&mut std::io::Cursor::new(bytes)).map(|sf| Self(Arc::new(sf)))
+    }
+}
+
+/// In-memory loader for [`SoundFontAsset`]. Reads the whole `.sf2` payload,
+/// then delegates to [`SoundFontAsset::from_bytes`].
 #[derive(Default, TypePath)]
 pub struct SoundFontAssetLoader;
 
@@ -22,7 +48,7 @@ pub enum SoundFontAssetLoaderError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Parse(tutti_synth::soundfont::SoundFontError),
+    Parse(SoundFontError),
 }
 
 impl AssetLoader for SoundFontAssetLoader {

@@ -7,11 +7,6 @@
 
 pub use rustysynth::{SoundFont, SoundFontError, SynthesizerSettings};
 
-// TODO: `SoundFontAsset` is a `bevy_asset`-gated type in the vendored
-// rustysynth-tutti; the asset wrapper belongs in the host adapter, not here.
-#[cfg(feature = "bevy_asset")]
-pub use rustysynth::SoundFontAsset;
-
 use rustysynth::Synthesizer;
 use tutti_core::Arc;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, Setting, SignalFrame};

@@ -116,37 +116,7 @@ impl SoundFont {
     }
 }
 
-#[cfg(feature = "bevy_asset")]
-mod asset {
-    use super::{SoundFont, SoundFontError};
-    use std::sync::Arc;
 
-    /// Asset wrapper around `Arc<SoundFont>`. Cheap-to-clone for use sites
-    /// that need shared ownership of parsed sf2 data (`SoundFontUnit::new`
-    /// takes `Arc<SoundFont>`).
-    #[derive(Debug, Clone, bevy_asset::Asset, bevy_reflect::TypePath)]
-    pub struct SoundFontAsset(pub Arc<SoundFont>);
-
-    impl std::ops::Deref for SoundFontAsset {
-        type Target = SoundFont;
-        fn deref(&self) -> &SoundFont {
-            &self.0
-        }
-    }
-
-    impl SoundFontAsset {
-        /// File extensions the Bevy asset loader recognises.
-        pub const EXTENSIONS: &'static [&'static str] = &["sf2"];
-
-        /// Parse a complete SoundFont from an in-memory byte slice.
-        pub fn from_bytes(bytes: &[u8]) -> Result<Self, SoundFontError> {
-            SoundFont::new(&mut std::io::Cursor::new(bytes)).map(|sf| Self(Arc::new(sf)))
-        }
-    }
-}
-
-#[cfg(feature = "bevy_asset")]
-pub use asset::SoundFontAsset;
 
 #[cfg(test)]
 mod tests {

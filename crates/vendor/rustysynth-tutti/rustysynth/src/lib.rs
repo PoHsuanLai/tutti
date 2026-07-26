@@ -60,8 +60,6 @@ pub use self::preset::Preset;
 pub use self::preset_region::PresetRegion;
 pub use self::sample_header::SampleHeader;
 pub use self::soundfont::SoundFont;
-#[cfg(feature = "bevy_asset")]
-pub use self::soundfont::SoundFontAsset;
 pub use self::soundfont_info::SoundFontInfo;
 pub use self::soundfont_version::SoundFontVersion;
 pub use self::synthesizer::Synthesizer;

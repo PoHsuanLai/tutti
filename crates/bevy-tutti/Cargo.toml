@@ -116,7 +116,7 @@ synth = ["dep:tutti-synth"]
 # `tutti-synth/soundfont` requires `tutti-synth/midi`, which pulls tutti-core
 # with `midi` under feature unification — so enable bevy-tutti's own `midi` to
 # keep `engine/build.rs` in step with the tutti-core that actually compiles.
-soundfont = ["synth", "midi", "tutti-synth/soundfont", "tutti-synth/bevy_asset"]
+soundfont = ["synth", "midi", "tutti-synth/soundfont"]
 # The `?` keeps sampler usable without export.
 sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy", "tutti-export?/sampler"]
 

@@ -15,13 +15,7 @@ midi = ["tutti-core/midi", "dep:tutti-midi-types", "dep:tutti-midi-runtime", "de
 soundfont = ["std", "dep:rustysynth", "midi"]
 full = ["soundfont"]
 
-# `SoundFontAsset` — the decoded `.sf2` as a loadable asset. Propagates the
-# derives into rustysynth and tutti-core.
-bevy_asset = ["soundfont", "dep:bevy_asset", "rustysynth?/bevy_asset", "tutti-core/bevy_asset"]
-
 [dependencies]
-# default-features = false so tutti-core's default `bevy` doesn't leak in; the
-# `bevy` feature above re-adds `tutti-core/bevy_asset` when wanted.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
 
 # The `ModParams` control-rate-modulation trait + its target surface
@@ -29,9 +23,6 @@ tutti-core = { path = "../../core/tutti-core", default-features = false }
 # trait every other node does. `routing` (std-only) keeps it bevy-free.
 tutti-mod = { path = "../../core/tutti-mod", default-features = false, features = ["routing"] }
 
-# Bevy-native ECS surface (entity-as-node SoundFont trigger). Optional, gated by
-# the `bevy` feature (implied by `soundfont`).
-bevy_asset = { version = "0.19", default-features = false, optional = true }
 tutti-midi-types = { path = "../../midi/tutti-midi-types", optional = true, default-features = false }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", optional = true, default-features = false }
 # For MidiBusRes — registering a promoted SoundFont unit's sender on the bus

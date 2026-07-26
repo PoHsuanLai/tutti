@@ -43,8 +43,6 @@ pub use tuning::Tuning;
 
 #[cfg(feature = "soundfont")]
 pub mod soundfont;
-#[cfg(all(feature = "soundfont", feature = "bevy_asset"))]
-pub use soundfont::SoundFontAsset;
 #[cfg(feature = "soundfont")]
 pub use soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
 

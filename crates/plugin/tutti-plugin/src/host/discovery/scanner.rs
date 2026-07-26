@@ -293,7 +293,6 @@ fn probe_plugin_fallback(path: &Path, format: PluginFormat) -> PluginDescriptor 
 #[cfg(test)]
 mod tests {
     use super::super::database::JsonCatalog;
-    use super::super::record::Vst2Category;
     use super::*;
     use tempfile::TempDir;
 
@@ -433,44 +432,72 @@ mod tests {
         assert_eq!(meta.id, "vst3.my_reverb");
     }
 
-    /// Probe a real system plugin and verify we get meaningful metadata.
-    /// Skipped if no real plugin is available on the system.
+    /// Without a `plugin-server` binary, `probe_plugin` must degrade to filename
+    /// metadata rather than fail — and must say so in the class it reports.
+    ///
+    /// This is the path a plain `cargo test` actually takes (the server is a
+    /// separate binary and usually isn't built), so it is the one worth pinning
+    /// hermetically. `Unknown` is the honest answer here: the name and id come
+    /// from the filename, but nothing has inspected the plugin, so claiming a
+    /// category would be a fabrication.
     #[test]
-    fn probe_real_plugin() {
+    fn probe_without_a_server_falls_back_to_filename_metadata() {
+        let dir = TempDir::new().unwrap();
+        let path = create_fake_plugin(dir.path(), "TAL-NoiseMaker.vst3");
+
+        let descriptor = probe_plugin(&path, PluginFormat::Vst3)
+            .expect("a missing plugin-server is a fallback, not an error");
+
+        assert_eq!(descriptor.name, "TAL-NoiseMaker");
+        assert_eq!(descriptor.id, "vst3.tal-noisemaker");
+        assert!(
+            matches!(descriptor.class, PluginClass::Unknown),
+            "an unprobed plugin must not claim a category, got {:?}",
+            descriptor.class
+        );
+    }
+
+    /// Probe a real installed plugin end-to-end. **Opt-in**: set
+    /// `TUTTI_PROBE_PLUGIN` to a plugin path to run it.
+    ///
+    /// Gated rather than auto-detected, because the auto-detecting version of
+    /// this test was wrong in three ways at once and failed for years: it took
+    /// the first of two hardcoded paths (the VST3) and then asserted a *VST2*
+    /// class, which `PluginClass` makes unsatisfiable — the enum is per-format
+    /// by construction. It also could not reach a real probe at all without the
+    /// `plugin-server` binary, since `probe_plugin` maps `ServerNotFound` to a
+    /// filename fallback, so it was really asserting a synth category against
+    /// `PluginClass::Unknown`.
+    ///
+    /// What it can honestly check, given the class vocabulary is deliberately
+    /// native and uninterpreted: the probe returns a name, and the class it
+    /// reports belongs to the format that was actually probed.
+    #[test]
+    fn probe_installed_plugin_reports_its_own_formats_class() {
         use super::super::fs::format_from_path;
 
-        let candidates = [
-            "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3",
-            "/Library/Audio/Plug-Ins/Components/TAL-NoiseMaker.component",
-        ];
-        let Some(path) = candidates.iter().find(|p| Path::new(p).exists()) else {
-            eprintln!("No real plugin found on system, skipping probe_real_plugin test");
+        let Ok(raw) = std::env::var("TUTTI_PROBE_PLUGIN") else {
+            eprintln!("TUTTI_PROBE_PLUGIN not set, skipping real-plugin probe");
             return;
         };
-        let path = Path::new(path);
-        let format = format_from_path(path).unwrap();
+        let path = Path::new(&raw);
+        assert!(path.exists(), "TUTTI_PROBE_PLUGIN={raw} does not exist");
 
-        match probe_plugin(path, format) {
-            Ok(descriptor) => {
-                assert!(!descriptor.name.is_empty(), "name should not be empty");
-                // TAL-NoiseMaker is a synth; its native class should reflect that
-                // (VST2 `Synth` category). The DAW interprets the class itself —
-                // tutti only carries it verbatim.
-                assert!(
-                    matches!(
-                        &descriptor.class,
-                        PluginClass::Vst2 {
-                            category: Vst2Category::Synth
-                        }
-                    ),
-                    "TAL-NoiseMaker should report a synth class, got {:?}",
-                    descriptor.class
-                );
-                println!("Probed {:?}: {:?}", path, descriptor);
-            }
-            Err(e) => {
-                eprintln!("Probe failed (plugin-server may not be built): {e}");
-            }
-        }
+        let format = format_from_path(path).expect("unrecognised plugin extension");
+        let descriptor = probe_plugin(path, format).expect("probe failed");
+
+        assert!(!descriptor.name.is_empty(), "name should not be empty");
+
+        // The class must match the format probed — never another format's
+        // vocabulary. `Unknown` is allowed: it is what the filename fallback
+        // reports when no `plugin-server` is on hand.
+        let class_format = descriptor.class.format_name();
+        assert!(
+            class_format == "unknown" || class_format == format.extension_id(),
+            "a {:?} plugin reported a {class_format} class: {:?}",
+            format,
+            descriptor.class
+        );
+        println!("Probed {path:?}: {descriptor:?}");
     }
 }

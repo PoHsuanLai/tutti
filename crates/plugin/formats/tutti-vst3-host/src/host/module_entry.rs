@@ -162,34 +162,67 @@ mod platform {
 
     pub(super) struct Entry {
         exit: Option<ModuleExitFn>,
+        /// A second, independently-owned `dlopen` reference on the same DSO,
+        /// held for as long as the plugin may still use the handle we passed it.
+        /// `None` when the module exports no `ModuleEntry`. See [`enter`].
+        handle: Option<libloading::os::unix::Library>,
     }
 
-    pub(super) fn enter(
-        library: &libloading::Library,
-        _lib_path: &Path,
-    ) -> Result<Entry, String> {
+    pub(super) fn enter(library: &libloading::Library, lib_path: &Path) -> Result<Entry, String> {
+        // Resolve the exit half BEFORE calling entry, so a module that
+        // initialises successfully is never left without its finalizer.
         let exit = symbol::<ModuleExitFn>(library, "ModuleExit").map(|s| *s);
 
-        if let Some(entry) = symbol::<ModuleEntryFn>(library, "ModuleEntry") {
-            // The SDK passes the module's own `dlopen` handle so the plugin can
-            // resolve its own path via `dladdr`.
-            let handle = {
-                use libloading::os::unix::Library as UnixLibrary;
-                let unix: &UnixLibrary = library.as_ref();
-                unix.into_raw() as *mut c_void
-            };
-            if !unsafe { entry(handle) } {
-                return Err("ModuleEntry returned false".to_string());
-            }
+        let Some(entry) = symbol::<ModuleEntryFn>(library, "ModuleEntry") else {
+            // No `ModuleEntry` export. The SDK's own loader treats this as fatal
+            // on Linux, but tutti is a library and a module that never asks to
+            // be initialised is harmless to us — matching the macOS and Windows
+            // arms, where a missing entry point is likewise a supported no-op.
+            return Ok(Entry { exit, handle: None });
+        };
+
+        // `ModuleEntry` receives the module's own `dlopen` handle — the SDK's
+        // `module_linux.cpp` passes its `mModule` verbatim — so the plugin can
+        // locate itself via `dladdr` and find its bundled resources.
+        //
+        // `libloading::Library` will not lend that pointer out: the only
+        // accessors are the consuming `into_raw`/`close`, and consuming the
+        // caller's library here would either leak it or unload it out from under
+        // the factory. So take a second reference by opening the same path
+        // again. `dlopen` refcounts per path, so this hands back the *same*
+        // handle rather than mapping a second copy — which is precisely the
+        // value the contract wants — and the extra reference is released when
+        // this `Entry` drops, after `ModuleExit` has run.
+        //
+        // A symbol address would not substitute: `dladdr` can map one back to
+        // the module, but it is not the handle value the SDK specifies.
+        let handle_raw = unsafe { libloading::os::unix::Library::new(lib_path) }
+            .map_err(|e| format!("reopening the module for ModuleEntry failed: {e}"))?
+            .into_raw();
+
+        // Reconstruct the owner immediately, so the reference is released by
+        // `Entry`'s drop on every path below — including the refusal below,
+        // where `?`-style early return would otherwise leak it.
+        let handle = unsafe { libloading::os::unix::Library::from_raw(handle_raw) };
+
+        if !unsafe { entry(handle_raw as *mut c_void) } {
+            return Err("ModuleEntry returned false".to_string());
         }
 
-        Ok(Entry { exit })
+        Ok(Entry {
+            exit,
+            handle: Some(handle),
+        })
     }
 
     pub(super) fn exit(entry: &mut Entry) {
         if let Some(exit) = entry.exit.take() {
             unsafe { exit() };
         }
+        // Release our extra `dlopen` reference only after `ModuleExit` has run:
+        // the plugin is entitled to use the handle we gave it right up to that
+        // call, and on the last reference `dlclose` unmaps the image.
+        drop(entry.handle.take());
     }
 }
 

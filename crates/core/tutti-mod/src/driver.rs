@@ -15,11 +15,14 @@
 //!   and never dropped, so when an edge disappears its last offset would linger
 //!   in the target forever. The driver remembers the previously-active
 //!   `(target, key)` set and clears any that the current snapshot no longer
-//!   contains — the "continuous-value tax".
+//!   contains — the "continuous-value tax". That set is double-buffered and
+//!   sorted, so the sweep is a binary search over a reused allocation rather
+//!   than a linear scan over a fresh one: a mod matrix grows as sources ×
+//!   targets, which is exactly the shape that punishes a quadratic sweep.
 
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
+use tutti_types::RtPublish;
 use tutti_types::{Beat, Hz, Seconds};
 
 use crate::id::{LayerKey, ModTargetId};
@@ -135,22 +138,31 @@ impl<M: Modulator + Send + Sync> ErasedModulator for Sourced<M> {
 /// The source registry indices must line up with [`crate::ModEdge::source`].
 pub struct ModPreFrame {
     sources: Vec<Box<dyn ErasedModulator>>,
-    routing: Arc<ArcSwap<ModRoutingSnapshot>>,
+    routing: Arc<RtPublish<ModRoutingSnapshot>>,
     router: Option<Arc<dyn ModRouter>>,
     /// The `(target, key)` layers written last frame — cleared next frame if the
     /// current snapshot no longer contains them.
+    ///
+    /// Double-buffered with [`active`](Self::active) and swapped each frame, so
+    /// steady-state running reuses both allocations instead of building a fresh
+    /// `Vec` per frame. Kept sorted, which is what lets the stale-layer sweep
+    /// binary-search rather than scan.
     prev_active: Vec<(ModTargetId, LayerKey)>,
+    /// This frame's layers. Swapped into `prev_active` at the end of `run`; held
+    /// as a field purely to keep its capacity across frames.
+    active: Vec<(ModTargetId, LayerKey)>,
 }
 
 impl ModPreFrame {
     /// Build a driver reading `routing`. Install sources and a router before
     /// running.
-    pub fn new(routing: Arc<ArcSwap<ModRoutingSnapshot>>) -> Self {
+    pub fn new(routing: Arc<RtPublish<ModRoutingSnapshot>>) -> Self {
         Self {
             sources: Vec::new(),
             routing,
             router: None,
             prev_active: Vec::new(),
+            active: Vec::new(),
         }
     }
 
@@ -178,10 +190,14 @@ impl ModPreFrame {
         let Some(router) = self.router.clone() else {
             return;
         };
-        let snapshot = self.routing.load();
+        let snapshot = self.routing.read();
 
         // Sample each source ONCE (advancing its state), fan across its edges.
-        let mut active: Vec<(ModTargetId, LayerKey)> = Vec::new();
+        // `active` is a reused buffer, not a fresh allocation: after the first
+        // few frames its capacity already covers the edge count, so steady-state
+        // running does not touch the allocator.
+        let mut active = std::mem::take(&mut self.active);
+        active.clear();
         for (idx, source) in self.sources.iter_mut().enumerate() {
             // Skip sampling a source with no edges — but only if there truly are
             // none this frame; still advance nothing (a source with no routing
@@ -204,12 +220,21 @@ impl ModPreFrame {
 
         // Clear layers that were active last frame but aren't this frame — a
         // removed/disabled edge must not leave a stuck offset.
+        //
+        // Sorted so the membership test below is a binary search. A linear
+        // `contains` here is quadratic in the edge count, which a mod matrix is
+        // exactly the shape to grow: every source × every target it drives.
+        active.sort_unstable();
         for (target, key) in self.prev_active.iter().copied() {
-            if !active.contains(&(target, key)) {
+            if active.binary_search(&(target, key)).is_err() {
                 router.clear(target, key);
             }
         }
-        self.prev_active = active;
+
+        // Swap rather than assign: `prev_active`'s allocation becomes next
+        // frame's `active` buffer instead of being dropped.
+        std::mem::swap(&mut self.prev_active, &mut active);
+        self.active = active;
     }
 }
 
@@ -295,6 +320,84 @@ mod tests {
                 (a.final_value() - b.final_value()).abs() < 1e-6,
                 "both edges must see the same single sample"
             );
+        }
+    }
+
+    /// The stale-layer sweep binary-searches `active`, which is only correct if
+    /// `active` is sorted. Two edges cannot tell a working comparison from a
+    /// broken one — with `ModTargetId::next()` handing out ascending ids, a
+    /// small set is already in order and an unsorted search would accidentally
+    /// agree.
+    ///
+    /// So this drives enough targets that insertion order and sorted order
+    /// genuinely differ: edges are declared with their target ids interleaved,
+    /// then a hot-swap retires every *odd*-indexed one. Each survivor must keep
+    /// its modulation and each retiree must fall back to base — a mis-ordered
+    /// search would clear live layers, strand dead ones, or both.
+    #[test]
+    fn stale_sweep_is_correct_when_many_layers_retire_at_once() {
+        const N: usize = 16;
+
+        let bus = Arc::new(ModBus::new());
+        let targets: Vec<_> = (0..N)
+            .map(|_| {
+                let t = Arc::new(AtomicTarget::new(1000.0, 0.0, 2000.0));
+                let id = ModTargetId::next();
+                bus.insert(id, t.clone());
+                (id, t)
+            })
+            .collect();
+
+        // `active` is built by iterating SOURCES in index order, so shuffling the
+        // edge list would achieve nothing — `edges_for_source` regroups it. The
+        // ordering has to be broken where it is actually observed: source `i`
+        // drives target `N-1-i`, so ascending source index yields *descending*
+        // target ids and `active` comes out reverse-sorted.
+        let target_of = |i: usize| targets[N - 1 - i].0;
+
+        let all_edges: Vec<_> = (0..N)
+            .map(|i| ModEdge::linear(i, target_of(i), LayerKey(1), 1.0, 0.0, 2000.0))
+            .collect();
+
+        let mut table = ModRoutingTable::new();
+        table.set_edges(all_edges, N);
+        table.commit();
+
+        let mut driver = ModPreFrame::new(table.snapshot_arc());
+        driver.set_router(bus.clone());
+        driver.set_sources((0..N).map(|_| source(LfoShape::Sine)).collect());
+
+        frame(&mut driver, 0.25);
+        for (i, (_, t)) in targets.iter().enumerate() {
+            assert!(
+                (t.final_value() - 1000.0).abs() > 1e-6,
+                "target {i} should be modulated on the first frame"
+            );
+        }
+
+        // Retire every odd SOURCE's edge, keep every even one.
+        let survivors: Vec<_> = (0..N)
+            .filter(|i| i % 2 == 0)
+            .map(|i| ModEdge::linear(i, target_of(i), LayerKey(1), 1.0, 0.0, 2000.0))
+            .collect();
+        table.set_edges(survivors, N);
+        table.commit();
+        frame(&mut driver, 0.5);
+
+        for i in 0..N {
+            // Target `N-1-i` is the one source `i` drives.
+            let t = &targets[N - 1 - i].1;
+            if i % 2 == 0 {
+                assert!(
+                    (t.final_value() - 1000.0).abs() > 1e-6,
+                    "source {i}'s target kept its edge and must still be modulated"
+                );
+            } else {
+                assert!(
+                    (t.final_value() - 1000.0).abs() < 1e-6,
+                    "source {i}'s target lost its edge and must fall back to base"
+                );
+            }
         }
     }
 

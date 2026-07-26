@@ -40,7 +40,7 @@
 //!   [`LayeredCurve`].
 //! - **Dispatch** — [`ModRouter`] / [`ModBus`]: an id→target map keyed by
 //!   [`ModTargetId`].
-//! - **Rules** — [`ModRoutingSnapshot`] / [`ModRoutingTable`]: an `ArcSwap`-hot-
+//! - **Rules** — [`ModRoutingSnapshot`] / [`ModRoutingTable`]: an `RtPublish`-hot-
 //!   swapped mod-matrix of [`ModEdge`]s.
 //! - **Driver** — [`ModPreFrame`]: the once-per-frame producer that samples each
 //!   source and dispatches its shaped offset by id.
@@ -156,7 +156,7 @@ pub use routing::{ModEdge, ModRoutingSnapshot, ModRoutingTable};
 /// table.set_edges([
 ///     ModEdge::linear(0, id_cut, LayerKey(1), 1.0, 0.0, 2000.0),
 /// ], 2);
-/// table.commit();          // ArcSwap::store — the driver sees it next frame
+/// table.commit();          // RtPublish::publish — the driver sees it next frame
 /// driver.run(Beat(0.5), Seconds(0.0)); // gain's stale layer cleared; cutoff re-asserted
 /// assert!((gain.final_value() - 0.5).abs() < 1e-6, "gain fell back to base");
 /// # }

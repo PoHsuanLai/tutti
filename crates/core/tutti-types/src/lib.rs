@@ -58,7 +58,7 @@ pub mod rt;
 
 // RT-callback primitives.
 pub use rt::{
-    AudioThreadCell, BorrowGuard, BorrowRef, RtEventBuf, RtScratch, RtScratchBuf,
+    AudioThreadCell, BorrowGuard, BorrowRef, RtEventBuf, RtPublish, RtRef, RtScratch, RtScratchBuf,
     RtScratchOverflow, ScopedNoDenormals,
 };
 

@@ -8,13 +8,14 @@
 //!
 //! The mutable writer with atomic publishing ([`MidiRoutingTable`]) lives at
 //! the bottom of this module. Audio-thread consumers typically hold an
-//! `Arc<ArcSwap<MidiRoutingSnapshot>>` and call `.load().route(&event)`.
+//! `Arc<RtPublish<MidiRoutingSnapshot>>` and call `.load().route(&event)`.
 
 use crate::ump::MidiEvent;
 use crate::unit_id::MidiUnitId;
-use arc_swap::ArcSwap;
 use std::sync::Arc;
+
 use std::vec::Vec;
+use tutti_types::RtPublish;
 
 /// Maximum number of targets per routing rule.
 /// Supports layering up to 8 synths on a single channel.
@@ -301,15 +302,15 @@ impl Iterator for RouteIterator<'_> {
 /// UI-thread writer for MIDI routing configuration.
 ///
 /// The mutable writer that publishes [`MidiRoutingSnapshot`]s atomically to
-/// the audio thread via [`arc_swap::ArcSwap`]. Stage the full rule set with
+/// the audio thread via [`RtPublish`]. Stage the full rule set with
 /// [`set_routes`](MidiRoutingTable::set_routes) from the UI thread, then
 /// [`commit`](MidiRoutingTable::commit) to publish. The audio thread reads via
-/// the `Arc<ArcSwap<MidiRoutingSnapshot>>` returned by
+/// the `Arc<RtPublish<MidiRoutingSnapshot>>` returned by
 /// [`snapshot_arc`](MidiRoutingTable::snapshot_arc).
 pub struct MidiRoutingTable {
     routes: Vec<MidiRoute>,
     fallback_target: Option<MidiUnitId>,
-    snapshot: Arc<ArcSwap<MidiRoutingSnapshot>>,
+    snapshot: Arc<RtPublish<MidiRoutingSnapshot>>,
     dirty: bool,
 }
 
@@ -319,18 +320,18 @@ impl MidiRoutingTable {
         Self {
             routes: Vec::new(),
             fallback_target: None,
-            snapshot: Arc::new(ArcSwap::from_pointee(snapshot)),
+            snapshot: Arc::new(RtPublish::new(snapshot)),
             dirty: false,
         }
     }
 
-    pub fn snapshot_arc(&self) -> Arc<ArcSwap<MidiRoutingSnapshot>> {
+    pub fn snapshot_arc(&self) -> Arc<RtPublish<MidiRoutingSnapshot>> {
         self.snapshot.clone()
     }
 
     #[inline]
-    pub fn load(&self) -> arc_swap::Guard<Arc<MidiRoutingSnapshot>> {
-        self.snapshot.load()
+    pub fn load(&self) -> tutti_types::RtRef<'_, MidiRoutingSnapshot> {
+        self.snapshot.read()
     }
 
     /// Stage a complete replacement of the routing rules.
@@ -365,7 +366,7 @@ impl MidiRoutingTable {
         }
 
         let snapshot = MidiRoutingSnapshot::from_routes(self.routes.clone(), self.fallback_target);
-        self.snapshot.store(Arc::new(snapshot));
+        self.snapshot.publish(Arc::new(snapshot));
         self.dirty = false;
     }
 }

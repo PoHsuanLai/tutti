@@ -13,17 +13,22 @@
 //! - [`RtScratch`] — a fixed-*capacity* scratch buffer with no grow/push API;
 //!   the active length per block is chosen by slicing, not by resizing. Sibling
 //!   to [`RtScratchBuf`] with a different contract (own-and-slice vs lend).
+//! - [`RtPublish`] — a value published from a control thread and read by the
+//!   audio thread, where the read is a *borrow*: the callback never holds an
+//!   owning handle, so retired values are freed by the publisher.
 //! - [`ScopedNoDenormals`] — RAII guard that flushes subnormals to zero for the
 //!   duration of an audio block, then restores the FPU control register.
 
 pub mod cell;
 pub mod denormals;
 pub mod event_buf;
+pub mod publish;
 pub mod scratch;
 pub mod scratch_buf;
 
 pub use cell::{AudioThreadCell, BorrowGuard, BorrowRef};
 pub use denormals::ScopedNoDenormals;
 pub use event_buf::RtEventBuf;
+pub use publish::{RtPublish, RtRef};
 pub use scratch::{RtScratch, RtScratchOverflow};
 pub use scratch_buf::RtScratchBuf;

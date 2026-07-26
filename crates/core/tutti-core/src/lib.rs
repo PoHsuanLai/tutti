@@ -76,6 +76,7 @@ pub use tutti_types::meter::{
     BarCount, BarNumber, BarPosition, BeatsPerBar, Meter, MeterChange, MeterMap, NoteValue,
     TimeSignature,
 };
+pub use tutti_types::{RtPublish, RtRef};
 
 pub mod metering;
 pub use metering::{meter_output, AtomicAmplitude, AudioTap, MasterMeter, MeteringContext};

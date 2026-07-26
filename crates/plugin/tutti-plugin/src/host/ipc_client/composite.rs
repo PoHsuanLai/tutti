@@ -49,9 +49,13 @@ impl PluginBridge {
         Ok((bridge, bridge_thread))
     }
 
+    /// Hand block `seq` to the bridge without waiting. See
+    /// [`AudioBridge::submit`] — returning `true` means the block was accepted,
+    /// never that its output is ready.
     #[allow(clippy::too_many_arguments)]
-    pub fn process(
+    pub fn submit(
         &self,
+        seq: u64,
         num_samples: usize,
         midi_events: MidiEventVec,
         param_changes: ParameterChanges,
@@ -60,7 +64,8 @@ impl PluginBridge {
         transport: TransportInfo,
         midi_out: &mut MidiEventVec,
     ) -> bool {
-        self.audio.process(
+        self.audio.submit(
+            seq,
             num_samples,
             midi_events,
             param_changes,

@@ -13,7 +13,7 @@
 use super::messages::{AudioResponse, BridgeEvent, Command};
 use crossbeam::queue::ArrayQueue;
 use parking_lot::Mutex;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::Thread;
 
@@ -26,7 +26,10 @@ pub(super) struct Channels {
     commands: Arc<ArrayQueue<Command>>,
     audio_responses: Arc<ArrayQueue<AudioResponse>>,
     unsolicited: Arc<ArrayQueue<BridgeEvent>>,
-    buffer_id_counter: Arc<AtomicU32>,
+    /// The newest block sequence the audio thread has submitted. Owned here
+    /// rather than on the batcher because the *bridge* thread is what reads it,
+    /// to decide whether a dequeued block is still worth sending.
+    newest_seq: Arc<AtomicU64>,
     /// Handle to the bridge thread, so a pushed command can wake it
     /// immediately instead of waiting out its park timeout. Published once at
     /// spawn (see [`Self::register_worker`]) and read-only thereafter.
@@ -46,7 +49,7 @@ impl Channels {
             commands: Arc::new(ArrayQueue::new(COMMAND_QUEUE_SIZE)),
             audio_responses: Arc::new(ArrayQueue::new(RESPONSE_QUEUE_SIZE)),
             unsolicited: Arc::new(ArrayQueue::new(EVENT_QUEUE_SIZE)),
-            buffer_id_counter: Arc::new(AtomicU32::new(0)),
+            newest_seq: Arc::new(AtomicU64::new(0)),
             worker: Arc::new(Mutex::new(None)),
             sample_rate_bits: Arc::new(AtomicU64::new(sample_rate.to_bits())),
         }
@@ -70,20 +73,20 @@ impl Channels {
         *self.worker.lock() = Some(thread);
     }
 
-    pub(super) fn next_buffer_id(&self) -> u32 {
-        self.buffer_id_counter.fetch_add(1, Ordering::Relaxed)
+    /// Record that the audio thread has submitted block `seq`. Called from the
+    /// RT path, so it is a single relaxed store and nothing else.
+    pub(super) fn note_submitted(&self, seq: u64) {
+        self.newest_seq.store(seq, Ordering::Relaxed);
     }
 
-    /// The id the *next* `Process` will be issued — i.e. one past the newest
-    /// block the audio thread has submitted.
+    /// The newest block the audio thread has submitted.
     ///
     /// The bridge thread uses this to tell how far behind a command it just
-    /// dequeued is, without draining the queue to look. `Relaxed` is right for
-    /// the same reason as `next_buffer_id`'s: this only decides whether to skip
-    /// work that is already provably useless, so reading a value one block stale
-    /// costs at most one extra dead block.
-    pub(super) fn issued_buffer_ids(&self) -> u32 {
-        self.buffer_id_counter.load(Ordering::Relaxed)
+    /// dequeued is, without draining the queue to look. `Relaxed` suffices: it
+    /// only decides whether to skip work that is already provably useless, so
+    /// reading a value one block stale costs at most one extra dead block.
+    pub(super) fn newest_submitted(&self) -> u64 {
+        self.newest_seq.load(Ordering::Relaxed)
     }
 
     /// Pushes, then wakes the bridge thread. `Thread::unpark` is a non-blocking

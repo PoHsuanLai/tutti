@@ -81,11 +81,11 @@ fn handle_with_mock_server(
         AudioSlab::create(
             unique_shm_name("handle"),
             SlabLayout {
-                channels: ChannelLayout::Stereo,
+                slots: crate::util::transport::shm::RING_SLOTS as u32,
                 samples_per_channel: 512,
                 format: SampleFormat::Float32,
-                inputs: smallvec![],
-                outputs: smallvec![],
+                inputs: smallvec![ChannelLayout::Stereo],
+                outputs: smallvec![ChannelLayout::Stereo],
             },
         )
         .unwrap(),
@@ -184,11 +184,11 @@ fn handle_with_multi_reply_server(
         AudioSlab::create(
             unique_shm_name("handle-multi"),
             SlabLayout {
-                channels: ChannelLayout::Stereo,
+                slots: crate::util::transport::shm::RING_SLOTS as u32,
                 samples_per_channel: 512,
                 format: SampleFormat::Float32,
-                inputs: smallvec![],
-                outputs: smallvec![],
+                inputs: smallvec![ChannelLayout::Stereo],
+                outputs: smallvec![ChannelLayout::Stereo],
             },
         )
         .unwrap(),

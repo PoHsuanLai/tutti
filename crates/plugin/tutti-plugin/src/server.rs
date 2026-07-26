@@ -31,7 +31,7 @@ pub use crate::protocol::{
     TimeSignature, TransportInfo, Vst2Category, MIDI_STACK_CAPACITY, PROTOCOL_VERSION,
 };
 pub use crate::util::config::BridgeConfig;
-pub use crate::util::transport::shm::AudioSlab;
+pub use crate::util::transport::shm::{AudioSlab, RING_SLOTS};
 pub use crate::util::window::{EditorSize, WindowHandle};
 /// Per-block process inputs/outputs, re-exported from `tutti-plugin-types`.
 pub use tutti_plugin_types::{ExpressiveContext, ProcessContext, ProcessOutput};

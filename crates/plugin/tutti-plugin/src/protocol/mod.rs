@@ -21,7 +21,14 @@ pub mod shm;
 /// - v2: `BridgeMessage::AudioProcessed` carries plugin `midi_out`.
 /// - v3: `BridgeMessage::AudioProcessed` echoes the request's `buffer_id`, so
 ///   the host can tell a reply for THIS block from a stale one.
-pub const PROTOCOL_VERSION: u32 = 3;
+/// - v4: pipelined audio. `buffer_id: u32` becomes `seq: u64` and indexes a
+///   ring of slots in the slab; `SlabLayout` drops its flat `channels` total and
+///   gains `slots`, with the two directions in disjoint regions. The bump is
+///   mandatory rather than housekeeping: a v3 server handed a v4
+///   `SetupSharedMemory` would read `slots` out of the bytes that used to hold
+///   `channels`, get a plausible small integer, and map a wrong-sized region in
+///   silence. The slab header's magic is the second line of defence.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of
@@ -130,7 +137,7 @@ mod tests {
         .collect();
         let msg = BridgeMessage::AudioProcessed {
             latency_us: 42,
-            buffer_id: 7,
+            seq: 7,
             midi_out,
         };
         let bytes = bincode::serialize(&msg).unwrap();
@@ -138,14 +145,14 @@ mod tests {
         match back {
             BridgeMessage::AudioProcessed {
                 latency_us,
-                buffer_id,
+                seq,
                 midi_out,
             } => {
                 assert_eq!(latency_us, 42);
-                // The block-identity echo the host's match-or-silence wait
-                // depends on: if this field did not survive the wire trip, every
-                // block would time out into silence.
-                assert_eq!(buffer_id, 7);
+                // The block-identity echo. No longer load-bearing for audio
+                // validity — the slab's per-slot sequence answers that — but it
+                // must survive the wire trip for diagnostics to mean anything.
+                assert_eq!(seq, 7);
                 assert_eq!(midi_out.len(), 2);
                 let events: Vec<MidiEvent> = midi_out.iter().map(|&e| e.into()).collect();
                 assert_eq!(events[0].frame_offset, 0);
@@ -189,7 +196,7 @@ mod tests {
         .collect();
 
         let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
-            buffer_id: 42,
+            seq: 42,
             num_samples: 512,
             midi_events,
             ..Default::default()
@@ -200,7 +207,7 @@ mod tests {
 
         match decoded {
             HostMessage::ProcessAudio(data) => {
-                assert_eq!(data.buffer_id, 42);
+                assert_eq!(data.seq, 42);
                 assert_eq!(data.num_samples, 512);
                 assert_eq!(data.midi_events.len(), 3);
 

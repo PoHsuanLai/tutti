@@ -121,7 +121,7 @@ fn pump(
             // Connection-level: the stream is gone, so this ends every
             // in-flight and queued block, not just one. `None` matches
             // whichever request the audio thread is waiting on.
-            channels.push_audio_response(AudioResponse::Error { buffer_id: None });
+            channels.push_audio_response(AudioResponse::Error { seq: None });
             drain_with_errors(channels);
             return;
         }
@@ -139,6 +139,6 @@ fn drain_unsolicited(channels: &Channels, listener: &ListenerSlot) {
 
 fn drain_with_errors(channels: &Channels) {
     while channels.pop_command().is_some() {
-        channels.push_audio_response(AudioResponse::Error { buffer_id: None });
+        channels.push_audio_response(AudioResponse::Error { seq: None });
     }
 }

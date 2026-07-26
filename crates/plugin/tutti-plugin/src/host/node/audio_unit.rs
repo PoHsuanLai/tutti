@@ -1,6 +1,7 @@
 //! fundsp trait impls for [`PluginClient`]. Dual f32/f64 dispatch lives
 //! here so the core struct + API in `mod.rs` stays focused.
 
+use super::batcher::PIPELINE_LATENCY_SAMPLES;
 use super::PluginClient;
 use crate::util::node::route_with_latency;
 use tutti_core::{AudioUnit, BufferMut, BufferRef, SignalFrame, F64};
@@ -55,10 +56,20 @@ impl AudioUnit for PluginClient {
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         let io = self.io_ref();
+        // The plugin's own reported latency PLUS the block the pipeline holds.
+        // Out-of-process audio is submitted now and collected next block, so a
+        // sample entering here leaves one block later than the plugin alone
+        // would account for. Declaring it is what turns that into compensated
+        // delay rather than audible drift — an out-of-process plugin on a
+        // parallel path would otherwise arrive a block late against its dry
+        // twin, which is the classic comb-filter smear.
+        //
+        // `AudioUnit::latency()` derives from `route()` and `LatencyGraph for
+        // Net` calls it, so this addition alone reaches `latency::plan`.
         route_with_latency(
             io.inputs,
             io.outputs,
-            PluginClient::latency(self) as f64,
+            (PluginClient::latency(self) + PIPELINE_LATENCY_SAMPLES) as f64,
             input,
         )
     }
@@ -117,10 +128,20 @@ impl AudioUnit<F64> for PluginClient {
 
     fn route(&mut self, input: &SignalFrame, _frequency: f64) -> SignalFrame {
         let io = self.io_ref();
+        // The plugin's own reported latency PLUS the block the pipeline holds.
+        // Out-of-process audio is submitted now and collected next block, so a
+        // sample entering here leaves one block later than the plugin alone
+        // would account for. Declaring it is what turns that into compensated
+        // delay rather than audible drift — an out-of-process plugin on a
+        // parallel path would otherwise arrive a block late against its dry
+        // twin, which is the classic comb-filter smear.
+        //
+        // `AudioUnit::latency()` derives from `route()` and `LatencyGraph for
+        // Net` calls it, so this addition alone reaches `latency::plan`.
         route_with_latency(
             io.inputs,
             io.outputs,
-            PluginClient::latency(self) as f64,
+            (PluginClient::latency(self) + PIPELINE_LATENCY_SAMPLES) as f64,
             input,
         )
     }

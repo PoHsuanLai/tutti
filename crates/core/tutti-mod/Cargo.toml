@@ -9,11 +9,9 @@ keywords = ["audio", "modulation", "lfo"]
 categories = ["multimedia::audio"]
 
 [features]
-# `bevy` (Component/Reflect on the ids + accumulator) is default-on, matching
-# the rest of the tutti engine. The PURE FLOOR — the `Modulator` source trait,
-# `Lfo`/combinators, and the `shape`/`fold` math — needs none of these and
-# builds under `--no-default-features`.
-default = ["bevy"]
+# The PURE FLOOR — the `Modulator` source trait, `Lfo`/combinators, and the
+# `shape`/`fold` math — needs no features at all.
+default = []
 # Unlocks the routing layer (needs std for Arc/Mutex/Vec).
 std = []
 # The mod-matrix routing subsystem: keyed accumulator, id→sink bus, routing

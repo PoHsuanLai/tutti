@@ -7,21 +7,12 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
-default = ["bevy"]
-# Bevy ECS integration: the bus / routing / sequence / scheduled / mpe /
-# clock_out / midi_plugin modules (Components / Events / Systems / Plugins).
-# Off → the MIDI I/O + SMF + port management compiles Bevy-free (the real
-# fan-out logic lives in tutti-midi-runtime, which is Bevy-free). Pulls
-# `tutti-core/bevy` because the routing/sequence systems schedule against
-# tutti-core's ECS graph hub (AudioGraphRes, GraphReconcileSystems, …).
-bevy = ["dep:bevy_ecs", "dep:bevy_app", "dep:bevy_reflect", "dep:bevy_tasks", "dep:bevy_log", "tutti-core/bevy"]
+default = []
 # OS MIDI hardware I/O: pulls `midir` (device connect / poll / send, the `MidiIo`
 # orchestrator + hardware input/output threads) and, on macOS, `coremidi` for
 # virtual ports. Off → the engine still has full MIDI (bus, routing, clips,
 # sequencer, MPE, clock-master *generation*) but no OS ports; `midir` is not
-# linked. This is the engine-vs-OS-I/O axis. The Bevy `device` ECS surface
-# (MidiIoRes / connect systems) + the clock-master send half additionally need
-# `bevy`.
+# linked. This is the engine-vs-OS-I/O axis.
 midi-hardware = ["dep:midir", "coremidi", "coremidi-sys", "core-foundation"]
 
 [dependencies]
@@ -38,11 +29,6 @@ tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false 
 
 # Bevy ECS integration: Components / Events / Systems / Plugins live next to the
 # I/O logic. Optional, gated by the `bevy` feature.
-bevy_ecs = { version = "0.19", default-features = false, optional = true }
-bevy_app = { version = "0.19", default-features = false, optional = true }
-bevy_reflect = { version = "0.19", default-features = false, optional = true }
-bevy_tasks = { version = "0.19", optional = true }
-bevy_log = { version = "0.19", default-features = false, optional = true }
 
 # Lock-free
 crossbeam-channel = "0.5"

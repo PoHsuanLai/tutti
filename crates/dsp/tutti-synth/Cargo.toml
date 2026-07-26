@@ -7,19 +7,17 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
-default = ["midi", "bevy"]
+default = ["midi"]
 std = []
 midi = ["tutti-core/midi", "dep:tutti-midi-types", "dep:tutti-midi-runtime", "dep:tutti-midi-io"]
-# Bevy ECS surface. The only Bevy code in this crate is the `soundfont` module's
-# entity-as-node trigger + `.sf2` AssetLoader, so `soundfont` implies `bevy`.
-# The voice/unison/portamento/tuning/synth DSP itself is Bevy-free.
-bevy = ["dep:bevy_app", "dep:bevy_ecs", "dep:bevy_reflect", "dep:bevy_asset", "dep:bevy_tasks", "dep:bevy_log", "tutti-core/bevy_asset"]
-soundfont = ["std", "dep:rustysynth", "midi", "bevy_asset"]
+# SoundFont synthesis. Framework-free: a host loads the `.sf2` itself and calls
+# `SoundFontUnit::new`.
+soundfont = ["std", "dep:rustysynth", "midi"]
 full = ["soundfont"]
 
-# Propagates bevy_asset derives into rustysynth (gates on soundfont) and pulls
-# the Bevy surface + tutti-core's bevy_asset.
-bevy_asset = ["bevy", "soundfont", "rustysynth?/bevy_asset"]
+# `SoundFontAsset` — the decoded `.sf2` as a loadable asset. Propagates the
+# derives into rustysynth and tutti-core.
+bevy_asset = ["soundfont", "dep:bevy_asset", "rustysynth?/bevy_asset", "tutti-core/bevy_asset"]
 
 [dependencies]
 # default-features = false so tutti-core's default `bevy` doesn't leak in; the
@@ -33,12 +31,7 @@ tutti-mod = { path = "../../core/tutti-mod", default-features = false, features 
 
 # Bevy-native ECS surface (entity-as-node SoundFont trigger). Optional, gated by
 # the `bevy` feature (implied by `soundfont`).
-bevy_app = { version = "0.19", default-features = false, optional = true }
-bevy_ecs = { version = "0.19", default-features = false, optional = true }
-bevy_reflect = { version = "0.19", default-features = false, optional = true }
 bevy_asset = { version = "0.19", default-features = false, optional = true }
-bevy_tasks = { version = "0.19", optional = true }
-bevy_log = { version = "0.19", default-features = false, optional = true }
 tutti-midi-types = { path = "../../midi/tutti-midi-types", optional = true, default-features = false }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", optional = true, default-features = false }
 # For MidiBusRes — registering a promoted SoundFont unit's sender on the bus

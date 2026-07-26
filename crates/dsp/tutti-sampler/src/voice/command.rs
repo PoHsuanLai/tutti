@@ -224,8 +224,7 @@ impl VoicePoolHandle {
         match self.tx.try_send(cmd) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                #[cfg(feature = "bevy")]
-                bevy_log::warn!("VoicePool command queue full, dropping command");
+                tracing::warn!("VoicePool command queue full, dropping command");
             }
             Err(TrySendError::Disconnected(_)) => {}
         }

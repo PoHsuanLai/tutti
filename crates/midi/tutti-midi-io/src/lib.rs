@@ -1,15 +1,10 @@
 //! Hardware and file MIDI I/O for the Tutti engine.
 //!
-//! The crate has two worlds, kept in separate module trees:
-//! - [`core`] — framework-free hardware I/O: [`MidiIo`], the `midir`/`coremidi`
-//!   driver edge, and the audio-thread ring buffers. Usable without Bevy.
-//! - [`ecs`] — the `feature = "bevy"` ECS integration (components, systems,
-//!   plugins) that wires the core into a Bevy app.
-//!
-//! Plus [`smf`], the Standard MIDI File codec, and passthrough re-exports of the
-//! pure MIDI vocabulary from [`tutti_midi_types`]. The whole surface re-exports at
-//! the crate root, so consumers write `tutti_midi_io::MidiIo` /
-//! `tutti_midi_io::TuttiMidiPlugin` regardless of which world a type lives in.
+//! [`core`] is the hardware edge: [`MidiIo`], the `midir`/`coremidi` drivers,
+//! and the audio-thread ring buffers. Plus [`smf`], the Standard MIDI File
+//! codec, and passthrough re-exports of the pure MIDI vocabulary from
+//! [`tutti_midi_types`]. The whole surface re-exports at the crate root, so
+//! consumers write `tutti_midi_io::MidiIo`.
 
 // --- Framework-free hardware I/O core ---
 

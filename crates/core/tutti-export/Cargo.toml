@@ -9,23 +9,16 @@ keywords = ["audio", "export", "render", "wav", "flac", "aiff", "ogg"]
 categories = ["multimedia::audio"]
 
 [features]
-default = ["bevy", "wav", "flac", "aiff", "ogg"]
-# Bevy ECS surface (the `ecs` module: export + region-render plugins). Off → the
-# encode/process/render pipeline compiles Bevy-free. The `sampler` feature (used
-# by `ecs::render_region`) implies `bevy`.
-bevy = ["dep:bevy_app", "dep:bevy_ecs", "dep:bevy_reflect", "dep:bevy_tasks", "dep:bevy_log", "tutti-core/bevy"]
+default = ["wav", "flac", "aiff", "ogg"]
 wav = ["hound"]
 flac = ["flacenc"]
 aiff = []
 ogg = ["vorbis_rs"]
-# Offline per-node region render (`ecs::render_region`). It isolates and
-# rebinds clip-reader / sampler units from tutti-sampler, so it needs that
-# crate. VERIFIED acyclic: tutti-sampler does NOT depend on tutti-export.
-# `ecs::export` is unconditional; only `ecs::render_region` is gated here.
+# Reads clip-reader / sampler units when rendering from a live graph.
+# VERIFIED acyclic: tutti-sampler does NOT depend on tutti-export.
 # tutti-sampler's file-loading path (its `Wave::load`) is codec-gated, so pull
-# `wav` to give it a codec — matches how the umbrella turns on the sampler.
-# `ecs::render_region` is Bevy code, so `sampler` implies `bevy`.
-sampler = ["bevy", "dep:tutti-sampler", "tutti-sampler/wav"]
+# `wav` to give it a codec.
+sampler = ["dep:tutti-sampler", "tutti-sampler/wav"]
 
 [dependencies]
 thiserror = "1.0"
@@ -42,11 +35,6 @@ crossbeam-channel = "0.5"
 
 # Bevy ECS surface (the `ecs` module: export + region-render plugins). Optional,
 # gated by the `bevy` feature.
-bevy_app = { version = "0.19", default-features = false, optional = true }
-bevy_ecs = { version = "0.19", default-features = false, optional = true }
-bevy_reflect = { version = "0.19", default-features = false, optional = true }
-bevy_tasks = { version = "0.19", optional = true }
-bevy_log = { version = "0.19", default-features = false, optional = true }
 
 [dev-dependencies]
 tempfile = "3.10"

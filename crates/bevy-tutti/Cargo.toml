@@ -110,18 +110,14 @@ ogg = ["tutti-core/ogg", "tutti-sampler?/ogg"]
 midi = ["dep:tutti-midi-io", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-synth?/midi"]
 midi-hardware = ["midi", "tutti-midi-io/midi-hardware"]
 
-# Synth & sampling. bevy-tutti always wants the bevy_asset derives on these
-# (SoundFontAsset, StreamingSample) — it registers them with the AssetServer.
-synth = ["dep:tutti-synth", "tutti-synth/bevy"]
-# `tutti-synth/soundfont` requires `tutti-synth/midi`, which pulls `tutti-core`
-# with `midi` under feature unification — so tutti-core compiles the 5-arg
-# `from_parts`. Like `plugin` below, `soundfont` must enable bevy-tutti's OWN
-# `midi` so `engine/build.rs` passes the gated `MidiRoutingTable` arg and the
-# call shape stays in sync with the compiled tutti-core.
+# Synth & sampling. bevy-tutti registers these with the AssetServer, so it
+# wants the asset derives on both.
+synth = ["dep:tutti-synth"]
+# `tutti-synth/soundfont` requires `tutti-synth/midi`, which pulls tutti-core
+# with `midi` under feature unification — so enable bevy-tutti's own `midi` to
+# keep `engine/build.rs` in step with the tutti-core that actually compiles.
 soundfont = ["synth", "midi", "tutti-synth/soundfont", "tutti-synth/bevy_asset"]
-# `tutti-export?/sampler` turns on tutti-export's region-render module only when
-# the export crate is also pulled in (export feature on) — the `?` keeps sampler
-# usable without export.
+# The `?` keeps sampler usable without export.
 sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy", "tutti-export?/sampler"]
 
 # Plugin hosting: editor windows, catalog scan, crash detection.

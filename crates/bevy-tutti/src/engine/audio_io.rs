@@ -276,7 +276,7 @@ mod tests {
     use super::*;
     use parking_lot::Mutex;
     use tutti_core::engine::Engine;
-    use tutti_core::{dsp::Net, MotionEvent, Transport, TransportClock};
+    use tutti_core::{dsp::Net, Beat, BeatDuration, MotionEvent, Transport, TransportClock};
 
     /// Build a minimal engine + transport pair for callback-level tests.
     /// Bypasses the engine builder — these tests exercise the RT callback
@@ -285,8 +285,7 @@ mod tests {
         let transport = Transport::new(sample_rate);
 
         let mut net = Net::new(0, 2);
-        let clock = TransportClock::from_inputs(transport.clock_inputs(), sample_rate)
-            .with_position_writeback(Arc::clone(&transport.settings.beat));
+        let clock = TransportClock::new(transport.clock_links(), sample_rate);
         net.push(Box::new(clock));
         let backend = net.backend();
 
@@ -313,11 +312,11 @@ mod tests {
         let mut output = vec![0.0f32; frames * 2];
         process_audio(&state, &mut output, 2);
 
-        let expected_beat = 256.0 * (120.0 / 60.0) / 44100.0;
+        let expected_beat = Beat(256.0 * (120.0 / 60.0) / 44100.0);
         let actual_beat = transport.settings.beat();
         assert!(
-            (actual_beat - expected_beat).abs() < 1e-6,
-            "expected {expected_beat}, got {actual_beat}"
+            (actual_beat - expected_beat).abs() < BeatDuration(1e-6),
+            "expected {expected_beat:?}, got {actual_beat:?}"
         );
     }
 
@@ -338,7 +337,10 @@ mod tests {
         process_audio(&state, &mut output, 2);
 
         let beat = transport.settings.beat();
-        assert!(beat < 4.0, "expected beat wrapped below 4.0, got {beat}");
+        assert!(
+            beat < Beat(4.0),
+            "expected beat wrapped below 4.0, got {beat:?}"
+        );
     }
 
     /// RT-safety regression: `process_audio` must not allocate on the

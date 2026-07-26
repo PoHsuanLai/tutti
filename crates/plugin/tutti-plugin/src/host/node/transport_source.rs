@@ -103,10 +103,11 @@ impl TransportSource {
         // `samples` is project time, which jumps on a loop or seek; the clock's
         // free-running counter is the *continuous* one, so they go to different
         // fields. Deriving project-time samples from beats and tempo would be
-        // wrong the moment tempo moves, so it stays 0 — which consumers already
-        // read as "fall back to the musical position".
+        // wrong the moment tempo moves, so it stays `None` — the type now says
+        // so, and each format host decides what to do with the absence rather
+        // than forwarding a placeholder 0 as fact.
         info = info
-            .with_position_quarters(beats, 0)
+            .with_position_quarters(beats)
             .with_continuous_samples(reader.steady_time());
 
         if let Some(region) = reader.loop_range() {

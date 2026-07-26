@@ -35,10 +35,33 @@
 //!
 //! # No locking
 //!
-//! There is deliberately **no synchronization in this module**. A mutex on
-//! the audio thread would defeat the purpose. The single-writer-per-channel
-//! invariant is instead upheld by the control-channel handshake one layer
-//! up: each side only writes while the other has yielded the slab to it.
+//! There is deliberately **no synchronization in this module** — no header, no
+//! generation counter, no data-ready flag. A mutex on the audio thread would
+//! defeat the purpose. The single-writer-per-channel invariant is upheld
+//! entirely by the request/reply handshake one layer up: the host writes its
+//! inputs, sends `ProcessAudio`, and does not touch the slab again until the
+//! matching `AudioProcessed` comes back; the server only touches it while
+//! serving that request.
+//!
+//! **The handshake is what makes a read meaningful, and it is not optional.**
+//! [`read_channel_into`](AudioSlab::read_channel_into) reports a full-length
+//! success whether or not the other side ever wrote the region — "the server
+//! never wrote this" is indistinguishable from "the server wrote this". So a
+//! caller that reads without having matched the reply to its own request reads
+//! stale bytes and cannot tell. That is exactly how the out-of-process bypass
+//! bug happened: with `output_base == 0` the host's own input write shares the
+//! region, so an unmatched read returned the host's input at unity gain — a
+//! silent bypass. `BridgeMessage::AudioProcessed` therefore echoes the
+//! request's `buffer_id`, and `AudioBridge::process` reads the slab only after
+//! matching it.
+//!
+//! # Sample payload stays raw
+//!
+//! The `f32`/`f64` samples here are deliberately NOT wrapped in the engine's
+//! unit newtypes. This is a C-ABI / IPC boundary: the bytes are `memcpy`'d
+//! into a region the plugin subprocess reads with its own ABI expectations,
+//! where the layout must be exactly the primitive's. The unit vocabulary stops
+//! at this edge by design.
 //!
 //! # Lifecycle
 //!
@@ -182,6 +205,11 @@ impl AudioSlab {
     /// actually produced" contract. Reads `min(samples_per_channel,
     /// output.len())` samples and returns that count. Errors if `channel` is
     /// out of range.
+    ///
+    /// The count says how many samples were copied, **not** whether anyone
+    /// wrote them: an untouched region reads back at full length just like a
+    /// freshly written one. Only call this once the control-channel handshake
+    /// has confirmed the other side wrote this block (see the module docs).
     pub fn read_channel_into<T: Sample>(&self, channel: usize, output: &mut [T]) -> Result<usize> {
         self.check_channel(channel)?;
         let copy_samples = self.layout.samples_per_channel.min(output.len());

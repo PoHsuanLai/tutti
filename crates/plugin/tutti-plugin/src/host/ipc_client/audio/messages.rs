@@ -88,6 +88,11 @@ pub(super) enum Command {
 /// `IpcMidiEvent → MidiEvent` conversion happens on the bridge thread (off-RT,
 /// see `dispatch`), so the SmallVec moves through the queue already built; the
 /// RT thread only drains it into caller storage.
+///
+/// Both variants carry the `buffer_id` of the request they answer. The RT
+/// thread waits for the id of the block it just submitted and discards
+/// anything else, so a late or dropped reply can never be mistaken for this
+/// block's audio.
 // `AudioProcessed` holds an inline-256 `MidiEventVec` (~5 KB) vs the zero-size
 // `Error`. Intentional: the SmallVec stays inline so popping + dropping it on the
 // RT audio thread never touches the heap (see `process`). Boxing would defeat
@@ -95,8 +100,30 @@ pub(super) enum Command {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub(super) enum AudioResponse {
-    AudioProcessed { midi_out: MidiEventVec },
-    Error,
+    AudioProcessed {
+        /// The `buffer_id` of the `Process` request this answers, as echoed by
+        /// the server.
+        buffer_id: u32,
+        midi_out: MidiEventVec,
+    },
+    /// A block failed. `buffer_id` is `Some` when the failure is attributable to
+    /// one request (the server replied `Error` to it), and `None` for a
+    /// connection-level failure that ends every in-flight block — the waiter
+    /// treats `None` as matching whatever it is waiting for.
+    Error {
+        buffer_id: Option<u32>,
+    },
+}
+
+impl AudioResponse {
+    /// True when this response answers request `id`. A `None`-id `Error` is a
+    /// connection-level failure and answers any outstanding request.
+    pub(super) fn answers(&self, id: u32) -> bool {
+        match self {
+            AudioResponse::AudioProcessed { buffer_id, .. } => *buffer_id == id,
+            AudioResponse::Error { buffer_id } => buffer_id.is_none_or(|b| b == id),
+        }
+    }
 }
 
 /// Plugin-originated, unsolicited events observed on the control stream.

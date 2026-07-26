@@ -105,8 +105,13 @@ pub(crate) struct ProcessExtras<'a> {
     pub transport: &'a TransportInfo,
 }
 
-/// One inbound block: how many samples, MIDI, and (optional) extras.
+/// One inbound block: its request id, how many samples, MIDI, and (optional)
+/// extras.
 pub(crate) struct AudioBlock<'a> {
+    /// The host's per-block request id, echoed verbatim in the
+    /// `AudioProcessed` reply so the host's audio thread can tell this block's
+    /// reply from a stale one. Opaque to the server — it never interprets it.
+    pub buffer_id: u32,
     pub num_samples: usize,
     pub midi: &'a [MidiEvent],
     pub extras: Option<ProcessExtras<'a>>,
@@ -627,6 +632,7 @@ mod tests {
                 &mut shm,
                 &clock,
                 AudioBlock {
+                    buffer_id: 0,
                     num_samples: N,
                     midi: &[],
                     extras: None,
@@ -688,6 +694,7 @@ mod tests {
             format: SampleFormat::Float32,
         };
         let block = AudioBlock {
+            buffer_id: 0,
             num_samples: N,
             midi: &[],
             extras: None,
@@ -755,6 +762,7 @@ mod tests {
                 &mut shm,
                 &clock,
                 AudioBlock {
+                    buffer_id: 0,
                     num_samples: N,
                     midi: &[],
                     extras: None,
@@ -770,6 +778,7 @@ mod tests {
                         &mut shm,
                         &clock,
                         AudioBlock {
+                            buffer_id: 0,
                             num_samples: N,
                             midi: &[],
                             extras: None,
@@ -815,6 +824,7 @@ mod tests {
                 &mut shm,
                 &clock,
                 AudioBlock {
+                    buffer_id: 0,
                     num_samples: N,
                     midi: &[],
                     extras: None,
@@ -830,6 +840,7 @@ mod tests {
                         &mut shm,
                         &clock,
                         AudioBlock {
+                            buffer_id: 0,
                             num_samples: N,
                             midi: &[],
                             extras: None,

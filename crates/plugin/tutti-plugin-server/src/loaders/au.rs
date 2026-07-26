@@ -42,7 +42,82 @@ pub struct AuInstance {
     inner: AuHostInstance,
     #[cfg(all(target_os = "macos", feature = "au"))]
     editor: Option<AuEditor>,
+    /// AU-H1: declared `[min, max]` per parameter id, captured once at load.
+    ///
+    /// `ProcessContext::param_changes` carries **normalized** `0..=1` values (the
+    /// host's authoring convention — see `PluginParams::get_parameter`), but AU's
+    /// `AudioUnitSetParameter` takes **native plain units**. Denormalizing needs
+    /// the declared range, and re-reading `kAudioUnitProperty_ParameterInfo` per
+    /// automation point on the audio thread would be a property round-trip per
+    /// block, so the ranges are cached here at load time.
+    ///
+    /// A `Vec` sorted by id rather than a `HashMap`: AU parameter counts are in
+    /// the tens, so a binary search beats hashing and keeps the RT path
+    /// allocation-free.
+    #[cfg(all(target_os = "macos", feature = "au"))]
+    param_ranges: Vec<(u32, ParamBounds)>,
     meta: Meta,
+}
+
+/// Declared plain-unit bounds for one AU parameter, as reported by
+/// `kAudioUnitProperty_ParameterInfo`.
+///
+/// Raw `f32` Hz/dB/percent/seconds, not `tutti_types` unit newtypes: which
+/// physical unit these bounds are in is per-parameter and only known at runtime
+/// from `AudioUnitParameterInfo::unit`, and the values cross the AudioToolbox C
+/// ABI verbatim.
+#[cfg(all(target_os = "macos", feature = "au"))]
+#[derive(Debug, Clone, Copy)]
+struct ParamBounds {
+    min: f32,
+    max: f32,
+}
+
+#[cfg(all(target_os = "macos", feature = "au"))]
+impl ParamBounds {
+    /// Map a normalized `0..=1` value onto `[min, max]`.
+    ///
+    /// Mirrors `tutti_plugin_types::ParameterInfo::to_plain` — the same linear
+    /// endpoint map, applied here in `f32` because that is what
+    /// `AudioUnitSetParameter` takes. A degenerate range yields `min`, and the
+    /// input is clamped, so this can never produce a value the AU did not
+    /// declare.
+    fn to_plain(self, normalized: f64) -> f32 {
+        if self.max <= self.min {
+            return self.min;
+        }
+        let n = normalized.clamp(0.0, 1.0) as f32;
+        self.min + n * (self.max - self.min)
+    }
+}
+
+/// Look up the declared bounds for `id` in a range table sorted by id.
+#[cfg(all(target_os = "macos", feature = "au"))]
+fn lookup_bounds(table: &[(u32, ParamBounds)], id: u32) -> Option<ParamBounds> {
+    table
+        .binary_search_by_key(&id, |&(pid, _)| pid)
+        .ok()
+        .map(|i| table[i].1)
+}
+
+/// Read every parameter's declared range off the AU, sorted by id for
+/// [`lookup_bounds`].
+#[cfg(all(target_os = "macos", feature = "au"))]
+fn read_param_ranges(unit: tutti_au_host::types::AudioUnit) -> Vec<(u32, ParamBounds)> {
+    let mut table: Vec<(u32, ParamBounds)> = parameters::list(unit)
+        .into_iter()
+        .map(|p| {
+            (
+                p.id,
+                ParamBounds {
+                    min: p.range.min,
+                    max: p.range.max,
+                },
+            )
+        })
+        .collect();
+    table.sort_unstable_by_key(|&(id, _)| id);
+    table
 }
 
 unsafe impl Send for AuInstance {}
@@ -196,9 +271,14 @@ impl AuInstance {
                 features,
             };
 
+            // Capture the declared plain ranges once, while still on the load
+            // thread — the RT path denormalizes against these (AU-H1).
+            let param_ranges = read_param_ranges(inner.raw_unit());
+
             Ok(Self {
                 inner,
                 editor: None,
+                param_ranges,
                 meta: Meta { descriptor, loaded },
             })
         }
@@ -233,14 +313,26 @@ impl PluginAudio for AuInstance {
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
     ) -> PluginResult<ProcessOutput> {
-        // AU params are treated as normalized `0..1` (the host's authoring
-        // convention); clamp defensively so an over-range value can't escape.
+        // AU-H1: automation arrives normalized `0..=1` (the host's authoring
+        // convention, shared with VST2/VST3), but `AudioUnitSetParameter` takes
+        // NATIVE PLAIN UNITS — AU has no normalization concept at all. Writing
+        // the normalized value straight through set Apple AUDelay's Lowpass
+        // Cutoff (declared `[10, 22050]` Hz) to 1 Hz at full scale and clamped
+        // every plain value above 1.0 away, making the entire usable range of
+        // every Hz/dB/percent/seconds parameter unreachable.
+        //
+        // Denormalize against the range the AU itself declared. A parameter
+        // missing from the table (the AU grew a parameter after load, or
+        // refused `ParameterInfo`) is skipped rather than written blind: a
+        // guessed range would be the same class of bug.
         if let Some(changes) = ctx.param_changes {
             for queue in &changes.queues {
                 if let Some(point) = queue.points.last() {
-                    let _ = self
-                        .inner
-                        .set_parameter(queue.param_id, (point.value as f32).clamp(0.0, 1.0));
+                    if let Some(bounds) = lookup_bounds(&self.param_ranges, queue.param_id) {
+                        let _ = self
+                            .inner
+                            .set_parameter(queue.param_id, bounds.to_plain(point.value));
+                    }
                 }
             }
         }
@@ -300,10 +392,16 @@ impl PluginAudio for AuInstance {
 }
 
 impl PluginParams for AuInstance {
+    /// Plain native units, per the [`PluginParams`] contract for AU — pass the
+    /// AU's value through unchanged.
     fn get_parameter(&self, id: u32) -> f64 {
         parameters::get(self.inner.raw_unit(), id).unwrap_or(0.0) as f64
     }
 
+    /// Plain native units in, matching [`get_parameter`](Self::get_parameter) —
+    /// so this pair round-trips. (The `param_changes` automation path in
+    /// `process` is the one that must denormalize, because ITS input is
+    /// normalized; see AU-H1 there.)
     fn set_parameter(&mut self, id: u32, value: f64) {
         let _ = parameters::set(self.inner.raw_unit(), id, value as f32);
     }
@@ -422,10 +520,12 @@ mod tests {
         let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
             .expect("Should create instance");
         inner.initialize().expect("Should initialize");
+        let param_ranges = read_param_ranges(inner.raw_unit());
 
         let au = AuInstance {
             inner,
             editor: None,
+            param_ranges,
             meta: Meta::default(),
         };
 
@@ -455,10 +555,12 @@ mod tests {
         let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
             .expect("Should create instance");
         inner.initialize().expect("Should initialize");
+        let param_ranges = read_param_ranges(inner.raw_unit());
 
         let mut au = AuInstance {
             inner,
             editor: None,
+            param_ranges,
             meta: Meta::default(),
         };
 
@@ -500,10 +602,12 @@ mod tests {
         let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
             .expect("Should create instance");
         inner.initialize().expect("Should initialize");
+        let param_ranges = read_param_ranges(inner.raw_unit());
 
         let mut au = AuInstance {
             inner,
             editor: None,
+            param_ranges,
             meta: Meta::default(),
         };
 
@@ -511,5 +615,148 @@ mod tests {
         assert!(!state.is_empty(), "State should not be empty");
 
         au.set_state(&state).expect("restore should succeed");
+    }
+
+    /// AU-H1, pure unit half: the normalized→plain map itself.
+    ///
+    /// The bug was writing the normalized value straight through, which is
+    /// equivalent to `to_plain` being the identity. These endpoints are exactly
+    /// where identity and the correct map differ, and they use AUDelay's real
+    /// declared ranges.
+    #[test]
+    fn to_plain_maps_onto_the_declared_range_not_identity() {
+        let cutoff = ParamBounds {
+            min: 10.0,
+            max: 22_050.0,
+        };
+        assert_eq!(cutoff.to_plain(0.0), 10.0);
+        assert_eq!(cutoff.to_plain(1.0), 22_050.0);
+        assert_eq!(cutoff.to_plain(0.5), 11_030.0);
+        // The old code sent 1.0 here — 1 Hz, an inaudible filter.
+        assert_ne!(cutoff.to_plain(1.0), 1.0);
+
+        // Negative minima (AUDelay Feedback is [-99.9, 99.9]) must map too; the
+        // old clamp to [0,1] made the entire negative half unreachable.
+        let feedback = ParamBounds {
+            min: -99.9,
+            max: 99.9,
+        };
+        assert!((feedback.to_plain(0.0) - -99.9).abs() < 1e-3);
+        assert!(feedback.to_plain(0.5).abs() < 1e-3);
+        assert!((feedback.to_plain(1.0) - 99.9).abs() < 1e-3);
+
+        // Out-of-range input is clamped to the declared endpoints, never past.
+        assert_eq!(cutoff.to_plain(-5.0), 10.0);
+        assert_eq!(cutoff.to_plain(9.0), 22_050.0);
+
+        // A degenerate range yields `min` rather than NaN/inf.
+        let degenerate = ParamBounds { min: 3.0, max: 3.0 };
+        assert_eq!(degenerate.to_plain(0.5), 3.0);
+    }
+
+    #[test]
+    fn lookup_bounds_finds_ids_in_a_sorted_table() {
+        let table = vec![
+            (2u32, ParamBounds { min: 0.0, max: 1.0 }),
+            (
+                7u32,
+                ParamBounds {
+                    min: 10.0,
+                    max: 22_050.0,
+                },
+            ),
+        ];
+        assert_eq!(lookup_bounds(&table, 7).map(|b| b.max), Some(22_050.0));
+        assert_eq!(lookup_bounds(&table, 2).map(|b| b.min), Some(0.0));
+        // A parameter the AU never declared has no range to denormalize
+        // against, so it must be reported missing (and skipped), not guessed.
+        assert!(lookup_bounds(&table, 3).is_none());
+    }
+
+    /// AU-H1, live half: drive a real AU's automation path and read the value
+    /// back in native units. Full-scale automation must land on the parameter's
+    /// declared MAXIMUM, not on `1.0`.
+    #[test]
+    fn param_automation_round_trips_in_native_units() {
+        use tutti_au_host::component;
+        use tutti_au_host::types::AudioComponentDescription;
+        use tutti_au_host::types::K_AUDIO_UNIT_TYPE_EFFECT;
+        use tutti_plugin::server::{
+            AudioBuffer as TuttiAudioBuffer, AudioBufferMut, ParameterChanges, ParameterQueue,
+        };
+
+        let desc = AudioComponentDescription {
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"dely"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
+        };
+
+        let comp = component::find_component(&desc).expect("AUDelay should exist");
+        let mut inner = unsafe { tutti_au_host::AuInstance::new(comp, 44100.0, 512) }
+            .expect("Should create instance");
+        inner.initialize().expect("Should initialize");
+        let param_ranges = read_param_ranges(inner.raw_unit());
+
+        let mut au = AuInstance {
+            inner,
+            editor: None,
+            param_ranges,
+            meta: Meta::default(),
+        };
+
+        // Pick a writable parameter with a genuinely wide plain range — one
+        // whose max is far from 1.0, so identity-vs-denormalized is decidable.
+        let target = au
+            .get_parameter_list()
+            .into_iter()
+            .find(|p| p.max_value > 2.0 && !p.flags.read_only)
+            .expect("AUDelay should expose a wide-range writable parameter");
+
+        let num_samples = 64;
+        for (normalized, expected) in [
+            (1.0f64, target.max_value),
+            (0.0f64, target.min_value),
+            (
+                0.5f64,
+                target.min_value + 0.5 * (target.max_value - target.min_value),
+            ),
+        ] {
+            let mut changes = ParameterChanges::new();
+            let mut queue = ParameterQueue::new(target.id);
+            queue.add_point(0, normalized);
+            changes.add_queue(queue);
+
+            let input_data = vec![vec![0.0f32; num_samples]; 2];
+            let mut output_data = vec![vec![0.0f32; num_samples]; 2];
+            let input_slices: Vec<&[f32]> = input_data.iter().map(|v| v.as_slice()).collect();
+            let mut output_slices: Vec<&mut [f32]> =
+                output_data.iter_mut().map(|v| v.as_mut_slice()).collect();
+            let buffer = TuttiAudioBuffer {
+                inputs: &input_slices,
+                outputs: &mut output_slices,
+                num_samples,
+                sample_rate: 44100.0,
+            };
+            let mut ctx = ProcessContext::new();
+            ctx.param_changes = Some(&changes);
+            au.process(AudioBufferMut::F32(buffer), &ctx)
+                .expect("process should succeed");
+
+            let read_back = au.get_parameter(target.id);
+            // Tolerance scales with the range: AU stores parameters as f32, so
+            // a 22 kHz range round-trips to ~1e-4 relative precision.
+            let tolerance = (target.max_value - target.min_value).abs() * 1e-4;
+            assert!(
+                (read_back - expected).abs() <= tolerance,
+                "param {} ('{}'): normalized {normalized} should read back as \
+                 {expected} in native units, got {read_back} (range [{}, {}])",
+                target.id,
+                target.name,
+                target.min_value,
+                target.max_value,
+            );
+        }
     }
 }

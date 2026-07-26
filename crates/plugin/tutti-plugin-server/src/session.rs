@@ -114,6 +114,7 @@ impl Session {
                     transport: &data.transport,
                 };
                 self.handle_process(AudioBlock {
+                    buffer_id: data.buffer_id,
                     num_samples: data.num_samples,
                     midi: &midi,
                     extras: Some(extras),
@@ -258,6 +259,11 @@ impl Session {
     }
 
     fn handle_process(&mut self, block: AudioBlock<'_>) -> Result<Reaction> {
+        // Read before `block` is moved into the pipeline: every AudioProcessed
+        // reply below must echo it, including the degenerate no-shm one, or the
+        // host's match-or-silence wait would time out on a reply it can't
+        // attribute.
+        let buffer_id = block.buffer_id;
         let Some(plugin) = self.plugin.as_mut() else {
             return Ok(BridgeMessage::Error {
                 message: "No plugin loaded".to_string(),
@@ -270,6 +276,7 @@ impl Session {
             // AudioProcessed reply so the host stays in sync.
             return Ok(BridgeMessage::AudioProcessed {
                 latency_us: 0,
+                buffer_id,
                 midi_out: IpcMidiEventVec::new(),
             }
             .into());
@@ -280,6 +287,7 @@ impl Session {
             .process(plugin.instance_mut(), shm, &self.clock, block)?;
         Ok(BridgeMessage::AudioProcessed {
             latency_us: output.latency_us,
+            buffer_id,
             midi_out: encode_midi_out(&output.midi_out),
         }
         .into())

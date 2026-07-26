@@ -92,22 +92,17 @@ pub(super) static HOST_THREAD_CHECK: clap_host_thread_check = clap_host_thread_c
     is_audio_thread: Some(host_thread_check_is_audio),
 };
 
+// C1: the two answers are mutually exclusive. `HostState::is_main_thread`
+// returns false while this thread holds the audio-thread claim, so a plugin
+// that asserts `!is_main_thread()` inside `start_processing` gets an honest
+// answer even when the host drove that call from the OS main thread (which the
+// spec explicitly permits — see `HostState::audio_thread_lock`).
 unsafe extern "C" fn host_thread_check_is_main(host: *const ClapHostVtable) -> bool {
-    match get_host_state(host) {
-        Some(state) => std::thread::current().id() == state.main_thread_id,
-        None => false,
-    }
+    get_host_state(host).is_some_and(|state| state.is_main_thread())
 }
 
 unsafe extern "C" fn host_thread_check_is_audio(host: *const ClapHostVtable) -> bool {
-    match get_host_state(host) {
-        Some(state) => state
-            .audio_thread_id
-            .load()
-            .as_deref()
-            .is_some_and(|id| *id == std::thread::current().id()),
-        None => false,
-    }
+    get_host_state(host).is_some_and(|state| state.is_audio_thread())
 }
 
 pub(super) static HOST_LOG: clap_host_log = clap_host_log {

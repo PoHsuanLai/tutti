@@ -19,7 +19,9 @@ pub mod shm;
 ///
 /// - v1: baseline.
 /// - v2: `BridgeMessage::AudioProcessed` carries plugin `midi_out`.
-pub const PROTOCOL_VERSION: u32 = 2;
+/// - v3: `BridgeMessage::AudioProcessed` echoes the request's `buffer_id`, so
+///   the host can tell a reply for THIS block from a stale one.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Validate a subprocess-reported protocol version against [`PROTOCOL_VERSION`].
 /// Called at each handshake consumer so a version skew fails loudly instead of
@@ -128,6 +130,7 @@ mod tests {
         .collect();
         let msg = BridgeMessage::AudioProcessed {
             latency_us: 42,
+            buffer_id: 7,
             midi_out,
         };
         let bytes = bincode::serialize(&msg).unwrap();
@@ -135,9 +138,14 @@ mod tests {
         match back {
             BridgeMessage::AudioProcessed {
                 latency_us,
+                buffer_id,
                 midi_out,
             } => {
                 assert_eq!(latency_us, 42);
+                // The block-identity echo the host's match-or-silence wait
+                // depends on: if this field did not survive the wire trip, every
+                // block would time out into silence.
+                assert_eq!(buffer_id, 7);
                 assert_eq!(midi_out.len(), 2);
                 let events: Vec<MidiEvent> = midi_out.iter().map(|&e| e.into()).collect();
                 assert_eq!(events[0].frame_offset, 0);

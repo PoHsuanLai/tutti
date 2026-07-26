@@ -215,6 +215,56 @@ fn host_delivers_param_points_with_offsets() {
     );
 }
 
+/// CLAP-H3 regression, end-to-end through the real FFI: no event may reach the
+/// plugin with a `time` outside `0..frames_count`.
+///
+/// `header.time` is a sample index the plugin uses to split the block, so an
+/// out-of-range value is an out-of-bounds access *inside the plugin*. Two ways
+/// the host used to produce one:
+/// - a NEGATIVE automation `sample_offset` (`i32`) cast bare to `u32`, which
+///   turned -1 into 4_294_967_295;
+/// - an offset simply past the end of the block, forwarded verbatim.
+#[test]
+fn host_never_delivers_an_event_time_outside_the_block() {
+    let Some(mut inst) = load_or_skip() else {
+        return;
+    };
+    const FRAMES: u32 = 128;
+
+    let mut params = ParameterChanges::new();
+    params.add_change(7, -1, 0.5); // negative → must not wrap
+    params.add_change(7, 100_000, 0.9); // past the block → must clamp
+    params.add_change(7, 64, 0.25); // in range → untouched
+    let midi = [MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(9_999)];
+    let ctx = ProcessContext {
+        midi: &midi,
+        params: Some(&params),
+        ..Default::default()
+    };
+    let cap = drive_once(&mut inst, FRAMES as usize, &ctx);
+
+    // Clamp, don't drop: every event still reaches the plugin. Dropping a
+    // note-on / param change would trade an OOB bug for a stuck-state bug.
+    assert_eq!(cap.event_count, 4, "no event may be silently dropped");
+
+    for e in &cap.events[..cap.event_count as usize] {
+        assert!(
+            e.time < FRAMES,
+            "event time {} is outside the {FRAMES}-frame block — the plugin \
+             will index its buffer with it",
+            e.time
+        );
+    }
+
+    let times: Vec<u32> = cap.events[..4].iter().map(|e| e.time).collect();
+    assert_eq!(
+        times,
+        vec![0, 64, 127, 127],
+        "negative saturates to 0, in-range is untouched, past-the-end lands on \
+         the last valid sample, and the list stays sorted"
+    );
+}
+
 #[test]
 fn host_supplies_transport_when_present() {
     let Some(mut inst) = load_or_skip() else {

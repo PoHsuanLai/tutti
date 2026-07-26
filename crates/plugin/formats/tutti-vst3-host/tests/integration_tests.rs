@@ -311,9 +311,23 @@ fn test_get_parameters() {
     let param_count = plugin.parameter_count();
     println!("Plugin has {} parameters", param_count);
 
+    // `parameter_count()` bounds the INDEX space; `parameter()` takes a
+    // ParamID. Iterating indices straight into `parameter()` reads whichever
+    // parameter happens to own that numeric id — go through the index-addressed
+    // accessor, which resolves index → ParamID via `getParameterInfo`.
     for i in 0..param_count.min(10) {
-        let value = plugin.parameter(i);
-        println!("  [{}] value: {}", i, value);
+        let id = plugin
+            .parameter_id_at(i)
+            .unwrap_or_else(|| panic!("index {i} < parameter_count but has no ParameterInfo"));
+        let value = plugin
+            .parameter_by_index(i)
+            .expect("resolved index has a value");
+        assert_eq!(
+            value,
+            plugin.parameter(id),
+            "by-index and by-ParamID reads must agree for index {i} (id {id})"
+        );
+        println!("  [{i}] id {id} value: {value}");
     }
 }
 
@@ -332,10 +346,23 @@ fn test_set_parameter() {
         Vst3Instance::<f32>::load(Path::new(path), 44100.0, 512).expect("Failed to load plugin");
 
     if plugin.parameter_count() > 0 {
-        println!("Setting parameter 0 to 0.5");
-        plugin.set_parameter(0, 0.5);
-        let value = plugin.parameter(0);
-        println!("Read back value: {}", value);
+        // Index 0, resolved to its ParamID — `set_parameter(0, ..)` would have
+        // written to *ParamID* 0, which need not be the first parameter (or
+        // exist at all).
+        let id = plugin.parameter_id_at(0).expect("index 0 has ParameterInfo");
+        println!("Setting parameter index 0 (ParamID {id}) to 0.5");
+        assert!(plugin.set_parameter_by_index(0, 0.5));
+        let value = plugin
+            .parameter_by_index(0)
+            .expect("index 0 resolves for reads too");
+        assert_eq!(value, plugin.parameter(id));
+        println!("Read back value: {value}");
+
+        // An out-of-range index must be reported, not silently written to a
+        // numerically-equal ParamID.
+        let past_end = plugin.parameter_count();
+        assert!(!plugin.set_parameter_by_index(past_end, 0.5));
+        assert_eq!(plugin.parameter_by_index(past_end), None);
     }
 }
 

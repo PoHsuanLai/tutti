@@ -13,7 +13,11 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
-const IDLE_POLL_INTERVAL: Duration = Duration::from_micros(100);
+/// Upper bound on how long the bridge thread stays parked with no command. In
+/// practice `push_command` unparks it immediately; this is only the backstop
+/// that guarantees `lifecycle.is_running()` is re-checked (shutdown) even if an
+/// unpark were ever missed.
+const IDLE_PARK_TIMEOUT: Duration = Duration::from_millis(1);
 
 pub struct BridgeThread {
     channels: Channels,
@@ -74,6 +78,9 @@ fn run_thread(
     listener: ListenerSlot,
     socket_path: PathBuf,
 ) {
+    // Publish our handle before the first poll so `push_command` can unpark us.
+    channels.register_worker(thread::current());
+
     let Ok(mut stream) = ipc::connect(&socket_path) else {
         return;
     };
@@ -93,7 +100,16 @@ fn pump(
 ) {
     while lifecycle.is_running() {
         let Some(cmd) = channels.pop_command() else {
-            thread::sleep(IDLE_POLL_INTERVAL);
+            // Park rather than sleep: `push_command` unparks us the instant a
+            // block arrives, so the socket round-trip starts immediately
+            // instead of after a fixed poll interval. That latency used to sit
+            // inside the audio thread's wait budget for the reply.
+            //
+            // `park_timeout` may also return spuriously — harmless, the loop
+            // just re-polls. An unpark racing with this re-poll is likewise
+            // safe: `park_timeout` consumes the pending token and returns at
+            // once, so no command is ever left sitting in the queue.
+            thread::park_timeout(IDLE_PARK_TIMEOUT);
             continue;
         };
 
@@ -102,7 +118,10 @@ fn pump(
 
         if result.is_err() {
             lifecycle.mark_crashed();
-            channels.push_audio_response(AudioResponse::Error);
+            // Connection-level: the stream is gone, so this ends every
+            // in-flight and queued block, not just one. `None` matches
+            // whichever request the audio thread is waiting on.
+            channels.push_audio_response(AudioResponse::Error { buffer_id: None });
             drain_with_errors(channels);
             return;
         }
@@ -120,6 +139,6 @@ fn drain_unsolicited(channels: &Channels, listener: &ListenerSlot) {
 
 fn drain_with_errors(channels: &Channels) {
     while channels.pop_command().is_some() {
-        channels.push_audio_response(AudioResponse::Error);
+        channels.push_audio_response(AudioResponse::Error { buffer_id: None });
     }
 }

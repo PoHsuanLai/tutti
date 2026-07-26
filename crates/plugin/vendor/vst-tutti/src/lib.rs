@@ -1,7 +1,17 @@
-// Vendored upstream (vst-rs 0.3.0); its lints are not chased here.
-#![allow(clippy::all)]
+// Forked from vst-rs 0.3.0. This is *owned* code, not a read-only vendor drop:
+// the fork already diverges deliberately (host-side audioMaster callbacks, plus
+// the host-safety fixes documented in `host.rs`), so its lints are chased like
+// any other crate here. The blanket `allow(clippy::all)` that used to sit at the
+// top of this file is what kept those bugs invisible.
+//
+// The remaining allows are narrow and each has a reason:
 #![allow(missing_docs)]
+// vst-rs predates `Library::is_null` ergonomics; the null checks on FFI
+// function pointers in `host.rs` are load-bearing (a plugin may legitimately
+// leave `processReplacing` null) even though rustc believes a
+// `extern "C" fn` is non-null by type.
 #![allow(useless_ptr_null_checks)]
+// Elided-lifetime style across a 2021-edition port of a 2018-edition crate.
 #![allow(mismatched_lifetime_syntaxes)]
 
 //! A rust implementation of the VST2.4 API.
@@ -39,9 +49,9 @@
 //!
 //! ```no_run
 //! #[macro_use]
-//! extern crate vst;
+//! extern crate vst_tutti as vst;
 //!
-//! use vst::plugin::{HostCallback, Info, Plugin};
+//! use vst_tutti::plugin::{HostCallback, Info, Plugin};
 //!
 //! struct BasicPlugin;
 //!
@@ -68,19 +78,19 @@
 //!
 //! ## `Host` Trait
 //! All hosts must implement the [`Host` trait](host/trait.Host.html). To load a VST plugin, you
-//! need to wrap your host in an `Arc<Mutex<T>>` wrapper for thread safety reasons. Along with the
+//! need to wrap your host in an `Arc<T>` wrapper. Along with the
 //! plugin path, this can be passed to the [`PluginLoader::load`] method to create a plugin loader
 //! which can spawn plugin instances.
 //!
 //! ## Example Host
 //! ```no_run
-//! extern crate vst;
+//! extern crate vst_tutti as vst;
 //!
-//! use std::sync::{Arc, Mutex};
+//! use std::sync::Arc;
 //! use std::path::Path;
 //!
-//! use vst::host::{Host, PluginLoader};
-//! use vst::plugin::Plugin;
+//! use vst_tutti::host::{Host, PluginLoader};
+//! use vst_tutti::plugin::Plugin;
 //!
 //! struct SampleHost;
 //!
@@ -91,7 +101,7 @@
 //! }
 //!
 //! fn main() {
-//!     let host = Arc::new(Mutex::new(SampleHost));
+//!     let host = Arc::new(SampleHost);
 //!     let path = Path::new("/path/to/vst");
 //!
 //!     let mut loader = PluginLoader::load(path, host.clone()).unwrap();

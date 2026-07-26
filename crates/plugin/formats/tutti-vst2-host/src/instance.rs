@@ -12,7 +12,7 @@
 //! collapse them.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use vst::host::PluginLoader;
 use vst::plugin::{Category, Plugin as _};
@@ -94,13 +94,19 @@ impl Vst2Instance {
         let (param_tx, param_rx) = crossbeam_channel::unbounded();
         let (midi_out_tx, midi_out_rx) = crossbeam_channel::unbounded();
         let time_info = Arc::new(arc_swap::ArcSwap::from_pointee(None));
-        let host = Arc::new(Mutex::new(HostState::new(
+        // A bare `Arc`, not `Arc<Mutex<_>>`: the plugin calls
+        // `audioMasterGetTime` from inside `processReplacing` on the audio
+        // thread and `audioMasterSizeWindow` / `audioMasterUpdateDisplay` from
+        // the GUI thread, so a shared lock here is a priority inversion.
+        // `HostState`'s fields are already lock-free (`ArcSwap` + crossbeam
+        // senders), so the lock bought nothing.
+        let host = Arc::new(HostState::new(
             param_tx,
             midi_out_tx,
             Arc::clone(&time_info),
             block_size,
             sample_rate,
-        )));
+        ));
 
         let mut loader = PluginLoader::load(&resolved, Arc::clone(&host)).map_err(|e| {
             Vst2Error::LoadFailed {

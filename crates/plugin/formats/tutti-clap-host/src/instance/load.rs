@@ -104,7 +104,16 @@ impl ClapLoaded {
             });
         }
 
-        let plugin_init_fn = unsafe { &*plugin_ptr }
+        // H5: bind the raw pointer into its owning handle BEFORE the init
+        // checks. `create_plugin` has already handed us ownership, so every
+        // exit from here on must `destroy()` it — CLAP's spec is explicit: "If
+        // init returns false, the host must destroy the plugin instance."
+        // Previously both early returns below (missing `init`, `init` false)
+        // dropped the raw pointer on the floor and then `dlclose`d the library
+        // out from under a live instance. `PluginHandle::drop` now covers both.
+        let plugin = PluginHandle::new(plugin_ptr);
+
+        let plugin_init_fn = unsafe { plugin.as_ref() }
             .init
             .ok_or_else(|| ClapError::LoadFailed {
                 path: bundle_path.to_path_buf(),
@@ -112,7 +121,7 @@ impl ClapLoaded {
                 reason: "No plugin init function".to_string(),
             })?;
 
-        if !unsafe { plugin_init_fn(plugin_ptr) } {
+        if !unsafe { plugin_init_fn(plugin.as_ptr()) } {
             return Err(ClapError::LoadFailed {
                 path: bundle_path.to_path_buf(),
                 stage: LoadStage::Initialization,
@@ -120,7 +129,6 @@ impl ClapLoaded {
             });
         }
 
-        let plugin = PluginHandle::new(plugin_ptr);
         let extensions = ExtensionCache::query(plugin.as_ptr());
 
         let mut ports = PortLayout {

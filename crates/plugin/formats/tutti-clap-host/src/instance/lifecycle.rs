@@ -5,6 +5,7 @@
 use super::config::AudioScratch;
 use super::{ClapActive, ClapLoaded};
 use crate::error::{ClapError, LoadStage, Result};
+use crate::host::AudioThreadClaim;
 use crate::types::PluginInfo;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
@@ -173,19 +174,22 @@ impl<T: super::ClapSample> ClapActive<T> {
     /// Ensure the plugin's `start_processing` has run. Called at the top of
     /// `process` (and is a no-op once started), so an instance returned by
     /// `activate` or rebuilt after `set_sample_rate` self-starts on first use.
-    pub(crate) fn ensure_processing(&mut self) -> Result<()> {
+    ///
+    /// # Threading (C1)
+    /// CLAP marks `start_processing` `[audio-thread & active & !processing]`.
+    /// The audio-thread is symbolic: any OS thread may take the role provided
+    /// only one holds it at a time, so this takes an [`AudioThreadClaim`] for
+    /// the duration of the call. Under the claim `is_audio_thread()` is `true`
+    /// and `is_main_thread()` is `false` on this thread — no dual identity —
+    /// and no other thread can be inside a `[audio-thread]` plugin call.
+    ///
+    /// `claim` is threaded in by the caller rather than taken here so the RT
+    /// `do_process` path takes the lock **once** per block and covers both
+    /// `start_processing` and `process` with a single claim.
+    pub(crate) fn ensure_processing(&mut self, _claim: &AudioThreadClaim<'_>) -> Result<()> {
         if self.loaded.flags.processing {
             return Ok(());
         }
-
-        // Publish the current thread as the audio thread before the plugin's
-        // start_processing runs — plugins commonly call is_audio_thread from
-        // inside it. This is the only place we pay the Arc allocation; the
-        // per-buffer do_process path only reads the ArcSwapOption.
-        self.loaded
-            .host_state
-            .audio_thread_id
-            .store(Some(Arc::new(std::thread::current().id())));
 
         let plugin_ref = unsafe { self.loaded.plugin.as_ref() };
         if let Some(start_fn) = plugin_ref.start_processing {
@@ -200,7 +204,25 @@ impl<T: super::ClapSample> ClapActive<T> {
         Ok(())
     }
 
+    /// Stop processing under a fresh [`AudioThreadClaim`] (C1).
+    ///
+    /// Every caller here is a setup-time / teardown path on the main thread
+    /// (`deactivate`, `set_sample_rate`, `set_max_block_size`, `Drop`). Taking
+    /// the claim makes this OS thread *the* audio thread for the duration of
+    /// the `stop_processing` call — which is what the spec's `[audio-thread]`
+    /// tag actually requires — and blocks until any in-flight `process` on a
+    /// real audio thread has returned.
     pub(crate) fn stop_processing(&mut self) {
+        // Clone the Arc into a local so the claim borrows the local, not
+        // `self` — `stop_processing_claimed` needs `&mut self`. Arc clone is an
+        // atomic increment, no allocation.
+        let host_state = Arc::clone(&self.loaded.host_state);
+        let claim = host_state.claim_audio_thread();
+        self.stop_processing_claimed(&claim);
+    }
+
+    /// `stop_processing` for a caller that already holds the claim.
+    pub(crate) fn stop_processing_claimed(&mut self, _claim: &AudioThreadClaim<'_>) {
         if !self.loaded.flags.processing {
             return;
         }
@@ -208,7 +230,6 @@ impl<T: super::ClapSample> ClapActive<T> {
         if let Some(stop_fn) = plugin_ref.stop_processing {
             unsafe { stop_fn(self.loaded.plugin.as_ptr()) };
         }
-        self.loaded.host_state.audio_thread_id.store(None);
         self.loaded.flags.processing = false;
         // H2: the CLAP steady_time counter is per start/stop cycle — reset it so
         // the next start_processing begins the monotonic sequence at 0.

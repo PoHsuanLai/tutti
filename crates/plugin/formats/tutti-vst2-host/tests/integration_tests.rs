@@ -203,12 +203,13 @@ fn process_with_transport() {
     let meta = instance.metadata().clone();
     let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, 512);
 
-    let mut transport = TransportInfo::new()
+    let transport = TransportInfo::new()
         .with_playing(true)
-        .with_position_quarters(2.0, 44_100)
+        .with_position_quarters(2.0)
+        .with_position_samples(44_100)
         .with_tempo(120.0)
-        .with_time_signature(TimeSignature::default());
-    transport.loop_region.end_quarters = 4.0;
+        .with_time_signature(TimeSignature::default())
+        .with_loop(true, 0.0, 4.0);
 
     let num_samples = 512;
     let input_data = vec![vec![0.0f32; num_samples]; (meta.num_inputs.count() as usize).max(1)];

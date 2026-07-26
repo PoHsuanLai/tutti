@@ -482,10 +482,10 @@ pub trait Plugin: Send {
     ///
     /// ```
     /// // ...
-    /// # extern crate vst;
+    /// # extern crate vst_tutti as vst;
     /// # #[macro_use] extern crate log;
-    /// # use vst::plugin::{Plugin, Info};
-    /// use vst::plugin::HostCallback;
+    /// # use vst_tutti::plugin::{Plugin, Info};
+    /// use vst_tutti::plugin::HostCallback;
     ///
     /// struct ExamplePlugin {
     ///     host: HostCallback
@@ -562,8 +562,8 @@ pub trait Plugin: Send {
     ///
     /// # Example
     /// ```no_run
-    /// # use vst::plugin::{HostCallback, Info, Plugin};
-    /// # use vst::buffer::AudioBuffer;
+    /// # use vst_tutti::plugin::{HostCallback, Info, Plugin};
+    /// # use vst_tutti::buffer::AudioBuffer;
     /// #
     /// # struct ExamplePlugin;
     /// # impl Plugin for ExamplePlugin {
@@ -605,8 +605,8 @@ pub trait Plugin: Send {
     ///
     /// # Example
     /// ```no_run
-    /// # use vst::plugin::{HostCallback, Info, Plugin};
-    /// # use vst::buffer::AudioBuffer;
+    /// # use vst_tutti::plugin::{HostCallback, Info, Plugin};
+    /// # use vst_tutti::buffer::AudioBuffer;
     /// #
     /// # struct ExamplePlugin;
     /// # impl Plugin for ExamplePlugin {

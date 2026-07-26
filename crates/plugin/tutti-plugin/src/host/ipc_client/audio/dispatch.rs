@@ -20,6 +20,7 @@ pub(super) fn handle(
 ) -> Result<()> {
     match cmd {
         Command::Process(mut payload) => {
+            let sent_id = payload.buffer_id;
             let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
                 buffer_id: payload.buffer_id,
                 num_samples: payload.num_samples,
@@ -38,16 +39,31 @@ pub(super) fn handle(
             ipc::send(stream, &msg)?;
 
             match recv_reply(stream, channels, PROCESS_TIMEOUT)? {
-                BridgeMessage::AudioProcessed { midi_out, .. } => {
+                BridgeMessage::AudioProcessed {
+                    buffer_id,
+                    midi_out,
+                    ..
+                } => {
                     // Convert IpcMidiEvent → MidiEvent HERE, on the bridge
                     // thread (off-RT). The RT thread only drains the built
                     // SmallVec — no per-event conversion, no heap traffic on
                     // the audio thread.
                     let midi_out = midi_out.iter().map(|e| MidiEvent::from(*e)).collect();
-                    channels.push_audio_response(AudioResponse::AudioProcessed { midi_out });
+                    // The server echoes the id it was sent. If it ever failed to
+                    // (a peer that predates the echo would send 0), the waiting
+                    // audio thread times out into silence rather than reading a
+                    // slab region nobody wrote — that is the whole point of the
+                    // echo, so pass it through verbatim without repairing it.
+                    channels.push_audio_response(AudioResponse::AudioProcessed {
+                        buffer_id,
+                        midi_out,
+                    });
                 }
                 BridgeMessage::Error { .. } => {
-                    channels.push_audio_response(AudioResponse::Error);
+                    // Attributable to this request: the server answered it.
+                    channels.push_audio_response(AudioResponse::Error {
+                        buffer_id: Some(sent_id),
+                    });
                 }
                 _ => {}
             }

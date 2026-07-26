@@ -30,7 +30,13 @@ pub mod native_window;
 pub mod scan;
 
 #[cfg(target_os = "macos")]
-mod live_resize;
+pub mod live_resize;
+
+/// macOS: the `NonSend` home for AppKit live-resize observers, plus its
+/// reaper system. Public because the editor systems name it in their
+/// signatures — the observers must never live in a `Send + Sync` component.
+#[cfg(target_os = "macos")]
+pub use live_resize::{reap_orphaned_live_resize_observers, LiveResizeRegistry};
 
 pub use crash::plugin_crash_detect_system;
 pub use editor::{
@@ -99,7 +105,26 @@ impl Plugin for TuttiHostingPlugin {
 
         app.add_observer(close_editor_observer);
 
+        // `Plugin::build` runs on the thread that builds the `App`, which for
+        // a windowed Bevy app is the main/UI thread — the same thread every
+        // `NonSend` editor system below is pinned to. Marking it here is what
+        // arms the `assert_main_thread()` guards throughout the VST3/CLAP/AU/
+        // VST2 hosts: those are `debug_assert!`s that *also* no-op while the
+        // main thread is unrecorded, so with no caller anywhere in the engine
+        // every main-thread guard in the plugin layer was decorative in every
+        // configuration.
+        //
+        // Idempotent (`OnceLock::set`): a host that already marked its own
+        // main thread wins and this call is a no-op.
+        tutti_plugin::mark_main_thread();
+
         app.insert_non_send(PluginEditorMainThread);
+
+        // macOS AppKit live-resize observers. `NonSend` so Bevy pins every
+        // access — and therefore every `removeObserver` drop — to the main
+        // thread, replacing the old `unsafe impl Send + Sync` on the handle.
+        #[cfg(target_os = "macos")]
+        app.insert_non_send(live_resize::LiveResizeRegistry::default());
 
         // Default plugin catalog: empty in-memory, no scan dirs. Apps
         // that want a real disk-backed catalog should overwrite this
@@ -135,6 +160,15 @@ impl Plugin for TuttiHostingPlugin {
                 trigger_plugin_scan,
                 poll_plugin_scan.after(trigger_plugin_scan),
             ),
+        );
+
+        // Reaps AppKit observers for editors that lost `PluginEditorOpen`
+        // without going through `close_editor_observer` — chiefly
+        // `plugin_crash_detect_system`, which is not main-thread pinned.
+        #[cfg(target_os = "macos")]
+        app.add_systems(
+            Update,
+            live_resize::reap_orphaned_live_resize_observers.after(plugin_crash_detect_system),
         );
         // The PluginParam reconcile + epoch bump moved to
         // dawai_model::engine_bind::plugin_host (with the PluginParam component).

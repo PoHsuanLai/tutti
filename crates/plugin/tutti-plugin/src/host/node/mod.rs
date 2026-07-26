@@ -22,6 +22,8 @@ mod process;
 mod transport_source;
 
 #[cfg(test)]
+mod process_sync_tests;
+#[cfg(test)]
 mod tests;
 
 // The shared node primitives (MIDI inbox, change sinks, routing helper) live
@@ -245,8 +247,12 @@ impl PluginClient {
         let outputs: usize = server.loaded.total_outputs();
         let output_base = server.audio_buffer.layout_ref().output_base();
 
-        let (bridge, bridge_thread) =
-            PluginBridge::new(config.socket_path.clone(), server.audio_buffer, plugin_path)?;
+        let (bridge, bridge_thread) = PluginBridge::new(
+            config.socket_path.clone(),
+            server.audio_buffer,
+            plugin_path,
+            sample_rate,
+        )?;
 
         let latency = Arc::new(AtomicUsize::new(server.loaded.latency_samples));
         let max_buffer_size = config.max_buffer_size;

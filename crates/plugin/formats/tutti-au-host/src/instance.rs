@@ -368,16 +368,41 @@ impl AuInstance {
 
     /// Change the sample rate. If the AU was initialized, it is uninitialized
     /// for reconfiguration and then re-initialized to preserve the state.
+    ///
+    /// AU-H2: this returns `Ok` only when the AU is *verified* to be running at
+    /// `rate`. `StreamConfig::apply` reads the accepted `mSampleRate` back and
+    /// errors on a mismatch; on that error the previous rate is restored into
+    /// the config, so [`sample_rate`](Self::sample_rate) and
+    /// [`get_latency`](Self::get_latency) never report a rate the AU is not
+    /// actually at. (Previously the set was best-effort and unverified, yet this
+    /// returned `Ok(())` and recorded the *requested* rate — a phantom that both
+    /// of those accessors then trusted.)
     pub fn set_sample_rate(&mut self, rate: f64) -> Result<()> {
         let was_ready = self.is_initialized();
         if was_ready {
             self.uninitialize()?;
         }
         if let State::Loaded(l) = &mut self.state {
+            let previous = l.config.sample_rate;
             l.config.sample_rate = rate;
             // Re-apply and capture the effective layout the AU accepts at the
             // new rate, so the rebuilt scratch is sized correctly (FIX 3).
-            l.config.channels = l.config.apply(&l.handle)?;
+            match l.config.apply(&l.handle) {
+                Ok(channels) => l.config.channels = channels,
+                Err(e) => {
+                    // Roll the config back to the rate the AU is still on, so a
+                    // caller that ignores this error doesn't inherit a lie.
+                    l.config.sample_rate = previous;
+                    // Best-effort restore of the AU's own format too; if this
+                    // also fails there is nothing further to do but surface the
+                    // original rejection.
+                    let _ = l.config.apply(&l.handle);
+                    if was_ready {
+                        self.initialize()?;
+                    }
+                    return Err(e);
+                }
+            }
         }
         if was_ready {
             self.initialize()?;
@@ -603,6 +628,11 @@ impl Drop for AuReady {
     }
 }
 
+/// The AU calls this on its render thread to pull input. It is `extern "C"`, so
+/// a panic must never escape it (AU-H3): unwinding across the FFI boundary into
+/// AudioToolbox is undefined behaviour. The whole body runs inside
+/// [`catch_unwind`](std::panic::catch_unwind) and a caught panic is reported as
+/// an error status, not swallowed.
 unsafe extern "C" fn au_input_render_callback(
     in_ref_con: *mut c_void,
     _io_action_flags: *mut AudioUnitRenderActionFlags,
@@ -611,14 +641,71 @@ unsafe extern "C" fn au_input_render_callback(
     in_number_frames: u32,
     io_data: *mut AudioBufferList,
 ) -> OSStatus {
+    // `AssertUnwindSafe`: the only state reachable here is `&RenderScratch`
+    // (shared, read-only) and the AU's own buffers. A panic mid-copy can leave
+    // a partially-written output buffer, which is a glitched block — not a
+    // broken invariant — so there is nothing for unwind safety to protect.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        render_input(in_ref_con, in_number_frames, io_data)
+    }));
+    match result {
+        Ok(status) => status,
+        Err(_) => {
+            // Do NOT swallow this. `eprintln!` rather than a logging facade
+            // because this crate has no logger dependency, and a write to
+            // stderr is the one diagnostic guaranteed to survive a process
+            // whose audio thread just panicked.
+            eprintln!(
+                "tutti-au-host: PANIC in au_input_render_callback, \
+                 contained to avoid unwinding into AudioToolbox"
+            );
+            K_AUDIO_UNIT_ERR_CANNOT_DO_IN_CURRENT_CONTEXT
+        }
+    }
+}
+
+/// The actual input-pull body. Split out so [`au_input_render_callback`] is
+/// nothing but the `catch_unwind` guard around it.
+///
+/// # Safety
+/// `in_ref_con` must be null or point at a live `RenderScratch`; `io_data` must
+/// be null or a well-formed `AudioBufferList`.
+unsafe fn render_input(
+    in_ref_con: *mut c_void,
+    in_number_frames: u32,
+    io_data: *mut AudioBufferList,
+) -> OSStatus {
     if in_ref_con.is_null() || io_data.is_null() {
         return -1;
     }
 
     let scratch = &*(in_ref_con as *const RenderScratch);
-    let frames = in_number_frames as usize;
+    let requested = in_number_frames as usize;
 
     for (ch, buf) in iter_buffers_mut(io_data).enumerate() {
+        // AU-H3: never trust the buffer the AU handed us. `mData` may be null
+        // (the AU asking us to supply our own pointer) and `mDataByteSize` may
+        // describe FEWER frames than `in_number_frames`. Writing
+        // `in_number_frames` blind is a null deref in the first case and an
+        // out-of-bounds store in the second.
+        if buf.mData.is_null() {
+            // Nothing to write into; report the size honestly as zero rather
+            // than claiming we filled a buffer that does not exist.
+            buf.mDataByteSize = 0;
+            continue;
+        }
+        // The buffer's own declared capacity, in f32 frames. This channel is
+        // non-interleaved (mNumberChannels == 1 in our ASBD), but honour a
+        // wider mNumberChannels defensively by dividing it out.
+        let per_channel = (buf.mNumberChannels as usize).max(1);
+        let capacity_frames =
+            buf.mDataByteSize as usize / (std::mem::size_of::<f32>() * per_channel);
+        let frames = requested.min(capacity_frames);
+        if frames == 0 {
+            buf.mDataByteSize = 0;
+            continue;
+        }
+
         let dst = std::slice::from_raw_parts_mut(buf.mData as *mut f32, frames);
         match scratch.inputs.get(ch) {
             Some(src) => {
@@ -630,7 +717,9 @@ unsafe extern "C" fn au_input_render_callback(
             }
             None => dst.fill(0.0),
         }
-        buf.mDataByteSize = (frames * std::mem::size_of::<f32>()) as u32;
+        // Report what was actually written, which is bounded by the buffer's
+        // own capacity — not the host's requested frame count.
+        buf.mDataByteSize = (frames * std::mem::size_of::<f32>() * per_channel) as u32;
     }
 
     NO_ERR
@@ -801,5 +890,301 @@ mod tests {
         inst.set_sample_rate(48000.0).unwrap();
         assert_eq!(inst.sample_rate(), 48000.0);
         assert!(inst.is_initialized());
+    }
+
+    /// AU-H2. `sample_rate()` used to report the *requested* rate whether or
+    /// not the AU took it, because the stream-format set was `let _`'d and only
+    /// `mChannelsPerFrame` was read back. Now an `Ok` from `set_sample_rate`
+    /// means the AU's own ASBD agrees — so assert against the AU, not against
+    /// the number we just stored.
+    #[test]
+    fn set_sample_rate_ok_means_the_au_really_moved() {
+        let comp = find_apple_delay().unwrap();
+        let mut inst = unsafe { AuInstance::new(comp, 44100.0, 512) }.unwrap();
+        inst.initialize().unwrap();
+
+        for rate in [48000.0f64, 96000.0, 44100.0] {
+            if inst.set_sample_rate(rate).is_err() {
+                // A refusal is a legitimate outcome; what must never happen is
+                // a refusal reported as success. Check the config was rolled
+                // back rather than left holding the rejected rate.
+                assert_ne!(
+                    inst.sample_rate(),
+                    rate,
+                    "a rejected rate must not be left in the config"
+                );
+                continue;
+            }
+            assert_eq!(inst.sample_rate(), rate);
+            // The independent check: ask the AU itself.
+            let asbd = unsafe {
+                get_property::<AudioStreamBasicDescription>(
+                    inst.raw_unit(),
+                    K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
+                    K_AUDIO_UNIT_SCOPE_OUTPUT,
+                    0,
+                )
+            }
+            .expect("AUDelay reports its output stream format");
+            assert!(
+                (asbd.mSampleRate - rate).abs() < 1e-6,
+                "set_sample_rate({rate}) returned Ok but the AU is at {}",
+                asbd.mSampleRate
+            );
+        }
+    }
+
+    /// AU-H2, the end-to-end invariant: `set_sample_rate` returning `Ok` must
+    /// imply the AU's own ASBD agrees.
+    ///
+    /// CAVEAT on what this can prove locally: Apple's AUDelay accepts *every*
+    /// rate offered to it — probed here at 0.5 Hz, 1 Hz, 8 kHz, 48 kHz, 192 kHz
+    /// and 1 MHz, all reported back verbatim. So no installed AU on this machine
+    /// drives the *rejection* branch, and this test cannot fail by deleting the
+    /// `check_sample_rate` call site. The rejection logic itself is pinned by
+    /// `stream::tests::a_rate_the_au_did_not_accept_is_an_error`; what this adds
+    /// is the standing guarantee that the two agree for whatever the AU does —
+    /// including on a machine with a pickier AU installed.
+    #[test]
+    fn an_unusual_rate_cannot_be_reported_as_accepted_unless_it_was() {
+        let comp = find_apple_delay().unwrap();
+        let mut inst = unsafe { AuInstance::new(comp, 44100.0, 512) }.unwrap();
+        inst.initialize().unwrap();
+
+        // A rate a stricter AU would refuse.
+        let absurd = 1.0f64;
+        match inst.set_sample_rate(absurd) {
+            Err(_) => {
+                // Rejected, as expected. The config must have been rolled back
+                // rather than left holding the rate the AU refused.
+                assert_ne!(inst.sample_rate(), absurd);
+            }
+            Ok(()) => {
+                // Astonishing, but then the AU must really be at 1 Hz.
+                let asbd = unsafe {
+                    get_property::<AudioStreamBasicDescription>(
+                        inst.raw_unit(),
+                        K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
+                        K_AUDIO_UNIT_SCOPE_OUTPUT,
+                        0,
+                    )
+                }
+                .expect("AUDelay reports its output stream format");
+                assert!(
+                    (asbd.mSampleRate - absurd).abs() < 1e-6,
+                    "set_sample_rate({absurd}) returned Ok while the AU is at {} — \
+                     this is exactly AU-H2",
+                    asbd.mSampleRate
+                );
+            }
+        }
+    }
+
+    /// Build a standalone `AudioBufferList` for the render-callback tests.
+    /// Mirrors what AudioToolbox hands the callback.
+    fn make_abl(buffers: &mut [(*mut f32, u32)]) -> (Vec<u8>, *mut AudioBufferList) {
+        let n = buffers.len();
+        let bytes = std::mem::offset_of!(AudioBufferList, mBuffers)
+            + n.max(1) * std::mem::size_of::<AudioBuffer>();
+        // Over-allocate and align by hand; this is test scaffolding standing in
+        // for AudioToolbox's own allocation.
+        let mut storage = vec![0u8; bytes + 16];
+        let base = storage.as_mut_ptr();
+        let offset = base.align_offset(std::mem::align_of::<AudioBufferList>());
+        let abl = unsafe { base.add(offset) } as *mut AudioBufferList;
+        unsafe {
+            (*abl).mNumberBuffers = n as u32;
+            let first = &raw mut (*abl).mBuffers[0];
+            for (i, &mut (data, byte_size)) in buffers.iter_mut().enumerate() {
+                let b = first.add(i);
+                (*b).mNumberChannels = 1;
+                (*b).mDataByteSize = byte_size;
+                (*b).mData = data as *mut c_void;
+            }
+        }
+        (storage, abl)
+    }
+
+    /// AU-H3. The callback used to build its destination slice straight from
+    /// `mData` for the full `in_number_frames` extent, never reading
+    /// `mDataByteSize` and never null-checking `mData`. A short buffer was an
+    /// out-of-bounds write; a null one was a null deref.
+    #[test]
+    fn render_callback_respects_a_short_buffer() {
+        let scratch = RenderScratch::new(
+            AuBusLayout {
+                inputs: ChannelLayout::Stereo,
+                outputs: ChannelLayout::Stereo,
+                has_input: true,
+            },
+            512,
+        );
+
+        // The AU offers room for 8 frames but asks for 64. Sentinels past the
+        // 8th slot must survive.
+        const CAPACITY: usize = 8;
+        const REQUESTED: u32 = 64;
+        let mut chan = vec![f32::from_bits(0xDEAD_BEEF); 32];
+        let data = chan.as_mut_ptr();
+        let mut descs = [(data, (CAPACITY * 4) as u32)];
+        let (_storage, abl) = make_abl(&mut descs);
+
+        let status = unsafe {
+            render_input(
+                &scratch as *const RenderScratch as *mut c_void,
+                REQUESTED,
+                abl,
+            )
+        };
+        assert_eq!(status, NO_ERR);
+
+        // Everything past the declared capacity is untouched — that is the OOB
+        // write not happening.
+        for (i, s) in chan.iter().enumerate().skip(CAPACITY) {
+            assert_eq!(
+                s.to_bits(),
+                0xDEAD_BEEF,
+                "frame {i} past the declared {CAPACITY}-frame capacity was overwritten"
+            );
+        }
+        // And the reported size is the capacity actually written, not the
+        // host's requested figure (which the old code wrote back blindly).
+        unsafe {
+            let b = &raw const (*abl).mBuffers[0];
+            assert_eq!((*b).mDataByteSize as usize, CAPACITY * 4);
+        }
+    }
+
+    /// A null `mData` must be skipped, not dereferenced.
+    #[test]
+    fn render_callback_survives_a_null_buffer() {
+        let scratch = RenderScratch::new(
+            AuBusLayout {
+                inputs: ChannelLayout::Stereo,
+                outputs: ChannelLayout::Stereo,
+                has_input: true,
+            },
+            512,
+        );
+        let mut descs = [(std::ptr::null_mut::<f32>(), 256u32)];
+        let (_storage, abl) = make_abl(&mut descs);
+
+        let status =
+            unsafe { render_input(&scratch as *const RenderScratch as *mut c_void, 64, abl) };
+        assert_eq!(status, NO_ERR);
+        unsafe {
+            let b = &raw const (*abl).mBuffers[0];
+            assert_eq!(
+                (*b).mDataByteSize,
+                0,
+                "a null buffer must report zero bytes written, not the requested size"
+            );
+        }
+    }
+
+    /// A zero-capacity buffer is the degenerate short case; it must write
+    /// nothing rather than forming a slice over a zero-length allocation.
+    #[test]
+    fn render_callback_handles_zero_capacity() {
+        let scratch = RenderScratch::new(
+            AuBusLayout {
+                inputs: ChannelLayout::Stereo,
+                outputs: ChannelLayout::Stereo,
+                has_input: true,
+            },
+            512,
+        );
+        let mut chan = vec![f32::from_bits(0xDEAD_BEEF); 8];
+        let mut descs = [(chan.as_mut_ptr(), 0u32)];
+        let (_storage, abl) = make_abl(&mut descs);
+
+        let status =
+            unsafe { render_input(&scratch as *const RenderScratch as *mut c_void, 64, abl) };
+        assert_eq!(status, NO_ERR);
+        assert!(chan.iter().all(|s| s.to_bits() == 0xDEAD_BEEF));
+    }
+
+    /// Null `ref_con` / `io_data` are rejected before any deref.
+    #[test]
+    fn render_callback_rejects_null_arguments() {
+        let scratch = RenderScratch::new(
+            AuBusLayout {
+                inputs: ChannelLayout::Stereo,
+                outputs: ChannelLayout::Stereo,
+                has_input: true,
+            },
+            512,
+        );
+        let mut descs = [(std::ptr::null_mut::<f32>(), 0u32)];
+        let (_storage, abl) = make_abl(&mut descs);
+
+        assert_eq!(unsafe { render_input(std::ptr::null_mut(), 64, abl) }, -1);
+        assert_eq!(
+            unsafe {
+                render_input(
+                    &scratch as *const RenderScratch as *mut c_void,
+                    64,
+                    std::ptr::null_mut(),
+                )
+            },
+            -1
+        );
+    }
+
+    /// AU-H3, the unwind half, driven through the real `extern "C"` entry
+    /// point rather than through `render_input`.
+    ///
+    /// The guard is what stands between a panicking render body and undefined
+    /// behaviour in AudioToolbox, so exercise the guarded symbol itself across
+    /// the same malformed inputs. Every one of these must return a status —
+    /// reaching this assert at all proves nothing unwound out of the
+    /// `extern "C"` frame.
+    #[test]
+    fn the_guarded_callback_returns_a_status_for_every_malformed_input() {
+        let scratch = RenderScratch::new(
+            AuBusLayout {
+                inputs: ChannelLayout::Stereo,
+                outputs: ChannelLayout::Stereo,
+                has_input: true,
+            },
+            512,
+        );
+        let ref_con = &scratch as *const RenderScratch as *mut c_void;
+        let mut flags: AudioUnitRenderActionFlags = 0;
+        let ts = AudioTimeStamp::with_sample_time(0.0);
+
+        let mut short_chan = vec![0.0f32; 32];
+        let mut zero_chan = vec![0.0f32; 8];
+        // (buffer descriptors, requested frames): short, null, zero-capacity,
+        // and a frame count far past anything the scratch holds.
+        let mut cases: Vec<(Vec<(*mut f32, u32)>, u32)> = vec![
+            (vec![(short_chan.as_mut_ptr(), 8 * 4)], 64),
+            (vec![(std::ptr::null_mut::<f32>(), 256)], 64),
+            (vec![(zero_chan.as_mut_ptr(), 0)], 64),
+            (vec![(short_chan.as_mut_ptr(), 32 * 4)], u32::MAX),
+        ];
+
+        for (descs, frames) in cases.iter_mut() {
+            let (_storage, abl) = make_abl(descs);
+            let status =
+                unsafe { au_input_render_callback(ref_con, &mut flags, &ts, 0, *frames, abl) };
+            assert_eq!(
+                status, NO_ERR,
+                "a malformed-but-handleable buffer list should render silence, not fail"
+            );
+        }
+
+        // Null arguments still short-circuit through the guard.
+        let (_storage, abl) = make_abl(&mut [(std::ptr::null_mut::<f32>(), 0u32)]);
+        assert_eq!(
+            unsafe { au_input_render_callback(std::ptr::null_mut(), &mut flags, &ts, 0, 64, abl) },
+            -1
+        );
+        assert_eq!(
+            unsafe {
+                au_input_render_callback(ref_con, &mut flags, &ts, 0, 64, std::ptr::null_mut())
+            },
+            -1
+        );
     }
 }

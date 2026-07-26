@@ -90,8 +90,13 @@ fn handle_with_mock_server(
         )
         .unwrap(),
     );
-    let (bridge, bridge_thread) =
-        PluginBridge::new(path.clone(), buffer, std::path::PathBuf::from("test.vst3")).unwrap();
+    let (bridge, bridge_thread) = PluginBridge::new(
+        path.clone(),
+        buffer,
+        std::path::PathBuf::from("test.vst3"),
+        48_000.0,
+    )
+    .unwrap();
 
     let server_stream = listener.accept().unwrap();
     send_bridge_msg(
@@ -188,8 +193,13 @@ fn handle_with_multi_reply_server(
         )
         .unwrap(),
     );
-    let (bridge, bridge_thread) =
-        PluginBridge::new(path.clone(), buffer, std::path::PathBuf::from("test.vst3")).unwrap();
+    let (bridge, bridge_thread) = PluginBridge::new(
+        path.clone(),
+        buffer,
+        std::path::PathBuf::from("test.vst3"),
+        48_000.0,
+    )
+    .unwrap();
 
     let server_stream = listener.accept().unwrap();
     send_bridge_msg(

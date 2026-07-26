@@ -100,8 +100,21 @@ pub enum BridgeMessage {
     /// emitted this block travel here. (Parameter / note-expression output is
     /// still not routed back.) `midi_out` is capped at `MIDI_STACK_CAPACITY`
     /// server-side so it stays inline (no heap on the RT-adjacent path).
+    ///
+    /// `buffer_id` echoes [`ProcessAudioData::buffer_id`] from the request that
+    /// produced this reply. It is the only thing that makes a stale or missing
+    /// reply detectable: the slab carries no generation counter, and
+    /// `AudioSlab::read_channel_into` reports a full-length success whether or
+    /// not the server ever wrote the region. The host's audio thread matches on
+    /// it and emits silence rather than reading back whatever the slab happens
+    /// to hold (see `AudioBridge::process`).
     AudioProcessed {
         latency_us: u64,
+        /// Echo of the request's `buffer_id`. `#[serde(default)]` = 0 only for a
+        /// peer predating the echo; `PROTOCOL_VERSION` rejects those at the
+        /// handshake, so at runtime this is always the real id.
+        #[serde(default)]
+        buffer_id: u32,
         #[serde(default)]
         midi_out: IpcMidiEventVec,
     },

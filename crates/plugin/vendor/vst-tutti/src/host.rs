@@ -8,10 +8,11 @@ use std::cell::UnsafeCell;
 use std::convert::TryFrom;
 use std::error::Error;
 use std::ffi::CString;
-use std::mem::MaybeUninit;
+use std::mem::{ManuallyDrop, MaybeUninit};
 use std::os::raw::c_void;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::Arc;
 use std::{fmt, ptr, slice};
 
 use crate::{
@@ -323,16 +324,36 @@ impl Error for PluginLoadError {}
 pub struct PluginLoader<T: Host> {
     main: PluginMain,
     lib: Arc<Library>,
-    host: Arc<Mutex<T>>,
+    host: Arc<T>,
 }
 
 /// An instance of an externally loaded VST plugin.
 #[allow(dead_code)] // To keep `lib` around.
 pub struct PluginInstance {
     params: Arc<PluginParametersInstance>,
-    lib: Arc<Library>,
+    /// The `dlopen` handle, deliberately leaked on drop.
+    ///
+    /// JUCE-based plugins (and several others) crash inside their static
+    /// destructor sequence when the module is unloaded, so hosts do not
+    /// `dlclose` them. `ManuallyDrop` is how that is expressed here — note it
+    /// covers *only* the unload. `effClose` still runs (see [`Drop`]); the two
+    /// are separate events and conflating them is what leaked live plugin
+    /// instances and licence seats.
+    lib: ManuallyDrop<Arc<Library>>,
     info: Info,
     is_editor_active: bool,
+    /// `effFlagsCanReplacing` as reported in `AEffect::flags`.
+    ///
+    /// Mandatory in VST2.4 and set by essentially every plugin, but a plugin
+    /// that clears it is telling the host that `processReplacing` is not
+    /// installed. Captured here rather than added to [`Info`] because `Info` is
+    /// the *plugin-authoring* struct: it is what a plugin returns from
+    /// `get_info()` to have the flags built for it, so a `can_replacing` field
+    /// there would be a host-only concern in a plugin-side type.
+    can_replacing: bool,
+    /// `effFlagsCanDoubleReplacing`, mirroring [`Self::can_replacing`] for the
+    /// `f64` path. (Also surfaced to plugin authors as `Info::f64_precision`.)
+    can_double_replacing: bool,
 }
 
 struct PluginParametersInstance {
@@ -344,7 +365,14 @@ unsafe impl Sync for PluginParametersInstance {}
 
 impl Drop for PluginInstance {
     fn drop(&mut self) {
+        // `effClose`. The plugin frees its own `AEffect` in response, so this
+        // must happen exactly once — and it *must* happen: a licensed plugin
+        // releases its session seat here, and skipping it leaks one live
+        // instance (and one licence) per A/B of a slot.
         self.dispatch(plugin::OpCode::Shutdown, 0, 0, ptr::null_mut(), 0.0);
+
+        // `self.lib` is `ManuallyDrop`, so the `Arc<Library>` is never released
+        // and the loader never `dlclose`s the module. See the field's docs.
     }
 }
 
@@ -421,9 +449,18 @@ impl Editor for EditorInstance {
 impl<T: Host> PluginLoader<T> {
     /// Load a plugin at the given path with the given host.
     ///
-    /// Because of the possibility of multi-threading problems that can occur when using plugins,
-    /// the host must be passed in via an `Arc<Mutex<T>>` object. This makes sure that even if the
-    /// plugins are multi-threaded no data race issues can occur.
+    /// The host is passed as a plain `Arc<T>`, **not** `Arc<Mutex<T>>`.
+    /// `callback_wrapper` — the C function pointer the plugin calls — is
+    /// invoked from the plugin's *audio* thread for `audioMasterGetTime`
+    /// (from inside `processReplacing` in nearly every synth),
+    /// `audioMasterAutomate` and `audioMasterProcessEvents`, and from the
+    /// *UI* thread for `audioMasterSizeWindow` / `audioMasterUpdateDisplay`.
+    /// A `std::sync::Mutex` shared by both is a priority inversion: the audio
+    /// thread blocks on the GUI thread and the stream drops out. `Host` takes
+    /// `&self` throughout, so the lock bought nothing but the inversion (and a
+    /// `PoisonError` unwind across the FFI boundary). Implementors are
+    /// responsible for their own interior mutability, which is what a real-time
+    /// host wants anyway: `ArcSwap` / atomics / lock-free channels.
     ///
     /// Upon success, this method returns a [`PluginLoader`](.) object which you can use to call
     /// [`instance`](#method.instance) to create a new instance of the plugin.
@@ -432,8 +469,8 @@ impl<T: Host> PluginLoader<T> {
     ///
     /// ```no_run
     /// # use std::path::Path;
-    /// # use std::sync::{Arc, Mutex};
-    /// # use vst::host::{Host, PluginLoader};
+    /// # use std::sync::Arc;
+    /// # use vst_tutti::host::{Host, PluginLoader};
     /// # let path = Path::new(".");
     /// # struct MyHost;
     /// # impl MyHost { fn new() -> MyHost { MyHost } }
@@ -442,7 +479,7 @@ impl<T: Host> PluginLoader<T> {
     /// #     fn get_plugin_id(&self) -> i32 { 0 }
     /// # }
     /// // ...
-    /// let host = Arc::new(Mutex::new(MyHost::new()));
+    /// let host = Arc::new(MyHost::new());
     ///
     /// let mut plugin = PluginLoader::load(path, host.clone()).unwrap();
     ///
@@ -460,7 +497,7 @@ impl<T: Host> PluginLoader<T> {
     ///   * Plugin: `/Library/Audio/Plug-Ins/VST/iZotope Ozone 5.vst`
     ///   * Possible full path:
     ///     `/Library/Audio/Plug-Ins/VST/iZotope Ozone 5.vst/Contents/MacOS/PluginHooksVST`
-    pub fn load(path: &Path, host: Arc<Mutex<T>>) -> Result<PluginLoader<T>, PluginLoadError> {
+    pub fn load(path: &Path, host: Arc<T>) -> Result<PluginLoader<T>, PluginLoadError> {
         // Try loading the library at the given path
         unsafe {
             let lib = match Library::new(path) {
@@ -527,14 +564,19 @@ impl PluginInstance {
         });
         let mut plug = PluginInstance {
             params,
-            lib,
+            lib: ManuallyDrop::new(lib),
             info: Default::default(),
             is_editor_active: false,
+            can_replacing: false,
+            can_double_replacing: false,
         };
 
         unsafe {
             let effect: &AEffect = &*effect;
             let flags = PluginFlags::from_bits_truncate(effect.flags);
+
+            plug.can_replacing = flags.intersects(PluginFlags::CAN_REPLACING);
+            plug.can_double_replacing = flags.intersects(PluginFlags::CAN_DOUBLE_REPLACING);
 
             plug.info = Info {
                 name: plug.read_string(op::GetProductName, MAX_PRODUCT_STR_LEN),
@@ -563,6 +605,66 @@ impl PluginInstance {
         }
 
         plug
+    }
+
+    /// Ask the plugin to fill an `api::ChannelProperties` and return what it
+    /// wrote, or an all-zero struct if it wrote nothing.
+    ///
+    /// `effGetInputProperties` / `effGetOutputProperties` are *optional*
+    /// opcodes: an unimplemented one falls through the plugin's dispatcher and
+    /// returns 0 without touching the buffer. Handing the plugin a
+    /// `MaybeUninit` and then calling `assume_init()` unconditionally therefore
+    /// read uninitialised memory — UB in its own right, before any garbage
+    /// `flags` value ever reached [`ChannelInfo`]. We hand over a zeroed struct
+    /// instead (all-zero is a valid `ChannelProperties`: no flags,
+    /// `arrangement_type = 0` = `Mono`, empty labels), then sanitise the one
+    /// field whose type constrains its bit pattern.
+    fn channel_properties(&self, opcode: plugin::OpCode, index: i32) -> api::ChannelProperties {
+        // SAFETY: `ChannelProperties` is a `#[repr(C)]` POD of byte arrays, an
+        // `i32` and a `#[repr(i32)]` enum whose `0` discriminant is `Mono`, so
+        // the all-zero bit pattern is a valid, in-range value for every field.
+        let mut props: MaybeUninit<api::ChannelProperties> = MaybeUninit::zeroed();
+        let ptr = props.as_mut_ptr() as *mut c_void;
+
+        self.dispatch(opcode, index, 0, ptr, 0.0);
+
+        // `arrangement_type` is a `#[repr(i32)]` enum the *plugin* wrote. Its
+        // valid discriminants are -2..=27; anything else is not a value of the
+        // type, and simply `match`ing on it (which `ChannelInfo::from` does)
+        // would be UB. Read the raw i32 out of the still-`MaybeUninit` struct
+        // and overwrite an out-of-range one with `Custom` before the value is
+        // ever materialised as the enum.
+        //
+        // SAFETY: `props` was zeroed above, so every byte is initialised; the
+        // field offset comes from `addr_of_mut!` on the same allocation.
+        unsafe {
+            let ty = std::ptr::addr_of_mut!((*props.as_mut_ptr()).arrangement_type);
+            let raw = ty.cast::<i32>().read();
+            const MIN: i32 = api::SpeakerArrangementType::Custom as i32; // -2
+            const MAX: i32 = api::SpeakerArrangementType::Surround102 as i32;
+            if !(MIN..=MAX).contains(&raw) {
+                warn!("plugin reported out-of-range speaker arrangement {raw}; treating as Custom");
+                ty.cast::<i32>().write(MIN);
+            }
+        }
+
+        // Initialised either way: we zeroed it, and the plugin may have
+        // overwritten it in place.
+        unsafe { props.assume_init() }
+    }
+}
+
+/// Silence every output channel of `buffer`.
+///
+/// Used both as the "there is nothing safe to call" result and as the required
+/// pre-clear for the deprecated accumulating `process` entry point, which adds
+/// into the outputs rather than overwriting them.
+fn zero_outputs<T: Float>(buffer: &mut AudioBuffer<'_, T>) {
+    let (_, mut outputs) = buffer.split();
+    for i in 0..outputs.len() {
+        for sample in outputs.get_mut(i).iter_mut() {
+            *sample = T::zero();
+        }
     }
 }
 
@@ -642,6 +744,63 @@ impl Dispatch for PluginParametersInstance {
     }
 }
 
+impl PluginParametersInstance {
+    /// Read an `effGetChunk` blob (`index == 1` for the current preset,
+    /// `index == 0` for the whole bank), returning empty on any answer the
+    /// plugin is allowed to give but that is not a readable buffer.
+    ///
+    /// Three plugin behaviours must not become UB on the project-save path:
+    ///
+    /// * `effFlagsProgramChunks` set but no preset loaded yet — the plugin
+    ///   returns `0` and never writes the out-pointer, leaving it null.
+    ///   `slice::from_raw_parts(null, 0)` is UB even at length zero, because
+    ///   the pointer must always be non-null and aligned.
+    /// * an error return of `-1`, which `as usize` turned into `usize::MAX`
+    ///   and then a `Vec` allocation of 16 exbibytes (or a wild read).
+    /// * a positive length with a null pointer, from a plugin that computed a
+    ///   size but failed to hand back the buffer.
+    fn get_chunk(&self, index: i32) -> Vec<u8> {
+        // Create a pointer that can be updated from the plugin.
+        let mut ptr: *mut u8 = ptr::null_mut();
+        let len = self.dispatch(
+            plugin::OpCode::GetData,
+            index,
+            0,
+            &mut ptr as *mut *mut u8 as *mut c_void,
+            0.0,
+        );
+
+        // SAFETY: `copy_chunk` rejects every pointer/length pair that is not a
+        // readable buffer before dereferencing. Where it does read, the plugin
+        // owns the buffer and the VST2.4 contract keeps it valid until the next
+        // dispatch — longer than this copy.
+        unsafe { copy_chunk(ptr, len) }
+    }
+}
+
+/// Copy an `effGetChunk` result, rejecting the pointer/length pairs a plugin is
+/// allowed to produce but that are not a readable buffer.
+///
+/// Split out from [`PluginParametersInstance::get_chunk`] so the validation is
+/// testable without a loaded plugin.
+///
+/// # Safety
+/// If `len > 0` and `ptr` is non-null, `ptr` must be valid for reads of `len`
+/// bytes.
+unsafe fn copy_chunk(ptr: *mut u8, len: isize) -> Vec<u8> {
+    if len <= 0 {
+        if len < 0 {
+            warn!("plugin returned a negative effGetChunk length ({len}); treating as empty");
+        }
+        return Vec::new();
+    }
+    if ptr.is_null() {
+        warn!("plugin reported {len} bytes of chunk data but left the pointer null");
+        return Vec::new();
+    }
+    unsafe { slice::from_raw_parts(ptr, len as usize) }.to_vec()
+}
+
 impl Plugin for PluginInstance {
     fn get_info(&self) -> plugin::Info {
         self.info.clone()
@@ -684,14 +843,30 @@ impl Plugin for PluginInstance {
 
     fn can_do(&self, can_do: plugin::CanDo) -> Supported {
         let s: String = can_do.into();
+        // `Supported::from` is total: undocumented `effCanDo` returns (a string
+        // length, an uninitialised stack slot) become `Supported::Custom`.
+        // Panicking here would abort during *load*, since the host queries
+        // canDo while probing every plugin.
         Supported::from(self.write_string(plugin::OpCode::CanDo, 0, 0, &s, 0.0))
-            .expect("Invalid response received when querying plugin CanDo")
     }
 
     fn get_tail_size(&self) -> isize {
         self.opcode(plugin::OpCode::GetTailSize)
     }
 
+    /// Render one block.
+    ///
+    /// Prefers `processReplacing`, but only when the plugin both advertises
+    /// `effFlagsCanReplacing` *and* actually installed the pointer. VST2.4
+    /// makes the replacing path mandatory, so the check looks redundant — it is
+    /// not: an unguarded call to a null `processReplacing` is a jump to address
+    /// 0 in-process, which takes the whole DAW down, and a plugin can report
+    /// api version >= 2400 while leaving the slot null. When replacing is
+    /// unavailable we fall back to the deprecated *accumulating* `process` the
+    /// same way JUCE does — that entry point adds into the output buffers, so
+    /// they must be zeroed first. If neither pointer exists there is nothing to
+    /// call; the outputs are left silent rather than filled with whatever the
+    /// caller's scratch held.
     fn process(&mut self, buffer: &mut AudioBuffer<f32>) {
         if buffer.input_count() < self.info.inputs as usize {
             panic!("Too few inputs in AudioBuffer");
@@ -699,16 +874,55 @@ impl Plugin for PluginInstance {
         if buffer.output_count() < self.info.outputs as usize {
             panic!("Too few outputs in AudioBuffer");
         }
+        let effect = self.get_effect();
+        let samples = buffer.samples() as i32;
         unsafe {
-            ((*self.get_effect()).processReplacing)(
-                self.get_effect(),
+            let replacing = (*effect).processReplacing;
+            if self.can_replacing && !(replacing as *const u8).is_null() {
+                replacing(
+                    effect,
+                    buffer.raw_inputs().as_ptr() as *const *const _,
+                    buffer.raw_outputs().as_mut_ptr() as *mut *mut _,
+                    samples,
+                );
+                return;
+            }
+
+            let accumulating = (*effect)._process;
+            if (accumulating as *const u8).is_null() {
+                error!(
+                    "plugin '{}' installed neither processReplacing nor process; \
+                     rendering silence",
+                    self.info.name
+                );
+                zero_outputs(buffer);
+                return;
+            }
+
+            warn!(
+                "plugin '{}' does not support processReplacing; \
+                 falling back to the deprecated accumulating process",
+                self.info.name
+            );
+            // Accumulating mode *adds* to the outputs, so they must start at 0.
+            zero_outputs(buffer);
+            accumulating(
+                effect,
                 buffer.raw_inputs().as_ptr() as *const *const _,
                 buffer.raw_outputs().as_mut_ptr() as *mut *mut _,
-                buffer.samples() as i32,
-            )
+                samples,
+            );
         }
     }
 
+    /// Render one block in `f64`.
+    ///
+    /// There is no accumulating counterpart for double precision in VST2.4 —
+    /// `processDoubleReplacing` is the only `f64` entry point — so an absent
+    /// `effFlagsCanDoubleReplacing` or a null pointer leaves the caller to
+    /// re-render through the `f32` path. Silence is returned rather than
+    /// jumping to a null pointer; callers should consult
+    /// `get_info().f64_precision` before choosing this path.
     fn process_f64(&mut self, buffer: &mut AudioBuffer<f64>) {
         if buffer.input_count() < self.info.inputs as usize {
             panic!("Too few inputs in AudioBuffer");
@@ -716,13 +930,23 @@ impl Plugin for PluginInstance {
         if buffer.output_count() < self.info.outputs as usize {
             panic!("Too few outputs in AudioBuffer");
         }
+        let effect = self.get_effect();
         unsafe {
-            ((*self.get_effect()).processReplacingF64)(
-                self.get_effect(),
+            let replacing = (*effect).processReplacingF64;
+            if !self.can_double_replacing || (replacing as *const u8).is_null() {
+                error!(
+                    "plugin '{}' does not support f64 processing; rendering silence",
+                    self.info.name
+                );
+                zero_outputs(buffer);
+                return;
+            }
+            replacing(
+                effect,
                 buffer.raw_inputs().as_ptr() as *const *const _,
                 buffer.raw_outputs().as_mut_ptr() as *mut *mut _,
                 buffer.samples() as i32,
-            )
+            );
         }
     }
 
@@ -737,21 +961,11 @@ impl Plugin for PluginInstance {
     }
 
     fn get_input_info(&self, input: i32) -> ChannelInfo {
-        let mut props: MaybeUninit<api::ChannelProperties> = MaybeUninit::uninit();
-        let ptr = props.as_mut_ptr() as *mut c_void;
-
-        self.dispatch(plugin::OpCode::GetInputInfo, input, 0, ptr, 0.0);
-
-        ChannelInfo::from(unsafe { props.assume_init() })
+        ChannelInfo::from(self.channel_properties(plugin::OpCode::GetInputInfo, input))
     }
 
     fn get_output_info(&self, output: i32) -> ChannelInfo {
-        let mut props: MaybeUninit<api::ChannelProperties> = MaybeUninit::uninit();
-        let ptr = props.as_mut_ptr() as *mut c_void;
-
-        self.dispatch(plugin::OpCode::GetOutputInfo, output, 0, ptr, 0.0);
-
-        ChannelInfo::from(unsafe { props.assume_init() })
+        ChannelInfo::from(self.channel_properties(plugin::OpCode::GetOutputInfo, output))
     }
 
     fn get_parameter_object(&mut self) -> Arc<dyn PluginParameters> {
@@ -857,31 +1071,11 @@ impl PluginParameters for PluginParametersInstance {
     // TODO: Editor
 
     fn get_preset_data(&self) -> Vec<u8> {
-        // Create a pointer that can be updated from the plugin.
-        let mut ptr: *mut u8 = ptr::null_mut();
-        let len = self.dispatch(
-            plugin::OpCode::GetData,
-            1, /*preset*/
-            0,
-            &mut ptr as *mut *mut u8 as *mut c_void,
-            0.0,
-        );
-        let slice = unsafe { slice::from_raw_parts(ptr, len as usize) };
-        slice.to_vec()
+        self.get_chunk(1 /*preset*/)
     }
 
     fn get_bank_data(&self) -> Vec<u8> {
-        // Create a pointer that can be updated from the plugin.
-        let mut ptr: *mut u8 = ptr::null_mut();
-        let len = self.dispatch(
-            plugin::OpCode::GetData,
-            0, /*bank*/
-            0,
-            &mut ptr as *mut *mut u8 as *mut c_void,
-            0.0,
-        );
-        let slice = unsafe { slice::from_raw_parts(ptr, len as usize) };
-        slice.to_vec()
+        self.get_chunk(0 /*bank*/)
     }
 
     fn load_preset_data(&self, data: &[u8]) {
@@ -912,8 +1106,8 @@ impl PluginParameters for PluginParametersInstance {
 /// be allocation free even if `AudioBuffer` instances are repeatedly created.
 ///
 /// ```rust
-/// # use vst::host::HostBuffer;
-/// # use vst::plugin::Plugin;
+/// # use vst_tutti::host::HostBuffer;
+/// # use vst_tutti::plugin::Plugin;
 /// # fn test<P: Plugin>(plugin: &mut P) {
 /// let mut host_buffer: HostBuffer<f32> = HostBuffer::new(2, 2);
 /// let inputs = vec![vec![0.0; 1000]; 2];
@@ -1016,7 +1210,7 @@ impl<T: Float> HostBuffer<T> {
 /// HACK: a pointer to store the host so that it can be accessed from the `callback_wrapper`
 /// function passed to the plugin.
 ///
-/// When the plugin is being loaded, a `Box<Arc<Mutex<T>>>` is transmuted to a `*mut c_void` pointer
+/// When the plugin is being loaded, a `Box<Arc<T>>` is transmuted to a `*mut c_void` pointer
 /// and placed here. When the plugin calls the callback during initialization, the host refers to
 /// this pointer to get a handle to the Host. After initialization, this pointer is invalidated and
 /// the host pointer is placed into a [reserved field] in the instance `AEffect` struct.
@@ -1029,6 +1223,17 @@ impl<T: Float> HostBuffer<T> {
 static mut LOAD_POINTER: *mut c_void = 0 as *mut c_void;
 
 /// Function passed to plugin to handle dispatching host opcodes.
+///
+/// This is a C function pointer the plugin calls, including from its audio
+/// thread inside `processReplacing`. Two properties are load-bearing:
+///
+/// * **No lock.** The host is reached through a plain `Arc<T>` (see
+///   [`PluginLoader::load`]); a shared mutex here would make the audio thread
+///   block on the GUI thread.
+/// * **No unwinding.** Unwinding out of an `extern "C"` frame into the
+///   plugin's C++ stack is undefined behaviour, so the whole dispatch is
+///   wrapped in `catch_unwind` and a panic degrades to `0` — the VST2 "not
+///   handled / not supported" answer for every host opcode.
 extern "C" fn callback_wrapper<T: Host>(
     effect: *mut AEffect,
     opcode: i32,
@@ -1037,32 +1242,137 @@ extern "C" fn callback_wrapper<T: Host>(
     ptr: *mut c_void,
     opt: f32,
 ) -> isize {
-    unsafe {
+    // AssertUnwindSafe: on a panic we return 0 and touch none of the captured
+    // state again — the host is behind a shared reference and the raw pointers
+    // are not re-read.
+    let result = panic::catch_unwind(AssertUnwindSafe(|| unsafe {
         // If the effect pointer is not null and the host pointer is not null, the plugin has
         // already been initialized
         if !effect.is_null() && (*effect).reserved1 != 0 {
-            let reserved = (*effect).reserved1 as *const Arc<Mutex<T>>;
-            let host = &*reserved;
-
-            let host = &mut *host.lock().unwrap();
+            let reserved = (*effect).reserved1 as *const Arc<T>;
+            let host: &T = &*reserved;
 
             interfaces::host_dispatch(host, effect, opcode, index, value, ptr, opt)
         // In this case, the plugin is still undergoing initialization and so `LOAD_POINTER` is
         // dereferenced
         } else {
             // Used only during the plugin initialization
-            let host = LOAD_POINTER as *const Arc<Mutex<T>>;
-            let host = &*host;
-            let host = &mut *host.lock().unwrap();
+            let load_ptr = LOAD_POINTER as *const Arc<T>;
+            if load_ptr.is_null() {
+                return 0;
+            }
+            let host: &T = &*load_ptr;
 
             interfaces::host_dispatch(host, effect, opcode, index, value, ptr, opt)
+        }
+    }));
+
+    match result {
+        Ok(value) => value,
+        Err(_) => {
+            // Cannot let this cross back into the plugin's C++ frame.
+            error!("host callback panicked (opcode {opcode}); reporting unhandled");
+            0
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::api::Supported;
     use crate::host::HostBuffer;
+
+    /// A real plugin's `effCanDo` returns whatever its dispatcher left in the
+    /// return slot — commonly the length of the queried string, or an
+    /// uninitialised stack value. `Supported::from` used to return `None` for
+    /// anything outside 1/0/-1 and the sole caller `.expect()`ed it, so probing
+    /// such a plugin panicked *during load*, unwinding out of an `extern "C"`
+    /// frame. It is now total.
+    #[test]
+    fn can_do_answers_outside_the_documented_set_do_not_panic() {
+        assert_eq!(Supported::from(1), Supported::Yes);
+        assert_eq!(Supported::from(0), Supported::Maybe);
+        assert_eq!(Supported::from(-1), Supported::No);
+
+        // The realistic garbage values.
+        assert_eq!(Supported::from(14), Supported::Custom(14)); // strlen("receiveVstMidiEvent")-ish
+        assert_eq!(Supported::from(-2), Supported::Custom(-2));
+        assert_eq!(Supported::from(isize::MAX), Supported::Custom(isize::MAX));
+
+        // And critically, none of them read as an affirmative "yes".
+        for v in [2, 14, -2, 9999, isize::MIN, isize::MAX] {
+            assert_ne!(Supported::from(v), Supported::Yes, "value {v}");
+        }
+    }
+
+    /// The host must survive a plugin that sets bits VST2.4 does not define in
+    /// `ChannelProperties::flags` — 29 of the 32 are unspecified, so any of
+    /// them appearing is a plugin quirk, not a host error. This used to
+    /// `.expect("Invalid bits in channel info")` and abort.
+    #[test]
+    fn undefined_channel_flag_bits_do_not_panic() {
+        use crate::channels::ChannelInfo;
+
+        let mut props: api::ChannelProperties = unsafe { MaybeUninit::zeroed().assume_init() };
+        // ACTIVE plus a pile of bits the SDK says nothing about.
+        props.flags = api::ChannelFlags::ACTIVE.bits() | 0x7FF0_0000;
+
+        // The conversion is what used to panic; reaching this line is the test.
+        let _info = ChannelInfo::from(props);
+    }
+
+    /// An all-zero `ChannelProperties` — what a plugin that ignores
+    /// `effGetInputProperties` leaves behind now that we zero the buffer
+    /// instead of handing over `MaybeUninit::uninit()` — must convert cleanly.
+    #[test]
+    fn zeroed_channel_properties_convert_cleanly() {
+        use crate::channels::ChannelInfo;
+
+        let props: api::ChannelProperties = unsafe { MaybeUninit::zeroed().assume_init() };
+        let _info = ChannelInfo::from(props);
+    }
+
+    /// VST2-H5. `effGetChunk` used to be trusted blindly:
+    /// `slice::from_raw_parts(ptr, len as usize)` with no null check and no
+    /// sign check. This is the project-*save* path, so each of these is a real
+    /// crash on a real user's save.
+    #[test]
+    fn get_chunk_rejects_unreadable_plugin_answers() {
+        // `effFlagsProgramChunks` set but nothing to save yet: the plugin
+        // returns 0 and never writes the out-pointer. `from_raw_parts(null, 0)`
+        // is UB even at length zero — the pointer must always be non-null.
+        assert!(unsafe { copy_chunk(ptr::null_mut(), 0) }.is_empty());
+
+        // An error return. `-1 as usize` was `usize::MAX`.
+        assert!(unsafe { copy_chunk(ptr::null_mut(), -1) }.is_empty());
+
+        // A plugin that sized the chunk but failed to hand back the buffer.
+        assert!(unsafe { copy_chunk(ptr::null_mut(), 4096) }.is_empty());
+
+        // A non-null pointer with a negative length is still rejected — the
+        // length is what would be cast, and it must never reach `as usize`.
+        let mut data = [1u8, 2, 3, 4];
+        assert!(unsafe { copy_chunk(data.as_mut_ptr(), -1) }.is_empty());
+
+        // The good case still copies.
+        assert_eq!(unsafe { copy_chunk(data.as_mut_ptr(), 4) }, vec![1, 2, 3, 4]);
+    }
+
+    /// VST2-H4's fallback path clears the outputs before the accumulating
+    /// `process` adds into them, and is also what a plugin with neither entry
+    /// point gets. Whatever the caller's scratch held must not leak through.
+    #[test]
+    fn zero_outputs_silences_every_channel() {
+        let mut host_buffer: HostBuffer<f32> = HostBuffer::new(2, 2);
+        let inputs = vec![vec![1.0f32; 8]; 2];
+        let mut outputs = vec![vec![0.5f32; 8]; 2];
+        {
+            let mut buffer = host_buffer.bind(&inputs, &mut outputs);
+            zero_outputs(&mut buffer);
+        }
+        assert_eq!(outputs, vec![vec![0.0f32; 8]; 2]);
+    }
 
     #[test]
     fn host_buffer() {

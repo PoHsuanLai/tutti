@@ -45,10 +45,14 @@ pub struct ScanResult {
     pub scanned: usize,
     /// Newly added or updated records.
     pub new: usize,
-    /// Plugins that failed to load.
+    /// Plugins that failed to load (including those newly blacklisted).
     pub failed: usize,
     /// Plugins that were blacklisted (previously or newly).
     pub blacklisted: usize,
+    /// Plugins this scan added to the blacklist because they crashed or hung.
+    /// Surface this so a UI can tell the user something was hidden and point
+    /// at [`CatalogExt::unblacklist`] / [`CatalogExt::clear_blacklist`].
+    pub newly_blacklisted: usize,
 }
 
 /// Plugin scanner with crash recovery. Operates on any [`PluginCatalog`].
@@ -178,6 +182,19 @@ impl PluginScanner {
     }
 
     /// Probe one plugin with pedal protection and upsert into the catalog.
+    ///
+    /// A failing probe is *recorded*, not merely warned about. Previously the
+    /// pedal was armed and disarmed unconditionally and a failure produced no
+    /// catalog write at all, so `needs_rescan` stayed true and the plugin was
+    /// re-probed at full cost — a 5 s hang, or a crashing subprocess — on
+    /// every scan, forever. Crash and timeout now go to the blacklist, which
+    /// is exactly the case the module doc advertises and the only case the
+    /// pedal could not cover (the pedal fires when the *scanner host* dies,
+    /// which is what out-of-process probing prevents).
+    ///
+    /// JUCE does the same: a scan attempt that yields nothing goes into
+    /// `failedFiles` and then `addToBlacklist` — failure, not just a hard
+    /// crash, earns the blacklist.
     fn probe_and_record(&mut self, path: &Path, format: PluginFormat) -> ScanOutcome {
         if let Err(e) = self.pedal.arm(path) {
             warn!("failed to arm dead-man's pedal: {e}");
@@ -195,9 +212,17 @@ impl PluginScanner {
                 });
                 ScanOutcome::New
             }
-            Err(reason) => {
-                warn!("failed to probe plugin {:?}: {reason}", path);
-                ScanOutcome::Failed
+            Err(failure) => {
+                warn!("failed to probe plugin {:?}: {}", path, failure.reason);
+                if failure.blacklistable {
+                    // The blacklist stamps the file's current mtime, so a
+                    // reinstall or update re-admits the plugin (see
+                    // `CatalogExt::is_blacklisted_and_unchanged`).
+                    self.catalog.blacklist(path, failure.reason);
+                    ScanOutcome::NewlyBlacklisted
+                } else {
+                    ScanOutcome::Failed
+                }
             }
         };
         self.pedal.disarm();
@@ -216,13 +241,60 @@ enum ScanDecision {
 enum ScanOutcome {
     New,
     Failed,
+    /// Already blacklisted before this scan; skipped.
     Blacklisted,
+    /// Blacklisted *by* this scan after a crash or timeout.
+    NewlyBlacklisted,
     UpToDate,
 }
 
+/// A probe failure, plus whether it earns a blacklist entry.
+struct ProbeFailure {
+    reason: String,
+    /// `true` for a subprocess crash or a probe timeout — a plugin that hangs
+    /// or takes the prober down will do so again on every future scan, so
+    /// re-probing it forever is strictly worse than hiding it behind a
+    /// user-clearable blacklist entry. `false` for environmental failures
+    /// (missing plugin-server, IO) that say nothing about the plugin itself.
+    blacklistable: bool,
+}
+
+impl ProbeFailure {
+    /// Classify a probe error. This is the whole crash/timeout → blacklist
+    /// decision, in one pure function so the tests exercise *this* code rather
+    /// than a hand-copied mirror of it.
+    fn from_bridge_error(e: crate::error::BridgeError) -> Self {
+        use crate::error::BridgeError;
+        match e {
+            // The prober died or hung on this plugin. It will do so again on
+            // every future scan, at the same cost.
+            BridgeError::ProcessCrashed => Self {
+                reason: format!("crashed during probe: {e}"),
+                blacklistable: true,
+            },
+            BridgeError::Timeout { .. } => Self {
+                reason: format!("timed out during probe: {e}"),
+                blacklistable: true,
+            },
+            // Environmental — IO, a missing binary, a protocol mismatch. Says
+            // nothing about the plugin, so never hide it.
+            other => Self {
+                reason: other.to_string(),
+                blacklistable: false,
+            },
+        }
+    }
+}
+
 /// Pure classification: inspects the catalog, no side effects.
+///
+/// The blacklist check is mtime-aware
+/// ([`CatalogExt::is_blacklisted_and_unchanged`]): a blacklisted plugin whose
+/// file changed on disk — reinstall, vendor update — is re-probed rather than
+/// skipped forever. Checking the raw flag first meant nothing short of
+/// hand-editing the DB could clear a false positive.
 fn classify(catalog: &dyn PluginCatalog, path: &Path) -> ScanDecision {
-    if catalog.is_blacklisted(path) {
+    if catalog.is_blacklisted_and_unchanged(path) {
         debug!("skipping blacklisted plugin: {:?}", path);
         ScanDecision::Skip(ScanOutcome::Blacklisted)
     } else if !catalog.needs_rescan(path) {
@@ -240,6 +312,7 @@ impl ScanResult {
             new: 0,
             failed: 0,
             blacklisted: 0,
+            newly_blacklisted: 0,
         }
     }
 
@@ -248,6 +321,14 @@ impl ScanResult {
             ScanOutcome::New => self.new += 1,
             ScanOutcome::Failed => self.failed += 1,
             ScanOutcome::Blacklisted => self.blacklisted += 1,
+            // A newly blacklisted plugin is both a failure this scan and a
+            // blacklist entry going forward; count it in both tallies so
+            // `failed` still means "did not load".
+            ScanOutcome::NewlyBlacklisted => {
+                self.failed += 1;
+                self.blacklisted += 1;
+                self.newly_blacklisted += 1;
+            }
             ScanOutcome::UpToDate => {}
         }
         self
@@ -257,17 +338,18 @@ impl ScanResult {
 /// Probe a plugin by spawning a plugin-server subprocess and querying its
 /// metadata. Falls back to filename-based metadata if the plugin-server
 /// binary is not available.
-fn probe_plugin(path: &Path, format: PluginFormat) -> Result<PluginDescriptor, String> {
+fn probe_plugin(path: &Path, format: PluginFormat) -> Result<PluginDescriptor, ProbeFailure> {
+    use crate::error::BridgeError;
     match crate::host::subprocess::probe_metadata(path) {
         Ok(descriptor) => Ok(descriptor),
-        Err(crate::error::BridgeError::ServerNotFound) => {
+        Err(BridgeError::ServerNotFound) => {
             debug!(
                 "plugin-server not available, using filename metadata for {:?}",
                 path
             );
             Ok(probe_plugin_fallback(path, format))
         }
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(ProbeFailure::from_bridge_error(e)),
     }
 }
 
@@ -426,6 +508,135 @@ mod tests {
         assert_eq!(result.new + result.failed, 2);
     }
 
+    /// Regression for DISC-C1: a crash or a probe timeout must earn a
+    /// blacklist entry, not just a `warn!`. `probe_and_record` used to arm
+    /// and disarm the pedal unconditionally and upsert nothing on failure,
+    /// so `needs_rescan` stayed true and the plugin was re-probed at full
+    /// cost — the crash, or the 5 s stall — on every scan, forever.
+    #[test]
+    fn crash_and_timeout_are_blacklistable_other_failures_are_not() {
+        use crate::error::BridgeError;
+
+        // Exercises the *production* classifier, not a copy of it.
+        let crashed = ProbeFailure::from_bridge_error(BridgeError::ProcessCrashed);
+        assert!(crashed.blacklistable, "ProcessCrashed must be blacklistable");
+        assert!(crashed.reason.contains("crashed"));
+
+        let timed_out = ProbeFailure::from_bridge_error(BridgeError::Timeout {
+            operation: "probe".into(),
+            duration_ms: 5000,
+        });
+        assert!(timed_out.blacklistable, "Timeout must be blacklistable");
+        assert!(timed_out.reason.contains("timed out"));
+
+        // Environmental failures say nothing about the plugin — never hide it.
+        assert!(!ProbeFailure::from_bridge_error(BridgeError::IpcError("socket".into())).blacklistable);
+        assert!(
+            !ProbeFailure::from_bridge_error(BridgeError::ProtocolMismatch {
+                expected: 2,
+                got: 1
+            })
+            .blacklistable
+        );
+        assert!(
+            !ProbeFailure::from_bridge_error(BridgeError::ServerNotFound).blacklistable,
+            "a missing plugin-server must never blacklist a plugin"
+        );
+    }
+
+    /// Regression for DISC-C1 (catalog half): a blacklisted probe result must
+    /// actually land in the catalog and hide the plugin from `plugins()`.
+    #[test]
+    fn blacklisting_from_a_failed_probe_hides_the_plugin() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        std::fs::create_dir(&plugins_dir).unwrap();
+        let bad = create_fake_plugin(&plugins_dir, "crashy.vst3");
+
+        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
+        db.blacklist(&bad, "crashed during probe".into());
+
+        assert!(db.is_blacklisted(&bad));
+        assert_eq!(db.plugins().count(), 0);
+        // The blacklist stamps the *current* mtime, so the plugin is skipped
+        // while unchanged...
+        assert!(db.is_blacklisted_and_unchanged(&bad));
+        assert!(matches!(
+            classify(&db, &bad),
+            ScanDecision::Skip(ScanOutcome::Blacklisted)
+        ));
+    }
+
+    /// Regression for DISC-C2: an mtime change (reinstall, vendor update)
+    /// must re-admit a blacklisted plugin. `classify` used to check the raw
+    /// `is_blacklisted` flag *before* `needs_rescan`, so a false positive was
+    /// permanent short of hand-editing the JSON.
+    #[test]
+    fn mtime_change_readmits_a_blacklisted_plugin() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        std::fs::create_dir(&plugins_dir).unwrap();
+        let bad = create_fake_plugin(&plugins_dir, "was-crashy.vst3");
+
+        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
+        db.blacklist(&bad, "crashed during probe".into());
+        assert!(matches!(
+            classify(&db, &bad),
+            ScanDecision::Skip(ScanOutcome::Blacklisted)
+        ));
+
+        // Simulate a reinstall: the file's mtime moves.
+        let record = db.get(&bad).unwrap().clone();
+        db.upsert(PluginRecord {
+            modification_time: record.modification_time.wrapping_sub(1),
+            ..record
+        });
+
+        assert!(db.is_blacklisted(&bad), "flag is still set");
+        assert!(
+            !db.is_blacklisted_and_unchanged(&bad),
+            "but the file changed, so it must be re-probed"
+        );
+        assert!(
+            matches!(classify(&db, &bad), ScanDecision::Probe),
+            "a changed blacklisted plugin must be re-probed, not skipped forever"
+        );
+    }
+
+    /// Regression for DISC-C2: blacklisting must have an inverse.
+    #[test]
+    fn unblacklist_and_clear_blacklist_are_the_inverse() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        std::fs::create_dir(&plugins_dir).unwrap();
+        // Real files, so their mtimes are real and non-zero — the whole point
+        // of `unblacklist` zeroing `modification_time` is to force a rescan.
+        let a = create_fake_plugin(&plugins_dir, "a.vst3");
+        let b = create_fake_plugin(&plugins_dir, "b.vst3");
+
+        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
+        db.blacklist(&a, "pedal misfire".into());
+        db.blacklist(&b, "pedal misfire".into());
+        assert_eq!(db.blacklisted().count(), 2);
+        assert_eq!(db.plugins().count(), 0);
+        // Blacklisting stamps the live mtime, so the entry is "unchanged".
+        assert!(!db.needs_rescan(&a));
+
+        assert!(db.unblacklist(&a));
+        assert!(!db.is_blacklisted(&a));
+        // Cleared records are forced to re-probe: the blacklisted stub's
+        // descriptor is a placeholder, so it must not be served as-is.
+        assert!(db.needs_rescan(&a));
+        assert!(matches!(classify(&db, &a), ScanDecision::Probe));
+        // Second call is a no-op, not a lie.
+        assert!(!db.unblacklist(&a));
+
+        let cleared = db.clear_blacklist();
+        assert_eq!(cleared, vec![b.clone()]);
+        assert_eq!(db.blacklisted().count(), 0);
+        assert!(db.needs_rescan(&b));
+    }
+
     #[test]
     fn probe_plugin_fallback_returns_metadata() {
         let meta = probe_plugin_fallback(Path::new("/plugins/My Reverb.vst3"), PluginFormat::Vst3);
@@ -469,7 +680,7 @@ mod tests {
                 println!("Probed {:?}: {:?}", path, descriptor);
             }
             Err(e) => {
-                eprintln!("Probe failed (plugin-server may not be built): {e}");
+                eprintln!("Probe failed (plugin-server may not be built): {}", e.reason);
             }
         }
     }

@@ -98,7 +98,30 @@ fn copy_string(dst: *mut c_void, src: &str, max: usize) -> isize {
 }
 
 /// VST2.4 dispatch function. This function handles dispatching all opcodes to the VST plugin.
+///
+/// `extern "C"`, so a panic escaping into the host's C++ frame is undefined
+/// behaviour. The body is wrapped in `catch_unwind` and a panic degrades to
+/// `0` — the VST2 "unhandled" answer for every effect opcode.
 pub extern "C" fn dispatch(
+    effect: *mut AEffect,
+    opcode: i32,
+    index: i32,
+    value: isize,
+    ptr: *mut c_void,
+    opt: f32,
+) -> isize {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        dispatch_inner(effect, opcode, index, value, ptr, opt)
+    })) {
+        Ok(v) => v,
+        Err(_) => {
+            error!("plugin dispatch panicked (opcode {opcode}); reporting unhandled");
+            0
+        }
+    }
+}
+
+fn dispatch_inner(
     effect: *mut AEffect,
     opcode: i32,
     index: i32,
@@ -332,8 +355,13 @@ pub extern "C" fn dispatch(
     0
 }
 
+/// Dispatch one `audioMaster` opcode to the host.
+///
+/// Takes `&dyn Host`, not `&mut`: every `Host` method takes `&self`, and this
+/// runs on the plugin's audio thread as often as the UI thread — see
+/// [`crate::host::PluginLoader::load`] for why no lock guards it.
 pub fn host_dispatch(
-    host: &mut dyn Host,
+    host: &dyn Host,
     effect: *mut AEffect,
     opcode: i32,
     index: i32,

@@ -55,14 +55,30 @@ pub trait PluginAudio: Send {
 /// returns id/name/range/default/unit/flags with no node analogue), so this
 /// stays plugin-specific.
 pub trait PluginParams {
-    /// Parameter value in the format's native convention: normalized 0..1 for
-    /// VST2/VST3/AU, but the plugin's **native plain range** for CLAP (CLAP has
-    /// no normalization concept). A consumer that needs a normalized value must
-    /// scale by the `min_value`/`max_value` carried on [`ParameterInfo`].
+    /// Parameter value in the format's native convention. There are two, and
+    /// which one applies is a property of the format's ABI, not a choice:
+    ///
+    /// - **normalized `0..=1`** — VST2 (`AEffect::getParameter`) and VST3
+    ///   (`IEditController::normalizedParamToPlain` exists precisely because the
+    ///   wire value is normalized).
+    /// - **native plain range** (`ParameterInfo::min_value..=max_value`) — CLAP
+    ///   (no normalization concept at all) **and AU**.
+    ///
+    /// AU is called out because this doc asserted for a long time that AU was
+    /// normalized, and it is not: `AudioUnitSetParameter` takes plain units.
+    /// Apple's own AUDelay declares Lowpass Cutoff as `[10, 22050]` Hz, so
+    /// writing `1.0` sets 1 Hz, not full scale — an inaudible filter that reads
+    /// as "the plugin ignored me". Any code that treats this value as normalized
+    /// without checking the format is wrong for two of the four formats.
+    ///
+    /// Convert with [`ParameterInfo::to_plain`] / [`ParameterInfo::to_normalized`],
+    /// which are THE conversion for this boundary — do not hand-roll the scaling,
+    /// and do not reuse [`ParameterInfo::to_range`], which answers the unrelated
+    /// question of display taper.
     fn get_parameter(&self, id: u32) -> f64;
 
     /// See [`get_parameter`](Self::get_parameter) for the value convention
-    /// (normalized for VST2/VST3/AU, native plain range for CLAP).
+    /// (normalized for VST2/VST3; native plain range for CLAP and AU).
     fn set_parameter(&mut self, id: u32, value: f64);
 
     /// Push the host [`AutomationMode`](crate::AutomationMode) to the plugin.

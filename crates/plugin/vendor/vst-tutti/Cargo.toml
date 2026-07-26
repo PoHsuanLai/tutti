@@ -42,3 +42,10 @@ libloading = "0.7"
 log = "0.4"
 num-traits = "0.2"
 num_enum = "0.5.2"
+
+# `util::parameter_transfer`'s test module has always done `extern crate rand`,
+# but upstream's dev-dependency was dropped when the crate was vendored — so
+# `cargo test -p vst-tutti` failed to compile the test target at all. That is
+# how a fork with "no failing tests" also had no *running* ones.
+[dev-dependencies]
+rand = "0.8"

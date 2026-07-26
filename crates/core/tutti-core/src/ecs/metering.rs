@@ -1,5 +1,4 @@
-//! Metering's Bevy surface: the `MeteringRes` resource, its engine-claim
-//! handoff, the default-enable, and `TuttiMeteringPlugin`.
+//! Metering's Bevy surface: the `MeteringRes` wrapper.
 //!
 //! Part of the [`crate::ecs`] hub (all of tutti-core's Bevy integration under
 //! one roof); the metering value types it wraps stay in [`crate::metering`].
@@ -7,10 +6,9 @@
 //! compiled with the `bevy` feature.
 //!
 //! Construction stays in bevy-tutti's `build_into` (the meter is born
-//! mid-sequence and shared with the RT callback) — this module owns the
-//! Bevy-side wrapper, the claim, and metering's own default-enable.
+//! mid-sequence and shared with the RT callback), which enables the meter and
+//! inserts this wrapper directly — insertion *is* the handoff.
 
-use bevy_app::{App, Plugin};
 use bevy_ecs::prelude::*;
 
 use crate::metering::MasterMeter;
@@ -26,25 +24,7 @@ impl std::ops::Deref for MeteringRes {
     }
 }
 
-/// Transient handoff: the built master meter. Inserted by `build_into`;
-/// claimed into [`MeteringRes`] by [`TuttiMeteringPlugin`]'s `build()`.
-#[derive(Resource)]
-pub struct PendingMetering(pub Option<MasterMeter>);
-
-/// Bevy plugin: owns metering's Bevy surface. Claims [`PendingMetering`] →
-/// [`MeteringRes`] during plugin build, and switches the master meter on —
-/// consumers read `MeteringRes::get()` directly, so it has to be measuring.
-/// The meter already exists — `build_into` ran synchronously before this
-/// plugin was added.
-pub struct TuttiMeteringPlugin;
-
-impl Plugin for TuttiMeteringPlugin {
-    fn build(&self, app: &mut App) {
-        if let Some(PendingMetering(Some(meter))) =
-            app.world_mut().remove_resource::<PendingMetering>()
-        {
-            meter.enable();
-            app.insert_resource(MeteringRes(meter));
-        }
-    }
-}
+// `TuttiMeteringPlugin` is gone: it existed only to claim `PendingMetering` into
+// the wrapper above. `build_into` now calls `meter.enable()` (consumers read
+// `MeteringRes::get()` directly, so it has to be measuring) and inserts
+// `MeteringRes` directly.

@@ -6,7 +6,7 @@
 //! A non-Bevy host drives them through their own APIs directly. This module is
 //! only the *adapter* that lets a Bevy `App` reconcile ECS state into the graph:
 //!
-//! - the graph resources ([`AudioGraphRes`], [`AudioConfig`], [`PendingGraph`]),
+//! - the graph resources ([`AudioGraphRes`], [`AudioConfig`]),
 //! - the four-phase reconcile pipeline ([`GraphReconcileSystems`],
 //!   [`commit_graph`], [`reconcile_node_despawn`], [`SpawnAudioNode`],
 //!   [`crossfade_audio_node`]) and its [`GraphReconcilePlugin`],
@@ -36,15 +36,12 @@ pub mod resources;
 pub mod transport;
 
 pub use emitter::{AudioEmitter, AudioPlaybackState};
-pub use metering::{MeteringRes, PendingMetering, TuttiMeteringPlugin};
+pub use metering::MeteringRes;
 pub use param_epoch::NodeParamEpoch;
 pub use plugin::GraphReconcilePlugin;
 pub use reconcile::{
     commit_graph, crossfade_audio_node, engine_ready, reconcile_node_despawn, GraphDirty,
     GraphReconcileSystems, SpawnAudioNode,
 };
-pub use resources::{AudioConfig, AudioGraphRes, PendingGraph};
-pub use transport::{
-    MetronomeRes, PendingMetronome, PendingTransport, TransportClockNode, TransportRes,
-    TuttiTransportPlugin,
-};
+pub use resources::{AudioConfig, AudioGraphRes};
+pub use transport::{MetronomeRes, TransportClockNode, TransportRes};

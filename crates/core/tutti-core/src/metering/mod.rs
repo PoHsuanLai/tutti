@@ -17,5 +17,5 @@ pub use amplitude::{AtomicAmplitude, MasterMeter};
 pub use rt::{meter_output, MeteringContext};
 pub use tap::AudioTap;
 
-// The Bevy wrapper (`MeteringRes` + its claim + `TuttiMeteringPlugin`) lives in
-// `crate::ecs::metering` — import it from `tutti_core::ecs`.
+// The Bevy wrapper (`MeteringRes`) lives in `crate::ecs::metering` — import it
+// from `tutti_core::ecs`.

@@ -127,7 +127,7 @@ pub use voice::{
 
 // The async disk-streaming engine (butler thread + the `DiskStreamer` handle). All
 // Bevy-free — a non-Bevy host drives it directly via `DiskStreamer::new` / the
-// `ButlerThread` API. The `Resource` derive on `DiskStreamer` is `bevy`-gated inside.
+// `ButlerThread` API.
 pub(crate) mod butler;
 
 pub use butler::{DiskStreamer, DiskStreamerConfig};
@@ -135,36 +135,10 @@ pub use butler::{DiskStreamer, DiskStreamerConfig};
 mod ports;
 pub use ports::{Command, Commands, Source, Status};
 
-#[cfg(feature = "bevy")]
-use bevy_ecs::prelude::Resource;
-
-/// Transient handed off by `build_into`, part of the umbrella's uniform
-/// `PendingX` init handshake: the builder inserts the freshly-built [`DiskStreamer`]
-/// and [`TuttiSamplerPlugin`]'s `build()` claims it into a real resource.
-#[cfg(feature = "bevy")]
-#[derive(Resource, Debug)]
-pub struct PendingDiskStreamer(pub Option<DiskStreamer>);
-
-/// Bevy plugin: the sampler's ECS surface — the wave asset loader, time-stretch
-/// control sync, and the [`DiskStreamer`] resource handshake.
-#[cfg(feature = "bevy")]
-#[derive(Debug)]
-pub struct TuttiSamplerPlugin;
-
-#[cfg(feature = "bevy")]
-impl bevy_app::Plugin for TuttiSamplerPlugin {
-    fn build(&self, app: &mut bevy_app::App) {
-        app.add_plugins(voice::TuttiPlaybackPlugin);
-
-        // Claim the sampler out of the transient `build_into` inserted
-        // (synchronous, during plugin build) — the umbrella `PendingX` handshake.
-        if let Some(PendingDiskStreamer(Some(sampler))) =
-            app.world_mut().remove_resource::<PendingDiskStreamer>()
-        {
-            app.insert_resource(sampler);
-        }
-    }
-}
+// `PendingDiskStreamer` / `TuttiSamplerPlugin` are gone. `DiskStreamer` is an
+// engine service, not a Bevy noun (house rule R2), so bevy-tutti wraps it as
+// `SamplerRes` and inserts it directly; bevy-tutti also adds
+// `TuttiPlaybackPlugin` itself.
 
 /// The write side's live impl: [`WavOut`], an [`AudioOut`] that streams stereo
 /// frames to a WAV file, plus its [`CaptureFormat`](capture::CaptureFormat).

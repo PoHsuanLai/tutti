@@ -1,5 +1,4 @@
-//! Transport's Bevy surface: the `TransportRes` resource, its engine-claim
-//! handoff, and `TuttiTransportPlugin`.
+//! Transport's Bevy surface: the `TransportRes` / `MetronomeRes` wrappers.
 //!
 //! Part of the [`crate::ecs`] hub (all of tutti-core's Bevy integration under
 //! one roof); the transport value types it wraps stay in [`crate::transport`].
@@ -7,10 +6,10 @@
 //! compiled with the `bevy` feature.
 //!
 //! Construction stays in bevy-tutti's `build_into` (the transport manager Arc is
-//! born mid-sequence and shared with the RT callback) — this module owns only the
-//! Bevy-side wrapper + claim, not the RT wiring.
+//! born mid-sequence and shared with the RT callback), which inserts these
+//! wrappers directly — insertion *is* the handoff, so there is no transient and
+//! no claim step.
 
-use bevy_app::{App, Plugin};
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
@@ -27,11 +26,6 @@ impl std::ops::Deref for TransportRes {
     }
 }
 
-/// Transient handoff: the built transport handle. Inserted by `build_into`;
-/// claimed into [`TransportRes`] by [`TuttiTransportPlugin`]'s `build()`.
-#[derive(Resource)]
-pub struct PendingTransport(pub Option<Transport>);
-
 /// Metronome control: the shared [`ClickState`] the click node reads.
 ///
 /// Separate from [`TransportRes`]: the metronome shares no state with the
@@ -47,10 +41,6 @@ impl std::ops::Deref for MetronomeRes {
         &self.0
     }
 }
-
-/// Transient handoff for [`MetronomeRes`], mirroring [`PendingTransport`].
-#[derive(Resource)]
-pub struct PendingMetronome(pub Option<Arc<ClickState>>);
 
 /// Graph address of the global [`TransportClock`](crate::TransportClock) node.
 ///
@@ -69,22 +59,6 @@ pub struct PendingMetronome(pub Option<Arc<ClickState>>);
 #[derive(Resource, Clone, Copy, Debug)]
 pub struct TransportClockNode(pub crate::NodeId);
 
-/// Bevy plugin: owns transport's Bevy surface. Claims [`PendingTransport`] →
-/// [`TransportRes`] during plugin build (the handle already exists — `build_into`
-/// ran synchronously before this plugin was added).
-pub struct TuttiTransportPlugin;
-
-impl Plugin for TuttiTransportPlugin {
-    fn build(&self, app: &mut App) {
-        if let Some(PendingTransport(Some(handle))) =
-            app.world_mut().remove_resource::<PendingTransport>()
-        {
-            app.insert_resource(TransportRes(handle));
-        }
-        if let Some(PendingMetronome(Some(handle))) =
-            app.world_mut().remove_resource::<PendingMetronome>()
-        {
-            app.insert_resource(MetronomeRes(handle));
-        }
-    }
-}
+// `TuttiTransportPlugin` is gone: it existed only to claim `PendingTransport` /
+// `PendingMetronome` into the wrappers above. `build_into` now inserts
+// `TransportRes` / `MetronomeRes` directly, so there is nothing left to wire.

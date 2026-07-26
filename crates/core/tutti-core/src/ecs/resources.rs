@@ -37,11 +37,6 @@ pub struct AudioConfig {
 #[derive(Resource)]
 pub struct AudioGraphRes(pub Net);
 
-/// Transient handoff: the freshly-built graph + its device config.
-///
-/// `build_into` (bevy-tutti) inserts this after the RT-wiring transaction; the
-/// graph subsystem claims it in [`GraphReconcilePlugin`](super::GraphReconcilePlugin)'s
-/// `build()` — promoting it into `AudioGraphRes` + `AudioConfig` synchronously,
-/// before frame 1 — then drops this transient.
-#[derive(Resource)]
-pub struct PendingGraph(pub Option<(Net, AudioConfig)>);
+// `PendingGraph` is gone: `build_into` (bevy-tutti) inserts `AudioGraphRes` +
+// `AudioConfig` directly at the end of its RT-wiring transaction. Insertion *is*
+// the handoff — no transient, no claim, no "before frame 1" invariant to hold.

@@ -12,7 +12,6 @@ use crate::ecs::param_epoch::NodeParamEpoch;
 use crate::ecs::reconcile::{
     commit_graph, engine_ready, reconcile_node_despawn, GraphDirty, GraphReconcileSystems,
 };
-use crate::ecs::resources::{AudioGraphRes, PendingGraph};
 
 /// Bevy plugin: the generic graph reconciliation pipeline.
 ///
@@ -42,15 +41,8 @@ impl Plugin for GraphReconcilePlugin {
                     .chain(),
             );
 
-        // Claim the graph + config out of the transient `build_into` inserted
-        // (synchronous, during plugin build — see `claim_pending`). The graph
-        // subsystem owns its own claim, like every other subsystem plugin.
-        if let Some(PendingGraph(Some((graph, config)))) =
-            app.world_mut().remove_resource::<PendingGraph>()
-        {
-            app.insert_resource(AudioGraphRes(graph));
-            app.insert_resource(config);
-        }
+        // `AudioGraphRes` + `AudioConfig` are inserted directly by `build_into`
+        // before this plugin is added; there is no transient to claim.
 
         // Graph-node removal is handled by an `On<Remove, AudioNode>`
         // observer (fires at command-flush, reads the still-present NodeId).

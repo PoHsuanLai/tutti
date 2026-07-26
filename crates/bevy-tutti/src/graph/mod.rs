@@ -1,31 +1,21 @@
-//! The Bevy ECS integration layer — all of tutti-core's `#[cfg(feature = "bevy")]`
-//! surface gathered in one place.
+//! Binding the DSP graph to an ECS world.
 //!
-//! **The engine does not need this.** The DSP graph is fundsp's
-//! [`Net`](crate::dsp::Net); transport, metering and PDC are plain value types.
-//! A non-Bevy host drives them through their own APIs directly. This module is
-//! only the *adapter* that lets a Bevy `App` reconcile ECS state into the graph:
+//! The engine itself needs none of this: the graph is fundsp's
+//! [`Net`](tutti_core::dsp::Net), and transport, metering and PDC are plain
+//! value types a host can drive directly. This module is the adapter that lets
+//! a Bevy `App` reconcile ECS state into that graph:
 //!
 //! - the graph resources ([`AudioGraphRes`], [`AudioConfig`]),
-//! - the four-phase reconcile pipeline ([`GraphReconcileSystems`],
-//!   [`commit_graph`], [`reconcile_node_despawn`], [`SpawnAudioNode`],
-//!   [`crossfade_audio_node`]) and its [`GraphReconcilePlugin`],
-//! - the per-node param epoch ([`NodeParamEpoch`]; the bump systems that read
-//!   the DAW param components live app-side now),
+//! - the reconcile pipeline ([`GraphReconcileSystems`], [`commit_graph`],
+//!   [`reconcile_node_despawn`], [`SpawnAudioNode`], [`crossfade_audio_node`])
+//!   and its [`GraphReconcilePlugin`],
+//! - the per-node param epoch ([`NodeParamEpoch`]),
 //! - the audio-emitter markers ([`AudioEmitter`], [`AudioPlaybackState`]),
-//! - and the per-subsystem Bevy wrappers for metering ([`MeteringRes`]) and
-//!   transport ([`TransportRes`], [`MetronomeRes`]).
+//! - and the wrappers for metering ([`MeteringRes`]) and transport
+//!   ([`TransportRes`], [`MetronomeRes`]).
 //!
-//! The one node handle [`AudioNode`](crate::node::AudioNode) stays in
-//! [`crate::node`] — always-compiled plain data whose Bevy `derive` is
-//! feature-gated in place, so it degrades to a plain newtype without this
-//! module. The DAW param components (`Volume`/`Pan`/`Mute`/…) that used to live
-//! beside it moved app-side to `dawai_model::engine_bind::foundational`.
-//!
-//! Metering / transport wrappers are re-exported from their historical paths
-//! (`tutti_core::metering::*`, `tutti_core::transport::*`) so existing imports
-//! keep resolving; this module is the physical home, those are the
-//! compatibility surface.
+//! The node handle itself, [`AudioNode`](tutti_core::AudioNode), lives in
+//! tutti-core: an entity carrying one *is* a node in the graph.
 
 pub mod emitter;
 pub mod metering;

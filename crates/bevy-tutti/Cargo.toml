@@ -41,9 +41,11 @@ tutti-export = { path = "../tutti/crates/core/tutti-export", optional = true }
 tutti-midi-io = { path = "../tutti/crates/midi/tutti-midi-io", optional = true }
 tutti-midi-runtime = { path = "../tutti/crates/midi/tutti-midi-runtime", optional = true, default-features = false }
 tutti-plugin = { path = "../tutti/crates/plugin/tutti-plugin", optional = true }
-# Plugin-hosting ECS surface (editor windows, scan, crash-detect, param
-# reconcile). Owns the bevy_window / raw-window-handle / objc2 deps now.
-tutti-plugin-host = { path = "../tutti/crates/plugin/tutti-plugin-host", optional = true }
+tutti-plugin-server = { path = "../tutti/crates/plugin/tutti-plugin-server", optional = true, default-features = false }
+
+# Plugin editor windows: native child-window parenting for hosted GUIs.
+bevy_window = { version = "0.19", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
 
 # CPAL audio I/O — bevy-tutti owns the audio callback (engine/audio_io.rs).
 cpal = "0.15"
@@ -59,6 +61,12 @@ thiserror.workspace = true
 
 # MIDI UI observer channel
 crossbeam-channel = "0.5"
+
+# macOS: child-window attach + live-resize observer for plugin editors.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", features = ["NSView", "NSWindow", "NSResponder"], optional = true }
+objc2-foundation = { version = "0.3", features = ["NSNotification", "NSString", "NSGeometry", "NSObject", "NSThread"], optional = true }
 
 [features]
 default = []
@@ -112,20 +120,24 @@ soundfont = ["synth", "midi", "tutti-synth/soundfont", "tutti-synth/bevy_asset"]
 # usable without export.
 sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy", "tutti-export?/sampler"]
 
-# Plugin hosting. The ECS surface (editor windows, scan, crash-detect, param
-# reconcile) + the native subprocess plugin-server + editor windowing deps all
-# live in `tutti-plugin-host`. bevy-tutti keeps a direct `tutti-plugin` dep for
-# the catalog / handles / metadata re-exports in its prelude.
-# `tutti-plugin-host` → `tutti-plugin-server` pulls `tutti-core` with `midi`,
-# so tutti-core compiles with midi under feature unification. bevy-tutti's
-# `engine/builder.rs` gates the `MidiRoutingTable` arg to `from_parts` on its
-# OWN `midi` feature, so `plugin` must enable `midi` to keep the call shape in
-# sync with the compiled `tutti-core`.
-plugin = ["dep:tutti-plugin", "dep:tutti-plugin-host", "midi"]
-vst2 = ["plugin", "tutti-plugin-host/vst2", "tutti-plugin/vst2"]
-vst3 = ["plugin", "tutti-plugin-host/vst3", "tutti-plugin/vst3"]
-clap = ["plugin", "tutti-plugin-host/clap", "tutti-plugin/clap"]
-au = ["plugin", "tutti-plugin-host/au", "tutti-plugin/au"]
+# Plugin hosting: editor windows, catalog scan, crash detection.
+# `tutti-plugin-server` pulls `tutti-core` with `midi` under feature
+# unification, so `plugin` enables bevy-tutti's own `midi` to keep the two in
+# step.
+plugin = [
+    "dep:tutti-plugin",
+    "dep:tutti-plugin-server",
+    "dep:bevy_window",
+    "dep:raw-window-handle",
+    "dep:objc2",
+    "dep:objc2-app-kit",
+    "dep:objc2-foundation",
+    "midi",
+]
+vst2 = ["plugin", "tutti-plugin-server/vst2", "tutti-plugin/vst2"]
+vst3 = ["plugin", "tutti-plugin-server/vst3", "tutti-plugin/vst3"]
+clap = ["plugin", "tutti-plugin-server/clap", "tutti-plugin/clap"]
+au = ["plugin", "tutti-plugin-server/au", "tutti-plugin/au"]
 
 # Export.
 export = ["dep:tutti-export"]

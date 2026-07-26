@@ -23,25 +23,25 @@ use tutti_core::{
     dsp::Net, AudioTap, ClickNode, ClickSettings, MasterMeter, Transport, TransportClock,
 };
 
-// Each subsystem owns its own transient `PendingX` (defined next to its plugin).
-// `build_into` fills them; the subsystem's plugin `build()` claims each into the
-// subsystem's `*Res` (synchronously, before frame 1).
-use tutti_core::ecs::{
-    AudioConfig, PendingGraph, PendingMetering, PendingMetronome, PendingTransport,
-    TransportClockNode,
+use crate::graph::{
+    AudioConfig, AudioGraphRes, MeteringRes, MetronomeRes, TransportClockNode, TransportRes,
 };
 
+#[cfg(feature = "midi")]
+use crate::midi::{ClockMasterRes, MidiBusRes, MidiRoutingRes};
+#[cfg(feature = "midi-hardware")]
+use crate::midi::MidiIoRes;
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_io::MidiIo;
-#[cfg(feature = "midi")]
-use tutti_midi_io::PendingMidi;
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::{MidiBus, MidiPreBlock};
 #[cfg(feature = "midi")]
 use tutti_midi_types::MidiRoutingTable;
 
 #[cfg(feature = "sampler")]
-use tutti_sampler::{DiskStreamer, PendingDiskStreamer};
+use crate::sampler::SamplerRes;
+#[cfg(feature = "sampler")]
+use tutti_sampler::DiskStreamer;
 
 /// Build the engine from a [`TuttiPlugin`](crate::TuttiPlugin) config and insert
 /// every subsystem resource into `app`. The audio callback is live on return.
@@ -182,39 +182,40 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // volume/mode via `ClickState`'s atomic setters directly.
     let metronome = click_settings;
 
-    // --- Hand each subsystem its transient `PendingX` (claimed in each
-    // subsystem plugin's `build()`). The non-send CPAL driver has no subsystem
-    // plugin, so it's inserted directly. On `Err` earlier, none of this runs —
-    // `engine_ready` stays an exact proxy. ---
+    // --- Publish every subsystem. On `Err` earlier none of this runs, so
+    // `engine_ready` stays an exact proxy for "the callback is live". ---
     let config = AudioConfig {
         sample_rate,
         channels,
     };
-    app.insert_resource(PendingGraph(Some((graph, config))));
+    app.insert_resource(AudioGraphRes(graph));
+    app.insert_resource(config);
     // Inserted whether or not the app opts into compensation: the sampler already
     // holds a clone of this Arc, so the resource must be *this* one, not a fresh
     // default. `LatencyCompensationPlugin` uses `init_resource`, which leaves it.
     app.insert_resource(compensation);
     app.insert_non_send(driver);
-    app.insert_resource(PendingTransport(Some(transport)));
-    app.insert_resource(PendingMetronome(Some(metronome)));
+    app.insert_resource(TransportRes(transport));
+    app.insert_resource(MetronomeRes(metronome));
     app.insert_resource(TransportClockNode(clock_id));
-    app.insert_resource(PendingMetering(Some(meter)));
+    // Consumers read `MeteringRes::get()` directly, so the meter has to be
+    // measuring from the start.
+    meter.enable();
+    app.insert_resource(MeteringRes(meter));
 
     #[cfg(feature = "midi")]
-    app.insert_resource(PendingMidi {
-        bus: Some(midi_bus),
+    {
+        app.insert_resource(MidiBusRes(midi_bus));
+        app.insert_resource(MidiRoutingRes(midi_route));
+        app.insert_resource(ClockMasterRes::new(clock_master, clock_out_consumer));
         #[cfg(feature = "midi-hardware")]
-        io: midi_io,
-        clock_out: Some(tutti_midi_io::ClockMasterRes::new(
-            clock_master,
-            clock_out_consumer,
-        )),
-        routing: Some(midi_route),
-    });
+        if let Some(io) = midi_io {
+            app.insert_resource(MidiIoRes(io));
+        }
+    }
 
     #[cfg(feature = "sampler")]
-    app.insert_resource(PendingDiskStreamer(Some(sampler)));
+    app.insert_resource(SamplerRes(sampler));
 
     Ok(())
 }

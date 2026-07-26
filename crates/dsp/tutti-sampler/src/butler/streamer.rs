@@ -11,9 +11,8 @@ use tutti_core::Samples;
 /// The sampler subsystem handle.
 ///
 /// Owns the butler thread, which drives all disk I/O. The engine builds one at
-/// startup with [`new`](Self::new). A Bevy host wraps it (`bevy_tutti::SamplerRes`)
-/// rather than storing it directly — it is an engine service, not a Bevy noun
-/// (house rule R2).
+/// startup with [`new`](Self::new); a host holds it for the lifetime of the
+/// session.
 ///
 /// Stream control is split MIDI-device-style into two cloneable ports: the
 /// WRITE port [`commands`](Self::commands) (a [`Commands`] over the butler

@@ -119,11 +119,11 @@ pub use voice::{
     Direction, DiskVoice, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice,
     VoiceCommand, VoiceNode, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow,
 };
-// Bevy ECS surface of `voice`.
+// Entity-as-node markers for the voice pool. The asset loader and the playback
+// plugin moved to bevy-tutti (house rule R1); what stays here is the pair of
+// marker components, which are derives on this crate's own value types.
 #[cfg(feature = "bevy")]
-pub use voice::{
-    TuttiPlaybackPlugin, VoicePoolNode, VoicePoolRef, WaveAssetLoader, WaveAssetLoaderError,
-};
+pub use voice::{VoicePoolNode, VoicePoolRef};
 
 // The async disk-streaming engine (butler thread + the `DiskStreamer` handle). All
 // Bevy-free — a non-Bevy host drives it directly via `DiskStreamer::new` / the

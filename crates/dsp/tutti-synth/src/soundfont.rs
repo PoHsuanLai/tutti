@@ -2,17 +2,13 @@
 //!
 //! Build a [`SoundFontUnit`] with [`SoundFontUnit::new`] from a decoded
 //! `SoundFont` and a [`SynthesizerSettings`], then `program_change` to pick the
-//! preset/channel. Pure DSP — a non-Bevy host loads the `.sf2` itself and calls
-//! `SoundFontUnit::new` directly.
-//!
-//! The Bevy asset loader, the playback/promotion systems and their plugin live
-//! in `bevy_tutti::synth` (house rules R1/R4).
+//! preset/channel. A host that wants asset-managed loading wires it in its own
+//! adapter layer; this module only needs the decoded `SoundFont`.
 
 pub use rustysynth::{SoundFont, SynthesizerSettings};
 
-// TODO(R5): `rustysynth::SoundFontAsset` is a `bevy_asset`-gated type in the
-// vendored rustysynth-tutti. Re-exporting it from an engine crate is the Bevy
-// leak R5 forbids; the asset wrapper belongs in `bevy_tutti::synth`.
+// TODO: `SoundFontAsset` is a `bevy_asset`-gated type in the vendored
+// rustysynth-tutti; the asset wrapper belongs in the host adapter, not here.
 #[cfg(feature = "bevy_asset")]
 pub use rustysynth::SoundFontAsset;
 

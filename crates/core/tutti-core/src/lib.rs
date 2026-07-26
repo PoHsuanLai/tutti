@@ -172,11 +172,8 @@ pub mod node_id;
 pub mod node;
 pub use node::AudioNode;
 
-// The Bevy ECS integration layer — the reconcile hub, graph resources, and the
-// per-subsystem Bevy wrappers, all gathered under one `#[cfg(feature = "bevy")]`
-// roof. The engine itself (fundsp's `Net`, transport, metering) needs none of
-// it; this is the adapter a Bevy host uses to reconcile ECS state into the
-// graph. Its items stay re-exported from their historical `metering::` /
-// `transport::` paths, so this move is invisible to consumers.
-#[cfg(feature = "bevy")]
-pub mod ecs;
+// This crate is the engine: fundsp's `Net`, transport, metering, PDC. Wiring it
+// into an ECS — the reconcile pipeline, graph resources, per-subsystem
+// wrappers — is the host adapter's business, and lives in `bevy_tutti::graph`.
+// `AudioNode` above carries a gated `Component` derive because it is the one
+// handle a host addresses by name.

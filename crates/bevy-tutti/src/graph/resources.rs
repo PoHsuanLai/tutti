@@ -1,19 +1,14 @@
-//! The audio-graph Bevy resources + the graph's engine-claim handoff.
+//! The audio graph's own ECS resources: the device config and the editable
+//! DSP graph. Each other subsystem keeps its `*Res` beside its own module.
 //!
-//! These are the graph-subsystem's own resources: the device config and the
-//! editable DSP graph. Transport / metering / midi / sampler / analysis each own
-//! their `*Res` next to their subsystem now; this module keeps only what the
-//! graph subsystem itself owns.
-//!
-//! `AudioGraphRes` skips `Deref` so `.0` access keeps the per-frame commit
-//! boundary visible.
+//! Both are inserted by [`build_into`](crate::engine::build_into) once the
+//! device is open and the graph is built.
 
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
+use tutti_core::dsp::Net;
 use tutti_types::ChannelLayout;
-
-use crate::dsp::Net;
 
 /// Audio device configuration captured at engine build time.
 #[derive(Resource, Debug, Clone, Copy, PartialEq, Reflect)]
@@ -36,7 +31,3 @@ pub struct AudioConfig {
 /// makes the dirty/commit boundary visible at the call site.
 #[derive(Resource)]
 pub struct AudioGraphRes(pub Net);
-
-// `PendingGraph` is gone: `build_into` (bevy-tutti) inserts `AudioGraphRes` +
-// `AudioConfig` directly at the end of its RT-wiring transaction. Insertion *is*
-// the handoff — no transient, no claim, no "before frame 1" invariant to hold.

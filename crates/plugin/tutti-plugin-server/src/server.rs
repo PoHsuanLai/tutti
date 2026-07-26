@@ -12,36 +12,20 @@ use tutti_plugin::Result;
 /// Ask the OS to schedule this thread as realtime, now that it is about to do
 /// nothing but per-block audio work.
 ///
-/// # Why the subprocess has to ask and the host does not
+/// The host side never needs this: CoreAudio, WASAPI and JACK all create the
+/// audio callback's thread at realtime priority themselves. A plugin subprocess
+/// gets no such treatment — it is an ordinary `Command::spawn` at default
+/// priority — yet it must answer within the same block period. Measured with
+/// eight real plugins at 64/48k, that asymmetry swung the number of on-time
+/// replies between 29 and 492 out of 500 across identical runs.
 ///
-/// On the host side the audio callback runs on a thread the OS audio backend
-/// created — CoreAudio, WASAPI and JACK all give that thread realtime priority
-/// themselves, because it is driving a live device. A plugin subprocess gets no
-/// such treatment: it is an ordinary `Command::spawn`ed process at default
-/// priority, competing with every background task on the machine, and yet it
-/// must answer within the same block period.
-///
-/// That asymmetry is measurable. Driving eight real plugins at 64 frames /
-/// 48 kHz from an unprivileged harness, the number of blocks whose reply
-/// arrived in time swung between 29 and 492 out of 500 across identical runs —
-/// entirely at the scheduler's discretion.
-///
-/// # Why a late reply is not a correctness problem
-///
-/// It is a *quality* problem. A block whose reply misses its window produces
-/// silence, never wrong audio: the host reads a slot only when the slab's
+/// This is a *quality* knob, not a correctness one: a late reply yields silence,
+/// never wrong audio, because the host reads a slot only when the slab's
 /// sequence number says the server published it (see
-/// `tutti_plugin::util::transport::shm::header`). So this call raises the
-/// proportion of blocks that carry audio; it is not load-bearing for the
-/// pipeline being sound.
+/// `tutti_plugin::util::transport::shm::header`).
 ///
-/// # Why failure is ignored
-///
-/// Elevation needs privileges that are not always available — a hardened
-/// sandbox, a container without `CAP_SYS_NICE`, an unprivileged CI runner.
-/// Refusing to run there would turn a degraded-quality situation into a
-/// non-functional one. `ThreadPriority::Max` matches
-/// `tutti-sampler`'s disk butler, the engine's other thread with a deadline.
+/// Failure is logged and ignored — elevation needs privileges a sandbox or CI
+/// runner may not grant, and degraded quality beats refusing to run.
 fn raise_to_realtime() {
     match thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Max) {
         Ok(()) => tracing::debug!("plugin-server audio phase running at realtime priority"),

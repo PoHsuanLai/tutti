@@ -249,25 +249,22 @@ enum ScanOutcome {
 }
 
 /// A probe failure, plus whether it earns a blacklist entry.
+#[derive(Debug)]
 struct ProbeFailure {
     reason: String,
-    /// `true` for a subprocess crash or a probe timeout — a plugin that hangs
-    /// or takes the prober down will do so again on every future scan, so
-    /// re-probing it forever is strictly worse than hiding it behind a
-    /// user-clearable blacklist entry. `false` for environmental failures
-    /// (missing plugin-server, IO) that say nothing about the plugin itself.
+    /// Set for a crash or a timeout: the plugin will fail the same way at the
+    /// same cost on every future scan, so hiding it behind a user-clearable
+    /// entry beats re-probing forever. Clear for environmental failures, which
+    /// say nothing about the plugin.
     blacklistable: bool,
 }
 
 impl ProbeFailure {
-    /// Classify a probe error. This is the whole crash/timeout → blacklist
-    /// decision, in one pure function so the tests exercise *this* code rather
-    /// than a hand-copied mirror of it.
+    /// The whole crash/timeout → blacklist decision, in one pure function so
+    /// tests exercise *this* code rather than a copy of it.
     fn from_bridge_error(e: crate::error::BridgeError) -> Self {
         use crate::error::BridgeError;
         match e {
-            // The prober died or hung on this plugin. It will do so again on
-            // every future scan, at the same cost.
             BridgeError::ProcessCrashed => Self {
                 reason: format!("crashed during probe: {e}"),
                 blacklistable: true,
@@ -276,8 +273,8 @@ impl ProbeFailure {
                 reason: format!("timed out during probe: {e}"),
                 blacklistable: true,
             },
-            // Environmental — IO, a missing binary, a protocol mismatch. Says
-            // nothing about the plugin, so never hide it.
+            // IO, a missing binary, a protocol mismatch — the environment's
+            // fault, not the plugin's.
             other => Self {
                 reason: other.to_string(),
                 blacklistable: false,
@@ -339,9 +336,22 @@ impl ScanResult {
 /// metadata. Falls back to filename-based metadata if the plugin-server
 /// binary is not available.
 fn probe_plugin(path: &Path, format: PluginFormat) -> Result<PluginDescriptor, ProbeFailure> {
+    interpret_probe(crate::host::subprocess::probe_metadata(path), path, format)
+}
+
+/// Decide what a raw probe result means. Split from [`probe_plugin`] so the
+/// fallback rule is testable without a subprocess: spawning a real server is what
+/// made the old test depend on whether `target/debug/` happened to be warm.
+fn interpret_probe(
+    result: Result<PluginDescriptor, crate::error::BridgeError>,
+    path: &Path,
+    format: PluginFormat,
+) -> Result<PluginDescriptor, ProbeFailure> {
     use crate::error::BridgeError;
-    match crate::host::subprocess::probe_metadata(path) {
+    match result {
         Ok(descriptor) => Ok(descriptor),
+        // The only error that means "we could not look", as opposed to "we looked
+        // and this plugin is bad". Widening it would hide real failures.
         Err(BridgeError::ServerNotFound) => {
             debug!(
                 "plugin-server not available, using filename metadata for {:?}",
@@ -375,7 +385,6 @@ fn probe_plugin_fallback(path: &Path, format: PluginFormat) -> PluginDescriptor 
 #[cfg(test)]
 mod tests {
     use super::super::database::JsonCatalog;
-    use super::super::record::Vst2Category;
     use super::*;
     use tempfile::TempDir;
 
@@ -644,44 +653,100 @@ mod tests {
         assert_eq!(meta.id, "vst3.my_reverb");
     }
 
-    /// Probe a real system plugin and verify we get meaningful metadata.
-    /// Skipped if no real plugin is available on the system.
+    /// A missing `plugin-server` must degrade to filename metadata rather than
+    /// fail, and must report `Unknown` when it does: name and id come from the
+    /// filename, but nothing inspected the plugin, so claiming a category would be
+    /// a fabrication.
+    ///
+    /// Driven through [`interpret_probe`] rather than by arranging for the server
+    /// to be absent. An earlier version called `probe_plugin` and relied on the
+    /// binary not being built — but `find_plugin_server` searches
+    /// `current_exe().parent().parent()`, which for a test binary in
+    /// `target/debug/deps/` is `target/debug/`, where the server lands as soon as
+    /// anything in the workspace builds it. So it passed on a cold target dir and
+    /// failed on a warm one, having found a real server that then reported
+    /// `LoadFailed` on the fake plugin. `TUTTI_PLUGIN_SERVER` is no lever either:
+    /// a nonexistent path there warns and falls through to the same search.
     #[test]
-    fn probe_real_plugin() {
+    fn probe_without_a_server_falls_back_to_filename_metadata() {
+        use crate::error::BridgeError;
+
+        let path = Path::new("/plugins/TAL-NoiseMaker.vst3");
+        let descriptor = interpret_probe(Err(BridgeError::ServerNotFound), path, PluginFormat::Vst3)
+            .expect("a missing plugin-server is a fallback, not an error");
+
+        assert_eq!(descriptor.name, "TAL-NoiseMaker");
+        assert_eq!(descriptor.id, "vst3.tal-noisemaker");
+        assert!(
+            matches!(descriptor.class, PluginClass::Unknown),
+            "an unprobed plugin must not claim a category, got {:?}",
+            descriptor.class
+        );
+    }
+
+    /// The counterpart: only `ServerNotFound` falls back. A load failure is a real
+    /// answer about a real plugin and must surface as an error, or a broken plugin
+    /// would be silently catalogued under its filename as though it had been probed.
+    #[test]
+    fn a_failed_load_is_an_error_not_a_filename_fallback() {
+        use crate::error::BridgeError;
+
+        let path = Path::new("/plugins/Broken.vst3");
+        let failure = interpret_probe(
+            Err(BridgeError::LoadFailed {
+                path: path.to_path_buf(),
+                stage: tutti_plugin_types::LoadStage::Opening,
+                reason: "dlopen failed".into(),
+            }),
+            path,
+            PluginFormat::Vst3,
+        )
+        .expect_err("a load failure must not be reported as successful metadata");
+
+        assert!(failure.reason.contains("dlopen failed"));
+    }
+
+    /// Probe a real installed plugin end-to-end. **Opt-in**: set
+    /// `TUTTI_PROBE_PLUGIN` to a plugin path to run it.
+    ///
+    /// Gated rather than auto-detected, because the auto-detecting version of
+    /// this test was wrong in three ways at once and failed for years: it took
+    /// the first of two hardcoded paths (the VST3) and then asserted a *VST2*
+    /// class, which `PluginClass` makes unsatisfiable — the enum is per-format
+    /// by construction. It also could not reach a real probe at all without the
+    /// `plugin-server` binary, since `probe_plugin` maps `ServerNotFound` to a
+    /// filename fallback, so it was really asserting a synth category against
+    /// `PluginClass::Unknown`.
+    ///
+    /// What it can honestly check, given the class vocabulary is deliberately
+    /// native and uninterpreted: the probe returns a name, and the class it
+    /// reports belongs to the format that was actually probed.
+    #[test]
+    fn probe_installed_plugin_reports_its_own_formats_class() {
         use super::super::fs::format_from_path;
 
-        let candidates = [
-            "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3",
-            "/Library/Audio/Plug-Ins/Components/TAL-NoiseMaker.component",
-        ];
-        let Some(path) = candidates.iter().find(|p| Path::new(p).exists()) else {
-            eprintln!("No real plugin found on system, skipping probe_real_plugin test");
+        let Ok(raw) = std::env::var("TUTTI_PROBE_PLUGIN") else {
+            eprintln!("TUTTI_PROBE_PLUGIN not set, skipping real-plugin probe");
             return;
         };
-        let path = Path::new(path);
-        let format = format_from_path(path).unwrap();
+        let path = Path::new(&raw);
+        assert!(path.exists(), "TUTTI_PROBE_PLUGIN={raw} does not exist");
 
-        match probe_plugin(path, format) {
-            Ok(descriptor) => {
-                assert!(!descriptor.name.is_empty(), "name should not be empty");
-                // TAL-NoiseMaker is a synth; its native class should reflect that
-                // (VST2 `Synth` category). The DAW interprets the class itself —
-                // tutti only carries it verbatim.
-                assert!(
-                    matches!(
-                        &descriptor.class,
-                        PluginClass::Vst2 {
-                            category: Vst2Category::Synth
-                        }
-                    ),
-                    "TAL-NoiseMaker should report a synth class, got {:?}",
-                    descriptor.class
-                );
-                println!("Probed {:?}: {:?}", path, descriptor);
-            }
-            Err(e) => {
-                eprintln!("Probe failed (plugin-server may not be built): {}", e.reason);
-            }
-        }
+        let format = format_from_path(path).expect("unrecognised plugin extension");
+        let descriptor = probe_plugin(path, format).expect("probe failed");
+
+        assert!(!descriptor.name.is_empty(), "name should not be empty");
+
+        // The class must match the format probed — never another format's
+        // vocabulary. `Unknown` is allowed: it is what the filename fallback
+        // reports when no `plugin-server` is on hand.
+        let class_format = descriptor.class.format_name();
+        assert!(
+            class_format == "unknown" || class_format == format.extension_id(),
+            "a {:?} plugin reported a {class_format} class: {:?}",
+            format,
+            descriptor.class
+        );
+        println!("Probed {path:?}: {descriptor:?}");
     }
 }

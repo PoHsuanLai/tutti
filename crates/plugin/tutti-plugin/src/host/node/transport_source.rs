@@ -15,7 +15,6 @@
 
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use atomic_float::AtomicF64;
 use std::sync::atomic::Ordering;
 use tutti_core::meter::{Meter, MeterMap};
@@ -43,14 +42,14 @@ pub struct TransportSource {
     /// state. An offline render and a live transport share one meter, and the
     /// transport does not change when the meter does. Shared like `sample_rate`
     /// so an edit reaches the running box without a re-install.
-    meter: Arc<ArcSwap<MeterMap>>,
+    meter: Arc<tutti_core::RtPublish<MeterMap>>,
     sample_rate: Arc<AtomicF64>,
 }
 
 impl TransportSource {
     pub fn new(
         reader: Arc<dyn TransportState>,
-        meter: Arc<ArcSwap<MeterMap>>,
+        meter: Arc<tutti_core::RtPublish<MeterMap>>,
         sample_rate: f64,
     ) -> Self {
         Self {
@@ -75,7 +74,7 @@ impl TransportSource {
         let beat = reader.beat();
 
         // One meter read per block — this runs in `fill`, not per sample.
-        let meter = self.meter.load();
+        let meter = self.meter.read();
         let position = meter.bar_at(beat);
 
         let mut info = TransportInfo::new()
@@ -152,12 +151,16 @@ mod tests {
         tempo: f64,
         rate: f64,
         meter: MeterMap,
-    ) -> (Transport, TransportSource, Arc<ArcSwap<MeterMap>>) {
+    ) -> (
+        Transport,
+        TransportSource,
+        Arc<tutti_core::RtPublish<MeterMap>>,
+    ) {
         let t = Transport::new(rate);
         t.settings.set_tempo(tempo);
         let _ = t.motion.try_send(tutti_core::MotionEvent::Play);
         t.motion.drain();
-        let meter = Arc::new(ArcSwap::from_pointee(meter));
+        let meter = Arc::new(tutti_core::RtPublish::new(meter));
         let src = TransportSource::new(Arc::new(t.clone()), Arc::clone(&meter), rate);
         (t, src, meter)
     }
@@ -227,7 +230,7 @@ mod tests {
         assert_eq!(out.timing.signature, TimeSignature::default());
 
         let three_four = TimeSignature::new(BeatsPerBar::new(3), NoteValue::QUARTER);
-        meter.store(Arc::new(MeterMap::new([MeterChange::new(
+        meter.publish(Arc::new(MeterMap::new([MeterChange::new(
             Beat(0.0),
             three_four,
         )])));

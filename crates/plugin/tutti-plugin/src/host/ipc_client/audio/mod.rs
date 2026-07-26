@@ -142,29 +142,23 @@ impl AudioBridge {
 
     /// Hand block `seq` to the bridge thread and return **immediately**.
     ///
-    /// RT-safe in the strongest sense available: lock-free, allocation-free, and
-    /// it does not wait at all. That is the point. The previous version blocked
-    /// here for up to half the block period, which was individually defensible
-    /// but summed across nodes — fundsp runs them serially in one callback, so
-    /// three stalled plugins spent 3 × 667 µs against a 1333 µs deadline and
-    /// overran it. Not waiting makes a stalled plugin cost zero, however many
-    /// there are.
+    /// Lock-free, allocation-free, and it never waits — see the module doc on
+    /// `Batcher` for why waiting here was the defect rather than a tuning problem.
     ///
     /// The caller collects block `seq`'s *output* on a later call, gated on the
-    /// slab's sequence number rather than on a reply (see
-    /// `Batcher::collectable`). Returning `true` means only "the bridge accepted
-    /// this block", never "the output is ready".
+    /// slab's sequence number rather than on a reply (see `Batcher::collectable`).
+    /// Returning `true` means only "the bridge accepted this block", never "the
+    /// output is ready".
     ///
     /// # What still comes back through the queue
     ///
-    /// Only the plugin's MIDI-out. The audio never travels this way — it is
-    /// written into, and read back out of, the shared [`AudioSlab`]. Everything
-    /// pending is drained into `midi_out` (cleared first); the caller-owned
-    /// buffer reaches steady-state capacity so the `append` is alloc-free.
+    /// Only the plugin's MIDI-out; audio travels through the shared [`AudioSlab`]
+    /// in both directions. Everything pending is drained into `midi_out` (cleared
+    /// first); the caller-owned buffer reaches steady-state capacity so the
+    /// `append` is alloc-free.
     ///
-    /// Note the resulting skew: MIDI-out drained here belongs to a block that
-    /// finished earlier, so its events' frame offsets are relative to *that*
-    /// block. The caller shifts them; see `PluginClient::drain_midi_out`.
+    /// Those events' frame offsets are relative to the *earlier* block that
+    /// produced them. The caller shifts them; see `PluginClient::drain_midi_out`.
     #[allow(clippy::too_many_arguments)]
     pub fn submit(
         &self,

@@ -148,7 +148,9 @@ impl PluginClient {
     pub fn set_midi_out(
         &self,
         queue: Arc<dyn tutti_midi_types::MidiRouter>,
-        routing: Arc<arc_swap::ArcSwap<tutti_midi_types::MidiRoutingSnapshot>>,
+        routing: Arc<
+            tutti_midi_types::tutti_types::RtPublish<tutti_midi_types::MidiRoutingSnapshot>,
+        >,
     ) {
         self.midi.set_out(queue, routing);
     }
@@ -200,24 +202,18 @@ impl PluginClient {
 
     /// Re-base the plugin's MIDI-out onto the block it is actually emitted in.
     ///
-    /// Pipelining means the reply drained here belongs to the block submitted
-    /// *last* time, so each event's `frame_offset` counts from that earlier
-    /// block's start. This block began [`PIPELINE_LATENCY_SAMPLES`] frames after
-    /// that one, so the event's position relative to *now* is
-    /// `offset - PIPELINE_LATENCY_SAMPLES` — always negative, because the offset
-    /// cannot exceed its own block's length. Every such event is therefore
-    /// already due, and clamps to frame 0.
+    /// The reply drained here belongs to the block submitted *last* time, so each
+    /// `frame_offset` counts from that earlier block's start. Relative to now that
+    /// is `offset - PIPELINE_LATENCY_SAMPLES`, always negative because an offset
+    /// cannot exceed its own block's length — so every such event is already due
+    /// and clamps to frame 0. Left unshifted they would land a full block *early*,
+    /// audible as an early-triggering sequencer.
     ///
-    /// Saturating to 0 rather than dropping: the event is one block late no
-    /// matter what, and emitting it at the top of this block is the closest
-    /// representable position. Dropping would silently lose an arpeggiator's
-    /// notes. The residual error is bounded by one block — the same 1.33 ms the
-    /// audio path declares to PDC — and unlike the audio it cannot be
-    /// compensated, because MIDI re-entering routing has no delay line to sit in.
-    ///
-    /// Left unshifted, these offsets would place plugin-generated notes a full
-    /// block *ahead* of the audio they are meant to align with, which is the
-    /// wrong direction and audible as an early-triggering sequencer.
+    /// Saturating rather than dropping: the event is late regardless, frame 0 is
+    /// the closest representable position, and dropping would silently lose an
+    /// arpeggiator's notes. The residual error is one block — the same 1.33 ms the
+    /// audio path declares to PDC — and unlike the audio it cannot be compensated,
+    /// since MIDI re-entering routing has no delay line to sit in.
     #[inline]
     fn shift_midi_out_into_this_block(&mut self) {
         let shift = PIPELINE_LATENCY_SAMPLES as u32;
@@ -473,7 +469,7 @@ impl PluginClient {
     pub fn set_transport_source(
         &mut self,
         reader: tutti_core::transport::Transport,
-        meter: Arc<arc_swap::ArcSwap<tutti_core::meter::MeterMap>>,
+        meter: Arc<tutti_core::RtPublish<tutti_core::meter::MeterMap>>,
     ) {
         self.inputs.transport.install(Arc::new(TransportSource::new(
             Arc::new(reader),

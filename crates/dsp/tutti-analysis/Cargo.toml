@@ -12,34 +12,33 @@ categories = ["multimedia::audio"]
 # default-features = false so tutti-core's default `bevy` doesn't leak in; this
 # crate's own `bevy` feature re-adds `tutti-core/bevy` when wanted.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
-
-# Bevy — optional, gated by the `bevy` feature. tutti-analysis defines its own
-# ECS integration (TuttiAnalysisPlugin, AnalysisRes, LiveAnalysisData) in the
-# `live` module; the analysis algorithms themselves are Bevy-free.
-bevy_ecs = { version = "0.19", default-features = false, optional = true }
-bevy_app = { version = "0.19", default-features = false, optional = true }
-bevy_reflect = { version = "0.19", default-features = false, optional = true }
-bevy_log = { version = "0.19", default-features = false, optional = true }
+# The unit vocabulary (Hz / Seconds / Samples / Amplitude / Confidence / …) and
+# the downmix matrices. Direct rather than through tutti-core's re-exports so
+# the units this crate's signatures speak are named at their source.
+tutti-types = { path = "../../core/tutti-types", default-features = false }
 
 # FFT for spectral analysis (transient detection, pitch detection)
 rustfft = "6"
-
-# Lock-free ring buffer and pointer swap for live analysis
-ringbuf = "0.4"
-arc-swap = "1"
-
-# LRU cache for thumbnail caching
-lru = "0.12"
 
 # Serialization (optional)
 serde = { version = "1", features = ["derive"], optional = true }
 
 [features]
-default = ["bevy"]
-# ECS integration (TuttiAnalysisPlugin + the live-analysis resources/systems).
-# Off → the analysis algorithms compile Bevy-free. `tutti-core` is requested
-# without bevy (`std` only), so the only Bevy pulled here is this crate's own.
-bevy = ["dep:bevy_ecs", "dep:bevy_app", "dep:bevy_reflect", "dep:bevy_log", "tutti-core/bevy"]
+# No `bevy` feature, and no default features. This crate is a library of
+# analysis algorithms over `&[f32]`; the ECS surface it used to carry belonged
+# to the live-analysis subsystem, which computed four analyses that nobody read
+# and has been removed. A host that wants these results in an ECS wires them up
+# on its own side.
+default = []
 # `dep:serde` (not bare `serde`) so this feature replaces the implicit
 # optional-dep feature rather than colliding with it.
 serde = ["dep:serde"]
+
+[dev-dependencies]
+# Reproducible noise for the correlation tests, which otherwise hand-roll a
+# generator. Seeded, so an uncorrelated-input assertion is not flaky.
+#
+# No `assert_no_alloc` here, unlike most sibling crates: everything this crate
+# does is cold-path batch analysis that legitimately allocates its output. The
+# one thread-adjacent path (`live.rs`) is being removed rather than gated.
+rand = "0.8"

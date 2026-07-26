@@ -12,21 +12,16 @@ use std::time::Duration;
 /// How many block periods the bridge thread will wait for a `ProcessAudio`
 /// reply before abandoning the block.
 ///
-/// This has to be bounded by the *block period*, not an absolute duration. The
-/// audio thread gives up on a block after a fraction of one period (see
-/// `wait_budget_for`); if the bridge thread waits far longer it stays blocked in
-/// `recv_reply` and — because `pump` is a single loop — dequeues no further
-/// commands while it waits. The audio thread meanwhile keeps pushing one command
-/// per block, so a single slow reply used to overflow the 128-slot command queue
-/// and produce a sustained run of silence long after the server recovered. With
-/// a 500 ms constant against a 667 µs budget (64 frames @ 48 kHz) that was a
-/// ~750x mismatch and roughly 750 queued blocks.
+/// Bounded by the *block period*, not an absolute duration. A bridge thread
+/// blocked in `recv_reply` dequeues no further commands — `pump` is a single
+/// loop — while the audio thread keeps pushing one command per block, so a single
+/// slow reply used to overflow the 128-slot queue and produce sustained silence
+/// long after the server recovered. The old 500 ms constant against a 667 µs
+/// block (64 frames @ 48 kHz) was a ~750x mismatch, some 750 queued blocks.
 ///
-/// A small multiple rather than the audio thread's own budget: the bridge is
-/// allowed to still be waiting when the audio thread has already given up (its
-/// reply then lands for a later block, or is discarded by `answers`), which
-/// absorbs ordinary jitter without stalling the queue. Beyond a few periods the
-/// reply is worthless anyway — the block it answers is long gone.
+/// A few periods rather than exactly one: the bridge may still be waiting after
+/// the audio thread has moved on, and that reply is simply unmatched by the
+/// slab's sequence check. Beyond a few periods it is worthless anyway.
 const PROCESS_TIMEOUT_PERIODS: u32 = 4;
 
 /// Fallback sample rate when the bridge has not been told the real one yet.
@@ -54,34 +49,28 @@ const STATE_TIMEOUT: Duration = Duration::from_secs(10);
 /// and still be worth sending.
 ///
 /// **This is the ring depth, not an independent tunable.** A reply is unusable
-/// once its slab slot has been overwritten — that is, once the host is more than
-/// [`RING_SLOTS`] blocks past it — so the two numbers express one constraint.
-/// Raising this without raising the ring would keep work whose destination has
-/// already been recycled; lowering it would drop work that was still usable.
-/// Deriving it is what stops a later edit from splitting them: two constants
-/// that should have been one is precisely how the 750x reply-timeout mismatch
-/// happened.
+/// once its slab slot has been overwritten — once the host is more than
+/// [`RING_SLOTS`] blocks past it — so the two express one constraint. Deriving it
+/// stops a later edit from splitting them; two constants that should have been one
+/// is precisely how the 750x reply-timeout mismatch above happened.
 ///
-/// It answers a *different* question from [`process_timeout`], and the two must
-/// not be conflated either. The timeout asks "is this plugin still responding?";
-/// this asks "is this reply still wanted?". Collapsing them — by capping the
-/// timeout low enough to force a catch-up — would answer the second by breaking
-/// the first, abandoning slow-but-working plugins on every block.
+/// It answers a *different* question from [`process_timeout`]: that asks "is this
+/// plugin still responding?", this asks "is this reply still wanted?". Capping the
+/// timeout low enough to force a catch-up would answer the second by breaking the
+/// first, abandoning slow-but-working plugins on every block.
 ///
-/// Dropping makes the bridge catch up in one step instead of grinding through a
-/// backlog of dead work. The honest cost: a stateful plugin (a delay line, a
-/// reverb tail) whose input blocks are skipped has its internal state diverge
-/// from a continuous signal, so it glitches on recovery rather than cleanly
-/// silencing. That is unavoidable in any design that does not stall the audio
-/// thread, and it only happens when the plugin is already failing to keep up.
+/// Cost of dropping: a stateful plugin (delay line, reverb tail) that skips input
+/// blocks has its state diverge from a continuous signal, so it glitches on
+/// recovery rather than cleanly silencing. Unavoidable without stalling the audio
+/// thread, and only when the plugin is already failing to keep up.
 const MAX_BEHIND: u64 = RING_SLOTS as u64;
 
 /// The bridge thread's reply timeout for one block: [`PROCESS_TIMEOUT_PERIODS`]
 /// of that block's own period, clamped to
 /// [`MIN_PROCESS_TIMEOUT`]..=[`MAX_PROCESS_TIMEOUT`].
 ///
-/// `num_samples`/`rate` stay raw here for the same reason as in
-/// `wait_budget_for`: both come off the IPC wire, where the unit mandate stops.
+/// `num_samples`/`rate` stay raw: both come off the IPC wire, where the unit
+/// mandate stops.
 fn process_timeout(num_samples: usize, rate: f64) -> Duration {
     let rate = if rate.is_finite() && rate > 0.0 {
         rate

@@ -10,8 +10,8 @@ categories = ["multimedia::audio"]
 
 [dependencies]
 bitflags = "2"
-# Atomic snapshot publishing for MidiRoutingTable.
-arc-swap = "1.7"
+# `RtPublish` — atomic snapshot publishing for MidiRoutingTable.
+tutti-types = { path = "../../core/tutti-types", default-features = false }
 
 # midi2's feature set is fully specified at the workspace level (this is its
 # only consumer). midly's alloc feature gives it owned event buffers.

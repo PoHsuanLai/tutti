@@ -9,25 +9,21 @@
 //!
 //! # Pipelined, never waiting
 //!
-//! Both paths **submit block N and consume block N−1's output**, without ever
-//! waiting for a reply. This is the whole design, and it replaced a synchronous
-//! version that spun on the audio thread for the subprocess round-trip.
+//! Both paths **submit block N and consume block N−1's output**, never waiting
+//! for a reply. This replaced a synchronous version that spun on the audio
+//! thread, where each node's wait was individually reasonable — half its own
+//! block period — but the budgets *summed*: fundsp runs nodes serially in one
+//! callback (`for &node_index in self.order`), so three stalled plugins spent
+//! 3 × 667 µs against a 1333 µs deadline. Parallelising fundsp would not have
+//! helped; plugins in series are a dependency chain. The defect was the waiting.
 //!
-//! The synchronous version was individually reasonable — each node waited at
-//! most half its own block period — but the budgets *summed*: fundsp runs nodes
-//! serially in one callback (`for &node_index in self.order`), so three
-//! concurrently-stalled plugins spent 3 × 667 µs against a 1333 µs deadline and
-//! overran it. Parallelising fundsp would not have helped, because plugins in
-//! series on one track are a dependency chain. The defect was the waiting, not
-//! the serialism.
+//! Not waiting makes a stalled plugin cost zero, however many there are and
+//! whatever the graph's shape. The price is one block of latency per
+//! out-of-process plugin — 64 samples, 1.33 ms at 48 kHz — *declared to PDC*
+//! (see [`PIPELINE_LATENCY_SAMPLES`]) and so compensated rather than heard. This
+//! is what JACK, PipeWire and AUv3 all do.
 //!
-//! Not waiting makes the per-node cost of a stalled plugin zero regardless of
-//! how many there are or how the graph is shaped. The price is one block of
-//! latency per out-of-process plugin — 64 samples, 1.33 ms at 48 kHz — which is
-//! *declared to PDC* (see [`PIPELINE_LATENCY_SAMPLES`]) and therefore compensated
-//! rather than heard. This is what JACK, PipeWire and AUv3 all do.
-//!
-//! Whether block N−1's output is really there is decided by the slab's per-slot
+//! Whether N−1's output is really there is decided by the slab's per-slot
 //! sequence numbers, not by a reply arriving: a mismatch yields silence. See
 //! `util::transport::shm::header`.
 //!

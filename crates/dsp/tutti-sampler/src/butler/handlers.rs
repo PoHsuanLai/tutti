@@ -7,8 +7,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use dashmap::DashMap;
+use tutti_core::RtPublish;
 use tutti_core::{Samples, SrcRatio};
 
 use super::cache::LruCache;
@@ -30,7 +30,7 @@ pub(super) struct Handles {
     pub cache: Arc<LruCache>,
     pub metrics: Arc<Metrics>,
     /// Lock-free subscription to the compensation table. `None` = no PDC wiring.
-    pub pdc: Option<Arc<ArcSwap<Vec<Samples>>>>,
+    pub pdc: Option<Arc<RtPublish<Vec<Samples>>>>,
 }
 
 /// Butler-thread-local state. Never shared. Plain data.
@@ -203,7 +203,7 @@ fn handle_stream_file(
     }
 
     let pdc_preroll = shared.pdc.as_ref().map_or(0, |pdc| {
-        pdc.load()
+        pdc.read()
             .get(channel_index)
             .copied()
             .unwrap_or_default()

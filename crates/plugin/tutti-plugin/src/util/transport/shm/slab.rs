@@ -1,48 +1,34 @@
 //! Named, cross-process audio storage: a header plus two independent rings of
 //! `channels × samples_per_channel` samples, one per direction.
 //!
-//! # The process edge, in the engine's I/O vocabulary
-//!
-//! This slab is where audio genuinely crosses the subprocess boundary, so it
-//! is the concrete realisation of [`tutti_types::io`]'s two roles at that edge:
-//! the `write_*` methods are the [`AudioOut`](tutti_types::io::AudioOut) side
-//! (push a block of samples into the shared region) and the `read_*_into`
-//! methods are the [`AudioIn`](tutti_types::io::AudioIn) side (poll a block back
-//! out). The slab does not `impl` those traits directly: they move *interleaved*
-//! `[S; CH]` frames, whereas the slab is *mono-planar* — one fixed contiguous
-//! region per channel, addressed by index — because the plugin ABIs it feeds
-//! are deinterleaved and the memcpy must stay a straight per-channel copy with
-//! no transpose. The traits name what each direction *is*; this module is the
-//! planar, fixed-region edge that carries it across the process boundary.
+//! Layout is **mono-planar** — one contiguous region per channel, addressed by
+//! index — not interleaved, because the plugin ABIs it feeds are deinterleaved
+//! and the memcpy must stay a straight per-channel copy with no transpose. That
+//! is why it does not `impl` [`tutti_types::io`]'s `AudioIn`/`AudioOut`, which
+//! move interleaved `[S; CH]` frames.
 //!
 //! # Why shared memory
 //!
-//! Each plugin runs in its own subprocess, so the host and the plugin live
-//! in separate address spaces and share no memory by default. Audio has to
-//! cross that boundary every block (~thousands of times a second), on the
-//! real-time audio thread, which must never block, allocate, or wait on the
-//! kernel. Sending it over the control socket would mean serialize + two
-//! syscalls + kernel copies *per block* — far too expensive.
+//! Host and plugin are separate processes, so they share no memory by default,
+//! and audio crosses the boundary every block on the audio thread — which must
+//! never block, allocate, or enter the kernel. Over the control socket that
+//! would be serialize + two syscalls + kernel copies per block.
 //!
-//! Instead both processes `mmap` the *same* named, RAM-backed file
-//! (`/dev/shm` on Linux, a temp file elsewhere), so the kernel maps the
-//! same physical pages into both. A write on one side is instantly visible
-//! to the other: transfer becomes a plain `memcpy` with no syscall in the
-//! hot path.
+//! Instead both processes `mmap` the *same* named, RAM-backed file (`/dev/shm`
+//! on Linux, a temp file elsewhere), so the kernel maps the same physical pages
+//! into both and transfer is a plain `memcpy`.
 //!
 //! # Synchronization lives here, not above
 //!
-//! This module used to carry no synchronization at all — no header, no
-//! generation counter, no data-ready flag — and delegated the single-writer
-//! invariant to a request/reply handshake "one layer up". **That handshake did
-//! not exist**, and the gap was invisible precisely because this layer could not
-//! report it: a read of an untouched region returned full length and plausible
-//! bytes, indistinguishable from a successful one. With the two directions
-//! aliased onto the same offset, an unmatched read handed the host its own input
-//! back at unity gain — a silent bypass that measured as working audio.
+//! This module used to carry none at all, delegating the single-writer invariant
+//! to a request/reply handshake "one layer up" that **did not exist**. The gap
+//! was invisible because this layer could not report it: a read of an untouched
+//! region returned full length and plausible bytes. With both directions aliased
+//! onto one offset, an unmatched read handed the host its own input back — a
+//! silent bypass that measured as working audio.
 //!
 //! Validity is now answered *in the slab*, by [`SlabHeader`]'s per-slot sequence
-//! numbers, and the two directions occupy disjoint regions. The rules:
+//! numbers, and the two directions occupy disjoint regions:
 //!
 //! - A writer fills every channel of a slot, then calls `publish_*` **once**.
 //! - A reader calls `*_sequence` first and only copies if it matches the block
@@ -50,16 +36,10 @@
 //!
 //! `read_*_into` still returns a copy count, but that count means only "how many
 //! samples I copied" — **it is not evidence that anyone wrote them**. The
-//! sequence number is the evidence. See `header.rs` for the Release/Acquire
-//! argument.
+//! sequence number is. See `header.rs` for the Release/Acquire argument.
 //!
-//! # Sample payload stays raw
-//!
-//! The `f32`/`f64` samples here are deliberately NOT wrapped in the engine's
-//! unit newtypes. This is a C-ABI / IPC boundary: the bytes are `memcpy`'d
-//! into a region the plugin subprocess reads with its own ABI expectations,
-//! where the layout must be exactly the primitive's. The unit vocabulary stops
-//! at this edge by design.
+//! Samples stay raw `f32`/`f64`, not unit newtypes: this is a C-ABI / IPC
+//! boundary where the layout must be exactly the primitive's.
 //!
 //! # Lifecycle
 //!
@@ -604,11 +584,11 @@ mod tests {
         for seq in 1..=RING_SLOTS as u64 {
             for ch in 0..l.input_channels() {
                 tag += 1.0;
-                slab.write_input(seq, ch, &vec![tag; 16]).unwrap();
+                slab.write_input(seq, ch, &[tag; 16]).unwrap();
             }
             for ch in 0..l.output_channels() {
                 tag += 1.0;
-                slab.write_output(seq, ch, &vec![tag; 16]).unwrap();
+                slab.write_output(seq, ch, &[tag; 16]).unwrap();
             }
         }
 

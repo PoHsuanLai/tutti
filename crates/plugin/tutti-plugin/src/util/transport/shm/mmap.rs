@@ -90,22 +90,15 @@ impl MmapCell {
             bytes.len() >= std::mem::size_of::<SlabHeader>(),
             "slab mapping is smaller than its own header"
         );
-        // SAFETY: three conditions, each independently established.
-        //
-        // *Alignment*: an mmap base address is page-aligned (4 KiB or more),
-        // which exceeds `SlabHeader`'s alignment — it is `CachePadded`, so at
-        // most 128 bytes. The header sits at offset 0, so the pointer inherits
-        // that alignment.
-        //
-        // *Size*: asserted above.
-        //
-        // *Validity*: `SlabHeader` is `repr(C)` and contains only atomic
-        // integers, which have no invalid bit patterns and no niches. Every byte
-        // sequence of the right length is therefore a valid instance —
-        // including the all-zeros of a freshly created mapping, which is exactly
-        // the state `initialize` expects to find. `validate` is what decides
-        // whether the contents are *meaningful*; this cast only needs them to be
-        // well-formed.
+        // SAFETY:
+        // - *Alignment*: the header sits at offset 0 of a page-aligned mmap base,
+        //   which exceeds `SlabHeader`'s alignment (`CachePadded`, so <= 128).
+        // - *Size*: asserted above.
+        // - *Validity*: `repr(C)` holding only atomic integers — no invalid bit
+        //   patterns, no niches — so any byte sequence of the right length is a
+        //   valid instance, including a fresh mapping's zeros. `validate` decides
+        //   whether the contents are *meaningful*; this cast only needs them
+        //   well-formed.
         unsafe { &*(bytes.as_ptr() as *const SlabHeader) }
     }
 }

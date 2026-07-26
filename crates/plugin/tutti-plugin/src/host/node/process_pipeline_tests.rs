@@ -347,8 +347,7 @@ fn pipeline_output_lags_input_by_exactly_one_block() {
     );
 
     let mut failures = Vec::new();
-    for block in 1..blocks {
-        let got = &captured[block];
+    for (block, got) in captured.iter().enumerate().skip(1) {
         let ok = (0..CHANNELS).all(|ch| {
             (0..BATCH_SIZE)
                 .all(|i| (got[ch][i] - ramp_sample(block - 1, ch, i) * GAIN).abs() < 1e-4)
@@ -373,8 +372,7 @@ fn pipeline_steady_state_is_not_echoed_or_doubly_stale() {
     let blocks = 6;
     let captured = drive_blocks_with_gap(blocks, CALLBACK_GAP);
 
-    for block in 2..blocks {
-        let got = &captured[block];
+    for (block, got) in captured.iter().enumerate().skip(2) {
         let matches = |b: usize, gain: f32| {
             (0..CHANNELS)
                 .all(|ch| (0..BATCH_SIZE).all(|i| (got[ch][i] - ramp_sample(b, ch, i) * gain).abs() < 1e-4))

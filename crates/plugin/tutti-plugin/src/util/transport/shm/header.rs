@@ -2,61 +2,48 @@
 //!
 //! # Why this exists
 //!
-//! The audio regions below this header carry no evidence of who wrote them. A
-//! freshly-mapped region of zeros and a region the peer just filled are
-//! byte-identical from the reader's side, so a bare `memcpy` out of shared
-//! memory cannot distinguish "the peer produced this block" from "nobody has
-//! touched this yet". That indistinguishability is not a theoretical concern —
-//! it is exactly how the out-of-process bypass shipped: with the input and
-//! output regions aliased, an unmatched read handed the host its own input back
+//! The audio regions below this header carry no evidence of who wrote them: a
+//! freshly-mapped region of zeros and one the peer just filled are byte-identical
+//! to the reader. That is exactly how the out-of-process bypass shipped — with
+//! input and output aliased, an unmatched read handed the host its own input back
 //! at unity gain, and every test passed because a plausible signal came out.
 //!
-//! The fix is to publish evidence *in the shared region itself*, next to the
-//! data it describes: a per-slot sequence number that the writer stamps after
-//! the last sample and the reader checks before the first. This is the shape
-//! JACK and PipeWire ship, and it is what finally justifies [`MmapCell`]'s
-//! `unsafe impl Sync` — the justification can now cite a Release/Acquire pair
-//! rather than a handshake in a layer above that the type system cannot see.
+//! So the evidence goes *in the shared region*, beside the data it describes: a
+//! per-slot sequence number the writer stamps after the last sample and the
+//! reader checks before the first. This is the shape JACK and PipeWire ship, and
+//! it is what finally justifies [`MmapCell`]'s `unsafe impl Sync` — the
+//! justification can cite a Release/Acquire pair rather than a handshake in a
+//! layer the type system cannot see.
 //!
 //! [`MmapCell`]: super::mmap::MmapCell
 //!
 //! # The ordering, and why it is not decorative
 //!
-//! Publishing a block is two steps that must not be reordered:
+//! Publish is `memcpy` every channel, *then* store `seq` with
+//! [`Release`](Ordering::Release). Read is the mirror: load `seq` with
+//! [`Acquire`](Ordering::Acquire), and only `memcpy` out if it matches.
 //!
-//! 1. `memcpy` every channel's samples into the slot.
-//! 2. Store `seq` for that slot, with [`Release`](Ordering::Release).
+//! Without the pair a reader may legally observe the new sequence number
+//! alongside the *old* samples — CPU and compiler are both free to reorder plain
+//! stores around a `Relaxed` atomic, and on aarch64 (one of the two architectures
+//! this engine targets) that is real hardware behaviour, not just a permitted
+//! one.
 //!
-//! Reading is the mirror:
-//!
-//! 1. Load `seq` for the slot, with [`Acquire`](Ordering::Acquire).
-//! 2. Only if it matches the expected block, `memcpy` the samples out.
-//!
-//! The Release store publishes every write that preceded it; the Acquire load
-//! makes those writes visible to everything that follows it. Without the pair, a
-//! reader may legally observe the new sequence number alongside the *old*
-//! samples — the CPU and the compiler are both free to reorder plain stores
-//! around a `Relaxed` atomic. On aarch64, one of the two architectures this
-//! engine targets, that reordering is a real hardware behaviour and not merely
-//! permitted by the memory model.
-//!
-//! There is no way to test this property into existence: a stress test on a
-//! strongly-ordered x86-64 machine passes whether or not the orderings are
-//! correct, and on aarch64 it fails only probabilistically. **Code review is the
-//! net here, not the test suite.** Each ordering appears in exactly one place,
-//! immediately below, and each carries the reason it is not `Relaxed`.
+//! This property cannot be tested into existence: a stress test on
+//! strongly-ordered x86-64 passes either way, and on aarch64 it fails only
+//! probabilistically. **Code review is the net here, not the test suite.** Each
+//! ordering appears in exactly one place below, with its reason for not being
+//! `Relaxed`.
 //!
 //! # Sequence numbers, not a "newest" index
 //!
-//! The header stores a sequence *per slot*, rather than one "most recently
-//! written" index. The reader does not want the newest block — it wants a
-//! specific one, the block it submitted a fixed number of blocks ago. A single
-//! newest-index would let a skipped block (the server errored, or the shm path
-//! was never set up) hand back block N-2 as though it were N-1: a one-block
-//! stale bypass, quieter than the original bug but the same class of defect.
+//! Per-slot, because the reader wants a *specific* block — the one it submitted
+//! a fixed number of blocks ago — not the newest. A single newest-index would let
+//! a skipped block (server error, shm never set up) hand back N-2 as though it
+//! were N-1: the same defect class as the original bug, one block quieter.
 //!
-//! Sequences start at **1**, because a freshly-created slab is zeroed and 0 must
-//! mean "nothing was ever published here".
+//! Sequences start at **1**: a fresh slab is zeroed, so 0 must mean "nothing was
+//! ever published here".
 
 use crossbeam::utils::CachePadded;
 use std::mem::{align_of, offset_of, size_of};

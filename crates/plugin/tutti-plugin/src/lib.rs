@@ -139,6 +139,9 @@ pub use util::config::BridgeConfig;
 /// (see [`tutti_plugin_types::assert_main_thread`]). Call once, on the UI
 /// thread, at host startup. No-op if never called.
 pub use tutti_plugin_types::mark_main_thread;
+// `PluginClient::set_automation_state` takes this, so callers must be able to
+// name it without depending on tutti-plugin-types directly.
+pub use tutti_plugin_types::AutomationMode;
 
 /// Building blocks for out-of-crate in-process loaders.
 ///

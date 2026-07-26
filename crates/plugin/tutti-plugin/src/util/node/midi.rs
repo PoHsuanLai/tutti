@@ -15,7 +15,8 @@
 
 use std::sync::Arc;
 
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwapOption;
+use tutti_midi_types::tutti_types::RtPublish;
 
 use crate::protocol::MidiEventVec;
 use tutti_midi_runtime::{MidiInPort, MidiSender};
@@ -35,7 +36,7 @@ const POLL_BUFFER_SIZE: usize = 256;
 /// output is just another source.
 struct OutHandle {
     queue: Arc<dyn MidiRouter>,
-    routing: Arc<ArcSwap<MidiRoutingSnapshot>>,
+    routing: Arc<RtPublish<MidiRoutingSnapshot>>,
 }
 
 fn empty_poll_scratch() -> Vec<MidiEvent> {
@@ -123,7 +124,11 @@ impl Midi {
     /// routing. `routing` is the shared snapshot the engine already uses for
     /// hardware input, and `queue` the fan-out bus. Off-RT (call once at wiring
     /// time).
-    pub fn set_out(&self, queue: Arc<dyn MidiRouter>, routing: Arc<ArcSwap<MidiRoutingSnapshot>>) {
+    pub fn set_out(
+        &self,
+        queue: Arc<dyn MidiRouter>,
+        routing: Arc<RtPublish<MidiRoutingSnapshot>>,
+    ) {
         self.out.store(Some(Arc::new(OutHandle { queue, routing })));
     }
 
@@ -147,7 +152,7 @@ impl Midi {
         let Some(handle) = handle.as_ref() else {
             return;
         };
-        let routing = handle.routing.load();
+        let routing = handle.routing.read();
         for event in events {
             for target in routing.route(event) {
                 handle.queue.queue(target, std::slice::from_ref(event));
@@ -252,7 +257,7 @@ mod tests {
     fn out_install_propagates_across_clones() {
         let dest = MidiUnitId::new(77);
         let queue = Arc::new(RecordingQueue::default());
-        let routing = Arc::new(ArcSwap::from_pointee(MidiRoutingSnapshot::from_routes(
+        let routing = Arc::new(RtPublish::new(MidiRoutingSnapshot::from_routes(
             vec![MidiRoute::new().with_target(dest)],
             None,
         )));

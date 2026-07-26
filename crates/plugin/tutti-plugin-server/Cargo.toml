@@ -59,6 +59,13 @@ smallvec = { version = "1.13", features = ["serde"] }
 # Cross-platform local IPC (Unix sockets on Unix, named pipes on Windows)
 interprocess = { version = "2" }
 
+# Realtime scheduling for the audio phase. The host's own audio callback runs on
+# a thread the OS backend created with realtime priority (CoreAudio, WASAPI,
+# JACK all do this); a subprocess we spawned ourselves inherits ordinary
+# priority and has to ask. Same crate and version as `tutti-sampler`'s disk
+# butler, which elevates for the same reason.
+thread-priority = "1.1"
+
 # Error handling
 thiserror = "2"
 

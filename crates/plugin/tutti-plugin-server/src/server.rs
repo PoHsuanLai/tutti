@@ -9,6 +9,49 @@ use crate::transport::{Transport, TransportListener};
 use tutti_plugin::server::{BridgeConfig, BridgeMessage, PROTOCOL_VERSION};
 use tutti_plugin::Result;
 
+/// Ask the OS to schedule this thread as realtime, now that it is about to do
+/// nothing but per-block audio work.
+///
+/// # Why the subprocess has to ask and the host does not
+///
+/// On the host side the audio callback runs on a thread the OS audio backend
+/// created — CoreAudio, WASAPI and JACK all give that thread realtime priority
+/// themselves, because it is driving a live device. A plugin subprocess gets no
+/// such treatment: it is an ordinary `Command::spawn`ed process at default
+/// priority, competing with every background task on the machine, and yet it
+/// must answer within the same block period.
+///
+/// That asymmetry is measurable. Driving eight real plugins at 64 frames /
+/// 48 kHz from an unprivileged harness, the number of blocks whose reply
+/// arrived in time swung between 29 and 492 out of 500 across identical runs —
+/// entirely at the scheduler's discretion.
+///
+/// # Why a late reply is not a correctness problem
+///
+/// It is a *quality* problem. A block whose reply misses its window produces
+/// silence, never wrong audio: the host reads a slot only when the slab's
+/// sequence number says the server published it (see
+/// `tutti_plugin::util::transport::shm::header`). So this call raises the
+/// proportion of blocks that carry audio; it is not load-bearing for the
+/// pipeline being sound.
+///
+/// # Why failure is ignored
+///
+/// Elevation needs privileges that are not always available — a hardened
+/// sandbox, a container without `CAP_SYS_NICE`, an unprivileged CI runner.
+/// Refusing to run there would turn a degraded-quality situation into a
+/// non-functional one. `ThreadPriority::Max` matches
+/// `tutti-sampler`'s disk butler, the engine's other thread with a deadline.
+fn raise_to_realtime() {
+    match thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Max) {
+        Ok(()) => tracing::debug!("plugin-server audio phase running at realtime priority"),
+        Err(e) => tracing::info!(
+            "could not raise the audio phase to realtime priority ({e:?}); \
+             continuing at normal priority — expect more dropped blocks under load"
+        ),
+    }
+}
+
 pub struct PluginServer {
     config: BridgeConfig,
     session: Session,
@@ -40,6 +83,7 @@ impl PluginServer {
         audio.send(&BridgeMessage::Ready {
             protocol_version: PROTOCOL_VERSION,
         })?;
+        raise_to_realtime();
         self.audio_phase(&mut audio)
     }
 

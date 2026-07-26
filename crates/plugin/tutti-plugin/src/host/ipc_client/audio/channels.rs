@@ -74,6 +74,18 @@ impl Channels {
         self.buffer_id_counter.fetch_add(1, Ordering::Relaxed)
     }
 
+    /// The id the *next* `Process` will be issued — i.e. one past the newest
+    /// block the audio thread has submitted.
+    ///
+    /// The bridge thread uses this to tell how far behind a command it just
+    /// dequeued is, without draining the queue to look. `Relaxed` is right for
+    /// the same reason as `next_buffer_id`'s: this only decides whether to skip
+    /// work that is already provably useless, so reading a value one block stale
+    /// costs at most one extra dead block.
+    pub(super) fn issued_buffer_ids(&self) -> u32 {
+        self.buffer_id_counter.load(Ordering::Relaxed)
+    }
+
     /// Pushes, then wakes the bridge thread. `Thread::unpark` is a non-blocking
     /// futex/semaphore post — no allocation, no waiting — so it is safe from
     /// the audio thread, and it removes the poll-interval latency from the

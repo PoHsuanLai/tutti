@@ -44,6 +44,29 @@ const MAX_PROCESS_TIMEOUT: Duration = Duration::from_millis(50);
 const PARAM_TIMEOUT: Duration = Duration::from_secs(5);
 const STATE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How many blocks behind the newest submitted block a queued `Process` may be
+/// and still be worth sending.
+///
+/// This answers a *different* question from [`process_timeout`], and the two
+/// must not be conflated. The timeout asks "is this plugin still responding?";
+/// this asks "is this reply still wanted?". Collapsing them — by capping the
+/// timeout low enough to force a catch-up — would answer the second by breaking
+/// the first, abandoning slow-but-working plugins on every block.
+///
+/// The bound is one block because the audio thread only ever waits for the reply
+/// to the block it just submitted: it pushes `S`, waits, and on timeout emits
+/// silence and moves on. Once it has advanced to `S+2`, nothing is left that
+/// could consume `S`'s reply, so sending `S` is pure waste that also delays the
+/// live block behind it. Dropping makes the bridge catch up in one step instead
+/// of grinding through a backlog of dead work.
+///
+/// The honest cost: a stateful plugin (a delay line, a reverb tail) whose input
+/// blocks are skipped has its internal state diverge from a continuous signal,
+/// so it glitches on recovery rather than cleanly silencing. That is unavoidable
+/// in any design that does not stall the audio thread, and it only happens when
+/// the plugin is already failing to keep up.
+const MAX_BEHIND: u32 = 1;
+
 /// The bridge thread's reply timeout for one block: [`PROCESS_TIMEOUT_PERIODS`]
 /// of that block's own period, clamped to
 /// [`MIN_PROCESS_TIMEOUT`]..=[`MAX_PROCESS_TIMEOUT`].
@@ -60,6 +83,21 @@ fn process_timeout(num_samples: usize, rate: f64) -> Duration {
     (period * PROCESS_TIMEOUT_PERIODS).clamp(MIN_PROCESS_TIMEOUT, MAX_PROCESS_TIMEOUT)
 }
 
+/// Whether block `sent_id` is far enough behind the newest submitted block that
+/// its reply is provably unwanted. `issued` is one past the newest id (see
+/// [`Channels::issued_buffer_ids`]), so `issued - 1 - sent_id` is the number of
+/// blocks the host has advanced since.
+///
+/// `wrapping_sub` because `buffer_id` is a `u32` that genuinely wraps — roughly
+/// 66 days of continuous playback at 64 frames / 48 kHz. A plain subtraction
+/// would panic in debug and, worse, compute a colossal "behind" count in release
+/// for the one block that straddles the wrap, dropping it for no reason. The
+/// wrapping difference stays correct across the boundary as long as the queue
+/// depth is far below `u32::MAX`, which the 128-slot command queue guarantees.
+fn is_stale(sent_id: u32, issued: u32) -> bool {
+    issued.wrapping_sub(1).wrapping_sub(sent_id) > MAX_BEHIND
+}
+
 pub(super) fn handle(
     cmd: Command,
     stream: &mut ControlStream,
@@ -70,6 +108,17 @@ pub(super) fn handle(
         Command::Process(mut payload) => {
             let sent_id = payload.buffer_id;
             let num_samples = payload.num_samples;
+
+            // Skip a block the host has already advanced past: its reply cannot
+            // be consumed by anyone (see `MAX_BEHIND`). Recycle the payload as
+            // usual so the pool doesn't leak, and push nothing — the audio
+            // thread that submitted this block has already timed out into
+            // silence and moved on, so there is no waiter to answer.
+            if is_stale(sent_id, channels.issued_buffer_ids()) {
+                payloads.recycle(payload);
+                return Ok(());
+            }
+
             let msg = HostMessage::ProcessAudio(Box::new(ProcessAudioData {
                 buffer_id: payload.buffer_id,
                 num_samples: payload.num_samples,
@@ -259,5 +308,64 @@ mod tests {
             let t = process_timeout(64, bad);
             assert!(t >= MIN_PROCESS_TIMEOUT && t <= MAX_PROCESS_TIMEOUT, "rate={bad}: {t:?}");
         }
+    }
+
+    /// The block the host is currently waiting on is never stale — dropping it
+    /// would turn every block into silence, which is the opposite of the fix.
+    #[test]
+    fn the_newest_block_is_never_stale() {
+        // Host issued ids 0..=9, so `issued` is 10 and block 9 is in flight.
+        assert!(!is_stale(9, 10));
+    }
+
+    /// One block behind is still sent: the audio thread may not have given up on
+    /// it yet, and `MAX_BEHIND` is deliberately tolerant of ordinary jitter.
+    #[test]
+    fn one_block_behind_is_still_sent() {
+        assert!(!is_stale(8, 10));
+    }
+
+    /// Two or more behind is provably unconsumable — no waiter remains.
+    #[test]
+    fn two_or_more_blocks_behind_are_dropped() {
+        assert!(is_stale(7, 10));
+        assert!(is_stale(0, 10));
+        assert!(is_stale(0, 1_000));
+    }
+
+    /// A backlog is dropped down to the live block in one pass rather than
+    /// ground through: of ten queued blocks only the newest two survive. This is
+    /// the whole point — the old behaviour sent all ten, each costing a socket
+    /// round-trip, while the audio thread kept adding more.
+    #[test]
+    fn a_backlog_collapses_to_the_live_blocks() {
+        let issued = 10;
+        let survivors: Vec<u32> = (0..issued).filter(|&id| !is_stale(id, issued)).collect();
+        assert_eq!(survivors, vec![8, 9]);
+    }
+
+    /// `buffer_id` is a `u32` and wraps after ~66 days of continuous playback.
+    /// The block straddling the wrap must be judged on its true distance, not on
+    /// a subtraction that underflows: a plain `issued - 1 - sent_id` would make
+    /// the freshest possible block look ~4 billion blocks behind and drop it.
+    #[test]
+    fn staleness_survives_the_u32_wrap() {
+        // The counter has just wrapped: `issued` is 0, so the newest issued id
+        // is `u32::MAX` and the ids in flight straddle the boundary.
+        assert!(!is_stale(u32::MAX, 0), "the live block across the wrap");
+        assert!(
+            !is_stale(u32::MAX - 1, 0),
+            "one behind, across the wrap, still sent"
+        );
+        assert!(
+            is_stale(u32::MAX - 2, 0),
+            "two behind, across the wrap, dropped"
+        );
+
+        // One step further on: `issued` is 1, so ids 0 and u32::MAX are the two
+        // live blocks and everything before them is dropped.
+        assert!(!is_stale(0, 1), "the live block just past the wrap");
+        assert!(!is_stale(u32::MAX, 1), "one behind, now below the wrap");
+        assert!(is_stale(u32::MAX - 1, 1), "two behind, dropped");
     }
 }

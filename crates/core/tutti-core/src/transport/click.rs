@@ -126,8 +126,24 @@ impl ClickSettings {
     }
 
     /// The meter in force. Prefer calling this once per block.
-    pub fn meter(&self) -> Arc<MeterMap> {
-        self.meter.load_full()
+    ///
+    /// Returns a [`Guard`](arc_swap::Guard), *not* an `Arc`, and the difference is
+    /// load-bearing on the audio thread. `load_full` would hand back an owning
+    /// `Arc`; if the publisher had already retired that `MeterMap` and dropped its
+    /// own handle, the audio thread would be left holding the last reference and
+    /// would free the `Vec` inside the callback. A guard is a borrow — dropping it
+    /// is a group-counter decrement that can never deallocate, so the hazard is
+    /// absent by construction rather than by test.
+    ///
+    /// Retired values are freed by whoever calls [`set_meter`](Self::set_meter):
+    /// `ArcSwap::store` returns the old value to the *writer* after
+    /// `wait_for_readers`, which is exactly the property that keeps the free off
+    /// this thread.
+    ///
+    /// Hold it only for the block you are rendering. Parking a guard long-term
+    /// keeps a retired `MeterMap` alive and stalls the next writer.
+    pub fn meter(&self) -> arc_swap::Guard<Arc<MeterMap>> {
+        self.meter.load()
     }
 
     /// The shared meter cell, for other subsystems that must see the same value.

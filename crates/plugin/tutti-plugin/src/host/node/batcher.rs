@@ -23,7 +23,14 @@ use tutti_core::{BufferMut, BufferRef, Sample as FundspSample, F32, F64};
 
 /// Matches fundsp's `MAX_BUFFER_SIZE` (`1 << 6`). Blocks of this size are
 /// fundsp's natural unit and what the plugin server is sized for.
-pub(super) const BATCH_SIZE: usize = 64;
+///
+/// This is a hard ceiling on the per-block sample count, not just a preference:
+/// `AudioUnit::process` is documented "process up to 64 samples" and every
+/// fundsp entry point `debug_assert!(size <= MAX_BUFFER_SIZE)`, with
+/// `BigBlockAdapter` chunking anything larger before it reaches a node. So the
+/// shared-memory slab is sized to this rather than to `config.max_buffer_size`
+/// — see `subprocess::launch::setup_shm`, the other consumer of this constant.
+pub(crate) const BATCH_SIZE: usize = 64;
 
 /// `count` per-channel buffers, each `size` samples of zeroed `T`.
 fn zero_channels<T: Copy + Default>(count: usize, size: usize) -> Vec<Vec<T>> {

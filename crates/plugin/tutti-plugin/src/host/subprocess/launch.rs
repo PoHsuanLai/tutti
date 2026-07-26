@@ -4,6 +4,7 @@
 
 use super::locate::find_plugin_server;
 use crate::error::{BridgeError, Result};
+use crate::host::node::BATCH_SIZE;
 use crate::protocol::{
     BridgeMessage, BusChannels, ChannelLayout, HostMessage, LoadedPlugin, PluginDescriptor,
     SampleFormat,
@@ -108,13 +109,20 @@ fn load_plugin(
     }
 }
 
-fn setup_shm(
-    stream: &mut ControlStream,
-    config: &BridgeConfig,
+/// The slab shape for a freshly loaded plugin: how many flat channels, how they
+/// partition into buses, and how many samples per channel cross the boundary.
+///
+/// Split out of [`setup_shm`] because it is the whole of the decision and none
+/// of the I/O — every input is a plain value, so it is unit-testable, whereas
+/// `setup_shm` needs a live subprocess on the other end of `stream`. That
+/// matters more than it looks: the only production construction site for a
+/// `SlabLayout` used to be unreachable from a test, so the in-place aliasing
+/// decision below could only be checked by launching a real plugin.
+fn slab_layout_for(
     loaded: &LoadedPlugin,
     format: SampleFormat,
-    shm_name: String,
-) -> Result<Arc<AudioSlab>> {
+    max_buffer_size: usize,
+) -> SlabLayout {
     // Carry the plugin's per-bus layout on the slab so both processes agree how
     // the flat channel range maps to buses. Loaders always populate at least the
     // main bus, so a single-bus plugin reports `inputs = [main_in]` /
@@ -137,13 +145,35 @@ fn setup_shm(
     } else {
         (loaded.inputs.clone(), loaded.outputs.clone())
     };
-    let layout = SlabLayout {
+    SlabLayout {
         channels: ChannelLayout::from(channels),
-        samples_per_channel: config.max_buffer_size,
+        // Sized to the largest block that can actually arrive, NOT to
+        // `config.max_buffer_size`. The two are different quantities that were
+        // being conflated: `max_buffer_size` (8192 by default) is what the
+        // *plugin* is told to size its own buffers for on `LoadPlugin`, whereas
+        // this is what crosses the shared region per block — and fundsp never
+        // hands a node more than `BATCH_SIZE` at a time (see the constant's
+        // docs; `BigBlockAdapter` chunks anything larger upstream).
+        //
+        // At the default that is a 128x over-allocation: 64 KiB of untouched
+        // mapped pages per stereo plugin instead of 512 B. `min` rather than a
+        // bare `BATCH_SIZE` so a host that deliberately configures a *smaller*
+        // buffer still gets a slab it cannot overrun.
+        samples_per_channel: max_buffer_size.min(BATCH_SIZE),
         format,
         inputs,
         outputs,
-    };
+    }
+}
+
+fn setup_shm(
+    stream: &mut ControlStream,
+    config: &BridgeConfig,
+    loaded: &LoadedPlugin,
+    format: SampleFormat,
+    shm_name: String,
+) -> Result<Arc<AudioSlab>> {
+    let layout = slab_layout_for(loaded, format, config.max_buffer_size);
     let audio_buffer = Arc::new(AudioSlab::create(shm_name.clone(), layout.clone())?);
 
     ipc::send(stream, &HostMessage::SetupSharedMemory { shm_name, layout })?;
@@ -163,4 +193,119 @@ fn next_shm_name() -> String {
         std::process::id(),
         SHM_COUNTER.fetch_add(1, Ordering::Relaxed),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smallvec::SmallVec;
+
+    fn loaded(inputs: &[ChannelLayout], outputs: &[ChannelLayout]) -> LoadedPlugin {
+        LoadedPlugin {
+            inputs: SmallVec::from_slice(inputs),
+            outputs: SmallVec::from_slice(outputs),
+            ..Default::default()
+        }
+    }
+
+    /// The default `BridgeConfig::max_buffer_size`. Named here so the sizing
+    /// tests below read as "the shipped default", not as a magic number.
+    const DEFAULT_MAX_BUFFER: usize = 8192;
+
+    /// The exact shape that regressed: a plain stereo-in/stereo-out plugin with
+    /// one bus per direction. This is the *common* case, and until now it had no
+    /// test at all — the only production construction site needed a live
+    /// subprocess, so the single-bus branch was only ever exercised by launching
+    /// a real plugin.
+    #[test]
+    fn stereo_one_bus_each_direction() {
+        let layout = slab_layout_for(
+            &loaded(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo]),
+            SampleFormat::Float32,
+            DEFAULT_MAX_BUFFER,
+        );
+
+        // Single-bus: one flat channel set, sized to the wider direction, and
+        // the bus partition is deliberately NOT carried.
+        assert_eq!(layout.channels.count(), 2);
+        assert!(!layout.is_multibus());
+        // Documenting current behaviour, not endorsing it: this is the in-place
+        // aliasing that made the bypass silent. The pipelining change splits the
+        // directions and this assertion inverts with it.
+        assert_eq!(layout.output_base(), 0);
+    }
+
+    /// Multi-bus keeps the directions in disjoint flat ranges, so a sidechain
+    /// input survives the output write.
+    #[test]
+    fn sidechain_input_gets_its_own_flat_range() {
+        let layout = slab_layout_for(
+            &loaded(
+                &[ChannelLayout::Stereo, ChannelLayout::Mono],
+                &[ChannelLayout::Stereo],
+            ),
+            SampleFormat::Float32,
+            DEFAULT_MAX_BUFFER,
+        );
+
+        assert!(layout.is_multibus());
+        assert_eq!(layout.input_channels(), 3);
+        assert_eq!(layout.output_channels(), 2);
+        assert_eq!(layout.output_base(), 3, "outputs sit past the sidechain");
+        // Disjoint ranges need room for both directions, unlike the single-bus
+        // `max`.
+        assert_eq!(layout.channels.count(), 5);
+    }
+
+    /// A plugin that reports no buses at all (filename-fallback discovery) still
+    /// gets a usable stereo slab rather than a zero-sized one.
+    #[test]
+    fn unknown_buses_floor_at_stereo() {
+        let layout = slab_layout_for(&loaded(&[], &[]), SampleFormat::Float32, DEFAULT_MAX_BUFFER);
+        assert_eq!(layout.channels.count(), 2);
+        assert!(layout.byte_size() > 0);
+    }
+
+    /// The slab is sized to the block that can actually arrive, not to
+    /// `max_buffer_size`. At the shipped default that is a 128x difference, so
+    /// this is worth pinning: a regression here silently reintroduces 64 KiB of
+    /// untouched mapped pages per plugin instance.
+    #[test]
+    fn slab_is_sized_to_the_real_block_not_the_configured_maximum() {
+        let l = loaded(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo]);
+        let layout = slab_layout_for(&l, SampleFormat::Float32, DEFAULT_MAX_BUFFER);
+
+        assert_eq!(layout.samples_per_channel, BATCH_SIZE);
+        assert_eq!(layout.byte_size(), 2 * BATCH_SIZE * 4);
+        assert!(
+            layout.byte_size() * 128 == 2 * DEFAULT_MAX_BUFFER * 4,
+            "the default config is exactly 128x oversized; \
+             if this ratio changes the comment in `slab_layout_for` is stale"
+        );
+    }
+
+    /// A host configured *below* the batch size gets a slab it cannot overrun —
+    /// the reason this is a `min` and not a bare `BATCH_SIZE`.
+    #[test]
+    fn a_smaller_configured_buffer_wins() {
+        let l = loaded(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo]);
+        let layout = slab_layout_for(&l, SampleFormat::Float32, 32);
+        assert_eq!(layout.samples_per_channel, 32);
+    }
+
+    /// f64 negotiation doubles the region; the channel/bus decisions are
+    /// unaffected by sample format.
+    #[test]
+    fn f64_doubles_the_byte_size_only() {
+        let l = loaded(&[ChannelLayout::Stereo], &[ChannelLayout::Stereo]);
+        let f32_layout = slab_layout_for(&l, SampleFormat::Float32, DEFAULT_MAX_BUFFER);
+        let f64_layout = slab_layout_for(&l, SampleFormat::Float64, DEFAULT_MAX_BUFFER);
+
+        assert_eq!(f64_layout.channels, f32_layout.channels);
+        assert_eq!(
+            f64_layout.samples_per_channel,
+            f32_layout.samples_per_channel
+        );
+        assert_eq!(f64_layout.byte_size(), f32_layout.byte_size() * 2);
+    }
 }

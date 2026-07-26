@@ -38,6 +38,10 @@ pub use param_automation_source::{
     LfoCurve, LfoOffset, OffsetCurve, ParamAutomationSource, PluginParamTarget, TimedParam,
 };
 pub(crate) use process::ProcessGuard;
+// The largest block that can cross the process edge. Re-exported because
+// `subprocess::launch` sizes the shared-memory slab from it — the slab and the
+// batcher must agree on the per-block ceiling or one of them is wrong.
+pub(crate) use batcher::BATCH_SIZE;
 
 use crate::error::Result;
 use crate::host::ipc_client::audio::HarmonyInputs;

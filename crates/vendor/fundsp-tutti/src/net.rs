@@ -148,6 +148,16 @@ pub struct Net {
     revision: u64,
     /// Current error, if any.
     error: Option<NetError>,
+    /// Settings the message queue had no room for, since the last
+    /// [`take_dropped_settings`](Self::take_dropped_settings).
+    ///
+    /// A dropped setting is a parameter change that never reaches the audio
+    /// thread — a fader that moves on screen and not in the sound. Unlike a
+    /// retired unit it cannot be parked, because the next setting for the same
+    /// target supersedes it and replaying a stale one would be worse than losing
+    /// it. Counting is what is left: silence here is what made this
+    /// indistinguishable from a working fader.
+    dropped_settings: u64,
 }
 
 impl Clone for Net {
@@ -168,6 +178,9 @@ impl Clone for Net {
             edit_queue: Vec::new(),
             revision: self.revision,
             error: self.error.clone(),
+            // The count belongs to the frontend that dropped them, like
+            // `front` and `edit_queue`.
+            dropped_settings: 0,
         }
     }
 }
@@ -240,6 +253,7 @@ impl Net {
             edit_queue: Vec::new(),
             revision: 0,
             error: None,
+            dropped_settings: 0,
         };
         for channel in 0..outputs {
             net.output_edge
@@ -259,6 +273,18 @@ impl Net {
         let mut net = Self::new(0, channels);
         let _backend = net.backend();
         net
+    }
+
+    /// Number of settings dropped because the message queue was full, resetting
+    /// the count to zero.
+    ///
+    /// Non-zero means parameter changes were made that the audio thread never
+    /// saw: the queue holds 256 messages and drains once per block, so a burst
+    /// of automation between two blocks can outrun it. A host that polls this
+    /// can re-send the affected parameters or warn; ignoring it reproduces the
+    /// stuck fader this counter exists to make visible.
+    pub fn take_dropped_settings(&mut self) -> u64 {
+        core::mem::take(&mut self.dropped_settings)
     }
 
     /// Return current error condition, if any.
@@ -1591,8 +1617,9 @@ impl AudioUnit for Net {
 
     fn set(&mut self, setting: Setting) {
         if let Some((sender, _receiver)) = &mut self.front {
-            #[allow(clippy::collapsible_if)]
-            if sender.enqueue(NetMessage::Setting(setting)).is_ok() {}
+            if sender.enqueue(NetMessage::Setting(setting)).is_err() {
+                self.dropped_settings += 1;
+            }
         } else if let Address::Node(id) = setting.direction()
             && let Some(index) = self.node_index.get(&id)
         {

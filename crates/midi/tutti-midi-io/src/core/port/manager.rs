@@ -36,9 +36,14 @@ impl PortInfo {
     }
 }
 
-/// Worst-case events drained from all ports in one audio block. Sized to the
-/// previous `Vec::with_capacity(256)`; overflow beyond this spills (SmallVec),
-/// which is acceptable off the hot path and vanishingly rare in practice.
+/// Events carried from all ports through one audio block.
+///
+/// This is a hard cap, not a hint: the drain takes at most this many events per
+/// block and leaves the rest in the port rings. Both scratch buffers are sized
+/// to it and neither is allowed to grow, because growing means `realloc` inside
+/// the audio callback. A dense SysEx dump or a multi-port sweep therefore
+/// spreads across blocks — one block of added latency, no missed deadline, and
+/// no dropped events.
 const CYCLE_SCRATCH_CAP: usize = 256;
 
 /// Audio-thread-only scratch state for the per-cycle fan-in/fan-out.
@@ -86,14 +91,20 @@ impl CycleScratch {
         let sample_rate = *self.sample_rate.borrow();
 
         // Drain all active input ports into the timestamp scratch, dropping that
-        // guard before the fill closure borrows `event_buffer`.
+        // guard before the fill closure borrows `event_buffer`. Each port gets
+        // the headroom left by the ports before it, so the total can never
+        // exceed the buffer's reserved capacity.
         let mut timestamped = self.timestamped_buffer.borrow_mut();
         timestamped.clear();
+        let mut headroom = CYCLE_SCRATCH_CAP;
         for (port_index, port) in input_ports.iter().enumerate() {
+            if headroom == 0 {
+                break;
+            }
             if !port.is_active() {
                 continue;
             }
-            port.cycle_start_read_input_into(&mut *timestamped, port_index);
+            headroom -= port.cycle_start_read_input_into(&mut *timestamped, port_index, headroom);
         }
         let timestamped_snapshot = timestamped;
 
@@ -101,7 +112,13 @@ impl CycleScratch {
         // from the audio callback (`MidiIn::poll_into`).
         unsafe {
             self.event_buffer.fill_and_read(|out| {
-                for &(midi_instant, port_index, mut event) in timestamped_snapshot.iter() {
+                // `take` is belt-and-braces: the drain above already bounded
+                // `timestamped_snapshot` by the same constant. It is here so the
+                // push stays capped even if that bound is ever loosened —
+                // `out` is a SmallVec, and one push past `N` heap-allocates.
+                for &(midi_instant, port_index, mut event) in
+                    timestamped_snapshot.iter().take(CYCLE_SCRATCH_CAP)
+                {
                     let delta = buffer_start.saturating_duration_since(midi_instant);
                     let samples_ago = (delta.as_secs_f64() * sample_rate) as u32;
                     let nframes_u32 = nframes as u32;
@@ -308,6 +325,38 @@ mod tests {
         // Output is not a port-manager concern: it has no backing store, so it
         // always lists empty (outbound MIDI rides the mailbox → OutputThread).
         assert!(manager.get_port_info(PortType::Output, 0).is_none());
+    }
+
+    /// A multi-port sweep must not push either scratch buffer past its reserved
+    /// capacity — that push is a `realloc` inside the audio callback.
+    ///
+    /// Four ports of 256 events each offer 1024, four times the cap.
+    #[test]
+    fn cycle_read_is_capped_across_ports() {
+        let manager = HardwareMidiInputs::new(256);
+        for port in 0..4 {
+            let index = manager.create_input_port(format!("Input {port}"));
+            for _ in 0..256 {
+                assert!(manager.push_input_event(index, MidiEvent::noop()));
+            }
+        }
+
+        let events = manager.cycle_start_read_all_inputs(512);
+        assert_eq!(
+            events.len(),
+            CYCLE_SCRATCH_CAP,
+            "one block drains at most the cap, however many ports are flooded"
+        );
+
+        // The remainder is deferred, not dropped: successive blocks drain it.
+        let total: usize = (0..3)
+            .map(|_| manager.cycle_start_read_all_inputs(512).len())
+            .sum();
+        assert_eq!(
+            total + CYCLE_SCRATCH_CAP,
+            1024,
+            "every queued event is eventually delivered"
+        );
     }
 
     #[test]

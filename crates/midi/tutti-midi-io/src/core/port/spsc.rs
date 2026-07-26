@@ -66,13 +66,28 @@ impl<T> SpscRing<T> {
 
     /// Drain every available item through `f` (consumer side).
     #[inline]
-    pub fn drain_each(&self, mut f: impl FnMut(T)) {
-        // SAFETY: single consumer — `drain_each` is the only consumer-side
-        // access and is called from one thread at a time (the SPSC invariant).
+    /// Pop at most `limit` items, passing each to `f`, and return how many were
+    /// taken.
+    ///
+    /// The unpopped remainder stays in the ring for the next drain. Callers on
+    /// the audio thread use this to keep a fixed-capacity sink from growing:
+    /// deferring an event costs one block of latency, where reallocating the
+    /// sink costs a deadline. Pass `usize::MAX` to drain the ring completely.
+    pub fn drain_each_limited(&self, limit: usize, mut f: impl FnMut(T)) -> usize {
+        // SAFETY: single consumer — this is the only consumer-side access and
+        // is called from one thread at a time (the SPSC invariant).
         let consumer = unsafe { &mut *self.consumer.get() };
-        while let Some(item) = consumer.try_pop() {
-            f(item);
+        let mut taken = 0;
+        while taken < limit {
+            match consumer.try_pop() {
+                Some(item) => {
+                    f(item);
+                    taken += 1;
+                }
+                None => break,
+            }
         }
+        taken
     }
 }
 

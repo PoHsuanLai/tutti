@@ -8,6 +8,7 @@ use super::realnet::*;
 use super::sequencer::Fade;
 use super::*;
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -29,6 +30,19 @@ pub(crate) struct Vertex {
     pub next: NodeEdit,
     /// The next node we will be fading into, if any. Not applicable to frontends.
     pub latest: NodeEdit,
+    /// Units this vertex retired while the return queue was full.
+    ///
+    /// Retirement runs on the audio thread (`next_phase` from `tick`/`process`,
+    /// `enqueue` from `NetBackend::handle_messages`), so a unit that cannot be
+    /// handed back must be *kept* — dropping it would run
+    /// `Box<dyn AudioUnit>::drop` in the callback and free an FDN reverb's delay
+    /// lines under the deadline. Parked units are retried ahead of every later
+    /// retirement, so the queue drains in retirement order once the frontend
+    /// commits.
+    ///
+    /// Capacity is reserved in [`Self::allocate`]; pushing past it is the one
+    /// case where retirement allocates, and it beats the alternative of freeing.
+    pub retired: VecDeque<Box<dyn AudioUnit>>,
     /// If all vertex inputs are sourced from successive outputs of the indicated node,
     /// we can omit copying and use the source node outputs directly.
     pub source_vertex: Option<(NodeIndex, usize)>,
@@ -57,6 +71,7 @@ impl Vertex {
             fade_phase: 0.0,
             next: NodeEdit::default(),
             latest: NodeEdit::default(),
+            retired: VecDeque::new(),
             source_vertex: None,
             changed: 0,
             unplugged: 0,
@@ -80,6 +95,42 @@ impl Vertex {
 
     pub fn allocate(&mut self) {
         self.unit.allocate();
+        // A vertex holds at most `unit`, `next.unit` and `latest.unit`, so three
+        // is the most that can retire before the frontend gets a chance to
+        // commit and drain. Reserving here — on the control thread, from
+        // `Net::allocate` — keeps the common overflow path push-only.
+        self.retired.reserve(3);
+    }
+
+    /// Hand `unit` back to the frontend for deallocation, parking it in
+    /// [`Self::retired`] if the return queue is full.
+    ///
+    /// Parked units go first: retirement order is preserved, and a queue that
+    /// stays full cannot strand an early unit behind later ones.
+    fn retire(&mut self, unit: Box<dyn AudioUnit>, sender: &Option<Arc<Queue<NetReturn, 256>>>) {
+        let Some(sender) = sender else {
+            // No frontend to return to. This is a standalone `Net`, where the
+            // caller owns the units and no deadline applies.
+            return;
+        };
+        // Flush the backlog oldest-first, so the frontend frees units in the
+        // order they retired.
+        while let Some(parked) = self.retired.pop_front() {
+            if let Err(NetReturn::Unit(parked)) = sender.enqueue(NetReturn::Unit(parked)) {
+                // Still full. Restore it and keep the rest parked behind it.
+                self.retired.push_front(parked);
+                break;
+            }
+        }
+        // A non-empty backlog means the queue is still full, so this unit joins
+        // the back of it rather than jumping the line.
+        if !self.retired.is_empty() {
+            self.retired.push_back(unit);
+            return;
+        }
+        if let Err(NetReturn::Unit(unit)) = sender.enqueue(NetReturn::Unit(unit)) {
+            self.retired.push_back(unit);
+        }
     }
 
     pub fn update_source_vertex(&mut self) {
@@ -109,13 +160,10 @@ impl Vertex {
     }
 
     /// We have faded to the next unit, now start fading to the latest unit, if any.
-    #[allow(clippy::needless_ifs)]
     fn next_phase(&mut self, sender: &Option<Arc<Queue<NetReturn, 256>>>) {
         let mut next = self.next.unit.take().unwrap();
         core::mem::swap(&mut self.unit, &mut next);
-        if let Some(sender) = sender
-            && sender.enqueue(NetReturn::Unit(next)).is_ok()
-        {}
+        self.retire(next, sender);
         self.next.fade = self.latest.fade.clone();
         self.fade_phase = 0.0;
         self.next.fade_time = self.latest.fade_time;
@@ -216,10 +264,9 @@ impl Vertex {
     pub fn enqueue(&mut self, edit: &mut NodeEdit, sender: &Option<Arc<Queue<NetReturn, 256>>>) {
         if self.next.unit.is_some() {
             // Replace the latest unit.
-            if let Some(latest) = self.latest.unit.take()
-                && let Some(sender) = sender
-                && sender.enqueue(NetReturn::Unit(latest)).is_ok()
-            {}
+            if let Some(latest) = self.latest.unit.take() {
+                self.retire(latest, sender);
+            }
             core::mem::swap(&mut self.latest, edit);
         } else {
             // Set the next unit.

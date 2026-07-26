@@ -148,13 +148,21 @@ impl MidiPreBlock {
             clock.tick(frames);
         }
 
-        let event_count = self.collect_events(frames);
+        // ONE routing read for the whole block, shared by the gate below and the
+        // fan-out in `route_events`. Reading twice would let a `commit` between
+        // them decide "there are routes" against one snapshot and then route
+        // against another — the collect phase would admit events for rules the
+        // deliver phase no longer has, or drop events the new rules would have
+        // routed. Both phases now see the same rules or neither does.
+        let routing = self.routing.read();
+
+        let event_count = self.collect_events(frames, &routing);
         if event_count == 0 {
             return;
         }
         // Deliver the whole block at once — each event keeps its `frame_offset`
         // for the destination unit to time it.
-        self.route_events();
+        self.route_events(&routing);
     }
 
     /// Reset the interior-mutable RT owner (device switch).
@@ -165,8 +173,11 @@ impl MidiPreBlock {
         self.mpe.reset_owner();
     }
 
+    /// Takes the block's routing snapshot rather than reading its own, so the
+    /// gate here and the fan-out in [`route_events`](Self::route_events) cannot
+    /// disagree. See [`run`](Self::run).
     #[inline]
-    fn collect_events(&self, frames: usize) -> usize {
+    fn collect_events(&self, frames: usize, routing: &MidiRoutingSnapshot) -> usize {
         self.events.clear();
 
         let Some(input) = &self.input else {
@@ -181,7 +192,6 @@ impl MidiPreBlock {
         let mut scratch = self.poll_scratch.borrow_mut();
         let n = input.poll_into(HARDWARE_POLL_UNIT, frames, &mut scratch[..]);
 
-        let routing = self.routing.read();
         if !routing.has_routes() || n == 0 {
             return 0;
         }
@@ -212,12 +222,13 @@ impl MidiPreBlock {
         self.events.len()
     }
 
+    /// Takes the block's routing snapshot from [`run`](Self::run) rather than
+    /// reading its own — see `collect_events` for why they must match.
     #[inline]
-    fn route_events(&self) {
+    fn route_events(&self, routing: &MidiRoutingSnapshot) {
         let Some(queue) = &self.queue else {
             return;
         };
-        let routing = self.routing.read();
         self.events.for_each(|&(_offset, event)| {
             for target in routing.route(&event) {
                 queue.queue(target, &[event]);
@@ -298,6 +309,68 @@ mod tests {
             }
             other => panic!("expected native PerNotePitchBend at the router, got {other:?}"),
         }
+    }
+
+    /// A publish that lands *between* the collect gate and the fan-out must not
+    /// split the block across two rule sets.
+    ///
+    /// The window is real but narrow, so rather than race two threads and hope,
+    /// this drives it deterministically: the input source republishes the table
+    /// from inside `poll_into`, which is exactly the interleaving point — after
+    /// `run` takes its snapshot, before the events are routed.
+    ///
+    /// With one read per block, the whole block routes by the rules in force when
+    /// it started. With a read per phase, the gate would consult the old table and
+    /// the fan-out the new one, and these events would vanish: the collect phase
+    /// admits them (old fallback exists), then the deliver phase drops them (new
+    /// table has no routes).
+    #[test]
+    fn a_publish_mid_block_does_not_split_the_block_across_rule_sets() {
+        struct RepublishOnPoll {
+            events: Mutex<Vec<MidiEvent>>,
+            table: Mutex<MidiRoutingTable>,
+        }
+        impl MidiIn for RepublishOnPoll {
+            fn poll_into(&self, _unit: MidiUnitId, _frames: usize, out: &mut [MidiEvent]) -> usize {
+                // Retire every route *while the block is in flight*.
+                let mut table = self.table.lock().unwrap();
+                table.set_routes(Vec::new(), None);
+                table.commit();
+
+                let events = self.events.lock().unwrap();
+                let n = events.len().min(out.len());
+                out[..n].copy_from_slice(&events[..n]);
+                n
+            }
+        }
+
+        let unit = MidiUnitId::new(11);
+        let mut table = MidiRoutingTable::new();
+        table.set_routes(Vec::new(), Some(unit));
+        table.commit();
+        let snapshot = table.snapshot_arc();
+
+        let note = MidiEvent::note_on(0, 0, 60, midi1_velocity_to_midi2(100));
+        let input = Arc::new(RepublishOnPoll {
+            events: Mutex::new(vec![note]),
+            table: Mutex::new(table),
+        });
+        let router = Arc::new(CapturingRouter::default());
+
+        let mut pre = MidiPreBlock::new(snapshot);
+        pre.set_input(input);
+        pre.set_queue(router.clone());
+
+        pre.run(256);
+
+        let routed = router.routed.lock().unwrap();
+        assert_eq!(
+            routed.len(),
+            1,
+            "the block must route by the snapshot it started with; a mid-block \
+             publish that empties the table must not strand events between the \
+             collect gate and the fan-out"
+        );
     }
 
     #[test]

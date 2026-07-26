@@ -1,16 +1,12 @@
-//! Bevy ECS integration for the MIDI subsystem (`feature = "bevy"`).
+//! ECS integration for the MIDI subsystem.
 //!
-//! Grouped by FUNCTION: each duty owns its components, systems, resources, and a
-//! focused sub-plugin in its own module. [`TuttiMidiPlugin`] (in [`midi_plugin`])
-//! is the composition root that claims the engine handles and adds the
-//! sub-plugins. Each resource lives with the duty that owns it: [`MidiBusRes`] in
-//! [`bus`], [`MidiRoutingRes`] in [`routing`], `MidiIoRes` in `device` (behind
-//! `midi-hardware`), the transient [`PendingMidi`] next to its claimant in
-//! [`midi_plugin`]. The whole surface
-//! re-exports at the crate root so consumers write `tutti_midi_io::TuttiMidiPlugin`.
+//! Grouped by function: each duty owns its components, systems, resources and a
+//! focused sub-plugin in its own module, with [`TuttiMidiPlugin`] (in
+//! [`plugin`]) as the composition root. Each resource lives with the duty that
+//! owns it — [`MidiBusRes`] in [`bus`], [`MidiRoutingRes`] in [`routing`],
+//! `MidiIoRes` in `device` (behind `midi-hardware`).
 //!
-//! This is the only Bevy-dependent part of the crate; everything under
-//! [`crate::core`] is framework-free.
+//! The MIDI engine these systems drive, `tutti_midi_io`, is framework-free.
 
 pub mod bus;
 pub mod clock_out;
@@ -26,7 +22,7 @@ pub mod device;
 
 pub mod mpe;
 
-pub mod midi_plugin;
+pub mod plugin;
 
 pub use bus::MidiBusRes;
 pub use clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
@@ -35,7 +31,7 @@ pub use metadata::UmpOutRes;
 pub use metadata::{
     flex_metadata_broadcast_system, BroadcastFlexMetadata, JrStamperRes, MidiMetadataPlugin,
 };
-pub use midi_plugin::{PendingMidi, TuttiMidiPlugin};
+pub use plugin::TuttiMidiPlugin;
 pub use negotiation::{
     ci_discovery_system, ci_ingest_system, endpoint_discovery_system, endpoint_ingest_system,
     CiDeviceDiscovered, CiRes, EndpointDiscovered, EndpointDiscoveryRes, InboundCiMessage,

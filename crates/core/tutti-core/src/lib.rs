@@ -130,10 +130,18 @@ pub use fundsp::fft::{inverse_fft, real_fft};
 pub use fundsp::math::Complex32;
 pub use fundsp::net::{NodeId, Source};
 pub use fundsp::prelude::{shared, AudioUnit, BufferMut, BufferRef, Shared};
-// `WaveAsset` is a Bevy `Asset` — it only exists in fundsp under `bevy_asset`,
-// so gate the re-export on our `bevy_asset` feature (which chains
-// `fundsp/bevy_asset`), not on the plain codec features.
-#[cfg(feature = "bevy_asset")]
+// `WaveAsset` needs both axes: it is a Bevy `Asset` (so `bevy_asset`), and it
+// lives in fundsp's `read` module, which only exists once a codec is on. Gating
+// on either alone breaks the other combination.
+#[cfg(all(
+    feature = "bevy_asset",
+    any(
+        feature = "wav",
+        feature = "flac",
+        feature = "mp3",
+        feature = "ogg"
+    )
+))]
 pub use fundsp::read::WaveAsset;
 // Decode error surfaced by `WaveAsset::from_bytes`; the Bevy `WaveAssetLoader`
 // in tutti-sampler wraps it.

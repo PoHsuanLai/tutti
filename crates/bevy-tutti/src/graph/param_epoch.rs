@@ -1,9 +1,9 @@
 //! Per-node parameter epoch — a Bevy-side change counter for audio-graph
-//! params that the tutti [`Net`](crate::dsp::Net) revision deliberately ignores.
+//! params that the tutti [`Net`](tutti_core::dsp::Net) revision deliberately ignores.
 //!
 //! ## Why this exists
 //!
-//! [`Net::revision`](crate::dsp::Net::revision) bumps only on
+//! [`Net::revision`](tutti_core::dsp::Net::revision) bumps only on
 //! `Net::commit()`, i.e. on **structural** graph edits (add/remove/rewire).
 //! Parameter setters (`set_frequency`, `set_gain`, `set_q`, …) are plain
 //! in-place writes — correct and real-time-safe for audio, no commit needed —
@@ -32,10 +32,10 @@
 use bevy_ecs::prelude::Resource;
 use std::collections::HashMap;
 
-use crate::NodeId;
+use tutti_core::NodeId;
 
 /// Monotonic per-node parameter version. Distinct from
-/// [`Net::revision`](crate::dsp::Net::revision) (which tracks
+/// [`Net::revision`](tutti_core::dsp::Net::revision) (which tracks
 /// structure); this tracks in-place param writes the revision skips.
 ///
 /// `get` returns 0 for a node that has never had a param change, so a fresh

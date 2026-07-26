@@ -2,7 +2,7 @@
 //!
 //! A [`MidiSequence`] component holds a list of beat-positioned notes; the
 //! per-frame [`midi_sequence_tick_system`] fires note_on/note_off through the
-//! [`MidiBusRes`](crate::MidiBusRes) as the transport's beat position crosses
+//! [`MidiBusRes`](super::bus::MidiBusRes) as the transport's beat position crosses
 //! each note's bounds. [`MidiSequenceState`] tracks the currently-sounding
 //! notes per entity and is auto-inserted by [`midi_sequence_setup_system`].
 
@@ -61,8 +61,8 @@ pub fn midi_sequence_setup_system(
 /// Ticks all [`MidiSequence`] entities, firing note_on/note_off based on
 /// the transport's current beat position.
 pub fn midi_sequence_tick_system(
-    transport: Res<tutti_core::ecs::TransportRes>,
-    midi: Res<crate::MidiBusRes>,
+    transport: Res<crate::graph::TransportRes>,
+    midi: Res<super::bus::MidiBusRes>,
     mut query: Query<(&MidiSequence, &mut MidiSequenceState)>,
 ) {
     if !transport.0.motion.is_playing() {
@@ -139,12 +139,12 @@ fn seq_note_number(n: &MidiSequenceNote) -> u8 {
     n.pitch.round().clamp(0.0, 127.0) as u8
 }
 
-fn note_on_event(note: u8, velocity_midi1: u8) -> crate::MidiEvent {
-    crate::MidiEvent::note_on_7bit(0, 0, note, velocity_midi1)
+fn note_on_event(note: u8, velocity_midi1: u8) -> tutti_midi_types::ump::MidiEvent {
+    tutti_midi_types::ump::MidiEvent::note_on_7bit(0, 0, note, velocity_midi1)
 }
 
-fn note_off_event(note: u8) -> crate::MidiEvent {
-    crate::MidiEvent::note_off(0, 0, note, 0)
+fn note_off_event(note: u8) -> tutti_midi_types::ump::MidiEvent {
+    tutti_midi_types::ump::MidiEvent::note_off(0, 0, note, 0)
 }
 
 /// Transport-beat-driven note firing for [`MidiSequence`] entities.
@@ -157,8 +157,8 @@ impl Plugin for MidiSequencePlugin {
             Update,
             (midi_sequence_setup_system, midi_sequence_tick_system)
                 .chain()
-                .run_if(tutti_core::ecs::engine_ready)
-                .before(tutti_core::ecs::GraphReconcileSystems::Commit),
+                .run_if(crate::graph::engine_ready)
+                .before(crate::graph::GraphReconcileSystems::Commit),
         );
     }
 }

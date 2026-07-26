@@ -4,8 +4,8 @@ use bevy_ecs::prelude::*;
 use bevy_log::warn;
 use bevy_reflect::prelude::*;
 
-use crate::native_window::attach_child_window;
-use crate::PluginEditorMainThread;
+use crate::plugin_host::native_window::attach_child_window;
+use crate::plugin_host::PluginEditorMainThread;
 
 /// Marks an entity as a loaded plugin with a control handle.
 ///
@@ -196,12 +196,12 @@ pub fn plugin_editor_attach_system(
                 #[cfg(target_os = "macos")]
                 if capabilities.resize.resizable {
                     if capabilities.appkit_autoresize_friendly {
-                        crate::native_window::enable_subview_autoresize(
+                        crate::plugin_host::native_window::enable_subview_autoresize(
                             raw_handle.get_window_handle(),
                         );
                     } else {
                         let handle = emitter.handle.clone();
-                        let cb: crate::live_resize::ResizeCallback =
+                        let cb: crate::plugin_host::live_resize::ResizeCallback =
                             std::sync::Arc::new(move |w, h| {
                                 let _ = handle.set_editor_size(tutti_plugin::handles::EditorSize {
                                     width: w,
@@ -211,7 +211,7 @@ pub fn plugin_editor_attach_system(
                         // SAFETY: main-thread context — this system takes
                         // `NonSend` params, so Bevy runs it on the main thread.
                         let installed = unsafe {
-                            crate::live_resize::LiveResizeHandle::install(
+                            crate::plugin_host::live_resize::LiveResizeHandle::install(
                                 raw_handle.get_window_handle(),
                                 cb,
                             )

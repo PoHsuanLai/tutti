@@ -10,14 +10,14 @@
 
 /// Configures the MPE mode the engine installs. Insert this *before* the engine
 /// builds to override the default. Default is
-/// [`MpeMode::Disabled`](crate::MpeMode::Disabled) — apps that want MPE flip this
+/// [`MpeMode::Disabled`](tutti_midi_io::MpeMode::Disabled) — apps that want MPE flip this
 /// to `LowerZone` / `UpperZone` / `DualZone` / `SingleChannelRotation`. The
 /// inspector UI writes it directly (it's a plain Bevy resource).
 #[derive(bevy_ecs::resource::Resource, Debug, Clone)]
-pub struct MpeModeConfig(pub crate::MpeMode);
+pub struct MpeModeConfig(pub tutti_midi_io::MpeMode);
 
 impl Default for MpeModeConfig {
     fn default() -> Self {
-        Self(crate::MpeMode::Disabled)
+        Self(tutti_midi_io::MpeMode::Disabled)
     }
 }

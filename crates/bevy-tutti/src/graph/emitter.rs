@@ -8,7 +8,7 @@
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
-use crate::NodeId;
+use tutti_core::NodeId;
 
 /// Marks an entity as an audio emitter with a live node in tutti's graph.
 ///
@@ -17,7 +17,7 @@ use crate::NodeId;
 /// playback and clean up the graph node.
 ///
 /// Not `Reflect`: the wrapped fundsp `NodeId` is foreign and not reflected
-/// (matching `crate::node::AudioNode`).
+/// (matching `tutti_core::node::AudioNode`).
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[require(AudioPlaybackState)]
 pub struct AudioEmitter {

@@ -117,13 +117,13 @@ impl Plugin for MidiRoutingPlugin {
         app.add_systems(
             Update,
             midi_routing_sync_system
-                .run_if(tutti_core::ecs::engine_ready)
+                .run_if(crate::graph::engine_ready)
                 // The table publishes itself, but stays anchored ahead of the
                 // graph flush so a route and the node it points at still land in
                 // the same frame — the ordering the old `GraphDirty` batching
                 // gave us, now expressed as a schedule constraint rather than a
                 // field on the graph.
-                .before(tutti_core::ecs::GraphReconcileSystems::Commit),
+                .before(crate::graph::GraphReconcileSystems::Commit),
         );
     }
 }

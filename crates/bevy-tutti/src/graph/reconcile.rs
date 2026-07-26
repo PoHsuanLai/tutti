@@ -1,4 +1,4 @@
-//! Reconcile entity-as-node component changes into [`Net`](crate::dsp::Net) operations.
+//! Reconcile entity-as-node component changes into [`Net`](tutti_core::dsp::Net) operations.
 //!
 //! See [`crate::graph`] for the component types. This module provides:
 //!
@@ -20,9 +20,9 @@ use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::SystemSet;
 use bevy_ecs::system::EntityCommands;
 
-use crate::dsp::AudioUnit;
-use crate::ecs::AudioGraphRes;
-use crate::node::AudioNode;
+use tutti_core::dsp::AudioUnit;
+use crate::graph::AudioGraphRes;
+use tutti_core::node::AudioNode;
 
 /// System-set ordering anchor for the reconcile pipeline.
 ///
@@ -148,7 +148,7 @@ impl<'w, 's> SpawnAudioNode for Commands<'w, 's> {
 /// Queues a deferred world command that:
 ///
 /// 1. Looks up the entity's [`AudioNode(NodeId)`](AudioNode).
-/// 2. Calls [`Net::crossfade`](crate::dsp::Net::crossfade) with a 5 ms `Smooth` fade.
+/// 2. Calls [`Net::crossfade`](tutti_core::dsp::Net::crossfade) with a 5 ms `Smooth` fade.
 /// 3. Marks [`GraphDirty`] so the per-frame [`commit_graph`] flushes.
 ///
 /// The same `NodeId` survives the crossfade — connections to/from this node
@@ -184,7 +184,7 @@ pub fn crossfade_audio_node(
         };
         graph
             .0
-            .crossfade(node.0, crate::Fade::Smooth, 0.005, new_unit);
+            .crossfade(node.0, tutti_core::Fade::Smooth, 0.005, new_unit);
         if let Some(mut dirty) = world.get_resource_mut::<GraphDirty>() {
             dirty.0 = true;
         }
@@ -242,9 +242,9 @@ pub fn commit_graph(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsp::sine_hz;
-    use crate::dsp::Net;
-    use crate::ecs::AudioGraphRes;
+    use tutti_core::dsp::sine_hz;
+    use tutti_core::dsp::Net;
+    use crate::graph::AudioGraphRes;
     use bevy_app::App;
 
     /// Local probe component: the DAW param components moved out of the engine,

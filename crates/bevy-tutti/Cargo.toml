@@ -29,6 +29,7 @@ bevy_tasks.workspace = true
 # types. bevy-tutti supplies the reconcile systems + the CPAL audio callback
 # (relocated into src/engine/).
 tutti-core = { path = "../tutti/crates/core/tutti-core", default-features = false, features = ["bevy_ecs", "bevy_asset"] }
+tutti-types = { path = "../tutti/crates/core/tutti-types", default-features = false }
 tutti-midi-types = { path = "../tutti/crates/midi/tutti-midi-types", default-features = false }
 # tutti-units is pure DSP now (its ECS binding moved to dawai_model::engine_bind).
 # The optional features below add spatial / convolution / automation DSP on top.
@@ -58,6 +59,9 @@ ringbuf = "0.4"
 
 # Error handling
 thiserror.workspace = true
+
+# Diagnostics
+tracing = "0.1"
 
 # MIDI UI observer channel
 crossbeam-channel = "0.5"

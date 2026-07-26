@@ -4,7 +4,7 @@
 //! [`MidiBusRes`] wraps a [`tutti_midi_runtime::MidiBus`] (owned by
 //! tutti-midi-runtime; this newtype only adds the Bevy `Resource` derive). It is
 //! built once by bevy-tutti's RT-wiring transaction and claimed into the world
-//! by [`TuttiMidiPlugin`](crate::TuttiMidiPlugin); the sequence, scheduled, and
+//! by [`TuttiMidiPlugin`](super::plugin::TuttiMidiPlugin); the sequence, scheduled, and
 //! MPE duties — plus dawai's track/effect graphs — all read it to push events.
 
 use bevy_ecs::prelude::*;

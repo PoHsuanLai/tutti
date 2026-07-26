@@ -141,7 +141,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
             .set_translator(tutti_midi_runtime::tutti_midi_types::Midi1ToMidi2Translator::new());
         let mpe_mode = app
             .world()
-            .get_resource::<tutti_midi_io::MpeModeConfig>()
+            .get_resource::<crate::midi::MpeModeConfig>()
             .map(|c| c.0)
             .unwrap_or(tutti_midi_io::MpeMode::Disabled);
         pre_block.set_mpe_ingest(tutti_midi_runtime::MpeIngest::new(mpe_mode));

@@ -36,7 +36,7 @@
 //!
 //! **UMP-Stream needs a native-UMP transport.** That family has no MIDI-1.0
 //! encoding, so it cannot arrive over midir (a MIDI-1.0 API) at all. On macOS
-//! [`UmpVirtualDestination`](crate::UmpVirtualDestination) provides the
+//! [`UmpVirtualDestination`](tutti_midi_io::UmpVirtualDestination) provides the
 //! MIDI-2.0-protocol endpoint it needs — point it at the same input ring with
 //! `with_producer` and UMP-Stream messages join the ordinary inbound stream,
 //! reaching the `UmpStream` arm of the app's drain. (Its outbound counterpart is
@@ -260,7 +260,7 @@ impl Plugin for MidiNegotiationPlugin {
                 endpoint_discovery_system,
                 endpoint_ingest_system,
             )
-                .run_if(tutti_core::ecs::engine_ready)
+                .run_if(crate::graph::engine_ready)
                 // Push into the outbound mailbox before the pump drains it, so a
                 // probe requested this frame reaches the wire this frame rather
                 // than waiting one.

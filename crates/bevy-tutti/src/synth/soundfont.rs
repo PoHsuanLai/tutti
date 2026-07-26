@@ -1,15 +1,16 @@
+//! Loading `.sf2` files as Bevy assets and promoting them into playing voices.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_asset::{io::Reader, AssetApp, AssetLoader, Assets, Handle, LoadContext};
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
-use bevy_tasks::{AsyncComputeTaskPool, Task};
+use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 
-use bevy_tasks::{block_on, futures_lite::future};
-use tutti_core::ecs::engine_ready;
-use tutti_core::ecs::{
-    AudioConfig, AudioEmitter, AudioGraphRes, GraphDirty, GraphReconcileSystems,
+use crate::graph::{
+    engine_ready, AudioConfig, AudioEmitter, AudioGraphRes, GraphDirty, GraphReconcileSystems,
 };
+use tutti_synth::soundfont::{SoundFontUnit, SynthesizerSettings};
+use tutti_synth::SoundFontAsset;
 
 /// In-memory Bevy loader for [`SoundFontAsset`]. Reads the whole `.sf2`
 /// payload, then delegates to [`SoundFontAsset::from_bytes`].
@@ -21,7 +22,7 @@ pub enum SoundFontAssetLoaderError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Parse(rustysynth::SoundFontError),
+    Parse(tutti_synth::soundfont::SoundFontError),
 }
 
 impl AssetLoader for SoundFontAssetLoader {
@@ -95,7 +96,7 @@ pub struct PlaySoundFont {
 /// [`AsyncComputeTaskPool`]. `promote_pending_soundfonts` drains it.
 #[derive(Component)]
 pub struct PendingSoundFontUnit {
-    task: Task<Result<SoundFontUnit, crate::Error>>,
+    task: Task<Result<SoundFontUnit, tutti_synth::Error>>,
     preset: i32,
     channel: i32,
 }
@@ -158,7 +159,7 @@ pub fn promote_pending_soundfonts(
     mut commands: Commands,
     mut graph: ResMut<AudioGraphRes>,
     mut dirty: ResMut<GraphDirty>,
-    #[cfg(feature = "midi")] midi: Option<Res<tutti_midi_io::MidiBusRes>>,
+    #[cfg(feature = "midi")] midi: Option<Res<crate::midi::MidiBusRes>>,
     mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,
 ) {
     let mut edited = false;

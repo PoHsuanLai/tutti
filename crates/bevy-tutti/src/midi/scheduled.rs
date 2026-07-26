@@ -22,8 +22,8 @@ use std::time::Instant;
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use crate::MidiBusRes;
-use crate::MidiEvent;
+use super::bus::MidiBusRes;
+use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
 
 /// "This entity owns the audio-graph node whose MIDI sink id is `midi_unit_id`."
@@ -119,7 +119,7 @@ impl Plugin for ScheduledMidiPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            tick_scheduled_midi.run_if(tutti_core::ecs::engine_ready),
+            tick_scheduled_midi.run_if(crate::graph::engine_ready),
         );
     }
 }

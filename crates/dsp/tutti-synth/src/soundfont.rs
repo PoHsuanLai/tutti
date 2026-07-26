@@ -5,7 +5,7 @@
 //! preset/channel. A host that wants asset-managed loading wires it in its own
 //! adapter layer; this module only needs the decoded `SoundFont`.
 
-pub use rustysynth::{SoundFont, SynthesizerSettings};
+pub use rustysynth::{SoundFont, SoundFontError, SynthesizerSettings};
 
 // TODO: `SoundFontAsset` is a `bevy_asset`-gated type in the vendored
 // rustysynth-tutti; the asset wrapper belongs in the host adapter, not here.

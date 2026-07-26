@@ -42,15 +42,11 @@ mod tuning;
 pub use tuning::Tuning;
 
 #[cfg(feature = "soundfont")]
-mod soundfont;
+pub mod soundfont;
 #[cfg(all(feature = "soundfont", feature = "bevy_asset"))]
 pub use soundfont::SoundFontAsset;
 #[cfg(feature = "soundfont")]
-pub use soundfont::{
-    promote_pending_soundfonts, soundfont_playback_system, PendingSoundFontUnit, PlaySoundFont,
-    SoundFont, SoundFontAssetLoader, SoundFontAssetLoaderError, SoundFontUnit, SynthesizerSettings,
-    TuttiSoundFontPlugin,
-};
+pub use soundfont::{SoundFont, SoundFontUnit, SynthesizerSettings};
 
 mod synth;
 pub use synth::{

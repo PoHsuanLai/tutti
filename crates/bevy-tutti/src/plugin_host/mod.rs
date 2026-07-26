@@ -22,7 +22,7 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use tutti_core::ecs::GraphReconcileSystems;
+use crate::graph::GraphReconcileSystems;
 
 pub mod crash;
 pub mod editor;
@@ -94,7 +94,7 @@ impl PluginsRes {
 /// (The `PluginParam` reconcile + epoch bump moved to
 /// `dawai_model::engine_bind::plugin_host` with the `PluginParam` component.)
 ///
-/// Requires [`tutti_core::ecs::GraphReconcilePlugin`] (which configures the
+/// Requires [`crate::graph::GraphReconcilePlugin`] (which configures the
 /// `GraphReconcileSystems` set) to be added before this plugin.
 pub struct TuttiHostingPlugin;
 
@@ -156,7 +156,7 @@ impl Plugin for TuttiHostingPlugin {
                 // commit), so anchor it before the Commit-phase commit_graph.
                 plugin_crash_detect_system
                     .before(GraphReconcileSystems::Commit)
-                    .run_if(tutti_core::ecs::engine_ready),
+                    .run_if(crate::graph::engine_ready),
                 trigger_plugin_scan,
                 poll_plugin_scan.after(trigger_plugin_scan),
             ),

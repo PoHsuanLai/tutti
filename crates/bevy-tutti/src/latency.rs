@@ -39,7 +39,7 @@ use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
-use tutti_core::ecs::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
+use crate::graph::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
 use tutti_core::RtPublish;
 use tutti_core::{latency, Samples};
 

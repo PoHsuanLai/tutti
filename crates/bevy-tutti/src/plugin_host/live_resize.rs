@@ -19,7 +19,7 @@ use objc2_foundation::{MainThreadMarker, NSNotification, NSNotificationCenter};
 
 use bevy_ecs::prelude::{NonSendMut, With};
 
-use crate::native_window::native_view_ptr;
+use crate::plugin_host::native_window::native_view_ptr;
 
 /// Closure invoked from inside AppKit's resize tracking loop with the
 /// host NSView's current logical content size.

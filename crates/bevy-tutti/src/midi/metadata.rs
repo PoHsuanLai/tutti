@@ -122,7 +122,7 @@ impl JrStamperRes {
 
 /// A native-UMP MIDI output source (macOS), the JR-out transport.
 ///
-/// Wraps a [`UmpVirtualSource`](crate::UmpVirtualSource) — a MIDI-2.0-protocol
+/// Wraps a [`UmpVirtualSource`](tutti_midi_io::UmpVirtualSource) — a MIDI-2.0-protocol
 /// endpoint that carries UMP words to the wire, unlike the MIDI-1.0 `MidiIoRes`
 /// port that drops JR Timestamps. The clock-out pump routes here (JR-stamped)
 /// when a [`JrStamperRes`] is enabled. Not inserted by default — an app that
@@ -130,7 +130,7 @@ impl JrStamperRes {
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 #[derive(Resource, Debug)]
 pub struct UmpOutRes {
-    source: crate::UmpVirtualSource,
+    source: tutti_midi_io::UmpVirtualSource,
     /// Running absolute sample position of the next block's frame-offset zero,
     /// so JR stamps stay monotonic across pump frames.
     origin_samples: u64,
@@ -139,7 +139,7 @@ pub struct UmpOutRes {
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 impl UmpOutRes {
     /// Wrap a native-UMP source as the JR-out target.
-    pub fn new(source: crate::UmpVirtualSource) -> Self {
+    pub fn new(source: tutti_midi_io::UmpVirtualSource) -> Self {
         Self {
             source,
             origin_samples: 0,
@@ -182,7 +182,7 @@ impl Plugin for MidiMetadataPlugin {
         app.add_systems(
             Update,
             flex_metadata_broadcast_system
-                .run_if(tutti_core::ecs::engine_ready)
+                .run_if(crate::graph::engine_ready)
                 // Fill the outbound mailbox before the pump drains it.
                 .before(super::track_out::pump_midi_out_system),
         );
@@ -195,7 +195,7 @@ mod tests {
 
     #[test]
     fn send_stamped_advances_origin_and_sends() {
-        let source = crate::UmpVirtualSource::new("Test JR-Out").expect("creates ump source");
+        let source = tutti_midi_io::UmpVirtualSource::new("Test JR-Out").expect("creates ump source");
         let mut out = UmpOutRes::new(source);
         let stamper = JrStamper::new(48_000.0, 0);
 

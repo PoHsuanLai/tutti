@@ -13,12 +13,12 @@ use bevy_log::warn;
 
 /// Hardware MIDI I/O (OS port management + virtual ports). Only present when
 /// the `midi-hardware` feature is compiled; claimed into the world by
-/// [`TuttiMidiPlugin`](crate::TuttiMidiPlugin) from the engine handoff.
+/// [`TuttiMidiPlugin`](super::plugin::TuttiMidiPlugin) from the engine handoff.
 #[derive(Resource, Clone, Debug)]
-pub struct MidiIoRes(pub crate::MidiIo);
+pub struct MidiIoRes(pub tutti_midi_io::MidiIo);
 
 impl std::ops::Deref for MidiIoRes {
-    type Target = crate::MidiIo;
+    type Target = tutti_midi_io::MidiIo;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -49,7 +49,7 @@ pub struct MidiDeviceState {
 }
 
 pub fn midi_device_connect_system(
-    midi_io: Option<Res<crate::MidiIoRes>>,
+    midi_io: Option<Res<super::device::MidiIoRes>>,
     mut connect_events: MessageReader<ConnectMidiDevice>,
     mut disconnect_events: MessageReader<DisconnectMidiDevice>,
     mut device_events: MessageWriter<MidiDeviceEvent>,
@@ -86,7 +86,7 @@ pub fn midi_device_connect_system(
 /// vanished and `Connected` for any new device that appeared (e.g., a hot-plug
 /// or an external connection through another part of the app).
 pub fn midi_device_poll_system(
-    midi_io: Option<Res<crate::MidiIoRes>>,
+    midi_io: Option<Res<super::device::MidiIoRes>>,
     mut state: ResMut<MidiDeviceState>,
     mut device_events: MessageWriter<MidiDeviceEvent>,
 ) {
@@ -134,7 +134,7 @@ impl Plugin for MidiDevicePlugin {
         app.add_systems(
             Update,
             (midi_device_connect_system, midi_device_poll_system)
-                .run_if(tutti_core::ecs::engine_ready),
+                .run_if(crate::graph::engine_ready),
         );
     }
 }

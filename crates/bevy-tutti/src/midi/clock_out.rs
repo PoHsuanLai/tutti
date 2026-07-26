@@ -7,7 +7,7 @@
 //! owns the *off-RT* half: [`ClockMasterRes`] holds the master handle (for
 //! enable/config from the UI) plus the mailbox's [`MidiReceiver`], and
 //! [`pump_clock_out_system`] drains it each frame to the OS MIDI output via
-//! [`MidiIo::send`](crate::MidiIo).
+//! [`MidiIo::send`](tutti_midi_io::MidiIo).
 //!
 //! Modeled on the hardware-input drain (`dawai-frontend`'s `drain_hardware_midi`):
 //! engine produces on the audio thread, a per-frame Bevy system forwards the
@@ -153,7 +153,7 @@ pub(super) fn jr_out_active<'a>(
 }
 
 /// Registers the clock-master output pump. The [`ClockMasterRes`] itself is
-/// claimed by [`TuttiMidiPlugin`](crate::TuttiMidiPlugin) from the engine
+/// claimed by [`TuttiMidiPlugin`](super::plugin::TuttiMidiPlugin) from the engine
 /// handoff; this plugin only schedules the drain.
 pub struct ClockOutPlugin;
 

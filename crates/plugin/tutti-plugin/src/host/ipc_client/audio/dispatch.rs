@@ -300,7 +300,10 @@ mod tests {
     fn non_finite_rate_falls_back() {
         for bad in [f64::NAN, f64::INFINITY, 0.0, -48_000.0] {
             let t = process_timeout(64, bad);
-            assert!(t >= MIN_PROCESS_TIMEOUT && t <= MAX_PROCESS_TIMEOUT, "rate={bad}: {t:?}");
+            assert!(
+                t >= MIN_PROCESS_TIMEOUT && t <= MAX_PROCESS_TIMEOUT,
+                "rate={bad}: {t:?}"
+            );
         }
     }
 

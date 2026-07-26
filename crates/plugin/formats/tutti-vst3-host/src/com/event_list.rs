@@ -311,7 +311,10 @@ mod tests {
             let bytes = unsafe { std::slice::from_raw_parts(data.bytes, 3) };
             assert_eq!(bytes[0], 0xB0, "event {i} status");
             assert_eq!(bytes[1], 74, "event {i} controller");
-            assert_eq!(bytes[2], i as u8, "event {i} value — pointer aliased or stale");
+            assert_eq!(
+                bytes[2], i as u8,
+                "event {i} value — pointer aliased or stale"
+            );
         }
     }
 
@@ -355,8 +358,7 @@ mod tests {
         for (i, ev) in fetched.iter().enumerate() {
             let chord = unsafe { ev.__field0.chord };
             assert_eq!(chord.root, 60 + i as i16, "event {i}");
-            let text =
-                unsafe { std::slice::from_raw_parts(chord.text, chord.textLen as usize) };
+            let text = unsafe { std::slice::from_raw_parts(chord.text, chord.textLen as usize) };
             assert_eq!(text, names[i].as_slice(), "event {i} text");
         }
     }

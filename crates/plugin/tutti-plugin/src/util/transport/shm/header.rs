@@ -159,8 +159,12 @@ impl SlabHeader {
     /// magic with `Acquire` (see [`validate`](Self::validate)) is guaranteed to
     /// see the version and slot count that were written before it.
     pub(super) fn initialize(&self) {
-        self.control.header_version.store(HEADER_VERSION, Ordering::Relaxed);
-        self.control.slots.store(RING_SLOTS as u32, Ordering::Relaxed);
+        self.control
+            .header_version
+            .store(HEADER_VERSION, Ordering::Relaxed);
+        self.control
+            .slots
+            .store(RING_SLOTS as u32, Ordering::Relaxed);
         for seq in self.input_seq.iter().chain(self.output_seq.iter()) {
             seq.store(0, Ordering::Relaxed);
         }

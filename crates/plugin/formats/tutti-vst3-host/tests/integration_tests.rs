@@ -349,7 +349,9 @@ fn test_set_parameter() {
         // Index 0, resolved to its ParamID — `set_parameter(0, ..)` would have
         // written to *ParamID* 0, which need not be the first parameter (or
         // exist at all).
-        let id = plugin.parameter_id_at(0).expect("index 0 has ParameterInfo");
+        let id = plugin
+            .parameter_id_at(0)
+            .expect("index 0 has ParameterInfo");
         println!("Setting parameter index 0 (ParamID {id}) to 0.5");
         assert!(plugin.set_parameter_by_index(0, 0.5));
         let value = plugin

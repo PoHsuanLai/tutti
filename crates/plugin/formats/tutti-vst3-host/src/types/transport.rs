@@ -277,7 +277,12 @@ mod tests {
 
         // (requirement bit, valid bit, "is the field non-zero?" probe)
         #[allow(clippy::type_complexity)]
-        let cases: &[(&str, u32, u32, fn(&vst3::Steinberg::Vst::ProcessContext) -> bool)] = &[
+        let cases: &[(
+            &str,
+            u32,
+            u32,
+            fn(&vst3::Steinberg::Vst::ProcessContext) -> bool,
+        )] = &[
             (
                 "projectTimeMusic",
                 need::NEED_PROJECT_TIME_MUSIC,
@@ -322,8 +327,15 @@ mod tests {
 
             // The inverse: nothing requested → field untouched, bit clear.
             let off = to_process_context(&t, 0);
-            assert!(!field_filled(&off), "{name}: filled without being requested");
-            assert_eq!(off.state & valid_bit, 0, "{name}: valid bit set with no data");
+            assert!(
+                !field_filled(&off),
+                "{name}: filled without being requested"
+            );
+            assert_eq!(
+                off.state & valid_bit,
+                0,
+                "{name}: valid bit set with no data"
+            );
         }
     }
 

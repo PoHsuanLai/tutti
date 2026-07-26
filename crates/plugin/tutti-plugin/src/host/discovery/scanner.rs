@@ -528,7 +528,10 @@ mod tests {
 
         // Exercises the *production* classifier, not a copy of it.
         let crashed = ProbeFailure::from_bridge_error(BridgeError::ProcessCrashed);
-        assert!(crashed.blacklistable, "ProcessCrashed must be blacklistable");
+        assert!(
+            crashed.blacklistable,
+            "ProcessCrashed must be blacklistable"
+        );
         assert!(crashed.reason.contains("crashed"));
 
         let timed_out = ProbeFailure::from_bridge_error(BridgeError::Timeout {
@@ -539,7 +542,9 @@ mod tests {
         assert!(timed_out.reason.contains("timed out"));
 
         // Environmental failures say nothing about the plugin — never hide it.
-        assert!(!ProbeFailure::from_bridge_error(BridgeError::IpcError("socket".into())).blacklistable);
+        assert!(
+            !ProbeFailure::from_bridge_error(BridgeError::IpcError("socket".into())).blacklistable
+        );
         assert!(
             !ProbeFailure::from_bridge_error(BridgeError::ProtocolMismatch {
                 expected: 2,
@@ -672,8 +677,9 @@ mod tests {
         use crate::error::BridgeError;
 
         let path = Path::new("/plugins/TAL-NoiseMaker.vst3");
-        let descriptor = interpret_probe(Err(BridgeError::ServerNotFound), path, PluginFormat::Vst3)
-            .expect("a missing plugin-server is a fallback, not an error");
+        let descriptor =
+            interpret_probe(Err(BridgeError::ServerNotFound), path, PluginFormat::Vst3)
+                .expect("a missing plugin-server is a fallback, not an error");
 
         assert_eq!(descriptor.name, "TAL-NoiseMaker");
         assert_eq!(descriptor.id, "vst3.tal-noisemaker");

@@ -159,7 +159,11 @@ fn fill_sine(input: &mut BufferVec<F32>, channels: usize, block_index: usize) {
 
 fn peak(buf: &BufferVec<F32>, channels: usize) -> f32 {
     (0..channels)
-        .map(|ch| (0..BLOCK).map(|i| buf.at_scalar(ch, i).abs()).fold(0.0f32, f32::max))
+        .map(|ch| {
+            (0..BLOCK)
+                .map(|i| buf.at_scalar(ch, i).abs())
+                .fold(0.0f32, f32::max)
+        })
         .fold(0.0f32, f32::max)
 }
 

@@ -1349,10 +1349,19 @@ mod tests {
     /// `kVibratoTypeID = 3`, `kExpressionTypeID = 4`, `kBrightnessTypeID = 5`.
     #[test]
     fn note_expression_type_ids_match_the_vst3_spec() {
-        assert_eq!(note_expression_type_to_id(NoteExpressionType::Volume), Some(0));
+        assert_eq!(
+            note_expression_type_to_id(NoteExpressionType::Volume),
+            Some(0)
+        );
         assert_eq!(note_expression_type_to_id(NoteExpressionType::Pan), Some(1));
-        assert_eq!(note_expression_type_to_id(NoteExpressionType::Tuning), Some(2));
-        assert_eq!(note_expression_type_to_id(NoteExpressionType::Vibrato), Some(3));
+        assert_eq!(
+            note_expression_type_to_id(NoteExpressionType::Tuning),
+            Some(2)
+        );
+        assert_eq!(
+            note_expression_type_to_id(NoteExpressionType::Vibrato),
+            Some(3)
+        );
         assert_eq!(
             note_expression_type_to_id(NoteExpressionType::Expression),
             Some(4),
@@ -1365,7 +1374,10 @@ mod tests {
         );
         // VST3 has no standard note-expression id for poly pressure; it rides
         // the kPolyPressureEvent path instead.
-        assert_eq!(note_expression_type_to_id(NoteExpressionType::Pressure), None);
+        assert_eq!(
+            note_expression_type_to_id(NoteExpressionType::Pressure),
+            None
+        );
     }
 
     /// The decoder must mirror the same absolute ids, so an incoming 5 is
@@ -1373,10 +1385,22 @@ mod tests {
     /// mislabelled Brightness).
     #[test]
     fn note_expression_type_from_id_matches_the_vst3_spec() {
-        assert_eq!(note_expression_type_from_id(0), Some(NoteExpressionType::Volume));
-        assert_eq!(note_expression_type_from_id(1), Some(NoteExpressionType::Pan));
-        assert_eq!(note_expression_type_from_id(2), Some(NoteExpressionType::Tuning));
-        assert_eq!(note_expression_type_from_id(3), Some(NoteExpressionType::Vibrato));
+        assert_eq!(
+            note_expression_type_from_id(0),
+            Some(NoteExpressionType::Volume)
+        );
+        assert_eq!(
+            note_expression_type_from_id(1),
+            Some(NoteExpressionType::Pan)
+        );
+        assert_eq!(
+            note_expression_type_from_id(2),
+            Some(NoteExpressionType::Tuning)
+        );
+        assert_eq!(
+            note_expression_type_from_id(3),
+            Some(NoteExpressionType::Vibrato)
+        );
         assert_eq!(
             note_expression_type_from_id(4),
             Some(NoteExpressionType::Expression)
@@ -1403,7 +1427,11 @@ mod tests {
             NoteExpressionType::Brightness,
         ] {
             let id = note_expression_type_to_id(ty).expect("VST3-encodable");
-            assert_eq!(note_expression_type_from_id(id), Some(ty), "{ty:?} @ id {id}");
+            assert_eq!(
+                note_expression_type_from_id(id),
+                Some(ty),
+                "{ty:?} @ id {id}"
+            );
         }
     }
 

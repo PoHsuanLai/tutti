@@ -244,7 +244,9 @@ impl AudioSlab {
     /// Which block currently occupies the output slot that `seq` maps to.
     #[inline]
     pub fn output_sequence(&self, seq: u64) -> u64 {
-        self.mmap.header().sequence(Direction::Output, slot_for(seq))
+        self.mmap
+            .header()
+            .sequence(Direction::Output, slot_for(seq))
     }
 
     /// True when the output ring holds block `seq` — the single check the host
@@ -643,7 +645,10 @@ mod tests {
         // valid for one direction may not be valid for the other.
         assert!(slab.write_input(1, 3, &data).is_err());
         assert!(slab.write_output(1, 2, &data).is_err());
-        assert!(slab.write_input(1, 2, &data).is_ok(), "sidechain is in range");
+        assert!(
+            slab.write_input(1, 2, &data).is_ok(),
+            "sidechain is in range"
+        );
         let mut out = vec![0.0f32; 64];
         assert!(slab.read_output_into(1, 5, &mut out).is_err());
     }
@@ -692,7 +697,9 @@ mod tests {
         let path = shm_path(&n);
         std::fs::write(&path, vec![0xABu8; byte_size(&l)]).unwrap();
 
-        let err = AudioSlab::open(n, l).err().expect("a foreign file must not open");
+        let err = AudioSlab::open(n, l)
+            .err()
+            .expect("a foreign file must not open");
         assert!(
             format!("{err}").contains("not a tutti audio slab"),
             "expected a magic failure, got: {err}"
@@ -710,7 +717,9 @@ mod tests {
         let _owner = AudioSlab::create(n.clone(), small).unwrap();
 
         let big = stereo_layout(256, SampleFormat::Float32);
-        let err = AudioSlab::open(n, big).err().expect("an oversized layout must not open");
+        let err = AudioSlab::open(n, big)
+            .err()
+            .expect("an oversized layout must not open");
         assert!(format!("{err}").contains("bytes"), "got: {err}");
     }
 }

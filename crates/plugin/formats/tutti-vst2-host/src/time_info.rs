@@ -40,9 +40,7 @@ use crate::types::TransportInfo;
 /// resetting for a real reason.
 fn transport_bits(flags: vst::api::TimeInfoFlags) -> i32 {
     use vst::api::TimeInfoFlags as F;
-    (flags
-        & (F::TRANSPORT_PLAYING | F::TRANSPORT_RECORDING | F::TRANSPORT_CYCLE_ACTIVE))
-        .bits()
+    (flags & (F::TRANSPORT_PLAYING | F::TRANSPORT_RECORDING | F::TRANSPORT_CYCLE_ACTIVE)).bits()
 }
 
 /// A `f64` field is only worth advertising as valid if a plugin can do

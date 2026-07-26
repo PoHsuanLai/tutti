@@ -10,8 +10,8 @@ use std::error::Error;
 use std::ffi::CString;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::os::raw::c_void;
-use std::path::Path;
 use std::panic::{self, AssertUnwindSafe};
+use std::path::Path;
 use std::sync::Arc;
 use std::{fmt, ptr, slice};
 
@@ -1356,7 +1356,10 @@ mod tests {
         assert!(unsafe { copy_chunk(data.as_mut_ptr(), -1) }.is_empty());
 
         // The good case still copies.
-        assert_eq!(unsafe { copy_chunk(data.as_mut_ptr(), 4) }, vec![1, 2, 3, 4]);
+        assert_eq!(
+            unsafe { copy_chunk(data.as_mut_ptr(), 4) },
+            vec![1, 2, 3, 4]
+        );
     }
 
     /// VST2-H4's fallback path clears the outputs before the accumulating

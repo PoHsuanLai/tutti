@@ -1146,8 +1146,12 @@ mod tests {
             63,
             "must land on the last valid index of a 64-frame block"
         );
-        assert_eq!(list.len(), 1, "the note-off must survive — dropping it would \
-                                   leave a stuck note");
+        assert_eq!(
+            list.len(),
+            1,
+            "the note-off must survive — dropping it would \
+                                   leave a stuck note"
+        );
     }
 
     /// CLAP-H3: an in-range time is untouched, and a zero-length block folds
@@ -1207,8 +1211,7 @@ mod tests {
         use tutti_midi_types::midi2::UmpMessage;
 
         let unit_of = |gain: f64| -> f32 {
-            let clap =
-                ClapEvent::per_note_expression(0, NoteExpressionType::Volume, 1, 64, gain);
+            let clap = ClapEvent::per_note_expression(0, NoteExpressionType::Volume, 1, 64, gain);
             let midi = clap.to_midi().expect("volume -> midi");
             match UmpMessage::try_from(midi.data_words()).expect("UMP") {
                 UmpMessage::ChannelVoice2(Cv2::AssignablePerNoteController(m)) => {
@@ -1356,10 +1359,8 @@ mod tests {
         const CH: u8 = 3;
         const KEY: u8 = 60;
 
-        let on = ClapEvent::from_midi(
-            &MidiEvent::note_on(0, CH, KEY, 0x8000).with_frame_offset(0),
-        )
-        .expect("note on converts");
+        let on = ClapEvent::from_midi(&MidiEvent::note_on(0, CH, KEY, 0x8000).with_frame_offset(0))
+            .expect("note on converts");
         let expr = ClapEvent::from_midi(
             &MidiEvent::poly_pressure(0, CH, KEY, unit_f32_to_u32(0.5)).with_frame_offset(1),
         )

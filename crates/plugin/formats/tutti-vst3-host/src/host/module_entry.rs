@@ -55,7 +55,10 @@ impl Drop for ModuleEntry {
 
 /// Resolve `name` as a function symbol in `library`, or `None` if the module
 /// doesn't export it. A missing entry/exit point is a supported case.
-fn symbol<'a, T>(library: &'a libloading::Library, name: &str) -> Option<libloading::Symbol<'a, T>> {
+fn symbol<'a, T>(
+    library: &'a libloading::Library,
+    name: &str,
+) -> Option<libloading::Symbol<'a, T>> {
     unsafe { library.get(name).ok() }
 }
 
@@ -105,10 +108,7 @@ mod platform {
         (!bundle.is_null()).then_some(bundle)
     }
 
-    pub(super) fn enter(
-        library: &libloading::Library,
-        lib_path: &Path,
-    ) -> Result<Entry, String> {
+    pub(super) fn enter(library: &libloading::Library, lib_path: &Path) -> Result<Entry, String> {
         // `bundleEntry` takes the plugin's own CFBundleRef; without a real
         // bundle there is nothing honest to pass, and handing a plugin a null
         // CFBundleRef invites it to dereference it. Skip the call instead.
@@ -237,10 +237,7 @@ mod platform {
         exit: Option<ExitDllFn>,
     }
 
-    pub(super) fn enter(
-        library: &libloading::Library,
-        _lib_path: &Path,
-    ) -> Result<Entry, String> {
+    pub(super) fn enter(library: &libloading::Library, _lib_path: &Path) -> Result<Entry, String> {
         let exit = symbol::<ExitDllFn>(library, "ExitDll").map(|s| *s);
 
         if let Some(entry) = symbol::<InitDllFn>(library, "InitDll") {

@@ -374,8 +374,9 @@ fn pipeline_steady_state_is_not_echoed_or_doubly_stale() {
 
     for (block, got) in captured.iter().enumerate().skip(2) {
         let matches = |b: usize, gain: f32| {
-            (0..CHANNELS)
-                .all(|ch| (0..BATCH_SIZE).all(|i| (got[ch][i] - ramp_sample(b, ch, i) * gain).abs() < 1e-4))
+            (0..CHANNELS).all(|ch| {
+                (0..BATCH_SIZE).all(|i| (got[ch][i] - ramp_sample(b, ch, i) * gain).abs() < 1e-4)
+            })
         };
 
         assert!(

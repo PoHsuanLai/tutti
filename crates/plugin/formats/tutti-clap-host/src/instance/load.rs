@@ -113,13 +113,14 @@ impl ClapLoaded {
         // out from under a live instance. `PluginHandle::drop` now covers both.
         let plugin = PluginHandle::new(plugin_ptr);
 
-        let plugin_init_fn = unsafe { plugin.as_ref() }
-            .init
-            .ok_or_else(|| ClapError::LoadFailed {
-                path: bundle_path.to_path_buf(),
-                stage: LoadStage::Initialization,
-                reason: "No plugin init function".to_string(),
-            })?;
+        let plugin_init_fn =
+            unsafe { plugin.as_ref() }
+                .init
+                .ok_or_else(|| ClapError::LoadFailed {
+                    path: bundle_path.to_path_buf(),
+                    stage: LoadStage::Initialization,
+                    reason: "No plugin init function".to_string(),
+                })?;
 
         if !unsafe { plugin_init_fn(plugin.as_ptr()) } {
             return Err(ClapError::LoadFailed {

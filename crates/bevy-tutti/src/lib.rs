@@ -18,7 +18,7 @@
 //! }
 //!
 //! fn setup(mut commands: Commands, assets: Res<AssetServer>) {
-//!     // Clip playback runs through tutti-sampler's TrackClipReaderUnit;
+//!     // Clip playback runs through tutti-sampler's VoicePool;
 //!     // see its docs for building and sending a `Voice`.
 //! }
 //! ```

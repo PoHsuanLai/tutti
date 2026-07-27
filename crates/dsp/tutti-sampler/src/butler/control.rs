@@ -14,8 +14,8 @@ use smol::channel::Sender;
 use tutti_core::PlaybackRate;
 
 use super::{ButlerCommand, ChannelPlan, RtState};
-use crate::clip::streaming_sampler::DiskSource;
-use crate::clip::track_clip_reader::Direction;
+use crate::voice::disk_voice::DiskSource;
+use crate::voice::voice_pool::Direction;
 
 /// Start a disk stream on `channel_index` from `file_path` at `offset_samples`.
 pub(crate) fn stream(

@@ -20,7 +20,7 @@ pub(crate) struct LoopCrossfade {
 ///
 /// The buffer is sized to this once, at slot construction, so a later loop
 /// change only rewrites its contents — see [`LoopCrossfade::retune`]. A
-/// `ClipCommand::UpdateLoop` is drained inside `tick`/`process`, so anything
+/// `VoiceCommand::UpdateLoop` is drained inside `tick`/`process`, so anything
 /// that grows the buffer there is an allocation in the audio callback.
 ///
 /// 4096 frames is ~93 ms at 44.1 kHz; the app asks for 256. A request past this

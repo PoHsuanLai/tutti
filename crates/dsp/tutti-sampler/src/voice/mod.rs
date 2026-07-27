@@ -1,9 +1,9 @@
-//! Clip playback — the DSP units that turn a wave into audio, plus the shared
+//! Voice playback — the DSP units that turn a wave into audio, plus the shared
 //! kernels they read through.
 //!
 //! - [`memory_source`] — in-memory playback ([`MemorySource`]).
-//! - [`streaming_sampler`] — disk-streaming playback, fed by the butler thread.
-//! - [`track_clip_reader`] — per-track multi-clip mixer over both tiers.
+//! - [`disk_voice`] — disk-streaming playback, fed by the butler thread.
+//! - [`voice_pool`] — per-track multi-voice mixer over both tiers.
 //! - [`interp`] — the interpolation kernel and the transport-placement gate.
 
 #[cfg(feature = "bevy")]
@@ -20,9 +20,9 @@ pub mod interp;
 pub mod memory_source;
 // Disk streaming — the unit is Bevy-free; it's fed by the (Bevy-free) butler
 // engine, which a non-Bevy host drives via `DiskStreamer`.
-pub mod streaming_sampler;
-// `track_clip_reader` holds Bevy-free DSP (its ECS pieces are gated inside).
-pub mod track_clip_reader;
+pub mod disk_voice;
+// `voice_pool` holds Bevy-free DSP (its ECS pieces are gated inside).
+pub mod voice_pool;
 
 // The sampler's Bevy asset loader. The DAW-facing ECS binding (param
 // write-through, deferred load) lives app-side in
@@ -32,18 +32,18 @@ pub mod track_clip_reader;
 pub mod wave_loader;
 
 // Bevy-free reader value types + DSP unit.
+pub use disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig};
 pub use memory_source::{LoopSetting, MemorySource, MemorySourceConfig, TransportPlacement};
-pub use streaming_sampler::{DiskSource, StreamingClipConfig, StreamingClipReader};
-pub use track_clip_reader::{
-    ClipCommand, ClipSpec, Direction, PendingPlayback, Playback, SlotId, TrackClipReaderHandle,
-    TrackClipReaderUnit, Voice, VoiceNode, VoiceSource,
+pub use voice_pool::{
+    Direction, PendingPlayback, Playback, SlotId, Voice, VoiceCommand, VoiceNode, VoicePool,
+    VoicePoolHandle, VoiceSource,
 };
 #[cfg(feature = "bevy")]
-pub use track_clip_reader::{TrackClipReaderNode, TrackClipReaderRef};
+pub use voice_pool::{VoicePoolNode, VoicePoolRef};
 #[cfg(feature = "bevy")]
 pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 
-/// Bevy plugin for clip playback: registers the wave asset loader.
+/// Bevy plugin for voice playback: registers the wave asset loader.
 #[cfg(feature = "bevy")]
 #[derive(Debug)]
 pub struct TuttiPlaybackPlugin;

@@ -35,7 +35,7 @@ pub(crate) enum LoopMode {
 /// into the internal [`LoopMode`], priming the crossfade privately.
 ///
 /// This mirrors how the streaming/timeline loop already speaks in
-/// `(start, end, crossfade_samples)` via `ClipCommand::UpdateLoop`.
+/// `(start, end, crossfade_samples)` via `VoiceCommand::UpdateLoop`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum LoopSetting {
     /// Play through once, then stop.
@@ -142,7 +142,7 @@ impl std::fmt::Debug for LoopMode {
 
 /// In-memory sample playback with optional loop crossfade.
 ///
-/// By default, plays immediately when added to the graph (suitable for timeline clips
+/// By default, plays immediately when added to the graph (suitable for timeline voices
 /// and offline export). Use `stop()` and `trigger()` for manual control if needed
 /// (e.g., MIDI-triggered one-shots).
 pub struct MemorySource {
@@ -296,7 +296,7 @@ impl MemorySource {
         unit
     }
 
-    /// Convenience constructor for the common transport-bound clip case: bind a
+    /// Convenience constructor for the common transport-bound voice case: bind a
     /// transport at `start_beat` for `duration_beats`, everything else default.
     /// Equivalent to `with_config(wave, MemorySourceConfig { placement: Some(..),
     /// ..Default::default() })`; kept because it reads better at the three
@@ -493,8 +493,8 @@ impl MemorySource {
     ) {
         // Reuse the resident crossfade rather than building one.
         //
-        // This runs on the audio thread: `ClipCommand::UpdateLoop` is drained by
-        // `TrackClipReaderUnit::drain_commands`, which `tick`/`process` call. So
+        // This runs on the audio thread: `VoiceCommand::UpdateLoop` is drained by
+        // `VoicePool::drain_commands`, which `tick`/`process` call. So
         // changing a loop mid-playback used to allocate `crossfade_samples *
         // channels` floats in the callback, plus a temporary buffer to read the
         // wave into. Both are gone: the crossfade's buffer is reserved once at
@@ -555,7 +555,7 @@ impl MemorySource {
     /// The current loop as a public [`LoopSetting`] intent (crossfade length
     /// recovered from the live [`LoopCrossfade`]). Lets a caller that built this
     /// unit imperatively read its loop back as a value — used by the
-    /// `TrackClipReader` add shim to fold a pre-configured `MemorySource`'s loop
+    /// `VoicePool` add shim to fold a pre-configured `MemorySource`'s loop
     /// into a `Playback` record.
     pub fn loop_setting(&self) -> LoopSetting {
         match &self.loop_mode {
@@ -616,15 +616,15 @@ impl MemorySource {
     /// per sample — the same relationship `TransportClock::tick`/`process` have
     /// in `tutti-core`. Previously the two entry points were written out
     /// separately and had drifted apart: `tick` ignored `speed` entirely for a
-    /// placed clip while `process` applied it, so the same unit produced
+    /// placed voice while `process` applied it, so the same unit produced
     /// different audio depending on which the graph happened to call.
     ///
     /// Two position models live here, and the split is deliberate:
     ///
     /// - **Placed** (a timeline clip) — position is *derived* from the playhead,
-    ///   so the clip cannot drift from the transport. Varispeed is folded into
+    ///   so the voice cannot drift from the transport. Varispeed is folded into
     ///   the beat→sample mapping, not accumulated here.
-    /// - **Free-running** (no transport) — nothing else owns this clip's time,
+    /// - **Free-running** (no transport) — nothing else owns this voice's time,
     ///   so it advances its own cursor by `read_rate`.
     ///
     /// `offset_in_block` is the sample's index within the current `process`
@@ -910,7 +910,7 @@ mod tests {
 
     #[test]
     fn tick_matches_process_when_placed() {
-        // The case that was actually broken: a placed clip at non-unity speed.
+        // The case that was actually broken: a placed voice at non-unity speed.
         let wave = ramp_wave(4096, 44100.0);
         let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
         let build = || {
@@ -952,13 +952,13 @@ mod tests {
         assert_tick_matches_process(build(), build(), 32, None, "loop wrap");
     }
 
-    // --- varispeed actually reaches a placed clip ---
+    // --- varispeed actually reaches a placed voice ---
     //
     // The equivalence tests above cannot catch the original defect on their own:
     // both entry points now call `next_frame`, so any change affects them
     // identically. These pin the *behaviour* instead — that speed reaches the
     // placed path at all. Previously `tick` returned a position derived without
-    // the rate, so a placed clip played at 1x no matter what speed was set.
+    // the rate, so a placed voice played at 1x no matter what speed was set.
 
     fn placed_unit(wave: &Arc<Wave>, transport: &Arc<MockTransport>, rate: f32) -> MemorySource {
         MemorySource::with_config(
@@ -993,7 +993,7 @@ mod tests {
         assert!(a > 0.0 && b > 0.0, "both should be sounding: {a}, {b}");
         assert!(
             (b - a / 2.0).abs() < 2.0,
-            "at 0.5x the clip should be half as far in ({a} -> expected ~{}, got {b})",
+            "at 0.5x the voice should be half as far in ({a} -> expected ~{}, got {b})",
             a / 2.0
         );
     }
@@ -1014,7 +1014,7 @@ mod tests {
         assert!((b - a / 2.0).abs() < 2.0, "expected ~{}, got {b}", a / 2.0);
     }
 
-    /// A placed clip must read ACROSS a block, not emit one frozen frame.
+    /// A placed voice must read ACROSS a block, not emit one frozen frame.
     ///
     /// A transport advances once per block — the offline driver calls
     /// `advance(block_size)` after `process` returns — so deriving position from
@@ -1032,7 +1032,7 @@ mod tests {
         let first = block[0].0;
         let last = block[7].0;
 
-        assert!(first > 0.0, "clip should be sounding, got {first}");
+        assert!(first > 0.0, "voice should be sounding, got {first}");
         assert!(
             last > first,
             "a ramp wave must rise across the block; got constant DC \
@@ -1747,7 +1747,7 @@ mod tests {
         }
     }
 
-    /// A looping 6-channel clip must keep every channel through the crossfade.
+    /// A looping 6-channel voice must keep every channel through the crossfade.
     /// The crossfade blends in place across the whole frame, so a stereo-shaped
     /// blend would leave channels 2..6 un-faded (or worse, untouched).
     #[test]

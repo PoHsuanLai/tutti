@@ -281,7 +281,7 @@ fn refill_one(
         // the old `fill_buffer_forward` shape. `loop_range` is honoured here for
         // the same reason as the decoder path above: this function serves the
         // 3+-stream parallel refill, and dropping it there made looping depend
-        // on how many clips happened to be streaming.
+        // on how many voices happened to be streaming.
         refill_forward(writer, &wave, file_position, chunk_size, buffer, loop_range);
     }
 }

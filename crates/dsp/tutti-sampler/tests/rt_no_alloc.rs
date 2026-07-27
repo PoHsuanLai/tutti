@@ -22,8 +22,8 @@ use tutti_core::{
 };
 use tutti_sampler::stretch::Unit as TimeStretchUnit;
 use tutti_sampler::{
-    ClipCommand, ClipSpec, Direction, MemorySource, MemorySourceConfig, Playback, SlotId,
-    TrackClipReaderUnit, TransportPlacement, Voice, VoiceSource,
+    Direction, MemorySource, MemorySourceConfig, Playback, SlotId, TransportPlacement, Voice,
+    VoiceCommand, VoicePool, VoiceSource,
 };
 
 #[global_allocator]
@@ -120,9 +120,9 @@ fn time_stretch_process_is_allocation_free() {
 }
 
 // ---------------------------------------------------------------------------
-// TrackClipReaderUnit — the live-graph workhorse. One node per track, mixing
-// down every clip's `MemorySource` each buffer. Mirrors the mock transport from
-// the crate's in-file tests so clips see a running playhead.
+// VoicePool — the live-graph workhorse. One node per track, mixing
+// down every voice's `MemorySource` each buffer. Mirrors the mock transport from
+// the crate's in-file tests so voices see a running playhead.
 // ---------------------------------------------------------------------------
 
 struct MockTransport {
@@ -153,32 +153,41 @@ impl Timeline for MockTransport {
     }
 }
 
-/// Steady-state mixdown must be allocation-free: two clips already present in
+/// Steady-state mixdown must be allocation-free: two voices already present in
 /// the slot list, the per-buffer `process()` sums them with no heap traffic.
 ///
-/// Clips are seeded via `insert_clip` (the synchronous, channel-less Populate
+/// Voices are seeded via `insert_voice` (the synchronous, channel-less Populate
 /// path) so the guarded loop measures ONLY the per-buffer mixdown — no `Add`
 /// command drain, which is a separate concern below.
 #[test]
-fn track_clip_reader_process_steady_state_is_allocation_free() {
+fn voice_pool_process_steady_state_is_allocation_free() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = sine_wave(2.0, 48_000.0);
 
-    let (mut unit, _handle) = TrackClipReaderUnit::with_transport(transport.clone(), None);
+    let (mut unit, _handle) = VoicePool::with_transport(transport.clone(), None);
     unit.set_sample_rate(SampleRate(48_000.0));
 
     for i in 0..2u128 {
         let sampler =
             MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
-        unit.insert_clip(ClipSpec {
-            id: SlotId(i),
-            sampler,
-            direction: Direction::Forward,
-            stretch_factor: StretchFactor::new(1.0),
-            pitch_cents: Cents::new(0.0),
-        });
+        unit.insert_voice(
+            SlotId(i),
+            Voice {
+                play: Playback {
+                    gain: sampler.gain(),
+                    speed: sampler.speed(),
+                    loop_: sampler.loop_setting(),
+                    direction: Direction::Forward,
+                    stretch: StretchFactor::new(1.0),
+                    pitch: Cents::new(0.0),
+                    placement: None,
+                },
+                source: VoiceSource::Memory(sampler),
+                channel_index: None,
+            },
+        );
     }
-    assert_eq!(unit.clip_count(), 2);
+    assert_eq!(unit.voice_count(), 2);
 
     let input_vec = BufferVec::new(0);
     let mut output_vec = BufferVec::new(2);
@@ -201,23 +210,32 @@ fn track_clip_reader_process_steady_state_is_allocation_free() {
 
 /// Same steady-state guard for the sample-accurate `tick()` mixdown path.
 #[test]
-fn track_clip_reader_tick_steady_state_is_allocation_free() {
+fn voice_pool_tick_steady_state_is_allocation_free() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = sine_wave(2.0, 48_000.0);
 
-    let (mut unit, _handle) = TrackClipReaderUnit::with_transport(transport.clone(), None);
+    let (mut unit, _handle) = VoicePool::with_transport(transport.clone(), None);
     unit.set_sample_rate(SampleRate(48_000.0));
 
     for i in 0..2u128 {
         let sampler =
             MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
-        unit.insert_clip(ClipSpec {
-            id: SlotId(i),
-            sampler,
-            direction: Direction::Forward,
-            stretch_factor: StretchFactor::new(1.0),
-            pitch_cents: Cents::new(0.0),
-        });
+        unit.insert_voice(
+            SlotId(i),
+            Voice {
+                play: Playback {
+                    gain: sampler.gain(),
+                    speed: sampler.speed(),
+                    loop_: sampler.loop_setting(),
+                    direction: Direction::Forward,
+                    stretch: StretchFactor::new(1.0),
+                    pitch: Cents::new(0.0),
+                    placement: None,
+                },
+                source: VoiceSource::Memory(sampler),
+                channel_index: None,
+            },
+        );
     }
 
     let mut output = [0.0f32; 2];
@@ -232,10 +250,10 @@ fn track_clip_reader_tick_steady_state_is_allocation_free() {
     });
 }
 
-/// The `ClipCommand::UpdateStretch` drain is allocation-free.
+/// The `VoiceCommand::UpdateStretch` drain is allocation-free.
 ///
 /// The resident time-stretch processor is built once at slot creation, off the
-/// hot path. Draining an `UpdateStretch` calls `ClipSlot::set_stretch`, which
+/// hot path. Draining an `UpdateStretch` calls `VoiceSlot::set_stretch`, which
 /// only flips the processor's lock-free `stretch_factor` / `pitch_cents` atomics
 /// and mirrors them into the routing-gate fields — it allocates nothing and
 /// (re)builds nothing. So the per-buffer `tick`/`process` command drain stays
@@ -252,7 +270,7 @@ fn track_clip_reader_tick_steady_state_is_allocation_free() {
 /// cleanly. A regression that reintroduces allocation on the drain aborts the
 /// child → this test FAILS.
 #[test]
-fn track_clip_reader_update_stretch_drain_is_allocation_free() {
+fn voice_pool_update_stretch_drain_is_allocation_free() {
     // Child arm: run the guarded drain. Aborts only on a regression.
     if std::env::var_os("RT_NO_ALLOC_STRETCH_CHILD").is_some() {
         run_stretch_drain_under_guard();
@@ -265,7 +283,7 @@ fn track_clip_reader_update_stretch_drain_is_allocation_free() {
     let exe = std::env::current_exe().expect("current_exe");
     let status = std::process::Command::new(exe)
         .arg("--exact")
-        .arg("track_clip_reader_update_stretch_drain_is_allocation_free")
+        .arg("voice_pool_update_stretch_drain_is_allocation_free")
         .arg("--nocapture")
         .env("RT_NO_ALLOC_STRETCH_CHILD", "1")
         .stdout(std::process::Stdio::null())
@@ -287,12 +305,12 @@ fn run_stretch_drain_under_guard() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = sine_wave(2.0, 48_000.0);
 
-    let (mut unit, handle) = TrackClipReaderUnit::with_transport(transport.clone(), None);
+    let (mut unit, handle) = VoicePool::with_transport(transport.clone(), None);
     unit.set_sample_rate(SampleRate(48_000.0));
 
     let sampler =
         MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
-    handle.send(ClipCommand::AddVoice {
+    handle.send(VoiceCommand::AddVoice {
         id: SlotId(1),
         voice: Box::new(Voice {
             source: VoiceSource::Memory(sampler),
@@ -310,7 +328,7 @@ fn run_stretch_drain_under_guard() {
 
     // Enqueue a stretch update; draining it inside the guarded tick rebuilds
     // the stretch unit and allocates. Trips assert_no_alloc TODAY.
-    handle.send(ClipCommand::UpdateStretch {
+    handle.send(VoiceCommand::UpdateStretch {
         id: SlotId(1),
         stretch_factor: StretchFactor::new(2.0),
         pitch_cents: Cents::new(0.0),
@@ -493,16 +511,14 @@ fn memory_source_process_is_allocation_free_when_folding_six_to_two() {
 ///
 /// The per-unit tests each cover one hop; this is the only one that exercises
 /// the whole in-memory chain at width 6 — `read_frame` -> `MemorySource` ->
-/// `ClipSlot` -> `TrackClipReaderUnit` -> a planar `BufferMut` — and so the only
+/// `VoiceSlot` -> `VoicePool` -> a planar `BufferMut` — and so the only
 /// one that would catch a width being dropped at a seam rather than inside a
 /// node.
 #[test]
 fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, _handle) =
-        TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
-    // `ClipSpec` requires an already-transport-bound sampler: `into_voice` sets
+    let (mut reader, _handle) = VoicePool::with_channels(Some(transport.clone()), None, 6);
     // `placement: None` on the Playback record, so the sampler's OWN placement
     // is what gates playback.
     let sampler = MemorySource::with_config(
@@ -517,13 +533,22 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
             ..Default::default()
         },
     );
-    reader.insert_clip(ClipSpec {
-        id: SlotId(1),
-        sampler,
-        direction: Direction::Forward,
-        stretch_factor: StretchFactor::new(1.0),
-        pitch_cents: Cents::new(0.0),
-    });
+    reader.insert_voice(
+        SlotId(1),
+        Voice {
+            play: Playback {
+                gain: sampler.gain(),
+                speed: sampler.speed(),
+                loop_: sampler.loop_setting(),
+                direction: Direction::Forward,
+                stretch: StretchFactor::new(1.0),
+                pitch: Cents::new(0.0),
+                placement: None,
+            },
+            source: VoiceSource::Memory(sampler),
+            channel_index: None,
+        },
+    );
     reader.set_sample_rate(SampleRate(48_000.0));
     assert_eq!(reader.outputs(), 6);
 
@@ -571,16 +596,16 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
 // in this file.
 // ---------------------------------------------------------------------------
 
-/// Adding a STRETCHING clip mid-playback must not build its filter in the drain.
+/// Adding a STRETCHING voice mid-playback must not build its filter in the drain.
 ///
-/// The filter is built by `TrackClipReaderHandle::send` on this thread; the
+/// The filter is built by `VoicePoolHandle::send` on this thread; the
 /// drain only moves it into the slot. Width 6 so the cost would be 6 FFT setups
 /// and 12 scratch buffers if it ever moved back.
 ///
 /// # What this test can and cannot assert
 ///
 /// It cannot wrap the drain in `assert_no_alloc`, and the reason is worth
-/// recording rather than working around: `ClipCommand::AddVoice` carries a
+/// recording rather than working around: `VoiceCommand::AddVoice` carries a
 /// `Box<Voice>`, so draining it *drops a Box* — and `assert_no_alloc`
 /// instruments `dealloc` as well as `alloc`, so the free alone is a violation.
 /// That box predates this work and is deliberate (a `Voice` is far larger than
@@ -596,7 +621,7 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
 fn add_voice_drain_is_allocation_free_at_six_channels() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
+    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6);
     reader.set_sample_rate(SampleRate(48_000.0));
 
     let input_vec = BufferVec::new(0);
@@ -622,7 +647,7 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
                 ..Default::default()
             },
         );
-        handle.send(ClipCommand::AddVoice {
+        handle.send(VoiceCommand::AddVoice {
             id: SlotId(i),
             voice: Box::new(Voice {
                 source: VoiceSource::Memory(sampler),
@@ -638,7 +663,7 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
     }
 
     reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
-    assert_eq!(reader.clip_count(), 8, "all adds must have drained");
+    assert_eq!(reader.voice_count(), 8, "all adds must have drained");
 
     // Steady state — an empty queue — must be clean. This is what catches a
     // per-block allocation sneaking into the width-generic mix path.
@@ -657,7 +682,7 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
 fn update_loop_drain_is_allocation_free_at_six_channels() {
     let transport = MockTransport::new(120.0, 0.0, true);
     let wave = surround_wave(2.0, 48_000.0);
-    let (mut reader, handle) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
+    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6);
     reader.set_sample_rate(SampleRate(48_000.0));
 
     let sampler = MemorySource::with_config(
@@ -690,14 +715,14 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
     // Several loop changes, including the on -> off -> on cycle that must
     // reclaim and reuse the same buffer.
     for i in 0..8u64 {
-        handle.send(ClipCommand::UpdateLoop {
+        handle.send(VoiceCommand::UpdateLoop {
             id: SlotId(1),
             looping: true,
             loop_start: SamplePosition::new(i as f64 * 8.0),
             loop_end: SamplePosition::new(i as f64 * 8.0 + 4096.0),
             crossfade_samples: 256,
         });
-        handle.send(ClipCommand::ClearLoop(SlotId(1)));
+        handle.send(VoiceCommand::ClearLoop(SlotId(1)));
     }
 
     assert_no_alloc::assert_no_alloc(|| {

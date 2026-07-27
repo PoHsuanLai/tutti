@@ -3,10 +3,10 @@
 //!
 //! # Two playback tiers, one vocabulary
 //!
-//! A clip plays either from memory ([`MemorySource`]) or streamed from disk
-//! ([`StreamingClipReader`], fed by the butler thread). The tier is the
+//! A voice plays either from memory ([`MemorySource`]) or streamed from disk
+//! ([`DiskVoice`], fed by the butler thread). The tier is the
 //! caller's choice — the sampler never picks one on its own — and
-//! [`TrackClipReaderUnit`] mixes both behind one command surface; where a verb
+//! [`VoicePool`] mixes both behind one command surface; where a verb
 //! only makes sense on one tier, the `VoiceSource` match says so at the call
 //! site instead of silently no-opping.
 //!
@@ -20,7 +20,7 @@
 //! live inside a single backend's setter, so the other tier silently accepted
 //! out-of-range speeds.
 //!
-//! A clip bound to a transport derives its read position from the playhead
+//! A voice bound to a transport derives its read position from the playhead
 //! every frame rather than carrying a cursor, matching `tutti_core`'s transport:
 //! one clock advances, everything else reads.
 //!
@@ -31,11 +31,10 @@
 //!
 //! # Crate layout
 //!
-//! - [`clip`] — the two playback tiers, the per-track mixer, and the shared
+//! - [`voice`] — the two playback tiers, the per-track mixer, and the shared
 //!   interpolation / placement kernels.
 //! - [`live`] — mic in, WAV out.
 //! - [`stretch`] — phase vocoder (pitch-independent stretch).
-//! - [`live`] — mic in, WAV out.
 //! - [`AudioIn`] / [`AudioOut`] / [`pump`] — the engine's I/O edge vocabulary,
 //!   re-exported from `tutti_types::io`.
 //!
@@ -44,11 +43,11 @@
 //! The engine is Bevy-free; only the ECS drivers are behind the `bevy` feature.
 //! A non-Bevy host builds a [`DiskStreamer`] and drives it through plain methods:
 //!
-//! - In-memory playback: construct a [`MemorySource`] / [`TrackClipReaderUnit`]
+//! - In-memory playback: construct a [`MemorySource`] / [`VoicePool`]
 //!   and add it to a fundsp `Net`.
 //! - **Disk streaming**: [`DiskStreamer::new`] spawns the butler thread;
 //!   [`commands()`](DiskStreamer::commands) issues stream/seek/loop ops and
-//!   [`status()`](DiskStreamer::status) constructs a [`StreamingClipReader`] to wire
+//!   [`status()`](DiskStreamer::status) constructs a [`DiskVoice`] to wire
 //!   into your graph.
 //!
 //! ```no_run
@@ -70,8 +69,8 @@ pub use error::{Error, Result};
 /// Widest frame the sampler reads, interpolates, or emits.
 ///
 /// Deliberately equal to [`tutti_core::engine::MAX_ROOT_CHANNELS`] — the graph root's
-/// own ceiling. **The two move together:** a clip wider than the root can render
-/// is a clip nobody can hear, so there is no value in the sampler exceeding it,
+/// own ceiling. **The two move together:** a voice wider than the root can render
+/// is a voice nobody can hear, so there is no value in the sampler exceeding it,
 /// and letting it do so would mean the truncation happened silently downstream
 /// (at the root's fold) rather than visibly here.
 ///
@@ -95,38 +94,36 @@ mod test_transport;
 // `tutti-core`; this crate's `WavOut` implements `AudioOut` against it.
 pub use tutti_core::io::{pump, AudioIn, AudioOut};
 
-// Clip playback: the two tier units, the mixer over them, and the kernels they
+// Voice playback: the two tier units, the mixer over them, and the kernels they
 // share. Bevy-free apart from the asset loader, gated inside.
-pub mod clip;
+pub mod voice;
 
-// The live audio edge — mic in, WAV out. Independent of clip playback.
+// The live audio edge — mic in, WAV out. Independent of voice playback.
 pub mod live;
 
 // Time-stretch / pitch-shift (phase vocoder). A peer DSP subsystem, not a
-// clip-playback concern: it owns no source and imports nothing from `clip`.
+// voice-playback concern: it owns no source and imports nothing from `voice`.
 pub mod stretch;
 
-// Bevy-free DSP leaves + value types from `clip` — usable for direct
+// Bevy-free DSP leaves + value types from `voice` — usable for direct
 // FunDSP-graph integration without the ECS layer. Only `WavOut` (the public
 // `AudioOut` sink) is re-exported; the butler's `LruCache` / `StreamPin` are
 // internal machinery a consumer never constructs, so they stay `pub(crate)`.
 pub use live::WavOut;
-// `StreamingClipConfig` and `DiskSource` are not re-exported: nothing
+// `DiskVoiceConfig` and `DiskSource` are not re-exported: nothing
 // outside this crate constructs them. `DiskSource` in particular is
-// `StreamingClipReader`'s `inner` — one capability, and only the outer type is
-// a doorway. `ClipSpec` stays public solely for `tests/rt_no_alloc.rs`, which
-// is a separate crate; it has no production caller.
-pub use clip::{
-    ClipCommand, ClipSpec, Direction, LoopSetting, MemorySource, MemorySourceConfig,
-    PendingPlayback, Playback, SlotId, StreamingClipReader, TrackClipReaderHandle,
-    TrackClipReaderUnit, TransportPlacement, Voice, VoiceNode, VoiceSource,
-};
+// `DiskVoice`'s `inner` — one capability, and only the outer type is
+// a doorway.
 pub use live::{share_mic_ring, MicMonitorNode, MicRing};
-// Bevy ECS surface of `clip`.
+pub use voice::{
+    Direction, DiskVoice, LoopSetting, MemorySource, MemorySourceConfig, PendingPlayback, Playback,
+    SlotId, TransportPlacement, Voice, VoiceCommand, VoiceNode, VoicePool, VoicePoolHandle,
+    VoiceSource,
+};
+// Bevy ECS surface of `voice`.
 #[cfg(feature = "bevy")]
-pub use clip::{
-    TrackClipReaderNode, TrackClipReaderRef, TuttiPlaybackPlugin, WaveAssetLoader,
-    WaveAssetLoaderError,
+pub use voice::{
+    TuttiPlaybackPlugin, VoicePoolNode, VoicePoolRef, WaveAssetLoader, WaveAssetLoaderError,
 };
 
 // The async disk-streaming engine (butler thread + the `DiskStreamer` handle). All
@@ -159,7 +156,7 @@ pub struct TuttiSamplerPlugin;
 #[cfg(feature = "bevy")]
 impl bevy_app::Plugin for TuttiSamplerPlugin {
     fn build(&self, app: &mut bevy_app::App) {
-        app.add_plugins(clip::TuttiPlaybackPlugin);
+        app.add_plugins(voice::TuttiPlaybackPlugin);
 
         // Claim the sampler out of the transient `build_into` inserted
         // (synchronous, during plugin build) — the umbrella `PendingX` handshake.

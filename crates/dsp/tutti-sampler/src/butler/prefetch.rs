@@ -175,7 +175,7 @@ impl RegionOut {
     ///
     /// Only the *frame sequence* reverses — the channels **within** each frame
     /// stay in order. Reversing those too would swap L/R (and every other pair)
-    /// on every reverse-played clip.
+    /// on every reverse-played source.
     pub fn write_interleaved_reversed(&mut self, samples: &[f32]) -> usize {
         let ch = self.channels;
         let mut written = 0;
@@ -239,7 +239,7 @@ impl RegionReader {
         }
         // ONE per FRAME. `plan.rs` compares this against a loop range in file
         // frames and `loops.rs` indexes the file with it — a sample-denominated
-        // count would wrap a looped clip at 1/channels of its true length.
+        // count would wrap a looped source at 1/channels of its true length.
         self.read_position.fetch_add(1, Ordering::Relaxed);
         true
     }
@@ -286,7 +286,7 @@ impl RegionReader {
 /// threads ever pop/clear concurrently**. That invariant holds because:
 ///
 ///   * The **audio thread** is the sole popper. `read()` / `clear()` are called
-///     only from `DiskSource` / `StreamingClipReader` on the audio
+///     only from `DiskSource` / `DiskVoice` on the audio
 ///     thread. Those units may hold several clones of the same `SharedReader`
 ///     (the direct-read reader plus the time-stretch processor's internal
 ///     clone), but only one clone is *active* per buffer and both live on the
@@ -479,7 +479,7 @@ mod tests {
 
     /// `read_position` counts FILE FRAMES at any width. `plan.rs` compares it
     /// against a loop range in file frames and `loops.rs` indexes the file with
-    /// it, so a sample-denominated count would wrap a looped 6-channel clip at
+    /// it, so a sample-denominated count would wrap a looped 6-channel source at
     /// one sixth of its true length.
     #[test]
     fn read_position_counts_frames_not_samples_at_six_channels() {
@@ -586,7 +586,7 @@ mod tests {
 
     /// Reverse push reverses the FRAME order, never the sample order within a
     /// frame. Getting this backwards swaps L/R (and every other pair) on every
-    /// reverse-played clip — audible, but easy to mistake for a panning bug.
+    /// reverse-played source — audible, but easy to mistake for a panning bug.
     #[test]
     fn reversed_push_keeps_channels_in_order_within_each_frame() {
         let (mut prod, mut cons) = RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 64, 4);

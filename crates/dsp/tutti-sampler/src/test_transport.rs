@@ -1,10 +1,10 @@
 //! One mock [`Timeline`] for the crate's tests.
 //!
-//! There were three, in `memory_source`, `streaming_sampler`, and
-//! `track_clip_reader` — identical state (playing / beat / tempo, all
+//! There were three, in `memory_source`, `disk_voice`, and
+//! `voice_pool` — identical state (playing / beat / tempo, all
 //! interior-mutable) with the methods split arbitrarily between them, so a test
 //! could only move the playhead the way its own module's copy happened to allow.
-//! `track_clip_reader`'s had no setter at all, which is why a
+//! `voice_pool`'s had no setter at all, which is why a
 //! seek-while-stretched test could not be written there.
 //!
 //! Worse than the duplication: the two constructors disagreed on argument order

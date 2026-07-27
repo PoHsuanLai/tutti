@@ -11,7 +11,7 @@ use tutti_core::{
 
 use super::interp::cubic_hermite;
 use super::memory_source::TransportPlacement;
-use super::track_clip_reader::Direction;
+use super::voice_pool::Direction;
 use crate::butler::{RtState, SharedReader};
 
 /// Per-block fetch budget in **frames**, reserved once per unit so the RT
@@ -419,11 +419,11 @@ impl AudioUnit for DiskSource {
 }
 
 // ---------------------------------------------------------------------------
-// StreamingClipReader — a `DiskSource` wrapped in the transport
+// DiskVoice — a `DiskSource` wrapped in the transport
 // placement gate that the raw unit lacks.
 //
 // `DiskSource` streams whatever the butler ring feeds it, unaware of
-// *where on the timeline* the clip lives. A timeline clip only sounds while the
+// *where on the timeline* the voice lives. A timeline clip only sounds while the
 // playhead is inside its [start_beat, start_beat + duration) window; outside it
 // must be silent. `MemorySource` bakes this in via `transport_sample_position`;
 // the streaming unit does not, so this wrapper adds the same gate:
@@ -435,7 +435,7 @@ impl AudioUnit for DiskSource {
 //       right disk offset before we start pulling.
 //
 // The gate math is a copy of `MemorySource::transport_sample_position`: it is the
-// single source of truth for "is the playhead inside this clip, and at what
+// single source of truth for "is the playhead inside this window, and at what
 // sample offset". Kept lock-free / alloc-free so `tick`/`process` stay RT-safe —
 // the actual disk seek is deferred to the butler; here we only publish the
 // requested target to the lock-free `RtState` (two atomic stores), which the
@@ -453,13 +453,13 @@ const NO_SEEK_TARGET: f64 = f64::NEG_INFINITY;
 /// slack at a generous block size keeps normal advance from tripping a seek.
 const SEEK_EPSILON_SAMPLES: f64 = 4096.0;
 
-/// Wiring for [`StreamingClipReader::new`]: the placement gate plus the file
+/// Wiring for [`DiskVoice::new`]: the placement gate plus the file
 /// sample rate. Reuses [`TransportPlacement`] for the transport/start/duration
 /// cluster so the streaming path and `MemorySource` speak the same value type;
 /// `shared_state` stays a separate wiring arg (it must be the same `RtState` the
 /// `inner` unit holds).
 #[derive(Debug, Clone)]
-pub struct StreamingClipConfig {
+pub struct DiskVoiceConfig {
     /// Transport binding — the placement gate. Whole-or-nothing, mirroring
     /// `MemorySource`'s use of [`TransportPlacement`].
     pub placement: TransportPlacement,
@@ -469,7 +469,7 @@ pub struct StreamingClipConfig {
     pub file_sample_rate: f64,
 }
 
-pub struct StreamingClipReader {
+pub struct DiskVoice {
     inner: DiskSource,
     shared_state: Arc<RtState>,
 
@@ -482,24 +482,24 @@ pub struct StreamingClipReader {
     /// `wave.sample_rate()`.
     file_sample_rate: f64,
 
-    /// The clip-relative sample offset we last requested the butler stream from.
+    /// The window-relative sample offset we last requested the butler stream from.
     /// `NO_SEEK_TARGET` until the first inside-frame. Used to detect a
     /// discontinuous jump: when the transport's desired offset diverges from the
     /// contiguously-advanced expectation by more than `SEEK_EPSILON_SAMPLES`, we
     /// issue a fresh seek.
     streamed_offset: f64,
 
-    /// Whether the previous frame was inside the clip window. A false→true edge
-    /// (playhead entering the clip) always forces a seek.
+    /// Whether the previous frame was inside the voice window. A false→true edge
+    /// (playhead entering the voice) always forces a seek.
     was_inside: bool,
 }
 
 // Hand-rolled: wraps a non-`Debug` `DiskSource` + `Arc<RtState>` +
 // `TransportPlacement` (holds an `Arc<dyn Timeline>`). Print the gate
 // scalars + inner unit; nothing here touches the ring.
-impl std::fmt::Debug for StreamingClipReader {
+impl std::fmt::Debug for DiskVoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StreamingClipReader")
+        f.debug_struct("DiskVoice")
             .field("inner", &self.inner)
             .field("placement", &self.placement)
             .field("file_sample_rate", &self.file_sample_rate)
@@ -509,7 +509,7 @@ impl std::fmt::Debug for StreamingClipReader {
     }
 }
 
-impl Clone for StreamingClipReader {
+impl Clone for DiskVoice {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -522,14 +522,14 @@ impl Clone for StreamingClipReader {
     }
 }
 
-impl StreamingClipReader {
+impl DiskVoice {
     /// Wrap a `DiskSource` with the transport placement gate.
     ///
     /// Construction (butler stream registration, ring allocation) happens on the
     /// ECS/butler side; this only binds the already-built unit to a timeline
     /// window. `shared_state` must be the same `RtState` the `inner` unit holds
     /// so the gate's seek requests reach the unit's seek/underrun machinery.
-    pub fn new(inner: DiskSource, shared_state: Arc<RtState>, config: StreamingClipConfig) -> Self {
+    pub fn new(inner: DiskSource, shared_state: Arc<RtState>, config: DiskVoiceConfig) -> Self {
         Self {
             inner,
             shared_state,
@@ -562,8 +562,8 @@ impl StreamingClipReader {
         self.file_sample_rate
     }
 
-    /// Clip-relative sample offset the playhead sits at, or `None` when it is
-    /// outside the clip window. Delegates to the shared
+    /// Source-relative sample offset the playhead sits at, or `None` when it is
+    /// outside the voice window. Delegates to the shared
     /// [`transport_sample_offset`](super::interp::transport_sample_offset) — the
     /// one gate definition, also used by [`MemorySource`].
     ///
@@ -587,7 +587,7 @@ impl StreamingClipReader {
         )
     }
 
-    /// Ask the butler to stream from `target_offset` (clip-relative samples).
+    /// Ask the butler to stream from `target_offset` (window-relative samples).
     ///
     /// Records the target for drift tracking, then publishes it to the shared
     /// [`RtState`](crate::butler::RtState) via `request_seek` — two lock-free
@@ -608,7 +608,7 @@ impl StreamingClipReader {
     /// does for speed (`rt_state.set_speed`) — two lock-free atomic stores, no
     /// butler round-trip needed. Direction is a separate concern (the reader has
     /// no direction verb), so this leaves it untouched, mirroring how
-    /// `ClipCommand::UpdateSpeed` carries only a magnitude.
+    /// `VoiceCommand::UpdateSpeed` carries only a magnitude.
     pub fn set_speed(&mut self, speed: PlaybackRate) {
         self.shared_state.set_speed(speed);
     }
@@ -622,7 +622,7 @@ impl StreamingClipReader {
         self.shared_state.set_direction(direction);
     }
 
-    /// Public seek: reposition the live stream to clip-relative `to`. Delegates
+    /// Public seek: reposition the live stream to window-relative `to`. Delegates
     /// to the private [`request_seek`](Self::request_seek), which publishes the
     /// target to the shared [`RtState`] (two atomic stores) for the butler to
     /// apply click-free — the same mechanism the placement gate uses on a
@@ -632,7 +632,7 @@ impl StreamingClipReader {
         self.request_seek(to.get());
     }
 
-    /// Decide, for a frame whose desired clip-relative offset is `offset`,
+    /// Decide, for a frame whose desired window-relative offset is `offset`,
     /// whether the playhead jumped (fresh entry or a seek/loop discontinuity)
     /// and issue a butler seek if so.
     #[inline]
@@ -650,7 +650,7 @@ impl StreamingClipReader {
     }
 }
 
-impl AudioUnit for StreamingClipReader {
+impl AudioUnit for DiskVoice {
     fn inputs(&self) -> usize {
         0
     }
@@ -744,7 +744,7 @@ mod tests {
         (unit, state)
     }
 
-    // --- StreamingClipReader: placement gate ---
+    // --- DiskVoice: placement gate ---
 
     use crate::test_transport::MockTransport;
     use tutti_core::Bpm;
@@ -754,12 +754,12 @@ mod tests {
         transport: Arc<dyn Timeline>,
         start_beat: Beat,
         duration: Option<BeatDuration>,
-    ) -> StreamingClipReader {
+    ) -> DiskVoice {
         let (inner, state) = make_unit(samples);
-        StreamingClipReader::new(
+        DiskVoice::new(
             inner,
             state,
-            StreamingClipConfig {
+            DiskVoiceConfig {
                 placement: TransportPlacement {
                     transport,
                     start_beat,
@@ -787,10 +787,10 @@ mod tests {
         let src = 48_000.0 / 44_100.0;
         state.set_src_ratio(tutti_core::SrcRatio::new(src as f32));
 
-        let reader = StreamingClipReader::new(
+        let reader = DiskVoice::new(
             inner,
             state,
-            StreamingClipConfig {
+            DiskVoiceConfig {
                 placement: TransportPlacement {
                     transport: transport.clone(),
                     start_beat: Beat::new(0.0),
@@ -805,7 +805,7 @@ mod tests {
         transport.set_beat(Beat::new(4.0));
         let offset = reader
             .placement_sample_offset()
-            .expect("inside the clip window");
+            .expect("inside the voice window");
 
         // 2 s of a 48 kHz file is 96000 file samples — src_ratio applied once.
         let expected = 2.0 * 48_000.0;
@@ -819,7 +819,7 @@ mod tests {
 
     #[test]
     fn clip_reader_silent_outside_window_audible_inside() {
-        // Clip window: beats [4, 8). Non-zero ramp in the ring.
+        // Voice window: beats [4, 8). Non-zero ramp in the ring.
         let samples: Vec<_> = (1..64).map(|i| (i as f32, i as f32)).collect();
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let mut reader = make_clip_reader(
@@ -869,7 +869,7 @@ mod tests {
         assert_eq!(out, [0.0, 0.0], "stopped transport → silence");
     }
 
-    // --- StreamingClipReader: RT no-alloc (steady-state process inside window) ---
+    // --- DiskVoice: RT no-alloc (steady-state process inside window) ---
     //
     // The integration-test gate `tests/rt_no_alloc.rs` cannot reach the
     // crate-private `RegionReader` / `RtState` needed to build a streaming
@@ -916,7 +916,7 @@ mod tests {
     }
 
     /// The seek edge (`request_seek`, fired on the audio thread when the playhead
-    /// jumps into or across the clip window) must be allocation-free — it may only
+    /// jumps into or across the voice window) must be allocation-free — it may only
     /// touch the lock-free `RtState` seek-request slot. This exercises that edge
     /// *inside* the guarded block by moving the transport beat each iteration, so a
     /// regression that reintroduces allocation on the seek path is caught.
@@ -1258,10 +1258,10 @@ mod tests {
         crate::butler::share_reader(reader)
     }
 
-    /// Outside its transport window a clip must silence EVERY channel.
+    /// Outside its transport window a voice must silence EVERY channel.
     ///
     /// At width 1 the old guard was `if output.len() >= 2 { .. }`, so a mono
-    /// streaming clip outside its window silenced nothing at all and simply
+    /// streaming voice outside its window silenced nothing at all and simply
     /// leaked whatever the caller's buffer already held. At width 6 the same
     /// site wrote only channels 0 and 1, leaving 2..6 holding the previous
     /// block. Both are invisible at width 2, which is what every other
@@ -1275,13 +1275,13 @@ mod tests {
             let inner = DiskSource::new(ring, state.clone());
             assert_eq!(inner.channels(), width, "ring width must reach the unit");
 
-            // Transport parked BEFORE the clip's start beat, so the placement
+            // Transport parked BEFORE the voice's start beat, so the placement
             // gate reports "outside".
             let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-            let mut clip = StreamingClipReader::new(
+            let mut voice = DiskVoice::new(
                 inner,
                 state,
-                StreamingClipConfig {
+                DiskVoiceConfig {
                     placement: TransportPlacement {
                         transport,
                         start_beat: Beat::new(64.0),
@@ -1293,7 +1293,7 @@ mod tests {
 
             // `tick`: pre-dirty the caller's frame so a missing write shows.
             let mut out = vec![9.0f32; width];
-            clip.tick(&[], &mut out);
+            voice.tick(&[], &mut out);
             for (c, &s) in out.iter().enumerate() {
                 assert_eq!(
                     s, 0.0,
@@ -1312,7 +1312,7 @@ mod tests {
                     }
                 }
             }
-            clip.process(8, &input.buffer_ref(), &mut output.buffer_mut());
+            voice.process(8, &input.buffer_ref(), &mut output.buffer_mut());
             let buf = output.buffer_ref();
             for c in 0..width {
                 for i in 0..8 {

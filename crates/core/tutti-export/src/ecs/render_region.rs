@@ -2,7 +2,7 @@
 //!
 //! Spectral (and any "what does this point in the graph actually sound like"
 //! consumer) needs the audio *at a tap point*, post-everything-upstream — not
-//! a clip's raw source file. This module renders exactly that: spawn an entity
+//! a raw source file. This module renders exactly that: spawn an entity
 //! with [`StartRegionRender`] naming a `NodeId` and a beat range; the start
 //! system clones the live net, repoints its output bus at that node (via
 //! [`Net::clone_isolated`]), and renders it offline on a worker
@@ -16,17 +16,17 @@
 //! raw OS thread, so it cannot pin every core and starve the real-time audio
 //! callback.
 //!
-//! ## Clip population is a downstream hole
+//! ## Voice population is a downstream hole
 //!
-//! `Prepare` replaces every clip reader in the clone with a fresh, channel-less
-//! [`TrackClipReaderUnit::detached`], so the render shares no clip state — and
+//! `Prepare` replaces every voice pool in the clone with a fresh, channel-less
+//! [`VoicePool::detached`], so the render shares no voice state — and
 //! crucially no live command `Receiver` — with the audio thread. That leaves the
 //! readers **empty**, so the render runs in three ordered steps
 //! ([`RegionRenderSystems`]): this crate clones + isolates + swaps in fresh
-//! readers bound to the offline transport (`Prepare`), a clip-aware downstream
+//! readers bound to the offline transport (`Prepare`), a voice-aware downstream
 //! crate fills them from ECS (`Populate`), then this crate hands the net to the
-//! worker (`Spawn`). bevy-tutti stays clip-vocabulary-free; only the middle step
-//! knows what a clip is.
+//! worker (`Spawn`). bevy-tutti stays voice-vocabulary-free; only the middle step
+//! knows what a voice is.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
@@ -43,11 +43,11 @@ use tutti_core::{
 
 use tutti_core::ecs::engine_ready;
 use tutti_core::ecs::{AudioConfig, AudioGraphRes};
-use tutti_sampler::TrackClipReaderUnit;
 use tutti_sampler::VoiceNode;
+use tutti_sampler::VoicePool;
 
-/// Ordering anchor for the three-step region render. A clip-aware downstream
-/// crate schedules its clip-population system in [`Self::Populate`]; this crate
+/// Ordering anchor for the three-step region render. A voice-aware downstream
+/// crate schedules its voice-population system in [`Self::Populate`]; this crate
 /// owns the surrounding `Prepare` (clone + isolate + rebind) and `Spawn`
 /// (hand the filled net to the worker) steps. The set is `.chain()`ed so the
 /// empty-but-isolated net is always filled before it reaches the worker.
@@ -107,13 +107,13 @@ impl Default for RegionRenderConfig {
 ///    automatically — the render never type-switches on it.
 ///
 /// 2. **Re-point at offline data** — inherently external (needs the render's
-///    transport / ECS clips), so it stays an explicit per-type step:
-///    - **Clip readers** ([`TrackClipReaderUnit`]) are severed by the generic
+///    transport / ECS voices), so it stays an explicit per-type step:
+///    - **Voice pools** ([`VoicePool`]) are severed by the generic
 ///      `isolate()` above — it drops the live command channel and clears the
-///      cloned clips, leaving the reader born empty and channel-less — and then
-///      just re-pointed at the offline transport here. The render's clips are
+///      cloned voices, leaving the reader born empty and channel-less — and then
+///      just re-pointed at the offline transport here. The render's voices are
 ///      rebuilt from ECS in the `Populate` step via
-///      [`TrackClipReaderUnit::insert_clip`].
+///      [`VoicePool::insert_voice`].
 ///    - **Bare standalone voices** ([`VoiceNode`]) keep their cloned content
 ///      (their clone is already independent) and are just re-pointed at the
 ///      offline transport so they read the render's playhead, not the (undriven)
@@ -149,11 +149,11 @@ fn rebind_net_transport(
         }
 
         // 2. Type-specific transport re-point. `isolate()` already severed the
-        //    live inputs (the reader's command channel + clips); all that's left
+        //    live inputs (the reader's command channel + voices); all that's left
         //    is to aim each transport-aware unit at the render's offline
-        //    playhead. Clip readers and bare voices both carry a transport.
+        //    playhead. Voice pools and bare voices both carry a transport.
         let node = net.node_mut(id);
-        if let Some(reader) = node.as_any_mut().downcast_mut::<TrackClipReaderUnit>() {
+        if let Some(reader) = node.as_any_mut().downcast_mut::<VoicePool>() {
             reader.replace_transport(transport.clone());
         } else if let Some(voice) = node.as_any_mut().downcast_mut::<VoiceNode>() {
             voice.replace_transport(transport.clone());
@@ -222,11 +222,11 @@ pub struct RegionRenderFailed {
 /// Carrier between [`prepare_region_render_system`] and
 /// [`spawn_region_render_system`]: the isolated, transport-rebound clone of the
 /// live net, parked on the request entity while the `Populate` step fills its
-/// clip readers from ECS. Not `Reflect`: `Net` is foreign to `bevy_reflect`.
+/// voice pools from ECS. Not `Reflect`: `Net` is foreign to `bevy_reflect`.
 #[derive(Component)]
 pub struct RegionRenderNet {
     net: Net,
-    /// The offline transport the clip readers (and the export) are bound to.
+    /// The offline transport the voice pools (and the export) are bound to.
     /// Public so the `Populate` step binds freshly-built samplers to the same
     /// timeline.
     pub transport: Arc<OfflineTimeline>,
@@ -238,14 +238,14 @@ pub struct RegionRenderNet {
 
 impl RegionRenderNet {
     /// Mutable access to a node in the cloned net, for the `Populate` step to
-    /// downcast its clip readers and insert clips.
+    /// downcast its voice pools and insert voices.
     pub fn node_mut(&mut self, node: NodeId) -> &mut dyn AudioUnit {
         self.net.node_mut(node)
     }
 }
 
 /// Step 1 (`Prepare`): clone + isolate the live net at `target`, build the
-/// offline transport, rebind every transport-aware unit (and detach the clip
+/// offline transport, rebind every transport-aware unit (and detach the voice
 /// readers' command channels), then park it as a [`RegionRenderNet`]. Clip
 /// population happens downstream in `Populate`; the worker spawns in `Spawn`.
 /// A render slot is occupied by either a parked net (`RegionRenderNet`) or a
@@ -319,7 +319,7 @@ pub fn prepare_region_render_system(
         // The offline transport the render advances. The clone's samplers still
         // point at the live transport (which the offline driver never drives),
         // so we rebind every transport-aware unit to this one — without it the
-        // clip samplers read a stale playhead and render silence. The export is
+        // voice sources read a stale playhead and render silence. The export is
         // handed the same transport in `Spawn`, tying both ends together.
         let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
             start_beat: start.start_beat,
@@ -345,7 +345,7 @@ pub fn prepare_region_render_system(
     }
 }
 
-/// Step 3 (`Spawn`): the clip readers are now populated; hand the net to the
+/// Step 3 (`Spawn`): the voice pools are now populated; hand the net to the
 /// offline export worker and swap [`RegionRenderNet`] for
 /// [`RegionRenderInProgress`].
 pub fn spawn_region_render_system(
@@ -444,7 +444,7 @@ impl Plugin for TuttiRegionRenderPlugin {
                     region_render_poll_system.in_set(Poll),
                 ),
             );
-        // `Populate` is intentionally left empty here — a clip-aware downstream
+        // `Populate` is intentionally left empty here — a voice-aware downstream
         // crate (dawai-spectral) fills the cloned net's readers in that slot.
     }
 }
@@ -456,8 +456,7 @@ mod tests {
     use tutti_core::Beat;
     use tutti_core::{BeatDuration, Bpm, SampleRate, Wave};
     use tutti_sampler::{
-        ClipCommand, Direction, MemorySource, Playback, SlotId, TrackClipReaderUnit, Voice,
-        VoiceSource,
+        Direction, MemorySource, Playback, SlotId, Voice, VoiceCommand, VoicePool, VoiceSource,
     };
 
     struct MockTransport {
@@ -486,7 +485,7 @@ mod tests {
         }
     }
 
-    /// `rebind_net_transport` must replace each clip reader in the cloned net
+    /// `rebind_net_transport` must replace each voice reader in the cloned net
     /// with a fresh, empty, channel-less reader — and must NOT disturb the live
     /// reader's command channel (no command theft from the audio thread).
     #[test]
@@ -494,7 +493,7 @@ mod tests {
         let live_transport = MockTransport::new(true);
 
         // A live reader + its handle, placed in a net feeding the output.
-        let (reader, handle) = TrackClipReaderUnit::with_transport(live_transport.clone(), None);
+        let (reader, handle) = VoicePool::with_transport(live_transport.clone(), None);
         let mut net = Net::new(0, 2);
         let id = net.push(Box::new(reader));
         net.pipe_output(id);
@@ -508,10 +507,10 @@ mod tests {
         let cloned_reader = clone
             .node_mut(id)
             .as_any_mut()
-            .downcast_mut::<TrackClipReaderUnit>()
-            .expect("still a clip reader after rebind");
+            .downcast_mut::<VoicePool>()
+            .expect("still a voice pool after rebind");
         assert_eq!(
-            cloned_reader.clip_count(),
+            cloned_reader.voice_count(),
             0,
             "render clone's reader must be born empty"
         );
@@ -523,7 +522,7 @@ mod tests {
         ));
         let sampler =
             MemorySource::with_transport(wave, live_transport.clone(), Beat::new(0.0), None);
-        handle.send(ClipCommand::AddVoice {
+        handle.send(VoiceCommand::AddVoice {
             id: SlotId(1),
             voice: Box::new(Voice {
                 source: VoiceSource::Memory(sampler),
@@ -540,12 +539,12 @@ mod tests {
         let live_reader = net
             .node_mut(id)
             .as_any_mut()
-            .downcast_mut::<TrackClipReaderUnit>()
-            .expect("original is still a clip reader");
+            .downcast_mut::<VoicePool>()
+            .expect("original is still a voice pool");
         let mut out = [0.0f32; 2];
         live_reader.tick(&[], &mut out); // drains the live channel
         assert_eq!(
-            live_reader.clip_count(),
+            live_reader.voice_count(),
             1,
             "live reader must still receive its commands"
         );
@@ -554,12 +553,12 @@ mod tests {
         let cloned_reader = clone
             .node_mut(id)
             .as_any_mut()
-            .downcast_mut::<TrackClipReaderUnit>()
+            .downcast_mut::<VoicePool>()
             .unwrap();
         let mut out_clone = [0.0f32; 2];
         cloned_reader.tick(&[], &mut out_clone);
         assert_eq!(
-            cloned_reader.clip_count(),
+            cloned_reader.voice_count(),
             0,
             "render clone must never receive live commands"
         );
@@ -739,7 +738,7 @@ mod tests {
     /// arm ever stops matching resynth's node type, the arm silently never fires
     /// and the offline render would run the correction against the (undriven)
     /// live transport with NO compile error — rendering silence. Existing tests
-    /// only cover the `TrackClipReaderUnit` arm, so this one closes the gap.
+    /// only cover the `VoicePool` arm, so this one closes the gap.
     #[test]
     fn offline_rebinds_bare_voice_node_transport() {
         use tutti_sampler::{LoopSetting, Playback, TransportPlacement, Voice, VoiceSource};

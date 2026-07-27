@@ -6,7 +6,7 @@
 //!
 //! [`Unit`] is a pure frame-in → frame-out filter: it owns no source, so the
 //! caller ticks its own source and feeds each frame in. That is why this is a
-//! peer of `playback` rather than part of it — nothing here knows what a clip
+//! peer of `playback` rather than part of it — nothing here knows what a voice
 //! is.
 //!
 //! # Example
@@ -431,7 +431,7 @@ impl Vocoder {
         // forward-then-inverse pair is the identity (pinned by
         // `fft_roundtrip_is_the_identity`). The original code divided anyway,
         // attenuating the stretched signal by the FFT size — 60 dB at 1024, 66
-        // at 2048. It read as "stretching mutes the clip" rather than as a
+        // at 2048. It read as "stretching mutes the voice" rather than as a
         // gain bug, which is why it survived: every test asserted only that
         // output was non-zero, and 0.0004 is non-zero.
         inverse_fft(&mut self.spectrum);
@@ -478,7 +478,7 @@ const MAX_BUFFER_SIZE: usize = 8192;
 /// Real-time time-stretching and pitch-shifting unit.
 ///
 /// A pure frame-in → frame-out **filter**: it owns NO source. The caller ticks
-/// the real clip source itself and feeds the resulting frame in as this unit's
+/// the real audio source itself and feeds the resulting frame in as this unit's
 /// `input`; what lives here is the latent phase-vocoder state (one [`Vocoder`]
 /// per channel, the scratch buffers, the atomics).
 ///
@@ -678,7 +678,7 @@ impl Clone for Unit {
 impl AudioUnit for Unit {
     fn inputs(&self) -> usize {
         // A filter: it consumes the frame the caller feeds in (already tick'd
-        // from the real clip source), one channel per vocoder.
+        // from the real audio source), one channel per vocoder.
         self.channels()
     }
 
@@ -1015,7 +1015,7 @@ mod tests {
     /// **The rate invariant, and the bug it exposes.** [`Unit::tick`] is
     /// one-in/one-out, so ticking it above unity stretch necessarily overruns the
     /// output ring — this test asserts that it *does*, because the overrun is
-    /// real and currently unfixed on both clip tiers.
+    /// real and currently unfixed on both source tiers.
     ///
     /// The arithmetic: at stretch `s`, one `process_frame` consumes `hop` input
     /// samples and publishes `hop × s`, so a 1:1 caller accumulates
@@ -1190,7 +1190,7 @@ mod tests {
     }
 
     /// A clone carries the parameters and the width, and starts with clean
-    /// phase state. Clones happen per graph commit and per clip slot.
+    /// phase state. Clones happen per graph commit and per voice slot.
     #[test]
     fn clone_carries_parameters_and_width() {
         let u = Unit::with_channels(44_100.0, 6);
@@ -1239,7 +1239,7 @@ mod tests {
     /// This is a **characterization** test: it passes today and documents the
     /// mechanism behind the seek bug rather than gating it. The gate lives one
     /// level up, where a transport can actually seek
-    /// (`track_clip_reader::tests::a_transport_seek_flushes_stretch_state`).
+    /// (`voice_pool::tests::a_transport_seek_flushes_stretch_state`).
     ///
     /// What it pins is the two halves of the fix:
     ///
@@ -1366,7 +1366,7 @@ mod tests {
     }
 
     /// With stretching active, every channel must reach the output — a
-    /// 6-channel clip through a stretcher that only ran two vocoders would
+    /// 6-channel voice through a stretcher that only ran two vocoders would
     /// silently lose four channels, and no stereo test can see that.
     #[test]
     fn six_channel_stretch_reaches_every_channel() {

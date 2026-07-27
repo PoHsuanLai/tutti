@@ -5,7 +5,7 @@
 /// Invoked *inside* an `impl AudioUnit for T { .. }` block. Always emits the
 /// identical trio (`as_any` / `as_any_mut` / `get_id`); `route` and `footprint`
 /// are emitted only when asked, so a unit whose `route`/`footprint` genuinely
-/// differ (e.g. time-stretch's latency-delayed route, the clip reader's
+/// differ (e.g. time-stretch's latency-delayed route, the voice pool's
 /// slot-sized footprint) simply omits them and hand-writes its own.
 ///
 /// ```ignore

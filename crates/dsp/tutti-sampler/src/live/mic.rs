@@ -134,7 +134,7 @@ impl AudioUnit for MicMonitorNode {
         0
     }
 
-    /// Stereo, deliberately — unlike the clip units, which take a runtime width.
+    /// Stereo, deliberately — unlike the voice units, which take a runtime width.
     ///
     /// The producer is the CPAL input callback in `bevy-tutti`, which downmixes
     /// each interleaved device frame to a stereo pair before it ever reaches

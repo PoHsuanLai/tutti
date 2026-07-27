@@ -822,6 +822,47 @@ mod tests {
             ),
             other => panic!("expected a Ram source, got {other:?}"),
         }
+
+        // And the same fact stated behaviourally: the rebound node renders
+        // SILENCE against a stopped offline clock, while the un-rebound original
+        // renders audio against the rolling live one.
+        //
+        // Deliberately redundant with the two structural assertions above,
+        // because they are both fragile in the same direction. Each asserts that
+        // a clock lives in a particular field and that the rebind reached it — so
+        // if the source ever stops owning a clock (the standing plan for this
+        // type: position derives from the playhead, the caller holds the cursor),
+        // `transport_sample_position()` becomes permanently `None` and that
+        // assertion passes *vacuously* while testing nothing. This one keeps
+        // failing for the right reason: it names the property that actually
+        // matters — an offline render must not hear the live playhead — without
+        // naming where the clock is kept.
+        let mut rebound = clone.clone();
+        let mut live = net.clone();
+        let peak = |net: &mut Net| {
+            net.reset();
+            net.set_sample_rate(tutti_core::SampleRate(44_100.0));
+            let mut worst = 0.0f32;
+            let mut frame = [0.0f32; 2];
+            for _ in 0..64 {
+                net.tick(&[], &mut frame);
+                worst = worst.max(frame[0].abs()).max(frame[1].abs());
+            }
+            worst
+        };
+
+        let live_peak = peak(&mut live);
+        let rebound_peak = peak(&mut rebound);
+        assert!(
+            live_peak > 1e-6,
+            "sanity: the un-rebound net must render audio from the rolling live \
+             clock, else this comparison proves nothing (peak {live_peak})"
+        );
+        assert_eq!(
+            rebound_peak, 0.0,
+            "the rebound net must render exact silence against the stopped \
+             offline clock; it rendered {rebound_peak} (live peak {live_peak})"
+        );
     }
 
     /// With the cap reached, the highest-`priority` pending request is admitted

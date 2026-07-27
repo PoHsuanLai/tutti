@@ -22,8 +22,8 @@ use tutti_core::{
 };
 use tutti_sampler::stretch::Unit as TimeStretchUnit;
 use tutti_sampler::{
-    Direction, MemorySource, MemorySourceConfig, Playback, SlotId, TransportPlacement, Voice,
-    VoiceCommand, VoicePool, VoiceSource,
+    Direction, MemorySource, MemorySourceConfig, Playback, SlotId, Voice, VoiceCommand, VoicePool,
+    VoiceSource, VoiceWindow,
 };
 
 #[global_allocator]
@@ -180,7 +180,6 @@ fn voice_pool_process_steady_state_is_allocation_free() {
                     direction: Direction::Forward,
                     stretch: StretchFactor::new(1.0),
                     pitch: Cents::new(0.0),
-                    placement: None,
                 },
                 source: VoiceSource::Memory(sampler),
                 channel_index: None,
@@ -230,7 +229,6 @@ fn voice_pool_tick_steady_state_is_allocation_free() {
                     direction: Direction::Forward,
                     stretch: StretchFactor::new(1.0),
                     pitch: Cents::new(0.0),
-                    placement: None,
                 },
                 source: VoiceSource::Memory(sampler),
                 channel_index: None,
@@ -525,11 +523,11 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
         wave,
         MemorySourceConfig {
             channels: 6,
-            placement: Some(TransportPlacement {
-                transport,
-                start_beat: Beat::new(0.0),
-                duration_beats: None,
-            }),
+            timeline: Some(transport),
+            window: VoiceWindow {
+                start: Beat::new(0.0),
+                duration: None,
+            },
             ..Default::default()
         },
     );
@@ -543,7 +541,6 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
                 direction: Direction::Forward,
                 stretch: StretchFactor::new(1.0),
                 pitch: Cents::new(0.0),
-                placement: None,
             },
             source: VoiceSource::Memory(sampler),
             channel_index: None,
@@ -639,11 +636,11 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
             wave.clone(),
             MemorySourceConfig {
                 channels: 6,
-                placement: Some(TransportPlacement {
-                    transport: transport.clone(),
-                    start_beat: Beat::new(0.0),
-                    duration_beats: None,
-                }),
+                timeline: Some(transport.clone()),
+                window: VoiceWindow {
+                    start: Beat::new(0.0),
+                    duration: None,
+                },
                 ..Default::default()
             },
         );
@@ -689,11 +686,11 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
         wave,
         MemorySourceConfig {
             channels: 6,
-            placement: Some(TransportPlacement {
-                transport,
-                start_beat: Beat::new(0.0),
-                duration_beats: None,
-            }),
+            timeline: Some(transport),
+            window: VoiceWindow {
+                start: Beat::new(0.0),
+                duration: None,
+            },
             ..Default::default()
         },
     );

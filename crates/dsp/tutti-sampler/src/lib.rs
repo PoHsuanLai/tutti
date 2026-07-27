@@ -116,9 +116,8 @@ pub use live::WavOut;
 // a doorway.
 pub use live::{share_mic_ring, MicMonitorNode, MicRing};
 pub use voice::{
-    Direction, DiskVoice, LoopSetting, MemorySource, MemorySourceConfig, PendingPlayback, Playback,
-    SlotId, TransportPlacement, Voice, VoiceCommand, VoiceNode, VoicePool, VoicePoolHandle,
-    VoiceSource,
+    Direction, DiskVoice, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice,
+    VoiceCommand, VoiceNode, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow,
 };
 // Bevy ECS surface of `voice`.
 #[cfg(feature = "bevy")]

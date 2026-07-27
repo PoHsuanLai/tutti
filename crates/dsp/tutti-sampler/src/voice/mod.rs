@@ -33,10 +33,10 @@ pub mod wave_loader;
 
 // Bevy-free reader value types + DSP unit.
 pub use disk_voice::{DiskSource, DiskVoice, DiskVoiceConfig};
-pub use memory_source::{LoopSetting, MemorySource, MemorySourceConfig, TransportPlacement};
+pub use memory_source::{LoopSetting, MemorySource, MemorySourceConfig, VoiceWindow};
 pub use voice_pool::{
-    Direction, PendingPlayback, Playback, SlotId, Voice, VoiceCommand, VoiceNode, VoicePool,
-    VoicePoolHandle, VoiceSource,
+    Direction, Playback, SlotId, Voice, VoiceCommand, VoiceNode, VoicePool, VoicePoolHandle,
+    VoiceSource,
 };
 #[cfg(feature = "bevy")]
 pub use voice_pool::{VoicePoolNode, VoicePoolRef};

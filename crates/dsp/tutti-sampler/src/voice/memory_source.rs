@@ -51,35 +51,52 @@ pub enum LoopSetting {
     },
 }
 
-/// Transport binding for beat-synced playback. Present as a whole or absent as
-/// a whole: no loose `transport`/`start_beat`/`duration_beats` that can drift
-/// out of sync.
-pub struct TransportPlacement {
-    /// Transport clock. The sampler only plays when it is rolling, and uses its
-    /// beat position to compute the sample offset.
-    pub transport: Arc<dyn Timeline>,
+/// The span of timeline a voice occupies: where it starts, and how long it
+/// lasts.
+///
+/// **Pure geometry — no clock.** It used to carry the `Arc<dyn Timeline>` too,
+/// under the reasoning that a whole-or-nothing bundle stops the three fields
+/// drifting apart. But a window and a clock are different kinds of thing: the
+/// window is a value a voice owns, while the clock is a shared dependency many
+/// voices read. Bundling them meant every offline rebind had to reach inside
+/// each source to swap one field of a value, and the gate kernel took them apart
+/// again at every call site anyway.
+///
+/// `Copy`, which the bundled form could not be — so passing one around no longer
+/// clones an `Arc`, and there is no hand-written `Clone`/`Debug` to keep in sync.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VoiceWindow {
     /// Start position in beats on the timeline.
-    pub start_beat: Beat,
-    /// Duration in beats, or None to play the entire sample.
-    pub duration_beats: Option<BeatDuration>,
+    pub start: Beat,
+    /// Duration in beats, or `None` to play the whole source.
+    pub duration: Option<BeatDuration>,
 }
 
-impl Clone for TransportPlacement {
-    fn clone(&self) -> Self {
+impl VoiceWindow {
+    /// A window starting at `start` and running to the end of the source.
+    pub const fn from(start: Beat) -> Self {
         Self {
-            transport: self.transport.clone(),
-            start_beat: self.start_beat,
-            duration_beats: self.duration_beats,
+            start,
+            duration: None,
+        }
+    }
+
+    /// A window of `duration` beats starting at `start`.
+    pub const fn span(start: Beat, duration: BeatDuration) -> Self {
+        Self {
+            start,
+            duration: Some(duration),
         }
     }
 }
 
-impl std::fmt::Debug for TransportPlacement {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TransportPlacement")
-            .field("start_beat", &self.start_beat)
-            .field("duration_beats", &self.duration_beats)
-            .finish_non_exhaustive()
+impl Default for VoiceWindow {
+    /// From beat 0, for the whole source.
+    fn default() -> Self {
+        Self {
+            start: Beat::new(0.0),
+            duration: None,
+        }
     }
 }
 
@@ -91,18 +108,38 @@ impl std::fmt::Debug for TransportPlacement {
 /// gain, normal speed, one-shot, no transport binding. It is hand-written (not
 /// derived) because the newtypes default to zero — a derived default would ship
 /// silent (`gain = 0`) and frozen (`speed = 0`).
-#[derive(Clone, Debug)]
+// Hand-rolled `Debug`: `timeline` is an `Arc<dyn Timeline>`, which is not
+// `Debug`. Report whether a clock is bound rather than trying to print it — the
+// same treatment `MemorySource` itself gets.
+#[derive(Clone)]
 pub struct MemorySourceConfig {
     pub gain: Amplitude,
     pub speed: PlaybackRate,
     /// Loop intent. `Off` plays once; `On { .. }` loops over the range and
     /// [`MemorySource::with_config`] primes the crossfade internally.
     pub loop_setting: LoopSetting,
-    /// Optional transport binding for beat-synced playback.
-    pub placement: Option<TransportPlacement>,
+    /// Transport clock. `Some` binds this source to a timeline; `None` leaves it
+    /// free-running (audition / one-shot).
+    pub timeline: Option<Arc<dyn Timeline>>,
+    /// Span of timeline the voice occupies. Only consulted when `timeline` is
+    /// `Some` — a window without a clock has nothing to be a window *of*.
+    pub window: VoiceWindow,
     /// Output width. Defaults to stereo — see [`MemorySource::channels`] for why
     /// this is declared rather than taken from the wave.
     pub channels: usize,
+}
+
+impl std::fmt::Debug for MemorySourceConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemorySourceConfig")
+            .field("gain", &self.gain)
+            .field("speed", &self.speed)
+            .field("loop_setting", &self.loop_setting)
+            .field("placed", &self.timeline.is_some())
+            .field("window", &self.window)
+            .field("channels", &self.channels)
+            .finish()
+    }
 }
 
 impl Default for MemorySourceConfig {
@@ -111,7 +148,8 @@ impl Default for MemorySourceConfig {
             gain: Amplitude::new(1.0),
             speed: PlaybackRate::UNITY,
             loop_setting: LoopSetting::Off,
-            placement: None,
+            timeline: None,
+            window: VoiceWindow::default(),
             channels: 2,
         }
     }
@@ -171,8 +209,16 @@ pub struct MemorySource {
     /// range and carries the optional crossfade.
     loop_mode: LoopMode,
 
-    /// Optional transport binding for beat-synced playback.
-    placement: Option<TransportPlacement>,
+    /// Transport clock, or `None` for a free-running source.
+    ///
+    /// Separate from `window` — see [`VoiceWindow`]. `Option` on the CLOCK is
+    /// what distinguishes placed from free-running playback; the window is always
+    /// present because "from beat 0, whole source" is a meaningful default and
+    /// `None` there would mean the same thing twice.
+    timeline: Option<Arc<dyn Timeline>>,
+
+    /// Span of timeline this voice occupies. Meaningless without `timeline`.
+    window: VoiceWindow,
 
     /// A crossfade buffer kept resident so a loop change never allocates.
     ///
@@ -192,7 +238,7 @@ pub struct MemorySource {
     channels: usize,
 }
 
-// Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>` and `placement` holds an
+// Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>` and `timeline` holds an
 // `Arc<dyn Timeline>`. Print the wave length + scalar params; never
 // borrow the `Wave` samples.
 impl std::fmt::Debug for MemorySource {
@@ -206,7 +252,8 @@ impl std::fmt::Debug for MemorySource {
             .field("sample_rate", &self.sample_rate)
             .field("src_ratio", &self.src_ratio)
             .field("loop_mode", &self.loop_mode)
-            .field("has_placement", &self.placement.is_some())
+            .field("placed", &self.timeline.is_some())
+            .field("window", &self.window)
             .finish_non_exhaustive()
     }
 }
@@ -222,7 +269,8 @@ impl Clone for MemorySource {
             sample_rate: self.sample_rate,
             src_ratio: self.src_ratio,
             loop_mode: self.loop_mode.clone(),
-            placement: self.placement.clone(),
+            timeline: self.timeline.clone(),
+            window: self.window,
             loop_crossfade: self.loop_crossfade.clone(),
             channels: self.channels,
         }
@@ -245,7 +293,8 @@ impl MemorySource {
             sample_rate,
             src_ratio: SrcRatio::UNITY,
             loop_mode: LoopMode::OneShot,
-            placement: None,
+            timeline: None,
+            window: VoiceWindow::default(),
             loop_crossfade: Some(LoopCrossfade::with_channels(0, 2)),
             channels: 2,
         }
@@ -281,7 +330,8 @@ impl MemorySource {
         let mut unit = Self {
             gain: config.gain,
             speed: config.speed,
-            placement: config.placement,
+            timeline: config.timeline,
+            window: config.window,
             loop_crossfade: Some(LoopCrossfade::with_channels(0, config.channels.max(1))),
             channels: config.channels.max(1),
             ..Self::new(wave)
@@ -299,8 +349,8 @@ impl MemorySource {
 
     /// Convenience constructor for the common transport-bound voice case: bind a
     /// transport at `start_beat` for `duration_beats`, everything else default.
-    /// Equivalent to `with_config(wave, MemorySourceConfig { placement: Some(..),
-    /// ..Default::default() })`; kept because it reads better at the three
+    /// Equivalent to `with_config(wave, MemorySourceConfig { timeline: Some(..),
+    /// window, ..Default::default() })`; kept because it reads better at the
     /// timeline call sites (tutti-synth likewise keeps convenience ctors
     /// alongside its config one).
     pub fn with_transport(
@@ -312,37 +362,30 @@ impl MemorySource {
         Self::with_config(
             wave,
             MemorySourceConfig {
-                placement: Some(TransportPlacement {
-                    transport,
-                    start_beat,
-                    duration_beats,
-                }),
+                timeline: Some(transport),
+                window: VoiceWindow {
+                    start: start_beat,
+                    duration: duration_beats,
+                },
                 ..Default::default()
             },
         )
     }
 
-    pub fn set_placement(&mut self, start_beat: Beat, duration_beats: Option<BeatDuration>) {
-        if let Some(placement) = &mut self.placement {
-            placement.start_beat = start_beat;
-            placement.duration_beats = duration_beats;
-        }
+    /// Move the window. Independent of whether a clock is bound — a window is
+    /// just geometry, so there is no "only if placed" branch to get wrong.
+    pub fn set_window(&mut self, window: VoiceWindow) {
+        self.window = window;
     }
 
-    /// Used by export to inject export timeline. Preserves the existing
-    /// start-beat / duration when a placement is already present; otherwise
-    /// binds the transport at beat 0 for the whole sample.
+    /// Swap the transport clock, used by export to inject the offline timeline.
+    ///
+    /// The window is untouched, because it is no longer part of the same value.
+    /// This used to be a two-arm `match` that had to *reconstruct* start/duration
+    /// on the unbound path (defaulting them to `0` / whole-source) — a swap that
+    /// silently rewrote geometry. Separating the two makes the swap a swap.
     pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
-        match &mut self.placement {
-            Some(placement) => placement.transport = transport,
-            None => {
-                self.placement = Some(TransportPlacement {
-                    transport,
-                    start_beat: Beat::new(0.0),
-                    duration_beats: None,
-                });
-            }
-        }
+        self.timeline = Some(transport);
     }
 
     pub fn trigger(&self) {
@@ -397,15 +440,19 @@ impl MemorySource {
         self.position.load(Ordering::Relaxed)
     }
 
+    /// The voice's window on the timeline. Always meaningful — see
+    /// [`VoiceWindow`] for why the window is not itself optional.
+    pub fn window(&self) -> VoiceWindow {
+        self.window
+    }
+
     pub fn start_beat(&self) -> Beat {
-        self.placement
-            .as_ref()
-            .map_or(Beat::new(0.0), |p| p.start_beat)
+        self.window.start
     }
 
     /// None means play entire sample.
     pub fn duration_beats(&self) -> Option<BeatDuration> {
-        self.placement.as_ref().and_then(|p| p.duration_beats)
+        self.window.duration
     }
 
     pub fn duration_samples(&self) -> usize {
@@ -644,11 +691,11 @@ impl MemorySource {
     /// tier had the bug.
     #[inline]
     pub fn window_position(&self) -> Option<SamplePosition> {
-        let placement = self.placement.as_ref()?;
+        let timeline = self.timeline.as_ref()?;
         super::interp::window_position(
-            placement.transport.as_ref(),
-            placement.start_beat,
-            placement.duration_beats,
+            timeline.as_ref(),
+            self.window.start,
+            self.window.duration,
             SampleRate::new(self.wave.sample_rate()),
             self.window_rate(),
         )
@@ -684,7 +731,7 @@ impl MemorySource {
     /// block in a trailing slot.
     #[inline]
     fn next_frame_into(&mut self, offset_in_block: usize, out: &mut [f32]) {
-        if self.placement.is_some() {
+        if self.timeline.is_some() {
             // Derived: the transport owns the position. Step within the block by
             // `read_rate` from the block's start beat — the transport itself
             // only moves between blocks.
@@ -963,11 +1010,7 @@ mod tests {
                 Arc::clone(&wave),
                 MemorySourceConfig {
                     speed: PlaybackRate::new(0.5),
-                    placement: Some(TransportPlacement {
-                        transport: transport.clone(),
-                        start_beat: Beat::new(0.0),
-                        duration_beats: None,
-                    }),
+                    timeline: Some(transport.clone()),
                     ..Default::default()
                 },
             );
@@ -1010,11 +1053,7 @@ mod tests {
             Arc::clone(wave),
             MemorySourceConfig {
                 speed: PlaybackRate::new(rate),
-                placement: Some(TransportPlacement {
-                    transport: transport.clone(),
-                    start_beat: Beat::new(0.0),
-                    duration_beats: None,
-                }),
+                timeline: Some(transport.clone()),
                 ..Default::default()
             },
         )
@@ -1382,6 +1421,31 @@ mod tests {
              (a double-applied src_ratio gives ~{doubled})",
             pos.get()
         );
+    }
+
+    /// A window is geometry: it does not need a clock to exist, and setting one
+    /// before the transport is bound must stick.
+    ///
+    /// Binding order is not fixed, and the guarded form of this setter lost the
+    /// window silently — the voice then played from beat 0 for its whole length.
+    #[test]
+    fn the_window_can_be_set_before_a_clock_is_bound() {
+        let wave = ramp_wave(100, 44_100.0);
+        let mut sampler = MemorySource::new(wave);
+        assert_eq!(sampler.window(), VoiceWindow::default());
+
+        // No clock yet — this used to be a silent no-op.
+        sampler.set_window(VoiceWindow::span(Beat::new(8.0), BeatDuration::new(4.0)));
+        assert_eq!(sampler.start_beat(), Beat::new(8.0));
+        assert_eq!(sampler.duration_beats(), Some(BeatDuration::new(4.0)));
+
+        // Binding a clock afterwards must not disturb the window...
+        sampler.replace_transport(MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)));
+        assert_eq!(sampler.start_beat(), Beat::new(8.0));
+        assert_eq!(sampler.duration_beats(), Some(BeatDuration::new(4.0)));
+
+        // ...and the gate now honours it: beat 0 is before the beat-8 start.
+        assert!(sampler.window_position().is_none());
     }
 
     /// The block-stepping rate must be the SAME rate the gate used, or a block

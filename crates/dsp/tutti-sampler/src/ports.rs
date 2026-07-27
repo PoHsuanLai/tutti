@@ -18,7 +18,7 @@ use dashmap::DashMap;
 use smol::channel::Sender;
 
 use crate::butler::{ButlerCommand, ChannelPlan};
-use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, TransportPlacement};
+use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
 use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, Timeline, Wave};
 
 /// The caller's stated choice of playback tier for a voice: whole-file in memory
@@ -222,10 +222,10 @@ impl Status {
             inner,
             rt_state,
             DiskVoiceConfig {
-                placement: TransportPlacement {
-                    transport,
-                    start_beat,
-                    duration_beats: duration,
+                timeline: transport,
+                window: VoiceWindow {
+                    start: start_beat,
+                    duration,
                 },
                 file_sample_rate,
             },

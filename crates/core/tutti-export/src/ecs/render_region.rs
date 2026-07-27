@@ -741,15 +741,13 @@ mod tests {
     /// only cover the `VoicePool` arm, so this one closes the gap.
     #[test]
     fn offline_rebinds_bare_voice_node_transport() {
-        use tutti_sampler::{LoopSetting, Playback, TransportPlacement, Voice, VoiceSource};
+        use tutti_sampler::{LoopSetting, Playback, Voice, VoiceSource};
 
         // The live transport is rolling; the offline one is stopped — so the memory
-        // source's `window_position()` (which reads its OWN placement
-        // clock) returns `Some(..)` while bound to the live clock and `None` once
-        // rebound to the stopped offline clock. That distinction is the real
-        // guard: the sampler reads its own transport, not `play.placement`, so a
-        // rebind that only touched `play.placement` would leave this probe on the
-        // live clock and the offline render would read the wrong playhead.
+        // source's `window_position()` returns `Some(..)` while bound to the live
+        // clock and `None` once rebound to the stopped offline one. That is the
+        // guard: a rebind that misses the source leaves this probe on the live
+        // clock, and the offline render reads the wrong playhead.
         let live_transport = MockTransport::new(true);
         let wave = Arc::new(Wave::from_samples(
             44100.0,
@@ -761,16 +759,11 @@ mod tests {
             sampler.window_position().is_some(),
             "sanity: the memory source reads a live position before rebind"
         );
-        // A standalone voice carrying a placement bound to the LIVE clock — the
-        // exact shape resynth builds before the graph add.
+        // A standalone voice bound to the LIVE clock — the exact shape resynth
+        // builds before the graph add.
         let voice = Voice {
             source: VoiceSource::Memory(sampler),
             play: Playback {
-                placement: Some(TransportPlacement {
-                    transport: live_transport.clone(),
-                    start_beat: Beat::new(0.0),
-                    duration_beats: None,
-                }),
                 loop_: LoopSetting::Off,
                 direction: Direction::Forward,
                 ..Playback::default()
@@ -794,19 +787,6 @@ mod tests {
             .downcast_mut::<VoiceNode>()
             .expect("still a voice node after rebind");
 
-        // The control-intent record's clock must have swapped.
-        let placement = voice_node
-            .voice()
-            .play
-            .placement
-            .as_ref()
-            .expect("placement present");
-        assert!(
-            !placement.transport.is_rolling(),
-            "the bare voice node's play.placement clock must be rebound to the \
-             (stopped) offline transport, not left on the live one"
-        );
-
         // And — the load-bearing half — the MEMORY SOURCE's OWN read clock must have
         // swapped too. The sampler reads its position from its own placement, so
         // if the rebind only touched `play.placement` this would still read the
@@ -819,23 +799,22 @@ mod tests {
                  offline transport (else the offline render reads the live \
                  playhead and renders the correction wrong)"
             ),
-            other => panic!("expected a Ram source, got {other:?}"),
+            other => panic!("expected a Memory source, got {other:?}"),
         }
 
         // And the same fact stated behaviourally: the rebound node renders
         // SILENCE against a stopped offline clock, while the un-rebound original
         // renders audio against the rolling live one.
         //
-        // Deliberately redundant with the two structural assertions above,
-        // because they are both fragile in the same direction. Each asserts that
-        // a clock lives in a particular field and that the rebind reached it — so
-        // if the source ever stops owning a clock (the standing plan for this
-        // type: position derives from the playhead, the caller holds the cursor),
-        // `window_position()` becomes permanently `None` and that
-        // assertion passes *vacuously* while testing nothing. This one keeps
-        // failing for the right reason: it names the property that actually
-        // matters — an offline render must not hear the live playhead — without
-        // naming where the clock is kept.
+        // Deliberately redundant with the structural assertion above, which is
+        // fragile in a specific direction: it asserts that a clock lives in a
+        // particular place and that the rebind reached it. If the source ever
+        // stops owning a clock (the standing plan for this type: position derives
+        // from the playhead, the caller holds the cursor), `window_position()`
+        // becomes permanently `None` and that assertion passes *vacuously* while
+        // testing nothing. This one keeps failing for the right reason: it names
+        // the property that actually matters — an offline render must not hear the
+        // live playhead — without naming where the clock is kept.
         let mut rebound = clone.clone();
         let mut live = net.clone();
         let peak = |net: &mut Net| {

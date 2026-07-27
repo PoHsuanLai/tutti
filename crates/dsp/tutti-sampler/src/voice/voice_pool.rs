@@ -23,7 +23,7 @@ use crate::stretch;
 use crate::MAX_SAMPLER_CHANNELS;
 
 use super::disk_voice::DiskVoice;
-use super::memory_source::{LoopSetting, MemorySource, TransportPlacement};
+use super::memory_source::{LoopSetting, MemorySource, VoiceWindow};
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
@@ -183,7 +183,10 @@ impl VoiceSource {
     #[inline]
     fn apply_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
         match self {
-            Self::Memory(s) => s.set_placement(start_beat, duration),
+            Self::Memory(s) => s.set_window(VoiceWindow {
+                start: start_beat,
+                duration,
+            }),
             Self::Disk(s) => s.set_placement(start_beat, duration),
         }
     }
@@ -207,9 +210,15 @@ pub struct Playback {
     pub speed: PlaybackRate,
     pub direction: Direction,
     pub loop_: LoopSetting,
-    pub placement: Option<TransportPlacement>,
-    /// Time-stretch factor (1.0 = no stretch). Absorbed here so the placement,
-    /// stretch, and pitch intent live in one record rather than in a sidecar.
+    /// Time-stretch factor (1.0 = no stretch). Absorbed here so the stretch and
+    /// pitch intent live in one record rather than in a sidecar.
+    ///
+    /// There is deliberately **no `placement` here**. Placement lived in this
+    /// record too until it was found to be write-only: it was cloned, rebound by
+    /// the offline render, and asserted on in tests, but no code ever derived a
+    /// position from it — every read went to the source's own copy. Two clocks
+    /// kept in sync by hand, one of them never consulted, is a rebind that can
+    /// silently reach the wrong one. The source owns its placement; ask it.
     pub stretch: StretchFactor,
     /// Pitch shift in cents (0.0 = no shift).
     pub pitch: Cents,
@@ -222,71 +231,8 @@ impl Default for Playback {
             speed: PlaybackRate::UNITY,
             direction: Direction::Forward,
             loop_: LoopSetting::Off,
-            placement: None,
             stretch: StretchFactor::UNITY,
             pitch: Cents::new(0.0),
-        }
-    }
-}
-
-/// The voice's control fields as decoded from ECS at promote time — the flat
-/// input to [`Playback::from_pending`]. A voice carries a single `gain` scalar
-/// that dawai maps to BOTH the voice gain and the read speed (the historical
-/// `playback_rate`), plus the loop range, reverse, and stretch/pitch intent.
-/// Grouped so both the memory promote and the Disk poll build a `Playback` from
-/// one shape.
-#[derive(Debug, Clone, Default)]
-pub struct PendingPlayback {
-    pub gain: Amplitude,
-    pub speed: PlaybackRate,
-    pub direction: Direction,
-    pub looping: bool,
-    pub loop_start: SamplePosition,
-    pub loop_end: SamplePosition,
-    pub stretch: StretchFactor,
-    pub pitch: Cents,
-    pub placement: Option<TransportPlacement>,
-}
-
-impl Playback {
-    /// Build the control-intent record for a freshly-promoted voice from its
-    /// decoded control fields. This is the single place the pending voice's
-    /// gain / loop / reverse / stretch DATA becomes a [`Playback`] — replacing
-    /// the old pre-send poking of the `MemorySource` (`set_gain`, the
-    /// `set_loop_range` / `set_looping` ladder) on the dawai side. The reader's
-    /// `insert_voice` then applies this record per-tier.
-    ///
-    /// Loop mapping matches the already-migrated `UpdateLoop` update path: an
-    /// explicit `[start, end)` range with `end > start` primes a 256-sample
-    /// crossfade; loop-enabled with no valid range primes a zero range
-    /// (`On { 0, 0, 0 }`), exactly as the update path sends it; disabled →
-    /// `Off`.
-    pub fn from_pending(p: PendingPlayback) -> Self {
-        let loop_ = if p.looping {
-            if p.loop_end.get() > p.loop_start.get() {
-                LoopSetting::On {
-                    start: p.loop_start,
-                    end: p.loop_end,
-                    crossfade_samples: 256,
-                }
-            } else {
-                LoopSetting::On {
-                    start: SamplePosition::new(0.0),
-                    end: SamplePosition::new(0.0),
-                    crossfade_samples: 0,
-                }
-            }
-        } else {
-            LoopSetting::Off
-        };
-        Self {
-            gain: p.gain,
-            speed: p.speed,
-            direction: p.direction,
-            loop_,
-            placement: p.placement,
-            stretch: p.stretch,
-            pitch: p.pitch,
         }
     }
 }
@@ -298,7 +244,6 @@ impl Clone for Playback {
             speed: self.speed,
             direction: self.direction,
             loop_: self.loop_.clone(),
-            placement: self.placement.clone(),
             stretch: self.stretch,
             pitch: self.pitch,
         }
@@ -342,24 +287,18 @@ impl Voice {
     /// start-beat / duration. Used by the offline region render to rebind a
     /// standalone voice onto the export transport.
     ///
-    /// Rebinds BOTH clocks that must move together:
-    /// - `play.placement.transport` — the control-intent record.
-    /// - the source's own read clock. The `Memory` [`MemorySource`] reads its
-    ///   sample position from its OWN placement (`window_position`),
-    ///   NOT from `play.placement`, so rebinding only the intent record would
-    ///   leave the actual read clock on the live transport — the offline render
-    ///   would then read the wrong (undriven) playhead and render silence. The
-    ///   `Disk` streaming source owns its transport internally likewise; both are
-    ///   covered here so the offline rebind is complete.
+    /// Rebinds the source's own read clock — the only clock there is.
+    ///
+    /// It used to rebind two: this record also carried a `placement`, and the
+    /// comment here warned that rebinding only *that* one would leave the real
+    /// read clock on the live transport and render silence. The second clock was
+    /// write-only, so it is gone; a rebind can no longer reach the wrong one.
+    ///
+    /// Only the `Memory` [`MemorySource`] exposes a whole-transport swap, and it
+    /// is the only source a standalone offline [`VoiceNode`] ever wraps (resynth
+    /// and region-render populate both build memory voices), so this is the path
+    /// that matters for the offline render.
     pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
-        if let Some(placement) = &mut self.play.placement {
-            placement.transport = transport.clone();
-        }
-        // Rebind the source's own read clock. Only the `Memory` `MemorySource`
-        // exposes a whole-transport swap (`replace_transport`); it is the only
-        // source a standalone offline `VoiceNode` ever wraps (resynth /
-        // region-render populate build memory voices), so this is the path that
-        // matters for the offline render.
         if let VoiceSource::Memory(sampler) = &mut self.source {
             sampler.replace_transport(transport);
         }
@@ -1323,16 +1262,12 @@ impl VoicePool {
                     duration_beats,
                 } => {
                     if let Some(slot) = self.slot_mut(id) {
-                        // Both backends carry a placement gate; each backend's
+                        // The source owns the gate; each backend's
                         // `set_placement` re-arms its own (streaming re-seeks on
                         // the next inside-frame).
                         slot.voice
                             .source
                             .apply_placement(start_beat, duration_beats);
-                        if let Some(placement) = &mut slot.voice.play.placement {
-                            placement.start_beat = start_beat;
-                            placement.duration_beats = duration_beats;
-                        }
                     }
                 }
                 VoiceCommand::UpdateGain { id, gain } => {
@@ -2030,7 +1965,6 @@ mod tests {
                     direction: Direction::Forward,
                     stretch: StretchFactor::new(1.0),
                     pitch: Cents::new(0.0),
-                    placement: None,
                 },
                 source: VoiceSource::Memory(sampler),
                 channel_index: None,
@@ -2080,7 +2014,6 @@ mod tests {
                     direction: Direction::Forward,
                     stretch: StretchFactor::new(1.0),
                     pitch: Cents::new(0.0),
-                    placement: None,
                 },
                 source: VoiceSource::Memory(sampler),
                 channel_index: None,
@@ -2192,7 +2125,6 @@ mod tests {
                     direction: Direction::Forward,
                     stretch: StretchFactor::new(1.0),
                     pitch: Cents::new(0.0),
-                    placement: None,
                 },
                 source: VoiceSource::Memory(sampler2),
                 channel_index: None,
@@ -2218,34 +2150,55 @@ mod tests {
         );
     }
 
-    /// `Voice::replace_transport` rebinds the placement clock (the offline
-    /// render's rebind path), preserving start/duration.
+    /// `Voice::replace_transport` rebinds the clock the source actually READS,
+    /// preserving start/duration — the offline render's rebind path.
+    ///
+    /// This test used to assert on `play.placement`, the record that was rebound
+    /// but never read. It therefore passed whether or not the real read clock
+    /// moved, which is the precise failure it was written to catch. With that
+    /// field deleted there is only one clock, and the assertion is behavioural:
+    /// the swapped-in transport is STOPPED, so the source must report no position
+    /// and render silence.
     #[test]
-    fn voice_replace_transport_rebinds_clock() {
+    fn voice_replace_transport_rebinds_the_clock_the_source_reads() {
         let wave = make_wave(100);
-        let t1 = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let sampler = MemorySource::with_transport(wave, t1, Beat::new(0.0), None);
+        let live = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let sampler = MemorySource::with_transport(wave, live, Beat::new(2.0), None);
         let mut voice = Voice {
             source: VoiceSource::Memory(sampler),
-            play: Playback {
-                placement: Some(TransportPlacement {
-                    transport: MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
-                    start_beat: Beat::new(2.0),
-                    duration_beats: None,
-                }),
-                ..Playback::default()
-            },
+            play: Playback::default(),
             channel_index: None,
         };
 
-        let t2 = MockTransport::stopped(Beat::new(1.0), Bpm::new(140.0));
-        voice.replace_transport(t2);
-        let placement = voice.play.placement.as_ref().expect("placement present");
-        assert_eq!(placement.start_beat, Beat::new(2.0));
-        assert!(
-            !placement.transport.is_rolling(),
-            "clock swapped to the stopped one"
-        );
+        // Rolling at beat 0 but the window starts at beat 2 — outside, so move the
+        // playhead in first and confirm the source is reading.
+        match &voice.source {
+            VoiceSource::Memory(s) => {
+                assert!(
+                    s.window_position().is_none(),
+                    "setup: beat 0 is before the beat-2 window"
+                );
+            }
+            other => panic!("expected a Memory source, got {other:?}"),
+        }
+
+        let stopped = MockTransport::stopped(Beat::new(4.0), Bpm::new(140.0));
+        voice.replace_transport(stopped);
+
+        match &voice.source {
+            VoiceSource::Memory(s) => {
+                // The window survived the rebind...
+                assert_eq!(s.start_beat(), Beat::new(2.0));
+                // ...and the source now reads the STOPPED clock. Beat 4 is inside
+                // the window, so a source still on the live clock would have
+                // reported a position here.
+                assert!(
+                    s.window_position().is_none(),
+                    "the source must read the stopped offline clock, not the live one"
+                );
+            }
+            other => panic!("expected a Memory source, got {other:?}"),
+        }
     }
 
     // --- 0e: dropped commands must not be recorded as applied ---
@@ -2274,10 +2227,10 @@ mod tests {
             inner,
             state,
             DiskVoiceConfig {
-                placement: TransportPlacement {
-                    transport: transport.clone(),
-                    start_beat: Beat::new(0.0),
-                    duration_beats: None,
+                timeline: transport.clone(),
+                window: VoiceWindow {
+                    start: Beat::new(0.0),
+                    duration: None,
                 },
                 file_sample_rate: 44100.0,
             },
@@ -2349,11 +2302,11 @@ mod tests {
                 indexed_wave(6, 64),
                 MemorySourceConfig {
                     channels: w,
-                    placement: Some(TransportPlacement {
-                        transport,
-                        start_beat: Beat::new(0.0),
-                        duration_beats: None,
-                    }),
+                    timeline: Some(transport),
+                    window: VoiceWindow {
+                        start: Beat::new(0.0),
+                        duration: None,
+                    },
                     ..Default::default()
                 },
             );
@@ -2383,11 +2336,11 @@ mod tests {
             indexed_wave(6, 512),
             MemorySourceConfig {
                 channels: 6,
-                placement: Some(TransportPlacement {
-                    transport,
-                    start_beat: Beat::new(0.0),
-                    duration_beats: None,
-                }),
+                timeline: Some(transport),
+                window: VoiceWindow {
+                    start: Beat::new(0.0),
+                    duration: None,
+                },
                 ..Default::default()
             },
         );
@@ -2427,11 +2380,11 @@ mod tests {
             indexed_wave(6, 4096),
             MemorySourceConfig {
                 channels: 6,
-                placement: Some(TransportPlacement {
-                    transport: transport.clone(),
-                    start_beat: Beat::new(0.0),
-                    duration_beats: None,
-                }),
+                timeline: Some(transport.clone()),
+                window: VoiceWindow {
+                    start: Beat::new(0.0),
+                    duration: None,
+                },
                 ..Default::default()
             },
         );
@@ -2493,11 +2446,11 @@ mod tests {
                 indexed_wave(6, 128),
                 MemorySourceConfig {
                     channels: 6,
-                    placement: Some(TransportPlacement {
-                        transport: transport.clone(),
-                        start_beat: Beat::new(0.0),
-                        duration_beats: None,
-                    }),
+                    timeline: Some(transport.clone()),
+                    window: VoiceWindow {
+                        start: Beat::new(0.0),
+                        duration: None,
+                    },
                     ..Default::default()
                 },
             );
@@ -2592,11 +2545,11 @@ mod tests {
             indexed_wave(6, 512),
             MemorySourceConfig {
                 channels: 6,
-                placement: Some(TransportPlacement {
-                    transport,
-                    start_beat: Beat::new(0.0),
-                    duration_beats: None,
-                }),
+                timeline: Some(transport),
+                window: VoiceWindow {
+                    start: Beat::new(0.0),
+                    duration: None,
+                },
                 ..Default::default()
             },
         );

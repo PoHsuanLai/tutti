@@ -7,11 +7,11 @@ use crate::MAX_SAMPLER_CHANNELS;
 use tutti_core::SignalFrame;
 use tutti_core::{
     Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, PlaybackRate, ReadRate,
-    SamplePosition, SampleRate, Samples, SrcRatio,
+    SamplePosition, SampleRate, Samples, SrcRatio, Timeline,
 };
 
 use super::interp::cubic_hermite;
-use super::memory_source::TransportPlacement;
+use super::memory_source::VoiceWindow;
 use super::voice_pool::Direction;
 use crate::butler::{RtState, SharedReader};
 
@@ -461,28 +461,42 @@ const NO_SEEK_TARGET: SamplePosition = SamplePosition(f64::NEG_INFINITY);
 const SEEK_EPSILON_SAMPLES: f64 = 4096.0;
 
 /// Wiring for [`DiskVoice::new`]: the placement gate plus the file
-/// sample rate. Reuses [`TransportPlacement`] for the transport/start/duration
+/// sample rate. Splits the clock from the [`VoiceWindow`]
 /// cluster so the streaming path and `MemorySource` speak the same value type;
 /// `shared_state` stays a separate wiring arg (it must be the same `RtState` the
 /// `inner` unit holds).
-#[derive(Debug, Clone)]
+// Hand-rolled `Debug` for the same reason as `MemorySourceConfig`: an
+// `Arc<dyn Timeline>` is not `Debug`.
+#[derive(Clone)]
 pub struct DiskVoiceConfig {
-    /// Transport binding — the placement gate. Whole-or-nothing, mirroring
-    /// `MemorySource`'s use of [`TransportPlacement`].
-    pub placement: TransportPlacement,
+    /// Transport clock — the gate reads its beat position.
+    pub timeline: Arc<dyn Timeline>,
+    /// Span of timeline this voice occupies. Separate from the clock, mirroring
+    /// `MemorySource` — see [`VoiceWindow`].
+    pub window: VoiceWindow,
     /// File sample rate — converts the transport's second-offset into a sample
     /// offset for the seek target, matching `MemorySource`'s use of
     /// `wave.sample_rate()`.
     pub file_sample_rate: f64,
 }
 
+impl std::fmt::Debug for DiskVoiceConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DiskVoiceConfig")
+            .field("window", &self.window)
+            .field("file_sample_rate", &self.file_sample_rate)
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct DiskVoice {
     inner: DiskSource,
     shared_state: Arc<RtState>,
 
-    /// Transport binding — the placement gate. Whole-or-nothing, mirroring
-    /// `MemorySource`'s `TransportPlacement`.
-    placement: TransportPlacement,
+    /// Transport clock — the gate reads its beat position.
+    timeline: Arc<dyn Timeline>,
+    /// Span of timeline this voice occupies.
+    window: VoiceWindow,
 
     /// File sample rate — converts the transport's second-offset into a sample
     /// offset for the seek target, matching `MemorySource`'s use of
@@ -502,13 +516,13 @@ pub struct DiskVoice {
 }
 
 // Hand-rolled: wraps a non-`Debug` `DiskSource` + `Arc<RtState>` +
-// `TransportPlacement` (holds an `Arc<dyn Timeline>`). Print the gate
+// the `Arc<dyn Timeline>` clock. Print the gate
 // scalars + inner unit; nothing here touches the ring.
 impl std::fmt::Debug for DiskVoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DiskVoice")
             .field("inner", &self.inner)
-            .field("placement", &self.placement)
+            .field("window", &self.window)
             .field("file_sample_rate", &self.file_sample_rate)
             .field("streamed_offset", &self.streamed_offset)
             .field("was_inside", &self.was_inside)
@@ -521,7 +535,8 @@ impl Clone for DiskVoice {
         Self {
             inner: self.inner.clone(),
             shared_state: Arc::clone(&self.shared_state),
-            placement: self.placement.clone(),
+            timeline: self.timeline.clone(),
+            window: self.window,
             file_sample_rate: self.file_sample_rate,
             streamed_offset: self.streamed_offset,
             was_inside: self.was_inside,
@@ -540,7 +555,8 @@ impl DiskVoice {
         Self {
             inner,
             shared_state,
-            placement: config.placement,
+            timeline: config.timeline,
+            window: config.window,
             file_sample_rate: config.file_sample_rate,
             streamed_offset: NO_SEEK_TARGET,
             was_inside: false,
@@ -548,8 +564,10 @@ impl DiskVoice {
     }
 
     pub fn set_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
-        self.placement.start_beat = start_beat;
-        self.placement.duration_beats = duration;
+        self.window = VoiceWindow {
+            start: start_beat,
+            duration,
+        };
         // A placement change may move the window out from under the playhead;
         // force a re-seek on the next inside-frame.
         self.streamed_offset = NO_SEEK_TARGET;
@@ -597,9 +615,9 @@ impl DiskVoice {
     #[inline]
     fn window_position(&self) -> Option<SamplePosition> {
         super::interp::window_position(
-            self.placement.transport.as_ref(),
-            self.placement.start_beat,
-            self.placement.duration_beats,
+            self.timeline.as_ref(),
+            self.window.start,
+            self.window.duration,
             SampleRate::new(self.file_sample_rate),
             self.shared_state
                 .effective_speed()
@@ -780,10 +798,10 @@ mod tests {
             inner,
             state,
             DiskVoiceConfig {
-                placement: TransportPlacement {
-                    transport,
-                    start_beat,
-                    duration_beats: duration,
+                timeline: transport,
+                window: VoiceWindow {
+                    start: start_beat,
+                    duration,
                 },
                 file_sample_rate: 44100.0,
             },
@@ -811,10 +829,10 @@ mod tests {
             inner,
             state,
             DiskVoiceConfig {
-                placement: TransportPlacement {
-                    transport: transport.clone(),
-                    start_beat: Beat::new(0.0),
-                    duration_beats: None,
+                timeline: transport.clone(),
+                window: VoiceWindow {
+                    start: Beat::new(0.0),
+                    duration: None,
                 },
                 // What `ports.rs` reconstructs: session × src == the real file rate.
                 file_sample_rate: 44_100.0 * src,
@@ -1300,10 +1318,10 @@ mod tests {
                 inner,
                 state,
                 DiskVoiceConfig {
-                    placement: TransportPlacement {
-                        transport,
-                        start_beat: Beat::new(64.0),
-                        duration_beats: None,
+                    timeline: transport,
+                    window: VoiceWindow {
+                        start: Beat::new(64.0),
+                        duration: None,
                     },
                     file_sample_rate: 44100.0,
                 },

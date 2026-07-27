@@ -1932,13 +1932,7 @@ mod tests {
     /// would see it — every other assertion on this path is `!= 0.0`, and a
     /// stuttering stretcher is still non-zero.
     ///
-    /// Currently ignored for the same reason as the pool's version: the vocoder
-    /// over-fills its own output ring at any stretch > 1.0 (see
-    /// `stretch::tests::a_one_to_one_feed_overruns_above_unity_stretch`), so
-    /// blocks fall silent on their own, with no flush involved. Un-ignore with
-    /// that fix.
     #[test]
-    #[ignore = "blocked on the vocoder's input-rate overrun, not on flushing"]
     fn continuous_playback_does_not_flush_a_standalone_voice_node() {
         const SR: f64 = 44_100.0;
         const LEN: usize = 441_000;
@@ -1995,27 +1989,13 @@ mod tests {
     /// this asserts *continuity of level* across hundreds of ordinary blocks —
     /// after the pipeline fills, no block may collapse to silence.
     ///
-    /// # Currently ignored: it fails on a SEPARATE, pre-existing bug
-    ///
-    /// It measures 32/256 silent blocks — and so does the same measurement taken
-    /// at `stretch::Unit` directly, with no transport and no flushing involved.
-    /// So the dropouts are not spurious flushes; the stretcher stutters on its
-    /// own.
-    ///
-    /// The cause is an unbounded backlog in `OverlapAdd`. At stretch `s`, one
-    /// frame consumes `hop` input samples and writes `hop * s` output samples,
-    /// while `tick` pushes and pops exactly one sample per call. For `s > 1` the
-    /// ring therefore grows by `hop * (s - 1)` per frame, without bound — 31,743
-    /// samples pending against a `window * 4` = 8,192 capacity when measured — so
-    /// the write cursor laps the read cursor and overwrites audio that was never
-    /// read. No fixed capacity fixes it; the drain rate has to match, which is a
-    /// design question about what `tick` means for a rate-changing filter.
-    ///
-    /// Un-ignore this together with that fix. Keeping it here, ignored and
-    /// explained, is deliberate: the assertion is the right one, and it is the
-    /// only thing in the suite that can see either bug.
+    /// It spent time `#[ignore]`d on a SECOND, unrelated cause of the same
+    /// symptom: it measured 32/256 silent blocks even with the flush logic removed,
+    /// because the vocoder published `stretch x` as many output samples as it
+    /// consumed against a host that takes exactly one per call. Two independent
+    /// bugs producing one indistinguishable symptom is the argument for asserting
+    /// level continuity here rather than merely "output is non-zero".
     #[test]
-    #[ignore = "fails on the pre-existing OverlapAdd backlog overflow, not on flushing"]
     fn continuous_playback_does_not_flush_the_stretch_filter() {
         const SR: f64 = 44_100.0;
         const LEN: usize = 441_000;

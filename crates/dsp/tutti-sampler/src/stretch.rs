@@ -327,8 +327,9 @@ struct Vocoder {
     phase_accumulator: Vec<Radians>,
     /// Per-bin analysis phase from the previous frame.
     last_phase: Vec<Radians>,
-    /// Per-bin phase advance one analysis hop is expected to produce.
-    expected_phase_diff: Vec<Radians>,
+    /// Per-bin phase advance produced by **one sample** of analysis hop.
+    /// Multiplied by the frame's analysis hop, which varies with stretch.
+    phase_per_sample: Vec<Radians>,
 
     input: SampleFifo,
     output: OverlapAdd,
@@ -338,13 +339,15 @@ impl Vocoder {
     fn new(geometry: StftGeometry) -> Self {
         let size = geometry.window().get();
         let bins = geometry.bins_per_frame().get();
-        let hop = geometry.hop().get();
-
-        // 2π·k·hop/size — the phase a bin advances over one hop. No sample-rate
-        // term: it is a ratio of sample counts, which is why changing the rate
-        // does not invalidate it.
-        let expected_phase_diff = (0..bins)
-            .map(|k| Radians(Radians::TAU.get() * k as f32 * hop as f32 / size as f32))
+        // 2π·k/size — the phase bin `k` advances **per sample** of analysis hop.
+        // No sample-rate term: it is a ratio of sample counts, which is why
+        // changing the rate does not invalidate it.
+        //
+        // Stored per-sample rather than per-hop because the analysis hop is no
+        // longer fixed — see `process_frame`. Multiplying by the frame's actual
+        // hop is one multiply on a table read that already happens.
+        let phase_per_sample = (0..bins)
+            .map(|k| Radians(Radians::TAU.get() * k as f32 / size as f32))
             .collect();
 
         Self {
@@ -354,7 +357,7 @@ impl Vocoder {
             spectrum: vec![Complex32::new(0.0, 0.0); size],
             phase_accumulator: vec![Radians(0.0); bins],
             last_phase: vec![Radians(0.0); bins],
-            expected_phase_diff,
+            phase_per_sample,
             // 4x the window: three frames of overlap-add tail plus the frame
             // being written.
             input: SampleFifo::new(size * 4),
@@ -372,16 +375,20 @@ impl Vocoder {
     }
 
     /// Drain every whole frame the input holds.
-    fn process(&mut self, synthesis_hop: usize, pitch_ratio: f32) {
+    ///
+    /// `analysis_hop` is how far through the SOURCE each frame steps;
+    /// `synthesis_hop` is how much finished output each frame publishes. Their
+    /// ratio is the time-scaling, and which one varies depends on who drives the
+    /// rate — see [`Unit::tick`].
+    fn process(&mut self, analysis_hop: usize, synthesis_hop: usize, pitch_ratio: f32) {
         while self.input.available() >= self.geometry.window().get() {
-            self.process_frame(synthesis_hop, pitch_ratio);
+            self.process_frame(analysis_hop, synthesis_hop, pitch_ratio);
         }
     }
 
-    fn process_frame(&mut self, synthesis_hop: usize, pitch_ratio: f32) {
+    fn process_frame(&mut self, analysis_hop: usize, synthesis_hop: usize, pitch_ratio: f32) {
         let size = self.geometry.window().get();
         let bins = self.geometry.bins_per_frame().get();
-        let analysis_hop = self.geometry.hop().get();
 
         // 1. Window the frame into the FFT scratch.
         for i in 0..size {
@@ -409,7 +416,7 @@ impl Vocoder {
             // Deviation of the observed advance from the expected one, wrapped
             // into (-π, π] — the unwrapping step that recovers the bin's true
             // instantaneous frequency rather than its aliased one.
-            let expected = self.expected_phase_diff[k];
+            let expected = Radians(self.phase_per_sample[k].get() * analysis_hop as f32);
             let deviation = wrap_phase(phase - self.last_phase[k] - expected);
             let true_advance = expected + deviation;
 
@@ -498,6 +505,20 @@ pub struct Unit {
     enabled: bool,
     scratch_in: Vec<RtScratch<f32>>,
     scratch_out: Vec<RtScratch<f32>>,
+
+    /// Fractional debt in the source-intake resampler: how much of the next
+    /// source sample the unit still owes itself before it may consume one.
+    ///
+    /// A time-stretcher emits `stretch` samples per source sample, but
+    /// [`AudioUnit::tick`] hands over exactly one and takes exactly one back. The
+    /// only way to satisfy both is for the unit to consume the source at
+    /// `1 / stretch` internally — dropping input above unity, repeating it below —
+    /// which is what this accumulator paces. See [`Unit::hops`].
+    ///
+    /// One accumulator for all channels: they share a stretch factor, so
+    /// per-channel debts would always be equal and could only drift through a
+    /// bug that skewed the channels against each other.
+    intake_debt: f64,
 }
 
 // Hand-rolled: holds non-`Debug` vocoders and `RtScratch` buffers. Print the
@@ -555,6 +576,7 @@ impl Unit {
             scratch_out: (0..channels)
                 .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
                 .collect(),
+            intake_debt: 0.0,
         }
     }
 
@@ -634,12 +656,59 @@ impl Unit {
             .map_or(0, |v| v.geometry.window().get())
     }
 
-    /// Synthesis hop, at least 1: a zero hop would advance the output ring
-    /// nowhere and spin `process` forever.
+    /// The (analysis, synthesis) hop pair for the current stretch factor.
+    ///
+    /// The **synthesis** hop is pinned to the grid's natural `size / 4`, and the
+    /// **analysis** hop is `synthesis / stretch`. Their ratio is still exactly
+    /// `stretch`, which is what the phase accumulator needs to hold pitch fixed
+    /// while duration changes.
+    ///
+    /// Pinning synthesis is a COLA requirement, not a preference. Overlap-add
+    /// reconstruction needs the synthesis frames to overlap by at least 75% for a
+    /// Hann-squared pair to sum to a constant; the synthesis hop is what sets that
+    /// overlap, and the window is fixed. Scaling synthesis *up* with the stretch
+    /// factor — the textbook offline formulation — walks the overlap down as the
+    /// factor rises: 62% at 1.5x, 50% at 2x, and at 4x the hop equals the whole
+    /// window, so consecutive frames abut with NO overlap at all. The Hann²
+    /// envelopes then ripple instead of summing flat, and the output amplitude
+    /// modulates at the frame rate. Measured as 16 of 256 blocks dipping under a
+    /// tenth of full level at 4x, on a perfectly steady input.
+    ///
+    /// Scaling analysis down instead keeps every factor at the same 75% overlap
+    /// the grid was built for, and `Unit::geometry` asserts that grid is COLA-valid.
+    ///
+    /// Both hops are clamped to at least 1: a zero analysis hop would re-read the
+    /// same frame forever, and a zero synthesis hop would advance the output ring
+    /// nowhere and spin `process` in an infinite loop.
     #[inline]
-    fn synthesis_hop(&self) -> usize {
-        let hop = self.channels.first().map_or(1, |v| v.geometry.hop().get());
-        ((hop as f32 * self.stretch_factor().get()).round() as usize).max(1)
+    fn hops(&self) -> (usize, usize) {
+        let synthesis = self.channels.first().map_or(1, |v| v.geometry.hop().get());
+        let analysis = ((synthesis as f32 / self.stretch_factor().get()).round() as usize).max(1);
+        (analysis, synthesis.max(1))
+    }
+
+    /// Source samples this unit consumes per output sample: `1 / stretch`.
+    ///
+    /// A time-stretcher is a rate changer, and `AudioUnit::tick` is one-in /
+    /// one-out — so the *caller* has to supply the difference. A placed voice
+    /// reads by derived position, so it can simply scale that position: at
+    /// `stretch = 2.0` the source advances half a sample per output sample, and
+    /// the vocoder spreads it back over the full duration at unchanged pitch.
+    ///
+    /// This is NOT varispeed, though it looks identical in isolation. Varispeed is
+    /// slow-reading *alone*, which drops pitch by the same factor. Here the
+    /// vocoder's `synthesis / analysis` ratio undoes exactly that shift — the two
+    /// halves only work together, which is why this rate belongs to the unit that
+    /// knows the stretch factor rather than to the call site.
+    ///
+    /// `1.0` when the unit is bypassing, so a caller can apply it unconditionally.
+    #[inline]
+    pub fn input_rate(&self) -> f64 {
+        if !self.is_processing() {
+            return 1.0;
+        }
+        let (analysis, synthesis) = self.hops();
+        analysis as f64 / synthesis as f64
     }
 }
 
@@ -669,6 +738,7 @@ impl Clone for Unit {
             enabled: self.enabled,
             scratch_in: self.scratch_in.clone(),
             scratch_out: self.scratch_out.clone(),
+            intake_debt: 0.0,
         };
         cloned.enabled = self.enabled;
         cloned
@@ -690,6 +760,7 @@ impl AudioUnit for Unit {
         for v in &mut self.channels {
             v.reset();
         }
+        self.intake_debt = 0.0;
     }
 
     fn set_sample_rate(&mut self, sample_rate: SampleRate) {
@@ -720,12 +791,18 @@ impl AudioUnit for Unit {
             return;
         }
 
-        let synthesis_hop = self.synthesis_hop();
+        let (analysis_hop, synthesis_hop) = self.hops();
         let pitch_ratio = self.pitch_cents().to_pitch_ratio();
 
-        for (c, v) in self.channels.iter_mut().enumerate() {
-            v.input.push(&[src(c)]);
-            v.process(synthesis_hop, pitch_ratio);
+        // Pace the source intake at `1 / stretch` — see `intake_debt`. Above
+        // unity this drops input samples; below it, feeds the same one twice.
+        self.intake_debt += self.input_rate();
+        while self.intake_debt >= 1.0 {
+            self.intake_debt -= 1.0;
+            for (c, v) in self.channels.iter_mut().enumerate() {
+                v.input.push(&[src(c)]);
+                v.process(analysis_hop, synthesis_hop, pitch_ratio);
+            }
         }
 
         let mut one = [0.0f32];
@@ -770,12 +847,25 @@ impl AudioUnit for Unit {
             return;
         }
 
-        let synthesis_hop = self.synthesis_hop();
+        let (analysis_hop, synthesis_hop) = self.hops();
         let pitch_ratio = self.pitch_cents().to_pitch_ratio();
+        let rate = self.input_rate();
 
-        for (c, v) in self.channels.iter_mut().enumerate() {
-            v.input.push(self.scratch_in[c].active_ref(size));
-            v.process(synthesis_hop, pitch_ratio);
+        // Same intake pacing as `tick`, applied per sample of the block so the
+        // two entry points consume the source identically. Walking the block
+        // rather than pushing it whole is what keeps `process` and `tick`
+        // producing the same audio — they drifted apart once before by writing
+        // the two paths separately.
+        for i in 0..size {
+            self.intake_debt += rate;
+            while self.intake_debt >= 1.0 {
+                self.intake_debt -= 1.0;
+                for (c, v) in self.channels.iter_mut().enumerate() {
+                    let sample = self.scratch_in[c].active_ref(size)[i];
+                    v.input.push(&[sample]);
+                    v.process(analysis_hop, synthesis_hop, pitch_ratio);
+                }
+            }
         }
 
         for c in 0..channels {
@@ -1012,95 +1102,114 @@ mod tests {
         assert_eq!(o.drain(&mut out), 4, "drain is bounded by available()");
     }
 
-    /// **The rate invariant, and the bug it exposes.** [`Unit::tick`] is
-    /// one-in/one-out, so ticking it above unity stretch necessarily overruns the
-    /// output ring — this test asserts that it *does*, because the overrun is
-    /// real and currently unfixed on both source tiers.
+    /// **The rate contract.** A one-in/one-out feed keeps both rings bounded and
+    /// the output audible, at every stretch factor.
     ///
-    /// The arithmetic: at stretch `s`, one `process_frame` consumes `hop` input
-    /// samples and publishes `hop × s`, so a 1:1 caller accumulates
-    /// `hop × (s − 1)` per frame *forever*. Measured at `s = 2.0`: 79,231 pending
-    /// against a 4,096-sample ring — nineteen laps — which made `drain` serve
-    /// overwritten slots and dropped 32 of 256 output blocks to silence.
+    /// This is the invariant the design rests on, and it asserts both halves:
+    /// bounded rings alone would be satisfied by a unit that emitted silence.
     ///
-    /// No ring capacity fixes it and neither does scaling the source *position*
-    /// (that is varispeed: it shifts pitch, the one thing stretching must not
-    /// do). The filter needs *fewer input samples*, not slower-moving ones, and
-    /// `tick`'s symmetric signature cannot express that ratio — the caller would
-    /// have to pull input on demand, or the filter would have to own its source.
-    /// That is a shape change, tracked as part of the stretch/placement rework;
-    /// see [`feeding_at_the_inverse_stretch_rate_keeps_the_ring_bounded`] for the
-    /// proof that the vocoder itself is correct once fed properly.
+    /// It holds because the unit paces its own source intake at
+    /// [`input_rate`](Unit::input_rate) internally. A stretcher emits `stretch`
+    /// samples per source sample, but `AudioUnit::tick` hands over exactly one and
+    /// takes one back — so the rate change has to happen on the source side, where
+    /// the unit can drop or repeat, rather than on the output side, where it
+    /// cannot.
     ///
-    /// Asserting the bug rather than `#[ignore]`-ing a wish keeps the suite
-    /// honest: when the shape changes, this test fails and must be rewritten
-    /// deliberately.
+    /// The old formulation consumed one source sample per tick and published
+    /// `hop * stretch` per `hop` consumed, leaving a surplus of
+    /// `hop * (stretch - 1)` output samples per frame with nowhere to go: measured
+    /// 79,231 pending in a 4,096-sample ring at `stretch = 2.0` — nineteen laps —
+    /// which made `drain` serve overwritten audio and dropped ~32 of every 256
+    /// blocks to silence.
     #[test]
-    fn a_one_to_one_feed_overruns_above_unity_stretch() {
-        // `1.5` and `2.0` both exceed unity; `0.5` under-fills and must not
-        // overrun. Unity bypasses, so it never reaches the ring.
-        for (factor, want_overrun) in [(0.5f32, false), (1.5, true), (2.0, true)] {
+    fn a_one_to_one_feed_stays_bounded_and_audible_at_every_stretch() {
+        for factor in [0.25f32, 0.5, 1.5, 2.0, 4.0] {
             let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1);
             u.set_stretch_factor(StretchFactor::new(factor));
             assert!(u.is_processing(), "factor {factor} should not bypass");
 
             let mut out = [0.0f32; 1];
-            for n in 0..40_000 {
-                let s = 0.5 * (Radians::TAU.get() * 3000.0 * n as f32 / 44_100.0).sin();
-                u.tick(&[s], &mut out);
-            }
+            let mut n = 0usize;
+            let mut feed = |u: &mut Unit, count: usize, n: &mut usize| {
+                let mut peak = 0.0f32;
+                for _ in 0..count {
+                    let t = *n as f32 / 44_100.0;
+                    let sample = 0.5 * (Radians::TAU.get() * 3000.0 * t).sin();
+                    *n += 1;
+                    u.tick(&[sample], &mut out);
+                    peak = peak.max(out[0].abs());
+                }
+                peak
+            };
 
+            // Prime: the opening blocks are legitimately quiet while the FIFOs and
+            // the overlap-add tail fill. At 4x the intake is a quarter rate, so
+            // this has to be generous.
+            feed(&mut u, 60_000, &mut n);
+
+            let mut quiet = 0usize;
+            for _ in 0..256 {
+                if feed(&mut u, 64, &mut n) < 0.01 {
+                    quiet += 1;
+                }
+                assert!(
+                    !u.channels[0].output.overrun(),
+                    "stretch {factor}: output ring overran ({} pending)",
+                    u.channels[0].output.available()
+                );
+                assert!(
+                    !u.channels[0].input.0.overrun(),
+                    "stretch {factor}: input ring overran"
+                );
+            }
             assert_eq!(
-                u.channels[0].output.overrun(),
-                want_overrun,
-                "at stretch {factor}, a 1:1 feed {} overrun the output ring",
-                if want_overrun { "should" } else { "should not" }
+                quiet, 0,
+                "stretch {factor}: {quiet}/256 blocks fell silent under a steady feed"
             );
         }
     }
 
-    /// The converse, and the property the fix relies on: fed at `1 / s` the
-    /// output ring stays bounded.
+    /// The intake loop is **bounded**, which is an RT-safety property rather than
+    /// a performance one: it runs inside the audio callback, and an unbounded
+    /// `while` there is a dropout waiting for the right parameter value.
     ///
-    /// Driven at the [`Vocoder`] because [`Unit::tick`] is one-in/one-out by
-    /// contract — supplying input at a different rate than output is precisely
-    /// the caller's job, so there is no way to express it through `Unit`. That
-    /// asymmetry is the reason the bug existed.
+    /// `input_rate` is `1 / stretch` and [`StretchFactor::MIN`] is 0.25, so the
+    /// rate can never exceed 4.0 and the loop can never run more than four times
+    /// per tick. The bound comes from `set_stretch_factor` clamping on store — a
+    /// raw `StretchFactor::new(0.001)` would otherwise ask for a thousand
+    /// iterations.
     #[test]
-    fn feeding_at_the_inverse_stretch_rate_keeps_the_ring_bounded() {
-        let fft = FftSize::N1024;
-        let hop = fft.hop().get();
+    fn the_intake_loop_is_bounded_by_the_stretch_clamp() {
+        let u = Unit::with_channels(44_100.0, 1);
 
-        for factor in [1.5f32, 2.0, 4.0] {
-            let mut v = Vocoder::new(Unit::geometry(44_100.0, fft));
-            let synthesis_hop = (hop as f32 * factor).round() as usize;
+        // Well past the clamp, in the direction that increases intake.
+        u.set_stretch_factor(StretchFactor::new(0.001));
+        assert_eq!(u.stretch_factor(), StretchFactor::MIN);
+        assert!(
+            u.input_rate() <= 4.0 + 1e-6,
+            "intake rate {} would run the per-tick loop more than 4 times",
+            u.input_rate()
+        );
 
-            // Per `synthesis_hop` samples the caller wants out, supply exactly
-            // `hop` in — the `1 / stretch` ratio a correct caller must hold.
-            let mut scratch = vec![0.0f32; synthesis_hop];
-            let mut n = 0usize;
-            for _ in 0..200 {
-                let chunk: Vec<f32> = (0..hop)
-                    .map(|i| {
-                        let t = (n + i) as f32 / 44_100.0;
-                        0.5 * (Radians::TAU.get() * 3000.0 * t).sin()
-                    })
-                    .collect();
-                n += hop;
-                v.input.push(&chunk);
-                v.process(synthesis_hop, 1.0);
-                v.output.drain(&mut scratch);
+        // And the other end cannot drive it to zero, which would starve the FIFO.
+        u.set_stretch_factor(StretchFactor::new(100.0));
+        assert_eq!(u.stretch_factor(), StretchFactor::MAX);
+        assert!(u.input_rate() > 0.0);
+    }
 
-                assert!(
-                    !v.output.overrun(),
-                    "stretch {factor}: output ring overran at input sample {n}"
-                );
-                assert!(
-                    !v.input.0.overrun(),
-                    "stretch {factor}: input ring overran at input sample {n}"
-                );
-            }
-        }
+    /// `input_rate` is `1.0` while bypassing, so a caller can apply it
+    /// unconditionally without branching on `is_processing`.
+    #[test]
+    fn input_rate_is_unity_when_bypassing() {
+        let u = Unit::with_channels(44_100.0, 1);
+        assert!(!u.is_processing());
+        assert_eq!(u.input_rate(), 1.0);
+
+        // Disabled counts as bypassing too.
+        let mut u = Unit::with_channels(44_100.0, 1);
+        u.set_stretch_factor(StretchFactor::new(2.0));
+        u.set_enabled(false);
+        assert_eq!(u.input_rate(), 1.0);
     }
 
     #[test]
@@ -1334,7 +1443,7 @@ mod tests {
             v.input.push(chunk);
             // Synthesis hop == analysis hop: no time scaling, so output and
             // input advance together.
-            v.process(hop, 1.0);
+            v.process(hop, hop, 1.0);
             written += v.output.drain(&mut out[written..]);
         }
 
@@ -1403,31 +1512,55 @@ mod tests {
         );
     }
 
-    /// Stretching must actually change the output rate: a 2x stretch produces
-    /// roughly half as many output samples per input sample.
+    /// Stretching changes how fast the unit walks its SOURCE, not how many output
+    /// samples it emits.
+    ///
+    /// The distinction is the whole shape of this unit. It emits exactly one
+    /// sample per `tick`, because that is `AudioUnit`'s contract; the time-scaling
+    /// shows up as the source being consumed at `1 / stretch`. So over a fixed
+    /// number of ticks a 2x stretch consumes half the source a 1x pass does, and a
+    /// 0.5x stretch consumes twice as much.
+    ///
+    /// This replaces a test that asserted "2x queues up MORE output than 0.5x".
+    /// That was true, but only because the surplus was piling into the output ring
+    /// with nowhere to go — it measured the overrun bug rather than the feature.
+    /// With the intake paced, both factors emit one sample per tick and the ring
+    /// stays bounded, so that assertion is now false and the property it meant to
+    /// check lives on the input side.
     #[test]
-    fn stretch_factor_changes_the_output_rate() {
-        let sample_rate = 44_100.0;
-        let input = sine(440.0, sample_rate, 16_384);
+    fn stretch_factor_changes_the_source_consumption_rate() {
+        const TICKS: usize = 16_384;
 
-        let produced = |factor: f32| {
-            let mut u = Unit::with_fft_size_and_channels(sample_rate, FftSize::N1024, 1);
+        let consumed = |factor: f32| {
+            let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1);
             u.set_stretch_factor(StretchFactor::new(factor));
-            let mut count = 0usize;
+            let input = sine(440.0, 44_100.0, TICKS);
             let mut frame = [0.0f32; 1];
+            let mut emitted = 0usize;
             for &s in &input {
                 u.tick(&[s], &mut frame);
-                count += 1;
+                emitted += 1;
             }
-            // What remains queued plus what was popped tells the whole story;
-            // `tick` pops one frame per call, so measure the ring instead.
-            count + u.channels[0].output.available()
+            // Everything the FIFO has seen: what it still holds plus what the
+            // frames have retired.
+            let v = &u.channels[0];
+            let seen = v.input.0.write;
+            (seen, emitted)
         };
 
-        // Half speed queues up more output than double speed does.
+        let (fast_seen, fast_emitted) = consumed(2.0);
+        let (slow_seen, slow_emitted) = consumed(0.5);
+
+        // Output is one-per-tick regardless — that is the contract.
+        assert_eq!(fast_emitted, TICKS);
+        assert_eq!(slow_emitted, TICKS);
+
+        // 2x walks the source at half rate, 0.5x at double.
+        let ratio = slow_seen as f64 / fast_seen as f64;
         assert!(
-            produced(2.0) > produced(0.5),
-            "2x stretch should produce more output than 0.5x"
+            (ratio - 4.0).abs() < 0.05,
+            "0.5x should consume 4x the source 2.0x does; \
+             saw {slow_seen} vs {fast_seen} (ratio {ratio:.3})"
         );
     }
 }

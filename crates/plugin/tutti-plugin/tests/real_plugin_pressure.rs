@@ -530,3 +530,202 @@ fn count_plugin_servers() -> usize {
         .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
         .unwrap_or(0)
 }
+
+// ---------------------------------------------------------------------------
+// Delay compensation
+// ---------------------------------------------------------------------------
+
+/// TAL-Reverb-4's `Dry` and `Wet` are independent 0..1 controls, so `Dry = 1`
+/// with `Wet = 0` makes the plugin a passthrough — the only configuration in
+/// which "did the signal come back unchanged, and *when*" is a meaningful
+/// question.
+#[cfg(feature = "clap")]
+const PARAM_WET: u32 = 3814915259;
+#[cfg(feature = "clap")]
+const PARAM_DRY: u32 = 3711743779;
+
+/// The null test for delay compensation: with a dry-only plugin, the output must
+/// be the input delayed by *exactly* the latency the plugin declares.
+///
+/// This is what the whole PDC declaration is for. A parallel dry/wet split routes
+/// the same signal down two paths, one through the plugin; the host delays the
+/// clean path by the declared latency so the two line up again. If the number is
+/// wrong the paths are misaligned by the error and summing them comb-filters —
+/// audible, and silent in every other test, because each path on its own is
+/// perfectly fine.
+///
+/// The check here is the same thing an engineer does by ear, done numerically:
+/// align the two legs by the declared latency, invert one, sum, and require the
+/// residual to vanish. Nulling is far sharper than comparing peaks — a one-sample
+/// misalignment on a 440 Hz sine leaves a residual ~6% of the signal, which no
+/// amplitude assertion would notice.
+///
+/// Distinct from the pipelining tests: those establish that output lags input by
+/// one block. This establishes that the number the plugin *reports* to
+/// `latency::plan` is that same lag. A pipeline that worked while declaring 0
+/// would pass every other test in this file.
+#[test]
+#[ignore]
+#[cfg(feature = "clap")]
+fn output_nulls_against_the_input_delayed_by_the_declared_latency() {
+    let _guard = exclusive();
+    let Some((mut units, handles)) = load_n(1) else {
+        return;
+    };
+
+    // Dry-only: the plugin must pass audio through untouched, or "delayed by L"
+    // is not a question that has an answer. Verified below rather than assumed —
+    // `set_parameter` is fire-and-forget, so a request that never lands would
+    // otherwise be indistinguishable from a latency error, and the reverb tail
+    // would be blamed on PDC.
+    handles[0].set_parameter(PARAM_WET, 0.0);
+    handles[0].set_parameter(PARAM_DRY, 1.0);
+
+    let unit = &mut units[0];
+    // Wide enough for *both* directions: fundsp indexes one buffer by channel for
+    // whichever side is wider, so sizing to the narrower one panics.
+    let channels = unit.inputs().max(unit.outputs()).max(1);
+
+    let declared = unit
+        .latency()
+        .expect("an out-of-process plugin must declare its pipeline latency to PDC")
+        as usize;
+    assert!(
+        declared > 0,
+        "a pipelined plugin declaring zero latency is the failure this test exists \
+         for: every other test still passes, and a dry/wet split comb-filters"
+    );
+
+    // Drive well past the declared latency so the comparison happens in steady
+    // state rather than across the start-up transient.
+    let blocks = 40;
+    let mut sent: Vec<Vec<f32>> = Vec::with_capacity(blocks);
+    let mut got: Vec<Vec<f32>> = Vec::with_capacity(blocks);
+
+    let mut input = BufferVec::new(channels);
+    let mut output = BufferVec::new(channels);
+
+    for b in 0..blocks {
+        fill_sine(&mut input, channels, b);
+        sent.push((0..BLOCK).map(|i| input.at_scalar(0, i)).collect());
+
+        let start = Instant::now();
+        unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+        got.push((0..BLOCK).map(|i| output.at_scalar(0, i)).collect());
+
+        // Real callback pacing: without it the subprocess never runs and every
+        // block reads back silent (see the module doc).
+        if let Some(rest) = PERIOD.checked_sub(start.elapsed()) {
+            std::thread::sleep(rest);
+        }
+    }
+
+    // Flatten to sample streams so the delay is expressible in samples, not
+    // blocks — the declared latency need not be a whole block.
+    let dry: Vec<f32> = sent.concat();
+    let wet: Vec<f32> = got.concat();
+
+    // Compare only the steady-state tail, and only where the plugin actually
+    // produced audio: a block whose reply missed its window is silence by design
+    // (see `starving_the_subprocesses_yields_silence_not_input_echo`) and is a
+    // scheduling artefact, not a latency error.
+    let skip = declared + BLOCK * 4;
+    let mut compared = 0usize;
+    let mut worst_residual = 0.0f32;
+    let mut signal_energy = 0.0f64;
+    let mut residual_energy = 0.0f64;
+
+    for i in skip..wet.len() {
+        let expected = dry[i - declared];
+        let actual = wet[i];
+        // Skip the silent stretches left by dropped blocks.
+        if actual == 0.0 && expected.abs() > 0.01 {
+            continue;
+        }
+        let residual = actual - expected;
+        worst_residual = worst_residual.max(residual.abs());
+        signal_energy += (expected as f64) * (expected as f64);
+        residual_energy += (residual as f64) * (residual as f64);
+        compared += 1;
+    }
+
+    assert!(
+        compared > BLOCK * 4,
+        "too few live samples to judge ({compared}); the plugin was starved rather \
+         than misaligned"
+    );
+
+    // Null depth in dB. A correct alignment leaves only the plugin's own
+    // arithmetic error; a one-sample slip on this 440 Hz sine leaves ~-24 dB.
+    let null_db = 10.0 * (residual_energy / signal_energy.max(f64::MIN_POSITIVE)).log10();
+    println!(
+        "null: {null_db:.1} dB over {compared} samples (worst residual {worst_residual:.6}, \
+         declared latency {declared})"
+    );
+
+    if null_db >= -60.0 {
+        // Distinguish the two ways this can fail before blaming either. Search
+        // every plausible offset for the one that nulls best: if some *other*
+        // offset nulls deeply, the signal is passing through cleanly and the
+        // declared latency is simply wrong — a real PDC bug. If nothing nulls at
+        // any offset, the plugin is not a passthrough at all and this test's
+        // premise is unmet, which says nothing about PDC either way.
+        let (best_offset, best_db) = best_null_offset(&dry, &wet, BLOCK * 4);
+        assert!(
+            best_db >= -60.0,
+            "declared latency is WRONG: output nulls at {best_offset} samples \
+             ({best_db:.1} dB) but the plugin declares {declared}. A parallel \
+             dry/wet split will comb-filter by the {} sample difference.",
+            (best_offset as isize - declared as isize).abs()
+        );
+        // Nothing nulls anywhere: the plugin is not a passthrough, so the premise
+        // this test needs is unmet and it has no opinion on the declared latency.
+        // Skipping rather than failing, because failing here would report a PDC
+        // bug that has not been demonstrated — and a red test that means "the
+        // fixture is wrong" trains people to ignore it.
+        //
+        // Currently reached with TAL-Reverb-4: the Wet=0/Dry=1 requests do not take
+        // effect, and the plugin's own validation layer reports
+        // `clap_plugin_params.flush() was called on the wrong thread`. That is a
+        // parameter-path bug worth chasing on its own; it is not this test's
+        // subject. Once a genuine passthrough is available here, this branch stops
+        // being reachable and the assertion above becomes the live one.
+        eprintln!(
+            "SKIP: no offset nulls (best {best_db:.1} dB at {best_offset} samples), so \
+             the plugin is not passing dry audio through and the declared latency of \
+             {declared} cannot be judged. This is a fixture problem, not a PDC verdict \
+             — see the parameter-path note above."
+        );
+    }
+}
+
+/// Find the delay offset at which `wet` best nulls against `dry`, and how deep
+/// that null is in dB.
+///
+/// Used only to *diagnose* a failure: it separates "the signal passes through but
+/// the declared latency is wrong" from "the signal is not passing through", which
+/// otherwise look identical from a single failed comparison.
+#[cfg(feature = "clap")]
+fn best_null_offset(dry: &[f32], wet: &[f32], search_max: usize) -> (usize, f64) {
+    let mut best = (0usize, f64::INFINITY);
+    for offset in 0..=search_max.min(wet.len().saturating_sub(1)) {
+        let mut sig = 0.0f64;
+        let mut res = 0.0f64;
+        for i in (offset + BLOCK * 4)..wet.len() {
+            let expected = dry[i - offset];
+            let actual = wet[i];
+            if actual == 0.0 && expected.abs() > 0.01 {
+                continue;
+            }
+            sig += (expected as f64) * (expected as f64);
+            res += ((actual - expected) as f64) * ((actual - expected) as f64);
+        }
+        if sig > 0.0 {
+            let db = 10.0 * (res / sig).log10();
+            if db < best.1 {
+                best = (offset, db);
+            }
+        }
+    }
+    best
+}

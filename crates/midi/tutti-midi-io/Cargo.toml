@@ -23,12 +23,8 @@ tracing = "0.1"
 tutti-midi-types = { path = "../tutti-midi-types" }
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }
 # MIDI fan-out runtime (MidiBus, MpeProcessor, PerNoteExpression, MidiEventSlot).
-# The `ecs` module's MidiBusRes wraps tutti-midi-runtime's MidiBus. Acyclic:
-# tutti-midi-runtime does NOT depend on tutti-midi-io.
+# Acyclic: tutti-midi-runtime does NOT depend on tutti-midi-io.
 tutti-midi-runtime = { path = "../tutti-midi-runtime", default-features = false }
-
-# Bevy ECS integration: Components / Events / Systems / Plugins live next to the
-# I/O logic. Optional, gated by the `bevy` feature.
 
 # Lock-free
 crossbeam-channel = "0.5"
@@ -52,6 +48,9 @@ core-foundation = { workspace = true, optional = true }
 
 [dev-dependencies]
 tracing-subscriber = "0.3"
+# The RT gate in tests/rt_no_alloc_hardware_poll.rs drives the real
+# `HardwareMidiInputs` through `MidiPreBlock` under a disabled allocator.
+assert_no_alloc = { version = "1", default-features = false }
 
 # These examples drive the OS `MidiIo` orchestrator, so they need the hardware axis.
 [[example]]

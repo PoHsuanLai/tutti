@@ -46,6 +46,29 @@
 //!   source and dispatches its shaped offset by id.
 //!   It owns the sources and threads their state across frames.
 //!
+//! ## Cascading — a source that modulates another source
+//! A [`SourceRate`]'s frequency is a [`Rate`]: either a constant, or a
+//! [`Param<Hz>`](tutti_types::Param) read fresh each frame. Point an
+//! [`AtomicTarget`] at that same cell and one LFO drives another's rate, using
+//! the ordinary target/edge machinery — no special case in the driver:
+//! ```
+//! # #[cfg(feature = "routing")] {
+//! use tutti_mod::{AtomicTarget, Lfo, LfoShape, SourceRate, Sourced};
+//! use tutti_types::{Hz, Param};
+//!
+//! let rate: Param<Hz> = Param::new(Hz(2.0));
+//! // The target writes the cell the source reads — one cell, two views.
+//! let target = AtomicTarget::with_mirror(2.0, 2.0, 10.0, rate.as_atomic());
+//! let wobbling = Sourced::new(Lfo::new(LfoShape::Sine),
+//!     SourceRate::free_running(rate.clone(), 0.0));
+//! # let _ = (target, wobbling);
+//! # }
+//! ```
+//! Build one cell and clone the handle: a separately-minted `Param<Hz>`
+//! compiles and modulates nothing. A cascade lags by at most one frame, which
+//! is what lets a cycle (A drives B's rate, B drives A's) settle instead of
+//! recursing.
+//!
 //! ## Module map
 //! - `modulator`, `lfo`, `shape` — the pure source + math.
 //! - `id` — [`ModTargetId`] (target address) + [`LayerKey`] (contributor key).
@@ -89,7 +112,7 @@ pub use target::ModTarget;
 #[cfg(feature = "routing")]
 pub use curve::Curve;
 #[cfg(feature = "routing")]
-pub use driver::{ErasedModulator, ModPreFrame, SourceRate, Sourced};
+pub use driver::{ErasedModulator, ModPreFrame, Rate, SourceRate, Sourced};
 #[cfg(feature = "routing")]
 pub use layered::LayeredCurve;
 #[cfg(feature = "routing")]

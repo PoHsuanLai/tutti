@@ -23,7 +23,7 @@
 use std::sync::Arc;
 
 use tutti_types::RtPublish;
-use tutti_types::{Beat, Hz, Seconds};
+use tutti_types::{Beat, Hz, Param, Seconds};
 
 use crate::id::{LayerKey, ModTargetId};
 use crate::router::ModRouter;
@@ -31,17 +31,75 @@ use crate::routing::ModRoutingSnapshot;
 use crate::shape::shape;
 use crate::Modulator;
 
+/// Where a source's frequency comes from: a constant, or a live cell another
+/// modulator writes.
+///
+/// The [`Modulated`](Rate::Modulated) arm is what makes modulation *cascade* —
+/// an LFO whose rate is itself modulated. It holds the same [`Param<Hz>`] an
+/// [`AtomicTarget`](crate::AtomicTarget) mirrors into (via
+/// [`Param::as_atomic`]), so the driver writes it as a target on one source and
+/// reads it as a rate on another, with no extra wiring.
+///
+/// The two must be *the same* cell. A `Param<Hz>` minted separately from the one
+/// handed to the target compiles, runs, and modulates nothing — so build one and
+/// clone the handle, never construct twice.
+///
+/// A cascaded rate lags its driver by at most one frame: the driver samples
+/// every source in a single pass, so a source read this frame may see the value
+/// its modulator wrote last frame. That is what makes a cycle (A's rate driven
+/// by B, B's by A) terminate rather than recurse — a one-frame-delayed feedback
+/// loop, which is a legitimate modulation technique, not an error to reject.
+#[derive(Debug, Clone)]
+pub enum Rate {
+    /// A constant frequency, fixed when the source is built.
+    Fixed(Hz),
+    /// A frequency read fresh each frame from a shared cell.
+    Modulated(Param<Hz>),
+}
+
+impl Rate {
+    /// This frame's frequency. One `Acquire` load in the modulated arm — read
+    /// once per frame by `tick_phase`, never per sample.
+    #[inline]
+    pub fn hz(&self) -> Hz {
+        match self {
+            Rate::Fixed(hz) => *hz,
+            Rate::Modulated(param) => param.load(),
+        }
+    }
+}
+
+impl From<Hz> for Rate {
+    fn from(hz: Hz) -> Self {
+        Rate::Fixed(hz)
+    }
+}
+
+impl From<Param<Hz>> for Rate {
+    fn from(param: Param<Hz>) -> Self {
+        Rate::Modulated(param)
+    }
+}
+
 /// A source's own rate — how its phase is generated from the transport, so each
 /// LFO runs at its own frequency (unlike one shared phase for all sources).
 ///
 /// The values are the transport's own vocabulary (`Beat`/`Seconds` reach the
 /// driver via [`ModPreFrame::run`]); the driver does not depend on the transport
 /// itself, only on the two scalars a caller reads off it.
-#[derive(Debug, Clone, Copy)]
+///
+/// Not `Copy`: [`Rate::Modulated`] holds a shared cell, and a `Copy` rate would
+/// invite building one per frame instead of cloning the handle to the one the
+/// target already writes.
+#[derive(Debug, Clone)]
 pub struct SourceRate {
     /// `beat_synced`: cycles per beat. Free-running: cycles per second (`Hz`).
-    pub frequency: Hz,
+    pub frequency: Rate,
     /// Constant phase shift in `[0, 1)` applied after phase generation.
+    ///
+    /// Deliberately not a [`Rate`]: modulating the offset of a source whose
+    /// phase already advances is a second, independent capability, and rate
+    /// covers the motivating case. Add it when something needs it.
     pub phase_offset: f32,
     /// `true`: phase = `(beat / frequency + offset) % 1` (locks to transport);
     /// `false`: integrate `frequency * dt` into a free-running accumulator.
@@ -50,7 +108,10 @@ pub struct SourceRate {
 
 impl SourceRate {
     /// A source locked to the transport at `frequency` cycles per beat.
-    pub fn beat_synced(frequency: impl Into<Hz>, phase_offset: f32) -> Self {
+    ///
+    /// Takes anything that becomes a [`Rate`] — an [`Hz`] for a constant, a
+    /// [`Param<Hz>`] for a modulated one.
+    pub fn beat_synced(frequency: impl Into<Rate>, phase_offset: f32) -> Self {
         Self {
             frequency: frequency.into(),
             phase_offset,
@@ -59,7 +120,10 @@ impl SourceRate {
     }
 
     /// A free-running source at `frequency` Hz (cycles per second).
-    pub fn free_running(frequency: impl Into<Hz>, phase_offset: f32) -> Self {
+    ///
+    /// Takes anything that becomes a [`Rate`] — see
+    /// [`beat_synced`](Self::beat_synced).
+    pub fn free_running(frequency: impl Into<Rate>, phase_offset: f32) -> Self {
         Self {
             frequency: frequency.into(),
             phase_offset,
@@ -107,7 +171,10 @@ impl<M: Modulator> Sourced<M> {
     /// This frame's phase in `[0, 1)`, advancing the free-running accumulator.
     #[inline]
     fn tick_phase(&mut self, beat: Beat, dt: Seconds) -> f32 {
-        let freq = self.rate.frequency.get();
+        // Read once per frame. A modulated rate is an `Acquire` load behind
+        // this call; per-sample reads are what the once-per-frame driver exists
+        // to avoid.
+        let freq = self.rate.frequency.hz().get();
         let base = if self.rate.beat_synced {
             if freq.abs() < f32::EPSILON {
                 0.0
@@ -496,6 +563,118 @@ mod tests {
         assert!(
             saw_divergence,
             "two sources at different Hz must reach different phases"
+        );
+    }
+
+    /// A `Rate::Modulated` cell is read every frame, not captured at build
+    /// time. Without this the whole cascade is inert: `Sourced` would hold the
+    /// frequency the cell happened to contain when the source was constructed.
+    ///
+    /// Driven by hand rather than through a second LFO, so a failure means the
+    /// *read* is broken and not the routing that would feed it.
+    #[test]
+    fn a_modulated_rate_is_reread_every_frame() {
+        let rate: Param<Hz> = Param::new(Hz(1.0));
+        let mut fast = Sourced::new(
+            Lfo::new(LfoShape::Sine),
+            SourceRate::free_running(rate.clone(), 0.0),
+        );
+
+        // At 1 Hz with a 0.25 s step, phase advances a quarter cycle per frame.
+        let slow_step = fast.tick_phase(Beat(0.0), Seconds(0.25));
+        assert!(
+            (slow_step - 0.25).abs() < 1e-5,
+            "1 Hz over 0.25 s is a quarter cycle, got {slow_step}"
+        );
+
+        // Quadruple the rate through the shared cell; the same dt must now
+        // advance a full cycle, landing back where it started.
+        rate.store(Hz(4.0));
+        let fast_step = fast.tick_phase(Beat(0.0), Seconds(0.25));
+        assert!(
+            (fast_step - 0.25).abs() < 1e-5,
+            "4 Hz over 0.25 s is a full cycle back to 0.25, got {fast_step}"
+        );
+
+        // And a fixed rate must be unaffected by any of this.
+        let mut fixed = Sourced::new(
+            Lfo::new(LfoShape::Sine),
+            SourceRate::free_running(Hz(1.0), 0.0),
+        );
+        let a = fixed.tick_phase(Beat(0.0), Seconds(0.25));
+        rate.store(Hz(64.0));
+        let b = fixed.tick_phase(Beat(0.0), Seconds(0.25));
+        assert!(
+            (a - 0.25).abs() < 1e-5 && (b - 0.5).abs() < 1e-5,
+            "a fixed rate ignores the cell entirely, got {a} then {b}"
+        );
+    }
+
+    /// Modulation cascades: one LFO drives the *rate* of another, through the
+    /// ordinary target/edge machinery and no special case.
+    ///
+    /// The cascade is wired by sharing one cell — the `AtomicTarget` mirrors
+    /// into the same `Param<Hz>` the second source reads as its rate. That
+    /// sharing is the load-bearing part and the thing that fails silently if
+    /// got wrong, so the test asserts the *carrier* moves and then that the
+    /// downstream source's phase advance actually responds to it.
+    #[test]
+    fn one_source_can_modulate_anothers_rate() {
+        // The shared cell: a rate, and a modulation target writing into it.
+        let rate: Param<Hz> = Param::new(Hz(2.0));
+        let rate_target = Arc::new(AtomicTarget::with_mirror(
+            2.0,
+            2.0,
+            10.0,
+            rate.as_atomic(), // <- the same cell the source below reads
+        ));
+
+        let id_rate = ModTargetId::next();
+        let bus = Arc::new(ModBus::new());
+        bus.insert(id_rate, rate_target.clone());
+
+        // Source 0 is a plain LFO; its only job is to drive source 1's rate.
+        let mut table = ModRoutingTable::new();
+        table.set_edges([ModEdge::linear(0, id_rate, LayerKey(1), 1.0, 2.0, 10.0)], 2);
+        table.commit();
+
+        let mut driver = ModPreFrame::new(table.snapshot_arc());
+        driver.set_router(bus.clone());
+        driver.set_sources(vec![
+            source(LfoShape::Sine),
+            // Source 1's rate IS the cell source 0 writes.
+            Box::new(Sourced::new(
+                Lfo::new(LfoShape::Sine),
+                SourceRate::free_running(rate.clone(), 0.0),
+            )),
+        ]);
+
+        // Drive to the sine's positive peak: the carrier must leave its base.
+        driver.run(Beat(0.25), Seconds(0.0));
+        let driven = rate.load();
+        assert!(
+            driven.get() > 2.0,
+            "the modulated rate should have been driven above its base, got {driven:?}"
+        );
+
+        // And the downstream source must actually run at the driven rate. Two
+        // otherwise identical free-running sources, one at the base rate and
+        // one reading the cell, must diverge — which can only happen if the
+        // cascade reached the phase advance.
+        let mut cascaded = Sourced::new(
+            Lfo::new(LfoShape::Sine),
+            SourceRate::free_running(rate.clone(), 0.0),
+        );
+        let mut baseline = Sourced::new(
+            Lfo::new(LfoShape::Sine),
+            SourceRate::free_running(Hz(2.0), 0.0),
+        );
+        let cascaded_phase = cascaded.tick_phase(Beat(0.0), Seconds(0.1));
+        let baseline_phase = baseline.tick_phase(Beat(0.0), Seconds(0.1));
+        assert!(
+            (cascaded_phase - baseline_phase).abs() > 1e-4,
+            "a driven rate must advance phase differently than the base rate: \
+             {cascaded_phase} vs {baseline_phase}"
         );
     }
 

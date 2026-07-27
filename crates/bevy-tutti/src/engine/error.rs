@@ -6,52 +6,21 @@ use thiserror::Error;
 
 /// Aggregate error type covering every subsystem re-exported by bevy-tutti.
 ///
-/// Each variant either wraps a subsystem error via `#[from]` (so `?` works
-/// across crate boundaries) or captures an audio I/O failure surfaced by
-/// [`cpal`].
+/// Each variant wraps a subsystem error via `#[from]`, so `?` propagates across
+/// crate boundaries. Device failures arrive as one [`Device`](Self::Device)
+/// variant rather than a per-CPAL-call spread — [`tutti_cpal::Error`] owns that
+/// distinction.
 #[derive(Error, Debug)]
 pub enum Error {
     /// Wraps an error from [`tutti_core::Error`].
     #[error(transparent)]
     Core(#[from] tutti_core::Error),
 
-    /// No default output stream config was available from the host.
+    /// Audio device failure — enumeration, stream construction, or playback.
     ///
-    /// Wraps [`cpal::DefaultStreamConfigError`].
-    #[error("Audio device not available")]
-    DeviceNotAvailable(#[from] cpal::DefaultStreamConfigError),
-
-    /// The CPAL stream could not be built with the requested config.
-    ///
-    /// Wraps [`cpal::BuildStreamError`].
-    #[error("Failed to build audio stream")]
-    BuildStream(#[from] cpal::BuildStreamError),
-
-    /// The CPAL stream could not be started.
-    ///
-    /// Wraps [`cpal::PlayStreamError`].
-    #[error("Failed to play audio stream")]
-    PlayStream(#[from] cpal::PlayStreamError),
-
-    /// Enumerating audio devices via CPAL failed.
-    ///
-    /// Wraps [`cpal::DevicesError`].
-    #[error("Failed to enumerate devices")]
-    DevicesError(#[from] cpal::DevicesError),
-
-    /// Querying a device's name via CPAL failed.
-    ///
-    /// Wraps [`cpal::DeviceNameError`].
-    #[error("Failed to get device name")]
-    DeviceNameError(#[from] cpal::DeviceNameError),
-
-    /// The requested stream configuration was rejected as invalid.
-    #[error("Invalid config: {0}")]
-    InvalidConfig(String),
-
-    /// The selected audio device could not be used (missing, unsupported, etc.).
-    #[error("Invalid device: {0}")]
-    InvalidDevice(String),
+    /// Wraps [`tutti_cpal::Error`], which owns every CPAL concern.
+    #[error(transparent)]
+    Device(#[from] tutti_cpal::Error),
 
     /// MIDI subsystem failure.
     ///

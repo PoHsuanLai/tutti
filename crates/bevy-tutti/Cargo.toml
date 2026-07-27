@@ -48,14 +48,14 @@ tutti-plugin-server = { path = "../tutti/crates/plugin/tutti-plugin-server", opt
 bevy_window = { version = "0.19", optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 
-# CPAL audio I/O — bevy-tutti owns the audio callback (engine/audio_io.rs).
-cpal = "0.15"
+# The device layer: CPAL stream, RT callback, mic capture, driver lifecycle.
+# Bevy-free — this crate supplies only the lifecycle around it.
+tutti-cpal = { path = "../tutti/crates/core/tutti-cpal", default-features = false }
 
 # Engine graph + RT primitives (used by src/engine/).
 arc-swap = "1.7"
 atomic_float = "1.1"
 parking_lot = "0.12"
-ringbuf = "0.4"
 
 # Error handling
 thiserror.workspace = true
@@ -107,7 +107,7 @@ ogg = ["tutti-core/ogg", "tutti-sampler?/ogg"]
 # playback, sequencer, MPE, the clock-master *generation*, built-in synth MIDI —
 # no OS I/O, no `midir`. `midi-hardware` adds the OS layer (device connect/poll,
 # MidiIo send, CoreMIDI virtual ports) on top. `plugin` also enables `midi`.
-midi = ["dep:tutti-midi-io", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-synth?/midi"]
+midi = ["dep:tutti-midi-io", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-synth?/midi", "tutti-cpal/midi"]
 midi-hardware = ["midi", "tutti-midi-io/midi-hardware"]
 
 # Synth & sampling. bevy-tutti registers these with the AssetServer, so it
@@ -118,7 +118,7 @@ synth = ["dep:tutti-synth"]
 # keep `engine/build.rs` in step with the tutti-core that actually compiles.
 soundfont = ["synth", "midi", "tutti-synth/soundfont"]
 # The `?` keeps sampler usable without export.
-sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy", "tutti-export?/sampler"]
+sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy", "tutti-export?/sampler", "tutti-cpal/capture"]
 
 # Plugin hosting: editor windows, catalog scan, crash detection.
 # `tutti-plugin-server` pulls `tutti-core` with `midi` under feature

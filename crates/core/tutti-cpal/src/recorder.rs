@@ -10,7 +10,7 @@
 //!
 //! The pump runs on its own background thread, NOT `cpal`'s real-time input
 //! callback (that thread only ever `try_push`es into [`MicIn`]'s ring; see
-//! [`mic`](super::mic)). The pump thread owns both the `MicIn` and the
+//! [`mic`](crate::MicIn)). The pump thread owns both the `MicIn` and the
 //! [`WavOut`] outright, so [`finalize`](tutti_core::io::AudioOut::finalize) —
 //! which consumes the sink by value and can happen only once — has a clear home:
 //! the thread breaks its loop on the stop flag, finalizes, and returns the
@@ -30,8 +30,8 @@ use std::time::Duration;
 use tutti_sampler::capture::CaptureFormat;
 use tutti_sampler::{pump, AudioOut, WavOut};
 
-use super::mic::MicIn;
-use crate::engine::error::{Error, Result};
+use crate::mic::MicIn;
+use crate::error::{Error, Result};
 
 /// Frames moved per pump pass. One bufferful, allocated once before the loop so
 /// the pump body stays allocation-free. ~21ms at 48kHz — small enough to bound

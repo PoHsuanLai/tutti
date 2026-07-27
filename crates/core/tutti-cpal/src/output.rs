@@ -13,18 +13,21 @@ use tutti_core::{ChannelLayout, ScopedNoDenormals};
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::MidiPreBlock;
 
-use crate::engine::error::{Error, Result};
+use crate::error::{Error, Result};
 
-/// Maximum frames per CPAL callback buffer. Pre-allocates the internal f32
-/// buffer to this size to avoid allocation in the audio thread.
-const MAX_FRAMES: usize = 8192;
+/// Maximum frames per CPAL callback buffer.
+///
+/// The stream's mix buffer is sized to this once and never resized, so it is
+/// also the largest block [`process_audio`] can be handed: a longer callback is
+/// clamped and its tail silenced rather than reallocating on the audio thread.
+pub const MAX_FRAMES: usize = 8192;
 
 /// State shared between the engine and the RT audio callback.
 ///
 /// Holds the [`Engine`] and, under `midi`, the pre-block MIDI producer that runs
 /// before each render. Both are RT-safe; the callback owns the ordering
 /// (`pre_block.run` then `engine.process`).
-pub(crate) struct AudioCallbackState {
+pub struct AudioCallbackState {
     pub(crate) engine: Engine,
     /// The once-per-block MIDI producer, run before the graph render to deliver
     /// events into node inboxes. `None` when no MIDI subsystem is wired.
@@ -35,7 +38,7 @@ pub(crate) struct AudioCallbackState {
 }
 
 impl AudioCallbackState {
-    pub(crate) fn new(engine: Engine, meter: MasterMeter, tap: AudioTap) -> Self {
+    pub fn new(engine: Engine, meter: MasterMeter, tap: AudioTap) -> Self {
         Self {
             engine,
             #[cfg(feature = "midi")]
@@ -47,12 +50,12 @@ impl AudioCallbackState {
 
     /// Install the pre-block MIDI producer (called once at engine build).
     #[cfg(feature = "midi")]
-    pub(crate) fn with_pre_block(mut self, pre_block: MidiPreBlock) -> Self {
+    pub fn with_pre_block(mut self, pre_block: MidiPreBlock) -> Self {
         self.pre_block = Some(pre_block);
         self
     }
 
-    pub(crate) fn reset_owners(&self) {
+    pub fn reset_owners(&self) {
         self.engine.reset_owners();
         #[cfg(feature = "midi")]
         if let Some(pre_block) = &self.pre_block {
@@ -64,7 +67,7 @@ impl AudioCallbackState {
 /// Render one block into `output`, a `channels`-wide interleaved device buffer.
 /// The graph root is folded to `channels` (see [`Engine::process`]).
 #[inline]
-pub(crate) fn process_audio(state: &AudioCallbackState, output: &mut [f32], channels: usize) {
+pub fn process_audio(state: &AudioCallbackState, output: &mut [f32], channels: usize) {
     let _no_denormals = ScopedNoDenormals::new();
     let frames = output.len().checked_div(channels).unwrap_or(0);
     // Pre-block MIDI: deliver this block's events into node inboxes before the
@@ -84,7 +87,7 @@ struct StreamHandle(#[allow(dead_code)] cpal::Stream);
 unsafe impl Send for StreamHandle {}
 
 /// Owns the CPAL stream and device configuration. Private to the engine.
-pub(crate) struct AudioEngine {
+pub struct AudioEngine {
     sample_rate: f64,
     channels: ChannelLayout,
     is_running: bool,
@@ -93,7 +96,7 @@ pub(crate) struct AudioEngine {
 }
 
 impl AudioEngine {
-    pub(crate) fn new(device_index: Option<usize>) -> Result<Self> {
+    pub fn new(device_index: Option<usize>) -> Result<Self> {
         let device = get_device(device_index)?;
         let config = device.default_output_config()?;
 
@@ -106,7 +109,7 @@ impl AudioEngine {
         })
     }
 
-    pub(crate) fn start(&mut self, state: Arc<AudioCallbackState>) -> Result<()> {
+    pub fn start(&mut self, state: Arc<AudioCallbackState>) -> Result<()> {
         if self.is_running {
             return Ok(());
         }
@@ -137,32 +140,32 @@ impl AudioEngine {
         Ok(())
     }
 
-    pub(crate) fn stop(&mut self) {
+    pub fn stop(&mut self) {
         self._stream = None;
         self.is_running = false;
     }
 
-    pub(crate) fn sample_rate(&self) -> f64 {
+    pub fn sample_rate(&self) -> f64 {
         self.sample_rate
     }
 
-    pub(crate) fn channels(&self) -> ChannelLayout {
+    pub fn channels(&self) -> ChannelLayout {
         self.channels
     }
 
-    pub(crate) fn is_running(&self) -> bool {
+    pub fn is_running(&self) -> bool {
         self.is_running
     }
 
-    pub(crate) fn set_device(&mut self, index: Option<usize>) {
+    pub fn set_device(&mut self, index: Option<usize>) {
         self.device_index = index;
     }
 
-    pub(crate) fn device_name(&self) -> Result<String> {
+    pub fn device_name(&self) -> Result<String> {
         Ok(get_device(self.device_index)?.name()?)
     }
 
-    pub(crate) fn output_devices() -> Result<impl Iterator<Item = (usize, String)>> {
+    pub fn output_devices() -> Result<impl Iterator<Item = (usize, String)>> {
         Ok(cpal::default_host()
             .output_devices()?
             .enumerate()

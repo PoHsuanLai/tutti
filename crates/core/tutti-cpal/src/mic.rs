@@ -36,7 +36,7 @@ use ringbuf::{
 use tutti_core::ChannelLayout;
 use tutti_sampler::{share_mic_ring, AudioIn, MicMonitorNode, MicRing};
 
-use crate::engine::error::{Error, Result};
+use crate::error::{Error, Result};
 
 /// Capture-ring capacity in stereo frames — ~1s at 48kHz. Large enough that a
 /// briefly descheduled pump thread doesn't overrun, small enough to bound

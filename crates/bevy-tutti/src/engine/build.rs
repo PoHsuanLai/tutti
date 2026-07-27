@@ -14,8 +14,8 @@
 
 use bevy_app::App;
 
-use crate::engine::audio_io::{AudioCallbackState, AudioEngine};
-use crate::engine::{Result, TuttiDriver};
+use crate::engine::Result;
+use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 use tutti_core::dsp::An;
 use tutti_core::engine::Engine;
 use tutti_core::Arc;

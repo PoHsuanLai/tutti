@@ -1,26 +1,23 @@
 //! `TuttiDriver` — CPAL audio I/O lifecycle.
 //!
-//! Owns the CPAL stream and the `AudioCallbackState` that feeds it. Typical
-//! flow: the engine builder spins up the driver once; downstream code may
-//! call [`set_device`](TuttiDriver::set_device) / [`restart`](TuttiDriver::restart)
-//! to switch device without rebuilding the graph.
+//! Owns the CPAL stream and the [`AudioCallbackState`] that feeds it. A host
+//! builds one at startup and may call [`set_device`](TuttiDriver::set_device) /
+//! [`restart`](TuttiDriver::restart) to switch device without rebuilding the
+//! graph.
 //!
-//! `&mut self` lifecycle — no `Mutex`. Hold it in one place. bevy-tutti
-//! inserts it as a **non-send** resource (the `cpal::Stream` it owns is `Send`
-//! but not `Sync`), so systems take `NonSend<TuttiDriver>` / `NonSendMut<TuttiDriver>`
-//! and Bevy pins them to the main thread — the same pattern Bevy uses for
-//! `Window` / `AudioOutput`.
+//! `&mut self` lifecycle — no `Mutex`. Hold it in one place. The `cpal::Stream`
+//! it owns is `Send` but not `Sync`, so a host that stores it in a shared
+//! context must pin it to one thread.
 
 use std::sync::Arc;
 
-use crate::engine::audio_io::{AudioCallbackState, AudioEngine};
-use crate::engine::Result;
+use crate::output::{AudioCallbackState, AudioEngine};
+use crate::Result;
 
 /// One enumerated audio output device.
 ///
 /// Returned from [`TuttiDriver::devices`]. `index` is the value to pass to
-/// [`TuttiDriver::set_device`] / [`TuttiDriver::restart`] /
-/// [`TuttiEngineBuilder::output_device`](crate::engine::TuttiEngineBuilder::output_device).
+/// [`TuttiDriver::set_device`] or [`TuttiDriver::restart`].
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
     pub index: usize,
@@ -34,8 +31,8 @@ pub struct TuttiDriver {
 }
 
 impl TuttiDriver {
-    /// Construct from pre-built parts. Called by `TuttiEngineBuilder`.
-    pub(crate) fn from_parts(
+    /// Construct from an opened device and the state its callback will read.
+    pub fn from_parts(
         audio_engine: AudioEngine,
         callback_state: Arc<AudioCallbackState>,
     ) -> Self {

@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crate::MAX_SAMPLER_CHANNELS;
 use tutti_core::SignalFrame;
 use tutti_core::{
-    Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, PlaybackRate, SamplePosition,
+    Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, PlaybackRate, ReadRate,
+    SamplePosition, SampleRate, Samples, SrcRatio,
 };
 
 use super::interp::cubic_hermite;
@@ -205,9 +206,12 @@ impl DiskSource {
         // speed by src_ratio by hand — this used to be written out twice in this
         // function, and the fetch estimate below has to agree with the per-sample
         // advance or the ring under- or over-runs.
-        let base_speed = self.shared_state.as_ref().map_or(1.0, |s| s.read_rate());
+        let base_rate = self
+            .shared_state
+            .as_ref()
+            .map_or(ReadRate::UNITY, |s| s.read_rate());
 
-        let samples_needed = (size as f64 * base_speed).ceil() as usize + 4;
+        let samples_needed = base_rate.advance(Samples(size)).get().ceil() as usize + 4;
 
         self.fetch_scratch.clear();
 
@@ -231,9 +235,12 @@ impl DiskSource {
         for i in 0..size {
             // Re-read per sample so a mid-block speed change takes effect
             // immediately; same composition as the fetch estimate above.
-            let speed = self.shared_state.as_ref().map_or(1.0, |s| s.read_rate());
+            let rate = self
+                .shared_state
+                .as_ref()
+                .map_or(ReadRate::UNITY, |s| s.read_rate());
 
-            self.fractional_pos += speed;
+            self.fractional_pos += rate.advance(Samples(1)).get();
 
             while self.fractional_pos >= 1.0 {
                 self.fractional_pos -= 1.0;
@@ -425,7 +432,7 @@ impl AudioUnit for DiskSource {
 // `DiskSource` streams whatever the butler ring feeds it, unaware of
 // *where on the timeline* the voice lives. A timeline clip only sounds while the
 // playhead is inside its [start_beat, start_beat + duration) window; outside it
-// must be silent. `MemorySource` bakes this in via `transport_sample_position`;
+// must be silent. `MemorySource` bakes this in via `window_position`;
 // the streaming unit does not, so this wrapper adds the same gate:
 //
 //   * inside the window  → pull from the ring (the raw unit's normal path)
@@ -434,7 +441,7 @@ impl AudioUnit for DiskSource {
 //     → request a butler seek to the target sample so the ring refills from the
 //       right disk offset before we start pulling.
 //
-// The gate math is a copy of `MemorySource::transport_sample_position`: it is the
+// The gate math is a copy of `MemorySource::window_position`: it is the
 // single source of truth for "is the playhead inside this window, and at what
 // sample offset". Kept lock-free / alloc-free so `tick`/`process` stay RT-safe —
 // the actual disk seek is deferred to the butler; here we only publish the
@@ -445,7 +452,7 @@ impl AudioUnit for DiskSource {
 
 /// Sentinel for "no seek has been requested yet" — any real target differs from
 /// this on the first entry, so the first inside-frame always issues a seek.
-const NO_SEEK_TARGET: f64 = f64::NEG_INFINITY;
+const NO_SEEK_TARGET: SamplePosition = SamplePosition(f64::NEG_INFINITY);
 
 /// Max sample-offset drift between the position the ring is streaming and the
 /// position the transport wants before we treat it as a discontinuity (seek /
@@ -487,7 +494,7 @@ pub struct DiskVoice {
     /// discontinuous jump: when the transport's desired offset diverges from the
     /// contiguously-advanced expectation by more than `SEEK_EPSILON_SAMPLES`, we
     /// issue a fresh seek.
-    streamed_offset: f64,
+    streamed_offset: SamplePosition,
 
     /// Whether the previous frame was inside the voice window. A false→true edge
     /// (playhead entering the voice) always forces a seek.
@@ -562,28 +569,41 @@ impl DiskVoice {
         self.file_sample_rate
     }
 
-    /// Source-relative sample offset the playhead sits at, or `None` when it is
+    /// Where the playhead sits in this stream's file samples, or `None` when
     /// outside the voice window. Delegates to the shared
-    /// [`transport_sample_offset`](super::interp::transport_sample_offset) — the
-    /// one gate definition, also used by [`MemorySource`].
+    /// [`window_position`](super::interp::window_position) — the one gate
+    /// definition, also used by [`MemorySource`].
     ///
-    /// Passes varispeed ALONE, not `read_rate` — deliberately unlike the in-memory
-    /// tier, because the two `file_sample_rate` arguments do not mean the same
-    /// thing. `MemorySource` passes `wave.sample_rate()`, a raw file rate; this
-    /// reader's `file_sample_rate` is *reconstructed* as
-    /// `session_rate × src_ratio` (`ports.rs`), so it already carries the
-    /// conversion. Multiplying by `read_rate` here would apply `src_ratio`
-    /// twice: on a 48 kHz file in a 44.1 kHz session the seek target lands
-    /// ~8.8% deep, and the gate then outruns the ring by ~4.2k file samples per
-    /// second — tripping `SEEK_EPSILON_SAMPLES` about once a second, forever.
+    /// Composes with [`SrcRatio::UNITY`] — deliberately unlike the memory tier,
+    /// and the asymmetry is real rather than cosmetic.
+    ///
+    /// `file_sample_rate` here already carries the conversion: `ports.rs` builds
+    /// it as `session_rate × src_ratio`, which for a placement gate measuring
+    /// *file* samples is exactly the file rate. So `src_ratio` has been applied
+    /// once by the time it reaches this call, and composing it again would apply it
+    /// twice — on a 48 kHz file in a 44.1 kHz session the gate lands ~8.8% deep and
+    /// then outruns the ring by ~4.2k file samples per second, tripping
+    /// `SEEK_EPSILON_SAMPLES` about once a second, forever.
+    /// `placement_gate_applies_src_ratio_exactly_once` pins it.
+    ///
+    /// The memory tier reaches the same product by the other split
+    /// (`wave.sample_rate()` × `speed × src_ratio`), because *its* rate argument is
+    /// the untouched file rate. Two splits, one product.
+    ///
+    /// Spelling the `UNITY` out — rather than adding a varispeed-only constructor
+    /// — keeps [`PlaybackRate::read_rate`] the single place the two factors
+    /// compose, and puts "the conversion is already in the rate above" at the call
+    /// site as a value instead of in a comment.
     #[inline]
-    fn placement_sample_offset(&self) -> Option<f64> {
-        super::interp::transport_sample_offset(
+    fn window_position(&self) -> Option<SamplePosition> {
+        super::interp::window_position(
             self.placement.transport.as_ref(),
             self.placement.start_beat,
             self.placement.duration_beats,
-            self.file_sample_rate,
-            self.shared_state.effective_speed().get() as f64,
+            SampleRate::new(self.file_sample_rate),
+            self.shared_state
+                .effective_speed()
+                .read_rate(SrcRatio::UNITY),
         )
     }
 
@@ -597,10 +617,10 @@ impl DiskVoice {
     /// butler to clear it the reader would mute forever). RT-safe: no alloc, no
     /// I/O, no blocking on this path.
     #[inline]
-    fn request_seek(&mut self, target_offset: f64) {
+    fn request_seek(&mut self, target_offset: SamplePosition) {
         self.streamed_offset = target_offset;
         self.shared_state
-            .request_seek(target_offset.max(0.0) as u64);
+            .request_seek(target_offset.get().max(0.0) as u64);
     }
 
     /// Set the playback speed magnitude. Routes directly to the shared
@@ -629,17 +649,17 @@ impl DiskVoice {
     /// discontinuous jump, and the same one the `Command::Seek` butler path
     /// ultimately drives. RT-safe: no alloc, no I/O.
     pub fn seek(&mut self, to: SamplePosition) {
-        self.request_seek(to.get());
+        self.request_seek(to);
     }
 
     /// Decide, for a frame whose desired window-relative offset is `offset`,
     /// whether the playhead jumped (fresh entry or a seek/loop discontinuity)
     /// and issue a butler seek if so.
     #[inline]
-    fn maybe_seek(&mut self, offset: f64) {
+    fn maybe_seek(&mut self, offset: SamplePosition) {
         let jumped = !self.was_inside
             || self.streamed_offset == NO_SEEK_TARGET
-            || (offset - self.streamed_offset).abs() > SEEK_EPSILON_SAMPLES;
+            || (offset - self.streamed_offset).get().abs() > SEEK_EPSILON_SAMPLES;
         if jumped {
             self.request_seek(offset);
         } else {
@@ -672,7 +692,7 @@ impl AudioUnit for DiskVoice {
     }
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        match self.placement_sample_offset() {
+        match self.window_position() {
             Some(offset) => {
                 self.maybe_seek(offset);
                 self.was_inside = true;
@@ -690,7 +710,7 @@ impl AudioUnit for DiskVoice {
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        match self.placement_sample_offset() {
+        match self.window_position() {
             Some(offset) => {
                 self.maybe_seek(offset);
                 self.was_inside = true;
@@ -803,14 +823,12 @@ mod tests {
 
         // Two seconds in at 120 BPM = beat 4.0.
         transport.set_beat(Beat::new(4.0));
-        let offset = reader
-            .placement_sample_offset()
-            .expect("inside the voice window");
+        let offset = reader.window_position().expect("inside the voice window");
 
         // 2 s of a 48 kHz file is 96000 file samples — src_ratio applied once.
         let expected = 2.0 * 48_000.0;
         assert!(
-            (offset - expected).abs() < 1.0,
+            (offset.get() - expected).abs() < 1.0,
             "expected ~{expected} file samples, got {offset} \
              (a double-applied src_ratio gives ~{})",
             expected * src

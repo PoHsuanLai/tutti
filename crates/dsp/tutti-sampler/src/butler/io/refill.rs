@@ -95,7 +95,7 @@ pub(crate) fn refill_all(
         }
 
         let is_reverse = stream_state.rt_state.is_reverse();
-        let adjusted_speed = stream_state.rt_state.read_rate() as f32 * buffer_margin as f32;
+        let adjusted_speed = stream_state.rt_state.read_rate().get() as f32 * buffer_margin as f32;
         let chunk_size = varifill_chunk(fill_pct, base_chunk_size, read_rate, adjusted_speed);
 
         let file_position = writer.file_position() as usize;
@@ -186,7 +186,8 @@ pub(crate) fn refill_all_parallel(
                 return None;
             }
 
-            let adjusted_speed = stream_state.rt_state.read_rate() as f32 * buffer_margin as f32;
+            let adjusted_speed =
+                stream_state.rt_state.read_rate().get() as f32 * buffer_margin as f32;
             let chunk_size = varifill_chunk(fill_pct, base_chunk_size, read_rate, adjusted_speed);
 
             let shared = stream_state.rt_state();

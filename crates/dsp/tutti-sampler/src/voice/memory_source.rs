@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tutti_core::{
     Amplitude, AtomicSamplePosition, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef,
-    PlaybackRate, SamplePosition, SampleRate, SignalFrame, SrcRatio, Timeline, Wave,
+    PlaybackRate, ReadRate, SamplePosition, SampleRate, Samples, SignalFrame, SrcRatio, Timeline,
+    Wave,
 };
 
 use super::loop_crossfade::LoopCrossfade;
@@ -440,9 +441,28 @@ impl MemorySource {
     }
 
     /// Source samples consumed per output sample: varispeed × conversion.
+    ///
+    /// For the **free-running** path, where a cursor steps through file samples
+    /// once per output sample and so needs both factors. The placement gate must
+    /// NOT use this — see [`window_rate`](Self::window_rate).
     #[inline]
-    fn read_rate(&self) -> f64 {
+    pub fn read_rate(&self) -> ReadRate {
         self.speed.read_rate(self.src_ratio)
+    }
+
+    /// Source samples per output sample **within a gated window**: varispeed
+    /// alone, because [`window_position`](Self::window_position) already resolved
+    /// the beat→sample conversion against this wave's own rate.
+    ///
+    /// One method rather than the expression repeated at each stepping site. A
+    /// block-stepping caller seats itself at `window_position()` and then advances
+    /// by this — the two MUST agree, or the block starts at the right sample and
+    /// drifts away from it, which sounds like a slow detune rather than a break.
+    /// Two call sites open-coded a `speed * src_ratio` product here and got that
+    /// wrong; naming the quantity is what stops a third.
+    #[inline]
+    pub fn window_rate(&self) -> ReadRate {
+        self.speed.read_rate(SrcRatio::UNITY)
     }
 
     /// Replace the wave data. Resets playback position to the start.
@@ -598,15 +618,39 @@ impl MemorySource {
         }
     }
 
+    /// Where the playhead sits in this source's samples, or `None` when outside
+    /// the window / unplaced. See [`window_position`](super::interp::window_position).
+    ///
+    /// **Varispeed alone, not [`read_rate`](Self::read_rate)** — and this was a
+    /// live bug until `both_tier_splits_agree_on_the_same_position` caught it.
+    ///
+    /// The gate maps wall-clock seconds onto *this wave's own* samples, and
+    /// `wave.sample_rate()` is already that wave's rate — so the beat→sample
+    /// conversion is complete before any ratio is applied. `read_rate` folds in
+    /// `src_ratio` (`file_rate / session_rate`), which belongs to the
+    /// *free-running* path, where a cursor steps through file samples once per
+    /// output sample and genuinely needs both factors.
+    ///
+    /// Applying it here multiplied the derived position by `src_ratio` a second
+    /// time: a 48 kHz file in a 44.1 kHz session read 104,490 samples in at the
+    /// two-second mark instead of 96,000 — 8.8% deep, drifting further the longer
+    /// the voice plays. `set_sample_rate` seeds `src_ratio` from the live graph, so
+    /// this fired for every placed voice whose file rate differed from the
+    /// session's; it stayed invisible because every test on this path used matched
+    /// rates, where `src_ratio` is `UNITY` and the extra factor is 1.0.
+    ///
+    /// The disk tier had the same hazard in mirror image and a comment warning
+    /// about it. The comment was right about the arithmetic and wrong about which
+    /// tier had the bug.
     #[inline]
-    pub fn transport_sample_position(&self) -> Option<f64> {
+    pub fn window_position(&self) -> Option<SamplePosition> {
         let placement = self.placement.as_ref()?;
-        super::interp::transport_sample_offset(
+        super::interp::window_position(
             placement.transport.as_ref(),
             placement.start_beat,
             placement.duration_beats,
-            self.wave.sample_rate(),
-            self.read_rate(),
+            SampleRate::new(self.wave.sample_rate()),
+            self.window_rate(),
         )
     }
 
@@ -644,11 +688,11 @@ impl MemorySource {
             // Derived: the transport owns the position. Step within the block by
             // `read_rate` from the block's start beat — the transport itself
             // only moves between blocks.
-            match self.transport_sample_position() {
+            match self.window_position() {
                 None => out.fill(0.0),
                 Some(start_pos) => {
-                    let pos = start_pos + offset_in_block as f64 * self.read_rate();
-                    self.get_sample_into(pos, out);
+                    let pos = start_pos + self.window_rate().advance(Samples(offset_in_block));
+                    self.get_sample_into(pos.get(), out);
                 }
             }
             return;
@@ -680,7 +724,8 @@ impl MemorySource {
             }
         };
 
-        let new_pos = pos + self.read_rate();
+        // One output sample's worth of source material.
+        let new_pos = pos + self.read_rate().advance(Samples(1)).get();
 
         if new_pos >= loop_end {
             if looping {
@@ -1294,6 +1339,72 @@ mod tests {
         let normal_pos = normal.position().get();
         let fast_pos = fast.position().get();
         assert!((fast_pos - normal_pos * 2.0).abs() < 1e-6);
+    }
+
+    /// **The placement gate must apply `src_ratio` exactly once** — at the unit,
+    /// not just at the kernel.
+    ///
+    /// This is the in-memory mirror of `disk_voice`'s
+    /// `placement_gate_applies_src_ratio_exactly_once`, and the memory tier failed
+    /// it: `window_position` passed the full `read_rate` against a rate argument
+    /// (`wave.sample_rate()`) that had already resolved the beat→sample
+    /// conversion, so `src_ratio` was applied twice.
+    ///
+    /// The mismatched rate is the whole test. Every other test on this path uses a
+    /// wave at the session rate, where `src_ratio` is `UNITY` and a doubled factor
+    /// is exactly 1.0 — which is why a live 8.8% position error survived here.
+    ///
+    /// Asserted at the unit rather than only at the kernel because the kernel
+    /// cannot see this: it takes the rate as an argument, so a caller passing the
+    /// wrong one is invisible there. Re-introducing the bug in `window_rate` fails
+    /// only this test.
+    #[test]
+    fn placement_gate_applies_src_ratio_exactly_once() {
+        // A 48 kHz wave in a 44.1 kHz session.
+        let wave = ramp_wave(200_000, 48_000.0);
+        let transport = MockTransport::rolling(Beat::new(4.0), Bpm::new(120.0));
+        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
+        sampler.set_sample_rate(SampleRate::new(44_100.0));
+        assert!(
+            (sampler.src_ratio().get() - (48_000.0 / 44_100.0)).abs() < 1e-4,
+            "setup: the session rate must produce a non-unity src_ratio, else \
+             this test cannot distinguish one application from two"
+        );
+
+        // Beat 4 at 120 BPM is two seconds; two seconds of a 48 kHz file is
+        // 96,000 file samples.
+        let pos = sampler.window_position().expect("inside the window");
+        let expected = 2.0 * 48_000.0;
+        let doubled = expected * (48_000.0 / 44_100.0);
+        assert!(
+            (pos.get() - expected).abs() < 1.0,
+            "expected ~{expected} file samples, got {} \
+             (a double-applied src_ratio gives ~{doubled})",
+            pos.get()
+        );
+    }
+
+    /// The block-stepping rate must be the SAME rate the gate used, or a block
+    /// starts at the right sample and walks away from it — a slow detune rather
+    /// than an obvious break.
+    #[test]
+    fn window_rate_matches_the_gate_and_excludes_src_ratio() {
+        let wave = ramp_wave(200_000, 48_000.0);
+        let mut sampler = MemorySource::new(wave);
+        sampler.set_speed(PlaybackRate::new(2.0));
+        sampler.set_sample_rate(SampleRate::new(44_100.0));
+
+        // Varispeed alone: the gate already resolved the file rate.
+        assert!((sampler.window_rate().get() - 2.0).abs() < 1e-6);
+
+        // The free-running rate DOES carry the conversion — different question,
+        // different quantity, and the two must not be conflated.
+        let free = 2.0 * (48_000.0 / 44_100.0);
+        assert!(
+            (sampler.read_rate().get() - free).abs() < 1e-4,
+            "read_rate should still be varispeed x conversion, got {}",
+            sampler.read_rate().get()
+        );
     }
 
     #[test]

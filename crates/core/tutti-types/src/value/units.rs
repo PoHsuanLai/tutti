@@ -1426,8 +1426,58 @@ impl PlaybackRate {
     /// what happened when both were a bare `Ratio` multiplied at four separate
     /// call sites.
     #[inline]
-    pub fn read_rate(self, src: SrcRatio) -> f64 {
-        self.0 as f64 * src.0 as f64
+    pub fn read_rate(self, src: SrcRatio) -> ReadRate {
+        ReadRate(self.0 as f64 * src.0 as f64)
+    }
+}
+
+unit_newtype!(
+    /// Source samples consumed per output sample: varispeed × sample-rate
+    /// conversion, the product [`PlaybackRate::read_rate`] returns.
+    ///
+    /// Its own type rather than a bare `f64`, on both of the rule's counts:
+    ///
+    /// - **Distinct algebra.** [`PlaybackRate`] and [`SrcRatio`] both omit `Mul`
+    ///   precisely so the three rate kinds cannot be multiplied together
+    ///   ad-hoc. This type exists *to be* multiplied — by a sample count, to
+    ///   advance a read position — which is the one operation neither factor
+    ///   allows. So `unit_scalable!` stays omitted here too, and
+    ///   [`advance`](Self::advance) is the named replacement.
+    /// - **Distinct range.** `PlaybackRate` is clamped to 0.25–4.0; `SrcRatio` is
+    ///   unclamped (a 192 kHz file in a 44.1 kHz session is ≈4.35), so the
+    ///   product reaches ≈17.4× — a range neither factor has.
+    ///
+    /// `f64`-backed, matching [`SamplePosition`]: a read position advanced a
+    /// million times must not drift, and widening here is what keeps the
+    /// accumulation exact.
+    ///
+    /// Returning it from `read_rate` closed a real hole. The gate kernel took
+    /// this rate and a file sample rate as two bare `f64`s, and the two tiers
+    /// split the `src_ratio` factor between those parameters *differently* —
+    /// memory passed `(file_rate, speed × src_ratio)`, disk passed
+    /// `(session_rate × src_ratio, speed)`. Algebraically equal, so it worked;
+    /// but nothing stopped a third caller from combining them wrongly, and one
+    /// already had — applying `src_ratio` twice, which the disk tier's own
+    /// comment records as costing real debugging time.
+    ReadRate,
+    f64
+);
+unit_ordered!(ReadRate);
+unit_bounded!(ReadRate, f64);
+// NOT `unit_scalable!` / `unit_additive!`: see the type docs. The whole point is
+// that the ONE legal multiplication is by a sample count, and it is named.
+impl ReadRate {
+    /// No resampling: one source sample per output sample.
+    pub const UNITY: Self = Self(1.0);
+
+    /// How far a read position advances over `out` output samples.
+    ///
+    /// The named replacement for the omitted `Mul<f64>`. Returns a
+    /// [`SamplePosition`] rather than a count because that is what a caller does
+    /// with it — seats or advances a fractional read cursor.
+    #[inline]
+    pub fn advance(self, out: Samples) -> SamplePosition {
+        SamplePosition(self.0 * out.get() as f64)
     }
 }
 
@@ -1669,6 +1719,12 @@ mod tests {
     /// - `Pan * f32`, `Pan + Pan` — a position on a segment, so the same
     ///   argument `Mix` makes: half a pan position is not a pan position, and
     ///   two of them do not sum. Interpolation is a `lerp`, not a `*`.
+    /// - `ReadRate * f64`, `ReadRate + ReadRate` — `advance`, which names the
+    ///   operand as a sample count and returns a `SamplePosition`. This type
+    ///   exists to be multiplied by exactly one thing, so a bare `*` would let
+    ///   it be multiplied by anything — including the `PlaybackRate` and
+    ///   `SrcRatio` it is already the product of, which is the double-apply bug
+    ///   the disk tier's gate comment records.
     ///
     /// And three *type* omissions, which the compiler enforces rather than a
     /// missing `impl`: `Correlation` and `Pan` are not `Depth`, and
@@ -2184,12 +2240,34 @@ mod tests {
         let rate = PlaybackRate::new(0.5);
         let src = SrcRatio::for_rates(48_000.0, 44_100.0);
         let expected = 0.5 * (48_000.0 / 44_100.0);
-        assert!((rate.read_rate(src) - expected).abs() < 1e-6);
+        assert!((rate.read_rate(src).get() - expected).abs() < 1e-6);
 
         // Unity on both sides consumes exactly one source sample per output —
         // this one IS exact, and must stay so: it is the matched-rate path every
         // same-sample-rate session takes.
-        assert_eq!(PlaybackRate::UNITY.read_rate(SrcRatio::UNITY), 1.0);
+        assert_eq!(
+            PlaybackRate::UNITY.read_rate(SrcRatio::UNITY),
+            ReadRate::UNITY
+        );
+    }
+
+    /// `ReadRate` omits `Mul`, so `advance` is the only way to turn a rate into a
+    /// distance — the omission ledger's rule that a removed operator ships with
+    /// its named replacement.
+    #[test]
+    fn read_rate_advances_a_position_by_a_sample_count() {
+        // Half speed: 512 output samples consume 256 source samples.
+        let half = PlaybackRate::new(0.5).read_rate(SrcRatio::UNITY);
+        assert_eq!(half.advance(Samples(512)), SamplePosition(256.0));
+
+        // Unity is the identity, exactly.
+        assert_eq!(
+            ReadRate::UNITY.advance(Samples(1024)),
+            SamplePosition(1024.0)
+        );
+
+        // Zero output samples advance nowhere, whatever the rate.
+        assert_eq!(half.advance(Samples(0)), SamplePosition(0.0));
     }
 
     #[test]

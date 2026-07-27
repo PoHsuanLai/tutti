@@ -6,7 +6,7 @@
 //! ownership story obvious.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use tutti_core::{AtomicF32, PlaybackRate, SrcRatio};
+use tutti_core::{AtomicF32, PlaybackRate, ReadRate, SrcRatio};
 
 use super::crossfader::StreamingCrossfader;
 use crate::voice::voice_pool::Direction;
@@ -126,7 +126,7 @@ impl RtState {
     /// same [`PlaybackRate::read_rate`] so neither tier can drop a factor or
     /// swap the pair.
     #[inline]
-    pub fn read_rate(&self) -> f64 {
+    pub fn read_rate(&self) -> ReadRate {
         self.speed().read_rate(self.src_ratio())
     }
 

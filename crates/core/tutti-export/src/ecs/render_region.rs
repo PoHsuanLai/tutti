@@ -744,7 +744,7 @@ mod tests {
         use tutti_sampler::{LoopSetting, Playback, TransportPlacement, Voice, VoiceSource};
 
         // The live transport is rolling; the offline one is stopped — so the memory
-        // source's `transport_sample_position()` (which reads its OWN placement
+        // source's `window_position()` (which reads its OWN placement
         // clock) returns `Some(..)` while bound to the live clock and `None` once
         // rebound to the stopped offline clock. That distinction is the real
         // guard: the sampler reads its own transport, not `play.placement`, so a
@@ -758,7 +758,7 @@ mod tests {
         let sampler =
             MemorySource::with_transport(wave, live_transport.clone(), Beat::new(0.0), None);
         assert!(
-            sampler.transport_sample_position().is_some(),
+            sampler.window_position().is_some(),
             "sanity: the memory source reads a live position before rebind"
         );
         // A standalone voice carrying a placement bound to the LIVE clock — the
@@ -814,7 +814,7 @@ mod tests {
         // playhead with NO compile error.
         match &voice_node.voice().source {
             VoiceSource::Memory(sampler) => assert!(
-                sampler.transport_sample_position().is_none(),
+                sampler.window_position().is_none(),
                 "the memory source's own read clock must be rebound to the stopped \
                  offline transport (else the offline render reads the live \
                  playhead and renders the correction wrong)"
@@ -831,7 +831,7 @@ mod tests {
         // a clock lives in a particular field and that the rebind reached it — so
         // if the source ever stops owning a clock (the standing plan for this
         // type: position derives from the playhead, the caller holds the cursor),
-        // `transport_sample_position()` becomes permanently `None` and that
+        // `window_position()` becomes permanently `None` and that
         // assertion passes *vacuously* while testing nothing. This one keeps
         // failing for the right reason: it names the property that actually
         // matters — an offline render must not hear the live playhead — without

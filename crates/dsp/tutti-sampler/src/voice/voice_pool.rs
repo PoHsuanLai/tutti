@@ -30,7 +30,7 @@ use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use tutti_core::transport::BeatCursor;
 use tutti_core::{
     Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Cents, PlaybackRate,
-    SamplePosition, SignalFrame, StretchFactor, Timeline, Wave,
+    SamplePosition, Samples, SignalFrame, StretchFactor, Timeline, Wave,
 };
 
 /// Voice slots a reader holds before its slot vector has to grow.
@@ -345,7 +345,7 @@ impl Voice {
     /// Rebinds BOTH clocks that must move together:
     /// - `play.placement.transport` — the control-intent record.
     /// - the source's own read clock. The `Memory` [`MemorySource`] reads its
-    ///   sample position from its OWN placement (`transport_sample_position`),
+    ///   sample position from its OWN placement (`window_position`),
     ///   NOT from `play.placement`, so rebinding only the intent record would
     ///   leave the actual read clock on the live transport — the offline render
     ///   would then read the wrong (undriven) playhead and render silence. The
@@ -517,7 +517,7 @@ impl VoiceSlot {
             }
         } else {
             match &mut self.voice.source {
-                VoiceSource::Memory(sampler) => match sampler.transport_sample_position() {
+                VoiceSource::Memory(sampler) => match sampler.window_position() {
                     Some(pos) => read_clip_sample_into(sampler, direction, pos, gain, out),
                     None => out.fill(0.0),
                 },
@@ -572,12 +572,16 @@ impl VoiceSlot {
             };
             match &mut self.voice.source {
                 VoiceSource::Memory(sampler) => {
-                    let Some(start_pos) = sampler.transport_sample_position() else {
+                    let Some(start_pos) = sampler.window_position() else {
                         return;
                     };
-                    let advance = (sampler.speed().get() * sampler.src_ratio().get()) as f64;
+                    // `window_rate`, not a hand-rolled `speed * src_ratio`: this
+                    // site multiplied the two by hand, which double-applied
+                    // `src_ratio` against a gate origin that had already resolved
+                    // it. The named method is what keeps origin and step matched.
+                    let rate = sampler.window_rate();
                     for i in 0..size {
-                        let pos = start_pos + i as f64 * advance;
+                        let pos = start_pos + rate.advance(Samples(i));
                         read_clip_sample_into(sampler, direction, pos, gain, &mut raw[..n]);
                         frame[..n].fill(0.0);
                         unit.tick(&raw[..n], &mut frame[..n]);
@@ -597,12 +601,16 @@ impl VoiceSlot {
         } else {
             match &mut self.voice.source {
                 VoiceSource::Memory(sampler) => {
-                    let Some(start_pos) = sampler.transport_sample_position() else {
+                    let Some(start_pos) = sampler.window_position() else {
                         return;
                     };
-                    let advance = (sampler.speed().get() * sampler.src_ratio().get()) as f64;
+                    // `window_rate`, not a hand-rolled `speed * src_ratio`: this
+                    // site multiplied the two by hand, which double-applied
+                    // `src_ratio` against a gate origin that had already resolved
+                    // it. The named method is what keeps origin and step matched.
+                    let rate = sampler.window_rate();
                     for i in 0..size {
-                        let pos = start_pos + i as f64 * advance;
+                        let pos = start_pos + rate.advance(Samples(i));
                         read_clip_sample_into(sampler, direction, pos, gain, &mut frame[..n]);
                         mix_in!(frame, i);
                     }
@@ -636,17 +644,17 @@ impl VoiceSlot {
 fn read_clip_sample_into(
     sampler: &MemorySource,
     direction: Direction,
-    pos: f64,
+    pos: SamplePosition,
     gain: Amplitude,
     out: &mut [f32],
 ) {
     match direction {
         Direction::Reverse => {
             let len = sampler.duration_samples() as f64;
-            let reversed = (len - 1.0 - pos).max(0.0);
+            let reversed = (len - 1.0 - pos.get()).max(0.0);
             sampler.get_sample_raw_into(reversed, out);
         }
-        Direction::Forward => sampler.get_sample_raw_into(pos, out),
+        Direction::Forward => sampler.get_sample_raw_into(pos.get(), out),
     }
     let g = gain.get();
     for s in out.iter_mut() {
@@ -668,7 +676,7 @@ fn read_source_frame_into(
     out: &mut [f32],
 ) {
     match source {
-        VoiceSource::Memory(sampler) => match sampler.transport_sample_position() {
+        VoiceSource::Memory(sampler) => match sampler.window_position() {
             Some(pos) => read_clip_sample_into(sampler, direction, pos, gain, out),
             None => out.fill(0.0),
         },

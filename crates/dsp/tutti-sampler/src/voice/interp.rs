@@ -20,20 +20,18 @@
 //! so it is safe to call from `process`/`tick` hot paths.
 
 use std::sync::Arc;
-use tutti_core::{fold_frame, Beat, BeatDuration, Timeline, Wave};
+use tutti_core::{
+    fold_frame, Beat, BeatDuration, ReadRate, SamplePosition, SampleRate, Timeline, Wave,
+};
 
 use crate::MAX_SAMPLER_CHANNELS;
 
-/// Source-relative sample offset the playhead sits at, or `None` when it is
-/// outside the voice's transport window.
+/// Where the playhead sits in source samples, or `None` when it is outside the
+/// voice's window.
 ///
-/// The single source of truth for the transport-placement gate shared by the
+/// The single source of truth for the transport-placement gate, shared by the
 /// in-memory [`MemorySource`](super::memory_source::MemorySource) and the
-/// disk-streaming
-/// [`DiskVoice`](super::disk_voice::DiskVoice).
-/// Callers differ only in how they obtain `file_sample_rate` (the in-memory
-/// unit reads `wave.sample_rate()`, the streaming reader stores it), so it is
-/// passed in to keep this source-agnostic.
+/// disk-streaming [`DiskVoice`](super::disk_voice::DiskVoice).
 ///
 /// # A placed voice has no position of its own
 ///
@@ -44,28 +42,43 @@ use crate::MAX_SAMPLER_CHANNELS;
 /// a second, competing clock, and the two would drift apart the moment the
 /// transport looped, seeked, or changed tempo.
 ///
-/// `read_rate` scales the derived offset rather than stepping a cursor: at 0.5
-/// the voice is half as far into its material for a given playhead position,
-/// which is what "half speed" means for something the timeline owns. That is why
-/// varispeed belongs *here*, in the beat→sample mapping, and not as a per-unit
-/// `+= speed` accumulator. Build it with
-/// [`PlaybackRate::read_rate`](tutti_core::PlaybackRate::read_rate) so the
-/// varispeed and sample-rate-conversion factors compose in exactly one place.
+/// `rate` scales the derived offset rather than stepping a cursor: at 0.5 the
+/// voice is half as far into its material for a given playhead position, which is
+/// what "half speed" means for something the timeline owns. That is why varispeed
+/// belongs *here*, in the beat→sample mapping, and not as a per-unit `+= speed`
+/// accumulator.
+///
+/// # Why both rate arguments are typed
+///
+/// `source_rate` and `rate` used to be two bare `f64`s, and the two tiers split
+/// the sample-rate-conversion factor between them *differently*: memory passed
+/// `(wave.sample_rate(), speed × src_ratio)` while disk passed
+/// `(session_rate × src_ratio, speed)`. Those are algebraically equal — both are
+/// `seconds × file_rate × speed` — so both tiers were correct, but nothing in the
+/// signature said which split a caller was using. A third caller combining them
+/// the obvious way applies `src_ratio` twice; that already happened once, and the
+/// disk tier's own comment records it costing real time (on a 48 kHz file in a
+/// 44.1 kHz session the gate outran the ring by ~4.2k samples/second, tripping a
+/// seek about once a second, forever).
+///
+/// [`ReadRate`] is the product's own type, so `rate` can only be built through
+/// [`PlaybackRate::read_rate`](tutti_core::PlaybackRate::read_rate) — the one
+/// place the two factors compose. A caller holding a bare varispeed can no longer
+/// pass it here by accident.
 ///
 /// Returns `None` when the transport is stopped, the playhead is before
-/// `start_beat`, past `duration`, or the tempo is non-positive. Otherwise the
-/// value is `beat_offset * 60 / tempo * file_sample_rate * read_rate`.
+/// `start_beat`, past `duration`, or the tempo is non-positive.
 ///
 /// Pure arithmetic: no allocation, no locks — safe from `tick`/`process` hot
 /// paths.
 #[inline]
-pub fn transport_sample_offset(
+pub fn window_position(
     transport: &dyn Timeline,
     start_beat: Beat,
     duration: Option<BeatDuration>,
-    file_sample_rate: f64,
-    read_rate: f64,
-) -> Option<f64> {
+    source_rate: SampleRate,
+    rate: ReadRate,
+) -> Option<SamplePosition> {
     if !transport.is_rolling() {
         return None;
     }
@@ -83,7 +96,9 @@ pub fn transport_sample_offset(
         return None;
     }
     let seconds_offset = beat_offset * 60.0 / tempo;
-    Some(seconds_offset * file_sample_rate * read_rate)
+    Some(SamplePosition(
+        seconds_offset * source_rate.get() * rate.get(),
+    ))
 }
 
 /// Catmull-Rom cubic Hermite interpolation across four consecutive taps.
@@ -214,6 +229,133 @@ pub fn read_stereo_frame(wave: &Arc<Wave>, position: f64) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_transport::MockTransport;
+    use tutti_core::{Bpm, PlaybackRate, SrcRatio};
+
+    /// **Gate parity.** Both tiers must derive the SAME source position from the
+    /// same transport reading — asserted on the value, not on liveness.
+    ///
+    /// This test found a live bug on its first run. Both tiers reach the gate with
+    /// a rate argument that is already the *file* rate — memory from
+    /// `wave.sample_rate()`, disk from `session_rate × src_ratio` — so the
+    /// beat→sample conversion is complete and the rate argument must carry
+    /// varispeed ALONE. The disk tier did that and said so in a comment; the
+    /// memory tier passed its full `read_rate`, applying `src_ratio` a second
+    /// time and landing 8.8% deep on a 48 kHz file in a 44.1 kHz session.
+    ///
+    /// It stayed invisible because every other test on this path uses matched
+    /// rates, where `src_ratio` is `UNITY` and the extra factor is exactly 1.0.
+    /// Hence the table below: the mismatched rows are the whole point, and the
+    /// matched row is there to show it is not what distinguishes them.
+    ///
+    /// Driven at the kernel rather than through the two units, because that is
+    /// where the splits meet — the units differ in how they *fetch*, which is a
+    /// separate question from where they think the playhead is.
+    #[test]
+    fn both_tier_splits_agree_on_the_same_position() {
+        let session = 44_100.0;
+        for (file_rate, speed) in [
+            (44_100.0f64, 1.0f32),
+            (48_000.0, 1.0),
+            (48_000.0, 0.5),
+            (22_050.0, 2.0),
+            (96_000.0, 0.25),
+        ] {
+            let src = SrcRatio::for_rates(file_rate, session);
+            let rate = PlaybackRate::new(speed);
+            let transport = MockTransport::rolling(Beat::new(4.0), Bpm::new(120.0));
+
+            // Memory's split: the wave's own rate, times varispeed alone.
+            let memory = window_position(
+                transport.as_ref(),
+                Beat::new(0.0),
+                None,
+                SampleRate::new(file_rate),
+                rate.read_rate(SrcRatio::UNITY),
+            )
+            .expect("inside the window");
+
+            // Disk's split: a rate that already carries the conversion, times
+            // varispeed alone.
+            let disk = window_position(
+                transport.as_ref(),
+                Beat::new(0.0),
+                None,
+                SampleRate::new(session * src.get() as f64),
+                rate.read_rate(SrcRatio::UNITY),
+            )
+            .expect("inside the window");
+
+            // Beat 4 at 120 BPM is 2 seconds.
+            let expected = 2.0 * file_rate * speed as f64;
+            assert!(
+                (memory.get() - expected).abs() < 1.0,
+                "memory split at {file_rate} Hz x{speed}: want ~{expected}, got {}",
+                memory.get()
+            );
+            assert!(
+                (memory.get() - disk.get()).abs() < 1.0,
+                "the two tiers disagree at {file_rate} Hz x{speed}: \
+                 memory {} vs disk {}",
+                memory.get(),
+                disk.get()
+            );
+        }
+    }
+
+    /// The gate is a *gate*: outside the window it reports nothing, so a caller
+    /// cannot read stale material by ignoring a `None`.
+    #[test]
+    fn window_position_is_none_outside_the_window() {
+        let stopped = MockTransport::stopped(Beat::new(4.0), Bpm::new(120.0));
+        assert!(
+            window_position(
+                stopped.as_ref(),
+                Beat::new(0.0),
+                None,
+                SampleRate::new(44_100.0),
+                ReadRate::UNITY
+            )
+            .is_none(),
+            "a stopped transport has no position"
+        );
+
+        let rolling = MockTransport::rolling(Beat::new(2.0), Bpm::new(120.0));
+        assert!(
+            window_position(
+                rolling.as_ref(),
+                Beat::new(8.0),
+                None,
+                SampleRate::new(44_100.0),
+                ReadRate::UNITY
+            )
+            .is_none(),
+            "before the window start"
+        );
+        assert!(
+            window_position(
+                rolling.as_ref(),
+                Beat::new(0.0),
+                Some(BeatDuration::new(1.0)),
+                SampleRate::new(44_100.0),
+                ReadRate::UNITY
+            )
+            .is_none(),
+            "past the window duration"
+        );
+        // The boundary is half-open: beat 2 with duration 2 is already outside.
+        assert!(
+            window_position(
+                rolling.as_ref(),
+                Beat::new(0.0),
+                Some(BeatDuration::new(2.0)),
+                SampleRate::new(44_100.0),
+                ReadRate::UNITY
+            )
+            .is_none(),
+            "the window end is exclusive"
+        );
+    }
 
     /// ch0 = (i+1)*0.01, ch1 = -(i+1)*0.01 — every sample distinct and the two
     /// channels distinguishable by sign, so a channel swap is visible.

@@ -63,7 +63,13 @@ impl ModulationMatrix {
     /// here and survives the next flush rather than being clobbered by it.
     /// Returns false if the param is not modulated, in which case the caller
     /// owns the write.
-    pub fn set_base(&self, entity: Entity, param: ParamAddr, base: f32) -> bool {
+    ///
+    /// Crate-internal on purpose: this is only *half* a write. A caller that
+    /// stops here silently drops every write to an unmodulated param — the
+    /// control works until someone deletes its LFO. Owning both halves is what
+    /// [`AudioParam`](crate::graph::AudioParam) is for, and inserting one is
+    /// the public way to author a param value.
+    pub(crate) fn set_base(&self, entity: Entity, param: ParamAddr, base: f32) -> bool {
         match self.targets.get(&(entity, param)) {
             Some(target) => {
                 target.set_base(base);
@@ -236,4 +242,125 @@ pub fn drive(
     *last_steady = Some(steady);
 
     driver.run(transport.settings.beat(), Seconds(elapsed as f32));
+}
+
+#[cfg(test)]
+mod tests {
+    //! `set_base` is crate-internal, so its tests live here rather than in
+    //! `tests/`. They still build a real `App` and assert on the node's own
+    //! atomic — the visibility changed, not the rigor.
+
+    use super::*;
+    use bevy_app::prelude::*;
+
+    use crate::graph::{AudioGraphRes, GraphReconcilePlugin, TransportRes};
+    use crate::modulation::{
+        LfoShape, ModParamRange, ModRate, ModRoute, ModSource, ModTargetRegistry,
+        TuttiModulationPlugin,
+    };
+    use crate::AudioEngineState;
+    use tutti_core::dsp::Net;
+    use tutti_core::transport::Transport;
+    use tutti_core::AudioNode;
+    use tutti_types::{Depth, Hz, UnitParam};
+    use tutti_units::DistortionNode;
+
+    const BASE_DRIVE: f32 = 5.0;
+
+    fn app_with_graph() -> (App, Entity) {
+        let mut app = App::new();
+
+        let mut net = Net::new(0, 1);
+        let node = net.push(Box::new(DistortionNode::new(
+            tutti_units::ShapeKind::Tanh,
+            1.0,
+        )));
+        net.pipe_output(node);
+
+        app.insert_resource(AudioGraphRes(net));
+        app.insert_resource(TransportRes(Transport::new(48_000.0)));
+        app.insert_resource(AudioEngineState::Running);
+        app.add_plugins((GraphReconcilePlugin, TuttiModulationPlugin));
+        app.world_mut()
+            .resource_mut::<ModTargetRegistry>()
+            .register::<DistortionNode>();
+
+        let target = app.world_mut().spawn(AudioNode(node)).id();
+        app.world_mut()
+            .entity_mut(target)
+            .insert(ModParamRange::default().with(
+                ParamAddr::Unit(UnitParam::Drive),
+                BASE_DRIVE,
+                0.0,
+                10.0,
+            ));
+        (app, target)
+    }
+
+    fn node_drive(app: &App, entity: Entity) -> f32 {
+        let node = app.world().get::<AudioNode>(entity).unwrap().0;
+        app.world()
+            .resource::<AudioGraphRes>()
+            .0
+            .node_as::<DistortionNode>(node)
+            .unwrap()
+            .drive()
+            .load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    fn advance_transport(app: &mut App, samples: i64) {
+        let transport = app.world().resource::<TransportRes>().clone();
+        let current = transport.settings.steady_time();
+        transport
+            .settings
+            .steady_time
+            .store(current + samples, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[test]
+    fn set_base_moves_a_modulated_param_without_fighting_the_driver() {
+        // The single-writer rule in practice: an authored change lands on the
+        // accumulator's base, so the next flush carries it rather than
+        // reverting it. Writing the node atomic directly loses it in a frame.
+        let (mut app, target) = app_with_graph();
+        let lfo = app
+            .world_mut()
+            // A square at zero rate holds a constant offset rather than
+            // sweeping — the base shift stays legible against it.
+            .spawn((
+                ModSource::new(LfoShape::Square),
+                ModRate::free_running(Hz(0.0)),
+            ))
+            .id();
+        app.world_mut().spawn(
+            ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.1)),
+        );
+
+        app.update();
+        let before = node_drive(&app, target);
+
+        let matrix = app.world().resource::<ModulationMatrix>();
+        assert!(matrix.set_base(target, ParamAddr::Unit(UnitParam::Drive), 8.0));
+
+        advance_transport(&mut app, 480);
+        app.update();
+        let after = node_drive(&app, target);
+
+        assert!(
+            (after - before - 3.0).abs() < 0.2,
+            "base moved 5 -> 8, so the value should follow: {before} -> {after}"
+        );
+    }
+
+    #[test]
+    fn set_base_declines_a_param_it_does_not_own() {
+        let (mut app, target) = app_with_graph();
+        app.update();
+
+        let matrix = app.world().resource::<ModulationMatrix>();
+        assert!(
+            !matrix.set_base(target, ParamAddr::Unit(UnitParam::Drive), 8.0),
+            "nothing routes here, so the caller owns the write"
+        );
+    }
 }

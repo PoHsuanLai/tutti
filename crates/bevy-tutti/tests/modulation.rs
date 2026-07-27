@@ -206,54 +206,11 @@ fn the_claim_set_reports_which_params_are_modulated() {
     assert!(!matrix.is_modulated(target, ParamAddr::Unit(UnitParam::Cutoff)));
 }
 
-#[test]
-fn set_base_moves_a_modulated_param_without_fighting_the_driver() {
-    // The single-writer rule in practice: an authored change lands on the
-    // accumulator's base, so the next flush carries it rather than reverting
-    // it. Writing the node atomic directly would lose the value within a frame.
-    let (mut app, target) = app_with_graph();
-    declare_drive_range(&mut app, target, 5.0);
-    let lfo = app
-        .world_mut()
-        // A square at full depth so the offset is a constant ±1 rather than
-        // sweeping — the base shift stays legible against it.
-        .spawn((
-            ModSource::new(LfoShape::Square),
-            ModRate::free_running(Hz(0.0)),
-        ))
-        .id();
-    app.world_mut().spawn(
-        ModRoute::new(lfo, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.1)),
-    );
-
-    app.update();
-    let before = node_drive(&app, target);
-
-    let matrix = app.world().resource::<ModulationMatrix>();
-    assert!(matrix.set_base(target, ParamAddr::Unit(UnitParam::Drive), 8.0));
-
-    advance_transport(&mut app, 480);
-    app.update();
-    let after = node_drive(&app, target);
-
-    assert!(
-        (after - before - 3.0).abs() < 0.2,
-        "base moved 5 -> 8, so the value should follow: {before} -> {after}"
-    );
-}
-
-#[test]
-fn set_base_declines_a_param_it_does_not_own() {
-    let (mut app, target) = app_with_graph();
-    declare_drive_range(&mut app, target, 5.0);
-    app.update();
-
-    let matrix = app.world().resource::<ModulationMatrix>();
-    assert!(
-        !matrix.set_base(target, ParamAddr::Unit(UnitParam::Drive), 8.0),
-        "nothing routes here, so the caller owns the write"
-    );
-}
+// The two `set_base` tests moved into `modulation/driver.rs` when the method
+// became `pub(crate)` — an integration test cannot reach it. They still build a
+// real `App` and assert on the node's atomic; only their address changed. The
+// public path they used to stand in for is covered by
+// `an_authored_write_to_a_modulated_param_moves_the_base` in `audio_param.rs`.
 
 #[test]
 fn removing_a_route_returns_the_param_to_its_base() {

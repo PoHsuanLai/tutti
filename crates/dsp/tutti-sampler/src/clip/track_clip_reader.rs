@@ -27,6 +27,7 @@ use super::streaming_sampler::StreamingClipReader;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
+use tutti_core::transport::BeatCursor;
 use tutti_core::{
     Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Cents, PlaybackRate,
     SamplePosition, SignalFrame, StretchFactor, Timeline, Wave,
@@ -445,6 +446,27 @@ impl ClipSlot {
     /// uses this to decide whether to build one.
     fn needs_stretch(&self) -> bool {
         stretch_wanted(&self.voice.play)
+    }
+
+    /// Drop every sample of audio this slot is holding mid-flight.
+    ///
+    /// Called from two places, which is why it is one function: `AudioUnit::reset`
+    /// (a graph-level reset) and the per-block seek check (a transport
+    /// discontinuity). They must clear exactly the same state — a seek that
+    /// flushed less than a reset would leave a subset of the stale audio behind,
+    /// which sounds like an intermittent artifact rather than a bug.
+    ///
+    /// The stretch filter is the state that matters. A placed source re-derives
+    /// its position from the playhead every block, so it is correct the instant
+    /// the playhead moves; the vocoder's FIFOs and per-bin phase accumulators are
+    /// not, and nothing else clears them.
+    ///
+    /// RT-safe: `Vocoder::reset` is buffer fills and cursor resets, no allocation.
+    fn flush_playhead_state(&mut self) {
+        self.voice.source.as_audio_unit_mut().reset();
+        if let Some(unit) = &mut self.stretch {
+            unit.reset();
+        }
     }
 
     /// Update the stretch factors — the only entry point for mutating them.
@@ -961,6 +983,23 @@ pub struct TrackClipReaderUnit {
     /// against `outputs()`. A width that followed its contents would re-arity a
     /// live graph node the moment a clip landed.
     channels: usize,
+
+    /// Detects transport discontinuities, so buffered audio can be flushed on a
+    /// seek. `None` when there is no transport to watch (free-running / detached).
+    ///
+    /// **One cursor for the whole reader, not one per slot.** Every slot reads the
+    /// same transport, so N cursors would be N redundant atomic loads per block
+    /// and N chances to disagree about whether the playhead moved — and a
+    /// disagreement would flush some slots and not others, which is worse than
+    /// flushing none.
+    ///
+    /// Held here rather than derived per block because the detection *is* the
+    /// state: a jump is a fact about two consecutive readings, so something has to
+    /// remember the previous one. [`BeatCursor`] is that memory, and it already
+    /// handles the paused case (a seek made while stopped is reconciled rather
+    /// than reported) and clones by sharing, so fundsp's clone-on-commit does not
+    /// restart playback.
+    cursor: Option<BeatCursor>,
 }
 
 // Hand-rolled: `clips` holds non-`Debug` `ClipSlot`s (each wraps a sampler +
@@ -1004,6 +1043,9 @@ impl TrackClipReaderUnit {
             clips: Vec::with_capacity(MAX_RESIDENT_CLIPS),
             rx,
             sample_rate: 44100.0,
+            cursor: transport
+                .as_ref()
+                .map(|t| BeatCursor::new(Arc::clone(t), 44100.0)),
             transport,
             butler,
             channels: channels.max(1),
@@ -1057,6 +1099,39 @@ impl TrackClipReaderUnit {
             sample_rate: unit.sample_rate,
         };
         (unit, handle)
+    }
+
+    /// Flush every slot's buffered audio if the playhead moved discontinuously.
+    ///
+    /// Called once per block from both `tick` and `process`, right after the
+    /// command drain. The check is one [`BeatCursor::advance`] — two atomic loads
+    /// and a comparison — and on the overwhelmingly common continuous block it
+    /// does nothing else.
+    ///
+    /// **Why anything is needed at all:** [`Timeline`] is poll-only. It reports
+    /// where the playhead *is*, never that it moved discontinuously, and it
+    /// cannot — "since when" differs per observer, so a shared `last_beat` on the
+    /// transport would be overwritten by whichever reader polled last. Each
+    /// observer keeps its own cursor; this is the sampler's.
+    ///
+    /// **Either direction, not just backward.** A backward jump is the obvious
+    /// case, but a forward scrub is equally destructive to a FIFO: the buffer
+    /// keeps draining the old region's material over the new one. Hence
+    /// [`BeatWindowSync::is_discontinuous`] rather than a `Rewound` match — the
+    /// distinction the MIDI consumers need (their sorted-list cursors
+    /// self-correct forward) is not one buffered audio can afford.
+    #[inline]
+    fn flush_on_seek(&mut self, block_size: usize) {
+        let Some(cursor) = &self.cursor else { return };
+        let Some((_, sync)) = cursor.advance(block_size) else {
+            return;
+        };
+        if !sync.is_discontinuous() {
+            return;
+        }
+        for slot in &mut self.clips {
+            slot.flush_playhead_state();
+        }
     }
 
     /// Number of clip slots currently materialised (drained from the command
@@ -1414,6 +1489,9 @@ impl Clone for TrackClipReaderUnit {
                 .collect(),
             rx: self.rx.clone(),
             sample_rate: self.sample_rate,
+            // Shares the underlying cursor cell, so a clone-on-commit does not
+            // read as a discontinuity and restart playback.
+            cursor: self.cursor.clone(),
             transport: self.transport.clone(),
             butler: self.butler.clone(),
             channels: self.channels,
@@ -1432,10 +1510,7 @@ impl AudioUnit for TrackClipReaderUnit {
 
     fn reset(&mut self) {
         for slot in &mut self.clips {
-            slot.voice.source.as_audio_unit_mut().reset();
-            if let Some(unit) = &mut slot.stretch {
-                unit.reset();
-            }
+            slot.flush_playhead_state();
         }
     }
 
@@ -1459,6 +1534,9 @@ impl AudioUnit for TrackClipReaderUnit {
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         self.sample_rate = sample_rate.get();
+        if let Some(cursor) = &mut self.cursor {
+            cursor.set_sample_rate(sample_rate.get());
+        }
         for slot in &mut self.clips {
             slot.voice
                 .source
@@ -1473,6 +1551,9 @@ impl AudioUnit for TrackClipReaderUnit {
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
         self.drain_commands();
+        // One frame is one "block" here: `tick` is the per-sample entry point, so
+        // the forward-jump slack is measured in single samples rather than 64.
+        self.flush_on_seek(1);
 
         let n = self.channels.min(output.len()).min(MAX_SAMPLER_CHANNELS);
         if n == 0 {
@@ -1495,6 +1576,7 @@ impl AudioUnit for TrackClipReaderUnit {
 
     fn process(&mut self, size: usize, _input: &BufferRef, output: &mut BufferMut) {
         self.drain_commands();
+        self.flush_on_seek(size.max(1));
 
         let n = self
             .channels
@@ -1820,6 +1902,95 @@ mod tests {
             after_seek < 0.01,
             "stretch filter leaked pre-seek audio across a transport jump: \
              peak {after_seek} (the source is silent at this playhead)"
+        );
+    }
+
+    /// Continuous playback must NOT flush — the false positive that matters.
+    ///
+    /// A jump threshold set too tight fires on ordinary blocks, so the vocoder
+    /// resets constantly and its output becomes a stutter of ~50 ms fragments.
+    /// Nothing else in the suite would see it: every other stretch assertion is
+    /// `!= 0.0` or `> 1e-6`, and a stuttering stretcher is still non-zero. So
+    /// this asserts *continuity of level* across hundreds of ordinary blocks —
+    /// after the pipeline fills, no block may collapse to silence.
+    ///
+    /// # Currently ignored: it fails on a SEPARATE, pre-existing bug
+    ///
+    /// It measures 32/256 silent blocks — and so does the same measurement taken
+    /// at `stretch::Unit` directly, with no transport and no flushing involved.
+    /// So the dropouts are not spurious flushes; the stretcher stutters on its
+    /// own.
+    ///
+    /// The cause is an unbounded backlog in `OverlapAdd`. At stretch `s`, one
+    /// frame consumes `hop` input samples and writes `hop * s` output samples,
+    /// while `tick` pushes and pops exactly one sample per call. For `s > 1` the
+    /// ring therefore grows by `hop * (s - 1)` per frame, without bound — 31,743
+    /// samples pending against a `window * 4` = 8,192 capacity when measured — so
+    /// the write cursor laps the read cursor and overwrites audio that was never
+    /// read. No fixed capacity fixes it; the drain rate has to match, which is a
+    /// design question about what `tick` means for a rate-changing filter.
+    ///
+    /// Un-ignore this together with that fix. Keeping it here, ignored and
+    /// explained, is deliberate: the assertion is the right one, and it is the
+    /// only thing in the suite that can see either bug.
+    #[test]
+    #[ignore = "fails on the pre-existing OverlapAdd backlog overflow, not on flushing"]
+    fn continuous_playback_does_not_flush_the_stretch_filter() {
+        const SR: f64 = 44_100.0;
+        const LEN: usize = 441_000;
+
+        // Steady 3 kHz throughout: any dropout is the filter being reset, not the
+        // material.
+        let data: Vec<f32> = (0..LEN)
+            .map(|i| 0.5 * (std::f32::consts::TAU * 3000.0 * i as f32 / SR as f32).sin())
+            .collect();
+        let wave = Arc::new(Wave::from_samples(SR, &data));
+
+        let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+        let (mut unit, handle) =
+            TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 1);
+
+        let sampler = SamplerUnit::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+        handle.send(ClipCommand::AddVoice {
+            id: SlotId(1),
+            voice: Box::new(Voice {
+                source: VoiceSource::Ram(sampler),
+                play: Playback {
+                    stretch: StretchFactor::new(2.0),
+                    ..Playback::default()
+                },
+                channel_index: None,
+            }),
+            stretch: None,
+        });
+
+        let mut out = [0.0f32; 1];
+        // Fill the vocoder pipeline first: the opening blocks are legitimately
+        // quiet while the FIFOs and overlap-add tail prime.
+        for _ in 0..16_384 {
+            unit.tick(&[], &mut out);
+            transport.advance(1, SR);
+        }
+        assert!(unit.clips[0].needs_stretch(), "stretch path must be live");
+
+        // Steady state: measure per-block peaks and require every one to carry
+        // signal. A reset mid-run empties the FIFO, so the following block is
+        // silent — which is exactly what this catches.
+        let mut quiet_blocks = 0usize;
+        for _ in 0..256 {
+            let mut peak = 0.0f32;
+            for _ in 0..64 {
+                unit.tick(&[], &mut out);
+                transport.advance(1, SR);
+                peak = peak.max(out[0].abs());
+            }
+            if peak < 0.01 {
+                quiet_blocks += 1;
+            }
+        }
+        assert_eq!(
+            quiet_blocks, 0,
+            "continuous playback flushed the filter: {quiet_blocks}/256 blocks fell silent"
         );
     }
 

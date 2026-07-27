@@ -28,8 +28,9 @@ use bevy_app::App;
 use bevy_ecs::prelude::*;
 
 use tutti_mod::{ErasedModulator, Modulator, SourceRate};
+use tutti_types::{Hz, Param, ParamAddr, UnitParam};
 
-use crate::modulation::components::ModRate;
+use crate::modulation::components::{ModRate, ModRoute};
 
 /// A component that describes how to build one kind of modulator.
 ///
@@ -89,6 +90,45 @@ pub(crate) fn clear_collected(mut collected: ResMut<CollectedModSources>) {
     collected.sources.clear();
 }
 
+/// Give every source a route points at the cell its rate will be read from.
+///
+/// Runs ahead of [`mark_dirty`], and that ordering is the whole reason it is a
+/// system of its own. The cell must exist *before* [`collect`] builds the
+/// [`Sourced`](tutti_mod::Sourced) that reads it, but only a route declares
+/// that a rate is modulated — and routes are resolved by
+/// [`rebuild`](super::rebuild), which runs after both. Adding the cell here
+/// closes that gap: the route is seen one frame, the cell exists from that
+/// frame on, and every later rebuild finds it already in place.
+///
+/// Adding the component marks the entity changed, so `mark_dirty` sees it in
+/// the same frame and the rebuild that follows picks it up — no extra dirty
+/// signal, and no frame where a modulated rate is silently still constant.
+pub(crate) fn ensure_rate_cells(
+    mut commands: Commands,
+    routes: Query<&ModRoute>,
+    sources: Query<(&ModRate, Option<&ModRateCell>)>,
+) {
+    for route in &routes {
+        // Only a route onto a *rate* needs one. Every other param on a source
+        // entity — or any route onto an ordinary node — is unaffected.
+        if route.param != ParamAddr::Unit(UnitParam::Rate) {
+            continue;
+        }
+        let Ok((rate, existing)) = sources.get(route.target) else {
+            continue;
+        };
+        if existing.is_some() {
+            continue;
+        }
+        // Seed with the authored frequency so the first frame after wiring is
+        // continuous — the source keeps running at the rate it already had
+        // until an accumulator actually moves the cell.
+        commands
+            .entity(route.target)
+            .insert(ModRateCell::new(rate.frequency));
+    }
+}
+
 /// Report whether kind `K`'s declaration moved this frame.
 ///
 /// Split from [`collect`] and scheduled ahead of it because **building a source
@@ -120,14 +160,14 @@ fn mark_dirty<K: ModSourceKind>(
 /// how `rebuild` stays free of every modulator type.
 fn collect<K: ModSourceKind>(
     mut collected: ResMut<CollectedModSources>,
-    sources: Query<(Entity, &K, &ModRate)>,
+    sources: Query<(Entity, &K, &ModRate, Option<&ModRateCell>)>,
 ) {
     if !collected.dirty {
         return;
     }
-    for (entity, kind, rate) in &sources {
+    for (entity, kind, rate, cell) in &sources {
         let source: Box<dyn ErasedModulator> =
-            Box::new(tutti_mod::Sourced::new(kind.build(), source_rate(rate)));
+            Box::new(tutti_mod::Sourced::new(kind.build(), source_rate(rate, cell)));
         collected.sources.push((entity, source));
     }
 }
@@ -178,11 +218,64 @@ pub enum ModSourceSystems {
 #[derive(Resource, Default)]
 struct RegisteredModSources(std::collections::HashSet<core::any::TypeId>);
 
+/// The live cell a source's frequency is read from, when its rate is itself
+/// modulated.
+///
+/// Present only on a source entity something routes *to* — added by
+/// [`rebuild`](super::rebuild) when it resolves such a route, not by the user.
+/// Its absence is the ordinary case and means the rate is the constant in
+/// [`ModRate`].
+///
+/// It is a **component, not a build-time value**, and that is load-bearing:
+/// [`collect`] reconstructs every [`Sourced`](tutti_mod::Sourced) on each
+/// rebuild, so a cell minted there would be a fresh one each time and the
+/// accumulator writing the *previous* cell would go unread. Living on the
+/// entity, it outlives every rebuild and both halves keep pointing at one cell.
+#[derive(Component, Debug, Clone)]
+pub struct ModRateCell(pub(crate) Param<Hz>);
+
+impl ModRateCell {
+    /// A cell seeded with `frequency` — the rate the source ran at before
+    /// anything modulated it, so the first frame after wiring is continuous.
+    pub(crate) fn new(frequency: Hz) -> Self {
+        Self(Param::new(frequency))
+    }
+
+    /// The shared atomic, for the accumulator that drives this rate.
+    ///
+    /// This must be the cell the [`Sourced`](tutti_mod::Sourced) reads — handing
+    /// an accumulator any other atomic type-checks, runs, and modulates nothing.
+    ///
+    /// Public so a host can identify the cell (compare allocations, hand it to
+    /// its own meter); it is a read handle, not a licence to write — the
+    /// accumulator is the single writer.
+    pub fn as_atomic(&self) -> std::sync::Arc<atomic_float::AtomicF32> {
+        self.0.as_atomic()
+    }
+
+    /// The frequency the source is running at *now* — the authored rate until
+    /// modulation moves it, and the modulated value thereafter.
+    ///
+    /// This is the live read a UI wants: [`ModRate::frequency`] is what the user
+    /// authored and does not move.
+    pub fn frequency(&self) -> Hz {
+        self.0.load()
+    }
+}
+
 /// Turn a [`ModRate`] component into the engine's [`SourceRate`].
-pub(crate) fn source_rate(rate: &ModRate) -> SourceRate {
+///
+/// `cell` is `Some` only when this source's own rate is modulated, in which
+/// case the frequency is read from it each frame and [`ModRate::frequency`]
+/// serves only as the value it was seeded with.
+pub(crate) fn source_rate(rate: &ModRate, cell: Option<&ModRateCell>) -> SourceRate {
+    let frequency: tutti_mod::Rate = match cell {
+        Some(cell) => cell.0.clone().into(),
+        None => rate.frequency.into(),
+    };
     if rate.beat_synced {
-        SourceRate::beat_synced(rate.frequency, rate.phase_offset)
+        SourceRate::beat_synced(frequency, rate.phase_offset)
     } else {
-        SourceRate::free_running(rate.frequency, rate.phase_offset)
+        SourceRate::free_running(frequency, rate.phase_offset)
     }
 }

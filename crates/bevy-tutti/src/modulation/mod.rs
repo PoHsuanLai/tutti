@@ -31,6 +31,32 @@
 //! [`set_base`](ModulationMatrix::set_base) when the answer is yes, so the value
 //! lands *under* the modulation instead of fighting it.
 //!
+//! # Cascading — modulating a source's own rate
+//!
+//! A [`ModSource`] entity is itself routable. Declare its
+//! [`UnitParam::Rate`](tutti_types::UnitParam::Rate) modulatable and route to
+//! it like any other param:
+//!
+//! ```rust,ignore
+//! let carrier = commands.spawn((
+//!     ModSource::new(LfoShape::Sine),
+//!     ModRate::free_running(Hz(2.0)),
+//!     ModParamRange::default().with(ParamAddr::Unit(UnitParam::Rate), 2.0, 2.0, 10.0),
+//! )).id();
+//!
+//! commands.spawn(ModRoute::new(slow_lfo, carrier, ParamAddr::Unit(UnitParam::Rate)));
+//! ```
+//!
+//! A source carries no `AudioNode`, so the registry's downcast path cannot
+//! serve this; the resolver tries a source's rate first and hands back an
+//! accumulator mirroring into that entity's [`ModRateCell`] — the same cell the
+//! running modulator reads its frequency from. `ModRateCell` is added
+//! automatically when a route asks for one, and is a *component* precisely so it
+//! outlives the rebuilds that reconstruct every source.
+//!
+//! Read the live rate with [`ModRateCell::frequency`];
+//! [`ModRate::frequency`](ModRate) stays what the user authored.
+//!
 //! # What the host must supply
 //!
 //! Resolving a param to an accumulator needs a downcast to a concrete node type
@@ -51,7 +77,9 @@ pub use components::{
     CurveType, LfoShape, ModParamRange, ModRate, ModRoute, ModSource, ParamRange, Polarity,
 };
 pub use driver::{drive, rebuild, ModulationMatrix, ParamKey};
-pub use source::{CollectedModSources, ModSourceAppExt, ModSourceKind, ModSourceSystems};
+pub use source::{
+    CollectedModSources, ModRateCell, ModSourceAppExt, ModSourceKind, ModSourceSystems,
+};
 pub use target::{ModBusRes, ModTargetRegistry, ModTargetResolver};
 
 use bevy_app::{App, Plugin, Update};
@@ -93,6 +121,10 @@ impl Plugin for TuttiModulationPlugin {
             Update,
             (
                 source::clear_collected.before(ModSourceSystems::MarkDirty),
+                // Before `MarkDirty` so that inserting a cell is itself seen as
+                // a change this frame, and before `Collect` so the source is
+                // built already reading it.
+                source::ensure_rate_cells.before(ModSourceSystems::MarkDirty),
                 rebuild
                     .after(ModSourceSystems::Collect)
                     .before(GraphReconcileSystems::Params),

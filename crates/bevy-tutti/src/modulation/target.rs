@@ -93,25 +93,68 @@ pub struct ModTargetResolver<'w, 's> {
     registry: Res<'w, ModTargetRegistry>,
     bus: Res<'w, ModBusRes>,
     nodes: Query<'w, 's, &'static AudioNode>,
+    /// Source entities whose own rate is modulated. A separate query because a
+    /// modulation source is *not* a graph node — see [`resolve`](Self::resolve).
+    rate_cells: Query<'w, 's, &'static crate::modulation::ModRateCell>,
 }
 
 impl ModTargetResolver<'_, '_> {
-    /// The accumulator for `param` on `entity`, or `None` if the entity has no
-    /// graph node yet, or its node type was never registered, or that node type
-    /// does not expose this param.
+    /// The accumulator for `param` on `entity`, or `None` if nothing on this
+    /// entity exposes it.
     ///
-    /// All three are ordinary — a node materialises a frame after its entity,
-    /// and a param a node does not expose is a routing mistake the user can see
-    /// and fix — so this returns `None` rather than logging. A route that cannot
-    /// resolve is skipped and retried on the next rebuild.
+    /// Two kinds of target, tried in order:
+    ///
+    /// 1. **A modulation source's own rate** — the cascade case. It is tried
+    ///    first because it is the cheap, exact one: a source entity carries a
+    ///    [`ModRateCell`](crate::modulation::ModRateCell) and no `AudioNode`, so
+    ///    the graph path below could never have served it. The accumulator
+    ///    mirrors straight into that cell, which is what makes an LFO able to
+    ///    drive another LFO's rate.
+    /// 2. **A graph node's param** — the ordinary case, resolved by downcast
+    ///    through the registry.
+    ///
+    /// `None` covers several ordinary situations — the entity has no graph node
+    /// yet (a node materialises a frame after its entity), its node type was
+    /// never registered, or that type does not expose this param. A route that
+    /// cannot resolve is skipped and retried on the next rebuild rather than
+    /// logged.
     pub fn resolve(
         &self,
         entity: Entity,
         param: ParamAddr,
         range: &ParamRange,
     ) -> Option<Arc<dyn ModTarget>> {
+        if let Some(target) = self.resolve_rate(entity, param, range) {
+            return Some(target);
+        }
         let node = self.nodes.get(entity).ok()?;
         self.registry.resolve(&self.graph, node.0, param, range)
+    }
+
+    /// The accumulator for a source's own rate — an [`AtomicTarget`] mirroring
+    /// into the very cell the source reads its frequency from.
+    ///
+    /// Sharing that one cell is the entire mechanism, and getting it wrong
+    /// fails silently: an accumulator pointed at any other atomic type-checks,
+    /// runs, and modulates nothing. Hence
+    /// [`ModRateCell::as_atomic`](crate::modulation::ModRateCell::as_atomic)
+    /// rather than a fresh `Param`.
+    fn resolve_rate(
+        &self,
+        entity: Entity,
+        param: ParamAddr,
+        range: &ParamRange,
+    ) -> Option<Arc<dyn ModTarget>> {
+        if param != ParamAddr::Unit(tutti_types::UnitParam::Rate) {
+            return None;
+        }
+        let cell = self.rate_cells.get(entity).ok()?;
+        Some(Arc::new(tutti_mod::AtomicTarget::with_mirror(
+            range.base,
+            range.min,
+            range.max,
+            cell.as_atomic(),
+        )))
     }
 
     pub fn bus(&self) -> Arc<ModBus> {

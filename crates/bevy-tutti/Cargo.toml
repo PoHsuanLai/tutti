@@ -166,3 +166,9 @@ tempfile = "3.8"
 # NOTE: examples 29_node_entities / 30_full_pipeline were removed — they
 # demonstrated engine-side ECS param reconcile (Volume/SamplerSpeed/…), which
 # moved app-side to dawai_model::engine_bind ("engine Bevy = Net pump only").
+# `AudioParam` brought the generic half of that reconcile back engine-side, so a
+# param example belongs here again — but only the modulation-aware read path,
+# which is the part an app cannot reconstruct on its own.
+[[example]]
+name = "modulated_fader"
+required-features = ["modulation"]

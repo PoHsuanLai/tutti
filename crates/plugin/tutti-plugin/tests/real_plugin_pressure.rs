@@ -138,10 +138,17 @@ fn load_n(
                 units.push(unit);
                 handles.push(handle);
             }
-            Err(e) => {
-                eprintln!("instance {i} ({path}) failed to load: {e} — skipping test");
-                return None;
-            }
+            // A plugin that is *installed* but will not load is a failure, not a
+            // reason to skip. Skipping here made every test in this file report
+            // `ok` while loading nothing and asserting nothing — which is how a
+            // server-side regression that broke plugin loading outright went
+            // unnoticed through a full run. "Absent" and "broken" are different
+            // answers and only the first is a skip.
+            Err(e) => panic!(
+                "instance {i} ({path}) is installed but failed to load: {e}\n\
+                 This is a real failure. If the plugin is genuinely unavailable, \
+                 remove it from EFFECTS rather than letting the suite pass vacuously."
+            ),
         }
     }
     Some((units, handles))

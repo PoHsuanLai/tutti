@@ -282,17 +282,67 @@ fn drive_blocks_with_gap(blocks: usize, gap: std::time::Duration) -> Vec<Vec<Vec
         );
 
         if !gap.is_zero() {
-            std::thread::sleep(gap);
+            wait_for_reply(&bridge, block as u64 + 1, gap);
         }
     }
 
     captured
 }
 
-/// Realistic spacing: a 64-sample block at 48 kHz is ~1.33 ms; 5 ms leaves the
-/// bridge thread unambiguously idle between blocks, so a stale reply would have
-/// had every chance to be sitting in the queue.
-const CALLBACK_GAP: std::time::Duration = std::time::Duration::from_millis(5);
+/// Wait until block `seq`'s output has been published, or `budget` elapses.
+///
+/// Replaces a bare `sleep(gap)`. The sleep encoded a *hope* — that 5 ms is
+/// always enough for the mock server to reply — and on a loaded machine it is
+/// not: the reply lands after the sleep, the next block reads its slot as
+/// unpublished, and the test fails with "block N: got silence". That is a defect
+/// in the harness's premise, not in the pipeline, and it was reproducible at
+/// roughly 1 run in 8 under heavy CPU load.
+///
+/// Waiting on the condition rather than on the clock removes the guess. The
+/// budget stays only so a genuinely broken pipeline fails the assertion instead
+/// of hanging, and it is spent in short slices so the common case still returns
+/// promptly.
+fn wait_for_reply(bridge: &PluginBridge, seq: u64, budget: std::time::Duration) {
+    const SLICE: std::time::Duration = std::time::Duration::from_micros(200);
+    let deadline = std::time::Instant::now() + budget;
+    while std::time::Instant::now() < deadline {
+        if bridge.audio_buffer().has_output(seq) {
+            return;
+        }
+        std::thread::sleep(SLICE);
+    }
+}
+
+/// Upper bound on how long to wait for a block's reply before giving up and
+/// letting the assertion speak.
+///
+/// Was a fixed inter-block sleep chosen to exceed a 64-sample block's ~1.33 ms
+/// at 48 kHz. It is now a *timeout* on [`wait_for_reply`] rather than a
+/// duration that is always spent: the common case returns as soon as the server
+/// publishes, and a loaded machine gets as much of the budget as it needs
+/// instead of failing because 5 ms happened not to be enough.
+const CALLBACK_GAP: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Serialises the tests whose assertions are about wall clock.
+///
+/// `cargo test` runs test functions on parallel threads, and the tests below
+/// pace themselves to the audio callback rate: [`CALLBACK_GAP`] is only long
+/// enough for the mock server's reply if the machine is not simultaneously
+/// running several other mock servers. Under load a reply lands *after* the gap
+/// and the block reads as silence — a real failure of the harness's premise, not
+/// of the pipeline, and it surfaces as an unexplained "block N was silent".
+///
+/// A lock rather than a `--test-threads=1` note: a note is something a future
+/// runner has to know, and its absence shows up as a mystifying failure. Same
+/// reasoning and shape as `real_plugin_pressure.rs`'s `EXCLUSIVE`.
+static EXCLUSIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the machine for the duration of a timing-sensitive test. Poisoning is
+/// irrelevant — the guard protects wall clock, not data — so one panicking test
+/// must not wedge every later one.
+fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+    EXCLUSIVE.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Classify what a block's output actually is, so a failure names the defect
 /// instead of just printing two numbers.
@@ -336,6 +386,7 @@ fn diagnose(block: usize, got: &[Vec<f32>]) -> String {
 /// while silently making PDC under-compensate by 1.33 ms.
 #[test]
 fn pipeline_output_lags_input_by_exactly_one_block() {
+    let _lock = exclusive();
     let blocks = 5;
     let captured = drive_blocks_with_gap(blocks, CALLBACK_GAP);
 
@@ -369,6 +420,7 @@ fn pipeline_output_lags_input_by_exactly_one_block() {
 /// block behind — never this block's own input echoed back, never two behind.
 #[test]
 fn pipeline_steady_state_is_not_echoed_or_doubly_stale() {
+    let _lock = exclusive();
     let blocks = 6;
     let captured = drive_blocks_with_gap(blocks, CALLBACK_GAP);
 
@@ -475,6 +527,7 @@ fn a_missing_reply_yields_silence_never_stale_audio() {
 /// intermittent failures.
 #[test]
 fn stalled_plugins_do_not_stall_the_audio_thread() {
+    let _lock = exclusive();
     use std::time::{Duration, Instant};
 
     const PLUGINS: usize = 3;

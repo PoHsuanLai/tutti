@@ -94,6 +94,16 @@ libloading = "0.8"
 # no chance to cooperate.
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+# Same duty as `libc` above, but Windows has no `getppid` and does not reparent
+# orphans, so the parent PID has to be found by walking the process table
+# (`CreateToolhelp32Snapshot`) and then probed for liveness.
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # RT-safety regression: prove the per-block audio path never allocates.
 assert_no_alloc = { version = "1", default-features = false }

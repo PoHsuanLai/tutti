@@ -151,10 +151,29 @@ fn wait_for_connection(listener: &PlatformListener) -> Result<()> {
     }
 }
 
-/// Windows has no `getppid` equivalent to key on, so there is nothing to wait
-/// for beyond the accept itself; the blocking accept below is the whole
-/// behaviour, as it was before.
-#[cfg(not(unix))]
+/// Windows counterpart of the poll loop above.
+///
+/// Windows named pipes expose no fd to `poll`, and `interprocess` gives no
+/// timed accept, so liveness is checked *before* committing to a blocking
+/// accept rather than interleaved with it. That is a weaker guarantee than the
+/// Unix arm: a host that dies while we are already blocked in `accept` is not
+/// noticed until it connects or the process is killed. It still covers the case
+/// that actually strands servers — the host dying between spawn and connect.
+#[cfg(windows)]
+fn wait_for_connection(_listener: &PlatformListener) -> Result<()> {
+    if !parent_is_alive() {
+        tracing::info!("host process is gone before it connected; exiting rather than waiting");
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "host process exited before connecting",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Neither Unix nor Windows: nothing to key on, so wait in `accept` as before.
+#[cfg(not(any(unix, windows)))]
 fn wait_for_connection(_listener: &PlatformListener) -> Result<()> {
     Ok(())
 }
@@ -169,4 +188,77 @@ fn wait_for_connection(_listener: &PlatformListener) -> Result<()> {
 fn parent_is_alive() -> bool {
     // SAFETY: `getppid` takes no arguments, touches no memory, and cannot fail.
     unsafe { libc::getppid() > 1 }
+}
+
+/// Whether the process that spawned us is still running.
+///
+/// Windows has no `getppid` and, crucially, **does not reparent orphans**: the
+/// parent PID recorded for this process stays whatever it was, pointing at a
+/// dead process rather than at init. So the Unix trick of comparing against
+/// pid 1 has no analogue, and the check is necessarily two steps — find the
+/// parent PID by walking the process table, then ask whether that PID is alive.
+///
+/// PIDs are reused on Windows, so a false *positive* is possible if the parent
+/// died and its PID was recycled before this ran. That errs toward waiting,
+/// which is the pre-existing behaviour and the safe direction: this check exists
+/// to stop stranded servers, and a stranded server is better than one that exits
+/// while its host is still coming up.
+#[cfg(windows)]
+fn parent_is_alive() -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    };
+
+    let Some(parent_pid) = parent_pid() else {
+        // Could not determine it — assume alive and keep waiting.
+        return true;
+    };
+
+    // SAFETY: `OpenProcess` takes only scalars. A null return means the process
+    // is gone or inaccessible; the handle is closed on every path below.
+    let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, parent_pid) };
+    if handle.is_null() {
+        return false;
+    }
+    // A process handle becomes signalled when the process exits, so a zero-length
+    // wait is a liveness probe: still running => WAIT_TIMEOUT.
+    // SAFETY: `handle` is a valid handle we just opened.
+    let alive = unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT;
+    // SAFETY: closing a handle we opened and have not closed.
+    unsafe { CloseHandle(handle) };
+    return alive;
+
+    /// Our parent's PID, from the process table. `None` if it cannot be found.
+    fn parent_pid() -> Option<u32> {
+        let me = std::process::id();
+        // SAFETY: scalar arguments; the returned handle is closed below.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return None;
+        }
+
+        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+        let mut found = None;
+        // SAFETY: `snapshot` is valid and `entry` is a correctly sized, live
+        // `PROCESSENTRY32W` for the duration of the walk.
+        let mut ok = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+        while ok {
+            if entry.th32ProcessID == me {
+                found = Some(entry.th32ParentProcessID);
+                break;
+            }
+            // SAFETY: as above.
+            ok = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        }
+        // SAFETY: closing a handle we opened and have not closed.
+        unsafe { CloseHandle(snapshot) };
+        found
+    }
 }

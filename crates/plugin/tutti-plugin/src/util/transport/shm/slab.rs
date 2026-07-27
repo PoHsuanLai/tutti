@@ -722,4 +722,119 @@ mod tests {
             .expect("an oversized layout must not open");
         assert!(format!("{err}").contains("bytes"), "got: {err}");
     }
+
+    /// Read the mapping's raw bytes and check the layout *without* going through
+    /// the offset helper that produced it.
+    ///
+    /// Every other test here writes with `write_input` and reads with
+    /// `read_input_into`, so both sides share `slot_channel_offset`. A consistent
+    /// error in it — a dropped slot term, a swapped channel/slot factor, the
+    /// wrong region base — cancels out and round-trips perfectly. This test
+    /// recomputes each address from the layout arithmetic independently, so such
+    /// an error shows up as a value in the wrong place rather than not at all.
+    ///
+    /// The `#[repr(C)]` header is checked here too: `magic` sits at offset 0 of
+    /// the mapping, which is what the opening side keys on before trusting a
+    /// single audio byte.
+    ///
+    /// This is the by-hand `hexdump` from the pipelining plan, kept as a test
+    /// because nothing about it needed a human eye — only bytes at addresses.
+    #[test]
+    fn raw_bytes_land_where_the_layout_says_they_should() {
+        const SAMPLES: usize = 8;
+        // 3 in / 2 out, so a swapped direction or channel count cannot alias.
+        let l = layout(SAMPLES, SampleFormat::Float32);
+        let in_channels = l.input_channels();
+        let out_channels = l.output_channels();
+        assert_eq!(
+            (in_channels, out_channels),
+            (3, 2),
+            "this test's arithmetic assumes the asymmetric helper layout"
+        );
+
+        let slab = AudioSlab::create(name("hexdump"), l.clone()).unwrap();
+
+        // A distinct constant per (direction, slot, channel). Every sample in a
+        // channel carries the same value, so a misaddressed *channel* is
+        // visible; the values are spread far enough apart that a misaddressed
+        // *slot* or *region* is too.
+        let tag = |dir: u8, slot: usize, ch: usize| -> f32 {
+            (dir as f32) * 1000.0 + (slot as f32) * 100.0 + (ch as f32) + 1.0
+        };
+
+        for slot in 0..RING_SLOTS {
+            // `seq` must be a sequence whose ring slot is `slot`; at depth 2 the
+            // sequence value and the slot coincide for 0..RING_SLOTS.
+            let seq = slot as u64;
+            for ch in 0..in_channels {
+                slab.write_input(seq, ch, &[tag(0, slot, ch); SAMPLES])
+                    .unwrap();
+            }
+            for ch in 0..out_channels {
+                slab.write_output(seq, ch, &[tag(1, slot, ch); SAMPLES])
+                    .unwrap();
+            }
+        }
+
+        let bytes = slab.mmap.as_slice();
+        assert_eq!(
+            bytes.len(),
+            byte_size(&l),
+            "mapping is not the sized length"
+        );
+
+        // 1. The magic is the first thing in the mapping.
+        let magic = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+        assert_eq!(
+            magic,
+            crate::util::transport::shm::header::SLAB_MAGIC,
+            "magic must sit at offset 0 — the opening side reads it before anything else"
+        );
+
+        // 2. Audio starts after the header, and the two rings are disjoint.
+        let stride = SAMPLES * size_of::<f32>();
+        let input_base = SLAB_HEADER_BYTES;
+        let output_base = SLAB_HEADER_BYTES + l.input_ring_bytes();
+        assert_eq!(
+            l.input_ring_bytes(),
+            RING_SLOTS * in_channels * stride,
+            "input ring must cover every slot x channel"
+        );
+        assert!(
+            output_base >= input_base + l.input_ring_bytes(),
+            "the output ring starts inside the input ring: bases {input_base} / {output_base}"
+        );
+
+        // 3. Every channel of every slot, addressed from the layout rather than
+        //    from the code under test.
+        let read_at = |offset: usize| -> f32 {
+            f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+        };
+        for slot in 0..RING_SLOTS {
+            for ch in 0..in_channels {
+                let at = input_base + (slot * in_channels + ch) * stride;
+                assert_eq!(
+                    read_at(at),
+                    tag(0, slot, ch),
+                    "input slot {slot} ch {ch} is not at byte {at}"
+                );
+            }
+            for ch in 0..out_channels {
+                let at = output_base + (slot * out_channels + ch) * stride;
+                assert_eq!(
+                    read_at(at),
+                    tag(1, slot, ch),
+                    "output slot {slot} ch {ch} is not at byte {at}"
+                );
+            }
+        }
+
+        // 4. The directions really do hold different data. The shipped bypass
+        //    was precisely the case where reading "output" returned the input.
+        assert_ne!(
+            read_at(input_base),
+            read_at(output_base),
+            "input and output regions hold identical bytes — the aliasing bug"
+        );
+    }
 }

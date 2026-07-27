@@ -92,10 +92,19 @@ fn run_thread(
         lifecycle.mark_crashed();
         return;
     };
-    // Consume the server's Ready handshake for connection 2.
-    if ipc::recv(&mut stream).is_err() {
-        lifecycle.mark_crashed();
-        return;
+    // Consume the server's Ready handshake for connection 2, and check its
+    // version rather than discarding it. `launch.rs` already gated the same
+    // server on connection 1, so a mismatch here is not reachable today — but
+    // this is a wire boundary, the check is one comparison off the audio path,
+    // and a silently-ignored version field is how a skew becomes a mis-parse
+    // instead of an error.
+    match ipc::recv(&mut stream) {
+        Ok(crate::protocol::BridgeMessage::Ready { protocol_version })
+            if crate::protocol::check_protocol_version(protocol_version).is_ok() => {}
+        _ => {
+            lifecycle.mark_crashed();
+            return;
+        }
     }
     pump(&channels, &payloads, &lifecycle, &listener, &mut stream);
 }

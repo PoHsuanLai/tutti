@@ -348,4 +348,87 @@ mod tests {
             f32_layout.byte_size_with_header(0) * 2
         );
     }
+
+    /// A leftover v3 `plugin-server` on `PATH` must be refused at the handshake
+    /// with a named error, not crash and not proceed.
+    ///
+    /// This matters because bincode is not self-describing. A v3 server that got
+    /// as far as `SetupSharedMemory` would read our `slots` field out of the
+    /// bytes where its own build expects `channels`, get a plausible small
+    /// integer, and map a wrong-sized region — in silence. The version gate is
+    /// what stops that, so it has to fire before any payload is sent, and the
+    /// failure has to name both versions or the operator has no idea which
+    /// binary is stale.
+    ///
+    /// Drives the real [`handshake`] against a socket that speaks v3, rather
+    /// than unit-testing `check_protocol_version` in isolation — the risk being
+    /// covered is a handshake path that forgets to call the gate at all.
+    #[test]
+    fn a_stale_v3_server_is_refused_with_a_named_version_error() {
+        use crate::protocol::PROTOCOL_VERSION;
+        use interprocess::local_socket::{traits::Listener as _, ListenerOptions, ToFsName as _};
+
+        const STALE_VERSION: u32 = 3;
+        assert_ne!(
+            STALE_VERSION, PROTOCOL_VERSION,
+            "this test is meaningless once the current version reaches 3"
+        );
+
+        // Unique per run. A fixed name collides with a leftover socket from an
+        // earlier run, and `connect` then fails with EINVAL *before* the version
+        // is ever compared — an IO error that would masquerade as a working gate.
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "tutti-v3-{}-{}.sock",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let name = path
+            .clone()
+            .to_fs_name::<interprocess::local_socket::GenericFilePath>()
+            .unwrap();
+        let listener = ListenerOptions::new().name(name).create_sync().unwrap();
+
+        let server = std::thread::spawn(move || {
+            use std::io::Write;
+            let Ok(stream) = listener.accept() else {
+                return;
+            };
+            let msg = BridgeMessage::Ready {
+                protocol_version: STALE_VERSION,
+            };
+            let data = bincode::serialize(&msg).unwrap();
+            let mut stream = &stream;
+            let _ = stream.write_all(&(data.len() as u32).to_be_bytes());
+            let _ = stream.write_all(&data);
+        });
+
+        let config = BridgeConfig {
+            socket_path: path.clone(),
+            timeout_ms: 2_000,
+            ..Default::default()
+        };
+        let err = handshake(&config).expect_err("a v3 server must not complete the v4 handshake");
+
+        match err {
+            BridgeError::ProtocolMismatch { expected, got } => {
+                assert_eq!(expected, PROTOCOL_VERSION);
+                assert_eq!(got, STALE_VERSION);
+            }
+            other => panic!("expected a ProtocolMismatch naming both versions, got: {other}"),
+        }
+
+        // The operator reads this line, so it must carry both numbers.
+        let text = format!("{err}");
+        assert!(
+            text.contains(&STALE_VERSION.to_string())
+                && text.contains(&PROTOCOL_VERSION.to_string()),
+            "the message must name both versions, got: {text}"
+        );
+
+        let _ = server.join();
+        let _ = std::fs::remove_file(&path);
+    }
 }

@@ -64,6 +64,10 @@ pub mod graph;
 #[cfg(feature = "midi")]
 pub mod midi;
 
+/// Control-rate modulation: LFO sources and mod-matrix edges as ECS entities.
+#[cfg(feature = "modulation")]
+pub mod modulation;
+
 /// The sampler's asset layer.
 #[cfg(feature = "sampler")]
 pub mod sampler;
@@ -103,10 +107,9 @@ pub use engine_state::AudioEngineState;
 /// Everything a typical host needs, in one import.
 pub mod prelude {
     pub use crate::graph::{
-        AudioConfig, AudioEmitter, AudioGraphRes, AudioPlaybackState, GraphDirty,
-        GraphReconcilePlugin, GraphReconcileSystems, MeteringRes, MetronomeRes, NodeParamEpoch,
-        SpawnAudioNode, TransportClockNode, TransportRes, commit_graph, crossfade_audio_node,
-        engine_ready,
+        commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioEmitter, AudioGraphRes,
+        AudioPlaybackState, GraphDirty, GraphReconcilePlugin, GraphReconcileSystems, MeteringRes,
+        MetronomeRes, NodeParamEpoch, SpawnAudioNode, TransportClockNode, TransportRes,
     };
     pub use crate::{
         AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo,
@@ -115,6 +118,11 @@ pub mod prelude {
 
     #[cfg(feature = "midi")]
     pub use crate::midi::{MidiBusRes, MidiRoutingRes, TuttiMidiPlugin};
+    #[cfg(feature = "modulation")]
+    pub use crate::modulation::{
+        ModParamRange, ModRate, ModRoute, ModSource, ModTargetRegistry, ModulationMatrix,
+        TuttiModulationPlugin,
+    };
     #[cfg(feature = "plugin")]
     pub use crate::plugin_host::{OpenPluginEditor, PluginsRes, TuttiHostingPlugin};
 

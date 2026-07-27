@@ -36,6 +36,11 @@ tutti-midi-types = { path = "../tutti/crates/midi/tutti-midi-types", default-fea
 tutti-units = { path = "../tutti/crates/dsp/tutti-units", default-features = false }
 
 # Optional subsystems (gated by bevy-tutti features below).
+# `routing` is the mod-matrix layer (targets, bus, table, driver); tutti-mod's
+# own `bevy` feature is deliberately left off — it adds derives to
+# `ModTargetId`/`LayerKey`, which this adapter keeps inside its resources rather
+# than exposing as components.
+tutti-mod = { path = "../tutti/crates/core/tutti-mod", optional = true, default-features = false, features = ["routing"] }
 tutti-sampler = { path = "../tutti/crates/dsp/tutti-sampler", optional = true, default-features = false }
 tutti-synth = { path = "../tutti/crates/dsp/tutti-synth", optional = true, default-features = false }
 tutti-export = { path = "../tutti/crates/core/tutti-export", optional = true }
@@ -83,6 +88,7 @@ full = [
     "sampler",
     "export",
     "dsp", "spatial",
+    "modulation",
 ]
 
 # Spatial audio. The spatial graph reconciler + position-sync (GlobalTransform)
@@ -96,6 +102,9 @@ dsp = ["tutti-units/spatial"]
 
 # FFT convolution reverb (partitioned IR) in tutti-units.
 convolution = ["tutti-units/convolution"]
+
+# Control-rate modulation: LFO sources and mod-matrix edges as ECS entities.
+modulation = ["dep:tutti-mod"]
 
 # Audio formats (codec on tutti-core + the sampler decoder).
 wav = ["tutti-core/wav", "tutti-sampler?/wav"]

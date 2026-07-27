@@ -7,17 +7,29 @@
 //! `&self, beat -> Option<value>`: pure, evaluated by whoever holds it, at
 //! whatever rate they read. Those are not two views of one thing.
 //!
-//! A sample & hold shows why. Its value depends on a stepper the caller threads
-//! between samples; a `&self` curve has nowhere to put that. The plugin crate's
-//! `LfoCurve` handles random shapes by hashing the cycle index instead — which
-//! is a *different modulator* that happens to look similar, not the same one
-//! sampled differently.
+//! So a "deliver this route as a curve" flag would be a lie for any modulator
+//! whose value depends on more than its position: a `Curve` has nowhere to put
+//! threaded state, so something else would have to be substituted silently.
+//! This trait makes the property declarable instead — implement it only where a
+//! value at a position really is computable from that position.
 //!
-//! So a "deliver this route as a curve" flag would silently substitute a
-//! different source for any stateful modulator. This trait makes the property
-//! declarable instead: implement it only where the modulator genuinely is a
-//! pure function of beat, and a route can ask for curve delivery only from a
-//! kind that has said so.
+//! # What that does *not* mean
+//!
+//! Not "stateless only". [`BeatLfo`]'s stepped shapes look stateful on the
+//! scalar path — an xorshift advanced once per phase wrap — yet they implement
+//! this trait, because the same randomness re-keyed on the **cycle index** is
+//! addressable: index `n` is computable without having produced `n-1`.
+//!
+//! That reformulation is strictly better than the sequence it replaces. A
+//! stepper that only ever advances cannot be evaluated at an arbitrary beat and
+//! does not replay a bar identically after a transport seek; a hash of the cycle
+//! index does both. It is a different sequence of numbers — the same shape, not
+//! the same samples — and that is the honest cost.
+//!
+//! The line this trait draws is therefore *position-derivable vs not*, not
+//! *stateless vs stateful*. What genuinely cannot cross it is a modulator whose
+//! history the beat cannot reconstruct — an envelope follower tracking live
+//! audio, say.
 //!
 //! # Why the offset is shaped here
 //!
@@ -55,17 +67,43 @@ pub trait CurveModulator: Modulator + Send + Sync + 'static {
     /// matching how a zero-frequency source behaves on the scalar path.
     fn beats_per_cycle(&self) -> f32;
 
-    /// The raw `[-1, 1]` value at `phase` — the same waveform the scalar path
+    /// The raw `[-1, 1]` value at `cycles` — the same waveform the scalar path
     /// samples, with no depth, polarity or range applied.
     ///
-    /// Defaulted to [`Modulator::value`] with a throwaway state, which is
-    /// correct precisely because an implementor of this trait is stateless.
-    /// That default is the trait's honesty check: a modulator for which it is
-    /// wrong is one that should not be implementing this trait.
-    fn raw_at(&self, phase: Phase) -> f32 {
+    /// `cycles` is the **un-wrapped** position: `beat / beats_per_cycle`. Its
+    /// fractional part is the phase, and its integer part is the cycle index.
+    /// A wrapped [`Phase`] would be enough for a periodic shape but throws away
+    /// exactly what a per-cycle value needs to be addressable — which cycle it
+    /// is. Handing over the whole position is what lets a stepped shape be a
+    /// pure function of beat at all.
+    ///
+    /// The default wraps to a [`Phase`] and samples [`Modulator::value`] with a
+    /// throwaway state, which is correct only when the modulator's value
+    /// depends on nothing but its phase. A modulator that threads real state
+    /// must override this with a position-derived formulation — see
+    /// [`BeatLfo`] for the two random shapes.
+    fn raw_at(&self, cycles: f32) -> f32 {
         let seed = <Self as Modulator>::State::default();
-        self.value(seed, phase).1
+        self.value(seed, Phase::wrapped(cycles)).1
     }
+}
+
+/// Map an integer index to a stable pseudo-random value in `[-1, 1]`
+/// (splitmix64 finalizer).
+///
+/// Addressable rather than sequential: the value for index `n` is computable
+/// without having produced `n-1`. That is the property that lets a stepped
+/// random shape be a [`Curve`] — and it is *stronger* than the threaded
+/// xorshift the scalar path uses, which only ever advances and so cannot replay
+/// a bar identically after a transport seek.
+#[inline]
+pub fn hash_bipolar(n: i64) -> f32 {
+    let mut z = (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    // Top 24 bits → [0, 1) → [-1, 1].
+    ((z >> 40) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
 }
 
 /// How an edge shapes a raw modulator value into an offset.
@@ -158,42 +196,43 @@ impl<M: CurveModulator> Curve for ShapedCurve<M> {
     /// The offset at `beat` — never an absolute value. See the module doc.
     fn value_at(&self, beat: Beat) -> Option<f32> {
         let bpc = self.modulator.beats_per_cycle();
-        let phase = if bpc > 0.0 {
-            Phase::wrapped(beat.get() as f32 / bpc).offset_by(self.edge.phase_offset)
+        // Un-wrapped, so a stepped shape can recover its cycle index. The offset
+        // is added here rather than inside the modulator because it displaces
+        // the *position*, which is what shifts a per-cycle boundary too.
+        let cycles = if bpc > 0.0 {
+            beat.get() as f32 / bpc + self.edge.phase_offset.get()
         } else {
             // A frozen source still contributes: its phase-offset value, held.
-            Phase::START.offset_by(self.edge.phase_offset)
+            self.edge.phase_offset.get()
         };
-        Some(self.edge.offset_of(self.modulator.raw_at(phase)))
+        Some(self.edge.offset_of(self.modulator.raw_at(cycles)))
     }
 }
 
 /// An [`Lfo`](crate::Lfo) clocked by the beat — the built-in [`CurveModulator`].
 ///
-/// Built only through [`new`](BeatLfo::new), which **refuses random shapes**.
-/// `Random` and `RandomSmooth` step a stepper the caller threads between
-/// samples, and a `&self` curve has nowhere to keep it. The plugin crate's
-/// `LfoCurve` substitutes a beat-index hash for those — defensible there, but it
-/// is a *different modulator*, and silently swapping one in is precisely what
-/// this trait split exists to prevent.
+/// **Every** LFO shape is curve-deliverable, including the stepped ones. The
+/// scalar path drives `Random`/`RandomSmooth` from a threaded xorshift, which
+/// only advances — so it cannot be evaluated at an arbitrary beat, and it does
+/// not replay a bar identically after a seek. Keying the same randomness on the
+/// *cycle index* instead (see [`hash_bipolar`]) removes both limitations at
+/// once: the value becomes addressable, and therefore reproducible.
 ///
-/// So a random-shaped source is simply not curve-deliverable, and the `Option`
-/// says so at construction rather than at the point of surprise.
+/// The two formulations are different sequences of numbers — the same shape,
+/// not the same samples. That is the honest cost, and it buys a property the
+/// scalar path never had.
 pub struct BeatLfo {
     lfo: crate::Lfo,
     beats_per_cycle: f32,
 }
 
 impl BeatLfo {
-    /// A beat-clocked LFO, or `None` if `shape` is random — see the type doc.
-    pub fn new(shape: crate::LfoShape, beats_per_cycle: f32) -> Option<Self> {
-        if shape.is_random() {
-            return None;
-        }
-        Some(Self {
+    /// A beat-clocked LFO of any shape.
+    pub fn new(shape: crate::LfoShape, beats_per_cycle: f32) -> Self {
+        Self {
             lfo: crate::Lfo::new(shape),
             beats_per_cycle,
-        })
+        }
     }
 }
 
@@ -208,6 +247,33 @@ impl CurveModulator for BeatLfo {
     fn beats_per_cycle(&self) -> f32 {
         self.beats_per_cycle
     }
+
+    /// Position-derived for every shape — periodic ones from the phase, stepped
+    /// ones from the cycle index.
+    fn raw_at(&self, cycles: f32) -> f32 {
+        // `floor`, not `as i64`: truncation rounds toward zero, so cycles -0.5
+        // and +0.5 would collide on index 0 and a source stepped before the
+        // origin would repeat its neighbour's value.
+        let index = cycles.floor();
+        match self.lfo.shape {
+            // One value per cycle, held across it.
+            crate::LfoShape::Random => hash_bipolar(index as i64),
+            // The same steps, interpolated across the phase — the ramp this
+            // shape is named for. Hashing both ends reconstructs the
+            // `previous`/`current` pair the scalar path threads, without
+            // needing the history that produced it.
+            crate::LfoShape::RandomSmooth => {
+                let prev = hash_bipolar(index as i64 - 1);
+                let cur = hash_bipolar(index as i64);
+                prev + (cur - prev) * (cycles - index)
+            }
+            // Purely phase-determined: the default is already exact.
+            _ => {
+                let seed = <crate::Lfo as Modulator>::State::default();
+                self.lfo.value(seed, Phase::wrapped(cycles)).1
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -216,18 +282,99 @@ mod tests {
     use crate::{LayerKey, LfoShape};
 
     fn sine(beats_per_cycle: f32) -> BeatLfo {
-        BeatLfo::new(LfoShape::Sine, beats_per_cycle).expect("sine is not random")
+        BeatLfo::new(LfoShape::Sine, beats_per_cycle)
     }
 
-    /// A stateful shape must not be curve-deliverable — the trait split's whole
-    /// purpose. The alternative is silently substituting a different modulator
-    /// and calling it a delivery choice.
+    /// `Random` holds one value per cycle and jumps at the boundary — a
+    /// beat-synced sample & hold, not a ramp.
     #[test]
-    fn a_random_shape_refuses_to_become_a_curve() {
-        assert!(BeatLfo::new(LfoShape::Random, 1.0).is_none());
-        assert!(BeatLfo::new(LfoShape::RandomSmooth, 1.0).is_none());
-        assert!(BeatLfo::new(LfoShape::Sine, 1.0).is_some());
-        assert!(BeatLfo::new(LfoShape::Triangle, 1.0).is_some());
+    fn random_holds_within_a_cycle_and_steps_between() {
+        let lfo = BeatLfo::new(LfoShape::Random, 1.0);
+
+        let within: Vec<f32> = [0.1, 0.4, 0.9].iter().map(|c| lfo.raw_at(*c)).collect();
+        assert!(
+            within.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-6),
+            "a held value must not move inside its cycle: {within:?}"
+        );
+
+        let steps: Vec<f32> = (0..6).map(|c| lfo.raw_at(c as f32 + 0.5)).collect();
+        let distinct = steps
+            .iter()
+            .filter(|v| (*v - steps[0]).abs() > 1e-6)
+            .count();
+        assert!(distinct >= 4, "cycles should differ from each other: {steps:?}");
+        assert!(
+            steps.iter().all(|v| (-1.0..=1.0).contains(v)),
+            "values stay in [-1, 1]: {steps:?}"
+        );
+    }
+
+    /// `RandomSmooth` ramps between the same steps. This is the bug the plugin
+    /// crate's hash had: one value per cycle under a name that promises
+    /// interpolation, which is `Random`'s behaviour wearing the wrong label —
+    /// and it defeats the point of sub-block delivery, which exists to be smooth.
+    #[test]
+    fn random_smooth_ramps_instead_of_stepping() {
+        let smooth = BeatLfo::new(LfoShape::RandomSmooth, 1.0);
+
+        let across: Vec<f32> = (0..8).map(|i| smooth.raw_at(3.0 + i as f32 / 8.0)).collect();
+        let moved = across
+            .iter()
+            .filter(|v| (*v - across[0]).abs() > 1e-6)
+            .count();
+        assert!(
+            moved >= 6,
+            "a smooth shape must move within a cycle, not hold: {across:?}"
+        );
+
+        // It is a *linear* ramp between the cycle's endpoints: the midpoint of
+        // the cycle is the mean of its ends.
+        let start = smooth.raw_at(3.0);
+        let end = smooth.raw_at(4.0);
+        let mid = smooth.raw_at(3.5);
+        assert!(
+            (mid - (start + end) / 2.0).abs() < 1e-5,
+            "midpoint {mid} should be the mean of {start} and {end}"
+        );
+
+        // And it is continuous across the boundary — the defining difference
+        // from `Random`, which jumps there.
+        let before = smooth.raw_at(4.0 - 1e-4);
+        assert!(
+            (before - end).abs() < 1e-3,
+            "no jump at the cycle boundary: {before} vs {end}"
+        );
+    }
+
+    /// The property the scalar path cannot offer: the same beat always gives the
+    /// same value, so a bar replays identically after a transport seek. The
+    /// threaded xorshift only ever advances, so it cannot.
+    #[test]
+    fn a_stepped_curve_replays_identically_after_a_seek() {
+        for shape in [LfoShape::Random, LfoShape::RandomSmooth] {
+            let lfo = BeatLfo::new(shape, 1.0);
+            let first: Vec<f32> = (0..16).map(|i| lfo.raw_at(i as f32 / 4.0)).collect();
+            // Wander far away, then come back — as a seek would.
+            for i in 0..32 {
+                let _ = lfo.raw_at(100.0 + i as f32);
+            }
+            let replay: Vec<f32> = (0..16).map(|i| lfo.raw_at(i as f32 / 4.0)).collect();
+            assert_eq!(first, replay, "{shape:?} must be reproducible at a beat");
+        }
+    }
+
+    /// Negative positions must not collide with positive ones. `as i64`
+    /// truncates toward zero, so -0.5 and +0.5 would share index 0 and a source
+    /// stepped before the origin would repeat its neighbour.
+    #[test]
+    fn cycles_before_the_origin_get_their_own_values() {
+        let lfo = BeatLfo::new(LfoShape::Random, 1.0);
+        assert!(
+            (lfo.raw_at(-0.5) - lfo.raw_at(0.5)).abs() > 1e-6,
+            "cycle -1 and cycle 0 must not share a value"
+        );
+        // Still held within the negative cycle.
+        assert!((lfo.raw_at(-0.9) - lfo.raw_at(-0.1)).abs() < 1e-6);
     }
 
     /// The load-bearing property: a curve layer and the scalar the driver would
@@ -242,7 +389,7 @@ mod tests {
         for i in 0..16 {
             let beat = Beat(i as f64 / 16.0);
             // The scalar path, spelled exactly as `ModPreFrame::run` does.
-            let raw = m.raw_at(Phase::wrapped(beat.get() as f32));
+            let raw = m.raw_at(beat.get() as f32);
             let scalar = shape(raw, edge.depth, edge.polarity, edge.curve) * (edge.max - edge.min);
 
             let from_curve = curve.value_at(beat).expect("a curve always contributes");

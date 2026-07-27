@@ -27,7 +27,10 @@
 use bevy_app::App;
 use bevy_ecs::prelude::*;
 
-use tutti_mod::{ErasedModulator, Modulator, SourceRate};
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use tutti_mod::{Curve, EdgeShape, ErasedModulator, Modulator, SourceRate};
 use tutti_types::{Hz, Param, ParamAddr, UnitParam};
 
 use crate::modulation::components::{ModRate, ModRoute};
@@ -37,7 +40,11 @@ use crate::modulation::components::{ModRate, ModRoute};
 /// Implement it on the component carrying that modulator's parameters; the
 /// component *is* the authored declaration, and [`build`](Self::build) turns it
 /// into the engine object.
-pub trait ModSourceKind: Component + Sized {
+/// `Clone + Send + Sync + 'static` so a kind's authored parameters can be moved
+/// into the curve builder the collector hands to `rebuild` — the builder
+/// outlives the query borrow it was read through, and only the collector can
+/// name `K`.
+pub trait ModSourceKind: Component + Clone + Send + Sync + Sized + 'static {
     /// The modulator this component builds.
     type Source: Modulator + Send + Sync + 'static;
 
@@ -47,6 +54,30 @@ pub trait ModSourceKind: Component + Sized {
     /// and is applied by the caller, so a kind cannot accidentally own two
     /// notions of frequency.
     fn build(&self) -> Self::Source;
+
+    /// This kind as a beat-evaluated [`Curve`], if it has such a form.
+    ///
+    /// A curve is installed once and sampled by the *sink* at whatever rate it
+    /// reads — a plugin's per-block producer traces a smooth ramp where a
+    /// frame-rate scalar gives a staircase. `edge` carries the shaping the
+    /// scalar path would otherwise apply per frame, so both deliveries agree on
+    /// the value.
+    ///
+    /// `beats_per_cycle` comes from the entity's [`ModRate`], converted by the
+    /// caller — the same reasoning that keeps rate off [`build`](Self::build).
+    ///
+    /// `None` by default, which is the honest answer for any modulator needing
+    /// more than its position: a `Curve` has nowhere to thread state. Note that
+    /// "stateful" is not the same as "not position-derivable" — an LFO's stepped
+    /// shapes qualify once re-keyed on the cycle index (see
+    /// [`BeatLfo`](tutti_mod::BeatLfo)).
+    ///
+    /// Returning `Some` is not a promise of curve delivery: the *sink* decides,
+    /// and one that takes only scalars makes the route fall back.
+    fn build_curve(&self, beats_per_cycle: f32, edge: EdgeShape) -> Option<Arc<dyn Curve>> {
+        let _ = (beats_per_cycle, edge);
+        None
+    }
 }
 
 /// Every source declared this frame, and whether any of them changed.
@@ -56,9 +87,20 @@ pub trait ModSourceKind: Component + Sized {
 /// component type cannot appear in `rebuild`'s signature — that is the whole
 /// point of the registry — but it can appear in a system of the kind's own,
 /// scheduled by `add_mod_source`.
+/// Builds this source's curve form for one edge's shaping, or `None` if the
+/// kind has no such form.
+///
+/// A boxed closure because only `collect::<K>` can name `K` — the same reason
+/// the modulators arrive erased. `rebuild` calls it per route without ever
+/// learning which kind it came from.
+pub(crate) type CurveBuilder = Box<dyn Fn(EdgeShape) -> Option<Arc<dyn Curve>> + Send + Sync>;
+
 #[derive(Resource, Default)]
 pub struct CollectedModSources {
     pub(crate) sources: Vec<(Entity, Box<dyn ErasedModulator>)>,
+    /// One per source that has a curve form, keyed by entity. Absent for a kind
+    /// that declined, which is what makes a curve request fall back.
+    pub(crate) curves: HashMap<Entity, CurveBuilder>,
     /// Set when any kind component or its rate changed, so `rebuild` knows to
     /// recompile without naming a kind type.
     pub(crate) dirty: bool,
@@ -88,6 +130,7 @@ impl CollectedModSources {
 /// rather than losing it.
 pub(crate) fn clear_collected(mut collected: ResMut<CollectedModSources>) {
     collected.sources.clear();
+    collected.curves.clear();
 }
 
 /// Give every source a route points at the cell its rate will be read from.
@@ -169,6 +212,24 @@ fn collect<K: ModSourceKind>(
         let source: Box<dyn ErasedModulator> =
             Box::new(tutti_mod::Sourced::new(kind.build(), source_rate(rate, cell)));
         collected.sources.push((entity, source));
+
+        // A curve is clocked by the beat, so a beat-synced rate is already in
+        // its own units (cycles per beat → beats per cycle is the reciprocal).
+        // A free-running rate is in Hz and has no fixed beat mapping, so it has
+        // no curve form — the scalar path stays correct for it.
+        if rate.beat_synced {
+            let freq = rate.frequency.get();
+            if freq > 0.0 {
+                let beats_per_cycle = 1.0 / freq;
+                // Cloned into the closure: the builder outlives this query
+                // borrow, and `rebuild` calls it once per route on the source.
+                let kind = kind.clone();
+                collected.curves.insert(
+                    entity,
+                    Box::new(move |edge| kind.build_curve(beats_per_cycle, edge)),
+                );
+            }
+        }
     }
 }
 

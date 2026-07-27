@@ -22,6 +22,7 @@
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tutti_core::AudioNode;
@@ -36,13 +37,17 @@ use crate::modulation::components::ParamRange;
 type ResolveFn =
     fn(&AudioGraphRes, tutti_core::NodeId, ParamAddr, &ParamRange) -> Option<Arc<dyn ModTarget>>;
 
-/// The node types this app can modulate.
+/// The node types this app can modulate, plus any sinks it supplies directly.
 ///
 /// Empty by default — an engine that knows every node type would be an engine
-/// that owns a DAW's vocabulary. [`register`](Self::register) adds one.
+/// that owns a DAW's vocabulary. [`register`](Self::register) adds a node type;
+/// [`insert_target`](Self::insert_target) adds one already-built sink.
 #[derive(Resource, Default)]
 pub struct ModTargetRegistry {
     resolvers: Vec<ResolveFn>,
+    /// Sinks the host built itself, keyed by the param they serve. Consulted
+    /// before the node resolvers — see [`insert_target`](Self::insert_target).
+    supplied: HashMap<(Entity, ParamAddr), Arc<dyn ModTarget>>,
 }
 
 impl ModTargetRegistry {
@@ -59,6 +64,49 @@ impl ModTargetRegistry {
                 .mod_target(param, range.base, range.min, range.max)
         });
         self
+    }
+
+    /// Supply an already-built sink for `(entity, param)`, replacing any
+    /// previous one.
+    ///
+    /// [`register`](Self::register) asks a *node type* for its accumulator,
+    /// which is how a native param resolves — and every native node answers with
+    /// an [`AtomicTarget`](tutti_mod::AtomicTarget). A sink that no `AudioUnit`
+    /// owns has no node to be downcast from and is otherwise unreachable: a
+    /// plugin's per-block param target, or any accumulator a host evaluates at
+    /// its own rate.
+    ///
+    /// This is also the only way to reach a sink that accepts **curve** layers,
+    /// since `AtomicTarget` declines them (it collapses at a fixed beat, so a
+    /// curve stored there would never move). Registering one is what makes
+    /// [`ModRoute::deliver_as_curve`](crate::modulation::ModRoute) more than a
+    /// request that always falls back.
+    ///
+    /// The entity need not carry an [`AudioNode`] — it need not be in the graph
+    /// at all. The registry holds an `Arc`, so the host keeps its own handle and
+    /// both see one accumulator.
+    pub fn insert_target(
+        &mut self,
+        entity: Entity,
+        param: ParamAddr,
+        target: Arc<dyn ModTarget>,
+    ) -> &mut Self {
+        self.supplied.insert((entity, param), target);
+        self
+    }
+
+    /// Drop a supplied sink. No-op if none was registered.
+    ///
+    /// Resolution falls back to the node path afterwards, so removing a
+    /// supplied sink for a param a node also exposes silently reverts to the
+    /// node's own accumulator rather than un-modulating the param.
+    pub fn remove_target(&mut self, entity: Entity, param: ParamAddr) -> Option<Arc<dyn ModTarget>> {
+        self.supplied.remove(&(entity, param))
+    }
+
+    /// A host-supplied sink for this param, if one was registered.
+    fn supplied(&self, entity: Entity, param: ParamAddr) -> Option<Arc<dyn ModTarget>> {
+        self.supplied.get(&(entity, param)).map(Arc::clone)
     }
 
     fn resolve(
@@ -102,15 +150,18 @@ impl ModTargetResolver<'_, '_> {
     /// The accumulator for `param` on `entity`, or `None` if nothing on this
     /// entity exposes it.
     ///
-    /// Two kinds of target, tried in order:
+    /// Three kinds of target, tried in order:
     ///
-    /// 1. **A modulation source's own rate** — the cascade case. It is tried
-    ///    first because it is the cheap, exact one: a source entity carries a
-    ///    [`ModRateCell`](crate::modulation::ModRateCell) and no `AudioNode`, so
-    ///    the graph path below could never have served it. The accumulator
-    ///    mirrors straight into that cell, which is what makes an LFO able to
-    ///    drive another LFO's rate.
-    /// 2. **A graph node's param** — the ordinary case, resolved by downcast
+    /// 1. **A host-supplied sink** — registered with
+    ///    [`insert_target`](ModTargetRegistry::insert_target). First because it
+    ///    is an explicit override: a host that hands over an accumulator for a
+    ///    param means that one, even if the entity's node would also answer.
+    /// 2. **A modulation source's own rate** — the cascade case. A source entity
+    ///    carries a [`ModRateCell`](crate::modulation::ModRateCell) and no
+    ///    `AudioNode`, so the graph path below could never have served it. The
+    ///    accumulator mirrors straight into that cell, which is what makes an
+    ///    LFO able to drive another LFO's rate.
+    /// 3. **A graph node's param** — the ordinary case, resolved by downcast
     ///    through the registry.
     ///
     /// `None` covers several ordinary situations — the entity has no graph node
@@ -124,6 +175,9 @@ impl ModTargetResolver<'_, '_> {
         param: ParamAddr,
         range: &ParamRange,
     ) -> Option<Arc<dyn ModTarget>> {
+        if let Some(target) = self.registry.supplied(entity, param) {
+            return Some(target);
+        }
         if let Some(target) = self.resolve_rate(entity, param, range) {
             return Some(target);
         }

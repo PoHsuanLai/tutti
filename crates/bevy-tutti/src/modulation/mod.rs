@@ -57,6 +57,28 @@
 //! Read the live rate with [`ModRateCell::frequency`];
 //! [`ModRate::frequency`](ModRate) stays what the user authored.
 //!
+//! # Delivery: per-frame scalar, or beat-evaluated curve
+//!
+//! By default the driver samples each source once a frame and writes a scalar.
+//! A route can instead ask for its source to be installed as a [`Curve`] the
+//! *sink* evaluates:
+//!
+//! ```rust,ignore
+//! commands.spawn(ModRoute::new(lfo, plugin_param, addr).as_curve());
+//! ```
+//!
+//! Worth asking for only when the sink reads faster than the frame rate — a
+//! plugin's per-block parameter producer traces a smooth ramp where a frame
+//! scalar gives a staircase. It is a **request**: honoured only if the source
+//! kind has a curve form (see
+//! [`ModSourceKind::build_curve`]) *and* the sink accepts one. Anything else
+//! falls back to scalar delivery, which is always correct.
+//!
+//! Native params always fall back — [`AtomicTarget`](tutti_mod::AtomicTarget)
+//! collapses at a fixed beat, so a curve stored there would never move. Reaching
+//! a sink that does accept curves means supplying it with
+//! [`ModTargetRegistry::insert_target`].
+//!
 //! # What the host must supply
 //!
 //! Resolving a param to an accumulator needs a downcast to a concrete node type

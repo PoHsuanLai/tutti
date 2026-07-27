@@ -171,13 +171,42 @@ pub fn rebuild(
             }
         };
 
+        // Each route owns a distinct layer, so two routes onto one param
+        // accumulate instead of overwriting each other. Offset past
+        // `AUTOMATION`, which owns layer zero.
+        let layer = tutti_mod::LayerKey(i as u64 + 1);
+
+        // A curve-delivered route installs its layer *once, here*, and the sink
+        // evaluates it from then on — so it gets no `ModEdge` and the per-frame
+        // driver never touches it. Both halves have to agree: an edge as well
+        // would write a scalar over the curve every frame.
+        if route.deliver_as_curve {
+            let installed = collected
+                .curves
+                .get(&route.source)
+                .and_then(|build| {
+                    build(tutti_mod::EdgeShape {
+                        depth: route.depth,
+                        polarity: route.polarity,
+                        curve: route.curve,
+                        phase_offset: tutti_types::PhaseIncrement(0.0),
+                        min,
+                        max,
+                    })
+                })
+                .is_some_and(|curve| targets[&key].accumulate_curve(layer, curve));
+            if installed {
+                continue;
+            }
+            // Fell through: either the kind has no curve form or the sink takes
+            // only scalars. Scalar delivery is always correct — a staircase
+            // rather than a ramp — so the route still sounds, just coarser.
+        }
+
         edges.push(ModEdge {
             source,
             target: id,
-            // Each route owns a distinct layer, so two routes onto one param
-            // accumulate instead of overwriting each other. Offset past
-            // `AUTOMATION`, which owns layer zero.
-            key: tutti_mod::LayerKey(i as u64 + 1),
+            key: layer,
             depth: route.depth,
             min,
             max,

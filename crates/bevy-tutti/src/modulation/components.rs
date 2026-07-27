@@ -45,6 +45,20 @@ impl super::ModSourceKind for ModSource {
         // modulator is built at full depth and each `ModEdge` scales it.
         tutti_mod::Lfo::new(self.shape)
     }
+
+    /// Every LFO shape has a beat-derived form, including the stepped ones —
+    /// see [`BeatLfo`](tutti_mod::BeatLfo), which keys their randomness on the
+    /// cycle index rather than a threaded stepper.
+    fn build_curve(
+        &self,
+        beats_per_cycle: f32,
+        edge: tutti_mod::EdgeShape,
+    ) -> Option<std::sync::Arc<dyn tutti_mod::Curve>> {
+        Some(tutti_mod::ShapedCurve::erased(
+            tutti_mod::BeatLfo::new(self.shape, beats_per_cycle),
+            edge,
+        ))
+    }
 }
 
 /// How a [`ModSource`] derives its phase from the transport.
@@ -127,6 +141,19 @@ pub struct ModRoute {
     /// layer is cleared from the target — the difference between muting a route
     /// and deleting it.
     pub enabled: bool,
+    /// Ask for the source to be installed as a beat-evaluated curve rather than
+    /// sampled once per frame.
+    ///
+    /// A **request**, not a guarantee: it is honoured only if the source kind
+    /// has a curve form *and* the sink accepts curve layers. Anything else falls
+    /// back to scalar delivery, which is always correct — a frame-rate staircase
+    /// rather than a smooth ramp, never silence.
+    ///
+    /// Worth asking for when the sink reads faster than the frame rate (a
+    /// plugin's per-block parameter producer). Pointless for a native param: its
+    /// accumulator collapses at a fixed beat, so it declines and the route falls
+    /// back.
+    pub deliver_as_curve: bool,
 }
 
 impl ModRoute {
@@ -140,7 +167,15 @@ impl ModRoute {
             polarity: Polarity::Bipolar,
             curve: CurveType::Linear,
             enabled: true,
+            deliver_as_curve: false,
         }
+    }
+
+    /// Ask for beat-evaluated delivery — see
+    /// [`deliver_as_curve`](Self::deliver_as_curve).
+    pub fn as_curve(mut self) -> Self {
+        self.deliver_as_curve = true;
+        self
     }
 
     pub fn with_depth(mut self, depth: impl Into<Depth>) -> Self {

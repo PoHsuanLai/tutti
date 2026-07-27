@@ -40,7 +40,7 @@ impl Modulator for Stair {
 /// The ECS declaration of a `Stair`, carrying a parameter `tutti-mod` has no
 /// concept of — proof that a kind owns its own config rather than squeezing
 /// into a shared `ModSource`.
-#[derive(Component)]
+#[derive(Component, Clone)]
 struct StairSource {
     /// Scales the stair's two levels. Nothing in bevy-tutti knows this exists.
     amount: f32,

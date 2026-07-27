@@ -680,10 +680,9 @@ trait Dispatch {
         ptr: *mut c_void,
         opt: f32,
     ) -> isize {
-        let dispatcher = unsafe { (*self.get_effect()).dispatcher };
-        if (dispatcher as *mut u8).is_null() {
+        let Some(dispatcher) = (unsafe { (*self.get_effect()).dispatcher }) else {
             panic!("Plugin was not loaded correctly.");
-        }
+        };
         dispatcher(self.get_effect(), opcode.into(), index, value, ptr, opt)
     }
 
@@ -867,6 +866,11 @@ impl Plugin for PluginInstance {
     /// they must be zeroed first. If neither pointer exists there is nothing to
     /// call; the outputs are left silent rather than filled with whatever the
     /// caller's scratch held.
+    ///
+    /// The presence check is `Option`, not `(p as *const u8).is_null()`. That
+    /// idiom silently did nothing: a bare `extern "C" fn` is non-nullable, so the
+    /// compiler folded the comparison to `false` under `-O` and the guard shipped
+    /// only in debug builds (R4).
     fn process(&mut self, buffer: &mut AudioBuffer<f32>) {
         if buffer.input_count() < self.info.inputs as usize {
             panic!("Too few inputs in AudioBuffer");
@@ -877,8 +881,7 @@ impl Plugin for PluginInstance {
         let effect = self.get_effect();
         let samples = buffer.samples() as i32;
         unsafe {
-            let replacing = (*effect).processReplacing;
-            if self.can_replacing && !(replacing as *const u8).is_null() {
+            if let Some(replacing) = (*effect).processReplacing.filter(|_| self.can_replacing) {
                 replacing(
                     effect,
                     buffer.raw_inputs().as_ptr() as *const *const _,
@@ -888,8 +891,7 @@ impl Plugin for PluginInstance {
                 return;
             }
 
-            let accumulating = (*effect)._process;
-            if (accumulating as *const u8).is_null() {
+            let Some(accumulating) = (*effect)._process else {
                 error!(
                     "plugin '{}' installed neither processReplacing nor process; \
                      rendering silence",
@@ -897,7 +899,7 @@ impl Plugin for PluginInstance {
                 );
                 zero_outputs(buffer);
                 return;
-            }
+            };
 
             warn!(
                 "plugin '{}' does not support processReplacing; \
@@ -932,15 +934,17 @@ impl Plugin for PluginInstance {
         }
         let effect = self.get_effect();
         unsafe {
-            let replacing = (*effect).processReplacingF64;
-            if !self.can_double_replacing || (replacing as *const u8).is_null() {
+            let replacing = (*effect)
+                .processReplacingF64
+                .filter(|_| self.can_double_replacing);
+            let Some(replacing) = replacing else {
                 error!(
                     "plugin '{}' does not support f64 processing; rendering silence",
                     self.info.name
                 );
                 zero_outputs(buffer);
                 return;
-            }
+            };
             replacing(
                 effect,
                 buffer.raw_inputs().as_ptr() as *const *const _,
@@ -1375,6 +1379,62 @@ mod tests {
             zero_outputs(&mut buffer);
         }
         assert_eq!(outputs, vec![vec![0.0f32; 8]; 2]);
+    }
+
+    /// R4: the audio entry points must be *detectably* absent.
+    ///
+    /// They were typed as bare `extern "C" fn`, which the compiler knows to be
+    /// non-null, so the `(p as *const u8).is_null()` guard folded to `false` under
+    /// `-O`: the null check shipped in debug builds and a jump to address 0 shipped
+    /// in release. `Option` makes the check survive optimization.
+    ///
+    /// This asserts the *type-level* property, which is what actually failed —
+    /// a plugin's real null slot cannot be exercised without a hostile plugin
+    /// binary, but a guard the optimizer can delete is the whole bug.
+    #[test]
+    fn a_null_entry_point_is_detectable_at_every_opt_level() {
+        use crate::api::{DispatcherProc, ProcessProc, ProcessProcF64};
+
+        // The bytes a plugin leaves in a slot it never fills in. Transmuted
+        // per-field rather than zeroing a whole `AEffect`, which rustc rejects
+        // outright — the fields this fix did *not* touch (`setParameter`,
+        // `getParameter`) are still non-nullable, so all-zeros is not a valid
+        // instance of the struct. That rejection is itself the point: the type
+        // system now knows which slots may be absent and which may not.
+        let absent: Option<ProcessProc> = unsafe { std::mem::transmute(0usize) };
+        assert!(
+            absent.is_none(),
+            "a null processReplacing must read as absent; if this fails, the \
+             guard in `process` is decorative and release builds jump to 0"
+        );
+
+        let absent_f64: Option<ProcessProcF64> = unsafe { std::mem::transmute(0usize) };
+        assert!(absent_f64.is_none());
+
+        let absent_dispatch: Option<DispatcherProc> = unsafe { std::mem::transmute(0usize) };
+        assert!(
+            absent_dispatch.is_none(),
+            "dispatcher carries every host->plugin call, so a null one is hit on \
+             the first opcode rather than only during audio"
+        );
+
+        // A real pointer still reads as present — the guard rejects null, not
+        // everything.
+        let present: Option<ProcessProc> =
+            unsafe { std::mem::transmute(crate::interfaces::process_replacing as usize) };
+        assert!(present.is_some());
+
+        // ABI unchanged: null pointer optimization keeps `Option<fn>` one pointer
+        // wide, so the C struct the plugin writes into still has its original
+        // layout. A regression here is an ABI break, not a lint.
+        assert_eq!(
+            std::mem::size_of::<Option<ProcessProc>>(),
+            std::mem::size_of::<ProcessProc>(),
+        );
+        assert_eq!(
+            std::mem::size_of::<Option<DispatcherProc>>(),
+            std::mem::size_of::<*const u8>(),
+        );
     }
 
     #[test]

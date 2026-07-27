@@ -6,13 +6,16 @@
 //
 // The remaining allows are narrow and each has a reason:
 #![allow(missing_docs)]
-// vst-rs predates `Library::is_null` ergonomics; the null checks on FFI
-// function pointers in `host.rs` are load-bearing (a plugin may legitimately
-// leave `processReplacing` null) even though rustc believes a
-// `extern "C" fn` is non-null by type.
-#![allow(useless_ptr_null_checks)]
 // Elided-lifetime style across a 2021-edition port of a 2018-edition crate.
 #![allow(mismatched_lifetime_syntaxes)]
+//
+// `allow(useless_ptr_null_checks)` used to sit here, justified as "the null
+// checks on FFI function pointers in `host.rs` are load-bearing even though
+// rustc believes an `extern "C" fn` is non-null by type". rustc was right and
+// the justification was backwards: the checks compiled to `false` under `-O`,
+// so the guard shipped only in debug builds while release jumped to address 0.
+// The nullable slots are `Option<...>` now (R4) and the lint has nothing left
+// to fire on — if it ever fires again, that is a real bug, not noise.
 
 //! A rust implementation of the VST2.4 API.
 //!
@@ -191,9 +194,9 @@ pub fn main<T: Plugin>(callback: HostCallbackProc) -> *mut AEffect {
     // these to zero is undefined behavior.
     let boxed_effect = Box::new(AEffect {
         magic: VST_MAGIC,
-        dispatcher: interfaces::dispatch, // fn pointer
+        dispatcher: Some(interfaces::dispatch), // fn pointer
 
-        _process: interfaces::process_deprecated, // fn pointer
+        _process: Some(interfaces::process_deprecated), // fn pointer
 
         setParameter: interfaces::set_parameter, // fn pointer
         getParameter: interfaces::get_parameter, // fn pointer
@@ -220,8 +223,8 @@ pub fn main<T: Plugin>(callback: HostCallbackProc) -> *mut AEffect {
         uniqueId: 0, // To be updated with plugin specific value.
         version: 0,  // To be updated with plugin specific value.
 
-        processReplacing: interfaces::process_replacing, // fn pointer
-        processReplacingF64: interfaces::process_replacing_f64, //fn pointer
+        processReplacing: Some(interfaces::process_replacing), // fn pointer
+        processReplacingF64: Some(interfaces::process_replacing_f64), //fn pointer
 
         future: [0u8; 56],
     });
@@ -414,11 +417,23 @@ mod tests {
             };
         }
 
+        // The audio entry points are `Option` (R4), so they need unwrapping before
+        // the address comparison — and asserting `Some` is itself part of the
+        // contract: we must install these, whatever a third-party plugin does.
+        macro_rules! assert_opt_fn_eq {
+            ($a:expr, $b:expr) => {
+                assert_eq!(
+                    $a.expect("this crate must install the entry point") as usize,
+                    $b as usize
+                );
+            };
+        }
+
         let aeffect = unsafe { &mut *VSTPluginMain(pass_callback) };
 
         assert_eq!(aeffect.magic, VST_MAGIC);
-        assert_fn_eq!(aeffect.dispatcher, interfaces::dispatch);
-        assert_fn_eq!(aeffect._process, interfaces::process_deprecated);
+        assert_opt_fn_eq!(aeffect.dispatcher, interfaces::dispatch);
+        assert_opt_fn_eq!(aeffect._process, interfaces::process_deprecated);
         assert_fn_eq!(aeffect.setParameter, interfaces::set_parameter);
         assert_fn_eq!(aeffect.getParameter, interfaces::get_parameter);
         assert_eq!(aeffect.numPrograms, 1);
@@ -430,8 +445,8 @@ mod tests {
         assert_eq!(aeffect.initialDelay, 123);
         assert_eq!(aeffect.uniqueId, 5678);
         assert_eq!(aeffect.version, 1234);
-        assert_fn_eq!(aeffect.processReplacing, interfaces::process_replacing);
-        assert_fn_eq!(
+        assert_opt_fn_eq!(aeffect.processReplacing, interfaces::process_replacing);
+        assert_opt_fn_eq!(
             aeffect.processReplacingF64,
             interfaces::process_replacing_f64
         );

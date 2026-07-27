@@ -1149,7 +1149,8 @@ mod tests {
     #[test]
     fn host_callbacks() {
         let aeffect = instance();
-        (unsafe { (*aeffect).dispatcher })(
+        let dispatcher = unsafe { (*aeffect).dispatcher }.expect("this crate installs dispatcher");
+        dispatcher(
             aeffect,
             plugin::OpCode::Initialize.into(),
             0,

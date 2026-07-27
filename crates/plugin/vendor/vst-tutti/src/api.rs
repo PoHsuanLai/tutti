@@ -79,10 +79,18 @@ pub struct AEffect {
     pub magic: i32,
 
     /// Host to plug-in dispatcher.
-    pub dispatcher: DispatcherProc,
+    ///
+    /// `Option` for the same reason as
+    /// [`processReplacing`](Self::processReplacing), and it matters more here:
+    /// this is the entry point for *every* host→plugin call, so a null slot
+    /// reached the jump on the first opcode rather than only during audio.
+    pub dispatcher: Option<DispatcherProc>,
 
     /// Accumulating process mode is deprecated in VST 2.4! Use `processReplacing` instead!
-    pub _process: ProcessProc,
+    ///
+    /// `Option` because the plugin fills this in across the C ABI and may leave it
+    /// null — see [`processReplacing`](Self::processReplacing).
+    pub _process: Option<ProcessProc>,
 
     /// Set value of automatable parameter.
     pub setParameter: SetParameterProc,
@@ -145,10 +153,21 @@ pub struct AEffect {
     pub version: i32,
 
     /// Process audio samples in replacing mode.
-    pub processReplacing: ProcessProc,
+    ///
+    /// `Option` rather than a bare `extern "C" fn`, because this struct is filled
+    /// in by the *plugin* across the C ABI and a real plugin can leave the slot
+    /// null even while reporting api version >= 2400. A non-nullable `fn` type
+    /// tells the compiler the pointer cannot be null, so the host's
+    /// `(p as *const u8).is_null()` guard folded to `false` under `-O` and the
+    /// call became a jump to address 0 — taking the whole DAW down. `Option<fn>`
+    /// makes the check load-bearing at every optimization level, and is
+    /// ABI-identical (null pointer optimization: both are one pointer wide).
+    pub processReplacing: Option<ProcessProc>,
 
     /// Process double-precision audio samples in replacing mode.
-    pub processReplacingF64: ProcessProcF64,
+    ///
+    /// `Option` for the same reason as [`processReplacing`](Self::processReplacing).
+    pub processReplacingF64: Option<ProcessProcF64>,
 
     /// Reserved for future use (please zero).
     pub future: [u8; 56],

@@ -882,6 +882,58 @@ mod tests {
         );
     }
 
+    /// The *consequence* of that monotonicity: no sequence issued after a seek
+    /// can equal one issued before it, so a late pre-seek publish cannot be
+    /// mistaken for post-seek audio however long it takes to arrive.
+    ///
+    /// `has_output` compares sequences for equality, so this disjointness is what
+    /// actually stops the replay. The test above pins the two fields; this pins
+    /// what they buy.
+    ///
+    /// Asserted here rather than end-to-end, deliberately. Driving a real seek
+    /// through the mock server means suspending it mid-block so the held reply
+    /// lands after the reset — but the mock is single-threaded, so a suspended
+    /// server also stops draining the 128-slot command queue. Every post-seek
+    /// submit is then rejected and the pipeline goes silent for a reason that has
+    /// nothing to do with `reset`. Measured, not assumed: all 8 post-seek submits
+    /// failed. A real subprocess keeps reading its socket however slow its DSP
+    /// is, so that failure is an artifact of the harness and the end-to-end test
+    /// would have been pinning the artifact.
+    #[test]
+    fn no_post_seek_sequence_can_collide_with_a_pre_seek_one() {
+        let mut b = Batcher::new(2, 2, SampleFormat::Float32, 64);
+
+        let mut pre_seek = Vec::new();
+        for _ in 0..5 {
+            pre_seek.push(b.next_seq);
+            b.next_seq += 1;
+        }
+        // One of them is still in flight when the seek happens.
+        b.expect_seq = Some(*pre_seek.last().unwrap());
+
+        b.reset();
+
+        let mut post_seek = Vec::new();
+        for _ in 0..5 {
+            post_seek.push(b.next_seq);
+            b.next_seq += 1;
+        }
+
+        for issued in &post_seek {
+            assert!(
+                !pre_seek.contains(issued),
+                "sequence {issued} was issued both before and after the seek: a \
+                 pre-seek block publishing late would satisfy `has_output` for a \
+                 post-seek block and replay its audio"
+            );
+        }
+        assert!(
+            post_seek[0] > *pre_seek.last().unwrap(),
+            "post-seek sequences must continue past the pre-seek ones, not \
+             restart alongside them"
+        );
+    }
+
     /// The declared pipeline latency is exactly one block. Pinned because both
     /// plausible alternatives are wrong in ways that are hard to hear as bugs:
     /// the per-block `size` is unavailable to `route()` and would vary, and

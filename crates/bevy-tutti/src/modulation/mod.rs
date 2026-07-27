@@ -44,12 +44,14 @@
 
 pub mod components;
 pub mod driver;
+pub mod source;
 pub mod target;
 
 pub use components::{
     CurveType, LfoShape, ModParamRange, ModRate, ModRoute, ModSource, ParamRange, Polarity,
 };
 pub use driver::{drive, rebuild, ModulationMatrix, ParamKey};
+pub use source::{CollectedModSources, ModSourceAppExt, ModSourceKind, ModSourceSystems};
 pub use target::{ModBusRes, ModTargetRegistry, ModTargetResolver};
 
 use bevy_app::{App, Plugin, Update};
@@ -71,6 +73,7 @@ impl Plugin for TuttiModulationPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ModulationMatrix>()
             .init_resource::<ModTargetRegistry>()
+            .init_resource::<CollectedModSources>()
             .init_resource::<ModBusRes>();
 
         app.register_type::<ModSource>()
@@ -78,16 +81,31 @@ impl Plugin for TuttiModulationPlugin {
             .register_type::<ModRoute>()
             .register_type::<ModParamRange>();
 
+        // `Collect` builds only when `MarkDirty` said something moved, so the
+        // answer must exist before it is read — without this the two sets are
+        // unordered and the build could run a frame early against a stale flag.
+        app.configure_sets(
+            Update,
+            ModSourceSystems::MarkDirty.before(ModSourceSystems::Collect),
+        );
+
         app.add_systems(
             Update,
             (
-                rebuild.before(GraphReconcileSystems::Params),
+                source::clear_collected.before(ModSourceSystems::MarkDirty),
+                rebuild
+                    .after(ModSourceSystems::Collect)
+                    .before(GraphReconcileSystems::Params),
                 drive.in_set(GraphReconcileSystems::Params),
             )
-                // Both reach into the audio graph — `rebuild` to resolve a node,
-                // `drive` to write its atomics — so neither means anything
+                // All reach into the audio graph — `rebuild` to resolve a node,
+                // `drive` to write its atomics — so none means anything
                 // without a running engine.
                 .run_if(engine_ready),
         );
+
+        // The built-in kind. An app adds its own with `add_mod_source::<K>()`;
+        // registering here means the common case needs no setup at all.
+        app.add_mod_source::<ModSource>();
     }
 }

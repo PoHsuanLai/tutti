@@ -17,6 +17,12 @@ use tutti_types::{Depth, Hz, ParamAddr, PhaseIncrement};
 /// vocabulary directly rather than mirroring it — a `From`-bridged copy is what
 /// the app layer needs when it has its own authored enum, not what the adapter
 /// needs.
+///
+/// One of possibly several *kinds* of source (see
+/// [`ModSourceKind`](super::ModSourceKind)); it is the built-in one, and the
+/// only kind [`TuttiModulationPlugin`](super::TuttiModulationPlugin) registers
+/// on its own. A source entity carries exactly one kind component plus a
+/// [`ModRate`].
 #[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]
 #[reflect(Component, Debug, Default)]
 #[require(ModRate)]
@@ -27,6 +33,17 @@ pub struct ModSource {
 impl ModSource {
     pub fn new(shape: LfoShape) -> Self {
         Self { shape }
+    }
+}
+
+impl super::ModSourceKind for ModSource {
+    type Source = tutti_mod::Lfo;
+
+    fn build(&self) -> Self::Source {
+        // Depth is the *route's* property, not the source's — one LFO feeding
+        // two params at different depths is the ordinary case — so the
+        // modulator is built at full depth and each `ModEdge` scales it.
+        tutti_mod::Lfo::new(self.shape)
     }
 }
 

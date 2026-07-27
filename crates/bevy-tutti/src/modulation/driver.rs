@@ -9,11 +9,12 @@ use bevy_ecs::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tutti_mod::{Lfo, ModEdge, ModPreFrame, ModRoutingTable, ModTarget, ModTargetId, SourceRate};
+use tutti_mod::{ModEdge, ModPreFrame, ModRoutingTable, ModTarget, ModTargetId};
 use tutti_types::{ParamAddr, Seconds};
 
 use crate::graph::TransportRes;
-use crate::modulation::components::{ModParamRange, ModRate, ModRoute, ModSource};
+use crate::modulation::components::{ModParamRange, ModRoute};
+use crate::modulation::source::CollectedModSources;
 use crate::modulation::target::ModTargetResolver;
 
 /// The address of one modulated parameter: which entity, which param.
@@ -100,43 +101,35 @@ impl ModulationMatrix {
 pub fn rebuild(
     mut matrix: ResMut<ModulationMatrix>,
     resolver: ModTargetResolver,
-    sources: Query<(Entity, &ModSource, &ModRate)>,
+    mut collected: ResMut<CollectedModSources>,
     routes: Query<&ModRoute>,
     ranges: Query<&ModParamRange>,
-    changed: Query<
-        Entity,
-        Or<(
-            Changed<ModSource>,
-            Changed<ModRate>,
-            Changed<ModRoute>,
-            Changed<ModParamRange>,
-        )>,
-    >,
+    changed: Query<Entity, Or<(Changed<ModRoute>, Changed<ModParamRange>)>>,
     mut removed: RemovedComponents<ModRoute>,
 ) {
-    let dirty = !changed.is_empty() || !removed.is_empty();
+    // Source changes arrive as `collected.dirty` rather than a `Changed<K>`
+    // filter: a kind's component type cannot be named here, so each kind
+    // reports its own movement from its collector.
+    let dirty = !changed.is_empty() || !removed.is_empty() || collected.dirty;
     // `removed` is an event reader: draining it is what marks the frame's
     // removals as seen, so it happens whether or not a rebuild follows.
     removed.clear();
     if !dirty {
         return;
     }
+    // Cleared here rather than at the top of the frame: a change that arrives
+    // while the engine is not ready keeps the flag raised until a rebuild
+    // actually consumes it.
+    collected.dirty = false;
 
     // Source registry order fixes the indices `ModEdge::source` refers to, so
-    // it is built once and consulted by every edge below.
+    // it is built once and consulted by every edge below. Which kinds exist is
+    // the registry's business — nothing here names a modulator type.
     let mut registry: Vec<Box<dyn tutti_mod::ErasedModulator>> = Vec::new();
     let mut source_index: HashMap<Entity, usize> = HashMap::new();
-    for (entity, source, rate) in &sources {
+    for (entity, source) in collected.sources.drain(..) {
         source_index.insert(entity, registry.len());
-        let rate = if rate.beat_synced {
-            SourceRate::beat_synced(rate.frequency, rate.phase_offset)
-        } else {
-            SourceRate::free_running(rate.frequency, rate.phase_offset)
-        };
-        registry.push(Box::new(tutti_mod::Sourced::new(
-            Lfo::new(source.shape),
-            rate,
-        )));
+        registry.push(source);
     }
 
     let mut targets: HashMap<ParamKey, Arc<dyn ModTarget>> = HashMap::new();

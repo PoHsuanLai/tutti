@@ -84,6 +84,10 @@ impl<U: Unit<Raw = f32> + Default, const P: u16> Default for AudioParam<U, P> {
 /// Change-detection-gated, so a steady frame does no work at all. Values reach
 /// the audio thread through `Net::set`, which enqueues rather than mutating —
 /// the RT-correct path, and the reason no downcast is needed.
+#[allow(
+    clippy::type_complexity,
+    reason = "Bevy queries are tuple-shaped by design"
+)]
 pub fn reconcile_audio_param<U: Unit<Raw = f32> + Send + Sync + 'static, const P: u16>(
     mut graph: ResMut<AudioGraphRes>,
     #[cfg(feature = "modulation")] matrix: Res<crate::modulation::ModulationMatrix>,

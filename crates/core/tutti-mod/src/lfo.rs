@@ -2,6 +2,7 @@
 //! [`RandomState`] noise stepper they share.
 
 use crate::{LfoShape, Modulator};
+use tutti_types::{Depth, Phase};
 
 // =========================================================================
 // RandomState — the sample & hold noise stepper (ONE copy).
@@ -18,7 +19,7 @@ use crate::{LfoShape, Modulator};
 pub struct RandomState {
     pub current: f32,
     pub previous: f32,
-    pub last_phase: f32,
+    pub last_phase: Phase,
     pub seed: u32,
 }
 
@@ -27,7 +28,7 @@ impl Default for RandomState {
         Self {
             current: 0.0,
             previous: 0.0,
-            last_phase: 0.0,
+            last_phase: Phase::START,
             seed: 12345,
         }
     }
@@ -45,9 +46,14 @@ impl RandomState {
 
     /// Step the held value when `phase` wraps past its previous position
     /// (detected as a large backward jump), then remember `phase`.
+    ///
+    /// The jump test reads both positions raw: `Phase` has no subtraction,
+    /// because the difference between two cycle positions is ambiguous —
+    /// forward and backward are both valid readings of the same pair, and only
+    /// this function's "more than half a turn backward" convention picks one.
     #[inline]
-    pub fn update_for_phase(&mut self, phase: f32) {
-        if phase < self.last_phase - 0.5 {
+    pub fn update_for_phase(&mut self, phase: Phase) {
+        if phase.get() < self.last_phase.get() - 0.5 {
             self.previous = self.current;
             self.current = self.next();
         }
@@ -63,8 +69,8 @@ impl RandomState {
     /// Linear interpolation from the previous to the current sample across the
     /// phase (for `RandomSmooth`).
     #[inline]
-    pub fn get_random_smooth(&self, phase: f32) -> f32 {
-        self.previous + (self.current - self.previous) * phase
+    pub fn get_random_smooth(&self, phase: Phase) -> f32 {
+        self.previous + (self.current - self.previous) * phase.get()
     }
 }
 
@@ -79,19 +85,21 @@ impl RandomState {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Lfo {
     pub shape: LfoShape,
-    pub depth: f32,
+    pub depth: Depth,
 }
 
 impl Lfo {
     /// A full-depth LFO of the given shape.
     pub fn new(shape: LfoShape) -> Self {
-        Self { shape, depth: 1.0 }
+        Self {
+            shape,
+            depth: Depth::FULL,
+        }
     }
 
-    /// Set the depth (typically `0.0..=1.0`; not clamped here — the target's
-    /// concern).
-    pub fn with_depth(mut self, depth: f32) -> Self {
-        self.depth = depth;
+    /// Set the depth. Not clamped here — the target's concern.
+    pub fn with_depth(mut self, depth: impl Into<Depth>) -> Self {
+        self.depth = depth.into();
         self
     }
 }
@@ -102,17 +110,18 @@ impl Modulator for Lfo {
     type State = RandomState;
 
     #[inline]
-    fn value(&self, mut state: RandomState, phase: f32) -> (RandomState, f32) {
+    fn value(&self, mut state: RandomState, phase: Phase) -> (RandomState, f32) {
+        let depth = self.depth.get();
         match self.shape {
             LfoShape::Random => {
                 state.update_for_phase(phase);
-                (state, state.get_random() * self.depth)
+                (state, state.get_random() * depth)
             }
             LfoShape::RandomSmooth => {
                 state.update_for_phase(phase);
-                (state, state.get_random_smooth(phase) * self.depth)
+                (state, state.get_random_smooth(phase) * depth)
             }
-            _ => (state, self.shape.evaluate_periodic(phase) * self.depth),
+            _ => (state, self.shape.evaluate_periodic(phase) * depth),
         }
     }
 }
@@ -137,7 +146,7 @@ impl Modulator for SampleHold {
     type State = RandomState;
 
     #[inline]
-    fn value(&self, mut state: RandomState, phase: f32) -> (RandomState, f32) {
+    fn value(&self, mut state: RandomState, phase: Phase) -> (RandomState, f32) {
         state.update_for_phase(phase);
         (state, state.get_random())
     }
@@ -153,7 +162,7 @@ mod tests {
     // `RandomState` in and drop the returned one.
 
     fn sample(lfo: &Lfo, phase: f32) -> f32 {
-        lfo.value(RandomState::default(), phase).1
+        lfo.value(RandomState::default(), Phase(phase)).1
     }
 
     #[test]
@@ -179,8 +188,16 @@ mod tests {
     fn depth_scales_output() {
         // Was tutti_units::lfo::test_depth_control — depth 0.5 on a square at
         // phase 0 → 0.5.
-        let lfo = Lfo::new(LfoShape::Square).with_depth(0.5);
+        let lfo = Lfo::new(LfoShape::Square).with_depth(Depth(0.5));
         assert!((sample(&lfo, 0.0) - 0.5).abs() < 0.01);
+    }
+
+    /// A negative depth phase-flips the shape rather than quieting it.
+    #[test]
+    fn inverted_depth_flips_the_shape() {
+        let up = Lfo::new(LfoShape::Square);
+        let down = Lfo::new(LfoShape::Square).with_depth(Depth::INVERTED);
+        assert!((sample(&up, 0.1) + sample(&down, 0.1)).abs() < 1e-6);
     }
 
     #[test]
@@ -190,12 +207,12 @@ mod tests {
         let lfo = Lfo::new(LfoShape::Random);
         let mut state = RandomState::default();
         let mut values = Vec::new();
-        let mut phase = 0.0_f32;
+        let mut phase = Phase::START;
         for _ in 0..500 {
             let (next, v) = lfo.value(state, phase);
             state = next;
             values.push(v);
-            phase = (phase + 0.03).fract();
+            phase = phase.advance(tutti_types::PhaseIncrement(0.03));
         }
         let unique: std::collections::HashSet<u32> =
             values.iter().map(|v| (v * 1000.0) as u32).collect();
@@ -210,17 +227,17 @@ mod tests {
     fn sample_hold_steps_on_phase_wrap() {
         let sh = SampleHold::new();
         let mut state = RandomState::default();
-        let (state1, first) = sh.value(state, 0.1);
+        let (state1, first) = sh.value(state, Phase(0.1));
         state = state1;
         // Same rising phase — held value must not change.
-        let (state2, v2) = sh.value(state, 0.2);
+        let (state2, v2) = sh.value(state, Phase(0.2));
         state = state2;
         assert_eq!(v2, first);
-        let (state3, v3) = sh.value(state, 0.9);
+        let (state3, v3) = sh.value(state, Phase(0.9));
         state = state3;
         assert_eq!(v3, first);
         // Wrap past → a new value steps in.
-        let (_state4, after_wrap) = sh.value(state, 0.05);
+        let (_state4, after_wrap) = sh.value(state, Phase(0.05));
         // (Statistically ~always different; at minimum the API stepped.)
         assert!(after_wrap.is_finite());
     }

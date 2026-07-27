@@ -6,6 +6,8 @@
 
 pub use audio_automation::CurveType;
 
+use tutti_types::{Depth, Phase};
+
 // =========================================================================
 // Value vocabulary
 // =========================================================================
@@ -46,12 +48,13 @@ impl LfoShape {
         matches!(self, Self::Random | Self::RandomSmooth)
     }
 
-    /// Evaluate a purely phase-deterministic shape at `phase ∈ [0, 1) → [-1, 1]`.
+    /// Evaluate a purely phase-deterministic shape at [`Phase`] → `[-1, 1]`.
     ///
     /// Callers must first check [`LfoShape::is_random`]; random shapes require
     /// per-instance state and are not handled here (they debug-assert).
     #[inline]
-    pub fn evaluate_periodic(&self, phase: f32) -> f32 {
+    pub fn evaluate_periodic(&self, phase: Phase) -> f32 {
+        let phase = phase.get();
         match self {
             Self::Sine => (phase * core::f32::consts::TAU).sin(),
             Self::Triangle => {
@@ -136,8 +139,14 @@ pub fn curve_apply(curve: CurveType, x: f32) -> f32 {
 /// `depth · polarity · curve`. `Bipolar` keeps the sign and curves the
 /// magnitude; `Unipolar` remaps `[-1, 1] → [0, 1]` (the source only pushes one
 /// direction from base) then curves. `depth` scales the result.
+///
+/// The return is a bare `f32`, not a [`Depth`]: it is an offset in the
+/// *target's* units — Hz for a cutoff, linear gain for a fader — which the
+/// caller has already scaled by the target's range. Only the input amount is a
+/// `Depth`.
 #[inline]
-pub fn shape(x: f32, depth: f32, polarity: Polarity, curve: CurveType) -> f32 {
+pub fn shape(x: f32, depth: Depth, polarity: Polarity, curve: CurveType) -> f32 {
+    let depth = depth.get();
     match polarity {
         // Bipolar: preserve sign, curve the magnitude, restore sign.
         Polarity::Bipolar => {
@@ -169,31 +178,33 @@ mod tests {
 
     #[test]
     fn test_lfo_shapes() {
-        let sine_val = LfoShape::Sine.evaluate_periodic(0.25);
+        let sine_val = LfoShape::Sine.evaluate_periodic(Phase(0.25));
         assert!((sine_val - 1.0).abs() < 0.01);
 
-        let square_val = LfoShape::Square.evaluate_periodic(0.25);
+        let square_val = LfoShape::Square.evaluate_periodic(Phase(0.25));
         assert_eq!(square_val, 1.0);
 
-        let square_val2 = LfoShape::Square.evaluate_periodic(0.75);
+        let square_val2 = LfoShape::Square.evaluate_periodic(Phase(0.75));
         assert_eq!(square_val2, -1.0);
 
-        let tri_val = LfoShape::Triangle.evaluate_periodic(0.25);
+        let tri_val = LfoShape::Triangle.evaluate_periodic(Phase(0.25));
         assert!((tri_val - 1.0).abs() < 0.01);
 
-        let saw_val = LfoShape::Sawtooth.evaluate_periodic(0.5);
+        let saw_val = LfoShape::Sawtooth.evaluate_periodic(Phase(0.5));
         assert!((saw_val - 0.0).abs() < 0.01);
     }
 
     #[test]
     fn test_sawtooth_down_shape() {
-        let val_start = LfoShape::SawtoothDown.evaluate_periodic(0.0);
+        let val_start = LfoShape::SawtoothDown.evaluate_periodic(Phase(0.0));
         assert!((val_start - 1.0).abs() < 0.01);
 
-        let val_mid = LfoShape::SawtoothDown.evaluate_periodic(0.5);
+        let val_mid = LfoShape::SawtoothDown.evaluate_periodic(Phase(0.5));
         assert!((val_mid - 0.0).abs() < 0.01);
 
-        let val_end = LfoShape::SawtoothDown.evaluate_periodic(1.0);
+        // Phase 1.0 is the cycle's end — reachable only as a literal, since
+        // `wrapped` would fold it to the next cycle's start.
+        let val_end = LfoShape::SawtoothDown.evaluate_periodic(Phase(1.0));
         assert!((val_end - (-1.0)).abs() < 0.01);
     }
 
@@ -201,29 +212,44 @@ mod tests {
 
     #[test]
     fn shape_linear_bipolar_is_depth_scaled_identity() {
-        assert!(shape(0.0, 1.0, Polarity::Bipolar, CurveType::Linear).abs() < 1e-3);
-        assert!((shape(1.0, 1.0, Polarity::Bipolar, CurveType::Linear) - 1.0).abs() < 1e-2);
-        assert!((shape(-1.0, 1.0, Polarity::Bipolar, CurveType::Linear) + 1.0).abs() < 1e-2);
+        assert!(shape(0.0, Depth::FULL, Polarity::Bipolar, CurveType::Linear).abs() < 1e-3);
+        assert!((shape(1.0, Depth::FULL, Polarity::Bipolar, CurveType::Linear) - 1.0).abs() < 1e-2);
+        assert!(
+            (shape(-1.0, Depth::FULL, Polarity::Bipolar, CurveType::Linear) + 1.0).abs() < 1e-2
+        );
     }
 
     #[test]
     fn shape_depth_scales_output() {
-        assert!((shape(1.0, 0.5, Polarity::Bipolar, CurveType::Linear) - 0.5).abs() < 1e-2);
+        assert!((shape(1.0, Depth(0.5), Polarity::Bipolar, CurveType::Linear) - 0.5).abs() < 1e-2);
+    }
+
+    /// A negative depth inverts the modulator rather than attenuating it — the
+    /// property that makes this a [`Depth`] and not an `Amplitude`.
+    #[test]
+    fn inverted_depth_flips_the_sign() {
+        let up = shape(1.0, Depth::FULL, Polarity::Bipolar, CurveType::Linear);
+        let down = shape(1.0, Depth::INVERTED, Polarity::Bipolar, CurveType::Linear);
+        assert!((up + down).abs() < 1e-6, "{up} and {down} must cancel");
     }
 
     #[test]
     fn shape_unipolar_maps_negative_to_zero_region() {
         // Unipolar remaps [-1,1]→[0,1]: x=-1 → 0, x=0 → 0.5, x=1 → 1.
-        assert!(shape(-1.0, 1.0, Polarity::Unipolar, CurveType::Linear).abs() < 1e-2);
-        assert!((shape(0.0, 1.0, Polarity::Unipolar, CurveType::Linear) - 0.5).abs() < 1e-2);
-        assert!((shape(1.0, 1.0, Polarity::Unipolar, CurveType::Linear) - 1.0).abs() < 1e-2);
+        assert!(shape(-1.0, Depth::FULL, Polarity::Unipolar, CurveType::Linear).abs() < 1e-2);
+        assert!(
+            (shape(0.0, Depth::FULL, Polarity::Unipolar, CurveType::Linear) - 0.5).abs() < 1e-2
+        );
+        assert!(
+            (shape(1.0, Depth::FULL, Polarity::Unipolar, CurveType::Linear) - 1.0).abs() < 1e-2
+        );
     }
 
     #[test]
     fn shape_scurve_is_flatter_at_extremes() {
         // SCurve magnitude at small |x| is below linear.
-        let lin = shape(0.25, 1.0, Polarity::Bipolar, CurveType::Linear);
-        let scv = shape(0.25, 1.0, Polarity::Bipolar, CurveType::SCurve);
+        let lin = shape(0.25, Depth::FULL, Polarity::Bipolar, CurveType::Linear);
+        let scv = shape(0.25, Depth::FULL, Polarity::Bipolar, CurveType::SCurve);
         assert!(scv < lin);
     }
 

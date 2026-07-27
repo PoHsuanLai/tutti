@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use tutti_core::transport::TransportState;
-use tutti_core::Beat;
+use tutti_core::{Beat, Depth, Phase, PhaseIncrement};
 use tutti_units::automation::Curve;
 
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
@@ -58,8 +58,10 @@ pub struct LfoCurve {
     lfo: tutti_units::Lfo,
     /// Beats per LFO cycle (beat-synced). `<= 0` freezes at the phase offset.
     beats_per_cycle: f32,
-    depth: f32,
-    phase_offset: f32,
+    depth: Depth,
+    /// A displacement added to the generated position, not a position itself —
+    /// and meaningfully negative, which a `Phase` cannot be.
+    phase_offset: PhaseIncrement,
     /// Output mapping: `base + shaped·(max-min)`, clamped to `[min, max]`.
     base: f32,
     min: f32,
@@ -74,8 +76,8 @@ impl LfoCurve {
     pub fn new(
         shape: tutti_units::LfoShape,
         beats_per_cycle: f32,
-        depth: f32,
-        phase_offset: f32,
+        depth: impl Into<Depth>,
+        phase_offset: impl Into<PhaseIncrement>,
         base: f32,
         min: f32,
         max: f32,
@@ -85,8 +87,8 @@ impl LfoCurve {
             // raw `[-1, 1]` output is what we sample here.
             lfo: tutti_units::Lfo::new(shape),
             beats_per_cycle,
-            depth,
-            phase_offset,
+            depth: depth.into(),
+            phase_offset: phase_offset.into(),
             base,
             min,
             max,
@@ -99,9 +101,9 @@ impl LfoCurve {
         use tutti_units::Modulator;
 
         let phase = if self.beats_per_cycle > 0.0 {
-            ((beat as f32 / self.beats_per_cycle) + self.phase_offset).rem_euclid(1.0)
+            Phase::wrapped(beat as f32 / self.beats_per_cycle).offset_by(self.phase_offset)
         } else {
-            self.phase_offset.rem_euclid(1.0)
+            Phase::START.offset_by(self.phase_offset)
         };
         if self.lfo.shape.is_random() {
             // Random shapes need the stateful stepper, which we can't thread
@@ -137,7 +139,7 @@ fn hash_unit_bipolar(n: i64) -> f32 {
 
 impl Curve for LfoCurve {
     fn value_at(&self, beat: tutti_core::Beat) -> Option<f32> {
-        let shaped = self.raw_value(beat.get()) * self.depth * (self.max - self.min);
+        let shaped = self.raw_value(beat.get()) * self.depth.get() * (self.max - self.min);
         Some((self.base + shaped).clamp(self.min, self.max))
     }
 }
@@ -168,8 +170,8 @@ impl LfoOffset {
     pub fn new(
         shape: tutti_units::LfoShape,
         beats_per_cycle: f32,
-        depth: f32,
-        phase_offset: f32,
+        depth: impl Into<Depth>,
+        phase_offset: impl Into<PhaseIncrement>,
         span: f32,
     ) -> Self {
         // Reuse LfoCurve only for its phase/waveform (`raw_value`); base 0, unit
@@ -184,7 +186,7 @@ impl LfoOffset {
 impl Curve for LfoOffset {
     fn value_at(&self, beat: tutti_core::Beat) -> Option<f32> {
         let raw = self.lfo.raw_value(beat.get()); // [-1, 1]
-        let offset = raw * self.lfo.depth * self.span;
+        let offset = raw * self.lfo.depth.get() * self.span;
         Some(offset.clamp(-self.span, self.span))
     }
 }

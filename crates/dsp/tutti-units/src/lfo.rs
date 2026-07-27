@@ -181,7 +181,7 @@ impl<M: Modulator> ModulatorNode<M> {
     /// `value`, store it back, and apply depth. `&mut self` here mutates only
     /// the node's own `mod_state`/params — the modulator stays `&self`.
     #[inline]
-    fn evaluate(&mut self, phase: f32) -> f32 {
+    fn evaluate(&mut self, phase: Phase) -> f32 {
         let depth = self.depth.load().get();
         let (next, v) = self.modulator.value(self.mod_state, phase);
         self.mod_state = next;
@@ -245,7 +245,7 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
             }
         };
 
-        output[0] = self.evaluate(phase.get());
+        output[0] = self.evaluate(phase);
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
@@ -258,7 +258,7 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
 
                 for i in 0..size {
                     let phase = self.phase.offset_by(phase_offset);
-                    output.set_f32(0, i, self.evaluate(phase.get()));
+                    output.set_f32(0, i, self.evaluate(phase));
 
                     self.phase = self.phase.advance(phase_increment);
                 }
@@ -273,7 +273,7 @@ impl<M: Modulator + Clone + Send + Sync + 'static> AudioUnit for ModulatorNode<M
                     } else {
                         Phase::START.offset_by(phase_offset)
                     };
-                    output.set_f32(0, i, self.evaluate(phase.get()));
+                    output.set_f32(0, i, self.evaluate(phase));
                 }
             }
         }
@@ -327,23 +327,9 @@ mod tests {
     use super::*;
     use tutti_core::dsp::Signal;
 
-    #[test]
-    fn test_lfo_shapes() {
-        let sine_val = LfoShape::Sine.evaluate_periodic(0.25);
-        assert!((sine_val - 1.0).abs() < 0.01);
-
-        let square_val = LfoShape::Square.evaluate_periodic(0.25);
-        assert_eq!(square_val, 1.0);
-
-        let square_val2 = LfoShape::Square.evaluate_periodic(0.75);
-        assert_eq!(square_val2, -1.0);
-
-        let tri_val = LfoShape::Triangle.evaluate_periodic(0.25);
-        assert!((tri_val - 1.0).abs() < 0.01);
-
-        let saw_val = LfoShape::Sawtooth.evaluate_periodic(0.5);
-        assert!((saw_val - 0.0).abs() < 0.01);
-    }
+    // The waveform math is `tutti-mod`'s, and so are the tests that pin it.
+    // What belongs here is the adapter around it: phase generation from
+    // transport, depth, and the `AudioUnit` surface.
 
     #[test]
     fn test_free_running_lfo() {
@@ -483,18 +469,6 @@ mod tests {
             "Expected ~1.0, got {}",
             output[0]
         );
-    }
-
-    #[test]
-    fn test_sawtooth_down_shape() {
-        let val_start = LfoShape::SawtoothDown.evaluate_periodic(0.0);
-        assert!((val_start - 1.0).abs() < 0.01);
-
-        let val_mid = LfoShape::SawtoothDown.evaluate_periodic(0.5);
-        assert!((val_mid - 0.0).abs() < 0.01);
-
-        let val_end = LfoShape::SawtoothDown.evaluate_periodic(1.0);
-        assert!((val_end - (-1.0)).abs() < 0.01);
     }
 
     #[test]

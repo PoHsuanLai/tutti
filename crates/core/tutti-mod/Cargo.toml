@@ -16,7 +16,7 @@ default = []
 std = []
 # The mod-matrix routing subsystem: keyed accumulator, id→sink bus, routing
 # snapshot + table, and the per-frame driver.
-routing = ["std", "dep:dashmap", "dep:arc-swap", "dep:atomic_float", "dep:tutti-types"]
+routing = ["std", "dep:dashmap", "dep:arc-swap", "dep:atomic_float"]
 # ECS surface: `Component`/`Reflect` derives on `ModTargetId`, `LayerKey`.
 # Implies `routing` (the ids/targets are only useful with it) and std.
 bevy = ["routing", "dep:bevy_ecs", "dep:bevy_reflect"]
@@ -26,9 +26,18 @@ bevy = ["routing", "dep:bevy_ecs", "dep:bevy_reflect"]
 # vocabulary. Keeps a `Modulator` able to drive something non-audio.
 audio-automation = { version = "0.4", default-features = false }
 
-# `ParamAddr` (native `UnitParam` + foreign id) — the key the `ModParams` trait
-# addresses, so one trait covers native nodes and plugins. Routing-gated.
-tutti-types = { path = "../tutti-types", default-features = false, optional = true }
+# The measurement vocabulary. `Phase`/`PhaseIncrement` (a modulator's position
+# and its step) and `Depth` (a bipolar modulation amount) reach into the pure
+# floor itself, so this is not routing-gated; `ParamAddr` — the key the
+# `ModParams` trait addresses — comes from here too.
+#
+# Unconditional despite the floor's no-dependencies instinct, because `Phase`
+# exists *because of this crate*: three hand-rolled wraps lived here, two of them
+# sign-wrong for a reverse-rate modulator, and the type is what makes that class
+# unrepresentable. Spelling the invariant out in a comment was the alternative,
+# and it is how the third wrap survived. tutti-types is a leaf crate — Bevy-free,
+# pulling only smallvec / atomic_float / arc-swap.
+tutti-types = { path = "../tutti-types", default-features = false }
 
 # Routing layer — literal pins matching the tutti crates (these are NOT in
 # [workspace.dependencies]).

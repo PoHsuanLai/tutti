@@ -1687,35 +1687,9 @@ impl AudioUnit for VoiceNode {
 mod tests {
     use super::*;
     use crate::clip::sampler_unit::SamplerUnitConfig;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use tutti_core::Bpm;
 
-    struct MockTransport {
-        playing: AtomicBool,
-        beat: AtomicU64,
-        tempo: AtomicU64,
-    }
-
-    impl MockTransport {
-        fn new(tempo: f64, beat: f64, playing: bool) -> Arc<Self> {
-            Arc::new(Self {
-                playing: AtomicBool::new(playing),
-                beat: AtomicU64::new(beat.to_bits()),
-                tempo: AtomicU64::new(tempo.to_bits()),
-            })
-        }
-    }
-
-    impl Timeline for MockTransport {
-        fn is_rolling(&self) -> bool {
-            self.playing.load(Ordering::Relaxed)
-        }
-        fn beat(&self) -> tutti_core::Beat {
-            tutti_core::Beat(f64::from_bits(self.beat.load(Ordering::Relaxed)))
-        }
-        fn tempo(&self) -> tutti_core::Bpm {
-            tutti_core::Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
-        }
-    }
+    use crate::test_transport::MockTransport;
 
     fn make_wave(samples: usize) -> Arc<Wave> {
         let data: Vec<f32> = (0..samples)
@@ -1741,7 +1715,7 @@ mod tests {
     #[test]
     fn add_and_remove_clips() {
         let (mut unit, handle) = TrackClipReaderUnit::new();
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
         let sampler =
@@ -1761,7 +1735,7 @@ mod tests {
     #[test]
     fn silence_when_transport_stopped() {
         let (mut unit, handle) = TrackClipReaderUnit::new();
-        let transport = MockTransport::new(120.0, 0.0, false);
+        let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
         let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
@@ -1776,7 +1750,7 @@ mod tests {
     #[test]
     fn clips_sum_together() {
         let (mut unit, handle) = TrackClipReaderUnit::new();
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
         for i in 0..3 {
@@ -1803,7 +1777,7 @@ mod tests {
     #[test]
     fn clone_snapshots_clips() {
         let (mut unit, handle) = TrackClipReaderUnit::new();
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
         let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
@@ -1822,7 +1796,7 @@ mod tests {
     #[test]
     fn insert_clip_is_audible_without_channel() {
         let (mut unit, _handle) = TrackClipReaderUnit::new();
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
         let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
@@ -1847,7 +1821,7 @@ mod tests {
 
     #[test]
     fn detached_reader_has_no_channel_and_is_empty() {
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
         // A render-only reader is born empty and channel-less: there is no
@@ -1877,7 +1851,7 @@ mod tests {
     #[test]
     fn update_gain() {
         let (mut unit, handle) = TrackClipReaderUnit::new();
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
         let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
@@ -1900,7 +1874,7 @@ mod tests {
     #[test]
     fn update_stretch_enables_processor() {
         let (mut unit, handle) = TrackClipReaderUnit::new();
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(4096);
 
         let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
@@ -1939,7 +1913,7 @@ mod tests {
     /// standalone `VoiceNode` produces the same audio one mixer slot does.
     #[test]
     fn voice_node_is_a_standalone_audio_unit() {
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
         // Same voice the mixer would hold for one clip.
@@ -1976,7 +1950,7 @@ mod tests {
         let mut node2 = VoiceNode::new(Voice {
             source: VoiceSource::Ram(SamplerUnit::with_transport(
                 make_wave(100),
-                MockTransport::new(120.0, 0.0, true),
+                MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
                 Beat::new(0.0),
                 None,
             )),
@@ -1998,13 +1972,13 @@ mod tests {
     #[test]
     fn voice_replace_transport_rebinds_clock() {
         let wave = make_wave(100);
-        let t1 = MockTransport::new(120.0, 0.0, true);
+        let t1 = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let sampler = SamplerUnit::with_transport(wave, t1, Beat::new(0.0), None);
         let mut voice = Voice {
             source: VoiceSource::Ram(sampler),
             play: Playback {
                 placement: Some(TransportPlacement {
-                    transport: MockTransport::new(120.0, 0.0, true),
+                    transport: MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
                     start_beat: Beat::new(2.0),
                     duration_beats: None,
                 }),
@@ -2013,7 +1987,7 @@ mod tests {
             channel_index: None,
         };
 
-        let t2 = MockTransport::new(140.0, 1.0, false);
+        let t2 = MockTransport::stopped(Beat::new(1.0), Bpm::new(140.0));
         voice.replace_transport(t2);
         let placement = voice.play.placement.as_ref().expect("placement present");
         assert_eq!(placement.start_beat, Beat::new(2.0));
@@ -2036,7 +2010,7 @@ mod tests {
         use crate::clip::streaming_sampler::StreamingSamplerUnit;
         use crate::clip::streaming_sampler::{StreamingClipConfig, StreamingClipReader};
 
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let (mut unit, handle) = TrackClipReaderUnit::new();
 
         // Build a Disk voice with no butler channel.
@@ -2119,7 +2093,7 @@ mod tests {
                 "reader route/outputs at width {w}"
             );
 
-            let transport = MockTransport::new(120.0, 0.0, true);
+            let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
             let sampler = SamplerUnit::with_config(
                 indexed_wave(6, 64),
                 SamplerUnitConfig {
@@ -2152,7 +2126,7 @@ mod tests {
     /// accumulates into a planar buffer — different code).
     #[test]
     fn six_channel_clip_reaches_all_six_reader_outputs() {
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let (mut unit, _h) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
         let sampler = SamplerUnit::with_config(
             indexed_wave(6, 512),
@@ -2196,7 +2170,7 @@ mod tests {
     /// suite exercises that combination at width 6.
     #[test]
     fn six_channel_clip_with_stretch_reaches_all_six_outputs() {
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let (mut unit, _h) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
         let sampler = SamplerUnit::with_config(
             indexed_wave(6, 4096),
@@ -2260,7 +2234,7 @@ mod tests {
     /// only because the send path put it there.
     #[test]
     fn send_builds_the_stretch_filter_not_the_drain() {
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let (mut unit, handle) =
             TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
 
@@ -2361,7 +2335,7 @@ mod tests {
     /// than a gap — and, critically, never an allocation in the callback.
     #[test]
     fn a_missing_stretch_filter_reads_dry_not_silent() {
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let (mut unit, _h) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
 
         let sampler = SamplerUnit::with_config(

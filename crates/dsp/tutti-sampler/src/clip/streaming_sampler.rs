@@ -750,38 +750,8 @@ mod tests {
 
     // --- StreamingClipReader: placement gate ---
 
-    use std::sync::atomic::AtomicU64;
-
-    struct MockTransport {
-        playing: AtomicBool,
-        beat: AtomicU64,
-        tempo: AtomicU64,
-    }
-
-    impl MockTransport {
-        fn new(tempo: f64, beat: f64, playing: bool) -> Arc<Self> {
-            Arc::new(Self {
-                playing: AtomicBool::new(playing),
-                beat: AtomicU64::new(beat.to_bits()),
-                tempo: AtomicU64::new(tempo.to_bits()),
-            })
-        }
-        fn set_beat(&self, beat: f64) {
-            self.beat.store(beat.to_bits(), Ordering::Relaxed);
-        }
-    }
-
-    impl Timeline for MockTransport {
-        fn is_rolling(&self) -> bool {
-            self.playing.load(Ordering::Relaxed)
-        }
-        fn beat(&self) -> Beat {
-            Beat::new(f64::from_bits(self.beat.load(Ordering::Relaxed)))
-        }
-        fn tempo(&self) -> tutti_core::Bpm {
-            tutti_core::Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
-        }
-    }
+    use crate::test_transport::MockTransport;
+    use tutti_core::Bpm;
 
     fn make_clip_reader(
         samples: &[(f32, f32)],
@@ -815,7 +785,7 @@ mod tests {
     #[test]
     fn placement_gate_applies_src_ratio_exactly_once() {
         let samples: Vec<_> = (1..64).map(|i| (i as f32, i as f32)).collect();
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
 
         let (inner, state) = make_unit(&samples);
         let src = 48_000.0 / 44_100.0;
@@ -836,7 +806,7 @@ mod tests {
         );
 
         // Two seconds in at 120 BPM = beat 4.0.
-        transport.set_beat(4.0);
+        transport.set_beat(Beat::new(4.0));
         let offset = reader
             .placement_sample_offset()
             .expect("inside the clip window");
@@ -855,7 +825,7 @@ mod tests {
     fn clip_reader_silent_outside_window_audible_inside() {
         // Clip window: beats [4, 8). Non-zero ramp in the ring.
         let samples: Vec<_> = (1..64).map(|i| (i as f32, i as f32)).collect();
-        let transport = MockTransport::new(120.0, 0.0, true);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let mut reader = make_clip_reader(
             &samples,
             transport.clone(),
@@ -871,7 +841,7 @@ mod tests {
         assert_eq!(out, [0.0, 0.0], "before window → silence");
 
         // Inside the window (beat 5): pulls the ring, produces audio.
-        transport.set_beat(5.0);
+        transport.set_beat(Beat::new(5.0));
         let mut got_audio = false;
         for _ in 0..8 {
             reader.tick(&[], &mut out);
@@ -882,7 +852,7 @@ mod tests {
         assert!(got_audio, "inside window → audible");
 
         // Past the window (beat 9): silent again.
-        transport.set_beat(9.0);
+        transport.set_beat(Beat::new(9.0));
         reader.tick(&[], &mut out);
         assert_eq!(out, [0.0, 0.0], "after window → silence");
     }
@@ -890,7 +860,7 @@ mod tests {
     #[test]
     fn clip_reader_stopped_transport_is_silent() {
         let samples: Vec<_> = (1..32).map(|i| (i as f32, i as f32)).collect();
-        let transport = MockTransport::new(120.0, 5.0, false); // inside window but stopped
+        let transport = MockTransport::stopped(Beat::new(5.0), Bpm::new(120.0)); // inside window but stopped
         let mut reader = make_clip_reader(
             &samples,
             transport,
@@ -919,7 +889,7 @@ mod tests {
         let samples: Vec<_> = (1..2048)
             .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
             .collect();
-        let transport = MockTransport::new(120.0, 5.0, true); // inside window
+        let transport = MockTransport::rolling(Beat::new(5.0), Bpm::new(120.0)); // inside window
         let mut reader = make_clip_reader(
             &samples,
             transport,
@@ -959,7 +929,7 @@ mod tests {
         let samples: Vec<_> = (1..2048)
             .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
             .collect();
-        let transport = MockTransport::new(120.0, 5.0, true); // inside [4, 8)
+        let transport = MockTransport::rolling(Beat::new(5.0), Bpm::new(120.0)); // inside [4, 8)
         let mut reader = make_clip_reader(
             &samples,
             Arc::clone(&transport) as Arc<dyn Timeline>,
@@ -983,7 +953,7 @@ mod tests {
                 // Jump the playhead in and out of the window so `maybe_seek` keeps
                 // detecting discontinuities and calling `request_seek`.
                 let beat = if i % 2 == 0 { 5.0 } else { 6.5 };
-                transport.set_beat(beat);
+                transport.set_beat(Beat::new(beat));
                 let input = input_vec.buffer_ref();
                 let mut output = output_vec.buffer_mut();
                 reader.process(64, &input, &mut output);
@@ -996,7 +966,7 @@ mod tests {
         let samples: Vec<_> = (1..2048)
             .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
             .collect();
-        let transport = MockTransport::new(120.0, 5.0, true);
+        let transport = MockTransport::rolling(Beat::new(5.0), Bpm::new(120.0));
         let mut reader = make_clip_reader(
             &samples,
             transport,
@@ -1311,7 +1281,7 @@ mod tests {
 
             // Transport parked BEFORE the clip's start beat, so the placement
             // gate reports "outside".
-            let transport = MockTransport::new(120.0, 0.0, true);
+            let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
             let mut clip = StreamingClipReader::new(
                 inner,
                 state,

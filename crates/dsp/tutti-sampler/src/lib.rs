@@ -86,6 +86,11 @@ mod macros;
 
 mod node_id;
 
+// One mock `Timeline` for every test in the crate, replacing three near-identical
+// copies whose constructors disagreed on argument order. Test-only.
+#[cfg(test)]
+mod test_transport;
+
 // The I/O edge vocabulary is defined once in `tutti-types` and re-exported by
 // `tutti-core`; this crate's `WavOut` implements `AudioOut` against it.
 pub use tutti_core::io::{pump, AudioIn, AudioOut};

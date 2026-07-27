@@ -830,8 +830,7 @@ impl AudioUnit for SamplerUnit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicU64;
-    use tutti_core::BufferVec;
+    use tutti_core::{Bpm, BufferVec};
 
     fn ramp_wave(len: usize, sample_rate: f64) -> Arc<Wave> {
         let samples: Vec<f32> = (0..len).map(|i| (i + 1) as f32).collect();
@@ -847,62 +846,7 @@ mod tests {
         Arc::new(wave)
     }
 
-    // --- Mock transport for beat-synced tests ---
-
-    /// Interior-mutable so a test can advance the playhead BETWEEN blocks, the
-    /// way a real transport moves. A plain-`f64` mock cannot: the beat never
-    /// changes, every frame derives the same position, and an equivalence test
-    /// over it passes no matter what the code does.
-    struct MockTransport {
-        playing: AtomicBool,
-        beat: AtomicU64,
-        tempo: AtomicU64,
-    }
-
-    impl MockTransport {
-        fn new(beat: f64, tempo: f64) -> Arc<Self> {
-            Arc::new(Self {
-                playing: AtomicBool::new(true),
-                beat: AtomicU64::new(beat.to_bits()),
-                tempo: AtomicU64::new(tempo.to_bits()),
-            })
-        }
-
-        fn stopped() -> Arc<Self> {
-            let t = Self::new(0.0, 120.0);
-            t.playing.store(false, Ordering::Relaxed);
-            t
-        }
-
-        /// Rewind by `samples`, so a test can replay the same span twice.
-        fn rewind(&self, samples: usize, sample_rate: f64) {
-            let tempo = f64::from_bits(self.tempo.load(Ordering::Relaxed));
-            let beats = samples as f64 * tempo / 60.0 / sample_rate;
-            let now = f64::from_bits(self.beat.load(Ordering::Relaxed));
-            self.beat.store((now - beats).to_bits(), Ordering::Relaxed);
-        }
-
-        /// Advance by `samples` at `sample_rate`, as a block-driven transport
-        /// does after `process` returns.
-        fn advance(&self, samples: usize, sample_rate: f64) {
-            let tempo = f64::from_bits(self.tempo.load(Ordering::Relaxed));
-            let beats = samples as f64 * tempo / 60.0 / sample_rate;
-            let now = f64::from_bits(self.beat.load(Ordering::Relaxed));
-            self.beat.store((now + beats).to_bits(), Ordering::Relaxed);
-        }
-    }
-
-    impl Timeline for MockTransport {
-        fn beat(&self) -> tutti_core::Beat {
-            tutti_core::Beat(f64::from_bits(self.beat.load(Ordering::Relaxed)))
-        }
-        fn is_rolling(&self) -> bool {
-            self.playing.load(Ordering::Relaxed)
-        }
-        fn tempo(&self) -> tutti_core::params::Bpm {
-            tutti_core::params::Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
-        }
-    }
+    use crate::test_transport::MockTransport;
 
     // --- tick/process equivalence ---
     //
@@ -968,7 +912,7 @@ mod tests {
 
         // Rewind so `process` sees the same span the ticks just walked.
         if let Some(t) = transport {
-            t.rewind(n, 44100.0);
+            t.advance(-(n as i64), 44100.0);
         }
         let processed = collect_process(&mut b, n);
 
@@ -1005,7 +949,7 @@ mod tests {
     fn tick_matches_process_when_placed() {
         // The case that was actually broken: a placed clip at non-unity speed.
         let wave = ramp_wave(4096, 44100.0);
-        let transport = MockTransport::new(1.0, 120.0);
+        let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
         let build = || {
             let mut u = SamplerUnit::with_config(
                 Arc::clone(&wave),
@@ -1075,7 +1019,7 @@ mod tests {
         // Beat 0.25 @ 120 BPM / 44.1 kHz = 5512.5 samples in, comfortably
         // inside a 16k wave at both 1x and 0.5x.
         let wave = ramp_wave(16_384, 44100.0);
-        let transport = MockTransport::new(0.25, 120.0);
+        let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
 
         let mut unity = placed_unit(&wave, &transport, 1.0);
         let mut half = placed_unit(&wave, &transport, 0.5);
@@ -1096,7 +1040,7 @@ mod tests {
         // The same assertion through the block path — this one always held, and
         // is here so the pair documents that the two agree for the right reason.
         let wave = ramp_wave(16_384, 44100.0);
-        let transport = MockTransport::new(0.25, 120.0);
+        let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
 
         let mut unity = placed_unit(&wave, &transport, 1.0);
         let mut half = placed_unit(&wave, &transport, 0.5);
@@ -1118,7 +1062,7 @@ mod tests {
     #[test]
     fn placed_clip_reads_across_a_block_not_dc() {
         let wave = ramp_wave(16_384, 44100.0);
-        let transport = MockTransport::new(0.25, 120.0);
+        let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
         let mut u = placed_unit(&wave, &transport, 1.0);
 
         let block = collect_process(&mut u, 8);
@@ -1144,7 +1088,7 @@ mod tests {
     #[test]
     fn placed_clip_block_step_follows_playback_rate() {
         let wave = ramp_wave(16_384, 44100.0);
-        let transport = MockTransport::new(0.25, 120.0);
+        let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
         let mut u = placed_unit(&wave, &transport, 0.5);
 
         let block = collect_process(&mut u, 8);
@@ -1553,7 +1497,7 @@ mod tests {
         // At 120 BPM, beat 1.0 = 0.5 seconds = 22050 samples at 44100 Hz.
         // ramp_wave has sample[i] = i+1, so sample[22050] = 22051.0.
         let wave = ramp_wave(44100, 44100.0);
-        let transport = MockTransport::new(1.0, 120.0);
+        let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
         let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
@@ -1571,7 +1515,7 @@ mod tests {
     #[test]
     fn transport_stopped_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
-        let transport = MockTransport::stopped();
+        let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
         let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
@@ -1584,7 +1528,7 @@ mod tests {
     #[test]
     fn transport_before_start_beat_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
-        let transport = MockTransport::new(1.0, 120.0);
+        let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
         let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(4.0), None);
 
         let mut output = [0.0f32; 2];
@@ -1596,7 +1540,7 @@ mod tests {
     #[test]
     fn transport_past_duration_beats_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
-        let transport = MockTransport::new(10.0, 120.0);
+        let transport = MockTransport::rolling(Beat::new(10.0), Bpm::new(120.0));
         let mut sampler = SamplerUnit::with_transport(
             wave,
             transport,
@@ -1613,7 +1557,7 @@ mod tests {
     #[test]
     fn transport_process_block() {
         let wave = ramp_wave(44100, 44100.0);
-        let transport = MockTransport::new(0.0, 120.0);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let input_vec = BufferVec::new(0);
@@ -1631,7 +1575,7 @@ mod tests {
     #[test]
     fn transport_process_block_silence_when_stopped() {
         let wave = ramp_wave(44100, 44100.0);
-        let transport = MockTransport::stopped();
+        let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
         let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
 
         let input_vec = BufferVec::new(0);

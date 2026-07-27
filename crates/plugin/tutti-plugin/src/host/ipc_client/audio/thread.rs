@@ -81,11 +81,20 @@ fn run_thread(
     // Publish our handle before the first poll so `push_command` can unpark us.
     channels.register_worker(thread::current());
 
+    // A bridge that never connects is as dead as one whose socket drops later,
+    // and the audio thread tells them apart only through `is_crashed`. Both
+    // exits below used to return silently, leaving the flag false forever — so
+    // the batcher's crash check could never fire, and the output was silent
+    // only because the slab sequence happened never to match. That made correct
+    // behaviour a coincidence of the numbering rather than the decision the
+    // check exists to make.
     let Ok(mut stream) = ipc::connect(&socket_path) else {
+        lifecycle.mark_crashed();
         return;
     };
     // Consume the server's Ready handshake for connection 2.
     if ipc::recv(&mut stream).is_err() {
+        lifecycle.mark_crashed();
         return;
     }
     pump(&channels, &payloads, &lifecycle, &listener, &mut stream);

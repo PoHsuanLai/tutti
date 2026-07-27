@@ -529,3 +529,210 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
         thread.shutdown();
     }
 }
+
+/// A bridge whose socket has no server behind it: the listener is created,
+/// dropped, and never accepts. Every dispatch therefore fails, which is how the
+/// bridge marks itself crashed through its ordinary path rather than through a
+/// test-only setter.
+///
+/// Returned deliberately without a server thread — the point is a bridge that
+/// never publishes to the slab.
+fn bridge_with_no_server() -> (Arc<PluginBridge>, BridgeThread) {
+    let path = unique_socket_path("no-server");
+    let _ = std::fs::remove_file(&path);
+
+    let layout = stereo_layout();
+    let shm_name = unique_shm_name("no-server");
+    let host_slab = Arc::new(AudioSlab::create(shm_name, layout).unwrap());
+
+    let (bridge, bridge_thread) = PluginBridge::new(
+        path,
+        host_slab,
+        std::path::PathBuf::from("test.vst3"),
+        48_000.0,
+    )
+    .unwrap();
+
+    (bridge, bridge_thread)
+}
+
+/// Drive `blocks` blocks through `batcher`, asserting nothing but that it runs.
+/// Split out so the warm-up and the guarded region execute *identical* code —
+/// if they diverged, the guarded region could take a colder path and the
+/// one-shot allocations would land inside the assertion.
+fn drive_one_block(
+    batcher: &mut Batcher,
+    bridge: &PluginBridge,
+    input: &BufferVec<F32>,
+    output: &mut BufferVec<F32>,
+    midi_out: &mut MidiEventVec,
+) {
+    batcher.process::<f32>(
+        bridge,
+        BATCH_SIZE,
+        &input.buffer_ref(),
+        &mut output.buffer_mut(),
+        BlockPayload::default(),
+        midi_out,
+    );
+}
+
+/// The silence substitutions are audio-thread code, so they must not allocate.
+///
+/// Both branches are reached through `Batcher::collectable` returning `None`,
+/// and both are new with the pipelined design — under the synchronous one the
+/// audio thread waited for a reply, so "nothing to collect" was not a per-block
+/// path. They are the branches taken whenever a plugin is late, absent or dead,
+/// which is exactly when the callback can least afford a malloc.
+///
+/// # What this does and does not prove
+///
+/// [`assert_no_alloc`] arms a *thread-local* counter, and the detection lives in
+/// the `AllocDisabler` global allocator registered below. A violation calls
+/// `handle_alloc_error`, which aborts rather than unwinds — so a regression here
+/// kills the test process rather than reporting a tidy failure. That is the
+/// harness working, not a broken test.
+///
+/// Registering a global allocator is process-wide, but the forbid counter is
+/// not: unrelated tests in this binary allocate freely, and only the closures
+/// below are guarded.
+#[global_allocator]
+static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
+
+/// A live-but-slow plugin must not push allocations onto the audio thread.
+///
+/// This is the case the pipelining exists for, and the one that found the bug:
+/// the payload pool held 4 entries against a 128-deep command queue, and a
+/// payload is recycled only when the bridge thread dequeues its command. So the
+/// audio thread outrunning a stalled bridge — the definition of this scenario —
+/// starved the pool from block 5 on and allocated ~9 KiB per block thereafter,
+/// exactly when the plugin was already failing to keep up.
+///
+/// Kept separate from the two silence tests below because it fails for a
+/// different reason: those cover branches where no audio arrives at all, while
+/// this one covers the path where everything is nominally working and the
+/// bridge is merely behind.
+#[test]
+fn a_stalled_but_live_server_does_not_allocate_on_the_audio_thread() {
+    let (bridge, mut bridge_thread, _server) =
+        bridge_with_server_stall(std::time::Duration::from_millis(10));
+    let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
+
+    let mut input = BufferVec::<F32>::new(CHANNELS);
+    let mut output = BufferVec::<F32>::new(CHANNELS);
+    for ch in 0..CHANNELS {
+        for i in 0..BATCH_SIZE {
+            input.set_scalar(ch, i, ramp_sample(0, ch, i));
+        }
+    }
+    let mut midi_out = MidiEventVec::new();
+
+    for _ in 0..8 {
+        drive_one_block(&mut batcher, &bridge, &input, &mut output, &mut midi_out);
+    }
+
+    // Back-to-back blocks with no gap: the audio thread outruns a stalled
+    // bridge thread, which is exactly the scenario the pipelining exists for.
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..64 {
+            drive_one_block(&mut batcher, &bridge, &input, &mut output, &mut midi_out);
+        }
+    });
+
+    bridge_thread.shutdown();
+}
+
+/// Nothing has ever been published, so every block takes the sequence-mismatch
+/// path into `silence_block`.
+#[test]
+fn silence_on_a_missing_reply_does_not_allocate() {
+    let (bridge, mut bridge_thread) = bridge_with_no_server();
+    let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
+
+    let mut input = BufferVec::<F32>::new(CHANNELS);
+    let mut output = BufferVec::<F32>::new(CHANNELS);
+    for ch in 0..CHANNELS {
+        for i in 0..BATCH_SIZE {
+            input.set_scalar(ch, i, ramp_sample(0, ch, i));
+        }
+    }
+    let mut midi_out = MidiEventVec::new();
+
+    // Warm up OUTSIDE the guard. The batcher's tick/wire storage and the
+    // payload pool allocate on first use by design; the contract under test is
+    // steady state, not first block.
+    for _ in 0..8 {
+        drive_one_block(&mut batcher, &bridge, &input, &mut output, &mut midi_out);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..64 {
+            drive_one_block(&mut batcher, &bridge, &input, &mut output, &mut midi_out);
+        }
+    });
+
+    // The branch under test is only meaningful if it actually ran: a bridge
+    // that somehow produced audio would make the assertion above vacuous.
+    assert!(
+        (0..CHANNELS).all(|ch| (0..BATCH_SIZE).all(|i| output.at_scalar(ch, i) == 0.0)),
+        "expected the silence branch, but the output was not silent — this test \
+         no longer covers what it claims to"
+    );
+
+    bridge_thread.shutdown();
+}
+
+/// A crashed bridge short-circuits ahead of the sequence check, so it is a
+/// genuinely separate branch and gets its own guard.
+#[test]
+fn silence_on_a_crashed_bridge_does_not_allocate() {
+    let (bridge, mut bridge_thread) = bridge_with_no_server();
+    let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
+
+    let mut input = BufferVec::<F32>::new(CHANNELS);
+    let mut output = BufferVec::<F32>::new(CHANNELS);
+    for ch in 0..CHANNELS {
+        for i in 0..BATCH_SIZE {
+            input.set_scalar(ch, i, ramp_sample(0, ch, i));
+        }
+    }
+    let mut midi_out = MidiEventVec::new();
+
+    // Drive until the failed dispatches have marked the bridge crashed, so the
+    // guarded region below exercises the crash branch rather than the mismatch
+    // one. Bounded rather than unbounded: if the flag never sets, the test
+    // should say so instead of hanging.
+    let mut crashed = false;
+    for _ in 0..200 {
+        drive_one_block(&mut batcher, &bridge, &input, &mut output, &mut midi_out);
+        if bridge.is_crashed() {
+            crashed = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(
+        crashed,
+        "the bridge never marked itself crashed, so this test would have \
+         measured the sequence-mismatch branch instead"
+    );
+
+    // Warm up again post-crash: the first block through the short-circuit may
+    // still touch cold storage.
+    for _ in 0..8 {
+        drive_one_block(&mut batcher, &bridge, &input, &mut output, &mut midi_out);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..64 {
+            drive_one_block(&mut batcher, &bridge, &input, &mut output, &mut midi_out);
+        }
+    });
+
+    assert!(
+        (0..CHANNELS).all(|ch| (0..BATCH_SIZE).all(|i| output.at_scalar(ch, i) == 0.0)),
+        "a crashed bridge must emit silence"
+    );
+
+    bridge_thread.shutdown();
+}

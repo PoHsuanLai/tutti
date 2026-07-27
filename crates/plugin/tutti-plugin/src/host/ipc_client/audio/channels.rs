@@ -17,7 +17,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::Thread;
 
-const COMMAND_QUEUE_SIZE: usize = 128;
+/// How many commands the audio thread can queue before `push_command` fails.
+/// This also bounds how many `Process` payloads can be outstanding at once,
+/// which is why [`super::payload_pool::PayloadPool`] sizes itself from it.
+pub(super) const COMMAND_QUEUE_SIZE: usize = 128;
 const RESPONSE_QUEUE_SIZE: usize = 128;
 const EVENT_QUEUE_SIZE: usize = 128;
 

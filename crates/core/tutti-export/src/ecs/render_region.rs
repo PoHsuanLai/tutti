@@ -454,7 +454,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use tutti_core::Beat;
-    use tutti_core::{Bpm, SampleRate, Wave};
+    use tutti_core::{BeatDuration, Bpm, SampleRate, Wave};
     use tutti_sampler::{
         ClipCommand, Direction, Playback, SamplerUnit, SlotId, TrackClipReaderUnit, Voice,
         VoiceSource,
@@ -530,6 +530,9 @@ mod tests {
                 play: Playback::default(),
                 channel_index: None,
             }),
+            // Unstretched: the filter is built by the sender only for a voice
+            // that arrives already needing one.
+            stretch: None,
         });
 
         net.set_sample_rate(SampleRate(44100.0));
@@ -579,8 +582,17 @@ mod tests {
         let writeback = Arc::new(AtomicF64::new(0.0));
 
         let mut net = Net::new(0, 2);
-        let live_clock = TransportClock::new(Arc::clone(&tempo), paused, 44100.0)
-            .with_position_writeback(Arc::clone(&writeback));
+        let live_clock = TransportClock::new(
+            tutti_core::transport::ClockLinks {
+                tempo: Arc::clone(&tempo),
+                paused,
+                seek: Default::default(),
+                loop_span: None,
+                position_writeback: Some(Arc::clone(&writeback)),
+                steady_time: None,
+            },
+            44100.0,
+        );
         let clock_id = net.push(Box::new(live_clock));
         net.pipe_output(clock_id);
 
@@ -595,7 +607,10 @@ mod tests {
             for _ in 0..44100 {
                 clock.tick(&[], &mut out);
             }
-            assert!(clock.current_beat() > 1.0, "live clock should have moved");
+            assert!(
+                clock.current_beat() > Beat::new(1.0),
+                "live clock should have moved"
+            );
         }
 
         let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
@@ -612,9 +627,12 @@ mod tests {
             .as_any_mut()
             .downcast_mut::<TransportClock>()
             .unwrap();
+        // `Beat - Beat` yields a `BeatDuration`; `Beat - f64` is deliberately not
+        // an operator (a position minus a scalar has no origin — see the omission
+        // ledger in units.rs).
         assert!(
-            (clock.current_beat() - 32.0).abs() < 1e-6,
-            "clock not re-seated on the render start beat: {}",
+            (clock.current_beat() - Beat::new(32.0)).abs() < BeatDuration::new(1e-6),
+            "clock not re-seated on the render start beat: {:?}",
             clock.current_beat()
         );
 

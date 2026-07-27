@@ -444,6 +444,13 @@ mod tests {
         assert_eq!(result.new + result.failed, 2);
     }
 
+    /// An already-blacklisted plugin is skipped without being probed, and is
+    /// counted as blacklisted rather than as a fresh failure.
+    ///
+    /// Both files here are stubs, so the *other* one is probed, fails to load, and
+    /// is newly blacklisted — which is the point of the `newly_blacklisted` split:
+    /// "was hidden before this scan" and "this scan hid it" are different facts,
+    /// and only the second is something to tell the user about.
     #[test]
     fn sync_scan_skips_blacklisted() {
         let dir = TempDir::new().unwrap();
@@ -459,8 +466,17 @@ mod tests {
         let result = scanner.scan_sync(vec![plugins_dir]);
 
         assert_eq!(result.scanned, 2);
-        assert_eq!(result.blacklisted, 1);
-        assert_eq!(result.new + result.failed, 1);
+        // The pre-blacklisted one was skipped, so it contributes to `blacklisted`
+        // but not to `newly_blacklisted`.
+        assert_eq!(
+            result.blacklisted - result.newly_blacklisted,
+            1,
+            "exactly one plugin was hidden before this scan started"
+        );
+        assert_eq!(
+            result.new, 0,
+            "neither stub is a loadable plugin, so nothing is newly catalogued"
+        );
     }
 
     #[test]

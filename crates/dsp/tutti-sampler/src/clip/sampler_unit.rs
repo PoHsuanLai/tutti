@@ -321,19 +321,6 @@ impl SamplerUnit {
         )
     }
 
-    pub fn set_transport(
-        &mut self,
-        transport: Arc<dyn Timeline>,
-        start_beat: Beat,
-        duration_beats: Option<BeatDuration>,
-    ) {
-        self.placement = Some(TransportPlacement {
-            transport,
-            start_beat,
-            duration_beats,
-        });
-    }
-
     pub fn set_placement(&mut self, start_beat: Beat, duration_beats: Option<BeatDuration>) {
         if let Some(placement) = &mut self.placement {
             placement.start_beat = start_beat;
@@ -355,10 +342,6 @@ impl SamplerUnit {
                 });
             }
         }
-    }
-
-    pub fn has_transport(&self) -> bool {
-        self.placement.is_some()
     }
 
     pub fn trigger(&self) {
@@ -460,10 +443,6 @@ impl SamplerUnit {
     #[inline]
     fn read_rate(&self) -> f64 {
         self.speed.read_rate(self.src_ratio)
-    }
-
-    pub fn wave(&self) -> &Arc<Wave> {
-        &self.wave
     }
 
     /// Replace the wave data. Resets playback position to the start.
@@ -617,22 +596,6 @@ impl SamplerUnit {
         for s in out.iter_mut() {
             *s *= gain;
         }
-    }
-
-    /// Stereo shim over [`get_sample_raw_into`](Self::get_sample_raw_into).
-    #[inline]
-    pub fn get_sample_raw(&self, position: f64) -> (f32, f32) {
-        let mut out = [0.0f32; 2];
-        self.get_sample_raw_into(position, &mut out);
-        (out[0], out[1])
-    }
-
-    /// Stereo shim over [`get_sample_into`](Self::get_sample_into).
-    #[inline]
-    pub fn get_sample(&self, position: f64) -> (f32, f32) {
-        let mut out = [0.0f32; 2];
-        self.get_sample_into(position, &mut out);
-        (out[0], out[1])
     }
 
     #[inline]

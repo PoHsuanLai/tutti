@@ -10,7 +10,7 @@ use tutti_core::{
 use super::loop_crossfade::LoopCrossfade;
 use crate::MAX_SAMPLER_CHANNELS;
 
-/// Live loop state on a `SamplerUnit`. Internal: `Looping` carries the running
+/// Live loop state on a `MemorySource`. Internal: `Looping` carries the running
 /// [`LoopCrossfade`] DSP object, which callers can neither build nor observe —
 /// the public loop *intent* is [`LoopSetting`].
 ///
@@ -29,9 +29,9 @@ pub(crate) enum LoopMode {
     },
 }
 
-/// Public loop *intent* for a [`SamplerUnitConfig`] — a plain, buildable value
+/// Public loop *intent* for a [`MemorySourceConfig`] — a plain, buildable value
 /// that says whether and how to loop, without exposing the live
-/// [`LoopCrossfade`] runtime state. [`SamplerUnit::with_config`] converts it
+/// [`LoopCrossfade`] runtime state. [`MemorySource::with_config`] converts it
 /// into the internal [`LoopMode`], priming the crossfade privately.
 ///
 /// This mirrors how the streaming/timeline loop already speaks in
@@ -82,29 +82,29 @@ impl std::fmt::Debug for TransportPlacement {
     }
 }
 
-/// Configuration for building a [`SamplerUnit`], passed to
-/// [`SamplerUnit::with_config`]. Matches tutti's config-struct constructor
+/// Configuration for building a [`MemorySource`], passed to
+/// [`MemorySource::with_config`]. Matches tutti's config-struct constructor
 /// convention (`PolySynth::new(SynthConfig)`, `OfflineTimeline::new(..)`).
 ///
-/// `Default` yields the same audible baseline as [`SamplerUnit::new`]: unity
+/// `Default` yields the same audible baseline as [`MemorySource::new`]: unity
 /// gain, normal speed, one-shot, no transport binding. It is hand-written (not
 /// derived) because the newtypes default to zero — a derived default would ship
 /// silent (`gain = 0`) and frozen (`speed = 0`).
 #[derive(Clone, Debug)]
-pub struct SamplerUnitConfig {
+pub struct MemorySourceConfig {
     pub gain: Amplitude,
     pub speed: PlaybackRate,
     /// Loop intent. `Off` plays once; `On { .. }` loops over the range and
-    /// [`SamplerUnit::with_config`] primes the crossfade internally.
+    /// [`MemorySource::with_config`] primes the crossfade internally.
     pub loop_setting: LoopSetting,
     /// Optional transport binding for beat-synced playback.
     pub placement: Option<TransportPlacement>,
-    /// Output width. Defaults to stereo — see [`SamplerUnit::channels`] for why
+    /// Output width. Defaults to stereo — see [`MemorySource::channels`] for why
     /// this is declared rather than taken from the wave.
     pub channels: usize,
 }
 
-impl Default for SamplerUnitConfig {
+impl Default for MemorySourceConfig {
     fn default() -> Self {
         Self {
             gain: Amplitude::new(1.0),
@@ -145,7 +145,7 @@ impl std::fmt::Debug for LoopMode {
 /// By default, plays immediately when added to the graph (suitable for timeline clips
 /// and offline export). Use `stop()` and `trigger()` for manual control if needed
 /// (e.g., MIDI-triggered one-shots).
-pub struct SamplerUnit {
+pub struct MemorySource {
     wave: Arc<Wave>,
     position: AtomicSamplePosition,
 
@@ -194,9 +194,9 @@ pub struct SamplerUnit {
 // Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>` and `placement` holds an
 // `Arc<dyn Timeline>`. Print the wave length + scalar params; never
 // borrow the `Wave` samples.
-impl std::fmt::Debug for SamplerUnit {
+impl std::fmt::Debug for MemorySource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SamplerUnit")
+        f.debug_struct("MemorySource")
             .field("wave_frames", &self.wave.len())
             .field("position", &self.position.load(Ordering::Relaxed))
             .field("playing", &self.playing.load(Ordering::Relaxed))
@@ -210,7 +210,7 @@ impl std::fmt::Debug for SamplerUnit {
     }
 }
 
-impl Clone for SamplerUnit {
+impl Clone for MemorySource {
     fn clone(&self) -> Self {
         Self {
             wave: Arc::clone(&self.wave),
@@ -228,7 +228,7 @@ impl Clone for SamplerUnit {
     }
 }
 
-impl SamplerUnit {
+impl MemorySource {
     /// A **stereo** sampler over `wave`.
     ///
     /// Stays stereo even for a wider wave — see [`channels`](Self::channels).
@@ -270,13 +270,13 @@ impl SamplerUnit {
         self.channels
     }
 
-    /// Build from an explicit [`SamplerUnitConfig`] — the canonical
+    /// Build from an explicit [`MemorySourceConfig`] — the canonical
     /// configurable constructor, matching tutti's `X::new(XConfig)` convention.
     ///
     /// A `LoopSetting::On { crossfade_samples, .. }` primes the loop crossfade
     /// from the wave (via the same path as [`set_loop_range`](Self::set_loop_range));
     /// `crossfade_samples == 0` loops with no crossfade.
-    pub fn with_config(wave: Arc<Wave>, config: SamplerUnitConfig) -> Self {
+    pub fn with_config(wave: Arc<Wave>, config: MemorySourceConfig) -> Self {
         let mut unit = Self {
             gain: config.gain,
             speed: config.speed,
@@ -298,7 +298,7 @@ impl SamplerUnit {
 
     /// Convenience constructor for the common transport-bound clip case: bind a
     /// transport at `start_beat` for `duration_beats`, everything else default.
-    /// Equivalent to `with_config(wave, SamplerUnitConfig { placement: Some(..),
+    /// Equivalent to `with_config(wave, MemorySourceConfig { placement: Some(..),
     /// ..Default::default() })`; kept because it reads better at the three
     /// timeline call sites (tutti-synth likewise keeps convenience ctors
     /// alongside its config one).
@@ -310,7 +310,7 @@ impl SamplerUnit {
     ) -> Self {
         Self::with_config(
             wave,
-            SamplerUnitConfig {
+            MemorySourceConfig {
                 placement: Some(TransportPlacement {
                     transport,
                     start_beat,
@@ -467,7 +467,7 @@ impl SamplerUnit {
     /// Apply a [`LoopSetting`]: `On` primes the range + crossfade, `Off`
     /// clears the range and disables looping.
     ///
-    /// In-RAM only. The streaming tier's loop is butler-owned (a
+    /// In-memory only. The streaming tier's loop is butler-owned (a
     /// `Command::Loop` from the reader's drain), which is why this is inherent
     /// rather than a shared trait method — there is no honest way for one call
     /// to mean both.
@@ -555,7 +555,7 @@ impl SamplerUnit {
     /// The current loop as a public [`LoopSetting`] intent (crossfade length
     /// recovered from the live [`LoopCrossfade`]). Lets a caller that built this
     /// unit imperatively read its loop back as a value — used by the
-    /// `TrackClipReader` add shim to fold a pre-configured `SamplerUnit`'s loop
+    /// `TrackClipReader` add shim to fold a pre-configured `MemorySource`'s loop
     /// into a `Playback` record.
     pub fn loop_setting(&self) -> LoopSetting {
         match &self.loop_mode {
@@ -582,7 +582,7 @@ impl SamplerUnit {
         }
 
         // 4-tap cubic Hermite via the shared kernel (idx-1, idx, idx+1, idx+2,
-        // bound-clamped), unifying this path with `StreamingSamplerUnit`.
+        // bound-clamped), unifying this path with `DiskSource`.
         super::interp::read_frame(&self.wave, position, out);
     }
 
@@ -732,7 +732,7 @@ fn wrap_into_loop(pos: f64, loop_start: f64, loop_end: f64) -> f64 {
     loop_start + (pos - loop_start).rem_euclid(len)
 }
 
-impl AudioUnit for SamplerUnit {
+impl AudioUnit for MemorySource {
     fn inputs(&self) -> usize {
         0
     }
@@ -827,7 +827,7 @@ mod tests {
     // against the two paths being rewritten apart again; do not read a pass
     // here as proof the placed branch is right.
 
-    fn collect_ticks(unit: &mut SamplerUnit, n: usize) -> Vec<(f32, f32)> {
+    fn collect_ticks(unit: &mut MemorySource, n: usize) -> Vec<(f32, f32)> {
         (0..n)
             .map(|_| {
                 let mut out = [0.0f32; 2];
@@ -837,7 +837,7 @@ mod tests {
             .collect()
     }
 
-    fn collect_process(unit: &mut SamplerUnit, n: usize) -> Vec<(f32, f32)> {
+    fn collect_process(unit: &mut MemorySource, n: usize) -> Vec<(f32, f32)> {
         let input = BufferVec::new(0);
         let mut output = BufferVec::new(2);
         output.resize(n);
@@ -856,8 +856,8 @@ mod tests {
     /// same position, both paths emit the same constant, and the assertion holds
     /// no matter what the code does.
     fn assert_tick_matches_process(
-        mut a: SamplerUnit,
-        mut b: SamplerUnit,
+        mut a: MemorySource,
+        mut b: MemorySource,
         n: usize,
         transport: Option<&Arc<MockTransport>>,
         case: &str,
@@ -889,8 +889,8 @@ mod tests {
     fn tick_matches_process_free_running() {
         let wave = ramp_wave(64, 44100.0);
         assert_tick_matches_process(
-            SamplerUnit::new(Arc::clone(&wave)),
-            SamplerUnit::new(wave),
+            MemorySource::new(Arc::clone(&wave)),
+            MemorySource::new(wave),
             16,
             None,
             "free-running",
@@ -901,7 +901,7 @@ mod tests {
     fn tick_matches_process_at_non_unity_speed() {
         let wave = ramp_wave(256, 44100.0);
         let build = || {
-            let mut u = SamplerUnit::new(Arc::clone(&wave));
+            let mut u = MemorySource::new(Arc::clone(&wave));
             u.set_speed(PlaybackRate::new(1.5));
             u
         };
@@ -914,9 +914,9 @@ mod tests {
         let wave = ramp_wave(4096, 44100.0);
         let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
         let build = || {
-            let mut u = SamplerUnit::with_config(
+            let mut u = MemorySource::with_config(
                 Arc::clone(&wave),
-                SamplerUnitConfig {
+                MemorySourceConfig {
                     speed: PlaybackRate::new(0.5),
                     placement: Some(TransportPlacement {
                         transport: transport.clone(),
@@ -937,9 +937,9 @@ mod tests {
         // Span the loop boundary so the wrap arithmetic runs inside the block.
         let wave = ramp_wave(64, 44100.0);
         let build = || {
-            SamplerUnit::with_config(
+            MemorySource::with_config(
                 Arc::clone(&wave),
-                SamplerUnitConfig {
+                MemorySourceConfig {
                     loop_setting: LoopSetting::On {
                         start: SamplePosition::new(0.0),
                         end: SamplePosition::new(8.0),
@@ -960,10 +960,10 @@ mod tests {
     // placed path at all. Previously `tick` returned a position derived without
     // the rate, so a placed clip played at 1x no matter what speed was set.
 
-    fn placed_unit(wave: &Arc<Wave>, transport: &Arc<MockTransport>, rate: f32) -> SamplerUnit {
-        SamplerUnit::with_config(
+    fn placed_unit(wave: &Arc<Wave>, transport: &Arc<MockTransport>, rate: f32) -> MemorySource {
+        MemorySource::with_config(
             Arc::clone(wave),
-            SamplerUnitConfig {
+            MemorySourceConfig {
                 speed: PlaybackRate::new(rate),
                 placement: Some(TransportPlacement {
                     transport: transport.clone(),
@@ -1092,9 +1092,9 @@ mod tests {
     // --- Existing tests ---
 
     #[test]
-    fn test_sampler_unit_creation() {
+    fn test_memory_source_creation() {
         let wave = Wave::with_capacity(1, 44100.0, 100);
-        let sampler = SamplerUnit::new(Arc::new(wave));
+        let sampler = MemorySource::new(Arc::new(wave));
 
         assert!(sampler.is_playing());
         assert!(!sampler.is_looping());
@@ -1104,7 +1104,7 @@ mod tests {
     #[test]
     fn test_sampler_trigger() {
         let wave = Wave::with_capacity(1, 44100.0, 100);
-        let sampler = SamplerUnit::new(Arc::new(wave));
+        let sampler = MemorySource::new(Arc::new(wave));
 
         sampler.trigger();
         assert!(sampler.is_playing());
@@ -1117,7 +1117,7 @@ mod tests {
     #[test]
     fn test_sampler_outputs_silence_when_stopped() {
         let wave = Wave::with_capacity(1, 44100.0, 100);
-        let mut sampler = SamplerUnit::new(Arc::new(wave));
+        let mut sampler = MemorySource::new(Arc::new(wave));
 
         sampler.stop();
 
@@ -1132,7 +1132,7 @@ mod tests {
     fn test_loop_range_api() {
         let samples = vec![0.0f32; 1000];
         let wave = Wave::from_samples(44100.0, &samples);
-        let mut sampler = SamplerUnit::new(Arc::new(wave));
+        let mut sampler = MemorySource::new(Arc::new(wave));
 
         assert!(sampler.loop_range().is_none());
 
@@ -1152,7 +1152,7 @@ mod tests {
     fn test_loop_crossfade_integration() {
         let samples: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
         let wave = Wave::from_samples(44100.0, &samples);
-        let mut sampler = SamplerUnit::new(Arc::new(wave));
+        let mut sampler = MemorySource::new(Arc::new(wave));
 
         sampler.set_loop_range(SamplePosition::new(10.0), SamplePosition::new(90.0), 10);
         sampler.trigger();
@@ -1173,9 +1173,9 @@ mod tests {
     #[test]
     fn with_config_constructor() {
         let wave = ramp_wave(100, 44100.0);
-        let sampler = SamplerUnit::with_config(
+        let sampler = MemorySource::with_config(
             Arc::clone(&wave),
-            SamplerUnitConfig {
+            MemorySourceConfig {
                 gain: Amplitude::new(0.5),
                 speed: PlaybackRate::new(2.0),
                 loop_setting: LoopSetting::On {
@@ -1196,7 +1196,7 @@ mod tests {
     #[test]
     fn config_default_matches_new() {
         let wave = ramp_wave(100, 44100.0);
-        let sampler = SamplerUnit::with_config(wave, SamplerUnitConfig::default());
+        let sampler = MemorySource::with_config(wave, MemorySourceConfig::default());
 
         // Default config must reproduce `new`'s audible baseline: unity gain,
         // normal speed, one-shot — NOT the newtypes' zero default.
@@ -1208,7 +1208,7 @@ mod tests {
     #[test]
     fn trigger_at_sets_position() {
         let wave = ramp_wave(100, 44100.0);
-        let sampler = SamplerUnit::new(wave);
+        let sampler = MemorySource::new(wave);
 
         sampler.stop();
         sampler.trigger_at(SamplePosition::new(42.0));
@@ -1219,7 +1219,7 @@ mod tests {
     #[test]
     fn reset_clears_position_and_stops() {
         let wave = ramp_wave(100, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         // Advance position
         let mut output = [0.0f32; 2];
@@ -1238,8 +1238,8 @@ mod tests {
     fn gain_scales_output() {
         let wave = ramp_wave(100, 44100.0);
 
-        let mut sampler_full = SamplerUnit::new(Arc::clone(&wave));
-        let mut sampler_half = SamplerUnit::new(wave);
+        let mut sampler_full = MemorySource::new(Arc::clone(&wave));
+        let mut sampler_half = MemorySource::new(wave);
         sampler_half.set_gain(Amplitude::new(0.5));
 
         let mut out_full = [0.0f32; 2];
@@ -1255,7 +1255,7 @@ mod tests {
     #[test]
     fn mono_wave_duplicates_to_stereo() {
         let wave = ramp_wave(100, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1267,7 +1267,7 @@ mod tests {
     #[test]
     fn stereo_wave_preserves_channels() {
         let wave = stereo_ramp_wave(100, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1281,8 +1281,8 @@ mod tests {
     fn speed_2x_advances_twice_as_fast() {
         let wave = ramp_wave(100, 44100.0);
 
-        let mut normal = SamplerUnit::new(Arc::clone(&wave));
-        let mut fast = SamplerUnit::new(wave);
+        let mut normal = MemorySource::new(Arc::clone(&wave));
+        let mut fast = MemorySource::new(wave);
         fast.set_speed(PlaybackRate::new(2.0));
 
         let mut out = [0.0f32; 2];
@@ -1299,7 +1299,7 @@ mod tests {
     #[test]
     fn src_ratio_adjusts_for_sample_rate_mismatch() {
         let wave = ramp_wave(100, 48000.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
         sampler.set_session_sample_rate(24000.0);
 
         let mut out = [0.0f32; 2];
@@ -1312,7 +1312,7 @@ mod tests {
     #[test]
     fn src_ratio_unity_when_rates_match() {
         let wave = ramp_wave(100, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
         sampler.set_session_sample_rate(44100.0);
 
         let mut out = [0.0f32; 2];
@@ -1325,7 +1325,7 @@ mod tests {
     #[test]
     fn stops_at_end_when_not_looping() {
         let wave = ramp_wave(10, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         let mut out = [0.0f32; 2];
         for _ in 0..20 {
@@ -1338,7 +1338,7 @@ mod tests {
     #[test]
     fn loops_back_when_looping() {
         let wave = ramp_wave(10, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
         sampler.set_looping(true);
 
         let mut out = [0.0f32; 2];
@@ -1371,7 +1371,7 @@ mod tests {
     #[test]
     fn looping_overshoot_at_double_speed() {
         let wave = ramp_wave(10, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
         sampler.set_looping(true);
         sampler.set_speed(PlaybackRate::new(2.0));
 
@@ -1400,7 +1400,7 @@ mod tests {
     #[test]
     fn process_block_produces_correct_samples() {
         let wave = ramp_wave(100, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
@@ -1418,7 +1418,7 @@ mod tests {
     #[test]
     fn process_block_silence_when_stopped() {
         let wave = ramp_wave(100, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
         sampler.stop();
 
         let input_vec = BufferVec::new(0);
@@ -1437,7 +1437,7 @@ mod tests {
     #[test]
     fn process_stops_mid_block_when_sample_ends() {
         let wave = ramp_wave(3, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
@@ -1461,7 +1461,7 @@ mod tests {
         // ramp_wave has sample[i] = i+1, so sample[22050] = 22051.0.
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1479,7 +1479,7 @@ mod tests {
     fn transport_stopped_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1492,7 +1492,7 @@ mod tests {
     fn transport_before_start_beat_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(4.0), None);
+        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(4.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1504,7 +1504,7 @@ mod tests {
     fn transport_past_duration_beats_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::rolling(Beat::new(10.0), Bpm::new(120.0));
-        let mut sampler = SamplerUnit::with_transport(
+        let mut sampler = MemorySource::with_transport(
             wave,
             transport,
             Beat::new(0.0),
@@ -1521,7 +1521,7 @@ mod tests {
     fn transport_process_block() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
@@ -1539,7 +1539,7 @@ mod tests {
     fn transport_process_block_silence_when_stopped() {
         let wave = ramp_wave(44100, 44100.0);
         let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
@@ -1557,9 +1557,9 @@ mod tests {
     #[test]
     fn clone_preserves_state() {
         let wave = ramp_wave(100, 44100.0);
-        let sampler = SamplerUnit::with_config(
+        let sampler = MemorySource::with_config(
             wave,
-            SamplerUnitConfig {
+            MemorySourceConfig {
                 gain: Amplitude::new(0.75),
                 speed: PlaybackRate::new(1.5),
                 loop_setting: LoopSetting::On {
@@ -1586,7 +1586,7 @@ mod tests {
     fn set_wave_resets_position() {
         let wave1 = ramp_wave(100, 44100.0);
         let wave2 = ramp_wave(50, 48000.0);
-        let mut sampler = SamplerUnit::new(wave1);
+        let mut sampler = MemorySource::new(wave1);
 
         sampler.trigger_at(SamplePosition::new(42.0));
         sampler.set_wave(wave2);
@@ -1600,7 +1600,7 @@ mod tests {
     #[test]
     fn set_sample_rate_updates_src_ratio() {
         let wave = ramp_wave(100, 48000.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         sampler.set_sample_rate(SampleRate(24000.0));
 
@@ -1615,7 +1615,7 @@ mod tests {
     #[test]
     fn interpolation_at_last_sample_clamps() {
         let wave = ramp_wave(3, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         let mut out = [0.0f32; 2];
         sampler.tick(&[], &mut out);
@@ -1633,7 +1633,7 @@ mod tests {
         // Verify that looping a 2-sample wave keeps producing the same
         // values cyclically (not silence, not garbage).
         let wave = ramp_wave(2, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
         sampler.set_looping(true);
 
         let mut outputs = Vec::new();
@@ -1667,18 +1667,18 @@ mod tests {
     /// `Net` edges already wired against `outputs()`.
     #[test]
     fn new_stays_stereo_even_for_a_wide_wave() {
-        let u = SamplerUnit::new(indexed_wave(6, 32));
+        let u = MemorySource::new(indexed_wave(6, 32));
         assert_eq!(u.channels(), 2);
         assert_eq!(u.outputs(), 2);
     }
 
     #[test]
     fn with_channels_declares_the_width() {
-        let u = SamplerUnit::with_channels(indexed_wave(6, 32), 6);
+        let u = MemorySource::with_channels(indexed_wave(6, 32), 6);
         assert_eq!(u.channels(), 6);
         assert_eq!(u.outputs(), 6);
         assert_eq!(
-            SamplerUnit::with_channels(indexed_wave(2, 32), 0).channels(),
+            MemorySource::with_channels(indexed_wave(2, 32), 0).channels(),
             1
         );
     }
@@ -1688,7 +1688,7 @@ mod tests {
     #[test]
     fn route_width_tracks_outputs() {
         for w in [1usize, 2, 6, 8] {
-            let mut u = SamplerUnit::with_channels(indexed_wave(2, 32), w);
+            let mut u = MemorySource::with_channels(indexed_wave(2, 32), w);
             let out = u.route(&SignalFrame::new(0), 44_100.0);
             assert_eq!(
                 out.len(),
@@ -1703,7 +1703,7 @@ mod tests {
     /// stack frame into a planar buffer — different code, so both are checked.
     #[test]
     fn six_channel_wave_reaches_all_six_outputs() {
-        let mut u = SamplerUnit::with_channels(indexed_wave(6, 64), 6);
+        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6);
 
         let mut out = [0.0f32; 6];
         u.tick(&[], &mut out);
@@ -1715,7 +1715,7 @@ mod tests {
             );
         }
 
-        let mut u = SamplerUnit::with_channels(indexed_wave(6, 64), 6);
+        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6);
         let input = BufferVec::new(0);
         let mut output = BufferVec::new(6);
         u.process(8, &input.buffer_ref(), &mut output.buffer_mut());
@@ -1734,7 +1734,7 @@ mod tests {
     /// strip's job, not the reader's.
     #[test]
     fn gain_applies_uniformly_across_all_channels() {
-        let mut u = SamplerUnit::with_channels(indexed_wave(6, 64), 6);
+        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6);
         u.set_gain(Amplitude::new(0.5));
         let mut out = [0.0f32; 6];
         u.tick(&[], &mut out);
@@ -1752,7 +1752,7 @@ mod tests {
     /// blend would leave channels 2..6 un-faded (or worse, untouched).
     #[test]
     fn six_channel_loop_crossfade_covers_every_channel() {
-        let mut u = SamplerUnit::with_channels(indexed_wave(6, 64), 6);
+        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6);
         u.set_loop_range(SamplePosition::new(0.0), SamplePosition::new(16.0), 4);
         let mut out = [0.0f32; 6];
         // Drive past the loop point so the crossfade engages at least once.

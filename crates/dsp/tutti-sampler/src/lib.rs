@@ -3,7 +3,7 @@
 //!
 //! # Two playback tiers, one vocabulary
 //!
-//! A clip plays either from RAM ([`SamplerUnit`]) or streamed from disk
+//! A clip plays either from memory ([`MemorySource`]) or streamed from disk
 //! ([`StreamingClipReader`], fed by the butler thread). The tier is the
 //! caller's choice — the sampler never picks one on its own — and
 //! [`TrackClipReaderUnit`] mixes both behind one command surface; where a verb
@@ -24,10 +24,10 @@
 //! every frame rather than carrying a cursor, matching `tutti_core`'s transport:
 //! one clock advances, everything else reads.
 //!
-//! The [`Sampler`] handle owns the streaming engine. Build it once with
-//! [`Sampler::new`], then drive streaming through the
-//! [`commands()`](Sampler::commands) WRITE port and the
-//! [`status()`](Sampler::status) READ port.
+//! The [`DiskStreamer`] handle owns the streaming engine. Build it once with
+//! [`DiskStreamer::new`], then drive streaming through the
+//! [`commands()`](DiskStreamer::commands) WRITE port and the
+//! [`status()`](DiskStreamer::status) READ port.
 //!
 //! # Crate layout
 //!
@@ -42,22 +42,22 @@
 //! # Bevy-free use (`--no-default-features`)
 //!
 //! The engine is Bevy-free; only the ECS drivers are behind the `bevy` feature.
-//! A non-Bevy host builds a [`Sampler`] and drives it through plain methods:
+//! A non-Bevy host builds a [`DiskStreamer`] and drives it through plain methods:
 //!
-//! - In-memory playback: construct a [`SamplerUnit`] / [`TrackClipReaderUnit`]
+//! - In-memory playback: construct a [`MemorySource`] / [`TrackClipReaderUnit`]
 //!   and add it to a fundsp `Net`.
-//! - **Disk streaming**: [`Sampler::new`] spawns the butler thread;
-//!   [`commands()`](Sampler::commands) issues stream/seek/loop ops and
-//!   [`status()`](Sampler::status) constructs a [`StreamingClipReader`] to wire
+//! - **Disk streaming**: [`DiskStreamer::new`] spawns the butler thread;
+//!   [`commands()`](DiskStreamer::commands) issues stream/seek/loop ops and
+//!   [`status()`](DiskStreamer::status) constructs a [`StreamingClipReader`] to wire
 //!   into your graph.
 //!
 //! ```no_run
 //! use std::sync::Arc;
-//! use tutti_sampler::{SamplerUnit, stretch};
+//! use tutti_sampler::{MemorySource, stretch};
 //! use tutti_core::Wave;
 //!
 //! let wave = Arc::new(Wave::with_capacity(1, 44_100.0, 0));
-//! let unit = SamplerUnit::new(wave);
+//! let unit = MemorySource::new(wave);
 //! // The stretcher is a pure frame-in → frame-out filter: it owns no source.
 //! // The caller ticks `unit` and feeds each frame into `stretched`.
 //! let stretched = stretch::Unit::new(44_100.0);
@@ -111,15 +111,15 @@ pub mod stretch;
 // `AudioOut` sink) is re-exported; the butler's `LruCache` / `StreamPin` are
 // internal machinery a consumer never constructs, so they stay `pub(crate)`.
 pub use live::WavOut;
-// `StreamingClipConfig` and `StreamingSamplerUnit` are not re-exported: nothing
-// outside this crate constructs them. `StreamingSamplerUnit` in particular is
+// `StreamingClipConfig` and `DiskSource` are not re-exported: nothing
+// outside this crate constructs them. `DiskSource` in particular is
 // `StreamingClipReader`'s `inner` — one capability, and only the outer type is
 // a doorway. `ClipSpec` stays public solely for `tests/rt_no_alloc.rs`, which
 // is a separate crate; it has no production caller.
 pub use clip::{
-    ClipCommand, ClipSpec, Direction, LoopSetting, PendingPlayback, Playback, SamplerUnit,
-    SamplerUnitConfig, SlotId, StreamingClipReader, TrackClipReaderHandle, TrackClipReaderUnit,
-    TransportPlacement, Voice, VoiceNode, VoiceSource,
+    ClipCommand, ClipSpec, Direction, LoopSetting, MemorySource, MemorySourceConfig,
+    PendingPlayback, Playback, SlotId, StreamingClipReader, TrackClipReaderHandle,
+    TrackClipReaderUnit, TransportPlacement, Voice, VoiceNode, VoiceSource,
 };
 pub use live::{share_mic_ring, MicMonitorNode, MicRing};
 // Bevy ECS surface of `clip`.
@@ -129,13 +129,13 @@ pub use clip::{
     WaveAssetLoaderError,
 };
 
-// The async disk-streaming engine (butler thread + the `Sampler` handle). All
-// Bevy-free — a non-Bevy host drives it directly via `Sampler::new` / the
-// `ButlerThread` API. The `Resource` derive on `Sampler` is `bevy`-gated inside.
+// The async disk-streaming engine (butler thread + the `DiskStreamer` handle). All
+// Bevy-free — a non-Bevy host drives it directly via `DiskStreamer::new` / the
+// `ButlerThread` API. The `Resource` derive on `DiskStreamer` is `bevy`-gated inside.
 pub(crate) mod butler;
 
-mod sampler;
-pub use sampler::{Sampler, SamplerConfig};
+mod disk_streamer;
+pub use disk_streamer::{DiskStreamer, DiskStreamerConfig};
 
 mod ports;
 pub use ports::{Command, Commands, Source, Status};
@@ -144,14 +144,14 @@ pub use ports::{Command, Commands, Source, Status};
 use bevy_ecs::prelude::Resource;
 
 /// Transient handed off by `build_into`, part of the umbrella's uniform
-/// `PendingX` init handshake: the builder inserts the freshly-built [`Sampler`]
+/// `PendingX` init handshake: the builder inserts the freshly-built [`DiskStreamer`]
 /// and [`TuttiSamplerPlugin`]'s `build()` claims it into a real resource.
 #[cfg(feature = "bevy")]
 #[derive(Resource, Debug)]
-pub struct PendingSampler(pub Option<Sampler>);
+pub struct PendingDiskStreamer(pub Option<DiskStreamer>);
 
 /// Bevy plugin: the sampler's ECS surface — the wave asset loader, time-stretch
-/// control sync, and the [`Sampler`] resource handshake.
+/// control sync, and the [`DiskStreamer`] resource handshake.
 #[cfg(feature = "bevy")]
 #[derive(Debug)]
 pub struct TuttiSamplerPlugin;
@@ -163,8 +163,8 @@ impl bevy_app::Plugin for TuttiSamplerPlugin {
 
         // Claim the sampler out of the transient `build_into` inserted
         // (synchronous, during plugin build) — the umbrella `PendingX` handshake.
-        if let Some(PendingSampler(Some(sampler))) =
-            app.world_mut().remove_resource::<PendingSampler>()
+        if let Some(PendingDiskStreamer(Some(sampler))) =
+            app.world_mut().remove_resource::<PendingDiskStreamer>()
         {
             app.insert_resource(sampler);
         }

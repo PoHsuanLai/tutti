@@ -1,12 +1,12 @@
 //! Shared, zero-alloc interpolation kernel for the sampler playback units.
 //!
-//! Both the in-memory [`SamplerUnit`](super::sampler_unit::SamplerUnit) and the
+//! Both the in-memory [`MemorySource`](super::memory_source::MemorySource) and the
 //! disk-streaming [`StreamingClipReader`](super::streaming_sampler::StreamingClipReader)
 //! read fractional sample positions, so both must interpolate the same way or
 //! the same clip sounds different on the two tiers. Shared here: one
 //! `cubic_hermite` kernel and one transport-placement gate, used by both.
 //!
-//! `read_frame` is the in-RAM reader only — the streaming tier pulls from the
+//! `read_frame` is the in-memory reader only — the streaming tier pulls from the
 //! butler ring rather than an indexable `Wave`, so it feeds the same kernel from
 //! its own 4-tap history. Same interpolation, different fetch.
 //!
@@ -28,7 +28,7 @@ use crate::MAX_SAMPLER_CHANNELS;
 /// outside the clip's transport window.
 ///
 /// The single source of truth for the transport-placement gate shared by the
-/// in-memory [`SamplerUnit`](super::sampler_unit::SamplerUnit) and the
+/// in-memory [`MemorySource`](super::memory_source::MemorySource) and the
 /// disk-streaming
 /// [`StreamingClipReader`](super::streaming_sampler::StreamingClipReader).
 /// Callers differ only in how they obtain `file_sample_rate` (the in-memory

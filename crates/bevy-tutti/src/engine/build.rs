@@ -41,8 +41,7 @@ use tutti_midi_runtime::{MidiBus, MidiPreBlock};
 use tutti_midi_types::MidiRoutingTable;
 
 #[cfg(feature = "sampler")]
-use tutti_sampler::{PendingSampler, Sampler};
-
+use tutti_sampler::{DiskStreamer, PendingDiskStreamer};
 
 /// Build the engine from a [`TuttiPlugin`](crate::TuttiPlugin) config and insert
 /// every subsystem resource into `app`. The audio callback is live on return.
@@ -138,7 +137,8 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         // channel-spread into native per-note messages, so downstream synths see
         // only native MIDI-2. MPE mode comes from the app's `MpeModeConfig`
         // (inserted before the engine builds); default `Disabled` = passthrough.
-        pre_block.set_translator(tutti_midi_runtime::tutti_midi_types::Midi1ToMidi2Translator::new());
+        pre_block
+            .set_translator(tutti_midi_runtime::tutti_midi_types::Midi1ToMidi2Translator::new());
         let mpe_mode = app
             .world()
             .get_resource::<tutti_midi_io::MpeModeConfig>()
@@ -164,9 +164,9 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     audio_engine.start(callback_state.clone())?;
 
     #[cfg(feature = "sampler")]
-    let sampler = Sampler::new(
+    let sampler = DiskStreamer::new(
         sample_rate,
-        tutti_sampler::SamplerConfig {
+        tutti_sampler::DiskStreamerConfig {
             pdc: Some(Arc::clone(&compensation.0)),
             ..Default::default()
         },
@@ -181,7 +181,6 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // The metronome resource is just the shared click settings — callers set
     // volume/mode via `ClickState`'s atomic setters directly.
     let metronome = click_settings;
-
 
     // --- Hand each subsystem its transient `PendingX` (claimed in each
     // subsystem plugin's `build()`). The non-send CPAL driver has no subsystem
@@ -215,8 +214,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     });
 
     #[cfg(feature = "sampler")]
-    app.insert_resource(PendingSampler(Some(sampler)));
-
+    app.insert_resource(PendingDiskStreamer(Some(sampler)));
 
     Ok(())
 }

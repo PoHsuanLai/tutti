@@ -1,12 +1,12 @@
 //! Per-track clip reader: a single graph node that internally manages
 //! all audio clip playback for one track.
 //!
-//! Replaces the old "one `SamplerUnit` graph node per clip + dynamic
+//! Replaces the old "one `MemorySource` graph node per clip + dynamic
 //! `StereoSumUnit`" model. ECS systems send [`ClipCommand`]s through
 //! a [`TrackClipReaderHandle`]; the unit drains them each audio buffer.
 //!
 //! Each clip is played by a [`Voice`]: a [`VoiceSource`] (EITHER an in-memory
-//! [`SamplerUnit`] with the whole clip resident in RAM as an `Arc<Wave>`, decoded
+//! [`MemorySource`] with the whole clip resident in memory as an `Arc<Wave>`, decoded
 //! once by the wave cache, OR a [`StreamingClipReader`] that pulls incrementally
 //! from the butler ring) plus its [`Playback`] control-intent record. The source
 //! choice is a monomorphized [`VoiceSource`] enum, not a boxed trait object, so
@@ -22,7 +22,7 @@ use crate::ports::{Command, Commands};
 use crate::stretch;
 use crate::MAX_SAMPLER_CHANNELS;
 
-use super::sampler_unit::{LoopSetting, SamplerUnit, TransportPlacement};
+use super::memory_source::{LoopSetting, MemorySource, TransportPlacement};
 use super::streaming_sampler::StreamingClipReader;
 #[cfg(feature = "bevy")]
 use bevy_ecs::prelude::*;
@@ -82,16 +82,16 @@ impl Direction {
 
 // ---------------------------------------------------------------------------
 // VoiceSource — a voice's audio source, monomorphized. Either the whole clip is
-// resident in RAM (`Ram`) or it streams incrementally from the butler ring
+// resident in memory (`Memory`) or it streams incrementally from the butler ring
 // (`Disk`).
 //
 // DESIGN INVARIANT: the two variants differ ONLY in the *essential* per-sample
-// read — `Ram` indexes an `Arc<Wave>`; `Disk` pops the butler-fed ring,
+// read — `Memory` indexes an `Arc<Wave>`; `Disk` pops the butler-fed ring,
 // emitting silence while `is_seeking()` and crossfading on refill. Every *cold*
 // control op is a `match` on this enum — see `apply_gain` / `apply_speed` /
 // `apply_direction` / `apply_placement`. A `ClipReader` trait used to sit over
 // the pair, but half its methods no-opped on one side or the other, which hid
-// the divergence instead of removing it (streaming clamped speed, in-RAM did
+// the divergence instead of removing it (streaming clamped speed, in-memory did
 // not; `set_wave` silently did nothing on disk). With two in-crate impls the
 // enum is the better tool: it inlines, it surfaces the fork at the call site,
 // and adding a variant makes the compiler list every decision to make.
@@ -105,16 +105,16 @@ impl Direction {
 
 #[non_exhaustive]
 pub enum VoiceSource {
-    Ram(SamplerUnit),
+    Memory(MemorySource),
     Disk(StreamingClipReader),
 }
 
-// Hand-rolled: both variants wrap non-`Debug`-deriving units (`SamplerUnit` /
+// Hand-rolled: both variants wrap non-`Debug`-deriving units (`MemorySource` /
 // `StreamingClipReader`), each with its own hand-rolled summary Debug.
 impl std::fmt::Debug for VoiceSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Ram(s) => f.debug_tuple("Ram").field(s).finish(),
+            Self::Memory(s) => f.debug_tuple("Memory").field(s).finish(),
             Self::Disk(s) => f.debug_tuple("Disk").field(s).finish(),
         }
     }
@@ -123,7 +123,7 @@ impl std::fmt::Debug for VoiceSource {
 impl Clone for VoiceSource {
     fn clone(&self) -> Self {
         match self {
-            Self::Ram(s) => Self::Ram(s.clone()),
+            Self::Memory(s) => Self::Memory(s.clone()),
             Self::Disk(s) => Self::Disk(s.clone()),
         }
     }
@@ -136,7 +136,7 @@ impl VoiceSource {
     #[inline]
     fn as_audio_unit_mut(&mut self) -> &mut dyn AudioUnit {
         match self {
-            Self::Ram(s) => s,
+            Self::Memory(s) => s,
             Self::Disk(s) => s,
         }
     }
@@ -146,35 +146,35 @@ impl VoiceSource {
     #[inline]
     fn apply_gain(&mut self, gain: Amplitude) {
         match self {
-            Self::Ram(s) => s.set_gain(gain),
+            Self::Memory(s) => s.set_gain(gain),
             Self::Disk(s) => s.set_gain(gain),
         }
     }
 
     /// Set varispeed.
     ///
-    /// The two tiers store it differently — a unit-local field in RAM, an
+    /// The two tiers store it differently — a unit-local field in memory, an
     /// atomic shared with the butler and every clone on disk — which is exactly
     /// why the bound now lives in [`PlaybackRate`] rather than in one of these
     /// arms.
     #[inline]
     fn apply_speed(&mut self, speed: PlaybackRate) {
         match self {
-            Self::Ram(s) => s.set_speed(speed),
+            Self::Memory(s) => s.set_speed(speed),
             Self::Disk(s) => s.set_speed(speed),
         }
     }
 
     /// Set playback direction.
     ///
-    /// In-RAM direction lives on the slot's `Playback`, not inside the unit —
+    /// In-memory direction lives on the slot's `Playback`, not inside the unit —
     /// the reversed index is applied at read time — so only the streaming tier
     /// has source-side state to update. The caller writes `play.direction`
     /// either way.
     #[inline]
     fn apply_direction(&mut self, direction: Direction) {
         match self {
-            Self::Ram(_) => {}
+            Self::Memory(_) => {}
             Self::Disk(s) => s.set_direction(direction),
         }
     }
@@ -183,7 +183,7 @@ impl VoiceSource {
     #[inline]
     fn apply_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
         match self {
-            Self::Ram(s) => s.set_placement(start_beat, duration),
+            Self::Memory(s) => s.set_placement(start_beat, duration),
             Self::Disk(s) => s.set_placement(start_beat, duration),
         }
     }
@@ -192,7 +192,7 @@ impl VoiceSource {
 // ---------------------------------------------------------------------------
 // Playback — the control-INTENT record for one voice. It says *what* the voice
 // should do (gain, speed, direction, loop, timeline placement, stretch, pitch);
-// each [`VoiceSource`] APPLIES it its own way (the in-RAM `SamplerUnit` stores
+// each [`VoiceSource`] APPLIES it its own way (the in-memory `MemorySource` stores
 // the state on its resident DSP; the streaming reader forwards to the butler's
 // shared `RtState`). The apply fan-out is the `VoiceSource` match — Playback is
 // the description, not the applied state.
@@ -234,7 +234,7 @@ impl Default for Playback {
 /// input to [`Playback::from_pending`]. A clip carries a single `gain` scalar
 /// that dawai maps to BOTH the voice gain and the read speed (the historical
 /// `playback_rate`), plus the loop range, reverse, and stretch/pitch intent.
-/// Grouped so both the RAM promote and the Disk poll build a `Playback` from
+/// Grouped so both the memory promote and the Disk poll build a `Playback` from
 /// one shape.
 #[derive(Debug, Clone, Default)]
 pub struct PendingPlayback {
@@ -253,7 +253,7 @@ impl Playback {
     /// Build the control-intent record for a freshly-promoted clip from its
     /// decoded control fields. This is the single place the pending clip's
     /// gain / loop / reverse / stretch DATA becomes a [`Playback`] — replacing
-    /// the old pre-send poking of the `SamplerUnit` (`set_gain`, the
+    /// the old pre-send poking of the `MemorySource` (`set_gain`, the
     /// `set_loop_range` / `set_looping` ladder) on the dawai side. The reader's
     /// `insert_voice` then applies this record per-tier.
     ///
@@ -308,10 +308,10 @@ impl Clone for Playback {
 
 // ---------------------------------------------------------------------------
 // Voice — one clip's playback state, and what the reader STORES per slot. Its
-// `source` is either an in-memory `SamplerUnit` or a streaming
+// `source` is either an in-memory `MemorySource` or a streaming
 // `StreamingClipReader` (the [`VoiceSource`] enum); `play` is the [`Playback`]
 // control-intent record; `channel_index` is the butler channel for a `Disk`
-// source (`None` for `Ram`), kept on the Voice because the butler loop routing
+// source (`None` for `Memory`), kept on the Voice because the butler loop routing
 // needs it.
 // ---------------------------------------------------------------------------
 
@@ -319,12 +319,12 @@ impl Clone for Playback {
 pub struct Voice {
     pub source: VoiceSource,
     pub play: Playback,
-    /// Butler channel index for a `Disk` source; `None` for `Ram`. The reader
+    /// Butler channel index for a `Disk` source; `None` for `Memory`. The reader
     /// drain forwards streaming loop ops (`SetStreamLoop` / `ClearStreamLoop`)
     /// to this channel via the typed [`Commands`] handle — loop is butler-owned
     /// (it reads a fadein head off disk + mutates `plan.link.loop_config`,
     /// neither reachable from the reader), so the forward is the honest path.
-    /// Meaningless for `Ram` (loop is primed directly on the `SamplerUnit`).
+    /// Meaningless for `Memory` (loop is primed directly on the `MemorySource`).
     pub channel_index: Option<usize>,
 }
 
@@ -345,7 +345,7 @@ impl Voice {
     ///
     /// Rebinds BOTH clocks that must move together:
     /// - `play.placement.transport` — the control-intent record.
-    /// - the source's own read clock. The `Ram` [`SamplerUnit`] reads its
+    /// - the source's own read clock. The `Memory` [`MemorySource`] reads its
     ///   sample position from its OWN placement (`transport_sample_position`),
     ///   NOT from `play.placement`, so rebinding only the intent record would
     ///   leave the actual read clock on the live transport — the offline render
@@ -356,12 +356,12 @@ impl Voice {
         if let Some(placement) = &mut self.play.placement {
             placement.transport = transport.clone();
         }
-        // Rebind the source's own read clock. Only the `Ram` `SamplerUnit`
+        // Rebind the source's own read clock. Only the `Memory` `MemorySource`
         // exposes a whole-transport swap (`replace_transport`); it is the only
         // source a standalone offline `VoiceNode` ever wraps (resynth /
-        // region-render populate build RAM voices), so this is the path that
+        // region-render populate build memory voices), so this is the path that
         // matters for the offline render.
-        if let VoiceSource::Ram(sampler) = &mut self.source {
+        if let VoiceSource::Memory(sampler) = &mut self.source {
             sampler.replace_transport(transport);
         }
     }
@@ -518,7 +518,7 @@ impl ClipSlot {
             }
         } else {
             match &mut self.voice.source {
-                VoiceSource::Ram(sampler) => match sampler.transport_sample_position() {
+                VoiceSource::Memory(sampler) => match sampler.transport_sample_position() {
                     Some(pos) => read_clip_sample_into(sampler, direction, pos, gain, out),
                     None => out.fill(0.0),
                 },
@@ -572,7 +572,7 @@ impl ClipSlot {
                 return;
             };
             match &mut self.voice.source {
-                VoiceSource::Ram(sampler) => {
+                VoiceSource::Memory(sampler) => {
                     let Some(start_pos) = sampler.transport_sample_position() else {
                         return;
                     };
@@ -597,7 +597,7 @@ impl ClipSlot {
             }
         } else {
             match &mut self.voice.source {
-                VoiceSource::Ram(sampler) => {
+                VoiceSource::Memory(sampler) => {
                     let Some(start_pos) = sampler.transport_sample_position() else {
                         return;
                     };
@@ -624,18 +624,18 @@ impl ClipSlot {
     }
 }
 
-/// Read the reversed-or-forward clip sample from an in-RAM `SamplerUnit`, scaled
+/// Read the reversed-or-forward clip sample from an in-memory `MemorySource`, scaled
 /// by the voice's `gain`. Free function so both the mixer/`VoiceNode` read and
 /// the stretch feed share it.
 ///
-/// The `SamplerUnit` is a PURE producer here: it reads the raw interpolated
+/// The `MemorySource` is a PURE producer here: it reads the raw interpolated
 /// frame via `get_sample_raw` (no gain), and gain is applied ONCE at this
 /// Voice/Playback level from `gain` (mirrored from `voice.play.gain`). This
 /// matches the streaming tier, where gain lives in the source's shared state,
 /// and keeps a single, well-defined gain application point per tier.
 #[inline]
 fn read_clip_sample_into(
-    sampler: &SamplerUnit,
+    sampler: &MemorySource,
     direction: Direction,
     pos: f64,
     gain: Amplitude,
@@ -657,7 +657,7 @@ fn read_clip_sample_into(
 
 /// Read ONE frame from a single voice source into `out`, using the exact
 /// per-variant read the direct (non-stretch) path uses — the `VoiceSource` enum
-/// still owns the read. `gain` scales the in-RAM read at the Voice level (see
+/// still owns the read. `gain` scales the in-memory read at the Voice level (see
 /// [`read_clip_sample_into`]); the streaming reader applies its own gain
 /// internally. Writes every element of `out`. Used to feed the stretch filter
 /// (which owns no source) on the hot path.
@@ -669,7 +669,7 @@ fn read_source_frame_into(
     out: &mut [f32],
 ) {
     match source {
-        VoiceSource::Ram(sampler) => match sampler.transport_sample_position() {
+        VoiceSource::Memory(sampler) => match sampler.transport_sample_position() {
             Some(pos) => read_clip_sample_into(sampler, direction, pos, gain, out),
             None => out.fill(0.0),
         },
@@ -689,22 +689,22 @@ fn read_source_frame_into(
 #[non_exhaustive]
 pub enum ClipCommand {
     /// Add a clip by handing the reader a fully-formed [`Voice`]: a
-    /// [`VoiceSource`] (in-RAM `SamplerUnit` or streaming `StreamingClipReader`)
+    /// [`VoiceSource`] (in-memory `MemorySource` or streaming `StreamingClipReader`)
     /// plus its [`Playback`] control-intent record. The drain builds the
     /// [`ClipSlot`] and applies the full `Playback` per-tier by reusing the same
     /// cold-path appliers the update commands use (`VoiceSource::apply_*` +
     /// `apply_loop`) — no allocation or I/O on the hot path, since the
-    /// source (RAM `SamplerUnit` or butler-registered `StreamingClipReader`) is
+    /// source (memory `MemorySource` or butler-registered `StreamingClipReader`) is
     /// built entirely on the ECS/butler side before the send.
     ///
-    /// This one command replaces the former split `Add` (in-RAM) /
+    /// This one command replaces the former split `Add` (in-memory) /
     /// `AddStreaming` (disk) pair: the tier now rides inside `source` and the
     /// butler channel inside `Playback`-adjacent `Voice::channel_index` (carried
     /// on the `Disk` construction), so dawai speaks ONE add command for both
     /// tiers.
     AddVoice {
         id: SlotId,
-        /// Boxed: a [`Voice`] carries a whole `SamplerUnit`/`StreamingClipReader`,
+        /// Boxed: a [`Voice`] carries a whole `MemorySource`/`StreamingClipReader`,
         /// far larger than the other command variants — boxing keeps the bounded
         /// command channel's per-slot footprint small. Cold path (drained off the
         /// per-sample loop), so the indirection costs nothing audible.
@@ -838,7 +838,7 @@ impl std::fmt::Debug for ClipCommand {
 /// populates a cloned (never-ticked) reader directly from ECS state.
 ///
 /// This is the synchronous mirror of [`ClipCommand::AddVoice`]: its fields are
-/// the flat Voice shape (`sampler` → the RAM [`VoiceSource`]; `direction` /
+/// the flat Voice shape (`sampler` → the memory [`VoiceSource`]; `direction` /
 /// `stretch_factor` / `pitch_cents` → [`Playback`]). [`ClipSpec::into_voice`]
 /// folds it — plus the gain / speed / loop the caller already baked onto the
 /// `sampler` — into a full [`Voice`], so a single [`TrackClipReaderUnit::insert_clip`]
@@ -851,17 +851,17 @@ impl std::fmt::Debug for ClipCommand {
 pub struct ClipSpec {
     pub id: SlotId,
     /// Already transport-bound, with gain / loop range applied.
-    pub sampler: SamplerUnit,
+    pub sampler: MemorySource,
     pub direction: Direction,
     pub stretch_factor: StretchFactor,
     pub pitch_cents: Cents,
 }
 
 impl ClipSpec {
-    /// Fold this spec into a full in-RAM [`Voice`]. Captures the gain / speed /
+    /// Fold this spec into a full in-memory [`Voice`]. Captures the gain / speed /
     /// loop the caller pre-baked onto the `sampler` INTO the [`Playback`] record,
-    /// the same way the `Add` shim folds a pre-configured `SamplerUnit` — so the
-    /// synchronous insert applies gain at the Voice level (the `SamplerUnit` is a
+    /// the same way the `Add` shim folds a pre-configured `MemorySource` — so the
+    /// synchronous insert applies gain at the Voice level (the `MemorySource` is a
     /// pure producer once its gain rides on `Playback`).
     fn into_voice(self) -> Voice {
         Voice {
@@ -874,7 +874,7 @@ impl ClipSpec {
                 pitch: self.pitch_cents,
                 placement: None,
             },
-            source: VoiceSource::Ram(self.sampler),
+            source: VoiceSource::Memory(self.sampler),
             channel_index: None,
         }
     }
@@ -970,7 +970,7 @@ pub struct TrackClipReaderUnit {
     sample_rate: f64,
     transport: Option<Arc<dyn Timeline>>,
     /// Typed butler write handle. `Some` on the live path (threaded in from the
-    /// [`Sampler`](crate::Sampler)); `None` for tests / detached / offline
+    /// [`DiskStreamer`](crate::DiskStreamer)); `None` for tests / detached / offline
     /// readers with no live butler. Used by the drain to forward *streaming*
     /// loop ops (`Command::Loop`) — loop is butler-owned and not reachable from
     /// the reader itself. Cloning it is cheap (a `Sender` + an `Arc` map).
@@ -1168,7 +1168,7 @@ impl TrackClipReaderUnit {
     pub fn detached(transport: Arc<dyn Timeline>) -> Self {
         let (_tx, rx) = bounded(0);
         // No butler: the offline render never forwards streaming loop ops (it
-        // rebuilds in-RAM clips from ECS), so a `None` handle is correct here.
+        // rebuilds in-memory clips from ECS), so a `None` handle is correct here.
         Self::from_parts(rx, Some(transport), None)
     }
 
@@ -1215,8 +1215,8 @@ impl TrackClipReaderUnit {
 
     /// Apply a loop setting to a slot, routing by tier.
     ///
-    /// - **In-RAM**: primes / clears the loop range on the `SamplerUnit` in-unit
-    ///   (`SamplerUnit::set_loop_setting`).
+    /// - **In-memory**: primes / clears the loop range on the `MemorySource` in-unit
+    ///   (`MemorySource::set_loop_setting`).
     /// - **Streaming**: loop is butler-owned — `SetStreamLoop` reads a loop-start
     ///   fadein head off disk and mutates `plan.link.loop_config`, neither
     ///   reachable from the reader — so the reader FORWARDS to the butler via the
@@ -1233,7 +1233,7 @@ impl TrackClipReaderUnit {
             return;
         };
         match &mut slot.voice.source {
-            VoiceSource::Ram(sampler) => {
+            VoiceSource::Memory(sampler) => {
                 sampler.set_loop_setting(setting.clone());
                 slot.voice.play.loop_ = setting;
             }
@@ -1269,13 +1269,13 @@ impl TrackClipReaderUnit {
     /// funnels through. Public so a clip-aware caller (the offline region
     /// render's `Populate` step) can hand the reader a `Voice` it built from
     /// ECS DATA — gain / loop / direction / stretch / pitch carried on
-    /// `voice.play` — instead of pre-poking a `SamplerUnit` before send.
+    /// `voice.play` — instead of pre-poking a `MemorySource` before send.
     ///
     /// The `Playback` is control-INTENT; each tier applies it its own way. Rather
     /// than duplicate the tier fork, we replay the exact cold-path appliers the
-    /// `Update*` commands use: `VoiceSource::apply_*` (per-tier match — in-RAM
-    /// stores on the `SamplerUnit`, streaming forwards to the shared `RtState`)
-    /// for gain / speed / direction, and `apply_loop` for loop (in-RAM
+    /// `Update*` commands use: `VoiceSource::apply_*` (per-tier match — in-memory
+    /// stores on the `MemorySource`, streaming forwards to the shared `RtState`)
+    /// for gain / speed / direction, and `apply_loop` for loop (in-memory
     /// primes the range in-unit, streaming forwards `Command::Loop` to the
     /// butler). Stretch/pitch are primed by `ClipSlot::new` from `play`. Runs on
     /// the COLD command drain, so the loop's butler send is RT-safe.
@@ -1365,7 +1365,7 @@ impl TrackClipReaderUnit {
                         // different file, which is a control-thread op issued
                         // from dawai-model as a fresh `AddVoice`.
                         match &mut slot.voice.source {
-                            VoiceSource::Ram(sampler) => sampler.set_wave(wave),
+                            VoiceSource::Memory(sampler) => sampler.set_wave(wave),
                             VoiceSource::Disk(_) => {
                                 #[cfg(feature = "bevy")]
                                 bevy_log::warn!(
@@ -1403,7 +1403,7 @@ impl TrackClipReaderUnit {
                 ClipCommand::UpdateSpeed { id, speed } => {
                     if let Some(slot) = self.slot_mut(id) {
                         // Unified across tiers: both backends carry speed in-unit.
-                        // In-RAM stores it on the `SamplerUnit`; streaming forwards
+                        // In-memory stores it on the `MemorySource`; streaming forwards
                         // to the shared `RtState` (the exact speed effect of the
                         // butler's `SetVarispeed`, reachable from the reader). The
                         // `apply_speed` covers both — dawai no longer
@@ -1435,7 +1435,7 @@ impl TrackClipReaderUnit {
                 }
                 ClipCommand::UpdateReverse { id, direction } => {
                     if let Some(slot) = self.slot_mut(id) {
-                        // In-RAM: `voice.play.direction` drives the reversed index
+                        // In-memory: `voice.play.direction` drives the reversed index
                         // in the hot read (the source-side `set_direction` is a
                         // no-op). Streaming: the source-side `set_direction`
                         // forwards to the shared `RtState` (the direction leg of the
@@ -1768,7 +1768,7 @@ impl AudioUnit for VoiceNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clip::sampler_unit::SamplerUnitConfig;
+    use crate::clip::memory_source::MemorySourceConfig;
     use tutti_core::Bpm;
 
     use crate::test_transport::MockTransport;
@@ -1780,13 +1780,13 @@ mod tests {
         Arc::new(Wave::from_samples(44100.0, &data))
     }
 
-    /// Send an in-RAM clip through the one `AddVoice` path — the test-setup
+    /// Send an in-memory clip through the one `AddVoice` path — the test-setup
     /// mirror of the timeline's `promote_pending_clip_waves` emit.
-    fn add_ram_clip(handle: &TrackClipReaderHandle, id: SlotId, sampler: SamplerUnit) {
+    fn add_ram_clip(handle: &TrackClipReaderHandle, id: SlotId, sampler: MemorySource) {
         handle.send(ClipCommand::AddVoice {
             id,
             voice: Box::new(Voice {
-                source: VoiceSource::Ram(sampler),
+                source: VoiceSource::Memory(sampler),
                 play: Playback::default(),
                 channel_index: None,
             }),
@@ -1842,12 +1842,11 @@ mod tests {
         let (mut unit, handle) =
             TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 1);
 
-        let sampler =
-            SamplerUnit::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+        let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
         handle.send(ClipCommand::AddVoice {
             id: SlotId(1),
             voice: Box::new(Voice {
-                source: VoiceSource::Ram(sampler),
+                source: VoiceSource::Memory(sampler),
                 play: Playback {
                     stretch: StretchFactor::new(2.0),
                     ..Playback::default()
@@ -1950,11 +1949,11 @@ mod tests {
         let (mut unit, handle) =
             TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 1);
 
-        let sampler = SamplerUnit::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+        let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
         handle.send(ClipCommand::AddVoice {
             id: SlotId(1),
             voice: Box::new(Voice {
-                source: VoiceSource::Ram(sampler),
+                source: VoiceSource::Memory(sampler),
                 play: Playback {
                     stretch: StretchFactor::new(2.0),
                     ..Playback::default()
@@ -2001,7 +2000,7 @@ mod tests {
         let wave = make_wave(100);
 
         let sampler =
-            SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+            MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
         add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
@@ -2020,7 +2019,7 @@ mod tests {
         let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
         add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
@@ -2037,7 +2036,7 @@ mod tests {
 
         for i in 0..3 {
             let sampler =
-                SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+                MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
             add_ram_clip(&handle, SlotId(i), sampler);
         }
 
@@ -2046,7 +2045,7 @@ mod tests {
 
         let (mut unit2, handle2) = TrackClipReaderUnit::new();
         let sampler =
-            SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+            MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
         add_ram_clip(&handle2, SlotId(0), sampler);
         let mut out_1 = [0.0f32; 2];
         unit2.tick(&[], &mut out_1);
@@ -2062,7 +2061,7 @@ mod tests {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
         add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
@@ -2081,7 +2080,7 @@ mod tests {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
         unit.insert_clip(ClipSpec {
             id: SlotId(1),
             sampler,
@@ -2118,7 +2117,7 @@ mod tests {
         assert_eq!(out[1], 0.0);
 
         // But clips inserted directly (the Populate path) are audible.
-        let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
         unit.insert_clip(ClipSpec {
             id: SlotId(1),
             sampler,
@@ -2136,7 +2135,7 @@ mod tests {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(100);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
         add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out_before = [0.0f32; 2];
@@ -2159,7 +2158,7 @@ mod tests {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let wave = make_wave(4096);
 
-        let sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
         add_ram_clip(&handle, SlotId(1), sampler);
 
         let mut out = [0.0f32; 2];
@@ -2200,9 +2199,9 @@ mod tests {
 
         // Same voice the mixer would hold for one clip.
         let sampler =
-            SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+            MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
         let voice = Voice {
-            source: VoiceSource::Ram(sampler),
+            source: VoiceSource::Memory(sampler),
             play: Playback::default(),
             channel_index: None,
         };
@@ -2220,7 +2219,7 @@ mod tests {
         );
 
         // It reads the SAME single-voice frame the mixer does for one slot.
-        let sampler2 = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let sampler2 = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
         let (mut mixer, _handle) = TrackClipReaderUnit::new();
         mixer.insert_clip(ClipSpec {
             id: SlotId(1),
@@ -2230,7 +2229,7 @@ mod tests {
             pitch_cents: Cents::new(0.0),
         });
         let mut node2 = VoiceNode::new(Voice {
-            source: VoiceSource::Ram(SamplerUnit::with_transport(
+            source: VoiceSource::Memory(MemorySource::with_transport(
                 make_wave(100),
                 MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
                 Beat::new(0.0),
@@ -2255,9 +2254,9 @@ mod tests {
     fn voice_replace_transport_rebinds_clock() {
         let wave = make_wave(100);
         let t1 = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-        let sampler = SamplerUnit::with_transport(wave, t1, Beat::new(0.0), None);
+        let sampler = MemorySource::with_transport(wave, t1, Beat::new(0.0), None);
         let mut voice = Voice {
-            source: VoiceSource::Ram(sampler),
+            source: VoiceSource::Memory(sampler),
             play: Playback {
                 placement: Some(TransportPlacement {
                     transport: MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)),
@@ -2289,7 +2288,7 @@ mod tests {
     #[test]
     fn loop_on_a_butlerless_streaming_voice_is_not_recorded() {
         use crate::butler::{share_reader, RegionBuffer, RegionId, RtState};
-        use crate::clip::streaming_sampler::StreamingSamplerUnit;
+        use crate::clip::streaming_sampler::DiskSource;
         use crate::clip::streaming_sampler::{StreamingClipConfig, StreamingClipReader};
 
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
@@ -2300,7 +2299,7 @@ mod tests {
             RegionBuffer::with_capacity(RegionId(1), std::path::PathBuf::new(), 128, 2);
         drop(writer);
         let state = std::sync::Arc::new(RtState::new());
-        let inner = StreamingSamplerUnit::new(share_reader(reader), state.clone());
+        let inner = DiskSource::new(share_reader(reader), state.clone());
         let clip_reader = StreamingClipReader::new(
             inner,
             state,
@@ -2376,9 +2375,9 @@ mod tests {
             );
 
             let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
-            let sampler = SamplerUnit::with_config(
+            let sampler = MemorySource::with_config(
                 indexed_wave(6, 64),
-                SamplerUnitConfig {
+                MemorySourceConfig {
                     channels: w,
                     placement: Some(TransportPlacement {
                         transport,
@@ -2389,7 +2388,7 @@ mod tests {
                 },
             );
             let voice = Voice {
-                source: VoiceSource::Ram(sampler),
+                source: VoiceSource::Memory(sampler),
                 play: Playback::default(),
                 channel_index: None,
             };
@@ -2410,9 +2409,9 @@ mod tests {
     fn six_channel_clip_reaches_all_six_reader_outputs() {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let (mut unit, _h) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
-        let sampler = SamplerUnit::with_config(
+        let sampler = MemorySource::with_config(
             indexed_wave(6, 512),
-            SamplerUnitConfig {
+            MemorySourceConfig {
                 channels: 6,
                 placement: Some(TransportPlacement {
                     transport,
@@ -2425,7 +2424,7 @@ mod tests {
         unit.insert_voice(
             SlotId(1),
             Voice {
-                source: VoiceSource::Ram(sampler),
+                source: VoiceSource::Memory(sampler),
                 play: Playback::default(),
                 channel_index: None,
             },
@@ -2454,9 +2453,9 @@ mod tests {
     fn six_channel_clip_with_stretch_reaches_all_six_outputs() {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let (mut unit, _h) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
-        let sampler = SamplerUnit::with_config(
+        let sampler = MemorySource::with_config(
             indexed_wave(6, 4096),
-            SamplerUnitConfig {
+            MemorySourceConfig {
                 channels: 6,
                 placement: Some(TransportPlacement {
                     transport: transport.clone(),
@@ -2469,7 +2468,7 @@ mod tests {
         unit.insert_voice(
             SlotId(1),
             Voice {
-                source: VoiceSource::Ram(sampler),
+                source: VoiceSource::Memory(sampler),
                 play: Playback {
                     // Off unity, so `needs_stretch()` takes the vocoder path.
                     stretch: StretchFactor::new(2.0),
@@ -2521,9 +2520,9 @@ mod tests {
             TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
 
         let mk = |stretch: StretchFactor| {
-            let sampler = SamplerUnit::with_config(
+            let sampler = MemorySource::with_config(
                 indexed_wave(6, 128),
-                SamplerUnitConfig {
+                MemorySourceConfig {
                     channels: 6,
                     placement: Some(TransportPlacement {
                         transport: transport.clone(),
@@ -2534,7 +2533,7 @@ mod tests {
                 },
             );
             Voice {
-                source: VoiceSource::Ram(sampler),
+                source: VoiceSource::Memory(sampler),
                 play: Playback {
                     stretch,
                     ..Default::default()
@@ -2620,9 +2619,9 @@ mod tests {
         let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
         let (mut unit, _h) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
 
-        let sampler = SamplerUnit::with_config(
+        let sampler = MemorySource::with_config(
             indexed_wave(6, 512),
-            SamplerUnitConfig {
+            MemorySourceConfig {
                 channels: 6,
                 placement: Some(TransportPlacement {
                     transport,
@@ -2636,7 +2635,7 @@ mod tests {
         unit.insert_voice_with_stretch(
             SlotId(1),
             Voice {
-                source: VoiceSource::Ram(sampler),
+                source: VoiceSource::Memory(sampler),
                 play: Playback {
                     stretch: StretchFactor::new(2.0),
                     ..Default::default()

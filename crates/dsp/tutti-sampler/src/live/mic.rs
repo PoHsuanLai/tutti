@@ -1,6 +1,6 @@
 //! Live-input monitoring node — the mic twin of the disk-streaming unit.
 //!
-//! `StreamingSamplerUnit`
+//! `DiskSource`
 //! drains a ring the *butler* fills off disk; [`MicMonitorNode`] drains a ring
 //! a *capture device* fills. Both are `AudioUnit`s with 0 inputs / 2 outputs
 //! whose whole job is "pop the next frame the producer pushed, or emit silence
@@ -39,7 +39,7 @@
 //! / `set_sample_rate` on the frontend, on the main thread, and popping there
 //! would race the backend's `tick`). Only `tick`/`process` pop, and fundsp ticks
 //! only the backend copy on the one audio thread, so pops serialize. This is the
-//! same discipline `StreamingSamplerUnit` follows — its `reset` likewise leaves
+//! same discipline `DiskSource` follows — its `reset` likewise leaves
 //! the shared `SharedReader` untouched. The device callback only ever *pushes*
 //! (the producer half, holding `HeapProd` directly), never pops.
 
@@ -157,7 +157,7 @@ impl AudioUnit for MicMonitorNode {
         // `HeapCons` from another thread — a data race on the SPSC read index.
         //
         // So the ring is popped ONLY from `tick`/`process` (the single backend
-        // consumer), exactly as `StreamingSamplerUnit::reset` leaves its shared
+        // consumer), exactly as `DiskSource::reset` leaves its shared
         // `SharedReader` untouched. The monitor ring self-limits to ~10ms, so
         // there's no stale backlog worth draining anyway.
     }

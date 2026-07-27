@@ -286,7 +286,7 @@ impl RegionReader {
 /// threads ever pop/clear concurrently**. That invariant holds because:
 ///
 ///   * The **audio thread** is the sole popper. `read()` / `clear()` are called
-///     only from `StreamingSamplerUnit` / `StreamingClipReader` on the audio
+///     only from `DiskSource` / `StreamingClipReader` on the audio
 ///     thread. Those units may hold several clones of the same `SharedReader`
 ///     (the direct-read reader plus the time-stretch processor's internal
 ///     clone), but only one clone is *active* per buffer and both live on the

@@ -1,4 +1,4 @@
-//! Bevy `AssetLoader` for the in-memory [`WaveAsset`] (short, fits-in-RAM
+//! Bevy `AssetLoader` for the in-memory [`WaveAsset`] (short, fits-in-memory
 //! samples). Reads the whole file into memory and decodes it into a shared
 //! [`WaveAsset`]. The asset itself lives in `tutti-core`; this is its loader.
 

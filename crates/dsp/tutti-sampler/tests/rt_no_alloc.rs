@@ -1,9 +1,9 @@
 //! Regression gate: sampler hot paths must not allocate per-buffer.
 //!
-//! Covers in-memory `SamplerUnit::process` + `tick` (the workhorse
+//! Covers in-memory `MemorySource::process` + `tick` (the workhorse
 //! playback unit).
 //!
-//! `StreamingSamplerUnit` is not covered here — it requires a real
+//! `DiskSource` is not covered here — it requires a real
 //! `RegionReader` from the butler. Its non-alloc safety is guarded by
 //! the streaming-buffer regression tests in `tutti-sampler/butler`
 //! instead.
@@ -22,7 +22,7 @@ use tutti_core::{
 };
 use tutti_sampler::stretch::Unit as TimeStretchUnit;
 use tutti_sampler::{
-    ClipCommand, ClipSpec, Direction, Playback, SamplerUnit, SamplerUnitConfig, SlotId,
+    ClipCommand, ClipSpec, Direction, MemorySource, MemorySourceConfig, Playback, SlotId,
     TrackClipReaderUnit, TransportPlacement, Voice, VoiceSource,
 };
 
@@ -43,9 +43,9 @@ fn sine_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
 }
 
 #[test]
-fn sampler_unit_process_is_allocation_free() {
+fn memory_source_process_is_allocation_free() {
     let wave = sine_wave(2.0, 48_000.0);
-    let mut node = SamplerUnit::new(wave);
+    let mut node = MemorySource::new(wave);
     node.set_sample_rate(SampleRate(48_000.0));
 
     let input_vec = BufferVec::new(0);
@@ -68,9 +68,9 @@ fn sampler_unit_process_is_allocation_free() {
 }
 
 #[test]
-fn sampler_unit_tick_is_allocation_free() {
+fn memory_source_tick_is_allocation_free() {
     let wave = sine_wave(2.0, 48_000.0);
-    let mut node = SamplerUnit::new(wave);
+    let mut node = MemorySource::new(wave);
     node.set_sample_rate(SampleRate(48_000.0));
 
     let mut output = [0.0f32; 2];
@@ -121,7 +121,7 @@ fn time_stretch_process_is_allocation_free() {
 
 // ---------------------------------------------------------------------------
 // TrackClipReaderUnit — the live-graph workhorse. One node per track, mixing
-// down every clip's `SamplerUnit` each buffer. Mirrors the mock transport from
+// down every clip's `MemorySource` each buffer. Mirrors the mock transport from
 // the crate's in-file tests so clips see a running playhead.
 // ---------------------------------------------------------------------------
 
@@ -169,7 +169,7 @@ fn track_clip_reader_process_steady_state_is_allocation_free() {
 
     for i in 0..2u128 {
         let sampler =
-            SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+            MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
         unit.insert_clip(ClipSpec {
             id: SlotId(i),
             sampler,
@@ -210,7 +210,7 @@ fn track_clip_reader_tick_steady_state_is_allocation_free() {
 
     for i in 0..2u128 {
         let sampler =
-            SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+            MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
         unit.insert_clip(ClipSpec {
             id: SlotId(i),
             sampler,
@@ -291,11 +291,11 @@ fn run_stretch_drain_under_guard() {
     unit.set_sample_rate(SampleRate(48_000.0));
 
     let sampler =
-        SamplerUnit::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+        MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
     handle.send(ClipCommand::AddVoice {
         id: SlotId(1),
         voice: Box::new(Voice {
-            source: VoiceSource::Ram(sampler),
+            source: VoiceSource::Memory(sampler),
             play: Playback::default(),
             channel_index: None,
         }),
@@ -418,9 +418,9 @@ fn surround_wave(duration_secs: f64, sample_rate: f64) -> Arc<Wave> {
 }
 
 #[test]
-fn sampler_unit_process_is_allocation_free_at_six_channels() {
+fn memory_source_process_is_allocation_free_at_six_channels() {
     let wave = surround_wave(2.0, 48_000.0);
-    let mut node = SamplerUnit::with_channels(wave, 6);
+    let mut node = MemorySource::with_channels(wave, 6);
     node.set_sample_rate(SampleRate(48_000.0));
     assert_eq!(node.outputs(), 6);
 
@@ -443,9 +443,9 @@ fn sampler_unit_process_is_allocation_free_at_six_channels() {
 }
 
 #[test]
-fn sampler_unit_tick_is_allocation_free_at_six_channels() {
+fn memory_source_tick_is_allocation_free_at_six_channels() {
     let wave = surround_wave(2.0, 48_000.0);
-    let mut node = SamplerUnit::with_channels(wave, 6);
+    let mut node = MemorySource::with_channels(wave, 6);
     node.set_sample_rate(SampleRate(48_000.0));
 
     let mut output = [0.0f32; 6];
@@ -464,9 +464,9 @@ fn sampler_unit_tick_is_allocation_free_at_six_channels() {
 /// the fold — and only executes when the wave's width differs from the node's.
 /// Neither the stereo gates nor the matched 6-channel gates above reach it.
 #[test]
-fn sampler_unit_process_is_allocation_free_when_folding_six_to_two() {
+fn memory_source_process_is_allocation_free_when_folding_six_to_two() {
     let wave = surround_wave(2.0, 48_000.0);
-    let mut node = SamplerUnit::new(wave); // 6-channel wave, 2-channel node
+    let mut node = MemorySource::new(wave); // 6-channel wave, 2-channel node
     node.set_sample_rate(SampleRate(48_000.0));
     assert_eq!(node.outputs(), 2);
 
@@ -492,7 +492,7 @@ fn sampler_unit_process_is_allocation_free_when_folding_six_to_two() {
 /// of a 6-wide reader, through `process` (the planar path), with no allocation.
 ///
 /// The per-unit tests each cover one hop; this is the only one that exercises
-/// the whole in-RAM chain at width 6 — `read_frame` -> `SamplerUnit` ->
+/// the whole in-memory chain at width 6 — `read_frame` -> `MemorySource` ->
 /// `ClipSlot` -> `TrackClipReaderUnit` -> a planar `BufferMut` — and so the only
 /// one that would catch a width being dropped at a seam rather than inside a
 /// node.
@@ -505,9 +505,9 @@ fn six_channel_clip_reaches_six_reader_outputs_without_allocating() {
     // `ClipSpec` requires an already-transport-bound sampler: `into_voice` sets
     // `placement: None` on the Playback record, so the sampler's OWN placement
     // is what gates playback.
-    let sampler = SamplerUnit::with_config(
+    let sampler = MemorySource::with_config(
         wave,
-        SamplerUnitConfig {
+        MemorySourceConfig {
             channels: 6,
             placement: Some(TransportPlacement {
                 transport,
@@ -610,9 +610,9 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
     // Queue the adds OUTSIDE the guard (send allocates, deliberately) and drain
     // them INSIDE it.
     for i in 0..8u128 {
-        let sampler = SamplerUnit::with_config(
+        let sampler = MemorySource::with_config(
             wave.clone(),
-            SamplerUnitConfig {
+            MemorySourceConfig {
                 channels: 6,
                 placement: Some(TransportPlacement {
                     transport: transport.clone(),
@@ -625,7 +625,7 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
         handle.send(ClipCommand::AddVoice {
             id: SlotId(i),
             voice: Box::new(Voice {
-                source: VoiceSource::Ram(sampler),
+                source: VoiceSource::Memory(sampler),
                 play: Playback {
                     // Non-unity: this is the branch that needs a filter.
                     stretch: StretchFactor::new(2.0),
@@ -660,9 +660,9 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
     let (mut reader, handle) = TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 6);
     reader.set_sample_rate(SampleRate(48_000.0));
 
-    let sampler = SamplerUnit::with_config(
+    let sampler = MemorySource::with_config(
         wave,
-        SamplerUnitConfig {
+        MemorySourceConfig {
             channels: 6,
             placement: Some(TransportPlacement {
                 transport,
@@ -675,7 +675,7 @@ fn update_loop_drain_is_allocation_free_at_six_channels() {
     reader.insert_voice(
         SlotId(1),
         Voice {
-            source: VoiceSource::Ram(sampler),
+            source: VoiceSource::Memory(sampler),
             play: Playback::default(),
             channel_index: None,
         },

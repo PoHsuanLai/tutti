@@ -10,7 +10,7 @@ use tutti_core::{
 };
 
 use super::interp::cubic_hermite;
-use super::sampler_unit::TransportPlacement;
+use super::memory_source::TransportPlacement;
 use super::track_clip_reader::Direction;
 use crate::butler::{RtState, SharedReader};
 
@@ -41,7 +41,7 @@ const MAX_FETCH_SAMPLES: usize = 8192 * 4 + 8;
 /// buffer it `load`s the current [`ReaderCell`](crate::butler::prefetch::ReaderCell)
 /// and pops from it. No lock ever sits on `tick`/`process`, so a butler
 /// operation can never stall the audio thread or be miscounted as an underrun.
-pub struct StreamingSamplerUnit {
+pub struct DiskSource {
     consumer: SharedReader,
     playing: AtomicBool,
 
@@ -83,9 +83,9 @@ pub struct StreamingSamplerUnit {
 // Hand-rolled: `consumer` (a `SharedReader` `ArcSwap`) and `shared_state`
 // (`Arc<RtState>`) aren't `Debug`. Print the scalar params + a note; never
 // load the ring consumer or read its occupancy from a Debug impl.
-impl std::fmt::Debug for StreamingSamplerUnit {
+impl std::fmt::Debug for DiskSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StreamingSamplerUnit")
+        f.debug_struct("DiskSource")
             .field("playing", &self.playing.load(Ordering::Relaxed))
             .field("gain", &self.gain)
             .field("sample_rate", &self.sample_rate)
@@ -95,7 +95,7 @@ impl std::fmt::Debug for StreamingSamplerUnit {
     }
 }
 
-impl Clone for StreamingSamplerUnit {
+impl Clone for DiskSource {
     fn clone(&self) -> Self {
         Self {
             consumer: Arc::clone(&self.consumer),
@@ -112,7 +112,7 @@ impl Clone for StreamingSamplerUnit {
     }
 }
 
-impl StreamingSamplerUnit {
+impl DiskSource {
     /// Width comes from the ring: the reader's stride is what this unit must
     /// pop, so there is nothing to declare independently and nothing that can
     /// disagree.
@@ -267,7 +267,7 @@ impl StreamingSamplerUnit {
     }
 }
 
-impl AudioUnit for StreamingSamplerUnit {
+impl AudioUnit for DiskSource {
     fn inputs(&self) -> usize {
         0
     }
@@ -419,13 +419,13 @@ impl AudioUnit for StreamingSamplerUnit {
 }
 
 // ---------------------------------------------------------------------------
-// StreamingClipReader — a `StreamingSamplerUnit` wrapped in the transport
+// StreamingClipReader — a `DiskSource` wrapped in the transport
 // placement gate that the raw unit lacks.
 //
-// `StreamingSamplerUnit` streams whatever the butler ring feeds it, unaware of
+// `DiskSource` streams whatever the butler ring feeds it, unaware of
 // *where on the timeline* the clip lives. A timeline clip only sounds while the
 // playhead is inside its [start_beat, start_beat + duration) window; outside it
-// must be silent. `SamplerUnit` bakes this in via `transport_sample_position`;
+// must be silent. `MemorySource` bakes this in via `transport_sample_position`;
 // the streaming unit does not, so this wrapper adds the same gate:
 //
 //   * inside the window  → pull from the ring (the raw unit's normal path)
@@ -434,7 +434,7 @@ impl AudioUnit for StreamingSamplerUnit {
 //     → request a butler seek to the target sample so the ring refills from the
 //       right disk offset before we start pulling.
 //
-// The gate math is a copy of `SamplerUnit::transport_sample_position`: it is the
+// The gate math is a copy of `MemorySource::transport_sample_position`: it is the
 // single source of truth for "is the playhead inside this clip, and at what
 // sample offset". Kept lock-free / alloc-free so `tick`/`process` stay RT-safe —
 // the actual disk seek is deferred to the butler; here we only publish the
@@ -455,30 +455,30 @@ const SEEK_EPSILON_SAMPLES: f64 = 4096.0;
 
 /// Wiring for [`StreamingClipReader::new`]: the placement gate plus the file
 /// sample rate. Reuses [`TransportPlacement`] for the transport/start/duration
-/// cluster so the streaming path and `SamplerUnit` speak the same value type;
+/// cluster so the streaming path and `MemorySource` speak the same value type;
 /// `shared_state` stays a separate wiring arg (it must be the same `RtState` the
 /// `inner` unit holds).
 #[derive(Debug, Clone)]
 pub struct StreamingClipConfig {
     /// Transport binding — the placement gate. Whole-or-nothing, mirroring
-    /// `SamplerUnit`'s use of [`TransportPlacement`].
+    /// `MemorySource`'s use of [`TransportPlacement`].
     pub placement: TransportPlacement,
     /// File sample rate — converts the transport's second-offset into a sample
-    /// offset for the seek target, matching `SamplerUnit`'s use of
+    /// offset for the seek target, matching `MemorySource`'s use of
     /// `wave.sample_rate()`.
     pub file_sample_rate: f64,
 }
 
 pub struct StreamingClipReader {
-    inner: StreamingSamplerUnit,
+    inner: DiskSource,
     shared_state: Arc<RtState>,
 
     /// Transport binding — the placement gate. Whole-or-nothing, mirroring
-    /// `SamplerUnit`'s `TransportPlacement`.
+    /// `MemorySource`'s `TransportPlacement`.
     placement: TransportPlacement,
 
     /// File sample rate — converts the transport's second-offset into a sample
-    /// offset for the seek target, matching `SamplerUnit`'s use of
+    /// offset for the seek target, matching `MemorySource`'s use of
     /// `wave.sample_rate()`.
     file_sample_rate: f64,
 
@@ -494,7 +494,7 @@ pub struct StreamingClipReader {
     was_inside: bool,
 }
 
-// Hand-rolled: wraps a non-`Debug` `StreamingSamplerUnit` + `Arc<RtState>` +
+// Hand-rolled: wraps a non-`Debug` `DiskSource` + `Arc<RtState>` +
 // `TransportPlacement` (holds an `Arc<dyn Timeline>`). Print the gate
 // scalars + inner unit; nothing here touches the ring.
 impl std::fmt::Debug for StreamingClipReader {
@@ -523,17 +523,13 @@ impl Clone for StreamingClipReader {
 }
 
 impl StreamingClipReader {
-    /// Wrap a `StreamingSamplerUnit` with the transport placement gate.
+    /// Wrap a `DiskSource` with the transport placement gate.
     ///
     /// Construction (butler stream registration, ring allocation) happens on the
     /// ECS/butler side; this only binds the already-built unit to a timeline
     /// window. `shared_state` must be the same `RtState` the `inner` unit holds
     /// so the gate's seek requests reach the unit's seek/underrun machinery.
-    pub fn new(
-        inner: StreamingSamplerUnit,
-        shared_state: Arc<RtState>,
-        config: StreamingClipConfig,
-    ) -> Self {
+    pub fn new(inner: DiskSource, shared_state: Arc<RtState>, config: StreamingClipConfig) -> Self {
         Self {
             inner,
             shared_state,
@@ -569,11 +565,11 @@ impl StreamingClipReader {
     /// Clip-relative sample offset the playhead sits at, or `None` when it is
     /// outside the clip window. Delegates to the shared
     /// [`transport_sample_offset`](super::interp::transport_sample_offset) — the
-    /// one gate definition, also used by [`SamplerUnit`].
+    /// one gate definition, also used by [`MemorySource`].
     ///
-    /// Passes varispeed ALONE, not `read_rate` — deliberately unlike the in-RAM
+    /// Passes varispeed ALONE, not `read_rate` — deliberately unlike the in-memory
     /// tier, because the two `file_sample_rate` arguments do not mean the same
-    /// thing. `SamplerUnit` passes `wave.sample_rate()`, a raw file rate; this
+    /// thing. `MemorySource` passes `wave.sample_rate()`, a raw file rate; this
     /// reader's `file_sample_rate` is *reconstructed* as
     /// `session_rate × src_ratio` (`ports.rs`), so it already carries the
     /// conversion. Multiplying by `read_rate` here would apply `src_ratio`
@@ -741,10 +737,10 @@ mod tests {
         crate::butler::share_reader(reader)
     }
 
-    fn make_unit(samples: &[(f32, f32)]) -> (StreamingSamplerUnit, Arc<RtState>) {
+    fn make_unit(samples: &[(f32, f32)]) -> (DiskSource, Arc<RtState>) {
         let reader = make_reader_with_samples(samples);
         let state = Arc::new(RtState::new());
-        let unit = StreamingSamplerUnit::new(reader, Arc::clone(&state));
+        let unit = DiskSource::new(reader, Arc::clone(&state));
         (unit, state)
     }
 
@@ -1028,7 +1024,7 @@ mod tests {
         assert_eq!(state.speed(), PlaybackRate::new(2.0));
 
         // The range is still enforced — but by the type, at construction, so the
-        // in-RAM tier gets it too. `RtState` used to be the only place it
+        // in-memory tier gets it too. `RtState` used to be the only place it
         // happened, which is why the two tiers disagreed.
         state.set_speed(PlaybackRate::new_clamped(0.1));
         assert_eq!(state.speed(), PlaybackRate::MIN);
@@ -1177,8 +1173,8 @@ mod tests {
         let state1 = Arc::new(RtState::new());
         let state2 = Arc::new(RtState::new());
 
-        let mut full = StreamingSamplerUnit::new(reader1, state1);
-        let mut half = StreamingSamplerUnit::new(reader2, state2);
+        let mut full = DiskSource::new(reader1, state1);
+        let mut half = DiskSource::new(reader2, state2);
         half.set_gain(Amplitude::new(0.5));
 
         let mut out_full = [0.0f32; 2];
@@ -1276,7 +1272,7 @@ mod tests {
             let frames: Vec<f32> = (0..64 * width).map(|i| (i + 1) as f32).collect();
             let ring = make_wide_reader(&frames, width);
             let state = Arc::new(RtState::new());
-            let inner = StreamingSamplerUnit::new(ring, state.clone());
+            let inner = DiskSource::new(ring, state.clone());
             assert_eq!(inner.channels(), width, "ring width must reach the unit");
 
             // Transport parked BEFORE the clip's start beat, so the placement
@@ -1338,7 +1334,7 @@ mod tests {
         let frames: Vec<f32> = (0..64 * width).map(|i| (i + 1) as f32).collect();
         let ring = make_wide_reader(&frames, width);
         let state = Arc::new(RtState::new());
-        let mut unit = StreamingSamplerUnit::new(ring, state.clone());
+        let mut unit = DiskSource::new(ring, state.clone());
 
         state.set_seeking(true);
         assert!(state.is_seeking());

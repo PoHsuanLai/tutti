@@ -192,7 +192,7 @@ fn handle_stream_file(
     let region_id = local.mint_region_id();
 
     // The ring carries the file at its OWN width: the streaming tier reads it
-    // back through the same channel policy the in-RAM tier uses, so folding
+    // back through the same channel policy the in-memory tier uses, so folding
     // here would discard channels before that policy ever sees them.
     let (mut producer, consumer) =
         RegionBuffer::with_capacity(region_id, file_path.clone(), buffer_capacity, file_channels);
@@ -217,7 +217,7 @@ fn handle_stream_file(
 
     shared.plans.entry(channel_index).or_default();
 
-    // Same derivation the in-RAM tier uses (`SamplerUnit::set_session_sample_rate`),
+    // Same derivation the in-memory tier uses (`MemorySource::set_session_sample_rate`),
     // via the one shared constructor — this was a hand-rolled copy that had to
     // agree with it by convention.
     let src_ratio = SrcRatio::for_rates(file_sr, sample_rate);

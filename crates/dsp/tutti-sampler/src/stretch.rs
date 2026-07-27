@@ -579,8 +579,10 @@ impl Unit {
 
     /// Clamped into [`StretchFactor::MIN`]..=[`StretchFactor::MAX`].
     pub fn set_stretch_factor(&self, factor: StretchFactor) {
-        self.stretch_factor
-            .store(StretchFactor::new_clamped(factor.get()).get(), Ordering::Release);
+        self.stretch_factor.store(
+            StretchFactor::new_clamped(factor.get()).get(),
+            Ordering::Release,
+        );
     }
 
     pub fn stretch_factor(&self) -> StretchFactor {
@@ -701,7 +703,7 @@ impl AudioUnit for Unit {
     }
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        // `input` is the source frame the caller already produced (in-RAM index
+        // `input` is the source frame the caller already produced (in-memory index
         // or streaming ring pop). This unit does not own or pull a source.
         //
         // A short `input` fans channel 0 to the rest: a mono feed into a wider
@@ -1429,4 +1431,3 @@ mod tests {
         );
     }
 }
-

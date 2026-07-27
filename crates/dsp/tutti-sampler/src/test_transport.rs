@@ -1,6 +1,6 @@
 //! One mock [`Timeline`] for the crate's tests.
 //!
-//! There were three, in `sampler_unit`, `streaming_sampler`, and
+//! There were three, in `memory_source`, `streaming_sampler`, and
 //! `track_clip_reader` — identical state (playing / beat / tempo, all
 //! interior-mutable) with the methods split arbitrarily between them, so a test
 //! could only move the playhead the way its own module's copy happened to allow.
@@ -8,7 +8,7 @@
 //! seek-while-stretched test could not be written there.
 //!
 //! Worse than the duplication: the two constructors disagreed on argument order
-//! — `new(beat, tempo)` in `sampler_unit` against `new(tempo, beat, playing)` in
+//! — `new(beat, tempo)` in `memory_source` against `new(tempo, beat, playing)` in
 //! the other two. Both take `f64`, so transposing them compiles and yields a
 //! transport at the wrong tempo *and* the wrong position. This version takes
 //! [`Bpm`] and [`Beat`], so the compiler refuses the swap.

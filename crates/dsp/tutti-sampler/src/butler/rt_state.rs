@@ -104,7 +104,7 @@ impl RtState {
     /// Publish a new varispeed.
     ///
     /// Takes the already-bounded [`PlaybackRate`] rather than a raw `f32`: the
-    /// range used to be enforced here and *only* here, so the in-RAM tier —
+    /// range used to be enforced here and *only* here, so the in-memory tier —
     /// which never went through this function — accepted speeds this one
     /// clamped. Same command, different audio per tier. The type carries the
     /// bound now, so both tiers get it.
@@ -122,7 +122,7 @@ impl RtState {
 
     /// Source samples consumed per output sample: varispeed × conversion.
     ///
-    /// The streaming twin of `SamplerUnit::read_rate`, composing through the
+    /// The streaming twin of `MemorySource::read_rate`, composing through the
     /// same [`PlaybackRate::read_rate`] so neither tier can drop a factor or
     /// swap the pair.
     #[inline]
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn test_speed_clamping() {
         // The clamp moved into `PlaybackRate` so BOTH playback tiers get it —
-        // this used to be the only place it happened, so the in-RAM sampler,
+        // this used to be the only place it happened, so the in-memory sampler,
         // which never called this setter, accepted out-of-range speeds.
         let state = RtState::new();
 

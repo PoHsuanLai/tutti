@@ -1,4 +1,4 @@
-//! The sampler streaming-engine handle. See [`Sampler`].
+//! The sampler streaming-engine handle. See [`DiskStreamer`].
 
 use crate::butler::{BufferConfig, ButlerCommand, ButlerThread};
 use crate::error::Result;
@@ -14,7 +14,7 @@ use tutti_core::Samples;
 ///
 /// Owns the butler thread, which drives all disk I/O. The engine builds one at
 /// startup with [`new`](Self::new) and inserts it directly; the ECS layer reads
-/// it as `Res<Sampler>`.
+/// it as `Res<DiskStreamer>`.
 ///
 /// Stream control is split MIDI-device-style into two cloneable ports: the
 /// WRITE port [`commands`](Self::commands) (a [`Commands`] over the butler
@@ -25,16 +25,16 @@ use tutti_core::Samples;
 /// # Example
 ///
 /// ```no_run
-/// use tutti_sampler::Sampler;
+/// use tutti_sampler::DiskStreamer;
 ///
 /// # fn main() -> tutti_sampler::Result<()> {
-/// let sampler = Sampler::new(48_000.0, Default::default())?;
+/// let sampler = DiskStreamer::new(48_000.0, Default::default())?;
 /// let _ = sampler.status().sample_rate();
 /// # Ok(())
 /// # }
 /// ```
 #[cfg_attr(feature = "bevy", derive(Resource))]
-pub struct Sampler {
+pub struct DiskStreamer {
     butler_tx: Sender<ButlerCommand>,
     butler: ButlerThread,
     sample_rate: f64,
@@ -42,21 +42,21 @@ pub struct Sampler {
 
 // `butler`/`butler_tx` hold a thread handle + command channel that can't
 // derive `Debug`; print the sample rate and note the live butler thread.
-impl std::fmt::Debug for Sampler {
+impl std::fmt::Debug for DiskStreamer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Sampler")
+        f.debug_struct("DiskStreamer")
             .field("sample_rate", &self.sample_rate)
             .finish_non_exhaustive()
     }
 }
 
-impl Sampler {
+impl DiskStreamer {
     /// Build the system and spawn the butler thread.
     ///
-    /// Configure with [`SamplerConfig`] (`Default` + struct-update); pass
+    /// Configure with [`DiskStreamerConfig`] (`Default` + struct-update); pass
     /// `Default::default()` for the tuned defaults. Returns [`Err`] if any
     /// subsystem fails to initialize.
-    pub fn new(sample_rate: f64, config: SamplerConfig) -> Result<Self> {
+    pub fn new(sample_rate: f64, config: DiskStreamerConfig) -> Result<Self> {
         let mut butler = ButlerThread::with_config(256, sample_rate, config.buffer_config);
 
         if let Some(ref pdc) = config.pdc {
@@ -66,7 +66,7 @@ impl Sampler {
         let butler_tx = butler.command_sender();
         butler.start();
 
-        Ok(Sampler {
+        Ok(DiskStreamer {
             butler_tx,
             butler,
             sample_rate,
@@ -90,9 +90,9 @@ impl Sampler {
 
 // `butler` has its own `Drop` impl; auto-drop handles cleanup.
 
-/// Configuration for [`Sampler::new`]. `Default` + struct-update.
+/// Configuration for [`DiskStreamer::new`]. `Default` + struct-update.
 #[derive(Clone, Default)]
-pub struct SamplerConfig {
+pub struct DiskStreamerConfig {
     /// Butler buffer / cache configuration. Default is tuned for
     /// 64-channel streaming on a typical desktop.
     pub buffer_config: BufferConfig,
@@ -107,9 +107,9 @@ pub struct SamplerConfig {
 
 // Hand-rolled: print the buffer config + whether a subscription is set, not
 // the snapshot itself.
-impl std::fmt::Debug for SamplerConfig {
+impl std::fmt::Debug for DiskStreamerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SamplerConfig")
+        f.debug_struct("DiskStreamerConfig")
             .field("buffer_config", &self.buffer_config)
             .field("has_pdc", &self.pdc.is_some())
             .finish()
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn test_io_metrics_zeroed_on_fresh_system() {
-        let sampler = Sampler::new(44100.0, Default::default()).unwrap();
+        let sampler = DiskStreamer::new(44100.0, Default::default()).unwrap();
         // A fresh butler has read nothing and an empty cache.
         let plans = sampler.butler.plans();
         assert!(plans.is_empty());
@@ -135,9 +135,9 @@ mod tests {
         // sampler is built; the sampler must observe those later stores.
         let pdc = Arc::new(RtPublish::new(vec![Samples(100), Samples(0)]));
 
-        let _sampler = Sampler::new(
+        let _sampler = DiskStreamer::new(
             44100.0,
-            SamplerConfig {
+            DiskStreamerConfig {
                 pdc: Some(Arc::clone(&pdc)),
                 ..Default::default()
             },

@@ -1,7 +1,7 @@
 //! Public ports onto the sampler streaming engine, split MIDI-device-style into
 //! a WRITE port ([`Commands`]) and a READ port ([`Status`]).
 //!
-//! The [`Sampler`](crate::Sampler) handle owns the butler thread; these two
+//! The [`DiskStreamer`](crate::DiskStreamer) handle owns the butler thread; these two
 //! cloneable handles are the differentiated surfaces onto it:
 //!
 //! - [`Commands`] wraps the butler command channel and exposes a single
@@ -23,13 +23,13 @@ use crate::clip::{
 };
 use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, Timeline, Wave};
 
-/// The caller's stated choice of playback tier for a clip: whole-file in RAM
+/// The caller's stated choice of playback tier for a clip: whole-file in memory
 /// (`Memory`) or incremental disk streaming (`Disk`). Plain data — the sampler
 /// never decides the tier on its own; it plays whichever variant it is handed.
 /// The caller owns the tier decision (e.g. dawai-model's `TieringPolicy`).
 #[derive(Clone)]
 pub enum Source {
-    /// Whole file decoded into RAM, played by a `SamplerUnit`.
+    /// Whole file decoded into memory, played by a `MemorySource`.
     Memory(Arc<Wave>),
     /// File streamed incrementally from disk via the butler.
     Disk(PathBuf),

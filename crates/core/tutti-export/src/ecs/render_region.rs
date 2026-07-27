@@ -456,7 +456,7 @@ mod tests {
     use tutti_core::Beat;
     use tutti_core::{BeatDuration, Bpm, SampleRate, Wave};
     use tutti_sampler::{
-        ClipCommand, Direction, Playback, SamplerUnit, SlotId, TrackClipReaderUnit, Voice,
+        ClipCommand, Direction, MemorySource, Playback, SlotId, TrackClipReaderUnit, Voice,
         VoiceSource,
     };
 
@@ -522,11 +522,11 @@ mod tests {
             &(0..64).map(|i| (i as f32 + 1.0) / 64.0).collect::<Vec<_>>(),
         ));
         let sampler =
-            SamplerUnit::with_transport(wave, live_transport.clone(), Beat::new(0.0), None);
+            MemorySource::with_transport(wave, live_transport.clone(), Beat::new(0.0), None);
         handle.send(ClipCommand::AddVoice {
             id: SlotId(1),
             voice: Box::new(Voice {
-                source: VoiceSource::Ram(sampler),
+                source: VoiceSource::Memory(sampler),
                 play: Playback::default(),
                 channel_index: None,
             }),
@@ -744,7 +744,7 @@ mod tests {
     fn offline_rebinds_bare_voice_node_transport() {
         use tutti_sampler::{LoopSetting, Playback, TransportPlacement, Voice, VoiceSource};
 
-        // The live transport is rolling; the offline one is stopped — so the RAM
+        // The live transport is rolling; the offline one is stopped — so the memory
         // source's `transport_sample_position()` (which reads its OWN placement
         // clock) returns `Some(..)` while bound to the live clock and `None` once
         // rebound to the stopped offline clock. That distinction is the real
@@ -757,15 +757,15 @@ mod tests {
             &(0..64).map(|i| (i as f32 + 1.0) / 64.0).collect::<Vec<_>>(),
         ));
         let sampler =
-            SamplerUnit::with_transport(wave, live_transport.clone(), Beat::new(0.0), None);
+            MemorySource::with_transport(wave, live_transport.clone(), Beat::new(0.0), None);
         assert!(
             sampler.transport_sample_position().is_some(),
-            "sanity: the RAM source reads a live position before rebind"
+            "sanity: the memory source reads a live position before rebind"
         );
         // A standalone voice carrying a placement bound to the LIVE clock — the
         // exact shape resynth builds before the graph add.
         let voice = Voice {
-            source: VoiceSource::Ram(sampler),
+            source: VoiceSource::Memory(sampler),
             play: Playback {
                 placement: Some(TransportPlacement {
                     transport: live_transport.clone(),
@@ -808,15 +808,15 @@ mod tests {
              (stopped) offline transport, not left on the live one"
         );
 
-        // And — the load-bearing half — the RAM SOURCE's OWN read clock must have
+        // And — the load-bearing half — the MEMORY SOURCE's OWN read clock must have
         // swapped too. The sampler reads its position from its own placement, so
         // if the rebind only touched `play.placement` this would still read the
         // (playing) live clock and the offline render would use the wrong
         // playhead with NO compile error.
         match &voice_node.voice().source {
-            VoiceSource::Ram(sampler) => assert!(
+            VoiceSource::Memory(sampler) => assert!(
                 sampler.transport_sample_position().is_none(),
-                "the RAM source's own read clock must be rebound to the stopped \
+                "the memory source's own read clock must be rebound to the stopped \
                  offline transport (else the offline render reads the live \
                  playhead and renders the correction wrong)"
             ),

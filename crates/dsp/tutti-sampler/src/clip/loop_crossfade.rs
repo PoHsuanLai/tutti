@@ -1,4 +1,4 @@
-//! Loop crossfade for smooth loop transitions in `SamplerUnit` (in-memory playback).
+//! Loop crossfade for smooth loop transitions in `MemorySource` (in-memory playback).
 //!
 //! For streaming playback, see `butler::StreamingCrossfader` — that one is lock-free
 //! because the butler thread is a separate producer; here the unit produces its own
@@ -31,7 +31,7 @@ pub(crate) const MAX_CROSSFADE_FRAMES: usize = 4096;
 impl LoopCrossfade {
     /// A crossfade over `channels`-wide frames. Width is explicit at every call
     /// site: there is no stereo-defaulting `new`, because the only caller
-    /// (`SamplerUnit::set_loop_range`) always knows its own width and a default
+    /// (`MemorySource::set_loop_range`) always knows its own width and a default
     /// here would silently mismatch it.
     ///
     /// Reserves [`MAX_CROSSFADE_FRAMES`] up front so [`retune`](Self::retune)

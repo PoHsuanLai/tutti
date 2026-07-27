@@ -1,7 +1,7 @@
 //! Clip playback — the DSP units that turn a wave into audio, plus the shared
 //! kernels they read through.
 //!
-//! - [`sampler_unit`] — in-RAM playback ([`SamplerUnit`]).
+//! - [`memory_source`] — in-memory playback ([`MemorySource`]).
 //! - [`streaming_sampler`] — disk-streaming playback, fed by the butler thread.
 //! - [`track_clip_reader`] — per-track multi-clip mixer over both tiers.
 //! - [`interp`] — the interpolation kernel and the transport-placement gate.
@@ -17,9 +17,9 @@ use tutti_core::WaveAsset;
 mod loop_crossfade;
 // Shared zero-alloc interpolation kernel (one cubic Hermite for both units).
 pub mod interp;
-pub mod sampler_unit;
+pub mod memory_source;
 // Disk streaming — the unit is Bevy-free; it's fed by the (Bevy-free) butler
-// engine, which a non-Bevy host drives via `Sampler`.
+// engine, which a non-Bevy host drives via `DiskStreamer`.
 pub mod streaming_sampler;
 // `track_clip_reader` holds Bevy-free DSP (its ECS pieces are gated inside).
 pub mod track_clip_reader;
@@ -32,8 +32,8 @@ pub mod track_clip_reader;
 pub mod wave_loader;
 
 // Bevy-free reader value types + DSP unit.
-pub use sampler_unit::{LoopSetting, SamplerUnit, SamplerUnitConfig, TransportPlacement};
-pub use streaming_sampler::{StreamingClipConfig, StreamingClipReader, StreamingSamplerUnit};
+pub use memory_source::{LoopSetting, MemorySource, MemorySourceConfig, TransportPlacement};
+pub use streaming_sampler::{DiskSource, StreamingClipConfig, StreamingClipReader};
 pub use track_clip_reader::{
     ClipCommand, ClipSpec, Direction, PendingPlayback, Playback, SlotId, TrackClipReaderHandle,
     TrackClipReaderUnit, Voice, VoiceNode, VoiceSource,

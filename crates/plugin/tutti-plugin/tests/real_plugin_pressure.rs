@@ -52,7 +52,7 @@
 // are feature-gated. Without this the default `cargo test` fails to compile
 // rather than simply skipping — these tests are opt-in twice over: a feature to
 // build them, and `--ignored` to run them.
-#![cfg(any(feature = "clap", feature = "vst3"))]
+#![cfg(any(feature = "clap", feature = "vst3", feature = "au"))]
 
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -91,6 +91,7 @@ const PERIOD: Duration = Duration::from_nanos((BLOCK as f64 / SAMPLE_RATE * 1e9)
 /// `load_n` cycles through this list, so more than one entry means the multi-plugin
 /// cases run a *mix* of plugins and formats rather than N copies of one — closer to
 /// a real session, and it exercises both format hosts in the same callback.
+#[cfg(any(feature = "clap", feature = "vst3"))]
 const EFFECTS: &[&str] = &[
     #[cfg(feature = "clap")]
     "/Library/Audio/Plug-Ins/CLAP/TAL-Reverb-4.clap",
@@ -102,6 +103,7 @@ const EFFECTS: &[&str] = &[
     "/Library/Audio/Plug-Ins/VST3/TDR Nova.vst3",
 ];
 
+#[cfg(any(feature = "clap", feature = "vst3"))]
 fn available_effects() -> Vec<&'static str> {
     EFFECTS
         .iter()
@@ -114,6 +116,12 @@ fn available_effects() -> Vec<&'static str> {
 ///
 /// Returns the units and their handles; the handles must outlive the units
 /// (they share the subprocess guard), so the caller keeps both.
+///
+/// Gated on the formats `EFFECTS` can name: with neither `clap` nor `vst3` every
+/// arm of the match below is cfg'd out, leaving nothing to infer the result type
+/// from. The delay-compensation tests do not go through here — they load one named
+/// plugin via [`load_passthrough`], which is why `au` alone is a valid build.
+#[cfg(any(feature = "clap", feature = "vst3"))]
 #[allow(clippy::type_complexity)]
 fn load_n(
     count: usize,
@@ -172,6 +180,7 @@ fn fill_sine(input: &mut BufferVec<F32>, channels: usize, block_index: usize) {
     }
 }
 
+#[cfg(any(feature = "clap", feature = "vst3"))]
 fn peak(buf: &BufferVec<F32>, channels: usize) -> f32 {
     (0..channels)
         .map(|ch| {
@@ -185,6 +194,7 @@ fn peak(buf: &BufferVec<F32>, channels: usize) -> f32 {
 /// Drive `units` in series for `blocks` blocks at real callback pacing, and
 /// return the per-block wall time spent *inside* processing (excluding the
 /// pacing sleep).
+#[cfg(any(feature = "clap", feature = "vst3"))]
 fn drive_series(units: &mut [Box<dyn AudioUnit>], blocks: usize) -> (Vec<Duration>, usize) {
     let mut costs = Vec::with_capacity(blocks);
     let mut non_silent = 0usize;
@@ -243,6 +253,7 @@ fn drive_series(units: &mut [Box<dyn AudioUnit>], blocks: usize) -> (Vec<Duratio
 /// Waiting on the condition instead of a guess makes the test independent of
 /// both. Returns `false` if audio never appears, so callers can fail with that
 /// as the diagnosis rather than reporting meaningless timings.
+#[cfg(any(feature = "clap", feature = "vst3"))]
 fn warm_up(units: &mut [Box<dyn AudioUnit>], deadline: Duration) -> bool {
     let start = Instant::now();
     while start.elapsed() < deadline {
@@ -255,6 +266,7 @@ fn warm_up(units: &mut [Box<dyn AudioUnit>], deadline: Duration) -> bool {
     false
 }
 
+#[cfg(any(feature = "clap", feature = "vst3"))]
 fn report(label: &str, costs: &[Duration], non_silent: usize) -> Duration {
     let n = costs.len();
     let mut sorted: Vec<Duration> = costs.to_vec();
@@ -304,6 +316,7 @@ fn report(label: &str, costs: &[Duration], non_silent: usize) -> Duration {
 /// starved block yields silence rather than the input echoed back — is asserted
 /// separately and deterministically in
 /// [`starving_the_subprocesses_yields_silence_not_input_echo`].
+#[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
 #[ignore = "requires plugins installed on the machine"]
 fn eight_real_plugins_stay_under_the_callback_deadline() {
@@ -378,6 +391,7 @@ fn eight_real_plugins_stay_under_the_callback_deadline() {
 /// Roughly flat at ~50-75 us each — an order of magnitude under 667 us, and
 /// nothing like the flat-at-667 signature a regression would show. The 200 us
 /// bound below sits between the two regimes with wide margin on both sides.
+#[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
 #[ignore = "requires plugins installed on the machine"]
 fn per_plugin_cost_stays_far_below_the_old_wait_budget() {
@@ -450,6 +464,7 @@ fn per_plugin_cost_stays_far_below_the_old_wait_budget() {
 ///
 /// This is the property that most directly guards the original bypass, checked
 /// against real subprocesses rather than a mock.
+#[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
 #[ignore = "requires plugins installed on the machine"]
 fn starving_the_subprocesses_yields_silence_not_input_echo() {
@@ -498,6 +513,7 @@ fn starving_the_subprocesses_yields_silence_not_input_echo() {
 ///
 /// Not a timing test — a resource one. A DAW loads and unloads plugins all
 /// session; leaking one host process per load would be fatal over hours.
+#[cfg(any(feature = "clap", feature = "vst3"))]
 #[test]
 #[ignore = "requires plugins installed on the machine"]
 fn repeated_load_and_drop_leaves_no_subprocesses() {
@@ -529,6 +545,7 @@ fn repeated_load_and_drop_leaves_no_subprocesses() {
     );
 }
 
+#[cfg(any(feature = "clap", feature = "vst3"))]
 fn count_plugin_servers() -> usize {
     std::process::Command::new("pgrep")
         .arg("-f")
@@ -553,12 +570,22 @@ fn count_plugin_servers() -> usize {
 /// exercises a real sum rather than the pipeline constant alone.
 ///
 /// Deliberately no `set_parameter` call. An earlier version of this test used
-/// TAL-Reverb-4 with `Wet=0`/`Dry=1`, which never took effect — the plugin's own
-/// validation layer reports `clap_plugin_params.flush() on the wrong thread` —
-/// so the test measured a reverb tail and could not say anything about latency.
-/// A fixture that needs no configuration cannot be misconfigured.
+/// TAL-Reverb-4 with `Wet=0`/`Dry=1`. Those values *do* arrive — verified by
+/// reading them back over IPC — but that plugin is an algorithmic reverb whose
+/// dry path is not a bit-exact passthrough, so the test measured a reverb tail and
+/// could say nothing about latency. A fixture that needs no configuration cannot
+/// be misconfigured, and cannot be misdiagnosed either.
 #[cfg(feature = "vst3")]
-const PASSTHROUGH_PLUGIN: &str = "/Library/Audio/Plug-Ins/VST3/TDR Nova.vst3";
+const PASSTHROUGH_VST3: &str = "/Library/Audio/Plug-Ins/VST3/TDR Nova.vst3";
+
+/// The same plugin as an Audio Unit.
+///
+/// Worth testing separately rather than trusting the VST3 result: it is a
+/// different format host, a different loader, and a different parameter/latency
+/// path in `tutti-plugin-server`. AU had no real-plugin coverage at all before
+/// this, despite an AU-specific NaN bug being one of the audit's findings.
+#[cfg(feature = "au")]
+const PASSTHROUGH_AU: &str = "/Library/Audio/Plug-Ins/Components/TDR Nova.component";
 
 /// The null test for delay compensation: the output must be the input delayed by
 /// *exactly* the latency the plugin declares.
@@ -584,16 +611,59 @@ const PASSTHROUGH_PLUGIN: &str = "/Library/Audio/Plug-Ins/VST3/TDR Nova.vst3";
 #[test]
 #[ignore]
 #[cfg(feature = "vst3")]
-fn output_nulls_against_the_input_delayed_by_the_declared_latency() {
+fn vst3_output_nulls_against_the_input_delayed_by_the_declared_latency() {
     let _guard = exclusive();
-
-    if !std::path::Path::new(PASSTHROUGH_PLUGIN).exists() {
-        eprintln!("{PASSTHROUGH_PLUGIN} not installed — skipping");
+    let Some((unit, _handle)) = load_passthrough(PASSTHROUGH_VST3) else {
         return;
+    };
+    assert_nulls_at_declared_latency(unit, PASSTHROUGH_VST3);
+}
+
+/// The same check through the AU host. Not redundant with the VST3 case: a
+/// different loader, a different format host, and a different latency path on the
+/// server side — any of which could report a number the compensation does not
+/// match.
+#[test]
+#[ignore]
+#[cfg(feature = "au")]
+fn au_output_nulls_against_the_input_delayed_by_the_declared_latency() {
+    let _guard = exclusive();
+    let Some((unit, _handle)) = load_passthrough(PASSTHROUGH_AU) else {
+        return;
+    };
+    assert_nulls_at_declared_latency(unit, PASSTHROUGH_AU);
+}
+
+/// Load an installed passthrough plugin, choosing the host from its extension.
+///
+/// Returns `None` only when the plugin is absent — a genuine skip. A plugin that
+/// is installed but will not load panics, for the reason `load_n` does.
+#[cfg(any(feature = "vst3", feature = "au"))]
+#[allow(clippy::type_complexity)]
+fn load_passthrough(
+    path: &str,
+) -> Option<(Box<dyn AudioUnit>, tutti_plugin::handles::PluginHandle)> {
+    if !std::path::Path::new(path).exists() {
+        eprintln!("{path} not installed — skipping");
+        return None;
     }
-    let (mut unit, _handle) = tutti_plugin::vst3(SAMPLE_RATE, PASSTHROUGH_PLUGIN)
-        .build()
-        .expect("installed passthrough plugin must load");
+    let built = match () {
+        #[cfg(feature = "au")]
+        () if path.ends_with(".component") => tutti_plugin::au(SAMPLE_RATE, path).build(),
+        #[cfg(feature = "vst3")]
+        () if path.ends_with(".vst3") => tutti_plugin::vst3(SAMPLE_RATE, path).build(),
+        () => {
+            eprintln!("{path}: no host compiled in for this format — skipping");
+            return None;
+        }
+    };
+    Some(built.unwrap_or_else(|e| panic!("{path} is installed but failed to load: {e}")))
+}
+
+/// Drive `unit` and require its output to null against the input delayed by the
+/// latency it declares.
+#[cfg(any(feature = "vst3", feature = "au"))]
+fn assert_nulls_at_declared_latency(mut unit: Box<dyn AudioUnit>, path: &str) {
     let unit = &mut unit;
     // Wide enough for *both* directions: fundsp indexes one buffer by channel for
     // whichever side is wider, so sizing to the narrower one panics.
@@ -703,7 +773,7 @@ fn output_nulls_against_the_input_delayed_by_the_declared_latency() {
         panic!(
             "fixture is no longer a passthrough — nothing nulls at any offset (best \
              {best_db:.1} dB at {best_offset}). This is not a PDC verdict: the test \
-             needs a plugin that reproduces its input, and {PASSTHROUGH_PLUGIN} has \
+             needs a plugin that reproduces its input, and {path} has \
              stopped doing so. Check for a loaded preset or a plugin update before \
              touching the latency code."
         );
@@ -716,7 +786,7 @@ fn output_nulls_against_the_input_delayed_by_the_declared_latency() {
 /// Used only to *diagnose* a failure: it separates "the signal passes through but
 /// the declared latency is wrong" from "the signal is not passing through", which
 /// otherwise look identical from a single failed comparison.
-#[cfg(feature = "vst3")]
+#[cfg(any(feature = "vst3", feature = "au"))]
 fn best_null_offset(dry: &[f32], wet: &[f32], search_max: usize) -> (usize, f64) {
     let mut best = (0usize, f64::INFINITY);
     for offset in 0..=search_max.min(wet.len().saturating_sub(1)) {

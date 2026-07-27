@@ -139,6 +139,10 @@ impl ClapLoaded {
                 reason: "Activate failed".to_string(),
             });
         }
+        // The plugin now considers itself active, which changes the thread
+        // contract of every `[active ? audio-thread : main-thread]` method — see
+        // `LifecycleFlags::active`.
+        self.flags.active = true;
         Ok(())
     }
 
@@ -149,6 +153,7 @@ impl ClapLoaded {
         if let Some(deactivate_fn) = plugin_ref.deactivate {
             unsafe { deactivate_fn(self.plugin.as_ptr()) };
         }
+        self.flags.active = false;
     }
 }
 

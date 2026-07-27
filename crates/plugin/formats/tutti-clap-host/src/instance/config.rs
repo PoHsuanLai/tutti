@@ -153,12 +153,74 @@ impl PortLayout {
     }
 }
 
-/// Lifecycle sub-state not encoded by the type. The active-vs-loaded
-/// distinction is now the type (`ClapActive` vs `ClapLoaded`); what remains is
-/// whether the active plugin has `start_processing`'d (`processing`) and
-/// whether its editor exists (`gui_created`, orthogonal to activation).
+/// Lifecycle sub-state not encoded by the type.
+///
+/// The active-vs-loaded distinction is the type (`ClapActive` vs `ClapLoaded`)
+/// for *callers*, but methods defined on `ClapLoaded` are reachable from both
+/// through `Deref` and cannot see which they were called on. `active` carries
+/// that fact down to them.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct LifecycleFlags {
+    /// The plugin's `activate()` has run and `deactivate()` has not.
+    ///
+    /// Distinct from `processing`, and the distinction is load-bearing: CLAP tags
+    /// methods like `params.flush` as `[active ? audio-thread : main-thread]`,
+    /// keyed on *activation* — not on whether audio has started flowing. Gating
+    /// those on `processing` treats the window between `activate()` and the first
+    /// `process()` as inactive, and a plugin that knows it is active reports the
+    /// host for calling on the wrong thread.
+    pub active: bool,
     pub processing: bool,
     pub gui_created: bool,
+}
+
+#[cfg(test)]
+mod lifecycle_flag_tests {
+    use super::LifecycleFlags;
+
+    /// `active` and `processing` are different facts, and the window where they
+    /// disagree is the one that matters.
+    ///
+    /// CLAP tags `params.flush` `[active ? audio-thread : main-thread]`. Between
+    /// `activate()` and the first `process()` a plugin is active but not
+    /// processing — and that is exactly when a host pushes initial parameter
+    /// values. Gating the thread choice on `processing` took the main-thread
+    /// branch there against an active plugin, which TAL-Reverb-4's validation
+    /// layer reported as `clap_plugin_params.flush() was called on the wrong
+    /// thread`.
+    ///
+    /// This pins the state machine rather than the call site: if a later edit
+    /// collapses the two flags back into one, the sequence below stops being
+    /// representable and this test stops compiling or starts failing.
+    #[test]
+    fn active_and_processing_are_independent() {
+        let mut flags = LifecycleFlags::default();
+        assert!(
+            !flags.active && !flags.processing,
+            "loaded, not yet activated"
+        );
+
+        // activate() — the plugin is active, but no audio has flowed.
+        flags.active = true;
+        assert!(
+            flags.active && !flags.processing,
+            "the window where the two disagree: `flush` is already an \
+             audio-thread call here, though `processing` is still false"
+        );
+
+        // First process() — start_processing runs.
+        flags.processing = true;
+        assert!(flags.active && flags.processing);
+
+        // stop_processing() without deactivating: back to the disagreeing window.
+        flags.processing = false;
+        assert!(
+            flags.active,
+            "stop_processing does not deactivate — `flush` stays an audio-thread \
+             call until deactivate()"
+        );
+
+        flags.active = false;
+        assert!(!flags.active && !flags.processing);
+    }
 }

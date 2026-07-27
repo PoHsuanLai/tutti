@@ -1084,6 +1084,65 @@ mod tests {
         assert_eq!(u.channels[0].output.available(), 0);
     }
 
+    /// Stale audio survives a source discontinuity until something calls
+    /// [`Unit::reset`] — and `reset` is sufficient to clear it.
+    ///
+    /// This is a **characterization** test: it passes today and documents the
+    /// mechanism behind the seek bug rather than gating it. The gate lives one
+    /// level up, where a transport can actually seek
+    /// (`track_clip_reader::tests::a_transport_seek_flushes_stretch_state`).
+    ///
+    /// What it pins is the two halves of the fix:
+    ///
+    /// - the leak is **large** — the FIFOs hold up to `window * 4` samples and
+    ///   the phase accumulators keep resynthesising from them, so the output
+    ///   after the input goes silent is at signal level, not at noise level;
+    /// - `reset()` clears it **exactly**, to zero, not merely to something
+    ///   small.
+    ///
+    /// The second half is why this test earns its place: if a later change makes
+    /// `Vocoder::reset` cheaper by clearing less, the fix built on top of it
+    /// stops working and this fails here rather than in an ear.
+    #[test]
+    fn stale_audio_survives_a_discontinuity_until_reset() {
+        let fill = |u: &mut Unit, level: f32, n: usize| {
+            let mut out = [0.0f32; 1];
+            let mut peak = 0.0f32;
+            for _ in 0..n {
+                u.tick(&[level], &mut out);
+                peak = peak.max(out[0].abs());
+            }
+            peak
+        };
+
+        // Prime with DC so "is the output still carrying the old material" is a
+        // question about level alone — no phase or frequency argument needed.
+        let mut leaking = Unit::with_channels(44_100.0, 1);
+        leaking.set_stretch_factor(StretchFactor::new(2.0));
+        assert!(leaking.is_processing());
+        fill(&mut leaking, 0.5, 8192);
+
+        // The discontinuity: the source goes silent. A seek into a silent region
+        // looks exactly like this from the filter's side.
+        let leaked = fill(&mut leaking, 0.0, 4096);
+        assert!(
+            leaked > 0.25,
+            "expected the pre-discontinuity signal to keep draining; peak {leaked}"
+        );
+
+        // Same run, with the flush the fix will perform.
+        let mut flushed = Unit::with_channels(44_100.0, 1);
+        flushed.set_stretch_factor(StretchFactor::new(2.0));
+        fill(&mut flushed, 0.5, 8192);
+        flushed.reset();
+
+        let after_reset = fill(&mut flushed, 0.0, 4096);
+        assert_eq!(
+            after_reset, 0.0,
+            "reset must clear the FIFOs and phase state exactly, not approximately"
+        );
+    }
+
     /// The gain invariant: at a synthesis hop equal to the analysis hop and
     /// unity pitch, the vocoder reconstructs its input.
     ///

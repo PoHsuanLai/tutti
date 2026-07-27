@@ -1712,6 +1712,117 @@ mod tests {
         });
     }
 
+    /// A transport seek must flush the stretch filter's buffered audio.
+    ///
+    /// **This is the gate for the seek bug and it FAILS before the fix.**
+    ///
+    /// `Timeline` is poll-only — `beat()` / `tempo()` / `is_rolling()`, no seek
+    /// event — and nothing on any transport-driven path calls
+    /// `AudioUnit::reset()`. So when the playhead jumps, the placement gate
+    /// re-derives the new position correctly and immediately, while
+    /// `stretch::Unit` keeps draining a FIFO primed from *before* the jump: up
+    /// to `window * 4` samples per channel, plus per-bin phase accumulators
+    /// still tracking the old material.
+    ///
+    /// The wave is loud in its first half and **exactly silent** in its second,
+    /// which is what makes the assertion about the bug rather than about
+    /// liveness. Every other stretch test on this path asserts only `!= 0.0` or
+    /// `> 1e-6` (`clips_sum_together`, `six_channel_clip_with_stretch_...`), and
+    /// a leak at signal level passes all of them — the same blind spot that let
+    /// a 60 dB gain error live in the vocoder. Here, parking the playhead in the
+    /// silent half means any output above the floor is provably material the
+    /// filter should no longer be holding.
+    #[test]
+    fn a_transport_seek_flushes_stretch_state() {
+        const SR: f64 = 44_100.0;
+        // Ten seconds, so the playhead has room to run for thousands of blocks
+        // inside one half without leaving it.
+        const LEN: usize = 441_000;
+        // 120 BPM = 2 beats/s, so the wave spans 20 beats and the halves split at
+        // beat 10.
+        const LOUD_BEAT: f64 = 2.0;
+        const SILENT_BEAT: f64 = 12.0;
+
+        // Loud first half at 3 kHz (a real signal — the vocoder needs a changing
+        // input to synthesise from), exactly silent second half.
+        let data: Vec<f32> = (0..LEN)
+            .map(|i| {
+                if i < LEN / 2 {
+                    0.5 * (std::f32::consts::TAU * 3000.0 * i as f32 / SR as f32).sin()
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let wave = Arc::new(Wave::from_samples(SR, &data));
+
+        let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::new(120.0));
+        let (mut unit, handle) =
+            TrackClipReaderUnit::with_channels(Some(transport.clone()), None, 1);
+
+        let sampler =
+            SamplerUnit::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+        handle.send(ClipCommand::AddVoice {
+            id: SlotId(1),
+            voice: Box::new(Voice {
+                source: VoiceSource::Ram(sampler),
+                play: Playback {
+                    stretch: StretchFactor::new(2.0),
+                    ..Playback::default()
+                },
+                channel_index: None,
+            }),
+            // The sender materialises the filter on the control thread, as
+            // `TrackClipReaderHandle::send` does for a voice that arrives
+            // already needing one.
+            stretch: None,
+        });
+
+        let mut out = [0.0f32; 1];
+        unit.tick(&[], &mut out);
+        assert!(
+            unit.clips[0].needs_stretch(),
+            "test is vacuous unless the stretch path is live"
+        );
+
+        // Advance the playhead one sample per tick, the way a real transport
+        // moves — a frozen playhead would make every frame re-derive the same
+        // position, so the source would emit a constant and the vocoder would
+        // have nothing to synthesise from.
+        let drive = |unit: &mut TrackClipReaderUnit, n: usize| {
+            let mut peak = 0.0f32;
+            let mut out = [0.0f32; 1];
+            for _ in 0..n {
+                unit.tick(&[], &mut out);
+                transport.advance(1, SR);
+                peak = peak.max(out[0].abs());
+            }
+            peak
+        };
+
+        // Settle in the silent half: whatever the filter emits here is the floor.
+        drive(&mut unit, 8192);
+
+        // Seek backwards into the loud half and prime the filter with it.
+        transport.set_beat(Beat::new(LOUD_BEAT));
+        let loud = drive(&mut unit, 8192);
+        assert!(
+            loud > 0.05,
+            "the loud half should be audible after seeking into it; peak {loud}"
+        );
+
+        // Seek back into the silent half. The source is silent from this playhead
+        // on, so anything above the floor is stale.
+        transport.set_beat(Beat::new(SILENT_BEAT));
+        let after_seek = drive(&mut unit, 2048);
+
+        assert!(
+            after_seek < 0.01,
+            "stretch filter leaked pre-seek audio across a transport jump: \
+             peak {after_seek} (the source is silent at this playhead)"
+        );
+    }
+
     #[test]
     fn add_and_remove_clips() {
         let (mut unit, handle) = TrackClipReaderUnit::new();

@@ -134,6 +134,18 @@ impl VoiceSource {
     /// (`reset`, `set_sample_rate`). Tier-specific control is a `match` at the
     /// call site instead — see [`apply_gain`](Self::apply_gain).
     #[inline]
+    /// The transport clock this source reads, if any.
+    ///
+    /// `None` for a free-running memory source. The disk tier always has one —
+    /// its gate is unconditional, so a `DiskVoice` without a clock could not
+    /// decide when to play.
+    fn timeline(&self) -> Option<Arc<dyn Timeline>> {
+        match self {
+            Self::Memory(s) => s.timeline(),
+            Self::Disk(r) => Some(r.timeline()),
+        }
+    }
+
     fn as_audio_unit_mut(&mut self) -> &mut dyn AudioUnit {
         match self {
             Self::Memory(s) => s,
@@ -1504,6 +1516,13 @@ pub struct VoiceNode {
     slot: VoiceSlot,
     /// Output width — see [`VoicePool`]'s field of the same name.
     channels: usize,
+    /// Detects transport discontinuities so buffered audio can be flushed on a
+    /// seek — the standalone twin of [`VoicePool`]'s cursor, and needed for the
+    /// same reason: a stretch filter's FIFOs keep draining pre-jump material
+    /// until something clears them.
+    ///
+    /// `None` when the voice has no clock to watch (free-running / unplaced).
+    cursor: Option<BeatCursor>,
 }
 
 impl VoiceNode {
@@ -1514,11 +1533,52 @@ impl VoiceNode {
     }
 
     /// Wrap a single [`Voice`] as a `channels`-wide graph node.
+    ///
+    /// Builds the stretch filter here when the voice asks for one. This is a
+    /// control-thread constructor, so the allocation is free; the audio-thread
+    /// drain in [`VoicePool`] cannot do the same and takes a pre-built filter
+    /// from the sender instead.
+    ///
+    /// It did not used to build one — `VoiceSlot::with_channels` always sets
+    /// `stretch: None`, and the doc here claimed a filter was built "once, like a
+    /// mixer slot" while nothing ever built it. A standalone stretched voice
+    /// therefore read DRY forever: no stretch, no pitch shift, and no error. Both
+    /// doc comments pointed at a `materialize_stretch` that does not exist.
     pub fn with_channels(voice: Voice, channels: usize) -> Self {
         let channels = channels.max(1);
+        let sample_rate = 44100.0;
+        let stretch = stretch_wanted(&voice.play).then(|| {
+            let unit = stretch::Unit::with_channels(sample_rate, channels);
+            unit.set_stretch_factor(voice.play.stretch);
+            unit.set_pitch_cents(voice.play.pitch);
+            unit
+        });
+        let mut slot = VoiceSlot::with_channels(SlotId(0), voice, sample_rate, channels);
+        slot.stretch = stretch;
+        let cursor = slot
+            .voice
+            .source
+            .timeline()
+            .map(|t| BeatCursor::new(t, sample_rate));
         Self {
-            slot: VoiceSlot::with_channels(SlotId(0), voice, 44100.0, channels),
+            slot,
             channels,
+            cursor,
+        }
+    }
+
+    /// Flush every voice's buffered audio when the playhead jumps.
+    ///
+    /// The standalone counterpart of [`VoicePool::flush_on_seek`]; see there for
+    /// why detection has to be stateful and per-observer.
+    #[inline]
+    fn flush_on_seek(&mut self, block_size: usize) {
+        let Some(cursor) = &self.cursor else { return };
+        let Some((_, sync)) = cursor.advance(block_size) else {
+            return;
+        };
+        if sync.is_discontinuous() {
+            self.slot.flush_playhead_state();
         }
     }
 
@@ -1574,6 +1634,11 @@ impl Clone for VoiceNode {
                 sample_rate: self.slot.sample_rate,
             },
             channels: self.channels,
+            // Shares the underlying `last_beat`, as `BeatCursor::clone` does for
+            // the pool: fundsp deep-clones every node on `Net::commit`, and a
+            // fresh cursor would read its first block as a discontinuity and
+            // flush the filter on every graph edit.
+            cursor: self.cursor.clone(),
         }
     }
 }
@@ -1588,10 +1653,9 @@ impl AudioUnit for VoiceNode {
     }
 
     fn reset(&mut self) {
-        self.slot.voice.source.as_audio_unit_mut().reset();
-        if let Some(unit) = &mut self.slot.stretch {
-            unit.reset();
-        }
+        // One definition shared with the per-block seek check, so a seek can
+        // never flush less than a reset does — see `VoiceSlot::flush_playhead_state`.
+        self.slot.flush_playhead_state();
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
@@ -1604,6 +1668,11 @@ impl AudioUnit for VoiceNode {
         if let Some(unit) = &mut self.slot.stretch {
             unit.set_sample_rate(sample_rate);
         }
+        // The cursor derives its forward-jump slack from the rate, so a stale one
+        // makes the threshold wrong — mirrors `VoicePool::set_sample_rate`.
+        if let Some(cursor) = &mut self.cursor {
+            cursor.set_sample_rate(sample_rate.get());
+        }
     }
 
     fn tick(&mut self, _input: &[f32], output: &mut [f32]) {
@@ -1613,6 +1682,7 @@ impl AudioUnit for VoiceNode {
         if n == 0 {
             return;
         }
+        self.flush_on_seek(1);
         self.slot.tick_frame_into(&mut output[..n]);
     }
 
@@ -1626,6 +1696,7 @@ impl AudioUnit for VoiceNode {
                 output.set_f32(c, i, 0.0);
             }
         }
+        self.flush_on_seek(size.max(1));
         self.slot.process_into(size, n, output);
     }
 
@@ -1776,6 +1847,142 @@ mod tests {
             after_seek < 0.01,
             "stretch filter leaked pre-seek audio across a transport jump: \
              peak {after_seek} (the source is silent at this playhead)"
+        );
+    }
+
+    /// **The same seek flush, for a STANDALONE voice.** `VoiceNode` is the other
+    /// node that plays a stretched voice, and it had no cursor at all — so the
+    /// pool-level fix covered one of the two paths and left this one smearing.
+    ///
+    /// Not hypothetical: `dawai-spectral`'s resynth adds bare `VoiceNode`s as
+    /// correction nodes, and `tutti-export`'s offline rebind has a dedicated arm
+    /// for them. A scrub across a stretched correction would drag pre-seek audio
+    /// over the new region with nothing in the suite to notice, because every
+    /// other assertion on this path checks only that output is non-zero.
+    #[test]
+    fn a_transport_seek_flushes_a_standalone_voice_node() {
+        const SR: f64 = 44_100.0;
+        const LEN: usize = 441_000;
+        const LOUD_BEAT: f64 = 2.0;
+        const SILENT_BEAT: f64 = 12.0;
+
+        let data: Vec<f32> = (0..LEN)
+            .map(|i| {
+                if i < LEN / 2 {
+                    0.5 * (std::f32::consts::TAU * 3000.0 * i as f32 / SR as f32).sin()
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let wave = Arc::new(Wave::from_samples(SR, &data));
+
+        let transport = MockTransport::rolling(Beat::new(SILENT_BEAT), Bpm::new(120.0));
+        let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+        let mut node = VoiceNode::with_channels(
+            Voice {
+                source: VoiceSource::Memory(sampler),
+                play: Playback {
+                    stretch: StretchFactor::new(2.0),
+                    ..Playback::default()
+                },
+                channel_index: None,
+            },
+            1,
+        );
+        assert!(
+            node.slot.needs_stretch() && node.slot.stretch.is_some(),
+            "test is vacuous unless the stretch path is live"
+        );
+
+        let drive = |node: &mut VoiceNode, n: usize| {
+            let mut peak = 0.0f32;
+            let mut out = [0.0f32; 1];
+            for _ in 0..n {
+                node.tick(&[], &mut out);
+                transport.advance(1, SR);
+                peak = peak.max(out[0].abs());
+            }
+            peak
+        };
+
+        drive(&mut node, 8192);
+
+        transport.set_beat(Beat::new(LOUD_BEAT));
+        let loud = drive(&mut node, 8192);
+        assert!(
+            loud > 0.05,
+            "the loud half should be audible after seeking into it; peak {loud}"
+        );
+
+        transport.set_beat(Beat::new(SILENT_BEAT));
+        let after_seek = drive(&mut node, 2048);
+        assert!(
+            after_seek < 0.01,
+            "a standalone VoiceNode leaked pre-seek audio across a transport \
+             jump: peak {after_seek} (the source is silent at this playhead)"
+        );
+    }
+
+    /// The standalone twin of the pool's false-positive guard: a `VoiceNode`
+    /// playing continuously must never flush.
+    ///
+    /// A cursor whose jump threshold is too tight resets the vocoder every block,
+    /// turning its output into a stutter of ~50 ms fragments. Nothing else here
+    /// would see it — every other assertion on this path is `!= 0.0`, and a
+    /// stuttering stretcher is still non-zero.
+    ///
+    /// Currently ignored for the same reason as the pool's version: the vocoder
+    /// over-fills its own output ring at any stretch > 1.0 (see
+    /// `stretch::tests::a_one_to_one_feed_overruns_above_unity_stretch`), so
+    /// blocks fall silent on their own, with no flush involved. Un-ignore with
+    /// that fix.
+    #[test]
+    #[ignore = "blocked on the vocoder's input-rate overrun, not on flushing"]
+    fn continuous_playback_does_not_flush_a_standalone_voice_node() {
+        const SR: f64 = 44_100.0;
+        const LEN: usize = 441_000;
+
+        let data: Vec<f32> = (0..LEN)
+            .map(|i| 0.5 * (std::f32::consts::TAU * 3000.0 * i as f32 / SR as f32).sin())
+            .collect();
+        let wave = Arc::new(Wave::from_samples(SR, &data));
+
+        let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+        let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+        let mut node = VoiceNode::with_channels(
+            Voice {
+                source: VoiceSource::Memory(sampler),
+                play: Playback {
+                    stretch: StretchFactor::new(2.0),
+                    ..Playback::default()
+                },
+                channel_index: None,
+            },
+            1,
+        );
+
+        let mut out = [0.0f32; 1];
+        for _ in 0..16_384 {
+            node.tick(&[], &mut out);
+            transport.advance(1, SR);
+        }
+
+        let mut quiet_blocks = 0usize;
+        for _ in 0..256 {
+            let mut peak = 0.0f32;
+            for _ in 0..64 {
+                node.tick(&[], &mut out);
+                transport.advance(1, SR);
+                peak = peak.max(out[0].abs());
+            }
+            if peak < 0.01 {
+                quiet_blocks += 1;
+            }
+        }
+        assert_eq!(
+            quiet_blocks, 0,
+            "continuous playback flushed the filter: {quiet_blocks}/256 blocks fell silent"
         );
     }
 

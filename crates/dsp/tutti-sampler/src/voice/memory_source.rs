@@ -440,6 +440,11 @@ impl MemorySource {
         self.position.load(Ordering::Relaxed)
     }
 
+    /// The transport clock this source reads, or `None` if free-running.
+    pub fn timeline(&self) -> Option<Arc<dyn Timeline>> {
+        self.timeline.clone()
+    }
+
     /// The voice's window on the timeline. Always meaningful — see
     /// [`VoiceWindow`] for why the window is not itself optional.
     pub fn window(&self) -> VoiceWindow {

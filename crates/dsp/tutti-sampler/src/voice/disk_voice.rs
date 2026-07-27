@@ -563,6 +563,11 @@ impl DiskVoice {
         }
     }
 
+    /// The transport clock this voice's gate reads.
+    pub fn timeline(&self) -> Arc<dyn Timeline> {
+        Arc::clone(&self.timeline)
+    }
+
     pub fn set_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {
         self.window = VoiceWindow {
             start: start_beat,

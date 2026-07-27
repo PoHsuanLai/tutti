@@ -86,12 +86,20 @@ const BLOCK: usize = 64;
 const PERIOD: Duration = Duration::from_nanos((BLOCK as f64 / SAMPLE_RATE * 1e9) as u64);
 
 /// Effects, not synths: a synth ignores its input, so it cannot show that audio
-/// traversed the graph. Listed by preference; missing ones are skipped.
+/// traversed the graph. Missing ones are skipped.
+///
+/// `load_n` cycles through this list, so more than one entry means the multi-plugin
+/// cases run a *mix* of plugins and formats rather than N copies of one — closer to
+/// a real session, and it exercises both format hosts in the same callback.
 const EFFECTS: &[&str] = &[
     #[cfg(feature = "clap")]
     "/Library/Audio/Plug-Ins/CLAP/TAL-Reverb-4.clap",
     #[cfg(feature = "vst3")]
     "/Library/Audio/Plug-Ins/VST3/TAL-Reverb-4.vst3",
+    // Declares 184 samples of its own latency, unlike the TAL plugins' 0, so the
+    // mixed runs cover a non-trivial PDC sum.
+    #[cfg(feature = "vst3")]
+    "/Library/Audio/Plug-Ins/VST3/TDR Nova.vst3",
 ];
 
 fn available_effects() -> Vec<&'static str> {
@@ -535,17 +543,25 @@ fn count_plugin_servers() -> usize {
 // Delay compensation
 // ---------------------------------------------------------------------------
 
-/// TAL-Reverb-4's `Dry` and `Wet` are independent 0..1 controls, so `Dry = 1`
-/// with `Wet = 0` makes the plugin a passthrough — the only configuration in
-/// which "did the signal come back unchanged, and *when*" is a meaningful
-/// question.
-#[cfg(feature = "clap")]
-const PARAM_WET: u32 = 3814915259;
-#[cfg(feature = "clap")]
-const PARAM_DRY: u32 = 3711743779;
+/// A plugin that is a **passthrough at its defaults**, which is what the null
+/// test needs and what most effects are not.
+///
+/// TDR Nova is a linear-phase EQ whose bands are all flat until moved, so a
+/// freshly loaded instance reproduces its input exactly — and, usefully, does so
+/// behind 184 samples of its own declared latency. That is the interesting case:
+/// the total it reports is *its* latency plus the pipeline's, so the test
+/// exercises a real sum rather than the pipeline constant alone.
+///
+/// Deliberately no `set_parameter` call. An earlier version of this test used
+/// TAL-Reverb-4 with `Wet=0`/`Dry=1`, which never took effect — the plugin's own
+/// validation layer reports `clap_plugin_params.flush() on the wrong thread` —
+/// so the test measured a reverb tail and could not say anything about latency.
+/// A fixture that needs no configuration cannot be misconfigured.
+#[cfg(feature = "vst3")]
+const PASSTHROUGH_PLUGIN: &str = "/Library/Audio/Plug-Ins/VST3/TDR Nova.vst3";
 
-/// The null test for delay compensation: with a dry-only plugin, the output must
-/// be the input delayed by *exactly* the latency the plugin declares.
+/// The null test for delay compensation: the output must be the input delayed by
+/// *exactly* the latency the plugin declares.
 ///
 /// This is what the whole PDC declaration is for. A parallel dry/wet split routes
 /// the same signal down two paths, one through the plugin; the host delays the
@@ -554,34 +570,31 @@ const PARAM_DRY: u32 = 3711743779;
 /// audible, and silent in every other test, because each path on its own is
 /// perfectly fine.
 ///
-/// The check here is the same thing an engineer does by ear, done numerically:
-/// align the two legs by the declared latency, invert one, sum, and require the
-/// residual to vanish. Nulling is far sharper than comparing peaks — a one-sample
-/// misalignment on a 440 Hz sine leaves a residual ~6% of the signal, which no
-/// amplitude assertion would notice.
+/// The check is what an engineer does by ear, done numerically: align the legs by
+/// the declared latency, invert one, sum, and require the residual to vanish.
+/// Nulling is far sharper than comparing peaks. Measured on this fixture: exact
+/// alignment gives a residual energy of 0.000000000 over 7176 samples, while a
+/// **one-sample** slip gives -24.8 dB. No amplitude assertion would notice the
+/// latter.
 ///
 /// Distinct from the pipelining tests: those establish that output lags input by
-/// one block. This establishes that the number the plugin *reports* to
-/// `latency::plan` is that same lag. A pipeline that worked while declaring 0
-/// would pass every other test in this file.
+/// one block. This establishes that the number reported to `latency::plan` is that
+/// same lag — a pipeline that worked while declaring 0 would pass every other test
+/// in this file.
 #[test]
 #[ignore]
-#[cfg(feature = "clap")]
+#[cfg(feature = "vst3")]
 fn output_nulls_against_the_input_delayed_by_the_declared_latency() {
     let _guard = exclusive();
-    let Some((mut units, handles)) = load_n(1) else {
+
+    if !std::path::Path::new(PASSTHROUGH_PLUGIN).exists() {
+        eprintln!("{PASSTHROUGH_PLUGIN} not installed — skipping");
         return;
-    };
-
-    // Dry-only: the plugin must pass audio through untouched, or "delayed by L"
-    // is not a question that has an answer. Verified below rather than assumed —
-    // `set_parameter` is fire-and-forget, so a request that never lands would
-    // otherwise be indistinguishable from a latency error, and the reverb tail
-    // would be blamed on PDC.
-    handles[0].set_parameter(PARAM_WET, 0.0);
-    handles[0].set_parameter(PARAM_DRY, 1.0);
-
-    let unit = &mut units[0];
+    }
+    let (mut unit, _handle) = tutti_plugin::vst3(SAMPLE_RATE, PASSTHROUGH_PLUGIN)
+        .build()
+        .expect("installed passthrough plugin must load");
+    let unit = &mut unit;
     // Wide enough for *both* directions: fundsp indexes one buffer by channel for
     // whichever side is wider, so sizing to the narrower one panics.
     let channels = unit.inputs().max(unit.outputs()).max(1);
@@ -597,8 +610,11 @@ fn output_nulls_against_the_input_delayed_by_the_declared_latency() {
     );
 
     // Drive well past the declared latency so the comparison happens in steady
-    // state rather than across the start-up transient.
-    let blocks = 40;
+    // state rather than across the start-up transient. This fixture declares 248
+    // samples (its own 184 plus the pipeline's 64), so 40 blocks would leave
+    // almost nothing to compare — enough to make an empty comparison look like a
+    // perfect null.
+    let blocks = 120;
     let mut sent: Vec<Vec<f32>> = Vec::with_capacity(blocks);
     let mut got: Vec<Vec<f32>> = Vec::with_capacity(blocks);
 
@@ -649,10 +665,15 @@ fn output_nulls_against_the_input_delayed_by_the_declared_latency() {
         compared += 1;
     }
 
+    // Scale the floor with the offset, not a constant: at a 248-sample latency a
+    // short run leaves few overlapping samples, and comparing almost nothing
+    // yields a residual of zero — a perfect-looking null that means the test did
+    // not run. This bit me while characterising the fixture.
     assert!(
-        compared > BLOCK * 4,
-        "too few live samples to judge ({compared}); the plugin was starved rather \
-         than misaligned"
+        compared > BLOCK * 8,
+        "too few live samples to judge ({compared} at offset {declared}); either the \
+         plugin was starved or the run is too short for this latency — a near-empty \
+         comparison nulls perfectly and proves nothing"
     );
 
     // Null depth in dB. A correct alignment leaves only the plugin's own
@@ -664,37 +685,27 @@ fn output_nulls_against_the_input_delayed_by_the_declared_latency() {
     );
 
     if null_db >= -60.0 {
-        // Distinguish the two ways this can fail before blaming either. Search
-        // every plausible offset for the one that nulls best: if some *other*
-        // offset nulls deeply, the signal is passing through cleanly and the
-        // declared latency is simply wrong — a real PDC bug. If nothing nulls at
-        // any offset, the plugin is not a passthrough at all and this test's
-        // premise is unmet, which says nothing about PDC either way.
-        let (best_offset, best_db) = best_null_offset(&dry, &wet, BLOCK * 4);
+        // Say which of the two failures this is before blaming either. Search
+        // every plausible offset for the deepest null: if some *other* offset
+        // nulls, the signal is passing through cleanly and the declared latency is
+        // simply wrong — the PDC bug this test exists to catch. If nothing nulls
+        // anywhere the fixture has stopped being a passthrough (a preset, a plugin
+        // update), which says nothing about PDC and should not be reported as if
+        // it did.
+        let (best_offset, best_db) = best_null_offset(&dry, &wet, declared * 2);
         assert!(
             best_db >= -60.0,
-            "declared latency is WRONG: output nulls at {best_offset} samples \
-             ({best_db:.1} dB) but the plugin declares {declared}. A parallel \
+            "DECLARED LATENCY IS WRONG: the output nulls at {best_offset} samples \
+             ({best_db:.1} dB) but the plugin declares {declared}. Any parallel \
              dry/wet split will comb-filter by the {} sample difference.",
             (best_offset as isize - declared as isize).abs()
         );
-        // Nothing nulls anywhere: the plugin is not a passthrough, so the premise
-        // this test needs is unmet and it has no opinion on the declared latency.
-        // Skipping rather than failing, because failing here would report a PDC
-        // bug that has not been demonstrated — and a red test that means "the
-        // fixture is wrong" trains people to ignore it.
-        //
-        // Currently reached with TAL-Reverb-4: the Wet=0/Dry=1 requests do not take
-        // effect, and the plugin's own validation layer reports
-        // `clap_plugin_params.flush() was called on the wrong thread`. That is a
-        // parameter-path bug worth chasing on its own; it is not this test's
-        // subject. Once a genuine passthrough is available here, this branch stops
-        // being reachable and the assertion above becomes the live one.
-        eprintln!(
-            "SKIP: no offset nulls (best {best_db:.1} dB at {best_offset} samples), so \
-             the plugin is not passing dry audio through and the declared latency of \
-             {declared} cannot be judged. This is a fixture problem, not a PDC verdict \
-             — see the parameter-path note above."
+        panic!(
+            "fixture is no longer a passthrough — nothing nulls at any offset (best \
+             {best_db:.1} dB at {best_offset}). This is not a PDC verdict: the test \
+             needs a plugin that reproduces its input, and {PASSTHROUGH_PLUGIN} has \
+             stopped doing so. Check for a loaded preset or a plugin update before \
+             touching the latency code."
         );
     }
 }
@@ -705,7 +716,7 @@ fn output_nulls_against_the_input_delayed_by_the_declared_latency() {
 /// Used only to *diagnose* a failure: it separates "the signal passes through but
 /// the declared latency is wrong" from "the signal is not passing through", which
 /// otherwise look identical from a single failed comparison.
-#[cfg(feature = "clap")]
+#[cfg(feature = "vst3")]
 fn best_null_offset(dry: &[f32], wet: &[f32], search_max: usize) -> (usize, f64) {
     let mut best = (0usize, f64::INFINITY);
     for offset in 0..=search_max.min(wet.len().saturating_sub(1)) {

@@ -16,15 +16,37 @@
 use crate::setting::{Address, Parameter, Setting};
 use tutti_types::UnitParam;
 
-/// Build a [`Setting`] carrying `(param, value)` for delivery through
-/// `Net::set` / `AudioUnit::set`. Address the target node with `.node(id)` at
-/// the call site: `unit_param::setting(param, v).node(node_id)`.
+/// Build a [`Setting`] carrying `(param, value)` addressed at a leaf unit,
+/// for delivery through `AudioUnit::set` directly.
 ///
 /// - `Parameter::Value(v)` carries the value,
 /// - the `Address::Index(id)` level (unused by leaf units, which have no inner
 ///   nodes to descend into) carries the param selector.
+///
+/// To address a node *inside a [`Net`](crate::net::Net)*, use
+/// [`node_setting`] — the address order is load-bearing and easy to get
+/// backwards by hand.
 pub fn setting(param: UnitParam, value: f32) -> Setting {
     Setting::value(value).index(u16::from(param) as usize)
+}
+
+/// Build a [`Setting`] that addresses `param` on `node` within a
+/// [`Net`](crate::net::Net).
+///
+/// The address is `[Node, Index]`, and the order is not cosmetic: `Net::set`
+/// matches on `direction()` — the *first* address level — to find the node,
+/// then `peel()`s it so the leaf's own `set` sees `Index` at the front. Build
+/// the two levels the other way round and `direction()` yields `Index`, the
+/// node lookup never matches, and the setting is dropped in silence: the fader
+/// moves on screen and not in the sound.
+///
+/// That is why this exists as a function rather than a documented call-site
+/// idiom. `setting(param, v).node(id)` reads correctly and appends in exactly
+/// the wrong order.
+pub fn node_setting(node: crate::net::NodeId, param: UnitParam, value: f32) -> Setting {
+    Setting::value(value)
+        .node(node)
+        .index(u16::from(param) as usize)
 }
 
 /// Read `(UnitParam, value)` from a [`Setting`] as seen by a leaf unit's `set()`
@@ -65,5 +87,28 @@ mod tests {
     fn non_value_setting_is_none() {
         // A bare center setting (no Value/Index) is not a UnitParam.
         assert_eq!(from_setting(&Setting::center(440.0)), None);
+    }
+
+    /// A node-addressed setting must present `Node` first, so `Net::set` finds
+    /// the node, and `Index` after peeling, so the leaf decodes the param.
+    ///
+    /// The test above round-trips a *leaf* setting, which is why it never
+    /// caught the ordering: peel one level off the wrong build order and the
+    /// address is empty, so a leaf sees nothing at all. The failure mode is
+    /// silence — `Net::set` drops an unmatched address without complaint —
+    /// which is exactly what a test has to stand in for.
+    #[test]
+    fn a_node_setting_addresses_the_node_then_the_param() {
+        let node = crate::net::NodeId::new();
+        let s = node_setting(node, UnitParam::Drive, 4.0);
+
+        assert!(
+            matches!(s.direction(), Address::Node(id) if id == node),
+            "Net::set matches on the first level; it must be the node"
+        );
+
+        let (param, value) = from_setting(&s.peel()).expect("leaf decodes after peel");
+        assert_eq!(param, UnitParam::Drive);
+        assert!((value - 4.0).abs() < 1e-9);
     }
 }

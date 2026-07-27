@@ -19,6 +19,7 @@
 
 pub mod emitter;
 pub mod metering;
+pub mod param;
 pub mod param_epoch;
 pub mod plugin;
 pub mod reconcile;
@@ -27,6 +28,7 @@ pub mod transport;
 
 pub use emitter::{AudioEmitter, AudioPlaybackState};
 pub use metering::MeteringRes;
+pub use param::{reconcile_audio_param, AudioParam, AudioParamAppExt};
 pub use param_epoch::NodeParamEpoch;
 pub use plugin::GraphReconcilePlugin;
 pub use reconcile::{

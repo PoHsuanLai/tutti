@@ -310,6 +310,19 @@ impl tutti_units::ModTarget for PluginParamTarget {
     fn clear(&self, key: tutti_units::LayerKey) {
         self.edit(|lc| lc.clear_layer(key));
     }
+    /// Accepted — this is the sink curve layers exist for. Its reader is the
+    /// plugin's per-block producer, which evaluates at each block beat, so a
+    /// stored curve traces a smooth ramp where a frame-rate scalar would give a
+    /// staircase.
+    #[inline]
+    fn accumulate_curve(
+        &self,
+        key: tutti_units::LayerKey,
+        curve: std::sync::Arc<dyn Curve>,
+    ) -> bool {
+        self.set_curve_layer(key, curve);
+        true
+    }
     /// A frame snapshot at beat 0 — for a non-`Curve` reader. The plugin path
     /// reads the beat-accurate [`Curve::value_at`] instead.
     #[inline]

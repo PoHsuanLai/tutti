@@ -51,4 +51,38 @@ pub trait ModTarget: Send + Sync {
 
     /// The folded, clamped result: `clamp(base + Σ offsets, [min, max])`.
     fn final_value(&self) -> f32;
+
+    /// Install a **beat-varying** contribution under `key`, replacing whatever
+    /// that key held. Returns `false` if this sink only takes scalars.
+    ///
+    /// The difference from [`accumulate`](Self::accumulate) is *when the value
+    /// is decided*, not what it is: a scalar is computed by the driver once per
+    /// frame and stored; a curve is stored as a function and evaluated by the
+    /// sink at whatever rate it reads. A sub-block sink (a plugin's per-block
+    /// parameter producer) traces a smooth ramp from the same source that a
+    /// frame-rate sink would see as a staircase.
+    ///
+    /// Defaults to declining, because for most sinks a curve layer is not
+    /// *wrong* so much as pointless: [`AtomicTarget`](crate::AtomicTarget)
+    /// collapses at a fixed beat, so a curve stored there would evaluate to one
+    /// unchanging value and look like a stuck modulator. Returning `false` lets
+    /// a caller fall back to scalar delivery, which is always correct — rather
+    /// than installing something that silently never moves.
+    ///
+    /// The curve must be an **offset** (swinging around zero), not an absolute
+    /// value: the sink adds the base and applies the clamp. Build one with
+    /// [`ShapedCurve`](crate::ShapedCurve), which derives the offset from the
+    /// same [`shape`](crate::shape) call the scalar path uses.
+    ///
+    /// Routing-gated, like [`Curve`](crate::Curve) itself — the pure floor has
+    /// no notion of a beat to evaluate one at.
+    #[cfg(feature = "routing")]
+    fn accumulate_curve(
+        &self,
+        key: LayerKey,
+        curve: std::sync::Arc<dyn crate::Curve>,
+    ) -> bool {
+        let _ = (key, curve);
+        false
+    }
 }

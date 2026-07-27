@@ -156,10 +156,33 @@ impl Ring {
         i & (self.data.len() - 1)
     }
 
-    /// Samples written but not yet consumed.
+    /// Samples written but not yet consumed, **capped at the capacity**.
+    ///
+    /// The cap is the load-bearing part. The cursors are monotonic so the raw
+    /// subtraction keeps counting past the ring end, and a reader that trusted it
+    /// would hand back slots overwritten laps ago as though they were fresh — a
+    /// plausible-sounding wrong answer rather than a detectable failure. That is
+    /// exactly how the vocoder's input-rate bug stayed hidden: `available()`
+    /// reported 79,231 pending in a 4,096-sample ring and every caller believed
+    /// it.
+    ///
+    /// Capping does not *fix* an overrun — the data is already gone. It bounds
+    /// the damage to "the oldest samples were dropped" instead of "the stream is
+    /// silently interleaved with stale laps", and it makes
+    /// [`Ring::overrun`](Self::overrun) meaningful.
     #[inline]
     fn available(&self) -> usize {
-        self.write.saturating_sub(self.read)
+        self.write.saturating_sub(self.read).min(self.data.len())
+    }
+
+    /// Whether more has been written than the ring can hold — i.e. unread
+    /// samples were overwritten. Always a bug in the *caller's* rate matching,
+    /// never something the ring can recover from, so it is exposed for tests to
+    /// assert against rather than handled here.
+    #[cfg(test)]
+    #[inline]
+    fn overrun(&self) -> bool {
+        self.write.saturating_sub(self.read) > self.data.len()
     }
 
     fn reset(&mut self) {
@@ -232,6 +255,14 @@ impl OverlapAdd {
     #[inline]
     fn available(&self) -> usize {
         self.0.available()
+    }
+
+    /// See [`Ring::overrun`]. On this side an overrun means the caller fed the
+    /// vocoder input slower than it is publishing output.
+    #[cfg(test)]
+    #[inline]
+    fn overrun(&self) -> bool {
+        self.0.overrun()
     }
 
     /// Sum `value` into the slot `offset` past the write cursor.
@@ -954,6 +985,122 @@ mod tests {
         assert_eq!(out[3], 0.0, "cleared slot must not carry stale audio");
     }
 
+    /// `available()` must not exceed the capacity, and an overrun must be
+    /// reportable.
+    ///
+    /// The cursors are monotonic, so before the cap this returned 12 for a
+    /// 4-slot ring and `drain` cheerfully served eight slots that had been
+    /// overwritten twice. A caller cannot distinguish that from real audio — it
+    /// is the mechanism that hid the vocoder's input-rate bug for the life of the
+    /// file.
+    #[test]
+    fn ring_available_saturates_at_capacity_and_reports_the_overrun() {
+        let mut o = OverlapAdd::new(4);
+        assert!(!o.overrun());
+
+        for i in 0..12 {
+            o.add_at(0, i as f32);
+            o.advance(1);
+        }
+
+        assert!(o.overrun(), "12 written into 4 slots is an overrun");
+        assert_eq!(o.available(), 4, "must not claim more than the ring holds");
+
+        let mut out = [0.0f32; 8];
+        assert_eq!(o.drain(&mut out), 4, "drain is bounded by available()");
+    }
+
+    /// **The rate invariant, and the bug it exposes.** [`Unit::tick`] is
+    /// one-in/one-out, so ticking it above unity stretch necessarily overruns the
+    /// output ring — this test asserts that it *does*, because the overrun is
+    /// real and currently unfixed on both clip tiers.
+    ///
+    /// The arithmetic: at stretch `s`, one `process_frame` consumes `hop` input
+    /// samples and publishes `hop × s`, so a 1:1 caller accumulates
+    /// `hop × (s − 1)` per frame *forever*. Measured at `s = 2.0`: 79,231 pending
+    /// against a 4,096-sample ring — nineteen laps — which made `drain` serve
+    /// overwritten slots and dropped 32 of 256 output blocks to silence.
+    ///
+    /// No ring capacity fixes it and neither does scaling the source *position*
+    /// (that is varispeed: it shifts pitch, the one thing stretching must not
+    /// do). The filter needs *fewer input samples*, not slower-moving ones, and
+    /// `tick`'s symmetric signature cannot express that ratio — the caller would
+    /// have to pull input on demand, or the filter would have to own its source.
+    /// That is a shape change, tracked as part of the stretch/placement rework;
+    /// see [`feeding_at_the_inverse_stretch_rate_keeps_the_ring_bounded`] for the
+    /// proof that the vocoder itself is correct once fed properly.
+    ///
+    /// Asserting the bug rather than `#[ignore]`-ing a wish keeps the suite
+    /// honest: when the shape changes, this test fails and must be rewritten
+    /// deliberately.
+    #[test]
+    fn a_one_to_one_feed_overruns_above_unity_stretch() {
+        // `1.5` and `2.0` both exceed unity; `0.5` under-fills and must not
+        // overrun. Unity bypasses, so it never reaches the ring.
+        for (factor, want_overrun) in [(0.5f32, false), (1.5, true), (2.0, true)] {
+            let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1);
+            u.set_stretch_factor(StretchFactor::new(factor));
+            assert!(u.is_processing(), "factor {factor} should not bypass");
+
+            let mut out = [0.0f32; 1];
+            for n in 0..40_000 {
+                let s = 0.5 * (Radians::TAU.get() * 3000.0 * n as f32 / 44_100.0).sin();
+                u.tick(&[s], &mut out);
+            }
+
+            assert_eq!(
+                u.channels[0].output.overrun(),
+                want_overrun,
+                "at stretch {factor}, a 1:1 feed {} overrun the output ring",
+                if want_overrun { "should" } else { "should not" }
+            );
+        }
+    }
+
+    /// The converse, and the property the fix relies on: fed at `1 / s` the
+    /// output ring stays bounded.
+    ///
+    /// Driven at the [`Vocoder`] because [`Unit::tick`] is one-in/one-out by
+    /// contract — supplying input at a different rate than output is precisely
+    /// the caller's job, so there is no way to express it through `Unit`. That
+    /// asymmetry is the reason the bug existed.
+    #[test]
+    fn feeding_at_the_inverse_stretch_rate_keeps_the_ring_bounded() {
+        let fft = FftSize::N1024;
+        let hop = fft.hop().get();
+
+        for factor in [1.5f32, 2.0, 4.0] {
+            let mut v = Vocoder::new(Unit::geometry(44_100.0, fft));
+            let synthesis_hop = (hop as f32 * factor).round() as usize;
+
+            // Per `synthesis_hop` samples the caller wants out, supply exactly
+            // `hop` in — the `1 / stretch` ratio a correct caller must hold.
+            let mut scratch = vec![0.0f32; synthesis_hop];
+            let mut n = 0usize;
+            for _ in 0..200 {
+                let chunk: Vec<f32> = (0..hop)
+                    .map(|i| {
+                        let t = (n + i) as f32 / 44_100.0;
+                        0.5 * (Radians::TAU.get() * 3000.0 * t).sin()
+                    })
+                    .collect();
+                n += hop;
+                v.input.push(&chunk);
+                v.process(synthesis_hop, 1.0);
+                v.output.drain(&mut scratch);
+
+                assert!(
+                    !v.output.overrun(),
+                    "stretch {factor}: output ring overran at input sample {n}"
+                );
+                assert!(
+                    !v.input.0.overrun(),
+                    "stretch {factor}: input ring overran at input sample {n}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn overlap_add_flushes_subnormals() {
         let mut o = OverlapAdd::new(4);
@@ -1282,3 +1429,4 @@ mod tests {
         );
     }
 }
+

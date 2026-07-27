@@ -51,10 +51,6 @@ impl MockTransport {
         t
     }
 
-    pub fn set_playing(&self, playing: bool) {
-        self.playing.store(playing, Ordering::Relaxed);
-    }
-
     /// Jump the playhead — a seek or a scrub. The discontinuity this creates is
     /// the thing under test in the stretch-flush tests.
     pub fn set_beat(&self, beat: Beat) {

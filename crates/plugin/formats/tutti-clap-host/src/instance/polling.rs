@@ -167,8 +167,8 @@ fn embed_editor_sequence(
 /// Split out of [`ClapActive::editor_capabilities`] for the same reason as
 /// [`embed_editor_sequence`]: the CLAP call order is the contract, and a free
 /// function over a vtable can be tested against a logging stub. The caller owns
-/// the *precondition* — `create()` must already have run (R7) — because that lives
-/// in `LifecycleFlags`, not in the vtable.
+/// the *precondition* — `create()` must already have run — because that lives in
+/// `LifecycleFlags`, not in the vtable.
 ///
 /// # Safety
 /// `plugin` must be a valid `clap_plugin` pointer the `gui` vtable's fns accept,
@@ -256,7 +256,7 @@ impl ClapLoaded {
 
     /// Query the plugin's resize/aspect capabilities.
     ///
-    /// **R7:** requires a created editor, not merely a `gui` extension. The CLAP
+    /// Requires a created editor, not merely a `gui` extension. The CLAP
     /// spec orders every other `clap_plugin_gui` call after `create()`, and plugins
     /// enforce it — TAL-Reverb-4's validation layer prints
     ///
@@ -1022,7 +1022,7 @@ mod embed_sequence_tests {
         assert_eq!(order, vec!["is_api_supported"], "stops before create");
     }
 
-    /// R7: querying capabilities on a created editor calls the vtable; the
+    /// Querying capabilities on a created editor calls the vtable; the
     /// `gui_created` gate in `editor_capabilities` is what keeps it from happening
     /// before that.
     ///
@@ -1050,7 +1050,7 @@ mod embed_sequence_tests {
         assert!(caps.resize.can_resize_vertically);
     }
 
-    /// R7: a plugin advertising `gui` but exposing neither resize fn is reported as
+    /// A plugin advertising `gui` but exposing neither resize fn is reported as
     /// non-resizable rather than defaulting to resizable — the safe direction, since
     /// a host that resizes a fixed-size editor corrupts its layout.
     #[test]

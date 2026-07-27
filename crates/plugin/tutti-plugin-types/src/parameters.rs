@@ -258,7 +258,7 @@ mod tests {
         assert_eq!(info.to_normalized(3.0), 0.0);
     }
 
-    /// R3: a NaN must never leave these conversions.
+    /// A NaN must never leave these conversions.
     ///
     /// The output of `to_plain` reaches `AudioUnitSetParameter` on a live unit, so
     /// a NaN here becomes a NaN filter coefficient — which does not stay in one

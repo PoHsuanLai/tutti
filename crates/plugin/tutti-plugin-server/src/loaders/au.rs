@@ -668,7 +668,7 @@ mod tests {
         assert_eq!(degenerate.to_plain(0.5), 3.0);
     }
 
-    /// R3, live-path half: this `to_plain`'s return value goes straight into
+    /// The live-path half: this `to_plain`'s return value goes straight into
     /// `AudioUnitSetParameter` on a running unit, so a NaN escaping here is a NaN
     /// in a live filter coefficient.
     ///

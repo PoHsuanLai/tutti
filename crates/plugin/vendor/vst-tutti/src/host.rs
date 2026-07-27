@@ -870,7 +870,7 @@ impl Plugin for PluginInstance {
     /// The presence check is `Option`, not `(p as *const u8).is_null()`. That
     /// idiom silently did nothing: a bare `extern "C" fn` is non-nullable, so the
     /// compiler folded the comparison to `false` under `-O` and the guard shipped
-    /// only in debug builds (R4).
+    /// only in debug builds.
     fn process(&mut self, buffer: &mut AudioBuffer<f32>) {
         if buffer.input_count() < self.info.inputs as usize {
             panic!("Too few inputs in AudioBuffer");
@@ -1381,7 +1381,7 @@ mod tests {
         assert_eq!(outputs, vec![vec![0.0f32; 8]; 2]);
     }
 
-    /// R4: the audio entry points must be *detectably* absent.
+    /// The audio entry points must be *detectably* absent.
     ///
     /// They were typed as bare `extern "C" fn`, which the compiler knows to be
     /// non-null, so the `(p as *const u8).is_null()` guard folded to `false` under

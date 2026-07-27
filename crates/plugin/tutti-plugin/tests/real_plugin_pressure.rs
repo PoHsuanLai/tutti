@@ -510,7 +510,7 @@ fn repeated_load_and_drop_leaves_no_subprocesses() {
     assert!(
         after <= before,
         "plugin-server count went {before} -> {after} across 8 load/drop rounds — \
-         subprocesses are leaking (see R6 in the audit notes)"
+         subprocesses are leaking"
     );
 }
 

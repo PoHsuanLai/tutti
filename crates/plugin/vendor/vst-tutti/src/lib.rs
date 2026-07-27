@@ -14,7 +14,7 @@
 // rustc believes an `extern "C" fn` is non-null by type". rustc was right and
 // the justification was backwards: the checks compiled to `false` under `-O`,
 // so the guard shipped only in debug builds while release jumped to address 0.
-// The nullable slots are `Option<...>` now (R4) and the lint has nothing left
+// The nullable slots are `Option<...>` now and the lint has nothing left
 // to fire on — if it ever fires again, that is a real bug, not noise.
 
 //! A rust implementation of the VST2.4 API.
@@ -417,7 +417,7 @@ mod tests {
             };
         }
 
-        // The audio entry points are `Option` (R4), so they need unwrapping before
+        // The audio entry points are `Option`, so they need unwrapping before
         // the address comparison — and asserting `Some` is itself part of the
         // contract: we must install these, whatever a third-party plugin does.
         macro_rules! assert_opt_fn_eq {

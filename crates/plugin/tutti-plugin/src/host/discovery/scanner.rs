@@ -196,8 +196,8 @@ impl PluginScanner {
     /// `failedFiles` and then `addToBlacklist` — failure, not just a hard
     /// crash, earns the blacklist.
     ///
-    /// **R5:** that reasoning applies to a *load* failure too, and it used to be
-    /// the one path that still wrote nothing. A plugin whose library will not open
+    /// That reasoning applies to a *load* failure too, which was the one path
+    /// that still wrote nothing. A plugin whose library will not open
     /// — a stub file, a wrong-arch binary, a broken install — fails identically on
     /// every future scan, and each attempt costs a full subprocess spawn. It is
     /// recorded for the same reason a crash is. What it is *not* is silently
@@ -295,7 +295,7 @@ impl ProbeFailure {
                 reason: format!("timed out during probe: {e}"),
                 blacklistable: true,
             },
-            // R5: the plugin was reached and its library would not load — a stub
+            // The plugin was reached and its library would not load — a stub
             // file, a wrong-arch binary, a broken install. Deterministic, and each
             // retry costs a full subprocess spawn. Carries the loader's own stage
             // and reason so the catalog entry says *why*.
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(result.new + result.failed, 2);
     }
 
-    /// Regression for DISC-C1 and R5: a failure that is a property of the plugin
+    /// A failure that is a property of the plugin
     /// must earn a catalog entry, not just a `warn!`. `probe_and_record` used to
     /// arm and disarm the pedal unconditionally and upsert nothing on failure, so
     /// `needs_rescan` stayed true and the plugin was re-probed at full cost — the
@@ -575,7 +575,7 @@ mod tests {
         assert!(timed_out.blacklistable, "Timeout must be blacklistable");
         assert!(timed_out.reason.contains("timed out"));
 
-        // R5: this was the one path that recorded nothing.
+        // A load failure was the one path that recorded nothing.
         let load_failed = ProbeFailure::from_bridge_error(BridgeError::LoadFailed {
             path: PathBuf::from("/plugins/Broken.vst3"),
             stage: tutti_plugin_types::LoadStage::Opening,
@@ -710,7 +710,7 @@ mod tests {
         assert_eq!(meta.id, "vst3.my_reverb");
     }
 
-    /// R5, the consequence rather than the classification: once a load failure is
+    /// The consequence rather than the classification: once a load failure is
     /// recorded, the scanner must stop re-probing it.
     ///
     /// This is the property that was actually broken — `blacklistable: false` meant

@@ -87,6 +87,13 @@ tutti-au-host = { path = "../formats/tutti-au-host", optional = true }
 
 libloading = "0.8"
 
+[target.'cfg(unix)'.dependencies]
+# `getppid`, to notice that the host died before it connected. An orphan is
+# reparented to init, so ppid == 1 is the signal — no handle, no host cooperation
+# needed, which is the point: the case being handled is the one where the host had
+# no chance to cooperate.
+libc = "0.2"
+
 [dev-dependencies]
 # RT-safety regression: prove the per-block audio path never allocates.
 assert_no_alloc = { version = "1", default-features = false }

@@ -255,10 +255,14 @@ impl Plugin for TuttiSoundFontPlugin {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    // `SoundFontUnit`'s `tick` / `process` / `reset` come from `AudioUnit`,
+    // which must be in scope to call them.
+    use tutti_core::dsp::AudioUnit;
+    use tutti_midi_types::ump::MidiEvent;
 
     /// Get path to test SoundFont (if available)
     fn test_soundfont_path() -> Option<PathBuf> {
-        // CARGO_MANIFEST_DIR is crates/tutti-synth, go up to crates/tutti
+        // CARGO_MANIFEST_DIR is this crate, go up to the repo's tutti/ root
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent() // crates/
             .unwrap()

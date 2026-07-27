@@ -52,6 +52,7 @@
 //! ```
 
 mod device_state;
+mod engine_state;
 pub mod latency;
 mod plugin;
 
@@ -96,6 +97,9 @@ pub use engine::{DeviceInfo, Error, Net, Result, TuttiDriver};
 /// mirror lives here too.
 pub use device_state::AudioDeviceState;
 
+/// Whether the engine is running, and if not, why.
+pub use engine_state::AudioEngineState;
+
 /// Everything a typical host needs, in one import.
 pub mod prelude {
     pub use crate::graph::{
@@ -105,8 +109,8 @@ pub mod prelude {
         engine_ready,
     };
     pub use crate::{
-        AudioDeviceState, ChannelCompensation, DeviceInfo, LatencyCompensationPlugin, Net,
-        TuttiDriver, TuttiPlugin,
+        AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo,
+        LatencyCompensationPlugin, Net, TuttiDriver, TuttiPlugin,
     };
 
     #[cfg(feature = "midi")]

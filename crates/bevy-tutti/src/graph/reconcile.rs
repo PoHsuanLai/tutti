@@ -22,6 +22,7 @@ use bevy_ecs::system::EntityCommands;
 
 use tutti_core::dsp::AudioUnit;
 use crate::graph::AudioGraphRes;
+use crate::AudioEngineState;
 use tutti_core::node::AudioNode;
 
 /// System-set ordering anchor for the reconcile pipeline.
@@ -54,27 +55,29 @@ pub enum GraphReconcileSystems {
     Commit,
 }
 
-/// Run-condition: the audio engine built successfully and its resources are
-/// present.
+/// Run-condition: the audio engine is running.
 ///
-/// Every engine resource (`AudioGraphRes`, `TransportRes`, `MeteringRes`,
-/// `AudioConfig`, and the feature subsystem resources) is inserted during the
-/// synchronous plugin-build pass: `build_into` inserts a transient `PendingX`
-/// per subsystem iff the RT build succeeded (none on failure), then each
-/// subsystem plugin's `build()` promotes its `PendingX` into its `*Res`. All of
-/// this runs before frame 1, so `resource_exists::<AudioGraphRes>` is an exact
-/// proxy for "engine ready", and every system gated on this can take its engine
-/// resources as plain `Res`/`ResMut` instead of `Option<Res<_>>` + a
-/// `let Some(..) else` guard — the system simply does not run when the engine is
-/// absent (the idiomatic Bevy shape, mirroring `bevy_audio`'s
+/// Reads [`AudioEngineState`], which `build_into` sets to
+/// [`Running`](AudioEngineState::Running) only after every engine resource
+/// (`AudioGraphRes`, `TransportRes`, `MeteringRes`, `AudioConfig`, and the
+/// feature subsystem resources) has been inserted. That happens synchronously
+/// during plugin build, before frame 1, so a system gated on this can take its
+/// engine resources as plain `Res`/`ResMut` rather than `Option<Res<_>>` plus a
+/// `let Some(..) else` guard — it simply does not run when there is no engine
+/// (the idiomatic Bevy shape, mirroring `bevy_audio`'s
 /// `audio_output_available`).
+///
+/// The state is the source of truth rather than `resource_exists::<AudioGraphRes>`
+/// so that "is the engine up?" has one answer. `Option<Res<_>>` here also keeps
+/// the condition usable in a `World` that never added
+/// [`TuttiPlugin`](crate::TuttiPlugin) — a missing state reads as not-ready.
 ///
 /// Two resources are *not* covered (they may be absent even when the engine
 /// built) and must keep `Option<Res<_>>`: `MidiIoRes` (only when a hardware
 /// MIDI port opened) and `PluginsRes` (inserted lazily, not in the engine
 /// block).
-pub fn engine_ready(graph: Option<Res<AudioGraphRes>>) -> bool {
-    graph.is_some()
+pub fn engine_ready(state: Option<Res<AudioEngineState>>) -> bool {
+    state.is_some_and(|s| s.is_running())
 }
 
 /// Per-frame "did anything change?" flag used to coalesce
@@ -305,14 +308,50 @@ mod tests {
             "gated system skipped with no engine"
         );
 
-        // Insert the resource (engine built): the gate now passes.
+        // Engine built: both the state and the resource it reports on are
+        // present, so the gate passes.
         app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+        app.insert_resource(AudioEngineState::Running);
         app.update();
         assert_eq!(
             ran.load(Ordering::SeqCst),
             1,
             "gated system runs once engine present"
         );
+    }
+
+    /// `Failed` and `Disabled` must both gate systems off — a disabled engine is
+    /// as unable to render as a broken one, and neither may let a plain
+    /// `Res<AudioGraphRes>` system through.
+    #[test]
+    fn engine_ready_is_false_unless_running() {
+        for state in [
+            AudioEngineState::Failed("no device".into()),
+            AudioEngineState::Disabled,
+        ] {
+            let mut app = App::new();
+            app.insert_resource(state.clone());
+            // Present but irrelevant: the state decides, not the resource.
+            app.insert_resource(AudioGraphRes(Net::with_backend(2)));
+
+            let ready = app
+                .world_mut()
+                .run_system_cached(engine_ready)
+                .expect("run condition is a valid system");
+            assert!(!ready, "{state:?} must not read as ready");
+        }
+    }
+
+    /// A `World` that never added `TuttiPlugin` has no state at all. The gate
+    /// must treat that as not-ready rather than panicking on a missing resource.
+    #[test]
+    fn engine_ready_is_false_without_the_plugin() {
+        let mut app = App::new();
+        let ready = app
+            .world_mut()
+            .run_system_cached(engine_ready)
+            .expect("run condition is a valid system");
+        assert!(!ready, "a world with no TuttiPlugin is not ready");
     }
 
     #[test]

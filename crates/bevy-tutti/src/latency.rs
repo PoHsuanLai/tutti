@@ -104,9 +104,14 @@ mod tests {
 
     /// App with the graph resource + dirty flag, but no reconcile pipeline —
     /// enough to drive the compensation system directly.
+    ///
+    /// `AudioEngineState::Running` stands in for a built engine: the
+    /// compensation system is gated on `engine_ready`, which reads the state
+    /// rather than probing for the graph resource.
     fn test_app(graph: Net) -> App {
         let mut app = App::new();
         app.insert_resource(AudioGraphRes(graph));
+        app.insert_resource(crate::AudioEngineState::Running);
         app.init_resource::<GraphDirty>();
         app.add_plugins(LatencyCompensationPlugin);
         app

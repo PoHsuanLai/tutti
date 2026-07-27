@@ -5,7 +5,7 @@ use bevy_log::{error, info};
 
 use crate::device_state;
 use crate::graph::{AudioConfig, GraphReconcilePlugin};
-use crate::AudioDeviceState;
+use crate::{AudioDeviceState, AudioEngineState};
 
 #[cfg(feature = "midi")]
 use crate::midi::TuttiMidiPlugin;
@@ -36,7 +36,14 @@ use crate::synth::TuttiSoundFontPlugin;
 ///     output_device: Some(1),
 ///     ..default()
 /// });
+///
+/// // Headless / CI: register the ECS surface, open no device.
+/// app.add_plugins(TuttiPlugin { disabled: true, ..default() });
 /// ```
+///
+/// Whether the engine actually came up is reported by
+/// [`AudioEngineState`] — a failed device does not panic or stop the app, it
+/// gates the audio systems off and records why.
 ///
 /// Which subsystems run is governed by this crate's Cargo features (sampler,
 /// dsp, synth, midi, plugin, …). Software MIDI fan-out is on whenever `midi` is
@@ -47,6 +54,13 @@ pub struct TuttiPlugin {
     pub output_device: Option<usize>,
     pub inputs: usize,
     pub outputs: usize,
+    /// Register the ECS surface but open no device.
+    ///
+    /// [`AudioEngineState`] reports [`Disabled`](AudioEngineState::Disabled) and
+    /// every audio system stays gated off, so a headless or CI run can add this
+    /// plugin — and any host plugin that schedules against its sets — on a
+    /// machine with no sound card.
+    pub disabled: bool,
 }
 
 impl Default for TuttiPlugin {
@@ -55,6 +69,7 @@ impl Default for TuttiPlugin {
             output_device: None,
             inputs: 0,
             outputs: 2,
+            disabled: false,
         }
     }
 }
@@ -64,14 +79,27 @@ impl Plugin for TuttiPlugin {
         info!("Initializing Tutti Audio Plugin");
 
         // One ordered, fallible RT-wiring transaction that publishes every
-        // subsystem resource. On `Err` the app proceeds without audio and
-        // `engine_ready` gates the engine-dependent systems off.
-        if let Err(e) = crate::engine::build_into(self, app) {
-            error!("Failed to start Tutti Audio Engine: {}", e);
-        }
+        // subsystem resource. The outcome is recorded in `AudioEngineState`,
+        // which `engine_ready` reads to gate every engine-dependent system —
+        // so a failure here disables audio rather than crashing the app, and
+        // stays visible to the world instead of only reaching the log.
+        let state = if self.disabled {
+            info!("Tutti audio disabled — registering the ECS surface only");
+            AudioEngineState::Disabled
+        } else {
+            match crate::engine::build_into(self, app) {
+                Ok(()) => AudioEngineState::Running,
+                Err(e) => {
+                    error!("Failed to start Tutti Audio Engine: {e}");
+                    AudioEngineState::Failed(e.to_string())
+                }
+            }
+        };
+        app.insert_resource(state);
 
         app.init_resource::<AudioDeviceState>();
         app.register_type::<AudioDeviceState>()
+            .register_type::<AudioEngineState>()
             .register_type::<AudioConfig>();
         app.add_systems(Startup, device_state::device_state_init_system);
         app.add_systems(Update, device_state::device_state_sync_system);

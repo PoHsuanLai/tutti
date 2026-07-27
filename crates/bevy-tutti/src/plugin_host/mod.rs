@@ -146,20 +146,26 @@ impl Plugin for TuttiHostingPlugin {
         app.add_systems(
             Update,
             (
+                // Open inserts `PendingPluginEditor`; attach reads it. Without
+                // this ordering an editor takes one or two frames to appear
+                // depending on scheduling.
                 plugin_editor_open_system,
-                plugin_editor_attach_system,
+                plugin_editor_attach_system.after(plugin_editor_open_system),
                 plugin_editor_idle_system,
                 plugin_editor_resize_request_system.after(plugin_editor_idle_system),
                 plugin_editor_window_resize_system.after(plugin_editor_resize_request_system),
                 plugin_editor_window_close_system,
                 // Removes a crashed plugin's node + sets GraphDirty (no inline
                 // commit), so anchor it before the Commit-phase commit_graph.
-                plugin_crash_detect_system
-                    .before(GraphReconcileSystems::Commit)
-                    .run_if(crate::graph::engine_ready),
+                plugin_crash_detect_system.before(GraphReconcileSystems::Commit),
                 trigger_plugin_scan,
                 poll_plugin_scan.after(trigger_plugin_scan),
-            ),
+            )
+                // Hosting only means anything with a live graph to host into,
+                // and these systems read window messages a headless app never
+                // registers. Gating the whole set keeps `plugin` usable with the
+                // engine disabled.
+                .run_if(crate::graph::engine_ready),
         );
 
         // Reaps AppKit observers for editors that lost `PluginEditorOpen`

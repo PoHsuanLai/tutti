@@ -20,7 +20,7 @@ use tutti_core::{
     AudioUnit, Beat, Bpm, BufferVec, Cents, SamplePosition, SampleRate, StretchFactor, Timeline,
     Wave,
 };
-use tutti_sampler::stretch::{Algorithm, Unit as TimeStretchUnit};
+use tutti_sampler::stretch::Unit as TimeStretchUnit;
 use tutti_sampler::{
     ClipCommand, ClipSpec, Direction, Playback, SamplerUnit, SamplerUnitConfig, SlotId,
     TrackClipReaderUnit, TransportPlacement, Voice, VoiceSource,
@@ -93,7 +93,7 @@ fn time_stretch_process_is_allocation_free() {
     let mut node = TimeStretchUnit::new(48_000.0);
     node.set_sample_rate(SampleRate(48_000.0));
     node.set_stretch_factor(StretchFactor::new(1.5));
-    assert_eq!(node.algorithm(), Algorithm::PhaseVocoder);
+    assert!(node.is_processing());
 
     let mut input_vec = BufferVec::new(2);
     for i in 0..64 {

@@ -675,9 +675,44 @@ impl DiskVoice {
         self.request_seek(to);
     }
 
+    /// Run the placement gate for this block: `Some` when the playhead is inside
+    /// the window (having issued any needed reposition), `None` when it is not.
+    ///
+    /// The single definition of "am I playing, and from where" for this tier.
+    /// `tick` and `process` previously open-coded the same five lines — gate,
+    /// maybe_seek, set `was_inside`, delegate, else clear `was_inside` and
+    /// silence — which is exactly the shape that lets two entry points drift
+    /// apart. They already had, twice, elsewhere in this crate.
+    #[inline]
+    fn enter_window(&mut self) -> Option<SamplePosition> {
+        match self.window_position() {
+            Some(offset) => {
+                self.maybe_seek(offset);
+                self.was_inside = true;
+                Some(offset)
+            }
+            None => {
+                self.was_inside = false;
+                None
+            }
+        }
+    }
+
     /// Decide, for a frame whose desired window-relative offset is `offset`,
-    /// whether the playhead jumped (fresh entry or a seek/loop discontinuity)
-    /// and issue a butler seek if so.
+    /// whether the read head must be repositioned, and ask the butler if so.
+    ///
+    /// Three triggers, and the third is why this cannot be replaced by the pool's
+    /// [`BeatCursor`](tutti_core::transport::BeatCursor):
+    ///
+    /// - **entry** (`!was_inside`) — the playhead just crossed into the window;
+    /// - **first frame** (`streamed_offset == NO_SEEK_TARGET`) — nothing streamed yet;
+    /// - **drift** past [`SEEK_EPSILON_SAMPLES`] — a seek, a loop wrap, *or a
+    ///   varispeed change*.
+    ///
+    /// A cursor watches beats, and a varispeed change moves the file position
+    /// without moving the playhead: 1.0x -> 2.0x at beat 20 relocates the read
+    /// head 441,000 samples while the transport reports the same beat at the same
+    /// tempo. `a_varispeed_change_seeks_without_any_beat_discontinuity` pins it.
     #[inline]
     fn maybe_seek(&mut self, offset: SamplePosition) {
         let jumped = !self.was_inside
@@ -715,37 +750,25 @@ impl AudioUnit for DiskVoice {
     }
 
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
-        match self.window_position() {
-            Some(offset) => {
-                self.maybe_seek(offset);
-                self.was_inside = true;
-                self.inner.tick(input, output);
-            }
-            None => {
-                self.was_inside = false;
-                // Every channel, not a hardcoded pair: at width 1 the old
-                // `output.len() >= 2` guard silenced nothing at all, and at
-                // width 6 it left channels 2..6 holding the previous block.
-                let n = self.outputs().min(output.len());
-                output[..n].fill(0.0);
-            }
+        if self.enter_window().is_some() {
+            self.inner.tick(input, output);
+        } else {
+            // Every channel, not a hardcoded pair: at width 1 the old
+            // `output.len() >= 2` guard silenced nothing at all, and at width 6
+            // it left channels 2..6 holding the previous block.
+            let n = self.outputs().min(output.len());
+            output[..n].fill(0.0);
         }
     }
 
     fn process(&mut self, size: usize, input: &BufferRef, output: &mut BufferMut) {
-        match self.window_position() {
-            Some(offset) => {
-                self.maybe_seek(offset);
-                self.was_inside = true;
-                self.inner.process(size, input, output);
-            }
-            None => {
-                self.was_inside = false;
-                let n = self.outputs().min(output.channels());
-                for c in 0..n {
-                    for i in 0..size {
-                        output.set_f32(c, i, 0.0);
-                    }
+        if self.enter_window().is_some() {
+            self.inner.process(size, input, output);
+        } else {
+            let n = self.outputs().min(output.channels());
+            for c in 0..n {
+                for i in 0..size {
+                    output.set_f32(c, i, 0.0);
                 }
             }
         }
@@ -855,6 +878,59 @@ mod tests {
             "expected ~{expected} file samples, got {offset} \
              (a double-applied src_ratio gives ~{})",
             expected * src
+        );
+    }
+
+    /// **Why `maybe_seek` cannot be replaced by the pool's `BeatCursor`.**
+    ///
+    /// The plan for this crate assumed the disk tier's drift check was redundant:
+    /// window entry is visible from the gate, playhead jumps are visible from the
+    /// cursor, so `DiskVoice` should need only a `seek_to`. That is true for both
+    /// of those triggers — and misses a third the cursor is structurally blind to.
+    ///
+    /// The cursor watches BEATS. A varispeed change moves the *file* position
+    /// without moving the playhead at all: at beat 20 of a 120 BPM timeline,
+    /// switching 1.0x -> 2.0x relocates the read head by 441,000 samples while the
+    /// transport reports the same beat, at the same tempo, still rolling. No
+    /// discontinuity exists for the cursor to see.
+    ///
+    /// So the epsilon check is load-bearing, and this test is what says so. If a
+    /// later change deletes `maybe_seek` in favour of the cursor, streaming
+    /// playback keeps reading from the pre-speed-change file offset until
+    /// something else happens to reset it.
+    #[test]
+    fn a_varispeed_change_seeks_without_any_beat_discontinuity() {
+        let samples: Vec<_> = (1..4096)
+            .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
+            .collect();
+        let transport = MockTransport::rolling(Beat::new(20.0), Bpm::new(120.0));
+        let mut reader = make_clip_reader(&samples, transport.clone(), Beat::new(0.0), None);
+
+        let mut out = [0.0f32; 2];
+        reader.tick(&[], &mut out);
+        let before = reader.streamed_offset;
+        assert!(
+            before != NO_SEEK_TARGET,
+            "setup: the first inside-frame must have seeded a stream target"
+        );
+
+        // Beat, tempo and rolling state are all untouched — only the read rate
+        // changes. This is exactly the blind spot.
+        let beat_before = transport.beat();
+        reader.set_speed(PlaybackRate::new(2.0));
+        reader.tick(&[], &mut out);
+        assert_eq!(
+            transport.beat(),
+            beat_before,
+            "the playhead must not have moved; otherwise this proves nothing"
+        );
+
+        let after = reader.streamed_offset;
+        let moved = (after - before).get().abs();
+        assert!(
+            moved > SEEK_EPSILON_SAMPLES,
+            "a 1x -> 2x change at beat 20 should relocate the read head far past \
+             the drift epsilon; it moved {moved} samples"
         );
     }
 

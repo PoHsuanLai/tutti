@@ -316,7 +316,13 @@ impl OverlapAdd {
 /// Sized once, at construction; `process` allocates nothing.
 struct Vocoder {
     geometry: StftGeometry,
-    window: Vec<f32>,
+    /// The Hann analysis/synthesis window.
+    ///
+    /// `Arc` because it is immutable for the vocoder's lifetime and identical for
+    /// every channel and every clone — and because building it costs `size`
+    /// `cos()` calls, which `Net::commit`'s deep clone was paying per channel per
+    /// node. Sharing turns that into a refcount bump.
+    window: Arc<Vec<f32>>,
 
     /// Real scratch handed to [`real_fft`], which transforms it in place.
     fft_buffer: Vec<f32>,
@@ -329,7 +335,10 @@ struct Vocoder {
     last_phase: Vec<Radians>,
     /// Per-bin phase advance produced by **one sample** of analysis hop.
     /// Multiplied by the frame's analysis hop, which varies with stretch.
-    phase_per_sample: Vec<Radians>,
+    ///
+    /// `Arc` for the same reason as `window`: a function of the geometry alone,
+    /// immutable for the vocoder's lifetime, and identical across every clone.
+    phase_per_sample: Arc<Vec<Radians>>,
 
     input: SampleFifo,
     output: OverlapAdd,
@@ -352,14 +361,64 @@ impl Vocoder {
 
         Self {
             geometry,
-            window: hann(size),
+            window: Arc::new(hann(size)),
             fft_buffer: vec![0.0; size],
             spectrum: vec![Complex32::new(0.0, 0.0); size],
             phase_accumulator: vec![Radians(0.0); bins],
             last_phase: vec![Radians(0.0); bins],
-            phase_per_sample,
+            phase_per_sample: Arc::new(phase_per_sample),
             // 4x the window: three frames of overlap-add tail plus the frame
             // being written.
+            input: SampleFifo::new(size * 4),
+            output: OverlapAdd::new(size * 4),
+        }
+    }
+
+    /// A fresh vocoder on the same grid, sharing everything immutable.
+    ///
+    /// A clone starts with clean phase history (see [`Unit::clone`]), so no state
+    /// is copied — only the *shapes* carry. The Hann window and the per-bin phase
+    /// table are both functions of the geometry alone, so they are shared rather
+    /// than rebuilt; rebuilding cost `size` `cos()` calls per vocoder per commit.
+    ///
+    /// # The remaining allocation is fundsp's, and it is pure waste
+    ///
+    /// This runs from `Net::commit`, once per channel per node — and that clone
+    /// is **discarded**. `commit_inner` clones the net, then
+    /// `core::mem::swap`s the vertex vectors back ("send over the ORIGINAL nodes
+    /// to the backend... necessary if the nodes contain any backends, which cannot
+    /// be cloned effectively"), so the freshly-built state stays on the frontend
+    /// and is dropped. Only the husk's *shape* is ever used.
+    ///
+    /// So every buffer allocated here is allocated to be thrown away. Measured at
+    /// 640 nodes (32 tracks x 20 voices), release:
+    ///
+    /// | width  | rebuild window | share window | budget |
+    /// |--------|----------------|--------------|--------|
+    /// | stereo | 18.5 ms        | 12.9 ms      | 2 ms   |
+    /// | 6ch    | 628 ms         | 448 ms       | 2 ms   |
+    ///
+    /// Sharing the immutable tables is worth taking — it is free — but it does not
+    /// reach the budget and cannot: ~100 KB of mutable state per vocoder still
+    /// gets allocated and zeroed, 64% of it the two `size * 4` rings. At six
+    /// channels that is ~405 MB touched per commit for data nothing will read.
+    ///
+    /// Fixing it properly means not allocating on this path at all — a pool the
+    /// clone claims from, or a node the graph does not clone. Both are design
+    /// changes beyond this crate's current shape, and
+    /// `cloning_shares_the_window_rather_than_rebuilding_it` records the numbers
+    /// so the decision is made against measurement rather than intuition.
+    fn clone_fresh(&self) -> Self {
+        let size = self.geometry.window().get();
+        let bins = self.geometry.bins_per_frame().get();
+        Self {
+            geometry: self.geometry,
+            window: Arc::clone(&self.window),
+            fft_buffer: vec![0.0; size],
+            spectrum: vec![Complex32::new(0.0, 0.0); size],
+            phase_accumulator: vec![Radians(0.0); bins],
+            last_phase: vec![Radians(0.0); bins],
+            phase_per_sample: Arc::clone(&self.phase_per_sample),
             input: SampleFifo::new(size * 4),
             output: OverlapAdd::new(size * 4),
         }
@@ -728,11 +787,7 @@ impl Clone for Unit {
         // overlap-add rings are mid-frame history, and a clone is a new voice
         // rather than a continuation of this one. Only the parameters carry.
         let mut cloned = Self {
-            channels: self
-                .channels
-                .iter()
-                .map(|v| Vocoder::new(v.geometry))
-                .collect(),
+            channels: self.channels.iter().map(Vocoder::clone_fresh).collect(),
             stretch_factor: Arc::new(AtomicF32::new(self.stretch_factor.load(Ordering::Acquire))),
             pitch_cents: Arc::new(AtomicF32::new(self.pitch_cents.load(Ordering::Acquire))),
             enabled: self.enabled,
@@ -1199,6 +1254,58 @@ mod tests {
 
     /// `input_rate` is `1.0` while bypassing, so a caller can apply it
     /// unconditionally without branching on `is_processing`.
+    /// A clone must not rebuild the immutable tables — the measurable half of
+    /// commit cost,
+    /// and the only half this crate can fix without a design change.
+    ///
+    /// `Net::commit` deep-clones every node, once per channel. Rebuilding the Hann
+    /// window there costs `size` `cos()` calls per vocoder; sharing it is a
+    /// refcount bump. Asserted structurally (pointer identity) rather than by
+    /// timing, because a wall-clock threshold in a test suite is a flake generator.
+    ///
+    /// # Commit cost is still over budget — do not proceed to per-voice nodes
+    ///
+    /// Measured on this machine, release, 640 stretch nodes (32 tracks x 20
+    /// voices), against the 2 ms budget a graph edit has before it risks an audio
+    /// dropout:
+    ///
+    /// | width  | before sharing | after  | budget |
+    /// |--------|----------------|--------|--------|
+    /// | stereo | 18.5 ms        | 12.9 ms | 2 ms  |
+    /// | 6ch    | 628 ms         | 448 ms  | 2 ms  |
+    ///
+    /// Still 6x over at stereo and 224x at six channels. The window was never the
+    /// dominant term: each `Vocoder` allocates and zeroes ~108 KB of state, so 640
+    /// six-channel nodes touch ~405 MB per commit. No amount of sharing immutable
+    /// data fixes that — the buffers must either be pooled (so a clone claims
+    /// rather than allocates) or not cloned at all.
+    ///
+    /// **This is the measurement gating the container dissolve.** It says the
+    /// per-voice-node design cannot land as written: 640 nodes is a realistic
+    /// project, and a commit at that scale would stall the main thread long enough
+    /// to underrun the callback.
+    #[test]
+    fn cloning_shares_the_window_rather_than_rebuilding_it() {
+        let u = Unit::with_channels(44_100.0, 6);
+        let c = u.clone();
+
+        for (i, (a, b)) in u.channels.iter().zip(c.channels.iter()).enumerate() {
+            assert!(
+                Arc::ptr_eq(&a.window, &b.window),
+                "channel {i}: the clone rebuilt the window instead of sharing it"
+            );
+            assert!(
+                Arc::ptr_eq(&a.phase_per_sample, &b.phase_per_sample),
+                "channel {i}: the clone rebuilt the phase table instead of sharing it"
+            );
+        }
+
+        // Sharing must not leak state: a clone starts with clean phase history,
+        // which is what makes it a new voice rather than a continuation.
+        assert_eq!(c.channels[0].input.available(), 0);
+        assert_eq!(c.channels[0].output.available(), 0);
+    }
+
     #[test]
     fn input_rate_is_unity_when_bypassing() {
         let u = Unit::with_channels(44_100.0, 1);

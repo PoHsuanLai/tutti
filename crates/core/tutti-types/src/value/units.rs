@@ -44,6 +44,14 @@ macro_rules! unit_newtype {
         // have to special-case which units happen to have it.
         #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
         #[cfg_attr(feature = "serde", serde(transparent))]
+        // Reflection is field-walking, not an ECS opinion: a unit is what a
+        // parameter *is*, so a component holding one has to be inspectable for
+        // an editor or a scene to round-trip it. That is a weaker claim than
+        // `Component`, which no unit gets — an app stores a `Volume`, never a
+        // bare `Db`. Applied in the macro for the same reason `serde` is: a type
+        // built from any unit should not have to care which ones happen to
+        // reflect.
+        #[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
         pub struct $name(pub $raw);
 
         impl $name {

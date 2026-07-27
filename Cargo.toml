@@ -97,3 +97,11 @@ core-foundation = "0.9"
 inherits = "release"
 debug = "line-tables-only"
 strip = "none"
+
+# The tutti crates depend on `audio-automation = "0.4"` from crates.io, but we
+# track an unreleased commit (0.4.1, which adds the `bevy_reflect` feature).
+# Redirect every crates.io reference to the pinned git commit so the whole graph
+# resolves to one version instead of coexisting crates.io 0.4.0 + git builds.
+# Mirrors the app workspace's patch — both must name the same rev.
+[patch.crates-io]
+audio-automation = { git = "https://github.com/PoHsuanLai/audio-automation.git", rev = "f7b6c3a" }

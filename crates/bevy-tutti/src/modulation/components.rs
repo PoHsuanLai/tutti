@@ -7,16 +7,9 @@
 //! the ids it mints stay inside the resource it builds.
 
 use bevy_ecs::prelude::*;
+use bevy_reflect::prelude::*;
 
 use tutti_types::{Depth, Hz, ParamAddr, PhaseIncrement};
-
-// No `Reflect` on the components below. Each carries engine vocabulary —
-// `ParamAddr`, `LfoShape`, `Polarity`, `CurveType`, and the unit newtypes —
-// none of which reflects, and reflection would have to be bought by putting
-// Bevy derives on types an app never names directly (it holds these components,
-// not a `Res<CurveType>`). Scene serialization of a mod graph is a real want,
-// but it is paid for at the field level, not by widening the engine's derive
-// surface.
 
 /// A modulation source: one LFO shape, running at one [`ModRate`].
 ///
@@ -24,7 +17,8 @@ use tutti_types::{Depth, Hz, ParamAddr, PhaseIncrement};
 /// vocabulary directly rather than mirroring it — a `From`-bridged copy is what
 /// the app layer needs when it has its own authored enum, not what the adapter
 /// needs.
-#[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Component, Reflect, Debug, Clone, Copy, Default, PartialEq)]
+#[reflect(Component, Debug, Default)]
 #[require(ModRate)]
 pub struct ModSource {
     pub shape: LfoShape,
@@ -42,7 +36,8 @@ impl ModSource {
 /// separate component rather than a field on `ModSource` so a rate change and a
 /// shape change are independently change-detectable — and because rate is the
 /// half a UI moves continuously.
-#[derive(Component, Debug, Clone, Copy, PartialEq)]
+#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq)]
+#[reflect(Component, Debug, Default)]
 pub struct ModRate {
     /// Beat-synced: cycles per beat. Free-running: cycles per second.
     pub frequency: Hz,
@@ -98,7 +93,8 @@ impl ModRate {
 /// `source` and `target` are `Entity`, not indices: index assignment into the
 /// driver's source registry is a build-step concern, and an `Entity` survives
 /// the rebuild that reassigns them.
-#[derive(Component, Debug, Clone, Copy, PartialEq)]
+#[derive(Component, Reflect, Debug, Clone, Copy, PartialEq)]
+#[reflect(Component, Debug)]
 pub struct ModRoute {
     /// The entity carrying the [`ModSource`].
     pub source: Entity,
@@ -157,14 +153,15 @@ impl ModRoute {
 /// The values are bare floats because they are in the param's own units — Hz
 /// for a cutoff, linear gain for a fader — the same reason
 /// [`ModEdge`](tutti_mod::ModEdge)'s bounds are.
-#[derive(Component, Debug, Clone, PartialEq, Default)]
+#[derive(Component, Reflect, Debug, Clone, PartialEq, Default)]
+#[reflect(Component, Debug, Default)]
 pub struct ModParamRange {
     /// One entry per modulatable param on this entity.
     pub params: Vec<ParamRange>,
 }
 
 /// One param's authored base and bounds. See [`ModParamRange`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Reflect, Debug, Clone, Copy, PartialEq)]
 pub struct ParamRange {
     pub param: ParamAddr,
     pub base: f32,

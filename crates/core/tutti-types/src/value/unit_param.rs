@@ -18,6 +18,7 @@
 /// Discriminants are **stable** — they ride through fundsp's `Setting` as an
 /// address index and (potentially) persist in tooling, so existing values must
 /// never be renumbered. Append new params at the end.
+#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u16)]
 pub enum UnitParam {
@@ -128,6 +129,7 @@ impl From<UnitParam> for u16 {
 ///
 /// Deliberately not "plugin"-named — the [`Id`](ParamAddr::Id) arm is any
 /// externally-numbered param, not a plugin concept.
+#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamAddr {
     /// A param from tutti's known vocabulary.

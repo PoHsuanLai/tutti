@@ -17,6 +17,7 @@ use tutti_types::{Depth, Phase};
 /// Owned here rather than re-using the app-side `dawai_types::Polarity`: this
 /// crate sits below the app and cannot see it. A boundary `From` (app side)
 /// bridges the two.
+#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Polarity {
     /// Preserve sign, curve the magnitude: `x ∈ [-1, 1] → [-1, 1]`.
@@ -28,6 +29,7 @@ pub enum Polarity {
 
 /// LFO waveform. Owned here (the single source of truth); app-side and
 /// tutti_units LfoShape are From-bridged mirrors.
+#[cfg_attr(feature = "bevy", derive(bevy_reflect::Reflect))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LfoShape {
     #[default]

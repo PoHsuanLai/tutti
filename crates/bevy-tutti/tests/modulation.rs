@@ -415,3 +415,58 @@ fn a_steady_transport_does_not_rebuild_the_matrix() {
         "a quiet frame must not rebuild the matrix"
     );
 }
+
+/// Reflection has to reach the *leaves* to be worth anything: an editor showing
+/// a route needs the `Depth` inside it, not just the struct's name. Walking down
+/// to the float is what distinguishes real reflection from a derive that
+/// compiles.
+#[test]
+fn a_route_reflects_down_to_its_depth() {
+    use bevy_reflect::{PartialReflect, ReflectRef};
+
+    // Real entities rather than synthesized ids: nothing here dereferences
+    // them, but spawning keeps the test off `Entity`'s construction API.
+    let mut world = World::new();
+    let (a, b) = (world.spawn_empty().id(), world.spawn_empty().id());
+    let route = ModRoute::new(a, b, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.25));
+
+    let ReflectRef::Struct(s) = route.reflect_ref() else {
+        panic!("ModRoute should reflect as a struct");
+    };
+    let depth = s.field("depth").expect("a `depth` field");
+
+    // A unit newtype is a tuple struct, so it reflects with an indexed field —
+    // and reflecting *through* to that float is the whole point: an opaque
+    // value would stop the walk here.
+    let ReflectRef::TupleStruct(depth) = depth.reflect_ref() else {
+        panic!("Depth should reflect as a tuple struct, not an opaque value");
+    };
+    let inner = depth
+        .field(0)
+        .expect("Depth's inner float")
+        .try_downcast_ref::<f32>()
+        .expect("f32");
+    assert_eq!(*inner, 0.25);
+}
+
+/// The types are registered, so a scene or an inspector can find them by name
+/// rather than only through a value that already exists.
+#[test]
+fn the_components_are_registered_for_reflection() {
+    use bevy_ecs::reflect::AppTypeRegistry;
+
+    let (app, _) = app_with_graph();
+    let registry = app.world().resource::<AppTypeRegistry>().read();
+
+    for name in [
+        std::any::type_name::<ModSource>(),
+        std::any::type_name::<ModRate>(),
+        std::any::type_name::<ModRoute>(),
+        std::any::type_name::<ModParamRange>(),
+    ] {
+        assert!(
+            registry.get_with_type_path(name).is_some(),
+            "{name} should be registered"
+        );
+    }
+}

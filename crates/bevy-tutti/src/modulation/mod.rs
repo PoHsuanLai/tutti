@@ -73,6 +73,11 @@ impl Plugin for TuttiModulationPlugin {
             .init_resource::<ModTargetRegistry>()
             .init_resource::<ModBusRes>();
 
+        app.register_type::<ModSource>()
+            .register_type::<ModRate>()
+            .register_type::<ModRoute>()
+            .register_type::<ModParamRange>();
+
         app.add_systems(
             Update,
             (

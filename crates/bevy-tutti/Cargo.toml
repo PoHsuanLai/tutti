@@ -104,7 +104,10 @@ dsp = ["tutti-units/spatial"]
 convolution = ["tutti-units/convolution"]
 
 # Control-rate modulation: LFO sources and mod-matrix edges as ECS entities.
-modulation = ["dep:tutti-mod"]
+# `tutti-mod/bevy` is what makes the components reflectable — it carries the
+# `Reflect` derives on the shape vocabulary and pulls the reflection features of
+# the units and the curve type underneath.
+modulation = ["dep:tutti-mod", "tutti-mod/bevy", "tutti-types/bevy"]
 
 # Audio formats (codec on tutti-core + the sampler decoder).
 wav = ["tutti-core/wav", "tutti-sampler?/wav"]

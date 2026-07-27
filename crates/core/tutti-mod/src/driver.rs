@@ -561,7 +561,7 @@ mod tests {
             )),
             Box::new(Sourced::new(
                 Lfo::new(LfoShape::Sine),
-                SourceRate::free_running(Hz(1.0), 0.0),
+                SourceRate::free_running(Hz(1.0), PhaseIncrement(0.0)),
             )),
         ]);
 
@@ -592,13 +592,13 @@ mod tests {
         let rate: Param<Hz> = Param::new(Hz(1.0));
         let mut fast = Sourced::new(
             Lfo::new(LfoShape::Sine),
-            SourceRate::free_running(rate.clone(), 0.0),
+            SourceRate::free_running(rate.clone(), PhaseIncrement(0.0)),
         );
 
         // At 1 Hz with a 0.25 s step, phase advances a quarter cycle per frame.
         let slow_step = fast.tick_phase(Beat(0.0), Seconds(0.25));
         assert!(
-            (slow_step - 0.25).abs() < 1e-5,
+            (slow_step.get() - 0.25).abs() < 1e-5,
             "1 Hz over 0.25 s is a quarter cycle, got {slow_step}"
         );
 
@@ -607,20 +607,20 @@ mod tests {
         rate.store(Hz(4.0));
         let fast_step = fast.tick_phase(Beat(0.0), Seconds(0.25));
         assert!(
-            (fast_step - 0.25).abs() < 1e-5,
+            (fast_step.get() - 0.25).abs() < 1e-5,
             "4 Hz over 0.25 s is a full cycle back to 0.25, got {fast_step}"
         );
 
         // And a fixed rate must be unaffected by any of this.
         let mut fixed = Sourced::new(
             Lfo::new(LfoShape::Sine),
-            SourceRate::free_running(Hz(1.0), 0.0),
+            SourceRate::free_running(Hz(1.0), PhaseIncrement(0.0)),
         );
         let a = fixed.tick_phase(Beat(0.0), Seconds(0.25));
         rate.store(Hz(64.0));
         let b = fixed.tick_phase(Beat(0.0), Seconds(0.25));
         assert!(
-            (a - 0.25).abs() < 1e-5 && (b - 0.5).abs() < 1e-5,
+            (a.get() - 0.25).abs() < 1e-5 && (b.get() - 0.5).abs() < 1e-5,
             "a fixed rate ignores the cell entirely, got {a} then {b}"
         );
     }
@@ -660,7 +660,7 @@ mod tests {
             // Source 1's rate IS the cell source 0 writes.
             Box::new(Sourced::new(
                 Lfo::new(LfoShape::Sine),
-                SourceRate::free_running(rate.clone(), 0.0),
+                SourceRate::free_running(rate.clone(), PhaseIncrement(0.0)),
             )),
         ]);
 
@@ -678,16 +678,16 @@ mod tests {
         // cascade reached the phase advance.
         let mut cascaded = Sourced::new(
             Lfo::new(LfoShape::Sine),
-            SourceRate::free_running(rate.clone(), 0.0),
+            SourceRate::free_running(rate.clone(), PhaseIncrement(0.0)),
         );
         let mut baseline = Sourced::new(
             Lfo::new(LfoShape::Sine),
-            SourceRate::free_running(Hz(2.0), 0.0),
+            SourceRate::free_running(Hz(2.0), PhaseIncrement(0.0)),
         );
         let cascaded_phase = cascaded.tick_phase(Beat(0.0), Seconds(0.1));
         let baseline_phase = baseline.tick_phase(Beat(0.0), Seconds(0.1));
         assert!(
-            (cascaded_phase - baseline_phase).abs() > 1e-4,
+            (cascaded_phase.get() - baseline_phase.get()).abs() > 1e-4,
             "a driven rate must advance phase differently than the base rate: \
              {cascaded_phase} vs {baseline_phase}"
         );

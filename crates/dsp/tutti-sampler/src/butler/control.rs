@@ -15,7 +15,7 @@ use tutti_core::PlaybackRate;
 
 use super::{ButlerCommand, ChannelPlan, RtState};
 use crate::voice::disk_voice::DiskSource;
-use crate::voice::voice_pool::Direction;
+use crate::voice::types::Direction;
 
 /// Start a disk stream on `channel_index` from `file_path` at `offset_samples`.
 pub(crate) fn stream(

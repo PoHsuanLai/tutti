@@ -2673,7 +2673,7 @@ mod tests {
     /// This is a **characterization** test: it passes today and documents the
     /// mechanism behind the seek bug rather than gating it. The gate lives one
     /// level up, where a transport can actually seek
-    /// (`voice_pool::tests::a_transport_seek_flushes_stretch_state`).
+    /// (`voice::voice_pool::tests::a_transport_seek_flushes_stretch_state`).
     ///
     /// What it pins is the two halves of the fix:
     ///

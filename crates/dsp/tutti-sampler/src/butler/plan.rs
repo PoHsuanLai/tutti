@@ -7,7 +7,7 @@ use super::cache::StreamPin;
 use super::command::RegionId;
 use super::prefetch::SharedReader;
 use super::rt_state::RtState;
-use crate::voice::voice_pool::Direction;
+use crate::voice::types::Direction;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LoopStatus {

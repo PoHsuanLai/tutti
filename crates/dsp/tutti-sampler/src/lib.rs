@@ -130,8 +130,7 @@ pub use voice::{
 // `ButlerThread` API. The `Resource` derive on `DiskStreamer` is `bevy`-gated inside.
 pub(crate) mod butler;
 
-mod disk_streamer;
-pub use disk_streamer::{DiskStreamer, DiskStreamerConfig};
+pub use butler::{DiskStreamer, DiskStreamerConfig};
 
 mod ports;
 pub use ports::{Command, Commands, Source, Status};

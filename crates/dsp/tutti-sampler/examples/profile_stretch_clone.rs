@@ -105,8 +105,39 @@
 //! 2 ms moving that much, so the remaining work is not "allocate faster" but
 //! "do not deep-clone the filter" — share it behind a handle, which is a design
 //! change to the node rather than to this path.
+//!
+//! # The counted traffic — a fact, not a timing
+//!
+//! Wall-clock here is unreliable enough that it is worth having one number that
+//! is not. The [`Counting`] global allocator reports the **last** commit (steady
+//! state, not first-commit), and it does not vary with machine load:
+//!
+//! | width | per commit                   | with the backend pumped |
+//! |-------|------------------------------|--------------------------|
+//! | 2ch   | 19,846 allocs / **201.8 MB** | + 19,846 frees / 201.8 MB |
+//! | 6ch   | 40,326 allocs / **604.6 MB** | + 40,326 frees / 604.6 MB |
+//!
+//! Two things fall out. Allocation and free are **exactly balanced** in steady
+//! state, which is the counted form of the profile's ~55%-in-`drop` finding: a
+//! commit builds a generation and frees the one before it, so any fix that
+//! removes the clone removes the free with it — they are one problem, not two.
+//!
+//! And `Net::migrate` does **not** rescue this. It swaps the *backend's* live
+//! units into the incoming net for nodes whose `changed <= revision`, which is
+//! real recycling — but it runs on the audio thread after delivery, long after
+//! `commit_inner` has already paid for the frontend clone. Pumping lowers the median
+//! (backend delivery lets the next commit free promptly) without changing the
+//! per-commit allocation count at all: 19,846 either way. Recycling that happens
+//! after the allocation cannot prevent it.
+//!
+//! Per node that is ~323 KB at stereo and ~967 KB at six channels, against ~192
+//! and ~576 KB of vocoder state — the remainder is fundsp's own per-`Vertex`
+//! bookkeeping (three `BufferVec`s, edge vectors) plus allocator size-class
+//! rounding, ~31 and ~63 allocations per node respectively.
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use tutti_core::dsp::Net;
@@ -115,6 +146,45 @@ use tutti_sampler::stretch::Unit;
 
 /// One realistic project: 32 tracks x 20 voices.
 const VOICES: usize = 640;
+
+/// Counts bytes allocated and freed, so a commit's traffic can be stated as a
+/// fact rather than inferred from wall-clock.
+///
+/// The sampling profiler says *where* time goes; this says *how much memory
+/// moves*, which is the quantity the design question actually turns on — and
+/// unlike timing it does not vary with machine state.
+struct Counting;
+
+static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+static ALLOC_BYTES: AtomicUsize = AtomicUsize::new(0);
+static FREES: AtomicUsize = AtomicUsize::new(0);
+static FREE_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        ALLOC_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        unsafe { System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        FREES.fetch_add(1, Ordering::Relaxed);
+        FREE_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: Counting = Counting;
+
+/// Allocation counters, reset to zero.
+fn take_counters() -> (usize, usize, usize, usize) {
+    (
+        ALLOCS.swap(0, Ordering::Relaxed),
+        ALLOC_BYTES.swap(0, Ordering::Relaxed),
+        FREES.swap(0, Ordering::Relaxed),
+        FREE_BYTES.swap(0, Ordering::Relaxed),
+    )
+}
 
 /// A deep, deliberately un-inlinable frame that names the phase in the profile.
 ///
@@ -198,8 +268,13 @@ fn fresh_construction(channels: usize) {
 /// Reports the median of `rounds` commits rather than a mean: this workload's
 /// distribution has a long right tail (see the module docs), and a mean lets one
 /// paging outlier swallow the answer.
+/// `pump` decides whether this measures the real steady state. The backend must
+/// consume each generation for `Net::migrate` to run, and migrate is what
+/// *recycles* an unchanged node's unit by `mem::swap` instead of dropping it.
+/// Without pumping, every commit builds a full generation that nothing ever
+/// takes delivery of — a first-commit cost measured forever.
 #[inline(never)]
-fn real_commits(channels: usize, rounds: usize) -> Vec<f64> {
+fn real_commits(channels: usize, rounds: usize, pump: bool) -> Vec<f64> {
     let mut net = Net::new(0, channels);
     for _ in 0..VOICES {
         let u = Unit::with_channels(44_100.0, channels);
@@ -208,13 +283,33 @@ fn real_commits(channels: usize, rounds: usize) -> Vec<f64> {
     }
     // Take a backend, which is what makes `commit` legal and what makes it do
     // the clone-and-swap this is measuring.
-    let _backend = net.backend();
+    let mut backend = net.backend();
 
     let mut times = Vec::with_capacity(rounds);
-    for _ in 0..rounds {
+    // Steady state, not first-commit: the first round or two still populate
+    // things the later ones reuse, and it is the repeat cost that must fit the
+    // budget.
+    for round in 0..rounds {
+        if round == rounds - 1 {
+            let _ = take_counters();
+        }
         let started = Instant::now();
         net.commit();
         times.push(started.elapsed().as_secs_f64() * 1e3);
+        if pump {
+            // The audio thread taking delivery: swaps the new generation in and
+            // returns the old one for the next commit to free.
+            backend.pump();
+        }
+        if round == rounds - 1 {
+            let (na, ba, nf, bf) = take_counters();
+            eprintln!(
+                "     [last commit{}] {na} allocs / {:.1} MB, {nf} frees / {:.1} MB",
+                if pump { " + pump" } else { "" },
+                ba as f64 / 1024.0 / 1024.0,
+                bf as f64 / 1024.0 / 1024.0
+            );
+        }
     }
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
     times
@@ -238,14 +333,24 @@ fn main() {
         marker("two_live_generations", || two_live_generations(channels));
 
         // The budget question, measured directly rather than extrapolated from
-        // the clone loops above.
-        let t = marker("real_commits", || real_commits(channels, 9));
-        let (min, median, max) = (t[0], t[t.len() / 2], t[t.len() - 1]);
-        println!(
-            "  >> {channels}ch, {VOICES} nodes: commit median {median:.2} ms \
-             (min {min:.2}, max {max:.2}) — budget 2 ms => {}",
-            if median <= 2.0 { "WITHIN" } else { "OVER" }
-        );
+        // the clone loops above. Both pump modes, because the difference between
+        // them IS whether `migrate`'s recycling is reached.
+        for (label, pump) in [("unpumped", false), ("pumped", true)] {
+            let t = marker(
+                if pump {
+                    "real_commits_pumped"
+                } else {
+                    "real_commits"
+                },
+                || real_commits(channels, 9, pump),
+            );
+            let (min, median, max) = (t[0], t[t.len() / 2], t[t.len() - 1]);
+            println!(
+                "  >> {channels}ch, {VOICES} nodes, {label}: commit median \
+                 {median:.2} ms (min {min:.2}, max {max:.2}) — budget 2 ms => {}",
+                if median <= 2.0 { "WITHIN" } else { "OVER" }
+            );
+        }
     }
 
     eprintln!("\nRead the inverted call tree per marker frame, not the times above.");

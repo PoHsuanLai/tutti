@@ -28,6 +28,26 @@ pub struct TransportInfo {
     pub sample_rate: f64,
 }
 
+/// Whether a transport `f64` is worth advertising to a plugin as valid.
+///
+/// Every plugin API has per-field "this value is filled in" flags, and setting
+/// one for a NaN or an infinity is worse than leaving it clear: a plugin that
+/// trusts the flag does arithmetic with the value, and NaN propagates straight
+/// through its timing math into the audio buffer. A cleared flag makes the
+/// plugin fall back to its own defaults, which is always recoverable.
+///
+/// Lives here rather than in one format host because every format needs the
+/// same gate and they had drifted: the VST2 path checked values, while the VST3
+/// path set `kTempoValid` from the plugin's requirement mask alone — so a NaN
+/// or zero tempo reached VST3 plugins flagged valid.
+///
+/// This is the finiteness half only. A field with an additional domain rule
+/// (tempo must also be positive) applies that at the call site, since the rule
+/// is per-field rather than per-type.
+pub fn is_usable(value: f64) -> bool {
+    value.is_finite()
+}
+
 /// Playback / record / cycle flags.
 ///
 /// Named `TransportFlags` after the plugin-SDK term for exactly this bundle —

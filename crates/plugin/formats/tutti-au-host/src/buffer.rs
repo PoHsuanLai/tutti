@@ -70,7 +70,16 @@ impl RenderBufferList {
             {
                 let audio_buf = &mut *((&mut (*ptr).mBuffers[0] as *mut AudioBuffer).add(ch));
                 audio_buf.mNumberChannels = 1;
-                audio_buf.mDataByteSize = frames * std::mem::size_of::<f32>() as u32;
+                // Multiply in `usize`, then narrow — `as` binds tighter than
+                // `*`, so `frames * size_of::<f32>() as u32` multiplies two
+                // u32s and wraps for `frames > u32::MAX / 4`, handing the
+                // plugin a byte size far smaller than the buffer it is given.
+                // `AuInstance::process` rejects `num_frames > block_size`
+                // before reaching here, so this is not reachable today; `bind`
+                // is public and should not depend on a caller's guard for it.
+                // Same form as `instance.rs`'s output-size report.
+                audio_buf.mDataByteSize =
+                    u32::try_from(frames as usize * std::mem::size_of::<f32>()).unwrap_or(u32::MAX);
                 audio_buf.mData = buf.as_mut_ptr() as *mut c_void;
             }
         }

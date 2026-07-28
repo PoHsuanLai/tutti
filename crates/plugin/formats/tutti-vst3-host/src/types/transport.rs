@@ -1,7 +1,7 @@
 //! VST3-specific encoding of the shared [`TransportInfo`] into VST3's
 //! `ProcessContext` struct.
 
-use tutti_plugin_types::TransportInfo;
+use tutti_plugin_types::{is_usable, TransportInfo};
 use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
 
 /// VST3 `IProcessContextRequirements` flag bits as simple `u32` constants,
@@ -99,14 +99,26 @@ pub fn to_process_context(
             }
         }
         // Each `*Valid` bit advertises that the matching field below is filled,
-        // so it must track the same requirement gate.
-        if wants(need::NEED_PROJECT_TIME_MUSIC) {
+        // so it must track the same requirement gate — AND the value must be one
+        // a plugin can compute with.
+        //
+        // The requirement mask alone is not enough: it says what the plugin
+        // *asked for*, not what the host *has*. Setting a validity bit over a
+        // NaN or an infinity is worse than leaving it clear, because a plugin
+        // that trusts the bit propagates the NaN through its timing math into
+        // the audio buffer. The VST2 path has always gated on the value this
+        // way; this one did not, so the two drifted (`is_usable` now lives in
+        // `tutti-plugin-types` so they cannot drift again).
+        if wants(need::NEED_PROJECT_TIME_MUSIC) && is_usable(t.position.quarters) {
             state |= StatesAndFlags_::kProjectTimeMusicValid as u32;
         }
-        if wants(need::NEED_BAR_POSITION_MUSIC) {
+        if wants(need::NEED_BAR_POSITION_MUSIC) && is_usable(t.bar.position_quarters) {
             state |= StatesAndFlags_::kBarPositionValid as u32;
         }
-        if wants(need::NEED_TEMPO) {
+        // Tempo carries a domain rule beyond finiteness: zero or negative BPM
+        // is not a tempo, and a plugin dividing by it produces an infinity.
+        // Matches the VST2 path's `is_usable(..) && > 0.0`.
+        if wants(need::NEED_TEMPO) && is_usable(t.timing.tempo) && t.timing.tempo > 0.0 {
             state |= StatesAndFlags_::kTempoValid as u32;
         }
         if wants(need::NEED_TIME_SIGNATURE) {
@@ -198,7 +210,7 @@ pub fn to_process_context(
 mod tests {
     use super::process_context_flags as need;
     use super::*;
-    use tutti_plugin_types::{BeatsPerBar, NoteValue, TimeSignature};
+    use tutti_plugin_types::{is_usable, BeatsPerBar, NoteValue, TimeSignature};
     use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
 
     /// A TransportInfo with every field set to a recognisable non-zero value,
@@ -225,6 +237,59 @@ mod tests {
     /// `u32::MAX` (the "plugin didn't implement IProcessContextRequirements"
     /// sentinel) fills every field this host knows how to source — i.e. the
     /// behaviour before the interface was wired.
+    /// An unusable value must not be advertised as valid, however loudly the
+    /// plugin asked for it.
+    ///
+    /// The requirement mask says what the plugin *wants*, not what the host
+    /// *has*. Gating the `*Valid` bits on the mask alone let a NaN tempo reach
+    /// the plugin flagged valid — and a plugin that trusts the flag divides by
+    /// it, propagating NaN or an infinity straight into the audio buffer. The
+    /// VST2 path has always gated on the value; this one had drifted.
+    #[test]
+    fn a_nan_or_zero_field_is_not_advertised_as_valid() {
+        // Everything requested, so only the value can clear a bit.
+        let all = u32::MAX;
+
+        let mut t = populated_transport();
+        t.timing.tempo = f64::NAN;
+        let ctx = to_process_context(&t, all);
+        assert_eq!(
+            ctx.state & StatesAndFlags_::kTempoValid as u32,
+            0,
+            "a NaN tempo must not be flagged valid — the plugin will compute \
+             with it"
+        );
+
+        // Zero is finite but not a tempo: a plugin dividing by it gets an
+        // infinity. Matches the VST2 path's `> 0.0` rule.
+        let mut t = populated_transport();
+        t.timing.tempo = 0.0;
+        let ctx = to_process_context(&t, all);
+        assert_eq!(
+            ctx.state & StatesAndFlags_::kTempoValid as u32,
+            0,
+            "a zero tempo must not be flagged valid"
+        );
+
+        let mut t = populated_transport();
+        t.position.quarters = f64::INFINITY;
+        let ctx = to_process_context(&t, all);
+        assert_eq!(
+            ctx.state & StatesAndFlags_::kProjectTimeMusicValid as u32,
+            0,
+            "an infinite musical position must not be flagged valid"
+        );
+
+        // The gate must not fire on good values — otherwise it would pass by
+        // clearing every bit unconditionally.
+        let ctx = to_process_context(&populated_transport(), all);
+        assert_ne!(ctx.state & StatesAndFlags_::kTempoValid as u32, 0);
+        assert_ne!(
+            ctx.state & StatesAndFlags_::kProjectTimeMusicValid as u32,
+            0
+        );
+    }
+
     #[test]
     fn all_bits_fills_everything() {
         let t = populated_transport();

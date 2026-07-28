@@ -31,6 +31,8 @@
 //! previously served snapshot exactly as JUCE and Ardour do.
 
 use crate::types::TransportInfo;
+// Shared with the VST3 path so the two cannot drift again.
+use tutti_plugin_types::is_usable;
 
 /// The transport bits whose transition defines `TRANSPORT_CHANGED`.
 ///
@@ -41,13 +43,6 @@ use crate::types::TransportInfo;
 fn transport_bits(flags: vst::api::TimeInfoFlags) -> i32 {
     use vst::api::TimeInfoFlags as F;
     (flags & (F::TRANSPORT_PLAYING | F::TRANSPORT_RECORDING | F::TRANSPORT_CYCLE_ACTIVE)).bits()
-}
-
-/// A `f64` field is only worth advertising as valid if a plugin can do
-/// arithmetic with it. NaN and the infinities propagate straight through a
-/// plugin's timing math into the audio buffer.
-fn is_usable(value: f64) -> bool {
-    value.is_finite()
 }
 
 /// Build the snapshot the plugin will read via `audioMasterGetTime`.

@@ -142,6 +142,32 @@ fn expression_to_per_note_controller_index(ty: NoteExpressionType) -> Option<u8>
     }
 }
 
+/// Resolve a CLAP note event's `(channel, key)` into a concrete MIDI address,
+/// or `None` when it names no single voice.
+///
+/// **CLAP types `channel` and `key` as `i16`, and `-1` is a wildcard** meaning
+/// "all channels" / "all keys" (`clap/events.h`). Masking a wildcard the way a
+/// non-negative value is masked does not preserve that meaning, it invents a
+/// different one: `-1i16 as u8` is `0xFF`, so `& 0x0F` yields channel **15** and
+/// `& 0x7F` yields note **127**. An all-notes-off aimed at every sounding voice
+/// arrives pointed at one phantom voice, and every real voice keeps ringing.
+///
+/// So a wildcard falls back to the host-minted `note_id`, which addresses a
+/// specific voice. A plugin's own `note_id` space cannot be decoded, in which
+/// case this returns `None` and the caller drops the event — dropping it is
+/// recoverable, misaddressing it is not.
+///
+/// Shared by the note-on, note-off and note-expression paths. It previously
+/// existed only inside the expression path, whose comment already named the
+/// phantom-voice hazard while the two note paths masked unguarded.
+fn note_address(channel: i16, key: i16, note_id: i32) -> Option<(u8, u8)> {
+    if channel >= 0 && key >= 0 {
+        Some((channel as u8 & 0x0F, key as u8 & 0x7F))
+    } else {
+        note_id_to_channel_note(note_id)
+    }
+}
+
 // C-4 (deferred): host→plugin events built below leave `header.flags = 0`, so
 // `CLAP_EVENT_IS_LIVE` is never set. IS_LIVE marks an event as originating from
 // live hardware interaction (a physical knob/key) rather than sequencer
@@ -437,26 +463,22 @@ impl ClapEvent {
     pub fn to_midi(&self) -> Option<MidiEvent> {
         use tutti_midi_types::convert::unit_f32_to_u16;
         match self {
-            ClapEvent::NoteOn(e) => Some(
-                MidiEvent::note_on(
-                    0,
-                    e.channel as u8 & 0x0F,
-                    e.key as u8 & 0x7F,
-                    unit_f32_to_u16(e.velocity as f32),
+            ClapEvent::NoteOn(e) => {
+                let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
+                Some(
+                    MidiEvent::note_on(0, channel, note, unit_f32_to_u16(e.velocity as f32))
+                        .with_frame_offset(e.header.time),
                 )
-                .with_frame_offset(e.header.time),
-            ),
-            ClapEvent::NoteOff(e) => Some(
-                // M3: preserve the plugin's release velocity on the way back to
-                // MIDI-2 too, mirroring the NoteOn path (was hardcoded 0).
-                MidiEvent::note_off(
-                    0,
-                    e.channel as u8 & 0x0F,
-                    e.key as u8 & 0x7F,
-                    unit_f32_to_u16(e.velocity as f32),
+            }
+            ClapEvent::NoteOff(e) => {
+                let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
+                Some(
+                    // Preserve the plugin's release velocity on the way back to
+                    // MIDI-2, mirroring the NoteOn path (was hardcoded 0).
+                    MidiEvent::note_off(0, channel, note, unit_f32_to_u16(e.velocity as f32))
+                        .with_frame_offset(e.header.time),
                 )
-                .with_frame_offset(e.header.time),
-            ),
+            }
             ClapEvent::NoteExpression(e) => Self::note_expression_to_midi(e),
             // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the
             // engine sees one vocabulary regardless of source — matching the
@@ -476,14 +498,7 @@ impl ClapEvent {
     fn note_expression_to_midi(e: &clap_event_note_expression) -> Option<MidiEvent> {
         use tutti_midi_types::convert::{signed_f32_to_bend_u32, unit_f32_to_u32};
 
-        let (channel, note) = if e.channel >= 0 && e.key >= 0 {
-            (e.channel as u8 & 0x0F, e.key as u8 & 0x7F)
-        } else {
-            // No stamped channel/key: fall back to the host-minted note_id. A
-            // plugin's own note_id space can't be decoded — skip rather than
-            // bind to a phantom voice.
-            note_id_to_channel_note(e.note_id)?
-        };
+        let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
         let time = e.header.time;
 
         let expression_type = match e.expression_id {

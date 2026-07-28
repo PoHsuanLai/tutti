@@ -602,7 +602,12 @@ pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
     use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
     use tutti_midi_types::midi2::{Channeled, UmpMessage};
 
-    let sample_offset = event.frame_offset as i32;
+    // `frame_offset` is `u32`; VST3's `sampleOffset` is `i32`. A value past
+    // `i32::MAX` wraps negative, and the plugin indexes its buffers with it —
+    // an out-of-bounds read inside the plugin, not in our code. Saturating keeps
+    // it in range; the mirror path (`vst3_to_midi_event`) already guards with
+    // `.max(0)` and this direction was left unguarded.
+    let sample_offset = i32::try_from(event.frame_offset).unwrap_or(i32::MAX);
     let header = EventHeader {
         bus_index: 0,
         sample_offset,
@@ -641,7 +646,13 @@ pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
                     },
                     channel: channel as i16,
                     pitch: note as i16,
-                    velocity: 0.0,
+                    // VST3's NoteOffEvent.velocity is the normalized *release*
+                    // velocity, and MIDI-2 note-off carries a real 16-bit one.
+                    // Hardcoding 0.0 gave every release-velocity-sensitive
+                    // instrument (piano and orchestral release layers) the
+                    // minimum on every note-off. The note-on path beside this
+                    // one already converts via `u16_to_unit_f32`.
+                    velocity: u16_to_unit_f32(m.velocity()),
                     note_id: note_id_for(channel, note),
                     tuning: 0.0,
                 }));
@@ -849,9 +860,14 @@ pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
             (e.pitch as u8) & 0x7F,
             unit_f32_to_u16(e.velocity),
         ),
-        Vst3Event::NoteOff(e) => {
-            MidiEvent::note_off(0, (e.channel as u8) & 0x0F, (e.pitch as u8) & 0x7F, 0)
-        }
+        Vst3Event::NoteOff(e) => MidiEvent::note_off(
+            0,
+            (e.channel as u8) & 0x0F,
+            (e.pitch as u8) & 0x7F,
+            // Mirrors the host->plugin direction: the plugin's normalized
+            // release velocity, not a hardcoded 0.
+            unit_f32_to_u16(e.velocity),
+        ),
         Vst3Event::PolyPressure(e) => MidiEvent::poly_pressure(
             0,
             (e.channel as u8) & 0x0F,
@@ -1268,12 +1284,21 @@ mod tests {
 
     #[test]
     fn note_off_lands_in_note_off_variant() {
-        let event = MidiEvent::note_off(0, 0, 72, 0x4000).with_frame_offset(10);
+        const RELEASE: u16 = 0x4000;
+        let event = MidiEvent::note_off(0, 0, 72, RELEASE).with_frame_offset(10);
         let vst3 = vst3_event_from_midi(&event).expect("NoteOff should convert");
         match &vst3 {
             Vst3Event::NoteOff(e) => {
                 assert_eq!(e.pitch, 72);
                 assert_eq!(e.header.sample_offset, 10);
+                // The test always passed a real release velocity here and
+                // asserted only pitch and offset, so it stayed green while both
+                // conversion directions hardcoded zero.
+                assert!(
+                    e.velocity > 0.0,
+                    "release velocity was dropped on the way to the plugin — \
+                     release-layer instruments get the minimum on every note-off"
+                );
             }
             _ => panic!("expected NoteOff variant"),
         }
@@ -1281,6 +1306,30 @@ mod tests {
         let back = vst3_to_midi_event(&vst3).expect("round-trip");
         assert!(back.is_note_off());
         assert_eq!(back.note(), Some(72));
+        assert!(
+            back.velocity_u7().is_some_and(|v| v > 0),
+            "release velocity was dropped on the way back from the plugin"
+        );
+    }
+
+    /// A frame offset past `i32::MAX` must saturate, not wrap negative.
+    ///
+    /// `MidiEvent::frame_offset` is `u32` and VST3's `sampleOffset` is `i32`, so
+    /// a bare `as i32` turns a large offset into a negative one. The plugin
+    /// indexes its own buffers with that value, so the out-of-bounds access
+    /// happens inside the plugin where nothing here can catch it. The mirror
+    /// path already guarded with `.max(0)`; this direction did not.
+    #[test]
+    fn a_huge_frame_offset_saturates_rather_than_going_negative() {
+        let event = MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(u32::MAX);
+        let vst3 = vst3_event_from_midi(&event).expect("NoteOn should convert");
+        let offset = vst3.sample_offset();
+        assert!(
+            offset >= 0,
+            "sample_offset went negative ({offset}) — the plugin will index \
+             its buffers out of bounds"
+        );
+        assert_eq!(offset, i32::MAX, "an unrepresentable offset must saturate");
     }
 
     #[test]

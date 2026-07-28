@@ -1,11 +1,12 @@
 //! Unwiring an entity from the graph takes `AudioNode` off, not a second handle.
 //!
-//! `plugin_crash_detect_system` used to strip a crashed plugin of
-//! `AudioEmitter` and remove its node from the graph by hand. That left
+//! `plugin_crash_detect_system` used to strip a crashed plugin of a second
+//! `AudioEmitter` handle and remove its node from the graph by hand. That left
 //! `AudioNode` in place, so the `On<Remove, AudioNode>` observers never fired:
 //! the entity still claimed a node that was gone, and MIDI unregistration —
 //! which keys on that same removal — never ran, leaking a sender on the bus for
-//! the life of the process.
+//! the life of the process. `AudioEmitter` is gone now; `AudioNode` is the one
+//! handle, and these pin the observers that hang off it.
 //!
 //! # Why a synth rather than a crashed plugin
 //!
@@ -20,7 +21,7 @@
 use bevy_app::prelude::*;
 use bevy_ecs::entity::Entity;
 
-use bevy_tutti::graph::{AudioEmitter, AudioGraphRes, GraphReconcilePlugin};
+use bevy_tutti::graph::{AudioGraphRes, GraphReconcilePlugin};
 use bevy_tutti::midi::{MidiBusRes, MidiTargetRegistry, TuttiMidiPlugin};
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
@@ -54,7 +55,7 @@ fn app() -> App {
     app
 }
 
-/// A synth carrying both handles, as the crashed-plugin path would have it.
+/// A synth bound to the graph the way every spawner binds one.
 fn spawn_synth(app: &mut App) -> (Entity, NodeId, MidiUnitId) {
     let synth = PolySynth::new(SynthConfig::default()).expect("builds a synth");
     let unit_id = synth.midi_port().unit_id();
@@ -62,10 +63,7 @@ fn spawn_synth(app: &mut App) -> (Entity, NodeId, MidiUnitId) {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
         graph.0.push(Box::new(synth))
     };
-    let entity = app
-        .world_mut()
-        .spawn((AudioNode(node), AudioEmitter { node_id: node }))
-        .id();
+    let entity = app.world_mut().spawn(AudioNode(node)).id();
     (entity, node, unit_id)
 }
 
@@ -103,27 +101,19 @@ fn removing_the_node_handle_unwires_the_graph_and_the_bus() {
     );
 }
 
-/// The bug, pinned: removing only the second handle unwires nothing.
+/// Despawning the whole entity unwires it too — the crash path's neighbour.
 ///
-/// This is exactly what `plugin_crash_detect_system` did. Both assertions here
-/// describe the leak, so if anyone reintroduces an `AudioEmitter`-only removal
-/// this test keeps passing while the one above starts failing — which is the
-/// pair working as intended.
+/// `On<Remove, AudioNode>` fires for a despawn as well as an explicit removal,
+/// so a plugin that is despawned rather than stripped leaks nothing either.
 #[test]
-fn removing_only_the_emitter_leaves_both_behind() {
+fn despawning_the_entity_unwires_it_as_well() {
     let mut app = app();
     let (entity, node, unit_id) = spawn_synth(&mut app);
     app.update();
 
-    app.world_mut().entity_mut(entity).remove::<AudioEmitter>();
+    app.world_mut().despawn(entity);
     app.update();
 
-    assert!(
-        graph_has(&app, node),
-        "no observer keys on AudioEmitter, so the node survives — the leak"
-    );
-    assert!(
-        bus_has(&app, unit_id),
-        "and the sender stays on the bus forever"
-    );
+    assert!(!graph_has(&app, node), "the node goes with the entity");
+    assert!(!bus_has(&app, unit_id), "and so does the sender");
 }

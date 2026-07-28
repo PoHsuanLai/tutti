@@ -9,7 +9,7 @@ use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 use std::sync::Arc;
 
 use crate::graph::{
-    engine_ready, AudioConfig, AudioEmitter, AudioGraphRes, GraphDirty, GraphReconcileSystems,
+    engine_ready, AudioConfig, AudioGraphRes, GraphDirty, GraphReconcileSystems,
 };
 use tutti_synth::soundfont::{SoundFont, SoundFontError, SoundFontUnit, SynthesizerSettings};
 
@@ -86,11 +86,12 @@ const _: () = {
 /// Trigger component: spawn an entity with this to create a SoundFont instrument.
 ///
 /// The [`soundfont_playback_system`] processes entities that carry
-/// `PlaySoundFont` but not yet a [`PendingSoundFontUnit`] or [`AudioEmitter`],
-/// spawns an off-thread `SoundFontUnit` build onto the
-/// [`AsyncComputeTaskPool`] and attaches [`PendingSoundFontUnit`]. Once the
-/// build completes, `promote_pending_soundfonts` adds the unit to tutti's graph,
-/// attaches `AudioEmitter`, and removes the pending marker.
+/// `PlaySoundFont` but not yet a [`PendingSoundFontUnit`] or an
+/// [`AudioNode`](tutti_core::AudioNode), spawns an off-thread `SoundFontUnit`
+/// build onto the [`AsyncComputeTaskPool`] and attaches
+/// [`PendingSoundFontUnit`]. Once the build completes,
+/// `promote_pending_soundfonts` adds the unit to tutti's graph, attaches
+/// `AudioNode`, and removes the pending marker.
 ///
 /// The trigger query is steady-state (not `Added`), so an entity whose `.sf2`
 /// asset has not finished loading is retried each frame until it resolves —
@@ -128,9 +129,12 @@ pub struct PendingSoundFontUnit {
 }
 
 /// Query filter for the steady-state SoundFont trigger: carries `PlaySoundFont`
-/// but is neither building (`PendingSoundFontUnit`) nor already playing
-/// (`AudioEmitter`).
-type PlaySoundFontPending = (Without<PendingSoundFontUnit>, Without<AudioEmitter>);
+/// but is neither building (`PendingSoundFontUnit`) nor already playing (it has
+/// no [`AudioNode`](tutti_core::AudioNode) yet).
+type PlaySoundFontPending = (
+    Without<PendingSoundFontUnit>,
+    Without<tutti_core::AudioNode>,
+);
 
 /// Processes `PlaySoundFont` trigger components: once the `.sf2` asset has
 /// resolved, spawns the (synchronous, potentially expensive)
@@ -144,7 +148,7 @@ pub fn soundfont_playback_system(
     config: Res<AudioConfig>,
     // Steady-state, not `Added`: retried each frame until the `.sf2` asset
     // resolves. Excludes entities already building (`PendingSoundFontUnit`) or
-    // already playing (`AudioEmitter`).
+    // already playing (they carry an `AudioNode`).
     query: Query<(Entity, &PlaySoundFont), PlaySoundFontPending>,
 ) {
     for (entity, play) in query.iter() {
@@ -177,8 +181,8 @@ pub fn soundfont_playback_system(
 
 /// Drains [`PendingSoundFontUnit`] entities whose off-thread build has
 /// finished: applies the entity's program change, adds the unit to tutti's
-/// graph, pipes it to output, attaches `AudioNode` + `AudioEmitter`, then
-/// removes the pending marker.
+/// graph, pipes it to output, attaches `AudioNode`, then removes the pending
+/// marker.
 ///
 /// Entities whose build is still running are left alone for the next frame.
 ///
@@ -213,14 +217,13 @@ pub fn promote_pending_soundfonts(
         graph.0.pipe_output(id);
         edited = true;
 
-        // `AudioNode` as well as `AudioEmitter`: the two are separate
-        // components, and node teardown — `reconcile_node_despawn`, and MIDI
-        // unregistration — keys on `AudioNode`. Without it a despawned soundfont
-        // left its fundsp node *and* its bus entry behind.
+        // `AudioNode` is the whole binding: node teardown
+        // (`reconcile_node_despawn`) and MIDI unregistration both key on its
+        // removal.
         commands
             .entity(entity)
             .remove::<PendingSoundFontUnit>()
-            .insert((tutti_core::AudioNode(id), AudioEmitter { node_id: id }));
+            .insert(tutti_core::AudioNode(id));
     }
 
     // Stage only; the Commit-phase `commit_graph` coalesces (this system is

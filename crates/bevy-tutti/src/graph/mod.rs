@@ -10,14 +10,12 @@
 //!   [`reconcile_node_despawn`], [`SpawnAudioNode`], [`crossfade_audio_node`])
 //!   and its [`GraphReconcilePlugin`],
 //! - the per-node param epoch ([`NodeParamEpoch`]),
-//! - the audio-emitter markers ([`AudioEmitter`], [`AudioPlaybackState`]),
 //! - and the wrappers for metering ([`MeteringRes`]) and transport
 //!   ([`TransportRes`], [`MetronomeRes`]).
 //!
 //! The node handle itself, [`AudioNode`](tutti_core::AudioNode), lives in
 //! tutti-core: an entity carrying one *is* a node in the graph.
 
-pub mod emitter;
 pub mod metering;
 pub mod param;
 pub mod param_epoch;
@@ -26,7 +24,6 @@ pub mod reconcile;
 pub mod resources;
 pub mod transport;
 
-pub use emitter::{AudioEmitter, AudioPlaybackState};
 pub use metering::MeteringRes;
 pub use param::{reconcile_audio_param, AudioParam, AudioParamAppExt};
 pub use param_epoch::NodeParamEpoch;

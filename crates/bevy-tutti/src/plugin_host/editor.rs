@@ -12,7 +12,7 @@ use crate::plugin_host::PluginEditorMainThread;
 /// Added automatically by `plugin_load_system`. Use the `handle` to
 /// control parameters, open/close the editor, save/load state, etc.
 ///
-/// The audio node is tracked separately via `AudioEmitter`.
+/// The audio node is tracked separately via `AudioNode`.
 ///
 /// Not `Debug` / `Reflect`: `PluginHandle` wraps a foreign plugin-control
 /// handle that doesn't implement `Debug` and isn't reflected.

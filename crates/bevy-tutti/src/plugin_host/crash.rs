@@ -5,7 +5,6 @@ use bevy_ecs::prelude::*;
 
 use tutti_core::AudioNode;
 
-use crate::graph::AudioEmitter;
 use crate::plugin_host::editor::{PluginEditorOpen, PluginEmitter};
 
 /// Detects crashed plugins and unwires them from the graph.
@@ -15,8 +14,8 @@ use crate::plugin_host::editor::{PluginEditorOpen, PluginEmitter};
 ///
 /// # Removing `AudioNode` is what unwires it
 ///
-/// This used to remove `AudioEmitter` alone and take the graph node out by
-/// hand. Both halves of that were wrong. `AudioNode` survived, so the
+/// This used to remove a second `AudioEmitter` handle alone and take the graph
+/// node out by hand. Both halves of that were wrong. `AudioNode` survived, so the
 /// `On<Remove, AudioNode>` observers never fired — the node was gone from the
 /// graph but the entity still claimed one, and MIDI unregistration (which keys
 /// on that same removal) never ran, leaking a sender on the bus for the life of
@@ -42,7 +41,6 @@ pub fn plugin_crash_detect_system(
                 .entity(entity)
                 .remove::<PluginEmitter>()
                 .remove::<PluginEditorOpen>()
-                .remove::<AudioEmitter>()
                 .remove::<AudioNode>();
         }
     }

@@ -169,7 +169,7 @@ commands.spawn(LoadPlugin::new("path/to/Reverb.vst3"));
 commands.spawn(LoadPlugin::new("path/to/Synth.clap").param("cutoff", 0.7));
 ```
 
-After processing: `LoadPlugin` is removed, `AudioEmitter` + `PluginEmitter { handle }` are inserted. Use the `PluginHandle` for parameter control, editor management, and state save/load.
+After processing: `LoadPlugin` is removed, `AudioNode` + `PluginEmitter { handle }` are inserted. Use the `PluginHandle` for parameter control, editor management, and state save/load.
 
 ### MIDI
 
@@ -301,7 +301,7 @@ Requires `spatial` feature.
 commands.spawn((AudioListener, Transform::default()));
 
 // Spatial emitter: add SpatialAudio + Transform to any entity carrying an
-// AudioEmitter (i.e. a node already in the graph).
+// AudioNode (i.e. a node already in the graph).
 commands.spawn((
     SpatialAudio::default(),
     Transform::from_xyz(5.0, 0.0, -3.0),

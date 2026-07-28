@@ -18,6 +18,7 @@ use bevy_ecs::prelude::*;
 
 use bevy_tutti::prelude::*;
 use tutti_core::dsp::{lowpass_hz, pass, saw_hz, AudioUnit as _, Net, Source};
+use tutti_core::transport::Transport;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -35,12 +36,33 @@ fn main() {
     // a graph, a claim that the engine is up, and the reconcile pipeline.
     app.insert_resource(AudioGraphRes(Net::with_backend(2)));
     app.insert_resource(AudioEngineState::Running);
+    app.insert_resource(TransportRes(Transport::new(SAMPLE_RATE)));
     app.add_plugins(GraphReconcilePlugin);
 
-    app.add_systems(Startup, build_chain);
+    app.add_systems(Startup, (build_chain, set_up_transport));
     app.add_systems(Update, report.run_if(run_once_after_startup));
 
     app.update();
+}
+
+/// Everything transport-shaped goes through `TransportRes`'s `Deref`.
+///
+/// There is no wrapper for any of this — `TransportRes` is a newtype over
+/// tutti-core's `Transport`, so a host calls the engine's own API. Note every
+/// setter takes `&self` (the state is atomics), which is why `Res` suffices and
+/// why `Res<TransportRes>` never triggers Bevy change detection: a host that
+/// wants "did the tempo change this frame" diffs it itself.
+fn set_up_transport(transport: Res<TransportRes>) {
+    transport.settings.set_tempo(128.0);
+
+    // Loop bars 2–4, in beats.
+    transport.settings.loop_span.set_range(4.0, 8.0);
+    transport.settings.loop_span.set_enabled(true);
+
+    // Transitions are *queued*, not applied: `motion` is a lock-free ring the
+    // audio thread drains at the top of each block. `is_playing()` still reads
+    // false here, and that is correct — nothing has rendered yet.
+    let _ = transport.motion.try_send(MotionEvent::Play);
 }
 
 /// Spawn three nodes and declare the signal path between them.
@@ -77,8 +99,24 @@ fn build_chain(mut commands: Commands) {
 }
 
 /// Read the graph back and render a few samples through it.
-fn report(graph: Res<AudioGraphRes>, nodes: Query<(&AudioNode, &Label)>) {
-    println!("nodes in the graph:");
+fn report(
+    graph: Res<AudioGraphRes>,
+    transport: Res<TransportRes>,
+    nodes: Query<(&AudioNode, &Label)>,
+) {
+    println!("transport:");
+    println!("  tempo    {:?}", transport.settings.tempo());
+    println!(
+        "  loop     {:?} enabled={}",
+        transport.settings.loop_span.bounds(),
+        transport.settings.loop_span.is_enabled()
+    );
+    println!(
+        "  playing  {} (Play is queued; the audio thread drains it)",
+        transport.motion.is_playing()
+    );
+
+    println!("\nnodes in the graph:");
     for (node, label) in &nodes {
         println!("  {:<7} inputs={}", label.0, graph.0.inputs_in(node.0));
     }

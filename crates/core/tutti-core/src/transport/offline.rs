@@ -165,6 +165,14 @@ impl super::Timeline for OfflineTimeline {
     }
 }
 
+impl super::RenderClock for OfflineTimeline {
+    fn advance(&self, frames: tutti_types::Samples) {
+        // The inherent `advance` takes a raw count; this is the same call with
+        // the frame-count type at the trait boundary.
+        OfflineTimeline::advance(self, frames.get());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

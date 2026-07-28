@@ -372,17 +372,26 @@ pub fn spawn_region_render_system(
         let net = std::mem::replace(&mut render.net, Net::new(0, 0));
         let timeline = render.transport.clone();
 
-        // Configure the export, then run it on the shared compute pool instead
-        // of `Run::spawn`'s raw OS thread. `Run::run()` is a synchronous
-        // `FnOnce(..) -> Result<_> + Send`, so it executes fine inside a task;
-        // running it on the bounded pool (the same one the STFT step and the
-        // wave cache use) keeps the render from starving the audio callback.
-        let run = crate::Export::graph(net, config.sample_rate)
-            .start_beat(render.start_beat)
-            .duration_beats(render.len_beats, render.tempo)
-            .transport(timeline)
-            .to_buffers();
-        let task = AsyncComputeTaskPool::get().spawn(async move { run.run() });
+        // The render is synchronous, so it runs on the shared compute pool —
+        // the same bounded pool the STFT step and the wave cache use. A raw OS
+        // thread per render could pin every core and starve the audio callback.
+        //
+        // `start_beat` is not passed: the timeline already carries it (it was
+        // built at that beat in `Prepare`), and the clock is what the render
+        // reads. There is no second copy to keep in sync.
+        let spec = crate::ExportSpec {
+            render: crate::RenderSpec {
+                sample_rate: tutti_core::SampleRate(config.sample_rate),
+                duration: crate::RenderDuration::Beats {
+                    len: tutti_types::BeatDuration(render.len_beats),
+                    tempo: tutti_core::Bpm(render.tempo),
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let task = AsyncComputeTaskPool::get()
+            .spawn(async move { crate::render_to_buffers(net, &spec, timeline.as_ref()) });
 
         commands
             .entity(entity)
@@ -410,10 +419,16 @@ pub fn region_render_poll_system(
         };
         match result {
             Ok(rendered) => {
+                // The region render is stereo (its spec asks for the default
+                // layout), so plane 0/1 are L/R. A mono render duplicates plane
+                // 0 rather than handing back a silent right channel.
+                let mut planes = rendered.planes.into_iter();
+                let left = planes.next().unwrap_or_default();
+                let right = planes.next().unwrap_or_else(|| left.clone());
                 let complete = RegionRenderComplete {
-                    samples_l: Arc::from(rendered.left),
-                    samples_r: Arc::from(rendered.right),
-                    sample_rate: rendered.sample_rate,
+                    samples_l: Arc::from(left),
+                    samples_r: Arc::from(right),
+                    sample_rate: rendered.sample_rate.get(),
                     start_beat: render.start_beat,
                     len_beats: render.len_beats,
                     tempo: render.tempo,

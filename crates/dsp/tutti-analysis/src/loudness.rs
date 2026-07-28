@@ -145,11 +145,15 @@ pub fn step_loudness(cfg: &LoudnessConfig, state: &mut LoudnessState, interleave
 /// partial reading as final.
 pub fn finish(state: LoudnessState) -> Loudness {
     let meter = state.meter;
-    // `-70` LUFS is R128's absolute gate: below it, the meter reports no
-    // integrated loudness because nothing passed the gate. Report the gate
-    // rather than an error — silence is a legitimate input.
-    let lufs = meter.loudness_global().unwrap_or(-70.0);
+    // `-70` LUFS is R128's absolute gate. The meter reports `-inf` (not an
+    // error) when nothing passed it — silence, or simply an input shorter than
+    // the 400 ms gating block, which a short render legitimately is. Clamping to
+    // the gate keeps the reading finite, because an infinite loudness poisons
+    // every gain derived from it into `NaN`.
+    let lufs = meter.loudness_global().unwrap_or(f64::NEG_INFINITY);
+    let lufs = if lufs.is_finite() { lufs } else { -70.0 };
     let range = meter.loudness_range().unwrap_or(0.0);
+    let range = if range.is_finite() { range } else { 0.0 };
 
     // True peak is per-channel; the file's peak is the loudest of them.
     let channels = meter.channels();
@@ -285,6 +289,30 @@ mod tests {
         let m = measure_loudness(&cfg(48_000.0), &vec![0.0; 4800]).unwrap();
         assert_eq!(m.true_peak, Db::FLOOR);
         assert!(m.lufs.get() <= -70.0, "gated silence, got {:?}", m.lufs);
+    }
+
+    /// Every reading must be finite, even when nothing passes R128's gate.
+    ///
+    /// `ebur128` returns `Ok(-inf)` rather than an error for an input shorter
+    /// than the 400 ms gating block — which a short render legitimately is. An
+    /// infinite LUFS silently poisons `gain_to` into `NaN`, and a `NaN` gain
+    /// multiplies a whole render into `NaN`. Caught by an export test composing
+    /// normalization over a 0.2 s buffer.
+    #[test]
+    fn a_reading_is_always_finite_even_below_the_gate() {
+        // 100 ms — a quarter of the gating block.
+        let short = sine(48_000.0, 0.1, 1_000.0, 0.5);
+        let m = measure_loudness(&cfg(48_000.0), &short).unwrap();
+        assert!(
+            m.lufs.get().is_finite(),
+            "LUFS must be finite, got {:?}",
+            m.lufs
+        );
+        assert!(m.range.get().is_finite());
+        assert!(
+            m.gain_to(Db(-14.0), Db(-1.0)).get().is_finite(),
+            "a gain derived from a sub-gate reading must not be NaN"
+        );
     }
 
     /// The gain is the plain difference when the ceiling is not in play.

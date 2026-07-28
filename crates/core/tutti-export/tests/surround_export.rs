@@ -10,7 +10,33 @@
 #![cfg(feature = "wav")]
 
 use tutti_core::dsp::{dc, Net};
-use tutti_export::{ChannelLayout, Export};
+use tutti_export::{ChannelLayout, EncodeSpec, ExportSpec, RenderDuration, RenderSpec};
+
+/// Render `net` to `path` as float WAV at `layout`, for `secs`.
+///
+/// The tests care about channel routing, not about export configuration, so the
+/// spec is built once here rather than restated at every call site.
+fn export(net: tutti_core::dsp::Net, layout: ChannelLayout, secs: f64, path: &std::path::Path) {
+    tutti_export::render_to_file(
+        net,
+        &ExportSpec {
+            render: RenderSpec {
+                sample_rate: tutti_core::SampleRate(48_000.0),
+                duration: RenderDuration::Seconds(secs),
+                ..Default::default()
+            },
+            encode: EncodeSpec {
+                bit_depth: tutti_export::BitDepth::Float32,
+                channels: layout,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        &tutti_export::FrozenClock,
+        path,
+    )
+    .expect("export");
+}
 use tutti_units::{build_surround_mix, SurroundSource};
 
 /// Build a quad surround graph via the engine's `build_surround_mix` helper: one
@@ -42,13 +68,7 @@ fn quad_surround_graph_exports_a_four_channel_wav_with_rear_energy() {
 
     // Render long enough for the panner's ~0.05s position smoother to settle
     // (0.3s @ 48k ≈ 14k samples, well past the ~2400-sample time constant).
-    Export::graph(quad_surround_net(), 48000.0)
-        .duration_seconds(0.3)
-        .bit_depth(tutti_export::BitDepth::Float32)
-        .channels(ChannelLayout::Quad)
-        .to_file(&path)
-        .run()
-        .expect("surround export");
+    export(quad_surround_net(), ChannelLayout::Quad, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 4, "file must carry four channels");
@@ -114,13 +134,7 @@ fn stereo_net_widened_then_exports_four_channels() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("widened.wav");
-    Export::graph(net, 48000.0)
-        .duration_seconds(0.3)
-        .bit_depth(tutti_export::BitDepth::Float32)
-        .channels(ChannelLayout::Quad)
-        .to_file(&path)
-        .run()
-        .expect("widened surround export");
+    export(net, ChannelLayout::Quad, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(
@@ -170,13 +184,7 @@ fn surround_5_1_export_places_center_and_feeds_lfe() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("surround51.wav");
-    Export::graph(net, 48000.0)
-        .duration_seconds(0.3)
-        .bit_depth(tutti_export::BitDepth::Float32)
-        .channels(ChannelLayout::from(6u16))
-        .to_file(&path)
-        .run()
-        .expect("5.1 export");
+    export(net, ChannelLayout::from(6u16), 0.3, &path);
 
     // The 6-channel file must declare WAVEFORMATEXTENSIBLE (0xfffe) with the
     // standard 5.1 dwChannelMask 0x3F (FL|FR|FC|LFE|BL|BR), so other tools read
@@ -247,13 +255,7 @@ fn surround_5_1_downmixes_center_to_both_stereo_channels() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("downmix.wav");
     // Render the 5.1 graph but request a STEREO file → triggers the downmix.
-    Export::graph(net, 48000.0)
-        .duration_seconds(0.3)
-        .bit_depth(tutti_export::BitDepth::Float32)
-        .channels(ChannelLayout::Stereo)
-        .to_file(&path)
-        .run()
-        .expect("5.1→stereo export");
+    export(net, ChannelLayout::Stereo, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 2, "downmixed file is stereo");
@@ -304,13 +306,7 @@ fn stereo_graph_exports_folded_mono_not_left_only() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mono.wav");
-    Export::graph(net, 48000.0)
-        .duration_seconds(0.1)
-        .bit_depth(tutti_export::BitDepth::Float32)
-        .channels(ChannelLayout::Mono)
-        .to_file(&path)
-        .run()
-        .expect("stereo→mono export");
+    export(net, ChannelLayout::Mono, 0.1, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 1, "file is mono");
@@ -341,13 +337,7 @@ fn surround_5_1_exports_folded_mono_keeps_center() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("surround_mono.wav");
-    Export::graph(net, 48000.0)
-        .duration_seconds(0.3)
-        .bit_depth(tutti_export::BitDepth::Float32)
-        .channels(ChannelLayout::Mono)
-        .to_file(&path)
-        .run()
-        .expect("5.1→mono export");
+    export(net, ChannelLayout::Mono, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 1, "file is mono");
@@ -387,13 +377,7 @@ fn atmos_7_1_4_exports_twelve_channels_with_rear_energy() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("atmos.wav");
-    Export::graph(net, 48000.0)
-        .duration_seconds(0.3)
-        .bit_depth(tutti_export::BitDepth::Float32)
-        .channels(ChannelLayout::from(12u16))
-        .to_file(&path)
-        .run()
-        .expect("7.1.4 export");
+    export(net, ChannelLayout::from(12u16), 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 12, "file carries twelve channels");
@@ -436,13 +420,7 @@ fn atmos_7_1_4_downmixes_surround_into_front() {
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("atmos_stereo.wav");
-    Export::graph(net, 48000.0)
-        .duration_seconds(0.3)
-        .bit_depth(tutti_export::BitDepth::Float32)
-        .channels(ChannelLayout::Stereo)
-        .to_file(&path)
-        .run()
-        .expect("7.1.4→stereo export");
+    export(net, ChannelLayout::Stereo, 0.3, &path);
 
     let reader = hound::WavReader::open(&path).unwrap();
     assert_eq!(reader.spec().channels, 2, "downmixed file is stereo");

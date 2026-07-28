@@ -1,156 +1,180 @@
-//! Audio encoding stage.
+//! The encode stage: each format drives the render to completion.
 //!
-//! Accepts mastered `[f32; CH]` frames from the `process` stage and writes them
-//! to disk via a format-specific encoder. Also defines the interleaved
-//! [`StreamingEncoder`](sink::StreamingEncoder) trait that the streaming export
-//! path uses.
+//! # Why the encoder pulls
 //!
-//! The root [`encode`] function is pure orchestration: [`rechannel`] maps the
-//! `CH` mastered channels onto the requested [`ChannelLayout`] (folding to mono,
-//! zero-filling extra channels) into per-channel planes, a [`PhaseGuard`] for
-//! progress, and a `match` on [`AudioFormat`]. Each encoder is channel-count
-//! agnostic — it writes `planes.len()` channels straight through, which is why
-//! WAV/FLAC/OGG/AIFF all carry surround with no per-format channel logic.
-
-#[cfg(any(feature = "wav", feature = "flac"))]
-pub(crate) mod sink;
-
-#[cfg(feature = "wav")]
-pub(crate) mod wav;
-
-#[cfg(feature = "flac")]
-pub(crate) mod flac;
+//! The obvious shape is push — a `write(block)` sink the renderer feeds. That is
+//! what this crate used to do, wrapped in three decorators, and it is why every
+//! non-WAV format was buffered whole in memory (and, latterly, broken outright).
+//!
+//! flacenc is **pull**-based: `encode_with_fixed_block_size` calls
+//! `Source::read_samples` until the source is dry. Our render is also a pull
+//! ([`NetSource`](crate::render::NetSource) is an `AudioIn`). Making the encoder
+//! the driver lets FLAC hand our source straight to its library, and costs the
+//! push formats only a small loop they run internally. Everything streams, no
+//! format holds the signal, and there is no buffered-vs-streaming decision for a
+//! caller to get wrong.
+//!
+//! Every encoder is width-agnostic: `CH` is fixed by the caller's
+//! [`ChannelLayout`](tutti_types::ChannelLayout), the render folds the graph onto
+//! it once, and the file header is simply that width.
 
 #[cfg(feature = "aiff")]
 pub(crate) mod aiff;
-
+#[cfg(feature = "flac")]
+pub(crate) mod flac;
 #[cfg(feature = "ogg")]
 pub(crate) mod ogg;
+#[cfg(feature = "wav")]
+pub(crate) mod wav;
 
 use crate::error::Result;
-use crate::options::{AudioFormat, BitDepth, Flac, Ogg};
-use crate::progress::{Phase, PhaseGuard};
+use crate::render::{drive, NetSource, RenderPlan};
+use crate::spec::ExportSpec;
+use crate::Written;
 use std::path::Path;
-use tutti_types::ChannelLayout;
 
-/// Everything an encoder needs to write one file: where, what format, what
-/// per-format knobs, and the [`ChannelLayout`] it should emit. The encoders
-/// receive their samples as deinterleaved per-channel planes ([`rechannel`]
-/// maps the mastered signal's `CH` channels onto `channels`, folding to mono
-/// when `channels.count() == 1`), so each encoder is width-agnostic — the file
-/// header is simply `channels.count()`.
-pub(crate) struct EncodeRequest<'a> {
-    pub path: &'a Path,
-    pub format: AudioFormat,
-    pub sample_rate: u32,
-    pub bit_depth: BitDepth,
-    pub channels: ChannelLayout,
-    #[allow(dead_code)]
-    pub flac: Flac,
-    #[allow(dead_code)]
-    pub ogg: Ogg,
+/// Drives a render to completion and writes a file.
+///
+/// `self` by value: an encoder finalizes exactly once, and taking ownership is
+/// what makes "finalize, then write more" unrepresentable rather than a runtime
+/// error.
+pub(crate) trait Encoder<const CH: usize> {
+    fn encode(
+        self,
+        src: &mut NetSource<'_, CH>,
+        plan: &RenderPlan,
+        spec: &ExportSpec,
+    ) -> Result<()>;
 }
 
-/// Map the mastered signal's `CH` interleaved frames onto the per-channel planes
-/// the requested [`ChannelLayout`] wants, returning `channels.count()` planes.
+/// Render `src` to `path` in the format `spec` names.
 ///
-/// The interesting case is **downmix** — the source is wider than the request (a
-/// 5.1/7.1 master exported to stereo or mono). There the extra channels are
-/// *folded in* with the ITU-R BS.775 / Dolby matrix (see
-/// [`tutti_types::downmix`]), not dropped, so the center (dialogue)
-/// and surrounds (ambience) survive to the two-speaker mix:
-///
-/// - **mono** (`count() == 1`): the standards mono fold of each frame.
-/// - **stereo** (`count() == 2`) *from a wider source*: the ITU stereo downmix.
-/// - **equal or upmix** (`count() >= CH`): channels `0..count()` straight
-///   through, zero-filling any the source lacks (a file wider than the master
-///   gets its extra channels as silence — no synthetic upmix).
-/// - **stereo from ≤2ch, or a same-width surround request**: passthrough.
-///
-/// Every encoder speaks these planes, so channel policy lives here once rather
-/// than being re-derived per format.
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) fn rechannel<const CH: usize>(
-    frames: &[[f32; CH]],
-    channels: ChannelLayout,
-) -> Vec<Vec<f32>> {
-    let out_ch = channels.count() as usize;
+/// The one dispatch. A format whose feature is off is a clean
+/// [`Error::UnsupportedFormat`](crate::Error::UnsupportedFormat); there is no arm
+/// that silently degrades, and — unlike the streaming-encoder opener this
+/// replaced — no arm that rejects a format the crate can actually write.
+pub(crate) fn encode_to_file<const CH: usize>(
+    src: &mut NetSource<'_, CH>,
+    plan: &RenderPlan,
+    spec: &ExportSpec,
+    path: &Path,
+) -> Result<Written> {
+    use crate::options::AudioFormat;
+    #[allow(unused_imports)]
+    use crate::Error;
 
-    // Mono output: always the standards mono fold (for CH ≤ 2 this reduces to the
-    // familiar L/R average; for surround it applies the matrix + LFE drop).
-    if out_ch == 1 {
-        let mono = frames
-            .iter()
-            .map(|f| tutti_types::fold_frame_to_mono(f))
-            .collect();
-        return vec![mono];
-    }
-
-    // Stereo output from a WIDER source: ITU/Dolby stereo downmix.
-    if out_ch == 2 && CH > 2 {
-        let mut lo = Vec::with_capacity(frames.len());
-        let mut ro = Vec::with_capacity(frames.len());
-        for f in frames {
-            let (l, r) = tutti_types::fold_frame_to_stereo(f);
-            lo.push(l);
-            ro.push(r);
-        }
-        return vec![lo, ro];
-    }
-
-    // Equal width, upmix (zero-fill), or stereo-from-≤2ch: straight passthrough.
-    (0..out_ch)
-        .map(|ch| {
-            if ch < CH {
-                frames.iter().map(|f| f[ch]).collect()
-            } else {
-                vec![0.0f32; frames.len()]
-            }
-        })
-        .collect()
-}
-
-/// Encode mastered `frames` (any width `CH`) to `request.path`, mapped onto
-/// `request.channels`. A [`PhaseGuard`] brackets the operation with
-/// `(Encode, 0.0)` / `(Encode, 1.0)` progress events.
-pub(crate) fn encode<const CH: usize>(
-    frames: &[[f32; CH]],
-    request: EncodeRequest<'_>,
-    on_progress: &(dyn Fn(Phase, f32) + Send + Sync),
-) -> Result<()> {
-    let _phase = PhaseGuard::new(on_progress, Phase::Encode);
-    // Deinterleave once, into the exact channel count the file will carry.
-    #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-    let planes = rechannel(frames, request.channels);
-    match request.format {
+    match spec.encode.format {
         #[cfg(feature = "wav")]
-        AudioFormat::Wav => wav::encode(&planes, &request)?,
+        AudioFormat::Wav => wav::WavEncoder::create(path, spec)?.encode(src, plan, spec)?,
         #[cfg(not(feature = "wav"))]
-        AudioFormat::Wav => {
-            return Err(crate::Error::UnsupportedFormat("WAV not enabled".into()));
-        }
+        AudioFormat::Wav => return Err(Error::UnsupportedFormat("WAV not enabled".into())),
 
         #[cfg(feature = "flac")]
-        AudioFormat::Flac => flac::encode(&planes, &request)?,
+        AudioFormat::Flac => flac::FlacEncoder::create(path, spec)?.encode(src, plan, spec)?,
         #[cfg(not(feature = "flac"))]
-        AudioFormat::Flac => {
-            return Err(crate::Error::UnsupportedFormat("FLAC not enabled".into()));
-        }
+        AudioFormat::Flac => return Err(Error::UnsupportedFormat("FLAC not enabled".into())),
 
         #[cfg(feature = "aiff")]
-        AudioFormat::Aiff => aiff::encode(&planes, &request)?,
+        AudioFormat::Aiff => aiff::AiffEncoder::create(path, spec)?.encode(src, plan, spec)?,
         #[cfg(not(feature = "aiff"))]
-        AudioFormat::Aiff => {
-            return Err(crate::Error::UnsupportedFormat("AIFF not enabled".into()));
-        }
+        AudioFormat::Aiff => return Err(Error::UnsupportedFormat("AIFF not enabled".into())),
 
         #[cfg(feature = "ogg")]
-        AudioFormat::OggVorbis => ogg::encode(&planes, &request)?,
+        AudioFormat::OggVorbis => ogg::OggEncoder::create(path, spec)?.encode(src, plan, spec)?,
         #[cfg(not(feature = "ogg"))]
-        AudioFormat::OggVorbis => {
-            return Err(crate::Error::UnsupportedFormat("OGG not enabled".into()));
-        }
+        AudioFormat::OggVorbis => return Err(Error::UnsupportedFormat("OGG not enabled".into())),
     }
 
-    Ok(())
+    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    Ok(Written {
+        path: path.to_path_buf(),
+        bytes,
+    })
+}
+
+/// Pull every frame of the render through resample → dither, into `write`.
+///
+/// The shared body of the three push-shaped encoders (WAV, Ogg, AIFF). FLAC does
+/// not use it — its library owns the loop.
+///
+/// Order matters: resample first, dither second. Dither's noise is scaled to one
+/// LSB at the *output* depth, so dithering before a rate conversion would filter
+/// that noise along with the signal and land it somewhere other than one LSB.
+#[cfg(any(feature = "wav", feature = "ogg", feature = "aiff"))]
+pub(crate) fn pump_blocks<const CH: usize, W>(
+    src: &mut NetSource<'_, CH>,
+    plan: &RenderPlan,
+    spec: &ExportSpec,
+    mut write: W,
+) -> Result<()>
+where
+    W: FnMut(&[[f32; CH]]) -> Result<()>,
+{
+    let mut dither = crate::process::DitherState::for_spec(spec);
+    let mut staging: Vec<[f32; CH]> = Vec::new();
+
+    let source_rate = spec.render.sample_rate.get().round() as u32;
+    let mut resampler = match spec.resample {
+        Some(r) if r.target_rate != source_rate => Some((
+            crate::process::Resampler::new(CH, source_rate, r.target_rate, r.quality)?,
+            vec![Vec::<f32>::new(); CH],
+            vec![Vec::<f32>::new(); CH],
+        )),
+        // A resample to the rate we are already at is not a resample.
+        _ => None,
+    };
+
+    /// Interleave `CH` planes into frames, dither, and hand them on.
+    macro_rules! emit_planes {
+        ($out:expr, $staging:expr, $dither:expr, $write:expr) => {{
+            let frames = $out.first().map_or(0, |p: &Vec<f32>| p.len());
+            $staging.clear();
+            $staging.reserve(frames);
+            for i in 0..frames {
+                $staging.push(std::array::from_fn(|c| $out[c][i]));
+            }
+            $dither.apply(&mut $staging);
+            let r = $write(&$staging);
+            for p in $out.iter_mut() {
+                p.clear();
+            }
+            r
+        }};
+    }
+
+    if let Some((rs, planes, out)) = resampler.as_mut() {
+        drive(src, plan, |block| {
+            for p in planes.iter_mut() {
+                p.clear();
+                p.reserve(block.len());
+            }
+            for f in block {
+                for (p, &s) in planes.iter_mut().zip(f.iter()) {
+                    p.push(s);
+                }
+            }
+            rs.push(planes, out)?;
+            emit_planes!(out, staging, dither, write)
+        })?;
+        rs.finish(out)?;
+        emit_planes!(out, staging, dither, write)?;
+        Ok(())
+    } else {
+        drive(src, plan, |block| {
+            staging.clear();
+            staging.extend_from_slice(block);
+            dither.apply(&mut staging);
+            write(&staging)
+        })
+    }
+}
+
+/// Flatten `CH`-wide frames into an interleaved buffer.
+#[cfg(any(feature = "wav", feature = "aiff"))]
+pub(crate) fn interleave<const CH: usize>(frames: &[[f32; CH]], out: &mut Vec<f32>) {
+    out.clear();
+    out.reserve(frames.len() * CH);
+    for f in frames {
+        out.extend_from_slice(f);
+    }
 }

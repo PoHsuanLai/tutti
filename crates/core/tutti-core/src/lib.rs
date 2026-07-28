@@ -64,9 +64,10 @@ pub use engine::Engine;
 
 pub mod transport;
 pub use transport::{
-    beat_from_ports, ClickNode, ClickSettings, ClickState, FadeOut, LoopRange, MetronomeMode,
-    MotionEvent, MotionFsm, MotionState, OfflineTimeline, OfflineTimelineConfig, QueueFull, Then,
-    Timeline, Transport, TransportClock, TransportSettings, TransportState, BEAT_PORTS,
+    beat_from_ports, ClickNode, ClickSettings, ClickState, FadeOut, FrozenClock, LoopRange,
+    MetronomeMode, MotionEvent, MotionFsm, MotionState, OfflineTimeline, OfflineTimelineConfig,
+    QueueFull, RenderClock, Then, Timeline, Transport, TransportClock, TransportSettings,
+    TransportState, BEAT_PORTS,
 };
 
 // Musical meter. Lives in `tutti-types` (pure musical math, no audio), re-exported

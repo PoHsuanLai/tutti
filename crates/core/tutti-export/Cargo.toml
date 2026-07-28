@@ -16,7 +16,7 @@ default = ["bevy", "wav", "flac", "aiff", "ogg"]
 bevy = ["dep:bevy_app", "dep:bevy_ecs", "dep:bevy_tasks", "dep:bevy_log", "tutti-core/bevy"]
 wav = ["hound"]
 flac = ["flacenc"]
-aiff = []
+aiff = ["aifc"]
 ogg = ["vorbis_rs"]
 # Offline per-node region render (`ecs::render_region`). It isolates and
 # rebinds clip-reader / sampler units from tutti-sampler, so it needs that
@@ -41,7 +41,11 @@ rubato = "0.16"
 hound = { version = "3.5", optional = true }
 flacenc = { version = "0.4", optional = true }
 vorbis_rs = { version = "0.5", optional = true }
-crossbeam-channel = "0.5"
+# AIFF/AIFF-C. Replaced ~200 lines of hand-rolled IFF chunk writing (including a
+# by-hand 80-bit IEEE 754 extended encoder); its I16/I24/F32 formats match our
+# three bit depths exactly and it back-patches sizes on finalize, so AIFF
+# streams like the other three.
+aifc = { version = "0.7", optional = true }
 
 # Bevy ECS surface (the `ecs` module: export + region-render plugins). Optional,
 # gated by the `bevy` feature.
@@ -50,7 +54,9 @@ bevy_ecs = { version = "0.19", default-features = false, optional = true }
 bevy_tasks = { version = "0.19", optional = true }
 bevy_log = { version = "0.19", default-features = false, optional = true }
 
+# The example measures loudness to show the composed-normalization path.
 [dev-dependencies]
+tutti-analysis = { path = "../../dsp/tutti-analysis", default-features = false }
 tempfile = "3.10"
 approx = "0.5"
 fundsp = { package = "fundsp-tutti", path = "../../vendor/fundsp-tutti", default-features = false, features = ["std"] }

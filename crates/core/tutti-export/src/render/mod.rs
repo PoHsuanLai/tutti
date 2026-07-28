@@ -1,64 +1,17 @@
-//! Offline rendering stage.
+//! The render stage: a `Net`, pulled one block at a time.
 //!
-//! Drives a `tutti_core::dsp::Net` block-by-block, gates each block, and pushes
-//! the kept stereo frames into an [`AudioOut`] sink. Composed of three
-//! children:
+//! - [`plan::RenderPlan`] — frame counts, derived once.
+//! - [`driver::NetSource`] — the graph as an [`AudioIn`](tutti_core::io::AudioIn).
+//! - [`driver::drive`] — the pull loop, applying the [`sink::BlockCursor`] gate.
 //!
-//! - [`plan::RenderPlan`] — derive sample counts.
-//! - [`driver::drive`] — the single block loop (owns the [`BlockCursor`] gate).
-//! - [`sink`] — the [`AudioOut`] block consumers ([`RenderOut`]/[`StreamOut`]).
-//!
-//! The public entry [`render`] is pure composition over those three.
+//! There is no sink type here. The *encoder* owns the pull (see
+//! [`crate::encode`]): FLAC's library is itself pull-based, and giving every
+//! format the same shape is what let the buffering decorators go away.
 
 pub(crate) mod driver;
 pub(crate) mod plan;
 pub(crate) mod sink;
 
+pub(crate) use driver::{drive, NetSource};
 pub(crate) use plan::RenderPlan;
-pub(crate) use sink::{BlockCursor, RenderOut};
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) use sink::{BufferingOut, EncoderOut};
-
-use crate::progress::ProgressEmitter;
-use crate::Result;
-use std::sync::Arc;
-use tutti_core::io::AudioOut;
-use tutti_core::transport::OfflineTimeline;
-
-/// All the inputs needed to render one offline pass. Separating the
-/// specification (this struct) from the consumer interface (`sink`,
-/// `progress`) keeps [`render`]'s body two function calls wide.
-pub(crate) struct RenderRequest<'a> {
-    pub net: tutti_core::dsp::Net,
-    pub sample_rate: f64,
-    pub duration_seconds: f64,
-    pub compensate_latency: bool,
-    /// Optional offline transport whose timeline advances with each block.
-    pub timeline: Option<&'a Arc<OfflineTimeline>>,
-}
-
-/// Run one offline render: derive a plan from `request`, drive the net,
-/// and pump every block into `sink`. Generic over the frame width `CH` — the
-/// caller picks it from the requested channel layout and the whole render loop
-/// is monomorphized at that width.
-pub(crate) fn render<const CH: usize>(
-    request: RenderRequest<'_>,
-    sink: &mut dyn AudioOut<f32, CH>,
-    progress: &mut ProgressEmitter<'_>,
-) -> Result<()> {
-    let mut net = request.net;
-    let plan = RenderPlan::new(
-        &mut net,
-        request.sample_rate,
-        request.duration_seconds,
-        request.compensate_latency,
-    );
-    driver::drive::<CH>(
-        &mut net,
-        request.sample_rate,
-        &plan,
-        request.timeline,
-        sink,
-        progress,
-    )
-}
+pub(crate) use sink::BlockCursor;

@@ -1,106 +1,73 @@
-//! OGG Vorbis encoder (vorbis_rs-backed). Whole-signal only.
+//! Ogg Vorbis (vorbis_rs). Streams via `encode_audio_block`.
 //!
-//! vorbis_rs takes the channel count at runtime and encodes from planar
-//! per-channel slices — which is exactly the shape
-//! [`rechannel`](crate::encode::rechannel) hands us — so OGG carries any width
-//! Vorbis supports (its channel mappings cover mono, stereo, and 3–8-channel
-//! surround) with no per-format channel logic.
+//! vorbis_rs takes planar per-channel slices, so each block is deinterleaved on
+//! the way through. Vorbis's channel mappings cover mono, stereo, and 3–8
+//! surround, so this carries any width the export dispatch admits below that.
+//!
+//! Vorbis is lossy and always float internally, so `bit_depth` and `dither` do
+//! not apply — quantization noise has nothing to dither against here.
 
-use crate::encode::EncodeRequest;
+use crate::encode::Encoder;
 use crate::error::{Error, Result};
+use crate::render::{drive, NetSource, RenderPlan};
+use crate::spec::ExportSpec;
 use std::io::BufWriter;
 use std::num::{NonZeroU32, NonZeroU8};
+use std::path::Path;
 use vorbis_rs::{VorbisBitrateManagementStrategy, VorbisEncoderBuilder};
 
-const BLOCK_SIZE: usize = 4096;
-
-pub(crate) fn encode(planes: &[Vec<f32>], request: &EncodeRequest<'_>) -> Result<()> {
-    let quality = request.ogg.quality;
-
-    // `planes` is already the per-channel planar shape vorbis_rs wants.
-    let channels = planes;
-    let num_channels = channels.len();
-    let num_frames = channels.iter().map(|p| p.len()).min().unwrap_or(0);
-
-    let file = std::fs::File::create(request.path)?;
-    let writer = BufWriter::new(file);
-
-    let sr = NonZeroU32::new(request.sample_rate)
-        .ok_or_else(|| Error::InvalidConfig("Sample rate must be non-zero".into()))?;
-    let ch = NonZeroU8::new(num_channels as u8)
-        .ok_or_else(|| Error::InvalidConfig("Channel count must be non-zero".into()))?;
-
-    let mut encoder = VorbisEncoderBuilder::new(sr, ch, writer)
-        .map_err(|e| Error::Encoding(format!("Failed to create OGG encoder: {e}")))?;
-    encoder.bitrate_management_strategy(VorbisBitrateManagementStrategy::QualityVbr {
-        target_quality: quality,
-    });
-    let mut encoder = encoder
-        .build()
-        .map_err(|e| Error::Encoding(format!("Failed to build OGG encoder: {e}")))?;
-
-    let mut offset = 0;
-    while offset < num_frames {
-        let block_end = (offset + BLOCK_SIZE).min(num_frames);
-        let block: Vec<&[f32]> = channels.iter().map(|c| &c[offset..block_end]).collect();
-        encoder
-            .encode_audio_block(block.as_slice())
-            .map_err(|e| Error::Encoding(format!("OGG encoding failed: {e}")))?;
-        offset = block_end;
-    }
-
-    encoder
-        .finish()
-        .map_err(|e| Error::Encoding(format!("OGG finalization failed: {e}")))?;
-
-    Ok(())
+pub(crate) struct OggEncoder {
+    encoder: vorbis_rs::VorbisEncoder<BufWriter<std::fs::File>>,
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::{AudioFormat, ChannelLayout, Export};
+impl OggEncoder {
+    pub(crate) fn create(path: &Path, spec: &ExportSpec) -> Result<Self> {
+        let sr = NonZeroU32::new(spec.output_rate())
+            .ok_or_else(|| Error::InvalidConfig("Sample rate must be non-zero".into()))?;
+        let ch = NonZeroU8::new(spec.encode.channels.count() as u8)
+            .ok_or_else(|| Error::InvalidConfig("Channel count must be non-zero".into()))?;
 
-    #[test]
-    fn ogg_stereo_sine_produces_valid_ogg() {
-        let sample_rate = 44100u32;
-        let num_samples = (sample_rate as f64 * 0.1) as usize;
-
-        let left: Vec<f32> = (0..num_samples)
-            .map(|i| {
-                (2.0 * std::f32::consts::PI * 440.0 * i as f32 / sample_rate as f32).sin() * 0.5
-            })
-            .collect();
-        let right = left.clone();
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test.ogg");
-        Export::buffers(left, right, sample_rate as f64)
-            .format(AudioFormat::OggVorbis)
-            .to_file(&path)
-            .run()
-            .unwrap();
-
-        let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&bytes[0..4], b"OggS");
-        assert!(bytes.len() > 100);
+        let writer = BufWriter::new(std::fs::File::create(path)?);
+        let mut builder = VorbisEncoderBuilder::new(sr, ch, writer)
+            .map_err(|e| Error::Encoding(format!("Failed to create OGG encoder: {e}")))?;
+        builder.bitrate_management_strategy(VorbisBitrateManagementStrategy::QualityVbr {
+            target_quality: spec.encode.ogg.quality,
+        });
+        let encoder = builder
+            .build()
+            .map_err(|e| Error::Encoding(format!("Failed to build OGG encoder: {e}")))?;
+        Ok(Self { encoder })
     }
+}
 
-    #[test]
-    fn ogg_mono_writes_ogg_magic() {
-        let num_samples = 4410;
-        let left: Vec<f32> = vec![0.0; num_samples];
-        let right = left.clone();
+impl<const CH: usize> Encoder<CH> for OggEncoder {
+    fn encode(
+        mut self,
+        src: &mut NetSource<'_, CH>,
+        plan: &RenderPlan,
+        _spec: &ExportSpec,
+    ) -> Result<()> {
+        // Reused planar staging, so a block deinterleaves without allocating.
+        let mut planes: Vec<Vec<f32>> = vec![Vec::new(); CH];
+        drive(src, plan, |frames| {
+            for p in planes.iter_mut() {
+                p.clear();
+                p.reserve(frames.len());
+            }
+            for f in frames {
+                for (p, &s) in planes.iter_mut().zip(f.iter()) {
+                    p.push(s);
+                }
+            }
+            let block: Vec<&[f32]> = planes.iter().map(|p| p.as_slice()).collect();
+            self.encoder
+                .encode_audio_block(block.as_slice())
+                .map_err(|e| Error::Encoding(format!("OGG encoding failed: {e}")))
+        })?;
 
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("test_mono.ogg");
-        Export::buffers(left, right, 44100.0)
-            .format(AudioFormat::OggVorbis)
-            .channels(ChannelLayout::Mono)
-            .to_file(&path)
-            .run()
-            .unwrap();
-
-        let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&bytes[0..4], b"OggS");
+        self.encoder
+            .finish()
+            .map_err(|e| Error::Encoding(format!("OGG finalization failed: {e}")))?;
+        Ok(())
     }
 }

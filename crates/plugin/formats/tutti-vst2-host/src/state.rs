@@ -115,7 +115,15 @@ impl Vst2Instance {
         state.extend_from_slice(&param_count.to_le_bytes());
 
         for i in 0..param_count {
-            let value = self.params.get_parameter(i);
+            // A plugin that advertises parameters but exposes no accessor
+            // cannot be serialized: writing 0.0 would produce a blob that
+            // restores silently and wrongly, which is worse than refusing.
+            let Some(value) = self.params.get_parameter(i) else {
+                return Err(Vst2Error::StateRestoreError(format!(
+                    "plugin reports {param_count} parameters but exposes no \
+                     getParameter, so parameter {i} cannot be saved"
+                )));
+            };
             state.extend_from_slice(&value.to_le_bytes());
         }
 
@@ -147,7 +155,14 @@ impl Vst2Instance {
                         values[offset + 3],
                     ]);
                     let value = value.clamp(0.0, 1.0);
-                    self.params.set_parameter(i, value);
+                    if !self.params.set_parameter(i, value) {
+                        // Reporting success here would claim a preset was
+                        // restored while every value went nowhere.
+                        return Err(Vst2Error::StateRestoreError(format!(
+                            "plugin exposes no setParameter, so parameter {i} \
+                             could not be restored"
+                        )));
+                    }
                 }
 
                 Ok(())

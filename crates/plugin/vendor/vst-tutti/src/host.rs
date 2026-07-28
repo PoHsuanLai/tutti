@@ -1050,24 +1050,25 @@ impl PluginParameters for PluginParametersInstance {
         )
     }
 
-    /// `0.0` when the plugin left `getParameter` null — the same answer a
-    /// parameterless plugin would give, and the only one available.
-    fn get_parameter(&self, index: i32) -> f32 {
+    /// `None` when the plugin left `AEffect::getParameter` null, which VST 2.4
+    /// permits for a plugin declaring `numParams == 0`.
+    fn get_parameter(&self, index: i32) -> Option<f32> {
         let effect = self.get_effect();
-        let Some(get) = (unsafe { (*effect).getParameter }) else {
-            return 0.0;
-        };
-        get(effect, index)
+        // SAFETY: `get_effect` returns the live `AEffect` this instance wraps.
+        let get = unsafe { (*effect).getParameter }?;
+        Some(get(effect, index))
     }
 
-    /// A null `setParameter` makes this a no-op rather than a crash. A plugin
-    /// that declares no automatable parameters has nothing to set.
-    fn set_parameter(&self, index: i32, value: f32) {
+    /// `false` when the plugin left `AEffect::setParameter` null — the value
+    /// went nowhere.
+    fn set_parameter(&self, index: i32, value: f32) -> bool {
         let effect = self.get_effect();
+        // SAFETY: as above.
         let Some(set) = (unsafe { (*effect).setParameter }) else {
-            return;
+            return false;
         };
-        set(effect, index, value)
+        set(effect, index, value);
+        true
     }
 
     fn can_be_automated(&self, index: i32) -> bool {
@@ -1408,11 +1409,9 @@ mod tests {
         use crate::api::{DispatcherProc, ProcessProc, ProcessProcF64};
 
         // The bytes a plugin leaves in a slot it never fills in. Transmuted
-        // per-field rather than zeroing a whole `AEffect`, which rustc rejects
-        // outright — the fields this fix did *not* touch (`setParameter`,
-        // `getParameter`) are still non-nullable, so all-zeros is not a valid
-        // instance of the struct. That rejection is itself the point: the type
-        // system now knows which slots may be absent and which may not.
+        // per-field: every function slot is `Option` now, so an all-zero
+        // `AEffect` would in fact be valid, but building one would assert far
+        // less precisely than naming each slot that must read as absent.
         let absent: Option<ProcessProc> = unsafe { std::mem::transmute(0usize) };
         assert!(
             absent.is_none(),
@@ -1446,6 +1445,62 @@ mod tests {
         assert_eq!(
             std::mem::size_of::<Option<DispatcherProc>>(),
             std::mem::size_of::<*const u8>(),
+        );
+
+        // The parameter accessors, converted later than the four above. VST 2.4
+        // lets a plugin with `numParams == 0` leave these null, so an ordinary
+        // parameterless effect reaches the same jump-to-zero.
+        use crate::api::{GetParameterProc, SetParameterProc};
+        let absent_get: Option<GetParameterProc> = unsafe { std::mem::transmute(0usize) };
+        assert!(absent_get.is_none());
+        let absent_set: Option<SetParameterProc> = unsafe { std::mem::transmute(0usize) };
+        assert!(absent_set.is_none());
+        assert_eq!(
+            std::mem::size_of::<Option<GetParameterProc>>(),
+            std::mem::size_of::<GetParameterProc>(),
+        );
+    }
+
+    /// The absent case must stay distinguishable from a real `0.0`.
+    ///
+    /// `PluginParameters::get_parameter` returns `Option<f32>` for exactly this
+    /// reason. Upstream vst-rs returns a bare `f32`, mirroring the C API, which
+    /// forces `0.0` to mean both "the plugin has no parameter access" and "the
+    /// parameter is at zero" — and there is deliberately no infallible overload
+    /// alongside it that would let a caller re-merge them by accident.
+    ///
+    /// Driven through the real accessor over a zeroed `AEffect` — exactly the
+    /// struct a parameterless plugin presents, and a valid instance only
+    /// *because* every function slot is `Option`. Before that conversion this
+    /// test could not have been written, and the code it covers jumped to
+    /// address zero.
+    #[test]
+    fn an_absent_parameter_accessor_is_not_a_real_zero() {
+        // Every slot null: the plugin filled in nothing.
+        let mut effect: AEffect = unsafe { std::mem::zeroed() };
+        let params = PluginParametersInstance {
+            effect: UnsafeCell::new(&mut effect as *mut AEffect),
+        };
+
+        assert_eq!(
+            params.get_parameter(0),
+            None,
+            "a null getParameter must be reported as absent, not as a value"
+        );
+        assert!(
+            !params.set_parameter(0, 0.75),
+            "a null setParameter must report that the value went nowhere"
+        );
+
+        // `None` is not `Some(0.0)`: a plugin genuinely sitting at zero stays
+        // distinguishable from one that cannot be asked. Collapsing the two is
+        // what the signature exists to prevent, and there is no lossy overload
+        // that would quietly do it for a caller.
+        assert_ne!(
+            params.get_parameter(0),
+            Some(0.0),
+            "absent and a real zero must stay distinguishable — if they merge, \
+             callers have no way to recover which happened"
         );
     }
 

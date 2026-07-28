@@ -730,7 +730,7 @@ pub trait PluginParameters: Sync {
 
     /// Get the parameter value for parameter at `index` (e.g. "1.0", "150", "Plate", "Off").
     fn get_parameter_text(&self, index: i32) -> String {
-        format!("{:.3}", self.get_parameter(index))
+        format!("{:.3}", self.get_parameter(index).unwrap_or(0.0))
     }
 
     /// Get the name of parameter at `index`.
@@ -738,15 +738,49 @@ pub trait PluginParameters: Sync {
         format!("Param {}", index)
     }
 
-    /// Get the value of parameter at `index`. Should be value between 0.0 and 1.0.
-    fn get_parameter(&self, index: i32) -> f32 {
-        0.0
+    /// Get the value of parameter at `index`, or `None` if this implementation
+    /// exposes no parameter access at all.
+    ///
+    /// **Fork divergence from upstream vst-rs**, which returns a bare `f32`.
+    /// That mirrors the C API, where the call cannot fail — but on the host side
+    /// it can: VST 2.4 lets a plugin declaring `numParams == 0` leave
+    /// `AEffect::getParameter` null, and a bare `f32` has to answer `0.0` there.
+    /// `0.0` is also a perfectly ordinary parameter value, so the two collapse
+    /// into each other and later surface as a parameter that silently reads
+    /// zero.
+    ///
+    /// There is deliberately no infallible variant alongside this one. A lossy
+    /// method and an honest one means callers reach for the lossy one by
+    /// default and the distinction rots; `unwrap_or(0.0)` at a call site that
+    /// genuinely does not care is one visible line.
+    ///
+    /// Plugin-side implementations always have a value, so returning `Some` is
+    /// the whole of the work — see the `Default` note below.
+    ///
+    /// # Implementing
+    ///
+    /// A plugin overriding this should return `Some(value)` unconditionally.
+    /// `None` is reserved for a *host* wrapping a loaded plugin that offers no
+    /// parameter access; it means "there is nothing to ask", not "the value is
+    /// unknown right now".
+    fn get_parameter(&self, index: i32) -> Option<f32> {
+        None
     }
 
-    /// Set the value of parameter at `index`. `value` is between 0.0 and 1.0.
+    /// Set the value of parameter at `index`, reporting whether the value was
+    /// delivered. `value` is between 0.0 and 1.0.
     ///
     /// This method can be called on the processing thread for automation.
-    fn set_parameter(&self, index: i32, value: f32) {}
+    ///
+    /// **Fork divergence from upstream vst-rs**, which returns `()`. `false`
+    /// means the write went nowhere — the host-side counterpart of
+    /// [`get_parameter`](Self::get_parameter)'s `None`, and the case that
+    /// matters on a preset-restore path, where the entire point is that the
+    /// values arrive. A dropped write and a successful one are otherwise
+    /// identical from the caller's side.
+    fn set_parameter(&self, index: i32, value: f32) -> bool {
+        false
+    }
 
     /// Return whether parameter at `index` can be automated.
     fn can_be_automated(&self, index: i32) -> bool {

@@ -74,7 +74,12 @@ pub extern "C" fn set_parameter(effect: *mut AEffect, index: i32, value: f32) {
 
 /// VST2.4 get parameter function.
 pub extern "C" fn get_parameter(effect: *mut AEffect, index: i32) -> f32 {
-    unsafe { (*effect).get_params() }.get_parameter(index)
+    // The C ABI has no way to say "absent", and a plugin implementing this
+    // trait always has a value — `None` here means the plugin did not override
+    // `get_parameter` at all, for which 0.0 is the SDK's historical answer.
+    unsafe { (*effect).get_params() }
+        .get_parameter(index)
+        .unwrap_or(0.0)
 }
 
 /// Copy a string into a destination buffer.

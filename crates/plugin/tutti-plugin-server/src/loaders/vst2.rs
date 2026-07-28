@@ -229,7 +229,12 @@ impl PluginParams for Vst2Instance {
     fn get_parameter(&self, id: u32) -> f64 {
         #[cfg(feature = "vst2")]
         {
-            self.inner.parameter(id) as f64
+            // `PluginParams` is the shared cross-format vocabulary and returns a
+            // bare `f64`, so the VST2-specific "plugin exposes no accessor" case
+            // is flattened here at the boundary rather than propagated. 0.0
+            // matches what the other format loaders return for an unreadable
+            // parameter; the distinction stays available on `Vst2Instance`.
+            self.inner.parameter(id).unwrap_or(0.0) as f64
         }
         #[cfg(not(feature = "vst2"))]
         {
@@ -239,8 +244,10 @@ impl PluginParams for Vst2Instance {
     }
 
     fn set_parameter(&mut self, id: u32, value: f64) {
+        // Same boundary flattening: the shared trait returns `()`, so a write
+        // the plugin cannot accept is dropped here rather than reported.
         #[cfg(feature = "vst2")]
-        self.inner.set_parameter(id, value as f32);
+        let _ = self.inner.set_parameter(id, value as f32);
         #[cfg(not(feature = "vst2"))]
         let _ = (id, value);
     }

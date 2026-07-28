@@ -75,12 +75,28 @@ fn parameter_count_nonzero() {
 #[ignore]
 fn parameter_set_get_roundtrip() {
     let instance = load();
-    instance.set_parameter(0, 0.5);
-    assert!((instance.parameter(0) - 0.5).abs() < 0.01);
-    instance.set_parameter(0, 0.0);
-    assert!(instance.parameter(0).abs() < 0.01);
-    instance.set_parameter(0, 1.0);
-    assert!((instance.parameter(0) - 1.0).abs() < 0.01);
+    // The fixture advertises parameters, so both accessors must be present —
+    // `expect` turns "the plugin exposes none" into a clear failure instead of
+    // a comparison against a substituted zero.
+    let read = |i| {
+        instance
+            .parameter(i)
+            .expect("the fixture plugin must expose getParameter")
+    };
+    let write = |i, v| {
+        assert!(
+            instance.set_parameter(i, v),
+            "the fixture plugin must expose setParameter"
+        );
+    };
+
+    write(0, 0.5);
+    assert!((read(0) - 0.5).abs() < 0.01);
+    write(0, 0.0);
+    // Distinct from `None`: the plugin really is at zero here.
+    assert!(read(0).abs() < 0.01);
+    write(0, 1.0);
+    assert!((read(0) - 1.0).abs() < 0.01);
 }
 
 #[test]
@@ -164,21 +180,21 @@ fn note_on_off_lifecycle_decays() {
 #[ignore]
 fn state_save_restore_roundtrip() {
     let instance = load();
-    instance.set_parameter(0, 0.25);
-    instance.set_parameter(1, 0.75);
+    assert!(instance.set_parameter(0, 0.25));
+    assert!(instance.set_parameter(1, 0.75));
 
     let state = instance.save_state().expect("save_state should succeed");
     assert!(!state.is_empty());
 
-    instance.set_parameter(0, 0.9);
-    instance.set_parameter(1, 0.1);
+    assert!(instance.set_parameter(0, 0.9));
+    assert!(instance.set_parameter(1, 0.1));
 
     instance
         .load_state(&state)
         .expect("load_state should succeed");
 
-    assert!((instance.parameter(0) - 0.25).abs() < 0.02);
-    assert!((instance.parameter(1) - 0.75).abs() < 0.02);
+    assert!((instance.parameter(0).unwrap() - 0.25).abs() < 0.02);
+    assert!((instance.parameter(1).unwrap() - 0.75).abs() < 0.02);
 }
 
 #[test]

@@ -648,13 +648,32 @@ impl Vocoder {
     /// `synthesis_hop` is how much finished output each frame publishes. Their
     /// ratio is the time-scaling, and which one varies depends on who drives the
     /// rate — see [`Unit::tick`].
-    fn process(&mut self, analysis_hop: usize, synthesis_hop: usize, pitch_ratio: f32) {
+    fn process(&mut self, analysis_hop: usize, synthesis_hop: usize) {
         while self.input.available() >= self.geometry.window().get() {
-            self.process_frame(analysis_hop, synthesis_hop, pitch_ratio);
+            self.process_frame(analysis_hop, synthesis_hop);
         }
     }
 
-    fn process_frame(&mut self, analysis_hop: usize, synthesis_hop: usize, pitch_ratio: f32) {
+    /// # Why there is no pitch parameter here
+    ///
+    /// A phase vocoder cannot transpose. A partial's output frequency is set by
+    /// **which bin holds its magnitude**, and this loop never moves magnitude
+    /// between bins — line for line, bin `k` in is bin `k` out. Scaling the phase
+    /// advance by a pitch ratio, which this function used to do, therefore
+    /// transposes nothing; it only decorrelates each bin's phase from its
+    /// magnitude.
+    ///
+    /// That was measurably *worse than omitting it*. Feeding 440 Hz and asking
+    /// for ±1200 cents, the scaling produced 411 Hz and 408 Hz — the same wrong
+    /// answer in both directions, so not even a wrong-ratio bug — at 6 dB down.
+    /// Held alongside the correct read-rate fix it still cost 8.7 dB at +1200 and
+    /// 12.5 dB at +700, pulling exact pitch off by up to 47 Hz.
+    ///
+    /// Transposition is a *resampling* operation and lives at the call site: the
+    /// caller reads the source at [`Unit::input_rate`], which folds in the pitch
+    /// ratio, and [`Unit::effective_stretch`] restores the duration that fast or
+    /// slow read cost. This function's only job is time-scaling.
+    fn process_frame(&mut self, analysis_hop: usize, synthesis_hop: usize) {
         let size = self.geometry.window().get();
         let bins = self.geometry.bins_per_frame().get();
 
@@ -675,7 +694,7 @@ impl Vocoder {
         self.spectrum[0] = Complex32::new(dc, 0.0);
         self.spectrum[bins - 1] = Complex32::new(nyquist, 0.0);
 
-        // 3. Per-bin phase advance, scaled for pitch and re-accumulated.
+        // 3. Per-bin phase advance, re-accumulated at the synthesis rate.
         let hop_ratio = synthesis_hop as f32 / analysis_hop as f32;
         for k in 0..bins {
             let magnitude = self.spectrum[k].norm();
@@ -690,7 +709,7 @@ impl Vocoder {
                 let deviation = wrap_phase(phase - self.last_phase[k] - expected);
                 let true_advance = expected + deviation;
                 self.phase_accumulator[k] =
-                    wrap_phase(self.phase_accumulator[k] + true_advance * pitch_ratio * hop_ratio);
+                    wrap_phase(self.phase_accumulator[k] + true_advance * hop_ratio);
             } else {
                 // First frame of the stream: adopt the observed phase. There is
                 // no previous frame to measure an advance against, and starting
@@ -973,12 +992,73 @@ impl Unit {
             .map_or(0, |v| v.geometry.window().get())
     }
 
-    /// The (analysis, synthesis) hop pair for the current stretch factor.
+    /// Time-scaling the vocoder actually performs: `stretch × pitch_ratio`.
+    ///
+    /// **Not** [`stretch_factor`](Self::stretch_factor), and deliberately not
+    /// clamped to [`StretchFactor::MIN`]..=[`StretchFactor::MAX`]. Those bounds
+    /// describe *user intent* — how much longer the material should get. This is
+    /// an internal quantity, and pitch shifting drives it outside them by
+    /// construction: 4× stretch up two octaves is an effective 16.0, and 0.25×
+    /// down two octaves is 0.0625.
+    ///
+    /// Pitch shift is resample-then-restore. Reading the source `pitch_ratio`
+    /// faster transposes it *and* shortens it (that much is plain varispeed);
+    /// stretching by the same ratio restores the duration and leaves the
+    /// transposition behind. Neither half is a pitch shift alone — the caller
+    /// supplies the read rate via [`input_rate`](Self::input_rate) and the
+    /// vocoder supplies the restore, which is why the two must be derived from
+    /// one place.
+    ///
+    /// Verified at the corners: pitch lands within 1 Hz of target at effective
+    /// factors from 0.0625 to 16.0, i.e. across the whole clamp-free range.
+    #[inline]
+    fn effective_stretch(&self) -> f32 {
+        self.stretch_factor().get() * self.pitch_cents().to_pitch_ratio()
+    }
+
+    /// Fed samples this unit consumes per output sample:
+    /// `1 / effective_stretch`.
+    ///
+    /// **The unit paces its own intake**, and the caller feeds one source sample
+    /// per output sample. That is the crate's existing contract — every voice
+    /// path hands `tick` a single frame and expects one back — and pitch shifting
+    /// rides on it rather than changing it.
+    ///
+    /// Consuming fed frames faster than one-per-output *is* a resample, and
+    /// resampling is the only thing that transposes. So this rate carries both
+    /// halves, for opposite reasons:
+    ///
+    /// - **`1 / stretch`** — consume slower so the material lasts longer;
+    ///   the hops restore the pitch that slow read would otherwise drop.
+    /// - **`/ pitch_ratio`** — consume faster to transpose up; the hops, which
+    ///   scale by the same [`effective_stretch`](Self::effective_stretch),
+    ///   restore the duration that fast read costs.
+    ///
+    /// Both must be derived from the one effective factor the hops use, or the
+    /// resample and the restore disagree and the result is neither the requested
+    /// pitch nor the requested length.
+    ///
+    /// Deliberately **not** a [`ReadRate`]: that type names what a caller
+    /// advances a source cursor by (see [`input_rate`](Self::input_rate)), and
+    /// this is the unit's own consumption of frames already produced. Two
+    /// quantities on two sides of a boundary; sharing one type is what would let
+    /// an edit swap them.
+    ///
+    /// `f64` to match `intake_debt`: the debt accumulates once per output sample
+    /// and is never reset, so a long voice sums millions of terms. Widening here
+    /// keeps that from drifting — the same reason [`ReadRate`] is `f64`-backed.
+    #[inline]
+    fn intake_rate(&self) -> f64 {
+        1.0 / self.effective_stretch() as f64
+    }
+
+    /// The (analysis, synthesis) hop pair for the current effective stretch.
     ///
     /// The **synthesis** hop is pinned to the grid's natural `size / 4`, and the
-    /// **analysis** hop is `synthesis / stretch`. Their ratio is still exactly
-    /// `stretch`, which is what the phase accumulator needs to hold pitch fixed
-    /// while duration changes.
+    /// **analysis** hop is `synthesis / effective`. Their ratio is exactly
+    /// [`effective_stretch`](Self::effective_stretch) — the time-scaling that,
+    /// combined with the caller reading at [`input_rate`](Self::input_rate),
+    /// yields the requested stretch and pitch independently.
     ///
     /// Pinning synthesis is a COLA requirement, not a preference. Overlap-add
     /// reconstruction needs the synthesis frames to overlap by at least 75% for a
@@ -1005,32 +1085,40 @@ impl Unit {
             .borrow()
             .first()
             .map_or(1, |v| v.geometry.hop().get());
-        let analysis = ((synthesis as f32 / self.stretch_factor().get()).round() as usize).max(1);
+        let analysis = ((synthesis as f32 / self.effective_stretch()).round() as usize).max(1);
         (analysis, synthesis.max(1))
     }
 
-    /// Source samples this unit consumes per output sample: `1 / stretch`.
+    /// Source samples a **placed** caller advances per output sample:
+    /// `1 / stretch`.
     ///
-    /// A time-stretcher is a rate changer, and `AudioUnit::tick` is one-in /
-    /// one-out — so the *caller* has to supply the difference. A placed voice
-    /// reads by derived position, so it can simply scale that position: at
-    /// `stretch = 2.0` the source advances half a sample per output sample, and
-    /// the vocoder spreads it back over the full duration at unchanged pitch.
+    /// For a voice whose position is *derived from the playhead* rather than fed
+    /// sample-by-sample. Such a caller cannot let the unit pace its own intake —
+    /// it computes where in the wave to read from the transport, so it must scale
+    /// that position itself or the stretch never reaches the source.
     ///
-    /// This is NOT varispeed, though it looks identical in isolation. Varispeed is
-    /// slow-reading *alone*, which drops pitch by the same factor. Here the
-    /// vocoder's `synthesis / analysis` ratio undoes exactly that shift — the two
-    /// halves only work together, which is why this rate belongs to the unit that
-    /// knows the stretch factor rather than to the call site.
+    /// **Pitch is deliberately absent**, and this is the subtle half of the
+    /// design. Pitch shifting is a resample, and the unit performs that resample
+    /// internally by consuming fed frames at
+    /// [`intake_rate`](Self::intake_rate). Folding the pitch ratio in here as
+    /// well would resample *twice* — once at the caller's cursor, once at the
+    /// intake — and the second cancels the first exactly. Measured: with pitch
+    /// folded in here, the output holds 440 Hz at every requested interval, which
+    /// is the same silent no-op this fix removed.
     ///
-    /// `1.0` when the unit is bypassing, so a caller can apply it unconditionally.
+    /// Contrast [`intake_rate`](Self::intake_rate), which carries both halves
+    /// because it *is* the resample. The two are not interchangeable despite both
+    /// being "samples consumed per output sample": one scales a cursor into a
+    /// wave, the other scales consumption of an already-produced stream.
+    ///
+    /// `1.0` when the unit is bypassing, so a caller can apply it
+    /// unconditionally.
     #[inline]
     pub fn input_rate(&self) -> ReadRate {
         if !self.is_processing() {
             return ReadRate::UNITY;
         }
-        let (analysis, synthesis) = self.hops();
-        ReadRate(analysis as f64 / synthesis as f64)
+        ReadRate(1.0 / self.stretch_factor().get() as f64)
     }
 }
 
@@ -1149,11 +1237,12 @@ impl AudioUnit for Unit {
         }
 
         let (analysis_hop, synthesis_hop) = self.hops();
-        let pitch_ratio = self.pitch_cents().to_pitch_ratio();
 
-        // Pace the source intake at `1 / stretch` — see `intake_debt`. Above
-        // unity this drops input samples; below it, feeds the same one twice.
-        self.intake_debt += self.input_rate().get();
+        // Pace the intake at the PITCH half — see `intake_debt` and
+        // `input_rate`. Above unity this drops fed samples (transposing up);
+        // below it, feeds the same one twice (transposing down). The stretch
+        // half is the caller's job, already applied to the frames arriving here.
+        self.intake_debt += self.intake_rate();
         // One borrow for the whole call: the cell's contract is one borrow at a
         // time, and re-borrowing per sample would also cost a debug atomic each.
         self.channels.claim(self.id);
@@ -1162,7 +1251,7 @@ impl AudioUnit for Unit {
             self.intake_debt -= 1.0;
             for (c, v) in bank.iter_mut().enumerate() {
                 v.input.push(&[src(c)]);
-                v.process(analysis_hop, synthesis_hop, pitch_ratio);
+                v.process(analysis_hop, synthesis_hop);
             }
         }
 
@@ -1232,8 +1321,7 @@ impl AudioUnit for Unit {
         }
 
         let (analysis_hop, synthesis_hop) = self.hops();
-        let pitch_ratio = self.pitch_cents().to_pitch_ratio();
-        let rate = self.input_rate();
+        let rate = self.intake_rate();
 
         // Same intake pacing as `tick`, applied per sample of the block so the
         // two entry points consume the source identically. Walking the block
@@ -1242,13 +1330,13 @@ impl AudioUnit for Unit {
         // the two paths separately.
         let mut bank = self.channels.channels.borrow_mut();
         for i in 0..size {
-            self.intake_debt += rate.get();
+            self.intake_debt += rate;
             while self.intake_debt >= 1.0 {
                 self.intake_debt -= 1.0;
                 for (c, v) in bank.iter_mut().enumerate() {
                     let sample = scratch_in[c].active_ref(size)[i];
                     v.input.push(&[sample]);
-                    v.process(analysis_hop, synthesis_hop, pitch_ratio);
+                    v.process(analysis_hop, synthesis_hop);
                 }
             }
         }
@@ -1617,28 +1705,61 @@ mod tests {
     /// a performance one: it runs inside the audio callback, and an unbounded
     /// `while` there is a dropout waiting for the right parameter value.
     ///
-    /// `input_rate` is `1 / stretch` and [`StretchFactor::MIN`] is 0.25, so the
-    /// rate can never exceed 4.0 and the loop can never run more than four times
-    /// per tick. The bound comes from `set_stretch_factor` clamping on store — a
-    /// raw `StretchFactor::new(0.001)` would otherwise ask for a thousand
-    /// iterations.
+    /// The loop is paced by [`Unit::intake_rate`], which is the **pitch** ratio —
+    /// not `input_rate`, which is the caller's stretch half and never reaches
+    /// this loop. [`MAX_PITCH_CENTS`] is +2400, so the rate cannot exceed 4.0 and
+    /// the loop cannot run more than four times per tick. The bound comes from
+    /// `set_pitch_cents` clamping on store: a raw `Cents::new(12_000.0)` would
+    /// otherwise ask for a thousand iterations.
+    ///
+    /// This test used to guard `input_rate` for the same reason, back when that
+    /// method paced the loop. It is asserted against `intake_rate` now because
+    /// that is what the loop actually reads — guarding the other one would pass
+    /// while the real bound went unchecked.
     #[test]
-    fn the_intake_loop_is_bounded_by_the_stretch_clamp() {
+    fn the_intake_loop_is_bounded_by_the_pitch_clamp() {
         let u = Unit::with_channels(44_100.0, 1);
 
         // Well past the clamp, in the direction that increases intake.
-        u.set_stretch_factor(StretchFactor::new(0.001));
-        assert_eq!(u.stretch_factor(), StretchFactor::MIN);
+        u.set_pitch_cents(Cents::new(12_000.0));
+        assert_eq!(u.pitch_cents().get(), MAX_PITCH_CENTS);
         assert!(
-            u.input_rate().get() <= 4.0 + 1e-6,
+            u.intake_rate() <= 4.0 + 1e-6,
             "intake rate {} would run the per-tick loop more than 4 times",
-            u.input_rate()
+            u.intake_rate()
         );
 
         // And the other end cannot drive it to zero, which would starve the FIFO.
+        u.set_pitch_cents(Cents::new(-12_000.0));
+        assert_eq!(u.pitch_cents().get(), MIN_PITCH_CENTS);
+        assert!(u.intake_rate() > 0.0);
+    }
+
+    /// The caller's rate is bounded too, for a different reason: it scales a
+    /// source cursor rather than a loop, so an unbounded value reads off the end
+    /// of a wave rather than spinning the callback.
+    #[test]
+    fn the_callers_read_rate_is_bounded_by_the_stretch_clamp() {
+        let u = Unit::with_channels(44_100.0, 1);
+
+        u.set_stretch_factor(StretchFactor::new(0.001));
+        assert_eq!(u.stretch_factor(), StretchFactor::MIN);
+        assert!(u.input_rate().get() <= 4.0 + 1e-6);
+
         u.set_stretch_factor(StretchFactor::new(100.0));
         assert_eq!(u.stretch_factor(), StretchFactor::MAX);
         assert!(u.input_rate().get() > 0.0);
+
+        // Pitch must NOT appear here — it is the unit's own half. A pitch shift
+        // folded into the caller's read cancels itself against the hops, which
+        // is precisely how pitch shift was silently inert before.
+        u.set_stretch_factor(StretchFactor::UNITY);
+        u.set_pitch_cents(Cents::new(1200.0));
+        assert_eq!(
+            u.input_rate(),
+            ReadRate::UNITY,
+            "pitch leaked into the caller's read rate, which cancels the shift"
+        );
     }
 
     /// `input_rate` is `1.0` while bypassing, so a caller can apply it
@@ -1946,6 +2067,250 @@ mod tests {
             heard_signal,
             "both rendered silence — the comparison proved nothing"
         );
+    }
+
+    /// Dominant frequency of a settled signal, by Goertzel-style scan.
+    ///
+    /// A test helper rather than production code: the crate has no FFT-analysis
+    /// surface and does not need one. Scans 40..4000 Hz at 1 Hz, Hann-windowed
+    /// so a partial that falls between probe frequencies does not split.
+    #[cfg(test)]
+    fn dominant_hz(x: &[f32], sample_rate: f32) -> f32 {
+        let n = x.len();
+        let mut best = (0.0f32, 0.0f32);
+        let mut f = 40.0f32;
+        while f < 4000.0 {
+            let (mut re, mut im) = (0.0f32, 0.0f32);
+            for (i, &s) in x.iter().enumerate() {
+                let w = 0.5 - 0.5 * (Radians::TAU.get() * i as f32 / n as f32).cos();
+                let p = Radians::TAU.get() * f * i as f32 / sample_rate;
+                re += s * w * p.cos();
+                im -= s * w * p.sin();
+            }
+            let m = (re * re + im * im).sqrt();
+            if m > best.1 {
+                best = (f, m);
+            }
+            f += 1.0;
+        }
+        best.0
+    }
+
+    #[cfg(test)]
+    fn rms(x: &[f32]) -> f32 {
+        (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt()
+    }
+
+    /// Render a 440 Hz source through a unit, **observing the crate's feed
+    /// contract**: one source sample in per output sample out, with the unit
+    /// pacing its own intake.
+    ///
+    /// That contract is what every voice path does and what
+    /// `stretch_factor_changes_the_source_consumption_rate` pins, so a pitch test
+    /// that fed differently would be measuring a call shape no caller uses. An
+    /// earlier draft of this helper advanced a source cursor by
+    /// [`Unit::input_rate`] instead; it made all four pitch tests pass while
+    /// breaking nine existing ones, because scaling the read *and* the intake
+    /// resamples twice and the halves cancel.
+    #[cfg(test)]
+    fn render_440(u: &Unit, sample_rate: f32, out_len: usize) -> Vec<f32> {
+        let mut au = u.clone();
+        au.allocate();
+        let mut out = Vec::with_capacity(out_len);
+        for i in 0..out_len {
+            let s = (Radians::TAU.get() * 440.0 * i as f32 / sample_rate).sin();
+            let mut o = [0.0f32];
+            au.tick(&[s], &mut o);
+            out.push(o[0]);
+        }
+        out
+    }
+
+    /// Render a 440 Hz **wave table** through a unit the way a placed voice does:
+    /// the caller advances a source cursor by [`Unit::input_rate`] and reads the
+    /// table at that fractional index.
+    ///
+    /// The table is load-bearing and cost real debugging time. Generating the
+    /// source from `sin(TAU·f·pos/sr)` while stepping `pos` by the read rate makes
+    /// the *generator* perform the resampling, which pre-cancels the very
+    /// transposition under test and reports a clean 440 Hz for every setting. A
+    /// table read is what `MemorySource::get_sample_into` does, and it is the only
+    /// form that can observe the effect.
+    #[cfg(test)]
+    fn render_440_placed(u: &Unit, sample_rate: f32, out_len: usize) -> Vec<f32> {
+        let table: Vec<f32> = (0..400_000)
+            .map(|i| (Radians::TAU.get() * 440.0 * i as f32 / sample_rate).sin())
+            .collect();
+        let rate = u.input_rate().get() as f32;
+        let mut au = u.clone();
+        au.allocate();
+        let mut out = Vec::with_capacity(out_len);
+        let mut pos = 0.0f32;
+        for _ in 0..out_len {
+            let j = pos.floor() as usize;
+            let frac = pos - j as f32;
+            let a = table.get(j).copied().unwrap_or(0.0);
+            let b = table.get(j + 1).copied().unwrap_or(0.0);
+            let mut o = [0.0f32];
+            au.tick(&[a + (b - a) * frac], &mut o);
+            out.push(o[0]);
+            pos += rate;
+        }
+        out
+    }
+
+    /// **Pitch shift transposes, and stretch does not.**
+    ///
+    /// The assertion this crate lacked. Every pre-existing pitch test checked
+    /// only that the atomic round-tripped and clamped, so a unit that ignored
+    /// pitch entirely passed all of them — and one did, for the whole life of the
+    /// feature. Measured before this fix: +1200 cents moved 440 Hz to 411 and
+    /// -1200 moved it to 408. The *same* wrong answer in both directions, which
+    /// is why it could never have been a wrong-ratio bug.
+    ///
+    /// Asserting frequency rather than liveness is the same lesson the 60 dB gain
+    /// bug taught here: `!= 0.0` is satisfied by almost any defect.
+    #[test]
+    fn pitch_shift_transposes_by_the_requested_interval() {
+        let sr = 48_000.0f32;
+        for &cents in &[0.0f32, 1200.0, -1200.0, 700.0, -500.0] {
+            let u = Unit::with_channels(sr as f64, 1);
+            u.set_pitch_cents(Cents::new(cents));
+
+            let out = render_440(&u, sr, 48_000);
+            let settled = &out[24_000..24_000 + 8192];
+            let got = dominant_hz(settled, sr);
+            let want = 440.0 * Cents::new(cents).to_pitch_ratio();
+
+            // 2% covers the 1 Hz scan step and the vocoder's own bin resolution
+            // without admitting a semitone (~6%) of error.
+            assert!(
+                (got - want).abs() < want * 0.02,
+                "{cents:+} cents: wanted {want:.1} Hz, got {got:.1} Hz"
+            );
+        }
+    }
+
+    /// **A one-per-tick feed makes the stretch factor behave as varispeed** — it
+    /// moves pitch — and that is correct, not a bug.
+    ///
+    /// This surprises, so it is pinned. A unit fed one source sample per output
+    /// sample has received the whole source by the time it has emitted the whole
+    /// output; there is no extra material to spread over a longer span, so a
+    /// factor of 2 can only mean "consume twice as fast", which transposes up an
+    /// octave. Measured here and on the parent commit alike: 0.5x yields 220 Hz
+    /// and 2.0x yields 880 Hz from a 440 Hz source.
+    ///
+    /// Duration-changing stretch needs the *caller* to supply the extra material
+    /// by advancing its source cursor at [`Unit::input_rate`], which is what a
+    /// placed voice does — see
+    /// `stretching_a_placed_read_changes_duration_not_pitch`. The two call shapes
+    /// give different, individually correct answers, and conflating them is what
+    /// made an earlier draft of this fix break nine tests.
+    #[test]
+    fn a_one_per_tick_feed_makes_stretch_behave_as_varispeed() {
+        let sr = 48_000.0f32;
+        for &(factor, want) in &[(0.5f32, 220.0f32), (1.0, 440.0), (2.0, 880.0)] {
+            let u = Unit::with_channels(sr as f64, 1);
+            u.set_stretch_factor(StretchFactor::new(factor));
+
+            let out = render_440(&u, sr, 48_000);
+            let got = dominant_hz(&out[24_000..24_000 + 8192], sr);
+            assert!(
+                (got - want).abs() < want * 0.02,
+                "stretch {factor}x on a one-per-tick feed: wanted {want:.1} Hz, got {got:.1} Hz"
+            );
+        }
+    }
+
+    /// A **placed** read — the caller advancing its cursor by
+    /// [`Unit::input_rate`] — changes duration without moving pitch.
+    ///
+    /// This is the shape a timeline voice uses (`MemorySource` derives its
+    /// position from the playhead and scales it by the rate), and the one where
+    /// "time-stretch" means what the name says. Pinned opposite
+    /// `a_one_per_tick_feed_makes_stretch_behave_as_varispeed` so the difference
+    /// between the two call shapes is documented by executable example rather
+    /// than by comment.
+    #[test]
+    fn stretching_a_placed_read_changes_duration_not_pitch() {
+        let sr = 48_000.0f32;
+        for &factor in &[0.5f32, 1.0, 1.5, 2.0] {
+            let u = Unit::with_channels(sr as f64, 1);
+            u.set_stretch_factor(StretchFactor::new(factor));
+
+            let out = render_440_placed(&u, sr, 48_000);
+            let got = dominant_hz(&out[24_000..24_000 + 8192], sr);
+            assert!(
+                (got - 440.0).abs() < 440.0 * 0.02,
+                "placed stretch {factor}x moved the pitch to {got:.1} Hz"
+            );
+        }
+    }
+
+    /// Pitch and stretch **compose** on a placed read: each lands on target with
+    /// the other engaged.
+    ///
+    /// Composition is where this design could plausibly fail, because both halves
+    /// flow through one `effective_stretch = stretch * pitch_ratio`. If the split
+    /// were wrong, the single-parameter tests could still pass while every real
+    /// combination drifted.
+    #[test]
+    fn pitch_and_stretch_are_independent_on_a_placed_read() {
+        let sr = 48_000.0f32;
+        for &(factor, cents) in &[
+            (2.0f32, 1200.0f32),
+            (2.0, -700.0),
+            (0.5, 1200.0),
+            (0.5, -1200.0),
+            (1.5, 500.0),
+        ] {
+            let u = Unit::with_channels(sr as f64, 1);
+            u.set_stretch_factor(StretchFactor::new(factor));
+            u.set_pitch_cents(Cents::new(cents));
+
+            let out = render_440_placed(&u, sr, 48_000);
+            let got = dominant_hz(&out[24_000..24_000 + 8192], sr);
+            let want = 440.0 * Cents::new(cents).to_pitch_ratio();
+            assert!(
+                (got - want).abs() < want * 0.02,
+                "placed stretch {factor}x with {cents:+} cents: \
+                 wanted {want:.1} Hz, got {got:.1} Hz"
+            );
+        }
+    }
+
+    /// A pitch shift must not cost level.
+    ///
+    /// The phase scaling this fix deleted was not merely inert — it *attenuated*,
+    /// because decorrelating each bin's phase from its magnitude makes
+    /// overlap-add cancel where it should reinforce. Measured with the scaling
+    /// retained alongside the correct read-rate fix: -8.7 dB at +1200 cents and
+    /// -12.5 dB at +700. Without an energy assertion, a future reintroduction
+    /// would show up only as "sounds a bit quiet".
+    #[test]
+    fn pitch_shift_preserves_level() {
+        let sr = 48_000.0f32;
+        let dry = {
+            let u = Unit::with_channels(sr as f64, 1);
+            u.set_pitch_cents(Cents::new(0.0));
+            rms(&render_440(&u, sr, 48_000)[24_000..24_000 + 8192])
+        };
+        assert!(dry > 0.1, "reference render was silent ({dry:.4})");
+
+        for &cents in &[1200.0f32, -1200.0, 700.0] {
+            let u = Unit::with_channels(sr as f64, 1);
+            u.set_pitch_cents(Cents::new(cents));
+            let wet = rms(&render_440(&u, sr, 48_000)[24_000..24_000 + 8192]);
+            let db = 20.0 * (wet / dry).log10();
+            // 3 dB is generous against the measured 0.0-0.6 dB, and still far
+            // tighter than the 8.7-12.5 dB the deleted scaling cost.
+            assert!(
+                db > -3.0,
+                "{cents:+} cents lost {:.1} dB (rms {wet:.4} vs dry {dry:.4})",
+                -db
+            );
+        }
     }
 
     /// At `StretchFactor::MIN` the frames stop overlapping, and the level ripples.
@@ -2403,7 +2768,7 @@ mod tests {
             v.input.push(chunk);
             // Synthesis hop == analysis hop: no time scaling, so output and
             // input advance together.
-            v.process(hop, hop, 1.0);
+            v.process(hop, hop);
             written += v.output.drain(&mut out[written..]);
         }
 

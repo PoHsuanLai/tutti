@@ -198,8 +198,8 @@ pub fn main<T: Plugin>(callback: HostCallbackProc) -> *mut AEffect {
 
         _process: Some(interfaces::process_deprecated), // fn pointer
 
-        setParameter: interfaces::set_parameter, // fn pointer
-        getParameter: interfaces::get_parameter, // fn pointer
+        setParameter: Some(interfaces::set_parameter),
+        getParameter: Some(interfaces::get_parameter),
 
         numPrograms: 0, // To be updated with plugin specific value.
         numParams: 0,   // To be updated with plugin specific value.
@@ -410,16 +410,10 @@ mod tests {
 
     #[test]
     fn aeffect_params() {
-        // Assert that 2 function pointers are equal.
-        macro_rules! assert_fn_eq {
-            ($a:expr, $b:expr) => {
-                assert_eq!($a as usize, $b as usize);
-            };
-        }
-
-        // The audio entry points are `Option`, so they need unwrapping before
-        // the address comparison — and asserting `Some` is itself part of the
-        // contract: we must install these, whatever a third-party plugin does.
+        // Every function slot in `AEffect` is now `Option`, so each needs
+        // unwrapping before the address comparison — and asserting `Some` is
+        // itself part of the contract: we must install these, whatever a
+        // third-party plugin does.
         macro_rules! assert_opt_fn_eq {
             ($a:expr, $b:expr) => {
                 assert_eq!(
@@ -434,8 +428,8 @@ mod tests {
         assert_eq!(aeffect.magic, VST_MAGIC);
         assert_opt_fn_eq!(aeffect.dispatcher, interfaces::dispatch);
         assert_opt_fn_eq!(aeffect._process, interfaces::process_deprecated);
-        assert_fn_eq!(aeffect.setParameter, interfaces::set_parameter);
-        assert_fn_eq!(aeffect.getParameter, interfaces::get_parameter);
+        assert_opt_fn_eq!(aeffect.setParameter, interfaces::set_parameter);
+        assert_opt_fn_eq!(aeffect.getParameter, interfaces::get_parameter);
         assert_eq!(aeffect.numPrograms, 1);
         assert_eq!(aeffect.numParams, 1);
         assert_eq!(aeffect.numInputs, 2);

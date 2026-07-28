@@ -93,10 +93,19 @@ pub struct AEffect {
     pub _process: Option<ProcessProc>,
 
     /// Set value of automatable parameter.
-    pub setParameter: SetParameterProc,
+    ///
+    /// `Option` for the same reason as
+    /// [`processReplacing`](Self::processReplacing). VST 2.4 lets a plugin with
+    /// `numParams == 0` leave this null, and an effect with no automatable
+    /// parameters is an ordinary thing to write — so the null is reachable
+    /// without any misbehaviour on the plugin's part.
+    pub setParameter: Option<SetParameterProc>,
 
     /// Get value of automatable parameter.
-    pub getParameter: GetParameterProc,
+    ///
+    /// `Option` for the same reason as
+    /// [`setParameter`](Self::setParameter).
+    pub getParameter: Option<GetParameterProc>,
 
     /// Number of programs (Presets).
     pub numPrograms: i32,

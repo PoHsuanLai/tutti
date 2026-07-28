@@ -1,8 +1,7 @@
 use crate::types::{TrackInfo, TransportRequest, TuningInfo, UndoChange};
-use arc_swap::ArcSwapOption;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::thread::ThreadId;
 use std::time::Instant;
 
@@ -226,24 +225,36 @@ impl ResourceState {
 /// Shared state for host↔plugin communication via atomic flags.
 pub struct HostState {
     pub main_thread_id: ThreadId,
-    /// Current audio-thread identity. Read from the audio thread on every
-    /// CLAP callback that queries `is_audio_thread`, and written at
-    /// start/stop of processing. Lock-free ([`ArcSwapOption`]: a single
-    /// atomic pointer load on the read side).
+    /// Current audio-thread identity, as a hash of the claiming [`ThreadId`].
+    /// [`NO_AUDIO_THREAD`] means no claim is outstanding, so a thread holds the
+    /// role only *during* an `[audio-thread]` call.
     ///
-    /// Written only through [`HostState::claim_audio_thread`], which also
-    /// takes [`audio_thread_lock`](Self::audio_thread_lock) — the two are one
-    /// unit, so an OS thread is never published here without also holding the
-    /// `[audio-thread]` concurrency guard. It is `None` whenever no claim is
-    /// outstanding, so a thread is the audio thread only *during* an
-    /// `[audio-thread]` call.
-    pub audio_thread_id: ArcSwapOption<ThreadId>,
-    /// Cached `Arc<ThreadId>` for the thread that most recently held the
-    /// claim, so a repeat claim by the same OS thread republishes without
-    /// hitting the allocator. Purely an RT optimisation
-    /// (`clap_process_no_alloc` pins the no-allocation property); it is only
-    /// ever read/written under [`audio_thread_lock`](Self::audio_thread_lock).
-    audio_thread_cache: ArcSwapOption<ThreadId>,
+    /// Read from the audio thread on every CLAP callback that queries
+    /// `is_audio_thread`, and written on entry to and exit from every
+    /// `[audio-thread]` call — so this is a per-block RT write, not a
+    /// start/stop-of-processing one.
+    ///
+    /// **A plain atomic, deliberately.** This was an `ArcSwapOption<ThreadId>`
+    /// with a one-slot `Arc` cache to avoid allocating per block. Both halves
+    /// were wrong on the audio thread:
+    ///
+    /// - `ArcSwapOption::store` is `drop(self.swap(val))`, and `swap` calls
+    ///   `wait_for_readers` before returning the old `Arc`. So publishing a
+    ///   claim could *block* on the audio thread, and releasing one could run
+    ///   the retired `Arc`'s deallocation there. That is the hazard
+    ///   `RtPublish` exists to prevent, arrived at through a different door.
+    /// - The cache held exactly one slot, so it only helped while the same
+    ///   thread claimed repeatedly. A GUI thread calling `flush_params` between
+    ///   two audio blocks evicts it, and the audio thread allocates again on
+    ///   its next block — precisely the interleaving a DAW produces when a user
+    ///   touches a control during playback.
+    ///
+    /// Hashing sidesteps both: a `u64` needs no allocation, no retirement, and
+    /// no reader coordination. `ThreadId` is opaque (`as_u64` is unstable), so
+    /// the hash is the portable way to fit it in an atomic. Collisions are
+    /// possible in principle; see [`thread_id_hash`] for why that is sound
+    /// here.
+    pub audio_thread_id: AtomicU64,
     /// The `[audio-thread]` concurrency guard (C1/C2).
     ///
     /// CLAP defines the audio-thread as a *symbolic* thread: "the host may
@@ -278,6 +289,40 @@ pub struct HostState {
 
 /// RAII claim on the `[audio-thread]` role for one plugin instance (C1/C2).
 ///
+/// Sentinel for "no thread currently holds the `[audio-thread]` role".
+///
+/// Zero because that is what a freshly constructed `AtomicU64` holds, so a
+/// `HostState` starts unclaimed without an explicit initialiser. A real thread
+/// hashing to 0 would be indistinguishable from "unclaimed" — see
+/// [`thread_id_hash`], which folds that case away.
+const NO_AUDIO_THREAD: u64 = 0;
+
+/// A [`ThreadId`] as a `u64`, so the audio-thread identity fits in one atomic.
+///
+/// `ThreadId` is deliberately opaque and its `as_u64` is unstable, so hashing is
+/// the portable route. `DefaultHasher` is not stable across releases, which does
+/// not matter here: the value never leaves the process and is only ever compared
+/// against another hash produced by this same function in this same run.
+///
+/// **On collisions.** Two live threads could in principle hash alike, which
+/// would let a non-claiming thread answer `is_audio_thread() == true`. That is
+/// tolerable because the property CLAP actually requires — that only one OS
+/// thread is inside an `[audio-thread]` call at a time — is enforced by
+/// `audio_thread_lock`, not by this value. The hash answers "who am I?" for
+/// plugin-facing thread-check queries; the mutex answers "may I enter?". A
+/// collision could mislead a plugin's assertion, never admit a second thread.
+/// At 64 bits with a handful of threads, it is also not a practical concern.
+fn thread_id_hash(id: ThreadId) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut hasher);
+    // Fold the sentinel away so a real thread can never be read as "unclaimed".
+    match hasher.finish() {
+        NO_AUDIO_THREAD => 1,
+        h => h,
+    }
+}
+
 /// While alive it holds [`HostState::audio_thread_lock`] and has published the
 /// claiming OS thread into [`HostState::audio_thread_id`], so:
 /// - `is_audio_thread()` answers `true` on this thread and `false` everywhere else;
@@ -303,12 +348,12 @@ pub struct AudioThreadClaim<'a> {
 
 impl Drop for AudioThreadClaim<'_> {
     fn drop(&mut self) {
-        // Hand the Arc back to the cache instead of freeing it, so the next
-        // claim by this same thread is allocation-free.
-        let released = self.state.audio_thread_id.swap(None);
-        if released.is_some() {
-            self.state.audio_thread_cache.store(released);
-        }
+        // One relaxed-ordered store of a `u64`. Nothing to free, so this cannot
+        // deallocate on the audio thread; `Release` pairs with the `Acquire` in
+        // `is_audio_thread`.
+        self.state
+            .audio_thread_id
+            .store(NO_AUDIO_THREAD, Ordering::Release);
     }
 }
 
@@ -316,8 +361,7 @@ impl HostState {
     pub fn new() -> Self {
         Self {
             main_thread_id: std::thread::current().id(),
-            audio_thread_id: ArcSwapOption::from(None),
-            audio_thread_cache: ArcSwapOption::from(None),
+            audio_thread_id: AtomicU64::new(NO_AUDIO_THREAD),
             audio_thread_lock: Mutex::new(()),
             lifecycle: LifecycleFlags::new(),
             processing: ProcessingState::new(),
@@ -356,17 +400,13 @@ impl HostState {
             .audio_thread_lock
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let current = std::thread::current().id();
-        // RT: the steady state (same audio thread claiming every block) must
-        // not touch the allocator — `clap_process_no_alloc` pins this. Reuse
-        // the Arc the previous claim handed back whenever it names this same
-        // thread; only a genuine thread change mints a new one.
-        let cached = self.audio_thread_cache.swap(None);
-        let id = match cached {
-            Some(arc) if *arc == current => arc,
-            _ => Arc::new(current),
-        };
-        self.audio_thread_id.store(Some(id));
+        // RT: a hash and one `Release` store. No allocation, no reader
+        // coordination, and nothing retired that could be freed here — see the
+        // note on `audio_thread_id` for what this replaced and why.
+        self.audio_thread_id.store(
+            thread_id_hash(std::thread::current().id()),
+            Ordering::Release,
+        );
         AudioThreadClaim {
             state: self,
             _guard: guard,
@@ -375,10 +415,8 @@ impl HostState {
 
     /// Whether the calling thread is currently acting as the audio thread.
     pub fn is_audio_thread(&self) -> bool {
-        self.audio_thread_id
-            .load()
-            .as_deref()
-            .is_some_and(|id| *id == std::thread::current().id())
+        let claimed = self.audio_thread_id.load(Ordering::Acquire);
+        claimed != NO_AUDIO_THREAD && claimed == thread_id_hash(std::thread::current().id())
     }
 
     /// Whether the calling thread is currently acting as the main thread.
@@ -387,8 +425,24 @@ impl HostState {
     /// spec lets a host mark the OS main thread as the audio thread, but the
     /// two symbolic roles are alternatives, not simultaneous identities. While
     /// an [`AudioThreadClaim`] is held on this thread we answer `false` here,
-    /// so a plugin asserting `!is_main_thread()` inside a `[audio-thread]`
+    /// so a plugin asserting `!is_main_thread()` inside an `[audio-thread]`
     /// call is not silently defeated by a host that claims to be both.
+    ///
+    /// Note the exclusion is per-thread, not global: `is_audio_thread` compares
+    /// against *this* thread, so a claim held by the real audio thread does not
+    /// demote a concurrent main-thread caller. Only the main thread's own claim
+    /// — the OS main thread running an `[audio-thread]` call — makes it answer
+    /// `false` here.
+    ///
+    /// One consequence is worth knowing when reading plugin bug reports: an
+    /// active `flush_params` claims the audio-thread role on whatever thread
+    /// calls it, so if the *main* thread drives it, `[main-thread]` callbacks a
+    /// plugin makes from inside `flush` (`request_callback`, `request_restart`,
+    /// `params.rescan`) see `is_main_thread() == false`. That is the spec's
+    /// own framing — `flush` on an active instance *is* `[audio-thread]` — but
+    /// a plugin asserting `is_main_thread()` there will trip. Routing param
+    /// changes through the next `process` block avoids it entirely, which is
+    /// what `flush_params`' own docs already recommend.
     pub fn is_main_thread(&self) -> bool {
         std::thread::current().id() == self.main_thread_id && !self.is_audio_thread()
     }

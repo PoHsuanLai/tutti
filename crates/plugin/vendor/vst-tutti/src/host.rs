@@ -1050,12 +1050,24 @@ impl PluginParameters for PluginParametersInstance {
         )
     }
 
+    /// `0.0` when the plugin left `getParameter` null — the same answer a
+    /// parameterless plugin would give, and the only one available.
     fn get_parameter(&self, index: i32) -> f32 {
-        unsafe { ((*self.get_effect()).getParameter)(self.get_effect(), index) }
+        let effect = self.get_effect();
+        let Some(get) = (unsafe { (*effect).getParameter }) else {
+            return 0.0;
+        };
+        get(effect, index)
     }
 
+    /// A null `setParameter` makes this a no-op rather than a crash. A plugin
+    /// that declares no automatable parameters has nothing to set.
     fn set_parameter(&self, index: i32, value: f32) {
-        unsafe { ((*self.get_effect()).setParameter)(self.get_effect(), index, value) }
+        let effect = self.get_effect();
+        let Some(set) = (unsafe { (*effect).setParameter }) else {
+            return;
+        };
+        set(effect, index, value)
     }
 
     fn can_be_automated(&self, index: i32) -> bool {

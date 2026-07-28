@@ -187,7 +187,7 @@ mod tests {
         assert_eq!(info.flags & F::CYCLE_POS_VALID.bits(), 0);
     }
 
-    /// VST2-H1. `kVstTransportChanged` means the transport state *just
+    /// `kVstTransportChanged` means the transport state *just
     /// changed*, not "a transport snapshot exists". The previous version of
     /// this function asserted it on every block — and the previous version of
     /// this test asserted that as correct — so a tempo-synced delay or
@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(second.flags & F::TRANSPORT_CHANGED.bits(), 0);
     }
 
-    /// VST2-H2. A zeroed transport carries `tempo = 0.0`; advertising
+    /// A zeroed transport carries `tempo = 0.0`; advertising
     /// `kVstTempoValid` alongside it hands the plugin a divisor of zero, and
     /// `60.0 / tempo` puts an infinity on the master bus.
     #[test]

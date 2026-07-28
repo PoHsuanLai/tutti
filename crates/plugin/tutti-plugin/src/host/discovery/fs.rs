@@ -104,7 +104,7 @@ mod tests {
         assert_eq!(format_from_path(Path::new("a.txt")), None);
     }
 
-    /// Regression for DISC-H6: `.VST3` / `.CLAP` are the same extension on a
+    /// Regression for `.VST3` / `.CLAP` are the same extension on a
     /// case-insensitive volume (macOS APFS, Windows NTFS). Matching
     /// case-sensitively made those bundles invisible, and because a `.VST3`
     /// bundle is a *directory*, the scanner then recursed into it and found
@@ -133,7 +133,7 @@ mod tests {
         );
     }
 
-    /// Regression for DISC-H7: VST2 on Windows/Linux ships as a bare
+    /// Regression for VST2 on Windows/Linux ships as a bare
     /// `.dll` / `.so`. `PluginRecord::EXTENSIONS` advertised both while
     /// `format_from_path` rejected both, so no VST2 plugin was discoverable
     /// on those platforms at all.
@@ -167,7 +167,7 @@ mod tests {
     }
 
     /// A `.VST3` bundle directory must be reported as a plugin, not recursed
-    /// into. This is the silent-invisibility half of DISC-H6.
+    /// Into. This is the silent-invisibility half of
     #[test]
     fn discover_treats_uppercase_bundle_dir_as_plugin() {
         let dir = TempDir::new().unwrap();

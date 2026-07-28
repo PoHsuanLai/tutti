@@ -727,7 +727,7 @@ mod tests {
     /// the offset helper that produced it.
     ///
     /// Every other test here writes with `write_input` and reads with
-    /// `read_input_into`, so both sides share `slot_channel_offset`. A consistent
+    /// `read_input_into`, so both sides share `offset_of`. A consistent
     /// error in it — a dropped slot term, a swapped channel/slot factor, the
     /// wrong region base — cancels out and round-trips perfectly. This test
     /// recomputes each address from the layout arithmetic independently, so such

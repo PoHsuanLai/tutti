@@ -626,7 +626,7 @@ mod tests {
         );
     }
 
-    /// Regression for DISC-C1 (catalog half): a blacklisted probe result must
+    /// Catalog half: a blacklisted probe result must
     /// actually land in the catalog and hide the plugin from `plugins()`.
     #[test]
     fn blacklisting_from_a_failed_probe_hides_the_plugin() {
@@ -649,7 +649,7 @@ mod tests {
         ));
     }
 
-    /// Regression for DISC-C2: an mtime change (reinstall, vendor update)
+    /// Regression for an mtime change (reinstall, vendor update)
     /// must re-admit a blacklisted plugin. `classify` used to check the raw
     /// `is_blacklisted` flag *before* `needs_rescan`, so a false positive was
     /// permanent short of hand-editing the JSON.
@@ -685,7 +685,7 @@ mod tests {
         );
     }
 
-    /// Regression for DISC-C2: blacklisting must have an inverse.
+    /// Regression for blacklisting must have an inverse.
     #[test]
     fn unblacklist_and_clear_blacklist_are_the_inverse() {
         let dir = TempDir::new().unwrap();

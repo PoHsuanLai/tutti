@@ -289,9 +289,7 @@ impl Batcher {
         self.read_pos += 1;
     }
 
-    /// Send inputs, process, receive outputs, reset cursors. Any bridge
-    /// failure zero-fills `size` output samples and returns.
-    /// Unpack a [`BlockPayload`] into the positional `bridge.process` call. The
+    /// Unpack a [`BlockPayload`] into the positional `bridge.submit` call. The
     /// one place the host-side aggregate meets the IPC boundary; `midi_out` is
     /// the caller-owned sink the plugin's MIDI-out is drained into.
     fn dispatch(

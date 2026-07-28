@@ -256,7 +256,7 @@ mod tests {
         }
     }
 
-    /// Regression for DISC-H5: the arch subdir must track `target_arch`, not
+    /// Regression for the arch subdir must track `target_arch`, not
     /// just `target_os`. On ARM Linux / Windows-on-ARM the old OS-only
     /// `#[cfg]` produced `x86_64-*`, so zero bundles resolved.
     #[test]

@@ -283,7 +283,12 @@ impl PluginClient {
         )?;
 
         let latency = Arc::new(AtomicUsize::new(server.loaded.latency_samples));
-        let max_buffer_size = config.max_buffer_size;
+        // Sized to what can actually cross the boundary, matching the slab —
+        // `slab_layout_for` clamps to `BATCH_SIZE` for the same reason (fundsp
+        // never hands a node more than one block). Passing the raw
+        // `max_buffer_size` here meant the batcher allocated 8192 samples per
+        // channel to stage 64, and left the two sizes free to disagree.
+        let max_buffer_size = config.max_buffer_size.min(BATCH_SIZE);
         let process_guard = Arc::new(ProcessGuard::new(server.process, bridge_thread, config));
         let param_sink = ParameterChangeSink::new();
         let refresh_sink = RefreshSink::new();

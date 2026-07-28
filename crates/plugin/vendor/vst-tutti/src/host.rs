@@ -1350,7 +1350,7 @@ mod tests {
         let _info = ChannelInfo::from(props);
     }
 
-    /// VST2-H5. `effGetChunk` used to be trusted blindly:
+    /// `effGetChunk` used to be trusted blindly:
     /// `slice::from_raw_parts(ptr, len as usize)` with no null check and no
     /// sign check. This is the project-*save* path, so each of these is a real
     /// crash on a real user's save.
@@ -1379,7 +1379,7 @@ mod tests {
         );
     }
 
-    /// VST2-H4's fallback path clears the outputs before the accumulating
+    /// The fallback path clears the outputs before the accumulating
     /// `process` adds into them, and is also what a plugin with neither entry
     /// point gets. Whatever the caller's scratch held must not leak through.
     #[test]

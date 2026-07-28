@@ -1113,7 +1113,7 @@ mod tests {
         list.events().first().expect("an event").header().time
     }
 
-    /// CLAP-H3 regression: a NEGATIVE `sample_offset` must not wrap.
+    /// A NEGATIVE `sample_offset` must not wrap.
     ///
     /// `sample_offset` is `i32` and `header.time` is `u32`; the old bare
     /// `point.sample_offset as u32` turned -1 into 4_294_967_295, which sorted
@@ -1133,7 +1133,7 @@ mod tests {
         );
     }
 
-    /// CLAP-H3: the same trap on the note-expression path.
+    /// The same trap on the note-expression path.
     #[test]
     fn negative_note_expression_offset_does_not_wrap_h3() {
         let mut list = InputEventList::new();
@@ -1143,7 +1143,7 @@ mod tests {
         assert_eq!(first_time(&list), 0);
     }
 
-    /// CLAP-H3: an event past the end of the block is clamped to the last valid
+    /// An event past the end of the block is clamped to the last valid
     /// sample index, never handed through as-is.
     ///
     /// Clamping rather than dropping is deliberate: a NOTE_OFF or PARAM_VALUE
@@ -1169,7 +1169,7 @@ mod tests {
         );
     }
 
-    /// CLAP-H3: an in-range time is untouched, and a zero-length block folds
+    /// An in-range time is untouched, and a zero-length block folds
     /// everything to 0 (there is no valid index at all).
     #[test]
     fn clamp_times_leaves_in_range_events_alone_h3() {
@@ -1184,7 +1184,7 @@ mod tests {
 
     // --- L6: CLAP VOLUME is a gain in `0 < x <= 4`, not a unit fraction ---
 
-    /// CLAP-L6 regression: `clap/events.h` defines
+    /// `clap/events.h` defines
     /// `CLAP_NOTE_EXPRESSION_VOLUME` as "with 0 < x <= 4, plain = 20 * log(x)"
     /// — a gain where 1.0 is unity and 0 is *excluded*. The host used to emit a
     /// bare `0..1` unit value, so a MIDI volume of 0 produced an out-of-range
@@ -1216,7 +1216,7 @@ mod tests {
         assert!(e.value < 1e-3, "silence must still be inaudible");
     }
 
-    /// CLAP-L6: the attenuating half round-trips exactly, and a plugin-emitted
+    /// The attenuating half round-trips exactly, and a plugin-emitted
     /// boost (`1 < x <= 4`, legal in CLAP) saturates at MIDI full scale instead
     /// of being reported as some arbitrary rescaled value.
     #[test]
@@ -1360,7 +1360,7 @@ mod tests {
         }
     }
 
-    /// CLAP-H2 regression: the `note_id` a NOTE_ON carries must equal the one a
+    /// The `note_id` a NOTE_ON carries must equal the one a
     /// later NOTE_EXPRESSION for the same voice carries.
     ///
     /// `note_on`/`note_off` used to hardcode `note_id: -1` while
@@ -1406,7 +1406,7 @@ mod tests {
         assert_eq!(on.note_id, note_id_for(CH, KEY));
     }
 
-    /// CLAP-H2: `note_id_for` only covers channels 0..16 and keys 0..128. A
+    /// `note_id_for` only covers channels 0..16 and keys 0..128. A
     /// CLAP wildcard (`-1`) or out-of-range field has no voice to name, so it
     /// must fall back to CLAP's `-1` "unspecified" rather than minting a
     /// nonsense id from a negative number.

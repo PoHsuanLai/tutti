@@ -23,7 +23,7 @@ pub enum AuError {
     InvalidBuffer(String),
     /// The AU declined the requested sample rate: after the stream-format /
     /// `kAudioUnitProperty_SampleRate` writes, its ASBD still reports a
-    /// different `mSampleRate` (AU-H2).
+    /// different `mSampleRate`.
     ///
     /// Not recoverable the way a rejected channel count is. The channel count
     /// can be re-read and the render scratch resized to match, but a rate the

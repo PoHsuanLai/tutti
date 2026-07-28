@@ -82,7 +82,8 @@ impl MmapCell {
     ///
     /// If the mapping is smaller than the header. That is a programming error in
     /// slab construction, not a runtime condition — both sides size the mapping
-    /// from the same `SlabLayout::byte_size`, which always includes the header.
+    /// from the same `SlabLayout::byte_size_with_header`, which always includes
+    /// the header.
     #[inline]
     pub(super) fn header(&self) -> &SlabHeader {
         let bytes = self.as_slice();

@@ -185,7 +185,7 @@ pub fn reap_orphaned_live_resize_observers(
 mod tests {
     use super::*;
 
-    // Regression for DISC-H8. `LiveResizeHandle` owns a `Retained<NSView>`
+    // `LiveResizeHandle` owns a `Retained<NSView>`
     // and its `Drop` calls AppKit's `removeObserver`, which is a hard crash
     // off the main thread. It previously carried `unsafe impl Send`/`Sync`
     // solely so it could ride inside a `Component` (Bevy requires

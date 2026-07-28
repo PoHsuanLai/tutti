@@ -215,7 +215,7 @@ fn host_delivers_param_points_with_offsets() {
     );
 }
 
-/// CLAP-H3 regression, end-to-end through the real FFI: no event may reach the
+/// End-to-end through the real FFI: no event may reach the
 /// plugin with a `time` outside `0..frames_count`.
 ///
 /// `header.time` is a sample index the plugin uses to split the block, so an

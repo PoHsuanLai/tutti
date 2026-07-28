@@ -39,10 +39,13 @@ pub(super) struct Channels {
     worker: Arc<Mutex<Option<Thread>>>,
     /// The negotiated sample rate, as `f64::to_bits`. Lives here rather than
     /// only on `AudioBridge` because *both* threads size a timeout from the
-    /// block period — the audio thread its wait budget, the bridge thread its
-    /// reply timeout. One shared source keeps the two from drifting apart,
-    /// which is what let a 500 ms constant sit ~750x above the audio thread's
-    /// 667 µs budget and starve the command queue.
+    /// block period — the bridge thread its reply timeout, and the staleness
+    /// bound its notion of how far behind a block may be. One shared source
+    /// keeps the two from drifting apart, which is what let a 500 ms constant
+    /// sit ~750x above the audio thread's old 667 µs wait budget and starve
+    /// the command queue. That budget is gone — the audio thread no longer
+    /// waits at all — but the drift hazard it illustrates is why this lives
+    /// here.
     sample_rate_bits: Arc<AtomicU64>,
 }
 

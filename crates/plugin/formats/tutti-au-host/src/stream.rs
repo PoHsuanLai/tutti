@@ -109,8 +109,8 @@ impl StreamConfig {
     /// scratch to a rejected (larger) layout is a topology mismatch that reads
     /// out-of-bounds during render.
     ///
-    /// The **sample rate**, unlike the channel layout, is NOT best-effort
-    /// (AU-H2). A channel-count rejection is recoverable — we resize the
+    /// The **sample rate**, unlike the channel layout, is NOT best-effort.
+    /// A channel-count rejection is recoverable — we resize the
     /// scratch and carry on — but a rejected sample rate is not: the config
     /// would record a rate the AU is not running at, and `sample_rate()` /
     /// `get_latency()` both trust that number, so the block would be rendered
@@ -214,7 +214,7 @@ impl StreamConfig {
         Ok(effective)
     }
 
-    /// AU-H2: fail loudly when the AU kept a different sample rate than the one
+    /// Fail loudly when the AU kept a different sample rate than the one
     /// requested, instead of letting the config record a rate the plugin is not
     /// actually running at.
     ///
@@ -257,7 +257,7 @@ mod tests {
         )
     }
 
-    /// AU-H2. The old code `let _`'d the stream-format set, re-read only
+    /// The old code `let _`'d the stream-format set, re-read only
     /// `mChannelsPerFrame`, and returned `Ok(())` regardless — so a rejected
     /// rate was recorded as if accepted. The read-back must reject it.
     #[test]

@@ -369,7 +369,7 @@ impl AuInstance {
     /// Change the sample rate. If the AU was initialized, it is uninitialized
     /// for reconfiguration and then re-initialized to preserve the state.
     ///
-    /// AU-H2: this returns `Ok` only when the AU is *verified* to be running at
+    /// This returns `Ok` only when the AU is *verified* to be running at
     /// `rate`. `StreamConfig::apply` reads the accepted `mSampleRate` back and
     /// errors on a mismatch; on that error the previous rate is restored into
     /// the config, so [`sample_rate`](Self::sample_rate) and
@@ -629,7 +629,7 @@ impl Drop for AuReady {
 }
 
 /// The AU calls this on its render thread to pull input. It is `extern "C"`, so
-/// a panic must never escape it (AU-H3): unwinding across the FFI boundary into
+/// A panic must never escape it: unwinding across the FFI boundary into
 /// AudioToolbox is undefined behaviour. The whole body runs inside
 /// [`catch_unwind`](std::panic::catch_unwind) and a caught panic is reported as
 /// an error status, not swallowed.
@@ -683,7 +683,7 @@ unsafe fn render_input(
     let requested = in_number_frames as usize;
 
     for (ch, buf) in iter_buffers_mut(io_data).enumerate() {
-        // AU-H3: never trust the buffer the AU handed us. `mData` may be null
+        // Never trust the buffer the AU handed us. `mData` may be null
         // (the AU asking us to supply our own pointer) and `mDataByteSize` may
         // describe FEWER frames than `in_number_frames`. Writing
         // `in_number_frames` blind is a null deref in the first case and an
@@ -892,7 +892,7 @@ mod tests {
         assert!(inst.is_initialized());
     }
 
-    /// AU-H2. `sample_rate()` used to report the *requested* rate whether or
+    /// `sample_rate()` used to report the *requested* rate whether or
     /// not the AU took it, because the stream-format set was `let _`'d and only
     /// `mChannelsPerFrame` was read back. Now an `Ok` from `set_sample_rate`
     /// means the AU's own ASBD agrees — so assert against the AU, not against
@@ -934,7 +934,7 @@ mod tests {
         }
     }
 
-    /// AU-H2, the end-to-end invariant: `set_sample_rate` returning `Ok` must
+    /// The end-to-end invariant: `set_sample_rate` returning `Ok` must
     /// imply the AU's own ASBD agrees.
     ///
     /// CAVEAT on what this can prove locally: Apple's AUDelay accepts *every*
@@ -973,7 +973,7 @@ mod tests {
                 assert!(
                     (asbd.mSampleRate - absurd).abs() < 1e-6,
                     "set_sample_rate({absurd}) returned Ok while the AU is at {} — \
-                     this is exactly AU-H2",
+                     Ok must mean the rate was actually applied",
                     asbd.mSampleRate
                 );
             }
@@ -1005,7 +1005,7 @@ mod tests {
         (storage, abl)
     }
 
-    /// AU-H3. The callback used to build its destination slice straight from
+    /// The callback used to build its destination slice straight from
     /// `mData` for the full `in_number_frames` extent, never reading
     /// `mDataByteSize` and never null-checking `mData`. A short buffer was an
     /// out-of-bounds write; a null one was a null deref.
@@ -1131,7 +1131,7 @@ mod tests {
         );
     }
 
-    /// AU-H3, the unwind half, driven through the real `extern "C"` entry
+    /// The unwind half, driven through the real `extern "C"` entry
     /// point rather than through `render_input`.
     ///
     /// The guard is what stands between a panicking render body and undefined

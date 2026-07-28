@@ -328,7 +328,7 @@ mod tests {
         assert!(db.is_empty());
     }
 
-    /// Regression for DISC-H1: a corrupt DB must be preserved, not silently
+    /// Regression for a corrupt DB must be preserved, not silently
     /// destroyed by the next flush. Losing it loses every blacklist entry.
     #[test]
     fn load_corrupt_json_quarantines_the_file() {
@@ -347,7 +347,7 @@ mod tests {
         assert!(!db_path.exists(), "corrupt DB should not be left in place");
     }
 
-    /// Regression for DISC-H1: `flush` must never truncate the live file.
+    /// Regression for `flush` must never truncate the live file.
     /// It writes a sibling temp then renames, so any failure leaves the
     /// previous catalog intact rather than half-written.
     #[test]

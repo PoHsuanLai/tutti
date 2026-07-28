@@ -42,7 +42,7 @@ pub struct AuInstance {
     inner: AuHostInstance,
     #[cfg(all(target_os = "macos", feature = "au"))]
     editor: Option<AuEditor>,
-    /// AU-H1: declared `[min, max]` per parameter id, captured once at load.
+    /// Declared `[min, max]` per parameter id, captured once at load.
     ///
     /// `ProcessContext::param_changes` carries **normalized** `0..=1` values (the
     /// host's authoring convention — see `PluginParams::get_parameter`), but AU's
@@ -286,7 +286,7 @@ impl AuInstance {
             };
 
             // Capture the declared plain ranges once, while still on the load
-            // thread — the RT path denormalizes against these (AU-H1).
+            // thread — the RT path denormalizes against these.
             let param_ranges = read_param_ranges(inner.raw_unit());
 
             Ok(Self {
@@ -327,7 +327,7 @@ impl PluginAudio for AuInstance {
         buffer: tutti_plugin::server::AudioBufferMut<'_, '_>,
         ctx: &ProcessContext,
     ) -> PluginResult<ProcessOutput> {
-        // AU-H1: automation arrives normalized `0..=1` (the host's authoring
+        // Automation arrives normalized `0..=1` (the host's authoring
         // convention, shared with VST2/VST3), but `AudioUnitSetParameter` takes
         // NATIVE PLAIN UNITS — AU has no normalization concept at all. Writing
         // the normalized value straight through set Apple AUDelay's Lowpass
@@ -415,7 +415,7 @@ impl PluginParams for AuInstance {
     /// Plain native units in, matching [`get_parameter`](Self::get_parameter) —
     /// so this pair round-trips. (The `param_changes` automation path in
     /// `process` is the one that must denormalize, because ITS input is
-    /// normalized; see AU-H1 there.)
+    /// Normalized; see the note there.)
     fn set_parameter(&mut self, id: u32, value: f64) {
         let _ = parameters::set(self.inner.raw_unit(), id, value as f32);
     }
@@ -631,7 +631,7 @@ mod tests {
         au.set_state(&state).expect("restore should succeed");
     }
 
-    /// AU-H1, pure unit half: the normalized→plain map itself.
+    /// Pure unit half: the normalized→plain map itself.
     ///
     /// The bug was writing the normalized value straight through, which is
     /// equivalent to `to_plain` being the identity. These endpoints are exactly
@@ -726,7 +726,7 @@ mod tests {
         assert!(lookup_bounds(&table, 3).is_none());
     }
 
-    /// AU-H1, live half: drive a real AU's automation path and read the value
+    /// Live half: drive a real AU's automation path and read the value
     /// back in native units. Full-scale automation must land on the parameter's
     /// declared MAXIMUM, not on `1.0`.
     #[test]

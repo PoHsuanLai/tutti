@@ -976,7 +976,7 @@ fn test_host_thread_check_audio_thread() {
     );
 }
 
-/// CLAP-C1 regression: `is_main_thread` and `is_audio_thread` must be
+/// `is_main_thread` and `is_audio_thread` must be
 /// **mutually exclusive**.
 ///
 /// The spec lets a host mark any OS thread — including the main thread — as the
@@ -1026,7 +1026,7 @@ fn thread_check_roles_are_mutually_exclusive_c1() {
     assert!(!unsafe { is_audio(raw) });
 }
 
-/// CLAP-C1/C2 regression: the audio-thread claim is real mutual exclusion, not
+/// The audio-thread claim is real mutual exclusion, not
 /// an assertion. A second thread trying to enter an `[audio-thread]` region
 /// must block until the first has left — this is the serialization CLAP's
 /// "`params.flush` must not be called concurrently to `process()`" requires,

@@ -168,7 +168,7 @@ impl RenderScratch {
 mod tests {
     use super::*;
 
-    /// AU-C1 regression. The size math must be driven by
+    /// The size math must be driven by
     /// `offset_of!(AudioBufferList, mBuffers)`, never by `size_of::<u32>()`.
     /// The two differ by the 4 bytes of tail padding after `mNumberBuffers`
     /// (the struct is 8-aligned because `AudioBuffer` holds a pointer), and

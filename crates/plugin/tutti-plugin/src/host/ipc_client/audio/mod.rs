@@ -2,8 +2,10 @@
 //! plugin-server subprocess.
 //!
 //! Composition:
-//! - [`Channels`] — the five lock-free queues (commands, two response
-//!   paths, recycle, buffer-id counter).
+//! - [`Channels`] — the three lock-free queues (commands, audio responses,
+//!   unsolicited events) plus the shared newest-sequence and sample-rate
+//!   cells. Payload recycling lives in [`PayloadPool`]; the buffer-id counter
+//!   is gone, the batcher owns the block sequence.
 //! - [`Lifecycle`] — running/crashed flags.
 //! - [`AudioSlab`] — bulk audio transport (created elsewhere; held as Arc).
 //!
@@ -128,7 +130,7 @@ impl AudioBridge {
     }
 
     pub fn set_sample_rate_rt(&self, rate: f64) -> bool {
-        // Publish before queueing, so both the audio thread's wait budget and
+        // Publish before queueing, so both the staleness bound and
         // the bridge thread's reply timeout track the new period from here on.
         self.channels.set_sample_rate(rate);
         !self.lifecycle.is_crashed() && self.channels.push_command(Command::SetSampleRate { rate })

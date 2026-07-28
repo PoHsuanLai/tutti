@@ -420,9 +420,19 @@ impl Vocoder {
     /// the control that says the drop is this change and not the machine.
     ///
     /// The vocoder rings are the remaining term and cannot get the same
-    /// treatment: they *are* the filter's memory. Removing them means not
-    /// deep-cloning the vocoder at all — sharing it behind a handle the graph
-    /// copies cheaply — which is a larger change than this one.
+    /// treatment: they *are* the filter's memory.
+    ///
+    /// **That leaves the Stage 6-7 budget far out of reach, and the gap is not
+    /// tunable.** Measured on a real `Net::commit` over 640 stretch nodes (not
+    /// extrapolated from a clone loop): median 70-135 ms at stereo, 393-488 ms
+    /// at six channels, against 2 ms — and the best commit ever observed, 11 ms,
+    /// is still 5x over. 96 KB of vocoder state per channel times 640 nodes is
+    /// 120 MB per commit at stereo and 360 MB at six, up to 720 MB with two
+    /// generations live. No allocator moves that in 2 ms.
+    ///
+    /// So per-voice graph nodes need the filter to stop being deep-cloned at all
+    /// — shared behind a handle the graph copies cheaply — which is a change to
+    /// the node's design, not to this function.
     fn clone_fresh(&self) -> Self {
         let size = self.geometry.window().get();
         let bins = self.geometry.bins_per_frame().get();

@@ -82,10 +82,34 @@
 //! scratch eagerly, so it *should not* move, and it doesn't. Wall-clock over the
 //! same change was useless — the phase swung 16 ms to 149 ms run to run — which
 //! is the whole argument for keeping this harness rather than a timing test.
+//!
+//! # The budget answer: not close
+//!
+//! [`real_commits`] measures the thing the 2 ms budget is actually about — one
+//! `Net::commit` on a graph of `VOICES` stretch nodes — rather than extrapolating
+//! from the clone loops. Median of 9 commits, three runs:
+//!
+//! | width | median      | best case | budget | over by |
+//! |-------|-------------|-----------|--------|---------|
+//! | 2ch   | 70-135 ms   | 11 ms     | 2 ms   | ~35-65x |
+//! | 6ch   | 393-488 ms  | 69 ms     | 2 ms   | ~200-245x |
+//!
+//! Even the best commit ever observed is 5x over. Profiled, the phase is **77%
+//! allocator, 19% memset** — the ratio tilts further toward malloc than the
+//! isolated clone loops, because a commit also allocates fundsp's own per-node
+//! bookkeeping on top of the vocoders.
+//!
+//! The arithmetic says why it cannot be tuned into range: 96 KB of vocoder state
+//! per channel, times 640 nodes, is 120 MB per commit at stereo and 360 MB at
+//! six channels — with two generations live, up to 720 MB. No allocator reaches
+//! 2 ms moving that much, so the remaining work is not "allocate faster" but
+//! "do not deep-clone the filter" — share it behind a handle, which is a design
+//! change to the node rather than to this path.
 
 use std::hint::black_box;
 use std::time::Instant;
 
+use tutti_core::dsp::Net;
 use tutti_core::StretchFactor;
 use tutti_sampler::stretch::Unit;
 
@@ -163,6 +187,39 @@ fn fresh_construction(channels: usize) {
     }
 }
 
+/// The measurement the 2 ms budget is actually about: **one real `Net::commit`**
+/// on a graph holding `VOICES` stretch nodes.
+///
+/// The clone phases above isolate `Unit::clone` in a tight loop, which is the
+/// right shape for profiling but the wrong shape for a budget — a commit clones
+/// each node once, interleaved with the graph's own bookkeeping, and it is the
+/// per-commit wall time that decides whether a graph edit risks a dropout.
+///
+/// Reports the median of `rounds` commits rather than a mean: this workload's
+/// distribution has a long right tail (see the module docs), and a mean lets one
+/// paging outlier swallow the answer.
+#[inline(never)]
+fn real_commits(channels: usize, rounds: usize) -> Vec<f64> {
+    let mut net = Net::new(0, channels);
+    for _ in 0..VOICES {
+        let u = Unit::with_channels(44_100.0, channels);
+        u.set_stretch_factor(StretchFactor::new(2.0));
+        net.push(Box::new(u));
+    }
+    // Take a backend, which is what makes `commit` legal and what makes it do
+    // the clone-and-swap this is measuring.
+    let _backend = net.backend();
+
+    let mut times = Vec::with_capacity(rounds);
+    for _ in 0..rounds {
+        let started = Instant::now();
+        net.commit();
+        times.push(started.elapsed().as_secs_f64() * 1e3);
+    }
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    times
+}
+
 fn main() {
     // Six channels is the width that hurts, and the width the earlier numbers
     // were taken at. Stereo is included because it is the common case and
@@ -179,6 +236,16 @@ fn main() {
         marker("fresh_construction", || fresh_construction(channels));
         marker("sequential_generations", || generations(channels, VOICES));
         marker("two_live_generations", || two_live_generations(channels));
+
+        // The budget question, measured directly rather than extrapolated from
+        // the clone loops above.
+        let t = marker("real_commits", || real_commits(channels, 9));
+        let (min, median, max) = (t[0], t[t.len() / 2], t[t.len() - 1]);
+        println!(
+            "  >> {channels}ch, {VOICES} nodes: commit median {median:.2} ms \
+             (min {min:.2}, max {max:.2}) — budget 2 ms => {}",
+            if median <= 2.0 { "WITHIN" } else { "OVER" }
+        );
     }
 
     eprintln!("\nRead the inverted call tree per marker frame, not the times above.");

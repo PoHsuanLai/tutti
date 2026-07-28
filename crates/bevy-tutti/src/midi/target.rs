@@ -34,10 +34,9 @@
 
 use bevy_ecs::prelude::*;
 use bevy_ecs::system::SystemParam;
-use std::collections::HashMap;
 
 use tutti_core::{AudioNode, NodeId};
-use tutti_midi_runtime::{MidiInPort, MidiSender};
+use tutti_midi_runtime::MidiInPort;
 
 use crate::graph::AudioGraphRes;
 
@@ -48,17 +47,28 @@ use crate::graph::AudioGraphRes;
 /// mailbox it was only asked to look at.
 type ResolveFn = for<'a> fn(&'a AudioGraphRes, NodeId) -> Option<&'a MidiInPort>;
 
-/// The node types this app can address MIDI to, plus any endpoints it supplies
-/// directly.
+/// The node types this app can address MIDI to.
 ///
 /// Empty by default. An engine that knew every node type would be an engine that
 /// owns a DAW's vocabulary — the thing this crate exists to stay out of.
+///
+/// # Only graph nodes
+///
+/// There was once a second path here: `insert_target`, which stored a bare
+/// `MidiSender` for an endpoint outside the graph. Nothing ever read it. Its own
+/// doc conceded why — "nothing here polls it" — so a host that supplied one had
+/// already taken over scheduling and held the sender itself; the registry copy
+/// bought nothing. Meanwhile the two lookups disagreed: registration and
+/// sequencing resolve through [`port`](MidiTargetResolver::port), which never
+/// consulted it, so a supplied sender was unreachable in practice.
+///
+/// Reconciling them was not possible without changing what a target *is*: a
+/// supplied sender has no port, no `unit_id` slot, and nothing to install a
+/// beat-scheduled source into, so `port` would have had to start returning
+/// something half-populated. A target is its node's port, or it is nothing.
 #[derive(Resource, Default)]
 pub struct MidiTargetRegistry {
     resolvers: Vec<ResolveFn>,
-    /// Senders the host registered itself, for a synth that is not a graph node.
-    /// Consulted before the node resolvers — see [`insert_target`](Self::insert_target).
-    supplied: HashMap<Entity, MidiSender>,
 }
 
 impl MidiTargetRegistry {
@@ -71,29 +81,6 @@ impl MidiTargetRegistry {
         self.resolvers
             .push(|graph, node| Some(graph.0.node_as::<T>(node)?.midi_port()));
         self
-    }
-
-    /// Supply a sender for `entity` directly, replacing any previous one.
-    ///
-    /// [`register`](Self::register) asks a *node type* for its port, which needs
-    /// the entity to be in the audio graph. A synth the host drives outside the
-    /// graph has no node to downcast from and is otherwise unaddressable.
-    ///
-    /// Only a sender, not a port: an endpoint the graph does not own cannot be
-    /// handed a beat-scheduled source by this crate, because nothing here polls
-    /// it. Such a host schedules its own playback and uses this to receive.
-    pub fn insert_target(&mut self, entity: Entity, sender: MidiSender) -> &mut Self {
-        self.supplied.insert(entity, sender);
-        self
-    }
-
-    /// Drop a supplied sender. No-op if none was registered.
-    ///
-    /// Resolution falls back to the node path afterwards, so removing a supplied
-    /// sender for an entity that also has a graph node silently reverts to that
-    /// node's own port rather than un-addressing it.
-    pub fn remove_target(&mut self, entity: Entity) -> Option<MidiSender> {
-        self.supplied.remove(&entity)
     }
 
     fn resolve_node<'a>(&self, graph: &'a AudioGraphRes, node: NodeId) -> Option<&'a MidiInPort> {
@@ -152,22 +139,10 @@ impl MidiTargetResolver<'_, '_> {
     /// never registered, or that type receives no MIDI. Callers skip and retry
     /// on a later frame rather than logging.
     ///
-    /// A host-supplied sender does *not* answer here: it has no port. Use
-    /// [`sender`](Self::sender) when a mailbox is all that is needed.
+    /// The one resolution path. A caller wanting only a push handle takes
+    /// [`MidiInPort::sender`] off the result.
     pub fn port(&self, entity: Entity) -> Option<&MidiInPort> {
         let node = self.nodes.get(entity).ok()?;
         self.registry.resolve_node(&self.graph, node.0)
-    }
-
-    /// The push handle for `entity` — a host-supplied sender if one was
-    /// registered, else the one its node's port owns.
-    ///
-    /// Supplied first because it is an explicit override: a host that hands over
-    /// a sender for an entity means that one, even if its node would also answer.
-    pub fn sender(&self, entity: Entity) -> Option<MidiSender> {
-        if let Some(sender) = self.registry.supplied.get(&entity) {
-            return Some(sender.clone());
-        }
-        Some(self.port(entity)?.sender())
     }
 }

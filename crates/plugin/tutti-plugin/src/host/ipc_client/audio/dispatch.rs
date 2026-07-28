@@ -48,11 +48,19 @@ const STATE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How many blocks behind the newest submitted block a queued `Process` may be
 /// and still be worth sending.
 ///
-/// **This is the ring depth, not an independent tunable.** A reply is unusable
-/// once its slab slot has been overwritten — once the host is more than
-/// [`RING_SLOTS`] blocks past it — so the two express one constraint. Deriving it
-/// stops a later edit from splitting them; two constants that should have been one
-/// is precisely how the 750x reply-timeout mismatch above happened.
+/// **This is the ring depth, not an independent tunable**, but note the `- 1`:
+/// a block exactly [`RING_SLOTS`] behind occupies the *same slot* as the newest
+/// one, because `slot_for` is `seq % RING_SLOTS`. So the last still-live block
+/// is `RING_SLOTS - 1` behind, not `RING_SLOTS`.
+///
+/// This was `RING_SLOTS`, and being one too lax was not merely wasteful. The
+/// server writes and publishes its output *unconditionally* — its `has_input`
+/// check gates only the read — so a block admitted here at `RING_SLOTS` behind
+/// would write into the very slot the host is reading for the newest block and
+/// then stamp that slot's `output_seq` with its own sequence, either tearing
+/// the block being read or destroying the evidence for it. Deriving the
+/// constant is right; deriving it with the wrong offset still shipped the bug
+/// the derivation was meant to prevent.
 ///
 /// It answers a *different* question from [`process_timeout`]: that asks "is this
 /// plugin still responding?", this asks "is this reply still wanted?". Capping the
@@ -63,7 +71,7 @@ const STATE_TIMEOUT: Duration = Duration::from_secs(10);
 /// blocks has its state diverge from a continuous signal, so it glitches on
 /// recovery rather than cleanly silencing. Unavoidable without stalling the audio
 /// thread, and only when the plugin is already failing to keep up.
-const MAX_BEHIND: u64 = RING_SLOTS as u64;
+const MAX_BEHIND: u64 = RING_SLOTS as u64 - 1;
 
 /// The bridge thread's reply timeout for one block: [`PROCESS_TIMEOUT_PERIODS`]
 /// of that block's own period, clamped to
@@ -342,15 +350,52 @@ mod tests {
     fn a_backlog_collapses_to_the_live_blocks() {
         let newest = 10u64;
         let survivors: Vec<u64> = (0..=newest).filter(|&s| !is_stale(s, newest)).collect();
-        assert_eq!(survivors, vec![8, 9, 10]);
+        assert_eq!(survivors, vec![9, 10]);
     }
 
-    /// `MAX_BEHIND` and the ring depth are one constraint, not two tunables.
-    /// Asserted so a later edit cannot raise one without the other — which would
-    /// either keep work whose slot was recycled or drop work still usable.
+    /// **The invariant, stated as a property rather than as a number.**
+    ///
+    /// No block this admits may share a ring slot with the newest one. If it
+    /// did, the server would write that block's output into the slot the host
+    /// is reading for `newest` and stamp the slot's sequence with its own —
+    /// tearing the block being read, or destroying the evidence for it.
+    ///
+    /// The previous version of this test asserted `MAX_BEHIND == RING_SLOTS`
+    /// and its sibling asserted `survivors == [8, 9, 10]`, which *pinned the
+    /// off-by-one as intended behaviour*: at depth 2, `slot_for(8) ==
+    /// slot_for(10)`. Asserting the numbers made the tests agree with the bug.
+    /// Asserting the property makes them independent of the ring depth, so
+    /// raising `RING_SLOTS` cannot silently reintroduce it.
     #[test]
-    fn max_behind_tracks_the_ring_depth() {
-        assert_eq!(MAX_BEHIND, RING_SLOTS as u64);
+    fn no_admitted_block_shares_a_slot_with_the_newest() {
+        // Mirrors `shm::header::slot_for`, which is private to that module.
+        // Duplicated deliberately: importing it would couple this test to the
+        // slab's internals, and the mapping (`seq % RING_SLOTS`) is the *wire*
+        // contract both sides implement, not an implementation detail.
+        let slot_of = |seq: u64| seq % RING_SLOTS as u64;
+
+        let newest = 64u64;
+        for seq in 0..=newest {
+            if is_stale(seq, newest) {
+                continue;
+            }
+            assert!(
+                seq == newest || slot_of(seq) != slot_of(newest),
+                "block {seq} is {} behind and admitted, but shares slot {} with \
+                 the newest block {newest} — the server would overwrite the slot \
+                 the host is reading",
+                newest - seq,
+                slot_of(seq),
+            );
+        }
+    }
+
+    /// `MAX_BEHIND` and the ring depth are one constraint, not two tunables —
+    /// but offset by one, because a block exactly `RING_SLOTS` behind lands in
+    /// the *same* slot as the newest (`slot_for` is `seq % RING_SLOTS`).
+    #[test]
+    fn max_behind_is_one_less_than_the_ring_depth() {
+        assert_eq!(MAX_BEHIND, RING_SLOTS as u64 - 1);
     }
 
     /// `newest < seq` cannot occur — the bridge cannot dequeue a block that was

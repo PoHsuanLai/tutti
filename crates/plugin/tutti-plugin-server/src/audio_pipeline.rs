@@ -224,6 +224,12 @@ impl AudioPipeline {
         // Per-direction channel widths, clamped to the slice-table capacity.
         let in_n = total_in.min(MAX_CHANNELS);
         let out_n = total_out.min(MAX_CHANNELS);
+        // Set false by any channel whose write into the slab failed. Publishing
+        // a slot whose later channels never landed is worse than not publishing
+        // at all: the host's sequence check would pass and it would read the
+        // previous occupant's samples in those channels — half this block
+        // spliced onto half another, which sounds almost right.
+        let mut all_channels_written = true;
         let plugin_output = match &mut self.buffers {
             AudioBuffers::F32 { input, output } => {
                 // Read every input bus's channels from this block's input slot.
@@ -260,7 +266,12 @@ impl AudioPipeline {
                             *s = 0.0;
                         }
                     }
-                    let _ = shm.write_output::<f32>(seq, ch, &chan[..num_samples]);
+                    if shm
+                        .write_output::<f32>(seq, ch, &chan[..num_samples])
+                        .is_err()
+                    {
+                        all_channels_written = false;
+                    }
                 }
                 result
             }
@@ -289,7 +300,12 @@ impl AudioPipeline {
                             *s = 0.0;
                         }
                     }
-                    let _ = shm.write_output::<f64>(seq, ch, &chan[..num_samples]);
+                    if shm
+                        .write_output::<f64>(seq, ch, &chan[..num_samples])
+                        .is_err()
+                    {
+                        all_channels_written = false;
+                    }
                 }
                 result
             }
@@ -300,7 +316,23 @@ impl AudioPipeline {
         // block that returned early above (an error path, no plugin loaded)
         // correctly produces silence rather than stale audio, without needing to
         // signal that separately.
-        shm.publish_output(seq);
+        //
+        // Two conditions gate it, and both are about *not writing into a slot
+        // that belongs to someone else*:
+        //
+        // - `inputs_ready` false means the host recycled this block's slot
+        //   before we got here, so it has moved on and this reply is for a block
+        //   nobody is waiting for. `MAX_BEHIND` in the host's `dispatch` should
+        //   already have dropped the command, but that is the host's bound on
+        //   *sending*; this is the server's own check on *writing*, and the two
+        //   failed independently once already.
+        // - `all_channels_written` false means the slot is only partly filled.
+        //
+        // Either way the host reads a stale sequence and substitutes silence,
+        // which is the designed failure mode.
+        if inputs_ready && all_channels_written {
+            shm.publish_output(seq);
+        }
 
         // The plugin's MIDI-out travels back to the host so it can re-enter
         // routing. `param_changes` / `note_expression` are still dropped (no
@@ -708,6 +740,78 @@ mod tests {
         assert!(
             sc.iter().all(|&s| s == 33.0),
             "sidechain input survived the output write"
+        );
+    }
+
+    /// A block whose input slot the host already recycled must not have its
+    /// output published.
+    ///
+    /// This is the server half of the ring-slot invariant, and it is deliberately
+    /// redundant with the host's `MAX_BEHIND` bound. The host stops *sending* such
+    /// a block; this stops the server *writing* one if it ever arrives anyway.
+    ///
+    /// Why both: at ring depth 2, `slot_for(seq)` and `slot_for(seq + 2)` are the
+    /// same slot. `MAX_BEHIND` was `RING_SLOTS` rather than `RING_SLOTS - 1`, so a
+    /// block exactly two behind was admitted, and publishing its output would
+    /// stamp the sequence of the slot the host was concurrently reading for the
+    /// newest block — tearing that block, or destroying the evidence for it. One
+    /// bound guarding a shared slot is a single point of failure, and that single
+    /// point is what shipped.
+    ///
+    /// The stale slot here holds real audio, not zeros. If it held zeros the test
+    /// could not tell "correctly withheld" from "published silence" — the trap
+    /// that made a sibling test on the host side vacuous.
+    #[test]
+    fn a_block_whose_input_slot_was_recycled_is_not_published() {
+        const CH: usize = 2;
+        const N: usize = 32;
+        const STALE_SEQ: u64 = 7;
+
+        let layout = test_layout(
+            N,
+            SF::Float32,
+            &[ChannelLayout::Stereo],
+            &[ChannelLayout::Stereo],
+        );
+        let name = format!("tutti_recycled_slot_{}", std::process::id());
+        let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
+        let mut shm = AudioSlab::open(name, layout).unwrap();
+
+        // Leave recognisable audio in the slot the stale block would land in, as
+        // a previous occupant would have. `publish_input` is NOT called for
+        // STALE_SEQ — that is precisely what "the host recycled this slot" means.
+        for ch in 0..CH {
+            shm.write_output::<f32>(STALE_SEQ, ch, &[0.5f32; N])
+                .unwrap();
+        }
+
+        let mut pipeline = AudioPipeline::new(SampleFormat::Float32);
+        let mut plugin = EchoProbe {
+            meta: meta(&[CH], &[CH]),
+            seen_inputs: std::cell::RefCell::new(Vec::new()),
+        };
+        let clock = Clock {
+            sample_rate: 48000.0,
+            format: SampleFormat::Float32,
+        };
+        pipeline
+            .process(
+                &mut plugin,
+                &mut shm,
+                &clock,
+                AudioBlock {
+                    seq: STALE_SEQ,
+                    num_samples: N,
+                    midi: &[],
+                    extras: None,
+                },
+            )
+            .unwrap();
+
+        assert!(
+            !shm.has_output(STALE_SEQ),
+            "the server published a block whose input slot had been recycled — \
+             the host would accept it as the current block's audio"
         );
     }
 

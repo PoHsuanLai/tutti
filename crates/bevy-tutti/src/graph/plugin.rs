@@ -8,7 +8,7 @@
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 
-use crate::graph::reconcile::{
+use crate::graph::{
     commit_graph, engine_ready, reconcile_node_despawn, GraphDirty, GraphReconcileSystems,
 };
 

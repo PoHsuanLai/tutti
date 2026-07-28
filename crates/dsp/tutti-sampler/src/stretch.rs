@@ -79,6 +79,18 @@ use tutti_core::{
 /// deep-copy on the rare one.
 struct Bank {
     channels: AudioThreadCell<Vec<Vocoder>>,
+
+    /// Per-block working buffers, one pair per channel.
+    ///
+    /// Here rather than on [`Unit`] because they follow the same rule the
+    /// vocoders do: only the one handle holding the bank's claim may touch them,
+    /// and they carry nothing between blocks. Leaving them on the handle meant a
+    /// fresh 64 KB per channel per generation — after the bank was shared, that
+    /// was **98% of a commit's remaining traffic at both widths** (240 MB of
+    /// 243.8 at six channels). Deferring their allocation to
+    /// [`AudioUnit::allocate`] had only moved when it was paid, not whether.
+    scratch_in: AudioThreadCell<Vec<RtScratch<f32>>>,
+    scratch_out: AudioThreadCell<Vec<RtScratch<f32>>>,
     /// Which [`Unit`] may tick this bank; `UNCLAIMED` until the first tick.
     ///
     /// Not a borrow flag — a claim. It outlives any single call, which is what
@@ -100,10 +112,46 @@ fn next_handle_id() -> usize {
 
 impl Bank {
     fn new(channels: Vec<Vocoder>) -> Arc<Self> {
+        // Size the scratch here, not lazily in `allocate`. A directly
+        // constructed unit must be usable without the graph's help — the RT
+        // guard `time_stretch_process_is_allocation_free` builds one and ticks
+        // it straight away, and leaving it unsized made `process` allocate in
+        // the callback. Construction is not on the commit path (a clone inherits
+        // an already-sized bank), so this costs nothing per graph edit.
+        let width = channels.len();
         Arc::new(Self {
             channels: AudioThreadCell::new(channels),
+            scratch_in: AudioThreadCell::new(
+                (0..width)
+                    .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
+                    .collect(),
+            ),
+            scratch_out: AudioThreadCell::new(
+                (0..width)
+                    .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
+                    .collect(),
+            ),
             ticker: AtomicUsize::new(UNCLAIMED),
         })
+    }
+
+    /// Whether the block scratch is sized for `width` channels.
+    fn scratch_is_ready(&self, width: usize) -> bool {
+        let scratch = self.scratch_in.borrow();
+        scratch.len() == width && scratch.iter().all(|s| s.capacity() >= MAX_BUFFER_SIZE)
+    }
+
+    /// Size the block scratch. Idempotent; control thread only.
+    fn allocate_scratch(&self, width: usize) {
+        if self.scratch_is_ready(width) {
+            return;
+        }
+        *self.scratch_in.borrow_mut() = (0..width)
+            .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
+            .collect();
+        *self.scratch_out.borrow_mut() = (0..width)
+            .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
+            .collect();
     }
 
     /// Assert `who` is allowed to tick, claiming the bank if it is unclaimed.
@@ -545,10 +593,10 @@ impl Vocoder {
     /// The history is worth keeping, because it is what the design was measured
     /// against. When a commit *did* deep-clone: 201.8 MB per commit at stereo and
     /// 604.6 MB at six channels, median 70-135 ms and 393-488 ms against a 2 ms
-    /// budget. Sharing took that to 81.5 / 243.8 MB and put stereo inside the
-    /// budget at ~0.95 ms. Six channels is still over, but its floor moved from
-    /// 11 ms to ~2.5 ms, and what remains is mostly fundsp's own per-`Vertex`
-    /// bookkeeping rather than this state.
+    /// budget. Sharing the bank took that to 81.5 / 243.8 MB, and moving the
+    /// block scratch onto the bank as well took it to **1.3 / 3.3 MB** — a ~180x
+    /// reduction, with both widths committing in ~0.2 ms. What remains is
+    /// fundsp's own per-`Vertex` bookkeeping, not this state.
     fn clone_fresh(&self) -> Self {
         let size = self.geometry.window().get();
         let bins = self.geometry.bins_per_frame().get();
@@ -717,9 +765,6 @@ pub struct Unit {
     stretch_factor: Arc<AtomicF32>,
     pitch_cents: Arc<AtomicF32>,
     enabled: bool,
-    scratch_in: Vec<RtScratch<f32>>,
-    scratch_out: Vec<RtScratch<f32>>,
-
     /// Fractional debt in the source-intake resampler: how much of the next
     /// source sample the unit still owes itself before it may consume one.
     ///
@@ -786,12 +831,6 @@ impl Unit {
             stretch_factor: Arc::new(AtomicF32::new(StretchFactor::UNITY.get())),
             pitch_cents: Arc::new(AtomicF32::new(0.0)),
             enabled: true,
-            scratch_in: (0..channels)
-                .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
-                .collect(),
-            scratch_out: (0..channels)
-                .map(|_| RtScratch::new(MAX_BUFFER_SIZE))
-                .collect(),
             intake_debt: 0.0,
         }
     }
@@ -976,7 +1015,6 @@ impl Clone for Unit {
         // nothing. `allocate` sizes it, which is exactly the hook fundsp
         // documents for "buffers for block processing" and which `Net::commit`
         // calls on the graph it is about to run.
-        let (scratch_in, scratch_out) = Self::scratch_pair(self.width, 0);
         let mut cloned = Self {
             // The whole point: a refcount bump, not ~96 KB per channel.
             channels: Arc::clone(&self.channels),
@@ -987,39 +1025,10 @@ impl Clone for Unit {
             stretch_factor: Arc::new(AtomicF32::new(self.stretch_factor.load(Ordering::Acquire))),
             pitch_cents: Arc::new(AtomicF32::new(self.pitch_cents.load(Ordering::Acquire))),
             enabled: self.enabled,
-            scratch_in,
-            scratch_out,
             intake_debt: 0.0,
         };
         cloned.enabled = self.enabled;
         cloned
-    }
-}
-
-impl Unit {
-    /// Per-block scratch, sized to the worst case. Empty until [`allocate`] runs.
-    ///
-    /// [`allocate`]: AudioUnit::allocate
-    fn scratch_pair(
-        channels: usize,
-        capacity: usize,
-    ) -> (Vec<RtScratch<f32>>, Vec<RtScratch<f32>>) {
-        (
-            (0..channels).map(|_| RtScratch::new(capacity)).collect(),
-            (0..channels).map(|_| RtScratch::new(capacity)).collect(),
-        )
-    }
-
-    /// Whether the block scratch is sized and ready for [`AudioUnit::process`].
-    ///
-    /// False on a clone that has not been [`allocate`]d yet — see
-    /// [`Unit::clone`], which deliberately leaves the scratch empty.
-    ///
-    /// [`allocate`]: AudioUnit::allocate
-    fn scratch_is_ready(&self) -> bool {
-        self.scratch_in
-            .first()
-            .is_some_and(|s| s.capacity() >= MAX_BUFFER_SIZE)
     }
 }
 
@@ -1125,23 +1134,30 @@ impl AudioUnit for Unit {
         let channels = self.channels();
         let in_ch = input.channels();
 
-        // A clone leaves the scratch empty for `allocate` to size. If that never
-        // ran, `RtScratch::active` clamps to a zero-length slice and every loop
-        // below iterates zero times — the unit would emit silence and look like a
-        // gain bug, the same failure shape that hid a 60 dB error here before.
-        // Size it here instead: this is the control thread's job, but a late
-        // allocation beats silent silence, and the debug assert names the real
-        // fault. `process` on an allocated unit — every RT call — skips it.
-        if !self.scratch_is_ready() {
+        // A clone shares the bank but leaves its scratch for `allocate` to size.
+        // If that never ran, `RtScratch::active` clamps to a zero-length slice
+        // and every loop below iterates zero times — the unit would emit silence
+        // and look like a gain bug, the same failure shape that hid a 60 dB
+        // error here before. Size it here instead: this is the control thread's
+        // job, but a late allocation beats silent silence, and the debug assert
+        // names the real fault. Every RT call on an allocated unit skips it.
+        if !self.channels.scratch_is_ready(self.width) {
             debug_assert!(
                 false,
                 "BUG: stretch::Unit::process before allocate(); the graph must \
                  call allocate() on a cloned unit before running it"
             );
-            self.allocate();
+            self.channels.allocate_scratch(self.width);
         }
 
-        for (c, s) in self.scratch_in.iter_mut().enumerate() {
+        // One claim and one borrow-set for the whole call. The scratch lives on
+        // the bank now, so it is covered by the same claim that protects the
+        // vocoders — a second live handle reaching this would be caught rather
+        // than silently sharing working buffers.
+        self.channels.claim(self.id);
+        let mut scratch_in = self.channels.scratch_in.borrow_mut();
+
+        for (c, s) in scratch_in.iter_mut().enumerate() {
             let buf = s.active(size);
             // Fewer input channels than vocoders: mirror `tick`'s
             // fan-from-channel-0 rather than emitting silence.
@@ -1155,7 +1171,7 @@ impl AudioUnit for Unit {
 
         if !self.is_processing() {
             for c in 0..out_ch {
-                let buf = self.scratch_in[c].active_ref(size);
+                let buf = scratch_in[c].active_ref(size);
                 for (i, &s) in buf.iter().enumerate().take(size) {
                     output.set_f32(c, i, s);
                 }
@@ -1172,22 +1188,22 @@ impl AudioUnit for Unit {
         // rather than pushing it whole is what keeps `process` and `tick`
         // producing the same audio — they drifted apart once before by writing
         // the two paths separately.
-        self.channels.claim(self.id);
         let mut bank = self.channels.channels.borrow_mut();
         for i in 0..size {
             self.intake_debt += rate;
             while self.intake_debt >= 1.0 {
                 self.intake_debt -= 1.0;
                 for (c, v) in bank.iter_mut().enumerate() {
-                    let sample = self.scratch_in[c].active_ref(size)[i];
+                    let sample = scratch_in[c].active_ref(size)[i];
                     v.input.push(&[sample]);
                     v.process(analysis_hop, synthesis_hop, pitch_ratio);
                 }
             }
         }
 
+        let mut scratch_out = self.channels.scratch_out.borrow_mut();
         for c in 0..channels {
-            let out = self.scratch_out[c].active(size);
+            let out = scratch_out[c].active(size);
             out.fill(0.0);
             let count = bank[c].output.drain(out);
             if c >= out_ch {
@@ -1271,12 +1287,7 @@ impl AudioUnit for Unit {
     /// `Net::set_unit` for a hot swap). Re-allocating an already-sized unit
     /// would be a needless 64 KB per channel, so a ready unit returns early.
     fn allocate(&mut self) {
-        if self.scratch_is_ready() {
-            return;
-        }
-        let (scratch_in, scratch_out) = Self::scratch_pair(self.width, MAX_BUFFER_SIZE);
-        self.scratch_in = scratch_in;
-        self.scratch_out = scratch_out;
+        self.channels.allocate_scratch(self.width);
     }
 }
 
@@ -1764,44 +1775,52 @@ mod tests {
         assert!(heard, "the successor went silent across the commit");
     }
 
-    /// The clone must not carry the block scratch — `allocate` sizes it.
+    /// The block scratch rides the shared bank, so a commit reallocates nothing.
     ///
-    /// 64 KB per channel of pure per-block scratch, copied only to be
-    /// overwritten. Deferring it to `allocate` is the hook fundsp documents for
-    /// exactly this, and `Net::commit` calls it on the graph it is about to run.
+    /// Rewritten twice, and the history is the point. First the clone copied
+    /// 64 KB per channel outright. Then it deferred that to `allocate` — which
+    /// changed *when* the cost was paid, not *whether*: `Net::commit` calls
+    /// `allocate` on every generation, so after the vocoder bank was shared this
+    /// scratch was **98% of a commit's remaining traffic at both widths**
+    /// (240 MB of 243.8 at six channels).
+    ///
+    /// Now it lives on the bank, under the same claim and the same isolate
+    /// boundary as the vocoders, and a successor generation inherits it sized.
     #[test]
-    fn cloning_leaves_the_block_scratch_for_allocate() {
+    fn the_block_scratch_rides_the_shared_bank() {
         let mut u = Unit::with_channels(44_100.0, 6);
-        assert!(
-            u.scratch_is_ready(),
-            "a constructed unit is ready to process"
-        );
-
-        let mut c = u.clone();
-        assert!(
-            !c.scratch_is_ready(),
-            "the clone copied the block scratch instead of deferring it"
-        );
-        assert!(
-            c.scratch_in.iter().all(|s| s.capacity() == 0),
-            "cloned scratch must be empty, not merely small"
-        );
-
-        // `allocate` is what the graph calls before running the unit.
-        c.allocate();
-        assert!(c.scratch_is_ready());
-        assert_eq!(c.scratch_in.len(), 6, "one scratch per channel");
-        assert_eq!(c.scratch_out.len(), 6);
-
-        // Idempotent: the graph may allocate a unit it already allocated, and
-        // re-sizing would throw away 64 KB per channel for nothing.
-        let before = c.scratch_in[0].capacity();
-        c.allocate();
-        assert_eq!(c.scratch_in[0].capacity(), before);
-
-        // And allocating an already-ready unit leaves it ready.
         u.allocate();
-        assert!(u.scratch_is_ready());
+        assert!(u.channels.scratch_is_ready(6));
+
+        // A commit's clone shares the bank, so it inherits sized scratch and
+        // `allocate` has nothing left to do.
+        let c = u.clone();
+        assert!(
+            c.channels.scratch_is_ready(6),
+            "the successor should inherit sized scratch, not reallocate it"
+        );
+        assert!(Arc::ptr_eq(&u.channels, &c.channels));
+
+        // Idempotent: the graph allocates every generation, and re-sizing would
+        // throw away 64 KB per channel per commit — the exact cost this removes.
+        let ptr_before = u.channels.scratch_in.borrow()[0].capacity();
+        let mut c2 = u.clone();
+        c2.allocate();
+        assert_eq!(u.channels.scratch_in.borrow()[0].capacity(), ptr_before);
+
+        // Isolation severs it with the rest of the bank. The fresh bank is
+        // sized at construction, so a render's isolated node is immediately
+        // usable — the same guarantee a directly built unit has, and the one
+        // `time_stretch_process_is_allocation_free` depends on.
+        let mut iso = u.clone();
+        iso.isolate();
+        assert!(!Arc::ptr_eq(&u.channels, &iso.channels));
+        assert!(
+            iso.channels.scratch_is_ready(6),
+            "a severed bank must arrive usable, not needing a later allocate"
+        );
+        iso.allocate();
+        assert_eq!(iso.channels.scratch_out.borrow().len(), 6);
     }
 
     /// An isolated clone renders exactly what the original renders.

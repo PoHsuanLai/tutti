@@ -134,6 +134,34 @@
 //! and ~576 KB of vocoder state — the remainder is fundsp's own per-`Vertex`
 //! bookkeeping (three `BufferVec`s, edge vectors) plus allocator size-class
 //! rounding, ~31 and ~63 allocations per node respectively.
+//!
+//! # Resolved: both widths are inside the budget
+//!
+//! Two changes, each measured here, closed it:
+//!
+//! 1. **Share the vocoder bank** (`Arc<Bank>`, deep-copied only in `isolate`).
+//!    201.8 -> 81.5 MB at stereo, 604.6 -> 243.8 MB at six channels.
+//! 2. **Move the block scratch onto that bank.** Deferring it to `allocate` had
+//!    only changed *when* it was paid: the graph calls `allocate` on every
+//!    generation, so it was still 64 KB per channel per commit — **98% of what
+//!    remained at both widths**. On the bank, a successor inherits it sized.
+//!
+//! | width | originally | after both | budget |
+//! |-------|-----------:|-----------:|--------|
+//! | 2ch   |   201.8 MB |     1.3 MB | — |
+//! | 6ch   |   604.6 MB |     3.3 MB | — |
+//! | 2ch commit |  ~91-164 ms |  **~0.17 ms** | 2 ms |
+//! | 6ch commit | ~182-334 ms |  **~0.22 ms** | 2 ms |
+//!
+//! A ~180x reduction in allocation traffic, and both widths land inside the
+//! budget *unpumped* as well as pumped — the wall-clock spread that made every
+//! earlier number untrustworthy is gone too, because there is no longer enough
+//! memory traffic for the OS to matter. What is left (6406 allocs, ~1-3 MB) is
+//! fundsp's own per-`Vertex` bookkeeping.
+//!
+//! So the Stage 6-7 gate is **met**: 640 voice nodes commit in well under 2 ms
+//! at both widths. Keep this harness — it is what turned three wrong conclusions
+//! into measured ones.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;

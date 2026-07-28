@@ -76,6 +76,28 @@ impl MidiOutRes {
     pub(crate) fn receiver_for_test(&self) -> &MidiReceiver {
         &self.receiver
     }
+
+    /// Drain the mailbox and return what was in it.
+    ///
+    /// For integration tests, which are a separate crate and so cannot reach
+    /// [`receiver_for_test`](Self::receiver_for_test); exposed through
+    /// [`test_support::drain_midi_out`](super::test_support::drain_midi_out)
+    /// rather than being called directly. It consumes the events, exactly as the
+    /// production pump would, so a test that drains twice sees the second one
+    /// empty.
+    pub(crate) fn drain_for_test(&self) -> Vec<MidiEvent> {
+        // Its own chunk size, not the pump's: this loops until empty, so the
+        // number only trades syscalls for stack and need not track that tuning.
+        let mut scratch = [MidiEvent::noop(); 64];
+        let mut drained = Vec::new();
+        loop {
+            let n = self.receiver.poll_into(&mut scratch);
+            if n == 0 {
+                return drained;
+            }
+            drained.extend_from_slice(&scratch[..n]);
+        }
+    }
 }
 
 /// Fire-and-forget request: send these events to external MIDI hardware.

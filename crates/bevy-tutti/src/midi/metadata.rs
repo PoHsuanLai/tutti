@@ -4,9 +4,10 @@
 //!
 //! - **Flex metadata** — [`BroadcastFlexMetadata`] is a fire-and-forget request
 //!   to emit one of the Flex Data musical-metadata messages (chord name, key
-//!   signature, or a text/metadata string like project or composition name) to
-//!   external MIDI out, via [`MidiOutRes`](super::track_out::MidiOutRes). The app
-//!   raises it whenever the corresponding project metadata changes.
+//!   signature, tempo, time signature, metronome, or a text/metadata string like
+//!   project or composition name) to external MIDI out, via
+//!   [`MidiOutRes`](super::track_out::MidiOutRes). The app raises it whenever the
+//!   corresponding project metadata changes.
 //!
 //!   Destination is the hardware-out mailbox, *not* the `MidiBus` synth fan-out:
 //!   Flex metadata describes the session to downstream gear, and only the
@@ -21,33 +22,32 @@ use bevy_ecs::message::{Message, MessageReader};
 use bevy_ecs::prelude::*;
 
 use tutti_midi_runtime::tutti_midi_types::ump::MidiEvent;
-use tutti_midi_runtime::tutti_midi_types::ump::{ChordName, FlexTextKind, KeySharpsFlats, Tonic};
+use tutti_midi_runtime::tutti_midi_types::ump::{
+    BarAccents, ChordName, FlexTextKind, KeySharpsFlats, Tonic,
+};
 
 /// The group Flex Data metadata is broadcast on (function-block-wide).
 const FLEX_GROUP: u8 = 0;
 
 /// A Flex Data musical-metadata value to broadcast in band on the MIDI bus.
 ///
-/// Covers chord name, key signature, and the variable-length UTF-8
-/// text/metadata family.
+/// Covers chord name, key signature, tempo, time signature, metronome, and the
+/// variable-length UTF-8 text/metadata family.
 ///
-/// # Not yet covered: tempo, time signature, metronome
+/// # Describing state, not owning it
 ///
-/// `MidiEvent::flex_set_tempo`, `flex_set_time_signature` and
-/// `flex_set_metronome` exist upstream and are the same shape as the two
-/// wrapped here — a group plus scalars. They are simply unimplemented.
+/// [`Tempo`](Self::Tempo) and [`TimeSignature`](Self::TimeSignature) name values
+/// the [`Transport`](tutti_core::transport::Transport) also holds, which reads
+/// like a second writer and is not one: every arm of
+/// [`flex_metadata_broadcast_system`] builds a packet and queues it into the
+/// hardware-out mailbox. There is no path from here back into the transport, so
+/// this describes the session to downstream gear and cannot change it.
 ///
-/// This used to claim they "already have dedicated `MidiBus::broadcast_*`
-/// one-liners". No such method has ever existed: `MidiBus` is
-/// new/insert/remove/queue/contains/len/is_empty. The sentence sent a reader
-/// hunting for an API that was never written, and made a gap look like a
-/// decision.
-///
-/// Adding them is mechanical — a variant each, and an arm in
-/// [`flex_metadata_broadcast_system`]. The reason to hold off is that tempo and
-/// time signature are *also* transport state, so broadcasting them from here
-/// would put a second writer beside the transport's own; that wants deciding
-/// before it is wired, not after.
+/// What that does leave to the caller is *when* to raise it. Chord name has no
+/// engine-side owner, so an app is its only possible source; tempo has one, so
+/// an app that broadcasts a figure the transport disagrees with has told the
+/// wire a lie. Raise these where the transport's tempo is set, not from a
+/// separate store.
 #[derive(Message, Debug, Clone)]
 pub enum BroadcastFlexMetadata {
     /// Set Chord Name (M2-104 §7.5.10).
@@ -56,6 +56,27 @@ pub enum BroadcastFlexMetadata {
     KeySignature {
         tonic: Tonic,
         sharps_flats: KeySharpsFlats,
+    },
+    /// Set Tempo (M2-104 §7.5.7), in beats per minute.
+    ///
+    /// A non-positive rate encodes upstream as the "no valid tempo" sentinel
+    /// rather than being rejected here.
+    Tempo(f64),
+    /// Set Time Signature (M2-104 §7.5.8).
+    TimeSignature {
+        /// Beats per bar.
+        numerator: u8,
+        /// The beat unit (4 = quarter, 8 = eighth, …).
+        denominator: u8,
+        /// 1/32 notes per quarter note — 8 in the ordinary case.
+        num_32nd_notes: u8,
+    },
+    /// Set Metronome (M2-104 §7.5.8).
+    Metronome {
+        /// MIDI clocks per primary click.
+        clocks_per_click: u8,
+        /// Which bar subdivisions are accented.
+        accents: BarAccents,
     },
     /// One of the ~19 text/metadata messages (project / composition / clip name,
     /// lyrics, copyright, composer/performer names, …).
@@ -92,6 +113,31 @@ pub fn flex_metadata_broadcast_system(
                     FLEX_GROUP,
                     *tonic,
                     *sharps_flats,
+                ));
+            }
+            BroadcastFlexMetadata::Tempo(bpm) => {
+                packets.push(MidiEvent::flex_set_tempo(FLEX_GROUP, *bpm));
+            }
+            BroadcastFlexMetadata::TimeSignature {
+                numerator,
+                denominator,
+                num_32nd_notes,
+            } => {
+                packets.push(MidiEvent::flex_set_time_signature(
+                    FLEX_GROUP,
+                    *numerator,
+                    *denominator,
+                    *num_32nd_notes,
+                ));
+            }
+            BroadcastFlexMetadata::Metronome {
+                clocks_per_click,
+                accents,
+            } => {
+                packets.push(MidiEvent::flex_set_metronome(
+                    FLEX_GROUP,
+                    *clocks_per_click,
+                    *accents,
                 ));
             }
             BroadcastFlexMetadata::Text { kind, text } => {

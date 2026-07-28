@@ -74,6 +74,19 @@ pub mod test_support {
         (super::MidiRoutingRes::new(table), rt_view)
     }
 
+    /// Everything sitting in the outbound MIDI-out mailbox, drained.
+    ///
+    /// **Tests only.** The production drain is
+    /// [`pump_midi_out_system`](super::track_out::pump_midi_out_system), which
+    /// routes each event to hardware and keeps none — so a test asserting *what
+    /// a producer queued* has to read the mailbox itself, and an integration
+    /// test cannot reach `MidiOutRes`'s crate-private receiver.
+    pub fn drain_midi_out(
+        out: &super::track_out::MidiOutRes,
+    ) -> Vec<tutti_midi_runtime::tutti_midi_types::ump::MidiEvent> {
+        out.drain_for_test()
+    }
+
     /// A clock master wired to a fresh transport. **Tests only.**
     ///
     /// Systems gated on `engine_ready` take this as a plain `Res`, because the
@@ -97,9 +110,7 @@ pub use clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 pub use hardware_out::UmpOutRes;
 pub use hardware_out::{drain_receiver_through, JrStamperRes, MidiOutDrops, MidiOutRouter};
-pub use metadata::{
-    flex_metadata_broadcast_system, BroadcastFlexMetadata, MidiMetadataPlugin,
-};
+pub use metadata::{flex_metadata_broadcast_system, BroadcastFlexMetadata, MidiMetadataPlugin};
 pub use negotiation::{
     ci_discovery_system, ci_ingest_system, endpoint_discovery_system, endpoint_ingest_system,
     CiDeviceDiscovered, CiRes, EndpointDiscovered, EndpointDiscoveryRes, InboundCiMessage,
@@ -109,7 +120,9 @@ pub use plugin::TuttiMidiPlugin;
 pub use registration::{
     register_midi_senders, unregister_midi_sender, MidiRegistered, MidiRegistrationPlugin,
 };
-pub use route::{rebuild as rebuild_midi_routes, MidiRouteFallback, MidiRoutePlugin, MidiRouteRule};
+pub use route::{
+    rebuild as rebuild_midi_routes, MidiRouteFallback, MidiRoutePlugin, MidiRouteRule,
+};
 pub use routing_table::MidiRoutingRes;
 pub use sequence::{
     rebuild as rebuild_midi_sources, InstalledMidiSources, MidiNote, MidiSequencePlugin,
@@ -126,4 +139,3 @@ pub use device::{
     DisconnectMidiDevice, DisconnectMidiOutput, MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState,
     MidiDirection, MidiIoRes,
 };
-

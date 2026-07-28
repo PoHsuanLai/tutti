@@ -8,7 +8,7 @@
 use fundsp::prelude32::*;
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeSpec,
-    ExportSpec, FrozenClock, LatencyTrim, RenderClock, RenderDuration, RenderSpec, Resample,
+    ExportSpec, FrozenClock, LatencyTrim, RenderClock, RenderSpec, Resample,
 };
 
 fn net() -> tutti_core::dsp::Net {
@@ -21,7 +21,7 @@ fn spec(format: AudioFormat, bd: BitDepth, layout: ChannelLayout) -> ExportSpec 
     ExportSpec {
         render: RenderSpec {
             sample_rate: tutti_core::SampleRate(44100.0),
-            duration: RenderDuration::Seconds(0.2),
+            duration_seconds: 0.2,
             ..Default::default()
         },
         encode: EncodeSpec {
@@ -164,7 +164,7 @@ fn a_caller_can_compose_normalization() {
     // Longer than R128's 400 ms gating block, or the meter reports nothing
     // passed the gate and there is no loudness to normalize toward.
     let mut long = spec(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
-    long.render.duration = RenderDuration::Seconds(2.0);
+    long.render.duration_seconds = 2.0;
     let mut out = render_to_buffers(net(), &long, &FrozenClock).unwrap();
 
     let cfg = LoudnessConfig::new(out.sample_rate, ChannelLayout::Stereo);
@@ -191,8 +191,8 @@ fn a_resample_request_reaches_the_file() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("r.wav");
     let mut s = spec(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
-    s.render.duration = RenderDuration::Seconds(1.0);
-    s.resample = Some(Resample::to(48_000));
+    s.render.duration_seconds = 1.0;
+    s.resample = Some(Resample::to(SampleRate(48_000.0)));
 
     render_to_file(net(), &s, &FrozenClock, &p).unwrap();
 
@@ -218,7 +218,7 @@ fn a_resample_request_reaches_the_file() {
 fn normalized_audio_can_be_written_to_every_format() {
     let d = tempfile::tempdir().unwrap();
     let mut s = spec(AudioFormat::Wav, BitDepth::Int24, ChannelLayout::Stereo);
-    s.render.duration = RenderDuration::Seconds(1.0);
+    s.render.duration_seconds = 1.0;
 
     let mut audio = render_to_buffers(net(), &s, &FrozenClock).unwrap();
     audio.apply_gain(tutti_types::Db(-6.0));

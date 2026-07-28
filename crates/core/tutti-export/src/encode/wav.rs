@@ -26,7 +26,7 @@ impl WavEncoder {
             path,
             WavSpec {
                 channels: spec.encode.channels.count(),
-                sample_rate: spec.output_rate(),
+                sample_rate: spec.encoder_rate(),
                 bits_per_sample,
                 sample_format,
             },

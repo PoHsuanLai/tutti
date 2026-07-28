@@ -113,10 +113,18 @@ where
     let mut dither = crate::process::DitherState::for_spec(spec);
     let mut staging: Vec<[f32; CH]> = Vec::new();
 
+    // Compare as the integer rate the codecs speak: two `SampleRate`s that
+    // round to the same header value are the same rate, and there is nothing to
+    // convert between them.
     let source_rate = spec.render.sample_rate.get().round() as u32;
     let mut resampler = match spec.resample {
-        Some(r) if r.target_rate != source_rate => Some((
-            crate::process::Resampler::new(CH, source_rate, r.target_rate, r.quality)?,
+        Some(r) if r.target_rate.get().round() as u32 != source_rate => Some((
+            crate::process::Resampler::new(
+                CH,
+                source_rate,
+                r.target_rate.get().round() as u32,
+                r.quality,
+            )?,
             vec![Vec::<f32>::new(); CH],
             vec![Vec::<f32>::new(); CH],
         )),

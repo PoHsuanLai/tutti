@@ -35,7 +35,8 @@ impl RenderPlan {
             LatencyTrim::Exact(n) => n,
         };
 
-        let output_length = spec.duration.to_frames(spec.sample_rate);
+        let output_length =
+            crate::spec::duration_to_frames(spec.duration_seconds, spec.sample_rate);
         // Render the audible span PLUS the trimmed head, so the output is still
         // `output_length` frames long after the drop.
         let total = Samples(output_length.get() + latency.get());
@@ -51,13 +52,12 @@ impl RenderPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::RenderDuration;
     use tutti_core::SampleRate;
 
     fn spec(latency: LatencyTrim) -> RenderSpec {
         RenderSpec {
             sample_rate: SampleRate(48_000.0),
-            duration: RenderDuration::Seconds(1.0),
+            duration_seconds: 1.0,
             latency,
         }
     }

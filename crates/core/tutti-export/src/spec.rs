@@ -8,7 +8,7 @@
 //! ExportSpec {
 //!     render: RenderSpec {
 //!         sample_rate: SampleRate(48_000.0),
-//!         duration: RenderDuration::Seconds(30.0),
+//!         duration_seconds: 30.0,
 //!         ..Default::default()
 //!     },
 //!     encode: EncodeSpec { format: AudioFormat::Flac, ..Default::default() },
@@ -25,51 +25,45 @@ use crate::process::ResampleQuality;
 use tutti_core::SampleRate;
 use tutti_types::{BeatDuration, Bpm, ChannelLayout, Samples};
 
-/// How long to render.
+/// Frames a `seconds` span covers at `rate`.
 ///
-/// Two arms because callers hold length in one of two vocabularies, and
-/// flattening musical time into seconds at the call site is where the old
-/// `duration_beats(beats: f64, tempo: f64)` went wrong — two same-typed scalars
-/// whose transposition typechecked.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum RenderDuration {
-    /// Wall-clock length.
-    ///
-    /// `f64`, not [`Seconds`](tutti_types::Seconds), and this is the one place
-    /// in the crate that stops short of a unit type. `Seconds` is `f32`: one ULP
-    /// exceeds one sample period at 48 kHz from ~256 s on, so a 10-minute render
-    /// lands 3 samples off and an hour-long one 12. Measured over realistic
-    /// durations, 76% of them round to a different frame count through `f32` —
-    /// while round numbers like `3600.0` stay exact, which is exactly how such a
-    /// bug ships with a green suite.
-    Seconds(f64),
-    /// Musical length. Both operands are `f64`-backed, so this arm needs no
-    /// exception.
-    Beats { len: BeatDuration, tempo: Bpm },
+/// The one duration conversion in the crate, so the rounding happens once. A
+/// non-finite or negative span is no frames rather than a panic or a wrapped
+/// length.
+///
+/// # Why `f64` and not [`Seconds`](tutti_types::Seconds)
+///
+/// This is the crate's one stop short of a unit type, and CLAUDE.md names the
+/// case: *"`Seconds` is f32, so SMPTE timecode and hour-long render durations
+/// stay f64."* Concretely, `Seconds` resolves individual frames only up to
+/// ~256 s at 48 kHz. Round lengths survive anyway (`3600.0` is exact), but a
+/// *derived* one does not — 2000 beats at 93 bpm lands 2 frames off, 8000 at
+/// 111 bpm lands 6. Small, but silent, and every hand-written test would use a
+/// round number and pass.
+///
+/// It is a bare `f64` rather than a newtype because a wrapper adds a name
+/// without adding a rule: there is one operation (`seconds × rate → frames`),
+/// it lives here, and `MemorySource::duration_seconds` already reports the same
+/// quantity the same way.
+pub fn duration_to_frames(seconds: f64, rate: SampleRate) -> Samples {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Samples(0);
+    }
+    Samples((seconds * rate.get()).round() as usize)
 }
 
-impl Default for RenderDuration {
-    fn default() -> Self {
-        Self::Seconds(0.0)
+/// Seconds covering `len` beats at `tempo` — the musical-vocabulary form.
+///
+/// Routed through [`beats_per_sample`](tutti_core::transport::beats_per_sample)
+/// rather than `BeatDuration::to_seconds`, which returns `f32` `Seconds` and
+/// would reintroduce exactly the narrowing above. The association
+/// `(tempo / 60) / rate` is load-bearing — see that function.
+pub fn beats_to_seconds(len: BeatDuration, tempo: Bpm, rate: SampleRate) -> f64 {
+    let bps = tutti_core::transport::beats_per_sample(tempo, rate).get();
+    if bps <= 0.0 {
+        return 0.0;
     }
-}
-
-impl RenderDuration {
-    /// Frames this span covers at `rate`.
-    ///
-    /// The one conversion, so the rounding happens once. Deliberately **not**
-    /// routed through `BeatDuration::to_seconds`, which returns `f32` `Seconds`
-    /// and would reintroduce the narrowing the `Seconds` arm documents.
-    pub fn to_frames(self, rate: SampleRate) -> Samples {
-        let seconds = match self {
-            Self::Seconds(s) => s,
-            Self::Beats { len, tempo } => (len.get() / tempo.get()) * 60.0,
-        };
-        if !seconds.is_finite() || seconds <= 0.0 {
-            return Samples(0);
-        }
-        Samples((seconds * rate.get()).round() as usize)
-    }
+    (len.get() / bps) / rate.get()
 }
 
 /// Whether to trim look-ahead latency from the head of the render, and by how
@@ -97,7 +91,8 @@ pub struct RenderSpec {
     /// Rate the graph is rendered at. The output rate may differ — see
     /// [`ExportSpec::resample`].
     pub sample_rate: SampleRate,
-    pub duration: RenderDuration,
+    /// Length in seconds. `f64` deliberately — see [`duration_to_frames`].
+    pub duration_seconds: f64,
     pub latency: LatencyTrim,
 }
 
@@ -105,7 +100,7 @@ impl Default for RenderSpec {
     fn default() -> Self {
         Self {
             sample_rate: SampleRate(44_100.0),
-            duration: RenderDuration::default(),
+            duration_seconds: 0.0,
             latency: LatencyTrim::default(),
         }
     }
@@ -126,16 +121,16 @@ pub struct EncodeSpec {
 }
 
 /// Sample-rate conversion applied on the way out.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Resample {
-    pub target_rate: u32,
+    pub target_rate: SampleRate,
     pub quality: ResampleQuality,
 }
 
 impl Resample {
-    pub fn to(target_rate: u32) -> Self {
+    pub fn to(target_rate: impl Into<SampleRate>) -> Self {
         Self {
-            target_rate,
+            target_rate: target_rate.into(),
             quality: ResampleQuality::default(),
         }
     }
@@ -163,13 +158,23 @@ impl ExportSpec {
     /// The rate the file is written at: the resample target, else the render
     /// rate.
     ///
-    /// `u32` because every encoder and the resampler take `u32`, and because
-    /// this value is compared for equality to decide whether to resample at all
-    /// — a float there would make that an ULP coin-flip.
-    pub fn output_rate(&self) -> u32 {
+    /// [`SampleRate`] throughout; the `u32` narrowing happens once, at
+    /// [`encoder_rate`](Self::encoder_rate), where the codec APIs demand it.
+    pub fn output_rate(&self) -> SampleRate {
         self.resample
             .map(|r| r.target_rate)
-            .unwrap_or_else(|| self.render.sample_rate.get().round() as u32)
+            .unwrap_or(self.render.sample_rate)
+    }
+
+    /// The output rate as the `u32` every codec header wants.
+    ///
+    /// The single narrowing point. hound, flacenc, vorbis and `aifc` all take an
+    /// integer rate, and the resampler compares rates for *equality* to decide
+    /// whether to convert at all — which a float would turn into an ULP
+    /// coin-flip. So the boundary is real; it just belongs in one named place
+    /// rather than at five call sites.
+    pub fn encoder_rate(&self) -> u32 {
+        self.output_rate().get().round() as u32
     }
 }
 
@@ -181,15 +186,12 @@ mod tests {
     fn beats_and_seconds_agree_at_the_same_length() {
         let rate = SampleRate(48_000.0);
         // 8 beats at 120 bpm is 4 seconds.
-        let beats = RenderDuration::Beats {
-            len: BeatDuration(8.0),
-            tempo: Bpm(120.0),
-        };
+        let beats = beats_to_seconds(BeatDuration(8.0), Bpm(120.0), rate);
         assert_eq!(
-            beats.to_frames(rate),
-            RenderDuration::Seconds(4.0).to_frames(rate)
+            duration_to_frames(beats, rate),
+            duration_to_frames(4.0, rate)
         );
-        assert_eq!(beats.to_frames(rate), Samples(192_000));
+        assert_eq!(duration_to_frames(beats, rate), Samples(192_000));
     }
 
     /// The `f64` in `Seconds` is load-bearing, not an oversight. An `f32` round
@@ -199,7 +201,7 @@ mod tests {
         let rate = SampleRate(48_000.0);
         // 2000 beats at 93 bpm — an ordinary long-set length, not a round one.
         let secs = (2000.0f64 / 93.0) * 60.0;
-        let exact = RenderDuration::Seconds(secs).to_frames(rate);
+        let exact = duration_to_frames(secs, rate);
         let via_f32 = Samples((f64::from(secs as f32) * rate.get()).round() as usize);
         assert_ne!(
             exact, via_f32,
@@ -212,11 +214,8 @@ mod tests {
     #[test]
     fn a_non_finite_or_negative_duration_is_no_frames() {
         let rate = SampleRate(48_000.0);
-        assert_eq!(RenderDuration::Seconds(-1.0).to_frames(rate), Samples(0));
-        assert_eq!(
-            RenderDuration::Seconds(f64::NAN).to_frames(rate),
-            Samples(0)
-        );
+        assert_eq!(duration_to_frames(-1.0, rate), Samples(0));
+        assert_eq!(duration_to_frames(f64::NAN, rate), Samples(0));
     }
 
     #[test]
@@ -228,14 +227,14 @@ mod tests {
             },
             ..Default::default()
         };
-        assert_eq!(spec.output_rate(), 44_100);
+        assert_eq!(spec.output_rate(), SampleRate(44_100.0));
         assert_eq!(
             ExportSpec {
-                resample: Some(Resample::to(48_000)),
+                resample: Some(Resample::to(SampleRate(48_000.0))),
                 ..spec
             }
             .output_rate(),
-            48_000
+            SampleRate(48_000.0)
         );
     }
 }

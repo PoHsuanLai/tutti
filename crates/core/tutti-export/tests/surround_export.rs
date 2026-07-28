@@ -10,7 +10,7 @@
 #![cfg(feature = "wav")]
 
 use tutti_core::dsp::{dc, Net};
-use tutti_export::{ChannelLayout, EncodeSpec, ExportSpec, RenderDuration, RenderSpec};
+use tutti_export::{ChannelLayout, EncodeSpec, ExportSpec, RenderSpec};
 
 /// Render `net` to `path` as float WAV at `layout`, for `secs`.
 ///
@@ -22,7 +22,7 @@ fn export(net: tutti_core::dsp::Net, layout: ChannelLayout, secs: f64, path: &st
         &ExportSpec {
             render: RenderSpec {
                 sample_rate: tutti_core::SampleRate(48_000.0),
-                duration: RenderDuration::Seconds(secs),
+                duration_seconds: secs,
                 ..Default::default()
             },
             encode: EncodeSpec {

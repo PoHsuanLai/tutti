@@ -382,10 +382,11 @@ pub fn spawn_region_render_system(
         let spec = crate::ExportSpec {
             render: crate::RenderSpec {
                 sample_rate: tutti_core::SampleRate(config.sample_rate),
-                duration: crate::RenderDuration::Beats {
-                    len: tutti_types::BeatDuration(render.len_beats),
-                    tempo: tutti_core::Bpm(render.tempo),
-                },
+                duration_seconds: crate::beats_to_seconds(
+                    tutti_types::BeatDuration(render.len_beats),
+                    tutti_core::Bpm(render.tempo),
+                    tutti_core::SampleRate(config.sample_rate),
+                ),
                 ..Default::default()
             },
             ..Default::default()

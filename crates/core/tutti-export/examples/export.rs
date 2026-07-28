@@ -16,7 +16,7 @@ use fundsp::prelude32::{dc, sine_hz};
 use tutti_core::{FrozenClock, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeSpec,
-    ExportSpec, RenderDuration, RenderSpec, Resample,
+    ExportSpec, RenderSpec, Resample,
 };
 use tutti_types::Db;
 
@@ -51,7 +51,7 @@ fn main() -> tutti_export::Result<()> {
     let spec = ExportSpec {
         render: RenderSpec {
             sample_rate: SampleRate(48_000.0),
-            duration: RenderDuration::Seconds(2.0),
+            duration_seconds: 2.0,
             ..Default::default()
         },
         encode: EncodeSpec {

@@ -3,7 +3,7 @@
 //! Offline audio export: render a Tutti graph to a file, or to buffers.
 //!
 //! ```ignore
-//! use tutti_export::{render_to_file, ExportSpec, RenderSpec, EncodeSpec, RenderDuration};
+//! use tutti_export::{render_to_file, ExportSpec, RenderSpec, EncodeSpec};
 //! use tutti_core::{SampleRate, FrozenClock};
 //!
 //! render_to_file(
@@ -11,7 +11,7 @@
 //!     &ExportSpec {
 //!         render: RenderSpec {
 //!             sample_rate: SampleRate(48_000.0),
-//!             duration: RenderDuration::Seconds(30.0),
+//!             duration_seconds: 30.0,
 //!             ..Default::default()
 //!         },
 //!         encode: EncodeSpec { format: AudioFormat::Flac, ..Default::default() },
@@ -48,7 +48,9 @@ pub use options::{AudioFormat, BitDepth, Dither, Flac, Ogg};
 pub use tutti_types::ChannelLayout;
 
 mod spec;
-pub use spec::{EncodeSpec, ExportSpec, LatencyTrim, RenderDuration, RenderSpec, Resample};
+pub use spec::{
+    beats_to_seconds, duration_to_frames, EncodeSpec, ExportSpec, LatencyTrim, RenderSpec, Resample,
+};
 
 pub(crate) mod encode;
 pub(crate) mod process;

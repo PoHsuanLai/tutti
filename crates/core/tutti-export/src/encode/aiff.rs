@@ -41,7 +41,7 @@ impl AiffEncoder {
                 _ => FileFormat::Aiff,
             },
             channels: spec.encode.channels.count() as i16,
-            sample_rate: f64::from(spec.output_rate()),
+            sample_rate: spec.output_rate().get(),
             sample_format,
         };
         let file = BufWriter::new(std::fs::File::create(path)?);

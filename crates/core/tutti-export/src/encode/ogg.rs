@@ -22,7 +22,7 @@ pub(crate) struct OggEncoder {
 
 impl OggEncoder {
     pub(crate) fn create(path: &Path, spec: &ExportSpec) -> Result<Self> {
-        let sr = NonZeroU32::new(spec.output_rate())
+        let sr = NonZeroU32::new(spec.encoder_rate())
             .ok_or_else(|| Error::InvalidConfig("Sample rate must be non-zero".into()))?;
         let ch = NonZeroU8::new(spec.encode.channels.count() as u8)
             .ok_or_else(|| Error::InvalidConfig("Channel count must be non-zero".into()))?;

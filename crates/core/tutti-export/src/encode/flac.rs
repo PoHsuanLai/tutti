@@ -68,7 +68,7 @@ struct RenderSource<'a, const CH: usize> {
     pending: Vec<i32>,
     /// Frames that have passed the gate, ever — the `kept_so_far` the cursor
     /// needs, which is not `pending.len()` once flacenc starts draining.
-    pending_frames_total: usize,
+    kept: tutti_types::Samples,
     done: bool,
 }
 
@@ -99,14 +99,14 @@ impl<const CH: usize> RenderSource<'_, CH> {
             let cursor = crate::render::BlockCursor {
                 block_start: produced,
                 latency: self.plan.latency,
-                kept_so_far: tutti_types::Samples(self.pending_frames_total),
+                kept_so_far: self.kept,
                 output_length: self.plan.output_length,
             };
             let window = cursor.window(tutti_types::Samples(n));
             if !window.is_empty() {
                 staging.extend_from_slice(&block[window.clone()]);
                 self.dither.apply(&mut staging);
-                self.pending_frames_total += staging.len();
+                self.kept = tutti_types::Samples(self.kept.get() + staging.len());
                 for f in &staging {
                     for &s in f.iter() {
                         self.pending.push(f32_to_i32(s, self.bit_depth));
@@ -161,10 +161,10 @@ impl<const CH: usize> Encoder<CH> for FlacEncoder {
             dither: crate::process::DitherState::for_spec(spec),
             channels: CH,
             bits,
-            sample_rate: spec.output_rate() as usize,
+            sample_rate: spec.encoder_rate() as usize,
             bit_depth: self.bit_depth,
             pending: Vec::new(),
-            pending_frames_total: 0,
+            kept: tutti_types::Samples(0),
             done: false,
         };
 

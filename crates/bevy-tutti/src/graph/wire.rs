@@ -166,6 +166,11 @@ impl MasterSources {
 /// port every rebuild would invalidate the topological order for ports that did
 /// not change. Reading the engine back is what makes the diff possible without
 /// this layer remembering anything.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Bevy systems declare their data access as parameters; each one here \
+              is a distinct query or resource the rebuild genuinely needs"
+)]
 pub fn rebuild(
     mut graph: ResMut<AudioGraphRes>,
     mut dirty: ResMut<GraphDirty>,

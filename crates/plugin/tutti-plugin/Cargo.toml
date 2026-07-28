@@ -26,10 +26,6 @@ au = ["dep:tutti-au-host"]
 # here.
 vst2 = ["dep:tutti-vst2-host"]
 
-# In-process WASM Component Model audio plugins (`dawai:audio-plugin@0.1.0`)
-# live in the separate `tutti-wasm-plugin` crate, which reuses this crate's
-# `backend` machinery. The heavy wasmtime stack stays out of this crate.
-
 [dependencies]
 # Core types (for AudioUnit trait)
 tutti-core = { path = "../../core/tutti-core", default-features = false, features = ["midi"] }

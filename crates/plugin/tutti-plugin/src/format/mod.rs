@@ -15,13 +15,6 @@
 //!   without remote-rendering pixels. Hosting in-process is the standard
 //!   tradeoff (Ableton/Logic/Reaper all do it for VST2): no subprocess crash
 //!   isolation, but a native editor.
-//!
-//! WASM Component Model audio plugins (`dawai:audio-plugin@0.1.0`) are also
-//! always in-process, but live in the separate `tutti-wasm-plugin` crate so
-//! the heavy wasmtime dependency stays out of this crate; they reuse this
-//! crate's [`PluginHandle`](crate::host::handles::PluginHandle) +
-//! granular capability-trait ([`HostParams`](crate::backend::HostParams) etc.)
-//! machinery.
 
 pub mod gui;
 

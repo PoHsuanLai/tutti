@@ -19,7 +19,6 @@ pub(super) const FORMAT_BY_EXTENSION: &[(&str, PluginFormat)] = &[
     ("so", PluginFormat::Vst2),
     ("clap", PluginFormat::Clap),
     ("component", PluginFormat::AudioUnit),
-    ("wasm", PluginFormat::Wasm),
 ];
 
 /// Infer [`PluginFormat`] from a file extension.
@@ -97,11 +96,10 @@ mod tests {
             format_from_path(Path::new("a.component")),
             Some(PluginFormat::AudioUnit)
         );
-        assert_eq!(
-            format_from_path(Path::new("a.wasm")),
-            Some(PluginFormat::Wasm)
-        );
         assert_eq!(format_from_path(Path::new("a.txt")), None);
+        // `dawai:audio-plugin` is the app's own format, hosted outside this
+        // crate; tutti must not claim `.wasm` as a plugin extension.
+        assert_eq!(format_from_path(Path::new("a.wasm")), None);
     }
 
     /// Regression for `.VST3` / `.CLAP` are the same extension on a

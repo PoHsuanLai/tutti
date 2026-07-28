@@ -84,14 +84,6 @@ pub(crate) fn load_gui_instance(path: &Path) -> Result<Box<dyn PluginEditor>> {
                      GUI loader."
                 .into(),
         }),
-        PluginFormat::Wasm => Err(BridgeError::LoadFailed {
-            path: path.to_path_buf(),
-            stage: LoadStage::Opening,
-            reason: "WASM audio plugins have no editor in v0.1 of \
-                     `dawai:audio-plugin`. Ship a panel UI from the \
-                     editor extension side instead."
-                .into(),
-        }),
         // Catch-all only exists when at least one of vst3/clap/(au+macOS) is
         // disabled — otherwise all four PluginFormat variants are matched
         // explicitly above and rustc warns this arm is unreachable.

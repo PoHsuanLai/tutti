@@ -128,8 +128,6 @@ pub trait CatalogExt: PluginCatalog {
                 descriptor: super::record::PluginDescriptor::default(),
                 modification_time: file_modification_time(path).unwrap_or(0),
                 blacklist: Blacklist::Blacklisted { reason },
-                extension_id: None,
-                manifest_index: None,
             },
         };
         self.upsert(record);
@@ -155,22 +153,6 @@ pub trait CatalogExt: PluginCatalog {
     /// `true` when no records are stored.
     fn is_empty(&self) -> bool {
         self.iter().next().is_none()
-    }
-
-    /// Drop every record bundled by the named extension. Used at
-    /// extension deactivation: standalone scanner-discovered records
-    /// (`extension_id == None`) are unaffected. Returns the paths
-    /// removed so the caller can also drop running instances.
-    fn remove_for_extension(&mut self, ext_id: &str) -> Vec<PathBuf> {
-        let owned: Vec<PathBuf> = self
-            .iter()
-            .filter(|r| r.extension_id.as_deref() == Some(ext_id))
-            .map(|r| r.path.clone())
-            .collect();
-        for path in &owned {
-            self.remove(path);
-        }
-        owned
     }
 }
 

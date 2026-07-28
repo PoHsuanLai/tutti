@@ -13,7 +13,7 @@ use tutti_midi_runtime::MidiSender;
 ///
 /// Backend-agnostic: it holds each control capability as a separate `Arc<dyn …>`
 /// slot ([`HostParams`], [`HostState`], and an *optional* [`HostEditor`]), so
-/// out-of-process VST3/CLAP/AU and in-process VST2/WASM hosting share this surface
+/// out-of-process VST3/CLAP/AU and in-process VST2 hosting share this surface
 /// while advertising only the capabilities they honor. One backend object
 /// implements several capability traits; construction clones the *same* backend
 /// `Arc` into each always-present slot (cheap — Arc-based — and shared state stays
@@ -62,8 +62,8 @@ impl PluginHandle {
 
     /// Construct from an in-process backend that implements the always-present
     /// capabilities, plus an optional editor. Used by every in-process loader —
-    /// the in-crate VST2 path (which passes `Some(backend)` for the editor) and
-    /// out-of-crate loaders like `tutti-wasm-plugin` (which pass `None`).
+    /// the in-crate VST2 path passes `Some(backend)` for the editor; a headless
+    /// out-of-crate loader passes `None`.
     ///
     /// `backend: Arc<B>` is coerced into the `params`/`state` slots at the call
     /// site (both are clones of the same object), so shared state stays intact.
@@ -79,13 +79,13 @@ impl PluginHandle {
             params: backend.clone(),
             state: backend,
             editor,
-            // In-process backends (VST2, WASM) don't implement the VST3-style
+            // In-process backends don't implement the VST3-style
             // automation-state advisory, so `automation_state()` is `None`.
             automation_state: None,
             descriptor,
             loaded,
             param_sink,
-            // In-process backends (VST2, WASM) have no latency-change or
+            // In-process backends have no latency-change or
             // restartComponent mechanism, so they never emit refresh /
             // invalidate signals — these sinks stay empty.
             refresh_sink: RefreshSink::default(),
@@ -135,14 +135,14 @@ impl PluginHandle {
     }
 
     /// The editor capability, or `None` when the backend cannot host an
-    /// embeddable editor (the WASM host). The "why" is queryable separately via
+    /// embeddable editor. The "why" is queryable separately via
     /// [`has_editor`](Self::has_editor) / the [`descriptor`](Self::descriptor).
     pub fn editor(&self) -> Option<&dyn HostEditor> {
         self.editor.as_deref()
     }
 
     /// The automation-state advisory capability (Direction C-in), or `None` when
-    /// the backend doesn't support it (in-process VST2 / WASM). Announce the
+    /// the backend doesn't support it (in-process VST2). Announce the
     /// host's automation mode via [`HostAutomationState::set_automation_mode`],
     /// or use the [`set_automation_mode`](Self::set_automation_mode) convenience.
     pub fn automation_state(&self) -> Option<&dyn HostAutomationState> {

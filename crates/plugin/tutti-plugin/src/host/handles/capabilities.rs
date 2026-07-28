@@ -18,10 +18,10 @@
 //!
 //! - [`HostParams`] and [`HostState`] are **always present** — every backend
 //!   implements them.
-//! - [`HostEditor`] is **optional**: a backend without an embeddable editor (the
-//!   WASM host) simply does not implement it, so `PluginHandle::editor()` returns
-//!   `None`. Absence is type-level; there is no `open_editor → Err(GuiNotSupported)`
-//!   stub to fake it.
+//! - [`HostEditor`] is **optional**: a backend with no embeddable editor simply
+//!   does not implement it, so `PluginHandle::editor()` returns `None`. Absence
+//!   is type-level; there is no `open_editor → Err(GuiNotSupported)` stub to
+//!   fake it.
 //! - `is_crashed` is a single-method concern folded onto the always-present set via
 //!   [`HostParams`], rather than a standalone trait too thin to stand alone.
 
@@ -66,8 +66,9 @@ pub trait HostState: Send + Sync {
 }
 
 /// Editor / GUI hosting — **optional**. A backend implements this only if it can
-/// embed the plugin's editor; the WASM host does not, so its plugins report
-/// `PluginHandle::editor() == None` rather than erroring at open time.
+/// embed the plugin's editor; a headless one leaves it unimplemented, so its
+/// plugins report `PluginHandle::editor() == None` rather than erroring at open
+/// time.
 ///
 /// `parent` is a raw platform window pointer (not a generic `HasWindowHandle`) so
 /// the trait stays object-safe; the ergonomic `HasWindowHandle` entry lives on

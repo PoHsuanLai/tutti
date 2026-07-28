@@ -16,19 +16,6 @@ pub struct PluginRecord {
     /// Blacklist state. `Ok` means the plugin is loadable.
     #[serde(default)]
     pub blacklist: Blacklist,
-    /// If set, this record came from an extension's manifest
-    /// `audio_plugins` field (manifest-bundled WASM audio plugin) and
-    /// should be unregistered when the owning extension deactivates.
-    /// `None` for standalone plugins discovered by the scanner.
-    #[serde(default)]
-    pub extension_id: Option<String>,
-    /// Position within the owning extension's `audio_plugins` manifest
-    /// list. `Some(0)` for the first bundled plugin, `Some(1)` for the
-    /// second, etc. `None` for standalone scanner-discovered plugins.
-    /// Used by editor extensions to address bundled DSP plugins
-    /// positionally (e.g., `audio_plugin(0).set_parameter(...)`).
-    #[serde(default)]
-    pub manifest_index: Option<u32>,
 }
 
 /// Blacklist state for a record. Folds the old `blacklisted: bool` +
@@ -76,8 +63,6 @@ pub enum PluginFormat {
     Vst2,
     Clap,
     AudioUnit,
-    /// WASM Component implementing the `dawai:audio-plugin@0.1.0` world.
-    Wasm,
 }
 
 impl PluginFormat {
@@ -88,7 +73,6 @@ impl PluginFormat {
             PluginFormat::Vst2 => "vst2",
             PluginFormat::Clap => "clap",
             PluginFormat::AudioUnit => "au",
-            PluginFormat::Wasm => "wasm",
         }
     }
 }
@@ -113,7 +97,7 @@ const fn extension_names<const N: usize>() -> [&'static str; N] {
     out
 }
 
-const EXTENSION_NAMES: [&str; 7] = extension_names::<7>();
+const EXTENSION_NAMES: [&str; 6] = extension_names::<6>();
 
 impl PluginRecord {
     /// Plugin file extensions a scanner / asset path recognises. Derived from
@@ -144,8 +128,6 @@ impl PluginRecord {
             descriptor,
             modification_time,
             blacklist: Blacklist::Ok,
-            extension_id: None,
-            manifest_index: None,
         })
     }
 }

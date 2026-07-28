@@ -25,9 +25,7 @@ clap = ["dep:tutti-clap-host"]
 # Audio Unit support (macOS only)
 au = ["dep:tutti-au-host"]
 
-# All plugin formats. WASM is intentionally absent — it's an in-process
-# format hosted by `tutti-plugin` directly (wasmtime sandbox provides
-# isolation without a subprocess wrapper).
+# All plugin formats.
 all = ["vst2", "vst3", "clap", "au"]
 
 [dependencies]

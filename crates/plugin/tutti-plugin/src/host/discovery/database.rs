@@ -155,8 +155,6 @@ mod tests {
             descriptor: PluginDescriptor::new(name, name, PluginClass::Unknown),
             modification_time: 1700000000,
             blacklist: Blacklist::Ok,
-            extension_id: None,
-            manifest_index: None,
         }
     }
 
@@ -198,8 +196,6 @@ mod tests {
             descriptor: PluginDescriptor::default(),
             modification_time: 0,
             blacklist: Blacklist::Ok,
-            extension_id: None,
-            manifest_index: None,
         });
 
         assert!(db.needs_rescan(&plugin_file));
@@ -219,8 +215,6 @@ mod tests {
             descriptor: PluginDescriptor::default(),
             modification_time: mtime,
             blacklist: Blacklist::Ok,
-            extension_id: None,
-            manifest_index: None,
         });
 
         assert!(!db.needs_rescan(&plugin_file));
@@ -269,8 +263,6 @@ mod tests {
             descriptor: PluginDescriptor::default(),
             modification_time: 0,
             blacklist: Blacklist::Ok,
-            extension_id: None,
-            manifest_index: None,
         });
         db.upsert(PluginRecord {
             path: PathBuf::from("/nonexistent/gone.vst3"),
@@ -278,44 +270,12 @@ mod tests {
             descriptor: PluginDescriptor::default(),
             modification_time: 0,
             blacklist: Blacklist::Ok,
-            extension_id: None,
-            manifest_index: None,
         });
 
         assert_eq!(db.len(), 2);
         db.prune_missing();
         assert_eq!(db.len(), 1);
         assert!(db.plugins().any(|r| r.path == existing));
-    }
-
-    #[test]
-    fn remove_for_extension_drops_only_owned() {
-        use crate::host::discovery::catalog::CatalogExt;
-
-        let dir = TempDir::new().unwrap();
-        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
-
-        // One standalone, two owned by ext-A, one owned by ext-B.
-        let mut standalone = test_record("standalone");
-        standalone.extension_id = None;
-        let mut a1 = test_record("a1");
-        a1.extension_id = Some("ext-a".into());
-        let mut a2 = test_record("a2");
-        a2.extension_id = Some("ext-a".into());
-        let mut b1 = test_record("b1");
-        b1.extension_id = Some("ext-b".into());
-
-        db.upsert(standalone);
-        db.upsert(a1);
-        db.upsert(a2);
-        db.upsert(b1);
-        assert_eq!(db.len(), 4);
-
-        let removed = db.remove_for_extension("ext-a");
-        assert_eq!(removed.len(), 2);
-        assert_eq!(db.len(), 2);
-        assert!(db.iter().any(|r| r.descriptor.name == "standalone"));
-        assert!(db.iter().any(|r| r.descriptor.name == "b1"));
     }
 
     #[test]

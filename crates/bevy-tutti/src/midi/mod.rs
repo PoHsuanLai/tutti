@@ -22,6 +22,7 @@
 
 pub mod bus;
 pub mod clock_out;
+pub mod hardware_out;
 pub mod metadata;
 pub mod negotiation;
 pub mod registration;
@@ -54,14 +55,32 @@ pub mod test_support {
     pub fn midi_bus_for_test() -> MidiBusRes {
         MidiBusRes::new(tutti_midi_runtime::MidiBus::new())
     }
+
+    /// A clock master wired to a fresh transport. **Tests only.**
+    ///
+    /// Systems gated on `engine_ready` take this as a plain `Res`, because the
+    /// engine block always inserts it — so a test that claims the engine is
+    /// running has to supply it or those systems panic on a missing resource.
+    pub fn clock_master_for_test(sample_rate: f64) -> super::ClockMasterRes {
+        let (sender, receiver) = tutti_midi_runtime::MidiMailbox::pair(
+            tutti_midi_runtime::tutti_midi_types::MidiUnitId::next(),
+        );
+        let master = std::sync::Arc::new(tutti_midi_runtime::ClockMaster::new(
+            std::sync::Arc::new(tutti_core::transport::Transport::new(sample_rate)),
+            sample_rate,
+            sender,
+        ));
+        super::ClockMasterRes::new(master, receiver)
+    }
 }
 
 pub use bus::{MidiBusRes, MpeModeConfig};
 pub use clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-pub use metadata::UmpOutRes;
+pub use hardware_out::UmpOutRes;
+pub use hardware_out::{drain_receiver_through, JrStamperRes, MidiOutRouter};
 pub use metadata::{
-    flex_metadata_broadcast_system, BroadcastFlexMetadata, JrStamperRes, MidiMetadataPlugin,
+    flex_metadata_broadcast_system, BroadcastFlexMetadata, MidiMetadataPlugin,
 };
 pub use negotiation::{
     ci_discovery_system, ci_ingest_system, endpoint_discovery_system, endpoint_ingest_system,

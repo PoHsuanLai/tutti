@@ -33,6 +33,7 @@ fn app() -> App {
     });
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
+    app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test(48_000.0));
     app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));
     app.world_mut()
         .resource_mut::<MidiTargetRegistry>()

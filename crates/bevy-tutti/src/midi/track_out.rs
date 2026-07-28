@@ -37,7 +37,7 @@ use tutti_midi_runtime::{MidiMailbox, MidiReceiver, MidiSender};
 use tutti_midi_types::ump::MidiEvent;
 use tutti_midi_types::MidiUnitId;
 
-use super::clock_out::{drain_receiver_through, MidiOutRouter};
+use super::hardware_out::{drain_receiver_through, MidiOutRouter};
 
 /// The outbound MIDI-out mailbox: a push [`sender`](Self::sender) any caller
 /// clones to send events to external hardware (off-RT or, as a clip `out_tap`,
@@ -98,10 +98,10 @@ pub fn pump_midi_out_system(
     out: Option<Res<MidiOutRes>>,
     #[cfg(feature = "midi-hardware")] midi_io: Option<Res<super::device::MidiIoRes>>,
     #[cfg(all(target_os = "macos", feature = "midi-hardware"))] ump_out: Option<
-        ResMut<super::metadata::UmpOutRes>,
+        ResMut<super::hardware_out::UmpOutRes>,
     >,
     #[cfg(all(target_os = "macos", feature = "midi-hardware"))] jr: Option<
-        Res<super::metadata::JrStamperRes>,
+        Res<super::hardware_out::JrStamperRes>,
     >,
 ) {
     let Some(out) = out else {
@@ -112,7 +112,7 @@ pub fn pump_midi_out_system(
         #[cfg(feature = "midi-hardware")]
         midi_io: midi_io.as_deref(),
         #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
-        jr_out: super::clock_out::jr_out_active(ump_out, jr),
+        jr_out: super::hardware_out::jr_out_active(ump_out, jr),
         #[cfg(not(feature = "midi-hardware"))]
         _marker: std::marker::PhantomData,
     };

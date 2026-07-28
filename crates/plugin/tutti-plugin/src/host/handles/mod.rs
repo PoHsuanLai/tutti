@@ -8,7 +8,7 @@
 //! The control surface splits into granular [`capabilities`] traits
 //! ([`HostParams`](capabilities::HostParams) / [`HostState`](capabilities::HostState)
 //! / [`HostEditor`](capabilities::HostEditor)), so out-of-process VST3/CLAP/AU and
-//! in-process VST2/WASM hosting each implement exactly the subset they honor while
+//! in-process VST2 hosting each implement exactly the subset they honor while
 //! sharing one [`PluginHandle`] surface.
 
 pub(crate) mod capabilities;
@@ -37,6 +37,3 @@ pub use tutti_units::{LfoShape, ModParams, ModTarget};
 /// this type to read their `MidiUnitId`.
 #[cfg(feature = "vst2")]
 pub use crate::format::vst2_in_process::InProcessVst2Client;
-
-// The in-process WASM audio-graph node (`InProcessWasmClient`) lives in the
-// `dawai-wasm-plugin` crate alongside its loader.

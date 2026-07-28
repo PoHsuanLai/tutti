@@ -149,8 +149,7 @@ impl Plugin {
                     stage: LoadStage::Opening,
                     reason: format!(
                         "Unsupported plugin format: {extension}. \
-                         Supported: .vst3, .vst/.dll/.so (VST2), .clap, .component (AU). \
-                         WASM plugins are loaded in-process via the `dawai-wasm-plugin` crate (`dawai_wasm_plugin::load`)."
+                         Supported: .vst3, .vst/.dll/.so (VST2), .clap, .component (AU)."
                     ),
                 });
             }

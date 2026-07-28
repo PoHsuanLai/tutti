@@ -107,11 +107,9 @@
 //!   `AEffect` fuses the editor and audio processor into one instance, so
 //!   the two cannot live in separate processes.
 //!
-//! In-process WASM Component Model audio plugins (`dawai:audio-plugin@0.1.0`)
-//! are a dawai-specific format, not a general one this engine hosts: they live
-//! in the app's `dawai-wasm-plugin` crate, which reuses this crate's
-//! [`backend`] machinery. They never go through `tutti-plugin-server` — the
-//! wasmtime sandbox provides equivalent isolation to a subprocess.
+//! This crate hosts the four industry plugin formats. A host that defines its
+//! *own* format can still reuse the control surface and audio-node wiring here
+//! by implementing the [`backend`] traits over its own loader.
 //!
 //! [`AudioUnit`]: tutti_core::AudioUnit
 
@@ -146,8 +144,8 @@ pub use tutti_plugin_types::AutomationMode;
 
 /// Building blocks for out-of-crate in-process loaders.
 ///
-/// **Not part of the general API.** These let a sibling crate (e.g.
-/// `dawai-wasm-plugin`) implement the granular host-side capability traits
+/// **Not part of the general API.** These let an out-of-crate loader
+/// implement the granular host-side capability traits
 /// ([`HostParams`](backend::HostParams), [`HostState`](backend::HostState), and
 /// optionally [`HostEditor`](backend::HostEditor)) over its own
 /// plugin and hand the result to
@@ -168,11 +166,6 @@ pub mod backend {
 /// behind the `vst2` feature.
 #[cfg(feature = "vst2")]
 pub use format::vst2_in_process::load as in_process_vst2;
-
-// WASM Component Model audio plugins live in the app's `dawai-wasm-plugin`
-// crate (`dawai_wasm_plugin::load`) — `dawai:audio-plugin` is our own format,
-// so its host belongs with the app, and the heavy wasmtime dependency stays
-// out of the engine. They reuse this crate's [`backend`] machinery.
 
 /// Discovering, persisting, and loading plugins.
 ///

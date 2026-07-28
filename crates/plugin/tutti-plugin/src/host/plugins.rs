@@ -211,15 +211,25 @@ impl Plugins {
         self.catalog.remove(path);
     }
 
+    /// Probe one plugin file and add it to the catalog, without scanning a
+    /// directory. Returns its [`PluginId`].
+    ///
+    /// For plugins the host knows about by path rather than by scan — one
+    /// shipped inside an application bundle, say, or a file the user pointed
+    /// at directly. The scan directories in [`PluginsConfig`] are for the
+    /// standard install locations; this is the escape hatch for everything
+    /// else. Errors if the extension is unrecognized or the probe fails.
+    pub fn register_path(&mut self, plugin_path: &Path) -> Result<PluginId> {
+        let record = PluginRecord::probe(plugin_path)?;
+        self.catalog.upsert(record);
+        Ok(PluginId(plugin_path.to_path_buf()))
+    }
+
     /// Load a plugin by id. Returns a graph-ready `Box<dyn AudioUnit>`
     /// and a main-thread [`PluginHandle`]; both must be kept alive while
     /// the plugin runs.
     ///
     /// Format dispatch:
-    /// - WASM: not loaded here — returns a `LoadFailed` error directing the
-    ///   caller to `dawai_wasm_plugin::load` (the in-process wasmtime path
-    ///   lives in the app's `dawai-wasm-plugin` crate). Hosts route by
-    ///   format before calling this.
     /// - VST2 (with the `vst2` feature): runs entirely in the host process
     ///   (single AEffect for audio + editor).
     /// - Everything else: subprocess + IPC bridge (audio out-of-process,
@@ -229,22 +239,6 @@ impl Plugins {
         id: &PluginId,
         sample_rate: f64,
     ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
-        // `dawai:audio-plugin` is dawai's own format, hosted in-process by
-        // the app's `dawai-wasm-plugin` crate. That crate lives in the app
-        // workspace and depends on this one, so the dependency only ever
-        // points dawai -> tutti; the wasmtime stack stays out of the engine.
-        // Hosts route by format: WASM records go to
-        // `dawai_wasm_plugin::load`, everything else here.
-        if matches!(format_from_path(&id.0), Some(PluginFormat::Wasm)) {
-            return Err(BridgeError::LoadFailed {
-                path: id.0.clone(),
-                stage: crate::error::LoadStage::Opening,
-                reason: "WASM plugins are loaded in-process via the \
-                         dawai-wasm-plugin crate (dawai_wasm_plugin::load), \
-                         not tutti_plugin::Plugins::load"
-                    .to_string(),
-            });
-        }
         #[cfg(feature = "vst2")]
         if matches!(format_from_path(&id.0), Some(PluginFormat::Vst2)) {
             return crate::format::vst2_in_process::load(&id.0, sample_rate);
@@ -258,21 +252,12 @@ impl Plugins {
     }
 
     /// Subprocess-formats variant of [`Plugins::load`] that returns the
-    /// raw [`PluginClient`] instead of `Box<dyn AudioUnit>`. Rejects
-    /// WASM (no `PluginClient` for the in-process path) — use
-    /// [`Self::load`] for those.
+    /// raw [`PluginClient`] instead of `Box<dyn AudioUnit>`.
     pub fn load_client(
         &self,
         id: &PluginId,
         sample_rate: f64,
     ) -> Result<(PluginClient, PluginHandle)> {
-        if matches!(format_from_path(&id.0), Some(PluginFormat::Wasm)) {
-            return Err(BridgeError::LoadFailed {
-                path: id.0.clone(),
-                stage: crate::error::LoadStage::Opening,
-                reason: "WASM plugins are in-process only; use Plugins::load()".to_string(),
-            });
-        }
         let client = PluginClient::new(self.config.to_bridge_config(), id.0.clone(), sample_rate)?;
         let handle = PluginHandle::from_client(&client);
         Ok((client, handle))
@@ -302,56 +287,6 @@ impl Plugins {
     /// Commit the in-memory catalog to its backing store.
     pub fn flush(&mut self) -> std::io::Result<()> {
         self.catalog.flush()
-    }
-
-    /// Register a WASM audio plugin bundled with an extension's
-    /// manifest. Probes metadata via `tutti-plugin-server` and inserts
-    /// a [`PluginRecord`] tagged with `ext_id` so deactivation can
-    /// drop just the plugins owned by the extension.
-    ///
-    /// `manifest_index` is the position within the extension's
-    /// `audio_plugins` list (0 = first bundled plugin). Lets editor
-    /// extensions address bundled DSP plugins positionally.
-    ///
-    /// Standalone scanner-discovered plugins (`extension_id == None`)
-    /// are unaffected by extension lifecycle.
-    pub fn register_bundled_plugin(
-        &mut self,
-        ext_id: &str,
-        manifest_index: u32,
-        plugin_path: &Path,
-    ) -> Result<PluginId> {
-        let format = format_from_path(plugin_path).ok_or_else(|| BridgeError::LoadFailed {
-            path: plugin_path.to_path_buf(),
-            stage: crate::error::LoadStage::Opening,
-            reason: format!(
-                "extension {ext_id}: bundled plugin {} has no recognized extension",
-                plugin_path.display()
-            ),
-        })?;
-
-        let descriptor = crate::host::subprocess::probe_metadata(plugin_path)?;
-        let modification_time =
-            crate::host::discovery::file_modification_time(plugin_path).unwrap_or(0);
-
-        self.catalog.upsert(PluginRecord {
-            path: plugin_path.to_path_buf(),
-            format,
-            descriptor,
-            modification_time,
-            blacklist: crate::host::discovery::record::Blacklist::Ok,
-            extension_id: Some(ext_id.to_string()),
-            manifest_index: Some(manifest_index),
-        });
-        Ok(PluginId(plugin_path.to_path_buf()))
-    }
-
-    /// Drop every catalog entry tagged with `ext_id`. Called at
-    /// extension deactivation. Returns the paths removed (running
-    /// plugin instances are not torn down here — the audio graph
-    /// continues to use them until the document removes them).
-    pub fn unregister_bundled_plugins(&mut self, ext_id: &str) -> Vec<PathBuf> {
-        self.catalog.remove_for_extension(ext_id)
     }
 }
 

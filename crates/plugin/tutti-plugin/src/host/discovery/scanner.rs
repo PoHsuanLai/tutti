@@ -219,8 +219,6 @@ impl PluginScanner {
                     descriptor,
                     modification_time: file_modification_time(path).unwrap_or(0),
                     blacklist: Blacklist::Ok,
-                    extension_id: None,
-                    manifest_index: None,
                 });
                 ScanOutcome::New
             }
@@ -494,8 +492,6 @@ mod tests {
             descriptor: PluginDescriptor::new("cached", "cached", PluginClass::Unknown),
             modification_time: mtime,
             blacklist: Blacklist::Ok,
-            extension_id: None,
-            manifest_index: None,
         });
 
         let mut scanner = PluginScanner::new(Box::new(db), dir.path().join(".scanning"));

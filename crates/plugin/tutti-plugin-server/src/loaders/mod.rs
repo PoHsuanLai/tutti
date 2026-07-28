@@ -4,10 +4,6 @@
 //! the unified trait the server dispatches to. Modules are feature-gated;
 //! a build without any loader feature still compiles but has no formats
 //! to load.
-//!
-//! WASM Component Model plugins are intentionally absent — they're
-//! sandboxed by wasmtime and run in-process via `tutti-plugin`'s
-//! `in_process::wasm` module, not through this server.
 
 pub(crate) mod common;
 

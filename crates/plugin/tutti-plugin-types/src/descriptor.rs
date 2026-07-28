@@ -82,14 +82,11 @@ pub enum PluginClass {
     Clap { features: Vec<String> },
     /// Apple AudioUnit component type (`aufx`, `aumu`, `aumf`, `aumi`, …).
     Au { component_type: AuComponentType },
-    /// WASM audio plugin (`dawai:audio-plugin`). Its WIT world exposes no
-    /// category vocabulary, only whether it consumes MIDI — carried verbatim.
-    Wasm { receives_midi: bool },
 }
 
 impl PluginClass {
     /// The plugin format's short name (`"vst2"`, `"vst3"`, `"clap"`, `"au"`,
-    /// `"wasm"`, or `"unknown"`). Used e.g. to fill
+    /// or `"unknown"`). Used e.g. to fill
     /// [`EditorError::GuiNotSupported`](crate::error::EditorError::GuiNotSupported)
     /// with which format has no hostable editor.
     pub fn format_name(&self) -> &'static str {
@@ -99,7 +96,6 @@ impl PluginClass {
             PluginClass::Vst3 { .. } => "vst3",
             PluginClass::Clap { .. } => "clap",
             PluginClass::Au { .. } => "au",
-            PluginClass::Wasm { .. } => "wasm",
         }
     }
 }

@@ -137,6 +137,23 @@ pub mod prelude {
     // The engine vocabulary a host writes graph edits in.
     pub use tutti_core::{AudioNode, NodeId};
 
+    // Types the surface above is *spelled in*. Each is load-bearing on a
+    // signature reachable from this prelude, so omitting it means a host can
+    // call the method but not write a function around it:
+    //
+    // - `AudioUnit` bounds `spawn_audio_node<U>` and is the `Box<dyn _>` of
+    //   `crossfade_audio_node` — without it a host cannot write its own generic
+    //   spawn helper at all.
+    // - `Timeline` is what `TransportRes::timeline()` returns.
+    // - `Transport` / `ClickState` are the `Deref` targets of `TransportRes` and
+    //   `MetronomeRes`.
+    // - `Samples` is `GraphLatency`'s payload; `Beat` / `Bpm` are what
+    //   `Timeline::beat()` and `tempo()` give back.
+    // - `Fade` is the curve `crossfade_audio_node` applies.
+    pub use tutti_core::dsp::AudioUnit;
+    pub use tutti_core::transport::{ClickState, Timeline, Transport};
+    pub use tutti_core::{Beat, Bpm, Fade, Samples};
+
     // Transport vocabulary. These are `tutti-core`'s and are re-exported, not
     // wrapped: a host cannot call `transport.motion.try_send(..)` or
     // `metronome.set_mode(..)` without naming the argument types, and this

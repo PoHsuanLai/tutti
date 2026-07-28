@@ -37,12 +37,21 @@
 //!
 //! # One writer per declared port
 //!
-//! A port named by an [`AudioSources`] belongs to that declaration. A host that
-//! also writes it imperatively through `AudioGraphRes.0` will see its write
-//! reverted by the next diff — the same situation
-//! [`graph::param`](super::param) already documents for modulated params, where
-//! a plain write "would be reverted within a frame and the fader would look
-//! stuck". The diff detects it for free and warns once.
+//! A port named by an [`AudioSources`] belongs to that declaration. Writing it
+//! imperatively through `AudioGraphRes.0` as well is a bug in the host, and one
+//! this layer **cannot detect**: [`rebuild`]'s dirty gate watches ECS change
+//! ticks, so an engine-side write nothing in the ECS touched does not re-enter
+//! the loop. The imperative value simply stays until something unrelated
+//! dirties the rebuild, at which point the declaration wins — silently, and at
+//! an unpredictable moment.
+//!
+//! (An earlier draft of this doc claimed the diff reverts such a write "within a
+//! frame" and "warns once". It does neither. The claim was written from the
+//! shape of [`graph::param`](super::param)'s modulated-param rule, where both
+//! writers are inside this crate and can cooperate; here the second writer is
+//! host code the crate never sees.)
+//!
+//! Declare the port, or own it — not both.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
@@ -129,13 +138,29 @@ impl AudioSources {
 pub struct MasterSources(pub Vec<AudioSource>);
 
 impl MasterSources {
-    /// Every output channel from `entity`, wrapping if it has fewer outputs
-    /// than the bus has channels. The declarative spelling of the old
-    /// `Net::pipe_output`.
+    /// A **stereo** source on both output channels: port 0 to channel 0, port 1
+    /// to channel 1.
+    ///
+    /// For a source with fewer outputs, say so explicitly — a mono node feeding
+    /// both channels is [`mono_from`](Self::mono_from). There is no wrapping
+    /// here on purpose. `Net::pipe_output` wraps with `channel % node_outputs`,
+    /// which silently turns "route this" into "route this, duplicated", and the
+    /// arity it wraps against is the *node's*, which this constructor cannot see
+    /// — it has an `Entity`, not a graph. Guessing wrong leaves a channel
+    /// unresolvable, which [`rebuild`] skips, which strands whatever the channel
+    /// held before.
     pub fn from(entity: Entity) -> Self {
         Self(vec![
             AudioSource::Node { entity, port: 0 },
             AudioSource::Node { entity, port: 1 },
+        ])
+    }
+
+    /// A **mono** source on both output channels, from its port 0.
+    pub fn mono_from(entity: Entity) -> Self {
+        Self(vec![
+            AudioSource::Node { entity, port: 0 },
+            AudioSource::Node { entity, port: 0 },
         ])
     }
 
@@ -153,10 +178,17 @@ impl MasterSources {
 ///
 /// # What counts as a change
 ///
-/// A declaration edit, a removal, a [`MasterSources`] edit — and a *new
-/// [`AudioNode`]*, which is the non-obvious one. A declaration routinely names
-/// an entity whose node arrives a frame later; nothing about the declaration
-/// changes when it does, so without watching for that the wire would never form.
+/// A declaration edit, a removal, a [`MasterSources`] edit — and a *touched
+/// [`AudioNode`]*, which is the non-obvious one, for two reasons. A declaration
+/// routinely names an entity whose node arrives a frame later, and nothing about
+/// the declaration changes when it does. And an entity can be *re-bound* to a
+/// different node, which must re-derive every wire naming it — that is the whole
+/// reason [`AudioSource::Node`] holds an `Entity` rather than a `NodeId`.
+///
+/// The gate is `Changed<AudioNode>`, not `Added`: a replacement `insert` on an
+/// entity that already has the component fires `Changed` but **not** `Added`, so
+/// gating on `Added` left a re-bound entity's wires pointing at the retired node
+/// forever. `Added` is a subset of `Changed`, so this covers arrival too.
 ///
 /// # Why a diff rather than a wholesale replace
 ///
@@ -178,12 +210,12 @@ pub fn rebuild(
     sinks: Query<(Entity, &AudioSources)>,
     master: Res<MasterSources>,
     changed: Query<(), Changed<AudioSources>>,
-    arrived: Query<(), Added<AudioNode>>,
+    rebound: Query<(), Changed<AudioNode>>,
     mut removed: RemovedComponents<AudioSources>,
 ) {
     let is_dirty = !changed.is_empty()
         || !removed.is_empty()
-        || !arrived.is_empty()
+        || !rebound.is_empty()
         || master.is_changed();
     // An event reader: draining is what marks this frame's removals as seen, so
     // it happens whether or not a rebuild follows.
@@ -261,12 +293,34 @@ fn resolve(
                 );
                 return None;
             }
-            if !graph.0.contains(node.0) || graph.0.outputs_in(node.0) <= port {
+            if !graph.0.contains(node.0) {
                 return None;
             }
+            warn_if_port_out_of_range(entity, node.0, port, graph)?;
             Some(Source::Local(node.0, port))
         }
     }
+}
+
+/// A port past the node's output count cannot resolve *ever*, unlike an entity
+/// whose node has not spawned yet — so it warns rather than silently retrying
+/// forever. Returns `None` in that case so the caller skips it.
+fn warn_if_port_out_of_range(
+    entity: Entity,
+    node: tutti_core::NodeId,
+    port: usize,
+    graph: &AudioGraphRes,
+) -> Option<()> {
+    let outputs = graph.0.outputs_in(node);
+    if outputs <= port {
+        bevy_log::warn!(
+            "declared source {entity:?} port {port}, but its node has only {outputs} output(s); \
+             that port stays unwired. A mono node feeding both master channels is \
+             `MasterSources::mono_from`."
+        );
+        return None;
+    }
+    Some(())
 }
 
 /// [`resolve`] for the global output bus, which has no sink node to compare
@@ -283,36 +337,47 @@ fn resolve_master(
         }
         AudioSource::Node { entity, port } => {
             let node = nodes.get(entity).ok()?;
-            if !graph.0.contains(node.0) || graph.0.outputs_in(node.0) <= port {
+            if !graph.0.contains(node.0) {
                 return None;
             }
+            warn_if_port_out_of_range(entity, node.0, port, graph)?;
             Some(Source::Local(node.0, port))
         }
     }
 }
 
-/// Silence every input port of a node whose declaration was removed.
+/// Silence the ports a removed declaration was claiming.
 ///
-/// `On<Remove, AudioSources>` fires at command-flush with the entity still
-/// intact, mirroring [`reconcile_node_despawn`](super::reconcile_node_despawn).
-/// Without this the ports would keep their last-written sources forever: the
-/// entity leaves [`rebuild`]'s query, so the diff never visits it again.
+/// `On<Remove, AudioSources>` fires at command-flush with the component value
+/// still readable, mirroring
+/// [`reconcile_node_despawn`](super::reconcile_node_despawn). Without this the
+/// ports would keep their last-written sources forever: the entity leaves
+/// [`rebuild`]'s query, so the diff never visits it again. This is the case that
+/// is unsolvable imperatively without every call site remembering what it wired.
 ///
-/// This is the case that is unsolvable imperatively without every call site
-/// remembering what it wired.
+/// **Only the declared ports.** It reads the outgoing `AudioSources` and clamps
+/// to its length, exactly as [`rebuild`] does when writing. Zeroing every input
+/// port instead would break the same contract the write path keeps — that a port
+/// this layer never declared belongs to whoever did wire it, and is not ours to
+/// silence on the way out.
 pub fn unwire_removed_sources(
     remove: On<Remove, AudioSources>,
     nodes: Query<&AudioNode>,
+    declarations: Query<&AudioSources>,
     graph: Option<ResMut<AudioGraphRes>>,
     mut dirty: ResMut<GraphDirty>,
 ) {
     let entity = remove.event_target();
     let Ok(node) = nodes.get(entity) else { return };
+    let Ok(declared) = declarations.get(entity) else {
+        return;
+    };
     let Some(mut graph) = graph else { return };
     if !graph.0.contains(node.0) {
         return;
     }
-    for port in 0..graph.0.inputs_in(node.0) {
+    let claimed = declared.0.len().min(graph.0.inputs_in(node.0));
+    for port in 0..claimed {
         if graph.0.source(node.0, port) != Source::Zero {
             graph.0.set_source(node.0, port, Source::Zero);
             dirty.0 = true;

@@ -45,9 +45,15 @@ impl TransportRes {
     /// (usually through a [`BeatCursor`](tutti_core::transport::BeatCursor),
     /// which owns the seek-epsilon and paused-case arithmetic).
     ///
-    /// The clone shares state rather than snapshotting it: `Transport`'s fields
-    /// are `Arc`s over atomics, so what the source holds is another reference to
+    /// The clone shares state rather than snapshotting it: every field
+    /// [`Timeline`] reads — the beat, the tempo, the rolling flag — lives behind
+    /// an `Arc` over an atomic, so what the source holds is another reference to
     /// the live transport, not a copy of this frame's values.
+    ///
+    /// (`Transport::sample_rate` is a plain `f64` and *does* copy. No `Timeline`
+    /// method reads it and nothing mutates it after construction, so it cannot
+    /// drift — but a future `set_sample_rate`, or a `Timeline` method that reads
+    /// it, would make that a live bug rather than a footnote.)
     ///
     /// ```rust,ignore
     /// fn install(transport: Res<TransportRes>, config: Res<AudioConfig>) {

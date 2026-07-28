@@ -17,7 +17,9 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::prelude::*;
-use tutti_core::dsp::{lowpass_hz, pass, saw_hz, AudioUnit as _, Net, Source};
+// `AudioUnit` is not imported here: the prelude carries it, because
+// `spawn_audio_node` is generic over it and a host needs to name it.
+use tutti_core::dsp::{lowpass_hz, pass, saw_hz, Net, Source};
 use tutti_core::transport::Transport;
 
 const SAMPLE_RATE: f64 = 48_000.0;

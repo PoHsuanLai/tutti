@@ -18,7 +18,10 @@
 //! describe is what it will silently reintroduce. The declarative side is
 //! covered in `graph_wire.rs`.
 
-#![cfg(feature = "synth")]
+// No feature gate: this drives `Net` directly and names no synth type. It
+// carried `#![cfg(feature = "synth")]` for one commit, which meant the file
+// documenting a silent bug was itself silently running zero tests in the
+// default configuration.
 
 use tutti_core::dsp::{sine_hz, Net, Source};
 

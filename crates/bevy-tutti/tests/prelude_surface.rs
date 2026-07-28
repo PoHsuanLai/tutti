@@ -58,6 +58,42 @@ fn a_motion_events_payload_types_are_nameable_from_the_prelude() {
     assert_ne!(state, MotionState::Rolling);
 }
 
+/// Every type the prelude's own signatures are spelled in is nameable from it.
+///
+/// This is the incomplete-forward rule applied to itself, and it is a *compile*
+/// test — the bodies do nothing, the point is that the annotations resolve. A
+/// previous pass added `TransportRes::timeline()` returning `Arc<dyn Timeline>`
+/// without re-exporting `Timeline`, so a host could call the method but not
+/// write a function whose signature mentions it. `AudioUnit` was worse: without
+/// it a host cannot write a generic spawn helper at all.
+#[test]
+fn the_types_the_prelude_is_spelled_in_are_nameable_from_it() {
+    use bevy_ecs::prelude::Commands;
+    use std::sync::Arc;
+
+    // Return of `TransportRes::timeline()`.
+    fn _timeline(t: &TransportRes) -> Arc<dyn Timeline> {
+        t.timeline()
+    }
+    // Bound on `spawn_audio_node`, and the boxed param of `crossfade_audio_node`.
+    fn _spawn<U: AudioUnit + 'static>(commands: &mut Commands, unit: U) {
+        commands.spawn_audio_node(unit);
+    }
+    fn _crossfade(commands: &mut Commands, e: bevy_ecs::entity::Entity, u: Box<dyn AudioUnit>) {
+        crossfade_audio_node(commands, e, u);
+    }
+    // Deref targets: nameable in a signature, which is what a host needs to
+    // write a helper taking one.
+    fn _deref<'a>(t: &'a TransportRes, m: &'a MetronomeRes) -> (&'a Transport, &'a ClickState) {
+        (t, m)
+    }
+    fn _payloads(l: &GraphLatency, t: &TransportRes) -> (Samples, Beat, Bpm) {
+        (l.0, t.settings.beat(), t.settings.tempo())
+    }
+    // The crossfade curve.
+    let _: Fade = Fade::Smooth;
+}
+
 /// `TransportRes::timeline()` hands over a live handle, not a snapshot.
 ///
 /// This is the property the whole per-frame/per-block seam rests on: a

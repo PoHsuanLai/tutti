@@ -207,10 +207,15 @@ pub fn to_process_context(
 }
 
 #[cfg(test)]
+// `StatesAndFlags_::*` is `u32` on unix and `c_int` (i32) on Windows, so the
+// `as u32` normalisations below are redundant on one target and load-bearing on
+// the other — the same reason `to_process_context` carries this allow. Taking
+// clippy's suggestion here would compile on macOS and break Windows.
+#[allow(clippy::unnecessary_cast)]
 mod tests {
     use super::process_context_flags as need;
     use super::*;
-    use tutti_plugin_types::{is_usable, BeatsPerBar, NoteValue, TimeSignature};
+    use tutti_plugin_types::{BeatsPerBar, NoteValue, TimeSignature};
     use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
 
     /// A TransportInfo with every field set to a recognisable non-zero value,

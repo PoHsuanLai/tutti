@@ -381,33 +381,32 @@ impl Vocoder {
     /// table are both functions of the geometry alone, so they are shared rather
     /// than rebuilt; rebuilding cost `size` `cos()` calls per vocoder per commit.
     ///
-    /// # The remaining allocation is fundsp's, and it is pure waste
+    /// # What this costs on a graph commit
     ///
-    /// This runs from `Net::commit`, once per channel per node — and that clone
-    /// is **discarded**. `commit_inner` clones the net, then
-    /// `core::mem::swap`s the vertex vectors back ("send over the ORIGINAL nodes
-    /// to the backend... necessary if the nodes contain any backends, which cannot
-    /// be cloned effectively"), so the freshly-built state stays on the frontend
-    /// and is dropped. Only the husk's *shape* is ever used.
+    /// This runs from `Net::commit`, once per channel per node, and the clone is
+    /// **kept** — `commit_inner` clones the net, `core::mem::swap`s the vertex
+    /// vectors so the ORIGINALS ship to the backend ("necessary if the nodes
+    /// contain any backends, which cannot be cloned effectively"), and the
+    /// freshly-built clones stay on the frontend as the next generation's source.
+    /// So the allocation is not waste; it is the price of double-buffering, paid
+    /// once per commit per vocoder: ~100 KB of mutable state, 64% of it the two
+    /// `size * 4` rings.
     ///
-    /// So every buffer allocated here is allocated to be thrown away. Measured at
-    /// 640 nodes (32 tracks x 20 voices), release:
+    /// **How much that costs is not established.** A benchmark at 640 nodes gave
+    /// 4.8 ms to 656 ms across six identical generations — an 81x spread, because
+    /// holding two live generations of 640 six-channel vocoders resident is
+    /// ~810 MB and the timings track the OS's paging rather than this code. Any
+    /// figure quoted from it (earlier revisions of this comment carried 18.5 ms
+    /// and 628 ms) measures the machine, not the crate. A pool was built to
+    /// attack the allocation and removed again: `Buffers::new` at this size costs
+    /// ~0.9 us, a pooled hit costs the same within noise, and the pool is empty at
+    /// the moment it would be read because `commit_inner` clones *before* it
+    /// retires the old generation.
     ///
-    /// | width  | rebuild window | share window | budget |
-    /// |--------|----------------|--------------|--------|
-    /// | stereo | 18.5 ms        | 12.9 ms      | 2 ms   |
-    /// | 6ch    | 628 ms         | 448 ms       | 2 ms   |
-    ///
-    /// Sharing the immutable tables is worth taking — it is free — but it does not
-    /// reach the budget and cannot: ~100 KB of mutable state per vocoder still
-    /// gets allocated and zeroed, 64% of it the two `size * 4` rings. At six
-    /// channels that is ~405 MB touched per commit for data nothing will read.
-    ///
-    /// Fixing it properly means not allocating on this path at all — a pool the
-    /// clone claims from, or a node the graph does not clone. Both are design
-    /// changes beyond this crate's current shape, and
-    /// `cloning_shares_the_window_rather_than_rebuilding_it` records the numbers
-    /// so the decision is made against measurement rather than intuition.
+    /// So the Stage 6-7 gate ("640 voice nodes, one commit under 2 ms") is
+    /// **unmeasured**, not failed. Deciding it needs a profiler that separates
+    /// allocator from page-fault from cache — see the note in
+    /// `cloning_shares_the_window_rather_than_rebuilding_it`.
     fn clone_fresh(&self) -> Self {
         let size = self.geometry.window().get();
         let bins = self.geometry.bins_per_frame().get();
@@ -707,9 +706,27 @@ impl Unit {
                 || self.pitch_cents().get().abs() > PITCH_EPSILON_CENTS)
     }
 
-    /// Processing latency. Every channel reports the same value (it is a
-    /// function of the shared FFT size), so channel 0 speaks for all.
+    /// Processing latency, in samples — **zero while bypassing**.
+    ///
+    /// One whole window must arrive before the first frame can be analysed, so a
+    /// processing unit delays by exactly that. A bypassing one does not: `tick`
+    /// and `process` copy input to output directly at unity stretch and pitch, or
+    /// when disabled.
+    ///
+    /// The bypass case is what `route` reports to fundsp's PDC, and reporting a
+    /// window there while the audio passes straight through makes every other
+    /// branch of the graph get delayed to compensate for a delay that does not
+    /// exist — 46 ms at the default 2048 window. It is reachable through ordinary
+    /// use, not only at construction: `VoiceSlot::set_stretch` keeps the resident
+    /// filter and writes its atomics, so returning a stretched voice to 1.0 leaves
+    /// a filter sitting at unity.
+    ///
+    /// Every channel reports the same value (a function of the shared FFT size),
+    /// so channel 0 speaks for all.
     pub fn latency_samples(&self) -> usize {
+        if !self.is_processing() {
+            return 0;
+        }
         self.channels
             .first()
             .map_or(0, |v| v.geometry.window().get())
@@ -1304,6 +1321,49 @@ mod tests {
         // which is what makes it a new voice rather than a continuation.
         assert_eq!(c.channels[0].input.available(), 0);
         assert_eq!(c.channels[0].output.available(), 0);
+
+        // What this test does NOT establish: that cloning is fast enough for the
+        // per-voice-node design (640 nodes, one commit under 2 ms). Wall-clock
+        // benchmarking here gave a 81x spread across identical generations —
+        // two live generations of 640 six-channel vocoders is ~810 MB, so the
+        // numbers tracked paging, not this code. Sharing the tables is taken
+        // because it is free, not because it was measured to help. Settle the
+        // budget with a sampling profiler; see `clone_fresh`.
+    }
+
+    /// PDC must not compensate for a delay that is not happening.
+    ///
+    /// `route` reports `latency_samples` to fundsp, which delays every parallel
+    /// branch to match. A bypassing unit copies input to output, so reporting a
+    /// window there desynchronises the whole graph by 46 ms at the default 2048.
+    #[test]
+    fn latency_is_zero_while_bypassing_and_a_window_while_processing() {
+        let mut u = Unit::with_channels(44_100.0, 2);
+        let window = u.channels[0].geometry.window().get();
+
+        assert!(!u.is_processing());
+        assert_eq!(u.latency_samples(), 0, "bypassing unit claimed latency");
+
+        u.set_stretch_factor(StretchFactor::new(2.0));
+        assert_eq!(u.latency_samples(), window);
+
+        // Reachable through ordinary use: `VoiceSlot::set_stretch` keeps the
+        // resident filter and writes its atomics, so a voice returned to 1.0 is a
+        // built filter sitting at unity — it must stop claiming latency.
+        u.set_stretch_factor(StretchFactor::UNITY);
+        assert_eq!(
+            u.latency_samples(),
+            0,
+            "unity stretch still claimed latency"
+        );
+
+        // Pitch alone is enough to make it real processing.
+        u.set_pitch_cents(Cents::new(100.0));
+        assert_eq!(u.latency_samples(), window);
+
+        // Disabling bypasses regardless of the atomics.
+        u.set_enabled(false);
+        assert_eq!(u.latency_samples(), 0, "disabled unit claimed latency");
     }
 
     #[test]

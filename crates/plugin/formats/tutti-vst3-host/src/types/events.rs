@@ -9,6 +9,24 @@
 //! [`Vst3Event`] and round-trips losslessly for the MIDI-representable
 //! variants.
 
+//! # Narrowing casts are denied in this module
+//!
+//! This file is a boundary between our vocabulary and the VST3 C ABI, and every
+//! bug it has had was a cast that silently changed a value's meaning: a `u32`
+//! frame offset wrapping negative into an `i32` `sampleOffset`, and a release
+//! velocity dropped on the way through. Both compiled without complaint.
+//!
+//! So truncating and sign-changing casts are denied here. Where a cast is
+//! genuinely safe, the `#[allow(..., reason = "...")]` states why — the
+//! justification is the point, not the lint. A cast nobody can justify is the
+//! bug.
+//!
+//! Scoped to this module deliberately. Enabling these lints crate-wide produces
+//! hundreds of warnings that get scrolled past, which is how the two above
+//! survived review; a small denied surface that must be argued with is worth
+//! more than a large warned one that is not read.
+#![deny(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+
 pub use tutti_midi_types::MidiEvent;
 
 use tutti_plugin_types::{note_id_for, NoteExpressionType, NoteExpressionValue};
@@ -43,24 +61,64 @@ impl Vst3InputEvents<'_> {
 }
 
 /// `type_` discriminant for note-on events.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SDK event-type ordinals, all < 16"
+)]
 pub const K_NOTE_ON_EVENT: u16 = EventTypes_::kNoteOnEvent as u16;
 /// `type_` discriminant for note-off events.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SDK event-type ordinals, all < 16"
+)]
 pub const K_NOTE_OFF_EVENT: u16 = EventTypes_::kNoteOffEvent as u16;
 /// `type_` discriminant for raw-data events (CC, pitch bend, program change, …).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SDK event-type ordinals, all < 16"
+)]
 pub const K_DATA_EVENT: u16 = EventTypes_::kDataEvent as u16;
 /// `type_` discriminant for poly-pressure events.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SDK event-type ordinals, all < 16"
+)]
 pub const K_POLY_PRESSURE_EVENT: u16 = EventTypes_::kPolyPressureEvent as u16;
 /// `type_` discriminant for note-expression value events.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SDK event-type ordinals, all < 16"
+)]
 pub const K_NOTE_EXPRESSION_VALUE_EVENT: u16 = EventTypes_::kNoteExpressionValueEvent as u16;
 /// `type_` discriminant for note-expression *text* events.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SDK event-type ordinals, all < 16"
+)]
 pub const K_NOTE_EXPRESSION_TEXT_EVENT: u16 = EventTypes_::kNoteExpressionTextEvent as u16;
 /// `type_` discriminant for chord events.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SDK event-type ordinals, all < 16"
+)]
 pub const K_CHORD_EVENT: u16 = EventTypes_::kChordEvent as u16;
 /// `type_` discriminant for scale events.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SDK event-type ordinals, all < 16"
+)]
 pub const K_SCALE_EVENT: u16 = EventTypes_::kScaleEvent as u16;
 /// `type_` discriminant for note-expression integer-value events.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SDK event-type ordinals, all < 16"
+)]
 pub const K_NOTE_EXPRESSION_INT_VALUE_EVENT: u16 = EventTypes_::kNoteExpressionIntValueEvent as u16;
 /// `type_` discriminant for legacy-MIDI-CC-out events (plugin → host, value 0xFFFF).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SDK event-type ordinals, all < 16"
+)]
 pub const K_LEGACY_MIDI_CC_OUT_EVENT: u16 = EventTypes_::kLegacyMIDICCOutEvent as u16;
 /// `DataEvent.type` subtype marking the payload as a MIDI SysEx message.
 ///
@@ -311,6 +369,13 @@ impl Vst3Event {
 /// - `text_arena` owns the UTF-16 for text-bearing events; the event's
 ///   [`TextRef`] indexes into it and is resolved to a pointer here. It is
 ///   likewise interned at stage time and only read at `getEvent` time.
+/// Text lengths are bounded by `MAX_EVENT_TEXT_LEN` (256) at intern time, so
+/// arena offsets and lengths fit `u32`/`u16` regardless of pointer width, and
+/// the VST3 struct fields they feed are exactly those widths.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "arena offsets and text lengths are bounded by MAX_EVENT_TEXT_LEN"
+)]
 pub(crate) fn to_c_event<'a>(
     event: &'a Vst3Event,
     text_arena: &'a [u16],
@@ -459,6 +524,11 @@ pub(crate) unsafe fn from_c_event(
 
     // Copy a plugin-supplied (ptr, len) UTF-16 string into the arena, returning
     // the TextRef. Null pointer or zero length yields an empty ref.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "n is clamped to MAX_EVENT_TEXT_LEN and the arena holds at most \
+                  that many per event, so both fit u32"
+    )]
     let intern =
         |arena: &mut smallvec::SmallVec<[u16; 256]>, ptr: *const u16, len: usize| -> TextRef {
             let n = len.min(MAX_EVENT_TEXT_LEN);
@@ -567,7 +637,7 @@ pub(crate) unsafe fn from_c_event(
                 header,
                 type_id: e.typeId,
                 note_id: e.noteId,
-                value: e.value as i64,
+                value: reinterpret_expression_value(e.value),
             }))
         }
         t if t == EventTypes_::kLegacyMIDICCOutEvent as u32 => {
@@ -597,6 +667,19 @@ pub(crate) unsafe fn from_c_event(
 /// 3-byte MIDI-1 frame by definition, so that branch stays on the byte form.
 /// Returns `None` only for messages with no MIDI-1 byte representation and no
 /// per-note mapping.
+/// Text sizes are bounded as in `to_c_event`.
+///
+/// **`cast_possible_wrap` is deliberately NOT allowed here.** An earlier version
+/// of this attribute listed it, to cover the `i64` note-expression slot — and
+/// that blanket allow silently re-permitted the `frame_offset as i32` wrap this
+/// module exists to prevent, verified by reintroducing the bug and watching it
+/// compile. The sign-changing casts now go through named helpers
+/// (`reinterpret_expression_value`) that carry their own narrow allow, so the
+/// deny still bites in the function body.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "text sizes bounded by MAX_EVENT_TEXT_LEN"
+)]
 pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
     use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
     use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
@@ -847,6 +930,44 @@ fn registered_controller_expression(
 /// for the non-MIDI events (note-expression value/text/int, chord, scale), for
 /// `Data` payloads shorter than 2 bytes, and for a SysEx too long for one UMP
 /// packet.
+/// A VST3 `i16` channel field as a 4-bit MIDI channel.
+///
+/// VST3 stores channel and pitch as `i16`; MIDI wants 4 and 7 bits. The mask is
+/// what makes the narrowing lossless, so it lives here with the cast rather
+/// than beside each call — three arms shared the same two-token idiom, and an
+/// `#[allow]` per argument is not expressible on stable Rust anyway (attributes
+/// on expressions are unstable, rust#15701).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "masked to 4 bits, so the narrowing cannot lose a bit the mask keeps"
+)]
+fn midi_channel(raw: i16) -> u8 {
+    (raw as u8) & 0x0F
+}
+
+/// MIDI-2's unsigned 64-bit note-expression payload in VST3's signed slot.
+///
+/// `NoteExpressionIntValueEvent::value` is `i64` and MIDI-2 carries the same 64
+/// bits unsigned. Reinterpreting is the intended round-trip — the bits are
+/// preserved and the receiving plugin reads them back through the same slot —
+/// so this is a rename, not a narrowing.
+#[allow(
+    clippy::cast_possible_wrap,
+    reason = "same 64 bits in VST3's signed slot; the round-trip restores them"
+)]
+fn reinterpret_expression_value(raw: u64) -> i64 {
+    raw as i64
+}
+
+/// A VST3 `i16` pitch field as a 7-bit MIDI note number.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "masked to 7 bits, so the narrowing cannot lose a bit the mask keeps"
+)]
+fn midi_note(raw: i16) -> u8 {
+    (raw as u8) & 0x7F
+}
+
 pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
     use tutti_midi_types::convert::{unit_f32_to_u16, unit_f32_to_u32};
 
@@ -856,22 +977,22 @@ pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
     let built = match event {
         Vst3Event::NoteOn(e) => MidiEvent::note_on(
             0,
-            (e.channel as u8) & 0x0F,
-            (e.pitch as u8) & 0x7F,
+            midi_channel(e.channel),
+            midi_note(e.pitch),
             unit_f32_to_u16(e.velocity),
         ),
         Vst3Event::NoteOff(e) => MidiEvent::note_off(
             0,
-            (e.channel as u8) & 0x0F,
-            (e.pitch as u8) & 0x7F,
+            midi_channel(e.channel),
+            midi_note(e.pitch),
             // Mirrors the host->plugin direction: the plugin's normalized
             // release velocity, not a hardcoded 0.
             unit_f32_to_u16(e.velocity),
         ),
         Vst3Event::PolyPressure(e) => MidiEvent::poly_pressure(
             0,
-            (e.channel as u8) & 0x0F,
-            (e.pitch as u8) & 0x7F,
+            midi_channel(e.channel),
+            midi_note(e.pitch),
             unit_f32_to_u32(e.pressure),
         ),
         Vst3Event::Data(e) => {
@@ -913,6 +1034,13 @@ pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
 /// for. `control_number` is a VST3 `ControllerNumbers` index: 0-127 are real
 /// CCs; the synthetic slots map to their channel-voice messages, with `value2`
 /// supplying the second data byte for pitch bend and poly-pressure.
+/// `ControllerNumbers_` variants are SDK ordinals below 130, and `cn` is
+/// range-checked against `0..=127` before the narrowing that reaches MIDI.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    reason = "SDK controller ordinals < 130; cn is range-checked before narrowing"
+)]
 fn legacy_cc_to_midi(e: &LegacyMidiCcOutEvent, frame: u32) -> Option<MidiEvent> {
     use tutti_midi_types::convert::{midi1_cc_to_midi2, midi1_pitch_bend_to_midi2};
     use vst3::Steinberg::Vst::ControllerNumbers_::{kAfterTouch, kCtrlPolyPressure, kPitchBend};
@@ -1032,6 +1160,11 @@ pub fn vst3_to_note_expression(event: &Vst3Event) -> Option<NoteExpressionValue>
 pub(crate) type TextArena = smallvec::SmallVec<[u16; 256]>;
 
 /// Intern `text` into `arena` and return a [`TextRef`] addressing it.
+/// As `to_c_event`: `MAX_EVENT_TEXT_LEN` bounds both the offset and the length.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "bounded by MAX_EVENT_TEXT_LEN"
+)]
 fn intern_utf16(arena: &mut TextArena, text: &[u16]) -> TextRef {
     let n = text.len().min(MAX_EVENT_TEXT_LEN);
     if n == 0 {
@@ -1213,6 +1346,13 @@ fn resolve_text(t: &TextRef, arena: &[u16]) -> Vec<u16> {
         .unwrap_or_default()
 }
 
+/// Tests build SDK structs by hand, so they repeat the same bounded narrowings
+/// the production code justifies above (SDK ordinals, text sizes clamped to
+/// `MAX_EVENT_TEXT_LEN`). Allowed at module scope rather than per case: a test
+/// that overflows one of these fails loudly on its own assertion, so the lint
+/// adds nothing here, and the deny is kept meaningful by staying tight in the
+/// code that actually crosses the ABI.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 #[cfg(test)]
 mod tests {
     //! MIDI round-trip tests through `Vst3Event::from_midi` + `Vst3Event::to_midi`.

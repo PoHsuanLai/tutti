@@ -3,6 +3,20 @@
 //! Events wrap the actual clap-sys C structs so that pointers returned by
 //! `input_events_get` have the correct C memory layout for plugins to cast.
 
+//! # Narrowing casts are denied in this module
+//!
+//! This file converts between our vocabulary and the CLAP C ABI, and its worst
+//! bug was a cast that changed a value's meaning: CLAP's `-1` wildcard for
+//! "all channels / all keys" masked into channel 15, note 127 — one phantom
+//! voice, while every real voice kept ringing.
+//!
+//! So truncating and sign-changing casts are denied here. Where a cast is safe,
+//! the `#[allow(..., reason = "...")]` says why; the justification is the point,
+//! not the lint. Keep those allows as narrow as the cast they cover — a
+//! function-wide allow in the sibling VST3 module silently re-permitted the very
+//! wrap that module exists to prevent.
+#![deny(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+
 use crate::types::{
     ClapNoteExpression, MidiEvent, NoteExpressionType, ParameterChanges, ParameterPoint,
     ParameterQueue,
@@ -109,6 +123,10 @@ fn unit_to_clap_volume(unit: f32) -> f64 {
 /// alternative (rescaling by 4) would move unity to 0.25 and silently attenuate
 /// every ordinary value by 12 dB on the way back. Saturating loses only the
 /// boost amount; rescaling would corrupt the whole range.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "CLAP gain is f64; the unit vocabulary is f32 by definition"
+)]
 fn clap_volume_to_unit(gain: f64) -> f32 {
     gain.clamp(0.0, CLAP_VOLUME_MAX_GAIN).min(1.0) as f32
 }
@@ -125,6 +143,10 @@ fn expression_value_from_unit(ty: NoteExpressionType, unit: f32) -> f64 {
 }
 
 /// Inverse of [`expression_value_from_unit`] (L6).
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "CLAP expression values are f64; the unit vocabulary is f32"
+)]
 fn expression_value_to_unit(ty: NoteExpressionType, value: f64) -> f32 {
     match ty {
         NoteExpressionType::Volume => clap_volume_to_unit(value),
@@ -160,8 +182,28 @@ fn expression_to_per_note_controller_index(ty: NoteExpressionType) -> Option<u8>
 /// Shared by the note-on, note-off and note-expression paths. It previously
 /// existed only inside the expression path, whose comment already named the
 /// phantom-voice hazard while the two note paths masked unguarded.
+/// A CLAP event struct's size for its `clap_event_header::size` field.
+///
+/// Every CLAP event struct is a few dozen bytes, so the `usize` → `u32`
+/// narrowing cannot lose anything; stating it once beats repeating an `#[allow]`
+/// at each of the five constructors that fill this field.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "CLAP event structs are tens of bytes; the header field is u32"
+)]
+const fn header_size<T>() -> u32 {
+    std::mem::size_of::<T>() as u32
+}
+
 fn note_address(channel: i16, key: i16, note_id: i32) -> Option<(u8, u8)> {
     if channel >= 0 && key >= 0 {
+        // Both are `>= 0` in this branch (the wildcard case returned above),
+        // and each is masked to the width MIDI wants, so neither narrowing can
+        // drop a bit the mask would have kept.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "non-negative in this branch and masked to 4/7 bits"
+        )]
         Some((channel as u8 & 0x0F, key as u8 & 0x7F))
     } else {
         note_id_to_channel_note(note_id)
@@ -238,7 +280,7 @@ impl ClapEvent {
     pub fn note_on(time: u32, channel: i16, key: i16, velocity: f64) -> Self {
         ClapEvent::NoteOn(clap_event_note {
             header: clap_event_header {
-                size: std::mem::size_of::<clap_event_note>() as u32,
+                size: header_size::<clap_event_note>(),
                 time,
                 space_id: CLAP_CORE_EVENT_SPACE_ID,
                 type_: CLAP_EVENT_NOTE_ON,
@@ -260,7 +302,7 @@ impl ClapEvent {
     pub fn note_off(time: u32, channel: i16, key: i16, velocity: f64) -> Self {
         ClapEvent::NoteOff(clap_event_note {
             header: clap_event_header {
-                size: std::mem::size_of::<clap_event_note>() as u32,
+                size: header_size::<clap_event_note>(),
                 time,
                 space_id: CLAP_CORE_EVENT_SPACE_ID,
                 type_: CLAP_EVENT_NOTE_OFF,
@@ -278,7 +320,7 @@ impl ClapEvent {
     pub fn midi(time: u32, port_index: u16, data: [u8; 3]) -> Self {
         ClapEvent::Midi(clap_event_midi {
             header: clap_event_header {
-                size: std::mem::size_of::<clap_event_midi>() as u32,
+                size: header_size::<clap_event_midi>(),
                 time,
                 space_id: CLAP_CORE_EVENT_SPACE_ID,
                 type_: CLAP_EVENT_MIDI,
@@ -295,7 +337,7 @@ impl ClapEvent {
     pub fn param_value(time: u32, param_id: u32, value: f64) -> Self {
         ClapEvent::ParamValue(clap_event_param_value {
             header: clap_event_header {
-                size: std::mem::size_of::<clap_event_param_value>() as u32,
+                size: header_size::<clap_event_param_value>(),
                 time,
                 space_id: CLAP_CORE_EVENT_SPACE_ID,
                 type_: CLAP_EVENT_PARAM_VALUE,
@@ -330,7 +372,7 @@ impl ClapEvent {
 
         ClapEvent::NoteExpression(clap_event_note_expression {
             header: clap_event_header {
-                size: std::mem::size_of::<clap_event_note_expression>() as u32,
+                size: header_size::<clap_event_note_expression>(),
                 time,
                 space_id: CLAP_CORE_EVENT_SPACE_ID,
                 type_: CLAP_EVENT_NOTE_EXPRESSION,
@@ -460,6 +502,10 @@ impl ClapEvent {
     /// of being squashed to 7 bits. Generic `Midi` events upconvert from their
     /// raw MIDI-1 bytes. Returns `None` for non-MIDI variants (NoteExpression,
     /// ParamValue, etc.).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "CLAP carries velocities and expression values as f64; the MIDI-2 conversion helpers take f32"
+    )]
     pub fn to_midi(&self) -> Option<MidiEvent> {
         use tutti_midi_types::convert::unit_f32_to_u16;
         match self {
@@ -495,6 +541,10 @@ impl ClapEvent {
     /// come from the event's `channel`/`key` when the host stamped them, else
     /// from decoding its `note_id`. Returns `None` for dimensions with no MIDI-2
     /// per-note counterpart (Vibrato, Expression).
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "CLAP expression values are f64; the MIDI-2 helpers take f32"
+    )]
     fn note_expression_to_midi(e: &clap_event_note_expression) -> Option<MidiEvent> {
         use tutti_midi_types::convert::{signed_f32_to_bend_u32, unit_f32_to_u32};
 
@@ -651,7 +701,14 @@ impl InputEventList {
             for point in &queue.points {
                 let value = match range {
                     Some(&(_, min, max)) => {
-                        let plain = min + (point.value as f32) * (max - min);
+                        // CLAP normalizes automation to f64 `0..=1`; the plain
+                        // range is f32, so the product is computed in f32.
+                        #[allow(
+                            clippy::cast_possible_truncation,
+                            reason = "normalized 0..=1 from CLAP; the plain range is f32"
+                        )]
+                        let normalized = point.value as f32;
+                        let plain = min + normalized * (max - min);
                         // `f32::clamp` panics when `lo > hi`, and `min`/`max`
                         // come straight from the plugin's own reported
                         // `min_value`/`max_value` (lifecycle.rs:93). A plugin
@@ -757,11 +814,19 @@ impl EventList for InputEventList {
     }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "one block's event count; the CLAP vtable returns u32"
+)]
 unsafe extern "C" fn input_events_size(list: *const clap_input_events) -> u32 {
     let event_list = &*(list as *const InputEventList);
     event_list.events.len() as u32
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "one block's event count; the CLAP vtable indexes with u32"
+)]
 unsafe extern "C" fn input_events_get(
     list: *const clap_input_events,
     index: u32,
@@ -864,7 +929,12 @@ impl OutputEventList {
                 continue;
             };
             let point = ParameterPoint {
-                sample_offset: e.header.time as i32,
+                // Saturate rather than wrap: `header.time` is `u32` and
+                // `ParameterPoint::sample_offset` is `i32`, so a bare cast turns
+                // a large offset negative and the automation point lands before
+                // the block. Found by the module's cast deny; the identical bug
+                // in the VST3 event path was fixed separately.
+                sample_offset: i32::try_from(e.header.time).unwrap_or(i32::MAX),
                 value: e.value,
             };
             // Linear scan: distinct param_ids per block are typically ≤8;
@@ -936,7 +1006,9 @@ fn clap_event_to_note_expression(event: &ClapEvent) -> Option<ClapNoteExpression
         _ => return None,
     };
     Some(ClapNoteExpression {
-        sample_offset: ne.header.time as i32,
+        // As in the parameter path above: `u32` time into an `i32` offset
+        // saturates rather than wrapping negative.
+        sample_offset: i32::try_from(ne.header.time).unwrap_or(i32::MAX),
         note_id: ne.note_id,
         port_index: ne.port_index,
         channel: ne.channel,
@@ -962,6 +1034,10 @@ impl EventList for OutputEventList {
     }
 }
 
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "SysEx payloads are bounded well below u32::MAX"
+)]
 unsafe extern "C" fn output_events_try_push(
     list: *const clap_output_events,
     event: *const clap_event_header,
@@ -1046,8 +1122,52 @@ unsafe extern "C" fn output_events_try_push(
     }
 }
 
+/// Tests construct CLAP structs by hand and so repeat the bounded narrowings
+/// justified above (event counts, SysEx sizes, small loop indices). Allowed at
+/// module scope: a test that overflows one of these fails on its own assertion,
+/// and keeping the deny tight in the ABI-crossing code is what makes it useful.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// A huge event time must saturate, not wrap negative.
+    ///
+    /// `clap_event_header::time` is `u32` and `ParameterPoint::sample_offset` is
+    /// `i32`, so a bare `as i32` sends a large offset negative — the automation
+    /// point then sorts before the block instead of after it. Found by this
+    /// module's cast deny, in two places; the identical bug on the VST3 event
+    /// path was fixed separately.
+    ///
+    /// `u32::MAX` is not a realistic block offset, but it is the value that
+    /// distinguishes saturation from wrapping, which is the whole property.
+    #[test]
+    fn a_huge_event_time_saturates_rather_than_going_negative() {
+        let mut list = OutputEventList::new();
+        list.events.push(ClapEvent::param_value(u32::MAX, 7, 0.5));
+
+        let mut changes = ParameterChanges::default();
+        list.fill_param_changes(&mut changes);
+
+        let point = changes
+            .queues
+            .iter()
+            .find(|q| q.param_id == 7)
+            .and_then(|q| q.points.first())
+            .expect("the param value must survive into a queue");
+        assert!(
+            point.sample_offset >= 0,
+            "sample_offset wrapped negative ({}) — the automation point sorts \
+             before the block it belongs to",
+            point.sample_offset
+        );
+        assert_eq!(
+            point.sample_offset,
+            i32::MAX,
+            "an unrepresentable offset must saturate"
+        );
+    }
+
     use super::*;
     use tutti_midi_types::convert::{signed_f32_to_bend_u32, unit_f32_to_u32};
 
@@ -1564,7 +1684,7 @@ mod tests {
 
         let begin = clap_event_param_gesture {
             header: clap_event_header {
-                size: std::mem::size_of::<clap_event_param_gesture>() as u32,
+                size: header_size::<clap_event_param_gesture>(),
                 time: 0,
                 space_id: CLAP_CORE_EVENT_SPACE_ID,
                 type_: CLAP_EVENT_PARAM_GESTURE_BEGIN,
@@ -1574,7 +1694,7 @@ mod tests {
         };
         let end = clap_event_param_gesture {
             header: clap_event_header {
-                size: std::mem::size_of::<clap_event_param_gesture>() as u32,
+                size: header_size::<clap_event_param_gesture>(),
                 time: 4,
                 space_id: CLAP_CORE_EVENT_SPACE_ID,
                 type_: CLAP_EVENT_PARAM_GESTURE_END,
@@ -1584,7 +1704,7 @@ mod tests {
         };
         let modev = clap_event_param_mod {
             header: clap_event_header {
-                size: std::mem::size_of::<clap_event_param_mod>() as u32,
+                size: header_size::<clap_event_param_mod>(),
                 time: 2,
                 space_id: CLAP_CORE_EVENT_SPACE_ID,
                 type_: CLAP_EVENT_PARAM_MOD,
@@ -1662,7 +1782,7 @@ mod tests {
         let list_ptr = output.as_raw_mut();
 
         let header = clap_event_header {
-            size: std::mem::size_of::<clap_event_header>() as u32,
+            size: header_size::<clap_event_header>(),
             time: 0,
             space_id: CLAP_CORE_EVENT_SPACE_ID,
             type_: 9999,
@@ -1702,7 +1822,7 @@ mod tests {
         let sysex_data: Vec<u8> = vec![0xF0, 0x7E, 0x7F, 0x09, 0x01, 0xF7];
         let sysex = clap_event_midi_sysex {
             header: clap_event_header {
-                size: std::mem::size_of::<clap_event_midi_sysex>() as u32,
+                size: header_size::<clap_event_midi_sysex>(),
                 time: 0,
                 space_id: CLAP_CORE_EVENT_SPACE_ID,
                 type_: CLAP_EVENT_MIDI_SYSEX,
@@ -1737,7 +1857,7 @@ mod tests {
 
         let sysex = clap_event_midi_sysex {
             header: clap_event_header {
-                size: std::mem::size_of::<clap_event_midi_sysex>() as u32,
+                size: header_size::<clap_event_midi_sysex>(),
                 time: 0,
                 space_id: CLAP_CORE_EVENT_SPACE_ID,
                 type_: CLAP_EVENT_MIDI_SYSEX,

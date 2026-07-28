@@ -56,6 +56,10 @@ fn bare_app() -> App {
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
     app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test(48_000.0));
+    // `engine_ready` claims every resource the engine block inserts is
+    // present, and the route rebuild takes `MidiRoutingRes` as a plain
+    // `ResMut` on that promise. A test asserting readiness supplies it.
+    app.insert_resource(bevy_tutti::midi::test_support::routing_table_for_test().0);
     app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));
     app
 }

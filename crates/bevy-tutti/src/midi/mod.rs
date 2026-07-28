@@ -26,6 +26,7 @@ pub mod hardware_out;
 pub mod metadata;
 pub mod negotiation;
 pub mod registration;
+pub mod route;
 pub mod routing_table;
 pub mod sequence;
 pub mod target;
@@ -108,6 +109,7 @@ pub use plugin::TuttiMidiPlugin;
 pub use registration::{
     register_midi_senders, unregister_midi_sender, MidiRegistered, MidiRegistrationPlugin,
 };
+pub use route::{rebuild as rebuild_midi_routes, MidiRouteFallback, MidiRoutePlugin, MidiRouteRule};
 pub use routing_table::MidiRoutingRes;
 pub use sequence::{
     rebuild as rebuild_midi_sources, InstalledMidiSources, MidiNote, MidiSequencePlugin,

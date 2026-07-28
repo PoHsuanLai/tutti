@@ -90,6 +90,10 @@ fn app_with_soundfont() -> Option<(App, Entity)> {
     app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test(
         SAMPLE_RATE,
     ));
+    // `engine_ready` claims every resource the engine block inserts is
+    // present, and the route rebuild takes `MidiRoutingRes` as a plain
+    // `ResMut` on that promise. A test asserting readiness supplies it.
+    app.insert_resource(bevy_tutti::midi::test_support::routing_table_for_test().0);
     app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));
     app.world_mut()
         .resource_mut::<MidiTargetRegistry>()

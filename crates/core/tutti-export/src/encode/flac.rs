@@ -36,7 +36,11 @@ pub(crate) struct FlacEncoder {
 }
 
 impl FlacEncoder {
-    pub(crate) fn create(path: &std::path::Path, spec: &ExportSpec) -> Result<Self> {
+    pub(crate) fn create(
+        path: &std::path::Path,
+        spec: &ExportSpec,
+        opts: crate::options::Flac,
+    ) -> Result<Self> {
         if spec.encode.bit_depth == BitDepth::Float32 {
             return Err(Error::UnsupportedFormat(
                 "FLAC does not support 32-bit float".into(),
@@ -44,7 +48,7 @@ impl FlacEncoder {
         }
         Ok(Self {
             path: path.to_path_buf(),
-            compression_level: spec.encode.flac.compression_level,
+            compression_level: opts.compression_level,
             bit_depth: spec.encode.bit_depth,
         })
     }
@@ -161,7 +165,7 @@ impl<const CH: usize> Encoder<CH> for FlacEncoder {
             dither: crate::process::DitherState::for_spec(spec),
             channels: CH,
             bits,
-            sample_rate: spec.encoder_rate() as usize,
+            sample_rate: crate::encode::encoder_rate(spec) as usize,
             bit_depth: self.bit_depth,
             pending: Vec::new(),
             kept: tutti_types::Samples(0),

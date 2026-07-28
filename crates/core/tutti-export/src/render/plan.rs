@@ -3,9 +3,9 @@
 //! Derived once from (duration, rate, latency), and drives both how many frames
 //! the net must produce and how many leading frames the sink drops.
 
-use crate::spec::{LatencyTrim, RenderSpec};
-use tutti_core::AudioUnit;
-use tutti_types::Samples;
+use crate::spec::RenderSpec;
+use tutti_core::SampleRate;
+use tutti_types::{BeatDuration, Bpm, Samples};
 
 /// Fixed scheduling parameters for one render.
 ///
@@ -24,37 +24,103 @@ pub(crate) struct RenderPlan {
 }
 
 impl RenderPlan {
-    pub fn new(net: &mut tutti_core::dsp::Net, spec: &RenderSpec) -> Self {
-        let latency = match spec.latency {
-            LatencyTrim::None => Samples(0),
-            // `Net::latency()` reports a fractional frame count; floor it, since
-            // trimming a partial frame is not a thing a sink can do.
-            LatencyTrim::Reported => {
-                Samples(net.latency().unwrap_or(0.0).floor().max(0.0) as usize)
-            }
-            LatencyTrim::Exact(n) => n,
-        };
-
-        let output_length =
-            crate::spec::duration_to_frames(spec.duration_seconds, spec.sample_rate);
+    /// Derive the plan from a spec. **Pure** — arithmetic over three numbers.
+    ///
+    /// It used to take `&mut tutti_core::dsp::Net`, for one reason: resolving a
+    /// `LatencyTrim::Reported` variant by calling `net.latency()`. One mode on
+    /// one field made a frame-count calculation require a mutable audio graph,
+    /// which meant it could not be tested, reused, or reasoned about without
+    /// building a graph first. The caller resolves the latency now (see
+    /// [`reported_latency`](crate::reported_latency)) and passes a number.
+    pub fn new(spec: &RenderSpec) -> Self {
+        let output_length = duration_to_frames(spec.duration_seconds, spec.sample_rate);
         // Render the audible span PLUS the trimmed head, so the output is still
         // `output_length` frames long after the drop.
-        let total = Samples(output_length.get() + latency.get());
+        let total = Samples(output_length.get() + spec.latency.get());
 
         Self {
             total,
             output_length,
-            latency,
+            latency: spec.latency,
         }
     }
+}
+
+/// Frames a `seconds` span covers at `rate`.
+///
+/// The one duration conversion in the crate, so the rounding happens once. A
+/// non-finite or negative span is no frames rather than a panic or a wrapped
+/// length.
+///
+/// # Why `f64` and not [`Seconds`](tutti_types::Seconds)
+///
+/// The crate's one stop short of a unit type, and CLAUDE.md names the case:
+/// *"`Seconds` is f32, so SMPTE timecode and hour-long render durations stay
+/// f64."* Concretely, `Seconds` resolves individual frames only to ~256 s at
+/// 48 kHz. Round lengths survive anyway (`3600.0` is exact), but a *derived* one
+/// does not — 2000 beats at 93 bpm lands 2 frames off, 8000 at 111 bpm lands 6.
+/// Small, silent, and every hand-written test would use a round number and pass.
+pub fn duration_to_frames(seconds: f64, rate: SampleRate) -> Samples {
+    if !seconds.is_finite() || seconds <= 0.0 {
+        return Samples(0);
+    }
+    Samples((seconds * rate.get()).round() as usize)
+}
+
+/// Seconds covering `len` beats at `tempo` — the musical-vocabulary form.
+///
+/// Routed through [`beats_per_sample`](tutti_core::transport::beats_per_sample)
+/// rather than `BeatDuration::to_seconds`, which returns `f32` `Seconds` and
+/// would reintroduce the narrowing above. The association `(tempo / 60) / rate`
+/// is load-bearing — see that function.
+pub fn beats_to_seconds(len: BeatDuration, tempo: Bpm, rate: SampleRate) -> f64 {
+    let bps = tutti_core::transport::beats_per_sample(tempo, rate).get();
+    if bps <= 0.0 {
+        return 0.0;
+    }
+    (len.get() / bps) / rate.get()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tutti_core::SampleRate;
 
-    fn spec(latency: LatencyTrim) -> RenderSpec {
+    use crate::spec::RenderSpec;
+    use tutti_types::{BeatDuration, Bpm};
+
+    #[test]
+    fn beats_and_seconds_agree_at_the_same_length() {
+        let rate = SampleRate(48_000.0);
+        // 8 beats at 120 bpm is 4 seconds.
+        let beats = beats_to_seconds(BeatDuration(8.0), Bpm(120.0), rate);
+        assert_eq!(
+            duration_to_frames(beats, rate),
+            duration_to_frames(4.0, rate)
+        );
+        assert_eq!(duration_to_frames(beats, rate), Samples(192_000));
+    }
+
+    /// The `f64` is load-bearing, not an oversight: an `f32` round trip at a
+    /// realistic derived length lands on a different frame count.
+    #[test]
+    fn long_durations_keep_sample_accuracy() {
+        let rate = SampleRate(48_000.0);
+        // 2000 beats at 93 bpm — an ordinary long-set length, not a round one.
+        let secs = (2000.0f64 / 93.0) * 60.0;
+        let exact = duration_to_frames(secs, rate);
+        let via_f32 = Samples((f64::from(secs as f32) * rate.get()).round() as usize);
+        assert_ne!(exact, via_f32, "this conversion must not narrow");
+        assert_eq!(exact, Samples(61_935_484));
+    }
+
+    #[test]
+    fn a_non_finite_or_negative_duration_is_no_frames() {
+        let rate = SampleRate(48_000.0);
+        assert_eq!(duration_to_frames(-1.0, rate), Samples(0));
+        assert_eq!(duration_to_frames(f64::NAN, rate), Samples(0));
+    }
+
+    fn spec(latency: Samples) -> RenderSpec {
         RenderSpec {
             sample_rate: SampleRate(48_000.0),
             duration_seconds: 1.0,
@@ -62,16 +128,11 @@ mod tests {
         }
     }
 
-    fn silent_net() -> tutti_core::dsp::Net {
-        let mut net = tutti_core::dsp::Net::new(0, 2);
-        let id = net.push(Box::new(tutti_core::dsp::dc((0.0, 0.0))));
-        net.pipe_output(id);
-        net
-    }
-
+    /// Note there is no `Net` in any of these. That is the point of the change:
+    /// the plan is arithmetic, so it can be checked as arithmetic.
     #[test]
     fn no_trim_renders_exactly_the_audible_span() {
-        let plan = RenderPlan::new(&mut silent_net(), &spec(LatencyTrim::None));
+        let plan = RenderPlan::new(&spec(Samples(0)));
         assert_eq!(plan.output_length, Samples(48_000));
         assert_eq!(plan.total, Samples(48_000));
         assert_eq!(plan.latency, Samples(0));
@@ -80,8 +141,8 @@ mod tests {
     /// The load-bearing property: trimming N frames means rendering N extra, or
     /// the file comes out short by exactly the trim.
     #[test]
-    fn an_exact_trim_extends_the_render_by_that_much() {
-        let plan = RenderPlan::new(&mut silent_net(), &spec(LatencyTrim::Exact(Samples(512))));
+    fn a_trim_extends_the_render_by_that_much() {
+        let plan = RenderPlan::new(&spec(Samples(512)));
         assert_eq!(plan.output_length, Samples(48_000));
         assert_eq!(plan.total, Samples(48_512));
         assert_eq!(plan.latency, Samples(512));

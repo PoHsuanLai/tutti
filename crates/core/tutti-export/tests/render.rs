@@ -8,7 +8,7 @@
 use fundsp::prelude32::*;
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeSpec,
-    ExportSpec, FrozenClock, LatencyTrim, RenderClock, RenderSpec, Resample,
+    ExportSpec, FrozenClock, RenderClock, RenderSpec, Resample,
 };
 
 fn net() -> tutti_core::dsp::Net {
@@ -28,7 +28,6 @@ fn spec(format: AudioFormat, bd: BitDepth, layout: ChannelLayout) -> ExportSpec 
             format,
             bit_depth: bd,
             channels: layout,
-            ..Default::default()
         },
         ..Default::default()
     }
@@ -39,8 +38,16 @@ fn all_four_formats_export() {
     let d = tempfile::tempdir().unwrap();
     for (f, bd, ext) in [
         (AudioFormat::Wav, BitDepth::Int24, "wav"),
-        (AudioFormat::Flac, BitDepth::Int24, "flac"),
-        (AudioFormat::OggVorbis, BitDepth::Int24, "ogg"),
+        (
+            AudioFormat::Flac(Default::default()),
+            BitDepth::Int24,
+            "flac",
+        ),
+        (
+            AudioFormat::OggVorbis(Default::default()),
+            BitDepth::Int24,
+            "ogg",
+        ),
         (AudioFormat::Aiff, BitDepth::Int24, "aiff"),
     ] {
         let p = d.path().join(format!("a.{ext}"));
@@ -82,8 +89,8 @@ fn upmix_does_not_panic_and_leaves_extras_silent() {
     }
     println!("mono->quad channel peaks: {ch:?}");
     assert!(ch[0] > 0.4, "ch0 carries the signal");
-    for c in 1..4 {
-        assert!(ch[c] < 1e-6, "ch{c} must be silent, got {}", ch[c]);
+    for (c, &peak) in ch.iter().enumerate().skip(1) {
+        assert!(peak < 1e-6, "ch{c} must be silent, got {peak}");
     }
 }
 
@@ -129,7 +136,7 @@ fn a_latency_trim_preserves_the_output_length() {
     let mut s = spec(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
     let untrimmed = render_to_buffers(net(), &s, &FrozenClock).unwrap();
 
-    s.render.latency = LatencyTrim::Exact(tutti_types::Samples(512));
+    s.render.latency = tutti_types::Samples(512);
     let trimmed = render_to_buffers(net(), &s, &FrozenClock).unwrap();
 
     assert_eq!(
@@ -225,8 +232,8 @@ fn normalized_audio_can_be_written_to_every_format() {
 
     for (format, ext) in [
         (AudioFormat::Wav, "wav"),
-        (AudioFormat::Flac, "flac"),
-        (AudioFormat::OggVorbis, "ogg"),
+        (AudioFormat::Flac(Default::default()), "flac"),
+        (AudioFormat::OggVorbis(Default::default()), "ogg"),
         (AudioFormat::Aiff, "aiff"),
     ] {
         s.encode.format = format;
@@ -235,8 +242,8 @@ fn normalized_audio_can_be_written_to_every_format() {
         assert!(w.bytes > 100, "{ext} wrote {} bytes", w.bytes);
     }
 
-    // The written WAV must carry the gain: 0.5 at -6 dB is ~0.25.
-    s.encode.format = AudioFormat::Wav;
+    // The written WAV must carry the gain: 0.5 at -6 dB is ~0.25. (The WAV was
+    // written in the loop above; this only re-reads it.)
     let p = d.path().join("n.wav");
     let rd = hound::WavReader::open(&p).unwrap();
     let peak = rd

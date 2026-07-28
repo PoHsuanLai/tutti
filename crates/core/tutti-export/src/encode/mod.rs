@@ -33,6 +33,25 @@ use crate::spec::ExportSpec;
 use crate::Written;
 use std::path::Path;
 
+/// The rate the file is written at: the resample target, else the render rate.
+pub(crate) fn output_rate(spec: &ExportSpec) -> tutti_core::SampleRate {
+    spec.resample
+        .map(|r| r.target_rate)
+        .unwrap_or(spec.render.sample_rate)
+}
+
+/// The output rate as the `u32` every codec header wants.
+///
+/// The single narrowing point. hound, flacenc, vorbis and `aifc` all take an
+/// integer rate, and the resampler compares rates for *equality* to decide
+/// whether to convert at all — which a float would turn into an ULP coin-flip.
+/// The boundary is real; it just belongs in one named place rather than at five
+/// call sites, and it lives beside the encoders that need it rather than hanging
+/// off the spec as behaviour.
+pub(crate) fn encoder_rate(spec: &ExportSpec) -> u32 {
+    output_rate(spec).get().round() as u32
+}
+
 /// Drives a render to completion and writes a file.
 ///
 /// `self` by value: an encoder finalizes exactly once, and taking ownership is
@@ -70,9 +89,11 @@ pub(crate) fn encode_to_file<const CH: usize>(
         AudioFormat::Wav => return Err(Error::UnsupportedFormat("WAV not enabled".into())),
 
         #[cfg(feature = "flac")]
-        AudioFormat::Flac => flac::FlacEncoder::create(path, spec)?.encode(src, plan, spec)?,
+        AudioFormat::Flac(opts) => {
+            flac::FlacEncoder::create(path, spec, opts)?.encode(src, plan, spec)?
+        }
         #[cfg(not(feature = "flac"))]
-        AudioFormat::Flac => return Err(Error::UnsupportedFormat("FLAC not enabled".into())),
+        AudioFormat::Flac(_) => return Err(Error::UnsupportedFormat("FLAC not enabled".into())),
 
         #[cfg(feature = "aiff")]
         AudioFormat::Aiff => aiff::AiffEncoder::create(path, spec)?.encode(src, plan, spec)?,
@@ -80,9 +101,13 @@ pub(crate) fn encode_to_file<const CH: usize>(
         AudioFormat::Aiff => return Err(Error::UnsupportedFormat("AIFF not enabled".into())),
 
         #[cfg(feature = "ogg")]
-        AudioFormat::OggVorbis => ogg::OggEncoder::create(path, spec)?.encode(src, plan, spec)?,
+        AudioFormat::OggVorbis(opts) => {
+            ogg::OggEncoder::create(path, spec, opts)?.encode(src, plan, spec)?
+        }
         #[cfg(not(feature = "ogg"))]
-        AudioFormat::OggVorbis => return Err(Error::UnsupportedFormat("OGG not enabled".into())),
+        AudioFormat::OggVorbis(_) => {
+            return Err(Error::UnsupportedFormat("OGG not enabled".into()))
+        }
     }
 
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -123,7 +148,7 @@ where
                 CH,
                 source_rate,
                 r.target_rate.get().round() as u32,
-                r.quality,
+                r.chunk,
             )?,
             vec![Vec::<f32>::new(); CH],
             vec![Vec::<f32>::new(); CH],

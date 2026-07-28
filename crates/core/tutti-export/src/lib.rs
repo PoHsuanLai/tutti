@@ -48,15 +48,16 @@ pub use options::{AudioFormat, BitDepth, Dither, Flac, Ogg};
 pub use tutti_types::ChannelLayout;
 
 mod spec;
-pub use spec::{
-    beats_to_seconds, duration_to_frames, EncodeSpec, ExportSpec, LatencyTrim, RenderSpec, Resample,
-};
+/// Frame-count arithmetic — pure, and public so a caller can size a render
+/// before committing to one.
+pub use render::plan::{beats_to_seconds, duration_to_frames};
+pub use spec::{EncodeSpec, ExportSpec, RenderSpec, Resample};
 
 pub(crate) mod encode;
 pub(crate) mod process;
 pub(crate) mod render;
 
-pub use process::ResampleQuality;
+pub use process::ChunkSize;
 /// The clock a render advances. Re-exported so callers can name it without
 /// depending on `tutti-core` directly; `FrozenClock` is the "this graph has no
 /// transport" answer.
@@ -162,6 +163,28 @@ macro_rules! dispatch_channels {
     }};
 }
 
+/// The look-ahead latency `net` reports, as a frame count.
+///
+/// For a caller that wants `RenderSpec::latency` to be whatever the graph says —
+/// look-ahead limiters, linear-phase filters. It is a function rather than a
+/// `LatencyTrim::Reported` mode on the spec because asking a graph is an
+/// *action*, and folding it into a value dragged a `&mut Net` into what is
+/// otherwise pure arithmetic:
+///
+/// ```ignore
+/// let latency = reported_latency(&mut net);
+/// let spec = ExportSpec {
+///     render: RenderSpec { latency, ..Default::default() },
+///     ..Default::default()
+/// };
+/// ```
+///
+/// Floored: trimming a partial frame is not something a sink can do.
+pub fn reported_latency(net: &mut tutti_core::dsp::Net) -> Samples {
+    use tutti_core::AudioUnit;
+    Samples(net.latency().unwrap_or(0.0).floor().max(0.0) as usize)
+}
+
 /// Write already-rendered audio to `path`.
 ///
 /// The third of the API, and the one that makes measure-then-apply usable:
@@ -192,7 +215,7 @@ pub fn render_to_file(
     let channels = spec.encode.channels;
     dispatch_channels!(channels, CH => {
         let mut net = net;
-        let plan = render::RenderPlan::new(&mut net, &spec.render);
+        let plan = render::RenderPlan::new(&spec.render);
         let mut src = render::NetSource::<CH>::new(&mut net, spec.render.sample_rate, clock);
         encode::encode_to_file::<CH>(&mut src, &plan, spec, path)
     })
@@ -213,10 +236,13 @@ pub fn render_to_buffers(
     let channels = spec.encode.channels;
     dispatch_channels!(channels, CH => {
         let mut net = net;
-        let plan = render::RenderPlan::new(&mut net, &spec.render);
+        let plan = render::RenderPlan::new(&spec.render);
         let mut src = render::NetSource::<CH>::new(&mut net, spec.render.sample_rate, clock);
 
-        let mut planes: Vec<Vec<f32>> = vec![Vec::with_capacity(plan.output_length.get()); CH];
+        // `vec![Vec::with_capacity(n); CH]` would clone ONE empty Vec CH times,
+        // and a clone does not carry capacity — every plane would reallocate.
+        let mut planes: Vec<Vec<f32>> =
+            (0..CH).map(|_| Vec::with_capacity(plan.output_length.get())).collect();
         let mut dither = process::DitherState::for_spec(spec);
         let mut staging: Vec<[f32; CH]> = Vec::new();
         render::drive(&mut src, &plan, |block| {

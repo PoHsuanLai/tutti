@@ -16,7 +16,7 @@ use fundsp::prelude32::{dc, sine_hz};
 use tutti_core::{FrozenClock, SampleRate};
 use tutti_export::{
     render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeSpec,
-    ExportSpec, RenderSpec, Resample,
+    ExportSpec, RenderSpec,
 };
 use tutti_types::Db;
 
@@ -55,7 +55,7 @@ fn main() -> tutti_export::Result<()> {
             ..Default::default()
         },
         encode: EncodeSpec {
-            format: AudioFormat::Flac,
+            format: AudioFormat::Flac(Default::default()),
             bit_depth: BitDepth::Int24,
             ..Default::default()
         },
@@ -73,7 +73,7 @@ fn main() -> tutti_export::Result<()> {
     // pull API, Ogg and AIFF through their own incremental writers.
     for (format, ext) in [
         (AudioFormat::Wav, "wav"),
-        (AudioFormat::OggVorbis, "ogg"),
+        (AudioFormat::OggVorbis(Default::default()), "ogg"),
         (AudioFormat::Aiff, "aiff"),
     ] {
         let s = ExportSpec {

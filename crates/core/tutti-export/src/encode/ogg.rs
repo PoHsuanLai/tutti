@@ -21,8 +21,12 @@ pub(crate) struct OggEncoder {
 }
 
 impl OggEncoder {
-    pub(crate) fn create(path: &Path, spec: &ExportSpec) -> Result<Self> {
-        let sr = NonZeroU32::new(spec.encoder_rate())
+    pub(crate) fn create(
+        path: &Path,
+        spec: &ExportSpec,
+        opts: crate::options::Ogg,
+    ) -> Result<Self> {
+        let sr = NonZeroU32::new(crate::encode::encoder_rate(spec))
             .ok_or_else(|| Error::InvalidConfig("Sample rate must be non-zero".into()))?;
         let ch = NonZeroU8::new(spec.encode.channels.count() as u8)
             .ok_or_else(|| Error::InvalidConfig("Channel count must be non-zero".into()))?;
@@ -31,7 +35,7 @@ impl OggEncoder {
         let mut builder = VorbisEncoderBuilder::new(sr, ch, writer)
             .map_err(|e| Error::Encoding(format!("Failed to create OGG encoder: {e}")))?;
         builder.bitrate_management_strategy(VorbisBitrateManagementStrategy::QualityVbr {
-            target_quality: spec.encode.ogg.quality,
+            target_quality: opts.quality,
         });
         let encoder = builder
             .build()

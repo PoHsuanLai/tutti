@@ -4,18 +4,27 @@
 use crate::error::{Error, Result};
 use std::path::Path;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+/// The container to write, carrying that format's own settings.
+///
+/// The settings live **in the variant**, not beside it. An `EncodeSpec` used to
+/// hold `flac: Flac` and `ogg: Ogg` unconditionally, so every WAV export
+/// carried a FLAC compression level and a Vorbis quality that nothing would
+/// read — the same "settings a path ignores" shape the fluent builder had, one
+/// layer down. Here a compression level cannot be set on a format that has no
+/// compression, because there is nowhere to put it.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[non_exhaustive]
 pub enum AudioFormat {
     #[default]
     Wav,
-    Flac,
+    Flac(Flac),
     Aiff,
-    OggVorbis,
+    OggVorbis(Ogg),
 }
 
 impl AudioFormat {
-    /// Detect format from a file path's extension. `.aif` aliases `.aiff`.
+    /// Detect format from a file path's extension, with that format's defaults.
+    /// `.aif` aliases `.aiff`.
     pub fn from_path(path: &Path) -> Result<Self> {
         let ext = path
             .extension()
@@ -24,9 +33,9 @@ impl AudioFormat {
             .to_lowercase();
         match ext.as_str() {
             "wav" => Ok(Self::Wav),
-            "flac" => Ok(Self::Flac),
+            "flac" => Ok(Self::Flac(Flac::default())),
             "aiff" | "aif" => Ok(Self::Aiff),
-            "ogg" => Ok(Self::OggVorbis),
+            "ogg" => Ok(Self::OggVorbis(Ogg::default())),
             _ => Err(Error::UnsupportedFormat(format!(
                 "Unknown extension: .{ext}"
             ))),

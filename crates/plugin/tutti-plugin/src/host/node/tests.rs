@@ -81,17 +81,22 @@ fn handle_with_mock_server(
         AudioSlab::create(
             unique_shm_name("handle"),
             SlabLayout {
-                channels: ChannelLayout::Stereo,
+                slots: crate::util::transport::shm::RING_SLOTS as u32,
                 samples_per_channel: 512,
                 format: SampleFormat::Float32,
-                inputs: smallvec![],
-                outputs: smallvec![],
+                inputs: smallvec![ChannelLayout::Stereo],
+                outputs: smallvec![ChannelLayout::Stereo],
             },
         )
         .unwrap(),
     );
-    let (bridge, bridge_thread) =
-        PluginBridge::new(path.clone(), buffer, std::path::PathBuf::from("test.vst3")).unwrap();
+    let (bridge, bridge_thread) = PluginBridge::new(
+        path.clone(),
+        buffer,
+        std::path::PathBuf::from("test.vst3"),
+        48_000.0,
+    )
+    .unwrap();
 
     let server_stream = listener.accept().unwrap();
     send_bridge_msg(
@@ -179,17 +184,22 @@ fn handle_with_multi_reply_server(
         AudioSlab::create(
             unique_shm_name("handle-multi"),
             SlabLayout {
-                channels: ChannelLayout::Stereo,
+                slots: crate::util::transport::shm::RING_SLOTS as u32,
                 samples_per_channel: 512,
                 format: SampleFormat::Float32,
-                inputs: smallvec![],
-                outputs: smallvec![],
+                inputs: smallvec![ChannelLayout::Stereo],
+                outputs: smallvec![ChannelLayout::Stereo],
             },
         )
         .unwrap(),
     );
-    let (bridge, bridge_thread) =
-        PluginBridge::new(path.clone(), buffer, std::path::PathBuf::from("test.vst3")).unwrap();
+    let (bridge, bridge_thread) = PluginBridge::new(
+        path.clone(),
+        buffer,
+        std::path::PathBuf::from("test.vst3"),
+        48_000.0,
+    )
+    .unwrap();
 
     let server_stream = listener.accept().unwrap();
     send_bridge_msg(

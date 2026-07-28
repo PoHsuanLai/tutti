@@ -3,9 +3,9 @@ use std::ffi::c_void;
 use clap_sys::events::{
     clap_event_header, clap_event_note, clap_event_note_expression, clap_event_param_gesture,
     clap_event_param_mod, clap_event_param_value, CLAP_CORE_EVENT_SPACE_ID, CLAP_EVENT_MIDI,
-    CLAP_EVENT_NOTE_CHOKE, CLAP_EVENT_NOTE_END, CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_ON,
-    CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END, CLAP_EVENT_PARAM_MOD,
-    CLAP_EVENT_PARAM_VALUE,
+    CLAP_EVENT_NOTE_CHOKE, CLAP_EVENT_NOTE_END, CLAP_EVENT_NOTE_EXPRESSION, CLAP_EVENT_NOTE_OFF,
+    CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_GESTURE_BEGIN, CLAP_EVENT_PARAM_GESTURE_END,
+    CLAP_EVENT_PARAM_MOD, CLAP_EVENT_PARAM_VALUE,
 };
 use tutti_clap_host::{
     ClapEvent, ClapHost, EventList, HostState, InputEventList, InputStream, MidiEvent,
@@ -154,6 +154,102 @@ fn test_output_event_list_push_note_on() {
     assert!(event.is_note_on());
     assert_eq!(event.note(), Some(64));
     assert_eq!(event.frame_offset, 50);
+}
+
+/// A wildcard note-off must not be re-pointed at one phantom voice.
+///
+/// CLAP types `channel`/`key` as `i16` with `-1` meaning "all channels" / "all
+/// keys" (`clap/events.h`). Masking them like ordinary values silently invents a
+/// different event: `-1i16 as u8` is `0xFF`, so `& 0x0F` gives channel 15 and
+/// `& 0x7F` gives note 127. A plugin panicking every voice off then aims that at
+/// a single phantom voice and every real voice keeps sounding — an audible stuck
+/// note on the normal instrument output path.
+///
+/// The event carries a `note_id`, so the address is recoverable and the event
+/// must resolve to *that* voice rather than to (15, 127).
+#[test]
+fn a_wildcard_note_off_resolves_by_note_id_not_by_masking() {
+    use tutti_plugin_types::note_id_for;
+
+    const CHANNEL: u8 = 2;
+    const NOTE: u8 = 60;
+
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let note = clap_event_note {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_note>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_NOTE_OFF,
+            flags: 0,
+        },
+        note_id: note_id_for(CHANNEL, NOTE),
+        port_index: 0,
+        // The wildcard under test.
+        channel: -1,
+        key: -1,
+        velocity: 0.0,
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        assert!(push_fn(raw as *const _, &note.header as *const _));
+    }
+
+    let midi_out = list.to_midi_events();
+    assert_eq!(midi_out.len(), 1, "the note-off must survive conversion");
+    let event = &midi_out[0];
+    assert!(event.is_note_off());
+    assert_eq!(
+        event.note(),
+        Some(NOTE),
+        "a wildcard key must resolve through note_id, not mask to 127 — \
+         masking leaves every real voice ringing"
+    );
+    assert_eq!(
+        event.channel(),
+        Some(CHANNEL),
+        "a wildcard channel must resolve through note_id, not mask to 15"
+    );
+}
+
+/// A wildcard with no decodable `note_id` is dropped rather than misaddressed.
+///
+/// Plugins may mint their own `note_id` space, which the host cannot decode.
+/// Dropping the event is recoverable; aiming it at a voice the plugin never
+/// named is not.
+#[test]
+fn a_wildcard_note_off_with_an_opaque_note_id_is_dropped() {
+    let mut list = OutputEventList::new();
+    let raw = list.as_raw_mut();
+
+    let note = clap_event_note {
+        header: clap_event_header {
+            size: std::mem::size_of::<clap_event_note>() as u32,
+            time: 0,
+            space_id: CLAP_CORE_EVENT_SPACE_ID,
+            type_: CLAP_EVENT_NOTE_OFF,
+            flags: 0,
+        },
+        // Outside the host-minted range, so undecodable.
+        note_id: -1,
+        port_index: 0,
+        channel: -1,
+        key: -1,
+        velocity: 0.0,
+    };
+
+    unsafe {
+        let push_fn = (*raw).try_push.unwrap();
+        assert!(push_fn(raw as *const _, &note.header as *const _));
+    }
+
+    assert!(
+        list.to_midi_events().is_empty(),
+        "an unaddressable wildcard must be dropped, not bound to a phantom voice"
+    );
 }
 
 /// Output generic `Midi` (CC) events survive the FFI round-trip.
@@ -867,13 +963,114 @@ fn test_host_thread_check_audio_thread() {
         "Random thread should not be audio (no audio_thread_id set)"
     );
 
-    // Set the audio_thread_id to the current thread, then check
-    state2
-        .audio_thread_id
-        .store(Some(std::sync::Arc::new(std::thread::current().id())));
+    // Claim the audio-thread role on this thread, then check.
+    let claim = state2.claim_audio_thread();
     assert!(
         unsafe { is_audio(raw) },
-        "Current thread should be audio after setting audio_thread_id"
+        "Current thread should be audio while holding the claim"
+    );
+    drop(claim);
+    assert!(
+        !unsafe { is_audio(raw) },
+        "Releasing the claim must clear the audio-thread identity"
+    );
+}
+
+/// `is_main_thread` and `is_audio_thread` must be
+/// **mutually exclusive**.
+///
+/// The spec lets a host mark any OS thread — including the main thread — as the
+/// audio thread, but they are alternative *roles*, not simultaneous identities.
+/// The host used to answer `true` to both at once while `start_processing` ran
+/// on the main thread, which made every plugin-side thread assertion
+/// unfalsifiable: a plugin asserting `!is_main_thread()` inside an
+/// `[audio-thread]` call could never detect that it was on the wrong thread.
+#[test]
+fn thread_check_roles_are_mutually_exclusive_c1() {
+    use clap_sys::ext::thread_check::clap_host_thread_check;
+    use std::sync::Arc;
+
+    let state = Arc::new(HostState::new());
+    let state2 = Arc::clone(&state);
+    let host = ClapHost::new(state);
+    let raw = host.as_raw();
+    let get_ext = unsafe { (*raw).get_extension.unwrap() };
+    let tc_ptr = unsafe { get_ext(raw, c"clap.thread-check".as_ptr()) };
+    let tc = unsafe { &*(tc_ptr as *const clap_host_thread_check) };
+    let is_main = tc.is_main_thread.unwrap();
+    let is_audio = tc.is_audio_thread.unwrap();
+
+    // Baseline: this IS the main thread, and nothing is the audio thread.
+    assert!(unsafe { is_main(raw) });
+    assert!(!unsafe { is_audio(raw) });
+
+    {
+        // While the main thread holds the audio-thread claim (exactly what
+        // `set_sample_rate` / `deactivate` / `Drop` do when they stop
+        // processing), it must report as the audio thread and NOT as main.
+        let _claim = state2.claim_audio_thread();
+        assert!(
+            unsafe { is_audio(raw) },
+            "the claiming thread must report as the audio thread"
+        );
+        assert!(
+            !unsafe { is_main(raw) },
+            "the host must not assert both identities at once — a plugin's own \
+             `assert(!is_main_thread())` inside start_processing has to be able \
+             to fail"
+        );
+    }
+
+    // Released: the main thread is the main thread again.
+    assert!(unsafe { is_main(raw) });
+    assert!(!unsafe { is_audio(raw) });
+}
+
+/// The audio-thread claim is real mutual exclusion, not
+/// an assertion. A second thread trying to enter an `[audio-thread]` region
+/// must block until the first has left — this is the serialization CLAP's
+/// "`params.flush` must not be called concurrently to `process()`" requires,
+/// and which the old `debug_assert!` (compiled out in release, and made
+/// tautologically true in debug by C1) did not provide.
+#[test]
+fn audio_thread_claim_serializes_across_threads_c2() {
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    let state = Arc::new(HostState::new());
+    // Counts concurrent occupants of the claimed region; must never exceed 1.
+    let inside = Arc::new(AtomicU32::new(0));
+    let overlapped = Arc::new(AtomicBool::new(false));
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let state = Arc::clone(&state);
+        let inside = Arc::clone(&inside);
+        let overlapped = Arc::clone(&overlapped);
+        handles.push(std::thread::spawn(move || {
+            for _ in 0..200 {
+                let _claim = state.claim_audio_thread();
+                if inside.fetch_add(1, Ordering::SeqCst) != 0 {
+                    overlapped.store(true, Ordering::SeqCst);
+                }
+                // The claiming thread must see itself as the audio thread for
+                // the whole region — no other claim can have overwritten it.
+                assert!(state.is_audio_thread());
+                inside.fetch_sub(1, Ordering::SeqCst);
+            }
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    assert!(
+        !overlapped.load(Ordering::SeqCst),
+        "two threads were inside the [audio-thread] region at once"
+    );
+    assert!(
+        !state.is_audio_thread(),
+        "no claim outstanding, so no thread should be the audio thread"
     );
 }
 

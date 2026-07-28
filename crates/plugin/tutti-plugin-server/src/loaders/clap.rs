@@ -438,15 +438,22 @@ fn convert_transport(
     } else {
         44100.0
     };
+    // CLAP's `song_pos_seconds`. Prefer the wire's own seconds field (the
+    // producer derives it from beats + tempo); only fall back to a sample-count
+    // division when the host actually reports a project-time sample clock,
+    // which none currently does — dividing the old unconditional `samples` by
+    // the rate just yielded a constant 0.
+    let seconds = if transport.position.seconds != 0.0 {
+        transport.position.seconds
+    } else {
+        transport.position.samples.unwrap_or(0) as f64 / sr
+    };
     tutti_clap_host::TransportInfo::default()
         .with_playing(transport.state.playing)
         .with_recording(transport.state.recording)
         .with_tempo(transport.timing.tempo)
         .with_time_signature(transport.timing.signature)
-        .with_position_beats(
-            transport.position.quarters,
-            transport.position.samples as f64 / sr,
-        )
+        .with_position_beats(transport.position.quarters, seconds)
         .with_loop(
             transport.state.cycle_active,
             transport.loop_region.start_quarters,

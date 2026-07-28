@@ -71,6 +71,67 @@ fn per_note_controller_expression(index: u8) -> Option<NoteExpressionType> {
     }
 }
 
+/// CLAP's upper bound for `CLAP_NOTE_EXPRESSION_VOLUME` (L6).
+///
+/// The spec (`clap/events.h`) defines VOLUME as a **gain**, not a unit
+/// fraction: "with 0 < x <= 4, plain = 20 * log(x)". So 1.0 is unity, 4.0 is
+/// +12 dB, and 0 is excluded — a strict inequality, because 20·log(0) is −∞.
+const CLAP_VOLUME_MAX_GAIN: f64 = 4.0;
+
+/// Smallest VOLUME gain the host will emit (L6).
+///
+/// CLAP excludes 0 from the VOLUME range, so a MIDI volume of 0 cannot be sent
+/// verbatim. −120 dB is inaudible at any practical bit depth and is what a
+/// fader's "−∞" position resolves to in practice, so it stands in for silence
+/// while staying inside the legal open interval.
+const CLAP_VOLUME_MIN_GAIN: f64 = 1e-6;
+
+/// MIDI-2 per-note volume (unit `0..=1`, full scale = unity) → a CLAP VOLUME
+/// gain in the spec's `0 < x <= 4` (L6).
+///
+/// Unity is preserved: MIDI full scale maps to gain 1.0, matching CLAP's
+/// "1.0 = unity". A MIDI controller cannot express boost, so the `1..4` half of
+/// the CLAP range is unreachable *from MIDI* — that is correct, not a loss. The
+/// bug this replaces was emitting a bare 0.0 at the bottom, which is outside
+/// CLAP's open interval.
+fn unit_to_clap_volume(unit: f32) -> f64 {
+    let gain = f64::from(unit.clamp(0.0, 1.0));
+    gain.max(CLAP_VOLUME_MIN_GAIN)
+}
+
+/// A CLAP VOLUME gain (`0 < x <= 4`) → MIDI-2 per-note volume (unit `0..=1`).
+///
+/// Exact inverse of [`unit_to_clap_volume`] over the attenuating half `0..=1`,
+/// so a host→plugin→host round trip is lossless there and unity stays unity.
+///
+/// A plugin may legally emit boost (`1 < x <= 4`). MIDI's unit per-note volume
+/// controller has no headroom above unity, so boost saturates at 1.0 — the
+/// alternative (rescaling by 4) would move unity to 0.25 and silently attenuate
+/// every ordinary value by 12 dB on the way back. Saturating loses only the
+/// boost amount; rescaling would corrupt the whole range.
+fn clap_volume_to_unit(gain: f64) -> f32 {
+    gain.clamp(0.0, CLAP_VOLUME_MAX_GAIN).min(1.0) as f32
+}
+
+/// Scale a MIDI-2 unit `0..=1` controller value into the CLAP value range of
+/// `ty` (L6). Only VOLUME differs from the identity: Pan (`0` left, `0.5`
+/// centre, `1` right), Brightness, Expression, Vibrato and Pressure are all
+/// genuinely `0..1` per `clap/events.h`.
+fn expression_value_from_unit(ty: NoteExpressionType, unit: f32) -> f64 {
+    match ty {
+        NoteExpressionType::Volume => unit_to_clap_volume(unit),
+        _ => f64::from(unit),
+    }
+}
+
+/// Inverse of [`expression_value_from_unit`] (L6).
+fn expression_value_to_unit(ty: NoteExpressionType, value: f64) -> f32 {
+    match ty {
+        NoteExpressionType::Volume => clap_volume_to_unit(value),
+        _ => value as f32,
+    }
+}
+
 /// Inverse of [`per_note_controller_expression`].
 fn expression_to_per_note_controller_index(ty: NoteExpressionType) -> Option<u8> {
     match ty {
@@ -78,6 +139,32 @@ fn expression_to_per_note_controller_index(ty: NoteExpressionType) -> Option<u8>
         NoteExpressionType::Pan => Some(10),
         NoteExpressionType::Brightness => Some(74),
         _ => None,
+    }
+}
+
+/// Resolve a CLAP note event's `(channel, key)` into a concrete MIDI address,
+/// or `None` when it names no single voice.
+///
+/// **CLAP types `channel` and `key` as `i16`, and `-1` is a wildcard** meaning
+/// "all channels" / "all keys" (`clap/events.h`). Masking a wildcard the way a
+/// non-negative value is masked does not preserve that meaning, it invents a
+/// different one: `-1i16 as u8` is `0xFF`, so `& 0x0F` yields channel **15** and
+/// `& 0x7F` yields note **127**. An all-notes-off aimed at every sounding voice
+/// arrives pointed at one phantom voice, and every real voice keeps ringing.
+///
+/// So a wildcard falls back to the host-minted `note_id`, which addresses a
+/// specific voice. A plugin's own `note_id` space cannot be decoded, in which
+/// case this returns `None` and the caller drops the event — dropping it is
+/// recoverable, misaddressing it is not.
+///
+/// Shared by the note-on, note-off and note-expression paths. It previously
+/// existed only inside the expression path, whose comment already named the
+/// phantom-voice hazard while the two note paths masked unguarded.
+fn note_address(channel: i16, key: i16, note_id: i32) -> Option<(u8, u8)> {
+    if channel >= 0 && key >= 0 {
+        Some((channel as u8 & 0x0F, key as u8 & 0x7F))
+    } else {
+        note_id_to_channel_note(note_id)
     }
 }
 
@@ -107,7 +194,47 @@ impl ClapEvent {
         }
     }
 
+    /// Mint the host's `note_id` for a `(channel, key)` voice, matching what
+    /// [`per_note_expression`](Self::per_note_expression) stamps (H2).
+    ///
+    /// [`note_id_for`] takes `u8`s; note/off events carry CLAP's signed
+    /// `i16` wildcard-capable fields. A wildcard (`< 0`) or out-of-range value
+    /// has no `(channel, key)` voice to name, so it yields CLAP's `-1`
+    /// "unspecified note id" — which the spec permits and plugins fall back
+    /// from by matching on the rest of the (port, channel, key, note_id) tuple.
+    fn voice_note_id(channel: i16, key: i16) -> i32 {
+        match (u8::try_from(channel), u8::try_from(key)) {
+            (Ok(ch), Ok(k)) if ch < 16 && k < 128 => note_id_for(ch, k),
+            _ => -1,
+        }
+    }
+
+    /// Mutable view of the common CLAP event header, so the host can correct
+    /// `time` at the boundary (see [`InputEventList::clamp_times`]).
+    fn header_mut(&mut self) -> &mut clap_event_header {
+        match self {
+            ClapEvent::NoteOn(e) => &mut e.header,
+            ClapEvent::NoteOff(e) => &mut e.header,
+            ClapEvent::NoteChoke(e) => &mut e.header,
+            ClapEvent::NoteEnd(e) => &mut e.header,
+            ClapEvent::Midi(e) => &mut e.header,
+            ClapEvent::NoteExpression(e) => &mut e.header,
+            ClapEvent::ParamValue(e) => &mut e.header,
+            ClapEvent::ParamMod(e) => &mut e.header,
+            ClapEvent::ParamGestureBegin(e) => &mut e.header,
+            ClapEvent::ParamGestureEnd(e) => &mut e.header,
+            ClapEvent::MidiSysex { inner, .. } => &mut inner.header,
+        }
+    }
+
     /// Build a CLAP note-on event. `velocity` is normalized to `[0.0, 1.0]`.
+    ///
+    /// H2: the `note_id` is minted from `(channel, key)` with the *same*
+    /// [`note_id_for`] the note-expression path uses, so a plugin keying its
+    /// voice map on `note_id` — the normal MPE-capable design — finds the voice
+    /// a later `NOTE_EXPRESSION` refers to. Previously this hardcoded `-1`
+    /// while expressions carried a real id, so every per-note expression was
+    /// silently dropped by such a plugin.
     pub fn note_on(time: u32, channel: i16, key: i16, velocity: f64) -> Self {
         ClapEvent::NoteOn(clap_event_note {
             header: clap_event_header {
@@ -117,7 +244,7 @@ impl ClapEvent {
                 type_: CLAP_EVENT_NOTE_ON,
                 flags: 0,
             },
-            note_id: -1,
+            note_id: Self::voice_note_id(channel, key),
             port_index: 0,
             channel,
             key,
@@ -126,6 +253,10 @@ impl ClapEvent {
     }
 
     /// Build a CLAP note-off event. `velocity` is normalized to `[0.0, 1.0]`.
+    ///
+    /// H2: carries the same `(channel, key)`-derived `note_id` as the matching
+    /// [`note_on`](Self::note_on), so the release lands on the voice the
+    /// note-on opened.
     pub fn note_off(time: u32, channel: i16, key: i16, velocity: f64) -> Self {
         ClapEvent::NoteOff(clap_event_note {
             header: clap_event_header {
@@ -135,7 +266,7 @@ impl ClapEvent {
                 type_: CLAP_EVENT_NOTE_OFF,
                 flags: 0,
             },
-            note_id: -1,
+            note_id: Self::voice_note_id(channel, key),
             port_index: 0,
             channel,
             key,
@@ -285,7 +416,10 @@ impl ClapEvent {
                         ty,
                         channel,
                         u8::from(m.note_number()),
-                        f64::from(u32_to_unit_f32(m.controller_data())),
+                        // L6: VOLUME is a gain in `0 < x <= 4`, not a unit
+                        // fraction — it needs its own scale. Pan/Brightness
+                        // really are `0..1`.
+                        expression_value_from_unit(ty, u32_to_unit_f32(m.controller_data())),
                     )),
                     None => as_generic_midi(),
                 }
@@ -307,7 +441,8 @@ impl ClapEvent {
                         ty,
                         channel,
                         u8::from(m.note_number()),
-                        f64::from(u32_to_unit_f32(data)),
+                        // L6: VOLUME uses CLAP's gain range, not `0..1`.
+                        expression_value_from_unit(ty, u32_to_unit_f32(data)),
                     )),
                     None => as_generic_midi(),
                 }
@@ -328,26 +463,22 @@ impl ClapEvent {
     pub fn to_midi(&self) -> Option<MidiEvent> {
         use tutti_midi_types::convert::unit_f32_to_u16;
         match self {
-            ClapEvent::NoteOn(e) => Some(
-                MidiEvent::note_on(
-                    0,
-                    e.channel as u8 & 0x0F,
-                    e.key as u8 & 0x7F,
-                    unit_f32_to_u16(e.velocity as f32),
+            ClapEvent::NoteOn(e) => {
+                let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
+                Some(
+                    MidiEvent::note_on(0, channel, note, unit_f32_to_u16(e.velocity as f32))
+                        .with_frame_offset(e.header.time),
                 )
-                .with_frame_offset(e.header.time),
-            ),
-            ClapEvent::NoteOff(e) => Some(
-                // M3: preserve the plugin's release velocity on the way back to
-                // MIDI-2 too, mirroring the NoteOn path (was hardcoded 0).
-                MidiEvent::note_off(
-                    0,
-                    e.channel as u8 & 0x0F,
-                    e.key as u8 & 0x7F,
-                    unit_f32_to_u16(e.velocity as f32),
+            }
+            ClapEvent::NoteOff(e) => {
+                let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
+                Some(
+                    // Preserve the plugin's release velocity on the way back to
+                    // MIDI-2, mirroring the NoteOn path (was hardcoded 0).
+                    MidiEvent::note_off(0, channel, note, unit_f32_to_u16(e.velocity as f32))
+                        .with_frame_offset(e.header.time),
                 )
-                .with_frame_offset(e.header.time),
-            ),
+            }
             ClapEvent::NoteExpression(e) => Self::note_expression_to_midi(e),
             // Promote the MIDI-1 bytes to Channel Voice 2 at this edge, so the
             // engine sees one vocabulary regardless of source — matching the
@@ -367,14 +498,7 @@ impl ClapEvent {
     fn note_expression_to_midi(e: &clap_event_note_expression) -> Option<MidiEvent> {
         use tutti_midi_types::convert::{signed_f32_to_bend_u32, unit_f32_to_u32};
 
-        let (channel, note) = if e.channel >= 0 && e.key >= 0 {
-            (e.channel as u8 & 0x0F, e.key as u8 & 0x7F)
-        } else {
-            // No stamped channel/key: fall back to the host-minted note_id. A
-            // plugin's own note_id space can't be decoded — skip rather than
-            // bind to a phantom voice.
-            note_id_to_channel_note(e.note_id)?
-        };
+        let (channel, note) = note_address(e.channel, e.key, e.note_id)?;
         let time = e.header.time;
 
         let expression_type = match e.expression_id {
@@ -401,7 +525,11 @@ impl ClapEvent {
                     channel,
                     note,
                     index,
-                    unit_f32_to_u32(e.value as f32),
+                    // L6: VOLUME arrives as a CLAP gain (`0 < x <= 4`), not a
+                    // unit fraction — convert before the unit encoding, or a
+                    // plugin's unity 1.0 and its +12 dB 4.0 both saturate to
+                    // MIDI full scale indistinguishably.
+                    unit_f32_to_u32(expression_value_to_unit(other, e.value)),
                     false,
                 )
             }
@@ -534,7 +662,13 @@ impl InputEventList {
                     None => point.value,
                 };
                 self.events.push(ClapEvent::param_value(
-                    point.sample_offset as u32,
+                    // H3: `sample_offset` is `i32`; a bare `as u32` turns a
+                    // negative offset into ~4.29 billion, which sorts last and
+                    // is handed to the plugin as a buffer index. Saturate at 0
+                    // — the change is simply already due. The upper bound is
+                    // enforced once for the whole list by `clamp_times`, which
+                    // is the only place `frames_count` is known.
+                    point.sample_offset.max(0) as u32,
                     queue.param_id,
                     value,
                 ));
@@ -547,11 +681,43 @@ impl InputEventList {
     pub fn add_note_expressions(&mut self, expressions: &[ClapNoteExpression]) -> &mut Self {
         for expr in expressions {
             self.events.push(ClapEvent::note_expression(
-                expr.sample_offset as u32,
+                // H3: same signed→unsigned trap as `add_param_changes`.
+                expr.sample_offset.max(0) as u32,
                 expr.expression_type,
                 expr.note_id,
                 expr.value,
             ));
+        }
+        self
+    }
+
+    /// Clamp every event's `header.time` into `0..frames_count` (H3).
+    ///
+    /// CLAP hands `time` to the plugin as a sample index into the block, and
+    /// plugins routinely use it to split the buffer — an out-of-range value is
+    /// an out-of-bounds read/write in the *plugin*. The host must not emit one,
+    /// so this is the boundary check, applied to every source (MIDI frame
+    /// offsets, automation `sample_offset`, note expressions) just before the
+    /// list is sorted and handed over.
+    ///
+    /// **Clamp, not drop.** A dropped event is not a neutral outcome here: a
+    /// lost NOTE_OFF is a stuck note that rings until the transport stops, and
+    /// a lost PARAM_VALUE leaves the plugin on a stale value indefinitely,
+    /// because both carry *state* rather than an impulse. Clamping mistimes the
+    /// event by at most one block (sub-millisecond at any realistic block size)
+    /// and preserves the state transition. An out-of-range time is a caller
+    /// bug either way; this bounds its blast radius to timing rather than
+    /// correctness.
+    ///
+    /// `frames_count == 0` maps everything to 0 (the block has no valid index,
+    /// and the plugin will process nothing).
+    pub fn clamp_times(&mut self, frames_count: u32) -> &mut Self {
+        let last = frames_count.saturating_sub(1);
+        for event in &mut self.events {
+            let header = event.header_mut();
+            if header.time > last {
+                header.time = last;
+            }
         }
         self
     }
@@ -941,6 +1107,144 @@ mod tests {
         assert!((first_param_value(&list) - 0.42).abs() < 1e-6);
     }
 
+    // --- H3: event time is bounded to the block ---
+
+    fn first_time(list: &InputEventList) -> u32 {
+        list.events().first().expect("an event").header().time
+    }
+
+    /// A NEGATIVE `sample_offset` must not wrap.
+    ///
+    /// `sample_offset` is `i32` and `header.time` is `u32`; the old bare
+    /// `point.sample_offset as u32` turned -1 into 4_294_967_295, which sorted
+    /// last and was handed to the plugin as a sample index into the block.
+    /// Plugins split their buffer on `time`, so that is an out-of-bounds access
+    /// inside the plugin.
+    #[test]
+    fn negative_sample_offset_does_not_wrap_to_four_billion_h3() {
+        let mut changes = ParameterChanges::new();
+        changes.add_change(9, -1, 0.5);
+        let mut list = InputEventList::new();
+        list.add_param_changes(&changes, &[]);
+        assert_eq!(
+            first_time(&list),
+            0,
+            "a negative offset means 'already due', so it saturates at 0"
+        );
+    }
+
+    /// The same trap on the note-expression path.
+    #[test]
+    fn negative_note_expression_offset_does_not_wrap_h3() {
+        let mut list = InputEventList::new();
+        let mut expr = ClapNoteExpression::new(NoteExpressionType::Pressure, 0, 0.5);
+        expr.sample_offset = -32;
+        list.add_note_expressions(&[expr]);
+        assert_eq!(first_time(&list), 0);
+    }
+
+    /// An event past the end of the block is clamped to the last valid
+    /// sample index, never handed through as-is.
+    ///
+    /// Clamping rather than dropping is deliberate: a NOTE_OFF or PARAM_VALUE
+    /// carries *state*, so dropping one leaves a stuck note or a stale
+    /// parameter forever, while clamping mistimes it by at most one block.
+    #[test]
+    fn event_time_past_the_block_is_clamped_to_the_last_sample_h3() {
+        let mut list = InputEventList::new();
+        list.add_midi(&MidiEvent::note_off(0, 0, 60, 0x4000).with_frame_offset(9_999));
+        assert_eq!(list.len(), 1);
+
+        list.clamp_times(64);
+        assert_eq!(
+            first_time(&list),
+            63,
+            "must land on the last valid index of a 64-frame block"
+        );
+        assert_eq!(
+            list.len(),
+            1,
+            "the note-off must survive — dropping it would \
+                                   leave a stuck note"
+        );
+    }
+
+    /// An in-range time is untouched, and a zero-length block folds
+    /// everything to 0 (there is no valid index at all).
+    #[test]
+    fn clamp_times_leaves_in_range_events_alone_h3() {
+        let mut list = InputEventList::new();
+        list.add_midi(&MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(17));
+        list.clamp_times(64);
+        assert_eq!(first_time(&list), 17);
+
+        list.clamp_times(0);
+        assert_eq!(first_time(&list), 0);
+    }
+
+    // --- L6: CLAP VOLUME is a gain in `0 < x <= 4`, not a unit fraction ---
+
+    /// `clap/events.h` defines
+    /// `CLAP_NOTE_EXPRESSION_VOLUME` as "with 0 < x <= 4, plain = 20 * log(x)"
+    /// — a gain where 1.0 is unity and 0 is *excluded*. The host used to emit a
+    /// bare `0..1` unit value, so a MIDI volume of 0 produced an out-of-range
+    /// 0.0.
+    #[test]
+    fn per_note_volume_maps_into_claps_gain_range_l6() {
+        // Full-scale MIDI volume is unity gain, not "the top of 0..1".
+        let full = MidiEvent::per_note_controller(0, 2, 64, 7, u32::MAX, false);
+        let ClapEvent::NoteExpression(e) = ClapEvent::from_midi(&full).expect("converts") else {
+            panic!("expected NoteExpression");
+        };
+        assert_eq!(e.expression_id, CLAP_NOTE_EXPRESSION_VOLUME);
+        assert!(
+            (e.value - 1.0).abs() < 1e-3,
+            "full MIDI volume must be CLAP unity (1.0), got {}",
+            e.value
+        );
+
+        // Zero MIDI volume must stay inside the OPEN interval: `0 < x`.
+        let zero = MidiEvent::per_note_controller(0, 2, 64, 7, 0, false);
+        let ClapEvent::NoteExpression(e) = ClapEvent::from_midi(&zero).expect("converts") else {
+            panic!("expected NoteExpression");
+        };
+        assert!(
+            e.value > 0.0,
+            "CLAP VOLUME excludes 0 (20*log(0) is -inf); got {}",
+            e.value
+        );
+        assert!(e.value < 1e-3, "silence must still be inaudible");
+    }
+
+    /// The attenuating half round-trips exactly, and a plugin-emitted
+    /// boost (`1 < x <= 4`, legal in CLAP) saturates at MIDI full scale instead
+    /// of being reported as some arbitrary rescaled value.
+    #[test]
+    fn clap_volume_round_trips_and_saturates_boost_l6() {
+        use tutti_midi_types::convert::u32_to_unit_f32;
+        use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
+        use tutti_midi_types::midi2::UmpMessage;
+
+        let unit_of = |gain: f64| -> f32 {
+            let clap = ClapEvent::per_note_expression(0, NoteExpressionType::Volume, 1, 64, gain);
+            let midi = clap.to_midi().expect("volume -> midi");
+            match UmpMessage::try_from(midi.data_words()).expect("UMP") {
+                UmpMessage::ChannelVoice2(Cv2::AssignablePerNoteController(m)) => {
+                    u32_to_unit_f32(m.controller_data())
+                }
+                other => panic!("expected a per-note controller, got {other:?}"),
+            }
+        };
+
+        // Unity gain is MIDI full scale — the anchor the whole mapping hangs on.
+        assert!((unit_of(1.0) - 1.0).abs() < 1e-3, "{}", unit_of(1.0));
+        // Half gain (-6 dB) round-trips to half scale.
+        assert!((unit_of(0.5) - 0.5).abs() < 1e-3, "{}", unit_of(0.5));
+        // Boost is legal in CLAP but unrepresentable in MIDI: saturate at full
+        // scale rather than wrapping or rescaling the whole range.
+        assert!((unit_of(4.0) - 1.0).abs() < 1e-3, "{}", unit_of(4.0));
+    }
+
     // --- MIDI 2.0 per-note ↔ CLAP note-expression ---
 
     #[test]
@@ -1049,9 +1353,74 @@ mod tests {
                 assert_eq!(e.channel, 1);
                 assert_eq!(e.key, 60);
                 assert!((e.velocity - 0.5).abs() < 0.01, "velocity {}", e.velocity);
+                // H2: the note_id must match what the expression path mints.
+                assert_eq!(e.note_id, note_id_for(1, 60));
             }
             _ => panic!("expected NoteOn"),
         }
+    }
+
+    /// The `note_id` a NOTE_ON carries must equal the one a
+    /// later NOTE_EXPRESSION for the same voice carries.
+    ///
+    /// `note_on`/`note_off` used to hardcode `note_id: -1` while
+    /// `per_note_expression` minted a real id via `note_id_for`. A plugin that
+    /// keys its voice map on `note_id` — the normal MPE-capable design — then
+    /// found no voice with id 444 and **silently dropped every per-note
+    /// expression**. This asserts the *pairing*, which neither half's existing
+    /// round-trip test did: they each checked one event in isolation.
+    #[test]
+    fn note_on_and_expression_agree_on_note_id_h2() {
+        const CH: u8 = 3;
+        const KEY: u8 = 60;
+
+        let on = ClapEvent::from_midi(&MidiEvent::note_on(0, CH, KEY, 0x8000).with_frame_offset(0))
+            .expect("note on converts");
+        let expr = ClapEvent::from_midi(
+            &MidiEvent::poly_pressure(0, CH, KEY, unit_f32_to_u32(0.5)).with_frame_offset(1),
+        )
+        .expect("poly pressure converts");
+        let off =
+            ClapEvent::from_midi(&MidiEvent::note_off(0, CH, KEY, 0x4000).with_frame_offset(2))
+                .expect("note off converts");
+
+        let (ClapEvent::NoteOn(on), ClapEvent::NoteExpression(expr), ClapEvent::NoteOff(off)) =
+            (&on, &expr, &off)
+        else {
+            panic!("expected NoteOn / NoteExpression / NoteOff");
+        };
+
+        assert_ne!(
+            on.note_id, -1,
+            "NOTE_ON must carry a real note_id, not the -1 wildcard"
+        );
+        assert_eq!(
+            on.note_id, expr.note_id,
+            "the expression targets a voice the note-on never opened — a plugin \
+             keying on note_id drops it"
+        );
+        assert_eq!(
+            off.note_id, on.note_id,
+            "the note-off must release the voice the note-on opened"
+        );
+        assert_eq!(on.note_id, note_id_for(CH, KEY));
+    }
+
+    /// `note_id_for` only covers channels 0..16 and keys 0..128. A
+    /// CLAP wildcard (`-1`) or out-of-range field has no voice to name, so it
+    /// must fall back to CLAP's `-1` "unspecified" rather than minting a
+    /// nonsense id from a negative number.
+    #[test]
+    fn note_on_wildcard_fields_yield_unspecified_note_id_h2() {
+        let ClapEvent::NoteOn(e) = ClapEvent::note_on(0, -1, 60, 1.0) else {
+            panic!("expected NoteOn");
+        };
+        assert_eq!(e.note_id, -1);
+
+        let ClapEvent::NoteOn(e) = ClapEvent::note_on(0, 0, -1, 1.0) else {
+            panic!("expected NoteOn");
+        };
+        assert_eq!(e.note_id, -1);
     }
 
     #[test]

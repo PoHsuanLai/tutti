@@ -2,8 +2,10 @@
 //! plugin-server subprocess.
 //!
 //! Composition:
-//! - [`Channels`] — the five lock-free queues (commands, two response
-//!   paths, recycle, buffer-id counter).
+//! - [`Channels`] — the three lock-free queues (commands, audio responses,
+//!   unsolicited events) plus the shared newest-sequence and sample-rate
+//!   cells. Payload recycling lives in [`PayloadPool`]; the buffer-id counter
+//!   is gone, the batcher owns the block sequence.
 //! - [`Lifecycle`] — running/crashed flags.
 //! - [`AudioSlab`] — bulk audio transport (created elsewhere; held as Arc).
 //!
@@ -25,7 +27,7 @@ use crate::protocol::{
 use crate::util::transport::shm::AudioSlab;
 
 /// VST3 sequencer-context inputs for one process block, bundled to keep
-/// [`AudioBridge::process`]'s signature manageable. All default to empty.
+/// [`AudioBridge::submit`]'s signature manageable. All default to empty.
 #[derive(Debug, Default, Clone)]
 pub struct HarmonyInputs {
     pub chords: ChordChanges,
@@ -67,8 +69,15 @@ pub struct AudioBridge {
 }
 
 impl AudioBridge {
-    pub fn new(socket_path: PathBuf, audio_buffer: Arc<AudioSlab>) -> Result<(Self, BridgeThread)> {
-        let channels = Channels::new();
+    pub fn new(
+        socket_path: PathBuf,
+        audio_buffer: Arc<AudioSlab>,
+        sample_rate: f64,
+    ) -> Result<(Self, BridgeThread)> {
+        // The rate lives on `Channels`, not here: the bridge thread sizes its
+        // own reply timeout from the same block period, and two copies of the
+        // rate would let the two timeouts drift apart.
+        let channels = Channels::new(sample_rate);
         let payloads = PayloadPool::new();
         let lifecycle = Lifecycle::new();
         let listener: ListenerSlot = Arc::new(Mutex::new(None));
@@ -121,6 +130,9 @@ impl AudioBridge {
     }
 
     pub fn set_sample_rate_rt(&self, rate: f64) -> bool {
+        // Publish before queueing, so both the staleness bound and
+        // the bridge thread's reply timeout track the new period from here on.
+        self.channels.set_sample_rate(rate);
         !self.lifecycle.is_crashed() && self.channels.push_command(Command::SetSampleRate { rate })
     }
 
@@ -128,15 +140,31 @@ impl AudioBridge {
         !self.lifecycle.is_crashed() && self.channels.push_command(Command::Reset)
     }
 
-    // --- RT request+response ---
+    // --- RT submit (fire-and-forget) ---
 
-    /// RT-safe, lock-free. Waits for the bridge thread's AudioResponse. The
-    /// plugin's MIDI-out for the block is drained into `midi_out` (cleared
+    /// Hand block `seq` to the bridge thread and return **immediately**.
+    ///
+    /// Lock-free, allocation-free, and it never waits — see the module doc on
+    /// `Batcher` for why waiting here was the defect rather than a tuning problem.
+    ///
+    /// The caller collects block `seq`'s *output* on a later call, gated on the
+    /// slab's sequence number rather than on a reply (see `Batcher::collectable`).
+    /// Returning `true` means only "the bridge accepted this block", never "the
+    /// output is ready".
+    ///
+    /// # What still comes back through the queue
+    ///
+    /// Only the plugin's MIDI-out; audio travels through the shared [`AudioSlab`]
+    /// in both directions. Everything pending is drained into `midi_out` (cleared
     /// first); the caller-owned buffer reaches steady-state capacity so the
-    /// `append` is alloc-free. Returns `false` on crash / failure.
+    /// `append` is alloc-free.
+    ///
+    /// Those events' frame offsets are relative to the *earlier* block that
+    /// produced them. The caller shifts them; see `PluginClient::drain_midi_out`.
     #[allow(clippy::too_many_arguments)]
-    pub fn process(
+    pub fn submit(
         &self,
+        seq: u64,
         num_samples: usize,
         midi_events: MidiEventVec,
         param_changes: ParameterChanges,
@@ -150,8 +178,26 @@ impl AudioBridge {
             return false;
         }
 
+        // Drain whatever the bridge has finished since the last block. These
+        // carry only the plugin's MIDI-out — the audio itself never travels
+        // through this queue, and whether the *audio* is there is settled by the
+        // slab's sequence numbers, not by a reply arriving.
+        //
+        // Draining rather than taking one: at ring depth 2 there is at most one
+        // block in flight, but a reply for an abandoned block can still be
+        // sitting here, and leaving it would put the queue one behind forever.
+        while let Some(resp) = self.channels.pop_audio_response() {
+            if let AudioResponse::AudioProcessed {
+                midi_out: mut events,
+                ..
+            } = resp
+            {
+                midi_out.append(&mut events);
+            }
+        }
+
         let mut payload = self.payloads.acquire();
-        payload.buffer_id = self.channels.next_buffer_id();
+        payload.seq = seq;
         payload.num_samples = num_samples;
         payload.midi_events = midi_events;
         payload.param_changes = param_changes;
@@ -162,18 +208,13 @@ impl AudioBridge {
         payload.expr_ints = harmony.expr_ints;
         payload.transport = transport;
 
-        if !self.channels.push_command(Command::Process(payload)) {
-            return false;
-        }
-        match self.channels.pop_audio_response() {
-            Some(AudioResponse::AudioProcessed {
-                midi_out: mut events,
-            }) => {
-                midi_out.append(&mut events);
-                true
-            }
-            _ => false,
-        }
+        // Publish the block number *before* queueing it, so the bridge thread
+        // can never dequeue a command that looks newer than what the host admits
+        // to having submitted. The reverse order would leave a window where a
+        // block is judged against a stale `newest` and dropped as if it were two
+        // blocks old.
+        self.channels.note_submitted(seq);
+        self.channels.push_command(Command::Process(payload))
     }
 
     // --- Main-thread sync request+response ---
@@ -229,5 +270,27 @@ impl AudioBridge {
             return None;
         }
         ask_resp.recv_timeout(PARAM_TIMEOUT).ok().flatten()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The negotiated rate is stored once and read live.
+    ///
+    /// This is what remains of a whole module of wait-budget tests, deleted with
+    /// the synchronous path: the audio thread no longer waits, so it no longer
+    /// sizes anything from the period. The *bridge* thread still does — its
+    /// reply timeout in `dispatch` reads exactly this cell — so the storage has
+    /// to keep working, and the test goes through the real `Channels` rather
+    /// than a local atomic so it would fail if that plumbing were disconnected.
+    #[test]
+    fn the_sample_rate_is_stored_and_updated_live() {
+        let channels = Channels::new(48_000.0);
+        assert_eq!(channels.sample_rate(), 48_000.0);
+
+        channels.set_sample_rate(192_000.0);
+        assert_eq!(channels.sample_rate(), 192_000.0);
     }
 }

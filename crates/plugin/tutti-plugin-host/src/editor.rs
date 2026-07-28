@@ -40,12 +40,15 @@ pub struct PluginEditorOpen {
     /// Last size written to either side. A `WindowResized` matching
     /// this is an echo of our own write and is ignored.
     pub last_applied: (u32, u32),
-    /// macOS only: AppKit notification observer that drives
-    /// `set_editor_size` during live drag for plugins that don't
-    /// follow the autoresize mask. Dropped with the editor.
-    #[cfg(target_os = "macos")]
-    #[allow(dead_code)]
-    pub(crate) live_resize: Option<crate::live_resize::LiveResizeHandle>,
+    // NOTE (macOS): the AppKit live-resize observer used to be a field here,
+    // which forced an `unsafe impl Send + Sync` over a `Retained<NSView>`
+    // solely to satisfy `Component: Send + Sync`. That placed an AppKit
+    // `removeObserver` inside a `Drop` that runs wherever a `Commands` queue
+    // is applied (`plugin_crash_detect_system` is not main-thread pinned) or
+    // wherever the `World` is torn down — off-main AppKit is a hard crash on
+    // macOS. The observer now lives in the `NonSend` `LiveResizeRegistry`,
+    // keyed by this plugin entity, so Bevy pins every access and every drop
+    // to the main thread.
 }
 
 /// Intermediate state: a Window has been spawned but `open_editor` hasn't
@@ -123,6 +126,12 @@ pub fn plugin_editor_open_system(
 /// Phase 2: once the native handle is available, call `open_editor` on the plugin.
 pub fn plugin_editor_attach_system(
     _main_thread: NonSend<PluginEditorMainThread>,
+    // `NonSendMut` pins this system (and therefore every observer install and
+    // every observer drop) to the main thread — the AppKit requirement that
+    // the old `unsafe impl Send + Sync` was papering over.
+    #[cfg(target_os = "macos")] mut live_resize_registry: NonSendMut<
+        crate::live_resize::LiveResizeRegistry,
+    >,
     mut commands: Commands,
     pending: Query<(Entity, &PluginEmitter, &PendingPluginEditor)>,
     mut windows: Query<&mut bevy_window::Window>,
@@ -185,12 +194,11 @@ pub fn plugin_editor_attach_system(
                 // observer that calls `set_editor_size` from inside
                 // AppKit's tracking loop.
                 #[cfg(target_os = "macos")]
-                let live_resize = if capabilities.resize.resizable {
+                if capabilities.resize.resizable {
                     if capabilities.appkit_autoresize_friendly {
                         crate::native_window::enable_subview_autoresize(
                             raw_handle.get_window_handle(),
                         );
-                        None
                     } else {
                         let handle = emitter.handle.clone();
                         let cb: crate::live_resize::ResizeCallback =
@@ -200,17 +208,21 @@ pub fn plugin_editor_attach_system(
                                     height: h,
                                 });
                             });
-                        // SAFETY: main-thread context.
-                        unsafe {
+                        // SAFETY: main-thread context — this system takes
+                        // `NonSend` params, so Bevy runs it on the main thread.
+                        let installed = unsafe {
                             crate::live_resize::LiveResizeHandle::install(
                                 raw_handle.get_window_handle(),
                                 cb,
                             )
+                        };
+                        // The observer is owned by the main-thread-only
+                        // registry, never by the (Send + Sync) component.
+                        if let Some(installed) = installed {
+                            live_resize_registry.insert(entity, installed);
                         }
                     }
-                } else {
-                    None
-                };
+                }
 
                 // Remove RawHandleWrapper so Bevy's renderer doesn't create a
                 // wgpu surface on this window (the plugin owns the rendering).
@@ -227,8 +239,6 @@ pub fn plugin_editor_attach_system(
                         height: h,
                         capabilities,
                         last_applied: (w, h),
-                        #[cfg(target_os = "macos")]
-                        live_resize,
                     });
             }
             Err(e) => {
@@ -358,6 +368,11 @@ pub fn plugin_editor_resize_request_system(
 pub fn close_editor_observer(
     close: On<CloseEditor>,
     _main_thread: NonSend<PluginEditorMainThread>,
+    // Main-thread-pinned: dropping the AppKit observer calls `removeObserver`,
+    // which must not run off-main.
+    #[cfg(target_os = "macos")] mut live_resize_registry: NonSendMut<
+        crate::live_resize::LiveResizeRegistry,
+    >,
     mut commands: Commands,
     query: Query<(&PluginEmitter, &PluginEditorOpen)>,
 ) {
@@ -365,6 +380,10 @@ pub fn close_editor_observer(
     let Ok((emitter, editor)) = query.get(entity) else {
         return;
     };
+    // Tear the observer down here — on the main thread — rather than in a
+    // component `Drop` that runs wherever the command queue is applied.
+    #[cfg(target_os = "macos")]
+    live_resize_registry.remove(entity);
     emitter.handle.close_editor();
     commands.entity(editor.editor_window).try_despawn();
     bevy_log::info!(

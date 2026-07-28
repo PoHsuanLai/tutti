@@ -149,7 +149,8 @@ pub struct PolyPressureEvent {
 pub struct NoteExpressionValueEvent {
     pub header: EventHeader,
     pub note_id: i32,
-    /// 0=volume, 1=pan, 2=tuning, 3=vibrato, 4=brightness.
+    /// VST3 `NoteExpressionTypeIDs`: 0=volume, 1=pan, 2=tuning, 3=vibrato,
+    /// 4=expression, 5=brightness. See [`note_expression_type_to_id`].
     pub type_id: u32,
     /// 0.0 to 1.0, meaning depends on type_id.
     pub value: f64,
@@ -160,9 +161,12 @@ pub struct NoteExpressionValueEvent {
 /// VST3's chord / scale / note-expression-text events carry a borrowed
 /// `const TChar*` (UTF-16) that must outlive the `process` call. To keep
 /// [`Vst3Event`] `Copy` (no owned heap per event), the string lives in a shared
-/// arena owned by the `EventList` — cleared each block, like the `DataEvent`
-/// byte scratch — and the event holds only this index into it. `len` counts
-/// `u16` code units, excluding any terminator.
+/// arena owned by the `EventList` — written only while staging, cleared once
+/// per block — and the event holds only this index into it. `len` counts `u16`
+/// code units, excluding any terminator.
+///
+/// `DataEvent` needs no arena: its payload is already an inline `[u8; 16]` in
+/// the event, and [`to_c_event`] points the C struct straight at it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TextRef {
     pub start: u32,
@@ -283,15 +287,33 @@ impl Vst3Event {
 
 /// Convert our flat `Vst3Event` into the C `Event` struct the vst3 crate expects.
 ///
-/// Two owner-scratch buffers back the borrowed pointers in the C structs and
-/// must outlive the returned `Event`:
-/// - `data_storage` owns the `DataEvent.bytes` slot (one push per `Data` event).
-/// - `text_arena` owns the UTF-16 text for chord / scale / note-expression-text
-///   events; the event's [`TextRef`] indexes into it, resolved to a pointer here.
-pub(crate) fn to_c_event(
-    event: &Vst3Event,
-    data_storage: &mut smallvec::SmallVec<[[u8; 16]; 8]>,
-    text_arena: &[u16],
+/// # Pointer lifetimes (the whole reason for the `'a` binding)
+///
+/// A VST3 `Event` is not self-contained: `DataEvent.bytes` and the chord /
+/// scale / note-expression-text `text` fields are **borrowed pointers**, and a
+/// plugin is entitled to read every one of them for the duration of the
+/// `process` call in which it called `getEvent`. So the storage behind each
+/// pointer must be stable for the whole block, not just until the next
+/// `getEvent`.
+///
+/// Both pointers are therefore tied to `'a`, and `'a` is chosen to be the
+/// borrow of the event list's per-block storage:
+///
+/// - `DataEvent.bytes` points **straight into `event`'s own inline `[u8; 16]`**,
+///   which lives in the list's `events: Vec<Vst3Event>`. That Vec is filled
+///   once per block by `update_from_sources` and only *read* by `getEvent`, so
+///   the address is fixed for the block. (This deliberately replaced a
+///   push-per-`getEvent` `SmallVec` scratch: it spilled to the heap on the 9th
+///   push and moved the inline elements, dangling every pointer already handed
+///   to the plugin. Reserving capacity would not have fixed it — growth past
+///   the reservation reallocates just the same. Borrowing the already-stable
+///   event removes the copy, and with it the hazard.)
+/// - `text_arena` owns the UTF-16 for text-bearing events; the event's
+///   [`TextRef`] indexes into it and is resolved to a pointer here. It is
+///   likewise interned at stage time and only read at `getEvent` time.
+pub(crate) fn to_c_event<'a>(
+    event: &'a Vst3Event,
+    text_arena: &'a [u16],
 ) -> vst3::Steinberg::Vst::Event {
     let header = event.header();
 
@@ -334,12 +356,14 @@ pub(crate) fn to_c_event(
             };
         }
         Vst3Event::Data(e) => {
-            data_storage.push(e.bytes);
-            let slot = data_storage.last().expect("just pushed");
+            // Borrow the event's own inline bytes — stable for the whole block
+            // (see the pointer-lifetime note on this function). No copy, no
+            // scratch buffer, so no reallocation can move it out from under a
+            // pointer already handed to the plugin.
             out.__field0.data = vst3::Steinberg::Vst::DataEvent {
                 size: e.size,
                 r#type: e.event_type,
-                bytes: slot.as_ptr(),
+                bytes: e.bytes.as_ptr(),
             };
         }
         Vst3Event::PolyPressure(e) => {
@@ -578,7 +602,12 @@ pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
     use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;
     use tutti_midi_types::midi2::{Channeled, UmpMessage};
 
-    let sample_offset = event.frame_offset as i32;
+    // `frame_offset` is `u32`; VST3's `sampleOffset` is `i32`. A value past
+    // `i32::MAX` wraps negative, and the plugin indexes its buffers with it —
+    // an out-of-bounds read inside the plugin, not in our code. Saturating keeps
+    // it in range; the mirror path (`vst3_to_midi_event`) already guards with
+    // `.max(0)` and this direction was left unguarded.
+    let sample_offset = i32::try_from(event.frame_offset).unwrap_or(i32::MAX);
     let header = EventHeader {
         bus_index: 0,
         sample_offset,
@@ -617,7 +646,13 @@ pub(crate) fn vst3_event_from_midi(event: &MidiEvent) -> Option<Vst3Event> {
                     },
                     channel: channel as i16,
                     pitch: note as i16,
-                    velocity: 0.0,
+                    // VST3's NoteOffEvent.velocity is the normalized *release*
+                    // velocity, and MIDI-2 note-off carries a real 16-bit one.
+                    // Hardcoding 0.0 gave every release-velocity-sensitive
+                    // instrument (piano and orchestral release layers) the
+                    // minimum on every note-off. The note-on path beside this
+                    // one already converts via `u16_to_unit_f32`.
+                    velocity: u16_to_unit_f32(m.velocity()),
                     note_id: note_id_for(channel, note),
                     tuning: 0.0,
                 }));
@@ -825,9 +860,14 @@ pub(crate) fn vst3_to_midi_event(event: &Vst3Event) -> Option<MidiEvent> {
             (e.pitch as u8) & 0x7F,
             unit_f32_to_u16(e.velocity),
         ),
-        Vst3Event::NoteOff(e) => {
-            MidiEvent::note_off(0, (e.channel as u8) & 0x0F, (e.pitch as u8) & 0x7F, 0)
-        }
+        Vst3Event::NoteOff(e) => MidiEvent::note_off(
+            0,
+            (e.channel as u8) & 0x0F,
+            (e.pitch as u8) & 0x7F,
+            // Mirrors the host->plugin direction: the plugin's normalized
+            // release velocity, not a hardcoded 0.
+            unit_f32_to_u16(e.velocity),
+        ),
         Vst3Event::PolyPressure(e) => MidiEvent::poly_pressure(
             0,
             (e.channel as u8) & 0x0F,
@@ -900,39 +940,56 @@ fn legacy_cc_to_midi(e: &LegacyMidiCcOutEvent, frame: u32) -> Option<MidiEvent> 
 }
 
 /// Encode a [`NoteExpressionType`] as the integer `typeId` VST3 uses on the
-/// wire. **Partial:** VST3 has no note-expression `typeId` for CLAP's
-/// [`Pressure`](NoteExpressionType::Pressure) /
-/// [`Expression`](NoteExpressionType::Expression), so those return `None`.
-/// Callers must handle the `None` (skip the event) rather than substitute a
-/// different dimension.
+/// wire.
+///
+/// The ids are the `NoteExpressionTypeIDs` enumerators from
+/// `ivstnoteexpression.h`: `kVolumeTypeID = 0`, `kPanTypeID = 1`,
+/// `kTuningTypeID = 2`, `kVibratoTypeID = 3`, `kExpressionTypeID = 4`,
+/// `kBrightnessTypeID = 5`. Note that **Expression comes before Brightness** —
+/// they are not in enum-declaration order here.
+///
+/// **Partial:** VST3 has no standard note-expression `typeId` for CLAP's
+/// [`Pressure`](NoteExpressionType::Pressure) (poly aftertouch rides the
+/// `kPolyPressureEvent` path instead), so that returns `None`. Callers must
+/// handle the `None` (skip the event) rather than substitute a different
+/// dimension.
 pub fn note_expression_type_to_id(ty: NoteExpressionType) -> Option<u32> {
+    use vst3::Steinberg::Vst::NoteExpressionTypeIDs_ as Ids;
+    #[allow(clippy::unnecessary_cast)]
     match ty {
-        NoteExpressionType::Volume => Some(0),
-        NoteExpressionType::Pan => Some(1),
-        NoteExpressionType::Tuning => Some(2),
-        NoteExpressionType::Vibrato => Some(3),
-        NoteExpressionType::Brightness => Some(4),
-        NoteExpressionType::Pressure | NoteExpressionType::Expression => None,
+        NoteExpressionType::Volume => Some(Ids::kVolumeTypeID as u32),
+        NoteExpressionType::Pan => Some(Ids::kPanTypeID as u32),
+        NoteExpressionType::Tuning => Some(Ids::kTuningTypeID as u32),
+        NoteExpressionType::Vibrato => Some(Ids::kVibratoTypeID as u32),
+        NoteExpressionType::Expression => Some(Ids::kExpressionTypeID as u32),
+        NoteExpressionType::Brightness => Some(Ids::kBrightnessTypeID as u32),
+        NoteExpressionType::Pressure => None,
     }
 }
 
 /// Decode a VST3 `typeId` back into a [`NoteExpressionType`]; `None` for
-/// unknown ids. VST3 only emits the five it can encode, so this never yields
-/// `Pressure`/`Expression`.
+/// unknown ids (including the `kTextTypeID` / `kPhonemeTypeID` slots, which
+/// carry text rather than a value, and any vendor-custom id above
+/// `kCustomStart`). The exact inverse of [`note_expression_type_to_id`] over
+/// the six standard value dimensions; `Pressure` is never produced because
+/// VST3 has no id for it.
 pub fn note_expression_type_from_id(id: u32) -> Option<NoteExpressionType> {
+    use vst3::Steinberg::Vst::NoteExpressionTypeIDs_ as Ids;
+    #[allow(clippy::unnecessary_cast)]
     match id {
-        0 => Some(NoteExpressionType::Volume),
-        1 => Some(NoteExpressionType::Pan),
-        2 => Some(NoteExpressionType::Tuning),
-        3 => Some(NoteExpressionType::Vibrato),
-        4 => Some(NoteExpressionType::Brightness),
+        i if i == Ids::kVolumeTypeID as u32 => Some(NoteExpressionType::Volume),
+        i if i == Ids::kPanTypeID as u32 => Some(NoteExpressionType::Pan),
+        i if i == Ids::kTuningTypeID as u32 => Some(NoteExpressionType::Tuning),
+        i if i == Ids::kVibratoTypeID as u32 => Some(NoteExpressionType::Vibrato),
+        i if i == Ids::kExpressionTypeID as u32 => Some(NoteExpressionType::Expression),
+        i if i == Ids::kBrightnessTypeID as u32 => Some(NoteExpressionType::Brightness),
         _ => None,
     }
 }
 
 /// Stage a [`NoteExpressionValue`] into the tagged-enum [`Vst3Event`] form
 /// accepted by the event-list code. Returns `None` for a dimension VST3
-/// cannot encode (Pressure/Expression) — see [`note_expression_type_to_id`];
+/// cannot encode (`Pressure`) — see [`note_expression_type_to_id`];
 /// the caller drops the event rather than substituting a different dimension.
 pub fn note_expression_to_vst3(value: &NoteExpressionValue) -> Option<Vst3Event> {
     let type_id = note_expression_type_to_id(value.expression_type)?;
@@ -1227,12 +1284,21 @@ mod tests {
 
     #[test]
     fn note_off_lands_in_note_off_variant() {
-        let event = MidiEvent::note_off(0, 0, 72, 0x4000).with_frame_offset(10);
+        const RELEASE: u16 = 0x4000;
+        let event = MidiEvent::note_off(0, 0, 72, RELEASE).with_frame_offset(10);
         let vst3 = vst3_event_from_midi(&event).expect("NoteOff should convert");
         match &vst3 {
             Vst3Event::NoteOff(e) => {
                 assert_eq!(e.pitch, 72);
                 assert_eq!(e.header.sample_offset, 10);
+                // The test always passed a real release velocity here and
+                // asserted only pitch and offset, so it stayed green while both
+                // conversion directions hardcoded zero.
+                assert!(
+                    e.velocity > 0.0,
+                    "release velocity was dropped on the way to the plugin — \
+                     release-layer instruments get the minimum on every note-off"
+                );
             }
             _ => panic!("expected NoteOff variant"),
         }
@@ -1240,6 +1306,30 @@ mod tests {
         let back = vst3_to_midi_event(&vst3).expect("round-trip");
         assert!(back.is_note_off());
         assert_eq!(back.note(), Some(72));
+        assert!(
+            back.velocity_u7().is_some_and(|v| v > 0),
+            "release velocity was dropped on the way back from the plugin"
+        );
+    }
+
+    /// A frame offset past `i32::MAX` must saturate, not wrap negative.
+    ///
+    /// `MidiEvent::frame_offset` is `u32` and VST3's `sampleOffset` is `i32`, so
+    /// a bare `as i32` turns a large offset into a negative one. The plugin
+    /// indexes its own buffers with that value, so the out-of-bounds access
+    /// happens inside the plugin where nothing here can catch it. The mirror
+    /// path already guarded with `.max(0)`; this direction did not.
+    #[test]
+    fn a_huge_frame_offset_saturates_rather_than_going_negative() {
+        let event = MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(u32::MAX);
+        let vst3 = vst3_event_from_midi(&event).expect("NoteOn should convert");
+        let offset = vst3.sample_offset();
+        assert!(
+            offset >= 0,
+            "sample_offset went negative ({offset}) — the plugin will index \
+             its buffers out of bounds"
+        );
+        assert_eq!(offset, i32::MAX, "an unrepresentable offset must saturate");
     }
 
     #[test]
@@ -1296,6 +1386,124 @@ mod tests {
             }
             _ => panic!("expected Data variant for ProgramChange"),
         }
+    }
+
+    /// The note-expression `typeId` table, asserted against the **absolute
+    /// numeric ids from `ivstnoteexpression.h`** — deliberately hardcoded here
+    /// rather than read back from `note_expression_type_to_id`, because a test
+    /// that compares the table to itself passes with a wrong table (which is
+    /// exactly how `Brightness => 4` — really `kExpressionTypeID` — shipped).
+    ///
+    /// `kVolumeTypeID = 0`, `kPanTypeID = 1`, `kTuningTypeID = 2`,
+    /// `kVibratoTypeID = 3`, `kExpressionTypeID = 4`, `kBrightnessTypeID = 5`.
+    #[test]
+    fn note_expression_type_ids_match_the_vst3_spec() {
+        assert_eq!(
+            note_expression_type_to_id(NoteExpressionType::Volume),
+            Some(0)
+        );
+        assert_eq!(note_expression_type_to_id(NoteExpressionType::Pan), Some(1));
+        assert_eq!(
+            note_expression_type_to_id(NoteExpressionType::Tuning),
+            Some(2)
+        );
+        assert_eq!(
+            note_expression_type_to_id(NoteExpressionType::Vibrato),
+            Some(3)
+        );
+        assert_eq!(
+            note_expression_type_to_id(NoteExpressionType::Expression),
+            Some(4),
+            "kExpressionTypeID is 4 — NOT Brightness"
+        );
+        assert_eq!(
+            note_expression_type_to_id(NoteExpressionType::Brightness),
+            Some(5),
+            "kBrightnessTypeID is 5"
+        );
+        // VST3 has no standard note-expression id for poly pressure; it rides
+        // the kPolyPressureEvent path instead.
+        assert_eq!(
+            note_expression_type_to_id(NoteExpressionType::Pressure),
+            None
+        );
+    }
+
+    /// The decoder must mirror the same absolute ids, so an incoming 5 is
+    /// Brightness (not dropped) and an incoming 4 is Expression (not
+    /// mislabelled Brightness).
+    #[test]
+    fn note_expression_type_from_id_matches_the_vst3_spec() {
+        assert_eq!(
+            note_expression_type_from_id(0),
+            Some(NoteExpressionType::Volume)
+        );
+        assert_eq!(
+            note_expression_type_from_id(1),
+            Some(NoteExpressionType::Pan)
+        );
+        assert_eq!(
+            note_expression_type_from_id(2),
+            Some(NoteExpressionType::Tuning)
+        );
+        assert_eq!(
+            note_expression_type_from_id(3),
+            Some(NoteExpressionType::Vibrato)
+        );
+        assert_eq!(
+            note_expression_type_from_id(4),
+            Some(NoteExpressionType::Expression)
+        );
+        assert_eq!(
+            note_expression_type_from_id(5),
+            Some(NoteExpressionType::Brightness)
+        );
+        // kTextTypeID (6) / kPhonemeTypeID (7) carry text, not a value.
+        assert_eq!(note_expression_type_from_id(6), None);
+        assert_eq!(note_expression_type_from_id(7), None);
+    }
+
+    /// Every VST3-encodable dimension survives a to-id → from-id round trip.
+    /// Combined with the two absolute-id tests above, this pins both halves.
+    #[test]
+    fn note_expression_type_round_trips_for_every_encodable_dimension() {
+        for ty in [
+            NoteExpressionType::Volume,
+            NoteExpressionType::Pan,
+            NoteExpressionType::Tuning,
+            NoteExpressionType::Vibrato,
+            NoteExpressionType::Expression,
+            NoteExpressionType::Brightness,
+        ] {
+            let id = note_expression_type_to_id(ty).expect("VST3-encodable");
+            assert_eq!(
+                note_expression_type_from_id(id),
+                Some(ty),
+                "{ty:?} @ id {id}"
+            );
+        }
+    }
+
+    /// `Expression` is a real VST3 dimension (id 4) and must survive staging
+    /// into an event and reading back out — it used to be hardcoded `None`
+    /// while Brightness consumed its id.
+    #[test]
+    fn expression_dimension_stages_and_reads_back() {
+        let expr = NoteExpressionValue {
+            sample_offset: 3,
+            note_id: note_id_for(2, 64),
+            expression_type: NoteExpressionType::Expression,
+            value: 0.25,
+        };
+        let ev = note_expression_to_vst3(&expr).expect("Expression is VST3-encodable (id 4)");
+        match &ev {
+            Vst3Event::NoteExpression(e) => assert_eq!(e.type_id, 4),
+            other => panic!("expected NoteExpression, got {other:?}"),
+        }
+        let back = vst3_to_note_expression(&ev).expect("decodes");
+        assert_eq!(back.expression_type, NoteExpressionType::Expression);
+        assert_eq!(back.note_id, expr.note_id);
+        assert_eq!(back.sample_offset, 3);
     }
 
     #[test]
@@ -1370,10 +1578,10 @@ mod tests {
         let known = MidiEvent::per_note_controller(0, 0, 60, 74, midi1_cc_to_midi2(100), false);
         match vst3_event_from_midi(&known) {
             Some(Vst3Event::NoteExpression(e)) => {
-                assert_eq!(
-                    Some(e.type_id),
-                    note_expression_type_to_id(NoteExpressionType::Brightness)
-                );
+                // Asserted against the SPEC's absolute id (kBrightnessTypeID = 5),
+                // not against `note_expression_type_to_id` — comparing the table
+                // to itself is what let the off-by-one at index 4 ship.
+                assert_eq!(e.type_id, 5, "CC74 → kBrightnessTypeID");
                 assert_eq!(e.note_id, note_id_for(0, 60));
             }
             other => panic!("expected Brightness note expression, got {other:?}"),
@@ -1498,8 +1706,7 @@ mod tests {
         assert_eq!(ev.header().event_type, K_CHORD_EVENT);
 
         // Encode to the C struct, pointing into the staging arena.
-        let mut data_scratch = smallvec::SmallVec::new();
-        let c = to_c_event(&ev, &mut data_scratch, &in_arena);
+        let c = to_c_event(&ev, &in_arena);
         assert_eq!(c.r#type, K_CHORD_EVENT);
         unsafe {
             assert_eq!(c.__field0.chord.root, 60);
@@ -1539,10 +1746,9 @@ mod tests {
         let scale_ev = scale.to_vst3_event(&mut in_arena);
         let text_ev = expr_text.to_vst3_event(&mut in_arena);
 
-        let mut scratch = smallvec::SmallVec::new();
         let mut out = smallvec::SmallVec::new();
         for (ev, expect_scale) in [(scale_ev, true), (text_ev, false)] {
-            let c = to_c_event(&ev, &mut scratch, &in_arena);
+            let c = to_c_event(&ev, &in_arena);
             let decoded = unsafe { from_c_event(&c, &mut out) }.expect("decodes");
             if expect_scale {
                 let s = vst3_to_scale(&decoded, &out).expect("scale");
@@ -1568,8 +1774,7 @@ mod tests {
         };
         let ev = host.to_vst3_event();
         assert_eq!(ev.header().event_type, K_NOTE_EXPRESSION_INT_VALUE_EVENT);
-        let mut scratch = smallvec::SmallVec::new();
-        let c = to_c_event(&ev, &mut scratch, &[]);
+        let c = to_c_event(&ev, &[]);
         let mut arena = smallvec::SmallVec::new();
         let decoded = unsafe { from_c_event(&c, &mut arena) }.expect("decodes");
         let back = vst3_to_note_expression_int(&decoded).expect("int expr");

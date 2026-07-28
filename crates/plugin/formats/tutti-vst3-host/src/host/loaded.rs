@@ -208,7 +208,7 @@ impl Vst3Loaded {
         controller: Controller,
         info: PluginInfo,
     ) -> Self {
-        let host_application = HostApplication::new("vst3-host");
+        let host_application = HostApplication::new(super::library::HOST_NAME);
         let (component_handler, param_event_rx, progress_event_rx, unit_event_rx) =
             ComponentHandler::new();
 
@@ -296,7 +296,27 @@ impl Vst3Loaded {
         unsafe { self.interfaces.processor.getLatencySamples() }
     }
 
-    /// Number of automatable parameters exposed by the edit controller.
+    // ── Parameters: ParamID vs index ──────────────────────────────────────────
+    //
+    // `IEditController` uses TWO different address spaces and conflating them
+    // is silent — you get a plausible `f64` for the wrong parameter:
+    //
+    // - `getParameterInfo(int32 paramIndex, ..)` is addressed by **index**,
+    //   `0 .. getParameterCount()`, and yields the `ParameterInfo` whose `.id`
+    //   is the ParamID.
+    // - `getParamNormalized(ParamID)` / `setParamNormalized(ParamID, ..)` are
+    //   addressed by **ParamID**, an opaque plugin-chosen `uint32`. It is not
+    //   an index and is under no obligation to be small, dense, or ordered —
+    //   plenty of plugins derive it from a hash of the parameter name.
+    //
+    // The methods below are therefore named and documented for the space they
+    // actually take, and the `*_by_index` pair resolves `index → ParamID`
+    // through `getParameterInfo` instead of passing an index straight into a
+    // ParamID slot (which reads whichever parameter happens to own that numeric
+    // id, or nothing at all).
+
+    /// Number of automatable parameters exposed by the edit controller — the
+    /// exclusive upper bound of the **index** space.
     /// Returns `0` if the plugin has no controller.
     pub fn parameter_count(&self) -> u32 {
         match self.interfaces.controller.as_ref() {
@@ -305,26 +325,62 @@ impl Vst3Loaded {
         }
     }
 
-    /// Read the normalized (0.0 – 1.0) value of the parameter at `index`.
+    /// Read the normalized (0.0 – 1.0) value of the parameter with **ParamID**
+    /// `param_id` — *not* an index (see the note above; use
+    /// [`parameter_by_index`](Self::parameter_by_index) to address by index).
     /// Returns `0.0` if the plugin has no controller.
-    pub fn parameter(&self, index: u32) -> f64 {
+    pub fn parameter(&self, param_id: u32) -> f64 {
         match self.interfaces.controller.as_ref() {
-            Some(c) => unsafe { c.getParamNormalized(index) },
+            Some(c) => unsafe { c.getParamNormalized(param_id) },
             None => 0.0,
         }
     }
 
-    /// Write a normalized (0.0 – 1.0) `value` to the parameter at `index`.
+    /// Write a normalized (0.0 – 1.0) `value` to the parameter with **ParamID**
+    /// `param_id` — *not* an index (use
+    /// [`set_parameter_by_index`](Self::set_parameter_by_index) for that).
     /// No-op if the plugin has no controller.
-    pub fn set_parameter(&mut self, index: u32, value: f64) {
+    pub fn set_parameter(&mut self, param_id: u32, value: f64) {
         if let Some(c) = self.interfaces.controller.as_ref() {
             unsafe {
-                c.setParamNormalized(index, value);
+                c.setParamNormalized(param_id, value);
             }
         }
     }
 
-    /// Descriptor for the parameter at `index` (title, units, flags, default).
+    /// The **ParamID** of the parameter at `index` in `0 .. parameter_count()`.
+    /// `None` when the index is out of range or the plugin has no controller.
+    ///
+    /// This is the bridge between the two address spaces: anything iterating
+    /// `0..parameter_count()` must go through it (or
+    /// [`parameter_info`](Self::parameter_info)) before calling
+    /// [`parameter`](Self::parameter) / [`set_parameter`](Self::set_parameter).
+    pub fn parameter_id_at(&self, index: u32) -> Option<u32> {
+        self.parameter_info(index).map(|info| info.id)
+    }
+
+    /// Read the normalized value of the parameter at **index**, resolving the
+    /// index to its ParamID first. `None` if the index is out of range or the
+    /// plugin has no controller.
+    pub fn parameter_by_index(&self, index: u32) -> Option<f64> {
+        self.parameter_id_at(index).map(|id| self.parameter(id))
+    }
+
+    /// Write a normalized `value` to the parameter at **index**, resolving the
+    /// index to its ParamID first. Returns `false` when the index is out of
+    /// range or the plugin has no controller (nothing was written).
+    pub fn set_parameter_by_index(&mut self, index: u32, value: f64) -> bool {
+        match self.parameter_id_at(index) {
+            Some(id) => {
+                self.set_parameter(id, value);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Descriptor for the parameter at **index** (title, units, flags, default,
+    /// and `id` — the ParamID to address it by).
     /// Returns `None` if the index is out of range or the plugin has no
     /// controller.
     pub fn parameter_info(&self, index: u32) -> Option<Vst3ParameterInfo> {

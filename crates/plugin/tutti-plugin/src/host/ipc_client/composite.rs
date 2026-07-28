@@ -30,12 +30,18 @@ impl PluginBridge {
     ///
     /// Returns an `Arc<Self>` (for cheap cloning into the audio graph) and
     /// a `BridgeThread` (whose `Drop` shuts down the bridge thread).
+    ///
+    /// `sample_rate` seeds the bridge thread's per-block reply timeout (see
+    /// `dispatch::process_timeout`); `set_sample_rate_rt` keeps it current after
+    /// device rate changes. The audio thread itself sizes nothing from the rate
+    /// any more — it does not wait.
     pub(crate) fn new(
         socket_path: PathBuf,
         audio_buffer: Arc<AudioSlab>,
         plugin_path: PathBuf,
+        sample_rate: f64,
     ) -> Result<(Arc<Self>, BridgeThread)> {
-        let (audio, bridge_thread) = AudioBridge::new(socket_path, audio_buffer)?;
+        let (audio, bridge_thread) = AudioBridge::new(socket_path, audio_buffer, sample_rate)?;
         let bridge = Arc::new(Self {
             audio,
             plugin_path,
@@ -44,9 +50,13 @@ impl PluginBridge {
         Ok((bridge, bridge_thread))
     }
 
+    /// Hand block `seq` to the bridge without waiting. See
+    /// [`AudioBridge::submit`] — returning `true` means the block was accepted,
+    /// never that its output is ready.
     #[allow(clippy::too_many_arguments)]
-    pub fn process(
+    pub fn submit(
         &self,
+        seq: u64,
         num_samples: usize,
         midi_events: MidiEventVec,
         param_changes: ParameterChanges,
@@ -55,7 +65,8 @@ impl PluginBridge {
         transport: TransportInfo,
         midi_out: &mut MidiEventVec,
     ) -> bool {
-        self.audio.process(
+        self.audio.submit(
+            seq,
             num_samples,
             midi_events,
             param_changes,

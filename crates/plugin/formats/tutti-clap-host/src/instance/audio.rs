@@ -289,6 +289,12 @@ impl<T: ClapSample> ClapActive<T> {
                 .input_events
                 .add_note_expressions(note_expressions);
         }
+        // H3: bound every event time to this block before handing the list to
+        // the plugin — `time` is a sample index the plugin will use to split
+        // the buffer, so an out-of-range value is an OOB access inside the
+        // plugin. Clamp before sorting so the ordering reflects the times the
+        // plugin actually sees.
+        self.scratch.input_events.clamp_times(num_samples);
         self.scratch.input_events.sort_by_time();
 
         // Output list starts empty each block; the plugin's `try_push`
@@ -346,31 +352,24 @@ impl<T: ClapSample> ClapActive<T> {
         num_samples: u32,
         transport: Option<&TransportInfo>,
     ) -> Result<ProcessOutputRef<'_>> {
-        // ensure_processing() publishes the audio-thread identity into
-        // host_state.audio_thread_id (once per start/stop cycle) — the RT
-        // do_process path is lock-free and allocation-free here.
-        self.ensure_processing()?;
-
-        // C2: `ensure_processing` publishes the audio-thread id once, on the
-        // first block. A spec-compliant host may run later blocks on a
-        // different pool thread, which would leave the stored id stale and
-        // make the plugin's `is_audio_thread` callback lie on the real audio
-        // thread. Re-publish only on mismatch: the steady state (same thread
-        // every block) pays just an atomic load + compare — no alloc, no store.
-        let current = std::thread::current().id();
-        let stale = self
-            .loaded
-            .host_state
-            .audio_thread_id
-            .load()
-            .as_deref()
-            .is_none_or(|id| *id != current);
-        if stale {
-            self.loaded
-                .host_state
-                .audio_thread_id
-                .store(Some(Arc::new(current)));
-        }
+        // C1/C2: take the `[audio-thread]` role for this whole block. The claim
+        // (a) publishes THIS OS thread as the audio thread — correct even when
+        // a host thread pool runs successive blocks on different threads —
+        // (b) makes `is_main_thread()` answer false here, so the two symbolic
+        // roles stay mutually exclusive, and (c) is the real serialization the
+        // spec's "must not be called concurrently to process()" demands: an
+        // active `flush_params`, `start_processing` or `stop_processing` on any
+        // other thread blocks until this block returns.
+        //
+        // Steady state is an uncontended lock/unlock plus one small Arc
+        // allocation per block. `start_processing` runs under the same claim
+        // rather than taking its own.
+        // Clone the Arc into a local so the claim borrows the local, not
+        // `self` (the rest of this function needs `&mut self`). An Arc clone is
+        // a relaxed atomic increment — no allocation, RT-safe.
+        let host_state = Arc::clone(&self.loaded.host_state);
+        let claim = host_state.claim_audio_thread();
+        self.ensure_processing(&claim)?;
 
         let clap_transport = transport.map(build_clap_transport);
         let transport_ptr = clap_transport

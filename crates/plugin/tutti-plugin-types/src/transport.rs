@@ -28,6 +28,26 @@ pub struct TransportInfo {
     pub sample_rate: f64,
 }
 
+/// Whether a transport `f64` is worth advertising to a plugin as valid.
+///
+/// Every plugin API has per-field "this value is filled in" flags, and setting
+/// one for a NaN or an infinity is worse than leaving it clear: a plugin that
+/// trusts the flag does arithmetic with the value, and NaN propagates straight
+/// through its timing math into the audio buffer. A cleared flag makes the
+/// plugin fall back to its own defaults, which is always recoverable.
+///
+/// Lives here rather than in one format host because every format needs the
+/// same gate and they had drifted: the VST2 path checked values, while the VST3
+/// path set `kTempoValid` from the plugin's requirement mask alone — so a NaN
+/// or zero tempo reached VST3 plugins flagged valid.
+///
+/// This is the finiteness half only. A field with an additional domain rule
+/// (tempo must also be positive) applies that at the call site, since the rule
+/// is per-field rather than per-type.
+pub fn is_usable(value: f64) -> bool {
+    value.is_finite()
+}
+
 /// Playback / record / cycle flags.
 ///
 /// Named `TransportFlags` after the plugin-SDK term for exactly this bundle —
@@ -75,11 +95,23 @@ impl Default for MusicalTiming {
 pub struct TransportPosition {
     /// Sample-accurate project timeline position (vst2 `samplePos`; vst3
     /// `projectTimeSamples`). Jumps when the transport loops/relocates.
-    pub samples: i64,
+    ///
+    /// `None` means the host has no project-time sample clock to report. It is
+    /// an `Option` rather than a plain `i64` because no producer in this engine
+    /// fills it: the transport's authority is musical (beats), and deriving
+    /// project-time samples from beats and tempo is wrong the moment tempo
+    /// moves — see `tutti-plugin`'s `TransportSource`. Neither the VST2 nor the
+    /// VST3 ABI has a validity bit for their sample-position field, so a plain
+    /// `0` was forwarded as fact and every plugin doing sample-accurate math
+    /// saw the project frozen at sample 0 forever. The `Option` forces each
+    /// format host to decide what to send instead of silently forwarding a
+    /// placeholder.
+    pub samples: Option<i64>,
     /// Monotonic sample counter that does **not** reset on loop/cycle (vst3
     /// `continousTimeSamples`; clap `steady_time`). Free-running plugins (LFOs,
     /// delays) key their timing off this. `0` means "host has no separate
-    /// continuous clock" — consumers fall back to [`samples`](Self::samples).
+    /// continuous clock" — consumers fall back to [`samples`](Self::samples),
+    /// which is itself optional.
     pub continuous_samples: i64,
     /// Quarter notes from project start (vst2 `ppqPos`; vst3
     /// `projectTimeMusic`).
@@ -172,10 +204,25 @@ impl TransportInfo {
         self
     }
 
-    /// Set VST-style position (quarter notes + free-running sample count).
-    pub fn with_position_quarters(mut self, quarters: f64, samples: i64) -> Self {
+    /// Set VST-style musical position (quarter notes).
+    ///
+    /// Deliberately does **not** take a sample position: the two are not
+    /// derivable from one another once tempo moves. A host that genuinely has a
+    /// project-time sample clock reports it separately via
+    /// [`with_position_samples`](Self::with_position_samples); one that doesn't
+    /// leaves [`TransportPosition::samples`] `None`.
+    pub fn with_position_quarters(mut self, quarters: f64) -> Self {
         self.position.quarters = quarters;
-        self.position.samples = samples;
+        self
+    }
+
+    /// Set the project-time sample position (vst2 `samplePos`; vst3
+    /// `projectTimeSamples`) — the one that jumps on loop/relocate.
+    ///
+    /// Only call this if the host actually tracks project time in samples. No
+    /// producer in this engine does; see [`TransportPosition::samples`].
+    pub fn with_position_samples(mut self, samples: i64) -> Self {
+        self.position.samples = Some(samples);
         self
     }
 
@@ -202,11 +249,63 @@ impl TransportInfo {
         self
     }
 
-    /// CLAP-style loop region (beats + cycle-active flag).
+    /// Set every loop field, plus the cycle-active flag.
+    ///
+    /// The `_beats` and `_quarters` pairs take the same value for the same
+    /// reason [`with_bar`](Self::with_bar) does: the engine measures both in
+    /// quarter notes, and the distinction exists only for hosts whose CLAP beat
+    /// axis is notated beats rather than quarters. Populating both matters:
+    /// VST2's `cycle_start_pos`/`cycle_end_pos` and VST3's
+    /// `cycleStartMusic`/`cycleEndMusic` read the `_quarters` pair, which the
+    /// previous `with_loop` left at zero — and both hosts set their
+    /// cycle-valid bit off `active` regardless, so every VST plugin was told a
+    /// 0..0 loop region was real.
     pub fn with_loop(mut self, active: bool, start_beats: f64, end_beats: f64) -> Self {
         self.state.cycle_active = active;
         self.loop_region.start_beats = start_beats;
         self.loop_region.end_beats = end_beats;
+        self.loop_region.start_quarters = start_beats;
+        self.loop_region.end_quarters = end_beats;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `with_loop` used to fill only the `_beats` pair, so CLAP saw the loop and
+    /// VST2/VST3 — which read `_quarters` — saw 0..0 while their cycle-valid bit
+    /// was set anyway. Both pairs must be populated, exactly as `with_bar` does.
+    #[test]
+    fn with_loop_fills_quarters_as_well_as_beats() {
+        let t = TransportInfo::new().with_loop(true, 4.0, 16.0);
+
+        assert!(t.state.cycle_active);
+        assert_eq!(t.loop_region.start_beats, 4.0);
+        assert_eq!(t.loop_region.end_beats, 16.0);
+        assert_eq!(t.loop_region.start_quarters, 4.0);
+        assert_eq!(t.loop_region.end_quarters, 16.0);
+    }
+
+    /// The project-time sample clock has no producer, so it must arrive as
+    /// `None` — not as a `0` that VST2/VST3 forward as fact.
+    #[test]
+    fn position_samples_is_absent_until_a_host_reports_one() {
+        assert_eq!(TransportInfo::new().position.samples, None);
+        assert_eq!(
+            TransportInfo::new()
+                .with_position_quarters(4.0)
+                .position
+                .samples,
+            None
+        );
+        assert_eq!(
+            TransportInfo::new()
+                .with_position_samples(1_234)
+                .position
+                .samples,
+            Some(1_234)
+        );
     }
 }

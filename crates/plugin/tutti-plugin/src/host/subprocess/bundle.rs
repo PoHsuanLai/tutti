@@ -7,6 +7,116 @@
 use crate::error::{BridgeError, Result};
 use std::path::{Path, PathBuf};
 
+/// Architecture subdirectories under `Contents/` to probe, in preference
+/// order, for the *build target* this binary was compiled for.
+///
+/// The VST3 SDK derives this name from the running architecture, not just the
+/// OS: `module_linux.cpp` builds `uname().machine + "-linux"`, and
+/// `module_win32.cpp` enumerates six Windows variants. Keying on
+/// `target_os` alone (as this module used to) means zero VST3/CLAP bundles
+/// resolve on ARM Linux or Windows-on-ARM.
+///
+/// This is deliberately a function rather than a `#[cfg]` chain at the call
+/// site so the tests can consume the *same* list — a test helper that
+/// hardcodes its own copy passes on ARM while production fails.
+pub(crate) fn arch_subdirs() -> &'static [&'static str] {
+    #[cfg(target_os = "macos")]
+    {
+        // A macOS bundle binary is fat/universal; there is no per-arch dir.
+        &["MacOS"]
+    }
+
+    // Linux: `<machine>-linux`, where `<machine>` is the `uname -m` string.
+    // Rust's `target_arch` maps onto those names.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        &["x86_64-linux"]
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        &["aarch64-linux"]
+    }
+    #[cfg(all(target_os = "linux", target_arch = "arm"))]
+    {
+        // `uname -m` reports the specific ARM variant; probe the common ones.
+        &["armv7l-linux", "armv8l-linux", "arm-linux"]
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86"))]
+    {
+        &["i686-linux", "i386-linux"]
+    }
+    #[cfg(all(
+        target_os = "linux",
+        not(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "arm",
+            target_arch = "x86"
+        ))
+    ))]
+    {
+        &["x86_64-linux"]
+    }
+
+    // Windows: the SDK's six variants, narrowed to what this target can load.
+    // On ARM64 Windows an arm64ec/arm64x binary is also loadable, and x64 runs
+    // under emulation, so probe those as fallbacks in the SDK's order.
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        &["x86_64-win"]
+    }
+    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+    {
+        &["arm64-win", "arm64ec-win", "arm64x-win", "x86_64-win"]
+    }
+    #[cfg(all(target_os = "windows", target_arch = "arm"))]
+    {
+        &["arm-win", "x86-win"]
+    }
+    #[cfg(all(target_os = "windows", target_arch = "x86"))]
+    {
+        &["x86-win"]
+    }
+    #[cfg(all(
+        target_os = "windows",
+        not(any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "arm",
+            target_arch = "x86"
+        ))
+    ))]
+    {
+        &["x86_64-win"]
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        &["MacOS"]
+    }
+}
+
+/// Explicit inner-binary extension used on this platform, if any. macOS
+/// bundle binaries are extensionless; Linux uses `.so` and Windows `.vst3`.
+fn arch_binary_ext() -> Option<&'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        None
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Some("so")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Some("vst3")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        None
+    }
+}
+
 /// Resolve a plugin bundle directory to its inner library binary.
 ///
 /// If `path` is already a file (VST2) or doesn't exist as a directory, it is
@@ -18,18 +128,18 @@ pub fn resolve_bundle(path: &Path) -> Result<PathBuf> {
         return Ok(path.to_path_buf());
     }
 
-    #[cfg(target_os = "macos")]
-    let resolved = probe_subdir(path, "MacOS", None);
+    let subdirs = arch_subdirs();
+    let ext = arch_binary_ext();
 
-    #[cfg(target_os = "linux")]
-    let resolved = probe_subdir(path, "x86_64-linux", Some("so"));
-
-    #[cfg(target_os = "windows")]
-    let resolved = probe_subdir(path, "x86_64-win", Some("vst3"));
-
-    resolved.ok_or_else(|| BridgeError::BundleResolutionFailed {
-        path: path.to_path_buf(),
-    })
+    subdirs
+        .iter()
+        .find_map(|arch| probe_subdir(path, arch, ext))
+        .ok_or_else(|| BridgeError::BundleResolutionFailed {
+            path: path.to_path_buf(),
+            // Self-diagnosing: says *where* we looked, so a missing-arch
+            // bundle reads as "wrong architecture" and not "corrupt".
+            arch_subdirs: subdirs.join(", "),
+        })
 }
 
 fn probe_subdir(bundle: &Path, arch_dir: &str, ext: Option<&str>) -> Option<PathBuf> {
@@ -68,20 +178,14 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    /// On the current OS, return the subdirectory `probe_subdir` looks in.
+    /// The subdirectory `resolve_bundle` looks in *first* on this target.
+    ///
+    /// This deliberately reads from production's `arch_subdirs()` rather than
+    /// hardcoding a copy: the previous helper hardcoded `"x86_64-linux"` /
+    /// `"x86_64-win"`, the exact strings production got wrong, so the tests
+    /// passed on ARM while every real bundle failed to resolve.
     fn arch_subdir() -> &'static str {
-        #[cfg(target_os = "macos")]
-        {
-            "MacOS"
-        }
-        #[cfg(target_os = "linux")]
-        {
-            "x86_64-linux"
-        }
-        #[cfg(target_os = "windows")]
-        {
-            "x86_64-win"
-        }
+        arch_subdirs()[0]
     }
 
     fn make_bundle(tmp: &TempDir, name: &str) -> PathBuf {
@@ -140,7 +244,67 @@ mod tests {
         fs::write(&stray, b"").unwrap();
 
         match resolve_bundle(&bundle) {
-            Err(BridgeError::BundleResolutionFailed { path }) => assert_eq!(path, bundle),
+            Err(BridgeError::BundleResolutionFailed { path, arch_subdirs }) => {
+                assert_eq!(path, bundle);
+                // Self-diagnosing: the error names where we looked.
+                assert!(
+                    arch_subdirs.contains(super::arch_subdirs()[0]),
+                    "error should name the probed arch subdir, got {arch_subdirs:?}"
+                );
+            }
+            other => panic!("expected BundleResolutionFailed, got {other:?}"),
+        }
+    }
+
+    /// Regression for the arch subdir must track `target_arch`, not
+    /// just `target_os`. On ARM Linux / Windows-on-ARM the old OS-only
+    /// `#[cfg]` produced `x86_64-*`, so zero bundles resolved.
+    #[test]
+    fn arch_subdir_tracks_target_architecture() {
+        let dirs = super::arch_subdirs();
+        assert!(!dirs.is_empty());
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(dirs, &["MacOS"]);
+
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        assert_eq!(dirs[0], "aarch64-linux");
+
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        assert_eq!(dirs[0], "x86_64-linux");
+
+        #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+        assert_eq!(dirs[0], "arm64-win");
+
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        assert_eq!(dirs[0], "x86_64-win");
+
+        // On every non-mac target the subdir carries the architecture, and on
+        // a 64-bit ARM target it must never be an x86 name.
+        #[cfg(all(not(target_os = "macos"), target_arch = "aarch64"))]
+        assert!(
+            !dirs[0].starts_with("x86"),
+            "ARM64 target must not probe an x86 subdir first, got {:?}",
+            dirs[0]
+        );
+    }
+
+    /// A bundle laid out for a *different* architecture must not resolve, and
+    /// the error must say which subdirs were probed.
+    #[test]
+    fn wrong_architecture_bundle_reports_probed_subdirs() {
+        let tmp = TempDir::new().unwrap();
+        let bundle = tmp.path().join("Foreign.vst3");
+        // Deliberately a subdir this target never probes.
+        let foreign = bundle.join("Contents").join("sparc64-solaris");
+        fs::create_dir_all(&foreign).unwrap();
+        fs::write(foreign.join("Foreign"), b"").unwrap();
+
+        match resolve_bundle(&bundle) {
+            Err(BridgeError::BundleResolutionFailed { arch_subdirs, .. }) => {
+                assert!(!arch_subdirs.is_empty());
+                assert!(!arch_subdirs.contains("sparc64-solaris"));
+            }
             other => panic!("expected BundleResolutionFailed, got {other:?}"),
         }
     }

@@ -866,7 +866,10 @@ mod tests {
         // Peaks near 1.0 / troughs near 0.0, none clipped flat at the rails for
         // long (a smooth sine, not a clipped square).
         assert!(max > 0.95 && max <= 1.0 + 1e-6, "peak near 1.0: {max}");
-        assert!(min < 0.05 && min >= -1e-6, "trough near 0.0: {min}");
+        assert!(
+            (-1e-6..0.05).contains(&min),
+            "trough near 0.0 and not clipped below the rail: {min}"
+        );
     }
 
     #[test]

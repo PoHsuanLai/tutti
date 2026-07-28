@@ -13,7 +13,11 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
-const IDLE_POLL_INTERVAL: Duration = Duration::from_micros(100);
+/// Upper bound on how long the bridge thread stays parked with no command. In
+/// practice `push_command` unparks it immediately; this is only the backstop
+/// that guarantees `lifecycle.is_running()` is re-checked (shutdown) even if an
+/// unpark were ever missed.
+const IDLE_PARK_TIMEOUT: Duration = Duration::from_millis(1);
 
 pub struct BridgeThread {
     channels: Channels,
@@ -74,12 +78,33 @@ fn run_thread(
     listener: ListenerSlot,
     socket_path: PathBuf,
 ) {
+    // Publish our handle before the first poll so `push_command` can unpark us.
+    channels.register_worker(thread::current());
+
+    // A bridge that never connects is as dead as one whose socket drops later,
+    // and the audio thread tells them apart only through `is_crashed`. Both
+    // exits below used to return silently, leaving the flag false forever — so
+    // the batcher's crash check could never fire, and the output was silent
+    // only because the slab sequence happened never to match. That made correct
+    // behaviour a coincidence of the numbering rather than the decision the
+    // check exists to make.
     let Ok(mut stream) = ipc::connect(&socket_path) else {
+        lifecycle.mark_crashed();
         return;
     };
-    // Consume the server's Ready handshake for connection 2.
-    if ipc::recv(&mut stream).is_err() {
-        return;
+    // Consume the server's Ready handshake for connection 2, and check its
+    // version rather than discarding it. `launch.rs` already gated the same
+    // server on connection 1, so a mismatch here is not reachable today — but
+    // this is a wire boundary, the check is one comparison off the audio path,
+    // and a silently-ignored version field is how a skew becomes a mis-parse
+    // instead of an error.
+    match ipc::recv(&mut stream) {
+        Ok(crate::protocol::BridgeMessage::Ready { protocol_version })
+            if crate::protocol::check_protocol_version(protocol_version).is_ok() => {}
+        _ => {
+            lifecycle.mark_crashed();
+            return;
+        }
     }
     pump(&channels, &payloads, &lifecycle, &listener, &mut stream);
 }
@@ -93,7 +118,16 @@ fn pump(
 ) {
     while lifecycle.is_running() {
         let Some(cmd) = channels.pop_command() else {
-            thread::sleep(IDLE_POLL_INTERVAL);
+            // Park rather than sleep: `push_command` unparks us the instant a
+            // block arrives, so the socket round-trip starts immediately
+            // instead of after a fixed poll interval. That latency used to sit
+            // inside the audio thread's wait budget for the reply.
+            //
+            // `park_timeout` may also return spuriously — harmless, the loop
+            // just re-polls. An unpark racing with this re-poll is likewise
+            // safe: `park_timeout` consumes the pending token and returns at
+            // once, so no command is ever left sitting in the queue.
+            thread::park_timeout(IDLE_PARK_TIMEOUT);
             continue;
         };
 
@@ -102,7 +136,10 @@ fn pump(
 
         if result.is_err() {
             lifecycle.mark_crashed();
-            channels.push_audio_response(AudioResponse::Error);
+            // Connection-level: the stream is gone, so this ends every
+            // in-flight and queued block, not just one. `None` matches
+            // whichever request the audio thread is waiting on.
+            channels.push_audio_response(AudioResponse::Error { seq: None });
             drain_with_errors(channels);
             return;
         }
@@ -120,6 +157,6 @@ fn drain_unsolicited(channels: &Channels, listener: &ListenerSlot) {
 
 fn drain_with_errors(channels: &Channels) {
     while channels.pop_command().is_some() {
-        channels.push_audio_response(AudioResponse::Error);
+        channels.push_audio_response(AudioResponse::Error { seq: None });
     }
 }

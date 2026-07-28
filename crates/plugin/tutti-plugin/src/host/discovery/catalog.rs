@@ -41,6 +41,65 @@ pub trait CatalogExt: PluginCatalog {
         self.get(path).is_some_and(|r| r.blacklist.is_blacklisted())
     }
 
+    /// `true` if `path` is blacklisted **and** its on-disk bytes have not
+    /// changed since the blacklist was recorded.
+    ///
+    /// This is the check the scanner must use, not the raw
+    /// [`Self::is_blacklisted`]: blacklisting records the file's mtime, so a
+    /// reinstall or a vendor update re-admits the plugin automatically. A
+    /// blacklist without that escape hatch is permanent, and false positives
+    /// are expected (the dead-man's pedal fires on force-quit, power loss, and
+    /// OOM-kill just as readily as on a real plugin crash).
+    fn is_blacklisted_and_unchanged(&self, path: &Path) -> bool {
+        self.get(path).is_some_and(|r| {
+            r.blacklist.is_blacklisted()
+                && file_modification_time(path).unwrap_or(0) == r.modification_time
+        })
+    }
+
+    /// Clear the blacklist flag on one record, keeping its other fields.
+    /// Returns `true` if a blacklisted record was found and cleared.
+    ///
+    /// The inverse of [`Self::blacklist`]. Without it a single pedal misfire
+    /// hides a plugin forever, remediable only by hand-editing the DB.
+    fn unblacklist(&mut self, path: &Path) -> bool {
+        let Some(existing) = self.get(path) else {
+            return false;
+        };
+        if !existing.blacklist.is_blacklisted() {
+            return false;
+        }
+        let cleared = PluginRecord {
+            blacklist: Blacklist::Ok,
+            // Force a rescan: the descriptor on a blacklisted stub is a
+            // placeholder, so the plugin must be probed again before use.
+            modification_time: 0,
+            ..existing.clone()
+        };
+        self.upsert(cleared);
+        true
+    }
+
+    /// Clear every blacklist entry. Returns the paths that were cleared.
+    /// The bulk escape hatch for "my plugins vanished after a crash".
+    fn clear_blacklist(&mut self) -> Vec<PathBuf> {
+        let blacklisted: Vec<PathBuf> = self
+            .iter()
+            .filter(|r| r.blacklist.is_blacklisted())
+            .map(|r| r.path.clone())
+            .collect();
+        for path in &blacklisted {
+            self.unblacklist(path);
+        }
+        blacklisted
+    }
+
+    /// Iterate the blacklisted records, so a UI can show what was hidden and
+    /// why instead of the plugin just being absent.
+    fn blacklisted(&self) -> Box<dyn Iterator<Item = &PluginRecord> + '_> {
+        Box::new(self.iter().filter(|r| r.blacklist.is_blacklisted()))
+    }
+
     /// `true` if `path` is absent or its on-disk mtime has changed since
     /// the last scan.
     fn needs_rescan(&self, path: &Path) -> bool {

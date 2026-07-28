@@ -36,7 +36,11 @@ impl HostParams for InProcessVst2Backend {
     }
 
     fn parameter_value(&self, id: u32) -> Option<f32> {
-        Some(self.inner.lock().parameter(id))
+        // Forwarded, not re-wrapped: `Vst2Instance::parameter` already returns
+        // `None` for a plugin exposing no `getParameter`, which is exactly this
+        // trait's "unavailable". Wrapping it in `Some` would report a missing
+        // accessor as a present value.
+        self.inner.lock().parameter(id)
     }
 
     fn set_parameter_value(&self, id: u32, value: f32) {

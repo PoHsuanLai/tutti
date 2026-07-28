@@ -79,16 +79,33 @@ pub struct AEffect {
     pub magic: i32,
 
     /// Host to plug-in dispatcher.
-    pub dispatcher: DispatcherProc,
+    ///
+    /// `Option` for the same reason as
+    /// [`processReplacing`](Self::processReplacing), and it matters more here:
+    /// this is the entry point for *every* host→plugin call, so a null slot
+    /// reached the jump on the first opcode rather than only during audio.
+    pub dispatcher: Option<DispatcherProc>,
 
     /// Accumulating process mode is deprecated in VST 2.4! Use `processReplacing` instead!
-    pub _process: ProcessProc,
+    ///
+    /// `Option` because the plugin fills this in across the C ABI and may leave it
+    /// null — see [`processReplacing`](Self::processReplacing).
+    pub _process: Option<ProcessProc>,
 
     /// Set value of automatable parameter.
-    pub setParameter: SetParameterProc,
+    ///
+    /// `Option` for the same reason as
+    /// [`processReplacing`](Self::processReplacing). VST 2.4 lets a plugin with
+    /// `numParams == 0` leave this null, and an effect with no automatable
+    /// parameters is an ordinary thing to write — so the null is reachable
+    /// without any misbehaviour on the plugin's part.
+    pub setParameter: Option<SetParameterProc>,
 
     /// Get value of automatable parameter.
-    pub getParameter: GetParameterProc,
+    ///
+    /// `Option` for the same reason as
+    /// [`setParameter`](Self::setParameter).
+    pub getParameter: Option<GetParameterProc>,
 
     /// Number of programs (Presets).
     pub numPrograms: i32,
@@ -105,7 +122,7 @@ pub struct AEffect {
     /// Bitmask made of values from `api::PluginFlags`.
     ///
     /// ```no_run
-    /// use vst::api::PluginFlags;
+    /// use vst_tutti::api::PluginFlags;
     /// let flags = PluginFlags::CAN_REPLACING | PluginFlags::CAN_DOUBLE_REPLACING;
     /// // ...
     /// ```
@@ -145,18 +162,42 @@ pub struct AEffect {
     pub version: i32,
 
     /// Process audio samples in replacing mode.
-    pub processReplacing: ProcessProc,
+    ///
+    /// `Option` rather than a bare `extern "C" fn`, because this struct is filled
+    /// in by the *plugin* across the C ABI and a real plugin can leave the slot
+    /// null even while reporting api version >= 2400. A non-nullable `fn` type
+    /// tells the compiler the pointer cannot be null, so the host's
+    /// `(p as *const u8).is_null()` guard folded to `false` under `-O` and the
+    /// call became a jump to address 0 — taking the whole DAW down. `Option<fn>`
+    /// makes the check load-bearing at every optimization level, and is
+    /// ABI-identical (null pointer optimization: both are one pointer wide).
+    pub processReplacing: Option<ProcessProc>,
 
     /// Process double-precision audio samples in replacing mode.
-    pub processReplacingF64: ProcessProcF64,
+    ///
+    /// `Option` for the same reason as [`processReplacing`](Self::processReplacing).
+    pub processReplacingF64: Option<ProcessProcF64>,
 
     /// Reserved for future use (please zero).
     pub future: [u8; 56],
 }
 
+// `AEffect` is the C struct the *host* owns and hands back to us on every
+// call, so these accessors have to conjure `&mut` out of `&self`
+// (`clippy::mut_from_ref`). That is upstream's design and reworking it would
+// mean changing the shape of every plugin-side entry point in `interfaces.rs`;
+// the invariant that makes it sound is the documented one on each method — the
+// host serialises its calls per instance. Scoped here rather than left to a
+// crate-wide `allow(clippy::all)`, which is what hid the *host*-side bugs.
+#[allow(clippy::mut_from_ref)]
 impl AEffect {
     /// Return handle to Plugin object. Only works for plugins created using this library.
-    /// Caller is responsible for not calling this function concurrently.
+    ///
+    /// # Safety
+    /// `self.object` must point at the `Box<Box<dyn Plugin>>` this library
+    /// installed, and the caller must not invoke this concurrently with any
+    /// other accessor on the same `AEffect` — the returned `&mut` aliases the
+    /// same plugin every other entry point reaches.
     // Suppresses warning about returning a reference to a box
     #[allow(clippy::borrowed_box)]
     pub unsafe fn get_plugin(&self) -> &mut Box<dyn Plugin> {
@@ -165,22 +206,36 @@ impl AEffect {
     }
 
     /// Return handle to Info object. Only works for plugins created using this library.
+    ///
+    /// # Safety
+    /// `self.user` must point at the `PluginCache` this library installed.
     pub unsafe fn get_info(&self) -> &Info {
         &(*(self.user as *mut super::PluginCache)).info
     }
 
     /// Return handle to PluginParameters object. Only works for plugins created using this library.
+    ///
+    /// # Safety
+    /// `self.user` must point at the `PluginCache` this library installed.
     pub unsafe fn get_params(&self) -> &Arc<dyn PluginParameters> {
         &(*(self.user as *mut super::PluginCache)).params
     }
 
     /// Return handle to Editor object. Only works for plugins created using this library.
-    /// Caller is responsible for not calling this function concurrently.
+    ///
+    /// # Safety
+    /// `self.user` must point at the `PluginCache` this library installed, and
+    /// the caller must not invoke this concurrently with any other accessor on
+    /// the same `AEffect`.
     pub unsafe fn get_editor(&self) -> &mut Option<Box<dyn Editor>> {
         &mut (*(self.user as *mut super::PluginCache)).editor
     }
 
     /// Drop the Plugin object. Only works for plugins created using this library.
+    ///
+    /// # Safety
+    /// Must be called exactly once, from `effClose`, after which neither
+    /// `self.object` nor `self.user` may be dereferenced again.
     pub unsafe fn drop_plugin(&mut self) {
         drop(Box::from_raw(self.object as *mut Box<dyn Plugin>));
         drop(Box::from_raw(self.user as *mut super::PluginCache));
@@ -291,7 +346,7 @@ pub enum SpeakerArrangementType {
 
 /// Used to specify whether functionality is supported.
 #[allow(missing_docs)]
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum Supported {
     Yes,
     Maybe,
@@ -300,15 +355,25 @@ pub enum Supported {
 }
 
 impl Supported {
-    /// Create a `Supported` value from an integer if possible.
-    pub fn from(val: isize) -> Option<Supported> {
+    /// Interpret an `effCanDo` return value.
+    ///
+    /// Total by construction. The VST2.4 SDK only *documents* `1` (yes), `0`
+    /// (don't know) and `-1` (no), but a real plugin's `canDo` returns whatever
+    /// its `dispatcher` left in the return slot — commonly the length of the
+    /// queried string, or an uninitialised stack value for an opcode it does
+    /// not handle. Anything undocumented is surfaced verbatim as
+    /// [`Supported::Custom`] (the variant that already existed for exactly this
+    /// case) rather than discarded: a host must not panic on a value a plugin
+    /// is free to invent, and folding an unknown answer into `Yes` would
+    /// misclassify the plugin.
+    pub fn from(val: isize) -> Supported {
         use self::Supported::*;
 
         match val {
-            1 => Some(Yes),
-            0 => Some(Maybe),
-            -1 => Some(No),
-            _ => None,
+            1 => Yes,
+            0 => Maybe,
+            -1 => No,
+            other => Custom(other),
         }
     }
 }
@@ -471,11 +536,11 @@ impl Events {
     ///
     /// # Example
     /// ```no_run
-    /// # use vst::plugin::{Info, Plugin, HostCallback};
-    /// # use vst::buffer::{AudioBuffer, SendEventBuffer};
-    /// # use vst::host::Host;
-    /// # use vst::api;
-    /// # use vst::event::{Event, MidiEvent};
+    /// # use vst_tutti::plugin::{Info, Plugin, HostCallback};
+    /// # use vst_tutti::buffer::{AudioBuffer, SendEventBuffer};
+    /// # use vst_tutti::host::Host;
+    /// # use vst_tutti::api;
+    /// # use vst_tutti::event::{Event, MidiEvent};
     /// # struct ExamplePlugin { host: HostCallback, send_buf: SendEventBuffer }
     /// # impl Plugin for ExamplePlugin {
     /// #     fn new(host: HostCallback) -> Self { Self { host, send_buf: Default::default() } }
@@ -533,7 +598,7 @@ pub enum EventType {
 /// via `mem::transmute()` while leveraging pointers, e.g.
 ///
 /// ```
-/// # use vst::api::{Event, EventType, MidiEvent, SysExEvent};
+/// # use vst_tutti::api::{Event, EventType, MidiEvent, SysExEvent};
 /// # let mut event: *mut Event = &mut unsafe { std::mem::zeroed() };
 /// // let event: *const Event = ...;
 /// let midi_event: &MidiEvent = unsafe { std::mem::transmute(event) };
@@ -546,7 +611,7 @@ pub struct Event {
     /// # Example
     ///
     /// ```
-    /// # use vst::api::{Event, EventType, MidiEvent, SysExEvent};
+    /// # use vst_tutti::api::{Event, EventType, MidiEvent, SysExEvent};
     /// #
     /// # // Valid for test
     /// # let mut event: *mut Event = &mut unsafe { std::mem::zeroed() };

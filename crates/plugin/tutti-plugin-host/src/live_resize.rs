@@ -17,6 +17,8 @@ use objc2::{define_class, msg_send, sel, AllocAnyThread, DefinedClass, Message};
 use objc2_app_kit::{NSView, NSWindowDidResizeNotification};
 use objc2_foundation::{MainThreadMarker, NSNotification, NSNotificationCenter};
 
+use bevy_ecs::prelude::{NonSendMut, With};
+
 use crate::native_window::native_view_ptr;
 
 /// Closure invoked from inside AppKit's resize tracking loop with the
@@ -50,12 +52,21 @@ define_class!(
 
 /// RAII wrapper around a registered observer; drops it from the
 /// notification center on `Drop`.
+///
+/// **Deliberately not `Send`/`Sync`.** It owns a `Retained<NSView>` and its
+/// `Drop` calls `NSNotificationCenter::removeObserver`; AppKit is main-thread
+/// only, and an off-main `removeObserver` is a hard crash on macOS. This type
+/// previously carried `unsafe impl Send`/`Sync` purely so it could sit inside
+/// a plain Bevy `Component` — which put its drop wherever a `Commands` queue
+/// happened to be applied (e.g. `plugin_crash_detect_system`, which is *not*
+/// main-thread pinned) or wherever the `World` was torn down.
+///
+/// It now lives in [`LiveResizeRegistry`], a `NonSend` resource, so Bevy
+/// itself enforces main-thread access. `Drop` additionally re-checks the
+/// thread and leaks rather than crashing if it ever runs off-main.
 pub(crate) struct LiveResizeHandle {
-    observer: Retained<LiveResizeObserver>,
+    observer: Option<Retained<LiveResizeObserver>>,
 }
-
-unsafe impl Send for LiveResizeHandle {}
-unsafe impl Sync for LiveResizeHandle {}
 
 impl LiveResizeHandle {
     /// Install a live-resize observer on `host`'s NSWindow.
@@ -90,15 +101,150 @@ impl LiveResizeHandle {
             );
         }
 
-        Some(Self { observer })
+        Some(Self {
+            observer: Some(observer),
+        })
     }
 }
 
 impl Drop for LiveResizeHandle {
     fn drop(&mut self) {
+        let Some(observer) = self.observer.take() else {
+            return;
+        };
+        // Defence in depth. `LiveResizeRegistry` is `NonSend`, so Bevy should
+        // already guarantee we are on the main thread — but a drop is easy to
+        // move by accident, and `removeObserver` off-main is a hard crash, not
+        // a warning. If we are not on the main thread, deliberately leak the
+        // observer: it keeps a retain on an object AppKit still knows about,
+        // which is inert, whereas the crash is not recoverable.
+        if MainThreadMarker::new().is_none() {
+            debug_assert!(
+                false,
+                "LiveResizeHandle dropped off the main thread; leaking the \
+                 AppKit observer rather than calling removeObserver off-main"
+            );
+            std::mem::forget(observer);
+            return;
+        }
         let center = NSNotificationCenter::defaultCenter();
         unsafe {
-            center.removeObserver(&self.observer);
+            center.removeObserver(&observer);
         }
+    }
+}
+
+/// Main-thread-only home for the live-resize observers, keyed by the plugin
+/// entity that owns the editor.
+///
+/// Inserted as a `NonSend` resource by `TuttiHostingPlugin`, so every system
+/// that touches it — and therefore every install and every drop — is pinned to
+/// the main thread by Bevy's own scheduler. This is what replaces the unsound
+/// `unsafe impl Send + Sync` that let the handle ride inside a `Component`.
+#[derive(Default)]
+pub struct LiveResizeRegistry {
+    handles: std::collections::HashMap<bevy_ecs::entity::Entity, LiveResizeHandle>,
+}
+
+impl LiveResizeRegistry {
+    /// Store the observer for `entity`, replacing (and dropping, on this
+    /// thread) any observer it already had.
+    pub(crate) fn insert(&mut self, entity: bevy_ecs::entity::Entity, handle: LiveResizeHandle) {
+        self.handles.insert(entity, handle);
+    }
+
+    /// Drop `entity`'s observer, if any. Must be called from a main-thread
+    /// system — which `NonSendMut<LiveResizeRegistry>` guarantees.
+    pub(crate) fn remove(&mut self, entity: bevy_ecs::entity::Entity) {
+        self.handles.remove(&entity);
+    }
+
+    /// Drop every observer whose owning entity no longer has an open editor.
+    pub(crate) fn retain_live(&mut self, is_live: impl Fn(bevy_ecs::entity::Entity) -> bool) {
+        self.handles.retain(|entity, _| is_live(*entity));
+    }
+}
+
+/// Reaps observers whose plugin lost its `PluginEditorOpen` without going
+/// through `close_editor_observer` — most importantly
+/// `plugin_crash_detect_system`, which is *not* main-thread pinned and used to
+/// drop the observer wherever its `Commands` queue happened to be applied.
+///
+/// `NonSendMut` pins this system to the main thread, so the AppKit
+/// `removeObserver` in `LiveResizeHandle::drop` always runs where it is legal.
+pub fn reap_orphaned_live_resize_observers(
+    mut registry: NonSendMut<LiveResizeRegistry>,
+    open: bevy_ecs::system::Query<bevy_ecs::entity::Entity, With<crate::editor::PluginEditorOpen>>,
+) {
+    use bevy_ecs::entity::EntityHashSet;
+    let live: EntityHashSet = open.iter().collect();
+    registry.retain_live(|e| live.contains(&e));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `LiveResizeHandle` owns a `Retained<NSView>`
+    // and its `Drop` calls AppKit's `removeObserver`, which is a hard crash
+    // off the main thread. It previously carried `unsafe impl Send`/`Sync`
+    // solely so it could ride inside a `Component` (Bevy requires
+    // `Component: Send + Sync`), which put that drop wherever a `Commands`
+    // queue was applied or the `World` was torn down. These tests pin the
+    // fix: reinstating either impl to squeeze it back into a component makes
+    // them fail.
+    use std::marker::PhantomData;
+
+    /// Autoref specialization: the inherent `check` (which requires
+    /// `T: Send`) shadows the trait `check` on `&Probe<T>` when it applies.
+    /// The resolution must happen at a site where `T` is concrete — wrapping
+    /// this in a generic `fn is_send<T>()` silently always returns `false`,
+    /// which is why `send_probe_actually_discriminates` exists.
+    struct Probe<T: ?Sized>(PhantomData<T>);
+    trait NotSendFallback {
+        fn check(&self) -> bool {
+            false
+        }
+    }
+    impl<T: ?Sized> NotSendFallback for &Probe<T> {}
+    impl<T: ?Sized + Send> Probe<T> {
+        fn check(&self) -> bool {
+            true
+        }
+    }
+
+    macro_rules! is_send {
+        ($t:ty) => {
+            (&Probe::<$t>(PhantomData)).check()
+        };
+    }
+
+    /// The probe itself must discriminate, or the assertions below — which
+    /// assert a *negative* — would pass no matter what the types are.
+    #[test]
+    fn send_probe_actually_discriminates() {
+        assert!(is_send!(u32), "probe failed to detect a Send type");
+        assert!(
+            !is_send!(std::rc::Rc<u32>),
+            "probe failed to detect a !Send type"
+        );
+    }
+
+    #[test]
+    fn live_resize_handle_is_not_send() {
+        assert!(
+            !is_send!(LiveResizeHandle),
+            "LiveResizeHandle must not be Send: its Drop calls AppKit \
+             removeObserver, which is a hard crash off the main thread"
+        );
+    }
+
+    #[test]
+    fn live_resize_registry_is_not_send() {
+        assert!(
+            !is_send!(LiveResizeRegistry),
+            "LiveResizeRegistry must not be Send; it must stay a NonSend \
+             resource so Bevy pins every observer drop to the main thread"
+        );
     }
 }

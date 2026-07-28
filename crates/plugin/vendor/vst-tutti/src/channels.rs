@@ -84,8 +84,13 @@ impl From<api::ChannelProperties> for ChannelInfo {
         ChannelInfo {
             name: String::from_utf8_lossy(&api.name).to_string(),
             short_name: String::from_utf8_lossy(&api.short_name).to_string(),
-            active: api::ChannelFlags::from_bits(api.flags)
-                .expect("Invalid bits in channel info")
+            // `from_bits_truncate`, not `from_bits().expect()`: `flags` is an
+            // `i32` a plugin filled in over FFI. VST2.4 defines three bits and
+            // says nothing about the other 29, so a plugin setting a private or
+            // reserved bit is legal. Panicking on an unrecognised bit turns a
+            // benign plugin quirk into a host crash — and does so from inside
+            // an `extern "C"` call chain.
+            active: api::ChannelFlags::from_bits_truncate(api.flags)
                 .intersects(api::ChannelFlags::ACTIVE),
             arrangement_type: SpeakerArrangementType::from(api),
         }
@@ -293,8 +298,9 @@ impl From<api::ChannelProperties> for SpeakerArrangementType {
         use self::SurroundConfig::*;
         use api::SpeakerArrangementType as Raw;
 
-        let stereo = if api::ChannelFlags::from_bits(api.flags)
-            .expect("Invalid Channel Flags")
+        // Truncating for the same reason as `ChannelInfo::from`: undefined bits
+        // in a plugin-written `i32` must not crash the host.
+        let stereo = if api::ChannelFlags::from_bits_truncate(api.flags)
             .intersects(api::ChannelFlags::STEREO)
         {
             StereoChannel::Left

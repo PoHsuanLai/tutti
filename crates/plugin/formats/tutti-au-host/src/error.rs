@@ -21,6 +21,28 @@ pub enum AuError {
     /// A buffer supplied to `process` was malformed or inconsistent with the
     /// configured stream (wrong frame count, mismatched channels, etc.).
     InvalidBuffer(String),
+    /// The AU declined the requested sample rate: after the stream-format /
+    /// `kAudioUnitProperty_SampleRate` writes, its ASBD still reports a
+    /// different `mSampleRate`.
+    ///
+    /// Not recoverable the way a rejected channel count is. The channel count
+    /// can be re-read and the render scratch resized to match, but a rate the
+    /// AU is not running at silently corrupts everything downstream that trusts
+    /// it — the render is at the wrong rate (pitch/time drift) and PDC latency
+    /// is computed against a rate that does not exist.
+    ///
+    /// Rates are raw `f64` Hz, not `tutti_types::Hz`: these are the exact bytes
+    /// read out of / written into the AudioToolbox `AudioStreamBasicDescription`
+    /// at the C ABI boundary, and the diagnostic's whole job is to report what
+    /// crossed that boundary verbatim.
+    SampleRateRejected {
+        /// Which bus disagreed — `"input"` or `"output"`.
+        scope: &'static str,
+        /// The rate this host asked for, in Hz.
+        requested: f64,
+        /// The rate the AU reports it is actually running at, in Hz.
+        accepted: f64,
+    },
     /// `AudioUnitRender` returned a non-`noErr` status. `code` is the render
     /// call's own OSStatus; `last_render_error` is the AU's
     /// `kAudioUnitProperty_LastRenderError` at failure time, when it could be
@@ -66,6 +88,7 @@ impl AuError {
                 AuError::RenderFailed { code, .. } => *code,
                 AuError::NullComponent => return "null component",
                 AuError::InvalidBuffer(_) => return "invalid buffer",
+                AuError::SampleRateRejected { .. } => return "sample rate rejected",
             };
             match code {
                 K_AUDIO_UNIT_ERR_INVALID_PROPERTY => "invalid property",
@@ -95,6 +118,7 @@ impl AuError {
             match self {
                 AuError::NullComponent => "null component",
                 AuError::InvalidBuffer(_) => "invalid buffer",
+                AuError::SampleRateRejected { .. } => "sample rate rejected",
                 _ => "unknown error",
             }
         }
@@ -134,6 +158,15 @@ impl fmt::Display for AuError {
             },
             AuError::NullComponent => write!(f, "null AudioComponent handle"),
             AuError::InvalidBuffer(msg) => write!(f, "invalid buffer: {msg}"),
+            AuError::SampleRateRejected {
+                scope,
+                requested,
+                accepted,
+            } => write!(
+                f,
+                "AU rejected the {scope} sample rate: requested {requested} Hz, \
+                 AU reports {accepted} Hz"
+            ),
         }
     }
 }

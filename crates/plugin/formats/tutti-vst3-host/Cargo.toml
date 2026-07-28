@@ -20,6 +20,11 @@ tutti-plugin-types = { path = "../../tutti-plugin-types" }
 tutti-types = { path = "../../../core/tutti-types" }
 vst3 = "0.3"
 
+# The VST3 macOS module entry point is `bundleEntry(CFBundleRef)`, so building a
+# CFBundleRef for the `.vst3` bundle needs CoreFoundation. macOS only.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation-sys = "0.8"
+
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
 tempfile = "3"

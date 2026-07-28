@@ -320,11 +320,18 @@ impl AudioUnit for DiskSource {
 
         self.apply_pending_reset();
 
-        let speed = self.shared_state.as_ref().map_or(1.0, |s| {
-            s.effective_speed().get() as f64 * s.src_ratio().get() as f64
-        });
+        // `read_rate`, not a hand-rolled `effective_speed * src_ratio`. This site
+        // multiplied the two by hand and so bypassed the one place the factors
+        // compose — which meant a stretch rate published into `RtState` reached
+        // `process` but not here, and a `tick`-driven voice kept draining its
+        // ring at full speed. Exactly the divergence `RtState::read_rate`'s doc
+        // warns about, in the function that pre-dated it.
+        let rate = self
+            .shared_state
+            .as_ref()
+            .map_or(ReadRate::UNITY, |s| s.read_rate());
 
-        self.fractional_pos += speed;
+        self.fractional_pos += rate.advance(Samples(1)).get();
 
         let ch = self.channels;
         let cell = self.consumer.load();
@@ -566,6 +573,22 @@ impl DiskVoice {
     /// The transport clock this voice's gate reads.
     pub fn timeline(&self) -> Arc<dyn Timeline> {
         Arc::clone(&self.timeline)
+    }
+
+    /// Tell the ring how fast a wrapping time-stretcher wants its source.
+    ///
+    /// `1 / stretch`, or [`ReadRate::UNITY`] when nothing wraps this voice. See
+    /// [`RtState::read_rate`] for why the factor lands there rather than at the
+    /// per-sample advance: three consumers read that rate, and the fetch estimate
+    /// is the one that fails silently when they disagree.
+    ///
+    /// **Callers must publish unity when they stop stretching.** The rate belongs
+    /// to the filter, not to the voice, so a voice returned to 1.0x that never
+    /// re-published would keep draining its ring at the old factor. Both branches
+    /// of the pool's read set it every block for exactly that reason.
+    #[inline]
+    pub fn set_stretch_rate(&self, rate: ReadRate) {
+        self.shared_state.set_stretch_rate(rate);
     }
 
     pub fn set_placement(&mut self, start_beat: Beat, duration: Option<BeatDuration>) {

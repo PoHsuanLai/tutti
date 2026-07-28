@@ -29,7 +29,7 @@ use bevy_ecs::prelude::*;
 use crossbeam_channel::{bounded, Receiver, Sender, TrySendError};
 use tutti_core::transport::BeatCursor;
 use tutti_core::{
-    Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Cents, PlaybackRate,
+    Amplitude, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef, Cents, PlaybackRate, ReadRate,
     SamplePosition, Samples, SignalFrame, StretchFactor, Timeline, Wave,
 };
 
@@ -461,6 +461,16 @@ impl VoiceSlot {
             // array at the fixed ceiling, used as a prefix — no heap.
             let n = out.len().min(MAX_SAMPLER_CHANNELS);
             let mut raw = [0.0f32; MAX_SAMPLER_CHANNELS];
+            // Keep the disk ring's rate in step with the filter, as `process`
+            // does. A frame-at-a-time caller cannot supply the stretch itself
+            // (there is no block to spread), but the ring must still drain at
+            // the stretched rate or the two disagree about how much source a
+            // second of output costs.
+            if let (VoiceSource::Disk(reader), Some(unit)) =
+                (&self.voice.source, self.stretch.as_ref())
+            {
+                reader.set_stretch_rate(unit.input_rate());
+            }
             read_source_frame_into(&mut self.voice.source, direction, gain, &mut raw[..n]);
             out.fill(0.0);
             if let Some(unit) = &mut self.stretch {
@@ -473,6 +483,8 @@ impl VoiceSlot {
                     None => out.fill(0.0),
                 },
                 VoiceSource::Disk(reader) => {
+                    // Unity when nothing stretches — see the `process` twin.
+                    reader.set_stretch_rate(ReadRate::UNITY);
                     // The `DiskVoice` owns its placement gate: it
                     // emits silence outside the voice window and pulls the
                     // butler ring inside it. Alloc-free (preallocated
@@ -523,14 +535,27 @@ impl VoiceSlot {
             };
             match &mut self.voice.source {
                 VoiceSource::Memory(sampler) => {
-                    let Some(start_pos) = sampler.window_position() else {
+                    // **The stretch rate must reach the origin, not only the
+                    // step.** A placed voice re-derives its origin from the
+                    // playhead every block, and the playhead runs at wall clock;
+                    // seating there and stepping slower makes each block re-seat
+                    // a full block ahead of where the previous one finished, so
+                    // the stretch is discarded at every boundary.
+                    //
+                    // Without this the factor behaved as pure varispeed — 2.0x
+                    // turned 440 Hz into 880 Hz with the duration unchanged.
+                    // Folding the rate into the step *only* was worse still
+                    // (pitch +35% off, purity 0.95 -> 0.54): origin and step then
+                    // disagreed within each block as well as across them.
+                    //
+                    // Both come from `stretched_window_position` / the same
+                    // composed rate for exactly that reason — the two must be
+                    // derived together or they drift apart again.
+                    let rate = sampler.window_rate().then(unit.input_rate());
+                    let Some(start_pos) = sampler.stretched_window_position(unit.input_rate())
+                    else {
                         return;
                     };
-                    // `window_rate`, not a hand-rolled `speed * src_ratio`: this
-                    // site multiplied the two by hand, which double-applied
-                    // `src_ratio` against a gate origin that had already resolved
-                    // it. The named method is what keeps origin and step matched.
-                    let rate = sampler.window_rate();
                     for i in 0..size {
                         let pos = start_pos + rate.advance(Samples(i));
                         read_clip_sample_into(sampler, direction, pos, gain, &mut raw[..n]);
@@ -540,6 +565,19 @@ impl VoiceSlot {
                     }
                 }
                 VoiceSource::Disk(reader) => {
+                    // The disk tier has no cursor to scale — it pops from the
+                    // butler ring and advances its own `fractional_pos`. So the
+                    // stretch rate is published into the `RtState` both sides
+                    // share, where it composes with varispeed and `src_ratio` at
+                    // the one point all three of the reader's consumers read
+                    // (per-sample advance in `tick` and `process`, plus the
+                    // `samples_needed` fetch estimate that must agree with them).
+                    //
+                    // Published per block rather than on the parameter-change
+                    // path because the rate is the *filter's*, and a voice
+                    // returned to unity must publish unity again — a set-once
+                    // would leave the ring draining at the old factor.
+                    reader.set_stretch_rate(unit.input_rate());
                     for i in 0..size {
                         raw[..n].fill(0.0);
                         reader.tick(&[], &mut raw[..n]);
@@ -567,6 +605,13 @@ impl VoiceSlot {
                     }
                 }
                 VoiceSource::Disk(reader) => {
+                    // Unity, every block: the stretch rate belongs to the filter
+                    // rather than to the voice, so a voice returned to 1.0x — or
+                    // one whose filter was removed — must publish unity or its
+                    // ring keeps draining at the old factor. `set_stretch` keeps
+                    // the resident filter and only rewrites its atomics, so this
+                    // is reachable through ordinary use, not just teardown.
+                    reader.set_stretch_rate(ReadRate::UNITY);
                     // Sum the reader per-sample (its placement gate + ring
                     // pull run inside each `tick`). Per-sample accumulation
                     // mirrors the stretch branch above and keeps this
@@ -1835,6 +1880,7 @@ impl AudioUnit for VoiceNode {
 mod tests {
     use super::*;
     use crate::voice::memory_source::MemorySourceConfig;
+    use tutti_core::dsp::{BufferArray, U2};
     use tutti_core::Bpm;
 
     use crate::test_transport::MockTransport;
@@ -2221,6 +2267,214 @@ mod tests {
             quiet_blocks, 0,
             "continuous playback flushed the filter: {quiet_blocks}/256 blocks fell silent"
         );
+    }
+
+    /// **A stretched placed voice must not transpose**, across block boundaries.
+    ///
+    /// The bug this pins was in the *assembly*, not the DSP.
+    /// [`stretch::Unit`] was correct and unit-tested, but `VoicePool` never
+    /// applied [`stretch::Unit::input_rate`] — the method had zero call sites in
+    /// the whole crate — so the vocoder was fed one source sample per output
+    /// sample and the factor acted as plain varispeed: 2.0x turned 440 Hz into
+    /// 880 Hz with the duration unchanged.
+    ///
+    /// **Why this renders many blocks.** The failure lives at block boundaries.
+    /// A placed voice re-derives its origin from the playhead each block, and the
+    /// playhead runs at wall clock, so a stretched read that covers
+    /// `block / stretch` source samples gets re-seated a full `block` further on
+    /// at the next boundary — discarding the stretch, forever. A single-block
+    /// test cannot see it, and a fix applied to the within-block step alone made
+    /// it *worse* (pitch +35% off, spectral purity 0.95 -> 0.54) rather than
+    /// failing outright.
+    ///
+    /// Asserted by measuring the dominant frequency, because every other stretch
+    /// assertion on this path is `!= 0.0` — and an octave-transposed voice is
+    /// emphatically non-zero. Found by rendering WAVs and analysing them in
+    /// numpy (`examples/render_cases.rs`); this is that check brought in-tree so
+    /// CI can see it.
+    #[test]
+    fn a_stretched_placed_voice_holds_its_pitch_across_blocks() {
+        const SR: f64 = 48_000.0;
+        const BLOCK: usize = 64;
+        const BLOCKS: usize = 750;
+
+        for factor in [0.5f32, 1.5, 2.0] {
+            let (mut pool, handle) = VoicePool::new();
+            let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+
+            // 440 Hz, long enough that even the fastest consumption stays inside
+            // the material for the whole render.
+            let data: Vec<f32> = (0..(SR as usize * 4))
+                .map(|i| (std::f32::consts::TAU * 440.0 * i as f32 / SR as f32).sin())
+                .collect();
+            let wave = Arc::new(Wave::from_samples(SR, &data));
+
+            let source =
+                MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+            let mut play = Playback::default();
+            play.stretch = StretchFactor::new(factor);
+            handle.send(VoiceCommand::AddVoice {
+                id: SlotId(1),
+                voice: Box::new(Voice {
+                    source: VoiceSource::Memory(source),
+                    play,
+                    channel_index: None,
+                }),
+                stretch: None,
+            });
+
+            let mut ib = BufferArray::<U2>::new();
+            let mut ob = BufferArray::<U2>::new();
+            let mut out = Vec::with_capacity(BLOCK * BLOCKS);
+            for _ in 0..BLOCKS {
+                pool.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
+                for i in 0..BLOCK {
+                    out.push(ob.buffer_ref().at_f32(0, i));
+                }
+                transport.advance(BLOCK as i64, SR);
+            }
+
+            // Measure well past the vocoder's fill, over a whole number of
+            // periods' worth of samples.
+            let settled = &out[24_000..24_000 + 8192];
+            let got = dominant_hz(settled, SR as f32);
+            assert!(
+                (got - 440.0).abs() < 440.0 * 0.02,
+                "stretch {factor}x transposed a placed voice to {got:.1} Hz \
+                 (the source is 440 Hz; stretch must change duration, not pitch)"
+            );
+        }
+    }
+
+    /// The **disk** tier must consume its source at the stretched rate too.
+    ///
+    /// The memory tier's fix scales a cursor; the disk tier has no cursor to
+    /// scale. It pops from a butler-fed ring, advancing an internal
+    /// `fractional_pos` by `RtState::read_rate` (speed × src_ratio), so the rate
+    /// has to reach *that* accumulator instead.
+    ///
+    /// Asserted as **source consumption**, not as pitch. A ring-fed reader has no
+    /// absolute position to measure a frequency against — it renders whatever the
+    /// butler last handed it — so the observable property is how fast the ring
+    /// drains: at 2x stretch a block of output must consume half a block of
+    /// source, because the vocoder supplies the other half.
+    ///
+    /// This is the same defect as
+    /// `a_stretched_placed_voice_holds_its_pitch_across_blocks`, in the tier
+    /// where it shows up differently.
+    #[test]
+    fn a_stretched_disk_voice_consumes_its_source_at_the_stretched_rate() {
+        use crate::butler::RtState;
+
+        const BLOCK: usize = 64;
+        const BLOCKS: usize = 8;
+
+        use crate::butler::{share_reader, RegionBuffer, RegionId};
+        use crate::voice::{DiskSource, DiskVoice, DiskVoiceConfig, VoiceWindow};
+        use std::path::PathBuf;
+        use std::sync::atomic::Ordering;
+
+        // How many source frames the ring gives up over a fixed render, at a
+        // given stretch factor. `read_position` is the ring's own consumption
+        // counter, so this measures what the reader actually took rather than
+        // what anything claims it should have.
+        let consumed = |factor: f32| -> u64 {
+            let (mut pool, handle) = VoicePool::new();
+            let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+
+            // Enough ring that the unstretched (fastest) case cannot underrun,
+            // so a short read means the rate applied rather than that we ran dry
+            // — the control assertion below checks the other direction.
+            let flat: Vec<f32> = (0..8192)
+                .flat_map(|i| {
+                    let s = (std::f32::consts::TAU * 440.0 * i as f32 / 44_100.0).sin();
+                    [s, s]
+                })
+                .collect();
+            let (mut writer, reader) =
+                RegionBuffer::with_capacity(RegionId(1), PathBuf::new(), 8192 + 64, 2);
+            writer.push_interleaved(&flat);
+            let read_pos = reader.read_position_shared();
+            // ONE `RtState`, shared by the source and the gate — `DiskVoice::new`
+            // requires it, and the published stretch rate is read back through
+            // the same cell. Two separate states here made the fix look inert.
+            let state = Arc::new(RtState::new());
+            let inner = DiskSource::new(share_reader(reader), Arc::clone(&state));
+            let voice = DiskVoice::new(
+                inner,
+                Arc::clone(&state),
+                DiskVoiceConfig {
+                    timeline: transport.clone(),
+                    window: VoiceWindow {
+                        start: Beat::new(0.0),
+                        duration: None,
+                    },
+                    file_sample_rate: 44_100.0,
+                },
+            );
+
+            let mut play = Playback::default();
+            play.stretch = StretchFactor::new(factor);
+            handle.send(VoiceCommand::AddVoice {
+                id: SlotId(1),
+                voice: Box::new(Voice {
+                    source: VoiceSource::Disk(voice),
+                    play,
+                    channel_index: None,
+                }),
+                stretch: None,
+            });
+
+            let mut ib = BufferArray::<U2>::new();
+            let mut ob = BufferArray::<U2>::new();
+            for _ in 0..BLOCKS {
+                pool.process(BLOCK, &ib.buffer_ref(), &mut ob.buffer_mut());
+                transport.advance(BLOCK as i64, 44_100.0);
+            }
+            read_pos.load(Ordering::Relaxed)
+        };
+
+        let unstretched = consumed(1.0);
+        let doubled = consumed(2.0);
+        assert!(
+            unstretched > 0,
+            "the unstretched control consumed nothing — the ring never fed, so \
+             this comparison would prove nothing"
+        );
+
+        // At 2x the vocoder emits two output samples per source sample, so the
+        // ring must drain at half the rate.
+        let ratio = unstretched as f64 / doubled.max(1) as f64;
+        assert!(
+            (ratio - 2.0).abs() < 0.15,
+            "2x stretch consumed {doubled} source frames where 1x consumed \
+             {unstretched} (ratio {ratio:.2}, want 2.0): the stretch rate never \
+             reached the disk tier's ring, so the factor acts as varispeed"
+        );
+    }
+
+    /// Dominant frequency by Hann-windowed DFT scan — a test helper, not
+    /// production code. Coarse (2 Hz) because the assertion tolerance is 2%.
+    #[cfg(test)]
+    fn dominant_hz(x: &[f32], sample_rate: f32) -> f32 {
+        let n = x.len();
+        let mut best = (0.0f32, 0.0f32);
+        let mut f = 60.0f32;
+        while f < 2500.0 {
+            let (mut re, mut im) = (0.0f32, 0.0f32);
+            for (i, &s) in x.iter().enumerate() {
+                let w = 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n as f32).cos();
+                let p = std::f32::consts::TAU * f * i as f32 / sample_rate;
+                re += s * w * p.cos();
+                im -= s * w * p.sin();
+            }
+            let m = (re * re + im * im).sqrt();
+            if m > best.1 {
+                best = (f, m);
+            }
+            f += 2.0;
+        }
+        best.0
     }
 
     /// Continuous playback must NOT flush — the false positive that matters.

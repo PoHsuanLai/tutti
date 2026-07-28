@@ -706,6 +706,40 @@ impl MemorySource {
         )
     }
 
+    /// [`window_position`](Self::window_position) for a **stretched** read, where
+    /// the source is consumed at `stretch_rate` rather than at wall-clock rate.
+    ///
+    /// The rate must reach the *origin*, not only the within-block step, and that
+    /// is the whole reason this exists. `window_position` re-derives its origin
+    /// from the playhead on every block, and the playhead advances at wall clock.
+    /// A caller that seats itself there and then steps by a stretched rate gets a
+    /// sawtooth: block N covers `block_size / stretch` source samples, but block
+    /// N+1 re-seats a full `block_size` further on, discarding the difference. At
+    /// 2x the read jumps forward 32 samples every 64, forever.
+    ///
+    /// Measured before this existed: a placed voice at 2.0x emitted 880 Hz from a
+    /// 440 Hz source with its duration unchanged — the stretch factor acting as
+    /// pure varispeed. Folding the rate into the step alone made it *worse*, not
+    /// better (pitch +35% off, spectral purity 0.95 -> 0.54), because then the
+    /// two disagreed within every block as well as across them.
+    ///
+    /// Kept separate from `window_position` rather than folded into it: that
+    /// method's varispeed-only contract was itself a bug fix
+    /// (`both_tier_splits_agree_on_the_same_position`), and the disk tier plus the
+    /// unstretched memory path both still depend on it. Two named methods, each
+    /// with one meaning.
+    #[inline]
+    pub fn stretched_window_position(&self, stretch_rate: ReadRate) -> Option<SamplePosition> {
+        let timeline = self.timeline.as_ref()?;
+        super::interp::window_position(
+            timeline.as_ref(),
+            self.window.start,
+            self.window.duration,
+            SampleRate::new(self.wave.sample_rate()),
+            self.window_rate().then(stretch_rate),
+        )
+    }
+
     /// Produce one output frame and advance whatever state that entails.
     ///
     /// The single playback algorithm. `tick` calls it once, `process` calls it

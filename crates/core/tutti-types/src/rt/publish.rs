@@ -194,11 +194,22 @@ mod tests {
     /// A guard must not be able to escape the thread that took it — that is what
     /// makes "held across blocks" a compile error rather than a review rule.
     ///
-    /// Asserted via autoref specialization: the inherent method on `&Wrap<T>`
-    /// wins only when `T: Send`, so `IS_SEND` resolves to `false` exactly when
-    /// the type is *not* `Send`. A plain `assert_not_send::<T>()` helper cannot
-    /// express this — there is no stable negative bound — and a bare
-    /// `assert_send` would pin the opposite of what we want.
+    /// Asserted via autoref specialization: the inherent const on `Wrap<T>` wins
+    /// over the trait's default only when `T: Send`, so `IS_SEND` resolves to
+    /// `false` exactly when the type is *not* `Send`. A plain
+    /// `assert_not_send::<T>()` helper cannot express this — there is no stable
+    /// negative bound — and a bare `assert_send` would pin the opposite of what
+    /// we want.
+    ///
+    /// # Why `const` rather than `assert!`
+    ///
+    /// Both operands are compile-time constants, so a runtime `assert!` was the
+    /// wrong tool twice over: clippy flagged it as an assertion on a constant,
+    /// and — the part that mattered — the check only ran if someone ran the
+    /// tests. A `const` block is evaluated during compilation, so this property
+    /// now fails the *build*. That matches what it guards: `RtRef`'s non-`Send`
+    /// ness is a type-system claim, and the whole point of moving the guarantee
+    /// into the return type was to stop relying on anyone remembering to check.
     #[test]
     fn rt_ref_is_not_send() {
         struct Wrap<T>(PhantomData<T>);
@@ -213,13 +224,16 @@ mod tests {
             const IS_SEND: bool = true;
         }
 
-        assert!(
-            !<Wrap<RtRef<'static, Vec<u32>>>>::IS_SEND,
-            "RtRef must not be Send: a guard that escapes its thread outlives \
-             the block it was taken for"
-        );
-        // Control: the same machinery reports `true` for a type that is `Send`,
-        // so the assertion above is measuring something.
-        assert!(<Wrap<Vec<u32>>>::IS_SEND);
+        // A guard that escapes its thread outlives the block it was taken for.
+        const {
+            assert!(!<Wrap<RtRef<'static, Vec<u32>>>>::IS_SEND);
+        }
+        // Control: the same machinery reports `true` for a type that IS `Send`,
+        // so the assertion above is measuring something rather than always
+        // holding. Without this, a broken `Wrap` that reported `false` for
+        // everything would look like a pass.
+        const {
+            assert!(<Wrap<Vec<u32>>>::IS_SEND);
+        }
     }
 }

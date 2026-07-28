@@ -19,6 +19,14 @@ pub struct PlaybackParams {
     direction: AtomicU8,
     /// file_sample_rate / session_sample_rate. 1.0 = no conversion.
     src_ratio: AtomicF32,
+    /// Source samples consumed per output sample by a wrapping time-stretcher:
+    /// `1 / stretch`. 1.0 when the voice does not stretch.
+    ///
+    /// Held here rather than in `DiskSource` because the stretch filter and the
+    /// ring reader never meet: the filter lives in the `VoiceSlot`, the reader
+    /// behind the butler's `SharedReader`. `RtState` is the cell both already
+    /// share, and it is where the other two rate factors compose.
+    stretch_rate: AtomicF32,
 }
 
 impl Default for PlaybackParams {
@@ -27,6 +35,7 @@ impl Default for PlaybackParams {
             speed: AtomicF32::new(1.0),
             direction: AtomicU8::new(0),
             src_ratio: AtomicF32::new(1.0),
+            stretch_rate: AtomicF32::new(1.0),
         }
     }
 }
@@ -120,14 +129,46 @@ impl RtState {
         self.speed()
     }
 
-    /// Source samples consumed per output sample: varispeed × conversion.
+    /// Source samples consumed per output sample: varispeed × conversion ×
+    /// stretch.
     ///
     /// The streaming twin of `MemorySource::read_rate`, composing through the
     /// same [`PlaybackRate::read_rate`] so neither tier can drop a factor or
     /// swap the pair.
+    ///
+    /// The stretch term is folded in **here**, at the one composition point, for
+    /// the reason the other two are: this rate has three consumers in
+    /// `DiskSource` — the per-sample advance in `tick`, the per-sample advance in
+    /// `process`, and the `samples_needed` fetch estimate that has to agree with
+    /// them or the ring under- or over-runs. Applying stretch at the call sites
+    /// instead would need all three to remember, and the fetch estimate is the
+    /// one that fails silently.
+    ///
+    /// Without it the factor acted as varispeed on this tier: a 2x-stretched
+    /// disk voice consumed exactly as many source frames as an unstretched one
+    /// (measured 512 vs 512), so the vocoder was fed at full rate and had
+    /// nothing to spread.
     #[inline]
     pub fn read_rate(&self) -> ReadRate {
-        self.speed().read_rate(self.src_ratio())
+        self.speed()
+            .read_rate(self.src_ratio())
+            .then(self.stretch_rate())
+    }
+
+    /// The wrapping stretcher's read rate — `1 / stretch`, or unity when the
+    /// voice does not stretch.
+    #[inline]
+    pub fn stretch_rate(&self) -> ReadRate {
+        ReadRate::new(self.playback.stretch_rate.load(Ordering::Acquire) as f64)
+    }
+
+    /// Publish the wrapping stretcher's read rate. Control thread, or the audio
+    /// thread's own parameter application — a single relaxed store either way.
+    #[inline]
+    pub fn set_stretch_rate(&self, rate: ReadRate) {
+        self.playback
+            .stretch_rate
+            .store(rate.get() as f32, Ordering::Release);
     }
 
     /// Current playback direction. Backed by the `AtomicU8` (0 = forward,

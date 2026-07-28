@@ -392,21 +392,29 @@ impl Vocoder {
     /// once per commit per vocoder: ~100 KB of mutable state, 64% of it the two
     /// `size * 4` rings.
     ///
-    /// **How much that costs is not established.** A benchmark at 640 nodes gave
-    /// 4.8 ms to 656 ms across six identical generations — an 81x spread, because
-    /// holding two live generations of 640 six-channel vocoders resident is
-    /// ~810 MB and the timings track the OS's paging rather than this code. Any
-    /// figure quoted from it (earlier revisions of this comment carried 18.5 ms
-    /// and 628 ms) measures the machine, not the crate. A pool was built to
-    /// attack the allocation and removed again: `Buffers::new` at this size costs
-    /// ~0.9 us, a pooled hit costs the same within noise, and the pool is empty at
-    /// the moment it would be read because `commit_inner` clones *before* it
-    /// retires the old generation.
+    /// Profiled (`examples/profile_stretch_clone.rs`, run under `samply`), the
+    /// cost splits **~42% allocator, ~37% `memset`** — allocating the buffers and
+    /// zeroing them, in nearly equal measure. Kernel time is 1.3%, so this is
+    /// real work rather than the paging artifact an earlier wall-clock benchmark
+    /// suggested. That benchmark's figures (18.5 ms / 628 ms, quoted in earlier
+    /// revisions of this comment) also measured two live generations at once,
+    /// which is 5-14x more expensive than the one-at-a-time shape `commit_inner`
+    /// actually produces — so they overstated a commit by about an order of
+    /// magnitude.
     ///
-    /// So the Stage 6-7 gate ("640 voice nodes, one commit under 2 ms") is
-    /// **unmeasured**, not failed. Deciding it needs a profiler that separates
-    /// allocator from page-fault from cache — see the note in
-    /// `cloning_shares_the_window_rather_than_rebuilding_it`.
+    /// **That 37% is why a buffer pool was built here and then removed.** A pool
+    /// recycles the allocation but a recycled buffer still has to be cleared, and
+    /// the clear is the same `memset` as a fresh `vec![0.0; n]` — so pooling can
+    /// only address the allocator's 42%, and only when the pool is non-empty.
+    /// Here it never is: `commit_inner` clones *before* it retires the previous
+    /// generation, so nothing has been returned at the moment the clone asks.
+    /// Measured, `Buffers::new` and a pooled hit came out identical within noise.
+    ///
+    /// The Stage 6-7 gate (640 voice nodes, one commit under 2 ms) is still
+    /// missed at six channels. Since the cost is allocate-and-zero in a roughly
+    /// even split, the fix has to remove *both* — not clone this state at all
+    /// (share it behind a handle the graph copies cheaply), rather than make
+    /// allocating it faster.
     fn clone_fresh(&self) -> Self {
         let size = self.geometry.window().get();
         let bins = self.geometry.bins_per_frame().get();
@@ -1323,12 +1331,13 @@ mod tests {
         assert_eq!(c.channels[0].output.available(), 0);
 
         // What this test does NOT establish: that cloning is fast enough for the
-        // per-voice-node design (640 nodes, one commit under 2 ms). Wall-clock
-        // benchmarking here gave a 81x spread across identical generations —
-        // two live generations of 640 six-channel vocoders is ~810 MB, so the
-        // numbers tracked paging, not this code. Sharing the tables is taken
-        // because it is free, not because it was measured to help. Settle the
-        // budget with a sampling profiler; see `clone_fresh`.
+        // per-voice-node design (640 nodes, one commit under 2 ms). It asserts
+        // the tables are shared, which is free and worth taking, but sharing was
+        // never the dominant term — profiling puts ~79% of a clone in allocating
+        // and zeroing the *mutable* buffers this test does not touch.
+        // `examples/profile_stretch_clone.rs` carries that measurement; don't
+        // re-derive the budget from wall-clock timing here, which is what
+        // produced the numbers that had to be retracted.
     }
 
     /// PDC must not compensate for a delay that is not happening.

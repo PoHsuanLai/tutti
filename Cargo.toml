@@ -75,3 +75,26 @@ coremidi = "0.8"
 # 0.8 already pulls, so no new tree.
 coremidi-sys = "3.2"
 core-foundation = "0.9"
+
+# Release codegen plus the symbols a sampling profiler needs to attribute them.
+#
+# `samply record` on a plain `--release` binary reports raw addresses: the
+# default release profile carries no debuginfo, so the call tree is unreadable
+# exactly where it matters. Inheriting release keeps the optimization decisions
+# identical to what ships, so a profile taken here describes shipping code —
+# profiling a debug build would mostly measure code that never runs in anger.
+#
+# `debug = "line-tables-only"` is enough for stack attribution and costs far
+# less build time and disk than full DWARF.
+#
+# Belongs here rather than in bevy-tutti/Cargo.toml: bevy-tutti is a *member* of
+# this workspace, and Cargo ignores `[profile]` in non-root manifests (with a
+# warning that is easy to miss under `| tail`).
+#
+#   cargo build --manifest-path crates/bevy-tutti/Cargo.toml \
+#       -p tutti-sampler --profile profiling --example profile_stretch_clone
+#   samply record <target-dir>/profiling/examples/profile_stretch_clone
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"

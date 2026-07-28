@@ -10,22 +10,22 @@
 #![cfg(feature = "wav")]
 
 use tutti_core::dsp::{dc, Net};
-use tutti_export::{ChannelLayout, EncodeSpec, ExportSpec, RenderSpec};
+use tutti_export::{ChannelLayout, EncodeConfig, ExportConfig, RenderConfig};
 
 /// Render `net` to `path` as float WAV at `layout`, for `secs`.
 ///
 /// The tests care about channel routing, not about export configuration, so the
-/// spec is built once here rather than restated at every call site.
+/// config is built once here rather than restated at every call site.
 fn export(net: tutti_core::dsp::Net, layout: ChannelLayout, secs: f64, path: &std::path::Path) {
     tutti_export::render_to_file(
         net,
-        &ExportSpec {
-            render: RenderSpec {
+        &ExportConfig {
+            render: RenderConfig {
                 sample_rate: tutti_core::SampleRate(48_000.0),
                 duration_seconds: secs,
                 ..Default::default()
             },
-            encode: EncodeSpec {
+            encode: EncodeConfig {
                 bit_depth: tutti_export::BitDepth::Float32,
                 channels: layout,
                 ..Default::default()

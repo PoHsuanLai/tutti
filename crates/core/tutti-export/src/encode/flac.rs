@@ -12,11 +12,11 @@
 //! held. `flacenc::coding::encode_fixed_size_frame` is public if fully
 //! incremental output is ever wanted.
 
+use crate::config::ExportConfig;
 use crate::encode::Encoder;
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
 use crate::render::{FrameSource, RenderPlan};
-use crate::spec::ExportSpec;
 use flacenc::bitsink::ByteSink;
 use flacenc::component::BitRepr;
 use flacenc::config::Encoder as EncoderConfig;
@@ -38,10 +38,10 @@ pub(crate) struct FlacEncoder {
 impl FlacEncoder {
     pub(crate) fn create(
         path: &std::path::Path,
-        spec: &ExportSpec,
+        config: &ExportConfig,
         opts: crate::options::Flac,
     ) -> Result<Self> {
-        if spec.encode.bit_depth == BitDepth::Float32 {
+        if config.encode.bit_depth == BitDepth::Float32 {
             return Err(Error::UnsupportedFormat(
                 "FLAC does not support 32-bit float".into(),
             ));
@@ -49,7 +49,7 @@ impl FlacEncoder {
         Ok(Self {
             path: path.to_path_buf(),
             compression_level: opts.compression_level,
-            bit_depth: spec.encode.bit_depth,
+            bit_depth: config.encode.bit_depth,
         })
     }
 }
@@ -156,16 +156,16 @@ impl<const CH: usize> Encoder<CH> for FlacEncoder {
         self,
         src: &mut dyn FrameSource<CH>,
         plan: &RenderPlan,
-        spec: &ExportSpec,
+        config: &ExportConfig,
     ) -> Result<()> {
         let bits = bits_for(self.bit_depth);
         let source = RenderSource::<CH> {
             src,
             plan,
-            dither: crate::process::DitherState::for_spec(spec),
+            dither: crate::process::DitherState::for_config(config),
             channels: CH,
             bits,
-            sample_rate: crate::encode::encoder_rate(spec) as usize,
+            sample_rate: crate::encode::encoder_rate(config) as usize,
             bit_depth: self.bit_depth,
             pending: Vec::new(),
             kept: tutti_types::Samples(0),

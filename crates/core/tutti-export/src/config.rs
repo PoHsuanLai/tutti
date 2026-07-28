@@ -5,13 +5,16 @@
 //! a caller writes what it means and lets `..Default::default()` cover the rest:
 //!
 //! ```ignore
-//! ExportSpec {
-//!     render: RenderSpec {
+//! ExportConfig {
+//!     render: RenderConfig {
 //!         sample_rate: SampleRate(48_000.0),
 //!         duration_seconds: 30.0,
 //!         ..Default::default()
 //!     },
-//!     encode: EncodeSpec { format: AudioFormat::Flac, ..Default::default() },
+//!     encode: EncodeConfig {
+//!         format: AudioFormat::Flac(Flac::default()),
+//!         ..Default::default()
+//!     },
 //!     ..Default::default()
 //! }
 //! ```
@@ -23,7 +26,7 @@
 //! **This module is data, and only data.** No method here reads a graph, opens
 //! a file, or decides anything — the derivations that used to hang off these
 //! structs live next to the code that needs them (`render::plan` for frame
-//! counts, `encode` for the codec rate). A spec you can construct without a
+//! counts, `encode` for the codec rate). A config you can construct without a
 //! `Net` and compare with `==` is one a caller can build up, log, diff, and hand
 //! around; one with an "ask the graph" mode is not.
 
@@ -34,9 +37,9 @@ use tutti_types::{ChannelLayout, Samples};
 
 /// The render stage: what to produce, and for how long.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct RenderSpec {
+pub struct RenderConfig {
     /// Rate the graph is rendered at. The output rate may differ — see
-    /// [`ExportSpec::resample`].
+    /// [`ExportConfig::resample`].
     pub sample_rate: SampleRate,
     /// Length in seconds. `f64` deliberately — see [`duration_to_frames`].
     pub duration_seconds: f64,
@@ -52,7 +55,7 @@ pub struct RenderSpec {
     pub latency: Samples,
 }
 
-impl Default for RenderSpec {
+impl Default for RenderConfig {
     fn default() -> Self {
         Self {
             sample_rate: SampleRate(44_100.0),
@@ -64,7 +67,7 @@ impl Default for RenderSpec {
 
 /// The encode stage: what file to write.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct EncodeSpec {
+pub struct EncodeConfig {
     pub format: AudioFormat,
     pub bit_depth: BitDepth,
     /// Width of the written file. A graph wider than this is folded with the
@@ -96,9 +99,9 @@ impl Resample {
 /// [`tutti_analysis::measure_loudness`](https://docs.rs), take
 /// `Loudness::gain_to`, apply it. That is why this crate can stream.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct ExportSpec {
-    pub render: RenderSpec,
-    pub encode: EncodeSpec,
+pub struct ExportConfig {
+    pub render: RenderConfig,
+    pub encode: EncodeConfig,
     /// `None` writes at the render rate.
     pub resample: Option<Resample>,
     /// Applied when quantizing to an integer bit depth. Ignored for

@@ -3,18 +3,21 @@
 //! Offline audio export: render a Tutti graph to a file, or to buffers.
 //!
 //! ```ignore
-//! use tutti_export::{render_to_file, ExportSpec, RenderSpec, EncodeSpec};
+//! use tutti_export::{render_to_file, ExportConfig, RenderConfig, EncodeConfig};
 //! use tutti_core::{SampleRate, FrozenClock};
 //!
 //! render_to_file(
 //!     net,
-//!     &ExportSpec {
-//!         render: RenderSpec {
+//!     &ExportConfig {
+//!         render: RenderConfig {
 //!             sample_rate: SampleRate(48_000.0),
 //!             duration_seconds: 30.0,
 //!             ..Default::default()
 //!         },
-//!         encode: EncodeSpec { format: AudioFormat::Flac, ..Default::default() },
+//!         encode: EncodeConfig {
+//!             format: AudioFormat::Flac(Flac::default()),
+//!             ..Default::default()
+//!         },
 //!         ..Default::default()
 //!     },
 //!     &FrozenClock,          // or your OfflineTimeline
@@ -47,11 +50,11 @@ mod options;
 pub use options::{AudioFormat, BitDepth, Dither, Flac, Ogg};
 pub use tutti_types::ChannelLayout;
 
-mod spec;
+mod config;
+pub use config::{EncodeConfig, ExportConfig, RenderConfig, Resample};
 /// Frame-count arithmetic — pure, and public so a caller can size a render
 /// before committing to one.
 pub use render::plan::{beats_to_seconds, duration_to_frames};
-pub use spec::{EncodeSpec, ExportSpec, RenderSpec, Resample};
 
 pub(crate) mod encode;
 pub(crate) mod process;
@@ -165,16 +168,16 @@ macro_rules! dispatch_channels {
 
 /// The look-ahead latency `net` reports, as a frame count.
 ///
-/// For a caller that wants `RenderSpec::latency` to be whatever the graph says —
+/// For a caller that wants `RenderConfig::latency` to be whatever the graph says —
 /// look-ahead limiters, linear-phase filters. It is a function rather than a
-/// `LatencyTrim::Reported` mode on the spec because asking a graph is an
+/// `LatencyTrim::Reported` mode on the config because asking a graph is an
 /// *action*, and folding it into a value dragged a `&mut Net` into what is
 /// otherwise pure arithmetic:
 ///
 /// ```ignore
 /// let latency = reported_latency(&mut net);
-/// let spec = ExportSpec {
-///     render: RenderSpec { latency, ..Default::default() },
+/// let config = ExportConfig {
+///     render: RenderConfig { latency, ..Default::default() },
 ///     ..Default::default()
 /// };
 /// ```
@@ -191,13 +194,13 @@ pub fn reported_latency(net: &mut tutti_core::dsp::Net) -> Samples {
 /// render to buffers, measure, apply a gain, write. Without it a caller who
 /// normalized would have nowhere to put the result.
 ///
-/// `spec.encode` is honoured as-is. `spec.render` is not consulted — the frames
-/// already exist — but `spec.resample` still applies, so a caller can convert on
+/// `config.encode` is honoured as-is. `config.render` is not consulted — the frames
+/// already exist — but `config.resample` still applies, so a caller can convert on
 /// the way out.
-pub fn write_buffers(rendered: &Rendered, spec: &ExportSpec, path: &Path) -> Result<Written> {
-    let channels = spec.encode.channels;
+pub fn write_buffers(rendered: &Rendered, config: &ExportConfig, path: &Path) -> Result<Written> {
+    let channels = config.encode.channels;
     dispatch_channels!(channels, CH => {
-        encode::encode_planes::<CH>(rendered, spec, path)
+        encode::encode_planes::<CH>(rendered, config, path)
     })
 }
 
@@ -208,16 +211,16 @@ pub fn write_buffers(rendered: &Rendered, spec: &ExportSpec, path: &Path) -> Res
 /// [`FrozenClock`] for a graph with no time-dependent nodes.
 pub fn render_to_file(
     net: tutti_core::dsp::Net,
-    spec: &ExportSpec,
+    config: &ExportConfig,
     clock: &dyn RenderClock,
     path: &Path,
 ) -> Result<Written> {
-    let channels = spec.encode.channels;
+    let channels = config.encode.channels;
     dispatch_channels!(channels, CH => {
         let mut net = net;
-        let plan = render::RenderPlan::new(&spec.render);
-        let mut src = render::NetSource::<CH>::new(&mut net, spec.render.sample_rate, clock);
-        encode::encode_to_file::<CH>(&mut src, &plan, spec, path)
+        let plan = render::RenderPlan::new(&config.render);
+        let mut src = render::NetSource::<CH>::new(&mut net, config.render.sample_rate, clock);
+        encode::encode_to_file::<CH>(&mut src, &plan, config, path)
     })
 }
 
@@ -225,25 +228,25 @@ pub fn render_to_file(
 ///
 /// Applies the same gate and dither as [`render_to_file`], and reports the rate
 /// it actually rendered at. Resampling is **not** applied here — that is
-/// `spec.resample`'s job at the file boundary, and a caller holding planes can
+/// `config.resample`'s job at the file boundary, and a caller holding planes can
 /// resample them itself; reporting a rate the samples are not at is the bug this
 /// shape avoids.
 pub fn render_to_buffers(
     net: tutti_core::dsp::Net,
-    spec: &ExportSpec,
+    config: &ExportConfig,
     clock: &dyn RenderClock,
 ) -> Result<Rendered> {
-    let channels = spec.encode.channels;
+    let channels = config.encode.channels;
     dispatch_channels!(channels, CH => {
         let mut net = net;
-        let plan = render::RenderPlan::new(&spec.render);
-        let mut src = render::NetSource::<CH>::new(&mut net, spec.render.sample_rate, clock);
+        let plan = render::RenderPlan::new(&config.render);
+        let mut src = render::NetSource::<CH>::new(&mut net, config.render.sample_rate, clock);
 
         // `vec![Vec::with_capacity(n); CH]` would clone ONE empty Vec CH times,
         // and a clone does not carry capacity — every plane would reallocate.
         let mut planes: Vec<Vec<f32>> =
             (0..CH).map(|_| Vec::with_capacity(plan.output_length.get())).collect();
-        let mut dither = process::DitherState::for_spec(spec);
+        let mut dither = process::DitherState::for_config(config);
         let mut staging: Vec<[f32; CH]> = Vec::new();
         render::drive(&mut src, &plan, |block| {
             staging.clear();
@@ -257,6 +260,6 @@ pub fn render_to_buffers(
             Ok(())
         })?;
 
-        Ok(Rendered { planes, sample_rate: spec.render.sample_rate })
+        Ok(Rendered { planes, sample_rate: config.render.sample_rate })
     })
 }

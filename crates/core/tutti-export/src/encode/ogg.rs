@@ -7,10 +7,10 @@
 //! Vorbis is lossy and always float internally, so `bit_depth` and `dither` do
 //! not apply — quantization noise has nothing to dither against here.
 
+use crate::config::ExportConfig;
 use crate::encode::Encoder;
 use crate::error::{Error, Result};
 use crate::render::{drive, FrameSource, RenderPlan};
-use crate::spec::ExportSpec;
 use std::io::BufWriter;
 use std::num::{NonZeroU32, NonZeroU8};
 use std::path::Path;
@@ -23,12 +23,12 @@ pub(crate) struct OggEncoder {
 impl OggEncoder {
     pub(crate) fn create(
         path: &Path,
-        spec: &ExportSpec,
+        config: &ExportConfig,
         opts: crate::options::Ogg,
     ) -> Result<Self> {
-        let sr = NonZeroU32::new(crate::encode::encoder_rate(spec))
+        let sr = NonZeroU32::new(crate::encode::encoder_rate(config))
             .ok_or_else(|| Error::InvalidConfig("Sample rate must be non-zero".into()))?;
-        let ch = NonZeroU8::new(spec.encode.channels.count() as u8)
+        let ch = NonZeroU8::new(config.encode.channels.count() as u8)
             .ok_or_else(|| Error::InvalidConfig("Channel count must be non-zero".into()))?;
 
         let writer = BufWriter::new(std::fs::File::create(path)?);
@@ -49,7 +49,7 @@ impl<const CH: usize> Encoder<CH> for OggEncoder {
         mut self,
         src: &mut dyn FrameSource<CH>,
         plan: &RenderPlan,
-        _spec: &ExportSpec,
+        _config: &ExportConfig,
     ) -> Result<()> {
         // Reused planar staging, so a block deinterleaves without allocating.
         let mut planes: Vec<Vec<f32>> = vec![Vec::new(); CH];

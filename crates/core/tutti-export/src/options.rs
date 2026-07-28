@@ -6,7 +6,7 @@ use std::path::Path;
 
 /// The container to write, carrying that format's own settings.
 ///
-/// The settings live **in the variant**, not beside it. An `EncodeSpec` used to
+/// The settings live **in the variant**, not beside it. An `EncodeConfig` used to
 /// hold `flac: Flac` and `ogg: Ogg` unconditionally, so every WAV export
 /// carried a FLAC compression level and a Vorbis quality that nothing would
 /// read — the same "settings a path ignores" shape the fluent builder had, one

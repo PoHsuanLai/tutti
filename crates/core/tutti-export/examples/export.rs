@@ -15,8 +15,8 @@ use tutti_core::dsp::Net;
 use fundsp::prelude32::{dc, sine_hz};
 use tutti_core::{FrozenClock, SampleRate};
 use tutti_export::{
-    render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeSpec,
-    ExportSpec, RenderSpec,
+    render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
+    ExportConfig, RenderConfig,
 };
 use tutti_types::Db;
 
@@ -48,13 +48,13 @@ fn main() -> tutti_export::Result<()> {
     // Configuration is a struct literal: fill in what you mean, let `Default`
     // cover the rest. There is no builder, so there is no way to set something
     // the path you chose will quietly ignore.
-    let spec = ExportSpec {
-        render: RenderSpec {
+    let config = ExportConfig {
+        render: RenderConfig {
             sample_rate: SampleRate(48_000.0),
             duration_seconds: 2.0,
             ..Default::default()
         },
-        encode: EncodeSpec {
+        encode: EncodeConfig {
             format: AudioFormat::Flac(Default::default()),
             bit_depth: BitDepth::Int24,
             ..Default::default()
@@ -66,7 +66,7 @@ fn main() -> tutti_export::Result<()> {
     // placed voices takes the `OfflineTimeline` those voices read — the clock is
     // a required argument precisely so a silent render is not something you can
     // get by forgetting one.
-    let written = render_to_file(tone(), &spec, &FrozenClock, &dir.join("tone.flac"))?;
+    let written = render_to_file(tone(), &config, &FrozenClock, &dir.join("tone.flac"))?;
     println!("wrote {} ({} bytes)", written.path.display(), written.bytes);
 
     // Every format goes through the same call. FLAC streams through flacenc's
@@ -76,12 +76,12 @@ fn main() -> tutti_export::Result<()> {
         (AudioFormat::OggVorbis(Default::default()), "ogg"),
         (AudioFormat::Aiff, "aiff"),
     ] {
-        let s = ExportSpec {
-            encode: EncodeSpec {
+        let s = ExportConfig {
+            encode: EncodeConfig {
                 format,
-                ..spec.encode
+                ..config.encode
             },
-            ..spec
+            ..config
         };
         let w = render_to_file(tone(), &s, &FrozenClock, &dir.join(format!("tone.{ext}")))?;
         println!("wrote {} ({} bytes)", w.path.display(), w.bytes);
@@ -94,12 +94,12 @@ fn main() -> tutti_export::Result<()> {
     // the signal, the rest are silent — not four copies of the same thing.
     let quad = render_to_buffers(
         mono_tone(),
-        &ExportSpec {
-            encode: EncodeSpec {
+        &ExportConfig {
+            encode: EncodeConfig {
                 channels: ChannelLayout::Quad,
                 ..Default::default()
             },
-            ..spec
+            ..config
         },
         &FrozenClock,
     )?;
@@ -121,7 +121,7 @@ fn main() -> tutti_export::Result<()> {
     // (`tutti_analysis` wraps an online R128 meter) and the gain is one value
     // you apply where you like — including on a second render, without ever
     // holding the audio.
-    let mut audio = render_to_buffers(tone(), &spec, &FrozenClock)?;
+    let mut audio = render_to_buffers(tone(), &config, &FrozenClock)?;
 
     let cfg = LoudnessConfig::new(audio.sample_rate, ChannelLayout::Stereo);
     let before = measure_loudness(&cfg, &audio.interleaved()).expect("stereo is meterable");

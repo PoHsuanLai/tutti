@@ -7,8 +7,8 @@
 
 use fundsp::prelude32::*;
 use tutti_export::{
-    render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeSpec,
-    ExportSpec, FrozenClock, RenderClock, RenderSpec, Resample,
+    render_to_buffers, render_to_file, AudioFormat, BitDepth, ChannelLayout, EncodeConfig,
+    ExportConfig, FrozenClock, RenderClock, RenderConfig, Resample,
 };
 
 fn net() -> tutti_core::dsp::Net {
@@ -17,14 +17,14 @@ fn net() -> tutti_core::dsp::Net {
     n.pipe_output(id);
     n
 }
-fn spec(format: AudioFormat, bd: BitDepth, layout: ChannelLayout) -> ExportSpec {
-    ExportSpec {
-        render: RenderSpec {
+fn config(format: AudioFormat, bd: BitDepth, layout: ChannelLayout) -> ExportConfig {
+    ExportConfig {
+        render: RenderConfig {
             sample_rate: tutti_core::SampleRate(44100.0),
             duration_seconds: 0.2,
             ..Default::default()
         },
-        encode: EncodeSpec {
+        encode: EncodeConfig {
             format,
             bit_depth: bd,
             channels: layout,
@@ -51,7 +51,12 @@ fn all_four_formats_export() {
         (AudioFormat::Aiff, BitDepth::Int24, "aiff"),
     ] {
         let p = d.path().join(format!("a.{ext}"));
-        let r = render_to_file(net(), &spec(f, bd, ChannelLayout::Stereo), &FrozenClock, &p);
+        let r = render_to_file(
+            net(),
+            &config(f, bd, ChannelLayout::Stereo),
+            &FrozenClock,
+            &p,
+        );
         match &r {
             Ok(w) => println!("{ext}: OK {} bytes", w.bytes),
             Err(e) => println!("{ext}: ERR {e}"),
@@ -73,7 +78,7 @@ fn upmix_does_not_panic_and_leaves_extras_silent() {
     n.pipe_output(id);
     render_to_file(
         n,
-        &spec(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Quad),
+        &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Quad),
         &FrozenClock,
         &p,
     )
@@ -115,7 +120,7 @@ fn the_clock_advances_by_exactly_the_frames_rendered() {
     let clock = Arc::new(CountingClock(AtomicUsize::new(0)));
     let out = render_to_buffers(
         net(),
-        &spec(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo),
+        &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo),
         clock.as_ref(),
     )
     .unwrap();
@@ -133,7 +138,7 @@ fn the_clock_advances_by_exactly_the_frames_rendered() {
 /// output is still the requested length — not short by the trim.
 #[test]
 fn a_latency_trim_preserves_the_output_length() {
-    let mut s = spec(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let mut s = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
     let untrimmed = render_to_buffers(net(), &s, &FrozenClock).unwrap();
 
     s.render.latency = tutti_types::Samples(512);
@@ -152,7 +157,7 @@ fn a_latency_trim_preserves_the_output_length() {
 fn buffers_report_their_own_shape() {
     let out = render_to_buffers(
         net(),
-        &spec(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Quad),
+        &config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Quad),
         &FrozenClock,
     )
     .unwrap();
@@ -170,7 +175,7 @@ fn a_caller_can_compose_normalization() {
 
     // Longer than R128's 400 ms gating block, or the meter reports nothing
     // passed the gate and there is no loudness to normalize toward.
-    let mut long = spec(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let mut long = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
     long.render.duration_seconds = 2.0;
     let mut out = render_to_buffers(net(), &long, &FrozenClock).unwrap();
 
@@ -197,7 +202,7 @@ fn a_caller_can_compose_normalization() {
 fn a_resample_request_reaches_the_file() {
     let d = tempfile::tempdir().unwrap();
     let p = d.path().join("r.wav");
-    let mut s = spec(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    let mut s = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
     s.render.duration_seconds = 1.0;
     s.resample = Some(Resample::to(SampleRate(48_000.0)));
 
@@ -224,7 +229,7 @@ fn a_resample_request_reaches_the_file() {
 #[test]
 fn normalized_audio_can_be_written_to_every_format() {
     let d = tempfile::tempdir().unwrap();
-    let mut s = spec(AudioFormat::Wav, BitDepth::Int24, ChannelLayout::Stereo);
+    let mut s = config(AudioFormat::Wav, BitDepth::Int24, ChannelLayout::Stereo);
     s.render.duration_seconds = 1.0;
 
     let mut audio = render_to_buffers(net(), &s, &FrozenClock).unwrap();

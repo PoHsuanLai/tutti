@@ -27,17 +27,18 @@ pub(crate) mod ogg;
 #[cfg(feature = "wav")]
 pub(crate) mod wav;
 
+use crate::config::ExportConfig;
 use crate::error::Result;
 use crate::render::{drive, FrameSource, PlaneSource, RenderPlan};
-use crate::spec::ExportSpec;
 use crate::Written;
 use std::path::Path;
 
 /// The rate the file is written at: the resample target, else the render rate.
-pub(crate) fn output_rate(spec: &ExportSpec) -> tutti_core::SampleRate {
-    spec.resample
+pub(crate) fn output_rate(config: &ExportConfig) -> tutti_core::SampleRate {
+    config
+        .resample
         .map(|r| r.target_rate)
-        .unwrap_or(spec.render.sample_rate)
+        .unwrap_or(config.render.sample_rate)
 }
 
 /// The output rate as the `u32` every codec header wants.
@@ -47,9 +48,9 @@ pub(crate) fn output_rate(spec: &ExportSpec) -> tutti_core::SampleRate {
 /// whether to convert at all — which a float would turn into an ULP coin-flip.
 /// The boundary is real; it just belongs in one named place rather than at five
 /// call sites, and it lives beside the encoders that need it rather than hanging
-/// off the spec as behaviour.
-pub(crate) fn encoder_rate(spec: &ExportSpec) -> u32 {
-    output_rate(spec).get().round() as u32
+/// off the config as behaviour.
+pub(crate) fn encoder_rate(config: &ExportConfig) -> u32 {
+    output_rate(config).get().round() as u32
 }
 
 /// Drives a render to completion and writes a file.
@@ -62,11 +63,11 @@ pub(crate) trait Encoder<const CH: usize> {
         self,
         src: &mut dyn FrameSource<CH>,
         plan: &RenderPlan,
-        spec: &ExportSpec,
+        config: &ExportConfig,
     ) -> Result<()>;
 }
 
-/// Render `src` to `path` in the format `spec` names.
+/// Render `src` to `path` in the format `config` names.
 ///
 /// The one dispatch. A format whose feature is off is a clean
 /// [`Error::UnsupportedFormat`](crate::Error::UnsupportedFormat); there is no arm
@@ -75,34 +76,34 @@ pub(crate) trait Encoder<const CH: usize> {
 pub(crate) fn encode_to_file<const CH: usize>(
     src: &mut dyn FrameSource<CH>,
     plan: &RenderPlan,
-    spec: &ExportSpec,
+    config: &ExportConfig,
     path: &Path,
 ) -> Result<Written> {
     use crate::options::AudioFormat;
     #[allow(unused_imports)]
     use crate::Error;
 
-    match spec.encode.format {
+    match config.encode.format {
         #[cfg(feature = "wav")]
-        AudioFormat::Wav => wav::WavEncoder::create(path, spec)?.encode(src, plan, spec)?,
+        AudioFormat::Wav => wav::WavEncoder::create(path, config)?.encode(src, plan, config)?,
         #[cfg(not(feature = "wav"))]
         AudioFormat::Wav => return Err(Error::UnsupportedFormat("WAV not enabled".into())),
 
         #[cfg(feature = "flac")]
         AudioFormat::Flac(opts) => {
-            flac::FlacEncoder::create(path, spec, opts)?.encode(src, plan, spec)?
+            flac::FlacEncoder::create(path, config, opts)?.encode(src, plan, config)?
         }
         #[cfg(not(feature = "flac"))]
         AudioFormat::Flac(_) => return Err(Error::UnsupportedFormat("FLAC not enabled".into())),
 
         #[cfg(feature = "aiff")]
-        AudioFormat::Aiff => aiff::AiffEncoder::create(path, spec)?.encode(src, plan, spec)?,
+        AudioFormat::Aiff => aiff::AiffEncoder::create(path, config)?.encode(src, plan, config)?,
         #[cfg(not(feature = "aiff"))]
         AudioFormat::Aiff => return Err(Error::UnsupportedFormat("AIFF not enabled".into())),
 
         #[cfg(feature = "ogg")]
         AudioFormat::OggVorbis(opts) => {
-            ogg::OggEncoder::create(path, spec, opts)?.encode(src, plan, spec)?
+            ogg::OggEncoder::create(path, config, opts)?.encode(src, plan, config)?
         }
         #[cfg(not(feature = "ogg"))]
         AudioFormat::OggVorbis(_) => {
@@ -129,20 +130,20 @@ pub(crate) fn encode_to_file<const CH: usize>(
 pub(crate) fn pump_blocks<const CH: usize, W>(
     src: &mut dyn FrameSource<CH>,
     plan: &RenderPlan,
-    spec: &ExportSpec,
+    config: &ExportConfig,
     mut write: W,
 ) -> Result<()>
 where
     W: FnMut(&[[f32; CH]]) -> Result<()>,
 {
-    let mut dither = crate::process::DitherState::for_spec(spec);
+    let mut dither = crate::process::DitherState::for_config(config);
     let mut staging: Vec<[f32; CH]> = Vec::new();
 
     // Compare as the integer rate the codecs speak: two `SampleRate`s that
     // round to the same header value are the same rate, and there is nothing to
     // convert between them.
-    let source_rate = spec.render.sample_rate.get().round() as u32;
-    let mut resampler = match spec.resample {
+    let source_rate = config.render.sample_rate.get().round() as u32;
+    let mut resampler = match config.resample {
         Some(r) if r.target_rate.get().round() as u32 != source_rate => Some((
             crate::process::Resampler::new(
                 CH,
@@ -211,7 +212,7 @@ where
 /// streaming one that did not.
 pub(crate) fn encode_planes<const CH: usize>(
     rendered: &crate::Rendered,
-    spec: &ExportSpec,
+    config: &ExportConfig,
     path: &Path,
 ) -> Result<Written> {
     let frames = rendered.frames();
@@ -221,7 +222,7 @@ pub(crate) fn encode_planes<const CH: usize>(
         output_length: frames,
         latency: tutti_types::Samples(0),
     };
-    encode_to_file::<CH>(&mut src, &plan, spec, path)
+    encode_to_file::<CH>(&mut src, &plan, config, path)
 }
 
 /// Flatten `CH`-wide frames into an interleaved buffer.

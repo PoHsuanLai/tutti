@@ -379,8 +379,8 @@ pub fn spawn_region_render_system(
         // `start_beat` is not passed: the timeline already carries it (it was
         // built at that beat in `Prepare`), and the clock is what the render
         // reads. There is no second copy to keep in sync.
-        let spec = crate::ExportSpec {
-            render: crate::RenderSpec {
+        let config = crate::ExportConfig {
+            render: crate::RenderConfig {
                 sample_rate: tutti_core::SampleRate(config.sample_rate),
                 duration_seconds: crate::beats_to_seconds(
                     tutti_types::BeatDuration(render.len_beats),
@@ -392,7 +392,7 @@ pub fn spawn_region_render_system(
             ..Default::default()
         };
         let task = AsyncComputeTaskPool::get()
-            .spawn(async move { crate::render_to_buffers(net, &spec, timeline.as_ref()) });
+            .spawn(async move { crate::render_to_buffers(net, &config, timeline.as_ref()) });
 
         commands
             .entity(entity)
@@ -420,7 +420,7 @@ pub fn region_render_poll_system(
         };
         match result {
             Ok(rendered) => {
-                // The region render is stereo (its spec asks for the default
+                // The region render is stereo (its config asks for the default
                 // layout), so plane 0/1 are L/R. A mono render duplicates plane
                 // 0 rather than handing back a silent right channel.
                 let mut planes = rendered.planes.into_iter();

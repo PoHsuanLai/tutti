@@ -3,7 +3,7 @@
 //! Derived once from (duration, rate, latency), and drives both how many frames
 //! the net must produce and how many leading frames the sink drops.
 
-use crate::spec::RenderSpec;
+use crate::config::RenderConfig;
 use tutti_core::SampleRate;
 use tutti_types::{BeatDuration, Bpm, Samples};
 
@@ -24,7 +24,7 @@ pub(crate) struct RenderPlan {
 }
 
 impl RenderPlan {
-    /// Derive the plan from a spec. **Pure** — arithmetic over three numbers.
+    /// Derive the plan from a config. **Pure** — arithmetic over three numbers.
     ///
     /// It used to take `&mut tutti_core::dsp::Net`, for one reason: resolving a
     /// `LatencyTrim::Reported` variant by calling `net.latency()`. One mode on
@@ -32,16 +32,16 @@ impl RenderPlan {
     /// which meant it could not be tested, reused, or reasoned about without
     /// building a graph first. The caller resolves the latency now (see
     /// [`reported_latency`](crate::reported_latency)) and passes a number.
-    pub fn new(spec: &RenderSpec) -> Self {
-        let output_length = duration_to_frames(spec.duration_seconds, spec.sample_rate);
+    pub fn new(config: &RenderConfig) -> Self {
+        let output_length = duration_to_frames(config.duration_seconds, config.sample_rate);
         // Render the audible span PLUS the trimmed head, so the output is still
         // `output_length` frames long after the drop.
-        let total = Samples(output_length.get() + spec.latency.get());
+        let total = Samples(output_length.get() + config.latency.get());
 
         Self {
             total,
             output_length,
-            latency: spec.latency,
+            latency: config.latency,
         }
     }
 }
@@ -85,7 +85,7 @@ pub fn beats_to_seconds(len: BeatDuration, tempo: Bpm, rate: SampleRate) -> f64 
 mod tests {
     use super::*;
 
-    use crate::spec::RenderSpec;
+    use crate::config::RenderConfig;
     use tutti_types::{BeatDuration, Bpm};
 
     #[test]
@@ -120,8 +120,8 @@ mod tests {
         assert_eq!(duration_to_frames(f64::NAN, rate), Samples(0));
     }
 
-    fn spec(latency: Samples) -> RenderSpec {
-        RenderSpec {
+    fn config(latency: Samples) -> RenderConfig {
+        RenderConfig {
             sample_rate: SampleRate(48_000.0),
             duration_seconds: 1.0,
             latency,
@@ -132,7 +132,7 @@ mod tests {
     /// the plan is arithmetic, so it can be checked as arithmetic.
     #[test]
     fn no_trim_renders_exactly_the_audible_span() {
-        let plan = RenderPlan::new(&spec(Samples(0)));
+        let plan = RenderPlan::new(&config(Samples(0)));
         assert_eq!(plan.output_length, Samples(48_000));
         assert_eq!(plan.total, Samples(48_000));
         assert_eq!(plan.latency, Samples(0));
@@ -142,7 +142,7 @@ mod tests {
     /// the file comes out short by exactly the trim.
     #[test]
     fn a_trim_extends_the_render_by_that_much() {
-        let plan = RenderPlan::new(&spec(Samples(512)));
+        let plan = RenderPlan::new(&config(Samples(512)));
         assert_eq!(plan.output_length, Samples(48_000));
         assert_eq!(plan.total, Samples(48_512));
         assert_eq!(plan.latency, Samples(512));

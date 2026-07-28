@@ -10,11 +10,11 @@
 //! `SampleFormat::{I16, I24, F32}` line up exactly with our three bit depths, so
 //! there is no conversion policy here beyond the PCM scaling every format does.
 
+use crate::config::ExportConfig;
 use crate::encode::{interleave, pump_blocks, Encoder};
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
 use crate::render::{FrameSource, RenderPlan};
-use crate::spec::ExportSpec;
 use aifc::{AifcWriteInfo, AifcWriter, FileFormat, SampleFormat};
 use std::io::BufWriter;
 use std::path::Path;
@@ -26,8 +26,8 @@ pub(crate) struct AiffEncoder {
 }
 
 impl AiffEncoder {
-    pub(crate) fn create(path: &Path, spec: &ExportSpec) -> Result<Self> {
-        let sample_format = match spec.encode.bit_depth {
+    pub(crate) fn create(path: &Path, config: &ExportConfig) -> Result<Self> {
+        let sample_format = match config.encode.bit_depth {
             BitDepth::Int16 => SampleFormat::I16,
             BitDepth::Int24 => SampleFormat::I24,
             BitDepth::Float32 => SampleFormat::F32,
@@ -36,12 +36,12 @@ impl AiffEncoder {
             // Float samples are an AIFF-C extension; plain AIFF is integer-only,
             // so the container follows the depth rather than the other way
             // round.
-            file_format: match spec.encode.bit_depth {
+            file_format: match config.encode.bit_depth {
                 BitDepth::Float32 => FileFormat::Aifc,
                 _ => FileFormat::Aiff,
             },
-            channels: spec.encode.channels.count() as i16,
-            sample_rate: crate::encode::output_rate(spec).get(),
+            channels: config.encode.channels.count() as i16,
+            sample_rate: crate::encode::output_rate(config).get(),
             sample_format,
         };
         let file = BufWriter::new(std::fs::File::create(path)?);
@@ -49,7 +49,7 @@ impl AiffEncoder {
             AifcWriter::new(file, &info).map_err(|e| Error::Encoding(format!("AIFF: {e:?}")))?;
         Ok(Self {
             writer,
-            bit_depth: spec.encode.bit_depth,
+            bit_depth: config.encode.bit_depth,
         })
     }
 }
@@ -59,12 +59,12 @@ impl<const CH: usize> Encoder<CH> for AiffEncoder {
         mut self,
         src: &mut dyn FrameSource<CH>,
         plan: &RenderPlan,
-        spec: &ExportSpec,
+        config: &ExportConfig,
     ) -> Result<()> {
         let mut buf = Vec::new();
         let mut ints: Vec<i32> = Vec::new();
         let mut shorts: Vec<i16> = Vec::new();
-        pump_blocks(src, plan, spec, |frames| {
+        pump_blocks(src, plan, config, |frames| {
             interleave(frames, &mut buf);
             match self.bit_depth {
                 BitDepth::Int16 => {

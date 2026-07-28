@@ -1,10 +1,10 @@
 //! WAV (hound). Streams; hound back-patches the RIFF sizes on `finalize`.
 
+use crate::config::ExportConfig;
 use crate::encode::{interleave, pump_blocks, Encoder};
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
 use crate::render::{FrameSource, RenderPlan};
-use crate::spec::ExportSpec;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::BufWriter;
 use std::path::Path;
@@ -16,8 +16,8 @@ pub(crate) struct WavEncoder {
 }
 
 impl WavEncoder {
-    pub(crate) fn create(path: &Path, spec: &ExportSpec) -> Result<Self> {
-        let (bits_per_sample, sample_format) = match spec.encode.bit_depth {
+    pub(crate) fn create(path: &Path, config: &ExportConfig) -> Result<Self> {
+        let (bits_per_sample, sample_format) = match config.encode.bit_depth {
             BitDepth::Int16 => (16, SampleFormat::Int),
             BitDepth::Int24 => (24, SampleFormat::Int),
             BitDepth::Float32 => (32, SampleFormat::Float),
@@ -25,8 +25,8 @@ impl WavEncoder {
         let writer = WavWriter::create(
             path,
             WavSpec {
-                channels: spec.encode.channels.count(),
-                sample_rate: crate::encode::encoder_rate(spec),
+                channels: config.encode.channels.count(),
+                sample_rate: crate::encode::encoder_rate(config),
                 bits_per_sample,
                 sample_format,
             },
@@ -34,7 +34,7 @@ impl WavEncoder {
         .map_err(io_err)?;
         Ok(Self {
             writer,
-            bit_depth: spec.encode.bit_depth,
+            bit_depth: config.encode.bit_depth,
         })
     }
 }
@@ -44,10 +44,10 @@ impl<const CH: usize> Encoder<CH> for WavEncoder {
         mut self,
         src: &mut dyn FrameSource<CH>,
         plan: &RenderPlan,
-        spec: &ExportSpec,
+        config: &ExportConfig,
     ) -> Result<()> {
         let mut buf = Vec::new();
-        pump_blocks(src, plan, spec, |frames| {
+        pump_blocks(src, plan, config, |frames| {
             interleave(frames, &mut buf);
             for &s in &buf {
                 match self.bit_depth {

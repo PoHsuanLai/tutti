@@ -321,6 +321,7 @@ impl PluginMeta for AuInstance {
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "au"))]
 impl PluginAudio for AuInstance {
     fn process(
         &mut self,
@@ -405,6 +406,7 @@ impl PluginAudio for AuInstance {
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "au"))]
 impl PluginParams for AuInstance {
     /// Plain native units, per the [`PluginParams`] contract for AU — pass the
     /// AU's value through unchanged.
@@ -454,6 +456,7 @@ impl PluginParams for AuInstance {
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "au"))]
 impl PluginEditorHost for AuInstance {
     fn open_editor(&mut self, parent: WindowHandle) -> PluginResult<EditorSize> {
         let parent_handle = unsafe { tutti_au_host::WindowHandle::from_raw(parent.as_ptr()) };
@@ -474,6 +477,7 @@ impl PluginEditorHost for AuInstance {
     }
 }
 
+#[cfg(all(target_os = "macos", feature = "au"))]
 impl PluginState for AuInstance {
     fn get_state(&mut self) -> PluginResult<Vec<u8>> {
         self.inner

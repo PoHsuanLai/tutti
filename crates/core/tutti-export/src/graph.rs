@@ -19,7 +19,6 @@ use crate::render::{self, BufferingOut, EncoderOut, RenderOut, RenderRequest};
 use crate::run::{Rendered, Run, Written};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 use tutti_core::io::AudioOut;
 use tutti_core::transport::{LoopRange, OfflineTimeline, OfflineTimelineConfig};
 
@@ -50,7 +49,9 @@ struct Spec {
 impl Spec {
     fn require_duration(&self) -> Result<f64> {
         self.duration_seconds.ok_or_else(|| {
-            Error::InvalidConfig("Duration not set. Use .duration() or .duration_beats()".into())
+            Error::InvalidConfig(
+                "Duration not set. Use .duration_seconds() or .duration_beats()".into(),
+            )
         })
     }
 
@@ -111,12 +112,6 @@ impl GraphExport {
     }
 
     // ---- duration ----
-
-    #[must_use]
-    pub fn duration(mut self, d: Duration) -> Self {
-        self.spec.duration_seconds = Some(d.as_secs_f64());
-        self
-    }
 
     #[must_use]
     pub fn duration_seconds(mut self, seconds: f64) -> Self {

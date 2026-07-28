@@ -13,7 +13,7 @@ default = ["bevy", "wav", "flac", "aiff", "ogg"]
 # Bevy ECS surface (the `ecs` module: export + region-render plugins). Off → the
 # encode/process/render pipeline compiles Bevy-free. The `sampler` feature (used
 # by `ecs::render_region`) implies `bevy`.
-bevy = ["dep:bevy_app", "dep:bevy_ecs", "dep:bevy_reflect", "dep:bevy_tasks", "dep:bevy_log", "tutti-core/bevy"]
+bevy = ["dep:bevy_app", "dep:bevy_ecs", "dep:bevy_tasks", "dep:bevy_log", "tutti-core/bevy"]
 wav = ["hound"]
 flac = ["flacenc"]
 aiff = []
@@ -31,10 +31,13 @@ sampler = ["bevy", "dep:tutti-sampler", "tutti-sampler/wav"]
 thiserror = "1.0"
 tutti-core = { path = "../tutti-core", default-features = false }
 tutti-types = { path = "../tutti-types", default-features = false }
+# EBU R128 loudness measurement lives in tutti-analysis (the crate's
+# Config/State/step analysis home). Acyclic: tutti-analysis does NOT depend on
+# tutti-export.
+tutti-analysis = { path = "../../dsp/tutti-analysis", default-features = false }
 # Optional: only the `ecs::render_region` module references sampler units.
 tutti-sampler = { path = "../../dsp/tutti-sampler", optional = true, default-features = false }
 rubato = "0.16"
-ebur128 = "0.1"
 hound = { version = "3.5", optional = true }
 flacenc = { version = "0.4", optional = true }
 vorbis_rs = { version = "0.5", optional = true }
@@ -44,7 +47,6 @@ crossbeam-channel = "0.5"
 # gated by the `bevy` feature.
 bevy_app = { version = "0.19", default-features = false, optional = true }
 bevy_ecs = { version = "0.19", default-features = false, optional = true }
-bevy_reflect = { version = "0.19", default-features = false, optional = true }
 bevy_tasks = { version = "0.19", optional = true }
 bevy_log = { version = "0.19", default-features = false, optional = true }
 

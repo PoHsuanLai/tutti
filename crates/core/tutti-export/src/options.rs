@@ -17,15 +17,6 @@ pub enum AudioFormat {
 }
 
 impl AudioFormat {
-    pub fn extension(&self) -> &'static str {
-        match self {
-            Self::Wav => "wav",
-            Self::Flac => "flac",
-            Self::Aiff => "aiff",
-            Self::OggVorbis => "ogg",
-        }
-    }
-
     /// Detect format from a file path's extension. `.aif` aliases `.aiff`.
     pub fn from_path(path: &Path) -> Result<Self> {
         let ext = path

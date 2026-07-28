@@ -25,8 +25,6 @@
 
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 pub(crate) mod dither;
-#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) mod loudness;
 pub(crate) mod resample;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 pub(crate) mod stream;
@@ -34,7 +32,40 @@ pub(crate) mod stream;
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
 pub(crate) use dither::{apply_dither, DitherState};
 #[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
-pub(crate) use loudness::{analyze_loudness, normalize_loudness, normalize_peak_planar};
+use tutti_analysis::{measure_loudness, LoudnessConfig};
+#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
+use tutti_types::Db;
+
+/// Interleave `CH` equal-length planes, the shape the R128 meter takes.
+#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
+fn interleave<const CH: usize>(planes: &[Vec<f32>; CH]) -> Vec<f32> {
+    let len = planes.iter().map(|p| p.len()).min().unwrap_or(0);
+    let mut out = Vec::with_capacity(len * CH);
+    for i in 0..len {
+        for plane in planes.iter() {
+            out.push(plane[i]);
+        }
+    }
+    out
+}
+
+/// The gain that puts the loudest sample across **all** planes at `target_db`.
+///
+/// One shared gain rather than per-plane, so the inter-channel balance survives
+/// normalization. Sample peak, not true peak: the R128 meter owns the
+/// oversampled measurement, and this arm exists for callers who asked for the
+/// plain one.
+#[cfg(any(feature = "wav", feature = "flac", feature = "aiff", feature = "ogg"))]
+fn peak_gain<const CH: usize>(planes: &[Vec<f32>; CH], target_db: f64) -> Db {
+    let peak = planes
+        .iter()
+        .flat_map(|p| p.iter())
+        .fold(0.0f32, |acc, s| acc.max(s.abs()));
+    if peak <= 0.0 {
+        return Db(0.0);
+    }
+    Db(target_db as f32 - tutti_types::Amplitude(peak).to_db().get())
+}
 #[cfg(any(feature = "wav", feature = "flac"))]
 pub(crate) use resample::resample_planar;
 pub use resample::ResampleQuality;
@@ -110,9 +141,12 @@ pub(crate) fn whole_signal<const CH: usize>(
         }
     }
 
-    match normalize {
-        Normalize::Off => {}
-        Normalize::Peak { target_db } => normalize_peak_planar(planes, target_db),
+    // Measurement lives in `tutti-analysis`; this stage only applies the gain
+    // it reports. The split is why an exporter can stream: measure while
+    // rendering, apply on a second pass, never hold the signal to do both.
+    let gain = match normalize {
+        Normalize::Off => None,
+        Normalize::Peak { target_db } => Some(peak_gain(planes, target_db)),
         Normalize::Loudness {
             target_lufs,
             true_peak_dbtp,
@@ -121,10 +155,22 @@ pub(crate) fn whole_signal<const CH: usize>(
             if CH != 2 {
                 return Err(crate::error::Error::UnsupportedChannels(CH as u16));
             }
-            let (left, right) = planes.split_at_mut(1);
-            let (left, right) = (&mut left[0], &mut right[0]);
-            let current = analyze_loudness(left, right, target_sample_rate);
-            normalize_loudness(left, right, current.lufs, target_lufs, true_peak_dbtp);
+            let cfg = LoudnessConfig::new(
+                tutti_core::SampleRate(f64::from(target_sample_rate)),
+                tutti_types::ChannelLayout::Stereo,
+            );
+            let interleaved = interleave(planes);
+            measure_loudness(&cfg, &interleaved)
+                .map(|m| m.gain_to(Db(target_lufs as f32), Db(true_peak_dbtp as f32)))
+        }
+    };
+
+    if let Some(gain) = gain {
+        let scale = gain.to_amplitude().get();
+        for plane in planes.iter_mut() {
+            for s in plane.iter_mut() {
+                *s *= scale;
+            }
         }
     }
 

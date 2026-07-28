@@ -20,6 +20,10 @@ tutti-types = { path = "../../core/tutti-types", default-features = false }
 # FFT for spectral analysis (transient detection, pitch detection)
 rustfft = "6"
 
+# EBU R128 loudness metering (`loudness`). An online meter, which is why the
+# streaming Config/State/step shape fits it without buffering the signal.
+ebur128 = "0.1"
+
 # Serialization (optional)
 serde = { version = "1", features = ["derive"], optional = true }
 

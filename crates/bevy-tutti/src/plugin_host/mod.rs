@@ -74,9 +74,8 @@ impl PluginsRes {
     }
 }
 
-// NOTE: `reconcile_plugin_params` + `bump_param_epoch_plugin` moved to
-// `dawai_model::engine_bind::plugin_host` with the `PluginParam` component they
-// read (which left tutti-core). `PluginEmitter` stays here; the app imports it
+// NOTE: `reconcile_plugin_params` moved out with the `PluginParam` component it
+// read (which left tutti-core). `PluginEmitter` stays here; a host imports it
 // via the `bevy_tutti` umbrella.
 
 /// Bevy plugin: plugin editor lifecycle + crash detection + async catalog

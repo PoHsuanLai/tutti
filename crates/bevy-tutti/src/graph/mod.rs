@@ -9,7 +9,6 @@
 //! - the reconcile pipeline ([`GraphReconcileSystems`], [`commit_graph`],
 //!   [`reconcile_node_despawn`], [`SpawnAudioNode`], [`crossfade_audio_node`])
 //!   and its [`GraphReconcilePlugin`],
-//! - the per-node param epoch ([`NodeParamEpoch`]),
 //! - and the wrappers for metering ([`MeteringRes`]) and transport
 //!   ([`TransportRes`], [`MetronomeRes`]).
 //!
@@ -18,7 +17,6 @@
 
 pub mod metering;
 pub mod param;
-pub mod param_epoch;
 pub mod plugin;
 pub mod reconcile;
 pub mod resources;
@@ -26,11 +24,10 @@ pub mod transport;
 
 pub use metering::MeteringRes;
 pub use param::{reconcile_audio_param, AudioParam, AudioParamAppExt};
-pub use param_epoch::NodeParamEpoch;
 pub use plugin::GraphReconcilePlugin;
 pub use reconcile::{
     commit_graph, crossfade_audio_node, engine_ready, reconcile_node_despawn, GraphDirty,
     GraphReconcileSystems, SpawnAudioNode,
 };
 pub use resources::{AudioConfig, AudioGraphRes};
-pub use transport::{MetronomeRes, TransportClockNode, TransportRes};
+pub use transport::{MetronomeRes, TransportRes};

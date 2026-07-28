@@ -48,15 +48,12 @@ use tutti_core::{latency, Samples};
 /// Cloneable subscription to the table [`compensate_graph`] publishes. The
 /// sampler holds one of these; a host wanting to display or apply the figures
 /// elsewhere can clone it from the resource.
+///
+/// Read a channel with `compensation.0.read().get(channel)`. A `for_channel`
+/// convenience lived here and was deleted: one line over an expression
+/// [`RtPublish::read`] already spells is surface without capability.
 #[derive(Resource, Clone, Default)]
 pub struct ChannelCompensation(pub Arc<RtPublish<Vec<Samples>>>);
-
-impl ChannelCompensation {
-    /// Pre-roll for a source feeding `channel`. Zero if uncompensated.
-    pub fn for_channel(&self, channel: usize) -> Samples {
-        self.0.read().get(channel).copied().unwrap_or_default()
-    }
-}
 
 /// Adds latency compensation to the graph reconcile pipeline.
 ///
@@ -140,8 +137,9 @@ mod tests {
         app.update();
 
         let published = app.world().resource::<ChannelCompensation>();
-        assert_eq!(published.for_channel(0), Samples(0));
-        assert_eq!(published.for_channel(1), eff_lat);
+        let table = published.0.read();
+        assert_eq!(table.first().copied(), Some(Samples(0)));
+        assert_eq!(table.get(1).copied(), Some(eff_lat));
     }
 
     #[test]
@@ -170,19 +168,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn for_channel_is_zero_outside_the_table() {
-        let (graph, _) = skewed_graph();
-        let mut app = test_app(graph);
-        app.world_mut().resource_mut::<GraphDirty>().0 = true;
-
-        app.update();
-
-        assert_eq!(
-            app.world()
-                .resource::<ChannelCompensation>()
-                .for_channel(99),
-            Samples(0)
-        );
-    }
+    // `for_channel_is_zero_outside_the_table` was deleted with the `for_channel`
+    // method it covered. Out-of-range now reads as `Vec::get -> None` at the call
+    // site, which is std's guarantee rather than this crate's to test.
 }

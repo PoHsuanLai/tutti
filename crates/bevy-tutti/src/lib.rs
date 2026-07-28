@@ -108,8 +108,8 @@ pub use engine_state::AudioEngineState;
 pub mod prelude {
     pub use crate::graph::{
         commit_graph, crossfade_audio_node, engine_ready, AudioConfig, AudioGraphRes, GraphDirty,
-        GraphReconcilePlugin, GraphReconcileSystems, MeteringRes, MetronomeRes, NodeParamEpoch,
-        SpawnAudioNode, TransportClockNode, TransportRes,
+        GraphReconcilePlugin, GraphReconcileSystems, MeteringRes, MetronomeRes, SpawnAudioNode,
+        TransportRes,
     };
     pub use crate::{
         AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo,

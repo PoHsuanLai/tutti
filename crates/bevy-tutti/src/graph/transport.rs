@@ -36,19 +36,9 @@ impl std::ops::Deref for MetronomeRes {
     }
 }
 
-/// Graph address of the global [`TransportClock`](tutti_core::TransportClock) node.
-///
-/// The clock emits the current beat on two output ports — port 0 whole beats,
-/// port 1 the fraction (see [`tutti_core::transport::BEAT_PORTS`]). Beat-driven
-/// nodes take those as inputs, so they need the clock's `NodeId` to wire an
-/// edge to it:
-///
-/// ```ignore
-/// graph.connect(clock.0, 0, node, 0);
-/// graph.connect(clock.0, 1, node, 1);
-/// ```
-///
-/// Re-published on device-switch graph rebuilds, since the rebuilt clock is a
-/// different node.
-#[derive(Resource, Clone, Copy, Debug)]
-pub struct TransportClockNode(pub tutti_core::NodeId);
+// `TransportClockNode` — a bare `NodeId` for the global transport clock — lived
+// here. Its whole documented purpose was letting a host hand-wire an edge with
+// `graph.connect(clock.0, 0, node, 0)`, which is the imperative path the
+// declarative wiring in `graph::wire` replaces. The clock now carries an entity
+// like every other node, so it is named the same way everything else is, and a
+// second spelling for one node is exactly the ambiguity that shape removes.

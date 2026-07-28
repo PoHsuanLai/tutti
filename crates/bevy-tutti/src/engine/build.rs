@@ -23,9 +23,7 @@ use tutti_core::{
 };
 use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 
-use crate::graph::{
-    AudioConfig, AudioGraphRes, MeteringRes, MetronomeRes, TransportClockNode, TransportRes,
-};
+use crate::graph::{AudioConfig, AudioGraphRes, MeteringRes, MetronomeRes, TransportRes};
 
 #[cfg(feature = "midi-hardware")]
 use crate::midi::MidiIoRes;
@@ -94,8 +92,9 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let mut net = Net::new(inputs, outputs);
 
     // Transport clock — emits the beat on two ports and writes it back to the
-    // manager's atomic. Its NodeId is retained so beat-driven nodes can wire an
-    // edge to it (published below as `TransportClockNode`).
+    // manager's atomic. Beat-driven nodes take those ports as inputs, so the
+    // clock needs a name a host can address; it gets an entity below, like every
+    // other node in the graph.
     let clock = TransportClock::new(transport.clock_links(), sample_rate);
     let clock_id = net.push(Box::new(clock));
 
@@ -209,7 +208,11 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     app.insert_non_send(driver);
     app.insert_resource(TransportRes(transport));
     app.insert_resource(MetronomeRes(metronome));
-    app.insert_resource(TransportClockNode(clock_id));
+    // The two engine-built nodes get entities like everything else in the graph.
+    // Without them a host would need a second way to name a node — a bare
+    // `NodeId` resource — and the clock exists precisely to be wired to.
+    app.world_mut().spawn(tutti_core::AudioNode(clock_id));
+    app.world_mut().spawn(tutti_core::AudioNode(click_id));
     // Consumers read `MeteringRes::get()` directly, so the meter has to be
     // measuring from the start.
     meter.enable();

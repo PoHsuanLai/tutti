@@ -7,7 +7,7 @@
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
-use tutti_core::transport::{ClickState, Transport};
+use tutti_core::transport::{ClickState, Timeline, Transport};
 
 /// The live transport. Newtype over tutti-core's [`Transport`] — every method
 /// below is the engine's, reached through the `Deref`.
@@ -32,6 +32,37 @@ use tutti_core::transport::{ClickState, Transport};
 /// wants "did the tempo change this frame" diffs the value itself.
 #[derive(Resource, Clone)]
 pub struct TransportRes(pub Transport);
+
+impl TransportRes {
+    /// A [`Timeline`] handle for an audio-thread source to ask the beat with.
+    ///
+    /// **This is the seam between the two rates**, and getting it right is the
+    /// difference between sample-accurate scheduling and framerate-quantised
+    /// scheduling. An ECS system runs per *frame*; a beat-scheduled source needs
+    /// the beat per *block*, and the two are neither equal nor aligned. So a
+    /// system does not read the beat and push events — it hands over this handle
+    /// once, at install time, and the source reads the beat itself every block
+    /// (usually through a [`BeatCursor`](tutti_core::transport::BeatCursor),
+    /// which owns the seek-epsilon and paused-case arithmetic).
+    ///
+    /// The clone shares state rather than snapshotting it: `Transport`'s fields
+    /// are `Arc`s over atomics, so what the source holds is another reference to
+    /// the live transport, not a copy of this frame's values.
+    ///
+    /// ```rust,ignore
+    /// fn install(transport: Res<TransportRes>, config: Res<AudioConfig>) {
+    ///     port.install(Arc::new(MidiClipSource::new(
+    ///         port.unit_id(),
+    ///         events,
+    ///         transport.timeline(),
+    ///         config.sample_rate,
+    ///     )));
+    /// }
+    /// ```
+    pub fn timeline(&self) -> Arc<dyn Timeline> {
+        Arc::new(self.0.clone())
+    }
+}
 
 impl std::ops::Deref for TransportRes {
     type Target = Transport;

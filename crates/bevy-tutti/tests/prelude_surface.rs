@@ -58,6 +58,35 @@ fn a_motion_events_payload_types_are_nameable_from_the_prelude() {
     assert_ne!(state, MotionState::Rolling);
 }
 
+/// `TransportRes::timeline()` hands over a live handle, not a snapshot.
+///
+/// This is the property the whole per-frame/per-block seam rests on: a
+/// beat-scheduled source is given the timeline once, at install time, and reads
+/// the beat itself every block. If the clone were a snapshot, every source would
+/// be frozen at the frame it was installed on.
+#[test]
+fn the_timeline_handle_tracks_the_live_transport() {
+    use bevy_tutti::graph::TransportRes;
+    use tutti_core::transport::Transport;
+
+    let res = TransportRes(Transport::new(48_000.0));
+    let timeline = res.timeline();
+
+    res.settings.set_beat(4.0);
+    assert_eq!(timeline.beat().get(), 4.0);
+
+    // Move it again through the resource; the handed-out handle follows.
+    res.settings.set_beat(12.5);
+    assert_eq!(
+        timeline.beat().get(),
+        12.5,
+        "the handle shares state — a snapshot would still read 4.0"
+    );
+
+    res.settings.set_tempo(140.0);
+    assert_eq!(timeline.tempo().get(), 140.0);
+}
+
 /// The loop region a host arms, and the validated form it reads back.
 ///
 /// `set_range` stores raw bounds — an inverted pair is a legitimate transient

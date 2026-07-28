@@ -151,7 +151,9 @@ fn pitch_attribute(pitch: f64, number: u8) -> Option<tutti_midi_types::NoteAttri
         return None;
     }
     // Pitch7_9 is a 7.9 fixed-point *note number*: 9 fractional bits.
-    let bits = ((number as f64 + cents) * 512.0).round().clamp(0.0, 65_535.0) as u16;
+    let bits = ((number as f64 + cents) * 512.0)
+        .round()
+        .clamp(0.0, 65_535.0) as u16;
     Some(tutti_midi_types::NoteAttribute::Pitch7_9(
         tutti_midi_types::midi2::num::Fixed7_9::from_bits(bits),
     ))
@@ -275,16 +277,18 @@ pub fn rebuild(
         // beat, so they would never be delivered.
         all_notes_off(port);
 
+        // `timeline()` rather than a hand-rolled `Arc::new(transport.0.clone())`
+        // — the accessor is where the per-frame/per-block seam is named, and
+        // where "the clone shares state, it is not a snapshot" is written down.
         port.install(Arc::new(MidiClipSource::new(
             port.unit_id(),
             events,
-            Arc::new(transport.0.clone()),
+            transport.timeline(),
             config.sample_rate,
         )));
         installed.0.insert(target);
     }
 }
-
 
 /// Send an all-notes-off on every channel to a port's own mailbox.
 ///

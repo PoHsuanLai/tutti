@@ -119,8 +119,11 @@ pub fn ci_discovery_system(
 }
 
 /// Fragment a CI message into SysEx7 UMP packets and push them at the
-/// hardware-out mailbox. The wire encoding matches `MidiBus::broadcast_ci`'s;
-/// only the destination differs.
+/// hardware-out mailbox.
+///
+/// The encoding is `ci_to_sysex7`'s, which is the only one — an earlier version
+/// of this comment compared it to `MidiBus::broadcast_ci`, a method that does
+/// not exist.
 fn send_ci(sender: &tutti_midi_runtime::MidiSender, message: &CiMessage) {
     let mut packets = Vec::new();
     tutti_midi_runtime::tutti_midi_types::ci::ci_to_sysex7(CI_GROUP, message, &mut packets);

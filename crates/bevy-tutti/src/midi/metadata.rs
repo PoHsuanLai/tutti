@@ -28,10 +28,26 @@ const FLEX_GROUP: u8 = 0;
 
 /// A Flex Data musical-metadata value to broadcast in band on the MIDI bus.
 ///
-/// Covers the Flex Data messages that carry *structured* values — chord name,
-/// key signature, and the variable-length UTF-8 text/metadata family. (Tempo,
-/// time signature, and metronome are scalar and already have dedicated
-/// `MidiBus::broadcast_*` one-liners.)
+/// Covers chord name, key signature, and the variable-length UTF-8
+/// text/metadata family.
+///
+/// # Not yet covered: tempo, time signature, metronome
+///
+/// `MidiEvent::flex_set_tempo`, `flex_set_time_signature` and
+/// `flex_set_metronome` exist upstream and are the same shape as the two
+/// wrapped here — a group plus scalars. They are simply unimplemented.
+///
+/// This used to claim they "already have dedicated `MidiBus::broadcast_*`
+/// one-liners". No such method has ever existed: `MidiBus` is
+/// new/insert/remove/queue/contains/len/is_empty. The sentence sent a reader
+/// hunting for an API that was never written, and made a gap look like a
+/// decision.
+///
+/// Adding them is mechanical — a variant each, and an arm in
+/// [`flex_metadata_broadcast_system`]. The reason to hold off is that tempo and
+/// time signature are *also* transport state, so broadcasting them from here
+/// would put a second writer beside the transport's own; that wants deciding
+/// before it is wired, not after.
 #[derive(Message, Debug, Clone)]
 pub enum BroadcastFlexMetadata {
     /// Set Chord Name (M2-104 §7.5.10).

@@ -178,16 +178,57 @@ fn wait_for_connection(_listener: &PlatformListener) -> Result<()> {
     Ok(())
 }
 
+/// The PID that spawned us, sampled once at startup.
+///
+/// Compared against rather than tested for pid 1 — see [`parent_is_alive`].
+#[cfg(unix)]
+static ORIGINAL_PPID: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
+
+/// Record the spawning process's PID. Call once, as early as possible.
+///
+/// **Timing is the whole point.** `parent_is_alive` compares the current parent
+/// against this recorded one, so the recording has to happen while the original
+/// parent is still the parent. Sampling lazily inside the check would defeat it
+/// in exactly the case being defended against: the Unix check only runs after a
+/// poll timeout, by which point an early-dying host may already have been
+/// reparented, and the first sample would record the *reaper* as the original.
+/// Every later comparison would then agree, forever.
+pub fn record_parent_pid() {
+    #[cfg(unix)]
+    {
+        // SAFETY: `getppid` takes no arguments, touches no memory, cannot fail.
+        let _ = ORIGINAL_PPID.get_or_init(|| unsafe { libc::getppid() });
+    }
+}
+
 /// Whether the process that spawned us is still running.
 ///
-/// An orphan is reparented to init, so `getppid() == 1` means the spawner is
-/// gone. No handle and no cooperation from the host is needed — which is the
-/// point, since the case being handled is the one where the host had no chance to
-/// cooperate.
+/// **Not `getppid() == 1`.** That reads "an orphan is reparented to init", which
+/// is only true when init is the reaper. Linux lets any ancestor claim orphans
+/// with `PR_SET_CHILD_SUBREAPER`, and the environments that do are the common
+/// ones: systemd user services (so: most Linux desktop sessions), Docker with
+/// `--init`, Flatpak, and Snap. Under any of them an orphan is reparented to the
+/// subreaper, whose PID is not 1, so the comparison never fires and a stranded
+/// server stays stranded. The check was silently inert on the platform it was
+/// most needed on.
+///
+/// Recording the spawner's PID and watching for it to *change* works under both
+/// regimes: reparenting alters `getppid()` whoever the new parent is. The
+/// residual risk is PID reuse — if the recorded PID is recycled by an unrelated
+/// process before this runs, the parent reads as alive. That errs toward
+/// waiting, which is the safe direction, and it is the same tradeoff the Windows
+/// path makes.
 #[cfg(unix)]
 fn parent_is_alive() -> bool {
     // SAFETY: `getppid` takes no arguments, touches no memory, and cannot fail.
-    unsafe { libc::getppid() > 1 }
+    let current = unsafe { libc::getppid() };
+    // `> 1` still catches the plain-init case even if nothing recorded a PID
+    // (a library embedder that never called `record_parent_pid`), which keeps
+    // this no worse than the check it replaces in that configuration.
+    match ORIGINAL_PPID.get() {
+        Some(&original) => current == original && current > 1,
+        None => current > 1,
+    }
 }
 
 /// Whether the process that spawned us is still running.
@@ -203,9 +244,20 @@ fn parent_is_alive() -> bool {
 /// which is the pre-existing behaviour and the safe direction: this check exists
 /// to stop stranded servers, and a stranded server is better than one that exits
 /// while its host is still coming up.
+///
+/// **"Cannot determine" therefore means alive, on every path** — only a positive
+/// answer counts as death. An earlier version returned "dead" whenever
+/// `OpenProcess` failed, contradicting the paragraph above, and it is wrong in
+/// exactly the case most likely to occur: `OpenProcess` returns null for *access
+/// denied* as readily as for *no such process*, so a host at a higher integrity
+/// level than its own plugin server (a UAC-elevated DAW) would have every server
+/// decide it was orphaned and exit at startup. Telling the two apart needs
+/// `GetLastError`, so it is consulted rather than assumed.
 #[cfg(windows)]
 fn parent_is_alive() -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, WAIT_TIMEOUT};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+    };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
         TH32CS_SNAPPROCESS,
@@ -223,12 +275,20 @@ fn parent_is_alive() -> bool {
     // is gone or inaccessible; the handle is closed on every path below.
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, parent_pid) };
     if handle.is_null() {
-        return false;
+        // SAFETY: reads this thread's last-error value, set by the call above.
+        let err = unsafe { GetLastError() };
+        // `ERROR_INVALID_PARAMETER` is what Windows reports for a PID naming no
+        // live process — the one unambiguous "it is gone". Anything else, and
+        // `ERROR_ACCESS_DENIED` in particular, means we were not permitted to
+        // ask, which says nothing about whether it is running.
+        return err != ERROR_INVALID_PARAMETER;
     }
     // A process handle becomes signalled when the process exits, so a zero-length
-    // wait is a liveness probe: still running => WAIT_TIMEOUT.
+    // wait is a liveness probe. Test for the *signalled* result specifically
+    // rather than for `WAIT_TIMEOUT`: timing out means alive, but so does
+    // `WAIT_FAILED`, which is a failure to ask rather than an answer.
     // SAFETY: `handle` is a valid handle we just opened.
-    let alive = unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT;
+    let alive = unsafe { WaitForSingleObject(handle, 0) } != WAIT_OBJECT_0;
     // SAFETY: closing a handle we opened and have not closed.
     unsafe { CloseHandle(handle) };
     return alive;

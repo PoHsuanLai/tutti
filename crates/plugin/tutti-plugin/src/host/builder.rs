@@ -22,10 +22,6 @@ use crate::host::node::PluginClient;
 use crate::util::config::BridgeConfig;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Monotonic counter for unique per-plugin socket paths within a process.
-static PLUGIN_SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Starts a [`PluginBuilder`] for a VST3 plugin bundle.
 ///
@@ -128,17 +124,10 @@ fn load_plugin(
     path: PathBuf,
     params: &HashMap<String, f32>,
 ) -> Result<(Box<dyn tutti_core::AudioUnit>, PluginHandle)> {
-    let counter = PLUGIN_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let socket_path = std::env::temp_dir().join(format!(
-        "tutti-plugin-{}-{}.sock",
-        std::process::id(),
-        counter,
-    ));
-
-    let config = BridgeConfig {
-        socket_path,
-        ..BridgeConfig::default()
-    };
+    // The unique per-bridge socket path comes from `BridgeConfig::default()`.
+    // This site used to derive its own, which is why it worked while the
+    // catalog path — identical but for the missing override — collided.
+    let config = BridgeConfig::default();
 
     let client = PluginClient::new(config, path, sample_rate)?;
 

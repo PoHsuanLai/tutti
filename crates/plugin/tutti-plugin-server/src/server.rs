@@ -43,6 +43,10 @@ pub struct PluginServer {
 
 impl PluginServer {
     pub fn new(config: BridgeConfig) -> Result<Self> {
+        // Before anything can block: the orphan check compares against the PID
+        // recorded here, and recording it later would sample a reaper instead
+        // of the real spawner. See `transport::record_parent_pid`.
+        crate::transport::record_parent_pid();
         Ok(Self {
             config,
             session: Session::new(),

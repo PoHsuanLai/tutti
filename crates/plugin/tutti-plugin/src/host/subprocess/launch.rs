@@ -31,26 +31,55 @@ pub struct LaunchedServer {
     pub audio_buffer: Arc<AudioSlab>,
 }
 
+/// Spawn a plugin-server and bring it to the point where the RT bridge thread
+/// can connect.
+///
+/// **Every failure after the spawn must reap the child.** `process` is a bare
+/// [`Child`], and `Child::drop` neither kills nor waits — it explicitly
+/// documents that the child keeps running. Ownership only transfers to
+/// `ProcessGuard` much later, in `PluginClient::new`, so a bare `?` anywhere in
+/// between leaves a `plugin-server` alive with nothing holding it: it survives
+/// the host, keeps its socket bound, and holds the plugin's audio device claim.
+/// A user retrying a failing plugin a few times accumulates them.
+///
+/// So the fallible work is done in one closure and the result captured, with
+/// teardown unconditional afterwards — the shape `probe::probe_plugin` already
+/// uses. Writing it as a sequence of `?` statements is what leaked; making the
+/// teardown structural rather than remembered is the point.
 pub fn launch(
     config: &BridgeConfig,
     plugin_path: &Path,
     sample_rate: f64,
 ) -> Result<LaunchedServer> {
-    let process = spawn_process(config)?;
-    let mut stream = handshake(config)?;
+    let mut process = spawn_process(config)?;
 
-    let shm_name = next_shm_name();
-    let (descriptor, loaded, format) =
-        load_plugin(&mut stream, config, plugin_path, sample_rate, &shm_name)?;
-    let audio_buffer = setup_shm(&mut stream, config, &loaded, format, shm_name)?;
+    let result = (|| {
+        let mut stream = handshake(config)?;
+        let shm_name = next_shm_name();
+        let (descriptor, loaded, format) =
+            load_plugin(&mut stream, config, plugin_path, sample_rate, &shm_name)?;
+        let audio_buffer = setup_shm(&mut stream, config, &loaded, format, shm_name)?;
+        Ok((descriptor, loaded, format, audio_buffer))
+    })();
 
-    Ok(LaunchedServer {
-        process,
-        descriptor: *descriptor,
-        loaded,
-        format,
-        audio_buffer,
-    })
+    match result {
+        Ok((descriptor, loaded, format, audio_buffer)) => Ok(LaunchedServer {
+            process,
+            descriptor: *descriptor,
+            loaded,
+            format,
+            audio_buffer,
+        }),
+        Err(e) => {
+            // Best-effort and deliberately un-propagated: the launch error is
+            // the one worth reporting, and a failure to clean up after it must
+            // not mask it. `wait` after `kill` is what reaps the zombie.
+            let _ = process.kill();
+            let _ = process.wait();
+            let _ = std::fs::remove_file(&config.socket_path);
+            Err(e)
+        }
+    }
 }
 
 fn spawn_process(config: &BridgeConfig) -> Result<Child> {
@@ -201,6 +230,145 @@ fn next_shm_name() -> String {
 mod tests {
     use super::*;
     use smallvec::SmallVec;
+
+    /// A failed launch must not leave the subprocess running.
+    ///
+    /// `process` is a bare [`Child`], whose `Drop` explicitly does *not* kill or
+    /// reap — so before this was fixed, every `?` between the spawn and
+    /// `ProcessGuard`'s construction (which happens much later, in
+    /// `PluginClient::new`) stranded a `plugin-server` with nothing holding it.
+    /// It outlives the host, keeps its socket bound, and holds the plugin's
+    /// device claim; a user retrying a failing plugin accumulates them.
+    ///
+    /// The stand-in has to satisfy three requirements at once: never speak the
+    /// protocol, so `handshake` fails the way a hung server does; **stay alive
+    /// while doing so**, or there is no leak left to detect; and leave the
+    /// socket path alone, so the failure under test is the ordinary
+    /// connect/handshake one.
+    ///
+    /// The middle requirement is easy to get wrong, because `spawn_process`
+    /// hands the socket path to the stand-in as argv[1]. `sleep` reads it as a
+    /// duration, rejects it, and exits. `cat` reads it as a filename and exits
+    /// too, since nothing has created it. Both looked right and both made this
+    /// test vacuous — caught only by restoring the leak and watching it still
+    /// pass. Creating the path as a FIFO keeps `cat` alive but breaks the third
+    /// requirement: `connect` then fails with ENOTSOCK long before the
+    /// handshake, testing a different path than the one that matters.
+    ///
+    /// So the stand-in is a tiny shell script that ignores its arguments and
+    /// sleeps. It survives, it never speaks, and it never touches the socket.
+    ///
+    /// Liveness is checked with `kill(pid, 0)`, which asks about the process
+    /// without signalling it. That distinguishes the two outcomes that matter:
+    /// a still-running orphan answers `Ok`, while a killed-and-reaped child
+    /// answers `ESRCH`. A zombie would also answer `Ok`, so this catches a
+    /// missing `wait` as well as a missing `kill`.
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_launch_does_not_strand_the_subprocess() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+
+        let stand_in = std::env::temp_dir().join(format!(
+            "tutti-standin-{}-{}.sh",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&stand_in, "#!/bin/sh\nexec sleep 120\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let socket_path = std::env::temp_dir().join(format!(
+            "tutti-leak-{}-{}.sock",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&socket_path);
+
+        let config = BridgeConfig {
+            socket_path: socket_path.clone(),
+            timeout_ms: 200,
+            ..Default::default()
+        };
+
+        // Scoped so the env var is restored before any assertion can panic and
+        // leave it set for other tests in this binary.
+        struct EnvGuard(Option<String>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(v) => std::env::set_var("TUTTI_PLUGIN_SERVER", v),
+                    None => std::env::remove_var("TUTTI_PLUGIN_SERVER"),
+                }
+            }
+        }
+        let _guard = EnvGuard(std::env::var("TUTTI_PLUGIN_SERVER").ok());
+        std::env::set_var("TUTTI_PLUGIN_SERVER", &stand_in);
+
+        // Snapshot the stand-in's PIDs before and after, so the child observed
+        // is the one `launch` itself spawned. Watching a separately-spawned
+        // process would prove nothing about `launch`'s own cleanup.
+        let before = stand_in_pids();
+        let err = match launch(&config, Path::new("/nonexistent.vst3"), 48_000.0) {
+            Err(e) => e,
+            // Cannot happen (`sleep` never sends `Ready`), but reap rather than
+            // leak if the premise ever changes.
+            Ok(mut server) => {
+                let _ = server.process.kill();
+                let _ = server.process.wait();
+                panic!("a stand-in server that never speaks the protocol completed a launch");
+            }
+        };
+
+        // `launch` kills and waits synchronously before returning, so anything
+        // new still present here was leaked. The retry loop absorbs the lag
+        // between `wait` returning and the process table reflecting it.
+        let mut leaked: Vec<i32> = Vec::new();
+        for _ in 0..50 {
+            leaked = stand_in_pids()
+                .into_iter()
+                .filter(|p| !before.contains(p))
+                .collect();
+            if leaked.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let _ = std::fs::remove_file(&socket_path);
+        let _ = std::fs::remove_file(&stand_in);
+        assert!(
+            leaked.is_empty(),
+            "a failed launch ({err}) left {} stand-in server(s) running (pids \
+             {leaked:?}) — a bare `?` after the spawn strands the subprocess, \
+             because `Child::drop` neither kills nor reaps",
+            leaked.len()
+        );
+    }
+
+    /// PIDs of every process running the stand-in's `sleep 120`.
+    ///
+    /// Matched on the full command line rather than the script name, because
+    /// the script `exec`s `sleep` and so replaces its own process image. The
+    /// 120-second duration is distinctive enough not to collide with an
+    /// unrelated `sleep` on a developer machine, and the before/after diff
+    /// makes a collision harmless in any case.
+    #[cfg(unix)]
+    fn stand_in_pids() -> Vec<i32> {
+        let Ok(out) = std::process::Command::new("pgrep")
+            .arg("-f")
+            .arg("^sleep 120$")
+            .output()
+        else {
+            return Vec::new();
+        };
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect()
+    }
 
     fn loaded(inputs: &[ChannelLayout], outputs: &[ChannelLayout]) -> LoadedPlugin {
         LoadedPlugin {

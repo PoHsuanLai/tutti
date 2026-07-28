@@ -105,8 +105,14 @@ pub(crate) struct ProcessExtras<'a> {
     pub transport: &'a TransportInfo,
 }
 
-/// One inbound block: how many samples, MIDI, and (optional) extras.
+/// One inbound block: which block it is, how many samples, MIDI, and (optional)
+/// extras.
 pub(crate) struct AudioBlock<'a> {
+    /// Which block this is. **No longer opaque to the server**: it selects the
+    /// slab ring slot to read the inputs from and to publish the outputs into,
+    /// so the server both interprets it and checks it. Echoed in the
+    /// `AudioProcessed` reply as well.
+    pub seq: u64,
     pub num_samples: usize,
     pub midi: &'a [MidiEvent],
     pub extras: Option<ProcessExtras<'a>>,
@@ -152,25 +158,22 @@ impl AudioPipeline {
         block: AudioBlock<'_>,
     ) -> Result<AudioOutput> {
         let num_samples = block.num_samples;
-        // Per-direction flat-channel partition. Multi-bus slabs lay the input
-        // direction at `[0, total_in)` and the output direction at
-        // `[output_base, output_base + total_out)` so a sidechain input bus
-        // isn't clobbered by the in-place output write. Single-bus legacy keeps
-        // `output_base == 0`, so input and output share channel 0 in-place.
-        // Borrow (don't clone) the layout — the bus list is heap-backed and
-        // this is the RT path. Copy out the three scalar widths before the
-        // scratch loop so the slab is free to be borrowed for read/write.
+        let seq = block.seq;
+        // Per-direction widths. The two directions have their own regions, so
+        // there is no base to compute and no branch on bus count — the shape
+        // that used to collapse both directions onto offset 0 no longer exists.
+        // Borrow (don't clone) the layout: the bus list is heap-backed and this
+        // is the RT path. Copy the widths out before the scratch loop so the
+        // slab is free to be borrowed for read/write.
         let layout = shm.layout_ref();
-        let (total_in, total_out, output_base) = if layout.is_multibus() {
-            (
-                layout.input_channels(),
-                layout.output_channels(),
-                layout.output_base(),
-            )
-        } else {
-            let loaded = plugin.loaded();
-            (loaded.total_inputs(), loaded.total_outputs(), 0)
-        };
+        let (total_in, total_out) = (layout.input_channels(), layout.output_channels());
+
+        // Does the input ring actually hold this block? A mismatch means the
+        // host has moved on and recycled the slot — the bytes there belong to a
+        // different block. Feed silence rather than a foreign block's audio: a
+        // stateful plugin fed the wrong input produces plausible-sounding wrong
+        // output, which is much harder to notice than a gap.
+        let inputs_ready = shm.has_input(seq);
         // Scratch holds each direction at full width; the input scratch is the
         // flat, bus-ordered input view handed to the plugin's `process` (the
         // host crate splits it back into per-bus `AudioBusBuffers`).
@@ -221,13 +224,23 @@ impl AudioPipeline {
         // Per-direction channel widths, clamped to the slice-table capacity.
         let in_n = total_in.min(MAX_CHANNELS);
         let out_n = total_out.min(MAX_CHANNELS);
+        // Set false by any channel whose write into the slab failed. Publishing
+        // a slot whose later channels never landed is worse than not publishing
+        // at all: the host's sequence check would pass and it would read the
+        // previous occupant's samples in those channels — half this block
+        // spliced onto half another, which sounds almost right.
+        let mut all_channels_written = true;
         let plugin_output = match &mut self.buffers {
             AudioBuffers::F32 { input, output } => {
-                // Read every input bus's channels from the flat input range
-                // (base 0). The flat order IS bus order — the host crate splits
-                // it back into per-bus `AudioBusBuffers`.
+                // Read every input bus's channels from this block's input slot.
+                // The flat order IS bus order — the host crate splits it back
+                // into per-bus `AudioBusBuffers`.
                 for (ch, chan) in input.iter_mut().enumerate().take(in_n) {
-                    let _ = shm.read_channel_into::<f32>(ch, &mut chan[..num_samples]);
+                    if inputs_ready {
+                        let _ = shm.read_input_into::<f32>(seq, ch, &mut chan[..num_samples]);
+                    } else {
+                        chan[..num_samples].fill(0.0);
+                    }
                 }
                 for chan in output.iter_mut().take(out_n) {
                     chan[..num_samples].fill(0.0);
@@ -246,21 +259,29 @@ impl AudioPipeline {
                 // plugin can emit NaN/Inf that would otherwise poison the
                 // entire downstream fundsp graph. Unconditional — this is a
                 // production hazard, and a finite-check per sample is cheap
-                // on an already memory-bound path. Write each output channel to
-                // the OUTPUT direction's flat range (base `output_base`).
+                // on an already memory-bound path.
                 for (ch, chan) in output.iter_mut().enumerate().take(out_n) {
                     for s in &mut chan[..num_samples] {
                         if !s.is_finite() {
                             *s = 0.0;
                         }
                     }
-                    let _ = shm.write_channel::<f32>(output_base + ch, &chan[..num_samples]);
+                    if shm
+                        .write_output::<f32>(seq, ch, &chan[..num_samples])
+                        .is_err()
+                    {
+                        all_channels_written = false;
+                    }
                 }
                 result
             }
             AudioBuffers::F64 { input, output } => {
                 for (ch, chan) in input.iter_mut().enumerate().take(in_n) {
-                    let _ = shm.read_channel_into::<f64>(ch, &mut chan[..num_samples]);
+                    if inputs_ready {
+                        let _ = shm.read_input_into::<f64>(seq, ch, &mut chan[..num_samples]);
+                    } else {
+                        chan[..num_samples].fill(0.0);
+                    }
                 }
                 for chan in output.iter_mut().take(out_n) {
                     chan[..num_samples].fill(0.0);
@@ -279,11 +300,39 @@ impl AudioPipeline {
                             *s = 0.0;
                         }
                     }
-                    let _ = shm.write_channel::<f64>(output_base + ch, &chan[..num_samples]);
+                    if shm
+                        .write_output::<f64>(seq, ch, &chan[..num_samples])
+                        .is_err()
+                    {
+                        all_channels_written = false;
+                    }
                 }
                 result
             }
         };
+
+        // Publish exactly once, after every output channel is in place. Until
+        // this store the host's sequence check fails and it emits silence — so a
+        // block that returned early above (an error path, no plugin loaded)
+        // correctly produces silence rather than stale audio, without needing to
+        // signal that separately.
+        //
+        // Two conditions gate it, and both are about *not writing into a slot
+        // that belongs to someone else*:
+        //
+        // - `inputs_ready` false means the host recycled this block's slot
+        //   before we got here, so it has moved on and this reply is for a block
+        //   nobody is waiting for. `MAX_BEHIND` in the host's `dispatch` should
+        //   already have dropped the command, but that is the host's bound on
+        //   *sending*; this is the server's own check on *writing*, and the two
+        //   failed independently once already.
+        // - `all_channels_written` false means the slot is only partly filled.
+        //
+        // Either way the host reads a stale sequence and substitutes silence,
+        // which is the designed failure mode.
+        if inputs_ready && all_channels_written {
+            shm.publish_output(seq);
+        }
 
         // The plugin's MIDI-out travels back to the host so it can re-enter
         // routing. `param_changes` / `note_expression` are still dropped (no
@@ -568,8 +617,35 @@ mod tests {
         }
     }
 
-    use smallvec::smallvec;
     use tutti_plugin::server::SampleFormat as SF;
+    use tutti_plugin::server::RING_SLOTS;
+
+    /// A slab layout with real bus lists in both directions.
+    ///
+    /// Every test now names its buses explicitly. The old helpers passed empty
+    /// lists, which used to mean "one flat range shared in place" — so those
+    /// tests ran entirely at offset 0, where an output write landing on the
+    /// input region was indistinguishable from correct behaviour. Empty is now
+    /// rejected by the slab, which is why this helper exists.
+    fn test_layout(
+        samples: usize,
+        format: SF,
+        inputs: &[ChannelLayout],
+        outputs: &[ChannelLayout],
+    ) -> SlabLayout {
+        SlabLayout {
+            samples_per_channel: samples,
+            format,
+            slots: RING_SLOTS as u32,
+            inputs: inputs.iter().copied().collect(),
+            outputs: outputs.iter().copied().collect(),
+        }
+    }
+
+    /// The block number every test drives. Deliberately not 0: a zeroed slab
+    /// reads back 0 for "nothing published", so a test using block 0 would have
+    /// its sequence check pass by accident rather than because anyone published.
+    const SEQ: u64 = 1;
 
     /// Build a test [`Meta`] with the given per-bus input/output channel widths.
     fn meta(inputs: &[usize], outputs: &[usize]) -> Meta {
@@ -584,33 +660,34 @@ mod tests {
         }
     }
 
-    /// Multi-bus channel split: a 2-input-bus layout (stereo main + mono
-    /// sidechain) plus a stereo output bus. The slab lays input at flat
-    /// `[0,3)` and output at flat `[3,5)` (`output_base = 3`). Writing distinct
-    /// markers into each input channel and a stereo output bus, the pipeline
-    /// must hand the plugin all THREE input channels (incl. the sidechain) in
-    /// flat bus order and write the echoed outputs into the disjoint output
-    /// range — never clobbering the sidechain input.
+    /// Multi-bus channel split: stereo main + mono sidechain in, stereo out.
+    /// The pipeline must hand the plugin all THREE input channels (incl. the
+    /// sidechain) in flat bus order, and write the echoed outputs into the
+    /// output region — never touching the sidechain input, which lives in a
+    /// different region entirely now rather than merely at a higher offset.
     #[test]
     fn process_splits_multibus_channels() {
         const N: usize = 32;
         // total_in = 3, total_out = 2 → 5 flat channels.
-        let layout = SlabLayout {
-            channels: ChannelLayout::from(5u16),
-            samples_per_channel: N,
-            format: SF::Float32,
-            inputs: smallvec![ChannelLayout::Stereo, ChannelLayout::Mono], // stereo main + mono sidechain
-            outputs: smallvec![ChannelLayout::Stereo],
-        };
+        // stereo main + mono sidechain in, stereo out.
+        let layout = test_layout(
+            N,
+            SF::Float32,
+            &[ChannelLayout::Stereo, ChannelLayout::Mono],
+            &[ChannelLayout::Stereo],
+        );
         let name = format!("tutti_multibus_test_{}", std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
         let mut shm = AudioSlab::open(name, layout).unwrap();
 
-        // Write a distinct marker into each of the 3 input channels at base 0.
+        // Write a distinct marker into each of the 3 input channels, then
+        // publish — without the publish the pipeline correctly refuses to read
+        // the region and the plugin would see silence.
         let markers = [11.0f32, 22.0, 33.0];
         for (ch, &m) in markers.iter().enumerate() {
-            shm.write_channel::<f32>(ch, &[m; N]).unwrap();
+            shm.write_input::<f32>(SEQ, ch, &[m; N]).unwrap();
         }
+        shm.publish_input(SEQ);
 
         let mut pipeline = AudioPipeline::new(SampleFormat::Float32);
         let mut plugin = EchoProbe {
@@ -627,6 +704,7 @@ mod tests {
                 &mut shm,
                 &clock,
                 AudioBlock {
+                    seq: SEQ,
                     num_samples: N,
                     midi: &[],
                     extras: None,
@@ -638,12 +716,16 @@ mod tests {
         // the mono sidechain (bus 1).
         assert_eq!(plugin.seen_inputs.borrow().as_slice(), &markers);
 
-        // Outputs (echo of input ch 0,1) landed in the OUTPUT range [3,5), and
-        // the sidechain input (flat ch 2) was NOT clobbered.
+        // The server published this block's outputs, so the host-side check
+        // would pass. Under the old design nothing marked the region as written.
+        assert!(shm.has_output(SEQ), "the pipeline must publish its outputs");
+
+        // Outputs (echo of input ch 0,1) landed in the OUTPUT region, indexed
+        // from 0 within it, and the sidechain input was NOT clobbered.
         let mut out0 = vec![0.0f32; N];
         let mut out1 = vec![0.0f32; N];
-        shm.read_channel_into::<f32>(3, &mut out0).unwrap();
-        shm.read_channel_into::<f32>(4, &mut out1).unwrap();
+        shm.read_output_into::<f32>(SEQ, 0, &mut out0).unwrap();
+        shm.read_output_into::<f32>(SEQ, 1, &mut out1).unwrap();
         assert!(
             out0.iter().all(|&s| s == 11.0),
             "output bus ch0 == main in ch0"
@@ -654,10 +736,82 @@ mod tests {
         );
 
         let mut sc = vec![0.0f32; N];
-        shm.read_channel_into::<f32>(2, &mut sc).unwrap();
+        shm.read_input_into::<f32>(SEQ, 2, &mut sc).unwrap();
         assert!(
             sc.iter().all(|&s| s == 33.0),
             "sidechain input survived the output write"
+        );
+    }
+
+    /// A block whose input slot the host already recycled must not have its
+    /// output published.
+    ///
+    /// This is the server half of the ring-slot invariant, and it is deliberately
+    /// redundant with the host's `MAX_BEHIND` bound. The host stops *sending* such
+    /// a block; this stops the server *writing* one if it ever arrives anyway.
+    ///
+    /// Why both: at ring depth 2, `slot_for(seq)` and `slot_for(seq + 2)` are the
+    /// same slot. `MAX_BEHIND` was `RING_SLOTS` rather than `RING_SLOTS - 1`, so a
+    /// block exactly two behind was admitted, and publishing its output would
+    /// stamp the sequence of the slot the host was concurrently reading for the
+    /// newest block — tearing that block, or destroying the evidence for it. One
+    /// bound guarding a shared slot is a single point of failure, and that single
+    /// point is what shipped.
+    ///
+    /// The stale slot here holds real audio, not zeros. If it held zeros the test
+    /// could not tell "correctly withheld" from "published silence" — the trap
+    /// that made a sibling test on the host side vacuous.
+    #[test]
+    fn a_block_whose_input_slot_was_recycled_is_not_published() {
+        const CH: usize = 2;
+        const N: usize = 32;
+        const STALE_SEQ: u64 = 7;
+
+        let layout = test_layout(
+            N,
+            SF::Float32,
+            &[ChannelLayout::Stereo],
+            &[ChannelLayout::Stereo],
+        );
+        let name = format!("tutti_recycled_slot_{}", std::process::id());
+        let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
+        let mut shm = AudioSlab::open(name, layout).unwrap();
+
+        // Leave recognisable audio in the slot the stale block would land in, as
+        // a previous occupant would have. `publish_input` is NOT called for
+        // STALE_SEQ — that is precisely what "the host recycled this slot" means.
+        for ch in 0..CH {
+            shm.write_output::<f32>(STALE_SEQ, ch, &[0.5f32; N])
+                .unwrap();
+        }
+
+        let mut pipeline = AudioPipeline::new(SampleFormat::Float32);
+        let mut plugin = EchoProbe {
+            meta: meta(&[CH], &[CH]),
+            seen_inputs: std::cell::RefCell::new(Vec::new()),
+        };
+        let clock = Clock {
+            sample_rate: 48000.0,
+            format: SampleFormat::Float32,
+        };
+        pipeline
+            .process(
+                &mut plugin,
+                &mut shm,
+                &clock,
+                AudioBlock {
+                    seq: STALE_SEQ,
+                    num_samples: N,
+                    midi: &[],
+                    extras: None,
+                },
+            )
+            .unwrap();
+
+        assert!(
+            !shm.has_output(STALE_SEQ),
+            "the server published a block whose input slot had been recycled — \
+             the host would accept it as the current block's audio"
         );
     }
 
@@ -667,13 +821,12 @@ mod tests {
     fn assert_sanitized(fill: f32) {
         const CH: usize = 2;
         const N: usize = 64;
-        let layout = SlabLayout {
-            channels: ChannelLayout::from(CH),
-            samples_per_channel: N,
-            format: SampleFormat::Float32,
-            inputs: smallvec![],
-            outputs: smallvec![],
-        };
+        let layout = test_layout(
+            N,
+            SampleFormat::Float32,
+            &[ChannelLayout::Stereo],
+            &[ChannelLayout::Stereo],
+        );
         let name = format!("tutti_nan_test_{}_{}", fill.to_bits(), std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
         let mut shm = AudioSlab::open(name, layout).unwrap();
@@ -688,6 +841,7 @@ mod tests {
             format: SampleFormat::Float32,
         };
         let block = AudioBlock {
+            seq: SEQ,
             num_samples: N,
             midi: &[],
             extras: None,
@@ -698,7 +852,7 @@ mod tests {
 
         for ch in 0..CH {
             let mut out = vec![1.0f32; N];
-            shm.read_channel_into::<f32>(ch, &mut out).unwrap();
+            shm.read_output_into::<f32>(SEQ, ch, &mut out).unwrap();
             assert!(
                 out.iter().all(|s| s.is_finite()),
                 "channel {ch} still contains non-finite samples after sanitize"
@@ -726,13 +880,12 @@ mod tests {
     fn process_is_alloc_free() {
         const CH: usize = 2;
         const N: usize = 128;
-        let layout = SlabLayout {
-            channels: ChannelLayout::from(CH),
-            samples_per_channel: N,
-            format: SampleFormat::Float32,
-            inputs: smallvec![],
-            outputs: smallvec![],
-        };
+        let layout = test_layout(
+            N,
+            SampleFormat::Float32,
+            &[ChannelLayout::Stereo],
+            &[ChannelLayout::Stereo],
+        );
         let name = format!("tutti_noalloc_test_{}", std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
         let mut shm = AudioSlab::open(name, layout).unwrap();
@@ -755,6 +908,7 @@ mod tests {
                 &mut shm,
                 &clock,
                 AudioBlock {
+                    seq: SEQ,
                     num_samples: N,
                     midi: &[],
                     extras: None,
@@ -770,6 +924,7 @@ mod tests {
                         &mut shm,
                         &clock,
                         AudioBlock {
+                            seq: SEQ,
                             num_samples: N,
                             midi: &[],
                             extras: None,
@@ -780,20 +935,19 @@ mod tests {
         });
     }
 
-    /// RT-safety regression for the Stage-3 multi-bus split: the per-direction
-    /// channel read/write (input from base 0, output from `output_base`) must
-    /// stay allocation-free after warm-up. Two input buses + one output bus.
+    /// RT-safety regression for the multi-bus split: the per-direction channel
+    /// read/write, the sequence checks, and the publish must all stay
+    /// allocation-free after warm-up. Two input buses + one output bus.
     #[test]
     fn process_multibus_is_alloc_free() {
         const N: usize = 128;
         // stereo main in + mono sidechain in + stereo out → 5 flat channels.
-        let layout = SlabLayout {
-            channels: ChannelLayout::from(5u16),
-            samples_per_channel: N,
-            format: SampleFormat::Float32,
-            inputs: smallvec![ChannelLayout::Stereo, ChannelLayout::Mono],
-            outputs: smallvec![ChannelLayout::Stereo],
-        };
+        let layout = test_layout(
+            N,
+            SampleFormat::Float32,
+            &[ChannelLayout::Stereo, ChannelLayout::Mono],
+            &[ChannelLayout::Stereo],
+        );
         let name = format!("tutti_noalloc_mb_test_{}", std::process::id());
         let _guard = AudioSlab::create(name.clone(), layout.clone()).unwrap();
         let mut shm = AudioSlab::open(name, layout).unwrap();
@@ -815,6 +969,7 @@ mod tests {
                 &mut shm,
                 &clock,
                 AudioBlock {
+                    seq: SEQ,
                     num_samples: N,
                     midi: &[],
                     extras: None,
@@ -830,6 +985,7 @@ mod tests {
                         &mut shm,
                         &clock,
                         AudioBlock {
+                            seq: SEQ,
                             num_samples: N,
                             midi: &[],
                             extras: None,

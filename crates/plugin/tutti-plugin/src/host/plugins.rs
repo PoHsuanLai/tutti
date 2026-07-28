@@ -170,6 +170,47 @@ impl Plugins {
             .map(|r| &r.descriptor)
     }
 
+    /// Iterate the blacklisted records — the plugins that were hidden and
+    /// why. `iter`/`records` deliberately exclude them, so without this a
+    /// blacklisted plugin is simply absent with no way for a UI to say so.
+    pub fn blacklisted(&self) -> impl Iterator<Item = &PluginRecord> {
+        self.catalog.blacklisted()
+    }
+
+    /// `true` if the plugin at `path` is blacklisted.
+    pub fn is_blacklisted(&self, path: &Path) -> bool {
+        self.catalog.is_blacklisted(path)
+    }
+
+    /// Blacklist a plugin by path, hiding it from `iter`/`records`/`find`.
+    pub fn blacklist(&mut self, path: &Path, reason: impl Into<String>) {
+        self.catalog.blacklist(path, reason.into());
+    }
+
+    /// Clear one blacklist entry so the plugin is re-probed on the next scan.
+    /// Returns `true` if a blacklisted record was found and cleared.
+    ///
+    /// The inverse of [`Self::blacklist`]. False positives are expected — the
+    /// dead-man's pedal fires on force-quit, power loss, and OOM-kill just as
+    /// readily as on a real plugin crash — so a blacklist with no inverse
+    /// hides a working plugin forever.
+    pub fn unblacklist(&mut self, path: &Path) -> bool {
+        self.catalog.unblacklist(path)
+    }
+
+    /// Clear every blacklist entry. Returns the paths cleared. The bulk
+    /// escape hatch for "all my plugins vanished after a crash".
+    pub fn clear_blacklist(&mut self) -> Vec<PathBuf> {
+        self.catalog.clear_blacklist()
+    }
+
+    /// Drop one record entirely (blacklisted or not). Unlike
+    /// [`Self::unblacklist`] this forgets the plugin was ever seen, so the
+    /// next scan treats it as brand new.
+    pub fn remove(&mut self, path: &Path) {
+        self.catalog.remove(path);
+    }
+
     /// Load a plugin by id. Returns a graph-ready `Box<dyn AudioUnit>`
     /// and a main-thread [`PluginHandle`]; both must be kept alive while
     /// the plugin runs.

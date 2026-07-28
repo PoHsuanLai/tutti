@@ -24,11 +24,16 @@ use crate::types::{
 };
 use tutti_types::AudioThreadCell;
 
+/// Per-block event storage. Both members are written **only** while staging
+/// (`update_from_sources` / `addEvent`) and only *read* by `getEvent`, which is
+/// what makes the pointers `getEvent` hands the plugin — `DataEvent.bytes` into
+/// an event's own inline array, `text` into the arena — stable for the whole
+/// `process` call, as VST3 requires.
 struct Inner {
+    /// The staged events. `getEvent` borrows out of this Vec rather than
+    /// copying, so `DataEvent.bytes` can point at the event's own inline
+    /// `[u8; 16]`.
     events: Vec<Vst3Event>,
-    /// Backing storage for `DataEvent.bytes` pointers exposed through
-    /// `IEventList::getEvent`. Regrown per frame; cleared when `events` is.
-    c_scratch_data: SmallVec<[[u8; 16]; 8]>,
     /// UTF-16 owner for chord / scale / note-expression-text events' borrowed
     /// `text` pointers. Interned at stage time, read back at `getEvent` time,
     /// cleared in lockstep with `events` so no pointer outlives its block.
@@ -39,18 +44,16 @@ impl Default for Inner {
     fn default() -> Self {
         Self {
             events: Vec::with_capacity(256),
-            c_scratch_data: SmallVec::new(),
             text_arena: SmallVec::new(),
         }
     }
 }
 
 impl Inner {
-    /// Clear all per-block storage in lockstep (events + both owner scratches),
+    /// Clear all per-block storage in lockstep (events + the text arena),
     /// keeping heap capacity for reuse.
     fn clear(&mut self) {
         self.events.clear();
-        self.c_scratch_data.clear();
         self.text_arena.clear();
     }
 }
@@ -151,17 +154,18 @@ impl IEventListTrait for EventList {
         if e.is_null() {
             return kInvalidArgument;
         }
-        let mut inner = self.inner.borrow_mut();
-        if index < 0 || index >= inner.events.len() as i32 {
+        // A shared borrow: `getEvent` must not mutate the storage, because the
+        // `DataEvent.bytes` / `text` pointers it hands out point *into* it and
+        // stay live for the rest of the plugin's `process` call. Copying the
+        // event out and pointing at the copy is exactly the bug this replaced.
+        let inner = self.inner.borrow();
+        let Ok(index) = usize::try_from(index) else {
             return kInvalidArgument;
-        }
-        let Inner {
-            events,
-            c_scratch_data,
-            text_arena,
-        } = &mut *inner;
-        let event = events[index as usize];
-        *e = to_c_event(&event, c_scratch_data, text_arena);
+        };
+        let Some(event) = inner.events.get(index) else {
+            return kInvalidArgument;
+        };
+        *e = to_c_event(event, &inner.text_arena);
         kResultOk
     }
 
@@ -257,6 +261,121 @@ mod tests {
         }
     }
 
+    /// Regression for the dangling `DataEvent.bytes` bug.
+    ///
+    /// A plugin's normal pattern is `getEventCount()` then `getEvent(i)` for
+    /// every `i`, keeping each returned `Event` (and therefore each borrowed
+    /// `bytes` pointer) live for the rest of `process`. `getEvent` used to copy
+    /// the event and push its bytes into a `SmallVec<[[u8; 16]; 8]>` scratch
+    /// that was only cleared once per *block*: the 9th push spilled the inline
+    /// storage to the heap and moved it, dangling every pointer already handed
+    /// out. This test stages well past the 8-element inline capacity and reads
+    /// every pointer only *after* the whole batch has been fetched — the exact
+    /// order that used to read freed memory.
+    ///
+    /// Every channel-voice non-note MIDI message becomes a `Data` event, so 32
+    /// CCs is not a contrived input.
+    #[test]
+    fn data_event_bytes_stay_valid_after_fetching_every_event() {
+        use tutti_midi_types::convert::midi1_cc_to_midi2;
+
+        const N: usize = 32;
+        let midi: Vec<MidiEvent> = (0..N)
+            .map(|i| {
+                MidiEvent::cc(0, 0, 74, midi1_cc_to_midi2(i as u8)).with_frame_offset(i as u32)
+            })
+            .collect();
+
+        let list = EventList::new();
+        list.update_from_midi(&midi);
+
+        let ptr = list.to_com_ptr::<IEventList>().unwrap();
+        let count = unsafe { ptr.getEventCount() };
+        assert_eq!(count as usize, N, "every CC should stage as a Data event");
+
+        // Phase 1: fetch them all, holding every Event (and its `bytes`
+        // pointer) live — as a plugin does.
+        let mut fetched: Vec<Event> = Vec::with_capacity(N);
+        for i in 0..count {
+            let mut out: Event = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { ptr.getEvent(i, &mut out) }, kResultOk);
+            fetched.push(out);
+        }
+
+        // Phase 2: only now dereference. Each event must still see its own
+        // 3-byte MIDI-1 CC frame, not another event's bytes or freed memory.
+        for (i, ev) in fetched.iter().enumerate() {
+            let data = unsafe { ev.__field0.data };
+            assert_eq!(data.size, 3, "event {i}");
+            assert!(!data.bytes.is_null(), "event {i}");
+            let bytes = unsafe { std::slice::from_raw_parts(data.bytes, 3) };
+            assert_eq!(bytes[0], 0xB0, "event {i} status");
+            assert_eq!(bytes[1], 74, "event {i} controller");
+            assert_eq!(
+                bytes[2], i as u8,
+                "event {i} value — pointer aliased or stale"
+            );
+        }
+    }
+
+    /// The same hazard on the text side: chord / scale / text events hand out a
+    /// `text` pointer into the arena. Fetching every event first and reading
+    /// after must still resolve each name correctly.
+    #[test]
+    fn text_pointers_stay_valid_after_fetching_every_event() {
+        let names: Vec<Vec<u16>> = (0..16)
+            .map(|i| format!("Chord{i}").encode_utf16().collect())
+            .collect();
+        let chords: Vec<ChordValue> = names
+            .iter()
+            .enumerate()
+            .map(|(i, text)| ChordValue {
+                sample_offset: i as i32,
+                root: 60 + i as i16,
+                bass_note: 48,
+                mask: 0,
+                text: text.clone(),
+            })
+            .collect();
+
+        let list = EventList::new();
+        list.update_from_sources(&Vst3InputEvents {
+            chords: &chords,
+            ..Default::default()
+        });
+
+        let ptr = list.to_com_ptr::<IEventList>().unwrap();
+        let count = unsafe { ptr.getEventCount() };
+        assert_eq!(count as usize, names.len());
+
+        let mut fetched: Vec<Event> = Vec::with_capacity(names.len());
+        for i in 0..count {
+            let mut out: Event = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { ptr.getEvent(i, &mut out) }, kResultOk);
+            fetched.push(out);
+        }
+
+        for (i, ev) in fetched.iter().enumerate() {
+            let chord = unsafe { ev.__field0.chord };
+            assert_eq!(chord.root, 60 + i as i16, "event {i}");
+            let text = unsafe { std::slice::from_raw_parts(chord.text, chord.textLen as usize) };
+            assert_eq!(text, names[i].as_slice(), "event {i} text");
+        }
+    }
+
+    /// `getEvent` must reject out-of-range and negative indices rather than
+    /// panic on the cast.
+    #[test]
+    fn get_event_rejects_bad_indices() {
+        let list = EventList::new();
+        list.update_from_midi(&[MidiEvent::note_on(0, 0, 60, 0x8000)]);
+        let ptr = list.to_com_ptr::<IEventList>().unwrap();
+        let mut out: Event = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { ptr.getEvent(-1, &mut out) }, kInvalidArgument);
+        assert_eq!(unsafe { ptr.getEvent(1, &mut out) }, kInvalidArgument);
+        assert_eq!(unsafe { ptr.getEvent(0, &mut out) }, kResultOk);
+    }
+
     /// RT regression: `update_from_midi` / `clear` run every buffer;
     /// they must reuse the pre-reserved Vec capacity without heap grow.
     #[test]
@@ -284,8 +403,7 @@ mod tests {
 
     /// RT regression for the full-source path: staging MIDI + every other event
     /// source (including arena-interned chord/scale/text) must stay
-    /// allocation-free once the events Vec, the data scratch, and the text arena
-    /// have warmed up.
+    /// allocation-free once the events Vec and the text arena have warmed up.
     #[test]
     fn update_from_sources_is_allocation_free_after_warmup() {
         let list = EventList::new();
@@ -337,7 +455,7 @@ mod tests {
             expr_ints: &ints,
         };
 
-        // Warm up every buffer (events / data scratch / text arena).
+        // Warm up every buffer (events Vec / text arena).
         list.update_from_sources(&src);
         list.clear();
 

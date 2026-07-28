@@ -57,7 +57,7 @@ pub use note_id::{note_id_for, note_id_to_channel_note, MAX_HOST_NOTE_ID};
 pub use parameters::{ParameterFlags, ParameterInfo, ALL_AUTOMATABLE};
 pub use process::{ExpressiveContext, ProcessContext, ProcessOutput};
 pub use transport::{
-    BarInfo, LoopRegion, MusicalTiming, TransportFlags, TransportInfo, TransportPosition,
+    is_usable, BarInfo, LoopRegion, MusicalTiming, TransportFlags, TransportInfo, TransportPosition,
 };
 
 /// Re-export of the workspace-wide MIDI event so host crates don't all

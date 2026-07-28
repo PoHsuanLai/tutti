@@ -32,16 +32,23 @@ impl std::ops::Deref for SendParams {
 
 impl Vst2Instance {
     /// Read a parameter's current normalized value, in `[0.0, 1.0]`.
-    /// Returns `0.0` if the index is out of range — VST2 has no error
-    /// path here.
-    pub fn parameter(&self, id: u32) -> f32 {
+    ///
+    /// `None` when the plugin exposes no `getParameter` at all, which VST 2.4
+    /// permits for a plugin declaring no parameters. That is not the same as a
+    /// parameter sitting at zero, so it is not flattened to `0.0` here — a
+    /// caller that genuinely does not care can say `unwrap_or(0.0)` and be seen
+    /// to have decided.
+    pub fn parameter(&self, id: u32) -> Option<f32> {
         self.params.get_parameter(id as i32)
     }
 
     /// Write a parameter's normalized value. The plugin clamps internally
     /// if the value is out of range.
-    pub fn set_parameter(&self, id: u32, value: f32) {
-        self.params.set_parameter(id as i32, value);
+    ///
+    /// `false` when the plugin exposes no `setParameter`, meaning the value was
+    /// discarded rather than applied.
+    pub fn set_parameter(&self, id: u32, value: f32) -> bool {
+        self.params.set_parameter(id as i32, value)
     }
 
     /// List every parameter the plugin advertises, with current value.
@@ -52,7 +59,9 @@ impl Vst2Instance {
                 id: i as u32,
                 name: self.params.get_parameter_name(i),
                 unit: self.params.get_parameter_label(i),
-                current: self.params.get_parameter(i),
+                // A listing is a display surface; a plugin with no accessor
+                // has nothing to show, and 0.0 is the neutral rendering.
+                current: self.params.get_parameter(i).unwrap_or(0.0),
             })
             .collect()
     }
@@ -97,7 +106,7 @@ impl Vst2Instance {
             id,
             name: self.params.get_parameter_name(index),
             unit: self.params.get_parameter_label(index),
-            current: self.params.get_parameter(index),
+            current: self.params.get_parameter(index).unwrap_or(0.0),
         })
     }
 

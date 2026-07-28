@@ -2,12 +2,27 @@
 //!
 //! The wrapper exists so [`Vst2Instance`](crate::instance::Vst2Instance)'s
 //! Drop semantics are spelled out in one place: close the editor, suspend
-//! audio, then leak the underlying `PluginInstance` so JUCE-based plugins
-//! don't crash inside their static destructor sequence on host shutdown.
-//! Same workaround the rest of tutti's plugin-bridge uses for VST3/CLAP
-//! (see `tutti-plugin/src/bridge/composite.rs`).
-
-use std::mem::ManuallyDrop;
+//! audio, then run the plugin's own teardown — which dispatches `effClose`.
+//!
+//! # `effClose` vs `dlclose`
+//!
+//! These are two different events and the JUCE static-destructor crash people
+//! work around belongs to only one of them.
+//!
+//! * `effClose` tells the plugin to release *this instance*: free its
+//!   `AEffect`, drop its DSP state, and — for licensed plugins — hand back the
+//!   session seat. It is safe, and it is mandatory. Skip it and every A/B of a
+//!   plugin slot leaks one live instance and one licence.
+//! * `dlclose` unloads the shared *module*, running its static destructors.
+//!   That is the step that crashes with JUCE-based plugins, so hosts (JUCE and
+//!   Ardour both) never do it.
+//!
+//! This handle used to be `ManuallyDrop` and skipped the instance destructor
+//! entirely, which had it exactly backwards: `effClose` never ran, while the
+//! `Arc<Library>` inside still dropped. The module leak now lives where it
+//! belongs — `vst::host::PluginInstance` holds its `Library` in a
+//! `ManuallyDrop` — so dropping the instance here closes the plugin without
+//! ever unloading the module.
 
 use vst::host::PluginInstance;
 use vst::plugin::Plugin as _;
@@ -20,10 +35,9 @@ use vst::plugin::Plugin as _;
 /// alongside. There is no way to load a second editor against the same
 /// audio instance.
 pub(crate) struct Vst2Handle {
-    /// `ManuallyDrop` so [`Drop::drop`] can deliberately skip running the
-    /// inner destructor (the JUCE-leak workaround documented at the
-    /// module level).
-    pub(crate) instance: ManuallyDrop<PluginInstance>,
+    /// Dropped normally: its destructor dispatches `effClose`. The module is
+    /// what stays loaded, not the instance — see the module docs.
+    pub(crate) instance: PluginInstance,
     pub(crate) editor: Option<SendEditor>,
 }
 
@@ -44,10 +58,7 @@ impl Vst2Handle {
         // None on subsequent calls. We probe it here so callers can ask
         // `has_editor()` later without re-entering the plugin.
         let editor = instance.get_editor().map(SendEditor);
-        Self {
-            instance: ManuallyDrop::new(instance),
-            editor,
-        }
+        Self { instance, editor }
     }
 
     pub(crate) fn has_editor(&self) -> bool {
@@ -64,14 +75,12 @@ impl Drop for Vst2Handle {
         }
 
         // Suspend audio processing so the plugin releases any RT-allocated
-        // resources before we walk away from the instance.
+        // resources before we close it.
         self.instance.suspend();
 
-        // JUCE-based plugins (and several others) crash during their
-        // static destructor sequence on dlclose. Skipping the destructor
-        // by *not* calling `ManuallyDrop::drop` is the standard host-side
-        // mitigation — same approach used for VST3/CLAP in
-        // `tutti-plugin/src/bridge/composite.rs::Drop`. The plugin's
-        // memory is reclaimed when the host process exits.
+        // `self.instance` is then dropped normally, which dispatches
+        // `effClose`. The shared module is *not* unloaded — that leak lives in
+        // `PluginInstance` itself. See the module docs for why the two must not
+        // be conflated.
     }
 }

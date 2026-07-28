@@ -22,6 +22,8 @@ mod process;
 mod transport_source;
 
 #[cfg(test)]
+mod process_pipeline_tests;
+#[cfg(test)]
 mod tests;
 
 // The shared node primitives (MIDI inbox, change sinks, routing helper) live
@@ -36,6 +38,10 @@ pub use param_automation_source::{
     LfoCurve, LfoOffset, OffsetCurve, ParamAutomationSource, PluginParamTarget, TimedParam,
 };
 pub(crate) use process::ProcessGuard;
+// The largest block that can cross the process edge. Re-exported because
+// `subprocess::launch` sizes the shared-memory slab from it — the slab and the
+// batcher must agree on the per-block ceiling or one of them is wrong.
+pub(crate) use batcher::BATCH_SIZE;
 
 use crate::error::Result;
 use crate::host::ipc_client::audio::HarmonyInputs;
@@ -48,7 +54,7 @@ use crate::protocol::{
     Features, LoadedPlugin, ParameterChanges, PluginDescriptor, SampleFormat, TransportInfo,
 };
 use crate::util::config::BridgeConfig;
-use batcher::Batcher;
+use batcher::{Batcher, PIPELINE_LATENCY_SAMPLES};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -183,13 +189,36 @@ impl PluginClient {
     /// emission dropped rather than silently re-injected. (Without the gate,
     /// `emit` fired whenever an out-target was installed, regardless of the bit.)
     #[inline]
-    fn emit_midi_out_if_declared(&self) {
+    fn emit_midi_out_if_declared(&mut self) {
         if self
             .loaded
             .features
             .contains(crate::protocol::Features::MIDI_OUT)
         {
+            self.shift_midi_out_into_this_block();
             self.midi.emit(&self.midi_out);
+        }
+    }
+
+    /// Re-base the plugin's MIDI-out onto the block it is actually emitted in.
+    ///
+    /// The reply drained here belongs to the block submitted *last* time, so each
+    /// `frame_offset` counts from that earlier block's start. Relative to now that
+    /// is `offset - PIPELINE_LATENCY_SAMPLES`, always negative because an offset
+    /// cannot exceed its own block's length — so every such event is already due
+    /// and clamps to frame 0. Left unshifted they would land a full block *early*,
+    /// audible as an early-triggering sequencer.
+    ///
+    /// Saturating rather than dropping: the event is late regardless, frame 0 is
+    /// the closest representable position, and dropping would silently lose an
+    /// arpeggiator's notes. The residual error is one block — the same 1.33 ms the
+    /// audio path declares to PDC — and unlike the audio it cannot be compensated,
+    /// since MIDI re-entering routing has no delay line to sit in.
+    #[inline]
+    fn shift_midi_out_into_this_block(&mut self) {
+        let shift = PIPELINE_LATENCY_SAMPLES as u32;
+        for ev in self.midi_out.iter_mut() {
+            ev.frame_offset = ev.frame_offset.saturating_sub(shift);
         }
     }
 
@@ -239,19 +268,27 @@ impl PluginClient {
 
         // Report the FULL input width (main + sidechain/aux input buses) so a
         // fundsp `connect(src, 0, target, 1)` lands on a real sidechain port;
-        // the batcher writes each input port into the matching flat slab
-        // channel (bus-ordered, base 0). The output direction reads from the
-        // slab's per-direction output base so it never aliases the inputs.
-        // Read the layout BEFORE the slab is moved into the bridge.
+        // the batcher writes each input port into the matching channel of the
+        // slab's input region (bus-ordered). Outputs are indexed from 0 within
+        // their own region — there is no base to carry any more, because the two
+        // directions can no longer share one.
         let inputs: usize = server.loaded.total_inputs();
         let outputs: usize = server.loaded.total_outputs();
-        let output_base = server.audio_buffer.layout_ref().output_base();
 
-        let (bridge, bridge_thread) =
-            PluginBridge::new(config.socket_path.clone(), server.audio_buffer, plugin_path)?;
+        let (bridge, bridge_thread) = PluginBridge::new(
+            config.socket_path.clone(),
+            server.audio_buffer,
+            plugin_path,
+            sample_rate,
+        )?;
 
         let latency = Arc::new(AtomicUsize::new(server.loaded.latency_samples));
-        let max_buffer_size = config.max_buffer_size;
+        // Sized to what can actually cross the boundary, matching the slab —
+        // `slab_layout_for` clamps to `BATCH_SIZE` for the same reason (fundsp
+        // never hands a node more than one block). Passing the raw
+        // `max_buffer_size` here meant the batcher allocated 8192 samples per
+        // channel to stage 64, and left the two sizes free to disagree.
+        let max_buffer_size = config.max_buffer_size.min(BATCH_SIZE);
         let process_guard = Arc::new(ProcessGuard::new(server.process, bridge_thread, config));
         let param_sink = ParameterChangeSink::new();
         let refresh_sink = RefreshSink::new();
@@ -294,7 +331,7 @@ impl PluginClient {
             refresh_sink,
             invalidate_sink,
             process_guard,
-            io: Batcher::new(inputs, outputs, output_base, server.format, max_buffer_size),
+            io: Batcher::new(inputs, outputs, server.format, max_buffer_size),
             midi: Midi::new(),
             midi_out: crate::protocol::MidiEventVec::new(),
             // No transport source yet — the host installs one via

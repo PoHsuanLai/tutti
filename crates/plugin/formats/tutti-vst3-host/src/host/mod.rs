@@ -9,6 +9,7 @@ mod library;
 mod loaded;
 mod midi_learn;
 mod midi_mapping;
+mod module_entry;
 mod plugin_state;
 
 pub use instance::Vst3Instance;

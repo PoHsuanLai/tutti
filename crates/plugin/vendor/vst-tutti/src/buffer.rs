@@ -16,6 +16,12 @@ pub struct AudioBuffer<'a, T: 'a + Float> {
 impl<'a, T: 'a + Float> AudioBuffer<'a, T> {
     /// Create an `AudioBuffer` from raw pointers.
     /// Only really useful for interacting with the VST API.
+    ///
+    /// # Safety
+    /// `inputs_raw` must point at `input_count` valid channel pointers and
+    /// `outputs_raw` at `output_count`, each channel pointer addressing at
+    /// least `samples` elements. The output channels must not alias each other
+    /// or the inputs, and all of it must outlive `'a`.
     #[inline]
     pub unsafe fn from_raw(
         input_count: usize,
@@ -421,10 +427,10 @@ impl SendEventBuffer {
     ///
     /// # Example
     /// ```no_run
-    /// # use vst::plugin::{Info, Plugin, HostCallback};
-    /// # use vst::buffer::{AudioBuffer, SendEventBuffer};
-    /// # use vst::host::Host;
-    /// # use vst::event::*;
+    /// # use vst_tutti::plugin::{Info, Plugin, HostCallback};
+    /// # use vst_tutti::buffer::{AudioBuffer, SendEventBuffer};
+    /// # use vst_tutti::host::Host;
+    /// # use vst_tutti::event::*;
     /// # struct ExamplePlugin { host: HostCallback, send_buffer: SendEventBuffer }
     /// # impl Plugin for ExamplePlugin {
     /// #     fn new(host: HostCallback) -> Self { Self { host, send_buffer: Default::default() } }

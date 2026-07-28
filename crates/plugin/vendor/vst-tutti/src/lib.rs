@@ -1,8 +1,21 @@
-// Vendored upstream (vst-rs 0.3.0); its lints are not chased here.
-#![allow(clippy::all)]
+// Forked from vst-rs 0.3.0. This is *owned* code, not a read-only vendor drop:
+// the fork already diverges deliberately (host-side audioMaster callbacks, plus
+// the host-safety fixes documented in `host.rs`), so its lints are chased like
+// any other crate here. The blanket `allow(clippy::all)` that used to sit at the
+// top of this file is what kept those bugs invisible.
+//
+// The remaining allows are narrow and each has a reason:
 #![allow(missing_docs)]
-#![allow(useless_ptr_null_checks)]
+// Elided-lifetime style across a 2021-edition port of a 2018-edition crate.
 #![allow(mismatched_lifetime_syntaxes)]
+//
+// `allow(useless_ptr_null_checks)` used to sit here, justified as "the null
+// checks on FFI function pointers in `host.rs` are load-bearing even though
+// rustc believes an `extern "C" fn` is non-null by type". rustc was right and
+// the justification was backwards: the checks compiled to `false` under `-O`,
+// so the guard shipped only in debug builds while release jumped to address 0.
+// The nullable slots are `Option<...>` now and the lint has nothing left
+// to fire on — if it ever fires again, that is a real bug, not noise.
 
 //! A rust implementation of the VST2.4 API.
 //!
@@ -39,9 +52,9 @@
 //!
 //! ```no_run
 //! #[macro_use]
-//! extern crate vst;
+//! extern crate vst_tutti as vst;
 //!
-//! use vst::plugin::{HostCallback, Info, Plugin};
+//! use vst_tutti::plugin::{HostCallback, Info, Plugin};
 //!
 //! struct BasicPlugin;
 //!
@@ -68,19 +81,19 @@
 //!
 //! ## `Host` Trait
 //! All hosts must implement the [`Host` trait](host/trait.Host.html). To load a VST plugin, you
-//! need to wrap your host in an `Arc<Mutex<T>>` wrapper for thread safety reasons. Along with the
+//! need to wrap your host in an `Arc<T>` wrapper. Along with the
 //! plugin path, this can be passed to the [`PluginLoader::load`] method to create a plugin loader
 //! which can spawn plugin instances.
 //!
 //! ## Example Host
 //! ```no_run
-//! extern crate vst;
+//! extern crate vst_tutti as vst;
 //!
-//! use std::sync::{Arc, Mutex};
+//! use std::sync::Arc;
 //! use std::path::Path;
 //!
-//! use vst::host::{Host, PluginLoader};
-//! use vst::plugin::Plugin;
+//! use vst_tutti::host::{Host, PluginLoader};
+//! use vst_tutti::plugin::Plugin;
 //!
 //! struct SampleHost;
 //!
@@ -91,7 +104,7 @@
 //! }
 //!
 //! fn main() {
-//!     let host = Arc::new(Mutex::new(SampleHost));
+//!     let host = Arc::new(SampleHost);
 //!     let path = Path::new("/path/to/vst");
 //!
 //!     let mut loader = PluginLoader::load(path, host.clone()).unwrap();
@@ -181,12 +194,12 @@ pub fn main<T: Plugin>(callback: HostCallbackProc) -> *mut AEffect {
     // these to zero is undefined behavior.
     let boxed_effect = Box::new(AEffect {
         magic: VST_MAGIC,
-        dispatcher: interfaces::dispatch, // fn pointer
+        dispatcher: Some(interfaces::dispatch), // fn pointer
 
-        _process: interfaces::process_deprecated, // fn pointer
+        _process: Some(interfaces::process_deprecated), // fn pointer
 
-        setParameter: interfaces::set_parameter, // fn pointer
-        getParameter: interfaces::get_parameter, // fn pointer
+        setParameter: Some(interfaces::set_parameter),
+        getParameter: Some(interfaces::get_parameter),
 
         numPrograms: 0, // To be updated with plugin specific value.
         numParams: 0,   // To be updated with plugin specific value.
@@ -210,8 +223,8 @@ pub fn main<T: Plugin>(callback: HostCallbackProc) -> *mut AEffect {
         uniqueId: 0, // To be updated with plugin specific value.
         version: 0,  // To be updated with plugin specific value.
 
-        processReplacing: interfaces::process_replacing, // fn pointer
-        processReplacingF64: interfaces::process_replacing_f64, //fn pointer
+        processReplacing: Some(interfaces::process_replacing), // fn pointer
+        processReplacingF64: Some(interfaces::process_replacing_f64), //fn pointer
 
         future: [0u8; 56],
     });
@@ -397,20 +410,26 @@ mod tests {
 
     #[test]
     fn aeffect_params() {
-        // Assert that 2 function pointers are equal.
-        macro_rules! assert_fn_eq {
+        // Every function slot in `AEffect` is now `Option`, so each needs
+        // unwrapping before the address comparison — and asserting `Some` is
+        // itself part of the contract: we must install these, whatever a
+        // third-party plugin does.
+        macro_rules! assert_opt_fn_eq {
             ($a:expr, $b:expr) => {
-                assert_eq!($a as usize, $b as usize);
+                assert_eq!(
+                    $a.expect("this crate must install the entry point") as usize,
+                    $b as usize
+                );
             };
         }
 
         let aeffect = unsafe { &mut *VSTPluginMain(pass_callback) };
 
         assert_eq!(aeffect.magic, VST_MAGIC);
-        assert_fn_eq!(aeffect.dispatcher, interfaces::dispatch);
-        assert_fn_eq!(aeffect._process, interfaces::process_deprecated);
-        assert_fn_eq!(aeffect.setParameter, interfaces::set_parameter);
-        assert_fn_eq!(aeffect.getParameter, interfaces::get_parameter);
+        assert_opt_fn_eq!(aeffect.dispatcher, interfaces::dispatch);
+        assert_opt_fn_eq!(aeffect._process, interfaces::process_deprecated);
+        assert_opt_fn_eq!(aeffect.setParameter, interfaces::set_parameter);
+        assert_opt_fn_eq!(aeffect.getParameter, interfaces::get_parameter);
         assert_eq!(aeffect.numPrograms, 1);
         assert_eq!(aeffect.numParams, 1);
         assert_eq!(aeffect.numInputs, 2);
@@ -420,8 +439,8 @@ mod tests {
         assert_eq!(aeffect.initialDelay, 123);
         assert_eq!(aeffect.uniqueId, 5678);
         assert_eq!(aeffect.version, 1234);
-        assert_fn_eq!(aeffect.processReplacing, interfaces::process_replacing);
-        assert_fn_eq!(
+        assert_opt_fn_eq!(aeffect.processReplacing, interfaces::process_replacing);
+        assert_opt_fn_eq!(
             aeffect.processReplacingF64,
             interfaces::process_replacing_f64
         );

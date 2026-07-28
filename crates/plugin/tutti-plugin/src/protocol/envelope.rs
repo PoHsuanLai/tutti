@@ -37,8 +37,8 @@ pub enum HostMessage {
         shm_name: String,
     },
     UnloadPlugin,
-    /// Process one audio block. Audio rides the shared `AudioSlab` (referenced
-    /// by `buffer_id`); the boxed payload carries the per-block side-band.
+    /// Process one audio block. Audio rides the shared `AudioSlab`, in the ring
+    /// slot `seq` selects; the boxed payload carries the per-block side-band.
     ProcessAudio(Box<ProcessAudioData>),
     SetParameter {
         param_id: u32,
@@ -95,13 +95,25 @@ pub enum BridgeMessage {
         negotiated_format: SampleFormat,
     },
     PluginUnloaded,
-    /// Acknowledges a processed block. Audio output is written back into the
-    /// shared `AudioSlab` in place; the measured latency and any MIDI the plugin
-    /// emitted this block travel here. (Parameter / note-expression output is
-    /// still not routed back.) `midi_out` is capped at `MIDI_STACK_CAPACITY`
-    /// server-side so it stays inline (no heap on the RT-adjacent path).
+    /// Acknowledges a processed block. Audio output goes into the block's slot
+    /// in the shared `AudioSlab`'s output ring, published there before this
+    /// message is sent; the measured latency and any MIDI the plugin emitted
+    /// travel here. (Parameter / note-expression output is still not routed
+    /// back.) `midi_out` is capped at `MIDI_STACK_CAPACITY` server-side so it
+    /// stays inline (no heap on the RT-adjacent path).
+    ///
+    /// **This message is not what makes the audio readable.** It used to be: the
+    /// echoed `buffer_id` was the only evidence a reply belonged to a given
+    /// block, because the slab carried no generation counter and reported a
+    /// full-length success whether or not anyone had written the region. The
+    /// slab now answers that itself, per slot, so the host would emit silence for
+    /// an unpublished block even if this arrived for it. The echoed `seq` is kept
+    /// for diagnostics and ordering.
     AudioProcessed {
         latency_us: u64,
+        /// Echo of the request's [`ProcessAudioData::seq`].
+        #[serde(default)]
+        seq: u64,
         #[serde(default)]
         midi_out: IpcMidiEventVec,
     },

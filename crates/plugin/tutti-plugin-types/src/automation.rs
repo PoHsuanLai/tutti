@@ -20,10 +20,16 @@ pub struct ParameterPoint {
 /// `MAX_BUFFER_SIZE` (64) block yields `64/8 + 1 = 9` points — 10 inline
 /// leaves headroom and never spills mid-block.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
 pub struct ParameterQueue {
     pub param_id: u32,
-    /// Points in ascending `sample_offset` order (caller maintains order).
+    /// Points in ascending, non-negative `sample_offset` order.
+    ///
+    /// In-process the caller maintains the order (all producers append
+    /// monotonically). Across the wire there *is* no caller, so
+    /// [`normalize`](ParameterQueue::normalize) re-establishes the invariant on
+    /// deserialize — see the `Deserialize` impl below for why that isn't
+    /// derived.
     pub points: SmallVec<[ParameterPoint; 10]>,
 }
 
@@ -52,6 +58,60 @@ impl ParameterQueue {
 
     pub fn clear(&mut self) {
         self.points.clear();
+    }
+
+    /// Re-establish the ordering invariant this type's `points` doc claims:
+    /// clamp negative `sample_offset`s to 0 and stable-sort ascending.
+    ///
+    /// A no-op for the in-process producers (already monotonic); the wire path
+    /// is what needs it. Stable so that two points sharing an offset keep the
+    /// producer's intent — last-writer-wins per offset, which is what every
+    /// consumer here assumes.
+    pub fn normalize(&mut self) {
+        for p in &mut self.points {
+            if p.sample_offset < 0 {
+                p.sample_offset = 0;
+            }
+        }
+        if !self
+            .points
+            .windows(2)
+            .all(|w| w[0].sample_offset <= w[1].sample_offset)
+        {
+            self.points.sort_by_key(|p| p.sample_offset);
+        }
+    }
+}
+
+/// Deserialize through [`ParameterQueue::normalize`].
+///
+/// **Hand-written rather than derived**, for the same reason `TimeSignature`'s
+/// is in `tutti-types`: a derived impl writes `points` straight through, and
+/// deserialization is the one place with no caller to maintain the ordering the
+/// field's doc promises. A peer handing over an unsorted or negatively-offset
+/// queue reaches a plugin unmodified — VST3's `IParamValueQueue::getPoint`
+/// (`com/param_queue.rs`) and CLAP's event emitter both iterate `points` in
+/// index order and hand the offset to the plugin verbatim, so an out-of-order
+/// point becomes a parameter ramp that jumps backwards mid-block, and a negative
+/// offset is a sample index before the start of the buffer.
+///
+/// `Serialize` stays derived: a value that already holds the invariant needs no
+/// checking on the way out.
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for ParameterQueue {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Raw {
+            param_id: u32,
+            points: SmallVec<[ParameterPoint; 10]>,
+        }
+        let raw = Raw::deserialize(d)?;
+        let mut queue = ParameterQueue {
+            param_id: raw.param_id,
+            points: raw.points,
+        };
+        queue.normalize();
+        Ok(queue)
     }
 }
 
@@ -104,5 +164,82 @@ impl ParameterChanges {
 
     pub fn get_queue_mut(&mut self, param_id: u32) -> Option<&mut ParameterQueue> {
         self.queues.iter_mut().find(|q| q.param_id == param_id)
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    fn round_trip(q: &ParameterQueue) -> ParameterQueue {
+        let bytes = bincode::serialize(q).expect("serialize");
+        bincode::deserialize(&bytes).expect("deserialize")
+    }
+
+    /// A peer can hand over points in any order; the wire path has no caller to
+    /// maintain the `points` doc's ascending invariant, so deserialize must.
+    #[test]
+    fn deserialize_sorts_out_of_order_points() {
+        let mut q = ParameterQueue::new(7);
+        q.add_point(32, 0.5);
+        q.add_point(0, 0.0);
+        q.add_point(16, 0.25);
+
+        let got = round_trip(&q);
+
+        assert_eq!(got.param_id, 7);
+        let offsets: Vec<i32> = got.points.iter().map(|p| p.sample_offset).collect();
+        assert_eq!(offsets, vec![0, 16, 32]);
+        // Values travel with their offsets, not independently.
+        assert_eq!(got.points[0].value, 0.0);
+        assert_eq!(got.points[1].value, 0.25);
+        assert_eq!(got.points[2].value, 0.5);
+    }
+
+    /// A negative offset is a sample index before the start of the buffer;
+    /// VST3's `getPoint` hands it to the plugin verbatim.
+    #[test]
+    fn deserialize_clamps_negative_offsets() {
+        let mut q = ParameterQueue::new(1);
+        q.add_point(-100, 0.75);
+        q.add_point(8, 0.25);
+
+        let got = round_trip(&q);
+
+        assert_eq!(got.points[0].sample_offset, 0);
+        assert_eq!(got.points[0].value, 0.75);
+        assert_eq!(got.points[1].sample_offset, 8);
+    }
+
+    /// An already-ordered queue is untouched — the common case pays no reorder.
+    #[test]
+    fn deserialize_leaves_ordered_points_alone() {
+        let mut q = ParameterQueue::new(3);
+        for i in 0..9 {
+            q.add_point(i * 8, i as f64 / 8.0);
+        }
+
+        let got = round_trip(&q);
+
+        let offsets: Vec<i32> = got.points.iter().map(|p| p.sample_offset).collect();
+        assert_eq!(offsets, (0..9).map(|i| i * 8).collect::<Vec<_>>());
+    }
+
+    /// `ParameterChanges` derives its `Deserialize`, so the per-queue impl has
+    /// to fire through the collection too — that is the shape the IPC protocol
+    /// actually sends.
+    #[test]
+    fn nested_in_parameter_changes() {
+        let mut changes = ParameterChanges::new();
+        changes.add_change(1, 32, 1.0);
+        changes.add_change(1, -4, 0.0);
+        changes.add_change(2, 0, 0.5);
+
+        let bytes = bincode::serialize(&changes).expect("serialize");
+        let got: ParameterChanges = bincode::deserialize(&bytes).expect("deserialize");
+
+        let q = got.get_queue(1).expect("queue 1");
+        assert_eq!(q.points[0].sample_offset, 0);
+        assert_eq!(q.points[1].sample_offset, 32);
     }
 }

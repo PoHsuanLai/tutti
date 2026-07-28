@@ -1,7 +1,7 @@
 //! VST3-specific encoding of the shared [`TransportInfo`] into VST3's
 //! `ProcessContext` struct.
 
-use tutti_plugin_types::TransportInfo;
+use tutti_plugin_types::{is_usable, TransportInfo};
 use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
 
 /// VST3 `IProcessContextRequirements` flag bits as simple `u32` constants,
@@ -57,7 +57,12 @@ pub mod process_context_flags {
 /// before the interface was wired.
 ///
 /// Field mapping:
-/// - `position.samples` → `projectTimeSamples` (always)
+/// - `position.samples` → `projectTimeSamples` (always). VST3 has no validity
+///   bit for this field, so when the host reports `None` there is nothing
+///   honest to send and it is left `0`. TODO: source a real project-time sample
+///   clock from the transport — until then a plugin doing sample-accurate math
+///   off `projectTimeSamples` sees the project frozen at sample 0. See
+///   `TransportPosition::samples`.
 /// - `position.continuous_samples` → `continousTimeSamples` (the monotonic
 ///   clock that does not reset on loop; falls back to `position.samples` when
 ///   unset, i.e. `0`)
@@ -94,19 +99,46 @@ pub fn to_process_context(
             }
         }
         // Each `*Valid` bit advertises that the matching field below is filled,
-        // so it must track the same requirement gate.
-        if wants(need::NEED_PROJECT_TIME_MUSIC) {
+        // so it must track the same requirement gate — AND the value must be one
+        // a plugin can compute with.
+        //
+        // The requirement mask alone is not enough: it says what the plugin
+        // *asked for*, not what the host *has*. Setting a validity bit over a
+        // NaN or an infinity is worse than leaving it clear, because a plugin
+        // that trusts the bit propagates the NaN through its timing math into
+        // the audio buffer. The VST2 path has always gated on the value this
+        // way; this one did not, so the two drifted (`is_usable` now lives in
+        // `tutti-plugin-types` so they cannot drift again).
+        if wants(need::NEED_PROJECT_TIME_MUSIC) && is_usable(t.position.quarters) {
             state |= StatesAndFlags_::kProjectTimeMusicValid as u32;
         }
-        if wants(need::NEED_BAR_POSITION_MUSIC) {
+        if wants(need::NEED_BAR_POSITION_MUSIC) && is_usable(t.bar.position_quarters) {
             state |= StatesAndFlags_::kBarPositionValid as u32;
         }
-        if wants(need::NEED_TEMPO) {
+        // Tempo carries a domain rule beyond finiteness: zero or negative BPM
+        // is not a tempo, and a plugin dividing by it produces an infinity.
+        // Matches the VST2 path's `is_usable(..) && > 0.0`.
+        if wants(need::NEED_TEMPO) && is_usable(t.timing.tempo) && t.timing.tempo > 0.0 {
             state |= StatesAndFlags_::kTempoValid as u32;
         }
         if wants(need::NEED_TIME_SIGNATURE) {
             state |= StatesAndFlags_::kTimeSigValid as u32;
         }
+        // `continousTimeSamples` is filled below whenever the plugin asked for
+        // it, so `kContTimeValid` must be set on the same condition. Without the
+        // bit a spec-correct plugin ignores the field entirely — the value was
+        // being computed and shipped into a dead slot.
+        if wants(need::NEED_CONTINOUS_TIME_SAMPLES) {
+            state |= StatesAndFlags_::kContTimeValid as u32;
+        }
+        // Deliberately NOT set: `kSystemTimeValid` and `kClockValid`. This host
+        // has no source for `systemTime` (a host-clock reading in nanoseconds)
+        // or `samplesToNextClock` (distance to the next MIDI 24-ppq clock), so
+        // both fields are left zeroed by the `mem::zeroed` above and left
+        // unflagged. Writing a literal 0 *and* claiming validity would tell a
+        // plugin the transport is pinned at time zero, which is worse than
+        // saying nothing. Same for `kSmpteValid` / `kChordValid`, whose fields
+        // have no producer either.
         state
     };
 
@@ -118,7 +150,12 @@ pub fn to_process_context(
     } else {
         44100.0
     };
-    ctx.projectTimeSamples = t.position.samples;
+    // VST3 carries no `kProjectTimeSamplesValid` bit — the field is always read
+    // as fact — so an absent project-time clock can only degrade to 0. TODO
+    // (see the field doc on `TransportPosition::samples`): give the transport a
+    // real project-time sample clock; until then plugins keying sample-accurate
+    // math off this see sample 0 forever.
+    ctx.projectTimeSamples = t.position.samples.unwrap_or(0);
 
     if wants(need::NEED_CONTINOUS_TIME_SAMPLES) {
         // The continuous clock is monotonic across loop/cycle boundaries and is
@@ -128,12 +165,15 @@ pub fn to_process_context(
         ctx.continousTimeSamples = if t.position.continuous_samples != 0 {
             t.position.continuous_samples
         } else {
-            t.position.samples
+            t.position.samples.unwrap_or(0)
         };
     }
-    if wants(need::NEED_SYSTEM_TIME) {
-        ctx.systemTime = 0;
-    }
+    // `systemTime` is intentionally not written: there is no host-clock source
+    // in `TransportInfo`, and `kSystemTimeValid` is correspondingly left clear
+    // (see the state block above). It stays 0 from `mem::zeroed`, which a
+    // spec-correct plugin ignores.
+    // TODO: plumb a monotonic host clock through `TransportInfo` (a
+    // tutti-plugin-types change), then fill the field and set the bit here.
     if wants(need::NEED_PROJECT_TIME_MUSIC) {
         ctx.projectTimeMusic = t.position.quarters;
     }
@@ -154,12 +194,15 @@ pub fn to_process_context(
         ctx.timeSigNumerator = t.timing.signature.beats_per_bar().into();
         ctx.timeSigDenominator = t.timing.signature.note_value().into();
     }
-    if wants(need::NEED_SAMPLES_TO_NEXT_CLOCK) {
-        ctx.samplesToNextClock = 0;
-    }
+    // `samplesToNextClock` is likewise not written: no MIDI-clock grid is
+    // tracked here, so `kClockValid` stays clear and the field stays 0.
+    // TODO: derive it from tempo + sample rate + project position (24 ppq) and
+    // set `kClockValid` alongside it.
+    //
     // `smpteOffsetSubframes` / `frameRate` (kNeedFrameRate) and the chord field
-    // (kNeedChord) are not sourced from TransportInfo yet; left zeroed. When a
-    // producer exists they gate on NEED_FRAME_RATE / NEED_CHORD here.
+    // (kNeedChord) are not sourced from TransportInfo yet; left zeroed with
+    // `kSmpteValid` / `kChordValid` clear. When a producer exists they gate on
+    // NEED_FRAME_RATE / NEED_CHORD here and set their own valid bit.
     ctx
 }
 
@@ -167,46 +210,86 @@ pub fn to_process_context(
 mod tests {
     use super::process_context_flags as need;
     use super::*;
-    use tutti_plugin_types::{
-        BarInfo, BeatsPerBar, LoopRegion, MusicalTiming, NoteValue, TimeSignature, TransportFlags,
-        TransportPosition,
-    };
+    use tutti_plugin_types::{is_usable, BeatsPerBar, NoteValue, TimeSignature};
     use vst3::Steinberg::Vst::ProcessContext_::StatesAndFlags_;
 
     /// A TransportInfo with every field set to a recognisable non-zero value,
     /// so a "field was populated" check is unambiguous.
+    ///
+    /// Built through the `with_*` constructors, **not** struct literals. The
+    /// literal form used to hand-fill `LoopRegion { start_quarters, end_quarters }`
+    /// directly, which is precisely why `with_loop` shipping without setting the
+    /// `_quarters` pair passed CI: the test asserted this host reads the fields,
+    /// never that the constructor writes them.
     fn populated_transport() -> TransportInfo {
-        TransportInfo {
-            sample_rate: 48_000.0,
-            position: TransportPosition {
-                samples: 1_234,
-                quarters: 4.0,
-                ..Default::default()
-            },
-            bar: BarInfo {
-                position_quarters: 8.0,
-                ..Default::default()
-            },
-            loop_region: LoopRegion {
-                start_quarters: 2.0,
-                end_quarters: 6.0,
-                ..Default::default()
-            },
-            timing: MusicalTiming {
-                tempo: 128.0,
-                signature: TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH),
-            },
-            state: TransportFlags {
-                playing: true,
-                recording: true,
-                cycle_active: true,
-            },
-        }
+        TransportInfo::new()
+            .with_sample_rate(48_000.0)
+            .with_position_samples(1_234)
+            .with_position_quarters(4.0)
+            .with_bar(8.0, Default::default())
+            .with_loop(true, 2.0, 6.0)
+            .with_tempo(128.0)
+            .with_time_signature(TimeSignature::new(BeatsPerBar::new(7), NoteValue::EIGHTH))
+            .with_playing(true)
+            .with_recording(true)
     }
 
     /// `u32::MAX` (the "plugin didn't implement IProcessContextRequirements"
     /// sentinel) fills every field this host knows how to source — i.e. the
     /// behaviour before the interface was wired.
+    /// An unusable value must not be advertised as valid, however loudly the
+    /// plugin asked for it.
+    ///
+    /// The requirement mask says what the plugin *wants*, not what the host
+    /// *has*. Gating the `*Valid` bits on the mask alone let a NaN tempo reach
+    /// the plugin flagged valid — and a plugin that trusts the flag divides by
+    /// it, propagating NaN or an infinity straight into the audio buffer. The
+    /// VST2 path has always gated on the value; this one had drifted.
+    #[test]
+    fn a_nan_or_zero_field_is_not_advertised_as_valid() {
+        // Everything requested, so only the value can clear a bit.
+        let all = u32::MAX;
+
+        let mut t = populated_transport();
+        t.timing.tempo = f64::NAN;
+        let ctx = to_process_context(&t, all);
+        assert_eq!(
+            ctx.state & StatesAndFlags_::kTempoValid as u32,
+            0,
+            "a NaN tempo must not be flagged valid — the plugin will compute \
+             with it"
+        );
+
+        // Zero is finite but not a tempo: a plugin dividing by it gets an
+        // infinity. Matches the VST2 path's `> 0.0` rule.
+        let mut t = populated_transport();
+        t.timing.tempo = 0.0;
+        let ctx = to_process_context(&t, all);
+        assert_eq!(
+            ctx.state & StatesAndFlags_::kTempoValid as u32,
+            0,
+            "a zero tempo must not be flagged valid"
+        );
+
+        let mut t = populated_transport();
+        t.position.quarters = f64::INFINITY;
+        let ctx = to_process_context(&t, all);
+        assert_eq!(
+            ctx.state & StatesAndFlags_::kProjectTimeMusicValid as u32,
+            0,
+            "an infinite musical position must not be flagged valid"
+        );
+
+        // The gate must not fire on good values — otherwise it would pass by
+        // clearing every bit unconditionally.
+        let ctx = to_process_context(&populated_transport(), all);
+        assert_ne!(ctx.state & StatesAndFlags_::kTempoValid as u32, 0);
+        assert_ne!(
+            ctx.state & StatesAndFlags_::kProjectTimeMusicValid as u32,
+            0
+        );
+    }
+
     #[test]
     fn all_bits_fills_everything() {
         let t = populated_transport();
@@ -232,6 +315,93 @@ mod tests {
         assert_ne!(s & StatesAndFlags_::kBarPositionValid, 0);
         assert_ne!(s & StatesAndFlags_::kTempoValid, 0);
         assert_ne!(s & StatesAndFlags_::kTimeSigValid, 0);
+        assert_ne!(
+            s & StatesAndFlags_::kContTimeValid,
+            0,
+            "continousTimeSamples is filled, so kContTimeValid must be set"
+        );
+
+        // Fields with no producer are neither written nor flagged. Writing a
+        // literal 0 while leaving the bit clear was dead code; claiming
+        // validity for it would be a lie.
+        assert_eq!(ctx.systemTime, 0);
+        assert_eq!(s & StatesAndFlags_::kSystemTimeValid, 0);
+        assert_eq!(ctx.samplesToNextClock, 0);
+        assert_eq!(s & StatesAndFlags_::kClockValid, 0);
+        assert_eq!(s & StatesAndFlags_::kSmpteValid, 0);
+        assert_eq!(s & StatesAndFlags_::kChordValid, 0);
+    }
+
+    /// Per `ivstprocesscontext.h`, each `*Valid` bit must be set iff its field
+    /// carries meaning. This pins the pairing for every field this host fills:
+    /// requesting exactly one field sets exactly that field's valid bit, and
+    /// not requesting it leaves both the field and the bit clear.
+    #[test]
+    fn each_valid_bit_tracks_its_own_field() {
+        let t = populated_transport();
+
+        // (requirement bit, valid bit, "is the field non-zero?" probe)
+        #[allow(clippy::type_complexity)]
+        let cases: &[(
+            &str,
+            u32,
+            u32,
+            fn(&vst3::Steinberg::Vst::ProcessContext) -> bool,
+        )] = &[
+            (
+                "projectTimeMusic",
+                need::NEED_PROJECT_TIME_MUSIC,
+                StatesAndFlags_::kProjectTimeMusicValid,
+                |c| c.projectTimeMusic != 0.0,
+            ),
+            (
+                "barPositionMusic",
+                need::NEED_BAR_POSITION_MUSIC,
+                StatesAndFlags_::kBarPositionValid,
+                |c| c.barPositionMusic != 0.0,
+            ),
+            (
+                "tempo",
+                need::NEED_TEMPO,
+                StatesAndFlags_::kTempoValid,
+                |c| c.tempo != 0.0,
+            ),
+            (
+                "timeSig",
+                need::NEED_TIME_SIGNATURE,
+                StatesAndFlags_::kTimeSigValid,
+                |c| c.timeSigNumerator != 0,
+            ),
+            (
+                "continousTimeSamples",
+                need::NEED_CONTINOUS_TIME_SAMPLES,
+                StatesAndFlags_::kContTimeValid,
+                |c| c.continousTimeSamples != 0,
+            ),
+        ];
+
+        for (name, requirement, valid_bit, field_filled) in cases {
+            let on = to_process_context(&t, *requirement);
+            assert!(field_filled(&on), "{name}: requested but not filled");
+            assert_ne!(
+                on.state & valid_bit,
+                0,
+                "{name}: filled but its *Valid bit is clear — a spec-correct \
+                 plugin ignores the field, so the feature is dead"
+            );
+
+            // The inverse: nothing requested → field untouched, bit clear.
+            let off = to_process_context(&t, 0);
+            assert!(
+                !field_filled(&off),
+                "{name}: filled without being requested"
+            );
+            assert_eq!(
+                off.state & valid_bit,
+                0,
+                "{name}: valid bit set with no data"
+            );
+        }
     }
 
     /// Requesting only tempo fills `tempo` + `kTempoValid` and nothing else
@@ -271,6 +441,11 @@ mod tests {
         assert_eq!(ctx.projectTimeSamples, 1_234);
         assert_eq!(ctx.continousTimeSamples, 100_000);
         assert_ne!(ctx.projectTimeSamples, ctx.continousTimeSamples);
+        assert_ne!(
+            ctx.state & StatesAndFlags_::kContTimeValid,
+            0,
+            "without kContTimeValid the plugin ignores continousTimeSamples"
+        );
     }
 
     /// A host with no separate continuous clock leaves `continuous_samples`
@@ -285,6 +460,7 @@ mod tests {
         assert_eq!(ctx.projectTimeSamples, 1_234);
         assert_eq!(ctx.continousTimeSamples, 1_234);
         assert_eq!(ctx.projectTimeSamples, ctx.continousTimeSamples);
+        assert_ne!(ctx.state & StatesAndFlags_::kContTimeValid, 0);
     }
 
     /// Always-on fields (sampleRate, projectTimeSamples) are populated even

@@ -8,14 +8,18 @@ use super::{
     ParameterChanges, ScaleChanges, TransportInfo,
 };
 
-/// One process block's inputs: which slab buffer holds the audio, the sample
-/// count, and all the per-block side-band (MIDI, automation, note-expression,
-/// VST3 sequencer-context, transport). Audio itself travels in the shared
-/// `AudioSlab`, referenced by `buffer_id`; everything here rides the control
-/// socket alongside it.
+/// One process block's inputs: which block this is, the sample count, and all
+/// the per-block side-band (MIDI, automation, note-expression, VST3
+/// sequencer-context, transport). Audio itself travels in the shared
+/// `AudioSlab`; everything here rides the control socket alongside it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProcessAudioData {
-    pub buffer_id: u32,
+    /// Which block this is. Monotonic per plugin instance from 1, and the index
+    /// into the slab's ring: the server reads `seq`'s input slot and publishes
+    /// into `seq`'s output slot, so both sides address the shared region by this
+    /// number alone. `u64` rather than the `u32` id it replaced — a sequence
+    /// that wraps could be matched by the wrong block.
+    pub seq: u64,
     pub num_samples: usize,
     pub midi_events: IpcMidiEventVec,
     pub param_changes: ParameterChanges,

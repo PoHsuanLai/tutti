@@ -93,10 +93,34 @@ impl PluginFormat {
     }
 }
 
+/// Compile-time projection of the extension column out of
+/// [`super::fs::FORMAT_BY_EXTENSION`]. Keeping this derived (rather than a
+/// second hand-written list) is the fix for the two lists disagreeing: this
+/// const used to advertise `dll`/`so` while `format_from_path` rejected both,
+/// so no VST2 plugin was discoverable on Windows or Linux.
+const fn extension_names<const N: usize>() -> [&'static str; N] {
+    let table = super::fs::FORMAT_BY_EXTENSION;
+    assert!(
+        table.len() == N,
+        "extension_names::<N> must match FORMAT_BY_EXTENSION.len()"
+    );
+    let mut out = [""; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = table[i].0;
+        i += 1;
+    }
+    out
+}
+
+const EXTENSION_NAMES: [&str; 7] = extension_names::<7>();
+
 impl PluginRecord {
-    /// Plugin file extensions a scanner / asset path recognises.
-    pub const EXTENSIONS: &'static [&'static str] =
-        &["vst3", "vst", "dll", "so", "clap", "component", "wasm"];
+    /// Plugin file extensions a scanner / asset path recognises. Derived from
+    /// the one [`super::fs::FORMAT_BY_EXTENSION`] table that
+    /// [`super::fs::format_from_path`] matches against, so the advertised list
+    /// and the accepted list are the same list.
+    pub const EXTENSIONS: &'static [&'static str] = &EXTENSION_NAMES;
 
     /// Probe a plugin file into a full record. Spawns a
     /// `tutti-plugin-server` subprocess to read metadata, falling back to

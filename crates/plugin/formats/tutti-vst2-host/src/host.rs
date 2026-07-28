@@ -23,7 +23,7 @@
 
 use crate::midi::to_midi;
 use crate::types::MidiEvent;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use vst::host::Host;
 
 /// `(parameter_index, normalized_value)` reported by the plugin's
@@ -36,7 +36,10 @@ pub type ParameterChange = (i32, f32);
 pub(crate) struct HostLink {
     /// Kept alive so the `Host`-trait callbacks keep firing; never read
     /// directly — the plugin holds the other end. Drop ends the callbacks.
-    pub(crate) _state: Arc<Mutex<HostState>>,
+    ///
+    /// No `Mutex`: this is reached from the plugin's audio thread on every
+    /// `audioMasterGetTime`, and every field it exposes is already lock-free.
+    pub(crate) _state: Arc<HostState>,
     /// Transport snapshot the host pushes and the plugin reads via
     /// `get_time_info`. Lock-free swap so the audio thread never blocks.
     pub(crate) time_info: Arc<arc_swap::ArcSwap<Option<vst::api::TimeInfo>>>,

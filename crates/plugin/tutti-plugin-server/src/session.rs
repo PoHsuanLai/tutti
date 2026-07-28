@@ -114,6 +114,7 @@ impl Session {
                     transport: &data.transport,
                 };
                 self.handle_process(AudioBlock {
+                    seq: data.seq,
                     num_samples: data.num_samples,
                     midi: &midi,
                     extras: Some(extras),
@@ -172,6 +173,13 @@ impl Session {
                 }
                 Ok(Reaction::None)
             }
+            // Deliberately a no-op, and the host depends on that. Clearing the
+            // pipeline on a seek is entirely the host's job: it drops its
+            // in-flight block and never rewinds its sequence, so a pre-seek
+            // block published late is structurally unmatchable. Nothing useful
+            // is left for the server to do — and anything it *did* do here
+            // (zeroing a slot, resetting a counter) would be a second mechanism
+            // that could disagree with the first.
             M::Reset => Ok(Reaction::None),
 
             M::SaveState => Ok(self.handle_save_state().into()),
@@ -258,6 +266,17 @@ impl Session {
     }
 
     fn handle_process(&mut self, block: AudioBlock<'_>) -> Result<Reaction> {
+        // Read before `block` is moved into the pipeline: every reply below
+        // echoes it.
+        let seq = block.seq;
+
+        // NOTE — both early returns below reply WITHOUT publishing to the slab,
+        // and that is deliberate. The host's read is gated on the output
+        // sequence, so an unpublished block reads back as silence; there is no
+        // separate "this block failed" signal to send, and none is wanted.
+        // Publishing something here to "answer properly" would be actively
+        // wrong: it would hand the host a slot full of whatever the previous
+        // block left, marked valid.
         let Some(plugin) = self.plugin.as_mut() else {
             return Ok(BridgeMessage::Error {
                 message: "No plugin loaded".to_string(),
@@ -265,11 +284,12 @@ impl Session {
             .into());
         };
         let Some(shm) = self.shm.as_mut() else {
-            // Matches prior behavior: process path only ran under the full
-            // `plugin + shared_buffer` pair. No shm ⇒ produce an empty
-            // AudioProcessed reply so the host stays in sync.
+            // The process path only ever ran under the full `plugin + shm` pair.
+            // Reply so the host's queue stays in step; no publish, so it hears
+            // silence.
             return Ok(BridgeMessage::AudioProcessed {
                 latency_us: 0,
+                seq,
                 midi_out: IpcMidiEventVec::new(),
             }
             .into());
@@ -280,6 +300,7 @@ impl Session {
             .process(plugin.instance_mut(), shm, &self.clock, block)?;
         Ok(BridgeMessage::AudioProcessed {
             latency_us: output.latency_us,
+            seq,
             midi_out: encode_midi_out(&output.midi_out),
         }
         .into())
@@ -411,7 +432,7 @@ mod tests {
         let r = s
             .handle(HostMessage::ProcessAudio(Box::new(
                 tutti_plugin::server::ProcessAudioData {
-                    buffer_id: 0,
+                    seq: 0,
                     num_samples: 256,
                     midi_events: IpcMidiEventVec::new(),
                     param_changes: ParameterChanges::new(),
@@ -550,11 +571,11 @@ mod tests {
 
         let buffer_name = format!("tutti_vst_buffer_{}_{}", name, std::process::id());
         let layout = tutti_plugin::server::SlabLayout {
-            channels: tutti_plugin::server::ChannelLayout::Stereo,
             samples_per_channel: 8192,
             format: preferred_format,
-            inputs: smallvec::smallvec![],
-            outputs: smallvec::smallvec![],
+            slots: tutti_plugin::server::RING_SLOTS as u32,
+            inputs: smallvec::smallvec![tutti_plugin::server::ChannelLayout::Stereo],
+            outputs: smallvec::smallvec![tutti_plugin::server::ChannelLayout::Stereo],
         };
         let shm_guard = AudioSlab::create(buffer_name.clone(), layout.clone()).unwrap();
         s.shm = Some(AudioSlab::open(buffer_name, layout).unwrap());
@@ -747,7 +768,7 @@ mod tests {
         let reply = s
             .handle(HostMessage::ProcessAudio(Box::new(
                 tutti_plugin::server::ProcessAudioData {
-                    buffer_id: 0,
+                    seq: 0,
                     num_samples: 512,
                     midi_events: IpcMidiEventVec::new(),
                     param_changes: ParameterChanges::new(),

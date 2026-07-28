@@ -11,7 +11,10 @@ use crate::protocol::{
 /// recycled between calls to avoid RT allocation.
 #[derive(Debug)]
 pub(super) struct ProcessPayload {
-    pub buffer_id: u32,
+    /// Which block this is. Monotonic per plugin instance, starting at 1, and
+    /// the same number that indexes this block's slab ring slot — the host and
+    /// the server address the shared region by it.
+    pub seq: u64,
     pub num_samples: usize,
     pub midi_events: MidiEventVec,
     pub param_changes: ParameterChanges,
@@ -27,7 +30,7 @@ pub(super) struct ProcessPayload {
 impl ProcessPayload {
     pub(super) fn empty() -> Self {
         Self {
-            buffer_id: 0,
+            seq: 0,
             num_samples: 0,
             midi_events: MidiEventVec::new(),
             param_changes: ParameterChanges::new(),
@@ -84,19 +87,41 @@ pub(super) enum Command {
 /// `Process` is on the RT path so it stays on a dedicated lock-free
 /// queue, not on a per-request `Reply` (audio thread can't block).
 ///
-/// `AudioProcessed` carries the plugin's MIDI-out for the block. The
-/// `IpcMidiEvent → MidiEvent` conversion happens on the bridge thread (off-RT,
-/// see `dispatch`), so the SmallVec moves through the queue already built; the
-/// RT thread only drains it into caller storage.
+/// **This queue no longer carries evidence about audio.** It once did: the RT
+/// thread waited for the reply matching the block it had just submitted, because
+/// nothing else could tell it whether the slab held that block's output. The
+/// slab now answers that itself, with a per-slot sequence number the server
+/// publishes after the last sample. So these are notifications, not permissions
+/// — the host reads audio on the strength of the slab, and would emit silence
+/// for an unpublished block even if a reply for it arrived.
+///
+/// What remains is the plugin's MIDI-out. The `IpcMidiEvent → MidiEvent`
+/// conversion happens on the bridge thread (off-RT, see `dispatch`), so the
+/// SmallVec moves through the queue already built; the RT thread only drains it
+/// into caller storage.
 // `AudioProcessed` holds an inline-256 `MidiEventVec` (~5 KB) vs the zero-size
 // `Error`. Intentional: the SmallVec stays inline so popping + dropping it on the
-// RT audio thread never touches the heap (see `process`). Boxing would defeat
+// RT audio thread never touches the heap (see `submit`). Boxing would defeat
 // that by moving the free onto the RT thread.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub(super) enum AudioResponse {
-    AudioProcessed { midi_out: MidiEventVec },
-    Error,
+    AudioProcessed {
+        /// The block this answers, as echoed by the server. Kept for diagnostics
+        /// and ordering; the slab is what establishes validity.
+        #[allow(dead_code)]
+        seq: u64,
+        midi_out: MidiEventVec,
+    },
+    /// A block failed. `seq` is `Some` when the failure is attributable to one
+    /// request (the server replied `Error` to it) and `None` for a
+    /// connection-level failure that ends every in-flight block. Either way the
+    /// host needs no action: the server never published, so the sequence check
+    /// fails and silence follows.
+    Error {
+        #[allow(dead_code)]
+        seq: Option<u64>,
+    },
 }
 
 /// Plugin-originated, unsolicited events observed on the control stream.

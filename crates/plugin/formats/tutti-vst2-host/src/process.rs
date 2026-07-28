@@ -84,11 +84,18 @@ impl Vst2Instance {
         }
     }
 
+    /// Refresh the snapshot the plugin reads back via `audioMasterGetTime`.
+    ///
+    /// The previously stored snapshot is loaded and handed to the builder:
+    /// `kVstTransportChanged` is an *edge*, so the only way to know whether the
+    /// transport state moved is to compare against what this plugin was last
+    /// told. When `ctx.transport` is `None` the last snapshot is left in place,
+    /// so the next real update still sees the correct predecessor.
     fn update_transport(&self, ctx: &ProcessContext) {
         if let Some(t) = ctx.transport {
-            self.host_link
-                .time_info
-                .store(Arc::new(Some(build_vst2_time_info(t, ctx.sample_rate))));
+            let previous = self.host_link.time_info.load();
+            let next = build_vst2_time_info(t, ctx.sample_rate, previous.as_ref().as_ref());
+            self.host_link.time_info.store(Arc::new(Some(next)));
         }
     }
 

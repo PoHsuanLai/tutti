@@ -87,9 +87,6 @@ tracing = "0.1"
 # extract the platform pointer internally.
 raw-window-handle = "0.6"
 
-# Fork-based plugin probe (Unix)
-libc = "0.2"
-
 # In-process plugin GUI (optional — loads plugin library for editor only).
 # `tutti-vst2-host` is different: it owns the audio path too (single in-process
 # AEffect), since VST2 fuses editor and processor.

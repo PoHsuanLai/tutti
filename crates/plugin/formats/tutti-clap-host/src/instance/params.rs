@@ -188,37 +188,46 @@ impl ClapLoaded {
     /// in response. Returns empty if the plugin does not implement params
     /// or lacks a flush function.
     ///
-    /// # Thread interlock (H1)
+    /// # Thread interlock (C2)
     /// CLAP declares `params.flush` as `[active ? audio-thread : main-thread]`
-    /// and forbids it running concurrently with `process`. This method has no
-    /// direct access to the active instance's scratch, so it cannot enqueue
-    /// into the next `process` block itself; instead it gates by state:
+    /// and states it "must not be called concurrently to
+    /// `clap_plugin->process()`". This gates by state, and on the active path
+    /// enforces that with real mutual exclusion, not an assertion:
     ///
-    /// - **Inactive** (`!flags.processing`) — the plugin has not
-    ///   `start_processing`'d, so a main-thread flush is safe. This is the
-    ///   GUI-only / setup path and is unchanged.
-    /// - **Active** (`flags.processing`) — flush must happen on the audio
-    ///   thread and must not overlap `process`. We debug-assert we are on the
-    ///   published audio thread. Callers driving an active instance should
-    ///   route param changes through the next `process` block (via
-    ///   `ProcessContext::params`) rather than calling flush here; the full
-    ///   enqueue path is deferred to the trait/adapter phase.
+    /// - **Inactive** (`!flags.active`) — `activate()` has not run, so a
+    ///   main-thread flush is what the spec asks for. This is the GUI-only /
+    ///   setup path.
+    /// - **Active** (`flags.active`) — the flush runs under an
+    ///   [`AudioThreadClaim`](crate::host::AudioThreadClaim), so the calling
+    ///   thread *becomes* the audio thread for the duration (which the spec
+    ///   explicitly permits for any OS thread) and **blocks** until any
+    ///   in-flight `process` on the real audio thread has returned. The
+    ///   previous `debug_assert!` provided neither: it compiled out in release,
+    ///   and in debug it compared against an `audio_thread_id` the host itself
+    ///   had set to the calling thread, so it was tautologically true.
+    ///
+    /// The condition is `active`, **not** `processing`. Those differ for the
+    /// whole window between `activate()` and the first `process()` — which is
+    /// exactly when a host sets up initial parameter values. Gating on
+    /// `processing` took the main-thread branch there while the plugin considered
+    /// itself active, and TAL-Reverb-4's validation layer duly reported
+    /// `clap_plugin_params.flush() was called on the wrong thread`. The values
+    /// were dropped, silently, on the one path a host uses to configure a plugin
+    /// before playing it.
+    ///
+    /// Callers driving an active instance should still prefer routing param
+    /// changes through the next `process` block (via `ProcessContext::params`)
+    /// — that is in-order delivery rather than an out-of-band poke — but doing
+    /// it here is now safe rather than merely unasserted.
     pub fn flush_params(&mut self, input_events: Vec<ClapEvent>) -> Vec<ClapEvent> {
-        if self.flags.processing {
-            // Active: the only sound caller is the audio thread. A main-thread
-            // call here would race the plugin's `process`.
-            debug_assert!(
-                self.host_state
-                    .audio_thread_id
-                    .load()
-                    .as_deref()
-                    .is_some_and(|id| *id == std::thread::current().id()),
-                "flush_params on an ACTIVE instance must run on the audio thread \
-                 (or route param changes through the next process block)"
-            );
+        // Bind the claim to a local so it lives across the whole flush call and
+        // releases only after the plugin has returned.
+        let _claim = if self.flags.active {
+            Some(self.host_state.claim_audio_thread())
         } else {
             self.assert_main_thread();
-        }
+            None
+        };
 
         let Some(ext) = (unsafe { ext::opt(self.extensions.params.params) }) else {
             return Vec::new();
@@ -245,7 +254,7 @@ impl ClapLoaded {
     /// Convenience wrapper that flushes a single `PARAM_VALUE` event.
     ///
     /// # REQUIRES_PROCESS gating (H1)
-    /// If the instance is active and `id` is flagged
+    /// If the instance is *processing* and `id` is flagged
     /// `CLAP_PARAM_REQUIRES_PROCESS`, the change is **not** flushed: the CLAP
     /// spec requires such params be delivered in-order through `process()`, and
     /// this host cannot yet enqueue into the next block from here (see
@@ -253,8 +262,13 @@ impl ClapLoaded {
     /// [`flush_params`](Self::flush_params)). Delivering it out-of-band via
     /// flush would violate the plugin's ordering contract, so it is skipped;
     /// routing REQUIRES_PROCESS params through `ProcessContext::params` is
-    /// deferred follow-up. On an inactive instance the flush is spec-legal and
-    /// happens normally.
+    /// deferred follow-up.
+    ///
+    /// `processing` is the right condition here, unlike in
+    /// [`flush_params`](Self::flush_params) where it was a bug: in-order delivery
+    /// is only meaningful once blocks are actually flowing. Before the first
+    /// `process()` there is no order to preserve, so the flush is legal even for a
+    /// REQUIRES_PROCESS param.
     pub fn set_parameter(&mut self, id: u32, value: f64) -> &mut Self {
         if self.flags.processing && self.param_requires_process(id) {
             return self;

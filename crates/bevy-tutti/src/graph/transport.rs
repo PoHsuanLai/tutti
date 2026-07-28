@@ -23,9 +23,12 @@ impl std::ops::Deref for TransportRes {
 /// Metronome control: the shared [`ClickState`] the click node reads.
 ///
 /// Separate from [`TransportRes`]: the metronome shares no state with the
-/// transport. Callers set volume/accent/mode through `ClickState`'s atomic
-/// setters (`set_volume` / `set_mode` / `set_accent_every`) directly — there
-/// is no fluent wrapper.
+/// transport. Callers reach `ClickState`'s atomic setters (`set_volume` /
+/// `set_mode` / `set_meter`) through the `Deref` — there is no fluent wrapper.
+///
+/// Accent is not among them: it is derived from the meter's downbeat, replacing
+/// a standalone `accent_every` count that defaulted to 4 whatever the time
+/// signature said. This doc named that setter for a while after it was removed.
 #[derive(Resource, Clone)]
 pub struct MetronomeRes(pub Arc<ClickState>);
 

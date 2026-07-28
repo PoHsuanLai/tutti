@@ -41,15 +41,23 @@
 //! Bevy resource (`AudioGraphRes`, `TransportRes`, `MeteringRes`, …). Systems
 //! take only the ones they need:
 //!
-//! ```rust,ignore
+//! ```rust
+//! # use bevy_ecs::prelude::*;
+//! # use bevy_tutti::prelude::*;
+//! # use tutti_core::transport::MotionEvent;
 //! fn control_audio(transport: Res<TransportRes>, mut graph: ResMut<AudioGraphRes>) {
 //!     transport.settings.set_tempo(128.0);
-//!     transport.motion.send(MotionEvent::Play);
-//!     let id = graph.0.add(tutti_core::dsp::sine_hz(440.0));
-//!     graph.0.pipe_output(id);
+//!     // `try_send` — the motion queue is bounded, so a send can fail and the
+//!     // caller decides what that means.
+//!     let _ = transport.motion.try_send(MotionEvent::Play);
+//!     let id = graph.0.add(tutti_core::dsp::sine_hz::<f32>(440.0));
 //!     graph.0.commit();
+//!     let _ = id;
 //! }
 //! ```
+//!
+//! A node added this way is **unwired** and renders nothing. What feeds it, and
+//! what reaches the speakers, is declared — see [`graph::spawn`] for the shape.
 
 mod device_state;
 mod engine_state;
@@ -128,6 +136,13 @@ pub mod prelude {
 
     // The engine vocabulary a host writes graph edits in.
     pub use tutti_core::{AudioNode, NodeId};
+
+    // Transport vocabulary. These are `tutti-core`'s and are re-exported, not
+    // wrapped: a host cannot call `transport.motion.try_send(..)` or
+    // `metronome.set_mode(..)` without naming the argument types, and this
+    // crate's own docs demonstrate both. Handing out a method whose parameter
+    // type you will not let the caller spell is an incomplete forward.
+    pub use tutti_core::transport::{beat_from_ports, MetronomeMode, MotionEvent, BEAT_PORTS};
 }
 
 // Test-only global allocator for RT-safety regression tests (relocated from

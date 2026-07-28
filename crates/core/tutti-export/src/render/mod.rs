@@ -12,6 +12,6 @@ pub(crate) mod driver;
 pub(crate) mod plan;
 pub(crate) mod sink;
 
-pub(crate) use driver::{drive, NetSource};
+pub(crate) use driver::{drive, FrameSource, NetSource, PlaneSource};
 pub(crate) use plan::RenderPlan;
 pub(crate) use sink::BlockCursor;

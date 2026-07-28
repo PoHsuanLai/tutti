@@ -209,3 +209,42 @@ fn a_resample_request_reaches_the_file() {
         "expected ~48000 frames at the new rate, got {frames}"
     );
 }
+
+/// `write_buffers` completes the measure-then-apply cycle: render, normalize,
+/// write. Without it a caller who normalized would have nowhere to put the
+/// result — and it shares every encoder with the streaming path rather than
+/// growing a second writer per format.
+#[test]
+fn normalized_audio_can_be_written_to_every_format() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = spec(AudioFormat::Wav, BitDepth::Int24, ChannelLayout::Stereo);
+    s.render.duration = RenderDuration::Seconds(1.0);
+
+    let mut audio = render_to_buffers(net(), &s, &FrozenClock).unwrap();
+    audio.apply_gain(tutti_types::Db(-6.0));
+
+    for (format, ext) in [
+        (AudioFormat::Wav, "wav"),
+        (AudioFormat::Flac, "flac"),
+        (AudioFormat::OggVorbis, "ogg"),
+        (AudioFormat::Aiff, "aiff"),
+    ] {
+        s.encode.format = format;
+        let p = d.path().join(format!("n.{ext}"));
+        let w = tutti_export::write_buffers(&audio, &s, &p).expect("write");
+        assert!(w.bytes > 100, "{ext} wrote {} bytes", w.bytes);
+    }
+
+    // The written WAV must carry the gain: 0.5 at -6 dB is ~0.25.
+    s.encode.format = AudioFormat::Wav;
+    let p = d.path().join("n.wav");
+    let rd = hound::WavReader::open(&p).unwrap();
+    let peak = rd
+        .into_samples::<i32>()
+        .map(|x| (x.unwrap() as f32 / 8_388_607.0).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        (peak - 0.25).abs() < 0.01,
+        "expected ~0.25 after -6 dB, got {peak}"
+    );
+}

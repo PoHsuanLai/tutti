@@ -3,7 +3,7 @@
 use crate::encode::{interleave, pump_blocks, Encoder};
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
-use crate::render::{NetSource, RenderPlan};
+use crate::render::{FrameSource, RenderPlan};
 use crate::spec::ExportSpec;
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::BufWriter;
@@ -42,7 +42,7 @@ impl WavEncoder {
 impl<const CH: usize> Encoder<CH> for WavEncoder {
     fn encode(
         mut self,
-        src: &mut NetSource<'_, CH>,
+        src: &mut dyn FrameSource<CH>,
         plan: &RenderPlan,
         spec: &ExportSpec,
     ) -> Result<()> {

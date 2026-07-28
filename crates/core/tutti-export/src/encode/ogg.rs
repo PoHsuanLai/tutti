@@ -9,7 +9,7 @@
 
 use crate::encode::Encoder;
 use crate::error::{Error, Result};
-use crate::render::{drive, NetSource, RenderPlan};
+use crate::render::{drive, FrameSource, RenderPlan};
 use crate::spec::ExportSpec;
 use std::io::BufWriter;
 use std::num::{NonZeroU32, NonZeroU8};
@@ -43,7 +43,7 @@ impl OggEncoder {
 impl<const CH: usize> Encoder<CH> for OggEncoder {
     fn encode(
         mut self,
-        src: &mut NetSource<'_, CH>,
+        src: &mut dyn FrameSource<CH>,
         plan: &RenderPlan,
         _spec: &ExportSpec,
     ) -> Result<()> {

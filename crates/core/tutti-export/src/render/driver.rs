@@ -115,6 +115,70 @@ impl<const CH: usize> AudioIn<f32, CH> for NetSource<'_, CH> {
     }
 }
 
+/// Anything that can hand out `CH`-wide frames one block at a time.
+///
+/// Two implementations: [`NetSource`] renders a graph, and [`PlaneSource`]
+/// replays PCM a caller already holds. Both feed the same encoders, so a
+/// normalized export (render → measure → apply → write) shares every codec path
+/// with a streamed one instead of growing a second writer per format.
+pub(crate) trait FrameSource<const CH: usize> {
+    /// Fill `out`, returning how many frames were written.
+    fn fill(&mut self, out: &mut [[f32; CH]]) -> usize;
+    /// Frames handed out so far.
+    fn produced(&self) -> Samples;
+}
+
+impl<const CH: usize> FrameSource<CH> for NetSource<'_, CH> {
+    fn fill(&mut self, out: &mut [[f32; CH]]) -> usize {
+        self.poll_into(out)
+    }
+    fn produced(&self) -> Samples {
+        NetSource::produced(self)
+    }
+}
+
+/// Replays already-rendered planes as a frame source.
+pub(crate) struct PlaneSource<'a> {
+    planes: &'a [Vec<f32>],
+    pos: Samples,
+}
+
+impl<'a> PlaneSource<'a> {
+    pub(crate) fn new(planes: &'a [Vec<f32>]) -> Self {
+        Self {
+            planes,
+            pos: Samples(0),
+        }
+    }
+}
+
+impl<const CH: usize> FrameSource<CH> for PlaneSource<'_> {
+    fn fill(&mut self, out: &mut [[f32; CH]]) -> usize {
+        let available = self
+            .planes
+            .first()
+            .map_or(0, |p| p.len().saturating_sub(self.pos.get()));
+        let n = out.len().min(available);
+        for (i, frame) in out[..n].iter_mut().enumerate() {
+            let at = self.pos.get() + i;
+            // A plane narrower than the frame zero-fills, matching the graph
+            // path's upmix rule.
+            *frame = std::array::from_fn(|c| {
+                self.planes
+                    .get(c)
+                    .and_then(|p| p.get(at))
+                    .copied()
+                    .unwrap_or(0.0)
+            });
+        }
+        self.pos = Samples(self.pos.get() + n);
+        n
+    }
+    fn produced(&self) -> Samples {
+        self.pos
+    }
+}
+
 /// Pull the whole render out of `src`, gating each block, handing the kept
 /// frames to `consume`.
 ///
@@ -122,7 +186,7 @@ impl<const CH: usize> AudioIn<f32, CH> for NetSource<'_, CH> {
 /// because it needs counters that span blocks. `consume` is called only with
 /// frames that survive it.
 pub(crate) fn drive<const CH: usize, F>(
-    src: &mut NetSource<'_, CH>,
+    src: &mut dyn FrameSource<CH>,
     plan: &crate::render::RenderPlan,
     mut consume: F,
 ) -> crate::Result<()>
@@ -143,7 +207,7 @@ where
             .remaining_after(src.produced())
             .min(Samples(MAX_BUFFER_SIZE));
         let block_start = src.produced();
-        let n = src.poll_into(&mut block[..want.get()]);
+        let n = src.fill(&mut block[..want.get()]);
         if n == 0 {
             break;
         }

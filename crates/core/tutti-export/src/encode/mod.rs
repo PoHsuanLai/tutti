@@ -28,7 +28,7 @@ pub(crate) mod ogg;
 pub(crate) mod wav;
 
 use crate::error::Result;
-use crate::render::{drive, NetSource, RenderPlan};
+use crate::render::{drive, FrameSource, PlaneSource, RenderPlan};
 use crate::spec::ExportSpec;
 use crate::Written;
 use std::path::Path;
@@ -41,7 +41,7 @@ use std::path::Path;
 pub(crate) trait Encoder<const CH: usize> {
     fn encode(
         self,
-        src: &mut NetSource<'_, CH>,
+        src: &mut dyn FrameSource<CH>,
         plan: &RenderPlan,
         spec: &ExportSpec,
     ) -> Result<()>;
@@ -54,7 +54,7 @@ pub(crate) trait Encoder<const CH: usize> {
 /// that silently degrades, and — unlike the streaming-encoder opener this
 /// replaced — no arm that rejects a format the crate can actually write.
 pub(crate) fn encode_to_file<const CH: usize>(
-    src: &mut NetSource<'_, CH>,
+    src: &mut dyn FrameSource<CH>,
     plan: &RenderPlan,
     spec: &ExportSpec,
     path: &Path,
@@ -102,7 +102,7 @@ pub(crate) fn encode_to_file<const CH: usize>(
 /// that noise along with the signal and land it somewhere other than one LSB.
 #[cfg(any(feature = "wav", feature = "ogg", feature = "aiff"))]
 pub(crate) fn pump_blocks<const CH: usize, W>(
-    src: &mut NetSource<'_, CH>,
+    src: &mut dyn FrameSource<CH>,
     plan: &RenderPlan,
     spec: &ExportSpec,
     mut write: W,
@@ -167,6 +167,28 @@ where
             write(&staging)
         })
     }
+}
+
+/// Write already-rendered planes to `path`.
+///
+/// Feeds the same encoders from a [`PlaneSource`] instead of a graph, so a
+/// normalized export (render → measure → apply → write) shares every codec path
+/// with a streamed one. Growing a second writer per format is exactly how the
+/// crate previously ended up with a whole-signal encoder that worked and a
+/// streaming one that did not.
+pub(crate) fn encode_planes<const CH: usize>(
+    rendered: &crate::Rendered,
+    spec: &ExportSpec,
+    path: &Path,
+) -> Result<Written> {
+    let frames = rendered.frames();
+    let mut src = PlaneSource::new(&rendered.planes);
+    let plan = RenderPlan {
+        total: frames,
+        output_length: frames,
+        latency: tutti_types::Samples(0),
+    };
+    encode_to_file::<CH>(&mut src, &plan, spec, path)
 }
 
 /// Flatten `CH`-wide frames into an interleaved buffer.

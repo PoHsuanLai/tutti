@@ -160,6 +160,22 @@ macro_rules! dispatch_channels {
     }};
 }
 
+/// Write already-rendered audio to `path`.
+///
+/// The third of the API, and the one that makes measure-then-apply usable:
+/// render to buffers, measure, apply a gain, write. Without it a caller who
+/// normalized would have nowhere to put the result.
+///
+/// `spec.encode` is honoured as-is. `spec.render` is not consulted — the frames
+/// already exist — but `spec.resample` still applies, so a caller can convert on
+/// the way out.
+pub fn write_buffers(rendered: &Rendered, spec: &ExportSpec, path: &Path) -> Result<Written> {
+    let channels = spec.encode.channels;
+    dispatch_channels!(channels, CH => {
+        encode::encode_planes::<CH>(rendered, spec, path)
+    })
+}
+
 /// Render `net` and write it to `path`.
 ///
 /// Streams: the encoder pulls the graph one block at a time and no PCM is held

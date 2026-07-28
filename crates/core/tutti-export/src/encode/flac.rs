@@ -15,7 +15,7 @@
 use crate::encode::Encoder;
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
-use crate::render::{NetSource, RenderPlan};
+use crate::render::{FrameSource, RenderPlan};
 use crate::spec::ExportSpec;
 use flacenc::bitsink::ByteSink;
 use flacenc::component::BitRepr;
@@ -56,8 +56,8 @@ impl FlacEncoder {
 /// render (already gated and dithered), convert to `i32` at the target depth,
 /// and hand them over. A short read means the render is done, which is exactly
 /// flacenc's stop condition.
-struct RenderSource<'a, 'n, const CH: usize> {
-    src: &'a mut NetSource<'n, CH>,
+struct RenderSource<'a, const CH: usize> {
+    src: &'a mut dyn FrameSource<CH>,
     plan: &'a RenderPlan,
     dither: crate::process::DitherState,
     channels: usize,
@@ -72,7 +72,7 @@ struct RenderSource<'a, 'n, const CH: usize> {
     done: bool,
 }
 
-impl<const CH: usize> RenderSource<'_, '_, CH> {
+impl<const CH: usize> RenderSource<'_, CH> {
     /// Fill `pending` until it holds at least `want` frames or the render ends.
     fn pull_until(&mut self, want: usize) {
         while !self.done && self.pending.len() < want * self.channels {
@@ -91,10 +91,7 @@ impl<const CH: usize> RenderSource<'_, '_, CH> {
                 .remaining_after(produced)
                 .min(tutti_types::Samples(tutti_core::MAX_BUFFER_SIZE));
             let mut block = vec![[0.0f32; CH]; block_want.get()];
-            let n = {
-                use tutti_core::io::AudioIn;
-                self.src.poll_into(&mut block)
-            };
+            let n = self.src.fill(&mut block);
             if n == 0 {
                 self.done = true;
                 break;
@@ -123,7 +120,7 @@ impl<const CH: usize> RenderSource<'_, '_, CH> {
     }
 }
 
-impl<const CH: usize> Source for RenderSource<'_, '_, CH> {
+impl<const CH: usize> Source for RenderSource<'_, CH> {
     fn channels(&self) -> usize {
         self.channels
     }
@@ -153,7 +150,7 @@ impl<const CH: usize> Source for RenderSource<'_, '_, CH> {
 impl<const CH: usize> Encoder<CH> for FlacEncoder {
     fn encode(
         self,
-        src: &mut NetSource<'_, CH>,
+        src: &mut dyn FrameSource<CH>,
         plan: &RenderPlan,
         spec: &ExportSpec,
     ) -> Result<()> {

@@ -13,7 +13,7 @@
 use crate::encode::{interleave, pump_blocks, Encoder};
 use crate::error::{Error, Result};
 use crate::options::BitDepth;
-use crate::render::{NetSource, RenderPlan};
+use crate::render::{FrameSource, RenderPlan};
 use crate::spec::ExportSpec;
 use aifc::{AifcWriteInfo, AifcWriter, FileFormat, SampleFormat};
 use std::io::BufWriter;
@@ -57,7 +57,7 @@ impl AiffEncoder {
 impl<const CH: usize> Encoder<CH> for AiffEncoder {
     fn encode(
         mut self,
-        src: &mut NetSource<'_, CH>,
+        src: &mut dyn FrameSource<CH>,
         plan: &RenderPlan,
         spec: &ExportSpec,
     ) -> Result<()> {

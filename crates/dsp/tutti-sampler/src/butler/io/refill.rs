@@ -95,7 +95,7 @@ pub(crate) fn refill_all(
         }
 
         let is_reverse = stream_state.rt_state.is_reverse();
-        let adjusted_speed = stream_state.rt_state.read_rate() as f32 * buffer_margin as f32;
+        let adjusted_speed = stream_state.rt_state.read_rate().get() as f32 * buffer_margin as f32;
         let chunk_size = varifill_chunk(fill_pct, base_chunk_size, read_rate, adjusted_speed);
 
         let file_position = writer.file_position() as usize;
@@ -186,7 +186,8 @@ pub(crate) fn refill_all_parallel(
                 return None;
             }
 
-            let adjusted_speed = stream_state.rt_state.read_rate() as f32 * buffer_margin as f32;
+            let adjusted_speed =
+                stream_state.rt_state.read_rate().get() as f32 * buffer_margin as f32;
             let chunk_size = varifill_chunk(fill_pct, base_chunk_size, read_rate, adjusted_speed);
 
             let shared = stream_state.rt_state();
@@ -281,7 +282,7 @@ fn refill_one(
         // the old `fill_buffer_forward` shape. `loop_range` is honoured here for
         // the same reason as the decoder path above: this function serves the
         // 3+-stream parallel refill, and dropping it there made looping depend
-        // on how many clips happened to be streaming.
+        // on how many voices happened to be streaming.
         refill_forward(writer, &wave, file_position, chunk_size, buffer, loop_range);
     }
 }

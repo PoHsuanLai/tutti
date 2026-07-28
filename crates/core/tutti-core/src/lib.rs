@@ -44,8 +44,8 @@ pub use fundsp::unit_param;
 pub use tutti_types::value::{
     Amplitude, ArcDegrees, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm, Cents,
     CompressionRatio, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Param, ParamAddr, Phase,
-    PhaseIncrement, PlaybackRate, Radians, Resonance, SamplePosition, Seconds, Semitones, Spread,
-    SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam, Q,
+    PhaseIncrement, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, Seconds, Semitones,
+    Spread, SrcRatio, StereoWidth, StretchFactor, Unit, UnitParam, Q,
 };
 
 /// Back-compat alias for the unit newtypes' old module path

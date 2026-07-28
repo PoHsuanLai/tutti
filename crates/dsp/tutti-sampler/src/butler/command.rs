@@ -7,7 +7,7 @@ pub(crate) struct RegionId(pub u64);
 
 use tutti_core::PlaybackRate;
 
-use crate::clip::track_clip_reader::Direction;
+use crate::voice::voice_pool::Direction;
 
 /// Command sent to the Butler thread.
 #[derive(Debug)]

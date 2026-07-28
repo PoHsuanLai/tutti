@@ -31,6 +31,12 @@ files = ["wav", "flac", "mp3", "ogg"]
 # re-adds `tutti-core/bevy` + `tutti-core/bevy_asset`.
 tutti-core = { path = "../../core/tutti-core", default-features = false }
 
+# The STFT analysis grid + the one periodic Hann. The time-stretch vocoder is an
+# STFT, so it shares `StftGeometry` (window/hop/rate validated together, COLA
+# checked) and `window::hann` rather than keeping a ninth copy of each.
+# default-features = false per the house rule, or Bevy re-leaks transitively.
+tutti-analysis = { path = "../tutti-analysis", default-features = false }
+
 # Bevy ECS integration: Components / Systems / Plugins live next to the audio
 # logic. Optional, gated by the `bevy` feature.
 bevy_ecs = { version = "0.19", default-features = false, optional = true }

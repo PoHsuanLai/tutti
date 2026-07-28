@@ -23,11 +23,11 @@ use tutti_core::{fold_frame, Wave};
 ///
 /// # Channel policy
 ///
-/// Identical to [`interp::read_frame`](crate::clip::interp::read_frame)'s: a
+/// Identical to [`interp::read_frame`](crate::voice::interp::read_frame)'s: a
 /// mono source fans to every channel; anything else folds through
 /// [`fold_frame`]. The two tiers **must** agree here — this is the butler's
-/// unpack and that is the RT reader, and a clip that unpacked differently on
-/// disk than in RAM is precisely the divergence the shared kernel exists to
+/// unpack and that is the RT reader, and a voice that unpacked differently on
+/// disk than in memory is precisely the divergence the shared kernel exists to
 /// prevent.
 #[inline]
 pub(crate) fn wave_frame_into(wave: &Wave, idx: usize, out: &mut [f32]) {

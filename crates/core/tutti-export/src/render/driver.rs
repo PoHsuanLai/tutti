@@ -235,6 +235,7 @@ mod tests {
                 seek: Default::default(),
                 loop_span: None,
                 position_writeback: None,
+                steady_time: None,
             },
             sample_rate,
         )

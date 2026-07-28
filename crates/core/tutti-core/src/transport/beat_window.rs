@@ -32,6 +32,13 @@ pub struct BeatWindow {
 
 /// What [`BeatWindow::from_timeline`] observed about the transport, so the
 /// caller can react to a seek without re-reading the beat itself.
+///
+/// The two discontinuity variants stay distinct rather than collapsing into one
+/// `Discontinuous`, because the two callers that predate them react differently.
+/// A cursor into a sorted event list (`MidiClipSource`, `HarmonySource`) must
+/// *rewind* on a backward jump, but a forward jump is self-correcting for it —
+/// the cursor walks past stale events on its own. Merging them would force a
+/// needless backward rescan on every forward scrub.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BeatWindowSync {
     /// Transport is rolling and the window advances forward from the last block.
@@ -39,6 +46,26 @@ pub enum BeatWindowSync {
     /// Transport jumped backwards — the caller should rewind its cursors to
     /// [`BeatWindow::start_beat`] before emitting.
     Rewound,
+    /// Transport jumped forwards, past where continuous playback would have
+    /// reached.
+    ///
+    /// Matters to anything holding *buffered audio* rather than a position:
+    /// a phase vocoder's FIFO, an overlap-add tail, an interpolator's history.
+    /// Those are not self-correcting — after a forward jump the buffer drains the
+    /// old region's material over the new one — so they must flush, exactly as
+    /// they would on [`Rewound`].
+    Jumped,
+}
+
+impl BeatWindowSync {
+    /// Whether the playhead moved discontinuously, in either direction.
+    ///
+    /// The question buffered state should ask. A cursor that only needs to know
+    /// about rewinds should match on [`Rewound`](Self::Rewound) instead.
+    #[inline]
+    pub fn is_discontinuous(self) -> bool {
+        matches!(self, Self::Rewound | Self::Jumped)
+    }
 }
 
 impl BeatWindow {
@@ -67,20 +94,28 @@ impl BeatWindow {
         }
 
         let start_beat = timeline.beat().get();
+
+        let tempo_bpm = timeline.tempo().get();
+        if tempo_bpm <= 0.0 || sample_rate <= 0.0 || block_size == 0 {
+            // Still publish the beat: a caller resuming after a tempo glitch must
+            // not read a stale `last_beat` as a jump.
+            *last_beat = start_beat;
+            return None;
+        }
+        let beats_per_sample = super::state::beats_per_sample(tempo_bpm, sample_rate).get();
+
         // Tolerate a tiny epsilon so float jitter at exactly-equal beats doesn't
         // trigger a spurious reseek.
         let sync = if start_beat + SEEK_EPSILON < *last_beat {
             BeatWindowSync::Rewound
+        } else if *last_beat > f64::NEG_INFINITY
+            && start_beat > *last_beat + forward_slack(beats_per_sample, block_size)
+        {
+            BeatWindowSync::Jumped
         } else {
             BeatWindowSync::Rolling
         };
         *last_beat = start_beat;
-
-        let tempo_bpm = timeline.tempo().get();
-        if tempo_bpm <= 0.0 || sample_rate <= 0.0 || block_size == 0 {
-            return None;
-        }
-        let beats_per_sample = super::state::beats_per_sample(tempo_bpm, sample_rate).get();
         Some((
             Self {
                 start_beat,
@@ -111,6 +146,26 @@ impl BeatWindow {
 /// Backward-jump tolerance, in beats. Below this a beat decrease is treated as
 /// float jitter rather than a seek.
 const SEEK_EPSILON: f64 = 1e-9;
+
+/// How far past the previous block's start the playhead may legitimately land
+/// before it counts as a forward jump.
+///
+/// **Deliberately not [`SEEK_EPSILON`].** Backward and forward need different
+/// tolerances, because normal playback advances forward: the expected step is
+/// one block, and several ordinary things perturb it — a tempo ramp mid-block, a
+/// changed block size, a dropped callback, a host that batches two blocks. A
+/// 1e-9 threshold would call all of those a seek and flush on nearly every
+/// block, which for a phase vocoder is a stutter.
+///
+/// `SLACK_BLOCKS` blocks of headroom, then. This is the beat-domain twin of the
+/// sampler's `SEEK_EPSILON_SAMPLES = 4096` — one policy expressed in two units —
+/// and like it, generous on purpose: a real seek moves the playhead far, so
+/// there is no need to resolve small ones.
+#[inline]
+fn forward_slack(beats_per_sample: f64, block_size: usize) -> f64 {
+    const SLACK_BLOCKS: f64 = 4.0;
+    beats_per_sample * block_size as f64 * SLACK_BLOCKS
+}
 
 /// A beat-scheduled source's transport reading plus its persisted last-block
 /// beat.
@@ -174,5 +229,222 @@ impl BeatCursor {
 
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate
+    }
+
+    /// Re-point at a new sample rate, as `AudioUnit::set_sample_rate` requires.
+    ///
+    /// Affects `beats_per_sample`, hence `end_beat` — and hence the forward-jump
+    /// threshold, which is derived from it. A cursor left at a stale rate would
+    /// mis-scale that slack: too small and ordinary playback reads as a seek, too
+    /// large and a real seek goes unnoticed.
+    pub fn set_sample_rate(&mut self, sample_rate: f64) {
+        self.sample_rate = sample_rate;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Beat, Bpm};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    struct Mock {
+        rolling: AtomicBool,
+        beat: AtomicU64,
+        tempo: AtomicU64,
+    }
+
+    impl Mock {
+        fn new(beat: f64, tempo: f64) -> Arc<Self> {
+            Arc::new(Self {
+                rolling: AtomicBool::new(true),
+                beat: AtomicU64::new(beat.to_bits()),
+                tempo: AtomicU64::new(tempo.to_bits()),
+            })
+        }
+        fn set_beat(&self, beat: f64) {
+            self.beat.store(beat.to_bits(), Ordering::Relaxed);
+        }
+        fn set_rolling(&self, rolling: bool) {
+            self.rolling.store(rolling, Ordering::Relaxed);
+        }
+    }
+
+    impl Timeline for Mock {
+        fn beat(&self) -> Beat {
+            Beat::new(f64::from_bits(self.beat.load(Ordering::Relaxed)))
+        }
+        fn is_rolling(&self) -> bool {
+            self.rolling.load(Ordering::Relaxed)
+        }
+        fn tempo(&self) -> Bpm {
+            Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
+        }
+    }
+
+    const SR: f64 = 44_100.0;
+    const BLOCK: usize = 64;
+
+    /// One block of beats at 120 BPM and this sample rate.
+    fn block_beats() -> f64 {
+        BLOCK as f64 * 120.0 / 60.0 / SR
+    }
+
+    /// Contiguous playback must never report a discontinuity. This is the false
+    /// positive that matters: a spurious flush every block turns a phase vocoder
+    /// into a stutter, and no output-level test would catch it.
+    #[test]
+    fn contiguous_playback_stays_rolling() {
+        let t = Mock::new(0.0, 120.0);
+        let cursor = BeatCursor::new(t.clone(), SR);
+
+        // First call has no previous beat, so it cannot judge continuity.
+        let (_, first) = cursor.advance(BLOCK).unwrap();
+        assert_eq!(first, BeatWindowSync::Rolling);
+
+        for i in 1..200 {
+            t.set_beat(i as f64 * block_beats());
+            let (_, sync) = cursor.advance(BLOCK).unwrap();
+            assert_eq!(sync, BeatWindowSync::Rolling, "block {i} misread as a seek");
+        }
+    }
+
+    #[test]
+    fn backward_jump_is_rewound() {
+        let t = Mock::new(64.0, 120.0);
+        let cursor = BeatCursor::new(t.clone(), SR);
+        cursor.advance(BLOCK).unwrap();
+
+        t.set_beat(8.0);
+        let (_, sync) = cursor.advance(BLOCK).unwrap();
+        assert_eq!(sync, BeatWindowSync::Rewound);
+        assert!(sync.is_discontinuous());
+    }
+
+    /// The variant this commit adds. Before it, a forward seek was
+    /// indistinguishable from normal advance — so buffered state never flushed
+    /// and the fix built on `Rewound` alone would have covered only half the
+    /// gesture.
+    #[test]
+    fn forward_jump_is_jumped() {
+        let t = Mock::new(0.0, 120.0);
+        let cursor = BeatCursor::new(t.clone(), SR);
+        cursor.advance(BLOCK).unwrap();
+
+        t.set_beat(64.0);
+        let (_, sync) = cursor.advance(BLOCK).unwrap();
+        assert_eq!(sync, BeatWindowSync::Jumped);
+        assert!(sync.is_discontinuous());
+    }
+
+    /// A step slightly larger than one block is ordinary — a tempo ramp, a
+    /// changed block size, a late callback — and must not read as a seek.
+    #[test]
+    fn a_small_forward_overshoot_is_not_a_jump() {
+        let t = Mock::new(0.0, 120.0);
+        let cursor = BeatCursor::new(t.clone(), SR);
+        cursor.advance(BLOCK).unwrap();
+
+        // Two blocks' worth: inside the slack.
+        t.set_beat(block_beats() * 2.0);
+        let (_, sync) = cursor.advance(BLOCK).unwrap();
+        assert_eq!(sync, BeatWindowSync::Rolling);
+    }
+
+    /// Rolling and Rewound are the only two things a cursor-style consumer
+    /// matches on today, so `Jumped` must not silently read as a rewind.
+    #[test]
+    fn jumped_is_not_rewound() {
+        assert_ne!(BeatWindowSync::Jumped, BeatWindowSync::Rewound);
+        assert!(!BeatWindowSync::Rolling.is_discontinuous());
+    }
+
+    /// A seek made while paused is **absorbed**, not reported.
+    ///
+    /// The paused path keeps updating `last_beat` (`from_timeline`'s first
+    /// branch), so by the time playback resumes the cursor already agrees with
+    /// the playhead and the first rolling block reads `Rolling`. That is the
+    /// documented intent — "so a seek-while-paused doesn't surprise playback on
+    /// resume" — and it is the right behaviour: nothing was mid-flight while
+    /// stopped, so there is nothing stale to flush.
+    ///
+    /// The bug this guards against is the *opposite* one: if the paused branch
+    /// ever stops publishing the beat, resume would report a phantom
+    /// discontinuity on every stop/start cycle, flushing buffered state that was
+    /// perfectly valid.
+    #[test]
+    fn a_seek_while_paused_is_absorbed_not_reported() {
+        let t = Mock::new(64.0, 120.0);
+        let cursor = BeatCursor::new(t.clone(), SR);
+        cursor.advance(BLOCK).unwrap();
+
+        t.set_rolling(false);
+        assert!(cursor.advance(BLOCK).is_none(), "paused emits nothing");
+        t.set_beat(8.0);
+        assert!(cursor.advance(BLOCK).is_none());
+
+        t.set_rolling(true);
+        let (w, sync) = cursor.advance(BLOCK).unwrap();
+        assert_eq!(
+            sync,
+            BeatWindowSync::Rolling,
+            "the paused path reconciled the beat, so resume is continuous"
+        );
+        assert_eq!(w.start_beat, 8.0, "and it resumes at the sought position");
+    }
+
+    /// A plain stop/start with no seek must also be continuous — the same
+    /// property, exercised the way a user actually hits the spacebar.
+    #[test]
+    fn stop_then_start_without_seeking_is_continuous() {
+        let t = Mock::new(16.0, 120.0);
+        let cursor = BeatCursor::new(t.clone(), SR);
+        cursor.advance(BLOCK).unwrap();
+
+        t.set_rolling(false);
+        assert!(cursor.advance(BLOCK).is_none());
+        t.set_rolling(true);
+
+        let (_, sync) = cursor.advance(BLOCK).unwrap();
+        assert_eq!(sync, BeatWindowSync::Rolling);
+    }
+
+    /// A non-positive tempo yields no window, but must still track the beat —
+    /// otherwise the first good block after the glitch reads a stale `last_beat`
+    /// and reports a phantom jump.
+    #[test]
+    fn a_tempo_glitch_does_not_produce_a_phantom_jump() {
+        let t = Mock::new(0.0, 120.0);
+        let cursor = BeatCursor::new(t.clone(), SR);
+        cursor.advance(BLOCK).unwrap();
+
+        t.tempo.store(0.0f64.to_bits(), Ordering::Relaxed);
+        t.set_beat(64.0);
+        assert!(cursor.advance(BLOCK).is_none(), "no tempo, no window");
+
+        // Tempo returns; the playhead has not moved since.
+        t.tempo.store(120.0f64.to_bits(), Ordering::Relaxed);
+        let (_, sync) = cursor.advance(BLOCK).unwrap();
+        assert_eq!(sync, BeatWindowSync::Rolling);
+    }
+
+    #[test]
+    fn window_spans_one_block_and_places_offsets() {
+        let t = Mock::new(4.0, 120.0);
+        let cursor = BeatCursor::new(t, SR);
+        let (w, _) = cursor.advance(BLOCK).unwrap();
+
+        assert_eq!(w.start_beat, 4.0);
+        assert!((w.end_beat - (4.0 + block_beats())).abs() < 1e-12);
+        assert_eq!(w.max_offset, BLOCK as u32 - 1);
+        assert_eq!(w.offset_of(4.0), 0);
+        assert_eq!(w.offset_of(0.0), 0, "beats before the window clamp to 0");
+        assert_eq!(
+            w.offset_of(1_000.0),
+            w.max_offset,
+            "beats past the window clamp to the last offset"
+        );
+        assert!(w.contains(4.0));
+        assert!(!w.contains(w.end_beat));
     }
 }

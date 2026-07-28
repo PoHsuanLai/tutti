@@ -1,15 +1,15 @@
 //! Public ports onto the sampler streaming engine, split MIDI-device-style into
 //! a WRITE port ([`Commands`]) and a READ port ([`Status`]).
 //!
-//! The [`Sampler`](crate::Sampler) handle owns the butler thread; these two
+//! The [`DiskStreamer`](crate::DiskStreamer) handle owns the butler thread; these two
 //! cloneable handles are the differentiated surfaces onto it:
 //!
 //! - [`Commands`] wraps the butler command channel and exposes a single
 //!   [`send`](Commands::send) over a public [`Command`] enum — mirroring the
-//!   audio-thread [`TrackClipReaderHandle`](crate::TrackClipReaderHandle).
+//!   audio-thread [`VoicePoolHandle`](crate::VoicePoolHandle).
 //! - [`Status`] wraps the sample rate + channel-plan map and exposes reads
 //!   ([`sample_rate`](Status::sample_rate)) plus the reader-factory
-//!   [`take_clip_reader`](Status::take_clip_reader).
+//!   [`take_disk_voice`](Status::take_disk_voice).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,18 +18,16 @@ use dashmap::DashMap;
 use smol::channel::Sender;
 
 use crate::butler::{ButlerCommand, ChannelPlan};
-use crate::clip::{
-    Direction, LoopSetting, StreamingClipConfig, StreamingClipReader, TransportPlacement,
-};
+use crate::voice::{Direction, DiskVoice, DiskVoiceConfig, LoopSetting, VoiceWindow};
 use tutti_core::{Beat, BeatDuration, PlaybackRate, SamplePosition, Timeline, Wave};
 
-/// The caller's stated choice of playback tier for a clip: whole-file in RAM
+/// The caller's stated choice of playback tier for a voice: whole-file in memory
 /// (`Memory`) or incremental disk streaming (`Disk`). Plain data — the sampler
 /// never decides the tier on its own; it plays whichever variant it is handed.
 /// The caller owns the tier decision (e.g. dawai-model's `TieringPolicy`).
 #[derive(Clone)]
 pub enum Source {
-    /// Whole file decoded into RAM, played by a `SamplerUnit`.
+    /// Whole file decoded into memory, played by a `MemorySource`.
     Memory(Arc<Wave>),
     /// File streamed incrementally from disk via the butler.
     Disk(PathBuf),
@@ -91,7 +89,7 @@ pub enum Command {
 /// WRITE port onto the butler: a cloneable wrapper over the command channel
 /// that dispatches a public [`Command`] to the butler.
 ///
-/// Mirrors [`TrackClipReaderHandle`](crate::TrackClipReaderHandle) — a thin,
+/// Mirrors [`VoicePoolHandle`](crate::VoicePoolHandle) — a thin,
 /// `Clone` handle over a `Sender` with a single [`send`](Self::send) method.
 #[derive(Clone, Debug)]
 pub struct Commands {
@@ -198,20 +196,20 @@ impl Status {
         self.sample_rate
     }
 
-    /// Build a [`StreamingClipReader`] for a channel whose butler stream is
+    /// Build a [`DiskVoice`] for a channel whose butler stream is
     /// ready, binding it to the timeline placement gate.
     ///
     /// Pulls the ring consumer + shared `RtState` out of the channel's
     /// [`ChannelPlan`] link and wraps them in a placement-gated reader. Returns
     /// `None` while the butler hasn't installed the link yet (the caller retries
     /// next frame).
-    pub fn take_clip_reader(
+    pub fn take_disk_voice(
         &self,
         channel_index: usize,
         transport: Arc<dyn Timeline>,
         start_beat: Beat,
         duration: Option<BeatDuration>,
-    ) -> Option<StreamingClipReader> {
+    ) -> Option<DiskVoice> {
         let (inner, rt_state) =
             crate::butler::control::take_streaming_unit(&self.plans, channel_index)?;
 
@@ -220,14 +218,14 @@ impl Status {
         // the file's own rate, so recover it from that ratio.
         let file_sample_rate = self.sample_rate * rt_state.src_ratio().get() as f64;
 
-        Some(StreamingClipReader::new(
+        Some(DiskVoice::new(
             inner,
             rt_state,
-            StreamingClipConfig {
-                placement: TransportPlacement {
-                    transport,
-                    start_beat,
-                    duration_beats: duration,
+            DiskVoiceConfig {
+                timeline: transport,
+                window: VoiceWindow {
+                    start: start_beat,
+                    duration,
                 },
                 file_sample_rate,
             },

@@ -25,7 +25,7 @@ pub(crate) use rt_state::RtState;
 pub(crate) use thread::ButlerThread;
 
 // Test-only re-exports for unit tests outside the butler module tree (e.g.
-// `units::streaming_sampler`) that build readers directly. Gated so they
+// `units::disk_voice`) that build readers directly. Gated so they
 // don't count as dead code in normal builds.
 #[cfg(test)]
 pub(crate) use command::RegionId;

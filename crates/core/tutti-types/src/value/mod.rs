@@ -21,13 +21,13 @@ pub mod param;
 pub mod samples;
 pub mod unit_param;
 
+pub use note::{NotOnMidiScale, Note, NoteNumberOutOfRange, PitchClass};
 pub use param::Param;
 pub use samples::Samples;
 pub use unit_param::{ParamAddr, UnitParam, UnitParamOutOfRange};
-pub use note::{Note, NotOnMidiScale, NoteNumberOutOfRange, PitchClass};
 pub use units::{
     Amplitude, ArcDegrees, AtomicSamplePosition, Azimuth, Beat, BeatDuration, Bpm, Cents,
     CompressionRatio, Confidence, Correlation, Db, Depth, Drive, Elevation, Feedback, Hz, Mix, Pan,
-    Phase, PhaseIncrement, PlaybackRate, Radians, Resonance, SamplePosition, Seconds, Semitones,
-    Spread, SrcRatio, StereoWidth, StretchFactor, Unit, Q,
+    Phase, PhaseIncrement, PlaybackRate, Radians, ReadRate, Resonance, SamplePosition, Seconds,
+    Semitones, Spread, SrcRatio, StereoWidth, StretchFactor, Unit, Q,
 };

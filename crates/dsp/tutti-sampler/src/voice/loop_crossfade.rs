@@ -1,4 +1,4 @@
-//! Loop crossfade for smooth loop transitions in `SamplerUnit` (in-memory playback).
+//! Loop crossfade for smooth loop transitions in `MemorySource` (in-memory playback).
 //!
 //! For streaming playback, see `butler::StreamingCrossfader` — that one is lock-free
 //! because the butler thread is a separate producer; here the unit produces its own
@@ -20,7 +20,7 @@ pub(crate) struct LoopCrossfade {
 ///
 /// The buffer is sized to this once, at slot construction, so a later loop
 /// change only rewrites its contents — see [`LoopCrossfade::retune`]. A
-/// `ClipCommand::UpdateLoop` is drained inside `tick`/`process`, so anything
+/// `VoiceCommand::UpdateLoop` is drained inside `tick`/`process`, so anything
 /// that grows the buffer there is an allocation in the audio callback.
 ///
 /// 4096 frames is ~93 ms at 44.1 kHz; the app asks for 256. A request past this
@@ -31,7 +31,7 @@ pub(crate) const MAX_CROSSFADE_FRAMES: usize = 4096;
 impl LoopCrossfade {
     /// A crossfade over `channels`-wide frames. Width is explicit at every call
     /// site: there is no stereo-defaulting `new`, because the only caller
-    /// (`SamplerUnit::set_loop_range`) always knows its own width and a default
+    /// (`MemorySource::set_loop_range`) always knows its own width and a default
     /// here would silently mismatch it.
     ///
     /// Reserves [`MAX_CROSSFADE_FRAMES`] up front so [`retune`](Self::retune)

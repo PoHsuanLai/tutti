@@ -4,13 +4,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tutti_core::{
     Amplitude, AtomicSamplePosition, AudioUnit, Beat, BeatDuration, BufferMut, BufferRef,
-    PlaybackRate, SamplePosition, SampleRate, SignalFrame, SrcRatio, Timeline, Wave,
+    PlaybackRate, ReadRate, SamplePosition, SampleRate, Samples, SignalFrame, SrcRatio, Timeline,
+    Wave,
 };
 
 use super::loop_crossfade::LoopCrossfade;
 use crate::MAX_SAMPLER_CHANNELS;
 
-/// Live loop state on a `SamplerUnit`. Internal: `Looping` carries the running
+/// Live loop state on a `MemorySource`. Internal: `Looping` carries the running
 /// [`LoopCrossfade`] DSP object, which callers can neither build nor observe —
 /// the public loop *intent* is [`LoopSetting`].
 ///
@@ -29,13 +30,13 @@ pub(crate) enum LoopMode {
     },
 }
 
-/// Public loop *intent* for a [`SamplerUnitConfig`] — a plain, buildable value
+/// Public loop *intent* for a [`MemorySourceConfig`] — a plain, buildable value
 /// that says whether and how to loop, without exposing the live
-/// [`LoopCrossfade`] runtime state. [`SamplerUnit::with_config`] converts it
+/// [`LoopCrossfade`] runtime state. [`MemorySource::with_config`] converts it
 /// into the internal [`LoopMode`], priming the crossfade privately.
 ///
 /// This mirrors how the streaming/timeline loop already speaks in
-/// `(start, end, crossfade_samples)` via `ClipCommand::UpdateLoop`.
+/// `(start, end, crossfade_samples)` via `VoiceCommand::UpdateLoop`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum LoopSetting {
     /// Play through once, then stop.
@@ -50,67 +51,105 @@ pub enum LoopSetting {
     },
 }
 
-/// Transport binding for beat-synced playback. Present as a whole or absent as
-/// a whole: no loose `transport`/`start_beat`/`duration_beats` that can drift
-/// out of sync.
-pub struct TransportPlacement {
-    /// Transport clock. The sampler only plays when it is rolling, and uses its
-    /// beat position to compute the sample offset.
-    pub transport: Arc<dyn Timeline>,
+/// The span of timeline a voice occupies: where it starts, and how long it
+/// lasts.
+///
+/// **Pure geometry — no clock.** It used to carry the `Arc<dyn Timeline>` too,
+/// under the reasoning that a whole-or-nothing bundle stops the three fields
+/// drifting apart. But a window and a clock are different kinds of thing: the
+/// window is a value a voice owns, while the clock is a shared dependency many
+/// voices read. Bundling them meant every offline rebind had to reach inside
+/// each source to swap one field of a value, and the gate kernel took them apart
+/// again at every call site anyway.
+///
+/// `Copy`, which the bundled form could not be — so passing one around no longer
+/// clones an `Arc`, and there is no hand-written `Clone`/`Debug` to keep in sync.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VoiceWindow {
     /// Start position in beats on the timeline.
-    pub start_beat: Beat,
-    /// Duration in beats, or None to play the entire sample.
-    pub duration_beats: Option<BeatDuration>,
+    pub start: Beat,
+    /// Duration in beats, or `None` to play the whole source.
+    pub duration: Option<BeatDuration>,
 }
 
-impl Clone for TransportPlacement {
-    fn clone(&self) -> Self {
+impl VoiceWindow {
+    /// A window starting at `start` and running to the end of the source.
+    pub const fn from(start: Beat) -> Self {
         Self {
-            transport: self.transport.clone(),
-            start_beat: self.start_beat,
-            duration_beats: self.duration_beats,
+            start,
+            duration: None,
+        }
+    }
+
+    /// A window of `duration` beats starting at `start`.
+    pub const fn span(start: Beat, duration: BeatDuration) -> Self {
+        Self {
+            start,
+            duration: Some(duration),
         }
     }
 }
 
-impl std::fmt::Debug for TransportPlacement {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TransportPlacement")
-            .field("start_beat", &self.start_beat)
-            .field("duration_beats", &self.duration_beats)
-            .finish_non_exhaustive()
+impl Default for VoiceWindow {
+    /// From beat 0, for the whole source.
+    fn default() -> Self {
+        Self {
+            start: Beat::new(0.0),
+            duration: None,
+        }
     }
 }
 
-/// Configuration for building a [`SamplerUnit`], passed to
-/// [`SamplerUnit::with_config`]. Matches tutti's config-struct constructor
+/// Configuration for building a [`MemorySource`], passed to
+/// [`MemorySource::with_config`]. Matches tutti's config-struct constructor
 /// convention (`PolySynth::new(SynthConfig)`, `OfflineTimeline::new(..)`).
 ///
-/// `Default` yields the same audible baseline as [`SamplerUnit::new`]: unity
+/// `Default` yields the same audible baseline as [`MemorySource::new`]: unity
 /// gain, normal speed, one-shot, no transport binding. It is hand-written (not
 /// derived) because the newtypes default to zero — a derived default would ship
 /// silent (`gain = 0`) and frozen (`speed = 0`).
-#[derive(Clone, Debug)]
-pub struct SamplerUnitConfig {
+// Hand-rolled `Debug`: `timeline` is an `Arc<dyn Timeline>`, which is not
+// `Debug`. Report whether a clock is bound rather than trying to print it — the
+// same treatment `MemorySource` itself gets.
+#[derive(Clone)]
+pub struct MemorySourceConfig {
     pub gain: Amplitude,
     pub speed: PlaybackRate,
     /// Loop intent. `Off` plays once; `On { .. }` loops over the range and
-    /// [`SamplerUnit::with_config`] primes the crossfade internally.
+    /// [`MemorySource::with_config`] primes the crossfade internally.
     pub loop_setting: LoopSetting,
-    /// Optional transport binding for beat-synced playback.
-    pub placement: Option<TransportPlacement>,
-    /// Output width. Defaults to stereo — see [`SamplerUnit::channels`] for why
+    /// Transport clock. `Some` binds this source to a timeline; `None` leaves it
+    /// free-running (audition / one-shot).
+    pub timeline: Option<Arc<dyn Timeline>>,
+    /// Span of timeline the voice occupies. Only consulted when `timeline` is
+    /// `Some` — a window without a clock has nothing to be a window *of*.
+    pub window: VoiceWindow,
+    /// Output width. Defaults to stereo — see [`MemorySource::channels`] for why
     /// this is declared rather than taken from the wave.
     pub channels: usize,
 }
 
-impl Default for SamplerUnitConfig {
+impl std::fmt::Debug for MemorySourceConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemorySourceConfig")
+            .field("gain", &self.gain)
+            .field("speed", &self.speed)
+            .field("loop_setting", &self.loop_setting)
+            .field("placed", &self.timeline.is_some())
+            .field("window", &self.window)
+            .field("channels", &self.channels)
+            .finish()
+    }
+}
+
+impl Default for MemorySourceConfig {
     fn default() -> Self {
         Self {
             gain: Amplitude::new(1.0),
             speed: PlaybackRate::UNITY,
             loop_setting: LoopSetting::Off,
-            placement: None,
+            timeline: None,
+            window: VoiceWindow::default(),
             channels: 2,
         }
     }
@@ -142,10 +181,10 @@ impl std::fmt::Debug for LoopMode {
 
 /// In-memory sample playback with optional loop crossfade.
 ///
-/// By default, plays immediately when added to the graph (suitable for timeline clips
+/// By default, plays immediately when added to the graph (suitable for timeline voices
 /// and offline export). Use `stop()` and `trigger()` for manual control if needed
 /// (e.g., MIDI-triggered one-shots).
-pub struct SamplerUnit {
+pub struct MemorySource {
     wave: Arc<Wave>,
     position: AtomicSamplePosition,
 
@@ -170,8 +209,16 @@ pub struct SamplerUnit {
     /// range and carries the optional crossfade.
     loop_mode: LoopMode,
 
-    /// Optional transport binding for beat-synced playback.
-    placement: Option<TransportPlacement>,
+    /// Transport clock, or `None` for a free-running source.
+    ///
+    /// Separate from `window` — see [`VoiceWindow`]. `Option` on the CLOCK is
+    /// what distinguishes placed from free-running playback; the window is always
+    /// present because "from beat 0, whole source" is a meaningful default and
+    /// `None` there would mean the same thing twice.
+    timeline: Option<Arc<dyn Timeline>>,
+
+    /// Span of timeline this voice occupies. Meaningless without `timeline`.
+    window: VoiceWindow,
 
     /// A crossfade buffer kept resident so a loop change never allocates.
     ///
@@ -191,12 +238,12 @@ pub struct SamplerUnit {
     channels: usize,
 }
 
-// Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>` and `placement` holds an
+// Hand-rolled: `wave` is a non-`Debug` `Arc<Wave>` and `timeline` holds an
 // `Arc<dyn Timeline>`. Print the wave length + scalar params; never
 // borrow the `Wave` samples.
-impl std::fmt::Debug for SamplerUnit {
+impl std::fmt::Debug for MemorySource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SamplerUnit")
+        f.debug_struct("MemorySource")
             .field("wave_frames", &self.wave.len())
             .field("position", &self.position.load(Ordering::Relaxed))
             .field("playing", &self.playing.load(Ordering::Relaxed))
@@ -205,12 +252,13 @@ impl std::fmt::Debug for SamplerUnit {
             .field("sample_rate", &self.sample_rate)
             .field("src_ratio", &self.src_ratio)
             .field("loop_mode", &self.loop_mode)
-            .field("has_placement", &self.placement.is_some())
+            .field("placed", &self.timeline.is_some())
+            .field("window", &self.window)
             .finish_non_exhaustive()
     }
 }
 
-impl Clone for SamplerUnit {
+impl Clone for MemorySource {
     fn clone(&self) -> Self {
         Self {
             wave: Arc::clone(&self.wave),
@@ -221,14 +269,15 @@ impl Clone for SamplerUnit {
             sample_rate: self.sample_rate,
             src_ratio: self.src_ratio,
             loop_mode: self.loop_mode.clone(),
-            placement: self.placement.clone(),
+            timeline: self.timeline.clone(),
+            window: self.window,
             loop_crossfade: self.loop_crossfade.clone(),
             channels: self.channels,
         }
     }
 }
 
-impl SamplerUnit {
+impl MemorySource {
     /// A **stereo** sampler over `wave`.
     ///
     /// Stays stereo even for a wider wave — see [`channels`](Self::channels).
@@ -244,7 +293,8 @@ impl SamplerUnit {
             sample_rate,
             src_ratio: SrcRatio::UNITY,
             loop_mode: LoopMode::OneShot,
-            placement: None,
+            timeline: None,
+            window: VoiceWindow::default(),
             loop_crossfade: Some(LoopCrossfade::with_channels(0, 2)),
             channels: 2,
         }
@@ -270,17 +320,18 @@ impl SamplerUnit {
         self.channels
     }
 
-    /// Build from an explicit [`SamplerUnitConfig`] — the canonical
+    /// Build from an explicit [`MemorySourceConfig`] — the canonical
     /// configurable constructor, matching tutti's `X::new(XConfig)` convention.
     ///
     /// A `LoopSetting::On { crossfade_samples, .. }` primes the loop crossfade
     /// from the wave (via the same path as [`set_loop_range`](Self::set_loop_range));
     /// `crossfade_samples == 0` loops with no crossfade.
-    pub fn with_config(wave: Arc<Wave>, config: SamplerUnitConfig) -> Self {
+    pub fn with_config(wave: Arc<Wave>, config: MemorySourceConfig) -> Self {
         let mut unit = Self {
             gain: config.gain,
             speed: config.speed,
-            placement: config.placement,
+            timeline: config.timeline,
+            window: config.window,
             loop_crossfade: Some(LoopCrossfade::with_channels(0, config.channels.max(1))),
             channels: config.channels.max(1),
             ..Self::new(wave)
@@ -296,10 +347,10 @@ impl SamplerUnit {
         unit
     }
 
-    /// Convenience constructor for the common transport-bound clip case: bind a
+    /// Convenience constructor for the common transport-bound voice case: bind a
     /// transport at `start_beat` for `duration_beats`, everything else default.
-    /// Equivalent to `with_config(wave, SamplerUnitConfig { placement: Some(..),
-    /// ..Default::default() })`; kept because it reads better at the three
+    /// Equivalent to `with_config(wave, MemorySourceConfig { timeline: Some(..),
+    /// window, ..Default::default() })`; kept because it reads better at the
     /// timeline call sites (tutti-synth likewise keeps convenience ctors
     /// alongside its config one).
     pub fn with_transport(
@@ -310,55 +361,31 @@ impl SamplerUnit {
     ) -> Self {
         Self::with_config(
             wave,
-            SamplerUnitConfig {
-                placement: Some(TransportPlacement {
-                    transport,
-                    start_beat,
-                    duration_beats,
-                }),
+            MemorySourceConfig {
+                timeline: Some(transport),
+                window: VoiceWindow {
+                    start: start_beat,
+                    duration: duration_beats,
+                },
                 ..Default::default()
             },
         )
     }
 
-    pub fn set_transport(
-        &mut self,
-        transport: Arc<dyn Timeline>,
-        start_beat: Beat,
-        duration_beats: Option<BeatDuration>,
-    ) {
-        self.placement = Some(TransportPlacement {
-            transport,
-            start_beat,
-            duration_beats,
-        });
+    /// Move the window. Independent of whether a clock is bound — a window is
+    /// just geometry, so there is no "only if placed" branch to get wrong.
+    pub fn set_window(&mut self, window: VoiceWindow) {
+        self.window = window;
     }
 
-    pub fn set_placement(&mut self, start_beat: Beat, duration_beats: Option<BeatDuration>) {
-        if let Some(placement) = &mut self.placement {
-            placement.start_beat = start_beat;
-            placement.duration_beats = duration_beats;
-        }
-    }
-
-    /// Used by export to inject export timeline. Preserves the existing
-    /// start-beat / duration when a placement is already present; otherwise
-    /// binds the transport at beat 0 for the whole sample.
+    /// Swap the transport clock, used by export to inject the offline timeline.
+    ///
+    /// The window is untouched, because it is no longer part of the same value.
+    /// This used to be a two-arm `match` that had to *reconstruct* start/duration
+    /// on the unbound path (defaulting them to `0` / whole-source) — a swap that
+    /// silently rewrote geometry. Separating the two makes the swap a swap.
     pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
-        match &mut self.placement {
-            Some(placement) => placement.transport = transport,
-            None => {
-                self.placement = Some(TransportPlacement {
-                    transport,
-                    start_beat: Beat::new(0.0),
-                    duration_beats: None,
-                });
-            }
-        }
-    }
-
-    pub fn has_transport(&self) -> bool {
-        self.placement.is_some()
+        self.timeline = Some(transport);
     }
 
     pub fn trigger(&self) {
@@ -413,15 +440,24 @@ impl SamplerUnit {
         self.position.load(Ordering::Relaxed)
     }
 
+    /// The transport clock this source reads, or `None` if free-running.
+    pub fn timeline(&self) -> Option<Arc<dyn Timeline>> {
+        self.timeline.clone()
+    }
+
+    /// The voice's window on the timeline. Always meaningful — see
+    /// [`VoiceWindow`] for why the window is not itself optional.
+    pub fn window(&self) -> VoiceWindow {
+        self.window
+    }
+
     pub fn start_beat(&self) -> Beat {
-        self.placement
-            .as_ref()
-            .map_or(Beat::new(0.0), |p| p.start_beat)
+        self.window.start
     }
 
     /// None means play entire sample.
     pub fn duration_beats(&self) -> Option<BeatDuration> {
-        self.placement.as_ref().and_then(|p| p.duration_beats)
+        self.window.duration
     }
 
     pub fn duration_samples(&self) -> usize {
@@ -457,13 +493,28 @@ impl SamplerUnit {
     }
 
     /// Source samples consumed per output sample: varispeed × conversion.
+    ///
+    /// For the **free-running** path, where a cursor steps through file samples
+    /// once per output sample and so needs both factors. The placement gate must
+    /// NOT use this — see [`window_rate`](Self::window_rate).
     #[inline]
-    fn read_rate(&self) -> f64 {
+    pub fn read_rate(&self) -> ReadRate {
         self.speed.read_rate(self.src_ratio)
     }
 
-    pub fn wave(&self) -> &Arc<Wave> {
-        &self.wave
+    /// Source samples per output sample **within a gated window**: varispeed
+    /// alone, because [`window_position`](Self::window_position) already resolved
+    /// the beat→sample conversion against this wave's own rate.
+    ///
+    /// One method rather than the expression repeated at each stepping site. A
+    /// block-stepping caller seats itself at `window_position()` and then advances
+    /// by this — the two MUST agree, or the block starts at the right sample and
+    /// drifts away from it, which sounds like a slow detune rather than a break.
+    /// Two call sites open-coded a `speed * src_ratio` product here and got that
+    /// wrong; naming the quantity is what stops a third.
+    #[inline]
+    pub fn window_rate(&self) -> ReadRate {
+        self.speed.read_rate(SrcRatio::UNITY)
     }
 
     /// Replace the wave data. Resets playback position to the start.
@@ -488,7 +539,7 @@ impl SamplerUnit {
     /// Apply a [`LoopSetting`]: `On` primes the range + crossfade, `Off`
     /// clears the range and disables looping.
     ///
-    /// In-RAM only. The streaming tier's loop is butler-owned (a
+    /// In-memory only. The streaming tier's loop is butler-owned (a
     /// `Command::Loop` from the reader's drain), which is why this is inherent
     /// rather than a shared trait method — there is no honest way for one call
     /// to mean both.
@@ -514,8 +565,8 @@ impl SamplerUnit {
     ) {
         // Reuse the resident crossfade rather than building one.
         //
-        // This runs on the audio thread: `ClipCommand::UpdateLoop` is drained by
-        // `TrackClipReaderUnit::drain_commands`, which `tick`/`process` call. So
+        // This runs on the audio thread: `VoiceCommand::UpdateLoop` is drained by
+        // `VoicePool::drain_commands`, which `tick`/`process` call. So
         // changing a loop mid-playback used to allocate `crossfade_samples *
         // channels` floats in the callback, plus a temporary buffer to read the
         // wave into. Both are gone: the crossfade's buffer is reserved once at
@@ -576,7 +627,7 @@ impl SamplerUnit {
     /// The current loop as a public [`LoopSetting`] intent (crossfade length
     /// recovered from the live [`LoopCrossfade`]). Lets a caller that built this
     /// unit imperatively read its loop back as a value — used by the
-    /// `TrackClipReader` add shim to fold a pre-configured `SamplerUnit`'s loop
+    /// `VoicePool` add shim to fold a pre-configured `MemorySource`'s loop
     /// into a `Playback` record.
     pub fn loop_setting(&self) -> LoopSetting {
         match &self.loop_mode {
@@ -603,7 +654,7 @@ impl SamplerUnit {
         }
 
         // 4-tap cubic Hermite via the shared kernel (idx-1, idx, idx+1, idx+2,
-        // bound-clamped), unifying this path with `StreamingSamplerUnit`.
+        // bound-clamped), unifying this path with `DiskSource`.
         super::interp::read_frame(&self.wave, position, out);
     }
 
@@ -619,31 +670,39 @@ impl SamplerUnit {
         }
     }
 
-    /// Stereo shim over [`get_sample_raw_into`](Self::get_sample_raw_into).
+    /// Where the playhead sits in this source's samples, or `None` when outside
+    /// the window / unplaced. See [`window_position`](super::interp::window_position).
+    ///
+    /// **Varispeed alone, not [`read_rate`](Self::read_rate)** — and this was a
+    /// live bug until `both_tier_splits_agree_on_the_same_position` caught it.
+    ///
+    /// The gate maps wall-clock seconds onto *this wave's own* samples, and
+    /// `wave.sample_rate()` is already that wave's rate — so the beat→sample
+    /// conversion is complete before any ratio is applied. `read_rate` folds in
+    /// `src_ratio` (`file_rate / session_rate`), which belongs to the
+    /// *free-running* path, where a cursor steps through file samples once per
+    /// output sample and genuinely needs both factors.
+    ///
+    /// Applying it here multiplied the derived position by `src_ratio` a second
+    /// time: a 48 kHz file in a 44.1 kHz session read 104,490 samples in at the
+    /// two-second mark instead of 96,000 — 8.8% deep, drifting further the longer
+    /// the voice plays. `set_sample_rate` seeds `src_ratio` from the live graph, so
+    /// this fired for every placed voice whose file rate differed from the
+    /// session's; it stayed invisible because every test on this path used matched
+    /// rates, where `src_ratio` is `UNITY` and the extra factor is 1.0.
+    ///
+    /// The disk tier had the same hazard in mirror image and a comment warning
+    /// about it. The comment was right about the arithmetic and wrong about which
+    /// tier had the bug.
     #[inline]
-    pub fn get_sample_raw(&self, position: f64) -> (f32, f32) {
-        let mut out = [0.0f32; 2];
-        self.get_sample_raw_into(position, &mut out);
-        (out[0], out[1])
-    }
-
-    /// Stereo shim over [`get_sample_into`](Self::get_sample_into).
-    #[inline]
-    pub fn get_sample(&self, position: f64) -> (f32, f32) {
-        let mut out = [0.0f32; 2];
-        self.get_sample_into(position, &mut out);
-        (out[0], out[1])
-    }
-
-    #[inline]
-    pub fn transport_sample_position(&self) -> Option<f64> {
-        let placement = self.placement.as_ref()?;
-        super::interp::transport_sample_offset(
-            placement.transport.as_ref(),
-            placement.start_beat,
-            placement.duration_beats,
-            self.wave.sample_rate(),
-            self.read_rate(),
+    pub fn window_position(&self) -> Option<SamplePosition> {
+        let timeline = self.timeline.as_ref()?;
+        super::interp::window_position(
+            timeline.as_ref(),
+            self.window.start,
+            self.window.duration,
+            SampleRate::new(self.wave.sample_rate()),
+            self.window_rate(),
         )
     }
 
@@ -653,15 +712,15 @@ impl SamplerUnit {
     /// per sample — the same relationship `TransportClock::tick`/`process` have
     /// in `tutti-core`. Previously the two entry points were written out
     /// separately and had drifted apart: `tick` ignored `speed` entirely for a
-    /// placed clip while `process` applied it, so the same unit produced
+    /// placed voice while `process` applied it, so the same unit produced
     /// different audio depending on which the graph happened to call.
     ///
     /// Two position models live here, and the split is deliberate:
     ///
     /// - **Placed** (a timeline clip) — position is *derived* from the playhead,
-    ///   so the clip cannot drift from the transport. Varispeed is folded into
+    ///   so the voice cannot drift from the transport. Varispeed is folded into
     ///   the beat→sample mapping, not accumulated here.
-    /// - **Free-running** (no transport) — nothing else owns this clip's time,
+    /// - **Free-running** (no transport) — nothing else owns this voice's time,
     ///   so it advances its own cursor by `read_rate`.
     ///
     /// `offset_in_block` is the sample's index within the current `process`
@@ -677,15 +736,15 @@ impl SamplerUnit {
     /// block in a trailing slot.
     #[inline]
     fn next_frame_into(&mut self, offset_in_block: usize, out: &mut [f32]) {
-        if self.placement.is_some() {
+        if self.timeline.is_some() {
             // Derived: the transport owns the position. Step within the block by
             // `read_rate` from the block's start beat — the transport itself
             // only moves between blocks.
-            match self.transport_sample_position() {
+            match self.window_position() {
                 None => out.fill(0.0),
                 Some(start_pos) => {
-                    let pos = start_pos + offset_in_block as f64 * self.read_rate();
-                    self.get_sample_into(pos, out);
+                    let pos = start_pos + self.window_rate().advance(Samples(offset_in_block));
+                    self.get_sample_into(pos.get(), out);
                 }
             }
             return;
@@ -717,7 +776,8 @@ impl SamplerUnit {
             }
         };
 
-        let new_pos = pos + self.read_rate();
+        // One output sample's worth of source material.
+        let new_pos = pos + self.read_rate().advance(Samples(1)).get();
 
         if new_pos >= loop_end {
             if looping {
@@ -769,7 +829,7 @@ fn wrap_into_loop(pos: f64, loop_start: f64, loop_end: f64) -> f64 {
     loop_start + (pos - loop_start).rem_euclid(len)
 }
 
-impl AudioUnit for SamplerUnit {
+impl AudioUnit for MemorySource {
     fn inputs(&self) -> usize {
         0
     }
@@ -830,8 +890,7 @@ impl AudioUnit for SamplerUnit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicU64;
-    use tutti_core::BufferVec;
+    use tutti_core::{Bpm, BufferVec};
 
     fn ramp_wave(len: usize, sample_rate: f64) -> Arc<Wave> {
         let samples: Vec<f32> = (0..len).map(|i| (i + 1) as f32).collect();
@@ -847,62 +906,7 @@ mod tests {
         Arc::new(wave)
     }
 
-    // --- Mock transport for beat-synced tests ---
-
-    /// Interior-mutable so a test can advance the playhead BETWEEN blocks, the
-    /// way a real transport moves. A plain-`f64` mock cannot: the beat never
-    /// changes, every frame derives the same position, and an equivalence test
-    /// over it passes no matter what the code does.
-    struct MockTransport {
-        playing: AtomicBool,
-        beat: AtomicU64,
-        tempo: AtomicU64,
-    }
-
-    impl MockTransport {
-        fn new(beat: f64, tempo: f64) -> Arc<Self> {
-            Arc::new(Self {
-                playing: AtomicBool::new(true),
-                beat: AtomicU64::new(beat.to_bits()),
-                tempo: AtomicU64::new(tempo.to_bits()),
-            })
-        }
-
-        fn stopped() -> Arc<Self> {
-            let t = Self::new(0.0, 120.0);
-            t.playing.store(false, Ordering::Relaxed);
-            t
-        }
-
-        /// Rewind by `samples`, so a test can replay the same span twice.
-        fn rewind(&self, samples: usize, sample_rate: f64) {
-            let tempo = f64::from_bits(self.tempo.load(Ordering::Relaxed));
-            let beats = samples as f64 * tempo / 60.0 / sample_rate;
-            let now = f64::from_bits(self.beat.load(Ordering::Relaxed));
-            self.beat.store((now - beats).to_bits(), Ordering::Relaxed);
-        }
-
-        /// Advance by `samples` at `sample_rate`, as a block-driven transport
-        /// does after `process` returns.
-        fn advance(&self, samples: usize, sample_rate: f64) {
-            let tempo = f64::from_bits(self.tempo.load(Ordering::Relaxed));
-            let beats = samples as f64 * tempo / 60.0 / sample_rate;
-            let now = f64::from_bits(self.beat.load(Ordering::Relaxed));
-            self.beat.store((now + beats).to_bits(), Ordering::Relaxed);
-        }
-    }
-
-    impl Timeline for MockTransport {
-        fn beat(&self) -> tutti_core::Beat {
-            tutti_core::Beat(f64::from_bits(self.beat.load(Ordering::Relaxed)))
-        }
-        fn is_rolling(&self) -> bool {
-            self.playing.load(Ordering::Relaxed)
-        }
-        fn tempo(&self) -> tutti_core::params::Bpm {
-            tutti_core::params::Bpm::new(f64::from_bits(self.tempo.load(Ordering::Relaxed)))
-        }
-    }
+    use crate::test_transport::MockTransport;
 
     // --- tick/process equivalence ---
     //
@@ -920,7 +924,7 @@ mod tests {
     // against the two paths being rewritten apart again; do not read a pass
     // here as proof the placed branch is right.
 
-    fn collect_ticks(unit: &mut SamplerUnit, n: usize) -> Vec<(f32, f32)> {
+    fn collect_ticks(unit: &mut MemorySource, n: usize) -> Vec<(f32, f32)> {
         (0..n)
             .map(|_| {
                 let mut out = [0.0f32; 2];
@@ -930,7 +934,7 @@ mod tests {
             .collect()
     }
 
-    fn collect_process(unit: &mut SamplerUnit, n: usize) -> Vec<(f32, f32)> {
+    fn collect_process(unit: &mut MemorySource, n: usize) -> Vec<(f32, f32)> {
         let input = BufferVec::new(0);
         let mut output = BufferVec::new(2);
         output.resize(n);
@@ -949,8 +953,8 @@ mod tests {
     /// same position, both paths emit the same constant, and the assertion holds
     /// no matter what the code does.
     fn assert_tick_matches_process(
-        mut a: SamplerUnit,
-        mut b: SamplerUnit,
+        mut a: MemorySource,
+        mut b: MemorySource,
         n: usize,
         transport: Option<&Arc<MockTransport>>,
         case: &str,
@@ -968,7 +972,7 @@ mod tests {
 
         // Rewind so `process` sees the same span the ticks just walked.
         if let Some(t) = transport {
-            t.rewind(n, 44100.0);
+            t.advance(-(n as i64), 44100.0);
         }
         let processed = collect_process(&mut b, n);
 
@@ -982,8 +986,8 @@ mod tests {
     fn tick_matches_process_free_running() {
         let wave = ramp_wave(64, 44100.0);
         assert_tick_matches_process(
-            SamplerUnit::new(Arc::clone(&wave)),
-            SamplerUnit::new(wave),
+            MemorySource::new(Arc::clone(&wave)),
+            MemorySource::new(wave),
             16,
             None,
             "free-running",
@@ -994,7 +998,7 @@ mod tests {
     fn tick_matches_process_at_non_unity_speed() {
         let wave = ramp_wave(256, 44100.0);
         let build = || {
-            let mut u = SamplerUnit::new(Arc::clone(&wave));
+            let mut u = MemorySource::new(Arc::clone(&wave));
             u.set_speed(PlaybackRate::new(1.5));
             u
         };
@@ -1003,19 +1007,15 @@ mod tests {
 
     #[test]
     fn tick_matches_process_when_placed() {
-        // The case that was actually broken: a placed clip at non-unity speed.
+        // The case that was actually broken: a placed voice at non-unity speed.
         let wave = ramp_wave(4096, 44100.0);
-        let transport = MockTransport::new(1.0, 120.0);
+        let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
         let build = || {
-            let mut u = SamplerUnit::with_config(
+            let mut u = MemorySource::with_config(
                 Arc::clone(&wave),
-                SamplerUnitConfig {
+                MemorySourceConfig {
                     speed: PlaybackRate::new(0.5),
-                    placement: Some(TransportPlacement {
-                        transport: transport.clone(),
-                        start_beat: Beat::new(0.0),
-                        duration_beats: None,
-                    }),
+                    timeline: Some(transport.clone()),
                     ..Default::default()
                 },
             );
@@ -1030,9 +1030,9 @@ mod tests {
         // Span the loop boundary so the wrap arithmetic runs inside the block.
         let wave = ramp_wave(64, 44100.0);
         let build = || {
-            SamplerUnit::with_config(
+            MemorySource::with_config(
                 Arc::clone(&wave),
-                SamplerUnitConfig {
+                MemorySourceConfig {
                     loop_setting: LoopSetting::On {
                         start: SamplePosition::new(0.0),
                         end: SamplePosition::new(8.0),
@@ -1045,24 +1045,20 @@ mod tests {
         assert_tick_matches_process(build(), build(), 32, None, "loop wrap");
     }
 
-    // --- varispeed actually reaches a placed clip ---
+    // --- varispeed actually reaches a placed voice ---
     //
     // The equivalence tests above cannot catch the original defect on their own:
     // both entry points now call `next_frame`, so any change affects them
     // identically. These pin the *behaviour* instead — that speed reaches the
     // placed path at all. Previously `tick` returned a position derived without
-    // the rate, so a placed clip played at 1x no matter what speed was set.
+    // the rate, so a placed voice played at 1x no matter what speed was set.
 
-    fn placed_unit(wave: &Arc<Wave>, transport: &Arc<MockTransport>, rate: f32) -> SamplerUnit {
-        SamplerUnit::with_config(
+    fn placed_unit(wave: &Arc<Wave>, transport: &Arc<MockTransport>, rate: f32) -> MemorySource {
+        MemorySource::with_config(
             Arc::clone(wave),
-            SamplerUnitConfig {
+            MemorySourceConfig {
                 speed: PlaybackRate::new(rate),
-                placement: Some(TransportPlacement {
-                    transport: transport.clone(),
-                    start_beat: Beat::new(0.0),
-                    duration_beats: None,
-                }),
+                timeline: Some(transport.clone()),
                 ..Default::default()
             },
         )
@@ -1075,7 +1071,7 @@ mod tests {
         // Beat 0.25 @ 120 BPM / 44.1 kHz = 5512.5 samples in, comfortably
         // inside a 16k wave at both 1x and 0.5x.
         let wave = ramp_wave(16_384, 44100.0);
-        let transport = MockTransport::new(0.25, 120.0);
+        let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
 
         let mut unity = placed_unit(&wave, &transport, 1.0);
         let mut half = placed_unit(&wave, &transport, 0.5);
@@ -1086,7 +1082,7 @@ mod tests {
         assert!(a > 0.0 && b > 0.0, "both should be sounding: {a}, {b}");
         assert!(
             (b - a / 2.0).abs() < 2.0,
-            "at 0.5x the clip should be half as far in ({a} -> expected ~{}, got {b})",
+            "at 0.5x the voice should be half as far in ({a} -> expected ~{}, got {b})",
             a / 2.0
         );
     }
@@ -1096,7 +1092,7 @@ mod tests {
         // The same assertion through the block path — this one always held, and
         // is here so the pair documents that the two agree for the right reason.
         let wave = ramp_wave(16_384, 44100.0);
-        let transport = MockTransport::new(0.25, 120.0);
+        let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
 
         let mut unity = placed_unit(&wave, &transport, 1.0);
         let mut half = placed_unit(&wave, &transport, 0.5);
@@ -1107,7 +1103,7 @@ mod tests {
         assert!((b - a / 2.0).abs() < 2.0, "expected ~{}, got {b}", a / 2.0);
     }
 
-    /// A placed clip must read ACROSS a block, not emit one frozen frame.
+    /// A placed voice must read ACROSS a block, not emit one frozen frame.
     ///
     /// A transport advances once per block — the offline driver calls
     /// `advance(block_size)` after `process` returns — so deriving position from
@@ -1118,14 +1114,14 @@ mod tests {
     #[test]
     fn placed_clip_reads_across_a_block_not_dc() {
         let wave = ramp_wave(16_384, 44100.0);
-        let transport = MockTransport::new(0.25, 120.0);
+        let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
         let mut u = placed_unit(&wave, &transport, 1.0);
 
         let block = collect_process(&mut u, 8);
         let first = block[0].0;
         let last = block[7].0;
 
-        assert!(first > 0.0, "clip should be sounding, got {first}");
+        assert!(first > 0.0, "voice should be sounding, got {first}");
         assert!(
             last > first,
             "a ramp wave must rise across the block; got constant DC \
@@ -1144,7 +1140,7 @@ mod tests {
     #[test]
     fn placed_clip_block_step_follows_playback_rate() {
         let wave = ramp_wave(16_384, 44100.0);
-        let transport = MockTransport::new(0.25, 120.0);
+        let transport = MockTransport::rolling(Beat::new(0.25), Bpm::new(120.0));
         let mut u = placed_unit(&wave, &transport, 0.5);
 
         let block = collect_process(&mut u, 8);
@@ -1185,9 +1181,9 @@ mod tests {
     // --- Existing tests ---
 
     #[test]
-    fn test_sampler_unit_creation() {
+    fn test_memory_source_creation() {
         let wave = Wave::with_capacity(1, 44100.0, 100);
-        let sampler = SamplerUnit::new(Arc::new(wave));
+        let sampler = MemorySource::new(Arc::new(wave));
 
         assert!(sampler.is_playing());
         assert!(!sampler.is_looping());
@@ -1197,7 +1193,7 @@ mod tests {
     #[test]
     fn test_sampler_trigger() {
         let wave = Wave::with_capacity(1, 44100.0, 100);
-        let sampler = SamplerUnit::new(Arc::new(wave));
+        let sampler = MemorySource::new(Arc::new(wave));
 
         sampler.trigger();
         assert!(sampler.is_playing());
@@ -1210,7 +1206,7 @@ mod tests {
     #[test]
     fn test_sampler_outputs_silence_when_stopped() {
         let wave = Wave::with_capacity(1, 44100.0, 100);
-        let mut sampler = SamplerUnit::new(Arc::new(wave));
+        let mut sampler = MemorySource::new(Arc::new(wave));
 
         sampler.stop();
 
@@ -1225,7 +1221,7 @@ mod tests {
     fn test_loop_range_api() {
         let samples = vec![0.0f32; 1000];
         let wave = Wave::from_samples(44100.0, &samples);
-        let mut sampler = SamplerUnit::new(Arc::new(wave));
+        let mut sampler = MemorySource::new(Arc::new(wave));
 
         assert!(sampler.loop_range().is_none());
 
@@ -1245,7 +1241,7 @@ mod tests {
     fn test_loop_crossfade_integration() {
         let samples: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
         let wave = Wave::from_samples(44100.0, &samples);
-        let mut sampler = SamplerUnit::new(Arc::new(wave));
+        let mut sampler = MemorySource::new(Arc::new(wave));
 
         sampler.set_loop_range(SamplePosition::new(10.0), SamplePosition::new(90.0), 10);
         sampler.trigger();
@@ -1266,9 +1262,9 @@ mod tests {
     #[test]
     fn with_config_constructor() {
         let wave = ramp_wave(100, 44100.0);
-        let sampler = SamplerUnit::with_config(
+        let sampler = MemorySource::with_config(
             Arc::clone(&wave),
-            SamplerUnitConfig {
+            MemorySourceConfig {
                 gain: Amplitude::new(0.5),
                 speed: PlaybackRate::new(2.0),
                 loop_setting: LoopSetting::On {
@@ -1289,7 +1285,7 @@ mod tests {
     #[test]
     fn config_default_matches_new() {
         let wave = ramp_wave(100, 44100.0);
-        let sampler = SamplerUnit::with_config(wave, SamplerUnitConfig::default());
+        let sampler = MemorySource::with_config(wave, MemorySourceConfig::default());
 
         // Default config must reproduce `new`'s audible baseline: unity gain,
         // normal speed, one-shot — NOT the newtypes' zero default.
@@ -1301,7 +1297,7 @@ mod tests {
     #[test]
     fn trigger_at_sets_position() {
         let wave = ramp_wave(100, 44100.0);
-        let sampler = SamplerUnit::new(wave);
+        let sampler = MemorySource::new(wave);
 
         sampler.stop();
         sampler.trigger_at(SamplePosition::new(42.0));
@@ -1312,7 +1308,7 @@ mod tests {
     #[test]
     fn reset_clears_position_and_stops() {
         let wave = ramp_wave(100, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         // Advance position
         let mut output = [0.0f32; 2];
@@ -1331,8 +1327,8 @@ mod tests {
     fn gain_scales_output() {
         let wave = ramp_wave(100, 44100.0);
 
-        let mut sampler_full = SamplerUnit::new(Arc::clone(&wave));
-        let mut sampler_half = SamplerUnit::new(wave);
+        let mut sampler_full = MemorySource::new(Arc::clone(&wave));
+        let mut sampler_half = MemorySource::new(wave);
         sampler_half.set_gain(Amplitude::new(0.5));
 
         let mut out_full = [0.0f32; 2];
@@ -1348,7 +1344,7 @@ mod tests {
     #[test]
     fn mono_wave_duplicates_to_stereo() {
         let wave = ramp_wave(100, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1360,7 +1356,7 @@ mod tests {
     #[test]
     fn stereo_wave_preserves_channels() {
         let wave = stereo_ramp_wave(100, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1374,8 +1370,8 @@ mod tests {
     fn speed_2x_advances_twice_as_fast() {
         let wave = ramp_wave(100, 44100.0);
 
-        let mut normal = SamplerUnit::new(Arc::clone(&wave));
-        let mut fast = SamplerUnit::new(wave);
+        let mut normal = MemorySource::new(Arc::clone(&wave));
+        let mut fast = MemorySource::new(wave);
         fast.set_speed(PlaybackRate::new(2.0));
 
         let mut out = [0.0f32; 2];
@@ -1389,10 +1385,101 @@ mod tests {
         assert!((fast_pos - normal_pos * 2.0).abs() < 1e-6);
     }
 
+    /// **The placement gate must apply `src_ratio` exactly once** — at the unit,
+    /// not just at the kernel.
+    ///
+    /// This is the in-memory mirror of `disk_voice`'s
+    /// `placement_gate_applies_src_ratio_exactly_once`, and the memory tier failed
+    /// it: `window_position` passed the full `read_rate` against a rate argument
+    /// (`wave.sample_rate()`) that had already resolved the beat→sample
+    /// conversion, so `src_ratio` was applied twice.
+    ///
+    /// The mismatched rate is the whole test. Every other test on this path uses a
+    /// wave at the session rate, where `src_ratio` is `UNITY` and a doubled factor
+    /// is exactly 1.0 — which is why a live 8.8% position error survived here.
+    ///
+    /// Asserted at the unit rather than only at the kernel because the kernel
+    /// cannot see this: it takes the rate as an argument, so a caller passing the
+    /// wrong one is invisible there. Re-introducing the bug in `window_rate` fails
+    /// only this test.
+    #[test]
+    fn placement_gate_applies_src_ratio_exactly_once() {
+        // A 48 kHz wave in a 44.1 kHz session.
+        let wave = ramp_wave(200_000, 48_000.0);
+        let transport = MockTransport::rolling(Beat::new(4.0), Bpm::new(120.0));
+        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
+        sampler.set_sample_rate(SampleRate::new(44_100.0));
+        assert!(
+            (sampler.src_ratio().get() - (48_000.0 / 44_100.0)).abs() < 1e-4,
+            "setup: the session rate must produce a non-unity src_ratio, else \
+             this test cannot distinguish one application from two"
+        );
+
+        // Beat 4 at 120 BPM is two seconds; two seconds of a 48 kHz file is
+        // 96,000 file samples.
+        let pos = sampler.window_position().expect("inside the window");
+        let expected = 2.0 * 48_000.0;
+        let doubled = expected * (48_000.0 / 44_100.0);
+        assert!(
+            (pos.get() - expected).abs() < 1.0,
+            "expected ~{expected} file samples, got {} \
+             (a double-applied src_ratio gives ~{doubled})",
+            pos.get()
+        );
+    }
+
+    /// A window is geometry: it does not need a clock to exist, and setting one
+    /// before the transport is bound must stick.
+    ///
+    /// Binding order is not fixed, and the guarded form of this setter lost the
+    /// window silently — the voice then played from beat 0 for its whole length.
+    #[test]
+    fn the_window_can_be_set_before_a_clock_is_bound() {
+        let wave = ramp_wave(100, 44_100.0);
+        let mut sampler = MemorySource::new(wave);
+        assert_eq!(sampler.window(), VoiceWindow::default());
+
+        // No clock yet — this used to be a silent no-op.
+        sampler.set_window(VoiceWindow::span(Beat::new(8.0), BeatDuration::new(4.0)));
+        assert_eq!(sampler.start_beat(), Beat::new(8.0));
+        assert_eq!(sampler.duration_beats(), Some(BeatDuration::new(4.0)));
+
+        // Binding a clock afterwards must not disturb the window...
+        sampler.replace_transport(MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0)));
+        assert_eq!(sampler.start_beat(), Beat::new(8.0));
+        assert_eq!(sampler.duration_beats(), Some(BeatDuration::new(4.0)));
+
+        // ...and the gate now honours it: beat 0 is before the beat-8 start.
+        assert!(sampler.window_position().is_none());
+    }
+
+    /// The block-stepping rate must be the SAME rate the gate used, or a block
+    /// starts at the right sample and walks away from it — a slow detune rather
+    /// than an obvious break.
+    #[test]
+    fn window_rate_matches_the_gate_and_excludes_src_ratio() {
+        let wave = ramp_wave(200_000, 48_000.0);
+        let mut sampler = MemorySource::new(wave);
+        sampler.set_speed(PlaybackRate::new(2.0));
+        sampler.set_sample_rate(SampleRate::new(44_100.0));
+
+        // Varispeed alone: the gate already resolved the file rate.
+        assert!((sampler.window_rate().get() - 2.0).abs() < 1e-6);
+
+        // The free-running rate DOES carry the conversion — different question,
+        // different quantity, and the two must not be conflated.
+        let free = 2.0 * (48_000.0 / 44_100.0);
+        assert!(
+            (sampler.read_rate().get() - free).abs() < 1e-4,
+            "read_rate should still be varispeed x conversion, got {}",
+            sampler.read_rate().get()
+        );
+    }
+
     #[test]
     fn src_ratio_adjusts_for_sample_rate_mismatch() {
         let wave = ramp_wave(100, 48000.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
         sampler.set_session_sample_rate(24000.0);
 
         let mut out = [0.0f32; 2];
@@ -1405,7 +1492,7 @@ mod tests {
     #[test]
     fn src_ratio_unity_when_rates_match() {
         let wave = ramp_wave(100, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
         sampler.set_session_sample_rate(44100.0);
 
         let mut out = [0.0f32; 2];
@@ -1418,7 +1505,7 @@ mod tests {
     #[test]
     fn stops_at_end_when_not_looping() {
         let wave = ramp_wave(10, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         let mut out = [0.0f32; 2];
         for _ in 0..20 {
@@ -1431,7 +1518,7 @@ mod tests {
     #[test]
     fn loops_back_when_looping() {
         let wave = ramp_wave(10, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
         sampler.set_looping(true);
 
         let mut out = [0.0f32; 2];
@@ -1464,7 +1551,7 @@ mod tests {
     #[test]
     fn looping_overshoot_at_double_speed() {
         let wave = ramp_wave(10, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
         sampler.set_looping(true);
         sampler.set_speed(PlaybackRate::new(2.0));
 
@@ -1493,7 +1580,7 @@ mod tests {
     #[test]
     fn process_block_produces_correct_samples() {
         let wave = ramp_wave(100, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
@@ -1511,7 +1598,7 @@ mod tests {
     #[test]
     fn process_block_silence_when_stopped() {
         let wave = ramp_wave(100, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
         sampler.stop();
 
         let input_vec = BufferVec::new(0);
@@ -1530,7 +1617,7 @@ mod tests {
     #[test]
     fn process_stops_mid_block_when_sample_ends() {
         let wave = ramp_wave(3, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
@@ -1553,8 +1640,8 @@ mod tests {
         // At 120 BPM, beat 1.0 = 0.5 seconds = 22050 samples at 44100 Hz.
         // ramp_wave has sample[i] = i+1, so sample[22050] = 22051.0.
         let wave = ramp_wave(44100, 44100.0);
-        let transport = MockTransport::new(1.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1571,8 +1658,8 @@ mod tests {
     #[test]
     fn transport_stopped_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
-        let transport = MockTransport::stopped();
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
+        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1584,8 +1671,8 @@ mod tests {
     #[test]
     fn transport_before_start_beat_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
-        let transport = MockTransport::new(1.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(4.0), None);
+        let transport = MockTransport::rolling(Beat::new(1.0), Bpm::new(120.0));
+        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(4.0), None);
 
         let mut output = [0.0f32; 2];
         sampler.tick(&[], &mut output);
@@ -1596,8 +1683,8 @@ mod tests {
     #[test]
     fn transport_past_duration_beats_outputs_silence() {
         let wave = ramp_wave(44100, 44100.0);
-        let transport = MockTransport::new(10.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(
+        let transport = MockTransport::rolling(Beat::new(10.0), Bpm::new(120.0));
+        let mut sampler = MemorySource::with_transport(
             wave,
             transport,
             Beat::new(0.0),
@@ -1613,8 +1700,8 @@ mod tests {
     #[test]
     fn transport_process_block() {
         let wave = ramp_wave(44100, 44100.0);
-        let transport = MockTransport::new(0.0, 120.0);
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
@@ -1631,8 +1718,8 @@ mod tests {
     #[test]
     fn transport_process_block_silence_when_stopped() {
         let wave = ramp_wave(44100, 44100.0);
-        let transport = MockTransport::stopped();
-        let mut sampler = SamplerUnit::with_transport(wave, transport, Beat::new(0.0), None);
+        let transport = MockTransport::stopped(Beat::new(0.0), Bpm::new(120.0));
+        let mut sampler = MemorySource::with_transport(wave, transport, Beat::new(0.0), None);
 
         let input_vec = BufferVec::new(0);
         let mut output_vec = BufferVec::new(2);
@@ -1650,9 +1737,9 @@ mod tests {
     #[test]
     fn clone_preserves_state() {
         let wave = ramp_wave(100, 44100.0);
-        let sampler = SamplerUnit::with_config(
+        let sampler = MemorySource::with_config(
             wave,
-            SamplerUnitConfig {
+            MemorySourceConfig {
                 gain: Amplitude::new(0.75),
                 speed: PlaybackRate::new(1.5),
                 loop_setting: LoopSetting::On {
@@ -1679,7 +1766,7 @@ mod tests {
     fn set_wave_resets_position() {
         let wave1 = ramp_wave(100, 44100.0);
         let wave2 = ramp_wave(50, 48000.0);
-        let mut sampler = SamplerUnit::new(wave1);
+        let mut sampler = MemorySource::new(wave1);
 
         sampler.trigger_at(SamplePosition::new(42.0));
         sampler.set_wave(wave2);
@@ -1693,7 +1780,7 @@ mod tests {
     #[test]
     fn set_sample_rate_updates_src_ratio() {
         let wave = ramp_wave(100, 48000.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         sampler.set_sample_rate(SampleRate(24000.0));
 
@@ -1708,7 +1795,7 @@ mod tests {
     #[test]
     fn interpolation_at_last_sample_clamps() {
         let wave = ramp_wave(3, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
 
         let mut out = [0.0f32; 2];
         sampler.tick(&[], &mut out);
@@ -1726,7 +1813,7 @@ mod tests {
         // Verify that looping a 2-sample wave keeps producing the same
         // values cyclically (not silence, not garbage).
         let wave = ramp_wave(2, 44100.0);
-        let mut sampler = SamplerUnit::new(wave);
+        let mut sampler = MemorySource::new(wave);
         sampler.set_looping(true);
 
         let mut outputs = Vec::new();
@@ -1760,18 +1847,18 @@ mod tests {
     /// `Net` edges already wired against `outputs()`.
     #[test]
     fn new_stays_stereo_even_for_a_wide_wave() {
-        let u = SamplerUnit::new(indexed_wave(6, 32));
+        let u = MemorySource::new(indexed_wave(6, 32));
         assert_eq!(u.channels(), 2);
         assert_eq!(u.outputs(), 2);
     }
 
     #[test]
     fn with_channels_declares_the_width() {
-        let u = SamplerUnit::with_channels(indexed_wave(6, 32), 6);
+        let u = MemorySource::with_channels(indexed_wave(6, 32), 6);
         assert_eq!(u.channels(), 6);
         assert_eq!(u.outputs(), 6);
         assert_eq!(
-            SamplerUnit::with_channels(indexed_wave(2, 32), 0).channels(),
+            MemorySource::with_channels(indexed_wave(2, 32), 0).channels(),
             1
         );
     }
@@ -1781,7 +1868,7 @@ mod tests {
     #[test]
     fn route_width_tracks_outputs() {
         for w in [1usize, 2, 6, 8] {
-            let mut u = SamplerUnit::with_channels(indexed_wave(2, 32), w);
+            let mut u = MemorySource::with_channels(indexed_wave(2, 32), w);
             let out = u.route(&SignalFrame::new(0), 44_100.0);
             assert_eq!(
                 out.len(),
@@ -1796,7 +1883,7 @@ mod tests {
     /// stack frame into a planar buffer — different code, so both are checked.
     #[test]
     fn six_channel_wave_reaches_all_six_outputs() {
-        let mut u = SamplerUnit::with_channels(indexed_wave(6, 64), 6);
+        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6);
 
         let mut out = [0.0f32; 6];
         u.tick(&[], &mut out);
@@ -1808,7 +1895,7 @@ mod tests {
             );
         }
 
-        let mut u = SamplerUnit::with_channels(indexed_wave(6, 64), 6);
+        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6);
         let input = BufferVec::new(0);
         let mut output = BufferVec::new(6);
         u.process(8, &input.buffer_ref(), &mut output.buffer_mut());
@@ -1827,7 +1914,7 @@ mod tests {
     /// strip's job, not the reader's.
     #[test]
     fn gain_applies_uniformly_across_all_channels() {
-        let mut u = SamplerUnit::with_channels(indexed_wave(6, 64), 6);
+        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6);
         u.set_gain(Amplitude::new(0.5));
         let mut out = [0.0f32; 6];
         u.tick(&[], &mut out);
@@ -1840,12 +1927,12 @@ mod tests {
         }
     }
 
-    /// A looping 6-channel clip must keep every channel through the crossfade.
+    /// A looping 6-channel voice must keep every channel through the crossfade.
     /// The crossfade blends in place across the whole frame, so a stereo-shaped
     /// blend would leave channels 2..6 un-faded (or worse, untouched).
     #[test]
     fn six_channel_loop_crossfade_covers_every_channel() {
-        let mut u = SamplerUnit::with_channels(indexed_wave(6, 64), 6);
+        let mut u = MemorySource::with_channels(indexed_wave(6, 64), 6);
         u.set_loop_range(SamplePosition::new(0.0), SamplePosition::new(16.0), 4);
         let mut out = [0.0f32; 6];
         // Drive past the loop point so the crossfade engages at least once.

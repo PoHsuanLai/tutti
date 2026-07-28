@@ -111,7 +111,7 @@ impl ButlerThread {
         }
     }
 
-    /// Access stream states for creating StreamingSamplerUnit instances.
+    /// Access stream states for creating DiskSource instances.
     pub fn plans(&self) -> Arc<DashMap<usize, ChannelPlan>> {
         Arc::clone(&self.shared.plans)
     }

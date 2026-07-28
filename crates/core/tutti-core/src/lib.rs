@@ -22,12 +22,13 @@
 //! # std + Bevy
 //!
 //! tutti-core is a std crate whose DSP graph runtime (fundsp's [`Net`](dsp::Net),
-//! transport, metering) is Bevy-agnostic. The optional `bevy` feature (on by
-//! default) adds the shared ECS graph-reconcile hub (`GraphReconcileSystems`,
-//! `AudioGraphRes`, the param components, `GraphReconcilePlugin`) that every leaf
-//! audio crate schedules against. Build with `--no-default-features` for a
-//! Bevy-free kernel; a non-Bevy host wires nodes via `Net`'s imperative
-//! `connect`/`disconnect` API directly.
+//! transport, metering) is Bevy-agnostic. The optional `bevy` feature is **off by
+//! default** and adds exactly one thing: a `Component` derive on [`AudioNode`],
+//! so an entity can *be* a node in the graph. Everything that reconciles against
+//! it — the set hierarchy, the graph resources, the param components, the
+//! declarative wiring — lives in the host adapter, `bevy_tutti::graph`. A
+//! non-Bevy host wires nodes through `Net`'s `set_source` / `connect` API
+//! directly.
 
 pub mod error;
 pub use error::{Error, Result};
@@ -135,12 +136,7 @@ pub use fundsp::prelude::{shared, AudioUnit, BufferMut, BufferRef, Shared};
 // on either alone breaks the other combination.
 #[cfg(all(
     feature = "bevy_asset",
-    any(
-        feature = "wav",
-        feature = "flac",
-        feature = "mp3",
-        feature = "ogg"
-    )
+    any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")
 ))]
 pub use fundsp::read::WaveAsset;
 // Decode error surfaced by `WaveAsset::from_bytes`; the Bevy `WaveAssetLoader`

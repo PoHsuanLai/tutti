@@ -1734,6 +1734,33 @@ impl AudioUnit for VoiceNode {
             s.allocate();
         }
     }
+
+    /// Sever every input this clone shares with the live graph.
+    ///
+    /// **Required, not an optimization.** The offline region render clones the
+    /// live net and ticks it on a worker pool *while the audio thread plays the
+    /// original* — the one place two generations run genuinely concurrently. A
+    /// clone that still shares state with the live node is a data race, not
+    /// merely an interleave.
+    ///
+    /// [`VoicePool::isolate`] gets this for free by clearing its voices, which
+    /// drops their stretch filters with them. `VoiceNode` keeps its single slot,
+    /// so it has to sever explicitly — and until it did, it inherited the
+    /// `AudioUnit` no-op default and shipped the render a filter still pointing
+    /// at the live [`stretch::Unit`]'s shared vocoder bank.
+    ///
+    /// Latent rather than firing only because the sole producer of these nodes
+    /// (`dawai-spectral`'s resynth) builds them at unity, where
+    /// `stretch_wanted` leaves the slot's filter `None`. A resynth voice with
+    /// any non-unity stretch or pitch arms it, with no change in this crate.
+    fn isolate(&mut self) {
+        if let Some(s) = self.slot.stretch.as_mut() {
+            s.isolate();
+        }
+        // A fresh cursor: the clone must not inherit the live playhead's
+        // last-seen beat, or its first offline block reads as a discontinuity.
+        self.cursor = None;
+    }
 }
 
 #[cfg(test)]
@@ -1785,6 +1812,130 @@ mod tests {
     /// a 60 dB gain error live in the vocoder. Here, parking the playhead in the
     /// silent half means any output above the floor is provably material the
     /// filter should no longer be holding.
+    /// Resetting a still-shared clone must not reach the live voice.
+    ///
+    /// The export path is `clone_isolated` -> `isolate` -> `reset`. It used to
+    /// be `clone_isolated` -> `reset` -> `isolate`, and in that order `reset`
+    /// cleared the FIFOs and phase accumulators of the *live* unit through the
+    /// shared bank — measured as live output dropping to exactly 0.0 for one
+    /// window. This pins the order-independent property: whatever the render
+    /// does to its own clone after isolating, the live voice keeps its state.
+    #[test]
+    fn resetting_an_isolated_clone_leaves_the_live_voice_playing() {
+        // Matches `make_wave`, so the source needs no rate conversion.
+        const SR: f64 = 44_100.0;
+        // Long enough to outlast the vocoder's fill-up: at 2x stretch the unit
+        // consumes source at 1/2 rate, so 8192 warm-up ticks eat 4096 samples
+        // and the 2048-sample window needs 4096 ticks before anything is emitted.
+        let wave = make_wave(48_000);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+        let mut live = VoiceNode::with_channels(
+            Voice {
+                source: VoiceSource::Memory(sampler),
+                play: Playback {
+                    stretch: StretchFactor::new(2.0),
+                    ..Playback::default()
+                },
+                channel_index: None,
+            },
+            1,
+        );
+        live.allocate();
+        assert!(live.slot.stretch.is_some(), "vacuous without a filter");
+
+        // Build real vocoder history. The playhead must ADVANCE: a placed
+        // source derives its position from the transport every tick, so a frozen
+        // playhead feeds the vocoder a constant and it synthesises nothing.
+        let mut out = [0.0f32; 1];
+        let mut peak_before = 0.0f32;
+        for _ in 0..8192 {
+            live.tick(&[], &mut out);
+            transport.advance(1, SR);
+            peak_before = peak_before.max(out[0].abs());
+        }
+        assert!(
+            peak_before > 1e-4,
+            "the live voice must be audible before the render starts"
+        );
+
+        // What the export path does: clone, isolate, then reset the clone.
+        let mut render = live.clone();
+        render.isolate();
+        render.reset();
+
+        // The live voice must be unaffected — it keeps emitting immediately,
+        // with no re-fill gap.
+        let mut peak_after = 0.0f32;
+        for _ in 0..512 {
+            live.tick(&[], &mut out);
+            transport.advance(1, SR);
+            peak_after = peak_after.max(out[0].abs());
+        }
+        assert!(
+            peak_after > 1e-4,
+            "a region render silenced the live voice \
+             (peak {peak_before:.6} -> {peak_after:.6})"
+        );
+    }
+
+    /// Every node type the offline render can carry must sever its shared state.
+    ///
+    /// The render clones the live net and ticks it on a worker pool while the
+    /// audio thread plays the original — the one genuinely concurrent path in
+    /// the engine. `VoicePool` severs by clearing its voices; `VoiceNode` keeps
+    /// its slot, so it has to sever its stretch filter explicitly.
+    ///
+    /// Asserted on `Arc` identity rather than on audio, because the failure is a
+    /// data race: in release two threads would mutate one `UnsafeCell` with no
+    /// synchronisation, which no output assertion can reliably observe.
+    #[test]
+    fn isolate_severs_a_standalone_voices_stretch_bank() {
+        let wave = make_wave(4096);
+        let transport = MockTransport::rolling(Beat::new(0.0), Bpm::new(120.0));
+        let sampler = MemorySource::with_transport(wave, transport.clone(), Beat::new(0.0), None);
+        let live = VoiceNode::with_channels(
+            Voice {
+                source: VoiceSource::Memory(sampler),
+                play: Playback {
+                    stretch: StretchFactor::new(2.0),
+                    ..Playback::default()
+                },
+                channel_index: None,
+            },
+            2,
+        );
+        assert!(
+            live.slot.stretch.is_some(),
+            "test is vacuous unless a filter is resident"
+        );
+
+        // What `clone_isolated` produces, then what the render's isolation pass
+        // does to it.
+        let mut render = live.clone();
+        assert!(
+            render
+                .slot
+                .stretch
+                .as_ref()
+                .unwrap()
+                .shares_bank_with(live.slot.stretch.as_ref().unwrap()),
+            "the clone should start out sharing — otherwise this proves nothing"
+        );
+
+        render.isolate();
+        assert!(
+            !render
+                .slot
+                .stretch
+                .as_ref()
+                .unwrap()
+                .shares_bank_with(live.slot.stretch.as_ref().unwrap()),
+            "isolate() left the render sharing the live voice's vocoder bank; \
+             a worker thread would race the audio thread on it"
+        );
+    }
+
     #[test]
     fn a_transport_seek_flushes_stretch_state() {
         const SR: f64 = 44_100.0;

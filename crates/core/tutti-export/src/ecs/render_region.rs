@@ -121,6 +121,30 @@ impl Default for RegionRenderConfig {
 ///      voice nodes; this arm and that producer move together (a mismatch would
 ///      silently render the correction with the live transport — see the
 ///      `offline_rebinds_bare_voice_node_transport` test).
+/// Sever every node in a freshly cloned net from the live graph.
+///
+/// **Must be the first thing done to the clone — before `reset`, before any
+/// tick.** `Net::clone_isolated` repoints the output bus but does *not*
+/// isolate (its name is about node targeting, not thread safety), so until
+/// this runs the clone still shares live state: an `Arc`-shared vocoder bank
+/// in `stretch::Unit`, a live command `Receiver` in `VoicePool`, a live
+/// `Timeline` in the clock.
+///
+/// This used to live inside [`rebind_net_transport`], which runs *after*
+/// `net.reset()`. That ordering was a live bug: `reset()` on a still-sharing
+/// clone reached through into the live `stretch::Unit`'s bank and cleared the
+/// FIFOs and phase accumulators the audio thread was mid-block on — measured
+/// as the live voice's output dropping to exactly 0.0 for one window (46 ms at
+/// the default 2048) every time a region render started. Isolation has to lead.
+fn isolate_net(net: &mut Net) {
+    let ids: Vec<NodeId> = net.ids().copied().collect();
+    for id in ids {
+        // Generic: each unit severs whatever live input it holds. No-op for
+        // pure-DSP nodes, which share nothing.
+        net.node_mut(id).isolate();
+    }
+}
+
 fn rebind_net_transport(
     net: &mut Net,
     transport: &Arc<dyn Timeline>,
@@ -130,10 +154,6 @@ fn rebind_net_transport(
     let tempo = tempo.into();
     let ids: Vec<NodeId> = net.ids().copied().collect();
     for id in ids {
-        // 1. Generic: sever any shared live input on this clone before the
-        //    worker ticks it. No-op for pure-DSP nodes.
-        net.node_mut(id).isolate();
-
         // 1b. The clock is severed by `isolate()` but keeps whatever beat the
         //     LIVE playhead happened to be at. Re-seat it on the render's own
         //     timeline, or every edge-driven node (LFO, AutomationLane) renders
@@ -303,6 +323,14 @@ pub fn prepare_region_render_system(
             });
             continue;
         };
+
+        // FIRST: sever this clone from the live graph. Everything below mutates
+        // the clone, and until this runs those mutations reach through into the
+        // nodes the audio thread is using — see `isolate_net`.
+        {
+            let _span = bevy_log::info_span!("region_render::isolate").entered();
+            isolate_net(&mut net);
+        }
 
         // Reset every DSP node's internal state (filter memory, reverb tails,
         // delay lines). The clone inherited the live nodes' state as-of clone

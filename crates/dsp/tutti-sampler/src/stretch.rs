@@ -903,6 +903,18 @@ impl Unit {
                 || self.pitch_cents().get().abs() > PITCH_EPSILON_CENTS)
     }
 
+    /// Whether these two units share one vocoder bank.
+    ///
+    /// Exposed so callers that must sever sharing before running a clone on
+    /// another thread can *assert* they did — the alternative is trusting that
+    /// [`AudioUnit::isolate`] was reached, which is exactly the assumption that
+    /// shipped a data race in `VoiceNode`. Sharing is otherwise invisible from
+    /// outside this module: it changes no output until two threads race, and by
+    /// then nothing is observable in a test.
+    pub fn shares_bank_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.channels, &other.channels)
+    }
+
     /// Processing latency, in samples — **zero while bypassing**.
     ///
     /// One whole window must arrive before the first frame can be analysed, so a

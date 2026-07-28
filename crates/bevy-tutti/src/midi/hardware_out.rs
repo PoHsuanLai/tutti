@@ -112,6 +112,43 @@ impl UmpOutRes {
     }
 }
 
+/// How many outbound events went nowhere, and whether that has been said aloud.
+///
+/// `MidiIo::send` pushes into a channel whether or not an output device is
+/// connected, and reports the failure at `debug!` — so an app with no output
+/// selected drains its mailboxes into silence, forever, with nothing above debug
+/// level to show for it. This counts what was lost and warns once, which is the
+/// honest halfway house until the host connects something.
+#[derive(Resource, Debug, Default)]
+pub struct MidiOutDrops {
+    dropped: std::sync::atomic::AtomicU64,
+    warned: std::sync::atomic::AtomicBool,
+}
+
+impl MidiOutDrops {
+    /// Events discarded for want of a connected output device.
+    pub fn count(&self) -> u64 {
+        self.dropped.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Record `n` dropped events, warning the first time only.
+    fn record(&self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let total = self
+            .dropped
+            .fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed)
+            + n as u64;
+        if !self.warned.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::warn!(
+                "MIDI out has events but no output device is connected; \
+                 {total} dropped so far. Send `ConnectMidiOutput` to select one."
+            );
+        }
+    }
+}
+
 /// Where drained MIDI-out events go: JR-stamped UMP if that transport is up and
 /// enabled, else the MIDI-1.0 port, else dropped.
 pub struct MidiOutRouter<'a> {
@@ -119,6 +156,9 @@ pub struct MidiOutRouter<'a> {
     pub midi_io: Option<&'a super::device::MidiIoRes>,
     #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
     pub jr_out: Option<&'a mut UmpOutRes>,
+    /// Where events with nowhere to go are counted. `None` keeps the drop
+    /// silent, which is what a caller with no interest in the tally passes.
+    pub drops: Option<&'a MidiOutDrops>,
     /// Keeps the lifetime and the non-hardware build honest (no fields to borrow).
     #[cfg(not(feature = "midi-hardware"))]
     pub _marker: std::marker::PhantomData<&'a ()>,
@@ -126,6 +166,9 @@ pub struct MidiOutRouter<'a> {
 
 impl MidiOutRouter<'_> {
     /// Route a batch of drained events to the active output transport.
+    ///
+    /// An event with no live transport is dropped — the ring must not back up —
+    /// but it is counted first, so "nothing is coming out" has an answer.
     pub fn route(&mut self, events: &[MidiEvent]) {
         #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
         if let Some(ump) = self.jr_out.as_mut() {
@@ -134,13 +177,20 @@ impl MidiOutRouter<'_> {
         }
         #[cfg(feature = "midi-hardware")]
         if let Some(io) = &self.midi_io {
-            for ev in events {
-                io.0.send(*ev);
+            // `send` queues regardless of whether a port is open, so the
+            // connection check has to happen here: without it every event is
+            // accepted and discarded one layer down, at `debug!`.
+            if io.0.is_output_connected() {
+                for ev in events {
+                    io.0.send(*ev);
+                }
+                return;
             }
         }
-        // No hardware feature (or no connected port): drop, keeping the ring
-        // from backing up.
-        let _ = events;
+        // No hardware feature, no `MidiIo`, or no connected output.
+        if let Some(drops) = self.drops {
+            drops.record(events.len());
+        }
     }
 }
 

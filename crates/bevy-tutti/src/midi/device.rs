@@ -7,6 +7,13 @@
 //! emits [`MidiDeviceEvent`]s for devices that appeared or vanished — by request
 //! or by hot-plug, indistinguishably, because the engine's list is the one
 //! source either way.
+//!
+//! Both directions are covered. Output used to have no ECS surface at all, which
+//! meant the whole outbound path ([`hardware_out`](super::hardware_out),
+//! [`track_out`](super::track_out), [`clock_out`](super::clock_out)) could never
+//! be made live from an app: it drained its mailboxes into `MidiIo::send`, which
+//! pushes into a channel with no connected port and logs at `debug!`. Events
+//! left the ring and reached nothing.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::message::{Message, MessageReader, MessageWriter};
@@ -38,10 +45,53 @@ pub struct DisconnectMidiDevice {
     pub name: String,
 }
 
+/// Fire-and-forget request: connect a MIDI **output** device by name (partial
+/// match). Replaces any currently connected output.
+///
+/// # Why not a direction field on [`ConnectMidiDevice`]
+///
+/// The engine's two sides are not symmetric, and folding them together would
+/// have to hide that. Inputs are many-at-once and disconnect *by name*
+/// (`MidiIo::disconnect_input(&name)`); there is at most one output, and
+/// `MidiIo::disconnect_output()` takes no name at all. A shared
+/// `DisconnectMidiDevice { name, direction }` would therefore have to accept a
+/// name it silently ignores for one of the two — a new quiet failure in the
+/// subsystem this layer exists to make loud.
+#[derive(Message, Debug, Clone)]
+pub struct ConnectMidiOutput {
+    pub name: String,
+}
+
+/// Fire-and-forget request: disconnect the MIDI output device.
+///
+/// Carries no name: there is only ever one connected output, and the engine's
+/// `disconnect_output` takes no argument.
+#[derive(Message, Debug, Clone, Default)]
+pub struct DisconnectMidiOutput;
+
+/// Which half of the wire a device event is about.
+///
+/// A host almost always cares — a disappeared *input* means a dead controller,
+/// a disappeared *output* means everything sent from now on is dropped — and
+/// before this the two were indistinguishable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MidiDirection {
+    /// A device the app receives MIDI from.
+    Input,
+    /// The device the app sends MIDI to.
+    Output,
+}
+
 #[derive(Event, Message, Clone, Debug)]
 pub enum MidiDeviceEvent {
-    Connected { name: String },
-    Disconnected { name: String },
+    Connected {
+        name: String,
+        direction: MidiDirection,
+    },
+    Disconnected {
+        name: String,
+        direction: MidiDirection,
+    },
 }
 
 /// What the last poll saw, so a change can be spotted.
@@ -56,6 +106,12 @@ pub enum MidiDeviceEvent {
 #[derive(Resource, Default, Debug)]
 pub struct MidiDeviceState {
     pub(crate) seen: std::collections::HashSet<String>,
+    /// The output device the last poll saw, for the same reason as `seen`.
+    ///
+    /// A separate `Option` rather than an entry in the set above: there is at
+    /// most one output, so a set would model a cardinality the engine does not
+    /// have and would need a second lookup to answer "which one".
+    pub(crate) seen_output: Option<String>,
     pub(crate) last_check: Option<std::time::Instant>,
 }
 
@@ -69,11 +125,15 @@ pub fn midi_device_connect_system(
     midi_io: Option<Res<super::device::MidiIoRes>>,
     mut connect_events: MessageReader<ConnectMidiDevice>,
     mut disconnect_events: MessageReader<DisconnectMidiDevice>,
+    mut connect_out: MessageReader<ConnectMidiOutput>,
+    mut disconnect_out: MessageReader<DisconnectMidiOutput>,
     mut state: ResMut<MidiDeviceState>,
 ) {
     let Some(midi_io) = midi_io else {
         connect_events.clear();
         disconnect_events.clear();
+        connect_out.clear();
+        disconnect_out.clear();
         return;
     };
 
@@ -86,6 +146,20 @@ pub fn midi_device_connect_system(
     }
     for disconnect in disconnect_events.read() {
         midi_io.0.disconnect_input(&disconnect.name);
+        acted = true;
+    }
+    for connect in connect_out.read() {
+        match midi_io.0.connect_output_by_name(&connect.name) {
+            Ok(()) => acted = true,
+            Err(e) => warn!(
+                "Failed to connect MIDI output device '{}': {}",
+                connect.name, e
+            ),
+        }
+    }
+    // Read even when empty, so the reader does not accumulate.
+    if disconnect_out.read().next().is_some() {
+        midi_io.0.disconnect_output();
         acted = true;
     }
 
@@ -120,12 +194,43 @@ pub fn midi_device_poll_system(
         midi_io.0.connected_input_names().into_iter().collect();
 
     for name in state.seen.difference(&live).cloned() {
-        device_events.write(MidiDeviceEvent::Disconnected { name });
+        device_events.write(MidiDeviceEvent::Disconnected {
+            name,
+            direction: MidiDirection::Input,
+        });
     }
     for name in live.difference(&state.seen).cloned() {
-        device_events.write(MidiDeviceEvent::Connected { name });
+        device_events.write(MidiDeviceEvent::Connected {
+            name,
+            direction: MidiDirection::Input,
+        });
     }
     state.seen = live;
+
+    // The output is one device or none, so its diff is a compare rather than a
+    // set difference. `is_output_connected` gates the name: the engine keeps the
+    // last device name around, and reporting it while disconnected would
+    // announce an output that cannot carry anything.
+    let live_output = midi_io
+        .0
+        .is_output_connected()
+        .then(|| midi_io.0.output_device_name())
+        .flatten();
+    if live_output != state.seen_output {
+        if let Some(name) = state.seen_output.take() {
+            device_events.write(MidiDeviceEvent::Disconnected {
+                name,
+                direction: MidiDirection::Output,
+            });
+        }
+        if let Some(name) = live_output.clone() {
+            device_events.write(MidiDeviceEvent::Connected {
+                name,
+                direction: MidiDirection::Output,
+            });
+        }
+        state.seen_output = live_output;
+    }
 }
 
 /// Hardware device connect/disconnect servicing + hot-plug polling.
@@ -136,6 +241,8 @@ impl Plugin for MidiDevicePlugin {
         app.add_message::<MidiDeviceEvent>();
         app.add_message::<ConnectMidiDevice>();
         app.add_message::<DisconnectMidiDevice>();
+        app.add_message::<ConnectMidiOutput>();
+        app.add_message::<DisconnectMidiOutput>();
         app.init_resource::<MidiDeviceState>();
         // Chained so a serviced request is reported on the same frame: the
         // connect system clears the poll timer, and the poll system reads it.

@@ -96,6 +96,7 @@ pub fn midi_out_send_system(out: Res<MidiOutRes>, mut requests: MessageReader<Se
 /// the same [`MidiOutRouter`] the clock-out pump uses.
 pub fn pump_midi_out_system(
     out: Option<Res<MidiOutRes>>,
+    drops: Res<super::hardware_out::MidiOutDrops>,
     #[cfg(feature = "midi-hardware")] midi_io: Option<Res<super::device::MidiIoRes>>,
     #[cfg(all(target_os = "macos", feature = "midi-hardware"))] ump_out: Option<
         ResMut<super::hardware_out::UmpOutRes>,
@@ -113,6 +114,7 @@ pub fn pump_midi_out_system(
         midi_io: midi_io.as_deref(),
         #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
         jr_out: super::hardware_out::jr_out_active(ump_out, jr),
+        drops: Some(&drops),
         #[cfg(not(feature = "midi-hardware"))]
         _marker: std::marker::PhantomData,
     };
@@ -131,6 +133,7 @@ pub struct MidiOutPlugin;
 impl Plugin for MidiOutPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MidiOutRes>();
+        app.init_resource::<super::hardware_out::MidiOutDrops>();
         app.add_message::<SendMidiOut>();
         app.add_systems(
             Update,

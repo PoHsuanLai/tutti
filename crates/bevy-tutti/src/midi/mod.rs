@@ -96,7 +96,7 @@ pub use bus::{MidiBusRes, MpeModeConfig};
 pub use clock_out::{pump_clock_out_system, ClockMasterRes, ClockOutPlugin};
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 pub use hardware_out::UmpOutRes;
-pub use hardware_out::{drain_receiver_through, JrStamperRes, MidiOutRouter};
+pub use hardware_out::{drain_receiver_through, JrStamperRes, MidiOutDrops, MidiOutRouter};
 pub use metadata::{
     flex_metadata_broadcast_system, BroadcastFlexMetadata, MidiMetadataPlugin,
 };
@@ -122,7 +122,8 @@ pub use track_out::{
 
 #[cfg(feature = "midi-hardware")]
 pub use device::{
-    midi_device_connect_system, midi_device_poll_system, ConnectMidiDevice, DisconnectMidiDevice,
-    MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState, MidiIoRes,
+    midi_device_connect_system, midi_device_poll_system, ConnectMidiDevice, ConnectMidiOutput,
+    DisconnectMidiDevice, DisconnectMidiOutput, MidiDeviceEvent, MidiDevicePlugin, MidiDeviceState,
+    MidiDirection, MidiIoRes,
 };
 

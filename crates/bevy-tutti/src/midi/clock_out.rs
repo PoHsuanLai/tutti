@@ -55,6 +55,7 @@ impl ClockMasterRes {
 /// OS; otherwise it drains and drops (keeping the ring from backing up).
 pub fn pump_clock_out_system(
     clock_out: Res<ClockMasterRes>,
+    drops: Res<super::hardware_out::MidiOutDrops>,
     #[cfg(feature = "midi-hardware")] midi_io: Option<Res<super::device::MidiIoRes>>,
     #[cfg(all(target_os = "macos", feature = "midi-hardware"))] ump_out: Option<ResMut<UmpOutRes>>,
     #[cfg(all(target_os = "macos", feature = "midi-hardware"))] jr: Option<Res<JrStamperRes>>,
@@ -64,6 +65,7 @@ pub fn pump_clock_out_system(
         midi_io: midi_io.as_deref(),
         #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
         jr_out: super::hardware_out::jr_out_active(ump_out, jr),
+        drops: Some(&drops),
         #[cfg(not(feature = "midi-hardware"))]
         _marker: std::marker::PhantomData,
     };

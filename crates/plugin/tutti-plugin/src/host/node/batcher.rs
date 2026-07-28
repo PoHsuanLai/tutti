@@ -946,6 +946,9 @@ mod tests {
     /// (8192 — 171 ms declared for a 1.33 ms pipeline). The bound below is the
     /// part that would catch the second one.
     #[test]
+    // Constant by construction — that is the point, per the note above. Clippy
+    // reads a const assertion as a mistake; here it is the change detector.
+    #[allow(clippy::assertions_on_constants)]
     fn declared_pipeline_latency_still_matches_the_block_size() {
         assert_eq!(PIPELINE_LATENCY_SAMPLES, BATCH_SIZE);
         // The failure mode worth naming: a max-buffer-sized declaration. Any

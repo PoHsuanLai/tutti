@@ -55,6 +55,18 @@ impl SoundFontUnit {
         })
     }
 
+    /// This unit's MIDI input endpoint — routing address, push mailbox, and the
+    /// source-install slot, in one borrow.
+    ///
+    /// The whole-port accessor exists so a host can reach all three through a
+    /// single downcast. Resolving a unit's MIDI identity means asking the unit,
+    /// and asking three times for three halves of one endpoint invites a caller
+    /// to cache one of them — which is how an id goes stale across a
+    /// `crossfade` that keeps the graph node but mints a new port.
+    pub fn midi_port(&self) -> &MidiInPort {
+        &self.midi
+    }
+
     /// Producer handle for this unit's MIDI inbox.
     pub fn midi_sender(&self) -> MidiSender {
         self.midi.sender()

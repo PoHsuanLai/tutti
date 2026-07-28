@@ -97,6 +97,15 @@ impl Midi {
         }
     }
 
+    /// This plugin's MIDI input endpoint — routing address, push mailbox, and
+    /// the source-install slot, in one borrow.
+    ///
+    /// The whole-port accessor exists so a host can reach all three through a
+    /// single downcast, the same shape `SoundFontUnit` and `PolySynth` expose.
+    pub fn port(&self) -> &MidiInPort {
+        &self.port
+    }
+
     pub fn unit_id(&self) -> MidiUnitId {
         self.port.unit_id()
     }

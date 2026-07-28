@@ -112,6 +112,18 @@ impl PolySynth {
         })
     }
 
+    /// This synth's MIDI input endpoint — routing address, push mailbox, and the
+    /// source-install slot, in one borrow.
+    ///
+    /// The whole-port accessor exists so a host can reach all three through a
+    /// single downcast. See [`SoundFontUnit::midi_port`] for why one borrow
+    /// beats three.
+    ///
+    /// [`SoundFontUnit::midi_port`]: crate::soundfont::SoundFontUnit::midi_port
+    pub fn midi_port(&self) -> &MidiInPort {
+        &self.midi
+    }
+
     /// Producer handle for this synth's MIDI inbox. Cheap to clone; insert
     /// into a `MidiBus` or hand to anything that pushes MIDI events.
     pub fn midi_sender(&self) -> MidiSender {

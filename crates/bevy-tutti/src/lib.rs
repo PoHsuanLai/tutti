@@ -97,7 +97,7 @@ pub use plugin::TuttiPlugin;
 // Latency (plugin delay) compensation. Opt-in: `TuttiPlugin` does not add it,
 // because it costs a graph walk per commit and a host with no latency-reporting
 // nodes never needs it. See the `latency` module docs for ordering.
-pub use latency::{ChannelCompensation, LatencyCompensationPlugin};
+pub use latency::{ChannelCompensation, GraphLatency, LatencyCompensationPlugin};
 
 #[cfg(feature = "plugin")]
 pub use plugin_host::{OpenPluginEditor, PluginEmitter, PluginsRes, TuttiHostingPlugin};
@@ -120,7 +120,7 @@ pub mod prelude {
         MasterSources, MeteringRes, MetronomeRes, SpawnAudioNode, TransportRes,
     };
     pub use crate::{
-        AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo,
+        AudioDeviceState, AudioEngineState, ChannelCompensation, DeviceInfo, GraphLatency,
         LatencyCompensationPlugin, Net, TuttiDriver, TuttiPlugin,
     };
 

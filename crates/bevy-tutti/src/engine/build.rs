@@ -15,22 +15,22 @@
 use bevy_app::App;
 
 use crate::engine::Result;
-use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 use tutti_core::dsp::An;
 use tutti_core::engine::Engine;
 use tutti_core::Arc;
 use tutti_core::{
     dsp::Net, AudioTap, ClickNode, ClickSettings, MasterMeter, Transport, TransportClock,
 };
+use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 
 use crate::graph::{
     AudioConfig, AudioGraphRes, MeteringRes, MetronomeRes, TransportClockNode, TransportRes,
 };
 
-#[cfg(feature = "midi")]
-use crate::midi::{ClockMasterRes, MidiBusRes, MidiRoutingRes};
 #[cfg(feature = "midi-hardware")]
 use crate::midi::MidiIoRes;
+#[cfg(feature = "midi")]
+use crate::midi::{ClockMasterRes, MidiBusRes, MidiRoutingRes};
 #[cfg(feature = "midi-hardware")]
 use tutti_midi_io::MidiIo;
 #[cfg(feature = "midi")]
@@ -205,7 +205,9 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
 
     #[cfg(feature = "midi")]
     {
-        app.insert_resource(MidiBusRes(midi_bus));
+        // Both must be the very values the pre-block above shares — a freshly
+        // built one publishes where the audio thread never reads.
+        app.insert_resource(MidiBusRes::new(midi_bus));
         app.insert_resource(MidiRoutingRes(midi_route));
         app.insert_resource(ClockMasterRes::new(clock_master, clock_out_consumer));
         #[cfg(feature = "midi-hardware")]

@@ -176,16 +176,20 @@ pub fn soundfont_playback_system(
 }
 
 /// Drains [`PendingSoundFontUnit`] entities whose off-thread build has
-/// finished: applies the entity's program change, registers the unit's MIDI
-/// sender on the bus (under `midi`), adds the unit to tutti's graph, pipes it to
-/// output, attaches `AudioEmitter`, then removes the pending marker.
+/// finished: applies the entity's program change, adds the unit to tutti's
+/// graph, pipes it to output, attaches `AudioNode` + `AudioEmitter`, then
+/// removes the pending marker.
 ///
 /// Entities whose build is still running are left alone for the next frame.
+///
+/// MIDI registration is *not* done here. It used to be, open-coded, and with no
+/// counterpart to take the sender back off the bus; it now belongs to
+/// [`register_midi_senders`](crate::midi::register_midi_senders), which sees
+/// this entity by its `AudioNode` and pairs insertion with removal.
 pub fn promote_pending_soundfonts(
     mut commands: Commands,
     mut graph: ResMut<AudioGraphRes>,
     mut dirty: ResMut<GraphDirty>,
-    #[cfg(feature = "midi")] midi: Option<Res<crate::midi::MidiBusRes>>,
     mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,
 ) {
     let mut edited = false;
@@ -205,22 +209,18 @@ pub fn promote_pending_soundfonts(
         };
         unit.program_change(pending_unit.channel, pending_unit.preset);
 
-        // Register the unit's MIDI sender on the bus so the routing table can
-        // dispatch events to it by `MidiUnitId` — done inline here (like every
-        // other MIDI-producing unit), before the unit moves into the graph.
-        #[cfg(feature = "midi")]
-        if let Some(ref bus) = midi {
-            bus.0.insert(unit.midi_sender());
-        }
-
         let id = graph.0.add(unit);
         graph.0.pipe_output(id);
         edited = true;
 
+        // `AudioNode` as well as `AudioEmitter`: the two are separate
+        // components, and node teardown — `reconcile_node_despawn`, and MIDI
+        // unregistration — keys on `AudioNode`. Without it a despawned soundfont
+        // left its fundsp node *and* its bus entry behind.
         commands
             .entity(entity)
             .remove::<PendingSoundFontUnit>()
-            .insert(AudioEmitter { node_id: id });
+            .insert((tutti_core::AudioNode(id), AudioEmitter { node_id: id }));
     }
 
     // Stage only; the Commit-phase `commit_graph` coalesces (this system is
@@ -246,7 +246,11 @@ impl Plugin for TuttiSoundFontPlugin {
                 (soundfont_playback_system, promote_pending_soundfonts)
                     .chain()
                     .run_if(engine_ready)
-                    .before(GraphReconcileSystems::Commit),
+                    // In `Spawn`, not merely before `Commit`: this adds a node
+                    // to the graph, and MIDI registration orders itself after
+                    // that phase so a promoted unit is registrable the same
+                    // frame it appears.
+                    .in_set(GraphReconcileSystems::Spawn),
             );
     }
 }

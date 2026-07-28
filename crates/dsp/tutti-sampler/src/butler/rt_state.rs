@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use tutti_core::{AtomicF32, PlaybackRate, ReadRate, SrcRatio};
 
 use super::crossfader::StreamingCrossfader;
-use crate::voice::voice_pool::Direction;
+use crate::voice::types::Direction;
 
 /// Playback parameters read by the audio thread every sample.
 #[repr(align(64))]

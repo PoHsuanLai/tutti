@@ -12,7 +12,7 @@ use tutti_core::{
 
 use super::interp::cubic_hermite;
 use super::memory_source::VoiceWindow;
-use super::voice_pool::Direction;
+use super::types::Direction;
 use crate::butler::{RtState, SharedReader};
 
 /// Per-block fetch budget in **frames**, reserved once per unit so the RT

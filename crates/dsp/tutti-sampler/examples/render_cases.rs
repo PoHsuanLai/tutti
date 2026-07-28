@@ -120,7 +120,7 @@ fn render(stretch: f32, cents: f32, seek_at: Option<usize>) -> Vec<f32> {
     // what caught it: 440 Hz came out as 308 Hz with no processing engaged.
     // Keeping the note because the mistake is invisible in any single case —
     // only the control says "the harness is wrong, not the engine".
-    let mut ib = BufferArray::<U2>::new();
+    let ib = BufferArray::<U2>::new();
     let mut ob = BufferArray::<U2>::new();
     let mut out = Vec::with_capacity(FRAMES * 2);
     let mut rendered = 0usize;

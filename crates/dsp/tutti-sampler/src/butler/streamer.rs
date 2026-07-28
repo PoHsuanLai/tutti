@@ -1,6 +1,6 @@
 //! The sampler streaming-engine handle. See [`DiskStreamer`].
 
-use crate::butler::{BufferConfig, ButlerCommand, ButlerThread};
+use super::{BufferConfig, ButlerCommand, ButlerThread};
 use crate::error::Result;
 use crate::ports::{Commands, Status};
 #[cfg(feature = "bevy")]

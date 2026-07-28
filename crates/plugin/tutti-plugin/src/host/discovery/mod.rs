@@ -1,11 +1,22 @@
-//! Plugin discovery and persistence.
+//! Plugin discovery and persistence, in two layers.
 //!
-//! [`PluginScanner`](crate::catalog::PluginScanner) walks filesystem
-//! directories and probes each plugin in a sandboxed subprocess, recording
-//! results in any [`PluginCatalog`](crate::catalog::PluginCatalog). The
-//! default catalog is `JsonCatalog` (JSON file on disk, behind the `json`
-//! feature); swap in your own impl to persist elsewhere. A dead-man's
-//! pedal auto-blacklists plugins that crash during probing.
+//! **Pure** — [`discover`] walks directories and returns paths;
+//! [`PluginRecord::probe`](record::PluginRecord::probe) turns one path into one
+//! record. Neither touches a store. An app that wants to own persistence
+//! entirely (records in a CRDT, a database, or just a `Vec`) needs nothing else
+//! from this module.
+//!
+//! **Stateful** — [`PluginScanner`] walks directories and probes each plugin in
+//! a sandboxed subprocess, recording results in any [`PluginCatalog`]. This
+//! layer exists for the two things the pure functions structurally cannot do:
+//! skip unchanged plugins on a rescan (probing is expensive; mtime comparison
+//! against stored records is what makes startup #2 fast) and survive a plugin
+//! that hard-crashes the scanner (a dead-man's pedal sentinel outlives the
+//! process and auto-blacklists the culprit on the next run).
+//!
+//! Persistence is pluggable — implement [`PluginCatalog`] over whatever store
+//! you like. [`JsonCatalog`] is one ready-made implementation, behind the
+//! opt-in `json` feature.
 
 pub mod catalog;
 #[cfg(feature = "json")]
@@ -18,7 +29,7 @@ pub mod scanner;
 pub use catalog::{CatalogExt, PluginCatalog};
 #[cfg(feature = "json")]
 pub use database::JsonCatalog;
-pub use fs::{file_modification_time, format_from_path};
+pub use fs::{discover, file_modification_time, format_from_path};
 pub use record::{
     AuComponentType, Blacklist, PluginClass, PluginDescriptor, PluginFormat, PluginRecord,
     Vst2Category,

@@ -46,6 +46,27 @@ pub fn file_modification_time(path: &Path) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
+/// Recursively discover plugin files across `dirs`.
+///
+/// The pure half of a scan: walks the filesystem and returns what it found,
+/// touching no catalog and spawning no subprocess. Pair with
+/// [`PluginRecord::probe`](super::record::PluginRecord::probe) to build records
+/// yourself when you own persistence and don't want a
+/// [`PluginCatalog`](super::catalog::PluginCatalog) at all.
+///
+/// What you forfeit going this way is what the catalog buys: incremental
+/// rescan (probing is a subprocess spawn with a multi-second timeout, so a
+/// large plugin folder is minutes of work that mtime comparison otherwise
+/// skips) and crash recovery (the dead-man's pedal needs state that outlives
+/// the probe that killed the process). [`PluginScanner`](super::PluginScanner)
+/// is the batteries-included path.
+///
+/// Unreadable directories are skipped, not reported — discovery over a list of
+/// standard install locations must not fail because one of them is absent.
+pub fn discover(dirs: &[PathBuf]) -> Vec<(PathBuf, PluginFormat)> {
+    dirs.iter().flat_map(|dir| discover_plugins(dir)).collect()
+}
+
 /// Recursively discover plugin files in `dir`.
 ///
 /// VST3 bundles are directories with a `.vst3` extension, so

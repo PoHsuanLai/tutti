@@ -7,18 +7,20 @@
 //!
 //! # Quick start
 //!
+//! With the `json` feature for ready-made persistence (see [Features](#features)
+//! — nothing is on by default):
+//!
 //! ```no_run
 //! # #[cfg(feature = "json")]
 //! # fn ex(window: &impl raw_window_handle::HasWindowHandle)
 //! # -> tutti_plugin::Result<()> {
 //! use std::path::PathBuf;
-//! use tutti_plugin::catalog::PluginsConfig;
+//! use tutti_plugin::catalog::{CatalogConfig, Plugins};
 //!
-//! let plugins = PluginsConfig::new(
+//! let plugins = Plugins::with_json_catalog(CatalogConfig::new(
 //!     PathBuf::from("/my/app/plugin-db.json"),
 //!     vec![PathBuf::from("/Library/Audio/Plug-Ins/VST3")],
-//! )
-//! .build()
+//! ))
 //! .with_fresh_scan();
 //! let (unit, handle) = plugins.load_by_name("TAL-NoiseMaker", 48000.0)?;
 //!
@@ -96,9 +98,15 @@
 //!
 //! # Features
 //!
-//! - `json` *(default)* — JSON-file-backed [`catalog::JsonCatalog`]. Disable
-//!   with `default-features = false` to drop the `serde_json` dep when
-//!   you're bringing your own [`catalog::PluginCatalog`] impl.
+//! **Nothing is on by default.** This is a library: persistence and format
+//! support are the embedding app's choices, so you wire up exactly what you
+//! use and the default build pulls no `serde_json` and no format FFI.
+//!
+//! - `json` — JSON-file-backed [`catalog::JsonCatalog`]. One ready-made
+//!   [`catalog::PluginCatalog`] impl, not the shape of the API: implement the
+//!   trait over your own store instead, or skip it entirely and use the pure
+//!   [`catalog::discover`] / [`PluginRecord::probe`][catalog::PluginRecord::probe]
+//!   pair.
 //! - `vst3`, `clap`, `au` — in-process GUI support. Loads the plugin
 //!   library in the *host* process for editor rendering only; audio still
 //!   runs out-of-process.
@@ -167,27 +175,42 @@ pub mod backend {
 #[cfg(feature = "vst2")]
 pub use format::vst2_in_process::load as in_process_vst2;
 
-/// Discovering, persisting, and loading plugins.
+/// Discovering, persisting, and loading plugins — pick your layer.
 ///
-/// [`Plugins`](catalog::Plugins) is the primary entry point — it wraps a
-/// [`PluginCatalog`](catalog::PluginCatalog) (a pluggable record store) and
-/// exposes a fluent API for scanning plugin directories and loading plugins
-/// by name or id.
+/// **Bring your own store.** [`discover`](catalog::discover) walks directories
+/// and returns paths; [`PluginRecord::probe`](catalog::PluginRecord::probe)
+/// turns one path into one record. Two pure functions, no state, no feature
+/// flags — put the results wherever you like:
 ///
-/// The default catalog is a JSON file on disk
-/// ([`JsonCatalog`](crate::host::discovery::JsonCatalog), behind the `json` feature).
-/// Ship your own [`PluginCatalog`](catalog::PluginCatalog) impl for SQLite,
-/// in-memory, or any other persistence.
+/// ```no_run
+/// use tutti_plugin::catalog::{discover, PluginRecord};
+/// # let dirs = vec![std::path::PathBuf::from("/Library/Audio/Plug-Ins/VST3")];
+/// let records: Vec<PluginRecord> = discover(&dirs)
+///     .iter()
+///     .filter_map(|(path, _format)| PluginRecord::probe(path).ok())
+///     .collect();
+/// ```
+///
+/// **Or let the library manage it.** [`Plugins`](catalog::Plugins) wraps a
+/// [`PluginCatalog`](catalog::PluginCatalog) — a pluggable record store — and
+/// adds the two things the pure path cannot give you: incremental rescan
+/// (probe only what changed, via stored mtimes — the difference between a
+/// multi-minute startup and an instant one) and crash recovery (a plugin that
+/// hard-crashes the scanner is auto-blacklisted on the next run).
+///
+/// [`JsonCatalog`](catalog::JsonCatalog) is one such store, behind the opt-in
+/// `json` feature. Implement [`PluginCatalog`](catalog::PluginCatalog) yourself
+/// for SQLite, a CRDT, or an in-memory map.
 pub mod catalog {
     #[cfg(feature = "json")]
     pub use crate::host::discovery::JsonCatalog;
     pub use crate::host::discovery::{
-        AuComponentType, Blacklist, CatalogExt, PluginCatalog, PluginClass, PluginDescriptor,
-        PluginFormat, PluginRecord, PluginScanner, ScanHandle, ScanPhase, ScanProgress, ScanResult,
-        Vst2Category,
+        discover, AuComponentType, Blacklist, CatalogExt, PluginCatalog, PluginClass,
+        PluginDescriptor, PluginFormat, PluginRecord, PluginScanner, ScanHandle, ScanPhase,
+        ScanProgress, ScanResult, Vst2Category,
     };
-    pub use crate::host::plugins::{PluginId, Plugins};
-    pub use crate::util::config::PluginsConfig;
+    pub use crate::host::plugins::{PluginId, Plugins, ScanTicket};
+    pub use crate::util::config::{AudioConfig, CatalogConfig};
 }
 
 /// Per-plugin handles — [`PluginClient`](handles::PluginClient) (audio graph

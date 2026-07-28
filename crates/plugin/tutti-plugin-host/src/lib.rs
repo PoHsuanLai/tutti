@@ -88,7 +88,7 @@ impl PluginsRes {
 /// - [`PluginsRes`] containing an empty in-memory plugin catalog (no scan
 ///   dirs configured by default — apps that want disk-backed scanning
 ///   should override the resource at startup with a
-///   `Plugins::with_config(...).with_fresh_scan()`).
+///   `Plugins::with_json_catalog(...).with_fresh_scan()`).
 ///
 /// Schedules the editor-lifecycle + crash-detect + scan systems in `Update`.
 /// (The `PluginParam` reconcile + epoch bump moved to
@@ -128,10 +128,10 @@ impl Plugin for TuttiHostingPlugin {
 
         // Default plugin catalog: empty in-memory, no scan dirs. Apps
         // that want a real disk-backed catalog should overwrite this
-        // resource with their own `PluginsRes::new(Plugins::with_config(...))`
+        // resource with their own `PluginsRes::new(Plugins::with_json_catalog(...))`
         // after `add_plugins(TuttiHostingPlugin)`.
         let default_db_path = std::path::PathBuf::from(".dawai-plugins.json");
-        let config = tutti_plugin::catalog::PluginsConfig::new(default_db_path, Vec::new());
+        let config = tutti_plugin::catalog::CatalogConfig::new(default_db_path, Vec::new());
         let plugins = tutti_plugin::catalog::Plugins::empty(config.clone());
         app.insert_resource(PluginsRes::new(plugins));
 

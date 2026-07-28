@@ -19,7 +19,7 @@ use bevy_ecs::prelude::*;
 use bevy_log::{info, warn};
 use bevy_tasks::{AsyncComputeTaskPool, Task};
 
-use tutti_plugin::catalog::{Plugins, PluginsConfig, ScanResult};
+use tutti_plugin::catalog::{CatalogConfig, Plugins, ScanResult};
 
 use crate::PluginsRes;
 use bevy_tasks::{block_on, futures_lite::future};
@@ -32,7 +32,7 @@ use bevy_tasks::{block_on, futures_lite::future};
 /// Apps that override [`PluginsRes`] with real scan dirs should overwrite
 /// this resource to match, so rescans target the same DB + directories.
 #[derive(Resource, Clone)]
-pub struct PluginScanConfig(pub PluginsConfig);
+pub struct PluginScanConfig(pub CatalogConfig);
 
 /// Request to (re)scan the plugin catalog. Fire this to discover plugins
 /// on disk; the scan runs off the main thread and swaps [`PluginsRes`]
@@ -51,7 +51,7 @@ pub struct InFlightScan(pub Option<Task<(Plugins, ScanResult)>>);
 
 /// Trigger: on [`RescanPlugins`], spawn a sync scan on the compute pool.
 ///
-/// Clones the [`PluginScanConfig`] and runs `Plugins::with_config(cfg)`
+/// Clones the [`PluginScanConfig`] and runs `Plugins::with_json_catalog(cfg)`
 /// then `rescan_sync()` **inside** the Bevy task — deliberately the sync
 /// scan path, not `tutti-plugin`'s own `scan_async` thread, so the work
 /// lives on Bevy's task pool and is drained by [`poll_plugin_scan`]. A scan
@@ -73,7 +73,7 @@ pub fn trigger_plugin_scan(
 
     let cfg = config.0.clone();
     let task = AsyncComputeTaskPool::get().spawn(async move {
-        let mut plugins = Plugins::with_config(cfg);
+        let mut plugins = Plugins::with_json_catalog(cfg);
         let result = plugins.rescan_sync();
         (plugins, result)
     });

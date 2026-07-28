@@ -36,6 +36,12 @@ pub enum ScanPhase {
 pub struct ScanHandle {
     pub progress_rx: Receiver<ScanProgress>,
     pub result_rx: Receiver<ScanResult>,
+    /// Yields the catalog back once the scan thread finishes with it.
+    ///
+    /// The scan *moves* the catalog onto its own thread — that is what lets
+    /// any [`PluginCatalog`] impl be scanned, not just cheaply-reloadable
+    /// file-backed ones. This channel is how ownership comes back.
+    pub catalog_rx: Receiver<Box<dyn PluginCatalog>>,
 }
 
 /// Summary of a completed scan.
@@ -83,25 +89,35 @@ impl PluginScanner {
 
     /// Scan directories asynchronously on a background thread.
     /// Runs crash recovery before scanning.
+    ///
+    /// The catalog travels with the scanner onto the worker thread and comes
+    /// back over [`ScanHandle::catalog_rx`] when the scan finishes. Drop the
+    /// handle and the catalog is dropped with the thread; keep it to recover
+    /// ownership.
     pub fn scan_async(mut self, directories: Vec<PathBuf>) -> ScanHandle {
         let (progress_tx, progress_rx) = crossbeam_channel::unbounded();
         let (result_tx, result_rx) = crossbeam_channel::bounded(1);
+        let (catalog_tx, catalog_rx) = crossbeam_channel::bounded(1);
 
         std::thread::Builder::new()
             .name("plugin-scanner".into())
             .spawn(move || {
                 self.recover_crash();
                 let result = self.scan_inner(&directories, Some(&progress_tx));
-                let _ = result_tx.send(result);
                 if let Err(e) = self.catalog.flush() {
                     warn!("failed to flush plugin catalog after async scan: {e}");
                 }
+                // Hand the catalog back before announcing completion, so a
+                // caller that reacts to `result_rx` finds it already waiting.
+                let _ = catalog_tx.send(self.catalog);
+                let _ = result_tx.send(result);
             })
             .expect("failed to spawn plugin scanner thread");
 
         ScanHandle {
             progress_rx,
             result_rx,
+            catalog_rx,
         }
     }
 
@@ -412,7 +428,7 @@ fn probe_plugin_fallback(path: &Path, format: PluginFormat) -> PluginDescriptor 
 
 #[cfg(test)]
 mod tests {
-    use super::super::database::JsonCatalog;
+    use super::super::catalog::MemoryCatalog;
     use super::*;
     use tempfile::TempDir;
 
@@ -423,7 +439,7 @@ mod tests {
     }
 
     fn scanner_for(dir: &Path) -> PluginScanner {
-        let db = JsonCatalog::empty(dir.join("db.json"));
+        let db = MemoryCatalog::default();
         PluginScanner::new(Box::new(db), dir.join(".scanning"))
     }
 
@@ -457,7 +473,7 @@ mod tests {
         let bad = create_fake_plugin(&plugins_dir, "bad.vst3");
         create_fake_plugin(&plugins_dir, "good.vst3");
 
-        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
+        let mut db = MemoryCatalog::default();
         db.blacklist(&bad, "known crasher".into());
 
         let mut scanner = PluginScanner::new(Box::new(db), dir.path().join(".scanning"));
@@ -485,7 +501,7 @@ mod tests {
         let plugin = create_fake_plugin(&plugins_dir, "cached.vst3");
         let mtime = file_modification_time(&plugin).unwrap();
 
-        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
+        let mut db = MemoryCatalog::default();
         db.upsert(PluginRecord {
             path: plugin,
             format: PluginFormat::Vst3,
@@ -509,8 +525,8 @@ mod tests {
         // Simulate a previous crash: write a pedal file.
         std::fs::write(&pedal_file, "/plugins/crashy.vst3").unwrap();
 
-        let db = JsonCatalog::empty(dir.path().join("plugins.json"));
-        let mut scanner = PluginScanner::new(Box::new(db), &pedal_file);
+        let db = MemoryCatalog::default();
+        let mut scanner = PluginScanner::new(Box::new(db), pedal_file.clone());
         scanner.recover_crash();
 
         let catalog = scanner.into_catalog();
@@ -557,6 +573,39 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap();
         assert_eq!(result.new + result.failed, 2);
+    }
+
+    /// An async scan must hand its catalog back. `scan_async` *moves* the
+    /// catalog onto the worker thread — that is what lets any `PluginCatalog`
+    /// impl be scanned rather than only file-backed ones that can be cheaply
+    /// reloaded from disk. Without this channel the records a scan produced
+    /// would be dropped with the thread, and the caller would be left holding
+    /// nothing. Uses `MemoryCatalog` precisely because it has no on-disk
+    /// fallback: if the handback were missing, the scan results would be
+    /// unrecoverable.
+    #[test]
+    fn async_scan_returns_the_catalog() {
+        let dir = TempDir::new().unwrap();
+        let plugins_dir = dir.path().join("plugins");
+        std::fs::create_dir(&plugins_dir).unwrap();
+        create_fake_plugin(&plugins_dir, "a.vst3");
+
+        let scanner = scanner_for(dir.path());
+        let handle = scanner.scan_async(vec![plugins_dir]);
+
+        let catalog = handle
+            .catalog_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("scan must return the catalog it was given");
+
+        // The stub is not a loadable plugin, so it is recorded as blacklisted
+        // rather than as a healthy record — either way the scan's findings
+        // survived the trip back.
+        assert_eq!(
+            catalog.len(),
+            1,
+            "the scanned plugin must be present in the returned catalog"
+        );
     }
 
     /// A failure that is a property of the plugin
@@ -631,7 +680,7 @@ mod tests {
         std::fs::create_dir(&plugins_dir).unwrap();
         let bad = create_fake_plugin(&plugins_dir, "crashy.vst3");
 
-        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
+        let mut db = MemoryCatalog::default();
         db.blacklist(&bad, "crashed during probe".into());
 
         assert!(db.is_blacklisted(&bad));
@@ -656,7 +705,7 @@ mod tests {
         std::fs::create_dir(&plugins_dir).unwrap();
         let bad = create_fake_plugin(&plugins_dir, "was-crashy.vst3");
 
-        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
+        let mut db = MemoryCatalog::default();
         db.blacklist(&bad, "crashed during probe".into());
         assert!(matches!(
             classify(&db, &bad),
@@ -692,7 +741,7 @@ mod tests {
         let a = create_fake_plugin(&plugins_dir, "a.vst3");
         let b = create_fake_plugin(&plugins_dir, "b.vst3");
 
-        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
+        let mut db = MemoryCatalog::default();
         db.blacklist(&a, "pedal misfire".into());
         db.blacklist(&b, "pedal misfire".into());
         assert_eq!(db.blacklisted().count(), 2);
@@ -737,7 +786,7 @@ mod tests {
         std::fs::create_dir(&plugins_dir).unwrap();
         let broken = create_fake_plugin(&plugins_dir, "Broken.vst3");
 
-        let mut db = JsonCatalog::empty(dir.path().join("db.json"));
+        let mut db = MemoryCatalog::default();
         // What `probe_and_record` now does for a LoadFailed.
         let failure = ProbeFailure::from_bridge_error(crate::error::BridgeError::LoadFailed {
             path: broken.clone(),

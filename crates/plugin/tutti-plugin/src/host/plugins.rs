@@ -5,14 +5,13 @@
 //!
 //! ```no_run
 //! # #[cfg(feature = "json")] {
-//! use tutti_plugin::catalog::{Plugins, PluginsConfig};
+//! use tutti_plugin::catalog::{CatalogConfig, Plugins};
 //! use std::path::PathBuf;
 //!
-//! let plugins = PluginsConfig::new(
+//! let plugins = Plugins::with_json_catalog(CatalogConfig::new(
 //!     PathBuf::from("/my/app/plugin-db.json"),
 //!     vec![PathBuf::from("/Library/Audio/Plug-Ins/VST3")],
-//! )
-//! .build()
+//! ))
 //! .with_fresh_scan();
 //! # }
 //! ```
@@ -21,21 +20,26 @@
 //! SQLite, in-memory, etc.) works without the `json` feature:
 //!
 //! ```ignore
-//! use tutti_plugin::catalog::{Plugins, PluginsConfig};
+//! use tutti_plugin::catalog::{CatalogConfig, Plugins};
 //! let catalog = my_sqlite_catalog();
-//! let plugins = Plugins::with_catalog(catalog, PluginsConfig::new(db, vec![]));
+//! let plugins = Plugins::with_catalog(catalog, CatalogConfig::new(db, vec![]));
 //! ```
+//!
+//! Audio knobs are separate and default sensibly; set them with
+//! [`Plugins::with_audio_config`] when the defaults don't fit.
 
 use crate::error::{BridgeError, Result};
 use crate::host::discovery::format_from_path;
 use crate::host::discovery::record::PluginFormat;
-use crate::host::discovery::{CatalogExt, PluginCatalog, PluginRecord, PluginScanner, ScanResult};
 #[cfg(feature = "json")]
-use crate::host::discovery::{JsonCatalog, ScanHandle};
+use crate::host::discovery::JsonCatalog;
+use crate::host::discovery::{
+    CatalogExt, PluginCatalog, PluginRecord, PluginScanner, ScanHandle, ScanResult,
+};
 use crate::host::handles::control_handle::PluginHandle;
 use crate::host::node::PluginClient;
 use crate::protocol::PluginDescriptor;
-use crate::util::config::PluginsConfig;
+use crate::util::config::{AudioConfig, CatalogConfig};
 use std::path::{Path, PathBuf};
 
 /// Opaque identifier for a plugin in a [`Plugins`] catalog.
@@ -63,39 +67,52 @@ impl From<PathBuf> for PluginId {
 }
 
 /// Catalog of discoverable + loadable plugins. Backed by any
-/// [`PluginCatalog`] impl — defaults to a JSON file on disk when the
-/// `json` feature is enabled (on by default).
+/// [`PluginCatalog`] impl; [`Plugins::with_json_catalog`] supplies a
+/// file-backed one when the opt-in `json` feature is enabled.
 pub struct Plugins {
     catalog: Box<dyn PluginCatalog>,
-    config: PluginsConfig,
+    config: CatalogConfig,
+    audio: AudioConfig,
 }
 
 impl Plugins {
     /// Catalog backed by an arbitrary [`PluginCatalog`] impl. Use this
     /// to plug in SQLite, in-memory, or any other persistence.
-    pub fn with_catalog(catalog: Box<dyn PluginCatalog>, config: PluginsConfig) -> Self {
-        Self { catalog, config }
+    ///
+    /// Audio settings default ([`AudioConfig::default`]); override with
+    /// [`Plugins::with_audio_config`].
+    pub fn with_catalog(catalog: Box<dyn PluginCatalog>, config: CatalogConfig) -> Self {
+        Self {
+            catalog,
+            config,
+            audio: AudioConfig::default(),
+        }
     }
 
-    /// JSON-backed catalog with a custom config. Loads from
-    /// `config.db_path`.
+    /// JSON-backed catalog, loaded from `config.db_path`. Requires the
+    /// `json` feature.
+    ///
+    /// This is the "just give me a working catalog" path. Construction lives
+    /// here rather than on the config struct: config describes, the host layer
+    /// builds — the reverse made `util::config` depend on `host::plugins`.
     #[cfg(feature = "json")]
-    pub fn with_config(config: PluginsConfig) -> Self {
+    pub fn with_json_catalog(config: CatalogConfig) -> Self {
         let catalog = JsonCatalog::load(config.db_path.clone());
-        Self {
-            catalog: Box::new(catalog),
-            config,
-        }
+        Self::with_catalog(Box::new(catalog), config)
     }
 
     /// Empty JSON-backed catalog (no DB load). For tests or manual management.
     #[cfg(feature = "json")]
-    pub fn empty(config: PluginsConfig) -> Self {
+    pub fn empty(config: CatalogConfig) -> Self {
         let catalog = JsonCatalog::empty(config.db_path.clone());
-        Self {
-            catalog: Box::new(catalog),
-            config,
-        }
+        Self::with_catalog(Box::new(catalog), config)
+    }
+
+    /// Override the audio settings applied to every plugin this catalog
+    /// loads. Chainable.
+    pub fn with_audio_config(mut self, audio: AudioConfig) -> Self {
+        self.audio = audio;
+        self
     }
 
     /// Run a synchronous rescan and return `self`. Discards the
@@ -105,18 +122,36 @@ impl Plugins {
         self
     }
 
-    /// Scan plugin directories asynchronously. Returns a handle with
-    /// progress + result channels. The scanner persists its own catalog
-    /// snapshot to disk on completion; call [`Plugins::reload`] afterward
-    /// to refresh the in-memory view.
+    /// Scan plugin directories asynchronously, consuming `self`. Returns the
+    /// scan handle (progress + result channels) alongside a
+    /// [`ScanTicket`] that yields the catalog back once the scan completes.
     ///
-    /// JSON-only — custom catalogs can't be cheaply cloned across
-    /// threads, so use [`Plugins::rescan_sync`] with them instead.
-    #[cfg(feature = "json")]
-    pub fn rescan(&self) -> ScanHandle {
-        let catalog = JsonCatalog::load(self.config.db_path.clone());
-        let scanner = PluginScanner::new(Box::new(catalog), self.config.pedal_path());
-        scanner.scan_async(self.config.scan_dirs.clone())
+    /// Works with any [`PluginCatalog`] impl: the live catalog is *moved* onto
+    /// the scanner thread rather than reloaded from disk, so this no longer
+    /// assumes JSON — and no longer silently discards in-memory records that
+    /// were never flushed.
+    ///
+    /// ```no_run
+    /// # use tutti_plugin::catalog::Plugins;
+    /// # fn ex(plugins: Plugins) {
+    /// let (handle, ticket) = plugins.rescan();
+    /// for progress in &handle.progress_rx {
+    ///     println!("{}/{}", progress.current, progress.total);
+    /// }
+    /// let result = handle.result_rx.recv().unwrap();
+    /// println!("{} new", result.new);
+    /// let plugins = ticket.join().expect("scanner thread panicked");
+    /// # }
+    /// ```
+    pub fn rescan(self) -> (ScanHandle, ScanTicket) {
+        let scanner = PluginScanner::new(self.catalog, self.config.pedal_path());
+        let handle = scanner.scan_async(self.config.scan_dirs.clone());
+        let ticket = ScanTicket {
+            catalog_rx: handle.catalog_rx.clone(),
+            config: self.config,
+            audio: self.audio,
+        };
+        (handle, ticket)
     }
 
     /// Scan synchronously. Returns the scan summary; the in-memory
@@ -133,8 +168,11 @@ impl Plugins {
         result
     }
 
-    /// Reload the in-memory catalog from disk. Call after an async
-    /// [`Plugins::rescan`] completes. JSON-only.
+    /// Rebuild the in-memory catalog by re-reading the JSON database file.
+    ///
+    /// Only meaningful for a JSON-backed catalog whose file another process
+    /// may have rewritten — after [`Plugins::rescan`] the catalog comes back
+    /// through [`ScanTicket::join`] instead, with no reload needed.
     #[cfg(feature = "json")]
     pub fn reload(&mut self) {
         self.catalog = Box::new(JsonCatalog::load(self.config.db_path.clone()));
@@ -216,7 +254,7 @@ impl Plugins {
     ///
     /// For plugins the host knows about by path rather than by scan — one
     /// shipped inside an application bundle, say, or a file the user pointed
-    /// at directly. The scan directories in [`PluginsConfig`] are for the
+    /// at directly. The scan directories in [`CatalogConfig`] are for the
     /// standard install locations; this is the escape hatch for everything
     /// else. Errors if the extension is unrecognized or the probe fails.
     pub fn register_path(&mut self, plugin_path: &Path) -> Result<PluginId> {
@@ -246,7 +284,7 @@ impl Plugins {
         let _ = format_from_path; // keep import live without the vst2 feature
         let _ = PluginFormat::Vst2;
 
-        let client = PluginClient::new(self.config.to_bridge_config(), id.0.clone(), sample_rate)?;
+        let client = PluginClient::new(self.audio.to_bridge_config(), id.0.clone(), sample_rate)?;
         let handle = PluginHandle::from_client(&client);
         Ok((Box::new(client), handle))
     }
@@ -258,18 +296,9 @@ impl Plugins {
         id: &PluginId,
         sample_rate: f64,
     ) -> Result<(PluginClient, PluginHandle)> {
-        let client = PluginClient::new(self.config.to_bridge_config(), id.0.clone(), sample_rate)?;
+        let client = PluginClient::new(self.audio.to_bridge_config(), id.0.clone(), sample_rate)?;
         let handle = PluginHandle::from_client(&client);
         Ok((client, handle))
-    }
-
-    /// Alias for [`Self::load_client`] — kept for API compatibility.
-    pub fn load_blocking(
-        &self,
-        id: &PluginId,
-        sample_rate: f64,
-    ) -> Result<(PluginClient, PluginHandle)> {
-        self.load_client(id, sample_rate)
     }
 
     /// Shortcut for [`Plugins::find`] + [`Plugins::load`].
@@ -287,6 +316,54 @@ impl Plugins {
     /// Commit the in-memory catalog to its backing store.
     pub fn flush(&mut self) -> std::io::Result<()> {
         self.catalog.flush()
+    }
+}
+
+/// Claim on the catalog an async [`Plugins::rescan`] took ownership of.
+///
+/// `rescan` consumes the [`Plugins`] because the catalog moves onto the scan
+/// thread; this is how you get one back. Holding a ticket does not block —
+/// [`join`](Self::join) is where you wait.
+pub struct ScanTicket {
+    catalog_rx: crossbeam_channel::Receiver<Box<dyn PluginCatalog>>,
+    config: CatalogConfig,
+    /// Carried across the scan so a rescanned catalog keeps the audio settings
+    /// the caller chose. Rebuilding with `AudioConfig::default()` here would
+    /// silently reset a customised block size or timeout on every rescan.
+    audio: AudioConfig,
+}
+
+impl ScanTicket {
+    /// Block until the scan finishes, then rebuild [`Plugins`] around the
+    /// returned catalog.
+    ///
+    /// Errors only if the scan thread died without handing the catalog back
+    /// (a panic inside the scanner); the config is returned so the caller can
+    /// rebuild a fresh catalog rather than losing its scan directories.
+    pub fn join(self) -> std::result::Result<Plugins, CatalogConfig> {
+        match self.catalog_rx.recv() {
+            Ok(catalog) => Ok(Plugins {
+                catalog,
+                config: self.config,
+                audio: self.audio,
+            }),
+            Err(_) => Err(self.config),
+        }
+    }
+
+    /// Take the catalog back if the scan has already finished, without
+    /// blocking. `Err(self)` means the scan is still running — poll again.
+    ///
+    /// For frame-driven hosts (a Bevy system, a UI tick) that must not stall.
+    pub fn try_join(self) -> std::result::Result<Plugins, Self> {
+        match self.catalog_rx.try_recv() {
+            Ok(catalog) => Ok(Plugins {
+                catalog,
+                config: self.config,
+                audio: self.audio,
+            }),
+            Err(_) => Err(self),
+        }
     }
 }
 

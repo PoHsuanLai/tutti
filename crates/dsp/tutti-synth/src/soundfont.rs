@@ -60,9 +60,10 @@ impl SoundFontUnit {
         self.midi.sender()
     }
 
-    /// Override the MIDI source. Used by offline export to swap the
-    /// live receiver for a [`MidiSnapshotReader`], or by clip playback
-    /// to install a [`tutti_midi_runtime::MidiClipSource`].
+    /// Layer a MIDI source over the live inbox. Used by offline export for a
+    /// [`MidiSnapshotReader`], or by clip playback for a
+    /// [`tutti_midi_runtime::MidiClipSource`]. Both the source and the inbox
+    /// are polled, so clip playback does not silence live input.
     ///
     /// The install is visible across fundsp's clone-on-commit (see
     /// [`MidiInPort`]), so the same source reaches the box the audio thread runs.

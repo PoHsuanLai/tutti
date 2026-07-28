@@ -172,6 +172,47 @@ impl Clone for Net {
     }
 }
 
+/// A freshly cloned [`Net`] that has **not** been severed from the live graph.
+///
+/// Cloning a running network is not the same as getting a private copy of it.
+/// Nodes hold shared live state — an `Arc`-shared vocoder bank in a time
+/// stretcher, a live command `Receiver` in a voice pool, a live `Timeline` in a
+/// clock — and until every node's [`AudioUnit::isolate`] has run, touching the
+/// clone reaches through into the graph the audio thread is using.
+///
+/// This type exists so that cannot be forgotten. It implements nothing: no
+/// [`AudioUnit`], no `Deref`, no accessor. The only way to get a usable [`Net`]
+/// out is [`isolate`](Self::isolate), so "isolate before you touch it" is a
+/// compile error rather than a review comment.
+///
+/// # Why it is a type and not a doc comment
+///
+/// It used to be a doc comment. The offline region render did
+/// `clone_isolated` → `reset()` → isolate-per-node, and the `reset()` in the
+/// middle cleared the FIFOs and phase accumulators of the *live* stretch units
+/// through their shared banks — measured as the live voice's output dropping to
+/// exactly 0.0 for one window. Nothing in the types objected, because a `Net`
+/// that is unsafe to use is indistinguishable from one that is safe.
+#[must_use = "a PendingClone shares state with the live graph until isolated"]
+pub struct PendingClone(Net);
+
+impl PendingClone {
+    /// Sever every node from the live graph, yielding a usable [`Net`].
+    ///
+    /// Each unit severs whatever live input it holds; the default
+    /// [`AudioUnit::isolate`] is a no-op, which is correct for pure-DSP nodes
+    /// that share nothing. A node type that *does* hold shared state and does
+    /// not implement `isolate` is a bug in that node — this type guarantees the
+    /// call happens, not that each implementation is right.
+    pub fn isolate(mut self) -> Net {
+        let ids: Vec<NodeId> = self.0.ids().copied().collect();
+        for id in ids {
+            self.0.node_mut(id).isolate();
+        }
+        self.0
+    }
+}
+
 impl Net {
     /// Create a new network with the given number of inputs and outputs.
     /// The number of inputs and outputs is fixed after construction.
@@ -293,7 +334,7 @@ impl Net {
     /// Returns `None` if `target` produces no output channels. Clones rather
     /// than mutating in place because this rewrites the output edges; the live
     /// network keeps its own.
-    pub fn clone_isolated(&self, target: NodeId) -> Option<Net> {
+    pub fn clone_isolated(&self, target: NodeId) -> Option<PendingClone> {
         let outs = self.outputs_in(target);
         if outs == 0 {
             return None;
@@ -305,7 +346,7 @@ impl Net {
             let port = core::cmp::min(ch, outs - 1);
             clone.set_output_source(ch, Source::Local(target, port));
         }
-        Some(clone)
+        Some(PendingClone(clone))
     }
 
     /// Add a new unit to the network with a fade-in. Return its ID handle.
@@ -2299,5 +2340,28 @@ impl core::ops::Mul<Net> for f32 {
     fn mul(self, y: Net) -> Self::Output {
         let n = y.outputs();
         Net::scalar(n, self) * y
+    }
+}
+
+#[cfg(test)]
+mod pending_clone_proof {
+    use super::*;
+
+    /// The original bug shape must not compile.
+    ///
+    /// `clone_isolated` -> `reset()` is what silenced live playback. With
+    /// `PendingClone` it is a type error, which is the whole point of the type.
+    #[test]
+    fn isolate_is_the_only_way_out() {
+        let mut net = Net::new(0, 1);
+        net.chain(Box::new(crate::prelude::dc(1.0)));
+        let id = net.ids().next().copied().unwrap();
+        let pending = net.clone_isolated(id).expect("target has outputs");
+
+        // pending.reset();          // compile error: no such method
+        // pending.tick(&[], &mut o); // compile error: not an AudioUnit
+        let mut usable: Net = pending.isolate();
+        usable.reset(); // only legal after isolating
+        assert_eq!(usable.outputs(), 1);
     }
 }

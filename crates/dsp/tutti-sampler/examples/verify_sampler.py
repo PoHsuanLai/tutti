@@ -94,21 +94,12 @@ EXPECTED = {
 # looser level bound.
 ZERO_OVERLAP = {"pitch_down_two_octaves", "stretch_half_pitch_down"}
 
-# `VoicePool` steps the source by `window_rate()` (varispeed only) and never
-# calls `stretch::Unit::input_rate`, which has ZERO call sites anywhere in the
-# crate — on this branch and on main alike. So the vocoder is fed one source
-# sample per output sample, the self-paced shape, in which the stretch factor
-# necessarily behaves as varispeed: pitch moves BY the factor and duration does
-# not change. Reported rather than hidden; the pitch error for these is expected
-# to equal the stretch factor exactly.
-KNOWN_BROKEN = {
-    "stretch_half",
-    "stretch_double",
-    "stretch_1p5",
-    "stretch_double_pitch_up",
-    "stretch_half_pitch_down",
-    "stretch_1p5_pitch_up_fifth",
-}
+# Was: the six stretch_* cases, because `VoicePool` stepped the source by
+# `window_rate()` (varispeed only) and never called `stretch::Unit::input_rate`.
+# Fixed — the stretch rate now reaches both the block origin and the within-block
+# step, via `MemorySource::stretched_window_position`. Empty rather than deleted,
+# so the mechanism stays documented next to the check that would catch it again.
+KNOWN_BROKEN: set[str] = set()
 
 TOL_PCT = 2.0
 BASE = 440.0

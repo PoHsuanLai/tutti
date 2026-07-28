@@ -1479,6 +1479,25 @@ impl ReadRate {
     pub fn advance(self, out: Samples) -> SamplePosition {
         SamplePosition(self.0 * out.get() as f64)
     }
+
+    /// Compose two read rates applied in series.
+    ///
+    /// The named replacement for the omitted `Mul<Self>`, and deliberately
+    /// narrower: it composes `ReadRate` with `ReadRate` only, so the three
+    /// *source* rate kinds still cannot be multiplied together ad-hoc. Each
+    /// factor has already resolved its own derivation through `read_rate`, so
+    /// what remains is genuine composition — two resamplings in the same signal
+    /// path — rather than the ratio-mixing the omission exists to block.
+    ///
+    /// The motivating case: a stretched placed voice reads its source at
+    /// varispeed *and* at the stretcher's rate, and the two are computed by
+    /// different owners (the source knows `speed`, the filter knows the stretch
+    /// factor). Hand-multiplying `.get()`s at that call site is precisely how
+    /// `src_ratio` came to be applied twice once before.
+    #[inline]
+    pub fn then(self, other: Self) -> Self {
+        Self(self.0 * other.0)
+    }
 }
 
 unit_newtype!(
@@ -2268,6 +2287,34 @@ mod tests {
 
         // Zero output samples advance nowhere, whatever the rate.
         assert_eq!(half.advance(Samples(0)), SamplePosition(0.0));
+    }
+
+    /// `then` composes two read rates applied in series, and composition must be
+    /// exactly multiplication — a stretched varispeed voice reads at the product.
+    #[test]
+    fn read_rates_compose_in_series() {
+        let half = PlaybackRate::new(0.5).read_rate(SrcRatio::UNITY);
+        let double = PlaybackRate::new(2.0).read_rate(SrcRatio::UNITY);
+
+        // Half speed then double: back to unity, and exactly so.
+        assert_eq!(half.then(double), ReadRate::UNITY);
+
+        // Unity is the identity on both sides.
+        assert_eq!(half.then(ReadRate::UNITY), half);
+        assert_eq!(ReadRate::UNITY.then(half), half);
+
+        // Order does not matter — the composition is a product.
+        assert_eq!(half.then(double), double.then(half));
+
+        // The motivating case: a 2x-stretched voice at half varispeed reads a
+        // quarter of a source sample per output sample. Composed, not
+        // hand-multiplied — which is the whole point of the method.
+        let stretch_half = ReadRate(0.5);
+        assert_eq!(half.then(stretch_half), ReadRate(0.25));
+        assert_eq!(
+            half.then(stretch_half).advance(Samples(1024)),
+            SamplePosition(256.0)
+        );
     }
 
     #[test]

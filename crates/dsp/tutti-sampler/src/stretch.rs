@@ -410,11 +410,19 @@ impl Vocoder {
     /// generation, so nothing has been returned at the moment the clone asks.
     /// Measured, `Buffers::new` and a pooled hit came out identical within noise.
     ///
-    /// The Stage 6-7 gate (640 voice nodes, one commit under 2 ms) is still
-    /// missed at six channels. Since the cost is allocate-and-zero in a roughly
-    /// even split, the fix has to remove *both* — not clone this state at all
-    /// (share it behind a handle the graph copies cheaply), rather than make
-    /// allocating it faster.
+    /// **What did work: not cloning what carries nothing.** The block scratch
+    /// (`scratch_in`/`scratch_out`, 64 KB per channel — 40% of a unit's bytes)
+    /// is overwritten every block before it is read, so a clone leaves it empty
+    /// and [`AudioUnit::allocate`] sizes it. That removes both halves of the
+    /// cost for those bytes, because a buffer never allocated is also never
+    /// zeroed. Re-profiled, the clone phase fell 461 → 215 samples (-53%) while
+    /// `fresh_construction`, which still allocates eagerly, held at 180 → 179 —
+    /// the control that says the drop is this change and not the machine.
+    ///
+    /// The vocoder rings are the remaining term and cannot get the same
+    /// treatment: they *are* the filter's memory. Removing them means not
+    /// deep-cloning the vocoder at all — sharing it behind a handle the graph
+    /// copies cheaply — which is a larger change than this one.
     fn clone_fresh(&self) -> Self {
         let size = self.geometry.window().get();
         let bins = self.geometry.bins_per_frame().get();
@@ -811,17 +819,53 @@ impl Clone for Unit {
         // Fresh vocoder state rather than cloned: the phase accumulators and
         // overlap-add rings are mid-frame history, and a clone is a new voice
         // rather than a continuation of this one. Only the parameters carry.
+        //
+        // The block scratch is left **empty**, not cloned. It carries nothing
+        // across blocks — `process` overwrites `scratch_in` from its input and
+        // `fill(0.0)`s `scratch_out` before draining into it — so copying 64 KB
+        // per channel only to overwrite it was 40% of a clone's bytes buying
+        // nothing. `allocate` sizes it, which is exactly the hook fundsp
+        // documents for "buffers for block processing" and which `Net::commit`
+        // calls on the graph it is about to run.
+        let (scratch_in, scratch_out) = Self::scratch_pair(self.channels.len(), 0);
         let mut cloned = Self {
             channels: self.channels.iter().map(Vocoder::clone_fresh).collect(),
             stretch_factor: Arc::new(AtomicF32::new(self.stretch_factor.load(Ordering::Acquire))),
             pitch_cents: Arc::new(AtomicF32::new(self.pitch_cents.load(Ordering::Acquire))),
             enabled: self.enabled,
-            scratch_in: self.scratch_in.clone(),
-            scratch_out: self.scratch_out.clone(),
+            scratch_in,
+            scratch_out,
             intake_debt: 0.0,
         };
         cloned.enabled = self.enabled;
         cloned
+    }
+}
+
+impl Unit {
+    /// Per-block scratch, sized to the worst case. Empty until [`allocate`] runs.
+    ///
+    /// [`allocate`]: AudioUnit::allocate
+    fn scratch_pair(
+        channels: usize,
+        capacity: usize,
+    ) -> (Vec<RtScratch<f32>>, Vec<RtScratch<f32>>) {
+        (
+            (0..channels).map(|_| RtScratch::new(capacity)).collect(),
+            (0..channels).map(|_| RtScratch::new(capacity)).collect(),
+        )
+    }
+
+    /// Whether the block scratch is sized and ready for [`AudioUnit::process`].
+    ///
+    /// False on a clone that has not been [`allocate`]d yet — see
+    /// [`Unit::clone`], which deliberately leaves the scratch empty.
+    ///
+    /// [`allocate`]: AudioUnit::allocate
+    fn scratch_is_ready(&self) -> bool {
+        self.scratch_in
+            .first()
+            .is_some_and(|s| s.capacity() >= MAX_BUFFER_SIZE)
     }
 }
 
@@ -905,6 +949,22 @@ impl AudioUnit for Unit {
         let channels = self.channels();
         let in_ch = input.channels();
 
+        // A clone leaves the scratch empty for `allocate` to size. If that never
+        // ran, `RtScratch::active` clamps to a zero-length slice and every loop
+        // below iterates zero times — the unit would emit silence and look like a
+        // gain bug, the same failure shape that hid a 60 dB error here before.
+        // Size it here instead: this is the control thread's job, but a late
+        // allocation beats silent silence, and the debug assert names the real
+        // fault. `process` on an allocated unit — every RT call — skips it.
+        if !self.scratch_is_ready() {
+            debug_assert!(
+                false,
+                "BUG: stretch::Unit::process before allocate(); the graph must \
+                 call allocate() on a cloned unit before running it"
+            );
+            self.allocate();
+        }
+
         for (c, s) in self.scratch_in.iter_mut().enumerate() {
             let buf = s.active(size);
             // Fewer input channels than vocoders: mirror `tick`'s
@@ -984,12 +1044,30 @@ impl AudioUnit for Unit {
     fn footprint(&self) -> usize {
         std::mem::size_of::<Self>()
     }
+
+    /// Size the per-block scratch. Idempotent, and never called from the audio
+    /// thread.
+    ///
+    /// This is what makes [`Unit::clone`] cheap: the clone leaves the scratch
+    /// empty, and the graph calls this before running the unit
+    /// (`Net::commit_inner` → `Net::allocate` → `Vertex::allocate`, and
+    /// `Net::set_unit` for a hot swap). Re-allocating an already-sized unit
+    /// would be a needless 64 KB per channel, so a ready unit returns early.
+    fn allocate(&mut self) {
+        if self.scratch_is_ready() {
+            return;
+        }
+        let (scratch_in, scratch_out) = Self::scratch_pair(self.channels.len(), MAX_BUFFER_SIZE);
+        self.scratch_in = scratch_in;
+        self.scratch_out = scratch_out;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::f32::consts::PI;
+    use tutti_core::BufferVec;
 
     fn sine(freq: f32, sample_rate: f32, len: usize) -> Vec<f32> {
         (0..len)
@@ -1334,10 +1412,107 @@ mod tests {
         // per-voice-node design (640 nodes, one commit under 2 ms). It asserts
         // the tables are shared, which is free and worth taking, but sharing was
         // never the dominant term — profiling puts ~79% of a clone in allocating
-        // and zeroing the *mutable* buffers this test does not touch.
-        // `examples/profile_stretch_clone.rs` carries that measurement; don't
-        // re-derive the budget from wall-clock timing here, which is what
-        // produced the numbers that had to be retracted.
+        // and zeroing the mutable buffers, of which the block scratch is handled
+        // by `cloning_leaves_the_block_scratch_for_allocate` and the vocoder
+        // rings are still copied. `examples/profile_stretch_clone.rs` carries
+        // that measurement; don't re-derive the budget from wall-clock timing
+        // here, which is what produced the numbers that had to be retracted.
+    }
+
+    /// The clone must not carry the block scratch — `allocate` sizes it.
+    ///
+    /// 64 KB per channel of pure per-block scratch, copied only to be
+    /// overwritten. Deferring it to `allocate` is the hook fundsp documents for
+    /// exactly this, and `Net::commit` calls it on the graph it is about to run.
+    #[test]
+    fn cloning_leaves_the_block_scratch_for_allocate() {
+        let mut u = Unit::with_channels(44_100.0, 6);
+        assert!(
+            u.scratch_is_ready(),
+            "a constructed unit is ready to process"
+        );
+
+        let mut c = u.clone();
+        assert!(
+            !c.scratch_is_ready(),
+            "the clone copied the block scratch instead of deferring it"
+        );
+        assert!(
+            c.scratch_in.iter().all(|s| s.capacity() == 0),
+            "cloned scratch must be empty, not merely small"
+        );
+
+        // `allocate` is what the graph calls before running the unit.
+        c.allocate();
+        assert!(c.scratch_is_ready());
+        assert_eq!(c.scratch_in.len(), 6, "one scratch per channel");
+        assert_eq!(c.scratch_out.len(), 6);
+
+        // Idempotent: the graph may allocate a unit it already allocated, and
+        // re-sizing would throw away 64 KB per channel for nothing.
+        let before = c.scratch_in[0].capacity();
+        c.allocate();
+        assert_eq!(c.scratch_in[0].capacity(), before);
+
+        // And allocating an already-ready unit leaves it ready.
+        u.allocate();
+        assert!(u.scratch_is_ready());
+    }
+
+    /// An allocated clone must render exactly what the original renders.
+    ///
+    /// The point of the scratch being scratch is that dropping it changes
+    /// nothing audible. Asserted on sample values rather than liveness — the
+    /// failure this guards against is a quieter or truncated block, which every
+    /// `!= 0.0` assertion in this file would pass.
+    #[test]
+    fn an_allocated_clone_renders_identically() {
+        let mut original = Unit::with_channels(44_100.0, 2);
+        original.set_stretch_factor(StretchFactor::new(2.0));
+        let mut clone = original.clone();
+        clone.allocate();
+
+        // fundsp's `Buffer` is fixed at 64 samples per channel; a larger `size`
+        // reads past it rather than being clamped.
+        let size = 64;
+        let mut input_vec = BufferVec::new(2);
+        for i in 0..size {
+            let s = (i as f32 * 0.05).sin() * 0.5;
+            input_vec.buffer_mut().set_f32(0, i, s);
+            input_vec.buffer_mut().set_f32(1, i, s);
+        }
+        let mut out_a = BufferVec::new(2);
+        let mut out_b = BufferVec::new(2);
+
+        // Enough blocks to clear the fill-up latency: at 2x stretch the vocoder
+        // emits nothing until its FIFO holds a whole 2048-sample window, which
+        // is 64 blocks of source at this size — so a handful would compare
+        // silence to silence and prove nothing.
+        let mut heard_signal = false;
+        for block in 0..128 {
+            original.process(size, &input_vec.buffer_ref(), &mut out_a.buffer_mut());
+            clone.process(size, &input_vec.buffer_ref(), &mut out_b.buffer_mut());
+
+            for ch in 0..2 {
+                for i in 0..size {
+                    let (x, y) = (
+                        out_a.buffer_ref().at_f32(ch, i),
+                        out_b.buffer_ref().at_f32(ch, i),
+                    );
+                    assert_eq!(
+                        x, y,
+                        "block {block}, channel {ch}, sample {i}: the allocated \
+                         clone diverged from the original"
+                    );
+                    heard_signal |= x.abs() > 1e-6;
+                }
+            }
+        }
+
+        assert!(
+            heard_signal,
+            "both rendered silence — the comparison proved nothing"
+        );
     }
 
     /// PDC must not compensate for a delay that is not happening.

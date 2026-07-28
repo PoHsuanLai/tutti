@@ -1494,6 +1494,22 @@ impl AudioUnit for VoicePool {
     fn footprint(&self) -> usize {
         std::mem::size_of::<Self>() + self.voices.len() * std::mem::size_of::<VoiceSlot>()
     }
+
+    /// Size each resident stretch filter's block scratch.
+    ///
+    /// `stretch::Unit::clone` deliberately leaves that scratch empty — it is
+    /// per-block, so copying it per graph commit was pure waste — and this is
+    /// the hook that restores it. Forwarding is **required**, not an
+    /// optimization: without it a cloned pool reaches the audio thread with
+    /// unsized scratch, and `process` has to allocate in the callback to avoid
+    /// rendering silence.
+    fn allocate(&mut self) {
+        for slot in &mut self.voices {
+            if let Some(s) = slot.stretch.as_mut() {
+                s.allocate();
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1709,6 +1725,14 @@ impl AudioUnit for VoiceNode {
 
     fn footprint(&self) -> usize {
         std::mem::size_of::<Self>()
+    }
+
+    /// Size the resident stretch filter's block scratch — see
+    /// [`VoicePool::allocate`], which this mirrors for the single-voice node.
+    fn allocate(&mut self) {
+        if let Some(s) = self.slot.stretch.as_mut() {
+            s.allocate();
+        }
     }
 }
 

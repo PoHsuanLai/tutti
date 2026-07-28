@@ -66,6 +66,22 @@
 //! 2 ms budget at 6 channels, and the run-to-run spread within a phase is still
 //! wide enough that a single number should not be quoted from it — take the
 //! library split as the finding, not the milliseconds.
+//!
+//! # What that led to, and how this harness confirmed it
+//!
+//! The block scratch (`scratch_in`/`scratch_out`, 64 KB per channel) carries
+//! nothing across blocks, so `Unit::clone` stopped copying it and
+//! `AudioUnit::allocate` sizes it instead. Re-profiled:
+//!
+//! | phase                  | before | after | |
+//! |------------------------|--------|-------|--|
+//! | `two_live_generations` | 461    | 215   | **-53%** |
+//! | `fresh_construction`   | 180    | 179   | unchanged — the control |
+//!
+//! [`fresh_construction`] is what makes this readable: it still allocates its
+//! scratch eagerly, so it *should not* move, and it doesn't. Wall-clock over the
+//! same change was useless — the phase swung 16 ms to 149 ms run to run — which
+//! is the whole argument for keeping this harness rather than a timing test.
 
 use std::hint::black_box;
 use std::time::Instant;

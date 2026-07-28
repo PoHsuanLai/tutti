@@ -119,6 +119,52 @@ fn time_stretch_process_is_allocation_free() {
     });
 }
 
+/// The same guarantee for a **cloned** unit — the shape a graph commit produces.
+///
+/// `Unit::clone` leaves the block scratch empty for `allocate` to size, which is
+/// what makes a commit cheap. That splits the RT contract in two, and only this
+/// half runs on the audio thread after a commit:
+///
+/// - allocate() ran  → `process` must not allocate. Asserted here.
+/// - allocate() did NOT run → `process` self-heals with a `debug_assert`, so it
+///   allocates once rather than emitting silence. Deliberately not asserted —
+///   it is the bug path, not the contract.
+///
+/// `time_stretch_process_is_allocation_free` above cannot catch a regression
+/// here: it drives a freshly constructed unit, which never had empty scratch.
+#[test]
+fn cloned_time_stretch_process_is_allocation_free_once_allocated() {
+    let mut original = TimeStretchUnit::new(48_000.0);
+    original.set_sample_rate(SampleRate(48_000.0));
+    original.set_stretch_factor(StretchFactor::new(1.5));
+
+    // What `Net::commit_inner` does: clone, then allocate before running it.
+    let mut node = original.clone();
+    node.allocate();
+    assert!(node.is_processing());
+
+    let mut input_vec = BufferVec::new(2);
+    for i in 0..64 {
+        input_vec.buffer_mut().set_f32(0, i, 0.25);
+        input_vec.buffer_mut().set_f32(1, i, 0.25);
+    }
+    let mut output_vec = BufferVec::new(2);
+
+    for _ in 0..64 {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        node.process(64, &input, &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..1_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            node.process(64, &input, &mut output);
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // VoicePool — the live-graph workhorse. One node per track, mixing
 // down every voice's `MemorySource` each buffer. Mirrors the mock transport from
@@ -193,6 +239,76 @@ fn voice_pool_process_steady_state_is_allocation_free() {
 
     // Warm-up — the empty command drain + first position reads.
     for _ in 0..16 {
+        let input = input_vec.buffer_ref();
+        let mut output = output_vec.buffer_mut();
+        unit.process(64, &input, &mut output);
+    }
+
+    assert_no_alloc::assert_no_alloc(|| {
+        for _ in 0..2_000 {
+            let input = input_vec.buffer_ref();
+            let mut output = output_vec.buffer_mut();
+            unit.process(64, &input, &mut output);
+        }
+    });
+}
+
+/// A **cloned** pool with a stretching voice — the shape a graph commit hands
+/// the audio thread.
+///
+/// Note what this does and does not pin. It covers the pool's own RT contract
+/// across a clone, which nothing else here did: every other pool test drives a
+/// freshly constructed unit, and the two stretch tests never clone a pool.
+///
+/// It does **not** pin `VoicePool`/`VoiceNode` forwarding `allocate` to their
+/// resident filters. Verified by sabotage: stubbing `VoicePool::allocate` to a
+/// no-op leaves this green, because the pool drives its filter sample-by-sample
+/// through `stretch::Unit::tick`, and `tick` never touches the block scratch
+/// that `allocate` sizes — only `process` does, and only when the unit sits in
+/// the graph as a node in its own right.
+///
+/// The forwards are kept regardless: they cost nothing, and the alternative is a
+/// latent trap where routing a pool's filter through `process` later would
+/// allocate in the callback with no test objecting.
+#[test]
+fn cloned_voice_pool_with_stretch_is_allocation_free_once_allocated() {
+    let transport = MockTransport::new(120.0, 0.0, true);
+    let wave = sine_wave(2.0, 48_000.0);
+
+    let (mut original, _handle) = VoicePool::with_transport(transport.clone(), None);
+    original.set_sample_rate(SampleRate(48_000.0));
+
+    let sampler =
+        MemorySource::with_transport(wave.clone(), transport.clone(), Beat::new(0.0), None);
+    original.insert_voice(
+        SlotId(0),
+        Voice {
+            play: Playback {
+                gain: sampler.gain(),
+                speed: sampler.speed(),
+                loop_: sampler.loop_setting(),
+                direction: Direction::Forward,
+                // Actually stretching: a unity voice bypasses the filter, so the
+                // scratch would never be touched and the test would pass either
+                // way.
+                stretch: StretchFactor::new(2.0),
+                pitch: Cents::new(0.0),
+            },
+            source: VoiceSource::Memory(sampler),
+            channel_index: None,
+        },
+    );
+
+    // What `Net::commit_inner` does: clone the node, then allocate it before it
+    // is handed to the backend.
+    let mut unit = original.clone();
+    unit.allocate();
+
+    let input_vec = BufferVec::new(0);
+    let mut output_vec = BufferVec::new(2);
+
+    // Warm past the vocoder's fill-up so `process` is on its steady-state path.
+    for _ in 0..64 {
         let input = input_vec.buffer_ref();
         let mut output = output_vec.buffer_mut();
         unit.process(64, &input, &mut output);

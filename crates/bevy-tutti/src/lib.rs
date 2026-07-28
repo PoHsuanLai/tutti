@@ -142,7 +142,16 @@ pub mod prelude {
     // `metronome.set_mode(..)` without naming the argument types, and this
     // crate's own docs demonstrate both. Handing out a method whose parameter
     // type you will not let the caller spell is an incomplete forward.
-    pub use tutti_core::transport::{beat_from_ports, MetronomeMode, MotionEvent, BEAT_PORTS};
+    //
+    // The same rule reaches one level further than it first appeared:
+    // `MotionEvent::{Stop, Locate}` carry `FadeOut` and `Then`, `motion()`
+    // returns `MotionState`, and `loop_span.range()` returns `LoopRange`. A host
+    // that could name `MotionEvent` but not `FadeOut` could still only write the
+    // convenience constructors.
+    pub use tutti_core::transport::{
+        beat_from_ports, FadeOut, LoopRange, LoopSpan, MetronomeMode, MotionEvent, MotionState,
+        Then, BEAT_PORTS,
+    };
 }
 
 // Test-only global allocator for RT-safety regression tests (relocated from

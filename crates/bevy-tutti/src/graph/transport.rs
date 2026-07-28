@@ -9,7 +9,27 @@ use std::sync::Arc;
 
 use tutti_core::transport::{ClickState, Transport};
 
-/// The live transport: `.0.motion` for transitions, `.0.settings` for values.
+/// The live transport. Newtype over tutti-core's [`Transport`] — every method
+/// below is the engine's, reached through the `Deref`.
+///
+/// Three fields carry everything:
+///
+/// - **`.motion`** — transitions. `try_send(MotionEvent::Play)` and friends
+///   *queue*; the audio thread drains them at the top of each block, so
+///   `is_playing()` does not flip until something renders.
+/// - **`.settings`** — values. `set_tempo`, `set_beat`, `set_recording`, and the
+///   reads beside them.
+/// - **`.settings.loop_span`** — the loop region. `set_range(start, end)` and
+///   `set_enabled(..)` to arm it; [`range()`](tutti_core::transport::LoopSpan::range)
+///   to read it back as a validated [`LoopRange`](tutti_core::transport::LoopRange),
+///   or `None` if it is disabled, empty or inverted. `bounds()` gives the raw
+///   pair instead, which is what a UI drawing a brace mid-drag wants — an
+///   inverted pair is a legitimate transient there, which is why the setter does
+///   not validate and the reader does.
+///
+/// Everything takes `&self` (the state is atomics), so `Res` suffices. That also
+/// means **`Res<TransportRes>` never triggers change detection** — a host that
+/// wants "did the tempo change this frame" diffs the value itself.
 #[derive(Resource, Clone)]
 pub struct TransportRes(pub Transport);
 

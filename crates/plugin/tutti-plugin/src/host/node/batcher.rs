@@ -934,12 +934,28 @@ mod tests {
         );
     }
 
-    /// The declared pipeline latency is exactly one block. Pinned because both
-    /// plausible alternatives are wrong in ways that are hard to hear as bugs:
-    /// the per-block `size` is unavailable to `route()` and would vary, and
-    /// `config.max_buffer_size` (8192) would declare 171 ms.
+    /// A change detector on the declared pipeline latency, and named as one.
+    ///
+    /// It compares two constants in this file, so it cannot fail unless someone
+    /// edits one of them — it does not observe `route()` and proves nothing
+    /// about what PDC receives. Constructing a `PluginClient` to check that
+    /// needs a live subprocess, which is the integration suite's job, not this
+    /// one's. An earlier comment here implied more coverage than that.
+    ///
+    /// It is kept because the two ways of getting this wrong are both silent
+    /// and both a one-word edit away: the per-block `size` (unavailable to
+    /// `route()`, and varying, so uncompensable) and `config.max_buffer_size`
+    /// (8192 — 171 ms declared for a 1.33 ms pipeline). The bound below is the
+    /// part that would catch the second one.
     #[test]
-    fn pipeline_latency_is_exactly_one_block() {
+    fn declared_pipeline_latency_still_matches_the_block_size() {
         assert_eq!(PIPELINE_LATENCY_SAMPLES, BATCH_SIZE);
+        // The failure mode worth naming: a max-buffer-sized declaration. Any
+        // plausible block size is far below this; 8192 is far above it.
+        assert!(
+            PIPELINE_LATENCY_SAMPLES <= 1024,
+            "a declared latency this large means `config.max_buffer_size` \
+             (8192 = 171 ms at 48 kHz) reached PDC in place of the block size"
+        );
     }
 }

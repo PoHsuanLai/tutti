@@ -771,11 +771,16 @@ fn assert_nulls_at_declared_latency(mut unit: Box<dyn AudioUnit>, path: &str) {
             (best_offset as isize - declared as isize).abs()
         );
         panic!(
-            "fixture is no longer a passthrough — nothing nulls at any offset (best \
-             {best_db:.1} dB at {best_offset}). This is not a PDC verdict: the test \
-             needs a plugin that reproduces its input, and {path} has \
-             stopped doing so. Check for a loaded preset or a plugin update before \
-             touching the latency code."
+            "nothing nulls at any offset (best {best_db:.1} dB at {best_offset}). \
+             This is not a PDC verdict, but it is not necessarily the fixture's \
+             fault either — two causes produce it identically:\n\
+             \x20 1. {path} stopped reproducing its input (a loaded preset, a \
+             plugin update), so there is no matching signal to null against; or\n\
+             \x20 2. the host stopped delivering the plugin's output — a \
+             regression in the collect path (the sequence check, the ring slot \
+             bound) yields silence every block, and silence nulls nowhere.\n\
+             Check whether the wet signal is non-silent to tell them apart: if it \
+             is silent, the fixture is fine and the bug is host-side."
         );
     }
 }

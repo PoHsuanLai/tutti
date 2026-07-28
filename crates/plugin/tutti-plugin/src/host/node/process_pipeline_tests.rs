@@ -461,36 +461,115 @@ fn pipeline_steady_state_is_not_echoed_or_doubly_stale() {
     }
 }
 
-/// With no gap at all the bridge thread may not be scheduled between blocks, so
-/// a block's reply can genuinely be absent. The result must then be **silence**,
-/// not stale audio from an earlier block sitting in the ring.
+/// The ring slot the host is about to read holds a **different block's real
+/// audio**, and the host must emit silence rather than that audio.
 ///
-/// This is the case the sequence check exists for. Without it the host would
-/// read whichever block last occupied the slot and emit it as though it were
-/// current — quieter than the original bypass, and the same class of defect.
+/// This is the single test that can detect the removal of the sequence check,
+/// and it is built to be detectable by construction rather than by luck.
+///
+/// # Why the obvious version of this test cannot work
+///
+/// Driving blocks back-to-back and asserting "silence or the correct block"
+/// looks like it tests this, but it does not. The mock server only ever
+/// publishes the block it was asked for, so the slot a missing reply leaves
+/// behind is either untouched (zeros) or already correct. Deleting the sequence
+/// check entirely still passes, because there is never a wrong block present to
+/// read. The distinction the test claims to make — substituted silence versus a
+/// stale slot — is not observable in that setup.
+///
+/// So the decoy is planted deliberately instead of hoped for. There is no
+/// server thread and no timing: the slot's contents are set up directly, which
+/// makes the outcome the same on every run and on every machine.
+///
+/// # The construction
+///
+/// Sequences start at 1, so block 0 submits seq 1 and collects nothing
+/// (`expect_seq` is `None`), and block 1 submits seq 2 and collects seq 1. At
+/// `RING_SLOTS == 2`, seq 1 and seq 3 share a slot. Publishing seq 3's audio
+/// therefore leaves the slot that block 1 is about to read full of loud,
+/// recognisable, *wrong* audio, stamped with a sequence that does not match.
+///
+/// A host that consults the sequence emits silence. A host that trusts the slot
+/// emits [`DECOY`] and fails. The `DECOY` value is far outside the ramp's range
+/// so the failure message cannot be confused with an off-by-one.
 #[test]
-fn a_missing_reply_yields_silence_never_stale_audio() {
-    let blocks = 5;
-    let captured = drive_blocks_with_gap(blocks, std::time::Duration::ZERO);
+fn a_stale_slot_holding_real_audio_still_yields_silence() {
+    /// Unmistakable, and nothing the ramp or the gain can produce.
+    const DECOY: f32 = -99.0;
+    /// Shares a ring slot with seq 1 — the block the host collects second.
+    const DECOY_SEQ: u64 = 1 + RING_SLOTS as u64;
 
-    for (block, got) in captured.iter().enumerate() {
-        let silent = got.iter().all(|ch| ch.iter().all(|&s| s == 0.0));
-        if silent {
-            continue; // The reply had not landed. Correct.
-        }
-        // Otherwise it must be exactly the previous block — never any other.
-        let ok = (0..CHANNELS).all(|ch| {
-            (0..BATCH_SIZE).all(|i| {
-                block > 0 && (got[ch][i] - ramp_sample(block - 1, ch, i) * GAIN).abs() < 1e-4
-            })
-        });
-        assert!(
-            ok,
-            "block {block}: non-silent output that is not block {}'s audio — {}",
-            block.wrapping_sub(1),
-            diagnose(block, got)
-        );
+    let (bridge, mut bridge_thread) = bridge_with_no_server();
+    let mut batcher = Batcher::new(CHANNELS, CHANNELS, SampleFormat::Float32, BATCH_SIZE);
+
+    // The premise, asserted rather than assumed: if the ring depth changes and
+    // these stop sharing a slot, the decoy lands somewhere harmless and the
+    // test would silently stop testing anything.
+    assert_eq!(
+        DECOY_SEQ % RING_SLOTS as u64,
+        1 % RING_SLOTS as u64,
+        "the decoy must occupy the same ring slot as seq 1"
+    );
+
+    let slab = bridge.audio_buffer();
+    for ch in 0..CHANNELS {
+        slab.write_output(DECOY_SEQ, ch, &[DECOY; BATCH_SIZE])
+            .unwrap();
     }
+    slab.publish_output(DECOY_SEQ);
+
+    let mut input = BufferVec::<F32>::new(CHANNELS);
+    let mut output = BufferVec::<F32>::new(CHANNELS);
+    let mut midi_out = MidiEventVec::new();
+
+    // Block 0 submits seq 1 and collects nothing; block 1 submits seq 2 and
+    // collects seq 1 — the slot now holding the decoy.
+    for block in 0..2 {
+        for ch in 0..CHANNELS {
+            for i in 0..BATCH_SIZE {
+                input.set_scalar(ch, i, ramp_sample(block, ch, i));
+            }
+        }
+        output.clear();
+        batcher.process::<f32>(
+            &bridge,
+            BATCH_SIZE,
+            &input.buffer_ref(),
+            &mut output.buffer_mut(),
+            BlockPayload::default(),
+            &mut midi_out,
+        );
+
+        for ch in 0..CHANNELS {
+            for i in 0..BATCH_SIZE {
+                let got = output.at_scalar(ch, i);
+                assert_eq!(
+                    got,
+                    0.0,
+                    "block {block} ch {ch} sample {i}: expected silence, got {got}{}",
+                    if got == DECOY {
+                        " — this is the decoy, so the sequence check is not being \
+                         consulted and a stale ring slot is being played as though \
+                         it were current audio"
+                    } else {
+                        ""
+                    }
+                );
+            }
+        }
+    }
+
+    // The decoy must still be sitting there: if something overwrote it, the
+    // silence above proves nothing about the sequence check.
+    let mut probe = [0.0f32; BATCH_SIZE];
+    let got = slab.read_output_into(DECOY_SEQ, 0, &mut probe).unwrap_or(0);
+    assert!(
+        got == BATCH_SIZE && probe.iter().all(|&s| s == DECOY),
+        "the decoy was overwritten during the run, so this test no longer \
+         distinguishes substituted silence from a stale slot read"
+    );
+
+    bridge_thread.shutdown();
 }
 
 /// **The test that justifies the whole change.** Several stalled plugins driven
@@ -520,11 +599,21 @@ fn a_missing_reply_yields_silence_never_stale_audio() {
 ///
 /// # On the threshold
 ///
-/// Deliberately loose — orders of magnitude above what the work costs — because
-/// this is not a benchmark and must not flake on a loaded CI box. It does not
-/// need to be tight: a regression to synchronous waiting would exceed it by
-/// ~100x, not by a few percent. A tight bound would buy nothing and cost
-/// intermittent failures.
+/// The limit is expressed **per block-plugin step**, and derived from the wait
+/// budget this test exists to detect rather than picked as a round number.
+///
+/// An earlier version asserted a 300 ms wall-clock bound over the whole test.
+/// That could not do its job: rig setup alone (three mock servers, each with a
+/// 50 ms startup settle) accounted for ~150 ms of it, so the budget left for
+/// the measured work was enormous relative to the ~20 us/step it actually
+/// costs. Re-inserting the old synchronous wait — 667 us per plugin per block,
+/// half the block period — still came in under the bound and still passed.
+///
+/// So only the driving loop is timed, and the bound is
+/// [`SYNC_WAIT_BUDGET`] / 4: comfortably above the real cost (~30x headroom,
+/// measured), and comfortably below a single re-inserted wait. The margin is
+/// what keeps it from flaking on a loaded box; the derivation is what keeps it
+/// meaningful. If the pipelining regresses, ONE waited block trips it.
 #[test]
 fn stalled_plugins_do_not_stall_the_audio_thread() {
     let _lock = exclusive();
@@ -534,7 +623,11 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
     const BLOCKS: usize = 20;
     /// Far beyond any block period, so a design that waits cannot hide it.
     const SERVER_STALL: Duration = Duration::from_millis(10);
-    const TIME_LIMIT: Duration = Duration::from_millis(300);
+    /// What the synchronous design spent per plugin per block: half the block
+    /// period at 64 samples / 48 kHz. This is the quantity under test.
+    const SYNC_WAIT_BUDGET: Duration = Duration::from_micros(667);
+    /// Per block-plugin step. See the note on the threshold above.
+    const STEP_LIMIT: Duration = Duration::from_micros(SYNC_WAIT_BUDGET.as_micros() as u64 / 4);
 
     let mut rigs: Vec<_> = (0..PLUGINS)
         .map(|_| bridge_with_server_stall(SERVER_STALL))
@@ -568,14 +661,18 @@ fn stalled_plugins_do_not_stall_the_audio_thread() {
     }
     let elapsed = start.elapsed();
 
+    let steps = (BLOCKS * PLUGINS) as u32;
+    let per_step = elapsed / steps;
     // What the old design would have spent: every plugin, every block, waiting
     // out its budget before giving up.
-    let synchronous_floor = SERVER_STALL * (BLOCKS * PLUGINS) as u32;
+    let synchronous_floor = SYNC_WAIT_BUDGET * steps;
     assert!(
-        elapsed < TIME_LIMIT,
-        "{PLUGINS} stalled plugins x {BLOCKS} blocks took {elapsed:?}, over the \
-         {TIME_LIMIT:?} limit. A synchronous design would need ~{synchronous_floor:?} — \
-         this looks like the audio thread is waiting for replies again."
+        per_step < STEP_LIMIT,
+        "{PLUGINS} stalled plugins x {BLOCKS} blocks took {elapsed:?} — \
+         {per_step:?} per block-plugin step, over the {STEP_LIMIT:?} limit. \
+         A synchronous design waits {SYNC_WAIT_BUDGET:?} per step \
+         (~{synchronous_floor:?} total), so this looks like the audio thread is \
+         waiting for replies again."
     );
 
     for (_, thread, _) in rigs.iter_mut() {
@@ -735,8 +832,19 @@ fn silence_on_a_missing_reply_does_not_allocate() {
     bridge_thread.shutdown();
 }
 
-/// A crashed bridge short-circuits ahead of the sequence check, so it is a
-/// genuinely separate branch and gets its own guard.
+/// A crashed bridge must reach silence without allocating.
+///
+/// **This does not prove the crash short-circuit is separately covered**, and an
+/// earlier version of this comment claimed it did. Deleting the `is_crashed()`
+/// check in `Batcher::collectable` leaves the entire suite green: a crashed
+/// bridge never publishes, so the sequence check below it returns `None` anyway
+/// — the same silence, by a longer route. The check earns its place by making
+/// that outcome a decision rather than a coincidence of the numbering, which is
+/// a design argument rather than a tested one.
+///
+/// What this test does cover is real: the crashed path is the one where every
+/// dispatch fails, and it must still not allocate on the audio thread. That is
+/// the claim in the name, and it is the claim being checked.
 #[test]
 fn silence_on_a_crashed_bridge_does_not_allocate() {
     let (bridge, mut bridge_thread) = bridge_with_no_server();

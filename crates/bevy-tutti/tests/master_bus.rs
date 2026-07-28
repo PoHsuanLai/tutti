@@ -7,10 +7,16 @@
 //! master output") and `synth::soundfont` for every soundfont that finishes
 //! loading.
 //!
-//! These tests pin that behaviour *before* it is fixed. They assert what the
-//! code does today, not what it should do, and the commit that introduces
-//! declarative wiring inverts them. A test written after the fix would prove
-//! nothing about whether the bug was ever real.
+//! These pinned that behaviour before the fix. `pipe_output` still behaves this
+//! way — it is the engine's, and clobbering is a correct thing for a
+//! "this node IS the master" primitive to do. What changed is that **this crate
+//! no longer calls it**: what reaches the bus is declared once, in
+//! `MasterSources`, where two claims cannot coexist.
+//!
+//! They stay as the record of why that shape was chosen, and as a guard: if
+//! anything here starts calling `pipe_output` again, the mechanism these tests
+//! describe is what it will silently reintroduce. The declarative side is
+//! covered in `graph_wire.rs`.
 
 #![cfg(feature = "synth")]
 
@@ -66,15 +72,16 @@ fn pipe_output_claims_every_channel_even_from_a_mono_source() {
     assert_eq!(net.output_source(1), Source::Local(mono, 0));
 }
 
-/// The engine's own build hands the master to the metronome the same way, so
-/// anything that later calls `pipe_output` takes the whole bus from it.
+/// The sequence this crate used to produce: the build piped the metronome to
+/// output, then every soundfont that finished loading piped itself, taking the
+/// whole bus. Neither call site knew about the other.
 ///
-/// Stated as a unit-level fact rather than driven through `build_into`, which
-/// needs a real audio device. The two call sites are `engine/build.rs` (the
-/// click) and `synth/soundfont.rs` (each promoted soundfont); this reproduces
-/// exactly the sequence those two produce in a running app.
+/// Both are gone — `engine/build.rs` no longer wires the click, and
+/// `synth/soundfont.rs` no longer wires the unit it promotes. This reproduces
+/// what they did, so the failure mode stays legible to whoever reads
+/// `MasterSources` and wonders why a resource rather than a helper.
 #[test]
-fn a_later_node_takes_the_master_from_the_metronome() {
+fn the_sequence_this_crate_used_to_produce_lost_the_metronome() {
     let mut net = Net::new(0, 2);
 
     // Stand-in for the click node `build_into` pipes to output.

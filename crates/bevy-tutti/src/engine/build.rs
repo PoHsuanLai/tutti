@@ -100,11 +100,17 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let clock = TransportClock::new(transport.clock_links(), sample_rate);
     let clock_id = net.push(Box::new(clock));
 
-    // Metronome — mixed into master output. It only READS the transport
-    // (beat + rolling/recording), so it takes a read view, not a control handle.
+    // Metronome. It only READS the transport (beat + rolling/recording), so it
+    // takes a read view, not a control handle.
+    //
+    // It is NOT wired to the output here. `net.pipe_output(click_id)` used to
+    // be, which reads like "mix the click into master" and is not what that
+    // call does: `pipe_output` overwrites every global output edge, so the
+    // first soundfont to load silently disconnected the metronome. What the
+    // click feeds is now the host's declaration, like every other node — see
+    // `graph::wire`.
     let click = ClickNode::with_transport(transport.clone(), click_settings.clone(), sample_rate);
     let click_id = net.push(Box::new(An(click)));
-    net.pipe_output(click_id);
 
     let backend = net.backend();
 

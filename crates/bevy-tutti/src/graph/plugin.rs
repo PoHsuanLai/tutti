@@ -47,6 +47,9 @@ impl Plugin for GraphReconcilePlugin {
         // observer (fires at command-flush, reads the still-present NodeId).
         app.add_observer(reconcile_node_despawn);
 
+        // Declared wiring: `AudioSources` per sink, `MasterSources` for the bus.
+        app.add_plugins(crate::graph::GraphWirePlugin);
+
         app.add_systems(
             Update,
             commit_graph

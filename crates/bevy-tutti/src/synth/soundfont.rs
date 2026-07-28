@@ -8,9 +8,7 @@ use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool, Task};
 
 use std::sync::Arc;
 
-use crate::graph::{
-    engine_ready, AudioConfig, AudioGraphRes, GraphDirty, GraphReconcileSystems,
-};
+use crate::graph::{engine_ready, AudioConfig, AudioGraphRes, GraphDirty, GraphReconcileSystems};
 use tutti_synth::soundfont::{SoundFont, SoundFontError, SoundFontUnit, SynthesizerSettings};
 
 /// A parsed `.sf2` as a loadable asset.
@@ -181,15 +179,23 @@ pub fn soundfont_playback_system(
 
 /// Drains [`PendingSoundFontUnit`] entities whose off-thread build has
 /// finished: applies the entity's program change, adds the unit to tutti's
-/// graph, pipes it to output, attaches `AudioNode`, then removes the pending
-/// marker.
+/// graph, attaches `AudioNode`, then removes the pending marker.
 ///
 /// Entities whose build is still running are left alone for the next frame.
 ///
-/// MIDI registration is *not* done here. It used to be, open-coded, and with no
-/// counterpart to take the sender back off the bus; it now belongs to
-/// [`register_midi_senders`](crate::midi::register_midi_senders), which sees
-/// this entity by its `AudioNode` and pairs insertion with removal.
+/// Two things this deliberately does *not* do, for the same reason — neither is
+/// a decision a loader gets to make on the host's behalf:
+///
+/// - **MIDI registration.** It used to be here, open-coded, with no counterpart
+///   to take the sender back off the bus; it belongs to
+///   [`register_midi_senders`](crate::midi::register_midi_senders), which sees
+///   this entity by its `AudioNode` and pairs insertion with removal.
+/// - **Output wiring.** `graph.0.pipe_output(id)` used to be here too, which
+///   made every soundfont that finished loading claim the entire master bus —
+///   overwriting the metronome, then the previous soundfont, silently, in query
+///   order. Whether a soundfont is audible is declared with
+///   [`MasterSources`](crate::graph::MasterSources) or an
+///   [`AudioSources`](crate::graph::AudioSources) on a mixer.
 pub fn promote_pending_soundfonts(
     mut commands: Commands,
     mut graph: ResMut<AudioGraphRes>,
@@ -214,7 +220,6 @@ pub fn promote_pending_soundfonts(
         unit.program_change(pending_unit.channel, pending_unit.preset);
 
         let id = graph.0.add(unit);
-        graph.0.pipe_output(id);
         edited = true;
 
         // `AudioNode` is the whole binding: node teardown

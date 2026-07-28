@@ -292,7 +292,10 @@ mod tests {
     fn app_with_graph() -> (App, Entity) {
         let mut app = App::new();
 
-        let mut net = Net::new(0, 1);
+        // `with_backend`, not `Net::new`: this app runs the full reconcile
+        // pipeline, and `commit_graph` asserts a backend exists. Backend-less
+        // worked only while nothing in the pipeline dirtied the graph.
+        let mut net = Net::with_backend(1);
         let node = net.push(Box::new(DistortionNode::new(
             tutti_units::ShapeKind::Tanh,
             1.0,

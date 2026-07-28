@@ -27,6 +27,7 @@ pub mod schedule;
 pub mod spawn;
 pub mod tap;
 pub mod transport;
+pub mod wire;
 
 pub use commit::commit_graph;
 pub use despawn::reconcile_node_despawn;
@@ -38,3 +39,4 @@ pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
 pub use spawn::{crossfade_audio_node, SpawnAudioNode};
 pub use tap::AudioTapRes;
 pub use transport::{MetronomeRes, TransportRes};
+pub use wire::{AudioSource, AudioSources, GraphWirePlugin, MasterSources};

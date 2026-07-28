@@ -56,6 +56,23 @@ pub mod test_support {
         MidiBusRes::new(tutti_midi_runtime::MidiBus::new())
     }
 
+    /// A routing table and the snapshot handle the RT pre-block would hold.
+    ///
+    /// **Tests only.** Returns both halves because the whole point of the type
+    /// is that they are one shared cell: a test asserts through the resource
+    /// and reads back through the arc, which is the invariant `MidiRoutingRes`
+    /// exists to protect.
+    pub fn routing_table_for_test() -> (
+        super::MidiRoutingRes,
+        std::sync::Arc<
+            tutti_core::RtPublish<tutti_midi_runtime::tutti_midi_types::MidiRoutingSnapshot>,
+        >,
+    ) {
+        let table = tutti_midi_runtime::tutti_midi_types::MidiRoutingTable::new();
+        let rt_view = table.snapshot_arc();
+        (super::MidiRoutingRes::new(table), rt_view)
+    }
+
     /// A clock master wired to a fresh transport. **Tests only.**
     ///
     /// Systems gated on `engine_ready` take this as a plain `Res`, because the

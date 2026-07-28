@@ -220,7 +220,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
         // Both must be the very values the pre-block above shares — a freshly
         // built one publishes where the audio thread never reads.
         app.insert_resource(MidiBusRes::new(midi_bus));
-        app.insert_resource(MidiRoutingRes(midi_route));
+        app.insert_resource(MidiRoutingRes::new(midi_route));
         app.insert_resource(ClockMasterRes::new(clock_master, clock_out_consumer));
         #[cfg(feature = "midi-hardware")]
         if let Some(io) = midi_io {

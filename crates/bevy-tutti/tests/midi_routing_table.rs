@@ -4,30 +4,32 @@
 //! `MidiPreBlock` holds the `Arc<RtPublish<..>>` its `snapshot_arc()` handed
 //! out. Build a second table and its `commit()` publishes into a cell nothing
 //! reads — every hardware MIDI event is dropped, silently, with nothing in the
-//! log. That is the highest-consequence invariant in this layer and it had no
-//! test; it was enforced only by the type having no `Default`.
+//! log.
 //!
-//! This asserts the property directly rather than trusting the type: publish
-//! through the resource, read through the arc the pre-block would hold.
+//! That failure is now unreachable through this type: the field is
+//! `pub(crate)` and the constructor is crate-internal, so a host cannot build
+//! an orphan at all. The compile-time half needs no test — you cannot assert
+//! the absence of a compile error — and the behavioural half moved down to
+//! `tutti_midi_types::routing`'s own tests
+//! (`two_tables_do_not_share_a_snapshot`), where the type it describes lives.
+//!
+//! What remains here is the positive claim: a publish through the resource is
+//! visible on the snapshot the RT would read.
 
 #![cfg(feature = "midi")]
 
-use bevy_tutti::midi::MidiRoutingRes;
-use tutti_midi_types::{MidiRoute, MidiRoutingTable, MidiUnitId};
+use bevy_tutti::midi::test_support::routing_table_for_test;
+use tutti_midi_types::{MidiRoute, MidiUnitId};
 
-/// A commit through the resource is visible on the snapshot the RT reads.
+/// A publish through the resource reaches the snapshot the RT reads.
 #[test]
 fn the_routing_table_publishes_where_the_rt_reads() {
-    let table = MidiRoutingTable::new();
-    // Exactly what `build_into` hands the pre-block, before the table itself
-    // moves into the resource.
-    let rt_view = table.snapshot_arc();
-    let mut res = MidiRoutingRes(table);
+    // Both halves of the one shared cell: the resource a host writes through,
+    // and the arc `build_into` hands the pre-block.
+    let (mut res, rt_view) = routing_table_for_test();
 
     let unit = MidiUnitId::new(7);
-    res.0
-        .set_routes(vec![MidiRoute::for_channel(3).with_target(unit)], None);
-    res.0.commit();
+    res.publish(vec![MidiRoute::for_channel(3).with_target(unit)], None);
 
     let snapshot = rt_view.read();
     let targets: Vec<MidiUnitId> = snapshot
@@ -39,30 +41,19 @@ fn the_routing_table_publishes_where_the_rt_reads() {
     );
 }
 
-/// The failure this guards: a table built separately publishes nowhere.
+/// `publish` commits — staging without publishing is not a reachable state.
 ///
-/// Not a test of our code so much as of the claim in `MidiRoutingRes`'s doc —
-/// if this ever stops holding, the `no Default` guard is protecting nothing and
-/// the doc is wrong.
+/// The engine's `set_routes` only marks the table dirty; nothing reaches the
+/// audio thread until `commit()`. Pairing them in one method is what keeps a
+/// caller from staging an edit that silently never arrives.
 #[test]
-fn a_separately_built_table_does_not_reach_that_snapshot() {
-    let rt_table = MidiRoutingTable::new();
-    let rt_view = rt_table.snapshot_arc();
+fn publishing_leaves_nothing_staged() {
+    let (mut res, rt_view) = routing_table_for_test();
+    res.publish(vec![MidiRoute::for_channel(0).with_target(MidiUnitId::new(1))], None);
 
-    // The mistake: a fresh table instead of the one the pre-block shares.
-    let mut orphan = MidiRoutingRes(MidiRoutingTable::new());
-    let unit = MidiUnitId::new(9);
-    orphan
-        .0
-        .set_routes(vec![MidiRoute::for_channel(3).with_target(unit)], None);
-    orphan.0.commit();
-
-    let snapshot = rt_view.read();
-    let targets: Vec<MidiUnitId> = snapshot
-        .route(&tutti_midi_types::ump::MidiEvent::note_on(0, 3, 60, 0x8000))
-        .collect();
+    assert_eq!(res.route_count(), 1, "the rule is staged");
     assert!(
-        !targets.contains(&unit),
-        "an orphaned table must not appear to work — this is the silent failure"
+        rt_view.read().has_routes(),
+        "and already published — a caller cannot be left holding an uncommitted edit"
     );
 }

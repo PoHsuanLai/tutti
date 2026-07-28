@@ -794,6 +794,12 @@ impl std::fmt::Debug for VoiceCommand {
 #[derive(Clone, Debug)]
 pub struct VoicePoolHandle {
     tx: Sender<VoiceCommand>,
+    /// Slots the audio thread has removed and handed back to be freed here.
+    ///
+    /// See [`VoicePool::retired`]. Draining this is what actually moves the
+    /// deallocation off the callback; [`collect_retired`](Self::collect_retired)
+    /// is the call that does it.
+    retired: Receiver<VoiceSlot>,
     /// The reader's output width, copied at construction (it is fixed for the
     /// reader's lifetime). Lets [`send`](Self::send) build a stretch filter at
     /// the right width on the CONTROL thread — see
@@ -812,6 +818,21 @@ impl VoicePoolHandle {
     /// from `tick`/`process`, so anything expensive left for the drain is an
     /// allocation in the callback. Today that means materialising the stretch
     /// filter for an `AddVoice` that needs one.
+    /// Free every slot the audio thread has retired since the last call.
+    ///
+    /// Call this periodically from the control thread — once a frame is ample.
+    /// Skipping it is safe but forfeits the point: the retirement channel fills,
+    /// and further `Remove`s fall back to freeing in the audio callback.
+    ///
+    /// Returns how many slots were freed, which is what a test can assert on.
+    pub fn collect_retired(&self) -> usize {
+        let mut n = 0;
+        while self.retired.try_recv().is_ok() {
+            n += 1;
+        }
+        n
+    }
+
     pub fn send(&self, cmd: VoiceCommand) {
         let cmd = self.prepare(cmd);
         match self.tx.try_send(cmd) {
@@ -874,6 +895,21 @@ pub struct VoicePoolNode(pub tutti_core::NodeId);
 pub struct VoicePool {
     voices: Vec<VoiceSlot>,
     rx: Receiver<VoiceCommand>,
+
+    /// Where removed slots go to be freed, off the audio thread.
+    ///
+    /// `VoiceCommand::Remove` is handled inside `drain_commands`, which runs
+    /// from `tick`/`process` — the audio callback. Dropping the slot there frees
+    /// its `stretch::Unit`'s vocoder bank (~192 KB at six channels) in the
+    /// callback whenever that handle held the last `Arc`, which is the normal
+    /// case: `VoicePoolHandle::send` builds a fresh refcount-1 filter and the
+    /// drain moves it in, so no graph commit need ever have cloned it.
+    ///
+    /// Pushing to a bounded channel instead is lock-free and allocation-free.
+    /// The control thread drains it via [`VoicePoolHandle::collect_retired`];
+    /// if nobody ever does, the channel fills and the slot is dropped in the
+    /// callback as before — degrading to today's behaviour rather than leaking.
+    retired: Sender<VoiceSlot>,
     sample_rate: f64,
     transport: Option<Arc<dyn Timeline>>,
     /// Typed butler write handle. `Some` on the live path (threaded in from the
@@ -941,7 +977,13 @@ impl VoicePool {
         butler: Option<Commands>,
         channels: usize,
     ) -> Self {
+        // Detached pools and clones get a dead retirement channel: a full
+        // `bounded(0)` never accepts, so `Remove` falls back to dropping in
+        // place. That is correct for an offline render, which owns its voices
+        // outright and has no control thread waiting to collect.
+        let (retired, _) = bounded(0);
         Self {
+            retired,
             // Reserved, not empty: `AddVoice` is drained inside `tick`/`process`,
             // so a `push` that grows this vector is a reallocation in the audio
             // callback. `MAX_RESIDENT_VOICES` is the point past which a track
@@ -966,12 +1008,16 @@ impl VoicePool {
 
     pub fn new() -> (Self, VoicePoolHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
+        let (retired_tx, retired) = bounded(MAX_RESIDENT_VOICES);
         let handle = VoicePoolHandle {
             tx,
+            retired,
             channels: 2,
             sample_rate: 44100.0,
         };
-        (Self::from_parts(rx, None, None), handle)
+        let mut unit = Self::from_parts(rx, None, None);
+        unit.retired = retired_tx;
+        (unit, handle)
     }
 
     pub fn with_transport(
@@ -979,12 +1025,16 @@ impl VoicePool {
         butler: Option<Commands>,
     ) -> (Self, VoicePoolHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
+        let (retired_tx, retired) = bounded(MAX_RESIDENT_VOICES);
         let handle = VoicePoolHandle {
             tx,
+            retired,
             channels: 2,
             sample_rate: 44100.0,
         };
-        (Self::from_parts(rx, Some(transport), butler), handle)
+        let mut unit = Self::from_parts(rx, Some(transport), butler);
+        unit.retired = retired_tx;
+        (unit, handle)
     }
 
     /// As [`with_transport`](Self::with_transport), at an explicit output width.
@@ -997,11 +1047,14 @@ impl VoicePool {
         channels: usize,
     ) -> (Self, VoicePoolHandle) {
         let (tx, rx) = bounded(COMMAND_CAPACITY);
-        let unit = Self::from_parts_with_channels(rx, transport, butler, channels);
+        let (retired_tx, retired) = bounded(MAX_RESIDENT_VOICES);
+        let mut unit = Self::from_parts_with_channels(rx, transport, butler, channels);
+        unit.retired = retired_tx;
         // The handle mirrors the reader's width/rate so `send` can build a
         // stretch filter that matches it, on the control thread.
         let handle = VoicePoolHandle {
             tx,
+            retired,
             channels: unit.channels,
             sample_rate: unit.sample_rate,
         };
@@ -1245,7 +1298,17 @@ impl VoicePool {
                     self.insert_voice_with_stretch(id, *voice, stretch.map(|b| *b));
                 }
                 VoiceCommand::Remove(id) => {
-                    self.voices.retain(|s| s.id != id);
+                    // `retain` would DROP the slot here, on the audio thread,
+                    // freeing its stretch filter's vocoder bank inside the
+                    // callback. Swap it out and hand it to the control thread
+                    // instead — a lock-free push, no free.
+                    if let Some(i) = self.voices.iter().position(|s| s.id == id) {
+                        let slot = self.voices.swap_remove(i);
+                        // A full or disconnected channel drops here, which is
+                        // exactly the old behaviour: correctness is unaffected,
+                        // only the thread that pays for the free.
+                        let _ = self.retired.try_send(slot);
+                    }
                 }
                 VoiceCommand::ReplaceWave { id, wave } => {
                     if let Some(slot) = self.slot_mut(id) {
@@ -1364,6 +1427,11 @@ impl Clone for VoicePool {
         // its Prepare step, so a render clone never shares this `Receiver` while
         // being ticked on a worker thread.
         Self {
+            // Dead, like the command `Receiver` beside it: a clone must not hand
+            // slots back to the live pool's control thread. A full `bounded(0)`
+            // never accepts, so its `Remove`s free in place — correct for a
+            // render clone, which owns its voices outright.
+            retired: bounded(0).0,
             voices: self
                 .voices
                 .iter()
@@ -2835,6 +2903,7 @@ mod tests {
             let (probe_tx, probe_rx) = bounded(4);
             let probe = VoicePoolHandle {
                 tx: probe_tx,
+                retired: bounded(0).1,
                 channels: 6,
                 sample_rate: 44100.0,
             };

@@ -40,7 +40,7 @@ use std::sync::Arc;
 use tutti_analysis::{window::hann, StftGeometry};
 use tutti_core::{
     inverse_fft, real_fft, AtomicF32, AudioThreadCell, AudioUnit, BufferMut, BufferRef, Cents,
-    Complex32, Ordering, Radians, RtScratch, SampleRate, Samples, Seconds, SignalFrame,
+    Complex32, Ordering, Radians, ReadRate, RtScratch, SampleRate, Samples, Seconds, SignalFrame,
     StretchFactor,
 };
 
@@ -995,12 +995,12 @@ impl Unit {
     ///
     /// `1.0` when the unit is bypassing, so a caller can apply it unconditionally.
     #[inline]
-    pub fn input_rate(&self) -> f64 {
+    pub fn input_rate(&self) -> ReadRate {
         if !self.is_processing() {
-            return 1.0;
+            return ReadRate::UNITY;
         }
         let (analysis, synthesis) = self.hops();
-        analysis as f64 / synthesis as f64
+        ReadRate(analysis as f64 / synthesis as f64)
     }
 }
 
@@ -1051,8 +1051,18 @@ impl Drop for Unit {
     /// to tick the bank it inherited. Without this the claim outlives the handle
     /// and every post-commit tick trips the guard.
     ///
-    /// Cheap and release-only — no deallocation, so this is safe on the audio
-    /// thread, where `VoiceCommand::Remove` can drop a slot mid-callback.
+    /// The body is release-only, but **dropping a `Unit` is not free**: after it
+    /// runs, `channels: Arc<Bank>` is dropped too, and when that is the last
+    /// reference the vocoders and block scratch (~192 KB at six channels) are
+    /// deallocated right there. This comment used to claim the opposite, which
+    /// was true of the body and false of the type.
+    ///
+    /// That matters because `VoiceCommand::Remove` retires a slot inside
+    /// `drain_commands`, which runs from the audio callback. `VoicePool` now
+    /// hands removed slots to a retirement channel so the free happens on the
+    /// control thread — see `VoicePool::retired`. Any *other* caller dropping a
+    /// `Unit` on the audio thread has the same hazard and needs the same
+    /// treatment.
     fn drop(&mut self) {
         self.channels.release(self.id);
     }
@@ -1113,7 +1123,7 @@ impl AudioUnit for Unit {
 
         // Pace the source intake at `1 / stretch` — see `intake_debt`. Above
         // unity this drops input samples; below it, feeds the same one twice.
-        self.intake_debt += self.input_rate();
+        self.intake_debt += self.input_rate().get();
         // One borrow for the whole call: the cell's contract is one borrow at a
         // time, and re-borrowing per sample would also cost a debug atomic each.
         self.channels.claim(self.id);
@@ -1202,7 +1212,7 @@ impl AudioUnit for Unit {
         // the two paths separately.
         let mut bank = self.channels.channels.borrow_mut();
         for i in 0..size {
-            self.intake_debt += rate;
+            self.intake_debt += rate.get();
             while self.intake_debt >= 1.0 {
                 self.intake_debt -= 1.0;
                 for (c, v) in bank.iter_mut().enumerate() {
@@ -1584,7 +1594,7 @@ mod tests {
         u.set_stretch_factor(StretchFactor::new(0.001));
         assert_eq!(u.stretch_factor(), StretchFactor::MIN);
         assert!(
-            u.input_rate() <= 4.0 + 1e-6,
+            u.input_rate().get() <= 4.0 + 1e-6,
             "intake rate {} would run the per-tick loop more than 4 times",
             u.input_rate()
         );
@@ -1592,7 +1602,7 @@ mod tests {
         // And the other end cannot drive it to zero, which would starve the FIFO.
         u.set_stretch_factor(StretchFactor::new(100.0));
         assert_eq!(u.stretch_factor(), StretchFactor::MAX);
-        assert!(u.input_rate() > 0.0);
+        assert!(u.input_rate().get() > 0.0);
     }
 
     /// `input_rate` is `1.0` while bypassing, so a caller can apply it
@@ -1941,13 +1951,13 @@ mod tests {
     fn input_rate_is_unity_when_bypassing() {
         let u = Unit::with_channels(44_100.0, 1);
         assert!(!u.is_processing());
-        assert_eq!(u.input_rate(), 1.0);
+        assert_eq!(u.input_rate(), ReadRate::UNITY);
 
         // Disabled counts as bypassing too.
         let mut u = Unit::with_channels(44_100.0, 1);
         u.set_stretch_factor(StretchFactor::new(2.0));
         u.set_enabled(false);
-        assert_eq!(u.input_rate(), 1.0);
+        assert_eq!(u.input_rate(), ReadRate::UNITY);
     }
 
     #[test]

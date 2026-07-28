@@ -787,6 +787,141 @@ fn add_voice_drain_is_allocation_free_at_six_channels() {
     });
 }
 
+/// Removing a stretching voice must not FREE on the audio thread.
+///
+/// `VoiceCommand::Remove` is handled by `voices.retain(...)` inside
+/// `drain_commands`, which runs from `tick`/`process` — the audio callback. A
+/// slot dropped there takes its `stretch::Unit` with it, and when that handle
+/// holds the last `Arc<Bank>` reference the vocoders and block scratch (~192 KB
+/// at six channels) are freed inside the callback.
+///
+/// Sole ownership is the *normal* case, not a corner: `VoicePoolHandle::send`
+/// builds a fresh refcount-1 `Unit` on the control thread and the drain moves it
+/// into the slot, so no graph commit need ever have cloned it.
+///
+/// `assert_no_alloc` traps deallocation as well as allocation, so this is the
+/// direct guard. It was missing: every other drain test here covers `AddVoice`,
+/// `UpdateStretch`, or `UpdateLoop`.
+#[test]
+fn remove_voice_drain_does_not_free_on_the_audio_thread() {
+    let transport = MockTransport::new(120.0, 0.0, true);
+    let wave = surround_wave(2.0, 48_000.0);
+    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6);
+    reader.set_sample_rate(SampleRate(48_000.0));
+
+    let input_vec = BufferVec::new(0);
+    let mut output_vec = BufferVec::new(6);
+
+    for _ in 0..16 {
+        reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+    }
+
+    // Add stretching voices OUTSIDE the guard — building the filters allocates,
+    // deliberately, on the control thread.
+    for i in 0..4u128 {
+        let sampler = MemorySource::with_config(
+            wave.clone(),
+            MemorySourceConfig {
+                channels: 6,
+                timeline: Some(transport.clone()),
+                window: VoiceWindow {
+                    start: Beat::new(0.0),
+                    duration: None,
+                },
+                ..Default::default()
+            },
+        );
+        handle.send(VoiceCommand::AddVoice {
+            id: SlotId(i),
+            voice: Box::new(Voice {
+                source: VoiceSource::Memory(sampler),
+                play: Playback {
+                    // Non-unity: this is what makes a filter resident, and the
+                    // filter is what owns the bank this test is about.
+                    stretch: StretchFactor::new(2.0),
+                    ..Default::default()
+                },
+                channel_index: None,
+            }),
+            stretch: None,
+        });
+    }
+    reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+    assert_eq!(reader.voice_count(), 4, "adds must have drained");
+
+    // Queue the removes outside, drain them inside.
+    for i in 0..4u128 {
+        handle.send(VoiceCommand::Remove(SlotId(i)));
+    }
+    assert_no_alloc::assert_no_alloc(|| {
+        reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+    });
+    assert_eq!(reader.voice_count(), 0, "removes must have drained");
+}
+
+/// The deferred free must actually happen on the control thread.
+///
+/// The RT guard above proves the callback does not free. That alone would also
+/// be satisfied by never freeing at all — a leak. This pins the other half:
+/// `collect_retired` returns the slots and drops them here, off the callback.
+#[test]
+fn collect_retired_frees_the_removed_slots_on_the_control_thread() {
+    let transport = MockTransport::new(120.0, 0.0, true);
+    let wave = surround_wave(2.0, 48_000.0);
+    let (mut reader, handle) = VoicePool::with_channels(Some(transport.clone()), None, 6);
+    reader.set_sample_rate(SampleRate(48_000.0));
+
+    let input_vec = BufferVec::new(0);
+    let mut output_vec = BufferVec::new(6);
+
+    for i in 0..3u128 {
+        let sampler = MemorySource::with_config(
+            wave.clone(),
+            MemorySourceConfig {
+                channels: 6,
+                timeline: Some(transport.clone()),
+                window: VoiceWindow {
+                    start: Beat::new(0.0),
+                    duration: None,
+                },
+                ..Default::default()
+            },
+        );
+        handle.send(VoiceCommand::AddVoice {
+            id: SlotId(i),
+            voice: Box::new(Voice {
+                source: VoiceSource::Memory(sampler),
+                play: Playback {
+                    stretch: StretchFactor::new(2.0),
+                    ..Default::default()
+                },
+                channel_index: None,
+            }),
+            stretch: None,
+        });
+    }
+    reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+    assert_eq!(reader.voice_count(), 3);
+
+    // Nothing retired yet.
+    assert_eq!(handle.collect_retired(), 0, "no removes have been drained");
+
+    for i in 0..3u128 {
+        handle.send(VoiceCommand::Remove(SlotId(i)));
+    }
+    reader.process(64, &input_vec.buffer_ref(), &mut output_vec.buffer_mut());
+    assert_eq!(reader.voice_count(), 0, "removes must have drained");
+
+    // The slots are now parked in the channel, still allocated. Collecting
+    // frees them here, on this thread.
+    assert_eq!(
+        handle.collect_retired(),
+        3,
+        "the removed slots must reach the control thread to be freed"
+    );
+    assert_eq!(handle.collect_retired(), 0, "and only once");
+}
+
 /// Changing a loop range mid-playback must not allocate in the drain.
 ///
 /// The crossfade buffer is reserved once at `MAX_CROSSFADE_FRAMES` and

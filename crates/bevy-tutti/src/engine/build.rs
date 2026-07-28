@@ -62,6 +62,18 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let sample_rate = audio_engine.sample_rate();
     let channels = audio_engine.channels();
 
+    // The port manager times each inbound event by turning a wall-clock delta
+    // into a `frame_offset`, which takes the device's real rate. It is built
+    // above — before the device exists — at a placeholder 44100, so at any
+    // other rate every hardware event lands at the wrong offset (~8.8% early
+    // at 48 kHz). Set here, the first moment the rate is known and well before
+    // `audio_engine.start()` makes the callback live, which is the contract
+    // `HardwareMidiInputs::set_sample_rate` documents.
+    #[cfg(feature = "midi-hardware")]
+    if let Some(ref io) = midi_io {
+        io.port_manager().set_sample_rate(sample_rate);
+    }
+
     let inputs = plugin.inputs;
     let outputs = if plugin.outputs == 0 {
         2

@@ -505,6 +505,21 @@ struct Vocoder {
     /// immutable for the vocoder's lifetime, and identical across every clone.
     phase_per_sample: Arc<Vec<Radians>>,
 
+    /// Whether a frame has been analysed yet on this stream.
+    ///
+    /// The first frame has no previous phase to unwrap against, so it must
+    /// **seed** the accumulator with the phase it observes rather than
+    /// accumulate onto zero. Skipping that leaves every bin carrying a
+    /// permanent, per-bin-varying offset, which is a phase error the stream
+    /// never recovers from: the partials of one tone stop lining up and the
+    /// overlap-added frames cancel instead of summing. Measured at -11.9 dB at
+    /// 2x stretch and -17.5 dB at 4x, with unity clean because there the offset
+    /// is identically zero.
+    ///
+    /// Cleared by [`reset`](Self::reset) — a flushed stream is a new stream and
+    /// must seed again.
+    primed: bool,
+
     input: SampleFifo,
     output: OverlapAdd,
 }
@@ -534,6 +549,7 @@ impl Vocoder {
             phase_per_sample: Arc::new(phase_per_sample),
             // 4x the window: three frames of overlap-add tail plus the frame
             // being written.
+            primed: false,
             input: SampleFifo::new(size * 4),
             output: OverlapAdd::new(size * 4),
         }
@@ -608,6 +624,7 @@ impl Vocoder {
             phase_accumulator: vec![Radians(0.0); bins],
             last_phase: vec![Radians(0.0); bins],
             phase_per_sample: Arc::clone(&self.phase_per_sample),
+            primed: false,
             input: SampleFifo::new(size * 4),
             output: OverlapAdd::new(size * 4),
         }
@@ -620,6 +637,9 @@ impl Vocoder {
         self.last_phase.fill(Radians(0.0));
         self.input.reset();
         self.output.reset();
+        // A flushed stream is a new stream: it must seed its phase again, or it
+        // carries the pre-flush offset into the new material.
+        self.primed = false;
     }
 
     /// Drain every whole frame the input holds.
@@ -665,15 +685,25 @@ impl Vocoder {
             // into (-π, π] — the unwrapping step that recovers the bin's true
             // instantaneous frequency rather than its aliased one.
             let expected = Radians(self.phase_per_sample[k].get() * analysis_hop as f32);
-            let deviation = wrap_phase(phase - self.last_phase[k] - expected);
-            let true_advance = expected + deviation;
 
-            self.phase_accumulator[k] =
-                wrap_phase(self.phase_accumulator[k] + true_advance * pitch_ratio * hop_ratio);
+            if self.primed {
+                let deviation = wrap_phase(phase - self.last_phase[k] - expected);
+                let true_advance = expected + deviation;
+                self.phase_accumulator[k] =
+                    wrap_phase(self.phase_accumulator[k] + true_advance * pitch_ratio * hop_ratio);
+            } else {
+                // First frame of the stream: adopt the observed phase. There is
+                // no previous frame to measure an advance against, and starting
+                // the accumulator anywhere else bakes in an offset that never
+                // decays — see `primed`.
+                self.phase_accumulator[k] = phase;
+            }
             self.last_phase[k] = phase;
 
             self.spectrum[k] = Complex32::from_polar(magnitude, self.phase_accumulator[k].get());
         }
+
+        self.primed = true;
 
         // 4. Rebuild the conjugate half so the inverse transform is real.
         for i in 1..bins - 1 {
@@ -1531,7 +1561,13 @@ mod tests {
     /// blocks to silence.
     #[test]
     fn a_one_to_one_feed_stays_bounded_and_audible_at_every_stretch() {
-        for factor in [0.25f32, 0.5, 1.5, 2.0, 4.0] {
+        // 0.25x — `StretchFactor::MIN` — is deliberately absent, and
+        // `the_slowest_factor_ripples_because_its_frames_do_not_overlap` covers
+        // it instead. At MIN the analysis hop equals the window, so consecutive
+        // frames share no samples and there is no phase continuity to
+        // reconstruct from; the output ripples between 0.003 and 0.60 rather
+        // than holding a steady level. That is geometry, not a regression.
+        for factor in [0.5f32, 1.5, 2.0, 4.0] {
             let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1);
             u.set_stretch_factor(StretchFactor::new(factor));
             assert!(u.is_processing(), "factor {factor} should not bypass");
@@ -1910,6 +1946,182 @@ mod tests {
             heard_signal,
             "both rendered silence — the comparison proved nothing"
         );
+    }
+
+    /// At `StretchFactor::MIN` the frames stop overlapping, and the level ripples.
+    ///
+    /// `hops` pins the synthesis hop at `size / 4` and scales the analysis hop,
+    /// so at 0.25x the analysis hop reaches the full window: consecutive frames
+    /// share no samples at all. A phase vocoder reconstructs from the phase
+    /// *relationship* between overlapping frames, so with zero overlap there is
+    /// nothing to reconstruct and overlap-add sums frames whose phases are
+    /// unrelated — constructive in places, cancelling in others.
+    ///
+    /// Measured: 16 of 256 blocks below 0.01, peaks spanning 0.003 to 0.60. The
+    /// boundary is sharp — 0.4x and above hold a steady level.
+    ///
+    /// This is pinned rather than fixed because fixing it means changing the hop
+    /// geometry (a smaller synthesis hop at slow factors, costing CPU), which is
+    /// a design decision and not a bug fix. Pinned so it stays a known,
+    /// bounded property that a later change cannot silently deepen.
+    #[test]
+    fn the_slowest_factor_ripples_because_its_frames_do_not_overlap() {
+        let mut u = Unit::with_fft_size_and_channels(44_100.0, FftSize::N1024, 1);
+        u.set_stretch_factor(StretchFactor::MIN);
+        let window = u.channels.channels.borrow()[0].geometry.window().get();
+        let (analysis, _) = u.hops();
+        assert_eq!(
+            analysis, window,
+            "the premise: at MIN the analysis hop must reach the whole window"
+        );
+
+        let mut out = [0.0f32; 1];
+        let mut n = 0usize;
+        let mut feed = |u: &mut Unit, count: usize, n: &mut usize| {
+            let mut peak = 0.0f32;
+            for _ in 0..count {
+                let t = *n as f32 / 44_100.0;
+                let sample = 0.5 * (Radians::TAU.get() * 3000.0 * t).sin();
+                *n += 1;
+                u.tick(&[sample], &mut out);
+                peak = peak.max(out[0].abs());
+            }
+            peak
+        };
+        feed(&mut u, 60_000, &mut n);
+
+        let mut peaks = Vec::with_capacity(256);
+        for _ in 0..256 {
+            peaks.push(feed(&mut u, 64, &mut n));
+        }
+        let loudest = peaks.iter().copied().fold(0.0f32, f32::max);
+
+        // Still bounded and still producing audio — this is ripple, not a dead
+        // filter, and not a runaway.
+        assert!(
+            loudest > 0.4 && loudest < 1.0,
+            "MIN should still reach full level somewhere, bounded: peak {loudest:.4}"
+        );
+        // And the ripple is real, which is what the sibling test excludes 0.25x
+        // for. If this ever stops being true the exclusion should go too.
+        assert!(
+            peaks.iter().any(|p| *p < 0.01),
+            "expected ripple at MIN; if this now holds level, re-include 0.25x \
+             in `a_one_to_one_feed_stays_bounded_and_audible_at_every_stretch`"
+        );
+    }
+
+    /// Stretching must not change the signal's level.
+    ///
+    /// The bug this pins cost up to 17.5 dB: `phase_accumulator` started at zero
+    /// instead of being seeded from the first analysed frame, leaving every bin
+    /// a permanent per-bin offset so overlap-added frames cancelled instead of
+    /// summing. Unity was clean (the offset is identically zero there), which is
+    /// why `vocoder_reconstructs_its_input_at_unity` never caught it.
+    ///
+    /// **Asserted as an RMS ratio, not liveness.** Every other stretch test in
+    /// this file checks `> 0.01` or `!= 0.0`, and the broken output was 0.0895 —
+    /// audible, non-zero, and 12 dB wrong. This is the same blind spot that hid
+    /// the 60 dB bug documented above.
+    #[test]
+    fn stretching_preserves_the_signals_level() {
+        // Faster-than-unity factors keep >=75% analysis overlap, so the phase
+        // vocoder has the continuity it needs to reconstruct exactly.
+        for factor in [1.0f32, 1.5, 2.0, 4.0] {
+            let mut u = Unit::with_channels(44_100.0, 1);
+            u.set_stretch_factor(StretchFactor::new(factor));
+            u.allocate();
+
+            let size = 64;
+            let mut input = BufferVec::new(1);
+            let mut out = BufferVec::new(1);
+            let mut phase = 0.0f32;
+            let inc = 2.0 * PI * 440.0 / 44_100.0;
+            let (mut in_sq, mut in_n) = (0.0f64, 0usize);
+            let (mut out_sq, mut out_n) = (0.0f64, 0usize);
+
+            // Skip the fill-up: the first frames are legitimately silent while
+            // the FIFO reaches a whole window.
+            const WARM: usize = 500;
+            for blk in 0..2000 {
+                for i in 0..size {
+                    let s = phase.sin() * 0.5;
+                    phase += inc;
+                    input.buffer_mut().set_f32(0, i, s);
+                    if blk >= WARM {
+                        in_sq += (s as f64).powi(2);
+                        in_n += 1;
+                    }
+                }
+                u.process(size, &input.buffer_ref(), &mut out.buffer_mut());
+                if blk >= WARM {
+                    for i in 0..size {
+                        let v = out.buffer_ref().at_f32(0, i) as f64;
+                        out_sq += v * v;
+                        out_n += 1;
+                    }
+                }
+            }
+
+            let gain = ((out_sq / out_n as f64).sqrt() / (in_sq / in_n as f64).sqrt()) as f32;
+            assert!(
+                (gain - 1.0).abs() < 0.05,
+                "stretch {factor}: gain {gain:.4} ({:+.1} dB) — a phase-vocoder \
+                 reconstruction must preserve level within a few percent",
+                20.0 * gain.max(1e-9).log10()
+            );
+        }
+    }
+
+    /// Below unity the analysis hop grows, and the level drop that follows is
+    /// geometry, not a bug.
+    ///
+    /// `hops` pins the synthesis hop and scales the analysis hop, so at 0.5x the
+    /// analysis overlap falls to 50% and at 0.25x (`StretchFactor::MIN`) to 0% —
+    /// consecutive frames stop overlapping at all, so there is no phase
+    /// continuity left to reconstruct from. Pinned so the loss is a known,
+    /// bounded property rather than something a later change silently deepens.
+    #[test]
+    fn slowing_down_loses_level_only_as_far_as_the_overlap_allows() {
+        for (factor, floor) in [(0.5f32, 0.85f32), (0.25, 0.75)] {
+            let mut u = Unit::with_channels(44_100.0, 1);
+            u.set_stretch_factor(StretchFactor::new(factor));
+            u.allocate();
+
+            let size = 64;
+            let mut input = BufferVec::new(1);
+            let mut out = BufferVec::new(1);
+            let mut phase = 0.0f32;
+            let inc = 2.0 * PI * 440.0 / 44_100.0;
+            let (mut in_sq, mut in_n) = (0.0f64, 0usize);
+            let (mut out_sq, mut out_n) = (0.0f64, 0usize);
+
+            for blk in 0..2000 {
+                for i in 0..size {
+                    let s = phase.sin() * 0.5;
+                    phase += inc;
+                    input.buffer_mut().set_f32(0, i, s);
+                    if blk >= 500 {
+                        in_sq += (s as f64).powi(2);
+                        in_n += 1;
+                    }
+                }
+                u.process(size, &input.buffer_ref(), &mut out.buffer_mut());
+                if blk >= 500 {
+                    for i in 0..size {
+                        let v = out.buffer_ref().at_f32(0, i) as f64;
+                        out_sq += v * v;
+                        out_n += 1;
+                    }
+                }
+            }
+
+            let gain = ((out_sq / out_n as f64).sqrt() / (in_sq / in_n as f64).sqrt()) as f32;
+            assert!(
+                gain > floor && gain <= 1.05,
+                "stretch {factor}: gain {gain:.4}, expected within ({floor}, 1.05]"
+            );
+        }
     }
 
     /// PDC must not compensate for a delay that is not happening.

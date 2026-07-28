@@ -162,6 +162,11 @@ assert_no_alloc = { version = "1", default-features = false }
 # it back with `hound` — same crates the sampler's own capture tests use.
 hound = "3.5"
 tempfile = "3.8"
+# `AudioTap::open` hands back a `ringbuf` consumer. Naming its `Consumer` trait
+# is what lets the tap test pop the frames a simulated callback pushed, rather
+# than asserting only that an `is_open` flag flipped. Same version tutti-core
+# builds the ring with.
+ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 
 # NOTE: examples 29_node_entities / 30_full_pipeline were removed — they
 # demonstrated engine-side ECS param reconcile (Volume/SamplerSpeed/…), which

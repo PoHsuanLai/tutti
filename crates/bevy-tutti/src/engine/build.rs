@@ -23,7 +23,9 @@ use tutti_core::{
 };
 use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 
-use crate::graph::{AudioConfig, AudioGraphRes, MeteringRes, MetronomeRes, TransportRes};
+use crate::graph::{
+    AudioConfig, AudioGraphRes, AudioTapRes, MeteringRes, MetronomeRes, TransportRes,
+};
 
 #[cfg(feature = "midi-hardware")]
 use crate::midi::MidiIoRes;
@@ -214,9 +216,15 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     app.world_mut().spawn(tutti_core::AudioNode(clock_id));
     app.world_mut().spawn(tutti_core::AudioNode(click_id));
     // Consumers read `MeteringRes::get()` directly, so the meter has to be
-    // measuring from the start.
+    // measuring from the start. `disable()` through the `Deref` turns it back
+    // off; see `graph::metering` for what that does and does not save.
     meter.enable();
     app.insert_resource(MeteringRes(meter));
+    // Deliberately NOT opened: while closed, `AudioTap::push` on the audio
+    // thread is one atomic load and a return, so a host that never analyses
+    // pays nothing. `AudioTapRes::open()` is the switch, and it hands back a
+    // consumer the caller owns.
+    app.insert_resource(AudioTapRes(tap));
 
     #[cfg(feature = "midi")]
     {

@@ -25,6 +25,7 @@ pub mod plugin;
 pub mod resources;
 pub mod schedule;
 pub mod spawn;
+pub mod tap;
 pub mod transport;
 
 pub use commit::commit_graph;
@@ -35,4 +36,5 @@ pub use plugin::GraphReconcilePlugin;
 pub use resources::{AudioConfig, AudioGraphRes};
 pub use schedule::{engine_ready, GraphDirty, GraphReconcileSystems};
 pub use spawn::{crossfade_audio_node, SpawnAudioNode};
+pub use tap::AudioTapRes;
 pub use transport::{MetronomeRes, TransportRes};

@@ -3,7 +3,8 @@
 //! - [`transport`] — the IPC substrate: shared-memory audio slab + the
 //!   control socket. Pure transport; knows nothing about plugins.
 //! - [`config`] — host configuration ([`BridgeConfig`](config::BridgeConfig)
-//!   per-subprocess, [`PluginsConfig`](config::PluginsConfig) app-facing).
+//!   per-subprocess; [`CatalogConfig`](config::CatalogConfig) +
+//!   [`AudioConfig`](config::AudioConfig) app-facing).
 //! - [`node`] — fundsp audio-node primitives shared by every host path
 //!   (in-process and out-of-process): the MIDI inbox, the parameter/latency
 //!   change sinks, the signal-routing helper, and the node-id fingerprint.

@@ -61,7 +61,7 @@ impl Pedal {
 
 #[cfg(test)]
 mod tests {
-    use super::super::database::JsonCatalog;
+    use super::super::catalog::MemoryCatalog;
     use super::*;
     use tempfile::TempDir;
 
@@ -83,14 +83,12 @@ mod tests {
     #[test]
     fn recover_blacklists_crashed_plugin() {
         let dir = TempDir::new().unwrap();
-        let db_path = dir.path().join("db.json");
-        let pedal_path = dir.path().join(".scanning");
-        let pedal = Pedal::new(&pedal_path);
+        let pedal = Pedal::new(dir.path().join(".scanning"));
 
         // Simulate a previous crash.
         std::fs::write(&pedal.path, "/plugins/crashy.vst3").unwrap();
 
-        let mut db = JsonCatalog::empty(&db_path);
+        let mut db = MemoryCatalog::default();
         assert!(pedal.recover(&mut db));
         assert!(db.is_blacklisted(Path::new("/plugins/crashy.vst3")));
         assert!(!pedal.path.exists());
@@ -99,9 +97,8 @@ mod tests {
     #[test]
     fn recover_returns_false_when_no_pedal() {
         let dir = TempDir::new().unwrap();
-        let db_path = dir.path().join("db.json");
         let pedal = Pedal::new(dir.path().join(".scanning"));
-        let mut db = JsonCatalog::empty(&db_path);
+        let mut db = MemoryCatalog::default();
 
         assert!(!pedal.recover(&mut db));
     }

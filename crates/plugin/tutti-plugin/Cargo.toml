@@ -7,11 +7,14 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
-default = ["json"]
+# Nothing on by default. This is a library: persistence and format support are
+# the embedding app's choices, so every one of them is opt-in and the default
+# build pulls no `serde_json` and no format FFI.
+default = []
 
-# Default JSON-file-backed `JsonCatalog`. Disable with `default-features = false`
-# if you're bringing your own `PluginCatalog` impl and don't want the
-# serde_json dep.
+# Opt-in JSON-file-backed `JsonCatalog` — one ready-made `PluginCatalog` impl,
+# not the shape of the API. Leave it off and bring your own impl, or skip the
+# trait entirely and use the pure `discover` / `PluginRecord::probe` pair.
 json = ["dep:serde_json"]
 
 # In-process GUI support (loads plugin library in host for editor only)

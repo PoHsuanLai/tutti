@@ -157,3 +157,32 @@ pub trait CatalogExt: PluginCatalog {
 }
 
 impl<T: PluginCatalog + ?Sized> CatalogExt for T {}
+
+/// In-memory [`PluginCatalog`] for tests. Deliberately feature-independent:
+/// the scanner and pedal tests exercise scanning and crash recovery, neither
+/// of which is about JSON, so they must not require the `json` feature to
+/// compile. Doubles as a worked example that the trait is genuinely pluggable.
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct MemoryCatalog {
+    records: std::collections::HashMap<PathBuf, PluginRecord>,
+}
+
+#[cfg(test)]
+impl PluginCatalog for MemoryCatalog {
+    fn get(&self, path: &Path) -> Option<&PluginRecord> {
+        self.records.get(path)
+    }
+
+    fn upsert(&mut self, record: PluginRecord) {
+        self.records.insert(record.path.clone(), record);
+    }
+
+    fn remove(&mut self, path: &Path) {
+        self.records.remove(path);
+    }
+
+    fn iter(&self) -> Box<dyn Iterator<Item = &PluginRecord> + '_> {
+        Box::new(self.records.values())
+    }
+}

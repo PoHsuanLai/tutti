@@ -34,13 +34,130 @@
 //! Every buffer is allocated in [`Unit::with_fft_size_and_channels`]. Neither
 //! `tick` nor `process` allocates, and neither does the vocoder beneath them.
 
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 
 use tutti_analysis::{window::hann, StftGeometry};
 use tutti_core::{
-    inverse_fft, real_fft, AtomicF32, AudioUnit, BufferMut, BufferRef, Cents, Complex32, Ordering,
-    Radians, RtScratch, SampleRate, Samples, Seconds, SignalFrame, StretchFactor,
+    inverse_fft, real_fft, AtomicF32, AudioThreadCell, AudioUnit, BufferMut, BufferRef, Cents,
+    Complex32, Ordering, Radians, RtScratch, SampleRate, Samples, Seconds, SignalFrame,
+    StretchFactor,
 };
+
+/// The vocoder bank, shared by refcount across graph generations.
+///
+/// `Net::commit` clones every node per graph edit, and a deep copy of this is
+/// ~96 KB per channel allocated and the previous generation's freed — measured
+/// at 201.8 MB per commit over 640 stereo nodes, with allocation and free
+/// exactly balanced. Sharing makes the commit clone a refcount bump and removes
+/// both halves: 81.5 MB at stereo, 243.8 MB at six channels.
+///
+/// # The invariant, and why it is enforced rather than documented
+///
+/// **At most one live handle may tick a given bank.** Sharing is sound only
+/// because generations are ticked one at a time: `commit_inner` hands the
+/// backend a new net and takes the old one back for deallocation, so the two
+/// never run together.
+///
+/// Break that and the failure is quiet. Two handles ticking one bank do not
+/// race or panic — they *interleave*, each consuming samples the other expected,
+/// producing audio that is plausible and wrong. That is the same failure shape
+/// as the 60 dB gain bug this module already carries a warning about, and it is
+/// exactly what no test catches by asserting output is non-zero.
+///
+/// `AudioThreadCell` cannot catch it: its debug flag detects *concurrent*
+/// borrows, and interleaved ticking is sequential. So the bank carries its own
+/// [`Bank::ticker`] token — the id of the handle allowed to tick it. A handle
+/// claims the bank on its first tick, and a second handle claiming an
+/// already-claimed bank trips a `debug_assert` naming both.
+///
+/// The one genuinely concurrent case is the offline region render, which
+/// `clone_isolated`s the live net and ticks it on a worker pool **while the
+/// audio thread plays the original**. That is severed in
+/// [`AudioUnit::isolate`], which the render's isolation pass already calls on
+/// every node of the clone before it reaches the worker. Share on the hot path,
+/// deep-copy on the rare one.
+struct Bank {
+    channels: AudioThreadCell<Vec<Vocoder>>,
+    /// Which [`Unit`] may tick this bank; `UNCLAIMED` until the first tick.
+    ///
+    /// Not a borrow flag — a claim. It outlives any single call, which is what
+    /// makes it able to see the interleaving a per-call guard cannot.
+    ticker: AtomicUsize,
+}
+
+/// No handle has ticked this bank yet.
+const UNCLAIMED: usize = 0;
+
+/// Source of [`Unit::id`]. Starts at 1 so no handle can collide with
+/// [`UNCLAIMED`].
+static NEXT_HANDLE_ID: AtomicUsize = AtomicUsize::new(1);
+
+/// A fresh handle identity.
+fn next_handle_id() -> usize {
+    NEXT_HANDLE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+impl Bank {
+    fn new(channels: Vec<Vocoder>) -> Arc<Self> {
+        Arc::new(Self {
+            channels: AudioThreadCell::new(channels),
+            ticker: AtomicUsize::new(UNCLAIMED),
+        })
+    }
+
+    /// Assert `who` is allowed to tick, claiming the bank if it is unclaimed.
+    ///
+    /// Debug-only, and deliberately so: in release this compiles away, leaving
+    /// the sharing at full speed. The claim is what a test can assert against —
+    /// see `two_live_handles_ticking_one_bank_is_caught`.
+    #[inline]
+    fn claim(&self, who: usize) {
+        #[cfg(debug_assertions)]
+        {
+            let prev = self
+                .ticker
+                .compare_exchange(UNCLAIMED, who, Ordering::AcqRel, Ordering::Acquire)
+                .unwrap_or_else(|actual| actual);
+            debug_assert!(
+                prev == UNCLAIMED || prev == who,
+                "BUG: two live stretch::Unit handles are ticking one shared vocoder \
+                 bank (owner {prev:#x}, caller {who:#x}). They will interleave and \
+                 render plausible-but-wrong audio. A clone that is ticked \
+                 independently must call `AudioUnit::isolate` first."
+            );
+        }
+        #[cfg(not(debug_assertions))]
+        let _ = who;
+    }
+
+    /// Give up `who`'s claim, if it holds one.
+    ///
+    /// Called when a handle is dropped. Without this a retired generation keeps
+    /// its claim forever and its legitimate successor looks like an interleave —
+    /// which is exactly what the first version of
+    /// `a_successor_generation_continues_the_stream` hit.
+    ///
+    /// Conditional, not an unconditional store: a handle that never ticked, or
+    /// one whose bank has already been taken over, must not clear someone else's
+    /// claim.
+    #[inline]
+    fn release(&self, who: usize) {
+        let _ = self
+            .ticker
+            .compare_exchange(who, UNCLAIMED, Ordering::AcqRel, Ordering::Acquire);
+    }
+
+    /// Hand ticking rights to `who`, forgetting any previous claim.
+    ///
+    /// Used where a handle legitimately succeeds another on the same bank: a
+    /// committed generation replaces the one it was cloned from, and `reset`
+    /// starts the stream over.
+    #[inline]
+    fn reclaim(&self, who: usize) {
+        self.ticker.store(who, Ordering::Release);
+    }
+}
 
 /// An analysis window length, in samples.
 ///
@@ -419,20 +536,19 @@ impl Vocoder {
     /// `fresh_construction`, which still allocates eagerly, held at 180 → 179 —
     /// the control that says the drop is this change and not the machine.
     ///
-    /// The vocoder rings are the remaining term and cannot get the same
-    /// treatment: they *are* the filter's memory.
+    /// # This is no longer on the commit path
     ///
-    /// **That leaves the Stage 6-7 budget far out of reach, and the gap is not
-    /// tunable.** Measured on a real `Net::commit` over 640 stretch nodes (not
-    /// extrapolated from a clone loop): median 70-135 ms at stereo, 393-488 ms
-    /// at six channels, against 2 ms — and the best commit ever observed, 11 ms,
-    /// is still 5x over. 96 KB of vocoder state per channel times 640 nodes is
-    /// 120 MB per commit at stereo and 360 MB at six, up to 720 MB with two
-    /// generations live. No allocator moves that in 2 ms.
+    /// `Unit::clone` shares the vocoder bank by refcount (see [`Bank`]), so a
+    /// graph commit does not reach this function at all. It runs only from
+    /// [`AudioUnit::isolate`], where an offline render needs private state.
     ///
-    /// So per-voice graph nodes need the filter to stop being deep-cloned at all
-    /// — shared behind a handle the graph copies cheaply — which is a change to
-    /// the node's design, not to this function.
+    /// The history is worth keeping, because it is what the design was measured
+    /// against. When a commit *did* deep-clone: 201.8 MB per commit at stereo and
+    /// 604.6 MB at six channels, median 70-135 ms and 393-488 ms against a 2 ms
+    /// budget. Sharing took that to 81.5 / 243.8 MB and put stereo inside the
+    /// budget at ~0.95 ms. Six channels is still over, but its floor moved from
+    /// 11 ms to ~2.5 ms, and what remains is mostly fundsp's own per-`Vertex`
+    /// bookkeeping rather than this state.
     fn clone_fresh(&self) -> Self {
         let size = self.geometry.window().get();
         let bins = self.geometry.bins_per_frame().get();
@@ -581,9 +697,23 @@ const MAX_BUFFER_SIZE: usize = 8192;
 /// original stereo pair; widening does not make it worse, and fixing it is a
 /// separate question from width.
 pub struct Unit {
-    /// One per channel; `channels.len()` **is** the unit's width, so the
+    /// One per channel; the bank's length **is** the unit's width, so the
     /// scratch vectors are always the same length.
-    channels: Vec<Vocoder>,
+    ///
+    /// Shared across graph generations — see [`Bank`]. `width` mirrors the
+    /// length so `inputs()`/`outputs()` need no borrow: fundsp calls them during
+    /// graph planning, where taking a borrow would collide with a live one.
+    channels: Arc<Bank>,
+    width: usize,
+
+    /// This handle's identity for [`Bank::claim`], unique among live handles.
+    ///
+    /// A counter, **not** `self as *const Self`. The address is not an identity:
+    /// `Net::push(Box::new(unit))` moves the value, so a handle that claimed the
+    /// bank before the move could never release its own claim afterwards — the
+    /// guard would then fire on the legitimate successor. Found the hard way, by
+    /// this exact bug in `a_successor_generation_continues_the_stream`.
+    id: usize,
     stretch_factor: Arc<AtomicF32>,
     pitch_cents: Arc<AtomicF32>,
     enabled: bool,
@@ -610,7 +740,7 @@ pub struct Unit {
 impl std::fmt::Debug for Unit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Unit")
-            .field("channels", &self.channels.len())
+            .field("channels", &self.width)
             .field("enabled", &self.enabled)
             .field("stretch_factor", &self.stretch_factor())
             .field("pitch_cents", &self.pitch_cents())
@@ -650,7 +780,9 @@ impl Unit {
         // `outputs()` lie to the graph.
         let channels = channels.max(1);
         Self {
-            channels: (0..channels).map(|_| Vocoder::new(geometry)).collect(),
+            channels: Bank::new((0..channels).map(|_| Vocoder::new(geometry)).collect()),
+            width: channels,
+            id: next_handle_id(),
             stretch_factor: Arc::new(AtomicF32::new(StretchFactor::UNITY.get())),
             pitch_cents: Arc::new(AtomicF32::new(0.0)),
             enabled: true,
@@ -680,7 +812,7 @@ impl Unit {
 
     /// Channel width — the number of vocoders, and this unit's in/out arity.
     pub fn channels(&self) -> usize {
-        self.channels.len()
+        self.width
     }
 
     /// Clamped into [`StretchFactor::MIN`]..=[`StretchFactor::MAX`].
@@ -754,6 +886,8 @@ impl Unit {
             return 0;
         }
         self.channels
+            .channels
+            .borrow()
             .first()
             .map_or(0, |v| v.geometry.window().get())
     }
@@ -784,7 +918,12 @@ impl Unit {
     /// nowhere and spin `process` in an infinite loop.
     #[inline]
     fn hops(&self) -> (usize, usize) {
-        let synthesis = self.channels.first().map_or(1, |v| v.geometry.hop().get());
+        let synthesis = self
+            .channels
+            .channels
+            .borrow()
+            .first()
+            .map_or(1, |v| v.geometry.hop().get());
         let analysis = ((synthesis as f32 / self.stretch_factor().get()).round() as usize).max(1);
         (analysis, synthesis.max(1))
     }
@@ -837,9 +976,14 @@ impl Clone for Unit {
         // nothing. `allocate` sizes it, which is exactly the hook fundsp
         // documents for "buffers for block processing" and which `Net::commit`
         // calls on the graph it is about to run.
-        let (scratch_in, scratch_out) = Self::scratch_pair(self.channels.len(), 0);
+        let (scratch_in, scratch_out) = Self::scratch_pair(self.width, 0);
         let mut cloned = Self {
-            channels: self.channels.iter().map(Vocoder::clone_fresh).collect(),
+            // The whole point: a refcount bump, not ~96 KB per channel.
+            channels: Arc::clone(&self.channels),
+            width: self.width,
+            // A distinct identity: the clone is a different live handle, and the
+            // guard exists precisely to tell it apart from its predecessor.
+            id: next_handle_id(),
             stretch_factor: Arc::new(AtomicF32::new(self.stretch_factor.load(Ordering::Acquire))),
             pitch_cents: Arc::new(AtomicF32::new(self.pitch_cents.load(Ordering::Acquire))),
             enabled: self.enabled,
@@ -879,6 +1023,20 @@ impl Unit {
     }
 }
 
+impl Drop for Unit {
+    /// Release this handle's claim on the shared bank.
+    ///
+    /// A commit retires the previous generation, and its successor must be able
+    /// to tick the bank it inherited. Without this the claim outlives the handle
+    /// and every post-commit tick trips the guard.
+    ///
+    /// Cheap and release-only — no deallocation, so this is safe on the audio
+    /// thread, where `VoiceCommand::Remove` can drop a slot mid-callback.
+    fn drop(&mut self) {
+        self.channels.release(self.id);
+    }
+}
+
 impl AudioUnit for Unit {
     fn inputs(&self) -> usize {
         // A filter: it consumes the frame the caller feeds in (already tick'd
@@ -891,7 +1049,11 @@ impl AudioUnit for Unit {
     }
 
     fn reset(&mut self) {
-        for v in &mut self.channels {
+        // A reset restarts the stream, so it also transfers ticking rights: this
+        // is the legitimate way a successor generation takes over a bank without
+        // tripping the claim.
+        self.channels.reclaim(self.id);
+        for v in self.channels.channels.borrow_mut().iter_mut() {
             v.reset();
         }
         self.intake_debt = 0.0;
@@ -902,7 +1064,7 @@ impl AudioUnit for Unit {
         // their ratio, so none of the vocoder state depends on the rate. Only
         // the rate the geometry reports back does — rebuild it, and leave the
         // running phase history alone.
-        for v in &mut self.channels {
+        for v in self.channels.channels.borrow_mut().iter_mut() {
             v.geometry = Self::geometry(sample_rate, FftSize::default());
         }
     }
@@ -931,9 +1093,13 @@ impl AudioUnit for Unit {
         // Pace the source intake at `1 / stretch` — see `intake_debt`. Above
         // unity this drops input samples; below it, feeds the same one twice.
         self.intake_debt += self.input_rate();
+        // One borrow for the whole call: the cell's contract is one borrow at a
+        // time, and re-borrowing per sample would also cost a debug atomic each.
+        self.channels.claim(self.id);
+        let mut bank = self.channels.channels.borrow_mut();
         while self.intake_debt >= 1.0 {
             self.intake_debt -= 1.0;
-            for (c, v) in self.channels.iter_mut().enumerate() {
+            for (c, v) in bank.iter_mut().enumerate() {
                 v.input.push(&[src(c)]);
                 v.process(analysis_hop, synthesis_hop, pitch_ratio);
             }
@@ -942,7 +1108,7 @@ impl AudioUnit for Unit {
         let mut one = [0.0f32];
         for (c, o) in output.iter_mut().enumerate().take(n) {
             one[0] = 0.0;
-            self.channels[c].output.drain(&mut one);
+            bank[c].output.drain(&mut one);
             *o = one[0];
         }
     }
@@ -1006,11 +1172,13 @@ impl AudioUnit for Unit {
         // rather than pushing it whole is what keeps `process` and `tick`
         // producing the same audio — they drifted apart once before by writing
         // the two paths separately.
+        self.channels.claim(self.id);
+        let mut bank = self.channels.channels.borrow_mut();
         for i in 0..size {
             self.intake_debt += rate;
             while self.intake_debt >= 1.0 {
                 self.intake_debt -= 1.0;
-                for (c, v) in self.channels.iter_mut().enumerate() {
+                for (c, v) in bank.iter_mut().enumerate() {
                     let sample = self.scratch_in[c].active_ref(size)[i];
                     v.input.push(&[sample]);
                     v.process(analysis_hop, synthesis_hop, pitch_ratio);
@@ -1021,7 +1189,7 @@ impl AudioUnit for Unit {
         for c in 0..channels {
             let out = self.scratch_out[c].active(size);
             out.fill(0.0);
-            let count = self.channels[c].output.drain(out);
+            let count = bank[c].output.drain(out);
             if c >= out_ch {
                 continue;
             }
@@ -1055,6 +1223,45 @@ impl AudioUnit for Unit {
         std::mem::size_of::<Self>()
     }
 
+    /// Sever the shared vocoder bank, giving this unit private state.
+    ///
+    /// **This is what makes sharing sound.** `Unit::clone` hands out a refcount
+    /// bump, which is safe only while generations are ticked one at a time. The
+    /// offline region render breaks that: it `clone_isolated`s the live net and
+    /// ticks it on a worker pool while the audio thread plays the original — two
+    /// generations, two threads, concurrently. Sharing the FIFOs and phase
+    /// accumulators there would corrupt both the render and playback.
+    ///
+    /// The render's isolation pass already calls this on every node of the clone
+    /// before it reaches the worker, so the deep copy lands exactly where
+    /// concurrency begins and nowhere else. Cost is the ~96 KB per channel that
+    /// the commit path no longer pays, on a path that is already
+    /// admission-capped for being expensive.
+    ///
+    /// Fresh state rather than a copy of the running one, matching what
+    /// `Unit::clone` used to produce: an isolated render starts its filter clean
+    /// rather than mid-frame on audio it will not emit.
+    fn isolate(&mut self) {
+        let geometry = self
+            .channels
+            .channels
+            .borrow()
+            .first()
+            .map(|v| v.geometry)
+            .unwrap_or_else(|| Self::geometry(SampleRate(44_100.0), FftSize::default()));
+        let fresh: Vec<Vocoder> = self
+            .channels
+            .channels
+            .borrow()
+            .iter()
+            .map(Vocoder::clone_fresh)
+            .collect();
+        let _ = geometry;
+        self.channels = Bank::new(fresh);
+        self.channels.reclaim(self.id);
+        self.intake_debt = 0.0;
+    }
+
     /// Size the per-block scratch. Idempotent, and never called from the audio
     /// thread.
     ///
@@ -1067,7 +1274,7 @@ impl AudioUnit for Unit {
         if self.scratch_is_ready() {
             return;
         }
-        let (scratch_in, scratch_out) = Self::scratch_pair(self.channels.len(), MAX_BUFFER_SIZE);
+        let (scratch_in, scratch_out) = Self::scratch_pair(self.width, MAX_BUFFER_SIZE);
         self.scratch_in = scratch_in;
         self.scratch_out = scratch_out;
     }
@@ -1321,12 +1528,12 @@ mod tests {
                     quiet += 1;
                 }
                 assert!(
-                    !u.channels[0].output.overrun(),
+                    !u.channels.channels.borrow()[0].output.overrun(),
                     "stretch {factor}: output ring overran ({} pending)",
-                    u.channels[0].output.available()
+                    u.channels.channels.borrow()[0].output.available()
                 );
                 assert!(
-                    !u.channels[0].input.0.overrun(),
+                    !u.channels.channels.borrow()[0].input.0.overrun(),
                     "stretch {factor}: input ring overran"
                 );
             }
@@ -1398,35 +1605,163 @@ mod tests {
     /// project, and a commit at that scale would stall the main thread long enough
     /// to underrun the callback.
     #[test]
-    fn cloning_shares_the_window_rather_than_rebuilding_it() {
+    fn cloning_shares_the_bank_and_isolate_severs_it() {
         let u = Unit::with_channels(44_100.0, 6);
         let c = u.clone();
 
-        for (i, (a, b)) in u.channels.iter().zip(c.channels.iter()).enumerate() {
-            assert!(
-                Arc::ptr_eq(&a.window, &b.window),
-                "channel {i}: the clone rebuilt the window instead of sharing it"
-            );
-            assert!(
-                Arc::ptr_eq(&a.phase_per_sample, &b.phase_per_sample),
-                "channel {i}: the clone rebuilt the phase table instead of sharing it"
-            );
+        // The commit path: a refcount bump, not ~96 KB per channel.
+        assert!(
+            Arc::ptr_eq(&u.channels, &c.channels),
+            "the clone deep-copied the vocoder bank instead of sharing it"
+        );
+        assert_eq!(
+            c.width, 6,
+            "width must mirror the bank without borrowing it"
+        );
+
+        // The safety boundary. An offline render clones the live net and ticks
+        // it on a worker pool WHILE the audio thread plays the original, so a
+        // shared bank there would have two threads writing one set of FIFOs.
+        // `isolate` is called on every node of that clone before it reaches the
+        // worker, and it must hand back private state.
+        let mut isolated = u.clone();
+        assert!(Arc::ptr_eq(&u.channels, &isolated.channels));
+        isolated.isolate();
+        assert!(
+            !Arc::ptr_eq(&u.channels, &isolated.channels),
+            "isolate() left the render sharing the live graph's vocoder state"
+        );
+        assert_eq!(isolated.width, 6, "isolate must preserve the unit's width");
+
+        // Isolated state is clean, matching what a clone used to produce: a
+        // render starts its filter fresh rather than mid-frame on audio it will
+        // never emit.
+        assert_eq!(isolated.channels.channels.borrow()[0].input.available(), 0);
+        assert_eq!(isolated.channels.channels.borrow()[0].output.available(), 0);
+
+        // The immutable tables still ride by `Arc` through an isolate, so
+        // severing does not pay to rebuild the window or the phase table.
+        assert!(Arc::ptr_eq(
+            &u.channels.channels.borrow()[0].window,
+            &isolated.channels.channels.borrow()[0].window
+        ));
+        assert!(Arc::ptr_eq(
+            &u.channels.channels.borrow()[0].phase_per_sample,
+            &isolated.channels.channels.borrow()[0].phase_per_sample
+        ));
+    }
+
+    /// The invariant has teeth: two live handles ticking one bank is caught.
+    ///
+    /// This is the test the whole hardening exists for. Interleaving is silent —
+    /// no race, no panic, just plausible-and-wrong audio — so without a guard
+    /// the only symptom is a subtly damaged render that every `!= 0.0` assertion
+    /// in this file would pass.
+    ///
+    /// `AudioThreadCell`'s debug flag cannot catch this: it detects *concurrent*
+    /// borrows, and interleaved ticking is sequential. Hence [`Bank::claim`].
+    #[test]
+    #[should_panic(expected = "two live stretch::Unit handles")]
+    #[cfg(debug_assertions)]
+    fn two_live_handles_ticking_one_bank_is_caught() {
+        let mut a = Unit::with_channels(44_100.0, 2);
+        a.set_stretch_factor(StretchFactor::new(2.0));
+        a.allocate();
+
+        // A committed generation, sharing `a`'s bank.
+        let mut b = a.clone();
+        b.allocate();
+
+        let mut frame = [0.0f32; 2];
+        // `a` claims the bank...
+        a.tick(&[0.25, 0.25], &mut frame);
+        // ...and `b` ticking it too is the bug. Both handles are still alive, so
+        // this is the interleave case and not a legitimate succession.
+        b.tick(&[0.25, 0.25], &mut frame);
+    }
+
+    /// Succession is legitimate and must NOT trip the claim.
+    ///
+    /// A committed generation replaces the one it was cloned from, and the live
+    /// path reaches that through `reset` / `isolate`. If either tripped the
+    /// guard, the guard would be unusable — so pin both directions, not just the
+    /// failing one.
+    #[test]
+    fn succession_and_isolation_do_not_trip_the_claim() {
+        let mut a = Unit::with_channels(44_100.0, 2);
+        a.set_stretch_factor(StretchFactor::new(2.0));
+        a.allocate();
+        let mut frame = [0.0f32; 2];
+        a.tick(&[0.25, 0.25], &mut frame);
+
+        // Reset transfers ticking rights to the successor.
+        let mut b = a.clone();
+        b.allocate();
+        b.reset();
+        b.tick(&[0.25, 0.25], &mut frame);
+
+        // Isolation gives a private bank, so the render path is free regardless.
+        let mut c = b.clone();
+        c.isolate();
+        c.allocate();
+        c.tick(&[0.25, 0.25], &mut frame);
+
+        // And the isolated handle owns state nobody else can reach.
+        assert!(!Arc::ptr_eq(&b.channels, &c.channels));
+    }
+
+    /// A successor generation continues the stream rather than restarting it.
+    ///
+    /// This is the payoff of sharing: a graph commit hands the next generation
+    /// the same bank, so playback continues seamlessly across a graph edit
+    /// instead of re-filling the vocoder and dropping ~46 ms of audio.
+    ///
+    /// Written second. The first attempt ticked the original and the clone while
+    /// **both were alive**, which is precisely the interleave bug — and
+    /// [`Bank::claim`] caught it, which is the guard earning its place on a test
+    /// its author got wrong. Succession means the predecessor stops.
+    #[test]
+    fn a_successor_generation_continues_the_stream() {
+        let mut original = Unit::with_channels(44_100.0, 2);
+        original.set_stretch_factor(StretchFactor::new(2.0));
+        original.allocate();
+
+        let size = 64;
+        let mut input = BufferVec::new(2);
+        for i in 0..size {
+            let s = (i as f32 * 0.05).sin() * 0.5;
+            input.buffer_mut().set_f32(0, i, s);
+            input.buffer_mut().set_f32(1, i, s);
         }
+        let mut out = BufferVec::new(2);
 
-        // Sharing must not leak state: a clone starts with clean phase history,
-        // which is what makes it a new voice rather than a continuation.
-        assert_eq!(c.channels[0].input.available(), 0);
-        assert_eq!(c.channels[0].output.available(), 0);
+        // Warm past the fill-up so the bank holds real history.
+        for _ in 0..96 {
+            original.process(size, &input.buffer_ref(), &mut out.buffer_mut());
+        }
+        let history = original.channels.channels.borrow()[0].input.available();
+        assert!(history > 0, "the bank should hold history to inherit");
 
-        // What this test does NOT establish: that cloning is fast enough for the
-        // per-voice-node design (640 nodes, one commit under 2 ms). It asserts
-        // the tables are shared, which is free and worth taking, but sharing was
-        // never the dominant term — profiling puts ~79% of a clone in allocating
-        // and zeroing the mutable buffers, of which the block scratch is handled
-        // by `cloning_leaves_the_block_scratch_for_allocate` and the vocoder
-        // rings are still copied. `examples/profile_stretch_clone.rs` carries
-        // that measurement; don't re-derive the budget from wall-clock timing
-        // here, which is what produced the numbers that had to be retracted.
+        // The commit: the successor takes the bank, the predecessor retires.
+        let mut successor = original.clone();
+        successor.allocate();
+        assert!(
+            Arc::ptr_eq(&original.channels, &successor.channels),
+            "the successor should share the bank, not copy it"
+        );
+        drop(original);
+
+        // The inherited state is the predecessor's, not a fresh filter's.
+        assert_eq!(
+            successor.channels.channels.borrow()[0].input.available(),
+            history,
+            "the successor restarted the stream instead of continuing it"
+        );
+
+        // And it emits immediately — no second fill-up latency after the edit.
+        successor.process(size, &input.buffer_ref(), &mut out.buffer_mut());
+        let heard = (0..size).any(|i| out.buffer_ref().at_f32(0, i).abs() > 1e-6);
+        assert!(heard, "the successor went silent across the commit");
     }
 
     /// The clone must not carry the block scratch — `allocate` sizes it.
@@ -1469,17 +1804,28 @@ mod tests {
         assert!(u.scratch_is_ready());
     }
 
-    /// An allocated clone must render exactly what the original renders.
+    /// An isolated clone renders exactly what the original renders.
     ///
-    /// The point of the scratch being scratch is that dropping it changes
-    /// nothing audible. Asserted on sample values rather than liveness — the
-    /// failure this guards against is a quieter or truncated block, which every
-    /// `!= 0.0` assertion in this file would pass.
+    /// Rewritten when the vocoder bank became shared. The previous version ticked
+    /// the original and a plain clone alternately and asserted they matched
+    /// sample-for-sample — which a shared bank makes meaningless, because the two
+    /// handles now feed ONE FIFO and interleave rather than run in parallel. That
+    /// is the design working, not a regression, but it means the property has to
+    /// be asserted on an `isolate`d clone, which is the only clone that genuinely
+    /// owns its state.
+    ///
+    /// Asserted on sample values rather than liveness — a quieter or truncated
+    /// block is the failure mode, and every `!= 0.0` assertion here would pass it.
     #[test]
-    fn an_allocated_clone_renders_identically() {
+    fn an_isolated_clone_renders_identically() {
         let mut original = Unit::with_channels(44_100.0, 2);
         original.set_stretch_factor(StretchFactor::new(2.0));
+        original.allocate();
+
+        // The offline-render shape: clone, isolate, allocate. Isolation gives it
+        // private state, so it must now track the original exactly.
         let mut clone = original.clone();
+        clone.isolate();
         clone.allocate();
 
         // fundsp's `Buffer` is fixed at 64 samples per channel; a larger `size`
@@ -1511,7 +1857,7 @@ mod tests {
                     );
                     assert_eq!(
                         x, y,
-                        "block {block}, channel {ch}, sample {i}: the allocated \
+                        "block {block}, channel {ch}, sample {i}: the isolated \
                          clone diverged from the original"
                     );
                     heard_signal |= x.abs() > 1e-6;
@@ -1533,7 +1879,7 @@ mod tests {
     #[test]
     fn latency_is_zero_while_bypassing_and_a_window_while_processing() {
         let mut u = Unit::with_channels(44_100.0, 2);
-        let window = u.channels[0].geometry.window().get();
+        let window = u.channels.channels.borrow()[0].geometry.window().get();
 
         assert!(!u.is_processing());
         assert_eq!(u.latency_samples(), 0, "bypassing unit claimed latency");
@@ -1699,8 +2045,8 @@ mod tests {
         }
         u.reset();
 
-        assert_eq!(u.channels[0].input.available(), 0);
-        assert_eq!(u.channels[0].output.available(), 0);
+        assert_eq!(u.channels.channels.borrow()[0].input.available(), 0);
+        assert_eq!(u.channels.channels.borrow()[0].output.available(), 0);
     }
 
     /// Stale audio survives a source discontinuity until something calls
@@ -1904,8 +2250,7 @@ mod tests {
             }
             // Everything the FIFO has seen: what it still holds plus what the
             // frames have retired.
-            let v = &u.channels[0];
-            let seen = v.input.0.write;
+            let seen = u.channels.channels.borrow()[0].input.0.write;
             (seen, emitted)
         };
 

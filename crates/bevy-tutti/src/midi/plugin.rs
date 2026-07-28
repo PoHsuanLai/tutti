@@ -9,6 +9,7 @@ use bevy_app::{App, Plugin};
 ///
 /// - [`MidiRegistrationPlugin`](super::registration::MidiRegistrationPlugin) —
 ///   keeps the bus in step with the graph
+/// - [`MidiSequencePlugin`](super::sequence::MidiSequencePlugin) — beat-scheduled playback
 /// - [`ClockOutPlugin`](super::clock_out::ClockOutPlugin) — outbound Beat Clock / MTC
 /// - [`MidiOutPlugin`](super::track_out::MidiOutPlugin) — MIDI-out to external hardware
 /// - [`MidiNegotiationPlugin`](super::negotiation::MidiNegotiationPlugin) — MIDI-CI + UMP-Stream
@@ -34,6 +35,7 @@ impl Plugin for TuttiMidiPlugin {
         app.init_resource::<super::target::MidiTargetRegistry>();
 
         app.add_plugins(super::registration::MidiRegistrationPlugin);
+        app.add_plugins(super::sequence::MidiSequencePlugin);
         app.add_plugins(super::clock_out::ClockOutPlugin);
         app.add_plugins(super::track_out::MidiOutPlugin);
         app.add_plugins(super::negotiation::MidiNegotiationPlugin);

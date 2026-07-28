@@ -43,6 +43,16 @@ fn bare_app() -> App {
     let mut net = Net::new(0, 2);
     let _backend = net.backend();
     app.insert_resource(AudioGraphRes(net));
+    // `AudioEngineState::Running` is a claim about the whole engine block, and
+    // systems gated on `engine_ready` take everything that block inserts as
+    // plain `Res` — so a test asserting readiness has to supply them all.
+    app.insert_resource(bevy_tutti::graph::TransportRes(
+        tutti_core::transport::Transport::new(48_000.0),
+    ));
+    app.insert_resource(bevy_tutti::graph::AudioConfig {
+        sample_rate: 48_000.0,
+        channels: Default::default(),
+    });
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
     app.add_plugins((GraphReconcilePlugin, TuttiMidiPlugin));

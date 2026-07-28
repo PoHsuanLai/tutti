@@ -26,6 +26,7 @@ pub mod metadata;
 pub mod negotiation;
 pub mod registration;
 pub mod routing_table;
+pub mod sequence;
 pub mod target;
 pub mod track_out;
 
@@ -72,6 +73,10 @@ pub use registration::{
     register_midi_senders, unregister_midi_sender, MidiRegistered, MidiRegistrationPlugin,
 };
 pub use routing_table::MidiRoutingRes;
+pub use sequence::{
+    rebuild as rebuild_midi_sources, InstalledMidiSources, MidiNote, MidiSequencePlugin,
+    MidiSourceInstall,
+};
 pub use target::{MidiNode, MidiTargetRegistry, MidiTargetResolver};
 pub use track_out::{
     midi_out_send_system, pump_midi_out_system, MidiOutPlugin, MidiOutRes, SendMidiOut,

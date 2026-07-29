@@ -20,12 +20,24 @@ pub const SUB_ID2_GET_PROPERTY_DATA_REPLY: u8 = 0x35;
 pub const SUB_ID2_SET_PROPERTY_DATA: u8 = 0x36;
 /// Sub-ID#2: Set Property Data Reply.
 pub const SUB_ID2_SET_PROPERTY_DATA_REPLY: u8 = 0x37;
+/// Sub-ID#2: Inquiry: Property Exchange Capabilities (M2-101 §8.4).
+pub const SUB_ID2_PE_CAPABILITIES: u8 = 0x30;
+/// Sub-ID#2: Reply to Property Exchange Capabilities (M2-101 §8.6).
+pub const SUB_ID2_PE_CAPABILITIES_REPLY: u8 = 0x31;
 /// Sub-ID#2: Subscription (M2-101 §8.11).
 pub const SUB_ID2_SUBSCRIPTION: u8 = 0x38;
 /// Sub-ID#2: Reply to Subscription (M2-101 §8.12).
 pub const SUB_ID2_SUBSCRIPTION_REPLY: u8 = 0x39;
+/// Sub-ID#2: Notify (M2-101 §8.13).
+pub const SUB_ID2_NOTIFY: u8 = 0x3F;
 
-/// `true` if `sub_id2` belongs to the Property Exchange family (this subset).
+/// `true` if `sub_id2` is a Property Exchange message carrying the chunked
+/// `PropertyData` body.
+///
+/// Deliberately excludes [`SUB_ID2_PE_CAPABILITIES`] / its reply: those are in
+/// the same 0x30-0x3F category but carry three scalars instead of the chunked
+/// header/body, so they decode to [`CiMessage::PropertyCapabilities`] rather
+/// than [`CiMessage::Property`].
 pub(super) fn is_property_sub_id2(sub_id2: u8) -> bool {
     matches!(
         sub_id2,
@@ -35,7 +47,51 @@ pub(super) fn is_property_sub_id2(sub_id2: u8) -> bool {
             | SUB_ID2_SET_PROPERTY_DATA_REPLY
             | SUB_ID2_SUBSCRIPTION
             | SUB_ID2_SUBSCRIPTION_REPLY
+            | SUB_ID2_NOTIFY
     )
+}
+
+/// The body of a Property Exchange Capabilities inquiry or reply
+/// (M2-101 §8.4 / §8.6, Table 30).
+///
+/// This is how a peer learns how many Property Exchange requests it may have in
+/// flight at once — §8.4 recommends the inquiry "might be performed only once
+/// after the Discovery Transaction and before starting any other Property
+/// Exchange inquiries", so it gates everything else in the family.
+///
+/// Kept separate from [`PropertyData`] because the body is a different shape
+/// entirely: three scalars, none of the chunked header/body machinery.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PropertyCapabilities {
+    /// Number of simultaneous Property Exchange requests supported.
+    pub simultaneous_requests: u8,
+    /// Property Exchange major version. Added in CI Message Version 2; §8.5
+    /// Table 31 pairs Common Rules 1.0/1.1 with major `0x00`, minor `0x00`.
+    pub major_version: u8,
+    /// Property Exchange minor version (Message Version 2).
+    pub minor_version: u8,
+}
+
+impl PropertyCapabilities {
+    pub(super) fn encode_body(&self, out: &mut Vec<u8>) {
+        out.push(self.simultaneous_requests & 0x7F);
+        // §8.4 Table 30 marks the two version bytes "added in MIDI-CI Message
+        // Version 2". We declare CI_VERSION 0x02, so they are always written —
+        // omitting them would contradict the version in our own header.
+        out.push(self.major_version & 0x7F);
+        out.push(self.minor_version & 0x7F);
+    }
+
+    pub(super) fn decode_body(b: &[u8]) -> Option<PropertyCapabilities> {
+        Some(PropertyCapabilities {
+            simultaneous_requests: *b.first()?,
+            // A version-1 peer sends neither byte. §5.4 requires we keep
+            // decoding it, and Table 31 makes 0x00/0x00 the correct reading of
+            // an absent version, not a guess.
+            major_version: b.get(1).copied().unwrap_or(0),
+            minor_version: b.get(2).copied().unwrap_or(0),
+        })
+    }
 }
 
 /// Which Property Exchange message this is.
@@ -53,6 +109,17 @@ pub enum PropertyKind {
     /// a device "shall reply with a Reply to Subscription message, so the
     /// original sender is aware of the success or failure of a command."
     SubscriptionReply,
+    /// Notify (§8.13) — **deprecated**, decode-oriented.
+    ///
+    /// §8.13: "MIDI-CI ACK and NAK messages … replace the Notify message which
+    /// was defined in prior revisions. Devices *should not* send a Notify
+    /// message, but should send MIDI-CI ACK and NAK messages instead. For
+    /// backward compatibility, Devices *shall* continue to honor the rules
+    /// receiving a Notify message."
+    ///
+    /// So this exists to be *received* from an older peer. Nothing in tutti
+    /// emits it, and the responder treats an inbound one as observe-only.
+    Notify,
 }
 
 /// A Property Exchange message body (M2-101 §7.1.3). The `header` and `body` are
@@ -83,6 +150,7 @@ impl PropertyData {
             PropertyKind::SetDataReply => SUB_ID2_SET_PROPERTY_DATA_REPLY,
             PropertyKind::Subscription => SUB_ID2_SUBSCRIPTION,
             PropertyKind::SubscriptionReply => SUB_ID2_SUBSCRIPTION_REPLY,
+            PropertyKind::Notify => SUB_ID2_NOTIFY,
         }
     }
 
@@ -104,6 +172,7 @@ impl PropertyData {
             SUB_ID2_SET_PROPERTY_DATA_REPLY => PropertyKind::SetDataReply,
             SUB_ID2_SUBSCRIPTION => PropertyKind::Subscription,
             SUB_ID2_SUBSCRIPTION_REPLY => PropertyKind::SubscriptionReply,
+            SUB_ID2_NOTIFY => PropertyKind::Notify,
             _ => return None,
         };
         let mut cur = b;
@@ -281,6 +350,80 @@ mod tests {
             ci_to_sysex7(0, &m, &mut events);
             assert_eq!(sysex7_to_ci(&events).expect("reassembles"), m);
         }
+    }
+
+    #[test]
+    fn pe_capabilities_round_trip_both_directions() {
+        for is_reply in [false, true] {
+            let m = CiMessage::PropertyCapabilities {
+                header: header(),
+                is_reply,
+                data: PropertyCapabilities {
+                    simultaneous_requests: 4,
+                    major_version: 0,
+                    minor_version: 0,
+                },
+            };
+            assert_eq!(CiMessage::decode(&m.encode()).unwrap(), m);
+            assert_eq!(m.encode()[3], if is_reply { 0x31 } else { 0x30 });
+        }
+    }
+
+    #[test]
+    fn a_version_1_capabilities_body_still_decodes() {
+        // §8.4 Table 30 marks the two version bytes "added in MIDI-CI Message
+        // Version 2", so a v1.1 peer sends only the request count. §5.4 says we
+        // keep decoding it; Table 31 makes 0x00/0x00 the right reading of an
+        // absent version rather than a guess.
+        let mut bytes = CiMessage::PropertyCapabilities {
+            header: header(),
+            is_reply: false,
+            data: PropertyCapabilities {
+                simultaneous_requests: 2,
+                major_version: 0,
+                minor_version: 0,
+            },
+        }
+        .encode();
+        bytes.truncate(bytes.len() - 2);
+        match CiMessage::decode(&bytes).expect("v1 body decodes") {
+            CiMessage::PropertyCapabilities { data, .. } => {
+                assert_eq!(data.simultaneous_requests, 2);
+                assert_eq!(data.major_version, 0);
+                assert_eq!(data.minor_version, 0);
+            }
+            other => panic!("expected PropertyCapabilities, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn capabilities_do_not_decode_as_chunked_property_data() {
+        // 0x30/0x31 sit inside the 0x30-0x3F Property Exchange range but carry
+        // three scalars, not the chunked header/body. If `is_property_sub_id2`
+        // claimed them, `PropertyData::decode_body` would read the request
+        // count as a request id and then run off the end.
+        assert!(!is_property_sub_id2(SUB_ID2_PE_CAPABILITIES));
+        assert!(!is_property_sub_id2(SUB_ID2_PE_CAPABILITIES_REPLY));
+        assert!(is_property_sub_id2(SUB_ID2_NOTIFY));
+    }
+
+    #[test]
+    fn notify_round_trips_with_the_chunked_body() {
+        // Deprecated (§8.13) but must still be *received*, so the decode path
+        // has to work even though nothing here emits one.
+        let m = CiMessage::Property {
+            header: header(),
+            data: PropertyData {
+                kind: PropertyKind::Notify,
+                request_id: 5,
+                header: br#"{"status":144}"#.to_vec(),
+                num_chunks: 1,
+                chunk: 1,
+                body: Vec::new(),
+            },
+        };
+        assert_eq!(CiMessage::decode(&m.encode()).unwrap(), m);
+        assert_eq!(m.encode()[3], 0x3F);
     }
 
     #[test]

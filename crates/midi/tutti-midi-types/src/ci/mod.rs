@@ -29,7 +29,7 @@ pub mod property;
 
 pub use discovery::{CiCategories, DiscoveryData, Nak};
 pub use profile::{ProfileId, ProfileState};
-pub use property::{PropertyData, PropertyKind, SubscriptionCommand};
+pub use property::{PropertyCapabilities, PropertyData, PropertyKind, SubscriptionCommand};
 
 /// Universal SysEx real-time/non-real-time id for MIDI-CI: `0x7E`
 /// (non-real-time). Every CI message begins with it.
@@ -185,6 +185,16 @@ pub enum CiMessage {
         header: CiHeader,
         data: PropertyData,
     },
+    /// Property Exchange **Capabilities** inquiry or reply (M2-101 §8.4/§8.6).
+    ///
+    /// A separate variant rather than another [`PropertyKind`]: it shares the
+    /// 0x30-0x3F category but not the chunked body, carrying three scalars
+    /// instead. `is_reply` distinguishes 0x30 from 0x31.
+    PropertyCapabilities {
+        header: CiHeader,
+        is_reply: bool,
+        data: property::PropertyCapabilities,
+    },
 }
 
 impl CiMessage {
@@ -195,7 +205,8 @@ impl CiMessage {
             | CiMessage::InvalidateMuid { header, .. }
             | CiMessage::Nak { header, .. }
             | CiMessage::Profile { header, .. }
-            | CiMessage::Property { header, .. } => header,
+            | CiMessage::Property { header, .. }
+            | CiMessage::PropertyCapabilities { header, .. } => header,
         }
     }
 
@@ -233,6 +244,19 @@ impl CiMessage {
                 header.encode(data.sub_id2(), &mut out);
                 data.encode_body(&mut out);
             }
+            CiMessage::PropertyCapabilities {
+                header,
+                is_reply,
+                data,
+            } => {
+                let sub_id2 = if *is_reply {
+                    property::SUB_ID2_PE_CAPABILITIES_REPLY
+                } else {
+                    property::SUB_ID2_PE_CAPABILITIES
+                };
+                header.encode(sub_id2, &mut out);
+                data.encode_body(&mut out);
+            }
         }
         out
     }
@@ -268,6 +292,16 @@ impl CiMessage {
             s if profile::is_profile_sub_id2(s) => Some(CiMessage::Profile {
                 header,
                 state: ProfileState::decode_body(s, body)?,
+            }),
+            property::SUB_ID2_PE_CAPABILITIES => Some(CiMessage::PropertyCapabilities {
+                header,
+                is_reply: false,
+                data: property::PropertyCapabilities::decode_body(body)?,
+            }),
+            property::SUB_ID2_PE_CAPABILITIES_REPLY => Some(CiMessage::PropertyCapabilities {
+                header,
+                is_reply: true,
+                data: property::PropertyCapabilities::decode_body(body)?,
             }),
             s if property::is_property_sub_id2(s) => Some(CiMessage::Property {
                 header,

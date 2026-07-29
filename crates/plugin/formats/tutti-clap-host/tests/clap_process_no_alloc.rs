@@ -1,79 +1,22 @@
-//! RT-safety regression: `ClapActive::process` must not allocate on the audio
-//! thread — in steady state, **and** in the awkward corners a real plugin
-//! reaches.
-//!
-//! # What this file replaced, and why it was worthless
-//!
-//! It previously drove TAL-NoiseMaker from a hard-coded
-//! `/Library/Audio/Plug-Ins/CLAP/TAL-NoiseMaker.clap`, a macOS path, on a Linux
-//! CI host — and both tests were `#[ignore]`d on top of that. Run the only way
-//! the module docs suggested (`-- --ignored`), the loader found nothing,
-//! returned `None`, and each test hit `let Some(..) else { return }` and
-//! reported `ok`. So the suite announced **"2 passed"** for a plugin it had
-//! never opened, on a platform where the path cannot exist. Every hazard below
-//! was live the whole time this file claimed the process path was clean.
-//!
-//! It now drives the in-repo reference plugin, resolved by
-//! [`support::probe_path`], which **panics** when the plugin is missing rather
-//! than skipping — the plugin is a dev-dependency of this crate, so its absence
-//! is a build failure, not a property of the machine. Nothing here is
-//! `#[ignore]`d.
-//!
-//! # How the detection works
+//! RT-safety: `ClapActive::process` must not allocate on the audio thread — in
+//! steady state, and in the awkward corners a real plugin reaches.
 //!
 //! The `#[global_allocator]` below is what detects; `assert_no_alloc` only sets
 //! a thread-local flag, so **without the allocator registered the gate is a
 //! silent no-op that passes unconditionally**. A violation aborts the process,
-//! so a failure here is a SIGABRT naming the test, not a tidy assertion
-//! message.
+//! so a failure here is a SIGABRT naming the test, not an assertion message.
 //!
-//! # What "non-vacuous" means here, concretely
+//! Two rules keep these non-vacuous, and every test below obeys them: the
+//! hazardous work happens *inside* the gate (not the setup, not a warm-up that
+//! primes it), and each test drives a plugin switch that *provokes* the corner
+//! rather than the default configuration.
 //!
-//! A no-alloc test is trivially easy to write so that it cannot fail — this
-//! project has already shipped one (`ClickSettings::meter`) that was
-//! single-threaded and published outside the gate, so it passed whether or not
-//! the bug was present. Two rules follow, and every test below obeys them:
-//!
-//! 1. **The hazardous work happens inside the gate.** Not the setup for it, not
-//!    a warm-up that primes it — the thing that would allocate.
-//! 2. **Each test was run against the unfixed host and observed to abort.** The
-//!    reference plugin's switches exist so the hazard can be *provoked*, not
-//!    merely tolerated: a test that drives the default configuration measures
-//!    nothing about the corners.
-//!
-//! # A stale-artifact hazard these tests uncovered
-//!
-//! `build.rs` emits two candidate paths for the reference plugin —
-//! `<profile>/<name>` and `<profile>/deps/<name>` — and `probe_path` used to
-//! return the **first that exists**. Under this workspace's shared external
-//! target dir both can exist, and cargo does not necessarily refresh the
-//! `<profile>/` copy: it was observed five minutes older than the `deps/` one
-//! after a plugin edit.
-//!
-//! That is not cosmetic. While verifying non-vacuity here, a deliberately-
-//! neutered plugin switch was still reported as working, because the host had
-//! dlopened the stale copy — the suite was measuring a build that no longer
-//! matched the source. Deleting it immediately turned five tests red, which is
-//! the answer that should have come back the first time.
-//!
-//! `probe_path` now takes the **newest** candidate rather than the first, so a
-//! stale copy is ignored instead of preferred. A suite that mysteriously passes
-//! after a plugin-side change should still suspect artifact staleness first.
-//!
-//! # What this file does not prove
-//!
-//! Only that the sampled paths do not call the allocator. It says nothing about
-//! the `RtPublish` deallocation property, which is a race and cannot be pinned
-//! by any allocation-sampling test (see the project's "Publishing to the Audio
-//! Thread" policy).
-//!
-//! H4 — the `clap.log` mutex — is a partial exception worth stating precisely.
-//! Its *allocations* are gated by `audio_thread_logging_does_not_allocate`
-//! below. Its *lock* is not, and cannot be: no allocation-sampling test can see
-//! a priority inversion. That half is handled by construction instead — the
-//! host refuses to reach the mutex from the audio thread at all — which the
-//! same test pins from the other side, by asserting the lines were counted as
-//! dropped rather than recorded.
+//! This says nothing about the `RtPublish` deallocation property, which is a
+//! race no allocation-sampling test can pin. Likewise the `clap.log` mutex: its
+//! allocations are gated below, but a priority inversion is invisible here and
+//! is handled by construction — the host refuses to reach the lock from the
+//! audio thread, which the same test pins from the other side by asserting the
+//! lines were counted as dropped.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -89,14 +32,8 @@ use support::probe_path::probe_path;
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
-/// The reference plugin's RT-hazard switches are **process-global** (one loaded
-/// image per test process), and `cargo test` runs these in parallel threads. A
-/// test that set a status mode while another was mid-gate would change what the
-/// other was measuring. Serialize the whole set-switches → drive → assert
-/// sequence.
-///
-/// This also serializes plugin loads, which the previous file did for the same
-/// reason.
+/// The RT-hazard switches are process-global (one loaded image per test
+/// process), so the whole set-switches → drive → assert sequence is serialized.
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Block size every test drives. Well under the 512 the instance is activated
@@ -111,37 +48,25 @@ const MAX_FRAMES: u32 = 512;
 //
 // The plugin is also an rlib dev-dependency, so the constants come from the
 // crate directly — but the *switches* must be called on the image the host
-// loaded, not on a second copy statically linked into this test binary. Those
-// are two different sets of globals. Hence `libloading` against the same path:
-// the loader dedupes by path, so this reaches the host's image.
+// loaded, not on the copy statically linked into this test binary. Those are
+// two different sets of globals; the loader dedupes by path, so `libloading`
+// against the same path reaches the host's image.
 // ---------------------------------------------------------------------------
 
-// `status::*` re-exports the CLAP-defined status values so this suite does not
-// take its own `clap-sys` dependency — and, more usefully, so it cannot get
-// them wrong: CLAP numbers ERROR = 0 and CONTINUE = 1, which is the reverse of
-// the usual C convention.
+// `status::*` re-exports the CLAP status values so this suite cannot get them
+// wrong: CLAP numbers ERROR = 0 and CONTINUE = 1, the reverse of the usual C
+// convention.
 use tutti_clap_test_plugin::rt_probe::status;
 use tutti_clap_test_plugin::{StatusMode, WideLayout};
 
 /// The plugin image, opened once and **never closed**.
 ///
-/// This being a `OnceLock` rather than a per-call `Library::new` is load-bearing,
-/// and the bug it fixes is worth naming because it is invisible: dropping a
-/// `libloading::Library` calls `dlclose`. When the host already holds the image
-/// open — which is true for every switch flipped *after* `load_probe()` — the
-/// refcount stays positive and the drop is harmless. But
-/// [`set_wide_layout`] must run **before** the host loads, because the audio
-/// port layout is read once during load. There the test's own handle is the
-/// only one: `Library::new` maps the image, the switch writes the atomic,
-/// `dlclose` unmaps it, and the write is discarded along with the mapping. The
-/// host then loads a fresh image whose layout switch is still at its default.
-///
-/// The symptom was a test asserting 16 channels and reading 2, with the plugin
-/// side provably correct — the store had happened, to memory that no longer
-/// existed.
-///
-/// Leaking one image for the lifetime of a test binary that keeps the plugin
-/// loaded throughout costs nothing and removes the ordering hazard entirely.
+/// A `OnceLock` rather than a per-call `Library::new` because dropping a
+/// `libloading::Library` calls `dlclose`. [`set_wide_layout`] must run *before*
+/// the host loads (the port layout is read once during load), so there the
+/// test's handle is the only one: the switch writes an atomic, `dlclose` unmaps
+/// the image, and the write is discarded with the mapping. Leaking one image
+/// removes the ordering hazard.
 fn probe_lib() -> &'static libloading::Library {
     use std::sync::OnceLock;
     static LIB: OnceLock<libloading::Library> = OnceLock::new();
@@ -217,13 +142,10 @@ fn load_probe() -> ClapActive<f32> {
 }
 
 // ---------------------------------------------------------------------------
-// Buffer plumbing.
-//
-// The reference plugin is 2-in / 2-out (`PortLayoutMode::SymmetricStereo`),
-// unlike TAL-NoiseMaker's 0-in / 2-out synth shape the old file hard-coded.
-// Everything here is stack storage so that the buffer setup inside the gate is
-// slice reborrows only — a `Vec` of channels built per iteration would allocate
-// and the test would be measuring itself.
+// Buffer plumbing. The reference plugin is 2-in / 2-out. Everything here is
+// stack storage so that buffer setup inside the gate is slice reborrows only —
+// a `Vec` of channels built per iteration would allocate and the test would be
+// measuring itself.
 // ---------------------------------------------------------------------------
 
 /// Stack channel storage for a stereo-in / stereo-out block.
@@ -272,13 +194,12 @@ fn drive(
 }
 
 // ===========================================================================
-// Baseline — the property the old file meant to assert.
+// Baseline
 // ===========================================================================
 
 /// Steady-state `process` with no events must not allocate.
 ///
-/// The weakest of the tests here, and the only one the old file attempted. Kept
-/// first so a regression can be localised: if this fails, the problem is the
+/// First so a regression can be localised: if this fails, the problem is the
 /// common path rather than any of the hazard corners below.
 #[test]
 fn process_steady_state_does_not_allocate() {
@@ -361,24 +282,20 @@ fn process_with_midi_does_not_allocate() {
 }
 
 // ===========================================================================
-// H1 — process-status transitions.
+// Process-status transitions.
 //
 // The host logged TAIL/SLEEP/unknown transitions with `eprintln!` from inside
-// `do_process`, under an `AudioThreadClaim`. That takes the stderr lock on the
-// audio thread, and the unknown-status arm additionally heap-formats an `i32`.
-//
-// The `status != prev_status` guard made this look rare. It is not: a plugin
-// that alternates between two statuses transitions on every single block.
+// `do_process`, taking the stderr lock on the audio thread; the unknown-status
+// arm additionally heap-formats an `i32`. The `status != prev_status` guard
+// made this look rare — a plugin alternating between two statuses transitions
+// on every block.
 // ===========================================================================
 
 /// A plugin alternating CONTINUE/TAIL must not make the host allocate.
 ///
-/// **This is the H1 test.** Every block is a transition, so the host's guard
-/// passes every block and the old code reached its `eprintln!` every block.
-///
-/// Alternating CONTINUE/TAIL is not a contrived plugin: a reverb whose tail
-/// decays below the noise floor and is re-excited by fresh input reports
-/// exactly this.
+/// Every block is a transition, so the host's guard passes every block. Not a
+/// contrived plugin: a reverb whose tail decays below the noise floor and is
+/// re-excited by fresh input reports exactly this.
 #[test]
 fn alternating_continue_tail_does_not_allocate() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -392,19 +309,17 @@ fn alternating_continue_tail_does_not_allocate() {
     };
 
     set_status_mode(StatusMode::AlternateContinueTail);
-    // Warm up *with the switch already set*, so the first transition — which is
-    // as much a one-shot as any other first call — is outside the gate and the
-    // gate measures only steady alternation.
+    // Warm up with the switch already set, so the first transition is outside
+    // the gate and the gate measures only steady alternation.
     drive(&mut inst, &mut bufs, 8, &ctx).expect("TAIL is not an error status");
 
     assert_no_alloc::assert_no_alloc(|| {
         drive(&mut inst, &mut bufs, 128, &ctx).expect("TAIL is not an error status");
     });
 
-    // The property is not just "did not allocate" — the host must still have
-    // *observed* the status, or a fix that simply deleted the tracking would
-    // pass. 128 blocks starting from an even index leaves the last one odd, so
-    // the final status is TAIL.
+    // Not just "did not allocate" — the host must still have *observed* the
+    // status, or a fix that deleted the tracking would pass. 128 blocks from an
+    // even index leaves the last odd, so the final status is TAIL.
     assert!(
         inst.is_tailing(),
         "the host must still record TAIL — it is now the only route by which a \
@@ -417,9 +332,8 @@ fn alternating_continue_tail_does_not_allocate() {
 /// allocate.
 ///
 /// Reaches the host's `other =>` arm, which formatted the raw `i32` into a
-/// message — an allocation on top of the stderr lock. CLAP leaves the status
-/// space open, so a plugin built against a newer header returning an unknown
-/// value is legal, not misbehaviour.
+/// message. CLAP leaves the status space open, so an unknown value from a
+/// plugin built against a newer header is legal, not misbehaviour.
 #[test]
 fn alternating_unknown_status_does_not_allocate() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -477,13 +391,10 @@ fn alternating_continue_sleep_does_not_allocate() {
 
 /// TAIL and SLEEP must be reachable by a caller at all.
 ///
-/// Not a no-alloc test — a correctness one, and the reason the accessor exists.
-/// `last_process_status` was written on every block but had no public reader,
-/// so the doc claiming callers could observe TAIL/SLEEP through it described
-/// something no caller could do. The only thing the host actually did with a
-/// TAIL was print it, from the audio thread, where the information was
-/// unavailable to the code that needed it (a host deciding when to stop calling
-/// a decaying plugin).
+/// Not a no-alloc test — a correctness one. `last_process_status` was written
+/// every block but had no public reader, so the only thing the host did with a
+/// TAIL was print it from the audio thread, where a caller deciding when to
+/// stop driving a decaying plugin could not see it.
 #[test]
 fn tail_and_sleep_are_observable_by_a_caller() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -524,21 +435,17 @@ fn tail_and_sleep_are_observable_by_a_caller() {
 }
 
 // ===========================================================================
-// H2 — error construction on the audio thread.
+// Error construction on the audio thread.
 // ===========================================================================
 
 /// A plugin returning `CLAP_PROCESS_ERROR` every block must not make the host
 /// allocate.
 ///
-/// The host built `ClapError::ProcessError("Plugin returned error".to_string())`
-/// — a heap allocation, on the audio thread, in the callback. And a plugin in
-/// an error state does not return ERROR once: it returns it every block, so
-/// this allocated per block on precisely the path where the host had already
-/// concluded something was wrong.
-///
-/// The error is asserted, not merely tolerated: the host must still *report*
-/// the failure, and it must still zero the output so undefined plugin audio
-/// does not leak.
+/// The host built `ClapError::ProcessError(...to_string())` in the callback,
+/// and a plugin in an error state returns ERROR every block, so this allocated
+/// per block. The error is asserted rather than merely tolerated: the host must
+/// still report the failure, and still zero the output so undefined plugin
+/// audio does not leak.
 #[test]
 fn plugin_error_status_does_not_allocate() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -551,8 +458,8 @@ fn plugin_error_status_does_not_allocate() {
         ..Default::default()
     };
 
-    // A clean block first, so `start_processing` and the pools are warm and the
-    // gate sees only the error path.
+    // A clean block first, so the pools are warm and the gate sees only the
+    // error path.
     drive(&mut inst, &mut bufs, 8, &ctx).expect("clean warm-up");
 
     set_status_mode(StatusMode::Error);
@@ -573,7 +480,6 @@ fn plugin_error_status_does_not_allocate() {
          rather than let garbage through"
     );
 
-    // Now the property: 128 further error blocks, all inside the gate.
     assert_no_alloc::assert_no_alloc(|| {
         for _ in 0..128 {
             let outs: &mut [&mut [f32]] = &mut [&mut bufs.out_l[..], &mut bufs.out_r[..]];
@@ -594,12 +500,10 @@ fn plugin_error_status_does_not_allocate() {
 /// Rejecting an oversized block must not allocate.
 ///
 /// The C1 guard formatted the requested and activated frame counts into a
-/// `String` — on the audio thread, before returning. A host driving a
-/// too-large block drives it again next block, so the allocation repeats.
-///
-/// The rejection itself is the point of the guard (an oversized block would
-/// make the plugin write past the scratch), so this asserts the error is still
-/// raised and still carries both numbers.
+/// `String` before returning, and a host driving a too-large block drives it
+/// again next block. The rejection itself is the point of the guard (an
+/// oversized block would make the plugin write past the scratch), so this
+/// asserts the error is still raised and still carries both numbers.
 #[test]
 fn oversized_block_rejection_does_not_allocate() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -626,8 +530,7 @@ fn oversized_block_rejection_does_not_allocate() {
         drive(&mut inst, &mut bufs, 8, &ctx).expect("legal warm-up");
     }
 
-    // Assert the rejection is real, and that the numbers survived the move off
-    // the `String`.
+    // The rejection is real, and the numbers survived the move off the `String`.
     {
         let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
         let ins: &[&[f32]] = &[&in_l[..], &in_r[..]];
@@ -668,21 +571,16 @@ fn oversized_block_rejection_does_not_allocate() {
 }
 
 // ===========================================================================
-// H3 — SysEx output events.
+// SysEx output events.
 // ===========================================================================
 
 /// A plugin emitting SysEx output events every block must not make the host
 /// allocate.
 ///
-/// `output_events_try_push` copied each payload with `to_vec()` — and the
-/// plugin calls `try_push` from *inside* `process`, so that allocation lands on
-/// the audio thread. Worse, `process` clears the output list at the top of each
-/// block, which dropped every payload `Vec`; there was nothing to amortise
-/// against, so a plugin emitting the same event every block allocated and freed
-/// every block.
-///
-/// The events are asserted to arrive, so a "fix" that dropped SysEx on the
-/// floor would fail here rather than pass quietly.
+/// `output_events_try_push` copied each payload with `to_vec()`, and the plugin
+/// calls `try_push` from inside `process`. `process` also clears the output list
+/// at the top of each block, dropping every payload `Vec` — so there was
+/// nothing to amortise against and the same event allocated and freed per block.
 #[test]
 fn sysex_output_events_do_not_allocate() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -698,9 +596,9 @@ fn sysex_output_events_do_not_allocate() {
     const EVENTS_PER_BLOCK: u32 = 4;
     const PAYLOAD_BYTES: u32 = 200;
 
-    // Warm up with SysEx already flowing: the payload pool is fed by `clear`,
-    // so the very first emitting block legitimately grows it. That is a one-off
-    // and belongs outside the gate; every block after it must recycle.
+    // Warm up with SysEx already flowing: the payload pool is fed by `clear`, so
+    // the first emitting block legitimately grows it. Every block after must
+    // recycle.
     set_sysex_output(EVENTS_PER_BLOCK, PAYLOAD_BYTES);
     drive(&mut inst, &mut bufs, 8, &ctx).expect("process");
 
@@ -709,19 +607,13 @@ fn sysex_output_events_do_not_allocate() {
     });
 }
 
-/// H2, third site: `ensure_processing` raising `StartProcessingFailed`.
+/// `ensure_processing` raising `StartProcessingFailed` must not allocate.
 ///
-/// The other two audio-thread error paths — `PluginReturnedError` and
-/// `BlockTooLarge` — are driven end-to-end by the tests above. This one cannot
-/// be: reaching it needs a `ClapActive` whose plugin is deactivated, and the
-/// rollback in `reconfigure` now makes that state unreachable by design. Its
-/// allocation-freedom is a property of the *variant* rather than of a path
-/// through the host, so it is asserted as one.
-///
-/// It matters because `ensure_processing` runs inside `do_process` on the audio
-/// thread, and nothing marks a refusing instance unusable — every subsequent
-/// block re-attempts the call, so the `"Start processing failed".to_string()`
-/// this replaced allocated once per block for as long as the plugin refused.
+/// Asserted on the *variant* rather than end-to-end: reaching this path needs a
+/// `ClapActive` whose plugin is deactivated, which the rollback in `reconfigure`
+/// makes unreachable by design. It matters because `ensure_processing` runs
+/// inside `do_process`, and nothing marks a refusing instance unusable — every
+/// block re-attempts the call.
 #[test]
 fn start_processing_failure_is_allocation_free() {
     let err = assert_no_alloc::assert_no_alloc(|| {
@@ -739,21 +631,18 @@ fn start_processing_failure_is_allocation_free() {
     );
 }
 
-/// H4: a plugin logging through `clap.log` from inside `process` must not make
-/// the host allocate, lock stderr, or take the log mutex.
+/// A plugin logging through `clap.log` from inside `process` must not make the
+/// host allocate, lock stderr, or take the log mutex.
 ///
-/// CLAP marks `clap.log` `[thread-safe]`, and means it — a plugin that detects a
-/// denormal storm or a dropped buffer mid-render has no other channel. The host
-/// used to treat such a line exactly like a main-thread one: `into_owned()` for
-/// the message, `eprintln!` for the mirror, and `LogState::push` taking a
-/// `Mutex` that `drain_log` holds across a `.collect()`. The first two are
-/// allocations in an audio callback; the third is a priority inversion, which
-/// this gate cannot see at all — it is caught by construction instead, by the
-/// host refusing to reach the lock from this thread.
+/// CLAP marks `clap.log` `[thread-safe]`, which includes the audio thread. The
+/// host used to treat such a line like a main-thread one: `into_owned()`,
+/// `eprintln!`, and `LogState::push` taking a `Mutex` that `drain_log` holds
+/// across a `.collect()`. The first two are allocations; the third is a
+/// priority inversion this gate cannot see, caught instead by the host refusing
+/// to reach the lock from this thread.
 ///
-/// The line is counted rather than kept, and `log_lines_dropped` is asserted to
-/// move, so a "fix" that silently discarded audio-thread logs without telling
-/// anyone would fail here rather than pass.
+/// `log_lines_dropped` is asserted to move, so a "fix" that silently discarded
+/// audio-thread logs would fail here rather than pass.
 #[test]
 fn audio_thread_logging_does_not_allocate() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -770,8 +659,7 @@ fn audio_thread_logging_does_not_allocate() {
     const GATED_BLOCKS: u32 = 256;
     set_audio_thread_log_lines(LINES_PER_BLOCK);
 
-    // A few blocks outside the gate: the host's first `process` calls after
-    // activation do their own one-off setup, which is not what this is about.
+    // A few blocks outside the gate for the host's one-off post-activation setup.
     drive(&mut inst, &mut bufs, 8, &ctx).expect("process");
     let before = inst.log_lines_dropped();
 
@@ -792,12 +680,10 @@ fn audio_thread_logging_does_not_allocate() {
 /// The same, with payloads that *vary* in size block to block.
 ///
 /// A pool keyed on "the buffer I had last time" is only obviously sufficient
-/// when every payload is identical. Real SysEx traffic is not: a device replies
-/// to an identity request, then dumps a patch. This drives four distinct sizes
-/// through the pool in rotation, all below the largest warmed size so recycling
-/// is possible — a size *larger* than anything seen would legitimately grow a
-/// buffer, and demanding otherwise would be demanding the host preallocate for
-/// an unbounded payload.
+/// when every payload is identical, and real SysEx traffic is not. The four
+/// sizes all sit below the largest warmed size so recycling is possible — a
+/// larger one would legitimately grow a buffer, and demanding otherwise would
+/// demand the host preallocate for an unbounded payload.
 #[test]
 fn varying_sysex_payload_sizes_do_not_allocate() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -814,9 +700,9 @@ fn varying_sysex_payload_sizes_do_not_allocate() {
     const EVENTS_PER_BLOCK: u32 = 3;
 
     // Warm up at the LARGEST size first, so every pooled buffer reaches the
-    // capacity the rotation will need. Warming at a smaller size and then
-    // stepping up would allocate inside the gate — correctly, and the test
-    // would be asserting something the host cannot promise.
+    // capacity the rotation needs. Warming smaller and stepping up would
+    // allocate inside the gate — correctly, so the test would be asserting
+    // something the host cannot promise.
     set_sysex_output(EVENTS_PER_BLOCK, SIZES[0]);
     drive(&mut inst, &mut bufs, 8, &ctx).expect("process");
     for size in SIZES {
@@ -838,11 +724,10 @@ fn varying_sysex_payload_sizes_do_not_allocate() {
 /// The SysEx switch, through a function pointer resolved **once** outside the
 /// gate.
 ///
-/// `dlsym` itself allocates. [`set_sysex_output`] resolves the symbol on every
-/// call, which is fine outside a gate and fatal inside one — the test would
-/// abort on its own harness rather than on the host, which is the most
-/// misleading possible failure. Caching the raw `fn` pointer leaves only the
-/// two relaxed atomic stores inside the gate.
+/// `dlsym` itself allocates, and [`set_sysex_output`] resolves the symbol on
+/// every call — fine outside a gate, fatal inside one, where the test would
+/// abort on its own harness rather than on the host. Caching the raw `fn`
+/// pointer leaves only the two relaxed atomic stores inside the gate.
 fn set_sysex_output_no_alloc(count: u32, bytes: u32) {
     use std::sync::OnceLock;
     static F: OnceLock<unsafe extern "C" fn(u32, u32)> = OnceLock::new();
@@ -856,26 +741,21 @@ fn set_sysex_output_no_alloc(count: u32, bytes: u32) {
 }
 
 // ===========================================================================
-// H7 — wide channel layouts.
+// Wide channel layouts.
 //
-// The host collected the caller's channel pointers into
-// `SmallVec<[*mut T; 16]>` locals, one per side. At 17+ channels a side that
-// spills to the heap — every block, both sides.
-//
-// The layouts below are supported configurations, not abuse: the host
-// advertises surround and ambisonic port types precisely so it can be handed
-// them. 7.1.4 Atmos is 12 channels; two 8-channel ports is 16; third-order
-// ambisonic is 16.
+// The host collected the caller's channel pointers into `SmallVec<[*mut T; 16]>`
+// locals, one per side, which spill to the heap at 17+ channels a side — every
+// block, both sides. These layouts are supported configurations, not abuse: the
+// host advertises surround and ambisonic port types precisely so it can be
+// handed them. 7.1.4 Atmos is 12 channels; third-order ambisonic is 16.
 // ===========================================================================
 
 /// Drive `iters` blocks through a plugin with `channels` channels a side, using
 /// heap channel storage allocated **outside** the gate.
 ///
-/// The channel storage has to be heap — 20 channels of stack array per side
-/// times two is fine, but the `&mut [&mut [f32]]` fan-out array itself must be
-/// built somewhere, and building it per block is what the host is being tested
-/// not to do. So the pointer arrays are built once, before the gate, and the
-/// gate only reborrows them.
+/// The `&mut [&mut [f32]]` fan-out arrays are built once, before the gate, and
+/// the gate only reborrows them — building them per block is what the host is
+/// being tested not to do.
 fn drive_wide(inst: &mut ClapActive<f32>, channels: usize, iters: usize) {
     let transport = TransportInfo::default();
     let ctx = ProcessContext {
@@ -900,8 +780,8 @@ fn drive_wide(inst: &mut ClapActive<f32>, channels: usize, iters: usize) {
         inst.process(&mut buffer, &ctx).expect("warm-up process");
     }
 
-    // Build the borrow arrays ONCE, before the gate. Rebuilding them per block
-    // inside the gate would allocate in the harness and mask the host.
+    // ONCE, before the gate: rebuilding per block would allocate in the harness
+    // and mask the host.
     let ins: Vec<&[f32]> = ins_storage.iter().map(|v| v.as_slice()).collect();
     let mut outs: Vec<&mut [f32]> = outs_storage.iter_mut().map(|v| v.as_mut_slice()).collect();
 
@@ -921,10 +801,8 @@ fn drive_wide(inst: &mut ClapActive<f32>, channels: usize, iters: usize) {
 /// **The control case.** Exactly 16 channels a side is still inline in a
 /// `SmallVec<[T; 16]>`, so this passed even against the unfixed host.
 ///
-/// It is here on purpose. Without it, the 20-channel test below could be
-/// passing because of anything that scales with channel count, and there would
-/// be no evidence the boundary is where the analysis says it is. This pins the
-/// "just below the cliff" side; the next test pins "just past it".
+/// Without it, the 20-channel test below could be passing because of anything
+/// that scales with channel count. This pins the "just below the cliff" side.
 #[test]
 fn exactly_sixteen_channels_per_side_does_not_allocate() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -940,17 +818,16 @@ fn exactly_sixteen_channels_per_side_does_not_allocate() {
 
     drive_wide(&mut inst, 16, 128);
 
-    // Restore for whatever runs next: this switch is not covered by
-    // `reset_probe`, because a reset after loading would describe a layout the
-    // host is no longer using.
+    // Restore for whatever runs next: `reset_probe` does not cover this switch,
+    // because a reset after loading would describe a layout the host is no
+    // longer using.
     set_wide_layout(WideLayout::Off);
 }
 
-/// **The H7 test.** 20 channels a side is past the inline bound, so the unfixed
-/// host heap-allocated two `SmallVec` backing buffers on every block.
+/// 20 channels a side is past the inline bound, so the unfixed host
+/// heap-allocated two `SmallVec` backing buffers on every block.
 ///
-/// 20 is not an arbitrary number past 16: it is what a 7.1.4 bed plus a
-/// discrete stereo pair, or a 4th-order-adjacent ambisonic layout, presents.
+/// 20 is what a 7.1.4 bed plus a discrete stereo pair presents.
 #[test]
 fn twenty_channels_per_side_does_not_allocate() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -968,12 +845,9 @@ fn twenty_channels_per_side_does_not_allocate() {
     set_wide_layout(WideLayout::Off);
 }
 
-/// The same spill reached through *port count* rather than one wide port:
-/// two 12-channel ports a side, i.e. 7.1.4 Atmos twice over, for 24 channels.
-///
-/// Separate from the test above because the two arrive at the same total by
-/// different routes, and a fix that widened only the single-port case would
-/// pass one and fail the other.
+/// The same spill reached through *port count* rather than one wide port: two
+/// 12-channel ports a side, 24 channels. A fix that widened only the
+/// single-port case passes the test above and fails this one.
 #[test]
 fn two_twelve_channel_ports_per_side_do_not_allocate() {
     let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());

@@ -2,39 +2,27 @@
 //! machinery** — `src/instance/polling.rs` and `src/host/callbacks.rs` driven
 //! by a real plugin across the real CLAP FFI.
 //!
-//! Companion to `clap_conformance.rs`, which covers buffer geometry and event
-//! delivery. This file covers what that one cannot reach: what the host tells a
-//! plugin about the thread it is on, and whether the host↔plugin request
-//! round-trips (`request_callback` → `on_main_thread`, `request_restart`,
-//! timer register/fire/unregister, `clap.log`) actually complete.
+//! Companion to `clap_conformance.rs` (buffer geometry and event delivery).
+//! This file covers what the host tells a plugin about the thread it is on, and
+//! whether the host↔plugin request round-trips (`request_callback` →
+//! `on_main_thread`, `request_restart`, timer register/fire/unregister,
+//! `clap.log`) actually complete.
 //!
-//! ## Why a *real plugin* adds anything over `unit_tests.rs`
+//! What a real plugin adds over `unit_tests.rs`'s
+//! `thread_check_roles_are_mutually_exclusive_c1`: that test calls the
+//! thread-check fn pointers directly, so it proves the primitive but not that
+//! the host **takes the claim on the paths that matter**. The claim lives in
+//! `do_process` and `stop_processing`, so a host that forgot to claim would
+//! still pass it while telling every plugin it was on the main thread inside
+//! `process()`. Here the plugin asks from inside each entry point instead.
 //!
-//! `unit_tests.rs` already has `thread_check_roles_are_mutually_exclusive_c1`.
-//! It builds a bare `ClapHost`, calls `claim_audio_thread()` by hand, and calls
-//! the thread-check fn pointers directly. That proves the *primitive* is right.
-//! It cannot prove the host **takes the claim on the paths that matter** — the
-//! claim lives in `do_process` and `stop_processing`, not in the thread-check
-//! callback, so a host that simply forgot to claim would still pass the unit
-//! test while telling every plugin it was on the main thread inside `process()`.
+//! Nothing waits on a clock: CLAP timers are driven with `period_ms = 0`, which
+//! `poll_timers` treats as due on every poll, so "the timer fires" is one call
+//! producing one `on_timer` and "it stops firing" is the same call producing
+//! none.
 //!
-//! Here, the plugin asks the host "where am I?" *from inside* `init`,
-//! `activate`, `start_processing`, `process`, `on_main_thread` and `on_timer`,
-//! and the test asserts the answer per site. That is the property a plugin
-//! actually depends on, and the mutation that catches it (dropping the claim in
-//! `do_process`) is invisible to the unit test.
-//!
-//! ## Determinism
-//!
-//! Nothing here waits on a clock. The one timing-shaped mechanism — CLAP timers
-//! — is driven with `period_ms = 0`, which `ClapLoaded::poll_timers` treats as
-//! due on every poll (`elapsed >= period_ms` holds for any elapsed). So "the
-//! timer fires" is one `poll_timers()` call producing one `on_timer`, and "it
-//! stops firing" is the same call producing none. There are no sleeps, and no
-//! assertion in this file can pass or fail as an accident of scheduling.
-//!
-//! The plugin state is a process-global (one loaded image), so every test holds
-//! [`PROBE_LOCK`] for its whole scenario and calls `thread_reset()` at the top.
+//! The plugin state is a process-global, so every test holds [`PROBE_LOCK`] for
+//! its whole scenario and calls `thread_reset()` at the top.
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -48,19 +36,14 @@ use tutti_clap_test_plugin::{
     CMD_REQUEST_RESTART, CMD_UNREGISTER_TIMER,
 };
 
-/// The reference plugin's capture, command word and reset are process-globals
-/// shared by every test in this binary (one dlopen'd image). Serialize whole
-/// scenarios — reset → drive → read — so one test cannot observe another's
-/// sites or consume another's latched command.
-///
-/// Separate from `clap_conformance.rs`'s `CAPTURE_LOCK` because that is a
-/// different test binary with its own process and its own image.
+/// The probe's capture, command word and reset are process-globals shared by
+/// every test in this binary. Serialize whole scenarios — reset → drive → read
+/// — so one test cannot observe another's sites or consume its latched command.
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
-/// CLAP log severities, in the order the probe emits them.
-/// Duplicated from `clap-sys` rather than depended on: these are ABI constants
-/// the plugin sends across the FFI, and pinning them here means a test failure
-/// names the wire value the host actually received.
+/// CLAP log severities, in the order the probe emits them. Pinned here rather
+/// than imported: these are the wire values the plugin sends across the FFI, so
+/// a failure names what the host actually received.
 const CLAP_LOG_DEBUG: i32 = 0;
 const CLAP_LOG_INFO: i32 = 1;
 const CLAP_LOG_WARNING: i32 = 2;
@@ -81,9 +64,6 @@ struct Probe {
 
 impl Probe {
     /// Take the lock and clear the plugin's recorded sites and counters.
-    ///
-    /// Panics if the reference plugin wasn't built — [`probe_path`] resolves it
-    /// or fails loudly, mirroring `load_plugin` in `clap_conformance.rs`.
     fn acquire() -> Self {
         let lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         thread_reset();
@@ -132,7 +112,7 @@ fn drive_block(inst: &mut ClapActive<f32>, frames: usize) {
         .expect("process succeeds");
 }
 
-// --- the three exported C symbols, reached across the dlopen seam -----------
+// --- the exported C symbols, reached across the dlopen seam -----------------
 //
 // Opening the same path a second time shares the already-loaded image, so
 // these see (and drive) exactly the globals the host's calls touched.
@@ -204,14 +184,11 @@ fn assert_roles(cap: &ThreadCapture, site: Site, want_main: bool, want_audio: bo
 /// point, and the two roles must stay mutually exclusive (C1) *on the real
 /// paths* — not just when a test calls `claim_audio_thread()` by hand.
 ///
-/// The interesting sites are `start_processing` and `process`: this test drives
-/// them from the OS main thread (as `cargo test` does, and as a DAW's offline
-/// render does), so a host that merely compared `current().id() ==
-/// main_thread_id` would answer `is_main = true` there. CLAP's audio-thread is
-/// symbolic — the host may nominate any OS thread including the main one — so
-/// the correct answer inside an `[audio-thread]` call is `is_main = false`,
-/// which is exactly what makes a plugin's own `assert(!is_main_thread())`
-/// falsifiable.
+/// The interesting sites are `start_processing` and `process`, driven here from
+/// the OS main thread, so a host comparing `current().id() == main_thread_id`
+/// answers `is_main = true`. CLAP's audio-thread is symbolic — the host may
+/// nominate any OS thread including the main one — so the correct answer inside
+/// an `[audio-thread]` call is `is_main = false`.
 #[test]
 fn host_answers_thread_check_correctly_at_every_call_site() {
     let probe = Probe::acquire();
@@ -240,12 +217,10 @@ fn host_answers_thread_check_correctly_at_every_call_site() {
 
 /// Leaving an `[audio-thread]` call must hand the audio-thread role back.
 ///
-/// The claim is RAII, so a leak would be a `std::mem::forget` or a guard parked
-/// in a field. The symptom is nasty and quiet: every subsequent `[main-thread]`
-/// call answers `is_main_thread() == false` forever, so plugins that assert
-/// their main-thread contract start failing on the *next* call, far from the
-/// cause. Asserting it from `on_main_thread` — a real host-driven main-thread
-/// callback that runs strictly after a `process` block — is what pins it.
+/// A leaked claim makes every subsequent `[main-thread]` call answer
+/// `is_main_thread() == false` forever, so plugins asserting their main-thread
+/// contract fail on the *next* call, far from the cause. Pinned from
+/// `on_main_thread`, which runs strictly after a `process` block.
 #[test]
 fn audio_thread_role_is_released_when_process_returns() {
     let probe = Probe::acquire();
@@ -275,11 +250,10 @@ fn audio_thread_role_is_released_when_process_returns() {
 /// `request_callback` from the plugin must reach the plugin's `on_main_thread`
 /// via the host, and must not fire it more than once per request.
 ///
-/// The at-most-once half is the part worth pinning: `poll_callback_requested`
-/// consumes the flag (`swap(false)`), and a peek-instead-of-consume regression
-/// would make a host loop call `on_main_thread` on every iteration forever.
-/// `visits` on the `OnMainThread` site counts the actual plugin-side calls, so
-/// the count is checked rather than inferred.
+/// The at-most-once half is what matters: a peek-instead-of-consume regression
+/// in `poll_callback_requested` would make a host loop call `on_main_thread`
+/// every iteration forever. `visits` counts the plugin-side calls, so the count
+/// is checked rather than inferred.
 #[test]
 fn request_callback_round_trips_to_on_main_thread_exactly_once() {
     let probe = Probe::acquire();
@@ -321,12 +295,10 @@ fn request_callback_round_trips_to_on_main_thread_exactly_once() {
 /// must expose it in the two shapes a caller needs: a non-clearing peek
 /// (`needs_restart`) and a consuming poll (`poll_restart_requested`).
 ///
-/// Note what is deliberately *not* asserted: that the host deactivates and
-/// reactivates by itself. It must not. CLAP requires the restart to happen
-/// outside `process()`, and this library's contract is to record the request
-/// and let the embedder pick the moment — a host that tore the plugin down from
-/// inside the plugin's own `process` call would be the bug. The reactivation
-/// half is covered by
+/// Deliberately *not* asserted: that the host deactivates and reactivates by
+/// itself. It must not — CLAP requires the restart to happen outside
+/// `process()`, so the contract is to record the request and let the embedder
+/// pick the moment. The reactivation half is covered by
 /// [`restart_cycle_reactivates_and_reruns_the_plugin_lifecycle`].
 #[test]
 fn request_restart_from_process_reaches_the_host() {
@@ -364,9 +336,9 @@ fn request_restart_from_process_reaches_the_host() {
 /// `request_process` is the other `[thread-safe]` lifecycle request; it must be
 /// recorded and consumed independently of `request_restart`.
 ///
-/// Independence is the point: the three lifecycle flags live in one struct and
-/// share a polling helper, so a copy-paste that pointed `request_process` at
-/// `restart_requested` would leave both single-flag tests passing.
+/// The three lifecycle flags live in one struct and share a polling helper, so
+/// a copy-paste pointing `request_process` at `restart_requested` would leave
+/// both single-flag tests passing.
 #[test]
 fn request_process_is_recorded_independently_of_restart() {
     let probe = Probe::acquire();
@@ -393,11 +365,9 @@ fn request_process_is_recorded_independently_of_restart() {
 /// `poll_restart_requested()` — must re-run the plugin's lifecycle, and the
 /// thread roles must still be right on the second pass.
 ///
-/// This is the half of "restart" the host library can be held to: the transition
-/// itself. `activate` is `[main-thread]` and `start_processing` is
-/// `[audio-thread]`, so a restart that left a stale audio-thread claim behind
-/// (or failed to take a fresh one) shows up here as a wrong role on the second
-/// activation rather than as a crash three blocks later.
+/// A restart that left a stale audio-thread claim behind (or failed to take a
+/// fresh one) shows up here as a wrong role on the second activation rather
+/// than as a crash three blocks later.
 #[test]
 fn restart_cycle_reactivates_and_reruns_the_plugin_lifecycle() {
     let probe = Probe::acquire();
@@ -451,12 +421,8 @@ fn restart_cycle_reactivates_and_reruns_the_plugin_lifecycle() {
 /// host handed back, must run on the main thread, and must stop firing once
 /// unregistered.
 ///
-/// **Determinism.** The plugin registers with `period_ms = 0`. `poll_timers`
-/// fires a timer when `elapsed >= period_ms`, which for a zero period is true
-/// on every call — so each `poll_timers()` here produces exactly one callback,
-/// with no clock involved. A nonzero period would make "did it fire yet?" a
-/// race the test could only resolve by sleeping, which is not synchronization
-/// and would make this flaky in both directions.
+/// The plugin registers with `period_ms = 0`, so each `poll_timers()` produces
+/// exactly one callback with no clock involved.
 #[test]
 fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
     let probe = Probe::acquire();
@@ -538,9 +504,8 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
         "host unregister_timer() returned false for an id it issued"
     );
 
-    // And now it must be silent. This is the assertion that catches a host
-    // whose unregister removes the bookkeeping but not the firing (or vice
-    // versa) — a plugin that has torn down the editor the timer drives will
+    // Silent now: catches a host whose unregister removes the bookkeeping but
+    // not the firing. A plugin that tore down the editor the timer drives would
     // dereference freed state on the next tick.
     let before = probe.capture().sites[Site::OnTimer as usize].visits;
     assert_eq!(inst.poll_timers(), 0, "an unregistered timer must not fire");
@@ -558,12 +523,10 @@ fn timer_registers_fires_on_the_main_thread_and_stops_after_unregister() {
 /// Every CLAP severity a plugin logs at must reach the host, keep its severity,
 /// keep its message, and keep its order.
 ///
-/// Severity fidelity is the substantive part. The host's `host_log` used to be
-/// seven `eprintln!` arms and nothing else, which meant a swap between two arms
-/// — routing `ERROR` as `DEBUG`, say — was invisible to everything except a
-/// human reading stderr. Retaining the records is what makes the mapping
-/// checkable at all, and the messages are distinct per severity so a host that
-/// collapsed them all onto one arm cannot pass on count alone.
+/// The host's `host_log` used to be seven `eprintln!` arms and nothing else, so
+/// a swap between two — routing `ERROR` as `DEBUG` — was invisible to anything
+/// but a human reading stderr. The messages are distinct per severity, so a
+/// host collapsing them onto one arm cannot pass on count alone.
 #[test]
 fn host_routes_plugin_log_lines_at_every_severity() {
     let probe = Probe::acquire();

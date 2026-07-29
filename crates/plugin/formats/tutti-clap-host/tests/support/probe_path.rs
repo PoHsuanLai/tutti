@@ -1,28 +1,13 @@
-//! Resolving the reference plugin — and why absence must be fatal.
+//! Resolves `tutti-clap-test-plugin`, the cdylib every integration suite here
+//! drives. `build.rs` names the paths cargo can drop it at; this picks one.
 //!
-//! Every integration suite in this crate drives `tutti-clap-test-plugin`, a
-//! cdylib built as a dev-dependency of this crate. `build.rs` names the places
-//! cargo can drop it; this module picks the one that exists.
-//!
-//! ## Why this panics instead of skipping
-//!
-//! Each suite used to resolve the plugin itself and `return None` when it was
-//! missing, with callers written as `let Some(p) = acquire() else { return };`.
-//! A skip was therefore indistinguishable from a pass.
-//!
-//! That is not a theoretical hazard. Run under an isolated `CARGO_TARGET_DIR`,
-//! cargo wrote the cdylib to `<profile>/deps/` but not `<profile>/`, so the
-//! single guessed path did not resolve and **all 55 integration tests across
-//! four binaries reported `ok` having executed nothing** — the suite announced
-//! success for work it never did.
-//!
-//! The plugin is built by the same `cargo test` invocation that runs these
-//! tests. Its absence is a build failure, not a property of the machine, so the
-//! only correct response is to be loud.
-//!
-//! The same mistake, in the same shape, previously shipped in the VST3 suite:
-//! a bundle resolved by hardcoded filename, renamed, and nine tests skipped
-//! while printing `test result: ok. 9 passed`.
+//! Absence is fatal, never a skip. The suites used to resolve the plugin
+//! themselves and return `None`, read as `let Some(p) = acquire() else
+//! { return };` — making a skip indistinguishable from a pass. Under an
+//! isolated `CARGO_TARGET_DIR` the guessed path stopped resolving and all 55
+//! integration tests reported `ok` having run nothing. The plugin is built by
+//! the same `cargo test` that runs these tests, so its absence is a build
+//! failure, not a property of the machine.
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -30,23 +15,19 @@ use std::sync::OnceLock;
 /// `;`-separated candidate paths emitted by `build.rs`.
 const CANDIDATES: &str = env!("TUTTI_CLAP_TEST_PLUGIN_CANDIDATES");
 
-/// Absolute path to the reference plugin cdylib, as a `&'static str` so it can
-/// be handed straight to `libloading::Library::new` as well as `Path::new`.
+/// Absolute path to the reference plugin cdylib, as a `&'static str` so it
+/// suits both `libloading::Library::new` and `Path::new`.
 ///
-/// Picks the **newest** candidate that exists, not the first. Cargo builds into
-/// `<profile>/deps/` and hardlinks up to `<profile>/`, but does not always
-/// refresh that copy — so both paths can hold *different builds of the same
-/// plugin*. Loading the older one is worse than loading none: the suite runs
-/// green against a plugin whose behaviour switches no longer match what the
-/// tests set, so a mutation that should turn a test red silently does not. That
-/// happened during this crate's RT work and briefly reversed a verification
-/// result.
+/// Picks the **newest** existing candidate, not the first. Cargo builds into
+/// `<profile>/deps/` and hardlinks up to `<profile>/` without always refreshing
+/// it, so the two can hold different builds of the same plugin. Loading the
+/// older one is worse than loading none: the suite runs green against a plugin
+/// whose switches no longer match what the tests set, so a mutation that should
+/// turn a test red silently does not.
 ///
 /// # Panics
 ///
-/// If no candidate exists. See the module docs: this is deliberate, and any
-/// change that softens it back into a skip re-opens a bug that has now shipped
-/// twice.
+/// If no candidate exists — deliberate; see the module docs.
 pub fn probe_path() -> &'static str {
     static RESOLVED: OnceLock<String> = OnceLock::new();
     RESOLVED

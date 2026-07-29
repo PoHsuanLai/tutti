@@ -157,11 +157,9 @@ impl UndoState {
 /// One routed `clap.log` line: the CLAP severity the plugin passed and the
 /// decoded message.
 ///
-/// `severity` stays a bare `clap_log_severity` (`i32`) rather than an enum:
-/// this is a C ABI value the plugin chose, and CLAP explicitly leaves room for
-/// severities a host does not recognise. Widening it into a host enum would
-/// have to invent a bucket for those, which is exactly the information the
-/// consumer wants preserved.
+/// `severity` stays a bare `clap_log_severity` (`i32`): CLAP leaves room for
+/// severities a host does not recognise, and an enum would have to bucket those
+/// away.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRecord {
     pub severity: i32,
@@ -170,11 +168,10 @@ pub struct LogRecord {
 
 /// The last [`LOG_CAPACITY`] lines the plugin logged.
 ///
-/// Bounded on purpose. A misbehaving plugin can log per audio block; an
-/// unbounded `Vec` behind a host that never drains would grow without limit,
-/// which is a leak in a long session rather than a diagnostic. Oldest lines are
-/// dropped, and `dropped` counts them so a consumer can see that it happened
-/// instead of silently reading a truncated history.
+/// Bounded on purpose: a plugin can log per audio block, so an unbounded buffer
+/// behind a host that never drains is a leak, not a diagnostic. Oldest lines go
+/// first, and `dropped` counts them so a consumer does not read a truncated
+/// history as a complete one.
 pub struct LogState {
     pub(crate) records: Mutex<std::collections::VecDeque<LogRecord>>,
     pub(crate) dropped: AtomicU32,
@@ -191,30 +188,24 @@ impl LogState {
         }
     }
 
-    /// Count a line refused because it arrived on the audio thread.
+    /// Count a line refused because it arrived on the audio thread (see
+    /// `host_log`). Shares the capacity-eviction counter — both are "a line the
+    /// host did not keep", and no caller can act differently on the two.
     ///
-    /// Folded into the same counter as a capacity eviction: from the
-    /// consumer's side both are "a line the host did not keep", and splitting
-    /// them would imply a caller can act differently on the two, which it
-    /// cannot. See `host_log` for why such a line is refused rather than
-    /// recorded.
-    ///
-    /// Audio-thread safe: one relaxed atomic increment, no lock, no
-    /// allocation.
+    /// Audio-thread safe: one relaxed increment, no lock, no allocation.
     pub(crate) fn note_audio_thread_drop(&self) {
         self.dropped.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record one routed line, evicting the oldest if at capacity.
     ///
-    /// **Not audio-thread safe.** This takes a `Mutex` that `drain_log` holds
-    /// across a copy, so calling it from the audio thread risks a
-    /// priority-inversion stall; `host_log` diverts audio-thread lines to
-    /// [`note_audio_thread_drop`](Self::note_audio_thread_drop) before
-    /// reaching here.
+    /// **Not audio-thread safe:** takes a `Mutex` that `drain_log` holds across
+    /// a copy, so an audio-thread call risks a priority-inversion stall.
+    /// `host_log` diverts those to
+    /// [`note_audio_thread_drop`](Self::note_audio_thread_drop) first.
     ///
-    /// A poisoned lock is recovered rather than propagated: a panic here would
-    /// take a caller down over a diagnostic.
+    /// A poisoned lock is recovered, not propagated — a panic here would take a
+    /// caller down over a diagnostic.
     pub(crate) fn push(&self, severity: i32, message: String) {
         let mut records = self.records.lock().unwrap_or_else(|p| p.into_inner());
         if records.len() == LOG_CAPACITY {

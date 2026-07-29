@@ -1,48 +1,28 @@
-//! Audio-correctness oracle for the CLAP host — does it wire the right
-//! samples to the right place?
+//! Audio-correctness oracle for the CLAP host — does it wire the right samples
+//! to the right place?
 //!
-//! The sibling `clap_conformance.rs` asserts the *shape* of the call the
-//! host builds: buffer geometry, event ordering, transport presence. That
-//! catches a malformed `clap_process`, but it cannot catch a host that
-//! builds a perfectly legal call and then hands input port 1's samples to
-//! the plugin's port 0, or collects the plugin's aux output as the main
-//! bus. Every struct field is correct; only the audio is wrong.
-//!
-//! So the reference plugin's output is a **closed-form function** of what
-//! the host handed it:
+//! `clap_conformance.rs` asserts the *shape* of the call the host builds, which
+//! cannot catch a host that builds a legal call and then hands input port 1's
+//! samples to the plugin's port 0. So the probe's output is a closed-form
+//! function of what the host handed it:
 //!
 //! ```text
 //! out[port][ch][i] = in[port][ch][i] + probe_tag(port, ch)
 //! ```
 //!
-//! `probe_tag` is `port * 1000 + channel + 1`, which makes every
-//! `(port, channel)` slot uniquely identifiable. A host that crosses
-//! channels, transposes ports, or misroutes the aux bus therefore produces
-//! arithmetically *wrong* samples that name the slot they came from —
-//! rather than merely suspicious-looking ones. The test asserts exact
-//! sample values.
+//! `probe_tag` is `port * 1000 + channel + 1`, and the input values are distinct
+//! primes below 1000, so every `input + tag` sum is unique across the layout: a
+//! host that crosses channels or transposes ports writes a value that names the
+//! mistake, and no coincidental match can let a routing bug pass.
 //!
-//! Input values are distinct primes per channel and the tags are multiples
-//! of 1000, so every `input + tag` sum is unique across the whole layout:
-//! no coincidental match can let a routing bug pass.
+//! The oracle runs against a `[2, 1]` layout (stereo main + mono aux), not
+//! `[2, 2]`: with equal-width ports a transposition still lands every pointer
+//! inside a correctly-sized buffer, so only the values differ.
 //!
-//! ## Asymmetric ports on purpose
-//!
-//! The oracle runs against a `[2, 1]` layout (stereo main + mono aux) on
-//! both sides, not `[2, 2]`. A symmetric layout hides index bugs — with
-//! equal-width ports a transposition still lands every pointer inside a
-//! correctly-sized buffer, so only the values differ. With `[2, 1]` the
-//! widths differ too, so the same bug is visible twice over.
-//!
-//! ## Process-global state
-//!
-//! The plugin's port layout is read **once at load time** and lives in a
-//! process-global (see `tutti_test_plugin_set_port_layout`), because the
-//! host queries `audio-ports` during `load` before any instance exists.
-//! Every test here therefore takes [`PROBE_LOCK`] across
-//! *configure → load → process → assert*, and restores the default layout
-//! on the way out — `clap_conformance.rs`'s tests assume the symmetric
-//! default and run in the same process.
+//! The port layout is read **once at load time** and lives in a process-global,
+//! so every test holds [`PROBE_LOCK`] across *configure → load → process →
+//! assert* and restores the default on the way out — `clap_conformance.rs`
+//! assumes the symmetric default and runs in the same process.
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -56,11 +36,10 @@ use tutti_clap_test_plugin::{probe_tag, REPORTED_LATENCY_SAMPLES, REPORTED_TAIL_
 const SAMPLE_RATE: f64 = 48_000.0;
 const MAX_FRAMES: u32 = 512;
 
-// Mirrors of the plugin's `PortLayoutMode` / `RenderMode` discriminants.
-// They cross the dlopen seam as bare `u32`s (a C ABI boundary — the
-// unit-newtype rule explicitly stops here), so the values are duplicated
-// rather than shared; `probe_setup_matches_plugin_discriminants` pins them
-// against the plugin's own enums so the duplication cannot silently drift.
+// Mirrors of the plugin's `PortLayoutMode` / `RenderMode` discriminants, which
+// cross the dlopen seam as bare `u32`s.
+// `probe_setup_matches_plugin_discriminants` pins them against the plugin's own
+// enums so the duplication cannot silently drift.
 const LAYOUT_SYMMETRIC_STEREO: u32 = 0;
 const LAYOUT_ASYMMETRIC_AUX: u32 = 1;
 
@@ -69,15 +48,10 @@ const RENDER_TAG_PASSTHROUGH: u32 = 1;
 const RENDER_TAG_ONLY: u32 = 2;
 const RENDER_LATENCY: u32 = 3;
 
-/// The plugin's port layout and render mode are process-global, and the
-/// layout is latched at load time. Serialize the whole
-/// configure → load → process → assert sequence so a parallel test cannot
-/// load against a layout this one is about to change (or read a capture
-/// this one overwrote).
-///
-/// This is a *different* lock from `clap_conformance.rs`'s `CAPTURE_LOCK`;
-/// the two test binaries are separate processes, so they never share a
-/// plugin image and cannot race each other.
+/// The plugin's port layout and render mode are process-global, and the layout
+/// is latched at load time. Serialize the whole configure → load → process →
+/// assert sequence so a parallel test cannot load against a layout this one is
+/// about to change.
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Handle to the plugin's process-global test controls, reached across the
@@ -141,9 +115,6 @@ struct ProbeSession<'a> {
 
 impl ProbeSession<'_> {
     /// Take the lock and select a port layout + render mode.
-    ///
-    /// Panics if the reference plugin was not built — [`probe_path`] resolves
-    /// it or fails loudly, mirroring `load_plugin` in `clap_conformance.rs`.
     fn begin(layout: u32, render: u32) -> Self {
         let guard = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let controls = ProbeControls::open();
@@ -185,17 +156,14 @@ impl Drop for ProbeSession<'_> {
 }
 
 /// Distinct per-channel input DC values. Primes, and all below 1000, so
-/// `input + probe_tag(port, ch)` is unique across every slot: the sum alone
-/// identifies which input landed in which output slot.
+/// `input + probe_tag(port, ch)` is unique across every slot.
 const INPUT_DC: [f32; 3] = [11.0, 23.0, 37.0];
 
-/// Run one block through the host with `channels` flat input channels and
-/// `channels` flat output channels, filling input channel `c` with
-/// `INPUT_DC[c]`. Returns the output channels.
+/// Run one block with `channels` flat input and output channels, filling input
+/// channel `c` with `INPUT_DC[c]`. Returns the output channels.
 ///
-/// The host distributes this flat channel list across the plugin's ports in
-/// order — with layout `[2, 1]`, channels 0,1 feed port 0 and channel 2
-/// feeds port 1.
+/// The host distributes the flat channel list across the plugin's ports in
+/// order — with layout `[2, 1]`, channels 0,1 feed port 0 and channel 2 port 1.
 fn drive_dc_block(inst: &mut ClapActive<f32>, channels: usize, frames: usize) -> Vec<Vec<f32>> {
     let ins: Vec<Vec<f32>> = (0..channels)
         .map(|c| vec![INPUT_DC[c % INPUT_DC.len()]; frames])
@@ -226,9 +194,8 @@ fn drive_block(
     outs
 }
 
-/// Flat channel index → `(port, channel_within_port)` for a port layout.
-/// The host lays the caller's channels out across ports in order, so this
-/// is the mapping the oracle's tags must agree with.
+/// Flat channel index → `(port, channel_within_port)`, the mapping the oracle's
+/// tags must agree with.
 fn slot_of(layout: &[u32], flat_channel: usize) -> (u32, u32) {
     let mut remaining = flat_channel;
     for (port, &width) in layout.iter().enumerate() {
@@ -245,10 +212,8 @@ fn slot_of(layout: &[u32], flat_channel: usize) -> (u32, u32) {
 // ---------------------------------------------------------------------------
 
 /// The host must report the plugin's asymmetric layout port-by-port, not
-/// collapse it to a channel total.
-///
-/// `num_input_channels() == 3` is true for `[2,1]`, `[1,2]` and `[3]` alike,
-/// so summing alone proves nothing. Assert the per-port widths.
+/// collapse it to a channel total. `num_input_channels() == 3` is true for
+/// `[2,1]`, `[1,2]` and `[3]` alike, so summing alone proves nothing.
 #[test]
 fn host_reports_asymmetric_port_layout_per_port() {
     let session = ProbeSession::begin(LAYOUT_ASYMMETRIC_AUX, RENDER_INERT);
@@ -310,9 +275,8 @@ fn host_reports_port_ids_distinct_from_indices() {
     );
 }
 
-/// The main-bus flag and the port name must survive the FFI per port —
-/// a host that reads port 0's info for every index would report both as
-/// "main".
+/// The main-bus flag and the port name must survive the FFI per port — a host
+/// that read port 0's info for every index would report both as "main".
 #[test]
 fn host_reports_per_port_flags_and_names() {
     let session = ProbeSession::begin(LAYOUT_ASYMMETRIC_AUX, RENDER_INERT);
@@ -333,10 +297,9 @@ fn host_reports_per_port_flags_and_names() {
     assert_eq!(p1.name, "aux");
 }
 
-/// An out-of-range port index must come back `None`, not a zeroed struct.
-/// The host zero-initialises the `clap_audio_port_info` it passes down, so
-/// ignoring the plugin's `false` return yields a plausible-looking port with
-/// id 0 and 0 channels.
+/// An out-of-range port index must come back `None`, not a zeroed struct. The
+/// host zero-initialises the `clap_audio_port_info` it passes down, so ignoring
+/// the plugin's `false` return yields a plausible port with id 0 and 0 channels.
 #[test]
 fn host_rejects_out_of_range_port_index() {
     let session = ProbeSession::begin(LAYOUT_ASYMMETRIC_AUX, RENDER_INERT);
@@ -354,21 +317,14 @@ fn host_rejects_out_of_range_port_index() {
 // The routing oracle.
 // ---------------------------------------------------------------------------
 
-/// **The central assertion.** Every output sample must equal its own
-/// slot's input plus its own slot's tag.
-///
-/// With `[2, 1]` ports and per-channel input DCs 11/23/37, the expected
-/// outputs are:
+/// **The central assertion.** Every output sample must equal its own slot's
+/// input plus its own slot's tag. With `[2, 1]` ports and input DCs 11/23/37:
 ///
 /// | flat ch | slot   | tag  | input | expected |
 /// |---------|--------|------|-------|----------|
 /// | 0       | (0, 0) | 1    | 11    | 12       |
 /// | 1       | (0, 1) | 2    | 23    | 25       |
 /// | 2       | (1, 0) | 1001 | 37    | 1038     |
-///
-/// Every sum is unique, so a host that swaps channels 0 and 1, transposes
-/// the main and aux ports, or feeds the aux input into the main slot writes
-/// a value that names the mistake.
 #[test]
 fn host_routes_each_channel_to_its_own_port_and_slot() {
     let session = ProbeSession::begin(LAYOUT_ASYMMETRIC_AUX, RENDER_TAG_PASSTHROUGH);
@@ -398,10 +354,8 @@ fn host_routes_each_channel_to_its_own_port_and_slot() {
 }
 
 /// Same oracle with the input side removed: output must be the tag alone.
-///
-/// Run alongside the passthrough test, this localises a failure. If
-/// `TagPassthrough` fails but this passes, the host's *output* collection is
-/// correct and its *input* distribution is at fault.
+/// Localises a failure — if `TagPassthrough` fails but this passes, the host's
+/// output collection is correct and its input distribution is at fault.
 #[test]
 fn host_collects_each_output_slot_from_the_right_port() {
     let session = ProbeSession::begin(LAYOUT_ASYMMETRIC_AUX, RENDER_TAG_ONLY);
@@ -424,8 +378,8 @@ fn host_collects_each_output_slot_from_the_right_port() {
          mono aux port (tag 1001), not a third channel of the main port"
     );
 
-    // And the tag must be constant across the block — a host that only
-    // wires the first sample of each channel would pass a spot check.
+    // Constant across the block — a host that wired only the first sample of
+    // each channel would pass a spot check.
     for (flat, out) in outs.iter().enumerate() {
         assert!(
             out.iter().all(|&s| s == want[flat]),
@@ -434,15 +388,10 @@ fn host_collects_each_output_slot_from_the_right_port() {
     }
 }
 
-/// The fan-out case: more output channels than input channels.
-///
-/// The host must zero-pad the missing *input* slots rather than leaving
-/// them uninitialised or aliasing another channel. With 1 caller input
-/// channel against a 3-channel layout, slots (0,1) and (1,0) see silence, so
-/// their outputs are the bare tag; slot (0,0) sees the real input.
-///
-/// A host that aliased the pad onto the caller's channel would make slot
-/// (0,1) read 11.0 and produce 13.0 instead of 2.0.
+/// The fan-out case: more output channels than input channels. The host must
+/// zero-pad the missing *input* slots rather than leaving them uninitialised or
+/// aliasing another channel — an aliased pad would make slot (0,1) read 11.0
+/// and produce 13.0 instead of 2.0.
 #[test]
 fn host_zero_pads_absent_input_channels() {
     let session = ProbeSession::begin(LAYOUT_ASYMMETRIC_AUX, RENDER_TAG_PASSTHROUGH);
@@ -470,16 +419,9 @@ fn host_zero_pads_absent_input_channels() {
 }
 
 /// In-place processing: the caller hands the *same* backing buffer as both
-/// input and output for a channel.
-///
-/// This is the layout a host uses to avoid a copy, and it is where a plugin
-/// or host that reads input after writing output gets a corrupted result.
-/// The oracle makes it checkable: with input `x` the output must still be
-/// `x + tag`, even though writing the output destroys `x`.
-///
-/// The host's own `refill_port_buffers` builds separate input and output
-/// pointer tables, so this asserts the host does not, for example, hand the
-/// output pointers to both sides.
+/// input and output for a channel — the layout a host uses to avoid a copy, and
+/// where reading input after writing output corrupts the result. With input `x`
+/// the output must still be `x + tag`, even though writing it destroys `x`.
 #[test]
 fn host_handles_in_place_style_buffers() {
     let session = ProbeSession::begin(LAYOUT_ASYMMETRIC_AUX, RENDER_TAG_PASSTHROUGH);
@@ -487,11 +429,9 @@ fn host_handles_in_place_style_buffers() {
     const FRAMES: usize = 40;
     let layout = [2u32, 1];
 
-    // Pre-seed the OUTPUT buffers with the input values, then pass them as
-    // outputs while passing equal-valued inputs. If the host let the plugin
-    // read its own output buffer as input, the result would be
-    // `(input + tag) + tag` on any slot processed twice, or the tag alone if
-    // the output were zeroed first.
+    // Pre-seed the OUTPUT buffers with the input values. If the host let the
+    // plugin read its own output buffer as input, the result would be
+    // `(input + tag) + tag`, or the tag alone if the output were zeroed first.
     let inputs: Vec<Vec<f32>> = (0..3).map(|c| vec![INPUT_DC[c]; FRAMES]).collect();
     let mut outs: Vec<Vec<f32>> = (0..3).map(|c| vec![INPUT_DC[c]; FRAMES]).collect();
     {
@@ -520,11 +460,9 @@ fn host_handles_in_place_style_buffers() {
     }
 }
 
-/// The symmetric layout must route correctly too — the asymmetric case is
-/// the sharper test, but a host could in principle special-case one.
-///
-/// With `[2]` in/out, tags are 1 and 2, so outputs are 12 and 25. A swapped
-/// pair would read 13 and 24 — both wrong, and distinguishably so.
+/// The symmetric layout must route correctly too — a host could special-case
+/// one. With `[2]` in/out the outputs are 12 and 25; a swapped pair reads 13
+/// and 24.
 #[test]
 fn host_routes_symmetric_stereo_correctly() {
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_TAG_PASSTHROUGH);
@@ -542,12 +480,10 @@ fn host_routes_symmetric_stereo_correctly() {
     );
 }
 
-/// Routing must be stable across blocks: the tags cannot drift as the
-/// host's scratch is reused.
-///
-/// `refill_port_buffers` rebuilds the pointer tables every call from a
-/// shared channel pool. An off-by-one in the pool's input/output split would
-/// show up on a later block once the pads have been touched.
+/// Routing must be stable across blocks: the tags cannot drift as the host's
+/// scratch is reused. `refill_port_buffers` rebuilds the pointer tables every
+/// call from a shared channel pool, so an off-by-one in the pool's input/output
+/// split shows up on a later block once the pads have been touched.
 #[test]
 fn host_routing_is_stable_across_blocks() {
     let session = ProbeSession::begin(LAYOUT_ASYMMETRIC_AUX, RENDER_TAG_PASSTHROUGH);
@@ -598,10 +534,9 @@ fn host_reports_plugin_latency() {
     );
 }
 
-/// `clap.tail` and `clap.latency` are separate extensions with identical
-/// vtable shapes (one `get() -> u32`). The probe reports different primes
-/// from each, so a host that resolved one extension's pointer and read the
-/// other's value is caught.
+/// `clap.tail` and `clap.latency` are separate extensions with identical vtable
+/// shapes (one `get() -> u32`). The probe reports different primes from each,
+/// so a host reading one through the other's vtable is caught.
 #[test]
 fn host_reports_tail_distinctly_from_latency() {
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_INERT);
@@ -615,14 +550,13 @@ fn host_reports_tail_distinctly_from_latency() {
     );
 }
 
-/// Latency as *audio*, not just a number: an impulse fed at a known offset
-/// must emerge exactly `REPORTED_LATENCY_SAMPLES` later.
+/// Latency as *audio*, not just a number: an impulse fed at a known offset must
+/// emerge exactly `REPORTED_LATENCY_SAMPLES` later.
 ///
-/// This is what makes the reported latency trustworthy. A plugin can report
-/// any number; here the plugin's delay line and its `clap.latency` value are
-/// the same constant, so the emerging impulse position confirms the host is
-/// driving the plugin's blocks contiguously — no dropped, duplicated, or
-/// reordered block — which is exactly what delay compensation depends on.
+/// The plugin's delay line and its `clap.latency` value are the same constant,
+/// so the emerging impulse position confirms the host drives the plugin's
+/// blocks contiguously — no dropped, duplicated, or reordered block — which is
+/// what delay compensation depends on.
 #[test]
 fn reported_latency_matches_observed_delay() {
     let session = ProbeSession::begin(LAYOUT_SYMMETRIC_STEREO, RENDER_LATENCY);
@@ -773,11 +707,10 @@ fn host_render_mode_reaches_the_plugin() {
 // Guards on the test's own assumptions.
 // ---------------------------------------------------------------------------
 
-/// The layout/render discriminants above are hand-mirrored across the C ABI
-/// seam. Pin them against the plugin's own enums so a reordering of either
-/// enum breaks this test rather than silently making every oracle above run
-/// in the wrong mode (which would still pass — `Inert` leaves the host's
-/// zeroed buffers alone, and zero equals zero).
+/// Pin the hand-mirrored discriminants against the plugin's own enums, so a
+/// reordering breaks this test rather than silently running every oracle above
+/// in the wrong mode — which would still pass, since `Inert` leaves the host's
+/// zeroed buffers alone and zero equals zero.
 #[test]
 fn probe_setup_matches_plugin_discriminants() {
     use tutti_clap_test_plugin::{PortLayoutMode, RenderMode};
@@ -794,9 +727,8 @@ fn probe_setup_matches_plugin_discriminants() {
 }
 
 /// The oracle's discriminating power rests on every `input + tag` sum being
-/// unique across the layout. Assert that rather than trusting the constants
-/// stay chosen well — if a later edit makes two slots collide, the routing
-/// tests would silently stop catching a swap between them.
+/// unique across the layout. Asserted rather than trusted: if a later edit makes
+/// two slots collide, the routing tests silently stop catching a swap.
 #[test]
 fn probe_tags_and_inputs_are_mutually_distinguishing() {
     let layout = [2u32, 1];
@@ -818,8 +750,8 @@ fn probe_tags_and_inputs_are_mutually_distinguishing() {
         }
     }
 
-    // And a *swapped* assignment must differ from the correct one, which is
-    // the property the routing tests actually depend on.
+    // A *swapped* assignment must differ from the correct one — the property
+    // the routing tests actually depend on.
     for i in 0..sums.len() {
         for j in (i + 1)..sums.len() {
             let (pi, ci) = slot_of(&layout, i);

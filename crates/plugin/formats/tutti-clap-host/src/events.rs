@@ -690,25 +690,14 @@ impl InputEventList {
     /// point is therefore denormalized against `ranges` (`param_id → (min,
     /// max)`) as `min + v·(max - min)`, clamped to `[min, max]`.
     ///
-    /// ## An unknown id on a plugin that *does* report params is dropped
-    ///
-    /// When `plugin_claims_params` is false the plugin has no `params`
-    /// extension (or reports zero), so there is nothing to denormalize against
-    /// and every point passes through unchanged — the safe fallback for the
-    /// common `0..1` param, and the case this function was written for.
-    ///
-    /// When it is true, an id missing from `ranges` is a different fact.
-    /// `get_info(index)` is CLAP's only route from a parameter index to a
-    /// `param_id`, so a plugin that declines to describe a parameter leaves the
-    /// host unable to name it, and `parameters()` truncates the list at that
-    /// hole. Passing the point through would hand a plugin expecting, say,
-    /// `100..1100` the raw normalized `0..1` — silently, and audibly. Dropping
-    /// it loses the automation, which is the lesser harm and the only one the
-    /// host can detect.
-    ///
-    /// The flag is needed because `ranges.is_empty()` cannot tell the two apart:
-    /// a hole at index 0 truncates the map to nothing while the plugin still
-    /// claims parameters.
+    /// An id missing from `ranges` passes through unchanged when
+    /// `plugin_claims_params` is false — no params extension, so `0..1` is the
+    /// safe reading — but is **dropped** when it is true: `parameters()`
+    /// truncated at a `get_info` hole, and forwarding raw `0..1` to a param
+    /// expecting, say, `100..1100` is silent and audible. Losing the automation
+    /// is the lesser harm. The flag is needed because `ranges.is_empty()`
+    /// cannot tell the two apart — a hole at index 0 empties the map while the
+    /// plugin still claims parameters.
     pub fn add_param_changes(
         &mut self,
         changes: &ParameterChanges,
@@ -861,20 +850,14 @@ unsafe extern "C" fn input_events_get(
 }
 
 /// How many SysEx payload buffers [`OutputEventList::reserve`] pre-warms.
-///
-/// Capped well below the event reserve (256 at the time of writing) because
-/// SysEx is a rare event type — a plugin emitting one per block is already
-/// unusual, and reserving one buffer per *possible* event would allocate 256
-/// buffers against a case that emits one. Beyond this the pool grows itself,
-/// once, and then recycles.
+/// Far below the event reserve: SysEx is rare, so one buffer per *possible*
+/// event would be 256 allocations against a case that emits one. Past this the
+/// pool grows itself once and then recycles.
 const SYSEX_POOL_PREWARM: usize = 8;
 
-/// Capacity each pre-warmed SysEx buffer starts with.
-///
-/// 64 bytes covers the common short messages (identity replies, GS/XG mode
-/// sets, MPE configuration) without a grow. A longer payload — a bulk dump —
-/// grows its buffer once and then keeps that capacity through the pool, so the
-/// cost is paid on the first such message rather than every one.
+/// Capacity each pre-warmed SysEx buffer starts with — enough for the common
+/// short messages (identity replies, GS/XG mode sets, MPE config) without a
+/// grow. A bulk dump grows its buffer once and keeps that capacity in the pool.
 const SYSEX_PREWARM_BYTES: usize = 64;
 
 /// Owned list that collects events produced by the plugin during
@@ -886,25 +869,17 @@ const SYSEX_PREWARM_BYTES: usize = 64;
 pub struct OutputEventList {
     pub(crate) list: clap_output_events,
     pub(crate) events: Vec<ClapEvent>,
-    /// Recycled SysEx payload buffers (H3).
+    /// Recycled SysEx payload buffers.
     ///
-    /// CLAP hands `try_push` a `buffer` owned by the *plugin* and valid only for
-    /// the duration of that call, so a host that keeps the event must copy the
-    /// bytes. That copy was a bare `to_vec()` — a heap allocation per SysEx
-    /// event, per block, executed from inside the plugin's `process` on the
-    /// audio thread. Clearing the list then *freed* each buffer, so even a
-    /// plugin emitting the same one event every block allocated and freed every
-    /// block; there was nothing to amortise against.
+    /// CLAP's `try_push` buffer is plugin-owned and valid only for that call, so
+    /// the host must copy — on the audio thread, per event, per block.
+    /// [`Self::clear`] moves each payload `Vec` here instead of dropping it and
+    /// `try_push` refills one, so the allocator is touched only for a payload
+    /// larger than any buffer yet seen.
     ///
-    /// [`Self::clear`] now moves each payload `Vec` here instead of dropping it,
-    /// and `try_push` takes one back out and refills it. A steady-state plugin
-    /// therefore recycles the same buffers indefinitely: the allocator is
-    /// touched only when a payload arrives larger than any buffer yet seen.
-    ///
-    /// A pool of whole `Vec`s rather than one flat arena because the
-    /// `ClapEvent::MidiSysex` variant's `buffer` pointer aliases its own
-    /// payload — an arena that reallocated while filling would dangle every
-    /// pointer already handed out.
+    /// Whole `Vec`s rather than one arena: `ClapEvent::MidiSysex`'s `buffer`
+    /// pointer aliases its own payload, and an arena reallocating mid-fill would
+    /// dangle every pointer already handed out.
     pub(crate) sysex_pool: Vec<Vec<u8>>,
 }
 
@@ -941,11 +916,9 @@ impl OutputEventList {
     /// once during plugin activation so the plugin's `try_push` callback
     /// doesn't grow the inner Vec.
     ///
-    /// Also pre-warms the SysEx payload pool (H3). Without this, the *first*
-    /// block a plugin emits SysEx in still allocates — the pool is only fed by
-    /// `clear`, which has nothing to recycle until an event has been pushed
-    /// once. Priming here moves that one-off cost to activation, where
-    /// allocating is free.
+    /// Also pre-warms the SysEx payload pool: the pool is fed only by `clear`,
+    /// so without priming, the first block emitting SysEx still allocates on
+    /// the audio thread.
     pub fn reserve(&mut self, n: usize) {
         self.events.reserve(n);
 
@@ -1102,17 +1075,10 @@ impl EventList for OutputEventList {
         self.events.len()
     }
 
-    /// Empty the list, **recycling** SysEx payload buffers rather than freeing
-    /// them (H3).
-    ///
-    /// `process` calls this at the top of every block. A plain `events.clear()`
-    /// dropped each `ClapEvent`, and with it the `Vec<u8>` inside every
-    /// `MidiSysex` — so a plugin emitting SysEx steadily paid one free here and
-    /// one allocation in `try_push` per event per block. Draining the payloads
-    /// into [`Self::sysex_pool`] first turns that into pointer moves.
-    ///
-    /// This is a `drain` rather than a `retain`+swap because the events must
-    /// leave the list either way; the only question is where their buffers go.
+    /// Empty the list, **recycling** SysEx payload buffers into
+    /// [`Self::sysex_pool`] rather than freeing them. `process` calls this every
+    /// block; a plain `events.clear()` dropped the `Vec<u8>` inside each
+    /// `MidiSysex`, pairing a free here with an allocation in `try_push`.
     fn clear(&mut self) {
         for event in self.events.drain(..) {
             if let ClapEvent::MidiSysex { _data, .. } = event {
@@ -1195,14 +1161,10 @@ unsafe extern "C" fn output_events_try_push(
         CLAP_EVENT_MIDI_SYSEX => {
             let e = &*(event as *const clap_event_midi_sysex);
             if !e.buffer.is_null() && e.size > 0 {
-                // H3: recycle a payload buffer from the pool instead of
-                // `to_vec()`-ing a fresh one. This runs on the audio thread —
-                // the plugin calls it from inside its own `process` — so the
-                // allocation the old shape made was a per-event, per-block heap
-                // touch in the callback. `extend_from_slice` into a pooled `Vec`
-                // reuses the capacity a previous block left behind and only
-                // reaches the allocator when a payload exceeds every buffer the
-                // pool has seen.
+                // Recycle a pooled buffer instead of `to_vec()`-ing a fresh
+                // one: the plugin calls this from inside its own `process`, so
+                // that was a per-event, per-block allocation on the audio
+                // thread.
                 let mut data = output_list.sysex_pool.pop().unwrap_or_default();
                 data.clear();
                 data.extend_from_slice(std::slice::from_raw_parts(e.buffer, e.size as usize));

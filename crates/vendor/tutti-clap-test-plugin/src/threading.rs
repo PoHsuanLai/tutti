@@ -1,21 +1,13 @@
 //! THREADING probe — the plugin side of the host's thread model, timers, log,
 //! and the host-callback round trips.
 //!
-//! Kept in its own module (rather than inlined into `lib.rs`) because the
-//! threading surface needs its own capture channel, its own extension vtables,
-//! and a *command* channel the test drives from outside. `lib.rs` holds only
-//! the four call-site hooks this module exports.
+//! Its own module because the threading surface needs its own capture channel,
+//! its own extension vtables, and a *command* channel the test drives from
+//! outside. `lib.rs` holds only the four call-site hooks this module exports.
 //!
-//! ## What is recorded, and why per-call-site
-//!
-//! CLAP's thread model is not one answer, it is one answer *per context*.
-//! `clap.thread-check` lets a plugin ask "am I on the main thread / the audio
-//! thread right now?", and plugins branch on it to pick a locking strategy. A
-//! host that answers wrong sends a plugin down the wrong path — the classic
-//! symptom being a lock taken on the audio thread, or a lock *not* taken where
-//! it was needed. So the probe records the pair `(is_main, is_audio)` separately
-//! at each site the host can call us from ([`Site`]), and the test asserts each
-//! one against what CLAP says that site is:
+//! CLAP's thread model is one answer *per context*, and plugins branch on
+//! `clap.thread-check` to pick a locking strategy. So the probe records
+//! `(is_main, is_audio)` separately at each [`Site`] the host can call from:
 //!
 //! | site              | CLAP tag        | expected (is_main, is_audio) |
 //! |-------------------|-----------------|------------------------------|
@@ -26,30 +18,20 @@
 //! | `on_main_thread`  | `[main-thread]` | (true, false)                |
 //! | `on_timer`        | `[main-thread]` | (true, false)                |
 //!
-//! Note `start_processing` and `process` expect `is_main == false` *even when
-//! the host drives them from the OS main thread*, which our host's test harness
-//! does. That is the C1 property: the two roles are alternatives, and a plugin's
-//! own `assert(!is_main_thread())` inside an `[audio-thread]` call has to be
-//! able to fail. Asserting it from a real plugin across the real FFI is what
-//! the in-crate unit test cannot do — it calls the vtable directly rather than
-//! observing it from inside a host-driven plugin call.
+//! `start_processing` and `process` expect `is_main == false` *even when the
+//! host drives them from the OS main thread*, which the test harness does: the
+//! two roles are alternatives, so a plugin's own `assert(!is_main_thread())`
+//! inside an `[audio-thread]` call has to be able to fail.
 //!
-//! ## Why atomics rather than a mutex
+//! Every field is a plain atomic rather than a `Mutex`, because the `process`
+//! and `start_processing` sites run on the audio thread of the very host being
+//! measured.
 //!
-//! The `process` and `start_processing` sites run on the audio thread. Recording
-//! through a `Mutex` (as the `ProcessCapture` path does) would put a lock on the
-//! RT path of the very host we are measuring, and a contended one at that if the
-//! test polls concurrently. Every field here is a plain atomic; the record is a
-//! handful of relaxed stores.
-//!
-//! ## Commands
-//!
-//! Some behaviours only exist if the plugin *initiates* them — registering a
-//! timer, emitting a log line, calling `request_restart`. The test sets a
-//! command word via [`tutti_test_plugin_thread_command`]; the plugin consumes it
-//! at the next call site that is legal for that command. Commands are latched
-//! rather than executed inline so the test never has to reach into the plugin
-//! from a thread the CLAP spec does not allow.
+//! Behaviours that only exist if the plugin *initiates* them — registering a
+//! timer, emitting a log line, `request_restart` — are latched via
+//! [`tutti_test_plugin_thread_command`] and consumed at the next call site legal
+//! for that command, so the test never reaches into the plugin from a thread
+//! the CLAP spec does not allow.
 
 use std::ffi::{c_char, c_void, CStr};
 use std::ptr;
@@ -104,8 +86,8 @@ pub struct ThreadAnswer {
     /// `is_main`/`is_audio` meaningless, so the test checks this first.
     pub ext_present: bool,
     /// How many times this site has run since the last reset. Timer tests
-    /// assert on the delta, which is what makes "fires" and "stops firing"
-    /// checkable without a wall-clock wait.
+    /// assert on the delta, making "fires" and "stops firing" checkable without
+    /// a wall-clock wait.
     pub visits: u32,
 }
 
@@ -115,17 +97,17 @@ pub struct ThreadAnswer {
 pub struct ThreadCapture {
     /// One record per [`Site`], indexed by its discriminant.
     pub sites: [ThreadAnswer; SITE_COUNT],
-    /// Timer id the host handed back from `register_timer`, or 0 if the plugin
-    /// has not registered one. CLAP ids are opaque, but a host that never
-    /// writes the out-param leaves this 0, which the test rejects.
+    /// Timer id the host handed back from `register_timer`, or 0 if none is
+    /// registered. CLAP ids are opaque, but a host that never writes the
+    /// out-param leaves this 0, which the test rejects.
     pub timer_id: u32,
     /// Whether the host's `register_timer` returned true.
     pub timer_registered: bool,
     /// Whether the host's `unregister_timer` returned true.
     pub timer_unregistered: bool,
-    /// The most recent `timer_id` the host passed back into `on_timer`. The
-    /// test asserts it equals `timer_id` — a host that fires timers with a
-    /// wrong or recycled id would route the callback to the wrong subscriber.
+    /// The most recent `timer_id` the host passed back into `on_timer`. Must
+    /// equal `timer_id`: a wrong or recycled id routes the callback to the
+    /// wrong subscriber inside the plugin.
     pub last_fired_timer_id: u32,
     /// Whether the host offered `clap.timer-support` when the plugin asked.
     pub timer_ext_present: bool,
@@ -217,12 +199,10 @@ static THREADING: ThreadGlobals = ThreadGlobals {
 pub const CMD_NONE: u32 = 0;
 /// Register a `period_ms = 0` timer with the host, from `on_main_thread`.
 ///
-/// Zero is deliberate: the host fires a timer once `elapsed >= period_ms`, so a
-/// zero-period timer is due on every `poll_timers` call. That makes "the timer
-/// fires" a *deterministic* assertion — one `poll_timers` call, one callback —
-/// instead of a race against a wall clock. A nonzero period would require the
-/// test to either sleep (flaky, and never real synchronization) or assert
-/// nothing.
+/// Zero is deliberate: the host fires once `elapsed >= period_ms`, so the timer
+/// is due on every `poll_timers` call. That makes "the timer fires" one poll,
+/// one callback — deterministic, rather than a race a test could only resolve
+/// by sleeping.
 pub const CMD_REGISTER_TIMER: u32 = 1;
 /// Unregister the timer previously registered, from `on_main_thread`.
 pub const CMD_UNREGISTER_TIMER: u32 = 2;
@@ -271,9 +251,8 @@ pub unsafe extern "C" fn tutti_test_plugin_thread_capture(out: *mut ThreadCaptur
     true
 }
 
-/// Clear every recorded site and counter. The test calls this before each
-/// scenario so `visits` deltas mean "since this scenario started" — the whole
-/// test binary shares one loaded image and therefore one global.
+/// Clear every recorded site and counter, so `visits` deltas mean "since this
+/// scenario started" — the whole test binary shares one loaded image.
 ///
 /// Does **not** clear `timer_id`: a timer registered in one scenario is still
 /// registered with the host, and the test needs the id to assert on the
@@ -332,10 +311,9 @@ pub unsafe fn run_pending_command(site: Site, host: *const clap_host) {
     if cmd == CMD_NONE {
         return;
     }
-    // Only run a command at a site the CLAP spec allows it from. Timer
-    // registration and logging are `[main-thread]`; the two request_* calls are
-    // `[thread-safe]` but we drive them from `process` because that is where a
-    // real plugin reaches the decision to ask for a restart.
+    // Only run a command at a site CLAP allows it from. Timer registration and
+    // logging are `[main-thread]`; the two request_* calls are `[thread-safe]`
+    // but driven from `process`, where a real plugin reaches the decision.
     let legal = match cmd {
         CMD_REGISTER_TIMER | CMD_UNREGISTER_TIMER | CMD_LOG_ALL_SEVERITIES => {
             site == Site::OnMainThread
@@ -441,9 +419,9 @@ unsafe fn unregister_timer(host: *const clap_host) {
 // ---------------------------------------------------------------------------
 
 /// The seven CLAP severities, paired with the message the plugin sends at each.
-/// The messages are distinct so the host-side record can be checked
-/// severity-by-severity rather than only by count — a host that routed every
-/// line through one severity arm would otherwise pass.
+/// The messages are distinct so the host-side record is checkable
+/// severity-by-severity — a host routing every line through one arm would
+/// otherwise pass on count alone.
 const LOG_LINES: [(i32, &CStr); 7] = [
     (CLAP_LOG_DEBUG, c"tutti-probe severity debug"),
     (CLAP_LOG_INFO, c"tutti-probe severity info"),

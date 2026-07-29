@@ -4,33 +4,22 @@
 //! CLAP FFI.
 //!
 //! Companion to `clap_conformance.rs` (buffer geometry + event delivery) and
-//! `clap_threading_conformance.rs` (thread model + callbacks).
+//! `clap_threading_conformance.rs` (thread model + callbacks). What a real
+//! plugin adds over `unit_tests.rs`'s primitive-level coverage is the wiring,
+//! where the two big hazards live:
 //!
-//! ## Why a real plugin adds anything over `unit_tests.rs`
-//!
-//! `unit_tests.rs` already exercises `InputStream`/`OutputStream` against
-//! hand-written `read`/`write` calls, and `params.rs` has stub-vtable tests for
-//! `value_to_text`/`text_to_value`. Both prove the *primitives*. Neither can
-//! prove the host **wires the primitives to the plugin correctly**, and the two
-//! biggest hazards live exactly in that gap:
-//!
-//! - **index-vs-id.** Every CLAP params entry point takes either a 0-based
+//! - **index-vs-id.** CLAP params entry points take either a 0-based
 //!   `param_index` (`get_info`) or an opaque `param_id` (`get_value`, `flush`,
-//!   the event structs). A host that passes one where the other belongs is
-//!   invisible to any fixture whose ids happen to be `0..n`. The probe's ids are
-//!   `101, 4242, 9` — non-contiguous, nonzero, and *not* in index order — so the
-//!   confusion is a hard failure here.
-//! - **stream fidelity.** `state.save` hands the plugin an ostream it writes in
-//!   a loop; `state.load` hands it an istream it reads in a loop. A host that
-//!   honours only the first `write`, or that restarts the read offset, produces
-//!   a payload the plugin *rejects* — but only if the plugin actually chunks its
-//!   I/O, which the probe deliberately does (7-byte writes, 5-byte reads).
-//!
-//! ## Determinism
+//!   the event structs). The probe's ids are `101, 4242, 9` — non-contiguous,
+//!   nonzero, and not in index order — so a confusion any `0..n` fixture would
+//!   hide is a hard failure here.
+//! - **stream fidelity.** The probe chunks its state I/O on purpose (7-byte
+//!   writes, 5-byte reads), so a host that honours only the first `write` or
+//!   restarts the read offset produces a payload the plugin rejects.
 //!
 //! Nothing here waits on a clock. The plugin's parameter table and capture are
-//! process-globals (one loaded image), so every test holds [`PROBE_LOCK`] for
-//! its whole scenario and resets the probe at the top.
+//! process-globals, so every test holds [`PROBE_LOCK`] for its whole scenario
+//! and resets the probe at the top.
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -61,8 +50,8 @@ const OUT_GESTURE_END: u32 = 2;
 const OUT_PARAM_MOD: u32 = 3;
 
 /// The probe's capture, value table and command word are process-globals shared
-/// by every test in this binary (one dlopen'd image). Serialize whole scenarios
-/// — reset → drive → read — so one test cannot observe another's writes.
+/// by every test in this binary. Serialize whole scenarios — reset → drive →
+/// read — so one test cannot observe another's writes.
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
 // ---------------------------------------------------------------------------
@@ -78,9 +67,6 @@ struct Probe {
 impl Probe {
     /// Take the lock and clear the probe's capture, restoring every parameter to
     /// its declared default.
-    ///
-    /// Panics if the reference plugin wasn't built — [`probe_path`] resolves it
-    /// or fails loudly, mirroring `load_plugin` in `clap_conformance.rs`.
     fn acquire() -> Self {
         let lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         param_reset();
@@ -114,10 +100,9 @@ impl Probe {
 
     /// Read a parameter's value straight out of the plugin, bypassing the host.
     ///
-    /// This is what makes a set/load assertion non-vacuous: `ClapLoaded::parameter`
-    /// asks the *plugin* too, so on its own it cannot distinguish "the host
-    /// delivered the change" from "the host is echoing its own cache". Comparing
-    /// both against this direct peek pins the value to the plugin's own table.
+    /// What makes a set/load assertion non-vacuous: on its own
+    /// `ClapLoaded::parameter` cannot distinguish "the host delivered the
+    /// change" from "the host is echoing its own cache".
     fn peek(&self, id: u32) -> Option<f64> {
         peek_param(id)
     }
@@ -239,9 +224,8 @@ fn read_process_capture() -> ProcessCapture {
 /// The host must report every parameter, in the plugin's *index* order, with
 /// the plugin's own ids — not the indices it iterated with.
 ///
-/// The whole point of the probe's `101, 4242, 9` id table: a host that returns
-/// `0, 1, 2` (index-as-id) or `9, 101, 4242` (helpfully sorted) fails here,
-/// while a `0..n` fixture would let both through.
+/// The point of the `101, 4242, 9` id table: a host returning `0, 1, 2`
+/// (index-as-id) or `9, 101, 4242` (sorted) fails here.
 #[test]
 fn host_enumerates_parameters_with_plugin_ids_in_index_order() {
     let probe = Probe::acquire();
@@ -294,10 +278,8 @@ fn host_projects_parameter_metadata_exactly() {
 }
 
 /// `CLAP_PARAM_IS_STEPPED` must reach the shared vocabulary as a nonzero
-/// `step_count`, and its absence as zero.
-///
-/// Param 9 ("Mode") is the only stepped one in the table, so this also catches a
-/// host that sets the flag on every parameter or on none.
+/// `step_count`, and its absence as zero. Param 9 ("Mode") is the only stepped
+/// one, so this also catches a host that sets the flag on every param or none.
 #[test]
 fn host_derives_step_count_from_the_stepped_flag() {
     let probe = Probe::acquire();
@@ -353,9 +335,9 @@ fn host_projects_parameter_flags() {
 
 /// A fresh plugin reports each parameter's declared default, keyed by **id**.
 ///
-/// Asking by id is the assertion: the probe's `get_value` rejects an unknown id
-/// rather than clamping, so a host passing an index gets `None` for 0 and 1 —
-/// and, worse, the *wrong parameter* for 2, since id 9 sits at index 2.
+/// The probe's `get_value` rejects an unknown id rather than clamping, so a
+/// host passing an index gets `None` for 0 and 1 — and the *wrong parameter*
+/// for 2, since id 9 sits at index 2.
 #[test]
 fn host_reads_parameter_values_by_id_not_index() {
     let probe = Probe::acquire();
@@ -370,8 +352,8 @@ fn host_reads_parameter_values_by_id_not_index() {
         );
     }
 
-    // The indices are 0, 1, 2. None is a valid id in this table, so every one
-    // must be rejected — that is what makes the assertion above load-bearing.
+    // The indices are 0, 1, 2. None is a valid id, so every one must be
+    // rejected — that is what makes the assertion above load-bearing.
     for index in 0..probe_params().len() as u32 {
         assert_eq!(
             loaded.parameter(index),
@@ -425,9 +407,8 @@ fn host_sets_parameter_through_flush_on_an_inactive_instance() {
 /// The `PARAM_VALUE` event the host synthesises for `set_parameter` must carry
 /// the id it was asked for and the value verbatim.
 ///
-/// `set_parameter` takes a *plain* value (CLAP has no normalization), so unlike
-/// the `ProcessContext::params` path there is no range scaling to apply. A host
-/// that denormalized here would turn 777.5 into something else.
+/// `set_parameter` takes a *plain* value, so unlike the `ProcessContext::params`
+/// path there is no range scaling to apply.
 #[test]
 fn set_parameter_emits_one_param_value_event_with_id_and_value_intact() {
     let probe = Probe::acquire();
@@ -456,11 +437,9 @@ fn set_parameter_emits_one_param_value_event_with_id_and_value_intact() {
 /// `PARAM_VALUE` events, sorted by sample offset, carrying the plugin's id, and
 /// **denormalized against that parameter's plain range**.
 ///
-/// The host caches `(id, min, max)` at `activate()` and maps normalized `0..1`
-/// to `min + v·(max - min)`. Param 101's range is `100..1100`, so:
-///   0.25 → 350, 0.75 → 850.
-/// A host that forwards the normalized value verbatim delivers 0.25 to a
-/// parameter whose minimum is 100 — silently pinned to the bottom of its range.
+/// The host maps normalized `0..1` to `min + v·(max - min)`; param 101's range
+/// is `100..1100`, so 0.25 → 350 and 0.75 → 850. A host forwarding the
+/// normalized value verbatim delivers 0.25 to a parameter whose minimum is 100.
 #[test]
 fn host_denormalizes_automation_against_the_parameter_range() {
     let probe = Probe::acquire();
@@ -501,10 +480,7 @@ fn host_denormalizes_automation_against_the_parameter_range() {
 
 /// Denormalization is per-parameter: two params with different ranges,
 /// automated in the same block at the same normalized value, must arrive at
-/// *different* plain values.
-///
-/// This is what a single-range host — one that caches one range, or the first,
-/// or the last — cannot fake.
+/// *different* plain values. A host caching a single range cannot fake this.
 #[test]
 fn host_denormalizes_each_parameter_against_its_own_range() {
     let probe = Probe::acquire();
@@ -547,10 +523,9 @@ fn host_decodes_plugin_emitted_param_values() {
     let probe = Probe::acquire();
     let p = param(2);
 
-    // Activate *before* queueing. Each helper here opens the image with
-    // `libloading` and drops the handle on return; while the host holds its own
-    // load the refcount stays above zero, but before that first load the drop is
-    // a `dlclose` that unloads the image and takes the queue with it.
+    // Activate *before* queueing. Each helper opens the image and drops the
+    // handle on return; before the host's own load the refcount reaches zero,
+    // so that drop is a `dlclose` that takes the queue with it.
     let mut inst = probe.activate();
     probe.queue_output(OUT_PARAM_VALUE, p.id, 2.0);
 
@@ -566,17 +541,16 @@ fn host_decodes_plugin_emitted_param_values() {
 /// Gesture begin/end and modulation events the plugin emits are *not*
 /// representable as parameter values, and must not be silently dropped.
 ///
-/// `OutputEventList::fill_param_changes` matches only `ParamValue`; the host's
-/// answer for the rest is `fill_gestures`. This drives all four kinds at once
-/// and asserts each arrives with its own type and id — a host that collapses
-/// them into `PARAM_VALUE`, or drops the two gesture types, fails here.
+/// `fill_param_changes` matches only `ParamValue`; the rest go through
+/// `fill_gestures`. A host that collapses all four kinds into `PARAM_VALUE`, or
+/// drops the two gesture types, fails here.
 #[test]
 fn host_preserves_gesture_and_modulation_events_from_the_plugin() {
     let probe = Probe::acquire();
     let p = param(0);
     // Activate first — see the note in `host_decodes_plugin_emitted_param_values`.
     let mut inst = probe.activate();
-    // A realistic knob-drag: begin, a value, end — plus a modulation.
+    // A knob-drag: begin, a value, end — plus a modulation.
     probe.queue_output(OUT_GESTURE_BEGIN, p.id, 0.0);
     probe.queue_output(OUT_PARAM_VALUE, p.id, 500.0);
     probe.queue_output(OUT_GESTURE_END, p.id, 0.0);
@@ -631,12 +605,12 @@ fn host_records_a_values_rescan_as_not_needing_deactivation() {
     );
 }
 
-/// `params.rescan(RESCAN_ALL)` must decode to the flavour the CLAP spec says a
-/// host may only honour while the plugin is deactivated.
+/// `params.rescan(RESCAN_ALL)` must decode to the flavour a host may only
+/// honour while the plugin is deactivated.
 ///
-/// The distinction is the whole reason the host accumulates flags rather than a
-/// bare boolean: conflating the two either deactivates on every value tweak, or
-/// re-reads the parameter list underneath a running plugin.
+/// The reason the host accumulates flags rather than a bare boolean: conflating
+/// the two either deactivates on every value tweak, or re-reads the parameter
+/// list underneath a running plugin.
 #[test]
 fn host_records_a_full_rescan_as_needing_deactivation() {
     let probe = Probe::acquire();
@@ -656,10 +630,8 @@ fn host_records_a_full_rescan_as_needing_deactivation() {
 }
 
 /// The rescan poll is consuming: a second poll with no intervening rescan must
-/// report nothing.
-///
-/// Without this, a host that never cleared the flag would pass every assertion
-/// above while permanently reporting a pending rescan.
+/// report nothing. Without this, a host that never cleared the flag would pass
+/// every assertion above while permanently reporting a pending rescan.
 #[test]
 fn polling_a_rescan_consumes_it() {
     let probe = Probe::acquire();
@@ -682,12 +654,8 @@ fn polling_a_rescan_consumes_it() {
 }
 
 /// `request_flush` must reach the host as a pending flush, and that flush must
-/// then actually deliver parameters **outside `process`**.
-///
-/// This is the full round trip the callback exists for: the plugin asks, the
-/// host notices, the host flushes, and the plugin sees the values. Asserting
-/// only the flag would leave the second half — the part a plugin depends on —
-/// untested.
+/// then actually deliver parameters **outside `process`**. Asserting only the
+/// flag would leave the second half — the part a plugin depends on — untested.
 #[test]
 fn request_flush_round_trips_into_a_real_out_of_band_flush() {
     let probe = Probe::acquire();
@@ -727,11 +695,9 @@ fn request_flush_round_trips_into_a_real_out_of_band_flush() {
 /// Save → mutate → load must restore the saved values exactly, through the
 /// host's own `OutputStream`/`InputStream`.
 ///
-/// The probe writes its payload in 7-byte chunks and reads it back in 5-byte
-/// chunks, and rejects a payload whose magic or length is wrong. So a host whose
-/// ostream honours only the first `write`, or whose istream restarts its offset,
-/// produces a `load` the *plugin* refuses — surfacing as an error here rather
-/// than as a silently wrong value.
+/// The probe chunks its I/O and rejects a payload whose magic or length is
+/// wrong, so a host whose ostream honours only the first `write` — or whose
+/// istream restarts its offset — produces a `load` the *plugin* refuses.
 #[test]
 fn host_round_trips_plugin_state_through_its_streams() {
     let probe = Probe::acquire();
@@ -753,8 +719,8 @@ fn host_round_trips_plugin_state_through_its_streams() {
         expected_len,
         "every chunk the plugin wrote must be accumulated, not just the first"
     );
-    // The probe chunks its writes on purpose; if it stopped, this test would
-    // silently lose its ability to catch a first-write-only host.
+    // If the probe stopped chunking, this test would silently lose its ability
+    // to catch a first-write-only host.
     let cap = probe.capture();
     assert!(
         cap.save_write_calls > 1,
@@ -838,9 +804,9 @@ fn host_input_stream_delivers_the_whole_payload_then_clean_eof() {
 
 /// A corrupted payload must be rejected, not silently applied.
 ///
-/// This is what makes the round-trip test above non-vacuous: it proves the
-/// plugin's magic/length check is live, so a passing round trip means the bytes
-/// really did survive rather than that the plugin accepts anything.
+/// What makes the round-trip test above non-vacuous: the plugin's magic/length
+/// check is live, so a passing round trip means the bytes really did survive
+/// rather than that the plugin accepts anything.
 #[test]
 fn host_reports_a_load_failure_when_the_payload_is_corrupt() {
     let probe = Probe::acquire();
@@ -881,10 +847,10 @@ fn empty_state_is_a_no_op() {
 /// The host must report that the plugin implements state-context, and must use
 /// the context entry point — passing CLAP's own context value through.
 ///
-/// The probe stamps the context byte into its payload, so this asserts the value
-/// that crossed the FFI rather than merely that *a* save happened. CLAP numbers
-/// the contexts 1 (preset), 2 (duplicate), 3 (project); a host that passes its
-/// own enum discriminant instead lands on the wrong one.
+/// The probe stamps the context byte into its payload, so this asserts the
+/// value that crossed the FFI rather than merely that *a* save happened. CLAP
+/// numbers the contexts 1 (preset), 2 (duplicate), 3 (project); a host passing
+/// its own enum discriminant lands on the wrong one.
 #[test]
 fn host_passes_the_state_context_through_to_the_plugin() {
     let probe = Probe::acquire();

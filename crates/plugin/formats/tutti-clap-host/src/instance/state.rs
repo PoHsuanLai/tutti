@@ -70,23 +70,12 @@ impl ClapLoaded {
     /// context-aware `save` fails, or — via the fallback — if the plain
     /// `CLAP_EXT_STATE` save fails.
     ///
-    /// ## Why the refusal is not a fallback trigger
-    ///
-    /// `clap_plugin_state_context.save` returns `bool` with the same meaning as
-    /// `clap_plugin_state.save`: `true` on success, `false` on failure. It has
-    /// no third "I don't handle this context" value — a plugin that does not
-    /// handle contexts declines by not exposing the extension at all. So
-    /// `false` is a hard failure, exactly as it is for the plain state path,
-    /// which this crate already treats as [`ClapError::StateError`].
-    ///
-    /// This method used to fall through to [`Self::state`] on `false` as well,
-    /// which silently downgraded the caller's request: it asked for a blob
-    /// saved *for a preset* and got one saved for the project context, tagged
-    /// `Ok`. Preset and project blobs legitimately differ (a preset omits
-    /// project-scoped bindings), so the substitution is not benign — it writes
-    /// the wrong bytes into a `.preset` file and only shows up when someone
-    /// loads it. That is the same "a `no` was read as a `not applicable`"
-    /// mistake as the `activate` bug in [`super::lifecycle`].
+    /// `save` has no third "I don't handle this context" value — a plugin
+    /// declines contexts by not exposing the extension — so `false` is a hard
+    /// failure, not a fallback trigger. Falling through on `false` (what this
+    /// used to do) silently answers a *preset* request with a project-context
+    /// blob tagged `Ok`; the two legitimately differ, so that writes the wrong
+    /// bytes into a `.preset` and surfaces only when someone loads it.
     pub fn state_with_context(&self, context: StateContext) -> Result<Vec<u8>> {
         self.assert_main_thread();
         if let Some(ext) = unsafe { ext::opt(self.extensions.state.context) } {
@@ -114,15 +103,10 @@ impl ClapLoaded {
     /// context-aware `load` rejects the data, or — via the fallback — if the
     /// plain `CLAP_EXT_STATE` load rejects it.
     ///
-    /// ## Why the rejection is not a fallback trigger
-    ///
-    /// The load side had the same shape as the save side and the same bug, with
-    /// a worse failure mode: retrying a *rejected* blob through the
-    /// context-free `load` asks the plugin to swallow bytes it just refused. If
-    /// it accepts them the caller gets `Ok` on state the plugin told us was
-    /// wrong for this context; if it refuses again the error names the wrong
-    /// entry point. See [`Self::state_with_context`] for why `false` here is a
-    /// failure and not a "not applicable".
+    /// A rejection is likewise not a fallback trigger (see
+    /// [`Self::state_with_context`]): retrying a rejected blob through the
+    /// context-free `load` either gets `Ok` on state the plugin said was wrong
+    /// for this context, or an error naming the wrong entry point.
     pub fn set_state_with_context(&mut self, data: &[u8], context: StateContext) -> Result<()> {
         self.assert_main_thread();
         if data.is_empty() {

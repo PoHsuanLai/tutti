@@ -109,10 +109,9 @@ pub(super) static HOST_LOG: clap_host_log = clap_host_log {
     log: Some(host_log),
 };
 
-/// The stderr tag for each CLAP severity. Split out from [`host_log`] so the
-/// severity→label mapping is one total function rather than a `match` whose
-/// arms are only reachable through the FFI — the previous shape had seven arms
-/// that no test could distinguish, because the only output was stderr.
+/// The stderr tag for each CLAP severity. Split out of [`host_log`] so the
+/// mapping is testable — inline, its seven arms were reachable only through the
+/// FFI, with stderr as the sole output.
 fn severity_label(severity: clap_log_severity) -> &'static str {
     match severity {
         CLAP_LOG_DEBUG => "DEBUG",
@@ -126,28 +125,17 @@ fn severity_label(severity: clap_log_severity) -> &'static str {
     }
 }
 
-/// `clap.log` is `[thread-safe]`, which includes the audio thread — and CLAP
-/// says so explicitly, because a plugin reporting a denormal storm or a dropped
-/// buffer has nothing else to report it with.
+/// `clap.log` is `[thread-safe]`, audio thread included — a plugin reporting a
+/// denormal storm has nothing else to report it with. But every step here is
+/// forbidden there: `into_owned` allocates, `eprintln!` allocates and takes the
+/// stderr lock, and `LogState::push` takes a `Mutex` that
+/// [`drain_log`](crate::ClapLoaded::drain_log) holds across a copy, so a
+/// main-thread consumer could stall the callback.
 ///
-/// Everything this function used to do is forbidden there. `into_owned()`
-/// allocates, `eprintln!` allocates *and* takes the stderr lock, and
-/// `LogState::push` takes a `Mutex` that [`drain_log`](crate::ClapLoaded::drain_log)
-/// holds across a `.collect()` — a main-thread consumer draining its console
-/// could stall the callback for the length of that copy. Priority inversion in
-/// an audio callback is a dropout.
-///
-/// So an audio-thread log is counted, not recorded. The count is visible
-/// through [`log_dropped`](crate::ClapLoaded::log_dropped), which already
-/// exists to report lines lost to a full buffer — a line dropped for being on
-/// the wrong thread is the same fact from the consumer's side.
-///
-/// This loses the message text, which is a real cost: a plugin that only
-/// misbehaves under load reports it from exactly the thread we now refuse to
-/// record. The alternative is a lock-free queue with pre-allocated slots, and
-/// it is the right eventual answer — but it is a bigger change than silencing
-/// the hazard, and shipping the hazard while designing it is not a trade worth
-/// making.
+/// So an audio-thread line is counted, not recorded — visible through
+/// [`log_lines_dropped`](crate::ClapLoaded::log_lines_dropped). That loses the
+/// message text, which is a real cost; the eventual answer is a lock-free queue
+/// with pre-allocated slots.
 unsafe extern "C" fn host_log(
     host: *const ClapHostVtable,
     severity: clap_log_severity,
@@ -172,9 +160,8 @@ unsafe extern "C" fn host_log(
     } else {
         eprintln!("[clap-plugin {label}] {msg_str}");
     }
-    // Also retain the line so a consumer can route it somewhere other than
-    // stderr, and so the routing is assertable at all. Unrecognised severities
-    // are retained verbatim rather than folded into a bucket — see `LogRecord`.
+    // Retain the line so a consumer can route it somewhere other than stderr.
+    // Unrecognised severities are kept verbatim — see `LogRecord`.
     state.log.push(severity, msg_str);
 }
 

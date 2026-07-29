@@ -1,37 +1,26 @@
-//! RT-HAZARD probe — the plugin-side switches that make the host's audio
-//! thread do the things it must not do.
+//! RT-HAZARD probe — the plugin-side switches that make the host's audio thread
+//! do the things it must not do.
 //!
-//! The other probe modules ask "did the host build a *correct* call?". This one
-//! asks a different question: "when the plugin exercises a legal-but-awkward
-//! corner, does the host allocate on the audio thread?". Every switch here
-//! corresponds to a confirmed hazard in `tutti-clap-host`'s `do_process` path,
-//! and the matching test lives in `tests/clap_process_no_alloc.rs`.
+//! Where the other probe modules ask "did the host build a *correct* call?",
+//! this one asks "when the plugin exercises a legal-but-awkward corner, does the
+//! host allocate?". The matching tests live in `tests/clap_process_no_alloc.rs`.
 //!
 //! | switch                         | host hazard it reaches                        |
 //! |--------------------------------|-----------------------------------------------|
-//! | [`StatusMode`]                 | H1 — `eprintln!` on a process-status *transition* |
-//! | [`StatusMode::Error`]          | H2 — `format!`/`to_string` building a `ClapError` |
-//! | [`tutti_test_plugin_set_sysex_output_bytes`] | H3 — per-event `to_vec()` in `output_events_try_push` |
-//! | [`tutti_test_plugin_set_audio_thread_log_lines`] | H4 — `String` + stderr lock + `Mutex` in `clap.log` |
-//! | [`WideLayout`]                 | H7 — `SmallVec<[*mut T; 16]>` spilling past its inline capacity |
+//! | [`StatusMode`]                 | `eprintln!` on a process-status *transition*  |
+//! | [`StatusMode::Error`]          | `format!`/`to_string` building a `ClapError`  |
+//! | [`tutti_test_plugin_set_sysex_output_bytes`] | per-event `to_vec()` in `output_events_try_push` |
+//! | [`tutti_test_plugin_set_audio_thread_log_lines`] | `String` + stderr lock + `Mutex` in `clap.log` |
+//! | [`WideLayout`]                 | `SmallVec<[*mut T; 16]>` spilling past its inline capacity |
 //!
-//! ## Why these are process-global switches rather than parameters
+//! These are process-global switches because a `clap_process_status` is a
+//! return value, not a parameter, and the port layout is read once at load.
 //!
-//! Same reason as [`crate::PortLayoutMode`]: the host reads the port layout
-//! once at load time, and a `clap_process_status` is a return value, not a
-//! parameter. A test sets the switch, then drives blocks; there is one plugin
-//! image per test process, so a global is the whole channel.
-//!
-//! ## Why the status modes *alternate*
-//!
-//! H1 is not "the host logs under SLEEP". The host already guards its
-//! `eprintln!` behind `status != prev_status`, so a plugin parked on one status
-//! prints once and never again — which is exactly why the hazard survived
-//! review. A plugin that alternates CONTINUE/TAIL transitions on *every* block,
-//! and so logs on every block. [`StatusMode::AlternateContinueTail`] and
-//! [`StatusMode::AlternateContinueGarbage`] exist to produce that, and they are
-//! ordinary plugin behaviour: a reverb whose tail decays below the noise floor
-//! and is re-excited by input flips between CONTINUE and TAIL naturally.
+//! The status modes *alternate* because the host guards its `eprintln!` behind
+//! `status != prev_status`: a plugin parked on one status prints once and never
+//! again, so only alternation reaches the hazard on every block. It is ordinary
+//! behaviour — a reverb whose tail decays below the noise floor and is
+//! re-excited by input flips between CONTINUE and TAIL naturally.
 
 use std::ffi::CStr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -48,24 +37,14 @@ use clap_sys::process::{
 // Process status
 // ---------------------------------------------------------------------------
 
-/// A `clap_process_status` value CLAP does not define.
-///
-/// The host's status `match` has an `other =>` arm that heap-formats the `i32`
-/// into an `eprintln!`. Reaching it needs a value outside the defined set, and
-/// CLAP explicitly leaves the space open — a plugin built against a newer
-/// version of the header can legitimately return a status this host has never
-/// heard of, which is precisely the case the host must survive without
-/// allocating.
+/// A `clap_process_status` value CLAP does not define, reaching the host's
+/// `other =>` arm (which heap-formats the `i32`). CLAP leaves the status space
+/// open, so a plugin built against a newer header can legitimately return one.
 pub const GARBAGE_STATUS: clap_process_status = 0x7EED_BEEF;
 
 /// The CLAP-defined statuses, re-exported so a test can assert against them
-/// without taking its own `clap-sys` dependency.
-///
-/// Worth the two lines: a test that hardcodes these gets them wrong. CLAP
-/// numbers `ERROR = 0` and `CONTINUE = 1`, so the natural guess — that the
-/// success value is 0, as in almost every other C API — is off by one and
-/// silently compares against ERROR. That mistake was made while writing the
-/// suite these serve.
+/// without hardcoding them: CLAP numbers `ERROR = 0` and `CONTINUE = 1`, so the
+/// natural guess is off by one and silently compares against ERROR.
 pub mod status {
     use super::clap_process_status;
 
@@ -93,14 +72,13 @@ pub enum StatusMode {
     Tail = 2,
     /// `CLAP_PROCESS_SLEEP` on every block. As with `Tail`, one log line.
     Sleep = 3,
-    /// `CLAP_PROCESS_ERROR` on every block. Reaches H2: the host builds an
-    /// owned `String` for the `ClapError` it returns.
+    /// `CLAP_PROCESS_ERROR` on every block: the host builds an owned `String`
+    /// for the `ClapError` it returns.
     Error = 4,
     /// [`GARBAGE_STATUS`] on every block — the host's unknown-status arm.
     Garbage = 5,
-    /// CONTINUE, TAIL, CONTINUE, TAIL, … — a transition on **every** block.
-    /// This is the mode that reaches H1: the host's transition guard passes
-    /// each time, so it logs (and, in the `other` arm, formats) per block.
+    /// CONTINUE, TAIL, CONTINUE, TAIL, … — a transition on **every** block, so
+    /// the host's transition guard passes each time and it logs per block.
     AlternateContinueTail = 6,
     /// CONTINUE, [`GARBAGE_STATUS`], … — as above, but landing in the host's
     /// `other =>` arm, which additionally heap-formats the status integer.
@@ -239,13 +217,10 @@ static AUDIO_THREAD_LOG_LINE: &CStr = c"tutti-probe logging from the audio threa
 
 /// Emit `count` `clap.log` lines per block, from inside `process`.
 ///
-/// CLAP marks `clap.log` `[thread-safe]`, which includes the audio thread —
-/// deliberately, because a plugin detecting a denormal storm or a dropped
-/// buffer has nothing else to report it with. A host that records such a line
-/// the way it records a main-thread one allocates a `String`, takes the stderr
-/// lock, and takes a `Mutex` its own `drain_log` holds across a copy: three
-/// things forbidden in an audio callback, the last of them a priority
-/// inversion.
+/// CLAP marks `clap.log` `[thread-safe]`, which includes the audio thread. A
+/// host that records such a line the way it records a main-thread one allocates
+/// a `String`, takes the stderr lock, and takes a `Mutex` its own `drain_log`
+/// holds across a copy — the last a priority inversion.
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
@@ -266,9 +241,6 @@ pub(crate) unsafe fn emit_audio_thread_logs(host: *const clap_host) {
     if count == 0 {
         return;
     }
-    // Resolved inline rather than through a shared helper: `gui` and
-    // `threading` each keep their own private `host_ext`, and a third copy
-    // would be one more than the two that already exist.
     if host.is_null() {
         return;
     }
@@ -289,9 +261,9 @@ pub(crate) unsafe fn emit_audio_thread_logs(host: *const clap_host) {
 
 /// Push the configured SysEx events into the host's output event list.
 ///
-/// Called from `plugin_process` — i.e. from inside the host's `process`, on the
-/// host's audio thread, which is what makes this reach the hazard. A host that
-/// copies each payload into a fresh `Vec` allocates here, per event, per block.
+/// Called from `plugin_process`, i.e. from inside the host's `process` on its
+/// audio thread — a host that copies each payload into a fresh `Vec` allocates
+/// here, per event, per block.
 ///
 /// # Safety
 /// `p` must be the live `clap_process` the host passed to `process`.
@@ -318,9 +290,8 @@ pub(crate) unsafe fn emit_sysex_output(p: &clap_process) {
             buffer: SYSEX_PAYLOAD.as_ptr(),
             size: bytes as u32,
         };
-        // CLAP: the buffer is owned by the *caller* and is only valid for the
-        // duration of this call, so a host that wants to keep it must copy.
-        // That copy is the hazard.
+        // CLAP: the buffer is owned by the caller and valid only for this call,
+        // so a host that wants to keep it must copy. That copy is the hazard.
         try_push(
             p.out_events,
             &ev as *const clap_event_midi_sysex as *const clap_event_header,
@@ -335,31 +306,25 @@ pub(crate) unsafe fn emit_sysex_output(p: &clap_process) {
 /// A port layout wide enough to spill the host's per-side `SmallVec<[*mut T;
 /// 16]>` of caller channel pointers.
 ///
-/// These are not contrived widths. 7.1.4 Dolby Atmos is 12 channels; two 8-
-/// channel ports is 16; third-order ambisonic is 16. The host advertises
-/// surround and ambisonic port types precisely so it can be handed these, so a
-/// layout at or past the inline bound is a supported configuration, not an
-/// abuse.
-///
-/// The interesting boundary is **17**, not 16: a `SmallVec<[T; 16]>` holding
-/// exactly 16 elements is still inline. A test that only reached 16 would pass
-/// against an unfixed host.
+/// Not contrived widths: 7.1.4 Atmos is 12 channels, third-order ambisonic is
+/// 16, and the host advertises surround and ambisonic port types precisely so it
+/// can be handed these. The interesting boundary is **17**, not 16 — a
+/// `SmallVec<[T; 16]>` holding exactly 16 elements is still inline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum WideLayout {
     /// Not wide — defer to [`crate::PortLayoutMode`]. The default.
     Off = 0,
-    /// One 16-channel port per side: 3rd-order ambisonic, or two 7.1 buses
-    /// worth. Exactly at the inline bound, so an unfixed host does **not**
-    /// spill — this is the control case that proves the test is measuring the
+    /// One 16-channel port per side, exactly at the inline bound, so an unfixed
+    /// host does **not** spill. The control case proving the test measures the
     /// boundary rather than the mere presence of many channels.
     Exactly16 = 1,
     /// One 20-channel port per side. Past the bound: an unfixed host heap-
     /// allocates two `SmallVec` backing buffers every block.
     Wide20 = 2,
-    /// Two ports per side, 12 + 12 — 7.1.4 Atmos twice over. Reaches the same
-    /// spill through *port count* rather than a single wide port, so a fix that
-    /// only widens the single-port case is still caught.
+    /// Two ports per side, 12 + 12. Reaches the same spill through *port count*
+    /// rather than a single wide port, so a fix that only widens the
+    /// single-port case is still caught.
     Split12Plus12 = 3,
 }
 
@@ -407,17 +372,12 @@ pub(crate) fn wide_ports() -> Option<&'static [u32]> {
 // Reset
 // ---------------------------------------------------------------------------
 
-/// Return every RT-probe switch to its inert default and zero the block
-/// counter.
+/// Return every RT-probe switch to its inert default and zero the block counter.
+/// Called on *entry* to each test rather than on exit from the previous one, so
+/// a test that panics mid-gate cannot poison its successors.
 ///
-/// The switches are process-global and the suites run in one process, so a test
-/// that set a mode and did not clear it would silently change the meaning of
-/// every later test. Each test in `clap_process_no_alloc.rs` calls this on
-/// entry rather than trusting its predecessors.
-///
-/// Does **not** reset the port/wide layout, because that is read at load time:
-/// a test that resets it after loading would be describing a layout the host is
-/// no longer using. Layout selection is the loading test's own responsibility.
+/// Does **not** reset the port/wide layout, which is read at load time: a reset
+/// after loading would describe a layout the host is no longer using.
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.

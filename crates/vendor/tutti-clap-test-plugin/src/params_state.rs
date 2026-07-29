@@ -1,35 +1,23 @@
 //! Probe implementations of `clap.params`, `clap.state` and
 //! `clap.state-context/2`, plus the capture channel the parameter/state
-//! conformance tests read.
+//! conformance tests read. Its own module so its bookkeeping cannot perturb the
+//! other oracles' captures.
 //!
-//! Lives in its own module rather than in `lib.rs` for the same reason the
-//! audio-ports vtable stays there: each extension the probe implements is an
-//! independent oracle, and keeping them separate means one extension's
-//! bookkeeping cannot silently perturb another's capture.
+//! What the fixture deliberately fakes, and what each fake catches:
 //!
-//! ## What a host must get right to pass
+//! - **Parameter ids are not indices.** `PARAMS[i].id` is non-contiguous,
+//!   nonzero, and not ascending with `i` (101, 4242, 9), so a host passing
+//!   `index` where the spec says `param_id` reads the wrong parameter or is
+//!   rejected by [`params_get_value`] — a confusion a `0..n` id space hides.
+//! - **Ranges are not `0..1`.** Two of the three have a plain range well away
+//!   from the unit interval, so denormalization has an exact arithmetic oracle
+//!   rather than an identity one.
+//! - **Id 7 is absent.** `clap_conformance.rs` drives automation on id 7 and
+//!   asserts the values arrive verbatim, which is only correct while the host
+//!   has no range cached for it.
 //!
-//! **Parameter ids are not indices.** `PARAMS[i].id` is deliberately
-//! non-contiguous, nonzero, and *not* ascending with `i` (101, 4242, 9). A host
-//! that passes `index` where the spec says `param_id` — the single most common
-//! CLAP host bug, and one a `0..n` id space hides completely — reads the wrong
-//! parameter or is rejected outright by [`params_get_value`].
-//!
-//! **Ranges are not `0..1`.** Two of the three parameters have a plain range
-//! well away from the unit interval, so the host's normalized→plain
-//! denormalization has an exact arithmetic oracle rather than an identity one.
-//!
-//! **Id 7 is deliberately absent.** The pre-existing event-ordering tests in
-//! `clap_conformance.rs` drive automation on param id 7 and assert the values
-//! arrive *verbatim*, which is only correct while the host has no range cached
-//! for that id. Keeping 7 out of `PARAMS` preserves that oracle; a test that
-//! wants denormalization exercised uses a real id instead.
-//!
-//! ## Capture channel
-//!
-//! Like [`crate::ProcessCapture`], the parameter/state observations land in a
-//! process-global guarded by a mutex and are copied out through an exported C
-//! symbol ([`tutti_test_plugin_param_capture`]) that the test reaches across a
+//! Observations land in a process-global guarded by a mutex and are copied out
+//! through [`tutti_test_plugin_param_capture`], which the test reaches across a
 //! second `dlopen` of this same image.
 
 use std::ffi::{c_char, CStr};
@@ -57,13 +45,9 @@ use clap_sys::string_sizes::{CLAP_NAME_SIZE, CLAP_PATH_SIZE};
 // The parameter table.
 // ---------------------------------------------------------------------------
 
-/// One parameter the probe advertises. A plain table rather than the C struct
-/// so the ids/ranges read as data at the top of the file — they *are* the
-/// contract the tests assert against.
-///
-/// `pub` and reachable through the rlib so the conformance test asserts against
-/// *this* table rather than a hand-copied second one. Two copies of the oracle
-/// is how a fixture change silently stops being checked.
+/// One parameter the probe advertises. `pub` and reachable through the rlib so
+/// the conformance test asserts against *this* table rather than a hand-copied
+/// second one that could drift.
 pub struct ProbeParam {
     pub id: u32,
     pub name: &'static [u8],
@@ -119,11 +103,10 @@ static PARAMS: &[ProbeParam] = &[
     },
 ];
 
-/// Live parameter values, index-parallel to [`PARAMS`], stored as the bit
-/// pattern of the `f64` so the table can be a `static` without a lock on the
-/// audio thread. Initialised lazily from `default` on first read (0 is not a
-/// legal sentinel — 0.0 is a legal value for `Drive`), which is what
-/// [`VALUES_INIT`] tracks.
+/// Live parameter values, index-parallel to [`PARAMS`], stored as `f64` bit
+/// patterns so the table can be a `static` without a lock on the audio thread.
+/// Initialised lazily from `default` on first read — 0 is not a legal sentinel,
+/// since 0.0 is a legal value for `Drive`.
 static VALUES: [AtomicU32; 6] = [
     AtomicU32::new(0),
     AtomicU32::new(0),
@@ -159,9 +142,8 @@ fn ensure_values_init() {
 }
 
 /// Index of the parameter with `id`, or `None`. The linear scan is the point:
-/// it is the only lookup that is correct for a sparse id space, and it is what
-/// makes a host passing an index instead of an id fail rather than silently
-/// hit the wrong parameter.
+/// the only lookup correct for a sparse id space, and what makes a host passing
+/// an index fail rather than silently hit the wrong parameter.
 fn index_of_id(id: u32) -> Option<usize> {
     PARAMS.iter().position(|p| p.id == id)
 }
@@ -193,12 +175,10 @@ pub const MAX_CAPTURED_STATE: usize = 64;
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ParamStateCapture {
-    /// Number of `params.flush` calls since the last [`reset`](tutti_test_plugin_param_reset).
-    ///
-    /// The *thread role* the host publishes inside `flush` is deliberately not
-    /// recorded here: `threading.rs` owns thread-check observation across all
-    /// call sites, and duplicating a second, differently-shaped answer here
-    /// would give two oracles for one property.
+    /// Number of `params.flush` calls since the last
+    /// [`reset`](tutti_test_plugin_param_reset). The thread role the host
+    /// publishes inside `flush` is not recorded here — `threading.rs` owns
+    /// thread-check observation across all call sites.
     pub flush_calls: u32,
     /// Events on the most recent flush's input list, in the order presented.
     pub flush_event_count: u32,
@@ -294,11 +274,8 @@ pub unsafe extern "C" fn tutti_test_plugin_param_capture(out: *mut ParamStateCap
 }
 
 /// Clear the parameter/state capture and restore every parameter to its
-/// declared default.
-///
-/// Tests call this before driving the host so an assertion cannot be satisfied
-/// by a *previous* test's observation — the capture is a process-global shared
-/// by every test in the binary.
+/// declared default. The capture is a process-global shared by every test in
+/// the binary, so a test calls this before driving the host.
 ///
 /// # Safety
 /// Safe to call from any thread; provided as `extern "C"` only so the test can
@@ -310,11 +287,11 @@ pub unsafe extern "C" fn tutti_test_plugin_param_reset() {
     ensure_values_init();
 }
 
-/// Read one parameter's current value by id, for a test that wants to confirm
-/// a host-driven set actually landed in the plugin (rather than only that the
-/// host's own `get_value` echo agreed with itself).
+/// Read one parameter's current value by id, so a test can confirm a
+/// host-driven set actually landed in the plugin rather than only that the
+/// host's `get_value` echo agreed with itself.
 ///
-/// Returns false for an unknown id. Writes nothing in that case.
+/// Returns false for an unknown id, writing nothing.
 ///
 /// # Safety
 /// `out` must point to a valid, writable `f64`.
@@ -336,11 +313,9 @@ pub unsafe extern "C" fn tutti_test_plugin_param_peek(id: u32, out: *mut f64) ->
 /// Queue an output event for the probe to emit on its next `params.flush`.
 ///
 /// `kind` selects the event: 0 = `PARAM_GESTURE_BEGIN`, 1 = `PARAM_VALUE`,
-/// 2 = `PARAM_GESTURE_END`, 3 = `PARAM_MOD`. The probe emits the queued
-/// gesture triple / mod so the test can assert the host decodes plugin→host
-/// parameter output — the direction the host's `fill_gestures` and
-/// `fill_param_changes` serve and which nothing else exercises against a real
-/// plugin.
+/// 2 = `PARAM_GESTURE_END`, 3 = `PARAM_MOD`. Exercises the plugin→host
+/// direction, which `fill_gestures` and `fill_param_changes` serve and nothing
+/// else drives against a real plugin.
 ///
 /// # Safety
 /// Safe to call from any thread.
@@ -419,14 +394,12 @@ unsafe extern "C" fn params_get_info(
     }
     // ENUMERATION HOLE: refuse this one index while `params_count` keeps
     // reporting the full count. Checked before the range check because the
-    // whole point is to fail an index that *is* in range — an out-of-range
-    // reject tells the host nothing it didn't already know from `count`.
+    // point is to fail an index that *is* in range.
     if crate::holes::param_hole_at(param_index) {
         return false;
     }
-    // `param_index` is an *index*, so out-of-range is a hard reject. This is
-    // the assertion that catches a host feeding an id in here: 101 and 4242 are
-    // both past the end.
+    // `param_index` is an *index*, so out-of-range is a hard reject — this is
+    // what catches a host feeding an id in here: 101 and 4242 are past the end.
     let Some(p) = PARAMS.get(param_index as usize) else {
         return false;
     };
@@ -455,9 +428,9 @@ unsafe extern "C" fn params_get_value(
         return false;
     }
     ensure_values_init();
-    // Reject unknown ids rather than clamping into range: a host that passes an
-    // index (0, 1, 2) gets `false` for 0 and 1 and the *wrong parameter* for 2
-    // — which is exactly why id 9 sits at index 2 and not at index 0.
+    // Reject unknown ids rather than clamping: a host passing an index (0, 1, 2)
+    // gets `false` for 0 and 1 and the *wrong parameter* for 2 — which is why
+    // id 9 sits at index 2 and not index 0.
     let Some(i) = index_of_id(param_id) else {
         return false;
     };
@@ -542,9 +515,9 @@ unsafe extern "C" fn params_flush(
                     let pv = &*(hdr_ptr as *const clap_event_param_value);
                     ev.param_id = pv.param_id;
                     ev.value = pv.value;
-                    // Apply it: this is what makes a host-driven `set_parameter`
-                    // observable through `parameter()` on the next query, rather
-                    // than the host merely echoing its own cache back.
+                    // Apply it, so a host-driven `set_parameter` is observable
+                    // through `parameter()` on the next query rather than the
+                    // host echoing its own cache back.
                     ensure_values_init();
                     if let Some(idx) = index_of_id(pv.param_id) {
                         store_value(idx, pv.value);
@@ -665,11 +638,9 @@ static PARAM_COMMAND: AtomicU32 = AtomicU32::new(PARAM_CMD_NONE);
 /// `on_main_thread`, returning the previous one.
 ///
 /// The latch exists because `clap_host_params::rescan` / `request_flush` are
-/// `[main-thread]`: a test calling them directly off its own thread would be
-/// asserting against a spec violation it introduced. Deferring to
-/// `on_main_thread` — which the host invokes on the main thread, in response to
-/// the probe's `request_callback` — makes the call legal *and* exercises the
-/// host's own callback plumbing on the way in.
+/// `[main-thread]`: a test calling them off its own thread would be asserting
+/// against a spec violation it introduced. Deferring to `on_main_thread` makes
+/// the call legal *and* exercises the host's callback plumbing on the way in.
 ///
 /// # Safety
 /// Safe to call from any thread; a single atomic swap. `extern "C"` only so
@@ -756,8 +727,7 @@ pub unsafe fn get_extension(id: &CStr) -> *const std::ffi::c_void {
 
 /// Magic prefix every save writes. A host that mangles, reorders or truncates
 /// the stream produces a payload that fails this on load, so a corrupted
-/// round-trip is rejected by the *plugin* rather than merely looking different
-/// to the test.
+/// round-trip is rejected by the *plugin* rather than merely looking different.
 pub const STATE_MAGIC: &[u8; 4] = b"TCP1";
 
 pub(crate) static STATE_EXT: clap_plugin_state = clap_plugin_state {
@@ -786,11 +756,11 @@ fn build_state(context: u32) -> Vec<u8> {
 
 /// Write `bytes` to the host's ostream **in several small chunks**.
 ///
-/// Deliberately not one `write` call: CLAP's `clap_ostream::write` returns the
-/// number of bytes accepted and a plugin is required to loop, so a host whose
-/// stream drops everything after the first call — or that ignores the offset
-/// and re-writes from the start — produces a payload that fails the magic /
-/// length check on the way back. One big write cannot distinguish those hosts.
+/// Deliberately not one `write`: `clap_ostream::write` returns the bytes
+/// accepted and a plugin must loop, so a host whose stream drops everything
+/// after the first call — or ignores the offset and re-writes from the start —
+/// produces a payload failing the magic/length check. One big write cannot
+/// distinguish those hosts.
 ///
 /// Returns the byte count written, or `None` if the stream errored.
 unsafe fn write_chunked(
@@ -897,8 +867,8 @@ unsafe fn load_impl(stream: *const clap_istream, context: u32) -> bool {
         return false;
     }
 
-    // Apply: each record is (id: u32 LE, value: f64 LE). Ids are matched, not
-    // positional — a save/load pair that lost id fidelity lands values on the
+    // Each record is (id: u32 LE, value: f64 LE), matched by id rather than
+    // position — a save/load pair that lost id fidelity lands values on the
     // wrong parameters, which `tutti_test_plugin_param_peek` then exposes.
     let mut off = STATE_MAGIC.len() + 1;
     while off + 12 <= bytes.len() {

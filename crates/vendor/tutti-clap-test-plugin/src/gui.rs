@@ -1,30 +1,18 @@
 //! GUI probe — the plugin side of the host's editor lifecycle.
 //!
-//! Kept in its own module for the same reason as `threading` and
-//! `params_state`: it owns an independent capture channel and its own
-//! configuration switches, so the extension it implements is an oracle that
-//! cannot perturb the others. `lib.rs` holds only the `get_extension` hook.
+//! Its own module so it owns an independent capture channel and switches, and
+//! cannot perturb the other oracles. `lib.rs` holds only the `get_extension`
+//! hook.
 //!
-//! ## This opens no windows
+//! **This opens no windows.** Every fn in the `clap_plugin_gui` vtable below is
+//! pure bookkeeping: it records that the host called it, returns the answer the
+//! test configured, and touches nothing native. `set_parent` is handed a host
+//! window handle the probe never dereferences.
 //!
-//! Every fn in the `clap_plugin_gui` vtable below is **pure bookkeeping**. It
-//! records that the host called it, returns the answer the test configured,
-//! and touches nothing native — no X11 connection, no `NSView`, no `HWND`. The
-//! host-side properties under test (does `has_editor` ask the right question,
-//! does `open_editor` run the spec's call order, does `resize_editor` honour
-//! `adjust_size`) are all decided *before* any pixel would exist, so a real
-//! window would add a display dependency and a headless-CI skip without adding
-//! a single assertion. `set_parent` in particular is handed a host window
-//! handle the probe never dereferences.
-//!
-//! ## Why the answers are process-global switches
-//!
-//! The interesting `has_editor` cases are *plugin shapes*, not runtime states:
-//! a floating-only plugin, a plugin whose `create` is absent from the vtable.
-//! A vtable is a `static`, and the host caches the extension pointer once at
-//! load, so neither can be a per-instance field — the test selects the shape
-//! with [`tutti_test_plugin_set_gui_mode`] before loading, exactly as
-//! `PortLayoutMode` does for audio ports.
+//! The answers are process-global switches because the interesting `has_editor`
+//! cases are *plugin shapes*, not runtime states. A vtable is a `static` and the
+//! host caches the extension pointer once at load, so the test selects the shape
+//! with [`tutti_test_plugin_set_gui_mode`] before loading.
 
 use std::ffi::{c_void, CStr};
 use std::ptr;
@@ -42,15 +30,13 @@ use clap_sys::plugin::clap_plugin;
 
 /// Which `clap.gui` shape the probe presents to the host.
 ///
-/// The host reads the vtable **once at load time** and caches the pointer, so
-/// a test picks the shape via [`tutti_test_plugin_set_gui_mode`] before calling
-/// `ClapLoaded::load`. Same constraint, and the same remedy, as
-/// [`crate::PortLayoutMode`].
+/// The host reads the vtable **once at load time** and caches the pointer, so a
+/// test picks the shape via [`tutti_test_plugin_set_gui_mode`] before calling
+/// `ClapLoaded::load`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuiMode {
     /// No `clap.gui` extension at all — `get_extension("clap.gui")` returns
-    /// null. The shape a host must report as "no editor" on the extension
-    /// pointer alone.
+    /// null. The one shape a host can rule out on the pointer alone.
     Absent = 0,
     /// A normal embeddable editor: `is_api_supported(api, is_floating=false)`
     /// is true and `create` is present.
@@ -58,24 +44,18 @@ pub enum GuiMode {
     /// Floating-only: the extension is present and `create` exists, but
     /// `is_api_supported` answers true **only** for `is_floating == true`.
     ///
-    /// This is the case that motivated the whole exercise. Such a plugin has a
-    /// non-null `gui` vtable, so a `has_editor` written as `!gui.is_null()`
-    /// says yes — and then `open_editor` fails at the embed gate, because
-    /// there is no embedded editor to open.
+    /// The vtable is non-null, so a `has_editor` written as `!gui.is_null()`
+    /// says yes and `open_editor` then fails at the embed gate.
     FloatingOnly = 2,
     /// The extension is present and the API is supported, but `create` is
     /// absent from the vtable.
     ///
     /// Legal CLAP — every `clap_plugin_gui` member is an `Option<fn>` — and
-    /// equally invisible to a null-pointer check. The host's own
-    /// `EmbedOutcome::did_create` field exists because of this shape, so the
-    /// host already knew it was possible in one place and not the other.
+    /// equally invisible to a null-pointer check.
     NoCreate = 3,
-    /// Embeddable, but the editor is fixed-size: `can_resize` is false and
-    /// `adjust_size` returns false (it cannot produce a usable size).
-    ///
-    /// Exists to pin the `resize_editor` contract — see the note on
-    /// `adjust_size` there.
+    /// Embeddable, but fixed-size: `can_resize` is false and `adjust_size`
+    /// returns false (it cannot produce a usable size). Pins the
+    /// `resize_editor` contract.
     FixedSize = 4,
 }
 
@@ -117,10 +97,8 @@ fn gui_mode() -> GuiMode {
 }
 
 /// Select the `clap.gui` shape the probe presents. Call **before** the host
-/// loads the plugin — the extension pointer is cached once during load.
-///
-/// Takes the discriminant of [`GuiMode`] as a bare `u32` because this crosses
-/// the dlopen seam as a C symbol.
+/// loads the plugin — the extension pointer is cached once during load. Takes
+/// the [`GuiMode`] discriminant as a bare `u32` (a C ABI boundary).
 ///
 /// # Safety
 /// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
@@ -175,21 +153,19 @@ pub struct GuiCapture {
     pub call_count: u32,
     /// How many times `is_api_supported` was asked with `is_floating == false`.
     ///
-    /// Split from the floating count because that distinction *is* the bug:
-    /// a host asking only the floating question would conclude a floating-only
+    /// Split from the floating count because that distinction *is* the bug: a
+    /// host asking only the floating question would conclude a floating-only
     /// plugin is embeddable.
     pub is_api_supported_embedded_queries: u32,
     /// How many times `is_api_supported` was asked with `is_floating == true`.
     pub is_api_supported_floating_queries: u32,
-    /// Whether `create` has ever run since the last reset. A live editor from
-    /// the host's point of view means this is true and `destroy` has not run
-    /// since.
+    /// Whether `create` has ever run since the last reset.
     pub created: bool,
     /// Whether `destroy` has run since the last reset.
     pub destroyed: bool,
     /// Net `create` minus `destroy` count. Non-zero at teardown means the host
-    /// leaked an editor; negative means it double-destroyed, which is the H5
-    /// hazard `close_editor`'s `already_destroyed` latch guards.
+    /// leaked an editor; negative means it double-destroyed, which is what
+    /// `close_editor`'s `already_destroyed` latch guards.
     pub create_balance: i32,
     /// The `scale` the host passed to `set_scale`, or 0.0 if never called.
     pub last_scale: f64,
@@ -203,14 +179,10 @@ pub struct GuiCapture {
     pub last_adjust_in_w: u32,
     /// See [`GuiCapture::last_adjust_in_w`].
     pub last_adjust_in_h: u32,
-    /// Whether the host ever passed a non-null `clap_window` to `set_parent`,
-    /// and whether its `api` string matched the platform the probe expects.
+    /// Whether the host ever passed a non-null `clap_window` to `set_parent`.
     pub set_parent_window_non_null: bool,
-    /// Whether the `api` string in the `clap_window` the host handed
-    /// `set_parent` was the current platform's CLAP window api constant.
-    ///
-    /// This is the "do not hardcode X11" assertion: a host that always sends
-    /// `"x11"` fails here on macOS and Windows.
+    /// Whether that `clap_window`'s `api` string was the current platform's
+    /// CLAP constant — the "do not hardcode X11" assertion.
     pub set_parent_api_matches_platform: bool,
 }
 
@@ -236,12 +208,9 @@ impl Default for GuiCapture {
 }
 
 // ---------------------------------------------------------------------------
-// Backing storage.
-//
-// Atomics, matching `threading.rs`: `clap_plugin_gui` is `[main-thread]`
-// throughout, so a mutex would be uncontended and correct — but the call log is
-// an append-and-index, which a `fetch_add` expresses without a lock and without
-// a poisoning path in the middle of an FFI callback.
+// Backing storage. Atomics rather than a mutex: the call log is an
+// append-and-index, which a `fetch_add` expresses without a poisoning path in
+// the middle of an FFI callback.
 // ---------------------------------------------------------------------------
 
 struct GuiGlobals {
@@ -381,31 +350,22 @@ pub const GUI_CMD_REQUEST_RESIZE: u32 = 1;
 /// plugin's window went away but its resources are intact, so the host should
 /// still run `hide`/`destroy`.
 pub const GUI_CMD_CLOSED_NOT_DESTROYED: u32 = 2;
-/// Call `host.gui.closed(was_destroyed = true)` and self-destroy.
+/// Call `host.gui.closed(was_destroyed = true)` and self-destroy. A host that
+/// then calls `gui.destroy` again is double-destroying, which shows up as a
+/// negative `create_balance`.
 ///
-/// This is the H5 hazard: the plugin tore its own editor down, so a host that
-/// then calls `gui.destroy` again is double-destroying. The probe's
-/// `create_balance` is what catches a host that does.
-///
-/// Unlike the two above, this one is **not** run from `show` — it is driven
-/// directly by the test via [`tutti_test_plugin_gui_run_command`] after
-/// `open_editor` has returned. It models the ordinary case: a user closes the
-/// plugin's own window later, while the editor sits open. For the
-/// during-`show` variant see [`GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW`].
+/// **Not** run from `show`: the test drives it via
+/// [`tutti_test_plugin_gui_run_command`] after `open_editor` returns, modelling
+/// a user closing the plugin's own window while the editor sits open.
 pub const GUI_CMD_CLOSED_AND_DESTROYED: u32 = 3;
 
-/// Call `host.gui.closed(was_destroyed = true)` and self-destroy **from inside
-/// `show`** — while the host is still within `open_editor`.
+/// The same, but **from inside `show`** — while the host is still within
+/// `open_editor`. A plugin does this when it discovers during the embed that it
+/// cannot present (no display, a failed GL context).
 ///
-/// A plugin does this when it discovers during the embed that it cannot
-/// present (no display, a failed GL context) and tears itself down rather than
-/// sit there broken.
-///
-/// This was untestable until the host stopped clearing its `already_destroyed`
-/// latch *after* `embed_editor_sequence` returned: the clear landed on top of
-/// the callback that had just fired, so the host forgot the plugin had
-/// self-destroyed and would call `destroy` on it again. The latch is now
-/// cleared before the sequence, and this command is what holds that.
+/// Distinguishes clearing the host's `already_destroyed` latch *before* the
+/// embed sequence from clearing it after; clearing after wipes the callback the
+/// sequence just carried.
 pub const GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW: u32 = 4;
 
 /// The size the plugin asks the host for via [`GUI_CMD_REQUEST_RESIZE`].
@@ -426,21 +386,18 @@ pub extern "C" fn tutti_test_plugin_gui_command(cmd: u32) -> u32 {
     GUI.command.swap(cmd, Ordering::AcqRel)
 }
 
-/// The `clap_host` of the most recent `gui.create`, so a command can be run
-/// out-of-band — outside any plugin callback the host drove.
-///
-/// A `clap_plugin_gui` fn receives only the `clap_plugin`, and the probe has no
-/// other route back to the host from a test-initiated call.
+/// The `clap_host` of the most recent `gui.create`. A `clap_plugin_gui` fn
+/// receives only the `clap_plugin`, so this is the probe's only route back to
+/// the host from a test-initiated call.
 static LAST_HOST: std::sync::atomic::AtomicPtr<clap_host> =
     std::sync::atomic::AtomicPtr::new(ptr::null_mut());
 
 /// Run the latched command **now**, from the caller's thread, rather than
-/// waiting for the next host-driven callback.
+/// waiting for the next host-driven callback — [`GUI_CMD_CLOSED_AND_DESTROYED`]
+/// must land *between* `open_editor` and `close_editor`, not inside either.
 ///
-/// [`GUI_CMD_CLOSED_AND_DESTROYED`] needs this: modelling a user closing the
-/// plugin's own window means the callback must land *between* `open_editor` and
-/// `close_editor`, not inside either. Returns false if no editor has been
-/// created (so no host pointer is known) or nothing was latched.
+/// Returns false if no editor has been created (so no host pointer is known) or
+/// nothing was latched.
 ///
 /// # Safety
 /// The host recorded at `create` must still be alive — i.e. the `ClapLoaded`
@@ -475,10 +432,9 @@ unsafe fn host_ext<'a, T>(host: *const clap_host, id: &CStr) -> Option<&'a T> {
 
 /// Run whatever command the test latched, from inside a host-driven callback.
 ///
-/// [`GUI_CMD_CLOSED_AND_DESTROYED`] is deliberately excluded: it must land
-/// *between* the host's calls, not inside one. See its docs.
-/// [`GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW`] is the opposite — it exists
-/// precisely to fire from here — so it is not excluded.
+/// [`GUI_CMD_CLOSED_AND_DESTROYED`] is excluded: it must land *between* the
+/// host's calls. [`GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW`] exists precisely to
+/// fire from here, so it is not.
 ///
 /// # Safety
 /// `plugin` must be a `clap_plugin` this crate's factory produced.
@@ -542,9 +498,8 @@ unsafe fn run_command_against(host: *const clap_host) {
 // ---------------------------------------------------------------------------
 
 /// The CLAP window api constant for the platform this probe was built for.
-/// `set_parent` compares the host's `clap_window.api` against it, which is what
-/// makes "the host hardcoded x11" a test failure on macOS and Windows rather
-/// than an unnoticed portability bug.
+/// `set_parent` compares the host's `clap_window.api` against it, which makes
+/// "the host hardcoded x11" a failure on macOS and Windows.
 fn platform_api() -> &'static CStr {
     #[cfg(target_os = "macos")]
     {
@@ -675,11 +630,9 @@ unsafe extern "C" fn gui_adjust_size(
     }
     GUI.last_adjust_in_w.store(*width, Ordering::Release);
     GUI.last_adjust_in_h.store(*height, Ordering::Release);
-    // CLAP: "the plugin will calculate the closest usable size which fits in
-    // the given size. This method does not change the size. Returns true if the
-    // plugin could adjust the given size." A fixed-size editor cannot, so it
-    // says so — and leaves the out-params untouched, which is exactly the
-    // situation where forwarding them to `set_size` would be wrong.
+    // CLAP: "Returns true if the plugin could adjust the given size." A
+    // fixed-size editor cannot, and leaves the out-params untouched — exactly
+    // the situation where forwarding them to `set_size` would be wrong.
     if gui_mode() == GuiMode::FixedSize {
         return false;
     }
@@ -759,10 +712,9 @@ static GUI_FULL: clap_plugin_gui = clap_plugin_gui {
 
 /// The [`GuiMode::NoCreate`] vtable — identical but for the absent `create`.
 ///
-/// A separate `static` rather than a runtime branch inside `gui_create`,
-/// because the shape under test is precisely "the fn pointer is `None`". A
-/// `create` that exists and returns false is a *different* plugin, and a host
-/// that handles one but not the other would pass a test that conflated them.
+/// A separate `static` rather than a runtime branch, because the shape under
+/// test is precisely "the fn pointer is `None`". A `create` that exists and
+/// returns false is a *different* plugin.
 static GUI_NO_CREATE: clap_plugin_gui = clap_plugin_gui {
     create: None,
     ..GUI_FULL

@@ -213,48 +213,18 @@ unsafe fn query_editor_capabilities(
 impl ClapLoaded {
     /// Whether [`open_editor`](Self::open_editor) can actually embed an editor.
     ///
-    /// Not "is there a `clap.gui` vtable?" — that is a different, weaker
-    /// question, and answering it here is a bug this project has now shipped
-    /// twice. In VST3 the same method asked "is there a controller?" instead of
-    /// calling `createView(kEditor)`; it fed `Features::EDITOR` in the plugin
-    /// descriptor (`tutti-plugin-server/src/loaders/clap.rs:166` does the same
-    /// with this one), so the DAW offered an "open editor" button for plugins
-    /// that had no editor to open. The button did nothing, and the failure
-    /// surfaced as a user-visible dead control rather than an error.
+    /// Not just "is there a `clap.gui` vtable?": a plugin may expose the
+    /// extension but omit `create`, or support only a floating window. Both are
+    /// legal CLAP and both make [`embed_editor_sequence`] fail, so both must
+    /// answer `false` here — this feeds `Features::EDITOR` in the plugin
+    /// descriptor.
     ///
-    /// Two shapes make the pointer check wrong, and both are legal CLAP:
-    ///
-    /// - **Floating-only.** `is_api_supported(api, is_floating = false)`
-    ///   returns false. The vtable is non-null and `create` exists, but there
-    ///   is no *embedded* editor, so [`embed_editor_sequence`] rejects it at
-    ///   the first gate.
-    /// - **No `create`.** Every `clap_plugin_gui` member is an `Option<fn>`.
-    ///   The host already knows this shape exists — `EmbedOutcome::did_create`
-    ///   is there precisely because `create` may be absent — but the knowledge
-    ///   lived only in the embed path.
-    ///
-    /// ## Why this does not create and destroy a GUI to find out
-    ///
-    /// VST3 had no cheaper option: `createView` *is* the query, so the fix
-    /// there had to create a view and release it. CLAP is better designed.
-    /// `is_api_supported` is documented as "Returns true if the requested gui
-    /// api is supported, either in floating or non-floating mode" — a pure
-    /// predicate. `create`, by contrast, "allocates all resources necessary for
-    /// the gui". Answering a capability question by allocating and freeing a
-    /// plugin's entire GUI would be a real side effect on every scan: plugins
-    /// spin up OpenGL contexts, worker threads, and font caches in `create`,
-    /// and a `destroy` that follows immediately is a path few plugins exercise
-    /// and some get wrong. So the query stops at the two facts it can read for
-    /// free — the vtable's shape and the plugin's own answer.
-    ///
-    /// The residual gap is deliberate: a plugin whose `is_api_supported` says
-    /// yes and whose `create` then fails still reports `true` here. That is
-    /// unknowable without creating, and the honest place to discover it is
-    /// [`open_editor`](Self::open_editor)'s error.
-    ///
-    /// A plugin that omits `is_api_supported` entirely is taken at its word and
-    /// treated as embeddable — the same reading [`embed_editor_sequence`] uses,
-    /// where an absent query is not a refusal.
+    /// Deliberately does not create a GUI to find out. `is_api_supported` is a
+    /// side-effect-free predicate; `create` allocates the plugin's real GUI
+    /// resources. So a plugin whose `is_api_supported` says yes and whose
+    /// `create` then fails still reports `true` here; that surfaces as
+    /// [`open_editor`](Self::open_editor)'s error. An absent `is_api_supported`
+    /// is not a refusal — the same reading [`embed_editor_sequence`] uses.
     pub fn has_editor(&self) -> bool {
         if self.extensions.gui.gui.is_null() {
             return false;
@@ -265,10 +235,8 @@ impl ClapLoaded {
         if gui.create.is_none() {
             return false;
         }
-        // Ask about the *embedded* window API for this platform — the same
-        // constant `open_editor` will pass, resolved by the same
-        // `platform_window_handle` helper, so the two can never disagree about
-        // which API is being asked about.
+        // Ask about the *embedded* window API, resolved through the same helper
+        // `open_editor` uses, so the two cannot disagree about which API.
         let (api, _) = platform_window_handle(std::ptr::null_mut());
         match gui.is_api_supported {
             // SAFETY: `plugin` is live for `&self`, and `api` is a 'static C
@@ -301,18 +269,11 @@ impl ClapLoaded {
         // carries no DPI today, so we pass 1.0 and wire the `set_scale` call.
         let scale = 1.0_f64;
 
-        // H5: clear the previous editor's "already destroyed" latch *before*
-        // the embed sequence, not after. `embed_editor_sequence` calls
-        // `create` → `set_scale` → `get_size` → `set_parent` → `show`, and
-        // `clap.gui.closed` is a callback the plugin may invoke from inside any
-        // of them — a plugin that decides during `show` that it cannot present
-        // (no display, a failed context) reports it that way. Clearing
-        // afterwards wiped exactly that signal, so the host would then call
-        // `destroy` on an editor the plugin had already torn down.
-        //
-        // Clearing first is safe in the other direction: the latch describes a
-        // *previous* editor, and if `create` fails there is no new editor whose
-        // state the cleared latch could misdescribe.
+        // Clear the previous editor's "already destroyed" latch *before* the
+        // embed sequence: the plugin may call `clap.gui.closed` from inside
+        // `create`/`set_parent`/`show`, and clearing afterwards wiped that
+        // signal, leaving the host to `destroy` an already-torn-down editor.
+        // Clearing first is safe — the latch describes a *previous* editor.
         self.host_state
             .gui
             .already_destroyed
@@ -357,21 +318,10 @@ impl ClapLoaded {
 
     /// Returns the snapped size the plugin applied.
     ///
-    /// `adjust_size` is consulted first and its **failure is fatal**, not
-    /// ignored. CLAP defines it as "the plugin will calculate the closest
-    /// usable size which fits in the given size … Returns true if the plugin
-    /// could adjust the given size" — so a `false` return says the plugin could
-    /// not produce a usable size for this request, and leaves the out-params
-    /// holding whatever they held before (the spec does not promise the plugin
-    /// wrote them, and a fixed-size editor has nothing to write).
-    ///
-    /// This previously read `false` as "no snap to apply" and forwarded the
-    /// *unadjusted* request to `set_size`. That inverts the meaning: the one
-    /// case where the plugin has explicitly said "I cannot give you a working
-    /// size" was the case where the host pushed the raw size through anyway.
-    /// A plugin that then accepted it out of politeness would render at a size
-    /// it had just declined; one that refused produced a `set_size refused`
-    /// error naming the wrong call.
+    /// `adjust_size` returning false means no usable size fits the request, and
+    /// leaves the out-params untouched — so it is fatal here, not "no snap to
+    /// apply". Reading it the other way forwarded the *unadjusted* size to
+    /// `set_size` in exactly the case the plugin had declined it.
     pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
         if self.extensions.gui.gui.is_null() {
             return Err(ClapError::GuiError("No GUI extension".to_string()));
@@ -440,12 +390,9 @@ impl ClapLoaded {
             self.flags.gui_created = false;
             return;
         }
-        // SAFETY: `gui_created` implies the pointer is non-null. The only
-        // writer that sets it true is `open_editor`, after its own
-        // `gui.is_null()` guard and a successful embed; `ExtensionCache` is
-        // built once in `load.rs` and the `gui` field is never reassigned, so
-        // the pointer cannot go null underneath a live latch. This runs from
-        // `Drop` (lifecycle.rs), where an unwind is not available anyway.
+        // SAFETY: `gui_created` implies non-null — only `open_editor` sets it,
+        // past its own null guard, and `ExtensionCache::gui` is never
+        // reassigned after `load.rs` builds it.
         let gui = unsafe { &*self.extensions.gui.gui };
         if let Some(hide_fn) = gui.hide {
             unsafe { hide_fn(self.plugin.as_ptr()) };
@@ -558,12 +505,11 @@ impl ClapLoaded {
     /// Drain every `clap.log` line the plugin has emitted since the last drain,
     /// oldest first.
     ///
-    /// The host also mirrors each line to stderr as it arrives; this is the
-    /// programmatic route, for a consumer that wants them in a UI console or a
-    /// structured log. Draining is deliberate — a peek would make "have I seen
-    /// this line already?" the caller's problem, and the buffer is bounded
-    /// ([`LOG_CAPACITY`](crate::host::LOG_CAPACITY)) precisely so a caller that
-    /// never drains cannot grow it without limit.
+    /// Lines are also mirrored to stderr as they arrive; this is the
+    /// programmatic route. Draining rather than peeking keeps "have I seen this
+    /// line?" out of the caller, and the buffer is bounded by
+    /// [`LOG_CAPACITY`](crate::host::LOG_CAPACITY) for a caller that never
+    /// drains.
     pub fn drain_log(&self) -> Vec<LogRecord> {
         let mut records = self
             .host_state
@@ -574,16 +520,13 @@ impl ClapLoaded {
         records.drain(..).collect()
     }
 
-    /// How many log lines the host did not keep. Cumulative, not consumed on
-    /// read: a caller tracks its own delta, and a caller that never asks is not
-    /// silently told the history is complete.
+    /// How many log lines the host did not keep — cumulative, not consumed on
+    /// read, so callers track their own delta.
     ///
-    /// Two causes, counted together because a consumer cannot act differently
-    /// on them: the buffer was full while nothing was draining, or the plugin
-    /// logged from the audio thread, where keeping the line would mean
-    /// allocating and taking a lock inside the callback (see `host_log`). A
-    /// plugin that logs per block shows a rising count here rather than a
-    /// growing buffer or a stalled audio thread.
+    /// Either the buffer was full, or the plugin logged from the audio thread,
+    /// where keeping the line would mean allocating and locking inside the
+    /// callback (see `host_log`). Counted together: a consumer cannot act
+    /// differently on the two.
     pub fn log_lines_dropped(&self) -> u32 {
         self.host_state
             .log

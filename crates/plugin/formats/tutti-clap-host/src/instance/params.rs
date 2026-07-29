@@ -123,47 +123,18 @@ impl ClapLoaded {
     /// Collect CLAP-native metadata for every parameter. Crate-private (see
     /// [`parameter_info`](Self::parameter_info)).
     ///
-    /// # Why a hole is a hard stop
-    ///
-    /// `params.h` declares `count()` as "Returns the number of parameters" and
-    /// `get_info()` as "Returns true on success". As with `audio-ports`, that
-    /// is a count and not a sparse index space, so `get_info(i)` failing at
-    /// `i < count` is a plugin bug. The host's only choice is which recovery is
-    /// least bad.
-    ///
-    /// The old `filter_map` **skipped** the hole, and unlike the audio-port
-    /// list the damage is not a shift — parameters are keyed by `id`
-    /// everywhere downstream, so a dropped entry renumbers nothing. It is
-    /// worse than a shift. [`activate`](super::ClapLoaded::activate) builds
-    /// `AudioScratch::param_ranges` from
-    /// [`parameter_list`](Self::parameter_list) (lifecycle.rs:91-95), keyed by
-    /// param id, and that map is what
-    /// [`InputEventList::add_param_changes`](crate::events::InputEventList::add_param_changes)
-    /// denormalizes incoming automation against: host automation is authored
-    /// normalized `0..1`, CLAP events carry the plugin's **plain** value. A
-    /// param the hole dropped is simply absent from the map, so its automation
-    /// takes the `None` pass-through arm (events.rs:719) and reaches the plugin
-    /// **un-denormalized** — a raw `0..1` handed to a parameter whose range is,
-    /// say, `100..1100` Hz. That arm is correct for its stated case (a plugin
-    /// with no params, or a genuine `0..1` param, where pass-through *is* the
-    /// identity); it is only wrong when the host silently lost a range it was
-    /// told. Nothing errors, nothing logs, and the parameter is audibly wrong.
-    ///
-    /// So this stops at the hole rather than skipping it. Truncating cannot
-    /// hand any parameter the wrong range: every entry returned was read
-    /// successfully at its own index, and a parameter the host omits entirely
-    /// is one it will never claim to have a range for — the missing-param and
-    /// wrong-range outcomes collapse into the single honest one. It also keeps
-    /// this list a prefix of the plugin's, matching what
-    /// [`port_channels`](super::load) does for the port enumeration, so both
-    /// index-based reads in this host recover the same way.
-    ///
-    /// The tempting alternative — keep scanning so parameters *after* the hole
-    /// retain their ranges — is what makes the failure hard to find: it yields
-    /// a map that is complete for every id except one, so automation is
-    /// correct everywhere the user looks and silently raw on a single
-    /// parameter. A short list is a visible symptom; a selectively-wrong map
-    /// is not.
+    /// A failing `get_info(i)` at `i < count` **truncates**, matching
+    /// [`port_channels`](super::load). Parameters are keyed by id downstream so
+    /// a skipped entry renumbers nothing — it is worse than that: `activate`
+    /// builds `AudioScratch::param_ranges` from this list, and a param missing
+    /// from that map takes the pass-through arm in
+    /// [`add_param_changes`](crate::events::InputEventList::add_param_changes),
+    /// reaching the plugin **un-denormalized** — raw `0..1` into a `100..1100`
+    /// Hz range, silently. Scanning past the hole to keep the later ranges is
+    /// the tempting alternative and is the worse one: it yields a map complete
+    /// for every id but one, so automation looks right everywhere the user
+    /// checks. A short list is a visible symptom; a selectively-wrong map is
+    /// not.
     pub(crate) fn parameters(&self) -> Vec<ClapParamInfo> {
         let count = self.parameter_count() as u32;
         let mut params = Vec::with_capacity(count as usize);
@@ -227,15 +198,10 @@ impl ClapLoaded {
     /// glitch — and leaves the full enqueue path as follow-up. On an inactive
     /// instance a flush is spec-legal, so it is allowed.
     ///
-    /// # Hole handling
-    /// The third `count`/`get(index)` enumeration in this host, and it stops at
-    /// a failing index for the same reason [`parameters`](Self::parameters)
-    /// does — it must agree with that function about which parameters exist.
-    /// Scanning past the hole would answer for a parameter that
-    /// [`parameter_list`](Self::parameter_list) has already decided the host
-    /// does not have, so `set_parameter` would gate on a flag belonging to a
-    /// param with no cached range. Sharing `parameters()` rather than
-    /// re-implementing the walk is what keeps the two answers from drifting.
+    /// Goes through [`parameters`](Self::parameters) rather than re-walking the
+    /// enumeration, so the two cannot drift about which parameters exist:
+    /// answering for one past a `get_info` hole would gate `set_parameter` on a
+    /// flag belonging to a param with no cached range.
     pub(crate) fn param_requires_process(&self, param_id: u32) -> bool {
         self.parameters()
             .into_iter()

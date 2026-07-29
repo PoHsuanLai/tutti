@@ -2,43 +2,20 @@
 //! `clap_plugin_gui` half of `src/instance/polling.rs`, driven by a real plugin
 //! across the real CLAP FFI.
 //!
-//! ## The bug this exists to prevent
+//! The bug this exists to prevent: `has_editor()` was `!gui.is_null()` — "is
+//! there a gui vtable?" rather than "can an editor actually be embedded?".
+//! Those differ for two legal plugin shapes, a floating-only plugin and one
+//! whose `create` is absent, both of which have a non-null pointer. The answer
+//! feeds `Features::EDITOR`, so the DAW rendered an "open editor" button that
+//! could not open one.
 //!
-//! `has_editor()` was `!self.extensions.gui.gui.is_null()` — "is there a gui
-//! vtable?" rather than "can an editor actually be embedded?". Those differ for
-//! two legal CLAP plugin shapes: a **floating-only** plugin (whose
-//! `is_api_supported(api, is_floating=false)` is false) and one whose **`create`
-//! is absent** from the vtable. Both have a non-null pointer, so both were
-//! reported as having an editor.
+//! Nothing here opens a window: the probe's `clap.gui` is pure bookkeeping and
+//! never dereferences the parent handle, so this suite runs headless on every
+//! platform with no `#[cfg(target_os)]` gate.
 //!
-//! It mattered because `tutti-plugin-server/src/loaders/clap.rs:166` feeds the
-//! answer into `Features::EDITOR`, so the DAW rendered an "open editor" button
-//! that could not open one.
-//!
-//! This had already shipped once, in VST3, in the same shape: `has_editor` there
-//! asked "is there a controller?" instead of calling `createView(kEditor)`. The
-//! CLAP fix is cheaper than the VST3 one — `is_api_supported` is a documented
-//! pure predicate, so unlike `createView` it can be asked without allocating and
-//! freeing a real GUI.
-//!
-//! ## Nothing here opens a window
-//!
-//! The reference plugin's `clap.gui` is pure bookkeeping: it records what the
-//! host called and returns configured answers. `set_parent` is handed a host
-//! window handle it never dereferences. Every property under test — does
-//! `has_editor` ask the right question, does `open_editor` run the spec's call
-//! order, does `resize_editor` honour `adjust_size` — is decided before any
-//! pixel would exist, so a real X11/Cocoa window would add a display dependency
-//! and a headless skip without adding an assertion. **This suite therefore runs
-//! headless on every platform** and has no `#[cfg(target_os)]` gate.
-//!
-//! ## Determinism and the process-global probe
-//!
-//! The plugin's GUI mode, capture and command word are process-globals (one
-//! dlopen'd image shared by the whole binary), so every test holds
-//! [`PROBE_LOCK`] for its entire scenario. The mode in particular is read by the
-//! host *once at load*, so it must be set before `load` and must not be changed
-//! by a concurrent test mid-scenario.
+//! The plugin's GUI mode, capture and command word are process-globals, so
+//! every test holds [`PROBE_LOCK`] for its entire scenario. The mode is read by
+//! the host once at load, so it must be set before `load`.
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -61,13 +38,8 @@ use tutti_clap_test_plugin::{
 /// [`GuiMode`].
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
-/// A stand-in parent window handle.
-///
-/// Never dereferenced by anything: the host passes it straight into the
-/// `clap_window` it builds, and the probe's `set_parent` records only that a
-/// window arrived and what `api` string came with it. A non-null,
-/// obviously-fake value is better than null here because it proves the host
-/// forwarded *our* handle rather than substituting a zero.
+/// A stand-in parent window handle, never dereferenced. Non-null rather than
+/// null so it proves the host forwarded *our* handle instead of a zero.
 const FAKE_PARENT: usize = 0xDEAD_BEEF;
 
 // ---------------------------------------------------------------------------
@@ -82,10 +54,9 @@ struct Probe {
 impl Probe {
     /// Take the lock, select the GUI shape, and clear the recorded calls.
     ///
-    /// The mode is set **before** any `load`, because the host caches the
-    /// `clap.gui` extension pointer once during load — `GuiMode::Absent` and
-    /// `GuiMode::NoCreate` are literally different vtables (or none), so they
-    /// cannot be switched afterwards.
+    /// The mode is set **before** any `load`: the host caches the `clap.gui`
+    /// extension pointer once during load, and `Absent`/`NoCreate` are
+    /// different vtables (or none), so they cannot be switched afterwards.
     fn acquire(mode: GuiMode) -> Self {
         let lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         set_gui_mode(mode as u32);
@@ -95,10 +66,9 @@ impl Probe {
 
     /// Load the reference plugin through the real host.
     ///
-    /// Deliberately **not** activated: the CLAP editor lifecycle is defined on
-    /// a loaded plugin and every method under test lives on `ClapLoaded`, so
-    /// activating would add an unrelated audio setup whose failure would be
-    /// reported as a GUI failure.
+    /// Deliberately **not** activated: every method under test lives on
+    /// `ClapLoaded`, so activating would add an unrelated audio setup whose
+    /// failure would be reported as a GUI failure.
     fn load(&self) -> ClapLoaded {
         let path = Path::new(probe_path());
         // Bare dylib: pass it as both bundle and library so the host dlopens it
@@ -116,8 +86,7 @@ impl Probe {
     }
 
     /// Fire the latched command immediately, from this thread, rather than
-    /// waiting for the plugin's next host-driven callback. See
-    /// [`GUI_CMD_CLOSED_AND_DESTROYED`].
+    /// waiting for the plugin's next host-driven callback.
     fn run_command(&self) {
         assert!(
             run_gui_command(),
@@ -128,10 +97,9 @@ impl Probe {
 }
 
 impl Drop for Probe {
-    /// Return the probe to the no-GUI shape every other suite in this crate
-    /// was written against. The mode is a process-global that outlives the
-    /// test, and a leaked `Embeddable` would silently give the audio and
-    /// threading suites a `clap.gui` extension they never asked for.
+    /// Return the probe to the no-GUI shape the other suites were written
+    /// against — the mode is a process-global that outlives the test, and a
+    /// leaked `Embeddable` would give them a `clap.gui` they never asked for.
     fn drop(&mut self) {
         set_gui_mode(GuiMode::Absent as u32);
     }
@@ -149,28 +117,13 @@ fn fake_parent() -> WindowHandle {
 //
 // Opening the same path a second time shares the already-loaded image, so these
 // see (and drive) exactly the globals the host's calls touched.
-//
-// ## Why the handle is leaked instead of dropped per call
-//
-// The sibling suites open the library, call their symbol, and let the
-// `Library` drop — which `dlclose`s it. That is harmless *there* because they
-// only ever write probe state while the host already holds the image open, so
-// the refcount never reaches zero.
-//
-// It is fatal here. This suite must set the [`GuiMode`] **before** the host
-// loads the plugin, since the host caches the `clap.gui` extension pointer
-// once during load. With a per-call handle that store happened in an image
-// whose refcount then dropped to zero: the loader unmapped it, the host's
-// subsequent load mapped a *fresh* copy with `GUI_MODE` back at its
-// `Absent` initializer, and every test failed with "No GUI extension" —
-// the plugin faithfully reporting the mode it actually had.
-//
-// One process-lifetime handle keeps the image mapped across the gap, so the
-// mode the test sets is the mode the host loads into.
 
-/// The probe image, opened once and kept mapped for the life of the test
-/// binary. See the note above: dropping it between a mode store and the host's
-/// load unmaps the global the store just wrote.
+/// The probe image, opened once and kept mapped for the life of the test binary.
+///
+/// Not dropped per call, unlike the sibling suites: this one sets the
+/// [`GuiMode`] *before* the host loads, so its handle is the only one. Dropping
+/// it `dlclose`s the image, and the host's subsequent load maps a fresh copy
+/// with `GUI_MODE` back at its `Absent` initializer.
 fn probe_lib() -> &'static libloading::Library {
     static LIB: std::sync::OnceLock<libloading::Library> = std::sync::OnceLock::new();
     LIB.get_or_init(|| unsafe {
@@ -242,15 +195,12 @@ fn calls(cap: &GuiCapture) -> Vec<u32> {
 }
 
 // ===========================================================================
-// has_editor — the bug.
+// has_editor
 // ===========================================================================
 
 /// The baseline: a plugin that really can embed an editor is reported as having
-/// one.
-///
-/// On its own this passes against the broken `!gui.is_null()` too — it is here
-/// so the three negative cases below cannot be satisfied by a `has_editor` that
-/// simply returns `false`.
+/// one. Here so the three negative cases below cannot be satisfied by a
+/// `has_editor` that simply returns `false`.
 #[test]
 fn has_editor_true_for_embeddable_plugin() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -280,9 +230,8 @@ fn has_editor_false_when_extension_absent() {
 /// false, so there is no embedded editor to open — but the vtable pointer is
 /// non-null, so the old implementation said `true`.
 ///
-/// The second assertion is what makes the first one meaningful: `open_editor`
-/// genuinely cannot embed this plugin, so a `has_editor` that says yes is
-/// promising something the host cannot deliver.
+/// The `open_editor` assertion is what makes the first one meaningful: the two
+/// must not disagree.
 #[test]
 fn has_editor_false_for_floating_only_plugin() {
     let probe = Probe::acquire(GuiMode::FloatingOnly);
@@ -319,13 +268,11 @@ fn has_editor_false_when_create_is_absent() {
 /// `has_editor` must be **cheap and side-effect-free** — it is called once per
 /// plugin during a scan, and the DAW scans everything installed.
 ///
-/// This is the CLAP-specific half of the fix. VST3 had no choice but to
-/// `createView` and release; CLAP documents `is_api_supported` as a pure
-/// predicate ("Returns true if the requested gui api is supported"), while
-/// `create` "allocates all resources necessary for the gui". A `has_editor`
-/// implemented by create-then-destroy would spin up OpenGL contexts and worker
-/// threads on every scanned plugin, so the absence of `create` in the call log
-/// is a property worth pinning, not an implementation detail.
+/// CLAP documents `is_api_supported` as a pure predicate, while `create`
+/// "allocates all resources necessary for the gui". A `has_editor` implemented
+/// by create-then-destroy would spin up OpenGL contexts and worker threads on
+/// every scanned plugin, so the absence of `create` in the call log is a
+/// property worth pinning.
 #[test]
 fn has_editor_does_not_create_a_gui() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -361,10 +308,9 @@ fn has_editor_does_not_create_a_gui() {
 /// The platform API constant must be the *current platform's*, not a hardcoded
 /// `"x11"`.
 ///
-/// The probe answers `is_api_supported` false for any api string that is not
-/// its own platform's, so a host that hardcoded X11 reports "no editor" on
-/// macOS and Windows — a silent, total loss of plugin GUIs on two of three
-/// platforms, which is precisely the kind of bug that survives a Linux-only CI.
+/// The probe answers `is_api_supported` false for any api string but its own
+/// platform's, so a host that hardcoded X11 reports "no editor" on macOS and
+/// Windows — a total loss of plugin GUIs that a Linux-only CI never sees.
 #[test]
 fn has_editor_asks_about_the_current_platform_api() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -383,10 +329,9 @@ fn has_editor_asks_about_the_current_platform_api() {
 
 /// The spec's embed order, observed from inside a real plugin.
 ///
-/// `polling.rs`'s in-crate test already asserts this order against a hand-written
-/// vtable. What it cannot show is that the host reaches that code with a
-/// correctly-built `clap_window` — the right platform `api` string and the
-/// caller's handle — which is what the `set_parent` assertions below add.
+/// `polling.rs`'s in-crate test asserts this order against a hand-written
+/// vtable; what it cannot show is that the host reaches that code with a
+/// correctly-built `clap_window`, which the `set_parent` assertions add.
 #[test]
 fn open_editor_runs_the_spec_embed_sequence() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -441,9 +386,8 @@ fn open_editor_runs_the_spec_embed_sequence() {
 
 /// A floating-only plugin is refused at the first gate, before `create`.
 ///
-/// Degrading gracefully matters more than it looks: `create` on a plugin that
-/// just said it cannot do embedded is undefined territory, and the plugins that
-/// handle it least well are the ones that would crash the host.
+/// `create` on a plugin that just said it cannot do embedded is undefined
+/// territory, and the plugins that handle it least well would crash the host.
 #[test]
 fn open_editor_refuses_floating_only_before_create() {
     let probe = Probe::acquire(GuiMode::FloatingOnly);
@@ -506,14 +450,13 @@ fn close_editor_destroys_exactly_once() {
     );
 }
 
-/// H5: when the plugin destroyed its own editor and told the host so via
+/// When the plugin destroyed its own editor and told the host so via
 /// `gui.closed(was_destroyed = true)`, the host must **not** call `destroy`
 /// again.
 ///
 /// A double-destroy is a use-after-free in the plugin, which is why the host
-/// keeps an `already_destroyed` latch rather than trusting its own
-/// `gui_created` flag alone. The probe's balance is what makes the second
-/// destroy visible: it would read -1.
+/// keeps an `already_destroyed` latch rather than trusting `gui_created` alone.
+/// The probe's balance makes a second destroy visible: it would read -1.
 #[test]
 fn close_editor_skips_destroy_after_plugin_self_destroyed() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -521,9 +464,8 @@ fn close_editor_skips_destroy_after_plugin_self_destroyed() {
 
     loaded.open_editor(fake_parent()).expect("opens");
 
-    // The plugin tears its own editor down and reports it — a user closing the
-    // plugin's own window while the editor sits open. Driven out-of-band, i.e.
-    // *between* the host's calls; the during-`show` case is its own test below.
+    // Driven out-of-band — *between* the host's calls. The during-`show` case
+    // is its own test below.
     probe.command(GUI_CMD_CLOSED_AND_DESTROYED);
     probe.run_command();
 
@@ -551,18 +493,14 @@ fn close_editor_skips_destroy_after_plugin_self_destroyed() {
     );
 }
 
-/// The same H5 hazard, but the plugin self-destroys from **inside `show`** —
-/// while the host is still within `open_editor`.
+/// The same hazard, but the plugin self-destroys from **inside `show`** — while
+/// the host is still within `open_editor`.
 ///
-/// A plugin does this when it finds during the embed that it cannot present.
 /// The host used to clear its `already_destroyed` latch *after*
 /// `embed_editor_sequence` returned, so this callback was wiped by the very
-/// call that carried it and the host went on to `destroy` an editor that had
-/// already torn itself down.
-///
-/// The out-of-band test above cannot catch it: firing between the host's calls
-/// lands after the clear either way. Only a callback raised inside the sequence
-/// distinguishes clearing before it from clearing after.
+/// call that carried it. Only a callback raised inside the sequence
+/// distinguishes clearing before it from clearing after; the out-of-band test
+/// above lands after the clear either way.
 #[test]
 fn close_editor_skips_destroy_after_plugin_self_destroyed_during_show() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -601,11 +539,8 @@ fn close_editor_skips_destroy_after_plugin_self_destroyed_during_show() {
 
 /// `gui.closed(was_destroyed = false)` is the *other* half: the plugin's window
 /// went away but its resources are intact, so the host still owes it a
-/// `hide`/`destroy`.
-///
-/// Distinguishing the two is the whole reason CLAP passes a flag. A host that
-/// treated every `closed` as self-destroyed would leak the plugin's GUI
-/// resources for the life of the instance.
+/// `hide`/`destroy`. A host that treated every `closed` as self-destroyed would
+/// leak the plugin's GUI resources for the life of the instance.
 #[test]
 fn close_editor_still_destroys_when_plugin_was_not_destroyed() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -667,11 +602,8 @@ fn editor_capabilities_reports_plugin_hints() {
 /// Before `create`, the query must not touch the plugin at all.
 ///
 /// CLAP orders every `clap_plugin_gui` call after `create()`, and plugins
-/// enforce it — TAL-Reverb-4 prints `[clap-plugin HOST-MISBEHAVING]
-/// clap_plugin_gui.can_resize() was called without a prior call to
-/// clap_plugin_gui.create()`. The host guarded only on the extension pointer,
-/// so it violated that on every pre-create query and the diagnostic went to a
-/// log nobody read.
+/// enforce it with a `HOST-MISBEHAVING` diagnostic. The host guarded only on
+/// the extension pointer, so it violated that on every pre-create query.
 #[test]
 fn editor_capabilities_touches_nothing_before_create() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -743,19 +675,16 @@ fn resize_editor_forwards_the_adjusted_size() {
     );
 }
 
-/// **The audit finding.** `adjust_size` returning false means the plugin could
-/// not compute a usable size — CLAP: "Returns true if the plugin could adjust
-/// the given size." The host previously read that as "no snap to apply" and
-/// forwarded the *unadjusted* request to `set_size`.
-///
-/// That inverts the meaning. The one case where the plugin has explicitly said
-/// "I cannot give you a working size" was the case where the host pushed the raw
-/// size through anyway, and the out-params it forwarded were never promised to
-/// have been written.
+/// `adjust_size` returning false means the plugin could not compute a usable
+/// size ("Returns true if the plugin could adjust the given size"). The host
+/// read that as "no snap to apply" and forwarded the *unadjusted* request to
+/// `set_size` — pushing the raw size through in the one case where the plugin
+/// said it cannot give a working size, with out-params never promised to have
+/// been written.
 ///
 /// The probe's fixed-size mode accepts only its own dimensions, so the old
-/// behaviour is observable: it reached `set_size` and was refused there,
-/// producing a `set_size refused` error that named the wrong call.
+/// behaviour is observable: it reached `set_size`, was refused there, and
+/// produced an error naming the wrong call.
 #[test]
 fn resize_editor_fails_when_plugin_cannot_adjust() {
     let probe = Probe::acquire(GuiMode::FixedSize);
@@ -792,11 +721,9 @@ fn resize_editor_fails_when_plugin_cannot_adjust() {
 }
 
 /// A fixed-size editor reports itself as non-resizable, and its absent hints do
-/// not get mistaken for permissive ones.
-///
-/// The safe direction matters: a host that resizes a fixed-size editor corrupts
-/// its layout, so an unanswered `get_resize_hints` must not read as
-/// "resizable in both axes".
+/// not get mistaken for permissive ones — a host that resizes a fixed-size
+/// editor corrupts its layout, so an unanswered `get_resize_hints` must not
+/// read as "resizable in both axes".
 #[test]
 fn editor_capabilities_reports_fixed_size_as_not_resizable() {
     let probe = Probe::acquire(GuiMode::FixedSize);
@@ -820,9 +747,8 @@ fn editor_capabilities_reports_fixed_size_as_not_resizable() {
 // ===========================================================================
 
 /// A plugin-initiated `request_resize` reaches the host and is delivered once.
-///
-/// The consume-on-read semantics are the point: a poll that kept returning the
-/// last request would make the host resize the editor on every UI frame.
+/// A poll that kept returning the last request would make the host resize the
+/// editor on every UI frame.
 #[test]
 fn poll_editor_resize_request_delivers_once() {
     let probe = Probe::acquire(GuiMode::Embeddable);
@@ -860,11 +786,9 @@ fn poll_editor_resize_request_delivers_once() {
 
 /// Dropping a `ClapLoaded` with a live editor destroys it, in that order.
 ///
-/// CLAP requires `gui.destroy()` before `plugin.destroy()`, so this is not
-/// merely tidiness: the reverse order hands the plugin's GUI code a destroyed
-/// instance. `ClapLoaded::drop` calls `close_editor` for exactly this reason,
-/// and nothing else in the suite covers the path where the host never gets an
-/// explicit close.
+/// CLAP requires `gui.destroy()` before `plugin.destroy()`; the reverse hands
+/// the plugin's GUI code a destroyed instance. Nothing else in the suite covers
+/// the path where the host never gets an explicit close.
 #[test]
 fn drop_destroys_a_live_editor() {
     let probe = Probe::acquire(GuiMode::Embeddable);

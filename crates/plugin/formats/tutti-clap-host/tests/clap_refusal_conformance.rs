@@ -2,45 +2,15 @@
 //! plugin returns `false` to mean *"no"* and the host must not read it as
 //! *"not applicable"*.
 //!
-//! Companion to `clap_conformance.rs` (buffer geometry + event delivery),
-//! `clap_params_state_conformance.rs` (params + state round-trips) and
-//! `clap_threading_conformance.rs` (thread model + callbacks). Those all drive
-//! a plugin that says **yes** to everything, which is exactly why none of them
-//! could see these bugs.
-//!
-//! ## The shared mistake
-//!
-//! Four of the five bugs found in the VST3 host had one shape: *a plugin's
-//! return code meaning "no" was read by the host as "not applicable"*. CLAP has
-//! the same shape in two places, and the host had it in both:
-//!
-//! - **`activate`.** `set_sample_rate` / `set_max_block_size` wrote
-//!   `let _ = self.loaded.activate_plugin();`. `activate_plugin` returns early
-//!   on refusal *without* setting `flags.active`, so a refusal left a value
-//!   typed `ClapActive` whose bookkeeping said inactive — and the next
-//!   `process` called `start_processing` on a deactivated plugin, violating
-//!   CLAP's `[audio-thread & active & !processing]` tag on that entry point.
-//! - **`state_context.save` / `.load`.** Both fell through to the plain
-//!   `state.save` / `state.load` on `false`. The doc comment claimed the
-//!   fallback was for a plugin that *does not implement* the extension; the
-//!   code took it for a plugin that implemented it and refused, so a caller
-//!   asking for a preset-context blob silently got a project-context one,
-//!   tagged `Ok`.
-//!
-//! ## Why these tests need the refusal switch
-//!
-//! Every assertion here is about what the host does *after* hearing "no". The
-//! reference plugin's `crate::refusal` module supplies the switches; without
-//! them the code paths under test are unreachable and any test written against
-//! them would pass vacuously. Each test below was run against the pre-fix host
-//! and observed to fail — see the module docs in
-//! `tutti-clap-test-plugin/src/refusal.rs` for what each switch models.
-//!
-//! ## Determinism
+//! Companion to the other conformance suites here, which all drive a plugin
+//! that says **yes** to everything — which is why none of them could see these
+//! bugs. Every assertion below is about what the host does *after* hearing
+//! "no", so the paths under test are unreachable without the reference
+//! plugin's `refusal` switches; see that module for what each one models.
 //!
 //! Nothing waits on a clock. The probe's switches and counters are
-//! process-globals (one loaded image), so every test holds [`PROBE_LOCK`] for
-//! its whole scenario and resets the probe at the top.
+//! process-globals, so every test holds [`PROBE_LOCK`] for its whole scenario
+//! and resets the probe at the top.
 
 mod support;
 
@@ -256,16 +226,10 @@ fn refused_sample_rate_change_is_reported() {
 /// After a refused `set_sample_rate` the instance must still be *running*, at
 /// the configuration the plugin already accepted.
 ///
-/// This is the state-machine half of the bug. `activate_plugin` returns before
-/// setting `flags.active`, so discarding the refusal left `flags.active ==
-/// false` inside a value typed `ClapActive` — the one combination the type
-/// exists to make unrepresentable.
-///
-/// The oracle is on the *plugin* side rather than the host's private flag: two
-/// accepted activations, the second one landing back on the base rate, is what
-/// a rollback looks like from the plugin's vantage. A host that discarded the
-/// refusal shows exactly one accept (the original `activate`), because it never
-/// called `activate` again at all.
+/// The oracle is plugin-side rather than the host's private flag: two accepted
+/// activations, the second back on the base rate, is what a rollback looks like
+/// from the plugin's vantage. A host that discarded the refusal shows exactly
+/// one accept, never having called `activate` again.
 #[test]
 fn refused_sample_rate_change_rolls_back_and_stays_active() {
     let probe = Probe::acquire();
@@ -431,21 +395,17 @@ fn accepted_sample_rate_change_reaches_the_plugin() {
 }
 
 // ---------------------------------------------------------------------------
-// Bug 2 — state-context refusal
+// State-context refusal
 // ---------------------------------------------------------------------------
 
 /// A refused `state_context.save` must not be answered with a plain
-/// `state.save` blob.
-///
-/// The pre-fix host fell through to [`ClapLoaded::state`] on `false` and
-/// returned `Ok`. The caller asked for bytes saved *for a preset* and got bytes
-/// saved for the project context — a substitution that only surfaces later,
-/// when someone loads the preset.
+/// `state.save` blob — a substitution that only surfaces later, when someone
+/// loads the preset.
 ///
 /// The probe tags every blob with the context it was saved at, and its plain
-/// `state.save` still succeeds while the context-aware one is armed. So the
-/// fallback is not merely detectable, it is the *only* way this can return
-/// `Ok`: `save_calls` counting a plain save is the fingerprint.
+/// `state.save` still succeeds while the context-aware one is armed. So a
+/// fallback is the *only* way this can return `Ok`: `save_calls` counting a
+/// plain save is the fingerprint.
 #[test]
 fn refused_context_save_is_not_silently_downgraded() {
     let probe = Probe::acquire();
@@ -509,20 +469,14 @@ fn refused_context_load_is_not_retried_context_free() {
     );
 }
 
-/// The *absent* case still falls back — that behaviour is correct and must
-/// survive the fix.
+/// Guards the other direction: a fix that turned "extension absent" into an
+/// error alongside "present and refused" would break every plugin without
+/// `clap.state-context/2`.
 ///
-/// Distinguishing "extension absent" from "extension present and refused" is
-/// the whole point; a fix that turned both into errors would break every plugin
-/// that does not implement `clap.state-context/2`.
-///
-/// The probe always exposes the extension, so this exercises the fallback
-/// through the one host method that reaches it with the extension pointer
-/// unused: with nothing armed, a context save must succeed *and* be tagged with
-/// the context, proving the host took the context-aware path rather than the
-/// fallback. The complementary direction — a plugin without the extension — is
-/// covered by `state_with_context` delegating to `state`, which
-/// `clap_params_state_conformance.rs` already exercises directly.
+/// With nothing armed, a context save must succeed *and* carry the context tag,
+/// proving the host took the context-aware path rather than the fallback. The
+/// absent-extension case itself is covered in
+/// `clap_params_state_conformance.rs`.
 #[test]
 fn unrefused_context_save_takes_the_context_aware_path() {
     let probe = Probe::acquire();

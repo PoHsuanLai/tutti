@@ -4,59 +4,34 @@
 //! `src/instance/ports.rs` (`num_input_channels` / `num_output_channels`),
 //! driven by a real plugin across the real CLAP FFI.
 //!
-//! ## The bug class
-//!
 //! CLAP enumerates audio ports and parameters as a `count()` / `get(index)`
-//! pair. `audio-ports.h` documents `count` as the "Number of ports" and `get`
-//! as "Returns true on success"; `params.h` says `count` "Returns the number of
-//! parameters" and `get_info` "Returns true on success". Neither describes a
-//! sparse index space — so `get(i)` answering `false` for some `i < count()` is
-//! a plugin bug.
+//! pair, and describes no sparse index space — so `get(i)` answering `false` for
+//! some `i < count()` is a plugin bug the host still has to survive. Both sites
+//! used `filter_map`, which **closes the gap**, and the two consequences differ:
 //!
-//! It is a plugin bug the host still has to survive, and the host's recovery
-//! must not be worse than simply stopping. It was. Both sites used
-//! `filter_map`, which **closes the gap**, and the two consequences differ:
+//! - **Ports.** The derived port list is positional: `refill_port_buffers`
+//!   walks it in order, advancing a flat pointer offset by each entry's channel
+//!   count. Skipping index 1 of `[2, 1]` does not produce "two ports, one
+//!   wrong" — it produces one port carrying the *other* port's channel count,
+//!   so channels reach the wrong port silently.
 //!
-//! - **Ports** (`hole_in_audio_ports_*`). The derived port list is positional —
-//!   it is the entire description of the buffer geometry, and
-//!   `refill_port_buffers` walks it in order, advancing a flat pointer offset by
-//!   each entry's channel count. Skipping index 1 of `[2, 1]` therefore does not
-//!   produce "two ports, one wrong"; it produces one port carrying the *other*
-//!   port's channel count. Channels reach the wrong port, silently.
+//! - **Parameters.** Worse. A dropped entry renumbers nothing and the list
+//!   merely looks short, but `activate` caches each parameter's plain
+//!   `min`/`max` to denormalize incoming automation. A parameter the hole
+//!   dropped is absent from that cache, so its automation takes the
+//!   pass-through arm and arrives **un-denormalized**: a raw `0.25` handed to a
+//!   parameter whose range is `100..1100`, where the plugin expected `350`.
 //!
-//! - **Parameters** (`hole_in_params_*`). Worse, and the reason this file
-//!   exists rather than a length assertion somewhere. Parameters are keyed by
-//!   id, so a dropped entry renumbers nothing and the list looks merely short.
-//!   But `activate` caches each parameter's plain `min`/`max` to denormalize
-//!   incoming automation — host automation is authored normalized `0..1`, CLAP
-//!   events carry the plugin's plain value — and a parameter the hole dropped is
-//!   absent from that cache, so its automation takes the pass-through arm and
-//!   arrives **un-denormalized**. A raw `0.25` is handed to a parameter whose
-//!   range is `100..1100`, where the plugin expected `350`. That is audible, and
-//!   nothing anywhere reports it.
+//! Both sites now stop at the hole, keeping each list a true **prefix** of the
+//! plugin's — every entry was read at its own index, so nothing is
+//! misattributed, and a parameter the host omits is one it never claims a range
+//! for. These tests pin the observable half (index fidelity and correct
+//! denormalization), not the prefix length, so a host that recovers more
+//! cleverly still has to keep both.
 //!
-//! [`hole_in_params_does_not_deliver_undenormalized_automation`] asserts that
-//! consequence directly, by reading back the plain value the plugin *received*.
-//! A test that only checked `parameter_list().len()` could be satisfied by a
-//! host that fixed the length and left the delivery bug intact.
-//!
-//! ## Why the fix is "truncate", and what these tests pin
-//!
-//! Both sites now stop at the hole rather than skipping it. That keeps each
-//! list a true **prefix** of the plugin's: every entry returned was read at its
-//! own index, so nothing is ever misattributed, and a parameter the host omits
-//! entirely is one it will never claim a range for. These tests pin the
-//! observable half of that — index fidelity and correct denormalization — not
-//! the choice of prefix length, so a future host that recovers more cleverly
-//! (re-querying, or failing the load outright) still has to keep both.
-//!
-//! ## Process-global state
-//!
-//! The hole switches are process-globals in the plugin, and the port hole must
-//! be set *before* the host loads (the host reads `audio-ports` once, during
-//! `load`). Every test therefore holds [`PROBE_LOCK`] across
-//! *configure → load → drive → assert* and clears the holes on the way out —
-//! the other suites in this process assume an unholed probe.
+//! The hole switches are process-globals, and the port hole must be set
+//! *before* the host loads. Every test holds [`PROBE_LOCK`] across *configure →
+//! load → drive → assert* and clears the holes on the way out.
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -73,8 +48,8 @@ use tutti_clap_test_plugin::{ProcessCapture, HOLE_NONE};
 const CLAP_EVENT_PARAM_VALUE: u16 = 5;
 
 /// The probe's hole switches, port layout and capture are process-globals
-/// shared by every test in this binary (one dlopen'd image). Serialize whole
-/// scenarios so one test cannot observe another's configuration.
+/// shared by every test in this binary. Serialize whole scenarios so one test
+/// cannot observe another's configuration.
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
 /// `PortLayoutMode::AsymmetricAux` — `in = [2, 1]`, `out = [2, 1]`.
@@ -109,9 +84,6 @@ impl Probe {
     /// Take the lock, re-open the plugin image (shared with the host's load, so
     /// these symbols drive the very globals the host reads), and start from a
     /// clean slate.
-    ///
-    /// Panics if the reference plugin wasn't built — [`probe_path`] resolves it
-    /// or fails loudly, matching the sibling suites.
     fn acquire() -> Self {
         let lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         unsafe {
@@ -223,24 +195,19 @@ fn drive_block(
 }
 
 // ===========================================================================
-// Bug 2 — the parameter hole. Ordered first: it is the higher-severity of the
-// two, and the automation test below is the one that asserts a consequence
-// rather than a shape.
+// The parameter hole — ordered first, as the higher-severity of the two.
 // ===========================================================================
 
-/// **The audible consequence, on the side the enumeration fix reaches.** A
-/// parameter that survives the hole must still have its automation
+/// A parameter that survives the hole must still have its automation
 /// denormalized against its own declared range.
 ///
 /// The hole is at index 1 (`Drive`), so index 0 (`Cutoff`, id 101, range
 /// `100..1100`) is inside the surviving prefix. Feeding normalized `0.25` must
-/// reach the plugin as `100 + 0.25·1000 = 350`, not as `0.25`.
+/// reach the plugin as `350`, not as `0.25`.
 ///
-/// This is the assertion that pins denormalization to a *plain value the plugin
-/// actually received*, rather than to a list length. A host that fixed the
-/// enumeration but lost the range cache along the way — or that truncated so
-/// aggressively it dropped surviving parameters too — fails here while a
-/// length-only test would still pass.
+/// Pins denormalization to a *plain value the plugin actually received* rather
+/// than to a list length: a host that fixed the enumeration but lost the range
+/// cache fails here while a length-only test would pass.
 #[test]
 fn hole_in_params_still_denormalizes_surviving_params() {
     let probe = Probe::acquire();

@@ -8,38 +8,21 @@
 //! the caller did not ask for. A plugin that always says yes cannot expose
 //! either mistake, so the probe needs a way to say no on demand.
 //!
-//! Separate module for the same reason as [`threading`](crate::threading) and
-//! [`params_state`](crate::params_state): each thing the probe models should be
-//! an oracle that cannot perturb the others. `lib.rs` and `params_state.rs`
-//! hold only the call-site hooks.
+//! Separate module so each thing the probe models is an oracle that cannot
+//! perturb the others; `lib.rs` and `params_state.rs` hold only the call-site
+//! hooks.
 //!
-//! ## What the activation switch catches
-//!
-//! A plugin is entitled to reject a sample rate or block size it cannot run.
-//! The host used to write `let _ = self.loaded.activate_plugin();` in
-//! `set_sample_rate` / `set_max_block_size`, discarding that answer. Because
-//! `activate_plugin` returns early *without* setting its `active` flag, the
-//! refusal left the host holding a `ClapActive` value whose bookkeeping said
-//! inactive — so the next `process` called `start_processing` on a deactivated
-//! plugin, violating CLAP's `[audio-thread & active & !processing]` tag.
-//!
-//! Counters alone would only prove the host *stopped*. The interesting question
-//! is whether it **recovered**: a host that discards the refusal never
-//! re-activates, so the plugin ends up inactive; a host that handles it rolls
-//! back to the configuration the plugin already accepted and re-activates
-//! there. [`tutti_test_plugin_last_accepted_activation`] plus
+//! **Activation.** A plugin may reject a sample rate or block size it cannot
+//! run. Counters alone would only show the host *stopped*; the question is
+//! whether it **recovered**. [`tutti_test_plugin_last_accepted_activation`] plus
 //! [`tutti_test_plugin_activate_accepts`] tell those apart — one accept with
-//! stale values means abandoned, two accepts landing on the previous
-//! configuration means rolled back.
+//! stale values means the host abandoned the instance, two accepts landing on
+//! the previous configuration mean it rolled back and re-activated.
 //!
-//! ## What the state-context switch catches
-//!
-//! The host used to fall through from a *refused* `state_context.save` to the
-//! plain `state.save`, and report `Ok`. The caller asked for a blob saved for
-//! one context and silently got one saved for another. Refusing only the
-//! context-aware entry point — while leaving the plain one working — is what
-//! makes the substitution observable: a host that falls through returns `Ok`
-//! carrying bytes the probe tagged with context 0.
+//! **State context.** Only the context-aware entry point refuses, leaving plain
+//! `state.save` working. That is what makes substitution observable: a host that
+//! falls through returns `Ok` carrying bytes the probe tagged with context 0 —
+//! a blob saved for a context the caller never asked for.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 

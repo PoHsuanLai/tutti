@@ -7,20 +7,17 @@
 //! offset, parameter points, transport, and the `clap_host` callback
 //! round-trip.
 //!
-//! Unlike the hermetic `NanPlugin`/`EchoProbe` fakes in
-//! `tutti-plugin-server` (which plug into the unified `PluginInstance`
-//! trait and bypass the CLAP FFI), this exercises the real `clap-sys`
-//! structs the host assembles — it is the layer those fakes can't reach.
+//! Unlike the hermetic `NanPlugin`/`EchoProbe` fakes in `tutti-plugin-server`,
+//! which plug into the unified `PluginInstance` trait and bypass the CLAP FFI,
+//! this exercises the real `clap-sys` structs the host assembles.
 //!
-//! The reference plugin records into a process-global capture and exposes
-//! it via the exported `tutti_test_plugin_capture` symbol. We `dlopen` the
-//! same binary a second time to read it; dyld dedupes by path so the host's
-//! load and ours share one image (and one capture).
+//! The reference plugin records into a process-global capture exposed via the
+//! exported `tutti_test_plugin_capture` symbol. We `dlopen` the same binary a
+//! second time to read it; dyld dedupes by path, so the host's load and ours
+//! share one image and one capture.
 //!
-//! If the reference plugin isn't there, every test **fails**. It is a
-//! dev-dependency built by the same `cargo test` run, so its absence is a
-//! build failure, not a property of the machine — see [`support::probe_path`]
-//! for the bug that skipping instead once hid.
+//! If the reference plugin isn't there, every test **fails** — see
+//! [`support::probe_path`] for why skipping is not an option.
 
 use std::path::Path;
 use std::sync::Mutex;

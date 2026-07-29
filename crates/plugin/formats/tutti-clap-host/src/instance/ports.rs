@@ -61,22 +61,38 @@ impl ClapLoaded {
         Some(audio_port_info_from_clap(&info))
     }
 
+    /// Total channel count summed across one side's audio ports.
+    ///
+    /// Stops at the first index `get` rejects rather than skipping it. A sum is
+    /// order-free, so a hole cannot misattribute channels here the way it can
+    /// in [`port_channels`](super::load) — but this total must describe the
+    /// *same* port list the host actually presents, and that list is truncated
+    /// at the hole. Summing past it would report channels for ports the
+    /// negotiated layout omits, so this number would no longer match
+    /// `PortLayout::input_channel_total` / `output_channel_total`, which is
+    /// what sizes the process scratch.
+    fn channel_total(&self, is_input: bool) -> usize {
+        let count = self.audio_port_count(is_input);
+        let mut total = 0usize;
+        for i in 0..count {
+            // Truncate, matching `port_channels`: past a hole the host presents
+            // no ports, so no port past it contributes channels.
+            let Some(port) = self.audio_port_info(i, is_input) else {
+                break;
+            };
+            total += port.layout.count() as usize;
+        }
+        total
+    }
+
     /// Total input channel count, summed across every input port.
     pub fn num_input_channels(&self) -> usize {
-        let count = self.audio_port_count(true);
-        (0..count)
-            .filter_map(|i| self.audio_port_info(i, true))
-            .map(|p| p.layout.count() as usize)
-            .sum()
+        self.channel_total(true)
     }
 
     /// Total output channel count, summed across every output port.
     pub fn num_output_channels(&self) -> usize {
-        let count = self.audio_port_count(false);
-        (0..count)
-            .filter_map(|i| self.audio_port_info(i, false))
-            .map(|p| p.layout.count() as usize)
-            .sum()
+        self.channel_total(false)
     }
 
     /// Number of input or output note (MIDI) ports.
@@ -543,6 +559,20 @@ impl ClapLoaded {
 
     /// Retrieve the channel-to-speaker mapping the plugin uses on a port.
     /// Unknown positions are dropped silently.
+    ///
+    /// `None` means the plugin cannot answer — no `clap.surround` extension or
+    /// no `get_channel_map`. An empty `Vec` means it answered with no channels.
+    ///
+    /// Those were previously the same value. `surround.h` documents
+    /// `get_channel_map` as returning "the number of elements stored in
+    /// channel_map" — so `0` is a legitimate answer (a port the plugin declares
+    /// no surround mapping for), not a failure signal, and the old
+    /// `count == 0 || count > map.len()` folded it in with the real error. A
+    /// caller could not distinguish "this port has no surround mapping" from
+    /// "this plugin has no surround extension", which are different facts about
+    /// different things. Only the capacity overrun is genuinely broken: the
+    /// plugin claims to have written more than the 64 elements it was given, so
+    /// the buffer contents cannot be trusted and there is nothing to return.
     pub fn get_surround_channel_map(
         &self,
         is_input: bool,
@@ -563,16 +593,29 @@ impl ClapLoaded {
                 64,
             )
         } as usize;
-        if count == 0 || count > map.len() {
-            return None;
-        }
-        Some(
-            map[..count]
-                .iter()
-                .filter_map(|&pos| SurroundChannel::from_position(pos))
-                .collect(),
-        )
+        decode_surround_channel_map(&map, count)
     }
+}
+
+/// Decode the first `count` entries of a plugin-filled surround channel map.
+///
+/// Split out of [`ClapLoaded::get_surround_channel_map`] so the count
+/// validation is reachable from a unit test: the method itself needs a live
+/// `ClapLoaded`, which cannot be built from a stub vtable, and the distinction
+/// this encodes (`0` is data, `> capacity` is an error) is precisely the part
+/// that was wrong.
+fn decode_surround_channel_map(map: &[u8], count: usize) -> Option<Vec<SurroundChannel>> {
+    // A count past the capacity we handed over is a plugin bug and makes every
+    // element suspect — reject. `count == 0` is a real empty map.
+    if count > map.len() {
+        return None;
+    }
+    Some(
+        map[..count]
+            .iter()
+            .filter_map(|&pos| SurroundChannel::from_position(pos))
+            .collect(),
+    )
 }
 
 /// Convert a raw `clap_audio_port_info` into the safe [`AudioPortInfo`].
@@ -626,4 +669,51 @@ fn build_port_config_requests(
             port_details: ptr::null(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod surround_map_tests {
+    use super::*;
+
+    /// A plugin reporting **zero** channels is answering, not failing.
+    ///
+    /// `surround.h` documents `get_channel_map` as returning "the number of
+    /// elements stored in channel_map", so `0` is a legitimate result — a port
+    /// the plugin declares no surround mapping for. The old guard was
+    /// `count == 0 || count > map.len()`, which folded that answer in with the
+    /// real error and left callers unable to tell "this port has no surround
+    /// mapping" from "this plugin has no surround extension".
+    #[test]
+    fn zero_count_is_an_empty_map_not_a_failure() {
+        let map = [0u8; 64];
+        assert_eq!(
+            decode_surround_channel_map(&map, 0),
+            Some(Vec::new()),
+            "a zero-length map is data the plugin returned, not a failure"
+        );
+    }
+
+    /// A count past the capacity the host handed over is a genuine plugin bug:
+    /// the plugin claims to have written more than it was given room for, so no
+    /// element can be trusted.
+    #[test]
+    fn count_past_capacity_is_rejected() {
+        let map = [0u8; 64];
+        assert_eq!(decode_surround_channel_map(&map, 65), None);
+    }
+
+    /// The ordinary path still decodes, and stops at `count` rather than
+    /// running to the end of the buffer.
+    #[test]
+    fn decodes_exactly_count_entries() {
+        let mut map = [0u8; 64];
+        map[0] = 0; // FrontLeft
+        map[1] = 1; // FrontRight
+        map[2] = 2; // FrontCenter — past `count`, must not appear
+        let decoded = decode_surround_channel_map(&map, 2).expect("valid count");
+        assert_eq!(
+            decoded,
+            vec![SurroundChannel::FrontLeft, SurroundChannel::FrontRight]
+        );
+    }
 }

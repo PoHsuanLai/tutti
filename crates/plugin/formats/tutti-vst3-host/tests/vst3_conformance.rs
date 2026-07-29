@@ -36,7 +36,7 @@ use std::sync::Mutex;
 use tutti_types::meter::{BarNumber, TimeSignature};
 use tutti_vst3_host::{
     host::conformance, AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, TransportInfo,
-    Vst3InputEvents, Vst3Instance, Vst3Loaded, Vst3Sample,
+    Vst3InputEvents, Vst3Instance, Vst3Library, Vst3Loaded, Vst3Sample,
 };
 
 // ── HostCheck C ABI (tests/support/hostcheck_shim.cpp) ───────────────────────
@@ -458,6 +458,189 @@ fn hostcheck_is_linked() {
     );
     let d = unsafe { CStr::from_ptr(hc_log_description(0)) };
     assert!(!d.to_string_lossy().is_empty());
+}
+
+/// Report how much of the corpus the per-bundle sweeps actually reach.
+///
+/// Every other test here loads a bundle by path, and `Vst3Loaded::load` calls
+/// `find_audio_class`, which takes the **first** class whose category contains
+/// `"Audio"` (`loaded.rs:1617-1630`). One bundle can export many: `mda-vst3`
+/// packs the whole mda suite into a single binary, which is the normal shape
+/// for commercial VST3 — plugin *suites* ship as one bundle, not one per
+/// effect.
+///
+/// So "19 plugins swept" overstates the coverage: it is 19 *bundles*, and every
+/// class after the first in each is never instantiated. This test measures the
+/// gap rather than asserting a threshold, because the number is a property of
+/// which plugins happen to be built here.
+///
+/// It also pins the real limitation behind that: there is no public API to
+/// instantiate a *chosen* class. A DAW needs one — a user picking "mda Delay"
+/// from a bundle that also holds "mda Bandisto" cannot be served by
+/// first-audio-class-wins. Issue #54 item 7 is about real-plugin coverage; this
+/// is the concrete, in-repo half of it.
+#[test]
+fn report_multi_class_bundle_coverage() {
+    if !harness_ready() {
+        return;
+    }
+    let _plugins = plugin_guard();
+
+    let mut bundles = 0usize;
+    let mut audio_classes = 0usize;
+    let mut multi = Vec::new();
+
+    for (name, path) in sample_plugins() {
+        let Ok(library) = Vst3Library::load(&path) else {
+            continue;
+        };
+        let names: Vec<String> = (0..library.count_classes())
+            .filter_map(|i| library.get_class_info(i).ok())
+            .filter(|c| c.category.contains("Audio"))
+            .map(|c| c.name.clone())
+            .collect();
+        if names.is_empty() {
+            continue;
+        }
+        bundles += 1;
+        audio_classes += names.len();
+        if names.len() > 1 {
+            multi.push(format!("  {name}: {} classes {names:?}", names.len()));
+        }
+    }
+
+    eprintln!(
+        "corpus: {bundles} bundles, {audio_classes} audio classes; the sweeps \
+         instantiate {bundles} (first audio class per bundle), leaving {} \
+         untested",
+        audio_classes - bundles
+    );
+    if !multi.is_empty() {
+        eprintln!("multi-class bundles:\n{}", multi.join("\n"));
+    }
+
+    // The premise of every other sweep: each bundle must yield at least one
+    // audio class, or those tests are silently measuring nothing.
+    assert!(
+        bundles > 0,
+        "no bundle in the corpus exposed an audio class — the sweeps that \
+         load by path are all vacuous"
+    );
+    assert!(
+        audio_classes >= bundles,
+        "counted {audio_classes} audio classes across {bundles} bundles, which \
+         is arithmetically impossible — the class enumeration is wrong"
+    );
+}
+
+/// Drive **every** audio class in the corpus, not just the first per bundle.
+///
+/// This is the coverage [`report_multi_class_bundle_coverage`] measures: 55
+/// classes behind 19 bundles, of which the path-loading sweeps reach 19. The 36
+/// others include 33 of `mda-vst3`'s — the closest thing in this corpus to real
+/// shipped plugins rather than teaching examples, which is what issue #54 item
+/// 7 is about.
+///
+/// Each is loaded, activated, and driven for a block. Failures are collected
+/// rather than panicking on the first, because one broken class should not hide
+/// the state of the other 54.
+#[test]
+fn every_audio_class_survives_a_block() {
+    if !harness_ready() {
+        return;
+    }
+    let _plugins = plugin_guard();
+
+    let mut driven = 0usize;
+    let mut failures = Vec::new();
+
+    for (bundle, path) in sample_plugins() {
+        let Ok(library) = Vst3Library::load(&path) else {
+            continue;
+        };
+        let names: Vec<String> = (0..library.count_classes())
+            .filter_map(|i| library.get_class_info(i).ok())
+            .filter(|c| c.category.contains("Audio"))
+            .map(|c| c.name.clone())
+            .collect();
+        // Drop before instantiating: `Vst3Loaded` opens its own handle, and
+        // holding two to one DSO across module init/exit is the load/unload
+        // race `PLUGIN_LOCK` exists to avoid.
+        drop(library);
+
+        for name in names {
+            match Vst3Instance::<f32>::load_class(&path, &name, 48_000.0, 512) {
+                Ok(mut inst) => {
+                    let info = inst.info().clone();
+                    // The class actually instantiated must be the one asked
+                    // for. Without this the sweep counts *attempts*: a
+                    // `load_class` that ignored its argument would load the
+                    // first class 55 times and still report "drove 55".
+                    // Measured — that mutation passed until this assert existed.
+                    if info.name != name {
+                        failures.push(format!(
+                            "{bundle}: asked for {name:?}, got {:?} — load_class \
+                             is not selecting by name",
+                            info.name
+                        ));
+                        continue;
+                    }
+                    let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))
+                        .map(|_| vec![0.0f32; 512])
+                        .collect();
+                    let mut outs: Vec<Vec<f32>> = (0..info.num_outputs.max(1))
+                        .map(|_| vec![0.0f32; 512])
+                        .collect();
+                    let in_refs: Vec<&[f32]> = ins.iter().map(|v| v.as_slice()).collect();
+                    let mut out_refs: Vec<&mut [f32]> =
+                        outs.iter_mut().map(|v| v.as_mut_slice()).collect();
+                    let mut buffer = AudioBuffer {
+                        inputs: &in_refs,
+                        outputs: &mut out_refs,
+                        num_samples: 512,
+                        sample_rate: 48_000.0,
+                    };
+                    inst.process(
+                        &mut buffer,
+                        &Vst3InputEvents::default(),
+                        None,
+                        &TransportInfo::default(),
+                    );
+
+                    // Silence in must not become non-finite out: a NaN here
+                    // propagates through every downstream node in the graph.
+                    for (ch, out) in outs.iter().enumerate() {
+                        if let Some(pos) = out.iter().position(|s| !s.is_finite()) {
+                            failures.push(format!(
+                                "{bundle}/{name}: non-finite sample at ch {ch} \
+                                 index {pos} ({}) from silent input",
+                                out[pos]
+                            ));
+                            break;
+                        }
+                    }
+                    driven += 1;
+                }
+                Err(e) => failures.push(format!("{bundle}/{name}: load failed: {e:?}")),
+            }
+        }
+    }
+
+    eprintln!("drove {driven} audio classes");
+    assert!(
+        failures.is_empty(),
+        "{} of {} audio classes failed:\n{}",
+        failures.len(),
+        driven + failures.len(),
+        failures.join("\n")
+    );
+    // Guard the premise: if class enumeration regressed to one-per-bundle this
+    // would still pass while covering a third of what it claims.
+    assert!(
+        driven > 40,
+        "expected the corpus to yield ~55 audio classes, drove only {driven} — \
+         class enumeration or the corpus regressed"
+    );
 }
 
 /// A plugin's sidechain inputs must be staged, not dropped.

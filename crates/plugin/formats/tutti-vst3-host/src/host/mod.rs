@@ -15,7 +15,7 @@ mod module_entry;
 mod plugin_state;
 
 pub use instance::Vst3Instance;
-pub use library::Vst3Library;
+pub use library::{ClassInfo, Vst3Library};
 pub use loaded::{PluginNotifications, RestartOutcome, Vst3Loaded};
 
 /// Editor-lifecycle internals, exposed for the conformance tests. Both are

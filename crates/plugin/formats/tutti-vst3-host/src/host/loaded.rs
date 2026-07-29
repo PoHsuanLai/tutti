@@ -183,11 +183,35 @@ impl Vst3Loaded {
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if
     /// `IPluginBase::initialize` fails.
     pub fn load(path: &Path) -> Result<Self> {
+        Self::load_class(path, None)
+    }
+
+    /// Load a specific audio class from a bundle, by display name.
+    ///
+    /// One VST3 bundle may export many plugins — that is the normal shape for a
+    /// commercial suite, and the sample corpus has it too: `mda-vst3` exports
+    /// 34 audio classes from one binary. [`load`](Self::load) takes the first,
+    /// which is the right default for a single-plugin bundle and useless for
+    /// picking "mda Delay" out of the 34.
+    ///
+    /// `class_name` matches [`ClassInfo::name`](crate::host::ClassInfo::name)
+    /// exactly; `None` reproduces [`load`](Self::load).
+    ///
+    /// # Errors
+    ///
+    /// As [`load`](Self::load), plus
+    /// [`Vst3Error::LoadFailed`](crate::Vst3Error::LoadFailed) when no audio
+    /// class carries `class_name` — the message lists what the bundle does
+    /// export, since a near-miss on a display name is the likely cause.
+    pub fn load_class(path: &Path, class_name: Option<&str>) -> Result<Self> {
         check_exists(path)?;
         let library = Vst3Library::load(path)?;
         ensure_has_classes(&library, path)?;
 
-        let class = find_audio_class(&library, path)?;
+        let class = match class_name {
+            Some(wanted) => find_audio_class_named(&library, path, wanted)?,
+            None => find_audio_class(&library, path)?,
+        };
         let component: ComPtr<IComponent> = library.create_instance(&class.cid)?;
         let processor =
             component
@@ -1612,6 +1636,35 @@ fn build_plugin_info(
     class: &AudioClass,
 ) -> PluginInfo {
     build_plugin_info_raw(library, component, Some(processor), class)
+}
+
+/// The audio class named `wanted`, or a `LoadFailed` naming what is on offer.
+fn find_audio_class_named(
+    library: &Vst3Library,
+    path: &Path,
+    wanted: &str,
+) -> Result<AudioClass> {
+    let audio: Vec<_> = (0..library.count_classes())
+        .filter_map(|i| library.get_class_info(i).ok())
+        .filter(|info| info.category.contains("Audio"))
+        .collect();
+
+    audio
+        .iter()
+        .find(|info| info.name == wanted)
+        .map(|info| AudioClass {
+            cid: info.cid,
+            cid_bytes: info.cid_bytes,
+            name: info.name.clone(),
+        })
+        .ok_or_else(|| Vst3Error::LoadFailed {
+            path: path.to_path_buf(),
+            stage: LoadStage::Factory,
+            reason: format!(
+                "no audio class named {wanted:?}; this bundle exports {:?}",
+                audio.iter().map(|i| &i.name).collect::<Vec<_>>()
+            ),
+        })
 }
 
 fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<AudioClass> {

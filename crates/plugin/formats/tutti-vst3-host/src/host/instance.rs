@@ -243,6 +243,27 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         Self::from_loaded(loaded, sample_rate, block_size, mode)
     }
 
+    /// Load and activate one named audio class from a multi-plugin bundle.
+    ///
+    /// See [`Vst3Loaded::load_class`] for why a bundle may hold many: `load`
+    /// takes the first audio class, which cannot address the other 33 in a
+    /// suite like `mda-vst3`.
+    ///
+    /// # Errors
+    ///
+    /// As [`load`](Self::load), plus a
+    /// [`LoadFailed`](crate::Vst3Error::LoadFailed) listing the bundle's actual
+    /// class names when `class_name` matches none of them.
+    pub fn load_class(
+        path: &Path,
+        class_name: &str,
+        sample_rate: f64,
+        block_size: usize,
+    ) -> Result<Self> {
+        let loaded = Vst3Loaded::load_class(path, Some(class_name))?;
+        Self::from_loaded(loaded, sample_rate, block_size, ProcessMode::Realtime)
+    }
+
     /// Called by [`Vst3Loaded::activate`]. Runs `setupProcessing`, activates
     /// buses, calls `setActive(1)` + `setProcessing(1)`.
     pub(super) fn from_loaded(

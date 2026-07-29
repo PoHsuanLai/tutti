@@ -83,14 +83,19 @@ pub struct UmpOutRes {
 
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 impl UmpOutRes {
-    /// Wrap a native-UMP source, stamping at `sample_rate`.
+    /// Wrap a native-UMP source, stamping *and clocking* at `sample_rate`.
     ///
     /// No group: JR Timestamps are groupless utility messages (M2-104-UM
     /// §2.1.2), so a stamp applies to the whole stream.
+    ///
+    /// This is a UMP-transport sender, so it owns the JR Clock cadence
+    /// (§7.2.2.1). Without it the stamps this type exists to emit are inert:
+    /// §7.2.2.3 has a receiver that has seen no JR Clock render messages "as
+    /// soon as possible", discarding the timing entirely.
     pub fn new(source: tutti_midi_io::UmpVirtualSource, sample_rate: f64) -> Self {
         Self {
             source,
-            stream: tutti_midi_runtime::JrStream::new(sample_rate),
+            stream: tutti_midi_runtime::JrStream::new(sample_rate).with_clock(sample_rate),
         }
     }
 
@@ -99,9 +104,28 @@ impl UmpOutRes {
     ///
     /// The stream advances its own origin, so successive blocks stay monotonic
     /// no matter which producer called.
+    ///
+    /// Prefer [`send_stamped_span`](Self::send_stamped_span): the JR Clock
+    /// cadence advances with the *block*, and this entry point can only advance
+    /// by the events it was handed, so a silent stream never clocks.
     pub fn send_stamped(&mut self, events: &[MidiEvent]) {
         let stamped = self.stream.stamp(events);
-        for ev in &stamped {
+        self.send_all(&stamped);
+    }
+
+    /// Like [`send_stamped`](Self::send_stamped), but tells the stream how long
+    /// the block was so the JR Clock cadence keeps running through silence.
+    ///
+    /// A pump that knows its block size should call this every block, events or
+    /// not — §7.2.2.1 makes JR Clocks independent of other messages, so the
+    /// cadence is a property of elapsed time, not of traffic.
+    pub fn send_stamped_span(&mut self, events: &[MidiEvent], block_samples: u64) {
+        let stamped = self.stream.stamp_span(events, block_samples);
+        self.send_all(&stamped);
+    }
+
+    fn send_all(&mut self, events: &[MidiEvent]) {
+        for ev in events {
             if let Err(e) = self.source.send_ump(ev.data_words()) {
                 tracing::debug!("JR-out UMP send: {e}");
             }

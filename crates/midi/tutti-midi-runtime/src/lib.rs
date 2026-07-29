@@ -44,7 +44,10 @@ pub use clock_master::ClockMaster;
 pub use endpoint::{
     DeviceIdentity, DiscoveredEndpoint, EndpointInquiry, EndpointNegotiator, FunctionBlock,
 };
-pub use jr_timestamp::{JrClock, JrReceiver, JrStamper, JrStream};
+pub use jr_timestamp::{
+    JrClock, JrClockEmitter, JrReceiver, JrStamper, JrStream, JR_CLOCK_INTERVAL,
+    JR_CLOCK_MAX_INTERVAL,
+};
 pub use port::MidiInPort;
 pub use pre_block::{BlockClock, MidiPreBlock};
 pub use registry::{MidiBus, MidiMailbox, MidiReceiver, MidiSender};

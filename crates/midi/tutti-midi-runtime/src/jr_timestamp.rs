@@ -11,9 +11,12 @@
 //! - [`JrClock`] — the shared tick reference (samples ↔ 16-bit ticks).
 //! - [`JrStamper`] — outbound: interleave a JR Timestamp before each event,
 //!   derived from the event's sample-accurate `frame_offset`. Pure.
+//! - [`JrClockEmitter`] — outbound: the periodic JR *Clock* (§7.2.2.1), which
+//!   is what makes the stamps usable at all. §7.2.2.3: a receiver that has seen
+//!   no JR Clock renders messages "as soon as possible", ignoring every stamp.
 //! - [`JrStream`] — a stamper plus the running sample origin one outbound wire
-//!   stamps against. This is what a pump holds; see its doc for why the origin
-//!   is per-wire rather than per-caller.
+//!   stamps against, and optionally the clock cadence. This is what a pump
+//!   holds; see its doc for why the origin is per-wire rather than per-caller.
 //! - [`JrReceiver`] — inbound: read stamps, reconstruct the delay before the
 //!   next event as a [`Duration`].
 //!
@@ -109,6 +112,93 @@ impl JrStamper {
     }
 }
 
+/// The spec's hard ceiling on the JR Clock interval: M2-104 §7.2.2.1 — "The
+/// Sender **shall** send a JR Clock message at least once every 250
+/// milliseconds."
+pub const JR_CLOCK_MAX_INTERVAL: Duration = Duration::from_millis(250);
+
+/// The interval [`JrClockEmitter::new`] actually uses.
+///
+/// Deliberately well inside the 250 ms ceiling. §7.2.2.1 ties the bound to the
+/// 16-bit wrap — "to avoid ambiguity of the 2.09712 seconds wrap, and to provide
+/// sufficient JR Clock messages for the Receiver" — and §7.2.2.1 also invites a
+/// shorter period: "A Sender may send additional JR Clock messages with a
+/// shorter period to help the Receiver analyze the jitter." Emitting at the
+/// ceiling would leave no margin for a late block to push an interval past it.
+pub const JR_CLOCK_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Emits JR Clock messages on a cadence (M2-104 §7.2.2.1).
+///
+/// This is what makes JR Timestamps mean anything. §7.2.2.3: a receiver that has
+/// seen no JR Clock "shall render those messages as soon as possible" — i.e. it
+/// discards our timestamps entirely. A stream that stamps but never clocks has
+/// done the work and gets none of the benefit.
+///
+/// Driven by sample position rather than wall time, so it stays in step with the
+/// stream it clocks and is deterministic under test. The emitter is pure: ask it
+/// [`due`](Self::due) for each block and it tells you whether one is owed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JrClockEmitter {
+    clock: JrClock,
+    sample_rate: f64,
+    interval_samples: u64,
+    /// Absolute sample position of the last emitted clock. `None` until the
+    /// first, which is due immediately — a receiver needs a reference before it
+    /// can use any stamp.
+    last_emit: Option<u64>,
+}
+
+impl JrClockEmitter {
+    /// An emitter at `sample_rate` Hz using [`JR_CLOCK_INTERVAL`].
+    pub fn new(sample_rate: f64) -> Self {
+        Self::with_interval(sample_rate, JR_CLOCK_INTERVAL)
+    }
+
+    /// An emitter with an explicit interval.
+    ///
+    /// Panics if `interval` exceeds [`JR_CLOCK_MAX_INTERVAL`]: §7.2.2.1 makes
+    /// that bound a `shall`, so a longer interval is not a tuning choice, it is
+    /// a non-conformant stream. Catching it here beats shipping one.
+    pub fn with_interval(sample_rate: f64, interval: Duration) -> Self {
+        assert!(
+            interval <= JR_CLOCK_MAX_INTERVAL,
+            "JR Clock interval {interval:?} exceeds the §7.2.2.1 maximum of {JR_CLOCK_MAX_INTERVAL:?}"
+        );
+        Self {
+            clock: JrClock::new(sample_rate),
+            sample_rate,
+            interval_samples: (interval.as_secs_f64() * sample_rate).round() as u64,
+            last_emit: None,
+        }
+    }
+
+    /// The JR Clock owed at `origin_samples`, or `None` if one is not yet due.
+    ///
+    /// Call once per block with the block's starting sample position. The first
+    /// call always yields a clock.
+    pub fn due(&mut self, origin_samples: u64) -> Option<MidiEvent> {
+        let owed = match self.last_emit {
+            None => true,
+            Some(last) => origin_samples.wrapping_sub(last) >= self.interval_samples,
+        };
+        if !owed {
+            return None;
+        }
+        self.last_emit = Some(origin_samples);
+        Some(MidiEvent::jr_clock(self.clock.ticks_at(origin_samples)))
+    }
+
+    /// The configured interval, in samples.
+    pub fn interval_samples(&self) -> u64 {
+        self.interval_samples
+    }
+
+    /// The sample rate this emitter clocks at.
+    pub fn sample_rate(&self) -> f64 {
+        self.sample_rate
+    }
+}
+
 /// One outbound JR-stamped stream: a [`JrStamper`] plus the running sample origin
 /// its stamps are relative to.
 ///
@@ -123,10 +213,15 @@ pub struct JrStream {
     stamper: JrStamper,
     /// Absolute sample position of the next block's frame-offset zero.
     origin_samples: u64,
+    /// The JR Clock cadence, when this stream clocks as well as stamps.
+    emitter: Option<JrClockEmitter>,
 }
 
 impl JrStream {
     /// A stream stamping at `sample_rate` Hz, starting at origin 0.
+    ///
+    /// Stamps only. Use [`with_clock`](Self::with_clock) for a conformant
+    /// sender: §7.2.2.3 makes a receiver ignore timestamps it has no clock for.
     pub fn new(sample_rate: f64) -> Self {
         Self::with_stamper(JrStamper::new(sample_rate))
     }
@@ -136,16 +231,55 @@ impl JrStream {
         Self {
             stamper,
             origin_samples: 0,
+            emitter: None,
         }
+    }
+
+    /// Add the JR Clock cadence (M2-104 §7.2.2.1) at [`JR_CLOCK_INTERVAL`].
+    ///
+    /// Once set, [`stamp_span`](Self::stamp_span) prefixes a clock to each block
+    /// where one is due — including blocks with no events at all, which is why
+    /// the cadence cannot ride on [`stamp`](Self::stamp) alone.
+    pub fn with_clock(mut self, sample_rate: f64) -> Self {
+        self.emitter = Some(JrClockEmitter::new(sample_rate));
+        self
+    }
+
+    /// Add the JR Clock cadence with an explicit interval. Panics above
+    /// [`JR_CLOCK_MAX_INTERVAL`]; see [`JrClockEmitter::with_interval`].
+    pub fn with_clock_interval(mut self, sample_rate: f64, interval: Duration) -> Self {
+        self.emitter = Some(JrClockEmitter::with_interval(sample_rate, interval));
+        self
     }
 
     /// Stamp one block and advance the origin past it, so the next call
     /// continues monotonically.
+    ///
+    /// The origin advances by the *events'* span, which is zero for an empty
+    /// block. That is fine for stamping — an empty block stamps nothing — but it
+    /// means a clock cadence driven from here would freeze on a silent stream.
+    /// Use [`stamp_span`](Self::stamp_span) when clocking.
     pub fn stamp(&mut self, events: &[MidiEvent]) -> Vec<MidiEvent> {
-        let out = self.stamper.stamp_block(events, self.origin_samples);
-        self.origin_samples = self
-            .origin_samples
-            .wrapping_add(JrStamper::block_span(events));
+        self.stamp_span(events, JrStamper::block_span(events))
+    }
+
+    /// Stamp one block of a known `block_samples` length, emitting a JR Clock
+    /// first if the cadence owes one, and advance the origin by the *block*
+    /// rather than by the events within it.
+    ///
+    /// This is the entry point a pump wants. §7.2.2.1 makes JR Clocks
+    /// "independent … not related to any other message", so the cadence has to
+    /// keep running through silence — and it only can if time advances on empty
+    /// blocks, which the true block length provides and `block_span` does not.
+    pub fn stamp_span(&mut self, events: &[MidiEvent], block_samples: u64) -> Vec<MidiEvent> {
+        let mut out = Vec::with_capacity(events.len() * 2 + 1);
+        if let Some(emitter) = self.emitter.as_mut() {
+            if let Some(clock) = emitter.due(self.origin_samples) {
+                out.push(clock);
+            }
+        }
+        out.extend(self.stamper.stamp_block(events, self.origin_samples));
+        self.origin_samples = self.origin_samples.wrapping_add(block_samples);
         out
     }
 
@@ -233,6 +367,107 @@ mod tests {
         assert_eq!(clock.ticks_at(0xFFFF), 0xFFFF);
         assert_eq!(clock.ticks_at(0x1_0000), 0, "wraps back to zero");
         assert_eq!(clock.ticks_at(0x1_0001), 1);
+    }
+
+    #[test]
+    fn the_first_clock_is_due_immediately() {
+        // A receiver cannot use any stamp until it has a clock reference, so
+        // waiting one interval before the first would leave the opening block's
+        // timing unusable.
+        let mut e = JrClockEmitter::new(48_000.0);
+        let first = e.due(0).expect("a clock is owed at once");
+        assert_eq!(first.jr_clock_value(), Some(0));
+    }
+
+    #[test]
+    fn clocks_are_emitted_on_the_configured_cadence() {
+        let mut e = JrClockEmitter::with_interval(48_000.0, Duration::from_millis(100));
+        let interval = e.interval_samples();
+        assert_eq!(interval, 4_800);
+
+        assert!(e.due(0).is_some(), "first");
+        assert!(e.due(interval - 1).is_none(), "one sample short");
+        assert!(e.due(interval).is_some(), "exactly due");
+        assert!(e.due(interval + 1).is_none(), "just emitted");
+        assert!(e.due(interval * 2).is_some(), "next period");
+    }
+
+    #[test]
+    fn the_cadence_keeps_running_through_silence() {
+        // The load-bearing case. §7.2.2.1: JR Clocks are "independent … not
+        // related to any other message", and §7.2.2.3 makes a receiver discard
+        // every stamp until it sees one. A cadence driven by outgoing traffic
+        // would satisfy a test that sends notes and still emit nothing on an
+        // idle stream — which is exactly when a receiver most needs the clock.
+        let sample_rate = 48_000.0;
+        let block = 512u64;
+        let mut stream =
+            JrStream::new(sample_rate).with_clock_interval(sample_rate, Duration::from_millis(100));
+
+        let mut clocks = 0;
+        // 1 second of entirely silent blocks.
+        for _ in 0..(sample_rate as u64 / block) {
+            let out = stream.stamp_span(&[], block);
+            clocks += out.iter().filter(|e| e.jr_clock_value().is_some()).count();
+            assert!(
+                out.iter().all(|e| e.jr_clock_value().is_some()),
+                "a silent block carries clocks and nothing else"
+            );
+        }
+        // 100 ms cadence over ~1 s: the first plus one per interval.
+        assert!(
+            (10..=11).contains(&clocks),
+            "expected ~10 clocks across a silent second, got {clocks}"
+        );
+    }
+
+    #[test]
+    fn a_stamped_block_carries_its_clock_before_the_stamps() {
+        let sample_rate = 48_000.0;
+        let mut stream = JrStream::new(sample_rate).with_clock(sample_rate);
+        let events = [MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0)];
+        let out = stream.stamp_span(&events, 512);
+        // clock, then stamp, then the note.
+        assert_eq!(out.len(), 3);
+        assert!(out[0].jr_clock_value().is_some(), "clock leads");
+        assert!(out[1].jr_timestamp_value().is_some(), "then the stamp");
+        assert_eq!(out[2], events[0]);
+    }
+
+    #[test]
+    fn a_stream_without_a_clock_emits_none() {
+        // `new` alone stamps only — the cadence is opt-in, so existing
+        // stamp-only callers keep their exact output.
+        let mut stream = JrStream::new(48_000.0);
+        let out = stream.stamp_span(&[], 512);
+        assert!(out.is_empty(), "no clock, no events, no output");
+    }
+
+    #[test]
+    fn stamp_advances_by_events_and_stamp_span_by_the_block() {
+        // The distinction the cadence depends on: `stamp` cannot move time on an
+        // empty block, `stamp_span` can.
+        let mut by_events = JrStream::new(48_000.0);
+        by_events.stamp(&[]);
+        assert_eq!(by_events.origin_samples(), 0, "silence stalls the origin");
+
+        let mut by_block = JrStream::new(48_000.0);
+        by_block.stamp_span(&[], 512);
+        assert_eq!(by_block.origin_samples(), 512, "the block advanced it");
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds the §7.2.2.1 maximum")]
+    fn an_interval_over_the_spec_maximum_is_rejected() {
+        // §7.2.2.1's 250 ms is a `shall`, so a longer interval is not a tuning
+        // choice — it is a non-conformant stream.
+        JrClockEmitter::with_interval(48_000.0, Duration::from_millis(251));
+    }
+
+    #[test]
+    fn the_default_interval_is_inside_the_spec_maximum() {
+        assert!(JR_CLOCK_INTERVAL < JR_CLOCK_MAX_INTERVAL);
+        assert_eq!(JR_CLOCK_MAX_INTERVAL, Duration::from_millis(250));
     }
 
     /// The span is one *past* the furthest offset, so the next block's origin

@@ -192,7 +192,7 @@ mod tests {
         // A JR Timestamp is a single UMP Utility word — the whole point of this
         // endpoint (it has no MIDI 1.0 form). It must send without error.
         let src = UmpVirtualSource::new("Test UMP JR").expect("creates");
-        let jr = tutti_midi_types::ump::MidiEvent::jr_timestamp(0, 0x1234).data_words()[0];
+        let jr = tutti_midi_types::ump::MidiEvent::jr_timestamp(0x1234).data_words()[0];
         assert!(src.send_ump(&[jr]).is_ok());
     }
 

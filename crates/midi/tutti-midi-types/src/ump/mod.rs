@@ -218,13 +218,19 @@ impl MidiEvent {
 // Helpers
 // -----------------------------------------------------------------------------
 
-/// Word count per UMP message type nibble (MIDI 2.0 spec §2.1.3).
+/// Word count per UMP message type nibble (M2-104-UM §2.1.4, Table 4).
+///
+/// The reserved types carry sizes too — Table 4 fixes them precisely so a
+/// parser can skip a message type it does not understand without losing the
+/// rest of the stream. 0xB and 0xC are **96 bits** (3 words), not 128; getting
+/// this wrong desynchronizes every following message in the buffer.
 #[inline]
 pub(crate) const fn ump_word_count(type_nibble: u8) -> usize {
     match type_nibble & 0x0F {
         0x0 | 0x1 | 0x2 | 0x6 | 0x7 => 1,
         0x3 | 0x4 | 0x8 | 0x9 | 0xA => 2,
-        0x5 | 0xB | 0xC | 0xD | 0xE | 0xF => 4,
+        0xB | 0xC => 3,
+        0x5 | 0xD | 0xE | 0xF => 4,
         _ => 1,
     }
 }
@@ -324,7 +330,7 @@ mod tests {
     fn split_ump_stream_walks_mixed_word_lengths() {
         // A native-UMP packet concatenates messages of different lengths with no
         // separators: 1-word JR Timestamp, 2-word CV2 note-on, 1-word clock.
-        let jr = MidiEvent::jr_timestamp(0, 0x1234);
+        let jr = MidiEvent::jr_timestamp(0x1234);
         let note = MidiEvent::note_on(0, 3, 60, 0x8000);
         let clock = MidiEvent::timing_clock(0);
 
@@ -354,5 +360,46 @@ mod tests {
     #[test]
     fn split_ump_stream_is_empty_for_no_words() {
         assert_eq!(split_ump_stream(&[]).count(), 0);
+    }
+
+    #[test]
+    fn reserved_message_types_have_their_table_4_sizes() {
+        // M2-104-UM §2.1.4 Table 4. The reserved types carry fixed sizes
+        // precisely so a parser can skip them without losing the stream, so
+        // these are as load-bearing as the defined ones. 0xB/0xC are 96 bits.
+        for (mt, words) in [
+            (0x0, 1),
+            (0x1, 1),
+            (0x2, 1),
+            (0x3, 2),
+            (0x4, 2),
+            (0x5, 4),
+            (0x6, 1),
+            (0x7, 1),
+            (0x8, 2),
+            (0x9, 2),
+            (0xA, 2),
+            (0xB, 3),
+            (0xC, 3),
+            (0xD, 4),
+            (0xE, 4),
+            (0xF, 4),
+        ] {
+            assert_eq!(ump_word_count(mt), words, "MT {mt:#x}");
+        }
+    }
+
+    #[test]
+    fn a_reserved_type_packet_does_not_desync_the_stream() {
+        // An MT-0xB packet (3 words) followed by a real message: if the walker
+        // takes 4 words for the 0xB, it eats the note-on's first word and every
+        // message after it decodes as garbage.
+        let note = MidiEvent::note_on(0, 0, 60, 0x8000);
+        let mut words = vec![0xB000_0000u32, 0, 0];
+        words.extend_from_slice(note.data_words());
+
+        let split: Vec<_> = split_ump_stream(&words).collect();
+        assert_eq!(split.len(), 2, "reserved packet, then the note-on");
+        assert_eq!(split[1], note, "the note-on survives intact");
     }
 }

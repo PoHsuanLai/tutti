@@ -29,7 +29,7 @@ pub mod property;
 
 pub use discovery::{CiCategories, DiscoveryData, Nak};
 pub use profile::{ProfileId, ProfileState};
-pub use property::{PropertyData, PropertyKind};
+pub use property::{PropertyData, PropertyKind, SubscriptionCommand};
 
 /// Universal SysEx real-time/non-real-time id for MIDI-CI: `0x7E`
 /// (non-real-time). Every CI message begins with it.

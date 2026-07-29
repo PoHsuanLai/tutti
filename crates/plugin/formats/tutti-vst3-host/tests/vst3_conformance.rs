@@ -460,6 +460,61 @@ fn hostcheck_is_linked() {
     assert!(!d.to_string_lossy().is_empty());
 }
 
+/// A plugin's sidechain inputs must be staged, not dropped.
+///
+/// `host-checker` declares a stereo main input plus several `kAux` inputs
+/// (`hostcheckerprocessor.cpp:76-88`). `Vst3Instance::activate_buses` loops
+/// over `getBusCount` and activates every one, which is correct VST3: the
+/// plugin's own `activateBus` scores `index > 0` as the informational feature
+/// "IComponent::activateBus for SideChain supported!" rather than an error
+/// (`hostcheckerprocessor.cpp:817-823`). Only an index *outside* the bus list
+/// is a violation.
+///
+/// The observable consequence — and what this asserts — is that the host's own
+/// per-bus staging covers every declared input bus. A host that stopped at bus
+/// 0 would leave a compressor's sidechain reading silence, with no error raised
+/// anywhere: `HostCheck::validate` reports process-time findings only, and the
+/// plugin's `activateBus` log flushes from `setActive`, so neither channel
+/// catches it. That is why this checks geometry rather than findings.
+#[test]
+fn sidechain_input_buses_are_staged() {
+    if !harness_ready() {
+        return;
+    }
+    let _plugins = plugin_guard();
+    let Some(path) = host_checker_path() else {
+        eprintln!("host-checker reference plugin not built; skipping");
+        return;
+    };
+    let Ok(inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+        eprintln!("host-checker load failed; skipping");
+        return;
+    };
+
+    let buses = &inst.info().input_bus_channels;
+    eprintln!("host-checker input buses: {buses:?}");
+
+    // The premise: this plugin must actually declare a sidechain, or the test
+    // proves nothing. Assert it rather than silently passing on a one-bus build.
+    assert!(
+        buses.len() > 1,
+        "host-checker is expected to declare aux inputs beside its main bus, \
+         but the host resolved {} input bus(es) — either the plugin was built \
+         without them or the host is collapsing the bus list",
+        buses.len()
+    );
+
+    // Every declared bus must carry channels. A staged-but-empty aux bus is the
+    // shape a dropped sidechain takes: present in the count, silent in use.
+    for (index, &channels) in buses.iter().enumerate() {
+        assert!(
+            channels > 0,
+            "input bus {index} of {buses:?} was staged with 0 channels — a \
+             plugin reading its sidechain here would get nothing"
+        );
+    }
+}
+
 /// A plain steady-state block against every sample plugin must produce no
 /// Error-severity findings. This is the broad sweep: it exercises bus
 /// staging, channel pointers, block size, and setup agreement for each

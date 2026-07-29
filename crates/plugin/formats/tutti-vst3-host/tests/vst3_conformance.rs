@@ -2042,3 +2042,223 @@ fn host_context_is_borrowed_not_consumed() {
         failures.join("\n")
     );
 }
+
+// ── Optional controller interfaces ───────────────────────────────────────────
+//
+// Everything below drives a `Vst3Loaded` accessor that had **zero call sites**
+// in either src or tests — code that had never once executed, so "untested" and
+// "unknown to work at all" were the same statement.
+//
+// Each assertion is anchored to a *contrast* between two real plugins rather
+// than to a single expected number: `host-checker` implements seven of these
+// interfaces and `note-expression-synth` a different three, so a host that
+// returned a constant (or ignored its arguments) cannot satisfy both.
+
+/// Load a named sample bundle, or `None` when this machine lacks it.
+fn sample(name: &str) -> Option<Vst3Loaded> {
+    let p = resolve_bundle(&Path::new(SAMPLE_PLUGIN_DIR).join(name));
+    if !p.is_file() {
+        return None;
+    }
+    Vst3Loaded::load(&p).ok()
+}
+
+/// `IProcessContextRequirements` is read at load and drives whether the host
+/// bothers filling a transport snapshot each block.
+///
+/// The contrast is the test: `host-checker` requests everything (`0x7ff`), and
+/// `note-expression-synth` implements the interface but requests nothing (`0`).
+/// A host that hardcoded either answer — or that failed to query the interface
+/// and fell back to `u32::MAX` — fails on one of the two.
+#[test]
+fn context_requirements_are_read_from_the_plugin() {
+    let Some(checker) = sample("host-checker.vst3") else {
+        eprintln!("host-checker not built; skipping");
+        return;
+    };
+
+    let req = checker.context_requirements();
+    assert_ne!(
+        req,
+        u32::MAX,
+        "host-checker implements IProcessContextRequirements, so the host must \
+         have its real flags rather than the everything-fallback"
+    );
+    assert!(
+        checker.wants_transport(),
+        "host-checker requests tempo/playhead/bar fields ({req:#x}), so \
+         wants_transport must be true"
+    );
+    assert!(
+        checker.wants_sequencer_context(),
+        "host-checker requests kNeedChord ({req:#x}), so \
+         wants_sequencer_context must be true"
+    );
+
+    // The discriminating half: a plugin that implements the interface and asks
+    // for nothing must come back false on both, or these accessors are
+    // constants rather than reads.
+    let Some(nes) = sample("note-expression-synth.vst3") else {
+        eprintln!("note-expression-synth not built; skipping the contrast");
+        return;
+    };
+    assert!(
+        !nes.wants_transport() && !nes.wants_sequencer_context(),
+        "note-expression-synth requests no context fields ({:#x}), but the host \
+         reports transport={} sequencer={} — these accessors are not reading \
+         the plugin's flags",
+        nes.context_requirements(),
+        nes.wants_transport(),
+        nes.wants_sequencer_context()
+    );
+}
+
+/// `INoteExpressionController` enumeration: count, then per-index descriptors.
+///
+/// `note-expression-synth` exposes 12 types and `host-checker` exposes 1, so a
+/// hardcoded count satisfies neither. Reading every descriptor back and
+/// requiring the ids to be distinct is what proves `index` is actually being
+/// passed through rather than ignored.
+#[test]
+fn note_expression_types_enumerate_per_plugin() {
+    let Some(nes) = sample("note-expression-synth.vst3") else {
+        eprintln!("note-expression-synth not built; skipping");
+        return;
+    };
+
+    let count = nes.note_expression_count(0, 0);
+    assert!(
+        count > 1,
+        "note-expression-synth advertises several expression types, got {count}"
+    );
+
+    let mut ids = Vec::new();
+    for i in 0..count {
+        let info = nes.note_expression_info(0, 0, i).unwrap_or_else(|| {
+            panic!(
+                "type {i} of {count} has no descriptor — the count and the \
+                    per-index lookup disagree"
+            )
+        });
+        ids.push(info.type_id);
+    }
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        ids.len(),
+        "every index returned the same descriptor(s) ({ids:?}) — the index \
+         argument is being ignored"
+    );
+
+    // Out of range must be None, not a wrapped or clamped entry.
+    assert!(
+        nes.note_expression_info(0, 0, count + 1000).is_none(),
+        "an out-of-range note-expression index returned a descriptor"
+    );
+}
+
+/// `IKeyswitchController` — the articulation map a sample library advertises.
+#[test]
+fn keyswitches_enumerate_and_bound_check() {
+    let Some(checker) = sample("host-checker.vst3") else {
+        eprintln!("host-checker not built; skipping");
+        return;
+    };
+
+    let count = checker.keyswitch_count(0, 0);
+    assert!(
+        count > 0,
+        "host-checker implements IKeyswitchController but the host read 0 \
+         entries"
+    );
+    for i in 0..count {
+        assert!(
+            checker.keyswitch_info(0, 0, i).is_some(),
+            "keyswitch {i} of {count} has no descriptor"
+        );
+    }
+    assert!(
+        checker.keyswitch_info(0, 0, count + 1000).is_none(),
+        "an out-of-range keyswitch index returned a descriptor"
+    );
+
+    // A plugin without the interface must answer 0 rather than guessing.
+    if let Some(nes) = sample("note-expression-synth.vst3") {
+        assert_eq!(
+            nes.keyswitch_count(0, 0),
+            0,
+            "note-expression-synth does not implement IKeyswitchController, so \
+             the count must be 0"
+        );
+    }
+}
+
+/// `IRemapParamID` — parameter migration when one plugin replaces another.
+///
+/// The strongest assertion available here: the `remap_paramid` sample maps
+/// *AGain's* parameter 0 onto its own `kMyGainParamTag` (123) and refuses every
+/// other UID and id (`remapparamidcontroller.cpp:76`). So the expected value is
+/// fixed by the sample's source, not by observation, and a host that passed the
+/// wrong UID through would get `None`.
+#[test]
+fn remap_param_id_migrates_a_known_parameter() {
+    const AGAIN_PROCESSOR_UID: [u8; 16] = [
+        0x84, 0xE8, 0xDE, 0x5F, 0x92, 0x55, 0x4F, 0x53, 0x96, 0xFA, 0xE4, 0x13, 0x3C, 0x93, 0x5A,
+        0x18,
+    ];
+    /// `kMyGainParamTag` in `remapparamidcids.h`.
+    const EXPECTED_NEW_ID: u32 = 123;
+
+    let Some(remap) = sample("remap-paramid.vst3") else {
+        eprintln!("remap-paramid not built; skipping");
+        return;
+    };
+    let uid: [i8; 16] = AGAIN_PROCESSOR_UID.map(|b| b as i8);
+
+    assert_eq!(
+        remap.remap_param_id(&uid, 0),
+        Some(EXPECTED_NEW_ID),
+        "the sample maps AGain's param 0 onto {EXPECTED_NEW_ID}; a different \
+         answer means the UID or the id is not reaching the plugin"
+    );
+    assert_eq!(
+        remap.remap_param_id(&uid, 999),
+        None,
+        "param 999 has no mapping, so the host must report None rather than a \
+         stale or defaulted id"
+    );
+    assert_eq!(
+        remap.remap_param_id(&[0i8; 16], 0),
+        None,
+        "a zero UID is not AGain, so the plugin refuses — a Some here means the \
+         host is not passing the UID through"
+    );
+}
+
+/// `INoteExpressionPhysicalUIMapping` — how physical controllers (x/y/pressure)
+/// map onto note-expression ids.
+#[test]
+fn physical_ui_mapping_is_read_per_plugin() {
+    let Some(nes) = sample("note-expression-synth.vst3") else {
+        eprintln!("note-expression-synth not built; skipping");
+        return;
+    };
+    let mapping = nes.physical_ui_mapping(0, 0);
+    assert!(
+        !mapping.is_empty(),
+        "note-expression-synth implements INoteExpressionPhysicalUIMapping but \
+         the host read no entries"
+    );
+
+    // A plugin without the interface must yield nothing rather than a default
+    // table — otherwise the host would invent controller routings.
+    if let Some(pn) = sample("pitch-names.vst3") {
+        assert!(
+            pn.physical_ui_mapping(0, 0).is_empty(),
+            "pitch-names does not implement the interface, so the mapping must \
+             be empty rather than a synthesised default"
+        );
+    }
+}

@@ -58,8 +58,8 @@ pub use translation::{normalize, Midi1ToMidi2Translator, MidiParseError};
 pub use ump::{
     Alteration, BarAccents, ChordBass, ChordName, ChordSharpsFlats, ChordType,
     EndpointCapabilities, EndpointDiscoveryRequest, FlexTextKind, FunctionBlockDirection,
-    FunctionBlocks, JrTimestamps, KeySharpsFlats, MidiEvent, Protocol, Tonic, UmpMessageType,
-    UmpVersion,
+    FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, KeySharpsFlats, MidiEvent,
+    Protocol, Tonic, UmpMessageType, UmpVersion, ALL_FUNCTION_BLOCKS,
 };
 pub use unit_id::MidiUnitId;
 

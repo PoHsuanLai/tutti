@@ -13,19 +13,30 @@
 
 use tutti_midi_types::midi2::ump_stream::{Direction, UmpStream};
 use tutti_midi_types::midi2::UmpMessage;
-use tutti_midi_types::ump::{endpoint_name, product_instance_id};
+use tutti_midi_types::ump::{endpoint_name, function_block_name, product_instance_id};
 use tutti_midi_types::{
-    EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection, FunctionBlocks,
-    JrTimestamps, MidiEvent, Protocol, UmpVersion,
+    EndpointCapabilities, EndpointDiscoveryRequest, FunctionBlockDirection,
+    FunctionBlockDiscoveryRequest, FunctionBlocks, JrTimestamps, MidiEvent, Protocol, UmpVersion,
+    ALL_FUNCTION_BLOCKS,
 };
 
 /// One Function Block this endpoint exposes (M2-104 §7.1.3).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// `name` is the block's label, reported in a Function Block Name Notification
+/// (§7.1.9) when a [`FunctionBlockDiscovery`](MidiEvent::function_block_discovery)
+/// asks for it. An empty name omits that reply — a device picker then shows the
+/// block number instead. It is not `Copy` because of this field; the topology
+/// fields alone were, but a name that must be truncated to stay `Copy` is worse
+/// than a clone at discovery time.
+// No `Default`: §7.1.8 makes direction 0b00 Reserved, so there is no honest
+// default direction to synthesise.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionBlock {
     pub block_number: u8,
     pub first_group: u8,
     pub num_groups: u8,
     pub direction: FunctionBlockDirection,
+    pub name: String,
 }
 
 /// SysEx-style device identity carried in a Device Identity notification.
@@ -146,15 +157,70 @@ impl EndpointNegotiator {
         // Function Block Info isn't gated by a discovery request flag — an
         // endpoint that has blocks announces them alongside its info.
         for fb in &self.function_blocks {
-            out.push(MidiEvent::function_block_info(
-                true,
-                fb.block_number,
-                fb.first_group,
-                fb.num_groups,
-                fb.direction,
-            ));
+            out.push(Self::block_info(fb));
         }
         out
+    }
+
+    /// The Function Block Info notification for one block.
+    fn block_info(fb: &FunctionBlock) -> MidiEvent {
+        MidiEvent::function_block_info(
+            true,
+            fb.block_number,
+            fb.first_group,
+            fb.num_groups,
+            fb.direction,
+        )
+    }
+
+    /// The reply stream for an inbound **Function Block Discovery** `event`
+    /// (M2-104 §7.1.7). Returns empty if `event` is not one.
+    ///
+    /// The requested block is either a single number or
+    /// [`ALL_FUNCTION_BLOCKS`], in which case §7.1.8 requires "one Function
+    /// Block Info Notification message per Function Block". Each filter bit
+    /// produces its own reply (§7.1.7), so a request for both Info and Name on
+    /// N blocks yields 2N messages, ordered Info-then-Name per block.
+    ///
+    /// A block whose `name` is empty contributes no Name notification even when
+    /// asked: there is no such thing as a nameless Name message, and an empty
+    /// one would claim the block is called "".
+    pub fn respond_to_function_block_discovery(&self, event: &MidiEvent) -> Vec<MidiEvent> {
+        let Ok(UmpMessage::UmpStream(UmpStream::FunctionBlockDiscovery(d))) =
+            UmpMessage::try_from(event.data_words())
+        else {
+            return Vec::new();
+        };
+
+        let requested = d.function_block_number();
+        let want_info = d.requesting_function_block_info();
+        let want_name = d.requesting_function_block_name();
+
+        let mut out = Vec::new();
+        for fb in self
+            .function_blocks
+            .iter()
+            .filter(|fb| requested == ALL_FUNCTION_BLOCKS || fb.block_number == requested)
+        {
+            if want_info {
+                out.push(Self::block_info(fb));
+            }
+            if want_name && !fb.name.is_empty() {
+                function_block_name(fb.block_number, &fb.name, &mut out);
+            }
+        }
+        out
+    }
+
+    /// Build an outbound Function Block Discovery asking `block_number` (or
+    /// [`ALL_FUNCTION_BLOCKS`]) for the notifications in `request`. Use when
+    /// tutti is the *discoverer* re-querying a peer whose blocks may have
+    /// changed.
+    pub fn function_block_discovery_request(
+        block_number: u8,
+        request: FunctionBlockDiscoveryRequest,
+    ) -> MidiEvent {
+        MidiEvent::function_block_discovery(block_number, request)
     }
 
     /// Build the outbound Endpoint Discovery request this endpoint would send to
@@ -205,6 +271,8 @@ pub struct EndpointInquiry {
     name_words: Vec<u32>,
     /// In-progress Product Instance Id packet words.
     product_words: Vec<u32>,
+    /// In-progress Function Block Name packet words.
+    block_name_words: Vec<u32>,
 }
 
 impl EndpointInquiry {
@@ -273,8 +341,9 @@ impl EndpointInquiry {
                 true
             }
             UmpStream::FunctionBlockInfo(m) => {
-                self.discovered.function_blocks.push(FunctionBlock {
-                    block_number: u8::from(m.function_block_number()),
+                let block_number = u8::from(m.function_block_number());
+                let info = FunctionBlock {
+                    block_number,
                     first_group: u8::from(m.first_group()),
                     num_groups: m.number_of_groups_spanned(),
                     direction: match m.direction() {
@@ -282,7 +351,57 @@ impl EndpointInquiry {
                         Direction::Output => FunctionBlockDirection::Output,
                         _ => FunctionBlockDirection::Bidirectional,
                     },
-                });
+                    // Carried by a separate Name notification, which may arrive
+                    // either side of this one.
+                    name: String::new(),
+                };
+                // §7.1.8: a non-static endpoint re-sends Info "when any property
+                // in this message has changed", and a Function Block Discovery
+                // can re-query one deliberately. Replacing in place keeps the
+                // re-query idempotent — pushing would grow a duplicate every
+                // time a block was polled. The name is preserved because it
+                // travels in its own message and is not restated here.
+                match self
+                    .discovered
+                    .function_blocks
+                    .iter_mut()
+                    .find(|fb| fb.block_number == block_number)
+                {
+                    Some(existing) => {
+                        let name = std::mem::take(&mut existing.name);
+                        *existing = FunctionBlock { name, ..info };
+                    }
+                    None => self.discovered.function_blocks.push(info),
+                }
+                true
+            }
+            UmpStream::FunctionBlockName(_) => {
+                self.block_name_words.extend_from_slice(event.data_words());
+                if let Some((block_number, name)) =
+                    decode_function_block_name(&self.block_name_words)
+                {
+                    self.block_name_words.clear();
+                    match self
+                        .discovered
+                        .function_blocks
+                        .iter_mut()
+                        .find(|fb| fb.block_number == block_number)
+                    {
+                        Some(existing) => existing.name = name,
+                        // A Name can arrive before its Info — §7.1.7 lets a
+                        // discovery ask for the name alone. Hold it against the
+                        // block number so the label is not lost; the topology
+                        // fields fill in when Info arrives, which is why the
+                        // Info arm preserves an existing name.
+                        None => self.discovered.function_blocks.push(FunctionBlock {
+                            block_number,
+                            first_group: 0,
+                            num_groups: 0,
+                            direction: FunctionBlockDirection::Bidirectional,
+                            name,
+                        }),
+                    }
+                }
                 true
             }
             UmpStream::EndpointName(_) => {
@@ -321,6 +440,18 @@ fn decode_endpoint_name(words: &[u32]) -> Option<String> {
     }
 }
 
+/// Decode a (possibly multi-packet) Function Block Name from accumulated
+/// UMP-Stream words into `(block_number, name)`, or `None` if the words don't
+/// yet form a complete message.
+fn decode_function_block_name(words: &[u32]) -> Option<(u8, String)> {
+    match UmpMessage::try_from(words).ok()? {
+        UmpMessage::UmpStream(UmpStream::FunctionBlockName(m)) => {
+            Some((m.function_block(), m.name()))
+        }
+        _ => None,
+    }
+}
+
 /// Decode a (possibly multi-packet) Product Instance Id from accumulated
 /// UMP-Stream words, or `None` if not yet complete.
 fn decode_product_instance_id(words: &[u32]) -> Option<String> {
@@ -348,6 +479,7 @@ mod tests {
                 first_group: 0,
                 num_groups: 1,
                 direction: FunctionBlockDirection::Bidirectional,
+                name: "Keys".into(),
             }],
         )
         .with_names("Tutti", "tutti-0001")
@@ -433,6 +565,188 @@ mod tests {
             UmpMessage::try_from(replies[0].data_words()).unwrap(),
             UmpMessage::UmpStream(UmpStream::DeviceIdentity(_))
         ));
+    }
+
+    /// Three blocks, only two of them named, for the discovery-filter tests.
+    fn multi_block_negotiator() -> EndpointNegotiator {
+        let block = |n: u8, name: &str| FunctionBlock {
+            block_number: n,
+            first_group: n,
+            num_groups: 1,
+            direction: FunctionBlockDirection::Bidirectional,
+            name: name.into(),
+        };
+        EndpointNegotiator::new(
+            DeviceIdentity {
+                manufacturer: [0, 0, 0],
+                family: 0,
+                family_model: 0,
+                software_version: [0; 4],
+            },
+            vec![block(0, "Keys"), block(1, "Drums"), block(2, "")],
+        )
+    }
+
+    fn is_info(e: &MidiEvent) -> bool {
+        matches!(
+            UmpMessage::try_from(e.data_words()).unwrap(),
+            UmpMessage::UmpStream(UmpStream::FunctionBlockInfo(_))
+        )
+    }
+
+    fn is_name(e: &MidiEvent) -> bool {
+        matches!(
+            UmpMessage::try_from(e.data_words()).unwrap(),
+            UmpMessage::UmpStream(UmpStream::FunctionBlockName(_))
+        )
+    }
+
+    #[test]
+    fn function_block_discovery_replies_for_one_block() {
+        let n = multi_block_negotiator();
+        let req = MidiEvent::function_block_discovery(1, FunctionBlockDiscoveryRequest::INFO);
+        let replies = n.respond_to_function_block_discovery(&req);
+        assert_eq!(replies.len(), 1);
+        assert!(is_info(&replies[0]));
+        let UmpMessage::UmpStream(UmpStream::FunctionBlockInfo(m)) =
+            UmpMessage::try_from(replies[0].data_words()).unwrap()
+        else {
+            panic!("expected FunctionBlockInfo");
+        };
+        assert_eq!(
+            u8::from(m.function_block_number()),
+            1,
+            "only the asked-for block"
+        );
+    }
+
+    #[test]
+    fn function_block_discovery_all_blocks_replies_per_block() {
+        // §7.1.8: with the number set to 0xFF "the reply shall be one Function
+        // Block Info Notification message per Function Block".
+        let n = multi_block_negotiator();
+        let req = MidiEvent::function_block_discovery(
+            ALL_FUNCTION_BLOCKS,
+            FunctionBlockDiscoveryRequest::INFO,
+        );
+        let replies = n.respond_to_function_block_discovery(&req);
+        assert_eq!(replies.len(), 3, "one Info per block");
+        assert!(replies.iter().all(is_info));
+    }
+
+    #[test]
+    fn each_filter_bit_produces_its_own_reply() {
+        // §7.1.7: "Each bit set will result in an individual reply." Both bits
+        // on the two named blocks → Info+Name each; block 2 is unnamed, so it
+        // contributes Info only.
+        let n = multi_block_negotiator();
+        let req = MidiEvent::function_block_discovery(
+            ALL_FUNCTION_BLOCKS,
+            FunctionBlockDiscoveryRequest::INFO | FunctionBlockDiscoveryRequest::NAME,
+        );
+        let replies = n.respond_to_function_block_discovery(&req);
+        assert_eq!(replies.len(), 5, "3 Info + 2 Name (block 2 is unnamed)");
+        assert_eq!(replies.iter().filter(|e| is_info(e)).count(), 3);
+        assert_eq!(replies.iter().filter(|e| is_name(e)).count(), 2);
+        // Info precedes its own Name, so a reader sees topology before label.
+        assert!(is_info(&replies[0]));
+        assert!(is_name(&replies[1]));
+    }
+
+    #[test]
+    fn name_only_request_returns_no_info() {
+        let n = multi_block_negotiator();
+        let req = MidiEvent::function_block_discovery(0, FunctionBlockDiscoveryRequest::NAME);
+        let replies = n.respond_to_function_block_discovery(&req);
+        assert_eq!(replies.len(), 1);
+        assert!(is_name(&replies[0]), "the 'i' bit was clear");
+    }
+
+    #[test]
+    fn unknown_block_number_replies_with_nothing() {
+        let n = multi_block_negotiator();
+        let req = MidiEvent::function_block_discovery(9, FunctionBlockDiscoveryRequest::INFO);
+        assert!(n.respond_to_function_block_discovery(&req).is_empty());
+    }
+
+    #[test]
+    fn non_discovery_events_are_ignored() {
+        let n = multi_block_negotiator();
+        // An Endpoint Discovery is a UMP Stream message but not *this* one.
+        let req = EndpointNegotiator::discovery_request();
+        assert!(n.respond_to_function_block_discovery(&req).is_empty());
+    }
+
+    #[test]
+    fn discovered_block_names_reach_the_inquiry() {
+        // A Function Block Discovery asking for both, looped back through the
+        // discoverer, yields blocks that carry their labels — the whole point of
+        // the Name notification.
+        let n = multi_block_negotiator();
+        let req = MidiEvent::function_block_discovery(
+            ALL_FUNCTION_BLOCKS,
+            FunctionBlockDiscoveryRequest::INFO | FunctionBlockDiscoveryRequest::NAME,
+        );
+        let mut inq = EndpointInquiry::new();
+        for ev in n.respond_to_function_block_discovery(&req) {
+            inq.ingest(&ev);
+        }
+        let blocks = &inq.discovered.function_blocks;
+        assert_eq!(blocks.len(), 3, "no duplicates from Info+Name on one block");
+        assert_eq!(blocks[0].name, "Keys");
+        assert_eq!(blocks[1].name, "Drums");
+        assert_eq!(blocks[2].name, "");
+    }
+
+    #[test]
+    fn a_name_arriving_before_its_info_is_not_lost() {
+        // §7.1.7 permits a name-only request, so Name can arrive with no Info
+        // before it — and a later Info for that block must not wipe the label.
+        let mut inq = EndpointInquiry::new();
+        let mut name_msg = Vec::new();
+        tutti_midi_types::ump::function_block_name(1, "Drums", &mut name_msg);
+        for ev in &name_msg {
+            inq.ingest(ev);
+        }
+        assert_eq!(inq.discovered.function_blocks[0].name, "Drums");
+
+        inq.ingest(&MidiEvent::function_block_info(
+            true,
+            1,
+            3,
+            2,
+            FunctionBlockDirection::Input,
+        ));
+        let blocks = &inq.discovered.function_blocks;
+        assert_eq!(blocks.len(), 1, "Info matched the block the Name created");
+        assert_eq!(blocks[0].name, "Drums", "the name survived the Info");
+        assert_eq!(blocks[0].first_group, 3, "and topology filled in");
+        assert_eq!(blocks[0].direction, FunctionBlockDirection::Input);
+    }
+
+    #[test]
+    fn re_queried_block_info_replaces_rather_than_duplicates() {
+        // §7.1.8: a non-static endpoint re-sends Info when a property changes.
+        // Ingesting the same block twice must update it, not grow the list.
+        let mut inq = EndpointInquiry::new();
+        inq.ingest(&MidiEvent::function_block_info(
+            true,
+            0,
+            0,
+            1,
+            FunctionBlockDirection::Input,
+        ));
+        inq.ingest(&MidiEvent::function_block_info(
+            true,
+            0,
+            5,
+            2,
+            FunctionBlockDirection::Output,
+        ));
+        let blocks = &inq.discovered.function_blocks;
+        assert_eq!(blocks.len(), 1, "one block, updated in place");
+        assert_eq!(blocks[0].first_group, 5);
+        assert_eq!(blocks[0].direction, FunctionBlockDirection::Output);
     }
 
     #[test]

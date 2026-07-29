@@ -113,6 +113,55 @@ impl MidiEvent {
         Self::from_ump(0, m.data())
     }
 
+    /// UMP Stream **Stream Configuration Request** (status 0x05) — asks a peer
+    /// endpoint to switch to `protocol` and to the JR-timestamp directions in
+    /// `jr`. The counterpart to
+    /// [`stream_configuration_notification`](Self::stream_configuration_notification),
+    /// which is the *reply*: §7.1.6.2 says the requester "should not use the
+    /// requested Protocol on its UMP Endpoint until a Stream Configuration
+    /// Notification message has been received as a reply".
+    ///
+    /// The two JR bits are requests about opposite directions, and §7.1.6.2
+    /// binds each to the same wait: with `RECEIVE` set the peer "can expect
+    /// incoming messages to be prefixed with JR Timestamps", but the requester
+    /// "shall not send JR Timestamps until after" the notification arrives; with
+    /// `SEND` set the peer "shall prefix all messages with JR Timestamps".
+    #[inline]
+    pub fn stream_configuration_request(protocol: Protocol, jr: JrTimestamps) -> Self {
+        use midi2::ump_stream::StreamConfigurationRequest;
+        let mut m = StreamConfigurationRequest::<[u32; 4]>::new();
+        m.set_protocol(protocol as u8);
+        m.set_receive_jr_timestamps(jr.contains(JrTimestamps::RECEIVE));
+        m.set_send_jr_timestamps(jr.contains(JrTimestamps::SEND));
+        Self::from_ump(0, m.data())
+    }
+
+    /// UMP Stream **Function Block Discovery** (status 0x10) — requests details
+    /// about `block_number`'s configuration, per M2-104 §7.1.7.
+    ///
+    /// `block_number` is a single block in `0x00..=0x1F`, or
+    /// [`ALL_FUNCTION_BLOCKS`] to ask about every one. `request` selects which
+    /// notifications come back — and §7.1.7 makes each bit an *independent*
+    /// reply ("Each bit set will result in an individual reply"), so asking for
+    /// both Info and Name yields two messages per block, not one combined.
+    ///
+    /// This is what makes a re-query possible: an endpoint that has not declared
+    /// its Function Blocks `static` may change them at any time (§7.1.8), and
+    /// without this message the only way to see the new topology is a full
+    /// Endpoint Discovery.
+    #[inline]
+    pub fn function_block_discovery(
+        block_number: u8,
+        request: FunctionBlockDiscoveryRequest,
+    ) -> Self {
+        use midi2::ump_stream::FunctionBlockDiscovery;
+        let mut m = FunctionBlockDiscovery::<[u32; 4]>::new();
+        m.set_function_block_number(block_number);
+        m.set_requesting_function_block_info(request.contains(FunctionBlockDiscoveryRequest::INFO));
+        m.set_requesting_function_block_name(request.contains(FunctionBlockDiscoveryRequest::NAME));
+        Self::from_ump(0, m.data())
+    }
+
     /// UMP Stream **Device Identity Notification** — the reply to an Endpoint
     /// Discovery `request_device_identity`. Carries the SysEx-style device id:
     /// a 3-byte `manufacturer`, 14-bit `family` and `family_model`, and a 4-byte
@@ -182,6 +231,28 @@ pub fn function_block_name(block_number: u8, name: &str, out: &mut Vec<MidiEvent
     m.set_function_block(block_number);
     push_ump_stream_packets(m.data(), out);
 }
+
+bitflags! {
+    /// Which Function Block notifications to request, for
+    /// [`MidiEvent::function_block_discovery`] (M2-104 §7.1.7, Figure 21).
+    ///
+    /// §7.1.7: "Each bit set will result in an individual reply." Both bits set
+    /// therefore asks for two messages per block, not one.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct FunctionBlockDiscoveryRequest: u8 {
+        /// Request a Function Block Info Notification (the `i` bit).
+        const INFO = 1 << 0;
+        /// Request a Function Block Name Notification (the `n` bit).
+        const NAME = 1 << 1;
+    }
+}
+
+/// Ask [`MidiEvent::function_block_discovery`] about every Function Block
+/// rather than one.
+///
+/// M2-104 §7.1.7: "Use 0xFF to request information about all Function Blocks."
+/// Individual blocks use `0x00..=0x1F`, so this value cannot collide with one.
+pub const ALL_FUNCTION_BLOCKS: u8 = 0xFF;
 
 /// Direction of a Function Block, for [`MidiEvent::function_block_info`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -340,6 +411,94 @@ mod tests {
                 assert!(m.receive_jr_timestamps());
             }
             other => panic!("expected StreamConfigurationNotification, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_configuration_request_decodes_via_midi2() {
+        use midi2::ump_stream::UmpStream;
+        use midi2::UmpMessage;
+        let ev = MidiEvent::stream_configuration_request(Protocol::Midi1, JrTimestamps::RECEIVE);
+        match UmpMessage::try_from(ev.data_words()).unwrap() {
+            UmpMessage::UmpStream(UmpStream::StreamConfigurationRequest(m)) => {
+                assert_eq!(m.protocol(), 1);
+                assert!(m.receive_jr_timestamps());
+                assert!(!m.send_jr_timestamps());
+            }
+            other => panic!("expected StreamConfigurationRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stream_configuration_request_is_status_05_not_the_notification() {
+        // The Request (0x05) and the Notification (0x06) carry identical
+        // payloads and differ only in status. Asserting the status nibble by
+        // hand is what keeps the two from being swapped: a round-trip through
+        // midi2 would be equally happy with either, and sending a Notification
+        // where §7.1.6.2 wants a Request asks a peer for nothing.
+        let req = MidiEvent::stream_configuration_request(Protocol::Midi2, JrTimestamps::empty());
+        let note =
+            MidiEvent::stream_configuration_notification(Protocol::Midi2, JrTimestamps::empty());
+        let status = |e: &MidiEvent| (e.data_words()[0] >> 16) & 0x03FF;
+        assert_eq!(status(&req), 0x05, "Request is status 0x05");
+        assert_eq!(status(&note), 0x06, "Notification is status 0x06");
+        assert_eq!(req.data_words()[0], 0xF005_0200);
+    }
+
+    #[test]
+    fn function_block_discovery_decodes_via_midi2() {
+        use midi2::ump_stream::UmpStream;
+        use midi2::UmpMessage;
+        let ev = MidiEvent::function_block_discovery(
+            3,
+            FunctionBlockDiscoveryRequest::INFO | FunctionBlockDiscoveryRequest::NAME,
+        );
+        match UmpMessage::try_from(ev.data_words()).unwrap() {
+            UmpMessage::UmpStream(UmpStream::FunctionBlockDiscovery(m)) => {
+                assert_eq!(m.function_block_number(), 3);
+                assert!(m.requesting_function_block_info());
+                assert!(m.requesting_function_block_name());
+            }
+            other => panic!("expected FunctionBlockDiscovery, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn function_block_discovery_filter_bits_are_independent() {
+        use midi2::ump_stream::UmpStream;
+        use midi2::UmpMessage;
+        // §7.1.7 Figure 21 places 'i' and 'n' in distinct bits, so asking for
+        // one must not imply the other — the caller controls how many replies
+        // it gets back.
+        let decode = |ev: &MidiEvent| match UmpMessage::try_from(ev.data_words()).unwrap() {
+            UmpMessage::UmpStream(UmpStream::FunctionBlockDiscovery(m)) => (
+                m.requesting_function_block_info(),
+                m.requesting_function_block_name(),
+            ),
+            other => panic!("expected FunctionBlockDiscovery, got {other:?}"),
+        };
+        let info_only = MidiEvent::function_block_discovery(0, FunctionBlockDiscoveryRequest::INFO);
+        let name_only = MidiEvent::function_block_discovery(0, FunctionBlockDiscoveryRequest::NAME);
+        assert_eq!(decode(&info_only), (true, false));
+        assert_eq!(decode(&name_only), (false, true));
+    }
+
+    #[test]
+    fn function_block_discovery_carries_the_all_blocks_sentinel() {
+        use midi2::ump_stream::UmpStream;
+        use midi2::UmpMessage;
+        // §7.1.7: "Use 0xFF to request information about all Function Blocks."
+        // Individual blocks are 0x00..=0x1F, so 0xFF must survive intact rather
+        // than being masked into a block number the way a 7-bit field would.
+        let ev = MidiEvent::function_block_discovery(
+            ALL_FUNCTION_BLOCKS,
+            FunctionBlockDiscoveryRequest::INFO,
+        );
+        match UmpMessage::try_from(ev.data_words()).unwrap() {
+            UmpMessage::UmpStream(UmpStream::FunctionBlockDiscovery(m)) => {
+                assert_eq!(m.function_block_number(), 0xFF);
+            }
+            other => panic!("expected FunctionBlockDiscovery, got {other:?}"),
         }
     }
 

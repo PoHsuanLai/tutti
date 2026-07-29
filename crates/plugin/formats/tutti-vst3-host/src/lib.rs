@@ -24,12 +24,15 @@ pub use types::{
     vst3_to_note_expression, vst3_to_note_expression_int, vst3_to_note_expression_text,
     vst3_to_scale, AudioBuffer, BufferPtrs, BusInfo, ChordValue, EditorCapabilities, EditorSize,
     MidiEvent, NoteExpressionIntValue, NoteExpressionText, NoteExpressionType, NoteExpressionValue,
-    ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo, ProcessOutput, ProcessOutputRef,
-    Sample, ScaleValue, TransportInfo, Vst3InputEvents, Vst3KeyswitchInfo, Vst3NoteExpressionInfo,
-    Vst3ParameterInfo, Vst3Sample, WindowHandle,
+    ParameterChanges, ParameterPoint, ParameterQueue, PluginInfo, ProcessMode, ProcessOutput,
+    ProcessOutputRef, Sample, ScaleValue, TransportInfo, Vst3InputEvents, Vst3KeyswitchInfo,
+    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3Sample, WindowHandle,
 };
 
 pub use com::{ParameterEditEvent, ProgressEvent, RestartFlags, UnitEvent};
+
+#[cfg(all(feature = "conformance", target_os = "linux"))]
+pub use com::run_loop::RunLoopActivity;
 
 /// Tagged-enum wrappers over VST3's typed event structs, plus the event-type
 /// discriminant constants.

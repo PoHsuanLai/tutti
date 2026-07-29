@@ -11,8 +11,8 @@ mod events;
 mod info;
 mod transport;
 
-pub use audio::Vst3Sample;
 pub(crate) use audio::K_SAMPLE_64_INT;
+pub use audio::{ProcessMode, Vst3Sample};
 pub(crate) use events::{from_c_event, to_c_event};
 pub use events::{
     note_expression_to_vst3, note_expression_type_from_id, note_expression_type_to_id,

@@ -4,6 +4,8 @@
 //! consume `self` so the compiler enforces the ordering.
 
 mod bus_buffers;
+#[cfg(feature = "conformance")]
+pub mod conformance;
 mod instance;
 mod library;
 mod loaded;
@@ -13,8 +15,16 @@ mod module_entry;
 mod plugin_state;
 
 pub use instance::Vst3Instance;
-pub use library::Vst3Library;
+pub use library::{ClassInfo, Vst3Library};
 pub use loaded::{PluginNotifications, RestartOutcome, Vst3Loaded};
+
+/// Editor-lifecycle internals, exposed for the conformance tests. Both are
+/// reached in production only through `open_editor`/`close_editor`, which need
+/// a real plugin and a display; the spec rules they encode — the teardown call
+/// *order*, and which `isPlatformTypeSupported` results count as a refusal —
+/// are worth pinning without either.
+#[cfg(feature = "conformance")]
+pub use loaded::{detach_view, platform_type_refused};
 
 // ── IComponent extension trait ────────────────────────────────────────────────
 

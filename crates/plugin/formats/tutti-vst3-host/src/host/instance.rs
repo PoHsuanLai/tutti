@@ -17,8 +17,8 @@ use smallvec::SmallVec;
 use vst3::Steinberg::{
     kResultFalse, kResultOk,
     Vst::{
-        IAudioProcessorTrait, IComponentTrait, MediaTypes_::kEvent, ProcessModes_::kRealtime,
-        ProcessSetup, SpeakerArr, SpeakerArrangement,
+        IAudioProcessorTrait, IComponentTrait, MediaTypes_::kEvent, ProcessSetup, SpeakerArr,
+        SpeakerArrangement,
     },
 };
 
@@ -28,7 +28,7 @@ use crate::com::{event_list_ptr, param_changes_ptr, EventList, ParameterChangesI
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::types::{
     to_process_context, AudioBuffer, BufferPtrs, MidiEvent, ParameterChanges, PluginInfo,
-    ProcessOutputRef, TransportInfo, Vst3InputEvents, Vst3Sample,
+    ProcessMode, ProcessOutputRef, TransportInfo, Vst3InputEvents, Vst3Sample,
 };
 
 use super::bus_buffers::{BusBuffers, DirectionScratch};
@@ -38,7 +38,6 @@ use super::midi_mapping::{midi_to_mapped_controller, CcRoute, MidiCcMapping};
 use super::{IComponentExt, K_INPUT, K_OUTPUT};
 
 pub(super) const K_EVENT: i32 = kEvent as i32;
-const K_REALTIME: i32 = kRealtime as i32;
 
 /// Pre-reserve capacity for output param-change queues. One slot per
 /// distinct param_id the plugin might emit in a single block; growing
@@ -88,6 +87,14 @@ struct ProcessConfig {
     block_size: usize,
     num_input_channels: ChannelLayout,
     num_output_channels: ChannelLayout,
+    /// The mode last handed to `setupProcessing`. This is the value
+    /// `ProcessData::processMode` must agree with, so both reads go through
+    /// this one field rather than two constants that could drift apart.
+    setup_mode: ProcessMode,
+    /// The mode written into each block's `ProcessData`. Equal to `setup_mode`
+    /// except while a live realtime↔prefetch toggle is in effect — the one
+    /// divergence `ProcessSetupCheck` permits without a fresh `setupProcessing`.
+    block_mode: ProcessMode,
 }
 
 /// The input half of `ProcessData`: per-bus audio scratch plus the COM-wrapped
@@ -215,8 +222,46 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     /// Returns [`Vst3Error::NotSupported`] if `T = f64` and the plugin does
     /// not advertise 64-bit support.
     pub fn load(path: &Path, sample_rate: f64, block_size: usize) -> Result<Self> {
+        Self::load_with_mode(path, sample_rate, block_size, ProcessMode::Realtime)
+    }
+
+    /// Load a VST3 plugin and activate it for a specific [`ProcessMode`].
+    ///
+    /// Use this — with [`ProcessMode::Offline`] — for a bounce or export.
+    /// [`load`](Self::load) is the [`Realtime`](ProcessMode::Realtime) case.
+    ///
+    /// # Errors
+    ///
+    /// As [`load`](Self::load).
+    pub fn load_with_mode(
+        path: &Path,
+        sample_rate: f64,
+        block_size: usize,
+        mode: ProcessMode,
+    ) -> Result<Self> {
         let loaded = Vst3Loaded::load(path)?;
-        Self::from_loaded(loaded, sample_rate, block_size)
+        Self::from_loaded(loaded, sample_rate, block_size, mode)
+    }
+
+    /// Load and activate one named audio class from a multi-plugin bundle.
+    ///
+    /// See [`Vst3Loaded::load_class`] for why a bundle may hold many: `load`
+    /// takes the first audio class, which cannot address the other 33 in a
+    /// suite like `mda-vst3`.
+    ///
+    /// # Errors
+    ///
+    /// As [`load`](Self::load), plus a
+    /// [`LoadFailed`](crate::Vst3Error::LoadFailed) listing the bundle's actual
+    /// class names when `class_name` matches none of them.
+    pub fn load_class(
+        path: &Path,
+        class_name: &str,
+        sample_rate: f64,
+        block_size: usize,
+    ) -> Result<Self> {
+        let loaded = Vst3Loaded::load_class(path, Some(class_name))?;
+        Self::from_loaded(loaded, sample_rate, block_size, ProcessMode::Realtime)
     }
 
     /// Called by [`Vst3Loaded::activate`]. Runs `setupProcessing`, activates
@@ -225,6 +270,7 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         loaded: Vst3Loaded,
         sample_rate: f64,
         block_size: usize,
+        mode: ProcessMode,
     ) -> Result<Self> {
         if T::VST3_SYMBOLIC_SIZE == crate::types::K_SAMPLE_64_INT && !loaded.info.supports_f64 {
             return Err(Vst3Error::NotSupported(
@@ -263,6 +309,12 @@ impl<T: Vst3Sample> Vst3Instance<T> {
                 block_size,
                 num_input_channels,
                 num_output_channels,
+                // Both start at the requested mode; `apply_process_setup` is
+                // what actually delivers `setup_mode` to the plugin, and
+                // `set_prefetch` is the only thing that may move `block_mode`
+                // away from it.
+                setup_mode: mode,
+                block_mode: mode,
             },
             ptrs: BufferPtrs::new(in_scratch.ptr_count, out_scratch.ptr_count),
             input: InputStaging {
@@ -294,6 +346,21 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         instance.apply_process_setup()?;
         instance.activate_buses()?;
         instance.set_active(true)?;
+        // The spec requires reading latency after each `setActive(true)`: the
+        // value is only valid once the plugin is active, and it is what a host
+        // feeds into delay compensation. Skipping it means a latency-reporting
+        // plugin runs uncompensated — audibly out of time against every other
+        // track. The read is also what tells a plugin the host implements PDC
+        // at all (HostChecker flags the omission as "Missing Call:
+        // getLatencySamples ()").
+        //
+        // The value is returned to the caller through `read_latency_samples`
+        // rather than stored here: the compensation machinery lives in
+        // `tutti-core` (`LatencyGraph` / `Compensation` / `PdcDelay`), which
+        // needs it per graph rather than per instance. What matters at this
+        // layer is that the call happens, in the right place, every activation
+        // — the figure PDC compensates by is only as good as this read.
+        let _ = instance.loaded.read_latency_samples();
         Ok(instance)
     }
 
@@ -318,6 +385,43 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         self.audio.config.sample_rate = rate;
         let _ = self.apply_process_setup();
         self
+    }
+
+    /// The mode this instance's blocks are currently processed in.
+    pub fn process_mode(&self) -> ProcessMode {
+        self.audio.config.block_mode
+    }
+
+    /// Toggle between [`Realtime`](ProcessMode::Realtime) and
+    /// [`Prefetch`](ProcessMode::Prefetch) on a live instance, without
+    /// re-running `setupProcessing`.
+    ///
+    /// This pair is the sole per-block mode change the VST3 spec allows: the
+    /// `ProcessSetup`/`ProcessData` agreement rule in
+    /// `ProcessSetupCheck::check` names it as an explicit exception, so only
+    /// `ProcessData::processMode` moves here and the negotiated setup is left
+    /// alone. Returns `false` — changing nothing — when the instance was
+    /// activated [`Offline`](ProcessMode::Offline), because reaching it from
+    /// either of these needs a fresh setup and the resulting disagreement would
+    /// be a spec violation. Re-activate with
+    /// [`Vst3Loaded::activate_with_mode`](super::loaded::Vst3Loaded::activate_with_mode)
+    /// to change an offline instance's mode.
+    ///
+    /// Must not be called from inside [`process`](Self::process).
+    pub fn set_prefetch(&mut self, prefetch: bool) -> bool {
+        let requested = if prefetch {
+            ProcessMode::Prefetch
+        } else {
+            ProcessMode::Realtime
+        };
+        // Gate on the *negotiated setup* mode, not the current block mode: it
+        // is the setup value every block is checked against, and it is what an
+        // offline activation pinned.
+        if !self.audio.config.setup_mode.switchable_to(requested) {
+            return false;
+        }
+        self.audio.config.block_mode = requested;
+        true
     }
 
     /// Run one realtime processing block.
@@ -427,7 +531,7 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         process_context.sampleRate = buffer.sample_rate;
 
         let mut process_data = vst3::Steinberg::Vst::ProcessData {
-            processMode: K_REALTIME,
+            processMode: self.audio.config.block_mode.to_vst3(),
             symbolicSampleSize: T::VST3_SYMBOLIC_SIZE,
             numSamples: buffer.num_samples as i32,
             numInputs: num_input_buses as i32,
@@ -444,6 +548,17 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             outputEvents: output_events_ptr,
             processContext: &mut process_context,
         };
+
+        // Test-only seam: hand the fully-built ProcessData to an installed
+        // observer before the plugin sees it. Compiled out by default. The
+        // setup comes from `process_setup()`, the same accessor
+        // `apply_process_setup` hands the plugin, so an observer comparing the
+        // two sees the real negotiated value.
+        #[cfg(feature = "conformance")]
+        {
+            let setup = self.process_setup();
+            super::conformance::observe(&process_data, &setup);
+        }
 
         let result = unsafe { processor.process(&mut process_data) };
 
@@ -586,13 +701,23 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         self.audio.output.buses = out_scratch.buses;
     }
 
-    fn apply_process_setup(&mut self) -> Result<()> {
-        let mut setup = ProcessSetup {
-            processMode: K_REALTIME,
+    /// The `ProcessSetup` describing this instance's negotiated configuration.
+    ///
+    /// The single source of the setup values, so what `setupProcessing`
+    /// receives and what the conformance observer is told cannot drift — a
+    /// second, hand-built copy for the observer would agree with `ProcessData`
+    /// by construction and hide exactly the mismatch the check exists to find.
+    fn process_setup(&self) -> ProcessSetup {
+        ProcessSetup {
+            processMode: self.audio.config.setup_mode.to_vst3(),
             symbolicSampleSize: T::VST3_SYMBOLIC_SIZE,
             maxSamplesPerBlock: self.audio.config.block_size as i32,
             sampleRate: self.audio.config.sample_rate,
-        };
+        }
+    }
+
+    fn apply_process_setup(&mut self) -> Result<()> {
+        let mut setup = self.process_setup();
         let result = unsafe { self.loaded.interfaces.processor.setupProcessing(&mut setup) };
         if result != kResultOk && result != kResultFalse {
             return Err(Vst3Error::PluginError {
@@ -649,19 +774,32 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     fn set_active(&mut self, active: bool) -> Result<()> {
         let flag: vst3::Steinberg::TBool = if active { 1 } else { 0 };
         let result = unsafe { self.loaded.interfaces.component.setActive(flag) };
-        if result != kResultOk && result != kResultFalse {
+        // `kResultFalse` is a *refusal*, not a "didn't implement it". A plugin
+        // whose licence check, dongle, or device claim fails reports it here,
+        // and it is the only way it can. Accepting it as success left the host
+        // believing an inactive plugin was live and calling `process` on it —
+        // which is undefined, and which the plugin has no way to prevent.
+        //
+        // Steinberg's own suite agrees: `validstatetransition.cpp` fails the
+        // plugin unless `setActive` returns exactly `kResultTrue`.
+        //
+        // This is the opposite of the `setProcessing` call below, where a
+        // non-OK result genuinely does mean "not implemented" — see there.
+        if result != kResultOk {
             return Err(Vst3Error::PluginError {
                 stage: LoadStage::Activation,
                 code: result,
             });
         }
         if active {
-            let result = unsafe { self.loaded.interfaces.processor.setProcessing(1) };
-            if result != kResultOk && result != kResultFalse {
-                return Err(Vst3Error::PluginError {
-                    stage: LoadStage::Activation,
-                    code: result,
-                });
+            // `setProcessing` only *informs* the plugin that processing is about
+            // to start; the SDK's own `AudioEffect` base returns
+            // `kNotImplemented` for it, so every plugin that doesn't need the
+            // notification reports failure here. Treating that as fatal rejects
+            // valid plugins — 7 of Steinberg's 11 reference plugins among them.
+            // Nothing downstream depends on the result, so ignore it.
+            unsafe {
+                self.loaded.interfaces.processor.setProcessing(1);
             }
         }
         Ok(())

@@ -36,13 +36,13 @@ fn test_bstream_from_data() {
 
 #[test]
 fn test_host_application_new() {
-    let _host = HostApplication::new("TestHost");
+    let _host = HostApplication::new_for_test("TestHost");
 }
 
 #[test]
 fn test_host_application_long_name_truncates() {
     let long_name = "A".repeat(200);
-    let _host = HostApplication::new(&long_name);
+    let _host = HostApplication::new_for_test(&long_name);
 }
 
 #[test]

@@ -7,6 +7,8 @@
 
 pub mod audio;
 pub mod composite;
+#[cfg(test)]
+mod hostile_peer_tests;
 
 pub use composite::PluginBridge;
 pub(crate) use composite::SubprocessBackend;

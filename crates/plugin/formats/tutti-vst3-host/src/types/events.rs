@@ -369,6 +369,7 @@ impl Vst3Event {
 /// - `text_arena` owns the UTF-16 for text-bearing events; the event's
 ///   [`TextRef`] indexes into it and is resolved to a pointer here. It is
 ///   likewise interned at stage time and only read at `getEvent` time.
+///
 /// Text lengths are bounded by `MAX_EVENT_TEXT_LEN` (256) at intern time, so
 /// arena offsets and lengths fit `u32`/`u16` regardless of pointer width, and
 /// the VST3 struct fields they feed are exactly those widths.
@@ -1346,6 +1347,8 @@ fn resolve_text(t: &TextRef, arena: &[u16]) -> Vec<u16> {
         .unwrap_or_default()
 }
 
+/// MIDI round-trip tests through `Vst3Event::from_midi` + `Vst3Event::to_midi`.
+///
 /// Tests build SDK structs by hand, so they repeat the same bounded narrowings
 /// the production code justifies above (SDK ordinals, text sizes clamped to
 /// `MAX_EVENT_TEXT_LEN`). Allowed at module scope rather than per case: a test
@@ -1355,8 +1358,6 @@ fn resolve_text(t: &TextRef, arena: &[u16]) -> Vec<u16> {
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 #[cfg(test)]
 mod tests {
-    //! MIDI round-trip tests through `Vst3Event::from_midi` + `Vst3Event::to_midi`.
-
     use super::*;
     use tutti_midi_types::convert::{bend_u32_to_signed_f32, u16_to_unit_f32, u32_to_unit_f32};
     use tutti_midi_types::midi2::channel_voice2::ChannelVoice2 as Cv2;

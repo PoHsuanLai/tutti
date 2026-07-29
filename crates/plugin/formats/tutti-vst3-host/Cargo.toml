@@ -9,6 +9,14 @@ keywords = ["vst3", "audio", "plugin", "dsp", "host"]
 categories = ["multimedia::audio"]
 readme = "README.md"
 
+[features]
+# Off by default. Exposes `host::conformance`, a test-only observation seam
+# that hands the fully-built `ProcessData` to an installed observer just
+# before `IAudioProcessor::process`. Used by the VST3 host-conformance tests
+# to validate what this host assembles against the VST3 spec.
+default = []
+conformance = []
+
 [dependencies]
 libloading = "0.9"
 thiserror = "2"
@@ -22,8 +30,16 @@ vst3 = "0.3"
 
 # The VST3 macOS module entry point is `bundleEntry(CFBundleRef)`, so building a
 # CFBundleRef for the `.vst3` bundle needs CoreFoundation. macOS only.
+# `IRunLoop` (Linux-only, and mandatory there per the VST3 docs) polls the
+# plugin-registered file descriptors.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation-sys = "0.8"
+
+[build-dependencies]
+cc = "1"
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

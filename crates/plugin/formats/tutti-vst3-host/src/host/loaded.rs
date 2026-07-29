@@ -8,11 +8,10 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use vst3::com_scrape_types::Unknown;
 use vst3::ComPtr;
 use vst3::Steinberg::{
-    kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPlugView,
-    IPlugViewContentScaleSupport, IPlugViewContentScaleSupportTrait, IPlugViewTrait,
+    kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream,
+    IPlugView, IPlugViewContentScaleSupport, IPlugViewContentScaleSupportTrait, IPlugViewTrait,
     IPluginBaseTrait, IPluginCompatibility, IPluginCompatibilityTrait, ViewRect,
     Vst::{
         IAudioPresentationLatency, IAudioPresentationLatencyTrait, IAudioProcessor,
@@ -42,8 +41,8 @@ use crate::com::{
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
 use crate::types::{
-    EditorCapabilities, EditorSize, PluginInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo,
-    Vst3ParameterInfo, Vst3Sample, WindowHandle,
+    EditorCapabilities, EditorSize, PluginInfo, ProcessMode, Vst3KeyswitchInfo,
+    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3Sample, WindowHandle,
 };
 
 use super::instance::Vst3Instance;
@@ -61,8 +60,12 @@ const DEFAULT_EDITOR_SIZE: (u32, u32) = (800, 600);
 /// `process()`. For GUI-only hosting (no audio ever), stay here — skip the
 /// `setActive(1) + setProcessing(1)` cost entirely.
 pub struct Vst3Loaded {
-    /// Kept alive to keep the DSO loaded for the plugin's lifetime.
-    pub(super) _library: Arc<Vst3Library>,
+    // Declaration order IS teardown order — Rust drops fields top-to-bottom.
+    // Every COM object below is implemented *inside* the plugin DSO, so its
+    // vtable lives in that module's text: releasing one after the DSO is gone
+    // jumps through a dangling function pointer. `_library` therefore has to be
+    // the LAST field, not the first. (Same rule `Vst3Library` documents for its
+    // own fields.)
     pub(super) interfaces: PluginInterfaces,
     pub(super) host: HostContext,
     pub(super) editor: EditorState,
@@ -71,6 +74,9 @@ pub struct Vst3Loaded {
     /// the audio thread, drained in [`poll_plugin_notifications`]. Built at load
     /// and outlives activate/deactivate cycles.
     pub(super) midi_learn: MidiLearnConsumer,
+    /// Keeps the DSO loaded for the plugin's lifetime. **Must stay last** — see
+    /// the teardown-order note at the top of this struct.
+    pub(super) _library: Arc<Vst3Library>,
 }
 
 /// Summary of the host-side state changes triggered by draining one or more
@@ -177,11 +183,35 @@ impl Vst3Loaded {
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if
     /// `IPluginBase::initialize` fails.
     pub fn load(path: &Path) -> Result<Self> {
+        Self::load_class(path, None)
+    }
+
+    /// Load a specific audio class from a bundle, by display name.
+    ///
+    /// One VST3 bundle may export many plugins — that is the normal shape for a
+    /// commercial suite, and the sample corpus has it too: `mda-vst3` exports
+    /// 34 audio classes from one binary. [`load`](Self::load) takes the first,
+    /// which is the right default for a single-plugin bundle and useless for
+    /// picking "mda Delay" out of the 34.
+    ///
+    /// `class_name` matches [`ClassInfo::name`](crate::host::ClassInfo::name)
+    /// exactly; `None` reproduces [`load`](Self::load).
+    ///
+    /// # Errors
+    ///
+    /// As [`load`](Self::load), plus
+    /// [`Vst3Error::LoadFailed`](crate::Vst3Error::LoadFailed) when no audio
+    /// class carries `class_name` — the message lists what the bundle does
+    /// export, since a near-miss on a display name is the likely cause.
+    pub fn load_class(path: &Path, class_name: Option<&str>) -> Result<Self> {
         check_exists(path)?;
         let library = Vst3Library::load(path)?;
         ensure_has_classes(&library, path)?;
 
-        let class = find_audio_class(&library, path)?;
+        let class = match class_name {
+            Some(wanted) => find_audio_class_named(&library, path, wanted)?,
+            None => find_audio_class(&library, path)?,
+        };
         let component: ComPtr<IComponent> = library.create_instance(&class.cid)?;
         let processor =
             component
@@ -208,7 +238,14 @@ impl Vst3Loaded {
         controller: Controller,
         info: PluginInfo,
     ) -> Self {
-        let host_application = HostApplication::new(super::library::HOST_NAME);
+        // Same run loop as the factory-level host context: a plugin that only
+        // sees the context handed to `IPluginBase::initialize` must reach the
+        // loop the host actually pumps.
+        let host_application = HostApplication::new(
+            super::library::HOST_NAME,
+            #[cfg(target_os = "linux")]
+            library.run_loop(),
+        );
         let (component_handler, param_event_rx, progress_event_rx, unit_event_rx) =
             ComponentHandler::new();
 
@@ -279,7 +316,36 @@ impl Vst3Loaded {
         sample_rate: f64,
         block_size: usize,
     ) -> Result<Vst3Instance<T>> {
-        Vst3Instance::from_loaded(self, sample_rate, block_size)
+        self.activate_with_mode(sample_rate, block_size, ProcessMode::Realtime)
+    }
+
+    /// Transition to the processing state for a specific [`ProcessMode`].
+    ///
+    /// The mode is chosen *here*, on the state transition, rather than on the
+    /// resulting instance, because `setupProcessing` is where VST3 delivers it
+    /// and that call happens exactly once per activation. Selecting
+    /// [`Offline`](ProcessMode::Offline) afterwards would require re-running
+    /// setup, which is what the spec's `ProcessSetup`/`ProcessData` agreement
+    /// rule forbids doing silently — so the type-state boundary and the spec
+    /// boundary are made to coincide. (The realtime↔prefetch pair *is*
+    /// switchable on a live instance; that is
+    /// [`Vst3Instance::set_prefetch`](crate::Vst3Instance::set_prefetch), and
+    /// it is the one exception the rule names.)
+    ///
+    /// Query [`prefetchable_support`](Self::prefetchable_support) beforehand if
+    /// you intend to use prefetch: it is the plugin's own statement about
+    /// whether it can be driven that way.
+    ///
+    /// # Errors
+    ///
+    /// As [`activate`](Self::activate).
+    pub fn activate_with_mode<T: Vst3Sample>(
+        self,
+        sample_rate: f64,
+        block_size: usize,
+        mode: ProcessMode,
+    ) -> Result<Vst3Instance<T>> {
+        Vst3Instance::from_loaded(self, sample_rate, block_size, mode)
     }
 
     /// Metadata snapshot (id, name, vendor, bus counts, MIDI and f64 support).
@@ -802,7 +868,7 @@ impl Vst3Loaded {
 
         let result = unsafe { self.interfaces.component.getState(stream_ptr.as_ptr()) };
 
-        if result != kResultOk && result != kResultFalse {
+        if !state_result_ok(result) {
             return Err(Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: result,
@@ -859,7 +925,7 @@ impl Vst3Loaded {
 
         let result = unsafe { self.interfaces.component.setState(stream_ptr.as_ptr()) };
 
-        if result != kResultOk && result != kResultFalse {
+        if !state_result_ok(result) {
             return Err(Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: result,
@@ -873,10 +939,40 @@ impl Vst3Loaded {
         Ok(())
     }
 
-    /// True if the plugin exposes an editor controller. Not all plugins with a
-    /// controller have a UI, but a missing controller definitely means no UI.
+    /// True if the plugin actually publishes an editor view.
+    ///
+    /// **Asks `createView`, not `controller.is_some()`.** Those are different
+    /// questions and the old answer was the wrong one: nearly every VST3 has an
+    /// edit controller — that is where parameters live — while only some also
+    /// publish a UI. So this returned `true` unconditionally, for every plugin
+    /// in the sample corpus including the four whose `open_editor` fails.
+    ///
+    /// It is not a cosmetic mismatch. `tutti-plugin-server` feeds this straight
+    /// into `Features::EDITOR` on the plugin descriptor
+    /// (`loaders/vst3.rs:116,150`), so a DAW advertised an "open editor"
+    /// affordance for every VST3 it scanned and failed when the user took it.
+    ///
+    /// The view is created and immediately released — the same
+    /// `createView(kEditor)` the SDK's own `editorhost` uses to decide there is
+    /// a UI (`editorhost.cpp:207`). That costs a plugin-side allocation per
+    /// call, so callers needing it per-frame should cache it; the DAW asks
+    /// once, at scan time.
+    ///
+    /// A plugin with no controller at all still answers `false`, as before.
     pub fn has_editor(&self) -> bool {
-        self.interfaces.controller.as_ref().is_some()
+        let Some(ctrl) = self.interfaces.controller.as_ref() else {
+            return false;
+        };
+        let view = unsafe { ctrl.createView(c"editor".as_ptr()) };
+        if view.is_null() {
+            return false;
+        }
+        // `createView` returns an owned reference; drop it rather than leak a
+        // view per query.
+        unsafe {
+            ComPtr::<IPlugView>::from_raw(view);
+        }
+        true
     }
 
     /// Create the plugin editor, attach it to `parent`, and return its initial
@@ -886,7 +982,8 @@ impl Vst3Loaded {
     /// # Errors
     ///
     /// Returns [`Vst3Error::NotSupported`](crate::Vst3Error::NotSupported) if
-    /// the plugin has no controller or refuses to create a view, and
+    /// the plugin has no controller, refuses to create a view, or the view
+    /// rejects this platform's window type, and
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if
     /// `IPlugView::attached` fails.
     pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
@@ -911,9 +1008,25 @@ impl Vst3Loaded {
         #[cfg(target_os = "linux")]
         let platform_type = kPlatformTypeX11EmbedWindowID;
 
+        // Ask before attaching: a view that only speaks Wayland or NSView must
+        // not be handed an X11 window id. `editorhost` checks this first for the
+        // same reason (WindowController::onShow), and a view that says no here
+        // would otherwise take an untested `attached` path instead of failing
+        // cleanly.
+        let supported = unsafe { view.isPlatformTypeSupported(platform_type) };
+        if platform_type_refused(supported) {
+            return Err(Vst3Error::NotSupported(format!(
+                "Plugin view does not support platform type {}",
+                platform_type_name(platform_type)
+            )));
+        }
+
         // Create a fresh frame/channel pair for this editor session.
         // setFrame must precede attached() per Steinberg spec.
-        let (plug_frame, resize_rx) = HostPlugFrame::new();
+        let (plug_frame, resize_rx) = HostPlugFrame::new(
+            #[cfg(target_os = "linux")]
+            self._library.run_loop(),
+        );
         let frame_ptr = plug_frame
             .as_com_ref::<vst3::Steinberg::IPlugFrame>()
             .map(|r| r.as_ptr())
@@ -967,9 +1080,7 @@ impl Vst3Loaded {
         if let EditorState::Open { view, .. } =
             std::mem::replace(&mut self.editor, EditorState::Closed)
         {
-            unsafe {
-                view.removed();
-            }
+            detach_view(&view);
         }
     }
 
@@ -987,6 +1098,65 @@ impl Vst3Loaded {
         }
     }
 
+    /// Run one iteration of the event loop this host lends the plugin
+    /// (`Linux::IRunLoop`): fire any timers that came due and dispatch any
+    /// plugin file descriptor that became readable.
+    ///
+    /// **The embedder must call this from its UI thread, every frame, for as
+    /// long as any editor of this plugin is open.** X11 has no ambient run loop
+    /// the way Cocoa and Win32 do, so `iplugview.h` makes the loop the *host's*
+    /// job: "the host has to call the event handler when the file descriptor is
+    /// marked readable", and a registered timer "will be called repeatedly until
+    /// it is unregistered". Nothing else drives them. Skip this and the editor
+    /// opens, paints once, and then freezes — no redraws, no animation, no
+    /// response to input.
+    ///
+    /// Cheap and non-blocking: the `poll` uses a zero timeout, so calling it on
+    /// a frame where nothing is ready costs one syscall and returns. That is why
+    /// it is safe to call unconditionally from a render loop.
+    ///
+    /// # Why this is not folded into `poll_plugin_notifications`
+    ///
+    /// The two look alike but run on different clocks, and merging them would
+    /// break one or the other.
+    /// [`poll_plugin_notifications`](Self::poll_plugin_notifications) drains
+    /// queues that this host filled; the work is already done and arriving late
+    /// only delays a UI update. This call *is* the plugin's event loop — its
+    /// cadence sets the editor's frame rate, and a host that polls
+    /// notifications a few times a second (perfectly adequate for parameter
+    /// echoes) would render such an editor unusable. Equally, a host with no
+    /// editor open should not be forced to pump a loop with nothing in it.
+    /// Keeping them separate lets each be called at the rate it actually needs.
+    ///
+    /// # Why the host and not a timer thread
+    ///
+    /// A background thread ticking this would be simpler for the embedder and
+    /// is wrong: the handlers are plugin GUI code reaching into its X
+    /// connection, and the spec's whole premise is that the host donates *its
+    /// UI thread*. Calling them from anywhere else is the same data race as
+    /// touching any other toolkit off-thread. So the obligation is the
+    /// embedder's, and this method is the seam — it deliberately cannot be
+    /// automated away from inside a library that owns no event loop.
+    ///
+    /// No-op on non-Linux targets, where the OS provides the run loop, so
+    /// calling it unconditionally is portable.
+    pub fn run_editor_loop_iteration(&mut self) {
+        tutti_plugin_types::assert_main_thread();
+        // The library-scoped loop, not the frame's — plugins register against
+        // the host context (via `setHostContext`) before any editor exists, and
+        // both objects share this one loop. See `com/run_loop.rs`.
+        #[cfg(target_os = "linux")]
+        self._library.run_loop().run_iteration();
+    }
+
+    /// What the plugin has registered with our run loop, and how much this host
+    /// has dispatched. Test-only observation seam behind the `conformance`
+    /// feature — see [`RunLoopActivity`](crate::RunLoopActivity).
+    #[cfg(all(feature = "conformance", target_os = "linux"))]
+    pub fn run_loop_activity(&self) -> crate::RunLoopActivity {
+        self._library.run_loop().activity()
+    }
+
     /// Coalesces multiple `IPlugFrame::resizeView` requests received
     /// since the last poll, returning only the latest.
     pub fn poll_editor_resize_request(&mut self) -> Option<EditorSize> {
@@ -998,6 +1168,35 @@ impl Vst3Loaded {
             latest = Some(size);
         }
         latest
+    }
+
+    /// Ask the plugin what it would snap `requested` to, without applying it.
+    ///
+    /// A read-only probe of `IPlugView::checkSizeConstraint`: the plugin clamps
+    /// the rect to the nearest size it accepts, and this reports that size
+    /// without the `onSize` that [`resize_editor`](Self::resize_editor) would
+    /// follow with. Returns `None` when no editor is open.
+    ///
+    /// Exposed for the conformance suite, which uses it to check that a size
+    /// the host granted is genuinely one the plugin accepts.
+    #[cfg(feature = "conformance")]
+    pub fn check_editor_size_constraint(&self, requested: EditorSize) -> Option<EditorSize> {
+        let EditorState::Open { view, .. } = &self.editor else {
+            return None;
+        };
+        let mut rect = ViewRect {
+            left: 0,
+            top: 0,
+            right: requested.width as i32,
+            bottom: requested.height as i32,
+        };
+        // `kResultFalse` means "no constraint to apply", which leaves `rect`
+        // holding the request — the same fallback `resize_editor` uses.
+        unsafe { view.checkSizeConstraint(&mut rect) };
+        Some(EditorSize {
+            width: (rect.right - rect.left) as u32,
+            height: (rect.bottom - rect.top) as u32,
+        })
     }
 
     /// Returns the snapped size the plugin applied.
@@ -1083,8 +1282,16 @@ impl Vst3Loaded {
         let host_ptr = self.host_context_ptr()?;
 
         let result = unsafe { self.interfaces.component.initialize(host_ptr) };
-        if result != kResultOk && result != kResultFalse {
-            unsafe { FUnknown::release(host_ptr) };
+        // `kResultFalse` is a *refusal*, exactly as in `set_active`: the plugin
+        // is declining to come up, and every later call would run against a
+        // component that never initialised. The SDK's own host agrees —
+        // `plugprovider.cpp:140` requires `== kResultOk` and reports a failure
+        // otherwise.
+        //
+        // `kNotImplemented` is not tolerated either, unlike the state methods:
+        // `IPluginBase::initialize` is mandatory, so a plugin that has not
+        // implemented it has not implemented the interface.
+        if result != kResultOk {
             return Err(Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: result,
@@ -1128,19 +1335,63 @@ impl Vst3Loaded {
         Ok(())
     }
 
-    /// `IHostApplication` upcast to `FUnknown`, with a +1 refcount that the
-    /// plugin assumes ownership of via `IComponent::initialize`.
+    /// The live reference count on the host-context object. Test-only seam for
+    /// the load-path refcount assertion in `tests/vst3_conformance.rs`: the
+    /// hand-off contract below is otherwise invisible from outside, and a leak
+    /// of one reference per load is not observable any other way.
+    ///
+    /// Reads the count without moving it — `add_ref` returns the value *after*
+    /// incrementing, so the matching `release` restores it and the count before
+    /// the pair is one less.
+    #[cfg(feature = "conformance")]
+    pub fn host_context_refcount(&self) -> usize {
+        use vst3::com_scrape_types::Unknown;
+        use vst3::Steinberg::Vst::IHostApplication;
+
+        let Some(iface) = self.host.application.as_com_ref::<IHostApplication>() else {
+            return 0;
+        };
+        unsafe {
+            let after_add = IHostApplication::add_ref(iface.as_ptr());
+            IHostApplication::release(iface.as_ptr());
+            after_add - 1
+        }
+    }
+
+    /// `IHostApplication` upcast to `FUnknown`, **borrowed**: the returned
+    /// pointer carries no reference for the caller to hand over or drop. It is
+    /// valid only while `self.host.application` is alive, which is why this is
+    /// private and its result never outlives the calling method.
+    ///
+    /// `IPluginBase::initialize` does **not** take ownership of the context.
+    /// The plugin retains it itself if it keeps it: `ComponentBase::hostContext`
+    /// is an `IPtr<FUnknown>` (`public.sdk/source/vst/vstcomponentbase.h:84`),
+    /// so the bare `hostContext = context;` in `ComponentBase::initialize`
+    /// (`vstcomponentbase.cpp:42`) runs `IPtr::operator=`, which addRefs — and
+    /// the `hostContext = nullptr;` in `terminate` (same file, line 51) releases.
+    /// `IPluginBase::terminate`'s own contract says as much:
+    /// "You have to release all references to any host application interfaces"
+    /// (`pluginterfaces/base/ipluginbase.h:48`).
+    ///
+    /// So the host must lend, not give. Passing an owned `+1` here (a
+    /// `to_com_ptr().into_raw()`) leaks one reference per load, unbounded across
+    /// load/unload cycles. The matching trap is the inverse: because the plugin
+    /// never consumed a reference, a host that "balances" this with a
+    /// `FUnknown::release` on any path frees a reference it does not own — a
+    /// use-after-free, not a leak. Steinberg's own reference host borrows and
+    /// releases nothing on either path
+    /// (`public.sdk/source/vst/hosting/plugprovider.cpp:140,178`).
     fn host_context_ptr(&self) -> Result<*mut FUnknown> {
         Ok(self
             .host
             .application
-            .to_com_ptr::<vst3::Steinberg::Vst::IHostApplication>()
+            .as_com_ref::<vst3::Steinberg::Vst::IHostApplication>()
             .ok_or(Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: 0,
             })?
             .upcast::<FUnknown>()
-            .into_raw())
+            .as_ptr())
     }
 
     /// Re-query bus counts from the component — `initialize` may have changed
@@ -1177,6 +1428,29 @@ impl Vst3Loaded {
             .info
             .clone()
             .bus_channels(input_bus_channels, output_bus_channels);
+
+        // Event buses need the same treatment, and for the same reason: a
+        // component adds them in `initialize` (`addEventInput`), so the
+        // pre-init query in `build_plugin_info` always sees zero. Without this,
+        // every instrument reports `has_midi_input == false` and a host that
+        // gates MIDI delivery on it never sends the plugin a single note.
+        let receives_midi = unsafe {
+            self.interfaces
+                .component
+                .getBusCount(crate::host::instance::K_EVENT, K_INPUT)
+                > 0
+        };
+        let emits_midi = unsafe {
+            self.interfaces
+                .component
+                .getBusCount(crate::host::instance::K_EVENT, K_OUTPUT)
+                > 0
+        };
+        self.info = self
+            .info
+            .clone()
+            .midi(receives_midi)
+            .midi_output(emits_midi);
     }
 
     /// Hand the controller our `IComponentHandler` so it can report param
@@ -1263,6 +1537,83 @@ fn host_backing_scale(_parent: &WindowHandle) -> f32 {
     1.0
 }
 
+/// Does this `isPlatformTypeSupported` result mean "no"?
+///
+/// Only an explicit denial counts. `editorhost` treats anything but
+/// `kResultTrue` as fatal, and copying that would break working plugins: the
+/// SDK's own `CPluginView` — base class of `EditorView`, and so of a large
+/// share of shipping plugins — returns `kNotImplemented` unconditionally
+/// (`public.sdk/source/common/pluginview.cpp`) while its `attached` succeeds
+/// anyway. A view that declines to answer is not a view that said no.
+///
+/// `kInvalidArgument` *is* a refusal: it is what `VSTGUIEditor` returns for a
+/// type it does not handle (`vstguieditor.cpp`), which is precisely the
+/// Wayland-only-view-handed-an-X11-id case this check exists to catch.
+///
+/// The asymmetry is deliberate — a false "unsupported" costs the user their
+/// editor, while a false "supported" only lands us where we already were
+/// before this check existed.
+pub fn platform_type_refused(result: i32) -> bool {
+    result == kResultFalse || result == kInvalidArgument
+}
+
+/// Whether a `getState` / `setState` result counts as success.
+///
+/// **`kNotImplemented`, not `kResultFalse`** — and getting this backwards is not
+/// a hypothetical. The SDK's own `Component` base returns `kNotImplemented` from
+/// both methods (`vstcomponent.cpp:159,165`), so *every* plugin that does not
+/// override state answers that way. This used to accept
+/// `kResultOk || kResultFalse`, which rejected exactly those plugins: saving a
+/// project containing one failed with a `PluginError`.
+///
+/// The list matches `verify` in the SDK's own preset writer
+/// (`vstpresetfile.cpp:53`), which is the closest thing to a reference host for
+/// this call and accepts `kResultOk || kNotImplemented`.
+///
+/// `kResultFalse` is deliberately *not* here. Unlike the state methods, where
+/// "I have none" is the common honest answer, a plugin that actively fails a
+/// state round-trip has told us the blob is bad — and silently returning an
+/// empty one would persist a project that cannot be restored.
+fn state_result_ok(result: i32) -> bool {
+    result == kResultOk || result == kNotImplemented
+}
+
+/// Tear a view down: retract the host frame, then tell the view it is removed.
+///
+/// The order is the point, and it matches `editorhost`'s `closePlugView`. The
+/// `HostPlugFrame` this view was given dies with the `EditorState` that owned
+/// it, so a plugin still holding the pointer during `removed()` — to report a
+/// final `resizeView`, say — would call through memory about to be freed.
+/// Retracting first makes that unrepresentable rather than merely unlikely.
+///
+/// Split out of `close_editor_unchecked` so the ordering is reachable from a
+/// test without a loaded plugin: the state this runs on can only be built by
+/// `open_editor`, but the sequence itself is what needs pinning.
+// `pub` in a private module: `super` re-exports it only under `conformance`, so
+// this never widens the public API of a normal build.
+pub fn detach_view(view: &ComPtr<IPlugView>) {
+    unsafe {
+        view.setFrame(std::ptr::null_mut());
+        view.removed();
+    }
+}
+
+/// Render a `kPlatformType*` constant as text for error messages. These are C
+/// string literals from the SDK, not Rust `&str`, so they need decoding at the
+/// FFI edge; a malformed one degrades to a placeholder rather than failing the
+/// error path we are already on.
+fn platform_type_name(platform_type: vst3::Steinberg::FIDString) -> String {
+    if platform_type.is_null() {
+        return "<null>".to_string();
+    }
+    // SAFETY: `platform_type` is one of the SDK's static `kPlatformType*`
+    // literals, which are NUL-terminated and live for the program's duration.
+    unsafe { std::ffi::CStr::from_ptr(platform_type) }
+        .to_str()
+        .unwrap_or("<invalid utf-8>")
+        .to_string()
+}
+
 /// Tell the view its content scale via `IPlugViewContentScaleSupport`, if it
 /// implements that interface. No-op for views that don't (the cast returns
 /// `None`) — the common case for non-HiDPI-aware plugins.
@@ -1345,6 +1696,31 @@ fn build_plugin_info(
     class: &AudioClass,
 ) -> PluginInfo {
     build_plugin_info_raw(library, component, Some(processor), class)
+}
+
+/// The audio class named `wanted`, or a `LoadFailed` naming what is on offer.
+fn find_audio_class_named(library: &Vst3Library, path: &Path, wanted: &str) -> Result<AudioClass> {
+    let audio: Vec<_> = (0..library.count_classes())
+        .filter_map(|i| library.get_class_info(i).ok())
+        .filter(|info| info.category.contains("Audio"))
+        .collect();
+
+    audio
+        .iter()
+        .find(|info| info.name == wanted)
+        .map(|info| AudioClass {
+            cid: info.cid,
+            cid_bytes: info.cid_bytes,
+            name: info.name.clone(),
+        })
+        .ok_or_else(|| Vst3Error::LoadFailed {
+            path: path.to_path_buf(),
+            stage: LoadStage::Factory,
+            reason: format!(
+                "no audio class named {wanted:?}; this bundle exports {:?}",
+                audio.iter().map(|i| &i.name).collect::<Vec<_>>()
+            ),
+        })
 }
 
 fn find_audio_class(library: &Vst3Library, path: &Path) -> Result<AudioClass> {

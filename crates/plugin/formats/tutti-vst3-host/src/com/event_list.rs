@@ -127,11 +127,6 @@ impl EventList {
         self.inner.borrow().events.len()
     }
 
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        self.inner.borrow().events.is_empty()
-    }
-
     /// Drain the plugin's emitted MIDI events into a caller-supplied pooled
     /// `SmallVec`. Clears `out` first; reuses existing heap capacity, so it is
     /// allocation-free after warmup.

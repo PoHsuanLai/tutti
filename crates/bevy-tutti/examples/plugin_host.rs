@@ -26,7 +26,7 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{
-    AudioConfig, AudioGraphRes, GraphReconcilePlugin, MetronomeRes, TransportRes,
+    AudioConfig, AudioGraphRes, GraphReconcilePlugin, MasterSources, MetronomeRes, TransportRes,
 };
 use bevy_tutti::plugin_host::{
     PluginCatalogState, PluginEditorOpen, PluginHealth, PluginLoadDone, PluginLoadTerminated,
@@ -53,6 +53,8 @@ const TEMPO: f64 = 90.0;
 const TICKS: usize = 600;
 /// Samples advanced per update, standing in for one audio block.
 const BLOCK: f64 = 512.0;
+/// Frames pulled through the graph at the end, to prove audio moves.
+const RENDER_FRAMES: usize = 256;
 
 /// The plugin this run is hosting, if one was named on the command line.
 #[derive(Resource)]
@@ -94,7 +96,14 @@ fn main() {
     let _ = transport
         .motion
         .try_send(tutti_core::transport::MotionEvent::Play);
-    app.insert_resource(AudioGraphRes(Net::new(0, 2)));
+    // Take a backend before handing the graph over. `commit_graph` asserts one
+    // exists — a commit publishes the new version *to* the backend, so a `Net`
+    // without one has nowhere to publish. A real host gets this from
+    // `TuttiPlugin`, which hands the backend to the audio callback; here it is
+    // dropped, so nothing renders and commits merely have somewhere to go.
+    let mut net = Net::new(0, 2);
+    let _backend = net.backend();
+    app.insert_resource(AudioGraphRes(net));
     app.insert_resource(AudioConfig {
         sample_rate: SAMPLE_RATE,
         channels: Default::default(),
@@ -173,6 +182,14 @@ fn narrate_load(
     };
     narrated.loaded = true;
     println!("  status: {:?}", health.status);
+
+    // Route the plugin to the master output. Note there is nothing
+    // plugin-specific here: wiring names *entities*, never node types, so a
+    // hosted plugin is addressed exactly like a synth or a filter. This is the
+    // whole audio-output story from a host's side.
+    commands.insert_resource(MasterSources::from(entity));
+    println!("  wired to master out");
+
     println!("  opening editor");
     commands.trigger(SetEditorVisible::show(entity));
 }
@@ -277,6 +294,32 @@ fn report(world: &mut World) {
                  subprocess launch against a four-thread pool"
             ),
             None => println!("plugin: load still in flight after {TICKS} ticks"),
+        }
+    }
+
+    // Pull real samples through the graph. Everything above only proves the
+    // plugin is *reachable*; this is the part that proves audio moves through
+    // it. `tick` per sample rather than `process`, matching the audio tests —
+    // a block is capped at 64 frames and this needs no more than a handful.
+    {
+        use tutti_core::dsp::AudioUnit as _;
+        let mut graph = world.resource_mut::<AudioGraphRes>();
+        let mut frame = [0.0f32; 2];
+        let mut peak = 0.0f32;
+        let mut rendered = 0usize;
+        for _ in 0..RENDER_FRAMES {
+            graph.0.tick(&[], &mut frame);
+            peak = peak.max(frame[0].abs()).max(frame[1].abs());
+            rendered += 1;
+        }
+        println!("rendered {rendered} frames through the plugin, peak {peak:.6}");
+        if peak == 0.0 {
+            println!(
+                "  (silence is the honest answer for a probe plugin with no input\n   \
+                 and no note — what this shows is that the graph pulls *through*\n   \
+                 the plugin without panicking or stalling, which is the wiring\n   \
+                 claim. Asserting on non-silence needs a plugin that generates.)"
+            );
         }
     }
 

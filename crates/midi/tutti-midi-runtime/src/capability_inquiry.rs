@@ -18,7 +18,8 @@
 
 use tutti_midi_types::ci::{
     CiCategories, CiHeader, CiMessage, DiscoveryData, Muid, Nak, ProfileId, ProfileState,
-    PropertyData, PropertyKind, SubscriptionCommand, CI_DEVICE_ID_FUNCTION_BLOCK, CI_VERSION,
+    PropertyCapabilities, PropertyData, PropertyKind, SubscriptionCommand,
+    CI_DEVICE_ID_FUNCTION_BLOCK, CI_VERSION,
 };
 
 /// A property this device exposes over Property Exchange: its resource name (the
@@ -67,6 +68,8 @@ pub struct CiResponder {
     profiles: Vec<(ProfileId, bool)>,
     /// Properties this device answers Get requests for.
     properties: Vec<CiProperty>,
+    /// What this device reports for a Property Exchange Capabilities inquiry.
+    pe_capabilities: PropertyCapabilities,
 }
 
 impl CiResponder {
@@ -79,7 +82,25 @@ impl CiResponder {
             identity,
             profiles: Vec::new(),
             properties: Vec::new(),
+            pe_capabilities: PropertyCapabilities {
+                // One in-flight request. Honest for a responder with no request
+                // queue: claiming more would invite a peer to pipeline
+                // inquiries we would then have to drop.
+                simultaneous_requests: 1,
+                // M2-101 §8.5 Table 31: Common Rules for PE 1.0/1.1 is major
+                // 0x00, minor 0x00.
+                major_version: 0,
+                minor_version: 0,
+            },
         }
+    }
+
+    /// Override the Property Exchange capabilities this device reports
+    /// (M2-101 §8.4). Raise `simultaneous_requests` only alongside a request
+    /// queue that can actually service that many.
+    pub fn with_pe_capabilities(mut self, caps: PropertyCapabilities) -> Self {
+        self.pe_capabilities = caps;
+        self
     }
 
     /// Declare the profiles this device exposes as `(id, enabled)` pairs.
@@ -217,8 +238,69 @@ impl CiResponder {
                 ..
             } => self.subscription_reply(src, *request_id, header),
 
+            // PE Capabilities inquiry → what we support. §8.4 recommends a peer
+            // asks this once before any other Property Exchange inquiry, so a
+            // NAK here would stall the whole family before it starts.
+            CiMessage::PropertyCapabilities {
+                is_reply: false, ..
+            } => vec![CiMessage::PropertyCapabilities {
+                header: self.reply_header(src),
+                is_reply: true,
+                data: self.pe_capabilities,
+            }],
+
+            // Profile Details Inquiry. The detail formats are defined per
+            // profile (§7.6.1) or by M2-102, neither of which this layer
+            // models, so answer only for a profile we actually expose and say
+            // so with an empty target data rather than inventing values.
+            CiMessage::Profile {
+                state: ProfileState::DetailsInquiry { profile, target },
+                ..
+            } => {
+                if self.profiles.iter().any(|(p, _)| p == profile) {
+                    vec![CiMessage::Profile {
+                        header: self.reply_header(src),
+                        state: ProfileState::DetailsReply {
+                            profile: *profile,
+                            // §7.7.1: "shall be the same as in the Profile
+                            // Details Inquiry message which was received".
+                            target: *target,
+                            data: Vec::new(),
+                        },
+                    }]
+                } else {
+                    self.nak_with(
+                        src,
+                        tutti_midi_types::ci::profile::SUB_ID2_PROFILE_DETAILS_INQUIRY,
+                        Nak::STATUS_PROFILE_NOT_SUPPORTED,
+                    )
+                }
+            }
+
             // Reports and replies we merely observe — no response.
-            CiMessage::Discovery { is_reply: true, .. }
+            //
+            // Notify (§8.13) is here deliberately. It is deprecated in favour of
+            // ACK/NAK, and the spec's requirement is that we "continue to honor
+            // the rules receiving a Notify message" — receiving, not answering.
+            // Replying would be inventing traffic the spec asks us not to send.
+            CiMessage::Property {
+                data:
+                    PropertyData {
+                        kind: PropertyKind::Notify,
+                        ..
+                    },
+                ..
+            }
+            | CiMessage::PropertyCapabilities { is_reply: true, .. }
+            | CiMessage::Profile {
+                state:
+                    ProfileState::Added(_)
+                    | ProfileState::Removed(_)
+                    | ProfileState::DetailsReply { .. }
+                    | ProfileState::SpecificData { .. },
+                ..
+            }
+            | CiMessage::Discovery { is_reply: true, .. }
             | CiMessage::Profile {
                 state:
                     ProfileState::InquiryReply { .. }
@@ -625,6 +707,161 @@ mod tests {
                 chunk: 1,
                 body: Vec::new(),
             },
+        }
+    }
+
+    #[test]
+    fn pe_capabilities_inquiry_is_answered() {
+        // §8.4 has a peer ask this once before any other PE inquiry, so a NAK
+        // here would stall the whole family before it starts.
+        let resp = responder();
+        let inquiry = CiMessage::PropertyCapabilities {
+            header: CiHeader {
+                device_id: CI_DEVICE_ID_FUNCTION_BLOCK,
+                ci_version: CI_VERSION,
+                source: Muid(0x1),
+                destination: resp.muid(),
+            },
+            is_reply: false,
+            data: PropertyCapabilities {
+                simultaneous_requests: 0,
+                major_version: 0,
+                minor_version: 0,
+            },
+        };
+        let reply = resp.respond_to(&inquiry);
+        assert_eq!(reply.len(), 1);
+        match &reply[0] {
+            CiMessage::PropertyCapabilities { is_reply, data, .. } => {
+                assert!(*is_reply);
+                assert_eq!(data.simultaneous_requests, 1, "the default we declare");
+            }
+            other => panic!("expected a capabilities reply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_capabilities_reply_is_observed_without_answering() {
+        let resp = responder();
+        let inbound = CiMessage::PropertyCapabilities {
+            header: CiHeader {
+                device_id: CI_DEVICE_ID_FUNCTION_BLOCK,
+                ci_version: CI_VERSION,
+                source: Muid(0x1),
+                destination: resp.muid(),
+            },
+            is_reply: true,
+            data: PropertyCapabilities {
+                simultaneous_requests: 4,
+                major_version: 0,
+                minor_version: 0,
+            },
+        };
+        assert!(resp.respond_to(&inbound).is_empty());
+    }
+
+    #[test]
+    fn profile_details_inquiry_echoes_its_target() {
+        // §7.7.1: the reply's target "shall be the same as in the Profile
+        // Details Inquiry message which was received".
+        let resp = responder();
+        let profile = resp.profiles[0].0;
+        let inquiry = CiMessage::Profile {
+            header: CiHeader {
+                device_id: CI_DEVICE_ID_FUNCTION_BLOCK,
+                ci_version: CI_VERSION,
+                source: Muid(0x1),
+                destination: resp.muid(),
+            },
+            state: ProfileState::DetailsInquiry {
+                profile,
+                target: 0x42,
+            },
+        };
+        match &resp.respond_to(&inquiry)[0] {
+            CiMessage::Profile {
+                state:
+                    ProfileState::DetailsReply {
+                        target, profile: p, ..
+                    },
+                ..
+            } => {
+                assert_eq!(*target, 0x42, "echoed, not re-chosen");
+                assert_eq!(*p, profile);
+            }
+            other => panic!("expected a DetailsReply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn details_inquiry_for_an_unexposed_profile_is_nakked() {
+        let resp = responder();
+        let inquiry = CiMessage::Profile {
+            header: CiHeader {
+                device_id: CI_DEVICE_ID_FUNCTION_BLOCK,
+                ci_version: CI_VERSION,
+                source: Muid(0x1),
+                destination: resp.muid(),
+            },
+            state: ProfileState::DetailsInquiry {
+                profile: ProfileId([0x63, 0x63, 0x63, 0x63, 0x63]),
+                target: 0,
+            },
+        };
+        assert!(matches!(
+            &resp.respond_to(&inquiry)[0],
+            CiMessage::Nak { .. }
+        ));
+    }
+
+    #[test]
+    fn a_notify_is_honored_by_being_received_not_answered() {
+        // §8.13 deprecates Notify in favour of ACK/NAK: devices "should not
+        // send a Notify message" but "shall continue to honor the rules
+        // receiving" one. Honoring it means accepting it — replying would emit
+        // traffic the spec asks us not to produce.
+        let resp = responder();
+        let inbound = CiMessage::Property {
+            header: CiHeader {
+                device_id: CI_DEVICE_ID_FUNCTION_BLOCK,
+                ci_version: CI_VERSION,
+                source: Muid(0x1),
+                destination: resp.muid(),
+            },
+            data: PropertyData {
+                kind: PropertyKind::Notify,
+                request_id: 1,
+                header: br#"{"status":144}"#.to_vec(),
+                num_chunks: 1,
+                chunk: 1,
+                body: Vec::new(),
+            },
+        };
+        assert!(
+            resp.respond_to(&inbound).is_empty(),
+            "received without a reply, and without a NAK"
+        );
+    }
+
+    #[test]
+    fn added_and_removed_reports_are_observed_without_answering() {
+        // These are broadcast notifications (§7.4/§7.5). Answering a broadcast
+        // would have every listening device reply at once.
+        let resp = responder();
+        for state in [
+            ProfileState::Added(ProfileId([1, 2, 3, 4, 5])),
+            ProfileState::Removed(ProfileId([1, 2, 3, 4, 5])),
+        ] {
+            let inbound = CiMessage::Profile {
+                header: CiHeader {
+                    device_id: CI_DEVICE_ID_FUNCTION_BLOCK,
+                    ci_version: CI_VERSION,
+                    source: Muid(0x1),
+                    destination: Muid::BROADCAST,
+                },
+                state,
+            };
+            assert!(resp.respond_to(&inbound).is_empty());
         }
     }
 

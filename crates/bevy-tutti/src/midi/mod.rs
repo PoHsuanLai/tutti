@@ -125,8 +125,7 @@ pub use route::{
 };
 pub use routing_table::MidiRoutingRes;
 pub use sequence::{
-    rebuild as rebuild_midi_sources, InstalledMidiSources, MidiNote, MidiSequencePlugin,
-    MidiSourceInstall,
+    rebuild as rebuild_midi_sources, InstalledMidiSources, MidiSequencePlugin, MidiSourceInstall,
 };
 pub use target::{MidiNode, MidiTargetRegistry, MidiTargetResolver};
 pub use track_out::{

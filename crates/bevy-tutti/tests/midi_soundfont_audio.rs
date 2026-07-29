@@ -19,14 +19,27 @@ use bevy_app::prelude::*;
 use bevy_ecs::entity::Entity;
 
 use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
-use bevy_tutti::midi::{MidiNote, MidiSourceInstall, MidiTargetRegistry, TuttiMidiPlugin};
+use bevy_tutti::midi::{MidiSourceInstall, MidiTargetRegistry, TuttiMidiPlugin};
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::{AudioUnit, Net};
 use tutti_core::transport::Transport;
 use tutti_core::AudioNode;
+use tutti_midi_runtime::TimedMidiEvent;
+use tutti_midi_types::ump::MidiEvent;
 use tutti_synth::{SoundFont, SoundFontUnit, SynthesizerSettings};
 
 const SAMPLE_RATE: f64 = 48_000.0;
+
+/// A note-on/note-off pair at full velocity, which is what an install holds.
+///
+/// These tests assert *audible output*, so velocity is pinned at the 16-bit
+/// maximum rather than left to a default.
+fn note(number: u8, start: f64, duration: f64) -> Vec<TimedMidiEvent> {
+    vec![
+        TimedMidiEvent::new(start, MidiEvent::note_on(0, 0, number, u16::MAX)),
+        TimedMidiEvent::new(start + duration, MidiEvent::note_off(0, 0, number, 0)),
+    ]
+}
 
 /// The repo's test soundfont, or `None` on a checkout without it.
 fn soundfont() -> Option<Arc<SoundFont>> {
@@ -124,10 +137,8 @@ fn a_declared_note_produces_audio() {
     };
     roll(&app);
 
-    app.world_mut().spawn(MidiSourceInstall::from_notes(
-        synth,
-        &[MidiNote::new(60.0, 0.0, 2.0).with_velocity(1.0)],
-    ));
+    app.world_mut()
+        .spawn(MidiSourceInstall::new(synth, note(60, 0.0, 2.0)));
     app.update();
 
     // Half a second at 120 BPM covers the note-on comfortably.
@@ -156,10 +167,8 @@ fn the_note_waits_for_its_beat() {
     };
     roll(&app);
 
-    app.world_mut().spawn(MidiSourceInstall::from_notes(
-        synth,
-        &[MidiNote::new(60.0, 4.0, 4.0).with_velocity(1.0)],
-    ));
+    app.world_mut()
+        .spawn(MidiSourceInstall::new(synth, note(60, 4.0, 4.0)));
     app.update();
 
     // Still well before beat 4.
@@ -196,23 +205,24 @@ fn preview_still_sounds_under_an_installed_clip() {
 
     // A clip whose first note is far in the future, so anything audible in the
     // next quarter-second can only be the preview.
-    app.world_mut().spawn(MidiSourceInstall::from_notes(
-        synth,
-        &[MidiNote::new(60.0, 100.0, 1.0)],
-    ));
+    app.world_mut()
+        .spawn(MidiSourceInstall::new(synth, note(60, 100.0, 1.0)));
     app.update();
 
     let quiet = rms(&render(&mut app, 6_000));
-    assert!(quiet < 1e-5, "the clip's note is far away; expected silence");
+    assert!(
+        quiet < 1e-5,
+        "the clip's note is far away; expected silence"
+    );
 
     // Push a live note straight at the synth's mailbox, as a keyboard would.
     {
         let node = app.world().get::<AudioNode>(synth).unwrap().0;
         let graph = app.world().resource::<AudioGraphRes>();
         let unit = graph.0.node_as::<SoundFontUnit>(node).unwrap();
-        unit.midi_port().sender().queue(&[
-            tutti_midi_types::ump::MidiEvent::note_on(0, 0, 67, 0xFFFF),
-        ]);
+        unit.midi_port()
+            .sender()
+            .queue(&[tutti_midi_types::ump::MidiEvent::note_on(0, 0, 67, 0xFFFF)]);
     }
 
     let previewed = rms(&render(&mut app, 12_000));

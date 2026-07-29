@@ -32,11 +32,13 @@
 //! controllers, program change. A notes-only component would have re-imposed a
 //! MIDI-1.0 ceiling on a MIDI-2 engine.
 //!
-//! Notes are still the common case, so they arrive through
-//! [`from_notes`](MidiSourceInstall::from_notes) — a *constructor*, not a second
-//! component. An app with its own richer note model builds the events itself and
-//! never touches [`MidiNote`]. Either way `rebuild` reads one component, so
-//! there is one way for playback to be declared.
+//! A note-with-duration record is *authoring* vocabulary, and this adapter is
+//! not where it belongs. MIDI 2.0 defines no such record — the wire carries a
+//! note-on and a note-off, and duration is only the gap between them — so any
+//! host wanting one is inventing engine vocabulary. That invention should
+//! happen once, in the engine, not per-adapter; a `from_notes` constructor here
+//! made bevy-tutti the accidental owner of a type every host needs. Callers
+//! build `TimedMidiEvent`s, which is the vocabulary the engine already has.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
@@ -45,128 +47,9 @@ use std::sync::Arc;
 
 use tutti_midi_runtime::{MidiClipSource, TimedMidiEvent};
 use tutti_midi_types::ump::MidiEvent;
-use tutti_midi_types::{MidiMessage, NoteId};
 
 use super::target::MidiTargetResolver;
 use crate::graph::{engine_ready, AudioConfig, GraphReconcileSystems, TransportRes};
-
-/// A note in the convenience form [`MidiSourceInstall::from_notes`] compiles.
-///
-/// Deliberately small: this is the *adapter's* note, not a DAW's. Anything it
-/// cannot say — per-note controllers, expression lanes, articulation — is a
-/// reason to build [`TimedMidiEvent`]s directly rather than to grow this.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MidiNote {
-    /// Pitch in semitones, 60.0 = middle C. A fractional value is carried as a
-    /// MIDI 2.0 `Pitch7_9` note attribute rather than rounded away.
-    pub pitch: f64,
-    /// Velocity, `0.0..=1.0`, widened to the full 16-bit MIDI 2.0 field.
-    pub velocity: f32,
-    /// Onset, in beats from the sequence start.
-    pub start: f64,
-    /// Length in beats.
-    pub duration: f64,
-    /// MIDI channel.
-    pub channel: u8,
-}
-
-impl Default for MidiNote {
-    fn default() -> Self {
-        Self {
-            pitch: 60.0,
-            velocity: 0.8,
-            start: 0.0,
-            duration: 1.0,
-            channel: 0,
-        }
-    }
-}
-
-impl MidiNote {
-    /// A note at `pitch` starting on `start`, lasting `duration` beats.
-    pub fn new(pitch: f64, start: f64, duration: f64) -> Self {
-        Self {
-            pitch,
-            start,
-            duration,
-            ..Default::default()
-        }
-    }
-
-    /// Set the velocity (`0.0..=1.0`).
-    pub fn with_velocity(mut self, velocity: f32) -> Self {
-        self.velocity = velocity;
-        self
-    }
-
-    /// Set the MIDI channel.
-    pub fn with_channel(mut self, channel: u8) -> Self {
-        self.channel = channel;
-        self
-    }
-
-    /// This note's on/off pair as timed events.
-    ///
-    /// Built through [`MidiMessage`] rather than `MidiEvent::note_on` so the
-    /// velocity keeps its full 16 bits and a fractional pitch survives as a
-    /// note attribute. `note_on_7bit` — what the old layer used — crushed an
-    /// `f32` velocity to 7 bits before widening it back.
-    fn to_events(self, id: NoteId) -> [TimedMidiEvent; 2] {
-        let number = self.pitch.floor().clamp(0.0, 127.0) as u8;
-        let attribute = pitch_attribute(self.pitch, number);
-        let velocity = (self.velocity.clamp(0.0, 1.0) * u16::MAX as f32).round() as u16;
-
-        let on = MidiMessage::NoteOn {
-            frame_offset: 0,
-            id,
-            channel: self.channel,
-            note: number,
-            velocity,
-            attribute,
-        };
-        let off = MidiMessage::NoteOff {
-            frame_offset: 0,
-            id,
-            channel: self.channel,
-            note: number,
-            velocity: 0,
-            attribute,
-        };
-        [
-            TimedMidiEvent::new(self.start, encode(on)),
-            TimedMidiEvent::new(self.start + self.duration, encode(off)),
-        ]
-    }
-}
-
-/// The fractional part of `pitch` as a MIDI 2.0 `Pitch7_9` attribute, or `None`
-/// when the note lands on a semitone.
-///
-/// `None` rather than a zero attribute so an ordinary note stays an ordinary
-/// note on the wire — a receiver that ignores attributes sees exactly what it
-/// would have seen before.
-fn pitch_attribute(pitch: f64, number: u8) -> Option<tutti_midi_types::NoteAttribute> {
-    let cents = pitch - number as f64;
-    if cents.abs() < f64::EPSILON {
-        return None;
-    }
-    // Pitch7_9 is a 7.9 fixed-point *note number*: 9 fractional bits.
-    let bits = ((number as f64 + cents) * 512.0)
-        .round()
-        .clamp(0.0, 65_535.0) as u16;
-    Some(tutti_midi_types::NoteAttribute::Pitch7_9(
-        tutti_midi_types::midi2::num::Fixed7_9::from_bits(bits),
-    ))
-}
-
-/// Encode a semantic message, falling back to a no-op it cannot.
-///
-/// `TryFrom` only fails for hand-built controller/bank values with no MIDI-2
-/// encoding, which the shapes above never produce — but a panic in a note
-/// compiler would be a poor trade for that.
-fn encode(msg: MidiMessage) -> MidiEvent {
-    MidiEvent::try_from(msg).unwrap_or_else(|_| MidiEvent::noop())
-}
 
 /// "Play these events at that entity's synth."
 ///
@@ -188,20 +71,6 @@ pub struct MidiSourceInstall {
 impl MidiSourceInstall {
     /// Play `events` at `target`.
     pub fn new(target: Entity, events: Vec<TimedMidiEvent>) -> Self {
-        Self { target, events }
-    }
-
-    /// Play `notes` at `target`, compiled to note-on/note-off pairs.
-    ///
-    /// Each note gets a distinct [`NoteId`], so two notes of the same pitch may
-    /// overlap without the second's note-off cutting the first — the per-note
-    /// identity MIDI 2.0 added for exactly this.
-    pub fn from_notes(target: Entity, notes: &[MidiNote]) -> Self {
-        let mut events = Vec::with_capacity(notes.len() * 2);
-        for (i, note) in notes.iter().enumerate() {
-            let id = NoteId::from_raw(i as u32);
-            events.extend(note.to_events(id));
-        }
         Self { target, events }
     }
 }

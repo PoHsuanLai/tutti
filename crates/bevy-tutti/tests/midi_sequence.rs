@@ -11,15 +11,36 @@ use bevy_app::prelude::*;
 use bevy_ecs::entity::Entity;
 
 use bevy_tutti::graph::{AudioConfig, AudioGraphRes, GraphReconcilePlugin, TransportRes};
-use bevy_tutti::midi::{MidiNote, MidiSourceInstall, MidiTargetRegistry, TuttiMidiPlugin};
+use bevy_tutti::midi::{MidiSourceInstall, MidiTargetRegistry, TuttiMidiPlugin};
 use bevy_tutti::AudioEngineState;
 use tutti_core::dsp::Net;
 use tutti_core::transport::Transport;
 use tutti_core::AudioNode;
+use tutti_midi_runtime::TimedMidiEvent;
 use tutti_midi_types::ump::MidiEvent;
 use tutti_synth::{PolySynth, SynthConfig};
 
 const SAMPLE_RATE: f64 = 48_000.0;
+
+/// A note-on/note-off pair as timed events, which is what an install holds.
+///
+/// Local to this test rather than a library constructor: a note record with a
+/// duration is authoring vocabulary, and MIDI 2.0 defines none — the wire has
+/// only the two events this builds. Whether the engine should own such a record
+/// is an open design question, and it should not be settled by a test helper.
+///
+/// `note_on` takes the native 16-bit MIDI-2 velocity, so callers name the field
+/// the spec defines rather than a normalized float.
+fn note(number: u8, start: f64, duration: f64, velocity: u16) -> [TimedMidiEvent; 2] {
+    [
+        TimedMidiEvent::new(start, MidiEvent::note_on(0, 0, number, velocity)),
+        TimedMidiEvent::new(start + duration, MidiEvent::note_off(0, 0, number, 0)),
+    ]
+}
+
+/// The mezzo-forte default — MIDI 2.0's center velocity, and what a 7-bit 64
+/// widens to through the spec's Min-Center-Max scaler.
+const MF: u16 = 0x8000;
 
 fn app() -> App {
     let mut app = App::new();
@@ -33,7 +54,9 @@ fn app() -> App {
     });
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
-    app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test(48_000.0));
+    app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test(
+        48_000.0,
+    ));
     // `engine_ready` claims every resource the engine block inserts is
     // present, and the route rebuild takes `MidiRoutingRes` as a plain
     // `ResMut` on that promise. A test asserting readiness supplies it.
@@ -78,7 +101,10 @@ fn roll(app: &App) {
 fn poll(app: &App, entity: Entity, block: usize) -> Vec<MidiEvent> {
     let node = app.world().get::<AudioNode>(entity).expect("has a node");
     let graph = app.world().resource::<AudioGraphRes>();
-    let synth = graph.0.node_as::<PolySynth>(node.0).expect("is a PolySynth");
+    let synth = graph
+        .0
+        .node_as::<PolySynth>(node.0)
+        .expect("is a PolySynth");
     let mut buf = [MidiEvent::noop(); 64];
     let n = synth.midi_port().poll(block, &mut buf);
     buf[..n].to_vec()
@@ -94,9 +120,9 @@ fn a_scheduled_note_lands_at_a_frame_offset() {
 
     // One note a third of a beat in, so its offset falls inside a block rather
     // than on its boundary.
-    app.world_mut().spawn(MidiSourceInstall::from_notes(
+    app.world_mut().spawn(MidiSourceInstall::new(
         synth,
-        &[MidiNote::new(60.0, 1.0 / 3.0, 1.0)],
+        note(60, 1.0 / 3.0, 1.0, MF).to_vec(),
     ));
     app.update();
 
@@ -125,10 +151,14 @@ fn two_installs_on_one_synth_both_sound() {
     let synth = spawn_synth(&mut app);
     roll(&app);
 
-    app.world_mut()
-        .spawn(MidiSourceInstall::from_notes(synth, &[MidiNote::new(60.0, 0.0, 1.0)]));
-    app.world_mut()
-        .spawn(MidiSourceInstall::from_notes(synth, &[MidiNote::new(67.0, 0.0, 1.0)]));
+    app.world_mut().spawn(MidiSourceInstall::new(
+        synth,
+        note(60, 0.0, 1.0, MF).to_vec(),
+    ));
+    app.world_mut().spawn(MidiSourceInstall::new(
+        synth,
+        note(67, 0.0, 1.0, MF).to_vec(),
+    ));
     app.update();
 
     let notes: Vec<u8> = poll(&app, synth, 16_384)
@@ -155,10 +185,10 @@ fn a_rebuild_does_not_hang_the_previous_note() {
 
     let install = app
         .world_mut()
-        .spawn(MidiSourceInstall::from_notes(
+        .spawn(MidiSourceInstall::new(
             synth,
             // A long note, so a mid-playback edit lands between its on and off.
-            &[MidiNote::new(60.0, 0.0, 32.0)],
+            note(60, 0.0, 32.0, MF).to_vec(),
         ))
         .id();
     app.update();
@@ -167,17 +197,19 @@ fn a_rebuild_does_not_hang_the_previous_note() {
     // Edit it — the note-off at beat 32 belongs to a clip about to be discarded.
     app.world_mut()
         .entity_mut(install)
-        .insert(MidiSourceInstall::from_notes(
+        .insert(MidiSourceInstall::new(
             synth,
-            &[MidiNote::new(64.0, 0.0, 32.0)],
+            note(64, 0.0, 32.0, MF).to_vec(),
         ));
     app.update();
 
     let events = poll(&app, synth, 512);
-    let all_notes_off = events
-        .iter()
-        .map(|e| e.message())
-        .any(|m| matches!(m, tutti_midi_types::MidiMessage::ControlChange { index: 123, .. }));
+    let all_notes_off = events.iter().map(|e| e.message()).any(|m| {
+        matches!(
+            m,
+            tutti_midi_types::MidiMessage::ControlChange { index: 123, .. }
+        )
+    });
     assert!(
         all_notes_off,
         "a rebuild must silence the target, else the outgoing note hangs: {events:?}"
@@ -194,9 +226,9 @@ fn removing_the_last_install_clears_the_source() {
 
     let install = app
         .world_mut()
-        .spawn(MidiSourceInstall::from_notes(
+        .spawn(MidiSourceInstall::new(
             synth,
-            &[MidiNote::new(60.0, 4.0, 1.0)],
+            note(60, 4.0, 1.0, MF).to_vec(),
         ))
         .id();
     app.update();
@@ -215,23 +247,21 @@ fn removing_the_last_install_clears_the_source() {
     );
 }
 
-/// Velocity keeps its full 16-bit range.
+/// Velocity keeps its full 16-bit range end to end.
 ///
-/// The old path took an `f32`, crushed it to 7 bits, and handed it to a widener,
-/// so 0.5 and 0.502 were indistinguishable. This asserts the two survive apart.
+/// Two velocities one LSB apart at 16 bits are the same number at 7, so this
+/// fails the moment anything on the install → port path narrows the field. It
+/// caught exactly that once: a `note_on_7bit` call that crushed the value and
+/// widened it back.
 #[test]
 fn velocity_keeps_its_full_width() {
     let mut app = app();
     let synth = spawn_synth(&mut app);
     roll(&app);
 
-    app.world_mut().spawn(MidiSourceInstall::from_notes(
-        synth,
-        &[
-            MidiNote::new(60.0, 0.0, 1.0).with_velocity(0.5),
-            MidiNote::new(64.0, 0.0, 1.0).with_velocity(0.502),
-        ],
-    ));
+    let mut events = note(60, 0.0, 1.0, MF).to_vec();
+    events.extend(note(64, 0.0, 1.0, MF + 1));
+    app.world_mut().spawn(MidiSourceInstall::new(synth, events));
     app.update();
 
     let velocities: Vec<u16> = poll(&app, synth, 16_384)
@@ -246,24 +276,10 @@ fn velocity_keeps_its_full_width() {
     assert_eq!(velocities.len(), 2, "both notes should sound");
     assert_ne!(
         velocities[0], velocities[1],
-        "a 0.002 velocity difference survives 16 bits but not 7: {velocities:?}"
+        "one 16-bit LSB apart — indistinguishable at 7 bits: {velocities:?}"
     );
-}
-
-/// `from_notes` is a constructor over the same component `new` builds, so the
-/// two produce identical installs — there is one write path, not two.
-#[test]
-fn from_notes_and_hand_built_events_agree() {
-    let target = Entity::from_raw_u32(1).expect("a valid entity id");
-    let note = MidiNote::new(60.0, 0.0, 1.0).with_velocity(1.0);
-
-    let compiled = MidiSourceInstall::from_notes(target, &[note]);
-    let by_hand = MidiSourceInstall::new(target, compiled.events.clone());
-
-    assert_eq!(compiled.target, by_hand.target);
-    assert_eq!(compiled.events.len(), by_hand.events.len());
-    for (a, b) in compiled.events.iter().zip(by_hand.events.iter()) {
-        assert_eq!(a.beat, b.beat);
-        assert_eq!(a.event.note(), b.event.note());
-    }
+    assert!(
+        velocities.contains(&MF) && velocities.contains(&(MF + 1)),
+        "the exact values must arrive, not merely differ: {velocities:?}"
+    );
 }

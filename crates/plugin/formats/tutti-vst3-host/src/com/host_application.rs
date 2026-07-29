@@ -160,6 +160,30 @@ impl IHostApplicationTrait for HostApplication {
 /// `ComponentHandler` (component-handler v1/v2/v3, bus-activation, progress,
 /// unit-handler v1/v2), the `IPlugFrame` installed per open editor, and — on
 /// Linux — the `IRunLoop` carried by both this object and the plug frame.
+///
+/// # The three HostChecker scores that stay unclaimed
+///
+/// HostChecker's capability table names three more interfaces. They are absent
+/// for different reasons, and only one is a gap:
+///
+/// - **`IParameterFinder`** — not a host interface. The *plugin's* view
+///   implements it (`ivstplugview.h:44-50`, `findParameter(x, y, &tag)`) so a
+///   host can ask which parameter sits under the mouse. Adding it here would be
+///   a category error; the host side is a *call*, worth making only when
+///   something wants per-widget parameter hit-testing.
+/// - **`ITest`** — also not a host interface. It is the plugin-side entry point
+///   for validator-run test suites (`pluginterfaces/test/itest.h`), which is
+///   `validator`'s job, not a DAW's.
+/// - **`IDataExchangeHandler`** — genuinely a host interface
+///   (`ivstdataexchange.h:56-96`) and genuinely absent. It is the thread-safe
+///   realtime-to-UI queue a plugin uses to ship analysis data to its editor
+///   without allocating on the audio thread. Implementing it means owning
+///   shared-memory queue lifetimes; nothing in tutti asks for it yet, so the
+///   honest answer to `isPlugInterfaceSupported` is the `kResultFalse` this
+///   list already gives.
+///
+/// Recorded here because "three interfaces missing" invites someone to add
+/// three, and two of the three would be wrong to add at all.
 const SUPPORTED_IIDS: &[TUID] = &[
     IHostApplication_iid,
     IPlugInterfaceSupport_iid,
@@ -194,7 +218,34 @@ mod tests {
     use super::*;
     use vst3::com_scrape_types::Unknown;
     use vst3::Steinberg::FUnknown;
-    use vst3::Steinberg::Vst::IMidiMapping_iid;
+    use vst3::Steinberg::Vst::{IDataExchangeHandler_iid, IMidiMapping_iid};
+
+    /// The host must not claim an interface it does not install.
+    ///
+    /// `IDataExchangeHandler` is the one host interface in HostChecker's table
+    /// that this host genuinely does not implement (see `SUPPORTED_IIDS` for
+    /// why the other two unclaimed scores — `IParameterFinder`, `ITest` — are
+    /// not host interfaces at all). A plugin that trusts a false `kResultTrue`
+    /// here would `queryInterface` for it, get null, and take whichever
+    /// fallback path it has for a *broken* host rather than the clean one for a
+    /// host that never offered the feature.
+    ///
+    /// So this pins the direction that matters: over-claiming is a bug,
+    /// under-claiming is merely a missing feature. If `IDataExchangeHandler` is
+    /// implemented later, this test should be deleted along with the
+    /// `SUPPORTED_IIDS` note — not weakened.
+    #[test]
+    fn does_not_claim_uninstalled_interfaces() {
+        let host = HostApplication::new_for_test("test");
+        let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
+        unsafe {
+            assert_eq!(
+                ptr.isPlugInterfaceSupported(&IDataExchangeHandler_iid),
+                kResultFalse,
+                "host advertised IDataExchangeHandler without installing it"
+            );
+        }
+    }
 
     #[test]
     fn reports_installed_host_interfaces_supported() {

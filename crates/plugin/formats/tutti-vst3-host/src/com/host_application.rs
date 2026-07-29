@@ -58,10 +58,7 @@ impl Class for HostApplication {
 }
 
 impl HostApplication {
-    pub fn new(
-        name: &str,
-        #[cfg(target_os = "linux")] run_loop: Arc<RunLoop>,
-    ) -> ComWrapper<Self> {
+    pub fn new(name: &str, #[cfg(target_os = "linux")] run_loop: Arc<RunLoop>) -> ComWrapper<Self> {
         let mut name_utf16 = [0u16; 128];
         for (i, c) in name.encode_utf16().take(127).enumerate() {
             name_utf16[i] = c;
@@ -181,6 +178,8 @@ const SUPPORTED_IIDS: &[TUID] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vst3::com_scrape_types::Unknown;
+    use vst3::Steinberg::FUnknown;
     use vst3::Steinberg::Vst::IMidiMapping_iid;
 
     #[test]
@@ -223,6 +222,54 @@ mod tests {
                 kInvalidArgument
             );
         }
+    }
+
+    /// The owning/borrowing split the host-context contract rests on:
+    /// `to_com_ptr` takes a reference and gives it back on drop, `as_com_ref`
+    /// never moves the count. `host_context_ptr` must use the latter, because
+    /// `IPluginBase::initialize` borrows (see the contract note there); the
+    /// leak it guards against is the `to_com_ptr` (+1) / `into_raw`
+    /// (relinquish) pair, which strands one reference per plugin load.
+    ///
+    /// This pins the primitives, not the call site — for the refcount across a
+    /// real `initialize()` see `host_context_is_borrowed_not_consumed` in
+    /// `tests/vst3_conformance.rs`, which needs an actual plugin.
+    #[test]
+    fn owning_accessor_moves_the_refcount_and_borrowing_one_does_not() {
+        let host = HostApplication::new_for_test("test");
+        // `add_ref` returns the count *after* incrementing, so pair it with a
+        // `release` and subtract to read the count without moving it.
+        let refcount = || {
+            let iface = host.as_com_ref::<IHostApplication>().unwrap();
+            unsafe {
+                let after_add = IHostApplication::add_ref(iface.as_ptr());
+                IHostApplication::release(iface.as_ptr());
+                after_add - 1
+            }
+        };
+
+        let before = refcount();
+
+        let borrowed = host.as_com_ref::<IHostApplication>().unwrap();
+        let _raw = borrowed.upcast::<FUnknown>().as_ptr();
+        assert_eq!(
+            refcount(),
+            before,
+            "as_com_ref must not addRef: the plugin borrows the host context"
+        );
+
+        let owned = host.to_com_ptr::<IHostApplication>().unwrap();
+        assert_eq!(
+            refcount(),
+            before + 1,
+            "to_com_ptr is the owning accessor and must addRef"
+        );
+        drop(owned);
+        assert_eq!(
+            refcount(),
+            before,
+            "dropping the ComPtr must give the reference back"
+        );
     }
 }
 

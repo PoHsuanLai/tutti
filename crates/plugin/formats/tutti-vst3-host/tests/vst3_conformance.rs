@@ -35,7 +35,7 @@ use std::sync::Mutex;
 
 use tutti_vst3_host::{
     host::conformance, AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, TransportInfo,
-    Vst3InputEvents, Vst3Instance, Vst3Sample,
+    Vst3InputEvents, Vst3Instance, Vst3Loaded, Vst3Sample,
 };
 
 // ── HostCheck C ABI (tests/support/hostcheck_shim.cpp) ───────────────────────
@@ -1695,5 +1695,62 @@ fn plugin_observes_the_offline_mode_we_requested() {
         observed, K_OFFLINE,
         "plugin observed process mode {observed}, but the host was asked for kOffline \
          ({K_OFFLINE}) — the requested mode did not reach ProcessData"
+    );
+}
+
+/// The host **lends** its `IHostApplication` to the plugin: `IPluginBase::
+/// initialize` borrows the context rather than consuming a reference, so a
+/// load must not strand one.
+///
+/// This is the load-path counterpart to the accessor-level test in
+/// `com::host_application` — that one pins the `to_com_ptr`/`as_com_ref`
+/// primitives, this one pins the call site that has to pick the borrowing form.
+///
+/// Each `Vst3Loaded` builds its own `HostApplication`, so the count is read
+/// within one instance: after `initialize()` it is the host's own reference
+/// plus however many the plugin chose to retain. A same-object controller
+/// shares the component's retain and a separate one takes its own, so the legal
+/// ceiling is host + component + controller. Measured against the SDK sample
+/// plugins: 3 with the borrowing hand-off, 4 once `to_com_ptr().into_raw()`
+/// strands its extra reference — so this bound discriminates, it is not slack.
+///
+/// Needs only a sample plugin, not the HostChecker sources.
+#[test]
+fn host_context_is_borrowed_not_consumed() {
+    if sample_plugins().is_empty() {
+        eprintln!(
+            "no sample plugins under VST3_SAMPLE_PLUGIN_DIR ({SAMPLE_PLUGIN_DIR:?}); skipping"
+        );
+        return;
+    }
+    let _plugins = plugin_guard();
+    let mut failures = Vec::new();
+    let mut exercised = 0usize;
+
+    for (name, path) in sample_plugins() {
+        let Ok(loaded) = Vst3Loaded::load(&path) else {
+            eprintln!("  {name}: skipped (load failed)");
+            continue;
+        };
+        exercised += 1;
+
+        let after_init = loaded.host_context_refcount();
+        if after_init > 3 {
+            failures.push(format!(
+                "{name}: host-context refcount {after_init} after initialize() exceeds \
+                 host(1) + component(1) + controller(1); the hand-off leaked a reference"
+            ));
+        }
+        drop(loaded);
+    }
+
+    if exercised == 0 {
+        eprintln!("no sample plugin loaded; host-context hand-off not exercised");
+    }
+
+    assert!(
+        failures.is_empty(),
+        "host context is being leaked at initialize():\n{}",
+        failures.join("\n")
     );
 }

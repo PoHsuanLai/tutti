@@ -11,11 +11,13 @@
 //
 // It lives under `tests/support/` because cargo compiles every top-level file
 // in `tests/` as its own target; a shared module must sit in a subdirectory or
-// it would be built (and its `#[test]`s collected) a third time on its own.
+// it would be built a third time on its own.
 //
-// `#[test]`/`#[ignore]` attributes below are honoured by the harness target and
-// inert in the main-thread one, which calls the functions directly.
-
+// Each test below is wrapped in `gui_test!`, which the two roots define
+// differently: the harness one attaches `#[test]`/`#[ignore]`, the main-thread
+// one emits a plain function. The attributes cannot be written here directly —
+// rustc strips an `#[ignore]` function out of a `harness = false` binary, so
+// the runner would have nothing left to call.
 
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};

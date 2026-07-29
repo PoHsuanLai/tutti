@@ -2,22 +2,20 @@
 //!
 //! ## Why this exists
 //!
-//! Every test in `vst3_gui_lifecycle.rs` needs a real native window, and on
-//! macOS Cocoa requires `NSApplication` — hence winit's event loop — to live on
-//! the process main thread. Cargo's default test harness runs each `#[test]` on
-//! a worker thread and offers no way to ask for the main one, so under that
-//! harness the macOS arm of `build_event_loop` can only skip. X11, Wayland and
-//! Windows escape via `with_any_thread`; macOS has no equivalent.
+//! These tests need a real native window, and macOS requires Cocoa's event
+//! loop on the process main thread. Cargo's harness runs every `#[test]` on a
+//! worker thread with no way to ask for the main one, so there the macOS arm of
+//! `build_event_loop` can only skip — X11, Wayland and Windows escape via
+//! `with_any_thread`, macOS has no equivalent.
 //!
-//! So this is a `harness = false` target: it owns `main()`, which *is* the main
-//! thread, and calls the same test functions directly. That turns 8 macOS skips
-//! into 8 real assertions without a second copy of the tests — the bodies are
-//! `include!`d from the harness file, so the two can never drift.
+//! So this target sets `harness = false`: it owns `main()`, which *is* the main
+//! thread, and calls the test functions directly. On macOS that turns 8 skips
+//! into 8 real assertions. The bodies live in `support/gui_lifecycle.rs`, shared
+//! with `vst3_gui_lifecycle.rs`, so the two cannot drift.
 //!
-//! It is not macOS-only: running these on the main thread is correct
-//! everywhere, and it is the only configuration that matches how a real host
-//! drives an editor. The default-harness file stays for the platforms where it
-//! works, since `cargo test` finds it without extra arguments.
+//! Not macOS-only: the main thread is where a real host drives an editor, so
+//! this is the more faithful configuration everywhere. The harness target stays
+//! because plain `cargo test` finds it with no extra arguments.
 //!
 //! ## Running
 //!
@@ -35,11 +33,8 @@
 
 #![cfg(feature = "conformance")]
 
-/// The main-thread build of each shared test: a plain function.
-///
-/// The harness target defines this same macro to attach `#[test]`/`#[ignore]`.
-/// Here they must be absent — rustc strips an `#[ignore]` function out of a
-/// `harness = false` binary, so `main` below could not call it.
+/// The main-thread build of each shared test: a plain function, so `main` can
+/// call it. `vst3_gui_lifecycle.rs` defines the same macro with `#[test]`.
 macro_rules! gui_test {
     ($(#[$doc:meta])* fn $name:ident() $body:block) => {
         $(#[$doc])*

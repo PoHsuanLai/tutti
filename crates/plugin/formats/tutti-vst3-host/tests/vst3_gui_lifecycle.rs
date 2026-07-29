@@ -34,11 +34,7 @@
 #![cfg(feature = "conformance")]
 
 /// The harness build of each shared test: attach `#[test]`/`#[ignore]`.
-///
-/// The main-thread target defines this same macro to emit a plain function,
-/// which is what lets one copy of the bodies serve both. The attributes cannot
-/// simply be unconditional: rustc strips an `#[ignore]` function out of a
-/// `harness = false` binary, so the runner could not call it.
+/// `gui_lifecycle_main.rs` defines the same macro to emit a plain function.
 macro_rules! gui_test {
     ($(#[$doc:meta])* fn $name:ident() $body:block) => {
         $(#[$doc])*

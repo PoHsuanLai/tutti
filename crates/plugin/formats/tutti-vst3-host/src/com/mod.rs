@@ -29,9 +29,7 @@ mod tests;
 /// COM objects and the effects land in the plugin's own GUI.
 ///
 /// Defined on every platform even though only Linux has a host-provided run
-/// loop, so a conformance test can read it unconditionally. Off Linux the OS
-/// owns the loop, nothing is ever registered with us, and every field stays
-/// zero — see [`Vst3Instance::run_loop_activity`](crate::Vst3Instance::run_loop_activity).
+/// loop, so a conformance test can read it without a `cfg`.
 #[cfg(feature = "conformance")]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RunLoopActivity {

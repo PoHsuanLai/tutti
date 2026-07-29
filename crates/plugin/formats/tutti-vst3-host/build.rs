@@ -131,10 +131,9 @@ fn main() {
     println!("cargo:rustc-env=VST3_SAMPLE_PLUGIN_DIR={plugin_dir}");
 
     // Every `rustc-env` the tests read via `env!` must be emitted on *every*
-    // path out of this function, including the failure paths. `env!` is
-    // resolved at compile time, so an unset one is a build error rather than
-    // the skip the test intends — which would make a checkout without the SDK
-    // fail to build instead of skipping.
+    // path out of this function, failure paths included: `env!` resolves at
+    // compile time, so an unset one fails the build instead of letting the test
+    // skip. That is what made a checkout without the SDK unbuildable.
     let Some(sdk) = std::env::var_os("VST3_SDK_DIR").map(PathBuf::from) else {
         println!("cargo:warning=VST3_SDK_DIR unset; conformance test will skip");
         println!("cargo:rustc-env=VST3_HOSTCHECK_AVAILABLE=0");

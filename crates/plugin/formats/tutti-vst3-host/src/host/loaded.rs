@@ -1153,10 +1153,8 @@ impl Vst3Loaded {
     /// has dispatched. Test-only observation seam behind the `conformance`
     /// feature — see [`RunLoopActivity`](crate::RunLoopActivity).
     ///
-    /// All-zero on non-Linux targets, where the OS owns the run loop and
-    /// plugins register nothing with us, so callers need no `cfg` of their own —
-    /// the same portability [`run_editor_loop_iteration`](Self::run_editor_loop_iteration)
-    /// offers.
+    /// All-zero off Linux, where the OS owns the run loop and plugins register
+    /// nothing with us, so callers need no `cfg` of their own.
     #[cfg(feature = "conformance")]
     pub fn run_loop_activity(&self) -> crate::RunLoopActivity {
         #[cfg(target_os = "linux")]
@@ -1492,16 +1490,12 @@ impl Drop for Vst3Loaded {
         // tear the component↔controller connection down before terminating
         // either half. No-op for same-object / no controller.
         self.disconnect_separate_controller();
-        // Retract the handler before terminating, mirroring
-        // `attach_component_handler`. Unlike `IPluginBase::initialize`, which
-        // borrows the host context, `setComponentHandler` is a *retaining*
-        // hand-off — the SDK stores it in an `IPtr`, which addRefs. The base
-        // class resets it in `EditController::terminate`, so this is belt and
-        // braces for that path, but a plugin that overrides `terminate` without
-        // chaining up would otherwise hold our handler past its own teardown.
-        // Steinberg's wrapper retracts here too (`basewrapper.cpp:369`), and in
-        // this order: retract, then terminate the controller, then the
-        // component.
+        // Retract the handler before terminating. Unlike `initialize`, which
+        // borrows the host context, `setComponentHandler` *retains* — so a
+        // plugin that overrides `terminate` without chaining up to the base
+        // class (which resets it) would hold our handler past its own teardown.
+        // Order — retract, controller, component — follows Steinberg's own
+        // wrapper (`basewrapper.cpp:369`).
         if let Some(ctrl) = self.interfaces.controller.as_ref() {
             unsafe {
                 let _ = ctrl.setComponentHandler(std::ptr::null_mut());

@@ -1492,13 +1492,24 @@ impl Drop for Vst3Loaded {
         // tear the component↔controller connection down before terminating
         // either half. No-op for same-object / no controller.
         self.disconnect_separate_controller();
-        unsafe {
-            self.interfaces.component.terminate();
-        }
+        // Retract the handler before terminating, mirroring
+        // `attach_component_handler`. Unlike `IPluginBase::initialize`, which
+        // borrows the host context, `setComponentHandler` is a *retaining*
+        // hand-off — the SDK stores it in an `IPtr`, which addRefs. The base
+        // class resets it in `EditController::terminate`, so this is belt and
+        // braces for that path, but a plugin that overrides `terminate` without
+        // chaining up would otherwise hold our handler past its own teardown.
+        // Steinberg's wrapper retracts here too (`basewrapper.cpp:369`), and in
+        // this order: retract, then terminate the controller, then the
+        // component.
         if let Some(ctrl) = self.interfaces.controller.as_ref() {
             unsafe {
+                let _ = ctrl.setComponentHandler(std::ptr::null_mut());
                 ctrl.terminate();
             }
+        }
+        unsafe {
+            self.interfaces.component.terminate();
         }
     }
 }

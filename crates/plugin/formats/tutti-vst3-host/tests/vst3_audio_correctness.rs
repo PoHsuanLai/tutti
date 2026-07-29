@@ -9,9 +9,10 @@
 //! wrong offset — passes all 185 of those checks silently.
 //!
 //! This suite closes that gap using `audio-probe`, a reference plugin whose
-//! output is a closed-form function of its input (see
-//! `/mnt/data2/vst3-hostchecker/audio-probe`). The test computes the expected
-//! samples and compares them exactly.
+//! output is a closed-form function of its input. Its sources live in-repo
+//! under `tests/support/audio-probe/` and `build.rs` compiles them into a real
+//! `.vst3` bundle as part of this same `cargo test` run. The test computes the
+//! expected samples and compares them exactly.
 //!
 //! **Exact comparison is deliberate.** A correct host does no arithmetic on the
 //! samples it forwards — it passes pointers — so any difference at all is a
@@ -26,10 +27,14 @@
 //!
 //! ## Running
 //!
+//! The probe is built from in-repo sources, so only the SDK path is needed:
+//!
 //! ```bash
-//! VST3_SAMPLE_PLUGIN_DIR=/path/to/build/VST3/Release \
+//! VST3_SDK_DIR=/path/to/vst3sdk \
 //! cargo test -p tutti-vst3-host --features conformance --test vst3_audio_correctness
 //! ```
+//!
+//! Set `VST3_SAMPLE_PLUGIN_DIR` to substitute an externally built probe.
 
 #![cfg(feature = "conformance")]
 
@@ -84,14 +89,28 @@ fn probe_tag(bus: usize, channel: usize) -> f32 {
     bus as f32 * 1000.0 + channel as f32 + 1.0
 }
 
-fn probe_path() -> Option<PathBuf> {
-    let dir = sample_plugin_dir();
+/// The in-repo probe bundle, built by `build.rs` from
+/// `tests/support/audio-probe/`. Empty only if the `conformance` feature is off.
+const PROBE_DIR_BUILT: &str = env!("VST3_PROBE_DIR");
+
+/// Locate the probe binary inside a directory holding `audio-probe.vst3`.
+fn probe_in(dir: &str) -> Option<PathBuf> {
     if dir.is_empty() {
         return None;
     }
-    let bundle = Path::new(&dir).join("audio-probe.vst3");
-    for sub in ["Contents/x86_64-linux", "Contents/MacOS", "Contents/x86_64-win"] {
-        for name in ["audio-probe.so", "audio-probe", "audio-probe.vst3", "audio-probe.dylib"] {
+    let bundle = Path::new(dir).join("audio-probe.vst3");
+    for sub in [
+        "Contents/x86_64-linux",
+        "Contents/aarch64-linux",
+        "Contents/MacOS",
+        "Contents/x86_64-win",
+    ] {
+        for name in [
+            "audio-probe.so",
+            "audio-probe",
+            "audio-probe.vst3",
+            "audio-probe.dylib",
+        ] {
             let p = bundle.join(sub).join(name);
             if p.is_file() {
                 return Some(p);
@@ -101,15 +120,42 @@ fn probe_path() -> Option<PathBuf> {
     None
 }
 
-/// Load and activate the probe, or print why and return `None`.
+/// Path to the reference probe.
+///
+/// **Panics rather than returning `None`.** The probe is built from in-repo
+/// sources by `build.rs` as part of this very `cargo test` invocation, so its
+/// absence is a build failure, not an environmental one. Skipping instead is
+/// what let this suite print `ok. 9 passed` while executing nothing at all: the
+/// bundle was simply named differently than the lookup expected, and nothing
+/// said so.
+///
+/// `VST3_SAMPLE_PLUGIN_DIR` still wins when it holds a probe, so an externally
+/// built one can be substituted deliberately.
+fn probe_path() -> PathBuf {
+    let external = sample_plugin_dir();
+    if let Some(p) = probe_in(&external) {
+        return p;
+    }
+    if let Some(p) = probe_in(PROBE_DIR_BUILT) {
+        return p;
+    }
+    panic!(
+        "audio-probe not found. build.rs builds it from tests/support/audio-probe \
+         into {PROBE_DIR_BUILT:?} whenever the `conformance` feature is on, so this \
+         means the build did not produce it (or VST3_SAMPLE_PLUGIN_DIR={external:?} \
+         points somewhere without an audio-probe.vst3)."
+    );
+}
+
+/// Load and activate the probe.
+///
+/// Returns `Option` only so call sites keep their existing shape; a load
+/// failure is a hard error, because the probe is ours and built from this tree.
 fn load_probe(block_size: usize) -> Option<Vst3Instance> {
-    let path = probe_path()?;
+    let path = probe_path();
     match Vst3Instance::<f32>::load(&path, 48_000.0, block_size) {
         Ok(i) => Some(i),
-        Err(e) => {
-            eprintln!("audio-probe load failed ({e:?}); skipping");
-            None
-        }
+        Err(e) => panic!("audio-probe failed to load from {path:?}: {e:?}"),
     }
 }
 
@@ -202,15 +248,16 @@ fn render(
     Rendered { out: grouped }
 }
 
+/// Kept as a no-op so every test still names its precondition at the top.
+///
+/// It used to decide whether to skip; [`probe_path`] now panics instead, because
+/// the probe is built from this tree rather than found on the machine. Returning
+/// a constant `true` keeps the call sites honest without reintroducing a path
+/// where a test reports success having run nothing.
 fn harness_ready() -> bool {
-    if probe_path().is_none() {
-        eprintln!(
-            "audio-probe not built under {:?}; skipping. Build it with \
-             `cmake --build <build-dir> --target audio-probe`.",
-            sample_plugin_dir()
-        );
-        return false;
-    }
+    // Resolve eagerly: this is what turns a missing probe into a failure at the
+    // start of the test rather than a confusing error part-way through.
+    let _ = probe_path();
     true
 }
 
@@ -454,12 +501,13 @@ fn f64_path_carries_the_same_audio() {
         return;
     }
     let _guard = plugin_guard();
-    let Some(path) = probe_path() else {
-        return;
-    };
-    let Ok(mut inst) = Vst3Instance::<f64>::load(&path, 48_000.0, 512) else {
-        eprintln!("audio-probe f64 activation failed; skipping");
-        return;
+    let path = probe_path();
+    // The probe declares f64 support, so a failure here is a real one — either
+    // in the probe or in the host's f64 activation path. Skipping would hide
+    // exactly the regression this test exists to catch.
+    let mut inst = match Vst3Instance::<f64>::load(&path, 48_000.0, 512) {
+        Ok(i) => i,
+        Err(e) => panic!("audio-probe f64 activation failed: {e:?}"),
     };
     inst.set_parameter(PARAM_MODE, mode(0));
 

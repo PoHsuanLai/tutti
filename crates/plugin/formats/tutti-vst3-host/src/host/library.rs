@@ -130,11 +130,13 @@ impl Vst3Library {
             run_loop.clone(),
         );
         if let Some(f3) = factory3.as_ref() {
-            if let Some(app) = host_context.to_com_ptr::<vst3::Steinberg::Vst::IHostApplication>() {
-                // The factory does NOT take ownership (unlike
-                // `IPluginBase::initialize`), so hand it a borrowed pointer and
-                // keep our own reference alive in `_host_context` for as long as
-                // the factory can call back into it.
+            if let Some(app) = host_context.as_com_ref::<vst3::Steinberg::Vst::IHostApplication>() {
+                // The factory does not take ownership — nor does
+                // `IPluginBase::initialize`; both borrow, and retain for
+                // themselves if they keep the context (see the contract note on
+                // `Vst3Loaded::host_context_ptr`). So hand over a borrowed
+                // pointer and keep our own reference alive in `_host_context`
+                // for as long as the factory can call back into it.
                 let raw = app.upcast::<FUnknown>().as_ptr();
                 unsafe { f3.setHostContext(raw) };
             }

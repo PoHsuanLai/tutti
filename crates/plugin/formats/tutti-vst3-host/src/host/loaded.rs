@@ -8,7 +8,6 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use vst3::com_scrape_types::Unknown;
 use vst3::ComPtr;
 use vst3::Steinberg::{
     kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPlugView,
@@ -1189,7 +1188,6 @@ impl Vst3Loaded {
 
         let result = unsafe { self.interfaces.component.initialize(host_ptr) };
         if result != kResultOk && result != kResultFalse {
-            unsafe { FUnknown::release(host_ptr) };
             return Err(Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: result,
@@ -1233,19 +1231,63 @@ impl Vst3Loaded {
         Ok(())
     }
 
-    /// `IHostApplication` upcast to `FUnknown`, with a +1 refcount that the
-    /// plugin assumes ownership of via `IComponent::initialize`.
+    /// The live reference count on the host-context object. Test-only seam for
+    /// the load-path refcount assertion in `tests/vst3_conformance.rs`: the
+    /// hand-off contract below is otherwise invisible from outside, and a leak
+    /// of one reference per load is not observable any other way.
+    ///
+    /// Reads the count without moving it — `add_ref` returns the value *after*
+    /// incrementing, so the matching `release` restores it and the count before
+    /// the pair is one less.
+    #[cfg(feature = "conformance")]
+    pub fn host_context_refcount(&self) -> usize {
+        use vst3::com_scrape_types::Unknown;
+        use vst3::Steinberg::Vst::IHostApplication;
+
+        let Some(iface) = self.host.application.as_com_ref::<IHostApplication>() else {
+            return 0;
+        };
+        unsafe {
+            let after_add = IHostApplication::add_ref(iface.as_ptr());
+            IHostApplication::release(iface.as_ptr());
+            after_add - 1
+        }
+    }
+
+    /// `IHostApplication` upcast to `FUnknown`, **borrowed**: the returned
+    /// pointer carries no reference for the caller to hand over or drop. It is
+    /// valid only while `self.host.application` is alive, which is why this is
+    /// private and its result never outlives the calling method.
+    ///
+    /// `IPluginBase::initialize` does **not** take ownership of the context.
+    /// The plugin retains it itself if it keeps it: `ComponentBase::hostContext`
+    /// is an `IPtr<FUnknown>` (`public.sdk/source/vst/vstcomponentbase.h:84`),
+    /// so the bare `hostContext = context;` in `ComponentBase::initialize`
+    /// (`vstcomponentbase.cpp:42`) runs `IPtr::operator=`, which addRefs — and
+    /// the `hostContext = nullptr;` in `terminate` (same file, line 51) releases.
+    /// `IPluginBase::terminate`'s own contract says as much:
+    /// "You have to release all references to any host application interfaces"
+    /// (`pluginterfaces/base/ipluginbase.h:48`).
+    ///
+    /// So the host must lend, not give. Passing an owned `+1` here (a
+    /// `to_com_ptr().into_raw()`) leaks one reference per load, unbounded across
+    /// load/unload cycles. The matching trap is the inverse: because the plugin
+    /// never consumed a reference, a host that "balances" this with a
+    /// `FUnknown::release` on any path frees a reference it does not own — a
+    /// use-after-free, not a leak. Steinberg's own reference host borrows and
+    /// releases nothing on either path
+    /// (`public.sdk/source/vst/hosting/plugprovider.cpp:140,178`).
     fn host_context_ptr(&self) -> Result<*mut FUnknown> {
         Ok(self
             .host
             .application
-            .to_com_ptr::<vst3::Steinberg::Vst::IHostApplication>()
+            .as_com_ref::<vst3::Steinberg::Vst::IHostApplication>()
             .ok_or(Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: 0,
             })?
             .upcast::<FUnknown>()
-            .into_raw())
+            .as_ptr())
     }
 
     /// Re-query bus counts from the component — `initialize` may have changed

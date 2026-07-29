@@ -46,7 +46,14 @@ tutti-synth = { path = "../tutti/crates/dsp/tutti-synth", optional = true, defau
 tutti-export = { path = "../tutti/crates/core/tutti-export", optional = true }
 tutti-midi-io = { path = "../tutti/crates/midi/tutti-midi-io", optional = true }
 tutti-midi-runtime = { path = "../tutti/crates/midi/tutti-midi-runtime", optional = true, default-features = false }
-tutti-plugin = { path = "../tutti/crates/plugin/tutti-plugin", optional = true }
+# `json` is explicit: this crate's `PluginsRes`/`PluginScanConfig` default path
+# builds a `Plugins` over the file-backed catalog (`with_json_catalog` / `empty`),
+# so it needs the ready-made impl rather than an app-supplied one. tutti-plugin
+# itself ships no default features. (Inherited from `tutti-plugin-host`, whose
+# code this crate absorbed.)
+tutti-plugin = { path = "../tutti/crates/plugin/tutti-plugin", optional = true, features = [
+    "json",
+] }
 tutti-plugin-server = { path = "../tutti/crates/plugin/tutti-plugin-server", optional = true, default-features = false }
 
 # Plugin editor windows: native child-window parenting for hosted GUIs.

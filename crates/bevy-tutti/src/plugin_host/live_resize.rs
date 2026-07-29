@@ -174,7 +174,7 @@ impl LiveResizeRegistry {
 /// `removeObserver` in `LiveResizeHandle::drop` always runs where it is legal.
 pub fn reap_orphaned_live_resize_observers(
     mut registry: NonSendMut<LiveResizeRegistry>,
-    open: bevy_ecs::system::Query<bevy_ecs::entity::Entity, With<crate::editor::PluginEditorOpen>>,
+    open: bevy_ecs::system::Query<bevy_ecs::entity::Entity, With<crate::plugin_host::editor::PluginEditorOpen>>,
 ) {
     use bevy_ecs::entity::EntityHashSet;
     let live: EntityHashSet = open.iter().collect();

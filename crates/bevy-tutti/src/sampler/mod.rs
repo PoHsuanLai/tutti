@@ -6,7 +6,7 @@ use bevy_asset::AssetApp;
 use bevy_ecs::prelude::*;
 
 use tutti_core::WaveAsset;
-use tutti_sampler::Sampler;
+use tutti_sampler::DiskStreamer;
 
 pub mod wave_loader;
 
@@ -15,10 +15,10 @@ pub use wave_loader::{WaveAssetLoader, WaveAssetLoaderError};
 /// The sampler streaming engine. Owns the butler thread that drives all disk
 /// I/O; built by [`build_into`](crate::engine::build_into).
 #[derive(Resource)]
-pub struct SamplerRes(pub Sampler);
+pub struct SamplerRes(pub DiskStreamer);
 
 impl std::ops::Deref for SamplerRes {
-    type Target = Sampler;
+    type Target = DiskStreamer;
     fn deref(&self) -> &Self::Target {
         &self.0
     }

@@ -130,7 +130,7 @@ pub fn plugin_editor_attach_system(
     // every observer drop) to the main thread — the AppKit requirement that
     // the old `unsafe impl Send + Sync` was papering over.
     #[cfg(target_os = "macos")] mut live_resize_registry: NonSendMut<
-        crate::live_resize::LiveResizeRegistry,
+        crate::plugin_host::live_resize::LiveResizeRegistry,
     >,
     mut commands: Commands,
     pending: Query<(Entity, &PluginEmitter, &PendingPluginEditor)>,
@@ -371,7 +371,7 @@ pub fn close_editor_observer(
     // Main-thread-pinned: dropping the AppKit observer calls `removeObserver`,
     // which must not run off-main.
     #[cfg(target_os = "macos")] mut live_resize_registry: NonSendMut<
-        crate::live_resize::LiveResizeRegistry,
+        crate::plugin_host::live_resize::LiveResizeRegistry,
     >,
     mut commands: Commands,
     query: Query<(&PluginEmitter, &PluginEditorOpen)>,

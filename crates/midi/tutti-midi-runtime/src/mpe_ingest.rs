@@ -91,6 +91,10 @@ impl MpeIngest {
         // the zone from the wire — handled in *any* mode, including Disabled (a
         // controller declaring its zone should enable MPE). Absorbed (returns
         // `None`): it's configuration, not a musical event.
+        //
+        // `from_mcm` requires the master channel be Ch1 or Ch16 per RP-053, so
+        // RPN 0x00/0x06 on any other channel is ordinary parameter traffic and
+        // passes through rather than being swallowed as configuration.
         if let Some((master, members)) = MpeZoneConfig::from_mcm(event) {
             self.reconfigure_from_mcm(master, members);
             return None;

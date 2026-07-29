@@ -42,8 +42,8 @@ use crate::com::{
 use crate::error::{LoadStage, Result, Vst3Error};
 use crate::helpers::cid_to_string;
 use crate::types::{
-    EditorCapabilities, EditorSize, PluginInfo, Vst3KeyswitchInfo, Vst3NoteExpressionInfo,
-    Vst3ParameterInfo, Vst3Sample, WindowHandle,
+    EditorCapabilities, EditorSize, PluginInfo, ProcessMode, Vst3KeyswitchInfo,
+    Vst3NoteExpressionInfo, Vst3ParameterInfo, Vst3Sample, WindowHandle,
 };
 
 use super::instance::Vst3Instance;
@@ -293,7 +293,36 @@ impl Vst3Loaded {
         sample_rate: f64,
         block_size: usize,
     ) -> Result<Vst3Instance<T>> {
-        Vst3Instance::from_loaded(self, sample_rate, block_size)
+        self.activate_with_mode(sample_rate, block_size, ProcessMode::Realtime)
+    }
+
+    /// Transition to the processing state for a specific [`ProcessMode`].
+    ///
+    /// The mode is chosen *here*, on the state transition, rather than on the
+    /// resulting instance, because `setupProcessing` is where VST3 delivers it
+    /// and that call happens exactly once per activation. Selecting
+    /// [`Offline`](ProcessMode::Offline) afterwards would require re-running
+    /// setup, which is what the spec's `ProcessSetup`/`ProcessData` agreement
+    /// rule forbids doing silently — so the type-state boundary and the spec
+    /// boundary are made to coincide. (The realtime↔prefetch pair *is*
+    /// switchable on a live instance; that is
+    /// [`Vst3Instance::set_prefetch`](crate::Vst3Instance::set_prefetch), and
+    /// it is the one exception the rule names.)
+    ///
+    /// Query [`prefetchable_support`](Self::prefetchable_support) beforehand if
+    /// you intend to use prefetch: it is the plugin's own statement about
+    /// whether it can be driven that way.
+    ///
+    /// # Errors
+    ///
+    /// As [`activate`](Self::activate).
+    pub fn activate_with_mode<T: Vst3Sample>(
+        self,
+        sample_rate: f64,
+        block_size: usize,
+        mode: ProcessMode,
+    ) -> Result<Vst3Instance<T>> {
+        Vst3Instance::from_loaded(self, sample_rate, block_size, mode)
     }
 
     /// Metadata snapshot (id, name, vendor, bus counts, MIDI and f64 support).
@@ -1200,21 +1229,23 @@ impl Vst3Loaded {
         // pre-init query in `build_plugin_info` always sees zero. Without this,
         // every instrument reports `has_midi_input == false` and a host that
         // gates MIDI delivery on it never sends the plugin a single note.
-        let receives_midi =
-            unsafe {
+        let receives_midi = unsafe {
             self.interfaces
                 .component
                 .getBusCount(crate::host::instance::K_EVENT, K_INPUT)
                 > 0
         };
-        let emits_midi =
-            unsafe {
+        let emits_midi = unsafe {
             self.interfaces
                 .component
                 .getBusCount(crate::host::instance::K_EVENT, K_OUTPUT)
                 > 0
         };
-        self.info = self.info.clone().midi(receives_midi).midi_output(emits_midi);
+        self.info = self
+            .info
+            .clone()
+            .midi(receives_midi)
+            .midi_output(emits_midi);
     }
 
     /// Hand the controller our `IComponentHandler` so it can report param

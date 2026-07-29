@@ -34,9 +34,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use tutti_vst3_host::{
-    Vst3Sample,
-    host::conformance, AudioBuffer, MidiEvent, ParameterChanges, TransportInfo, Vst3InputEvents,
-    Vst3Instance,
+    host::conformance, AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, TransportInfo,
+    Vst3InputEvents, Vst3Instance, Vst3Sample,
 };
 
 // ── HostCheck C ABI (tests/support/hostcheck_shim.cpp) ───────────────────────
@@ -89,7 +88,9 @@ fn plugin_guard() -> std::sync::MutexGuard<'static, ()> {
 const AVAILABLE: &str = env!("VST3_HOSTCHECK_AVAILABLE");
 const SAMPLE_PLUGIN_DIR: &str = env!("VST3_SAMPLE_PLUGIN_DIR");
 
-const K_REALTIME: c_int = 0;
+/// `ProcessModes_::kOffline`. Used to assert the plugin observed the mode we
+/// asked for, independent of the enum's Rust-side representation.
+const K_OFFLINE: c_int = 2;
 
 // ── Findings ─────────────────────────────────────────────────────────────────
 
@@ -103,7 +104,11 @@ struct Finding {
 
 impl std::fmt::Display for Finding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{}] {} (x{})", self.severity, self.description, self.count)
+        write!(
+            f,
+            "[{}] {} (x{})",
+            self.severity, self.description, self.count
+        )
     }
 }
 
@@ -165,7 +170,11 @@ fn resolve_bundle(path: &Path) -> PathBuf {
         return path.to_path_buf();
     }
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    for sub in ["Contents/x86_64-linux", "Contents/MacOS", "Contents/x86_64-win"] {
+    for sub in [
+        "Contents/x86_64-linux",
+        "Contents/MacOS",
+        "Contents/x86_64-win",
+    ] {
         let dir = path.join(sub);
         for ext in ["so", "", "vst3", "dylib"] {
             let cand = if ext.is_empty() {
@@ -271,12 +280,12 @@ fn drive_block<T: Vst3Sample + Default + Copy>(
     midi: &[MidiEvent],
     params: Option<&ParameterChanges>,
 ) -> Result<Vec<Finding>, String> {
-    drive_blocks::<T>(
+    drive_blocks_in_mode::<T>(
         path,
         sample_rate,
         block_size,
-        &[Block::of(frames).midi(midi)
-            .maybe_params(params)],
+        ProcessMode::Realtime,
+        &[Block::of(frames).midi(midi).maybe_params(params)],
     )
     .map(|mut v| v.pop().unwrap_or_default())
 }
@@ -300,45 +309,51 @@ fn drive_blocks<T: Vst3Sample + Default + Copy>(
     block_size: usize,
     blocks: &[Block<'_>],
 ) -> Result<Vec<Vec<Finding>>, String> {
+    drive_blocks_in_mode::<T>(path, sample_rate, block_size, ProcessMode::Realtime, blocks)
+}
+
+/// As [`drive_blocks`], but activating the instance in `mode`.
+///
+/// The checker is configured from the `ProcessSetup` the observer reports —
+/// the one the host actually negotiated — rather than from `mode` directly.
+/// Feeding it `mode` would make `ProcessSetupCheck`'s setup-vs-data comparison
+/// tautological on the very field under test: it would compare the test's
+/// intent against the host's `ProcessData` and pass even if the host had
+/// silently never delivered that mode to `setupProcessing`.
+fn drive_blocks_in_mode<T: Vst3Sample + Default + Copy>(
+    path: &Path,
+    sample_rate: f64,
+    block_size: usize,
+    mode: ProcessMode,
+    blocks: &[Block<'_>],
+) -> Result<Vec<Vec<Finding>>, String> {
     // NOTE: the caller must already hold `PLUGIN_LOCK` — see its docs. Taking
     // it here instead would deadlock against the helpers (`accepts_midi`,
     // `first_parameter_id`, ...) that load plugins around this call.
-    let mut inst = Vst3Instance::<T>::load(path, sample_rate, block_size)
+    let mut inst = Vst3Instance::<T>::load_with_mode(path, sample_rate, block_size, mode)
         .map_err(|e| format!("load failed: {e:?}"))?;
 
     let info = inst.info().clone();
     let n = unsafe { hc_num_log_events() } as usize;
 
-    // Configure the checker to match what the host negotiated and what the
-    // plugin reported, so any disagreement is a finding rather than noise.
-    // The per-bus channel lists come straight from the plugin: collapsing
-    // them to one count would invent mismatches on any multi-bus plugin.
-    let in_ch: Vec<c_int> = info.input_bus_channels.iter().map(|&c| c as c_int).collect();
+    // The per-bus channel lists come straight from the plugin: collapsing them
+    // to one count would invent mismatches on any multi-bus plugin.
+    let in_ch: Vec<c_int> = info
+        .input_bus_channels
+        .iter()
+        .map(|&c| c as c_int)
+        .collect();
     let out_ch: Vec<c_int> = info
         .output_bus_channels
         .iter()
         .map(|&c| c as c_int)
         .collect();
-    unsafe {
-        hc_configure(
-            sample_rate,
-            block_size as c_int,
-            // Must follow `T`: the checker compares this against
-            // `ProcessData::symbolicSampleSize`, so hardcoding f32 would make
-            // every f64 block report a (spurious) sample-size mismatch.
-            T::VST3_SYMBOLIC_SIZE as c_int,
-            K_REALTIME,
-            in_ch.as_ptr(),
-            in_ch.len() as c_int,
-            out_ch.as_ptr(),
-            out_ch.len() as c_int,
-            info.has_midi_input as c_int,
-            info.has_midi_output as c_int,
-        );
-    }
+    let event_in = info.has_midi_input as c_int;
+    let event_out = info.has_midi_output as c_int;
 
     // Register the plugin's parameter ids so unknown-id and out-of-range
-    // param queues are reported.
+    // param queues are reported. `hc_configure` (below, per block) resets only
+    // the event log, not the parameter table, so registering once is enough.
     for i in 0..inst.parameter_count() {
         if let Some(id) = inst.parameter_id_at(i) {
             unsafe { hc_add_parameter(id as c_uint) };
@@ -346,11 +361,32 @@ fn drive_blocks<T: Vst3Sample + Default + Copy>(
     }
 
     // Capture the counts the observer produces for this block.
-    let counts_cell: &'static Mutex<Vec<i64>> =
-        Box::leak(Box::new(Mutex::new(vec![0i64; n])));
+    let counts_cell: &'static Mutex<Vec<i64>> = Box::leak(Box::new(Mutex::new(vec![0i64; n])));
     let seen: &'static Mutex<bool> = Box::leak(Box::new(Mutex::new(false)));
 
-    conformance::set_observer(Box::new(move |data, _setup| {
+    conformance::set_observer(Box::new(move |data, setup| {
+        // Configure the checker from the `ProcessSetup` the host actually
+        // negotiated, captured through the same seam as the `ProcessData`
+        // beside it. Deriving `processMode`/`symbolicSampleSize`/block size
+        // from the test's *intent* instead would make `ProcessSetupCheck`'s
+        // setup-vs-data comparison compare the test against itself — it would
+        // pass even if the host had never delivered the requested mode to
+        // `setupProcessing`, which is precisely the bug being guarded.
+        unsafe {
+            hc_configure(
+                setup.sampleRate,
+                setup.maxSamplesPerBlock,
+                setup.symbolicSampleSize,
+                setup.processMode,
+                in_ch.as_ptr(),
+                in_ch.len() as c_int,
+                out_ch.as_ptr(),
+                out_ch.len() as c_int,
+                event_in,
+                event_out,
+            );
+        }
+
         let mut counts = vec![0i64; n];
         let ptr = std::ptr::from_ref(data).cast::<c_void>();
         // min in/out buffer counts: the host must supply at least the bus
@@ -415,7 +451,10 @@ fn hostcheck_is_linked() {
         return;
     }
     let n = unsafe { hc_num_log_events() };
-    assert!(n > 100, "expected the full HostChecker table, got {n} checks");
+    assert!(
+        n > 100,
+        "expected the full HostChecker table, got {n} checks"
+    );
     let d = unsafe { CStr::from_ptr(hc_log_description(0)) };
     assert!(!d.to_string_lossy().is_empty());
 }
@@ -439,7 +478,10 @@ fn steady_state_block_is_spec_clean() {
                 if !errs.is_empty() {
                     failures.push(format!(
                         "{name}:\n{}",
-                        errs.iter().map(|e| format!("    {e}")).collect::<Vec<_>>().join("\n")
+                        errs.iter()
+                            .map(|e| format!("    {e}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
                     ));
                 } else {
                     eprintln!("  {name}: clean ({} advisory)", findings.len());
@@ -474,7 +516,10 @@ fn partial_block_is_spec_clean() {
                     if !errs.is_empty() {
                         failures.push(format!(
                             "{name} @ {frames} frames:\n{}",
-                            errs.iter().map(|e| format!("    {e}")).collect::<Vec<_>>().join("\n")
+                            errs.iter()
+                                .map(|e| format!("    {e}"))
+                                .collect::<Vec<_>>()
+                                .join("\n")
                         ));
                     }
                 }
@@ -547,7 +592,10 @@ fn describe_log_id(id: i32) -> Option<(String, String)> {
     unsafe {
         let d = CStr::from_ptr(hc_log_description(id));
         let s = CStr::from_ptr(hc_log_severity(id));
-        Some((s.to_string_lossy().into_owned(), d.to_string_lossy().into_owned()))
+        Some((
+            s.to_string_lossy().into_owned(),
+            d.to_string_lossy().into_owned(),
+        ))
     }
 }
 
@@ -617,9 +665,12 @@ fn report_host_capability_score() {
     let info = inst.info().clone();
     let transport = TransportInfo::default();
     for _ in 0..4 {
-        let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1)).map(|_| vec![0.0; 512]).collect();
-        let mut outs: Vec<Vec<f32>> =
-            (0..info.num_outputs.max(1)).map(|_| vec![0.0; 512]).collect();
+        let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))
+            .map(|_| vec![0.0; 512])
+            .collect();
+        let mut outs: Vec<Vec<f32>> = (0..info.num_outputs.max(1))
+            .map(|_| vec![0.0; 512])
+            .collect();
         let in_refs: Vec<&[f32]> = ins.iter().map(|v| v.as_slice()).collect();
         let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|v| v.as_mut_slice()).collect();
         let mut buffer = AudioBuffer {
@@ -633,7 +684,10 @@ fn report_host_capability_score() {
     let _ = inst.poll_plugin_notifications();
 
     let score = inst.parameter(K_SCORE_TAG);
-    eprintln!("host capability score: {:.1}% of HostChecker's 75 weighted features", score * 100.0);
+    eprintln!(
+        "host capability score: {:.1}% of HostChecker's 75 weighted features",
+        score * 100.0
+    );
 
     // Deliberately not a threshold assertion: the score measures coverage of
     // features this test drove, so pinning it would encode today's harness
@@ -781,8 +835,12 @@ fn midi_learn_forwards_from_the_main_thread() {
         MidiEvent::cc(0, 0, 7, 0x8000_0000).with_frame_offset(0),
         MidiEvent::cc(0, 0, 10, 0x4000_0000).with_frame_offset(64),
     ];
-    let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1)).map(|_| vec![0.0; 512]).collect();
-    let mut outs: Vec<Vec<f32>> = (0..info.num_outputs.max(1)).map(|_| vec![0.0; 512]).collect();
+    let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))
+        .map(|_| vec![0.0; 512])
+        .collect();
+    let mut outs: Vec<Vec<f32>> = (0..info.num_outputs.max(1))
+        .map(|_| vec![0.0; 512])
+        .collect();
     let in_refs: Vec<&[f32]> = ins.iter().map(|v| v.as_slice()).collect();
     let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|v| v.as_mut_slice()).collect();
     let mut buffer = AudioBuffer {
@@ -888,9 +946,12 @@ fn host_checker_reports_no_errors_through_output_params() {
     let mut all_ids = Vec::new();
     let transport = TransportInfo::default();
     for _ in 0..8 {
-        let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1)).map(|_| vec![0.0; 512]).collect();
-        let mut outs: Vec<Vec<f32>> =
-            (0..info.num_outputs.max(1)).map(|_| vec![0.0; 512]).collect();
+        let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))
+            .map(|_| vec![0.0; 512])
+            .collect();
+        let mut outs: Vec<Vec<f32>> = (0..info.num_outputs.max(1))
+            .map(|_| vec![0.0; 512])
+            .collect();
         let in_refs: Vec<&[f32]> = ins.iter().map(|v| v.as_slice()).collect();
         let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|v| v.as_mut_slice()).collect();
         let mut buffer = AudioBuffer {
@@ -899,12 +960,7 @@ fn host_checker_reports_no_errors_through_output_params() {
             num_samples: 512,
             sample_rate: 48_000.0,
         };
-        let out = inst.process(
-            &mut buffer,
-            &Vst3InputEvents::default(),
-            None,
-            &transport,
-        );
+        let out = inst.process(&mut buffer, &Vst3InputEvents::default(), None, &transport);
         all_ids.extend(decode_hostchecker_warnings(out.parameter_changes));
     }
 
@@ -1207,7 +1263,10 @@ fn parameter_changes_are_spec_clean() {
                 if !errs.is_empty() {
                     failures.push(format!(
                         "{name}:\n{}",
-                        errs.iter().map(|e| format!("    {e}")).collect::<Vec<_>>().join("\n")
+                        errs.iter()
+                            .map(|e| format!("    {e}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
                     ));
                 }
             }
@@ -1257,7 +1316,10 @@ fn midi_event_list_is_spec_clean() {
                 if !errs.is_empty() {
                     failures.push(format!(
                         "{name}:\n{}",
-                        errs.iter().map(|e| format!("    {e}")).collect::<Vec<_>>().join("\n")
+                        errs.iter()
+                            .map(|e| format!("    {e}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
                     ));
                 }
             }
@@ -1273,5 +1335,365 @@ fn midi_event_list_is_spec_clean() {
         failures.is_empty(),
         "VST3 spec violations in the staged event list:\n{}",
         failures.join("\n")
+    );
+}
+
+// ── Process modes ────────────────────────────────────────────────────────────
+//
+// `ProcessSetup::processMode` and `ProcessData::processMode` must agree;
+// `ProcessSetupCheck::check` reports `kLogIdInvalidProcessMode` (severity
+// Error) when they do not, permitting exactly one divergence — a per-block
+// toggle between `kRealtime` and `kPrefetch`. Because the checker is configured
+// from the observed `ProcessSetup` (see `drive_blocks_in_mode`), every one of
+// these tests validates the host's *real* setup against the host's real block,
+// so a mode that never reached `setupProcessing` fails rather than passes.
+
+/// An offline bounce must be spec-clean for every sample plugin.
+///
+/// The regression this pins: `processMode` was hardcoded to `kRealtime` at
+/// every site, so asking for an offline render silently produced the realtime
+/// result — no error, and nothing downstream could tell. Plugins with lookahead
+/// limiters, high-quality resamplers, or longer offline FFT windows are
+/// entitled to behave differently here, and could not.
+#[test]
+fn offline_mode_is_spec_clean() {
+    if !harness_ready() {
+        return;
+    }
+    let _plugins = plugin_guard();
+    let mut failures = Vec::new();
+    let mut exercised = 0usize;
+
+    for (name, path) in sample_plugins() {
+        // Partial blocks alongside the full one: offline renders end on a
+        // short block, which is where a stale `numSamples` would show up.
+        let blocks = [Block::of(512), Block::of(64), Block::of(1)];
+        exercised += 1;
+        match drive_blocks_in_mode::<f32>(&path, 48_000.0, 512, ProcessMode::Offline, &blocks) {
+            Ok(per_block) => {
+                for (i, findings) in per_block.iter().enumerate() {
+                    let errs = errors(findings);
+                    if !errs.is_empty() {
+                        failures.push(format!(
+                            "{name} block {i} (offline):\n{}",
+                            errs.iter()
+                                .map(|e| format!("    {e}"))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        ));
+                    }
+                }
+            }
+            Err(e) => eprintln!("  {name}: skipped ({e})"),
+        }
+    }
+
+    assert!(exercised > 0, "no sample plugins to drive offline");
+    assert!(
+        failures.is_empty(),
+        "VST3 spec violations in offline mode:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Prefetch mode, selected at activation, must be spec-clean.
+///
+/// `prefetchable.vst3` is the corpus plugin that implements
+/// `IPrefetchableSupport`, but the mode is the *host's* to request and every
+/// plugin must tolerate it, so this sweeps them all.
+#[test]
+fn prefetch_mode_is_spec_clean() {
+    if !harness_ready() {
+        return;
+    }
+    let _plugins = plugin_guard();
+    let mut failures = Vec::new();
+
+    for (name, path) in sample_plugins() {
+        let blocks = [Block::of(512), Block::of(64)];
+        match drive_blocks_in_mode::<f32>(&path, 48_000.0, 512, ProcessMode::Prefetch, &blocks) {
+            Ok(per_block) => {
+                for (i, findings) in per_block.iter().enumerate() {
+                    let errs = errors(findings);
+                    if !errs.is_empty() {
+                        failures.push(format!(
+                            "{name} block {i} (prefetch):\n{}",
+                            errs.iter()
+                                .map(|e| format!("    {e}"))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        ));
+                    }
+                }
+            }
+            Err(e) => eprintln!("  {name}: skipped ({e})"),
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "VST3 spec violations in prefetch mode:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// Toggling realtime↔prefetch on a *live* instance must stay spec-clean.
+///
+/// This is the one setup/data divergence VST3 allows without re-running
+/// `setupProcessing` (`ProcessSetupCheck::check`'s explicit exception), so the
+/// blocks here deliberately run with `ProcessData::processMode` differing from
+/// the negotiated `ProcessSetup::processMode` — and `kLogIdInvalidProcessMode`
+/// must still not fire. A host that re-ran setup on the toggle, or one that
+/// refused the toggle outright, would both fail to reach this state.
+#[test]
+fn live_realtime_prefetch_toggle_is_spec_clean() {
+    if !harness_ready() {
+        return;
+    }
+    let _plugins = plugin_guard();
+    let Some(path) = host_checker_path() else {
+        eprintln!("host-checker reference plugin not built; skipping");
+        return;
+    };
+
+    let n = unsafe { hc_num_log_events() } as usize;
+    let mut inst = match Vst3Instance::<f32>::load(&path, 48_000.0, 512) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("host-checker load failed ({e:?}); skipping");
+            return;
+        }
+    };
+    let info = inst.info().clone();
+
+    assert_eq!(
+        inst.process_mode(),
+        ProcessMode::Realtime,
+        "plain activation must stay realtime"
+    );
+
+    let in_ch: Vec<c_int> = info
+        .input_bus_channels
+        .iter()
+        .map(|&c| c as c_int)
+        .collect();
+    let out_ch: Vec<c_int> = info
+        .output_bus_channels
+        .iter()
+        .map(|&c| c as c_int)
+        .collect();
+    let event_in = info.has_midi_input as c_int;
+    let event_out = info.has_midi_output as c_int;
+    for i in 0..inst.parameter_count() {
+        if let Some(id) = inst.parameter_id_at(i) {
+            unsafe { hc_add_parameter(id as c_uint) };
+        }
+    }
+
+    // Record the mode pair the host presented each block alongside the
+    // findings, so the assertions below can tell "clean because the toggle
+    // worked" from "clean because nothing ever changed".
+    let observed: &'static Mutex<Vec<(c_int, c_int)>> = Box::leak(Box::new(Mutex::new(Vec::new())));
+    let counts_cell: &'static Mutex<Vec<i64>> = Box::leak(Box::new(Mutex::new(vec![0i64; n])));
+
+    conformance::set_observer(Box::new(move |data, setup| {
+        unsafe {
+            hc_configure(
+                setup.sampleRate,
+                setup.maxSamplesPerBlock,
+                setup.symbolicSampleSize,
+                setup.processMode,
+                in_ch.as_ptr(),
+                in_ch.len() as c_int,
+                out_ch.as_ptr(),
+                out_ch.len() as c_int,
+                event_in,
+                event_out,
+            );
+        }
+        let mut counts = vec![0i64; n];
+        let ptr = std::ptr::from_ref(data).cast::<c_void>();
+        unsafe { hc_validate(ptr, data.numInputs, data.numOutputs, counts.as_mut_ptr()) };
+        observed
+            .lock()
+            .unwrap()
+            .push((setup.processMode, data.processMode));
+        *counts_cell.lock().unwrap() = counts;
+    }));
+
+    let transport = TransportInfo::default();
+    let mut failures = Vec::new();
+
+    for (i, prefetch) in [false, true, true, false, true].into_iter().enumerate() {
+        assert!(
+            inst.set_prefetch(prefetch),
+            "block {i}: realtime<->prefetch toggle refused on a realtime-activated instance"
+        );
+
+        let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))
+            .map(|_| vec![0.0; 512])
+            .collect();
+        let mut outs: Vec<Vec<f32>> = (0..info.num_outputs.max(1))
+            .map(|_| vec![0.0; 512])
+            .collect();
+        let in_refs: Vec<&[f32]> = ins.iter().map(|v| v.as_slice()).collect();
+        let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let mut buffer = AudioBuffer {
+            inputs: &in_refs,
+            outputs: &mut out_refs,
+            num_samples: 512,
+            sample_rate: 48_000.0,
+        };
+        inst.process(&mut buffer, &Vst3InputEvents::default(), None, &transport);
+
+        let findings = findings_from(&counts_cell.lock().unwrap());
+        let errs = errors(&findings);
+        if !errs.is_empty() {
+            failures.push(format!(
+                "block {i} (prefetch={prefetch}):\n{}",
+                errs.iter()
+                    .map(|e| format!("    {e}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+    }
+
+    conformance::clear_observer();
+
+    let seen = observed.lock().unwrap().clone();
+    assert_eq!(seen.len(), 5, "observer did not fire once per block");
+    // The setup half must never move: the whole point of the exception is that
+    // a toggle does *not* re-run `setupProcessing`.
+    assert!(
+        seen.iter().all(|&(setup_mode, _)| setup_mode == seen[0].0),
+        "ProcessSetup::processMode changed across a live toggle — the host re-ran \
+         setupProcessing instead of using the spec's realtime<->prefetch exception: {seen:?}"
+    );
+    // ...and the data half must actually have moved, or this test proves
+    // nothing beyond "a constant equals itself".
+    assert!(
+        seen.iter()
+            .any(|&(setup_mode, data_mode)| setup_mode != data_mode),
+        "ProcessData::processMode never diverged from the setup — the toggle was a no-op, \
+         so the spec exception under test was never exercised: {seen:?}"
+    );
+    assert!(
+        failures.is_empty(),
+        "VST3 spec violations across a live realtime<->prefetch toggle:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// An offline-activated instance must refuse the live realtime/prefetch toggle.
+///
+/// Reaching realtime or prefetch from `kOffline` needs a fresh
+/// `setupProcessing`; doing it per-block would put `ProcessData` out of
+/// agreement with `ProcessSetup` in a way the spec's exception does *not*
+/// cover, and `kLogIdInvalidProcessMode` would fire. The host therefore
+/// declines rather than producing an invalid block — and must keep rendering
+/// offline, which is what a bounce asked for.
+#[test]
+fn offline_instance_refuses_the_live_toggle() {
+    if !harness_ready() {
+        return;
+    }
+    let _plugins = plugin_guard();
+    let Some(path) = host_checker_path() else {
+        eprintln!("host-checker reference plugin not built; skipping");
+        return;
+    };
+    let Ok(mut inst) =
+        Vst3Instance::<f32>::load_with_mode(&path, 48_000.0, 512, ProcessMode::Offline)
+    else {
+        eprintln!("host-checker offline load failed; skipping");
+        return;
+    };
+
+    assert_eq!(inst.process_mode(), ProcessMode::Offline);
+    assert!(
+        !inst.set_prefetch(true),
+        "offline instance accepted a prefetch toggle; that would put ProcessData out of \
+         agreement with the negotiated ProcessSetup"
+    );
+    assert!(
+        !inst.set_prefetch(false),
+        "offline instance accepted a realtime toggle"
+    );
+    assert_eq!(
+        inst.process_mode(),
+        ProcessMode::Offline,
+        "a refused toggle must leave the mode untouched"
+    );
+}
+
+/// The plugin's own view: `host-checker` must report back that it saw offline.
+///
+/// An independent check on the linked-in `HostCheck`. `HostCheckerProcessor`
+/// publishes the mode it observed through `outputParameterChanges` as
+/// `kParamProcessModeTag` carrying `processMode * 0.5`, so decoding it proves
+/// `kOffline` crossed the FFI and arrived inside the plugin — not merely that
+/// our own struct held the right integer. If the host regressed to a hardcoded
+/// `kRealtime`, this reads 0.0 instead of 1.0 and fails.
+#[test]
+fn plugin_observes_the_offline_mode_we_requested() {
+    if !harness_ready() {
+        return;
+    }
+    let _plugins = plugin_guard();
+    let Some(path) = host_checker_path() else {
+        eprintln!("host-checker reference plugin not built; skipping");
+        return;
+    };
+    let Ok(mut inst) =
+        Vst3Instance::<f32>::load_with_mode(&path, 48_000.0, 512, ProcessMode::Offline)
+    else {
+        eprintln!("host-checker offline load failed; skipping");
+        return;
+    };
+    let info = inst.info().clone();
+    let transport = TransportInfo::default();
+
+    // The plugin emits the tag only when the mode *changed* since the last
+    // block (`mLastProcessMode`), and it initialises that field to -1 — so the
+    // first block reports, and later ones stay silent. Scan every block rather
+    // than only the last.
+    let mut reported: Option<f64> = None;
+    for _ in 0..4 {
+        let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))
+            .map(|_| vec![0.0; 512])
+            .collect();
+        let mut outs: Vec<Vec<f32>> = (0..info.num_outputs.max(1))
+            .map(|_| vec![0.0; 512])
+            .collect();
+        let in_refs: Vec<&[f32]> = ins.iter().map(|v| v.as_slice()).collect();
+        let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let mut buffer = AudioBuffer {
+            inputs: &in_refs,
+            outputs: &mut out_refs,
+            num_samples: 512,
+            sample_rate: 48_000.0,
+        };
+        let out = inst.process(&mut buffer, &Vst3InputEvents::default(), None, &transport);
+        if let Some(queue) = out.parameter_changes.get_queue(K_PARAM_PROCESS_MODE_TAG) {
+            if let Some(point) = queue.points.last() {
+                reported = Some(point.value);
+            }
+        }
+    }
+
+    let Some(value) = reported else {
+        panic!(
+            "host-checker never published kParamProcessModeTag; either the host emitted no \
+             ProcessData or output parameter changes are not being read back"
+        );
+    };
+    // The plugin sends `processMode * 0.5` (hostcheckerprocessor.cpp), so
+    // kOffline == 2 arrives as 1.0.
+    let observed = (value * 2.0).round() as c_int;
+    assert_eq!(
+        observed, K_OFFLINE,
+        "plugin observed process mode {observed}, but the host was asked for kOffline \
+         ({K_OFFLINE}) — the requested mode did not reach ProcessData"
     );
 }

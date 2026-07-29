@@ -34,18 +34,21 @@
 //! ## Only the first windowed test in a process gets a window
 //!
 //! `winit` builds at most one `EventLoop` per process, so the second and later
-//! calls to `TestWindow::new` return `None` and those tests print "could not
-//! create a window; skipping" and pass without asserting anything. Running the
-//! whole file therefore exercises exactly one windowed test — pass a filter to
-//! choose which:
+//! calls to [`TestWindow::new`] cannot succeed. Running the whole file
+//! therefore exercises exactly one windowed test — pass a filter to choose
+//! which:
 //!
 //! ```bash
 //! ... --test vst3_gui_lifecycle -- --ignored --nocapture open_editor_run_loop_is_pumped
 //! ```
 //!
-//! This is a pre-existing property of the harness, not of any one test. It is
-//! called out here because a green run of the full file is *not* evidence that
-//! every test in it did its work.
+//! **The starved tests fail rather than skip.** They used to print "could not
+//! create a window; skipping" and report `ok`, which meant a green full-file
+//! run was not evidence that any of them had asserted anything — two of the
+//! four were silently vacuous. A skip is only honest when the *environment*
+//! cannot support the test (no display at all, plugin not built); being
+//! second in line is a harness limitation, and a limitation that reports
+//! success is indistinguishable from a passing test. See [`require_window`].
 
 #![cfg(feature = "conformance")]
 
@@ -110,6 +113,29 @@ fn has_display() -> bool {
         std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some()
     } else {
         true
+    }
+}
+
+/// Obtain a window, or end the test honestly.
+///
+/// Returns `None` only when there is no display to build against — the one
+/// case where skipping is truthful. When a display *is* present, a failure to
+/// build the event loop means this test was not the first windowed one in the
+/// process (see the module header), and that panics: a test starved by a
+/// harness limitation must not report the same `ok` as one that ran.
+fn require_window() -> Option<TestWindow> {
+    if !has_display() {
+        eprintln!("no display (DISPLAY/WAYLAND_DISPLAY unset); skipping");
+        return None;
+    }
+    match TestWindow::new() {
+        Some(win) => Some(win),
+        None => panic!(
+            "a display is present but the event loop could not be built — \
+             winit allows one per process, so only the first windowed test in \
+             a run gets a window. Re-run this test with a filter (see the \
+             module header). Refusing to report success without asserting."
+        ),
     }
 }
 
@@ -187,8 +213,7 @@ fn editor_open_close_pairs_attach_and_remove() {
     let Some(mut inst) = load_host_checker() else {
         return;
     };
-    let Some(win) = TestWindow::new() else {
-        eprintln!("could not create a window; skipping");
+    let Some(win) = require_window() else {
         return;
     };
     let Some(handle) = win.handle() else {
@@ -244,8 +269,7 @@ fn editor_resize_respects_capabilities() {
     let Some(mut inst) = load_host_checker() else {
         return;
     };
-    let Some(win) = TestWindow::new() else {
-        eprintln!("could not create a window; skipping");
+    let Some(win) = require_window() else {
         return;
     };
     let Some(handle) = win.handle() else {
@@ -306,8 +330,7 @@ fn open_editor_run_loop_is_pumped() {
     let Some(mut inst) = load_host_checker() else {
         return;
     };
-    let Some(win) = TestWindow::new() else {
-        eprintln!("could not create a window; skipping");
+    let Some(win) = require_window() else {
         return;
     };
     let Some(handle) = win.handle() else {

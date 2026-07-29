@@ -189,9 +189,11 @@ impl CiResponder {
             | CiMessage::InvalidateMuid { .. }
             | CiMessage::Nak { .. } => Vec::new(),
 
-            // `CiMessage` is non-exhaustive; a future family we don't model yet
-            // gets no reply (a conservative default, never a spurious NAK).
-            _ => Vec::new(),
+            // A CI family we don't model. M2-101 §5.11 lists "Reply to a MIDI-CI
+            // message the Device does not support" as the first intended use of
+            // a NAK, and Table 16 has the code for it. Staying silent instead
+            // leaves the initiator waiting out its §5.5.5 timeout, so answer.
+            _ => self.nak_with(src, 0, Nak::STATUS_MESSAGE_NOT_SUPPORTED),
         }
     }
 
@@ -209,7 +211,13 @@ impl CiResponder {
                 state,
             }]
         } else {
-            self.nak(dest, tutti_midi_types::ci::profile::SUB_ID2_SET_PROFILE_ON)
+            // Table 16 has a code for exactly this: "Profile not supported on
+            // the requested Channel, Group, or Function Block".
+            self.nak_with(
+                dest,
+                tutti_midi_types::ci::profile::SUB_ID2_SET_PROFILE_ON,
+                Nak::STATUS_PROFILE_NOT_SUPPORTED,
+            )
         }
     }
 
@@ -227,22 +235,26 @@ impl CiResponder {
                     body: prop.body.clone(),
                 },
             }],
-            None => self.nak(
+            // We don't hold this property — the resource, not the message, is
+            // what's unsupported, and retrying won't change that.
+            None => self.nak_with(
                 dest,
                 tutti_midi_types::ci::property::SUB_ID2_GET_PROPERTY_DATA,
+                Nak::STATUS_MESSAGE_NOT_SUPPORTED,
             ),
         }
     }
 
-    /// A NAK addressed to `dest` for a message of `nak_sub_id2` we couldn't serve.
-    fn nak(&self, dest: Muid, nak_sub_id2: u8) -> Vec<CiMessage> {
+    /// A NAK addressed to `dest` for a message of `nak_sub_id2`, carrying a
+    /// specific M2-101 Table 16 status code.
+    ///
+    /// Table 16 splits "Do Not Retry" (0x00-0x1F) from "Retry is recommended"
+    /// (0x40-0x5F), so a precise code is what lets the initiator decide whether
+    /// to try again — a blanket 0x00 tells it nothing.
+    fn nak_with(&self, dest: Muid, nak_sub_id2: u8, status_code: u8) -> Vec<CiMessage> {
         vec![CiMessage::Nak {
             header: self.reply_header(dest),
-            nak: Nak {
-                nak_sub_id2,
-                status_code: 0,
-                status_data: 0,
-            },
+            nak: Nak::new(nak_sub_id2, status_code),
         }]
     }
 }

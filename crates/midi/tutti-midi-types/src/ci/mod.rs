@@ -38,8 +38,26 @@ pub const CI_UNIVERSAL_SYSEX: u8 = 0x7E;
 /// Sub-ID#1 identifying a MIDI-CI message (M2-101 §5.1).
 pub const CI_SUB_ID_1: u8 = 0x0D;
 
-/// The MIDI-CI message version/format this implementation speaks (M2-101 v1.2).
-pub const CI_VERSION: u8 = 0x02;
+/// The MIDI-CI Message Format Version this implementation speaks: **0x01**
+/// (MIDI-CI v1.1).
+///
+/// M2-101 §5.3: "When sending MIDI-CI messages, a Device shall always use its
+/// own Message Format Version." Our message bodies are v1.1-shaped — Discovery
+/// omits the Initiator's Output Path Id, Reply to Discovery omits the Output
+/// Path Instance Id and Function Block byte, and NAK omits the details/length/
+/// text fields, all of which v2 added. Declaring 0x02 while emitting v1 bodies
+/// makes every message one or more bytes short of what a conformant peer parses,
+/// which earns a NAK (status 0x41, "Message was malformed").
+///
+/// 0x01 is a fully valid version to speak: §5.4 requires only that a device use
+/// "Message Format Version 0x01 or higher" and that receivers "process the
+/// fields, values, and bits defined in the received version" when it is lower
+/// than their own. So a v1.2 peer parses these correctly.
+///
+/// Raise this to 0x02 in the same change that adds the v2 fields, never before —
+/// and note §5.3 requires invalidating the MUID and re-running Discovery when a
+/// device changes the version it sends.
+pub const CI_VERSION: u8 = 0x01;
 
 /// The "whole device" destination for the device-id byte and for broadcast
 /// MUIDs (M2-101 §5.1).

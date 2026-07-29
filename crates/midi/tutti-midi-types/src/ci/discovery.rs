@@ -104,6 +104,37 @@ pub struct Nak {
 }
 
 impl Nak {
+    /// Generic failure, no further detail (M2-101 Table 16).
+    pub const STATUS_NAK: u8 = 0x00;
+    /// "MIDI-CI message not supported" — we don't implement this message at all.
+    pub const STATUS_MESSAGE_NOT_SUPPORTED: u8 = 0x01;
+    /// "MIDI-CI version not supported".
+    pub const STATUS_VERSION_NOT_SUPPORTED: u8 = 0x02;
+    /// "Channel/Group/Function Block Not in use".
+    pub const STATUS_NOT_IN_USE: u8 = 0x03;
+    /// "Profile not supported on the requested Channel, Group, or Function Block".
+    pub const STATUS_PROFILE_NOT_SUPPORTED: u8 = 0x04;
+    /// "Error occurred, please retry" — unlike the 0x00-0x1F codes, this one
+    /// tells the initiator a retry is worthwhile.
+    pub const STATUS_RETRY: u8 = 0x40;
+    /// "Message was malformed".
+    pub const STATUS_MALFORMED: u8 = 0x41;
+    /// "Timeout has occurred".
+    pub const STATUS_TIMEOUT: u8 = 0x42;
+
+    /// A NAK for `nak_sub_id2` with a specific Table 16 status code.
+    ///
+    /// Prefer a precise code over [`Self::STATUS_NAK`]: Table 16 splits
+    /// "Do Not Retry" (0x00-0x1F) from "Retry is recommended" (0x40-0x5F), and a
+    /// generic 0x00 tells the peer only that something went wrong.
+    pub fn new(nak_sub_id2: u8, status_code: u8) -> Self {
+        Self {
+            nak_sub_id2,
+            status_code,
+            status_data: 0,
+        }
+    }
+
     pub(super) fn encode_body(&self, out: &mut Vec<u8>) {
         out.push(self.nak_sub_id2);
         out.push(self.status_code);

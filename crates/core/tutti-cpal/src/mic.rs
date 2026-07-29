@@ -34,7 +34,7 @@ use ringbuf::{
 };
 
 use tutti_core::ChannelLayout;
-use tutti_sampler::{share_mic_ring, AudioIn, MicMonitorNode, MicRing};
+use tutti_sampler::{share_mic_ring, AudioIn, MicMonitorNode, MicRing, OnEmpty};
 
 use crate::error::{Error, Result};
 
@@ -186,6 +186,12 @@ impl MicIn {
 }
 
 impl AudioIn for MicIn {
+    /// A live capture device: an empty ring means the callback has not pushed
+    /// since the last poll, not that the microphone is finished. A consumer
+    /// that stopped here would end a recording within milliseconds of starting
+    /// it.
+    const ON_EMPTY: OnEmpty = OnEmpty::Starved;
+
     fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
         // Pop up to out.len() frames the callback has pushed. A short/zero count
         // is normal for a live source — the pump backs off and tries again.

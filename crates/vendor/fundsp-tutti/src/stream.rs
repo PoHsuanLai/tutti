@@ -19,7 +19,7 @@
 use super::read::{WaveResult, decode_packet_into};
 use std::fs::File;
 use std::path::Path;
-use tutti_types::io::AudioIn;
+use tutti_types::io::{AudioIn, OnEmpty};
 extern crate alloc;
 use alloc::boxed::Box;
 use symphonia::core::audio::{AudioBuffer, Signal};
@@ -337,6 +337,10 @@ impl FileIn {
 /// fallible detail is available through [`fill_sequential`](FileIn::fill_sequential)
 /// for callers that want it.
 impl AudioIn for FileIn {
+    /// A file has an end, and this impl folds a decode error into it (see the
+    /// doc above): either way `0` means there is no more to read.
+    const ON_EMPTY: OnEmpty = OnEmpty::EndOfStream;
+
     fn poll_into(&mut self, out: &mut [[f32; 2]]) -> usize {
         self.fill_sequential(out).unwrap_or(0)
     }

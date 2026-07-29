@@ -92,7 +92,7 @@ mod test_transport;
 
 // The I/O edge vocabulary is defined once in `tutti-types` and re-exported by
 // `tutti-core`; this crate's `WavOut` implements `AudioOut` against it.
-pub use tutti_core::io::{pump, AudioIn, AudioOut};
+pub use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
 
 // Voice playback: the two tier units, the mixer over them, and the kernels they
 // share. Bevy-free apart from the asset loader, gated inside.

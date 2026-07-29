@@ -359,7 +359,11 @@ pub fn unwire_removed_sources(
     nodes: Query<&AudioNode>,
     declarations: Query<&AudioSources>,
     graph: Option<ResMut<AudioGraphRes>>,
-    mut dirty: ResMut<GraphDirty>,
+    // `Option` to match `graph`: this observer is registered by `GraphWirePlugin`
+    // while `GraphDirty` is inserted by `GraphReconcilePlugin`, and both are
+    // `pub`. An observer has no run condition to hide behind, so the only guard
+    // is the signature.
+    dirty: Option<ResMut<GraphDirty>>,
 ) {
     let entity = remove.event_target();
     let Ok(node) = nodes.get(entity) else { return };
@@ -367,6 +371,7 @@ pub fn unwire_removed_sources(
         return;
     };
     let Some(mut graph) = graph else { return };
+    let Some(mut dirty) = dirty else { return };
     if !graph.0.contains(node.0) {
         return;
     }

@@ -64,23 +64,24 @@ type TransportUnbound = (With<PluginEmitter>, Without<PluginTransportBound>);
 /// lets a later tempo-map edit reach a plugin that is already running, with
 /// nothing reinstalled. Meter is deliberately not read off the transport: it is
 /// a layer over the timeline, not transport state.
+/// # Every resource here is optional, deliberately
+///
+/// All three come from `engine::build_into`, and `engine_ready` only reads
+/// `AudioEngineState` — a value a host can insert on its own, as this crate's
+/// own tests and examples do. Waiting is the right answer anyway: the
+/// steady-state query means a plugin binds as soon as the missing half turns up,
+/// where a hard `Res` turns "not yet" into a panicked schedule.
 pub fn plugin_bind_transport(
     mut commands: Commands,
-    mut graph: ResMut<AudioGraphRes>,
-    transport: Res<TransportRes>,
-    // `Option`, and not covered by `engine_ready`: the metronome is inserted by
-    // the full engine bootstrap, so an app that built a graph and a transport by
-    // hand (a test, an offline render, this crate's own example) has one without
-    // the other. Waiting is the right answer — the steady-state query means a
-    // plugin binds as soon as the meter turns up, where a hard `Res` would panic
-    // the whole schedule instead.
+    graph: Option<ResMut<AudioGraphRes>>,
+    transport: Option<Res<TransportRes>>,
     metronome: Option<Res<MetronomeRes>>,
     unbound: Query<(Entity, &tutti_core::AudioNode), TransportUnbound>,
 ) {
     if unbound.is_empty() {
         return;
     }
-    let Some(metronome) = metronome else {
+    let (Some(mut graph), Some(transport), Some(metronome)) = (graph, transport, metronome) else {
         return;
     };
     let meter = metronome.0.meter_cell();
@@ -206,15 +207,32 @@ type ParamsNeedRebind = (
 /// (`AtomicTarget` declines them, since it collapses at a fixed beat), so a
 /// plugin param modulated with `ModRoute::as_curve` traces a real ramp where a
 /// native param would get a frame-rate staircase.
+/// # Every resource here is optional, deliberately
+///
+/// `engine_ready` reads `AudioEngineState`, which says nothing about whether
+/// `build_into` ran (graph, config, transport) or whether the host added
+/// `TuttiModulationPlugin` (the registry). `TuttiPlugin` notably does **not**
+/// add the modulation plugin, so `--features plugin,modulation` used to panic
+/// here on frame one — this system is scheduled by the hosting plugin but reads
+/// a resource only a different plugin inserts.
 #[cfg(feature = "modulation")]
 pub fn plugin_bind_params(
     mut commands: Commands,
-    mut graph: ResMut<AudioGraphRes>,
-    mut registry: ResMut<crate::modulation::ModTargetRegistry>,
-    config: Res<crate::graph::AudioConfig>,
-    transport: Res<TransportRes>,
+    graph: Option<ResMut<AudioGraphRes>>,
+    registry: Option<ResMut<crate::modulation::ModTargetRegistry>>,
+    config: Option<Res<crate::graph::AudioConfig>>,
+    transport: Option<Res<TransportRes>>,
     changed: Query<ParamBindItem, ParamsNeedRebind>,
 ) {
+    if changed.is_empty() {
+        return;
+    }
+    let (Some(mut graph), Some(mut registry), Some(config), Some(transport)) =
+        (graph, registry, config, transport)
+    else {
+        return;
+    };
+
     for (entity, node, ranges) in changed.iter() {
         let Some(client) = graph.0.node_as_mut::<PluginClient>(node.0) else {
             continue; // not resolvable yet — retried next frame

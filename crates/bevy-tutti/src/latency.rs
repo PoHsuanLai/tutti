@@ -111,10 +111,17 @@ impl Plugin for LatencyCompensationPlugin {
 /// the flag; `commit_graph` does that after publishing to the audio thread.
 pub fn compensate_graph(
     mut graph: ResMut<AudioGraphRes>,
-    dirty: Res<GraphDirty>,
+    // `Option`: `GraphDirty` belongs to `GraphReconcilePlugin`, not to this one.
+    // `LatencyCompensationPlugin` is `pub` and documented as opt-in, so a host
+    // can add it alone — and then a hard `Res` panics rather than doing nothing,
+    // which is what "no graph edits to compensate" should mean.
+    dirty: Option<Res<GraphDirty>>,
     published: Res<ChannelCompensation>,
     mut total: ResMut<GraphLatency>,
 ) {
+    let Some(dirty) = dirty else {
+        return;
+    };
     if !dirty.0 {
         return;
     }

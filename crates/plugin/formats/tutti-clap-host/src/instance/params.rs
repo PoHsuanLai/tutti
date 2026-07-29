@@ -122,9 +122,31 @@ impl ClapLoaded {
 
     /// Collect CLAP-native metadata for every parameter. Crate-private (see
     /// [`parameter_info`](Self::parameter_info)).
+    ///
+    /// A failing `get_info(i)` at `i < count` **truncates**, matching
+    /// [`port_channels`](super::load). Parameters are keyed by id downstream so
+    /// a skipped entry renumbers nothing — it is worse than that: `activate`
+    /// builds `AudioScratch::param_ranges` from this list, and a param missing
+    /// from that map takes the pass-through arm in
+    /// [`add_param_changes`](crate::events::InputEventList::add_param_changes),
+    /// reaching the plugin **un-denormalized** — raw `0..1` into a `100..1100`
+    /// Hz range, silently. Scanning past the hole to keep the later ranges is
+    /// the tempting alternative and is the worse one: it yields a map complete
+    /// for every id but one, so automation looks right everywhere the user
+    /// checks. A short list is a visible symptom; a selectively-wrong map is
+    /// not.
     pub(crate) fn parameters(&self) -> Vec<ClapParamInfo> {
         let count = self.parameter_count() as u32;
-        (0..count).filter_map(|i| self.parameter_info(i)).collect()
+        let mut params = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            let Some(info) = self.parameter_info(i) else {
+                // Stop, don't skip: a skipped param is absent from
+                // `param_ranges` and its automation arrives un-denormalized.
+                break;
+            };
+            params.push(info);
+        }
+        params
     }
 
     /// Every parameter projected onto the shared, format-agnostic
@@ -175,10 +197,14 @@ impl ClapLoaded {
     /// dropping the change rather than delivering it out-of-band and risking a
     /// glitch — and leaves the full enqueue path as follow-up. On an inactive
     /// instance a flush is spec-legal, so it is allowed.
+    ///
+    /// Goes through [`parameters`](Self::parameters) rather than re-walking the
+    /// enumeration, so the two cannot drift about which parameters exist:
+    /// answering for one past a `get_info` hole would gate `set_parameter` on a
+    /// flag belonging to a param with no cached range.
     pub(crate) fn param_requires_process(&self, param_id: u32) -> bool {
-        let count = self.parameter_count() as u32;
-        (0..count)
-            .filter_map(|i| self.parameter_info(i))
+        self.parameters()
+            .into_iter()
             .find(|info| info.id == param_id)
             .is_some_and(|info| info.flags.contains(ClapParamFlags::REQUIRES_PROCESS))
     }

@@ -58,24 +58,55 @@ impl ClapLoaded {
     }
 
     /// Save state, telling the plugin whether it is being saved for a
-    /// preset, project, or duplicate. Falls back to [`Self::state`] if the
-    /// plugin does not implement `CLAP_EXT_STATE_CONTEXT`.
+    /// preset, project, or duplicate.
+    ///
+    /// Falls back to [`Self::state`] **only** when the plugin does not
+    /// implement `CLAP_EXT_STATE_CONTEXT` (or implements it without a `save`
+    /// entry point). A plugin that implements it and returns `false` has
+    /// *refused* the save, and that refusal is reported.
+    ///
+    /// # Errors
+    /// [`ClapError::StateError`] if the plugin implements the extension and its
+    /// context-aware `save` fails, or — via the fallback — if the plain
+    /// `CLAP_EXT_STATE` save fails.
+    ///
+    /// `save` has no third "I don't handle this context" value — a plugin
+    /// declines contexts by not exposing the extension — so `false` is a hard
+    /// failure, not a fallback trigger. Falling through on `false` (what this
+    /// used to do) silently answers a *preset* request with a project-context
+    /// blob tagged `Ok`; the two legitimately differ, so that writes the wrong
+    /// bytes into a `.preset` and surfaces only when someone loads it.
     pub fn state_with_context(&self, context: StateContext) -> Result<Vec<u8>> {
         self.assert_main_thread();
         if let Some(ext) = unsafe { ext::opt(self.extensions.state.context) } {
             if let Some(save_fn) = ext.save {
                 let mut stream = OutputStream::new();
-                if unsafe { save_fn(self.plugin.as_ptr(), stream.as_raw(), context.into()) } {
-                    return Ok(stream.into_data());
+                if !unsafe { save_fn(self.plugin.as_ptr(), stream.as_raw(), context.into()) } {
+                    return Err(ClapError::StateError(format!(
+                        "Context-aware save failed for {context:?}"
+                    )));
                 }
+                return Ok(stream.into_data());
             }
         }
         self.state()
     }
 
-    /// Load state with a specific [`StateContext`]. Falls back to
-    /// [`Self::set_state`] if the plugin does not implement
-    /// `CLAP_EXT_STATE_CONTEXT`.
+    /// Load state with a specific [`StateContext`].
+    ///
+    /// Falls back to [`Self::set_state`] **only** when the plugin does not
+    /// implement `CLAP_EXT_STATE_CONTEXT` (or implements it without a `load`
+    /// entry point). Empty slices are treated as a no-op.
+    ///
+    /// # Errors
+    /// [`ClapError::StateError`] if the plugin implements the extension and its
+    /// context-aware `load` rejects the data, or — via the fallback — if the
+    /// plain `CLAP_EXT_STATE` load rejects it.
+    ///
+    /// A rejection is likewise not a fallback trigger (see
+    /// [`Self::state_with_context`]): retrying a rejected blob through the
+    /// context-free `load` either gets `Ok` on state the plugin said was wrong
+    /// for this context, or an error naming the wrong entry point.
     pub fn set_state_with_context(&mut self, data: &[u8], context: StateContext) -> Result<()> {
         self.assert_main_thread();
         if data.is_empty() {
@@ -84,9 +115,12 @@ impl ClapLoaded {
         if let Some(ext) = unsafe { ext::opt(self.extensions.state.context) } {
             if let Some(load_fn) = ext.load {
                 let mut stream = InputStream::new(data);
-                if unsafe { load_fn(self.plugin.as_ptr(), stream.as_raw(), context.into()) } {
-                    return Ok(());
+                if !unsafe { load_fn(self.plugin.as_ptr(), stream.as_raw(), context.into()) } {
+                    return Err(ClapError::StateError(format!(
+                        "Context-aware load failed for {context:?}"
+                    )));
                 }
+                return Ok(());
             }
         }
         self.set_state(data)

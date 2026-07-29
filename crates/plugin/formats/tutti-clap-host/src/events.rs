@@ -688,16 +688,27 @@ impl InputEventList {
     /// Host-side automation authors values normalized `0..1`, but CLAP events
     /// carry the plugin's **plain** value (CLAP has no normalization). Each
     /// point is therefore denormalized against `ranges` (`param_id → (min,
-    /// max)`) as `min + v·(max - min)`, clamped to `[min, max]`. A param absent
-    /// from `ranges` (or an empty map) passes through unchanged — the safe
-    /// fallback for the common `0..1` param.
+    /// max)`) as `min + v·(max - min)`, clamped to `[min, max]`.
+    ///
+    /// An id missing from `ranges` passes through unchanged when
+    /// `plugin_claims_params` is false — no params extension, so `0..1` is the
+    /// safe reading — but is **dropped** when it is true: `parameters()`
+    /// truncated at a `get_info` hole, and forwarding raw `0..1` to a param
+    /// expecting, say, `100..1100` is silent and audible. Losing the automation
+    /// is the lesser harm. The flag is needed because `ranges.is_empty()`
+    /// cannot tell the two apart — a hole at index 0 empties the map while the
+    /// plugin still claims parameters.
     pub fn add_param_changes(
         &mut self,
         changes: &ParameterChanges,
         ranges: &[(u32, f32, f32)],
+        plugin_claims_params: bool,
     ) -> &mut Self {
         for queue in &changes.queues {
             let range = ranges.iter().find(|(id, _, _)| *id == queue.param_id);
+            if range.is_none() && plugin_claims_params {
+                continue;
+            }
             for point in &queue.points {
                 let value = match range {
                     Some(&(_, min, max)) => {
@@ -838,6 +849,17 @@ unsafe extern "C" fn input_events_get(
     event_list.events[index as usize].header() as *const _
 }
 
+/// How many SysEx payload buffers [`OutputEventList::reserve`] pre-warms.
+/// Far below the event reserve: SysEx is rare, so one buffer per *possible*
+/// event would be 256 allocations against a case that emits one. Past this the
+/// pool grows itself once and then recycles.
+const SYSEX_POOL_PREWARM: usize = 8;
+
+/// Capacity each pre-warmed SysEx buffer starts with — enough for the common
+/// short messages (identity replies, GS/XG mode sets, MPE config) without a
+/// grow. A bulk dump grows its buffer once and keeps that capacity in the pool.
+const SYSEX_PREWARM_BYTES: usize = 64;
+
 /// Owned list that collects events produced by the plugin during
 /// `clap_plugin.process()`.
 ///
@@ -847,6 +869,18 @@ unsafe extern "C" fn input_events_get(
 pub struct OutputEventList {
     pub(crate) list: clap_output_events,
     pub(crate) events: Vec<ClapEvent>,
+    /// Recycled SysEx payload buffers.
+    ///
+    /// CLAP's `try_push` buffer is plugin-owned and valid only for that call, so
+    /// the host must copy — on the audio thread, per event, per block.
+    /// [`Self::clear`] moves each payload `Vec` here instead of dropping it and
+    /// `try_push` refills one, so the allocator is touched only for a payload
+    /// larger than any buffer yet seen.
+    ///
+    /// Whole `Vec`s rather than one arena: `ClapEvent::MidiSysex`'s `buffer`
+    /// pointer aliases its own payload, and an arena reallocating mid-fill would
+    /// dangle every pointer already handed out.
+    pub(crate) sysex_pool: Vec<Vec<u8>>,
 }
 
 impl OutputEventList {
@@ -858,6 +892,7 @@ impl OutputEventList {
                 try_push: Some(output_events_try_push),
             },
             events: Vec::new(),
+            sysex_pool: Vec::new(),
         }
     }
 
@@ -880,8 +915,19 @@ impl OutputEventList {
     /// Reserve heap capacity for at least `n` events. Off-RT only; call
     /// once during plugin activation so the plugin's `try_push` callback
     /// doesn't grow the inner Vec.
+    ///
+    /// Also pre-warms the SysEx payload pool: the pool is fed only by `clear`,
+    /// so without priming, the first block emitting SysEx still allocates on
+    /// the audio thread.
     pub fn reserve(&mut self, n: usize) {
         self.events.reserve(n);
+
+        let wanted = n.min(SYSEX_POOL_PREWARM);
+        self.sysex_pool.reserve(wanted);
+        while self.sysex_pool.len() < wanted {
+            self.sysex_pool
+                .push(Vec::with_capacity(SYSEX_PREWARM_BYTES));
+        }
     }
 
     /// Extract MIDI events from the output as UMP [`MidiEvent`]s,
@@ -1029,8 +1075,20 @@ impl EventList for OutputEventList {
         self.events.len()
     }
 
+    /// Empty the list, **recycling** SysEx payload buffers into
+    /// [`Self::sysex_pool`] rather than freeing them. `process` calls this every
+    /// block; a plain `events.clear()` dropped the `Vec<u8>` inside each
+    /// `MidiSysex`, pairing a free here with an allocation in `try_push`.
     fn clear(&mut self) {
-        self.events.clear();
+        for event in self.events.drain(..) {
+            if let ClapEvent::MidiSysex { _data, .. } = event {
+                // `_data`'s capacity is what is worth keeping; the length is
+                // reset so `try_push` sees an empty buffer to extend into.
+                let mut buf = _data;
+                buf.clear();
+                self.sysex_pool.push(buf);
+            }
+        }
     }
 }
 
@@ -1103,9 +1161,17 @@ unsafe extern "C" fn output_events_try_push(
         CLAP_EVENT_MIDI_SYSEX => {
             let e = &*(event as *const clap_event_midi_sysex);
             if !e.buffer.is_null() && e.size > 0 {
-                let data = std::slice::from_raw_parts(e.buffer, e.size as usize).to_vec();
+                // Recycle a pooled buffer instead of `to_vec()`-ing a fresh
+                // one: the plugin calls this from inside its own `process`, so
+                // that was a per-event, per-block allocation on the audio
+                // thread.
+                let mut data = output_list.sysex_pool.pop().unwrap_or_default();
+                data.clear();
+                data.extend_from_slice(std::slice::from_raw_parts(e.buffer, e.size as usize));
                 // The buffer pointer aliases `data`; the ClapEvent::MidiSysex
                 // variant keeps both together and is never moved independently.
+                // Taken *after* the extend, since that is the last thing that
+                // can reallocate `data` and move its bytes.
                 let inner = clap_event_midi_sysex {
                     header: *header,
                     port_index: e.port_index,
@@ -1168,7 +1234,7 @@ mod tests {
         );
     }
 
-    use super::*;
+    // (`use super::*` is already in scope from the top of this module.)
     use tutti_midi_types::convert::{signed_f32_to_bend_u32, unit_f32_to_u32};
 
     // --- Param-change denormalization (host 0..1 → CLAP plain) ---
@@ -1189,7 +1255,7 @@ mod tests {
         let mut changes = ParameterChanges::new();
         changes.add_change(9, 0, 0.25);
         let mut list = InputEventList::new();
-        list.add_param_changes(&changes, &[(9, 100.0, 1100.0)]);
+        list.add_param_changes(&changes, &[(9, 100.0, 1100.0)], true);
         assert!((first_param_value(&list) - 350.0).abs() < 1e-6);
     }
 
@@ -1199,7 +1265,7 @@ mod tests {
         let mut changes = ParameterChanges::new();
         changes.add_change(9, 0, 1.5);
         let mut list = InputEventList::new();
-        list.add_param_changes(&changes, &[(9, 0.0, 10.0)]);
+        list.add_param_changes(&changes, &[(9, 0.0, 10.0)], true);
         assert!((first_param_value(&list) - 10.0).abs() < 1e-6);
     }
 
@@ -1211,7 +1277,7 @@ mod tests {
         let mut changes = ParameterChanges::new();
         changes.add_change(9, 0, 0.5);
         let mut list = InputEventList::new();
-        list.add_param_changes(&changes, &[(9, 10.0, 0.0)]);
+        list.add_param_changes(&changes, &[(9, 10.0, 0.0)], true);
         let v = first_param_value(&list);
         assert!((0.0..=10.0).contains(&v), "value {v} escaped the range");
     }
@@ -1223,7 +1289,7 @@ mod tests {
         let mut changes = ParameterChanges::new();
         changes.add_change(9, 0, 0.42);
         let mut list = InputEventList::new();
-        list.add_param_changes(&changes, &[]);
+        list.add_param_changes(&changes, &[], false);
         assert!((first_param_value(&list) - 0.42).abs() < 1e-6);
     }
 
@@ -1245,7 +1311,7 @@ mod tests {
         let mut changes = ParameterChanges::new();
         changes.add_change(9, -1, 0.5);
         let mut list = InputEventList::new();
-        list.add_param_changes(&changes, &[]);
+        list.add_param_changes(&changes, &[], false);
         assert_eq!(
             first_time(&list),
             0,

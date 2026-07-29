@@ -109,25 +109,60 @@ pub(super) static HOST_LOG: clap_host_log = clap_host_log {
     log: Some(host_log),
 };
 
+/// The stderr tag for each CLAP severity. Split out of [`host_log`] so the
+/// mapping is testable — inline, its seven arms were reachable only through the
+/// FFI, with stderr as the sole output.
+fn severity_label(severity: clap_log_severity) -> &'static str {
+    match severity {
+        CLAP_LOG_DEBUG => "DEBUG",
+        CLAP_LOG_INFO => "INFO",
+        CLAP_LOG_WARNING => "WARN",
+        CLAP_LOG_ERROR => "ERROR",
+        CLAP_LOG_FATAL => "FATAL",
+        CLAP_LOG_HOST_MISBEHAVING => "HOST-MISBEHAVING",
+        CLAP_LOG_PLUGIN_MISBEHAVING => "PLUGIN-MISBEHAVING",
+        _ => "UNKNOWN",
+    }
+}
+
+/// `clap.log` is `[thread-safe]`, audio thread included — a plugin reporting a
+/// denormal storm has nothing else to report it with. But every step here is
+/// forbidden there: `into_owned` allocates, `eprintln!` allocates and takes the
+/// stderr lock, and `LogState::push` takes a `Mutex` that
+/// [`drain_log`](crate::ClapLoaded::drain_log) holds across a copy, so a
+/// main-thread consumer could stall the callback.
+///
+/// So an audio-thread line is counted, not recorded — visible through
+/// [`log_lines_dropped`](crate::ClapLoaded::log_lines_dropped). That loses the
+/// message text, which is a real cost; the eventual answer is a lock-free queue
+/// with pre-allocated slots.
 unsafe extern "C" fn host_log(
-    _host: *const ClapHostVtable,
+    host: *const ClapHostVtable,
     severity: clap_log_severity,
     msg: *const c_char,
 ) {
     if msg.is_null() {
         return;
     }
-    let msg_str = CStr::from_ptr(msg).to_string_lossy();
-    match severity {
-        CLAP_LOG_DEBUG => eprintln!("[clap-plugin DEBUG] {}", msg_str),
-        CLAP_LOG_INFO => eprintln!("[clap-plugin INFO] {}", msg_str),
-        CLAP_LOG_WARNING => eprintln!("[clap-plugin WARN] {}", msg_str),
-        CLAP_LOG_ERROR => eprintln!("[clap-plugin ERROR] {}", msg_str),
-        CLAP_LOG_FATAL => eprintln!("[clap-plugin FATAL] {}", msg_str),
-        CLAP_LOG_HOST_MISBEHAVING => eprintln!("[clap-plugin HOST-MISBEHAVING] {}", msg_str),
-        CLAP_LOG_PLUGIN_MISBEHAVING => eprintln!("[clap-plugin PLUGIN-MISBEHAVING] {}", msg_str),
-        _ => eprintln!("[clap-plugin ?{}] {}", severity, msg_str),
+    let Some(state) = get_host_state(host) else {
+        return;
+    };
+    // Check the thread before touching `msg`: building the `String` is itself
+    // one of the allocations this guard exists to prevent.
+    if state.is_audio_thread() {
+        state.log.note_audio_thread_drop();
+        return;
     }
+    let msg_str = CStr::from_ptr(msg).to_string_lossy().into_owned();
+    let label = severity_label(severity);
+    if label == "UNKNOWN" {
+        eprintln!("[clap-plugin ?{severity}] {msg_str}");
+    } else {
+        eprintln!("[clap-plugin {label}] {msg_str}");
+    }
+    // Retain the line so a consumer can route it somewhere other than stderr.
+    // Unrecognised severities are kept verbatim — see `LogRecord`.
+    state.log.push(severity, msg_str);
 }
 
 pub(super) static HOST_PARAMS: clap_host_params = clap_host_params {

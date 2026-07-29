@@ -8,8 +8,18 @@
 use crate::events::{InputEventList, OutputEventList};
 use crate::types::{ClapNoteExpression, MidiEvent, ParameterChanges};
 use clap_sys::audio_buffer::clap_audio_buffer;
-use clap_sys::process::{clap_process_status, CLAP_PROCESS_CONTINUE};
+use clap_sys::process::CLAP_PROCESS_CONTINUE;
 use smallvec::SmallVec;
+use std::sync::atomic::AtomicI32;
+
+/// Extra caller-channel-pointer slots reserved beyond the plugin's port layout,
+/// so a caller supplying more channels than the plugin consumes does not grow
+/// the pool on the audio thread. See [`ProcessScratch::caller_input_ptrs`].
+///
+/// 8 covers the realistic over-supply (a 7.1 host feeding a stereo plugin) for
+/// 64 bytes a side; past it, one heap grow on the first such block and none
+/// after.
+const CALLER_PTR_HEADROOM: usize = 8;
 
 /// Audio format the host presents to the plugin.
 #[derive(Debug, Clone, Copy)]
@@ -33,6 +43,17 @@ pub struct ProcessScratch<T> {
     pub(crate) output_ptrs: Vec<*mut T>,
     pub(crate) input_bufs: Vec<clap_audio_buffer>,
     pub(crate) output_bufs: Vec<clap_audio_buffer>,
+    /// The *caller's* channel pointers for this block, one entry per channel
+    /// the caller supplied — distinct from `input_ptrs`/`output_ptrs`, which
+    /// are the plugin-facing arrays after zero-padding to the port layout.
+    ///
+    /// These were `SmallVec<[*mut T; 16]>` locals in `process`, which spilled to
+    /// the heap every block past 16 channels a side — reachable through
+    /// supported layouts, since two 8-channel ports or a third-order ambisonic
+    /// bus already sit at the inline bound. Pooled here instead, sized from the
+    /// port layout in `resize_for`.
+    pub(crate) caller_input_ptrs: Vec<*mut T>,
+    pub(crate) caller_output_ptrs: Vec<*mut T>,
 }
 
 // The raw pointers live inside our own `channels` vec; the whole struct is
@@ -48,6 +69,8 @@ impl<T: Copy + Default> ProcessScratch<T> {
             output_ptrs: Vec::new(),
             input_bufs: Vec::new(),
             output_bufs: Vec::new(),
+            caller_input_ptrs: Vec::new(),
+            caller_output_ptrs: Vec::new(),
         }
     }
 
@@ -81,6 +104,19 @@ impl<T: Copy + Default> ProcessScratch<T> {
         self.input_bufs.reserve_exact(num_input_ports);
         self.output_bufs.clear();
         self.output_bufs.reserve_exact(num_output_ports);
+
+        // Headroom above the port layout: `refill_port_buffers` clamps with
+        // `.min(wanted)`, but the caller's extra pointers are collected before
+        // the clamp discards them, so an over-supplying caller would otherwise
+        // be exactly the case that still grows the pool on the audio thread.
+        // Additive, not a multiplier — over-supply is a handful of channels,
+        // not a proportion of the layout.
+        self.caller_input_ptrs.clear();
+        self.caller_input_ptrs
+            .reserve_exact(input_channels_total + CALLER_PTR_HEADROOM);
+        self.caller_output_ptrs.clear();
+        self.caller_output_ptrs
+            .reserve_exact(output_channels_total + CALLER_PTR_HEADROOM);
     }
 }
 
@@ -100,8 +136,19 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     /// CLAP parameter events carry the plugin's **plain** value (CLAP has no
     /// normalization), but host-side automation authors values normalized
     /// `0..1` — so incoming param points are denormalized `min + v·(max-min)`
-    /// against this map before the plugin sees them. Empty ⇒ pass-through.
+    /// against this map before the plugin sees them.
     pub param_ranges: Vec<(u32, f32, f32)>,
+    /// Whether the plugin reported a nonzero `params.count()` at activation.
+    ///
+    /// An empty `param_ranges` is ambiguous on its own and the two cases need
+    /// opposite handling: no `params` extension means automation must pass
+    /// through unchanged, while a failing `get_info(0)` empties the map by
+    /// truncation in [`parameters`](super::ClapLoaded::parameters), where
+    /// pass-through would hand raw `0..1` to a param expecting a real range.
+    /// Recording the claim separately lets
+    /// [`add_param_changes`](crate::events::InputEventList::add_param_changes)
+    /// tell those apart.
+    pub plugin_claims_params: bool,
     /// Filled by the plugin's `try_push` callback during `process`.
     pub output_events: OutputEventList,
     /// Return pools: `process` drains the plugin's emitted events into these so
@@ -114,9 +161,14 @@ pub(crate) struct AudioScratch<T: super::ClapSample> {
     /// on stop_processing/reactivate. Never derived from transport seconds.
     pub steady_time: i64,
     /// The `clap_process_status` the plugin returned on the most recent block.
-    /// Drives the TAIL/SLEEP transition logging in `process`; the shared output
-    /// vocabulary carries no status field.
-    pub last_process_status: clap_process_status,
+    ///
+    /// Atomic so the audio thread's `Relaxed` store is readable off-thread
+    /// through
+    /// [`ClapActive::last_process_status`](super::ClapActive::last_process_status);
+    /// as a plain field, TAIL and SLEEP reached callers only via an `eprintln!`
+    /// on the audio thread. A plain `AtomicI32` rather than `RtPublish` because
+    /// this is a scalar — nothing here can be freed on the audio thread.
+    pub last_process_status: AtomicI32,
 }
 
 impl<T: super::ClapSample> AudioScratch<T> {
@@ -125,12 +177,13 @@ impl<T: super::ClapSample> AudioScratch<T> {
             process: ProcessScratch::new(),
             input_events: InputEventList::new(),
             param_ranges: Vec::new(),
+            plugin_claims_params: false,
             output_events: OutputEventList::new(),
             out_midi: SmallVec::new(),
             out_param_changes: ParameterChanges::new(),
             out_note_expressions: SmallVec::new(),
             steady_time: 0,
-            last_process_status: CLAP_PROCESS_CONTINUE,
+            last_process_status: AtomicI32::new(CLAP_PROCESS_CONTINUE),
         }
     }
 }

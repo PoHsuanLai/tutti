@@ -143,12 +143,18 @@ type PlaySoundFontPending = (
 pub fn soundfont_playback_system(
     mut commands: Commands,
     sf_assets: Res<Assets<SoundFontAsset>>,
-    config: Res<AudioConfig>,
+    // `build_into`'s, and this plugin is separately addable.
+    config: Option<Res<AudioConfig>>,
     // Steady-state, not `Added`: retried each frame until the `.sf2` asset
     // resolves. Excludes entities already building (`PendingSoundFontUnit`) or
     // already playing (they carry an `AudioNode`).
     query: Query<(Entity, &PlaySoundFont), PlaySoundFontPending>,
 ) {
+    // No engine config means no rate to build at; the trigger query is
+    // steady-state, so entities simply wait for one.
+    let Some(config) = config else {
+        return;
+    };
     for (entity, play) in query.iter() {
         let Some(source) = sf_assets.get(&play.source) else {
             // Asset still loading; entity stays in the trigger set and is
@@ -198,10 +204,17 @@ pub fn soundfont_playback_system(
 ///   [`AudioSources`](crate::graph::AudioSources) on a mixer.
 pub fn promote_pending_soundfonts(
     mut commands: Commands,
-    mut graph: ResMut<AudioGraphRes>,
-    mut dirty: ResMut<GraphDirty>,
+    graph: Option<ResMut<AudioGraphRes>>,
+    dirty: Option<ResMut<GraphDirty>>,
     mut pending: Query<(Entity, &mut PendingSoundFontUnit)>,
 ) {
+    // `TuttiSoundFontPlugin` is `pub` and separately addable, but `GraphDirty`
+    // is `GraphReconcilePlugin`'s and the graph is `build_into`'s. A promotion
+    // with nowhere to promote into waits instead of panicking — the pending
+    // task is untouched, so it retries.
+    let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
+        return;
+    };
     let mut edited = false;
 
     for (entity, mut pending_unit) in pending.iter_mut() {

@@ -246,9 +246,13 @@ pub fn rebuild(
 /// "free-running" has to mean.
 pub fn drive(
     mut matrix: ResMut<ModulationMatrix>,
-    transport: Res<TransportRes>,
+    // `build_into`'s, not this plugin's; `engine_ready` does not cover it.
+    transport: Option<Res<TransportRes>>,
     mut last_steady: Local<Option<i64>>,
 ) {
+    let Some(transport) = transport else {
+        return;
+    };
     let Some(driver) = matrix.driver.as_mut() else {
         return;
     };

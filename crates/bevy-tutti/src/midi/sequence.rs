@@ -97,8 +97,10 @@ pub fn rebuild(
     mut removed: RemovedComponents<MidiSourceInstall>,
     mut installed: ResMut<InstalledMidiSources>,
     resolver: MidiTargetResolver,
-    transport: Res<TransportRes>,
-    config: Res<AudioConfig>,
+    // Both `engine::build_into`'s, and `engine_ready` covers neither — it reads
+    // `AudioEngineState`, which a host can insert alone.
+    transport: Option<Res<TransportRes>>,
+    config: Option<Res<AudioConfig>>,
 ) {
     let dirty = !changed.is_empty() || !removed.is_empty();
     // Draining is what marks this frame's removals as seen, so it happens
@@ -107,6 +109,10 @@ pub fn rebuild(
     if !dirty {
         return;
     }
+    // After the drain, so a frame with no engine still marks removals seen.
+    let (Some(transport), Some(config)) = (transport, config) else {
+        return;
+    };
 
     // Group by target first: a port holds *one* installed source, so two
     // installs on one synth have to become one merged clip. Installing each in

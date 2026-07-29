@@ -204,8 +204,8 @@ impl MasterSources {
               is a distinct query or resource the rebuild genuinely needs"
 )]
 pub fn rebuild(
-    mut graph: ResMut<AudioGraphRes>,
-    mut dirty: ResMut<GraphDirty>,
+    graph: Option<ResMut<AudioGraphRes>>,
+    dirty: Option<ResMut<GraphDirty>>,
     nodes: Query<&AudioNode>,
     sinks: Query<(Entity, &AudioSources)>,
     master: Res<MasterSources>,
@@ -221,6 +221,12 @@ pub fn rebuild(
     if !is_dirty {
         return;
     }
+    // `build_into`'s graph and `GraphReconcilePlugin`'s flag; `engine_ready`
+    // guarantees neither, and a wire rebuild with no graph is a no-op. Taken
+    // after the dirty gate so the removal drain above still happens.
+    let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
+        return;
+    };
 
     for (sink_entity, declared) in sinks.iter() {
         let Ok(sink) = nodes.get(sink_entity) else {

@@ -86,20 +86,35 @@ pub fn start_exports(world: &mut World) {
         .map(|(e, n)| (e, *n))
         .collect();
 
-    let prepared = {
-        let graph = world.resource::<AudioGraphRes>();
-        let config = world.resource::<AudioConfig>();
-        prepare_net(graph, config, &nodes, &request)
+    // Fallible rather than `world.resource::<_>()`: both come from
+    // `engine::build_into`, while the `engine_ready` gate on this system only
+    // reads `AudioEngineState` — a value a host can insert alone. An export with
+    // no engine to render from is a reportable failure, and this request is
+    // already holding the channel to report it on, so it does not silently
+    // vanish the way an early `return` would.
+    let prepared = match (
+        world.get_resource::<AudioGraphRes>(),
+        world.get_resource::<AudioConfig>(),
+    ) {
+        (Some(graph), Some(config)) => {
+            prepare_net(graph, config, &nodes, &request).ok_or("export target node has no outputs")
+        }
+        // Distinguished from the above so the reason is the real one: an export
+        // requested against a world with no engine is a different failure than a
+        // target that cannot produce audio, and reporting the wrong one sends
+        // whoever reads it looking at the wrong thing.
+        _ => Err("no audio engine to export from"),
     };
 
-    let Some((mut net, ctx)) = prepared else {
-        world.trigger(ExportDone {
-            entity,
-            result: Err(tutti_export::Error::InvalidConfig(
-                "export target node has no outputs".into(),
-            )),
-        });
-        return;
+    let (mut net, ctx) = match prepared {
+        Ok(prepared) => prepared,
+        Err(reason) => {
+            world.trigger(ExportDone {
+                entity,
+                result: Err(tutti_export::Error::InvalidConfig(reason.into())),
+            });
+            return;
+        }
     };
 
     let ExportRequest {

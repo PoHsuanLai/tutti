@@ -141,7 +141,15 @@ pub struct ModBusRes(pub Arc<ModBus>);
 /// individually buys nothing.
 #[derive(SystemParam)]
 pub struct ModTargetResolver<'w, 's> {
-    graph: Res<'w, AudioGraphRes>,
+    /// `Option` because a `SystemParam` validates before its system runs: a hard
+    /// `Res` here panics the schedule for every caller, whatever their own
+    /// signature says. The graph is `build_into`'s, while `engine_ready` only
+    /// reads `AudioEngineState`.
+    ///
+    /// Note this degrades rather than disables: [`resolve`](Self::resolve)
+    /// checks host-supplied targets and a source's own rate *before* the graph,
+    /// and neither needs one. Only the node-downcast tier goes quiet.
+    graph: Option<Res<'w, AudioGraphRes>>,
     registry: Res<'w, ModTargetRegistry>,
     bus: Res<'w, ModBusRes>,
     nodes: Query<'w, 's, &'static AudioNode>,
@@ -185,8 +193,9 @@ impl ModTargetResolver<'_, '_> {
         if let Some(target) = self.resolve_rate(entity, param, range) {
             return Some(target);
         }
+        let graph = self.graph.as_ref()?;
         let node = self.nodes.get(entity).ok()?;
-        self.registry.resolve(&self.graph, node.0, param, range)
+        self.registry.resolve(graph, node.0, param, range)
     }
 
     /// The accumulator for a source's own rate — an [`AtomicTarget`] mirroring

@@ -20,9 +20,16 @@ use crate::graph::{AudioGraphRes, GraphDirty};
 /// forces main-thread scheduling without an exclusive-system signature.
 pub fn commit_graph(
     _main: bevy_ecs::system::NonSendMarker,
-    mut graph: ResMut<AudioGraphRes>,
-    mut dirty: ResMut<GraphDirty>,
+    graph: Option<ResMut<AudioGraphRes>>,
+    dirty: Option<ResMut<GraphDirty>>,
 ) {
+    // Both come from different plugins than each other (`build_into` and
+    // `GraphReconcilePlugin`), and `engine_ready` guarantees neither — it reads
+    // `AudioEngineState`, which a host can insert alone. Nothing to commit into
+    // is a no-op, not a crash.
+    let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
+        return;
+    };
     if !dirty.0 {
         return;
     }

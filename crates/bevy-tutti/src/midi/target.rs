@@ -126,7 +126,15 @@ impl MidiNode for tutti_synth::PolySynth {
 /// together and threading them separately buys nothing.
 #[derive(SystemParam)]
 pub struct MidiTargetResolver<'w, 's> {
-    graph: Res<'w, AudioGraphRes>,
+    /// `Option` because a `SystemParam` validates *before* its system runs, so a
+    /// hard `Res` here panics the schedule for every caller — including ones
+    /// whose own signature is carefully optional. The graph comes from
+    /// `engine::build_into`, while the `engine_ready` gate those callers sit
+    /// behind only reads `AudioEngineState`, which a host can insert alone.
+    ///
+    /// With no graph there are no nodes, so [`port`](Self::port) answers `None`
+    /// and callers take their existing skip-and-retry path.
+    graph: Option<Res<'w, AudioGraphRes>>,
     registry: Res<'w, MidiTargetRegistry>,
     nodes: Query<'w, 's, &'static AudioNode>,
 }
@@ -142,7 +150,8 @@ impl MidiTargetResolver<'_, '_> {
     /// The one resolution path. A caller wanting only a push handle takes
     /// [`MidiInPort::sender`] off the result.
     pub fn port(&self, entity: Entity) -> Option<&MidiInPort> {
+        let graph = self.graph.as_ref()?;
         let node = self.nodes.get(entity).ok()?;
-        self.registry.resolve_node(&self.graph, node.0)
+        self.registry.resolve_node(graph, node.0)
     }
 }

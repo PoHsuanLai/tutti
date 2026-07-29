@@ -193,36 +193,14 @@ impl ClapLoaded {
 
 /// Per-port channel counts for one side, read off `clap.audio-ports`.
 ///
-/// # Why a hole truncates instead of being skipped
-///
-/// `audio-ports.h` declares `count()` as "Number of ports" and `get()` as
-/// "Returns true on success" — a count, not the upper bound of a sparse index
-/// space. There is no spec provision for `get(i)` failing at `i < count`, so a
-/// plugin that does it is malformed. What matters is that the host's recovery
-/// not be worse than stopping.
-///
-/// It was. This used to `filter_map`, which **skips** the hole and closes the
-/// gap: with 5 ports and `get(3)` failing, the returned `Vec` had 4 entries and
-/// port 4's channel count landed at index 3. That list is positional — it is
-/// the *only* description of the port geometry, and
-/// [`refill_port_buffers`](super::audio) walks it in order to carve a flat
-/// pointer array into per-port `clap_audio_buffer` descriptors, advancing its
-/// offset by each entry's channel count. So a skipped hole silently renumbers
-/// every later port and hands the plugin channels belonging to its neighbour —
-/// misrouted audio, with no error anywhere and geometry that still looks
-/// self-consistent.
-///
-/// Truncating at the hole keeps the surviving list a true **prefix** of the
-/// plugin's real port list: every port the host does present sits at its own
-/// index carrying its own channel count, so nothing is ever misattributed. The
-/// host presents fewer ports than the plugin declared, which CLAP already
-/// tolerates (`process` carries explicit `audio_inputs_count` /
-/// `audio_outputs_count`, and the caller pads or drops against them) — whereas
-/// a wrong-width port at the wrong index is unrepresentable as anything but a
-/// bug. Failing the whole load was the other candidate and is disproportionate:
-/// a hole at index 0 would kill a plugin whose remaining ports are perfectly
-/// describable, and truncation degrades to exactly that empty-list case on its
-/// own when the hole *is* at 0.
+/// A `get(i)` failure at `i < count` is malformed — CLAP has no sparse index
+/// space — and **truncates** rather than skipping. The returned list is
+/// positional: [`refill_port_buffers`](super::audio) walks it in order,
+/// advancing its offset by each entry's channel count. A `filter_map` (what
+/// this used to be) closes the gap, so every later port silently moves down one
+/// index and gets handed its neighbour's channels. Truncating keeps the list a
+/// true prefix, which CLAP tolerates — `process` carries explicit
+/// `audio_inputs_count` / `audio_outputs_count`.
 fn port_channels(
     plugin: *const clap_plugin,
     audio_ports: *const clap_plugin_audio_ports,
@@ -250,20 +228,10 @@ fn port_channels(
 
 /// Whether any output port advertises `CLAP_AUDIO_PORT_SUPPORTS_64BITS`.
 ///
-/// # Why this stops at a hole too
-///
-/// Same enumeration shape as [`port_channels`], but the consequence differs
-/// and is worth naming, because "it's only a bool" is the reasoning that would
-/// leave it unfixed. This result is not positional, so a hole cannot *shift*
-/// anything — yet it must still stop at the same index, because the two
-/// functions describe the same port list and are consumed together.
-///
-/// [`port_channels`] truncates at the hole, so ports past it are ones the host
-/// has decided not to present at all. Scanning past the hole here would let a
-/// port the host will never hand the plugin decide the sample format for the
-/// ports it does — `activate::<f64>()` would then succeed on a claim made by a
-/// port that is absent from the negotiated layout. Stopping keeps both reads
-/// describing the same prefix, which is the only way the two stay consistent.
+/// Stops at a `get` failure for the same index as [`port_channels`], though
+/// nothing here is positional: ports past the hole are absent from the
+/// presented layout, so letting one vote would make `activate::<f64>()` succeed
+/// on a claim by a port the plugin is never handed.
 fn check_f64_support(
     plugin: *const clap_plugin,
     audio_ports: *const clap_plugin_audio_ports,
@@ -295,21 +263,22 @@ fn check_f64_support(
 mod enumeration_hole_tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Mutex;
 
-    /// Index at which the stub's `get` reports failure. Process-global because
-    /// the stub is a bare `extern "C"` fn with no state parameter — the same
-    /// reason the reference plugin's switches are globals.
+    /// Index at which the stub's `get` reports failure. Global because the stub
+    /// is a bare `extern "C"` fn with no state parameter.
     static HOLE: AtomicU32 = AtomicU32::new(u32::MAX);
     /// Number of ports the stub's `count` reports.
     static COUNT: AtomicU32 = AtomicU32::new(0);
+    /// Serializes [`with_layout`]. The globals above are process-wide, every
+    /// test configures them differently, and cargo runs the tests on parallel
+    /// threads: unserialized, one test's `store` lands inside another's `f` and
+    /// the suite fails on roughly 45% of runs.
+    static LAYOUT_LOCK: Mutex<()> = Mutex::new(());
 
     /// Stub layout: port `i` has `i + 1` channels, and only the **last** port
-    /// advertises 64-bit support.
-    ///
-    /// Both choices are load-bearing. Distinct widths make a shift visible in
-    /// `port_channels`; putting the 64-bit flag last means a `check_f64_support`
-    /// that scans past a hole reaches a different answer than one that stops,
-    /// which is the whole distinction under test.
+    /// advertises 64-bit support. Distinct widths make an index shift visible;
+    /// the flag being last is what makes scanning-past differ from stopping.
     unsafe extern "C" fn stub_count(_plugin: *const clap_plugin, _is_input: bool) -> u32 {
         COUNT.load(Ordering::SeqCst)
     }
@@ -340,19 +309,22 @@ mod enumeration_hole_tests {
         }
     }
 
-    /// Configure the stub and run `f`. Serialized by the harness running these
-    /// in one binary; each call sets both globals, so no test inherits state.
+    /// Configure the stub and run `f` under [`LAYOUT_LOCK`], so the store and
+    /// the read that follows it cannot interleave with another test's.
+    ///
+    /// The lock is taken poison-tolerant: a failing assertion inside `f` panics
+    /// with the guard held, and propagating that as a `PoisonError` would turn
+    /// one real failure into four misleading ones in the other tests.
     fn with_layout<R>(count: u32, hole: u32, f: impl FnOnce(&clap_plugin_audio_ports) -> R) -> R {
+        let _guard = LAYOUT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         COUNT.store(count, Ordering::SeqCst);
         HOLE.store(hole, Ordering::SeqCst);
         let ext = stub_ext();
         f(&ext)
     }
 
-    /// The baseline: with no hole, every port is reported at its own index.
-    ///
-    /// Without this, a bug that dropped all ports unconditionally would satisfy
-    /// the truncation assertions below for entirely the wrong reason.
+    /// Baseline — without it, dropping all ports unconditionally would satisfy
+    /// the truncation assertions below.
     #[test]
     fn no_hole_reports_every_port() {
         let channels = with_layout(4, u32::MAX, |ext| {
@@ -361,12 +333,8 @@ mod enumeration_hole_tests {
         assert_eq!(channels, vec![1, 2, 3, 4]);
     }
 
-    /// A hole must truncate, never renumber.
-    ///
-    /// The pre-fix `filter_map` returned `[1, 2, 4]` here: three ports, with
-    /// port 3's four channels sitting at index 2 where a two-channel port
-    /// belongs. `refill_port_buffers` slices a flat pointer array by these
-    /// counts in order, so that list routes channels to the wrong ports.
+    /// A hole must truncate, never renumber. The pre-fix `filter_map` returned
+    /// `[1, 2, 4]` — port 3's width at index 2.
     #[test]
     fn hole_truncates_the_port_list() {
         let channels = with_layout(4, 2, |ext| port_channels(std::ptr::null(), ext, false));
@@ -385,12 +353,8 @@ mod enumeration_hole_tests {
         assert!(channels.is_empty());
     }
 
-    /// `check_f64_support` must not let a port past the hole vote.
-    ///
-    /// Only the last port advertises 64-bit here, and the hole sits before it.
-    /// `port_channels` therefore presents a layout that excludes that port
-    /// entirely — so reporting 64-bit support would let `activate::<f64>()`
-    /// succeed on a claim made by a port the plugin will never be handed.
+    /// The only 64-bit-capable port is the last one, past the hole — so it is
+    /// absent from the presented layout and must not vote.
     #[test]
     fn f64_support_ignores_ports_past_a_hole() {
         let supports = with_layout(4, 2, |ext| check_f64_support(std::ptr::null(), ext));
@@ -402,9 +366,8 @@ mod enumeration_hole_tests {
         );
     }
 
-    /// The complement: a 64-bit-capable port *inside* the surviving prefix
-    /// still counts. Without this, `check_f64_support` returning a constant
-    /// `false` would pass the test above.
+    /// The complement — without it, a constant `false` would pass the test
+    /// above.
     #[test]
     fn f64_support_still_sees_ports_before_a_hole() {
         // count = 1 → index 0 is the last port, so it carries the flag; the

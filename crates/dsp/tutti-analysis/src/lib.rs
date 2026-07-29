@@ -73,6 +73,7 @@ pub mod error;
 pub mod fft;
 pub mod geometry;
 pub mod grid;
+pub mod loudness;
 pub mod onset;
 pub mod peaks;
 /// The YIN numerics `yin` drives. Private engine, not public surface:
@@ -89,6 +90,10 @@ pub use error::{AnalysisError, Result};
 pub use fft::FftScratch;
 pub use geometry::StftGeometry;
 pub use grid::{BinCount, BinIndex, FrameCount, FrameIndex, Grid};
+pub use loudness::{
+    finish as finish_loudness, measure_loudness, step_loudness, Loudness, LoudnessConfig,
+    LoudnessState,
+};
 pub use onset::{
     complex_domain_deviation, detect_onsets, high_frequency_content, spectral_energy,
     spectral_flux, step_onset, suppress_close_onsets, DetectionFunction, Onset, OnsetConfig,
@@ -120,7 +125,6 @@ pub use tutti_types::{Note, PitchClass};
 /// this crate — five of them had hand-rolled their own, two silently dropping
 /// channels 2..N.
 pub use tutti_types::{fold_buffer_to_mono, fold_planar_to_mono};
-
 
 /// The generic complex type, re-exported so consumers can name a bin without
 /// depending on `rustfft` directly. Most code wants [`Complex`] instead.

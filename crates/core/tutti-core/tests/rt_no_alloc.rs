@@ -47,7 +47,10 @@ fn meter_output_is_allocation_free_with_tap_open() {
     let tap = AudioTap::new();
     // The ring holds ~3 s; draining is the consumer's job, so this also
     // exercises the ring-full drop path once it saturates.
-    let _consumer = tap.open();
+    // `expect`, not a discard: the whole point of this test is that the tap is
+    // OPEN while `meter_output` runs, so a silently-unopened tap would make it
+    // pass by measuring the closed path.
+    let _consumer = tap.open().expect("a fresh tap opens");
 
     let buffer = interleaved_stereo(512);
     let mut ctx = MeteringContext::new();

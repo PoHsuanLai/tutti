@@ -6,7 +6,7 @@ Sample playback, disk streaming, audio input, and recording.
 
 Handles file playback and audio recording for DAW applications. Butler thread loads audio from disk asynchronously using ring buffers. Supports audio input from hardware, MIDI/audio/automation recording, time-stretching via phase vocoder, and SoundFont synthesis.
 
-Uses [cpal](https://crates.io/crates/cpal) for audio I/O, [hound](https://crates.io/crates/hound) for WAV files, [symphonia](https://crates.io/crates/symphonia) for other formats, and [rustysynth](https://github.com/PoHsuanLai/rustysynth) for SoundFont.
+Uses [symphonia](https://crates.io/crates/symphonia) for decoding. Device I/O lives in `tutti-cpal`, the live WAV sink in `tutti-io`, and SoundFont in `tutti-synth` — this crate is sample playback and disk streaming only.
 
 ## Quick Start
 

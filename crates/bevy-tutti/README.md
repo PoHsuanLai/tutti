@@ -203,16 +203,33 @@ is what `AudioPump` does. Register the frame type once, then spawn a pump:
 app.add_audio_pump::<f32, 2>();   // stereo — mic, WAV
 app.add_audio_pump::<f32, 6>();   // 5.1 render
 
-// Mic -> WAV. `MicIn::open_with_monitor` also hands back a monitor node;
-// see below.
+// Mic -> WAV. `matching_sink` builds the sink from the device's own rate and
+// width, which is the one place both halves are in scope — hand-rolling the
+// `WavOut` is how you get a file that plays at the wrong speed.
+// `MicIn::open_with_monitor` also hands back a monitor node; see below.
 let mic = MicIn::open(None)?;
-let wav = WavOut::create(&path, mic.sample_rate(), 2, CaptureFormat::F32)
+let wav = mic.matching_sink(&path, BitDepth::Float32)
     .ok_or("could not create WAV")?;
 let pump = commands.spawn(AudioPump::start(mic, wav, 1024)).id();
 
 // Later:
 audio_pumps.get(pump)?.stop();
 ```
+
+The master output records the same way — `AudioTapRes` is the engine's
+lock-free copy of it, and `TapIn` adapts the consumer end into an `AudioIn`:
+
+```rust
+// One consumer at a time: `open` returns `Err(TapBusy)` rather than displacing
+// an analysis reader that got there first.
+let src = TapIn::new(tap.open()?);
+let wav = WavOut::create(&path, config.sample_rate, 2, BitDepth::Float32)
+    .ok_or("could not create WAV")?;
+commands.spawn(AudioPump::start(src, wav, 1024));
+```
+
+Nothing can check that a sink's rate matches its source — `AudioIn` carries no
+rate — so for a tap it comes from `AudioConfig`, not from the source.
 
 There is no policy argument for what an empty poll means: that is
 `AudioIn::ON_EMPTY`, a property of the source type. A `MicIn` is `Starved` (an
@@ -230,6 +247,11 @@ result, so a host can react to a sink that failed to close.
 The pump runs on its own thread, not a Bevy task pool: it never completes, and
 `AsyncComputeTaskPool` caps at four threads, so live pumps would starve every
 other async job.
+
+`AudioPump` is the ECS-shaped surface. The same loop without an ECS is
+`tutti_io::Recorder`, which takes the same `(source, sink)` pair and hands back a
+handle you `stop()` — reach for it in a non-Bevy host, or in a Bevy one for work
+whose lifetime you want to own yourself.
 
 #### Monitoring while recording
 
@@ -307,7 +329,8 @@ All features are opt-in and aligned with Tutti's feature flags.
 
 | Feature | What it enables |
 |---------|----------------|
-| `sampler` | The `.wav` asset loader, `DiskStreamerRes`, and mic capture |
+| `sampler` | Clip playback: the `.wav` asset loader and `DiskStreamerRes` |
+| `audio-io` | The live I/O edge (`bevy_tutti::io`): mic capture, `WavOut`, `Recorder` |
 | `midi` | MIDI routing, sequencing, clock, MPE — no OS I/O |
 | `midi-hardware` | The OS layer on top of `midi`: device connect/poll, CoreMIDI virtual ports |
 | `synth` | The software synths |
@@ -323,8 +346,14 @@ All features are opt-in and aligned with Tutti's feature flags.
 | `full` | Everything above except the opt-in plugin formats |
 
 `AudioPump`, the graph, transport, metering and PDC are always available — no
-feature gate. The pump in particular needs no `sampler`: it speaks `AudioIn` /
-`AudioOut`, which live in `tutti-core`.
+feature gate. The pump in particular needs neither `sampler` nor `audio-io`: it
+speaks `AudioIn` / `AudioOut`, which live in `tutti-core`. `audio-io` is what
+gives you a `WavOut` to point it at.
+
+`sampler` and `audio-io` are independent in both directions — recording a take
+needs no clip playback, and playing a clip needs no microphone. They were one
+flag until the live I/O edge moved to its own crate; a host wanting only mic→WAV
+was compiling the butler streaming thread to get it.
 
 ## Bevy compatibility
 

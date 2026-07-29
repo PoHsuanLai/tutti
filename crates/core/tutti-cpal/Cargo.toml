@@ -8,10 +8,9 @@ repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
 default = []
-# Mic capture (`MicIn`) and the live mic→WAV `Recorder`. Gated because both
-# speak tutti-sampler's `AudioIn`/`AudioOut` traits, which is the only reason
-# this crate would depend on the sampler at all.
-capture = ["dep:tutti-sampler", "dep:ringbuf"]
+# Mic capture (`MicIn`). Gated because it needs the capture ring and the
+# monitor node `tutti-io` defines; without it this crate is output-only.
+capture = ["dep:tutti-io", "dep:ringbuf"]
 # Pre-block MIDI inside the render callback. Off → the callback renders the
 # graph and nothing else.
 midi = ["dep:tutti-midi-runtime"]
@@ -22,9 +21,9 @@ thiserror = "2"
 
 tutti-core = { path = "../tutti-core", default-features = false }
 
-# `wav` is not optional here: the `Recorder` writes a `WavOut` and the butler's
-# refill path calls `Wave::load`, both of which need a codec compiled in.
-tutti-sampler = { path = "../../dsp/tutti-sampler", default-features = false, features = ["wav"], optional = true }
+# The live I/O edge: the capture ring and the monitor node `MicIn` hands back.
+# `core/`, so the device layer no longer reaches up into `dsp/` for them.
+tutti-io = { path = "../tutti-io", optional = true }
 tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", default-features = false, optional = true }
 
 # The mic ring's producer half, moved to the CPAL input callback thread.

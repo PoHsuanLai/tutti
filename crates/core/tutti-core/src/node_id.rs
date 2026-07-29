@@ -21,8 +21,9 @@
 //! types they define, in their own `node_id` module: tutti-units (filters,
 //! delay, modulation, dynamics, spatial, automation-lane), tutti-synth
 //! (`POLYSYNT`, `\0RUSTYSY`), tutti-plugin (`PLUGINCL`), tutti-sampler
-//! (`AUDINBKD`, `SAMPLRND`, `STRSMPLR`, `TSTRCHNT`). This keeps core the bottom
-//! layer — it no longer names node types that live above it.
+//! (`SAMPLRND`, `STRSMPLR`, `TSTRCHNT`, `VOICENOD`), tutti-io (`MICMONIT`).
+//! This keeps core the bottom layer: it names no node type that lives above
+//! it.
 //!
 //! ## Collisions
 //!
@@ -42,7 +43,8 @@
 //!           PAN\0 ORs num_outputs into the low byte)
 //! synth:   POLYSYNT \0RUSTYSY
 //! plugin:  PLUGINCL
-//! sampler: AUDINBKD SAMPLRND STRSMPLR TSTRCHNT
+//! sampler: SAMPLRND STRSMPLR TSTRCHNT VOICENOD
+//! io:      MICMONIT
 //! ```
 //!
 //! [`AudioUnit::get_id`]: fundsp::audiounit::AudioUnit::get_id

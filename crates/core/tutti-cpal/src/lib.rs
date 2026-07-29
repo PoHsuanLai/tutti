@@ -21,7 +21,8 @@
 //! # What belongs here
 //!
 //! Device enumeration, stream construction, the RT callback body, and mic
-//! capture. Everything here is framework-free: a host that wants a different
+//! capture. The pump that drives a mic into a file is `tutti_io::Recorder` —
+//! device-free, and one layer down. Everything here is framework-free: a host that wants a different
 //! lifecycle (a Bevy `App`, a CLI, a test harness) drives these types itself.
 //!
 //! The callback ([`process_audio`]) is deliberately a free function taking
@@ -42,8 +43,6 @@ mod output;
 
 #[cfg(feature = "capture")]
 mod mic;
-#[cfg(feature = "capture")]
-mod recorder;
 
 pub use driver::{DeviceInfo, TuttiDriver};
 pub use error::{Error, Result};
@@ -51,5 +50,3 @@ pub use output::{process_audio, AudioCallbackState, AudioEngine, MAX_FRAMES};
 
 #[cfg(feature = "capture")]
 pub use mic::MicIn;
-#[cfg(feature = "capture")]
-pub use recorder::Recorder;

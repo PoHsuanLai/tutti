@@ -76,6 +76,10 @@ pub mod midi;
 #[cfg(feature = "modulation")]
 pub mod modulation;
 
+/// The live audio I/O edge: mic in, WAV out, and the pump between them.
+#[cfg(feature = "audio-io")]
+pub mod io;
+
 /// Streaming and sample assets: the `.wav` loader and the `DiskStreamer` handle.
 #[cfg(feature = "sampler")]
 pub mod stream;
@@ -134,6 +138,8 @@ pub mod prelude {
         ExportDone, ExportInFlight, ExportOutput, ExportPlugin, ExportRequest, ExportSource,
         ExportTarget,
     };
+    #[cfg(feature = "audio-io")]
+    pub use crate::io::{BitDepth, MicIn, MicMonitorNode, Recorder, TapIn, WavOut};
     #[cfg(feature = "midi")]
     pub use crate::midi::{MidiBusRes, MidiRoutingRes, TuttiMidiPlugin};
     #[cfg(feature = "modulation")]
@@ -162,7 +168,11 @@ pub mod prelude {
     // - `Samples` is `GraphLatency`'s payload; `Beat` / `Bpm` are what
     //   `Timeline::beat()` and `tempo()` give back.
     // - `Fade` is the curve `crossfade_audio_node` applies.
+    // - `TapBusy` is what `AudioTapRes::open` returns on failure. Ungated,
+    //   because `AudioTapRes` is: a host can reach the method without
+    //   `audio-io`, so it must be able to name what the method gives back.
     pub use tutti_core::dsp::AudioUnit;
+    pub use tutti_core::metering::TapBusy;
     pub use tutti_core::transport::{ClickState, Timeline, Transport};
     pub use tutti_core::{Beat, Bpm, Fade, Samples};
 

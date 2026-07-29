@@ -1,11 +1,11 @@
 //! Microphone capture as an [`AudioIn`] — the input-device twin of the output
-//! stream in [`audio_io`](super::audio_io).
+//! stream in [`output`](super::output).
 //!
-//! The device layer lives here in the adapter, not in `tutti-sampler`: opening a
-//! `cpal` stream needs a device, and the engine already owns device I/O for
-//! playback. `tutti-sampler` stays device-free (it can build `--no-default-
-//! features`); this crate provides the one live [`AudioIn`] that touches
-//! hardware, so recording — `pump(mic, wav_sink)` — has a real source to drain.
+//! This is the device crate, so opening the `cpal` stream belongs here and
+//! nowhere lower. Everything the mic feeds is device-free and sits one layer
+//! down in `tutti-io`: the monitor node this hands back, the `WavOut` a take
+//! records into, and the `Recorder` that pumps between them. What this crate
+//! contributes is the one live [`AudioIn`] that touches hardware.
 //!
 //! # Threading
 //!
@@ -21,7 +21,7 @@
 //!
 //! [`open_with_monitor`](MicIn::open_with_monitor) tees the same capture
 //! callback into a *second*, shallow ring drained by a [`MicMonitorNode`] (a
-//! `tutti_sampler` `AudioUnit`, so it's device-free and lives in the graph).
+//! a `tutti_io` `AudioUnit`, so it's device-free and lives in the graph).
 //! Add that node to the audio graph — through effects if you like — to hear the
 //! mic live while recording the same input. The two rings are independent: the
 //! recording ring is deep (dropout-resistant, latency irrelevant to a file); the
@@ -33,8 +33,10 @@ use ringbuf::{
     HeapCons, HeapProd, HeapRb,
 };
 
+use tutti_core::io::{AudioIn, OnEmpty};
+use tutti_core::pcm::BitDepth;
 use tutti_core::ChannelLayout;
-use tutti_sampler::{share_mic_ring, AudioIn, MicMonitorNode, MicRing, OnEmpty};
+use tutti_io::{share_mic_ring, MicMonitorNode, MicRing, WavOut};
 
 use crate::error::{Error, Result};
 
@@ -64,7 +66,7 @@ unsafe impl Send for StreamHandle {}
 
 /// A live microphone as an [`AudioIn`]: the consumer end of the capture ring
 /// plus the stream handle that feeds it. Poll it with [`poll_into`](AudioIn::poll_into);
-/// pump it into any [`AudioOut`](tutti_sampler::AudioOut) (e.g. a `WavOut`) to
+/// pump it into any [`AudioOut`](tutti_core::io::AudioOut) (e.g. a `WavOut`) to
 /// record.
 pub struct MicIn {
     cons: HeapCons<[f32; 2]>,
@@ -173,6 +175,28 @@ impl MicIn {
     /// sink so the WAV header matches the frames it's fed.
     pub fn sample_rate(&self) -> f64 {
         self.sample_rate
+    }
+
+    /// Build a WAV sink that matches this mic: its native rate, its stereo
+    /// width, at `depth`.
+    ///
+    /// Recording needs a source and a sink whose rate and channel count agree,
+    /// and **nothing downstream can check that**: `AudioIn` deliberately carries
+    /// no rate (see its docs — a caller that needs one holds the concrete type),
+    /// so a pump handed an 8 kHz sink and a 48 kHz mic writes a valid WAV that
+    /// plays back six times too slow, silently.
+    ///
+    /// This is the one place both halves are in scope, so pairing them here is
+    /// what makes the mismatch unrepresentable for the common case. A caller
+    /// with a different sink still builds its own — the obligation is only
+    /// removed where it can be.
+    ///
+    /// Returns `None` when the file cannot be created or the header written,
+    /// matching [`WavOut::create`].
+    pub fn matching_sink(&self, path: &std::path::PathBuf, depth: BitDepth) -> Option<WavOut> {
+        // 2 because `MicIn` downmixes every device frame to a stereo pair before
+        // it reaches the ring; see the callback.
+        WavOut::create(path, self.sample_rate, 2, depth)
     }
 
     /// Input devices as `(index, name)` — the index is what [`open`](Self::open)

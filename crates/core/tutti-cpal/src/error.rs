@@ -41,11 +41,6 @@ pub enum Error {
     /// I/O failure while reading or writing audio data.
     #[error(transparent)]
     Io(#[from] std::io::Error),
-
-    /// Capture failure from the sampler's recording path.
-    #[cfg(feature = "capture")]
-    #[error("Capture: {0}")]
-    Capture(#[from] tutti_sampler::Error),
 }
 
 /// Convenience alias for `Result<T, `[`enum@Error`]`>`.

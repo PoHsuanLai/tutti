@@ -45,6 +45,7 @@
 
 use std::sync::Arc;
 
+use crate::node_id::MIC_MONITOR_ID;
 use ringbuf::{traits::Consumer, HeapCons};
 use tutti_core::{Amplitude, AudioThreadCell, AudioUnit, BufferMut, BufferRef};
 
@@ -183,7 +184,33 @@ impl AudioUnit for MicMonitorNode {
         }
     }
 
-    audio_unit_boilerplate!(id = crate::node_id::MIC_MONITOR_ID, outputs = 2);
+    // Written out rather than macro-expanded: `audio_unit_boilerplate!` is
+    // tutti-sampler's, and this crate exists precisely to not depend on that
+    // one. One unit's worth of tail methods is cheaper than a shared macro
+    // crate.
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn get_id(&self) -> u64 {
+        MIC_MONITOR_ID
+    }
+
+    fn route(
+        &mut self,
+        _input: &tutti_core::SignalFrame,
+        _frequency: f64,
+    ) -> tutti_core::SignalFrame {
+        tutti_core::SignalFrame::new(2)
+    }
+
+    fn footprint(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@
 //! `hound`, so "was it finalized" is answered by the file rather than by a flag
 //! this crate set. No audio device is involved.
 
-#![cfg(feature = "sampler")]
+#![cfg(feature = "audio-io")]
 
 use std::path::PathBuf;
 
@@ -18,9 +18,9 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{AudioPump, AudioPumpAppExt, PumpFinished};
-use tutti_core::io::{AudioIn, OnEmpty};
-use tutti_sampler::capture::CaptureFormat;
-use tutti_sampler::WavOut;
+// Through `bevy_tutti::io`, not the engine crates directly: a host should not
+// need to name `tutti-core` or `tutti-io` to write a pump, and this pins that.
+use bevy_tutti::io::{AudioIn, BitDepth, OnEmpty, WavOut};
 
 const SAMPLE_RATE: f64 = 48_000.0;
 
@@ -75,7 +75,7 @@ fn frames(n: usize) -> Vec<[f32; 2]> {
 }
 
 fn sink(path: &PathBuf) -> WavOut {
-    WavOut::create(path, SAMPLE_RATE, 2, CaptureFormat::F32).expect("sink should open")
+    WavOut::create(path, SAMPLE_RATE, 2, BitDepth::Float32).expect("sink should open")
 }
 
 /// An app with the stereo-`f32` pump drain registered. No engine, no device —
@@ -307,7 +307,7 @@ fn the_documented_shape_compiles() {
         pos: 0,
     };
     let wav =
-        WavOut::create(&path, SAMPLE_RATE, 2, CaptureFormat::F32).expect("could not create WAV");
+        WavOut::create(&path, SAMPLE_RATE, 2, BitDepth::Float32).expect("could not create WAV");
     let pump = app.world_mut().spawn(AudioPump::start(src, wav, 1024)).id();
 
     // The stop path a host writes, through the component.

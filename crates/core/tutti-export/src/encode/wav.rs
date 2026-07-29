@@ -8,7 +8,7 @@ use crate::render::{FrameSource, RenderPlan};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::io::BufWriter;
 use std::path::Path;
-use tutti_core::pcm::{f32_to_i16, f32_to_i24};
+use tutti_core::pcm::Sample;
 
 pub(crate) struct WavEncoder {
     writer: WavWriter<BufWriter<std::fs::File>>,
@@ -51,10 +51,15 @@ impl<const CH: usize> Encoder<CH> for WavEncoder {
         pump_blocks(src, source_rate, plan, config, |frames| {
             interleave(frames, &mut buf);
             for &s in &buf {
-                match self.bit_depth {
-                    BitDepth::Int16 => self.writer.write_sample(f32_to_i16(s)),
-                    BitDepth::Int24 => self.writer.write_sample(f32_to_i24(s)),
-                    BitDepth::Float32 => self.writer.write_sample(s),
+                // The depth dispatch is `tutti-types`', shared with the live
+                // `WavOut` sink; only the writer call per variant is ours. An
+                // offline render and a live capture therefore quantize a given
+                // sample identically by construction, not by two hand-written
+                // matches happening to agree.
+                match self.bit_depth.quantize(s) {
+                    Sample::I16(v) => self.writer.write_sample(v),
+                    Sample::I24(v) => self.writer.write_sample(v),
+                    Sample::F32(v) => self.writer.write_sample(v),
                 }
                 .map_err(io_err)?;
             }

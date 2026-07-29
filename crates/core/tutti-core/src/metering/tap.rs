@@ -1,8 +1,19 @@
 //! The analysis tap — a lock-free copy of the master output for off-thread
-//! consumers (spectrum, pitch, transients).
+//! consumers.
+//!
+//! Two of them, both off the audio thread: **analysis** (spectrum, pitch,
+//! transients) drains the ring directly, and **recording** goes through
+//! `tutti-io`'s `TapIn`, which adapts the consumer end into an `AudioIn` so a
+//! pump can write what the graph is playing to a file.
 //!
 //! Opt-in: until someone calls [`AudioTap::open`], the audio thread's
 //! [`push`](AudioTap::push) is a single atomic load and a return.
+//!
+//! This is the only way to observe master output. The RT callback takes no
+//! host-supplied hook, so the alternative is an `AudioUnit` spliced into
+//! `MasterSources` — which must leave its ring untouched in `reset` (fundsp
+//! clones every vertex on `commit`, so a frontend clone shares the ring and
+//! popping there races the backend's `tick`) and mint a unique `get_id`.
 
 use crate::{AtomicBool, Ordering};
 use parking_lot::Mutex;
@@ -20,6 +31,16 @@ const CAPACITY: usize = 131_072;
 /// thread `try_lock`s and skips the buffer on contention.
 type TapProducer = Arc<Mutex<Option<HeapProd<(f32, f32)>>>>;
 
+/// [`AudioTap::open`] was called on a tap that already has a consumer.
+///
+/// A ring has one reader. Returning this rather than minting a second ring is
+/// what keeps the first consumer alive: the alternative orphans it in a way
+/// nothing can detect, because a consumer whose producer was dropped reads
+/// exactly like one whose producer is idle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the analysis tap already has a consumer; close it before opening again")]
+pub struct TapBusy;
+
 /// Producer half of the analysis tap. Cheap to clone; the audio callback keeps
 /// one and pushes every buffer through it.
 #[derive(Clone, Default)]
@@ -34,21 +55,56 @@ impl AudioTap {
     }
 
     /// Open the tap, returning the consumer end. The caller owns it and drains
-    /// it from its own thread. Opening again replaces the ring, orphaning any
-    /// previous consumer.
-    pub fn open(&self) -> HeapCons<(f32, f32)> {
+    /// it from its own thread.
+    ///
+    /// A ring has exactly one reader, so a tap has exactly one consumer:
+    /// opening an already-open tap returns [`TapBusy`] rather than minting a
+    /// second ring, and the incumbent keeps receiving. Displacing it would be
+    /// undetectable — a `HeapCons` whose producer was dropped reads exactly
+    /// like one that is merely idle, so both look like silence.
+    ///
+    /// Call [`close`](Self::close) first to hand the tap over deliberately.
+    #[must_use = "the returned consumer is the only handle to the tap ring; drop it and the audio thread pushes into a ring nobody reads"]
+    pub fn open(&self) -> Result<HeapCons<(f32, f32)>, TapBusy> {
+        // Decide under the lock, not against `is_open`: `on` and `producer` are
+        // separate, so a check-then-open would let two control threads both
+        // pass the check and the loser's consumer would be orphaned — exactly
+        // the bug this returns an error to prevent.
+        let mut slot = self.producer.lock();
+        if slot.is_some() {
+            return Err(TapBusy);
+        }
+
         let (prod, cons) = HeapRb::<(f32, f32)>::new(CAPACITY).split();
-        *self.producer.lock() = Some(prod);
+        *slot = Some(prod);
+        // Release *after* the producer is in place: the audio thread checks
+        // `on` first and only then tries the lock, so flipping this earlier
+        // would let a callback find `on == true` with nothing to push into.
         self.on.store(true, Ordering::Release);
-        cons
+        Ok(cons)
     }
 
     /// Close the tap and drop the producer. The consumer sees an empty ring.
+    ///
+    /// Also the way to hand the tap to a *different* consumer: [`open`](Self::open)
+    /// refuses while one is live, so releasing it is an explicit step rather
+    /// than a side effect of asking for a second.
+    ///
+    /// Idempotent — closing a closed tap is a no-op.
     pub fn close(&self) {
+        // Flag down first: the audio thread reads `on` before touching the
+        // lock, so this order means a callback can never find a live flag over
+        // an absent producer.
         self.on.store(false, Ordering::Release);
         *self.producer.lock() = None;
     }
 
+    /// Whether a consumer currently holds this tap.
+    ///
+    /// Advisory only. Between this returning `false` and a subsequent
+    /// [`open`](Self::open), another thread may have opened it — which is why
+    /// `open` decides under the lock and reports [`TapBusy`] rather than
+    /// trusting a prior check.
     pub fn is_open(&self) -> bool {
         self.on.load(Ordering::Acquire)
     }
@@ -70,5 +126,90 @@ impl AudioTap {
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ringbuf::traits::Consumer;
+
+    /// A fresh tap opens, and says so.
+    #[test]
+    fn a_fresh_tap_opens() {
+        let tap = AudioTap::new();
+        assert!(!tap.is_open());
+        assert!(tap.open().is_ok());
+        assert!(tap.is_open());
+    }
+
+    /// The contract this type gained: a second open is refused, and the FIRST
+    /// consumer keeps receiving.
+    ///
+    /// The liveness half is what matters. `open` returning `Err` is easy to get
+    /// right and easy to test; the bug being prevented is the first consumer
+    /// going silent, and that only shows up by pushing after the refusal and
+    /// checking the original still sees it.
+    #[test]
+    fn a_second_open_is_refused_and_the_first_consumer_survives() {
+        let tap = AudioTap::new();
+        let mut first = tap.open().expect("first open");
+
+        // Matched rather than `unwrap_err`: `HeapCons` is not `Debug`, so the
+        // Result cannot be unwrapped for its error side.
+        assert!(
+            matches!(tap.open(), Err(TapBusy)),
+            "a second open must be refused"
+        );
+
+        tap.push(&[0.5, -0.5], 1);
+        assert_eq!(
+            first.try_pop(),
+            Some((0.5, -0.5)),
+            "the incumbent consumer must still be fed after a refused open"
+        );
+    }
+
+    /// Closing releases the tap, so it can be handed to a different consumer.
+    ///
+    /// Without this, refusing a second open would make the tap single-use — a
+    /// host that stopped analysing could never start recording.
+    #[test]
+    fn closing_releases_the_tap_for_a_new_consumer() {
+        let tap = AudioTap::new();
+        let first = tap.open().expect("first open");
+        tap.close();
+        assert!(!tap.is_open());
+        drop(first);
+
+        let mut second = tap.open().expect("a closed tap reopens");
+        tap.push(&[0.25, 0.75], 1);
+        assert_eq!(second.try_pop(), Some((0.25, 0.75)));
+    }
+
+    /// Closing twice is a no-op rather than a panic or a state flip.
+    #[test]
+    fn closing_is_idempotent() {
+        let tap = AudioTap::new();
+        let _c = tap.open().expect("open");
+        tap.close();
+        tap.close();
+        assert!(!tap.is_open());
+        assert!(tap.open().is_ok(), "still reopenable after a double close");
+    }
+
+    /// A closed tap drops pushes on the floor — the opt-in half of the design.
+    #[test]
+    fn a_closed_tap_pushes_nothing() {
+        let tap = AudioTap::new();
+        let mut cons = tap.open().expect("open");
+        tap.close();
+
+        tap.push(&[1.0, 1.0], 1);
+        assert_eq!(
+            cons.try_pop(),
+            None,
+            "a closed tap must not feed a consumer that outlived the close"
+        );
     }
 }

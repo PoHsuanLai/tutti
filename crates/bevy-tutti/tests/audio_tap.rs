@@ -33,7 +33,11 @@ fn opening_the_tap_yields_a_consumer_that_sees_the_pushed_frames() {
 
     // The callback's half — the clone `build_into` hands to `AudioCallbackState`.
     let callback_side = app.world().resource::<AudioTapRes>().0.clone();
-    let mut consumer = app.world().resource::<AudioTapRes>().open();
+    let mut consumer = app
+        .world()
+        .resource::<AudioTapRes>()
+        .open()
+        .expect("a fresh tap opens");
     assert!(app.world().resource::<AudioTapRes>().is_open());
 
     // Two interleaved stereo frames, as a block would arrive.
@@ -52,7 +56,11 @@ fn closing_the_tap_stops_the_copy() {
     app.insert_resource(AudioTapRes::default());
 
     let callback_side = app.world().resource::<AudioTapRes>().0.clone();
-    let mut consumer = app.world().resource::<AudioTapRes>().open();
+    let mut consumer = app
+        .world()
+        .resource::<AudioTapRes>()
+        .open()
+        .expect("a fresh tap opens");
     app.world().resource::<AudioTapRes>().close();
     assert!(!app.world().resource::<AudioTapRes>().is_open());
 

@@ -33,7 +33,7 @@
 //! occupy all of them permanently — soundfont decodes and plugin scans would
 //! stop running with no error anywhere. `IoTaskPool` has the same cap. A
 //! starving source also needs a real sleep between polls, which is illegal on a
-//! shared pool. `tutti_cpal::Recorder` already runs exactly this loop on a
+//! shared pool. [`tutti_io::Recorder`] already runs exactly this loop on a
 //! dedicated thread; this wraps that shape rather than reimplementing it.
 
 use std::marker::PhantomData;
@@ -49,7 +49,7 @@ use bevy_ecs::prelude::*;
 use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
 
 /// How long the pump parks when a [`Starved`](OnEmpty::Starved) source yields
-/// nothing. Matches `tutti_cpal::Recorder`: long enough not to spin a core,
+/// nothing. Matches [`tutti_io::Recorder`]: long enough not to spin a core,
 /// far shorter than the ring it drains can overrun.
 pub const IDLE_PARK: Duration = Duration::from_millis(5);
 

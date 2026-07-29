@@ -43,24 +43,10 @@ impl AudioFormat {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[non_exhaustive]
-pub enum BitDepth {
-    Int16,
-    #[default]
-    Int24,
-    Float32,
-}
-
-impl BitDepth {
-    pub fn bits(&self) -> u16 {
-        match self {
-            Self::Int16 => 16,
-            Self::Int24 => 24,
-            Self::Float32 => 32,
-        }
-    }
-}
+// The depth vocabulary lives in `tutti-types`, beside the quantizers that give
+// it meaning (`pcm::f32_to_i16` / `f32_to_i24`). Re-exported here so this
+// crate's public surface is unchanged.
+pub use tutti_types::pcm::BitDepth;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]

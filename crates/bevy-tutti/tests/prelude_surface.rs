@@ -167,3 +167,42 @@ fn the_disk_streamer_resource_is_nameable_from_the_prelude() {
     // The plugin that registers the `.wav` loader travels with it.
     let _ = TuttiPlaybackPlugin;
 }
+
+/// The whole capture surface is writable from the prelude alone.
+///
+/// Each of these three is a path this crate's own docs demonstrate, and each
+/// was reachable only by naming an engine crate directly until the types below
+/// were forwarded. The assertion is that they *compile* — every one is a
+/// signature a host would write, and a missing re-export is a compile error
+/// rather than a runtime surprise.
+#[cfg(feature = "audio-io")]
+#[test]
+fn the_capture_paths_the_docs_demonstrate_are_writable_from_the_prelude() {
+    // Recording the master output: `io/mod.rs`'s "Recording what the graph is
+    // playing". Needs `TapIn` *and* `TapBusy` — the second because `open`
+    // returns it, and a host that cannot name it cannot write this signature at
+    // all, only call the method inside someone else's.
+    fn record_master(tap: &AudioTapRes, path: std::path::PathBuf) -> Result<AudioPump, TapBusy> {
+        let wav = WavOut::create(&path, 48_000.0, 2, BitDepth::Float32).expect("sink opens");
+        Ok(AudioPump::start(TapIn::new(tap.open()?), wav, 1024))
+    }
+
+    // Recording a mic: `io/mod.rs`'s `matching_sink` example.
+    fn record_mic(path: std::path::PathBuf) -> Option<AudioPump> {
+        let mic = MicIn::open(None).ok()?;
+        let wav = mic.matching_sink(&path, BitDepth::Float32)?;
+        Some(AudioPump::start(mic, wav, 1024))
+    }
+
+    // Live monitoring: `io/mod.rs`'s graph-wiring example.
+    fn wire_monitor(graph: &mut AudioGraphRes) -> Option<()> {
+        let (_mic, monitor) = MicIn::open_with_monitor(None).ok()?;
+        let _id = graph.0.add(monitor);
+        Some(())
+    }
+
+    // Naming them is the assertion — calling them would open a real device.
+    let _ = record_master;
+    let _ = record_mic;
+    let _ = wire_monitor;
+}

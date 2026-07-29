@@ -1,0 +1,31 @@
+[package]
+name = "tutti-io"
+version = "0.0.1"
+edition = "2021"
+description = "Tutti's live audio I/O edge — mic monitoring in, WAV out"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+keywords = ["audio", "recording", "capture", "wav"]
+categories = ["multimedia::audio"]
+
+[dependencies]
+# The `AudioIn`/`AudioOut` traits this crate implements, plus `AudioUnit`,
+# `ChannelLayout` and the PCM quantizers. `default-features = false` matches
+# every sibling and keeps this crate immune if tutti-core ever grows a default —
+# it has none today (`default = []`), so the flag currently suppresses nothing.
+tutti-core = { path = "../tutti-core", default-features = false }
+
+# The capture ring `MicMonitorNode` drains. The producer half lives in the
+# device layer (`tutti-cpal`), which sits *above* this crate.
+ringbuf = "0.4"
+
+# WAV encode for the `WavOut` sink. Deliberately not in `tutti-types`, which is
+# the root leaf: a file-format codec belongs at the edge that writes files.
+hound = "3.5"
+
+[dev-dependencies]
+tempfile = "3.8"
+# The RT gate: `MicMonitorNode::{tick, process}` must not allocate.
+assert_no_alloc = { version = "1", default-features = false }
+# The gate builds a ring by hand to feed the node under a disabled allocator.
+ringbuf = "0.4"

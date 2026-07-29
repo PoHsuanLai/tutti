@@ -66,6 +66,15 @@ pub enum OnEmpty {
     Starved,
     /// Finite source (decoded file, rendered net): there is no more. A consumer
     /// that loops should stop.
+    ///
+    /// **This is a promise about the *first* zero, not an eventual one.** A
+    /// looping consumer stops on it immediately, so a source that can return `0`
+    /// and then more later — a decoder awaiting a refill, a file read over a
+    /// socket — must not declare `EndOfStream`: it would end the read mid-stream
+    /// with no error. Such a source is `Starved` (the consumer retries), and it
+    /// signals completion by some means of its own. The two implementors here
+    /// satisfy the promise: `FileIn` folds even a decode error into end-of-file,
+    /// and a render only returns `0` for a zero-length request.
     EndOfStream,
 }
 

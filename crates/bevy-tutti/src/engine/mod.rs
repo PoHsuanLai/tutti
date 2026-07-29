@@ -6,8 +6,10 @@
 //! transaction and inserts every subsystem as a Bevy resource directly into the
 //! `App`, with no intermediate bundle struct to destructure.
 //!
-//! The device types are re-exported so a host reaches the whole engine through
-//! `bevy_tutti` without naming the device crate.
+//! The device *driver* types are re-exported so a host reaches the whole engine
+//! through `bevy_tutti` without naming the device crate. Mic capture and
+//! recording are not here — they are the live I/O edge, and live in
+//! [`io`](crate::io).
 
 mod build;
 mod error;
@@ -17,16 +19,8 @@ pub use error::{Error, Result};
 
 pub use tutti_cpal::{DeviceInfo, TuttiDriver};
 
-// Mic capture and the live mic→WAV recorder. Gated on `sampler` because both
-// speak `tutti_sampler`'s `AudioIn`/`AudioOut` traits, so the sampler is only a
-// dependency under that feature.
-#[cfg(feature = "sampler")]
-pub use tutti_cpal::{MicIn, Recorder};
-// The live-monitor graph node paired with `MicIn::open_with_monitor`. Defined
-// in the (device-free) sampler; surfaced here so the whole mic API — capture,
-// record, monitor — is reachable from one place.
-#[cfg(feature = "sampler")]
-pub use tutti_sampler::MicMonitorNode;
+// The mic/record API is not here: it is the live I/O edge, not engine
+// bootstrap, so it lives in `crate::io` — one adapter module per engine crate.
 
 // The audio graph is fundsp's `Net` — there is no tutti wrapper. Surfaced here
 // so hosts reach it without naming fundsp directly.

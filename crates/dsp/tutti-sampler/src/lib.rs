@@ -33,7 +33,6 @@
 //!
 //! - [`voice`] — the two playback tiers, the per-track mixer, and the shared
 //!   interpolation / placement kernels.
-//! - [`live`] — mic in, WAV out.
 //! - [`stretch`] — phase vocoder (pitch-independent stretch).
 //! - [`AudioIn`] / [`AudioOut`] / [`pump`] — the engine's I/O edge vocabulary,
 //!   re-exported from `tutti_types::io`.
@@ -91,30 +90,26 @@ mod node_id;
 mod test_transport;
 
 // The I/O edge vocabulary is defined once in `tutti-types` and re-exported by
-// `tutti-core`; this crate's `WavOut` implements `AudioOut` against it.
+// `tutti-core`. Re-exported again here because the butler's refill path speaks
+// `AudioIn`; the live *impls* of these traits live in `tutti-io`.
 pub use tutti_core::io::{pump, AudioIn, AudioOut, OnEmpty};
 
 // Voice playback: the two tier units, the mixer over them, and the kernels they
 // share. Bevy-free apart from the asset loader, gated inside.
 pub mod voice;
 
-// The live audio edge — mic in, WAV out. Independent of voice playback.
-pub mod live;
-
 // Time-stretch / pitch-shift (phase vocoder). A peer DSP subsystem, not a
 // voice-playback concern: it owns no source and imports nothing from `voice`.
 pub mod stretch;
 
 // Bevy-free DSP leaves + value types from `voice` — usable for direct
-// FunDSP-graph integration without the ECS layer. Only `WavOut` (the public
-// `AudioOut` sink) is re-exported; the butler's `LruCache` / `StreamPin` are
-// internal machinery a consumer never constructs, so they stay `pub(crate)`.
-pub use live::WavOut;
+// FunDSP-graph integration without the ECS layer. The butler's `LruCache` /
+// `StreamPin` are internal machinery a consumer never constructs, so they stay
+// `pub(crate)`.
 // `DiskVoiceConfig` and `DiskSource` are not re-exported: nothing
 // outside this crate constructs them. `DiskSource` in particular is
 // `DiskVoice`'s `inner` — one capability, and only the outer type is
 // a doorway.
-pub use live::{share_mic_ring, MicMonitorNode, MicRing};
 pub use voice::{
     Direction, DiskVoice, LoopSetting, MemorySource, MemorySourceConfig, Playback, SlotId, Voice,
     VoiceCommand, VoiceNode, VoicePool, VoicePoolHandle, VoiceSource, VoiceWindow,
@@ -140,12 +135,7 @@ pub use ports::{Command, Commands, Source, Status};
 // `DiskStreamerRes` and inserts it directly; bevy-tutti also adds
 // `TuttiPlaybackPlugin` itself.
 
-/// The write side's live impl: [`WavOut`], an [`AudioOut`] that streams stereo
-/// frames to a WAV file, plus its [`CaptureFormat`](capture::CaptureFormat).
-///
-/// The record-mic→WAV flow is an explicit [`AudioIn`] → [`AudioOut`] pump
-/// driving this sink, lived out by `tutti_cpal::Recorder` (a `MicIn` pumped
-/// into a `WavOut` on a background thread).
-pub mod capture {
-    pub use crate::live::{CaptureFormat, WavOut};
-}
+// The live I/O edge — `MicMonitorNode`, `WavOut`, `Recorder` — moved to
+// `tutti-io`. It never coupled to this crate in either direction, and keeping
+// it here made `tutti-cpal` (the device layer) depend on a DSP crate to reach
+// it.

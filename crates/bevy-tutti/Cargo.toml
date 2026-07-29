@@ -42,6 +42,9 @@ tutti-units = { path = "../tutti/crates/dsp/tutti-units", default-features = fal
 # than exposing as components.
 tutti-mod = { path = "../tutti/crates/core/tutti-mod", optional = true, default-features = false, features = ["routing"] }
 tutti-sampler = { path = "../tutti/crates/dsp/tutti-sampler", optional = true, default-features = false }
+# The live I/O edge — `WavOut`, `MicMonitorNode`, `Recorder`. Separate from the
+# sampler since the layering split; re-exported through `engine`.
+tutti-io = { path = "../tutti/crates/core/tutti-io", optional = true }
 tutti-synth = { path = "../tutti/crates/dsp/tutti-synth", optional = true, default-features = false }
 tutti-export = { path = "../tutti/crates/core/tutti-export", optional = true }
 tutti-midi-io = { path = "../tutti/crates/midi/tutti-midi-io", optional = true }
@@ -93,6 +96,7 @@ full = [
     "midi", "midi-hardware",
     "synth", "soundfont",
     "sampler",
+    "audio-io",
     "export",
     "dsp", "spatial",
     "modulation",
@@ -136,7 +140,20 @@ synth = ["dep:tutti-synth"]
 # with `midi` under feature unification — so enable bevy-tutti's own `midi` to
 # keep `engine/build.rs` in step with the tutti-core that actually compiles.
 soundfont = ["synth", "midi", "tutti-synth/soundfont"]
-sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy", "tutti-cpal/capture"]
+# Clip playback: the butler streaming engine and the `.wav` asset loader
+# (`tutti-sampler` → `crate::stream`).
+#
+# This used to also carry the live I/O edge, on the reasoning that both were
+# "sampler things". They are not: they are separate engine crates, neither
+# depends on the other, and a host wanting only mic→WAV was compiling the
+# butler thread to get it. `audio-io` below is that half.
+sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy"]
+
+# The live audio I/O edge: mic capture, WAV sink, and the pump between them
+# (`tutti-io` + `tutti-cpal/capture` → `crate::io`). Independent of `sampler` in
+# both directions — recording a take needs no clip playback, and playing a clip
+# needs no microphone.
+audio-io = ["dep:tutti-io", "tutti-cpal/capture"]
 
 # Plugin hosting: editor windows, catalog scan, crash detection.
 # `tutti-plugin-server` pulls `tutti-core` with `midi` under feature

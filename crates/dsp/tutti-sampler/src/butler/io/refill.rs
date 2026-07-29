@@ -445,25 +445,42 @@ fn refill_reverse(
     writer.set_file_position(file_position.saturating_sub(written) as u64);
 }
 
+/// The whole-file fallback: hand back a cached [`Wave`], or decode one and cache
+/// it. `None` means the file could not be turned into audio — every caller
+/// already treats that as "skip this region".
+///
+/// With no codec feature enabled there is no decoder to call, so the miss arm is
+/// gated out and a miss is simply `None`. The cache *lookup* stays live in both
+/// builds: entries reach it from elsewhere, and a hit needs no decoder.
 pub(in crate::butler) fn load_wave(
     cache: &LruCache,
     metrics: &Metrics,
     file_path: &PathBuf,
 ) -> Option<Arc<Wave>> {
     if let Some(cached) = cache.get(file_path) {
-        Some(cached)
-    } else {
-        match Wave::load(file_path) {
-            Ok(w) => {
-                let arc_wave = Arc::new(w);
-                let bytes = arc_wave.len() as u64 * arc_wave.channels() as u64 * 4;
-                metrics.record_read(bytes);
-                cache.insert(file_path.clone(), arc_wave.clone());
-                Some(arc_wave)
-            }
-            Err(_) => None,
+        return Some(cached);
+    }
+
+    // `Wave::load` lives in fundsp's `read` module, which is compiled only when
+    // a codec is on. Calling it unconditionally is what made
+    // `--no-default-features` fail to build.
+    #[cfg(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg"))]
+    {
+        if let Ok(w) = Wave::load(file_path) {
+            let arc_wave = Arc::new(w);
+            let bytes = arc_wave.len() as u64 * arc_wave.channels() as u64 * 4;
+            metrics.record_read(bytes);
+            cache.insert(file_path.clone(), arc_wave.clone());
+            return Some(arc_wave);
         }
     }
+
+    // Silences the unused-parameter warning in the codec-free build, where the
+    // only way to reach this line is a cache miss with nothing able to fill it.
+    #[cfg(not(any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")))]
+    let _ = metrics;
+
+    None
 }
 
 #[cfg(test)]

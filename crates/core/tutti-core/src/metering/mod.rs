@@ -6,8 +6,10 @@
 //! - [`MasterMeter`] — peak/RMS for the master output, published into an
 //!   [`AtomicAmplitude`] the UI reads lock-free. Per-track meters use the same
 //!   [`AtomicAmplitude`] directly, one per channel strip.
-//! - [`AudioTap`] — a ring-buffer copy of the output for off-thread analysis
-//!   (spectrum, pitch, transients). See `tutti-analysis`.
+//! - [`AudioTap`] — a ring-buffer copy of the output for off-thread consumers:
+//!   analysis (spectrum, pitch, transients) or recording. `tutti-io`'s `TapIn`
+//!   adapts its consumer end into an `AudioIn`, which is what lets a pump write
+//!   the master output to a file.
 
 mod amplitude;
 mod rt;
@@ -15,7 +17,7 @@ mod tap;
 
 pub use amplitude::{AtomicAmplitude, MasterMeter};
 pub use rt::{meter_output, MeteringContext};
-pub use tap::AudioTap;
+pub use tap::{AudioTap, TapBusy};
 
 // The Bevy wrapper (`MeteringRes`) lives in `crate::ecs::metering` — import it
 // from `tutti_core::ecs`.

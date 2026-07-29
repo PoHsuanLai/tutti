@@ -33,6 +33,7 @@ use std::os::raw::{c_char, c_double, c_int, c_longlong, c_uint, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use tutti_types::meter::{BarNumber, TimeSignature};
 use tutti_vst3_host::{
     host::conformance, AudioBuffer, MidiEvent, ParameterChanges, ProcessMode, TransportInfo,
     Vst3InputEvents, Vst3Instance, Vst3Loaded, Vst3Sample,
@@ -646,6 +647,26 @@ const K_TRIGGER_PROGRESS_TAG: u32 = 1008;
 /// fraction observed *so far in this session*. It therefore only counts what
 /// the test actually exercised — it is a gap map, not a verdict, and a low
 /// number means "not yet driven" as much as "not implemented".
+///
+/// ## Why the number does not move much
+///
+/// Issue #54 item 10 assumed the figure was low mainly because this test drove
+/// so little, and that feeding it everything the suite covers elsewhere would
+/// raise it. Measured, that is not what happens: populating every transport
+/// field (14 of the 75 are per-`ProcessContext`-flag), processing more blocks,
+/// polling notifications repeatedly, and deactivating to flush the processor's
+/// log all leave it at the same **28.9%**.
+///
+/// The reason is structural. `updateScoring` runs on the *controller*, from
+/// `addFeatureLog`; the processor's observations only reach it as `"LogEvent"`
+/// messages over `IConnectionPoint`. Most of what this test drives happens on
+/// the processor side, so it does not credit the score however hard it is
+/// driven. Raising the number means exercising controller-side surfaces —
+/// editor, units, `IComponentHandler2`/`3`, keyswitches — not more audio.
+///
+/// So the figure is a **floor on controller-side coverage**, which is a
+/// narrower claim than item 10 implied. Treat a change in it as signal; treat
+/// its absolute value as close to meaningless.
 #[test]
 fn report_host_capability_score() {
     if !harness_ready() {
@@ -662,8 +683,30 @@ fn report_host_capability_score() {
     };
 
     // Exercise the surfaces we do support, so the score reflects them.
+    //
+    // A fully-populated transport, not `default()`. HostChecker scores each
+    // `ProcessContext` field separately (`ProcessContextTempoSupported`,
+    // `…TimeSigSupported`, `…BarPositionSupported`, `…CycleSupported`, and so
+    // on — 14 of the 75), and a default transport leaves every one of those
+    // flags clear. The host fills them from what it is handed, so driving it
+    // with a bare default measured the fixture rather than the host.
+    //
+    // `kSystemTimeValid` / `kClockValid` / `kSmpteValid` / `kChordValid` stay
+    // unreachable on purpose — see `types/transport.rs:134-204`: no upstream
+    // producer exists, and advertising a field the host cannot fill would be
+    // worse than saying nothing. They are a deliberate ceiling on this score.
     let info = inst.info().clone();
-    let transport = TransportInfo::default();
+    let transport = TransportInfo::default()
+        .with_tempo(128.0)
+        .with_playing(true)
+        .with_recording(true)
+        .with_time_signature(TimeSignature::from_parts(7, 8))
+        .with_sample_rate(48_000.0)
+        .with_position_beats(8.0, 3.75)
+        .with_position_samples(180_000)
+        .with_continuous_samples(180_000)
+        .with_bar(8.0, BarNumber::new(3))
+        .with_loop(true, 4.0, 12.0);
     for _ in 0..4 {
         let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))
             .map(|_| vec![0.0; 512])
@@ -681,6 +724,13 @@ fn report_host_capability_score() {
         };
         inst.process(&mut buffer, &Vst3InputEvents::default(), None, &transport);
     }
+    // Deactivate before reading: the processor half accumulates findings in a
+    // local log and ships them to the controller as `"LogEvent"` messages
+    // **only from `setActive`** (`hostcheckerprocessor.cpp:742`, the single call
+    // site of `sendNowAllLogEvents`), and `updateScoring` runs controller-side
+    // as those arrive. Reading while still active cannot see anything `process`
+    // observed.
+    let mut inst = inst.deactivate();
     let _ = inst.poll_plugin_notifications();
 
     let score = inst.parameter(K_SCORE_TAG);

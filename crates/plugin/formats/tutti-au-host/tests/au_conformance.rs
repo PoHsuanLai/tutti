@@ -310,9 +310,22 @@ fn state_save_restore_round_trips() {
     let _g = lock();
     for unit in EFFECTS {
         let mut au = unit.open(RATE, BLOCK);
-        let Some(param) = au.get_parameter_list().into_iter().find(|p| p.writable) else {
-            continue;
-        };
+        // Not `continue`: every corpus effect has writable parameters (AUDelay
+        // 4/4, AUNBandEQ 41/41, AULowpass 2/2, AUDynamicsProcessor 7/10), so
+        // skipping one would mean the corpus changed under us — and a loop that
+        // skipped all four would report `ok` having asserted nothing, which is
+        // the silent pass this suite exists to refuse.
+        let param = au
+            .get_parameter_list()
+            .into_iter()
+            .find(|p| p.writable)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: no writable parameter, so the state round-trip cannot \
+                     be proven — see support/corpus.rs on why absence is loud",
+                    unit.label
+                )
+            });
 
         let original = au.get_parameter(param.id).expect("read original");
         let blob = au
@@ -664,19 +677,36 @@ fn note_off_silences_the_voice() {
     au.send_midi(&[MidiEvent::note_off(0, 0, 60, 0)]);
     // The DLS release is a long exponential, not a gate: measured on a quiet
     // machine it is still at ~5.9% of the held peak 60 blocks after the
-    // note-off, 1.3% at 120, and 0.002% at 480. So wait 240 blocks (2.56 s at
-    // 48 kHz) and assert against 1%, which sits an order of magnitude clear of
-    // both the measured value there (0.2%) and the threshold — a note-off that
-    // was dropped entirely stays near 100% and fails unmistakably.
-    for _ in 0..240 {
+    // note-off, 1.3% at 120, 0.15% at 240, and 0.002% at 480. So wait 240
+    // blocks (2.56 s at 48 kHz) and assert against 1% — about 7x clear of the
+    // measured value there, which is headroom for a different DLS release
+    // envelope but not for a note-off that was dropped, since that stays near
+    // 100%. Values are bit-identical across runs: this is offline block
+    // rendering, so the margin cannot flake under CPU load.
+    //
+    // Every block is checked for finiteness as it goes. `peak` folds with
+    // `f32::max`, which returns the NON-NaN operand, so an all-NaN buffer has a
+    // peak of 0.0 — without this guard a host that corrupted the release tail
+    // into NaN would read as a perfectly silenced voice and pass. This is the
+    // one assertion in the suite that reads a *decaying* signal, so it is the
+    // one where a quiet-looking result must be proven to be real silence.
+    let mut render_block = |au: &mut _| -> f32 {
         let mut output = silence(channels, BLOCK as usize);
-        render(&mut au, &input, &mut output, BLOCK).expect("render");
+        render(au, &input, &mut output, BLOCK).expect("render");
+        assert!(
+            all_finite(&output),
+            "the release tail contained a non-finite sample; `peak` would \
+             report that as silence"
+        );
+        peak(&output)
+    };
+
+    for _ in 0..240 {
+        render_block(&mut au);
     }
     let mut after = 0.0f32;
     for _ in 0..10 {
-        let mut output = silence(channels, BLOCK as usize);
-        render(&mut au, &input, &mut output, BLOCK).expect("render");
-        after = after.max(peak(&output));
+        after = after.max(render_block(&mut au));
     }
     assert!(
         after < sounding * 0.01,

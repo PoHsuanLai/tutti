@@ -85,7 +85,9 @@ impl Midi1ToMidi2Translator {
             cc::RPN_MSB => self.select(channel, event.frame_offset, true, ParamByte::Bank(value)),
             cc::RPN_LSB => self.select(channel, event.frame_offset, true, ParamByte::Index(value)),
             cc::NRPN_MSB => self.select(channel, event.frame_offset, false, ParamByte::Bank(value)),
-            cc::NRPN_LSB => self.select(channel, event.frame_offset, false, ParamByte::Index(value)),
+            cc::NRPN_LSB => {
+                self.select(channel, event.frame_offset, false, ParamByte::Index(value))
+            }
             cc::DATA_ENTRY => {
                 state.data_msb = value;
                 state.pending = true;
@@ -246,16 +248,12 @@ mod tests {
     /// Bank/index of a Registered or Assignable Controller, if that's what `ev` is.
     fn controller_param(ev: &MidiEvent) -> Option<(u8, u8, u32)> {
         match UmpMessage::try_from(ev.data_words()).ok()? {
-            UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m)) => Some((
-                u8::from(m.bank()),
-                u8::from(m.index()),
-                m.controller_data(),
-            )),
-            UmpMessage::ChannelVoice2(ChannelVoice2::AssignableController(m)) => Some((
-                u8::from(m.bank()),
-                u8::from(m.index()),
-                m.controller_data(),
-            )),
+            UmpMessage::ChannelVoice2(ChannelVoice2::RegisteredController(m)) => {
+                Some((u8::from(m.bank()), u8::from(m.index()), m.controller_data()))
+            }
+            UmpMessage::ChannelVoice2(ChannelVoice2::AssignableController(m)) => {
+                Some((u8::from(m.bank()), u8::from(m.index()), m.controller_data()))
+            }
             _ => None,
         }
     }
@@ -312,8 +310,10 @@ mod tests {
             .expect("parameter B emits");
         let (bank, index, data) = controller_param(&out).expect("controller");
         assert_eq!((bank, index), (0, 1));
-        let expected =
-            super::super::scaling::midi1_pitch_bend_to_midi2(((0u16) << 7) | 1u16);
+        // B's own 14-bit value: MSB never sent (0), LSB 1 — spelled out so the
+        // contrast with A's stale MSB of 64 is visible.
+        let (b_msb, b_lsb) = (0u16, 1u16);
+        let expected = super::super::scaling::midi1_pitch_bend_to_midi2((b_msb << 7) | b_lsb);
         assert_eq!(
             data, expected,
             "value must be built from B's own data only (stale MSB 64 would give a much larger value)"

@@ -49,10 +49,10 @@ pub use tutti_midi_types::Midi1ToMidi2Translator;
 
 /// MIDI 2.0 Clip File (M2-116) interchange — a portable single-clip UMP stream,
 /// distinct from project save (Loro) and from SMF. See [`crate::smf`] for the
-/// MIDI 1.0 equivalent.
+/// MIDI 1.0 equivalent, and [`crate::clip`] for the file-level (path) codec.
 pub use tutti_midi_types::{
-    read_clip_file, write_clip_file, write_clip_file_from_beats, ClipEvent, ClipFileError,
-    ParsedClipFile,
+    read_clip_file, write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
+    ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile, CLIP_FILE_MAGIC,
 };
 
 pub use tutti_midi_types::mpe::{MpeMode, MpeZone, MpeZoneConfig};
@@ -77,6 +77,12 @@ pub use tutti_midi_runtime::{
 pub use crossbeam_channel;
 
 // --- Standard MIDI File codec ---
+
+/// MIDI 2.0 Clip File (M2-116) file I/O — read/write a clip by path, and
+/// identify which MIDI format a file holds ([`MidiFileKind`]) by magic rather
+/// than by extension. The byte-level codec lives in [`tutti_midi_types`].
+pub mod clip;
+pub use clip::{read_clip_file_from_path, write_clip_file_to_path, MidiFileKind};
 
 /// Standard MIDI File (SMF) read/write — parse a `.mid` into beat-positioned
 /// events ([`ParsedMidiFile`]) or per-track paired notes ([`smf::tracks`]), and

@@ -569,7 +569,11 @@ mod tests {
         // A channel-voice message is still filtered by channel.
         let note = MidiEvent::note_on(0, 1, 60, 0x8000);
         let targets: Vec<_> = snapshot.route(&note).collect();
-        assert_eq!(targets, vec![id(200)], "note on ch1 goes only to ch1's route");
+        assert_eq!(
+            targets,
+            vec![id(200)],
+            "note on ch1 goes only to ch1's route"
+        );
     }
 
     #[test]

@@ -103,11 +103,7 @@ pub fn write_clip_file_with_header(
     write_clip(ticks_per_quarter, Some(header), events)
 }
 
-fn write_clip(
-    ticks_per_quarter: u16,
-    header: Option<ClipHeader>,
-    events: &[ClipEvent],
-) -> Vec<u8> {
+fn write_clip(ticks_per_quarter: u16, header: Option<ClipHeader>, events: &[ClipEvent]) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + (events.len() + 3) * 8);
     out.extend_from_slice(&CLIP_FILE_MAGIC);
 
@@ -127,7 +123,10 @@ fn write_clip(
     if let Some(h) = header {
         let (numerator, denominator) = h.time_signature;
         push_words(&mut out, delta_clockstamp(0).data_words());
-        push_words(&mut out, MidiEvent::flex_set_tempo(0, h.tempo_bpm).data_words());
+        push_words(
+            &mut out,
+            MidiEvent::flex_set_tempo(0, h.tempo_bpm).data_words(),
+        );
         push_words(&mut out, delta_clockstamp(0).data_words());
         push_words(
             &mut out,
@@ -241,6 +240,80 @@ impl ParsedClipFile {
         let total_ticks: u64 = self.events.iter().map(|ce| u64::from(ce.delta_ticks)).sum();
         total_ticks as f64 / f64::from(self.ticks_per_quarter)
     }
+
+    /// Pair the event stream into whole notes with durations — the shape an
+    /// importer wants, and the MIDI-2 analogue of `tutti_midi_io::smf::tracks`.
+    ///
+    /// Velocity stays 16-bit ([`ClipNote::velocity`]): pairing here rather than
+    /// in a caller is what keeps a clip file's full-resolution velocity from
+    /// being narrowed to 7 bits on the way in.
+    ///
+    /// Pairing is keyed on `(group, channel, note)`, so a Note Off only closes a
+    /// Note On on the same group *and* channel; overlapping identical notes
+    /// close in LIFO order; notes still open at End of Clip are dropped (their
+    /// duration is unknowable). MIDI 1.0 velocity-0 Note On counts as a Note Off
+    /// — [`MidiEvent::is_note_off`] already folds that in.
+    pub fn notes(&self) -> Vec<ClipNote> {
+        use std::collections::BTreeMap;
+
+        let mut held: BTreeMap<(u8, u8, u8), Vec<(f64, u16)>> = BTreeMap::new();
+        let mut out: Vec<ClipNote> = Vec::new();
+
+        for (beat, event) in self.timed() {
+            let (Some(note), Some(channel)) = (event.note(), event.channel()) else {
+                continue;
+            };
+            let key = (event.group(), channel, note);
+            // Order matters: a velocity-0 MIDI 1.0 Note On satisfies both
+            // predicates' shapes, and `is_note_off` is the one that claims it.
+            if event.is_note_off() {
+                if let Some((start, velocity)) = held.get_mut(&key).and_then(Vec::pop) {
+                    out.push(ClipNote {
+                        group: key.0,
+                        channel,
+                        note,
+                        velocity,
+                        start_beats: start,
+                        duration_beats: (beat - start).max(0.0),
+                    });
+                }
+            } else if event.is_note_on() {
+                let velocity = event.velocity_u16().unwrap_or(0);
+                held.entry(key).or_default().push((beat, velocity));
+            }
+        }
+
+        // Onset order, then key, so simultaneous notes have a stable order
+        // rather than one that depends on when their Note Offs arrived.
+        out.sort_by(|a, b| {
+            a.start_beats
+                .partial_cmp(&b.start_beats)
+                .unwrap_or(core::cmp::Ordering::Equal)
+                .then_with(|| (a.group, a.channel, a.note).cmp(&(b.group, b.channel, b.note)))
+        });
+        out
+    }
+}
+
+/// One note from a clip file, paired from its Note On / Note Off, in beats from
+/// the clip start. The MIDI-2 counterpart of `tutti_midi_io::smf::SmfNote` —
+/// same shape, but velocity keeps all 16 bits and the UMP group is carried.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipNote {
+    /// UMP group, 0..=15. Part of the pairing key: groups are independent
+    /// 16-channel spaces, so the same channel+note in two groups is two notes.
+    pub group: u8,
+    /// MIDI channel, 0..=15.
+    pub channel: u8,
+    /// Note number, 0..=127.
+    pub note: u8,
+    /// Note On velocity at full MIDI 2.0 width. A MIDI 1.0 note in the clip is
+    /// upscaled by Min-Center-Max, so this is lossless in both directions.
+    pub velocity: u16,
+    /// Onset in beats (quarter notes) from the clip start.
+    pub start_beats: f64,
+    /// Duration in beats (Note Off beat − Note On beat, clamped to ≥ 0).
+    pub duration_beats: f64,
 }
 
 /// Why a byte stream failed to parse as a MIDI Clip File (M2-116). Distinguishes
@@ -824,12 +897,125 @@ mod tests {
                 0x8000_0000, // …then a stray note-on
             ],
         );
-        assert_eq!(
-            read_clip_file(&trailing),
-            Err(ClipFileError::TrailingData)
-        );
+        assert_eq!(read_clip_file(&trailing), Err(ClipFileError::TrailingData));
 
         // A well-formed file with both brackets still parses.
         assert!(read_clip_file(&write_clip_file(480, &[])).is_ok());
+    }
+
+    // --- Note pairing ---
+
+    /// Round-trip a beat-positioned event list and pair it back into notes.
+    fn notes_from(events: impl IntoIterator<Item = (f64, MidiEvent)>) -> Vec<ClipNote> {
+        let bytes = write_clip_file_from_beats(96, events);
+        read_clip_file(&bytes).unwrap().notes()
+    }
+
+    #[test]
+    fn pairs_notes_and_keeps_full_velocity() {
+        let notes = notes_from([
+            (0.0, MidiEvent::note_on(0, 0, 60, 0xABCD)),
+            (2.5, MidiEvent::note_off(0, 0, 60, 0)),
+        ]);
+
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].note, 60);
+        assert_eq!(notes[0].start_beats, 0.0);
+        assert_eq!(notes[0].duration_beats, 2.5);
+        // The reason pairing lives here: a caller pairing on `velocity_u7`
+        // would have silently narrowed this to 7 bits.
+        assert_eq!(notes[0].velocity, 0xABCD);
+    }
+
+    #[test]
+    fn a_note_off_only_closes_its_own_channel_and_group() {
+        // Same note number in three different (group, channel) spaces, closed
+        // in a deliberately scrambled order.
+        let notes = notes_from([
+            (0.0, MidiEvent::note_on(0, 0, 60, 0x1000)),
+            (0.0, MidiEvent::note_on(0, 1, 60, 0x2000)),
+            (0.0, MidiEvent::note_on(1, 0, 60, 0x3000)),
+            (1.0, MidiEvent::note_off(1, 0, 60, 0)),
+            (2.0, MidiEvent::note_off(0, 1, 60, 0)),
+            (3.0, MidiEvent::note_off(0, 0, 60, 0)),
+        ]);
+
+        assert_eq!(notes.len(), 3);
+        // Sorted by (group, channel) at equal onset, so the order is stable.
+        assert_eq!(
+            notes
+                .iter()
+                .map(|n| (n.group, n.channel))
+                .collect::<Vec<_>>(),
+            [(0, 0), (0, 1), (1, 0)]
+        );
+        // Each closed against its own Note Off, not the nearest one.
+        assert_eq!(notes[0].duration_beats, 3.0);
+        assert_eq!(notes[1].duration_beats, 2.0);
+        assert_eq!(notes[2].duration_beats, 1.0);
+        assert_eq!(
+            notes.iter().map(|n| n.velocity).collect::<Vec<_>>(),
+            [0x1000, 0x2000, 0x3000]
+        );
+    }
+
+    #[test]
+    fn overlapping_identical_notes_close_in_lifo_order() {
+        let notes = notes_from([
+            (0.0, MidiEvent::note_on(0, 0, 60, 0x1000)),
+            (1.0, MidiEvent::note_on(0, 0, 60, 0x2000)),
+            (2.0, MidiEvent::note_off(0, 0, 60, 0)),
+            (4.0, MidiEvent::note_off(0, 0, 60, 0)),
+        ]);
+
+        assert_eq!(notes.len(), 2);
+        // The first Note Off closes the *most recent* Note On.
+        assert_eq!((notes[0].start_beats, notes[0].duration_beats), (0.0, 4.0));
+        assert_eq!((notes[1].start_beats, notes[1].duration_beats), (1.0, 1.0));
+    }
+
+    #[test]
+    fn a_midi1_velocity_zero_note_on_closes_a_note() {
+        // MIDI 1.0's running-status idiom: NoteOn with velocity 0 is a NoteOff.
+        // If it were treated as an onset instead, this would pair as two open
+        // notes and yield nothing. Built from MIDI 1.0 bytes so these are real
+        // Channel Voice 1 packets — `note_on_7bit` would widen to CV2 and never
+        // reach this path.
+        let on = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 100]).expect("midi1 note-on");
+        let off = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 0]).expect("midi1 note-on vel 0");
+        let notes = notes_from([(0.0, on), (1.5, off)]);
+
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].duration_beats, 1.5);
+        // A MIDI 1.0 velocity upscales by Min-Center-Max rather than shifting.
+        assert_eq!(
+            notes[0].velocity,
+            crate::convert::midi1_velocity_to_midi2(100)
+        );
+    }
+
+    #[test]
+    fn notes_left_open_at_end_of_clip_are_dropped() {
+        let notes = notes_from([
+            (0.0, MidiEvent::note_on(0, 0, 60, 0x8000)),
+            (1.0, MidiEvent::note_off(0, 0, 60, 0)),
+            // Never closed — its duration is unknowable, so it is not a note.
+            (2.0, MidiEvent::note_on(0, 0, 64, 0x8000)),
+        ]);
+
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].note, 60);
+    }
+
+    #[test]
+    fn non_note_events_do_not_disturb_pairing() {
+        let notes = notes_from([
+            (0.0, MidiEvent::note_on(0, 0, 60, 0x8000)),
+            (0.5, MidiEvent::cc(0, 0, 74, 0x4000)),
+            (1.0, MidiEvent::note_off(0, 0, 60, 0)),
+        ]);
+
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].duration_beats, 1.0);
     }
 }

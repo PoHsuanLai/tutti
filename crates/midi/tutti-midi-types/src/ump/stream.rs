@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(out.len(), 1);
         match UmpMessage::try_from(out[0].data_words()).unwrap() {
             UmpMessage::UmpStream(UmpStream::FunctionBlockName(m)) => {
-                assert_eq!(u8::from(m.function_block()), 2);
+                assert_eq!(m.function_block(), 2);
                 assert_eq!(m.name(), "Keys");
             }
             other => panic!("expected FunctionBlockName, got {other:?}"),
@@ -369,7 +369,7 @@ mod tests {
         let words: Vec<u32> = out.iter().flat_map(|e| e.data_words().to_vec()).collect();
         match UmpMessage::try_from(&words[..]).unwrap() {
             UmpMessage::UmpStream(UmpStream::FunctionBlockName(m)) => {
-                assert_eq!(u8::from(m.function_block()), 7);
+                assert_eq!(m.function_block(), 7);
                 assert_eq!(m.name(), long);
             }
             other => panic!("expected FunctionBlockName, got {other:?}"),

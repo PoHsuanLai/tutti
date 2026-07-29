@@ -67,7 +67,8 @@ impl MidiEvent {
     /// event that isn't a type-0x5 packet. Use [`sysex8_message`] to recover the
     /// reassembled payload of a whole (possibly multi-packet) message.
     pub fn sysex8_status(&self) -> Option<(u8, u8)> {
-        self.sysex8_header().map(|(status, stream_id, _)| (status, stream_id))
+        self.sysex8_header()
+            .map(|(status, stream_id, _)| (status, stream_id))
     }
 
     /// Read `(status, stream_id, byte_count)` from a SysEx8 packet's first word.

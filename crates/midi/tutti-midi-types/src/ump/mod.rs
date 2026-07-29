@@ -304,15 +304,15 @@ pub use controllers::{
     RPN_INDEX_PER_NOTE_PITCH_BEND_SENSITIVITY,
 };
 pub use flex_data::{
-    bpm_to_ten_ns_per_quarter, flex_chord_name, flex_key_signature, flex_tempo_bpm,
-    flex_text, flex_time_signature, FlexTextReassembler,
-    push_flex_text, ten_ns_per_quarter_to_bpm, Alteration, BarAccents, ChordBass, ChordName,
-    ChordSharpsFlats, ChordType, FlexTextKind, KeySharpsFlats, Tonic,
+    bpm_to_ten_ns_per_quarter, flex_chord_name, flex_key_signature, flex_tempo_bpm, flex_text,
+    flex_time_signature, push_flex_text, ten_ns_per_quarter_to_bpm, Alteration, BarAccents,
+    ChordBass, ChordName, ChordSharpsFlats, ChordType, FlexTextKind, FlexTextReassembler,
+    KeySharpsFlats, Tonic,
 };
 pub use stream::{
     endpoint_name, function_block_name, product_instance_id, EndpointCapabilities,
-    EndpointDiscoveryRequest,
-    FunctionBlockDirection, FunctionBlocks, JrTimestamps, Protocol, UmpVersion,
+    EndpointDiscoveryRequest, FunctionBlockDirection, FunctionBlocks, JrTimestamps, Protocol,
+    UmpVersion,
 };
 pub use sysex::{
     SYSEX7_STATUS_CONTINUE, SYSEX7_STATUS_END, SYSEX7_STATUS_SINGLE, SYSEX7_STATUS_START,

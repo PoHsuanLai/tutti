@@ -44,7 +44,7 @@ pub use translation::scaling as convert;
 
 pub use clip_file::{
     read_clip_file, write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
-    ClipEvent, ClipFileError, ClipHeader, ParsedClipFile, CLIP_FILE_MAGIC,
+    ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile, CLIP_FILE_MAGIC,
 };
 pub use message::{MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage};
 pub use mpe::{
@@ -121,6 +121,24 @@ pub use unit_id::MidiUnitId;
 /// let clip = read_clip_file(&bytes).unwrap();
 /// assert_eq!(clip.time_signature(), Some((7, 8)));
 /// assert!((clip.tempo_bpm().unwrap() - 174.0).abs() < 0.05);
+/// ```
+///
+/// [`ParsedClipFile::notes`] pairs the event stream into whole notes, so an
+/// importer gets durations without reimplementing note matching — and without
+/// narrowing velocity to 7 bits on the way:
+///
+/// ```
+/// use tutti_midi_types::{read_clip_file, write_clip_file_from_beats, MidiEvent};
+///
+/// let bytes = write_clip_file_from_beats(96, [
+///     (0.0, MidiEvent::note_on(0, 0, 60, 0xABCD)),
+///     (1.5, MidiEvent::note_off(0, 0, 60, 0)),
+/// ]);
+///
+/// let notes = read_clip_file(&bytes).unwrap().notes();
+/// assert_eq!(notes.len(), 1);
+/// assert_eq!(notes[0].duration_beats, 1.5);
+/// assert_eq!(notes[0].velocity, 0xABCD);
 /// ```
 ///
 /// [`MidiEvent::message`]: crate::MidiMessage

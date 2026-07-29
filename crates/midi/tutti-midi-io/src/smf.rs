@@ -200,19 +200,20 @@ fn pair_notes(track: &Track, ticks_per_beat: f64) -> Vec<SmfNote> {
     let mut held: BTreeMap<(u8, u8), Vec<(f64, u8)>> = BTreeMap::new();
     let mut out: Vec<SmfNote> = Vec::new();
 
-    let mut close = |held: &mut BTreeMap<(u8, u8), Vec<(f64, u8)>>, channel: u8, key: u8, end: f64| {
-        if let Some(stack) = held.get_mut(&(channel, key)) {
-            if let Some((start, velocity)) = stack.pop() {
-                out.push(SmfNote {
-                    channel,
-                    key,
-                    velocity,
-                    start_beats: start,
-                    duration_beats: (end - start).max(0.0),
-                });
+    let mut close =
+        |held: &mut BTreeMap<(u8, u8), Vec<(f64, u8)>>, channel: u8, key: u8, end: f64| {
+            if let Some(stack) = held.get_mut(&(channel, key)) {
+                if let Some((start, velocity)) = stack.pop() {
+                    out.push(SmfNote {
+                        channel,
+                        key,
+                        velocity,
+                        start_beats: start,
+                        duration_beats: (end - start).max(0.0),
+                    });
+                }
             }
-        }
-    };
+        };
 
     for event in track.iter() {
         now_ticks = now_ticks.saturating_add(u64::from(event.delta.as_int()));

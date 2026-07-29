@@ -187,3 +187,11 @@ required-features = ["modulation"]
 [[example]]
 name = "offline_export"
 required-features = ["export", "wav"]
+
+# `modulation` as well as `plugin`: the example declares a param modulatable to
+# show that a hosted plugin's numeric param ids reach the same modulation
+# vocabulary a native node's `UnitParam` does. Without it the plugin still
+# loads, binds and plays — that half just has nothing to demonstrate.
+[[example]]
+name = "plugin_host"
+required-features = ["plugin", "modulation"]

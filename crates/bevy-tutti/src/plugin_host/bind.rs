@@ -68,12 +68,21 @@ pub fn plugin_bind_transport(
     mut commands: Commands,
     mut graph: ResMut<AudioGraphRes>,
     transport: Res<TransportRes>,
-    metronome: Res<MetronomeRes>,
+    // `Option`, and not covered by `engine_ready`: the metronome is inserted by
+    // the full engine bootstrap, so an app that built a graph and a transport by
+    // hand (a test, an offline render, this crate's own example) has one without
+    // the other. Waiting is the right answer — the steady-state query means a
+    // plugin binds as soon as the meter turns up, where a hard `Res` would panic
+    // the whole schedule instead.
+    metronome: Option<Res<MetronomeRes>>,
     unbound: Query<(Entity, &tutti_core::AudioNode), TransportUnbound>,
 ) {
     if unbound.is_empty() {
         return;
     }
+    let Some(metronome) = metronome else {
+        return;
+    };
     let meter = metronome.0.meter_cell();
 
     for (entity, node) in unbound.iter() {
@@ -107,7 +116,17 @@ pub fn plugin_bind_transport(
 /// A plugin's parameters are **not** reachable through this registration, and
 /// registering `PluginClient` for modulation would be actively wrong — see
 /// [`plugin_bind_params`]. It is registered for MIDI only.
+///
+/// # Ordering
+///
+/// `init_resource` rather than `resource_mut`, so this does not depend on
+/// `TuttiMidiPlugin` having been added first. The registry is a plain
+/// `Default` map that both plugins contribute entries to; requiring an order
+/// between two independent `add_plugins` calls is the kind of constraint nobody
+/// reads until it panics, and hosting is perfectly coherent without MIDI (an
+/// effect plugin never receives a note).
 pub fn register_plugin_node_types(app: &mut bevy_app::App) {
+    app.init_resource::<crate::midi::MidiTargetRegistry>();
     app.world_mut()
         .resource_mut::<crate::midi::MidiTargetRegistry>()
         .register::<PluginClient>();

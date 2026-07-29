@@ -77,6 +77,24 @@ pub use scan::{
 /// `NonSend<PluginEditorMainThread>` is pinned to the main thread.
 pub struct PluginEditorMainThread;
 
+/// Whether this app has windowing, and so whether a plugin editor can exist.
+///
+/// The editor systems read `WindowCloseRequested` and `WindowResized`. Those
+/// message resources are registered by Bevy's window plugin, which a headless
+/// host does not add — and an ungated `MessageReader` over an unregistered
+/// message fails parameter validation on the first frame rather than quietly
+/// reading nothing.
+///
+/// Keyed on the message resource rather than on a window *existing*: a host with
+/// windowing but no window open yet is still a host whose editors will work, and
+/// the plugin's own window is spawned by this module anyway.
+pub fn windowing_ready(
+    close_events: Option<Res<bevy_ecs::message::Messages<bevy_window::WindowCloseRequested>>>,
+    resize_events: Option<Res<bevy_ecs::message::Messages<bevy_window::WindowResized>>>,
+) -> bool {
+    close_events.is_some() && resize_events.is_some()
+}
+
 /// The plugin discovery + loading catalog. Owns the on-disk DB and the
 /// scan-dir config; systems reach in to `register_bundled_plugin`,
 /// `unregister_bundled_plugins`, `rescan`, etc.
@@ -115,6 +133,12 @@ impl PluginsRes {
 ///
 /// Requires [`crate::graph::GraphReconcilePlugin`] (which configures the
 /// `GraphReconcileSystems` set) to be added before this plugin.
+///
+/// Also requires the host to have initialised Bevy's task pools — a
+/// `TaskPoolPlugin`, or the `DefaultPlugins`/`MinimalPlugins` that include one.
+/// Loading and scanning both run on `AsyncComputeTaskPool`; this plugin does not
+/// add one itself, since a host that configured its own pool sizes would have
+/// them silently replaced.
 pub struct TuttiHostingPlugin;
 
 impl Plugin for TuttiHostingPlugin {
@@ -166,6 +190,18 @@ impl Plugin for TuttiHostingPlugin {
         app.add_message::<ProbePlugin>();
         app.add_message::<PluginProbed>();
 
+        // Editor systems, gated on **windowing** rather than on the engine.
+        //
+        // They read `WindowCloseRequested` / `WindowResized`, which only exist
+        // once something has added Bevy's window plugin. A headless host — a
+        // renderer, a test, this crate's own examples — registers neither, and
+        // an ungated `MessageReader` fails parameter validation on the first
+        // frame rather than simply finding nothing to read.
+        //
+        // The engine is the wrong gate for these: a plugin's GUI is perfectly
+        // meaningful with audio stopped, and gating on `engine_ready` was both
+        // too strict (no editor without a device) and too loose (it says nothing
+        // about windows, which is what these actually need).
         app.add_systems(
             Update,
             (
@@ -177,6 +213,15 @@ impl Plugin for TuttiHostingPlugin {
                 plugin_editor_resize_request_system.after(plugin_editor_idle_system),
                 plugin_editor_window_resize_system.after(plugin_editor_resize_request_system),
                 plugin_editor_window_close_system,
+            )
+                .run_if(windowing_ready),
+        );
+
+        // Health needs neither a window nor, strictly, a device — but it unwires
+        // through the graph, so it runs with the engine.
+        app.add_systems(
+            Update,
+            (
                 // Unwires a dead plugin by removing `AudioNode`; the observers
                 // that hang off that removal take the node out of the graph and
                 // the sender off the MIDI bus, so this must land before the
@@ -186,10 +231,6 @@ impl Plugin for TuttiHostingPlugin {
                 // not asked for state it can no longer produce.
                 plugin_state_snapshot.after(plugin_health_poll),
             )
-                // Hosting only means anything with a live graph to host into,
-                // and these systems read window messages a headless app never
-                // registers. Gating the whole set keeps `plugin` usable with the
-                // engine disabled.
                 .run_if(crate::graph::engine_ready),
         );
 

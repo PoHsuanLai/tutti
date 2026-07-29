@@ -1,21 +1,30 @@
-//! Plugin (VST2/VST3/CLAP/AU) hosting for Bevy: editor lifecycle, crash
-//! detection, async catalog scanning, and param reconciliation.
+//! Plugin (VST2/VST3/CLAP/AU) hosting for Bevy.
 //!
-//! This crate owns the ECS surface that turns `tutti-plugin`'s loaded
-//! plugin handles into Bevy entities with a native GUI editor window,
-//! and reconciles `PluginParam` changes into the running audio graph.
+//! Turns `tutti-plugin`'s catalog and handles into an ECS surface: a
+//! [`PluginRequest`] becomes a loaded plugin bound to the transport, the MIDI
+//! bus and the modulation matrix, with a native GUI window and a liveness state.
 //!
 //! **Bevy-only by design.** Every module here is ECS / window glue; there is no
 //! Bevy-free core to gate. A non-Bevy host uses the (Bevy-free) `tutti-plugin`
-//! crate for plugin discovery / loading / `PluginHandle` param control and
-//! `tutti-plugin-server` for out-of-process audio, wiring editor + scan hosting
-//! itself.
+//! crate directly and wires the equivalent itself.
+//!
+//! # Life of a plugin
+//!
+//! A host spawns a [`PluginRequest`]. [`load`] picks it up, runs the subprocess
+//! launch on a worker, and promotes the result to an `AudioNode` carrying a
+//! [`PluginEmitter`]. [`bind`] then installs the transport, registers the plugin
+//! with the shared MIDI resolver, and builds accumulators for whichever params
+//! the host declared modulatable. [`health`] polls liveness from there on, and
+//! removes `AudioNode` — the one handle everything else keys on — when a plugin
+//! is finally written off.
 //!
 //! Sub-modules:
-//! - [`editor`] — open / attach / idle / window-resize / close. The 5-system
-//!   choreography that owns the plugin GUI window's lifecycle.
-//! - [`crash`] — polls each plugin's crashed flag and unwires from the graph.
-//! - [`scan`] — async plugin-catalog scanning on the compute task pool.
+//! - [`load`] — off-thread loading: request → pending → promoted.
+//! - [`bind`] — transport, MIDI and parameter binding once loaded.
+//! - [`health`] — debounced liveness, state snapshots, unwiring the dead.
+//! - [`editor`] — the GUI window's lifecycle, driven by [`SetEditorVisible`].
+//! - [`scan`] — catalog scanning with per-plugin progress.
+//! - [`catalog`] — probing a single plugin off the frame thread.
 //! - [`native_window`] — platform helpers for child-window parenting.
 //! - `live_resize` (macOS only) — AppKit live-resize observer.
 
@@ -24,8 +33,11 @@ use bevy_ecs::prelude::*;
 
 use crate::graph::GraphReconcileSystems;
 
-pub mod crash;
+pub mod bind;
+pub mod catalog;
 pub mod editor;
+pub mod health;
+pub mod load;
 pub mod native_window;
 pub mod scan;
 
@@ -38,16 +50,24 @@ pub mod live_resize;
 #[cfg(target_os = "macos")]
 pub use live_resize::{reap_orphaned_live_resize_observers, LiveResizeRegistry};
 
-pub use crash::plugin_crash_detect_system;
+#[cfg(feature = "modulation")]
+pub use bind::{plugin_bind_params, PluginParamsBound};
+pub use bind::{plugin_bind_transport, PluginTransportBound};
+pub use catalog::{poll_probes, start_probe, InFlightProbes, PluginProbed, ProbePlugin};
 pub use editor::{
-    close_editor_observer, plugin_editor_attach_system, plugin_editor_idle_system,
-    plugin_editor_open_system, plugin_editor_resize_request_system,
-    plugin_editor_window_close_system, plugin_editor_window_resize_system, CloseEditor,
-    OpenPluginEditor, PendingPluginEditor, PluginEditorOpen, PluginEmitter,
+    plugin_editor_attach_system, plugin_editor_idle_system, plugin_editor_resize_request_system,
+    plugin_editor_window_close_system, plugin_editor_window_resize_system,
+    set_editor_visible_observer, PendingPluginEditor, PluginEditorOpen, PluginEmitter,
+    SetEditorVisible, Visibility,
+};
+pub use health::{plugin_health_poll, plugin_state_snapshot, PluginHealth, PluginStatus};
+pub use load::{
+    plugin_load_promote, plugin_load_start, PendingPlugin, PluginLoadDone, PluginLoadTerminated,
+    PluginRequest,
 };
 pub use scan::{
-    poll_plugin_scan, trigger_plugin_scan, InFlightScan, PluginScanConfig, PluginsScanned,
-    RescanPlugins,
+    poll_scan, start_scan, InFlightScan, PluginCatalogState, PluginsScanned, RescanPlugins,
+    ScanProgressed,
 };
 
 /// Non-Send marker resource that forces plugin editor systems to run on the
@@ -56,6 +76,24 @@ pub use scan::{
 /// this. Inserted as `insert_non_send` so any system that takes
 /// `NonSend<PluginEditorMainThread>` is pinned to the main thread.
 pub struct PluginEditorMainThread;
+
+/// Whether this app has windowing, and so whether a plugin editor can exist.
+///
+/// The editor systems read `WindowCloseRequested` and `WindowResized`. Those
+/// message resources are registered by Bevy's window plugin, which a headless
+/// host does not add — and an ungated `MessageReader` over an unregistered
+/// message fails parameter validation on the first frame rather than quietly
+/// reading nothing.
+///
+/// Keyed on the message resource rather than on a window *existing*: a host with
+/// windowing but no window open yet is still a host whose editors will work, and
+/// the plugin's own window is spawned by this module anyway.
+pub fn windowing_ready(
+    close_events: Option<Res<bevy_ecs::message::Messages<bevy_window::WindowCloseRequested>>>,
+    resize_events: Option<Res<bevy_ecs::message::Messages<bevy_window::WindowResized>>>,
+) -> bool {
+    close_events.is_some() && resize_events.is_some()
+}
 
 /// The plugin discovery + loading catalog. Owns the on-disk DB and the
 /// scan-dir config; systems reach in to `register_bundled_plugin`,
@@ -74,12 +112,14 @@ impl PluginsRes {
     }
 }
 
-// NOTE: `reconcile_plugin_params` moved out with the `PluginParam` component it
-// read (which left tutti-core). `PluginEmitter` stays here; a host imports it
-// via the `bevy_tutti` umbrella.
+// Hosted-plugin parameters have no ECS reconcile and no `AudioParam`-style
+// component. They are runtime-discovered `u32` ids with per-instance ranges,
+// which `AudioParam<U, P>` (const-generic over a closed `UnitParam` enum)
+// cannot express. Automation reaches them sample-accurately over the per-block
+// `ParamAutomationSource` path instead — see [`bind`].
 
-/// Bevy plugin: plugin editor lifecycle + crash detection + async catalog
-/// scanning + param reconciliation.
+/// Bevy plugin: plugin load, engine binding, health, editor lifecycle, and
+/// catalog scanning.
 ///
 /// Inserts:
 /// - [`PluginEditorMainThread`] non-send marker to pin editor systems to
@@ -87,22 +127,25 @@ impl PluginsRes {
 /// - [`PluginsRes`] containing an empty in-memory plugin catalog (no scan
 ///   dirs configured by default — apps that want disk-backed scanning
 ///   should override the resource at startup with a
-///   `Plugins::with_json_catalog(...).with_fresh_scan()`).
-///
-/// Schedules the editor-lifecycle + crash-detect + scan systems in `Update`.
-/// (The `PluginParam` reconcile + epoch bump moved to
-/// `dawai_model::engine_bind::plugin_host` with the `PluginParam` component.)
+///   `Plugins::with_json_catalog(...)`). The scan systems read their
+///   directories off this one resource, so there is nothing else to keep in
+///   sync with it.
 ///
 /// Requires [`crate::graph::GraphReconcilePlugin`] (which configures the
 /// `GraphReconcileSystems` set) to be added before this plugin.
+///
+/// Also requires the host to have initialised Bevy's task pools — a
+/// `TaskPoolPlugin`, or the `DefaultPlugins`/`MinimalPlugins` that include one.
+/// Loading and scanning both run on `AsyncComputeTaskPool`; this plugin does not
+/// add one itself, since a host that configured its own pool sizes would have
+/// them silently replaced.
 pub struct TuttiHostingPlugin;
 
 impl Plugin for TuttiHostingPlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<OpenPluginEditor>()
-            .register_type::<PendingPluginEditor>();
+        app.register_type::<PendingPluginEditor>();
 
-        app.add_observer(close_editor_observer);
+        app.add_observer(set_editor_visible_observer);
 
         // `Plugin::build` runs on the thread that builds the `App`, which for
         // a windowed Bevy app is the main/UI thread — the same thread every
@@ -125,57 +168,137 @@ impl Plugin for TuttiHostingPlugin {
         #[cfg(target_os = "macos")]
         app.insert_non_send(live_resize::LiveResizeRegistry::default());
 
-        // Default plugin catalog: empty in-memory, no scan dirs. Apps
-        // that want a real disk-backed catalog should overwrite this
-        // resource with their own `PluginsRes::new(Plugins::with_json_catalog(...))`
-        // after `add_plugins(TuttiHostingPlugin)`.
+        // Default plugin catalog: empty in-memory, no scan dirs. Apps that want
+        // a real disk-backed catalog overwrite this resource with their own
+        // `PluginsRes::new(Plugins::with_json_catalog(..))` — or any other
+        // `PluginCatalog` impl — after `add_plugins(TuttiHostingPlugin)`.
+        //
+        // The scan reads its directories off *this* resource (the catalog moves
+        // onto the scan thread and back), so overriding it is the whole
+        // configuration story. There is no second config to keep in sync.
         let default_db_path = std::path::PathBuf::from(".dawai-plugins.json");
         let config = tutti_plugin::catalog::CatalogConfig::new(default_db_path, Vec::new());
-        let plugins = tutti_plugin::catalog::Plugins::empty(config.clone());
-        app.insert_resource(PluginsRes::new(plugins));
+        app.insert_resource(PluginsRes::new(tutti_plugin::catalog::Plugins::empty(
+            config,
+        )));
 
-        // Async scan path: config mirrors the default catalog (apps that
-        // override `PluginsRes` should overwrite `PluginScanConfig` to
-        // match), an empty in-flight slot, and the rescan messages.
-        app.insert_resource(PluginScanConfig(config));
-        app.init_resource::<InFlightScan>();
+        app.init_resource::<PluginCatalogState>();
+        app.init_resource::<InFlightProbes>();
         app.add_message::<RescanPlugins>();
+        app.add_message::<ScanProgressed>();
         app.add_message::<PluginsScanned>();
+        app.add_message::<ProbePlugin>();
+        app.add_message::<PluginProbed>();
 
+        // Editor systems, gated on **windowing** rather than on the engine.
+        //
+        // They read `WindowCloseRequested` / `WindowResized`, which only exist
+        // once something has added Bevy's window plugin. A headless host — a
+        // renderer, a test, this crate's own examples — registers neither, and
+        // an ungated `MessageReader` fails parameter validation on the first
+        // frame rather than simply finding nothing to read.
+        //
+        // The engine is the wrong gate for these: a plugin's GUI is perfectly
+        // meaningful with audio stopped, and gating on `engine_ready` was both
+        // too strict (no editor without a device) and too loose (it says nothing
+        // about windows, which is what these actually need).
         app.add_systems(
             Update,
             (
-                // Open inserts `PendingPluginEditor`; attach reads it. Without
-                // this ordering an editor takes one or two frames to appear
-                // depending on scheduling.
-                plugin_editor_open_system,
-                plugin_editor_attach_system.after(plugin_editor_open_system),
+                // `set_editor_visible_observer` inserts `PendingPluginEditor`;
+                // attach reads it and finishes the open once Bevy has created
+                // the window and its native handle exists.
+                plugin_editor_attach_system,
                 plugin_editor_idle_system,
                 plugin_editor_resize_request_system.after(plugin_editor_idle_system),
                 plugin_editor_window_resize_system.after(plugin_editor_resize_request_system),
                 plugin_editor_window_close_system,
-                // Removes a crashed plugin's node + sets GraphDirty (no inline
-                // commit), so anchor it before the Commit-phase commit_graph.
-                plugin_crash_detect_system.before(GraphReconcileSystems::Commit),
-                trigger_plugin_scan,
-                poll_plugin_scan.after(trigger_plugin_scan),
             )
-                // Hosting only means anything with a live graph to host into,
-                // and these systems read window messages a headless app never
-                // registers. Gating the whole set keeps `plugin` usable with the
-                // engine disabled.
+                .run_if(windowing_ready),
+        );
+
+        // Health needs neither a window nor, strictly, a device — but it unwires
+        // through the graph, so it runs with the engine.
+        app.add_systems(
+            Update,
+            (
+                // Unwires a dead plugin by removing `AudioNode`; the observers
+                // that hang off that removal take the node out of the graph and
+                // the sender off the MIDI bus, so this must land before the
+                // Commit-phase commit_graph rather than after it.
+                plugin_health_poll.before(GraphReconcileSystems::Commit),
+                // Ordered after the poll so a plugin declared dead this frame is
+                // not asked for state it can no longer produce.
+                plugin_state_snapshot.after(plugin_health_poll),
+            )
+                .run_if(crate::graph::engine_ready),
+        );
+
+        // Scanning is deliberately **not** gated on `engine_ready`: it walks the
+        // filesystem and probes subprocesses, touching neither the graph nor a
+        // window. A host that wants to populate its browser before (or without)
+        // starting audio must be able to. Poll before start, as `export` does,
+        // so a scan that finishes between two frames is still reported.
+        app.add_systems(Update, (poll_scan, start_scan).chain());
+
+        // Single-plugin probes, ungated for the same reason and polled first for
+        // the same reason.
+        app.add_systems(Update, (poll_probes, start_probe).chain());
+
+        // Loading adds a node, so promotion belongs in `Spawn` — MIDI
+        // registration and the engine bindings order themselves after that
+        // phase and pick a freshly promoted plugin up the same frame.
+        //
+        // Only the *start* is gated: it needs a catalog to read an audio config
+        // from, and nothing downstream can use a plugin the engine cannot host.
+        // Promotion stays ungated so a load already in flight when the engine
+        // goes down is still reported rather than left hanging.
+        app.add_systems(
+            Update,
+            (
+                plugin_load_start.run_if(crate::graph::engine_ready),
+                plugin_load_promote.after(plugin_load_start),
+            )
+                .in_set(GraphReconcileSystems::Spawn),
+        );
+
+        // `PluginClient` is only reachable through the shared MIDI resolver if
+        // its type is registered — an unregistered node type is invisible to
+        // `register_midi_senders`, which is why a hosted plugin could not
+        // receive MIDI however it was wired.
+        bind::register_plugin_node_types(app);
+
+        // Binding sits between spawn and commit, alongside MIDI registration and
+        // route rebuilding: it needs the node to exist, and the graph edits it
+        // stages must reach the same frame's commit.
+        app.add_systems(
+            Update,
+            plugin_bind_transport
+                .after(GraphReconcileSystems::Spawn)
+                .before(GraphReconcileSystems::Commit)
+                .run_if(crate::graph::engine_ready),
+        );
+
+        // Param accumulators are modulation vocabulary (`ModParamRange`,
+        // `ModTargetRegistry`), so this half only exists when that feature does.
+        // A `plugin` build without `modulation` still loads, binds transport and
+        // receives MIDI — it just has no route to modulate a param with.
+        #[cfg(feature = "modulation")]
+        app.add_systems(
+            Update,
+            plugin_bind_params
+                .after(GraphReconcileSystems::Spawn)
+                .before(GraphReconcileSystems::Commit)
                 .run_if(crate::graph::engine_ready),
         );
 
         // Reaps AppKit observers for editors that lost `PluginEditorOpen`
-        // without going through `close_editor_observer` — chiefly
-        // `plugin_crash_detect_system`, which is not main-thread pinned.
+        // without going through `set_editor_visible_observer` — chiefly
+        // `plugin_health_poll`, which is not main-thread pinned.
         #[cfg(target_os = "macos")]
         app.add_systems(
             Update,
-            live_resize::reap_orphaned_live_resize_observers.after(plugin_crash_detect_system),
+            live_resize::reap_orphaned_live_resize_observers.after(plugin_health_poll),
         );
-        // The PluginParam reconcile + epoch bump moved to
-        // dawai_model::engine_bind::plugin_host (with the PluginParam component).
     }
 }

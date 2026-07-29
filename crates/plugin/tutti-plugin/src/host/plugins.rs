@@ -115,6 +115,23 @@ impl Plugins {
         self
     }
 
+    /// The audio settings every load from this catalog uses.
+    ///
+    /// The counterpart to [`with_audio_config`](Self::with_audio_config), and
+    /// what makes an **off-thread** load possible. [`load`](Self::load) and
+    /// [`load_client`](Self::load_client) take `&self`, so a caller that must
+    /// not block its thread — a frame-driven host, where a load costs a
+    /// subprocess launch of half a second to fifteen — cannot call them
+    /// directly: the borrow would have to outlive the frame. Reading the config
+    /// here, cloning it with the [`PluginId`], and calling
+    /// [`load_with`](Self::load_with) on the worker is the way across, and the
+    /// [`load_client_with`] on the worker is the way across, and the settings a
+    /// host chose ride along instead of being silently replaced by
+    /// [`AudioConfig::default`].
+    pub fn audio_config(&self) -> &AudioConfig {
+        &self.audio
+    }
+
     /// Run a synchronous rescan and return `self`. Discards the
     /// [`ScanResult`]; use [`Plugins::rescan_sync`] if you need the tally.
     pub fn with_fresh_scan(mut self) -> Self {
@@ -257,10 +274,29 @@ impl Plugins {
     /// at directly. The scan directories in [`CatalogConfig`] are for the
     /// standard install locations; this is the escape hatch for everything
     /// else. Errors if the extension is unrecognized or the probe fails.
+    /// **Blocking** — the probe spawns a subprocess and waits on a handshake,
+    /// up to about seven seconds if the plugin hangs. A frame-driven host should
+    /// run [`PluginRecord::probe`] on a worker and hand the result to
+    /// [`register_record`](Self::register_record) instead.
     pub fn register_path(&mut self, plugin_path: &Path) -> Result<PluginId> {
         let record = PluginRecord::probe(plugin_path)?;
+        Ok(self.register_record(record))
+    }
+
+    /// Add an already-probed record to the catalog, returning its [`PluginId`].
+    ///
+    /// The non-blocking half of [`register_path`](Self::register_path): a caller
+    /// that cannot afford the probe on its own thread runs
+    /// [`PluginRecord::probe`] wherever it likes — the probe needs no catalog —
+    /// and calls this with the result. `register_path` is exactly these two
+    /// steps, so the two paths cannot disagree about what registering means.
+    ///
+    /// In-memory only, like every other catalog mutation; call
+    /// [`flush`](Self::flush) to persist.
+    pub fn register_record(&mut self, record: PluginRecord) -> PluginId {
+        let id = PluginId(record.path.clone());
         self.catalog.upsert(record);
-        Ok(PluginId(plugin_path.to_path_buf()))
+        id
     }
 
     /// Load a plugin by id. Returns a graph-ready `Box<dyn AudioUnit>`
@@ -284,8 +320,7 @@ impl Plugins {
         let _ = format_from_path; // keep import live without the vst2 feature
         let _ = PluginFormat::Vst2;
 
-        let client = PluginClient::new(self.audio.to_bridge_config(), id.0.clone(), sample_rate)?;
-        let handle = PluginHandle::from_client(&client);
+        let (client, handle) = load_client_with(&self.audio, id, sample_rate)?;
         Ok((Box::new(client), handle))
     }
 
@@ -296,9 +331,7 @@ impl Plugins {
         id: &PluginId,
         sample_rate: f64,
     ) -> Result<(PluginClient, PluginHandle)> {
-        let client = PluginClient::new(self.audio.to_bridge_config(), id.0.clone(), sample_rate)?;
-        let handle = PluginHandle::from_client(&client);
-        Ok((client, handle))
+        load_client_with(&self.audio, id, sample_rate)
     }
 
     /// Shortcut for [`Plugins::find`] + [`Plugins::load`].
@@ -317,6 +350,85 @@ impl Plugins {
     pub fn flush(&mut self) -> std::io::Result<()> {
         self.catalog.flush()
     }
+
+    /// If a previous scan died mid-probe, blacklist whatever it was probing.
+    ///
+    /// The scan arms a sentinel file before each probe and clears it after, so a
+    /// sentinel surviving into the next run means the scanner *host* went down —
+    /// a plugin crash, but equally a force-quit, a power loss, or an OOM kill.
+    /// False positives are therefore expected, and
+    /// [`unblacklist`](Self::unblacklist) is the counterpart a host must offer.
+    ///
+    /// Both scan paths already call this. It is public here so a host can
+    /// surface "a plugin brought your last session down" at startup **without**
+    /// paying for a full rescan: the recovery reads one sentinel and one record,
+    /// where a scan probes every plugin on disk in its own subprocess.
+    ///
+    /// Idempotent, and a no-op when no sentinel is present.
+    pub fn recover_crash(&mut self) {
+        // The scanner owns the recovery, and it takes the catalog by value, so
+        // this is a move out and back rather than a borrow — the same shape as
+        // `rescan_sync`, and for the same reason: any `PluginCatalog` impl must
+        // work here, not just cheaply-reloadable file-backed ones.
+        let placeholder: Box<dyn PluginCatalog> = Box::new(PlaceholderCatalog);
+        let catalog = std::mem::replace(&mut self.catalog, placeholder);
+        let mut scanner = PluginScanner::new(catalog, self.config.pedal_path());
+        scanner.recover_crash();
+        self.catalog = scanner.into_catalog();
+    }
+
+    /// Drop records whose plugin file no longer exists.
+    ///
+    /// Uninstalling a plugin leaves its record behind — a scan only ever *adds*
+    /// what it finds, so nothing else removes one, and the entry stays visible
+    /// in a browser indefinitely. Returns the paths that were forgotten.
+    ///
+    /// Not part of a scan: a directory that is temporarily unavailable (an
+    /// unmounted volume, a network share) would otherwise have its whole
+    /// contents forgotten on the next rescan, and re-probing all of it is far
+    /// more expensive than leaving a stale row. Pruning is a decision a host
+    /// makes deliberately.
+    ///
+    /// Returns the paths rather than a count, because "three plugins vanished"
+    /// is not something a host can act on and "these three vanished" is —
+    /// `CatalogExt::prune_missing` computes the list and drops it.
+    pub fn prune_missing(&mut self) -> Vec<PathBuf> {
+        let missing: Vec<PathBuf> = self
+            .catalog
+            .iter()
+            .filter(|r| !r.path.exists())
+            .map(|r| r.path.clone())
+            .collect();
+        for path in &missing {
+            self.catalog.remove(path);
+        }
+        missing
+    }
+}
+
+/// Load a plugin from an [`AudioConfig`] alone, with no catalog.
+///
+/// The catalog's only contribution to a load is its [`AudioConfig`] — the
+/// record is looked up beforehand to get the [`PluginId`], and nothing else is
+/// read. Splitting that out is what lets a load run **off the caller's thread**:
+/// [`Plugins::load`] and [`Plugins::load_client`] take `&self`, so a frame-driven
+/// host cannot hold the borrow across the half-second-to-fifteen-second
+/// subprocess launch. It reads [`Plugins::audio_config`], clones it with the id,
+/// and calls this from a worker.
+///
+/// `Plugins::load_client` is this function with the config supplied, so there is
+/// one implementation rather than two that can drift.
+///
+/// Subprocess formats only — the in-process VST2 path is chosen by
+/// [`Plugins::load`], which dispatches on format before reaching here.
+pub fn load_client_with(
+    audio: &AudioConfig,
+    id: &PluginId,
+    sample_rate: f64,
+) -> Result<(PluginClient, PluginHandle)> {
+    let client = PluginClient::new(audio.to_bridge_config(), id.0.clone(), sample_rate)?;
+    let handle = PluginHandle::from_client(&client);
+    Ok((client, handle))
 }
 
 /// Claim on the catalog an async [`Plugins::rescan`] took ownership of.

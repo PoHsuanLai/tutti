@@ -63,10 +63,30 @@ pub enum GraphReconcileSystems {
 /// the condition usable in a `World` that never added
 /// [`TuttiPlugin`](crate::TuttiPlugin) — a missing state reads as not-ready.
 ///
-/// Two resources are *not* covered (they may be absent even when the engine
-/// built) and must keep `Option<Res<_>>`: `MidiIoRes` (only when a hardware
-/// MIDI port opened) and `PluginsRes` (inserted lazily, not in the engine
-/// block).
+/// # What this does **not** guarantee
+///
+/// This reads a *state*, not the resources. `AudioEngineState::Running` is a
+/// value any host can insert, and the crate's own tests and examples do exactly
+/// that to exercise graph systems without a device. So a system gated here may
+/// still run in a `World` where `build_into` never executed, and **every
+/// resource `build_into` inserts can be absent**: `MetronomeRes`, `MeteringRes`,
+/// `AudioTapRes`, `MidiBusRes`, `MidiRoutingRes`, `ClockMasterRes`,
+/// `DiskStreamerRes`, `MidiIoRes`, and the compensation cell. Add `PluginsRes`,
+/// which is inserted lazily and not by the engine block at all.
+///
+/// In Bevy 0.19 a missing `Res<T>` is a **parameter-validation failure that
+/// panics the schedule**, not a skipped system — so a hard `Res` on any of the
+/// above turns "this host did not build an engine" into a crash. Take them as
+/// `Option<Res<_>>` and return early.
+///
+/// The safe ones are those inserted by the *same plugin* that schedules the
+/// system, since a host cannot have one without the other. That is the real
+/// test — not whether the engine is up, but who owns the insertion.
+///
+/// (An earlier version of this doc named only `MidiIoRes` and `PluginsRes` as
+/// exceptions, and three MIDI systems took hard `Res` on the strength of it. All
+/// three panicked the first time a host added `TuttiMidiPlugin` without the full
+/// engine bootstrap.)
 pub fn engine_ready(state: Option<Res<AudioEngineState>>) -> bool {
     state.is_some_and(|s| s.is_running())
 }

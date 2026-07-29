@@ -58,7 +58,7 @@ define_class!(
 /// only, and an off-main `removeObserver` is a hard crash on macOS. This type
 /// previously carried `unsafe impl Send`/`Sync` purely so it could sit inside
 /// a plain Bevy `Component` — which put its drop wherever a `Commands` queue
-/// happened to be applied (e.g. `plugin_crash_detect_system`, which is *not*
+/// happened to be applied (e.g. `plugin_health_poll`, which is *not*
 /// main-thread pinned) or wherever the `World` was torn down.
 ///
 /// It now lives in [`LiveResizeRegistry`], a `NonSend` resource, so Bevy
@@ -166,8 +166,8 @@ impl LiveResizeRegistry {
 }
 
 /// Reaps observers whose plugin lost its `PluginEditorOpen` without going
-/// through `close_editor_observer` — most importantly
-/// `plugin_crash_detect_system`, which is *not* main-thread pinned and used to
+/// through `set_editor_visible_observer` — most importantly
+/// `plugin_health_poll`, which is *not* main-thread pinned and used to
 /// drop the observer wherever its `Commands` queue happened to be applied.
 ///
 /// `NonSendMut` pins this system to the main thread, so the AppKit

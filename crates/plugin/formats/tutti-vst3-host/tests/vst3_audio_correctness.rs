@@ -369,11 +369,7 @@ fn automation_ramp_is_rendered_at_the_right_offsets() {
     let mut regressions = Vec::new();
     for i in 1..FRAMES {
         if ch0[i] < ch0[i - 1] - 1e-6 {
-            regressions.push(format!(
-                "sample {i}: {} < previous {}",
-                ch0[i],
-                ch0[i - 1]
-            ));
+            regressions.push(format!("sample {i}: {} < previous {}", ch0[i], ch0[i - 1]));
             if regressions.len() >= 5 {
                 break;
             }
@@ -682,13 +678,19 @@ fn reported_latency_matches_the_plugins_actual_delay() {
     // Send an impulse at sample 0 and find where it emerges. The probe's delay
     // line spans one latency period, so a block longer than that sees it.
     const FRAMES: usize = 512;
-    let rendered = render(&mut inst, FRAMES, &[], None, |_, _, i| {
-        if i == 0 {
-            1.0
-        } else {
-            0.0
-        }
-    });
+    let rendered = render(
+        &mut inst,
+        FRAMES,
+        &[],
+        None,
+        |_, _, i| {
+            if i == 0 {
+                1.0
+            } else {
+                0.0
+            }
+        },
+    );
     let ch0 = &rendered.out[0][0];
 
     let found = ch0.iter().position(|&v| v != 0.0);
@@ -841,9 +843,12 @@ fn midi_emitted_by_the_plugin_reaches_the_host() {
             params.add_change(id, 0, (step as f64 * 0.0625).min(1.0));
         }
 
-        let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1)).map(|_| vec![0.0; 512]).collect();
-        let mut outs: Vec<Vec<f32>> =
-            (0..info.num_outputs.max(1)).map(|_| vec![0.0; 512]).collect();
+        let ins: Vec<Vec<f32>> = (0..info.num_inputs.max(1))
+            .map(|_| vec![0.0; 512])
+            .collect();
+        let mut outs: Vec<Vec<f32>> = (0..info.num_outputs.max(1))
+            .map(|_| vec![0.0; 512])
+            .collect();
         let in_refs: Vec<&[f32]> = ins.iter().map(|v| v.as_slice()).collect();
         let mut out_refs: Vec<&mut [f32]> = outs.iter_mut().map(|v| v.as_mut_slice()).collect();
         let mut buffer = AudioBuffer {

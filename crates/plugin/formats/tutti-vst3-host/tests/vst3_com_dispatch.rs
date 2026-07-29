@@ -66,11 +66,7 @@ impl IRunLoopTrait for TwoInterfaceClass {
     unsafe fn unregisterEventHandler(&self, _handler: *mut IEventHandler) -> tresult {
         kResultOk
     }
-    unsafe fn registerTimer(
-        &self,
-        _handler: *mut ITimerHandler,
-        _ms: TimerInterval,
-    ) -> tresult {
+    unsafe fn registerTimer(&self, _handler: *mut ITimerHandler, _ms: TimerInterval) -> tresult {
         kResultOk
     }
     unsafe fn unregisterTimer(&self, _handler: *mut ITimerHandler) -> tresult {

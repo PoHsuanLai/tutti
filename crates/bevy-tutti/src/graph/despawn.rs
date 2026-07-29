@@ -22,11 +22,16 @@ pub fn reconcile_node_despawn(
     remove: On<Remove, AudioNode>,
     nodes: Query<&AudioNode>,
     graph: Option<ResMut<AudioGraphRes>>,
-    mut dirty: ResMut<GraphDirty>,
+    // `Option` to match `graph`. Both come from the plugin that registers this
+    // observer, so this is belt-and-braces rather than a live bug — but an
+    // observer has no run condition, and a half-optional signature is how the
+    // sibling observer in `wire.rs` ended up able to panic.
+    dirty: Option<ResMut<GraphDirty>>,
 ) {
     let entity = remove.event_target();
     let Ok(node) = nodes.get(entity) else { return };
     let Some(mut graph) = graph else { return };
+    let Some(mut dirty) = dirty else { return };
     if graph.0.contains(node.0) {
         graph.0.remove(node.0);
         dirty.0 = true;

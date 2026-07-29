@@ -79,7 +79,11 @@ impl Plugin for ExportPlugin {
         // only that a just-finished render reports on the following frame.
         app.add_systems(
             Update,
-            (poll_exports, start_exports.run_if(crate::graph::engine_ready)).chain(),
+            (
+                poll_exports,
+                start_exports.run_if(crate::graph::engine_ready),
+            )
+                .chain(),
         );
     }
 }

@@ -108,6 +108,9 @@ impl Plugin for TuttiPlugin {
         // against them.
         app.add_plugins(GraphReconcilePlugin);
 
+        // Needs `bevy_asset::AssetPlugin` already added: this registers an asset
+        // loader at build time, and `init_asset` panics without an `AssetServer`.
+        // `DefaultPlugins` includes one; a headless host must add it explicitly.
         #[cfg(feature = "soundfont")]
         app.add_plugins(TuttiSoundFontPlugin);
         #[cfg(feature = "midi")]

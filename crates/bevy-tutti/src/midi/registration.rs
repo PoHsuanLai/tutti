@@ -63,10 +63,18 @@ impl MidiRegistered {
 /// without a round-trip through this system. An entry costs one map slot.
 pub fn register_midi_senders(
     mut commands: Commands,
-    bus: Res<MidiBusRes>,
+    // `Option` for the same reason `unregister_midi_sender` below takes one: the
+    // bus comes from `engine::build_into`, while the `engine_ready` gate reads
+    // `AudioEngineState`. A host can declare the engine up without having run
+    // the build — the crate's own tests do exactly that — and a hard `Res` makes
+    // that a panicked schedule instead of a frame with nothing to register into.
+    bus: Option<Res<MidiBusRes>>,
     resolver: MidiTargetResolver,
     pending: Query<Entity, (With<AudioNode>, Without<MidiRegistered>)>,
 ) {
+    let Some(bus) = bus else {
+        return;
+    };
     for entity in pending.iter() {
         let Some(port) = resolver.port(entity) else {
             continue;

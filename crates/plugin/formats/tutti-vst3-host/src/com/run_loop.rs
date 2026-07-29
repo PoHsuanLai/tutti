@@ -40,8 +40,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use vst3::Steinberg::kResultOk;
-use vst3::Steinberg::Linux::{FileDescriptor, IEventHandler, ITimerHandler, TimerInterval};
 use vst3::Steinberg::tresult;
+use vst3::Steinberg::Linux::{FileDescriptor, IEventHandler, ITimerHandler, TimerInterval};
 
 /// A timer the plugin asked us to run, and when it last fired.
 struct TimerEntry {

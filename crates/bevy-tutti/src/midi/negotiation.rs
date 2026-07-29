@@ -286,6 +286,12 @@ mod tests {
             software_revision: [1, 0, 0, 0],
             categories: CiCategories::PROFILE_CONFIGURATION,
             max_sysex_size: 512,
+            // MIDI-CI Message Version 2 fields. This helper builds an
+            // *initiator's* Discovery, which declares no Function Block and a
+            // single output path, so these are the defaults rather than values
+            // the test cares about.
+            output_path_id: 0,
+            function_block: tutti_midi_runtime::tutti_midi_types::ci::discovery::NO_FUNCTION_BLOCK,
         }
     }
 

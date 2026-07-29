@@ -204,8 +204,8 @@ impl MasterSources {
               is a distinct query or resource the rebuild genuinely needs"
 )]
 pub fn rebuild(
-    mut graph: ResMut<AudioGraphRes>,
-    mut dirty: ResMut<GraphDirty>,
+    graph: Option<ResMut<AudioGraphRes>>,
+    dirty: Option<ResMut<GraphDirty>>,
     nodes: Query<&AudioNode>,
     sinks: Query<(Entity, &AudioSources)>,
     master: Res<MasterSources>,
@@ -221,6 +221,12 @@ pub fn rebuild(
     if !is_dirty {
         return;
     }
+    // `build_into`'s graph and `GraphReconcilePlugin`'s flag; `engine_ready`
+    // guarantees neither, and a wire rebuild with no graph is a no-op. Taken
+    // after the dirty gate so the removal drain above still happens.
+    let (Some(mut graph), Some(mut dirty)) = (graph, dirty) else {
+        return;
+    };
 
     for (sink_entity, declared) in sinks.iter() {
         let Ok(sink) = nodes.get(sink_entity) else {
@@ -359,7 +365,11 @@ pub fn unwire_removed_sources(
     nodes: Query<&AudioNode>,
     declarations: Query<&AudioSources>,
     graph: Option<ResMut<AudioGraphRes>>,
-    mut dirty: ResMut<GraphDirty>,
+    // `Option` to match `graph`: this observer is registered by `GraphWirePlugin`
+    // while `GraphDirty` is inserted by `GraphReconcilePlugin`, and both are
+    // `pub`. An observer has no run condition to hide behind, so the only guard
+    // is the signature.
+    dirty: Option<ResMut<GraphDirty>>,
 ) {
     let entity = remove.event_target();
     let Ok(node) = nodes.get(entity) else { return };
@@ -367,6 +377,7 @@ pub fn unwire_removed_sources(
         return;
     };
     let Some(mut graph) = graph else { return };
+    let Some(mut dirty) = dirty else { return };
     if !graph.0.contains(node.0) {
         return;
     }

@@ -37,7 +37,12 @@ use bevy_app::{App, Update};
 use bevy_ecs::prelude::*;
 
 use tutti_core::AudioNode;
-use tutti_types::{ParamAddr, Unit, UnitParam};
+// `ParamAddr` only appears in the modulation-gated arm of the reconciler, which
+// is where an authored value is handed to the accumulator's base instead of
+// being written straight to the node.
+#[cfg(feature = "modulation")]
+use tutti_types::ParamAddr;
+use tutti_types::{Unit, UnitParam};
 
 use crate::graph::{engine_ready, AudioGraphRes, GraphReconcileSystems};
 

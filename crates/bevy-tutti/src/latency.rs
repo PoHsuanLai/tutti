@@ -109,12 +109,21 @@ impl Plugin for LatencyCompensationPlugin {
 /// Runs only when a reconcile system touched the graph this frame — the same
 /// `GraphDirty` flag that gates the commit. It deliberately does **not** clear
 /// the flag; `commit_graph` does that after publishing to the audio thread.
+/// Both `graph` and `dirty` are optional, and for the same reason: neither
+/// belongs to this plugin. `LatencyCompensationPlugin` is `pub` and documented
+/// as opt-in, so a host can add it alone; `GraphDirty` is
+/// `GraphReconcilePlugin`'s and `AudioGraphRes` is `engine::build_into`'s. The
+/// `engine_ready` gate covers neither — it reads `AudioEngineState`, a value a
+/// host can insert on its own. Nothing to compensate is a no-op.
 pub fn compensate_graph(
-    mut graph: ResMut<AudioGraphRes>,
-    dirty: Res<GraphDirty>,
+    graph: Option<ResMut<AudioGraphRes>>,
+    dirty: Option<Res<GraphDirty>>,
     published: Res<ChannelCompensation>,
     mut total: ResMut<GraphLatency>,
 ) {
+    let (Some(mut graph), Some(dirty)) = (graph, dirty) else {
+        return;
+    };
     if !dirty.0 {
         return;
     }

@@ -325,7 +325,8 @@ fn a_prepare_hook_reaches_the_net_that_gets_rendered() {
         });
 
     assert!(
-        run_until(&mut app, |_| PEAK_MILLI.load(Ordering::SeqCst) != usize::MAX),
+        run_until(&mut app, |_| PEAK_MILLI.load(Ordering::SeqCst)
+            != usize::MAX),
         "the export never reported"
     );
 
@@ -383,7 +384,8 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
     app.world_mut().spawn(request);
 
     assert!(
-        run_until(&mut app, |_| SEEN_TEMPO.load(Ordering::SeqCst) != usize::MAX),
+        run_until(&mut app, |_| SEEN_TEMPO.load(Ordering::SeqCst)
+            != usize::MAX),
         "the render never started"
     );
 

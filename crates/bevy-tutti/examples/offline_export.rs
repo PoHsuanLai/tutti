@@ -77,8 +77,20 @@ fn build_chain(mut commands: Commands) {
         .spawn_audio_node(pass() | pass())
         .insert(
             AudioSources::silent()
-                .with(0, AudioSource::Node { entity: filter, port: 0 })
-                .with(1, AudioSource::Node { entity: filter, port: 0 }),
+                .with(
+                    0,
+                    AudioSource::Node {
+                        entity: filter,
+                        port: 0,
+                    },
+                )
+                .with(
+                    1,
+                    AudioSource::Node {
+                        entity: filter,
+                        port: 0,
+                    },
+                ),
         )
         .id();
 
@@ -87,11 +99,7 @@ fn build_chain(mut commands: Commands) {
     commands.insert_resource(Remaining(2));
 }
 
-fn request_exports(
-    mut commands: Commands,
-    transport: Res<TransportRes>,
-    filter: Res<FilterNode>,
-) {
+fn request_exports(mut commands: Commands, transport: Res<TransportRes>, filter: Res<FilterNode>) {
     let dir = std::env::temp_dir();
 
     // ── 1. The whole mix, normalized, to a file ───────────────────────────

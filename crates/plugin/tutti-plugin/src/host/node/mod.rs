@@ -418,6 +418,25 @@ impl PluginClient {
         self.midi.sender()
     }
 
+    /// This plugin's MIDI input endpoint — address, mailbox and source-install
+    /// slot together.
+    ///
+    /// A hosted plugin's inbox *is* an ordinary [`MidiInPort`], the same type a
+    /// built-in synth exposes, so a host that resolves MIDI targets by asking a
+    /// node for its port can treat plugins and synths identically instead of
+    /// carrying a second, plugin-shaped path.
+    ///
+    /// Prefer this over [`midi_sender`](Self::midi_sender) when the caller might
+    /// later want to install a source or read the unit id: handing back the
+    /// whole port avoids a second downcast, and caching half of it is how a
+    /// stale unit id gets stored (a `crossfade` replaces the unit while keeping
+    /// its `NodeId`, and with it the port's id).
+    ///
+    /// [`MidiInPort`]: tutti_midi_runtime::MidiInPort
+    pub fn midi_port(&self) -> &tutti_midi_runtime::MidiInPort {
+        self.midi.port()
+    }
+
     /// Install a [`tutti_midi_types::MidiIn`] override (typically
     /// [`tutti_midi_runtime::MidiClipSource`] from a track's MIDI
     /// clips) that the plugin polls per block instead of its live

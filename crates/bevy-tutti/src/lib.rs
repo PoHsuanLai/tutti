@@ -108,7 +108,7 @@ pub use plugin::TuttiPlugin;
 pub use latency::{ChannelCompensation, GraphLatency, LatencyCompensationPlugin};
 
 #[cfg(feature = "plugin")]
-pub use plugin_host::{OpenPluginEditor, PluginEmitter, PluginsRes, TuttiHostingPlugin};
+pub use plugin_host::{PluginEmitter, PluginsRes, SetEditorVisible, TuttiHostingPlugin};
 
 // Engine types. The audio graph itself is `Net` (fundsp) — no wrapper.
 pub use engine::{DeviceInfo, Error, Net, Result, TuttiDriver};
@@ -148,7 +148,7 @@ pub mod prelude {
         TuttiModulationPlugin,
     };
     #[cfg(feature = "plugin")]
-    pub use crate::plugin_host::{OpenPluginEditor, PluginsRes, TuttiHostingPlugin};
+    pub use crate::plugin_host::{PluginsRes, SetEditorVisible, TuttiHostingPlugin};
     #[cfg(feature = "sampler")]
     pub use crate::stream::{DiskStreamerRes, TuttiPlaybackPlugin};
 

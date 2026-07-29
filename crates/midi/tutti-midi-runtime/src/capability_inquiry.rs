@@ -94,11 +94,20 @@ impl CiResponder {
             // A Discovery inquiry → our Discovery Reply. (We ignore inbound
             // replies — we're the responder.)
             CiMessage::Discovery {
-                is_reply: false, ..
+                is_reply: false,
+                data: inquiry,
+                ..
             } => vec![CiMessage::Discovery {
                 header: self.reply_header(src),
                 is_reply: true,
-                data: self.identity,
+                data: DiscoveryData {
+                    // §5.6.1: "The Reply to Discovery shall return the same
+                    // Output Path ID provided in the originating Discovery
+                    // Message." It identifies the initiator's MIDI Out
+                    // connection, so echoing ours would name the wrong path.
+                    output_path_id: inquiry.output_path_id,
+                    ..self.identity
+                },
             }],
 
             // Profile Inquiry → our enabled/disabled profile lists.
@@ -381,14 +390,14 @@ mod tests {
     use super::*;
 
     fn identity(mfr: [u8; 3]) -> DiscoveryData {
-        DiscoveryData {
-            manufacturer: mfr,
-            family: 0x1234,
-            family_model: 0x0055,
-            software_revision: [1, 0, 0, 0],
-            categories: CiCategories::PROFILE_CONFIGURATION | CiCategories::PROPERTY_EXCHANGE,
-            max_sysex_size: 512,
-        }
+        DiscoveryData::new(
+            mfr,
+            0x1234,
+            0x0055,
+            [1, 0, 0, 0],
+            CiCategories::PROFILE_CONFIGURATION | CiCategories::PROPERTY_EXCHANGE,
+            512,
+        )
     }
 
     fn responder() -> CiResponder {
@@ -418,6 +427,32 @@ mod tests {
         assert_eq!(dev.muid, Muid(0x0011_2233));
         assert_eq!(dev.identity.manufacturer, [0x00, 0x21, 0x09]);
         assert!(dev.categories.contains(CiCategories::PROFILE_CONFIGURATION));
+    }
+
+    #[test]
+    fn reply_echoes_the_initiators_output_path_id() {
+        // §5.6.1: "The Reply to Discovery shall return the same Output Path ID
+        // provided in the originating Discovery Message." It names the
+        // *initiator's* MIDI Out connection, so a responder that answered with
+        // its own id would point at the wrong path.
+        let resp = responder();
+        let mut init_identity = identity([0x11, 0x22, 0x33]);
+        init_identity.output_path_id = 0x42;
+        let init = CiInitiator::new(Muid(0x0044_5566), init_identity);
+
+        let replies = resp.respond_to(&init.discovery());
+        match &replies[0] {
+            CiMessage::Discovery {
+                is_reply: true,
+                data,
+                ..
+            } => {
+                assert_eq!(data.output_path_id, 0x42, "echoed, not the responder's");
+                // …while the rest of the reply is still the responder's identity.
+                assert_eq!(data.manufacturer, [0x00, 0x21, 0x09]);
+            }
+            other => panic!("expected a Discovery reply, got {other:?}"),
+        }
     }
 
     #[test]

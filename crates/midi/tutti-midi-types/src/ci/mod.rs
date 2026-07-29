@@ -38,26 +38,25 @@ pub const CI_UNIVERSAL_SYSEX: u8 = 0x7E;
 /// Sub-ID#1 identifying a MIDI-CI message (M2-101 §5.1).
 pub const CI_SUB_ID_1: u8 = 0x0D;
 
-/// The MIDI-CI Message Format Version this implementation speaks: **0x01**
-/// (MIDI-CI v1.1).
+/// The MIDI-CI Message Format Version this implementation speaks: **0x02**
+/// (MIDI-CI v1.2).
 ///
-/// M2-101 §5.3: "When sending MIDI-CI messages, a Device shall always use its
-/// own Message Format Version." Our message bodies are v1.1-shaped — Discovery
-/// omits the Initiator's Output Path Id, Reply to Discovery omits the Output
-/// Path Instance Id and Function Block byte, and NAK omits the details/length/
-/// text fields, all of which v2 added. Declaring 0x02 while emitting v1 bodies
-/// makes every message one or more bytes short of what a conformant peer parses,
-/// which earns a NAK (status 0x41, "Message was malformed").
+/// M2-101 §5.2: "In this version 1.2 of the MIDI-CI Specification, the version
+/// number is 0x02." §5.3 requires a device "always use its own Message Format
+/// Version", so this may only be raised alongside the message bodies — which now
+/// carry every Version-2 field: Discovery's Output Path ID (Table 6), Reply's
+/// Output Path Instance ID + Function Block (Table 8), and NAK's details,
+/// message length and text (Table 15).
 ///
-/// 0x01 is a fully valid version to speak: §5.4 requires only that a device use
-/// "Message Format Version 0x01 or higher" and that receivers "process the
+/// Older peers still interoperate: §5.4 requires a receiver to "process the
 /// fields, values, and bits defined in the received version" when it is lower
-/// than their own. So a v1.2 peer parses these correctly.
+/// than its own, and our decoders default each absent Version-2 field rather
+/// than rejecting the message.
 ///
-/// Raise this to 0x02 in the same change that adds the v2 fields, never before —
-/// and note §5.3 requires invalidating the MUID and re-running Discovery when a
-/// device changes the version it sends.
-pub const CI_VERSION: u8 = 0x01;
+/// Changing this value at runtime is not a free edit — §5.3: "If a Device wishes
+/// to change to sending a different Message Format Version, the Device shall
+/// invalidate its MUID and initiate a new Discovery Transaction."
+pub const CI_VERSION: u8 = 0x02;
 
 /// The "whole device" destination for the device-id byte and for broadcast
 /// MUIDs (M2-101 §5.1).
@@ -216,7 +215,7 @@ impl CiMessage {
                     discovery::SUB_ID2_DISCOVERY
                 };
                 header.encode(sub_id2, &mut out);
-                data.encode_body(&mut out);
+                data.encode_body(*is_reply, &mut out);
             }
             CiMessage::InvalidateMuid { header, target } => {
                 header.encode(discovery::SUB_ID2_INVALIDATE_MUID, &mut out);
@@ -248,12 +247,12 @@ impl CiMessage {
             discovery::SUB_ID2_DISCOVERY => Some(CiMessage::Discovery {
                 header,
                 is_reply: false,
-                data: DiscoveryData::decode_body(body)?,
+                data: DiscoveryData::decode_body(false, body)?,
             }),
             discovery::SUB_ID2_DISCOVERY_REPLY => Some(CiMessage::Discovery {
                 header,
                 is_reply: true,
-                data: DiscoveryData::decode_body(body)?,
+                data: DiscoveryData::decode_body(true, body)?,
             }),
             discovery::SUB_ID2_INVALIDATE_MUID => {
                 let b: [u8; 4] = body.get(..4)?.try_into().ok()?;

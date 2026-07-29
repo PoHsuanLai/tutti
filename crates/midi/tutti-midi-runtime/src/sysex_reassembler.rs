@@ -206,14 +206,14 @@ mod tests {
                 destination: Muid::BROADCAST,
             },
             is_reply: false,
-            data: DiscoveryData {
-                manufacturer: mfr,
-                family: 0x1234,
-                family_model: 0x0055,
-                software_revision: [1, 0, 0, 0],
-                categories: CiCategories::PROFILE_CONFIGURATION,
-                max_sysex_size: 512,
-            },
+            data: DiscoveryData::new(
+                mfr,
+                0x1234,
+                0x0055,
+                [1, 0, 0, 0],
+                CiCategories::PROFILE_CONFIGURATION,
+                512,
+            ),
         }
     }
 

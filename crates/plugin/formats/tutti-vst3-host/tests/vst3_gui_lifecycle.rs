@@ -77,14 +77,18 @@ fn resolve_bundle(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-fn host_checker_path() -> Option<PathBuf> {
+fn sample_plugin_path(bundle: &str) -> Option<PathBuf> {
     let dir = sample_plugin_dir();
     if dir.is_empty() {
         return None;
     }
-    let p = Path::new(&dir).join("host-checker.vst3");
+    let p = Path::new(&dir).join(bundle);
     let bin = resolve_bundle(&p);
     bin.is_file().then_some(bin)
+}
+
+fn host_checker_path() -> Option<PathBuf> {
+    sample_plugin_path("host-checker.vst3")
 }
 
 /// Whether a window server is reachable. Without one, `winit` aborts the
@@ -104,8 +108,31 @@ struct TestWindow {
     window: winit::window::Window,
 }
 
+// SAFETY: the singleton below lives in a `static` and hands out
+// `&'static TestWindow` to tests on cargo's worker threads, which requires both
+// `Send` and `Sync`. `winit`'s types are neither, because their *methods* are
+// thread-affine — but the only method these tests call is `handle()`, which
+// reads an X11 window id fixed at creation. No test pumps the event loop,
+// mutates the window, or drops it (it lives for the process).
+unsafe impl Send for TestWindow {}
+unsafe impl Sync for TestWindow {}
+
+/// The process-wide window, built at most once.
+///
+/// `winit` permits a single `EventLoop` per process: a second `build()` fails.
+/// Per-test windows therefore worked only for whichever test ran first, and the
+/// rest skipped themselves with "could not create a window" while still
+/// reporting `ok` — a silent pass that asserted nothing. Sharing one window
+/// makes every test in the file actually run.
+static WINDOW: std::sync::OnceLock<Option<TestWindow>> = std::sync::OnceLock::new();
+
 impl TestWindow {
-    fn new() -> Option<Self> {
+    /// The shared window, or `None` if one could not be created.
+    fn get() -> Option<&'static Self> {
+        WINDOW.get_or_init(Self::build).as_ref()
+    }
+
+    fn build() -> Option<Self> {
         use winit::event_loop::EventLoop;
         use winit::platform::x11::EventLoopBuilderExtX11;
 
@@ -138,8 +165,8 @@ impl TestWindow {
             RawWindowHandle::AppKit(h) => h.ns_view.as_ptr(),
             _ => return None,
         };
-        // SAFETY: `ptr` is this window's live platform handle; `self` (and so
-        // the window) outlives every editor opened against it in these tests.
+        // SAFETY: `ptr` is this window's live platform handle; the window is a
+        // process-lifetime singleton, so it outlives every editor opened here.
         Some(unsafe { WindowHandle::from_raw(ptr) })
     }
 }
@@ -171,7 +198,7 @@ fn editor_open_close_pairs_attach_and_remove() {
     let Some(mut inst) = load_host_checker() else {
         return;
     };
-    let Some(win) = TestWindow::new() else {
+    let Some(win) = TestWindow::get() else {
         eprintln!("could not create a window; skipping");
         return;
     };
@@ -228,7 +255,7 @@ fn editor_resize_respects_capabilities() {
     let Some(mut inst) = load_host_checker() else {
         return;
     };
-    let Some(win) = TestWindow::new() else {
+    let Some(win) = TestWindow::get() else {
         eprintln!("could not create a window; skipping");
         return;
     };
@@ -266,5 +293,84 @@ fn editor_resize_respects_capabilities() {
         Err(e) => eprintln!("resize refused ({e:?}) — valid for a fixed-size editor"),
     }
 
+    inst.close_editor();
+}
+
+/// A plugin with no editor must fail cleanly, not crash or hang.
+///
+/// `audio-probe` returns nullptr from `createView`, so `open_editor` never
+/// reaches the platform-type check or `attached`. This pins the earliest
+/// rejection point: the host must report `NotSupported` rather than
+/// dereferencing the null view.
+///
+/// Uses a real window rather than a null handle: `WindowHandle::from_raw`
+/// requires a valid handle, and this path must not be the one place that
+/// quietly breaks the contract.
+#[test]
+#[ignore = "needs a display; run under xvfb-run -a"]
+fn editorless_plugin_is_refused_cleanly() {
+    if !has_display() {
+        eprintln!("no DISPLAY/WAYLAND_DISPLAY; run under `xvfb-run -a`. Skipping.");
+        return;
+    }
+    let Some(path) = sample_plugin_path("audio-probe.vst3") else {
+        eprintln!("audio-probe.vst3 not found; skipping");
+        return;
+    };
+    let Ok(mut inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+        eprintln!("audio-probe load failed; skipping");
+        return;
+    };
+    let Some(win) = TestWindow::get() else {
+        eprintln!("could not create a window; skipping");
+        return;
+    };
+    let Some(handle) = win.handle() else {
+        eprintln!("unsupported window handle type; skipping");
+        return;
+    };
+
+    let err = inst
+        .open_editor(handle)
+        .expect_err("audio-probe has no editor; open_editor must fail");
+    eprintln!("editorless plugin refused with: {err:?}");
+
+    // And the failure must leave nothing open — a close afterwards is a no-op,
+    // not a `removed()` without a matching `attached()`.
+    inst.close_editor();
+}
+
+/// The host must ask `isPlatformTypeSupported` before `attached`.
+///
+/// `host-checker` scores `IPlugView` entry points the host exercises, and a
+/// successful open here means the view accepted this platform's type *and* the
+/// host's check let it through — i.e. the Gap A check does not reject a plugin
+/// that works. The inverse (a view that refuses being rejected) is covered
+/// without a display in `vst3_view_teardown.rs`, because no corpus plugin
+/// refuses X11.
+#[test]
+#[ignore = "needs a display; run under xvfb-run -a"]
+fn supported_platform_type_still_opens() {
+    let Some(mut inst) = load_host_checker() else {
+        return;
+    };
+    let Some(win) = TestWindow::get() else {
+        eprintln!("could not create a window; skipping");
+        return;
+    };
+    let Some(handle) = win.handle() else {
+        eprintln!("unsupported window handle type; skipping");
+        return;
+    };
+
+    let size = inst
+        .open_editor(handle)
+        .expect("host-checker supports this platform type; the check must not reject it");
+    assert!(
+        size.width > 0 && size.height > 0,
+        "editor reported a degenerate size {}x{}",
+        size.width,
+        size.height
+    );
     inst.close_editor();
 }

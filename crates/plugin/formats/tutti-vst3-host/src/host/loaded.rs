@@ -11,7 +11,7 @@ use std::sync::Arc;
 use vst3::com_scrape_types::Unknown;
 use vst3::ComPtr;
 use vst3::Steinberg::{
-    kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPlugView,
+    kInvalidArgument, kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPlugView,
     IPlugViewContentScaleSupport, IPlugViewContentScaleSupportTrait, IPlugViewTrait,
     IPluginBaseTrait, IPluginCompatibility, IPluginCompatibilityTrait, ViewRect,
     Vst::{
@@ -900,7 +900,8 @@ impl Vst3Loaded {
     /// # Errors
     ///
     /// Returns [`Vst3Error::NotSupported`](crate::Vst3Error::NotSupported) if
-    /// the plugin has no controller or refuses to create a view, and
+    /// the plugin has no controller, refuses to create a view, or the view
+    /// rejects this platform's window type, and
     /// [`Vst3Error::PluginError`](crate::Vst3Error::PluginError) if
     /// `IPlugView::attached` fails.
     pub fn open_editor(&mut self, parent: WindowHandle) -> Result<EditorSize> {
@@ -924,6 +925,19 @@ impl Vst3Loaded {
         let platform_type = kPlatformTypeHWND;
         #[cfg(target_os = "linux")]
         let platform_type = kPlatformTypeX11EmbedWindowID;
+
+        // Ask before attaching: a view that only speaks Wayland or NSView must
+        // not be handed an X11 window id. `editorhost` checks this first for the
+        // same reason (WindowController::onShow), and a view that says no here
+        // would otherwise take an untested `attached` path instead of failing
+        // cleanly.
+        let supported = unsafe { view.isPlatformTypeSupported(platform_type) };
+        if platform_type_refused(supported) {
+            return Err(Vst3Error::NotSupported(format!(
+                "Plugin view does not support platform type {}",
+                platform_type_name(platform_type)
+            )));
+        }
 
         // Create a fresh frame/channel pair for this editor session.
         // setFrame must precede attached() per Steinberg spec.
@@ -984,9 +998,7 @@ impl Vst3Loaded {
         if let EditorState::Open { view, .. } =
             std::mem::replace(&mut self.editor, EditorState::Closed)
         {
-            unsafe {
-                view.removed();
-            }
+            detach_view(&view);
         }
     }
 
@@ -1299,6 +1311,62 @@ fn ensure_has_classes(library: &Vst3Library, path: &Path) -> Result<()> {
 fn host_backing_scale(_parent: &WindowHandle) -> f32 {
     // TODO: thread real backing-scale from frontend WindowHandle.
     1.0
+}
+
+/// Does this `isPlatformTypeSupported` result mean "no"?
+///
+/// Only an explicit denial counts. `editorhost` treats anything but
+/// `kResultTrue` as fatal, and copying that would break working plugins: the
+/// SDK's own `CPluginView` — base class of `EditorView`, and so of a large
+/// share of shipping plugins — returns `kNotImplemented` unconditionally
+/// (`public.sdk/source/common/pluginview.cpp`) while its `attached` succeeds
+/// anyway. A view that declines to answer is not a view that said no.
+///
+/// `kInvalidArgument` *is* a refusal: it is what `VSTGUIEditor` returns for a
+/// type it does not handle (`vstguieditor.cpp`), which is precisely the
+/// Wayland-only-view-handed-an-X11-id case this check exists to catch.
+///
+/// The asymmetry is deliberate — a false "unsupported" costs the user their
+/// editor, while a false "supported" only lands us where we already were
+/// before this check existed.
+pub fn platform_type_refused(result: i32) -> bool {
+    result == kResultFalse || result == kInvalidArgument
+}
+
+/// Tear a view down: retract the host frame, then tell the view it is removed.
+///
+/// The order is the point, and it matches `editorhost`'s `closePlugView`. The
+/// `HostPlugFrame` this view was given dies with the `EditorState` that owned
+/// it, so a plugin still holding the pointer during `removed()` — to report a
+/// final `resizeView`, say — would call through memory about to be freed.
+/// Retracting first makes that unrepresentable rather than merely unlikely.
+///
+/// Split out of `close_editor_unchecked` so the ordering is reachable from a
+/// test without a loaded plugin: the state this runs on can only be built by
+/// `open_editor`, but the sequence itself is what needs pinning.
+// `pub` in a private module: `super` re-exports it only under `conformance`, so
+// this never widens the public API of a normal build.
+pub fn detach_view(view: &ComPtr<IPlugView>) {
+    unsafe {
+        view.setFrame(std::ptr::null_mut());
+        view.removed();
+    }
+}
+
+/// Render a `kPlatformType*` constant as text for error messages. These are C
+/// string literals from the SDK, not Rust `&str`, so they need decoding at the
+/// FFI edge; a malformed one degrades to a placeholder rather than failing the
+/// error path we are already on.
+fn platform_type_name(platform_type: vst3::Steinberg::FIDString) -> String {
+    if platform_type.is_null() {
+        return "<null>".to_string();
+    }
+    // SAFETY: `platform_type` is one of the SDK's static `kPlatformType*`
+    // literals, which are NUL-terminated and live for the program's duration.
+    unsafe { std::ffi::CStr::from_ptr(platform_type) }
+        .to_str()
+        .unwrap_or("<invalid utf-8>")
+        .to_string()
 }
 
 /// Tell the view its content scale via `IPlugViewContentScaleSupport`, if it

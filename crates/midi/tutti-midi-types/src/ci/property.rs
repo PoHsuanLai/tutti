@@ -20,6 +20,10 @@ pub const SUB_ID2_GET_PROPERTY_DATA_REPLY: u8 = 0x35;
 pub const SUB_ID2_SET_PROPERTY_DATA: u8 = 0x36;
 /// Sub-ID#2: Set Property Data Reply.
 pub const SUB_ID2_SET_PROPERTY_DATA_REPLY: u8 = 0x37;
+/// Sub-ID#2: Subscription (M2-101 §8.11).
+pub const SUB_ID2_SUBSCRIPTION: u8 = 0x38;
+/// Sub-ID#2: Reply to Subscription (M2-101 §8.12).
+pub const SUB_ID2_SUBSCRIPTION_REPLY: u8 = 0x39;
 
 /// `true` if `sub_id2` belongs to the Property Exchange family (this subset).
 pub(super) fn is_property_sub_id2(sub_id2: u8) -> bool {
@@ -29,6 +33,8 @@ pub(super) fn is_property_sub_id2(sub_id2: u8) -> bool {
             | SUB_ID2_GET_PROPERTY_DATA_REPLY
             | SUB_ID2_SET_PROPERTY_DATA
             | SUB_ID2_SET_PROPERTY_DATA_REPLY
+            | SUB_ID2_SUBSCRIPTION
+            | SUB_ID2_SUBSCRIPTION_REPLY
     )
 }
 
@@ -39,6 +45,14 @@ pub enum PropertyKind {
     GetDataReply,
     SetData,
     SetDataReply,
+    /// Subscription (M2-101 §8.11) — establishes, updates, or ends a
+    /// subscription. Which of those it does lives in the header's `command`
+    /// property, not in the sub-ID; see [`SubscriptionCommand`].
+    Subscription,
+    /// Reply to Subscription (§8.12). §11.2 of M2-103 makes this mandatory:
+    /// a device "shall reply with a Reply to Subscription message, so the
+    /// original sender is aware of the success or failure of a command."
+    SubscriptionReply,
 }
 
 /// A Property Exchange message body (M2-101 §7.1.3). The `header` and `body` are
@@ -67,6 +81,8 @@ impl PropertyData {
             PropertyKind::GetDataReply => SUB_ID2_GET_PROPERTY_DATA_REPLY,
             PropertyKind::SetData => SUB_ID2_SET_PROPERTY_DATA,
             PropertyKind::SetDataReply => SUB_ID2_SET_PROPERTY_DATA_REPLY,
+            PropertyKind::Subscription => SUB_ID2_SUBSCRIPTION,
+            PropertyKind::SubscriptionReply => SUB_ID2_SUBSCRIPTION_REPLY,
         }
     }
 
@@ -86,6 +102,8 @@ impl PropertyData {
             SUB_ID2_GET_PROPERTY_DATA_REPLY => PropertyKind::GetDataReply,
             SUB_ID2_SET_PROPERTY_DATA => PropertyKind::SetData,
             SUB_ID2_SET_PROPERTY_DATA_REPLY => PropertyKind::SetDataReply,
+            SUB_ID2_SUBSCRIPTION => PropertyKind::Subscription,
+            SUB_ID2_SUBSCRIPTION_REPLY => PropertyKind::SubscriptionReply,
             _ => return None,
         };
         let mut cur = b;
@@ -102,6 +120,71 @@ impl PropertyData {
             chunk,
             body,
         })
+    }
+}
+
+/// The `command` property carried in a Subscription message's header
+/// (M2-103 §11.1, Table 39).
+///
+/// The sub-ID says only "this is a Subscription"; the command says what it
+/// *does*, and each is restricted to one direction. Modelling that here rather
+/// than leaving callers to compare strings is what makes
+/// [`is_valid_from`](Self::is_valid_from) checkable — a Responder that sends
+/// `Start`, or an Initiator that sends `Full`, is speaking out of turn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubscriptionCommand {
+    /// `"start"` — Initiator only. Creates a subscription. §11.1: "The header
+    /// is identical to that used by an Inquiry: Get Property Data message. The
+    /// Response does not return any Property Data."
+    Start,
+    /// `"partial"` — Responder only. An update to a *subset* of the subscribed
+    /// data, formatted like a partial Set Property Data.
+    Partial,
+    /// `"full"` — Responder only. A complete set of the subscribed data,
+    /// formatted like a Reply to Get Property.
+    Full,
+    /// `"notify"` — Responder only. Asks the Initiator to refresh by issuing
+    /// its own Get Property Data. §11.1: "There is no body in this message."
+    Notify,
+    /// `"end"` — either side. Ends the subscription.
+    End,
+}
+
+impl SubscriptionCommand {
+    /// The wire string for this command (the header JSON's `command` value).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Partial => "partial",
+            Self::Full => "full",
+            Self::Notify => "notify",
+            Self::End => "end",
+        }
+    }
+
+    /// Parse a `command` value, or `None` if it names no known command.
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "start" => Self::Start,
+            "partial" => Self::Partial,
+            "full" => Self::Full,
+            "notify" => Self::Notify,
+            "end" => Self::End,
+            _ => return None,
+        })
+    }
+
+    /// Whether this command may be sent by an Initiator (`true`) or a Responder
+    /// (`false`), per the per-command direction rules in §11.1.
+    ///
+    /// `End` is the only command either side may send — §11.5 lets the
+    /// subscription be ended "by either the Initiator or the Responder".
+    pub fn is_valid_from(&self, is_initiator: bool) -> bool {
+        match self {
+            Self::Start => is_initiator,
+            Self::Partial | Self::Full | Self::Notify => !is_initiator,
+            Self::End => true,
+        }
     }
 }
 
@@ -177,6 +260,97 @@ mod tests {
             let back = sysex7_to_ci(&events).expect("reassembles");
             assert_eq!(back, m);
         }
+    }
+
+    #[test]
+    fn subscription_round_trips_over_sysex7() {
+        for kind in [PropertyKind::Subscription, PropertyKind::SubscriptionReply] {
+            let data = PropertyData {
+                kind,
+                request_id: 3,
+                header: br#"{"resource":"ChannelList","command":"start"}"#.to_vec(),
+                num_chunks: 1,
+                chunk: 1,
+                body: Vec::new(),
+            };
+            let m = CiMessage::Property {
+                header: header(),
+                data: data.clone(),
+            };
+            let mut events = Vec::new();
+            ci_to_sysex7(0, &m, &mut events);
+            assert_eq!(sysex7_to_ci(&events).expect("reassembles"), m);
+        }
+    }
+
+    #[test]
+    fn subscription_uses_the_spec_sub_ids() {
+        // §8.11 / §8.12 fix these at 0x38 and 0x39. The wire body is identical
+        // to Get/Set Property Data, so the sub-ID is the *only* thing that
+        // distinguishes a subscription from an ordinary property exchange —
+        // assert the byte rather than trusting a round-trip through our own
+        // encoder, which would agree with itself either way.
+        let sub = PropertyData {
+            kind: PropertyKind::Subscription,
+            request_id: 0,
+            header: Vec::new(),
+            num_chunks: 1,
+            chunk: 1,
+            body: Vec::new(),
+        };
+        assert_eq!(sub.sub_id2(), 0x38);
+        assert_eq!(
+            PropertyData {
+                kind: PropertyKind::SubscriptionReply,
+                ..sub
+            }
+            .sub_id2(),
+            0x39
+        );
+    }
+
+    #[test]
+    fn subscription_commands_round_trip_through_their_wire_strings() {
+        for cmd in [
+            SubscriptionCommand::Start,
+            SubscriptionCommand::Partial,
+            SubscriptionCommand::Full,
+            SubscriptionCommand::Notify,
+            SubscriptionCommand::End,
+        ] {
+            assert_eq!(SubscriptionCommand::parse(cmd.as_str()), Some(cmd));
+        }
+        assert_eq!(SubscriptionCommand::parse("subscribe"), None);
+        // The strings are the wire contract from M2-103 Table 39, so pin them.
+        assert_eq!(SubscriptionCommand::Start.as_str(), "start");
+        assert_eq!(SubscriptionCommand::Partial.as_str(), "partial");
+        assert_eq!(SubscriptionCommand::Full.as_str(), "full");
+        assert_eq!(SubscriptionCommand::Notify.as_str(), "notify");
+        assert_eq!(SubscriptionCommand::End.as_str(), "end");
+    }
+
+    #[test]
+    fn each_command_is_restricted_to_its_direction() {
+        // M2-103 §11.1 marks start "Initiator only" and partial/full/notify
+        // "Responder only"; §11.5 lets either side send end. A device that
+        // ignores this talks out of turn — a Responder cannot start its own
+        // subscription, and an Initiator cannot push updates (the note under
+        // §8.11: an Initiator "shall not send updates … but shall send updates
+        // … using an Inquiry: Set Property Data message instead").
+        let initiator = true;
+        let responder = false;
+        assert!(SubscriptionCommand::Start.is_valid_from(initiator));
+        assert!(!SubscriptionCommand::Start.is_valid_from(responder));
+        for cmd in [
+            SubscriptionCommand::Partial,
+            SubscriptionCommand::Full,
+            SubscriptionCommand::Notify,
+        ] {
+            assert!(cmd.is_valid_from(responder), "{cmd:?} is responder-only");
+            assert!(!cmd.is_valid_from(initiator), "{cmd:?} is responder-only");
+        }
+        assert!(SubscriptionCommand::End.is_valid_from(initiator));
+        assert!(SubscriptionCommand::End.is_valid_from(responder));
     }
 
     #[test]

@@ -18,7 +18,7 @@
 
 use tutti_midi_types::ci::{
     CiCategories, CiHeader, CiMessage, DiscoveryData, Muid, Nak, ProfileId, ProfileState,
-    PropertyData, PropertyKind, CI_DEVICE_ID_FUNCTION_BLOCK, CI_VERSION,
+    PropertyData, PropertyKind, SubscriptionCommand, CI_DEVICE_ID_FUNCTION_BLOCK, CI_VERSION,
 };
 
 /// A property this device exposes over Property Exchange: its resource name (the
@@ -29,6 +29,30 @@ pub struct CiProperty {
     pub header: Vec<u8>,
     /// The body returned in the Get reply.
     pub body: Vec<u8>,
+}
+
+/// Read a flat `"key": "value"` string field out of a Property Exchange header.
+///
+/// PE headers are JSON (M2-103 §5), but this crate deliberately keeps them
+/// opaque — the codec moves bytes and the schema is the application's business.
+/// Subscription is the one place the *protocol* depends on a header field:
+/// §11.1 puts `command` and `subscribeId` there, and the direction rules cannot
+/// be checked without reading `command`.
+///
+/// So this is a deliberately narrow scanner, not a JSON parser: top-level string
+/// values only, no escapes, no nesting. That covers every field §11.1 defines
+/// (`command` is an enum of five ASCII words; `subscribeId` is "max 8 chars,
+/// 'a-z', '0-9' or '_' characters only"). Anything richer belongs to a real
+/// parser in the application, which is where a JSON dependency would belong too.
+fn header_str_field<'a>(header: &'a [u8], key: &str) -> Option<&'a str> {
+    let text = std::str::from_utf8(header).ok()?;
+    let pat = format!("\"{key}\"");
+    let after_key = &text[text.find(&pat)? + pat.len()..];
+    let after_colon = &after_key[after_key.find(':')? + 1..];
+    let open = after_colon.find('"')?;
+    let rest = &after_colon[open + 1..];
+    let close = rest.find('"')?;
+    Some(&rest[..close])
 }
 
 /// The **responder** half of MIDI-CI — this device's declared identity, MUID,
@@ -178,6 +202,21 @@ impl CiResponder {
                 },
             }],
 
+            // A Subscription. M2-103 §11.2: a device receiving one "shall reply
+            // with a Reply to Subscription message, so the original sender is
+            // aware of the success or failure of a command" — so this arm never
+            // stays silent, even for a command it rejects.
+            CiMessage::Property {
+                data:
+                    PropertyData {
+                        kind: PropertyKind::Subscription,
+                        request_id,
+                        header,
+                        ..
+                    },
+                ..
+            } => self.subscription_reply(src, *request_id, header),
+
             // Reports and replies we merely observe — no response.
             CiMessage::Discovery { is_reply: true, .. }
             | CiMessage::Profile {
@@ -190,7 +229,10 @@ impl CiResponder {
             | CiMessage::Property {
                 data:
                     PropertyData {
-                        kind: PropertyKind::GetDataReply | PropertyKind::SetDataReply,
+                        kind:
+                            PropertyKind::GetDataReply
+                            | PropertyKind::SetDataReply
+                            | PropertyKind::SubscriptionReply,
                         ..
                     },
                 ..
@@ -252,6 +294,62 @@ impl CiResponder {
                 Nak::STATUS_MESSAGE_NOT_SUPPORTED,
             ),
         }
+    }
+
+    /// The mandatory reply to an inbound Subscription (M2-103 §11.2).
+    ///
+    /// The reply echoes the request id and header so the initiator can tie it to
+    /// its request. A command this responder cannot honour still gets a reply
+    /// rather than a NAK: §11.2 frames the reply as reporting "the success or
+    /// failure of a command", and it is the reply — not silence — that lets the
+    /// sender "decide to retry or end the Subscription".
+    ///
+    /// A `start` for a resource we do not hold is the one case that NAKs: the
+    /// resource, not the message, is unsupported, and no retry will change that.
+    fn subscription_reply(&self, dest: Muid, request_id: u8, header: &[u8]) -> Vec<CiMessage> {
+        let command = header_str_field(header, "command").and_then(SubscriptionCommand::parse);
+
+        // §11.1 makes partial/full/notify Responder-only. Arriving here they are
+        // inbound *to* the responder, so an initiator sent one out of turn.
+        if let Some(cmd) = command {
+            if !cmd.is_valid_from(true) {
+                return self.nak_with(
+                    dest,
+                    tutti_midi_types::ci::property::SUB_ID2_SUBSCRIPTION,
+                    Nak::STATUS_MESSAGE_NOT_SUPPORTED,
+                );
+            }
+        }
+
+        // A `start` names a resource; we can only subscribe to what we hold.
+        if command == Some(SubscriptionCommand::Start) {
+            let resource = header_str_field(header, "resource");
+            let known = resource.is_some_and(|r| {
+                self.properties
+                    .iter()
+                    .any(|p| header_str_field(&p.header, "resource") == Some(r))
+            });
+            if !known {
+                return self.nak_with(
+                    dest,
+                    tutti_midi_types::ci::property::SUB_ID2_SUBSCRIPTION,
+                    Nak::STATUS_MESSAGE_NOT_SUPPORTED,
+                );
+            }
+        }
+
+        vec![CiMessage::Property {
+            header: self.reply_header(dest),
+            data: PropertyData {
+                kind: PropertyKind::SubscriptionReply,
+                request_id,
+                header: header.to_vec(),
+                num_chunks: 1,
+                chunk: 1,
+                // §11.1: a Start's "Response does not return any Property Data".
+                body: Vec::new(),
+            },
+        }]
     }
 
     /// A NAK addressed to `dest` for a message of `nak_sub_id2`, carrying a
@@ -508,6 +606,139 @@ mod tests {
             }
             other => panic!("expected property reply, got {other:?}"),
         }
+    }
+
+    /// A Subscription message carrying `header`, addressed to `resp`.
+    fn subscription(resp: &CiResponder, header: &str) -> CiMessage {
+        CiMessage::Property {
+            header: CiHeader {
+                device_id: CI_DEVICE_ID_FUNCTION_BLOCK,
+                ci_version: CI_VERSION,
+                source: Muid(0x1),
+                destination: resp.muid(),
+            },
+            data: PropertyData {
+                kind: PropertyKind::Subscription,
+                request_id: 9,
+                header: header.as_bytes().to_vec(),
+                num_chunks: 1,
+                chunk: 1,
+                body: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_start_subscription_is_acknowledged_with_no_body() {
+        // M2-103 §11.2 makes the reply mandatory; §11.1 says a Start's
+        // "Response does not return any Property Data".
+        let resp = responder();
+        let reply = resp.respond_to(&subscription(
+            &resp,
+            r#"{"resource":"DeviceInfo","command":"start"}"#,
+        ));
+        assert_eq!(reply.len(), 1);
+        match &reply[0] {
+            CiMessage::Property { data, .. } => {
+                assert_eq!(data.kind, PropertyKind::SubscriptionReply);
+                assert_eq!(data.request_id, 9, "echoed so the initiator can match it");
+                assert!(data.body.is_empty(), "a Start reply carries no data");
+            }
+            other => panic!("expected a SubscriptionReply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_end_subscription_is_acknowledged_without_naming_a_resource() {
+        // §11.5 lets either side end a subscription, and an `end` is keyed on
+        // subscribeId rather than a resource — so it must not be run through the
+        // resource check that gates `start`.
+        let resp = responder();
+        let reply = resp.respond_to(&subscription(
+            &resp,
+            r#"{"subscribeId":"sub1","command":"end"}"#,
+        ));
+        assert_eq!(reply.len(), 1);
+        assert!(matches!(
+            &reply[0],
+            CiMessage::Property {
+                data: PropertyData {
+                    kind: PropertyKind::SubscriptionReply,
+                    ..
+                },
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_start_for_an_unheld_resource_is_nakked() {
+        // We cannot subscribe a peer to data we do not have. The resource, not
+        // the message, is unsupported — so a NAK, not an empty reply.
+        let resp = responder();
+        let reply = resp.respond_to(&subscription(
+            &resp,
+            r#"{"resource":"NoSuch","command":"start"}"#,
+        ));
+        assert!(matches!(&reply[0], CiMessage::Nak { .. }));
+    }
+
+    #[test]
+    fn responder_only_commands_from_an_initiator_are_rejected() {
+        // §11.1 marks partial/full/notify "Responder only". Inbound *to* the
+        // responder they can only have come from an initiator talking out of
+        // turn — the note under §8.11 says an Initiator "shall not send updates
+        // to the Property Data by this message".
+        let resp = responder();
+        for cmd in ["partial", "full", "notify"] {
+            let header = format!(r#"{{"resource":"DeviceInfo","command":"{cmd}"}}"#);
+            let reply = resp.respond_to(&subscription(&resp, &header));
+            assert!(
+                matches!(&reply[0], CiMessage::Nak { .. }),
+                "{cmd} is responder-only and must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn a_subscription_reply_is_observed_without_answering() {
+        // Replying to a reply would loop forever between two devices.
+        let resp = responder();
+        let inbound = CiMessage::Property {
+            header: CiHeader {
+                device_id: CI_DEVICE_ID_FUNCTION_BLOCK,
+                ci_version: CI_VERSION,
+                source: Muid(0x1),
+                destination: resp.muid(),
+            },
+            data: PropertyData {
+                kind: PropertyKind::SubscriptionReply,
+                request_id: 9,
+                header: Vec::new(),
+                num_chunks: 1,
+                chunk: 1,
+                body: Vec::new(),
+            },
+        };
+        assert!(resp.respond_to(&inbound).is_empty());
+    }
+
+    #[test]
+    fn header_fields_are_read_out_of_realistic_json() {
+        // The scanner is narrow by design, so pin what it must handle: key order
+        // it does not control, whitespace, and a field that is absent.
+        fn cmd(s: &str) -> Option<&str> {
+            super::header_str_field(s.as_bytes(), "command")
+        }
+        assert_eq!(cmd(r#"{"command":"start"}"#), Some("start"));
+        assert_eq!(cmd(r#"{ "command" : "end" }"#), Some("end"), "whitespace");
+        assert_eq!(
+            cmd(r#"{"resource":"X","command":"full"}"#),
+            Some("full"),
+            "not the first key"
+        );
+        assert_eq!(cmd(r#"{"resource":"X"}"#), None, "absent field");
+        assert_eq!(cmd("not json at all"), None);
     }
 
     #[test]

@@ -89,6 +89,10 @@ pub mod synth;
 #[cfg(feature = "plugin")]
 pub mod plugin_host;
 
+/// Offline export: runs `tutti-export`'s synchronous renders on the task pool.
+#[cfg(feature = "export")]
+pub mod export;
+
 /// The Tutti audio engine: CPAL callback, DSP graph, device driver, bootstrap.
 pub mod engine;
 

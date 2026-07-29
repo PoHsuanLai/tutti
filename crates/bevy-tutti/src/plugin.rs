@@ -116,5 +116,7 @@ impl Plugin for TuttiPlugin {
         app.add_plugins(TuttiHostingPlugin);
         #[cfg(feature = "sampler")]
         app.add_plugins(TuttiPlaybackPlugin);
+        #[cfg(feature = "export")]
+        app.add_plugins(crate::export::ExportPlugin);
     }
 }

@@ -461,10 +461,25 @@ mod tests {
     /// An already-blacklisted plugin is skipped without being probed, and is
     /// counted as blacklisted rather than as a fresh failure.
     ///
-    /// Both files here are stubs, so the *other* one is probed, fails to load, and
-    /// is newly blacklisted — which is the point of the `newly_blacklisted` split:
-    /// "was hidden before this scan" and "this scan hid it" are different facts,
-    /// and only the second is something to tell the user about.
+    /// That split is the subject: "was hidden before this scan" and "this scan
+    /// hid it" are different facts, and only the second is worth telling the
+    /// user about.
+    ///
+    /// **What happens to the *other* stub is deliberately not asserted.** It
+    /// depends on the environment, not on the code under test: with a
+    /// `plugin-server` present it is probed, fails to load, and is newly
+    /// blacklisted; without one, `interpret_probe` maps `ServerNotFound` onto
+    /// the filename fallback and it is catalogued as `New`. Both are correct —
+    /// the fallback exists precisely so a missing server does not blacklist
+    /// every plugin on the machine (see `a_failed_load_is_an_error_not_a_\
+    /// filename_fallback` and `probe_without_a_server_falls_back_to_filename_\
+    /// metadata`, which pin the two halves of that rule directly).
+    ///
+    /// An earlier version asserted `result.new == 0`, which held only on a
+    /// machine where `plugin-server` had not been built — so `cargo test`
+    /// passed or failed depending on whether an unrelated binary happened to be
+    /// in the target dir. `sync_scan_discovers_and_records` avoids the same trap
+    /// by asserting on `new + failed`, and this now follows it.
     #[test]
     fn sync_scan_skips_blacklisted() {
         let dir = TempDir::new().unwrap();
@@ -487,9 +502,22 @@ mod tests {
             1,
             "exactly one plugin was hidden before this scan started"
         );
+        // The skipped plugin must not also be counted as processed. This is what
+        // keeps the test non-vacuous once `new` is no longer asserted: a scanner
+        // that probed the blacklisted file anyway would land it in one of these
+        // buckets.
+        //
+        // `new + failed` and not `+ newly_blacklisted`: `tally` deliberately
+        // counts a newly-blacklisted plugin in *both* `failed` and
+        // `newly_blacklisted`, so adding the third term double-counts it. Every
+        // probed plugin lands in exactly one of `new` or `failed`.
         assert_eq!(
-            result.new, 0,
-            "neither stub is a loadable plugin, so nothing is newly catalogued"
+            result.new + result.failed,
+            1,
+            "only the non-blacklisted plugin should have been probed, but \
+             new={} failed={} were recorded",
+            result.new,
+            result.failed
         );
     }
 

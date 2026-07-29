@@ -47,6 +47,9 @@ pub mod component;
 pub mod handle;
 
 #[cfg(target_os = "macos")]
+pub mod bus;
+
+#[cfg(target_os = "macos")]
 pub mod stream;
 
 #[cfg(target_os = "macos")]
@@ -73,6 +76,12 @@ pub use error::{AuError, Result};
 // callbacks are unwired, so nothing here speaks transport.
 pub use tutti_plugin_types::{EditorSize, MidiEvent, WindowHandle};
 
+// Bus topology vocabulary. Unlike the parameter types below, these ARE flat
+// re-exports: `bus_count` / `bus_layout` / `supported_channel_configs` are
+// inherent methods on `AuInstance`, so a caller that reaches those methods needs
+// their argument and return types in scope without a second import path.
+#[cfg(target_os = "macos")]
+pub use bus::{AuChannelConfig, AuChannelCount, BusDirection};
 #[cfg(target_os = "macos")]
 pub use editor::AuEditor;
 #[cfg(target_os = "macos")]

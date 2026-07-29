@@ -4,6 +4,7 @@
 
 use tutti_plugin_types::ChannelLayout;
 
+use crate::bus::BusDirection;
 use crate::error::{AuError, Result};
 use crate::ffi::{get_property, set_property};
 use crate::handle::AuHandle;
@@ -53,37 +54,43 @@ impl StreamConfig {
         }
     }
 
-    /// Query the AU's current stream format to discover its channel layout.
+    /// Query the AU's current stream format on bus 0 to discover its channel
+    /// layout.
+    ///
+    /// Bus 0 only, deliberately: this layout is what the render scratch is sized
+    /// from, and [`AuInstance::process`](crate::instance::AuInstance::process)
+    /// renders bus 0 alone. Multi-bus units are *described* by
+    /// [`crate::bus`] — `bus_count` / `bus_layout` — but not yet rendered
+    /// per-bus, so widening the probe would size buffers for buses nothing
+    /// reads.
+    ///
+    /// `has_input` is taken from the AU's own input **element count**, not from
+    /// whether the stream-format query happened to succeed. Those differ: an AU
+    /// can have an input element whose format it declines to report, and the old
+    /// "format read failed ⇒ 0 channels ⇒ no input" inference would then skip
+    /// installing the render callback on a unit that genuinely needs one. The
+    /// element count is the AU's direct answer to "is there an input bus".
     ///
     /// Falls back to stereo out / no input if the AU refuses the queries.
     pub(crate) fn probe(handle: &AuHandle) -> AuBusLayout {
         let unit = handle.raw_unit();
-        let outputs = unsafe {
-            get_property::<AudioStreamBasicDescription>(
-                unit,
-                K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
-                K_AUDIO_UNIT_SCOPE_OUTPUT,
-                0,
-            )
-        }
-        .map(|asbd| ChannelLayout::from(asbd.mChannelsPerFrame))
-        .unwrap_or(ChannelLayout::Stereo);
+        let outputs = unsafe { crate::bus::bus_layout(unit, BusDirection::Output, 0) }
+            .unwrap_or(ChannelLayout::Stereo);
 
-        let input_count = unsafe {
-            get_property::<AudioStreamBasicDescription>(
-                unit,
-                K_AUDIO_UNIT_PROPERTY_STREAM_FORMAT,
-                K_AUDIO_UNIT_SCOPE_INPUT,
-                0,
-            )
-        }
-        .map(|asbd| asbd.mChannelsPerFrame)
-        .unwrap_or(0);
+        // An AU with zero input elements has no bus 0 to ask about, so skip the
+        // format query entirely rather than reading -10877 and inferring from it.
+        let has_input = unsafe { crate::bus::bus_count(unit, BusDirection::Input) } > 0;
+        let inputs = if has_input {
+            unsafe { crate::bus::bus_layout(unit, BusDirection::Input, 0) }
+                .unwrap_or(ChannelLayout::Stereo)
+        } else {
+            ChannelLayout::Multi(0)
+        };
 
         AuBusLayout {
-            inputs: ChannelLayout::from(input_count),
+            inputs,
             outputs,
-            has_input: input_count > 0,
+            has_input,
         }
     }
 

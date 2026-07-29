@@ -9,6 +9,7 @@
 use std::os::raw::c_void;
 
 use crate::buffer::{iter_buffers_mut, RenderScratch};
+use crate::bus::{self, AuChannelConfig, BusDirection};
 use crate::cf::{CfArray, CfPlist, CfString};
 use crate::component::AuType;
 use crate::error::{AuError, Result};
@@ -282,6 +283,49 @@ impl AuInstance {
     /// Enumerate all parameters exposed by the AU.
     pub fn get_parameter_list(&self) -> Vec<AuParameter> {
         parameters::list(self.raw_unit())
+    }
+
+    /// How many buses the AU has on `direction`.
+    ///
+    /// `0` is a real answer, not a failure: instruments and generators have no
+    /// input buses at all, and that zero is what
+    /// [`AuLoaded::initialize`] keys the render-callback install off. An AU that
+    /// refuses `kAudioUnitProperty_ElementCount` also reports `0`, because
+    /// "declines to say" and "has none" leave a caller in the same position.
+    ///
+    /// Measured on macOS 15.6: every Apple effect is 1 in / 1 out;
+    /// DLSMusicDevice is 0 in / **2 out**; AUMatrixMixer is 64 in / 4 out.
+    pub fn bus_count(&self, direction: BusDirection) -> u32 {
+        // SAFETY: `raw_unit` is live for the lifetime of this instance.
+        unsafe { bus::bus_count(self.raw_unit(), direction) }
+    }
+
+    /// The channel layout of bus `bus` on `direction`.
+    ///
+    /// Unlike [`num_inputs`](Self::num_inputs) / [`num_outputs`](Self::num_outputs),
+    /// which report the layout the host *configured* on bus 0, this asks the AU
+    /// what a specific bus is running right now.
+    ///
+    /// # Errors
+    /// A bus index at or past [`bus_count`](Self::bus_count) returns the AU's
+    /// own `kAudioUnitErr_InvalidElement` rather than a default layout.
+    /// [`ChannelLayout`] cannot represent "no such bus", so returning one for an
+    /// out-of-range index would have the caller allocate buffers for a bus that
+    /// does not exist.
+    pub fn bus_layout(&self, direction: BusDirection, bus: u32) -> Result<ChannelLayout> {
+        // SAFETY: as above.
+        unsafe { bus::bus_layout(self.raw_unit(), direction, bus) }
+    }
+
+    /// Every channel configuration the AU declares it can run.
+    ///
+    /// An empty vec means the AU publishes no constraint — which is what all 22
+    /// Apple effects measured on macOS 15.6 do — and must be read as
+    /// "unconstrained, consult the stream format", never as "supports nothing".
+    /// See [`AuChannelConfig`] for why the negative entries stay sentinels.
+    pub fn supported_channel_configs(&self) -> Vec<AuChannelConfig> {
+        // SAFETY: as above.
+        unsafe { bus::supported_channel_configs(self.raw_unit()) }
     }
 
     /// Borrow a [`ParamView`] for scoped parameter access.

@@ -61,6 +61,14 @@ impl AuRef {
         }
     }
 
+    const fn mixer(label: &'static str, sub_type: &'static [u8; 4]) -> Self {
+        Self {
+            label,
+            sub_type,
+            au_type: AuType::Mixer,
+        }
+    }
+
     /// Locate this unit, or `None` if it is not registered on this machine.
     pub fn find(&self) -> Option<AuComponentInfo> {
         let wanted = u32::from_be_bytes(*self.sub_type);
@@ -133,6 +141,19 @@ pub const SAMPLER: AuRef = AuRef::instrument("AUSampler", b"samp");
 /// The built-in DLS synth: no input bus, driven by MIDI.
 pub const DLS_SYNTH: AuRef = AuRef::instrument("DLSMusicDevice", b"dls ");
 
+/// 64 input elements and 4 output elements — the widest bus topology on the
+/// system, and the only corpus member with more than one bus on *both* sides.
+/// Publishes `{-1,-2}`: any input width, any output width, independently.
+pub const MATRIX_MIXER: AuRef = AuRef::mixer("AUMatrixMixer", b"mxmx");
+/// 8 input elements, each carrying its own 7-parameter strip. The subject for
+/// per-element parameter addressing: the same parameter id on two different
+/// input elements holds two independent values.
+pub const MULTI_CHANNEL_MIXER: AuRef = AuRef::mixer("AUMultiChannelMixer", b"mcmx");
+/// One input, two outputs. The mirror image of DLSMusicDevice — multi-bus on the
+/// side the instruments are single-bus on — and it declares `{-1,-1}`, the
+/// "any width, but matched" spelling.
+pub const MULTI_SPLITTER: AuRef = AuRef::mixer("AUMultiSplitter", b"mspl");
+
 /// Every effect in the corpus, for tests that assert a property across all of
 /// them rather than picking one representative.
 pub const EFFECTS: &[AuRef] = &[DELAY, N_BAND_EQ, LOWPASS, DYNAMICS];
@@ -159,6 +180,11 @@ pub const PRESETLESS_EFFECTS: &[AuRef] = &[DELAY, LOWPASS, N_BAND_EQ];
 
 /// Every instrument in the corpus.
 pub const INSTRUMENTS: &[AuRef] = &[SAMPLER, DLS_SYNTH];
+
+/// Every mixer in the corpus. Mixers are where AUv2's multi-bus and per-element
+/// parameter features are actually exercised; no effect or instrument on the
+/// system uses either.
+pub const MIXERS: &[AuRef] = &[MATRIX_MIXER, MULTI_CHANNEL_MIXER, MULTI_SPLITTER];
 
 /// Planar silence: `channels` buffers of `frames` zeroes.
 pub fn silence(channels: usize, frames: usize) -> Vec<Vec<f32>> {

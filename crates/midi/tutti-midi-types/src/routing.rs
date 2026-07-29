@@ -65,14 +65,27 @@ impl MidiRoute {
         self
     }
 
+    /// Whether this route carries `event`.
+    ///
+    /// A channel filter can only exclude messages that *have* a channel. Only
+    /// MIDI 1.0 and MIDI 2.0 Channel Voice messages (UMP types 0x2 / 0x4) do;
+    /// Flex Data (tempo, time signature, key), UMP Stream, SysEx and utility
+    /// messages are group- or stream-scoped, so there is nothing for a channel
+    /// filter to compare against and they pass every enabled route.
+    ///
+    /// Dropping them instead — which is what comparing `Some(c) != None` did —
+    /// meant a per-channel route never saw a Set Tempo, so a clip's own tempo
+    /// map could not reach a channel-scoped consumer.
     #[inline]
     pub fn matches(&self, event: &MidiEvent) -> bool {
         if !self.enabled {
             return false;
         }
-        match self.channel {
-            None => true,
-            Some(c) => event.channel() == Some(c),
+        match (self.channel, event.channel()) {
+            (None, _) => true,
+            // Channelless message: no channel to filter on, so it passes.
+            (Some(_), None) => true,
+            (Some(want), Some(got)) => want == got,
         }
     }
 }
@@ -145,6 +158,7 @@ impl MidiRoutingSnapshot {
             event,
             phase: RoutePhase::ChannelLookup,
             target_idx: 0,
+            channel_idx: 0,
             seen: [MidiUnitId::new(0); 16],
             seen_count: 0,
         }
@@ -152,11 +166,19 @@ impl MidiRoutingSnapshot {
 
     #[inline]
     pub fn route_single(&self, event: &MidiEvent) -> Option<MidiUnitId> {
-        // Non-channel-voice messages (system, SysEx, utility) skip the
-        // channel-indexed fast path.
-        if let Some(channel) = event.channel() {
-            if let Some(&target) = self.channel_lookup[channel as usize].first() {
-                return Some(target);
+        // A channelless message (Flex Data, UMP Stream, SysEx, utility) has no
+        // channel to filter on, so it belongs to every route — take the first
+        // per-channel target rather than skipping the buckets entirely.
+        match event.channel() {
+            Some(channel) => {
+                if let Some(&target) = self.channel_lookup[channel as usize].first() {
+                    return Some(target);
+                }
+            }
+            None => {
+                if let Some(&target) = self.channel_lookup[..16].iter().flatten().next() {
+                    return Some(target);
+                }
             }
         }
 
@@ -226,6 +248,9 @@ pub struct RouteIterator<'a> {
     event: &'a MidiEvent,
     phase: RoutePhase,
     target_idx: usize,
+    /// Which per-channel bucket the channelless sweep is on. Unused when the
+    /// event has a channel (that path reads exactly one bucket).
+    channel_idx: usize,
     seen: [MidiUnitId; 16],
     seen_count: usize,
 }
@@ -253,17 +278,39 @@ impl Iterator for RouteIterator<'_> {
         loop {
             match self.phase {
                 RoutePhase::ChannelLookup => {
-                    // Non-channel-voice messages (system/SysEx/utility) bypass
-                    // the channel-indexed fast path and fall through to the
-                    // "any channel" bucket.
-                    if let Some(channel) = self.event.channel() {
-                        let targets = &self.snapshot.channel_lookup[channel as usize];
-                        while self.target_idx < targets.len() {
-                            let target = targets[self.target_idx];
-                            self.target_idx += 1;
-                            if !self.is_seen(target) {
-                                self.mark_seen(target);
-                                return Some(target);
+                    // A channel filter can only exclude a message that has a
+                    // channel. Flex Data (tempo/time-signature/key), UMP Stream,
+                    // SysEx and utility messages are group- or stream-scoped, so
+                    // they belong to *every* enabled route — including the
+                    // per-channel ones, which is how a clip's tempo map reaches
+                    // a channel-scoped consumer.
+                    match self.event.channel() {
+                        Some(channel) => {
+                            let targets = &self.snapshot.channel_lookup[channel as usize];
+                            while self.target_idx < targets.len() {
+                                let target = targets[self.target_idx];
+                                self.target_idx += 1;
+                                if !self.is_seen(target) {
+                                    self.mark_seen(target);
+                                    return Some(target);
+                                }
+                            }
+                        }
+                        None => {
+                            // Walk every per-channel bucket; `seen` dedupes a
+                            // target that several channels route to.
+                            while self.channel_idx < 16 {
+                                let targets = &self.snapshot.channel_lookup[self.channel_idx];
+                                while self.target_idx < targets.len() {
+                                    let target = targets[self.target_idx];
+                                    self.target_idx += 1;
+                                    if !self.is_seen(target) {
+                                        self.mark_seen(target);
+                                        return Some(target);
+                                    }
+                                }
+                                self.channel_idx += 1;
+                                self.target_idx = 0;
                             }
                         }
                     }
@@ -496,6 +543,33 @@ mod tests {
         assert!(targets.contains(&id(300)));
         assert!(targets.contains(&id(999)));
         assert_eq!(targets.len(), 4);
+    }
+
+    #[test]
+    fn channelless_messages_reach_channel_scoped_routes() {
+        // A channel filter can only exclude a message that has a channel. Flex
+        // Data, UMP Stream, SysEx and utility messages have none, so a
+        // per-channel route must still receive them — otherwise a clip's Set
+        // Tempo never reaches a channel-scoped consumer.
+        let routes = vec![
+            MidiRoute::for_channel(0).with_target(id(100)),
+            MidiRoute::for_channel(1).with_target(id(200)),
+        ];
+        let snapshot = MidiRoutingSnapshot::from_routes(routes, None);
+
+        let tempo = MidiEvent::flex_set_tempo(0, 128.0);
+        assert_eq!(tempo.channel(), None, "Set Tempo carries no channel");
+
+        let targets: Vec<_> = snapshot.route(&tempo).collect();
+        assert!(targets.contains(&id(100)), "channel-0 route gets the tempo");
+        assert!(targets.contains(&id(200)), "channel-1 route gets the tempo");
+        assert_eq!(targets.len(), 2, "each target exactly once");
+        assert!(snapshot.route_single(&tempo).is_some());
+
+        // A channel-voice message is still filtered by channel.
+        let note = MidiEvent::note_on(0, 1, 60, 0x8000);
+        let targets: Vec<_> = snapshot.route(&note).collect();
+        assert_eq!(targets, vec![id(200)], "note on ch1 goes only to ch1's route");
     }
 
     #[test]

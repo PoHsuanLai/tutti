@@ -1,11 +1,12 @@
 //! Thin wrappers around CoreFoundation reference types, built on the
 //! `core-foundation` 0.10 `TCFType` RAII wrappers.
 //!
-//! `CfString` / `CfUrl` / `CfPlist` keep the `from_copied` (CoreFoundation
-//! "Create" rule: take a +1 reference, release on drop) constructor the rest of
-//! the crate uses, plus the accessors those call sites need. The retain/release
-//! bookkeeping is delegated to `core-foundation`'s `CFString` / `CFURL` /
-//! `CFPropertyList` (which release on drop) rather than hand-rolled here.
+//! `CfString` / `CfUrl` / `CfPlist` / `CfArray` keep the `from_copied`
+//! (CoreFoundation "Create" rule: take a +1 reference, release on drop)
+//! constructor the rest of the crate uses, plus the accessors those call sites
+//! need. The retain/release bookkeeping is delegated to `core-foundation`'s
+//! `CFString` / `CFURL` / `CFPropertyList` / `CFArray` (which release on drop)
+//! rather than hand-rolled here.
 //!
 //! AudioToolbox APIs hand us `coreaudio-sys` `CF*Ref` pointers. Those are
 //! ABI-identical to `core-foundation-sys`'s opaque pointers, so we cast across
@@ -13,6 +14,7 @@
 
 #![cfg(target_os = "macos")]
 
+use core_foundation::array::CFArray;
 use core_foundation::base::TCFType;
 use core_foundation::propertylist::{self, kCFPropertyListBinaryFormat_v1_0, CFPropertyList};
 use core_foundation::string::CFString as CfCFString;
@@ -69,6 +71,63 @@ impl CfUrl {
             let raw = raw as core_foundation_sys::url::CFURLRef;
             Some(Self(CFURL::wrap_under_create_rule(raw)))
         }
+    }
+}
+
+/// Owned CoreFoundation array (Create rule: released on drop).
+///
+/// Elements are handed back as raw `*const c_void` rather than as a typed
+/// `CFArray<T>`, because the one array this crate reads —
+/// `kAudioUnitProperty_FactoryPresets` — does **not** hold CoreFoundation
+/// objects. Its elements are bare `AUPreset` structs, so `core-foundation`'s
+/// typed accessors (which assume every element is a retainable CF type) would
+/// be wrong for it. What is needed from CF here is only the release-on-drop and
+/// the count, and this exposes exactly that.
+pub(crate) struct CfArray(CFArray<*const std::os::raw::c_void>);
+
+impl CfArray {
+    /// Take ownership of a +1 reference (Create rule). Returns `None` if `raw`
+    /// is null.
+    ///
+    /// # Safety
+    /// `raw` must be null or a valid `CFArrayRef` owned with a +1 retain the
+    /// caller is transferring (the Create/Copy ownership rule). `AudioUnitGetProperty`
+    /// on a `CFArrayRef`-valued property returns exactly that: a copied array
+    /// the host owns and must release.
+    pub unsafe fn from_copied(raw: coreaudio_sys::CFArrayRef) -> Option<Self> {
+        if raw.is_null() {
+            None
+        } else {
+            let raw = raw as core_foundation_sys::array::CFArrayRef;
+            Some(Self(CFArray::wrap_under_create_rule(raw)))
+        }
+    }
+
+    /// Number of elements in the array.
+    pub fn len(&self) -> usize {
+        // `CFArrayGetCount` returns a signed `CFIndex`; a negative count is not
+        // representable for a live array, so clamp rather than propagate a
+        // nonsense length into a slice index.
+        self.0.len().max(0) as usize
+    }
+
+    /// Raw element pointer at `index`, or `None` if out of bounds.
+    ///
+    /// The returned pointer borrows from the array — it is only valid while
+    /// `self` is alive, which is why this is `pub(crate)` and callers copy out
+    /// of it immediately rather than storing it.
+    pub fn value_at(&self, index: usize) -> Option<*const std::os::raw::c_void> {
+        if index >= self.len() {
+            return None;
+        }
+        // SAFETY: `index` was just bounds-checked against the array's own count,
+        // and `self` owns a live +1 reference for the duration of this call.
+        Some(unsafe {
+            core_foundation_sys::array::CFArrayGetValueAtIndex(
+                self.0.as_concrete_TypeRef(),
+                index as core_foundation_sys::base::CFIndex,
+            )
+        })
     }
 }
 

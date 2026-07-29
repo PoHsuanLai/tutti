@@ -59,6 +59,9 @@ pub mod instance;
 pub mod parameters;
 
 #[cfg(target_os = "macos")]
+pub mod preset;
+
+#[cfg(target_os = "macos")]
 pub mod editor;
 
 pub use component::{AuComponentInfo, AuType};
@@ -80,5 +83,12 @@ pub use instance::{AuInstance, AuLoaded, AuReady};
 // vocabulary — reachable via `tutti_au_host::parameters::*` for the loader, but
 // not surfaced as flat crate-root re-exports. Consumers speak the shared
 // `tutti_plugin_types::ParameterInfo` produced by the loader's trait impl.
+//
+// `AuPreset` is flat-re-exported where `AuParameter` is not, because it is the
+// return type of `AuInstance::factory_presets`/`current_preset`: there is no
+// shared `tutti_plugin_types` preset vocabulary to translate into, so a caller
+// has to be able to name it without reaching into a submodule.
+#[cfg(target_os = "macos")]
+pub use preset::AuPreset;
 #[cfg(target_os = "macos")]
 pub use stream::{AuBusLayout, StreamConfig};

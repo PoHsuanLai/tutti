@@ -117,6 +117,17 @@ pub const LOWPASS: AuRef = AuRef::effect("AULowpass", b"lpas");
 /// Reports a real non-zero latency (256 samples of lookahead), so PDC has
 /// something to assert against.
 pub const DYNAMICS: AuRef = AuRef::effect("AUDynamicsProcessor", b"dcmp");
+/// The widest factory-preset surface among Apple's effects (22 presets, named
+/// and numbered `0..=21`), and a strongly non-linear processor — so it is the
+/// unit that can tell a bypassed render from a processed one at a glance.
+pub const DISTORTION: AuRef = AuRef::effect("AUDistortion", b"dist");
+/// 13 factory presets, sharing its preset names with [`REVERB2`]. The pair
+/// exists so preset assertions are not resting on a single AU's table.
+pub const MATRIX_REVERB: AuRef = AuRef::effect("AUMatrixReverb", b"mrev");
+/// 13 factory presets. Unlike [`MATRIX_REVERB`] it reports no preset selected
+/// (`-1`) on a fresh instance, which is what makes it useful: the two units
+/// disagree about the initial state, so nothing may assume one.
+pub const REVERB2: AuRef = AuRef::effect("AUReverb2", b"rvb2");
 /// A sampler with no input bus, driven by MIDI.
 pub const SAMPLER: AuRef = AuRef::instrument("AUSampler", b"samp");
 /// The built-in DLS synth: no input bus, driven by MIDI.
@@ -125,6 +136,26 @@ pub const DLS_SYNTH: AuRef = AuRef::instrument("DLSMusicDevice", b"dls ");
 /// Every effect in the corpus, for tests that assert a property across all of
 /// them rather than picking one representative.
 pub const EFFECTS: &[AuRef] = &[DELAY, N_BAND_EQ, LOWPASS, DYNAMICS];
+
+/// Effects that ship factory presets, paired with the count each advertises.
+///
+/// The counts are pinned rather than merely asserted non-empty, because the
+/// failure this guards against is a *truncated* enumeration — an off-by-one in
+/// the `CFArray` walk, or elements silently dropped by the `filter_map` — and
+/// "more than zero presets" would pass all of those. Measured on macOS 15.6;
+/// see `au_presets_bypass.rs` for what a mismatch here means.
+pub const PRESET_EFFECTS: &[(AuRef, usize)] = &[
+    (DISTORTION, 22),
+    (MATRIX_REVERB, 13),
+    (REVERB2, 13),
+    (DYNAMICS, 6),
+];
+
+/// Effects whose `kAudioUnitProperty_FactoryPresets` read *fails*, which the
+/// host reports as "no presets" rather than as an error. Keeping them named
+/// here is what stops that absorption from also hiding a real regression: if
+/// one of these ever grew presets the count assertion would catch it.
+pub const PRESETLESS_EFFECTS: &[AuRef] = &[DELAY, LOWPASS, N_BAND_EQ];
 
 /// Every instrument in the corpus.
 pub const INSTRUMENTS: &[AuRef] = &[SAMPLER, DLS_SYNTH];

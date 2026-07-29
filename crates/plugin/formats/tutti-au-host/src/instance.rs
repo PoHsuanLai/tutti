@@ -9,12 +9,13 @@
 use std::os::raw::c_void;
 
 use crate::buffer::{iter_buffers_mut, RenderScratch};
-use crate::cf::CfPlist;
+use crate::cf::{CfArray, CfPlist, CfString};
 use crate::component::AuType;
 use crate::error::{AuError, Result};
 use crate::ffi::{check, get_property, set_property};
 use crate::handle::AuHandle;
 use crate::parameters::{self, AuParameter, ParamView};
+use crate::preset::AuPreset;
 use crate::stream::{AuBusLayout, StreamConfig};
 use crate::types::*;
 use tutti_midi_types::MidiEvent;
@@ -302,6 +303,178 @@ impl AuInstance {
         }
         .unwrap_or(0.0);
         Ok((latency * self.sample_rate()) as u32)
+    }
+
+    /// Enumerate the AU's factory presets.
+    ///
+    /// Returns an empty vec when the AU ships none. That is deliberately *not*
+    /// an error: `kAudioUnitProperty_FactoryPresets` is optional, and several
+    /// Apple units that plainly work (AUDelay, AULowpass, AUNBandEQ) answer the
+    /// property with an OSStatus error rather than an empty array. Surfacing
+    /// that as `Err` would make "this AU has no presets" indistinguishable from
+    /// "the property read failed", and every caller would have to paper over it
+    /// with the same `unwrap_or_default`. This mirrors
+    /// [`get_parameter_list`](Self::get_parameter_list), which absorbs the same
+    /// absence the same way.
+    ///
+    /// The returned `number`s are AU-assigned selectors to pass to
+    /// [`load_factory_preset`](Self::load_factory_preset), not indices into this
+    /// vec — see [`AuPreset`].
+    pub fn factory_presets(&self) -> Vec<AuPreset> {
+        // The property's value is a `CFArrayRef` the AU *copies* for us: the
+        // host owns that reference and must release it. `CfArray::from_copied`
+        // takes it under the Create rule so the release happens on drop, on
+        // every path out of this function including the early returns below.
+        let raw: CFArrayRef = match unsafe {
+            get_property(
+                self.raw_unit(),
+                K_AUDIO_UNIT_PROPERTY_FACTORY_PRESETS,
+                K_AUDIO_UNIT_SCOPE_GLOBAL,
+                0,
+            )
+        } {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+        let Some(array) = (unsafe { CfArray::from_copied(raw) }) else {
+            return Vec::new();
+        };
+
+        (0..array.len())
+            .filter_map(|i| {
+                let ptr = array.value_at(i)? as *const AUPreset;
+                if ptr.is_null() {
+                    return None;
+                }
+                // SAFETY: the elements of a FactoryPresets array are `AUPreset`
+                // structs, per `kAudioUnitProperty_FactoryPresets`'s documented
+                // value type. The pointer borrows from `array`, which outlives
+                // this closure body, and everything is copied out before it
+                // drops.
+                let preset = unsafe { &*ptr };
+                Some(AuPreset {
+                    number: preset.presetNumber,
+                    // GET rule, not Create: `presetName` belongs to the AU's own
+                    // preset table, and the array copy did not add a retain to
+                    // it. Wrapping it with `CfString::from_copied` (Create)
+                    // would release a string the host never owned — an
+                    // over-release that corrupts the AU's table and crashes on
+                    // the *next* enumeration, far from the cause.
+                    name: unsafe { cfstring_to_string(preset.presetName) },
+                })
+            })
+            .collect()
+    }
+
+    /// Select factory preset `number`, restoring the parameter values the AU
+    /// stores under it.
+    ///
+    /// # Errors
+    /// Returns [`AuError::OsStatus`] when the AU rejects the preset — most
+    /// commonly `kAudioUnitErr_InvalidPropertyValue` for a number it does not
+    /// advertise. A rejected load leaves the AU's parameters as they were; the
+    /// AU is still renderable.
+    pub fn load_factory_preset(&mut self, number: i32) -> Result<()> {
+        // `presetName` is ignored by the AU on a *set* — the number is the
+        // selector, and the AU fills the name back in from its own table. Pass
+        // null rather than manufacturing a string: a host-owned string here
+        // would either leak (the AU does not release what we hand it) or be
+        // read back out of `current_preset` as a name the AU never assigned.
+        let preset = AUPreset {
+            presetNumber: number,
+            presetName: std::ptr::null(),
+        };
+        unsafe {
+            set_property(
+                self.raw_unit(),
+                K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET,
+                K_AUDIO_UNIT_SCOPE_GLOBAL,
+                0,
+                &preset,
+            )
+        }
+    }
+
+    /// Read back the preset the AU currently considers active.
+    ///
+    /// # Errors
+    /// Returns [`AuError::OsStatus`] if the AU does not implement
+    /// `kAudioUnitProperty_PresentPreset`. Unlike
+    /// [`factory_presets`](Self::factory_presets) this *is* an error rather
+    /// than a benign default, because there is no honest value to report: a
+    /// fabricated "preset 0" would be a claim about the AU's state that the
+    /// host cannot back up.
+    pub fn current_preset(&self) -> Result<AuPreset> {
+        let preset: AUPreset = unsafe {
+            get_property(
+                self.raw_unit(),
+                K_AUDIO_UNIT_PROPERTY_PRESENT_PRESET,
+                K_AUDIO_UNIT_SCOPE_GLOBAL,
+                0,
+            )?
+        };
+        // PresentPreset is documented as a Copy-rule read: the caller owns the
+        // returned `presetName` and must release it. `CfString::from_copied`
+        // takes that +1 and releases on drop, so reading the current preset in
+        // a loop (a UI polling it, say) does not leak a CFString per read.
+        let name = unsafe { CfString::from_copied(preset.presetName) }
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        Ok(AuPreset {
+            number: preset.presetNumber,
+            name,
+        })
+    }
+
+    /// Bypass the effect: when set, the AU passes its input through to its
+    /// output without processing it.
+    ///
+    /// # Errors
+    /// Returns [`AuError::OsStatus`] when the AU has no
+    /// `kAudioUnitProperty_BypassEffect` property. That is the case for **every
+    /// AU instrument** — DLSMusicDevice, AUSampler and AUMIDISynth all reject
+    /// both the read and the write — because an instrument has no input to pass
+    /// through, so "bypassed" has no meaning for one.
+    ///
+    /// The error is deliberately propagated rather than absorbed into a silent
+    /// `Ok(())`. A host that mutes a channel by bypassing its plugins must be
+    /// able to tell that the bypass did not take: swallowing the failure would
+    /// leave the AU audibly processing while the host's UI showed it bypassed,
+    /// and the divergence would only surface as a user-reported "the bypass
+    /// button does nothing".
+    pub fn set_bypass(&mut self, bypass: bool) -> Result<()> {
+        // The property is a `UInt32` 0/1, not a C `Boolean`. Measured on macOS
+        // 15.6: `AudioUnitGetPropertyInfo` reports a size of 4 for BypassEffect,
+        // and a 1-byte write is refused with -10851
+        // (`kAudioUnitErr_InvalidPropertyValue`). So the width is load-bearing,
+        // not a stylistic choice — a `bool` here would make every bypass fail.
+        let value: u32 = u32::from(bypass);
+        unsafe {
+            set_property(
+                self.raw_unit(),
+                K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT,
+                K_AUDIO_UNIT_SCOPE_GLOBAL,
+                0,
+                &value,
+            )
+        }
+    }
+
+    /// Whether the AU is currently bypassed.
+    ///
+    /// # Errors
+    /// As [`set_bypass`](Self::set_bypass): an AU with no bypass property
+    /// (every instrument) errors rather than reporting a fabricated `false`.
+    pub fn is_bypassed(&self) -> Result<bool> {
+        let value: u32 = unsafe {
+            get_property(
+                self.raw_unit(),
+                K_AUDIO_UNIT_PROPERTY_BYPASS_EFFECT,
+                K_AUDIO_UNIT_SCOPE_GLOBAL,
+                0,
+            )?
+        };
+        Ok(value != 0)
     }
 
     /// Serialize the AU's current state (all parameters + internal state) to
@@ -854,6 +1027,53 @@ mod tests {
         let state = inst.save_state().unwrap();
         assert!(!state.is_empty());
         inst.load_state(&state).unwrap();
+    }
+
+    /// Presets and bypass must work in the `Loaded` state, before
+    /// `AudioUnitInitialize`. Both are global-scope properties with no render
+    /// resources behind them, and a host builds its preset menu and restores a
+    /// saved bypass state while wiring the plugin up — i.e. before it ever
+    /// initializes. Gating either on the Ready state would break that.
+    #[test]
+    fn presets_and_bypass_work_before_initialize() {
+        let comp = find_apple_delay().unwrap();
+        let mut inst = unsafe { AuInstance::new(comp, 44100.0, 512) }.unwrap();
+        assert!(!inst.is_initialized());
+
+        // AUDelay ships no presets — the read fails and is absorbed. What is
+        // being asserted is that it does not panic or error out of the Loaded
+        // state, not the count (the integration suite pins counts).
+        assert!(inst.factory_presets().is_empty());
+        inst.set_bypass(true).expect("bypass in the Loaded state");
+        assert!(inst.is_bypassed().unwrap());
+        inst.set_bypass(false).unwrap();
+        assert!(!inst.is_bypassed().unwrap());
+    }
+
+    /// `factory_presets` must absorb the property error, but `current_preset`
+    /// must not invent a preset for a unit that has none.
+    ///
+    /// These two deliberately differ, and the difference is easy to "tidy" into
+    /// consistency later: an empty list is an honest description of a unit with
+    /// no presets, whereas any `AuPreset` returned from `current_preset` would
+    /// be a claim about the AU's state. AUDelay in fact implements
+    /// `PresentPreset` and reports the `-1`/"Untitled" no-selection sentinel,
+    /// so this asserts the number is negative rather than that the call fails —
+    /// the point is that the value came from the AU.
+    #[test]
+    fn a_preset_less_unit_reports_no_selection_rather_than_a_fabricated_preset() {
+        let comp = find_apple_delay().unwrap();
+        let mut inst = unsafe { AuInstance::new(comp, 44100.0, 512) }.unwrap();
+        inst.initialize().unwrap();
+
+        assert!(inst.factory_presets().is_empty());
+        if let Ok(current) = inst.current_preset() {
+            assert!(
+                current.number < 0,
+                "AUDelay advertises no factory presets, so it must not report a \
+                 selected one; got {current:?}"
+            );
+        }
     }
 
     #[test]

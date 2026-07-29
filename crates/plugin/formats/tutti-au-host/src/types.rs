@@ -25,10 +25,10 @@ use coreaudio_sys as sys;
 
 // Opaque handles + scalar aliases (verbatim from coreaudio-sys).
 pub use sys::{
-    AURenderCallback, AURenderCallbackStruct, AudioBuffer, AudioBufferList, AudioComponent,
-    AudioComponentDescription, AudioComponentInstance, AudioStreamBasicDescription, AudioTimeStamp,
-    AudioUnit, AudioUnitCocoaViewInfo, AudioUnitParameterInfo, AudioUnitRenderActionFlags,
-    OSStatus,
+    AUPreset, AURenderCallback, AURenderCallbackStruct, AudioBuffer, AudioBufferList,
+    AudioComponent, AudioComponentDescription, AudioComponentInstance, AudioStreamBasicDescription,
+    AudioTimeStamp, AudioUnit, AudioUnitCocoaViewInfo, AudioUnitParameterInfo,
+    AudioUnitRenderActionFlags, CFArrayRef, OSStatus,
 };
 
 // AudioToolbox functions (verbatim from coreaudio-sys — these are the real

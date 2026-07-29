@@ -73,8 +73,8 @@ pub fn write_clip_file(ticks_per_quarter: u16, events: &[ClipEvent]) -> Vec<u8> 
     push_words(&mut out, start_of_clip().data_words());
 
     // The timed event stream: each UMP preceded by its delta clockstamp(s).
-    // A DCS field is only 20 bits, so a delta beyond `DCS_MAX` is expressed as a
-    // chain of DCS messages that accumulate (M2-116 §3.2.3).
+    // A DCS field is only 20 bits, so a delta beyond `DCS_MAX` is expressed as
+    // DCS·NOOP restarts (M2-116 §3.2.2) — see `push_delta`.
     for ev in events {
         push_delta(&mut out, ev.delta_ticks);
         push_words(&mut out, ev.event.data_words());
@@ -199,7 +199,10 @@ pub fn read_clip_file(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
 
     let mut ticks_per_quarter = None;
     let mut events = Vec::new();
+    // The delta declared by the most recent DCS, and the total closed off by
+    // NOOP restarts before it. See the DCS/NOOP arms below.
     let mut pending_delta: u32 = 0;
+    let mut banked_delta: u32 = 0;
 
     while let Some(word0) = words.peek() {
         let mt = (word0 >> 28) as u8;
@@ -213,16 +216,26 @@ pub fn read_clip_file(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
             let status = ((word0 >> 20) & 0x0F) as u8;
             match status {
                 0x4 => {
-                    // Delta Clockstamps accumulate: a chain of them (each ≤ 20
-                    // bits) expresses a delta larger than one field can hold.
-                    pending_delta = pending_delta.saturating_add(word0 & DCS_MAX);
+                    // A DCS is the count since the last event or Null message —
+                    // it *replaces* the current count rather than adding to it
+                    // (M2-116 §3.2.2). Only `banked_delta`, closed off by a
+                    // NOOP below, carries over from earlier restarts.
+                    pending_delta = word0 & DCS_MAX;
                     continue;
                 }
                 0x3 => {
                     ticks_per_quarter = Some((word0 & 0xFFFF) as u16);
                     continue;
                 }
-                _ => continue, // NoOp / other utility — ignore
+                0x0 => {
+                    // NOOP = the Null message that restarts the delta count
+                    // (M2-116 §3.2.2). Bank what the preceding DCS declared;
+                    // the next DCS counts from here.
+                    banked_delta = banked_delta.saturating_add(pending_delta);
+                    pending_delta = 0;
+                    continue;
+                }
+                _ => continue, // JR clock / timestamp / other utility — ignore
             }
         }
         if mt == 0xF {
@@ -235,12 +248,14 @@ pub fn read_clip_file(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
                 break; // end of clip — done
             }
         }
-        // A real event: attach the pending delta.
+        // A real event: its delta is the current count plus everything banked
+        // by NOOP restarts since the previous event.
         events.push(ClipEvent {
-            delta_ticks: pending_delta,
+            delta_ticks: banked_delta.saturating_add(pending_delta),
             event: ev,
         });
         pending_delta = 0;
+        banked_delta = 0;
     }
 
     Ok(ParsedClipFile {
@@ -266,18 +281,25 @@ fn delta_clockstamp(ticks: u32) -> MidiEvent {
     MidiEvent::from_ump(0, m.data())
 }
 
-/// Emit `ticks` as one or more chained Delta Clockstamps. A single DCS field is
-/// 20 bits; a larger delta is split into full-width chunks that the reader sums
-/// (M2-116 §3.2.3). `0` still emits exactly one (zero) DCS.
+/// Emit `ticks` as Delta Clockstamps, restarting the count with a NOOP each
+/// time a gap exceeds the 20-bit DCS field.
+///
+/// M2-116 §3.2.2 (identically M2-104-UM §7.2.3.2): "If no MIDI message has
+/// occurred during the previous 1,048,575 ticks, then the application which
+/// creates the MIDI Clip File shall insert a Delta Clockstamp followed by a
+/// Null message to restart the delta time count. Then the next Delta Clockstamp
+/// in the file declares the ticks since the previous Null message."
+///
+/// So consecutive DCSs do **not** accumulate — each one is the count since the
+/// last event, and a NOOP is what makes a long gap expressible as a sequence of
+/// restarts. `0` still emits exactly one (zero) DCS.
 fn push_delta(out: &mut Vec<u8>, mut ticks: u32) {
-    loop {
-        let chunk = ticks.min(DCS_MAX);
-        push_words(out, delta_clockstamp(chunk).data_words());
-        ticks -= chunk;
-        if ticks == 0 {
-            break;
-        }
+    while ticks > DCS_MAX {
+        push_words(out, delta_clockstamp(DCS_MAX).data_words());
+        push_words(out, MidiEvent::noop().data_words());
+        ticks -= DCS_MAX;
     }
+    push_words(out, delta_clockstamp(ticks).data_words());
 }
 
 fn dctpq(ticks_per_quarter: u16) -> MidiEvent {
@@ -378,27 +400,131 @@ mod tests {
         assert_eq!(parsed.events, events);
     }
 
+    /// Big-endian words of a clip file body, for byte-level assertions.
+    fn body_words(bytes: &[u8]) -> Vec<u32> {
+        bytes[8..]
+            .chunks_exact(4)
+            .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    }
+
     #[test]
-    fn large_delta_chains_and_round_trips() {
-        // A delta well beyond the 20-bit DCS field (0xFFFFF = 1_048_575) must
-        // survive via chained clockstamps rather than truncating.
-        let big = 3_000_000; // ~2.86 × DCS_MAX
+    fn large_delta_writes_dcs_noop_restarts() {
+        // M2-116 §3.2.2: a gap beyond the 20-bit DCS field is written as
+        // `DCS(max) · NOOP` restarts, then the remainder — NOT as adjacent DCSs
+        // that a reader is expected to sum. This asserts the bytes, not a
+        // round-trip: writer and reader agreeing with each other is exactly the
+        // thing that hid this bug.
+        let big = 3_000_000; // 2×DCS_MAX + 902_850
+        let bytes = write_clip_file(
+            480,
+            &[ClipEvent {
+                delta_ticks: big,
+                event: MidiEvent::note_on(0, 0, 60, 0x8000),
+            }],
+        );
+        let words = body_words(&bytes);
+
+        // Skip DCS(0)+DCTPQ and DCS(0)+StartOfClip (1+1+1+4 words).
+        let stream = &words[7..];
+        let dcs_max_word = 0x0040_0000 | DCS_MAX; // utility, status 0x4
+        let noop_word = 0x0000_0000; // utility, status 0x0
+
+        assert_eq!(stream[0], dcs_max_word, "first chunk is a full DCS field");
+        assert_eq!(stream[1], noop_word, "restart marker must be a NOOP");
+        assert_eq!(stream[2], dcs_max_word, "second full chunk");
+        assert_eq!(stream[3], noop_word, "second restart marker");
+        assert_eq!(
+            stream[4],
+            0x0040_0000 | (big - 2 * DCS_MAX),
+            "remainder counts from the last NOOP"
+        );
+        // Then the note-on itself (MT 0x4, 2 words).
+        assert_eq!(stream[5] >> 28, 0x4);
+    }
+
+    #[test]
+    fn reader_restarts_on_noop_and_replaces_on_bare_dcs() {
+        // Hand-built conformant fixture — an independent oracle for the reader,
+        // so a matching writer bug cannot mask a reader bug.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&CLIP_FILE_MAGIC);
+        let mut push = |w: u32| bytes.extend_from_slice(&w.to_be_bytes());
+        push(0x0040_0000); // DCS(0)
+        push(0x0030_01E0); // DCTPQ = 480
+        push(0x0040_0000); // DCS(0)
+        for w in [0xF020_0000, 0, 0, 0] {
+            push(w); // Start of Clip
+        }
+        // A gap of DCS_MAX + 1000, spelled the conformant way.
+        push(0x0040_0000 | DCS_MAX); // DCS(max)
+        push(0x0000_0000); // NOOP → restart
+        push(0x0040_0000 | 1000); // DCS(1000) counts from the NOOP
+        push(0x4090_3C00); // NoteOn word 0
+        push(0x8000_0000); // NoteOn word 1
+
+        let parsed = read_clip_file(&bytes).expect("parses");
+        assert_eq!(parsed.ticks_per_quarter, 480);
+        assert_eq!(parsed.events.len(), 1);
+        assert_eq!(
+            parsed.events[0].delta_ticks,
+            DCS_MAX + 1000,
+            "NOOP banks the preceding DCS; the next DCS adds on top"
+        );
+    }
+
+    #[test]
+    fn bare_consecutive_dcs_replaces_rather_than_sums() {
+        // Two DCSs with no NOOP between them: §3.2.2 makes each the count since
+        // the last event, so the second REPLACES the first. Summing them (our
+        // old behaviour) would give 1500 and place the event late.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&CLIP_FILE_MAGIC);
+        let mut push = |w: u32| bytes.extend_from_slice(&w.to_be_bytes());
+        push(0x0040_0000);
+        push(0x0030_01E0); // DCTPQ = 480
+        push(0x0040_0000 | 500); // DCS(500)
+        push(0x0040_0000 | 1000); // DCS(1000) — replaces, not adds
+        push(0x4090_3C00);
+        push(0x8000_0000);
+
+        let parsed = read_clip_file(&bytes).expect("parses");
+        assert_eq!(parsed.events.len(), 1);
+        assert_eq!(parsed.events[0].delta_ticks, 1000);
+    }
+
+    #[test]
+    fn large_delta_round_trips() {
+        // The round-trip must still hold — but it is now a consequence of both
+        // halves being spec-correct, not of them sharing a bug.
         let events = [
             ClipEvent {
-                delta_ticks: big,
+                delta_ticks: 3_000_000,
                 event: MidiEvent::note_on(0, 0, 60, 0x8000),
             },
             ClipEvent {
-                delta_ticks: DCS_MAX, // exactly one full field
+                delta_ticks: DCS_MAX, // exactly one full field — no restart needed
                 event: MidiEvent::note_off(0, 0, 60, 0),
             },
         ];
         let bytes = write_clip_file(480, &events);
         let parsed = read_clip_file(&bytes).expect("parses");
-        assert_eq!(parsed.events.len(), 2);
-        assert_eq!(parsed.events[0].delta_ticks, big);
-        assert_eq!(parsed.events[1].delta_ticks, DCS_MAX);
         assert_eq!(parsed.events, events);
+    }
+
+    #[test]
+    fn exactly_max_delta_needs_no_restart() {
+        // Boundary: DCS_MAX fits one field, so no NOOP should be emitted.
+        let bytes = write_clip_file(
+            480,
+            &[ClipEvent {
+                delta_ticks: DCS_MAX,
+                event: MidiEvent::note_on(0, 0, 60, 0x8000),
+            }],
+        );
+        let stream = body_words(&bytes)[7..].to_vec();
+        assert_eq!(stream[0], 0x0040_0000 | DCS_MAX);
+        assert_eq!(stream[1] >> 28, 0x4, "note-on follows immediately, no NOOP");
     }
 
     #[test]

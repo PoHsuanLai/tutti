@@ -118,6 +118,11 @@ mod tests {
         let rate = SampleRate(48_000.0);
         assert_eq!(duration_to_frames(-1.0, rate), Samples(0));
         assert_eq!(duration_to_frames(f64::NAN, rate), Samples(0));
+        // INFINITY is the one that needs the guard. Rust's float->int cast
+        // saturates, so -1.0 and NaN both reach 0 on their own and assert
+        // nothing about this function; `INFINITY * rate` casts to usize::MAX,
+        // which would be an unbounded render.
+        assert_eq!(duration_to_frames(f64::INFINITY, rate), Samples(0));
     }
 
     fn config(latency: Samples) -> RenderConfig {

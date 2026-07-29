@@ -54,77 +54,30 @@ impl FlacEncoder {
     }
 }
 
-/// Adapts the render to `flacenc::Source`.
+/// Interleaved `i32` frames flacenc pulls from.
 ///
-/// flacenc asks for `block_size` frames at a time; we pull that many from the
-/// render (already gated and dithered), convert to `i32` at the target depth,
-/// and hand them over. A short read means the render is done, which is exactly
-/// flacenc's stop condition.
-struct RenderSource<'a, const CH: usize> {
-    src: &'a mut dyn FrameSource<CH>,
-    plan: &'a RenderPlan,
-    dither: crate::process::DitherState,
+/// FLAC inverts control — `encode_with_fixed_block_size` calls `read_samples`
+/// until dry — so it cannot sit inside `pump_blocks`'s push loop. It used to
+/// resolve that by re-implementing the gate by hand and pulling from the render
+/// directly, which meant it **never applied `config.resample`** while still
+/// taking its header from `encoder_rate`: a file whose STREAMINFO claimed
+/// 48 kHz holding 44.1 kHz audio, playing back 8.8% fast.
+///
+/// Now the frames come from the same `pump_blocks` every other format uses —
+/// gate, resample and dither included — and this only hands them over. The
+/// PCM is collected first, so FLAC is the one format that holds the signal;
+/// see the module note. Trading that for correctness is the right way round,
+/// and `encode_fixed_size_frame` is public if incremental output is wanted.
+struct PulledFrames {
     channels: usize,
     bits: usize,
     sample_rate: usize,
-    bit_depth: BitDepth,
-    /// Frames pulled but not yet handed to flacenc, interleaved as `i32`.
-    pending: Vec<i32>,
-    /// Frames that have passed the gate, ever — the `kept_so_far` the cursor
-    /// needs, which is not `pending.len()` once flacenc starts draining.
-    kept: tutti_types::Samples,
-    done: bool,
+    /// Interleaved, already at the output rate and depth.
+    samples: Vec<i32>,
+    pos: usize,
 }
 
-impl<const CH: usize> RenderSource<'_, CH> {
-    /// Fill `pending` until it holds at least `want` frames or the render ends.
-    fn pull_until(&mut self, want: usize) {
-        while !self.done && self.pending.len() < want * self.channels {
-            let before = self.pending.len();
-            let mut staging: Vec<[f32; CH]> = Vec::new();
-            // One block per call: `drive` runs the whole render, so instead we
-            // step the source directly and apply the same gate `drive` would.
-            let produced = self.src.produced();
-            if produced >= self.plan.total {
-                self.done = true;
-                break;
-            }
-            let block_want = self
-                .plan
-                .total
-                .remaining_after(produced)
-                .min(tutti_types::Samples(tutti_core::MAX_BUFFER_SIZE));
-            let mut block = vec![[0.0f32; CH]; block_want.get()];
-            let n = self.src.fill(&mut block);
-            if n == 0 {
-                self.done = true;
-                break;
-            }
-            let cursor = crate::render::BlockCursor {
-                block_start: produced,
-                latency: self.plan.latency,
-                kept_so_far: self.kept,
-                output_length: self.plan.output_length,
-            };
-            let window = cursor.window(tutti_types::Samples(n));
-            if !window.is_empty() {
-                staging.extend_from_slice(&block[window.clone()]);
-                self.dither.apply(&mut staging);
-                self.kept = tutti_types::Samples(self.kept.get() + staging.len());
-                for f in &staging {
-                    for &s in f.iter() {
-                        self.pending.push(f32_to_i32(s, self.bit_depth));
-                    }
-                }
-            }
-            if self.pending.len() == before && self.src.produced() >= self.plan.total {
-                self.done = true;
-            }
-        }
-    }
-}
-
-impl<const CH: usize> Source for RenderSource<'_, CH> {
+impl Source for PulledFrames {
     fn channels(&self) -> usize {
         self.channels
     }
@@ -140,13 +93,12 @@ impl<const CH: usize> Source for RenderSource<'_, CH> {
         block_size: usize,
         dest: &mut F,
     ) -> std::result::Result<usize, SourceError> {
-        self.pull_until(block_size);
-        let want = (block_size * self.channels).min(self.pending.len());
+        let want = (block_size * self.channels).min(self.samples.len() - self.pos);
         if want == 0 {
             return Ok(0);
         }
-        let chunk: Vec<i32> = self.pending.drain(..want).collect();
-        dest.fill_interleaved(&chunk)?;
+        dest.fill_interleaved(&self.samples[self.pos..self.pos + want])?;
+        self.pos += want;
         Ok(want / self.channels)
     }
 }
@@ -155,34 +107,45 @@ impl<const CH: usize> Encoder<CH> for FlacEncoder {
     fn encode(
         self,
         src: &mut dyn FrameSource<CH>,
+        source_rate: tutti_core::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
     ) -> Result<()> {
         let bits = bits_for(self.bit_depth);
-        let source = RenderSource::<CH> {
-            src,
-            plan,
-            dither: crate::process::DitherState::for_config(config),
+        let bit_depth = self.bit_depth;
+
+        // Through `pump_blocks`, like every other format — that is what applies
+        // the gate, the resample and the dither.
+        let mut samples: Vec<i32> = Vec::new();
+        crate::encode::pump_blocks(src, source_rate, plan, config, |frames| {
+            samples.reserve(frames.len() * CH);
+            for f in frames {
+                for &s in f.iter() {
+                    samples.push(f32_to_i32(s, bit_depth));
+                }
+            }
+            Ok(())
+        })?;
+
+        let source = PulledFrames {
             channels: CH,
             bits,
             sample_rate: crate::encode::encoder_rate(config) as usize,
-            bit_depth: self.bit_depth,
-            pending: Vec::new(),
-            kept: tutti_types::Samples(0),
-            done: false,
+            samples,
+            pos: 0,
         };
 
         // `compression_level` is the app-facing knob; flacenc expresses effort
         // through its own preset, which `Encoder::default()` already sets to a
-        // balanced point. Mapping the 0–8 scale onto flacenc's individual
-        // coding options is a separate change — the level is accepted and
-        // currently unmapped rather than silently reinterpreted.
+        // balanced point. Mapping the 0–8 scale onto flacenc's coding options is
+        // a separate change — the level is accepted and currently unmapped
+        // rather than silently reinterpreted.
         let _ = self.compression_level;
-        let config = EncoderConfig::default()
+        let flac_config = EncoderConfig::default()
             .into_verified()
             .map_err(|e| Error::Encoding(format!("Invalid FLAC config: {e:?}")))?;
 
-        let stream = encode_with_fixed_block_size(&config, source, BLOCK_SIZE)
+        let stream = encode_with_fixed_block_size(&flac_config, source, BLOCK_SIZE)
             .map_err(|e| Error::Encoding(format!("FLAC encoding failed: {e:?}")))?;
 
         let mut sink = ByteSink::new();

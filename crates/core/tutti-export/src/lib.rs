@@ -220,7 +220,7 @@ pub fn render_to_file(
         let mut net = net;
         let plan = render::RenderPlan::new(&config.render);
         let mut src = render::NetSource::<CH>::new(&mut net, config.render.sample_rate, clock);
-        encode::encode_to_file::<CH>(&mut src, &plan, config, path)
+        encode::encode_to_file::<CH>(&mut src, config.render.sample_rate, &plan, config, path)
     })
 }
 

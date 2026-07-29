@@ -59,9 +59,18 @@ pub(crate) fn encoder_rate(config: &ExportConfig) -> u32 {
 /// what makes "finalize, then write more" unrepresentable rather than a runtime
 /// error.
 pub(crate) trait Encoder<const CH: usize> {
+    /// `source_rate` is the rate the incoming frames are **at**, which is not
+    /// always `config.render.sample_rate` — `write_buffers` feeds frames that
+    /// were rendered elsewhere. Every implementation must resample from this,
+    /// and every implementation must go through [`pump_blocks`], which is where
+    /// the resample lives. An encoder that pulls from [`drive`] directly still
+    /// gets its header from [`encoder_rate`] and so writes un-resampled audio
+    /// under a header claiming the target — that was a real bug in both FLAC
+    /// and Ogg.
     fn encode(
         self,
         src: &mut dyn FrameSource<CH>,
+        source_rate: tutti_core::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
     ) -> Result<()>;
@@ -75,6 +84,7 @@ pub(crate) trait Encoder<const CH: usize> {
 /// replaced — no arm that rejects a format the crate can actually write.
 pub(crate) fn encode_to_file<const CH: usize>(
     src: &mut dyn FrameSource<CH>,
+    source_rate: tutti_core::SampleRate,
     plan: &RenderPlan,
     config: &ExportConfig,
     path: &Path,
@@ -85,25 +95,29 @@ pub(crate) fn encode_to_file<const CH: usize>(
 
     match config.encode.format {
         #[cfg(feature = "wav")]
-        AudioFormat::Wav => wav::WavEncoder::create(path, config)?.encode(src, plan, config)?,
+        AudioFormat::Wav => {
+            wav::WavEncoder::create(path, config)?.encode(src, source_rate, plan, config)?
+        }
         #[cfg(not(feature = "wav"))]
         AudioFormat::Wav => return Err(Error::UnsupportedFormat("WAV not enabled".into())),
 
         #[cfg(feature = "flac")]
         AudioFormat::Flac(opts) => {
-            flac::FlacEncoder::create(path, config, opts)?.encode(src, plan, config)?
+            flac::FlacEncoder::create(path, config, opts)?.encode(src, source_rate, plan, config)?
         }
         #[cfg(not(feature = "flac"))]
         AudioFormat::Flac(_) => return Err(Error::UnsupportedFormat("FLAC not enabled".into())),
 
         #[cfg(feature = "aiff")]
-        AudioFormat::Aiff => aiff::AiffEncoder::create(path, config)?.encode(src, plan, config)?,
+        AudioFormat::Aiff => {
+            aiff::AiffEncoder::create(path, config)?.encode(src, source_rate, plan, config)?
+        }
         #[cfg(not(feature = "aiff"))]
         AudioFormat::Aiff => return Err(Error::UnsupportedFormat("AIFF not enabled".into())),
 
         #[cfg(feature = "ogg")]
         AudioFormat::OggVorbis(opts) => {
-            ogg::OggEncoder::create(path, config, opts)?.encode(src, plan, config)?
+            ogg::OggEncoder::create(path, config, opts)?.encode(src, source_rate, plan, config)?
         }
         #[cfg(not(feature = "ogg"))]
         AudioFormat::OggVorbis(_) => {
@@ -120,15 +134,18 @@ pub(crate) fn encode_to_file<const CH: usize>(
 
 /// Pull every frame of the render through resample → dither, into `write`.
 ///
-/// The shared body of the three push-shaped encoders (WAV, Ogg, AIFF). FLAC does
-/// not use it — its library owns the loop.
+/// Every encoder goes through this — including FLAC, whose library owns its own
+/// pull loop but whose frames are collected through here first. That is the
+/// point: this is where the gate, the resample and the dither live, so an
+/// encoder that skips it writes un-resampled audio under a resampled header.
 ///
 /// Order matters: resample first, dither second. Dither's noise is scaled to one
 /// LSB at the *output* depth, so dithering before a rate conversion would filter
 /// that noise along with the signal and land it somewhere other than one LSB.
-#[cfg(any(feature = "wav", feature = "ogg", feature = "aiff"))]
+#[cfg(any(feature = "wav", feature = "flac", feature = "ogg", feature = "aiff"))]
 pub(crate) fn pump_blocks<const CH: usize, W>(
     src: &mut dyn FrameSource<CH>,
+    source_rate: tutti_core::SampleRate,
     plan: &RenderPlan,
     config: &ExportConfig,
     mut write: W,
@@ -142,7 +159,11 @@ where
     // Compare as the integer rate the codecs speak: two `SampleRate`s that
     // round to the same header value are the same rate, and there is nothing to
     // convert between them.
-    let source_rate = config.render.sample_rate.get().round() as u32;
+    // The PARAMETER, not `config.render.sample_rate`. Frames handed to
+    // `write_buffers` already exist and carry their own rate, which may not be
+    // the one the config was rendered at; reading it from the config made such
+    // a call resample from a rate the samples were never at.
+    let source_rate = source_rate.get().round() as u32;
     let mut resampler = match config.resample {
         Some(r) if r.target_rate.get().round() as u32 != source_rate => Some((
             crate::process::Resampler::new(
@@ -222,7 +243,9 @@ pub(crate) fn encode_planes<const CH: usize>(
         output_length: frames,
         latency: tutti_types::Samples(0),
     };
-    encode_to_file::<CH>(&mut src, &plan, config, path)
+    // The frames' OWN rate. Reading `config.render.sample_rate` here made a
+    // `write_buffers` call resample from a rate the samples were never at.
+    encode_to_file::<CH>(&mut src, rendered.sample_rate, &plan, config, path)
 }
 
 /// Flatten `CH`-wide frames into an interleaved buffer.

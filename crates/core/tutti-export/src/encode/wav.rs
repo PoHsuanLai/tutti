@@ -43,11 +43,12 @@ impl<const CH: usize> Encoder<CH> for WavEncoder {
     fn encode(
         mut self,
         src: &mut dyn FrameSource<CH>,
+        source_rate: tutti_core::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
     ) -> Result<()> {
         let mut buf = Vec::new();
-        pump_blocks(src, plan, config, |frames| {
+        pump_blocks(src, source_rate, plan, config, |frames| {
             interleave(frames, &mut buf);
             for &s in &buf {
                 match self.bit_depth {

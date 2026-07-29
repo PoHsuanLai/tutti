@@ -185,9 +185,29 @@ fn a_caller_can_compose_normalization() {
     out.apply_gain(gain);
     let after = measure_loudness(&cfg, &out.interleaved()).unwrap();
 
+    // Assert what `gain_to` actually promises, not merely that `apply_gain` is
+    // linear. The earlier form checked `after ≈ before + gain`, which is
+    // algebraically true for ANY gain — `gain_to` could return `Db(0.0)` and it
+    // still passed, so the measure half of measure-then-apply was unverified.
+    //
+    // The promise is two-sided: reach the target, UNLESS the true-peak ceiling
+    // binds first. This signal is a DC-ish 0.5 constant at -29.3 LUFS with a
+    // -4.99 dBTP peak, so +15.3 dB would be needed for -14 LUFS — and that
+    // would put the peak at +10 dBTP. The ceiling wins, and the peak is what
+    // must land exactly.
     assert!(
-        (after.lufs.get() - (before.lufs.get() + gain.get())).abs() < 0.5,
-        "applying the reported gain must move loudness by that gain: \
+        after.lufs.get() <= -14.0 + 0.5,
+        "must never overshoot the loudness target: {before:?} -> {after:?}"
+    );
+    assert!(
+        (after.true_peak.get() - (-1.0)).abs() < 0.5,
+        "the ceiling binds here, so the peak must land on it: {after:?}"
+    );
+
+    // And the ceiling must not be an excuse to do nothing: a gain was applied.
+    assert!(
+        after.lufs.get() > before.lufs.get() + 1.0,
+        "the reachable part of the gain must still be applied: \
          {before:?} + {gain:?} -> {after:?}"
     );
 }
@@ -259,4 +279,151 @@ fn normalized_audio_can_be_written_to_every_format() {
         (peak - 0.25).abs() < 0.01,
         "expected ~0.25 after -6 dB, got {peak}"
     );
+}
+
+/// A resample must reach **every** format, not just the ones that happened to
+/// route through the shared pump.
+///
+/// FLAC and Ogg used to pull from `drive` directly while still taking their
+/// header rate from `encoder_rate`, so each wrote un-resampled audio under a
+/// header claiming the target: a 1 s render played back 8.8% fast. WAV and AIFF
+/// were correct, which is exactly why a WAV-only test could not see it.
+#[test]
+fn a_resample_reaches_every_format_not_just_wav() {
+    let d = tempfile::tempdir().unwrap();
+    let mut s = config(AudioFormat::Wav, BitDepth::Int24, ChannelLayout::Stereo);
+    s.render.duration_seconds = 1.0; // 44100 frames in, 48000 expected out
+    s.resample = Some(Resample::to(tutti_core::SampleRate(48_000.0)));
+
+    // WAV is the control: it was already correct.
+    let p = d.path().join("r.wav");
+    render_to_file(net(), &s, &FrozenClock, &p).unwrap();
+    let rd = hound::WavReader::open(&p).unwrap();
+    assert_eq!(rd.spec().sample_rate, 48_000);
+    let wav_frames = rd.into_samples::<i32>().count() / 2;
+    assert!(
+        (wav_frames as i64 - 48_000).abs() < 512,
+        "wav: expected ~48000 frames, got {wav_frames}"
+    );
+
+    // FLAC: the header claims 48k, so the payload must actually BE 48k. If the
+    // resample were skipped the file would hold 44100 frames.
+    s.encode.format = AudioFormat::Flac(Default::default());
+    let pf = d.path().join("r.flac");
+    render_to_file(net(), &s, &FrozenClock, &pf).unwrap();
+    let flac_frames = flac_frame_count(&pf);
+    assert!(
+        (flac_frames as i64 - 48_000).abs() < 512,
+        "flac: header says 48000 but payload holds {flac_frames} frames \
+         (44100 means the resample was skipped)"
+    );
+
+    // Ogg: same property, read from the final page's granule position.
+    s.encode.format = AudioFormat::OggVorbis(Default::default());
+    let po = d.path().join("r.ogg");
+    render_to_file(net(), &s, &FrozenClock, &po).unwrap();
+    let ogg_frames = ogg_granule(&po);
+    assert!(
+        (ogg_frames as i64 - 48_000).abs() < 2048,
+        "ogg: header says 48000 but granule reports {ogg_frames} frames"
+    );
+}
+
+/// `write_buffers` must resample from the rate the FRAMES are at, not from
+/// whatever `config.render.sample_rate` happens to hold.
+///
+/// The frames handed to `write_buffers` already exist; `config.render` describes
+/// a render that already happened, and may be a different rate entirely. Reading
+/// it made the output 2.18x too long and pitched down, under a header that said
+/// otherwise.
+#[test]
+fn write_buffers_resamples_from_the_frames_own_rate() {
+    let d = tempfile::tempdir().unwrap();
+
+    // Render at 96k...
+    let mut render_cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    render_cfg.render.sample_rate = tutti_core::SampleRate(96_000.0);
+    render_cfg.render.duration_seconds = 1.0;
+    let audio = render_to_buffers(net(), &render_cfg, &FrozenClock).unwrap();
+    assert_eq!(audio.sample_rate.get(), 96_000.0);
+
+    // ...then write with a config whose `render` half is left at its DEFAULT
+    // 44100 — the case the doc tells a caller is fine to ignore.
+    let mut write_cfg = config(AudioFormat::Wav, BitDepth::Float32, ChannelLayout::Stereo);
+    write_cfg.resample = Some(Resample::to(tutti_core::SampleRate(48_000.0)));
+    assert_eq!(
+        write_cfg.render.sample_rate.get(),
+        44_100.0,
+        "this test is only meaningful while the config's render rate differs"
+    );
+
+    let p = d.path().join("w.wav");
+    tutti_export::write_buffers(&audio, &write_cfg, &p).unwrap();
+
+    let rd = hound::WavReader::open(&p).unwrap();
+    assert_eq!(rd.spec().sample_rate, 48_000);
+    let frames = rd.into_samples::<f32>().count() / 2;
+    // 96k -> 48k halves the length. Reading 44100 as the source instead would
+    // give ~104_490 frames.
+    assert!(
+        (frames as i64 - 48_000).abs() < 512,
+        "expected ~48000 frames (96k halved), got {frames} \
+         (~104490 means it resampled from the config's rate, not the audio's)"
+    );
+}
+
+/// Frame count from a FLAC STREAMINFO block (bytes 21..27, 36 bits).
+fn flac_frame_count(path: &std::path::Path) -> u64 {
+    let b = std::fs::read(path).unwrap();
+    assert_eq!(&b[0..4], b"fLaC", "not a FLAC file");
+    // 4 magic + 4 block header, then STREAMINFO; total-samples is 36 bits
+    // starting 13 bytes into it.
+    let si = &b[8..];
+    ((si[13] as u64 & 0x0F) << 32)
+        | (si[14] as u64) << 24
+        | (si[15] as u64) << 16
+        | (si[16] as u64) << 8
+        | (si[17] as u64)
+}
+
+/// Granule position of the last Ogg page — the total frames encoded.
+///
+/// Walks pages by seeking the `OggS` capture pattern rather than stepping
+/// blindly: a page body can contain those four bytes, and a naive walk that
+/// mis-steps once reads a random eight bytes as a granule (it reported 3830784
+/// for a 96000-frame file while I was writing this).
+fn ogg_granule(path: &std::path::Path) -> u64 {
+    let b = std::fs::read(path).unwrap();
+    let mut last = 0i64;
+    let mut i = 0usize;
+    while let Some(off) = find_from(&b, b"OggS", i) {
+        if off + 27 > b.len() {
+            break;
+        }
+        let gran = i64::from_le_bytes(b[off + 6..off + 14].try_into().unwrap());
+        let segs = b[off + 26] as usize;
+        if off + 27 + segs > b.len() {
+            break;
+        }
+        // -1 marks a page that completes no packet; it is not a frame count.
+        if gran >= 0 {
+            last = gran;
+        }
+        let body: usize = b[off + 27..off + 27 + segs]
+            .iter()
+            .map(|&s| s as usize)
+            .sum();
+        i = off + 27 + segs + body;
+    }
+    last as u64
+}
+
+fn find_from(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if from >= hay.len() {
+        return None;
+    }
+    hay[from..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| p + from)
 }

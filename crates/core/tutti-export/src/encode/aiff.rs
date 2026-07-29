@@ -58,13 +58,14 @@ impl<const CH: usize> Encoder<CH> for AiffEncoder {
     fn encode(
         mut self,
         src: &mut dyn FrameSource<CH>,
+        source_rate: tutti_core::SampleRate,
         plan: &RenderPlan,
         config: &ExportConfig,
     ) -> Result<()> {
         let mut buf = Vec::new();
         let mut ints: Vec<i32> = Vec::new();
         let mut shorts: Vec<i16> = Vec::new();
-        pump_blocks(src, plan, config, |frames| {
+        pump_blocks(src, source_rate, plan, config, |frames| {
             interleave(frames, &mut buf);
             match self.bit_depth {
                 BitDepth::Int16 => {

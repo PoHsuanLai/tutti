@@ -8,9 +8,9 @@
 //! not apply — quantization noise has nothing to dither against here.
 
 use crate::config::ExportConfig;
-use crate::encode::Encoder;
+use crate::encode::{pump_blocks, Encoder};
 use crate::error::{Error, Result};
-use crate::render::{drive, FrameSource, RenderPlan};
+use crate::render::{FrameSource, RenderPlan};
 use std::io::BufWriter;
 use std::num::{NonZeroU32, NonZeroU8};
 use std::path::Path;
@@ -48,12 +48,20 @@ impl<const CH: usize> Encoder<CH> for OggEncoder {
     fn encode(
         mut self,
         src: &mut dyn FrameSource<CH>,
+        source_rate: tutti_core::SampleRate,
         plan: &RenderPlan,
-        _config: &ExportConfig,
+        config: &ExportConfig,
     ) -> Result<()> {
-        // Reused planar staging, so a block deinterleaves without allocating.
+        // Through `pump_blocks`, not `drive` — that is what applies the
+        // resample. Calling `drive` directly while still taking the header rate
+        // from `encoder_rate` wrote un-resampled audio under a header claiming
+        // the target rate: a 1 s render played back 8.8% fast.
+        //
+        // Vorbis is lossy and float internally, so `pump_blocks`'s dither stage
+        // is a no-op here by construction — `DitherState::for_config` only
+        // arms for an integer bit depth.
         let mut planes: Vec<Vec<f32>> = vec![Vec::new(); CH];
-        drive(src, plan, |frames| {
+        pump_blocks(src, source_rate, plan, config, |frames| {
             for p in planes.iter_mut() {
                 p.clear();
                 p.reserve(frames.len());
@@ -62,6 +70,14 @@ impl<const CH: usize> Encoder<CH> for OggEncoder {
                 for (p, &s) in planes.iter_mut().zip(f.iter()) {
                     p.push(s);
                 }
+            }
+            // An EMPTY block is vorbis's end-of-stream signal. `pump_blocks`
+            // legitimately emits one (the resampler flushes after its last
+            // real block), and passing it through here closed the stream early
+            // and left the encoder writing garbage pages — a 1 s render came
+            // out 178 KB instead of 7.8 KB.
+            if frames.is_empty() {
+                return Ok(());
             }
             let block: Vec<&[f32]> = planes.iter().map(|p| p.as_slice()).collect();
             self.encoder

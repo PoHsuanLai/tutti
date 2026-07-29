@@ -166,7 +166,7 @@ impl LiveResizeRegistry {
 }
 
 /// Reaps observers whose plugin lost its `PluginEditorOpen` without going
-/// through `close_editor_observer` — most importantly
+/// through `set_editor_visible_observer` — most importantly
 /// `plugin_health_poll`, which is *not* main-thread pinned and used to
 /// drop the observer wherever its `Commands` queue happened to be applied.
 ///

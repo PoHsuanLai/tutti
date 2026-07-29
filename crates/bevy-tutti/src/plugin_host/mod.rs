@@ -1,21 +1,30 @@
-//! Plugin (VST2/VST3/CLAP/AU) hosting for Bevy: editor lifecycle, crash
-//! detection, async catalog scanning, and param reconciliation.
+//! Plugin (VST2/VST3/CLAP/AU) hosting for Bevy.
 //!
-//! This crate owns the ECS surface that turns `tutti-plugin`'s loaded
-//! plugin handles into Bevy entities with a native GUI editor window,
-//! and reconciles `PluginParam` changes into the running audio graph.
+//! Turns `tutti-plugin`'s catalog and handles into an ECS surface: a
+//! [`PluginRequest`] becomes a loaded plugin bound to the transport, the MIDI
+//! bus and the modulation matrix, with a native GUI window and a liveness state.
 //!
 //! **Bevy-only by design.** Every module here is ECS / window glue; there is no
 //! Bevy-free core to gate. A non-Bevy host uses the (Bevy-free) `tutti-plugin`
-//! crate for plugin discovery / loading / `PluginHandle` param control and
-//! `tutti-plugin-server` for out-of-process audio, wiring editor + scan hosting
-//! itself.
+//! crate directly and wires the equivalent itself.
+//!
+//! # Life of a plugin
+//!
+//! A host spawns a [`PluginRequest`]. [`load`] picks it up, runs the subprocess
+//! launch on a worker, and promotes the result to an `AudioNode` carrying a
+//! [`PluginEmitter`]. [`bind`] then installs the transport, registers the plugin
+//! with the shared MIDI resolver, and builds accumulators for whichever params
+//! the host declared modulatable. [`health`] polls liveness from there on, and
+//! removes `AudioNode` — the one handle everything else keys on — when a plugin
+//! is finally written off.
 //!
 //! Sub-modules:
-//! - [`editor`] — open / attach / idle / window-resize / close. The 5-system
-//!   choreography that owns the plugin GUI window's lifecycle.
-//! - [`crash`] — polls each plugin's crashed flag and unwires from the graph.
-//! - [`scan`] — async plugin-catalog scanning on the compute task pool.
+//! - [`load`] — off-thread loading: request → pending → promoted.
+//! - [`bind`] — transport, MIDI and parameter binding once loaded.
+//! - [`health`] — debounced liveness, state snapshots, unwiring the dead.
+//! - [`editor`] — the GUI window's lifecycle, driven by [`SetEditorVisible`].
+//! - [`scan`] — catalog scanning with per-plugin progress.
+//! - [`catalog`] — probing a single plugin off the frame thread.
 //! - [`native_window`] — platform helpers for child-window parenting.
 //! - `live_resize` (macOS only) — AppKit live-resize observer.
 
@@ -25,6 +34,7 @@ use bevy_ecs::prelude::*;
 use crate::graph::GraphReconcileSystems;
 
 pub mod bind;
+pub mod catalog;
 pub mod editor;
 pub mod health;
 pub mod load;
@@ -43,11 +53,12 @@ pub use live_resize::{reap_orphaned_live_resize_observers, LiveResizeRegistry};
 #[cfg(feature = "modulation")]
 pub use bind::{plugin_bind_params, PluginParamsBound};
 pub use bind::{plugin_bind_transport, PluginTransportBound};
+pub use catalog::{poll_probes, start_probe, InFlightProbes, PluginProbed, ProbePlugin};
 pub use editor::{
-    close_editor_observer, plugin_editor_attach_system, plugin_editor_idle_system,
-    plugin_editor_open_system, plugin_editor_resize_request_system,
-    plugin_editor_window_close_system, plugin_editor_window_resize_system, CloseEditor,
-    OpenPluginEditor, PendingPluginEditor, PluginEditorOpen, PluginEmitter,
+    plugin_editor_attach_system, plugin_editor_idle_system, plugin_editor_resize_request_system,
+    plugin_editor_window_close_system, plugin_editor_window_resize_system,
+    set_editor_visible_observer, PendingPluginEditor, PluginEditorOpen, PluginEmitter,
+    SetEditorVisible, Visibility,
 };
 pub use health::{plugin_health_poll, plugin_state_snapshot, PluginHealth, PluginStatus};
 pub use load::{
@@ -108,10 +119,9 @@ pub struct TuttiHostingPlugin;
 
 impl Plugin for TuttiHostingPlugin {
     fn build(&self, app: &mut App) {
-        app.register_type::<OpenPluginEditor>()
-            .register_type::<PendingPluginEditor>();
+        app.register_type::<PendingPluginEditor>();
 
-        app.add_observer(close_editor_observer);
+        app.add_observer(set_editor_visible_observer);
 
         // `Plugin::build` runs on the thread that builds the `App`, which for
         // a windowed Bevy app is the main/UI thread — the same thread every
@@ -149,18 +159,20 @@ impl Plugin for TuttiHostingPlugin {
         )));
 
         app.init_resource::<PluginCatalogState>();
+        app.init_resource::<InFlightProbes>();
         app.add_message::<RescanPlugins>();
         app.add_message::<ScanProgressed>();
         app.add_message::<PluginsScanned>();
+        app.add_message::<ProbePlugin>();
+        app.add_message::<PluginProbed>();
 
         app.add_systems(
             Update,
             (
-                // Open inserts `PendingPluginEditor`; attach reads it. Without
-                // this ordering an editor takes one or two frames to appear
-                // depending on scheduling.
-                plugin_editor_open_system,
-                plugin_editor_attach_system.after(plugin_editor_open_system),
+                // `set_editor_visible_observer` inserts `PendingPluginEditor`;
+                // attach reads it and finishes the open once Bevy has created
+                // the window and its native handle exists.
+                plugin_editor_attach_system,
                 plugin_editor_idle_system,
                 plugin_editor_resize_request_system.after(plugin_editor_idle_system),
                 plugin_editor_window_resize_system.after(plugin_editor_resize_request_system),
@@ -187,6 +199,10 @@ impl Plugin for TuttiHostingPlugin {
         // starting audio must be able to. Poll before start, as `export` does,
         // so a scan that finishes between two frames is still reported.
         app.add_systems(Update, (poll_scan, start_scan).chain());
+
+        // Single-plugin probes, ungated for the same reason and polled first for
+        // the same reason.
+        app.add_systems(Update, (poll_probes, start_probe).chain());
 
         // Loading adds a node, so promotion belongs in `Spawn` — MIDI
         // registration and the engine bindings order themselves after that
@@ -236,7 +252,7 @@ impl Plugin for TuttiHostingPlugin {
         );
 
         // Reaps AppKit observers for editors that lost `PluginEditorOpen`
-        // without going through `close_editor_observer` — chiefly
+        // without going through `set_editor_visible_observer` — chiefly
         // `plugin_health_poll`, which is not main-thread pinned.
         #[cfg(target_os = "macos")]
         app.add_systems(

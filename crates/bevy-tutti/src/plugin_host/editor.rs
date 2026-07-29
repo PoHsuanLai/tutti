@@ -60,21 +60,67 @@ pub struct PendingPluginEditor {
     pub window_entity: Entity,
 }
 
-/// Trigger component: insert on an entity with `PluginEmitter` to open
-/// the plugin's native GUI editor. Automatically removed after processing.
-#[derive(Component, Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Reflect)]
-#[reflect(Component, Default)]
-pub struct OpenPluginEditor;
-
-/// Entity-targeted event: trigger on an entity with `PluginEmitter` +
-/// `PluginEditorOpen` to close the plugin's native GUI editor.
+/// Ask for a plugin's native GUI editor to be shown or hidden.
 ///
-/// Handled by the `close_editor_observer`. Fire via
-/// `commands.trigger(CloseEditor { entity })` or
-/// `commands.entity(e).trigger(CloseEditor { entity: e })`.
+/// The one way to drive editor visibility:
+///
+/// ```ignore
+/// commands.trigger(SetEditorVisible::show(entity));
+/// commands.trigger(SetEditorVisible::hide(entity));
+/// commands.trigger(SetEditorVisible::toggle(entity));   // menu item / double-click
+/// ```
+///
+/// # Why one event rather than an open-component and a close-event
+///
+/// This replaced a trigger *component* (`OpenPluginEditor`, inserted and then
+/// removed by the system that saw it) beside an *event* (`CloseEditor`) — two
+/// shapes for one concern, and neither could express "toggle" without the caller
+/// first asking whether the editor was open. That question has no good answer
+/// from outside: a `Query<&PluginEditorOpen>` reads the previous frame, so a
+/// fast double-click could open twice or close a window already gone. Resolving
+/// [`Visibility::Toggle`] inside the observer, where `PluginEditorOpen` is
+/// authoritative, makes that unrepresentable.
+///
+/// A component also implied a state it did not have: `OpenPluginEditor` was
+/// present for exactly one frame, so "is this plugin's editor open" was never
+/// answerable from it — that is `PluginEditorOpen`, which this event does not
+/// duplicate.
 #[derive(EntityEvent, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CloseEditor {
+pub struct SetEditorVisible {
     pub entity: Entity,
+    pub visibility: Visibility,
+}
+
+/// What [`SetEditorVisible`] asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Visibility {
+    Show,
+    Hide,
+    /// Whichever the editor is not right now.
+    Toggle,
+}
+
+impl SetEditorVisible {
+    pub fn show(entity: Entity) -> Self {
+        Self {
+            entity,
+            visibility: Visibility::Show,
+        }
+    }
+
+    pub fn hide(entity: Entity) -> Self {
+        Self {
+            entity,
+            visibility: Visibility::Hide,
+        }
+    }
+
+    pub fn toggle(entity: Entity) -> Self {
+        Self {
+            entity,
+            visibility: Visibility::Toggle,
+        }
+    }
 }
 
 /// Ticks `editor_idle()` on all plugins that have `PluginEditorOpen`.
@@ -90,19 +136,54 @@ pub fn plugin_editor_idle_system(
     }
 }
 
-/// Phase 1 of plugin editor opening: spawn a Bevy Window for the editor.
+/// Observer: the one entry point for editor visibility.
 ///
-/// The native handle won't be available until the next frame, so we insert
-/// `PendingPluginEditor` and let `plugin_editor_attach_system` finish the job.
-pub fn plugin_editor_open_system(
+/// Showing is phase 1 of two — it spawns the host `Window` and leaves
+/// [`PendingPluginEditor`]; the native handle does not exist until Bevy has
+/// created the window, so `plugin_editor_attach_system` finishes the job on a
+/// later frame. Hiding closes the plugin's editor and despawns that window.
+///
+/// Both are no-ops when already in the requested state, which is what lets a
+/// host fire `show` without first checking, and what makes a double `hide`
+/// harmless.
+pub fn set_editor_visible_observer(
+    request: On<SetEditorVisible>,
+    _main_thread: NonSend<PluginEditorMainThread>,
+    // Main-thread-pinned: dropping the AppKit observer calls `removeObserver`,
+    // which must not run off-main.
+    #[cfg(target_os = "macos")] mut live_resize_registry: NonSendMut<
+        crate::plugin_host::live_resize::LiveResizeRegistry,
+    >,
     mut commands: Commands,
-    query: Query<(Entity, &PluginEmitter), Added<OpenPluginEditor>>,
+    plugins: Query<&PluginEmitter>,
+    open: Query<&PluginEditorOpen>,
+    pending: Query<&PendingPluginEditor>,
 ) {
     use bevy_window::{Window, WindowResolution};
 
-    for (entity, emitter) in query.iter() {
-        commands.entity(entity).remove::<OpenPluginEditor>();
+    let entity = request.event_target();
+    // Not a plugin, or one whose load failed. A host aiming a toggle at the
+    // wrong entity is a mistake a log line per click would not help with.
+    let Ok(emitter) = plugins.get(entity) else {
+        return;
+    };
 
+    let showing = open.get(entity).is_ok() || pending.get(entity).is_ok();
+    let want_visible = match request.visibility {
+        Visibility::Show => true,
+        Visibility::Hide => false,
+        // Resolved here rather than by the caller: `PluginEditorOpen` is
+        // current in an observer and a frame stale in a query.
+        Visibility::Toggle => !showing,
+    };
+
+    if want_visible == showing {
+        return;
+    }
+
+    if want_visible {
+        // Spawned hidden: the plugin reports its real size when the editor
+        // attaches, and showing it at 800x600 first would flash the wrong size.
         let window_entity = commands
             .spawn(Window {
                 title: emitter.handle.name().to_string(),
@@ -117,11 +198,34 @@ pub fn plugin_editor_open_system(
             "Spawning editor window for '{}' (window={window_entity:?})",
             emitter.handle.name(),
         );
-
         commands
             .entity(entity)
             .insert(PendingPluginEditor { window_entity });
+        return;
     }
+
+    // Hiding. A pending editor has a window but no native editor yet, so there
+    // is nothing to close — just drop the window and the marker.
+    if let Ok(pend) = pending.get(entity) {
+        commands.entity(pend.window_entity).try_despawn();
+        commands.entity(entity).remove::<PendingPluginEditor>();
+        return;
+    }
+
+    let Ok(editor) = open.get(entity) else {
+        return;
+    };
+    // Tear the observer down here — on the main thread — rather than in a
+    // component `Drop` that runs wherever the command queue is applied.
+    #[cfg(target_os = "macos")]
+    live_resize_registry.remove(entity);
+    emitter.handle.close_editor();
+    commands.entity(editor.editor_window).try_despawn();
+    commands.entity(entity).remove::<PluginEditorOpen>();
+    bevy_log::info!(
+        "Plugin '{}' editor closed (entity {entity:?})",
+        emitter.handle.name()
+    );
 }
 
 /// Phase 2: once the native handle is available, call `open_editor` on the plugin.
@@ -360,47 +464,16 @@ pub fn plugin_editor_resize_request_system(
     }
 }
 
-/// Observer: closes a plugin editor when `CloseEditor` is triggered on
-/// the plugin entity.
-///
-/// Reads `PluginEmitter` + `PluginEditorOpen` off the targeted entity,
-/// calls the native `close_editor()`, despawns the editor window, and
-/// removes `PluginEditorOpen`. No graph interaction.
-pub fn close_editor_observer(
-    close: On<CloseEditor>,
-    _main_thread: NonSend<PluginEditorMainThread>,
-    // Main-thread-pinned: dropping the AppKit observer calls `removeObserver`,
-    // which must not run off-main.
-    #[cfg(target_os = "macos")] mut live_resize_registry: NonSendMut<
-        crate::plugin_host::live_resize::LiveResizeRegistry,
-    >,
-    mut commands: Commands,
-    query: Query<(&PluginEmitter, &PluginEditorOpen)>,
-) {
-    let entity = close.event_target();
-    let Ok((emitter, editor)) = query.get(entity) else {
-        return;
-    };
-    // Tear the observer down here — on the main thread — rather than in a
-    // component `Drop` that runs wherever the command queue is applied.
-    #[cfg(target_os = "macos")]
-    live_resize_registry.remove(entity);
-    emitter.handle.close_editor();
-    commands.entity(editor.editor_window).try_despawn();
-    bevy_log::info!(
-        "Plugin '{}' editor closed (entity {entity:?})",
-        emitter.handle.name()
-    );
-    commands.entity(entity).remove::<PluginEditorOpen>();
-}
-
 /// Handles the OS close button on plugin editor windows.
 ///
-/// When a plugin editor window receives a `WindowCloseRequested`, this routes
-/// the close through a `CloseEditor` trigger on the plugin entity (so the
-/// native `close_editor()` call runs before the window despawns) and removes
-/// the `ClosingWindow` marker so Bevy's default `close_when_requested` doesn't
+/// Routes the close through [`SetEditorVisible::hide`] so the native
+/// `close_editor()` runs before the window despawns, and removes the
+/// `ClosingWindow` marker so Bevy's default `close_when_requested` doesn't
 /// despawn the window out from under us.
+///
+/// The user closing the window and a host calling `hide` are the same operation,
+/// so they share the one path rather than each tearing the editor down their own
+/// way.
 pub fn plugin_editor_window_close_system(
     mut commands: Commands,
     mut close_events: bevy_ecs::message::MessageReader<bevy_window::WindowCloseRequested>,
@@ -412,7 +485,7 @@ pub fn plugin_editor_window_close_system(
                 commands
                     .entity(event.window)
                     .remove::<bevy_window::ClosingWindow>();
-                commands.trigger(CloseEditor { entity });
+                commands.trigger(SetEditorVisible::hide(entity));
             }
         }
     }

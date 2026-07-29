@@ -274,10 +274,29 @@ impl Plugins {
     /// at directly. The scan directories in [`CatalogConfig`] are for the
     /// standard install locations; this is the escape hatch for everything
     /// else. Errors if the extension is unrecognized or the probe fails.
+    /// **Blocking** — the probe spawns a subprocess and waits on a handshake,
+    /// up to about seven seconds if the plugin hangs. A frame-driven host should
+    /// run [`PluginRecord::probe`] on a worker and hand the result to
+    /// [`register_record`](Self::register_record) instead.
     pub fn register_path(&mut self, plugin_path: &Path) -> Result<PluginId> {
         let record = PluginRecord::probe(plugin_path)?;
+        Ok(self.register_record(record))
+    }
+
+    /// Add an already-probed record to the catalog, returning its [`PluginId`].
+    ///
+    /// The non-blocking half of [`register_path`](Self::register_path): a caller
+    /// that cannot afford the probe on its own thread runs
+    /// [`PluginRecord::probe`] wherever it likes — the probe needs no catalog —
+    /// and calls this with the result. `register_path` is exactly these two
+    /// steps, so the two paths cannot disagree about what registering means.
+    ///
+    /// In-memory only, like every other catalog mutation; call
+    /// [`flush`](Self::flush) to persist.
+    pub fn register_record(&mut self, record: PluginRecord) -> PluginId {
+        let id = PluginId(record.path.clone());
         self.catalog.upsert(record);
-        Ok(PluginId(plugin_path.to_path_buf()))
+        id
     }
 
     /// Load a plugin by id. Returns a graph-ready `Box<dyn AudioUnit>`
@@ -330,6 +349,60 @@ impl Plugins {
     /// Commit the in-memory catalog to its backing store.
     pub fn flush(&mut self) -> std::io::Result<()> {
         self.catalog.flush()
+    }
+
+    /// If a previous scan died mid-probe, blacklist whatever it was probing.
+    ///
+    /// The scan arms a sentinel file before each probe and clears it after, so a
+    /// sentinel surviving into the next run means the scanner *host* went down —
+    /// a plugin crash, but equally a force-quit, a power loss, or an OOM kill.
+    /// False positives are therefore expected, and
+    /// [`unblacklist`](Self::unblacklist) is the counterpart a host must offer.
+    ///
+    /// Both scan paths already call this. It is public here so a host can
+    /// surface "a plugin brought your last session down" at startup **without**
+    /// paying for a full rescan: the recovery reads one sentinel and one record,
+    /// where a scan probes every plugin on disk in its own subprocess.
+    ///
+    /// Idempotent, and a no-op when no sentinel is present.
+    pub fn recover_crash(&mut self) {
+        // The scanner owns the recovery, and it takes the catalog by value, so
+        // this is a move out and back rather than a borrow — the same shape as
+        // `rescan_sync`, and for the same reason: any `PluginCatalog` impl must
+        // work here, not just cheaply-reloadable file-backed ones.
+        let placeholder: Box<dyn PluginCatalog> = Box::new(PlaceholderCatalog);
+        let catalog = std::mem::replace(&mut self.catalog, placeholder);
+        let mut scanner = PluginScanner::new(catalog, self.config.pedal_path());
+        scanner.recover_crash();
+        self.catalog = scanner.into_catalog();
+    }
+
+    /// Drop records whose plugin file no longer exists.
+    ///
+    /// Uninstalling a plugin leaves its record behind — a scan only ever *adds*
+    /// what it finds, so nothing else removes one, and the entry stays visible
+    /// in a browser indefinitely. Returns the paths that were forgotten.
+    ///
+    /// Not part of a scan: a directory that is temporarily unavailable (an
+    /// unmounted volume, a network share) would otherwise have its whole
+    /// contents forgotten on the next rescan, and re-probing all of it is far
+    /// more expensive than leaving a stale row. Pruning is a decision a host
+    /// makes deliberately.
+    ///
+    /// Returns the paths rather than a count, because "three plugins vanished"
+    /// is not something a host can act on and "these three vanished" is —
+    /// `CatalogExt::prune_missing` computes the list and drops it.
+    pub fn prune_missing(&mut self) -> Vec<PathBuf> {
+        let missing: Vec<PathBuf> = self
+            .catalog
+            .iter()
+            .filter(|r| !r.path.exists())
+            .map(|r| r.path.clone())
+            .collect();
+        for path in &missing {
+            self.catalog.remove(path);
+        }
+        missing
     }
 }
 

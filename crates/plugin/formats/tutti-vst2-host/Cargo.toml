@@ -21,4 +21,16 @@ vst-tutti = { path = "../../vendor/vst-tutti" }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
+# Used by the conformance harness to re-open the reference plugin and read
+# its capture. The test cannot use the linked rlib's globals for this: the
+# rlib and the cdylib are separate images with separate statics, and the host
+# only ever touches the cdylib's. The rlib is still linked, for the shared
+# `#[repr(C)]` type definitions.
+libloading = "0.8"
 tempfile = "3"
+# The reference plugin the conformance harness loads. As a dev-dependency,
+# Cargo builds its cdylib in the same `cargo test` invocation (no nested
+# cargo / no target-dir-lock deadlock — see build.rs); the rlib side gives
+# the test the `ProcessCapture` type and the misbehaviour switches directly
+# instead of hand-mirroring them across the dlopen seam.
+tutti-vst2-test-plugin = { path = "../../vendor/tutti-vst2-test-plugin" }

@@ -1,0 +1,31 @@
+[package]
+name = "tutti-vst2-test-plugin"
+version = "0.1.0"
+edition = "2021"
+description = "Reference VST2 plugin used as a host-conformance probe in tutti-vst2-host tests"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+readme = "README.md"
+publish = false
+
+# A real loadable VST2 shared library the host dlopens (it exports
+# `VSTPluginMain`). It records what the host hands it across the AEffect
+# FFI so the host can be asserted against the VST 2.4 spec, and can be
+# switched into a set of deliberate spec violations so the host can be
+# tested against plugins that misbehave.
+#
+# Both crate types on purpose: `cdylib` is the loadable artifact the host
+# dlopens; `rlib` lets `tutti-vst2-host` take this as a dev-dependency so
+# Cargo builds the cdylib as part of the same `cargo test` invocation
+# (one target-dir lock, no nested `cargo` — see the host's build.rs for
+# why that matters). The rlib also lets the test import `ProcessCapture`
+# and the misbehaviour constants directly instead of hand-mirroring them.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# `vst::buffer::AudioBuffer<T>` is bounded on `num_traits::Float`, so the one
+# generic `write_tagged` shared by the f32 and f64 render paths needs the same
+# bound in scope. Pinned to what vst-tutti already resolves, so no new tree.
+num-traits = "0.2"
+vst-tutti = { path = "../vst-tutti" }

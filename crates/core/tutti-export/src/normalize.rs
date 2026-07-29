@@ -32,6 +32,19 @@ use crate::{render_to_buffers, write_buffers, Result, Written};
 /// targets **true** peak (4× oversampled, per BS.1770), not sample peak — an
 /// inter-sample peak a sample-peak reading misses is exactly what clips on a
 /// consumer DAC after resampling.
+///
+/// # Above six channels
+///
+/// [`Lufs`](Self::Lufs) is measured through R128's standard channel map, which
+/// weights the first six channels (L, R, C, LFE, Ls, Rs) and leaves any beyond
+/// them unweighted. A 7.1 or 7.1.4 export is therefore normalized on its first
+/// six channels: content that lives only in the rear surrounds or the height
+/// layer does not raise the reading, so the gain lands higher than that mix's
+/// true loudness warrants — the ceiling is what stops it.
+///
+/// [`Peak`](Self::Peak) has no such limit; true peak folds over every channel.
+/// Prefer it when normalizing wide layouts whose energy is not concentrated in
+/// the front six.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Normalize {
     /// Bring the loudest true peak to `target` dBTP.
@@ -65,23 +78,42 @@ impl Normalize {
     /// applies).
     fn gain_for(&self, measured: &tutti_analysis::Loudness) -> Db {
         match *self {
-            Self::Peak { target } => Db(target.get() - measured.true_peak.get()),
+            // `Db - Db` is a gain difference, which is why `Db` implements
+            // `Sub` — see the `unit_additive!(Db)` note in `units.rs`.
+            Self::Peak { target } => target - measured.true_peak,
             Self::Lufs { target, ceiling } => measured.gain_to(target, ceiling),
         }
     }
 
-    /// The gain that normalizes `rendered`, or `None` if it cannot be measured
-    /// (a layout the meter rejects).
+    /// The gain that normalizes `rendered`.
     ///
     /// For a caller that already holds a [`Rendered`] and is not writing it
     /// with [`render_normalized_to_file`] — handing the PCM to another encoder,
     /// say. Returning the gain rather than applying it keeps the reading
     /// available to log or gate on, and is the same value the two-pass render
     /// uses internally, so the two can never disagree.
-    pub fn gain_for_rendered(&self, rendered: &crate::Rendered) -> Option<Db> {
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Unmeasurable`] when the meter will not read this signal:
+    /// EBU R128 accepts 1–64 channels at 16 Hz–2.8 MHz, and a `Rendered`
+    /// outside that cannot produce a reading. This is an error rather than a
+    /// `None` the caller might discard, because the alternative — writing the
+    /// file un-normalized and reporting success — is silent: nothing in
+    /// [`Written`] records that the gain the caller asked for was never
+    /// applied.
+    pub fn gain_for_rendered(&self, rendered: &crate::Rendered) -> Result<Db> {
         let layout = ChannelLayout::from_count(rendered.channels() as u16);
         let meter = LoudnessConfig::new(rendered.sample_rate, layout);
-        measure_loudness(&meter, &rendered.interleaved()).map(|m| self.gain_for(&m))
+        measure_loudness(&meter, &rendered.interleaved())
+            .map(|m| self.gain_for(&m))
+            .ok_or_else(|| {
+                crate::Error::Unmeasurable(format!(
+                    "loudness meter rejected {} channels at {} Hz",
+                    rendered.channels(),
+                    rendered.sample_rate.get()
+                ))
+            })
     }
 }
 
@@ -91,13 +123,28 @@ impl Normalize {
 /// from it. Use [`render_to_file`](crate::render_to_file) when no gain is
 /// needed — it streams and holds nothing.
 ///
-/// The measurement runs at the rendered width: R128 meters any channel count,
-/// so a surround export is normalized against its own loudness rather than
-/// silently falling back to a different metric.
+/// # Measured at the output rate
 ///
-/// A signal the meter cannot read (no channels) is written through unchanged
-/// rather than failing the export — the render succeeded, and refusing to write
-/// it would lose it.
+/// When `config.resample` asks for a rate conversion, it happens *before* the
+/// measurement, not after. Sample-rate conversion moves the true peak — its
+/// interpolation overshoots between the original samples — so a gain chosen at
+/// the render rate and applied to resampled audio misses its target, and a
+/// ceiling chosen to prevent clipping does not prevent it. Measuring the
+/// converted signal is what makes the dBTP figure a promise about the file
+/// rather than about an intermediate nobody hears.
+///
+/// The trailing [`write_buffers`] is then given a config with `resample`
+/// cleared: the conversion already happened, and running it twice would resample
+/// from a rate the samples are no longer at.
+///
+/// # Width
+///
+/// The measurement runs at the rendered width. EBU R128 meters 1–64 channels,
+/// so a surround export is normalized against its own loudness rather than
+/// falling back to a different metric — but note that beyond 6 channels the
+/// standard channel map marks the extra channels unweighted, so a 7.1 or 7.1.4
+/// mix is measured on its first six channels. [`Normalize::Peak`] is unaffected;
+/// true peak folds over every channel.
 pub fn render_normalized_to_file(
     net: tutti_core::dsp::Net,
     config: &ExportConfig,
@@ -105,13 +152,28 @@ pub fn render_normalized_to_file(
     normalize: Normalize,
     path: &Path,
 ) -> Result<Written> {
-    let mut rendered = render_to_buffers(net, config, clock)?;
+    let rendered = render_to_buffers(net, config, clock)?;
 
-    if let Some(gain) = normalize.gain_for_rendered(&rendered) {
-        rendered.apply_gain(gain);
-    }
+    // Convert first, so what is measured is what is written.
+    let (mut rendered, config) = match config.resample {
+        Some(r) if r.target_rate.get().round() != rendered.sample_rate.get().round() => {
+            let converted = crate::process::resample_rendered(&rendered, r)?;
+            // The conversion has happened, so the config must stop asking for
+            // it — but `render.sample_rate` has to move with it. The header rate
+            // is `resample.target_rate` *or* `render.sample_rate`, so clearing
+            // one without setting the other writes converted samples under the
+            // pre-conversion rate: right audio, wrong speed.
+            let mut cfg = config.clone();
+            cfg.resample = None;
+            cfg.render.sample_rate = converted.sample_rate;
+            (converted, std::borrow::Cow::Owned(cfg))
+        }
+        _ => (rendered, std::borrow::Cow::Borrowed(config)),
+    };
 
-    write_buffers(&rendered, config, path)
+    rendered.apply_gain(normalize.gain_for_rendered(&rendered)?);
+
+    write_buffers(&rendered, &config, path)
 }
 
 #[cfg(test)]

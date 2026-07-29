@@ -232,11 +232,24 @@ pub fn render_to_file(
 
 /// Render `net` into memory.
 ///
-/// Applies the same gate and dither as [`render_to_file`], and reports the rate
-/// it actually rendered at. Resampling is **not** applied here — that is
-/// `config.resample`'s job at the file boundary, and a caller holding planes can
-/// resample them itself; reporting a rate the samples are not at is the bug this
-/// shape avoids.
+/// Applies the same gate as [`render_to_file`], and reports the rate it actually
+/// rendered at.
+///
+/// **Neither resampled nor dithered**, for the same reason in both cases: they
+/// are *output* steps, and these planes are not an output. `config.resample`
+/// belongs at the file boundary (a caller holding planes can resample them
+/// itself, and reporting a rate the samples are not at is the bug this shape
+/// avoids). Dither is scaled to one LSB of the encoded bit depth — which `f32`
+/// planes do not have, so applying it here adds noise to a signal that
+/// quantizes to nothing.
+///
+/// Dithering here would also be *measured* by anything that reads these planes.
+/// A silent render at an integer depth would come back reading roughly −86 dBTP
+/// of dither rather than silence, and normalizing that reading amplifies the
+/// noise toward full scale.
+///
+/// [`write_buffers`] dithers on the way out, at the real depth and after any
+/// resample — the only point where the LSB is known.
 pub fn render_to_buffers(
     net: tutti_core::dsp::Net,
     config: &ExportConfig,
@@ -252,13 +265,8 @@ pub fn render_to_buffers(
         // and a clone does not carry capacity — every plane would reallocate.
         let mut planes: Vec<Vec<f32>> =
             (0..CH).map(|_| Vec::with_capacity(plan.output_length.get())).collect();
-        let mut dither = process::DitherState::for_config(config);
-        let mut staging: Vec<[f32; CH]> = Vec::new();
         render::drive(&mut src, &plan, |block| {
-            staging.clear();
-            staging.extend_from_slice(block);
-            dither.apply(&mut staging);
-            for f in &staging {
+            for f in block {
                 for (plane, &s) in planes.iter_mut().zip(f.iter()) {
                     plane.push(s);
                 }

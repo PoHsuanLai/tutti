@@ -153,6 +153,11 @@ pub const MULTI_CHANNEL_MIXER: AuRef = AuRef::mixer("AUMultiChannelMixer", b"mcm
 /// side the instruments are single-bus on — and it declares `{-1,-1}`, the
 /// "any width, but matched" spelling.
 pub const MULTI_SPLITTER: AuRef = AuRef::mixer("AUMultiSplitter", b"mspl");
+/// A second view-less unit, so the no-editor assertions are not resting on one
+/// AU's behaviour. Measured on macOS 15.6, as for [`MATRIX_REVERB`]:
+/// `AuEditor::has_editor` is false and `open` fails with
+/// `kAudioUnitErr_InvalidProperty` (-10879).
+pub const NO_VIEW_SAMPLE_DELAY: AuRef = AuRef::effect("AUSampleDelay", b"sdly");
 
 /// Every effect in the corpus, for tests that assert a property across all of
 /// them rather than picking one representative.
@@ -177,6 +182,22 @@ pub const PRESET_EFFECTS: &[(AuRef, usize)] = &[
 /// here is what stops that absorption from also hiding a real regression: if
 /// one of these ever grew presets the count assertion would catch it.
 pub const PRESETLESS_EFFECTS: &[AuRef] = &[DELAY, LOWPASS, N_BAND_EQ];
+
+/// Units measured to advertise a Cocoa view on macOS 15.6, with the frame size
+/// each one reported. Sizes are recorded so a host that starts inventing
+/// geometry (returning its requested 800x600 rather than the view's own frame)
+/// is caught, not merely a host that returns something non-zero.
+pub const WITH_COCOA_VIEW: &[(AuRef, u32, u32)] = &[
+    (DELAY, 484, 255),
+    (LOWPASS, 500, 200),
+    (DYNAMICS, 388, 324),
+    (N_BAND_EQ, 550, 453),
+    (SAMPLER, 793, 596),
+    (DLS_SYNTH, 518, 243),
+];
+
+/// Units measured to advertise no Cocoa view at all.
+pub const WITHOUT_COCOA_VIEW: &[AuRef] = &[MATRIX_REVERB, NO_VIEW_SAMPLE_DELAY];
 
 /// Every instrument in the corpus.
 pub const INSTRUMENTS: &[AuRef] = &[SAMPLER, DLS_SYNTH];

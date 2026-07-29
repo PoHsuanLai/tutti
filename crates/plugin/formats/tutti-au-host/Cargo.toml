@@ -16,8 +16,27 @@ tutti-midi-types = { path = "../../../midi/tutti-midi-types", default-features =
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
 coreaudio-sys = "0.2"
-objc2 = "0.6"
+# `relax-void-encoding`: the AU Cocoa view factory protocol takes the unit as
+# `AudioUnit`, an opaque pointer each plugin SDK binds under its own struct name
+# (`ComponentInstanceRecord` from JUCE, `OpaqueAudioComponentInstance` from
+# Apple's own view factories). objc2's debug-build encoding check compares what
+# we send against the *plugin's* declared signature, so no single Rust type can
+# satisfy every plugin. This feature lets `*mut c_void` stand in for any
+# pointer, which is the case objc2 documents it for. It relaxes only pointer
+# identity at the top level — arity, scalar types and struct layouts are still
+# verified. See `editor/cocoa.rs::make_view`.
+objc2 = { version = "0.6", features = ["relax-void-encoding"] }
 objc2-foundation = { version = "0.3", features = ["NSBundle", "NSString", "NSGeometry", "NSObject"] }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }
+
+# The Cocoa editor-lifecycle tests, run on the main thread. `harness = false` so
+# this target owns `main()` — the only way to reach the main thread under cargo,
+# and macOS requires it for AppKit. `main()` also calls `mark_main_thread()`,
+# which arms the affinity assert `AuEditor` makes. See the module docs; the test
+# bodies are shared with `tests/au_gui_lifecycle.rs`, not duplicated.
+[[test]]
+name = "au_gui_lifecycle_main"
+path = "tests/au_gui_lifecycle_main.rs"
+harness = false

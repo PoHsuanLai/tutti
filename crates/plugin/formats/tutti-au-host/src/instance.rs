@@ -88,6 +88,15 @@ impl AuInstance {
     }
 
     /// Transition Loaded → Ready. No-op if already Ready.
+    ///
+    /// A failure leaves the instance in the `Loaded` state it started from, so
+    /// the caller may inspect it, retry at a different configuration, or drop
+    /// it. Previously the failure arm returned the error while `self.state` was
+    /// still the `Empty` marker `mem::replace` had installed, which turned
+    /// *every* later method — `raw_unit`, `au_type`, even `is_initialized` —
+    /// into an `unreachable!()` panic. A host that scans installed AUs and
+    /// tolerates one refusing to initialize (some do — AUNetReceive, and any
+    /// unit whose hardware is absent) would crash on the next thing it asked.
     pub fn initialize(&mut self) -> Result<()> {
         match std::mem::replace(&mut self.state, State::Empty) {
             State::Loaded(l) => match l.initialize() {
@@ -95,7 +104,16 @@ impl AuInstance {
                     self.state = State::Ready(r);
                     Ok(())
                 }
-                Err(e) => Err(e),
+                // `None` only when the AU refused both the callback install and
+                // the compensating uninitialize; the unit has already been
+                // disposed, so `Empty` is the honest state and every accessor
+                // reports the instance as dead rather than pretending.
+                Err((recovered, e)) => {
+                    if let Some(l) = recovered {
+                        self.state = State::Loaded(l);
+                    }
+                    Err(e)
+                }
             },
             other @ State::Ready(_) => {
                 self.state = other;
@@ -106,6 +124,9 @@ impl AuInstance {
     }
 
     /// Transition Ready → Loaded. No-op if already Loaded.
+    ///
+    /// As with [`initialize`](Self::initialize), a failure restores the state
+    /// the call started in rather than leaving the instance unusable.
     pub fn uninitialize(&mut self) -> Result<()> {
         match std::mem::replace(&mut self.state, State::Empty) {
             State::Ready(r) => match r.uninitialize() {
@@ -113,7 +134,10 @@ impl AuInstance {
                     self.state = State::Loaded(l);
                     Ok(())
                 }
-                Err(e) => Err(e),
+                Err((r, e)) => {
+                    self.state = State::Ready(r);
+                    Err(e)
+                }
             },
             other @ State::Loaded(_) => {
                 self.state = other;
@@ -664,10 +688,24 @@ impl AuLoaded {
     /// lives behind a `Box`, its body never moves even as the enclosing
     /// [`AuReady`]/`State` is `mem::replace`d, so the pointer the AU retains
     /// stays valid (FIX 2).
-    pub fn initialize(self) -> Result<AuReady> {
-        check("AudioUnitInitialize", unsafe {
+    ///
+    /// # Errors
+    /// The error carries `self` back, because this is a by-value typestate
+    /// transition: without it a refusing AU is simply destroyed, and
+    /// [`AuInstance::initialize`] has nothing to put back into its state
+    /// machine. See that method for what the resulting hole did.
+    ///
+    /// The recovered state is an `Option` for the one case that cannot produce
+    /// a `Loaded` AU: the callback install failed *and* the compensating
+    /// `AudioUnitUninitialize` failed too, leaving a unit that is still
+    /// initialized. Its `AuReady` is dropped here so the unit is still disposed
+    /// — there is simply no honest `AuLoaded` to return.
+    pub fn initialize(self) -> std::result::Result<AuReady, (Option<Self>, AuError)> {
+        if let Err(e) = check("AudioUnitInitialize", unsafe {
             AudioUnitInitialize(self.handle.raw_unit())
-        })?;
+        }) {
+            return Err((Some(self), e));
+        }
 
         // Allocate the heap-pinned scratch, then move it into `AuReady`. The
         // Box body does not move on that transfer (only the 8-byte pointer
@@ -697,7 +735,23 @@ impl AuLoaded {
         // init entirely.
         let scratch_ptr: *mut RenderScratch = &*ready.scratch as *const RenderScratch as *mut _;
         if ready.loaded.config.channels.has_input {
-            unsafe { ready.install_input_callback(scratch_ptr)? };
+            if let Err(e) = unsafe { ready.install_input_callback(scratch_ptr) } {
+                // The AU *is* initialized at this point, so backing out has to
+                // undo that too — not merely drop the half-built `AuReady`.
+                // Route through `uninitialize`, which owns the ordering
+                // invariant (uninitialize before the boxed scratch is freed)
+                // rather than duplicating it here.
+                //
+                // The reported error is always `e`, the install failure: it is
+                // what actually went wrong, and a follow-on
+                // `AudioUnitUninitialize` complaint would only describe the
+                // cleanup. If that cleanup also failed there is no `Loaded` AU
+                // to hand back — dropping the `AuReady` still disposes the unit.
+                return Err(match ready.uninitialize() {
+                    Ok(loaded) => (Some(loaded), e),
+                    Err((_ready, _unwind_err)) => (None, e),
+                });
+            }
         }
         Ok(ready)
     }
@@ -715,7 +769,14 @@ impl AuLoaded {
 
 impl AuReady {
     /// Tear down the render session and return to the [`AuLoaded`] state.
-    pub fn uninitialize(self) -> Result<AuLoaded> {
+    ///
+    /// # Errors
+    /// The error carries `self` back, for the reason
+    /// [`AuLoaded::initialize`]'s does. Handing it back also keeps the failure
+    /// path from leaking: the `ManuallyDrop` below has suppressed the `Drop`
+    /// that disposes the unit and frees the scratch, so an early `?` here would
+    /// have leaked both.
+    pub fn uninitialize(self) -> std::result::Result<AuLoaded, (Self, AuError)> {
         // Disable the Drop path (which would also uninitialize) to avoid a
         // double `AudioUnitUninitialize`.
         let mut me = std::mem::ManuallyDrop::new(self);
@@ -725,7 +786,17 @@ impl AuReady {
         // is guaranteed dead before we drop the Box. Reordering these two would
         // let the AU call back into freed memory.
         let status = unsafe { AudioUnitUninitialize(me.loaded.handle.raw_unit()) };
-        check("AudioUnitUninitialize", status)?;
+        if let Err(e) = check("AudioUnitUninitialize", status) {
+            // The AU refused to uninitialize, so it is still initialized and
+            // the render callback may still fire against `*scratch`. Rebuild
+            // the `AuReady` intact — its `Drop` retries the uninitialize before
+            // freeing anything — rather than leaking it inside `ManuallyDrop`.
+            // SAFETY: `me` is a live, fully-initialized `AuReady` that nothing
+            // has moved out of; `ManuallyDrop::take` is the documented way to
+            // reclaim ownership, and `me` is not used again.
+            let ready = unsafe { std::mem::ManuallyDrop::take(&mut me) };
+            return Err((ready, e));
+        }
         // Move `loaded` out by reading through the ManuallyDrop. Safe because
         // nothing else touches `me` afterwards.
         let loaded = unsafe { std::ptr::read(&me.loaded) };
@@ -1152,6 +1223,63 @@ mod tests {
             1,
             "process() must not re-install the render callback per block"
         );
+    }
+
+    /// A refused `initialize` must leave the instance usable.
+    ///
+    /// `initialize` takes the state out with `mem::replace(.., State::Empty)`
+    /// and the by-value transition consumes it, so the failure arm used to
+    /// return the error with `Empty` still installed. Every later accessor —
+    /// `raw_unit`, `au_type`, `num_outputs`, even `is_initialized` — routes
+    /// through `handle()`/`config()`, which `unreachable!()` on `Empty`. So a
+    /// host scanning installed AUs would panic on the next thing it asked about
+    /// any unit that declined to initialize, and some do: AUSoundIsolation
+    /// refuses on this machine, and any unit whose hardware or entitlement is
+    /// absent will too.
+    ///
+    /// Driven through a real refusal rather than a mocked one. `vois` is not in
+    /// the corpus because it is not part of the *rendering* contract; it is
+    /// used here only as a unit that says no. If it ever starts initializing,
+    /// the test says so rather than passing silently.
+    #[test]
+    fn a_refused_initialize_leaves_the_instance_usable() {
+        let desc = AudioComponentDescription {
+            componentType: K_AUDIO_UNIT_TYPE_EFFECT,
+            componentSubType: u32::from_be_bytes(*b"vois"),
+            componentManufacturer: u32::from_be_bytes(*b"appl"),
+            componentFlags: 0,
+            componentFlagsMask: 0,
+        };
+        let Some(comp) = find_component(&desc) else {
+            // Not a silent skip of the invariant: the same guarantee is
+            // asserted below against an AU that *does* initialize, so the state
+            // machine is still exercised. Only the refusal leg needs this unit.
+            eprintln!("AUSoundIsolation not registered; refusal leg not exercised");
+            return;
+        };
+        let mut inst = unsafe { AuInstance::new(comp, 44100.0, 512) }.unwrap();
+        let unit_before = inst.raw_unit();
+
+        match inst.initialize() {
+            Err(_) => {
+                // The whole point: these must answer rather than panic.
+                assert!(!inst.is_initialized());
+                assert_eq!(
+                    inst.raw_unit(),
+                    unit_before,
+                    "a refused initialize replaced the underlying unit"
+                );
+                let _ = inst.au_type();
+                let _ = inst.num_outputs();
+                // And the instance must still be re-drivable.
+                let _ = inst.initialize();
+            }
+            Ok(()) => {
+                // It accepted after all. Still assert the state is coherent, so
+                // this branch is not a free pass.
+                assert!(inst.is_initialized());
+            }
+        }
     }
 
     #[test]

@@ -22,6 +22,7 @@
 //!   fall through to vst-rs's swallowed 0; the fork owns the answer.
 
 use crate::midi::to_midi;
+use crate::transport_cell::TransportCell;
 use crate::types::MidiEvent;
 use std::sync::Arc;
 use vst::host::Host;
@@ -41,8 +42,10 @@ pub(crate) struct HostLink {
     /// `audioMasterGetTime`, and every field it exposes is already lock-free.
     pub(crate) _state: Arc<HostState>,
     /// Transport snapshot the host pushes and the plugin reads via
-    /// `get_time_info`. Lock-free swap so the audio thread never blocks.
-    pub(crate) time_info: Arc<arc_swap::ArcSwap<Option<vst::api::TimeInfo>>>,
+    /// `get_time_info`. A seqlock, not an `ArcSwap`: the push happens on the
+    /// audio thread every block, and `ArcSwap::store` allocated the new value
+    /// and freed the old one there. See [`TransportCell`].
+    pub(crate) time_info: Arc<TransportCell>,
     /// Inbox for `audioMasterAutomate` parameter changes (editor knob moves).
     pub(crate) param_rx: crossbeam_channel::Receiver<ParameterChange>,
 }
@@ -52,7 +55,7 @@ pub(crate) struct HostLink {
 pub(crate) struct HostState {
     param_tx: crossbeam_channel::Sender<ParameterChange>,
     midi_out_tx: crossbeam_channel::Sender<MidiEvent>,
-    time_info: Arc<arc_swap::ArcSwap<Option<vst::api::TimeInfo>>>,
+    time_info: Arc<TransportCell>,
     /// Maximum block size the host will render, in samples. Served back
     /// through `audioMasterGetBlockSize` for plugins that poll it rather
     /// than caching the `effSetBlockSize` setter value.
@@ -67,7 +70,7 @@ impl HostState {
     pub(crate) fn new(
         param_tx: crossbeam_channel::Sender<ParameterChange>,
         midi_out_tx: crossbeam_channel::Sender<MidiEvent>,
-        time_info: Arc<arc_swap::ArcSwap<Option<vst::api::TimeInfo>>>,
+        time_info: Arc<TransportCell>,
         block_size: usize,
         default_sample_rate: f64,
     ) -> Self {
@@ -108,8 +111,13 @@ impl Host for HostState {
 
     fn idle(&self) {}
 
+    /// Called re-entrantly from inside the plugin's `process`, on the audio
+    /// thread. `TransportCell::read` is wait-free and returns the snapshot by
+    /// value, which is all the caller needs: `host_dispatch` copies the
+    /// returned `TimeInfo` into a thread-local `Cell` and hands the plugin a
+    /// pointer to that copy, so nothing here is ever retained.
     fn get_time_info(&self, _mask: i32) -> Option<vst::api::TimeInfo> {
-        **self.time_info.load()
+        self.time_info.read()
     }
 
     /// Host identification, in vst-rs's `(version, vendor, product)` form.
@@ -139,8 +147,8 @@ impl Host for HostState {
     /// snapshot, falling back to the load-time rate before the transport
     /// has pushed a snapshot.
     fn get_sample_rate(&self) -> f32 {
-        match **self.time_info.load() {
-            Some(ref info) => info.sample_rate as f32,
+        match self.time_info.read() {
+            Some(info) => info.sample_rate as f32,
             None => self.default_sample_rate as f32,
         }
     }
@@ -192,10 +200,7 @@ mod tests {
     use super::*;
     use vst::host::Host;
 
-    fn make_host(
-        time_info: Arc<arc_swap::ArcSwap<Option<vst::api::TimeInfo>>>,
-        default_sample_rate: f64,
-    ) -> HostState {
+    fn make_host(time_info: Arc<TransportCell>, default_sample_rate: f64) -> HostState {
         let (param_tx, _param_rx) = crossbeam_channel::unbounded();
         let (midi_out_tx, _midi_out_rx) = crossbeam_channel::unbounded();
         HostState::new(param_tx, midi_out_tx, time_info, 512, default_sample_rate)
@@ -203,22 +208,23 @@ mod tests {
 
     #[test]
     fn get_sample_rate_reflects_time_info_snapshot() {
-        let time_info = Arc::new(arc_swap::ArcSwap::from_pointee(None));
+        let time_info = Arc::new(TransportCell::new());
         let host = make_host(Arc::clone(&time_info), 44_100.0);
 
         // Before any snapshot: falls back to the load-time rate.
         assert_eq!(host.get_sample_rate(), 44_100.0);
 
         // After the transport pushes a snapshot: the snapshot rate wins.
-        let mut ti = vst::api::TimeInfo::default();
-        ti.sample_rate = 96_000.0;
-        time_info.store(Arc::new(Some(ti)));
+        time_info.write(vst::api::TimeInfo {
+            sample_rate: 96_000.0,
+            ..Default::default()
+        });
         assert_eq!(host.get_sample_rate(), 96_000.0);
     }
 
     #[test]
     fn get_process_level_is_realtime() {
-        let time_info = Arc::new(arc_swap::ArcSwap::from_pointee(None));
+        let time_info = Arc::new(TransportCell::new());
         let host = make_host(time_info, 48_000.0);
         assert_eq!(host.get_process_level(), 2); // kVstProcessLevelRealtime
     }

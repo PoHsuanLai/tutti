@@ -5,7 +5,6 @@
 //! (`self.host_link.time_info`), then drive the scratch buffers and the
 //! `vst` crate's `AudioBuffer`. Returns any MIDI events the plugin emitted.
 
-use std::sync::Arc;
 use vst::plugin::Plugin as _;
 
 use crate::instance::Vst2Instance;
@@ -91,11 +90,24 @@ impl Vst2Instance {
     /// transport state moved is to compare against what this plugin was last
     /// told. When `ctx.transport` is `None` the last snapshot is left in place,
     /// so the next real update still sees the correct predecessor.
+    ///
+    /// This runs on the audio thread, so it must not allocate. It used to:
+    /// `time_info.store(Arc::new(Some(next)))` allocated the new snapshot and
+    /// freed the retired one inside the callback, every block, on the primary
+    /// path. [`TransportCell`](crate::transport_cell::TransportCell) overwrites
+    /// in place instead — see its module docs for why a seqlock and not
+    /// `RtPublish`.
+    ///
+    /// Ordering is load-bearing: this must complete *before* the plugin is
+    /// entered, because the plugin issues `audioMasterGetTime` re-entrantly
+    /// from inside `process` and a seqlock reader cannot make progress against
+    /// a write in flight on its own thread. Callers keep that order; the cell
+    /// debug-asserts it.
     fn update_transport(&self, ctx: &ProcessContext) {
         if let Some(t) = ctx.transport {
-            let previous = self.host_link.time_info.load();
-            let next = build_vst2_time_info(t, ctx.sample_rate, previous.as_ref().as_ref());
-            self.host_link.time_info.store(Arc::new(Some(next)));
+            let previous = self.host_link.time_info.read();
+            let next = build_vst2_time_info(t, ctx.sample_rate, previous.as_ref());
+            self.host_link.time_info.write(next);
         }
     }
 

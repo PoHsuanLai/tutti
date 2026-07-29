@@ -61,8 +61,12 @@ const DEFAULT_EDITOR_SIZE: (u32, u32) = (800, 600);
 /// `process()`. For GUI-only hosting (no audio ever), stay here — skip the
 /// `setActive(1) + setProcessing(1)` cost entirely.
 pub struct Vst3Loaded {
-    /// Kept alive to keep the DSO loaded for the plugin's lifetime.
-    pub(super) _library: Arc<Vst3Library>,
+    // Declaration order IS teardown order — Rust drops fields top-to-bottom.
+    // Every COM object below is implemented *inside* the plugin DSO, so its
+    // vtable lives in that module's text: releasing one after the DSO is gone
+    // jumps through a dangling function pointer. `_library` therefore has to be
+    // the LAST field, not the first. (Same rule `Vst3Library` documents for its
+    // own fields.)
     pub(super) interfaces: PluginInterfaces,
     pub(super) host: HostContext,
     pub(super) editor: EditorState,
@@ -71,6 +75,9 @@ pub struct Vst3Loaded {
     /// the audio thread, drained in [`poll_plugin_notifications`]. Built at load
     /// and outlives activate/deactivate cycles.
     pub(super) midi_learn: MidiLearnConsumer,
+    /// Keeps the DSO loaded for the plugin's lifetime. **Must stay last** — see
+    /// the teardown-order note at the top of this struct.
+    pub(super) _library: Arc<Vst3Library>,
 }
 
 /// Summary of the host-side state changes triggered by draining one or more
@@ -208,7 +215,14 @@ impl Vst3Loaded {
         controller: Controller,
         info: PluginInfo,
     ) -> Self {
-        let host_application = HostApplication::new(super::library::HOST_NAME);
+        // Same run loop as the factory-level host context: a plugin that only
+        // sees the context handed to `IPluginBase::initialize` must reach the
+        // loop the host actually pumps.
+        let host_application = HostApplication::new(
+            super::library::HOST_NAME,
+            #[cfg(target_os = "linux")]
+            library.run_loop(),
+        );
         let (component_handler, param_event_rx, progress_event_rx, unit_event_rx) =
             ComponentHandler::new();
 
@@ -913,7 +927,10 @@ impl Vst3Loaded {
 
         // Create a fresh frame/channel pair for this editor session.
         // setFrame must precede attached() per Steinberg spec.
-        let (plug_frame, resize_rx) = HostPlugFrame::new();
+        let (plug_frame, resize_rx) = HostPlugFrame::new(
+            #[cfg(target_os = "linux")]
+            self._library.run_loop(),
+        );
         let frame_ptr = plug_frame
             .as_com_ref::<vst3::Steinberg::IPlugFrame>()
             .map(|r| r.as_ptr())
@@ -1177,6 +1194,27 @@ impl Vst3Loaded {
             .info
             .clone()
             .bus_channels(input_bus_channels, output_bus_channels);
+
+        // Event buses need the same treatment, and for the same reason: a
+        // component adds them in `initialize` (`addEventInput`), so the
+        // pre-init query in `build_plugin_info` always sees zero. Without this,
+        // every instrument reports `has_midi_input == false` and a host that
+        // gates MIDI delivery on it never sends the plugin a single note.
+        let receives_midi =
+            unsafe {
+            self.interfaces
+                .component
+                .getBusCount(crate::host::instance::K_EVENT, K_INPUT)
+                > 0
+        };
+        let emits_midi =
+            unsafe {
+            self.interfaces
+                .component
+                .getBusCount(crate::host::instance::K_EVENT, K_OUTPUT)
+                > 0
+        };
+        self.info = self.info.clone().midi(receives_midi).midi_output(emits_midi);
     }
 
     /// Hand the controller our `IComponentHandler` so it can report param

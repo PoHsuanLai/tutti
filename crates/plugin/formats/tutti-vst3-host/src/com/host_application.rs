@@ -1,5 +1,14 @@
 //! IHostApplication COM implementation — minimal host, plus IPlugInterfaceSupport
 //! so plugins can probe which host interfaces we expose.
+//!
+//! On Linux this object also carries `Linux::IRunLoop`, and that is not
+//! optional. This is the object handed to `IPluginFactory3::setHostContext` and
+//! to `IPluginBase::initialize`, and the SDK installs a host-context callback
+//! that casts it to `IRunLoop` and pushes the result into VSTGUI's
+//! `LinuxFactory` at factory-load time. A host that omits it leaves that
+//! factory run loop null, and the plugin dereferences it during
+//! `IPlugView::attached` — a segfault on the first editor open. See
+//! `run_loop.rs` for the full mechanism and how it was confirmed.
 
 use std::ffi::c_void;
 
@@ -20,21 +29,88 @@ use vst3::{Class, ComWrapper};
 use super::attr_list::AttributeList;
 use super::message::Message;
 
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
+#[cfg(target_os = "linux")]
+use vst3::Steinberg::Linux::{
+    FileDescriptor, IEventHandler, IRunLoop, ITimerHandler, TimerInterval,
+};
+
+#[cfg(target_os = "linux")]
+use super::run_loop::RunLoop;
+
 pub struct HostApplication {
     name: [u16; 128],
+    /// Shared with every `HostPlugFrame` this library creates, so handlers
+    /// registered through either object land in one pumped loop.
+    #[cfg(target_os = "linux")]
+    run_loop: Arc<RunLoop>,
 }
 
+#[cfg(target_os = "linux")]
+impl Class for HostApplication {
+    type Interfaces = (IHostApplication, IPlugInterfaceSupport, IRunLoop);
+}
+
+#[cfg(not(target_os = "linux"))]
 impl Class for HostApplication {
     type Interfaces = (IHostApplication, IPlugInterfaceSupport);
 }
 
 impl HostApplication {
-    pub fn new(name: &str) -> ComWrapper<Self> {
+    pub fn new(
+        name: &str,
+        #[cfg(target_os = "linux")] run_loop: Arc<RunLoop>,
+    ) -> ComWrapper<Self> {
         let mut name_utf16 = [0u16; 128];
         for (i, c) in name.encode_utf16().take(127).enumerate() {
             name_utf16[i] = c;
         }
-        ComWrapper::new(Self { name: name_utf16 })
+        ComWrapper::new(Self {
+            name: name_utf16,
+            #[cfg(target_os = "linux")]
+            run_loop,
+        })
+    }
+}
+
+impl HostApplication {
+    /// Construct with a private run loop. Test-only: production code shares the
+    /// library-scoped loop so the host pumps a single one (see `run_loop.rs`).
+    #[cfg(test)]
+    pub(crate) fn new_for_test(name: &str) -> ComWrapper<Self> {
+        Self::new(
+            name,
+            #[cfg(target_os = "linux")]
+            super::run_loop::RunLoop::new(),
+        )
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl vst3::Steinberg::Linux::IRunLoopTrait for HostApplication {
+    unsafe fn registerEventHandler(
+        &self,
+        handler: *mut IEventHandler,
+        fd: FileDescriptor,
+    ) -> tresult {
+        self.run_loop.register_event_handler(handler, fd)
+    }
+
+    unsafe fn unregisterEventHandler(&self, handler: *mut IEventHandler) -> tresult {
+        self.run_loop.unregister_event_handler(handler)
+    }
+
+    unsafe fn registerTimer(
+        &self,
+        handler: *mut ITimerHandler,
+        milliseconds: TimerInterval,
+    ) -> tresult {
+        self.run_loop.register_timer(handler, milliseconds)
+    }
+
+    unsafe fn unregisterTimer(&self, handler: *mut ITimerHandler) -> tresult {
+        self.run_loop.unregister_timer(handler)
     }
 }
 
@@ -85,7 +161,8 @@ impl IHostApplicationTrait for HostApplication {
 /// on this `IHostApplication` object (`IHostApplication`,
 /// `IPlugInterfaceSupport`), the seven vtables on the installed
 /// `ComponentHandler` (component-handler v1/v2/v3, bus-activation, progress,
-/// unit-handler v1/v2), and the `IPlugFrame` installed per open editor.
+/// unit-handler v1/v2), the `IPlugFrame` installed per open editor, and — on
+/// Linux — the `IRunLoop` carried by both this object and the plug frame.
 const SUPPORTED_IIDS: &[TUID] = &[
     IHostApplication_iid,
     IPlugInterfaceSupport_iid,
@@ -97,6 +174,8 @@ const SUPPORTED_IIDS: &[TUID] = &[
     IUnitHandler_iid,
     IUnitHandler2_iid,
     IPlugFrame_iid,
+    #[cfg(target_os = "linux")]
+    vst3::Steinberg::Linux::IRunLoop_iid,
 ];
 
 #[cfg(test)]
@@ -106,7 +185,7 @@ mod tests {
 
     #[test]
     fn reports_installed_host_interfaces_supported() {
-        let host = HostApplication::new("test");
+        let host = HostApplication::new_for_test("test");
         let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
         unsafe {
             assert_eq!(
@@ -123,7 +202,7 @@ mod tests {
 
     #[test]
     fn reports_uninstalled_interfaces_unsupported() {
-        let host = HostApplication::new("test");
+        let host = HostApplication::new_for_test("test");
         let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
         // The host does not install IMidiMapping (that's a plugin-side interface).
         unsafe {
@@ -136,7 +215,7 @@ mod tests {
 
     #[test]
     fn null_iid_is_invalid_argument() {
-        let host = HostApplication::new("test");
+        let host = HostApplication::new_for_test("test");
         let ptr = host.to_com_ptr::<IPlugInterfaceSupport>().unwrap();
         unsafe {
             assert_eq!(

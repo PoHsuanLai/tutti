@@ -76,6 +76,20 @@ impl ParamValueQueueImpl {
                 value: p.value.clamp(0.0, 1.0),
             });
         }
+        // VST3 requires the points a plugin reads via `getPoint(0..n)` to be in
+        // ascending sample-offset order: the documented interpolation is
+        // `slope = (y2 - y1) / (x2 - x1)` over *consecutive* points, so an
+        // out-of-order pair yields a negative `x2 - x1` and inverts the ramp.
+        // Callers assemble automation from several sources (host lanes, routed
+        // MIDI CCs) and have no obligation to interleave them in order, so the
+        // sort belongs here, at the boundary where the plugin's view is built.
+        //
+        // `sort_by` on a nearly-sorted slice is the common case and cheap;
+        // it is also stable, so two points sharing an offset keep insertion
+        // order (the spec's "jump" idiom: old value then new value).
+        if !points.is_sorted_by_key(|p| p.sample_offset) {
+            points.sort_by_key(|p| p.sample_offset);
+        }
     }
 
     #[cfg(test)]
@@ -157,6 +171,71 @@ mod tests {
             q.add_point(i as i32, i as f64 * 0.01);
         }
         q
+    }
+
+    /// Points added out of order must reach the plugin sorted ascending by
+    /// sample offset.
+    ///
+    /// VST3 plugins interpolate between *consecutive* points
+    /// (`slope = (y2 - y1) / (x2 - x1)`), so an unsorted pair produces a
+    /// negative denominator and inverts the automation ramp. Callers merge
+    /// automation from several sources (host lanes, routed MIDI CCs) and
+    /// don't guarantee interleaved order, so the queue must sort.
+    #[test]
+    fn refill_from_queue_sorts_points_by_sample_offset() {
+        let mut source = ParameterQueue::new(7);
+        source.add_point(384, 0.75);
+        source.add_point(0, 0.25);
+        source.add_point(128, 0.5);
+
+        let queue = ParamValueQueueImpl::new_empty(0);
+        queue.refill_from_queue(&source);
+
+        let mut got = Vec::new();
+        queue.for_each_point(|p| got.push((p.sample_offset, p.value)));
+        assert_eq!(
+            got,
+            vec![(0, 0.25), (128, 0.5), (384, 0.75)],
+            "points must be ascending by sample offset"
+        );
+    }
+
+    /// Two points at the same offset keep insertion order — the spec's "jump"
+    /// idiom transmits old-value-then-new-value at one position, and swapping
+    /// them would inverting the jump.
+    #[test]
+    fn refill_from_queue_is_stable_for_equal_offsets() {
+        let mut source = ParameterQueue::new(7);
+        source.add_point(64, 0.1); // old value
+        source.add_point(64, 0.9); // new value at the same instant
+
+        let queue = ParamValueQueueImpl::new_empty(0);
+        queue.refill_from_queue(&source);
+
+        let mut got = Vec::new();
+        queue.for_each_point(|p| got.push(p.value));
+        assert_eq!(got, vec![0.1, 0.9], "equal offsets must keep insertion order");
+    }
+
+    /// The sort must not allocate: it runs on every block that carries
+    /// automation, on the audio thread. The existing no-alloc tests feed
+    /// already-sorted points, so they never exercise the sorting branch.
+    #[test]
+    fn refill_from_queue_unsorted_is_allocation_free() {
+        let mut source = ParameterQueue::new(7);
+        for i in (0..16i32).rev() {
+            source.add_point(i * 8, f64::from(i) * 0.01);
+        }
+
+        let queue = ParamValueQueueImpl::new_empty(0);
+        queue.refill_from_queue(&source); // warm up capacity
+
+        assert_no_alloc::assert_no_alloc(|| {
+            for _ in 0..1_000 {
+                queue.refill_from_queue(&source);
+            }
+        });
+        assert_eq!(queue.len(), 16);
     }
 
     /// RT regression: `refill_from_queue` must not allocate when the

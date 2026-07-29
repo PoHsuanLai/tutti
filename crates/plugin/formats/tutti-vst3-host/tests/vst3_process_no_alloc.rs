@@ -26,17 +26,24 @@ const TAL_NOISEMAKER: &str = "/Library/Audio/Plug-Ins/VST3/TAL-NoiseMaker.vst3";
 
 static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
-/// Resolve a VST3 bundle directory to its inner binary on macOS.
-/// On other platforms / non-bundle layouts, returns the input path
-/// unchanged.
+/// Resolve a VST3 bundle directory to its inner binary, across platforms.
+/// A path that is already a file (or not a bundle) is returned unchanged.
 fn resolve_bundle(path: &Path) -> PathBuf {
     if path.is_file() || !path.is_dir() {
         return path.to_path_buf();
     }
-    #[cfg(target_os = "macos")]
-    {
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        let candidate = path.join("Contents").join("MacOS").join(stem);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    for (sub, ext) in [
+        ("Contents/MacOS", ""),
+        ("Contents/x86_64-linux", "so"),
+        ("Contents/x86_64-win", "vst3"),
+    ] {
+        let dir = path.join(sub);
+        let candidate = if ext.is_empty() {
+            dir.join(stem)
+        } else {
+            dir.join(format!("{stem}.{ext}"))
+        };
         if candidate.is_file() {
             return candidate;
         }
@@ -44,13 +51,42 @@ fn resolve_bundle(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-fn load_or_skip() -> Option<Vst3Instance> {
-    let bundle = Path::new(TAL_NOISEMAKER);
-    if !bundle.exists() {
-        eprintln!("TAL-NoiseMaker VST3 not installed at {TAL_NOISEMAKER}, skipping");
-        return None;
+/// Find a plugin to drive: any `.vst3` under `VST3_SAMPLE_PLUGIN_DIR` (the
+/// SDK sample plugins the conformance harness builds), else TAL-NoiseMaker at
+/// its stock macOS location.
+///
+/// The env-var path matters on Linux/CI, where no plugin is installed system
+/// wide — without it these tests silently skipped on every platform but a
+/// developer Mac with that one plugin installed.
+fn find_plugin() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("VST3_SAMPLE_PLUGIN_DIR") {
+        let dir = PathBuf::from(dir);
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            let mut candidates: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|x| x == "vst3"))
+                .map(|p| resolve_bundle(&p))
+                .filter(|p| p.is_file())
+                .collect();
+            candidates.sort();
+            if let Some(first) = candidates.into_iter().next() {
+                return Some(first);
+            }
+        }
     }
-    let library = resolve_bundle(bundle);
+    let bundle = Path::new(TAL_NOISEMAKER);
+    bundle.exists().then(|| resolve_bundle(bundle))
+}
+
+fn load_or_skip() -> Option<Vst3Instance> {
+    let Some(library) = find_plugin() else {
+        eprintln!(
+            "no VST3 plugin found (set VST3_SAMPLE_PLUGIN_DIR, or install \
+             TAL-NoiseMaker at {TAL_NOISEMAKER}); skipping"
+        );
+        return None;
+    };
     let inst = Vst3Instance::load(&library, 48_000.0, 64).expect("VST3 load failed");
     Some(inst)
 }

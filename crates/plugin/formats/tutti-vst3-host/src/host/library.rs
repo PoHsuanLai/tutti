@@ -38,6 +38,12 @@ pub struct Vst3Library {
     /// (it does not take ownership the way `IPluginBase::initialize` does), so
     /// this must outlive the factory.
     _host_context: ComWrapper<HostApplication>,
+    /// The run loop lent to the plugin via `IRunLoop`. Owned here, at library
+    /// scope, because the host context registers handlers with it before any
+    /// editor exists and it must outlive every `HostPlugFrame`. Linux only —
+    /// other platforms have an ambient OS run loop.
+    #[cfg(target_os = "linux")]
+    run_loop: std::sync::Arc<crate::com::run_loop::RunLoop>,
     /// Runs the paired module exit point (`bundleExit` / `ModuleExit` /
     /// `ExitDll`) on drop. Held only for that side effect.
     _entry: ModuleEntry,
@@ -52,6 +58,14 @@ unsafe impl Send for Vst3Library {}
 unsafe impl Sync for Vst3Library {}
 
 impl Vst3Library {
+    /// The run loop this library lends the plugin. Shared with every
+    /// `HostPlugFrame` so handlers registered through either object are pumped
+    /// by one loop. Linux only.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn run_loop(&self) -> std::sync::Arc<crate::com::run_loop::RunLoop> {
+        self.run_loop.clone()
+    }
+
     /// Load a VST3 library from a pre-resolved path to the actual binary (the
     /// inner Mach-O / ELF / PE, not the bundle directory).
     ///
@@ -108,7 +122,13 @@ impl Vst3Library {
         // Optional by spec: a factory that only implements IPluginFactory or
         // IPluginFactory2 has nothing to set, which is not an error.
         let factory3 = factory.cast::<IPluginFactory3>();
-        let host_context = HostApplication::new(HOST_NAME);
+        #[cfg(target_os = "linux")]
+        let run_loop = crate::com::run_loop::RunLoop::new();
+        let host_context = HostApplication::new(
+            HOST_NAME,
+            #[cfg(target_os = "linux")]
+            run_loop.clone(),
+        );
         if let Some(f3) = factory3.as_ref() {
             if let Some(app) = host_context.to_com_ptr::<vst3::Steinberg::Vst::IHostApplication>() {
                 // The factory does NOT take ownership (unlike
@@ -124,6 +144,8 @@ impl Vst3Library {
             factory,
             factory3,
             _host_context: host_context,
+            #[cfg(target_os = "linux")]
+            run_loop,
             _entry: entry,
             _library: library,
         }))

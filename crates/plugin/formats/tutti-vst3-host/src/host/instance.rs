@@ -294,6 +294,19 @@ impl<T: Vst3Sample> Vst3Instance<T> {
         instance.apply_process_setup()?;
         instance.activate_buses()?;
         instance.set_active(true)?;
+        // The spec requires reading latency after each `setActive(true)`: the
+        // value is only valid once the plugin is active, and it is what a host
+        // feeds into delay compensation. Skipping it means a latency-reporting
+        // plugin runs uncompensated — audibly out of time against every other
+        // track. The read is also what tells a plugin the host implements PDC
+        // at all (HostChecker flags the omission as "Missing Call:
+        // getLatencySamples ()").
+        //
+        // The value is returned to the caller through `read_latency_samples`
+        // rather than stored: PDC is the embedding host's concern, not this
+        // crate's. What matters here is that the call happens, in the right
+        // place, every activation.
+        let _ = instance.loaded.read_latency_samples();
         Ok(instance)
     }
 
@@ -444,6 +457,19 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             outputEvents: output_events_ptr,
             processContext: &mut process_context,
         };
+
+        // Test-only seam: hand the fully-built ProcessData to an installed
+        // observer before the plugin sees it. Compiled out by default.
+        #[cfg(feature = "conformance")]
+        {
+            let setup = ProcessSetup {
+                processMode: K_REALTIME,
+                symbolicSampleSize: T::VST3_SYMBOLIC_SIZE,
+                maxSamplesPerBlock: self.audio.config.block_size as i32,
+                sampleRate: self.audio.config.sample_rate,
+            };
+            super::conformance::observe(&process_data, &setup);
+        }
 
         let result = unsafe { processor.process(&mut process_data) };
 
@@ -656,12 +682,14 @@ impl<T: Vst3Sample> Vst3Instance<T> {
             });
         }
         if active {
-            let result = unsafe { self.loaded.interfaces.processor.setProcessing(1) };
-            if result != kResultOk && result != kResultFalse {
-                return Err(Vst3Error::PluginError {
-                    stage: LoadStage::Activation,
-                    code: result,
-                });
+            // `setProcessing` only *informs* the plugin that processing is about
+            // to start; the SDK's own `AudioEffect` base returns
+            // `kNotImplemented` for it, so every plugin that doesn't need the
+            // notification reports failure here. Treating that as fatal rejects
+            // valid plugins — 7 of Steinberg's 11 reference plugins among them.
+            // Nothing downstream depends on the result, so ignore it.
+            unsafe {
+                self.loaded.interfaces.processor.setProcessing(1);
             }
         }
         Ok(())

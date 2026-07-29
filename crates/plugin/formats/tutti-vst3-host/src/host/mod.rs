@@ -4,6 +4,8 @@
 //! consume `self` so the compiler enforces the ordering.
 
 mod bus_buffers;
+#[cfg(feature = "conformance")]
+pub mod conformance;
 mod instance;
 mod library;
 mod loaded;

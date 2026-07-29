@@ -21,6 +21,17 @@
 //! `set_transport_source`, no `param_target` bookkeeping, no
 //! `MidiTargetRegistry::register`. Those are the adapter's job, and a host that
 //! had to do them would be doing the work this crate exists to do.
+//!
+//! # Audio
+//!
+//! Against the in-repo `audio-probe.vst3` the expected samples are known
+//! exactly — it renders `input + bus*1000 + channel + 1` — so the render checks
+//! arithmetic rather than "not silent", which would pass with crossed channels.
+//!
+//! Driving an out-of-process plugin has two traps that both look like broken
+//! audio: the first two blocks are silence by construction (signal starts at
+//! frame 127), and an unpaced loop outruns the subprocess so every block is
+//! dropped as stale. See `RENDER_FRAMES` and the sleep in the render loop.
 
 use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
@@ -55,7 +66,11 @@ const TICKS: usize = 600;
 /// Samples advanced per update, standing in for one audio block.
 const BLOCK: f64 = 512.0;
 /// Frames pulled through the graph at the end, to prove audio moves.
-const RENDER_FRAMES: usize = 256;
+///
+/// Well past the two blocks of warm-up: `tick` buffers 64 samples before
+/// shipping, then the pipeline lags one more block. Anything ≤128 measures only
+/// the dead zone and reads as broken audio.
+const RENDER_FRAMES: usize = 1024;
 /// DC level fed into the plugin's input, so an *effect* plugin has something to
 /// transform. A generator ignores it; a passthrough or gain reveals itself.
 const INPUT_LEVEL: f32 = 0.25;
@@ -268,6 +283,14 @@ fn drive_transport(transport: Res<TransportRes>) {
 fn report(world: &mut World) {
     println!("\n--- result ---");
 
+    // Only the in-repo probe has a predictable output, so only it gets the
+    // arithmetic check below.
+    let is_probe = world
+        .query::<&PluginRequest>()
+        .iter(world)
+        .next()
+        .is_some_and(|r| r.id.path().to_string_lossy().contains("audio-probe"));
+
     let catalog_state = world.resource::<PluginCatalogState>().clone();
     println!("catalog: {catalog_state:?}");
 
@@ -371,10 +394,35 @@ fn report(world: &mut World) {
         latency.0.get() as f64 / SAMPLE_RATE * 1000.0
     );
 
+    // IO width, which separates "rendered silence" from "no channel to render
+    // into" — the batcher loops `for ch in 0..outputs`, so a zero width writes
+    // nothing and leaves the buffer untouched.
+    {
+        let node = world
+            .query_filtered::<&AudioNode, With<PluginHealth>>()
+            .single(world)
+            .ok()
+            .copied();
+        let graph = world.resource::<AudioGraphRes>();
+        match node {
+            Some(n) => {
+                let unit = graph.0.node(n.0);
+                println!(
+                    "plugin node io: {} in, {} out",
+                    unit.inputs(),
+                    unit.outputs()
+                );
+            }
+            None => println!("plugin node io: node not resolvable in the graph"),
+        }
+    }
+
     // Pull real samples through the graph. Everything above only proves the
-    // plugin is *reachable*; this is the part that proves audio moves through
-    // it. `tick` per sample rather than `process`, matching the audio tests —
-    // a block is capped at 64 frames and this needs no more than a handful.
+    // plugin is *reachable*; this proves audio moves through it.
+    //
+    // `tick` per sample, as a `Net` at the master output is driven. It warms up
+    // one block later than `process` (frame 127 vs 63), which is why the
+    // format-level suites in `tutti-vst3-host` see a shorter dead zone.
     {
         use tutti_core::dsp::AudioUnit as _;
         let mut graph = world.resource_mut::<AudioGraphRes>();
@@ -386,31 +434,60 @@ fn report(world: &mut World) {
         // plugin that ramps and one that settles also differ.
         let mut peak = [0.0f32; 2];
         let mut rendered = 0usize;
+        // Where silence stops, not whether it started — the pipeline opens
+        // silent by design, and a peak alone conflates that with a dead plugin.
+        let mut first_signal: Option<usize> = None;
         for _ in 0..RENDER_FRAMES {
             graph.0.tick(&[], &mut frame);
             peak[0] = peak[0].max(frame[0].abs());
             peak[1] = peak[1].max(frame[1].abs());
+            if first_signal.is_none() && (frame[0] != 0.0 || frame[1] != 0.0) {
+                first_signal = Some(rendered);
+            }
             rendered += 1;
+
+            // Pace at the callback rate. Load-bearing, not cosmetic: the slab
+            // ring is two deep, so a block more than one behind the newest is
+            // dropped by design (`MAX_BEHIND`). Free-running outruns the
+            // subprocess and every block ages out — silence, with no error.
+            if rendered.is_multiple_of(64) {
+                std::thread::sleep(std::time::Duration::from_micros(1333));
+            }
         }
         println!(
             "rendered {rendered} frames: peak L={:.6} R={:.6}, last L={:.6} R={:.6}",
             peak[0], peak[1], frame[0], frame[1]
         );
+        match first_signal {
+            Some(at) => println!("  first non-zero sample at frame {at} (warm-up is 2 blocks)"),
+            None => println!("  no non-zero sample in {rendered} frames"),
+        }
+
+        // The probe's output is known exactly (`input + bus*1000 + channel + 1`
+        // against `INPUT_LEVEL` DC on bus 0), so check the numbers. Any other
+        // pair is a routing fault — swapped channels, an aux bus on the main
+        // one, or no input reaching the plugin — and a peak-only check passes
+        // for all three.
+        if is_probe {
+            let want = [INPUT_LEVEL + 1.0, INPUT_LEVEL + 2.0];
+            if peak == want {
+                println!(
+                    "  matches the probe's expected tags exactly \
+                     (L={:.2}, R={:.2} = input + bus*1000 + channel + 1)",
+                    want[0], want[1]
+                );
+            } else {
+                println!(
+                    "  MISMATCH: expected L={:.2} R={:.2}, got L={:.6} R={:.6} \
+                     — the tags are exact, so this is a routing fault.",
+                    want[0], want[1], peak[0], peak[1]
+                );
+            }
+        }
         if peak == [0.0, 0.0] {
             println!(
-                "  Silent. What this run *does* establish is the wiring: the graph\n  \
-                 resolves the plugin's entity to a node, pulls through it, and\n  \
-                 survives a commit — none of which panics or stalls.\n  \
-                 \n  \
-                 It does not establish that audio is correct, and the in-repo VST3\n  \
-                 probe stays silent here for reasons outside this layer: it renders\n  \
-                 nothing until its mode parameter has been driven through a real\n  \
-                 block (a controller write alone does not reach the processor), and\n  \
-                 it exposes three buses rather than two. Checked directly against\n  \
-                 `PluginClient`, with no Bevy involved, it is equally silent — so\n  \
-                 signal correctness is the plugin audio path's to prove, not the\n  \
-                 adapter's, and it needs a harness that speaks bus layouts and\n  \
-                 parameter changes."
+                "  Silent. Check the io width above, that the subprocess is \
+                 alive, and that the render loop is not outrunning it."
             );
         }
     }

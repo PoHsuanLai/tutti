@@ -354,15 +354,10 @@ pub struct PluginInstance {
     /// `effFlagsCanDoubleReplacing`, mirroring [`Self::can_replacing`] for the
     /// `f64` path. (Also surfaced to plugin authors as `Info::f64_precision`.)
     can_double_replacing: bool,
-    /// `effFlagsHasEditor` as reported in `AEffect::flags` — whether the plugin
-    /// publishes a GUI at all.
-    ///
-    /// Captured here for the same reason as [`Self::can_replacing`]: it is a
-    /// flag the *host* must read off the loaded `AEffect`, whereas [`Info`] is
-    /// the plugin-authoring struct that flags get built *from*. Consulted by
-    /// [`Plugin::get_editor`], which before this field never asked the plugin
-    /// anything and handed back an `EditorInstance` for every plugin ever
-    /// loaded — see that method's docs for what that cost.
+    /// `effFlagsHasEditor` in `AEffect::flags` — whether the plugin publishes a
+    /// GUI at all. Captured here for the same reason as [`Self::can_replacing`],
+    /// and consulted by [`Plugin::get_editor`], which previously asked nothing
+    /// and handed back an `EditorInstance` for every plugin loaded.
     has_editor: bool,
 }
 
@@ -434,13 +429,10 @@ impl Editor for EditorInstance {
 
     /// Dispatch `effEditClose`, but only when an editor is actually open.
     ///
-    /// The guard is not defensive tidiness: `tutti-vst2-host` has two paths that
-    /// both close — the explicit `close_editor()` and `Vst2Handle::drop` — so a
-    /// host that closes and then drops used to dispatch `effEditClose` twice.
-    /// A second close is a double-free of the plugin's window resources in
-    /// several real plugins, and VST 2.4 gives it no defined meaning.
-    /// Idempotence belongs here, at the one place that owns `is_open`, rather
-    /// than being re-derived by every caller.
+    /// The guard is load-bearing: hosts routinely have two closing paths (an
+    /// explicit `close_editor()` and `Drop`), and a second `effEditClose` has no
+    /// defined meaning in VST 2.4 — several real plugins double-free their
+    /// window resources on it. Idempotence lives here, where `is_open` lives.
     fn close(&mut self) {
         if !self.is_open {
             return;
@@ -454,20 +446,13 @@ impl Editor for EditorInstance {
     ///
     /// Two corrections over the original:
     ///
-    /// * **`> 0`, not `== 1`.** Every other boolean opcode in this file
-    ///   (`can_be_automated`, `string_to_parameter`, `load_preset_data`) reads
-    ///   "truthy" as `> 0`. `effEditOpen` alone demanded exactly `1`, so a
-    ///   plugin returning any other positive value — which shipping plugins do,
-    ///   some returning the window handle — had its *successful* open reported
-    ///   to `tutti-vst2-host` as a refusal, and the host raised a hard error over
-    ///   an editor that was in fact embedded.
+    /// * **`> 0`, not `== 1`.** Shipping plugins return other positive values
+    ///   (some the window handle), and `== 1` reported those successful opens as
+    ///   refusals. `> 0` matches every other boolean opcode in this file.
     /// * **Refuse a second open.** VST 2.4 requires an `effEditClose` between
-    ///   two `effEditOpen`s; opening twice against one instance is undefined and
-    ///   leaks the first window in practice. Nothing upstream enforced it.
-    ///   Returning `true` for the already-open case is the honest answer to
-    ///   "is the editor now open against this parent" for a repeat call with the
-    ///   same parent, and it keeps a caller from treating an idempotent open as
-    ///   a failure.
+    ///   two `effEditOpen`s; opening twice leaks the first window in practice.
+    ///   The already-open case answers `true`, since the editor *is* open, so a
+    ///   caller does not read an idempotent open as a failure.
     fn open(&mut self, parent: *mut c_void) -> bool {
         if self.is_open {
             warn!("effEditOpen called on an already-open editor; ignoring the second open");
@@ -833,11 +818,10 @@ impl PluginParametersInstance {
 /// Split out from [`PluginParametersInstance::get_chunk`] so the validation is
 /// testable without a loaded plugin.
 ///
-/// `len == 0` is `Ok(empty)`: the plugin has nothing saved, which is a normal
-/// state for a chunk-capable plugin that has not been touched. The two failure
-/// shapes get an `Err` instead of the empty `Vec` they used to share with it,
-/// because only the caller can decide what a *failed* save means — and the one
-/// caller that mattered was silently treating it as "nothing to save".
+/// `len == 0` is `Ok(empty)` — a normal state for an untouched chunk-capable
+/// plugin. The two failure shapes get an `Err` rather than the empty `Vec` they
+/// used to share with it, so a caller cannot read a failed save as "nothing
+/// saved".
 ///
 /// # Safety
 /// If `len > 0` and `ptr` is non-null, `ptr` must be valid for reads of `len`
@@ -896,15 +880,12 @@ impl Plugin for PluginInstance {
 
     /// Dispatch `effStartProcess`.
     ///
-    /// Upstream vst-rs left this (and `stop_process`) at the `Plugin` trait's
-    /// empty default body on the *host* side, so a host calling it silently did
-    /// nothing while appearing to work — the plugin-side dispatcher in
-    /// `interfaces.rs` has always handled the opcode. A plugin that arms its
-    /// DSP here (VST 2.4 permits it, and some plugins ramp gain or seed
-    /// dither only on this edge) rendered without ever being started.
+    /// The host side inherited the `Plugin` trait's empty default body, so a
+    /// host calling it dispatched nothing while appearing to work — even though
+    /// `interfaces.rs` has always handled the opcode plugin-side. A plugin that
+    /// arms its DSP on this edge rendered without ever being started.
     ///
-    /// Callers must issue this only while the plugin is resumed, per the
-    /// contract on `Plugin::start_process`.
+    /// Only legal while the plugin is resumed, per `Plugin::start_process`.
     fn start_process(&mut self) {
         self.dispatch(plugin::OpCode::StartProcess, 0, 0, ptr::null_mut(), 0.0);
     }
@@ -1057,39 +1038,22 @@ impl Plugin for PluginInstance {
 
     /// The plugin's editor, or `None` when it publishes no GUI.
     ///
-    /// **Asks the plugin, not just the call count.** This used to return `Some`
-    /// on its first call for *every* plugin ever loaded: it consulted
-    /// `is_editor_active` and nothing else, never reading `effFlagsHasEditor`
-    /// and never dispatching `effEditGetRect`. So a pure DSP effect with no GUI
-    /// handed the host a live `EditorInstance`, and `has_editor` — which is one
-    /// `Option::is_some` downstream — was a constant `true`.
+    /// **Asks the plugin, not just the call count.** This used to consult
+    /// `is_editor_active` alone, so it handed back a live `EditorInstance` on
+    /// the first call for every plugin ever loaded — making the host's
+    /// `has_editor` (one `Option::is_some` downstream) a constant `true`, and
+    /// its "Plugin has no editor" error path unreachable.
     ///
-    /// That is not cosmetic. `tutti-vst2-host` copies the answer into
-    /// `PluginInfo::has_editor` at load time, so a DAW advertised an
-    /// "open editor" affordance for every VST2 it scanned; taking it dispatched
-    /// `effEditOpen` at a plugin with no editor, and the resulting failure was
-    /// reported as the *plugin* refusing rather than as there being nothing to
-    /// open. The host's own "Plugin has no editor" error path was unreachable.
-    ///
-    /// This is the third host to carry this exact bug: VST3's `has_editor` asked
-    /// "is there an edit controller?" instead of calling `createView(kEditor)`,
-    /// and CLAP's asked "is there a gui vtable?" instead of checking `create` +
-    /// `is_api_supported`. All three read a weaker question's answer as if it
-    /// answered the stronger one.
-    ///
-    /// `effFlagsHasEditor` is the flag VST 2.4 defines for exactly this query
-    /// and the one `vst::main` sets plugin-side (`lib.rs`) when `get_editor`
-    /// returns `Some`, so it round-trips with the plugin API. We deliberately do
-    /// *not* also require a successful `effEditGetRect` here: the SDK permits a
-    /// plugin to compute its rect only once the editor is open, so a plugin with
-    /// a real GUI can legitimately answer 0 before `effEditOpen`. Requiring the
-    /// rect would reintroduce the same bug with the polarity flipped.
+    /// `effFlagsHasEditor` is the flag VST 2.4 defines for this query, and the
+    /// one `vst::main` sets plugin-side when `get_editor` returns `Some`, so it
+    /// round-trips with the plugin API. Deliberately *not* also requiring a
+    /// successful `effEditGetRect`: the SDK lets a plugin compute its rect only
+    /// once the editor is open, so requiring it would reintroduce the same bug
+    /// with the polarity flipped.
     fn get_editor(&mut self) -> Option<Box<dyn Editor>> {
         if !self.has_editor {
-            // The plugin did not set `effFlagsHasEditor`: there is no GUI to
-            // hand back, and fabricating an `EditorInstance` would only let the
-            // caller dispatch `effEditOpen` into a plugin that never
-            // implemented it.
+            // No `effFlagsHasEditor`: an `EditorInstance` here would only let
+            // the caller dispatch `effEditOpen` into a plugin without one.
             return None;
         }
 
@@ -1204,14 +1168,11 @@ impl PluginParameters for PluginParametersInstance {
     // TODO: Editor
 
     /// Lossy view of [`try_get_preset_data`](Self::try_get_preset_data), kept
-    /// because `PluginParameters` is the *plugin-authoring* trait and its
-    /// signature is shared with plugin implementations that have no dispatch
-    /// result to report.
+    /// for plugin implementations that have no dispatch result to report.
     ///
-    /// A host must not save state through this: it cannot distinguish "the
-    /// plugin has nothing saved" from "the plugin's save failed", and treating
-    /// the second as the first discards non-parameter state. Use
-    /// `try_get_preset_data` instead — `tutti-vst2-host::save_state` does.
+    /// A host must not save state through this: it cannot tell "nothing saved"
+    /// from "the save failed", and reading the second as the first discards
+    /// non-parameter state. Use `try_get_preset_data`.
     fn get_preset_data(&self) -> Vec<u8> {
         self.try_get_preset_data().unwrap_or_default()
     }
@@ -1224,9 +1185,7 @@ impl PluginParameters for PluginParametersInstance {
     }
 
     /// The real `effGetChunk` answer, with a failed save distinguishable from an
-    /// empty one. This override is what the [`ChunkError`] split exists for —
-    /// the default on the trait cannot err because a plugin implementation has
-    /// no dispatch result to relay.
+    /// empty one — what the [`ChunkError`] split exists for.
     fn try_get_preset_data(&self) -> Result<Vec<u8>, ChunkError> {
         self.get_chunk(1 /*preset*/)
     }
@@ -1240,16 +1199,12 @@ impl PluginParameters for PluginParametersInstance {
     /// Hand a preset chunk to the plugin, reporting whether it **accepted** it.
     ///
     /// VST 2.4 has `effSetChunk` return `1` on success. This used to discard the
-    /// dispatch result and return `()`, so a rejected chunk was indistinguishable
-    /// from an applied one and `tutti-vst2-host::load_state` answered `Ok(())`
-    /// either way — the same "a refusal read as success" shape as the parameter
-    /// path, which in the very same function *does* check
-    /// (`PluginParameters::set_parameter` returns `bool`).
+    /// dispatch result and return `()`, leaving a rejected chunk
+    /// indistinguishable from an applied one.
     ///
-    /// `> 0`, not `== 1`, matching every other boolean opcode in this file
-    /// (`can_be_automated`, `string_to_parameter`): the spec names `1` but
-    /// shipping plugins have returned other positive values for "yes", and
-    /// reading those as refusal would lose presets that did load.
+    /// `> 0`, not `== 1`, matching every other boolean opcode in this file:
+    /// shipping plugins return other positive values for "yes", and reading
+    /// those as refusal would lose presets that did load.
     fn load_preset_data(&self, data: &[u8]) -> bool {
         self.dispatch(
             plugin::OpCode::SetData,
@@ -1461,16 +1416,10 @@ mod tests {
     /// opcodes the plugin-side dispatcher in `interfaces.rs` actually matches
     /// on, and must not be left at the `Plugin` trait's empty default bodies.
     ///
-    /// The default bodies are the bug this guards: upstream vst-rs never
-    /// overrode these on the host side, so a host calling them compiled,
-    /// returned, and dispatched *nothing* — while `interfaces.rs` had handled
-    /// `StartProcess`/`StopProcess` all along. A plugin arming its DSP in
-    /// `effStartProcess` therefore rendered without ever being started.
-    ///
-    /// Asserting the numeric values is the point: `OpCode` is `#[repr(i32)]`
-    /// and positional, so inserting a variant above these shifts every opcode
-    /// below it and silently re-points the dispatch at a different call. The
-    /// VST 2.4 SDK fixes `effStartProcess = 71` and `effStopProcess = 72`.
+    /// Asserting the numeric values is the point: `OpCode` is `#[repr(i32)]` and
+    /// positional, so inserting a variant above these shifts every opcode below
+    /// it and silently re-points the dispatch. The SDK fixes
+    /// `effStartProcess = 71` and `effStopProcess = 72`.
     #[test]
     fn start_and_stop_process_opcodes_match_the_sdk() {
         assert_eq!(plugin::OpCode::StartProcess as i32, 71);
@@ -1548,9 +1497,8 @@ mod tests {
         // returns 0 and never writes the out-pointer. `from_raw_parts(null, 0)`
         // is UB even at length zero — the pointer must always be non-null.
         //
-        // This is `Ok(empty)`, not an error: the plugin answered the question
-        // and the answer is "nothing saved". A caller may legitimately fall back
-        // to a parameter snapshot here.
+        // `Ok(empty)`, not an error: the plugin answered, and the answer is
+        // "nothing saved".
         assert_eq!(unsafe { copy_chunk(ptr::null_mut(), 0) }, Ok(Vec::new()));
 
         // An error return. `-1 as usize` was `usize::MAX`.
@@ -1583,18 +1531,10 @@ mod tests {
     /// `effEditOpen` / `effEditClose` must each be dispatched at most once per
     /// open editor, and a truthy-but-not-1 open must count as success.
     ///
-    /// Three separate defects, all observable by counting dispatches:
-    ///
-    /// * `open` demanded `result == 1` while every other boolean opcode in this
-    ///   file uses `> 0`, so a plugin returning another positive value (some
-    ///   return the window handle) had a *successful* open reported to
-    ///   `tutti-vst2-host` as a refusal — a hard error over an embedded editor.
-    /// * `open` never checked `is_open`, and two `effEditOpen`s without an
-    ///   intervening close is undefined per VST 2.4 (it leaks the first window
-    ///   in practice).
-    /// * `close` never checked either, and the host has *two* paths that close —
-    ///   `close_editor()` and `Vst2Handle::drop` — so a host that closed then
-    ///   dropped double-closed, which several real plugins double-free on.
+    /// Three defects, all observable by counting dispatches: `open` demanded
+    /// `result == 1` (rejecting truthy non-1 answers some plugins give);
+    /// neither `open` nor `close` checked `is_open`, so a repeat open leaked the
+    /// first window and a host's two teardown paths double-closed.
     #[test]
     fn the_editor_opens_once_closes_once_and_accepts_a_truthy_open() {
         use crate::api::DispatcherProc;
@@ -1668,8 +1608,7 @@ mod tests {
              undefined per VST 2.4"
         );
 
-        // Close once, then again: only the first reaches the plugin. This is
-        // the double-close the host's two teardown paths used to produce.
+        // Close twice: only the first reaches the plugin.
         ed.close();
         ed.close();
         assert_eq!(
@@ -1702,16 +1641,13 @@ mod tests {
 
     /// The answer a plugin's `effSetChunk` gives must reach the caller.
     ///
-    /// This drives the *real* dispatch path rather than the trait default: a
-    /// synthetic `AEffect` whose dispatcher returns a chosen value, read back
-    /// through `PluginParametersInstance::load_preset_data`. That method used to
-    /// return `()` — it dispatched and dropped the SDK's answer on the floor —
-    /// which is why `tutti-vst2-host::load_state` reported `Ok(())` for a preset
-    /// the plugin had refused, and could not have reported anything else.
+    /// Non-vacuous because it drives the *real* dispatch path rather than the
+    /// trait default: a synthetic `AEffect` returning a chosen value, read back
+    /// through `PluginParametersInstance::load_preset_data`, which used to
+    /// return `()` and drop that answer.
     ///
-    /// VST 2.4 names `1` for success. `> 0` rather than `== 1` is deliberate and
-    /// asserted below: shipping plugins return other positive values, and
-    /// reading those as a refusal would discard presets that did load.
+    /// VST 2.4 names `1` for success, but `> 0` is deliberate and asserted
+    /// below: shipping plugins return other positive values.
     #[test]
     fn the_plugins_set_chunk_answer_reaches_the_caller() {
         use crate::api::DispatcherProc;
@@ -1797,8 +1733,8 @@ mod tests {
             "a plugin must be able to report a failed chunk save"
         );
 
-        // The well-behaved default must still succeed, so neither assertion
-        // above is satisfied by a blanket failure.
+        // The default must still succeed, so neither assertion above is
+        // satisfied by a blanket failure.
         struct AcceptingParams;
         impl PluginParameters for AcceptingParams {}
         assert!(
@@ -1808,10 +1744,9 @@ mod tests {
         assert_eq!(AcceptingParams.try_get_preset_data(), Ok(Vec::new()));
     }
 
-    /// The distinction Bug 3 turned on: a *failed* save and an *empty* save must
-    /// not produce the same value. They used to both be `Vec::new()`, which let
-    /// `tutti-vst2-host::save_state` read a plugin's refusal as "this plugin has
-    /// no chunk state" and silently write a parameter snapshot instead.
+    /// A *failed* save and an *empty* save must not produce the same value.
+    /// Both used to be `Vec::new()`, which let a host read a plugin's failure as
+    /// "no chunk state" and silently write a parameter snapshot instead.
     #[test]
     fn failed_chunk_save_is_distinguishable_from_an_empty_one() {
         let empty = unsafe { copy_chunk(ptr::null_mut(), 0) };

@@ -91,18 +91,15 @@ impl Vst2Instance {
     /// told. When `ctx.transport` is `None` the last snapshot is left in place,
     /// so the next real update still sees the correct predecessor.
     ///
-    /// This runs on the audio thread, so it must not allocate. It used to:
-    /// `time_info.store(Arc::new(Some(next)))` allocated the new snapshot and
-    /// freed the retired one inside the callback, every block, on the primary
-    /// path. [`TransportCell`](crate::transport_cell::TransportCell) overwrites
-    /// in place instead — see its module docs for why a seqlock and not
-    /// `RtPublish`.
+    /// Runs on the audio thread, so it must not allocate — hence
+    /// [`TransportCell`](crate::transport_cell::TransportCell), which overwrites
+    /// in place, rather than the `ArcSwap` store that allocated and freed a
+    /// snapshot per block inside the callback.
     ///
-    /// Ordering is load-bearing: this must complete *before* the plugin is
-    /// entered, because the plugin issues `audioMasterGetTime` re-entrantly
-    /// from inside `process` and a seqlock reader cannot make progress against
-    /// a write in flight on its own thread. Callers keep that order; the cell
-    /// debug-asserts it.
+    /// Must complete *before* the plugin is entered: the plugin issues
+    /// `audioMasterGetTime` re-entrantly from inside `process`, and a seqlock
+    /// reader cannot make progress against a write in flight on its own thread.
+    /// The cell debug-asserts that order.
     fn update_transport(&self, ctx: &ProcessContext) {
         if let Some(t) = ctx.transport {
             let previous = self.host_link.time_info.read();

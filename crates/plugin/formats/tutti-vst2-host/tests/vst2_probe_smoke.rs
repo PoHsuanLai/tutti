@@ -1,26 +1,15 @@
-//! Smoke test for the VST2 conformance foundation.
-//!
-//! Proves three things, and deliberately nothing more — the conformance
-//! suite proper is built on top of this, not here:
-//!
-//! 1. `Vst2Instance::load` can load the in-repo reference plugin
-//!    (`tutti-vst2-test-plugin`) and reports its declared metadata.
-//! 2. The process capture round-trips: what the host handed the plugin is
-//!    readable back across the dlopen seam and matches what the host was
-//!    asked to send.
-//! 3. The tag-passthrough oracle produces the exact expected samples, so a
-//!    later test asserting on sample values has a working baseline.
-//!
-//! If the probe is missing this test **panics** — see
-//! `tests/support/probe_path.rs` for why a skip is not on offer.
+//! Smoke test for the VST2 conformance foundation: that the host loads the
+//! in-repo reference plugin and reports its declared metadata, that the
+//! process capture round-trips across the dlopen seam, and that the
+//! tag-passthrough oracle produces exact samples. The conformance suite
+//! proper builds on this rather than living here.
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 
 use tutti_vst2_host::{MidiEvent, ProcessContext, RenderScratch, Vst2Instance};
-// The reference plugin is a dev-dependency (cdylib + rlib), so the
-// `#[repr(C)]` capture type and the oracle's tag function come from the
-// source of truth rather than a hand-written mirror that can drift.
+// From the probe's rlib, not a hand-written mirror that can drift out of
+// layout agreement with the cdylib the host loads.
 use tutti_vst2_test_plugin::{channel_tag, ProcessCapture, ProcessEntry, PROBE_UNIQUE_ID};
 
 #[path = "support/probe_path.rs"]
@@ -29,18 +18,15 @@ mod probe_path;
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 128;
 
-/// The probe records into a single process-global capture inside one loaded
-/// image, and `cargo test` runs test fns on parallel threads. Serialize the
-/// whole drive→read sequence so one test's render cannot overwrite the
-/// capture another is about to read.
+/// Serializes the whole drive→read sequence, so one test's render cannot
+/// overwrite the process-global capture another is about to read.
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
 fn lock_probe() -> MutexGuard<'static, ()> {
     PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// Load the probe through the real host, with the capture and switches reset
-/// so the test starts from a known state.
+/// Load the probe through the real host, capture and switches reset.
 fn load_probe() -> (Vst2Instance, PathBuf) {
     let path = probe_path::probe_path().clone();
     reset_probe(&path);
@@ -52,19 +38,16 @@ fn load_probe() -> (Vst2Instance, PathBuf) {
 /// Re-open the image the host loaded and call one of the probe's exported
 /// control functions.
 ///
-/// The linked rlib is a *different* image with its own statics; only the
-/// cdylib's globals see the host's calls. `dlopen` on the same path returns
-/// a handle to the already-loaded image, so this reads the right ones.
+/// Must go through `dlopen`: the linked rlib is a *different* image with its
+/// own statics, and only the cdylib's globals see the host's calls.
 fn probe_call<F, R>(path: &PathBuf, symbol: &[u8], f: F) -> R
 where
     F: FnOnce(libloading::Symbol<'_, *mut std::ffi::c_void>) -> R,
 {
-    // SAFETY: the path is the cdylib this crate's dev-dependency built; its
-    // initializers are the probe's, which do nothing beyond zero-init.
+    // SAFETY: the path is the cdylib this crate's dev-dependency built.
     let lib = unsafe { libloading::Library::new(path) }
         .unwrap_or_else(|e| panic!("re-open reference plugin at {path:?}: {e}"));
-    // SAFETY: symbol names are the probe's `#[no_mangle]` exports, verified
-    // present by the `expect` below.
+    // SAFETY: symbol names are the probe's `#[no_mangle]` exports.
     let sym: libloading::Symbol<*mut std::ffi::c_void> =
         unsafe { lib.get(symbol) }.unwrap_or_else(|e| {
             panic!(
@@ -108,9 +91,8 @@ fn host_loads_probe_and_reports_declared_metadata() {
     let (instance, _path) = load_probe();
     let meta = instance.metadata();
 
-    // The id the host derives from `AEffect::uniqueId`. Asserting the exact
-    // string (rather than "non-empty") is what makes this catch a host that
-    // reads the field at the wrong offset or with the wrong signedness.
+    // The exact string, not "non-empty": that is what catches a host reading
+    // `AEffect::uniqueId` at the wrong offset or with the wrong signedness.
     assert_eq!(meta.id, format!("vst2.{PROBE_UNIQUE_ID}"));
     assert_eq!(meta.name, "Tutti VST2 Probe");
     assert_eq!(meta.vendor, "Tutti");
@@ -134,10 +116,9 @@ fn capture_round_trips_what_the_host_sent() {
     let in_refs: Vec<&[f32]> = inputs.iter().map(|v| v.as_slice()).collect();
     let mut out_refs: Vec<&mut [f32]> = outputs.iter_mut().map(|v| v.as_mut_slice()).collect();
 
-    // Two events at distinct, non-zero offsets. The offsets are the point:
-    // VST 2.4 requires `deltaFrames` be relative to the current block, and a
-    // host that forwards an absolute timestamp is caught by the comparison
-    // below rather than by any structural check.
+    // Distinct, non-zero offsets are the point: `deltaFrames` must be relative
+    // to the current block, and only comparing the values catches a host that
+    // forwards an absolute timestamp.
     let midi = vec![
         MidiEvent::note_on(0, 0, 60, 100).with_frame_offset(7),
         MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(64),
@@ -191,7 +172,7 @@ fn tag_passthrough_oracle_produces_exact_samples() {
     let mut scratch = RenderScratch::new(meta.num_inputs, meta.num_outputs, BLOCK);
 
     // A distinct ramp per channel, so a host that copies channel 0 into both
-    // outputs fails on the *content* as well as the tag.
+    // outputs fails on content as well as tag.
     let inputs: Vec<Vec<f32>> = (0..2)
         .map(|ch| (0..BLOCK).map(|i| ch as f32 + i as f32 * 0.25).collect())
         .collect();
@@ -202,17 +183,14 @@ fn tag_passthrough_oracle_produces_exact_samples() {
     let ctx = ProcessContext::new(SAMPLE_RATE);
     instance.process_f32(&in_refs, &mut out_refs, BLOCK, &ctx, &mut scratch);
 
-    // Confirm the render actually happened before asserting on its output —
-    // otherwise a host that silently skipped `process` would be judged only
-    // by whatever was left in `outputs`.
+    // Confirm the render happened before asserting on its output, or a host
+    // that skipped `process` is judged on whatever was left in `outputs`.
     let cap = read_capture(&path);
     assert_eq!(cap.process_calls, 1);
 
-    // Literals, not `channel_tag(ch)` alone. Importing the function from the
-    // probe makes the assertion move with any change to it, so the test could
-    // never fail — coverage that does not exist. Pinning the values here and
-    // cross-checking them against the shared function catches both a probe
-    // that changed its oracle and a test left behind by one that did.
+    // Literals, not `channel_tag(ch)` alone: expressing the expectation with
+    // the shared function makes it move with any change to that function, so
+    // the assertion could never fail. Cross-checked against it just below.
     const EXPECTED_TAGS: [f32; 2] = [1.0, 101.0];
     for (ch, &tag) in EXPECTED_TAGS.iter().enumerate() {
         assert_eq!(
@@ -232,8 +210,7 @@ fn tag_passthrough_oracle_produces_exact_samples() {
         }
     }
 
-    // The tags are far enough apart that a channel swap is unambiguous, and
-    // asserting it here documents why the oracle is shaped this way.
+    // The oracle only distinguishes channels if the tags differ.
     assert_ne!(
         channel_tag(0),
         channel_tag(1),

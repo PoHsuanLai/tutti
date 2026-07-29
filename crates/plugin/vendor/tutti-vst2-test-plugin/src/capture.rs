@@ -1,16 +1,15 @@
 //! What the host actually handed the plugin, recorded across the AEffect
 //! seam and read back by the conformance test.
 //!
-//! `#[repr(C)]` throughout: the test may either link the `rlib` and use
-//! these types directly, or `dlopen` the cdylib and mirror them. Both must
-//! agree on layout, so the layout is pinned rather than left to Rust.
+//! `#[repr(C)]` throughout: a test may link the `rlib` and use these types
+//! directly, or `dlopen` the cdylib and mirror them, and both must agree on
+//! layout.
 
 use std::sync::Mutex;
 
-/// One MIDI event as the host delivered it, with the sample offset the
-/// host claimed. `delta_frames` is the field the routing tests care about:
-/// VST 2.4 requires it be relative to the *current* block, and a host that
-/// forgets to rebase absolute timestamps gets caught here.
+/// One MIDI event as the host delivered it. `delta_frames` is the field the
+/// routing tests care about: VST 2.4 requires it be relative to the *current*
+/// block, so a host forwarding an absolute timestamp is caught here.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CapturedEvent {
@@ -31,11 +30,10 @@ pub struct CapturedEvent {
 /// silently truncated into a passing assertion.
 pub const MAX_CAPTURED_EVENTS: usize = 64;
 
-/// Which entry point the host used to render. VST 2.4 deprecated the
-/// accumulating `process`, but hosts still exist that call it — and a host
-/// that calls it against a plugin *without* `effFlagsCanReplacing` is doing
-/// the right thing, while one that calls `processReplacing` regardless is
-/// writing through a slot the plugin never promised.
+/// Which entry point the host used to render. Against a plugin *without*
+/// `effFlagsCanReplacing`, falling back to the deprecated accumulating
+/// `process` is correct; calling `processReplacing` regardless writes through
+/// a slot the plugin never promised.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessEntry {
@@ -52,9 +50,9 @@ pub enum ProcessEntry {
 /// The snapshot the conformance test reads back.
 ///
 /// Everything here is what the *host* chose, not what the probe declared —
-/// the point is to compare the two. `valid` stays false until a render has
-/// actually happened, so a test that forgets to call `process` fails loudly
-/// instead of asserting against a zeroed struct.
+/// comparing the two is the point. `valid` stays false until a render has
+/// happened, so a test that forgets to call `process` fails loudly rather
+/// than asserting against a zeroed struct.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessCapture {
@@ -64,10 +62,10 @@ pub struct ProcessCapture {
     pub process_calls: u32,
     /// `samples` argument of the most recent render call.
     pub block_size: i32,
-    /// Channel count the host's input pointer table was read at — i.e. what
-    /// the probe declared via `numInputs`, since `AudioBuffer::from_raw` is
-    /// built from the AEffect. Mismatches show up as reads of channels the
-    /// host never filled.
+    /// Channel count the host's input pointer table was read at — what the
+    /// probe declared via `numInputs`, since `AudioBuffer::from_raw` is built
+    /// from the AEffect. A mismatch shows up as reads of channels the host
+    /// never filled.
     pub input_count: i32,
     /// Same for outputs.
     pub output_count: i32,
@@ -160,14 +158,12 @@ impl Default for ProcessCapture {
 }
 
 /// Process-global capture. One loaded image per path (both `dlopen` and the
-/// host's own load resolve to the same image), so a single global is the
-/// simplest correct channel between the plugin and the test — and it is
-/// strictly test-only code.
+/// host's own load resolve to the same one), so a single global is the
+/// simplest correct channel between plugin and test.
 ///
-/// A `Mutex` rather than atomics: the capture is written on the audio
-/// thread, which would normally forbid a lock, but there is no audio thread
-/// here — the conformance test drives `process` synchronously. The
-/// no-alloc regression tests deliberately do not use this probe.
+/// A `Mutex` despite being written from `process`: there is no real audio
+/// thread here — the conformance tests drive `process` synchronously, and an
+/// uncontended `lock()` does not allocate, so the no-alloc gates still hold.
 pub(crate) static CAPTURE: Mutex<ProcessCapture> = Mutex::new(ProcessCapture::empty());
 
 /// Run `f` against the global capture, recovering from a poisoned lock so a
@@ -180,9 +176,8 @@ pub(crate) fn with_capture<R>(f: impl FnOnce(&mut ProcessCapture) -> R) -> R {
 /// Copy the latest capture out to `out`; returns whether a render has been
 /// observed since load.
 ///
-/// This is the read side of the dlopen seam: the conformance test resolves
-/// this symbol out of the same image the host loaded, so it sees exactly
-/// what the host's `process` call produced.
+/// The read side of the dlopen seam: the test resolves this symbol out of
+/// the same image the host loaded.
 ///
 /// # Safety
 /// `out` must point to a valid, writable [`ProcessCapture`].
@@ -197,12 +192,9 @@ pub unsafe extern "C" fn tutti_vst2_probe_capture(out: *mut ProcessCapture) -> b
     })
 }
 
-/// Reset the capture to its starting state.
-///
-/// Tests run in parallel threads against one shared global, so a test that
-/// wants to assert "the host called `process` exactly once" must be able to
-/// start from a known zero. The conformance harness pairs this with a mutex
-/// around the whole drive→read sequence.
+/// Reset the capture to its starting state, so a test asserting "the host
+/// called `process` exactly once" starts from a known zero. Pair it with the
+/// harness mutex around the whole drive→read sequence.
 #[no_mangle]
 pub extern "C" fn tutti_vst2_probe_reset_capture() {
     with_capture(|cap| *cap = ProcessCapture::empty());

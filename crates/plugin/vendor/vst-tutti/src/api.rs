@@ -6,12 +6,10 @@ use std::sync::Arc;
 
 /// Why an `effGetChunk` produced no usable buffer.
 ///
-/// The distinction exists because "the plugin has nothing saved" and "the plugin
-/// tried to save and failed" call for opposite host behaviour, and `copy_chunk`
-/// used to fold both into an empty `Vec`. A host that cannot tell them apart
-/// silently downgrades a failed chunk save to a parameter snapshot and drops
-/// every piece of non-parameter state the plugin held — which is exactly what
-/// `tutti-vst2-host::save_state` did, with no error and nothing logged.
+/// Distinct from an empty chunk, because "nothing saved" and "the save failed"
+/// call for opposite host behaviour: `copy_chunk` used to fold both into an
+/// empty `Vec`, which let a host downgrade a failed chunk save to a parameter
+/// snapshot and drop the plugin's non-parameter state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkError {
     /// The plugin returned a negative length: an explicit error return.

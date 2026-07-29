@@ -1,30 +1,23 @@
 //! Runtime behaviour switches, flipped by the test across the dlopen seam.
 //!
 //! Everything here is something a *loaded, running* plugin can change its
-//! mind about, so unlike `config.rs` these do not have to be in place before
-//! `VSTPluginMain` runs. They are `#[no_mangle] extern "C"` functions over
-//! process-global atomics, matching the CLAP probe's idiom: the test
-//! resolves the symbol out of the same image the host loaded and calls it
-//! directly.
+//! mind about, so unlike `config.rs` these need not be in place before
+//! `VSTPluginMain` runs. The test resolves the symbol out of the same image
+//! the host loaded and calls it directly.
 //!
-//! Prefer a switch to an env var wherever the timing permits. An env var is
-//! process-global *and* sticky for the life of the image — a test that
-//! forgets to unset one silently poisons every later test in the same
-//! binary, which is precisely the failure mode `probe_path.rs` documents for
-//! stale artifacts.
+//! Prefer a switch to an env var wherever the timing permits: an env var is
+//! process-global *and* sticky for the life of the image, so one a test
+//! forgets to unset silently poisons every later test in the binary.
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, Ordering};
 
 /// What the probe answers to `effCanDo`.
 ///
-/// VST 2.4 defines three answers and hosts routinely collapse them into
-/// two: `1` = yes, `0` = "don't know, ask something else / assume the
-/// default", `-1` = **explicitly no**. Treating `-1` as truthy (it is
-/// non-zero) or as equal to `0` (it is not "unknown") is the VST2 shape of
-/// the return-code-misinterpretation bug class that accounted for four of
-/// VST3's five host bugs and four of CLAP's nine. `Yes`/`Maybe`/`No` are
-/// the three legal answers; `Custom` exists because real plugins have
-/// returned other integers and the host must not read them as success.
+/// VST 2.4 defines three answers and hosts routinely collapse them into two:
+/// `1` = yes, `0` = "don't know, assume the default", `-1` = **explicitly
+/// no**. Treating `-1` as truthy (it is non-zero) or as equal to `0` (it is
+/// not "unknown") is the bug this hunts. `Custom` exists because real plugins
+/// have returned other integers, which must not read as success either.
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanDoAnswer {
@@ -75,18 +68,12 @@ pub(crate) fn can_do_custom_value() -> isize {
 
 /// Make the probe refuse to enter the resumed state.
 ///
-/// VST 2.4's `effMainsChanged` has no failure return — the dispatcher's
-/// answer is ignored by every host, and vst-rs's `Plugin::resume` returns
-/// `()` accordingly. So "refuse to resume" cannot be signalled the way
-/// VST3's `setActive` returning `kResultFalse` can. What the probe does
-/// instead is refuse *in substance*: it stays suspended and renders silence,
-/// which is what a plugin whose device/licence claim failed actually does.
-/// The capture's `resume_count` still increments, so a test can tell "the
-/// host never called resume" apart from "the plugin declined it".
-///
-/// This is a fork limitation, recorded here rather than worked around: the
-/// honest fix is a raw-dispatcher override, and there is nothing on the host
-/// side that would observe a different `effMainsChanged` return value.
+/// `effMainsChanged` has no failure return — every host ignores the
+/// dispatcher's answer, and vst-rs's `Plugin::resume` returns `()`
+/// accordingly — so the refusal is expressed *in substance*: stay suspended
+/// and render silence, as a plugin whose device or licence claim failed
+/// does. `resume_count` still increments, so a test can tell "the host never
+/// called resume" from "the plugin declined it".
 #[no_mangle]
 pub extern "C" fn tutti_vst2_probe_set_refuse_resume(refuse: bool) {
     REFUSE_RESUME.store(refuse, Ordering::SeqCst);
@@ -96,11 +83,10 @@ pub(crate) fn refuse_resume() -> bool {
     REFUSE_RESUME.load(Ordering::SeqCst)
 }
 
-/// Return from `process` without touching the output buffers.
-///
-/// The stale-buffer leak: a host that does not zero its output scratch
-/// between blocks replays the previous block's audio. Well-behaved plugins
-/// never expose it because they always write.
+/// Return from `process` without touching the output buffers — the
+/// stale-buffer leak. A host that does not zero its output scratch between
+/// blocks replays the previous block's audio; well-behaved plugins never
+/// expose it, because they always write.
 #[no_mangle]
 pub extern "C" fn tutti_vst2_probe_set_silent_process(silent: bool) {
     SILENT_PROCESS.store(silent, Ordering::SeqCst);
@@ -112,11 +98,9 @@ pub(crate) fn silent_process() -> bool {
 
 /// Write one channel *past* the declared `numOutputs`.
 ///
-/// A plugin lying about its channel count is the VST2 shape of the VST3
-/// `getBusCount` overreport. The host is expected to size its pointer table
-/// from the AEffect, so this is a genuine out-of-bounds write — it will
-/// corrupt or crash a host that trusts the plugin, which is the finding.
-/// Off by default and never enabled by the smoke test.
+/// The host sizes its pointer table from the AEffect, so this is a genuine
+/// out-of-bounds write: it will corrupt or crash a host that trusts the
+/// plugin, which is the finding. Off by default.
 #[no_mangle]
 pub extern "C" fn tutti_vst2_probe_set_write_extra_output(enable: bool) {
     WRITE_EXTRA_OUTPUT.store(enable, Ordering::SeqCst);
@@ -141,9 +125,8 @@ pub(crate) fn read_extra_input() -> bool {
 
 /// Restore every switch to its well-behaved default.
 ///
-/// Tests share one loaded image, so a switch left set is a cross-test
-/// contamination channel. Every misbehaviour test must call this on the way
-/// out (and the harness should call it on the way in).
+/// Tests share one loaded image, so a switch left set contaminates every
+/// later test. Call it on the way out of any misbehaviour test.
 #[no_mangle]
 pub extern "C" fn tutti_vst2_probe_reset_switches() {
     CAN_DO_ANSWER.store(CanDoAnswer::Yes as i32, Ordering::SeqCst);

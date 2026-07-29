@@ -1,34 +1,15 @@
 //! Conformance tests for the VST2 host, driven by the in-repo reference
 //! plugin (`tutti-vst2-test-plugin`).
 //!
-//! # These were dead for the life of the crate
-//!
-//! Every test here used to be `#[ignore]`d against
-//! `/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst` — a macOS path, on a Linux
-//! host, for a commercial plugin nobody had installed. Thirteen tests reported
-//! as a clean suite while executing nothing, and four host bugs lived
-//! underneath them. They now load the probe, which is built from this tree by a
-//! dev-dependency edge, and they assert.
-//!
-//! # What the probe buys that a real plugin cannot
-//!
-//! A commercial synth can only be observed. The probe can be *told to
-//! misbehave* — to answer `effCanDo` with an explicit `-1`, to publish no
-//! editor, to expose no chunk — which is what turns "the host did not crash"
-//! into "the host read the plugin's answer correctly". Every question in the
-//! bug class this suite exists for ("is a refusal being read as a success?")
-//! needs a plugin that will actually refuse.
-//!
-//! # Serialization and the env-var seam
+//! The probe can be *told to misbehave* — answer `effCanDo` with an explicit
+//! `-1`, publish no editor, expose no chunk — which is what turns "the host did
+//! not crash" into "the host read the plugin's answer correctly".
 //!
 //! `ProbeConfig::from_env()` runs inside `Plugin::new`, i.e. during
-//! `Vst2Instance::load`, so a test can reshape the plugin by setting
-//! `TUTTI_VST2_PROBE_*` immediately before loading. `std::env::set_var` is
-//! process-global and `cargo test` runs test fns on parallel threads, so every
-//! test that touches the environment — and every test that reads the probe's
-//! single process-global capture — holds [`PROBE_LOCK`] across the whole
-//! set→load→assert sequence. Tests that do neither still take it, because the
-//! probe's switches are global too.
+//! `Vst2Instance::load`, so a test reshapes the plugin by setting
+//! `TUTTI_VST2_PROBE_*` immediately before loading. `set_var` is process-global
+//! and the probe's switches and capture are too, so every test holds
+//! [`PROBE_LOCK`] across the whole set→load→assert sequence.
 
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
@@ -52,12 +33,9 @@ fn lock_probe() -> MutexGuard<'static, ()> {
     PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// Every `TUTTI_VST2_PROBE_*` key a test in this file sets.
-///
-/// Listed explicitly rather than scanned from the environment: a test that
-/// leaks one variable silently reshapes every plugin loaded afterwards in the
-/// same process, and the resulting failure appears in an unrelated test. This
-/// is the "sticky env var" hazard `switches.rs` documents.
+/// Every `TUTTI_VST2_PROBE_*` key a test in this file sets. Listed explicitly
+/// so `clear_probe_env` cannot miss one: a leaked variable reshapes every
+/// plugin loaded afterwards, and the failure surfaces in an unrelated test.
 const PROBE_ENV_KEYS: &[&str] = &[
     "TUTTI_VST2_PROBE_EDITOR",
     "TUTTI_VST2_PROBE_IS_SYNTH",
@@ -105,9 +83,9 @@ fn load_probe() -> Vst2Instance {
 
 /// Call one of the probe's exported `#[no_mangle]` control functions.
 ///
-/// The linked rlib is a *different* image with its own statics; only the
-/// cdylib's globals see the host's calls. `dlopen` on the same path returns a
-/// handle to the already-loaded image, so this reaches the right ones.
+/// Must go through `dlopen`, not the linked rlib: the rlib is a *different*
+/// image with its own statics, and only the cdylib's globals see the host's
+/// calls. `dlopen` on the same path returns the already-loaded image.
 fn probe_call<F, R>(path: &Path, symbol: &[u8], f: F) -> R
 where
     F: FnOnce(libloading::Symbol<'_, *mut std::ffi::c_void>) -> R,
@@ -142,8 +120,6 @@ fn set_can_do(path: &Path, answer: i32, custom: isize) {
 }
 
 /// `CanDoAnswer` discriminants, mirrored from the probe's `switches.rs`.
-/// Kept as named constants so the call sites read as the spec's three answers
-/// rather than as bare integers.
 mod can_do {
     pub const YES: i32 = 0;
     pub const MAYBE: i32 = 1;
@@ -174,21 +150,13 @@ fn render_block(
 }
 
 // ---------------------------------------------------------------------------
-// Bug 1 — `has_editor` must ask the plugin
+// `has_editor` must ask the plugin
 // ---------------------------------------------------------------------------
 
 /// A plugin that publishes no GUI must report `has_editor == false`.
 ///
-/// This is the whole of Bug 1. `Vst2Handle::new` calls `get_editor()` once and
-/// stores the `Option`; the fork's `get_editor` used to consult only its own
-/// `is_editor_active` flag and return `Some` on the first call for *every*
-/// plugin, never reading `effFlagsHasEditor`. So `metadata().has_editor` was a
-/// constant `true` — a DAW advertised an "open editor" affordance for every
-/// VST2 it scanned.
-///
-/// The probe's `get_editor` returns `None` unless `TUTTI_VST2_PROBE_EDITOR` is
-/// set, and `vst::main` keys `effFlagsHasEditor` off exactly that, so this
-/// loads a genuinely editor-less plugin rather than a mocked one.
+/// `has_editor` was a constant `true`: the fork's `get_editor` consulted only
+/// its own `is_editor_active` flag and never read `effFlagsHasEditor`.
 #[test]
 fn editorless_plugin_reports_no_editor() {
     let _guard = lock_probe();
@@ -201,10 +169,7 @@ fn editorless_plugin_reports_no_editor() {
     );
 }
 
-/// The converse, so the fix cannot be "always report false".
-///
-/// Without this, `has_editor() -> false` would pass the test above, and the
-/// suite would have swapped a constant `true` for a constant `false`.
+/// The converse, so a constant `false` cannot satisfy the test above.
 #[test]
 fn plugin_with_an_editor_reports_one() {
     let _guard = lock_probe();
@@ -216,24 +181,18 @@ fn plugin_with_an_editor_reports_one() {
     );
 }
 
-/// The downstream consequence of Bug 1: `open_editor`'s "Plugin has no editor"
-/// path was unreachable.
-///
-/// With `has_editor` a constant `true`, `handle.editor` was always `Some`, so
-/// the `ok_or_else` in `open_editor` never fired. The host instead dispatched
-/// `effEditOpen` at a plugin with no editor and reported the resulting failure
-/// as the *plugin* refusing — a different and more confusing error than the
-/// truth, which is that there was never anything to open.
+/// The downstream consequence: with `has_editor` constant-`true`,
+/// `handle.editor` was always `Some`, so `open_editor`'s "no editor" branch
+/// was unreachable and the host reported a dispatched-`effEditOpen` failure
+/// instead — blaming the plugin for something that was never there to open.
 #[test]
 fn opening_an_editor_on_an_editorless_plugin_says_so() {
     let _guard = lock_probe();
     let mut instance = load_probe_with(&[]);
 
-    // SAFETY: a null parent is never dereferenced, because the correct host
-    // rejects this call before dispatching `effEditOpen` — which is precisely
-    // the property under test. Should the fix regress, the host would dispatch
-    // with a null parent and the probe's editor (which refuses to open) would
-    // still return cleanly, so this cannot crash the suite either way.
+    // SAFETY: the null parent is never dereferenced. A correct host rejects
+    // before dispatching `effEditOpen` (the property under test), and on a
+    // regression the probe's editor refuses to open rather than touching it.
     let parent = unsafe { tutti_vst2_host::WindowHandle::from_raw(std::ptr::null_mut()) };
 
     let err = instance
@@ -248,20 +207,16 @@ fn opening_an_editor_on_an_editorless_plugin_says_so() {
 }
 
 // ---------------------------------------------------------------------------
-// Bug 4 — an explicit `canDo == -1` must beat the category inference
+// An explicit `canDo == -1` must beat the category inference
 // ---------------------------------------------------------------------------
 
 /// A synth that explicitly answers `-1` to `receiveVstMidiEvent` must not be
 /// classified as receiving MIDI.
 ///
-/// VST 2.4's `effCanDo` has three answers: `1` yes, `0` don't-know, `-1`
-/// **explicitly no**. The host used to collapse `No` and `Maybe` into one falsy
-/// bucket and then OR the result with `category == Synth`, so an explicit
-/// refusal had no way to win: the plugin said "I do not receive MIDI" and the
-/// host recorded that it did.
-///
-/// `Category::Synth` is exactly the term that made the OR unbeatable, which is
-/// why this fixture is a synth.
+/// `effCanDo` has three answers — `1` yes, `0` don't-know, `-1` explicitly no.
+/// The host collapsed `No` and `Maybe` into one falsy bucket and OR'd with
+/// `category == Synth`, so a refusal could never win. The fixture is a synth
+/// because `Category::Synth` is the term that made the OR unbeatable.
 #[test]
 fn an_explicit_can_do_refusal_beats_the_synth_category() {
     let _guard = lock_probe();
@@ -289,11 +244,8 @@ fn an_explicit_can_do_refusal_beats_the_synth_category() {
     reset_switches(&path);
 }
 
-/// `Maybe` (`0`, "don't know") must keep deferring to the category.
-///
-/// The fix must not over-rotate: a plugin that simply does not answer is the
-/// common case the OR was written for, and MIDI-effect plugins declaring zero
-/// MIDI pins depend on it. This pins the tolerance the fix preserves.
+/// `Maybe` (`0`, "don't know") must keep deferring to the category — the
+/// common case the OR was written for. Pins the tolerance the fix preserves.
 #[test]
 fn a_silent_can_do_still_defers_to_the_synth_category() {
     let _guard = lock_probe();
@@ -335,11 +287,8 @@ fn an_affirmative_can_do_beats_the_effect_category() {
 }
 
 /// An undocumented `Custom(n)` return must not be read as an affirmative.
-///
-/// Real plugins have returned integers outside `{-1, 0, 1}`. A host that tests
-/// "non-zero, therefore yes" turns `-1` into a capability — the exact shape of
-/// the bug class. `Custom` is treated as "did not answer", so a plain effect
-/// stays audio-only.
+/// Real plugins return integers outside `{-1, 0, 1}`, and a host testing
+/// "non-zero, therefore yes" also turns `-1` into a capability.
 #[test]
 fn an_undocumented_can_do_answer_is_not_an_affirmative() {
     let _guard = lock_probe();
@@ -359,14 +308,13 @@ fn an_undocumented_can_do_answer_is_not_an_affirmative() {
 }
 
 // ---------------------------------------------------------------------------
-// Bugs 2 & 3 — state save / restore must not paper over refusals
+// State save / restore must not paper over refusals
 // ---------------------------------------------------------------------------
 
 /// The happy path: a chunk-capable plugin round-trips its own blob.
 ///
-/// The probe stores whatever `effSetChunk` hands it and returns it from
-/// `effGetChunk`, so this asserts the host framed and unframed the payload
-/// correctly rather than that any particular plugin state survived.
+/// The probe echoes whatever `effSetChunk` hands it, so this asserts the
+/// host's framing, not that any particular plugin state survived.
 #[test]
 fn chunk_state_round_trips() {
     let _guard = lock_probe();
@@ -393,27 +341,16 @@ fn chunk_state_round_trips() {
     instance.load_state(&saved).expect("restore should succeed");
 }
 
-/// Bug 3: a plugin advertising `effFlagsProgramChunks` whose chunk save
-/// *fails* must produce an error, not a silent parameter snapshot.
+/// The benign half of the `copy_chunk` split: "nothing saved" must still fall
+/// back to a parameter snapshot rather than erroring. (`len == 0` and
+/// `len == -1` used to fold into the same empty `Vec`, so a *failed* chunk save
+/// silently became a parameter snapshot; the failure half is asserted in
+/// `vst-tutti`'s `failed_chunk_save_is_distinguishable_from_an_empty_one`.)
 ///
-/// `copy_chunk` used to fold `len == 0` and `len == -1` into the same empty
-/// `Vec`, so `save_state` could not distinguish "nothing saved" from "save
-/// failed" and treated both as "fall through to parameters" — discarding
-/// exactly the non-parameter state the chunk mechanism exists to carry, with
-/// no error and nothing logged.
-///
-/// The fork now reports the two separately (`ChunkError::Failed` vs
-/// `Ok(empty)`), which is asserted directly in `vst-tutti`'s unit tests
-/// (`failed_chunk_save_is_distinguishable_from_an_empty_one`). Here we pin the
-/// *other* half of that split at the host level: an empty chunk is a legitimate
-/// "nothing saved yet" and must still fall back rather than erroring.
-///
-/// The probe seeds its chunk non-empty at construction, so the empty state has
-/// to be established explicitly — restoring a one-byte chunk and then emptying
-/// it is not possible through `load_state` (which rejects an empty `CHK\0`
-/// payload as malformed framing), so the plugin is instead loaded without chunk
-/// support at all. Both routes reach the same host branch: `save_state` falls
-/// through to the parameter snapshot without erroring.
+/// Reached via `NO_CHUNKS` rather than an emptied chunk: the probe seeds its
+/// chunk non-empty and `load_state` rejects an empty `CHK\0` payload as
+/// malformed, so there is no route to an empty chunk on a chunk-capable
+/// plugin. Both land on the same host branch.
 #[test]
 fn a_chunkless_plugin_falls_back_to_a_parameter_snapshot() {
     let _guard = lock_probe();
@@ -430,12 +367,11 @@ fn a_chunkless_plugin_falls_back_to_a_parameter_snapshot() {
     );
 }
 
-// Bug 2's core assertion — that a plugin's chunk *refusal* is representable at
-// all, and therefore that `load_state` can report it — lives in `vst-tutti`'s
-// own unit tests (`a_chunk_refusal_is_representable`), because constructing a
-// refusing plugin needs the `PluginParameters` trait in scope and the shared
-// probe deliberately accepts every chunk. The tests below cover the host-side
-// half: the framing, the fallback, and the acceptance path.
+// The refusal direction — that a chunk *refusal* is representable, so
+// `load_state` can report it — is pinned in `vst-tutti`'s
+// `a_chunk_refusal_is_representable`; the shared probe deliberately accepts
+// every chunk, so it cannot be built here. These cover the host-side half:
+// framing, fallback, and the acceptance path.
 
 /// Restoring a chunk into a plugin that does not advertise chunk support still
 /// goes through the plugin and reports what it answered.
@@ -447,10 +383,8 @@ fn restoring_a_chunk_into_a_chunkless_plugin_reports_the_plugin_answer() {
     let mut chunk = b"CHK\0".to_vec();
     chunk.extend_from_slice(b"state-for-a-plugin-that-cannot-take-it");
 
-    // The probe's `load_preset_data` is unconditional, so it accepts. What
-    // matters is that the host relayed the plugin's answer rather than
-    // inventing one; the refusal direction is pinned above, where a plugin that
-    // actually refuses can be constructed.
+    // The probe's `load_preset_data` is unconditional, so it accepts; what is
+    // asserted is that the host relayed that answer rather than inventing one.
     instance
         .load_state(&chunk)
         .expect("the probe accepts chunks, so the host must report success");
@@ -501,20 +435,13 @@ fn state_restore_rejects_malformed_blobs() {
 
 /// A plugin declaring a negative `numParams` must not take the host down.
 ///
-/// `numParams` is read raw off the `AEffect` with no clamp, and `save_state`
-/// computed `(param_count as usize) * 4` inside `Vec::with_capacity` — a
-/// negative `i32` became a request for ~16 EiB and aborted the process. The
-/// other AEffect counts (`numInputs`, `numOutputs`, `initialDelay`) were
-/// already clamped where they are consumed; this one was not.
+/// `numParams` is read raw off the `AEffect`, and `save_state` fed
+/// `(param_count as usize) * 4` to `Vec::with_capacity` — a negative `i32`
+/// became a ~16 EiB request and aborted the process.
 ///
-/// The loop underneath (`0..param_count`) was always harmless for a negative
-/// count — it simply does not run — so the crash was entirely in the capacity
-/// hint, and the correct save is an empty parameter snapshot.
-///
-/// `NO_CHUNKS` is required to reach that code at all: the probe seeds a
-/// non-empty chunk, and a chunk-capable plugin returns from `save_state` before
-/// the parameter path. Without it this test would pass while never executing
-/// the line under test.
+/// `NO_CHUNKS` is required to reach that line: the probe seeds a non-empty
+/// chunk, and a chunk-capable plugin returns from `save_state` before the
+/// parameter path. Without it this test passes while executing nothing.
 #[test]
 fn a_negative_parameter_count_does_not_abort_the_save() {
     let _guard = lock_probe();
@@ -611,9 +538,8 @@ fn parameter_info_lookup() {
 }
 
 /// The probe's tag oracle: `out[ch][i] == in[ch][i] + channel_tag(ch)`.
-///
-/// Asserting exact samples rather than "something non-zero happened" is what
-/// makes this catch a host that swaps channels or renders the wrong block.
+/// Exact samples, not "something non-zero happened" — that is what catches a
+/// host that swaps channels or renders the wrong block.
 #[test]
 fn process_delivers_the_expected_audio() {
     let _guard = lock_probe();

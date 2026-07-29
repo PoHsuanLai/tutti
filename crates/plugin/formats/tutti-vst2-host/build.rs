@@ -2,32 +2,18 @@
 //! (`tutti-vst2-test-plugin`) and hand the candidate paths to the
 //! integration tests via `TUTTI_VST2_PROBE_DIR` / `TUTTI_VST2_PROBE_LIB`.
 //!
-//! ## Why we don't *build* it here
+//! It does not *build* the probe: artifact-dependencies are nightly-only, and
+//! shelling out to a nested `cargo build` deadlocks against the
+//! target-directory lock the outer `cargo test` already holds. The probe is a
+//! dev-dependency instead (it builds `cdylib` + `rlib`), so Cargo builds it
+//! within the same invocation.
 //!
-//! There is no stable Cargo mechanism to depend on a sibling *cdylib*
-//! artifact from a test (artifact-dependencies are nightly-only). The
-//! obvious workaround — shelling out to `cargo build -p
-//! tutti-vst2-test-plugin` from this build script — **deadlocks**: the outer
-//! `cargo test` already holds the target-directory lock for the whole build,
-//! and the nested `cargo` blocks forever waiting for that same lock (this
-//! workspace shares one external target dir across worktrees, so the lock is
-//! always contended).
-//!
-//! Instead, `tutti-vst2-host` takes `tutti-vst2-test-plugin` as a
-//! **dev-dependency** (it builds both `cdylib` + `rlib`). Cargo therefore
-//! builds the cdylib as part of the *same* `cargo test` invocation — one
-//! lock, no nested cargo. This script's only job is to compute the
-//! deterministic directory; `tests/support/probe_path.rs` picks the newest
-//! of the candidates at runtime and panics if there is none.
-//!
-//! ## Why the *directory* and not one path
-//!
-//! Cargo writes the cdylib to `<profile>/deps/<name>` and hardlinks it up to
-//! `<profile>/<name>`, but does not always refresh the uplifted copy. Naming
-//! a single path here would let a stale hardlink be loaded, which silently
-//! reverses test results — see `probe_path.rs` for the incident. Emitting
-//! the profile dir and letting the test compare mtimes keeps that decision
-//! at runtime, where the timestamps exist.
+//! It emits the profile *directory*, not one path: Cargo writes the cdylib to
+//! `<profile>/deps/<name>` and hardlinks it up to `<profile>/<name>` without
+//! always refreshing the uplifted copy, so naming a single path can load a
+//! stale library and silently reverse test results.
+//! `tests/support/probe_path.rs` picks the newest candidate by mtime at
+//! runtime and panics if there is none.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -36,9 +22,6 @@ use std::path::{Path, PathBuf};
 const PROBE_LIB: &str = "tutti_vst2_test_plugin";
 
 fn main() {
-    // Rerun if the probe's sources change — not strictly required for
-    // correctness (the dev-dependency edge already forces a rebuild), but it
-    // keeps the emitted env vars in step when the probe is edited.
     println!("cargo:rerun-if-changed=build.rs");
 
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());

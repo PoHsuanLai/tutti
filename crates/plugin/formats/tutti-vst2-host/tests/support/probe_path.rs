@@ -1,41 +1,19 @@
 //! Resolve the reference VST2 plugin (`tutti-vst2-test-plugin`) that the
 //! conformance tests load.
 //!
-//! # Absence is a hard failure, never a skip
+//! **Absence panics, never skips.** The probe is built from this tree by a
+//! dev-dependency edge in the same `cargo test` invocation, so its absence is
+//! a build failure, not a property of the machine. A skip would put the suite
+//! one typo away from reporting success having executed nothing — which has
+//! happened here twice, most memorably nine VST3 tests skipping while
+//! printing `test result: ok. 9 passed`.
 //!
-//! [`probe_path`] **panics** with every path it searched. It does not return
-//! `Option`, and there is deliberately no `_or_skip` variant to reach for.
-//!
-//! The probe is built from this tree, by a dev-dependency edge, in the same
-//! `cargo test` invocation. Its absence is therefore a build failure — never
-//! a property of the machine, the way a missing commercial plugin would be.
-//! Making it skippable would put the suite one typo away from reporting
-//! success having executed nothing.
-//!
-//! That is not hypothetical. Two incidents in this repo:
-//!
-//! - The VST3 probe bundle lived at a machine-specific path outside the repo
-//!   and the test resolved it by a hardcoded filename. Building it under a
-//!   different name made all nine tests skip **while printing
-//!   `test result: ok. 9 passed`**.
-//! - Every VST2 integration test in this crate was `#[ignore]`d against
-//!   `/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst` — a macOS path, on a
-//!   Linux host. Fifteen tests, dead for the entire life of the crate,
-//!   reported as a clean suite.
-//!
-//! # Why the *newest* candidate, not the first
-//!
-//! Cargo writes the cdylib to `<profile>/deps/<name>` and hardlinks it up to
-//! `<profile>/<name>`. It does not always refresh the uplifted copy — an
-//! interrupted build, a switched feature set, or a shared target dir across
-//! worktrees can leave a stale file at the more obvious path. Loading a
-//! stale probe silently reverses test results: the misbehaviour switch the
-//! test just set does not exist in the old image, so the plugin behaves
-//! well, and the test asserting that the host survives misbehaviour passes
-//! for entirely the wrong reason.
-//!
-//! So every candidate is stat'd and the newest mtime wins. This is the same
-//! resolution the CLAP probe uses and for the same reason.
+//! **The newest candidate wins, not the first.** Cargo writes the cdylib to
+//! `<profile>/deps/<name>` and hardlinks it up to `<profile>/<name>` without
+//! always refreshing the uplifted copy, so the more obvious path can be stale.
+//! A stale probe reverses results silently: the misbehaviour switch the test
+//! set does not exist in the old image, the plugin behaves well, and the test
+//! asserting the host survives misbehaviour passes for the wrong reason.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -50,9 +28,7 @@ const PROBE_LIB: &str = env!("TUTTI_VST2_PROBE_LIB");
 ///
 /// # Panics
 ///
-/// If no candidate exists. The message lists every path searched — a
-/// missing probe is a build problem, and the reader needs to know where to
-/// look, not merely that something was absent.
+/// If no candidate exists, listing every path searched.
 pub fn probe_path() -> &'static PathBuf {
     static RESOLVED: OnceLock<PathBuf> = OnceLock::new();
     RESOLVED.get_or_init(|| {
@@ -88,8 +64,8 @@ pub fn probe_path() -> &'static PathBuf {
     })
 }
 
-/// Every place Cargo might have left the cdylib, in no meaningful order —
-/// the caller compares mtimes rather than trusting position.
+/// Every place Cargo might have left the cdylib. Order is not significant:
+/// the caller compares mtimes.
 fn candidate_paths() -> Vec<PathBuf> {
     let dir = PathBuf::from(PROBE_DIR);
     vec![

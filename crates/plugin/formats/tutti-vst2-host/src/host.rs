@@ -112,10 +112,9 @@ impl Host for HostState {
     fn idle(&self) {}
 
     /// Called re-entrantly from inside the plugin's `process`, on the audio
-    /// thread. `TransportCell::read` is wait-free and returns the snapshot by
-    /// value, which is all the caller needs: `host_dispatch` copies the
-    /// returned `TimeInfo` into a thread-local `Cell` and hands the plugin a
-    /// pointer to that copy, so nothing here is ever retained.
+    /// thread, so the read must be wait-free. Returning by value is enough:
+    /// `host_dispatch` copies the `TimeInfo` into a thread-local `Cell` and
+    /// hands the plugin a pointer to that copy, retaining nothing from here.
     fn get_time_info(&self, _mask: i32) -> Option<vst::api::TimeInfo> {
         self.time_info.read()
     }

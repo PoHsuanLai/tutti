@@ -62,23 +62,14 @@ pub struct Vst2Instance {
     /// Per-block MIDI plumbing (host→plugin staging, plugin→host drain).
     pub(crate) midi: MidiIo,
     metadata: PluginInfo,
-    /// Whether the plugin is currently in the resumed (processing-enabled)
-    /// state — i.e. the last `effMainsChanged` we dispatched carried `value=1`.
+    /// Whether the last `effMainsChanged` we dispatched carried `value=1`.
     ///
-    /// Tracked because `effMainsChanged` is *not* documented as idempotent, and
-    /// real plugins reallocate rate-dependent buffers on every `resume(1)`.
-    /// Before this flag existed, `set_sample_rate` and `set_block_size` each ran
-    /// an unconditional `suspend(); set(); resume()`, so calling either twice
-    /// suspended an already-suspended plugin and re-resumed an already-resumed
-    /// one. [`suspend_for_reconfigure`](Self::suspend_for_reconfigure) and
-    /// [`restore_after_reconfigure`](Self::restore_after_reconfigure) make both
-    /// transitions edge-triggered.
-    ///
-    /// A `bool` rather than a type-state: `Vst2Instance` is deliberately one
-    /// state (see the module docs on why the `Loaded → Ready` split au-host
-    /// needs collapses here), and suspension is a transient interior detail of
-    /// two setters, not a phase callers move the instance through. A type-state
-    /// would force that transience into every caller's signature for no gain.
+    /// Tracked because `effMainsChanged` is not documented as idempotent and
+    /// real plugins reallocate rate-dependent buffers on every `resume(1)`:
+    /// [`suspend_for_reconfigure`](Self::suspend_for_reconfigure) and
+    /// [`restore_after_reconfigure`](Self::restore_after_reconfigure) use it to
+    /// make both transitions edge-triggered, where the setters previously ran
+    /// an unconditional `suspend(); set(); resume()`.
     resumed: bool,
 }
 
@@ -147,34 +138,19 @@ impl Vst2Instance {
         instance.resume();
 
         let info = instance.get_info();
-        // `effCanDo` is a *three*-answer question and the answers are not
-        // interchangeable: `1` = yes, `0` = "don't know / didn't answer",
-        // `-1` = **explicitly no**. `Supported` decodes all three faithfully;
-        // what follows must not re-collapse them.
-        //
-        // Pin-count / category is the primary MIDI signal, but MIDI-effect
-        // plugins routinely declare 0 MIDI pins and advertise capability only
-        // via `canDo`, so those weaker signals are OR-ed in — otherwise such a
-        // plugin is misclassified as audio-only.
-        //
-        // That OR is right over a *silent* plugin and wrong over a speaking one.
-        // This code used to fold `No` and `Maybe` into one falsy bucket and then
-        // OR with the category, so a plugin answering `-1` ("I do not receive
-        // MIDI") was still classified as receiving MIDI the moment it declared
-        // `Category::Synth` — an explicit refusal with no way to win. An
-        // explicit `No` is the most authoritative answer available and now
-        // overrides the inference; `Maybe` keeps the old tolerance.
+        // MIDI classification. Pin count / category is the primary signal, but
+        // MIDI-effect plugins routinely declare 0 MIDI pins and advertise
+        // capability only via `canDo`, so those weaker signals are OR-ed in.
         use vst::api::Supported;
         use vst::plugin::CanDo;
 
-        // Resolve one `canDo` answer against the weaker signals that would
-        // otherwise imply the capability: `Yes` asserts, `No` vetoes, and
-        // anything else defers to `inferred`.
-        //
-        // `Custom(n)` is an undocumented integer a real plugin returned; it is
-        // neither an affirmative nor a refusal we should act on, so it defers
-        // like `Maybe`. Reading a non-zero `Custom` as truthy is the exact
-        // "return code meaning no, read as yes" shape this audit is hunting.
+        // `effCanDo` has three answers and they are not interchangeable: `1` =
+        // yes, `0` = "don't know", `-1` = explicitly no. Folding `No` in with
+        // `Maybe` and then OR-ing the inference let a plugin answering `-1` be
+        // classified as MIDI-capable anyway the moment it declared
+        // `Category::Synth`. So `Yes` asserts, `No` vetoes, and the rest defer
+        // to `inferred` — including `Custom(n)`, an undocumented integer that
+        // is neither an affirmative nor a refusal worth acting on.
         fn resolve(answer: Supported, inferred: bool) -> bool {
             match answer {
                 Supported::Yes => true,
@@ -183,13 +159,10 @@ impl Vst2Instance {
             }
         }
 
-        // `midi_inputs` / `midi_outputs` are hardcoded to 0 in the fork
-        // (`vst-tutti/src/host.rs` — the host never dispatches
-        // `effGetNumMidiInputOutputChannels`), so both pin terms are dead
-        // constants today. They are kept in the expression rather than deleted:
-        // the opcode exists and the plugin side already answers it, so wiring it
-        // up is a change to `Info`'s construction alone, with this logic already
-        // correct for the day it lands.
+        // `midi_inputs` / `midi_outputs` are hardcoded to 0 in the fork (the
+        // host never dispatches `effGetNumMidiInputOutputChannels`), so the pin
+        // terms are dead constants today. Kept so that wiring the opcode up is a
+        // change to `Info`'s construction alone.
         let midi_pins_declared = info.midi_inputs > 0 || info.midi_outputs > 0;
         let receives_midi = resolve(
             instance.can_do(CanDo::ReceiveMidiEvent),
@@ -226,8 +199,7 @@ impl Vst2Instance {
             },
             midi: MidiIo::new(midi_out_rx),
             metadata,
-            // `load` dispatched `resume()` above, so the instance starts in the
-            // resumed state and the flag must agree from the first observation.
+            // `load` dispatched `resume()` above.
             resumed: true,
         })
     }
@@ -238,29 +210,23 @@ impl Vst2Instance {
     }
 
     /// Whether the plugin is currently resumed (processing enabled).
-    ///
-    /// Exposed so callers — and the conformance tests — can observe the
-    /// lifecycle state machine rather than infer it from dispatch counts.
     pub fn is_resumed(&self) -> bool {
         self.resumed
     }
 
-    /// Take the plugin out of the processing state.
+    /// Take the plugin out of the processing state, returning whether a suspend
+    /// was actually dispatched.
     ///
-    /// Idempotent: calling it on an already-suspended plugin dispatches
-    /// nothing. VST 2.4 does not document `effMainsChanged` as idempotent and
-    /// real plugins free or reallocate buffers on each transition, so the host
-    /// must not issue a redundant one.
-    ///
-    /// Returns whether a suspend was actually dispatched.
+    /// Idempotent: a no-op when already suspended. VST 2.4 does not document
+    /// `effMainsChanged` as idempotent and real plugins free or reallocate
+    /// buffers on each transition, so the host must not issue a redundant one.
     pub fn suspend(&mut self) -> bool {
         self.suspend_for_reconfigure()
     }
 
-    /// Put the plugin back into the processing state.
-    ///
-    /// Idempotent, for the same reason as [`suspend`](Self::suspend). Returns
-    /// whether a resume was actually dispatched.
+    /// Put the plugin back into the processing state. Idempotent for the same
+    /// reason as [`suspend`](Self::suspend); returns whether a resume was
+    /// actually dispatched.
     pub fn resume(&mut self) -> bool {
         if self.resumed {
             return false;
@@ -269,12 +235,8 @@ impl Vst2Instance {
         true
     }
 
-    /// Take the plugin out of the processing state, if it is in it.
-    ///
-    /// Edge-triggered: a no-op when already suspended. VST 2.4 does not
-    /// document `effMainsChanged` as idempotent, and the SDK orders the
-    /// teardown `effStopProcess` → `effMainsChanged(0)` — stop the DSP before
-    /// powering it down, never the reverse.
+    /// Take the plugin out of the processing state, if it is in it, in the
+    /// SDK's teardown order: `effStopProcess` → `effMainsChanged(0)`.
     ///
     /// Returns whether a suspend was actually issued, so the caller can restore
     /// exactly the state it found rather than assuming it was resumed.
@@ -283,21 +245,18 @@ impl Vst2Instance {
             return false;
         }
         // Only legal while resumed, per `Plugin::start_process`'s contract —
-        // which is why it is inside this branch and not above it.
+        // hence inside this branch, not above it.
         self.handle.instance.stop_process();
         self.handle.instance.suspend();
         self.resumed = false;
         true
     }
 
-    /// Put the plugin back into the processing state. The inverse of
-    /// [`suspend_for_reconfigure`](Self::suspend_for_reconfigure), and ordered
-    /// as the SDK's startup sequence: `effMainsChanged(1)` → `effStartProcess`,
-    /// i.e. power on, then arm the DSP.
+    /// Inverse of [`suspend_for_reconfigure`](Self::suspend_for_reconfigure),
+    /// in the SDK's startup order: `effMainsChanged(1)` → `effStartProcess`.
     ///
     /// `was_resumed` is that function's return value. Passing `false` leaves the
-    /// plugin suspended, which is correct when it was already suspended on
-    /// entry: a reconfigure must not silently *start* a stopped plugin.
+    /// plugin suspended — a reconfigure must not start a stopped plugin.
     fn restore_after_reconfigure(&mut self, was_resumed: bool) {
         if !was_resumed || self.resumed {
             return;
@@ -313,13 +272,11 @@ impl Vst2Instance {
     /// many plugins reallocate rate-dependent buffers in `effSetSampleRate`
     /// and assume they are not concurrently processing. We bracket the call so
     /// callers don't have to. The bracket is edge-triggered (see
-    /// [`suspend_for_reconfigure`](Self::suspend_for_reconfigure)): calling this
-    /// twice in a row no longer suspends an already-suspended plugin, and a
-    /// plugin that was suspended on entry stays suspended on exit.
+    /// [`suspend_for_reconfigure`](Self::suspend_for_reconfigure)), so a plugin
+    /// suspended on entry stays suspended on exit.
     ///
-    /// `sample_rate as f32` is not a unit-type regression: `effSetSampleRate`
-    /// passes the rate in the `opt` field of the VST2 dispatcher, which is a
-    /// C `float`. This is the FFI boundary the unit policy exempts.
+    /// `as f32` is not a unit-type regression: `effSetSampleRate` passes the
+    /// rate in the dispatcher's `opt` field, a C `float` — an FFI boundary.
     pub fn set_sample_rate(&mut self, sample_rate: f64) {
         let was_resumed = self.suspend_for_reconfigure();
         self.handle.instance.set_sample_rate(sample_rate as f32);
@@ -330,11 +287,9 @@ impl Vst2Instance {
     /// reason as [`set_sample_rate`](Self::set_sample_rate) (block size drives
     /// per-block buffer sizing), with the same edge-triggered semantics.
     ///
-    /// Note this has no in-tree caller today: the block size is fixed at
-    /// [`load`](Self::load) and the engine re-loads rather than re-sizing. It
-    /// stays public and correct because it is part of the VST2 host contract a
-    /// caller may reach for, and a latent unbalanced-suspend bug is worse than
-    /// an unused method.
+    /// No in-tree caller today — block size is fixed at [`load`](Self::load) and
+    /// the engine re-loads rather than re-sizing — but it stays public as part
+    /// of the VST2 host contract.
     pub fn set_block_size(&mut self, block_size: usize) {
         let was_resumed = self.suspend_for_reconfigure();
         self.handle.instance.set_block_size(block_size as i64);

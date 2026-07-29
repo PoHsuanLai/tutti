@@ -1,41 +1,19 @@
 //! RT-safety and lifecycle conformance for the VST2 host.
 //!
-//! Two properties, both regression tests for confirmed bugs:
+//! Two regressions:
 //!
-//! 1. **`process_f32` must not allocate on the audio thread.**
-//!    `update_transport` used to run `time_info.store(Arc::new(Some(next)))`
-//!    every block — a heap allocation *and* a free of the retired snapshot,
-//!    inside the callback, on the primary path. See
-//!    `src/transport_cell.rs` for the seqlock that replaced it.
+//! 1. `update_transport` ran `time_info.store(Arc::new(Some(next)))` every
+//!    block — an allocation *and* a free inside the callback. Replaced by the
+//!    seqlock in `src/transport_cell.rs`.
+//! 2. `set_sample_rate` / `set_block_size` ran an unconditional
+//!    `suspend(); set(); resume()` with nothing tracking suspend state.
 //!
-//! 2. **The suspend/resume state machine must be idempotent.**
-//!    `set_sample_rate` / `set_block_size` used to run an unconditional
-//!    `suspend(); set(); resume()` with nothing tracking whether the plugin
-//!    was already suspended, so calling either twice double-suspended it.
-//!
-//! # What the no-alloc gate can and cannot prove
-//!
-//! The allocation tests here prove the *allocation* is gone: `AllocDisabler`
-//! panics on any `malloc` inside the gated scope, and the mutation record in
-//! the task report shows they fail when the seqlock is reverted.
-//!
-//! They do **not** prove the RT-publishing property CLAUDE.md describes, and
-//! this file does not claim to. That policy is explicit that a no-alloc test
-//! *cannot* pin it — the hazard is a race between a reader holding a retired
-//! value and a writer freeing it, and no sampling schedule exhausts a race.
-//! What replaces that proof here is structural, not statistical: the value is
-//! overwritten in place, so there is no retired allocation for anyone to free.
-//! The concurrent-reader torture test lives next to the implementation, in
-//! `transport_cell.rs`'s unit tests, where it can see the private internals.
-//!
-//! # Why this file loads the in-repo probe
-//!
-//! It previously pointed at `/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst`
-//! — a macOS path, on a Linux host — *and* was `#[ignore]`d, *and* guarded by
-//! a `load_or_skip()` returning `None`. Three independent reasons it could
-//! never fail. It now loads the reference probe, which is built by a
-//! dev-dependency edge in this same `cargo test` invocation, and panics if it
-//! is missing (see `tests/support/probe_path.rs`).
+//! The gate proves only that the *allocation* is gone. It does not prove the
+//! RT-publishing property CLAUDE.md describes, and cannot: that hazard is a
+//! race no sampling schedule exhausts. What stands in for it is structural —
+//! the value is overwritten in place, so nothing is retired for a reader to
+//! free. The concurrent-reader torture test lives in `transport_cell.rs`,
+//! where it can see the private internals.
 
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
@@ -49,23 +27,19 @@ use tutti_vst2_test_plugin::ProcessCapture;
 #[path = "support/probe_path.rs"]
 mod probe_path;
 
-// The `assert_no_alloc` checks below are inert unless `AllocDisabler` is the
-// active global allocator for THIS test binary — without it the gate is a
-// silent no-op that passes unconditionally. The `#[cfg(test)]` declaration in
-// `src/lib.rs` applies to unit tests only, not to integration-test binaries,
-// so it must be declared here. Verified by mutation: commenting this out makes
-// the reverted-seqlock run pass, which is the failure mode it guards against.
+// Not redundant with `src/lib.rs`: that declaration is `#[cfg(test)]`, which
+// covers unit tests only, not integration-test binaries. Without this the
+// `assert_no_alloc` gates below are silent no-ops that pass unconditionally.
 #[global_allocator]
 static A: AllocDisabler = AllocDisabler;
 
 const SAMPLE_RATE: f64 = 48_000.0;
 const BLOCK: usize = 64;
 
-/// The probe writes into one process-global capture inside a single loaded
-/// image and `cargo test` runs test fns on parallel threads, so the whole
-/// drive→read sequence is serialized. The allocation tests need this for a
-/// second reason: a concurrent test's allocations would otherwise be attributed
-/// to whichever thread is inside the gate.
+/// Serializes the whole drive→read sequence against the probe's one
+/// process-global capture. The allocation tests need it for a second reason:
+/// a concurrent test's allocations would be attributed to whichever thread is
+/// inside the gate.
 static PROBE_LOCK: Mutex<()> = Mutex::new(());
 
 fn lock_probe() -> MutexGuard<'static, ()> {
@@ -83,9 +57,8 @@ fn load_probe() -> (Vst2Instance, RenderScratch, PathBuf) {
 }
 
 /// Re-open the image the host loaded and call one of the probe's exports.
-/// The linked rlib is a separate image with separate statics; only the
-/// cdylib's globals see the host's calls, and `dlopen` on the same path
-/// returns the already-loaded image. Mirrors `vst2_probe_smoke.rs`.
+/// Must go through `dlopen`: the linked rlib is a separate image with separate
+/// statics, and only the cdylib's globals see the host's calls.
 fn probe_call<F, R>(path: &PathBuf, symbol: &[u8], f: F) -> R
 where
     F: FnOnce(libloading::Symbol<'_, *mut std::ffi::c_void>) -> R,
@@ -132,8 +105,8 @@ fn playing_transport() -> TransportInfo {
         .with_time_signature(TimeSignature::default())
 }
 
-/// Render `iters` blocks of silence. Every buffer lives on the stack, so any
-/// allocation the gate observes came from the host, not from this harness.
+/// Render `iters` blocks of silence. Every buffer is on the stack, so any
+/// allocation the gate observes came from the host, not this harness.
 fn drive_silent(
     inst: &mut Vst2Instance,
     scratch: &mut RenderScratch,
@@ -157,10 +130,8 @@ fn drive_silent(
 
 /// The headline regression: a transport-carrying block must not allocate.
 ///
-/// `ctx.transport` is `Some` on every iteration, which is what drives
-/// `update_transport` down the path that used to call `Arc::new`. A version of
-/// this test that left the transport `None` would pass against the buggy code,
-/// because the allocation sat behind exactly that branch.
+/// `ctx.transport` must stay `Some` on every iteration — the `Arc::new` sat
+/// behind exactly that branch, so a `None` transport passes against the bug.
 #[test]
 fn process_f32_with_transport_does_not_allocate() {
     let _guard = lock_probe();
@@ -175,9 +146,8 @@ fn process_f32_with_transport_does_not_allocate() {
         drive_silent(&mut inst, &mut scratch, 256, &transport);
     });
 
-    // The gate only means something if the plugin actually ran and actually
-    // read the transport back. Without this, a host that silently skipped
-    // `process` would trivially "not allocate".
+    // The gate is vacuous unless the plugin actually ran and read the
+    // transport back — a host that skipped `process` trivially never allocates.
     let cap = read_capture(&path);
     assert!(cap.valid, "probe observed no render");
     assert!(
@@ -194,7 +164,7 @@ fn process_f32_with_transport_does_not_allocate() {
 }
 
 /// Same gate with MIDI in flight, so the staging/drain pools are exercised
-/// alongside the transport publish rather than only in isolation.
+/// alongside the transport publish.
 #[test]
 fn process_f32_with_midi_does_not_allocate() {
     let _guard = lock_probe();
@@ -251,18 +221,13 @@ fn process_f32_with_midi_does_not_allocate() {
 /// Reconfiguring an **already-suspended** plugin must not suspend it again,
 /// and must leave it suspended.
 ///
-/// This is the exact shape of the bug, and the reason a "call `set_sample_rate`
-/// twice" test is not enough: the pre-fix code ran an unconditional
-/// `suspend(); set(); resume()`, so back-to-back reconfigures of a *resumed*
-/// plugin still produced one balanced pair each and looked correct. The defect
-/// only becomes observable when the plugin is already suspended on entry —
-/// then the old code dispatched a second `effMainsChanged(0)` to a plugin that
-/// had already powered down and, worse, silently *resumed* it on the way out.
-/// VST 2.4 does not document `effMainsChanged` as idempotent, and real plugins
-/// reallocate on every `resume(1)`.
+/// The plugin must be suspended on entry for this to bite: back-to-back
+/// reconfigures of a *resumed* plugin produced one balanced pair each even
+/// pre-fix and looked correct. Only from suspended did the old code dispatch a
+/// second `effMainsChanged(0)` and then silently resume on the way out.
 ///
-/// Counters are read from the probe, so this asserts what actually crossed the
-/// FFI seam rather than trusting the host's own flag.
+/// Counters come from the probe, so this asserts what crossed the FFI seam
+/// rather than trusting the host's own flag.
 #[test]
 fn reconfigure_while_suspended_does_not_double_suspend_or_silently_resume() {
     let _guard = lock_probe();
@@ -304,10 +269,8 @@ fn reconfigure_while_suspended_does_not_double_suspend_or_silently_resume() {
 }
 
 /// `suspend` / `resume` must be idempotent: a redundant call dispatches
-/// nothing across the FFI seam.
-///
-/// Nothing in the crate tracked suspend state before this fix — there was no
-/// `resumed` flag anywhere — so every call was unconditionally dispatched.
+/// nothing across the FFI seam. Nothing tracked suspend state before the fix,
+/// so every call was dispatched unconditionally.
 #[test]
 fn repeated_suspend_and_resume_are_idempotent() {
     let _guard = lock_probe();
@@ -341,10 +304,8 @@ fn repeated_suspend_and_resume_are_idempotent() {
 }
 
 /// The same bracket on `set_block_size`, which shares the implementation.
-///
-/// It has no in-tree caller today (verified by ripgrep across both
-/// workspaces), so this test is the only thing holding its lifecycle correct —
-/// which is precisely why it is here rather than omitted as dead weight.
+/// It has no in-tree caller, so this test is the only thing holding its
+/// lifecycle correct.
 #[test]
 fn set_block_size_while_suspended_does_not_double_suspend() {
     let _guard = lock_probe();
@@ -386,19 +347,12 @@ fn reconfigure_while_resumed_issues_one_balanced_pair() {
     assert!(inst.is_resumed());
 }
 
-/// A reconfigure must leave the plugin in a state where it still renders.
+/// A reconfigure must leave the plugin in a state where it still renders —
+/// the end-to-end consequence of an unbalanced suspend, which leaves a
+/// powered-down plugin that the host happily keeps feeding blocks.
 ///
-/// This is the end-to-end consequence of getting the lifecycle wrong: an
-/// unbalanced suspend, or a `resume` the plugin refused because it was never
-/// suspended, leaves a plugin that is powered down while the host happily
-/// feeds it blocks. Asserting the audio still comes out is what makes the
-/// state machine's correctness observable without reaching into the probe for
-/// opcode-level counters it does not yet record.
-///
-/// The `effStartProcess` / `effStopProcess` dispatch added alongside this
-/// (see `vst-tutti/src/host.rs`) is *not* asserted here: the probe's
-/// `ProcessCapture` has no counter for those opcodes, and that file belongs to
-/// another agent. Flagged in the task report as the one unverified piece.
+/// The `effStartProcess` / `effStopProcess` dispatch in `vst-tutti/src/host.rs`
+/// is *not* covered: `ProcessCapture` has no counter for those opcodes.
 #[test]
 fn plugin_still_renders_after_repeated_reconfigure() {
     let _guard = lock_probe();

@@ -1,19 +1,13 @@
 //! Construction-time metadata, read from `TUTTI_VST2_PROBE_*` env vars.
 //!
-//! # Why env vars here and `extern "C"` switches elsewhere
+//! Env vars rather than the `extern "C"` switches in `switches.rs` because
+//! `vst::main` calls `get_info()` synchronously while building the `AEffect`,
+//! before `VSTPluginMain` returns — so anything landing in the AEffect
+//! (`numInputs`, `numParams`, `numPrograms`, `flags`, `initialDelay`) is only
+//! reachable through the process environment.
 //!
-//! `vst::main` calls `Plugin::get_info()` *once*, synchronously, while
-//! building the `AEffect` — before `VSTPluginMain` has even returned, so
-//! before the test could possibly call a switch on the loaded image.
-//! Anything that lands in the AEffect (`numInputs`, `numParams`,
-//! `numPrograms`, `flags`, `initialDelay`) is therefore only reachable
-//! through the process environment. This is the same split the CLAP probe
-//! draws and the same one the VST3 probe's README documents: read-once
-//! construction state is an env var, everything a running plugin can change
-//! its mind about is an `extern "C"` switch (see `switches.rs`).
-//!
-//! A test setting these must do so before `Vst2Instance::load`, and must
-//! serialize against other tests — `std::env::set_var` is process-global.
+//! A test must set these before `Vst2Instance::load` and serialize against
+//! other tests — `set_var` is process-global.
 
 use std::env;
 
@@ -21,9 +15,9 @@ use vst::plugin::Category;
 
 /// Parse a `TUTTI_VST2_PROBE_*` variable, falling back to `default` when
 /// unset or unparseable. Silent fallback on garbage is deliberate: a typo
-/// in a test's env var should produce the well-behaved probe (whose
-/// assertions then fail loudly) rather than a panic inside `dlopen`, where
-/// the host would report it as a load failure and hide the real cause.
+/// should yield the well-behaved probe, whose assertions then fail loudly,
+/// rather than a panic inside `dlopen` that the host reports as a load
+/// failure and that hides the real cause.
 fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
     env::var(name)
         .ok()
@@ -38,9 +32,7 @@ fn env_flag(name: &str) -> bool {
 /// Everything the probe declares to the host at construction time.
 ///
 /// Defaults describe the *well-behaved* probe: a stereo-in / stereo-out
-/// effect with four parameters and two programs, no latency, no tail. Every
-/// field is overridable so a test can build a host-hostile shape without a
-/// second probe binary.
+/// effect, four parameters, two programs, no latency, no tail.
 #[derive(Debug, Clone)]
 pub struct ProbeConfig {
     /// `AEffect::numInputs`.
@@ -51,13 +43,12 @@ pub struct ProbeConfig {
     pub parameters: i32,
     /// `AEffect::numPrograms`.
     pub programs: i32,
-    /// Number of parameters the probe will actually service. When this is
-    /// below `parameters`, the probe is advertising an enumeration hole —
-    /// the classic out-of-bounds trigger, and the VST2 analogue of the
-    /// `getBusCount` overreport that produced one of the VST3 bugs.
+    /// Number of parameters the probe will actually service. Below
+    /// `parameters`, it is advertising an enumeration hole — a host that
+    /// walks `0..numParams` and trusts every answer reads past the end.
     pub serviced_parameters: i32,
-    /// Number of programs the probe will actually name. Same hole, on the
-    /// preset axis.
+    /// Number of programs the probe will actually name. The same hole, on
+    /// the preset axis.
     pub serviced_programs: i32,
     /// `AEffect::initialDelay`.
     pub initial_delay: i32,
@@ -70,20 +61,15 @@ pub struct ProbeConfig {
     /// Whether `get_editor` returns an editor, which is what makes
     /// `vst::main` set `effFlagsHasEditor`.
     pub has_editor: bool,
-    /// Clear `effFlagsCanReplacing` from the AEffect after `vst::main` has
-    /// built it. `vst::main` sets that bit unconditionally, so this cannot
-    /// be expressed through the `Plugin` trait — see `lib.rs`'s
-    /// `VSTPluginMain`.
+    /// Clear `effFlagsCanReplacing` after `vst::main` has built the AEffect.
+    /// `vst::main` sets that bit unconditionally, so it cannot be expressed
+    /// through the `Plugin` trait — see `lib.rs`'s `VSTPluginMain`.
     pub omit_can_replacing: bool,
-    /// Raw `effGetTailSize` answer, bypassing the `Plugin` trait.
-    ///
-    /// vst-rs's dispatcher rewrites a trait-reported `0` into `1`, which
-    /// erases exactly the distinction VST 2.4 draws: `0` means "no tail
-    /// info, assume the worst / ask again", `1` means "no tail at all,
-    /// safe to stop rendering immediately", and anything larger is a
-    /// sample count. A host that conflates them either truncates reverb
-    /// tails or renders silence forever. `None` leaves the trait path
-    /// alone; `Some(n)` answers `n` verbatim from the raw dispatcher.
+    /// Raw `effGetTailSize` answer, bypassing the `Plugin` trait, whose path
+    /// vst-rs rewrites from `0` to `1` — erasing VST 2.4's distinction
+    /// between `0` ("no tail info, assume the worst") and `1` ("no tail,
+    /// safe to stop rendering"); larger values are sample counts. `None`
+    /// leaves the trait path alone; `Some(n)` answers `n` verbatim.
     pub raw_tail_size: Option<isize>,
     /// Number of MIDI input channels declared.
     pub midi_inputs: i32,
@@ -125,9 +111,8 @@ impl ProbeConfig {
             outputs: env_or("TUTTI_VST2_PROBE_OUTPUTS", d.outputs),
             parameters,
             programs,
-            // Default the serviced counts to the declared counts: absent an
-            // explicit override the probe is honest, and a test that wants a
-            // hole names its size.
+            // Default the serviced counts to the declared ones, so the probe
+            // is honest unless a test names a hole size explicitly.
             serviced_parameters: env_or("TUTTI_VST2_PROBE_SERVICED_PARAMS", parameters),
             serviced_programs: env_or("TUTTI_VST2_PROBE_SERVICED_PROGRAMS", programs),
             initial_delay: env_or("TUTTI_VST2_PROBE_LATENCY", d.initial_delay),
@@ -149,18 +134,17 @@ impl ProbeConfig {
     }
 }
 
-/// Per-channel DC tag added to the passthrough signal, the routing oracle.
+/// Per-channel DC tag added to the passthrough signal — the routing oracle.
 ///
 /// `out[ch][i] = in[ch][i] + tag(ch)`. The offsets are distinct and not
-/// multiples of each other, so a host that swaps two channels, duplicates
-/// one across both, or wires an input onto the wrong output slot produces
-/// arithmetically wrong samples that no amount of "is it finite / is it
-/// non-silent" checking would catch. 100.0 spacing keeps the tag far above
-/// any plausible audio content, so an assertion failure names the channel
-/// that went wrong by inspection.
+/// multiples of each other, so a host that swaps two channels, duplicates one
+/// across both, or wires an input onto the wrong output slot produces
+/// arithmetically wrong samples that "is it finite / non-silent" checking
+/// cannot catch. The 100.0 spacing puts the tag far above plausible audio, so
+/// a failure names the guilty channel by inspection.
 pub const fn channel_tag(channel: usize) -> f32 {
-    // Chosen over `ch as f32` so an off-by-one in the host's channel loop
-    // cannot be mistaken for rounding.
+    // Not `ch as f32`: an off-by-one in the host's channel loop must not be
+    // mistakable for rounding.
     (channel as f32) * 100.0 + 1.0
 }
 
@@ -168,21 +152,18 @@ pub const fn channel_tag(channel: usize) -> f32 {
 mod tests {
     use super::channel_tag;
 
-    /// Pin the first few tags as literals.
-    ///
-    /// `channel_tag` is shared by the probe and the host test, so an
-    /// assertion written as `in + channel_tag(ch)` moves with any change to
-    /// this function and can never fail — it would report coverage that does
-    /// not exist. The literals here are the anchor: change the formula and
-    /// this test fails, which is the signal to go re-check every mirrored
-    /// constant in `tutti-vst2-host`'s tests.
+    /// Pin the tags as literals. `channel_tag` is shared by the probe and the
+    /// host tests, so an expectation written as `in + channel_tag(ch)` moves
+    /// with the function and can never fail. These literals are the anchor:
+    /// a failure here is the signal to re-check every mirrored constant in
+    /// `tutti-vst2-host`'s tests.
     #[test]
     fn tags_are_pinned_and_distinct() {
         assert_eq!(channel_tag(0), 1.0);
         assert_eq!(channel_tag(1), 101.0);
         assert_eq!(channel_tag(2), 201.0);
-        // The gap must dwarf any plausible audio sample, so a swapped
-        // channel cannot be mistaken for a loud one.
+        // The gap must dwarf any plausible sample, so a swapped channel
+        // cannot be mistaken for a loud one.
         assert!(channel_tag(1) - channel_tag(0) > 10.0);
     }
 }

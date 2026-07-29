@@ -8,16 +8,12 @@ It is ours. It is not an SDK sample, and it is not a usable audio effect.
 
 ## Why it exists
 
-Every VST2 integration test in `tutti-vst2-host` was `#[ignore]`d and hardcoded
-to `/Library/Audio/Plug-Ins/VST/TAL-NoiseMaker.vst` — a macOS path, on a Linux
-host. Fifteen tests, dead for the entire life of the crate, reported as a clean
-suite. The host's whole integration surface was unverified.
-
-Even a working commercial plugin would not have closed the gap. A host that
-hands the plugin a perfectly-formed `AEffect` call full of the *wrong audio* —
-swapped channels, an input wired onto the wrong output, MIDI delivered at the
-wrong sample offset — produces output that is finite, non-silent, and plausible.
-Nothing short of an oracle catches it.
+A commercial plugin cannot close this gap. A host that hands the plugin a
+perfectly-formed `AEffect` call full of the *wrong audio* — swapped channels, an
+input wired onto the wrong output, MIDI delivered at the wrong sample offset —
+produces output that is finite, non-silent, and plausible. Nothing short of an
+oracle catches it. And no commercial plugin will reliably misbehave on demand,
+which is what testing the host's robustness requires.
 
 ## The oracle
 
@@ -61,9 +57,7 @@ strictly test-only code.
 ## Misbehaviour
 
 Everything above makes the probe a *well-behaved* oracle. It can also be a badly
-behaved one, so the host can be tested against plugins that violate the spec —
-which no commercial plugin will ever reliably do for you, and which is why a
-corpus of only well-behaved plugins proves so little about robustness.
+behaved one, so the host can be tested against plugins that violate the spec.
 
 ### Runtime switches — `#[no_mangle] extern "C"`, in `switches.rs`
 
@@ -80,9 +74,7 @@ Call these across the dlopen seam on the image the host loaded. Reset with
 
 `can_do` is the important one. VST 2.4 defines **three** answers and hosts
 routinely collapse them into two: `-1` means "explicitly no", not "unknown", and
-it is also non-zero, so a host testing `!= 0` reads a refusal as consent. That
-return-code-misinterpretation class produced four of VST3's five host bugs and
-four of CLAP's nine.
+it is also non-zero, so a host testing `!= 0` reads a refusal as consent.
 
 ### Construction-time metadata — `TUTTI_VST2_PROBE_*` env vars, in `config.rs`
 
@@ -145,9 +137,8 @@ does not return `Option` and there is deliberately no `_or_skip` variant.
 The probe is built from this tree by a dev-dependency edge, in the same
 `cargo test` invocation, so its absence is a build failure — never a property of
 the machine. Making it skippable would put the suite one typo away from
-reporting success having executed nothing. That is not hypothetical: the VST3
-probe once lived at a machine-specific path outside the repo, and building it
-under a different name made all nine tests skip **while printing
+reporting success having executed nothing, which has happened here before: a
+renamed VST3 probe made all nine of its tests skip **while printing
 `test result: ok. 9 passed`**.
 
 `probe_path` also resolves the **newest** of several candidates rather than the
@@ -188,10 +179,10 @@ cargo test -p tutti-vst2-host
    tag, or force the switch to its off value unconditionally) and confirming the
    test fails.
 
-Step 3 is not optional. Four of the VST3 probe's first nine misbehaviour tests
-asserted only "didn't crash, stayed finite" — true of a well-behaved plugin too,
-so they passed for the wrong reason. A test that cannot fail is worse than no
-test, because it reports coverage that does not exist.
+Step 3 is not optional. The usual way to fail it is to assert only "didn't
+crash, stayed finite" — which is true of a well-behaved plugin too, so the test
+passes for the wrong reason. A test that cannot fail is worse than no test,
+because it reports coverage that does not exist.
 
 Two constraints on anything added here:
 

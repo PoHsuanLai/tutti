@@ -1,64 +1,32 @@
-//! The transport snapshot the plugin reads back via `audioMasterGetTime`.
+//! A seqlock holding the transport snapshot the plugin reads back via
+//! `audioMasterGetTime`. `TimeInfo` is ~100 bytes of `Copy` POD and readers
+//! take it by value, so the cell is overwritten in place: wait-free reads,
+//! allocation-free writes.
 //!
-//! # Why this is not an `ArcSwap`
+//! Not an `ArcSwap`: the audio thread is the *writer* here (once per block),
+//! and `store` would allocate the new snapshot and free the retired one inside
+//! the callback — what CLAUDE.md's "Publishing to the Audio Thread" forbids.
+//! `RtPublish` is control-thread→audio-thread and also takes ownership of a
+//! fresh value, so it does not fit either.
 //!
-//! It was one. `update_transport` ran `time_info.store(Arc::new(Some(next)))`
-//! once per block, on the audio thread, on the primary path — so every block
-//! with a transport (the common case) did a heap allocation *and* a free of
-//! the retired snapshot, both inside the audio callback. That is the exact
-//! shape CLAUDE.md's "Publishing to the Audio Thread" section forbids:
-//! *"Never `publish` from the audio thread — it stalls the callback and frees
-//! inside it."* Here the audio thread was the publisher.
-//!
-//! `RtPublish` is the project's answer for control-thread→audio-thread
-//! publishing, and it is the wrong tool here for two reasons: the direction is
-//! reversed (the audio thread writes; the plugin — possibly on another thread —
-//! reads), and it would keep the allocation, since `RtPublish::publish` also
-//! takes ownership of a fresh value. What this site actually needs is a cell
-//! that is *mutated in place* rather than replaced.
-//!
-//! # Why a seqlock
-//!
-//! [`vst::api::TimeInfo`] is ~100 bytes of plain `Copy` POD, and the reader
-//! (`Host::get_time_info`) returns it **by value** — `vst-tutti`'s
-//! `host_dispatch` copies the returned `Option<TimeInfo>` into a thread-local
-//! `Cell` and hands the plugin a pointer to *that*. So no reader ever needs an
-//! owning handle to the published value, which is what made the `Arc` pure
-//! overhead. A seqlock gives wait-free reads and an allocation-free,
-//! lock-free write of a value too large for a single atomic.
-//!
-//! # Re-entrancy, which is the whole design constraint
-//!
-//! The plugin calls `audioMasterGetTime` from *inside* `processReplacing`,
-//! i.e. re-entrantly on the audio thread — the same thread that just wrote.
-//! A textbook seqlock reader spins until the sequence number is even and
-//! stable, which on a same-thread re-entrant read during a write would spin
-//! forever. That deadlock is unreachable here by construction:
-//! [`Vst2Instance::process_f32`] calls `update_transport` to completion
-//! *before* it calls into the plugin, so by the time the plugin can issue a
-//! re-entrant read the sequence is already even. [`write`] additionally
-//! asserts the counter was even on entry in debug builds, which is what pins
-//! that ordering — reorder the two calls and the debug assertion fires rather
-//! than the release build hanging.
-//!
-//! A reader on a *different* thread (the GUI thread polling transport while
-//! audio renders) is the genuinely concurrent case, and it is why [`read`]
-//! retries a bounded number of times and then reports "no transport" instead
-//! of spinning. A plugin briefly told the transport is unavailable degrades;
-//! a host that spins on the GUI thread hangs the UI.
+//! Re-entrancy is the design constraint: the plugin calls `audioMasterGetTime`
+//! from inside `processReplacing`, on the same thread that just wrote, and a
+//! seqlock reader cannot make progress against a write in flight on its own
+//! thread. [`Vst2Instance::process_f32`] runs `update_transport` to completion
+//! before entering the plugin, so the sequence is already even by then;
+//! [`TransportCell::write`]'s debug assert pins that ordering. A reader on
+//! another thread is the genuinely concurrent case, which is why [`read`] gives
+//! up after a bounded number of retries rather than spinning.
 
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// How many times [`TransportCell::read`] retries a torn read before giving up.
 ///
-/// The writer's critical section is a single ~100-byte struct copy with no
-/// branches or syscalls, so a reader that loses the race twice in a row has
-/// been descheduled mid-read rather than merely raced. Retrying further would
-/// not help, and the fallback (`None` — "host has no transport info", a
-/// response every VST2 plugin must already handle, since it is what a host
-/// without a transport returns) is strictly better than an unbounded spin on
-/// whatever thread the plugin chose to call from.
+/// The writer's critical section is one ~100-byte copy, so a reader losing the
+/// race repeatedly was descheduled rather than raced, and more retries will not
+/// help. The fallback (`None` = "host has no transport", which every VST2
+/// plugin must already handle) beats an unbounded spin on the plugin's thread.
 const READ_RETRY_LIMIT: usize = 8;
 
 /// A lock-free, allocation-free cell holding the latest transport snapshot.
@@ -74,19 +42,15 @@ pub(crate) struct TransportCell {
     value: UnsafeCell<Option<vst::api::TimeInfo>>,
 }
 
-// SAFETY: `value` is only ever touched through the seqlock protocol. Writes
-// happen under an odd sequence number with `Release` ordering on both edges;
-// reads copy the value out between two `Acquire` sequence loads and discard the
-// copy unless the sequence was even and unchanged, so a reader never returns
-// bytes from an in-flight write. `TimeInfo` is `Copy` POD with no interior
-// pointers, so a torn *discarded* copy cannot have observed a dangling
-// reference — the worst case is meaningless numbers that are then thrown away.
+// SAFETY: `value` is only touched through the seqlock protocol — written under
+// an odd sequence with `Release` on both edges, read between two `Acquire`
+// sequence loads and discarded unless the sequence was even and unchanged.
+// `TimeInfo` is `Copy` POD with no interior pointers, so a torn discarded copy
+// is meaningless numbers, never an invalid reference.
 //
-// This type tolerates one writer only. `write` is `&mut self`-gated through
-// `Vst2Instance`, which is `!Sync` in practice for writes (callers serialize:
-// the subprocess server is single-threaded, the in-process backend holds a
-// `parking_lot::Mutex`), so the single-writer requirement is upheld by the
-// same discipline that already governs `process_f32`.
+// Single-writer only. Writes go through `Vst2Instance`, whose callers already
+// serialize `process_f32` (single-threaded subprocess server; `parking_lot::
+// Mutex` in the in-process backend).
 unsafe impl Sync for TransportCell {}
 unsafe impl Send for TransportCell {}
 
@@ -99,17 +63,13 @@ impl TransportCell {
         }
     }
 
-    /// Publish a new snapshot. Allocation-free and lock-free: the value is
-    /// overwritten in place, so nothing is allocated and nothing is freed.
-    ///
-    /// Single-writer only — see the `Sync` safety note on the type.
+    /// Publish a new snapshot, overwriting in place — nothing is allocated or
+    /// freed. Single-writer only; see the `Sync` safety note on the type.
     pub(crate) fn write(&self, next: vst::api::TimeInfo) {
         let seq = self.seq.load(Ordering::Relaxed);
-        // The re-entrancy argument in the module docs rests on writes never
-        // overlapping, on this thread or any other. If this trips, a second
-        // writer exists or `update_transport` has been moved inside the
-        // plugin's `process` call, and the release build would be handing
-        // plugins torn snapshots instead of failing here.
+        // Pins the module docs' ordering: writes must never overlap. A trip
+        // means a second writer exists, or `update_transport` moved inside the
+        // plugin's `process` call.
         debug_assert!(
             seq.is_multiple_of(2),
             "TransportCell had a write already in flight"
@@ -120,9 +80,9 @@ impl TransportCell {
         // being hoisted above the odd-marking store, the second keeps it from
         // sinking below the even-marking store.
         std::sync::atomic::fence(Ordering::Release);
-        // SAFETY: the sequence number is odd for the duration of this write, so
-        // any concurrent reader discards whatever it copies. Single-writer
-        // means no other thread is writing concurrently.
+        // SAFETY: the sequence is odd for the duration of this write, so any
+        // concurrent reader discards what it copies; single-writer means no
+        // other thread writes concurrently.
         unsafe {
             *self.value.get() = Some(next);
         }
@@ -142,11 +102,9 @@ impl TransportCell {
                 std::hint::spin_loop();
                 continue;
             }
-            // SAFETY: `TimeInfo` is `Copy` POD. This read may race with a
-            // writer and produce torn bytes, which is exactly why the result is
-            // discarded unless the sequence check below confirms no write
-            // overlapped it. No interior pointers means torn bytes are merely
-            // wrong numbers, never an invalid reference.
+            // SAFETY: `TimeInfo` is `Copy` POD with no interior pointers, so a
+            // race with the writer yields wrong numbers, never an invalid
+            // reference — and the sequence re-check below discards those.
             let candidate = unsafe { *self.value.get() };
             std::sync::atomic::fence(Ordering::Acquire);
             if self.seq.load(Ordering::Acquire) == before {
@@ -190,9 +148,8 @@ mod tests {
         assert_eq!(cell.read().unwrap().sample_pos, 256.0);
     }
 
-    /// The re-entrant shape the plugin actually produces: a read issued from
-    /// inside `process`, i.e. after the write has completed on the same thread.
-    /// This must return the fresh value and must not spin.
+    /// The re-entrant shape: a read from inside `process`, after the write
+    /// completed on the same thread. Must return the fresh value, not spin.
     #[test]
     fn reentrant_same_thread_read_sees_completed_write() {
         let cell = TransportCell::new();
@@ -204,9 +161,9 @@ mod tests {
         assert_eq!(inner.sample_pos, 64.0);
     }
 
-    /// A concurrent reader must never observe a half-written snapshot. Every
-    /// field the writer sets moves together, so any torn read shows up as an
-    /// inconsistent pair.
+    /// A concurrent reader must never observe a half-written snapshot. The
+    /// writer keeps every field it sets in lockstep, so a torn read shows up as
+    /// a disagreeing pair.
     #[test]
     fn concurrent_reader_never_observes_a_torn_snapshot() {
         use std::sync::atomic::AtomicBool;

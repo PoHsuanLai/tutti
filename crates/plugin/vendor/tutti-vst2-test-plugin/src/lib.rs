@@ -1,44 +1,22 @@
 //! Reference VST2 plugin — a host-conformance probe.
 //!
-//! This is **not** a usable audio effect. It is a test oracle: its output is
-//! a closed-form function of its input, so a host test can compute what a
-//! correct host would produce and compare exact sample values. Alongside
-//! that it records what the host handed it across the `AEffect` FFI — block
-//! size, channel counts, transport fields, MIDI events with their delta
-//! frames, which render entry point was called — so the host can be asserted
-//! against the VST 2.4 spec rather than against "it didn't crash".
-//!
-//! It is the host-side analog of pluginval: instead of a host torturing a
-//! plugin, a known-good (or, on demand, known-*bad*) plugin observes the
-//! host.
-//!
-//! ## The oracle
-//!
-//! `out[ch][i] = in[ch][i] + channel_tag(ch)`, with a distinct DC offset per
-//! channel (see [`config::channel_tag`]). A host that swaps channels,
+//! **Not** a usable audio effect. It is a test oracle:
+//! `out[ch][i] = in[ch][i] + channel_tag(ch)`, a distinct DC offset per
+//! channel (see [`config::channel_tag`]), so a host that swaps channels,
 //! duplicates one across both, or writes into the wrong output slot produces
-//! arithmetically wrong samples. Every other structural check — non-null
-//! pointers, agreeing counts — passes just as happily on misrouted audio,
-//! which is why the tag exists.
+//! arithmetically wrong samples. Structural checks — non-null pointers,
+//! agreeing counts — pass just as happily on misrouted audio, which is why
+//! the tag exists. Alongside that it records what the host handed it across
+//! the `AEffect` FFI into a process-global [`ProcessCapture`], read back
+//! through [`tutti_vst2_probe_capture`]. The loader dedupes images by path,
+//! so the host's load and a test's `dlopen` share one image and one global.
 //!
-//! ## How the test reads what the plugin saw
-//!
-//! The plugin records into a process-global [`ProcessCapture`] behind a
-//! mutex and exports [`tutti_vst2_probe_capture`]. The conformance test
-//! either links this crate's `rlib` and uses the type directly, or `dlopen`s
-//! the same binary a second time to call the symbol; the loader dedupes
-//! loaded images by path, so the host's load and the test's share one image
-//! and therefore one global.
-//!
-//! ## Misbehaviour
-//!
-//! A corpus of well-behaved plugins proves very little about host
-//! robustness. The probe can be switched into deliberate spec violations —
-//! `effCanDo` answering `-1` rather than `0`, parameter and program counts
-//! larger than it services, a refused resume, tail sizes of 0 / 1 / large,
-//! a missing `effFlagsCanReplacing`, and channel counts inconsistent with
-//! what it reads and writes. See `README.md` for the full table and the two
-//! constraints on adding to it.
+//! On demand it also misbehaves — `effCanDo` answering `-1`, counts larger
+//! than it services, a refused resume, tail sizes of 0 / 1 / large, a missing
+//! `effFlagsCanReplacing`, channel counts inconsistent with what it reads and
+//! writes. A corpus of well-behaved plugins proves little about host
+//! robustness. See `README.md` for the table and the constraints on adding
+//! to it.
 //!
 //! Construction-time metadata comes from `TUTTI_VST2_PROBE_*` env vars
 //! (`config.rs`), runtime behaviour from `extern "C"` switches
@@ -66,11 +44,9 @@ pub use capture::{
 pub use config::{channel_tag, ProbeConfig};
 pub use switches::CanDoAnswer;
 
-/// `AEffect::uniqueId` the probe advertises. The host derives its plugin id
-/// (`vst2.<unique_id>`) from this, so the conformance test can assert the id
-/// round-tripped without knowing anything else about the binary.
-///
-/// Spells "TPRB" in the four-character-code convention VST2 unique ids use.
+/// `AEffect::uniqueId` the probe advertises; the host derives its plugin id
+/// (`vst2.<unique_id>`) from it. Spells "TPRB" in VST2's four-character-code
+/// convention.
 pub const PROBE_UNIQUE_ID: i32 = i32::from_be_bytes(*b"TPRB");
 
 /// `AEffect::version`, and the string the host reports.
@@ -88,17 +64,15 @@ pub const PROBE_VENDOR: &str = "Tutti";
 
 /// Parameter store.
 ///
-/// Values are plain `f32` behind a mutex rather than atomics because
-/// `PluginParameters` takes `&self` and the conformance test drives
-/// everything synchronously; there is no audio thread to keep lock-free.
-///
 /// `serviced` is the count the store will actually answer for, which may be
-/// *below* the count the AEffect advertises. That gap is the enumeration
-/// hole: a host that walks `0..numParams` and trusts every answer will read
-/// names and values the plugin never had. The probe answers the
-/// out-of-range indices safely (empty name, `None` value) instead of
-/// panicking — a crash *inside the plugin* reads as a host bug and wastes
-/// the reader's time.
+/// *below* what the AEffect advertises. That gap is the enumeration hole: a
+/// host that walks `0..numParams` and trusts every answer reads names and
+/// values the plugin never had. Out-of-range indices answer safely (empty
+/// name, `None` value) rather than panicking — a crash *inside the plugin*
+/// reads as a host bug.
+///
+/// Mutex rather than atomics because `PluginParameters` takes `&self` and
+/// there is no audio thread here to keep lock-free.
 struct ProbeParameters {
     values: std::sync::Mutex<Vec<f32>>,
     serviced: i32,
@@ -131,19 +105,15 @@ impl ProbeParameters {
 impl PluginParameters for ProbeParameters {
     fn get_parameter(&self, index: i32) -> Option<f32> {
         if !self.in_range(index) {
-            // Not `Some(0.0)`: the fork's whole reason for making this
-            // `Option` is that "no such parameter" and "the value is zero"
-            // must not collapse.
+            // Not `Some(0.0)` — the fork made this an `Option` so "no such
+            // parameter" and "the value is zero" cannot collapse.
             //
-            // Verified caveat for whoever writes the enumeration-hole test:
-            // this `None` does **not** survive to the host. VST 2.4's
-            // `AEffect::getParameter` returns a bare `float` with no way to
-            // say "absent", so vst-rs's `interfaces::get_parameter` collapses
-            // it to `0.0` on the way out and `Vst2Instance::parameter` reads
-            // `Some(0.0)` for every index in the hole. The hole is therefore
-            // only observable through the *string* opcodes — an out-of-range
-            // `get_parameter_name` / `get_parameter_label` answers empty
-            // below, and `can_be_automated` answers false. Assert on those.
+            // But the `None` does not survive to the host: `getParameter`
+            // returns a bare `float`, so vst-rs flattens it to `0.0` and the
+            // host reads `Some(0.0)` across the whole hole. Tests must assert
+            // on the string opcodes instead — out-of-range
+            // `get_parameter_name` / `_label` answer empty below and
+            // `can_be_automated` answers false.
             return None;
         }
         let values = self.values.lock().unwrap_or_else(|p| p.into_inner());
@@ -175,8 +145,8 @@ impl PluginParameters for ProbeParameters {
         if !self.in_range(index) {
             return String::new();
         }
-        // A non-empty, non-uniform unit so a host that hands back a shared
-        // buffer for every index is caught.
+        // Non-uniform, so a host handing back one shared buffer for every
+        // index is caught.
         ["dB", "Hz", "%", "ms"][(index as usize) % 4].to_string()
     }
 
@@ -215,11 +185,9 @@ impl PluginParameters for ProbeParameters {
     }
 
     fn load_bank_data(&self, data: &[u8]) -> bool {
-        // Reject an empty blob rather than storing it. VST 2.4 has
-        // `effSetChunk` return 1 on success, and a host that ignores the
-        // answer reports a session restore as succeeding while every plugin
-        // sits at its defaults — so the probe needs at least one input the
-        // host can be seen mishandling.
+        // Reject an empty blob rather than storing it: `effSetChunk` returns
+        // 1 on success, and the probe needs at least one input whose refusal
+        // a host can be seen ignoring.
         if data.is_empty() {
             return false;
         }
@@ -242,9 +210,8 @@ impl PluginParameters for ProbeParameters {
 
 /// A do-nothing editor. Its only job is to exist, because `vst::main` keys
 /// `effFlagsHasEditor` off `get_editor()` returning `Some`. It never opens a
-/// window — the conformance suite runs headless, and a probe that tried to
-/// realise an X11 surface would fail on CI for reasons unrelated to the
-/// host.
+/// window: the suite runs headless, and realising an X11 surface would fail
+/// on CI for reasons unrelated to the host.
 struct ProbeEditor;
 
 impl Editor for ProbeEditor {
@@ -257,9 +224,8 @@ impl Editor for ProbeEditor {
     }
 
     fn open(&mut self, _parent: *mut std::os::raw::c_void) -> bool {
-        // Refuse to open rather than pretend. A host that treats this as
-        // success and then sizes a window around a surface that does not
-        // exist is a finding; one that reports the failure is correct.
+        // Refuse rather than pretend: a host that reads this as success and
+        // sizes a window around a nonexistent surface is a finding.
         false
     }
 
@@ -283,9 +249,9 @@ struct ProbePlugin {
 impl ProbePlugin {
     /// Snapshot the host's `audioMasterGetTime` answer into the capture.
     ///
-    /// Asked with every validity flag set: the point is to record which ones
-    /// the host *returns*, and a host that only fills the fields it was
-    /// asked for would otherwise look like one that fills none.
+    /// Asked with every validity flag set, so the capture records which ones
+    /// the host *returns* — otherwise a host that fills only what it was
+    /// asked for is indistinguishable from one that fills nothing.
     fn capture_time_info(&self) {
         let mask = api::TimeInfoFlags::all().bits();
         let info = self.host.get_time_info(mask);
@@ -317,9 +283,9 @@ impl ProbePlugin {
         });
         self.capture_time_info();
 
-        // A refused resume renders silence: see
-        // `tutti_vst2_probe_set_refuse_resume` for why substance rather than
-        // a return code.
+        // A refused resume renders silence — see
+        // `tutti_vst2_probe_set_refuse_resume` for why in substance rather
+        // than by return code.
         !switches::silent_process() && switches::is_resumed()
     }
 }
@@ -345,7 +311,7 @@ impl Plugin for ProbePlugin {
             unique_id: PROBE_UNIQUE_ID,
             version: PROBE_VERSION,
             // The *declared* counts, which may exceed what `ProbeParameters`
-            // services — that gap is the enumeration hole.
+            // services: that gap is the enumeration hole.
             parameters: self.config.parameters,
             presets: self.config.programs,
             inputs: self.config.inputs,
@@ -374,10 +340,9 @@ impl Plugin for ProbePlugin {
 
     fn resume(&mut self) {
         capture::with_capture(|cap| cap.resume_count = cap.resume_count.saturating_add(1));
-        // `effMainsChanged` has no failure return in VST 2.4, so a refusal
-        // can only be expressed in behaviour: stay suspended, render
-        // silence. The count above still increments, so a test can separate
-        // "host never resumed" from "plugin declined".
+        // `effMainsChanged` has no failure return, so a refusal is expressed
+        // in behaviour: stay suspended, render silence. The count above still
+        // increments, separating "host never resumed" from "plugin declined".
         switches::set_resumed(!switches::refuse_resume());
     }
 
@@ -387,14 +352,12 @@ impl Plugin for ProbePlugin {
     }
 
     fn can_do(&self, can_do: CanDo) -> Supported {
-        // The three-answer question. VST 2.4: 1 = yes, 0 = don't know,
-        // -1 = explicitly no. `Supported::No` is the only way a plugin can
-        // say "I will never do this"; a host that reads it as non-zero-so-
-        // truthy, or as equal to "don't know", is the bug this switch hunts.
+        // Answers every query alike, including the receiveVstMidiEvent /
+        // sendVstMidiEvent pair the host asks during `Vst2Instance::load`,
+        // so a test can watch `PluginInfo::receives_midi` flip.
         //
-        // The queries the host actually asks during `Vst2Instance::load`
-        // (receiveVstMidiEvent / sendVstMidiEvent) are answered by the
-        // switch too, so a test can watch `PluginInfo::receives_midi` flip.
+        // VST 2.4: 1 = yes, 0 = don't know, -1 = explicitly no. Reading `No`
+        // as non-zero-so-truthy, or as equal to "don't know", is the bug.
         let _ = can_do;
         match switches::can_do_answer() {
             CanDoAnswer::Yes => Supported::Yes,
@@ -434,13 +397,12 @@ impl Plugin for ProbePlugin {
                 *slot = CapturedEvent::default();
             }
             for i in 0..stored {
-                // SAFETY: `Events` is a flexible-array header — `events` is
-                // declared `[*mut Event; 2]` but the host allocates
-                // `num_events` entries contiguously after the header, per
-                // VST 2.4. Reading `i < num_events` pointers off the base is
-                // the defined access. A host that lies about `num_events` is
-                // a finding this probe cannot survive, and should not: a
-                // silent clamp would hide it.
+                // SAFETY: `Events` is a flexible-array header — declared
+                // `[*mut Event; 2]`, but the host allocates `num_events`
+                // entries contiguously after it, so reading
+                // `i < num_events` off the base is the defined access. No
+                // clamp: a host that lies about `num_events` is a finding,
+                // and clamping would hide it.
                 let ev_ptr = unsafe { *events.events.as_ptr().add(i) };
                 if ev_ptr.is_null() {
                     continue;
@@ -481,21 +443,18 @@ impl Plugin for ProbePlugin {
 
 /// The oracle: `out[ch][i] = in[ch][i] + channel_tag(ch)`.
 ///
-/// Generic over the sample type so the f32 and f64 entry points share one
-/// implementation and cannot drift — a divergence between them would look
-/// like a host bug in whichever path was tested second.
+/// Generic over the sample type so the f32 and f64 entry points cannot drift
+/// — a divergence would look like a host bug in whichever was tested second.
 ///
-/// Output channels with no matching input are filled with the tag alone, so
-/// an asymmetric layout still produces a defined, checkable value rather
-/// than whatever the host left in the buffer.
+/// Output channels with no matching input get the tag alone, so an
+/// asymmetric layout is still checkable.
 fn write_tagged<S: Float>(buffer: &mut AudioBuffer<S>, samples: usize, declared_outputs: usize) {
     let (inputs, mut outputs) = buffer.split();
     let in_count = inputs.len();
     let out_count = outputs.len();
 
     // Read one channel past `numInputs` when the switch is on. Guarded by
-    // `in_count` so the *honest* configuration never does it — a probe that
-    // crashed on its own well-behaved path would be useless.
+    // `in_count` so the honest configuration never does it.
     let read_channels = if switches::read_extra_input() {
         in_count + 1
     } else {
@@ -508,17 +467,12 @@ fn write_tagged<S: Float>(buffer: &mut AudioBuffer<S>, samples: usize, declared_
     };
 
     for ch in 0..write_channels {
-        // `Float::from` is fallible for exotic targets; every tag is a small
-        // exactly-representable value, so a failure here is impossible and
-        // falling back to zero would silently disarm the oracle rather than
-        // report it. Zero is chosen over a panic because a panic in a render
-        // call has no `catch_unwind` above it — the assertion then fails in
-        // the test, which is the visible outcome we want.
+        // Unreachable — every tag is small and exactly representable. Zero
+        // over a panic because a render call has no `catch_unwind` above it;
+        // a disarmed oracle fails visibly in the test's assertions instead.
         let tag = S::from(channel_tag(ch)).unwrap_or_else(S::zero);
-        // SAFETY-adjacent: `outputs.get_mut(ch)` panics past the end, which
-        // is what the write-extra switch is asking for — the panic escapes
-        // into `catch_unwind` in the fork's dispatcher for opcodes, but a
-        // render call has no such guard, so the switch is documented as
+        // `get_mut` panics past the end, which is what the write-extra switch
+        // asks for. A render call has no `catch_unwind`, so that switch is
         // crash-capable and off by default.
         let out = outputs.get_mut(ch);
         if ch < read_channels && ch < in_count {
@@ -527,9 +481,6 @@ fn write_tagged<S: Float>(buffer: &mut AudioBuffer<S>, samples: usize, declared_
                 out[i] = inp[i] + tag;
             }
         } else {
-            // An output channel with no matching input still gets a defined
-            // value, so an asymmetric layout is checkable rather than
-            // reporting whatever the host left in the buffer.
             out[..samples].fill(tag);
         }
     }
@@ -539,15 +490,12 @@ fn write_tagged<S: Float>(buffer: &mut AudioBuffer<S>, samples: usize, declared_
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// The raw dispatcher installed over vst-rs's, so the probe can answer a few
-/// opcodes the `Plugin` trait cannot express.
-///
-/// Today that is `effGetTailSize` only. vst-rs's `dispatch` rewrites a
-/// trait-reported tail size of `0` into `1`, collapsing the two answers VST
-/// 2.4 gives distinct meanings: `0` = "no tail information, host must decide
-/// for itself", `1` = "no tail at all, stop rendering immediately". A host
-/// that treats them alike either truncates reverb tails or renders silence
-/// forever, and there is no way to test that through the trait.
+/// Raw dispatcher installed over vst-rs's, for opcodes the `Plugin` trait
+/// cannot express. Today that is `effGetTailSize` only: vst-rs rewrites a
+/// trait-reported `0` into `1`, collapsing two distinct VST 2.4 answers —
+/// `0` = "no tail information, host must decide", `1` = "no tail at all, stop
+/// rendering immediately". A host conflating them either truncates reverb
+/// tails or renders silence forever.
 ///
 /// Everything else falls through to the original pointer, so the probe stays
 /// a vst-rs plugin rather than a hand-rolled AEffect.
@@ -582,17 +530,16 @@ extern "C" fn probe_dispatch(
 }
 
 /// The VST2 entry point. Hand-written rather than `plugin_main!` because two
-/// of the required misbehaviours live *outside* the `Plugin` trait:
+/// misbehaviours live *outside* the `Plugin` trait:
 ///
-/// - `effFlagsCanReplacing`: `vst::main` sets it unconditionally, so the only
-///   way to ship a plugin without it — and find out whether the host then
-///   falls back to the deprecated accumulating `process`, or calls
-///   `processReplacing` anyway through a slot the plugin never promised — is
-///   to clear the bit after the AEffect is built.
+/// - `effFlagsCanReplacing`: `vst::main` sets it unconditionally, so the bit
+///   can only be cleared after the AEffect is built. Asks whether the host
+///   falls back to the deprecated accumulating `process` or calls
+///   `processReplacing` anyway, through a slot the plugin never promised.
 /// - `effGetTailSize`: see [`probe_dispatch`].
 ///
-/// Both edits are to the AEffect the host is about to receive, before this
-/// function returns, so no host can observe the intermediate state.
+/// Both edits land before the host receives the AEffect, so the intermediate
+/// state is unobservable.
 ///
 /// # Safety
 /// `callback` must be the host's `audioMaster` function pointer.

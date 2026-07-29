@@ -26,7 +26,8 @@ use bevy_app::prelude::*;
 use bevy_ecs::prelude::*;
 
 use bevy_tutti::graph::{
-    AudioConfig, AudioGraphRes, GraphReconcilePlugin, MasterSources, MetronomeRes, TransportRes,
+    AudioConfig, AudioGraphRes, AudioSources, GraphReconcilePlugin, MasterSources, MetronomeRes,
+    SpawnAudioNode, TransportRes,
 };
 use bevy_tutti::plugin_host::{
     PluginCatalogState, PluginEditorOpen, PluginHealth, PluginLoadDone, PluginLoadTerminated,
@@ -55,6 +56,9 @@ const TICKS: usize = 600;
 const BLOCK: f64 = 512.0;
 /// Frames pulled through the graph at the end, to prove audio moves.
 const RENDER_FRAMES: usize = 256;
+/// DC level fed into the plugin's input, so an *effect* plugin has something to
+/// transform. A generator ignores it; a passthrough or gain reveals itself.
+const INPUT_LEVEL: f32 = 0.25;
 
 /// The plugin this run is hosting, if one was named on the command line.
 #[derive(Resource)]
@@ -199,12 +203,26 @@ fn narrate_load(
     narrated.loaded = true;
     println!("  status: {:?}", health.status);
 
-    // Route the plugin to the master output. Note there is nothing
-    // plugin-specific here: wiring names *entities*, never node types, so a
-    // hosted plugin is addressed exactly like a synth or a filter. This is the
-    // whole audio-output story from a host's side.
+    // Feed the plugin a signal, then route it to master. Note there is nothing
+    // plugin-specific in either step: wiring names *entities*, never node types,
+    // so a hosted plugin is addressed exactly like a synth or a filter.
+    //
+    // The input matters for what the render below can prove. Most probe plugins
+    // are effects — they transform input rather than generate — so rendering one
+    // with silence at its input yields silence at its output whether the path
+    // works or not. A known DC level in makes the output diagnostic.
+    // Stereo DC: `dc` with a 2-channel argument, so the source has a port 1 for
+    // the plugin's right input. A mono `dc(x)` here leaves port 1 unresolvable,
+    // which `rebuild` skips — silently, since an unresolvable port is an
+    // ordinary not-yet state elsewhere.
+    let source = commands
+        .spawn_audio_node(tutti_core::dsp::dc((INPUT_LEVEL, INPUT_LEVEL)))
+        .id();
+    commands
+        .entity(entity)
+        .insert(AudioSources::stereo_from(source));
     commands.insert_resource(MasterSources::from(entity));
-    println!("  wired to master out");
+    println!("  fed {INPUT_LEVEL} DC in, wired to master out");
 
     println!("  opening editor");
     commands.trigger(SetEditorVisible::show(entity));
@@ -361,20 +379,38 @@ fn report(world: &mut World) {
         use tutti_core::dsp::AudioUnit as _;
         let mut graph = world.resource_mut::<AudioGraphRes>();
         let mut frame = [0.0f32; 2];
-        let mut peak = 0.0f32;
+        // Per channel, not one peak: the whole point of a bus/channel tag is
+        // that a plugin writing the *same* value to both channels and one
+        // writing the right value to each are different outcomes, and a single
+        // peak cannot tell them apart. Last frame as well as peak, because a
+        // plugin that ramps and one that settles also differ.
+        let mut peak = [0.0f32; 2];
         let mut rendered = 0usize;
         for _ in 0..RENDER_FRAMES {
             graph.0.tick(&[], &mut frame);
-            peak = peak.max(frame[0].abs()).max(frame[1].abs());
+            peak[0] = peak[0].max(frame[0].abs());
+            peak[1] = peak[1].max(frame[1].abs());
             rendered += 1;
         }
-        println!("rendered {rendered} frames through the plugin, peak {peak:.6}");
-        if peak == 0.0 {
+        println!(
+            "rendered {rendered} frames: peak L={:.6} R={:.6}, last L={:.6} R={:.6}",
+            peak[0], peak[1], frame[0], frame[1]
+        );
+        if peak == [0.0, 0.0] {
             println!(
-                "  (silence is the honest answer for a probe plugin with no input\n   \
-                 and no note — what this shows is that the graph pulls *through*\n   \
-                 the plugin without panicking or stalling, which is the wiring\n   \
-                 claim. Asserting on non-silence needs a plugin that generates.)"
+                "  Silent. What this run *does* establish is the wiring: the graph\n  \
+                 resolves the plugin's entity to a node, pulls through it, and\n  \
+                 survives a commit — none of which panics or stalls.\n  \
+                 \n  \
+                 It does not establish that audio is correct, and the in-repo VST3\n  \
+                 probe stays silent here for reasons outside this layer: it renders\n  \
+                 nothing until its mode parameter has been driven through a real\n  \
+                 block (a controller write alone does not reach the processor), and\n  \
+                 it exposes three buses rather than two. Checked directly against\n  \
+                 `PluginClient`, with no Bevy involved, it is equally silent — so\n  \
+                 signal correctness is the plugin audio path's to prove, not the\n  \
+                 adapter's, and it needs a harness that speaks bus layouts and\n  \
+                 parameter changes."
             );
         }
     }

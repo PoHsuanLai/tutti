@@ -690,7 +690,7 @@ fn note_off_silences_the_voice() {
     // into NaN would read as a perfectly silenced voice and pass. This is the
     // one assertion in the suite that reads a *decaying* signal, so it is the
     // one where a quiet-looking result must be proven to be real silence.
-    let mut render_block = |au: &mut _| -> f32 {
+    let render_block = |au: &mut _| -> f32 {
         let mut output = silence(channels, BLOCK as usize);
         render(au, &input, &mut output, BLOCK).expect("render");
         assert!(

@@ -38,15 +38,51 @@
 
 #![cfg(target_os = "macos")]
 
-/// The harness build of each shared test: attach `#[test]`/`#[ignore]`.
+/// The harness build of each shared test: attach `#[test]`/`#[ignore]`, and
+/// refuse to run the body off the main thread.
 /// `au_gui_lifecycle_main.rs` defines the same macro to emit a plain function.
+///
+/// The `#[ignore]` alone is only advisory — `cargo test -- --include-ignored`
+/// overrides it and runs the body on a cargo worker thread, where the first
+/// AppKit call raises an Objective-C exception that unwinds into Rust and
+/// aborts the process (`fatal runtime error: Rust cannot catch foreign
+/// exceptions`, SIGABRT). That killed the whole test binary, so the documented
+/// "run everything" command could not be used on this crate at all.
+///
+/// The guard turns that abort into a skip with a message pointing at the target
+/// that *can* run these. It is a runtime check because there is no attribute
+/// for "this test must own the process main thread".
 macro_rules! gui_test {
     ($(#[$doc:meta])* fn $name:ident() $body:block) => {
         $(#[$doc])*
         #[test]
         #[ignore = "AppKit requires the main thread; run --test au_gui_lifecycle_main"]
-        fn $name() $body
+        fn $name() {
+            if !is_main_thread() {
+                eprintln!(
+                    "{}: skipped — AppKit requires the process main thread and \
+                     this is a cargo worker. Run `--test au_gui_lifecycle_main`.",
+                    stringify!($name)
+                );
+                return;
+            }
+            $body
+        }
     };
+}
+
+/// Whether the caller owns the process main thread.
+///
+/// `pthread_main_np` is the only way to ask: `assert_main_thread` cannot answer,
+/// because it compares against a thread *marked* by `mark_main_thread`, which no
+/// harness target calls — so it is a no-op here by construction.
+fn is_main_thread() -> bool {
+    // SAFETY: `pthread_main_np` takes no arguments, reads no memory, and is
+    // available on every macOS this crate compiles for.
+    unsafe extern "C" {
+        fn pthread_main_np() -> std::os::raw::c_int;
+    }
+    unsafe { pthread_main_np() == 1 }
 }
 
 mod support;

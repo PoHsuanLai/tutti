@@ -97,6 +97,15 @@ impl Midi {
         }
     }
 
+    /// This plugin's MIDI input endpoint — routing address, push mailbox, and
+    /// the source-install slot, in one borrow.
+    ///
+    /// The whole-port accessor exists so a host can reach all three through a
+    /// single downcast, the same shape `SoundFontUnit` and `PolySynth` expose.
+    pub fn port(&self) -> &MidiInPort {
+        &self.port
+    }
+
     pub fn unit_id(&self) -> MidiUnitId {
         self.port.unit_id()
     }
@@ -106,16 +115,16 @@ impl Midi {
         self.port.sender()
     }
 
-    /// Install an `Arc`-backed [`MidiIn`] override. Polled per
-    /// block in `drain_for_process` instead of the live receiver.
-    /// Used by clip players (`tutti_midi_runtime::MidiClipSource`) to
-    /// drive plugin synths from MIDI clips.
+    /// Layer an `Arc`-backed [`MidiIn`] over the live receiver. Both are
+    /// polled per block in `drain_for_process`, so a clip-driven plugin
+    /// synth still answers live events. Used by clip players
+    /// (`tutti_midi_runtime::MidiClipSource`).
     pub fn set_source(&mut self, source: Arc<dyn MidiIn>) {
         self.port.install(source);
     }
 
-    /// Drop a previously-installed source override. Subsequent ticks
-    /// poll the live receiver again.
+    /// Drop a previously-layered source. Subsequent ticks poll only the
+    /// live receiver.
     pub fn clear_source(&mut self) {
         self.port.clear();
     }

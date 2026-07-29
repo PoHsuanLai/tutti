@@ -29,36 +29,60 @@ bevy_tasks.workspace = true
 # types. bevy-tutti supplies the reconcile systems + the CPAL audio callback
 # (relocated into src/engine/).
 tutti-core = { path = "../tutti/crates/core/tutti-core", default-features = false, features = ["bevy_ecs", "bevy_asset"] }
+tutti-types = { path = "../tutti/crates/core/tutti-types", default-features = false }
 tutti-midi-types = { path = "../tutti/crates/midi/tutti-midi-types", default-features = false }
 # tutti-units is pure DSP now (its ECS binding moved to dawai_model::engine_bind).
 # The optional features below add spatial / convolution / automation DSP on top.
 tutti-units = { path = "../tutti/crates/dsp/tutti-units", default-features = false }
 
 # Optional subsystems (gated by bevy-tutti features below).
+# `routing` is the mod-matrix layer (targets, bus, table, driver); tutti-mod's
+# own `bevy` feature is deliberately left off — it adds derives to
+# `ModTargetId`/`LayerKey`, which this adapter keeps inside its resources rather
+# than exposing as components.
+tutti-mod = { path = "../tutti/crates/core/tutti-mod", optional = true, default-features = false, features = ["routing"] }
 tutti-sampler = { path = "../tutti/crates/dsp/tutti-sampler", optional = true, default-features = false }
 tutti-synth = { path = "../tutti/crates/dsp/tutti-synth", optional = true, default-features = false }
 tutti-export = { path = "../tutti/crates/core/tutti-export", optional = true }
 tutti-midi-io = { path = "../tutti/crates/midi/tutti-midi-io", optional = true }
 tutti-midi-runtime = { path = "../tutti/crates/midi/tutti-midi-runtime", optional = true, default-features = false }
-tutti-plugin = { path = "../tutti/crates/plugin/tutti-plugin", optional = true }
-# Plugin-hosting ECS surface (editor windows, scan, crash-detect, param
-# reconcile). Owns the bevy_window / raw-window-handle / objc2 deps now.
-tutti-plugin-host = { path = "../tutti/crates/plugin/tutti-plugin-host", optional = true }
+# `json` is explicit: this crate's `PluginsRes`/`PluginScanConfig` default path
+# builds a `Plugins` over the file-backed catalog (`with_json_catalog` / `empty`),
+# so it needs the ready-made impl rather than an app-supplied one. tutti-plugin
+# itself ships no default features. (Inherited from `tutti-plugin-host`, whose
+# code this crate absorbed.)
+tutti-plugin = { path = "../tutti/crates/plugin/tutti-plugin", optional = true, features = [
+    "json",
+] }
+tutti-plugin-server = { path = "../tutti/crates/plugin/tutti-plugin-server", optional = true, default-features = false }
 
-# CPAL audio I/O — bevy-tutti owns the audio callback (engine/audio_io.rs).
-cpal = "0.15"
+# Plugin editor windows: native child-window parenting for hosted GUIs.
+bevy_window = { version = "0.19", optional = true }
+raw-window-handle = { version = "0.6", optional = true }
+
+# The device layer: CPAL stream, RT callback, mic capture, driver lifecycle.
+# Bevy-free — this crate supplies only the lifecycle around it.
+tutti-cpal = { path = "../tutti/crates/core/tutti-cpal", default-features = false }
 
 # Engine graph + RT primitives (used by src/engine/).
 arc-swap = "1.7"
 atomic_float = "1.1"
 parking_lot = "0.12"
-ringbuf = "0.4"
 
 # Error handling
 thiserror.workspace = true
 
+# Diagnostics
+tracing = "0.1"
+
 # MIDI UI observer channel
 crossbeam-channel = "0.5"
+
+# macOS: child-window attach + live-resize observer for plugin editors.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", features = ["NSView", "NSWindow", "NSResponder"], optional = true }
+objc2-foundation = { version = "0.3", features = ["NSNotification", "NSString", "NSGeometry", "NSObject", "NSThread"], optional = true }
 
 [features]
 default = []
@@ -71,6 +95,7 @@ full = [
     "sampler",
     "export",
     "dsp", "spatial",
+    "modulation",
 ]
 
 # Spatial audio. The spatial graph reconciler + position-sync (GlobalTransform)
@@ -85,6 +110,12 @@ dsp = ["tutti-units/spatial"]
 # FFT convolution reverb (partitioned IR) in tutti-units.
 convolution = ["tutti-units/convolution"]
 
+# Control-rate modulation: LFO sources and mod-matrix edges as ECS entities.
+# `tutti-mod/bevy` is what makes the components reflectable — it carries the
+# `Reflect` derives on the shape vocabulary and pulls the reflection features of
+# the units and the curve type underneath.
+modulation = ["dep:tutti-mod", "tutti-mod/bevy", "tutti-types/bevy"]
+
 # Audio formats (codec on tutti-core + the sampler decoder).
 wav = ["tutti-core/wav", "tutti-sampler?/wav"]
 flac = ["tutti-core/flac", "tutti-sampler?/flac"]
@@ -95,37 +126,37 @@ ogg = ["tutti-core/ogg", "tutti-sampler?/ogg"]
 # playback, sequencer, MPE, the clock-master *generation*, built-in synth MIDI —
 # no OS I/O, no `midir`. `midi-hardware` adds the OS layer (device connect/poll,
 # MidiIo send, CoreMIDI virtual ports) on top. `plugin` also enables `midi`.
-midi = ["dep:tutti-midi-io", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-synth?/midi"]
+midi = ["dep:tutti-midi-io", "dep:tutti-midi-runtime", "tutti-core/midi", "tutti-synth?/midi", "tutti-cpal/midi"]
 midi-hardware = ["midi", "tutti-midi-io/midi-hardware"]
 
-# Synth & sampling. bevy-tutti always wants the bevy_asset derives on these
-# (SoundFontAsset, StreamingSample) — it registers them with the AssetServer.
-synth = ["dep:tutti-synth", "tutti-synth/bevy"]
-# `tutti-synth/soundfont` requires `tutti-synth/midi`, which pulls `tutti-core`
-# with `midi` under feature unification — so tutti-core compiles the 5-arg
-# `from_parts`. Like `plugin` below, `soundfont` must enable bevy-tutti's OWN
-# `midi` so `engine/build.rs` passes the gated `MidiRoutingTable` arg and the
-# call shape stays in sync with the compiled tutti-core.
-soundfont = ["synth", "midi", "tutti-synth/soundfont", "tutti-synth/bevy_asset"]
-# `tutti-export?/sampler` turns on tutti-export's region-render module only when
-# the export crate is also pulled in (export feature on) — the `?` keeps sampler
-# usable without export.
-sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy", "tutti-export?/sampler"]
+# Synth & sampling. bevy-tutti registers these with the AssetServer, so it
+# wants the asset derives on both.
+synth = ["dep:tutti-synth"]
+# `tutti-synth/soundfont` requires `tutti-synth/midi`, which pulls tutti-core
+# with `midi` under feature unification — so enable bevy-tutti's own `midi` to
+# keep `engine/build.rs` in step with the tutti-core that actually compiles.
+soundfont = ["synth", "midi", "tutti-synth/soundfont"]
+# The `?` keeps sampler usable without export.
+sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy", "tutti-export?/sampler", "tutti-cpal/capture"]
 
-# Plugin hosting. The ECS surface (editor windows, scan, crash-detect, param
-# reconcile) + the native subprocess plugin-server + editor windowing deps all
-# live in `tutti-plugin-host`. bevy-tutti keeps a direct `tutti-plugin` dep for
-# the catalog / handles / metadata re-exports in its prelude.
-# `tutti-plugin-host` → `tutti-plugin-server` pulls `tutti-core` with `midi`,
-# so tutti-core compiles with midi under feature unification. bevy-tutti's
-# `engine/builder.rs` gates the `MidiRoutingTable` arg to `from_parts` on its
-# OWN `midi` feature, so `plugin` must enable `midi` to keep the call shape in
-# sync with the compiled `tutti-core`.
-plugin = ["dep:tutti-plugin", "dep:tutti-plugin-host", "midi"]
-vst2 = ["plugin", "tutti-plugin-host/vst2", "tutti-plugin/vst2"]
-vst3 = ["plugin", "tutti-plugin-host/vst3", "tutti-plugin/vst3"]
-clap = ["plugin", "tutti-plugin-host/clap", "tutti-plugin/clap"]
-au = ["plugin", "tutti-plugin-host/au", "tutti-plugin/au"]
+# Plugin hosting: editor windows, catalog scan, crash detection.
+# `tutti-plugin-server` pulls `tutti-core` with `midi` under feature
+# unification, so `plugin` enables bevy-tutti's own `midi` to keep the two in
+# step.
+plugin = [
+    "dep:tutti-plugin",
+    "dep:tutti-plugin-server",
+    "dep:bevy_window",
+    "dep:raw-window-handle",
+    "dep:objc2",
+    "dep:objc2-app-kit",
+    "dep:objc2-foundation",
+    "midi",
+]
+vst2 = ["plugin", "tutti-plugin-server/vst2", "tutti-plugin/vst2"]
+vst3 = ["plugin", "tutti-plugin-server/vst3", "tutti-plugin/vst3"]
+clap = ["plugin", "tutti-plugin-server/clap", "tutti-plugin/clap"]
+au = ["plugin", "tutti-plugin-server/au", "tutti-plugin/au"]
 
 # Export.
 export = ["dep:tutti-export"]
@@ -138,7 +169,18 @@ assert_no_alloc = { version = "1", default-features = false }
 # it back with `hound` — same crates the sampler's own capture tests use.
 hound = "3.5"
 tempfile = "3.8"
+# `AudioTap::open` hands back a `ringbuf` consumer. Naming its `Consumer` trait
+# is what lets the tap test pop the frames a simulated callback pushed, rather
+# than asserting only that an `is_open` flag flipped. Same version tutti-core
+# builds the ring with.
+ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 
 # NOTE: examples 29_node_entities / 30_full_pipeline were removed — they
 # demonstrated engine-side ECS param reconcile (Volume/SamplerSpeed/…), which
 # moved app-side to dawai_model::engine_bind ("engine Bevy = Net pump only").
+# `AudioParam` brought the generic half of that reconcile back engine-side, so a
+# param example belongs here again — but only the modulation-aware read path,
+# which is the part an app cannot reconstruct on its own.
+[[example]]
+name = "modulated_fader"
+required-features = ["modulation"]

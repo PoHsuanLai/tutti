@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use tutti_types::RtPublish;
+use tutti_types::{Depth, RtPublish};
 
 use crate::id::{LayerKey, ModTargetId};
 use crate::shape::Polarity;
@@ -33,9 +33,14 @@ pub struct ModEdge {
     pub target: ModTargetId,
     /// Contributor key — must be non-zero (never [`LayerKey::AUTOMATION`]).
     pub key: LayerKey,
-    /// Bipolar routing depth, typically `-1.0..=1.0`.
-    pub depth: f32,
+    /// Bipolar routing depth. Negative inverts the source.
+    pub depth: Depth,
     /// Target range, baked in so scaling needs no lock.
+    ///
+    /// Bare floats because these are in the *target's* units — Hz for a cutoff,
+    /// linear gain for a fader, semitones for a pitch — so no one newtype is
+    /// right for the field. The unit lives with the target that declared the
+    /// range, and the driver only ever uses the span to scale by.
     pub min: f32,
     pub max: f32,
     /// How the raw value is shaped (see [`crate::shape`]).
@@ -51,7 +56,7 @@ impl ModEdge {
         source: usize,
         target: ModTargetId,
         key: LayerKey,
-        depth: f32,
+        depth: impl Into<Depth>,
         min: f32,
         max: f32,
     ) -> Self {
@@ -59,7 +64,7 @@ impl ModEdge {
             source,
             target,
             key,
-            depth,
+            depth: depth.into(),
             min,
             max,
             polarity: Polarity::Bipolar,

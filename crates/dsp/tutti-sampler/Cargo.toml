@@ -7,16 +7,14 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/PoHsuanLai/Tutti"
 
 [features]
-default = ["bevy", "wav"]
+default = ["wav"]
 
-# Bevy ECS integration: the playback Plugins, Components, Systems, and asset
-# loaders. Off → the DSP leaves (SamplerUnit,
-# StreamingSamplerUnit, TrackClipReaderUnit, the butler streaming engine, the
-# stretch::Unit) compile Bevy-free for direct FunDSP-graph use. Pulls
-# `tutti-core/bevy` (the playback systems schedule against the graph hub and
-# `#[require(Volume)]` a core Component) and `tutti-core/bevy_asset` (the
-# `WaveAsset` loader).
-bevy = ["dep:bevy_ecs", "dep:bevy_app", "dep:bevy_reflect", "dep:bevy_asset", "dep:bevy_log", "tutti-core/bevy", "tutti-core/bevy_asset"]
+# Bevy ECS integration: the entity-as-node marker derives on the voice-pool
+# handles, and nothing else. The Plugins and asset loaders moved to bevy-tutti
+# (house rule R1), so this feature adds only `derive(Component)` — the DSP
+# leaves (MemorySource, DiskVoice, VoicePool, the butler streaming engine, the
+# stretch::Unit) compile Bevy-free for direct FunDSP-graph use either way.
+bevy = ["dep:bevy_ecs"]
 
 # Audio format support - cascade to tutti-core
 wav = ["tutti-core/wav"]
@@ -34,17 +32,13 @@ tutti-core = { path = "../../core/tutti-core", default-features = false }
 # The STFT analysis grid + the one periodic Hann. The time-stretch vocoder is an
 # STFT, so it shares `StftGeometry` (window/hop/rate validated together, COLA
 # checked) and `window::hann` rather than keeping a ninth copy of each.
-# default-features = false per the house rule, or Bevy re-leaks transitively.
 tutti-analysis = { path = "../tutti-analysis", default-features = false }
 
-# Bevy ECS integration: Components / Systems / Plugins live next to the audio
-# logic. Optional, gated by the `bevy` feature.
+# The entity-as-node marker derives on the voice-pool handles. Optional,
+# gated by the `bevy` feature.
 bevy_ecs = { version = "0.19", default-features = false, optional = true }
-bevy_app = { version = "0.19", default-features = false, optional = true }
-bevy_reflect = { version = "0.19", default-features = false, optional = true }
-bevy_asset = { version = "0.19", default-features = false, optional = true }
-bevy_log = { version = "0.19", default-features = false, optional = true }
 
+tracing = "0.1"
 thiserror = "2"
 
 # Lock-free

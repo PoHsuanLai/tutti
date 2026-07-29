@@ -74,18 +74,23 @@ impl HardwareMidiInput {
         }
     }
 
-    /// Drain this port's input ring into `sink`, tagging each event with
-    /// `port_index`. Generic over the sink (`Vec`, `SmallVec`, …) so callers
-    /// can use whatever RT buffer they hold.
+    /// Drain at most `limit` events from this port's input ring into `sink`,
+    /// tagging each with `port_index`, and return how many were taken.
+    ///
+    /// Generic over the sink (`Vec`, `SmallVec`, …) so callers can use whatever
+    /// RT buffer they hold. `limit` is what keeps a fixed-capacity sink from
+    /// reallocating: the audio thread passes its remaining headroom, and events
+    /// past it stay in the ring for the next block.
     #[inline]
     pub fn cycle_start_read_input_into(
         &self,
         sink: &mut impl Extend<(Instant, usize, MidiEvent)>,
         port_index: usize,
-    ) {
-        self.input.drain_each(|(timestamp, event)| {
+        limit: usize,
+    ) -> usize {
+        self.input.drain_each_limited(limit, |(timestamp, event)| {
             sink.extend(core::iter::once((timestamp, port_index, event)))
-        });
+        })
     }
 }
 
@@ -109,8 +114,38 @@ mod tests {
     /// Test helper: drain input into a fresh Vec.
     fn read_input(port: &HardwareMidiInput) -> Vec<MidiEvent> {
         let mut buf = Vec::new();
-        port.cycle_start_read_input_into(&mut buf, 0);
+        port.cycle_start_read_input_into(&mut buf, 0, usize::MAX);
         buf.into_iter().map(|(_, _, e)| e).collect()
+    }
+
+    #[test]
+    fn drain_stops_at_limit_and_keeps_the_rest() {
+        let port = HardwareMidiInput::new("Limited", 16);
+        let handle = port.input_producer_handle();
+        for i in 0..8 {
+            assert!(handle.push(note_on(0x3C, 0x7F).with_frame_offset(i), Instant::now()));
+        }
+
+        let mut buf = Vec::new();
+        let taken = port.cycle_start_read_input_into(&mut buf, 0, 3);
+        assert_eq!(taken, 3, "drain must stop at the limit");
+        assert_eq!(buf.len(), 3);
+
+        // The undrained remainder is still queued, not lost.
+        let rest = read_input(&port);
+        assert_eq!(rest.len(), 5, "events past the limit stay in the ring");
+    }
+
+    #[test]
+    fn drain_of_zero_takes_nothing() {
+        let port = HardwareMidiInput::new("Zero", 16);
+        let handle = port.input_producer_handle();
+        assert!(handle.push(note_on(0x3C, 0x7F), Instant::now()));
+
+        let mut buf = Vec::new();
+        assert_eq!(port.cycle_start_read_input_into(&mut buf, 0, 0), 0);
+        assert!(buf.is_empty());
+        assert_eq!(read_input(&port).len(), 1, "a zero budget must not consume");
     }
 
     #[test]

@@ -22,12 +22,13 @@
 //! # std + Bevy
 //!
 //! tutti-core is a std crate whose DSP graph runtime (fundsp's [`Net`](dsp::Net),
-//! transport, metering) is Bevy-agnostic. The optional `bevy` feature (on by
-//! default) adds the shared ECS graph-reconcile hub (`GraphReconcileSystems`,
-//! `AudioGraphRes`, the param components, `GraphReconcilePlugin`) that every leaf
-//! audio crate schedules against. Build with `--no-default-features` for a
-//! Bevy-free kernel; a non-Bevy host wires nodes via `Net`'s imperative
-//! `connect`/`disconnect` API directly.
+//! transport, metering) is Bevy-agnostic. The optional `bevy` feature is **off by
+//! default** and adds exactly one thing: a `Component` derive on [`AudioNode`],
+//! so an entity can *be* a node in the graph. Everything that reconciles against
+//! it — the set hierarchy, the graph resources, the param components, the
+//! declarative wiring — lives in the host adapter, `bevy_tutti::graph`. A
+//! non-Bevy host wires nodes through `Net`'s `set_source` / `connect` API
+//! directly.
 
 pub mod error;
 pub use error::{Error, Result};
@@ -131,10 +132,13 @@ pub use fundsp::fft::{inverse_fft, real_fft};
 pub use fundsp::math::Complex32;
 pub use fundsp::net::{NodeId, Source};
 pub use fundsp::prelude::{shared, AudioUnit, BufferMut, BufferRef, Shared};
-// `WaveAsset` is a Bevy `Asset` — it only exists in fundsp under `bevy_asset`,
-// so gate the re-export on our `bevy_asset` feature (which chains
-// `fundsp/bevy_asset`), not on the plain codec features.
-#[cfg(feature = "bevy_asset")]
+// `WaveAsset` needs both axes: it is a Bevy `Asset` (so `bevy_asset`), and it
+// lives in fundsp's `read` module, which only exists once a codec is on. Gating
+// on either alone breaks the other combination.
+#[cfg(all(
+    feature = "bevy_asset",
+    any(feature = "wav", feature = "flac", feature = "mp3", feature = "ogg")
+))]
 pub use fundsp::read::WaveAsset;
 // Decode error surfaced by `WaveAsset::from_bytes`; the Bevy `WaveAssetLoader`
 // in tutti-sampler wraps it.
@@ -173,11 +177,8 @@ pub mod node_id;
 pub mod node;
 pub use node::AudioNode;
 
-// The Bevy ECS integration layer — the reconcile hub, graph resources, and the
-// per-subsystem Bevy wrappers, all gathered under one `#[cfg(feature = "bevy")]`
-// roof. The engine itself (fundsp's `Net`, transport, metering) needs none of
-// it; this is the adapter a Bevy host uses to reconcile ECS state into the
-// graph. Its items stay re-exported from their historical `metering::` /
-// `transport::` paths, so this move is invisible to consumers.
-#[cfg(feature = "bevy")]
-pub mod ecs;
+// This crate is the engine: fundsp's `Net`, transport, metering, PDC. Wiring it
+// into an ECS — the reconcile pipeline, graph resources, per-subsystem
+// wrappers — is the host adapter's business, and lives in `bevy_tutti::graph`.
+// `AudioNode` above carries a gated `Component` derive because it is the one
+// handle a host addresses by name.

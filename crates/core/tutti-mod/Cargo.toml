@@ -9,28 +9,54 @@ keywords = ["audio", "modulation", "lfo"]
 categories = ["multimedia::audio"]
 
 [features]
-# `bevy` (Component/Reflect on the ids + accumulator) is default-on, matching
-# the rest of the tutti engine. The PURE FLOOR — the `Modulator` source trait,
-# `Lfo`/combinators, and the `shape`/`fold` math — needs none of these and
-# builds under `--no-default-features`.
-default = ["bevy"]
+# The PURE FLOOR — the `Modulator` source trait, `Lfo`/combinators, and the
+# `shape`/`fold` math — needs no features at all.
+default = []
 # Unlocks the routing layer (needs std for Arc/Mutex/Vec).
 std = []
 # The mod-matrix routing subsystem: keyed accumulator, id→sink bus, routing
 # snapshot + table, and the per-frame driver.
-routing = ["std", "dep:dashmap", "dep:arc-swap", "dep:atomic_float", "dep:tutti-types"]
-# ECS surface: `Component`/`Reflect` derives on `ModTargetId`, `LayerKey`.
+routing = ["std", "dep:dashmap", "dep:arc-swap", "dep:atomic_float"]
+# ECS surface: `Component`/`Reflect` derives on `ModTargetId`, `LayerKey`, and
+# `Reflect` on the `LfoShape`/`Polarity` vocabulary a Bevy component carries.
 # Implies `routing` (the ids/targets are only useful with it) and std.
-bevy = ["routing", "dep:bevy_ecs", "dep:bevy_reflect"]
+#
+# Enables `tutti-types/bevy` because the reflected types here are built from
+# reflected units — an unreflectable `Depth` inside a reflected `ModEdge` does
+# not compile. This is the one place a tutti crate's `bevy` feature reaches into
+# another's, and it is a reflection-completeness edge rather than the transitive
+# Bevy leak the feature-hygiene rule guards against.
+# Enables the reflection features of the crates whose types ride inside the
+# reflected ones: an unreflectable `Depth` inside a reflected `ModEdge`, or a
+# `CurveType` inside a `ModRoute`, does not compile. These are
+# reflection-completeness edges rather than the transitive Bevy leak the
+# feature-hygiene rule guards against — `audio-automation/bevy_reflect` pulls
+# `bevy_reflect` alone, no ECS and no runtime.
+bevy = [
+    "routing",
+    "tutti-types/bevy",
+    "audio-automation/bevy_reflect",
+    "dep:bevy_ecs",
+    "dep:bevy_reflect",
+]
 
 [dependencies]
 # `CurveType` only for the pure floor — the project's established response-curve
 # vocabulary. Keeps a `Modulator` able to drive something non-audio.
 audio-automation = { version = "0.4", default-features = false }
 
-# `ParamAddr` (native `UnitParam` + foreign id) — the key the `ModParams` trait
-# addresses, so one trait covers native nodes and plugins. Routing-gated.
-tutti-types = { path = "../tutti-types", default-features = false, optional = true }
+# The measurement vocabulary. `Phase`/`PhaseIncrement` (a modulator's position
+# and its step) and `Depth` (a bipolar modulation amount) reach into the pure
+# floor itself, so this is not routing-gated; `ParamAddr` — the key the
+# `ModParams` trait addresses — comes from here too.
+#
+# Unconditional despite the floor's no-dependencies instinct, because `Phase`
+# exists *because of this crate*: three hand-rolled wraps lived here, two of them
+# sign-wrong for a reverse-rate modulator, and the type is what makes that class
+# unrepresentable. Spelling the invariant out in a comment was the alternative,
+# and it is how the third wrap survived. tutti-types is a leaf crate — Bevy-free,
+# pulling only smallvec / atomic_float / arc-swap.
+tutti-types = { path = "../tutti-types", default-features = false }
 
 # Routing layer — literal pins matching the tutti crates (these are NOT in
 # [workspace.dependencies]).

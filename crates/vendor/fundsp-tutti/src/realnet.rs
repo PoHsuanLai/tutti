@@ -8,6 +8,7 @@ use super::setting::*;
 use super::signal::*;
 use super::*;
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 
 /// Message from frontend to backend.
 #[derive(Default, Clone)]
@@ -33,6 +34,15 @@ pub struct NetBackend {
     /// For receiving new versions and settings from the frontend.
     receiver: Arc<Queue<NetMessage, 256>>,
     net: Net,
+    /// Superseded networks the return queue had no room for.
+    ///
+    /// `handle_messages` runs from `tick`/`process` — the audio callback — so a
+    /// network that cannot be handed back must be kept rather than dropped.
+    /// Dropping one here would free *every* unit in that graph under the
+    /// deadline, which makes this the costlier sibling of the per-vertex
+    /// retirement `Vertex` does. Retried ahead of each later return, so the
+    /// frontend frees them in supersession order.
+    retired: VecDeque<Box<Net>>,
 }
 
 impl Clone for NetBackend {
@@ -44,6 +54,7 @@ impl Clone for NetBackend {
             sender: Some(queue_return),
             receiver: queue_message,
             net: self.net.clone(),
+            retired: VecDeque::new(),
         }
     }
 }
@@ -58,6 +69,34 @@ impl NetBackend {
             sender: Some(sender),
             receiver,
             net,
+            // Two slots cover the steady state: the superseded network plus one
+            // skipped intermediate per `handle_messages`. Reserved here, on the
+            // control thread, so the common path never grows the deque.
+            retired: VecDeque::with_capacity(2),
+        }
+    }
+
+    /// Hand `net` back to the frontend for deallocation, parking it if the
+    /// return queue is full.
+    ///
+    /// Parked networks go first, so the frontend frees them in the order they
+    /// were superseded.
+    fn retire(&mut self, net: Box<Net>) {
+        let Some(sender) = self.sender.as_ref() else {
+            return;
+        };
+        while let Some(parked) = self.retired.pop_front() {
+            if let Err(NetReturn::Net(parked)) = sender.enqueue(NetReturn::Net(parked)) {
+                self.retired.push_front(parked);
+                break;
+            }
+        }
+        if !self.retired.is_empty() {
+            self.retired.push_back(net);
+            return;
+        }
+        if let Err(NetReturn::Net(net)) = sender.enqueue(NetReturn::Net(net)) {
+            self.retired.push_back(net);
         }
     }
 
@@ -87,13 +126,7 @@ impl NetBackend {
                             if let Some(mut old_net) = latest_net {
                                 // This is not the latest network, send it back immediately for deallocation.
                                 self.net.apply_foreign_edits(&mut old_net, &self.sender);
-                                if self
-                                    .sender
-                                    .as_ref()
-                                    .unwrap()
-                                    .enqueue(NetReturn::Net(old_net))
-                                    .is_ok()
-                                {}
+                                self.retire(old_net);
                             }
                             latest_net = Some(net);
                         }
@@ -112,13 +145,7 @@ impl NetBackend {
             core::mem::swap(&mut *net, &mut self.net);
             self.net.apply_edits(&self.sender);
             // Send the previous network back for deallocation.
-            if self
-                .sender
-                .as_ref()
-                .unwrap()
-                .enqueue(NetReturn::Net(net))
-                .is_ok()
-            {}
+            self.retire(net);
         }
     }
 }

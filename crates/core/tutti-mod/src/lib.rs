@@ -88,6 +88,8 @@ mod target;
 #[cfg(feature = "routing")]
 mod curve;
 #[cfg(feature = "routing")]
+mod curve_source;
+#[cfg(feature = "routing")]
 mod driver;
 #[cfg(feature = "routing")]
 mod layered;
@@ -111,6 +113,8 @@ pub use target::ModTarget;
 
 #[cfg(feature = "routing")]
 pub use curve::Curve;
+#[cfg(feature = "routing")]
+pub use curve_source::{BeatLfo, CurveModulator, EdgeShape, ShapedCurve};
 #[cfg(feature = "routing")]
 pub use driver::{ErasedModulator, ModPreFrame, Rate, SourceRate, Sourced};
 #[cfg(feature = "routing")]

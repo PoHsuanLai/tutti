@@ -1,5 +1,7 @@
 //! The [`Modulator`] trait — the core abstraction of this crate.
 
+use tutti_types::{Phase, PhaseIncrement};
+
 /// A pure `phase -> value` function, in the shape of [`Iterator::scan`]: it
 /// carries no interior state — the caller threads a [`State`](Modulator::State)
 /// value **in and out** of each sample.
@@ -25,38 +27,40 @@ pub trait Modulator {
     /// satisfies this; it costs stateless (`()`) modulators nothing.
     type State: Copy + Default + Send + Sync;
 
-    /// Pure sample: given the incoming `state` and `phase ∈ [0, 1)`, return the
+    /// Pure sample: given the incoming `state` and a [`Phase`], return the
     /// `(next_state, value)`. `value` is typically `[-1, 1]`.
     ///
     /// `&self` — the modulator holds no mutable state; the `state` value is the
     /// only thing that carries between samples (the `scan` accumulator).
-    fn value(&self, state: Self::State, phase: f32) -> (Self::State, f32);
+    ///
+    /// [`Phase`] rather than a bare `f32` because an implementation may index a
+    /// shape table directly with it: the type's `[0, 1)` range is the
+    /// precondition, and it is one only [`Phase::wrapped`] can establish.
+    fn value(&self, state: Self::State, phase: Phase) -> (Self::State, f32);
 
     /// Block form, alloc-free: fill `out` starting at `phase`, advancing by
-    /// `dphase` (wrapped to `[0, 1)`) per sample, threading `state` through.
-    /// Returns the final state. The default loops [`Modulator::value`]; impls
-    /// may override for a tighter inner loop.
+    /// `dphase` per sample and threading `state` through. Returns the final
+    /// state. The default loops [`Modulator::value`]; impls may override for a
+    /// tighter inner loop.
     ///
-    /// Wraps with `rem_euclid`, not `.fract()`: `fract` keeps the sign of its
-    /// input, so a negative `dphase` — a modulator running backwards — walks
-    /// the phase below zero and leaves the `[0, 1)` range every implementation
-    /// of [`value`](Modulator::value) assumes, indexing off the front of a
-    /// shape table. `tutti_types::Phase` is the typed form of this rule, but
-    /// this crate's pure floor deliberately does not depend on `tutti-types`,
-    /// so the invariant is spelled out here instead.
+    /// A negative `dphase` runs the modulator backwards, and
+    /// [`Phase::advance`] wraps correctly for it — that case is exactly what
+    /// the `%` and `.fract()` wraps this signature replaced got wrong, since
+    /// both keep the sign of their input and walk the phase off the front of a
+    /// shape table.
     fn fill(
         &self,
         mut state: Self::State,
-        phase: f32,
-        dphase: f32,
+        phase: Phase,
+        dphase: PhaseIncrement,
         out: &mut [f32],
     ) -> Self::State {
-        let mut p = phase.rem_euclid(1.0);
+        let mut p = phase;
         for s in out.iter_mut() {
             let (next, v) = self.value(state, p);
             state = next;
             *s = v;
-            p = (p + dphase).rem_euclid(1.0);
+            p = p.advance(dphase);
         }
         state
     }
@@ -72,8 +76,8 @@ mod tests {
 
     impl Modulator for PhaseProbe {
         type State = ();
-        fn value(&self, _state: (), phase: f32) -> ((), f32) {
-            ((), phase)
+        fn value(&self, _state: (), phase: Phase) -> ((), f32) {
+            ((), phase.get())
         }
     }
 
@@ -84,7 +88,7 @@ mod tests {
         // because `fract` preserves the sign of its input — every sample after
         // the first would index off the front of a shape table.
         let mut out = [0.0_f32; 16];
-        PhaseProbe.fill((), 0.1, -0.25, &mut out);
+        PhaseProbe.fill((), Phase(0.1), PhaseIncrement(-0.25), &mut out);
 
         for (i, p) in out.iter().enumerate() {
             assert!(
@@ -97,10 +101,15 @@ mod tests {
         assert!((out[2] - 0.60).abs() < 1e-6);
     }
 
+    /// `fill` no longer wraps its starting phase, because [`Phase`] cannot
+    /// arrive out of range — `wrapped` is the only constructor that accepts
+    /// arbitrary input, so the guarantee moved from the loop into the type.
+    /// This pins that it is the *same* guarantee: the wrap `fill` used to
+    /// perform is still available, one call earlier.
     #[test]
-    fn fill_wraps_a_starting_phase_that_is_already_out_of_range() {
+    fn a_wrapped_starting_phase_enters_the_range() {
         let mut out = [0.0_f32; 4];
-        PhaseProbe.fill((), -0.25, 0.1, &mut out);
+        PhaseProbe.fill((), Phase::wrapped(-0.25), PhaseIncrement(0.1), &mut out);
         assert!((out[0] - 0.75).abs() < 1e-6);
         assert!(out.iter().all(|p| (0.0..1.0).contains(p)));
     }
@@ -108,7 +117,7 @@ mod tests {
     #[test]
     fn fill_still_wraps_forwards() {
         let mut out = [0.0_f32; 8];
-        PhaseProbe.fill((), 0.9, 0.25, &mut out);
+        PhaseProbe.fill((), Phase(0.9), PhaseIncrement(0.25), &mut out);
         assert!((out[0] - 0.9).abs() < 1e-6);
         assert!((out[1] - 0.15).abs() < 1e-6);
         assert!(out.iter().all(|p| (0.0..1.0).contains(p)));

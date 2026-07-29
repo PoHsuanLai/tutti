@@ -15,14 +15,5 @@ categories = ["multimedia::audio"]
 [features]
 default = []
 
-# Enables `SoundFontAsset` (inherent `from_bytes` + `#[derive(Asset, TypePath)]`
-# on the wrapper). Pulls optional bevy_asset/bevy_reflect.
-bevy_asset = [
-    "dep:bevy_asset",
-    "dep:bevy_reflect",
-]
-
 [dependencies]
-bevy_asset = { version = "0.19", default-features = false, optional = true }
-bevy_reflect = { version = "0.19", default-features = false, optional = true }
 thiserror = { version = "2", default-features = false, optional = true }

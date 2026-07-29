@@ -30,6 +30,8 @@
 
 use std::sync::Arc;
 
+use tutti_types::Depth;
+
 use crate::driver::{ErasedModulator, ModPreFrame, SourceRate, Sourced};
 use crate::id::{LayerKey, ModTargetId};
 use crate::param::AtomicTarget;
@@ -197,7 +199,7 @@ impl<'m> Route<'m> {
                 source: self.source,
                 target: target.id,
                 key,
-                depth: 1.0,
+                depth: Depth::FULL,
                 min: target.min,
                 max: target.max,
                 polarity: Polarity::Bipolar,
@@ -218,9 +220,9 @@ pub struct RouteTo<'m> {
 }
 
 impl RouteTo<'_> {
-    /// Set the routing depth (bipolar, typically `-1.0..=1.0`).
-    pub fn depth(mut self, depth: f32) -> Self {
-        self.edge.depth = depth;
+    /// Set the routing depth. Negative inverts the source.
+    pub fn depth(mut self, depth: impl Into<Depth>) -> Self {
+        self.edge.depth = depth.into();
         self
     }
 

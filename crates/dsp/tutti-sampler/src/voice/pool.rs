@@ -340,8 +340,7 @@ impl VoicePool {
                     // a `play.loop_` that says "looping" while the stream is
                     // not would make `Playback` lie about the applied state —
                     // which `insert_voice` then replays as if it were real.
-                    #[cfg(feature = "bevy")]
-                    bevy_log::warn!(
+                    tracing::warn!(
                         "loop command dropped for slot {id:?}: streaming voice has no butler channel"
                     );
                     return;
@@ -468,8 +467,7 @@ impl VoicePool {
                         match &mut slot.voice.source {
                             VoiceSource::Memory(sampler) => sampler.set_wave(wave),
                             VoiceSource::Disk(_) => {
-                                #[cfg(feature = "bevy")]
-                                bevy_log::warn!(
+                                tracing::warn!(
                                     "ReplaceWave ignored for slot {id:?}: a streaming voice \
                                      changes source by re-issuing AddVoice, not in-unit"
                                 );

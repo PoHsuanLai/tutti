@@ -7,9 +7,9 @@
 //! events whose beat falls in that range with their `frame_offset` set to
 //! the sample-accurate position inside the block.
 //!
-//! Installing a source on a [`MidiInPort`](crate::MidiInPort) *replaces* its
-//! live receiver, so a synth plays either its clip or live preview events, not
-//! both. Layering the two would be a change to `MidiInPort::poll`.
+//! Installing a source on a [`MidiInPort`](crate::MidiInPort) *layers* it over
+//! that port's live receiver, so a synth plays its clip and still answers the
+//! keyboard.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

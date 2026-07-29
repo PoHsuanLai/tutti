@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use tutti_core::transport::TransportState;
-use tutti_core::Beat;
+use tutti_core::{Beat, Depth, PhaseIncrement};
 use tutti_units::automation::Curve;
 
 use crate::host::node::input_slot::{BlockCtx, BlockInput, BlockReset};
@@ -46,20 +46,21 @@ pub struct TimedParam {
 /// closes the LFO→plugin gap without any fundsp node — a plugin param never
 /// enters the graph, so the value is IPC-encoded like any other automation.
 ///
-/// `Curve::value_at` is `&self` and stateless, so the deterministic shapes go
-/// through the pure scan-shaped [`tutti_units::Lfo`] with a throwaway state
-/// (they never read it). The random shapes can't thread the modulator's stepper
-/// through a `&self` curve, so they derive a stable value from the integer beat
-/// index instead — a beat-synced sample & hold, one new value per cycle.
+/// `Curve::value_at` is `&self` and stateless, so the waveform comes from
+/// [`BeatLfo`](tutti_units::BeatLfo) — `tutti-mod`'s beat-clocked formulation,
+/// which derives every shape from the position alone. The stepped shapes key
+/// their randomness on the cycle index rather than a threaded stepper, so they
+/// are addressable and a bar replays identically after a seek.
 #[derive(Debug, Clone, Copy)]
 pub struct LfoCurve {
-    /// The pure modulator (config only). Deterministic shapes are sampled from
-    /// it; random shapes use the per-cycle hash below.
+    /// The pure modulator (config only) — its shape selects the `BeatLfo` form.
     lfo: tutti_units::Lfo,
     /// Beats per LFO cycle (beat-synced). `<= 0` freezes at the phase offset.
     beats_per_cycle: f32,
-    depth: f32,
-    phase_offset: f32,
+    depth: Depth,
+    /// A displacement added to the generated position, not a position itself —
+    /// and meaningfully negative, which a `Phase` cannot be.
+    phase_offset: PhaseIncrement,
     /// Output mapping: `base + shaped·(max-min)`, clamped to `[min, max]`.
     base: f32,
     min: f32,
@@ -74,8 +75,8 @@ impl LfoCurve {
     pub fn new(
         shape: tutti_units::LfoShape,
         beats_per_cycle: f32,
-        depth: f32,
-        phase_offset: f32,
+        depth: impl Into<Depth>,
+        phase_offset: impl Into<PhaseIncrement>,
         base: f32,
         min: f32,
         max: f32,
@@ -85,59 +86,37 @@ impl LfoCurve {
             // raw `[-1, 1]` output is what we sample here.
             lfo: tutti_units::Lfo::new(shape),
             beats_per_cycle,
-            depth,
-            phase_offset,
+            depth: depth.into(),
+            phase_offset: phase_offset.into(),
             base,
             min,
             max,
         }
     }
 
-    /// The raw modulator value in `[-1, 1]` at a given beat, phase-deterministic.
+    /// The raw modulator value in `[-1, 1]` at a given beat.
+    ///
+    /// Delegates to [`BeatLfo`](tutti_units::BeatLfo), the shared beat-clocked
+    /// formulation in `tutti-mod`. This crate used to hash the cycle index
+    /// itself for the random shapes; that handled `Random` correctly but gave
+    /// `RandomSmooth` one value per cycle too — a stair under a name that
+    /// promises a ramp, which defeats the point of sub-block delivery.
     #[inline]
     fn raw_value(&self, beat: f64) -> f32 {
-        use tutti_units::Modulator;
+        use tutti_units::CurveModulator;
 
-        let phase = if self.beats_per_cycle > 0.0 {
-            ((beat as f32 / self.beats_per_cycle) + self.phase_offset).rem_euclid(1.0)
+        let cycles = if self.beats_per_cycle > 0.0 {
+            beat as f32 / self.beats_per_cycle + self.phase_offset.get()
         } else {
-            self.phase_offset.rem_euclid(1.0)
+            self.phase_offset.get()
         };
-        if self.lfo.shape.is_random() {
-            // Random shapes need the stateful stepper, which we can't thread
-            // through a `&self` curve. Instead derive a stable per-cycle value:
-            // hash the cycle index so the value is constant within a cycle and
-            // jumps at each boundary — a beat-synced sample & hold.
-            let cycle = if self.beats_per_cycle > 0.0 {
-                (beat as f32 / self.beats_per_cycle).floor() as i64
-            } else {
-                0
-            };
-            hash_unit_bipolar(cycle)
-        } else {
-            // Deterministic shape: sample the pure scan-shaped modulator with a
-            // throwaway state (it never reads it) — the waveform math lives in
-            // `tutti-mod`, not here.
-            let seed = <tutti_units::Lfo as Modulator>::State::default();
-            self.lfo.value(seed, phase).1
-        }
+        tutti_units::BeatLfo::new(self.lfo.shape, self.beats_per_cycle).raw_at(cycles)
     }
-}
-
-/// Map a cycle index to a stable pseudo-random value in `[-1, 1]` (splitmix64).
-#[inline]
-fn hash_unit_bipolar(n: i64) -> f32 {
-    let mut z = (n as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^= z >> 31;
-    // Top 24 bits → [0, 1) → [-1, 1].
-    ((z >> 40) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
 }
 
 impl Curve for LfoCurve {
     fn value_at(&self, beat: tutti_core::Beat) -> Option<f32> {
-        let shaped = self.raw_value(beat.get()) * self.depth * (self.max - self.min);
+        let shaped = self.raw_value(beat.get()) * self.depth.get() * (self.max - self.min);
         Some((self.base + shaped).clamp(self.min, self.max))
     }
 }
@@ -168,8 +147,8 @@ impl LfoOffset {
     pub fn new(
         shape: tutti_units::LfoShape,
         beats_per_cycle: f32,
-        depth: f32,
-        phase_offset: f32,
+        depth: impl Into<Depth>,
+        phase_offset: impl Into<PhaseIncrement>,
         span: f32,
     ) -> Self {
         // Reuse LfoCurve only for its phase/waveform (`raw_value`); base 0, unit
@@ -184,7 +163,7 @@ impl LfoOffset {
 impl Curve for LfoOffset {
     fn value_at(&self, beat: tutti_core::Beat) -> Option<f32> {
         let raw = self.lfo.raw_value(beat.get()); // [-1, 1]
-        let offset = raw * self.lfo.depth * self.span;
+        let offset = raw * self.lfo.depth.get() * self.span;
         Some(offset.clamp(-self.span, self.span))
     }
 }
@@ -307,6 +286,19 @@ impl tutti_units::ModTarget for PluginParamTarget {
     #[inline]
     fn clear(&self, key: tutti_units::LayerKey) {
         self.edit(|lc| lc.clear_layer(key));
+    }
+    /// Accepted — this is the sink curve layers exist for. Its reader is the
+    /// plugin's per-block producer, which evaluates at each block beat, so a
+    /// stored curve traces a smooth ramp where a frame-rate scalar would give a
+    /// staircase.
+    #[inline]
+    fn accumulate_curve(
+        &self,
+        key: tutti_units::LayerKey,
+        curve: std::sync::Arc<dyn Curve>,
+    ) -> bool {
+        self.set_curve_layer(key, curve);
+        true
     }
     /// A frame snapshot at beat 0 — for a non-`Curve` reader. The plugin path
     /// reads the beat-accurate [`Curve::value_at`] instead.
@@ -741,6 +733,65 @@ mod tests {
         let b0 = c.value_at(Beat::new(4.5)).unwrap();
         // Next cycle draws a fresh value (overwhelmingly likely to differ).
         assert!(b0.is_finite());
+    }
+
+    /// `RandomSmooth` must ramp between its steps, not hold them.
+    ///
+    /// This crate used to hash the cycle index for *both* random shapes, which
+    /// is right for `Random` and wrong here — it produced one value per cycle
+    /// under a name that promises interpolation, i.e. `Random`'s behaviour with
+    /// the wrong label. The bug survived because the only random test covered
+    /// `Random`, whose correct behaviour is precisely "holds within a cycle".
+    #[test]
+    fn lfo_curve_random_smooth_ramps_within_a_cycle() {
+        use tutti_core::Beat;
+        // Quarter depth: a full-depth swing over `[0, 1]` saturates the clamp
+        // and the ramp reads as a flat run at the rail, which would hide the
+        // very difference this test exists to see.
+        let c = LfoCurve::new(
+            tutti_units::LfoShape::RandomSmooth,
+            4.0,
+            0.25,
+            0.0,
+            0.5,
+            0.0,
+            1.0,
+        );
+        let across: Vec<f32> = (0..8)
+            .map(|i| c.value_at(Beat::new(4.0 + i as f64 / 2.0)).unwrap())
+            .collect();
+        let moved = across
+            .iter()
+            .filter(|v| (*v - across[0]).abs() > 1e-6)
+            .count();
+        assert!(
+            moved >= 6,
+            "a smooth shape must interpolate across its cycle, not hold: {across:?}"
+        );
+    }
+
+    /// The property the threaded stepper cannot offer: evaluating the same beat
+    /// twice gives the same value, so a bar sounds the same on every pass.
+    #[test]
+    fn lfo_curve_random_replays_identically() {
+        use tutti_core::Beat;
+        for shape in [
+            tutti_units::LfoShape::Random,
+            tutti_units::LfoShape::RandomSmooth,
+        ] {
+            let c = LfoCurve::new(shape, 4.0, 1.0, 0.0, 0.5, 0.0, 1.0);
+            let first: Vec<f32> = (0..12)
+                .map(|i| c.value_at(Beat::new(i as f64)).unwrap())
+                .collect();
+            // Evaluate far away, then return — as a transport seek would.
+            for i in 0..20 {
+                let _ = c.value_at(Beat::new(500.0 + i as f64));
+            }
+            let replay: Vec<f32> = (0..12)
+                .map(|i| c.value_at(Beat::new(i as f64)).unwrap())
+                .collect();
+            assert_eq!(first, replay, "{shape:?} must be reproducible at a beat");
+        }
     }
 
     #[test]

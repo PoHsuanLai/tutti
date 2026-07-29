@@ -2,7 +2,7 @@ use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
 
 use crate::TuttiDriver;
-use tutti_core::ecs::AudioConfig;
+use crate::graph::AudioConfig;
 use tutti_core::ChannelLayout;
 
 /// Audio device state synced from Tutti every frame.

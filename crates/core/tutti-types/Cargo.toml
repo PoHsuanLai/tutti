@@ -14,6 +14,11 @@ categories = ["multimedia::audio"]
 # (which round-trips through the host's document), and the unit newtypes the
 # latter is built from.
 serde = ["dep:serde"]
+# Enables `Reflect` on the unit newtypes and the param vocabulary, so a Bevy
+# component built from them can be inspected and scene-serialized. Reflection
+# only — no `Component`/`Resource` derives: an app stores a `Volume`, never a
+# bare `Db`.
+bevy = ["dep:bevy_reflect"]
 
 [dependencies]
 # `const_generics` provides the blanket `Array for [T; N]` impl so RtEventBuf
@@ -25,6 +30,9 @@ atomic_float = { version = "1.1", default-features = false, features = ["atomic_
 # keeps the read wait-free and the retired value's free on the publisher.
 arc-swap = "1.7"
 serde = { version = "1", optional = true, default-features = false, features = ["derive"] }
+# Reflection derives only, gated on `bevy`. No `bevy_ecs` here — this crate
+# defines vocabulary, not ECS surface.
+bevy_reflect = { workspace = true, optional = true }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

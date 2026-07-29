@@ -96,7 +96,6 @@ pub use fundsp::latency::PDC_DELAY_ID;
 // Transport / control nodes
 // ──────────────────────────────────────────────────────────────────────
 pub const TRANSPORT_CLOCK_ID: u64 = 0x_5452_4E53_434C_4B00; // "TRNSCLK\0"
-pub const AUTOMATION_INPUT_ID: u64 = 0x_4155_544F_494E_5054; // "AUTOINPT"
 
 // Compile-time intra-crate uniqueness guard for core's own ids.
-const _: () = assert_unique(&[PDC_DELAY_ID, TRANSPORT_CLOCK_ID, AUTOMATION_INPUT_ID]);
+const _: () = assert_unique(&[PDC_DELAY_ID, TRANSPORT_CLOCK_ID]);

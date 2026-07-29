@@ -20,9 +20,8 @@ pub use state::{
     BEAT_PORTS,
 };
 
-// The Bevy wrappers (`TransportRes` / `MetronomeRes` + their claims +
-// `TuttiTransportPlugin`) live in `crate::ecs::transport` — import them from
-// `tutti_core::ecs`.
+// The Bevy wrappers (`TransportRes` / `MetronomeRes`) live in
+// `crate::ecs::transport` — import them from `tutti_core::ecs`.
 
 /// A musical timeline: where we are, how fast, and whether it is moving.
 ///

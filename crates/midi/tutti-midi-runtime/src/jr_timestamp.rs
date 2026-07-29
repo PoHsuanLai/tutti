@@ -10,13 +10,15 @@
 //! module is the *engine* around it:
 //! - [`JrClock`] — the shared tick reference (samples ↔ 16-bit ticks).
 //! - [`JrStamper`] — outbound: interleave a JR Timestamp before each event,
-//!   derived from the event's sample-accurate `frame_offset`.
+//!   derived from the event's sample-accurate `frame_offset`. Pure.
+//! - [`JrStream`] — a stamper plus the running sample origin one outbound wire
+//!   stamps against. This is what a pump holds; see its doc for why the origin
+//!   is per-wire rather than per-caller.
 //! - [`JrReceiver`] — inbound: read stamps, reconstruct the delay before the
 //!   next event as a [`Duration`].
 //!
-//! Both halves are pure (no interior transport, no I/O), so a stamp → observe
-//! loopback recovers the injected spacing — see the tests. Real transport
-//! activation (feeding [`JrStamper`] on the hardware-out path) is ECS-layer work.
+//! The clock, stamper and receiver are pure (no interior transport, no I/O), so
+//! a stamp → observe loopback recovers the injected spacing — see the tests.
 
 use std::time::Duration;
 
@@ -76,6 +78,10 @@ impl JrStamper {
     /// Return a new stream: each input event preceded by a JR Timestamp for its
     /// `frame_offset`. `origin_samples` is the absolute sample position of this
     /// block's frame-offset zero, so stamps stay monotonic across blocks.
+    ///
+    /// Prefer [`JrStream`] over calling this directly: the origin has to advance
+    /// by exactly the right amount between blocks, and that is the part a caller
+    /// gets wrong.
     pub fn stamp_block(&self, events: &[MidiEvent], origin_samples: u64) -> Vec<MidiEvent> {
         let mut out = Vec::with_capacity(events.len() * 2);
         for ev in events {
@@ -84,6 +90,72 @@ impl JrStamper {
             out.push(*ev);
         }
         out
+    }
+
+    /// How far the origin must advance after stamping `events` — one past the
+    /// furthest frame offset in the block, or zero for an empty block.
+    ///
+    /// Split out from [`JrStream::stamp`] so the arithmetic that keeps stamps
+    /// monotonic is stated once and testable on its own.
+    #[inline]
+    pub fn block_span(events: &[MidiEvent]) -> u64 {
+        events
+            .iter()
+            .map(|e| e.frame_offset as u64)
+            .max()
+            .map_or(0, |m| m + 1)
+    }
+}
+
+/// One outbound JR-stamped stream: a [`JrStamper`] plus the running sample origin
+/// its stamps are relative to.
+///
+/// [`JrStamper`] is deliberately pure, so the origin has to live *somewhere*, and
+/// "somewhere" is per **wire**, not per caller. A single endpoint fed by two
+/// pumps — the clock master and the track MIDI-out both reach the same hardware
+/// port — must share one origin, or the two interleave stamps that walk
+/// backwards and a receiver reconstructs the wrong spacing. Owning it here is
+/// what makes that structural rather than a convention each pump has to keep.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JrStream {
+    stamper: JrStamper,
+    /// Absolute sample position of the next block's frame-offset zero.
+    origin_samples: u64,
+}
+
+impl JrStream {
+    /// A stream stamping at `sample_rate` Hz on UMP `group`, starting at origin 0.
+    pub fn new(sample_rate: f64, group: u8) -> Self {
+        Self::with_stamper(JrStamper::new(sample_rate, group))
+    }
+
+    /// A stream over an existing stamper.
+    pub fn with_stamper(stamper: JrStamper) -> Self {
+        Self {
+            stamper,
+            origin_samples: 0,
+        }
+    }
+
+    /// Stamp one block and advance the origin past it, so the next call
+    /// continues monotonically.
+    pub fn stamp(&mut self, events: &[MidiEvent]) -> Vec<MidiEvent> {
+        let out = self.stamper.stamp_block(events, self.origin_samples);
+        self.origin_samples = self
+            .origin_samples
+            .wrapping_add(JrStamper::block_span(events));
+        out
+    }
+
+    /// The absolute sample position the next [`stamp`](Self::stamp) will start
+    /// from. Exposed for tests and diagnostics.
+    pub fn origin_samples(&self) -> u64 {
+        self.origin_samples
+    }
+
+    /// The underlying stamper.
+    pub fn stamper(&self) -> &JrStamper {
+        &self.stamper
     }
 }
 
@@ -159,6 +231,69 @@ mod tests {
         assert_eq!(clock.ticks_at(0xFFFF), 0xFFFF);
         assert_eq!(clock.ticks_at(0x1_0000), 0, "wraps back to zero");
         assert_eq!(clock.ticks_at(0x1_0001), 1);
+    }
+
+    /// The span is one *past* the furthest offset, so the next block's origin
+    /// does not re-stamp the sample the last event sat on.
+    #[test]
+    fn a_blocks_span_is_one_past_its_furthest_offset() {
+        let events = [
+            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
+            MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(511),
+        ];
+        assert_eq!(JrStamper::block_span(&events), 512);
+        assert_eq!(
+            JrStamper::block_span(&[]),
+            0,
+            "an empty block spans nothing"
+        );
+    }
+
+    /// A stream advances its own origin, so successive blocks keep climbing.
+    #[test]
+    fn a_stream_advances_its_origin_across_blocks() {
+        let mut stream = JrStream::new(48_000.0, 0);
+        let events = [
+            MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
+            MidiEvent::note_off(0, 0, 60, 0).with_frame_offset(24_000),
+        ];
+
+        let first = stream.stamp(&events);
+        assert_eq!(first[0].jr_timestamp_value(), Some(0));
+        assert_eq!(stream.origin_samples(), 24_001);
+
+        // The second block's first event is stamped from the new origin, not zero.
+        let second = stream.stamp(&events);
+        assert_eq!(second[0].jr_timestamp_value(), Some(15_625));
+        assert_eq!(stream.origin_samples(), 48_002);
+    }
+
+    /// The reason the origin lives on the stream: two producers feeding one wire
+    /// must share it. Stamping both through one `JrStream` keeps the sequence
+    /// climbing; a per-producer origin would restart each at zero and hand the
+    /// receiver stamps that walk backwards.
+    ///
+    /// The events sit at a *block-sized* offset, not zero: a JR tick is 32 µs —
+    /// about 1.5 samples at 48 kHz — so a one-sample advance rounds to the same
+    /// tick and would prove nothing either way.
+    #[test]
+    fn two_producers_on_one_stream_keep_stamps_monotonic() {
+        let mut wire = JrStream::new(48_000.0, 0);
+
+        // One 512-frame block each, the event at the block's end.
+        let clock_block = [MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(511)];
+        let track_block = [MidiEvent::note_on(0, 0, 64, 0x8000).with_frame_offset(511)];
+
+        let from_clock = wire.stamp(&clock_block);
+        let from_track = wire.stamp(&track_block);
+
+        let first = from_clock[0].jr_timestamp_value().unwrap();
+        let second = from_track[0].jr_timestamp_value().unwrap();
+        assert!(
+            second > first,
+            "the second producer must stamp later than the first: {first} then {second}"
+        );
+        assert_eq!(wire.origin_samples(), 1024, "two 512-frame blocks");
     }
 
     #[test]

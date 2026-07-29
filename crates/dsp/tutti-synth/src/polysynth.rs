@@ -34,8 +34,9 @@ fn q7_9_to_fractional_note(bits: u16) -> f32 {
 ///
 /// Construct one from a [`SynthConfig`] via [`PolySynth::new`]. The synth always
 /// owns a lock-free MIDI inbox; callers push events via [`PolySynth::midi_sender`].
-/// For offline export, the inbox source can be replaced with a
-/// [`MidiSnapshotReader`] via [`PolySynth::set_midi_source`].
+/// For offline export, a [`MidiSnapshotReader`] is layered over that inbox via
+/// [`PolySynth::set_midi_source`] (on an isolated clone, which has no live
+/// inbox of its own).
 ///
 /// [`MidiSnapshotReader`]: tutti_midi_runtime::MidiSnapshotReader
 pub struct PolySynth {
@@ -111,15 +112,28 @@ impl PolySynth {
         })
     }
 
+    /// This synth's MIDI input endpoint — routing address, push mailbox, and the
+    /// source-install slot, in one borrow.
+    ///
+    /// The whole-port accessor exists so a host can reach all three through a
+    /// single downcast. See [`SoundFontUnit::midi_port`] for why one borrow
+    /// beats three.
+    ///
+    /// [`SoundFontUnit::midi_port`]: crate::soundfont::SoundFontUnit::midi_port
+    pub fn midi_port(&self) -> &MidiInPort {
+        &self.midi
+    }
+
     /// Producer handle for this synth's MIDI inbox. Cheap to clone; insert
     /// into a `MidiBus` or hand to anything that pushes MIDI events.
     pub fn midi_sender(&self) -> MidiSender {
         self.midi.sender()
     }
 
-    /// Override the MIDI source. Used by offline export to swap the live
-    /// receiver for a [`MidiSnapshotReader`], or by clip playback to
-    /// install a [`tutti_midi_runtime::MidiClipSource`].
+    /// Layer a MIDI source over the live inbox. Used by offline export for a
+    /// [`MidiSnapshotReader`], or by clip playback for a
+    /// [`tutti_midi_runtime::MidiClipSource`]. Both the source and the inbox
+    /// are polled, so clip playback does not silence live input.
     ///
     /// The install is visible across fundsp's clone-on-commit (see
     /// [`MidiInPort`]), so the same instance reaches the box the audio thread runs.
@@ -129,8 +143,8 @@ impl PolySynth {
         self.midi.install(source);
     }
 
-    /// Drop a previously-installed override; subsequent ticks poll the
-    /// live `MidiReceiver` again.
+    /// Drop a previously-layered source; subsequent ticks poll only the
+    /// live `MidiReceiver`.
     pub fn clear_midi_source(&mut self) {
         self.midi.clear();
     }

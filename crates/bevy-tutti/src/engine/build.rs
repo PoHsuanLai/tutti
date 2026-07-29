@@ -14,34 +14,34 @@
 
 use bevy_app::App;
 
-use crate::engine::audio_io::{AudioCallbackState, AudioEngine};
-use crate::engine::{Result, TuttiDriver};
+use crate::engine::Result;
 use tutti_core::dsp::An;
 use tutti_core::engine::Engine;
 use tutti_core::Arc;
 use tutti_core::{
     dsp::Net, AudioTap, ClickNode, ClickSettings, MasterMeter, Transport, TransportClock,
 };
+use tutti_cpal::{AudioCallbackState, AudioEngine, TuttiDriver};
 
-// Each subsystem owns its own transient `PendingX` (defined next to its plugin).
-// `build_into` fills them; the subsystem's plugin `build()` claims each into the
-// subsystem's `*Res` (synchronously, before frame 1).
-use tutti_core::ecs::{
-    AudioConfig, PendingGraph, PendingMetering, PendingMetronome, PendingTransport,
-    TransportClockNode,
+use crate::graph::{
+    AudioConfig, AudioGraphRes, AudioTapRes, MeteringRes, MetronomeRes, TransportRes,
 };
 
 #[cfg(feature = "midi-hardware")]
-use tutti_midi_io::MidiIo;
+use crate::midi::MidiIoRes;
 #[cfg(feature = "midi")]
-use tutti_midi_io::PendingMidi;
+use crate::midi::{ClockMasterRes, MidiBusRes, MidiRoutingRes};
+#[cfg(feature = "midi-hardware")]
+use tutti_midi_io::MidiIo;
 #[cfg(feature = "midi")]
 use tutti_midi_runtime::{MidiBus, MidiPreBlock};
 #[cfg(feature = "midi")]
 use tutti_midi_types::MidiRoutingTable;
 
 #[cfg(feature = "sampler")]
-use tutti_sampler::{DiskStreamer, PendingDiskStreamer};
+use crate::sampler::SamplerRes;
+#[cfg(feature = "sampler")]
+use tutti_sampler::DiskStreamer;
 
 /// Build the engine from a [`TuttiPlugin`](crate::TuttiPlugin) config and insert
 /// every subsystem resource into `app`. The audio callback is live on return.
@@ -61,6 +61,18 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let mut audio_engine = AudioEngine::new(plugin.output_device)?;
     let sample_rate = audio_engine.sample_rate();
     let channels = audio_engine.channels();
+
+    // The port manager times each inbound event by turning a wall-clock delta
+    // into a `frame_offset`, which takes the device's real rate. It is built
+    // above — before the device exists — at a placeholder 44100, so at any
+    // other rate every hardware event lands at the wrong offset (~8.8% early
+    // at 48 kHz). Set here, the first moment the rate is known and well before
+    // `audio_engine.start()` makes the callback live, which is the contract
+    // `HardwareMidiInputs::set_sample_rate` documents.
+    #[cfg(feature = "midi-hardware")]
+    if let Some(ref io) = midi_io {
+        io.port_manager().set_sample_rate(sample_rate);
+    }
 
     let inputs = plugin.inputs;
     let outputs = if plugin.outputs == 0 {
@@ -82,16 +94,23 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     let mut net = Net::new(inputs, outputs);
 
     // Transport clock — emits the beat on two ports and writes it back to the
-    // manager's atomic. Its NodeId is retained so beat-driven nodes can wire an
-    // edge to it (published below as `TransportClockNode`).
+    // manager's atomic. Beat-driven nodes take those ports as inputs, so the
+    // clock needs a name a host can address; it gets an entity below, like every
+    // other node in the graph.
     let clock = TransportClock::new(transport.clock_links(), sample_rate);
     let clock_id = net.push(Box::new(clock));
 
-    // Metronome — mixed into master output. It only READS the transport
-    // (beat + rolling/recording), so it takes a read view, not a control handle.
+    // Metronome. It only READS the transport (beat + rolling/recording), so it
+    // takes a read view, not a control handle.
+    //
+    // It is NOT wired to the output here. `net.pipe_output(click_id)` used to
+    // be, which reads like "mix the click into master" and is not what that
+    // call does: `pipe_output` overwrites every global output edge, so the
+    // first soundfont to load silently disconnected the metronome. What the
+    // click feeds is now the host's declaration, like every other node — see
+    // `graph::wire`.
     let click = ClickNode::with_transport(transport.clone(), click_settings.clone(), sample_rate);
     let click_id = net.push(Box::new(An(click)));
-    net.pipe_output(click_id);
 
     let backend = net.backend();
 
@@ -141,7 +160,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
             .set_translator(tutti_midi_runtime::tutti_midi_types::Midi1ToMidi2Translator::new());
         let mpe_mode = app
             .world()
-            .get_resource::<tutti_midi_io::MpeModeConfig>()
+            .get_resource::<crate::midi::MpeModeConfig>()
             .map(|c| c.0)
             .unwrap_or(tutti_midi_io::MpeMode::Disabled);
         pre_block.set_mpe_ingest(tutti_midi_runtime::MpeIngest::new(mpe_mode));
@@ -182,39 +201,52 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     // volume/mode via `ClickState`'s atomic setters directly.
     let metronome = click_settings;
 
-    // --- Hand each subsystem its transient `PendingX` (claimed in each
-    // subsystem plugin's `build()`). The non-send CPAL driver has no subsystem
-    // plugin, so it's inserted directly. On `Err` earlier, none of this runs —
-    // `engine_ready` stays an exact proxy. ---
+    // --- Publish every subsystem. On `Err` earlier none of this runs, so
+    // `engine_ready` stays an exact proxy for "the callback is live". ---
     let config = AudioConfig {
         sample_rate,
         channels,
     };
-    app.insert_resource(PendingGraph(Some((graph, config))));
+    app.insert_resource(AudioGraphRes(graph));
+    app.insert_resource(config);
     // Inserted whether or not the app opts into compensation: the sampler already
     // holds a clone of this Arc, so the resource must be *this* one, not a fresh
     // default. `LatencyCompensationPlugin` uses `init_resource`, which leaves it.
     app.insert_resource(compensation);
     app.insert_non_send(driver);
-    app.insert_resource(PendingTransport(Some(transport)));
-    app.insert_resource(PendingMetronome(Some(metronome)));
-    app.insert_resource(TransportClockNode(clock_id));
-    app.insert_resource(PendingMetering(Some(meter)));
+    app.insert_resource(TransportRes(transport));
+    app.insert_resource(MetronomeRes(metronome));
+    // The two engine-built nodes get entities like everything else in the graph.
+    // Without them a host would need a second way to name a node — a bare
+    // `NodeId` resource — and the clock exists precisely to be wired to.
+    app.world_mut().spawn(tutti_core::AudioNode(clock_id));
+    app.world_mut().spawn(tutti_core::AudioNode(click_id));
+    // Consumers read `MeteringRes::get()` directly, so the meter has to be
+    // measuring from the start. `disable()` through the `Deref` turns it back
+    // off; see `graph::metering` for what that does and does not save.
+    meter.enable();
+    app.insert_resource(MeteringRes(meter));
+    // Deliberately NOT opened: while closed, `AudioTap::push` on the audio
+    // thread is one atomic load and a return, so a host that never analyses
+    // pays nothing. `AudioTapRes::open()` is the switch, and it hands back a
+    // consumer the caller owns.
+    app.insert_resource(AudioTapRes(tap));
 
     #[cfg(feature = "midi")]
-    app.insert_resource(PendingMidi {
-        bus: Some(midi_bus),
+    {
+        // Both must be the very values the pre-block above shares — a freshly
+        // built one publishes where the audio thread never reads.
+        app.insert_resource(MidiBusRes::new(midi_bus));
+        app.insert_resource(MidiRoutingRes::new(midi_route));
+        app.insert_resource(ClockMasterRes::new(clock_master, clock_out_consumer));
         #[cfg(feature = "midi-hardware")]
-        io: midi_io,
-        clock_out: Some(tutti_midi_io::ClockMasterRes::new(
-            clock_master,
-            clock_out_consumer,
-        )),
-        routing: Some(midi_route),
-    });
+        if let Some(io) = midi_io {
+            app.insert_resource(MidiIoRes(io));
+        }
+    }
 
     #[cfg(feature = "sampler")]
-    app.insert_resource(PendingDiskStreamer(Some(sampler)));
+    app.insert_resource(SamplerRes(sampler));
 
     Ok(())
 }

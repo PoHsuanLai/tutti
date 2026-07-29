@@ -9,20 +9,17 @@ keywords = ["audio", "dsp", "real-time", "daw", "fundsp"]
 categories = ["multimedia::audio"]
 
 [features]
-# tutti-core is a std crate; its DSP graph runtime (Net/AudioGraph, transport,
-# metering, PDC) is Bevy-free. The `bevy` feature adds the ECS reconcile hub
-# (GraphReconcileSystems, AudioGraphRes, GraphReconcilePlugin, the param
-# Components) that leaf audio crates schedule against. On by default so Bevy
-# consumers are unaffected; `--no-default-features` builds a Bevy-free kernel a
-# non-Bevy DAW can link.
-default = ["bevy"]
-bevy = ["dep:bevy_ecs", "dep:bevy_reflect", "dep:bevy_app", "dep:bevy_tasks", "dep:bevy_log"]
+# The DSP graph runtime (Net, transport, metering, PDC) is framework-free.
+# `bevy` adds only the `Component` derive on `AudioNode`, so that an entity can
+# *be* a node in the graph; the systems that reconcile against it live in the
+# host adapter.
+default = []
+bevy = ["dep:bevy_ecs", "dep:bevy_reflect"]
 
 # Back-compat alias: sibling crates still pass `features = ["bevy_ecs"]`, which
 # maps onto the `bevy` feature.
 bevy_ecs = ["bevy"]
-# Bevy asset loading is a distinct axis (fundsp WaveAsset derives); it also
-# implies `bevy` since the loaders live in the ECS layer.
+# Asset loading is a distinct axis (fundsp's `WaveAsset` derives).
 bevy_asset = ["bevy", "dep:bevy_asset", "fundsp/bevy_asset"]
 
 # Individual audio format support (each pulls only its codec)
@@ -69,10 +66,7 @@ parking_lot = { version = "0.12", default-features = false }
 # workspace. `--no-default-features` drops all of these.
 bevy_ecs = { version = "0.19", default-features = false, features = ["bevy_reflect"], optional = true }
 bevy_reflect = { version = "0.19", default-features = false, optional = true }
-bevy_app = { version = "0.19", default-features = false, optional = true }
 bevy_asset = { version = "0.19", default-features = false, optional = true }
-bevy_tasks = { version = "0.19", optional = true }
-bevy_log = { version = "0.19", default-features = false, optional = true }
 
 [dev-dependencies]
 assert_no_alloc = { version = "1", default-features = false }

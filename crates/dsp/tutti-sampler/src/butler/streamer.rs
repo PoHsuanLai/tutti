@@ -3,18 +3,16 @@
 use super::{BufferConfig, ButlerCommand, ButlerThread};
 use crate::error::Result;
 use crate::ports::{Commands, Status};
-#[cfg(feature = "bevy")]
-use bevy_ecs::resource::Resource;
 use smol::channel::Sender;
 use std::sync::Arc;
 use tutti_core::RtPublish;
 use tutti_core::Samples;
 
-/// The sampler subsystem handle, held as a Bevy [`Resource`].
+/// The sampler subsystem handle.
 ///
 /// Owns the butler thread, which drives all disk I/O. The engine builds one at
-/// startup with [`new`](Self::new) and inserts it directly; the ECS layer reads
-/// it as `Res<DiskStreamer>`.
+/// startup with [`new`](Self::new); a host holds it for the lifetime of the
+/// session.
 ///
 /// Stream control is split MIDI-device-style into two cloneable ports: the
 /// WRITE port [`commands`](Self::commands) (a [`Commands`] over the butler
@@ -33,7 +31,6 @@ use tutti_core::Samples;
 /// # Ok(())
 /// # }
 /// ```
-#[cfg_attr(feature = "bevy", derive(Resource))]
 pub struct DiskStreamer {
     butler_tx: Sender<ButlerCommand>,
     butler: ButlerThread,

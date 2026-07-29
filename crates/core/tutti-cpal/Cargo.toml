@@ -1,0 +1,36 @@
+[package]
+name = "tutti-cpal"
+version = "0.0.1"
+edition = "2021"
+description = "CPAL device layer for Tutti — output stream, mic capture, and the driver lifecycle"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/PoHsuanLai/Tutti"
+
+[features]
+default = []
+# Mic capture (`MicIn`) and the live mic→WAV `Recorder`. Gated because both
+# speak tutti-sampler's `AudioIn`/`AudioOut` traits, which is the only reason
+# this crate would depend on the sampler at all.
+capture = ["dep:tutti-sampler", "dep:ringbuf"]
+# Pre-block MIDI inside the render callback. Off → the callback renders the
+# graph and nothing else.
+midi = ["dep:tutti-midi-runtime"]
+
+[dependencies]
+cpal = "0.15"
+thiserror = "2"
+
+tutti-core = { path = "../tutti-core", default-features = false }
+
+# `wav` is not optional here: the `Recorder` writes a `WavOut` and the butler's
+# refill path calls `Wave::load`, both of which need a codec compiled in.
+tutti-sampler = { path = "../../dsp/tutti-sampler", default-features = false, features = ["wav"], optional = true }
+tutti-midi-runtime = { path = "../../midi/tutti-midi-runtime", default-features = false, optional = true }
+
+# The mic ring's producer half, moved to the CPAL input callback thread.
+ringbuf = { version = "0.4", optional = true }
+
+[dev-dependencies]
+# The RT gates render a real graph under a disabled allocator.
+assert_no_alloc = { version = "1", default-features = false }
+parking_lot = "0.12"

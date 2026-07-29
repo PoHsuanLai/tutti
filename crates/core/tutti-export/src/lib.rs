@@ -66,9 +66,6 @@ pub use process::ChunkSize;
 /// transport" answer.
 pub use tutti_core::transport::{FrozenClock, RenderClock};
 
-#[cfg(feature = "bevy")]
-pub mod ecs;
-
 use std::path::{Path, PathBuf};
 use tutti_types::Samples;
 

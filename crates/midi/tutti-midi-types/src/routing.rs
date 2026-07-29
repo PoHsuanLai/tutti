@@ -572,4 +572,35 @@ mod tests {
         table.commit();
         assert!(!table.is_dirty());
     }
+
+    /// Two tables do not share a snapshot — the hazard every wrapper of this
+    /// type has to guard.
+    ///
+    /// A host that builds a second `MidiRoutingTable` instead of using the one
+    /// the RT pre-block was assembled with gets a `commit()` that publishes
+    /// into a cell nothing reads: every hardware MIDI event is dropped,
+    /// silently, with nothing in the log. `bevy_tutti::midi::MidiRoutingRes`
+    /// makes that a compile error by keeping its field private, and this is the
+    /// behavioural half of that guarantee — it pins *why* the guard is needed,
+    /// where the type lives.
+    #[test]
+    fn two_tables_do_not_share_a_snapshot() {
+        let rt_table = MidiRoutingTable::new();
+        let rt_view = rt_table.snapshot_arc();
+
+        // The mistake: a fresh table rather than the one the pre-block shares.
+        let mut orphan = MidiRoutingTable::new();
+        let unit = id(9);
+        orphan.set_routes(vec![MidiRoute::for_channel(3).with_target(unit)], None);
+        orphan.commit();
+
+        let snapshot = rt_view.read();
+        let targets: Vec<MidiUnitId> = snapshot
+            .route(&crate::ump::MidiEvent::note_on(0, 3, 60, 0x8000))
+            .collect();
+        assert!(
+            !targets.contains(&unit),
+            "an orphaned table must not appear to work — this is the silent failure"
+        );
+    }
 }

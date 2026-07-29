@@ -56,40 +56,35 @@ Bevy resource — take only what you need:
 
 ```rust
 use bevy::prelude::*;
-use bevy_tutti::*;
-use tutti::dsp::sine_hz;
+use bevy_tutti::prelude::*;
+use tutti_core::dsp::sine_hz;
+use tutti_core::transport::MotionEvent;
 
-fn control(transport: Res<TransportRes>, mut graph: ResMut<TuttiGraphRes>) {
-    transport.tempo(128.0).play();
+fn control(transport: Res<TransportRes>, mut graph: ResMut<AudioGraphRes>) {
+    transport.settings.set_tempo(128.0);
+    let _ = transport.motion.try_send(MotionEvent::Play);
     let id = graph.0.add(sine_hz::<f32>(440.0));
-    graph.0.pipe_output(id);
     graph.0.commit();
 }
 ```
 
 ## Node entities
 
-With the `bevy_ecs` integration baked into `tutti`, audio graph nodes can
-also be spawned as Bevy entities and tuned with normal `Changed<T>` queries.
-The reconcile pipeline (`GraphReconcileSystems::{Spawn, Params, Despawn, Commit}`)
+An entity carrying `AudioNode(NodeId)` *is* a node in the graph. The reconcile
+pipeline (`GraphReconcileSystems::{Spawn, Params, Despawn, Compensate, Commit}`)
 translates component edits into graph operations and coalesces a single
 `graph.commit()` per frame.
 
 ```rust
 use bevy::prelude::*;
-use bevy_tutti::*;
-use tutti::dsp::sine_hz;
+use bevy_tutti::prelude::*;
+use tutti_core::dsp::sine_hz;
 
 fn setup(mut commands: Commands) {
-    commands
-        .spawn_audio_node(sine_hz::<f32>(440.0), NodeKind::Generator)
-        .insert(Volume(0.5));
-}
-
-fn fade(mut q: Query<&mut Volume, With<AudioNode>>) {
-    for mut v in &mut q {
-        v.0 = (v.0 - 0.005).max(0.0);
-    }
+    // `spawn_audio_node` adds an *unwired* node — it renders nothing until
+    // something declares it as a source.
+    let osc = commands.spawn_audio_node(sine_hz::<f32>(440.0)).id();
+    commands.insert_resource(MasterSources::from(osc));
 }
 ```
 
@@ -97,44 +92,47 @@ Despawn the entity to remove the underlying graph node.
 
 ### Components
 
-Every component is a thin wrapper over a tutti capability that already
-exists. See [`tutti::core::ecs`] for the parameter components and the
-top-level bevy-tutti module docs for the binding modules.
+Every component is a thin wrapper over a tutti capability that already exists.
 
 | Component | Feature | What it binds |
 |-----------|---------|---------------|
 | `AudioNode(NodeId)` | always | Identity for "this entity owns a graph node." |
-| `NodeKind` | always | Typed dispatch tag (Sampler, Plugin, Generator, …). |
-| `Volume`, `Pan`, `Mute` | always | Per-node parameter components. |
-| `PluginParam { id, value }` | `plugin` | RT-safe `PluginHandle::set_parameter` write. |
-| `SamplerSpeed`, `SamplerLooping` | `sampler` | `SamplerUnit::set_speed` / `set_looping`. |
-| `PendingSamplerLoad` | `sampler` | "Load a wave, then build a `SamplerUnit`." |
-| `WaveImportQueue` (resource) | `sampler` | Tracks in-flight `tutti::sampler::file::ImportHandle`s. |
-| `AutomationLaneNode`, `AutomationDrivesParam` | `automation` | Drive `Volume` / `PluginParam` from a `LiveAutomationLane<f32>` output. |
-| `MidiSynthMarker`, `ScheduledMidi` | `midi` | Time-delayed MIDI dispatch via `MidiBusRes`. |
-| `SidechainOf`, `SidechainSources` | always | Wire one entity's audio into another's input port 1. |
-| `PendingVst2Build` | `plugin` + `vst2` | Main-thread VST2 loader (avoids JUCE MessageManager mis-binding). |
+| `AudioParam<U, P>` | always | One scalar param: unit `U`, address `P`. Registered with `App::add_audio_param`. |
+| `AudioSources` | always | What feeds this entity's input ports. Index *i* is port *i*. |
+| `ModParamRange` | `modulation` | Depth/range for a modulated param. |
+| `PendingSoundFontUnit` | `synth` | "Build a SoundFont unit off-thread, then bind it." |
+| `MidiRouteRule` | `midi` | Which inbound MIDI channel reaches which entities. |
+| `PluginEmitter`, `PluginEditorOpen` | `plugin` | A hosted plugin instance and its editor window. |
+
+The DAW parameter components (`Volume`, `Pan`, `Mute`, …) are **not** here: they
+are app vocabulary and live app-side. `AudioParam<U, P>` is the generic the
+engine adapter keeps.
 
 ### Helpers
 
 | Helper | Where | What it does |
 |--------|-------|--------------|
-| `Commands::spawn_audio_node(unit, kind)` | always | Add `unit` to the graph + spawn an entity with `AudioNode + NodeKind`. |
-| `crossfade_audio_node(commands, entity, new_unit)` | always | `TuttiGraph::crossfade_boxed` for entity-as-node, same `NodeId` survives. |
+| `Commands::spawn_audio_node(unit)` | always | Add `unit` to the graph + spawn an entity with `AudioNode`. The node arrives unwired. |
+| `crossfade_audio_node(commands, entity, new_unit)` | always | `Net::crossfade` for entity-as-node; the same `NodeId` survives, so declared wiring keeps resolving. |
 
 ## ECS resources
 
-These resources are synced from the engine every frame via lock-free atomics:
+Inserted by `TuttiPlugin` once the engine builds. Each is a newtype over an
+engine value — the wrapper adds no behaviour, it just gives a Bevy system a way
+to reach it.
 
 | Resource | Feature | Description |
 |----------|---------|-------------|
-| `TuttiGraphRes` | always | `TuttiGraph` -- editable DSP graph |
+| `AudioGraphRes` | always | fundsp `Net` -- the editable DSP graph. No `Deref`, so the mutate/commit boundary stays visible at call sites. |
+| `AudioConfig` | always | Sample rate and channel layout, captured at build |
 | `TransportRes` | always | Lock-free transport handle (play/stop/seek/tempo/loop) |
-| `MeteringRes` | always | Lock-free metering snapshots (peak/RMS amplitude) |
+| `MetronomeRes` | always | Shared `ClickState` the click node reads |
+| `MeteringRes` | always | Lock-free master peak/RMS meter |
+| `MasterSources` | always | What feeds each global output channel |
 | `AudioDeviceState` | always | Output devices, current device, running status |
-| `ContentBounds` | `sampler` | Content end beat and duration in seconds |
-| `LiveAnalysisData` | `analysis` | Spectrum, loudness, and other analysis data |
-| `AudioInputState` | `sampler` | Input device info and capture status |
+| `ChannelCompensation` | always | Per-channel PDC pre-roll for out-of-graph sources |
+| `MidiBusRes`, `MidiRoutingRes` | `midi` | The synth fan-out bus and the inbound routing table |
+| `PluginsRes` | `plugin` | The scanned plugin catalog (inserted lazily) |
 
 ## Trigger components
 
@@ -169,7 +167,7 @@ commands.spawn(LoadPlugin::new("path/to/Reverb.vst3"));
 commands.spawn(LoadPlugin::new("path/to/Synth.clap").param("cutoff", 0.7));
 ```
 
-After processing: `LoadPlugin` is removed, `AudioEmitter` + `PluginEmitter { handle }` are inserted. Use the `PluginHandle` for parameter control, editor management, and state save/load.
+After processing: `LoadPlugin` is removed, `AudioNode` + `PluginEmitter { handle }` are inserted. Use the `PluginHandle` for parameter control, editor management, and state save/load.
 
 ### MIDI
 
@@ -301,7 +299,7 @@ Requires `spatial` feature.
 commands.spawn((AudioListener, Transform::default()));
 
 // Spatial emitter: add SpatialAudio + Transform to any entity carrying an
-// AudioEmitter (i.e. a node already in the graph).
+// AudioNode (i.e. a node already in the graph).
 commands.spawn((
     SpatialAudio::default(),
     Transform::from_xyz(5.0, 0.0, -3.0),

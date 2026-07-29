@@ -34,12 +34,21 @@
 //! arrives already aligned. [`ChannelCompensation`] carries the per-channel
 //! figures for that, republished every time compensation runs, and the sampler
 //! subscribes to it at engine build.
+//!
+//! # Reporting without applying
+//!
+//! This plugin *applies* compensation, inserting delays. A host that only wants
+//! to know what a graph would need — a latency readout that must not perturb the
+//! graph — calls [`tutti_core::latency::plan`] on `AudioGraphRes.0` directly;
+//! `Net` implements the `LatencyGraph` trait it takes. There is no wrapper here
+//! because there would be nothing to wrap: `plan` needs no ECS state and mutates
+//! nothing, so a wrapper would be a rename.
 
 use bevy_app::{App, Plugin, Update};
 use bevy_ecs::prelude::*;
 use std::sync::Arc;
 
-use tutti_core::ecs::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
+use crate::graph::{engine_ready, AudioGraphRes, GraphDirty, GraphReconcileSystems};
 use tutti_core::RtPublish;
 use tutti_core::{latency, Samples};
 
@@ -48,13 +57,30 @@ use tutti_core::{latency, Samples};
 /// Cloneable subscription to the table [`compensate_graph`] publishes. The
 /// sampler holds one of these; a host wanting to display or apply the figures
 /// elsewhere can clone it from the resource.
+///
+/// Read a channel with `compensation.0.read().get(channel)`. A `for_channel`
+/// convenience lived here and was deleted: one line over an expression
+/// [`RtPublish::read`] already spells is surface without capability.
 #[derive(Resource, Clone, Default)]
 pub struct ChannelCompensation(pub Arc<RtPublish<Vec<Samples>>>);
 
-impl ChannelCompensation {
-    /// Pre-roll for a source feeding `channel`. Zero if uncompensated.
-    pub fn for_channel(&self, channel: usize) -> Samples {
-        self.0.read().get(channel).copied().unwrap_or_default()
+/// The graph's total latency, as of the last compensation run.
+///
+/// The figure a DAW displays as "latency: N samples", and the one a host offsets
+/// recording by. Distinct from [`ChannelCompensation`], which answers "how far
+/// must *this* source pre-roll": the worst-case path is often the channel whose
+/// pre-roll is zero, so the total is **not recoverable** from the per-channel
+/// table — it was computed here and thrown away for as long as this resource
+/// did not exist.
+///
+/// Zero when no node in the graph reports latency, which is the common case.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GraphLatency(pub Samples);
+
+impl GraphLatency {
+    /// Whether any path in the graph needs compensation at all.
+    pub fn is_empty(&self) -> bool {
+        self.0 == Samples(0)
     }
 }
 
@@ -66,16 +92,19 @@ pub struct LatencyCompensationPlugin;
 
 impl Plugin for LatencyCompensationPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ChannelCompensation>().add_systems(
-            Update,
-            compensate_graph
-                .in_set(GraphReconcileSystems::Compensate)
-                .run_if(engine_ready),
-        );
+        app.init_resource::<ChannelCompensation>()
+            .init_resource::<GraphLatency>()
+            .add_systems(
+                Update,
+                compensate_graph
+                    .in_set(GraphReconcileSystems::Compensate)
+                    .run_if(engine_ready),
+            );
     }
 }
 
-/// Aligns every path in the graph, then republishes the per-channel table.
+/// Aligns every path in the graph, then republishes the per-channel table and
+/// the graph's total latency.
 ///
 /// Runs only when a reconcile system touched the graph this frame — the same
 /// `GraphDirty` flag that gates the commit. It deliberately does **not** clear
@@ -84,12 +113,14 @@ pub fn compensate_graph(
     mut graph: ResMut<AudioGraphRes>,
     dirty: Res<GraphDirty>,
     published: Res<ChannelCompensation>,
+    mut total: ResMut<GraphLatency>,
 ) {
     if !dirty.0 {
         return;
     }
 
     let compensation = latency::compensate(&mut graph.0);
+    total.0 = compensation.total();
     published
         .0
         .publish(Arc::new(compensation.channels().to_vec()));
@@ -104,9 +135,14 @@ mod tests {
 
     /// App with the graph resource + dirty flag, but no reconcile pipeline —
     /// enough to drive the compensation system directly.
+    ///
+    /// `AudioEngineState::Running` stands in for a built engine: the
+    /// compensation system is gated on `engine_ready`, which reads the state
+    /// rather than probing for the graph resource.
     fn test_app(graph: Net) -> App {
         let mut app = App::new();
         app.insert_resource(AudioGraphRes(graph));
+        app.insert_resource(crate::AudioEngineState::Running);
         app.init_resource::<GraphDirty>();
         app.add_plugins(LatencyCompensationPlugin);
         app
@@ -135,8 +171,52 @@ mod tests {
         app.update();
 
         let published = app.world().resource::<ChannelCompensation>();
-        assert_eq!(published.for_channel(0), Samples(0));
-        assert_eq!(published.for_channel(1), eff_lat);
+        let table = published.0.read();
+        assert_eq!(table.first().copied(), Some(Samples(0)));
+        assert_eq!(table.get(1).copied(), Some(eff_lat));
+    }
+
+    /// The graph's *total* latency is published too — and it cannot be recovered
+    /// from the per-channel table.
+    ///
+    /// In this graph the limiter defines the worst-case path, and the channel it
+    /// feeds pre-rolls by zero: the figure a DAW displays is exactly the one the
+    /// table does not contain. It was computed and discarded for as long as
+    /// `GraphLatency` did not exist.
+    #[test]
+    fn publishes_the_graphs_total_latency_not_just_the_per_channel_table() {
+        let (graph, eff_lat) = skewed_graph();
+        let mut app = test_app(graph);
+        app.world_mut().resource_mut::<GraphDirty>().0 = true;
+
+        app.update();
+
+        assert_eq!(app.world().resource::<GraphLatency>().0, eff_lat);
+        assert!(!app.world().resource::<GraphLatency>().is_empty());
+
+        // The point: reading it off the table gives the wrong answer.
+        let table = app.world().resource::<ChannelCompensation>().0.read();
+        assert_eq!(
+            table.first().copied(),
+            Some(Samples(0)),
+            "the channel that defines the latency pre-rolls by zero"
+        );
+    }
+
+    /// A graph where nothing reports latency has no figure to display.
+    #[test]
+    fn a_graph_with_no_latency_reports_none() {
+        let mut graph = Net::with_backend(2);
+        let a = graph.add(dc(1.0));
+        graph.set_output_source(0, Source::Local(a, 0));
+        graph.set_output_source(1, Source::Local(a, 0));
+
+        let mut app = test_app(graph);
+        app.world_mut().resource_mut::<GraphDirty>().0 = true;
+        app.update();
+
+        assert!(app.world().resource::<GraphLatency>().is_empty());
+        assert_eq!(app.world().resource::<GraphLatency>().0, Samples(0));
     }
 
     #[test]
@@ -165,19 +245,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn for_channel_is_zero_outside_the_table() {
-        let (graph, _) = skewed_graph();
-        let mut app = test_app(graph);
-        app.world_mut().resource_mut::<GraphDirty>().0 = true;
-
-        app.update();
-
-        assert_eq!(
-            app.world()
-                .resource::<ChannelCompensation>()
-                .for_channel(99),
-            Samples(0)
-        );
-    }
+    // `for_channel_is_zero_outside_the_table` was deleted with the `for_channel`
+    // method it covered. Out-of-range now reads as `Vec::get -> None` at the call
+    // site, which is std's guarantee rather than this crate's to test.
 }

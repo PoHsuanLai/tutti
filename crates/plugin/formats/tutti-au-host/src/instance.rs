@@ -470,8 +470,16 @@ impl AuLoaded {
         // scratch's stable heap address. AU accepts a render-callback set on the
         // input scope post-`AudioUnitInitialize`. There is deliberately no
         // per-block install in `process` (that was the RT-thread bug, FIX 1).
+        // Gate on `has_input`, the AU's own answer to "is there an input bus",
+        // NOT on the scratch's input buffer count: `RenderScratch::new`
+        // over-allocates inputs to `in_ch.max(out_ch)` so a 0-in/2-out
+        // instrument still gets 2 input buffers. Keying the install off that
+        // made every instrument (DLSMusicDevice, AUSampler) fail `initialize`
+        // with -10877 — setting a render callback on the input scope of a unit
+        // that has no input element is a property error, and the `?` aborted
+        // init entirely.
         let scratch_ptr: *mut RenderScratch = &*ready.scratch as *const RenderScratch as *mut _;
-        if !ready.scratch.inputs.is_empty() {
+        if ready.loaded.config.channels.has_input {
             unsafe { ready.install_input_callback(scratch_ptr)? };
         }
         Ok(ready)

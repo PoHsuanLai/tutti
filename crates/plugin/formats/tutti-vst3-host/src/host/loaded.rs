@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use vst3::ComPtr;
 use vst3::Steinberg::{
-    kInvalidArgument, kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream, IPlugView,
-    IPlugViewContentScaleSupport, IPlugViewContentScaleSupportTrait, IPlugViewTrait,
+    kInvalidArgument, kNotImplemented, kResultFalse, kResultOk, kResultTrue, FUnknown, IBStream,
+    IPlugView, IPlugViewContentScaleSupport, IPlugViewContentScaleSupportTrait, IPlugViewTrait,
     IPluginBaseTrait, IPluginCompatibility, IPluginCompatibilityTrait, ViewRect,
     Vst::{
         IAudioPresentationLatency, IAudioPresentationLatencyTrait, IAudioProcessor,
@@ -868,7 +868,7 @@ impl Vst3Loaded {
 
         let result = unsafe { self.interfaces.component.getState(stream_ptr.as_ptr()) };
 
-        if result != kResultOk && result != kResultFalse {
+        if !state_result_ok(result) {
             return Err(Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: result,
@@ -925,7 +925,7 @@ impl Vst3Loaded {
 
         let result = unsafe { self.interfaces.component.setState(stream_ptr.as_ptr()) };
 
-        if result != kResultOk && result != kResultFalse {
+        if !state_result_ok(result) {
             return Err(Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: result,
@@ -1252,7 +1252,16 @@ impl Vst3Loaded {
         let host_ptr = self.host_context_ptr()?;
 
         let result = unsafe { self.interfaces.component.initialize(host_ptr) };
-        if result != kResultOk && result != kResultFalse {
+        // `kResultFalse` is a *refusal*, exactly as in `set_active`: the plugin
+        // is declining to come up, and every later call would run against a
+        // component that never initialised. The SDK's own host agrees —
+        // `plugprovider.cpp:140` requires `== kResultOk` and reports a failure
+        // otherwise.
+        //
+        // `kNotImplemented` is not tolerated either, unlike the state methods:
+        // `IPluginBase::initialize` is mandatory, so a plugin that has not
+        // implemented it has not implemented the interface.
+        if result != kResultOk {
             return Err(Vst3Error::PluginError {
                 stage: LoadStage::Initialization,
                 code: result,
@@ -1518,6 +1527,27 @@ pub fn platform_type_refused(result: i32) -> bool {
     result == kResultFalse || result == kInvalidArgument
 }
 
+/// Whether a `getState` / `setState` result counts as success.
+///
+/// **`kNotImplemented`, not `kResultFalse`** — and getting this backwards is not
+/// a hypothetical. The SDK's own `Component` base returns `kNotImplemented` from
+/// both methods (`vstcomponent.cpp:159,165`), so *every* plugin that does not
+/// override state answers that way. This used to accept
+/// `kResultOk || kResultFalse`, which rejected exactly those plugins: saving a
+/// project containing one failed with a `PluginError`.
+///
+/// The list matches `verify` in the SDK's own preset writer
+/// (`vstpresetfile.cpp:53`), which is the closest thing to a reference host for
+/// this call and accepts `kResultOk || kNotImplemented`.
+///
+/// `kResultFalse` is deliberately *not* here. Unlike the state methods, where
+/// "I have none" is the common honest answer, a plugin that actively fails a
+/// state round-trip has told us the blob is bad — and silently returning an
+/// empty one would persist a project that cannot be restored.
+fn state_result_ok(result: i32) -> bool {
+    result == kResultOk || result == kNotImplemented
+}
+
 /// Tear a view down: retract the host frame, then tell the view it is removed.
 ///
 /// The order is the point, and it matches `editorhost`'s `closePlugView`. The
@@ -1639,11 +1669,7 @@ fn build_plugin_info(
 }
 
 /// The audio class named `wanted`, or a `LoadFailed` naming what is on offer.
-fn find_audio_class_named(
-    library: &Vst3Library,
-    path: &Path,
-    wanted: &str,
-) -> Result<AudioClass> {
+fn find_audio_class_named(library: &Vst3Library, path: &Path, wanted: &str) -> Result<AudioClass> {
     let audio: Vec<_> = (0..library.count_classes())
         .filter_map(|i| library.get_class_info(i).ok())
         .filter(|info| info.category.contains("Audio"))

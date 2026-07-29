@@ -184,6 +184,24 @@ enum ProbeMisbehaviour : int32
     /// The host currently *tolerates* `kResultFalse` here by design; this makes
     /// that tolerance a tested decision rather than an untested one.
     kMisbehaveSetupFails = 7,
+
+    /// `getState`/`setState` return `kNotImplemented`.
+    ///
+    /// **Not a violation at all.** This is what the SDK's own `Component` base
+    /// returns (`vstcomponent.cpp:159,165`), so every plugin that does not
+    /// override state does exactly this. It lives here because the host was
+    /// *rejecting* it: the tolerance list was `kResultOk || kResultFalse`,
+    /// which is neither what the SDK returns nor what the SDK's own preset
+    /// writer accepts — `vstpresetfile.cpp`'s `verify` takes
+    /// `kResultOk || kNotImplemented`.
+    kMisbehaveStateNotImplemented = 8,
+
+    /// `IComponent::initialize` returns `kResultFalse`.
+    ///
+    /// A refusal, like `setActive`: the plugin is declining to initialise, and
+    /// the host must not go on to use a component that never came up. The SDK's
+    /// own host requires `== kResultOk` here (`plugprovider.cpp:140`).
+    kMisbehaveInitializeFails = 9,
 };
 
 /// Read the selected misbehaviour from the environment. Returns
@@ -197,7 +215,7 @@ inline int32 probeMisbehaviour ()
     if (!raw || !*raw)
         return kMisbehaveNone;
     const int32 v = static_cast<int32> (std::strtol (raw, nullptr, 10));
-    return (v >= kMisbehaveNone && v <= kMisbehaveSetupFails) ? v : kMisbehaveNone;
+    return (v >= kMisbehaveNone && v <= kMisbehaveInitializeFails) ? v : kMisbehaveNone;
 }
 
 /// Bus count reported under [`kMisbehaveExtraBuses`]. Larger than any real

@@ -76,6 +76,15 @@ Set `TUTTI_PROBE_MISBEHAVIOUR` to one of the `ProbeMisbehaviour` values in
 | 5 | `process` returns success without touching the output (stale-buffer leak) |
 | 6 | `getState`/`setState` both fail |
 | 7 | `setupProcessing` returns `kResultFalse` |
+| 8 | `getState`/`setState` return `kNotImplemented` — **not a violation**; see below |
+| 9 | `IComponent::initialize` returns `kResultFalse` |
+
+Value 8 is the odd one out: it is what the SDK's own `Component` base returns,
+so every plugin that does not override state behaves that way. It lives here
+because the host was *rejecting* it, which broke saving any project containing a
+stateless plugin. A "misbehaviour" that is really "the common case the host got
+wrong" is worth keeping in the same harness — the switch is just a way to make
+one plugin exhibit many return codes.
 
 The value is read **once, when the processor is constructed** — it cannot be a
 parameter, because most of these happen during `initialize`/`setActive`, before a

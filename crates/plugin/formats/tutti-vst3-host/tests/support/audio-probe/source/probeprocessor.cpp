@@ -38,6 +38,11 @@ tresult PLUGIN_API AudioProbeProcessor::initialize (FUnknown* context)
 	if (result != kResultOk)
 		return result;
 
+	// Decline initialisation the way a plugin whose resources are unavailable
+	// would. Done *after* the base call so teardown still has a coherent object.
+	if (mMisbehaviour == kMisbehaveInitializeFails)
+		return kResultFalse;
+
 	// Two input buses of differing width plus two outputs. The asymmetry is
 	// deliberate: a host that assumes "one stereo bus in, one stereo bus out"
 	// — the shape of every other sample plugin — is exercised here instead of
@@ -399,6 +404,9 @@ tresult PLUGIN_API AudioProbeProcessor::setState (IBStream* state)
 	// best-effort rather than failing the whole load over it.
 	if (mMisbehaviour == kMisbehaveStateFails)
 		return kResultFalse;
+	// What the SDK's own Component base returns when state is not overridden.
+	if (mMisbehaviour == kMisbehaveStateNotImplemented)
+		return kNotImplemented;
 
 	if (!state)
 		return kResultFalse;
@@ -418,6 +426,8 @@ tresult PLUGIN_API AudioProbeProcessor::getState (IBStream* state)
 {
 	if (mMisbehaviour == kMisbehaveStateFails)
 		return kResultFalse;
+	if (mMisbehaviour == kMisbehaveStateNotImplemented)
+		return kNotImplemented;
 
 	if (!state)
 		return kResultFalse;

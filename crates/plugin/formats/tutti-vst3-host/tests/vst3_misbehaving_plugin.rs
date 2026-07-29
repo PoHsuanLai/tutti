@@ -60,6 +60,8 @@ mod misbehave {
     pub const PROCESS_WRITES_NOTHING: &str = "5";
     pub const STATE_FAILS: &str = "6";
     pub const SETUP_FAILS: &str = "7";
+    pub const STATE_NOT_IMPLEMENTED: &str = "8";
+    pub const INITIALIZE_FAILS: &str = "9";
 }
 
 /// Latency the probe claims but never applies under `LATENCY_LIES`
@@ -625,5 +627,69 @@ fn the_misbehaviour_switch_reaches_the_plugin() {
     assert_eq!(
         lying, LIED_LATENCY_SAMPLES,
         "the probe reported {lying} rather than its inflated {LIED_LATENCY_SAMPLES}"
+    );
+}
+
+// ── Return codes that are not refusals ───────────────────────────────────────
+
+/// `kNotImplemented` from `getState`/`setState` must be tolerated.
+///
+/// **This is not a hostile plugin.** The SDK's own `Component` base returns
+/// `kNotImplemented` from both (`vstcomponent.cpp:159,165`), so every plugin
+/// that simply does not override state behaves exactly this way.
+///
+/// The host's tolerance list was `kResultOk || kResultFalse`, which is neither
+/// what the SDK returns nor what the SDK's own preset writer accepts:
+/// `vstpresetfile.cpp`'s `verify` is `kResultOk || kNotImplemented`. So saving a
+/// project containing any stateless plugin failed with a `PluginError`.
+#[test]
+fn a_stateless_plugin_does_not_fail_the_state_roundtrip() {
+    let _m = Misbehaviour::set(misbehave::STATE_NOT_IMPLEMENTED);
+    let path = probe_path();
+
+    let mut loaded =
+        Vst3Loaded::load(&path).expect("a plugin that does not implement state must still load");
+
+    let saved = loaded.state();
+    assert!(
+        saved.is_ok(),
+        "getState returned kNotImplemented — what the SDK's own Component base \
+         returns for every plugin that does not override state — and the host \
+         reported it as an error: {:?}. Saving a project with any stateless \
+         plugin in it would fail.",
+        saved.err()
+    );
+    assert!(
+        saved.as_ref().unwrap().is_empty(),
+        "a plugin with no state produced a non-empty blob"
+    );
+
+    // And the restore direction must be equally tolerant.
+    let restored = loaded.set_state(&[1, 2, 3, 4]);
+    assert!(
+        restored.is_ok(),
+        "setState returned kNotImplemented and the host treated it as a \
+         failure: {:?}. Loading a project would fail on any stateless plugin.",
+        restored.err()
+    );
+}
+
+/// A plugin that refuses `initialize` must not be reported as loaded.
+///
+/// The same shape as the `setActive` refusal: `kResultFalse` here is the
+/// plugin declining to come up, and a host that proceeds is using a component
+/// that was never initialised. The SDK's own host requires `== kResultOk`
+/// (`plugprovider.cpp:140`).
+#[test]
+fn a_refused_initialize_is_an_error_not_a_silent_success() {
+    let _m = Misbehaviour::set(misbehave::INITIALIZE_FAILS);
+    let path = probe_path();
+
+    let loaded = Vst3Loaded::load(&path);
+    assert!(
+        loaded.is_err(),
+        "IComponent::initialize returned kResultFalse — a refusal — but the \
+         host reported the plugin as loaded. Every later call runs against a \
+         component that never initialised."
     );
 }

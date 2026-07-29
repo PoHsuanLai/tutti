@@ -59,11 +59,34 @@ struct State {
     event_handlers: HashMap<i32, *mut IEventHandler>,
     /// Repeating timers, keyed by handler address.
     timers: HashMap<usize, TimerEntry>,
+    /// Dispatch tallies. Test-only: see [`RunLoopActivity`].
+    #[cfg(feature = "conformance")]
+    timers_fired: u64,
+    #[cfg(feature = "conformance")]
+    fds_dispatched: u64,
 }
 
 // SAFETY: see `State` — the pointers are only used from the UI thread, and the
 // Mutex serialises access to the collections themselves.
 unsafe impl Send for State {}
+
+/// What one [`RunLoop::run_iteration`] actually did, plus what is registered.
+///
+/// Only meaningful to assert on: "the plugin registered a timer and our pump
+/// fired it" is otherwise invisible from outside — the handlers are plugin-side
+/// COM objects and the effects land in the plugin's own GUI.
+#[cfg(feature = "conformance")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunLoopActivity {
+    /// Timers the plugin currently has registered.
+    pub timers_registered: usize,
+    /// File descriptors the plugin currently has registered.
+    pub event_handlers_registered: usize,
+    /// Cumulative `ITimerHandler::onTimer` calls this loop has made.
+    pub timers_fired: u64,
+    /// Cumulative `IEventHandler::onFDIsSet` calls this loop has made.
+    pub fds_dispatched: u64,
+}
 
 /// The host's run loop, shared between every object that exposes `IRunLoop`.
 #[derive(Default)]
@@ -86,6 +109,9 @@ impl RunLoop {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
 
         let now = Instant::now();
+        // Tallied locally because `values_mut` holds the borrow on `state`.
+        #[cfg(feature = "conformance")]
+        let mut fired = 0u64;
         for entry in state.timers.values_mut() {
             if now.duration_since(entry.last_fired) >= entry.period {
                 entry.last_fired = now;
@@ -95,8 +121,17 @@ impl RunLoop {
                     // (unregistration takes this same lock), called on the UI
                     // thread as the spec requires.
                     unsafe { ((*(*handler).vtbl).onTimer)(handler) };
+                    #[cfg(feature = "conformance")]
+                    {
+                        fired += 1;
+                    }
                 }
             }
+        }
+
+        #[cfg(feature = "conformance")]
+        {
+            state.timers_fired += fired;
         }
 
         if state.event_handlers.is_empty() {
@@ -117,6 +152,8 @@ impl RunLoop {
         if ready <= 0 {
             return;
         }
+        #[cfg(feature = "conformance")]
+        let mut dispatched = 0u64;
         for pfd in &fds {
             if pfd.revents & libc::POLLIN == 0 {
                 continue;
@@ -125,8 +162,28 @@ impl RunLoop {
                 if !handler.is_null() {
                     // SAFETY: as above.
                     unsafe { ((*(*handler).vtbl).onFDIsSet)(handler, pfd.fd) };
+                    #[cfg(feature = "conformance")]
+                    {
+                        dispatched += 1;
+                    }
                 }
             }
+        }
+        #[cfg(feature = "conformance")]
+        {
+            state.fds_dispatched += dispatched;
+        }
+    }
+
+    /// Snapshot of what is registered and what this loop has dispatched.
+    #[cfg(feature = "conformance")]
+    pub(crate) fn activity(&self) -> RunLoopActivity {
+        let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        RunLoopActivity {
+            timers_registered: state.timers.len(),
+            event_handlers_registered: state.event_handlers.len(),
+            timers_fired: state.timers_fired,
+            fds_dispatched: state.fds_dispatched,
         }
     }
 

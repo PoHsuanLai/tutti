@@ -1152,9 +1152,21 @@ impl Vst3Loaded {
     /// What the plugin has registered with our run loop, and how much this host
     /// has dispatched. Test-only observation seam behind the `conformance`
     /// feature — see [`RunLoopActivity`](crate::RunLoopActivity).
-    #[cfg(all(feature = "conformance", target_os = "linux"))]
+    ///
+    /// All-zero on non-Linux targets, where the OS owns the run loop and
+    /// plugins register nothing with us, so callers need no `cfg` of their own —
+    /// the same portability [`run_editor_loop_iteration`](Self::run_editor_loop_iteration)
+    /// offers.
+    #[cfg(feature = "conformance")]
     pub fn run_loop_activity(&self) -> crate::RunLoopActivity {
-        self._library.run_loop().activity()
+        #[cfg(target_os = "linux")]
+        {
+            self._library.run_loop().activity()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            crate::RunLoopActivity::default()
+        }
     }
 
     /// Coalesces multiple `IPlugFrame::resizeView` requests received

@@ -105,6 +105,45 @@ fn has_display() -> bool {
     }
 }
 
+/// Build the test event loop, or `None` if this platform will not give us one
+/// off the main thread.
+///
+/// The only genuinely platform-specific step in this file. Cargo runs tests on
+/// worker threads, and winit refuses to build an event loop off the main thread
+/// unless asked — X11, Wayland and Windows expose `with_any_thread` for exactly
+/// that, each on its own extension trait. macOS has no equivalent because Cocoa
+/// requires the main thread at the OS level, so there the loop simply cannot be
+/// built here and every GUI test skips.
+///
+/// Callers get an `Option` and no `cfg` of their own.
+fn build_event_loop() -> Option<winit::event_loop::EventLoop<()>> {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // X11 and Wayland each spell it on their own trait; whichever backend
+        // winit picks, the builder honours the flag set for it.
+        use winit::event_loop::EventLoop;
+        use winit::platform::wayland::EventLoopBuilderExtWayland;
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        let mut builder = EventLoop::builder();
+        EventLoopBuilderExtX11::with_any_thread(&mut builder, true);
+        EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
+        builder.build().ok()
+    }
+    #[cfg(windows)]
+    {
+        use winit::event_loop::EventLoop;
+        use winit::platform::windows::EventLoopBuilderExtWindows as _;
+        EventLoop::builder().with_any_thread(true).build().ok()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Cocoa requires the main thread and offers no opt-out, so a test
+        // worker thread cannot host an event loop at all.
+        eprintln!("macOS requires the event loop on the main thread; skipping");
+        None
+    }
+}
+
 /// A real native window to parent the plugin editor into, plus the event loop
 /// that owns it. Both must outlive the editor.
 struct TestWindow {
@@ -137,12 +176,7 @@ impl TestWindow {
     }
 
     fn build() -> Option<Self> {
-        use winit::event_loop::EventLoop;
-        use winit::platform::x11::EventLoopBuilderExtX11;
-
-        // `with_any_thread` because cargo runs tests on worker threads; winit
-        // otherwise refuses to build an event loop off the main thread.
-        let event_loop = EventLoop::builder().with_any_thread(true).build().ok()?;
+        let event_loop = build_event_loop()?;
         #[allow(deprecated)]
         let window = event_loop
             .create_window(

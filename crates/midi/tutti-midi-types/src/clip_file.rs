@@ -57,10 +57,57 @@ impl From<(u32, MidiEvent)> for ClipEvent {
     }
 }
 
+/// The musical context a clip declares up front: tempo and time signature.
+///
+/// M2-116 §7.1.1 and §7.1.2 say the sequence *should* open with a Set Tempo and
+/// a Set Time Signature, in that order, immediately after Start of Clip. Without
+/// them a reader has no tempo map, so [`ParsedClipFile::timed`]'s beats cannot be
+/// converted to seconds by any importer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipHeader {
+    /// Quarter-notes per minute.
+    pub tempo_bpm: f64,
+    /// Beats per bar and the beat unit, e.g. `(4, 4)`.
+    pub time_signature: (u8, u8),
+}
+
+impl Default for ClipHeader {
+    /// 120 BPM, 4/4 — the conventional default when a caller has no better idea.
+    fn default() -> Self {
+        Self {
+            tempo_bpm: 120.0,
+            time_signature: (4, 4),
+        }
+    }
+}
+
 /// Serialize a MIDI Clip File (M2-116) from a tick-per-quarter unit and a flat
 /// list of timed events. Emits header + DCTPQ + Start-of-Clip + (DCS·UMP)* +
 /// End-of-Clip, big-endian.
+///
+/// This writes no Set Tempo or Set Time Signature, which §7.1.1/§7.1.2 recommend
+/// — use [`write_clip_file_with_header`] when you know the clip's musical
+/// context, so the file carries its own tempo map.
 pub fn write_clip_file(ticks_per_quarter: u16, events: &[ClipEvent]) -> Vec<u8> {
+    write_clip(ticks_per_quarter, None, events)
+}
+
+/// Serialize a MIDI Clip File that opens with its tempo and time signature, per
+/// M2-116 §7.1.1 / §7.1.2 — the shape an importer needs to place the clip in
+/// real time.
+pub fn write_clip_file_with_header(
+    ticks_per_quarter: u16,
+    header: ClipHeader,
+    events: &[ClipEvent],
+) -> Vec<u8> {
+    write_clip(ticks_per_quarter, Some(header), events)
+}
+
+fn write_clip(
+    ticks_per_quarter: u16,
+    header: Option<ClipHeader>,
+    events: &[ClipEvent],
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(8 + (events.len() + 3) * 8);
     out.extend_from_slice(&CLIP_FILE_MAGIC);
 
@@ -71,6 +118,23 @@ pub fn write_clip_file(ticks_per_quarter: u16, events: &[ClipEvent]) -> Vec<u8> 
     // Start of Clip (preceded by a zero DCS — bar 1 begins here).
     push_words(&mut out, delta_clockstamp(0).data_words());
     push_words(&mut out, start_of_clip().data_words());
+
+    // Set Tempo then Set Time Signature, in that order and at the same (zero)
+    // clockstamp as Start of Clip — M2-116 §7.1.1: the first Set Tempo "should
+    // use the Delta Clockstamp which precedes the Start of Clip message";
+    // §7.1.2 puts the time signature "immediately following the Start of Clip
+    // and Set Tempo messages".
+    if let Some(h) = header {
+        let (numerator, denominator) = h.time_signature;
+        push_words(&mut out, delta_clockstamp(0).data_words());
+        push_words(&mut out, MidiEvent::flex_set_tempo(0, h.tempo_bpm).data_words());
+        push_words(&mut out, delta_clockstamp(0).data_words());
+        push_words(
+            &mut out,
+            // 8 thirty-second notes per quarter — the standard value.
+            MidiEvent::flex_set_time_signature(0, numerator, denominator, 8).data_words(),
+        );
+    }
 
     // The timed event stream: each UMP preceded by its delta clockstamp(s).
     // A DCS field is only 20 bits, so a delta beyond `DCS_MAX` is expressed as
@@ -147,6 +211,27 @@ impl ParsedClipFile {
             abs_tick += u64::from(ce.delta_ticks);
             (abs_tick as f64 / tpq, ce.event)
         })
+    }
+
+    /// The clip's own tempo in BPM — the first Flex Data **Set Tempo** in the
+    /// sequence (M2-116 §7.1.1), or `None` if the file declares none.
+    ///
+    /// A clip file carries its own tempo map, and it is not the project's: an
+    /// importer that ignores this places every note at the wrong wall-clock
+    /// time, silently. Read it and decide explicitly whether to adopt it or
+    /// keep the project tempo — do not let it default by omission.
+    pub fn tempo_bpm(&self) -> Option<f64> {
+        self.events
+            .iter()
+            .find_map(|ce| crate::ump::flex_tempo_bpm(&ce.event))
+    }
+
+    /// The clip's first Flex Data **Set Time Signature** as
+    /// `(numerator, denominator)` (M2-116 §7.1.2), or `None` if unset.
+    pub fn time_signature(&self) -> Option<(u8, u8)> {
+        self.events
+            .iter()
+            .find_map(|ce| crate::ump::flex_time_signature(&ce.event))
     }
 
     /// The clip's musical length in beats: the absolute beat of the last event
@@ -564,6 +649,53 @@ mod tests {
         assert!(beats[0] < beats[1]);
         assert!((beats[0] - 0.0).abs() < 1e-9);
         assert!((beats[1] - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn header_round_trips_tempo_and_time_signature() {
+        // M2-116 §7.1.1/§7.1.2: the sequence opens with Set Tempo then Set Time
+        // Signature. A clip carries its own tempo map; an importer that can't
+        // read it back places every note at the wrong wall-clock time.
+        let header = ClipHeader {
+            tempo_bpm: 174.0,
+            time_signature: (7, 8),
+        };
+        let bytes = write_clip_file_with_header(
+            480,
+            header,
+            &[ClipEvent::new(0, MidiEvent::note_on(0, 0, 60, 0x8000))],
+        );
+
+        let clip = read_clip_file(&bytes).expect("parses");
+        assert!(
+            (clip.tempo_bpm().expect("tempo present") - 174.0).abs() < 0.05,
+            "tempo survives the round trip"
+        );
+        assert_eq!(clip.time_signature(), Some((7, 8)));
+
+        // Ordering: tempo comes before the time signature, both before the note.
+        let kinds: Vec<_> = clip
+            .events
+            .iter()
+            .map(|ce| {
+                (
+                    crate::ump::flex_tempo_bpm(&ce.event).is_some(),
+                    crate::ump::flex_time_signature(&ce.event).is_some(),
+                )
+            })
+            .collect();
+        assert_eq!(kinds[0], (true, false), "Set Tempo first");
+        assert_eq!(kinds[1], (false, true), "Set Time Signature second");
+
+        // The note still lands at beat 0 — the header messages share its
+        // zero clockstamp rather than pushing it later.
+        let timed: Vec<(f64, MidiEvent)> = clip.timed().collect();
+        assert!(timed.iter().all(|(b, _)| *b == 0.0));
+
+        // A clip written without a header simply declares none.
+        let bare = read_clip_file(&write_clip_file(480, &[])).expect("parses");
+        assert_eq!(bare.tempo_bpm(), None);
+        assert_eq!(bare.time_signature(), None);
     }
 
     #[test]

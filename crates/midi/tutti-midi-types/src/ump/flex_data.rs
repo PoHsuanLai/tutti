@@ -363,6 +363,20 @@ pub fn flex_tempo_bpm(event: &MidiEvent) -> Option<f64> {
     ten_ns_per_quarter_to_bpm(m.number_of_10_nanosecond_units_per_quarter_note())
 }
 
+/// Recover `(numerator, denominator)` from a Flex Data Set Time Signature
+/// [`MidiEvent`], or `None` if `event` isn't one. Inverse of
+/// [`MidiEvent::flex_set_time_signature`].
+pub fn flex_time_signature(event: &MidiEvent) -> Option<(u8, u8)> {
+    use midi2::flex_data::FlexData;
+    use midi2::UmpMessage;
+    let UmpMessage::FlexData(FlexData::SetTimeSignature(m)) =
+        UmpMessage::try_from(event.data_words()).ok()?
+    else {
+        return None;
+    };
+    Some((m.numerator(), m.denominator()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

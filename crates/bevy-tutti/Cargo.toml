@@ -136,8 +136,7 @@ synth = ["dep:tutti-synth"]
 # with `midi` under feature unification — so enable bevy-tutti's own `midi` to
 # keep `engine/build.rs` in step with the tutti-core that actually compiles.
 soundfont = ["synth", "midi", "tutti-synth/soundfont"]
-# The `?` keeps sampler usable without export.
-sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy", "tutti-export?/sampler", "tutti-cpal/capture"]
+sampler = ["wav", "dep:tutti-sampler", "tutti-sampler/bevy", "tutti-cpal/capture"]
 
 # Plugin hosting: editor windows, catalog scan, crash detection.
 # `tutti-plugin-server` pulls `tutti-core` with `midi` under feature

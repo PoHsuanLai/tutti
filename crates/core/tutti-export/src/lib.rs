@@ -33,11 +33,17 @@
 //! surface routes its renders through Bevy's `AsyncComputeTaskPool` for exactly
 //! that reason.
 //!
-//! **It does not normalize.** Choosing a gain means measuring the whole signal
-//! first, which is two passes and a caller's composition. Measure with
-//! `tutti_analysis::loudness` (a streaming meter — run it *while* rendering),
-//! take `Loudness::gain_to`, and apply it. Hiding that inside an export is what
-//! forced the whole signal into memory before.
+//! **It does not normalize *while streaming*.** Choosing a gain means measuring
+//! the whole signal first, which is two passes. So normalization is not a field
+//! on [`ExportConfig`] that quietly changes what `render_to_file` costs — it is
+//! [`render_normalized_to_file`], a separate entry point whose name says which
+//! path you are on. Hiding the two passes inside one export is what forced the
+//! whole signal into memory before.
+//!
+//! For a gain of your own — logged, gated, or derived some other way — compose
+//! the steps directly: measure with `tutti_analysis::loudness` (a streaming
+//! meter, so it can run *while* rendering), take `Loudness::gain_to`, apply it
+//! with [`Rendered::apply_gain`], and write with [`write_buffers`].
 //!
 //! **It does not decide how to buffer.** Every format streams, because every
 //! codec library it uses supports incremental encoding. There is no
@@ -52,6 +58,9 @@ pub use tutti_types::ChannelLayout;
 
 mod config;
 pub use config::{EncodeConfig, ExportConfig, RenderConfig, Resample};
+
+mod normalize;
+pub use normalize::{render_normalized_to_file, Normalize};
 /// Frame-count arithmetic — pure, and public so a caller can size a render
 /// before committing to one.
 pub use render::plan::{beats_to_seconds, duration_to_frames};

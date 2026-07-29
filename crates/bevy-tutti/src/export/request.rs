@@ -82,6 +82,22 @@ pub struct ExportRequest {
     /// `tutti_export::FrozenClock` for a graph with no time-dependent nodes, or
     /// an `OfflineTimeline` seeded at the beat you want to render from.
     pub clock: Arc<dyn RenderClock>,
+    /// The timeline transport-aware nodes are rebound onto, for
+    /// [`ExportSource::Node`].
+    ///
+    /// **Pass the same object as `clock`** when it is an `OfflineTimeline`:
+    /// `RenderClock` is advance-only, so this crate cannot read a timeline back
+    /// out of it, and the two ends have to agree. The renderer advances `clock`;
+    /// the nodes read this. Hand over two different timelines and the nodes read
+    /// a playhead nothing moves — silence, or a window that never opens.
+    ///
+    /// `None` builds a default context at the render's sample rate, 120 BPM,
+    /// starting at beat 0. That is right for a graph with no musical time
+    /// (an effect tail, a synth patch) and wrong for anything placed on a
+    /// timeline, which is why a caller that has a transport should say so.
+    ///
+    /// Ignored for [`ExportSource::Master`], which keeps its live bindings.
+    pub offline: Option<OfflineContext>,
     /// Optional last look at the net before it leaves the main thread — see
     /// [`PrepareNet`]. Use [`ExportRequest::new`] when there is nothing to do.
     pub prepare: Option<PrepareNet>,
@@ -100,8 +116,16 @@ impl ExportRequest {
             target,
             config,
             clock,
+            offline: None,
             prepare: None,
         }
+    }
+
+    /// Bind transport-aware nodes to `ctx` rather than a default 120 BPM
+    /// context — see [`offline`](Self::offline).
+    pub fn on_timeline(mut self, ctx: OfflineContext) -> Self {
+        self.offline = Some(ctx);
+        self
     }
 
     /// Attach a hook that runs on the net before the render starts.

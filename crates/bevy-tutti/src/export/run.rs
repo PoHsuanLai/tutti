@@ -159,21 +159,32 @@ fn prepare_net(
         ExportSource::Node(target) => {
             let pending = graph.0.clone_isolated(target)?;
 
-            // The clock the render drives. Every transport-aware node in the
-            // clone is re-seated on it below, and the same `Arc` is what the
-            // renderer advances — binding both ends to one timeline is what
-            // keeps voices from reading a playhead nothing moves.
-            let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-                start_beat: 0.0,
-                tempo: 120.0.into(),
-                sample_rate: SampleRate(config.sample_rate),
-                loop_range: None,
-            }));
-            let ctx = OfflineContext::new(
-                timeline as Arc<dyn tutti_core::Timeline>,
-                tutti_core::Beat::new(0.0),
-                tutti_core::Bpm(120.0),
-            );
+            // The timeline every transport-aware node in the clone is re-seated
+            // on. The caller supplies it, because the caller also supplies the
+            // `clock` the renderer advances and the two must be the same object
+            // — `RenderClock` is advance-only, so there is no reading one back
+            // out of the other. Manufacturing one here is what made a tap on a
+            // 90 BPM project rebind its voices to a 120 BPM playhead that
+            // nothing then advanced.
+            let ctx = match request.offline.clone() {
+                Some(ctx) => ctx,
+                // No transport named: a default at the render's own rate. Right
+                // for a graph with no musical time, and the reason `offline` is
+                // worth passing for anything else.
+                None => {
+                    let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+                        start_beat: 0.0,
+                        tempo: 120.0.into(),
+                        sample_rate: SampleRate(config.sample_rate),
+                        loop_range: None,
+                    }));
+                    OfflineContext::new(
+                        timeline as Arc<dyn tutti_core::Timeline>,
+                        tutti_core::Beat::new(0.0),
+                        tutti_core::Bpm(120.0),
+                    )
+                }
+            };
 
             // Isolate (sever live inputs) and rebind (re-point at `ctx`) in the
             // one order they may happen — see `PendingClone::isolate_for_offline`.

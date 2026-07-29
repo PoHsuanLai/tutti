@@ -333,3 +333,71 @@ fn a_prepare_hook_reaches_the_net_that_gets_rendered() {
          would come back at the 0.5 it was built with"
     );
 }
+
+/// **The caller's timeline is what the nodes get rebound onto.**
+///
+/// `RenderClock` is advance-only, so this crate cannot read a timeline back out
+/// of the `clock` a caller supplies. It used to manufacture its own — hardcoded
+/// to 120 BPM at beat 0 — and rebind every transport-aware node in the clone
+/// onto *that*, while the renderer advanced the caller's. The two ends
+/// disagreed: a tap on a 90 BPM project bound its voices to a 120 BPM playhead
+/// that nothing then advanced, which is the silent-playhead failure the
+/// per-node rebind exists to prevent.
+#[test]
+fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
+    use tutti_core::transport::{OfflineContext, OfflineTimeline, OfflineTimelineConfig};
+
+    let (mut app, node) = app_with_engine();
+
+    // A deliberately un-default transport: neither 120 BPM nor beat 0.
+    let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+        start_beat: 16.0,
+        tempo: tutti_core::Bpm(90.0).into(),
+        sample_rate: tutti_core::SampleRate(44_100.0),
+        loop_range: None,
+    }));
+    let ctx = OfflineContext::new(
+        timeline.clone() as Arc<dyn tutti_core::Timeline>,
+        tutti_core::Beat::new(16.0),
+        tutti_core::Bpm(90.0),
+    );
+
+    static SEEN_TEMPO: AtomicUsize = AtomicUsize::new(usize::MAX);
+    static SEEN_BEAT: AtomicUsize = AtomicUsize::new(usize::MAX);
+    SEEN_TEMPO.store(usize::MAX, Ordering::SeqCst);
+    SEEN_BEAT.store(usize::MAX, Ordering::SeqCst);
+
+    let request = ExportRequest::new(
+        ExportSource::Node(node),
+        ExportTarget::Buffers,
+        stereo_config(),
+        timeline.clone(),
+    )
+    .on_timeline(ctx)
+    // The hook sees the very context the nodes were rebound with.
+    .with_prepare(|prepared, _world| {
+        if let Some(ctx) = prepared.ctx {
+            use tutti_core::Timeline;
+            SEEN_TEMPO.store(ctx.transport.tempo().get().round() as usize, Ordering::SeqCst);
+            SEEN_BEAT.store(ctx.transport.beat().get().round() as usize, Ordering::SeqCst);
+        }
+    });
+
+    app.world_mut().spawn(request);
+
+    assert!(
+        run_until(&mut app, |_| SEEN_TEMPO.load(Ordering::SeqCst) != usize::MAX),
+        "the render never started"
+    );
+
+    assert_eq!(
+        SEEN_TEMPO.load(Ordering::SeqCst),
+        90,
+        "nodes must be rebound onto the caller's timeline, not a manufactured 120 BPM one"
+    );
+    assert_eq!(
+        SEEN_BEAT.load(Ordering::SeqCst),
+        16,
+        "and at the caller's start beat, not beat 0"
+    );
+}

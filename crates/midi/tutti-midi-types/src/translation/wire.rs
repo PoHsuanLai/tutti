@@ -157,7 +157,14 @@ impl MidiEvent {
             ChannelVoice2::NoteOn(m) => (
                 0x9,
                 u8::from(m.note_number()),
-                midi2_velocity_to_midi1(m.velocity()),
+                // M2-104-UM §7.4.2: "When translating a MIDI 2.0 Note On
+                // message to the MIDI 1.0 Protocol, if the translated MIDI 1.0
+                // value of the Velocity is zero, then the Translator shall
+                // replace the zero with a value of 1." Downscale is `>> 9`, so
+                // every CV2 velocity in 0x0001..=0x01FF lands on 0 — and a
+                // MIDI 1.0 Note On with velocity 0 *is* a Note Off, which would
+                // silence the note instead of sounding it.
+                midi2_velocity_to_midi1(m.velocity()).max(1),
                 3,
             ),
             ChannelVoice2::NoteOff(m) => (
@@ -223,5 +230,37 @@ mod tests {
         assert_eq!(ev.frame_offset, 0);
         // Garbage → the typed error.
         assert_eq!(MidiEvent::try_from(&[0x00u8][..]), Err(MidiParseError));
+    }
+
+    #[test]
+    fn quiet_note_on_never_downscales_to_a_note_off() {
+        // M2-104-UM §7.4.2: a CV2 Note On whose velocity narrows to 0 must be
+        // sent as 1, because MIDI 1.0 reads velocity 0 as a Note Off. The
+        // downscale is `>> 9`, so the whole 0x0001..=0x01FF range is at risk.
+        for vel in [0x0001u16, 0x0080, 0x00FF, 0x01FF] {
+            let ev = MidiEvent::note_on(0, 0, 60, vel);
+            let (bytes, len) = ev.to_midi1_bytes().expect("note-on downconverts");
+            assert_eq!(len, 3);
+            assert_eq!(bytes[0], 0x90, "status stays Note On");
+            assert_eq!(
+                bytes[2], 1,
+                "velocity {vel:#06x} must clamp up to 1, not become a Note Off"
+            );
+        }
+
+        // A velocity of exactly 0 is not a valid CV2 Note On gesture, but if one
+        // arrives it must still not turn into a Note Off.
+        let ev = MidiEvent::note_on(0, 0, 60, 0);
+        assert_eq!(ev.to_midi1_bytes().unwrap().0[2], 1);
+
+        // Audible velocities are untouched.
+        let ev = MidiEvent::note_on(0, 0, 60, 0x8000);
+        assert_eq!(ev.to_midi1_bytes().unwrap().0[2], 64);
+
+        // Note Off velocity 0 is legitimate and must NOT be clamped.
+        let off = MidiEvent::note_off(0, 0, 60, 0);
+        let (bytes, _) = off.to_midi1_bytes().expect("note-off downconverts");
+        assert_eq!(bytes[0], 0x80);
+        assert_eq!(bytes[2], 0, "note-off velocity 0 is valid");
     }
 }

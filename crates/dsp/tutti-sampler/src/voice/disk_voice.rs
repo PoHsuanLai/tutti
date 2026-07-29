@@ -768,6 +768,25 @@ impl AudioUnit for DiskVoice {
         self.was_inside = false;
     }
 
+    /// Re-point the placement gate's clock at the render's transport.
+    ///
+    /// The gate reads `timeline`'s beat to decide whether this voice is inside
+    /// its window. Bound to the live clock during an offline render, the window
+    /// never opens (or opens at the wrong beat) and the voice renders silence —
+    /// the same failure the wrapper types have, which the predecessor rebind
+    /// covered for them and not for this one.
+    ///
+    /// Forces a re-seek: the streamed offset was computed against the old
+    /// clock's position, so carrying it over would read the wrong file region.
+    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+        let Some(ctx) = ctx.downcast_ref::<tutti_core::transport::OfflineContext>() else {
+            return;
+        };
+        self.timeline = ctx.transport.clone();
+        self.streamed_offset = NO_SEEK_TARGET;
+        self.was_inside = false;
+    }
+
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         self.inner.set_sample_rate(sample_rate);
     }

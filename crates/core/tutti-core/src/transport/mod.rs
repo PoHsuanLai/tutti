@@ -5,6 +5,7 @@ pub(crate) mod fsm;
 mod handle;
 mod motion;
 mod offline;
+mod offline_ctx;
 mod settings;
 mod state;
 
@@ -14,6 +15,7 @@ pub use clock::TransportClock;
 pub use handle::Transport;
 pub use motion::{FadeOut, MotionEvent, MotionFsm, MotionState, QueueFull, Then};
 pub use offline::{OfflineTimeline, OfflineTimelineConfig};
+pub use offline_ctx::OfflineContext;
 pub use settings::TransportSettings;
 pub use state::{
     beat_from_ports, beats_per_sample, ClockLinks, Declick, LoopRange, LoopSpan, SeekSlot,

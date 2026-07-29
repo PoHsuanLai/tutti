@@ -878,6 +878,20 @@ impl AudioUnit for MemorySource {
         self.playing.store(false, Ordering::Relaxed);
     }
 
+    /// Re-point this source's own read clock at the render's transport.
+    ///
+    /// A `MemorySource` reaches the graph two ways: wrapped in a `VoicePool` /
+    /// `VoiceNode` (which cascade into it), and — since it is itself an
+    /// `AudioUnit` — directly as a node. The predecessor rebind knew only the
+    /// wrappers, so a bare memory source rendered against the live playhead.
+    /// Declaring it here covers both routes, and any future one.
+    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+        let Some(ctx) = ctx.downcast_ref::<tutti_core::transport::OfflineContext>() else {
+            return;
+        };
+        self.replace_transport(ctx.transport.clone());
+    }
+
     fn set_sample_rate(&mut self, sample_rate: SampleRate) {
         self.sample_rate = sample_rate;
         self.set_session_sample_rate(sample_rate.get());

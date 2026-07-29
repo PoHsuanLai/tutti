@@ -632,6 +632,16 @@ impl AudioUnit for VoicePool {
         self.butler = None;
     }
 
+    /// Seat the render's transport, so voices inserted afterwards are built
+    /// against it. The data-carrying half `isolate` defers to; see
+    /// [`replace_transport`](Self::replace_transport).
+    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+        let Some(ctx) = ctx.downcast_ref::<tutti_core::transport::OfflineContext>() else {
+            return;
+        };
+        self.replace_transport(ctx.transport.clone());
+    }
+
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         self.sample_rate = sample_rate.get();
         if let Some(cursor) = &mut self.cursor {

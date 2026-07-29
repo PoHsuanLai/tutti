@@ -47,8 +47,44 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     /// on every node of the cloned net before it reaches the worker.
     ///
     /// This severs *inputs only*; re-pointing a unit at offline data (transport,
-    /// scheduled events) is a separate, data-carrying step the caller drives.
+    /// scheduled events) is the data-carrying step [`Self::rebind_offline`]
+    /// performs immediately after.
     fn isolate(&mut self) {
+        // The default implementation does nothing.
+    }
+
+    /// Re-point this unit at the offline render's data — the half `isolate()`
+    /// cannot do, because it carries no data.
+    ///
+    /// `isolate()` leaves a severed unit still aiming at the *live* transport,
+    /// which nothing advances offline: a voice bound to it reads a frozen
+    /// playhead and renders silence. Implementors holding a transport (or their
+    /// own clock) re-seat it here.
+    ///
+    /// # Why the context is `&dyn Any`
+    ///
+    /// The offline context names a timeline, and this crate cannot name one —
+    /// `Timeline` lives in `tutti-core`, which depends on *this* crate. Passing
+    /// it opaquely keeps the hook where every node already is (beside `isolate`,
+    /// reached through `Net` without a type switch) while letting the transport
+    /// vocabulary stay downstream. Implementors downcast it once:
+    ///
+    /// ```ignore
+    /// fn rebind_offline(&mut self, ctx: &dyn Any) {
+    ///     let Some(ctx) = ctx.downcast_ref::<OfflineContext>() else { return };
+    ///     self.transport = ctx.transport.clone();
+    /// }
+    /// ```
+    ///
+    /// **A transport-aware unit that does not implement this renders against
+    /// the live playhead**, and does so silently — there is no value to compare
+    /// and no error to raise. That is exactly why this is a defaulted method on
+    /// the node rather than a match arm in the renderer: a new node declares its
+    /// own rebinding and is covered automatically, where a renderer-side ladder
+    /// would skip anything it had not been taught to name. Pure-DSP units are
+    /// unaffected by time-of-render and correctly do nothing.
+    #[allow(unused_variables)]
+    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
         // The default implementation does nothing.
     }
 

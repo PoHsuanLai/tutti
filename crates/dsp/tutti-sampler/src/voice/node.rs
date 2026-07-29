@@ -263,4 +263,18 @@ impl AudioUnit for VoiceNode {
         // last-seen beat, or its first offline block reads as a discontinuity.
         self.cursor = None;
     }
+
+    /// Rebind the wrapped voice's placement (and its source's own read clock) to
+    /// the render's transport.
+    ///
+    /// A bare voice node keeps its cloned content — the clone is already
+    /// independent — so this is purely the re-point. Without it the voice reads
+    /// the live playhead, which the offline driver never advances, and renders
+    /// silence.
+    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+        let Some(ctx) = ctx.downcast_ref::<tutti_core::transport::OfflineContext>() else {
+            return;
+        };
+        self.replace_transport(ctx.transport.clone());
+    }
 }

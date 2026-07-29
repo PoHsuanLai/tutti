@@ -43,8 +43,8 @@ pub mod unit_id;
 pub use translation::scaling as convert;
 
 pub use clip_file::{
-    read_clip_file, write_clip_file, write_clip_file_from_beats, ClipEvent, ClipFileError,
-    ParsedClipFile,
+    read_clip_file, write_clip_file, write_clip_file_from_beats, write_clip_file_with_header,
+    ClipEvent, ClipFileError, ClipHeader, ClipNote, ParsedClipFile, CLIP_FILE_MAGIC,
 };
 pub use message::{MidiMessage, NoteAttribute, PerNoteController, UnencodableMessage};
 pub use mpe::{
@@ -93,6 +93,52 @@ pub use unit_id::MidiUnitId;
 /// let bytes = write_clip_file_from_beats(96, [(0.0, ev)]);
 /// let clip = read_clip_file(&bytes).unwrap();
 /// assert_eq!(clip.timed().count(), 1);
+///
+/// // Velocity survives at full MIDI 2.0 width — the point of the format.
+/// let (_, first) = clip.timed().next().unwrap();
+/// assert_eq!(first.velocity_u16(), Some(0x8000));
+/// ```
+///
+/// A clip written with a [`ClipHeader`] declares its own tempo and time
+/// signature (M2-116 §7.1.1/§7.1.2), so an importer can place it in real time
+/// rather than assuming the project's:
+///
+/// ```
+/// use tutti_midi_types::{
+///     read_clip_file, write_clip_file_with_header, ClipEvent, ClipHeader, MidiEvent,
+///     CLIP_FILE_MAGIC,
+/// };
+///
+/// let bytes = write_clip_file_with_header(
+///     480,
+///     ClipHeader { tempo_bpm: 174.0, time_signature: (7, 8) },
+///     &[ClipEvent::new(0, MidiEvent::note_on(0, 0, 60, 0x8000))],
+/// );
+///
+/// // Self-identifying: a file can be recognised before it is parsed.
+/// assert_eq!(&bytes[..8], &CLIP_FILE_MAGIC);
+///
+/// let clip = read_clip_file(&bytes).unwrap();
+/// assert_eq!(clip.time_signature(), Some((7, 8)));
+/// assert!((clip.tempo_bpm().unwrap() - 174.0).abs() < 0.05);
+/// ```
+///
+/// [`ParsedClipFile::notes`] pairs the event stream into whole notes, so an
+/// importer gets durations without reimplementing note matching — and without
+/// narrowing velocity to 7 bits on the way:
+///
+/// ```
+/// use tutti_midi_types::{read_clip_file, write_clip_file_from_beats, MidiEvent};
+///
+/// let bytes = write_clip_file_from_beats(96, [
+///     (0.0, MidiEvent::note_on(0, 0, 60, 0xABCD)),
+///     (1.5, MidiEvent::note_off(0, 0, 60, 0)),
+/// ]);
+///
+/// let notes = read_clip_file(&bytes).unwrap().notes();
+/// assert_eq!(notes.len(), 1);
+/// assert_eq!(notes[0].duration_beats, 1.5);
+/// assert_eq!(notes[0].velocity, 0xABCD);
 /// ```
 ///
 /// [`MidiEvent::message`]: crate::MidiMessage

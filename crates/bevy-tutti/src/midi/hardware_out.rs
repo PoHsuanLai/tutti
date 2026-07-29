@@ -83,11 +83,14 @@ pub struct UmpOutRes {
 
 #[cfg(all(target_os = "macos", feature = "midi-hardware"))]
 impl UmpOutRes {
-    /// Wrap a native-UMP source, stamping at `sample_rate` on UMP `group`.
-    pub fn new(source: tutti_midi_io::UmpVirtualSource, sample_rate: f64, group: u8) -> Self {
+    /// Wrap a native-UMP source, stamping at `sample_rate`.
+    ///
+    /// No group: JR Timestamps are groupless utility messages (M2-104-UM
+    /// §2.1.2), so a stamp applies to the whole stream.
+    pub fn new(source: tutti_midi_io::UmpVirtualSource, sample_rate: f64) -> Self {
         Self {
             source,
-            stream: tutti_midi_runtime::JrStream::new(sample_rate, group),
+            stream: tutti_midi_runtime::JrStream::new(sample_rate),
         }
     }
 

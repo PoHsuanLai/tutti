@@ -39,10 +39,7 @@ fn soundfont_asset() -> Option<SoundFontAsset> {
 /// An app with the soundfont plugin and the engine resources its systems gate on.
 fn app() -> App {
     let mut app = App::new();
-    app.add_plugins((
-        bevy_app::TaskPoolPlugin::default(),
-        AssetPlugin::default(),
-    ));
+    app.add_plugins((bevy_app::TaskPoolPlugin::default(), AssetPlugin::default()));
 
     let mut net = Net::new(0, 2);
     let _backend = net.backend();

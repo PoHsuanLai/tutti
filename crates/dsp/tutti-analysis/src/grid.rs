@@ -273,7 +273,6 @@ mod tests {
         assert_eq!(frame.get(), bin.get());
     }
 
-
     fn grid() -> Grid<i32> {
         // 3 frames x 4 bins, values encode (frame, bin) as frame*10 + bin.
         let data = (0..3)

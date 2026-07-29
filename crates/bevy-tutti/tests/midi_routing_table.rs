@@ -49,7 +49,10 @@ fn the_routing_table_publishes_where_the_rt_reads() {
 #[test]
 fn publishing_leaves_nothing_staged() {
     let (mut res, rt_view) = routing_table_for_test();
-    res.publish(vec![MidiRoute::for_channel(0).with_target(MidiUnitId::new(1))], None);
+    res.publish(
+        vec![MidiRoute::for_channel(0).with_target(MidiUnitId::new(1))],
+        None,
+    );
 
     assert_eq!(res.route_count(), 1, "the rule is staged");
     assert!(

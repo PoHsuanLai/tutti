@@ -209,8 +209,10 @@ fn collect<K: ModSourceKind>(
         return;
     }
     for (entity, kind, rate, cell) in &sources {
-        let source: Box<dyn ErasedModulator> =
-            Box::new(tutti_mod::Sourced::new(kind.build(), source_rate(rate, cell)));
+        let source: Box<dyn ErasedModulator> = Box::new(tutti_mod::Sourced::new(
+            kind.build(),
+            source_rate(rate, cell),
+        ));
         collected.sources.push((entity, source));
 
         // A curve is clocked by the beat, so a beat-synced rate is already in

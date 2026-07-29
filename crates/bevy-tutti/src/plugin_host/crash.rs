@@ -26,10 +26,7 @@ use crate::plugin_host::editor::{PluginEditorOpen, PluginEmitter};
 /// Removing the component instead lets the observer do both jobs, so this
 /// system no longer touches the graph at all — hence no `AudioGraphRes` and no
 /// `GraphDirty` here.
-pub fn plugin_crash_detect_system(
-    mut commands: Commands,
-    query: Query<(Entity, &PluginEmitter)>,
-) {
+pub fn plugin_crash_detect_system(mut commands: Commands, query: Query<(Entity, &PluginEmitter)>) {
     for (entity, plugin) in query.iter() {
         if plugin.handle.is_crashed() {
             bevy_log::error!(

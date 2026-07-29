@@ -210,9 +210,14 @@ fn a_driven_rate_changes_the_carriers_own_output() {
             .id();
 
         // The carrier drives a node param, so its phase is observable.
-        app.world_mut().entity_mut(target).insert(
-            ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
-        );
+        app.world_mut()
+            .entity_mut(target)
+            .insert(ModParamRange::default().with(
+                ParamAddr::Unit(UnitParam::Drive),
+                5.0,
+                0.0,
+                10.0,
+            ));
         app.world_mut().spawn(
             ModRoute::new(carrier, target, ParamAddr::Unit(UnitParam::Drive))
                 .with_depth(Depth(0.4)),
@@ -295,9 +300,9 @@ fn the_cascade_survives_a_rebuild() {
 
     // Force a rebuild by declaring an unrelated route — enough to make the
     // whole source registry be rebuilt from scratch.
-    app.world_mut().entity_mut(target).insert(
-        ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0),
-    );
+    app.world_mut()
+        .entity_mut(target)
+        .insert(ModParamRange::default().with(ParamAddr::Unit(UnitParam::Drive), 5.0, 0.0, 10.0));
     let other = app
         .world_mut()
         .spawn((
@@ -305,8 +310,9 @@ fn the_cascade_survives_a_rebuild() {
             ModRate::free_running(Hz(3.0)),
         ))
         .id();
-    app.world_mut()
-        .spawn(ModRoute::new(other, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.2)));
+    app.world_mut().spawn(
+        ModRoute::new(other, target, ParamAddr::Unit(UnitParam::Drive)).with_depth(Depth(0.2)),
+    );
     app.update();
 
     let after = app

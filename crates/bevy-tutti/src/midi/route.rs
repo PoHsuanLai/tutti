@@ -136,10 +136,8 @@ pub fn rebuild(
     arrived: Query<(), Added<tutti_core::AudioNode>>,
     mut removed: RemovedComponents<MidiRouteRule>,
 ) {
-    let dirty = !changed.is_empty()
-        || !removed.is_empty()
-        || !arrived.is_empty()
-        || fallback.is_changed();
+    let dirty =
+        !changed.is_empty() || !removed.is_empty() || !arrived.is_empty() || fallback.is_changed();
     // An event reader: draining is what marks this frame's removals as seen, so
     // it happens whether or not a rebuild follows.
     removed.clear();

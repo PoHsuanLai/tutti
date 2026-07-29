@@ -55,7 +55,9 @@ fn bare_app() -> App {
     });
     app.insert_resource(AudioEngineState::Running);
     app.insert_resource(bevy_tutti::midi::test_support::midi_bus_for_test());
-    app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test(48_000.0));
+    app.insert_resource(bevy_tutti::midi::test_support::clock_master_for_test(
+        48_000.0,
+    ));
     // `engine_ready` claims every resource the engine block inserts is
     // present, and the route rebuild takes `MidiRoutingRes` as a plain
     // `ResMut` on that promise. A test asserting readiness supplies it.
@@ -87,11 +89,17 @@ fn bus_has(app: &App, unit_id: tutti_midi_types::MidiUnitId) -> bool {
 fn a_midi_node_reaches_the_bus() {
     let mut app = app();
     let (entity, unit_id) = spawn_synth(&mut app);
-    assert!(!bus_has(&app, unit_id), "not registered before a frame runs");
+    assert!(
+        !bus_has(&app, unit_id),
+        "not registered before a frame runs"
+    );
 
     app.update();
 
-    assert!(bus_has(&app, unit_id), "the synth's sender should be routable");
+    assert!(
+        bus_has(&app, unit_id),
+        "the synth's sender should be routable"
+    );
     assert!(
         app.world().get::<MidiRegistered>(entity).is_some(),
         "and the entity should be marked as registered"

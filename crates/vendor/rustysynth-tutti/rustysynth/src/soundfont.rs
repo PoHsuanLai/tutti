@@ -116,8 +116,6 @@ impl SoundFont {
     }
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

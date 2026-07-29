@@ -278,8 +278,8 @@ fn write_output<T: cpal::SizedSample + cpal::FromSample<f32>>(
 mod tests {
     use super::*;
     use parking_lot::Mutex;
-    use tutti_core::engine::Engine;
     use tutti_core::dsp::{lowpass_hz, sine_hz, Net};
+    use tutti_core::engine::Engine;
     use tutti_core::{Beat, BeatDuration, MotionEvent, Transport, TransportClock};
 
     /// Build an engine + transport pair whose graph actually renders.

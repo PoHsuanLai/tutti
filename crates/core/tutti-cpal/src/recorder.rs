@@ -30,8 +30,8 @@ use std::time::Duration;
 use tutti_sampler::capture::CaptureFormat;
 use tutti_sampler::{pump, AudioOut, WavOut};
 
-use crate::mic::MicIn;
 use crate::error::{Error, Result};
+use crate::mic::MicIn;
 
 /// Frames moved per pump pass. One bufferful, allocated once before the loop so
 /// the pump body stays allocation-free. ~21ms at 48kHz — small enough to bound

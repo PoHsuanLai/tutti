@@ -38,7 +38,6 @@ impl PitchResult {
     pub fn is_voiced(&self) -> bool {
         self.frequency > 0.0 && self.confidence > 0.0
     }
-
 }
 
 use rustfft::{num_complex::Complex, FftPlanner};

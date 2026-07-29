@@ -127,11 +127,7 @@ fn dropped_settings_are_counted() {
         dropped > 0,
         "overflowing the message queue must be counted, not silent"
     );
-    assert_eq!(
-        net.take_dropped_settings(),
-        0,
-        "taking the count resets it"
-    );
+    assert_eq!(net.take_dropped_settings(), 0, "taking the count resets it");
 
     // The backend still runs; a full queue is not a broken one.
     let mut output = BufferVec::new(1);

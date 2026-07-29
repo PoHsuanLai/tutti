@@ -214,7 +214,10 @@ pub fn step_ballistics(
     let balance = Pan::new_clamped(smooth(state.current.balance.get(), instant.balance.get()));
 
     let levels = StereoLevels {
-        mid: Amplitude(smooth(state.current.levels.mid.get(), instant.levels.mid.get())),
+        mid: Amplitude(smooth(
+            state.current.levels.mid.get(),
+            instant.levels.mid.get(),
+        )),
         side: Amplitude(smooth(
             state.current.levels.side.get(),
             instant.levels.side.get(),
@@ -290,10 +293,7 @@ mod tests {
         // Flip from correlated to anti-correlated: the case that desynced the
         // old stored pair.
         let smoothed = step_ballistics(&cfg, &mut state, correlate(&mono, &mono), Seconds(0.01));
-        assert_eq!(
-            smoothed.width(),
-            smoothed.correlation.to_stereo_width()
-        );
+        assert_eq!(smoothed.width(), smoothed.correlation.to_stereo_width());
 
         let smoothed =
             step_ballistics(&cfg, &mut state, correlate(&mono, &inverted), Seconds(0.01));

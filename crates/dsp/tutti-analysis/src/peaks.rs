@@ -285,7 +285,10 @@ mod tests {
         // Left ramps, right is its negation, so a fold gives silence while
         // reading channel 0 alone would give the ramp.
         let samples: Vec<f32> = (0..200).flat_map(|i| [i as f32, -(i as f32)]).collect();
-        let blocks = summarize(&PeakConfig::new(Samples(100), ChannelLayout::Stereo), &samples);
+        let blocks = summarize(
+            &PeakConfig::new(Samples(100), ChannelLayout::Stereo),
+            &samples,
+        );
 
         assert_eq!(blocks.len(), 2, "frames, not interleaved samples");
         assert_eq!(blocks[0].min, 0.0);
@@ -297,7 +300,9 @@ mod tests {
     #[test]
     fn surround_keeps_the_centre_channel() {
         // 5.1 with only the centre non-zero.
-        let samples: Vec<f32> = (0..100).flat_map(|_| [0.0, 0.0, 1.0, 0.0, 0.0, 0.0]).collect();
+        let samples: Vec<f32> = (0..100)
+            .flat_map(|_| [0.0, 0.0, 1.0, 0.0, 0.0, 0.0])
+            .collect();
         let blocks = summarize(
             &PeakConfig::new(Samples(50), ChannelLayout::Multi(6)),
             &samples,

@@ -256,6 +256,16 @@ pub enum ClipFileError {
     Truncated,
     /// No DCTPQ (tick-unit declaration) was seen before the events.
     MissingDctpq,
+    /// No Start of Clip message. M2-116 §7: "A Clip Sequence Data shall include
+    /// one Start of Clip message … as the first UMP message."
+    MissingStartOfClip,
+    /// No End of Clip message. §7: "A Clip Sequence Data shall include one End
+    /// of Clip message as the last UMP message."
+    MissingEndOfClip,
+    /// Bytes follow the End of Clip. §7.3: "A MIDI Clip File shall not have any
+    /// data following the End of Clip message." There is no multi-clip clip
+    /// file — that is what the MIDI Container File is for.
+    TrailingData,
 }
 
 impl core::fmt::Display for ClipFileError {
@@ -265,6 +275,9 @@ impl core::fmt::Display for ClipFileError {
             Self::Unaligned => "clip body is not 32-bit-word aligned",
             Self::Truncated => "clip file is truncated mid-message",
             Self::MissingDctpq => "clip file has no DCTPQ tick-unit declaration",
+            Self::MissingStartOfClip => "clip file has no Start of Clip message",
+            Self::MissingEndOfClip => "clip file has no End of Clip message",
+            Self::TrailingData => "clip file has data following the End of Clip message",
         };
         f.write_str(msg)
     }
@@ -288,6 +301,10 @@ pub fn read_clip_file(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
     // NOOP restarts before it. See the DCS/NOOP arms below.
     let mut pending_delta: u32 = 0;
     let mut banked_delta: u32 = 0;
+    // §7 requires both brackets. Tracked rather than assumed: a file missing
+    // either is malformed, and `ClipFileError` exists to say which.
+    let mut saw_start_of_clip = false;
+    let mut saw_end_of_clip = false;
 
     while let Some(word0) = words.peek() {
         let mt = (word0 >> 28) as u8;
@@ -327,10 +344,18 @@ pub fn read_clip_file(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
             // UMP Stream: Start of Clip (0x020) / End of Clip (0x021).
             let status = (word0 >> 16) & 0x03FF;
             if status == 0x020 {
-                continue; // start of clip — structural
+                saw_start_of_clip = true;
+                continue; // structural
             }
             if status == 0x021 {
-                break; // end of clip — done
+                saw_end_of_clip = true;
+                // §7.3: "A MIDI Clip File shall not have any data following the
+                // End of Clip message." There is no multi-clip clip file, so
+                // anything after this is corruption rather than a second clip.
+                if words.peek().is_some() {
+                    return Err(ClipFileError::TrailingData);
+                }
+                break;
             }
         }
         // A real event: its delta is the current count plus everything banked
@@ -343,8 +368,18 @@ pub fn read_clip_file(bytes: &[u8]) -> Result<ParsedClipFile, ClipFileError> {
         banked_delta = 0;
     }
 
+    // Order matters: report the *earliest* structural thing that is missing, so
+    // a caller sees the first reason the file is unusable rather than the last.
+    let ticks_per_quarter = ticks_per_quarter.ok_or(ClipFileError::MissingDctpq)?;
+    if !saw_start_of_clip {
+        return Err(ClipFileError::MissingStartOfClip);
+    }
+    if !saw_end_of_clip {
+        return Err(ClipFileError::MissingEndOfClip);
+    }
+
     Ok(ParsedClipFile {
-        ticks_per_quarter: ticks_per_quarter.ok_or(ClipFileError::MissingDctpq)?,
+        ticks_per_quarter,
         events,
     })
 }
@@ -547,6 +582,10 @@ mod tests {
         push(0x0040_0000 | 1000); // DCS(1000) counts from the NOOP
         push(0x4090_3C00); // NoteOn word 0
         push(0x8000_0000); // NoteOn word 1
+        push(0x0040_0000); // DCS(0)
+        for w in [0xF021_0000, 0, 0, 0] {
+            push(w); // End of Clip
+        }
 
         let parsed = read_clip_file(&bytes).expect("parses");
         assert_eq!(parsed.ticks_per_quarter, 480);
@@ -568,10 +607,18 @@ mod tests {
         let mut push = |w: u32| bytes.extend_from_slice(&w.to_be_bytes());
         push(0x0040_0000);
         push(0x0030_01E0); // DCTPQ = 480
+        push(0x0040_0000); // DCS(0)
+        for w in [0xF020_0000, 0, 0, 0] {
+            push(w); // Start of Clip
+        }
         push(0x0040_0000 | 500); // DCS(500)
         push(0x0040_0000 | 1000); // DCS(1000) — replaces, not adds
         push(0x4090_3C00);
         push(0x8000_0000);
+        push(0x0040_0000); // DCS(0)
+        for w in [0xF021_0000, 0, 0, 0] {
+            push(w); // End of Clip
+        }
 
         let parsed = read_clip_file(&bytes).expect("parses");
         assert_eq!(parsed.events.len(), 1);
@@ -722,5 +769,67 @@ mod tests {
             read_clip_file(b"SMF2CLIP"),
             Err(ClipFileError::MissingDctpq)
         );
+    }
+
+    #[test]
+    fn structural_shalls_are_enforced() {
+        // M2-116 §7 requires both brackets, and §7.3 forbids anything after End
+        // of Clip. These were all accepted silently, which defeats the point of
+        // ClipFileError distinguishing "not a clip file" from "malformed".
+        let mut base = Vec::new();
+        base.extend_from_slice(&CLIP_FILE_MAGIC);
+        for w in [0x0040_0000u32, 0x0030_01E0] {
+            base.extend_from_slice(&w.to_be_bytes()); // DCS(0) + DCTPQ
+        }
+        let push = |bytes: &mut Vec<u8>, words: &[u32]| {
+            for w in words {
+                bytes.extend_from_slice(&w.to_be_bytes());
+            }
+        };
+
+        // DCTPQ but no Start of Clip.
+        let mut no_start = base.clone();
+        push(&mut no_start, &[0x0040_0000, 0xF021_0000, 0, 0, 0]);
+        assert_eq!(
+            read_clip_file(&no_start),
+            Err(ClipFileError::MissingStartOfClip)
+        );
+
+        // Start but no End — a file truncated mid-clip.
+        let mut no_end = base.clone();
+        push(&mut no_end, &[0x0040_0000, 0xF020_0000, 0, 0, 0]);
+        assert_eq!(
+            read_clip_file(&no_end),
+            Err(ClipFileError::MissingEndOfClip)
+        );
+
+        // Data after End of Clip: §7.3 forbids it, and there is no such thing
+        // as a multi-clip clip file (that is the MIDI Container File's job).
+        let mut trailing = base.clone();
+        push(
+            &mut trailing,
+            &[
+                0x0040_0000,
+                0xF020_0000,
+                0,
+                0,
+                0, // Start of Clip
+                0x0040_0000,
+                0xF021_0000,
+                0,
+                0,
+                0, // End of Clip
+                0x0040_0000,
+                0x4090_3C00,
+                0x8000_0000, // …then a stray note-on
+            ],
+        );
+        assert_eq!(
+            read_clip_file(&trailing),
+            Err(ClipFileError::TrailingData)
+        );
+
+        // A well-formed file with both brackets still parses.
+        assert!(read_clip_file(&write_clip_file(480, &[])).is_ok());
     }
 }

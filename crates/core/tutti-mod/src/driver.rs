@@ -93,7 +93,12 @@ impl From<Param<Hz>> for Rate {
 /// target already writes.
 #[derive(Debug, Clone)]
 pub struct SourceRate {
-    /// `beat_synced`: cycles per beat. Free-running: cycles per second (`Hz`).
+    /// `beat_synced`: **beats per cycle** — the phase is `beat / frequency`, so
+    /// `2.0` completes one cycle every two beats (a half-note LFO), not two
+    /// cycles per beat. Free-running: cycles per second (`Hz`).
+    ///
+    /// The two readings coincide at `1.0`, which is why this was documented
+    /// backwards for a while — every example used `Hz(1.0)`.
     pub frequency: Rate,
     /// Constant shift applied after phase generation.
     ///
@@ -112,7 +117,9 @@ pub struct SourceRate {
 }
 
 impl SourceRate {
-    /// A source locked to the transport at `frequency` cycles per beat.
+    /// A source locked to the transport at `frequency` **beats per cycle**
+    /// (`Hz(4.0)` is a whole-note sweep in 4/4, not four cycles per beat) — see
+    /// [`frequency`](Self::frequency).
     ///
     /// Takes anything that becomes a [`Rate`] — an [`Hz`] for a constant, a
     /// [`Param<Hz>`] for a modulated one.

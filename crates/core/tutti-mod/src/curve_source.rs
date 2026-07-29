@@ -285,6 +285,41 @@ mod tests {
         BeatLfo::new(LfoShape::Sine, beats_per_cycle)
     }
 
+    /// The scalar path (`SourceRate`/`ModPreFrame`, `phase = beat / frequency`)
+    /// and the curve path (`BeatLfo::beats_per_cycle`) must read the SAME rate
+    /// off the same number — one param driven by both must not run at two
+    /// speeds.
+    ///
+    /// Pinned because the units are reciprocals of each other and coincide at
+    /// `1.0`: the adapter that feeds `BeatLfo` once took `1.0 / frequency` on
+    /// the reading that the field meant cycles-per-beat, and every example
+    /// using `1.0` agreed anyway. At 2.0 they did not.
+    #[test]
+    fn curve_and_scalar_paths_read_the_rate_identically() {
+        use crate::Modulator;
+        use tutti_types::Phase;
+
+        for beats_per_cycle in [0.5f32, 1.0, 2.0, 4.0] {
+            for beat in [0.0f64, 0.25, 0.5, 1.0, 2.0, 3.5] {
+                // Scalar path: the driver's own phase derivation, verbatim.
+                let scalar_phase = Phase::wrapped(beat as f32 / beats_per_cycle);
+                let (_, scalar) =
+                    crate::Lfo::new(LfoShape::Sine).value(Default::default(), scalar_phase);
+
+                // Curve path: the real `ShapedCurve` beat → cycles mapping. The
+                // edge spans a unit range (`-0.5..0.5`) so its depth scaling is
+                // 1x and only the RATE is under test, not the depth.
+                let curve = ShapedCurve::new(sine(beats_per_cycle), EdgeShape::new(-0.5, 0.5));
+                let curved = curve.value_at(tutti_types::Beat(beat)).unwrap();
+
+                assert!(
+                    (scalar - curved).abs() < 1e-4,
+                    "rate {beats_per_cycle} beat {beat}: scalar {scalar} vs curve {curved}"
+                );
+            }
+        }
+    }
+
     /// `Random` holds one value per cycle and jumps at the boundary — a
     /// beat-synced sample & hold, not a ramp.
     #[test]

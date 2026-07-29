@@ -70,7 +70,9 @@ impl super::ModSourceKind for ModSource {
 #[derive(Component, Reflect, Debug, Clone, Copy, PartialEq)]
 #[reflect(Component, Debug, Default)]
 pub struct ModRate {
-    /// Beat-synced: cycles per beat. Free-running: cycles per second.
+    /// Beat-synced: **beats per cycle** — `2.0` is one cycle every two beats,
+    /// not two cycles per beat (phase is `beat / frequency`). Free-running:
+    /// cycles per second. Mirrors [`SourceRate::frequency`](tutti_mod::SourceRate::frequency).
     pub frequency: Hz,
     /// A displacement applied after phase generation — negative is meaningful,
     /// which is why it is not a `Phase`.
@@ -90,7 +92,8 @@ impl Default for ModRate {
 }
 
 impl ModRate {
-    /// Locked to the transport at `frequency` cycles per beat.
+    /// Locked to the transport at `frequency` **beats per cycle** — see
+    /// [`frequency`](Self::frequency).
     pub fn beat_synced(frequency: impl Into<Hz>) -> Self {
         Self {
             frequency: frequency.into(),

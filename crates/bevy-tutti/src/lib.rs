@@ -76,9 +76,9 @@ pub mod midi;
 #[cfg(feature = "modulation")]
 pub mod modulation;
 
-/// The sampler's asset layer.
+/// Streaming and sample assets: the `.wav` loader and the `DiskStreamer` handle.
 #[cfg(feature = "sampler")]
-pub mod sampler;
+pub mod stream;
 
 /// SoundFont assets and their playback systems.
 #[cfg(feature = "soundfont")]
@@ -133,6 +133,8 @@ pub mod prelude {
     };
     #[cfg(feature = "plugin")]
     pub use crate::plugin_host::{OpenPluginEditor, PluginsRes, TuttiHostingPlugin};
+    #[cfg(feature = "sampler")]
+    pub use crate::stream::{DiskStreamerRes, TuttiPlaybackPlugin};
 
     // The engine vocabulary a host writes graph edits in.
     pub use tutti_core::{AudioNode, NodeId};

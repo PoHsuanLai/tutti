@@ -148,3 +148,22 @@ fn the_loop_region_round_trips_through_the_prelude() {
     );
     assert!(span.range().is_none(), "but it is not a loop");
 }
+
+/// The disk-streaming handle, nameable through the prelude and named after the
+/// engine type it wraps.
+///
+/// It used to be `SamplerRes` — a name with no referent, since `tutti-sampler`
+/// has no `Sampler` type. Every sibling resource (`AudioGraphRes(Net)`,
+/// `MeteringRes(MasterMeter)`, `TransportRes(Transport)`) is named for what it
+/// holds, and a host that cannot guess the name cannot ask for the resource.
+#[cfg(feature = "sampler")]
+#[test]
+fn the_disk_streamer_resource_is_nameable_from_the_prelude() {
+    // Naming the type in a signature is the whole assertion: a `DiskStreamer`
+    // needs a butler thread, so constructing one here would be an engine test.
+    fn takes_the_resource(_: &DiskStreamerRes) {}
+    let _ = takes_the_resource;
+
+    // The plugin that registers the `.wav` loader travels with it.
+    let _ = TuttiPlaybackPlugin;
+}

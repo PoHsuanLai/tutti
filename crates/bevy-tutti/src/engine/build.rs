@@ -39,7 +39,7 @@ use tutti_midi_runtime::{MidiBus, MidiPreBlock};
 use tutti_midi_types::MidiRoutingTable;
 
 #[cfg(feature = "sampler")]
-use crate::sampler::SamplerRes;
+use crate::stream::DiskStreamerRes;
 #[cfg(feature = "sampler")]
 use tutti_sampler::DiskStreamer;
 
@@ -183,7 +183,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     audio_engine.start(callback_state.clone())?;
 
     #[cfg(feature = "sampler")]
-    let sampler = DiskStreamer::new(
+    let disk_streamer = DiskStreamer::new(
         sample_rate,
         tutti_sampler::DiskStreamerConfig {
             pdc: Some(Arc::clone(&compensation.0)),
@@ -246,7 +246,7 @@ pub fn build_into(plugin: &crate::TuttiPlugin, app: &mut App) -> Result<()> {
     }
 
     #[cfg(feature = "sampler")]
-    app.insert_resource(SamplerRes(sampler));
+    app.insert_resource(DiskStreamerRes(disk_streamer));
 
     Ok(())
 }

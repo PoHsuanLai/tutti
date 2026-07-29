@@ -30,46 +30,72 @@ use crate::graph::{AudioConfig, AudioGraphRes};
 /// main thread, because the clone borrows the graph resource and cannot cross
 /// into a `'static` task. See [`ExportSource::Node`] for what that means for a
 /// caller spawning several at once.
-pub fn start_exports(
-    mut commands: Commands,
-    graph: Res<AudioGraphRes>,
-    config: Res<AudioConfig>,
-    populator: Option<Res<NetPopulator>>,
-    // No `Added<>`: the request component's *presence* is the pending flag, and
-    // removing it below is what marks it started. A request spawned while the
-    // engine was not ready must still be picked up on a later frame.
-    requests: Query<(Entity, &ExportRequest)>,
-) {
-    for (entity, request) in requests.iter() {
-        let Some((net, ctx)) = prepare_net(&graph, &config, request) else {
-            commands.entity(entity).remove::<ExportRequest>().trigger(
-                |entity: Entity| ExportDone {
-                    entity,
-                    result: Err(tutti_export::Error::InvalidConfig(
-                        "export target node has no outputs".into(),
-                    )),
-                },
-            );
+/// Exclusive because a registered [`PopulateNet`] is handed `&World`: filling a
+/// render's voices is a read of arbitrary app state (which clips exist, their
+/// decoded audio), and no fixed `SystemParam` list here could anticipate what a
+/// host needs to read. The work is main-thread-bound regardless — the net clone
+/// borrows the graph resource and cannot cross into a `'static` task.
+pub fn start_exports(world: &mut World) {
+    // Collect first: the borrow of `world` for the query must end before the
+    // populator gets its own `&World`.
+    let pending: Vec<Entity> = world
+        .query_filtered::<Entity, With<ExportRequest>>()
+        .iter(world)
+        // No `Added<>`: the component's *presence* is the pending flag, and
+        // removing it below is what marks a request started. One spawned while
+        // the engine was down must still be picked up on a later frame.
+        .collect();
+    if pending.is_empty() {
+        return;
+    }
+
+    for entity in pending {
+        // Take the request out; from here the entity is either in flight or has
+        // reported a failure, never still pending.
+        let Some(request) = world.entity_mut(entity).take::<ExportRequest>() else {
             continue;
         };
 
-        let mut net = net;
-        // Fill the clone's voices from the app's world, if it registered a
-        // filler. Runs here, on the main thread, because it reads the ECS.
-        if let (Some(populator), Some(ctx)) = (populator.as_deref(), ctx.as_ref()) {
-            populator.0.populate(&mut net, ctx);
+        let prepared = {
+            let graph = world.resource::<AudioGraphRes>();
+            let config = world.resource::<AudioConfig>();
+            prepare_net(graph, config, &request)
+        };
+
+        let Some((mut net, ctx)) = prepared else {
+            world.trigger(ExportDone {
+                entity,
+                result: Err(tutti_export::Error::InvalidConfig(
+                    "export target node has no outputs".into(),
+                )),
+            });
+            continue;
+        };
+
+        // Fill the clone's voices from the app's world, if a filler was
+        // registered. An isolated clone is born empty, so without this a
+        // sampler-fed tap renders silence.
+        if let Some(ctx) = ctx.as_ref() {
+            if let Some(populator) = world.remove_resource::<NetPopulator>() {
+                populator.0.populate(&mut net, ctx, world);
+                world.insert_resource(populator);
+            }
         }
 
-        let target = request.target.clone();
-        let export_config = request.config;
-        let clock = Arc::clone(&request.clock);
+        let ExportRequest {
+            target,
+            config: export_config,
+            clock,
+            ..
+        } = request;
 
         let task = AsyncComputeTaskPool::get().spawn(async move {
             match target {
                 ExportTarget::File {
                     path,
                     normalize: None,
-                } => render_to_file(net, &export_config, clock.as_ref(), &path).map(ExportOutput::File),
+                } => render_to_file(net, &export_config, clock.as_ref(), &path)
+                    .map(ExportOutput::File),
                 ExportTarget::File {
                     path,
                     normalize: Some(normalize),
@@ -81,10 +107,7 @@ pub fn start_exports(
             }
         });
 
-        commands
-            .entity(entity)
-            .remove::<ExportRequest>()
-            .insert(ExportInFlight { task });
+        world.entity_mut(entity).insert(ExportInFlight { task });
     }
 }
 

@@ -168,10 +168,15 @@ pub struct ExportDone {
 pub trait PopulateNet: Send + Sync + 'static {
     /// Insert whatever voices this net should render with.
     ///
+    /// `world` is read-only on purpose: filling a render is a *read* of the
+    /// app's state, and a `&mut World` here would let it mutate the app from
+    /// inside the export pipeline — the sort of back-channel the projection
+    /// arrow is not supposed to have.
+    ///
     /// `ctx` carries the render's offline transport: voices built here must be
     /// bound to it, not to the live one, or they read a playhead nothing
     /// advances.
-    fn populate(&self, net: &mut tutti_core::dsp::Net, ctx: &OfflineContext);
+    fn populate(&self, net: &mut tutti_core::dsp::Net, ctx: &OfflineContext, world: &World);
 }
 
 /// Holds the app's [`PopulateNet`] implementation, if it registered one.

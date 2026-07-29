@@ -20,7 +20,7 @@ use std::path::Path;
 
 use tutti_analysis::{measure_loudness, LoudnessConfig};
 use tutti_core::transport::RenderClock;
-use tutti_types::Db;
+use tutti_types::{ChannelLayout, Db};
 
 use crate::config::ExportConfig;
 use crate::{render_to_buffers, write_buffers, Result, Written};
@@ -69,6 +69,20 @@ impl Normalize {
             Self::Lufs { target, ceiling } => measured.gain_to(target, ceiling),
         }
     }
+
+    /// The gain that normalizes `rendered`, or `None` if it cannot be measured
+    /// (a layout the meter rejects).
+    ///
+    /// For a caller that already holds a [`Rendered`] and is not writing it
+    /// with [`render_normalized_to_file`] — handing the PCM to another encoder,
+    /// say. Returning the gain rather than applying it keeps the reading
+    /// available to log or gate on, and is the same value the two-pass render
+    /// uses internally, so the two can never disagree.
+    pub fn gain_for_rendered(&self, rendered: &crate::Rendered) -> Option<Db> {
+        let layout = ChannelLayout::from_count(rendered.channels() as u16);
+        let meter = LoudnessConfig::new(rendered.sample_rate, layout);
+        measure_loudness(&meter, &rendered.interleaved()).map(|m| self.gain_for(&m))
+    }
 }
 
 /// Render `net`, measure it, apply the resulting gain, and write it to `path`.
@@ -93,9 +107,8 @@ pub fn render_normalized_to_file(
 ) -> Result<Written> {
     let mut rendered = render_to_buffers(net, config, clock)?;
 
-    let meter = LoudnessConfig::new(rendered.sample_rate, config.encode.channels);
-    if let Some(measured) = measure_loudness(&meter, &rendered.interleaved()) {
-        rendered.apply_gain(normalize.gain_for(&measured));
+    if let Some(gain) = normalize.gain_for_rendered(&rendered) {
+        rendered.apply_gain(gain);
     }
 
     write_buffers(&rendered, config, path)

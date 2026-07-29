@@ -154,6 +154,58 @@ impl UndoState {
     }
 }
 
+/// One routed `clap.log` line: the CLAP severity the plugin passed and the
+/// decoded message.
+///
+/// `severity` stays a bare `clap_log_severity` (`i32`) rather than an enum:
+/// this is a C ABI value the plugin chose, and CLAP explicitly leaves room for
+/// severities a host does not recognise. Widening it into a host enum would
+/// have to invent a bucket for those, which is exactly the information the
+/// consumer wants preserved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogRecord {
+    pub severity: i32,
+    pub message: String,
+}
+
+/// The last [`LOG_CAPACITY`] lines the plugin logged.
+///
+/// Bounded on purpose. A misbehaving plugin can log per audio block; an
+/// unbounded `Vec` behind a host that never drains would grow without limit,
+/// which is a leak in a long session rather than a diagnostic. Oldest lines are
+/// dropped, and `dropped` counts them so a consumer can see that it happened
+/// instead of silently reading a truncated history.
+pub struct LogState {
+    pub(crate) records: Mutex<std::collections::VecDeque<LogRecord>>,
+    pub(crate) dropped: AtomicU32,
+}
+
+/// How many log lines the host retains before dropping the oldest.
+pub const LOG_CAPACITY: usize = 256;
+
+impl LogState {
+    fn new() -> Self {
+        Self {
+            records: Mutex::new(std::collections::VecDeque::new()),
+            dropped: AtomicU32::new(0),
+        }
+    }
+
+    /// Record one routed line, evicting the oldest if at capacity.
+    ///
+    /// A poisoned lock is recovered rather than propagated: `clap.log` is
+    /// `[thread-safe]` and may be called from the audio thread, where a panic
+    /// would take the callback down over a diagnostic.
+    pub(crate) fn push(&self, severity: i32, message: String) {
+        let mut records = self.records.lock().unwrap_or_else(|p| p.into_inner());
+        if records.len() == LOG_CAPACITY {
+            records.pop_front();
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        records.push_back(LogRecord { severity, message });
+    }
+}
+
 pub struct TimerState {
     pub(crate) timers: Mutex<Vec<TimerEntry>>,
     pub(crate) next_id: AtomicU32,
@@ -281,6 +333,7 @@ pub struct HostState {
     pub audio_ports: AudioPortState,
     pub notes: NoteState,
     pub undo: UndoState,
+    pub log: LogState,
     pub timer: TimerState,
     pub transport: TransportState,
     pub remote_controls: RemoteControlState,
@@ -370,6 +423,7 @@ impl HostState {
             audio_ports: AudioPortState::new(),
             notes: NoteState::new(),
             undo: UndoState::new(),
+            log: LogState::new(),
             timer: TimerState::new(),
             transport: TransportState::new(),
             remote_controls: RemoteControlState::new(),

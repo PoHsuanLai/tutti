@@ -109,24 +109,43 @@ pub(super) static HOST_LOG: clap_host_log = clap_host_log {
     log: Some(host_log),
 };
 
+/// The stderr tag for each CLAP severity. Split out from [`host_log`] so the
+/// severity→label mapping is one total function rather than a `match` whose
+/// arms are only reachable through the FFI — the previous shape had seven arms
+/// that no test could distinguish, because the only output was stderr.
+fn severity_label(severity: clap_log_severity) -> &'static str {
+    match severity {
+        CLAP_LOG_DEBUG => "DEBUG",
+        CLAP_LOG_INFO => "INFO",
+        CLAP_LOG_WARNING => "WARN",
+        CLAP_LOG_ERROR => "ERROR",
+        CLAP_LOG_FATAL => "FATAL",
+        CLAP_LOG_HOST_MISBEHAVING => "HOST-MISBEHAVING",
+        CLAP_LOG_PLUGIN_MISBEHAVING => "PLUGIN-MISBEHAVING",
+        _ => "UNKNOWN",
+    }
+}
+
 unsafe extern "C" fn host_log(
-    _host: *const ClapHostVtable,
+    host: *const ClapHostVtable,
     severity: clap_log_severity,
     msg: *const c_char,
 ) {
     if msg.is_null() {
         return;
     }
-    let msg_str = CStr::from_ptr(msg).to_string_lossy();
-    match severity {
-        CLAP_LOG_DEBUG => eprintln!("[clap-plugin DEBUG] {}", msg_str),
-        CLAP_LOG_INFO => eprintln!("[clap-plugin INFO] {}", msg_str),
-        CLAP_LOG_WARNING => eprintln!("[clap-plugin WARN] {}", msg_str),
-        CLAP_LOG_ERROR => eprintln!("[clap-plugin ERROR] {}", msg_str),
-        CLAP_LOG_FATAL => eprintln!("[clap-plugin FATAL] {}", msg_str),
-        CLAP_LOG_HOST_MISBEHAVING => eprintln!("[clap-plugin HOST-MISBEHAVING] {}", msg_str),
-        CLAP_LOG_PLUGIN_MISBEHAVING => eprintln!("[clap-plugin PLUGIN-MISBEHAVING] {}", msg_str),
-        _ => eprintln!("[clap-plugin ?{}] {}", severity, msg_str),
+    let msg_str = CStr::from_ptr(msg).to_string_lossy().into_owned();
+    let label = severity_label(severity);
+    if label == "UNKNOWN" {
+        eprintln!("[clap-plugin ?{severity}] {msg_str}");
+    } else {
+        eprintln!("[clap-plugin {label}] {msg_str}");
+    }
+    // Also retain the line so a consumer can route it somewhere other than
+    // stderr, and so the routing is assertable at all. Unrecognised severities
+    // are retained verbatim rather than folded into a bucket — see `LogRecord`.
+    if let Some(state) = get_host_state(host) {
+        state.log.push(severity, msg_str);
     }
 }
 

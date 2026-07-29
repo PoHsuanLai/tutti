@@ -23,10 +23,41 @@ pub enum ClapError {
         reason: String,
     },
 
-    /// Audio processing failed — the plugin returned `CLAP_PROCESS_ERROR`
-    /// or a 64-bit buffer was passed to a 32-bit-only plugin.
+    /// Audio processing failed — a 64-bit buffer was passed to a 32-bit-only
+    /// plugin, `start_processing` refused, or a similar setup-time fault.
+    ///
+    /// Carries an owned `String`, so this variant must **not** be constructed
+    /// on the audio thread. The two conditions raised from inside `process`
+    /// itself have their own allocation-free variants below.
     #[error("Processing error: {0}")]
     ProcessError(String),
+
+    /// The plugin returned `CLAP_PROCESS_ERROR` from `process`.
+    ///
+    /// Split out of [`ClapError::ProcessError`] because it is raised **on the
+    /// audio thread**, where the `String` the old shape required was a heap
+    /// allocation inside the callback. A plugin in an error state typically
+    /// returns ERROR on every block, so that allocation repeated per block —
+    /// on the very path where the host has already decided something is wrong.
+    ///
+    /// The message is fixed, so `Display` can render it without storing it.
+    #[error("Processing error: plugin returned CLAP_PROCESS_ERROR")]
+    PluginReturnedError,
+
+    /// A `process` call asked for more frames than the instance was activated
+    /// for (CLAP's `max_frames_count`).
+    ///
+    /// Also raised on the audio thread, and also formerly a `format!`ed
+    /// `String`. The two numbers ride as fields and are rendered by `Display`
+    /// off-thread, which is where the message is actually read.
+    ///
+    /// Recovering means growing the scratch off the audio thread via
+    /// `set_max_block_size`; the host cannot resize inside the callback.
+    #[error(
+        "Processing error: block size {requested} exceeds activated max_frames {max_frames}; \
+         grow it off the audio thread with `set_max_block_size`"
+    )]
+    BlockTooLarge { requested: u32, max_frames: u32 },
 
     /// Saving or loading plugin state failed.
     #[error("State error: {0}")]

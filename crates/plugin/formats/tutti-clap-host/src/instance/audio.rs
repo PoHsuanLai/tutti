@@ -14,10 +14,11 @@ use clap_sys::events::{
 };
 use clap_sys::fixedpoint::{CLAP_BEATTIME_FACTOR, CLAP_SECTIME_FACTOR};
 use clap_sys::process::{
-    clap_process, CLAP_PROCESS_CONTINUE, CLAP_PROCESS_CONTINUE_IF_NOT_QUIET, CLAP_PROCESS_ERROR,
+    clap_process, clap_process_status, CLAP_PROCESS_CONTINUE, CLAP_PROCESS_ERROR,
     CLAP_PROCESS_SLEEP, CLAP_PROCESS_TAIL,
 };
 use std::ptr;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// Owned snapshot of the plugin's per-block output. Returned for
@@ -243,6 +244,47 @@ impl<T: ClapSample> ClapActive<T> {
         self.process_impl(buffer, ctx.midi, params, ctx.expressions, ctx.transport)
     }
 
+    /// The raw `clap_process_status` the plugin returned on the most recent
+    /// block, or `CLAP_PROCESS_CONTINUE` if none has run yet.
+    ///
+    /// **This accessor is the reason TAIL and SLEEP are observable at all.**
+    /// The status was recorded from the first version of this path, and the
+    /// comment there told callers they could watch `last_process_status` for
+    /// TAIL/SLEEP — but no accessor was ever written, so the only thing the
+    /// host actually did with a TAIL was `eprintln!` it from the audio thread.
+    /// A caller that wanted to know when the plugin's tail had decayed (to stop
+    /// running it, which is the entire purpose of the status) had no route to
+    /// the answer, and the host paid a stderr lock per transition for a message
+    /// nobody could act on.
+    ///
+    /// Returned raw rather than as a host enum: CLAP explicitly leaves the
+    /// status space open, so a plugin built against a newer header can return a
+    /// value this host has never heard of. Widening it into an enum would have
+    /// to invent a bucket for those, discarding the one piece of information a
+    /// caller diagnosing a misbehaving plugin wants. Compare against
+    /// `clap_sys::process::CLAP_PROCESS_*`.
+    ///
+    /// Reads a `Relaxed` atomic, so this is safe to call from any thread and
+    /// makes no ordering promise beyond "the value from some recent block".
+    /// Polling it from a control thread is the intended use.
+    pub fn last_process_status(&self) -> clap_process_status {
+        self.scratch.last_process_status.load(Ordering::Relaxed)
+    }
+
+    /// Whether the plugin's most recent block reported `CLAP_PROCESS_TAIL` —
+    /// it produced no new signal but is still decaying, so the host should keep
+    /// calling `process` until the tail runs out.
+    pub fn is_tailing(&self) -> bool {
+        self.last_process_status() == CLAP_PROCESS_TAIL
+    }
+
+    /// Whether the plugin's most recent block reported `CLAP_PROCESS_SLEEP` —
+    /// it is idle and produced silence, so the host may stop calling `process`
+    /// until it has new input to deliver.
+    pub fn is_sleeping(&self) -> bool {
+        self.last_process_status() == CLAP_PROCESS_SLEEP
+    }
+
     fn process_impl(
         &mut self,
         buffer: &mut AudioBuffer<T>,
@@ -259,11 +301,19 @@ impl<T: ClapSample> ClapActive<T> {
         // past the scratch → out-of-bounds. Reject it here (RT-safe: no alloc,
         // just a compare). Callers that legitimately need a bigger block must
         // grow the scratch off the audio thread via `set_max_block_size`.
+        //
+        // H2: the rejection carries its two numbers as fields rather than
+        // `format!`ing them into a `String`. This is a *rejection on the audio
+        // thread* — the one moment where allocating to describe the problem is
+        // least acceptable, and a host driving a too-large block will drive it
+        // again next block, so the allocation repeats. The `Display` impl on
+        // `ClapError` renders the same sentence, off-thread, for whoever prints
+        // it.
         if num_samples > self.loaded.audio.max_frames {
-            return Err(ClapError::ProcessError(format!(
-                "block size {num_samples} exceeds activated max_frames {}",
-                self.loaded.audio.max_frames
-            )));
+            return Err(ClapError::BlockTooLarge {
+                requested: num_samples,
+                max_frames: self.loaded.audio.max_frames,
+            });
         }
 
         // Refill the pooled input event list in place. `clear()` keeps the
@@ -280,9 +330,10 @@ impl<T: ClapSample> ClapActive<T> {
             let AudioScratch {
                 input_events,
                 param_ranges,
+                plugin_claims_params,
                 ..
             } = &mut self.scratch;
-            input_events.add_param_changes(param_changes, param_ranges);
+            input_events.add_param_changes(param_changes, param_ranges, *plugin_claims_params);
         }
         if !note_expressions.is_empty() {
             self.scratch
@@ -301,13 +352,6 @@ impl<T: ClapSample> ClapActive<T> {
         // callback fills it during `process_fn`.
         self.scratch.output_events.clear();
 
-        // Caller-supplied channel pointers live on the stack (SmallVec) —
-        // no heap alloc for typical channel counts (≤ 16 per side).
-        let caller_inputs: smallvec::SmallVec<[*mut T; 16]> =
-            buffer.inputs.iter().map(|s| s.as_ptr() as *mut T).collect();
-        let caller_outputs: smallvec::SmallVec<[*mut T; 16]> =
-            buffer.outputs.iter_mut().map(|s| s.as_mut_ptr()).collect();
-
         // Populate the pre-allocated scratch in place. We need to read
         // `self.loaded.ports` while mutating `self.scratch.process`; the two
         // fields are disjoint, so we split the borrow through a raw pointer.
@@ -317,11 +361,35 @@ impl<T: ClapSample> ClapActive<T> {
         // reborrow `self` for the duration of the scratch mutation.
         let ports_ptr: *const PortLayout = &self.loaded.ports;
         let scratch = &mut self.scratch.process;
+
+        // H7: collect the caller's channel pointers into the pooled vectors
+        // rather than into per-block `SmallVec<[*mut T; 16]>` locals, which
+        // spilled to the heap every block at 17+ channels a side. `clear` keeps
+        // the capacity reserved in `activate()`; the pushes reuse it.
+        scratch.caller_input_ptrs.clear();
+        scratch
+            .caller_input_ptrs
+            .extend(buffer.inputs.iter().map(|s| s.as_ptr() as *mut T));
+        scratch.caller_output_ptrs.clear();
+        scratch
+            .caller_output_ptrs
+            .extend(buffer.outputs.iter_mut().map(|s| s.as_mut_ptr()));
+
+        // `refill_port_buffers` takes the caller arrays by shared slice while
+        // mutating the rest of the scratch, so hand it raw slices over the two
+        // pooled vectors.
+        //
+        // SAFETY: the pools are disjoint fields of `*scratch` from everything
+        // `refill_port_buffers` writes (`input_ptrs`, `output_ptrs`,
+        // `input_bufs`, `output_bufs`, `channels`), and nothing on that path
+        // touches them — so the slices stay valid and unaliased for the call.
+        let caller_in_ptr: *const [*mut T] = scratch.caller_input_ptrs.as_slice();
+        let caller_out_ptr: *const [*mut T] = scratch.caller_output_ptrs.as_slice();
         unsafe {
             refill_port_buffers(
                 scratch,
-                &caller_inputs,
-                &caller_outputs,
+                &*caller_in_ptr,
+                &*caller_out_ptr,
                 &(*ports_ptr).inputs,
                 &(*ports_ptr).outputs,
             );
@@ -413,30 +481,40 @@ impl<T: ClapSample> ClapActive<T> {
         self.scratch.steady_time = self.scratch.steady_time.saturating_add(num_samples as i64);
 
         // H3: record the full status (not just ERROR) so callers can observe
-        // TAIL/SLEEP via `last_process_status`. The shared `ProcessOutput`
-        // does not carry a status field this phase, so it stays CLAP-private.
-        // Log only on a *transition* (avoids per-block spam under SLEEP/TAIL,
-        // and keeps the steady-state hot path allocation-free).
-        let prev_status = self.scratch.last_process_status;
-        self.scratch.last_process_status = status;
-        if status != prev_status {
-            match status {
-                CLAP_PROCESS_TAIL => {
-                    eprintln!("[clap-host] process → TAIL (plugin has a decaying tail)")
-                }
-                CLAP_PROCESS_SLEEP => eprintln!("[clap-host] process → SLEEP (plugin is idle)"),
-                CLAP_PROCESS_ERROR | CLAP_PROCESS_CONTINUE | CLAP_PROCESS_CONTINUE_IF_NOT_QUIET => {
-                }
-                other => eprintln!("[clap-host] process → unknown status {other}"),
-            }
-        }
+        // TAIL/SLEEP through [`ClapActive::last_process_status`].
+        //
+        // This used to `eprintln!` the TAIL/SLEEP/unknown transitions from right
+        // here, which is a lock on stderr taken from the audio thread — and, in
+        // the unknown-status arm, a heap-formatted `i32` as well. The
+        // `status != prev` guard was believed to make that a rare event, but it
+        // does not: a plugin that alternates between two statuses transitions on
+        // *every* block, which is ordinary behaviour for a reverb whose tail
+        // decays below the noise floor and is re-excited by fresh input. So the
+        // steady-state hot path printed and allocated per block.
+        //
+        // The status is now published as a plain atomic and read off-thread by
+        // `last_process_status()`. A `Relaxed` store is the right strength:
+        // nothing else is ordered against it, the reader wants the most recent
+        // value rather than a synchronised view of other state, and this is a
+        // per-block RT write. A caller that wants the transitions in a log polls
+        // the accessor from its own thread — the information survives, the
+        // stderr lock does not.
+        self.scratch
+            .last_process_status
+            .store(status, Ordering::Relaxed);
+
         if status == CLAP_PROCESS_ERROR {
             // On error the plugin's output is undefined — zero the caller's
             // output channels so no garbage/uninitialised audio leaks out.
             for buf in audio_outputs.iter() {
                 zero_clap_output::<T>(buf, num_samples);
             }
-            return Err(ClapError::ProcessError("Plugin returned error".to_string()));
+            // H2: a `&'static str` variant, not `ProcessError(String)`. Building
+            // the owned message allocated on the audio thread — and a plugin
+            // that returns ERROR is very often returning it *every* block, so
+            // this was a per-block allocation on the error path, i.e. exactly
+            // when the callback can least afford one.
+            return Err(ClapError::PluginReturnedError);
         }
 
         // Drain the plugin's output events into the pooled return buffers.

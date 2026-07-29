@@ -361,7 +361,19 @@ impl PluginAudio for ClapInstance {
 
     fn set_sample_rate(&mut self, rate: f64) {
         clap_dispatch_mut!(self, i => {
-            i.set_sample_rate(rate);
+            // `PluginAudio::set_sample_rate` is infallible across every format,
+            // so a CLAP plugin's refusal cannot be propagated from here. It must
+            // still be *said*: the host rolls the instance back to the rate the
+            // plugin already accepted and stays active there, so the session
+            // keeps running — but at a rate the caller did not ask for, and a
+            // silent discard is how that becomes an unexplained pitch shift.
+            if let Err(e) = i.set_sample_rate(rate) {
+                tracing::warn!(
+                    requested = rate,
+                    running_at = i.sample_rate(),
+                    "CLAP plugin refused the sample rate: {e}"
+                );
+            }
         });
     }
 }

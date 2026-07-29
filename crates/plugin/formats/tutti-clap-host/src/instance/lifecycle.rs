@@ -93,6 +93,10 @@ impl ClapLoaded {
             .into_iter()
             .map(|p| (p.id, p.min_value as f32, p.max_value as f32))
             .collect();
+        // Read the plugin's own count, not the length of the map above: they
+        // differ exactly when `parameters()` truncated at a hole, which is the
+        // case `add_param_changes` has to tell apart from a params-less plugin.
+        scratch.plugin_claims_params = self.parameter_count() > 0;
         let input_total = self.ports.input_channel_total();
         let output_total = self.ports.output_channel_total();
         let max_frames = self.audio.max_frames as usize;
@@ -249,16 +253,133 @@ impl<T: super::ClapSample> ClapActive<T> {
     /// deactivate → re-activate the plugin at the new ceiling. **Main-thread /
     /// setup only** — never call on the audio thread (it deactivates the
     /// plugin and reallocates). The next `process` self-starts processing.
-    pub fn set_max_block_size(&mut self, max_frames: u32) -> &mut Self {
+    ///
+    /// # Errors
+    /// [`ClapError::NotSupported`] if the plugin refuses `activate` at the new
+    /// ceiling. The instance is then **rolled back** to the previous
+    /// `max_frames` and left active there, so it remains usable — see
+    /// [`Self::reconfigure`] for why a refusal cannot be discarded.
+    ///
+    /// [`ClapError::LoadFailed`] if the rollback *also* fails. See
+    /// [`Self::reconfigure`].
+    pub fn set_max_block_size(&mut self, max_frames: u32) -> Result<()> {
         if max_frames <= self.loaded.audio.max_frames {
-            return self;
+            return Ok(());
         }
+        self.reconfigure(self.loaded.audio.sample_rate, max_frames)
+    }
+
+    /// Change the sample rate in place. CLAP requires deactivation around a
+    /// sample-rate change, so this stops processing and re-activates the plugin
+    /// at the new rate; the next `process` call self-starts processing again.
+    /// Setup-time only — never call on the audio thread.
+    ///
+    /// # Errors
+    /// Same contract as [`Self::set_max_block_size`]: a plugin that refuses the
+    /// new rate leaves the instance rolled back to the previous rate and still
+    /// active, and says so through [`ClapError::NotSupported`].
+    pub fn set_sample_rate(&mut self, sample_rate: f64) -> Result<()> {
+        if (self.loaded.audio.sample_rate - sample_rate).abs() < f64::EPSILON {
+            return Ok(());
+        }
+        self.reconfigure(sample_rate, self.loaded.audio.max_frames)
+    }
+
+    /// Deactivate → re-activate at `(sample_rate, max_frames)`, restoring the
+    /// previous configuration if the plugin refuses the new one.
+    ///
+    /// ## Why a refusal cannot be discarded
+    ///
+    /// CLAP's `activate` returns `false` to mean **"no, not at this
+    /// configuration"** — a plugin is entitled to reject a rate or block size
+    /// it cannot run. That is a *refusal*, not a "not applicable". Both
+    /// setters used to write `let _ = self.loaded.activate_plugin();`, and the
+    /// consequences of dropping that `Err` were not cosmetic:
+    ///
+    /// - `activate_plugin` returns early **without** setting
+    ///   `flags.active`, so the instance was left `active == false` while its
+    ///   *type* was still `ClapActive` — the one state the type is supposed to
+    ///   make unrepresentable.
+    /// - The next `process` therefore called `ensure_processing` →
+    ///   `start_processing` on a **deactivated** plugin, violating CLAP's
+    ///   `[audio-thread & active & !processing]` tag on that entry point.
+    /// - [`flush_params`](ClapLoaded::flush_params) branches on `flags.active`
+    ///   to pick between the audio-thread and main-thread contract, so it would
+    ///   have taken the main-thread branch against a plugin that (from the
+    ///   host's own bookkeeping) was mid-reconfiguration.
+    ///
+    /// This is the CLAP twin of the VST3 host bug where `setActive` returning
+    /// `kResultFalse` was read as "the plugin has nothing to say".
+    ///
+    /// ## Why roll back rather than surface a dead instance
+    ///
+    /// The previous configuration is one the plugin already accepted, so
+    /// re-activating there is the one recovery a host can actually perform —
+    /// and it restores the `ClapActive` invariant (`flags.active == true`)
+    /// instead of handing the caller a value whose type lies about its state.
+    /// The caller learns the request was denied from the `Err`, and can read
+    /// [`sample_rate`](ClapLoaded::sample_rate) /
+    /// [`block_size`](ClapLoaded::block_size) to see what it is still running
+    /// at.
+    ///
+    /// If the rollback *also* fails the plugin has refused a configuration it
+    /// previously accepted; there is nothing left to fall back to. The
+    /// resulting `Err` is [`ClapError::LoadFailed`] with
+    /// [`LoadStage::Activation`] — distinct from the plain refusal — and the
+    /// instance is genuinely inactive. `Drop` still tears it down safely
+    /// (`deactivate_plugin` on an inactive plugin is what a CLAP host does
+    /// after a failed `activate` anyway), and `process` will report the failed
+    /// `start_processing` rather than corrupting anything.
+    fn reconfigure(&mut self, sample_rate: f64, max_frames: u32) -> Result<()> {
         self.loaded.assert_main_thread();
+
+        let prev_rate = self.loaded.audio.sample_rate;
+        let prev_frames = self.loaded.audio.max_frames;
+
         self.stop_processing();
         self.loaded.deactivate_plugin();
+
+        self.loaded.audio.sample_rate = sample_rate;
         self.loaded.audio.max_frames = max_frames;
-        // Re-size the channel scratch for the larger block. Port layout and
-        // channel counts are unchanged; only per-channel length grows.
+        // Re-size the channel scratch. Port layout and channel counts are
+        // unchanged; only per-channel length tracks `max_frames`. A pure
+        // sample-rate change passes the same `max_frames` back in, so this is a
+        // no-op there.
+        self.resize_scratch(max_frames);
+
+        if self.loaded.activate_plugin().is_ok() {
+            return Ok(());
+        }
+
+        // Refused. Put back what the plugin already accepted once.
+        self.loaded.audio.sample_rate = prev_rate;
+        self.loaded.audio.max_frames = prev_frames;
+        self.resize_scratch(prev_frames);
+
+        // A refused rollback means the plugin has now declined a configuration it
+        // previously accepted; that `LoadFailed` is a different (and worse) fact
+        // than the `NotSupported` below, so it propagates rather than being
+        // folded into it.
+        self.loaded.activate_plugin()?;
+
+        Err(ClapError::NotSupported(format!(
+            "Plugin '{}' refused activation at sample_rate {sample_rate} / \
+             max_frames {max_frames}; still active at {prev_rate} / {prev_frames}",
+            self.loaded.info.name
+        )))
+    }
+
+    /// Re-size the RT channel scratch for `max_frames`. Split out of
+    /// [`Self::reconfigure`] because the rollback path needs the identical
+    /// call with the previous ceiling. Only per-channel length changes — the
+    /// port layout is fixed at load.
+    ///
+    /// This rebuilds the channel vectors rather than growing them in place, so
+    /// the rollback path pays a second allocation. That is acceptable: it runs
+    /// only when a plugin refused a configuration, off the audio thread, and
+    /// leaving the scratch sized for a ceiling the plugin is *not* activated at
+    /// would let `process` accept a block the plugin never agreed to.
+    fn resize_scratch(&mut self, max_frames: u32) {
         let input_total = self.loaded.ports.input_channel_total();
         let output_total = self.loaded.ports.output_channel_total();
         let num_in = self.loaded.ports.inputs.len();
@@ -270,27 +391,6 @@ impl<T: super::ClapSample> ClapActive<T> {
             num_in,
             num_out,
         );
-        // Re-activate at the new ceiling; the next `process` self-starts.
-        let _ = self.loaded.activate_plugin();
-        self
-    }
-
-    /// Change the sample rate in place. CLAP requires deactivation around a
-    /// sample-rate change, so this stops processing and re-activates the plugin
-    /// at the new rate; the next `process` call self-starts processing again.
-    /// Setup-time only — never call on the audio thread.
-    pub fn set_sample_rate(&mut self, sample_rate: f64) -> &mut Self {
-        if (self.loaded.audio.sample_rate - sample_rate).abs() < f64::EPSILON {
-            return self;
-        }
-        self.loaded.assert_main_thread();
-        self.stop_processing();
-        self.loaded.deactivate_plugin();
-        self.loaded.audio.sample_rate = sample_rate;
-        // Re-activate at the new rate; scratch is already sized for max_frames,
-        // which is unchanged, so no reallocation is needed.
-        let _ = self.loaded.activate_plugin();
-        self
     }
 }
 

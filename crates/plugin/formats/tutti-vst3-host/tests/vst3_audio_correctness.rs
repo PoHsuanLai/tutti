@@ -64,9 +64,21 @@ const PARAM_MODE: u32 = 100;
 const PARAM_RAMP: u32 = 101;
 
 const MODE_TAG_PASSTHROUGH: f64 = 0.0;
-const MODE_PARAM_RAMP: f64 = 0.25;
-const MODE_BLOCK_COUNTER: f64 = 0.5;
-const MODE_NOTE_GATE: f64 = 1.0;
+const MODE_PARAM_RAMP: f64 = 1.0 / 5.0;
+const MODE_BLOCK_COUNTER: f64 = 2.0 / 5.0;
+const MODE_NOTE_GATE: f64 = 4.0 / 5.0;
+/// `kModeLatency` — the probe delays by `PROBE_LATENCY_SAMPLES` and reports it.
+const MODE_LATENCY: f64 = 3.0 / 5.0;
+/// `kModeEventTranscript` — event kind + pitch encoded at each event's offset.
+const MODE_EVENT_TRANSCRIPT: f64 = 5.0 / 5.0;
+
+/// Latency the probe reports and applies in `MODE_LATENCY`
+/// (`kReportedLatencySamples` in `probeids.h`).
+const PROBE_LATENCY_SAMPLES: u32 = 137;
+
+/// Code the transcript mode writes for an event that is neither note-on nor
+/// note-off (`kEventOtherCode`).
+const EVENT_OTHER_CODE: f32 = 1000.0;
 
 /// Per-slot DC offset the probe adds in tag-passthrough mode. Must match
 /// `probeTag` in `probeids.h` exactly.
@@ -521,5 +533,124 @@ fn f64_path_carries_the_same_audio() {
         "f64 audio landed wrong — symbolicSampleSize and the channel-buffer \
          union arm may disagree:\n  {}",
         mismatches.join("\n  ")
+    );
+}
+
+/// The full MIDI event list must reach the plugin intact — every event, with
+/// its kind, pitch and offset preserved, and none merged or dropped.
+///
+/// `note_on_takes_effect_at_its_sample_offset` only finds the *first* rising
+/// edge, so it cannot see a dropped note-off, a mangled pitch, or two events
+/// collapsed onto one offset. The transcript mode encodes note-on as
+/// `+(pitch + 1)` and note-off as `-(pitch + 1)` at the event's own sample, so
+/// all of that is recoverable from the audio. A stuck note in a real session
+/// is precisely a dropped note-off.
+#[test]
+fn full_midi_event_list_survives_intact() {
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+    let Some(mut inst) = load_probe(512) else {
+        return;
+    };
+    set_mode(&mut inst, MODE_EVENT_TRANSCRIPT);
+
+    const FRAMES: usize = 512;
+    // Deliberately out of order, with two events sharing offset 256 — the host
+    // must sort without merging, and must not drop the note-offs.
+    let midi = [
+        MidiEvent::note_off(0, 0, 64, 0x4000).with_frame_offset(300),
+        MidiEvent::note_on(0, 0, 60, 0x8000).with_frame_offset(0),
+        MidiEvent::note_on(0, 0, 64, 0x6000).with_frame_offset(100),
+        MidiEvent::note_off(0, 0, 60, 0x4000).with_frame_offset(256),
+        MidiEvent::note_on(0, 0, 72, 0x7000).with_frame_offset(256),
+    ];
+
+    let rendered = render(&mut inst, FRAMES, &midi, None, |_, _, _| 0.0);
+    let ch0 = &rendered.out[0][0];
+
+    // (offset, expected code). Offset 256 carries note-off 60 and note-on 72,
+    // which the probe accumulates: -(60+1) + (72+1) = 12.
+    let expected: &[(usize, f32)] = &[
+        (0, 61.0),    // note-on 60
+        (100, 65.0),  // note-on 64
+        (256, 12.0),  // note-off 60 + note-on 72
+        (300, -65.0), // note-off 64
+    ];
+
+    let mut failures = Vec::new();
+    for &(offset, code) in expected {
+        if ch0[offset] != code {
+            failures.push(format!(
+                "sample {offset}: expected code {code}, got {}",
+                ch0[offset]
+            ));
+        }
+    }
+    // Everything else must be silent: a spurious or mistimed event shows up as
+    // a nonzero sample where none was sent.
+    let marked: Vec<usize> = expected.iter().map(|&(o, _)| o).collect();
+    for (i, &v) in ch0.iter().enumerate() {
+        if !marked.contains(&i) && v != 0.0 {
+            failures.push(format!("unexpected event code {v} at sample {i}"));
+            if failures.len() >= 8 {
+                break;
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "the MIDI event list did not survive the trip intact:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+/// The host must report the plugin's latency, so an embedder can compensate.
+///
+/// tutti reads `getLatencySamples` but does not itself delay-compensate — PDC
+/// belongs to the embedding host. So this asserts the two things this crate is
+/// actually responsible for: that the reported figure matches what the plugin
+/// declares, and that the plugin's output really is delayed by that much (i.e.
+/// the number is meaningful, not a stale zero).
+#[test]
+fn reported_latency_matches_the_plugins_actual_delay() {
+    if !harness_ready() {
+        return;
+    }
+    let _guard = plugin_guard();
+    let Some(mut inst) = load_probe(512) else {
+        return;
+    };
+    set_mode(&mut inst, MODE_LATENCY);
+
+    // The probe only reports latency while in latency mode, so this must be
+    // read after the mode switch.
+    let reported = inst.read_latency_samples();
+    assert_eq!(
+        reported, PROBE_LATENCY_SAMPLES,
+        "host reported {reported} samples of latency; the plugin declares \
+         {PROBE_LATENCY_SAMPLES}"
+    );
+
+    // Send an impulse at sample 0 and find where it emerges. The probe's delay
+    // line spans one latency period, so a block longer than that sees it.
+    const FRAMES: usize = 512;
+    let rendered = render(&mut inst, FRAMES, &[], None, |_, _, i| {
+        if i == 0 {
+            1.0
+        } else {
+            0.0
+        }
+    });
+    let ch0 = &rendered.out[0][0];
+
+    let found = ch0.iter().position(|&v| v != 0.0);
+    assert_eq!(
+        found,
+        Some(PROBE_LATENCY_SAMPLES as usize),
+        "the plugin declares {PROBE_LATENCY_SAMPLES} samples of latency, but its \
+         impulse emerged at {found:?} — the reported figure does not describe \
+         the actual delay, so compensating by it would misalign the audio"
     );
 }

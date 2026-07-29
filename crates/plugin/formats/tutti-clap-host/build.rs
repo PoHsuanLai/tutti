@@ -16,9 +16,20 @@
 //! Instead, `tutti-clap-host` takes `tutti-clap-test-plugin` as a
 //! **dev-dependency** (it builds both `cdylib` + `rlib`). Cargo therefore
 //! builds the cdylib as part of the *same* `cargo test` invocation — one
-//! lock, no nested cargo — and drops it in the profile directory. This
-//! script's only job is to compute that deterministic path. The test
-//! checks the file exists at runtime and skips with a message if not.
+//! lock, no nested cargo — and drops it under the profile directory. This
+//! script's only job is to name the places it can land.
+//!
+//! ## Absence is a hard failure, not a skip
+//!
+//! The tests **panic** when no candidate resolves. The plugin is a
+//! dev-dependency built by the same `cargo test` run, so its absence is a
+//! build failure, not a property of the machine.
+//!
+//! This is not hypothetical. This script used to emit a single guessed path
+//! and the tests skipped when it was missing — so under an isolated
+//! `CARGO_TARGET_DIR`, where cargo wrote the cdylib to `<profile>/deps/`
+//! only, all 55 integration tests reported `ok` having executed nothing.
+//! Any change here must keep a missing plugin loud.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -27,15 +38,34 @@ const PLUGIN_LIB: &str = "tutti_clap_test_plugin";
 
 fn main() {
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".to_string());
-    let target_dir = resolve_target_dir();
-    let artifact = target_dir.join(&profile).join(lib_filename());
-    // Emit the expected path unconditionally; the cdylib is produced by the
-    // dev-dependency during this same `cargo test` run. The test verifies
-    // existence at load time.
-    println!(
-        "cargo:rustc-env=TUTTI_CLAP_TEST_PLUGIN={}",
-        artifact.display()
-    );
+    let profile_dir = resolve_target_dir().join(&profile);
+    let name = lib_filename();
+
+    // Cargo does not promise *where* under the profile dir a dev-dependency's
+    // cdylib lands. With the default layout it is `<profile>/<name>`, but under
+    // an explicit `CARGO_TARGET_DIR` (or `--target <triple>`) it has been
+    // observed only in `<profile>/deps/<name>`. Emit both candidates so a
+    // layout shift degrades into a slower lookup rather than a silently
+    // skipped suite.
+    //
+    // `deps/` is listed first deliberately: cargo builds into `deps/` and
+    // hardlinks the result up to `<profile>/`, but it does not always refresh
+    // the copy, so `<profile>/` can be an *older build of the same plugin*.
+    // The resolver takes the newest of the candidates that exist rather than
+    // the first, because a stale-but-present artifact is the nastier failure —
+    // the suite runs green against a plugin whose behaviour switches no longer
+    // match the test's expectations. That is not hypothetical: it silently
+    // reversed one mutation-verification result during this crate's RT work.
+    let candidates = [
+        profile_dir.join("deps").join(&name),
+        profile_dir.join(&name),
+    ];
+    let joined = candidates
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join(";");
+    println!("cargo:rustc-env=TUTTI_CLAP_TEST_PLUGIN_CANDIDATES={joined}");
 }
 
 /// The cdylib filename for the current platform.

@@ -1152,9 +1152,19 @@ impl Vst3Loaded {
     /// What the plugin has registered with our run loop, and how much this host
     /// has dispatched. Test-only observation seam behind the `conformance`
     /// feature — see [`RunLoopActivity`](crate::RunLoopActivity).
-    #[cfg(all(feature = "conformance", target_os = "linux"))]
+    ///
+    /// All-zero off Linux, where the OS owns the run loop and plugins register
+    /// nothing with us, so callers need no `cfg` of their own.
+    #[cfg(feature = "conformance")]
     pub fn run_loop_activity(&self) -> crate::RunLoopActivity {
-        self._library.run_loop().activity()
+        #[cfg(target_os = "linux")]
+        {
+            self._library.run_loop().activity()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            crate::RunLoopActivity::default()
+        }
     }
 
     /// Coalesces multiple `IPlugFrame::resizeView` requests received
@@ -1480,13 +1490,20 @@ impl Drop for Vst3Loaded {
         // tear the component↔controller connection down before terminating
         // either half. No-op for same-object / no controller.
         self.disconnect_separate_controller();
-        unsafe {
-            self.interfaces.component.terminate();
-        }
+        // Retract the handler before terminating. Unlike `initialize`, which
+        // borrows the host context, `setComponentHandler` *retains* — so a
+        // plugin that overrides `terminate` without chaining up to the base
+        // class (which resets it) would hold our handler past its own teardown.
+        // Order — retract, controller, component — follows Steinberg's own
+        // wrapper (`basewrapper.cpp:369`).
         if let Some(ctrl) = self.interfaces.controller.as_ref() {
             unsafe {
+                let _ = ctrl.setComponentHandler(std::ptr::null_mut());
                 ctrl.terminate();
             }
+        }
+        unsafe {
+            self.interfaces.component.terminate();
         }
     }
 }

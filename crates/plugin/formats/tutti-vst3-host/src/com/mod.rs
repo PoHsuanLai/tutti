@@ -22,6 +22,27 @@ mod unit_handler;
 #[cfg(test)]
 mod tests;
 
+/// What one run-loop pump actually did, plus what the plugin has registered.
+///
+/// Only meaningful to assert on: "the plugin registered a timer and our pump
+/// fired it" is otherwise invisible from outside — the handlers are plugin-side
+/// COM objects and the effects land in the plugin's own GUI.
+///
+/// Defined on every platform even though only Linux has a host-provided run
+/// loop, so a conformance test can read it without a `cfg`.
+#[cfg(feature = "conformance")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunLoopActivity {
+    /// Timers the plugin currently has registered.
+    pub timers_registered: usize,
+    /// File descriptors the plugin currently has registered.
+    pub event_handlers_registered: usize,
+    /// Cumulative `ITimerHandler::onTimer` calls this loop has made.
+    pub timers_fired: u64,
+    /// Cumulative `IEventHandler::onFDIsSet` calls this loop has made.
+    pub fds_dispatched: u64,
+}
+
 pub use component_handler::{
     ComponentHandler, ParameterEditEvent, ProgressEvent, RestartFlags, UnitEvent,
 };

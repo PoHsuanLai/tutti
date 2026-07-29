@@ -130,9 +130,14 @@ fn main() {
     let plugin_dir = std::env::var("VST3_SAMPLE_PLUGIN_DIR").unwrap_or_default();
     println!("cargo:rustc-env=VST3_SAMPLE_PLUGIN_DIR={plugin_dir}");
 
+    // Every `rustc-env` the tests read via `env!` must be emitted on *every*
+    // path out of this function, failure paths included: `env!` resolves at
+    // compile time, so an unset one fails the build instead of letting the test
+    // skip. That is what made a checkout without the SDK unbuildable.
     let Some(sdk) = std::env::var_os("VST3_SDK_DIR").map(PathBuf::from) else {
         println!("cargo:warning=VST3_SDK_DIR unset; conformance test will skip");
         println!("cargo:rustc-env=VST3_HOSTCHECK_AVAILABLE=0");
+        println!("cargo:rustc-env=VST3_PROBE_DIR=");
         return;
     };
 
@@ -241,9 +246,7 @@ fn build_audio_probe(sdk: &Path) {
     let mut cmd = compiler.to_command();
     cmd.arg("-shared").arg("-fPIC").arg("-o").arg(&so);
     cmd.args(&objects);
-    if cfg!(target_os = "linux") {
-        cmd.args(["-lstdc++fs", "-lpthread", "-ldl"]);
-    }
+    cmd.args(probe_link_args());
 
     let status = cmd.status().expect("failed to invoke the linker");
     assert!(status.success(), "linking audio-probe failed: {status}");
@@ -253,6 +256,40 @@ fn build_audio_probe(sdk: &Path) {
     // bundle name onto it, matching how an external plugin dir is passed.
     let dir = out_dir.join("probe-bundle");
     println!("cargo:rustc-env=VST3_PROBE_DIR={}", dir.display());
+}
+
+/// System libraries the probe's platform sources need at link time.
+///
+/// The SDK's per-OS sources in [`platform_sources`] are what pull these in:
+/// macOS builds `systemclipboard_mac.mm` / `threadchecker_mac.mm` plus the
+/// CoreFoundation calls in `fstring`/`timer`/`funknown` and the CoreAudio host
+/// clock in `systemtime.cpp`, so the probe needs the Objective-C runtime and
+/// four frameworks. On Linux the equivalents are `libstdc++fs`/`pthread`/`dl`.
+/// Windows resolves its own through the MSVC defaults and needs nothing here.
+fn probe_link_args() -> Vec<String> {
+    if cfg!(target_os = "macos") {
+        [
+            "-framework",
+            "CoreFoundation",
+            "-framework",
+            "Foundation",
+            "-framework",
+            "AppKit",
+            "-framework",
+            "CoreAudio",
+            "-lobjc",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    } else if cfg!(target_os = "windows") {
+        Vec::new()
+    } else {
+        ["-lstdc++fs", "-lpthread", "-ldl"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    }
 }
 
 /// The per-platform subdirectory inside `Contents/` that the VST3 bundle spec

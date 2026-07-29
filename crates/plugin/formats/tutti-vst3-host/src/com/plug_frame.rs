@@ -10,6 +10,12 @@
 //! loop on the frame rather than on the host context, so we answer here too —
 //! but note the frame is *not* the path that prevents the editor-open crash;
 //! see `run_loop.rs` for why the host context is the load-bearing one.
+//!
+//! Registration is all the frame does. It exposes no way to *pump* the loop:
+//! the frame is per-editor-session and comes and goes with `open_editor`, while
+//! handlers registered through the host context outlive it. Pumping is
+//! therefore driven from the library-scoped loop, via
+//! [`Vst3Loaded::run_editor_loop_iteration`](crate::Vst3Loaded::run_editor_loop_iteration).
 
 use crossbeam_channel::{Receiver, Sender};
 use vst3::Steinberg::{kResultOk, tresult, IPlugFrame, IPlugView, ViewRect};
@@ -57,12 +63,6 @@ impl HostPlugFrame {
             run_loop,
         });
         (wrapper, receiver)
-    }
-
-    /// Pump the shared run loop. See [`RunLoop::run_iteration`].
-    #[cfg(target_os = "linux")]
-    pub(crate) fn run_loop_iteration(&self) {
-        self.run_loop.run_iteration();
     }
 }
 

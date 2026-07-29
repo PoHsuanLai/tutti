@@ -1033,6 +1033,65 @@ impl Vst3Loaded {
         }
     }
 
+    /// Run one iteration of the event loop this host lends the plugin
+    /// (`Linux::IRunLoop`): fire any timers that came due and dispatch any
+    /// plugin file descriptor that became readable.
+    ///
+    /// **The embedder must call this from its UI thread, every frame, for as
+    /// long as any editor of this plugin is open.** X11 has no ambient run loop
+    /// the way Cocoa and Win32 do, so `iplugview.h` makes the loop the *host's*
+    /// job: "the host has to call the event handler when the file descriptor is
+    /// marked readable", and a registered timer "will be called repeatedly until
+    /// it is unregistered". Nothing else drives them. Skip this and the editor
+    /// opens, paints once, and then freezes — no redraws, no animation, no
+    /// response to input.
+    ///
+    /// Cheap and non-blocking: the `poll` uses a zero timeout, so calling it on
+    /// a frame where nothing is ready costs one syscall and returns. That is why
+    /// it is safe to call unconditionally from a render loop.
+    ///
+    /// # Why this is not folded into `poll_plugin_notifications`
+    ///
+    /// The two look alike but run on different clocks, and merging them would
+    /// break one or the other.
+    /// [`poll_plugin_notifications`](Self::poll_plugin_notifications) drains
+    /// queues that this host filled; the work is already done and arriving late
+    /// only delays a UI update. This call *is* the plugin's event loop — its
+    /// cadence sets the editor's frame rate, and a host that polls
+    /// notifications a few times a second (perfectly adequate for parameter
+    /// echoes) would render such an editor unusable. Equally, a host with no
+    /// editor open should not be forced to pump a loop with nothing in it.
+    /// Keeping them separate lets each be called at the rate it actually needs.
+    ///
+    /// # Why the host and not a timer thread
+    ///
+    /// A background thread ticking this would be simpler for the embedder and
+    /// is wrong: the handlers are plugin GUI code reaching into its X
+    /// connection, and the spec's whole premise is that the host donates *its
+    /// UI thread*. Calling them from anywhere else is the same data race as
+    /// touching any other toolkit off-thread. So the obligation is the
+    /// embedder's, and this method is the seam — it deliberately cannot be
+    /// automated away from inside a library that owns no event loop.
+    ///
+    /// No-op on non-Linux targets, where the OS provides the run loop, so
+    /// calling it unconditionally is portable.
+    pub fn run_editor_loop_iteration(&mut self) {
+        tutti_plugin_types::assert_main_thread();
+        // The library-scoped loop, not the frame's — plugins register against
+        // the host context (via `setHostContext`) before any editor exists, and
+        // both objects share this one loop. See `com/run_loop.rs`.
+        #[cfg(target_os = "linux")]
+        self._library.run_loop().run_iteration();
+    }
+
+    /// What the plugin has registered with our run loop, and how much this host
+    /// has dispatched. Test-only observation seam behind the `conformance`
+    /// feature — see [`RunLoopActivity`](crate::RunLoopActivity).
+    #[cfg(all(feature = "conformance", target_os = "linux"))]
+    pub fn run_loop_activity(&self) -> crate::RunLoopActivity {
+        self._library.run_loop().activity()
+    }
+
     /// Coalesces multiple `IPlugFrame::resizeView` requests received
     /// since the last poll, returning only the latest.
     pub fn poll_editor_resize_request(&mut self) -> Option<EditorSize> {

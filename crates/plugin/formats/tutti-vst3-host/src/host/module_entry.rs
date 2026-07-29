@@ -205,7 +205,7 @@ mod platform {
         // where `?`-style early return would otherwise leak it.
         let handle = unsafe { libloading::os::unix::Library::from_raw(handle_raw) };
 
-        if !unsafe { entry(handle_raw as *mut c_void) } {
+        if !unsafe { entry(handle_raw) } {
             return Err("ModuleEntry returned false".to_string());
         }
 

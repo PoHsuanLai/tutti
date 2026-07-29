@@ -219,7 +219,7 @@ impl RunLoop {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         // Zero would mean "every iteration"; clamp so a misbehaving plugin
         // cannot spin the host's UI loop.
-        let period = Duration::from_millis(milliseconds.max(1) as u64);
+        let period = Duration::from_millis(milliseconds.max(1));
         state.timers.insert(
             handler as usize,
             TimerEntry {

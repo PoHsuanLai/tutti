@@ -175,6 +175,20 @@ const SUPPORTED_IIDS: &[TUID] = &[
     vst3::Steinberg::Linux::IRunLoop_iid,
 ];
 
+impl IPlugInterfaceSupportTrait for HostApplication {
+    unsafe fn isPlugInterfaceSupported(&self, iid: *const TUID) -> tresult {
+        if iid.is_null() {
+            return kInvalidArgument;
+        }
+        let queried = *iid;
+        if SUPPORTED_IIDS.contains(&queried) {
+            kResultTrue
+        } else {
+            kResultFalse
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,16 +287,3 @@ mod tests {
     }
 }
 
-impl IPlugInterfaceSupportTrait for HostApplication {
-    unsafe fn isPlugInterfaceSupported(&self, iid: *const TUID) -> tresult {
-        if iid.is_null() {
-            return kInvalidArgument;
-        }
-        let queried = *iid;
-        if SUPPORTED_IIDS.contains(&queried) {
-            kResultTrue
-        } else {
-            kResultFalse
-        }
-    }
-}

@@ -65,7 +65,6 @@ const PARAM_MODE: u32 = 100;
 const PARAM_RAMP: u32 = 101;
 /// Steps on `kParamMode`: 6 modes (0..=5) is 5 steps, and a stepped VST3
 /// parameter normalizes as `index / stepCount`.
-
 const MODE_STEPS: f64 = 5.0;
 
 /// Normalized value selecting probe mode `index` (see `ProbeMode` in
@@ -511,13 +510,12 @@ fn f64_path_carries_the_same_audio() {
         for ch in 0..channels {
             let got = flat.next().unwrap_or_default();
             let has_input = bus < in_layout.len() && ch < in_layout[bus];
-            for i in 0..FRAMES {
+            for (i, &actual) in got.iter().enumerate().take(FRAMES) {
                 let src = if has_input { input_at(bus, ch, i) } else { 0.0 };
                 let expected = src + f64::from(probe_tag(bus, ch));
-                if got[i] != expected {
+                if actual != expected {
                     mismatches.push(format!(
-                        "bus {bus} ch {ch} sample {i}: expected {expected}, got {}",
-                        got[i]
+                        "bus {bus} ch {ch} sample {i}: expected {expected}, got {actual}",
                     ));
                     if mismatches.len() >= 8 {
                         break;

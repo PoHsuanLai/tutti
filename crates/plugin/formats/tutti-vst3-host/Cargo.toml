@@ -50,3 +50,12 @@ raw-window-handle = "0.6"
 [[example]]
 name = "gui_test"
 path = "examples/gui_test.rs"
+
+# The editor-lifecycle tests, run on the main thread. `harness = false` so this
+# target owns `main()` — the only way to reach the main thread under cargo, and
+# macOS requires it for Cocoa's event loop. See the module docs; the test bodies
+# are shared with `tests/vst3_gui_lifecycle.rs`, not duplicated.
+[[test]]
+name = "gui_lifecycle_main"
+path = "tests/gui_lifecycle_main.rs"
+harness = false

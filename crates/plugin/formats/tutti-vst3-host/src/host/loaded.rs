@@ -939,10 +939,40 @@ impl Vst3Loaded {
         Ok(())
     }
 
-    /// True if the plugin exposes an editor controller. Not all plugins with a
-    /// controller have a UI, but a missing controller definitely means no UI.
+    /// True if the plugin actually publishes an editor view.
+    ///
+    /// **Asks `createView`, not `controller.is_some()`.** Those are different
+    /// questions and the old answer was the wrong one: nearly every VST3 has an
+    /// edit controller — that is where parameters live — while only some also
+    /// publish a UI. So this returned `true` unconditionally, for every plugin
+    /// in the sample corpus including the four whose `open_editor` fails.
+    ///
+    /// It is not a cosmetic mismatch. `tutti-plugin-server` feeds this straight
+    /// into `Features::EDITOR` on the plugin descriptor
+    /// (`loaders/vst3.rs:116,150`), so a DAW advertised an "open editor"
+    /// affordance for every VST3 it scanned and failed when the user took it.
+    ///
+    /// The view is created and immediately released — the same
+    /// `createView(kEditor)` the SDK's own `editorhost` uses to decide there is
+    /// a UI (`editorhost.cpp:207`). That costs a plugin-side allocation per
+    /// call, so callers needing it per-frame should cache it; the DAW asks
+    /// once, at scan time.
+    ///
+    /// A plugin with no controller at all still answers `false`, as before.
     pub fn has_editor(&self) -> bool {
-        self.interfaces.controller.as_ref().is_some()
+        let Some(ctrl) = self.interfaces.controller.as_ref() else {
+            return false;
+        };
+        let view = unsafe { ctrl.createView(c"editor".as_ptr()) };
+        if view.is_null() {
+            return false;
+        }
+        // `createView` returns an owned reference; drop it rather than leak a
+        // view per query.
+        unsafe {
+            ComPtr::<IPlugView>::from_raw(view);
+        }
+        true
     }
 
     /// Create the plugin editor, attach it to `parent`, and return its initial

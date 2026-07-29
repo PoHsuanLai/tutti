@@ -61,7 +61,11 @@ fn resolve_bundle(path: &Path) -> PathBuf {
         return path.to_path_buf();
     }
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    for sub in ["Contents/x86_64-linux", "Contents/MacOS", "Contents/x86_64-win"] {
+    for sub in [
+        "Contents/x86_64-linux",
+        "Contents/MacOS",
+        "Contents/x86_64-win",
+    ] {
         let dir = path.join(sub);
         for ext in ["so", "", "vst3", "dylib"] {
             let cand = if ext.is_empty() {
@@ -512,4 +516,134 @@ fn open_editor_run_loop_is_pumped() {
     // Pumping with the editor closed must stay safe (and is what a host does on
     // the frame after the user closes the window).
     inst.run_editor_loop_iteration();
+}
+
+/// `has_editor()` must agree with whether an editor can actually be opened.
+///
+/// It used to be `controller.is_some()`, which answers a *different question*:
+/// nearly every VST3 has an edit controller, because that is where parameters
+/// live, and only some of them also publish a view. So it returned `true`
+/// unconditionally — for `audio-probe` and `adelay`, whose `open_editor` fails,
+/// exactly as much as for `host-checker` and `again`, whose succeeds.
+///
+/// That is not cosmetic. `tutti-plugin-server` feeds this straight into
+/// `Features::EDITOR` on the plugin descriptor (`loaders/vst3.rs:116,150`), so
+/// a DAW would offer an "open editor" affordance for every VST3 it scanned and
+/// fail when the user took it.
+///
+/// The check is a *contrast across four plugins* rather than a single
+/// assertion: two that open and two that do not. A `has_editor` hardcoded
+/// either way — which is what the bug amounted to — fails one of the pairs.
+#[test]
+#[ignore = "needs a display; run under xvfb-run -a"]
+fn has_editor_agrees_with_opening_one() {
+    if !has_display() {
+        eprintln!("no DISPLAY/WAYLAND_DISPLAY; run under `xvfb-run -a`. Skipping.");
+        return;
+    }
+    let Some(win) = TestWindow::get() else {
+        eprintln!("could not create a window; skipping");
+        return;
+    };
+    let Some(handle) = win.handle() else {
+        eprintln!("unsupported window handle type; skipping");
+        return;
+    };
+
+    let mut checked = 0;
+    let mut with_editor = 0;
+    let mut without_editor = 0;
+    let mut disagreements = Vec::new();
+
+    // `again.vst3` is deliberately absent: its VSTGUI/cairo backend aborts in
+    // `_get_screen_index` under Xvfb, which kills the whole test binary. That
+    // is a cairo/Xvfb interaction, not a host defect — the plugins below cover
+    // both outcomes without it.
+    for name in [
+        "host-checker.vst3",
+        "panner.vst3",
+        "note-expression-text.vst3",
+        "audio-probe.vst3",
+        "adelay.vst3",
+        "channel-context.vst3",
+    ] {
+        let Some(path) = sample_plugin_path(name) else {
+            continue;
+        };
+        let Ok(mut inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+            continue;
+        };
+
+        let claims = inst.has_editor();
+        let opened = inst.open_editor(handle).is_ok();
+        if opened {
+            inst.close_editor();
+            with_editor += 1;
+        } else {
+            without_editor += 1;
+        }
+        checked += 1;
+
+        if claims != opened {
+            disagreements.push(format!(
+                "{name}: has_editor()={claims} but open_editor() {}",
+                if opened { "succeeded" } else { "failed" }
+            ));
+        }
+    }
+
+    // Without both kinds present, agreement proves nothing: a constant `true`
+    // satisfies an all-editor corpus and a constant `false` an all-editorless
+    // one. Say so rather than reporting a pass that means nothing.
+    assert!(
+        checked >= 2 && with_editor > 0 && without_editor > 0,
+        "this test needs at least one plugin with an editor and one without to \
+         be meaningful; checked {checked} ({with_editor} with, \
+         {without_editor} without)"
+    );
+    assert!(
+        disagreements.is_empty(),
+        "has_editor() disagrees with reality:\n  {}",
+        disagreements.join("\n  ")
+    );
+}
+
+/// A closed editor must report no pending resize request.
+///
+/// `poll_editor_resize_request` drains a channel the plugin's `IPlugFrame`
+/// pushes into. The `EditorState::Open` guard is what stops a stale request
+/// surviving a close and being applied to the *next* editor — so the assertion
+/// is that closing clears it, not merely that a fresh instance returns `None`.
+#[test]
+#[ignore = "needs a display; run under xvfb-run -a"]
+fn a_closed_editor_reports_no_resize_request() {
+    let Some(mut inst) = load_host_checker() else {
+        return;
+    };
+    let Some(win) = TestWindow::get() else {
+        eprintln!("could not create a window; skipping");
+        return;
+    };
+    let Some(handle) = win.handle() else {
+        eprintln!("unsupported window handle type; skipping");
+        return;
+    };
+
+    assert!(
+        inst.poll_editor_resize_request().is_none(),
+        "an editor that was never opened reported a pending resize"
+    );
+
+    inst.open_editor(handle)
+        .expect("host-checker opens an editor");
+    // Drain whatever the plugin queued during open, so the post-close assertion
+    // is about the close and not about start-up traffic.
+    let _ = inst.poll_editor_resize_request();
+    inst.close_editor();
+
+    assert!(
+        inst.poll_editor_resize_request().is_none(),
+        "a closed editor still reported a pending resize request — it would be \
+         applied to whichever editor is opened next"
+    );
 }

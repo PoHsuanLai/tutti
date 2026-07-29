@@ -176,6 +176,30 @@ impl MidiEvent {
         }
     }
 
+    /// Velocity at full MIDI 2.0 resolution — 16 bits.
+    ///
+    /// A MIDI 1.0 note is upscaled via the spec's Min-Center-Max algorithm, so
+    /// this is the lossless accessor: prefer it over
+    /// [`velocity_u7`](Self::velocity_u7), which narrows a MIDI-2 velocity to
+    /// 7 bits and is only for a MIDI 1.0 destination.
+    pub fn velocity_u16(&self) -> Option<u16> {
+        use crate::convert::midi1_velocity_to_midi2;
+        use midi2::channel_voice1::ChannelVoice1;
+        use midi2::channel_voice2::ChannelVoice2;
+        use midi2::UmpMessage;
+        match UmpMessage::try_from(self.data_words()).ok()? {
+            UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(m)) => Some(m.velocity()),
+            UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(m)) => Some(m.velocity()),
+            UmpMessage::ChannelVoice1(ChannelVoice1::NoteOn(m)) => {
+                Some(midi1_velocity_to_midi2(u8::from(m.velocity())))
+            }
+            UmpMessage::ChannelVoice1(ChannelVoice1::NoteOff(m)) => {
+                Some(midi1_velocity_to_midi2(u8::from(m.velocity())))
+            }
+            _ => None,
+        }
+    }
+
     /// Velocity as a 7-bit value (downconverted from MIDI 2.0's 16-bit form
     /// via spec Min-Center-Max).
     pub fn velocity_u7(&self) -> Option<u8> {
@@ -314,6 +338,51 @@ mod tests {
         let shifted = ev.with_frame_offset(128);
         assert_eq!(shifted.frame_offset, 128);
         assert_eq!(shifted.data, ev.data);
+    }
+
+    #[test]
+    fn velocity_u16_is_lossless_where_u7_is_not() {
+        // The reason this accessor exists: `velocity_u7` narrows a MIDI 2.0
+        // velocity to 7 bits, so any value between 7-bit steps is destroyed.
+        // Reading a MIDI-2 source through the u7 accessor would throw away
+        // exactly the resolution MIDI 2.0 was for.
+        for vel in [0x0000u16, 0x0001, 0x1234, 0x8000, 0xABCD, 0xFFFF] {
+            let ev = MidiEvent::note_on(0, 0, 60, vel);
+            assert_eq!(ev.velocity_u16(), Some(vel), "exact for {vel:#06x}");
+        }
+
+        // A value that is *not* on a 7-bit boundary survives here and does not
+        // survive there.
+        let ev = MidiEvent::note_on(0, 0, 60, 0xABCD);
+        assert_eq!(ev.velocity_u16(), Some(0xABCD));
+        let narrowed = ev.velocity_u7().expect("u7 view exists");
+        assert_ne!(
+            crate::convert::midi1_velocity_to_midi2(narrowed),
+            0xABCD,
+            "u7 round-trip must be lossy — otherwise this accessor is pointless"
+        );
+
+        // Note Off carries velocity too.
+        assert_eq!(
+            MidiEvent::note_off(0, 0, 60, 0x4000).velocity_u16(),
+            Some(0x4000)
+        );
+    }
+
+    #[test]
+    fn velocity_u16_upscales_a_midi1_note() {
+        // A MIDI 1.0 note reads at full resolution via the spec's
+        // Min-Center-Max upscale, so a caller need not know which protocol the
+        // event arrived as. 127 → full scale and 64 → centre are the anchors
+        // that algorithm guarantees.
+        let ev = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 127]).expect("midi1 note-on");
+        assert_eq!(ev.velocity_u16(), Some(0xFFFF));
+
+        let ev = MidiEvent::from_midi1_bytes(0, &[0x90, 60, 64]).expect("midi1 note-on");
+        assert_eq!(ev.velocity_u16(), Some(0x8000));
+
+        // Non-note messages have no velocity.
+        assert_eq!(MidiEvent::timing_clock(0).velocity_u16(), None);
     }
 
     #[test]

@@ -147,6 +147,11 @@ impl DiskSource {
                 self.consumer.load().clear();
                 self.history.fill(0.0);
                 self.fractional_pos = 0.0;
+                // The carried-over fetch tail is pre-seek material. It survives
+                // the ring clear (it has already been popped), so dropping it
+                // here is what stops a seek from replaying a few stale frames
+                // from the old position.
+                self.fetch_scratch.clear();
             }
         }
     }
@@ -213,14 +218,32 @@ impl DiskSource {
 
         let samples_needed = base_rate.advance(Samples(size)).get().ceil() as usize + 4;
 
-        self.fetch_scratch.clear();
-
         let ch = self.channels;
         let gain = self.gain.get();
-        {
+
+        // Fetch only the SHORTFALL, and keep whatever this block does not
+        // consume for the next one.
+        //
+        // The `+ 4` above is interpolator head-room — the kernel needs taps
+        // ahead of the sample it emits — not extra material to play. This used
+        // to `clear()` the scratch each block and pop `samples_needed` frames
+        // fresh, so those 4 frames were popped off the ring and then dropped on
+        // the floor. The ring drained at `(size + 4) / size` while playback
+        // advanced at `size / size`: at a 64-frame block the source ran 68/64 =
+        // 6.25% fast, forever. That is a transposition — every partial of a
+        // streamed file came out a quarter-tone sharp, with the level and the
+        // waveform otherwise perfect, which is why nothing caught it. The
+        // in-memory tier indexes a `Wave` and has no such fetch step, so the
+        // same file played correctly if it happened to fit in RAM.
+        //
+        // Carrying the tail is also what makes the fetch estimate's `ceil()`
+        // harmless: rounding up now borrows from the next block instead of
+        // discarding.
+        let have = self.fetch_scratch.len() / ch;
+        if samples_needed > have {
             let cell = self.consumer.load();
             let mut frame = [0.0f32; MAX_SAMPLER_CHANNELS];
-            for _ in 0..samples_needed {
+            for _ in 0..(samples_needed - have) {
                 if cell.read_into(&mut frame[..ch]) {
                     for &s in &frame[..ch] {
                         self.fetch_scratch.push(s * gain);
@@ -270,6 +293,19 @@ impl DiskSource {
                 );
                 output.set_f32(c, offset + i, s);
             }
+        }
+
+        // Drop what this block consumed; keep the rest for the next one.
+        //
+        // `copy_within` + `truncate` rather than `drain(..fetch_idx)`: both are
+        // allocation-free, but this path is the audio thread and the shift is a
+        // single memmove of at most the head-room (a handful of frames). Without
+        // this the scratch would grow without bound, since the fetch above now
+        // only tops it up.
+        if fetch_idx > 0 {
+            self.fetch_scratch.copy_within(fetch_idx.., 0);
+            self.fetch_scratch
+                .truncate(self.fetch_scratch.len() - fetch_idx);
         }
     }
 }
@@ -831,6 +867,62 @@ mod tests {
         let state = Arc::new(RtState::new());
         let unit = DiskSource::new(reader, Arc::clone(&state));
         (unit, state)
+    }
+
+    /// At unity rate, `process` must consume exactly one ring frame per output
+    /// frame — no more.
+    ///
+    /// The fetch estimate asks for `size + 4` frames because the interpolation
+    /// kernel needs taps *ahead* of the sample it emits. Those extra frames are
+    /// head-room, not material: `process` used to pop all of them off the ring
+    /// and discard whatever the block did not consume, so the source advanced
+    /// `(size + 4) / size` per block — 68/64 at a 64-frame block, a permanent
+    /// 6.25% overspeed. Since pitch and rate are the same thing for a sampler,
+    /// every streamed file played a quarter-tone sharp while its level and
+    /// waveform stayed perfect. The in-memory tier indexes a `Wave` directly and
+    /// has no fetch step, so the same file was correct if it fit in RAM.
+    ///
+    /// Asserted by counting what the ring actually gave up, which is the
+    /// quantity that was wrong. `tests/tier_parity.rs` pins the audible
+    /// consequence end to end; this pins the mechanism, in the file that owns it.
+    #[test]
+    fn process_consumes_one_ring_frame_per_output_frame_at_unity_rate() {
+        const BLOCK: usize = 64;
+        const BLOCKS: usize = 8;
+        // A ramp, so a consumed frame is identifiable by its value.
+        let samples: Vec<(f32, f32)> = (0..2048)
+            .map(|i| (i as f32 * 0.001, i as f32 * 0.001))
+            .collect();
+        let (mut unit, _state) = make_unit(&samples);
+        unit.play();
+
+        let input = BufferVec::new(0);
+        let mut output = BufferVec::new(2);
+        for _ in 0..BLOCKS {
+            unit.process(BLOCK, &input.buffer_ref(), &mut output.buffer_mut());
+        }
+
+        // The ring's own read cursor IS the consumption count — the quantity
+        // the bug inflated.
+        let consumed = unit
+            .consumer
+            .load()
+            .read_position_shared()
+            .load(Ordering::Acquire) as usize;
+        let emitted = BLOCK * BLOCKS;
+
+        // The kernel legitimately holds a few frames of look-ahead in `history`,
+        // so allow a small constant — but NOT a per-block one. The bug scaled
+        // with block count (4 per block = 32 frames over this run); a constant
+        // head-room does not.
+        assert!(
+            consumed <= emitted + 8,
+            "consumed {consumed} ring frames to emit {emitted} output frames \
+             ({} extra). The fetch head-room is being consumed rather than \
+             carried across blocks, so the source runs fast and every streamed \
+             file is transposed.",
+            consumed - emitted
+        );
     }
 
     // --- DiskVoice: placement gate ---

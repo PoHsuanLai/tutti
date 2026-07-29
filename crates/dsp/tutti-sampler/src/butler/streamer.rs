@@ -126,6 +126,113 @@ mod tests {
         assert_eq!(sampler.status().sample_rate(), 44100.0);
     }
 
+    /// A backward `Command::Seek` must actually reposition the live stream.
+    ///
+    /// This settles a question an end-to-end test could not. In
+    /// `tests/tier_parity.rs`, seeking a live stream leaves the audio coming
+    /// from the old position — which is consistent with two very different
+    /// causes: the butler ignoring the seek, or the butler repositioning
+    /// correctly while the reader drains a ring already primed with up to 30 s
+    /// of pre-seek material. From outside the crate those are indistinguishable,
+    /// because the only observable is the audio and the audio is the thing in
+    /// dispute.
+    ///
+    /// In-crate the butler's own state is visible, so the question is
+    /// answerable. **It passes: the butler does reposition.** The end-to-end
+    /// symptom is therefore ring latency, not a defect.
+    ///
+    /// # Why the ring-reset epoch, and not a position
+    ///
+    /// The obvious probe is `link.read_position` — and it is the wrong one. That
+    /// counter tracks frames the *reader* has consumed, so with nothing
+    /// rendering it sits at 0 no matter what the butler does; asserting on it
+    /// reported "the butler did not reposition" for a butler that had. The
+    /// writer's `file_position` would be right but lives in butler-thread-local
+    /// state that nothing else can reach.
+    ///
+    /// The reset epoch works because `reposition_click_free` bumps it via
+    /// `plan.flush_buffer()`, on the *shared* plan, and nothing else in a quiet
+    /// stream moves it. So a change means the butler ran the reposition path.
+    #[test]
+    fn a_backward_seek_repositions_the_live_stream() {
+        use crate::ports::Command;
+        use std::io::Write;
+        use tutti_core::SamplePosition;
+
+        const SR: f64 = 48_000.0;
+
+        // 60 s of tone, long enough that the ring cannot hold the whole file
+        // (`buffer_size_for_file` caps at 30 s), so a seek is real work.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("seek_probe.wav");
+        {
+            let spec = hound::WavSpec {
+                channels: 2,
+                sample_rate: SR as u32,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            };
+            let mut w = hound::WavWriter::create(&path, spec).unwrap();
+            for i in 0..(SR * 60.0) as usize {
+                let s = (std::f32::consts::TAU * 440.0 * i as f32 / SR as f32).sin() * 0.4;
+                w.write_sample(s).unwrap();
+                w.write_sample(s).unwrap();
+            }
+            w.finalize().unwrap();
+            std::io::stdout().flush().ok();
+        }
+
+        let sampler = DiskStreamer::new(SR, Default::default()).unwrap();
+        sampler.commands().send(Command::Stream {
+            channel_index: 0,
+            file_path: path.clone(),
+            offset: SamplePosition(20.0 * SR),
+        });
+
+        // Wait for the butler to install the link.
+        let plans = sampler.butler.plans();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if plans.get(&0).is_some_and(|p| p.link.is_some()) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the butler never registered the stream"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // The ring-reset epoch is the butler's own signal that it repositioned:
+        // `reposition_click_free` calls `plan.flush_buffer()`, which bumps it.
+        // Unlike `read_position` (a *reader* consumption counter, which stays 0
+        // when nothing is rendering) this moves purely as a result of the seek.
+        let reset_epoch =
+            || -> u64 { plans.get(&0).map(|p| p.rt_state.reset_epoch()).unwrap_or(0) };
+
+        let before = reset_epoch();
+
+        // Seek backward, which is the direction a "refill forward from here"
+        // implementation is most likely to drop.
+        sampler.commands().send(Command::Seek {
+            channel_index: 0,
+            file_position: SamplePosition(5.0 * SR),
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if reset_epoch() != before {
+                return; // the butler flushed and repositioned — this is the pass
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the ring-reset epoch never moved from {before} after a backward \
+                 seek — the butler did not reposition the stream"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn pdc_subscription_is_shared_not_copied() {
         // The caller owns the table and keeps publishing to it after the

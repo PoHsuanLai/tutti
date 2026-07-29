@@ -1,0 +1,37 @@
+# Python dependencies for the audio-correctness harnesses.
+#
+# Two of them, both following the same pattern: a Rust example renders audio to a
+# directory, and a Python script judges it. See
+#   crates/dsp/tutti-sampler/examples/README.md
+#   crates/core/tutti-export/examples/README.md
+#
+# This is not a Python package -- nothing here is imported by anything. It exists
+# so the judges' dependencies are declared and locked in one place instead of
+# living as a prose `pip install` line in a README, which is what they were.
+#
+#   uv sync
+#   uv run python crates/core/tutti-export/examples/verify_export.py /tmp/exports
+#
+# Why Python at all, when the engine is Rust: these scripts are a *second
+# opinion*. Four defects in the sampler were invisible to its whole Rust suite
+# because the tests were written against the same understanding of the DSP as the
+# code, so they could not contradict it. A judge that re-derives the expected
+# answer from the signal, using libraries with no knowledge of tutti, has no such
+# shared blind spot. soundfile also decodes FLAC/AIFF/Ogg uniformly, which is the
+# only practical way to compare tutti's four containers against each other -- the
+# Rust tests can only read WAV.
+[project]
+name = "tutti-verify"
+version = "0.0.1"
+description = "Independent audio-correctness judges for the tutti engine"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.23",
+    "scipy>=1.9",
+    # Decodes WAV/FLAC/AIFF/Ogg through libsndfile, which is what lets one
+    # comparison span every container tutti-export writes.
+    "soundfile>=0.12",
+]
+
+[tool.uv]
+package = false

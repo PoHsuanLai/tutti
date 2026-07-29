@@ -2,9 +2,8 @@
 //!
 //! These tests pin the *shape* rather than the audio: that a spawned request
 //! starts and reports, that the result reaches an observer attached at the
-//! spawn site, and — the load-bearing one — that `ExportInFlight` is a usable
-//! throttle for a caller, since this crate deliberately ships no queue of its
-//! own.
+//! spawn site, that a batch spawned in one frame starts one at a time, and that
+//! a request's `prepare` hook reaches the net that is actually rendered.
 
 #![cfg(all(feature = "export", feature = "wav"))]
 
@@ -87,12 +86,12 @@ fn a_buffers_request_runs_and_reports_planes() {
     CHANNELS.store(usize::MAX, Ordering::SeqCst);
 
     app.world_mut()
-        .spawn(ExportRequest {
-            source: ExportSource::Master,
-            target: ExportTarget::Buffers,
-            config: stereo_config(),
-            clock: Arc::new(FrozenClock),
-        })
+        .spawn(ExportRequest::new(
+            ExportSource::Master,
+            ExportTarget::Buffers,
+            stereo_config(),
+            Arc::new(FrozenClock),
+        ))
         .observe(|done: On<ExportDone>| {
             match &done.result {
                 Ok(ExportOutput::Buffers(rendered)) => {
@@ -122,15 +121,15 @@ fn a_file_request_writes_and_reports_the_path() {
     DONE.store(0, Ordering::SeqCst);
 
     app.world_mut()
-        .spawn(ExportRequest {
-            source: ExportSource::Master,
-            target: ExportTarget::File {
+        .spawn(ExportRequest::new(
+            ExportSource::Master,
+            ExportTarget::File {
                 path: path.clone(),
                 normalize: None,
             },
-            config: stereo_config(),
-            clock: Arc::new(FrozenClock),
-        })
+            stereo_config(),
+            Arc::new(FrozenClock),
+        ))
         .observe(|done: On<ExportDone>| {
             match &done.result {
                 Ok(ExportOutput::File(written)) => {
@@ -148,22 +147,24 @@ fn a_file_request_writes_and_reports_the_path() {
     assert!(path.exists(), "the file was reported but does not exist");
 }
 
-/// **The throttle contract.** This crate ships no queue, so a caller's
-/// `run_if(not(any_with_component::<ExportInFlight>))` is the whole mechanism.
-/// It only works if `ExportInFlight` is present for the entire time a render
-/// occupies the pool — present the frame it starts, and gone once it reports.
+/// `ExportInFlight` marks the whole render: present the frame it starts, gone
+/// once it reports.
+///
+/// `start_exports` checks this component to enforce one-at-a-time, so a gap at
+/// either end would let a second render start on top of a live one. It is also
+/// what a caller watches to know an export is running.
 #[test]
 fn export_in_flight_marks_the_whole_render_so_callers_can_gate_on_it() {
     let (mut app, _node) = app_with_engine();
 
     let entity = app
         .world_mut()
-        .spawn(ExportRequest {
-            source: ExportSource::Master,
-            target: ExportTarget::Buffers,
-            config: stereo_config(),
-            clock: Arc::new(FrozenClock),
-        })
+        .spawn(ExportRequest::new(
+            ExportSource::Master,
+            ExportTarget::Buffers,
+            stereo_config(),
+            Arc::new(FrozenClock),
+        ))
         .id();
 
     // One frame: the request is consumed and the marker is on.
@@ -207,12 +208,12 @@ fn an_unrenderable_node_reports_a_failure() {
     FAILED.store(0, Ordering::SeqCst);
 
     app.world_mut()
-        .spawn(ExportRequest {
-            source: ExportSource::Node(orphan),
-            target: ExportTarget::Buffers,
-            config: stereo_config(),
-            clock: Arc::new(FrozenClock),
-        })
+        .spawn(ExportRequest::new(
+            ExportSource::Node(orphan),
+            ExportTarget::Buffers,
+            stereo_config(),
+            Arc::new(FrozenClock),
+        ))
         .observe(|done: On<ExportDone>| {
             assert!(
                 done.result.is_err(),
@@ -224,5 +225,111 @@ fn an_unrenderable_node_reports_a_failure() {
     assert!(
         run_until(&mut app, |_| FAILED.load(Ordering::SeqCst) == 1),
         "an unrenderable request must still report"
+    );
+}
+
+/// Several requests spawned in the SAME frame must not all start at once.
+///
+/// This is the property a caller-side `run_if(not(any_with_component::<
+/// ExportInFlight>))` cannot provide and this crate previously advertised: a run
+/// condition is evaluated against the previous frame's state, so every request
+/// spawned in one frame passes it and they all start together — each doing a
+/// main-thread deep clone of the live net, back to back, which is what stalls
+/// the audio callback.
+#[test]
+fn a_batch_spawned_in_one_frame_starts_one_at_a_time() {
+    let (mut app, _node) = app_with_engine();
+
+    for _ in 0..5 {
+        app.world_mut().spawn(ExportRequest::new(
+            ExportSource::Master,
+            ExportTarget::Buffers,
+            stereo_config(),
+            Arc::new(FrozenClock),
+        ));
+    }
+
+    // Watch every frame until the batch drains: at no point may two renders be
+    // in flight together. Checking only the first frame would pass even if the
+    // limit were "start two per frame".
+    let mut max_seen = 0usize;
+    for _ in 0..64 {
+        app.update();
+        let in_flight = app
+            .world_mut()
+            .query_filtered::<Entity, With<ExportInFlight>>()
+            .iter(app.world())
+            .count();
+        max_seen = max_seen.max(in_flight);
+    }
+
+    assert_eq!(
+        max_seen, 1,
+        "at most one render may be in flight; saw {max_seen} at once"
+    );
+
+    let unstarted = app
+        .world_mut()
+        .query_filtered::<Entity, With<ExportRequest>>()
+        .iter(app.world())
+        .count();
+    assert_eq!(
+        unstarted, 0,
+        "every request must eventually start — the limit delays, it does not drop"
+    );
+}
+
+/// The `prepare` hook runs on the net that is actually rendered, with the world
+/// readable, before the render leaves the main thread.
+///
+/// Pinned by *audio*, not by a call counter: a hook that runs against some other
+/// net, or after the task was spawned, would leave the rendered signal at the
+/// graph's own 0.5 rather than the 0.25 this one writes.
+#[test]
+fn a_prepare_hook_reaches_the_net_that_gets_rendered() {
+    let (mut app, _node) = app_with_engine();
+
+    // The hook needs something in the world to read, or it could be pinned by a
+    // closure capture alone — which would not show that `&World` arrives.
+    #[derive(Resource)]
+    struct Level(f32);
+    app.insert_resource(Level(0.25));
+
+    static PEAK_MILLI: AtomicUsize = AtomicUsize::new(usize::MAX);
+    PEAK_MILLI.store(usize::MAX, Ordering::SeqCst);
+
+    let request = ExportRequest::new(
+        ExportSource::Master,
+        ExportTarget::Buffers,
+        stereo_config(),
+        Arc::new(FrozenClock),
+    )
+    .with_prepare(|prepared, world| {
+        // Replace the whole graph's output with a constant read from the world.
+        let level = world.resource::<Level>().0;
+        prepared.net.master(tutti_core::dsp::dc(level));
+    });
+
+    app.world_mut()
+        .spawn(request)
+        .observe(|done: On<ExportDone>| {
+            if let Ok(ExportOutput::Buffers(rendered)) = &done.result {
+                let peak = rendered.planes[0]
+                    .iter()
+                    .fold(0.0f32, |acc, s| acc.max(s.abs()));
+                PEAK_MILLI.store((peak * 1000.0).round() as usize, Ordering::SeqCst);
+            }
+        });
+
+    assert!(
+        run_until(&mut app, |_| PEAK_MILLI.load(Ordering::SeqCst) != usize::MAX),
+        "the export never reported"
+    );
+
+    assert_eq!(
+        PEAK_MILLI.load(Ordering::SeqCst),
+        250,
+        "prepare must run on the net that is rendered — an unmodified graph \
+         would come back at the 0.5 it was built with"
     );
 }

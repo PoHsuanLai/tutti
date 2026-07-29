@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
-use bevy_tasks::{block_on, futures_lite::future, AsyncComputeTaskPool};
+use bevy_tasks::AsyncComputeTaskPool;
 
 use tutti_core::transport::{OfflineContext, OfflineTimeline, OfflineTimelineConfig};
 use tutti_core::{AudioUnit, SampleRate};
@@ -20,95 +20,117 @@ use tutti_export::{render_normalized_to_file, render_to_buffers, render_to_file}
 
 use crate::export::request::{
     ExportDone, ExportInFlight, ExportOutput, ExportRequest, ExportSource, ExportTarget,
-    NetPopulator,
+    PreparedNet,
 };
 use crate::graph::{AudioConfig, AudioGraphRes};
 
-/// Turn each new [`ExportRequest`] into a running task.
+/// Start the oldest pending [`ExportRequest`], if nothing is already running.
 ///
 /// The expensive part — cloning and isolating the net — happens here, on the
 /// main thread, because the clone borrows the graph resource and cannot cross
-/// into a `'static` task. See [`ExportSource::Node`] for what that means for a
-/// caller spawning several at once.
-/// Exclusive because a registered [`PopulateNet`] is handed `&World`: filling a
-/// render's voices is a read of arbitrary app state (which clips exist, their
-/// decoded audio), and no fixed `SystemParam` list here could anticipate what a
-/// host needs to read. The work is main-thread-bound regardless — the net clone
-/// borrows the graph resource and cannot cross into a `'static` task.
+/// into a `'static` task. That is also why only one starts per frame; see
+/// [`ExportInFlight`].
+///
+/// Exclusive because a request's `prepare` hook is handed `&World`: preparing a
+/// render reads arbitrary app state (which clips exist, their decoded audio),
+/// and no fixed `SystemParam` list here could anticipate what a host needs to
+/// read. The work is main-thread-bound regardless.
 pub fn start_exports(world: &mut World) {
-    // Collect first: the borrow of `world` for the query must end before the
-    // populator gets its own `&World`.
-    let pending: Vec<Entity> = world
-        .query_filtered::<Entity, With<ExportRequest>>()
+    // One render at a time, enforced here rather than left to callers.
+    //
+    // The obvious alternative — telling callers to gate their spawn system on
+    // `not(any_with_component::<ExportInFlight>)` — cannot work: a run
+    // condition sees only the state left by the previous frame, so N requests
+    // spawned in one frame all pass the gate and all start together. That is
+    // the burst the limit exists to prevent, so the check belongs where the
+    // starting happens.
+    if world
+        .query_filtered::<Entity, With<ExportInFlight>>()
         .iter(world)
-        // No `Added<>`: the component's *presence* is the pending flag, and
-        // removing it below is what marks a request started. One spawned while
-        // the engine was down must still be picked up on a later frame.
-        .collect();
-    if pending.is_empty() {
+        .next()
+        .is_some()
+    {
         return;
     }
 
-    for entity in pending {
-        // Take the request out; from here the entity is either in flight or has
-        // reported a failure, never still pending.
-        let Some(request) = world.entity_mut(entity).take::<ExportRequest>() else {
-            continue;
-        };
+    // Exactly one request per frame — `next()`, not a loop. This is the half
+    // that serializes a *batch* spawned in one frame; the check above is the
+    // half that stops the next frame starting on top of a still-running render.
+    // Each start deep-clones the live net on this thread, so neither half is
+    // redundant.
+    //
+    // No `Added<>` — the component's *presence* is the pending flag, and taking
+    // it below is what marks a request started. One spawned while the engine was
+    // down must still be picked up on a later frame.
+    let Some(entity) = world
+        .query_filtered::<Entity, (With<ExportRequest>, Without<ExportInFlight>)>()
+        .iter(world)
+        .next()
+    else {
+        return;
+    };
 
-        let prepared = {
-            let graph = world.resource::<AudioGraphRes>();
-            let config = world.resource::<AudioConfig>();
-            prepare_net(graph, config, &request)
-        };
+    // Take the request out; from here the entity is either in flight or has
+    // reported a failure, never still pending.
+    let Some(request) = world.entity_mut(entity).take::<ExportRequest>() else {
+        return;
+    };
 
-        let Some((mut net, ctx)) = prepared else {
-            world.trigger(ExportDone {
-                entity,
-                result: Err(tutti_export::Error::InvalidConfig(
-                    "export target node has no outputs".into(),
-                )),
-            });
-            continue;
-        };
+    let prepared = {
+        let graph = world.resource::<AudioGraphRes>();
+        let config = world.resource::<AudioConfig>();
+        prepare_net(graph, config, &request)
+    };
 
-        // Fill the clone's voices from the app's world, if a filler was
-        // registered. An isolated clone is born empty, so without this a
-        // sampler-fed tap renders silence.
-        if let Some(ctx) = ctx.as_ref() {
-            if let Some(populator) = world.remove_resource::<NetPopulator>() {
-                populator.0.populate(&mut net, ctx, world);
-                world.insert_resource(populator);
+    let Some((mut net, ctx)) = prepared else {
+        world.trigger(ExportDone {
+            entity,
+            result: Err(tutti_export::Error::InvalidConfig(
+                "export target node has no outputs".into(),
+            )),
+        });
+        return;
+    };
+
+    let ExportRequest {
+        target,
+        config: export_config,
+        clock,
+        prepare,
+        ..
+    } = request;
+
+    // The caller's last look at the net, on the main thread, with the world
+    // still readable. An isolated clone is born empty, so a sampler-fed tap
+    // that skips this renders silence.
+    if let Some(prepare) = prepare.as_ref() {
+        prepare(
+            PreparedNet {
+                net: &mut net,
+                ctx: ctx.as_ref(),
+            },
+            world,
+        );
+    }
+
+    let task = AsyncComputeTaskPool::get().spawn(async move {
+        match target {
+            ExportTarget::File {
+                path,
+                normalize: None,
+            } => render_to_file(net, &export_config, clock.as_ref(), &path).map(ExportOutput::File),
+            ExportTarget::File {
+                path,
+                normalize: Some(normalize),
+            } => render_normalized_to_file(net, &export_config, clock.as_ref(), normalize, &path)
+                .map(ExportOutput::File),
+            ExportTarget::Buffers => {
+                render_to_buffers(net, &export_config, clock.as_ref()).map(ExportOutput::Buffers)
             }
         }
+    });
 
-        let ExportRequest {
-            target,
-            config: export_config,
-            clock,
-            ..
-        } = request;
-
-        let task = AsyncComputeTaskPool::get().spawn(async move {
-            match target {
-                ExportTarget::File {
-                    path,
-                    normalize: None,
-                } => render_to_file(net, &export_config, clock.as_ref(), &path)
-                    .map(ExportOutput::File),
-                ExportTarget::File {
-                    path,
-                    normalize: Some(normalize),
-                } => render_normalized_to_file(net, &export_config, clock.as_ref(), normalize, &path)
-                    .map(ExportOutput::File),
-                ExportTarget::Buffers => {
-                    render_to_buffers(net, &export_config, clock.as_ref()).map(ExportOutput::Buffers)
-                }
-            }
-        });
-
-        world.entity_mut(entity).insert(ExportInFlight { task });
-    }
+    world.entity_mut(entity).insert(ExportInFlight::new(task));
 }
 
 /// Build the net this request renders, plus the offline context its nodes were
@@ -123,9 +145,15 @@ fn prepare_net(
     request: &ExportRequest,
 ) -> Option<(tutti_core::dsp::Net, Option<OfflineContext>)> {
     match request.source {
-        // The whole graph as-is. `Clone` drops the backend, so this net is
-        // already safe to render on a worker; nothing is shared that the live
-        // graph is still reading.
+        // The whole graph as-is, keeping its live transport bindings — the
+        // caller's own clock is what drives this render.
+        //
+        // NOTE: this is a plain `Clone`, so it does *not* go through
+        // `PendingClone` and nothing is isolated. Nodes that share live state
+        // through `Clone` rather than copying it — a disk voice's ring, a mic
+        // monitor's input — stay attached to what the audio thread is using.
+        // For a master export that is mostly what you want (it is the live mix),
+        // but it is not the safety `ExportSource::Node` gets.
         ExportSource::Master => Some((graph.0.clone(), None)),
 
         ExportSource::Node(target) => {
@@ -166,7 +194,7 @@ fn prepare_net(
 /// Drive in-flight renders; trigger [`ExportDone`] on the ones that finished.
 pub fn poll_exports(mut commands: Commands, mut in_flight: Query<(Entity, &mut ExportInFlight)>) {
     for (entity, mut export) in in_flight.iter_mut() {
-        let Some(result) = block_on(future::poll_once(&mut export.task)) else {
+        let Some(result) = export.poll() else {
             continue; // still running
         };
         commands

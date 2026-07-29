@@ -9,47 +9,48 @@
 //!
 //! ```ignore
 //! // Whole graph to a normalized file.
-//! commands.spawn(ExportRequest {
-//!     source: ExportSource::Master,
-//!     target: ExportTarget::File {
+//! commands.spawn(ExportRequest::new(
+//!     ExportSource::Master,
+//!     ExportTarget::File {
 //!         path: "mix.wav".into(),
 //!         normalize: Some(Normalize::lufs(Db(-14.0))),
 //!     },
 //!     config,
-//!     clock: Arc::new(FrozenClock),
-//! })
+//!     Arc::new(FrozenClock),
+//! ))
 //! .observe(|done: On<ExportDone>| { /* ... */ });
 //!
-//! // One node's output, into memory.
-//! commands.spawn(ExportRequest {
-//!     source: ExportSource::Node(node_id),
-//!     target: ExportTarget::Buffers,
-//!     config,
-//!     clock,
-//! });
+//! // One node's output into memory, filling its voices from the app's world
+//! // on the way past.
+//! commands.spawn(
+//!     ExportRequest::new(ExportSource::Node(node_id), ExportTarget::Buffers, config, clock)
+//!         .with_prepare(|prepared, world| fill_voices(prepared.net, prepared.ctx, world)),
+//! );
 //! ```
 //!
 //! # What is deliberately not here
 //!
-//! **No queue.** No `max_in_flight`, no priority field, no slot accounting. A
-//! cap in this crate would make unrelated consumers queue behind one another —
-//! a long project export starving a view's taps — and would force two crates
-//! that never meet to agree on an integer convention. What the engine gives a
-//! caller instead is the fact it needs to throttle itself: [`ExportInFlight`]
-//! is a public component, so "one at a time" is
-//! `run_if(not(any_with_component::<ExportInFlight>))` at the caller's own
-//! spawn site, where it also knows which of *its* requests matters most.
+//! **No priority.** Requests start oldest-first, one per frame. There is no
+//! priority field, because a cross-crate integer convention would make two
+//! consumers that never meet argue about whose renders matter — and the caller
+//! that knows the answer can simply spawn the one it wants first.
+//!
+//! There *is* a cap, of exactly one: see [`ExportInFlight`]. It is enforced in
+//! [`start_exports`] rather than left to callers, because the per-request net
+//! clone is main-thread work and a `run_if` gate cannot see requests spawned in
+//! its own frame.
 //!
 //! **No progress reporting.** The render is one synchronous call; there is
 //! nothing to sample between blocks without the engine pushing a callback back
-//! across the task boundary.
+//! across the task boundary. Cancellation *is* available —
+//! [`ExportInFlight::cancel`], or just despawn the entity.
 
 mod request;
 mod run;
 
 pub use request::{
     ExportDone, ExportInFlight, ExportOutput, ExportRequest, ExportSource, ExportTarget,
-    NetPopulator, PopulateNet,
+    PrepareNet, PreparedNet,
 };
 pub use run::{poll_exports, start_exports};
 
@@ -67,16 +68,15 @@ impl Plugin for ExportPlugin {
     fn build(&self, app: &mut App) {
         // Poll BEFORE start, deliberately.
         //
-        // Chained the other way, a render that finishes quickly is started and
-        // reported within one frame — `ExportInFlight` is inserted and removed
-        // before any other system observes it. That silently breaks the one
-        // throttling mechanism this crate offers: a caller gating on
-        // `not(any_with_component::<ExportInFlight>)` would never see a short
-        // render, and would spawn a second one on top of it.
+        // Chained the other way, a render that finishes inside one frame is
+        // started and reported before any other system sees `ExportInFlight` —
+        // so anything watching that component to know whether an export is
+        // running would miss short renders entirely.
         //
-        // Polling first means a render is always visible for at least one full
-        // frame, and costs only that a just-finished render reports on the next
-        // frame rather than the current one.
+        // Polling first also means `start_exports` observes the previous
+        // render's completion in the same frame it picks the next request, so
+        // a queue of them drains at one per frame with no idle gap. The cost is
+        // only that a just-finished render reports on the following frame.
         app.add_systems(
             Update,
             (poll_exports, start_exports.run_if(crate::graph::engine_ready)).chain(),

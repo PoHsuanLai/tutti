@@ -31,23 +31,15 @@ pub enum ExportSource {
     /// # Cost
     ///
     /// Each of these does one **main-thread deep clone** of the live net
-    /// (`clone_isolated` → `DynClone` of every DSP node) in the frame it is
-    /// admitted. Spawning many in a single frame runs those clones back to back
-    /// on the main thread and can stall the frame long enough to underrun the
-    /// audio callback — an audible glitch.
+    /// (`clone_isolated` → `DynClone` of every DSP node) in the frame it
+    /// starts. Running several of those back to back can stall the frame long
+    /// enough to underrun the audio callback — an audible glitch.
     ///
-    /// This crate deliberately does not throttle that for you: a cap here would
-    /// make unrelated consumers queue behind each other, and only the caller
-    /// knows which of its own requests matters most. Gate your spawn system
-    /// instead —
-    ///
-    /// ```ignore
-    /// use bevy_ecs::prelude::*;
-    /// app.add_systems(Update, spawn_my_taps
-    ///     .run_if(not(any_with_component::<ExportInFlight>)));
-    /// ```
-    ///
-    /// — and pick the single best candidate when several are pending.
+    /// That is why only one export starts per frame (see [`ExportInFlight`]).
+    /// Requests wait their turn as entities; nothing is dropped. A caller with
+    /// several pending that cares which goes first should spawn the best one
+    /// and recompute next frame, rather than spawning all of them and hoping
+    /// for an ordering this crate does not promise.
     Node(NodeId),
 }
 
@@ -80,11 +72,46 @@ pub struct ExportRequest {
     pub source: ExportSource,
     pub target: ExportTarget,
     /// Rate, duration, format, bit depth, channel width, resample, dither.
+    ///
+    /// Not every field reaches every target. [`ExportTarget::Buffers`] renders
+    /// PCM and encodes nothing, so `format` and `bit_depth` are inert there —
+    /// and so is `resample`, because `render_to_buffers` deliberately does not
+    /// resample. Only `channels` and `dither` affect a `Buffers` render.
     pub config: ExportConfig,
     /// The clock the render advances, one block at a time. Use
     /// `tutti_export::FrozenClock` for a graph with no time-dependent nodes, or
     /// an `OfflineTimeline` seeded at the beat you want to render from.
     pub clock: Arc<dyn RenderClock>,
+    /// Optional last look at the net before it leaves the main thread — see
+    /// [`PrepareNet`]. Use [`ExportRequest::new`] when there is nothing to do.
+    pub prepare: Option<PrepareNet>,
+}
+
+impl ExportRequest {
+    /// A request with no [`prepare`](ExportRequest::prepare) hook.
+    pub fn new(
+        source: ExportSource,
+        target: ExportTarget,
+        config: ExportConfig,
+        clock: Arc<dyn RenderClock>,
+    ) -> Self {
+        Self {
+            source,
+            target,
+            config,
+            clock,
+            prepare: None,
+        }
+    }
+
+    /// Attach a hook that runs on the net before the render starts.
+    pub fn with_prepare(
+        mut self,
+        prepare: impl Fn(PreparedNet, &World) + Send + Sync + 'static,
+    ) -> Self {
+        self.prepare = Some(Box::new(prepare));
+        self
+    }
 }
 
 impl std::fmt::Debug for ExportRequest {
@@ -100,18 +127,42 @@ impl std::fmt::Debug for ExportRequest {
 
 /// Present while a render occupies the task pool.
 ///
-/// Public so callers can gate their own spawning on it — this component *is*
-/// the throttling API:
+/// **At most one of these exists at a time.** The per-request net clone is
+/// main-thread work (see [`ExportSource::Node`]), so starting a batch of them in
+/// one frame is what stalls the audio callback. The limit is enforced where the
+/// renders start, not advertised as a run condition for callers to apply: a
+/// `run_if` gate can only see the *previous* frame's state, so several requests
+/// spawned in one frame would all pass it and all start together — precisely the
+/// burst it was supposed to prevent.
 ///
-/// ```ignore
-/// .run_if(not(any_with_component::<ExportInFlight>))
-/// ```
-///
-/// There is deliberately no cap, priority field or slot counter in this crate;
-/// see [`ExportSource::Node`] for why.
+/// Observe it to know whether an export is running. Gating a spawn system on
+/// `not(any_with_component::<ExportInFlight>)` still works and avoids piling up
+/// entities, but it is an optimization now, not the safety mechanism.
 #[derive(Component)]
 pub struct ExportInFlight {
-    pub(crate) task: Task<tutti_export::Result<ExportOutput>>,
+    task: Task<tutti_export::Result<ExportOutput>>,
+}
+
+impl ExportInFlight {
+    pub(crate) fn new(task: Task<tutti_export::Result<ExportOutput>>) -> Self {
+        Self { task }
+    }
+
+    pub(crate) fn poll(&mut self) -> Option<tutti_export::Result<ExportOutput>> {
+        bevy_tasks::block_on(bevy_tasks::futures_lite::future::poll_once(&mut self.task))
+    }
+
+    /// Abort the render, discarding whatever it has done so far.
+    ///
+    /// No [`ExportDone`] fires for a cancelled export. A cancelled
+    /// [`ExportTarget::File`] may leave a partial file at its path — the encoder
+    /// writes as it goes, and stopping mid-render does not unlink it.
+    ///
+    /// Despawning the entity does the same thing implicitly: dropping the
+    /// component drops the task, which cancels it.
+    pub fn cancel(self) {
+        drop(self.task);
+    }
 }
 
 /// What an export produced.
@@ -144,47 +195,43 @@ pub struct ExportDone {
     pub result: tutti_export::Result<ExportOutput>,
 }
 
-/// Fill a cloned, isolated net's voices before it is rendered.
+/// The net an export is about to render, handed back to the caller for a last
+/// look before it leaves the main thread.
 ///
-/// # Why this is a trait and not a system set
+/// [`ExportRequest::prepare`] receives this together with `&World`. Two things
+/// need it, and neither is something this crate can do on the caller's behalf:
 ///
-/// An isolated clone is born **empty**: `isolate()` drops the voice pools'
-/// command channels and clears their voices, so nothing downstream of a sampler
-/// makes a sound until something re-inserts them. The data needed to do that —
-/// which clips exist, and their decoded audio — lives in the *app's* ECS, which
-/// this crate cannot see.
+/// - **Filling voices.** An isolated clone is born *empty* — `isolate()` drops
+///   the voice pools' command channels and clears their voices, so nothing
+///   downstream of a sampler makes a sound until something re-inserts them. The
+///   data needed to do that (which clips exist, their decoded audio) lives in
+///   the app's ECS.
+/// - **Shaping the output.** Widening the net to the master's channel count and
+///   piping a node to the output, say — policy about what "the export" means,
+///   which differs per host.
 ///
-/// The predecessor solved that by leaving an empty `Populate` system set in the
-/// middle of a three-step pipeline for a stranger crate to fill, plus a public
-/// `&mut dyn AudioUnit` escape hatch into a half-built net. Correctness then
-/// depended on an unenforced scheduling contract spanning three crates.
-///
-/// Passing the filler *in* collapses that to one system: register an
-/// implementation as a resource with
-/// [`App::insert_resource`], and it is called on the clone before it reaches
-/// the worker.
-///
-/// Registering none is fine — a graph with no voices needs no filling.
-pub trait PopulateNet: Send + Sync + 'static {
-    /// Insert whatever voices this net should render with.
-    ///
-    /// `world` is read-only on purpose: filling a render is a *read* of the
-    /// app's state, and a `&mut World` here would let it mutate the app from
-    /// inside the export pipeline — the sort of back-channel the projection
-    /// arrow is not supposed to have.
-    ///
-    /// `ctx` carries the render's offline transport: voices built here must be
-    /// bound to it, not to the live one, or they read a playhead nothing
-    /// advances.
-    fn populate(&self, net: &mut tutti_core::dsp::Net, ctx: &OfflineContext, world: &World);
+/// `ctx` is `Some` only for [`ExportSource::Node`], and carries the render's
+/// offline transport: voices built here must bind to it, not to the live one,
+/// or they read a playhead nothing advances. For [`ExportSource::Master`] it is
+/// `None` — that net keeps its live transport bindings, which the caller's own
+/// clock drives.
+pub struct PreparedNet<'a> {
+    pub net: &'a mut tutti_core::dsp::Net,
+    pub ctx: Option<&'a OfflineContext>,
 }
 
-/// Holds the app's [`PopulateNet`] implementation, if it registered one.
-#[derive(Resource)]
-pub struct NetPopulator(pub Box<dyn PopulateNet>);
-
-impl NetPopulator {
-    pub fn new(populator: impl PopulateNet) -> Self {
-        Self(Box::new(populator))
-    }
-}
+/// A caller's hook into the net, run on the main thread before the render is
+/// handed to the pool.
+///
+/// `&World` is read-only on purpose: preparing a render is a *read* of app
+/// state, and `&mut World` here would let the export pipeline mutate the app
+/// from inside itself — the back-channel the projection arrow is not supposed
+/// to have.
+///
+/// This is a plain boxed closure rather than a registered trait object. An
+/// earlier design had a `PopulateNet` trait behind a `NetPopulator` resource;
+/// that was one filler for the whole app, so two plugins that both needed one
+/// silently clobbered each other, and forgetting to register it rendered
+/// silence with no diagnostic. Attaching it to the *request* means the caller
+/// that knows what this net needs is the one that says so.
+pub type PrepareNet = Box<dyn Fn(PreparedNet, &World) + Send + Sync>;

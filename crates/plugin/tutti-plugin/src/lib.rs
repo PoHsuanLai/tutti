@@ -209,7 +209,7 @@ pub mod catalog {
         PluginDescriptor, PluginFormat, PluginRecord, PluginScanner, ScanHandle, ScanPhase,
         ScanProgress, ScanResult, Vst2Category,
     };
-    pub use crate::host::plugins::{PluginId, Plugins, ScanTicket};
+    pub use crate::host::plugins::{load_client_with, PluginId, Plugins, ScanTicket};
     pub use crate::util::config::{AudioConfig, CatalogConfig};
 }
 

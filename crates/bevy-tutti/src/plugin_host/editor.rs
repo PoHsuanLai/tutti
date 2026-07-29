@@ -9,8 +9,9 @@ use crate::plugin_host::PluginEditorMainThread;
 
 /// Marks an entity as a loaded plugin with a control handle.
 ///
-/// Added automatically by `plugin_load_system`. Use the `handle` to
-/// control parameters, open/close the editor, save/load state, etc.
+/// Inserted by [`plugin_load_promote`](crate::plugin_host::load::plugin_load_promote)
+/// once the off-thread load resolves. Use the `handle` to control parameters,
+/// open/close the editor, save/load state, etc.
 ///
 /// The audio node is tracked separately via `AudioNode`.
 ///

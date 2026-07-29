@@ -68,6 +68,22 @@ impl TransportRes {
     pub fn timeline(&self) -> Arc<dyn Timeline> {
         Arc::new(self.0.clone())
     }
+
+    /// A [`TransportState`] handle — [`timeline`](Self::timeline) plus the
+    /// live-session facts a plain timeline has no vocabulary for: whether the
+    /// transport is recording, its loop region, and free-running stream time.
+    ///
+    /// Same seam and same sharing as `timeline`; the difference is only how much
+    /// of the transport the consumer is allowed to ask about. Use this when the
+    /// sink genuinely needs those extras — a hosted plugin's `TransportInfo`
+    /// carries recording and loop state, so its sources take `TransportState`
+    /// — and `timeline` otherwise. `TransportState` is a strict supertrait of
+    /// `Timeline`, so an offline render (a `Timeline`-only implementor) cannot
+    /// be passed where this is wanted, which is the point: it has no answer for
+    /// "am I recording".
+    pub fn transport_state(&self) -> Arc<dyn tutti_core::transport::TransportState> {
+        Arc::new(self.0.clone())
+    }
 }
 
 impl std::ops::Deref for TransportRes {

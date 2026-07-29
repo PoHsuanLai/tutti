@@ -24,8 +24,10 @@ use bevy_ecs::prelude::*;
 
 use crate::graph::GraphReconcileSystems;
 
+pub mod bind;
 pub mod crash;
 pub mod editor;
+pub mod load;
 pub mod native_window;
 pub mod scan;
 
@@ -45,9 +47,16 @@ pub use editor::{
     plugin_editor_window_close_system, plugin_editor_window_resize_system, CloseEditor,
     OpenPluginEditor, PendingPluginEditor, PluginEditorOpen, PluginEmitter,
 };
+pub use bind::{plugin_bind_transport, PluginTransportBound};
+#[cfg(feature = "modulation")]
+pub use bind::{plugin_bind_params, PluginParamsBound};
+pub use load::{
+    plugin_load_promote, plugin_load_start, PendingPlugin, PluginLoadDone, PluginLoadTerminated,
+    PluginRequest,
+};
 pub use scan::{
-    poll_plugin_scan, trigger_plugin_scan, InFlightScan, PluginScanConfig, PluginsScanned,
-    RescanPlugins,
+    poll_scan, start_scan, InFlightScan, PluginCatalogState, PluginsScanned, RescanPlugins,
+    ScanProgressed,
 };
 
 /// Non-Send marker resource that forces plugin editor systems to run on the
@@ -74,12 +83,14 @@ impl PluginsRes {
     }
 }
 
-// NOTE: `reconcile_plugin_params` moved out with the `PluginParam` component it
-// read (which left tutti-core). `PluginEmitter` stays here; a host imports it
-// via the `bevy_tutti` umbrella.
+// Hosted-plugin parameters have no ECS reconcile and no `AudioParam`-style
+// component. They are runtime-discovered `u32` ids with per-instance ranges,
+// which `AudioParam<U, P>` (const-generic over a closed `UnitParam` enum)
+// cannot express. Automation reaches them sample-accurately over the per-block
+// `ParamAutomationSource` path instead — see [`bind`].
 
-/// Bevy plugin: plugin editor lifecycle + crash detection + async catalog
-/// scanning + param reconciliation.
+/// Bevy plugin: plugin load, engine binding, health, editor lifecycle, and
+/// catalog scanning.
 ///
 /// Inserts:
 /// - [`PluginEditorMainThread`] non-send marker to pin editor systems to
@@ -87,11 +98,9 @@ impl PluginsRes {
 /// - [`PluginsRes`] containing an empty in-memory plugin catalog (no scan
 ///   dirs configured by default — apps that want disk-backed scanning
 ///   should override the resource at startup with a
-///   `Plugins::with_json_catalog(...).with_fresh_scan()`).
-///
-/// Schedules the editor-lifecycle + crash-detect + scan systems in `Update`.
-/// (The `PluginParam` reconcile + epoch bump moved to
-/// `dawai_model::engine_bind::plugin_host` with the `PluginParam` component.)
+///   `Plugins::with_json_catalog(...)`). The scan systems read their
+///   directories off this one resource, so there is nothing else to keep in
+///   sync with it.
 ///
 /// Requires [`crate::graph::GraphReconcilePlugin`] (which configures the
 /// `GraphReconcileSystems` set) to be added before this plugin.
@@ -125,21 +134,23 @@ impl Plugin for TuttiHostingPlugin {
         #[cfg(target_os = "macos")]
         app.insert_non_send(live_resize::LiveResizeRegistry::default());
 
-        // Default plugin catalog: empty in-memory, no scan dirs. Apps
-        // that want a real disk-backed catalog should overwrite this
-        // resource with their own `PluginsRes::new(Plugins::with_json_catalog(...))`
-        // after `add_plugins(TuttiHostingPlugin)`.
+        // Default plugin catalog: empty in-memory, no scan dirs. Apps that want
+        // a real disk-backed catalog overwrite this resource with their own
+        // `PluginsRes::new(Plugins::with_json_catalog(..))` — or any other
+        // `PluginCatalog` impl — after `add_plugins(TuttiHostingPlugin)`.
+        //
+        // The scan reads its directories off *this* resource (the catalog moves
+        // onto the scan thread and back), so overriding it is the whole
+        // configuration story. There is no second config to keep in sync.
         let default_db_path = std::path::PathBuf::from(".dawai-plugins.json");
         let config = tutti_plugin::catalog::CatalogConfig::new(default_db_path, Vec::new());
-        let plugins = tutti_plugin::catalog::Plugins::empty(config.clone());
-        app.insert_resource(PluginsRes::new(plugins));
+        app.insert_resource(PluginsRes::new(tutti_plugin::catalog::Plugins::empty(
+            config,
+        )));
 
-        // Async scan path: config mirrors the default catalog (apps that
-        // override `PluginsRes` should overwrite `PluginScanConfig` to
-        // match), an empty in-flight slot, and the rescan messages.
-        app.insert_resource(PluginScanConfig(config));
-        app.init_resource::<InFlightScan>();
+        app.init_resource::<PluginCatalogState>();
         app.add_message::<RescanPlugins>();
+        app.add_message::<ScanProgressed>();
         app.add_message::<PluginsScanned>();
 
         app.add_systems(
@@ -157,13 +168,65 @@ impl Plugin for TuttiHostingPlugin {
                 // Removes a crashed plugin's node + sets GraphDirty (no inline
                 // commit), so anchor it before the Commit-phase commit_graph.
                 plugin_crash_detect_system.before(GraphReconcileSystems::Commit),
-                trigger_plugin_scan,
-                poll_plugin_scan.after(trigger_plugin_scan),
             )
                 // Hosting only means anything with a live graph to host into,
                 // and these systems read window messages a headless app never
                 // registers. Gating the whole set keeps `plugin` usable with the
                 // engine disabled.
+                .run_if(crate::graph::engine_ready),
+        );
+
+        // Scanning is deliberately **not** gated on `engine_ready`: it walks the
+        // filesystem and probes subprocesses, touching neither the graph nor a
+        // window. A host that wants to populate its browser before (or without)
+        // starting audio must be able to. Poll before start, as `export` does,
+        // so a scan that finishes between two frames is still reported.
+        app.add_systems(Update, (poll_scan, start_scan).chain());
+
+        // Loading adds a node, so promotion belongs in `Spawn` — MIDI
+        // registration and the engine bindings order themselves after that
+        // phase and pick a freshly promoted plugin up the same frame.
+        //
+        // Only the *start* is gated: it needs a catalog to read an audio config
+        // from, and nothing downstream can use a plugin the engine cannot host.
+        // Promotion stays ungated so a load already in flight when the engine
+        // goes down is still reported rather than left hanging.
+        app.add_systems(
+            Update,
+            (
+                plugin_load_start.run_if(crate::graph::engine_ready),
+                plugin_load_promote.after(plugin_load_start),
+            )
+                .in_set(GraphReconcileSystems::Spawn),
+        );
+
+        // `PluginClient` is only reachable through the shared MIDI resolver if
+        // its type is registered — an unregistered node type is invisible to
+        // `register_midi_senders`, which is why a hosted plugin could not
+        // receive MIDI however it was wired.
+        bind::register_plugin_node_types(app);
+
+        // Binding sits between spawn and commit, alongside MIDI registration and
+        // route rebuilding: it needs the node to exist, and the graph edits it
+        // stages must reach the same frame's commit.
+        app.add_systems(
+            Update,
+            plugin_bind_transport
+                .after(GraphReconcileSystems::Spawn)
+                .before(GraphReconcileSystems::Commit)
+                .run_if(crate::graph::engine_ready),
+        );
+
+        // Param accumulators are modulation vocabulary (`ModParamRange`,
+        // `ModTargetRegistry`), so this half only exists when that feature does.
+        // A `plugin` build without `modulation` still loads, binds transport and
+        // receives MIDI — it just has no route to modulate a param with.
+        #[cfg(feature = "modulation")]
+        app.add_systems(
+            Update,
+            plugin_bind_params
+                .after(GraphReconcileSystems::Spawn)
+                .before(GraphReconcileSystems::Commit)
                 .run_if(crate::graph::engine_ready),
         );
 
@@ -175,7 +238,5 @@ impl Plugin for TuttiHostingPlugin {
             Update,
             live_resize::reap_orphaned_live_resize_observers.after(plugin_crash_detect_system),
         );
-        // The PluginParam reconcile + epoch bump moved to
-        // dawai_model::engine_bind::plugin_host (with the PluginParam component).
     }
 }

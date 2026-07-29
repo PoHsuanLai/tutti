@@ -115,6 +115,23 @@ impl Plugins {
         self
     }
 
+    /// The audio settings every load from this catalog uses.
+    ///
+    /// The counterpart to [`with_audio_config`](Self::with_audio_config), and
+    /// what makes an **off-thread** load possible. [`load`](Self::load) and
+    /// [`load_client`](Self::load_client) take `&self`, so a caller that must
+    /// not block its thread — a frame-driven host, where a load costs a
+    /// subprocess launch of half a second to fifteen — cannot call them
+    /// directly: the borrow would have to outlive the frame. Reading the config
+    /// here, cloning it with the [`PluginId`], and calling
+    /// [`load_with`](Self::load_with) on the worker is the way across, and the
+    /// [`load_client_with`] on the worker is the way across, and the settings a
+    /// host chose ride along instead of being silently replaced by
+    /// [`AudioConfig::default`].
+    pub fn audio_config(&self) -> &AudioConfig {
+        &self.audio
+    }
+
     /// Run a synchronous rescan and return `self`. Discards the
     /// [`ScanResult`]; use [`Plugins::rescan_sync`] if you need the tally.
     pub fn with_fresh_scan(mut self) -> Self {
@@ -284,8 +301,7 @@ impl Plugins {
         let _ = format_from_path; // keep import live without the vst2 feature
         let _ = PluginFormat::Vst2;
 
-        let client = PluginClient::new(self.audio.to_bridge_config(), id.0.clone(), sample_rate)?;
-        let handle = PluginHandle::from_client(&client);
+        let (client, handle) = load_client_with(&self.audio, id, sample_rate)?;
         Ok((Box::new(client), handle))
     }
 
@@ -296,9 +312,7 @@ impl Plugins {
         id: &PluginId,
         sample_rate: f64,
     ) -> Result<(PluginClient, PluginHandle)> {
-        let client = PluginClient::new(self.audio.to_bridge_config(), id.0.clone(), sample_rate)?;
-        let handle = PluginHandle::from_client(&client);
-        Ok((client, handle))
+        load_client_with(&self.audio, id, sample_rate)
     }
 
     /// Shortcut for [`Plugins::find`] + [`Plugins::load`].
@@ -317,6 +331,31 @@ impl Plugins {
     pub fn flush(&mut self) -> std::io::Result<()> {
         self.catalog.flush()
     }
+}
+
+/// Load a plugin from an [`AudioConfig`] alone, with no catalog.
+///
+/// The catalog's only contribution to a load is its [`AudioConfig`] — the
+/// record is looked up beforehand to get the [`PluginId`], and nothing else is
+/// read. Splitting that out is what lets a load run **off the caller's thread**:
+/// [`Plugins::load`] and [`Plugins::load_client`] take `&self`, so a frame-driven
+/// host cannot hold the borrow across the half-second-to-fifteen-second
+/// subprocess launch. It reads [`Plugins::audio_config`], clones it with the id,
+/// and calls this from a worker.
+///
+/// `Plugins::load_client` is this function with the config supplied, so there is
+/// one implementation rather than two that can drift.
+///
+/// Subprocess formats only — the in-process VST2 path is chosen by
+/// [`Plugins::load`], which dispatches on format before reaching here.
+pub fn load_client_with(
+    audio: &AudioConfig,
+    id: &PluginId,
+    sample_rate: f64,
+) -> Result<(PluginClient, PluginHandle)> {
+    let client = PluginClient::new(audio.to_bridge_config(), id.0.clone(), sample_rate)?;
+    let handle = PluginHandle::from_client(&client);
+    Ok((client, handle))
 }
 
 /// Claim on the catalog an async [`Plugins::rescan`] took ownership of.

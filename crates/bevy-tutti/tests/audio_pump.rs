@@ -288,3 +288,35 @@ fn registering_a_frame_type_twice_still_drains_once() {
         "one pump must report once however many times its frame type was registered"
     );
 }
+
+/// The README's registration + spawn shape, compiled.
+///
+/// A README example that does not build is the defect this whole commit is
+/// about — the file documented a recording API that never existed. Pinning the
+/// shape here means the next rename breaks a test rather than the docs.
+#[test]
+fn the_documented_shape_compiles() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("documented.wav");
+
+    let mut app = App::new();
+    app.add_audio_pump::<f32, 2>();
+
+    let src = SliceSource {
+        frames: frames(128),
+        pos: 0,
+    };
+    let wav =
+        WavOut::create(&path, SAMPLE_RATE, 2, CaptureFormat::F32).expect("could not create WAV");
+    let pump = app.world_mut().spawn(AudioPump::start(src, wav, 1024)).id();
+
+    // The stop path a host writes, through the component.
+    if let Some(p) = app.world().entity(pump).get::<AudioPump<f32, 2>>() {
+        p.stop();
+    }
+
+    assert!(
+        run_until_drained(&mut app, 200),
+        "the documented pump drains"
+    );
+}

@@ -99,6 +99,7 @@ Every component is a thin wrapper over a tutti capability that already exists.
 | `AudioNode(NodeId)` | always | Identity for "this entity owns a graph node." |
 | `AudioParam<U, P>` | always | One scalar param: unit `U`, address `P`. Registered with `App::add_audio_param`. |
 | `AudioSources` | always | What feeds this entity's input ports. Index *i* is port *i*. |
+| `AudioPump<S, CH>` | always | A running `AudioIn` → `AudioOut` transfer. Registered with `App::add_audio_pump`. |
 | `ModParamRange` | `modulation` | Depth/range for a modulated param. |
 | `PendingSoundFontUnit` | `synth` | "Build a SoundFont unit off-thread, then bind it." |
 | `MidiRouteRule` | `midi` | Which inbound MIDI channel reaches which entities. |
@@ -128,10 +129,12 @@ to reach it.
 | `TransportRes` | always | Lock-free transport handle (play/stop/seek/tempo/loop) |
 | `MetronomeRes` | always | Shared `ClickState` the click node reads |
 | `MeteringRes` | always | Lock-free master peak/RMS meter |
+| `AudioTapRes` | always | Post-master frame tap for analysis. Closed at build; `open()` hands back a consumer the caller owns |
 | `MasterSources` | always | What feeds each global output channel |
 | `AudioDeviceState` | always | Output devices, current device, running status |
 | `ChannelCompensation` | always | Per-channel PDC pre-roll for out-of-graph sources |
 | `MidiBusRes`, `MidiRoutingRes` | `midi` | The synth fan-out bus and the inbound routing table |
+| `DiskStreamerRes` | `sampler` | The disk-streaming engine; owns the butler thread |
 | `PluginsRes` | `plugin` | The scanned plugin catalog (inserted lazily) |
 
 ## Trigger components
@@ -140,11 +143,16 @@ Spawn an entity with a trigger component to perform an action. The corresponding
 
 ### Audio playback
 
-Clip playback goes through `tutti-sampler`'s `TrackClipReaderUnit`: build a
-`Voice` (in-RAM `SamplerUnit` or disk-streaming `StreamingClipReader`) and send
-it with `ClipCommand::AddVoice`, then drive it with `ClipCommand::Update*`. A
-clip bound to a transport derives its read position from the playhead, so it
+Clip playback goes through `tutti-sampler`'s `VoicePool`: build a `Voice` (in-RAM
+`MemorySource` or disk-streaming `DiskVoice`) and send it with
+`VoiceCommand::Add`, then drive it with the other `VoiceCommand` variants. A
+voice bound to a transport derives its read position from the playhead, so it
 stays sample-aligned with the timeline.
+
+Disk streaming is driven through `DiskStreamerRes`: `commands()` issues
+stream/seek/loop operations and `status()` builds a `DiskVoice` to wire into the
+graph. Neither is wrapped in ECS vocabulary — both speak in channel indices and
+timeline placements, which is clip-scheduling policy a host owns.
 
 There is no spawn-a-trigger one-shot API — an earlier `PlayAudio` component
 existed but had no consumer and was removed.
@@ -186,87 +194,74 @@ commands.spawn(SendMidi {
 
 `MidiInputEvent` is emitted as a Bevy message for incoming hardware MIDI (requires `midi-hardware`).
 
-### Neural audio
+### Recording, and audio I/O generally
 
-Requires `neural` feature.
-
-```rust
-// Neural synth (also requires `midi`)
-let model = asset_server.load("models/violin.mpk");
-commands.spawn(PlayNeuralSynth::new(model));
-
-// Neural effect
-commands.spawn(PlayNeuralEffect::new(asset_server.load("models/amp_sim.mpk")));
-```
-
-### Recording
-
-Requires `sampler` feature.
+Recording is one case of moving frames from an `AudioIn` to an `AudioOut`, which
+is what `AudioPump` does. Register the frame type once, then spawn a pump:
 
 ```rust
-// Start recording audio on channel 0
-commands.spawn(StartRecording::new(0, RecordingSource::Audio));
+app.add_audio_pump::<f32, 2>();   // stereo — mic, WAV
+app.add_audio_pump::<f32, 6>();   // 5.1 render
 
-// Overdub mode
-commands.spawn(StartRecording::new(0, RecordingSource::Audio).mode(RecordingMode::Overdub));
+// Mic -> WAV. `MicIn::open_with_monitor` also hands back a monitor node;
+// see below.
+let mic = MicIn::open(None)?;
+let wav = WavOut::create(&path, mic.sample_rate(), 2, CaptureFormat::F32)
+    .ok_or("could not create WAV")?;
+let pump = commands.spawn(AudioPump::start(mic, wav, 1024)).id();
 
-// Stop recording
-commands.spawn(StopRecording { channel_index: 0 });
+// Later:
+audio_pumps.get(pump)?.stop();
 ```
+
+There is no policy argument for what an empty poll means: that is
+`AudioIn::ON_EMPTY`, a property of the source type. A `MicIn` is `Starved` (an
+empty ring means the callback has not pushed yet, so the pump parks and
+retries); a decoded file is `EndOfStream` (the pump finishes and finalizes).
+Passing it per call would let a caller state it wrong, and treating a mic as
+finite would end a recording milliseconds in with no error.
+
+The sink is finalized **exactly once on every path out** — an explicit `stop()`,
+the source ending itself, or the entity being despawned mid-pump. That matters
+because `AudioOut::finalize` consumes `self` and can fail; for a WAV, missing it
+leaves the header unpatched and the file unreadable. `PumpFinished` carries the
+result, so a host can react to a sink that failed to close.
+
+The pump runs on its own thread, not a Bevy task pool: it never completes, and
+`AsyncComputeTaskPool` caps at four threads, so live pumps would starve every
+other async job.
+
+#### Monitoring while recording
+
+`MicIn::open_with_monitor` returns a `MicMonitorNode` alongside the source. The
+two drain **independent rings** fed by the same callback — a deep one for
+recording, a shallow one for monitoring — so polling one never steals frames
+from the other.
+
+The node is a plain `AudioUnit`; add it and declare what it feeds, like any node:
+
+```rust
+let (mic, monitor) = MicIn::open_with_monitor(None)?;
+let id = graph.0.add(Box::new(monitor));
+commands.spawn(AudioNode(id));   // then name it in MasterSources or an AudioSources
+```
+
+A monitor node that is never wired fills its ~10 ms ring and then silently drops
+every frame — there is no error and no counter, so an unwired monitor looks
+exactly like a working one.
 
 ### Export
 
-Requires `export` feature.
+Requires `export` feature, which adds the `tutti-export` dependency and its
+error variant — there is **no ECS surface for export**. Offline rendering is a
+plain engine call a host makes directly:
 
 ```rust
-fn start(mut export: MessageWriter<StartExport>) {
-    export.write(StartExport {
-        path: "output.wav".into(),
-        duration_seconds: Some(30.0),
-        format: Some(AudioFormat::Wav),
-        normalization: Some(Normalize::lufs(-14.0)),
-        ..default()
-    });
-}
+tutti_export::render_to_file(&mut graph.0, &config, &path)?;
 ```
 
-After processing, an entity carrying `ExportInProgress` tracks the in-flight job; on completion it is replaced by `ExportComplete` or `ExportFailed`.
-
-### Audio input
-
-Requires `sampler` feature.
-
-```rust
-// EnableAudioInput / DisableAudioInput are Messages (not spawned components).
-input.write(EnableAudioInput { device_index: Some(0), monitoring: true, gain: 0.8 });
-input.write(DisableAudioInput);
-```
-
-### Live analysis
-
-Requires `analysis` feature.
-
-```rust
-commands.spawn(EnableLiveAnalysis);
-// Read from Res<LiveAnalysisData>
-commands.spawn(DisableLiveAnalysis);
-```
-
-### Automation
-
-Requires `automation` feature.
-
-```rust
-use tutti::{AutomationEnvelope, AutomationPoint, CurveType};
-
-let mut envelope = AutomationEnvelope::new("volume");
-envelope.add_point(AutomationPoint::new(0.0, 0.0))
-        .add_point(AutomationPoint::with_curve(4.0, 1.0, CurveType::SCurve));
-
-commands.spawn(AddAutomationLane { envelope });
-```
-
-After processing: `AutomationLaneEmitter { node_id }` is inserted.
+Wrapping it would be a rename: it needs no ECS state, only the `Net` the host
+already has.
 
 ### DSP nodes
 
@@ -312,25 +307,24 @@ All features are opt-in and aligned with Tutti's feature flags.
 
 | Feature | What it enables |
 |---------|----------------|
-| `sampler` | Audio playback, time stretch, recording, audio input, content bounds |
-| `midi` | MIDI routing, send, input events |
-| `midi-hardware` | Physical MIDI device connect/disconnect |
-| `mpe` | MPE zone configuration and per-note expression |
-| `midi2` | MIDI 2.0 message types |
-| `soundfont` | SoundFont (.sf2) asset loading and playback |
-| `neural` | Neural model asset loading, neural effects (+`midi` for neural synths) |
-| `plugin` | VST3/VST2/CLAP plugin hosting |
-| `vst2` / `vst3` / `clap` | Individual plugin format support |
-| `spatial` | 3D spatial audio with distance attenuation |
-| `dsp` | Compressor and gate DSP nodes |
-| `automation` | Automation lanes with envelope playback |
-| `export` | Offline audio export (WAV/FLAC/MP3/OGG) |
-| `analysis` | Live spectrum and loudness analysis |
+| `sampler` | The `.wav` asset loader, `DiskStreamerRes`, and mic capture |
+| `midi` | MIDI routing, sequencing, clock, MPE — no OS I/O |
+| `midi-hardware` | The OS layer on top of `midi`: device connect/poll, CoreMIDI virtual ports |
+| `synth` | The software synths |
+| `soundfont` | SoundFont (.sf2) asset loading and playback (implies `synth`, `midi`) |
+| `plugin` | VST3/VST2/CLAP/AU hosting: editor windows, catalog scan, crash detection |
+| `vst2` / `vst3` / `clap` / `au` | Individual plugin format support (each implies `plugin`) |
+| `modulation` | Control-rate modulation: LFO sources and mod-matrix edges as entities |
+| `spatial` | 3D spatial audio with distance attenuation (implies `dsp`) |
+| `dsp` | The VBAP/binaural panner. Dynamics are always compiled |
+| `convolution` | FFT convolution reverb (partitioned IR) |
+| `export` | The `tutti-export` dependency (no ECS surface — see above) |
 | `wav` / `flac` / `mp3` / `ogg` | Individual audio format decoders |
-| `files` | All audio format decoders |
-| `full` | Everything |
+| `full` | Everything above except the opt-in plugin formats |
 
-LFO is always available (no feature gate required).
+`AudioPump`, the graph, transport, metering and PDC are always available — no
+feature gate. The pump in particular needs no `sampler`: it speaks `AudioIn` /
+`AudioOut`, which live in `tutti-core`.
 
 ## Bevy compatibility
 

@@ -128,6 +128,11 @@ pub mod prelude {
         LatencyCompensationPlugin, Net, TuttiDriver, TuttiPlugin,
     };
 
+    #[cfg(feature = "export")]
+    pub use crate::export::{
+        ExportDone, ExportInFlight, ExportOutput, ExportPlugin, ExportRequest, ExportSource,
+        ExportTarget,
+    };
     #[cfg(feature = "midi")]
     pub use crate::midi::{MidiBusRes, MidiRoutingRes, TuttiMidiPlugin};
     #[cfg(feature = "modulation")]

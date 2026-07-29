@@ -14,7 +14,6 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use bevy_tasks::Task;
 
-use tutti_core::NodeId;
 use tutti_export::{ExportConfig, Normalize, RenderClock, Rendered, Written};
 
 use tutti_core::transport::OfflineContext;
@@ -28,6 +27,12 @@ pub enum ExportSource {
     /// One node's output, isolated from everything downstream of it — "what
     /// does this point in the graph actually sound like".
     ///
+    /// Names the **entity**, not its `NodeId`, for the same reason every other
+    /// edge in this crate does (`AudioSources`, `MasterSources`): the id is
+    /// resolved when the render starts, so a node replaced between spawning the
+    /// request and starting it — a crossfade, a rebuilt chain — is followed
+    /// rather than rendered from a stale id.
+    ///
     /// # Cost
     ///
     /// Each of these does one **main-thread deep clone** of the live net
@@ -40,7 +45,7 @@ pub enum ExportSource {
     /// several pending that cares which goes first should spawn the best one
     /// and recompute next frame, rather than spawning all of them and hoping
     /// for an ordering this crate does not promise.
-    Node(NodeId),
+    Node(Entity),
 }
 
 /// Where the rendered audio goes.

@@ -183,3 +183,7 @@ ringbuf = { version = "0.4", default-features = false, features = ["alloc"] }
 [[example]]
 name = "modulated_fader"
 required-features = ["modulation"]
+
+[[example]]
+name = "offline_export"
+required-features = ["export", "wav"]

@@ -47,7 +47,7 @@ fn stereo_config() -> ExportConfig {
 }
 
 /// Build an app with the export plugin and a ready engine.
-fn app_with_engine() -> (App, tutti_core::NodeId) {
+fn app_with_engine() -> (App, Entity) {
     let (graph, node) = graph_with_one_node();
     let mut app = App::new();
     app.add_plugins(bevy_app::TaskPoolPlugin::default());
@@ -60,7 +60,9 @@ fn app_with_engine() -> (App, tutti_core::NodeId) {
     // `engine_ready` gates `start_exports` on this state, not on the graph
     // resource, so a test graph alone is not enough.
     app.insert_resource(bevy_tutti::AudioEngineState::Running);
-    (app, node)
+    // `ExportSource::Node` names an entity, so bind one to the node.
+    let entity = app.world_mut().spawn(tutti_core::AudioNode(node)).id();
+    (app, entity)
 }
 
 /// Run frames until `predicate` holds or the budget runs out. The render is on
@@ -201,7 +203,8 @@ fn an_unrenderable_node_reports_a_failure() {
     // `sink()` consumes one channel and produces nothing.
     let orphan = {
         let mut graph = app.world_mut().resource_mut::<AudioGraphRes>();
-        graph.0.push(Box::new(tutti_core::dsp::sink()))
+        let id = graph.0.push(Box::new(tutti_core::dsp::sink()));
+        app.world_mut().spawn(tutti_core::AudioNode(id)).id()
     };
 
     static FAILED: AtomicUsize = AtomicUsize::new(0);

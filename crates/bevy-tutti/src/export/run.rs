@@ -9,6 +9,7 @@
 //! task pool"). So this module is the *whole* of what Bevy adds: a place to run
 //! it, and a way to hear about it.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy_ecs::prelude::*;
@@ -76,10 +77,19 @@ pub fn start_exports(world: &mut World) {
         return;
     };
 
+    // Snapshot the node bindings before the resource borrows: `prepare_net`
+    // needs to resolve an entity to its `NodeId`, and an exclusive system
+    // cannot hold a `Query` across the `world.resource` borrows below.
+    let nodes: HashMap<Entity, tutti_core::AudioNode> = world
+        .query::<(Entity, &tutti_core::AudioNode)>()
+        .iter(world)
+        .map(|(e, n)| (e, *n))
+        .collect();
+
     let prepared = {
         let graph = world.resource::<AudioGraphRes>();
         let config = world.resource::<AudioConfig>();
-        prepare_net(graph, config, &request)
+        prepare_net(graph, config, &nodes, &request)
     };
 
     let Some((mut net, ctx)) = prepared else {
@@ -142,6 +152,7 @@ pub fn start_exports(world: &mut World) {
 fn prepare_net(
     graph: &AudioGraphRes,
     config: &AudioConfig,
+    nodes: &HashMap<Entity, tutti_core::AudioNode>,
     request: &ExportRequest,
 ) -> Option<(tutti_core::dsp::Net, Option<OfflineContext>)> {
     match request.source {
@@ -156,8 +167,10 @@ fn prepare_net(
         // but it is not the safety `ExportSource::Node` gets.
         ExportSource::Master => Some((graph.0.clone(), None)),
 
-        ExportSource::Node(target) => {
-            let pending = graph.0.clone_isolated(target)?;
+        ExportSource::Node(entity) => {
+            // Resolved here rather than stored: see `ExportSource::Node`.
+            let node = nodes.get(&entity)?;
+            let pending = graph.0.clone_isolated(node.0)?;
 
             // The timeline every transport-aware node in the clone is re-seated
             // on. The caller supplies it, because the caller also supplies the

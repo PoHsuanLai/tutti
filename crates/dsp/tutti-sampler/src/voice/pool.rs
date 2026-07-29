@@ -636,10 +636,10 @@ impl AudioUnit for VoicePool {
     /// against it. The data-carrying half `isolate` defers to; see
     /// [`replace_transport`](Self::replace_transport).
     fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
-        let Some(ctx) = ctx.downcast_ref::<tutti_core::transport::OfflineContext>() else {
+        let Some(transport) = ctx.downcast_ref::<tutti_core::transport::OfflineTransport>() else {
             return;
         };
-        self.replace_transport(ctx.transport.clone());
+        self.replace_transport(transport.clone());
     }
 
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {

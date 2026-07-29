@@ -15,7 +15,7 @@ use std::sync::Arc;
 use bevy_ecs::prelude::*;
 use bevy_tasks::AsyncComputeTaskPool;
 
-use tutti_core::transport::{OfflineContext, OfflineTimeline, OfflineTimelineConfig};
+use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, OfflineTransport};
 use tutti_core::{AudioUnit, SampleRate};
 use tutti_export::{render_normalized_to_file, render_to_buffers, render_to_file};
 
@@ -154,7 +154,7 @@ fn prepare_net(
     config: &AudioConfig,
     nodes: &HashMap<Entity, tutti_core::AudioNode>,
     request: &ExportRequest,
-) -> Option<(tutti_core::dsp::Net, Option<OfflineContext>)> {
+) -> Option<(tutti_core::dsp::Net, Option<OfflineTransport>)> {
     match request.source {
         // The whole graph as-is, keeping its live transport bindings — the
         // caller's own clock is what drives this render.
@@ -179,24 +179,17 @@ fn prepare_net(
             // out of the other. Manufacturing one here is what made a tap on a
             // 90 BPM project rebind its voices to a 120 BPM playhead that
             // nothing then advanced.
-            let ctx = match request.offline.clone() {
-                Some(ctx) => ctx,
+            let ctx: OfflineTransport = match request.offline.clone() {
+                Some(timeline) => timeline,
                 // No transport named: a default at the render's own rate. Right
-                // for a graph with no musical time, and the reason `offline` is
-                // worth passing for anything else.
-                None => {
-                    let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
-                        start_beat: 0.0,
-                        tempo: 120.0.into(),
-                        sample_rate: SampleRate(config.sample_rate),
-                        loop_range: None,
-                    }));
-                    OfflineContext::new(
-                        timeline as Arc<dyn tutti_core::Timeline>,
-                        tutti_core::Beat::new(0.0),
-                        tutti_core::Bpm(120.0),
-                    )
-                }
+                // for a graph with no musical time, and the reason `on_timeline`
+                // is worth calling for anything else.
+                None => Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
+                    start_beat: 0.0,
+                    tempo: 120.0.into(),
+                    sample_rate: SampleRate(config.sample_rate),
+                    loop_range: None,
+                })),
             };
 
             // Isolate (sever live inputs) and rebind (re-point at `ctx`) in the

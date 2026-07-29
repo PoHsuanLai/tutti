@@ -348,7 +348,7 @@ fn a_prepare_hook_reaches_the_net_that_gets_rendered() {
 /// per-node rebind exists to prevent.
 #[test]
 fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
-    use tutti_core::transport::{OfflineContext, OfflineTimeline, OfflineTimelineConfig};
+    use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig};
 
     let (mut app, node) = app_with_engine();
 
@@ -359,12 +359,6 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
         sample_rate: tutti_core::SampleRate(44_100.0),
         loop_range: None,
     }));
-    let ctx = OfflineContext::new(
-        timeline.clone() as Arc<dyn tutti_core::Timeline>,
-        tutti_core::Beat::new(16.0),
-        tutti_core::Bpm(90.0),
-    );
-
     static SEEN_TEMPO: AtomicUsize = AtomicUsize::new(usize::MAX);
     static SEEN_BEAT: AtomicUsize = AtomicUsize::new(usize::MAX);
     SEEN_TEMPO.store(usize::MAX, Ordering::SeqCst);
@@ -376,13 +370,13 @@ fn the_callers_timeline_is_the_one_nodes_are_rebound_onto() {
         stereo_config(),
         timeline.clone(),
     )
-    .on_timeline(ctx)
+    .on_timeline(timeline.clone())
     // The hook sees the very context the nodes were rebound with.
     .with_prepare(|prepared, _world| {
-        if let Some(ctx) = prepared.ctx {
+        if let Some(transport) = prepared.ctx {
             use tutti_core::Timeline;
-            SEEN_TEMPO.store(ctx.transport.tempo().get().round() as usize, Ordering::SeqCst);
-            SEEN_BEAT.store(ctx.transport.beat().get().round() as usize, Ordering::SeqCst);
+            SEEN_TEMPO.store(transport.tempo().get().round() as usize, Ordering::SeqCst);
+            SEEN_BEAT.store(transport.beat().get().round() as usize, Ordering::SeqCst);
         }
     });
 

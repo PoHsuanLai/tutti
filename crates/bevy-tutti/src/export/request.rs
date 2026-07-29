@@ -16,7 +16,7 @@ use bevy_tasks::Task;
 
 use tutti_export::{ExportConfig, Normalize, RenderClock, Rendered, Written};
 
-use tutti_core::transport::OfflineContext;
+use tutti_core::transport::OfflineTransport;
 
 /// Which audio to render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,19 +90,17 @@ pub struct ExportRequest {
     /// The timeline transport-aware nodes are rebound onto, for
     /// [`ExportSource::Node`].
     ///
-    /// **Pass the same object as `clock`** when it is an `OfflineTimeline`:
-    /// `RenderClock` is advance-only, so this crate cannot read a timeline back
-    /// out of it, and the two ends have to agree. The renderer advances `clock`;
-    /// the nodes read this. Hand over two different timelines and the nodes read
-    /// a playhead nothing moves — silence, or a window that never opens.
+    /// Normally the *same object* as `clock`: the renderer advances the clock
+    /// and the nodes read this, so two different timelines means the nodes watch
+    /// a playhead nothing moves. [`ExportRequest::on_timeline`] sets both at
+    /// once and is the way to say it.
     ///
-    /// `None` builds a default context at the render's sample rate, 120 BPM,
-    /// starting at beat 0. That is right for a graph with no musical time
-    /// (an effect tail, a synth patch) and wrong for anything placed on a
-    /// timeline, which is why a caller that has a transport should say so.
+    /// `None` builds a default at the render's sample rate, 120 BPM, from beat
+    /// 0 — right for a graph with no musical time (an effect tail, a synth
+    /// patch), wrong for anything placed on a timeline.
     ///
     /// Ignored for [`ExportSource::Master`], which keeps its live bindings.
-    pub offline: Option<OfflineContext>,
+    pub offline: Option<OfflineTransport>,
     /// Optional last look at the net before it leaves the main thread — see
     /// [`PrepareNet`]. Use [`ExportRequest::new`] when there is nothing to do.
     pub prepare: Option<PrepareNet>,
@@ -126,10 +124,19 @@ impl ExportRequest {
         }
     }
 
-    /// Bind transport-aware nodes to `ctx` rather than a default 120 BPM
-    /// context — see [`offline`](Self::offline).
-    pub fn on_timeline(mut self, ctx: OfflineContext) -> Self {
-        self.offline = Some(ctx);
+    /// Render against `timeline`: the renderer advances it, and every
+    /// transport-aware node is rebound onto it.
+    ///
+    /// Sets both ends from one argument, because they are the same object —
+    /// which is the only configuration that is ever correct. Takes anything that
+    /// is both a [`RenderClock`] and a [`Timeline`]; `OfflineTimeline` is the
+    /// usual one.
+    pub fn on_timeline<T>(mut self, timeline: Arc<T>) -> Self
+    where
+        T: RenderClock + tutti_core::Timeline + 'static,
+    {
+        self.clock = timeline.clone() as Arc<dyn RenderClock>;
+        self.offline = Some(timeline as OfflineTransport);
         self
     }
 
@@ -246,7 +253,7 @@ pub struct ExportDone {
 /// clock drives.
 pub struct PreparedNet<'a> {
     pub net: &'a mut tutti_core::dsp::Net,
-    pub ctx: Option<&'a OfflineContext>,
+    pub ctx: Option<&'a OfflineTransport>,
 }
 
 /// A caller's hook into the net, run on the main thread before the render is

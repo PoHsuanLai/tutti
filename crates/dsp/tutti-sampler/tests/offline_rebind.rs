@@ -14,7 +14,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tutti_core::transport::OfflineContext;
 use tutti_core::{AudioUnit, Beat, Bpm, SampleRate, Timeline, Wave};
 use tutti_sampler::{
     Direction, LoopSetting, MemorySource, Playback, SlotId, Voice, VoiceCommand, VoiceNode,
@@ -56,10 +55,6 @@ fn ramp_wave() -> Arc<Wave> {
     ))
 }
 
-fn ctx_on(transport: Arc<dyn Timeline>) -> OfflineContext {
-    OfflineContext::new(transport, Beat::new(0.0), Bpm(120.0))
-}
-
 /// `isolate()` must leave the render's pool born empty and channel-less, and
 /// must not consume commands the LIVE pool needs — each command is delivered to
 /// exactly one consumer, so a shared channel means the worker steals playback.
@@ -78,7 +73,7 @@ fn an_isolated_pool_steals_no_commands_from_the_live_one() {
     for nid in clone.ids().copied().collect::<Vec<_>>() {
         let node = clone.node_mut(nid);
         node.isolate();
-        node.rebind_offline(&ctx_on(offline.clone()));
+        node.rebind_offline(&offline.clone());
     }
 
     let cloned = clone
@@ -171,7 +166,7 @@ fn a_rebound_voice_node_reads_the_offline_clock_not_the_live_one() {
     for nid in clone.ids().copied().collect::<Vec<_>>() {
         let node = clone.node_mut(nid);
         node.isolate();
-        node.rebind_offline(&ctx_on(offline.clone()));
+        node.rebind_offline(&offline.clone());
     }
 
     let peak = |net: &mut tutti_core::dsp::Net| {
@@ -224,7 +219,7 @@ fn a_bare_memory_source_node_is_rebound_too() {
     let offline = MockTransport::new(false) as Arc<dyn Timeline>;
     let node = net.node_mut(id);
     node.isolate();
-    node.rebind_offline(&ctx_on(offline));
+    node.rebind_offline(&offline);
 
     let rebound = net
         .node_mut(id)
@@ -251,7 +246,7 @@ fn pure_dsp_and_foreign_contexts_are_no_ops() {
     net.pipe_output(id);
 
     let offline = MockTransport::new(false) as Arc<dyn Timeline>;
-    net.node_mut(id).rebind_offline(&ctx_on(offline));
+    net.node_mut(id).rebind_offline(&offline);
     // A foreign context must not panic anywhere.
     net.node_mut(id).rebind_offline(&42u32);
 
@@ -308,7 +303,7 @@ fn a_voice_nested_inside_a_sub_net_is_rebound_too() {
     for nid in clone.ids().copied().collect::<Vec<_>>() {
         let node = clone.node_mut(nid);
         node.isolate();
-        node.rebind_offline(&ctx_on(offline.clone()));
+        node.rebind_offline(&offline.clone());
     }
 
     let peak = |net: &mut tutti_core::dsp::Net| {

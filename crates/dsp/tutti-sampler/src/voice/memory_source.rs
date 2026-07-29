@@ -886,10 +886,10 @@ impl AudioUnit for MemorySource {
     /// wrappers, so a bare memory source rendered against the live playhead.
     /// Declaring it here covers both routes, and any future one.
     fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
-        let Some(ctx) = ctx.downcast_ref::<tutti_core::transport::OfflineContext>() else {
+        let Some(transport) = ctx.downcast_ref::<tutti_core::transport::OfflineTransport>() else {
             return;
         };
-        self.replace_transport(ctx.transport.clone());
+        self.replace_transport(transport.clone());
     }
 
     fn set_sample_rate(&mut self, sample_rate: SampleRate) {

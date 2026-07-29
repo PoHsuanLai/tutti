@@ -19,14 +19,13 @@ use bevy_ecs::prelude::*;
 // Export lives in the prelude alongside the rest of the layer.
 use bevy_tutti::prelude::*;
 use tutti_core::dsp::{lowpass_hz, pass, saw_hz, Net};
-use tutti_core::transport::{OfflineContext, OfflineTimeline, OfflineTimelineConfig, Transport};
+use tutti_core::transport::{OfflineTimeline, OfflineTimelineConfig, Transport};
 use tutti_export::{
     AudioFormat, BitDepth, ChannelLayout, EncodeConfig, ExportConfig, Normalize, RenderConfig,
 };
 use tutti_types::Db;
 
 const SAMPLE_RATE: f64 = 48_000.0;
-const TEMPO: f64 = 128.0;
 
 /// The node we want to hear on its own, remembered from the build step.
 #[derive(Resource)]
@@ -119,12 +118,13 @@ fn request_exports(
     // `Node` isolates: everything downstream is severed, so this is "what does
     // the filter actually sound like" rather than its contribution to the mix.
     //
-    // An isolated clone is rebound onto an offline timeline, so this one names
-    // the session's real tempo — the same object goes in as the clock the
-    // renderer advances, which is what keeps both ends on one playhead.
+    // An isolated clone is rebound onto an offline timeline, seeded at the
+    // session's real tempo. `on_timeline` sets the clock the renderer advances
+    // AND the timeline the nodes read, from one argument — they are the same
+    // object, and any other arrangement is a bug.
     let timeline = Arc::new(OfflineTimeline::new(&OfflineTimelineConfig {
         start_beat: 0.0,
-        tempo: transport.settings.tempo().into(),
+        tempo: transport.settings.tempo(),
         sample_rate: tutti_core::SampleRate(SAMPLE_RATE),
         loop_range: None,
     }));
@@ -139,11 +139,7 @@ fn request_exports(
                 config(),
                 timeline.clone(),
             )
-            .on_timeline(OfflineContext::new(
-                timeline as Arc<dyn tutti_core::Timeline>,
-                tutti_core::Beat::new(0.0),
-                tutti_core::Bpm(TEMPO),
-            )),
+            .on_timeline(timeline),
         )
         .observe(report);
 }

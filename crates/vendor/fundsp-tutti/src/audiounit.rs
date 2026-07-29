@@ -71,8 +71,8 @@ pub trait AudioUnit<S: Sample = F32>: Send + Sync + DynClone {
     ///
     /// ```ignore
     /// fn rebind_offline(&mut self, ctx: &dyn Any) {
-    ///     let Some(ctx) = ctx.downcast_ref::<OfflineContext>() else { return };
-    ///     self.transport = ctx.transport.clone();
+    ///     let Some(transport) = ctx.downcast_ref::<OfflineTransport>() else { return };
+    ///     self.transport = transport.clone();
     /// }
     /// ```
     ///

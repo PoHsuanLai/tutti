@@ -6,50 +6,35 @@
 //! to re-point at.
 //!
 //! The context is passed to nodes as `&dyn Any` (see `rebind_offline`'s docs —
-//! `fundsp-tutti` cannot name [`Timeline`]), so this type is the agreed shape on
+//! `fundsp-tutti` cannot name [`Timeline`]), so this alias is the agreed shape on
 //! both sides of that cast. Downcast it with
-//! `ctx.downcast_ref::<OfflineContext>()`.
+//! `ctx.downcast_ref::<OfflineTransport>()`.
 
 use std::sync::Arc;
 
-use crate::params::{Beat, Bpm};
 use crate::transport::Timeline;
 
-/// The clock an offline render drives, plus where and how fast it starts.
+/// The timeline an offline render advances, one block at a time.
 ///
-/// A node re-points whatever transport it holds at [`Self::transport`]. Nodes
-/// carrying their own internal clock (rather than an `Arc<dyn Timeline>`) use
-/// [`Self::start_beat`] and [`Self::tempo`] to re-seat it — the clock is severed
-/// by `isolate()` but keeps whatever beat the *live* playhead happened to be at,
-/// so without this every beat-driven node (LFO, automation) would render from
-/// the wrong position.
-#[derive(Clone)]
-pub struct OfflineContext {
-    /// The timeline the renderer advances, one block at a time.
-    pub transport: Arc<dyn Timeline>,
-    /// Beat the render begins at.
-    pub start_beat: Beat,
-    /// Tempo the render runs at.
-    pub tempo: Bpm,
-}
-
-impl OfflineContext {
-    pub fn new(transport: Arc<dyn Timeline>, start_beat: impl Into<Beat>, tempo: impl Into<Bpm>) -> Self {
-        Self {
-            transport,
-            start_beat: start_beat.into(),
-            tempo: tempo.into(),
-        }
-    }
-}
-
-impl std::fmt::Debug for OfflineContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `dyn Timeline` is not Debug; report what it reads instead.
-        f.debug_struct("OfflineContext")
-            .field("start_beat", &self.start_beat)
-            .field("tempo", &self.tempo)
-            .field("transport_beat", &self.transport.beat())
-            .finish()
-    }
-}
+/// Nodes holding a transport re-point at this. Nodes carrying their own internal
+/// clock (rather than an `Arc<dyn Timeline>`) re-seat it from
+/// [`Timeline::beat`] and [`Timeline::tempo`] — the clock is severed by
+/// `isolate()` but keeps whatever beat the *live* playhead happened to be at, so
+/// without this every beat-driven node (LFO, automation) would render from the
+/// wrong position. Read at rebind time, before the renderer has advanced
+/// anything, so those are the seeded start values rather than a moving position.
+///
+/// # Why this is an alias and not a struct
+///
+/// It was a struct, carrying `start_beat` and `tempo` beside the transport. Both
+/// are things a `Timeline` already answers, so the copies could disagree with it
+/// — and two rebind paths read different ones:
+/// `TransportClock::rebind_offline` re-seated itself from the scalars while
+/// `MemorySource::rebind_offline` followed the timeline. A caller who built the
+/// context with mismatched values rendered half the graph at one tempo and half
+/// at another, silently, with nothing to compare.
+///
+/// Deleting the scalars left a one-field wrapper around the type every call site
+/// actually wanted, so the wrapper went too. `Arc<dyn Timeline>` is `'static` and
+/// sized, so it downcasts out of `&dyn Any` exactly as the struct did.
+pub type OfflineTransport = Arc<dyn Timeline>;

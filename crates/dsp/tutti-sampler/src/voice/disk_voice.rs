@@ -820,10 +820,10 @@ impl AudioUnit for DiskVoice {
     /// Forces a re-seek: the streamed offset was computed against the old
     /// clock's position, so carrying it over would read the wrong file region.
     fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
-        let Some(ctx) = ctx.downcast_ref::<tutti_core::transport::OfflineContext>() else {
+        let Some(transport) = ctx.downcast_ref::<tutti_core::transport::OfflineTransport>() else {
             return;
         };
-        self.timeline = ctx.transport.clone();
+        self.timeline = transport.clone();
         self.streamed_offset = NO_SEEK_TARGET;
         self.was_inside = false;
     }

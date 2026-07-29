@@ -192,10 +192,14 @@ impl AudioUnit for TransportClock {
     /// arbitrary position — the output would depend on *when* the render was
     /// started, which is both wrong and non-reproducible.
     fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
-        let Some(ctx) = ctx.downcast_ref::<super::OfflineContext>() else {
+        let Some(transport) = ctx.downcast_ref::<super::OfflineTransport>() else {
             return;
         };
-        *self = self.at_tempo(ctx.tempo).starting_at(ctx.start_beat);
+        // Read at rebind time — before the renderer has advanced anything — so
+        // these are the seeded start values, not a moving position.
+        *self = self
+            .at_tempo(transport.tempo())
+            .starting_at(transport.beat());
     }
 
     fn set_sample_rate(&mut self, sample_rate: crate::params::SampleRate) {

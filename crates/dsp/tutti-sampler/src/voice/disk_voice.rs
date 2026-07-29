@@ -288,6 +288,32 @@ impl AudioUnit for DiskSource {
         self.reset_interpolation();
     }
 
+    /// Stop this clone from touching the live stream.
+    ///
+    /// `Clone` shares the ring and the control state by `Arc` — correct for a
+    /// clone that stays in the live graph (a crossfade, a duplicated voice),
+    /// wrong for one taken to render offline. The audio thread is documented as
+    /// the ring's **sole** consumer, so a second consumer popping frames steals
+    /// them from playback, and a seek requested through the shared `RtState`
+    /// makes the butler reposition the ring underneath the live voice.
+    ///
+    /// Both `tick` and `process` return silence before reading either handle
+    /// when `playing` is false, so clearing that flag and dropping the shared
+    /// state is a complete severing — no frame is popped and no seek is
+    /// requested. `shared_state` is dropped as well so a later `rebind_offline`
+    /// cannot re-arm a seek through it.
+    ///
+    /// The honest severed state is *silent*: there is no second ring to hand
+    /// this clone, and manufacturing one would mean re-opening the file off a
+    /// butler that is not running. A disk-backed voice therefore contributes
+    /// nothing to an isolated render unless something refills it — which is what
+    /// a caller's prepare step is for.
+    fn isolate(&mut self) {
+        self.playing.store(false, Ordering::Relaxed);
+        self.shared_state = None;
+        self.reset_interpolation();
+    }
+
     fn set_sample_rate(&mut self, sample_rate: tutti_core::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         self.sample_rate = sample_rate as f32;
@@ -764,6 +790,21 @@ impl AudioUnit for DiskVoice {
 
     fn reset(&mut self) {
         self.inner.reset();
+        self.streamed_offset = NO_SEEK_TARGET;
+        self.was_inside = false;
+    }
+
+    /// Sever the inner stream, then keep the gate shut.
+    ///
+    /// Forwarding is the whole point: `inner` is what holds the shared ring, and
+    /// a `DiskVoice` inside a voice pool is not a graph vertex, so nothing else
+    /// will reach it. Without this, an isolated render pops frames the live
+    /// audio thread is waiting on.
+    ///
+    /// `was_inside` is left false and the offset cleared so the gate does not
+    /// think it is mid-window on an inner source that can no longer produce.
+    fn isolate(&mut self) {
+        self.inner.isolate();
         self.streamed_offset = NO_SEEK_TARGET;
         self.was_inside = false;
     }

@@ -275,13 +275,42 @@ impl Voice {
     /// read clock on the live transport and render silence. The second clock was
     /// write-only, so it is gone; a rebind can no longer reach the wrong one.
     ///
-    /// Only the `Memory` [`MemorySource`] exposes a whole-transport swap, and it
-    /// is the only source a standalone offline [`VoiceNode`] ever wraps (resynth
-    /// and region-render populate both build memory voices), so this is the path
-    /// that matters for the offline render.
+    /// Only the `Memory` [`MemorySource`] exposes a whole-transport swap, so a
+    /// `Disk` voice is unchanged here — it needs the whole offline context, not
+    /// just a clock, and rebinds through [`rebind_offline`](Self::rebind_offline)
+    /// instead.
     pub fn replace_transport(&mut self, transport: Arc<dyn Timeline>) {
         if let VoiceSource::Memory(sampler) = &mut self.source {
             sampler.replace_transport(transport);
+        }
+    }
+
+    /// Rebind this voice onto an offline render's transport, whichever source
+    /// backs it.
+    ///
+    /// [`replace_transport`](Self::replace_transport) covers only the `Memory`
+    /// arm, and used to be the whole of the offline rebind — which meant a
+    /// `Disk` voice in a pool slot silently kept the live clock and rendered
+    /// against a playhead nothing advanced. A slot is not a graph vertex, so the
+    /// net-wide walk never reaches it either; this is the only path that does.
+    pub fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+        use tutti_core::AudioUnit;
+        match &mut self.source {
+            VoiceSource::Memory(sampler) => sampler.rebind_offline(ctx),
+            VoiceSource::Disk(voice) => voice.rebind_offline(ctx),
+        }
+    }
+
+    /// Sever this voice from live-thread state, whichever source backs it.
+    ///
+    /// Only `Disk` holds any — the shared ring and control cell its `Clone`
+    /// duplicates by `Arc`. Left unsevered, an offline render pops frames the
+    /// live audio thread is waiting on.
+    pub fn isolate(&mut self) {
+        use tutti_core::AudioUnit;
+        match &mut self.source {
+            VoiceSource::Memory(_) => {}
+            VoiceSource::Disk(voice) => voice.isolate(),
         }
     }
 }

@@ -265,3 +265,74 @@ fn pure_dsp_and_foreign_contexts_are_no_ops() {
         frame[0]
     );
 }
+
+/// **The rebind must reach into nested networks.**
+///
+/// `Net` implements `AudioUnit`, so a sub-graph can be pushed as a single node.
+/// Before `Net` forwarded `isolate`/`rebind_offline` to its vertices, such a
+/// node inherited the do-nothing defaults and everything inside it kept the live
+/// transport: an export of a bus whose contents are a sub-net rendered against a
+/// playhead nothing advances.
+///
+/// The failure is silent — no value to compare, no error — which is exactly what
+/// the per-node design was meant to eliminate. It only eliminates it if the walk
+/// is deep.
+#[test]
+fn a_voice_nested_inside_a_sub_net_is_rebound_too() {
+    let live_transport = MockTransport::new(true);
+    let sampler =
+        MemorySource::with_transport(ramp_wave(), live_transport.clone(), Beat::new(0.0), None);
+
+    let voice = Voice {
+        source: VoiceSource::Memory(sampler),
+        play: Playback {
+            loop_: LoopSetting::Off,
+            direction: Direction::Forward,
+            ..Playback::default()
+        },
+        channel_index: None,
+    };
+
+    // The voice lives one level down, inside a Net used as a node.
+    let mut inner = tutti_core::dsp::Net::new(0, 2);
+    let vid = inner.push(Box::new(VoiceNode::from(voice)));
+    inner.pipe_output(vid);
+
+    let mut outer = tutti_core::dsp::Net::new(0, 2);
+    let nested = outer.push(Box::new(inner));
+    outer.pipe_output(nested);
+
+    // Offline transport is STOPPED: a rebound voice must fall silent.
+    let offline = MockTransport::new(false) as Arc<dyn Timeline>;
+    let mut clone = outer.clone();
+    for nid in clone.ids().copied().collect::<Vec<_>>() {
+        let node = clone.node_mut(nid);
+        node.isolate();
+        node.rebind_offline(&ctx_on(offline.clone()));
+    }
+
+    let peak = |net: &mut tutti_core::dsp::Net| {
+        net.reset();
+        net.set_sample_rate(SampleRate(44_100.0));
+        let mut worst = 0.0f32;
+        let mut frame = [0.0f32; 2];
+        for _ in 0..64 {
+            net.tick(&[], &mut frame);
+            worst = worst.max(frame[0].abs()).max(frame[1].abs());
+        }
+        worst
+    };
+
+    let live_peak = peak(&mut outer.clone());
+    let rebound_peak = peak(&mut clone);
+
+    assert!(
+        live_peak > 0.0,
+        "sanity: the nested voice must sound on a rolling live clock"
+    );
+    assert_eq!(
+        rebound_peak, 0.0,
+        "a voice one level down must follow the offline clock; it read the live \
+         one instead (live {live_peak}, rebound {rebound_peak})"
+    );
+}

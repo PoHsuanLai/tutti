@@ -602,6 +602,12 @@ impl AudioUnit for BigBlockAdapter {
     fn reset(&mut self) {
         self.source.reset();
     }
+    fn isolate(&mut self) {
+        self.source.isolate();
+    }
+    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+        self.source.rebind_offline(ctx);
+    }
     fn set_sample_rate(&mut self, sample_rate: crate::SampleRate) {
         let sample_rate: f64 = sample_rate.get();
         self.source.set_sample_rate(crate::SampleRate(sample_rate));
@@ -672,6 +678,12 @@ impl AudioUnit for BlockRateAdapter {
     fn reset(&mut self) {
         self.unit.reset();
         self.index = MAX_BUFFER_SIZE;
+    }
+    fn isolate(&mut self) {
+        self.unit.isolate();
+    }
+    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+        self.unit.rebind_offline(ctx);
     }
     fn set_sample_rate(&mut self, sample_rate: crate::SampleRate) {
         let sample_rate: f64 = sample_rate.get();

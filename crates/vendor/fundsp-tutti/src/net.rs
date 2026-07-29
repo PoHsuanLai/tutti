@@ -1628,6 +1628,31 @@ impl AudioUnit for Net {
         }
     }
 
+    /// Forwarded to every vertex, so a nested network is severed too.
+    ///
+    /// Without this, a `Net` used as a node inherits the do-nothing default and
+    /// its children are never reached — anything sharing live state one level
+    /// down stays attached to what the audio thread is reading, which is the
+    /// hazard `isolate` exists to remove.
+    fn isolate(&mut self) {
+        for vertex in &mut self.vertex {
+            vertex.unit.isolate();
+            vertex.changed = self.revision;
+        }
+    }
+
+    /// Forwarded to every vertex, for the same reason as [`isolate`](Self::isolate).
+    ///
+    /// A transport-aware node inside a sub-network would otherwise keep the live
+    /// transport and render against a playhead nothing advances — silence, with
+    /// nothing to compare and no error to raise.
+    fn rebind_offline(&mut self, ctx: &dyn core::any::Any) {
+        for vertex in &mut self.vertex {
+            vertex.unit.rebind_offline(ctx);
+            vertex.changed = self.revision;
+        }
+    }
+
     fn tick(&mut self, input: &[f32], output: &mut [f32]) {
         self.tick_2(input, output, &None);
     }

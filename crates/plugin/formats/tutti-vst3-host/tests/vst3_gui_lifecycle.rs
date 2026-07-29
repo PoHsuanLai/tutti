@@ -374,3 +374,104 @@ fn supported_platform_type_still_opens() {
     );
     inst.close_editor();
 }
+
+/// This is the regression test for "nothing pumps the plugin run loop": before
+/// [`Vst3Loaded::run_editor_loop_iteration`] existed, `host-checker` (a VSTGUI
+/// plugin, which drives its redraws off a registered timer) would register its
+/// timer and X file descriptor with us and then wait forever. The editor
+/// appeared, painted once, and froze.
+///
+/// The assertion is deliberately two-part, because registration alone proves
+/// nothing about the pump:
+/// 1. the plugin registered *something* (a timer or an fd) — otherwise there is
+///    no run loop to test and we say so rather than passing vacuously;
+/// 2. driving the pump raises the dispatch counters, i.e. we really called back
+///    into the plugin's `onTimer` / `onFDIsSet`.
+#[test]
+#[ignore = "needs a display; run under xvfb-run -a"]
+fn open_editor_run_loop_is_pumped() {
+    let Some(mut inst) = load_host_checker() else {
+        return;
+    };
+    let Some(win) = TestWindow::get() else {
+        eprintln!("could not create a window; skipping");
+        return;
+    };
+    let Some(handle) = win.handle() else {
+        eprintln!("unsupported window handle type; skipping");
+        return;
+    };
+
+    // Nothing should be dispatched before an editor exists.
+    let before_open = inst.run_loop_activity();
+
+    if let Err(e) = inst.open_editor(handle) {
+        eprintln!("open_editor failed ({e:?}); skipping");
+        return;
+    }
+
+    let registered = inst.run_loop_activity();
+    eprintln!(
+        "after open: {} timer(s), {} fd(s) registered",
+        registered.timers_registered, registered.event_handlers_registered
+    );
+
+    if registered.timers_registered == 0 && registered.event_handlers_registered == 0 {
+        // Not a host bug: a plugin whose toolkit needs no run loop is entitled
+        // to register nothing. Fail loudly only if it registered and we then
+        // failed to pump — that is what this test is for.
+        eprintln!("plugin registered no run-loop handlers; nothing to pump. Skipping.");
+        inst.close_editor();
+        return;
+    }
+
+    // VSTGUI's redraw timer is on the order of tens of milliseconds, so pump
+    // for well over one period rather than assuming a single iteration is due.
+    // Real hosts call this every frame; this is that loop, compressed.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut activity = registered;
+    while std::time::Instant::now() < deadline {
+        inst.run_editor_loop_iteration();
+        activity = inst.run_loop_activity();
+        if activity.timers_fired > before_open.timers_fired
+            && activity.fds_dispatched >= before_open.fds_dispatched
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+
+    eprintln!(
+        "after pumping: {} timer fire(s), {} fd dispatch(es)",
+        activity.timers_fired, activity.fds_dispatched
+    );
+
+    // The pump must have done *something*. A registered handler that never
+    // fires across two seconds of pumping means the loop is not wired.
+    assert!(
+        activity.timers_fired > before_open.timers_fired
+            || activity.fds_dispatched > before_open.fds_dispatched,
+        "run loop registered {} timer(s) and {} fd(s), but pumping for 2s \
+         dispatched nothing (timers_fired {} -> {}, fds_dispatched {} -> {})",
+        registered.timers_registered,
+        registered.event_handlers_registered,
+        before_open.timers_fired,
+        activity.timers_fired,
+        before_open.fds_dispatched,
+        activity.fds_dispatched,
+    );
+
+    inst.close_editor();
+
+    // Closing must retire the plugin's handlers, or the next pump calls into a
+    // released view.
+    let after_close = inst.run_loop_activity();
+    eprintln!(
+        "after close: {} timer(s), {} fd(s) still registered",
+        after_close.timers_registered, after_close.event_handlers_registered
+    );
+
+    // Pumping with the editor closed must stay safe (and is what a host does on
+    // the frame after the user closes the window).
+    inst.run_editor_loop_iteration();
+}

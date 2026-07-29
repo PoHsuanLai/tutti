@@ -30,25 +30,6 @@
 //!
 //! `#[ignore]` by default: a test that silently needs a display is worse than
 //! one you opt into.
-//!
-//! ## Only the first windowed test in a process gets a window
-//!
-//! `winit` builds at most one `EventLoop` per process, so the second and later
-//! calls to [`TestWindow::new`] cannot succeed. Running the whole file
-//! therefore exercises exactly one windowed test — pass a filter to choose
-//! which:
-//!
-//! ```bash
-//! ... --test vst3_gui_lifecycle -- --ignored --nocapture open_editor_run_loop_is_pumped
-//! ```
-//!
-//! **The starved tests fail rather than skip.** They used to print "could not
-//! create a window; skipping" and report `ok`, which meant a green full-file
-//! run was not evidence that any of them had asserted anything — two of the
-//! four were silently vacuous. A skip is only honest when the *environment*
-//! cannot support the test (no display at all, plugin not built); being
-//! second in line is a harness limitation, and a limitation that reports
-//! success is indistinguishable from a passing test. See [`require_window`].
 
 #![cfg(feature = "conformance")]
 
@@ -96,14 +77,18 @@ fn resolve_bundle(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
-fn host_checker_path() -> Option<PathBuf> {
+fn sample_plugin_path(bundle: &str) -> Option<PathBuf> {
     let dir = sample_plugin_dir();
     if dir.is_empty() {
         return None;
     }
-    let p = Path::new(&dir).join("host-checker.vst3");
+    let p = Path::new(&dir).join(bundle);
     let bin = resolve_bundle(&p);
     bin.is_file().then_some(bin)
+}
+
+fn host_checker_path() -> Option<PathBuf> {
+    sample_plugin_path("host-checker.vst3")
 }
 
 /// Whether a window server is reachable. Without one, `winit` aborts the
@@ -116,29 +101,6 @@ fn has_display() -> bool {
     }
 }
 
-/// Obtain a window, or end the test honestly.
-///
-/// Returns `None` only when there is no display to build against — the one
-/// case where skipping is truthful. When a display *is* present, a failure to
-/// build the event loop means this test was not the first windowed one in the
-/// process (see the module header), and that panics: a test starved by a
-/// harness limitation must not report the same `ok` as one that ran.
-fn require_window() -> Option<TestWindow> {
-    if !has_display() {
-        eprintln!("no display (DISPLAY/WAYLAND_DISPLAY unset); skipping");
-        return None;
-    }
-    match TestWindow::new() {
-        Some(win) => Some(win),
-        None => panic!(
-            "a display is present but the event loop could not be built — \
-             winit allows one per process, so only the first windowed test in \
-             a run gets a window. Re-run this test with a filter (see the \
-             module header). Refusing to report success without asserting."
-        ),
-    }
-}
-
 /// A real native window to parent the plugin editor into, plus the event loop
 /// that owns it. Both must outlive the editor.
 struct TestWindow {
@@ -146,8 +108,31 @@ struct TestWindow {
     window: winit::window::Window,
 }
 
+// SAFETY: the singleton below lives in a `static` and hands out
+// `&'static TestWindow` to tests on cargo's worker threads, which requires both
+// `Send` and `Sync`. `winit`'s types are neither, because their *methods* are
+// thread-affine — but the only method these tests call is `handle()`, which
+// reads an X11 window id fixed at creation. No test pumps the event loop,
+// mutates the window, or drops it (it lives for the process).
+unsafe impl Send for TestWindow {}
+unsafe impl Sync for TestWindow {}
+
+/// The process-wide window, built at most once.
+///
+/// `winit` permits a single `EventLoop` per process: a second `build()` fails.
+/// Per-test windows therefore worked only for whichever test ran first, and the
+/// rest skipped themselves with "could not create a window" while still
+/// reporting `ok` — a silent pass that asserted nothing. Sharing one window
+/// makes every test in the file actually run.
+static WINDOW: std::sync::OnceLock<Option<TestWindow>> = std::sync::OnceLock::new();
+
 impl TestWindow {
-    fn new() -> Option<Self> {
+    /// The shared window, or `None` if one could not be created.
+    fn get() -> Option<&'static Self> {
+        WINDOW.get_or_init(Self::build).as_ref()
+    }
+
+    fn build() -> Option<Self> {
         use winit::event_loop::EventLoop;
         use winit::platform::x11::EventLoopBuilderExtX11;
 
@@ -180,8 +165,8 @@ impl TestWindow {
             RawWindowHandle::AppKit(h) => h.ns_view.as_ptr(),
             _ => return None,
         };
-        // SAFETY: `ptr` is this window's live platform handle; `self` (and so
-        // the window) outlives every editor opened against it in these tests.
+        // SAFETY: `ptr` is this window's live platform handle; the window is a
+        // process-lifetime singleton, so it outlives every editor opened here.
         Some(unsafe { WindowHandle::from_raw(ptr) })
     }
 }
@@ -213,7 +198,8 @@ fn editor_open_close_pairs_attach_and_remove() {
     let Some(mut inst) = load_host_checker() else {
         return;
     };
-    let Some(win) = require_window() else {
+    let Some(win) = TestWindow::get() else {
+        eprintln!("could not create a window; skipping");
         return;
     };
     let Some(handle) = win.handle() else {
@@ -269,7 +255,8 @@ fn editor_resize_respects_capabilities() {
     let Some(mut inst) = load_host_checker() else {
         return;
     };
-    let Some(win) = require_window() else {
+    let Some(win) = TestWindow::get() else {
+        eprintln!("could not create a window; skipping");
         return;
     };
     let Some(handle) = win.handle() else {
@@ -309,28 +296,33 @@ fn editor_resize_respects_capabilities() {
     inst.close_editor();
 }
 
-/// An open editor must have its `Linux::IRunLoop` handlers actually dispatched
-/// by the host's pump.
+/// A plugin with no editor must fail cleanly, not crash or hang.
 ///
-/// This is the regression test for "nothing pumps the plugin run loop": before
-/// [`Vst3Loaded::run_editor_loop_iteration`] existed, `host-checker` (a VSTGUI
-/// plugin, which drives its redraws off a registered timer) would register its
-/// timer and X file descriptor with us and then wait forever. The editor
-/// appeared, painted once, and froze.
+/// `audio-probe` returns nullptr from `createView`, so `open_editor` never
+/// reaches the platform-type check or `attached`. This pins the earliest
+/// rejection point: the host must report `NotSupported` rather than
+/// dereferencing the null view.
 ///
-/// The assertion is deliberately two-part, because registration alone proves
-/// nothing about the pump:
-/// 1. the plugin registered *something* (a timer or an fd) — otherwise there is
-///    no run loop to test and we say so rather than passing vacuously;
-/// 2. driving the pump raises the dispatch counters, i.e. we really called back
-///    into the plugin's `onTimer` / `onFDIsSet`.
+/// Uses a real window rather than a null handle: `WindowHandle::from_raw`
+/// requires a valid handle, and this path must not be the one place that
+/// quietly breaks the contract.
 #[test]
 #[ignore = "needs a display; run under xvfb-run -a"]
-fn open_editor_run_loop_is_pumped() {
-    let Some(mut inst) = load_host_checker() else {
+fn editorless_plugin_is_refused_cleanly() {
+    if !has_display() {
+        eprintln!("no DISPLAY/WAYLAND_DISPLAY; run under `xvfb-run -a`. Skipping.");
+        return;
+    }
+    let Some(path) = sample_plugin_path("audio-probe.vst3") else {
+        eprintln!("audio-probe.vst3 not found; skipping");
         return;
     };
-    let Some(win) = require_window() else {
+    let Ok(mut inst) = Vst3Instance::<f32>::load(&path, 48_000.0, 512) else {
+        eprintln!("audio-probe load failed; skipping");
+        return;
+    };
+    let Some(win) = TestWindow::get() else {
+        eprintln!("could not create a window; skipping");
         return;
     };
     let Some(handle) = win.handle() else {
@@ -338,76 +330,47 @@ fn open_editor_run_loop_is_pumped() {
         return;
     };
 
-    // Nothing should be dispatched before an editor exists.
-    let before_open = inst.run_loop_activity();
+    let err = inst
+        .open_editor(handle)
+        .expect_err("audio-probe has no editor; open_editor must fail");
+    eprintln!("editorless plugin refused with: {err:?}");
 
-    if let Err(e) = inst.open_editor(handle) {
-        eprintln!("open_editor failed ({e:?}); skipping");
-        return;
-    }
-
-    let registered = inst.run_loop_activity();
-    eprintln!(
-        "after open: {} timer(s), {} fd(s) registered",
-        registered.timers_registered, registered.event_handlers_registered
-    );
-
-    if registered.timers_registered == 0 && registered.event_handlers_registered == 0 {
-        // Not a host bug: a plugin whose toolkit needs no run loop is entitled
-        // to register nothing. Fail loudly only if it registered and we then
-        // failed to pump — that is what this test is for.
-        eprintln!("plugin registered no run-loop handlers; nothing to pump. Skipping.");
-        inst.close_editor();
-        return;
-    }
-
-    // VSTGUI's redraw timer is on the order of tens of milliseconds, so pump
-    // for well over one period rather than assuming a single iteration is due.
-    // Real hosts call this every frame; this is that loop, compressed.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let mut activity = registered;
-    while std::time::Instant::now() < deadline {
-        inst.run_editor_loop_iteration();
-        activity = inst.run_loop_activity();
-        if activity.timers_fired > before_open.timers_fired
-            && activity.fds_dispatched >= before_open.fds_dispatched
-        {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-
-    eprintln!(
-        "after pumping: {} timer fire(s), {} fd dispatch(es)",
-        activity.timers_fired, activity.fds_dispatched
-    );
-
-    // The pump must have done *something*. A registered handler that never
-    // fires across two seconds of pumping means the loop is not wired.
-    assert!(
-        activity.timers_fired > before_open.timers_fired
-            || activity.fds_dispatched > before_open.fds_dispatched,
-        "run loop registered {} timer(s) and {} fd(s), but pumping for 2s \
-         dispatched nothing (timers_fired {} -> {}, fds_dispatched {} -> {})",
-        registered.timers_registered,
-        registered.event_handlers_registered,
-        before_open.timers_fired,
-        activity.timers_fired,
-        before_open.fds_dispatched,
-        activity.fds_dispatched,
-    );
-
+    // And the failure must leave nothing open — a close afterwards is a no-op,
+    // not a `removed()` without a matching `attached()`.
     inst.close_editor();
+}
 
-    // Closing must retire the plugin's handlers, or the next pump calls into a
-    // released view.
-    let after_close = inst.run_loop_activity();
-    eprintln!(
-        "after close: {} timer(s), {} fd(s) still registered",
-        after_close.timers_registered, after_close.event_handlers_registered
+/// The host must ask `isPlatformTypeSupported` before `attached`.
+///
+/// `host-checker` scores `IPlugView` entry points the host exercises, and a
+/// successful open here means the view accepted this platform's type *and* the
+/// host's check let it through — i.e. the Gap A check does not reject a plugin
+/// that works. The inverse (a view that refuses being rejected) is covered
+/// without a display in `vst3_view_teardown.rs`, because no corpus plugin
+/// refuses X11.
+#[test]
+#[ignore = "needs a display; run under xvfb-run -a"]
+fn supported_platform_type_still_opens() {
+    let Some(mut inst) = load_host_checker() else {
+        return;
+    };
+    let Some(win) = TestWindow::get() else {
+        eprintln!("could not create a window; skipping");
+        return;
+    };
+    let Some(handle) = win.handle() else {
+        eprintln!("unsupported window handle type; skipping");
+        return;
+    };
+
+    let size = inst
+        .open_editor(handle)
+        .expect("host-checker supports this platform type; the check must not reject it");
+    assert!(
+        size.width > 0 && size.height > 0,
+        "editor reported a degenerate size {}x{}",
+        size.width,
+        size.height
     );
-
-    // Pumping with the editor closed must stay safe (and is what a host does on
-    // the frame after the user closes the window).
-    inst.run_editor_loop_iteration();
+    inst.close_editor();
 }

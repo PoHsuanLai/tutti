@@ -301,16 +301,27 @@ impl ClapLoaded {
         // carries no DPI today, so we pass 1.0 and wire the `set_scale` call.
         let scale = 1.0_f64;
 
+        // H5: clear the previous editor's "already destroyed" latch *before*
+        // the embed sequence, not after. `embed_editor_sequence` calls
+        // `create` → `set_scale` → `get_size` → `set_parent` → `show`, and
+        // `clap.gui.closed` is a callback the plugin may invoke from inside any
+        // of them — a plugin that decides during `show` that it cannot present
+        // (no display, a failed context) reports it that way. Clearing
+        // afterwards wiped exactly that signal, so the host would then call
+        // `destroy` on an editor the plugin had already torn down.
+        //
+        // Clearing first is safe in the other direction: the latch describes a
+        // *previous* editor, and if `create` fails there is no new editor whose
+        // state the cleared latch could misdescribe.
+        self.host_state
+            .gui
+            .already_destroyed
+            .store(false, std::sync::atomic::Ordering::Release);
+
         let outcome = embed_editor_sequence(gui, self.plugin.as_ptr(), api, window_handle, scale)?;
 
         if outcome.did_create {
             self.flags.gui_created = true;
-            // H5: a fresh editor exists now — clear any stale "already
-            // destroyed" latch from the previous editor's teardown.
-            self.host_state
-                .gui
-                .already_destroyed
-                .store(false, std::sync::atomic::Ordering::Release);
         }
 
         Ok(outcome.size)
@@ -563,10 +574,16 @@ impl ClapLoaded {
         records.drain(..).collect()
     }
 
-    /// How many log lines were dropped because the buffer was full while the
-    /// consumer was not draining. Cumulative, not consumed on read: a caller
-    /// tracks its own delta, and a caller that never asks is not silently told
-    /// the history is complete.
+    /// How many log lines the host did not keep. Cumulative, not consumed on
+    /// read: a caller tracks its own delta, and a caller that never asks is not
+    /// silently told the history is complete.
+    ///
+    /// Two causes, counted together because a consumer cannot act differently
+    /// on them: the buffer was full while nothing was draining, or the plugin
+    /// logged from the audio thread, where keeping the line would mean
+    /// allocating and taking a lock inside the callback (see `host_log`). A
+    /// plugin that logs per block shows a rising count here rather than a
+    /// growing buffer or a stalled audio thread.
     pub fn log_lines_dropped(&self) -> u32 {
         self.host_state
             .log

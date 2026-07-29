@@ -44,31 +44,36 @@
 //! # A stale-artifact hazard these tests uncovered
 //!
 //! `build.rs` emits two candidate paths for the reference plugin —
-//! `<profile>/<name>` and `<profile>/deps/<name>` — and `probe_path` returns
-//! the **first that exists**. Under this workspace's shared external target
-//! dir, both can exist, and cargo does not necessarily refresh the
-//! `<profile>/` copy on every build: it was observed five minutes older than
-//! the `deps/` one after a plugin edit.
+//! `<profile>/<name>` and `<profile>/deps/<name>` — and `probe_path` used to
+//! return the **first that exists**. Under this workspace's shared external
+//! target dir both can exist, and cargo does not necessarily refresh the
+//! `<profile>/` copy: it was observed five minutes older than the `deps/` one
+//! after a plugin edit.
 //!
-//! That is not cosmetic. While verifying non-vacuity, a deliberately-neutered
-//! plugin switch was still reported as working, because the host had dlopened
-//! the stale `<profile>/` copy — the suite was measuring a build that no longer
-//! matched the source. Deleting the stale copy immediately turned five tests
-//! red, which is the answer that should have come back the first time.
+//! That is not cosmetic. While verifying non-vacuity here, a deliberately-
+//! neutered plugin switch was still reported as working, because the host had
+//! dlopened the stale copy — the suite was measuring a build that no longer
+//! matched the source. Deleting it immediately turned five tests red, which is
+//! the answer that should have come back the first time.
 //!
-//! `build.rs` and `tests/support/` are owned elsewhere, so this is recorded
-//! rather than fixed here. A suite that mysteriously passes after a plugin-side
-//! change should suspect this first: compare the mtimes of the two candidates
-//! before believing the result.
+//! `probe_path` now takes the **newest** candidate rather than the first, so a
+//! stale copy is ignored instead of preferred. A suite that mysteriously passes
+//! after a plugin-side change should still suspect artifact staleness first.
 //!
 //! # What this file does not prove
 //!
 //! Only that the sampled paths do not call the allocator. It says nothing about
 //! the `RtPublish` deallocation property, which is a race and cannot be pinned
 //! by any allocation-sampling test (see the project's "Publishing to the Audio
-//! Thread" policy) — and nothing about the `clap.log` mutex (H4), whose hazard
-//! is a *lock*, not an allocation. Both are noted in the report rather than
-//! claimed here.
+//! Thread" policy).
+//!
+//! H4 — the `clap.log` mutex — is a partial exception worth stating precisely.
+//! Its *allocations* are gated by `audio_thread_logging_does_not_allocate`
+//! below. Its *lock* is not, and cannot be: no allocation-sampling test can see
+//! a priority inversion. That half is handled by construction instead — the
+//! host refuses to reach the mutex from the audio thread at all — which the
+//! same test pins from the other side, by asserting the lines were counted as
+//! dropped rather than recorded.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -182,6 +187,10 @@ fn set_sysex_output(count: u32, bytes: u32) {
 
 fn set_wide_layout(layout: WideLayout) {
     set_switch_u32(b"tutti_test_plugin_set_wide_layout\0", layout as u32);
+}
+
+fn set_audio_thread_log_lines(count: u32) {
+    set_switch_u32(b"tutti_test_plugin_set_audio_thread_log_lines\0", count);
 }
 
 /// Return every RT-probe switch to its inert default. Called on entry to each
@@ -698,6 +707,86 @@ fn sysex_output_events_do_not_allocate() {
     assert_no_alloc::assert_no_alloc(|| {
         drive(&mut inst, &mut bufs, 256, &ctx).expect("process");
     });
+}
+
+/// H2, third site: `ensure_processing` raising `StartProcessingFailed`.
+///
+/// The other two audio-thread error paths — `PluginReturnedError` and
+/// `BlockTooLarge` — are driven end-to-end by the tests above. This one cannot
+/// be: reaching it needs a `ClapActive` whose plugin is deactivated, and the
+/// rollback in `reconfigure` now makes that state unreachable by design. Its
+/// allocation-freedom is a property of the *variant* rather than of a path
+/// through the host, so it is asserted as one.
+///
+/// It matters because `ensure_processing` runs inside `do_process` on the audio
+/// thread, and nothing marks a refusing instance unusable — every subsequent
+/// block re-attempts the call, so the `"Start processing failed".to_string()`
+/// this replaced allocated once per block for as long as the plugin refused.
+#[test]
+fn start_processing_failure_is_allocation_free() {
+    let err = assert_no_alloc::assert_no_alloc(|| {
+        std::hint::black_box(tutti_clap_host::ClapError::StartProcessingFailed)
+    });
+    assert!(
+        matches!(err, tutti_clap_host::ClapError::StartProcessingFailed),
+        "constructing the variant must not allocate"
+    );
+    // Rendering happens off the audio thread, where the message is actually
+    // read — so the text lives in the `#[error]` attribute, not in the value.
+    assert_eq!(
+        err.to_string(),
+        "Processing error: plugin refused to start processing"
+    );
+}
+
+/// H4: a plugin logging through `clap.log` from inside `process` must not make
+/// the host allocate, lock stderr, or take the log mutex.
+///
+/// CLAP marks `clap.log` `[thread-safe]`, and means it — a plugin that detects a
+/// denormal storm or a dropped buffer mid-render has no other channel. The host
+/// used to treat such a line exactly like a main-thread one: `into_owned()` for
+/// the message, `eprintln!` for the mirror, and `LogState::push` taking a
+/// `Mutex` that `drain_log` holds across a `.collect()`. The first two are
+/// allocations in an audio callback; the third is a priority inversion, which
+/// this gate cannot see at all — it is caught by construction instead, by the
+/// host refusing to reach the lock from this thread.
+///
+/// The line is counted rather than kept, and `log_lines_dropped` is asserted to
+/// move, so a "fix" that silently discarded audio-thread logs without telling
+/// anyone would fail here rather than pass.
+#[test]
+fn audio_thread_logging_does_not_allocate() {
+    let _lock = PROBE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    reset_probe();
+    let mut inst = load_probe();
+    let mut bufs = StereoBufs::new();
+    let transport = TransportInfo::default();
+    let ctx = ProcessContext {
+        transport: Some(&transport),
+        ..Default::default()
+    };
+
+    const LINES_PER_BLOCK: u32 = 4;
+    const GATED_BLOCKS: u32 = 256;
+    set_audio_thread_log_lines(LINES_PER_BLOCK);
+
+    // A few blocks outside the gate: the host's first `process` calls after
+    // activation do their own one-off setup, which is not what this is about.
+    drive(&mut inst, &mut bufs, 8, &ctx).expect("process");
+    let before = inst.log_lines_dropped();
+
+    assert_no_alloc::assert_no_alloc(|| {
+        drive(&mut inst, &mut bufs, GATED_BLOCKS as usize, &ctx).expect("process");
+    });
+
+    let after = inst.log_lines_dropped();
+    assert_eq!(
+        after - before,
+        LINES_PER_BLOCK * GATED_BLOCKS,
+        "every audio-thread line must be counted as dropped — a host that \
+         silently swallowed them would leave this at 0, and one that recorded \
+         them would have allocated inside the gate"
+    );
 }
 
 /// The same, with payloads that *vary* in size block to block.

@@ -389,11 +389,24 @@ pub const GUI_CMD_CLOSED_NOT_DESTROYED: u32 = 2;
 ///
 /// Unlike the two above, this one is **not** run from `show` — it is driven
 /// directly by the test via [`tutti_test_plugin_gui_run_command`] after
-/// `open_editor` has returned. Firing it from `show` would put the callback
-/// *inside* `open_editor`, which clears the host's `already_destroyed` latch
-/// after the embed sequence returns; the latch this models is the one set by a
-/// user closing the plugin's own window later, while the editor sits open.
+/// `open_editor` has returned. It models the ordinary case: a user closes the
+/// plugin's own window later, while the editor sits open. For the
+/// during-`show` variant see [`GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW`].
 pub const GUI_CMD_CLOSED_AND_DESTROYED: u32 = 3;
+
+/// Call `host.gui.closed(was_destroyed = true)` and self-destroy **from inside
+/// `show`** — while the host is still within `open_editor`.
+///
+/// A plugin does this when it discovers during the embed that it cannot
+/// present (no display, a failed GL context) and tears itself down rather than
+/// sit there broken.
+///
+/// This was untestable until the host stopped clearing its `already_destroyed`
+/// latch *after* `embed_editor_sequence` returned: the clear landed on top of
+/// the callback that had just fired, so the host forgot the plugin had
+/// self-destroyed and would call `destroy` on it again. The latch is now
+/// cleared before the sequence, and this command is what holds that.
+pub const GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW: u32 = 4;
 
 /// The size the plugin asks the host for via [`GUI_CMD_REQUEST_RESIZE`].
 /// Deliberately unrelated to [`GUI_WIDTH`]/[`GUI_HEIGHT`] so a host echoing the
@@ -464,6 +477,8 @@ unsafe fn host_ext<'a, T>(host: *const clap_host, id: &CStr) -> Option<&'a T> {
 ///
 /// [`GUI_CMD_CLOSED_AND_DESTROYED`] is deliberately excluded: it must land
 /// *between* the host's calls, not inside one. See its docs.
+/// [`GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW`] is the opposite — it exists
+/// precisely to fire from here — so it is not excluded.
 ///
 /// # Safety
 /// `plugin` must be a `clap_plugin` this crate's factory produced.
@@ -506,7 +521,9 @@ unsafe fn run_command_against(host: *const clap_host) {
                 f(host, false);
             }
         }
-        GUI_CMD_CLOSED_AND_DESTROYED => {
+        // Both self-destroy variants behave identically here; they differ only
+        // in *when* they are dispatched — see `run_pending_command`.
+        GUI_CMD_CLOSED_AND_DESTROYED | GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW => {
             // Order matters: tear our own resources down *then* tell the host,
             // which is what a plugin whose window received a close event does.
             // The host must not call `destroy` after this.

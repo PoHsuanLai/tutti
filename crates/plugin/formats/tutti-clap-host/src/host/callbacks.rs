@@ -126,12 +126,43 @@ fn severity_label(severity: clap_log_severity) -> &'static str {
     }
 }
 
+/// `clap.log` is `[thread-safe]`, which includes the audio thread — and CLAP
+/// says so explicitly, because a plugin reporting a denormal storm or a dropped
+/// buffer has nothing else to report it with.
+///
+/// Everything this function used to do is forbidden there. `into_owned()`
+/// allocates, `eprintln!` allocates *and* takes the stderr lock, and
+/// `LogState::push` takes a `Mutex` that [`drain_log`](crate::ClapLoaded::drain_log)
+/// holds across a `.collect()` — a main-thread consumer draining its console
+/// could stall the callback for the length of that copy. Priority inversion in
+/// an audio callback is a dropout.
+///
+/// So an audio-thread log is counted, not recorded. The count is visible
+/// through [`log_dropped`](crate::ClapLoaded::log_dropped), which already
+/// exists to report lines lost to a full buffer — a line dropped for being on
+/// the wrong thread is the same fact from the consumer's side.
+///
+/// This loses the message text, which is a real cost: a plugin that only
+/// misbehaves under load reports it from exactly the thread we now refuse to
+/// record. The alternative is a lock-free queue with pre-allocated slots, and
+/// it is the right eventual answer — but it is a bigger change than silencing
+/// the hazard, and shipping the hazard while designing it is not a trade worth
+/// making.
 unsafe extern "C" fn host_log(
     host: *const ClapHostVtable,
     severity: clap_log_severity,
     msg: *const c_char,
 ) {
     if msg.is_null() {
+        return;
+    }
+    let Some(state) = get_host_state(host) else {
+        return;
+    };
+    // Check the thread before touching `msg`: building the `String` is itself
+    // one of the allocations this guard exists to prevent.
+    if state.is_audio_thread() {
+        state.log.note_audio_thread_drop();
         return;
     }
     let msg_str = CStr::from_ptr(msg).to_string_lossy().into_owned();
@@ -144,9 +175,7 @@ unsafe extern "C" fn host_log(
     // Also retain the line so a consumer can route it somewhere other than
     // stderr, and so the routing is assertable at all. Unrecognised severities
     // are retained verbatim rather than folded into a bucket — see `LogRecord`.
-    if let Some(state) = get_host_state(host) {
-        state.log.push(severity, msg_str);
-    }
+    state.log.push(severity, msg_str);
 }
 
 pub(super) static HOST_PARAMS: clap_host_params = clap_host_params {

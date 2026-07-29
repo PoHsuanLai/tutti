@@ -96,9 +96,9 @@ pub use gui::{
     GuiCapture, GuiMode, GUI_ASPECT_H, GUI_ASPECT_W, GUI_CALL_ADJUST_SIZE, GUI_CALL_CAN_RESIZE,
     GUI_CALL_CREATE, GUI_CALL_DESTROY, GUI_CALL_GET_RESIZE_HINTS, GUI_CALL_GET_SIZE, GUI_CALL_HIDE,
     GUI_CALL_IS_API_SUPPORTED, GUI_CALL_SET_PARENT, GUI_CALL_SET_SCALE, GUI_CALL_SET_SIZE,
-    GUI_CALL_SHOW, GUI_CMD_CLOSED_AND_DESTROYED, GUI_CMD_CLOSED_NOT_DESTROYED, GUI_CMD_NONE,
-    GUI_CMD_REQUEST_RESIZE, GUI_HEIGHT, GUI_REQUESTED_RESIZE_H, GUI_REQUESTED_RESIZE_W,
-    GUI_SIZE_QUANTUM, GUI_WIDTH, MAX_GUI_CALLS,
+    GUI_CALL_SHOW, GUI_CMD_CLOSED_AND_DESTROYED, GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW,
+    GUI_CMD_CLOSED_NOT_DESTROYED, GUI_CMD_NONE, GUI_CMD_REQUEST_RESIZE, GUI_HEIGHT,
+    GUI_REQUESTED_RESIZE_H, GUI_REQUESTED_RESIZE_W, GUI_SIZE_QUANTUM, GUI_WIDTH, MAX_GUI_CALLS,
 };
 
 /// REFUSAL probe: switches that make `activate` and the `clap.state-context/2`
@@ -443,6 +443,12 @@ unsafe extern "C" fn plugin_process(
     // `out_events.try_push` — and it is the host's audio thread, which is the
     // whole point.
     rt_probe::emit_sysex_output(p);
+
+    // RT-HAZARD: log through `clap.log` from inside the host's `process`. CLAP
+    // marks that callback `[thread-safe]`, so this is legal plugin behaviour —
+    // and it is the only way a plugin can report something it only discovers
+    // while rendering.
+    rt_probe::emit_audio_thread_logs(host);
 
     // RT-HAZARD: the status is the last thing decided, so the block counter the
     // alternating modes read advances exactly once per block regardless of

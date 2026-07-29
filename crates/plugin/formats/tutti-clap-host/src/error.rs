@@ -24,7 +24,7 @@ pub enum ClapError {
     },
 
     /// Audio processing failed — a 64-bit buffer was passed to a 32-bit-only
-    /// plugin, `start_processing` refused, or a similar setup-time fault.
+    /// plugin, or a similar setup-time fault.
     ///
     /// Carries an owned `String`, so this variant must **not** be constructed
     /// on the audio thread. The two conditions raised from inside `process`
@@ -58,6 +58,16 @@ pub enum ClapError {
          grow it off the audio thread with `set_max_block_size`"
     )]
     BlockTooLarge { requested: u32, max_frames: u32 },
+
+    /// The plugin's `start_processing` returned false.
+    ///
+    /// Raised from `ensure_processing`, which `process` calls on the audio
+    /// thread to self-start after activation — so this was the third `String`
+    /// allocated inside the callback. It also repeats: nothing marks the
+    /// instance unusable, so every subsequent block re-attempts the call and
+    /// re-allocates on failure.
+    #[error("Processing error: plugin refused to start processing")]
+    StartProcessingFailed,
 
     /// Saving or loading plugin state failed.
     #[error("State error: {0}")]

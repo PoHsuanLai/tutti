@@ -191,11 +191,30 @@ impl LogState {
         }
     }
 
+    /// Count a line refused because it arrived on the audio thread.
+    ///
+    /// Folded into the same counter as a capacity eviction: from the
+    /// consumer's side both are "a line the host did not keep", and splitting
+    /// them would imply a caller can act differently on the two, which it
+    /// cannot. See `host_log` for why such a line is refused rather than
+    /// recorded.
+    ///
+    /// Audio-thread safe: one relaxed atomic increment, no lock, no
+    /// allocation.
+    pub(crate) fn note_audio_thread_drop(&self) {
+        self.dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Record one routed line, evicting the oldest if at capacity.
     ///
-    /// A poisoned lock is recovered rather than propagated: `clap.log` is
-    /// `[thread-safe]` and may be called from the audio thread, where a panic
-    /// would take the callback down over a diagnostic.
+    /// **Not audio-thread safe.** This takes a `Mutex` that `drain_log` holds
+    /// across a copy, so calling it from the audio thread risks a
+    /// priority-inversion stall; `host_log` diverts audio-thread lines to
+    /// [`note_audio_thread_drop`](Self::note_audio_thread_drop) before
+    /// reaching here.
+    ///
+    /// A poisoned lock is recovered rather than propagated: a panic here would
+    /// take a caller down over a diagnostic.
     pub(crate) fn push(&self, severity: i32, message: String) {
         let mut records = self.records.lock().unwrap_or_else(|p| p.into_inner());
         if records.len() == LOG_CAPACITY {

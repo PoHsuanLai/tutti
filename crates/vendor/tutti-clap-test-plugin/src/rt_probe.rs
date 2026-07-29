@@ -12,6 +12,7 @@
 //! | [`StatusMode`]                 | H1 — `eprintln!` on a process-status *transition* |
 //! | [`StatusMode::Error`]          | H2 — `format!`/`to_string` building a `ClapError` |
 //! | [`tutti_test_plugin_set_sysex_output_bytes`] | H3 — per-event `to_vec()` in `output_events_try_push` |
+//! | [`tutti_test_plugin_set_audio_thread_log_lines`] | H4 — `String` + stderr lock + `Mutex` in `clap.log` |
 //! | [`WideLayout`]                 | H7 — `SmallVec<[*mut T; 16]>` spilling past its inline capacity |
 //!
 //! ## Why these are process-global switches rather than parameters
@@ -32,9 +33,12 @@
 //! ordinary plugin behaviour: a reverb whose tail decays below the noise floor
 //! and is re-excited by input flips between CONTINUE and TAIL naturally.
 
+use std::ffi::CStr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use clap_sys::events::{clap_event_header, clap_event_midi_sysex, CLAP_EVENT_MIDI_SYSEX};
+use clap_sys::ext::log::{clap_host_log, CLAP_EXT_LOG, CLAP_LOG_WARNING};
+use clap_sys::host::clap_host;
 use clap_sys::process::{
     clap_process, clap_process_status, CLAP_PROCESS_CONTINUE, CLAP_PROCESS_CONTINUE_IF_NOT_QUIET,
     CLAP_PROCESS_ERROR, CLAP_PROCESS_SLEEP, CLAP_PROCESS_TAIL,
@@ -222,6 +226,67 @@ pub unsafe extern "C" fn tutti_test_plugin_set_sysex_output_bytes(count: u32, by
     SYSEX_BYTES.store(bytes.min(MAX_SYSEX_BYTES as u32), Ordering::SeqCst);
 }
 
+// ---------------------------------------------------------------------------
+// clap.log from the audio thread
+// ---------------------------------------------------------------------------
+
+/// How many `clap.log` lines to emit per block from inside `process`.
+static LOG_LINES_PER_BLOCK: AtomicU32 = AtomicU32::new(0);
+
+/// The line the probe logs from the audio thread. Fixed and distinctive so a
+/// host-side test can tell it from the threading probe's main-thread lines.
+static AUDIO_THREAD_LOG_LINE: &CStr = c"tutti-probe logging from the audio thread";
+
+/// Emit `count` `clap.log` lines per block, from inside `process`.
+///
+/// CLAP marks `clap.log` `[thread-safe]`, which includes the audio thread —
+/// deliberately, because a plugin detecting a denormal storm or a dropped
+/// buffer has nothing else to report it with. A host that records such a line
+/// the way it records a main-thread one allocates a `String`, takes the stderr
+/// lock, and takes a `Mutex` its own `drain_log` holds across a copy: three
+/// things forbidden in an audio callback, the last of them a priority
+/// inversion.
+///
+/// # Safety
+/// Safe to call; `extern "C"` only so the test can reach it across `dlopen`.
+#[no_mangle]
+pub unsafe extern "C" fn tutti_test_plugin_set_audio_thread_log_lines(count: u32) {
+    LOG_LINES_PER_BLOCK.store(count, Ordering::SeqCst);
+}
+
+/// Log the configured number of lines through the host's `clap.log`.
+///
+/// Called from `plugin_process`, so these arrive on the host's audio thread
+/// while it is inside its own `process`.
+///
+/// # Safety
+/// `host` must be null or the live `clap_host` the plugin was created with.
+pub(crate) unsafe fn emit_audio_thread_logs(host: *const clap_host) {
+    let count = LOG_LINES_PER_BLOCK.load(Ordering::Acquire);
+    if count == 0 {
+        return;
+    }
+    // Resolved inline rather than through a shared helper: `gui` and
+    // `threading` each keep their own private `host_ext`, and a third copy
+    // would be one more than the two that already exist.
+    if host.is_null() {
+        return;
+    }
+    let Some(get_extension) = (*host).get_extension else {
+        return;
+    };
+    let ptr = get_extension(host, CLAP_EXT_LOG.as_ptr()) as *const clap_host_log;
+    if ptr.is_null() {
+        return;
+    }
+    let Some(log) = (*ptr).log else {
+        return;
+    };
+    for _ in 0..count {
+        log(host, CLAP_LOG_WARNING, AUDIO_THREAD_LOG_LINE.as_ptr());
+    }
+}
+
 /// Push the configured SysEx events into the host's output event list.
 ///
 /// Called from `plugin_process` — i.e. from inside the host's `process`, on the
@@ -362,4 +427,5 @@ pub unsafe extern "C" fn tutti_test_plugin_reset_rt_probe() {
     BLOCK_COUNTER.store(0, Ordering::SeqCst);
     SYSEX_COUNT.store(0, Ordering::SeqCst);
     SYSEX_BYTES.store(0, Ordering::SeqCst);
+    LOG_LINES_PER_BLOCK.store(0, Ordering::SeqCst);
 }

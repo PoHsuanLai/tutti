@@ -51,9 +51,9 @@ use tutti_clap_test_plugin::{
     GuiCapture, GuiMode, GUI_ASPECT_H, GUI_ASPECT_W, GUI_CALL_ADJUST_SIZE, GUI_CALL_CAN_RESIZE,
     GUI_CALL_CREATE, GUI_CALL_DESTROY, GUI_CALL_GET_RESIZE_HINTS, GUI_CALL_GET_SIZE, GUI_CALL_HIDE,
     GUI_CALL_IS_API_SUPPORTED, GUI_CALL_SET_PARENT, GUI_CALL_SET_SCALE, GUI_CALL_SET_SIZE,
-    GUI_CALL_SHOW, GUI_CMD_CLOSED_AND_DESTROYED, GUI_CMD_CLOSED_NOT_DESTROYED,
-    GUI_CMD_REQUEST_RESIZE, GUI_HEIGHT, GUI_REQUESTED_RESIZE_H, GUI_REQUESTED_RESIZE_W,
-    GUI_SIZE_QUANTUM, GUI_WIDTH,
+    GUI_CALL_SHOW, GUI_CMD_CLOSED_AND_DESTROYED, GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW,
+    GUI_CMD_CLOSED_NOT_DESTROYED, GUI_CMD_REQUEST_RESIZE, GUI_HEIGHT, GUI_REQUESTED_RESIZE_H,
+    GUI_REQUESTED_RESIZE_W, GUI_SIZE_QUANTUM, GUI_WIDTH,
 };
 
 /// Serializes whole scenarios — set mode → reset → load → drive → read — so one
@@ -523,9 +523,7 @@ fn close_editor_skips_destroy_after_plugin_self_destroyed() {
 
     // The plugin tears its own editor down and reports it — a user closing the
     // plugin's own window while the editor sits open. Driven out-of-band, i.e.
-    // *between* the host's calls: `open_editor` clears the `already_destroyed`
-    // latch after its embed sequence returns, so a callback fired from inside
-    // `show` would be wiped by the very call that carried it.
+    // *between* the host's calls; the during-`show` case is its own test below.
     probe.command(GUI_CMD_CLOSED_AND_DESTROYED);
     probe.run_command();
 
@@ -546,6 +544,54 @@ fn close_editor_skips_destroy_after_plugin_self_destroyed() {
         cap.create_balance, 0,
         "close_editor must skip hide/destroy entirely — calling destroy on an \
          already-destroyed editor is a double-destroy, and would read -1 here"
+    );
+    assert!(
+        !calls(&cap).contains(&GUI_CALL_DESTROY),
+        "the host must not have called destroy at all"
+    );
+}
+
+/// The same H5 hazard, but the plugin self-destroys from **inside `show`** —
+/// while the host is still within `open_editor`.
+///
+/// A plugin does this when it finds during the embed that it cannot present.
+/// The host used to clear its `already_destroyed` latch *after*
+/// `embed_editor_sequence` returned, so this callback was wiped by the very
+/// call that carried it and the host went on to `destroy` an editor that had
+/// already torn itself down.
+///
+/// The out-of-band test above cannot catch it: firing between the host's calls
+/// lands after the clear either way. Only a callback raised inside the sequence
+/// distinguishes clearing before it from clearing after.
+#[test]
+fn close_editor_skips_destroy_after_plugin_self_destroyed_during_show() {
+    let probe = Probe::acquire(GuiMode::Embeddable);
+    let mut loaded = probe.load();
+
+    // Latched, not run by hand: the probe fires it from `show`, the last call
+    // of the host's embed sequence.
+    probe.command(GUI_CMD_CLOSED_AND_DESTROYED_FROM_SHOW);
+    loaded.open_editor(fake_parent()).expect("opens");
+
+    assert!(
+        loaded.poll_gui_closed(),
+        "the host must still hold the `gui.closed` the plugin raised during the \
+         embed — clearing the latch afterwards would have erased it"
+    );
+
+    let after_open = probe.capture();
+    assert_eq!(
+        after_open.create_balance, 0,
+        "the plugin destroyed its own editor from inside show, so nothing is live"
+    );
+
+    loaded.close_editor();
+
+    let cap = probe.capture();
+    assert_eq!(
+        cap.create_balance, 0,
+        "close_editor must skip destroy — a second destroy on the editor the \
+         plugin already tore down would read -1 here"
     );
     assert!(
         !calls(&cap).contains(&GUI_CALL_DESTROY),

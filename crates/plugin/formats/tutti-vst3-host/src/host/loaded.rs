@@ -1116,6 +1116,35 @@ impl Vst3Loaded {
         latest
     }
 
+    /// Ask the plugin what it would snap `requested` to, without applying it.
+    ///
+    /// A read-only probe of `IPlugView::checkSizeConstraint`: the plugin clamps
+    /// the rect to the nearest size it accepts, and this reports that size
+    /// without the `onSize` that [`resize_editor`](Self::resize_editor) would
+    /// follow with. Returns `None` when no editor is open.
+    ///
+    /// Exposed for the conformance suite, which uses it to check that a size
+    /// the host granted is genuinely one the plugin accepts.
+    #[cfg(feature = "conformance")]
+    pub fn check_editor_size_constraint(&self, requested: EditorSize) -> Option<EditorSize> {
+        let EditorState::Open { view, .. } = &self.editor else {
+            return None;
+        };
+        let mut rect = ViewRect {
+            left: 0,
+            top: 0,
+            right: requested.width as i32,
+            bottom: requested.height as i32,
+        };
+        // `kResultFalse` means "no constraint to apply", which leaves `rect`
+        // holding the request — the same fallback `resize_editor` uses.
+        unsafe { view.checkSizeConstraint(&mut rect) };
+        Some(EditorSize {
+            width: (rect.right - rect.left) as u32,
+            height: (rect.bottom - rect.top) as u32,
+        })
+    }
+
     /// Returns the snapped size the plugin applied.
     pub fn resize_editor(&mut self, requested: EditorSize) -> Result<EditorSize> {
         let EditorState::Open { view, .. } = &self.editor else {

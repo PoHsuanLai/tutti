@@ -275,6 +275,9 @@ fn editor_resize_respects_capabilities() {
         initial.width, initial.height, caps.resize
     );
 
+    // An in-range request: both a correct host and one that ignores
+    // `checkSizeConstraint` return the same thing here, so this leg only
+    // establishes that resizing works at all.
     let requested = EditorSize {
         width: initial.width + 100,
         height: initial.height + 80,
@@ -291,6 +294,41 @@ fn editor_resize_respects_capabilities() {
         }
         // A fixed-size view refusing is correct behaviour, not a failure.
         Err(e) => eprintln!("resize refused ({e:?}) — valid for a fixed-size editor"),
+    }
+
+    // The discriminating case: a request the plugin *must* clamp.
+    //
+    // `VST3Editor::checkSizeConstraint` clamps to the .uidesc min/max
+    // (vst3editor.cpp:1467-1490), so an absurd request comes back snapped. Ask
+    // the plugin directly what it would do, and only assert if it genuinely
+    // constrains this size — a plugin with no limits has nothing to enforce and
+    // must not be turned into a failure.
+    //
+    // Without this leg the test was vacuous: it asserted only that the granted
+    // size was non-degenerate, which is equally true of a host that forwards
+    // the raw request. Measured — replacing `resize_editor`'s constrained rect
+    // with the unmodified request left the old test reporting `ok`.
+    const ABSURD: EditorSize = EditorSize {
+        width: 10_000,
+        height: 10_000,
+    };
+    let clamped_to = inst
+        .check_editor_size_constraint(ABSURD)
+        .expect("editor is open, so the constraint query must answer");
+
+    if clamped_to == ABSURD {
+        eprintln!("editor accepts {ABSURD:?} unclamped — no constraint to verify");
+    } else {
+        eprintln!("plugin clamps {ABSURD:?} to {clamped_to:?}");
+        let granted = inst
+            .resize_editor(ABSURD)
+            .expect("plugin reported a legal snapped size, so onSize must accept it");
+        assert_eq!(
+            granted, clamped_to,
+            "host granted {granted:?} for an out-of-range request, but the \
+             plugin's own checkSizeConstraint snaps it to {clamped_to:?} — the \
+             host applied the raw request instead of the constrained rect"
+        );
     }
 
     inst.close_editor();

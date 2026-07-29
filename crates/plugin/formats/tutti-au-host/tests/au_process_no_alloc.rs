@@ -28,17 +28,45 @@ static A: AllocDisabler = AllocDisabler;
 
 static PLUGIN_LOAD_LOCK: Mutex<()> = Mutex::new(());
 
-fn load_apple_delay_or_skip() -> Option<AuInstance> {
-    let effects = enumerate_components_of_type(AuType::Effect);
-    let info = effects.into_iter().find(|i| i.name.contains("AUDelay"))?;
+/// Load Apple's AUDelay, or panic.
+///
+/// Absence is a hard failure rather than a skip: AUDelay ships with macOS, so
+/// not finding it means the AU environment is broken, not that an optional
+/// plugin is missing. This used to `return` early with an `eprintln!`, which
+/// the harness still counts as a pass — the same silent-skip shape that once
+/// let 31 of 32 VST3 conformance tests report `ok` having run nothing.
+///
+/// Matching is by component code rather than display-name substring: names are
+/// localized and have been renamed across releases, and a substring match would
+/// happily bind to a third-party unit. Mirrors `tests/support/corpus.rs`.
+fn load_apple_delay() -> AuInstance {
+    let wanted = u32::from_be_bytes(*b"dely");
+    let apple = u32::from_be_bytes(*b"appl");
+    let info = enumerate_components_of_type(AuType::Effect)
+        .into_iter()
+        .find(|i| i.sub_type == wanted && i.manufacturer_code == apple)
+        .expect(
+            "Apple's AUDelay is not registered with AudioToolbox. It ships \
+             with macOS, so this means the AU environment is broken.",
+        );
     // SAFETY: `info.component` was returned by AudioComponentFindNext under
     // an Apple-owned AUDelay description; valid for the lifetime of the host
     // process.
-    let mut au = unsafe { AuInstance::new(info.component, 48_000.0, 64) }.ok()?;
-    au.initialize().ok()?;
-    Some(au)
+    let mut au =
+        unsafe { AuInstance::new(info.component, 48_000.0, 64) }.expect("instantiate AUDelay");
+    au.initialize().expect("initialize AUDelay");
+    au
 }
 
+/// Drive `iters` silent blocks, asserting each one actually rendered.
+///
+/// The render result was previously discarded with `let _`, which made the
+/// whole no-alloc assertion vacuous: a `process` that failed on every call
+/// allocates nothing, so the test passed just as readily when no audio was
+/// being produced at all.
+///
+/// The `expect` is not itself an allocation risk inside the guarded section —
+/// it only formats on the failure path, and a failure fails the test anyway.
 fn drive_silent(au: &mut AuInstance, iters: usize) {
     let in_l = [0.0f32; 64];
     let in_r = [0.0f32; 64];
@@ -47,18 +75,15 @@ fn drive_silent(au: &mut AuInstance, iters: usize) {
     for _ in 0..iters {
         let ins: &[&[f32]] = &[&in_l, &in_r];
         let outs: &mut [&mut [f32]] = &mut [&mut out_l[..], &mut out_r[..]];
-        let _ = au.process(ins, outs, 64);
+        au.process(ins, outs, 64).expect("steady-state render");
     }
 }
 
 #[test]
 #[ignore]
 fn process_steady_state_does_not_allocate() {
-    let _lock = PLUGIN_LOAD_LOCK.lock().unwrap();
-    let Some(mut au) = load_apple_delay_or_skip() else {
-        eprintln!("AUDelay not available, skipping");
-        return;
-    };
+    let _lock = PLUGIN_LOAD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut au = load_apple_delay();
 
     // Warm-up: any first-call lazy allocations inside the AU and the host
     // adapter settle.

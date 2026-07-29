@@ -25,6 +25,10 @@ namespace Vst {
 AudioProbeProcessor::AudioProbeProcessor ()
 {
 	setControllerClass (AudioProbeControllerUID);
+	// Latched once, not re-read per call: a test sets the variable, loads,
+	// asserts, then unsets it, and re-reading would make behaviour depend on
+	// when each call landed relative to that cleanup.
+	mMisbehaviour = probeMisbehaviour ();
 }
 
 //-----------------------------------------------------------------------------
@@ -72,12 +76,39 @@ tresult PLUGIN_API AudioProbeProcessor::canProcessSampleSize (int32 symbolicSamp
 //-----------------------------------------------------------------------------
 uint32 PLUGIN_API AudioProbeProcessor::getLatencySamples ()
 {
+	// Claim a latency that is never applied — the stale-or-wrong-units bug.
+	if (mMisbehaviour == kMisbehaveLatencyLies)
+		return static_cast<uint32> (kLiedLatencySamples);
 	return mMode == kModeLatency ? static_cast<uint32> (kReportedLatencySamples) : 0;
+}
+
+//-----------------------------------------------------------------------------
+int32 PLUGIN_API AudioProbeProcessor::getBusCount (MediaType type, BusDirection dir)
+{
+	// Overreport *audio* buses only. Inflating the event count too would change
+	// which failure the host hits first and muddle what the test observes.
+	if (mMisbehaviour == kMisbehaveExtraBuses && type == kAudio)
+		return kLyingBusCount;
+	return AudioEffect::getBusCount (type, dir);
+}
+
+//-----------------------------------------------------------------------------
+tresult PLUGIN_API AudioProbeProcessor::setupProcessing (ProcessSetup& setup)
+{
+	if (mMisbehaviour == kMisbehaveSetupFails)
+		return kResultFalse;
+	return AudioEffect::setupProcessing (setup);
 }
 
 //-----------------------------------------------------------------------------
 tresult PLUGIN_API AudioProbeProcessor::setActive (TBool state)
 {
+	// Refuse activation the way a licence or device check would. Only the
+	// *activating* direction fails: a plugin that cannot be deactivated would
+	// wedge teardown for reasons unrelated to what this tests.
+	if (mMisbehaviour == kMisbehaveSetActiveFails && state)
+		return kResultFalse;
+
 	if (state)
 	{
 		// Deterministic origin for the block counter, and a cleared delay line
@@ -237,6 +268,17 @@ void AudioProbeProcessor::renderBlock (ProcessData& data)
 
 				case kModeLatency:
 				{
+					// The delay line is allocated in `setActive(true)`, which
+					// `kMisbehaveSetActiveFails` returns from early — and a host
+					// that ignores that failure calls `process` anyway. Guard
+					// rather than divide by `mDelay.size()` and take SIGFPE:
+					// the probe's job is to misbehave *as specified*, and a
+					// crash inside the plugin would be read as a host bug.
+					if (mDelay.empty ())
+					{
+						std::fill (dst, dst + frames, static_cast<T> (0));
+						break;
+					}
 					// Each channel walks its own ring from the same starting
 					// cursor; the shared cursor is advanced once for the whole
 					// block, after every channel is done (see below). Advancing
@@ -320,7 +362,21 @@ void AudioProbeProcessor::renderBlock (ProcessData& data)
 //-----------------------------------------------------------------------------
 tresult PLUGIN_API AudioProbeProcessor::process (ProcessData& data)
 {
+	// Leave every output buffer exactly as the host handed it over. A host that
+	// assumes its scratch was filled forwards whatever was previously in that
+	// memory — the stale-buffer leak, which sounds like a burst of older audio.
+	// Returning kResultOk is deliberate: the plugin claims success, so only the
+	// buffer contents can reveal the problem.
+	if (mMisbehaviour == kMisbehaveProcessWritesNothing)
+		return kResultOk;
+
 	consumeParameterChanges (data);
+
+	// Report failure on every call. Legal per the spec — plugins with nothing
+	// to render do it — so the host must keep running rather than treat the
+	// output as meaningful audio.
+	if (mMisbehaviour == kMisbehaveProcessFails)
+		return kResultFalse;
 
 	// A parameter-flush call (no audio) is legal and must not be treated as a
 	// block: counting it would desynchronise `kModeBlockCounter`.
@@ -339,6 +395,11 @@ tresult PLUGIN_API AudioProbeProcessor::process (ProcessData& data)
 //-----------------------------------------------------------------------------
 tresult PLUGIN_API AudioProbeProcessor::setState (IBStream* state)
 {
+	// Reject every restore. The host must treat a state round-trip as
+	// best-effort rather than failing the whole load over it.
+	if (mMisbehaviour == kMisbehaveStateFails)
+		return kResultFalse;
+
 	if (!state)
 		return kResultFalse;
 	IBStreamer s (state, kLittleEndian);
@@ -355,6 +416,9 @@ tresult PLUGIN_API AudioProbeProcessor::setState (IBStream* state)
 //-----------------------------------------------------------------------------
 tresult PLUGIN_API AudioProbeProcessor::getState (IBStream* state)
 {
+	if (mMisbehaviour == kMisbehaveStateFails)
+		return kResultFalse;
+
 	if (!state)
 		return kResultFalse;
 	IBStreamer s (state, kLittleEndian);

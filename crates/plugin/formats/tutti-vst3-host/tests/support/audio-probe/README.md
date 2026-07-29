@@ -57,6 +57,41 @@ under a different name made all nine tests skip *while printing
 `test result: ok. 9 passed`* — the suite reported success having executed
 nothing. Any change here must keep a missing probe loud.
 
+## Misbehaviour
+
+Everything above makes the probe a *well-behaved* oracle. It can also be a badly
+behaved one, so the host can be tested against plugins that violate the spec —
+which no Steinberg sample will ever do for you, and which is why a corpus of only
+well-behaved plugins proves so little about robustness.
+
+Set `TUTTI_PROBE_MISBEHAVIOUR` to one of the `ProbeMisbehaviour` values in
+`source/probeids.h`:
+
+| value | violation |
+|---|---|
+| 1 | `setActive(true)` returns `kResultFalse` (licence/device claim failed) |
+| 2 | `getLatencySamples` reports a latency never applied (stale or wrong units) |
+| 3 | `getBusCount` overreports (the classic out-of-bounds trigger) |
+| 4 | `process` returns `kResultFalse` on every call |
+| 5 | `process` returns success without touching the output (stale-buffer leak) |
+| 6 | `getState`/`setState` both fail |
+| 7 | `setupProcessing` returns `kResultFalse` |
+
+The value is read **once, when the processor is constructed** — it cannot be a
+parameter, because most of these happen during `initialize`/`setActive`, before a
+host could set one. `tests/vst3_misbehaving_plugin.rs` drives them.
+
+Two constraints on anything added here:
+
+- **The probe must misbehave only as specified.** An early version of
+  `kMisbehaveSetActiveFails` left the delay line unallocated, so `process`
+  divided by `mDelay.size()` and took SIGFPE. A crash *inside the plugin* reads
+  as a host bug and wastes the reader's time. Guard defensively.
+- **Every test must fail when the switch is disabled.** Four of the first nine
+  asserted only "didn't crash, stayed finite" — true of a well-behaved plugin
+  too, so they passed for the wrong reason. Verify by making `probeMisbehaviour`
+  return `kMisbehaveNone` unconditionally and confirming *every* test fails.
+
 ## Adding a mode
 
 1. Add the enum value and any constants to `source/probeids.h`.

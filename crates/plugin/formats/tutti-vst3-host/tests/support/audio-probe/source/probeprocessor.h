@@ -25,7 +25,13 @@ public:
 	tresult PLUGIN_API canProcessSampleSize (int32 symbolicSampleSize) SMTG_OVERRIDE;
 	uint32 PLUGIN_API getLatencySamples () SMTG_OVERRIDE;
 	tresult PLUGIN_API setActive (TBool state) SMTG_OVERRIDE;
+	tresult PLUGIN_API setupProcessing (ProcessSetup& setup) SMTG_OVERRIDE;
 	tresult PLUGIN_API process (ProcessData& data) SMTG_OVERRIDE;
+
+	/// Overridden only to support `kMisbehaveExtraBuses`; otherwise defers to
+	/// the base. A host that trusts an inflated count and indexes `getBusInfo`
+	/// up to it reads past the plugin's own bus array.
+	int32 PLUGIN_API getBusCount (MediaType type, BusDirection dir) SMTG_OVERRIDE;
 
 	tresult PLUGIN_API setState (IBStream* state) SMTG_OVERRIDE;
 	tresult PLUGIN_API getState (IBStream* state) SMTG_OVERRIDE;
@@ -49,6 +55,14 @@ private:
 	int32 mMode {kModeTagPassthrough};
 	double mRamp {0.0};
 	double mGain {1.0};
+
+	/// Which spec violation to commit, from `TUTTI_PROBE_MISBEHAVIOUR`.
+	///
+	/// Latched once at construction rather than read per call: a host test sets
+	/// the variable, loads, asserts, then unsets it, and re-reading would make
+	/// the plugin's behaviour depend on when each call happened relative to the
+	/// test's cleanup.
+	int32 mMisbehaviour {kMisbehaveNone};
 
 	/// Ramp value per sample for the current block (see `kModeParamRamp`).
 	std::vector<double> mRampAt;

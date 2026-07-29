@@ -774,7 +774,18 @@ impl<T: Vst3Sample> Vst3Instance<T> {
     fn set_active(&mut self, active: bool) -> Result<()> {
         let flag: vst3::Steinberg::TBool = if active { 1 } else { 0 };
         let result = unsafe { self.loaded.interfaces.component.setActive(flag) };
-        if result != kResultOk && result != kResultFalse {
+        // `kResultFalse` is a *refusal*, not a "didn't implement it". A plugin
+        // whose licence check, dongle, or device claim fails reports it here,
+        // and it is the only way it can. Accepting it as success left the host
+        // believing an inactive plugin was live and calling `process` on it —
+        // which is undefined, and which the plugin has no way to prevent.
+        //
+        // Steinberg's own suite agrees: `validstatetransition.cpp` fails the
+        // plugin unless `setActive` returns exactly `kResultTrue`.
+        //
+        // This is the opposite of the `setProcessing` call below, where a
+        // non-OK result genuinely does mean "not implemented" — see there.
+        if result != kResultOk {
             return Err(Vst3Error::PluginError {
                 stage: LoadStage::Activation,
                 code: result,
